@@ -1,198 +1,239 @@
 prd: docs/prds/v0_6/uniform-member-access.md
 schema_version: 1
-# Authored at decompose time 2026-07-24; task ids pre-stamped from the
-# same-session planning_mode batch (5424-5432) so the committed sidecar matches what
-# commit_planning's stamper re-writes.
-# Narrative evidence + probe captures: uniform-member-access.capability-manifest.md.
 tasks:
-- label: "α"
+- label: α
   task_id: 5424
-  title: 'Uniform member-path resolver in reify-compiler (typed dotted chains, priv per hop)'
+  title: Uniform member-path resolver in reify-compiler (typed dotted chains, priv
+    per hop)
   capabilities:
   - name: resolver-single-authority
-    binding: 'capability→producer (this leaf) — contract C1 names resolve_member_path; absorbs template.value_cells read-back (expr.rs:6506-6560) + two-level shape matchers as callers'
+    binding: capability→producer (this leaf) — contract C1 names resolve_member_path;
+      absorbs template.value_cells read-back (expr.rs:6506-6560) + two-level shape
+      matchers as callers
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: 'fn resolve_member_path'
+      pattern: fn resolve_member_path
       paths:
       - crates/reify-compiler/src
       expect: present
   - name: scalar-chain-regression-floor
-    binding: 'signal premise — probe 2026-07-24: member_chain_scalar.ri eval Test.v=0.014m / Test.direct=0.007m; member_let_read.ri Test.drill=0.008m — already-working paths must stay byte-identical'
+    binding: 'signal premise — probe 2026-07-24: member_chain_scalar.ri eval Test.v=0.014m
+      / Test.direct=0.007m; member_let_read.ri Test.drill=0.008m — already-working
+      paths must stay byte-identical'
     verdict: PASS
     delivered_check:
       kind: manual
       reason: behavioral parity asserted by boundary row 5 (α's own regression tests)
   - name: priv-enforced-per-hop
-    binding: 'capability→producer (substrate) — E_PRIV_MEMBER_ACCESS live (diagnostics.rs:3391, task 3978 suites); α extends enforcement to every hop of every path shape'
+    binding: capability→producer (substrate) — E_PRIV_MEMBER_ACCESS live (diagnostics.rs:3391,
+      task 3978 suites); α extends enforcement to every hop of every path shape
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: enforcement extent (deep chains) asserted by boundary row 7 test, not pattern-discriminable from the existing symbol
-- label: "β"
+      reason: enforcement extent (deep chains) asserted by boundary row 7 test, not
+        pattern-discriminable from the existing symbol
+- label: β
   task_id: 5425
-  title: 'Type-driven geometry-position acceptance + GeomRef instance-member endpoint'
+  title: Type-driven geometry-position acceptance + GeomRef instance-member endpoint
   capabilities:
   - name: syntactic-rejection-is-the-gap
-    binding: 'signal premise (rejection observed) — probe: member_geom_let_instance.ri → "difference() argument 2 must be a geometry expression", exit 1'
+    binding: 'signal premise (rejection observed) — probe: member_geom_let_instance.ri
+      → "difference() argument 2 must be a geometry expression", exit 1'
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: post-fix acceptance asserted by γ/ι e2e; the pre-fix rejection is the authored-time probe
+      reason: post-fix acceptance asserted by γ/ι e2e; the pre-fix rejection is the
+        authored-time probe
   - name: sub-acceptance-reference-semantics
-    binding: 'capability→producer (substrate, wired) — member_sub_geom_baseline.ri check exit 0 via GeomRef::Sub (geometry_boolean.rs:40-107)'
+    binding: capability→producer (substrate, wired) — member_sub_geom_baseline.ri
+      check exit 0 via GeomRef::Sub (geometry_boolean.rs:40-107)
     verdict: PASS
     delivered_check:
       kind: manual
       reason: pre-landed substrate fact (baseline probe)
   - name: registry-cross-check-extended
-    binding: 'capability→producer (this leaf) — task-1733 cross-check harness in geometry.rs extended to the typed acceptance class (contracts-machine-checked)'
+    binding: capability→producer (this leaf) — task-1733 cross-check harness in geometry.rs
+      extended to the typed acceptance class (contracts-machine-checked)
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: harness extension shape is implementer-chosen; boundary row 10 asserts the behavioral half
-- label: "γ"
+      reason: harness extension shape is implementer-chosen; boundary row 10 asserts
+        the behavioral half
+- label: γ
   task_id: 5426
-  title: 'Per-instance lazy realization of let-instance geometry members (inert-until-consumed)'
+  title: Per-instance lazy realization of let-instance geometry members (inert-until-consumed)
   capabilities:
   - name: target-non-vacuous
-    binding: 'signal premise (rejection observed) — member_geom_let_instance.ri + member_geom_alias.ri both exit 1 today with the geometry-position diagnostic'
+    binding: signal premise (rejection observed) — member_geom_let_instance.ri + member_geom_alias.ri
+      both exit 1 today with the geometry-position diagnostic
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: post-fix acceptance (check exit 0 + non-undef drilled volume) asserted by γ's own e2e (boundary rows 1-3, 12)
+      reason: post-fix acceptance (check exit 0 + non-undef drilled volume) asserted
+        by γ's own e2e (boundary rows 1-3, 12)
   - name: mechanism-gap-located
-    binding: 'signal premise — member_instance_geom_field.ri eval: instance value has NO body field (geometry lets have no value cell, entity.rs:1327-1330)'
+    binding: 'signal premise — member_instance_geom_field.ri eval: instance value
+      has NO body field (geometry lets have no value cell, entity.rs:1327-1330)'
     verdict: PASS
     delivered_check:
       kind: manual
       reason: pre-fix substrate fact backing D5
   - name: elaboration-producer-wired
-    binding: 'capability→producer (substrate, wired) — elaborate_child_instance unfold.rs:287; ctor-override threading proven by task 3814 (done, upstream on main)'
+    binding: capability→producer (substrate, wired) — elaborate_child_instance unfold.rs:287;
+      ctor-override threading proven by task 3814 (done, upstream on main)
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: 'fn elaborate_child_instance'
+      pattern: fn elaborate_child_instance
       paths:
       - crates/reify-eval/src/unfold.rs
       expect: present
   - name: volume-bound-achievable
-    binding: 'numeric floor — 1% bound vs OCCT boolean volume accuracy on prism∖cylinder (task-325 closed-form precedent); bound ≫ floor'
+    binding: numeric floor — 1% bound vs OCCT boolean volume accuracy on prism∖cylinder
+      (task-325 closed-form precedent); bound ≫ floor
     verdict: PASS
     delivered_check:
       kind: manual
       reason: numeric-basis judgment; asserted by γ e2e assertion tolerance
   - name: r3f-no-clobber-honored
-    binding: 'constraint — docs/design/symbolic-eval-nested-selector-resolution.md §R3f: no GeometryHandle pinning into instance fields (C3-vi)'
+    binding: 'constraint — docs/design/symbolic-eval-nested-selector-resolution.md
+      §R3f: no GeometryHandle pinning into instance fields (C3-vi)'
     verdict: PASS
     delivered_check:
       kind: manual
       reason: design-constraint conformance; reviewed at γ implementation review
-- label: "δ"
+- label: δ
   task_id: 5427
-  title: 'Chained member paths ending in geometry endpoints'
+  title: Chained member paths ending in geometry endpoints
   capabilities:
   - name: chain-geom-rejected-today
-    binding: 'signal premise (rejection observed) — member_chain_geom.ri exit 1 with the geometry-position diagnostic'
+    binding: signal premise (rejection observed) — member_chain_geom.ri exit 1 with
+      the geometry-position diagnostic
     verdict: PASS
     delivered_check:
       kind: manual
       reason: post-fix acceptance asserted by δ e2e (boundary row 4)
   - name: nested-sub-elaboration-upstream
-    binding: 'producer:task-5360 (pending-high, upstream via add_dependency; anti-inversion verified — 5360 has no deps into this batch; its files unfold.rs/engine_eval.rs are C4-fenced from this batch)'
+    binding: producer:task-5360 (pending-high, upstream via add_dependency; anti-inversion
+      verified — 5360 has no deps into this batch; its files unfold.rs/engine_eval.rs
+      are C4-fenced from this batch)
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: dependency-graph property, wired via add_dependency and checked by the scheduler
-- label: "ε"
+      reason: dependency-graph property, wired via add_dependency and checked by the
+        scheduler
+- label: ε
   task_id: 5428
-  title: '.ri functions returning Geometry legal in geometry position'
+  title: .ri functions returning Geometry legal in geometry position
   capabilities:
   - name: wildcard-rejection-observed
-    binding: 'signal premise (rejection observed) — member_fn_geometry.ri → "unsupported geometry function: clearance_cutter", exit 1 (geometry.rs:2620/UNSUPPORTED_GEOMETRY_FN_MSG:2668)'
+    binding: 'signal premise (rejection observed) — member_fn_geometry.ri → "unsupported
+      geometry function: clearance_cutter", exit 1 (geometry.rs:2620/UNSUPPORTED_GEOMETRY_FN_MSG:2668)'
     verdict: PASS
     delivered_check:
       kind: manual
       reason: post-fix acceptance asserted by ε e2e (boundary row 8)
   - name: fn-geometry-grammar-exists
-    binding: 'grammar-fixture — member_fn_geometry.ri parses (probe reached semantic diagnostic, not parse error)'
+    binding: grammar-fixture — member_fn_geometry.ri parses (probe reached semantic
+      diagnostic, not parse error)
     verdict: PASS
     delivered_check:
       kind: manual
       reason: authored-time tree-sitter evidence; no novel syntax in batch
-- label: "ζ"
+- label: ζ
   task_id: 5429
-  title: 'Enum-typed ctor param binding for user-module structures'
+  title: Enum-typed ctor param binding for user-module structures
   capabilities:
   - name: over-rejection-observed
-    binding: 'signal premise (rejection observed) — member_enum_ctor.ri → "argument ''fit'' has type ''Enum(Fit)'' but param ''fit'' requires structure type ''Fit''", exit 1'
+    binding: signal premise (rejection observed) — member_enum_ctor.ri → "argument
+      'fit' has type 'Enum(Fit)' but param 'fit' requires structure type 'Fit'", exit
+      1
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: post-fix acceptance (check exit 0 + bound variant in eval) asserted by ζ e2e (boundary row 9)
+      reason: post-fix acceptance (check exit 0 + bound variant in eval) asserted
+        by ζ e2e (boundary row 9)
   - name: stdlib-asymmetry-proves-resolvable
-    binding: 'signal premise — stdlib-structure enum params (ThreadSpec) bind on the let path (2026-07-24 brief probe corpus); the capability exists, mis-scoped to stdlib types'
+    binding: signal premise — stdlib-structure enum params (ThreadSpec) bind on the
+      let path (2026-07-24 brief probe corpus); the capability exists, mis-scoped
+      to stdlib types
     verdict: PASS
     delivered_check:
       kind: manual
       reason: asymmetry evidence recorded in .md manifest
-- label: "η"
+- label: η
   task_id: 5430
-  title: 'Route sub member access through the uniform resolver; retire bespoke matchers'
+  title: Route sub member access through the uniform resolver; retire bespoke matchers
   capabilities:
   - name: parity-suites-exist
-    binding: 'capability→producer (substrate, wired) — cross_sub_geometry_diagnostic_tests.rs / solid_param_tests.rs / priv suites on main pin the behavior the consolidation must preserve'
+    binding: capability→producer (substrate, wired) — cross_sub_geometry_diagnostic_tests.rs
+      / solid_param_tests.rs / priv suites on main pin the behavior the consolidation
+      must preserve
     verdict: PASS
     delivered_check:
       kind: manual
       reason: suite-green parity is the task e2e; INV-5 no-lockstep-duplication driver
-- label: "θ"
+- label: θ
   task_id: 5431
-  title: 'Docs: language spec section, reify-mcp doc-chunks, reify-design cheatsheet, discoverability'
+  title: 'Docs: language spec section, reify-mcp doc-chunks, reify-design cheatsheet,
+    discoverability'
   capabilities:
   - name: chunk-surface-exists
-    binding: 'capability→producer (substrate, wired) — crates/reify-mcp/src/tools/chunks/ on main; registration seam = include_str! + TOPICS registry + chunk-count test (D3 adversary, wf_ffb35317)'
+    binding: capability→producer (substrate, wired) — crates/reify-mcp/src/tools/chunks/
+      on main; registration seam = include_str! + TOPICS registry + chunk-count test
+      (D3 adversary, wf_ffb35317)
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: 'member'
+      pattern: member
       paths:
       - crates/reify-mcp/src/tools/chunks
       expect: present
   - name: documented-idiom-compiles
-    binding: 'DAG-direction — the difference(plate, h.cutter) idiom is delivered by tasks 5426/5428/5429, all upstream of θ via add_dependency (D3 prover saw the correct pre-fix rejection; resolved by dependency closure)'
+    binding: DAG-direction — the difference(plate, h.cutter) idiom is delivered by
+      tasks 5426/5428/5429, all upstream of θ via add_dependency (D3 prover saw the
+      correct pre-fix rejection; resolved by dependency closure)
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: dependency-graph property, wired via add_dependency and checked by the scheduler
+      reason: dependency-graph property, wired via add_dependency and checked by the
+        scheduler
   - name: signature-fidelity-strong-oracle
-    binding: 'rejection of weak oracle (D3 adversary) — acceptance re-specified as registry verification (geometry dispatch/GEOMETRY_OP_DESCRIPTORS/stdlib builtin registry), never check-exit-0; cautionary instance offset_surface drift filed as task 5434'
+    binding: rejection of weak oracle (D3 adversary) — acceptance re-specified as
+      registry verification (geometry dispatch/GEOMETRY_OP_DESCRIPTORS/stdlib builtin
+      registry), never check-exit-0; cautionary instance offset_surface drift filed
+      as task 5434
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: oracle-strength requirement recorded in the task text; enforced at θ review
-- label: "ι"
+      reason: oracle-strength requirement recorded in the task text; enforced at θ
+        review
+- label: ι
   task_id: 5432
-  title: 'Two-way boundary-test suite (§6 rows 1-12) green on the merge gate'
+  title: Two-way boundary-test suite (§6 rows 1-12) green on the merge gate
   capabilities:
   - name: fixtures-committed-and-probed
-    binding: 'grammar-fixture + probes — all nine member_*.ri fixtures committed beside the PRD; §2 probe corpus'
+    binding: grammar-fixture + probes — all nine member_*.ri fixtures committed beside
+      the PRD; §2 probe corpus
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: 'member_geom_let_instance'
+      pattern: member_geom_let_instance
       paths:
       - docs/prds/v0_6/fixtures
       expect: present
   - name: negative-rows-mechanism-backed
-    binding: 'rejection-check — rows 7/10/11 diagnostics: E_PRIV_MEMBER_ACCESS live today; rows 10/11 diagnostics delivered by upstream in-batch α/β (DAG-direction verified)'
+    binding: 'rejection-check — rows 7/10/11 diagnostics: E_PRIV_MEMBER_ACCESS live
+      today; rows 10/11 diagnostics delivered by upstream in-batch α/β (DAG-direction
+      verified)'
     verdict: PASS
     delivered_check:
       kind: manual
       reason: the suite itself is the mechanical check once landed
   - name: drift-guard-registrations
-    binding: 'overlay §Gate-test drift-guard — same-diff registration rule recorded in the task text (nextest partitions; no new tests/infra .sh planned)'
+    binding: overlay §Gate-test drift-guard — same-diff registration rule recorded
+      in the task text (nextest partitions; no new tests/infra .sh planned)
     verdict: PASS
     delivered_check:
       kind: manual
