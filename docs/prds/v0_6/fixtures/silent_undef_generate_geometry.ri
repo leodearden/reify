@@ -1,0 +1,11 @@
+module silent_undef_generate_geometry
+
+// PRD fixture (eradicate-silent-undef.md): geometry constructors inside a
+// generate() lambda currently yield [undef, ...] with zero diagnostics and a
+// green `reify check` (#5385's functional fix; this PRD's Leg A makes the
+// residual undef loud).  Probed 2026-07-24 against the 2026-07-22 debug binary:
+//   check → "All constraints satisfied." exit 0
+//   eval  → "P.holes = [undef, undef, undef, undef]", no note, exit 0
+structure def P {
+    let holes = generate(4, |i| cylinder(5mm, 20mm))
+}
