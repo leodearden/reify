@@ -11391,6 +11391,134 @@ mod tests {
         assert_eq!(format_display_number_rel(0.0, 21.5), "0");
     }
 
+    // ── Value::format_display Point/Vector relative snap-to-zero (task 5339) ──
+    //
+    // format_display_number_rel alone isn't reachable from real GUI output —
+    // Value::format_display's Point/Vector arms must compute a whole-aggregate
+    // reference and thread it into each component. These tests exercise that
+    // wiring end-to-end. Value::Real components keep the ratios transparent
+    // (no display-unit scaling); a dedicated case below (h) proves the
+    // reference is computed in display units for Value::Scalar aggregates.
+
+    #[test]
+    fn format_display_point_snaps_centroid_dust_relative_to_z() {
+        // Real artifact: BottomDeck.centroid. x/y are ~1e-13 dust next to the
+        // z sibling (21.5084347502) and must snap to "0"; z is unaffected.
+        let v = Value::Point(vec![
+            Value::Real(3.86564423998e-13),
+            Value::Real(1.56011476434e-13),
+            Value::Real(21.5084347502),
+        ]);
+        assert_eq!(
+            v.format_display(),
+            format!("point(0, 0, {})", format_display_number(21.5084347502))
+        );
+    }
+
+    #[test]
+    fn format_display_vector_snaps_dust_relative_to_sibling() {
+        let v = Value::Vector(vec![
+            Value::Real(4e-13),
+            Value::Real(0.0),
+            Value::Real(21.5),
+        ]);
+        assert_eq!(v.format_display(), "vec(0, 0, 21.5)");
+    }
+
+    #[test]
+    fn format_display_point_preserves_comparable_components() {
+        // No component is dust relative to another — no-op, matches the
+        // pre-5339 rendering exactly.
+        let v = Value::Point(vec![
+            Value::Real(1.0),
+            Value::Real(2.0),
+            Value::Real(3.0),
+        ]);
+        assert_eq!(v.format_display(), "point(1, 2, 3)");
+    }
+
+    #[test]
+    fn format_display_point_preserves_legit_small_tolerance() {
+        // ratio = 0.00005 / 21.5 ≈ 2.33e-6, above the 1e-9 epsilon — a
+        // legitimate small tolerance (task 5198) must survive unchanged even
+        // alongside a much larger sibling.
+        let v = Value::Point(vec![
+            Value::Real(0.00005),
+            Value::Real(0.0),
+            Value::Real(21.5),
+        ]);
+        assert_eq!(v.format_display(), "point(0.00005, 0, 21.5)");
+    }
+
+    #[test]
+    fn format_display_point_all_comparable_tiny_not_snapped() {
+        // All three components are equally tiny in absolute terms, so none
+        // is dust *relative to* a sibling — the relative test must not
+        // collapse the whole aggregate to zero just because every component
+        // is small in absolute magnitude.
+        let v = Value::Point(vec![
+            Value::Real(1e-13),
+            Value::Real(1e-13),
+            Value::Real(1e-13),
+        ]);
+        assert_ne!(v.format_display(), "point(0, 0, 0)");
+    }
+
+    #[test]
+    fn format_display_point_infinite_sibling_disables_snapping() {
+        // A non-finite sibling must never zero out an otherwise-dust finite
+        // component: the aggregate reference becomes non-finite, which
+        // disables the relative snap entirely (format_display_number_rel's
+        // guard), so 4e-13 falls through to its own decimal rendering.
+        let v = Value::Point(vec![
+            Value::Real(4e-13),
+            Value::Real(f64::INFINITY),
+            Value::Real(21.5),
+        ]);
+        assert!(
+            !v.format_display().starts_with("point(0, "),
+            "an infinite sibling must not cause the 4e-13 component to snap to zero: {}",
+            v.format_display()
+        );
+    }
+
+    #[test]
+    fn format_display_list_excluded_from_relative_snap() {
+        // List is a heterogeneous collection, not a geometric/tensor
+        // aggregate sharing a coordinate frame — relative snapping must not
+        // apply, unlike the Point case above with the same magnitudes.
+        let v = Value::List(vec![Value::Real(4e-13), Value::Real(21.5)]);
+        assert_ne!(v.format_display(), "[0, 21.5]");
+    }
+
+    #[test]
+    fn format_display_point_scalar_reference_computed_in_display_units() {
+        // Same magnitudes as format_display_point_snaps_centroid_dust_relative_to_z,
+        // but expressed as Value::Scalar{si_value in metres, LENGTH} instead
+        // of Value::Real — proves aggregate_magnitude computes the reference
+        // from the *display*-unit value (mm, via display_scale's *1000) and
+        // not the raw SI value, matching format_display's own to_display_units
+        // conversion for each component.
+        let v = Value::Point(vec![
+            Value::Scalar {
+                si_value: 3.86564423998e-16,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 1.56011476434e-16,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0215084347502,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        assert_eq!(
+            v.format_display(),
+            format!("point(0, 0, {})", format_display_number(21.5084347502))
+        );
+    }
+
     // ── Value::Selector substrate tests (step-3 RED / task 4116 α) ───────────
     //
     // These tests reference GeometryHandleRef, SelectorValue, LeafQuery, SelectorNode,
