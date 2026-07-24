@@ -1,0 +1,11 @@
+module dic_min_unconstrained
+
+// INV-SF-3 probe: pure unconstrained optimization — the objective transitively
+// reaches auto `a`, but with no constraints the decomposition builds zero
+// components and the registry drops the objective silently (registry.rs:182).
+// Baseline 2026-07-24: `a = undef (awaiting solve)`, objective never mentioned.
+
+structure DicMinUnconstrained {
+    param a : Real = auto(free)
+    minimize (a - 3.0) * (a - 3.0)
+}

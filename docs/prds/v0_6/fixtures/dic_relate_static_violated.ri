@@ -1,0 +1,31 @@
+module dic_relate_static_violated
+
+// INV-SF-3 probe: relate with ZERO `at auto` subs. The relations are
+// geometrically FALSE at the subs' fixed (identity) placements: the bushing's
+// datums sit at the origin while the plate's sit at (30,20,5). Baseline
+// 2026-07-24: total silent no-op — `reify check` prints "All constraints
+// satisfied." and eval emits nothing about the relate block.
+
+structure PlateV {
+    let boss = translate(cylinder(4mm, 12mm), 30mm, 20mm, 5mm)
+    let boss_axis : Axis = boss.axis
+    let top = translate(rectangle(10mm, 10mm), 30mm, 20mm, 5mm)
+    let top_plane : Plane = top.plane
+}
+
+structure BushingV {
+    let bore = cylinder(4mm, 12mm)
+    let bore_axis : Axis = bore.axis
+    let seat = rectangle(10mm, 10mm)
+    let seat_plane : Plane = seat.plane
+}
+
+structure DicRelateViolated {
+    sub plate : PlateV
+    sub bush : BushingV
+
+    relate {
+        concentric(bush.bore_axis, plate.boss_axis)
+        flush(bush.seat_plane, plate.top_plane)
+    }
+}
