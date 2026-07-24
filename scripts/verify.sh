@@ -134,8 +134,17 @@
 #                                  DF_VERIFY_ROLE=merge → immediate bypass (CAVEAT 1).
 #
 # Host-relative compile timeout knobs (task 4621):
-#   REIFY_VERIFY_TEST_TIMEOUT   — outer timeout for `cargo nextest run` passes.
-#                                  Default 60m (workstation budget, η/4521 × 4.5).
+#   REIFY_VERIFY_TEST_TIMEOUT   — outer timeout for the DEBUG (`--workspace`)
+#                                  `cargo nextest run` pass. Default 60m
+#                                  (workstation budget, η/4521 × 4.5).
+#   REIFY_VERIFY_TEST_TIMEOUT_RELEASE — outer timeout for the RELEASE (`--release`)
+#                                  `cargo nextest run` pass ONLY. Default 90m. A cold
+#                                  sccache native-kernel relink (OCCT/OpenVDB/gmsh/
+#                                  manifold — a separate sccache profile from debug)
+#                                  pushes the combined release build+exec past the 60m
+#                                  debug budget (task 5382, esc-5370-2); the merge OUTER
+#                                  wall (merge_verify_cold_command_timeout_secs=10800,
+#                                  task 5383) covers debug 60m + release 90m.
 #   REIFY_VERIFY_CLIPPY_TIMEOUT — outer timeout for `cargo clippy` and the
 #                                  gui-feature `cargo check -p reify-gui` pass.
 #                                  Default 45m.
@@ -325,9 +334,13 @@ _resolve_timeout_knob() {
     esac
 }
 
-# Resolve three compile-budget tiers once at startup.  Defaults match the
+# Resolve the compile-budget tiers once at startup.  Defaults match the
 # workstation-measured budgets (unset → identical render, no-op on workstation).
+# The test budget splits PER PROFILE (task 5382): the DEBUG (--workspace) pass uses
+# REIFY_VERIFY_TEST_TIMEOUT (60m); the RELEASE (--release) pass uses its own cold-aware
+# REIFY_VERIFY_TEST_TIMEOUT_RELEASE (90m) — see add_test_passes for the derivation.
 _VERIFY_TEST_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT 60m)"
+_VERIFY_TEST_TIMEOUT_RELEASE="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE 90m)"
 _VERIFY_CLIPPY_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_CLIPPY_TIMEOUT 45m)"
 _VERIFY_CHECK_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_CHECK_TIMEOUT 30m)"
 
@@ -1600,18 +1613,27 @@ add_test_passes() {
     add "@@SEMAPHORE_ACQUIRE@@"
 
     # Emit one combined build+execution nextest pass per profile (slot held).
-    # Outer timeout: single unified budget re-derived from η/4521's authoritative
-    # real-load floor (task 4520/ζ′).
-    # Floor: 798.9 s (worst-observed cold real-load, genuinely cold-cache, quiet box
-    # with warm host sccache — see docs/prds/jobserver-merge-priority-balancer
-    # .acceptance-report.md §"ζ′/4520 budget floor (authoritative)").
-    # Derivation: ceil(798.9 × 4.5 production-weighted margin) = ceil(3595.05 s) =
-    # 3596 s → rounded up to clean minute-granularity = 60m (3600 s).
-    # Bound 3600 s > floor 798.9 s by construction.
+    # Outer timeout: PER-PROFILE budgets (task 5382 restored the pre-4520 split).
+    #  - DEBUG (--workspace): _VERIFY_TEST_TIMEOUT (60m). Re-derived from η/4521's
+    #    real-load floor (task 4520/ζ′): 798.9 s worst-observed cold real-load on a
+    #    quiet box with WARM host sccache (docs/prds/jobserver-merge-priority-balancer
+    #    .acceptance-report.md §"ζ′/4520 budget floor (authoritative)");
+    #    ceil(798.9 × 4.5 production-weighted margin) = ceil(3595.05 s) = 3596 s →
+    #    rounded up to 60m (3600 s). Bound 3600 s > floor 798.9 s by construction.
+    #  - RELEASE (--release): _VERIFY_TEST_TIMEOUT_RELEASE (90m). The 798.9 s floor
+    #    was measured cold-TARGET / WARM-sccache; it NEVER included a cold-SCCACHE
+    #    native-kernel relink (OCCT/OpenVDB/gmsh/manifold — a SEPARATE sccache profile
+    #    from debug, so a cleared debug pass does not warm the release compile), which
+    #    pushed the combined release build+exec past the unified 60m and SIGTERM'd it
+    #    at the inner timeout (esc-5370-2, false "integration_skew"). 90m is the
+    #    cold-aware release budget; sibling task 5383 sized the merge OUTER wall
+    #    (merge_verify_cold_command_timeout_secs=10800) to cover debug 60m + release
+    #    90m = 9000 s with ~1800 s margin.
     # NOTE: outer timeouts asserted in tests/infra/test_occt_flock_gate.sh
-    # (Test 17 — debug pass, Test 17b — release pass) — keep in sync.
+    # (Test 17 — debug pass, Test 17b — release pass; T1/T2/T8/T9 knob behavior) — keep in sync.
     local _profile _rel
-    local _outer_timeout="${_VERIFY_TEST_TIMEOUT}"  # identical for all profiles
+    local _outer_timeout="${_VERIFY_TEST_TIMEOUT}"             # debug (--workspace) budget
+    local _rel_outer_timeout="${_VERIFY_TEST_TIMEOUT_RELEASE}" # release (--release) budget
 
     # retry_failed_only (task 5287) — precompute subset eligibility ONCE, before
     # the profile loop, so emit_nextest_pass just consumes the decision.
@@ -1688,9 +1710,9 @@ add_test_passes() {
             # release-sensitive -p set so offline's heavy coverage never silently
             # narrows if a heavy crate is ever dropped from release-sensitive-crates.txt.
             if [ "$DF_VERIFY_ROLE" = "offline" ]; then
-                emit_nextest_pass "--workspace" "$_rel" "$_outer_timeout"
+                emit_nextest_pass "--workspace" "$_rel" "$_rel_outer_timeout"
             else
-                emit_nextest_pass "$_RELEASE_ALL_FLAGS" "$_rel" "$_outer_timeout"
+                emit_nextest_pass "$_RELEASE_ALL_FLAGS" "$_rel" "$_rel_outer_timeout"
             fi
         else
             _rel=""
