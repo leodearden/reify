@@ -1,0 +1,390 @@
+prd: docs/prds/v0_6/placement-relations-belt.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 5435
+  title: 'placement-relations α: RealizedBodySet walk primitive — world-posed, aux-flagged,
+    Undef-as-placeholder body enumeration (§7.1.1)'
+  capabilities:
+  - name: relate-pose-substrate
+    binding: 'capability→producer (substrate) — relate-solved auto poses + explicit
+      at poses as Value::Frame (geometric-relations ζ #4386 done; solve_scopes relate_solve.rs:826
+      re-verified 2026-07-24 main ef6863e770); ApplyTransform landed (#3901)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: RealizedBody
+      paths:
+      - crates/reify-eval
+      expect: present
+  - name: aux-markers-exist
+    binding: substrate — is_aux across compiler decl surfaces (auto_type_param.rs,
+      entities_phase.rs, conformance/checker.rs, connect.rs; grep 2026-07-24)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: is_aux
+      paths:
+      - crates/reify-compiler/src
+      expect: present
+  - name: undef-placeholder-provenance
+    binding: INV-SF-1 design conformance — Undef leaf yields placeholder-with-path,
+      never dropped (§7.1.1); consumers go loudly indeterminate
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: behavioral; asserted by α's own two-level-assembly + Undef-leaf tests
+- label: β
+  task_id: 5436
+  title: 'placement-relations β: .world_frame member + in_frame builtin + staged placement
+    eval with E_POSE_CYCLE (§7.1.2–7.1.3)'
+  capabilities:
+  - name: member-absent-baseline
+    binding: 'signal premise — probe placement_b5_world_frame.ri 2026-07-24: reify
+      check → "error: structure ''Part'' has no member ''world_frame''", exit 1; capability
+      absent, absence loud'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: world_frame
+      paths:
+      - crates/reify-compiler
+      expect: present
+  - name: pose-cycle-rejection
+    binding: G6 branch 4, producer-self — E_POSE_CYCLE is β's deliverable; boundary
+      test observes the diagnostic + nonzero exit (compile-phase gate verified; build-phase
+      gate = task 4458 landed)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: E_POSE_CYCLE
+      paths:
+      - crates
+      expect: present
+  - name: cell-dep-graph-substrate
+    binding: substrate — build_dependent_cells engine_eval.rs:1553 (#5188 done); cycle
+      check extends this graph with pose→world_frame-read edges
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn build_dependent_cells
+      paths:
+      - crates/reify-eval/src/engine_eval.rs
+      expect: present
+- label: γ
+  task_id: 5439
+  title: 'placement-relations γ: sub-instance bodies into snapshots — kinematic trio
+    reaches assemblies (§7.1.4, B13)'
+  capabilities:
+  - name: snapshot-substrate
+    binding: substrate — try_eval_kinematic_query dispatch geometry_ops.rs:4250–4292
+      (re-verified); named_steps top-level-let-only body resolution is the §2 gap
+      γ closes
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn try_eval_kinematic_query
+      paths:
+      - crates/reify-eval/src/geometry_ops.rs
+      expect: present
+  - name: walk-upstream
+    binding: capability→producer — α hard prereq; γ consumes realized_bodies, never
+      a second walk (G7 no-lockstep-duplication)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: behavioral (B13 .ri example returns a real pair list); back-compat C2
+        asserted byte-identical by γ's own tests
+- label: ε
+  task_id: 5438
+  title: 'placement-relations ε: relate-family error-exit regression coverage under
+    the general severity gate (#5403)'
+  capabilities:
+  - name: general-gate-upstream
+    binding: capability→producer:#5403 upstream (eradicate-silent-undef ε, hard dep
+      edge) — the general Error-severity⇒nonzero-exit gate + burn-down allowlist +
+      ratchet; ε pins the relate family, never builds a per-family bolt-on (INV-SF-2)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'cross-batch DAG-direction binding; mechanical enforcement is #5403''s
+        own ratchet test'
+  - name: compile-phase-already-gated
+    binding: 'baseline REFINED vs PRD §2 trap c — probe placement_b3_operand_type.ri
+      2026-07-24: statically-typed relate operand error already exits 1 with DiagnosticCode::DatumProjectionUnavailable
+      (relation_signatures.rs:546); residue is the engine-phase channel (gradualism
+      skips Type::Error|TypeParam operands at :489–492), owned generally by #5403'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'ε''s committed regression fixtures assert both phases post-#5403; a
+        pattern check would false-fail before #5403 lands'
+- label: ζ
+  task_id: 5440
+  title: 'placement-relations ζ: connect LocatedPort frame alignment — fasten mate
+    into the relate-solve (§7.3)'
+  capabilities:
+  - name: locatedport-substrate
+    binding: 'substrate — trait LocatedPort : Port { param frame : Frame3 } + refinement
+      machinery (stdlib/ports.ri; connect.rs:217, 353–401; re-verified)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: LocatedPort
+      paths:
+      - crates/reify-compiler/stdlib/ports.ri
+      expect: present
+  - name: fasten-over-frames
+    binding: substrate — fasten over Frames (relation_signatures.rs:186–189); mate
+      enters the catalogued §3.5 ConstraintSolver seam via the relate-solve
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"fasten"'
+      paths:
+      - crates/reify-compiler/src/relation_signatures.rs
+      expect: present
+  - name: adhoc-branch-not-ours
+    binding: 'G4 resolution 3 — ad-hoc-@ Bool Eq branch (connect.rs:584–622) is DIC
+      ε #5419''s territory (generation refusal); ζ narrows to the LocatedPort arm;
+      degenerate non-auto mate routes through DIC α #5415''s static-verify arm'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: seam-ownership fact recorded in both task texts; not mechanically expressible
+  - name: ill-formed-frame-rejection
+    binding: G6 branch 4, producer-self — E_PORT_FRAME_ILL_FORMED typed error on non-orthonormal
+      Frame3; ζ's test observes it fire
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: E_PORT_FRAME_ILL_FORMED
+      paths:
+      - crates
+      expect: present
+- label: η
+  task_id: 5441
+  title: 'placement-relations η: min_clearance(a, b) Structure/Geometry overload with
+    loud-indeterminate Undef handling (§7.2)'
+  capabilities:
+  - name: kinematic-trio-substrate
+    binding: substrate — arity-3 trio + pose cache (units.rs signatures; try_eval_kinematic_query
+      geometry_ops.rs:4250–4292); η is a sibling eval dispatch (try_eval_conformance_query
+      pattern), catalogued seam
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: min_clearance
+      paths:
+      - crates/reify-compiler/src/units.rs
+      expect: present
+  - name: structure-operand-absent-baseline
+    binding: 'signal premise — probe placement_b8_min_clearance_structs.ri 2026-07-24:
+      constraint INDETERMINATE "operator undefined for these operand kinds: StructureInstance",
+      exit 0, let form silent Undef; capability absent, current behavior is the quiet-indeterminate
+      the PRD replaces'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: baseline inverts on delivery; η's B7/B8 tests assert the loud replacement
+  - name: loud-indeterminate-rejection
+    binding: 'G6 branch 4, producer-self — Undef-body fixture observes the diagnostic
+      naming the provenance path; verdict INDETERMINATE never TRUE; populate DIC δ
+      #5418''s typed IndeterminateReason if landed'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Kleene-verdict semantics asserted by η's own boundary tests
+- label: θ
+  task_id: 5442
+  title: 'placement-relations θ: min_clearance list forms (N², M×N) + AABB prefilter'
+  capabilities:
+  - name: list-type-surface
+    binding: substrate — Type::List (ty.rs:132,134); list literals parse (grammar
+      fixture); η upstream hard edge supplies the pairwise primitive
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: overload indistinguishable by grep from η's; θ's analytic-min + prefilter
+        unit tests are the signal
+- label: ι
+  task_id: 5443
+  title: 'placement-relations ι: declared-contact whitelist + self_interferes/self_clearance
+    + no_undeclared_interference (decisions 8–9)'
+  capabilities:
+  - name: relate-connect-edges-readable
+    binding: substrate — whitelist derives from relate coincident/flush/fasten edges
+      (RELATION_FN_NAMES relation_signatures.rs:54–68) + connect edges; model facts,
+      not annotations (G7 contracts-machine-checked)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: RELATION_FN_NAMES
+      paths:
+      - crates/reify-compiler/src/relation_signatures.rs
+      expect: present
+  - name: constraint-surface-baseline
+    binding: 'signal premise — probe placement_b9_no_undeclared.ri 2026-07-24: name
+      unbound today ("constraint expression has type Asm, expected Bool" + INDETERMINATE,
+      exit 0); no silent success to displace'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: no_undeclared_interference
+      paths:
+      - crates
+      expect: present
+  - name: undeclared-pair-naming-rejection
+    binding: G6 branch 4, producer-self — B9 fixture observes FALSE naming only the
+      un-declared pair, TRUE after declaring; connect-arm needs ζ (hard edge ι←ζ)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: self_interferes
+      paths:
+      - crates
+      expect: present
+- label: κ
+  task_id: 5437
+  title: 'placement-relations κ: wire() kernel op — OCCT MakeWire join of contiguous
+    segments (§3.1 op-execute)'
+  capabilities:
+  - name: wire-op-absent
+    binding: 'signal premise — grep re-verified 2026-07-24: no MakeWire/JoinWire/concat
+      op in reify-ir/reify-eval/reify-kernel-occt; κ is the pre-registered §3.1 op-execute
+      Rust escape (F1)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: MakeWire
+      paths:
+      - crates/reify-kernel-occt
+      expect: present
+  - name: sweep-consumer
+    binding: substrate — Sweep/SweepGuided exist (reify-ir geometry.rs:883–933); B11
+      sweep-along-wire consumer is landed substrate; non-contiguity typed error observed
+      by κ's own test (G6 branch 4)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: SweepGuided
+      paths:
+      - crates/reify-ir/src/geometry.rs
+      expect: present
+- label: λ
+  task_id: 5444
+  title: 'placement-relations λ: belt_path stdlib structure in .ri + language-power
+    findings doc (§7.4, §8)'
+  capabilities:
+  - name: ri-expressibility-substrate
+    binding: substrate — atan2/acos/sqrt (math_signatures.rs:49,97–99); Arc/LineSegment
+      (geometry.rs:883–933); closed-form length exact by construction, no numeric-floor
+      hazard (G6 branches 1/2 N/A)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: BeltPath
+      paths:
+      - crates/reify-compiler/stdlib
+      expect: present
+  - name: generate-of-geometry-broken
+    binding: 'capability→producer:#5385 upstream (HARD dep edge) — generate(n, |i|
+      geom) silent-Undef today (F0); flat_map sharing the defect extends #5385, never
+      worked around'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'cross-batch DAG-direction binding; #5385''s own fix carries the mechanical
+        test'
+  - name: findings-doc-deliverable
+    binding: producer-self — docs/notes/belt-path-language-findings.md with pre-registered
+      F0–F2 rows is part of λ's signal (§8 protocol)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: belt_path
+      paths:
+      - docs/notes/belt-path-language-findings.md
+      expect: present
+- label: μ
+  task_id: 5445
+  title: 'placement-relations μ: printer_v01 rear-drive routing v2 on relate + belt_path
+    with no_undeclared_interference (THE LEAF)'
+  capabilities:
+  - name: printer-on-main
+    binding: consumer premise, anchor REFRESHED — printer.ri now 679 lines (PRD's
+      995/:341–383 stale; dogfood continued); hand-solved literal at-transform3 idiom
+      + eyeball oracle re-verified 2026-07-24 (idler_in_l arithmetic, CarriageIdlers
+      at transform3); cite idiom, not line numbers
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: belt_path|BeltPath
+      paths:
+      - prj/printer_v01
+      expect: present
+  - name: trap-a-protection-upstream
+    binding: capability→producer:#5415 upstream (DIC α, hard edge — G4 resolution
+      1, replaces dropped δ) — zero-auto relate scopes verify instead of vanish while
+      μ authors relate blocks
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: cross-batch DAG-direction binding; DIC α's B1/B2 carry the mechanical
+        tests
+  - name: full-stack-upstream
+    binding: G6 branch 3 clean — α, β, η, ι, λ all hard prereqs; perturbed-pulley
+      build-FAIL regression is μ's own assertion over ι's constraint; every asserted
+      capability in μ's dependency closure
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: no_undeclared_interference
+      paths:
+      - prj/printer_v01
+      expect: present
+- label: ν
+  task_id: 5446
+  title: 'placement-relations ν: doc-chunk updates for the new placement/clearance/belt
+    surfaces'
+  capabilities:
+  - name: chunk-files-exist
+    binding: 'substrate — chunks/{constraints,connect,geometry,stdlib}.md present
+      (ls re-verified); #5389 owns EXISTING-trio docs, ν only NEW surfaces (G4 row);
+      signatures spot-verified against compiler registries in ν''s own diff'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: world_frame
+      paths:
+      - crates/reify-mcp/src/tools/chunks
+      expect: present
+- label: ξ
+  task_id: 5447
+  title: 'placement-relations ξ: reify-design skill cheatsheet — at-auto+relate default
+    idiom, clearance recipe, belt recipe'
+  capabilities:
+  - name: skill-file-exists
+    binding: substrate — .claude/skills/reify-design/SKILL.md present; documents landed
+      idioms only (β, ζ, ι, λ upstream)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: min_clearance
+      paths:
+      - .claude/skills/reify-design/SKILL.md
+      expect: present
+- label: ο
+  task_id: 5448
+  title: 'placement-relations ο: discoverability acceptance — intent queries surface
+    the new idioms'
+  capabilities:
+  - name: chunk-topic-surface
+    binding: substrate — reify-mcp chunk-topic query surface exists (chunks/ corpus);
+      scripted acceptance over ν/ξ landed content (hard edges); committed transcript
+      is the deliverable
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: transcript path fixed by ο at implementation time; acceptance is the
+        committed transcript itself

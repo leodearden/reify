@@ -1,0 +1,11 @@
+module placement_b8_min_clearance_structs
+
+structure Part {
+    let body = box(10mm, 10mm, 10mm)
+}
+structure Asm {
+    sub a : Part
+    sub b : Part
+    let gap = min_clearance(a, b)
+    constraint min_clearance(a, b) > 1mm
+}

@@ -1,0 +1,10 @@
+module placement_b9_no_undeclared
+
+structure Part {
+    let body = box(10mm, 10mm, 10mm)
+}
+structure Asm {
+    sub a : Part
+    sub b : Part
+    constraint no_undeclared_interference(self)
+}

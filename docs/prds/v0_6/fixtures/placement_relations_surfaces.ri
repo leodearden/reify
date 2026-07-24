@@ -1,0 +1,34 @@
+// Grammar-gate fixture — placement-relations-belt PRD (decompose 2026-07-24).
+// Every new surface is a function call or member access; no novel productions.
+// Parsed by `tree-sitter parse --quiet` as manifest grammar-fixture evidence.
+
+module placement_relations_surfaces
+
+structure Rig {
+    param window : Length = 4mm
+
+    sub boss : Boss
+    sub bush : Bushing at auto
+
+    relate {
+        concentric(bush.bore, boss.shaft)
+        flush(bush.face, boss.seat)
+    }
+
+    // world-pose surface (β): read-only member + frame conversion call.
+    let f = bush.world_frame
+    let axis_in_scope = in_frame(bush.bore_axis, bush.world_frame)
+
+    // clearance family (η/θ/ι): calls over structure operands and lists.
+    let gap = min_clearance(bush, boss)
+    let gaps = min_clearance([bush, boss], [bush, boss])
+    let sc = self_clearance(bush)
+    let path_sc = self_clearance(f, window)
+    constraint min_clearance(bush, boss) > 1mm
+    constraint no_undeclared_interference(self)
+    constraint not self_interferes(bush)
+
+    // wire join (κ) + belt (λ): plain calls / structure instantiation.
+    let w = wire([f, axis_in_scope])
+    sub belt : BeltPath at auto
+}
