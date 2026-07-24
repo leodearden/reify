@@ -11650,6 +11650,33 @@ mod tests {
         assert_eq!(v.format_display(), "[1, 2]");
     }
 
+    // ── Value::format_display Matrix relative snap-to-zero (task 5339) ───────
+    //
+    // Matrix is not yet wired to the relative snap — the Matrix arm of
+    // format_display still maps cells via the plain format_display(). These
+    // tests cover the near-zero-relative-entries case and a comparable-
+    // entries preservation case that guards the existing matrix golden shape
+    // (gui types_tests / cli_eval_geometry pin `[[1, 2], [3, 4]]`-style
+    // output).
+
+    #[test]
+    fn format_display_matrix_snaps_near_zero_entries_relative_to_whole_matrix_max() {
+        let v = Value::Matrix(vec![
+            vec![Value::Real(1.5), Value::Real(4e-13)],
+            vec![Value::Real(4e-13), Value::Real(2.1)],
+        ]);
+        assert_eq!(v.format_display(), "[[1.5, 0], [0, 2.1]]");
+    }
+
+    #[test]
+    fn format_display_matrix_preserves_comparable_entries() {
+        let v = Value::Matrix(vec![
+            vec![Value::Real(1.0), Value::Real(2.0)],
+            vec![Value::Real(3.0), Value::Real(4.0)],
+        ]);
+        assert_eq!(v.format_display(), "[[1, 2], [3, 4]]");
+    }
+
     // ── Value::Selector substrate tests (step-3 RED / task 4116 α) ───────────
     //
     // These tests reference GeometryHandleRef, SelectorValue, LeafQuery, SelectorNode,
