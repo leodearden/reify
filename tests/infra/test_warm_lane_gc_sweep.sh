@@ -51,7 +51,10 @@
 #         clears a later sweep reclaims it (preserve is temporary, mirrors T3).
 #         Stub sub-cases assert the argv carries --extra-protect-glob <live-lane>
 #         when a lane is live and omits the flag entirely when none is (fail-open,
-#         no spurious protection).
+#         no spurious protection). A substring-boundary sub-case (U14+, esc-5378
+#         review) proves a live MMAP under a torn-down _lane-10 does NOT protect
+#         a free _lane-1 whose basename is a name-prefix of it — the mmap-pass
+#         path-boundary regression.
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -1177,5 +1180,89 @@ assert "U12: no live reference → --extra-protect-glob NOT appended (no spuriou
     bash -c '! grep -q -- "--extra-protect-glob" "$1"' _ "$U11_GC_LOG"
 assert "U13: gc-script still invoked (the lane scan does not abort the sweep)" \
     bash -c '[ -s "$1" ]' _ "$U11_GC_LOG"
+
+# ── U14: substring-boundary regression (esc-5378 review) — a live MMAP whose ───
+# path has a FREE lane's basename as a NAME-PREFIX must NOT protect that free ───
+# lane ─────────────────────────────────────────────────────────────────────────
+# The /proc scanner's mmap pass matched a candidate lane realpath as a fixed-
+# string SUBSTRING, so a maps line ".../_lane-10/target/... (deleted)" from an
+# _lane-10 build spuriously matched the free candidate ".../_lane-1" and added
+# _lane-1 to --extra-protect-glob — perpetually shielding the low-numbered lane's
+# divergent target/ from reclaim, partially defeating the disk-space purpose of
+# the backstop. Reproduced via a lane-teardown race: _lane-10's build binary is
+# exec'd, then _lane-10 is torn down so it is no longer an enumerated candidate
+# (which also defeats GNU grep's longest-match tie-break that HIDES the bug while
+# both lanes are candidates); the live process's "(deleted)" mapping still names
+# ".../_lane-10/..." in /proc/<pid>/maps. Only a real MMAP exercises this pass —
+# a cwd/fd ref would use the already-boundary-correct cwd/fd pass — so the
+# reference is an ELF exec'd from UNDER _lane-10/target with cwd OUTSIDE the pool
+# (the mmap is the SOLE lane reference). RED before the boundary fix
+# (CSV="_lane-1"); GREEN after (the ".../_lane-1/" boundary rejects the
+# ".../_lane-10/..." line → empty CSV → no --extra-protect-glob).
+
+# _wait_for_exec_map <pid> <want-exe-realpath> <deadline-seconds>
+# The MMAP analogue of _wait_for_reader_lock: `exec` REPLACES the shell so it
+# cannot touch a READY marker, so poll /proc/<pid>/exe until it resolves to the
+# exec'd binary — at which point the binary's mapping is provably established —
+# before the sweep scans (causal ordering, technique R, no wall-clock sleep).
+_wait_for_exec_map() {
+    local pid="$1" want="$2" deadline_s="${3:-30}"
+    local max_ticks=$(( deadline_s * 20 )) tick=0 exe
+    while [ "$tick" -lt "$max_ticks" ]; do
+        exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+        [ "$exe" = "$want" ] && return 0
+        sleep 0.05
+        tick=$(( tick + 1 ))
+    done
+    return 1
+}
+
+U14_ROOT="$(mktemp -d /tmp/test-gc-sweep-u14-XXXXXX)"
+_TMPDIRS+=("$U14_ROOT")
+U14_MOUNT="$U14_ROOT/worktrees"
+mkdir -p "$U14_MOUNT/_lane-1/target" "$U14_MOUNT/_lane-10/target" "$U14_ROOT/stage"
+
+U14_GC_LOG="$U14_ROOT/gc_calls.log"
+U14_GC_STUB="$U14_ROOT/gc_stub.sh"
+_t_gc_stub "$U14_GC_STUB"
+
+U14_DF_STUB="$U14_ROOT/df_stub.sh"
+_df_stub "$U14_DF_STUB" 107374182400  # above floor → no --disk-pressure noise
+
+# A standalone ELF under _lane-10/target; exec'ing it maps it as
+# ".../_lane-10/target/live-bin" in the helper's /proc/<pid>/maps. cwd is the
+# stage dir OUTSIDE the mount, so NO cwd/fd references any lane.
+U14_BIN="$U14_MOUNT/_lane-10/target/live-bin"
+cp "$(command -v sleep)" "$U14_BIN"
+chmod +x "$U14_BIN"
+U14_BIN_RP="$(readlink -f "$U14_BIN")"
+( cd "$U14_ROOT/stage" && exec "$U14_BIN" 300 ) &
+U14_HELPER_PID=$!
+_BGPIDS+=("$U14_HELPER_PID")
+_wait_for_exec_map "$U14_HELPER_PID" "$U14_BIN_RP" 30 && U14_MAPPED=1 || U14_MAPPED=0
+
+assert "U14: fixture — helper exec'd the lane binary (live mmap established)" \
+    test "$U14_MAPPED" -eq 1
+assert "U15: fixture — _lane-10 build binary is mmap'd in the live helper (pre-teardown)" \
+    bash -c 'grep -qF "/_lane-10/target/live-bin" "/proc/$1/maps"' _ "$U14_HELPER_PID"
+
+# Tear down _lane-10 so it is no longer an enumerated candidate (its "(deleted)"
+# mapping lingers in the live process's maps). Now _lane-1 is the ONLY candidate
+# whose realpath is a bare substring of that ".../_lane-10/..." maps line.
+rm -f "$U14_BIN"
+rm -rf "$U14_MOUNT/_lane-10"
+
+GC_LOG="$U14_GC_LOG" REIFY_WARM_LANE_GC_SWEEP_DF="$U14_DF_STUB" \
+    run_sweep --mount "$U14_MOUNT" --gc-script "$U14_GC_STUB" --critical-free-gib 2
+
+assert "U16: exit 0" test "$RC" -eq 0
+assert "U17: gc-script still invoked (the lane scan did not abort the sweep)" \
+    bash -c '[ -s "$1" ]' _ "$U14_GC_LOG"
+assert "U18: free _lane-1 (name-prefix of a live _lane-10 mmap) NOT spuriously protected (substring-boundary regression, esc-5378)" \
+    bash -c '! grep -qE -- "(^|[ ,])_lane-1([ ,]|$)" "$1"' _ "$U14_GC_LOG"
+
+kill "$U14_HELPER_PID" 2>/dev/null || true
+wait "$U14_HELPER_PID" 2>/dev/null || true
+_BGPIDS=()
 
 test_summary

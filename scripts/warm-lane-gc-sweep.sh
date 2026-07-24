@@ -185,10 +185,23 @@ _live_referenced_paths() {
         ' <(printf '%s\n' "$@") - 2>/dev/null || true
 
     # mmap'd regions: a single grep over every process's maps for a path mapped
-    # from inside any candidate trash dir; -o prints the matched candidate
-    # string (fixed-string substring match, mirroring the original
-    # single-candidate grep).
-    grep -hoFf <(printf '%s\n' "$@") /proc/[0-9]*/maps 2>/dev/null || true
+    # from INSIDE any candidate dir. Each pattern carries a trailing "/" so the
+    # fixed-string match is path-BOUNDARY-aware: ".../_lane-1/" matches a maps
+    # line ".../_lane-1/target/x" but NOT the longer sibling ".../_lane-10/..."
+    # whose basename merely has "_lane-1" as a name-prefix. A bare-substring
+    # match (the original) spuriously mapped an "_lane-10" build's maps line back
+    # to a free "_lane-1" whenever the longer path was not itself a live
+    # candidate — e.g. a lane torn down mid-build, whose "(deleted)" mapping
+    # lingers — perpetually shielding low-numbered lanes' divergent target/ from
+    # reclaim (esc-5378 review). This mirrors the cwd/fd pass's cand"/"
+    # descendant test above; a mmap'd file always lives UNDER the dir, so
+    # requiring "/" drops no real reference. The trailing "/" is then stripped so
+    # each emitted line equals the input candidate realpath EXACTLY — both
+    # callers key on it (the reaper's `referenced` set; the lane guard's
+    # rp_to_base lookup). (The reaper's trash inputs already carried a ".<pid>"
+    # delimiter, so this only tightens — never loosens — its matching.)
+    grep -hoFf <(printf '%s/\n' "$@") /proc/[0-9]*/maps 2>/dev/null \
+        | sed 's:/$::' || true
 }
 
 # _reap_stale_trash MOUNT — reap stranded MOUNT/.reseed-trash/<lane>.<pid> dirs.
