@@ -711,6 +711,12 @@ export function Editor(props: EditorProps) {
   // handleReload) for the active file. It intentionally bails when the active file
   // changes (file switch) so the file-switch effect above can restore the cached
   // EditorState — which may contain unsaved user edits that the store doesn't hold.
+  // It also bails on a structural-only re-run — openFiles.find(...) below subscribes
+  // this effect to STRUCTURAL changes of openFiles (append/removal), not merely to
+  // the active file's content signal, so editorStore.openFile/closeFile's un-batched
+  // setState calls re-run this effect while activeFile is unchanged. Tracking the
+  // active file's last-synced content (not just its identity) distinguishes that
+  // spurious re-run from a genuine external content change (task-5366).
   //
   // Anti-loop invariant: user typing dispatches changes directly to the view
   // via the EditorView.updateListener but does NOT call updateFileContent —
@@ -723,6 +729,7 @@ export function Editor(props: EditorProps) {
   // this ensures the effect re-fires when updateFileContent is called even if a
   // prior run bailed (e.g., because the view wasn't mounted yet).
   let syncPreviousActive: string | null = null;
+  let syncPreviousContent: string | undefined = undefined;
   createEffect(() => {
     const activeFile = props.store.state.activeFile;
 
@@ -737,6 +744,7 @@ export function Editor(props: EditorProps) {
     // dispatch on the first run after mount.
     if (!view || !activeFile || !file || storeContent === undefined) {
       syncPreviousActive = activeFile;
+      syncPreviousContent = storeContent;
       return;
     }
 
@@ -745,11 +753,20 @@ export function Editor(props: EditorProps) {
     // Update tracking and bail without dispatching.
     if (activeFile !== syncPreviousActive) {
       syncPreviousActive = activeFile;
+      syncPreviousContent = storeContent;
       return;
     }
 
-    // Same active file, store content changed externally (e.g. auto-reload).
-    // Dispatch only when there is an actual diff to prevent no-op transactions.
+    // Same active file. Distinguish a genuine external content change (dispatch)
+    // from a structural-only re-run of openFiles — e.g. openFile appending a new
+    // tab, or closeFile removing a different tab — whose content is unchanged
+    // since the last run (bail, do not clobber a dirty view buffer).
+    const contentChanged = storeContent !== syncPreviousContent;
+    syncPreviousContent = storeContent;
+    if (!contentChanged) return;
+
+    // Store content changed externally (e.g. auto-reload). Dispatch only when
+    // there is an actual diff to prevent no-op transactions.
     //
     // The dispatch is doubly-protected:
     // 1. Transaction.userEvent.of('sync.external') — the updateListener checks this

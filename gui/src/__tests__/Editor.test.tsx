@@ -516,6 +516,73 @@ describe('reopen of an already-open file via the debug bridge shows fresh conten
   });
 });
 
+// task-5366: the store→view content-sync effect reads openFiles.find(...), which
+// subscribes it to STRUCTURAL changes of openFiles (append/removal) — not merely to
+// the active file's content signal. editorStore.openFile/closeFile issue un-batched
+// setState calls, so a structural mutation re-runs the effect while activeFile is
+// unchanged; without content-level tracking it dispatches the (unchanged) store
+// snapshot over a dirty view buffer, silently clobbering unsaved edits.
+describe('openFile of a not-yet-open file must not clobber a dirty active buffer (task-5366)', () => {
+  it('Case 1 (openFile-append): opening a new file does not clobber the dirty active buffer, and switch-back keeps the edit', () => {
+    const fileA: FileData = { path: '/project/src/sync_a.ri', content: 'A0' };
+    const store = setupStore([fileA]);
+    store.setActiveFile(fileA.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Dirty the active buffer: view holds 'XA0', store snapshot stays 'A0'.
+    view.dispatch({ changes: { from: 0, insert: 'X' } });
+    expect(getEditorView(container).state.doc.toString()).toBe('XA0');
+    expect(store.state.dirtyFiles).toContain(fileA.path);
+
+    // Open a BRAND-NEW file — a structural openFiles append while fileA is still
+    // dirty. This must not clobber fileA's cached buffer.
+    const fileB: FileData = { path: '/project/src/sync_b.ri', content: 'B0' };
+    store.openFile(fileB);
+    expect(getEditorView(container).state.doc.toString()).toBe('B0');
+
+    // Switch back to fileA — must show the preserved unsaved edit, not the
+    // store's clean 'A0' snapshot.
+    store.setActiveFile(fileA.path);
+    expect(getEditorView(container).state.doc.toString()).toBe('XA0');
+    expect(store.state.dirtyFiles).toContain(fileA.path);
+  });
+
+  it('Case 2 (closeFile of a non-active tab): closing an unrelated tab does not clobber the dirty active buffer', () => {
+    const fileA: FileData = { path: '/project/src/close_a.ri', content: 'A0' };
+    const fileC: FileData = { path: '/project/src/close_c.ri', content: 'C0' };
+    const store = setupStore([fileA, fileC]);
+    store.setActiveFile(fileA.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Dirty the active buffer: view holds 'XA0', store snapshot stays 'A0'.
+    view.dispatch({ changes: { from: 0, insert: 'X' } });
+    expect(getEditorView(container).state.doc.toString()).toBe('XA0');
+    expect(store.state.dirtyFiles).toContain(fileA.path);
+
+    // Close a DIFFERENT, non-active tab — a structural openFiles removal with no
+    // tab switch. This must not clobber fileA's cached buffer either.
+    store.closeFile(fileC.path);
+    expect(getEditorView(container).state.doc.toString()).toBe('XA0');
+  });
+
+  it('Case 3 (regression guard): a genuine external content change to the active file still auto-reloads', () => {
+    const fileA: FileData = { path: '/project/src/reload_a.ri', content: 'A0' };
+    const store = setupStore([fileA]);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    expect(getEditorView(container).state.doc.toString()).toBe('A0');
+
+    // Genuine external content change to the ACTIVE file (e.g. auto-reload) must
+    // still flow through the content-sync effect's dispatch.
+    store.updateFileContent(fileA.path, 'A1');
+    expect(getEditorView(container).state.doc.toString()).toBe('A1');
+  });
+});
+
 describe('Editor scrollToLocation', () => {
   const BASELINE_HEAD = 9; // file2 'structure Mount {}': end_column 10 -> 0-indexed offset 9
 
