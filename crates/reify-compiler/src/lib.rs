@@ -51,6 +51,7 @@ mod parse_signatures;
 // to surface the relation ΔDOF contract on hover (geometric-relations γ, task 4383).
 pub mod module_dag;
 mod module_pragmas;
+mod orientation_signatures;
 pub mod prelude_context;
 pub(crate) mod recursion_guard;
 pub mod relation_signatures;
@@ -100,6 +101,7 @@ pub(crate) use ice::*;
 pub(crate) use joint_signatures::*;
 pub(crate) use list_helpers::*;
 pub(crate) use math_signatures::*;
+pub(crate) use orientation_signatures::*;
 pub(crate) use parse_signatures::*;
 pub(crate) use scope::*;
 #[allow(unused_imports)]
