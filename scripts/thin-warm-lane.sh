@@ -19,7 +19,12 @@
 #
 # Options:
 #   --reseed              After freeing target/, re-seed a thin base clone:
-#                         <seed-script> <base_target_dir> <lane_dir> --fresh-checkout.
+#                         <seed-script> <base_target_dir> <lane_dir> --fresh-checkout
+#                         --assume-lane-lock-held. thin already holds
+#                         ${LANE_DIR}.lock on FD 9 (T3) across the seed call, so it
+#                         passes --assume-lane-lock-held so seed-warm-lane.sh skips
+#                         its own (now default-on) lane-lock acquire rather than
+#                         self-refusing against thin's held lock (esc-5214/task 5354).
 #                         Best-effort: a failed re-seed is logged but does not
 #                         change the exit code (see Exit codes below).
 #                         Requires --base. Default OFF (no clone staged).
@@ -88,7 +93,9 @@ Usage: $(basename "$0") <lane_dir> [--reseed] [--base <base_target_dir>] [--seed
                           base dir.
 
   --reseed                After freeing target/, re-seed a thin base clone
-                          (--seed-script <base_target_dir> <lane_dir> --fresh-checkout).
+                          (--seed-script <base_target_dir> <lane_dir> --fresh-checkout
+                          --assume-lane-lock-held; thin holds \${LANE_DIR}.lock on FD 9
+                          across the call, so seed skips its own default acquire).
                           Best-effort: a failed re-seed is logged but does not
                           change the exit code. Requires --base. Default OFF.
   --base DIR              base_target_dir to seed from. Required with --reseed.
@@ -262,7 +269,14 @@ fi
 # would otherwise corrupt it.
 if [ -n "$RESEED" ]; then
     info "Re-seeding thin base clone via $SEED_SCRIPT ..."
-    if "$SEED_SCRIPT" "$BASE_TARGET_DIR" "$LANE_DIR" --fresh-checkout >&2; then
+    # --assume-lane-lock-held: thin ALREADY holds ${LANE_DIR}.lock on FD 9 (T3,
+    # line 236), held across this seed call. seed-warm-lane.sh acquires the lane
+    # lock BY DEFAULT under --fresh-checkout (esc-5214/task 5354 fail-safe), so
+    # without this opt-out it would re-open+flock the same file on its own FD 9
+    # and self-refuse against thin's held lock (flock is not re-entrant across a
+    # process tree). --assume-lane-lock-held tells seed to skip its own acquire;
+    # thin's FD-9 lock already provides the inv.2 one-consumer exclusivity.
+    if "$SEED_SCRIPT" "$BASE_TARGET_DIR" "$LANE_DIR" --fresh-checkout --assume-lane-lock-held >&2; then
         ok "Re-seeded: $LANE_DIR/target"
     else
         warn "Re-seed FAILED ($SEED_SCRIPT); lane target/ was already freed (success not masked)"

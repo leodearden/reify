@@ -492,14 +492,20 @@ _do_reclaim() {
                 preserved_count=$((preserved_count + 1))
             fi
         else
-            # Invoke α while the lane lock is held in the parent shell.
-            # The action subshell inherits FD 8; the parent still owns the lock.
-            # Also hold flock -s on the gen lock (D8 reader-refcount seam).
+            # Invoke α while the lane lock is held in the parent shell (FD 8;
+            # the action subshell inherits it, the parent still owns the lock)
+            # AND a shared gen lock is held on FD 9 (flock -s; D8 reader-refcount
+            # seam). Pass --assume-lane-lock-held: seed-warm-lane.sh acquires the
+            # lane lock BY DEFAULT under --fresh-checkout (esc-5214/task 5354
+            # fail-safe), and its own FD-9 acquire would BOTH self-refuse against
+            # gc's FD-8 lane lock AND clobber gc's FD-9 gen lock. The opt-out
+            # makes seed skip its own acquire; gc's held locks already provide the
+            # inv.2 one-consumer exclusivity + the gen reader-refcount.
             info "  resetting lane: $name"
             if (
                 exec 9>"$gen_lock"
                 flock -s 9
-                "$SEED_SCRIPT" "$resolved_gen" "$lane" --fresh-checkout
+                "$SEED_SCRIPT" "$resolved_gen" "$lane" --fresh-checkout --assume-lane-lock-held
             ) 2>&1 | while IFS= read -r line; do warn "  [seed] $line"; done; then
                 ok "  reset lane: $name"
                 reset_count=$((reset_count + 1))
