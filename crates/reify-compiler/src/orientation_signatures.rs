@@ -228,4 +228,96 @@ mod tests {
             );
         }
     }
+
+    // ── Result-type resolution (step-3 RED / step-4 GREEN) ───────────────────
+
+    /// The 10 Orientation producers.
+    const ORIENTATION_PRODUCERS: [&str; 10] = [
+        "orient_identity",
+        "orient_quaternion",
+        "orient_euler",
+        "orient_basis",
+        "orient_look_at",
+        "orient_axis_angle",
+        "orient_exp",
+        "orient_inverse",
+        "orient_compose",
+        "orient_slerp",
+    ];
+
+    /// Every Orientation producer resolves to `Type::Orientation(3)`, the three
+    /// Transform producers to `Type::Transform(3)`, and `frame3` to
+    /// `Type::Frame(3)`. Called with `&[]` (name-only dispatch).
+    ///
+    /// RED until step-4: the stub resolver returns `dimensionless_scalar`.
+    #[test]
+    fn orientation_typed_fn_result_type_maps_each_name_to_its_nominal_type() {
+        for name in ORIENTATION_PRODUCERS {
+            assert_eq!(
+                orientation_typed_fn_result_type(name, &[]),
+                Type::Orientation(3),
+                "{name} must map to Type::Orientation(3)"
+            );
+        }
+        for name in &["transform3", "transform3_identity", "transform_compose"] {
+            assert_eq!(
+                orientation_typed_fn_result_type(name, &[]),
+                Type::Transform(3),
+                "{name} must map to Type::Transform(3)"
+            );
+        }
+        assert_eq!(
+            orientation_typed_fn_result_type("frame3", &[]),
+            Type::Frame(3),
+            "frame3 must map to Type::Frame(3)"
+        );
+    }
+
+    /// ACCEPTANCE PIN: `orient_axis_angle(vec3, angle)` must resolve to
+    /// `Type::Orientation(3)` and DECISIVELY NOT the first-arg Vector type. The
+    /// dummy first arg is deliberately TYPED as a `Vector{3}` so this proves the
+    /// resolver ignores the first-arg type (the old first-arg fallback would
+    /// have produced `Vector{3}` here — the exact bug this task fixes).
+    #[test]
+    fn orient_axis_angle_result_is_orientation_not_first_arg_vector() {
+        use reify_ir::Value;
+
+        let vec3_arg = CompiledExpr::literal(
+            Value::Real(1.0),
+            Type::vec3(Type::dimensionless_scalar()),
+        );
+        let args = &[vec3_arg];
+
+        assert_eq!(
+            orientation_typed_fn_result_type("orient_axis_angle", args),
+            Type::Orientation(3),
+            "orient_axis_angle(vec3, angle) must resolve to Orientation(3)"
+        );
+        assert_ne!(
+            orientation_typed_fn_result_type("orient_axis_angle", args),
+            Type::vec3(Type::dimensionless_scalar()),
+            "orient_axis_angle must NOT adopt the first-arg Vector type"
+        );
+    }
+
+    /// Args-agnostic invariant: every producer returns the same result type for
+    /// an empty arg slice and a non-empty one (the resolver is name-only).
+    #[test]
+    fn orientation_typed_fn_result_type_is_args_agnostic() {
+        use reify_ir::Value;
+
+        let dummy = CompiledExpr::literal(
+            Value::Real(1.0),
+            Type::vec3(Type::dimensionless_scalar()),
+        );
+        let args = &[dummy];
+
+        for name in EXPECTED_NAMES {
+            assert_eq!(
+                orientation_typed_fn_result_type(name, args),
+                orientation_typed_fn_result_type(name, &[]),
+                "{name} result must be the same regardless of args"
+            );
+        }
+    }
 }
