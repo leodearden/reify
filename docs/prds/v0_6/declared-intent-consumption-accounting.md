@@ -18,7 +18,7 @@ A designer who declares intent the engine cannot or does not consume today gets 
 
 ### §0.1 — What this is NOT (G4 boundaries, fixed by the spawn brief + sibling PRDs)
 
-- **NOT the exit-code gate (INV-SF-2).** `error:` with exit 0 (visible in probes 1–3) is owned by the sibling "eradicate silent undef" PRD's severity gate. This PRD emits correctly-coded, correctly-severitied diagnostics and lets that gate own process exit codes. The ONE exception: mechanism D's inert class fails `reify check` through check's **native constraint-outcome path** (`check_fails`, `main.rs:2299-2305`) — an outcome-class change, not a severity-gate change.
+- **NOT the exit-code gate (INV-SF-2).** Error-severity-vs-exit-code coherence (e.g. the investigation's relate operand-type-error-exits-0 finding) is owned by the sibling "eradicate silent undef" PRD's severity gate. This PRD emits correctly-coded, correctly-severitied diagnostics and lets that gate own process exit codes. The ONE exception: mechanism D's inert class fails `reify check` through check's **native constraint-outcome path** (`check_fails`, `main.rs:2299-2305`) — an outcome-class change, not a severity-gate change.
 - **NOT the discrete-solve capability.** CpSat registration/default-ON, `DiscreteFirstFallback` routing, let-tracing, `Int`/`discrete_set` domains, and minimize-over-discrete actually *solving* are owned by `discrete-cost-minimisation.md` (PRD 2, authored 2026-07-24, task/5396). This PRD owns only the **accounting**: mechanism B derives its verdicts from the **live registry contents**, so it is truthful before AND after PRD 2 lands (§3 decision 2).
 - **NOT objective routing.** The component-0 fallback (`registry.rs:208-210`) and objective-side transitive coupling into the *solve* are PRD 2 α's fold/let-tracing territory; mechanism C reads transitive reachability (via landed `build_dependent_cells`, #5188) but changes no routing (§3 decision 3).
 - **NOT undef provenance (INV-SF-1) or placeholder types (INV-SF-5)** — sibling PRDs from the same investigation.
@@ -64,7 +64,7 @@ A designer who declares intent the engine cannot or does not consume today gets 
 | `dic_min_no_autos.ri` — `minimize k*k`, no autos in scope | **total silence** — no solve, no diagnostic, exit 0 |
 | `dic_min_unread.ri` — `a = auto(free)` + `minimize k*k` (objective reads only concrete `k`) | `a` resolves via constraints (3.06…), objective silently useless; only the generic auto(free) non-uniqueness warning |
 | `dic_min_unconstrained.ri` — `a = auto(free)` + `minimize (a-3)²`, no constraints | `a = undef (awaiting solve)` — objective dropped at `registry.rs:182`, never mentioned |
-| `dic_inert_connect.ri` — `connect a @ face("top") -> b @ face("bottom")` | `INDETERMINATE frame_align_a_b` + reason-string warning; non-strict: `No constraints violated (1 indeterminate).` exit 0; strict: misattributed generic reason, exit 0 |
+| `dic_inert_connect.ri` — `connect a @ face("top") -> b @ face("bottom")` | `INDETERMINATE frame_align_a_b` + reason-string warning; non-strict: `No constraints violated (1 indeterminate).` exit 0; strict: fails (exit 1) but with the **misattributed** generic reason |
 
 **Grammar (G3): no novel syntax.** All fixtures parse today (`tree-sitter parse --quiet`, 0 ERROR nodes, 2026-07-24). This PRD adds diagnostics, an additive trait method, an additive outcome-entry field, and CLI summary changes — no grammar work. `grammar_confirmed = true` for every leaf.
 
