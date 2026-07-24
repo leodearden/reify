@@ -5103,292 +5103,45 @@ impl Engine {
                 .set_realization_reads(&NodeId::Value(cell), reads);
         }
 
-        // ── RBD-α (task 3822): MassProperties PSD inertia validation ─────────────
-        // Post-eval pass: for every cell whose value is a StructureInstance with
-        // type_name == "MassProperties", extract the `inertia` field, compute the
-        // symmetric-3×3 eigenvalues analytically, and replace the cell with
-        // Value::Undef (Determined) when the matrix is non-PSD or malformed.
-        //
-        // Design rationale: `reify-expr::eval_structure_instance_ctor` is
-        // intentionally registry-free and diagnostic-free (SIR-α design decision
-        // 2), so the diagnostic-emitting + value-replacing hook belongs here in
-        // reify-eval, where the diagnostics sink and value maps are both accessible.
-        //
-        // The immutable `values` borrow is released before any mutable insert by
-        // collecting target pairs first.
-        //
-        // Performance: the scan is guarded by a fast any() check so designs that
-        // never instantiate MassProperties skip the extraction pass entirely.
-        {
-            // Fast early-out: skip the O(n) extraction pass when no MassProperties
-            // cell exists (the common case when std.dynamics is unused).
-            let has_mass_props = values.iter().any(|(_, v)| {
-                matches!(v, Value::StructureInstance(d) if d.type_name == "MassProperties")
-            });
+        // ── MassProperties PSD post-pass via λ's shared DetectorRegistry ─────────
+        // (task μ #5062) Replaces the former inline RBD-α (task 3822) PSD block
+        // with λ's registry so eval / eval_cached / edit_check run the SAME
+        // detector — INV-EVAL-3, one owner across all serve paths.
+        // `MassPropertiesPsdDetector` is a verbatim port of the deleted inline
+        // block (same classification rules, wording, and Undef-replacement), so
+        // this is behavior-preserving on the cold path. It mutates only the
+        // output `values` / `snapshot.values` / `diagnostics` (never the cache),
+        // so it is always FRESHLY produced on every serve mode — disjoint from
+        // the per-cell runtime-diagnostic replay class (the INV-EVAL-3
+        // double-emission guard). Registration order is run order; the
+        // annotation-args post-pass below still runs AFTER this (the
+        // PSD-then-annotation ordering the scattered "must run before" comments
+        // encoded is now owned by the registry + this call ordering).
+        crate::detectors::DetectorRegistry::with_builtins().run_all(
+            &mut crate::detectors::PostPassState {
+                values: &mut values,
+                snapshot_values: &mut snapshot.values,
+                diagnostics: &mut diagnostics,
+            },
+        );
 
-            if has_mass_props {
-                // Classify each MassProperties cell's inertia field.
-                enum InertiaResult {
-                    /// Field is absent or already Undef — leave untouched (no false positives).
-                    Skip,
-                    /// Field is present but could not be parsed as a 3×3 numeric matrix.
-                    Malformed,
-                    /// Field parsed successfully — run PSD check.
-                    Valid([[f64; 3]; 3]),
-                }
-
-                let mass_props_cells: Vec<(ValueCellId, InertiaResult)> = values
-                    .iter()
-                    .filter_map(|(id, val)| {
-                        if let Value::StructureInstance(data) = val
-                            && data.type_name == "MassProperties"
-                        {
-                            let result = match data.fields.get("inertia") {
-                                None | Some(Value::Undef) => InertiaResult::Skip,
-                                Some(v) => match crate::dynamics_psd::inertia_3x3_from_value(v) {
-                                    Some(m) => InertiaResult::Valid(m),
-                                    None => InertiaResult::Malformed,
-                                },
-                            };
-                            // Only collect cells that need attention.
-                            match result {
-                                InertiaResult::Skip => None,
-                                other => Some((id.clone(), other)),
-                            }
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                for (id, result) in mass_props_cells {
-                    match result {
-                        InertiaResult::Skip => unreachable!("Skip filtered above"),
-                        InertiaResult::Malformed => {
-                            // A present-but-unparseable inertia field (wrong shape, non-numeric
-                            // cell) is surfaced as E_DynamicsInertiaNotPSD so malformed tensors
-                            // never silently flow to dynamics consumers.
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "MassProperties '{}': inertia field cannot be parsed as \
-                                     a 3×3 numeric matrix",
-                                    id,
-                                ))
-                                .with_code(DiagnosticCode::DynamicsInertiaNotPSD),
-                            );
-                            values.insert(id.clone(), Value::Undef);
-                            snapshot
-                                .values
-                                .insert(id.clone(), (Value::Undef, DeterminacyState::Determined));
-                        }
-                        InertiaResult::Valid(m) => {
-                            let tol = crate::dynamics_psd::psd_tol(&m);
-                            if !crate::dynamics_psd::is_symmetric_psd(&m, tol) {
-                                let min_eig = crate::dynamics_psd::min_eigenvalue(&m);
-                                diagnostics.push(
-                                    Diagnostic::error(format!(
-                                        "MassProperties '{}': inertia tensor is not positive \
-                                         semi-definite (min eigenvalue ≈ {:.3e})",
-                                        id, min_eig,
-                                    ))
-                                    .with_code(DiagnosticCode::DynamicsInertiaNotPSD),
-                                );
-                                values.insert(id.clone(), Value::Undef);
-                                snapshot.values.insert(
-                                    id.clone(),
-                                    (Value::Undef, DeterminacyState::Determined),
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // ── annotation-args ε (#3556): materialization-time eval driver ──────────────
-        // Post-eval pass: for every `Value::StructureInstance` cell whose template
-        // declares `AtMaterialization` annotation args, evaluate each compiled
-        // expression and attach the result as a per-instance materialized-annotation
-        // overlay under `MATERIALIZED_ANNOTATIONS_KEY`.
-        //
-        // Design mirrors the RBD-α MassProperties PSD pass above:
-        // - reify-expr's StructureInstance constructor is intentionally
-        //   registry/diagnostic-free (SIR-α design decision 2), so the hook
-        //   lives here where the diagnostics sink, value maps, template registry,
-        //   and functions are all accessible.
-        // - Immutable `values` borrows are released before any mutable insert
-        //   by collecting targets first, then evaluating + inserting per-target.
-        // - Failure handling (emit AnnotationEvalFailed + replace with Undef)
-        //   is added in step-8.
-        //
-        // Note: `eval_cached()` is a parallel implementation that does not
-        // delegate to `eval()` and therefore does NOT run this pass. Materialized-
-        // annotation overlays are intentionally absent on the `eval_cached()` path,
-        // matching the existing MassProperties PSD precedent (also eval-only).
-        // Consumers that rely on the overlay must use `eval()` directly. If
-        // `eval_cached()` consumers ever need the overlay, factor this pass into a
-        // shared helper called from both code paths.
-        {
-            let has_struct_instance = values
-                .iter()
-                .any(|(_, v)| matches!(v, Value::StructureInstance(_)));
-            if has_struct_instance {
-                /// Match a `Value` against a `MaterializationArgType` expectation.
-                ///
-                /// Returns `false` for `Value::Undef` (eval-failure sentinel) and for
-                /// any value whose kind doesn't match the expected type.
-                /// `Any` accepts any non-Undef value.
-                fn value_kind_matches(
-                    val: &Value,
-                    expected: reify_compiler::MaterializationArgType,
-                ) -> bool {
-                    use reify_compiler::MaterializationArgType as MAT;
-                    match expected {
-                        MAT::Any => !matches!(val, Value::Undef),
-                        MAT::String => matches!(val, Value::String(_)),
-                        MAT::Int => matches!(val, Value::Int(_)),
-                        MAT::Real => matches!(val, Value::Real(_)),
-                        MAT::Bool => matches!(val, Value::Bool(_)),
-                        MAT::Length => matches!(val, Value::Scalar { .. }),
-                    }
-                }
-
-                // Memoize compile_materialization_annotation_args per template
-                // type_name: a design with N instances of the same template
-                // compiles its annotation Exprs only once (O(T) compilations,
-                // T = distinct template types), not O(N). Each instance still
-                // receives its own evaluated Value (eval is per-instance).
-                let mut margs_by_type: std::collections::HashMap<
-                    String,
-                    Vec<reify_compiler::MaterializationAnnotationArg>,
-                > = std::collections::HashMap::new();
-
-                // Collect instances that carry AtMaterialization args.
-                // Releasing the immutable borrow on `values` before any mutable
-                // insert (collect into Vec<_> drops the iterator).
-                let targets: Vec<_> = values
-                    .iter()
-                    .filter_map(|(id, val)| {
-                        let Value::StructureInstance(data) = val else {
-                            return None;
-                        };
-                        // Look up cached margs, or compile once for this type.
-                        let margs = margs_by_type
-                            .entry(data.type_name.clone())
-                            .or_insert_with(|| {
-                                find_template_with_prelude(
-                                    module,
-                                    self.prelude,
-                                    &data.type_name,
-                                )
-                                .map(|t| {
-                                    reify_compiler::compile_materialization_annotation_args(
-                                        t,
-                                        &module.enum_defs,
-                                        &functions,
-                                    )
-                                })
-                                .unwrap_or_default()
-                            });
-                        if margs.is_empty() {
-                            return None;
-                        }
-                        Some((id.clone(), data.clone(), margs.clone()))
-                    })
-                    .collect();
-
-                for (id, mut data, margs) in targets {
-                    let mut failure_diags: Vec<Diagnostic> = Vec::new();
-                    let mut collected: Vec<(String, String, Value)> = Vec::new();
-
-                    {
-                        // Build a per-instance EvalContext using the global values.
-                        // (Per-instance param-binding scope deferred to task ι; ε's
-                        //  signals are constant exprs or unresolved idents that don't
-                        //  need param binding.)
-                        let ctx =
-                            eval_ctx_with_meta(&values, &functions, &self.meta_map);
-                        for marg in &margs {
-                            let val = reify_expr::eval_expr(&marg.expr, &ctx);
-                            if !matches!(val, Value::Undef)
-                                && value_kind_matches(&val, marg.expected)
-                            {
-                                collected.push((
-                                    marg.annotation.clone(),
-                                    marg.arg_name.clone(),
-                                    val,
-                                ));
-                            } else {
-                                // Distinguish the two failure modes for the message.
-                                let reason = if matches!(val, Value::Undef) {
-                                    "eval returned Undef"
-                                } else {
-                                    "type mismatch"
-                                };
-                                failure_diags.push(
-                                    Diagnostic::error(format!(
-                                        "annotation @{} arg '{}' on '{}': \
-                                         materialization-time evaluation failed ({reason})",
-                                        marg.annotation, marg.arg_name, id,
-                                    ))
-                                    .with_code(DiagnosticCode::AnnotationEvalFailed),
-                                );
-                            }
-                        }
-                        // ctx dropped here — immutable borrow on `values` released.
-                    }
-
-                    // Commit-only migration (task γ #5053, impl-6): both arms below
-                    // keep their existing pre-commit logic unchanged. CacheLeg::Skip
-                    // makes the pre-existing no-cache decision explicit + auditable
-                    // instead of silently omitting the cache leg.
-                    if failure_diags.is_empty() {
-                        // All args evaluated and type-checked successfully.
-                        // Attach the overlay to the cloned instance data in a single
-                        // batch call (O(K) clones of the overlay BTreeMap) rather
-                        // than K separate per-arg calls (which would be O(K²)).
-                        data.set_materialized_annotations_batch(&collected);
-                        let rebuilt = Value::StructureInstance(data);
-                        commit_cell_result(
-                            CommitLegs {
-                                values: &mut values,
-                                snapshot_values: &mut snapshot.values,
-                                cache: &mut self.cache,
-                                journal: &mut self.journal,
-                            },
-                            id,
-                            rebuilt,
-                            DeterminacyRule::UnconditionalDetermined,
-                            TraceSource::PostPassOverwrite,
-                            DependencyTrace::default(),
-                            version,
-                            CacheLeg::Skip("annotation-args materialization overlay"),
-                        );
-                    } else {
-                        // Any arg failure → emit all per-arg diagnostics and replace
-                        // the instance cell with Undef so downstream consumers never
-                        // observe a partially-materialized annotation. Mirrors the
-                        // MassProperties PSD hook's replace-on-failure pattern.
-                        diagnostics.extend(failure_diags);
-                        commit_cell_result(
-                            CommitLegs {
-                                values: &mut values,
-                                snapshot_values: &mut snapshot.values,
-                                cache: &mut self.cache,
-                                journal: &mut self.journal,
-                            },
-                            id,
-                            Value::Undef,
-                            DeterminacyRule::UnconditionalDetermined,
-                            TraceSource::PostPassOverwrite,
-                            DependencyTrace::default(),
-                            version,
-                            CacheLeg::Skip("annotation-args materialization overlay"),
-                        );
-                    }
-                }
-            }
-        }
+        // ── annotation-args ε (#3556): materialization-time eval driver ──────
+        // (task μ #5062) Extracted into the shared
+        // `run_materialization_annotation_post_pass` helper (defined just after
+        // this fn) so BOTH eval() and eval_cached() run it — dissolving the
+        // former eval-only asymmetry the deleted "eval_cached does NOT run this
+        // pass" note described (PRD
+        // `docs/prds/v0_6/eval-cell-commit-substrate.md` §10 Q2). Runs AFTER the
+        // MassProperties PSD registry pass above, preserving the former inline
+        // PSD-then-annotation ordering.
+        self.run_materialization_annotation_post_pass(
+            module,
+            &functions,
+            &mut values,
+            &mut snapshot.values,
+            version,
+            &mut diagnostics,
+        );
 
         // undef-self-describing α (task 4321): post-eval UndefCause classification pass.
         //
@@ -5690,6 +5443,205 @@ impl Engine {
             resolved_params,
             objective_provenance,
             structured_detail,
+        }
+    }
+
+    /// Annotation-args materialization post-pass (task μ #5062).
+    ///
+    /// Extracted verbatim from the former `eval()`-inline block (annotation-args
+    /// ε #3556) so BOTH `eval()` and `eval_cached()` run it — dissolving the
+    /// eval-only asymmetry the old "eval_cached does NOT run this pass" note
+    /// described (PRD `docs/prds/v0_6/eval-cell-commit-substrate.md` §10 Q2).
+    ///
+    /// For every `Value::StructureInstance` cell whose template declares
+    /// `AtMaterialization` annotation args, evaluate each compiled expression and
+    /// attach the result as a per-instance materialized-annotation overlay under
+    /// `MATERIALIZED_ANNOTATIONS_KEY`; on any arg eval/type failure, emit
+    /// `AnnotationEvalFailed` and replace the instance cell with `Value::Undef`
+    /// so downstream consumers never observe a partially-materialized annotation.
+    ///
+    /// Kept a shared HELPER rather than a λ `PostPassDetector` because its state
+    /// shape — `module` / `self.prelude` / `functions` / `self.meta_map` (via a
+    /// constructed `EvalContext`) plus `self.cache` / `self.journal` for the
+    /// `commit_cell_result` overlay — deliberately exceeds `PostPassState` (which
+    /// carries only `values` / `snapshot_values` / `diagnostics`). Do NOT bloat
+    /// `PostPassState` to absorb it (λ module doc; PRD §10 Q2).
+    ///
+    /// Like the MassProperties PSD registry pass it runs after, this is always
+    /// FRESHLY produced on every serve mode: it mutates only the OUTPUT `values`
+    /// / `snapshot_values` / `diagnostics`, and its `commit_cell_result` calls use
+    /// `CacheLeg::Skip` (the overlay is never cached), so on a warm `eval_cached()`
+    /// serve the instance cell is served from cache with its ORIGINAL value and
+    /// this pass re-detects + re-emits idempotently — never overlapping the
+    /// per-cell runtime-diagnostic replay class (INV-EVAL-3).
+    fn run_materialization_annotation_post_pass(
+        &mut self,
+        module: &CompiledModule,
+        functions: &[CompiledFunction],
+        values: &mut ValueMap,
+        snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+        version: VersionId,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        let has_struct_instance = values
+            .iter()
+            .any(|(_, v)| matches!(v, Value::StructureInstance(_)));
+        if !has_struct_instance {
+            return;
+        }
+
+        /// Match a `Value` against a `MaterializationArgType` expectation.
+        ///
+        /// Returns `false` for `Value::Undef` (eval-failure sentinel) and for
+        /// any value whose kind doesn't match the expected type.
+        /// `Any` accepts any non-Undef value.
+        fn value_kind_matches(
+            val: &Value,
+            expected: reify_compiler::MaterializationArgType,
+        ) -> bool {
+            use reify_compiler::MaterializationArgType as MAT;
+            match expected {
+                MAT::Any => !matches!(val, Value::Undef),
+                MAT::String => matches!(val, Value::String(_)),
+                MAT::Int => matches!(val, Value::Int(_)),
+                MAT::Real => matches!(val, Value::Real(_)),
+                MAT::Bool => matches!(val, Value::Bool(_)),
+                MAT::Length => matches!(val, Value::Scalar { .. }),
+            }
+        }
+
+        // Memoize compile_materialization_annotation_args per template
+        // type_name: a design with N instances of the same template
+        // compiles its annotation Exprs only once (O(T) compilations,
+        // T = distinct template types), not O(N). Each instance still
+        // receives its own evaluated Value (eval is per-instance).
+        let mut margs_by_type: std::collections::HashMap<
+            String,
+            Vec<reify_compiler::MaterializationAnnotationArg>,
+        > = std::collections::HashMap::new();
+
+        // Collect instances that carry AtMaterialization args.
+        // Releasing the immutable borrow on `values` before any mutable
+        // insert (collect into Vec<_> drops the iterator).
+        let targets: Vec<_> = values
+            .iter()
+            .filter_map(|(id, val)| {
+                let Value::StructureInstance(data) = val else {
+                    return None;
+                };
+                // Look up cached margs, or compile once for this type.
+                let margs = margs_by_type
+                    .entry(data.type_name.clone())
+                    .or_insert_with(|| {
+                        find_template_with_prelude(
+                            module,
+                            self.prelude,
+                            &data.type_name,
+                        )
+                        .map(|t| {
+                            reify_compiler::compile_materialization_annotation_args(
+                                t,
+                                &module.enum_defs,
+                                functions,
+                            )
+                        })
+                        .unwrap_or_default()
+                    });
+                if margs.is_empty() {
+                    return None;
+                }
+                Some((id.clone(), data.clone(), margs.clone()))
+            })
+            .collect();
+
+        for (id, mut data, margs) in targets {
+            let mut failure_diags: Vec<Diagnostic> = Vec::new();
+            let mut collected: Vec<(String, String, Value)> = Vec::new();
+
+            {
+                // Build a per-instance EvalContext using the global values.
+                // (Per-instance param-binding scope deferred to task ι; ε's
+                //  signals are constant exprs or unresolved idents that don't
+                //  need param binding.)
+                let ctx = eval_ctx_with_meta(&*values, functions, &self.meta_map);
+                for marg in &margs {
+                    let val = reify_expr::eval_expr(&marg.expr, &ctx);
+                    if !matches!(val, Value::Undef)
+                        && value_kind_matches(&val, marg.expected)
+                    {
+                        collected.push((
+                            marg.annotation.clone(),
+                            marg.arg_name.clone(),
+                            val,
+                        ));
+                    } else {
+                        // Distinguish the two failure modes for the message.
+                        let reason = if matches!(val, Value::Undef) {
+                            "eval returned Undef"
+                        } else {
+                            "type mismatch"
+                        };
+                        failure_diags.push(
+                            Diagnostic::error(format!(
+                                "annotation @{} arg '{}' on '{}': \
+                                 materialization-time evaluation failed ({reason})",
+                                marg.annotation, marg.arg_name, id,
+                            ))
+                            .with_code(DiagnosticCode::AnnotationEvalFailed),
+                        );
+                    }
+                }
+                // ctx dropped here — immutable borrow on `values` released.
+            }
+
+            // Commit-only migration (task γ #5053, impl-6): both arms below
+            // keep their existing pre-commit logic unchanged. CacheLeg::Skip
+            // makes the pre-existing no-cache decision explicit + auditable
+            // instead of silently omitting the cache leg.
+            if failure_diags.is_empty() {
+                // All args evaluated and type-checked successfully.
+                // Attach the overlay to the cloned instance data in a single
+                // batch call (O(K) clones of the overlay BTreeMap) rather
+                // than K separate per-arg calls (which would be O(K²)).
+                data.set_materialized_annotations_batch(&collected);
+                let rebuilt = Value::StructureInstance(data);
+                commit_cell_result(
+                    CommitLegs {
+                        values: &mut *values,
+                        snapshot_values: &mut *snapshot_values,
+                        cache: &mut self.cache,
+                        journal: &mut self.journal,
+                    },
+                    id,
+                    rebuilt,
+                    DeterminacyRule::UnconditionalDetermined,
+                    TraceSource::PostPassOverwrite,
+                    DependencyTrace::default(),
+                    version,
+                    CacheLeg::Skip("annotation-args materialization overlay"),
+                );
+            } else {
+                // Any arg failure → emit all per-arg diagnostics and replace
+                // the instance cell with Undef so downstream consumers never
+                // observe a partially-materialized annotation. Mirrors the
+                // MassProperties PSD hook's replace-on-failure pattern.
+                diagnostics.extend(failure_diags);
+                commit_cell_result(
+                    CommitLegs {
+                        values: &mut *values,
+                        snapshot_values: &mut *snapshot_values,
+                        cache: &mut self.cache,
+                        journal: &mut self.journal,
+                    },
+                    id,
+                    Value::Undef,
+                    DeterminacyRule::UnconditionalDetermined,
+                    TraceSource::PostPassOverwrite,
+                    DependencyTrace::default(),
+                    version,
+                    CacheLeg::Skip("annotation-args materialization overlay"),
+                );
+            }
         }
     }
 
@@ -6432,6 +6384,9 @@ impl Engine {
                     if let Some(CachedResult::Value(val, det)) =
                         self.cache.try_fast_path(&node_id, version)
                     {
+                        // μ (#5062): replay this clean-served cell's stored
+                        // per-cell diagnostics (else swallowed on the fast path).
+                        self.replay_cell_diagnostics(&node_id, &mut diagnostics);
                         self.journal.record(EvalEvent {
                             timestamp: Instant::now(),
                             node_id,
@@ -6470,6 +6425,10 @@ impl Engine {
                         values.insert(cell.id.clone(), val);
                         let trace = entry.dependency_trace.clone();
                         let result = entry.result.clone();
+                        // μ (#5062): replay this clean-served cell's stored
+                        // per-cell diagnostics (last use of `entry` before the
+                        // &mut record below).
+                        diagnostics.extend(entry.diagnostics.iter().cloned());
                         self.cache.record_evaluation_with_freshness(
                             node_id.clone(),
                             result,
@@ -6646,6 +6605,9 @@ impl Engine {
                             if let Some(CachedResult::Value(val, det)) =
                                 self.cache.try_fast_path(&node_id, version)
                             {
+                                // μ (#5062): replay this clean-served cell's
+                                // stored per-cell diagnostics (else swallowed).
+                                self.replay_cell_diagnostics(&node_id, &mut diagnostics);
                                 self.journal.record(EvalEvent {
                                     timestamp: Instant::now(),
                                     node_id,
@@ -6677,6 +6639,10 @@ impl Engine {
                                 values.insert(cell.id.clone(), val);
                                 let trace = entry.dependency_trace.clone();
                                 let result = entry.result.clone();
+                                // μ (#5062): replay this clean-served cell's
+                                // stored per-cell diagnostics (last use of
+                                // `entry` before the &mut record below).
+                                diagnostics.extend(entry.diagnostics.iter().cloned());
                                 self.cache.record_evaluation_with_freshness(
                                     node_id.clone(),
                                     result,
@@ -6731,6 +6697,10 @@ impl Engine {
                                         (reify_ir::Value::Undef, no_default_state)
                                     }
                                 };
+                            // μ (#5062): mark runtime_sink length before the
+                            // default-expr eval so this cell's diagnostics delta
+                            // can be stored after the record below.
+                            let diag_mark = runtime_sink.borrow().len();
                             let (val, det) = match override_entry {
                                 Some((override_val, Ok(()))) => {
                                     (override_val.clone(), DeterminacyState::Determined)
@@ -6796,6 +6766,11 @@ impl Engine {
                                 trace,
                             );
 
+                            // μ (#5062): store this freshly-evaluated cell's
+                            // diagnostics delta for replay on future cache-hit
+                            // serves (empty delta clears stale content).
+                            self.store_cell_replay_diagnostics(&node_id, &runtime_sink, diag_mark);
+
                             self.journal.record(EvalEvent {
                                 timestamp: Instant::now(),
                                 node_id,
@@ -6823,6 +6798,9 @@ impl Engine {
                             if let Some(CachedResult::Value(val, det)) =
                                 self.cache.try_fast_path(&node_id, version)
                             {
+                                // μ (#5062): replay this clean-served cell's
+                                // stored per-cell diagnostics (else swallowed).
+                                self.replay_cell_diagnostics(&node_id, &mut diagnostics);
                                 self.journal.record(EvalEvent {
                                     timestamp: Instant::now(),
                                     node_id,
@@ -6854,6 +6832,10 @@ impl Engine {
                                 values.insert(cell.id.clone(), val);
                                 let trace = entry.dependency_trace.clone();
                                 let result = entry.result.clone();
+                                // μ (#5062): replay this clean-served cell's
+                                // stored per-cell diagnostics (last use of
+                                // `entry` before the &mut record below).
+                                diagnostics.extend(entry.diagnostics.iter().cloned());
                                 self.cache.record_evaluation_with_freshness(
                                     node_id.clone(),
                                     result,
@@ -6875,6 +6857,10 @@ impl Engine {
                             // Cache miss: evaluate and record.
                             stats.cache_misses += 1;
                             self.cache.clear_dirty(&node_id);
+
+                            // μ (#5062): mark runtime_sink length before eval_expr
+                            // so this cell's diagnostics delta can be stored below.
+                            let diag_mark = runtime_sink.borrow().len();
 
                             // Use cell_eval_ctx so DeterminacyPredicate cells (e.g.
                             // `let r = determined(x)`) see the determinacy map (task 4356).
@@ -6967,6 +6953,11 @@ impl Engine {
                             let outcome = commit_outcome
                                 .cache_outcome()
                                 .expect("CacheLeg::Record always yields Some(outcome)");
+
+                            // μ (#5062): store this freshly-evaluated cell's
+                            // diagnostics delta for replay on future cache-hit
+                            // serves (empty delta clears stale content).
+                            self.store_cell_replay_diagnostics(&node_id, &runtime_sink, diag_mark);
 
                             if outcome == EvalOutcome::Unchanged {
                                 stats.early_cutoffs += 1;
@@ -7394,6 +7385,46 @@ impl Engine {
             &values,
             self.default_query_kernel().is_none(),
         ));
+
+        // ── MassProperties PSD post-pass via λ's shared DetectorRegistry ─────────
+        // (task μ #5062) Mirrors the eval() registry call so the warm /
+        // incremental serve runs the SAME MassProperties PSD inertia check —
+        // INV-EVAL-3, one owner across all serve paths (the cold-only asymmetry
+        // this fixes). The detector re-detects+re-emits idempotently off each
+        // cell's ORIGINAL (cache-served) value, mutating only the OUTPUT
+        // `values` / `snapshot_values` / `diagnostics` — never the cache — so it
+        // is always FRESHLY produced here, never replayed, keeping it disjoint
+        // from the per-cell runtime-diagnostic replay class. `snapshot_values`
+        // is still an owned local here (the snapshot is built + installed just
+        // below), the eval_cached analogue of eval()'s `snapshot.values`.
+        crate::detectors::DetectorRegistry::with_builtins().run_all(
+            &mut crate::detectors::PostPassState {
+                values: &mut values,
+                snapshot_values: &mut snapshot_values,
+                diagnostics: &mut diagnostics,
+            },
+        );
+
+        // ── annotation-args ε (#3556) materialization post-pass ──────────────
+        // (task μ #5062) Mirror of the eval() call: the shared helper now runs on
+        // the warm / incremental serve too (PRD §10 Q2), so a materialization
+        // failure surfaces (AnnotationEvalFailed + Undef-replacement) on
+        // eval_cached() rather than only cold eval(). Ordered AFTER the PSD
+        // registry pass above, matching eval()'s PSD-then-annotation ordering.
+        // `functions` is cloned into a local first because the helper takes
+        // `&mut self` (can't hold an immutable borrow of `self.functions` across
+        // the call). The overlay commits use CacheLeg::Skip, so this never writes
+        // the cache — always freshly produced on each serve, disjoint from the
+        // per-cell runtime-diagnostic replay class (INV-EVAL-3).
+        let functions_for_annotation = Arc::clone(&self.functions);
+        self.run_materialization_annotation_post_pass(
+            module,
+            &functions_for_annotation,
+            &mut values,
+            &mut snapshot_values,
+            version,
+            &mut diagnostics,
+        );
 
         // Build and store a snapshot so that engine.snapshot() returns Some after
         // eval_cached() — preserving cross-path parity with eval() (spec §8.2,
@@ -8275,6 +8306,9 @@ impl Engine {
                         }
                     }
 
+                    // μ (#5062): snapshot runtime_sink length before eval_expr
+                    // (per-cell diagnostics capture — see store_cell_replay_diagnostics).
+                    let diag_mark = runtime_sink.borrow().len();
                     // Normal eval: panic boundary (arch §9.1 / evaluate_let_bindings:4056).
                     let eval_ctx = eval_ctx_with_meta(values, functions, meta_map)
                         .with_determinacy(&snapshot.values)
@@ -8369,6 +8403,9 @@ impl Engine {
                         trace,
                         false,
                     );
+                    // μ (#5062): store this cell's eval-time diagnostics delta
+                    // for replay on future cache-hit clean serves (empty clears).
+                    self.store_cell_replay_diagnostics(&node_id, runtime_sink, diag_mark);
                     self.journal.record(EvalEvent {
                         timestamp: Instant::now(),
                         node_id,
@@ -8673,6 +8710,54 @@ impl Engine {
         // re-eval loop above (parity with each caller's own drain, which
         // only captured its main walk's diagnostics, predating this pass).
         diagnostics.append(&mut runtime_sink.borrow_mut());
+    }
+
+    /// μ (#5062): capture the per-cell runtime diagnostics a cell's
+    /// `eval_expr` just pushed — the `runtime_sink` slice `[mark..]` — into
+    /// `NodeCache.diagnostics` (κ #5042), so a later cache-hit clean serve can
+    /// REPLAY them via [`Engine::replay_cell_diagnostics`]. Without this a
+    /// per-cell-branch warning (`W_FIELD_OUT_OF_BOUNDS`,
+    /// `W_FIELD_SAMPLED_INVALID_CONFIG`) is silently dropped on a warm serve
+    /// (the 2259/2267 "fast-path-swallow" class, PRD §2.7 / INV-EVAL-3).
+    ///
+    /// `mark` is `runtime_sink.borrow().len()` captured IMMEDIATELY before the
+    /// cell's `eval_expr`. The store ALWAYS overwrites (via
+    /// [`CacheStore::set_node_diagnostics`]) — an empty delta clears stale
+    /// replay content left by a prior eval that has since stopped warning.
+    ///
+    /// Load-bearing invariant (keeps the two diagnostic classes disjoint):
+    /// this reads ONLY `runtime_sink` (the `eval_expr` output channel). Post-
+    /// pass detector diagnostics (MassProperties PSD, annotation-args) push to
+    /// the OUTPUT `diagnostics` vec, never `runtime_sink`, so they are never
+    /// captured here — they stay always-fresh, never per-cell-stored.
+    ///
+    /// `pub(crate)` so the edit path (`engine_edit::edit_param`) can call it too.
+    pub(crate) fn store_cell_replay_diagnostics(
+        &mut self,
+        node_id: &NodeId,
+        runtime_sink: &RefCell<Vec<Diagnostic>>,
+        mark: usize,
+    ) {
+        let delta = runtime_sink.borrow()[mark..].to_vec();
+        self.cache.set_node_diagnostics(node_id, delta);
+    }
+
+    /// μ (#5062): replay a clean-served cell's stored per-cell diagnostics
+    /// (`NodeCache.diagnostics`, κ #5042) into the output `diagnostics` vec.
+    ///
+    /// Called from `eval_cached`'s clean-serve arms (try_fast_path /
+    /// cache-reuse) where the cell is served from cache WITHOUT re-running
+    /// `eval_expr`, so its eval-time diagnostics never re-fire and would
+    /// otherwise be swallowed. This is the "replayed" leg of the replayed-XOR-
+    /// fresh owner rule (INV-EVAL-3): a cell is either re-evaluated (fresh, via
+    /// the flat `runtime_sink` drain) or clean-served (replayed) — never both
+    /// in one serve. No-op when the entry is absent or carries no diagnostics.
+    fn replay_cell_diagnostics(&self, node_id: &NodeId, diagnostics: &mut Vec<Diagnostic>) {
+        if let Some(entry) = self.cache.get(node_id)
+            && !entry.diagnostics.is_empty()
+        {
+            diagnostics.extend(entry.diagnostics.iter().cloned());
+        }
     }
 
     /// Evaluate let bindings from a template in topological order.
@@ -9245,6 +9330,11 @@ impl Engine {
             // `if force_panic { panic!(…) }` branch are both
             // `#[cfg(any(test, feature = "test-instrumentation"))]`-gated and
             // are absent in production builds.
+            //
+            // μ (#5062): snapshot the runtime_sink length before eval_expr so
+            // this cell's diagnostics delta can be captured + stored for replay
+            // on future cache-hit serves (see store_cell_replay_diagnostics).
+            let diag_mark = runtime_sink.borrow().len();
             let eval_ctx = eval_ctx_with_meta(values, functions, meta_map)
                 .with_determinacy(&snapshot.values)
                 .with_runtime_diagnostics(runtime_sink);
@@ -9315,6 +9405,12 @@ impl Engine {
                 trace,
                 false,
             );
+
+            // μ (#5062): store this cell's eval-time diagnostics delta for
+            // replay on future cache-hit clean serves (empty delta clears any
+            // stale replay content). Read from runtime_sink only — post-pass
+            // detector diagnostics never land here, keeping the classes disjoint.
+            self.store_cell_replay_diagnostics(&node_id, runtime_sink, diag_mark);
 
             self.journal.record(EvalEvent {
                 timestamp: Instant::now(),

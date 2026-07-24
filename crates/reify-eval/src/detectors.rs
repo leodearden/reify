@@ -28,12 +28,14 @@
 //!   task μ (PRD §10 open-question #2).
 //! - Per-node diagnostic attribution and `NodeCache` storage/replay
 //!   (consuming task κ's per-node diagnostics vec) is also task μ's.
-//! - The inline `MassProperties` PSD pass at `engine_eval.rs:4662-4762`
-//!   stays in place until task μ removes it and wires this registry into
-//!   the three eval paths (foundation-then-migrate, mirroring how task α
-//!   shipped `commit_cell_result` ahead of its own migration leaves). Until
-//!   then, [`MassPropertiesPsdDetector`] is a live second copy of that
-//!   logic — see its doc comment for the drift-avoidance note.
+//! - The inline `MassProperties` PSD pass that formerly lived in `Engine::eval`
+//!   (the `RBD-α (task 3822)` block) has been REMOVED by task μ (#5062), which
+//!   wired this registry into all three eval paths (`eval` / `eval_cached` /
+//!   `edit_check`) via [`DetectorRegistry::with_builtins`]
+//!   (foundation-then-migrate, mirroring how task α shipped `commit_cell_result`
+//!   ahead of its own migration leaves). [`MassPropertiesPsdDetector`] is now
+//!   the sole owner of that logic — no second copy, no drift window (see its
+//!   doc comment).
 
 use reify_core::{Diagnostic, DiagnosticCode, ValueCellId};
 use reify_ir::{DeterminacyState, PersistentMap, Value, ValueMap};
@@ -51,7 +53,6 @@ use reify_ir::{DeterminacyState, PersistentMap, Value, ValueMap};
 /// driver's module/prelude/functions + `EvalContext`) are out of scope for
 /// this task; see the module doc's "Known scope gaps for task μ". Task μ
 /// may extend this struct if a migrated detector needs more.
-#[allow(dead_code)] // wired in by task μ; exercised by tests until then
 pub(crate) struct PostPassState<'a> {
     pub(crate) values: &'a mut ValueMap,
     pub(crate) snapshot_values: &'a mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
@@ -71,7 +72,6 @@ pub(crate) struct PostPassState<'a> {
 /// owned by [`DetectorRegistry::run_all`] (registration order — a true
 /// sequence guarantee). Implementations should treat `state` as the only
 /// source of truth — no hidden global/interior state.
-#[allow(dead_code)] // wired in by task μ; exercised by tests until then
 pub(crate) trait PostPassDetector {
     /// A stable kebab-case slug identifying this detector — used for
     /// ordering introspection ([`DetectorRegistry::ids`]) and debugging.
@@ -90,13 +90,11 @@ pub(crate) trait PostPassDetector {
 /// convention comments (e.g. `engine_eval.rs:6312`,
 /// `structural_query.rs:531,610`, `significance_filter.rs:1025,1032`) with
 /// one readable, explicit `Vec`.
-#[allow(dead_code)] // wired in by task μ; exercised by tests until then
 #[derive(Default)]
 pub(crate) struct DetectorRegistry {
     detectors: Vec<Box<dyn PostPassDetector>>,
 }
 
-#[allow(dead_code)] // wired in by task μ; exercised by tests until then
 impl DetectorRegistry {
     /// An empty registry.
     pub(crate) fn new() -> Self {
@@ -116,8 +114,13 @@ impl DetectorRegistry {
         }
     }
 
-    /// The registered detectors' ids, in registration (= run) order — the
-    /// fixed, introspectable order task μ relies on.
+    /// The registered detectors' ids, in registration (= run) order.
+    ///
+    /// Introspection/debug helper — exercised by this module's unit tests, not
+    /// by the wired eval paths (which call [`Self::with_builtins`] +
+    /// [`Self::run_all`]). Kept because it documents+pins the registration-order
+    /// contract the wiring depends on.
+    #[allow(dead_code)] // test/introspection-only; the wired paths use run_all
     pub(crate) fn ids(&self) -> Vec<&'static str> {
         self.detectors.iter().map(|d| d.id()).collect()
     }
@@ -136,8 +139,11 @@ impl DetectorRegistry {
     }
 }
 
-/// A faithful, characterization-preserving port of the inline `MassProperties`
-/// PSD inertia validation at `engine_eval.rs:4662-4762` (RBD-α, task 3822).
+/// The SOLE owner of the `MassProperties` PSD inertia validation post-pass — a
+/// characterization-preserving port of the former inline `RBD-α (task 3822)`
+/// block in `Engine::eval`, which task μ (#5062) DELETED once this detector was
+/// wired (via [`DetectorRegistry::with_builtins`]) into all three serve paths:
+/// `Engine::eval`, `Engine::eval_cached`, and `Engine::edit_check`.
 ///
 /// For every cell whose value is a `StructureInstance` with
 /// `type_name == "MassProperties"`, classifies the `inertia` field and
@@ -148,40 +154,23 @@ impl DetectorRegistry {
 /// case. A cell with no `inertia` field (or an already-`Undef` one) is left
 /// untouched — no false positives.
 ///
-/// **Drift warning**: until task μ (#5062) removes the inline copy at
-/// `engine_eval.rs:4662-4762` (the "RBD-α (task 3822)" block) and wires
-/// this registry into the eval paths, this is a live second copy of that
-/// logic. The two bodies are deliberately kept semantically/logically
-/// identical — same classification rules, same diagnostic wording, same
-/// Undef-replacement behavior — modulo state-access binding: this detector
-/// reads `state.values` / `state.snapshot_values` / `state.diagnostics`
-/// where the inline copy reads the bare `values` / `snapshot.values` /
-/// `diagnostics` locals, and the two use different early-out shapes (a
-/// guarded `if` block there vs. an early `return` here). A byte-for-byte
-/// diff of the two will therefore show mismatches even though they are not
-/// intended to diverge. A change to the classification rules, diagnostic
-/// wording, or Undef-replacement behavior on either side (this detector,
-/// or the `engine_eval.rs:4662-4762` site it mirrors) must be mirrored on
-/// the other by hand, or the two will silently diverge before μ deletes
-/// the inline copy.
-///
-/// **Wording is duplicated, not shared**: the diagnostic wording above was
-/// copied from `engine_eval.rs:4662-4762`, not extracted into something
-/// both sides call. The wording-regression assertions folded into
-/// `mass_properties_psd_detector_flags_and_replaces_deterministically`
-/// (below) pin this detector's OWN wording as a plain regression check on
-/// its output — it is not a cross-file check (it never reads or executes
-/// `engine_eval.rs`), so it provides no protection against the two copies
-/// drifting apart, whether in wording, classification rules, or
-/// Undef-replacement behavior. The real fix is extracting a shared
-/// classify+replace function (and, for wording, a shared constant) that
-/// both this detector and the `engine_eval.rs:4662-4762` site call —
-/// deliberately deferred to task μ (#5062), since it would require editing
-/// `engine_eval.rs`, which is outside this task's locked modules
-/// (`detectors.rs`, `lib.rs`) and is left untouched by design (see the
-/// module doc's "Known scope gaps for task μ") to avoid same-file
-/// contention with the concurrent task γ `engine_eval.rs` migration.
-#[allow(dead_code)] // wired in by task μ; exercised by tests until then
+/// **Sole owner — no drift risk (task λ's detail (b) is obviated, not
+/// deferred)**: there is no longer a second inline copy of this logic. Task μ
+/// removed the `engine_eval.rs` inline block the moment this detector was wired
+/// in, so there is no coexistence window and nothing to keep in hand-sync —
+/// this is now the ONLY producer of `DynamicsInertiaNotPSD` in the crate. The
+/// wording-regression assertions in
+/// `mass_properties_psd_detector_flags_and_replaces_deterministically` (below)
+/// therefore ARE the wording contract outright (a plain regression check on the
+/// single producer's output — no cross-file mirror left to drift against). The
+/// shared classify+replace / shared-wording-constant extraction λ conditionally
+/// deferred here (its detail (b), predicated on an inline copy coexisting for
+/// an interim window) is consequently obviated: with a single owner there is no
+/// second call site to share with. Correctness of the inline→registry swap on
+/// the cold `eval()` path is additionally pinned by the existing MassProperties
+/// PSD eval tests (`dynamics_body_mass_props.rs`, `structure_instance_e2e.rs`)
+/// staying green — a strong characterization guard, since this detector is a
+/// verbatim port of the deleted block.
 pub(crate) struct MassPropertiesPsdDetector;
 
 impl PostPassDetector for MassPropertiesPsdDetector {

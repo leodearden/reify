@@ -464,6 +464,40 @@ impl CacheStore {
         self.caches.insert(node, cache);
     }
 
+    /// Overwrite the stored per-cell runtime diagnostics for `node` (task μ,
+    /// #5062).
+    ///
+    /// This is μ's storage seam for the `NodeCache.diagnostics` field κ (#5042)
+    /// added: the eval / eval_cached / edit_param capture sites call it AFTER
+    /// recording the node, passing the runtime-sink length-delta captured
+    /// around the cell's `eval_expr`. The `eval_cached` clean-serve arms then
+    /// replay `NodeCache.diagnostics` so a per-cell-branch warning
+    /// (`W_FIELD_OUT_OF_BOUNDS`, `W_FIELD_SAMPLED_INVALID_CONFIG`) is not
+    /// silently dropped on a cache hit (the 2259/2267 "fast-path-swallow"
+    /// class).
+    ///
+    /// A single post-record setter is used — rather than threading a
+    /// diagnostics arg through `record_evaluation` /
+    /// `record_evaluation_with_freshness` /
+    /// `record_evaluation_propagating_freshness` / `commit_cell_result` —
+    /// because the dominant let/param commit sites use
+    /// `record_evaluation_propagating_freshness`, which α's
+    /// `commit_cell_result` cannot represent (its `Freshness::Final`-only
+    /// scope gap). One setter is uniform across all three record paths.
+    ///
+    /// Semantics: UNCONDITIONAL overwrite when the entry exists — an empty vec
+    /// CLEARS, so a cell re-evaluated to no-longer-warning drops its stale
+    /// replay content. Safe no-op when `node` is absent (there is no cache
+    /// entry to attach metadata to). NOT reflected in `result_hash` —
+    /// diagnostics are metadata, not result content (see the
+    /// `NodeCache.diagnostics` field doc), so this never perturbs early-cutoff
+    /// comparison.
+    pub fn set_node_diagnostics(&mut self, node: &NodeId, diagnostics: Vec<Diagnostic>) {
+        if let Some(entry) = self.caches.get_mut(node) {
+            entry.diagnostics = diagnostics;
+        }
+    }
+
     /// Remove a cached entry and its dirty state.
     ///
     /// Note: the `node_traits` per-instance override for `node` (if any) is
@@ -5789,6 +5823,63 @@ mod tests {
         assert_eq!(
             cloned.diagnostics[0].message, "carried",
             "Clone must PRESERVE diagnostics — they are replay content, not a transient hint"
+        );
+    }
+
+    // ── μ / task 5062 step-1: set_node_diagnostics storage seam ──────────────
+    //
+    // `CacheStore::set_node_diagnostics` is the post-record setter μ writes the
+    // per-cell runtime diagnostics through (into κ's `NodeCache.diagnostics`
+    // field). Chosen over threading a diagnostics arg through
+    // record_evaluation / record_evaluation_propagating_freshness /
+    // commit_cell_result so a single post-record call is uniform across all
+    // three record paths. It OVERWRITES unconditionally (an empty vec clears),
+    // so a re-evaluated cell that stops warning drops its stale replay content.
+
+    /// `set_node_diagnostics` round-trips a non-empty vec, CLEARS on a
+    /// subsequent empty vec (overwrite, not append), and is a safe no-op on an
+    /// absent node.
+    #[test]
+    fn set_node_diagnostics_overwrites_and_no_ops_on_absent() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("S", "oob_a"));
+
+        // Record the node — record_evaluation leaves diagnostics empty by default.
+        store.record_evaluation(
+            node.clone(),
+            CachedResult::Value(Value::Int(1), DeterminacyState::Determined),
+            VersionId(1),
+            DependencyTrace::default(),
+        );
+        assert!(
+            store.get(&node).unwrap().diagnostics.is_empty(),
+            "record_evaluation must leave diagnostics empty by default"
+        );
+
+        // Non-empty vec must round-trip through get().
+        store.set_node_diagnostics(
+            &node,
+            vec![reify_core::Diagnostic::warning("field 'f' out of bounds")],
+        );
+        let stored = &store.get(&node).unwrap().diagnostics;
+        assert_eq!(stored.len(), 1, "set_node_diagnostics must store the supplied vec");
+        assert_eq!(stored[0].message, "field 'f' out of bounds");
+        assert_eq!(stored[0].severity, reify_core::Severity::Warning);
+
+        // Empty vec must CLEAR (overwrite semantics, not append) — a cell that
+        // stops warning on re-eval must drop its stale replay content.
+        store.set_node_diagnostics(&node, Vec::new());
+        assert!(
+            store.get(&node).unwrap().diagnostics.is_empty(),
+            "set_node_diagnostics with an empty vec must CLEAR, not append"
+        );
+
+        // Absent node — safe no-op (no panic, no phantom insertion).
+        let absent = NodeId::Value(ValueCellId::new("S", "missing"));
+        store.set_node_diagnostics(&absent, vec![reify_core::Diagnostic::warning("ignored")]);
+        assert!(
+            store.get(&absent).is_none(),
+            "set_node_diagnostics on an absent node must be a no-op (no insertion)"
         );
     }
 }
