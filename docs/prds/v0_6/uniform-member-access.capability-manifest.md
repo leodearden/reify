@@ -68,6 +68,9 @@ Grammar gate: **N/A batch-wide** — every target shape parses today (all probes
 |---|---|---|
 | doc-chunk surface exists | `crates/reify-mcp/src/tools/chunks/` on main | PASS (wired) |
 | cheatsheet surface exists | `reify-design` skill (`.claude/skills/reify-design/`) | PASS (wired) |
+| documented idiom (`difference(plate, h.cutter)`) actually compiles | `producer:task-5426/5428/5429` — **upstream** in θ's dependency closure (real `add_dependency` edges; D3-verify run `wf_ffb35317` flagged the fixtures failing on TODAY's binary — correct pre-fix state; DAG-direction resolves it) | PASS (queued upstream) |
+| signature fidelity oracle is strong | D3 adversary findings adopted: check-exit-0 rejected as oracle; θ's acceptance re-specified as registry verification (geometry dispatch / `GEOMETRY_OP_DESCRIPTORS` / stdlib builtin registry); chunk registration seam (include_str! + TOPICS + count test) recorded in the task text | PASS (re-specified) |
+| pre-existing chunk drift surfaced | `offset_surface` at `chunks/stdlib.md:29` absent from every registry — filed as task **5434** (content fix, out-of-batch of the θ acceptance) | PASS (filed) |
 
 ## ι — boundary-test suite (LEAF, integration gate)
 

@@ -152,7 +152,7 @@ tasks:
   title: 'Docs: language spec section, reify-mcp doc-chunks, reify-design cheatsheet, discoverability'
   capabilities:
   - name: chunk-surface-exists
-    binding: 'capability→producer (substrate, wired) — crates/reify-mcp/src/tools/chunks/ on main'
+    binding: 'capability→producer (substrate, wired) — crates/reify-mcp/src/tools/chunks/ on main; registration seam = include_str! + TOPICS registry + chunk-count test (D3 adversary, wf_ffb35317)'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -160,6 +160,18 @@ tasks:
       paths:
       - crates/reify-mcp/src/tools/chunks
       expect: present
+  - name: documented-idiom-compiles
+    binding: 'DAG-direction — the difference(plate, h.cutter) idiom is delivered by tasks 5426/5428/5429, all upstream of θ via add_dependency (D3 prover saw the correct pre-fix rejection; resolved by dependency closure)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: dependency-graph property, wired via add_dependency and checked by the scheduler
+  - name: signature-fidelity-strong-oracle
+    binding: 'rejection of weak oracle (D3 adversary) — acceptance re-specified as registry verification (geometry dispatch/GEOMETRY_OP_DESCRIPTORS/stdlib builtin registry), never check-exit-0; cautionary instance offset_surface drift filed as task 5434'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: oracle-strength requirement recorded in the task text; enforced at θ review
 - label: "ι"
   task_id: 5432
   title: 'Two-way boundary-test suite (§6 rows 1-12) green on the merge gate'
