@@ -415,4 +415,124 @@ assert "S6 knob-on/merge/real-merge/no-override: PLAN_S6 non-empty (verify.sh --
 assert "S6 knob-on/merge/real-merge/no-override: release nextest pass PRESENT (real derived delta => affected=ALL => fail-wide REQUIRED)" _has_release_pass "$PLAN_S6"
 assert "S6 knob-on/merge/real-merge/no-override: delta-clean marker ABSENT" _lacks_skip_marker "$PLAN_S6"
 
+# ===========================================================================
+# ACTIVATION block (task ζ / 5280): REIFY_RELEASE_DELTA_SKIP durable verify_env
+# wiring.
+#   The delta-conditional release-pass skip stays inert until
+#   REIFY_RELEASE_DELTA_SKIP=1 is genuinely exported into the merge-gate
+#   verify.sh process tree (the role=merge guard at verify.sh:1161 gates on
+#   it). Task ζ wires the flag into dark-factory-orchestrator.yaml's
+#   verify_env block ONLY once the sweep backstop (PRD §5.3 (a)+(b)) is
+#   demonstrably healthy — see task 5280's pre-1 prerequisite for the live
+#   re-verification record. This block proves the KEY is wired AND valued
+#   exactly "1" (not merely present as a comment mention elsewhere in the
+#   yaml), mirroring sibling δ/5276's Section 9 in
+#   test_run_all_content_skip.sh. RED until step-2 adds the verify_env line.
+# ===========================================================================
+echo ""
+echo "--- ACTIVATION (task ζ): REIFY_RELEASE_DELTA_SKIP durable verify_env wiring ---"
+
+# verify_env_exports — parse KEY=VALUE from the yaml verify_env block. Mirrored
+# VERBATIM from tests/infra/test_verify_env_ambient_isolation.sh:59-85 (task
+# 4966's drift-guard; the established 3-copy convention — no shared lib
+# exists) as a reuse-note, NOT extracted to a shared lib, to avoid editing
+# that live merge-gate guard file (out of this task's declared scope).
+# Refresh all copies together if the awk logic ever changes.
+verify_env_exports() {
+    local yaml_file="$1"
+    awk '
+        /^verify_env:[[:space:]]*$/ { in_block = 1; next }
+        in_block && /^[^[:space:]#]/ { in_block = 0 }
+        !in_block { next }
+        /^[[:space:]]*#/ { next }
+        /^[[:space:]]*$/ { next }
+        /^[[:space:]]+[A-Za-z_][A-Za-z0-9_]*:/ {
+            line = $0
+            sub(/^[[:space:]]+/, "", line)
+            colon = index(line, ":")
+            key = substr(line, 1, colon - 1)
+            rest = substr(line, colon + 1)
+            sub(/^[[:space:]]+/, "", rest)
+            if (substr(rest, 1, 1) == "\"") {
+                tail = substr(rest, 2)
+                q = index(tail, "\"")
+                val = (q > 0) ? substr(tail, 1, q - 1) : tail
+            } else {
+                n = split(rest, toks, /[[:space:]]+/)
+                val = (n >= 1) ? toks[1] : ""
+            }
+            print key "=" val
+        }
+    ' "$yaml_file"
+}
+
+ACT_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
+assert "ACTIVATION: dark-factory-orchestrator.yaml exists" \
+    test -f "$ACT_YAML"
+
+ACT_VERIFY_ENV_KV="$(verify_env_exports "$ACT_YAML")"
+assert "ACTIVATION: verify_env block parse is non-empty" \
+    test -n "$ACT_VERIFY_ENV_KV"
+
+# Parser sanity: a known-wired sibling must be visible to this parser, so an
+# ACTIVATION miss below is a real absence, not a parser-shape regression.
+assert "ACTIVATION: verify_env parse sees REIFY_RUN_ALL_SKIP_STATE (sibling wiring sanity)" \
+    bash -c 'grep -qE "^REIFY_RUN_ALL_SKIP_STATE=" <<< "$1"' _ "$ACT_VERIFY_ENV_KV"
+
+# (1) KEY presence — task ζ wires REIFY_RELEASE_DELTA_SKIP into verify_env.
+#     RED now (the yaml line lands in step-2).
+assert "ACTIVATION: REIFY_RELEASE_DELTA_SKIP is wired into the yaml verify_env block (task zeta)" \
+    bash -c 'grep -qE "^REIFY_RELEASE_DELTA_SKIP=" <<< "$1"' _ "$ACT_VERIFY_ENV_KV"
+
+# (2) exact VALUE "1" — proves a genuinely ACTIVE knob, not a stray "0"/empty
+#     placeholder that would satisfy (1) alone but leave the skip permanently
+#     inert (verify.sh:1161 requires the literal string "1").
+assert "ACTIVATION: REIFY_RELEASE_DELTA_SKIP value is exactly \"1\" (genuinely active, not a placeholder)" \
+    bash -c '
+        val="$(grep -E "^REIFY_RELEASE_DELTA_SKIP=" <<< "$1" | head -n1)"
+        val="${val#REIFY_RELEASE_DELTA_SKIP=}"
+        [ "$val" = "1" ]
+    ' _ "$ACT_VERIFY_ENV_KV"
+
+# ===========================================================================
+# CONTAINMENT block (task ζ / 5280; esc-5280-6 design ruling): the pool
+# chokepoint strip.
+#   The ACTIVATION above exports REIFY_RELEASE_DELTA_SKIP=1 into the WHOLE
+#   merge-gate verify.sh process tree via the orchestrator verify_env. The
+#   knob is meant to be consulted ONCE by the top-level merge verify at
+#   plan-build time (verify.sh:1160-1178); its decision is frozen into the
+#   PLAN before any plan line runs. Without containment the ambient knob
+#   leaks into run_all.sh's pool, where members that re-assert
+#   DF_VERIFY_ROLE=merge inline (test_verify_scope.sh MG-B5,
+#   test_verify_role_prio.sh C1, the occt/release/semaphore plan-shape
+#   meta-tests) would inherit knob=1 and see the release pass wrongly
+#   suppressed on a delta-clean fixture — merge gate RED on every
+#   delta-clean merge (esc-5280-6). run_all.sh neutralizes the knob for all
+#   members with `export REIFY_RELEASE_DELTA_SKIP=0`, mirroring its existing
+#   DF_VERIFY_ROLE=task normalization (merge-gate-riders K4: "never ambient
+#   in the pool"). This asserts that chokepoint is present so it cannot be
+#   silently dropped. Direct end-to-end proof (the victim member re-runs
+#   GREEN under an ambient knob=1) is captured by the pool run itself; here
+#   we pin the seam against regression.
+# ===========================================================================
+echo ""
+echo "--- CONTAINMENT (task ζ): run_all.sh chokepoint strips the ambient knob ---"
+
+ACT_RUN_ALL="$REPO_ROOT/tests/infra/run_all.sh"
+assert "CONTAINMENT: tests/infra/run_all.sh exists" \
+    test -f "$ACT_RUN_ALL"
+
+# The chokepoint: run_all.sh must export REIFY_RELEASE_DELTA_SKIP=0 so no pool
+# member (even one that re-asserts DF_VERIFY_ROLE=merge inline) ever inherits
+# the ambient activation knob. Matches `export REIFY_RELEASE_DELTA_SKIP=0`
+# with optional leading indentation; the value must be exactly 0.
+assert "CONTAINMENT: run_all.sh neutralizes REIFY_RELEASE_DELTA_SKIP for pool members (=0)" \
+    grep -qE '^[[:space:]]*export REIFY_RELEASE_DELTA_SKIP=0([[:space:]]|$)' "$ACT_RUN_ALL"
+
+# Placement sanity: the strip must sit beside the sibling DF_VERIFY_ROLE=task
+# normalization (both neutralize ambient merge-gate state for the pool), so a
+# future refactor that moves one is prompted to move the other.
+assert "CONTAINMENT: run_all.sh still normalizes DF_VERIFY_ROLE=task (sibling seam intact)" \
+    grep -qE '^[[:space:]]*export DF_VERIFY_ROLE=task([[:space:]]|$)' "$ACT_RUN_ALL"
+
 test_summary

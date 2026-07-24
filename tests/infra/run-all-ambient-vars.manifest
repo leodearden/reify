@@ -71,3 +71,13 @@ REIFY_RUN_ALL_FLAKY_LEDGER
 # row co-lands in δ's diff to keep test_run_all_ambient_isolation.sh's set-equality
 # guard balanced. Flips run_all.sh's γ-landed content-skip engine from inert to active.
 REIFY_RUN_ALL_SKIP_STATE
+
+# Sweep-gated delta-conditional release-pass skip activation flag
+# (merge-gate-riders ζ / task 5280, PRD §5.3): exported into verify_env
+# (dark-factory-orchestrator.yaml) so verify.sh's _RELEASE_DELTA_SKIP decision
+# block (role=merge only) can omit the release nextest pass on a delta-clean
+# merge. This row co-lands with the yaml knob in the SAME commit to keep
+# test_run_all_ambient_isolation.sh's set-equality guard balanced (the yaml
+# knob alone trips the live-var-not-in-ledger check; this row alone trips the
+# ledger-var-not-live check).
+REIFY_RELEASE_DELTA_SKIP
