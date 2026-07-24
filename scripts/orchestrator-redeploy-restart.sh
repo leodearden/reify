@@ -130,6 +130,29 @@ require_commit_on_main() {
     git -C "$root" merge-base --is-ancestor "$sha" "$branch" 2>/dev/null
 }
 
+# describe_commit_precondition_failure ROOT SHA BRANCH
+#   Echoes a short reason token explaining WHY require_commit_on_main refused,
+#   so the operator-facing message can distinguish an unresolvable sha/branch
+#   (typically a typo or truncation, or a ref that isn't fetched) from a valid
+#   commit that simply hasn't landed yet. `merge-base --is-ancestor` collapses
+#   all three into exit non-zero, which would otherwise send an operator chasing
+#   the wrong fix ("land the commit") for what is really a bad name.
+#     bad-object   — SHA does not resolve to a commit in ROOT
+#     bad-branch   — BRANCH does not resolve to a commit in ROOT
+#     not-ancestor — both resolve, but SHA is not an ancestor of BRANCH
+#   Purely advisory for messaging: the fail-closed refusal is authoritative
+#   regardless of what this classification returns.
+describe_commit_precondition_failure() {
+    local root="$1" sha="$2" branch="$3"
+    if ! git -C "$root" rev-parse --verify --quiet "${sha}^{commit}" >/dev/null 2>&1; then
+        echo "bad-object"
+    elif ! git -C "$root" rev-parse --verify --quiet "${branch}^{commit}" >/dev/null 2>&1; then
+        echo "bad-branch"
+    else
+        echo "not-ancestor"
+    fi
+}
+
 # ── Arg parsing ───────────────────────────────────────────────────────────────
 MODE="schedule"
 for arg in "$@"; do
@@ -185,14 +208,36 @@ if [ "$MODE" = "schedule" ]; then
     # provably an ancestor of ORCH_MAIN_BRANCH (esc-5271-11) — is_clean()
     # alone cannot detect a stale-but-clean project_root. Schedules NOTHING.
     if [ -n "$ORCH_REQUIRE_COMMIT" ] && ! require_commit_on_main "$ORCH_PROJECT_ROOT" "$ORCH_REQUIRE_COMMIT" "$ORCH_MAIN_BRANCH"; then
-        echo "orchestrator-redeploy-restart.sh: ERROR — required commit is not an ancestor of '$ORCH_MAIN_BRANCH'." >&2
+        # Classify the failure so the message points at the right fix: an
+        # unresolvable sha/branch needs a name/fetch fix, not "land the commit".
+        # The refusal itself is unconditional (fail-closed) regardless of reason.
+        reason="$(describe_commit_precondition_failure "$ORCH_PROJECT_ROOT" "$ORCH_REQUIRE_COMMIT" "$ORCH_MAIN_BRANCH")"
+        case "$reason" in
+            bad-object)
+                echo "orchestrator-redeploy-restart.sh: ERROR — required commit does not resolve to a commit in project_root (possible typo/truncation)." >&2
+                ;;
+            bad-branch)
+                echo "orchestrator-redeploy-restart.sh: ERROR — ORCH_MAIN_BRANCH '$ORCH_MAIN_BRANCH' does not resolve to a ref in project_root (possible typo, or the branch is not fetched)." >&2
+                ;;
+            *)
+                echo "orchestrator-redeploy-restart.sh: ERROR — required commit is not an ancestor of '$ORCH_MAIN_BRANCH'." >&2
+                ;;
+        esac
         echo "  sha:          $ORCH_REQUIRE_COMMIT" >&2
         echo "  project_root: $ORCH_PROJECT_ROOT" >&2
         echo "  branch:       $ORCH_MAIN_BRANCH" >&2
         echo "" >&2
-        echo "  A restart right now would reload config that does not yet include this" >&2
-        echo "  commit. FIX: land/merge the commit onto '$ORCH_MAIN_BRANCH' first, then" >&2
-        echo "  re-run this script. Schedules NOTHING." >&2
+        case "$reason" in
+            bad-object|bad-branch)
+                echo "  FIX: correct the sha / ORCH_MAIN_BRANCH (or fetch the missing ref), then" >&2
+                echo "  re-run this script. Schedules NOTHING." >&2
+                ;;
+            *)
+                echo "  A restart right now would reload config that does not yet include this" >&2
+                echo "  commit. FIX: land/merge the commit onto '$ORCH_MAIN_BRANCH' first, then" >&2
+                echo "  re-run this script. Schedules NOTHING." >&2
+                ;;
+        esac
         exit 1
     fi
 
@@ -264,7 +309,21 @@ if [ "$MODE" = "exec" ]; then
     # known-good orchestrator running rather than restarting into stale
     # config — mirrors the dirty-at-fire-time guard above.
     if [ -n "$ORCH_REQUIRE_COMMIT" ] && ! require_commit_on_main "$ORCH_PROJECT_ROOT" "$ORCH_REQUIRE_COMMIT" "$ORCH_MAIN_BRANCH"; then
-        echo "orchestrator-redeploy-restart.sh: WARNING — required commit is no longer an ancestor of '$ORCH_MAIN_BRANCH' at fire time." >&2
+        # Classify as in schedule mode so the fire-time warning names the real
+        # cause (unresolvable sha/branch vs a commit that moved off the branch).
+        # Every reason still leaves the orchestrator RUNNING (fail-closed).
+        reason="$(describe_commit_precondition_failure "$ORCH_PROJECT_ROOT" "$ORCH_REQUIRE_COMMIT" "$ORCH_MAIN_BRANCH")"
+        case "$reason" in
+            bad-object)
+                echo "orchestrator-redeploy-restart.sh: WARNING — required commit does not resolve to a commit in project_root at fire time (possible typo/truncation)." >&2
+                ;;
+            bad-branch)
+                echo "orchestrator-redeploy-restart.sh: WARNING — ORCH_MAIN_BRANCH '$ORCH_MAIN_BRANCH' does not resolve to a ref in project_root at fire time." >&2
+                ;;
+            *)
+                echo "orchestrator-redeploy-restart.sh: WARNING — required commit is no longer an ancestor of '$ORCH_MAIN_BRANCH' at fire time." >&2
+                ;;
+        esac
         echo "  sha:          $ORCH_REQUIRE_COMMIT" >&2
         echo "  project_root: $ORCH_PROJECT_ROOT" >&2
         echo "  Leaving orchestrator '$ORCH_UNIT' RUNNING, not restarting." >&2

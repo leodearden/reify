@@ -438,6 +438,26 @@ assert "I7: --require-commit=<bogus sha> -> exits non-zero" test "$RC" -ne 0
 assert "I8: --require-commit=<bogus sha> schedules NO systemd-run (fail-closed)" \
     bash -c '! grep -q "^systemd-run" "$1"' _ "$CALLS_FILE"
 
+# I17: the bogus-sha refusal message must distinguish an UNRESOLVABLE object
+# (typo/truncation) from a valid-but-unlanded commit, so the operator is not
+# misdirected to "land/merge" a sha that does not exist (reviewer diagnosability
+# nit). The not-ancestor path never says "resolve"; the bad-object path does.
+assert "I17: --require-commit=<bogus sha> message flags an unresolvable object (says 'resolve')" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "resolve"' _ "$OUT"
+
+# I18: a VALID on-main sha but a bogus ORCH_MAIN_BRANCH -> still fail-closed
+# (exit non-zero, no systemd-run), but the message must flag the branch as
+# unresolvable rather than claim the (already-landed) commit needs landing.
+reset_calls
+ORCH_PROJECT_ROOT="$CLEAN_REPO_I" \
+ORCH_MAIN_BRANCH="no-such-branch-xyz" \
+    run_helper "--require-commit=$ON_MAIN_SHA_I"
+assert "I18a: valid sha + bogus ORCH_MAIN_BRANCH -> exits non-zero" test "$RC" -ne 0
+assert "I18b: valid sha + bogus ORCH_MAIN_BRANCH schedules NO systemd-run (fail-closed)" \
+    bash -c '! grep -q "^systemd-run" "$1"' _ "$CALLS_FILE"
+assert "I18c: valid sha + bogus ORCH_MAIN_BRANCH message flags the unresolvable branch (says 'resolve')" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "resolve"' _ "$OUT"
+
 # I-noop: no flag on the same clean repo -> exits 0, systemd-run emitted, and
 # that call contains NO --setenv=ORCH_REQUIRE_COMMIT (default byte-unchanged)
 reset_calls
@@ -535,6 +555,27 @@ assert "J10: --require-commit=<bogus sha> records NO systemctl stop (fail-closed
     bash -c '! grep -q "^systemctl.*stop exec-unit.service" "$1"' _ "$CALLS_FILE"
 assert "J11: --require-commit=<bogus sha> records NO systemctl start (fail-closed)" \
     bash -c '! grep -q "^systemctl.*start exec-unit.service" "$1"' _ "$CALLS_FILE"
+
+# J15: like I17 at fire time — the bogus-sha warning must flag an unresolvable
+# object (says "resolve"), not misleadingly claim the sha "is no longer an
+# ancestor" (which reads as if it were once valid).
+assert "J15: --require-commit=<bogus sha> at fire time message flags an unresolvable object (says 'resolve')" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "resolve"' _ "$OUT"
+
+# J16: a VALID on-main sha but a bogus ORCH_MAIN_BRANCH at fire time -> still
+# fail-closed (exit 0, leave running, no stop/start), with a branch-unresolvable
+# warning rather than a not-ancestor one.
+reset_calls
+ORCH_PROJECT_ROOT="$CLEAN_REPO_J" \
+ORCH_UNIT="exec-unit.service" \
+ORCH_REQUIRE_COMMIT="$ON_MAIN_SHA_J" \
+ORCH_MAIN_BRANCH="no-such-branch-xyz" \
+    run_helper --exec-restart
+assert "J16a: valid sha + bogus ORCH_MAIN_BRANCH at fire time -> exits 0 (leave running)" test "$RC" -eq 0
+assert "J16b: valid sha + bogus ORCH_MAIN_BRANCH records NO stop/start (fail-closed)" \
+    bash -c '! grep -qE "^systemctl.*(stop|start) exec-unit.service" "$1"' _ "$CALLS_FILE"
+assert "J16c: valid sha + bogus ORCH_MAIN_BRANCH message flags the unresolvable branch (says 'resolve')" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "resolve"' _ "$OUT"
 
 # J-custom-branch: same side-branch-sha as J-refuse-side, but with a
 # NON-DEFAULT ORCH_MAIN_BRANCH="side" set at fire time -> exec mode must now
