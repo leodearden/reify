@@ -1,0 +1,205 @@
+prd: docs/prds/v0_6/placeholder-type-eradication-ratchet.md
+schema_version: 1
+# 2026-07-24 decompose. Baselines probed against target/debug/reify (built 2026-07-24
+# 14:59, post-dates last stdlib change 2026-07-19). See the .md twin for the full
+# evidence tables; this sidecar carries the mechanical delivered_checks.
+tasks:
+- label: alpha
+  task_id: null
+  title: 'placeholder-ratchet α: FlexureJoint marker vertical slice (prb_* signatures + flexure_compliance retarget + E_NO_MATCHING_OVERLOAD)'
+  capabilities:
+  - name: bare-literal-rejected-by-nominal-overload
+    binding: 'rejection-mechanism (G6 branch 4) — self-delivered: exact-equality
+      overload filter wired on main (type_compat.rs:1176-1183, NoMatch poison
+      expr.rs:2958-3037); baseline probe 2026-07-24: flexure_compliance(5mm) exits 0
+      silent-accept with only W_FLEXURE_NON_JOINT_ARG Warning; α flips it to a coded
+      Error + nonzero exit, asserted by committed negative fixture BT1'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'E_NO_MATCHING_OVERLOAD|NoMatchingOverload'
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+      expect: present
+  - name: prb-ctors-statically-typed-as-marker
+    binding: 'capability→producer (this leaf) — signature-arm seam wired on main
+      (joint_signatures.rs template #4311, ladder at expr.rs:3417, displacing the
+      first-arg fallback expr.rs:3540); all 14 prb_* names enumerated at
+      flexures/diagnostics.rs:163-175'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'FlexureJoint'
+      paths:
+      - crates/reify-compiler/src
+      expect: present
+  - name: flexure-param-retargeted-off-Length
+    binding: 'capability→producer (this leaf) — anchor site flexures.ri:236
+      `pub fn flexure_compliance(joint: Length)`; marker structure def resolves via
+      type_resolution.rs:656; DrivingJoint conformance keeps bind/sweep/dim green
+      (#4310 satisfies_trait_bound entity.rs:3732)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub fn flexure_compliance\(joint: Length\)'
+      paths:
+      - crates/reify-compiler/stdlib/flexures.ri
+      expect: absent
+- label: beta
+  task_id: null
+  title: 'placeholder-ratchet β: kinematic-family struct-field retargets (mechanism/joint_id/bodies/SweepDim.joint → nominal types)'
+  capabilities:
+  - name: mechanism-and-bodyid-nominal-types-upstream
+    binding: 'capability→producer — structure defs kinematic.ri:30/:237 (#3845 done);
+      producer typing joint_signatures.rs:127 (#4311 done, wired); cross-module
+      reachability #4574 done'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^\s*param mechanism\s*:\s*Real|^\s*param joint_id\s*:\s*Real'
+      paths:
+      - crates/reify-compiler/stdlib/trajectory.ri
+      - crates/reify-compiler/stdlib/dynamics.ri
+      expect: absent
+  - name: wrong-typed-ctor-arg-rejected-at-error
+    binding: 'rejection-mechanism (G6 branch 4) — delivered by producer:5306
+      (conformance chokepoint Warning→Error; checker α=5302 in-progress); hard dep
+      edge β→5306; baseline probe 2026-07-24: PiecewisePolynomialProfile(mechanism: 1.0)
+      exits 0 with NO diagnostic (checker not yet landed) — silent-accept confirmed,
+      rejection owned upstream, asserted post-5306 by committed fixture BT4'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the Error fires only once 5306 lands; β's fixture asserts it then —
+        not grep-able from β's own diff
+  - name: examples-migrated-to-real-producers
+    binding: 'capability→producer (this leaf) — mechanism() runtime producer exists
+      (crates/reify-stdlib/src/mechanism.rs:187-202); dummy-literal sites inventoried
+      (tots_optimal_ptp.ri:58 mechanism: 1.0); per-site honest typing per PRD §3.5
+      (ramp_profile driving-joint quirk, dynamics/eval.rs:203-213)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'mechanism: 1\.0'
+      paths:
+      - examples
+      expect: absent
+- label: gamma
+  task_id: null
+  title: 'placeholder-ratchet γ: blanket type-placeholder escape purge + census refresh'
+  capabilities:
+  - name: blanket-escapes-extinct
+    binding: 'capability→producer (this leaf) — inventory 2026-07-24: 28 lines / 7
+      stdlib files carry `ptodo:allow type-placeholder`; canonical re-cite form
+      TODO(<label>, #NNNN) accepted by ptodo.rs has_canonical_cite (surface-type-
+      substrate decision 6 precedent); cite target for joint-value markers = sibling
+      η (must exist + stay non-terminal, no completion dependency)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'ptodo:allow type-placeholder'
+      paths:
+      - crates
+      expect: absent
+  - name: census-doc-refreshed
+    binding: 'capability→producer (this leaf) — docs/notes/stdlib-real-placeholder-audit.md
+      exists (task 3090); stale rows verified: task-D listed pending but #3114
+      cancelled 2026-06-02 and its sites superseded by #4229/#4485/later work
+      (structural_physical.ri re-verified 2026-07-24)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'task-D \(#3114\) pending'
+      paths:
+      - docs/notes/stdlib-real-placeholder-audit.md
+      expect: absent
+- label: delta
+  task_id: null
+  title: 'placeholder-ratchet δ: PTYPE reify-audit detector (blanket-escape ban + cited-marker liveness) + verify hard gate'
+  capabilities:
+  - name: detector-registry-and-gate-seam
+    binding: 'capability→producer (this leaf) — registry lib.rs:88 + bin allowlist
+      bin/reify-audit.rs:264 + dispatch :613-664 wired; verify hard-gate seam
+      verify.sh:1994-2114 + tests/infra/test_reify_audit_ptodo.sh (exit=High count,
+      #4559); same-diff run-all-classification.manifest rule applies if a new infra
+      test file is added'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'PTYPE'
+      paths:
+      - crates/reify-audit/src/bin/reify-audit.rs
+      expect: present
+  - name: shared-liveness-helper-not-duplicated
+    binding: 'capability→producer (this leaf) — ptodo.rs β-lane (read-only tasks.db,
+      §6.7 fail-soft) exists to extract; PTYPE consumes the extracted helper, no
+      copy (G7 no-lockstep-duplication posture)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub mod ptype'
+      paths:
+      - crates/reify-audit/src/lib.rs
+      expect: present
+  - name: zero-baseline-at-landing
+    binding: 'DAG-direction — producer:task-γ upstream (hard dep); BT9: zero PTYPE
+      findings on the tracked tree at δ landing; no baseline-ratchet machinery
+      (PRD decision 7)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: asserted by δ's own gate run on the real tree (BT9), inherently a
+        run-time observation
+- label: epsilon
+  task_id: null
+  title: 'placeholder-ratchet ε: mode/kind String→enum retargets (BucklingOptions.mode, Tensegrity kind fields)'
+  capabilities:
+  - name: enum-substrate-and-sites
+    binding: 'capability→producer (this leaf) — Type::Enum ty.rs:130 + .ri enum-def
+      precedent (materials_chemical.ri); sites solver_buckling.ri:84,
+      tensegrity.ri:143/:178; per-site honesty may keep builtin-populated internal
+      String fields with recorded rationale (PRD OQ2)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^\s*param mode\s*:\s*String'
+      paths:
+      - crates/reify-compiler/stdlib/solver_buckling.ri
+      expect: absent
+  - name: wrong-typed-arg-rejected-at-error
+    binding: 'rejection-mechanism (G6 branch 4) — delivered by producer:5306
+      (upstream dep edge, same chokepoint as β)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: fires post-5306; asserted by ε's committed fixture
+- label: zeta
+  task_id: null
+  title: 'placeholder-ratchet ζ: combinator-intercept drift guards (discriminating stdlib-compiled e2e per intercepted combinator)'
+  capabilities:
+  - name: intercept-wired-and-gap-real
+    binding: 'capability→producer (this leaf) — intercept production path
+      reify-expr/src/lib.rs:735-775 → option_recovery.rs (wired); harness precedent
+      option_recovery_eval_tests.rs:275; gap verified 2026-07-24: zero
+      compile_source_with_stdlib uses in result_combinator/result_fallback tests, so
+      Result family + map_or + map_err + absent-key get_or would NOT catch a
+      body-shadow regression'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'compile_source_with_stdlib'
+      paths:
+      - crates/reify-expr/tests/result_combinator_eval_tests.rs
+      expect: present
+- label: eta
+  task_id: null
+  title: 'placeholder-ratchet η: [MILESTONE] joint-value-type owner (decide JointValue target type, then retarget)'
+  capabilities:
+  - name: decision-gate-existence
+    binding: 'no code capability asserted at filing — the task is γ''s live cite
+      target; upstream substrate for the decision = β (typed mechanism/joint surface)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a [MILESTONE] decision gate; deliverable is the ratified target type +
+        subsequent retarget, not a present repo state
