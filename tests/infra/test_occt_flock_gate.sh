@@ -304,8 +304,11 @@ echo "--- Test 17b: release nextest pass uses cold-aware 90m release inner timeo
 # and SIGTERM'd it at the inner timeout (esc-5370-2, false "integration_skew"). Task 5382
 # reintroduces a release-specific inner budget REIFY_VERIFY_TEST_TIMEOUT_RELEASE (default 90m);
 # the debug --workspace pass keeps REIFY_VERIFY_TEST_TIMEOUT (60m, asserted by Test 17).
-# Sibling task 5383 sized the merge OUTER wall (merge_verify_cold_command_timeout_secs=10800)
-# to accommodate debug(60m=3600s)+release(90m=5400s)=9000s with ~1800s margin. The --release
+# The merge OUTER wall that must not preempt these two inner budgets is
+# merge_verify_cold_command_timeout_secs (sibling task 5383) — its comment block in
+# dark-factory-orchestrator.yaml is the SINGLE SOURCE for what that relationship does and
+# does NOT model, and T10 below mechanises it. Deliberately no arithmetic restated here:
+# the duplicated copy drifted once already (esc-5382-1 amendment review). The --release
 # token in the regex discriminates this assertion from Test 17's --workspace assertion.
 assert "Test 17b: release nextest pass uses cold-aware 90m release inner timeout (task 5382; not 60m)" \
     bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 90m .*cargo nextest run .*--release'"
@@ -443,13 +446,24 @@ assert "T9: REIFY_VERIFY_TEST_TIMEOUT_RELEASE=banana (malformed): release pass f
 rm -f "$_T9_ERR"
 
 # T10: GREEN relationship guard — the merge OUTER wall (merge_verify_cold_command_timeout_secs,
-#      sibling task 5383) must be ≥ the SUM of the two inner nextest budgets (debug 60m=3600s +
-#      release 90m=5400s = 9000s), so the outer merge wall can never SIGTERM the release
-#      native-kernel pass before its own inner budget is reached. This is a NECESSARY-condition
-#      relationship derived from the two inner defaults — DISTINCT from 5383's
-#      test_merge_verify_cold_outer_timeout.sh (which pins the outer value ≥ 10800 as an absolute
-#      floor), so it is not lockstep duplication. GREEN once the release knob lands (5383 already
-#      set 10800 ≥ 9000).
+#      sibling task 5383) must be ≥ the sum of the two TERMINAL nextest inner budgets (debug
+#      60m=3600s + release 90m=5400s = 9000s), so the outer merge wall can never SIGTERM the
+#      release native-kernel pass before its own inner budget is reached.
+#      THIS IS NOT A WORST-CASE SUM. The wall bounds EXPECTED cold merge-verify duration; the
+#      full set of inner ceilings for the command it bounds sums to ~2x the wall and always has
+#      (clippy 45m x2, check 30m, the release pre-builds, ...). What is asserted here is a
+#      NECESSARY-CONDITION lower bound over a deliberately chosen SUBSET — the two passes that
+#      run back-to-back at the END of the plan, where a wall below their sum would make the
+#      release inner budget unreachable BY CONSTRUCTION. The release PRE-BUILD is deliberately
+#      excluded: its cost is transferred FROM the release nextest pass (which then runs against
+#      a warm release cone), so folding it in would double-count the same cold native-kernel
+#      compile — and an earlier revision that did fold it in produced a bogus "300s margin"
+#      that read as a binding cap on REIFY_VERIFY_PREBUILD_TIMEOUT (esc-5382-1 amendment
+#      review). The pre-build's own budget is asserted by T11–T13 instead.
+#      The authoritative prose for this model lives in the merge_verify_cold_command_timeout_secs
+#      comment block in dark-factory-orchestrator.yaml — keep this comment a summary of it.
+#      DISTINCT from 5383's test_merge_verify_cold_outer_timeout.sh (which pins the outer value
+#      ≥ 10800 as an absolute floor), so it is not lockstep duplication.
 #      WALLCLOCK-GUARD SAFETY: the comparison uses the lower-bound `-ge` (never -le/-lt) and the
 #      operand vars carry NO ELAPSED/_S/_MS/_NS/SECONDS suffix, so
 #      tests/infra/test_no_new_wallclock_upper_bounds.sh does not fire.
@@ -466,10 +480,8 @@ _T10_ORCH_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
 _debug_inner_min="$(grep -oE '_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT [0-9]+m' "$_T10_VERIFY_SH" | grep -oE '[0-9]+' | head -n1 || true)"
 # Extract the release inner default (minutes) from the release-knob resolution line.
 _release_inner_min="$(grep -oE '_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE [0-9]+m' "$_T10_VERIFY_SH" | grep -oE '[0-9]+' | head -n1 || true)"
-# Extract the merge-path RELEASE pre-build default (minutes) — esc-5382-1. The pre-builds
-# run BEFORE both nextest passes on the merge path, so they are part of the same sequential
-# budget the outer wall must cover.
-_prebuild_min="$(grep -oE '_resolve_timeout_knob REIFY_VERIFY_PREBUILD_TIMEOUT [0-9]+m' "$_T10_VERIFY_SH" | grep -oE '[0-9]+' | head -n1 || true)"
+# NB the merge-path RELEASE pre-build budget (REIFY_VERIFY_PREBUILD_TIMEOUT) is intentionally
+# NOT extracted or summed here — see the subset rationale in this test's header comment.
 # Extract the merge outer wall (seconds) from the yaml key.
 _outer_budget="$(grep -oE '^merge_verify_cold_command_timeout_secs:[[:space:]]*[0-9]+' "$_T10_ORCH_YAML" | grep -oE '[0-9]+' | head -n1 || true)"
 
@@ -477,21 +489,16 @@ assert "T10: debug inner default extracted from verify.sh (non-empty minutes)" \
     test -n "$_debug_inner_min"
 assert "T10: release inner default extracted from verify.sh (non-empty minutes)" \
     test -n "$_release_inner_min"
-assert "T10: release pre-build default extracted from verify.sh (non-empty minutes)" \
-    test -n "$_prebuild_min"
 assert "T10: merge outer wall extracted from dark-factory-orchestrator.yaml (non-empty seconds)" \
     test -n "$_outer_budget"
 
 # Default any absent extraction to 0 so the arithmetic below cannot abort the suite under
 # set -e during the RED window (the release knob is absent until the step-2 impl lands).
 # Non-emptiness is asserted above; this is purely an anti-abort backstop.
-# esc-5382-1: the pre-build budget is folded into the sequential sum. Only ONE pre-build
-# term is counted, not two: reify-audit and reify-cli share the release cone, so the second
-# runs warm — the cold cost is paid once.
-_inner_budget_total=$(( ${_debug_inner_min:-0} * 60 + ${_release_inner_min:-0} * 60 + ${_prebuild_min:-0} * 60 ))
+_inner_budget_total=$(( ${_debug_inner_min:-0} * 60 + ${_release_inner_min:-0} * 60 ))
 _outer_budget="${_outer_budget:-0}"
 
-assert "T10: merge outer wall (${_outer_budget}s) >= prebuild + debug_inner + release_inner (${_inner_budget_total}s from ${_prebuild_min:-?}m + ${_debug_inner_min:-?}m + ${_release_inner_min:-?}m) so the outer wall covers the pre-build and both inner nextest budgets" \
+assert "T10: merge outer wall (${_outer_budget}s) >= debug_inner + release_inner (${_inner_budget_total}s from ${_debug_inner_min:-?}m + ${_release_inner_min:-?}m) so the wall cannot preempt either terminal nextest pass before its own inner budget is reached" \
     test "$_outer_budget" -ge "$_inner_budget_total"
 
 # -- Tests T11–T13 (task 5382, esc-5382-1): merge-path RELEASE pre-build budget -----
@@ -501,25 +508,35 @@ assert "T10: merge outer wall (${_outer_budget}s) >= prebuild + debug_inner + re
 # that variable, which would otherwise suppress the whole block and make T11–T13 vacuous).
 # esc-5382-1: reify-cli was SIGTERM'd mid-`Compiling reify-runtime` by the former fixed 10m
 # ceiling on a cold merge lane, with zero failing assertions — same class as esc-5370-2.
+# REIFY_RELEASE_DELTA_SKIP is unset alongside REIFY_INFRA_SUITE_ACTIVE in each capture below:
+# that knob is consulted ONLY when DF_VERIFY_ROLE=merge (scripts/verify.sh, the
+# _RELEASE_DELTA_SKIP decision block), and when it is 1 on a delta-clean tree the release
+# nextest pass is replaced by the frozen `echo 'RELEASE-PASS: skipped (delta-clean)'` marker —
+# which would spuriously FAIL T12's "release nextest pass stays default 90m" assertion. It is
+# default-OFF today but is slated for activation in the orchestrator's verify_env by the
+# sibling sweep task (#5280), so pinning the plan shape here is a live concern, not a
+# hypothetical. T1/T2/T8/T9 need no such pin: they do not set the merge role.
 echo ""
 echo "--- Tests T11–T13 (task 5382): merge-path release pre-build cold-aware timeout ---"
 
-# T11: default → both release pre-builds render the 25m pre-build budget (was a fixed 10m).
+# T11: default → both release pre-builds render the 45m pre-build budget (was a fixed 10m).
 _T11_ERR="$(mktemp)"
-_T11_PLAN="$(env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_VERIFY_PREBUILD_TIMEOUT DF_VERIFY_ROLE=merge \
+_T11_PLAN="$(env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP -u REIFY_VERIFY_PREBUILD_TIMEOUT \
+    DF_VERIFY_ROLE=merge \
     bash "$REPO_ROOT/scripts/verify.sh" test \
     --profile both --scope all --print-plan 2>"$_T11_ERR" | grep -v '^#')"
 export _T11_PLAN
-assert "T11: default: reify-cli release pre-build uses the 25m pre-build budget (not the former fixed 10m)" \
-    occt_plan_grep_or_dump 'timeout --kill-after=60 25m .*cargo build --release -p reify-cli' "$_T11_PLAN" "$_T11_ERR"
-assert "T11: default: reify-audit release pre-build uses the same 25m pre-build budget" \
-    occt_plan_grep_or_dump 'timeout --kill-after=60 25m .*cargo build --release -p reify-audit' "$_T11_PLAN" "$_T11_ERR"
+assert "T11: default: reify-cli release pre-build uses the 45m pre-build budget (not the former fixed 10m)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 45m .*cargo build --release -p reify-cli' "$_T11_PLAN" "$_T11_ERR"
+assert "T11: default: reify-audit release pre-build uses the same 45m pre-build budget" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 45m .*cargo build --release -p reify-audit' "$_T11_PLAN" "$_T11_ERR"
 rm -f "$_T11_ERR"
 
 # T12: REIFY_VERIFY_PREBUILD_TIMEOUT=40m drives the pre-builds ONLY — the two nextest passes
 #      keep their own 60m/90m defaults. Proves the pre-build knob is pre-build-scoped.
 _T12_ERR="$(mktemp)"
-_T12_PLAN="$(env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE \
+_T12_PLAN="$(env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP \
+    -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE \
     DF_VERIFY_ROLE=merge REIFY_VERIFY_PREBUILD_TIMEOUT=40m \
     bash "$REPO_ROOT/scripts/verify.sh" test \
     --profile both --scope all --print-plan 2>"$_T12_ERR" | grep -v '^#')"
@@ -532,15 +549,16 @@ assert "T12: REIFY_VERIFY_PREBUILD_TIMEOUT=40m: release nextest pass stays defau
     occt_plan_grep_or_dump 'timeout --kill-after=60 90m .*cargo nextest run .*--release' "$_T12_PLAN" "$_T12_ERR"
 rm -f "$_T12_ERR"
 
-# T13: malformed REIFY_VERIFY_PREBUILD_TIMEOUT=banana → falls back to the 25m default via the
+# T13: malformed REIFY_VERIFY_PREBUILD_TIMEOUT=banana → falls back to the 45m default via the
 #      shared _resolve_timeout_knob validator (mirrors T3/T9's malformed-fallback guard).
 _T13_ERR="$(mktemp)"
-_T13_PLAN="$(env -u REIFY_INFRA_SUITE_ACTIVE DF_VERIFY_ROLE=merge REIFY_VERIFY_PREBUILD_TIMEOUT=banana \
+_T13_PLAN="$(env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP \
+    DF_VERIFY_ROLE=merge REIFY_VERIFY_PREBUILD_TIMEOUT=banana \
     bash "$REPO_ROOT/scripts/verify.sh" test \
     --profile both --scope all --print-plan 2>"$_T13_ERR" | grep -v '^#')"
 export _T13_PLAN
-assert "T13: REIFY_VERIFY_PREBUILD_TIMEOUT=banana (malformed): pre-builds fall back to the 25m default" \
-    occt_plan_grep_or_dump 'timeout --kill-after=60 25m .*cargo build --release -p reify-cli' "$_T13_PLAN" "$_T13_ERR"
+assert "T13: REIFY_VERIFY_PREBUILD_TIMEOUT=banana (malformed): pre-builds fall back to the 45m default" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 45m .*cargo build --release -p reify-cli' "$_T13_PLAN" "$_T13_ERR"
 rm -f "$_T13_ERR"
 
 # -- Test 18: wrapper does not leak the lock fd into background daemons --------

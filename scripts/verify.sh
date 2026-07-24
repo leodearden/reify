@@ -142,21 +142,49 @@
 #                                  sccache native-kernel relink (OCCT/OpenVDB/gmsh/
 #                                  manifold — a separate sccache profile from debug)
 #                                  pushes the combined release build+exec past the 60m
-#                                  debug budget (task 5382, esc-5370-2); the merge OUTER
-#                                  wall (merge_verify_cold_command_timeout_secs=10800,
-#                                  task 5383) covers debug 60m + release 90m.
+#                                  debug budget (task 5382, esc-5370-2). The merge OUTER
+#                                  wall that must not preempt this pass is
+#                                  merge_verify_cold_command_timeout_secs (task 5383) in
+#                                  dark-factory-orchestrator.yaml — that key's comment
+#                                  block is the single source for the relationship.
 #   REIFY_VERIFY_PREBUILD_TIMEOUT — outer timeout for the merge-path RELEASE
 #                                  pre-builds (`cargo build --release -p reify-audit`
-#                                  and `-p reify-cli`). Default 25m. These run ONLY on
+#                                  and `-p reify-cli`). Default 45m. These run ONLY on
 #                                  the merge/background path and are the step that
 #                                  actually COLD-BUILDS the release native-kernel cone
 #                                  (manifold-csg-sys/manifold3d/OCCT) — the release
 #                                  nextest pass afterwards inherits a warm cone, so this
 #                                  budget is transferred FROM the release nextest budget,
-#                                  not added to it. The former fixed 10m ceiling SIGTERM'd
-#                                  reify-cli mid-`Compiling reify-runtime` on a cold
-#                                  merge lane with zero failing assertions (esc-5382-1,
-#                                  same class as esc-5370-2).
+#                                  not added to it.
+#                                  DERIVATION — read this before re-tuning. Unlike the
+#                                  debug 60m (η/4521's 798.9 s worst-observed COMPLETION
+#                                  × 4.5), the cold pre-build's true duration is
+#                                  UNMEASURED. The only datum is a strict LOWER bound:
+#                                  the former fixed 10m ceiling SIGTERM'd reify-cli
+#                                  mid-`Compiling reify-runtime` on a cold merge lane
+#                                  with zero failing assertions (esc-5382-1, same class
+#                                  as esc-5370-2) — so the true cold duration is >10m,
+#                                  by an unknown amount. 45m applies this file's house
+#                                  4.5× production-weighted margin idiom to that lower
+#                                  bound (10m × 4.5 = 45m), landing on the same tier as
+#                                  clippy — the other full-scale cold compile wave here.
+#                                  Because the margin multiplies a TRUNCATION point and
+#                                  not an observed completion, 45m carries strictly less
+#                                  assurance than the debug 60m does: if a cold pre-build
+#                                  ever SIGTERMs at 45m, the correct response is to
+#                                  MEASURE the real duration and re-derive, NOT to
+#                                  multiply again. The earlier 25m was reverse-derived
+#                                  from a 10800 − 3600 − 5400 ceiling-sum residual; that
+#                                  constraint is not real (see the
+#                                  merge_verify_cold_command_timeout_secs comment in
+#                                  dark-factory-orchestrator.yaml for why the outer wall
+#                                  never bounded the sum of inner ceilings), so nothing
+#                                  caps this knob at 25m.
+#                                  NB this step runs at `nice -n 5` OUTSIDE
+#                                  compile_gate()/psi_gate()/the test semaphore (see the
+#                                  ADMISSION CONTROLS note at the pre-build block), so a
+#                                  contended cold merge lane is exactly the case the
+#                                  margin has to absorb.
 #   REIFY_VERIFY_CLIPPY_TIMEOUT — outer timeout for `cargo clippy` and the
 #                                  gui-feature `cargo check -p reify-gui` pass.
 #                                  Default 45m.
@@ -353,7 +381,7 @@ _resolve_timeout_knob() {
 # REIFY_VERIFY_TEST_TIMEOUT_RELEASE (90m) — see add_test_passes for the derivation.
 _VERIFY_TEST_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT 60m)"
 _VERIFY_TEST_TIMEOUT_RELEASE="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE 90m)"
-_VERIFY_PREBUILD_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_PREBUILD_TIMEOUT 25m)"
+_VERIFY_PREBUILD_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_PREBUILD_TIMEOUT 45m)"
 _VERIFY_CLIPPY_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_CLIPPY_TIMEOUT 45m)"
 _VERIFY_CHECK_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_CHECK_TIMEOUT 30m)"
 
@@ -1639,9 +1667,13 @@ add_test_passes() {
     #    from debug, so a cleared debug pass does not warm the release compile), which
     #    pushed the combined release build+exec past the unified 60m and SIGTERM'd it
     #    at the inner timeout (esc-5370-2, false "integration_skew"). 90m is the
-    #    cold-aware release budget; sibling task 5383 sized the merge OUTER wall
-    #    (merge_verify_cold_command_timeout_secs=10800) to cover debug 60m + release
-    #    90m = 9000 s with ~1800 s margin.
+    #    cold-aware release budget. The merge OUTER wall that must not preempt these
+    #    two inner budgets is merge_verify_cold_command_timeout_secs (sibling task
+    #    5383) in dark-factory-orchestrator.yaml. That key's comment block is the
+    #    SINGLE SOURCE for the inner/outer relationship — what it does and does NOT
+    #    model, and why the inner ceilings are not summed against it. Do not restate
+    #    its arithmetic here; it drifted once already (esc-5382-1 amendment review).
+    #    tests/infra/test_occt_flock_gate.sh T10 mechanises that relationship.
     # NOTE: outer timeouts asserted in tests/infra/test_occt_flock_gate.sh
     # (Test 17 — debug pass, Test 17b — release pass; T1/T2/T8/T9 knob behavior) — keep in sync.
     local _profile _rel
@@ -2080,8 +2112,11 @@ build_plan() {
         # By the time run_all.sh runs, target/release/{reify-audit,ptodo-baseline-gen}
         # are fresh so the in-wall freshness guard finds them fresh and skips the cold
         # build.  sccache (RUSTC_WRAPPER) makes this cheap when already cached.
-        # Timeout is 10m (distinct from the run_all wall) so the plan-shape test can assert
-        # the pre-step is not the walled run_all.sh line.
+        # Timeout is _VERIFY_PREBUILD_TIMEOUT (45m default, esc-5382-1 — see the
+        # REIFY_VERIFY_PREBUILD_TIMEOUT knob-doc above for the derivation), which is
+        # distinct from the run_all wall so the plan-shape test
+        # (tests/infra/test_verify_failfast_order.sh) can still assert the pre-step is
+        # not the walled run_all.sh line.
         #
         # ADMISSION CONTROLS: this pre-step runs OUTSIDE compile_gate()/psi_gate()/
         # @@SEMAPHORE_ACQUIRE@@ — build_plan() emits this whole block (the
