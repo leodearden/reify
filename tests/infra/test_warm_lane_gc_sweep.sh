@@ -42,6 +42,16 @@
 #         candidates in ONE sweep, exactly the live-cwd-referenced one
 #         preserved while the rest are reaped (discrimination within a single
 #         scan, not all-or-nothing).
+#   U — live-consumer lane guard (task 5378): the sweep scans each pool-lane
+#         DIR realpath for a live cwd/fd/mmap reference (the reseed-trash
+#         scanner, generalized) and passes live lanes to the real gc.sh via
+#         --extra-protect-glob, so a lane with an active build is preserved
+#         despite a FREE flock — the exact esc-5375-1 gap; a free unreferenced
+#         lane is still reset (no blanket over-preserve), and once the reference
+#         clears a later sweep reclaims it (preserve is temporary, mirrors T3).
+#         Stub sub-cases assert the argv carries --extra-protect-glob <live-lane>
+#         when a lane is live and omits the flag entirely when none is (fail-open,
+#         no spurious protection).
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -1022,5 +1032,150 @@ GC_LOG="$T7_GC_LOG" run_sweep --mount "$T7_MOUNT" --gc-script "$T7_GC_STUB"
 assert "T7: exit 0 (second sweep)" test "$RC" -eq 0
 assert "T7: entry B reaped once its live cwd reference is gone (second sweep)" \
     bash -c '[ ! -d "$1" ]' _ "$T7_ENTRY_B"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block U — live-consumer lane guard (task 5378)
+# ──────────────────────────────────────────────────────────────────────────────
+# ROOT CAUSE (esc-5375-1): the "one consumer per lane" flock (inv.2) is held
+# only across the ACQUIRE reseed, NOT across the consumer's long cargo verify
+# build. During that multi-minute build the flock is FREE, so gc.sh's Pass-1
+# always-reclaim reset renames/rm's <lane>/target out from under the live build.
+# FIX: warm-lane-gc-sweep.sh scans each pool-lane DIR realpath for a live process
+# reference (cwd/fd/mmap at or under it — the SAME /proc scanner the reseed-trash
+# reaper uses), maps live lanes back to basenames, and passes them to the real
+# gc.sh via --extra-protect-glob so a lane with an active build is skipped
+# ENTIRELY (Pass 1 reset + Pass 2 remove) despite a FREE flock. Over-preserving
+# is SAFE and TEMPORARY: once the reference clears, a later sweep reclaims the
+# lane (mirrors the trash reaper's second-sweep behavior). RED against the
+# current gc-sweep.sh (no lane scan) — the first sweep resets the live lane.
+echo ""
+echo "--- Block U: live-consumer lane guard (task 5378) ---"
+
+# ── U1: end-to-end via REAL gc.sh — a live cwd reference at/under a lane dir ───
+# preserves it despite a FREE flock, while a free unreferenced lane is reset ────
+U_ROOT="$(mktemp -d /tmp/test-gc-sweep-u-XXXXXX)"
+_TMPDIRS+=("$U_ROOT")
+
+U_REPO="$U_ROOT/repo"
+U_WORKTREES="$U_ROOT/worktrees"
+U_BASE="$U_ROOT/base"
+mkdir -p "$U_WORKTREES" "$U_BASE"
+make_repo "$U_REPO"
+mkdir -p "$U_BASE/target.gen.1"
+touch "$U_BASE/target.gen.1.lock"
+ln -sfn "$U_BASE/target.gen.1" "$U_BASE/target"
+
+# Two clean+landed (HEAD==main) reclaimable pool lanes, each with a divergent
+# marker and a FREE flock (no holder started).
+for _u_name in _lane-1 _lane-2; do
+    git -C "$U_REPO" worktree add -q "$U_WORKTREES/$_u_name"
+    mkdir -p "$U_WORKTREES/$_u_name/target"
+    touch "$U_WORKTREES/$_u_name/target/DIVERGENT_MARKER"
+done
+
+# Live helper whose CWD is _lane-1/target (a descendant of the lane dir — the
+# exact build-fd/cwd shape). It touches READY AFTER cd'ing in, so
+# _wait_for_reader_lock proves the cwd is established before the sweep runs
+# (causal ordering, Block T3 pattern). exec sleep so the tracked PID holds it.
+U_READY="$U_ROOT/helper.ready"
+( cd "$U_WORKTREES/_lane-1/target" && touch "$U_READY" && exec sleep 300 ) &
+U_HELPER_PID=$!
+_BGPIDS+=("$U_HELPER_PID")
+_wait_for_reader_lock "$U_READY" 30
+
+U_DF_STUB="$U_ROOT/df_stub.sh"
+_df_stub "$U_DF_STUB" 107374182400  # 100 GiB avail (above floor → α path, no --disk-pressure)
+
+U_SEED_LOG="$U_ROOT/seed_calls.log"
+U_SEED_STUB="$U_ROOT/seed_stub.sh"
+_thinning_seed_stub_body > "$U_SEED_STUB"
+chmod +x "$U_SEED_STUB"
+
+REIFY_WARM_LANE_GC_SWEEP_DF="$U_DF_STUB" \
+REIFY_WARM_LANE_GC_SEED_SCRIPT="$U_SEED_STUB" \
+SEED_LOG="$U_SEED_LOG" \
+    run_sweep --mount "$U_WORKTREES" --gc-script "$GC_REAL" --critical-free-gib 2
+
+assert "U1: exit 0 (first sweep)" test "$RC" -eq 0
+assert "U2: live-referenced _lane-1 divergent marker INTACT (cwd ref preserves it despite a FREE flock)" \
+    test -f "$U_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+assert "U3: _lane-1 seed-script NOT invoked (preserved, not reset)" \
+    bash -c '[ ! -f "$1" ] || ! grep -q "_lane-1" "$1"' _ "$U_SEED_LOG"
+assert "U4: free unreferenced _lane-2 divergent marker REMOVED (reset — no blanket over-preserve)" \
+    bash -c '[ ! -f "$1" ]' _ "$U_WORKTREES/_lane-2/target/DIVERGENT_MARKER"
+assert "U5: _lane-2 seed-script invoked (reclaimed via α)" \
+    bash -c 'test -f "$1" && grep -q "_lane-2" "$1"' _ "$U_SEED_LOG"
+
+# ── U6: preserve is TEMPORARY — once the live reference clears, a SECOND sweep
+# reclaims the lane (mirrors Block T3's second-sweep reap) ─────────────────────
+kill "$U_HELPER_PID" 2>/dev/null || true
+wait "$U_HELPER_PID" 2>/dev/null || true
+_BGPIDS=()  # clear so EXIT cleanup does not re-kill a possibly-reused PID
+
+REIFY_WARM_LANE_GC_SWEEP_DF="$U_DF_STUB" \
+REIFY_WARM_LANE_GC_SEED_SCRIPT="$U_SEED_STUB" \
+SEED_LOG="$U_SEED_LOG" \
+    run_sweep --mount "$U_WORKTREES" --gc-script "$GC_REAL" --critical-free-gib 2
+
+assert "U6: exit 0 (second sweep)" test "$RC" -eq 0
+assert "U7: _lane-1 divergent marker REMOVED once its live cwd reference is gone (preserve is temporary)" \
+    bash -c '[ ! -f "$1" ]' _ "$U_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+
+# ── U8: stub-gc — the sweep passes --extra-protect-glob carrying the live lane ─
+# Block-C/T gc-stub logs the argv the sweep hands gc.sh; a live cwd reference on
+# _lane-1 must surface as `--extra-protect-glob _lane-1` in that argv.
+U8_ROOT="$(mktemp -d /tmp/test-gc-sweep-u8-XXXXXX)"
+_TMPDIRS+=("$U8_ROOT")
+U8_MOUNT="$U8_ROOT/worktrees"
+mkdir -p "$U8_MOUNT/_lane-1/target"
+
+U8_GC_LOG="$U8_ROOT/gc_calls.log"
+U8_GC_STUB="$U8_ROOT/gc_stub.sh"
+_t_gc_stub "$U8_GC_STUB"
+
+U8_DF_STUB="$U8_ROOT/df_stub.sh"
+_df_stub "$U8_DF_STUB" 107374182400  # above floor → no --disk-pressure noise
+
+U8_READY="$U8_ROOT/helper.ready"
+( cd "$U8_MOUNT/_lane-1/target" && touch "$U8_READY" && exec sleep 300 ) &
+U8_HELPER_PID=$!
+_BGPIDS+=("$U8_HELPER_PID")
+_wait_for_reader_lock "$U8_READY" 30
+
+GC_LOG="$U8_GC_LOG" REIFY_WARM_LANE_GC_SWEEP_DF="$U8_DF_STUB" \
+    run_sweep --mount "$U8_MOUNT" --gc-script "$U8_GC_STUB" --critical-free-gib 2
+
+assert "U8: exit 0" test "$RC" -eq 0
+assert "U9: sweep passed --extra-protect-glob to gc.sh (live lane discovered)" \
+    bash -c 'grep -q -- "--extra-protect-glob" "$1"' _ "$U8_GC_LOG"
+assert "U10: --extra-protect-glob carries the live lane basename _lane-1" \
+    bash -c 'grep -q -- "--extra-protect-glob _lane-1" "$1"' _ "$U8_GC_LOG"
+
+kill "$U8_HELPER_PID" 2>/dev/null || true
+wait "$U8_HELPER_PID" 2>/dev/null || true
+_BGPIDS=()
+
+# ── U11: no-live-lane — a free unreferenced lane yields an EMPTY scan, so NO ───
+# --extra-protect-glob is appended (fail-open, no spurious protection) ─────────
+U11_ROOT="$(mktemp -d /tmp/test-gc-sweep-u11-XXXXXX)"
+_TMPDIRS+=("$U11_ROOT")
+U11_MOUNT="$U11_ROOT/worktrees"
+mkdir -p "$U11_MOUNT/_lane-1/target"   # a free lane dir, but NO live reference
+
+U11_GC_LOG="$U11_ROOT/gc_calls.log"
+U11_GC_STUB="$U11_ROOT/gc_stub.sh"
+_t_gc_stub "$U11_GC_STUB"
+
+U11_DF_STUB="$U11_ROOT/df_stub.sh"
+_df_stub "$U11_DF_STUB" 107374182400
+
+GC_LOG="$U11_GC_LOG" REIFY_WARM_LANE_GC_SWEEP_DF="$U11_DF_STUB" \
+    run_sweep --mount "$U11_MOUNT" --gc-script "$U11_GC_STUB" --critical-free-gib 2
+
+assert "U11: exit 0" test "$RC" -eq 0
+assert "U12: no live reference → --extra-protect-glob NOT appended (no spurious protection, fail-open)" \
+    bash -c '! grep -q -- "--extra-protect-glob" "$1"' _ "$U11_GC_LOG"
+assert "U13: gc-script still invoked (the lane scan does not abort the sweep)" \
+    bash -c '[ -s "$1" ]' _ "$U11_GC_LOG"
 
 test_summary
