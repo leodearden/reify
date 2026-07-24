@@ -229,32 +229,51 @@ pub(crate) fn eval_named_arg_f64(
     }
 }
 
+/// Outcome of [`eval_named_arg_length`]. Three-state rather than `Option<f64>`
+/// so callers can report an UNRESOLVED argument accurately instead of claiming
+/// it was missing or wrongly-dimensioned (reviewer note, task 5214 amendment).
+#[derive(Debug, PartialEq)]
+pub(crate) enum LengthArg {
+    /// A finite LENGTH-dimensioned `Value::Scalar`; carries its SI value (metres).
+    Length(f64),
+    /// The argument evaluated to `Value::Undef` — not YET resolved (an
+    /// unresolved param, or a `ValueMap` cell still empty during a partial /
+    /// fixpoint build), as opposed to *wrong*. No diagnostic was pushed
+    /// (quiet degradation, matching `resolve_scalar_dim_arg`).
+    Unresolved,
+    /// The argument is missing, non-finite, or defined-but-not-a-LENGTH (a bare
+    /// `Real`/`Int` or a wrong-dimension `Scalar`). Exactly one
+    /// `Severity::Warning` describing which has already been pushed.
+    Invalid,
+}
+
 /// Look up a named LENGTH-semantic argument, evaluate it with full context,
-/// and require a finite LENGTH-dimensioned `Value::Scalar`, returning its SI
-/// value (metres).
+/// and require a finite LENGTH-dimensioned `Value::Scalar`.
 ///
 /// This is the units chokepoint for the pattern/mirror length-semantic args
 /// (spacing, mirror-plane origin, arbitrary-pattern offsets). Unlike
 /// [`eval_named_arg_f64`] — whose `Value::as_f64` silently reads a BARE
 /// `Value::Real(10.0)` as **10 SI metres** and a `10mm` Scalar as `0.01` m —
 /// this helper REJECTS a bare `Real`/`Int` or a wrong-dimension `Scalar`
-/// (one `Severity::Warning` via `ArgRejection::message`, then `None`), so a
-/// dimensionless spacing can never scatter instances 1000× too far. Same
-/// hazard and discipline as `joints::read_length3` (the canonical "reject bare
-/// Real to avoid silent 40 m vs 40 mm" precedent), `point3_components`, and
+/// (one `Severity::Warning` via `ArgRejection::message`), so a dimensionless
+/// spacing can never scatter instances 1000× too far. Same hazard and
+/// discipline as `joints::read_length3` (the canonical "reject bare Real to
+/// avoid silent 40 m vs 40 mm" precedent), `point3_components`, and
 /// `resolve_length_scalar_arg`; the dimension classification + diagnostic
 /// wording are delegated to `arg_acceptance::{accept_arg, length_spec}`.
 ///
-/// Outcomes:
-/// - missing arg → `None` (+ the missing-arg Warning from [`eval_named_arg`])
-/// - `Value::Undef` → `None` (quiet degradation)
-/// - finite LENGTH Scalar → `Some(si_metres)`
-/// - non-finite LENGTH Scalar → `None` (+ Warning)
-/// - anything else (bare `Real`/`Int`, wrong dimension) → `None` (+ Warning)
+/// | evaluated arg value                        | return                 | diagnostic pushed?      |
+/// |--------------------------------------------|------------------------|-------------------------|
+/// | missing arg                                | [`LengthArg::Invalid`] | yes — from `eval_named_arg` |
+/// | `Value::Undef` (unresolved param/cell)     | [`LengthArg::Unresolved`] | no — quiet degradation |
+/// | finite LENGTH `Scalar`                     | [`LengthArg::Length`]  | no                      |
+/// | non-finite LENGTH `Scalar` (NaN / ±inf)    | [`LengthArg::Invalid`] | yes — `Severity::Warning` |
+/// | bare `Real`/`Int`, wrong-dimension `Scalar`| [`LengthArg::Invalid`] | yes — `Severity::Warning` |
 ///
-/// The caller propagates `None` via `.ok_or_else(...)?` so `compile_geometry_op`
-/// short-circuits with a single Error and drops the op (fail-closed), matching
-/// the `validate_pattern_count` rejection shape.
+/// Callers go through [`required_length_arg`] / [`required_length_value`],
+/// which map each non-`Length` state to its own `Err` message so
+/// `compile_geometry_op` short-circuits with a single Error and drops the op
+/// (fail-closed), matching the `validate_pattern_count` rejection shape.
 pub(crate) fn eval_named_arg_length(
     name: &str,
     kind_label: impl std::fmt::Display + Copy,
@@ -263,10 +282,12 @@ pub(crate) fn eval_named_arg_length(
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<f64> {
+) -> LengthArg {
     use crate::arg_acceptance::{Acceptance, accept_arg, length_spec};
 
-    let value = eval_named_arg(
+    // A missing arg is `Invalid`, not `Unresolved`: `eval_named_arg` has
+    // already pushed its own missing-arg Warning naming the culprit.
+    let Some(value) = eval_named_arg(
         name,
         kind_label,
         args,
@@ -274,22 +295,85 @@ pub(crate) fn eval_named_arg_length(
         functions,
         meta_map,
         diagnostics,
-    )?;
+    ) else {
+        return LengthArg::Invalid;
+    };
     match accept_arg(&value, &length_spec()) {
-        Acceptance::Accepted(si) if si.is_finite() => Some(si),
+        Acceptance::Accepted(si) if si.is_finite() => LengthArg::Length(si),
         Acceptance::Accepted(_) => {
             diagnostics.push(Diagnostic::warning(format!(
                 "argument '{}' for {} evaluated to a non-finite Length",
                 name, kind_label
             )));
-            None
+            LengthArg::Invalid
         }
-        Acceptance::Undefined => None,
+        Acceptance::Undefined => LengthArg::Unresolved,
         Acceptance::Rejected(rej) => {
             diagnostics.push(Diagnostic::warning(rej.message(&kind_label.to_string(), name)));
-            None
+            LengthArg::Invalid
         }
     }
+}
+
+/// `Result` adapter over [`eval_named_arg_length`]: the SINGLE owner of the
+/// caller-facing error wording for a required LENGTH-semantic argument (it was
+/// previously copy-pasted at six call sites). An `Unresolved` argument gets its
+/// own message — asserting "missing or non-Length" for a cell that is merely
+/// not yet resolved is actively misleading during solver iteration, where Undef
+/// cells are expected transient state.
+pub(crate) fn required_length_arg(
+    name: &str,
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<f64, String> {
+    match eval_named_arg_length(
+        name,
+        kind_label,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    ) {
+        LengthArg::Length(si) => Ok(si),
+        LengthArg::Unresolved => Err(format!(
+            "argument '{}' for {} is unresolved (Undef)",
+            name, kind_label
+        )),
+        LengthArg::Invalid => Err(format!(
+            "missing or non-Length argument '{}' for {}",
+            name, kind_label
+        )),
+    }
+}
+
+/// As [`required_length_arg`], re-wrapped as a LENGTH `Value::Scalar` for the
+/// IR spacing slots (`LinearPattern`/`LinearPattern2D`), whose representation
+/// is deliberately unchanged by this check — the kernel still reads a
+/// dimensioned spacing `Value`.
+pub(crate) fn required_length_value(
+    name: &str,
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::Value, String> {
+    required_length_arg(
+        name,
+        kind_label,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .map(reify_ir::Value::length)
 }
 
 /// Evaluate all args in a variadic curve constructor to f64 values.
@@ -2402,18 +2486,15 @@ fn pattern_linear(
     // LENGTH-required: reject a bare/dimensionless spacing (op dropped) rather
     // than silently reading it as SI metres; re-wrap as a LENGTH Scalar so the
     // IR/kernel spacing representation is unchanged.
-    let spacing = reify_ir::Value::length(
-        eval_named_arg_length(
-            "spacing",
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )
-        .ok_or_else(|| format!("missing or non-Length argument 'spacing' for {}", kind))?,
-    );
+    let spacing = required_length_value(
+        "spacing",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::LinearPattern {
         target: target_id,
         direction,
@@ -2490,6 +2571,14 @@ fn pattern_circular(
                 format!("missing or non-finite argument '{}' for {}", name, kind)
             })
         };
+        // The axis ORIGIN is length-semantic (a point in space) and is still read
+        // BARE here — `Value::as_f64` silently reads it as SI metres — unlike
+        // mirror's plane origin, which task 5214 gated as a Length. That
+        // asymmetry is deliberate, not an oversight: `circular_pattern` was
+        // outside 5214's enumerated audit list, and closing it also has to
+        // migrate its own bare call sites + characterization fixtures.
+        // TODO(#5350): route ox/oy/oz through `required_length_arg`. The axis
+        // DIRECTION ax/ay/az stays bare — a unit vector is dimensionless.
         let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
         let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
         let count_raw = f64_arg("count")?;
@@ -2548,18 +2637,9 @@ fn pattern_mirror(
         // would silently read as SI metres). Read ox/oy/oz directly here — NOT
         // via the `f64_arg` closure below — so their `&mut diagnostics` borrows
         // don't overlap with the closure's capture.
-        let ox = eval_named_arg_length(
-            "ox", kind, args, values, functions, meta_map, diagnostics,
-        )
-        .ok_or_else(|| format!("missing or non-Length argument 'ox' for {}", kind))?;
-        let oy = eval_named_arg_length(
-            "oy", kind, args, values, functions, meta_map, diagnostics,
-        )
-        .ok_or_else(|| format!("missing or non-Length argument 'oy' for {}", kind))?;
-        let oz = eval_named_arg_length(
-            "oz", kind, args, values, functions, meta_map, diagnostics,
-        )
-        .ok_or_else(|| format!("missing or non-Length argument 'oz' for {}", kind))?;
+        let ox = required_length_arg("ox", kind, args, values, functions, meta_map, diagnostics)?;
+        let oy = required_length_arg("oy", kind, args, values, functions, meta_map, diagnostics)?;
+        let oz = required_length_arg("oz", kind, args, values, functions, meta_map, diagnostics)?;
         // The plane NORMAL is a dimensionless unit vector — stays bare f64.
         let mut f64_arg = |name: &str| -> Result<f64, String> {
             eval_named_arg_f64(
@@ -2612,18 +2692,15 @@ fn pattern_linear2d(
     // LENGTH-required: a bare/dimensionless spacing1 is rejected (op dropped)
     // instead of silently read as SI metres. Re-wrap the validated SI value as
     // a LENGTH Scalar so the IR/kernel spacing representation is unchanged.
-    let spacing1 = reify_ir::Value::length(
-        eval_named_arg_length(
-            "spacing1",
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )
-        .ok_or_else(|| format!("missing or non-Length argument 'spacing1' for {}", kind))?,
-    );
+    let spacing1 = required_length_value(
+        "spacing1",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     let mut f64_arg = |name: &str| -> Result<f64, String> {
         eval_named_arg_f64(
             name,
@@ -2641,18 +2718,15 @@ fn pattern_linear2d(
     let direction2 = [f64_arg("dx2")?, f64_arg("dy2")?, f64_arg("dz2")?];
     let count2_raw = f64_arg("count2")?;
     let count2 = validate_pattern_count(count2_raw, "count2", kind, diagnostics)?;
-    let spacing2 = reify_ir::Value::length(
-        eval_named_arg_length(
-            "spacing2",
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )
-        .ok_or_else(|| format!("missing or non-Length argument 'spacing2' for {}", kind))?,
-    );
+    let spacing2 = required_length_value(
+        "spacing2",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::LinearPattern2D {
         target: target_id,
         direction1,
@@ -2739,18 +2813,7 @@ fn pattern_arbitrary(
         // Scalar per component. A bare/dimensionless offset is rejected (op
         // dropped) rather than silently read as SI metres by `Value::as_f64`.
         let mut length_arg = |name: &str| -> Result<f64, String> {
-            eval_named_arg_length(
-                name,
-                kind,
-                args,
-                values,
-                functions,
-                meta_map,
-                diagnostics,
-            )
-            .ok_or_else(|| {
-                format!("missing or non-Length argument '{}' for {}", name, kind)
-            })
+            required_length_arg(name, kind, args, values, functions, meta_map, diagnostics)
         };
         let dx = length_arg(&format!("t{}_dx", idx))?;
         let dy = length_arg(&format!("t{}_dy", idx))?;
@@ -8628,11 +8691,40 @@ fn resolve_vec3_arg(
 
 /// Shared evaluate-then-accept core for the SCALAR-dimension owned args
 /// (task ε): EVALUATE `expr` against `values` (via [`eval_arg_value`]) and
-/// classify the resulting `Value` against an inline
-/// [`crate::arg_acceptance::ArgSpec`] of `expected_dim`. `Value::Undef`
-/// degrades quietly to `None`; a defined-but-wrong value pushes exactly one
+/// classify the resulting `Value` against `spec`. `Value::Undef` degrades
+/// quietly to `None`; a defined-but-wrong value pushes exactly one
 /// `Severity::Warning` (built from the rejection + `builtin`/`arg_name` labels,
 /// byte-uniform with the density path) and returns `None`.
+///
+/// Taking the whole [`crate::arg_acceptance::ArgSpec`] — rather than a
+/// dimension + type name, with the hint hard-wired to `None` — is what lets
+/// [`resolve_length_scalar_arg`] share the ONE canonical `length_spec()` with
+/// the pattern/mirror chokepoint [`eval_named_arg_length`], so both LENGTH
+/// rejection paths emit identical text (task 5214 amendment).
+fn resolve_spec_arg(
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+    spec: &crate::arg_acceptance::ArgSpec,
+    builtin: &str,
+    arg_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<f64> {
+    use crate::arg_acceptance::{Acceptance, accept_arg};
+
+    let value = eval_arg_value(expr, values);
+    match accept_arg(&value, spec) {
+        Acceptance::Accepted(si) => Some(si),
+        Acceptance::Undefined => None,
+        Acceptance::Rejected(rej) => {
+            diagnostics.push(Diagnostic::warning(rej.message(builtin, arg_name)));
+            None
+        }
+    }
+}
+
+/// [`resolve_spec_arg`] for a dimension that has no canonical `ArgSpec`
+/// constructor of its own: builds an inline hint-less spec from `expected_dim`
+/// + `type_name`.
 fn resolve_scalar_dim_arg(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
@@ -8642,22 +8734,18 @@ fn resolve_scalar_dim_arg(
     arg_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<f64> {
-    use crate::arg_acceptance::{Acceptance, ArgSpec, accept_arg};
-
-    let value = eval_arg_value(expr, values);
-    let spec = ArgSpec {
-        type_name,
-        dimension: expected_dim,
-        migration_hint: None,
-    };
-    match accept_arg(&value, &spec) {
-        Acceptance::Accepted(si) => Some(si),
-        Acceptance::Undefined => None,
-        Acceptance::Rejected(rej) => {
-            diagnostics.push(Diagnostic::warning(rej.message(builtin, arg_name)));
-            None
-        }
-    }
+    resolve_spec_arg(
+        expr,
+        values,
+        &crate::arg_acceptance::ArgSpec {
+            type_name,
+            dimension: expected_dim,
+            migration_hint: None,
+        },
+        builtin,
+        arg_name,
+        diagnostics,
+    )
 }
 
 /// Resolve an ANGLE-dimensioned scalar arg to its SI value (radians).
@@ -8693,6 +8781,12 @@ fn resolve_angle_scalar_arg(
 /// defined-but-wrong value pushes exactly one `Severity::Warning` naming
 /// `builtin`/`arg_name`. Pins the LENGTH dimension for the z-plane / tolerance
 /// args of `edges_at_height` and the tolerance arg of `geo_equiv`.
+///
+/// Shares the ONE canonical `arg_acceptance::length_spec()` with the
+/// pattern/mirror chokepoint [`eval_named_arg_length`] (task 5214 amendment) —
+/// previously this path built its own hint-less inline `ArgSpec`, so the two
+/// helpers emitted DIFFERENT text for the identical "`Real` where a `Length`
+/// was required" error, breaking this doc's own byte-uniformity claim.
 fn resolve_length_scalar_arg(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
@@ -8700,11 +8794,10 @@ fn resolve_length_scalar_arg(
     arg_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<f64> {
-    resolve_scalar_dim_arg(
+    resolve_spec_arg(
         expr,
         values,
-        reify_core::DimensionVector::LENGTH,
-        "Length",
+        &crate::arg_acceptance::length_spec(),
         builtin,
         arg_name,
         diagnostics,

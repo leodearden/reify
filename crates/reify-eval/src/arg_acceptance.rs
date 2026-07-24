@@ -1,13 +1,19 @@
 //! Shared value-level acceptance helper for dimensioned builtin arguments.
 //!
 //! Provides [`accept_arg`] and the associated types (`ArgSpec`, `Acceptance`,
-//! `ArgRejection`) used by Contract A (`resolve_density_arg` in `geometry_ops`)
-//! and Contract B (`body_mass_props` density ladder in `dynamics_ops`; task δ).
+//! `ArgRejection`) used by Contract A (`resolve_density_arg` in `geometry_ops`),
+//! Contract B (`body_mass_props` density ladder in `dynamics_ops`; task δ), and
+//! Contract C — the LENGTH-semantic args (task 5214): `geometry_ops`'
+//! `eval_named_arg_length` (pattern spacing, mirror-plane origin,
+//! arbitrary-pattern offsets) and `resolve_length_scalar_arg`
+//! (`edges_at_height` z/tol, `geo_equiv` tol), which share the single
+//! [`length_spec`] so both emit identical rejection text.
 //!
 //! The helper is **value-level only**: it operates on an already-resolved
 //! `reify_ir::Value` and has no knowledge of `CompiledExpr` or `ValueMap`.
-//! Callers (currently `resolve_density_arg`) are responsible for extracting the
-//! value from the expression.
+//! Callers are responsible for extracting the value from the expression
+//! (`resolve_density_arg`/`resolve_spec_arg` evaluate a `CompiledExpr`;
+//! `eval_named_arg_length` goes through `eval_named_arg`).
 
 /// Specification for a single builtin argument — its expected type name, the
 /// required `DimensionVector`, and an optional hint shown in rejection messages.
