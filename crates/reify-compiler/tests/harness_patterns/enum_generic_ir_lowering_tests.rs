@@ -9,9 +9,7 @@
 //! - INV-1 same-resolver-provenance: declared type-param names drive the same
 //!   `Type::TypeParam(..)` outcome in payload fields that structures/traits/fns use.
 
-mod common;
-
-use common::compile_with_stdlib_helper;
+use crate::common::compile_with_stdlib_helper;
 use reify_core::Severity;
 use reify_core::ty::Type;
 use reify_ir::VariantPayload;

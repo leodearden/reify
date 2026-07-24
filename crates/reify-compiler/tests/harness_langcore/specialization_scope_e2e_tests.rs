@@ -37,7 +37,7 @@ fn forbidden_decl_diagnostics(
 /// within the body walk is an internal detail not pinned by the contract.
 #[test]
 fn forbidden_spec_scope_fixture_emits_three_forbidden_decl_diagnostics() {
-    let source = include_str!("fixtures/specialization_scope_forbidden.ri");
+    let source = include_str!("../fixtures/specialization_scope_forbidden.ri");
     let parsed =
         reify_compiler::parse_with_stdlib(source, ModulePath::single("spec_e2e_forbidden"));
 
@@ -114,7 +114,7 @@ fn forbidden_spec_scope_fixture_emits_three_forbidden_decl_diagnostics() {
 /// the validator must emit zero `SpecializationForbiddenDecl` diagnostics (PRD AC 4-5).
 #[test]
 fn permitted_only_spec_scope_fixture_emits_zero_forbidden_decl_diagnostics() {
-    let source = include_str!("fixtures/specialization_scope_permitted.ri");
+    let source = include_str!("../fixtures/specialization_scope_permitted.ri");
     let parsed =
         reify_compiler::parse_with_stdlib(source, ModulePath::single("spec_e2e_permitted"));
 

@@ -9,9 +9,7 @@
 //! Diagnostic assertions match on `Diagnostic.code` (typed `DiagnosticCode`)
 //! rather than message substrings, per the codebase convention.
 
-mod common;
-
-use common::compile_with_stdlib_helper;
+use crate::common::compile_with_stdlib_helper;
 use reify_core::ty::Type;
 use reify_core::{DiagnosticCode, Severity};
 

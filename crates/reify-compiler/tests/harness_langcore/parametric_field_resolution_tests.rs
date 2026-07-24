@@ -18,9 +18,7 @@
 //!   all other builtin parametrics)
 //! - subst-path test (step 3): parametric alias `type F<D,C> = Field<D,C>`
 
-mod common;
-
-use common::compile_with_stdlib_helper;
+use crate::common::compile_with_stdlib_helper;
 use reify_core::{DimensionVector, Severity, Type};
 
 // ---------------------------------------------------------------------------

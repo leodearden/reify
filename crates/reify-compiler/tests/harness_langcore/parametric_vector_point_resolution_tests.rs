@@ -9,9 +9,7 @@
 //! with `param`s exercises the same surface→IR resolution path with no
 //! body-type-checking distraction.
 
-mod common;
-
-use common::compile_with_stdlib_helper;
+use crate::common::compile_with_stdlib_helper;
 use reify_core::{DimensionVector, Severity, Type};
 
 /// Compile `source`, assert no Error-severity diagnostics, then find `template`

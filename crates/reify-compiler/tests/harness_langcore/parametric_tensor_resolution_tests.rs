@@ -13,9 +13,7 @@
 //! [IntegerLiteral, IntegerLiteral, Named] }` shape regardless of whether the
 //! type is anchored to a fn signature or a param annotation.
 
-mod common;
-
-use common::compile_with_stdlib_helper;
+use crate::common::compile_with_stdlib_helper;
 use reify_core::{DimensionVector, Severity, Type};
 
 /// End-to-end fixture: a structure with three params whose annotated types
