@@ -2869,6 +2869,121 @@
         );
     }
 
+    /// Helper: a `PatternKind::Linear` op whose `spacing` arg is `spacing_expr`
+    /// and whose every other arg is valid. Lets the spacing-rejection tests
+    /// vary ONLY the value under test.
+    fn linear_pattern_with_spacing(
+        spacing_expr: reify_ir::CompiledExpr,
+    ) -> CompiledGeometryOp {
+        CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(10.0)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+                ("count".into(), literal_f64(3.0)),
+                ("spacing".into(), spacing_expr),
+            ],
+        }
+    }
+
+    /// A WRONG-DIMENSION `Value::Scalar` spacing must be rejected exactly like a
+    /// bare `Value::Real` — `accept_arg`'s dimension check is strict, so only a
+    /// LENGTH Scalar passes.
+    ///
+    /// Two arms, both of which a `Real`-only test would miss:
+    ///   (a) an ANGLE Scalar (`20deg` where a spacing was meant) — a plausible
+    ///       argument-order slip on `circular_pattern`-shaped call sites;
+    ///   (b) a DIMENSIONLESS Scalar — the likeliest silent-regression path,
+    ///       since eval arithmetic can collapse to a dimensionless `Scalar`
+    ///       rather than a `Real` (`arg_acceptance::value_short_label` carries a
+    ///       dedicated arm for it), so it would sneak past a `Real`-shaped guard.
+    #[test]
+    fn compile_geometry_op_linear_pattern_wrong_dimension_spacing_rejected() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        for (label, spacing_expr) in [
+            (
+                "ANGLE",
+                literal_scalar(0.35, reify_core::DimensionVector::ANGLE),
+            ),
+            (
+                "dimensionless",
+                literal_scalar(0.02, reify_core::DimensionVector::DIMENSIONLESS),
+            ),
+        ] {
+            let op = linear_pattern_with_spacing(spacing_expr);
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &step_handles,
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "a {label} Scalar spacing must drop the op, got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("spacing") && d.message.contains("Length")),
+                "a diagnostic must name the spacing arg and the Length \
+                 requirement for a {label} Scalar; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// A LENGTH-dimensioned but NON-FINITE spacing (NaN / ±inf — e.g. from a
+    /// divide-by-zero in a parametric expression) must also drop the op, and
+    /// must say so specifically: the value IS a Length, so the generic
+    /// wrong-dimension wording would be wrong. Pins `eval_named_arg_length`'s
+    /// dedicated non-finite arm, which no other test observes.
+    #[test]
+    fn compile_geometry_op_linear_pattern_non_finite_length_spacing_rejected() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        for (label, si) in [
+            ("NaN", f64::NAN),
+            ("+inf", f64::INFINITY),
+            ("-inf", f64::NEG_INFINITY),
+        ] {
+            let op = linear_pattern_with_spacing(literal_length(si));
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &step_handles,
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "a {label} Length spacing must drop the op, got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics.iter().any(|d| {
+                    d.message.contains("spacing") && d.message.contains("non-finite Length")
+                }),
+                "the diagnostic for a {label} Length must name the arg and say \
+                 'non-finite Length' (NOT the wrong-dimension wording — the \
+                 value IS a Length); got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
     #[test]
     fn compile_geometry_op_circular_pattern_valid_args() {
         let step_handles = vec![GeometryHandleId(42)];
@@ -3165,52 +3280,68 @@
         }
     }
 
-    /// A BARE (dimensionless) mirror-plane origin component `ox` must be
-    /// REJECTED — a plane ORIGIN is length-semantic, so a bare `0.0` would be
-    /// silently read as 0 SI metres (and any non-zero bare value 1000× off).
-    /// The op is dropped (Err) with a diagnostic naming `ox` and Length.
+    /// A BARE (dimensionless) mirror-plane origin component must be REJECTED —
+    /// a plane ORIGIN is length-semantic, so a bare `0.0` would be silently read
+    /// as 0 SI metres (and any non-zero bare value 1000× off). The op is dropped
+    /// (Err) with a diagnostic naming the offending component and Length.
+    ///
+    /// Run once per component: `ox`/`oy`/`oz` are read by three separate call
+    /// sites, so an `ox`-only test would not notice one of the other two
+    /// regressing back to the bare-accepting `f64_arg` closure.
     #[test]
     fn compile_geometry_op_mirror_bare_origin_rejected() {
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
-        let op = CompiledGeometryOp::Pattern {
-            kind: PatternKind::Mirror,
-            target: GeomRef::Step(0),
-            args: vec![
-                // BARE dimensionless ox — must be rejected.
-                ("ox".into(), literal_f64(0.0)),
-                ("oy".into(), literal_length(0.0)),
-                ("oz".into(), literal_length(0.0)),
-                ("nx".into(), literal_f64(1.0)),
-                ("ny".into(), literal_f64(0.0)),
-                ("nz".into(), literal_f64(0.0)),
-            ],
-        };
+        for bare in ["ox", "oy", "oz"] {
+            // Exactly one origin component is BARE; the other two are Lengths.
+            let origin_arg = |name: &str| -> (String, reify_ir::CompiledExpr) {
+                (
+                    name.into(),
+                    if name == bare {
+                        literal_f64(0.0)
+                    } else {
+                        literal_length(0.0)
+                    },
+                )
+            };
+            let op = CompiledGeometryOp::Pattern {
+                kind: PatternKind::Mirror,
+                target: GeomRef::Step(0),
+                args: vec![
+                    origin_arg("ox"),
+                    origin_arg("oy"),
+                    origin_arg("oz"),
+                    ("nx".into(), literal_f64(1.0)),
+                    ("ny".into(), literal_f64(0.0)),
+                    ("nz".into(), literal_f64(0.0)),
+                ],
+            };
 
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let result = compile_geometry_op(
-            &op,
-            &values,
-            &step_handles,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-            &mut diagnostics,
-        );
-        assert!(
-            result.is_err(),
-            "bare (dimensionless) mirror origin ox must drop the op, got: {:?}",
-            result
-        );
-        assert!(
-            diagnostics
-                .iter()
-                .any(|d| d.message.contains("ox") && d.message.contains("Length")),
-            "a diagnostic must name the ox arg and the Length units requirement; \
-             got: {:?}",
-            diagnostics
-        );
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &step_handles,
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "bare (dimensionless) mirror origin {bare} must drop the op, got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.message.contains(bare) && d.message.contains("Length")),
+                "a diagnostic must name the {bare} arg and the Length units \
+                 requirement; got: {:?}",
+                diagnostics
+            );
+        }
     }
 
     /// Locks the split: the mirror-plane ORIGIN must be a Length, but the plane
