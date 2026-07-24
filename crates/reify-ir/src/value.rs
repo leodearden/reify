@@ -2588,10 +2588,14 @@ impl Value {
                 format!("vec({})", strs.join(", "))
             }
             Value::Matrix(rows) => {
+                let reference = aggregate_magnitude(self);
                 let row_strs: Vec<String> = rows
                     .iter()
                     .map(|row| {
-                        let inner: Vec<String> = row.iter().map(|v| v.format_display()).collect();
+                        let inner: Vec<String> = row
+                            .iter()
+                            .map(|v| v.format_display_rel(reference))
+                            .collect();
                         format!("[{}]", inner.join(", "))
                     })
                     .collect();
@@ -2729,6 +2733,19 @@ impl Value {
                     .map(|v| v.format_display_rel(reference))
                     .collect();
                 format!("[{}]", strs.join(", "))
+            }
+            Value::Matrix(rows) => {
+                let row_strs: Vec<String> = rows
+                    .iter()
+                    .map(|row| {
+                        let inner: Vec<String> = row
+                            .iter()
+                            .map(|v| v.format_display_rel(reference))
+                            .collect();
+                        format!("[{}]", inner.join(", "))
+                    })
+                    .collect();
+                format!("[{}]", row_strs.join(", "))
             }
             _ => self.format_display(),
         }
