@@ -114,26 +114,40 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# Shared harness-layout contract data + predicates (task 5300). This guard and
+# the diff-scoped scripts/check-harness-baseline-registration.sh both source
+# this lib, so the consolidatable-crate set, the override set, and the
+# baseline-membership semantics cannot silently diverge between them.
+[ -f "$SCRIPT_DIR/harness-layout-lib.sh" ] || {
+    echo "ERROR: harness-layout-lib.sh not found at $SCRIPT_DIR/harness-layout-lib.sh" >&2
+    exit 1
+}
+source "$SCRIPT_DIR/harness-layout-lib.sh"
+
 # ---------------------------------------------------------------------------
 # Config constants (the C1/C2 contract parameters).
 # ---------------------------------------------------------------------------
 
 # The 5 crates whose top-level tests/*.rs are subject to the C1 layout
-# contract. reify-solver-elastic / reify-eval-fea-tests are deliberately NOT
-# here: they host only override binaries + permanently-standalone tests and are
-# out of the consolidation contract's scope.
-CONSOLIDATABLE_CRATES=(reify-cli reify-syntax reify-kernel-occt reify-eval reify-compiler)
-
-# The 7 standalone integration binaries that are NEVER consolidated (I1),
-# identified by file stem (basename without the .rs extension).
-OVERRIDE_BINARIES=(determinism analytical_validation modal_benchmarks buckling_smoke fea_diagnostics_e2e tensegrity_t0a representation_within_assertion)
+# contract, and the 7 standalone integration binaries that are NEVER
+# consolidated (I1). Both sets are now sourced from the shared
+# harness-layout-lib.sh (single source of truth with the diff-scoped gate) —
+# populated into these arrays so the rest of this guard is unchanged.
+# reify-solver-elastic / reify-eval-fea-tests are deliberately NOT consolidatable:
+# they host only override binaries + permanently-standalone tests.
+CONSOLIDATABLE_CRATES=()
+while IFS= read -r _c; do CONSOLIDATABLE_CRATES+=("$_c"); done < <(harness_layout_consolidatable_crates)
+OVERRIDE_BINARIES=()
+while IFS= read -r _ov; do OVERRIDE_BINARIES+=("$_ov"); done < <(harness_layout_override_stems)
 
 # Raw-line-count cap per harness_<subsystem>.rs compile unit (PRD §11: raw
 # line count, simplest/conservative; ~20 kLOC = upper end of the §7 band).
 CAP_LINES=20000
 
-# The checked-in grandfather-baseline ratchet.
-BASELINE="$SCRIPT_DIR/harness-layout-baseline.manifest"
+# The checked-in grandfather-baseline ratchet (resolved via the shared lib so
+# the REIFY_HARNESS_LAYOUT_BASELINE override is honored identically by both
+# guards; default path is unchanged).
+BASELINE="$(harness_layout_baseline_path)"
 
 # ---------------------------------------------------------------------------
 # _emit <VERDICT> <field>... — emit one canonical structured verdict line.
@@ -180,16 +194,10 @@ harness_layout_violations() {
         return 1
     fi
 
-    # Load the grandfather baseline (comment/blank-line stripped, matching the
-    # run-all-classification-lib.sh accessor style) into a set for O(1) rule-(b)
-    # membership tests — read once per crate, not once per file.
-    local -A _baseline_set=()
-    if [ -f "$baseline_file" ]; then
-        local _bl
-        while IFS= read -r _bl; do
-            _baseline_set["$_bl"]=1
-        done < <(grep -vE '^[[:space:]]*#' "$baseline_file" | grep -vE '^[[:space:]]*$')
-    fi
+    # rule (b) baseline membership is delegated to the shared lib's
+    # harness_layout_baseline_contains (single source of truth with the
+    # diff-scoped gate; same comment/blank stripping), called per candidate
+    # below.
 
     # The 7 override binaries (I1) are allow-listed by file stem — never
     # re-accretion violations. Build the lookup set once per call.
@@ -226,7 +234,7 @@ harness_layout_violations() {
             continue
         fi
         key="crates/$crate/tests/$base"
-        if [ -z "${_baseline_set[$key]:-}" ]; then
+        if ! harness_layout_baseline_contains "$key" "$baseline_file"; then
             _emit FAIL "crate=$crate" "file=$f" "reason=unsanctioned-standalone"
             violations=$((violations + 1))
         fi

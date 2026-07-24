@@ -46,10 +46,10 @@ below and replacing the counts; then re-run the test to confirm it passes.
 <!-- THROUGHPUT-COUNTS:BEGIN -->
 | shape | all | branch |
 |-------|-----|--------|
-| docs-only  | 15 |  0 |
-| reify-doc  | 15 | 15 |
-| reify-eval | 15 | 15 |
-| gui-only   | 15 |  3 |
+| docs-only  | 16 |  0 |
+| reify-doc  | 16 | 16 |
+| reify-eval | 16 | 16 |
+| gui-only   | 16 |  3 |
 <!-- THROUGHPUT-COUNTS:END -->
 
 _Counts bumped 2026-06-25 (task 4839): `add_test_passes()` emitted one
@@ -99,6 +99,16 @@ plan line wherever that block runs — every `scope=all` plan, and `scope=branch
 the `RUN_RUST=1` shapes (reify-doc, reify-eval). docs-only branch stays 0 and
 gui-only branch stays 3 (the Rust-infra lint block is not emitted under those branch
 scopes). The Plan-Step Counts table and the machine sentinel move 13 → 14 in lockstep._
+
+_Counts bumped 2026-07-24 (task 5300): added
+`./scripts/check-harness-baseline-registration.sh --from-git` (the diff-scoped
+harness-layout baseline-registration drift gate) to `build_plan` inside the
+`RUN_RUST=1` block in `scripts/verify.sh`, immediately after
+`check-infra-classification-manifest.sh`. Net change: +1 non-comment plan line
+wherever `RUN_RUST=1` — every `scope=all` plan, and `scope=branch` for the
+`RUN_RUST=1` shapes (reify-doc, reify-eval). docs-only branch stays 0 and
+gui-only branch stays 3 (`RUN_RUST=0` there, so the gate is not emitted). The
+machine sentinel moves 15 → 16 for those cells._
 
 ## Heavy-Work Narrowed Markers
 
