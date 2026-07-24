@@ -25,8 +25,49 @@ use reify_ir::CompiledExpr;
 /// recognised by the compiler. Single source of truth — imported into the
 /// `units.rs` test module to pin disjointness from all sibling families.
 ///
-/// Populated in step-2 (currently an empty scaffold).
-pub const ORIENTATION_TYPED_FN_NAMES: &[&str] = &[];
+/// **14 names** grouped by target nominal type:
+/// - **Orientation producers** (10) → `Type::Orientation(3)`: `orient_identity`,
+///   `orient_quaternion`, `orient_euler`, `orient_basis`, `orient_look_at`,
+///   `orient_axis_angle`, `orient_exp`, `orient_inverse`, `orient_compose`,
+///   `orient_slerp`. Eval dispatch: `reify_stdlib::orientation::eval_orientation`.
+/// - **Transform producers** (3) → `Type::Transform(3)`: `transform3`,
+///   `transform3_identity`, `transform_compose`. Eval dispatch:
+///   `reify_stdlib::geometry::eval_geometry`.
+/// - **Frame producer** (1) → `Type::Frame(3)`: `frame3`. Eval dispatch:
+///   `reify_stdlib::geometry::eval_geometry`.
+///
+/// **The `orient_*` family is NOT uniform** — this MUST be an explicit list, not
+/// a `starts_with("orient_")` prefix. Three `orient_*` DECOMPOSERS are
+/// deliberately EXCLUDED because they return other value kinds, not an
+/// orientation:
+/// - `orient_log` → `Value::Vector` (the rotation vector / log map),
+/// - `orient_to_euler` → `Value::List` of Angles,
+/// - `orient_to_axis_angle` → `Value::Map` `{angle, axis}`.
+///
+/// A prefix or blanket "all `orient_*` → Orientation" rule would newly MISTYPE
+/// these three (and the Map case has no clean `Type` variant). Per-name typing
+/// for the decomposers is out of scope here (a follow-up).
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub const ORIENTATION_TYPED_FN_NAMES: &[&str] = &[
+    // Orientation producers (10): → Type::Orientation(3)
+    "orient_identity",
+    "orient_quaternion",
+    "orient_euler",
+    "orient_basis",
+    "orient_look_at",
+    "orient_axis_angle",
+    "orient_exp",
+    "orient_inverse",
+    "orient_compose",
+    "orient_slerp",
+    // Transform producers (3): → Type::Transform(3)
+    "transform3",
+    "transform3_identity",
+    "transform_compose",
+    // Frame producer (1): → Type::Frame(3)
+    "frame3",
+];
 
 /// Is `name` an orientation/transform/frame constructor builtin the compiler
 /// types via [`orientation_typed_fn_result_type`]? Name-only classification —
