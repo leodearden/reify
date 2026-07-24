@@ -3118,11 +3118,14 @@ impl OcctKernel {
                 // with ANY finite start-tangent (not just +Z).
                 let t = ffi::ffi::wire_start_tangent(path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                // Copy the tangent components before the by-value validate guard
+                // consumes `t` (Point3 is not Copy).
+                let (tx, ty, tz) = (t.x, t.y, t.z);
                 validate_pipe_start_tangent(t)?;
                 let p = ffi::ffi::wire_start_point(path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 let circle_shape =
-                    ffi::ffi::make_oriented_circle_face(r, p.x, p.y, p.z, t.x, t.y, t.z)
+                    ffi::ffi::make_oriented_circle_face(r, p.x, p.y, p.z, tx, ty, tz)
                         .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 ffi::ffi::make_pipe(&circle_shape, path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
