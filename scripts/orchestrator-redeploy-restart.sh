@@ -12,29 +12,38 @@
 #   SCHEDULE MODE (default):
 #     Checks project_root is clean. If dirty, exits non-zero with an
 #     actionable "commit/land first" message — schedules NOTHING.
-#     If clean, best-effort pre-cleans any stale transient unit, then
-#     schedules the restart as a DETACHED transient unit via:
+#     If ORCH_REQUIRE_COMMIT is set, ALSO refuses (exit non-zero, schedules
+#     NOTHING) unless that commit is an ancestor of ORCH_MAIN_BRANCH.
+#     If clean (and the optional commit precondition holds), best-effort
+#     pre-cleans any stale transient unit, then schedules the restart as a
+#     DETACHED transient unit via:
 #       systemd-run --user --on-active=<delay> --unit=<tu> --collect \
 #         --setenv=ORCH_UNIT=… --setenv=ORCH_PROJECT_ROOT=… \
+#         [--setenv=ORCH_REQUIRE_COMMIT=… --setenv=ORCH_MAIN_BRANCH=…] \
 #         <abs-path-to-self> --exec-restart
 #     The transient unit is a child of the USER systemd manager (not the
 #     orchestrator), so it fires AFTER the triggering agent has exited.
 #
 #   EXEC MODE (--exec-restart):
 #     Run by the transient unit at fire time. Re-checks project_root.
-#     If clean → blocking `systemctl --user stop <unit>` THEN
+#     If clean AND (ORCH_REQUIRE_COMMIT is unset OR still an ancestor of
+#     ORCH_MAIN_BRANCH) → blocking `systemctl --user stop <unit>` THEN
 #       `systemctl --user start <unit>` (NEVER `systemctl restart` —
 #       the 90s graceful-stop window cancels restart's start-half).
-#     If dirty → leave the old orchestrator RUNNING, log loudly, exit 0.
+#     If dirty, OR ORCH_REQUIRE_COMMIT no longer holds → leave the old
+#     orchestrator RUNNING, log loudly, exit 0.
 #
 # Config (env vars with defaults):
 #   ORCH_UNIT            — systemd unit name (default: orchestrator-reify.service)
 #   ORCH_PROJECT_ROOT    — main checkout to guard (default: /home/leo/src/reify)
 #   ORCH_RESTART_DELAY   — on-active delay for systemd-run (default: 60s)
 #   ORCH_TRANSIENT_UNIT  — transient unit name (default: orch-redeploy-restart)
+#   ORCH_REQUIRE_COMMIT  — optional <sha> precondition, gates BOTH modes on
+#                          being an ancestor of ORCH_MAIN_BRANCH (default: unset)
+#   ORCH_MAIN_BRANCH     — branch ORCH_REQUIRE_COMMIT is checked against (default: main)
 #
 # Usage:
-#   scripts/orchestrator-redeploy-restart.sh [--help]
+#   scripts/orchestrator-redeploy-restart.sh [--help] [--require-commit=<sha>]
 #   scripts/orchestrator-redeploy-restart.sh --exec-restart
 #
 # See also: docs in CLAUDE.md §"Deploying the orchestrator (config/code changes)"
@@ -46,11 +55,13 @@ ORCH_UNIT="${ORCH_UNIT:-orchestrator-reify.service}"
 ORCH_PROJECT_ROOT="${ORCH_PROJECT_ROOT:-/home/leo/src/reify}"
 ORCH_RESTART_DELAY="${ORCH_RESTART_DELAY:-60s}"
 ORCH_TRANSIENT_UNIT="${ORCH_TRANSIENT_UNIT:-orch-redeploy-restart}"
+ORCH_REQUIRE_COMMIT="${ORCH_REQUIRE_COMMIT:-}"
+ORCH_MAIN_BRANCH="${ORCH_MAIN_BRANCH:-main}"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 usage() {
     cat >&2 <<'USAGE'
-Usage: scripts/orchestrator-redeploy-restart.sh [--help | --exec-restart]
+Usage: scripts/orchestrator-redeploy-restart.sh [--help | --exec-restart] [--require-commit=<sha>]
 
 Modes:
   (default)      Schedule mode: check project_root is clean, then schedule a
@@ -59,6 +70,13 @@ Modes:
   --exec-restart Exec mode (run by the transient unit at fire time): re-check
                  clean, then blocking stop then start. If dirty, leave the
                  orchestrator running and exit 0.
+  --require-commit=<sha>
+                 Optional precondition (either mode): refuse unless <sha> is
+                 an ancestor of ORCH_MAIN_BRANCH. Schedule mode exits non-zero
+                 and schedules NOTHING if it isn't. Exec mode leaves the
+                 orchestrator RUNNING and exits 0 if it no longer holds at
+                 fire time. Overrides ORCH_REQUIRE_COMMIT if both are given.
+                 Omit entirely for today's behavior (no precondition).
   --help         Show this usage and exit 0.
 
 Environment knobs (all have defaults):
@@ -66,9 +84,13 @@ Environment knobs (all have defaults):
   ORCH_PROJECT_ROOT     Main checkout to guard   (default: /home/leo/src/reify)
   ORCH_RESTART_DELAY    on-active delay           (default: 60s)
   ORCH_TRANSIENT_UNIT   Transient unit name       (default: orch-redeploy-restart)
+  ORCH_REQUIRE_COMMIT   Optional <sha> precondition (default: unset — no precondition)
+  ORCH_MAIN_BRANCH      Branch ORCH_REQUIRE_COMMIT is checked against (default: main)
 
 IMPORTANT: project_root must be clean (no uncommitted tracked changes) before
-scheduling. If it is dirty, commit/land your changes first, then re-run.
+scheduling. If it is dirty, commit/land your changes first, then re-run. If
+--require-commit/ORCH_REQUIRE_COMMIT is set, that commit must also be an
+ancestor of ORCH_MAIN_BRANCH, or scheduling is refused the same way.
 USAGE
 }
 
@@ -96,6 +118,41 @@ is_clean() {
     [ -z "$status_out" ]
 }
 
+# require_commit_on_main ROOT SHA BRANCH
+#   Returns 0 if SHA is an ancestor of BRANCH in the repo at ROOT — i.e. a
+#   restart against ROOT would load config that already includes SHA.
+#   Returns non-zero if SHA is NOT an ancestor, OR SHA/BRANCH is not a valid
+#   object/ref, OR any other git error — all fail-closed to "refuse the
+#   restart" (esc-5271-11: is_clean() alone cannot tell a stale-but-clean
+#   project_root from one that actually has the expected commit).
+require_commit_on_main() {
+    local root="$1" sha="$2" branch="$3"
+    git -C "$root" merge-base --is-ancestor "$sha" "$branch" 2>/dev/null
+}
+
+# describe_commit_precondition_failure ROOT SHA BRANCH
+#   Echoes a short reason token explaining WHY require_commit_on_main refused,
+#   so the operator-facing message can distinguish an unresolvable sha/branch
+#   (typically a typo or truncation, or a ref that isn't fetched) from a valid
+#   commit that simply hasn't landed yet. `merge-base --is-ancestor` collapses
+#   all three into exit non-zero, which would otherwise send an operator chasing
+#   the wrong fix ("land the commit") for what is really a bad name.
+#     bad-object   — SHA does not resolve to a commit in ROOT
+#     bad-branch   — BRANCH does not resolve to a commit in ROOT
+#     not-ancestor — both resolve, but SHA is not an ancestor of BRANCH
+#   Purely advisory for messaging: the fail-closed refusal is authoritative
+#   regardless of what this classification returns.
+describe_commit_precondition_failure() {
+    local root="$1" sha="$2" branch="$3"
+    if ! git -C "$root" rev-parse --verify --quiet "${sha}^{commit}" >/dev/null 2>&1; then
+        echo "bad-object"
+    elif ! git -C "$root" rev-parse --verify --quiet "${branch}^{commit}" >/dev/null 2>&1; then
+        echo "bad-branch"
+    else
+        echo "not-ancestor"
+    fi
+}
+
 # ── Arg parsing ───────────────────────────────────────────────────────────────
 MODE="schedule"
 for arg in "$@"; do
@@ -106,6 +163,14 @@ for arg in "$@"; do
             ;;
         --exec-restart)
             MODE="exec"
+            ;;
+        --require-commit=*)
+            ORCH_REQUIRE_COMMIT="${arg#--require-commit=}"
+            if [ -z "$ORCH_REQUIRE_COMMIT" ]; then
+                echo "orchestrator-redeploy-restart.sh: ERROR — --require-commit requires a non-empty <sha>" >&2
+                usage
+                exit 1
+            fi
             ;;
         *)
             echo "orchestrator-redeploy-restart.sh: ERROR — unknown argument: $arg" >&2
@@ -139,6 +204,43 @@ if [ "$MODE" = "schedule" ]; then
         exit 1
     fi
 
+    # Preflight: if a specific commit is required, refuse unless it is
+    # provably an ancestor of ORCH_MAIN_BRANCH (esc-5271-11) — is_clean()
+    # alone cannot detect a stale-but-clean project_root. Schedules NOTHING.
+    if [ -n "$ORCH_REQUIRE_COMMIT" ] && ! require_commit_on_main "$ORCH_PROJECT_ROOT" "$ORCH_REQUIRE_COMMIT" "$ORCH_MAIN_BRANCH"; then
+        # Classify the failure so the message points at the right fix: an
+        # unresolvable sha/branch needs a name/fetch fix, not "land the commit".
+        # The refusal itself is unconditional (fail-closed) regardless of reason.
+        reason="$(describe_commit_precondition_failure "$ORCH_PROJECT_ROOT" "$ORCH_REQUIRE_COMMIT" "$ORCH_MAIN_BRANCH")"
+        case "$reason" in
+            bad-object)
+                echo "orchestrator-redeploy-restart.sh: ERROR — required commit does not resolve to a commit in project_root (possible typo/truncation)." >&2
+                ;;
+            bad-branch)
+                echo "orchestrator-redeploy-restart.sh: ERROR — ORCH_MAIN_BRANCH '$ORCH_MAIN_BRANCH' does not resolve to a ref in project_root (possible typo, or the branch is not fetched)." >&2
+                ;;
+            *)
+                echo "orchestrator-redeploy-restart.sh: ERROR — required commit is not an ancestor of '$ORCH_MAIN_BRANCH'." >&2
+                ;;
+        esac
+        echo "  sha:          $ORCH_REQUIRE_COMMIT" >&2
+        echo "  project_root: $ORCH_PROJECT_ROOT" >&2
+        echo "  branch:       $ORCH_MAIN_BRANCH" >&2
+        echo "" >&2
+        case "$reason" in
+            bad-object|bad-branch)
+                echo "  FIX: correct the sha / ORCH_MAIN_BRANCH (or fetch the missing ref), then" >&2
+                echo "  re-run this script. Schedules NOTHING." >&2
+                ;;
+            *)
+                echo "  A restart right now would reload config that does not yet include this" >&2
+                echo "  commit. FIX: land/merge the commit onto '$ORCH_MAIN_BRANCH' first, then" >&2
+                echo "  re-run this script. Schedules NOTHING." >&2
+                ;;
+        esac
+        exit 1
+    fi
+
     # Resolve self as absolute path so the transient unit can re-invoke us
     SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
@@ -147,6 +249,15 @@ if [ "$MODE" = "schedule" ]; then
     systemctl --user stop "${ORCH_TRANSIENT_UNIT}.timer"   2>/dev/null || true
     systemctl --user reset-failed "${ORCH_TRANSIENT_UNIT}.service" 2>/dev/null || true
     systemctl --user reset-failed "${ORCH_TRANSIENT_UNIT}.timer"   2>/dev/null || true
+
+    # Thread the require-commit precondition through to the transient unit
+    # ONLY when set, so the systemd-run invocation stays byte-identical to
+    # today when the precondition is unused. Guarded-array expansion avoids
+    # an unbound-variable error under `set -u` when extra_setenv is empty.
+    extra_setenv=()
+    if [ -n "$ORCH_REQUIRE_COMMIT" ]; then
+        extra_setenv+=(--setenv="ORCH_REQUIRE_COMMIT=$ORCH_REQUIRE_COMMIT" --setenv="ORCH_MAIN_BRANCH=$ORCH_MAIN_BRANCH")
+    fi
 
     # Schedule the detached restart as a transient user unit.
     # Check systemd-run's exit code: if scheduling fails (e.g. a stale unit the
@@ -159,6 +270,7 @@ if [ "$MODE" = "schedule" ]; then
             --collect \
             --setenv="ORCH_UNIT=$ORCH_UNIT" \
             --setenv="ORCH_PROJECT_ROOT=$ORCH_PROJECT_ROOT" \
+            "${extra_setenv[@]+${extra_setenv[@]}}" \
             "$SELF" --exec-restart; then
         echo "orchestrator-redeploy-restart.sh: ERROR — systemd-run failed to schedule restart of '$ORCH_UNIT'." >&2
         echo "  Check that systemd --user is available and the transient unit is not already active:" >&2
@@ -189,6 +301,32 @@ if [ "$MODE" = "exec" ]; then
         echo "  Leaving orchestrator '$ORCH_UNIT' RUNNING to avoid a crash-loop." >&2
         echo "  (Starting dirty would crash-loop to StartLimitBurst=10 then stay DOWN.)" >&2
         echo "  Commit/land the changes and run the script again when clean." >&2
+        exit 0
+    fi
+
+    # Re-check the require-commit precondition at fire time (rare: main could
+    # have moved since schedule time). Fail-closed toward leaving the
+    # known-good orchestrator running rather than restarting into stale
+    # config — mirrors the dirty-at-fire-time guard above.
+    if [ -n "$ORCH_REQUIRE_COMMIT" ] && ! require_commit_on_main "$ORCH_PROJECT_ROOT" "$ORCH_REQUIRE_COMMIT" "$ORCH_MAIN_BRANCH"; then
+        # Classify as in schedule mode so the fire-time warning names the real
+        # cause (unresolvable sha/branch vs a commit that moved off the branch).
+        # Every reason still leaves the orchestrator RUNNING (fail-closed).
+        reason="$(describe_commit_precondition_failure "$ORCH_PROJECT_ROOT" "$ORCH_REQUIRE_COMMIT" "$ORCH_MAIN_BRANCH")"
+        case "$reason" in
+            bad-object)
+                echo "orchestrator-redeploy-restart.sh: WARNING — required commit does not resolve to a commit in project_root at fire time (possible typo/truncation)." >&2
+                ;;
+            bad-branch)
+                echo "orchestrator-redeploy-restart.sh: WARNING — ORCH_MAIN_BRANCH '$ORCH_MAIN_BRANCH' does not resolve to a ref in project_root at fire time." >&2
+                ;;
+            *)
+                echo "orchestrator-redeploy-restart.sh: WARNING — required commit is no longer an ancestor of '$ORCH_MAIN_BRANCH' at fire time." >&2
+                ;;
+        esac
+        echo "  sha:          $ORCH_REQUIRE_COMMIT" >&2
+        echo "  project_root: $ORCH_PROJECT_ROOT" >&2
+        echo "  Leaving orchestrator '$ORCH_UNIT' RUNNING, not restarting." >&2
         exit 0
     fi
 

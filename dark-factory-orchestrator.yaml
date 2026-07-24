@@ -57,6 +57,18 @@ lock_depth: 10
 # (5400) is now < this warm budget; if cold-cache verifies under saturation start hitting exit-124,
 # add verify_cold_command_timeout_secs >= 7200.
 verify_command_timeout_secs: 7200
+# merge_verify_cold_command_timeout_secs (task #5383, sibling of #5382 which
+# lifts verify_command_timeout_secs above to this same 10800): the merge path
+# (DF_VERIFY_ROLE=merge) is NOT bounded by verify_command_timeout_secs above.
+# dark-factory orchestrator/src/orchestrator/verify.py's
+# `_resolve_verify_timeout` resolves the cold merge-verify OUTER wall via a
+# cascade whose FIRST branch returns this key when set (the is_merge_verify
+# branch), overriding dark-factory defaults.yaml's 7200s default. 180m (10800s)
+# covers the cold OCCT/OpenVDB/gmsh/manifold native-kernel compile that
+# precedes nextest on a cold cache, plus the debug(60m=3600s)+release(90m=5400s)
+# = 9000s inner nextest budget, with ~1800s margin. Only ever widens the wall
+# versus the 7200s default it overrides.
+merge_verify_cold_command_timeout_secs: 10800
 # Verify kill-tree hardening (merge-gate-health W1b, 2026-07-19 survey): run each verify
 # in a systemd df-verify-*.scope so the whole subtree is enumerable/killable — eliminates
 # the GNU-timeout setpgid pgroup-escape strands that gut the _merge-verify worktree after
