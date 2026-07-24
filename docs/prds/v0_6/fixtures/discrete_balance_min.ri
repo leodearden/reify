@@ -1,0 +1,32 @@
+module discrete_balance_min
+
+// n1 + an objective: prefer configs with pulley 1 down (minimize its force).
+// Under the spike CpSat has no objective support: expect a feasible point
+// with optimality unproven/unreported — NOT the argmin.
+
+structure N3 {
+    param up1 : Bool = auto(free)
+    param up2 : Bool = auto(free)
+    param up3 : Bool = auto(free)
+    param up4 : Bool = auto(free)
+    param up5 : Bool = auto(free)
+    param up6 : Bool = auto(free)
+
+    constraint (if up1 then 1.0 else -1.0) + (if up2 then 1.0 else -1.0)
+             + (if up3 then 1.0 else -1.0) + (if up4 then 1.0 else -1.0)
+             + (if up5 then 1.0 else -1.0) + (if up6 then 1.0 else -1.0) == 0.0
+
+    constraint 0.8660254 * (if up2 then 1.0 else -1.0)
+             + 0.8660254 * (if up3 then 1.0 else -1.0)
+             - 0.8660254 * (if up5 then 1.0 else -1.0)
+             - 0.8660254 * (if up6 then 1.0 else -1.0) == 0.0
+
+    constraint (if up1 then 1.0 else -1.0)
+             + 0.5 * (if up2 then 1.0 else -1.0)
+             - 0.5 * (if up3 then 1.0 else -1.0)
+             - (if up4 then 1.0 else -1.0)
+             - 0.5 * (if up5 then 1.0 else -1.0)
+             + 0.5 * (if up6 then 1.0 else -1.0) == 0.0
+
+    minimize (if up1 then 1.0 else -1.0)
+}

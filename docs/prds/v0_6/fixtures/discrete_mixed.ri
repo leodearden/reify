@@ -1,0 +1,9 @@
+module discrete_mixed
+
+structure DCM4 {
+    param up : Bool = auto
+    param t : Real = auto
+    constraint t >= (if up then 3.0 else 5.0)
+    constraint t <= 10.0
+    minimize t
+}

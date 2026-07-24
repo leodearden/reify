@@ -1,0 +1,8 @@
+module discrete_int_auto
+
+structure DCM2 {
+    param n : Int = auto
+    constraint n >= 1
+    constraint n <= 8
+    constraint n * 3 >= 10
+}

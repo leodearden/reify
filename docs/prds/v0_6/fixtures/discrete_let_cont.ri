@@ -1,0 +1,10 @@
+module discrete_let_cont
+
+structure DCM5 {
+    param a : Real = auto
+    param b : Real = auto
+    let s = a + b
+    let d = a - b
+    constraint s == 10.0
+    constraint d == 2.0
+}
