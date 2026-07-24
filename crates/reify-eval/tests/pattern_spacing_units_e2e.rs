@@ -68,6 +68,80 @@ fn linear_pattern_2d_bare_spacing_drops_op_with_error() {
     );
 }
 
+/// Build `source` against a mock kernel and return
+/// `(error_diagnostic_count, matching_op_count)`, where an op matches when
+/// `is_pattern` accepts it. Shared by the 1D `linear_pattern` pair below, whose
+/// two cases differ only in the source and the expected counts.
+fn build_and_count(source: &str, is_pattern: fn(&GeometryOp) -> bool) -> (usize, usize) {
+    let compiled = parse_and_compile(source);
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = Engine::new(
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(kernel)),
+    );
+    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
+
+    let error_count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .count();
+    let ops = ops_ref.lock().unwrap();
+    let op_count = ops.iter().filter(|r| is_pattern(&r.op)).count();
+    (error_count, op_count)
+}
+
+/// The 1D `linear_pattern` needs its own e2e lock, not just the unit-level one:
+/// its spacing is read at a SEPARATE call site from `linear_pattern_2d`'s
+/// spacing1/spacing2, so a regression there would slip past the 2D e2e above.
+///
+/// BARE `20` spacing → at least one `Severity::Error` and NO `LinearPattern` op
+/// reaches the kernel; DIMENSIONED `20mm` → zero Errors and exactly one op
+/// (the positive control that keeps the rejection case from passing vacuously).
+#[test]
+fn linear_pattern_1d_bare_spacing_drops_op_dimensioned_builds() {
+    let is_linear = |op: &GeometryOp| matches!(op, GeometryOp::LinearPattern { .. });
+
+    let (bare_errors, bare_ops) = build_and_count(
+        r#"
+        structure def BareSpacingRow {
+            let row = linear_pattern(box(10mm, 10mm, 10mm), 1, 0, 0, 3, 20)
+        }
+        "#,
+        is_linear,
+    );
+    assert!(
+        bare_errors > 0,
+        "a bare (dimensionless) linear_pattern spacing must produce at least one \
+         Error diagnostic; got {bare_errors}"
+    );
+    assert_eq!(
+        bare_ops, 0,
+        "a bare-spacing linear_pattern must be DROPPED, not silently built with \
+         20 SI-metre spacing; emitted LinearPattern ops: {bare_ops}"
+    );
+
+    let (dim_errors, dim_ops) = build_and_count(
+        r#"
+        structure def DimSpacingRow {
+            let row = linear_pattern(box(10mm, 10mm, 10mm), 1, 0, 0, 3, 20mm)
+        }
+        "#,
+        is_linear,
+    );
+    assert_eq!(
+        dim_errors, 0,
+        "a dimensioned 20mm linear_pattern spacing must build with zero Error \
+         diagnostics; got {dim_errors}"
+    );
+    assert_eq!(
+        dim_ops, 1,
+        "a dimensioned linear_pattern must emit exactly one LinearPattern op; \
+         got {dim_ops}"
+    );
+}
+
 /// Positive control / contrast: the SAME grid with DIMENSIONED `20mm` spacings
 /// builds cleanly — zero Error diagnostics and exactly one `LinearPattern2D`
 /// op reaches the kernel. This guards the rejection test above against a
