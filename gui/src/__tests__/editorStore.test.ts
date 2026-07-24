@@ -707,3 +707,63 @@ describe('editorStore missingFiles', () => {
     });
   });
 });
+
+// ─── openFile reopen of an already-open file (task-5359) ─────────────────────
+//
+// Reopening an already-open path (debug bridge open_file, File→Open, launch) must
+// dedup to one tab AND reconcile the buffer against fresh disk content without
+// clobbering unsaved edits.  See task 5359 (regression of 3892/3893).
+
+describe('openFile reopen of an already-open file', () => {
+  it('A: clean reopen refreshes buffer from disk and clears externallyChanged', () => {
+    createRoot((dispose) => {
+      const { state, openFile, markExternallyChanged } = createEditorStore();
+      openFile({ path: '/p/a.ri', content: 'V0' });
+      // Simulate a prior disk-diverged flag on the (clean) file.
+      markExternallyChanged('/p/a.ri');
+      expect(state.externallyChanged).toContain('/p/a.ri');
+
+      // Reopen the same canonical path with fresh disk content; file is NOT dirty.
+      openFile({ path: '/p/a.ri', content: 'V1' });
+
+      expect(state.openFiles).toHaveLength(1); // dedup — one tab
+      expect(state.openFiles[0].content).toBe('V1'); // buffer refreshed to disk
+      expect(state.activeFile).toBe('/p/a.ri'); // focused
+      // A clean reopen reconciles the tab to disk, so the stale flag is cleared.
+      expect(state.externallyChanged).not.toContain('/p/a.ri');
+      dispose();
+    });
+  });
+
+  it('B: dirty reopen must NOT clobber the buffer and surfaces a conflict', () => {
+    createRoot((dispose) => {
+      const { state, openFile, markDirty } = createEditorStore();
+      openFile({ path: '/p/a.ri', content: 'V0' });
+      markDirty('/p/a.ri'); // user has unsaved edits in the buffer
+      // Disk changed to V1 under the dirty buffer (reopen with fresh disk content).
+      openFile({ path: '/p/a.ri', content: 'V1' });
+
+      expect(state.openFiles).toHaveLength(1); // dedup — one tab
+      expect(state.openFiles[0].content).toBe('V0'); // unsaved edits preserved (NOT clobbered)
+      expect(state.externallyChanged).toContain('/p/a.ri'); // conflict surfaced → save blocked
+      expect(state.dirtyFiles).toContain('/p/a.ri'); // still dirty
+      expect(state.activeFile).toBe('/p/a.ri'); // focused
+      dispose();
+    });
+  });
+
+  it('B (guard): dirty reopen with identical content does NOT mark externallyChanged', () => {
+    createRoot((dispose) => {
+      const { state, openFile, markDirty } = createEditorStore();
+      openFile({ path: '/p/a.ri', content: 'V0' });
+      markDirty('/p/a.ri');
+      // Reopen with the SAME content — no real divergence, so no conflict is raised.
+      openFile({ path: '/p/a.ri', content: 'V0' });
+
+      expect(state.openFiles[0].content).toBe('V0');
+      expect(state.externallyChanged).not.toContain('/p/a.ri');
+      expect(state.dirtyFiles).toContain('/p/a.ri');
+      dispose();
+    });
+  });
+});

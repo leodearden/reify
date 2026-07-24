@@ -652,9 +652,18 @@ export function Editor(props: EditorProps) {
     // Save current file's EditorState (keyed by URI) before switching
     fileStates.set(oldUri, view.state);
 
-    // Restore or create EditorState for the new file
+    // Restore or create EditorState for the new file.
+    //
+    // The per-URI fileStates cache preserves cursor/scroll/undo and, crucially, a
+    // dirty file's unsaved edits across tab switches.  But when a CLEAN file's store
+    // content was refreshed while it was inactive (debug open_file / reload of an
+    // already-open path — task-5359), the cached buffer holds stale disk content and
+    // must be rebuilt from the fresh store content.  Restore the cache only when the
+    // file is dirty (preserve unsaved edits) or the cache already matches the store;
+    // otherwise rebuild from newContent so a clean, diverged tab reflects disk.
     const savedState = fileStates.get(newUri);
-    if (savedState) {
+    const isDirty = activeFile ? props.store.state.dirtyFiles.includes(activeFile) : false;
+    if (savedState && (isDirty || savedState.doc.toString() === newContent)) {
       view.setState(savedState);
     } else {
       view.setState(EditorState.create({ doc: newContent, extensions }));

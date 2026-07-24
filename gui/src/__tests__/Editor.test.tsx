@@ -393,6 +393,129 @@ describe('Editor active file switching', () => {
   });
 });
 
+// task-5359: switching back to a file whose store content was refreshed while it
+// was inactive (debug open_file / reload of an already-open path) must show the
+// fresh content — not the stale per-URI cached EditorState — while still
+// preserving a dirty buffer's unsaved edits.
+describe('switching back to an already-open file refreshed while inactive (task-5359)', () => {
+  it('Case 1 (clean refresh): switch-back shows the refreshed store content, not the stale cached buffer', () => {
+    const fileA: FileData = { path: '/project/src/refresh_a.ri', content: 'A0' };
+    const fileB: FileData = { path: '/project/src/refresh_b.ri', content: 'B0' };
+    // Both files already open (switch via the tab bar) so the switch-away does not
+    // append a tab — isolating this test to the file-switch cache-vs-refresh policy.
+    const store = setupStore([fileA, fileB]);
+    store.setActiveFile(fileA.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    expect(getEditorView(container).state.doc.toString()).toBe('A0');
+
+    // Switch away — the file-switch effect caches fileA's EditorState (doc 'A0').
+    store.setActiveFile(fileB.path);
+    expect(getEditorView(container).state.doc.toString()).toBe('B0');
+
+    // Disk changed under the inactive CLEAN tab (e.g. debug open_file / reload).
+    store.updateFileContent(fileA.path, 'A1');
+
+    // Switch back to fileA — the CM view must show the refreshed content, not the
+    // stale cached 'A0' buffer.
+    store.setActiveFile(fileA.path);
+    expect(getEditorView(container).state.doc.toString()).toBe('A1');
+  });
+
+  it('Case 2 (dirty preservation): switch-back keeps the unsaved edited buffer, not the store content', () => {
+    const fileA: FileData = { path: '/project/src/dirty_a.ri', content: 'A0' };
+    const fileB: FileData = { path: '/project/src/dirty_b.ri', content: 'B0' };
+    const store = setupStore([fileA, fileB]);
+    store.setActiveFile(fileA.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // User edits fileA (marks it dirty); the store's fileA.content stays 'A0'.
+    view.dispatch({ changes: { from: 0, insert: 'X' } });
+    expect(getEditorView(container).state.doc.toString()).toBe('XA0');
+    expect(store.state.dirtyFiles).toContain(fileA.path);
+
+    // Switch away and back via the tab bar (both files already open).
+    store.setActiveFile(fileB.path);
+    store.setActiveFile(fileA.path);
+
+    // The dirty buffer (with the unsaved 'X') must be preserved — NOT rebuilt from
+    // the store's clean 'A0' content.
+    expect(getEditorView(container).state.doc.toString()).toBe('XA0');
+  });
+
+  it('Case 3 (dirty + disk diverged while inactive): switch-back keeps the unsaved buffer; the conflict flag surfaces the divergence instead of clobbering', () => {
+    const fileA: FileData = { path: '/project/src/conflict_a.ri', content: 'A0' };
+    const fileB: FileData = { path: '/project/src/conflict_b.ri', content: 'B0' };
+    const store = setupStore([fileA, fileB]);
+    store.setActiveFile(fileA.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // User edits fileA → buffer 'XA0' (dirty); the store snapshot stays 'A0'.
+    view.dispatch({ changes: { from: 0, insert: 'X' } });
+    expect(getEditorView(container).state.doc.toString()).toBe('XA0');
+    expect(store.state.dirtyFiles).toContain(fileA.path);
+
+    // Switch away — fileA's EditorState (doc 'XA0') is cached while it is inactive.
+    store.setActiveFile(fileB.path);
+
+    // A concurrent disk refresh lands 'A1' under the inactive DIRTY tab. markExternallyChanged
+    // is exactly what App.onFileChanged / openFile's dirty branch raise for a dirty external
+    // change, routing a later save to the conflict prompt; updateFileContent forces the store
+    // to the fresh disk content 'A1' so the switch-back must choose between the dirty buffer
+    // ('XA0') and diverged store/disk content ('A1') — a genuine three-way divergence.
+    store.updateFileContent(fileA.path, 'A1');
+    store.markExternallyChanged(fileA.path);
+    expect(store.state.externallyChanged).toContain(fileA.path);
+
+    // Switch back — the isDirty guard (Editor.tsx:666) must restore the cached dirty buffer
+    // 'XA0' rather than rebuilding from the store's 'A1'. Unsaved edits win over the concurrent
+    // disk refresh; the conflict is surfaced by the still-set externallyChanged flag (which the
+    // switch-back must not clear), not by silently clobbering the edit.
+    store.setActiveFile(fileA.path);
+    expect(getEditorView(container).state.doc.toString()).toBe('XA0');
+    expect(store.state.externallyChanged).toContain(fileA.path);
+    expect(store.state.dirtyFiles).toContain(fileA.path);
+  });
+});
+
+// task-5359 capstone: faithfully mirror the dogfood repro (printer_v01, 2026-07-22/23).
+// Reopening an already-open file via the debug bridge (open printer, open a second
+// file, reopen printer, disk changes, reopen printer) must keep exactly one printer
+// tab AND show the fresh disk content in the active CM view — not a stale first-load
+// buffer.  Passes only with BOTH fix A (clean-refresh in the store) and fix B (rebuild
+// the EditorState from fresh store content on a clean diverged switch-back).
+describe('reopen of an already-open file via the debug bridge shows fresh content in one tab (task-5359 capstone)', () => {
+  it('one printer tab and the active view reflects disk after a reopen with new content', () => {
+    const printer: FileData = { path: '/project/src/printer_v01.ri', content: 'V0' };
+    const devCapstan: FileData = { path: '/project/src/dev_capstan.ri', content: 'D' };
+    const store = setupStore([printer]);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    expect(getEditorView(container).state.doc.toString()).toBe('V0');
+
+    // Open a second file, then reopen the printer (still V0 on disk) — back to printer.
+    store.openFile({ path: devCapstan.path, content: 'D' });
+    store.openFile({ path: printer.path, content: 'V0' });
+    expect(getEditorView(container).state.doc.toString()).toBe('V0');
+
+    // Disk edit to the printer → 'V1' happens while it is inactive: switch to the
+    // second file, then reopen the printer with the fresh disk content.
+    store.openFile({ path: devCapstan.path, content: 'D' });
+    store.openFile({ path: printer.path, content: 'V1' });
+
+    // Exactly one printer tab (dedup), two tabs total — no duplicate spawned.
+    expect(store.state.openFiles.filter((f) => f.path === printer.path)).toHaveLength(1);
+    expect(store.state.openFiles).toHaveLength(2);
+    // Printer is focused and the CM view shows disk == what the engine evaluates.
+    expect(store.state.activeFile).toBe(printer.path);
+    expect(getEditorView(container).state.doc.toString()).toBe('V1');
+  });
+});
+
 describe('Editor scrollToLocation', () => {
   const BASELINE_HEAD = 9; // file2 'structure Mount {}': end_column 10 -> 0-indexed offset 9
 
