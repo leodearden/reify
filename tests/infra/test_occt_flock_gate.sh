@@ -293,52 +293,66 @@ assert "Test 17: NO 'cargo nextest run ... --no-run' line in the plan (task 4862
 assert "Test 17: debug full-workspace nextest pass uses unified 60m outer timeout (η/4521 floor 798.9s × 4.5, task 4520; build inside slot, task 4862)" \
     bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run --workspace'"
 
-# -- Test 17b: release pass uses the same unified 60m outer timeout (task 4520) ------
+# -- Test 17b: release pass uses the cold-aware 90m release inner timeout (task 5382) ------
 echo ""
-echo "--- Test 17b: release nextest pass uses unified 60m timeout (η/4521 floor 798.9s × 4.5 → 60m, retiring 75m, task 4520) ---"
+echo "--- Test 17b: release nextest pass uses cold-aware 90m release inner timeout (task 5382; debug stays 60m) ---"
 
-# The release pass (--release) was previously assigned 75m (a larger budget on the
-# LIGHTER pass — load-inconsistent band-aid lineage). Task 4520/ζ′ unifies both passes
-# to the single re-derived 60m: the debug --workspace pass is the HEAVIER compile (all
-# crates) yet already clears 60m battle-tested (task 4453), so the lighter
-# release-sensitive-subset pass clears 60m a fortiori. The --release token in the
-# regex discriminates this assertion from Test 17's --workspace assertion.
-# Task 4862 revert: the single combined build+exec pass carries the unified 60m timeout.
-assert "Test 17b: release nextest pass uses unified 60m outer timeout (not 75m, task 4520; build inside slot, task 4862)" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run .*--release'"
+# The release pass (--release) carries its OWN cold-aware inner budget, DECOUPLED from the
+# debug pass. The prior unified 60m (task 4520/ζ′) was derived from η/4521's floor (798.9s)
+# measured cold-TARGET / WARM-sccache — it NEVER included a cold-SCCACHE native-kernel relink
+# of OCCT/OpenVDB/gmsh/manifold, which pushes the combined release build+exec pass past 60m
+# and SIGTERM'd it at the inner timeout (esc-5370-2, false "integration_skew"). Task 5382
+# reintroduces a release-specific inner budget REIFY_VERIFY_TEST_TIMEOUT_RELEASE (default 90m);
+# the debug --workspace pass keeps REIFY_VERIFY_TEST_TIMEOUT (60m, asserted by Test 17).
+# Sibling task 5383 sized the merge OUTER wall (merge_verify_cold_command_timeout_secs=10800)
+# to accommodate debug(60m=3600s)+release(90m=5400s)=9000s with ~1800s margin. The --release
+# token in the regex discriminates this assertion from Test 17's --workspace assertion.
+assert "Test 17b: release nextest pass uses cold-aware 90m release inner timeout (task 5382; not 60m)" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 90m .*cargo nextest run .*--release'"
 
 # -- Tests T1–T7: host-relative compile timeout knobs (task 4621) ---------------
 # Pure hermetic plan-string assertions via `--print-plan` oracle + grep.
 # Each test runs verify.sh with a specific REIFY_VERIFY_*_TIMEOUT env and
 # checks that the rendered timeout token in the plan output matches.
 #
-# T1–T3: REIFY_VERIFY_TEST_TIMEOUT (test compile budget, default 60m)
+# T1–T3: REIFY_VERIFY_TEST_TIMEOUT (debug/base nextest budget, default 60m)
 # T4–T5: REIFY_VERIFY_CLIPPY_TIMEOUT (clippy+gui-feature check budget, default 45m)
 # T6–T7: REIFY_VERIFY_CHECK_TIMEOUT (cargo check budget, default 30m)
+# T8–T9: REIFY_VERIFY_TEST_TIMEOUT_RELEASE (release-pass inner budget, default 90m; task 5382)
+# T10:   merge OUTER wall ≥ debug_inner + release_inner relationship guard (task 5382)
 #
-# RED (T1, T4, T6) until step-6 impl; GREEN guards (T2, T3, T5, T7) already pass.
+# Task 4621 knobs: RED (T1, T4, T6) until step-6 impl; GREEN guards (T2, T3, T5, T7).
+# Task 5382: T1 (now decoupling), Test 17b, T2 (release token), T8, T9 are RED until the
+# release knob lands; T10 is a GREEN relationship guard (sibling 5383 already sized the
+# outer wall to 10800 ≥ 9000).
 echo ""
 echo "--- Tests T1–T7 (task 4621): host-relative compile timeout knobs ---"
 
-# T1: REIFY_VERIFY_TEST_TIMEOUT=90m → both debug (--workspace) and release
-#     nextest passes render `timeout --kill-after=60 90m`.
-#     RED: current code always emits 60m regardless of this env.
+# T1 (updated for task 5382 DECOUPLING): REIFY_VERIFY_TEST_TIMEOUT=95m drives ONLY the DEBUG
+#     (--workspace) nextest pass → `timeout --kill-after=60 95m`, while the RELEASE (--release)
+#     pass keeps its OWN default 90m (REIFY_VERIFY_TEST_TIMEOUT_RELEASE explicitly unset, so it
+#     falls to its own default regardless of ambient env). This proves the base knob no longer
+#     drives the release pass. 95m ≠ the release default 90m so the two tokens are
+#     distinguishable. RED against current code: the release pass currently follows the unified
+#     base knob → would render 95m.
 _T1_ERR="$(mktemp)"
-_T1_PLAN="$(REIFY_VERIFY_TEST_TIMEOUT=90m bash "$REPO_ROOT/scripts/verify.sh" test \
+_T1_PLAN="$(env -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE REIFY_VERIFY_TEST_TIMEOUT=95m \
+    bash "$REPO_ROOT/scripts/verify.sh" test \
     --profile both --scope all --print-plan 2>"$_T1_ERR" | grep -v '^#')"
 export _T1_PLAN
-assert "T1: REIFY_VERIFY_TEST_TIMEOUT=90m: debug nextest pass uses 90m outer timeout" \
-    occt_plan_grep_or_dump 'timeout --kill-after=60 90m .*cargo nextest run --workspace' "$_T1_PLAN" "$_T1_ERR"
-assert "T1: REIFY_VERIFY_TEST_TIMEOUT=90m: release nextest pass uses 90m outer timeout" \
+assert "T1: REIFY_VERIFY_TEST_TIMEOUT=95m: debug nextest pass uses 95m outer timeout" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 95m .*cargo nextest run --workspace' "$_T1_PLAN" "$_T1_ERR"
+assert "T1: REIFY_VERIFY_TEST_TIMEOUT=95m: release nextest pass keeps its OWN default 90m (decoupled, task 5382)" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 90m .*cargo nextest run .*--release' "$_T1_PLAN" "$_T1_ERR"
 rm -f "$_T1_ERR"
 
-# T2: REIFY_VERIFY_TEST_TIMEOUT unset → both passes use 60m (workstation default preserved).
+# T2: REIFY_VERIFY_TEST_TIMEOUT unset → debug pass uses 60m; release pass uses its OWN
+#     default 90m (task 5382 decoupled the release inner budget from the base knob).
 #     Guard: Tests 17/17b already check this via TEST_PLAN_SEGS; this is a direct re-check.
 assert "T2: REIFY_VERIFY_TEST_TIMEOUT unset: debug nextest pass uses default 60m" \
     bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run --workspace'"
-assert "T2: REIFY_VERIFY_TEST_TIMEOUT unset: release nextest pass uses default 60m" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run .*--release'"
+assert "T2: REIFY_VERIFY_TEST_TIMEOUT unset: release nextest pass uses its own default 90m (task 5382)" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 90m .*cargo nextest run .*--release'"
 
 # T3: Malformed REIFY_VERIFY_TEST_TIMEOUT=banana → falls back to 60m (validation guard).
 _T3_ERR="$(mktemp)"
@@ -390,6 +404,86 @@ export _T7_PLAN
 assert "T7: REIFY_VERIFY_CHECK_TIMEOUT unset: cargo check --workspace --tests uses default 30m" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 30m .*cargo check --workspace' "$_T7_PLAN" "$_T7_ERR"
 rm -f "$_T7_ERR"
+
+# -- Tests T8–T10 (task 5382): release-pass cold-aware inner timeout knob --------
+# The release nextest pass carries its OWN inner budget REIFY_VERIFY_TEST_TIMEOUT_RELEASE
+# (default 90m), decoupled from the debug/base REIFY_VERIFY_TEST_TIMEOUT (60m). The 60m
+# unified budget was measured cold-TARGET / WARM-sccache and SIGTERM'd the release pass on
+# a cold-SCCACHE native-kernel relink (esc-5370-2). T8/T9 exercise the new knob via the
+# same --print-plan oracle as T1–T7; T10 is a GREEN relationship guard tying the two inner
+# budgets to sibling task 5383's merge OUTER wall.
+echo ""
+echo "--- Tests T8–T10 (task 5382): release-pass cold-aware inner timeout knob ---"
+
+# T8: REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m drives ONLY the RELEASE (--release) nextest
+#     pass → `timeout --kill-after=60 100m`, while the DEBUG (--workspace) pass keeps its
+#     default 60m (REIFY_VERIFY_TEST_TIMEOUT explicitly unset). Proves the release knob is
+#     release-only. RED against current code: no release knob exists, so release renders 60m.
+_T8_ERR="$(mktemp)"
+_T8_PLAN="$(env -u REIFY_VERIFY_TEST_TIMEOUT REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m \
+    bash "$REPO_ROOT/scripts/verify.sh" test \
+    --profile both --scope all --print-plan 2>"$_T8_ERR" | grep -v '^#')"
+export _T8_PLAN
+assert "T8: REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m: release nextest pass uses 100m outer timeout" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 100m .*cargo nextest run .*--release' "$_T8_PLAN" "$_T8_ERR"
+assert "T8: REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m: debug nextest pass stays default 60m (release knob is release-only)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 60m .*cargo nextest run --workspace' "$_T8_PLAN" "$_T8_ERR"
+rm -f "$_T8_ERR"
+
+# T9: malformed REIFY_VERIFY_TEST_TIMEOUT_RELEASE=banana → the release pass falls back to its
+#     90m default (mirrors T3's malformed-fallback guard through the shared
+#     _resolve_timeout_knob validator). RED against current code: release renders 60m.
+_T9_ERR="$(mktemp)"
+_T9_PLAN="$(env -u REIFY_VERIFY_TEST_TIMEOUT REIFY_VERIFY_TEST_TIMEOUT_RELEASE=banana \
+    bash "$REPO_ROOT/scripts/verify.sh" test \
+    --profile both --scope all --print-plan 2>"$_T9_ERR" | grep -v '^#')"
+export _T9_PLAN
+assert "T9: REIFY_VERIFY_TEST_TIMEOUT_RELEASE=banana (malformed): release pass falls back to 90m default" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 90m .*cargo nextest run .*--release' "$_T9_PLAN" "$_T9_ERR"
+rm -f "$_T9_ERR"
+
+# T10: GREEN relationship guard — the merge OUTER wall (merge_verify_cold_command_timeout_secs,
+#      sibling task 5383) must be ≥ the SUM of the two inner nextest budgets (debug 60m=3600s +
+#      release 90m=5400s = 9000s), so the outer merge wall can never SIGTERM the release
+#      native-kernel pass before its own inner budget is reached. This is a NECESSARY-condition
+#      relationship derived from the two inner defaults — DISTINCT from 5383's
+#      test_merge_verify_cold_outer_timeout.sh (which pins the outer value ≥ 10800 as an absolute
+#      floor), so it is not lockstep duplication. GREEN once the release knob lands (5383 already
+#      set 10800 ≥ 9000).
+#      WALLCLOCK-GUARD SAFETY: the comparison uses the lower-bound `-ge` (never -le/-lt) and the
+#      operand vars carry NO ELAPSED/_S/_MS/_NS/SECONDS suffix, so
+#      tests/infra/test_no_new_wallclock_upper_bounds.sh does not fire.
+echo ""
+echo "--- Test T10 (task 5382): merge outer wall >= debug_inner + release_inner (relationship guard) ---"
+
+_T10_VERIFY_SH="$REPO_ROOT/scripts/verify.sh"
+_T10_ORCH_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
+
+# Extract the debug inner default (minutes) from the base-knob resolution line. The trailing
+# space after REIFY_VERIFY_TEST_TIMEOUT ensures this does NOT match the _RELEASE line.
+# `|| true` keeps a NO-MATCH extraction from tripping `set -o pipefail`/`set -e` (the release
+# knob is absent until step-2 lands); emptiness is caught by the `test -n` asserts below.
+_debug_inner_min="$(grep -oE '_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT [0-9]+m' "$_T10_VERIFY_SH" | grep -oE '[0-9]+' | head -n1 || true)"
+# Extract the release inner default (minutes) from the release-knob resolution line.
+_release_inner_min="$(grep -oE '_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE [0-9]+m' "$_T10_VERIFY_SH" | grep -oE '[0-9]+' | head -n1 || true)"
+# Extract the merge outer wall (seconds) from the yaml key.
+_outer_budget="$(grep -oE '^merge_verify_cold_command_timeout_secs:[[:space:]]*[0-9]+' "$_T10_ORCH_YAML" | grep -oE '[0-9]+' | head -n1 || true)"
+
+assert "T10: debug inner default extracted from verify.sh (non-empty minutes)" \
+    test -n "$_debug_inner_min"
+assert "T10: release inner default extracted from verify.sh (non-empty minutes)" \
+    test -n "$_release_inner_min"
+assert "T10: merge outer wall extracted from dark-factory-orchestrator.yaml (non-empty seconds)" \
+    test -n "$_outer_budget"
+
+# Default any absent extraction to 0 so the arithmetic below cannot abort the suite under
+# set -e during the RED window (the release knob is absent until the step-2 impl lands).
+# Non-emptiness is asserted above; this is purely an anti-abort backstop.
+_inner_budget_total=$(( ${_debug_inner_min:-0} * 60 + ${_release_inner_min:-0} * 60 ))
+_outer_budget="${_outer_budget:-0}"
+
+assert "T10: merge outer wall (${_outer_budget}s) >= debug_inner + release_inner (${_inner_budget_total}s from ${_debug_inner_min:-?}m + ${_release_inner_min:-?}m) so the outer wall covers both inner nextest budgets" \
+    test "$_outer_budget" -ge "$_inner_budget_total"
 
 # -- Test 18: wrapper does not leak the lock fd into background daemons --------
 # Regression test for the 2026-04-20 merge-queue wedge: sccache (spawned as a
