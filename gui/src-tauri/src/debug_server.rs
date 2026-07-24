@@ -1081,7 +1081,15 @@ where
 {
     let engine = Arc::clone(engine);
     let (tx, rx) = tokio::sync::oneshot::channel();
-    std::thread::spawn(move || {
+    // Task 5357: run the engine closure on a dedicated large-stack thread (256
+    // MiB) rather than the default ~2 MiB, so a deeply-nested compile driven via
+    // the debug/MCP tools cannot overflow the stack. Unlike the previous bare
+    // `std::thread::spawn` (which panics on OS thread-creation failure),
+    // `spawn_on_large_stack` returns an `io::Result` we surface as a clean Err
+    // (consistent with the "engine thread died" string below). The returned
+    // JoinHandle is dropped/ignored exactly as the prior fire-and-forget spawn
+    // was; results still flow via the oneshot channel.
+    crate::large_stack::spawn_on_large_stack(move || {
         // with_engine_lock catches panics and recovers from mutex poisoning,
         // so f() panicking will not leave the mutex poisoned for future callers.
         // The user closure f returns Result<T, String>, so with_engine_lock
@@ -1089,7 +1097,8 @@ where
         let result =
             crate::engine_lock::with_engine_lock(&engine, f).and_then(std::convert::identity);
         let _ = tx.send(result);
-    });
+    })
+    .map_err(|e| format!("failed to spawn engine thread: {e}"))?;
     rx.await.map_err(|_| "engine thread died".to_string())?
 }
 
