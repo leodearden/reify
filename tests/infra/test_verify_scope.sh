@@ -496,30 +496,38 @@ assert "B-KLOC-merge: selective harness-kLOC pole ABSENT (run_all.sh owns it who
 
 # ---------------------------------------------------------------------------
 # Scenario B-KLOC-driftguard: select_harness_kloc_guard()'s hardcoded 5-crate
-# whitelist (scripts/verify.sh) must equal CONSOLIDATABLE_CRATES in
-# tests/infra/test_harness_kloc_cap.sh (task 5328 amendment; reviewer
-# comprehensive code-reuse-duplication finding).
+# whitelist (scripts/verify.sh) must equal the canonical consolidatable-crate
+# list — the SINGLE SOURCE OF TRUTH in tests/infra/harness-layout-lib.sh
+# (harness_layout_consolidatable_crates). Task 5328 introduced this guard;
+# task 5300 made harness-layout-lib.sh the sole definition (both
+# test_harness_kloc_cap.sh and check-harness-baseline-registration.sh source it
+# rather than carrying their own literal array), so this guard now checks
+# verify.sh's literal against the lib — not against another test's literal
+# (which no longer exists as a sed-greppable line).
 #
-# The two lists are duplicated on purpose (sync comment at verify.sh:984-985;
-# design_decisions note that drift is non-catastrophic because the merge gate
-# remains the wholesale authority), but silent drift would silently narrow
-# early branch-scope coverage. This pins the "keep in sync" prose comment as
-# an executable check: extract both lists as literal text (no sourcing of
-# either script — hermetic, no cargo) and assert they name the same crates.
-# Order-independent (sorted compare): both call sites use the list only for
-# MEMBERSHIP tests, never order.
+# verify.sh's whitelist is duplicated on purpose (sync comment beside
+# select_harness_kloc_guard; design_decisions note that drift is non-catastrophic
+# because the merge gate remains the wholesale authority), but silent drift would
+# silently narrow early branch-scope coverage. This pins the "keep in sync" prose
+# as an executable check: extract verify.sh's list as literal text (hermetic, no
+# cargo) and the canonical list from the lib (sourced in a command-substitution
+# subshell — pure bash, no cargo, no env pollution), and assert they name the same
+# crates. Order-independent (sorted compare): both call sites use the list only
+# for MEMBERSHIP tests, never order.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario B-KLOC-driftguard: verify.sh crate whitelist == test_harness_kloc_cap.sh CONSOLIDATABLE_CRATES ---"
+echo "--- Scenario B-KLOC-driftguard: verify.sh crate whitelist == harness-layout-lib.sh canonical list ---"
 _GUARD_CRATES_RAW="$(sed -n 's/^[[:space:]]*case " \(reify-[^"]*\) " in$/\1/p' "$REPO_ROOT/scripts/verify.sh")"
-_BASELINE_CRATES_RAW="$(sed -n 's/^CONSOLIDATABLE_CRATES=(\(.*\))$/\1/p' "$REPO_ROOT/tests/infra/test_harness_kloc_cap.sh")"
+# xargs normalizes the lib's one-per-line output to single-spaced, no trailing
+# space — matching _GUARD_CRATES_RAW's shape so the sorted compare below is exact.
+_BASELINE_CRATES_RAW="$(source "$REPO_ROOT/tests/infra/harness-layout-lib.sh" && harness_layout_consolidatable_crates | xargs)"
 assert "B-KLOC-driftguard: verify.sh's select_harness_kloc_guard whitelist line found exactly once" \
     test "$(printf '%s\n' "$_GUARD_CRATES_RAW" | grep -c .)" -eq 1
-assert "B-KLOC-driftguard: test_harness_kloc_cap.sh's CONSOLIDATABLE_CRATES line found exactly once" \
-    test "$(printf '%s\n' "$_BASELINE_CRATES_RAW" | grep -c .)" -eq 1
+assert "B-KLOC-driftguard: harness-layout-lib.sh canonical crate list is non-empty" \
+    test -n "$_BASELINE_CRATES_RAW"
 _GUARD_CRATES_SORTED="$(printf '%s' "$_GUARD_CRATES_RAW" | tr ' ' '\n' | sort | tr '\n' ' ')"
 _BASELINE_CRATES_SORTED="$(printf '%s' "$_BASELINE_CRATES_RAW" | tr ' ' '\n' | sort | tr '\n' ' ')"
-assert "B-KLOC-driftguard: crate sets are identical (sorted) — no silent drift from the sync comment at verify.sh:984-985" \
+assert "B-KLOC-driftguard: crate sets are identical (sorted) — verify.sh whitelist == harness-layout-lib.sh single source" \
     test "$_GUARD_CRATES_SORTED" = "$_BASELINE_CRATES_SORTED"
 
 # ===========================================================================
