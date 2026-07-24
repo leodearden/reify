@@ -1,0 +1,4 @@
+structure def Test {
+    param x: Length = 5mm
+    let y = if x > 3mm then 1mm else 2mm
+}

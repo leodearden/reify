@@ -1,0 +1,233 @@
+prd: docs/prds/v0_6/thread-hole-features.md
+schema_version: 1
+# Authored at decompose time 2026-07-24. task_id fields stamped by commit_planning.
+# Narrative evidence + probe captures: thread-hole-features.capability-manifest.md.
+tasks:
+- label: "α"
+  task_id: null
+  title: 'thread-hole α: thread_solid dual-gender geometry builtin + envelope diagnostics'
+  capabilities:
+  - name: helix-geometry-op-exists
+    binding: 'capability→producer (substrate) — GeometryOp::Helix + make_helix_wire wired in IR/ffi/eval production paths'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'Helix'
+      paths:
+      - crates/reify-ir/src/geometry.rs
+      expect: present
+  - name: helix-wire-sweepable
+    binding: 'capability→producer (task-5342, upstream dep) — BuildCurves3d fix; #5342 acceptance = sweep(posed circle, helix) non-Undef + volume band'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'BuildCurves3d'
+      paths:
+      - crates/reify-kernel-occt/cpp/occt_wrapper.cpp
+      expect: present
+  - name: thread-solid-registered
+    binding: 'capability→producer (this leaf) — new geometry builtin in compiler registry + eval'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'thread_solid'
+      paths:
+      - crates/reify-compiler/src/geometry.rs
+      expect: present
+  - name: loud-envelope-rejection
+    binding: 'capability→producer (this leaf) — E_ThreadSolidOutOfEnvelope + recorded UndefCause; house pattern = iso_it diagnose (tolerancing.rs:197-214)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'E_ThreadSolidOutOfEnvelope'
+      paths:
+      - crates
+      expect: present
+  - name: volume-band-floor
+    binding: 'numeric floor — band ±25% around closed-form core+ridge estimate; floor = tessellation/boolean tolerance (torus 2% precedent) ≪ band'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'band asserted by α''s own gate-resident tests (boundary rows 1-2), not grep-able'
+- label: "β"
+  task_id: null
+  title: 'thread-hole β: #thread_repr pragma → CompiledModule → ambient_thread_repr injection'
+  capabilities:
+  - name: pragma-grammar
+    binding: 'grammar-fixture — docs/prds/v0_6/fixtures/thread_repr_pragma.ri parses, 0 ERROR nodes (2026-07-24)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'fixture committed beside PRD; tree-sitter parse --quiet exit 0 captured at authoring'
+  - name: unknown-pragma-warns-today
+    binding: 'signal premise (probe) — reify check emits "warning: unknown pragma #thread_repr", exit 0; β registers the key'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'thread_repr'
+      paths:
+      - crates/reify-compiler/src/module_pragmas.rs
+      expect: present
+  - name: ambient-constant-injection
+    binding: 'capability→producer (this leaf) — C2 contract; consumer (stdlib match + volume-flip e2e) ships in-slice, closing the #deterministic dangling-flag precedent'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'ambient_thread_repr'
+      paths:
+      - crates/reify-compiler/src
+      expect: present
+- label: "γ"
+  task_id: null
+  title: 'thread-hole γ: std.features.holes stdlib module — ThreadRepr/HoleFitClass/FitDesignation + five hole/bore structures + DFM constraints'
+  capabilities:
+  - name: stdlib-structure-ctor-derived-lets
+    binding: 'signal premise (probe) — fixtures/thread_spec_ctor_derived_lets.ri: reify eval prints Test.td = 0.0042 m; let-path, named args, no re-declaration'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'structure def TappedHole'
+      paths:
+      - crates/reify-compiler/stdlib
+      expect: present
+  - name: match-enum-in-let
+    binding: 'signal premise (probe) — fixtures/fit_match_enum_let.ri evals (Fit.Medium → 0.5mm); if-then-else twin fixture; ports_mechanical.ri:58-62 comment stale'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'don.t parse in a let RHS'
+      paths:
+      - crates/reify-compiler/stdlib/ports_mechanical.ri
+      expect: absent
+  - name: constraint-in-structure-checked
+    binding: 'capability→producer (substrate) — grammar commonMembers; behavioural check() coverage ports_mechanical_thread_eval.rs:191-272'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'existing substrate; γ''s DFM constraints get their own check()-time tests (boundary row 8)'
+  - name: iso-it-tolerance-wired
+    binding: 'capability→producer (substrate, wired) — tolerancing.rs:112-128 + eval_builtin dispatch lib.rs:225/286; 24.969µm value-pin precedent'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'FitDesignation'
+      paths:
+      - crates/reify-compiler/stdlib
+      expect: present
+  - name: option-geometry-fill
+    binding: 'capability→producer (this leaf) — generic Option machinery wired (OptionSome expr.rs:2196; some(310MPa) materials_fea.ri:161); Geometry payload e2e is γ''s row-10 test'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'row-10 e2e (is_some(spec.thread_form) after some(thread_solid(...))) asserted by γ''s tests'
+  - name: stdlib-enum-ctor-binding
+    binding: 'signal premise (probe) — stdlib enums bind via ctor (thread_spec fixture); user-module wart (fixtures/fit_enum_user_module_wart.ri) NOT on γ''s path; fix = uniform-member-access 5429, no edge'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'probe evidence recorded; all enums in this PRD are stdlib-defined'
+- label: "δ"
+  task_id: null
+  title: 'thread-hole δ: printer_v01 capstan helical groove modeled for real (dogfood leaf 1)'
+  capabilities:
+  - name: sweep-along-helix
+    binding: 'capability→producer (task-5342, upstream dep) — δ''s composition is #5342''s literal acceptance shape'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'BuildCurves3d'
+      paths:
+      - crates/reify-kernel-occt/cpp/occt_wrapper.cpp
+      expect: present
+  - name: groove-volume-formula
+    binding: 'numeric floor — ΔV ≈ π·r²·L_helix ±15%; basis = #5342 acceptance math (L_helix ≈ 1.359 m for 24/7/63)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'asserted by δ''s e2e volume-delta test'
+  - name: target-caveat-cleared
+    binding: 'capability→producer (this leaf) — dev_capstan.ri MODELLING CAVEATS header names the gap + #5342'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'HELICAL GROOVE itself is not modelled'
+      paths:
+      - prj/printer_v01/dev_capstan.ri
+      expect: absent
+- label: "ε"
+  task_id: null
+  title: 'thread-hole ε: printer_v01 bore retrofit to FittedBore + first fastener clearance holes (dogfood leaf 2)'
+  capabilities:
+  - name: instance-cutter-consumption
+    binding: 'capability→producer (task-5426, upstream dep) — uniform-member-access γ delivers difference(body, h.cutter) on let-instances; today''s rejection captured in fixtures/hole_cutter_member_gap.ri'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'FittedBore'
+      paths:
+      - prj/printer_v01/printer.ri
+      - prj/printer_v01/dev_capstan.ri
+      expect: present
+  - name: retrofit-volume-invariance
+    binding: 'numeric floor — same-dims bore swap; < 0.1% vs identical closed forms'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'asserted by ε''s row-12 volume tests'
+  - name: nested-difference-hazard
+    binding: 'known hazard #5318 (dense-sieve nested-difference no-op) — documented PRD §7; row-12 volume assertions detect; ε blocks on #5318 if reproduced'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'hazard note; not a capability this leaf asserts'
+- label: "ζ"
+  task_id: null
+  title: 'thread-hole ζ: threaded-rod example + modeled TappedHole e2e (pragma-flip observable)'
+  capabilities:
+  - name: modeled-volume-delta
+    binding: 'numeric floor — cosmetic→modeled delta within C1-I1 ridge band (derived); producers α/β/γ intra-batch + 5426 upstream'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'thread_repr'
+      paths:
+      - examples
+      expect: present
+- label: "η"
+  task_id: null
+  title: 'thread-hole η: doc chunks + reify-design cheatsheet + discoverability acceptance'
+  capabilities:
+  - name: chunk-registration-mechanism
+    binding: 'capability→producer (substrate, wired) — language_chunks.rs:3-66 include_str!+match+TOPICS; count tests :77-97 + reference_tools_tests.rs:35-129 updated in-task'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'TappedHole'
+      paths:
+      - crates/reify-mcp/src/tools/chunks
+      expect: present
+  - name: cheatsheet-idiom
+    binding: 'capability→producer (this leaf) — .claude/skills/reify-design/SKILL.md cheatsheet gains hole/thread idiom'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'TappedHole'
+      paths:
+      - .claude/skills/reify-design/SKILL.md
+      expect: present
+  - name: discoverability-intent-query
+    binding: 'signal premise — intent query through reify_language_reference returns the chunk; serving path wired (reference.rs:24 get_chunk)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'intent-query acceptance is judged in-task; chunk presence is the grep above'
+- label: "θ"
+  task_id: null
+  title: 'thread-hole θ: two-way boundary-test suite (PRD §6 rows 1-12) on the merge gate'
+  capabilities:
+  - name: boundary-suite-green
+    binding: 'integration gate — aggregates rows 1-12; every producer upstream (α β γ δ ε ζ + 5342 + 5426); drift-guard registrations same-diff per overlay gate-test rule'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the suite itself is the mechanical check once landed; same-diff drift-guard registration enforced at decompose walk'

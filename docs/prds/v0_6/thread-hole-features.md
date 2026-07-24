@@ -284,6 +284,11 @@ the producer, 7–12 the consumer.
 - This PRD's own docs-landing task gates the batch roots (5433 pattern).
 - **NOT** #5343 (generator poses internally); **NOT** ISO 286 letter tables (#5391);
   **NOT** `placement-relations-belt` (local-frame cutters only).
+- **Known hazard (not a dep): #5318** — nested `difference(difference(fillet…),
+  union_all(pattern))` can silently build hole-free (dense-sieve bug, pending-high).
+  printer_v01's compositions don't use the fillet+pattern nesting that triggers it, and
+  §6 row 12's volume assertions detect the no-op shape immediately; if ε reproduces it,
+  ε blocks on #5318 rather than working around it.
 
 ## 8. Cross-PRD relationship (G4)
 
