@@ -1,0 +1,8 @@
+fn clearance_cutter(d: Length, depth: Length) -> Geometry {
+    cylinder(d / 2, depth)
+}
+
+structure def Test {
+    let plate = box(20mm, 20mm, 5mm)
+    let drilled = difference(plate, clearance_cutter(3.4mm, 8mm))
+}
