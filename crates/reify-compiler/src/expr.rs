@@ -3145,7 +3145,8 @@ fn compile_expr_guarded_with_expected_inner(
                     // `is_dynamics_constructor` → `is_affine_map_constructor` →
                     // `is_math_typed_fn` → `is_joint_typed_fn` →
                     // `is_analysis_typed_fn` → `fea_envelope_result_type` (#4629 W2) →
-                    // `is_field_op` →
+                    // `is_field_op` → `is_parse_typed_fn` →
+                    // `is_orientation_typed_fn` (task 5344) →
                     // first-arg fallback. The five geometry-name families plus the
                     // RBD-β `is_dynamics_query` family (task 3829), the task-4278
                     // `is_dynamics_constructor` family, the std.fields α
@@ -3565,6 +3566,38 @@ fn compile_expr_guarded_with_expected_inner(
                         // `parse_signatures.rs`'s own two-name spot-check), so
                         // this arm's position in the ladder is unobservable.
                         parse_fn_result_type(name)
+                    } else if is_orientation_typed_fn(name) {
+                        // Orientation / transform / frame constructor family
+                        // (task 5344). Fixed-nominal result:
+                        //   orient_* producers      → Type::Orientation(3)
+                        //   transform3 / _identity /
+                        //     transform_compose      → Type::Transform(3)
+                        //   frame3                   → Type::Frame(3)
+                        //
+                        // Set the cell type up-front. This REPLACES the wrong
+                        // first-arg fallback below — `orient_axis_angle(vec3,
+                        // angle)` would otherwise adopt its first arg's
+                        // `Vector{3}` type, and `transform3(orient, vec3)` its
+                        // `orient` arg's type — and SILENCES the zero-arg
+                        // "cannot infer return type" warning for the sole
+                        // zero-arg member, `orient_identity()` (the
+                        // prj/printer_v01/printer.ri acceptance criterion).
+                        //
+                        // Cell TYPE matches the eval VALUE KIND exactly
+                        // (Type::Orientation(3) ⇄ Value::Orientation, etc.), so
+                        // unlike the joint StructureRef arm this needs no
+                        // value_type_kind_matches escape hatch. Eval dispatch is
+                        // name-based in reify_stdlib (orientation.rs /
+                        // geometry.rs); the call STAYS a FunctionCall.
+                        //
+                        // The three `orient_*` DECOMPOSERS (orient_log /
+                        // orient_to_euler / orient_to_axis_angle → Vector / List
+                        // / Map) are deliberately NOT in the family (see
+                        // ORIENTATION_TYPED_FN_NAMES) — an explicit list, never a
+                        // prefix. The family is pinned disjoint from all sibling
+                        // families by the units.rs disjointness test, so this
+                        // arm's position in the ladder is unobservable.
+                        orientation_typed_fn_result_type(name, &compiled_args)
                     } else {
                         compiled_args
                             .first()
