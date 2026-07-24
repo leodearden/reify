@@ -260,6 +260,86 @@ fn volume_inline_arg_dispatch_torus() {
     );
 }
 
+// ── centroid()/area() with an INLINE geometry-call argument (task 5345) ───────
+
+/// Inline-arg analogues of the `centroid()` and `area()` whole-handle queries,
+/// each mirroring a let-bound test below with the geometry constructor moved
+/// INLINE into the query call (no intermediate geometry `let`). Both route
+/// through the compile-time hoist to the identical OCCT dispatch as the
+/// let-bound `centroid_dispatch_box_is_origin` / `area_dispatch_box_sphere_cylinder`.
+const QUERY_INLINE_SOURCE: &str = r#"
+structure def CentroidInlineBox {
+    let c = centroid(box(10mm, 20mm, 30mm))
+}
+structure def AreaInlineSphere {
+    let a = area(sphere(10mm))
+}
+"#;
+
+/// `centroid(box(10,20,30)mm)` inline → `Point3<Length>` `(0,0,0)` (box is
+/// origin-centered), and `area(sphere(10mm))` inline → `Scalar<Area>` =
+/// 4·π·0.010² ≈ 1.256637e-3 m². Both dispatch to real OCCT via the desugared
+/// synthetic geometry let; on base they resolve to `Value::Undef`.
+#[test]
+fn centroid_and_area_inline_arg_dispatch() {
+    let Some(result) = compile_and_build_occt(QUERY_INLINE_SOURCE) else {
+        return;
+    };
+
+    assert_point_abs(
+        result.values.get(&ValueCellId::new("CentroidInlineBox", "c")),
+        [0.0, 0.0, 0.0],
+        1e-6,
+        "centroid(box(10,20,30)mm) inline",
+    );
+
+    let sphere_a = 4.0 * std::f64::consts::PI * 0.010_f64.powi(2);
+    assert_scalar_rel(
+        result.values.get(&ValueCellId::new("AreaInlineSphere", "a")),
+        DimensionVector::AREA,
+        sphere_a,
+        "area(sphere(10mm)) inline",
+    );
+}
+
+/// Inline-vs-let equivalence (task 5345): the INLINE `volume(cylinder(...))`
+/// value cell must equal the LET-bound `let g = cylinder(...); volume(g)` cell.
+/// The compile-time hoist desugars the former into exactly the latter, so both
+/// route to the identical OCCT Volume query on an identical cylinder handle and
+/// must agree to floating-point tolerance. This demonstrably preserves the
+/// working named-cell path (and, transitively, the `param:Solid`
+/// `spec-shape-physical` path exercised by `spec_shape_physical_mass_and_centroid`).
+const VOL_CYL_INLINE_VS_LET_SOURCE: &str = r#"
+structure def VolCylLet {
+    let g = cylinder(10mm, 20mm)
+    let v = volume(g)
+}
+structure def VolCylInline {
+    let v = volume(cylinder(10mm, 20mm))
+}
+"#;
+
+#[test]
+fn volume_inline_equals_let_bound_cylinder() {
+    let Some(result) = compile_and_build_occt(VOL_CYL_INLINE_VS_LET_SOURCE) else {
+        return;
+    };
+
+    // Read the working let-bound value, then assert the inline cell matches IT
+    // (not merely the analytic constant) so the equivalence with the preserved
+    // named-cell path is pinned directly.
+    let let_v = match result.values.get(&ValueCellId::new("VolCylLet", "v")) {
+        Some(Value::Scalar { si_value, .. }) => *si_value,
+        other => panic!("VolCylLet.v should be Scalar<Volume>, got {other:?}"),
+    };
+    assert_scalar_rel(
+        result.values.get(&ValueCellId::new("VolCylInline", "v")),
+        DimensionVector::VOLUME,
+        let_v,
+        "volume(cylinder(10mm,20mm)) inline == let-bound",
+    );
+}
+
 // ── area() ──────────────────────────────────────────────────────────────────
 
 const AREA_SOURCE: &str = r#"
