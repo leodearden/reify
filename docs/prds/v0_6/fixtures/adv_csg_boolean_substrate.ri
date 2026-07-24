@@ -1,0 +1,6 @@
+structure def Test {
+    let cyl = cylinder(2mm, 8mm)
+    let plate = box(20mm, 20mm, 5mm)
+    let cut = difference(plate, cyl)
+    let joined = union(plate, cyl)
+}

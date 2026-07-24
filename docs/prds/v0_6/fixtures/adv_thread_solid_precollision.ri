@@ -1,0 +1,3 @@
+structure def Test {
+    let t = thread_solid(5mm, 0.8mm, 10mm, true, false, 0mm)
+}

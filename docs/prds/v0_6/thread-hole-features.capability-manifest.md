@@ -124,6 +124,34 @@ stamped by commit_planning).
   wallclock-bounds / nextest partitions as applicable) — **manual** binding, enforced
   by this session's decompose walk per the overlay's gate-test rule.
 
+## D3 verification-run disposition (wf_cd540f25-549, 2026-07-24)
+
+The D3 workflow (Enumerator → Prover ‖ Adversary → Synthesize, 32 agents) returned
+`blocks: true` on all 8 leaves. Per-finding disposition:
+
+- **Pre-state of batch-delivered capabilities** (thread_solid envelope diagnostics,
+  #thread_repr registration/ambient wiring/precedence, std.features.holes module +
+  structures, thread_form fill, modeled-volume observables, boundary suite itself):
+  probes correctly observe these are absent/silent today — that is the gap the batch
+  exists to close; each is bound `capability→producer (this leaf / intra-batch)` above.
+  Notable capture: today's failure mode for an op-contract violation is
+  **silent undef + `OpContractViolation` note + exit 0** — the exact INV-SF-1/-2
+  pre-state α's loud-envelope deliverable replaces.
+- **Upstream deps flagged blocking** (#5342 helix 3D curve; 5426 cutter-member
+  consumption): resolved as hard `add_dependency` edges, the sanctioned G3 resolution.
+- **Adopted signal refinements** (PRD amended in this commit): α gains dual-gender
+  coverage (row 1b — adversary: `internal: true` was never exercised); δ's volume-delta
+  band restated against dev_capstan's ACTUAL parameters with the submersion caveat
+  (adversary: the 24/7/63 numbers were #5342's, and swept-volume ≈ removed-volume only
+  when the groove is submerged); η's discoverability signal reworded to the real tool
+  surface (available_topics listing + chunk fetch; no intent-search exists) and the
+  sweep/sweep_guided docs must state real arg-type constraints (adversary falsified
+  "any 3 geometry args pass").
+- **Substrate premise verified during disposition**: examples-CI runner exists
+  (`crates/reify-compiler/tests/examples_smoke.rs`) — ζ's "examples run in CI" is real.
+- No finding falsified a premise about EXISTING substrate; no numeric bound was at or
+  below a method floor.
+
 ## Non-leaf batch entries
 
 - Docs-landing task (deterministic; merge-queue provenance; roots α/δ dep on it).

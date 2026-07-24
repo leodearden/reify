@@ -258,6 +258,7 @@ Producer side = generator/compiler/stdlib; consumer side = dogfood/examples via 
 | # | Scenario | Preconditions | Postconditions (asserted) |
 |---|---|---|---|
 | 1 | `thread_solid` M5×0.8×10, external | #5342 landed | non-Undef Solid; volume in C1-I1 band |
+| 1b | same, `internal: true` (dual-gender coverage; D3 adversary finding) | row 1 | non-Undef Solid; V(allowance=0) = V_external; V(allowance=0.05mm) > V_external, monotone in allowance |
 | 2 | handedness mirror | row 1 | left/right volumes equal; chirality probe point differs |
 | 3 | `thread_solid` invalid (minor ≤ 0) | — | `E_ThreadSolidOutOfEnvelope` emitted; Undef with recorded cause; `reify eval` exit nonzero (INV-SF-2) |
 | 4 | pragma flip on same file | α, β, γ | eval'd volume differs cosmetic→modeled; delta in ridge band |
@@ -267,7 +268,7 @@ Producer side = generator/compiler/stdlib; consumer side = dogfood/examples via 
 | 8 | TappedHole DFM: depth < D | γ | check() reports the engagement constraint violated |
 | 9 | FittedBore H7-style fit | γ | `fit.tolerance_width` = published IT cell (exact-value pin, iso_it 24.969 µm pattern); seat constraint consumes it at check() |
 | 10 | ThreadSpec.thread_form filled | α, γ | `some(thread_solid(...))` binds; `is_some(spec.thread_form)`; eval prints Some(…) (closes the §2 carrier-slot arc + the untested some(geometry) cell) |
-| 11 | capstan groove | **#5342**, δ | drum volume delta ≈ π·r²·L_helix within ±15% (G6 basis: #5342's own acceptance math) |
+| 11 | capstan groove | **#5342**, δ | drum volume delta ≈ π·r²·L_helix within ±15%, **computed from dev_capstan's actual parameters** (pitch radius, lead, wrap band, groove profile r), groove fully submerged along the band; end-emergence absorbed by the band (G6 basis: #5342's acceptance *formula*, not its 24/7/63 numbers — D3 refinement) |
 | 12 | printer retrofit invariance | γ, 5426, ε | pure bore→FittedBore retrofit leaves each part volume unchanged (< 0.1%); added clearance holes change volume by computed amount |
 
 The integration-gate task (θ) names this table as its observable signal; rows 1–6 face
@@ -314,10 +315,12 @@ against INV-SF-1..6 (notes inline; no waivers needed).
 - **α — `thread_solid` geometry builtin (dual-gender) + envelope diagnostics** ·
   crates: reify-eval, reify-compiler (registry), reify-kernel-occt tests ·
   deps: **#5342** ·
-  signal: boundary rows 1–3 as gate-resident tests — volume band, handedness, loud
-  envelope failure (`E_ThreadSolidOutOfEnvelope` + UndefCause). G7: INV-SF-1/-6 designed
-  in (C1-I3). *Gate-test drift-guard: new gate-resident tests register in the same diff
-  (run-all classification / nextest partitions as applicable).*
+  signal: boundary rows 1, 1b, 2, 3 as gate-resident tests — volume band, dual-gender
+  coverage (internal envelope monotone in allowance), handedness, loud envelope failure
+  (`E_ThreadSolidOutOfEnvelope` + UndefCause; today's pre-state is silent
+  undef+OpContractViolation+exit-0, captured by the D3 probe run). G7: INV-SF-1/-6
+  designed in (C1-I3). *Gate-test drift-guard: new gate-resident tests register in the
+  same diff (run-all classification / nextest partitions as applicable).*
 - **β — `#thread_repr` pragma → `CompiledModule` → `ambient_thread_repr` injection** ·
   crates: reify-compiler ·
   deps: α (its e2e consumer path) ·
@@ -347,16 +350,23 @@ against INV-SF-1..6 (notes inline; no waivers needed).
 - **ζ — modeled-thread e2e: threaded-rod example + modeled TappedHole variant** ·
   files: `examples/` ·
   deps: α, β, γ, 5426 ·
-  signal: boundary rows 4–5 at example level; external demo per decision 4.
+  signal: boundary rows 4–5 at example level; external demo per decision 4. New
+  examples are auto-swept by the existing examples-CI runner
+  (`crates/reify-compiler/tests/examples_smoke.rs` — substrate verified); volume pins
+  live in eval e2e tests.
 - **η — doc chunks + reify-design cheatsheet + discoverability (project PRD gate)** ·
   crates: reify-mcp (`chunks/` + `language_chunks.rs` + topic-count tests),
   `.claude/skills/reify-design/SKILL.md` ·
   deps: γ (surface frozen), ζ (idioms real) ·
   signal: new/extended chunk documents ThreadSpec + hole family + `thread_solid` +
   `#thread_repr` + helix/sweep (closing the audited helix/sweep_guided doc hole) with
-  signatures verified against the compiler registries in-task; TOPICS registration +
-  count tests updated; an intent query ("how do I make a tapped hole") through
-  `reify_language_reference` returns the chunk; cheatsheet gains the hole/thread idiom.
+  signatures verified against the compiler registries in-task — including
+  sweep/sweep_guided's REAL profile/path/guide type constraints (D3 adversary falsified
+  "any 3 geometry args pass"); TOPICS registration + count tests updated;
+  discoverability = listing `available_topics` + fetching the relevant chunk through
+  `reify_language_reference` surfaces the tapped-hole idiom for the intent "how do I
+  make a tapped hole" (judged in-task; no intent-search tool exists — D3 refinement);
+  cheatsheet gains the hole/thread idiom.
 - **θ — two-way boundary-test integration gate** ·
   deps: α, β, γ, δ, ε, ζ ·
   signal: §6 table rows 1–12 all green on the merge gate (the C-as-integration-gate

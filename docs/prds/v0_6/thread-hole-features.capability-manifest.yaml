@@ -49,6 +49,12 @@ tasks:
     delivered_check:
       kind: manual
       reason: 'band asserted by α''s own gate-resident tests (boundary rows 1-2), not grep-able'
+  - name: dual-gender-coverage
+    binding: 'D3 adversary finding (wf_cd540f25-549) — internal: true must be exercised by α''s own signal; boundary row 1b added (internal envelope monotone in allowance)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'row-1b assertion lives in α''s gate-resident tests'
 - label: "β"
   task_id: null
   title: 'thread-hole β: #thread_repr pragma → CompiledModule → ambient_thread_repr injection'
