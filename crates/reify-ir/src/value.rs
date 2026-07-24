@@ -2564,7 +2564,11 @@ impl Value {
                 ..
             } => format!("Field<{}, {}>({:?})", domain_type, codomain_type, source),
             Value::Tensor(items) => {
-                let strs: Vec<String> = items.iter().map(|v| v.format_display()).collect();
+                let reference = aggregate_magnitude(self);
+                let strs: Vec<String> = items
+                    .iter()
+                    .map(|v| v.format_display_rel(reference))
+                    .collect();
                 format!("[{}]", strs.join(", "))
             }
             Value::Point(items) => {
@@ -2719,6 +2723,13 @@ impl Value {
                 format_display_number_rel(display_value, reference)
             }
             Value::Real(r) => format_display_number_rel(*r, reference),
+            Value::Tensor(items) => {
+                let strs: Vec<String> = items
+                    .iter()
+                    .map(|v| v.format_display_rel(reference))
+                    .collect();
+                format!("[{}]", strs.join(", "))
+            }
             _ => self.format_display(),
         }
     }
