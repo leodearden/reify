@@ -77,12 +77,55 @@ pub(crate) fn is_orientation_typed_fn(name: &str) -> bool {
     ORIENTATION_TYPED_FN_NAMES.contains(&name)
 }
 
-/// Result type for an orientation/transform/frame constructor builtin.
+/// Result type for an orientation/transform/frame constructor builtin — a fixed
+/// nominal type keyed on `name` alone. Mirrors [`joint_ctor_result_type`], but
+/// simpler: every name in this family is arg-agnostic (fixed nominal), so the
+/// `args` slice is unused (named `_args` to keep the signature parallel to the
+/// sibling resolvers).
 ///
-/// Scaffolding stub — returns `Type::dimensionless_scalar()` until the per-name
-/// resolver is implemented in step-4.
-pub(crate) fn orientation_typed_fn_result_type(_name: &str, _args: &[CompiledExpr]) -> Type {
-    Type::dimensionless_scalar()
+/// - The 10 Orientation producers → `Type::Orientation(3)`.
+/// - `transform3` / `transform3_identity` / `transform_compose` →
+///   `Type::Transform(3)`.
+/// - `frame3` → `Type::Frame(3)`.
+///
+/// ## Cell-type / value-kind agreement
+///
+/// Unlike the joint family (which types a `Value::Map` cell as a
+/// `Type::StructureRef`), here the cell TYPE matches the eval VALUE KIND
+/// exactly: `Type::Orientation(3)` ⇄ `Value::Orientation`, `Type::Transform(3)`
+/// ⇄ `Value::Transform`, `Type::Frame(3)` ⇄ `Value::Frame`. So this arm is
+/// strictly safe under `value_type_kind_matches` — no `StructureRef` escape
+/// hatch is relied upon.
+///
+/// Only reached for names in [`ORIENTATION_TYPED_FN_NAMES`] (the caller gates on
+/// [`is_orientation_typed_fn`]); the `_` arm is therefore unreachable in
+/// practice and returns a harmless `Type::dimensionless_scalar()`.
+pub(crate) fn orientation_typed_fn_result_type(name: &str, _args: &[CompiledExpr]) -> Type {
+    match name {
+        // ── Orientation producers (10) → Orientation(3) ──────────────────────
+        // Eval: reify_stdlib::orientation::eval_orientation → Value::Orientation.
+        "orient_identity"
+        | "orient_quaternion"
+        | "orient_euler"
+        | "orient_basis"
+        | "orient_look_at"
+        | "orient_axis_angle"
+        | "orient_exp"
+        | "orient_inverse"
+        | "orient_compose"
+        | "orient_slerp" => Type::Orientation(3),
+
+        // ── Transform producers (3) → Transform(3) ───────────────────────────
+        // Eval: reify_stdlib::geometry::eval_geometry → Value::Transform.
+        "transform3" | "transform3_identity" | "transform_compose" => Type::Transform(3),
+
+        // ── Frame producer (1) → Frame(3) ────────────────────────────────────
+        // Eval: reify_stdlib::geometry::eval_geometry → Value::Frame.
+        "frame3" => Type::Frame(3),
+
+        // Unreachable in practice — the caller gates on is_orientation_typed_fn.
+        _ => Type::dimensionless_scalar(),
+    }
 }
 
 #[cfg(test)]
