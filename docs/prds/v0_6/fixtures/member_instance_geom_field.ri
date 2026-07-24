@@ -1,0 +1,9 @@
+structure def Cutter {
+    param d: Length = 3mm
+    let body = cylinder(d / 2, 10mm)
+    let half_d = d / 2
+}
+structure def Test {
+    let c = Cutter(d: 3.4mm)
+    let r = c.half_d
+}
