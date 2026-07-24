@@ -57,9 +57,12 @@ lock_depth: 10
 # (5400) is now < this warm budget; if cold-cache verifies under saturation start hitting exit-124,
 # add verify_cold_command_timeout_secs >= 7200.
 verify_command_timeout_secs: 7200
-# merge_verify_cold_command_timeout_secs (task #5383, sibling of #5382 which
-# lifts verify_command_timeout_secs above to this same 10800): the merge path
-# (DF_VERIFY_ROLE=merge) is NOT bounded by verify_command_timeout_secs above.
+# merge_verify_cold_command_timeout_secs (task #5383; sibling task #5382 delivers the
+# RELEASE inner nextest budget REIFY_VERIFY_TEST_TIMEOUT_RELEASE=90m in scripts/verify.sh
+# and deliberately does NOT lift verify_command_timeout_secs above — that key bounds only
+# the non-merge path, which verify.sh runs --profile debug, so no non-merge path runs the
+# debug+release passes cold together): the merge path (DF_VERIFY_ROLE=merge) is NOT bounded
+# by verify_command_timeout_secs above.
 # dark-factory orchestrator/src/orchestrator/verify.py's
 # `_resolve_verify_timeout` resolves the cold merge-verify OUTER wall via a
 # cascade whose FIRST branch returns this key when set (the is_merge_verify
