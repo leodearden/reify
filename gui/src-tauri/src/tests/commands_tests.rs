@@ -1047,6 +1047,100 @@ fn mesh_stats_json_reports_full_scene_under_selective_demand() {
     }
 }
 
+/// step-6 amendment (task 5348, reviewer test-coverage): the full-scene
+/// regression test above only checks key *presence*, and its plain-box fixtures
+/// all carry `element_kind: None`, so their `element_kind_count` is always the
+/// empty object `{}`. That never exercises `mesh_stats_json`'s populated
+/// byte→string-key histogram projection — a regression that mis-serialized a
+/// non-empty histogram would slip through.
+///
+/// The FEA shell flexure fixture tessellates (under `MockGeometryKernel`) to a
+/// body mesh with an all-shell `element_kind` (`vec![1; face_count]`, see
+/// `build_gui_state_shell_flexure_populates_element_kind_and_von_mises_top` in
+/// engine_tests.rs), so `mesh_stats_json` must emit a NON-empty, string-keyed
+/// `element_kind_count` object — exactly `{"1": face_count}` — whose counts
+/// partition the mesh's faces. This pins the full byte→JSON-key mapping, not just
+/// the presence of the key.
+#[test]
+fn mesh_stats_json_emits_populated_element_kind_histogram() {
+    use crate::commands::mesh_stats_json;
+
+    let source = include_str!("../../../../examples/fea_shell_flexure.ri");
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(source, "FeaShellFlexure")
+        .expect("load_from_source must succeed for fea_shell_flexure.ri");
+
+    let stats = mesh_stats_json(&mut session).expect("mesh_stats_json should succeed");
+    let meshes = stats["meshes"].as_array().expect("meshes must be an array");
+
+    // The shell body's stats entry is the one whose histogram object is non-empty
+    // (the plain-box meshes all serialize `element_kind_count` as `{}`).
+    let shell_entry = meshes
+        .iter()
+        .find(|entry| {
+            entry["element_kind_count"]
+                .as_object()
+                .is_some_and(|hist| !hist.is_empty())
+        })
+        .expect(
+            "FEA shell flexure must yield a mesh_stats entry with a populated \
+             element_kind histogram (all-shell body)",
+        );
+
+    let hist = shell_entry["element_kind_count"]
+        .as_object()
+        .expect("element_kind_count must serialize as a JSON object");
+    let face_count = shell_entry["face_count"]
+        .as_u64()
+        .expect("face_count must be a JSON number");
+
+    // Byte→string-key mapping contract: keys are decimal-stringified `u8` bytes,
+    // values are positive counts. A mis-serialized populated histogram (wrong key
+    // type, dropped/duplicated counts) fails here — the full-scene test's
+    // key-presence check on box fixtures never reaches this branch.
+    for (key, value) in hist {
+        assert!(
+            key.parse::<u8>().is_ok(),
+            "element_kind_count keys must be stringified u8 bytes; got {key:?}"
+        );
+        assert!(
+            value.as_u64().is_some_and(|c| c > 0),
+            "each histogram count must be a positive JSON number; got {value:?} for {key:?}"
+        );
+    }
+
+    // The histogram partitions the faces: its counts sum to face_count, and since
+    // every face is a shell triangle (byte 1) it is exactly `{"1": face_count}`.
+    let hist_total: u64 = hist.values().filter_map(serde_json::Value::as_u64).sum();
+    assert_eq!(
+        hist_total, face_count,
+        "element_kind histogram counts must partition the mesh's faces (sum == face_count)"
+    );
+    assert_eq!(
+        hist.get("1").and_then(serde_json::Value::as_u64),
+        Some(face_count),
+        "an all-shell body must classify every face under the '1' (shell) key; got {hist:?}"
+    );
+
+    // The shell body has vertices, so its `bounding_box` is the non-null
+    // `{min, max}` branch (not the zero-vertex `null` branch) — assert its shape,
+    // which the full-scene test's `bounding_box` key-presence check (satisfied
+    // even by `null`) cannot distinguish.
+    let bbox = shell_entry["bounding_box"]
+        .as_object()
+        .expect("a mesh with vertices must carry a non-null {min,max} bounding_box");
+    for key in ["min", "max"] {
+        assert_eq!(
+            bbox[key].as_array().map(|a| a.len()),
+            Some(3),
+            "bounding_box.{key} must be a 3-element array"
+        );
+    }
+}
+
 /// Two-body, constraint-free, param-driven fixture (mirrors the engine-side
 /// `SELECTIVE_MULTIBODY_SRC` at engine_tests.rs:13210 and the δ
 /// `SELECTIVE_DEMAND_MULTIBODY_SRC`): `w → sa → box a (R0)` and
