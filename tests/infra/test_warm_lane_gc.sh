@@ -36,6 +36,11 @@
 #   N — full managed-worktree protect set (_solo-*/_substrate-gate-*/
 #       _offline-deep (exact name)/_iact-*) protected by default, plus an
 #       explicit --protect-glob override still re-narrows the set (task 5221)
+#   O — --extra-protect-glob / REIFY_WARM_LANE_GC_EXTRA_PROTECT_GLOB ADDS to
+#       (never replaces) the default protect set: an extra-matched lane (_lane-9)
+#       is preserved alongside a default-protected lane (_mainsweep-x) while a
+#       plain lane (_lane-1) is still reset; env-var sub-case drives the same
+#       additive protection (task 5378)
 #
 # The former Tier-3 blocks I/J/L (terminal-task reclaim + Pass-2 boundary,
 # task 5167) were deleted when task 5326 collapsed the Pass-1 gate to the
@@ -1159,5 +1164,145 @@ assert "N-override: _mainsweep-abcd1234 absent from git worktree list" \
     bash -c '! git -C "$1" worktree list | grep -q "_mainsweep-abcd1234"' _ "$NOV_REPO"
 assert "N-override: summary shows removed=1" \
     bash -c 'printf "%s\n" "$1" | grep -qE "removed=1"' _ "$OUT"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block O — --extra-protect-glob ADDS to (never replaces) the default protect set
+# The live-consumer lane guard (task 5378) needs the sweep to protect specific
+# lane basenames it discovers hold a live build, WITHOUT restating gc.sh's full
+# default protect list (that duplication would be a G7 lockstep-duplication hit).
+# --extra-protect-glob / REIFY_WARM_LANE_GC_EXTRA_PROTECT_GLOB is that additive
+# primitive: entries it matches are skipped exactly like --protect-glob entries
+# (Pass 1 reset AND Pass 2 remove) and counted as preserved, while the DEFAULT
+# protect set stays active alongside it (unlike --protect-glob, which REPLACES
+# the default). Fixture mirrors Block B/M: base/target.gen.1 (+ .lock + symlink),
+# an argv-logging thinning seed stub, and three clean+landed (HEAD==main) lanes
+# each with a target/DIVERGENT_MARKER:
+#   _lane-1      — plain reclaimable pool lane      → MUST still be reset
+#   _lane-9      — reclaimable, passed via --extra-protect-glob → preserved
+#   _mainsweep-x — default-protected (_mainsweep-*) → preserved (default set on)
+# Sub-case O-env drives the SAME protection through the env var instead of the
+# flag. RED today: --extra-protect-glob is an unknown flag (exit 2) and the env
+# var is ignored (so _lane-9 is reset instead of preserved).
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block O: --extra-protect-glob adds to the default protect set ---"
+
+# ── O-flag: additive protection driven by the --extra-protect-glob FLAG ───────
+O_ROOT="$(mktemp -d /tmp/test-gc-o-XXXXXX)"
+_TMPDIRS+=("$O_ROOT")
+
+O_REPO="$O_ROOT/repo"
+O_WORKTREES="$O_ROOT/worktrees"
+O_BASE="$O_ROOT/base"
+mkdir -p "$O_WORKTREES" "$O_BASE"
+
+make_repo "$O_REPO"
+
+mkdir -p "$O_BASE/target.gen.1"
+touch "$O_BASE/target.gen.1.lock"
+ln -sfn "$O_BASE/target.gen.1" "$O_BASE/target"
+
+# Three clean+landed (HEAD==main) lanes, each with a divergent target marker.
+for _o_name in _lane-1 _lane-9 _mainsweep-x; do
+    git -C "$O_REPO" worktree add -q "$O_WORKTREES/$_o_name"
+    mkdir -p "$O_WORKTREES/$_o_name/target"
+    touch "$O_WORKTREES/$_o_name/target/DIVERGENT_MARKER"
+done
+
+O_SEED_LOG="$O_ROOT/seed_calls.log"
+O_SEED_STUB="$O_ROOT/seed_stub.sh"
+cat > "$O_SEED_STUB" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
+exit 0
+STUB_EOF
+chmod +x "$O_SEED_STUB"
+export SEED_LOG="$O_SEED_LOG"
+
+run_helper reclaim \
+    --worktrees-dir "$O_WORKTREES" \
+    --base-target "$O_BASE/target" \
+    --seed-script "$O_SEED_STUB" \
+    --main-ref main \
+    --extra-protect-glob _lane-9
+
+assert "O1: exit 0" test "$RC" -eq 0
+# _lane-1: plain reclaimable → reset (seed invoked, divergent marker gone).
+assert "O2: plain lane _lane-1 reset (seed-script invoked)" \
+    bash -c 'test -f "$1" && grep -q "_lane-1" "$1"' _ "$O_SEED_LOG"
+assert "O3: plain lane _lane-1 divergent marker removed (reset)" \
+    bash -c '[ ! -f "$1" ]' _ "$O_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+# _lane-9: extra-protected → preserved (seed NOT invoked, marker intact).
+assert "O4: extra-protected lane _lane-9 seed-script NOT invoked (preserved)" \
+    bash -c '[ ! -f "$1" ] || ! grep -q "_lane-9" "$1"' _ "$O_SEED_LOG"
+assert "O5: extra-protected lane _lane-9 divergent marker intact" \
+    test -f "$O_WORKTREES/_lane-9/target/DIVERGENT_MARKER"
+# _mainsweep-x: default-protected → preserved (default set still active alongside extra).
+assert "O6: default-protected lane _mainsweep-x seed-script NOT invoked (preserved)" \
+    bash -c '[ ! -f "$1" ] || ! grep -q "_mainsweep-x" "$1"' _ "$O_SEED_LOG"
+assert "O7: default-protected lane _mainsweep-x divergent marker intact (default set still on)" \
+    test -f "$O_WORKTREES/_mainsweep-x/target/DIVERGENT_MARKER"
+# Summary: reset=1 (_lane-1), preserved=2 (extra _lane-9 + default _mainsweep-x).
+assert "O8: summary shows reset=1 (only _lane-1)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "reset=1"' _ "$OUT"
+assert "O9: summary preserved count includes BOTH protected entries (preserved=2)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "preserved=2"' _ "$OUT"
+
+# ── O-env: SAME additive protection via REIFY_WARM_LANE_GC_EXTRA_PROTECT_GLOB ──
+# Parallel sub-case: NO --extra-protect-glob flag; the env var carries _lane-9,
+# proving the env knob is an equal driver of the additive protect set (mirrors
+# the --disk-pressure / REIFY_WARM_LANE_GC_DISK_PRESSURE flag/env convention).
+OE_ROOT="$(mktemp -d /tmp/test-gc-oe-XXXXXX)"
+_TMPDIRS+=("$OE_ROOT")
+
+OE_REPO="$OE_ROOT/repo"
+OE_WORKTREES="$OE_ROOT/worktrees"
+OE_BASE="$OE_ROOT/base"
+mkdir -p "$OE_WORKTREES" "$OE_BASE"
+
+make_repo "$OE_REPO"
+
+mkdir -p "$OE_BASE/target.gen.1"
+touch "$OE_BASE/target.gen.1.lock"
+ln -sfn "$OE_BASE/target.gen.1" "$OE_BASE/target"
+
+for _oe_name in _lane-1 _lane-9 _mainsweep-x; do
+    git -C "$OE_REPO" worktree add -q "$OE_WORKTREES/$_oe_name"
+    mkdir -p "$OE_WORKTREES/$_oe_name/target"
+    touch "$OE_WORKTREES/$_oe_name/target/DIVERGENT_MARKER"
+done
+
+OE_SEED_LOG="$OE_ROOT/seed_calls.log"
+OE_SEED_STUB="$OE_ROOT/seed_stub.sh"
+cat > "$OE_SEED_STUB" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
+exit 0
+STUB_EOF
+chmod +x "$OE_SEED_STUB"
+export SEED_LOG="$OE_SEED_LOG"
+
+REIFY_WARM_LANE_GC_EXTRA_PROTECT_GLOB="_lane-9" run_helper reclaim \
+    --worktrees-dir "$OE_WORKTREES" \
+    --base-target "$OE_BASE/target" \
+    --seed-script "$OE_SEED_STUB" \
+    --main-ref main
+
+assert "O-env1: exit 0" test "$RC" -eq 0
+# Env-var-protected lane preserved (seed NOT invoked, marker intact).
+assert "O-env2: env-protected lane _lane-9 seed-script NOT invoked (preserved)" \
+    bash -c '[ ! -f "$1" ] || ! grep -q "_lane-9" "$1"' _ "$OE_SEED_LOG"
+assert "O-env3: env-protected lane _lane-9 divergent marker intact" \
+    test -f "$OE_WORKTREES/_lane-9/target/DIVERGENT_MARKER"
+# Plain lane still reset (env protection is additive, not blanket).
+assert "O-env4: plain lane _lane-1 still reset (marker removed)" \
+    bash -c '[ ! -f "$1" ]' _ "$OE_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+# Summary: preserved=2 (env-driven _lane-9 + default _mainsweep-x).
+assert "O-env5: summary preserved=2 (env _lane-9 + default _mainsweep-x)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "preserved=2"' _ "$OUT"
 
 test_summary
