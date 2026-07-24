@@ -122,6 +122,20 @@ Reify is numerically heavy; G6 branches 1 (numeric bound) and 2 (closed-form exa
 
 **Worked case — esc-4914-162 (2026-07-01):** task 4914 landed `crates/reify-solver-elastic/tests/solver_gate_smoke.rs` (gate-resident smoke binary, offline-deep-test-lane PRD task A3) without its drift-guard registrations (`test_run_all_classification.sh` + `test_no_new_wallclock_upper_bounds.sh`), turning main RED for every subsequent merge; the registration (A6) was ordered after A3 by PRD prose only, not a hard `add_dependency` edge — the A3-before-A6 failure this check exists to catch.
 
+## Docs-truth gate (language/stdlib/tooling surface)
+
+**Trigger:** the PRD adds or changes anything a `.ri` author can observe — grammar/syntax, builtins or stdlib functions and their signatures, geometry/query/transform semantics, diagnostics, or CLI/GUI behavior a design session relies on (collectively: language surface).
+
+**Author-mode rule:** the PRD must carry deliverable leaves for all four of:
+1. **Doc-chunk update, registry-verified.** The affected `crates/reify-mcp/src/tools/chunks/*.md` chunk(s) updated in this PRD, with every documented signature verified against the compiler arms/registries (`crates/reify-compiler/src/{geometry,geometry_curve,geometry_transform,geometry_modify,geometry_boolean}.rs`, the `units.rs` name registries). Acceptance: each documented signature compiles as written in a smoke `.ri`.
+2. **Exemplar-corpus update.** If the change introduces or alters an authoring idiom, a leaf adds/updates a worked example under `examples/best_practices/` (auto-compile-gated by `crates/reify-compiler/tests/examples_smoke.rs`; keep normative claims in code/constraints, not comments) plus its `INDEX.md` line. Where the new feature enables a cleaner idiom than existing corpus or stdlib code uses, updating those exemplars is in scope for this PRD. (Corpus seeded by task #5397.)
+3. **reify-design cheatsheet index update.** A one-line index entry in `.claude/skills/reify-design/SKILL.md` pointing at the corpus file — not an inline playbook.
+4. **Discoverability acceptance.** The leaf's signal includes intent-level findability: an author who knows the *goal* (e.g. "check two parts don't collide") but not the feature name finds the mechanism from the chunks or the corpus index — the right topic chunk / index line names the capability in intent terms.
+
+**Decompose-mode rule:** reject a leaf batch where a language-surface capability leaf has no same-PRD doc-chunk leaf, or where the doc leaves are ordered by prose only — wire them same-diff or as real `add_dependency` edges.
+
+**Worked case — 2026-07-24 language review:** ~40% of the printer_v01 dogfood session's CLI spend went to probing what the language can do. The static interference/clearance oracle (`interferes`/`min_clearance`/`intersects`/`distance`) had ZERO chunk presence and the session shipped mechanically-checkable interferences (#5389); phantom chunk signatures `rotate(geo,axis,angle)` / `translate(geo,vector)` cost live probe cycles (#5347/#5364). Each was language surface that landed without its doc leaf.
+
 ## Capability Manifest — reify evidence forms
 
 Mechanizes `gates.md` → *Capability Manifest — mechanizing G3 + G6 per leaf* for reify. **Manifest path:** `docs/prds/<vM_N>/<slug>.capability-manifest.md` (commit beside the PRD).

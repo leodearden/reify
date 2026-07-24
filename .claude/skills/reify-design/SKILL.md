@@ -54,6 +54,26 @@ Things that are easy to get wrong (the embedded GUI prompt has old forms — the
 - **Specials:** `undef` (not yet decided), `auto` (solver decides), `some(v)` / `none`.
 - **Member kinds:** `param` (public input), `let` (derived), `auto` (solver-determined), `constraint` (predicate), `sub` (sub-entity instance), `port`, `connect a.port <-> b.port`, `type` (alias), `meta { ... }` (informational only, no constraint participation).
 
+### Probe-verified idioms — index (2026-07-24)
+
+One line per idiom. Worked, compile-gated examples live in `examples/best_practices/`
+(second-level index: its `INDEX.md`; corpus seeded by task #5397 — pointers added as files land).
+
+- **Unary minus** works everywhere: `-x`, never `0mm - x`.
+- **Hollow/centered primitives**: `tube(outer_r, inner_r, h)`, `cylinder_centered` — don't
+  difference two cylinders.
+- **Symmetric parts**: `mirror` returns a reflected copy — `let twin = union(g, mirror(g, plane_yz(0mm)))`.
+- **Bolt circles**: `circular_pattern(hole, axis_z(point3(…)), n, 360deg)` — angle is the TOTAL
+  sweep. Never construct geometry inside `generate` lambdas: silent `undef` under a green
+  `check` (#5385); lambdas may only compute `point3`/scalar values.
+- **Imports** resolve under `reify check` + GUI; `eval`/`build` are still single-file — keep
+  eval/build entry files self-contained.
+- **Interference/clearance oracle exists — run it before shipping an assembly**:
+  `intersects(a, b)`/`distance(a, b)` on let-bound geometry (low ceremony), or
+  `mechanism`/`snapshot`/`min_clearance` (assembly-grade). Eval/build only — `reify check`
+  reports these INDETERMINATE. Worked example: `examples/tolerancing/vc_bolt_pattern_clearance.ri`.
+- **Discrete choices**: until CP-SAT is wired, `auto s : Real` + `constraint s*s == 1` (s = ±1).
+
 ## Workflow
 
 ### 1. Read before writing
