@@ -231,6 +231,7 @@ crates/reify-compiler/tests/stackup_stdlib_tests.rs
 crates/reify-compiler/tests/standard_gravity_tests.rs
 crates/reify-compiler/tests/standard_joint_library_tests.rs
 crates/reify-compiler/tests/standard_stock_tests.rs
+crates/reify-compiler/tests/stdlib_chunk_geometry_ops_smoke.rs
 crates/reify-compiler/tests/stdlib_determinacy_purposes.rs
 crates/reify-compiler/tests/stdlib_loader_tests.rs
 crates/reify-compiler/tests/string_interp_lowering_tests.rs
