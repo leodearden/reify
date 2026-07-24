@@ -234,6 +234,7 @@ crates/reify-compiler/tests/standard_stock_tests.rs
 crates/reify-compiler/tests/stdlib_determinacy_purposes.rs
 crates/reify-compiler/tests/stdlib_loader_tests.rs
 crates/reify-compiler/tests/string_interp_lowering_tests.rs
+crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs
 crates/reify-compiler/tests/structural_physical_spec_shape.rs
 crates/reify-compiler/tests/structural_physical_tests.rs
 crates/reify-compiler/tests/structural_query_compile_tests.rs
