@@ -54,7 +54,7 @@ fn run_on_large_stack_returns_value_and_runs_on_distinct_thread() {
 
     let caller_id = std::thread::current().id();
     // A local owned by the caller's stack; the closure borrows it by reference.
-    let data = vec![1u64, 2, 3, 4];
+    let data = [1u64, 2, 3, 4];
 
     let (sum, inner_id) = run_on_large_stack(|| {
         // Borrow `data` — no move, no `'static` bound. Only compiles if the
