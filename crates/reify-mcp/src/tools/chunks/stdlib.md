@@ -25,10 +25,15 @@ The Reify standard library (`std.*`) provides domain-specific functionality.
 
 ## Key Geometry Operations
 
-<!-- SYNC: every signature below is compile-verified by the fixture
-     crates/reify-compiler/tests/fixtures/stdlib_geometry_ops_smoke.ri (asserted
-     by crates/reify-compiler/tests/stdlib_chunk_geometry_ops_smoke.rs). If you
-     change a signature here, change it there too — and vice-versa. -->
+<!-- SYNC: every signature below has a compiling instance in the fixture
+     crates/reify-compiler/tests/fixtures/stdlib_geometry_ops_smoke.ri. Its
+     companion test crates/reify-compiler/tests/stdlib_chunk_geometry_ops_smoke.rs
+     enforces exactly two things over that fixture: (1) every call name in it is
+     a real entry in the compiler's own geometry-op / topology-selector name
+     registries, and (2) it compiles with zero Error-severity diagnostics. So
+     these forms name real ops and are accepted as written; keeping this table in
+     step with the fixture is manual. If you change a signature here, change it
+     there too — and vice-versa. -->
 
 Positions/lengths take a `Length` (e.g. `5mm`); angles take an `Angle` (e.g. `90deg`); direction/axis/normal components and counts are plain numbers.
 

@@ -5,9 +5,15 @@
 // SYNC CONTRACT: every call form below mirrors a signature documented in that
 // chunk's "Key Geometry Operations" / "Curves" section, and vice-versa. The
 // companion test crates/reify-compiler/tests/stdlib_chunk_geometry_ops_smoke.rs
-// asserts this file compiles with ZERO Error-severity diagnostics — i.e. every
-// documented form actually compiles against the real geometry-op arms. Keep the
-// two files in lockstep: if you edit a signature in one, edit it in the other.
+// asserts TWO things over this file, neither of which alone is sufficient:
+//   1. it compiles with ZERO Error-severity diagnostics — every documented form
+//      type-checks, FOR THE NAMES THE COMPILER RESOLVES; and
+//   2. every call name below is a real entry in the compiler's own geometry-op /
+//      topology-selector registries — because an unknown call name in a
+//      `structure def` body is silently ignored (no diagnostic at ANY severity),
+//      so a documented-but-nonexistent op would pass (1) untouched.
+// Keep the two files in lockstep: if you edit a signature in one, edit it in the
+// other. Renaming a call here to something with no compiler arm goes RED.
 //
 // Each form is the exact arity/overload the compiler accepts (verified against
 // the match arms in reify-compiler/src/geometry{,_transform,_boolean,_modify,
