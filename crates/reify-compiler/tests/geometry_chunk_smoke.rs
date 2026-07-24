@@ -151,10 +151,15 @@ fn vec3_compiles() {
 fn revolve_compiles() {
     // geometry.md line 121 documents the 8-arg
     // `revolve(profile, ox, oy, oz, ax, ay, az, angle)` form (geometry.rs:1969):
-    // profile + origin (0,0,0) + axis direction (0,0,1) + angle.
+    // profile + origin (0,0,0) + axis direction (0,0,1) + angle. The origin
+    // triple (ox,oy,oz) is a Length position, so it takes `mm` literals;
+    // the axis triple (ax,ay,az) is a direction only — its magnitude is
+    // irrelevant and the compiler does not unit-check it — so it takes
+    // dimensionless literals to avoid implying a direction vector has a
+    // length unit.
     assert_compiles(
         "revolve",
-        "revolve(circle(5mm), 0mm, 0mm, 0mm, 0mm, 0mm, 1mm, 90deg)",
+        "revolve(circle(5mm), 0mm, 0mm, 0mm, 0.0, 0.0, 1.0, 90deg)",
     );
 }
 
