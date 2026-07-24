@@ -1697,6 +1697,11 @@ mod tests {
     // the newest family, so its disjointness test below checks against ALL
     // existing sibling slices, not just those that preceded it).
     use crate::parse_signatures::PARSE_FN_NAMES;
+    // Orientation/transform/frame constructor family (task 5344) — single
+    // source of truth in `crate::orientation_signatures`, imported here to pin
+    // disjointness from every sibling family (regression-lock: catches any
+    // future colliding name added to EITHER slice).
+    use crate::orientation_signatures::ORIENTATION_TYPED_FN_NAMES;
 
     // Local fixtures for name families that have no pub single-source slice —
     // they are hardcoded match arms in `affine_map_algebra_result_type` and
@@ -5120,6 +5125,37 @@ mod tests {
                  (`single`/`flat_map` — earlier arm in the NoUserFunctions \
                  ladder would shadow it)"
             );
+        }
+    }
+
+    /// Disjointness regression-lock for the orientation/transform/frame
+    /// constructor family (task 5344): every `ORIENTATION_TYPED_FN_NAMES` entry
+    /// must be absent from every sibling classification family so the
+    /// `is_orientation_typed_fn` arm in `expr.rs`'s `NoUserFunctions` ladder is
+    /// the sole claimant, making the arm's position unobservable. Mirrors
+    /// `parse_fn_names_are_disjoint_from_other_families`. GREEN on arrival — a
+    /// lock that fails if a colliding name is later added to either slice.
+    #[test]
+    fn orientation_typed_fn_names_are_disjoint_from_other_families() {
+        for name in ORIENTATION_TYPED_FN_NAMES {
+            assert!(!GEOMETRY_FUNCTION_NAMES.contains(name), "{name:?} in GEOMETRY_FUNCTION_NAMES");
+            assert!(!GEOMETRY_QUERY_HELPER_NAMES.contains(name), "{name:?} in GEOMETRY_QUERY_HELPER_NAMES");
+            assert!(!GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name), "{name:?} in GEOMETRY_KINEMATIC_QUERY_NAMES");
+            assert!(!GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name), "{name:?} in GEOMETRY_TOPOLOGY_SELECTOR_NAMES");
+            assert!(!GEOMETRY_QUERY_NAMES.contains(name), "{name:?} in GEOMETRY_QUERY_NAMES");
+            assert!(!DYNAMICS_QUERY_NAMES.contains(name), "{name:?} in DYNAMICS_QUERY_NAMES");
+            assert!(!DYNAMICS_CONSTRUCTOR_NAMES.contains(name), "{name:?} in DYNAMICS_CONSTRUCTOR_NAMES");
+            assert!(!AFFINE_MAP_CONSTRUCTOR_NAMES.contains(name), "{name:?} in AFFINE_MAP_CONSTRUCTOR_NAMES");
+            assert!(!TOLERANCING_MARKER_NAMES.contains(name), "{name:?} in TOLERANCING_MARKER_NAMES");
+            assert!(!MATH_CONSTRUCTION_NAMES.contains(name), "{name:?} in MATH_CONSTRUCTION_NAMES");
+            assert!(!MATH_OPERATION_NAMES.contains(name), "{name:?} in MATH_OPERATION_NAMES");
+            assert!(!MATH_TRANSCENDENTAL_NAMES.contains(name), "{name:?} in MATH_TRANSCENDENTAL_NAMES");
+            assert!(!JOINT_TYPED_FN_NAMES.contains(name), "{name:?} in JOINT_TYPED_FN_NAMES");
+            assert!(!ANALYSIS_FN_NAMES.contains(name), "{name:?} in ANALYSIS_FN_NAMES");
+            assert!(!RELATION_FN_NAMES.contains(name), "{name:?} in RELATION_FN_NAMES");
+            assert!(!PARSE_FN_NAMES.contains(name), "{name:?} in PARSE_FN_NAMES");
+            assert!(!FEA_ENVELOPE_NAMES.contains(name), "{name:?} in FEA_ENVELOPE_NAMES");
+            assert!(!FIELD_OP_NAMES.contains(name), "{name:?} in FIELD_OP_NAMES");
         }
     }
 }
