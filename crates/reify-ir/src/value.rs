@@ -2866,6 +2866,51 @@ pub fn format_display_number(v: f64) -> String {
     }
 }
 
+/// Relative snap-to-zero threshold for [`format_display_number_rel`] (task
+/// 5339, follow-up papercut to 5198).
+///
+/// Derived from the reported magnitudes, not guessed: the observed dust
+/// ratio in `BottomDeck.centroid` is `3.86564423998e-13 / 21.5084347502 ≈
+/// 1.80e-14` (~5 orders below this threshold, so it snaps), while the
+/// smallest legitimate tolerance ratio the fix must preserve is `0.00005 /
+/// 21.5 ≈ 2.33e-6` (task 5198's small-tolerance case, ~3 orders above this
+/// threshold, so it survives). `1e-9` sits cleanly between the two and is
+/// the value the task explicitly suggests: a component 9 orders of
+/// magnitude below its dominant sibling carries no display-meaningful
+/// signal at [`DISPLAY_SIG_FIGS`] significant figures.
+const DISPLAY_REL_ZERO_EPSILON: f64 = 1e-9;
+
+/// Format `v` for display the same way [`format_display_number`] does, but
+/// additionally snap `v` to `"0"` when it is dust *relative to* `reference`
+/// — the max-magnitude sibling in the containing aggregate (e.g. the other
+/// components of a `Value::Point`).
+///
+/// This is the relative counterpart to `format_display_number`'s absolute
+/// 1-ulp cleanup: `format_display_number` has no sibling context, so it
+/// cannot see that a component like `3.86564423998e-13` is numerical dust
+/// next to a sibling like `21.5084347502` (the `BottomDeck.centroid` case).
+/// `format_display_number_rel` snaps `v` to `"0"` when `v != 0.0 &&
+/// v.abs() < DISPLAY_REL_ZERO_EPSILON * reference`; otherwise it delegates
+/// to the unchanged `format_display_number(v)`.
+///
+/// `reference` must be finite and positive for the relative snap to apply —
+/// a non-finite reference (an `inf`/`NaN` sibling in the aggregate) or a
+/// zero reference (an all-zero or all-comparable-tiny aggregate) disables
+/// snapping entirely, falling through to the absolute path. This guards
+/// against a single non-finite or zero sibling ever zeroing out otherwise
+/// legitimate finite components. An exact-zero `v` always renders `"0"`
+/// regardless of `reference`, via the same path `format_display_number`
+/// already takes.
+///
+/// Delegating to the byte-identical `format_display_number` keeps this
+/// purely additive: the existing task-5198 test suite is unaffected.
+pub fn format_display_number_rel(v: f64, reference: f64) -> String {
+    if reference.is_finite() && reference > 0.0 && v != 0.0 && v.abs() < DISPLAY_REL_ZERO_EPSILON * reference {
+        return "0".to_string();
+    }
+    format_display_number(v)
+}
+
 /// Map a DimensionVector to a human-readable SI unit label.
 ///
 /// Used by [`Value::format_hover`] for user-facing display, which renders
