@@ -29,7 +29,7 @@ use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 ///     This proves the EvalResult → CheckResult propagation — the R3b-2 read point.
 #[test]
 fn fea_unconstrained_eval_and_check_carry_structured_detail() {
-    let source = include_str!("fixtures/fea_no_supports.ri");
+    let source = include_str!("../fixtures/fea_no_supports.ri");
     let compiled = parse_and_compile_with_stdlib(source);
 
     let expected_detail = vec![StructuredComputeDetail::Fea(

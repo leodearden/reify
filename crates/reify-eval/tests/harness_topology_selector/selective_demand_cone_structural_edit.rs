@@ -11,8 +11,7 @@
 //! count-controlled by `param n : Int = 2`. Growing n (via `edit_param`) triggers
 //! `structural_mutation = true` in `engine_edit.rs`.
 
-#[path = "common/differential.rs"]
-mod differential;
+use crate::differential;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{RealizationNodeId, ValueCellId};

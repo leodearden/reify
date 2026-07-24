@@ -14,8 +14,7 @@
 //! `common/differential.rs` — a constraint-free, param-driven two-body source
 //! (`param w` → `sa = w*3` → box `a`; `sb = w*2` → box `b`).
 
-#[path = "common/differential.rs"]
-mod differential;
+use crate::differential;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{DiagnosticCode, RealizationNodeId};

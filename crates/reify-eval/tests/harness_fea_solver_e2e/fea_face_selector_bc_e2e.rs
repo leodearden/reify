@@ -147,7 +147,7 @@ fn boundary_demand_realization_edge_produces_attributed_boundary_on_occt_surface
     }
 
     let compiled = reify_test_support::parse_and_compile_with_stdlib(include_str!(
-        "fixtures/fea_bc_box.ri"
+        "../fixtures/fea_bc_box.ri"
     ));
 
     let mut engine = make_occt_engine();
@@ -261,7 +261,7 @@ fn non_boundary_demanded_realization_yields_no_boundary() {
     }
 
     let compiled = reify_test_support::parse_and_compile_with_stdlib(include_str!(
-        "fixtures/fea_bc_box.ri"
+        "../fixtures/fea_bc_box.ri"
     ));
 
     let mut engine = make_occt_engine();
@@ -413,7 +413,7 @@ fn real_occt_box_surface() -> reify_ir::Mesh {
     use reify_core::Severity;
 
     let compiled = reify_test_support::parse_and_compile_with_stdlib(include_str!(
-        "fixtures/fea_bc_box.ri"
+        "../fixtures/fea_bc_box.ri"
     ));
 
     let mut engine = make_occt_engine();

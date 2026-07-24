@@ -23,8 +23,7 @@
 
 use std::sync::Arc;
 
-mod common;
-use common::as_printed::{as_printed_options, box_mesh, fdm_process, r0_toolpath_gcode, structure};
+use crate::common::as_printed::{as_printed_options, box_mesh, fdm_process, r0_toolpath_gcode, structure};
 use reify_core::{ContentHash, RealizationNodeId, Type};
 use reify_eval::compute_targets::as_printed_material::as_printed_material_r_fast_trampoline;
 use reify_eval::compute_targets::as_printed_material_r0::as_printed_material_r0_trampoline;

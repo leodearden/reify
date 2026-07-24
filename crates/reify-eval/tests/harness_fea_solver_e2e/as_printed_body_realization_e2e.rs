@@ -24,8 +24,6 @@
 //! All tests are gated on `reify_kernel_occt::OCCT_AVAILABLE` — OCCT is present
 //! in this environment via `/opt/reify-deps`, so tests execute for real.
 
-mod common;
-
 use reify_core::{Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, ExportFormat, FieldSourceKind, ResolvedFunction, Value, ValueMap};
 use reify_eval::compute_targets::register_compute_fns;
@@ -57,7 +55,7 @@ structure FdmBox {
 
 /// A `Point3<Length>` from SI-metre coordinates.
 fn point3(p: [f64; 3]) -> Value {
-    use common::as_printed::length;
+    use crate::common::as_printed::length;
     Value::Point(vec![length(p[0]), length(p[1]), length(p[2])])
 }
 

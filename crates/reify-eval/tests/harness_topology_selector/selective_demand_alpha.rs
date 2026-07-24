@@ -16,8 +16,7 @@
 //! dependency spine is `a → sa → w` and `b → sb → w`, so every value cell sits in
 //! some realization's backward closure.
 
-#[path = "common/differential.rs"]
-mod differential;
+use crate::differential;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{RealizationNodeId, ValueCellId};

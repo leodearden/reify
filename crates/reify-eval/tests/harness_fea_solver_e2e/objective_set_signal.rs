@@ -22,7 +22,7 @@ use reify_ir::Value;
 use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_with_stdlib};
 
 fn weighted_fixture_source() -> &'static str {
-    include_str!("fixtures/objective_set_weighted.ri")
+    include_str!("../fixtures/objective_set_weighted.ri")
 }
 
 /// [B1/B4] WEIGHTED: `minimize 0.7 * mass - 0.3 * stiffness` (1-term WeightedSum,

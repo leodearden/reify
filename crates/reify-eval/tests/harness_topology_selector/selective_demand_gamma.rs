@@ -11,8 +11,7 @@
 //! `param w` → `sa = w*3` → box `a` (realization[0]); `sb = w*2` → box `b`
 //! (realization[1]).
 
-#[path = "common/differential.rs"]
-mod differential;
+use crate::differential;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{RealizationNodeId, ValueCellId};

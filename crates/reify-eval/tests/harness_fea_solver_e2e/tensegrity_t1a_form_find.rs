@@ -683,7 +683,7 @@ fn trampoline_surface_count_mismatch_is_failed() {
 /// The committed anchored cable-net example. `include_str!` makes a *missing*
 /// file a compile error — the step-11 RED signal until step-12 creates it.
 fn cable_net_source() -> &'static str {
-    include_str!("../../../examples/tensegrity_cable_net.ri")
+    include_str!("../../../../examples/tensegrity_cable_net.ri")
 }
 
 /// Crack a `CableNet.form` FormFindResult cell into solved `[f64;3]` node
@@ -962,7 +962,7 @@ fn cli_cable_net_prints_solved_z() {
 /// `include_str!` makes a *missing* file a compile error — the step-11 RED signal
 /// until step-12 creates it.
 fn membrane_formfind_source() -> &'static str {
-    include_str!("../../../examples/tensegrity_membrane_formfind.ri")
+    include_str!("../../../../examples/tensegrity_membrane_formfind.ri")
 }
 
 /// Crack a `MembraneFormFind.form` FormFindResult cell into its `converged` flag

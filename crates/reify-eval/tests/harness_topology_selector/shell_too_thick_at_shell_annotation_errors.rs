@@ -18,7 +18,7 @@ use reify_ir::Value;
 /// The `@shell` too-thick fixture, compile-time baked via `include_str!`
 /// (single source of truth — stays in sync with the user-facing example file).
 fn annotated_source() -> &'static str {
-    include_str!("../../../examples/fea_shell_too_thick_annotated.ri")
+    include_str!("../../../../examples/fea_shell_too_thick_annotated.ri")
 }
 
 /// Build an engine with BOTH the elastic-static trampoline and the shell-extract

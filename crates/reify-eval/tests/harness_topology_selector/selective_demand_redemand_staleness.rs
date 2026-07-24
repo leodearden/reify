@@ -52,8 +52,7 @@
 //! `sb` is body_b's EXCLUSIVE scalar cell: it does not appear in body_a's
 //! backward cone, so it is stale in `snapshot.values` after a hidden edit.
 
-#[path = "common/differential.rs"]
-mod differential;
+use crate::differential;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{RealizationNodeId, ValueCellId};

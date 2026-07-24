@@ -28,8 +28,7 @@
 //! `param w : Length = 10mm`; `sa = w*3` → `box a` (body_a = realization[0]);
 //! `sb = w*2` → `box b` (body_b = realization[1]).
 
-#[path = "common/differential.rs"]
-mod differential;
+use crate::differential;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{RealizationNodeId, ValueCellId};

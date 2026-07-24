@@ -16,11 +16,11 @@ use reify_ir::{ObjectiveCombination, Value};
 use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_with_stdlib};
 
 fn weighted_fixture_source() -> &'static str {
-    include_str!("fixtures/objective_set_weighted.ri")
+    include_str!("../fixtures/objective_set_weighted.ri")
 }
 
 fn centrality_fixture_source() -> &'static str {
-    include_str!("fixtures/centrality_two_sided_bound.ri")
+    include_str!("../fixtures/centrality_two_sided_bound.ri")
 }
 
 /// [θ Cycle 1a] An explicit objective (WeightedSum) records provenance for each
