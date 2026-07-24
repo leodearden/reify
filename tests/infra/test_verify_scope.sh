@@ -414,6 +414,114 @@ assert "C5/no-main: scope=all in plan header (fail-wide, contract C5)" \
 assert "C5/no-main: full scope forced (RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1)" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_C5"
 
+# ---------------------------------------------------------------------------
+# Scenario B-KLOC: new top-level standalone crate test file on a branch
+# triggers the harness-kLOC guard (task 5328).
+#
+# tests/infra/test_harness_kloc_cap.sh (the C2 anti-re-accretion guard) has no
+# row in scripts/verify-pipeline-infra-tests.txt (its trigger is not a single
+# artifact path — it is *adding* a new top-level standalone
+# crates/<c>/tests/*.rs file in one of the 5 consolidatable crates). This
+# exercises select_harness_kloc_guard()'s own added-file scan (git diff
+# --diff-filter=A against the merge-base), wired into SELECTED_INFRA_GLOBS
+# alongside select_infra_tests(). Positive cases pin two of the 5
+# consolidatable crates; boundary cases guard against over-firing on a source
+# file, a nested harness-module file, and a non-consolidatable crate's test.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario B-KLOC: new crates/reify-eval/tests/*.rs branch -> harness-kLOC guard selected (RED until step-2) ---"
+plan_for_branch crates/reify-eval/tests/zz_prd_probe.rs
+assert "B-KLOC/reify-eval: plan contains test_harness_kloc_cap.sh (guard wired as selective pole)" \
+    plan_has 'tests/infra/test_harness_kloc_cap\.sh'
+
+echo ""
+echo "--- Scenario B-KLOC-2: new crates/reify-compiler/tests/*.rs branch -> harness-kLOC guard selected (pins >1 of the 5 crates, RED until step-2) ---"
+plan_for_branch crates/reify-compiler/tests/zz_probe.rs
+assert "B-KLOC-2/reify-compiler: plan contains test_harness_kloc_cap.sh" \
+    plan_has 'tests/infra/test_harness_kloc_cap\.sh'
+
+echo ""
+echo "--- Scenario B-KLOC-src: crates/reify-eval/src/lib.rs branch (source file, not a test) -> guard NOT selected (no-op boundary) ---"
+plan_for_branch crates/reify-eval/src/lib.rs
+assert "B-KLOC-src: plan LACKS test_harness_kloc_cap.sh (src file, not a top-level test)" \
+    plan_lacks 'tests/infra/test_harness_kloc_cap\.sh'
+
+echo ""
+echo "--- Scenario B-KLOC-nested: crates/reify-eval/tests/harness_probe/nested.rs branch (nested harness-module file) -> guard NOT selected (no-op boundary) ---"
+plan_for_branch crates/reify-eval/tests/harness_probe/nested.rs
+assert "B-KLOC-nested: plan LACKS test_harness_kloc_cap.sh (nested, not top-level tests/*.rs)" \
+    plan_lacks 'tests/infra/test_harness_kloc_cap\.sh'
+
+echo ""
+echo "--- Scenario B-KLOC-noncons: crates/reify-doc/tests/probe.rs branch (crate NOT one of the 5 consolidatable) -> guard NOT selected (no-op boundary) ---"
+plan_for_branch crates/reify-doc/tests/probe.rs
+assert "B-KLOC-noncons: plan LACKS test_harness_kloc_cap.sh (reify-doc is not consolidatable)" \
+    plan_lacks 'tests/infra/test_harness_kloc_cap\.sh'
+
+# ---------------------------------------------------------------------------
+# Scenario B-KLOC-merge: DF_VERIFY_ROLE=merge + a consolidatable-crate test add
+# -> the selective harness-kLOC pole is NOT emitted (anti-double-fire, task
+# 5328 amendment; reviewer_comprehensive test-coverage finding).
+#
+# select_harness_kloc_guard() only appends into SELECTED_INFRA_GLOBS under
+# SCOPE="branch" (verify.sh:991), and DF_VERIFY_ROLE=merge|background forces
+# SCOPE=all BEFORE that check runs (verify.sh:643-646) — so scope=branch is
+# structurally impossible under the merge role and the selector never even
+# scans the diff. The selective-infra emission block ALSO independently
+# suppresses on DF_VERIFY_ROLE=merge|background (verify.sh:1864) — a second,
+# redundant belt-and-braces guard. Either guard alone is sufficient for the
+# exactly-once (INV-5) claim; this scenario locks the OBSERVABLE outcome (the
+# pole is absent from the merge-role plan) so a regression to EITHER guard is
+# caught here without needing to distinguish which one is doing the work.
+# run_all.sh (not exercised by --print-plan) remains the sole runner of the
+# guard at the merge tier, wholesale.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario B-KLOC-merge: DF_VERIFY_ROLE=merge + crate-test add -> selective harness-kLOC pole NOT emitted (anti-double-fire, INV-5) ---"
+FIX_KLOC_MERGE=""
+make_branch_fixture FIX_KLOC_MERGE
+git -C "$FIX_KLOC_MERGE" checkout -q -b task-branch
+mkdir -p "$FIX_KLOC_MERGE/crates/reify-eval/tests"
+printf 'x\n' > "$FIX_KLOC_MERGE/crates/reify-eval/tests/zz_prd_probe.rs"
+git -C "$FIX_KLOC_MERGE" add crates/reify-eval/tests/zz_prd_probe.rs
+git -C "$FIX_KLOC_MERGE" commit -q -m "task changes"
+PLAN_KLOC_MERGE="$(cd "$FIX_KLOC_MERGE" && DF_VERIFY_ROLE=merge bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+git -C "$FIX_KLOC_MERGE" checkout -q main
+git -C "$FIX_KLOC_MERGE" branch -q -D task-branch
+# FIX_KLOC_MERGE left dirty; cleaned up by the EXIT trap via _TMPDIRS.
+assert "B-KLOC-merge: scope=all in plan header (DF_VERIFY_ROLE=merge forces full scope)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "scope=all"' _ "$PLAN_KLOC_MERGE"
+assert "B-KLOC-merge: selective harness-kLOC pole ABSENT (run_all.sh owns it wholesale at the merge tier)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "tests/infra/test_harness_kloc_cap\.sh"' _ "$PLAN_KLOC_MERGE"
+
+# ---------------------------------------------------------------------------
+# Scenario B-KLOC-driftguard: select_harness_kloc_guard()'s hardcoded 5-crate
+# whitelist (scripts/verify.sh) must equal CONSOLIDATABLE_CRATES in
+# tests/infra/test_harness_kloc_cap.sh (task 5328 amendment; reviewer
+# comprehensive code-reuse-duplication finding).
+#
+# The two lists are duplicated on purpose (sync comment at verify.sh:984-985;
+# design_decisions note that drift is non-catastrophic because the merge gate
+# remains the wholesale authority), but silent drift would silently narrow
+# early branch-scope coverage. This pins the "keep in sync" prose comment as
+# an executable check: extract both lists as literal text (no sourcing of
+# either script — hermetic, no cargo) and assert they name the same crates.
+# Order-independent (sorted compare): both call sites use the list only for
+# MEMBERSHIP tests, never order.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario B-KLOC-driftguard: verify.sh crate whitelist == test_harness_kloc_cap.sh CONSOLIDATABLE_CRATES ---"
+_GUARD_CRATES_RAW="$(sed -n 's/^[[:space:]]*case " \(reify-[^"]*\) " in$/\1/p' "$REPO_ROOT/scripts/verify.sh")"
+_BASELINE_CRATES_RAW="$(sed -n 's/^CONSOLIDATABLE_CRATES=(\(.*\))$/\1/p' "$REPO_ROOT/tests/infra/test_harness_kloc_cap.sh")"
+assert "B-KLOC-driftguard: verify.sh's select_harness_kloc_guard whitelist line found exactly once" \
+    test "$(printf '%s\n' "$_GUARD_CRATES_RAW" | grep -c .)" -eq 1
+assert "B-KLOC-driftguard: test_harness_kloc_cap.sh's CONSOLIDATABLE_CRATES line found exactly once" \
+    test "$(printf '%s\n' "$_BASELINE_CRATES_RAW" | grep -c .)" -eq 1
+_GUARD_CRATES_SORTED="$(printf '%s' "$_GUARD_CRATES_RAW" | tr ' ' '\n' | sort | tr '\n' ' ')"
+_BASELINE_CRATES_SORTED="$(printf '%s' "$_BASELINE_CRATES_RAW" | tr ' ' '\n' | sort | tr '\n' ' ')"
+assert "B-KLOC-driftguard: crate sets are identical (sorted) — no silent drift from the sync comment at verify.sh:984-985" \
+    test "$_GUARD_CRATES_SORTED" = "$_BASELINE_CRATES_SORTED"
+
 # ===========================================================================
 # DEL-* scenarios (task 5140): scope classification must be deletion-aware.
 # verify.sh derives its changed-file list with `git diff --diff-filter=ACMR`
