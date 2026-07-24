@@ -2568,11 +2568,19 @@ impl Value {
                 format!("[{}]", strs.join(", "))
             }
             Value::Point(items) => {
-                let strs: Vec<String> = items.iter().map(|v| v.format_display()).collect();
+                let reference = aggregate_magnitude(self);
+                let strs: Vec<String> = items
+                    .iter()
+                    .map(|v| v.format_display_rel(reference))
+                    .collect();
                 format!("point({})", strs.join(", "))
             }
             Value::Vector(items) => {
-                let strs: Vec<String> = items.iter().map(|v| v.format_display()).collect();
+                let reference = aggregate_magnitude(self);
+                let strs: Vec<String> = items
+                    .iter()
+                    .map(|v| v.format_display_rel(reference))
+                    .collect();
                 format!("vec({})", strs.join(", "))
             }
             Value::Matrix(rows) => {
@@ -2688,6 +2696,30 @@ impl Value {
             Value::Selector(sv) => format!("Selector({})", sv.kind),
             Value::Feature(fid) => format!("Feature({fid})"), // task 4808 / P1 γ
             Value::Undef => "undefined".to_string(),
+        }
+    }
+
+    /// Format this value for GUI display like [`format_display`](Value::format_display),
+    /// but snap to `"0"` when this value is dust relative to `reference` (task 5339).
+    ///
+    /// `reference` is the whole-aggregate magnitude computed once by the
+    /// caller (see [`aggregate_magnitude`]) and threaded unchanged into every
+    /// component, so a component is judged against the *whole* containing
+    /// aggregate, not just its own subtree.
+    ///
+    /// Only `Scalar` and `Real` leaves apply the relative snap; every other
+    /// variant falls back to the unchanged [`format_display`](Value::format_display).
+    fn format_display_rel(&self, reference: f64) -> String {
+        match self {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                let (display_value, _unit) = dimension.to_display_units(*si_value);
+                format_display_number_rel(display_value, reference)
+            }
+            Value::Real(r) => format_display_number_rel(*r, reference),
+            _ => self.format_display(),
         }
     }
 
@@ -2909,6 +2941,43 @@ pub fn format_display_number_rel(v: f64, reference: f64) -> String {
         return "0".to_string();
     }
     format_display_number(v)
+}
+
+/// Compute the reference magnitude for [`format_display_number_rel`]'s
+/// relative snap: the max absolute display-unit magnitude over every numeric
+/// leaf reachable from `v`, recursing through nested `Point`/`Vector`/
+/// `Tensor`/`Matrix` (task 5339).
+///
+/// Recursing into nested composites means a 3×3 `Tensor`-of-`Tensor`
+/// (e.g. `moment_of_inertia`) is measured against the largest entry in the
+/// *whole* tensor, not just its own row — so an off-diagonal component is
+/// judged dust relative to the dominant term anywhere in the aggregate, not
+/// merely within its immediate row.
+///
+/// `Scalar` magnitudes are computed via [`DimensionVector::display_scale`]
+/// (the same scale [`Value::format_display`] applies via `to_display_units`),
+/// so the reference is comparable to the display-unit values
+/// `format_display_rel` will snap against. Non-numeric, non-aggregate
+/// variants contribute `0.0` (the `fold` seed), and `f64::max`'s NaN-ignoring
+/// semantics mean a NaN leaf never poisons the reference.
+fn aggregate_magnitude(v: &Value) -> f64 {
+    match v {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => dimension.display_scale(*si_value).abs(),
+        Value::Real(r) => r.abs(),
+        Value::Int(i) => (*i as f64).abs(),
+        Value::Point(items) | Value::Vector(items) | Value::Tensor(items) => {
+            items.iter().map(aggregate_magnitude).fold(0.0, f64::max)
+        }
+        Value::Matrix(rows) => rows
+            .iter()
+            .flatten()
+            .map(aggregate_magnitude)
+            .fold(0.0, f64::max),
+        _ => 0.0,
+    }
 }
 
 /// Map a DimensionVector to a human-readable SI unit label.
