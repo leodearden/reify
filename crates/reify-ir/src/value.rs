@@ -11588,6 +11588,57 @@ mod tests {
         );
     }
 
+    // ── Value::format_display Tensor relative snap-to-zero (task 5339) ───────
+    //
+    // Tensor is not yet wired to the relative snap (that's the whole point of
+    // this RED step) — the Tensor arm of format_display still maps children
+    // via the plain format_display(), and format_display_rel has no Tensor
+    // arm yet, so a nested Tensor-of-Tensor falls back to format_display()
+    // at the outer level too. These tests exercise the moment_of_inertia
+    // shape: a 3×3 nested Tensor whose off-diagonals are ~1e-18 dust next to
+    // O(1) diagonals, plus a flat-Tensor case and a no-op preservation case.
+
+    #[test]
+    fn format_display_tensor_snaps_inertia_off_diagonals_relative_to_whole_tensor_max() {
+        // reference must be computed over the WHOLE tensor (max diagonal
+        // 2.7), not per-row, and threaded unchanged into every row — so
+        // every ~1e-18 off-diagonal snaps, including in rows whose own max
+        // (e.g. row 0's 1.5) is smaller than the global reference.
+        let v = Value::Tensor(vec![
+            Value::Tensor(vec![
+                Value::Real(1.5),
+                Value::Real(8.681e-18),
+                Value::Real(-3.0e-18),
+            ]),
+            Value::Tensor(vec![
+                Value::Real(8.681e-18),
+                Value::Real(2.1),
+                Value::Real(1.0e-18),
+            ]),
+            Value::Tensor(vec![
+                Value::Real(-3.0e-18),
+                Value::Real(1.0e-18),
+                Value::Real(2.7),
+            ]),
+        ]);
+        assert_eq!(
+            v.format_display(),
+            "[[1.5, 0, 0], [0, 2.1, 0], [0, 0, 2.7]]"
+        );
+    }
+
+    #[test]
+    fn format_display_tensor_flat_snaps_dust_relative_to_sibling() {
+        let v = Value::Tensor(vec![Value::Real(4e-13), Value::Real(21.5)]);
+        assert_eq!(v.format_display(), "[0, 21.5]");
+    }
+
+    #[test]
+    fn format_display_tensor_preserves_comparable_components() {
+        let v = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0)]);
+        assert_eq!(v.format_display(), "[1, 2]");
+    }
+
     // ── Value::Selector substrate tests (step-3 RED / task 4116 α) ───────────
     //
     // These tests reference GeometryHandleRef, SelectorValue, LeafQuery, SelectorNode,
