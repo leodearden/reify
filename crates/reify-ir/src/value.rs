@@ -11282,6 +11282,70 @@ mod tests {
         assert_eq!(format_display_number(-80.0), "-80");
     }
 
+    // ── format_display_number_rel relative-to-aggregate snap-to-zero (task 5339) ──
+    //
+    // format_display_number cleans up 1-ulp *relative* noise but has no
+    // sibling context, so it cannot see that a component like
+    // 3.86564423998e-13 is dust relative to a sibling like 21.5084347502 (the
+    // BottomDeck.centroid case). format_display_number_rel adds a second,
+    // reference-relative snap-to-zero on top of the unchanged
+    // format_display_number: values below DISPLAY_REL_ZERO_EPSILON * reference
+    // render as "0", everything else falls through to format_display_number
+    // verbatim.
+
+    #[test]
+    fn format_display_number_rel_snaps_near_zero_relative_to_reference() {
+        // Real artifact: BottomDeck.centroid x component (~1.80e-14 of the
+        // z sibling) must snap to "0".
+        assert_eq!(
+            format_display_number_rel(3.86564423998e-13, 21.5084347502),
+            "0"
+        );
+    }
+
+    #[test]
+    fn format_display_number_rel_preserves_above_threshold_value() {
+        // ratio = 0.00005 / 21.5 ≈ 2.33e-6, well above the 1e-9 epsilon — a
+        // legitimate small tolerance (task 5198) must survive unchanged.
+        assert_eq!(format_display_number_rel(0.00005, 21.5), "0.00005");
+    }
+
+    #[test]
+    fn format_display_number_rel_preserves_the_reference_value_itself() {
+        // A value equal to the reference (ratio == 1.0) must render exactly
+        // as format_display_number would render it standalone.
+        assert_eq!(
+            format_display_number_rel(21.5084347502, 21.5084347502),
+            format_display_number(21.5084347502)
+        );
+    }
+
+    #[test]
+    fn format_display_number_rel_zero_reference_delegates_to_absolute_path() {
+        // reference == 0.0 (e.g. an all-zero or all-comparable-tiny
+        // aggregate) disables the relative snap entirely — falls through to
+        // the unchanged absolute-path cleanup.
+        assert_eq!(
+            format_display_number_rel(6.3999999999999995, 0.0),
+            "6.4"
+        );
+    }
+
+    #[test]
+    fn format_display_number_rel_non_finite_reference_disables_snapping() {
+        // A non-finite reference (e.g. an inf sibling in the aggregate) must
+        // never zero out a finite component — falls through unchanged.
+        assert_eq!(
+            format_display_number_rel(4e-13, f64::INFINITY),
+            format_display_number(4e-13)
+        );
+    }
+
+    #[test]
+    fn format_display_number_rel_exact_zero_value_stays_zero() {
+        assert_eq!(format_display_number_rel(0.0, 21.5), "0");
+    }
+
     // ── Value::Selector substrate tests (step-3 RED / task 4116 α) ───────────
     //
     // These tests reference GeometryHandleRef, SelectorValue, LeafQuery, SelectorNode,
