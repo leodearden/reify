@@ -67,6 +67,18 @@
 #                          orphan-removed by Pass 2 — e.g. _mainprobe-*/
 #                          _mainsweep-* must survive while a background
 #                          integrity sweep is live (task 5221).
+#   --extra-protect-glob GLOB
+#                          Additive protect glob (opt-in): ADDS to (never
+#                          replaces) the --protect-glob set above, comma-joined,
+#                          so a caller can protect extra entries WITHOUT
+#                          restating the default list (avoids a G7
+#                          lockstep-duplication hit). Matched entries are
+#                          skipped entirely (Pass 1 reset AND Pass 2 remove) and
+#                          counted as preserved, exactly like --protect-glob.
+#                          warm-lane-gc-sweep.sh uses it to protect lanes it
+#                          discovers hold a live build (task 5378). Default:
+#                          REIFY_WARM_LANE_GC_EXTRA_PROTECT_GLOB (any non-empty
+#                          value = on). Off by default.
 #   --seed-script PATH     Path to the α seed primitive (default: sibling seed-warm-lane.sh).
 #                          Overridable for hermetic testing.
 #   --disk-pressure        Fast-path: reclaim a lane by `rm -rf <lane>/target`
@@ -91,6 +103,8 @@
 #   REIFY_WARM_LANE_GC_MAIN_REF         — default --main-ref (default: main)
 #   REIFY_WARM_LANE_GC_LANE_GLOB        — default --lane-glob
 #   REIFY_WARM_LANE_GC_PROTECT_GLOB     — default --protect-glob
+#   REIFY_WARM_LANE_GC_EXTRA_PROTECT_GLOB — default --extra-protect-glob (any
+#                                         non-empty value = on); off by default
 #   REIFY_WARM_LANE_GC_SEED_SCRIPT      — default --seed-script
 #   REIFY_WARM_LANE_GC_DISK_PRESSURE    — default --disk-pressure (any non-empty
 #                                         value = on); off by default
@@ -177,6 +191,11 @@ Usage: $(basename "$0") reclaim --mount WORKTREE_BASE [OPTIONS]
                           which must never be orphan-removed (e.g. ephemeral
                           verify/sweep worktrees while a background integrity
                           sweep is live).
+    --extra-protect-glob GLOB
+                          Additive protect glob: ADDS to (never replaces) the
+                          --protect-glob set, so a caller protects extra entries
+                          without restating the default list (default:
+                          REIFY_WARM_LANE_GC_EXTRA_PROTECT_GLOB). Off by default.
     --seed-script PATH    Path to α seed primitive (default: sibling seed-warm-lane.sh).
     --disk-pressure       Fast-path: reclaim via `rm -rf <lane>/target` instead
                           of the α reflink-reseed clone (default:
@@ -201,6 +220,9 @@ BASE_TARGET="${REIFY_WARM_LANE_GC_BASE_TARGET:-}"
 MAIN_REF="${REIFY_WARM_LANE_GC_MAIN_REF:-main}"
 LANE_GLOB="${REIFY_WARM_LANE_GC_LANE_GLOB:-}"
 PROTECT_GLOB="${REIFY_WARM_LANE_GC_PROTECT_GLOB:-}"
+# Extra additive protect glob (task 5378): any non-empty value adds to (never
+# replaces) the effective protect set; empty/unset = off. Off by default.
+EXTRA_PROTECT_GLOB="${REIFY_WARM_LANE_GC_EXTRA_PROTECT_GLOB:-}"
 SEED_SCRIPT="${REIFY_WARM_LANE_GC_SEED_SCRIPT:-}"
 # Disk-pressure fast-path (task 5167): any non-empty value = on; off by default.
 DISK_PRESSURE="${REIFY_WARM_LANE_GC_DISK_PRESSURE:-}"
@@ -230,6 +252,9 @@ while [ $# -gt 0 ]; do
         --protect-glob)
             [ $# -ge 2 ] || { err "--protect-glob requires a value"; exit 2; }
             PROTECT_GLOB="$2"; shift 2 ;;
+        --extra-protect-glob)
+            [ $# -ge 2 ] || { err "--extra-protect-glob requires a value"; exit 2; }
+            EXTRA_PROTECT_GLOB="$2"; shift 2 ;;
         --seed-script)
             [ $# -ge 2 ] || { err "--seed-script requires a value"; exit 2; }
             SEED_SCRIPT="$2"; shift 2 ;;
@@ -290,6 +315,19 @@ fi
 # (dark-factory's .merge_verify.lock is a different path gc never inspects),
 # so this list only ever grows, never narrows an existing prefix.
 [ -n "$PROTECT_GLOB" ] || PROTECT_GLOB="_merge-*,_mainprobe-*,_mainsweep-*,_solo-*,_substrate-gate-*,_offline-deep,_iact-*"
+# Extra additive protect glob (task 5378): --extra-protect-glob /
+# REIFY_WARM_LANE_GC_EXTRA_PROTECT_GLOB ADDS to (never replaces) the effective
+# protect set — comma-joined onto whatever PROTECT_GLOB resolved to above
+# (its default OR an explicit --protect-glob). This lets a caller (e.g.
+# warm-lane-gc-sweep.sh's live-consumer lane guard) protect specific entries
+# WITHOUT restating the default list (avoiding a G7 lockstep-duplication hit).
+# It flows through the SAME _matches_glob path in the enumeration loop, so a
+# matched entry is skipped ENTIRELY in Pass 1 (reset) and Pass 2 (remove) and
+# counted as preserved. PROTECT_GLOB is always non-empty here (defaulted just
+# above), so the comma-join never yields a leading comma / empty pattern.
+if [ -n "$EXTRA_PROTECT_GLOB" ]; then
+    PROTECT_GLOB="${PROTECT_GLOB},${EXTRA_PROTECT_GLOB}"
+fi
 if [ -z "$SEED_SCRIPT" ]; then
     SEED_SCRIPT="$SCRIPT_DIR/seed-warm-lane.sh"
 fi
