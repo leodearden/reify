@@ -8218,6 +8218,7 @@ structure Assembly {
             None,              // unified_pass: LegacyMultiPass (no schedule)
             &std::collections::HashSet::new(), // realization_read_cells: empty
             None,              // demand_seed: full scope (not testing selective demand)
+            reify_ir::geometry::MeshContractMode::Enforce, // mesh_contract_mode: production default
         );
     }
 
@@ -8282,6 +8283,7 @@ structure Assembly {
             None,          // unified_pass: LegacyMultiPass (no schedule)
             &std::collections::HashSet::new(), // realization_read_cells: empty
             None,          // demand_seed: full scope (not testing selective demand)
+            reify_ir::geometry::MeshContractMode::Enforce, // mesh_contract_mode: production default
         );
     }
 

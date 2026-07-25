@@ -2690,8 +2690,14 @@ impl MeshContractMode {
     /// exhaustive string→mode cases (`mesh_contract_mode_from_env_value_parsing`).
     /// Mirroring the codebase convention, the wrapper is intentionally NOT
     /// unit-tested with `std::env::set_var`/`remove_var` — both are `unsafe`
-    /// in Rust 2024 and race-prone across parallel tests. The delegation is
-    /// pinned by `mesh_contract_mode_from_env_delegates_to_parser_over_real_env`.
+    /// in Rust 2024 and race-prone across parallel tests. A same-process
+    /// "delegates to the parser" test is not written either: with `ENV_VAR`
+    /// unset (the normal suite environment) both sides of such an assertion
+    /// evaluate to `Enforce`, so it would pass equally against a `from_env`
+    /// that hard-codes `Enforce` and ignores the environment — no
+    /// discriminating power. Pinning it honestly would need a child process
+    /// with the var set. The one behavioral line here is instead covered
+    /// indirectly by the site-1/site-2 integration tests.
     pub fn from_env() -> Self {
         Self::from_env_value(std::env::var(Self::ENV_VAR).ok().as_deref())
     }
@@ -11684,20 +11690,6 @@ mod tests {
             MeshContractMode::default(),
             MeshContractMode::from_env_value(None)
         );
-    }
-
-    /// The thin env wrapper must delegate to the pure parser rather than
-    /// hard-coding a variant — checked against whatever the real environment
-    /// currently holds.
-    ///
-    /// No `std::env::set_var` — `unsafe` in Rust 2024 + race-prone across
-    /// parallel tests.
-    #[test]
-    fn mesh_contract_mode_from_env_delegates_to_parser_over_real_env() {
-        let expected = MeshContractMode::from_env_value(
-            std::env::var(MeshContractMode::ENV_VAR).ok().as_deref(),
-        );
-        assert_eq!(MeshContractMode::from_env(), expected);
     }
 
     #[test]

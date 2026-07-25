@@ -5677,6 +5677,9 @@ impl Engine {
             unified_pass_tess.as_ref(),
             &realization_read_cells_tess,
             demand_seed_tess.as_ref(),
+            // Task #5105 δ (INV-GEO-1): forward the Engine's posture so the
+            // `set_mesh_contract_mode` seam governs the tessellate path too.
+            self.mesh_contract_mode,
         );
 
         TessellateResult {
@@ -6052,6 +6055,17 @@ impl Engine {
         // (not &DemandRegistry) keeps the fn self-contained and matches how
         // the seed is produced once by the caller's helper.
         demand_seed: Option<&HashSet<NodeId>>,
+        // Task #5105 δ (INV-GEO-1): mesh-contract enforcement posture for the
+        // tessellate→ingest handoff, forwarded from `tessellate_realizations` /
+        // `tessellate_snapshot` (each passes `self.mesh_contract_mode`, itself
+        // seeded from `MeshContractMode::from_env()` at Engine construction).
+        // Threaded explicitly — like `dispatch_count` and `capture_repr_tol` —
+        // rather than re-read from the env here, so the
+        // `Engine::set_mesh_contract_mode` test seam governs this path exactly
+        // as it governs `build` / `build_snapshot`. (`long_chain_threshold` is
+        // still env-read inline below because it is a perf-diagnostic knob that
+        // cannot abort a build; this one can.)
+        mesh_contract_mode: reify_ir::geometry::MeshContractMode,
     ) -> Vec<MeshSurface> {
         let mut meshes = Vec::new();
 
@@ -6115,14 +6129,6 @@ impl Engine {
         });
         // GR-034: resolve once per eval-loop entry; threaded per-iteration.
         let long_chain_threshold = crate::dispatcher::long_chain_threshold_from_env();
-        // Task #5105 δ (INV-GEO-1): resolved from the env here rather than
-        // snapshotted off `Engine`, because this is an associated fn with no
-        // `self` — exactly the same reason `long_chain_threshold` is read via
-        // `long_chain_threshold_from_env()` on the line above instead of being
-        // threaded in. `from_env` fails closed (Enforce unless
-        // `REIFY_MESH_CONTRACT=warn`), so the break-glass still reaches this
-        // path even though the `set_mesh_contract_mode` test seam does not.
-        let mesh_contract_mode = reify_ir::geometry::MeshContractMode::from_env();
 
         for (t_idx, template) in module.templates.iter().enumerate() {
             // Task 5033 Gap D: the isosurface-pipeline exception to this
@@ -11389,6 +11395,9 @@ impl Engine {
             unified_pass_snap.as_ref(),
             &realization_read_cells_snap,
             demand_seed_snap.as_ref(),
+            // Task #5105 δ (INV-GEO-1): mirror of the `tessellate_realizations`
+            // forward above.
+            self.mesh_contract_mode,
         );
 
         Some(TessellateResult {

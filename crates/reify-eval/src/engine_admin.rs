@@ -2004,6 +2004,11 @@ impl Engine {
     /// WITHOUT mutating process env — `std::env::set_var` is `unsafe` in
     /// Rust 2024 and races other parallel tests. Mirrors the
     /// `set_build_scheduler` seam directly above.
+    ///
+    /// Governs every entry point that reaches site 1: `build` /
+    /// `build_snapshot` (via `RealizationOpsInput::with_mesh_contract_mode`)
+    /// AND `tessellate_realizations` / `tessellate_snapshot` (forwarded as an
+    /// explicit `tessellate_from_values` parameter).
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn set_mesh_contract_mode(&mut self, mode: reify_ir::geometry::MeshContractMode) {
         self.mesh_contract_mode = mode;

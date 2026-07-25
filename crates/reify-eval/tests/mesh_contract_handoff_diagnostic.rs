@@ -34,6 +34,22 @@
 //!
 //! Both tests carry the VALID-tetra control half, so the no-false-positive
 //! guard holds under either mode.
+//!
+//! ## Coverage boundary: the tessellate surfaces are NOT pinned here
+//!
+//! `self.mesh_contract_mode` is forwarded to `tessellate_from_values` as an
+//! explicit parameter, so `tessellate_realizations` / `tessellate_snapshot`
+//! honour the `set_mesh_contract_mode` seam identically to `build` /
+//! `build_snapshot`. That forwarding is NOT covered by a runtime test, and
+//! deliberately so: those two surfaces hardcode `demanded_repr = ReprKind::BRep`
+//! for every realization (engine_build.rs, "Task 5033 Gap D"), so the
+//! cross-kernel BRep→Mesh handoff this file's harness relies on cannot be
+//! planned there at all — the dispatcher rejects it upstream of site 1 with
+//! `NoKernelChain` ("no kernel chain found for op 'BooleanUnion' to produce
+//! 'BRep'"). Site 1 IS reachable from the tessellate surfaces, but only via
+//! the `voxel_pipeline_demand_overrides` exception (an isosurface consumer
+//! whose demand is overridden to `Mesh`), which needs a Voxel-capable mock
+//! harness this file does not have. Tracked as a follow-up.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -95,6 +111,11 @@ impl reify_ir::GeometryKernel for CorruptTessellateKernel {
 /// V1=(1,0,0), V2=(0,1,0), V3=(0,0,1), faces (0,2,1),(0,1,3),(0,3,2),(1,2,3)
 /// — the same fixture as `reify_ir::geometry::tests::welded_tetra_mesh`,
 /// satisfying every `Mesh::validate` obligation.
+///
+/// Sourced from the shared [`reify_test_support::mocks::minimal_valid_mesh`]
+/// helper rather than hand-rolled here, so a future correction to the tetra's
+/// winding cannot silently desync this control half from the other mock
+/// producers that use it.
 struct ValidTessellateKernel {
     inner: MockGeometryKernel,
 }
@@ -125,23 +146,7 @@ impl reify_ir::GeometryKernel for ValidTessellateKernel {
         _handle: reify_ir::GeometryHandleId,
         _tolerance: f64,
     ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
-        Ok(reify_ir::Mesh {
-            #[rustfmt::skip]
-            vertices: vec![
-                0.0, 0.0, 0.0, // V0
-                1.0, 0.0, 0.0, // V1
-                0.0, 1.0, 0.0, // V2
-                0.0, 0.0, 1.0, // V3
-            ],
-            #[rustfmt::skip]
-            indices: vec![
-                0, 2, 1, // face 0
-                0, 1, 3, // face 1
-                0, 3, 2, // face 2
-                1, 2, 3, // face 3
-            ],
-            normals: None,
-        })
+        Ok(reify_test_support::mocks::minimal_valid_mesh(false))
     }
 }
 

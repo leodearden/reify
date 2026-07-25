@@ -499,7 +499,10 @@ pub struct Engine {
     /// either posture without mutating process env. Threaded into the build
     /// path via `RealizationOpsInput::with_mesh_contract_mode`
     /// (engine_build.rs), since the consuming `execute_realization_ops` is a
-    /// free fn with no `self`.
+    /// free fn with no `self`; the tessellate paths
+    /// (`tessellate_realizations` / `tessellate_snapshot`) forward this field
+    /// as an explicit `tessellate_from_values` parameter for the same reason,
+    /// so ALL four entry points honour the seam identically.
     mesh_contract_mode: reify_ir::geometry::MeshContractMode,
     /// Demand registry tracking which nodes are demanded.
     demand: DemandRegistry,
