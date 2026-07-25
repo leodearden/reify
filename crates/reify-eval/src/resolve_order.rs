@@ -27,10 +27,11 @@
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::cmp::Reverse;
 
-use reify_compiler::TopologyTemplate;
+use reify_compiler::{CompiledTrait, TopologyTemplate};
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, ValueCellId};
+use reify_ir::{CompiledExpr, CompiledFunction, ValueMap};
 
-use crate::deps::extract_dependency_trace;
+use crate::deps::{extract_dependency_trace, extract_value_deps};
 
 /// Result of computing the dependency-ordered resolution pass over a module's
 /// template slice.
@@ -98,6 +99,40 @@ pub(crate) struct Cluster {
     /// Whether this cluster is within-cap (`MergedSolve`) or over-cap
     /// (`ApproximatedFallback`).
     pub(crate) disposition: ClusterDisposition,
+}
+
+/// Cluster-formation context for the expansion-aware clustering pass
+/// (JOINT-DRIVE δ, Gap C, task #5334, PRD
+/// `docs/prds/v0_6/whole-model-joint-drive-seam.md` §13 Amendment A1).
+///
+/// Threaded as `Option<&ClusterFormationCtx>` through [`resolve_order`] /
+/// [`resolve_order_ordering_and_clusters`] into [`compute_clusters`]'s `Some`
+/// branch so that objective terms carrying structural queries
+/// (`cost(self.descendants)`) can be EXPANDED at cluster time — surfacing the
+/// derived `line_cost` reads that couple a parent objective to a child auto —
+/// and so the transitive walk can STOP at `@optimized` cells (PRD design
+/// decision 5). Callers that pass `None` keep the pre-#5334 direct-auto
+/// objective seed byte-for-byte, which is the executable INV-2 fence.
+///
+/// The fields mirror the in-scope variables at the engine call sites
+/// (`engine_eval.rs`): `values` (pre-solve structural counts only — autos are
+/// still `Undef`), the module `functions` table, the shared structural-query
+/// `trait_registry`, and the unfold budgets.
+pub(crate) struct ClusterFormationCtx<'a> {
+    /// Pre-solve value map — read ONLY for structural collection counts by the
+    /// `enumerate_*` helpers (never solved autos), so cluster-time expansion
+    /// respects `resolve_order`'s "no solved values" contract.
+    pub(crate) values: &'a ValueMap,
+    /// The module's compiled function table — resolves `@optimized`
+    /// `UserFunctionCall` cells so the walk can stop at them.
+    pub(crate) functions: &'a [CompiledFunction],
+    /// Structural-query trait registry (prelude + module trait defs) used by
+    /// `apply_trait_filters` / `apply_cost_aggregation` during expansion.
+    pub(crate) trait_registry: &'a HashMap<String, &'a CompiledTrait>,
+    /// `self.descendants` DFS depth guard (mirrors `Engine::max_unfold_depth`).
+    pub(crate) max_unfold_depth: usize,
+    /// `self.descendants` node-count budget (mirrors `Engine::max_unfold_nodes`).
+    pub(crate) max_unfold_nodes: usize,
 }
 
 /// Output of [`build_read_dag`]: `(auto_owner, adj, objective_reads)`.
@@ -299,8 +334,17 @@ fn tarjan_visit(v: usize, adj: &[Vec<usize>], st: &mut TarjanState) {
 /// 5. Emit each SCC's members in source-index order.
 /// 6. For SCCs of size ≥ 2, emit W_SCOPE_COUPLING for every intra-SCC
 ///    cross-scope auto read crossing (deduped per (owner, reader, cell)).
-pub(crate) fn resolve_order(templates: &[TopologyTemplate]) -> ResolveOrder {
-    resolve_order_impl(templates)
+///
+/// `cluster_ctx` selects the cluster-formation seed rule (JOINT-DRIVE δ, task
+/// #5334): `Some(ctx)` uses the expansion-aware transitive auto-reaching seed;
+/// `None` keeps the legacy direct-auto objective seed byte-for-byte. It only
+/// ever widens `clusters` — `order` and `coupling_diagnostics` are identical
+/// either way.
+pub(crate) fn resolve_order(
+    templates: &[TopologyTemplate],
+    cluster_ctx: Option<&ClusterFormationCtx>,
+) -> ResolveOrder {
+    resolve_order_impl(templates, cluster_ctx)
 }
 
 /// Ordering-AND-clusters variant for the warm `eval_cached` path (M-WHOLE
@@ -313,8 +357,11 @@ pub(crate) fn resolve_order(templates: &[TopologyTemplate]) -> ResolveOrder {
 /// emission (engine_eval.rs comment near the warm solver sub-pass) —
 /// `eval_cached` must never emit these, so the contract is made explicit
 /// here rather than relying on the caller to ignore the field.
-pub(crate) fn resolve_order_ordering_and_clusters(templates: &[TopologyTemplate]) -> ResolveOrder {
-    let mut ro = resolve_order_impl(templates);
+pub(crate) fn resolve_order_ordering_and_clusters(
+    templates: &[TopologyTemplate],
+    cluster_ctx: Option<&ClusterFormationCtx>,
+) -> ResolveOrder {
+    let mut ro = resolve_order_impl(templates, cluster_ctx);
     ro.coupling_diagnostics = Vec::new();
     ro
 }
@@ -327,7 +374,13 @@ pub(crate) fn resolve_order_ordering_and_clusters(templates: &[TopologyTemplate]
 /// (`resolve_order_ordering_and_clusters`, for the warm `eval_cached` path,
 /// which must never emit coupling diagnostics) — each wrapper handles that
 /// difference itself after calling this shared implementation.
-fn resolve_order_impl(templates: &[TopologyTemplate]) -> ResolveOrder {
+///
+/// `cluster_ctx` is forwarded verbatim to [`compute_clusters`] (JOINT-DRIVE δ,
+/// task #5334) and affects nothing else in this function.
+fn resolve_order_impl(
+    templates: &[TopologyTemplate],
+    cluster_ctx: Option<&ClusterFormationCtx>,
+) -> ResolveOrder {
     let n = templates.len();
     if n == 0 {
         return ResolveOrder {
@@ -441,7 +494,13 @@ fn resolve_order_impl(templates: &[TopologyTemplate]) -> ResolveOrder {
     // gated behind a `compute_cluster_set` bool (task #5013) that a warm-only
     // caller set `false`; that caller (`resolve_order_ordering_only`) was
     // deleted when #5118 switched `eval_cached` onto this variant.
-    let clusters = compute_clusters(templates, &auto_owner, &sccs_topo, &objective_reads);
+    let clusters = compute_clusters(
+        templates,
+        &auto_owner,
+        &sccs_topo,
+        &objective_reads,
+        cluster_ctx,
+    );
 
     // --- Step 5: Coupling diagnostics for SCCs of size ≥ 2 ---
     //
@@ -587,6 +646,81 @@ fn auto_cell_count(template: &TopologyTemplate) -> usize {
         .count()
 }
 
+/// Build the cross-template map of every non-auto value cell's `default_expr`,
+/// keyed by cell id (JOINT-DRIVE δ, task #5334, C2).
+///
+/// Mirrors `build_dependent_cells`' cell_map construction (engine_eval.rs) —
+/// autos have no `default_expr` and are skipped; ComputeNode-produced cells
+/// without a foldable `default_expr` never enter.  First-writer-wins on
+/// duplicate ids (`or_insert`), matching that precedent.  The forward walk in
+/// [`union_via_transitive_auto_owners`] follows these derived cells' reads to
+/// reach the autos they transitively depend on.
+fn build_non_auto_cell_map(templates: &[TopologyTemplate]) -> HashMap<ValueCellId, &CompiledExpr> {
+    let mut cell_map: HashMap<ValueCellId, &CompiledExpr> = HashMap::new();
+    for template in templates {
+        for cell in &template.value_cells {
+            if cell.kind.is_auto() {
+                continue;
+            }
+            if let Some(expr) = cell.default_expr.as_ref() {
+                cell_map.entry(cell.id.clone()).or_insert(expr);
+            }
+        }
+    }
+    cell_map
+}
+
+/// Forward-reachability walk that unions scope `j` with the owning scope of
+/// every auto cell reachable from `seeds` through derived (non-auto) cells
+/// (JOINT-DRIVE δ, task #5334, C2).
+///
+/// Starting from `seeds` (scope `j`'s objective reads), for each popped id:
+/// (i) if it is auto-owned, union `j` with the owner and stop — an auto has no
+/// `default_expr` to follow; (ii) otherwise, if it is a derived cell in
+/// `cell_map`, follow its `default_expr` reads (`extract_value_deps`)
+/// transitively, cross-scope.
+///
+/// Case (i) SUBSUMES the legacy direct-auto seed: an objective read that IS an
+/// auto unions at walk step 1, before any derived cell is consulted.
+///
+/// A `visited` set makes the walk terminate on cyclic derived-cell reads.  This
+/// is a plain forward reachability collecting union pairs — NOT a topological
+/// sort — so it needs no `detect_let_cycle` (whose single-template contract
+/// stays untouched).  The `@optimized` stop-check is added in step-6.
+fn union_via_transitive_auto_owners(
+    j: usize,
+    seeds: &[ValueCellId],
+    cell_map: &HashMap<ValueCellId, &CompiledExpr>,
+    auto_owner: &HashMap<ValueCellId, usize>,
+    parent: &mut [usize],
+) {
+    let mut visited: HashSet<ValueCellId> = HashSet::new();
+    let mut frontier: Vec<ValueCellId> = Vec::new();
+    for s in seeds {
+        if visited.insert(s.clone()) {
+            frontier.push(s.clone());
+        }
+    }
+    while let Some(id) = frontier.pop() {
+        // (i) Auto-owned id: union j with its owner (if a different scope) and
+        // stop — autos are walk leaves (no default_expr).
+        if let Some(&owner) = auto_owner.get(&id) {
+            if owner != j {
+                uf_union(parent, owner, j);
+            }
+            continue;
+        }
+        // (ii) Derived non-auto cell: follow its reads transitively.
+        if let Some(expr) = cell_map.get(&id) {
+            for dep in extract_value_deps(expr) {
+                if visited.insert(dep.clone()) {
+                    frontier.push(dep);
+                }
+            }
+        }
+    }
+}
+
 /// Compute the pre-solve cluster set (M-WHOLE α, task #5013).
 ///
 /// Seeds a union-find over `0..templates.len()` from (a) non-trivial SCCs
@@ -597,11 +731,16 @@ fn auto_cell_count(template: &TopologyTemplate) -> usize {
 /// else `MergedSolve`.  Clusters are sorted by their minimum member index so the
 /// output is deterministic.  Returns an empty vec when no group reaches size 2
 /// (INV-2).
+///
+/// `cluster_ctx` selects the objective seed rule (JOINT-DRIVE δ, task #5334):
+/// `None` is the legacy direct-auto seed, `Some(ctx)` the transitive
+/// auto-reaching walk.  Either way ONLY objective reads seed the union-find.
 fn compute_clusters(
     templates: &[TopologyTemplate],
     auto_owner: &HashMap<ValueCellId, usize>,
     sccs_topo: &[Vec<usize>],
     objective_reads: &[Vec<ValueCellId>],
+    cluster_ctx: Option<&ClusterFormationCtx>,
 ) -> Vec<Cluster> {
     let n = templates.len();
     // Union-find over template indices; each node starts in its own set.
@@ -622,17 +761,51 @@ fn compute_clusters(
     // every OTHER scope's auto cell its objective terms read. CONSTRAINT reads
     // are deliberately NOT unioned — an acyclic constraint crossing is resolved
     // by ordering (the reader sees the owner frozen), needs no merge, and must
-    // keep forming zero clusters (preserves scope_coupling A–G and INV-2).
-    //
-    // Reads come from the `objective_reads` cache (built once in build_read_dag),
-    // not a fresh `extract_dependency_trace` walk (task #5013). `objective_reads[j]`
-    // is empty for objectiveless templates, so those iterations are no-ops.
-    for (j, reads) in objective_reads.iter().enumerate() {
-        for r in reads {
-            if let Some(&i) = auto_owner.get(r)
-                && i != j
-            {
-                uf_union(&mut parent, i, j);
+    // keep forming zero clusters (preserves scope_coupling A–G and INV-2). Both
+    // branches below read ONLY `objective_reads`, so that invariant holds
+    // regardless of `cluster_ctx`.
+    match cluster_ctx {
+        // Legacy direct-auto seed (task #5013): union j with the owner of every
+        // OTHER scope's auto cell its objective terms read DIRECTLY.
+        //
+        // Reads come from the `objective_reads` cache (built once in
+        // build_read_dag), not a fresh `extract_dependency_trace` walk (task
+        // #5013). `objective_reads[j]` is empty for objectiveless templates, so
+        // those iterations are no-ops. Byte-identical to the pre-#5334
+        // behaviour, and kept as the executable INV-2 fence.
+        None => {
+            for (j, reads) in objective_reads.iter().enumerate() {
+                for r in reads {
+                    if let Some(&i) = auto_owner.get(r)
+                        && i != j
+                    {
+                        uf_union(&mut parent, i, j);
+                    }
+                }
+            }
+        }
+        // Transitive auto-reaching seed (JOINT-DRIVE δ, task #5334, C2). Builds a
+        // cross-template map of every non-auto cell's `default_expr`, then for
+        // each scope j walks j's objective reads forward through those derived
+        // cells, unioning j with the owner of any auto the walk reaches. This
+        // SUBSUMES the direct seed above (an objective read that IS an auto
+        // unions at walk step 1) and additionally follows a derived Let cell
+        // (`line_cost = unit_cost * quantity_produced`) down to the child auto
+        // behind it — the joint-drive leaf coupling.
+        //
+        // step-2 still seeds from the UNEXPANDED `objective_reads`; step-4
+        // replaces the seed with the cluster-time-EXPANDED objective reads so
+        // `cost(self.descendants)` surfaces its `line_cost` reads too.
+        Some(_ctx) => {
+            let cell_map = build_non_auto_cell_map(templates);
+            for (j, reads) in objective_reads.iter().enumerate() {
+                union_via_transitive_auto_owners(
+                    j,
+                    reads,
+                    &cell_map,
+                    auto_owner,
+                    &mut parent,
+                );
             }
         }
     }
@@ -723,7 +896,7 @@ mod tests {
             .build();
 
         let templates = vec![b, a];
-        let ro = resolve_order(&templates);
+        let ro = resolve_order(&templates, None);
 
         // A (index 1) must come before B (index 0).
         assert_eq!(
@@ -756,7 +929,7 @@ mod tests {
             .build();
 
         let templates = vec![x, y];
-        let ro = resolve_order(&templates);
+        let ro = resolve_order(&templates, None);
 
         assert_eq!(
             ro.order,
@@ -793,7 +966,7 @@ mod tests {
 
         // Source order: [X=0, Y=1, Z=2]
         let templates = vec![x, y, z];
-        let ro = resolve_order(&templates);
+        let ro = resolve_order(&templates, None);
 
         // Z must come after Y.
         let y_pos = ro.order.iter().position(|&i| i == 1).unwrap();
@@ -840,7 +1013,7 @@ mod tests {
 
         // Source order: [A=0, B=1]
         let templates = vec![a, b];
-        let ro = resolve_order(&templates);
+        let ro = resolve_order(&templates, None);
 
         // Must include both members.
         assert_eq!(ro.order.len(), 2, "both cycle members must be in order");
@@ -914,7 +1087,7 @@ mod tests {
 
         // Source order: [A=0, B=1, C=2]
         let templates = vec![a, b, c];
-        let ro = resolve_order(&templates);
+        let ro = resolve_order(&templates, None);
 
         // All three members must be present.
         assert_eq!(ro.order.len(), 3);
@@ -983,7 +1156,7 @@ mod tests {
             .build();
 
         let templates = vec![parent, conn7];
-        let ro = resolve_order(&templates);
+        let ro = resolve_order(&templates, None);
 
         // Conn7 (idx 1) must come before Parent (idx 0) — the reverse of
         // declaration order, driven by the synthesized child→parent edge.
@@ -1033,7 +1206,7 @@ mod tests {
             .build();
 
         let templates = vec![x, y];
-        let ro = resolve_order(&templates);
+        let ro = resolve_order(&templates, None);
 
         assert!(
             ro.clusters.is_empty(),
@@ -1066,7 +1239,7 @@ mod tests {
             .build();
 
         let templates = vec![a, b];
-        let ro = resolve_order(&templates);
+        let ro = resolve_order(&templates, None);
 
         assert_eq!(
             ro.clusters.len(),
@@ -1128,7 +1301,7 @@ mod tests {
 
         // Source order: [Parent=0, ChildA=1, ChildB=2].
         let templates = vec![parent, child_a, child_b];
-        let ro = resolve_order(&templates);
+        let ro = resolve_order(&templates, None);
 
         assert_eq!(
             ro.clusters.len(),
@@ -1181,7 +1354,7 @@ mod tests {
             .build();
 
         let templates = vec![a, b];
-        let ro = resolve_order(&templates);
+        let ro = resolve_order(&templates, None);
 
         assert_eq!(
             ro.clusters.len(),
@@ -1235,8 +1408,8 @@ mod tests {
 
         let templates = vec![a, b];
 
-        let cold = resolve_order(&templates);
-        let ordering_and_clusters = resolve_order_ordering_and_clusters(&templates);
+        let cold = resolve_order(&templates, None);
+        let ordering_and_clusters = resolve_order_ordering_and_clusters(&templates, None);
 
         // (a) `order` must be identical to the cold `resolve_order`'s order.
         assert_eq!(

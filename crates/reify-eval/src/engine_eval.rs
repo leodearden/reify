@@ -4500,7 +4500,7 @@ impl Engine {
         // β #4822: compute dependency-ordered resolve order BEFORE the solver
         // gate so `ro` is in scope at the detect_scope_coupling site below.
         // Pure structural analysis — requires no solved values.
-        let mut ro = crate::resolve_order::resolve_order(&module.templates);
+        let mut ro = crate::resolve_order::resolve_order(&module.templates, None);
         let has_active_solver = self
             .resolve_solver_for_module(module, &mut diagnostics)
             .is_some();
@@ -6428,7 +6428,7 @@ impl Engine {
         // call (tracked alongside that task's reverse-dependency-index
         // follow-up — both are "warm state recomputed/reset every call
         // instead of persisted" regressions from this task).
-        let ro = crate::resolve_order::resolve_order_ordering_and_clusters(&module.templates);
+        let ro = crate::resolve_order::resolve_order_ordering_and_clusters(&module.templates, None);
 
         for template in &module.templates {
             // Pre-seed Auto cells (unchanged; processed separately before the
