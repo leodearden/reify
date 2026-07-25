@@ -231,3 +231,25 @@ reify leaves filed here (`project_root=/home/leo/src/reify`); DF leaves filed wi
 - **Sidecar vs DF-supplied OID as the source of truth.** §4 uses both (reify sidecar + DF env, must agree). Confirm no race where the lane sidecar is stale from a prior consumer (the lane-lock at acquire should prevent it — verify against `seed-warm-lane.sh --lane-lock`).
 - **ε as a standalone leaf vs folded into 5254.** Decide at decompose whether the e2e demo is its own task or 5254's verification body.
 - **G7 decompose walk.** `docs/legibility/design-invariants.md` is not yet on disk (advisory walk only at author time — no lock-step duplication, no prose-only contract, no silent fail-soft: §4.3 makes every fallback loud). Run the normative G7 walk at decompose once the doc lands.
+
+---
+
+## §12 — Post-landing finding (2026-07-25): the seam did not close
+
+Every leaf landed `done` (α/β/γ/δ = reify 5287–5290; D1–D5 = dark_factory 2833–2837; DF 2821), yet the capability **has never fired once**: `data/orchestrator/runs.db` carries **1579/1579** `merge_verify` events with `retry_scope` NULL. The ε demo attempt aborted before flaking anything because the precondition is unsatisfiable (full forensics in esc-5291-1's `triage_note`). Three producer/consumer mismatches at the attempt-0 sidecar:
+
+| | reify ships | dark-factory consumes |
+|---|---|---|
+| Path | `<wt>/target/reify-verify-attempt.json` (`verify.sh:715,1794`) | `<merge_wt>/.reify-verify-retry/attempt0.json` (`merge_queue.py:1787,1806`) |
+| Schema | `{tree_oid, profiles, timestamp}` — exactly §4.1 | `{tree_oid, debug:{planned,verdicts}, release:{…}, run_all_members, gui_specs}` |
+| Written when | final plan line ⇒ only after a **fully green** attempt-0 (executor `exit`s on first failure, `verify.sh:2431-2469`) | needed after a **red** attempt-0 |
+
+`_load_attempt0_sidecar` therefore always returns None → `narrowed=False` → no `REIFY_VERIFY_RETRY_*` in `verify_env` → `retry_scope_event_fields` emits `None`. Executed against the live lane: `_load_attempt0_sidecar('/home/leo/src/warm-lanes/worktrees/_merge-verify') -> None`. DF's own comments already conceded the inertness (`merge_queue.py:7083-7087`, `:2186`).
+
+**Root cause.** The shipped D2 substituted *"read a reify-written payload sidecar"* for §8 D2's *"compute from `parse_per_test_results` + the attempt-0 plan"*, inventing a reify obligation no reify leaf carries. Two structural reasons it stayed invisible: (a) D2's unit fixtures were authored from its own docstring, never from reify's real sidecar bytes; (b) δ's boundary test drives `verify.sh`'s env consumption **directly**, so it never crosses the seam. Both sides green, seam dead — the "DONE producer ≠ wired at the seam" class.
+
+**Corrective leaves** (both `pending`, both hard deps of ε):
+- **α2 — reify 5548.** Stamp the tree-OID sidecar at the top of `add_test_passes` (after the compile poles, before the first nextest pass) so a **red** attempt-0 still leaves a valid pin; the sidecar asserts *"the warm `target/` was built from THIS tree"*, not *"this tree passed"*. Same-diff inversion of `test_verify_retry_subset.sh` Test 6 plus a red-attempt-0 case.
+- **D2b — dark_factory 3059.** Build the payload from DF's own per-test results; decide and document the source of the *planned* set (fail safe to a full verify when unobtainable — §4.2's {failed ∪ not-started} is unsound without it); repoint INV-3 corroboration at the sidecar reify actually writes; pin the unit fixtures to reify's real sidecar bytes.
+
+**ε (5291) is now a rerun** gated on both, and carries a preflight — a non-null `retry_scope` in `runs.db`, or the DF payload builder returning non-None against the live `_merge-verify` lane — that must pass **before** any gate is deliberately flaked. §9.2's C1–C4 remain the right DF-side checks; what was missing is a check that the two sides agree on the artifact at all, which is what D2b's byte-pinned fixture adds.

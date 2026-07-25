@@ -27,6 +27,26 @@ tasks:
       paths:
       - scripts/verify.sh
       expect: present
+- label: α2
+  task_id: 5548
+  title: attempt-0 tree-OID sidecar must survive a RED attempt-0 (stamp before the
+    test poles, not after)
+  capabilities:
+  - name: red-attempt0-tree-pin-survives
+    binding: 'corrective leaf on α (post-landing finding 2026-07-25, esc-5291-1 triage;
+      see PRD §12) — α stamps the sidecar as the FINAL plan line (verify.sh:1779-1795)
+      and the executor exits on first failure (:2431-2469), so ONLY a green attempt-0
+      leaves a pin; a narrowed retry follows a RED attempt-0, so the tree-pin guard
+      (:1694-1712) refuses every retry with `retry refused: tree drift`. Moves the
+      stamp to the top of add_test_passes (after the compile poles), pinning "the
+      warm target/ was built from THIS tree" — the property the retry actually needs.
+      Consumed by dark_factory:3059 (D2b) + ε'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: positional change — not greppable; the mechanical check is test_verify_retry_subset.sh's
+        inverted Test-6 ordering assertion plus its new red-attempt-0 case, landed
+        in the same diff
 - label: β
   task_id: 5288
   title: 'run_all.sh: REIFY_RUN_ALL_MEMBER_SUBSET member-subset knob (reuse Phase-2.5
@@ -95,7 +115,12 @@ tasks:
   - name: operator-observable-e2e-retry-lands
     binding: 'premise-soundness (G6 branch 3) — ε''s signal produced entirely by its
       dep set: δ(marker)+D1-D5+dark_factory:2821(classifier gate)+reify:5261(durable
-      FLAKY ledger); no capability demanded that a dependency doesn''t produce'
+      FLAKY ledger); no capability demanded that a dependency doesn''t produce. FALSIFIED
+      2026-07-25 by the demo attempt (PRD §12): the dep set does NOT produce the capability
+      — the attempt-0 sidecar seam between α and D2 never closed, so no flake can
+      yield retry_scope=failed_only. Dep set corrected to add α2(reify:5548)+D2b(dark_factory:3059);
+      ε is now a rerun carrying a preflight (runs.db retry_scope non-null / DF payload
+      builder non-None) that must pass BEFORE any gate is flaked'
     verdict: PASS
     delivered_check:
       kind: manual
@@ -123,16 +148,43 @@ tasks:
     population in verify_env + tree-OID gate'
   capabilities:
   - name: sound-subset-construction-and-verify-env-wiring
-    binding: capability→producer (dark_factory) — parse_per_test_results merge_shadow.py:171
+    binding: 'capability→producer (dark_factory) — parse_per_test_results merge_shadow.py:171
       + M4 _reverify_rebased_tree merge_queue.py:79,1685; nextest subset={failed ∪
       not-started} (failed-only UNSOUND under fail-fast); INV-3 tree-OID gate; D1
-      upstream
+      upstream. POST-LANDING CORRECTION 2026-07-25 (PRD §12): the shipped implementation
+      does NOT use parse_per_test_results as bound here — it reads the whole attempt-0
+      payload from <merge_wt>/.reify-verify-retry/attempt0.json (merge_queue.py:1787-1845),
+      a file no producer writes, so _load_attempt0_sidecar always returns None, narrowed
+      stays False and the capability has never fired. Superseded by D2b (dark_factory:3059),
+      which restores the bound mechanism'
     verdict: PASS
     delivered_check:
       kind: manual
       reason: DF-side; the DF unit test (fail-fast map ⇒ {failed ∪ not-started}; reify
         envs+filter files populated; rebased tree ⇒ full verify) is the mechanical
-        check
+        check — note it passed against an invented fixture, never against reify's
+        real sidecar bytes, which is how the seam gap stayed invisible (D2b pins the
+        fixture)
+- label: D2b
+  task_id: 3059
+  title: 'D2 re-wire: build the attempt-0 retry payload from DF''s own per-test results
+    — the sidecar it reads today is written by nobody'
+  capabilities:
+  - name: df-owned-attempt0-payload-construction
+    binding: 'corrective leaf on D2 (post-landing finding 2026-07-25; see PRD §12)
+      — restores the mechanism D2''s own binding already names (parse_per_test_results
+      merge_shadow.py:171 + the attempt-0 plan) in place of the phantom <merge_wt>/.reify-verify-retry/attempt0.json
+      read; INV-3 tree-OID corroboration repointed at the sidecar reify actually writes
+      (target/reify-verify-attempt.json, gated on reify:5548 so it survives a red attempt-0);
+      fail-safe to full verify when the planned set is unobtainable (failed-only is
+      UNSOUND under fail-fast). Consumed by D3/D4/D5 + ε'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'DF-side; the DF unit tests are the mechanical check — a recorded attempt-0
+        fail-fast result yields narrowed=True with REIFY_VERIFY_RETRY_* populated,
+        and an anti-recurrence fixture pinned to reify''s REAL sidecar bytes fails
+        on any path/schema drift'
 - label: D3
   task_id: 2835
   title: retry budget policy + M1-autonomous narrowed retry, category-gated on 2821
