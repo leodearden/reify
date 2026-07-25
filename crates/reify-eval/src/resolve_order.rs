@@ -915,7 +915,7 @@ mod tests {
     use reify_compiler::CompiledTrait;
     use reify_core::{ContentHash, DimensionVector, Type};
     use reify_ir::{
-        BinOp, CompiledFnBody, CompiledFunction, ObjectiveSense, ObjectiveSet, ValueMap,
+        BinOp, CompiledFnBody, CompiledFunction, ObjectiveSense, ObjectiveSet, Value, ValueMap,
     };
     use reify_test_support::{
         TopologyTemplateBuilder, binop, fn_call, gt, literal, method_call_expr, mm, user_fn_call,
@@ -1788,6 +1788,260 @@ mod tests {
              decision 5 / §11 documented limitation): the walk must stop at the \
              @optimized cell and form NO cluster; got: {:?}",
             ro.clusters
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // JOINT-DRIVE δ invariant fences (task #5334, step-7)
+    //
+    // These lock the contracts the production wiring (steps 9/10) must not
+    // break. They are expected GREEN on arrival: if any turns RED, the
+    // transitive walk is over-reaching and must be narrowed BEFORE the engine
+    // call sites start passing `Some(&ctx)`.
+    // -------------------------------------------------------------------------
+
+    /// A Money-dimensioned scalar literal for the constraint-side fence below
+    /// (no `money(..)` constructor exists in reify-test-support; the local
+    /// `money_ty()` covers the type side).
+    fn money(v: f64) -> Value {
+        Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::MONEY,
+        }
+    }
+
+    /// (BT-10, negative fence) A Parent whose CONSTRAINT — never its objective —
+    /// transitively reads the Child's auto through the derived `line_cost` Let
+    /// cell must still form ZERO clusters under `Some(&ctx)`.
+    ///
+    /// The transitive walk is seeded from OBJECTIVE reads ONLY, so this holds by
+    /// construction; the test is the executable fence against a future widening
+    /// that seeds it from constraint reads too. That widening would be a
+    /// silent INV-2 break: an acyclic constraint crossing is resolved by
+    /// ORDERING (the reader sees the owner frozen), needs no merged solve, and
+    /// the `tests/scope_coupling.rs` A–G cases all depend on it forming zero
+    /// clusters.
+    ///
+    /// Note the crossing is invisible to the read-DAG as well: `line_cost` is a
+    /// Let, not an auto, so `build_read_dag` adds no edge and the order stays
+    /// identity — exactly as it does on the pre-#5334 path.
+    #[test]
+    fn bt10_constraint_only_transitive_read_forms_no_cluster() {
+        // Parent (idx 0): a CONSTRAINT (not an objective) reading the child's
+        // derived cost cell — `Child.line_cost > 0` (Money).
+        let parent = TopologyTemplateBuilder::new("Parent")
+            .constraint(
+                "Parent",
+                0,
+                None,
+                gt(
+                    value_ref_typed("Child", "line_cost", money_ty()),
+                    literal(money(0.0)),
+                ),
+            )
+            .build();
+
+        // Child (idx 1): identical to BT-8a's — derived `line_cost` over the
+        // child's own auto `quantity_produced`.
+        let child = TopologyTemplateBuilder::new("Child")
+            .trait_bound("Costed")
+            .auto_param_free("Child", "quantity_produced", Type::dimensionless_scalar())
+            .let_binding(
+                "Child",
+                "line_cost",
+                money_ty(),
+                binop(
+                    BinOp::Mul,
+                    value_ref_typed("Child", "unit_cost", money_ty()),
+                    value_ref("Child", "quantity_produced"),
+                ),
+            )
+            .build();
+
+        let templates = vec![parent, child];
+
+        let values = ValueMap::default();
+        let no_fns: [CompiledFunction; 0] = [];
+        let registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let ctx = ClusterFormationCtx {
+            values: &values,
+            functions: &no_fns,
+            trait_registry: &registry,
+            max_unfold_depth: 64,
+            max_unfold_nodes: 10_000,
+        };
+        let ro = resolve_order(&templates, Some(&ctx));
+
+        assert!(
+            ro.clusters.is_empty(),
+            "a CONSTRAINT-only transitive read must NOT form a cluster — the δ walk \
+             is seeded from objective reads only (INV-2 / scope_coupling A–G); got: {:?}",
+            ro.clusters
+        );
+        assert_eq!(
+            ro.order,
+            vec![0, 1],
+            "a derived-cell crossing adds no read-DAG edge, so order stays identity; got: {:?}",
+            ro.order
+        );
+    }
+
+    /// (INV-2 under ctx) An uncoupled two-scope module resolves IDENTICALLY
+    /// whether cluster formation runs the legacy direct-auto seed (`None`) or
+    /// the δ expansion-aware seed (`Some(&ctx)`): same identity `order`, zero
+    /// clusters, and the same `coupling_diagnostics`.
+    ///
+    /// This is the proof that cluster-time expansion did not leak back into the
+    /// read-DAG (PRD design decision 7, "at cluster time only"): feeding
+    /// expanded objective reads into `build_read_dag` would add ordering edges
+    /// and change both `order` and the W_SCOPE_COUPLING text.
+    ///
+    /// The fixture is `no_cross_scope_reads_yields_zero_clusters_and_identity_order`'s,
+    /// plus a SELF-objective on X (`minimize X.a`, X's own auto). The
+    /// self-objective keeps the module uncoupled — a same-scope read unions
+    /// nothing — while ensuring `expanded_objective_reads` actually RUNS, so the
+    /// no-leak claim is tested rather than vacuously true of an objectiveless
+    /// module.
+    #[test]
+    fn inv2_uncoupled_module_identical_with_and_without_cluster_ctx() {
+        let x = TopologyTemplateBuilder::new("X")
+            .auto_param("X", "a", Type::length())
+            .constraint("X", 0, None, gt(value_ref("X", "a"), literal(mm(0.0))))
+            .objective(ObjectiveSet::single(
+                ObjectiveSense::Minimize,
+                value_ref("X", "a"),
+            ))
+            .build();
+
+        let y = TopologyTemplateBuilder::new("Y")
+            .auto_param("Y", "b", Type::length())
+            .constraint("Y", 0, None, gt(value_ref("Y", "b"), literal(mm(0.0))))
+            .build();
+
+        let templates = vec![x, y];
+
+        let ro_legacy = resolve_order(&templates, None);
+
+        let values = ValueMap::default();
+        let no_fns: [CompiledFunction; 0] = [];
+        let registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let ctx = ClusterFormationCtx {
+            values: &values,
+            functions: &no_fns,
+            trait_registry: &registry,
+            max_unfold_depth: 64,
+            max_unfold_nodes: 10_000,
+        };
+        let ro_delta = resolve_order(&templates, Some(&ctx));
+
+        assert_eq!(
+            ro_delta.order,
+            vec![0, 1],
+            "uncoupled module keeps identity order under the δ seed (INV-2); got: {:?}",
+            ro_delta.order
+        );
+        assert_eq!(
+            ro_delta.order, ro_legacy.order,
+            "the δ seed must not perturb `order` relative to the legacy seed; got: {:?} vs {:?}",
+            ro_delta.order, ro_legacy.order
+        );
+        assert!(
+            ro_delta.clusters.is_empty(),
+            "a self-objective reads only its OWN scope's auto: no cluster; got: {:?}",
+            ro_delta.clusters
+        );
+        assert_eq!(
+            ro_delta.clusters, ro_legacy.clusters,
+            "uncoupled module: both seeds must agree on the (empty) cluster set"
+        );
+        // `Diagnostic` has no `PartialEq`; compare its derived `Debug` rendering,
+        // which covers severity, message, labels and code.
+        assert_eq!(
+            format!("{:?}", ro_delta.coupling_diagnostics),
+            format!("{:?}", ro_legacy.coupling_diagnostics),
+            "cluster-time expansion must not leak into the read-DAG: coupling \
+             diagnostics must be byte-identical to the legacy seed's"
+        );
+    }
+
+    /// (cold/warm parity) The cold entry point [`resolve_order`] and the warm
+    /// entry point [`resolve_order_ordering_and_clusters`] must agree EXACTLY on
+    /// the δ-formed cluster set, and the warm variant must still return no
+    /// coupling diagnostics.
+    ///
+    /// This is the unit-level guard against re-opening the cold/warm cluster-set
+    /// divergence task #5118 closed (esc-5014-10): warm computes its cluster set
+    /// through its OWN entry point, so wiring only the cold call site would
+    /// silently give the two paths different merged-solve behaviour. It is the
+    /// primary coverage for the warm wiring (step-10).
+    ///
+    /// Fixture is BT-8b's elaborated `minimize cost(self.descendants)` shape, so
+    /// the parity assertion is non-vacuous: a real cluster must exist on both
+    /// sides.
+    #[test]
+    fn cold_and_warm_entry_points_agree_on_delta_cluster_set() {
+        let parent = TopologyTemplateBuilder::new("Parent")
+            .sub_component("childinst", "Child", vec![])
+            .objective(cost_self_descendants_objective())
+            .build();
+
+        let child = TopologyTemplateBuilder::new("Child")
+            .trait_bound("Costed")
+            .auto_param_free(
+                "Parent.childinst",
+                "quantity_produced",
+                Type::dimensionless_scalar(),
+            )
+            .let_binding(
+                "Parent.childinst",
+                "line_cost",
+                money_ty(),
+                binop(
+                    BinOp::Mul,
+                    value_ref_typed("Parent.childinst", "unit_cost", money_ty()),
+                    value_ref("Parent.childinst", "quantity_produced"),
+                ),
+            )
+            .build();
+
+        let templates = vec![parent, child];
+
+        let values = ValueMap::default();
+        let no_fns: [CompiledFunction; 0] = [];
+        let registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let ctx = ClusterFormationCtx {
+            values: &values,
+            functions: &no_fns,
+            trait_registry: &registry,
+            max_unfold_depth: 64,
+            max_unfold_nodes: 10_000,
+        };
+
+        let cold = resolve_order(&templates, Some(&ctx));
+        let warm = resolve_order_ordering_and_clusters(&templates, Some(&ctx));
+
+        assert!(
+            !cold.clusters.is_empty(),
+            "fixture must actually form a cluster, else the parity assertion below \
+             is vacuous; got: {:?}",
+            cold.clusters
+        );
+        assert_eq!(
+            cold.clusters, warm.clusters,
+            "cold and warm entry points must form the SAME δ cluster set (task #5118 \
+             cold/warm co-solve parity); cold: {:?}, warm: {:?}",
+            cold.clusters, warm.clusters
+        );
+        assert_eq!(
+            cold.order, warm.order,
+            "cold and warm entry points must also agree on `order`; got: {:?} vs {:?}",
+            cold.order, warm.order
+        );
+        assert!(
+            warm.coupling_diagnostics.is_empty(),
+            "the warm entry point always clears coupling diagnostics — `eval_cached` \
+             must emit neither W_SCOPE_COUPLING nor W_COUPLING_APPROXIMATED; got: {:?}",
+            warm.coupling_diagnostics
         );
     }
 }
