@@ -504,6 +504,63 @@ assert "P: no hint text leaks onto stdout" \
     bash -c '! grep -qE "\[hint\]|remedy:" "$1"' _ "$_P_OUT"
 
 # ===========================================================================
+# Section P2: hint is absent on a clean pass and on an empty candidate list,
+# and is emitted at most ONCE per run (not once per violation) — task #5381.
+# ===========================================================================
+echo ""
+echo "--- Section P2: hint absent on clean/empty runs; emitted exactly once on multi-violation runs ---"
+
+: > "$_G_ROOT/crates/reify-eval/tests/newthing2.rs"   # 2nd in-scope, unregistered
+
+# (i) CLEAN PASS — the Section-H shape (registered baseline, single registered arg).
+_P2_CLEAN_OUT="$(mktemp)"; _TMPDIRS+=("$_P2_CLEAN_OUT")
+_P2_CLEAN_ERR="$(mktemp)"; _TMPDIRS+=("$_P2_CLEAN_ERR")
+_P2_CLEAN_RC=0
+( cd "$_G_ROOT" && REIFY_HARNESS_LAYOUT_BASELINE="$_G_BASELINE_PRESENT" bash "$GATE" \
+    crates/reify-eval/tests/newthing.rs </dev/null ) > "$_P2_CLEAN_OUT" 2> "$_P2_CLEAN_ERR" || _P2_CLEAN_RC=$?
+
+assert "P2: clean-pass run exits 0" \
+    test "$_P2_CLEAN_RC" -eq 0
+assert "P2: clean-pass run emits no hint on stderr" \
+    test ! -s "$_P2_CLEAN_ERR"
+assert "P2: clean-pass run still emits the structured PASS line on stdout" \
+    grep -Eq '^HARNESS_BASELINE_REG PASS' "$_P2_CLEAN_OUT"
+
+# (ii) EMPTY CANDIDATE LIST — the Section-J shape (no args). added=0 is not a
+# violation, so a hint here would spam every green RUN_RUST=1 verify run.
+_P2_EMPTY_OUT="$(mktemp)"; _TMPDIRS+=("$_P2_EMPTY_OUT")
+_P2_EMPTY_ERR="$(mktemp)"; _TMPDIRS+=("$_P2_EMPTY_ERR")
+_P2_EMPTY_RC=0
+( cd "$_G_ROOT" && REIFY_HARNESS_LAYOUT_BASELINE="$_G_BASELINE_MISSING" bash "$GATE" </dev/null ) \
+    > "$_P2_EMPTY_OUT" 2> "$_P2_EMPTY_ERR" || _P2_EMPTY_RC=$?
+
+assert "P2: empty-candidate-list run exits 0" \
+    test "$_P2_EMPTY_RC" -eq 0
+assert "P2: empty-candidate-list run emits no hint on stderr" \
+    test ! -s "$_P2_EMPTY_ERR"
+
+# (iii) TWO VIOLATIONS in one run — the hint must fire EXACTLY ONCE, not once
+# per violating file.
+_P2_TWO_OUT="$(mktemp)"; _TMPDIRS+=("$_P2_TWO_OUT")
+_P2_TWO_ERR="$(mktemp)"; _TMPDIRS+=("$_P2_TWO_ERR")
+_P2_TWO_RC=0
+( cd "$_G_ROOT" && REIFY_HARNESS_LAYOUT_BASELINE="$_G_BASELINE_MISSING" bash "$GATE" \
+    crates/reify-eval/tests/newthing.rs crates/reify-eval/tests/newthing2.rs </dev/null ) \
+    > "$_P2_TWO_OUT" 2> "$_P2_TWO_ERR" || _P2_TWO_RC=$?
+
+assert "P2: two-violation run exits 1" \
+    test "$_P2_TWO_RC" -eq 1
+
+_P2_TWO_EXPECTED_OUT="$(mktemp)"; _TMPDIRS+=("$_P2_TWO_EXPECTED_OUT")
+printf 'HARNESS_BASELINE_REG FAIL crate=reify-eval file=crates/reify-eval/tests/newthing.rs reason=unregistered-standalone\nHARNESS_BASELINE_REG FAIL crate=reify-eval file=crates/reify-eval/tests/newthing2.rs reason=unregistered-standalone\nHARNESS_BASELINE_REG SUMMARY added=2 violations=2\n' \
+    > "$_P2_TWO_EXPECTED_OUT"
+assert "P2: two-violation stdout is byte-for-byte FAIL+FAIL+SUMMARY (one line per violation)" \
+    diff -u "$_P2_TWO_EXPECTED_OUT" "$_P2_TWO_OUT"
+
+assert "P2: the remediation block is emitted EXACTLY ONCE per run, not once per violation" \
+    bash -c '[ "$(grep -cE "^\[hint\] remedy:" "$1")" -eq 1 ]' _ "$_P2_TWO_ERR"
+
+# ===========================================================================
 # Section O: plan-shape — verify.sh emits the gate EARLY under RUN_RUST=1, among
 # the cheap fail-fast poles before check-manifold-deps.sh / psi-gate / run_all.sh.
 # Hermetic --print-plan oracle + `grep -n` relative-index technique (mirrors
