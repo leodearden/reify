@@ -1948,20 +1948,24 @@ fn build_gui_state_mesh_data_structure_matches_kernel_output() {
     assert!(!state.meshes.is_empty(), "should have at least one mesh");
     let mesh = &state.meshes[0];
 
-    // MockGeometryKernel returns: vertices = [0,0,0, 1,0,0, 0,1,0] (9 floats = 3 vertices)
+    // MockGeometryKernel returns `mocks::minimal_valid_mesh(true)`: a closed
+    // unit tetrahedron (4 vertices, 4 faces). It used to be a single open
+    // triangle, which `Mesh::validate` rejects under `MeshInvariant::Closed`
+    // (3 boundary edges) — see task #5105 (INV-GEO-1) for why the shared
+    // fixture had to become contract-valid. This test asserts the GuiState
+    // mesh-data *structure* mirrors the kernel output, so the counts are
+    // re-grounded on the tetra rather than pinned to the old shape.
     assert_eq!(
         mesh.vertices.len(),
-        9,
-        "expected 9 vertex floats (3 vertices × 3 coords)"
+        12,
+        "expected 12 vertex floats (4 vertices × 3 coords)"
     );
-    // indices = [0, 1, 2] (1 triangle)
-    assert_eq!(mesh.indices.len(), 3, "expected 3 indices (1 triangle)");
-    // normals = Some([0,0,1, 0,0,1, 0,0,1]) (9 floats)
+    assert_eq!(mesh.indices.len(), 12, "expected 12 indices (4 triangles)");
     assert!(mesh.normals.is_some(), "expected normals to be present");
     assert_eq!(
         mesh.normals.as_ref().unwrap().len(),
-        9,
-        "expected 9 normal floats"
+        12,
+        "expected 12 normal floats (4 normals × 3 coords)"
     );
     // entity_path should be non-empty
     assert!(
