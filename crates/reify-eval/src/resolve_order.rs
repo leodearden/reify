@@ -855,7 +855,8 @@ mod tests {
     use reify_core::{DimensionVector, Type};
     use reify_ir::{BinOp, CompiledFunction, ObjectiveSense, ObjectiveSet, ValueMap};
     use reify_test_support::{
-        TopologyTemplateBuilder, binop, gt, literal, mm, value_ref, value_ref_typed,
+        TopologyTemplateBuilder, binop, fn_call, gt, literal, method_call_expr, mm, value_ref,
+        value_ref_typed,
     };
 
     use super::{
@@ -869,6 +870,29 @@ mod tests {
         Type::Scalar {
             dimension: DimensionVector::MONEY,
         }
+    }
+
+    /// The `minimize cost(self.descendants)` objective used by the elaborated
+    /// derived-cost fixtures (BT-8b / BT-9). `self.descendants` is the compiler's
+    /// `MethodCall { object: ValueRef(Parent.__self), method: "descendants" }`
+    /// placeholder that `expand_structural_query` rewrites to a list of the
+    /// parent's structural descendants, which `apply_cost_aggregation` then turns
+    /// into `[ValueRef(<descendant>.line_cost) ...].sum`.
+    fn cost_self_descendants_objective() -> ObjectiveSet {
+        ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            fn_call(
+                "cost",
+                "cost",
+                vec![method_call_expr(
+                    value_ref("Parent", "__self"),
+                    "descendants",
+                    vec![],
+                    Type::List(Box::new(Type::StructureRef("Structure".to_string()))),
+                )],
+                money_ty(),
+            ),
+        )
     }
 
     // -------------------------------------------------------------------------
@@ -1512,6 +1536,89 @@ mod tests {
             ro.clusters.len(),
             1,
             "derived-cost coupling must form exactly one cluster; got: {:?}",
+            ro.clusters
+        );
+        let cluster = &ro.clusters[0];
+        assert_eq!(
+            cluster.scopes,
+            vec![0, 1],
+            "cluster must span Parent + Child (sorted indices); got: {:?}",
+            cluster.scopes
+        );
+        assert_eq!(
+            cluster.dim, 1,
+            "dim = 1 (the single child auto `quantity_produced`); got: {}",
+            cluster.dim
+        );
+        assert_eq!(
+            cluster.disposition,
+            ClusterDisposition::MergedSolve,
+            "dim 1 is within cap ⇒ MergedSolve; got: {:?}",
+            cluster.disposition
+        );
+    }
+
+    /// (BT-8b, elaborated) A Parent (idx 0) carrying a REAL
+    /// `minimize cost(self.descendants)` objective over its Costed child
+    /// sub-component must form a single MergedSolve cluster with the Child (idx
+    /// 1). Cluster-time expansion (C1) rewrites `cost(self.descendants)` to
+    /// `[ValueRef(Parent.childinst.line_cost)].sum`, and the C2 walk follows that
+    /// derived cell down to the child auto `quantity_produced`.
+    ///
+    /// The Child template is NAMED "Child" (so `find_template` + Costed
+    /// conformance resolve during expansion) but its value cells are
+    /// entity-scoped under the instance path "Parent.childinst" — mirroring real
+    /// sub-component elaboration — so the expanded ValueRef resolves against them
+    /// and their `auto_owner` entry.
+    ///
+    /// An EMPTY trait registry suffices: `satisfies_trait_bound` short-circuits on
+    /// name equality (`trait_satisfies`, reify-compiler/src/entity.rs), so the
+    /// child's declared `Costed` bound conforms without a registry entry — the
+    /// registry is only consulted for trait REFINEMENT chains.
+    #[test]
+    fn bt8_cost_self_descendants_forms_single_merged_cluster() {
+        let parent = TopologyTemplateBuilder::new("Parent")
+            .sub_component("childinst", "Child", vec![])
+            .objective(cost_self_descendants_objective())
+            .build();
+
+        let child = TopologyTemplateBuilder::new("Child")
+            .trait_bound("Costed")
+            .auto_param_free(
+                "Parent.childinst",
+                "quantity_produced",
+                Type::dimensionless_scalar(),
+            )
+            .let_binding(
+                "Parent.childinst",
+                "line_cost",
+                money_ty(),
+                binop(
+                    BinOp::Mul,
+                    value_ref_typed("Parent.childinst", "unit_cost", money_ty()),
+                    value_ref("Parent.childinst", "quantity_produced"),
+                ),
+            )
+            .build();
+
+        let templates = vec![parent, child];
+
+        let values = ValueMap::default();
+        let no_fns: [CompiledFunction; 0] = [];
+        let registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let ctx = ClusterFormationCtx {
+            values: &values,
+            functions: &no_fns,
+            trait_registry: &registry,
+            max_unfold_depth: 64,
+            max_unfold_nodes: 10_000,
+        };
+        let ro = resolve_order(&templates, Some(&ctx));
+
+        assert_eq!(
+            ro.clusters.len(),
+            1,
+            "cost(self.descendants) must expand + form exactly one cluster; got: {:?}",
             ro.clusters
         );
         let cluster = &ro.clusters[0];
