@@ -1,0 +1,28 @@
+// γ-verification ADVERSARY baseline fixture — indexed-sub-instantiation.md §7 γ,
+// §6.2 row 4 "Queries see posed instances" (γ's PRD signal cites rows 1, 3, 4;
+// the leaf-signal text silently dropped row 4). Premise the prover missed:
+// TODAY, `distance(a.body, b.body)` between two posed hand-placed subs is NOT
+// resolvable on the value-eval surface — `reify check` exits 0 while emitting
+// "error: `distance` could not be resolved: geometry-consumer builtins require
+// a realized geometry kernel and are only resolvable on the build()/
+// tessellate() path — not on the pure value-eval surface (Engine::eval /
+// eval_cached)" on stderr, and `reify eval` exits 0 printing `Rig.d = undef`
+// (verified 2026-07-25 @ 94e1631111). Consequences for γ: (1) row 4's
+// observable cannot be an eval-print observable on today's substrate — it must
+// ride the build/tessellate path or γ must extend eval-surface realization;
+// (2) this is a live demonstration that an "error:"-prefixed diagnostic can
+// coexist with exit 0, so the prover's claim that "any loud eval error would
+// flip [the ir probe] PRESENT and FAIL" is overstated — the ir kind observes
+// ABSENT on ANY exit-0 run regardless of stderr content.
+module posed_subs_distance_query_unresolvable
+
+structure def P {
+    param r : Length = 5mm
+    let body = cylinder(r, 10mm)
+}
+
+structure def Rig {
+    sub a = P() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+    sub b = P() at transform3(orient_identity(), vec3(50mm, 0mm, 0mm))
+    let d = distance(a.body, b.body)
+}

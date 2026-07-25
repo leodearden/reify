@@ -1,0 +1,17 @@
+// Fixture (γ decompose-phase premise, indexed-sub-instantiation §7 ε baseline):
+// PRD probe #9 — `self.idlers.count` is rejected LOUDLY with a redirect
+// diagnostic containing "cannot access aggregation" (pointing at the bare
+// `idlers.count` spelling). ε aligns probe #8's diagnostic quality with this.
+module self_collection_count_redirect_rejected
+
+structure def Pulley {
+    param od : Length = 36mm
+    let body = cylinder(od / 2, 8mm)
+}
+
+structure def Rig {
+    sub idlers : List<Pulley>
+    constraint idlers.count == 2
+
+    let n = self.idlers.count
+}

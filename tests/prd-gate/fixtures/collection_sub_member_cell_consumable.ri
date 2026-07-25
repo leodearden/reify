@@ -1,0 +1,22 @@
+/// γ-adversary baseline fixture — indexed-sub-instantiation.md §7 β, PRD probe #1.
+///
+/// Binds the per-member value-cell half of probe #1 with exit-code polarity
+/// (the prover's ir probe binds only eval-exit-0; the harness's ir kind cannot
+/// assert stdout, so 'Rig.idlers[0].od = …' was machine-unbound). Here the
+/// per-member cell is made load-bearing: `let d0 = idlers[0].od` +
+/// `constraint d0 == 36mm` — check exits 0 printing 'OK Rig#constraint[0]'.
+/// Falsification witnessed 2026-07-25 @ 94e1631111: changing to `== 40mm`
+/// yields 'VIOLATED Rig#constraint[0]', exit 1 — the constraint is evaluated,
+/// not vacuously satisfied.
+module collection_sub_member_cell_consumable
+
+pub structure Pulley {
+    param od : Length = 36mm
+}
+
+structure Rig {
+    sub idlers : List<Pulley>
+    constraint idlers.count == 2
+    let d0 = idlers[0].od
+    constraint d0 == 36mm
+}

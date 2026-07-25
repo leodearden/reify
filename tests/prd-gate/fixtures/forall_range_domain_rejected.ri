@@ -1,0 +1,10 @@
+// γ-verification baseline fixture for indexed-sub-instantiation §7 δ (PRD probe #6).
+// Premise: a Range<Int> forall domain is rejected LOUDLY today — δ lifts this.
+// Expected: `reify check` exits 1; stderr contains
+// "cannot iterate over non-collection type 'Range<Int>' in forall: expected List<_> or Set<_>".
+// Verified 2026-07-25 against target/debug/reify (built same day): exit 1, diagnostic on stderr.
+// NOTE: after δ lands this fixture's expectation inverts (range domains become
+// accepted); the δ task owns retiring/repurposing it.
+structure def Rig {
+    forall i in 0..4 : constraint i >= 0
+}

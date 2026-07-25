@@ -1,0 +1,21 @@
+// Fixture (γ decompose-phase ADVERSARY premise, indexed-sub-instantiation §7 ε
+// parity baseline): the probe-#8 defect class has a SECOND today-observable
+// variant. When the element type has NO geometry member, `self.idlers[0].od`
+// is rejected with the generic poison-tail diagnostic
+// `error: member access not yet supported: .od` (reify-compiler/src/expr.rs
+// ~6301) instead of the cross-sub-geometry misroute ("has no projection") that
+// indexed_sub_self_member_misrouted.ri pins. ε's self.-path parity must cover
+// BOTH variants: post-ε this fixture must evaluate equal to the bare path or
+// emit the probe-#9-quality redirect — not this generic error.
+module indexed_sub_self_member_nogeom_unsupported
+
+structure def Pulley {
+    param od : Length = 36mm
+}
+
+structure def Rig {
+    sub idlers : List<Pulley>
+    constraint idlers.count == 2
+
+    let d0 = self.idlers[0].od
+}
