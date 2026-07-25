@@ -9,6 +9,33 @@ Project specialization for the generic `/prd` skill (`~/.claude/skills/prd/`, �
 - **PRD path:** `docs/prds/<vM_N>/<slug>.md`, where `<vM_N>` is the milestone dir (`v0_3`, `v0_4`, `v0_5`); root-level `docs/prds/` for version-agnostic foundations.
 - **Substrate-confirmed metadata field:** `grammar_confirmed` (bool): true iff the task's mechanism uses existing grammar, false if it queues grammar work.
 
+## Landing PRD artifacts (author-mode Stage 10 / decompose Step 5.5)
+
+Commit the PRD `.md`, its `.capability-manifest.md`, the `.capability-manifest.yaml` sidecar and any `.ri` fixtures **directly on `main` in project_root, in ONE commit**. Do **not** route them through the orchestrator merge queue, and do **not** use `scripts/land.sh`.
+
+Both branch routes stamp `DF_VERIFY_ROLE=merge`, which makes `scripts/verify.sh` force `--scope all` (contract C2, `verify.sh:778`) and `--profile both` (`:602`); dark-factory's INV-1 (`verify.py:5499`, DF task 2883) additionally refuses the docs-only trivial pass at merge role and escalates it to the full global gate, because an adoptable merge verdict must never be stamped from zero evidence. A docs-only merge therefore costs a full cold debug+release workspace build — reify budgets `merge_verify_cold_command_timeout_secs: 10800` (3 h). A commit on `main` instead runs `hooks/pre-commit` → `verify.sh all --profile debug --scope staged --include-infra` with `DF_VERIFY_ROLE` unset (role `task`, so no C2 force), where `decide_scope` classifies `docs/*|*.md|*.yaml|*.yml` as no-heavy-checks: seconds.
+
+This is **sanctioned**, not a main-gate violation: `hooks/pre-commit` runs `project-checks` on `main` and then calls `main_gate_mark`, so `hooks/reference-transaction` logs the ref move as SANCTIONED. The `CLAUDE.md` invariant forbids moving `main` *without* a gate (`merge --no-verify`, `update-ref`, `reset`, `commit-tree`) — a hook-gated commit is not that.
+
+Sequence — **flip first, commit the stamped sidecar once**:
+
+1. Write the artifacts as untracked files at their canonical paths.
+2. File the batch (`planning_mode=True`), wire deps, then `commit_planning` — it stamps the on-disk sidecar **in place** and copies `delivered_checks` into producer metadata. Never land an unstamped sidecar and stamp afterwards.
+3. `git add <each exact file path>`.
+4. `git commit --only <same exact paths> -F <msgfile>`.
+
+Traps:
+
+- **Never `--no-verify` on `main`.** `reify.mainGate.enforce` is `true`; `--no-verify` skips `pre-commit`, so no sentinel is marked, `hooks/reference-transaction` sees an UNSANCTIONED main move and **hard-aborts the transaction**. This is dark-factory's docs-only-commit habit — it is fatal here.
+- **Never `git checkout -b` in project_root** — it moves the running orchestrator's checkout off `main`.
+- Confirm `HEAD == main` before committing; the offline lane can leave project_root on another branch.
+- **Never `git add -A` or a directory** — project_root is a shared hot checkout with concurrent `/prd` sessions and the orchestrator; a directory add sweeps their untracked files into your commit. List every path explicitly. (`--only` in step 4 likewise ignores foreign *staged* state; a pathspec commit alone fails on untracked files, which is why step 3 exists.)
+- `pre-commit` can exceed a default 2-minute tool timeout — pass `timeout >= 300000`.
+
+Landing PRD `.md` and manifest/sidecar via *separate* vehicles is how `resolution-unification` and `stdlib-namespace` ended up with their `.md` on `main` and their manifest halves stranded untracked in project_root (2026-07-25). One commit, all artifacts.
+
+Committing in place also obviates the branch-landing sidecar dance (copying `commit_planning`'s `yaml.dump`-rewritten sidecar back into the branch and `cmp`-ing every file to avoid a dirty tracked file in project_root): the on-disk and committed copies are identical by construction.
+
 ## Provenance & portfolio
 
 This skill operationalizes the **2026-05-12 architecture audit**: ~19/44 mechanism clusters fit the **incomplete/ill-formed implementation chain** pattern (memory `preferences_implementation_chain_naming`). The dominant prevention is discipline at PRD-authoring and decomposition time, before any task reaches the orchestrator.
@@ -177,6 +204,7 @@ Mechanizes `gates.md` → *Capability Manifest — mechanizing G3 + G6 per leaf*
 - `feedback_prd_grammar_gate` — G3 source.
 - `feedback_orchestrator_narrow_locks_favor_upfront_design` — why G5 tilts toward H.
 - `feedback_commit_prds_before_referencing_tasks` — author commits before decompose references.
+- topic `docs-prd-landing` (canonical, 2026-07-25) — the "Landing PRD artifacts" section above. It **supersedes five contradictory predecessors** (2026-06-02 / 06-24 / 07-01 / 07-06 / 07-11), all deleted. If you recall a "land docs via the merge queue", "`scripts/land.sh`", or "`git merge --ff-only`" landing procedure, it is deleted and wrong — follow the section above.
 - `feedback_planning_mode_scope` — why decompose uses planning_mode=True.
 - `procedural_fused_memory_two_phase_writes` — submit_task + resolve_ticket (planning_mode=False only).
 - `preferences_bookmark_task_pattern` — bookmark/deferred-batch lifecycle.
