@@ -2652,11 +2652,12 @@ structure Assembly {
             _tolerance: f64,
         ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
             *self.tessellate_count.lock().unwrap() += 1;
-            Ok(reify_ir::Mesh {
-                vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-                indices: vec![0, 1, 2],
-                normals: None,
-            })
+            // Task #5105 δ (INV-GEO-1): a closed tetra, NOT the open triangle
+            // this fixture used to return. Site 1 now enforces the mesh
+            // contract by default, and a lone triangle fails it (open_edges=3)
+            // — which has nothing to do with what these routing/caching tests
+            // assert. Shared with the other mock producers to avoid drift.
+            Ok(reify_test_support::mocks::minimal_valid_mesh(false))
         }
 
         fn extract_faces(

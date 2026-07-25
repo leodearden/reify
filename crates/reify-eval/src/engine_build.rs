@@ -342,6 +342,13 @@ struct RealizationOpsInput<'a> {
     // unsafe in edition 2024). Production callers pass
     // `crate::dispatcher::long_chain_threshold_from_env()`.
     long_chain_threshold: Duration,
+    // Task #5105 δ (INV-GEO-1): mesh-contract enforcement posture consulted
+    // at the tessellate→ingest handoff below. Threaded from the caller
+    // (`Engine::mesh_contract_mode`, itself read once from the env at
+    // construction) rather than read here, so the e2e locking tests can
+    // inject either posture deterministically — env mutation is unsafe in
+    // edition 2024, exactly as for `long_chain_threshold` above.
+    mesh_contract_mode: reify_ir::geometry::MeshContractMode,
 }
 
 impl<'a> RealizationOpsInput<'a> {
@@ -403,6 +410,13 @@ impl<'a> RealizationOpsInput<'a> {
             long_chain_threshold: Duration::from_millis(
                 crate::dispatcher::LONG_CHAIN_DEFAULT_THRESHOLD_MS,
             ),
+            // Fail-closed default, matching `MeshContractMode::from_env()`
+            // with the env var unset — so a call site that omits the override
+            // (the `run`/`run_demand` test wrapper) still enforces INV-GEO-1
+            // rather than silently opting out of it. Production call sites
+            // override with `Engine::mesh_contract_mode`, which honours the
+            // `REIFY_MESH_CONTRACT` break-glass.
+            mesh_contract_mode: reify_ir::geometry::MeshContractMode::Enforce,
         }
     }
 
@@ -460,6 +474,16 @@ impl<'a> RealizationOpsInput<'a> {
     /// initializer in [`Self::new`] for why).
     fn with_long_chain_threshold(mut self, v: Duration) -> Self {
         self.long_chain_threshold = v;
+        self
+    }
+
+    /// Override the mesh-contract (INV-GEO-1) enforcement posture at the
+    /// tessellate→ingest handoff (default
+    /// [`reify_ir::geometry::MeshContractMode::Enforce`], the fail-closed
+    /// posture — see the comment above this field's initializer in
+    /// [`Self::new`]).
+    fn with_mesh_contract_mode(mut self, v: reify_ir::geometry::MeshContractMode) -> Self {
+        self.mesh_contract_mode = v;
         self
     }
 }
@@ -3191,6 +3215,11 @@ impl Engine {
                 HashMap::new();
             // GR-034: resolve once per eval-loop entry; threaded per-iteration.
             let long_chain_threshold = crate::dispatcher::long_chain_threshold_from_env();
+            // Task #5105 δ (INV-GEO-1): same shape — snapshot the Engine's
+            // mesh-contract posture into a local BEFORE the `&mut self`
+            // borrows taken by `RealizationOpsInput::new` below, then thread
+            // it per-iteration.
+            let mesh_contract_mode = self.mesh_contract_mode;
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -3299,7 +3328,10 @@ impl Engine {
                         // bound to `morph_io` just above the call.
                         .with_morph_io(morph_io)
                         // GR-034: resolved once at entry (see above).
-                        .with_long_chain_threshold(long_chain_threshold),
+                        .with_long_chain_threshold(long_chain_threshold)
+                        // Task #5105 δ (INV-GEO-1): mesh-contract posture for the
+                        // tessellate→ingest handoff, resolved once at entry (see above).
+                        .with_mesh_contract_mode(mesh_contract_mode),
                         RealizationOutputs::new(
                             &mut step_handles,
                             &mut named_steps,
@@ -3963,6 +3995,11 @@ impl Engine {
 
             // GR-034: resolve once per eval-loop entry; threaded per-iteration.
             let long_chain_threshold = crate::dispatcher::long_chain_threshold_from_env();
+            // Task #5105 δ (INV-GEO-1): same shape — snapshot the Engine's
+            // mesh-contract posture into a local BEFORE the `&mut self`
+            // borrows taken by `RealizationOpsInput::new` below, then thread
+            // it per-iteration.
+            let mesh_contract_mode = self.mesh_contract_mode;
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -4189,7 +4226,10 @@ impl Engine {
                         // bound to `morph_io` just above the call.
                         .with_morph_io(morph_io)
                         // GR-034: resolved once at entry (see above).
-                        .with_long_chain_threshold(long_chain_threshold),
+                        .with_long_chain_threshold(long_chain_threshold)
+                        // Task #5105 δ (INV-GEO-1): mesh-contract posture for the
+                        // tessellate→ingest handoff, resolved once at entry (see above).
+                        .with_mesh_contract_mode(mesh_contract_mode),
                         RealizationOutputs::new(
                             &mut step_handles,
                             &mut named_steps,
@@ -5133,6 +5173,11 @@ impl Engine {
         let mut module_named_steps: HashMap<String, HashMap<String, KernelHandle>> = HashMap::new();
         // GR-034: resolve once per eval-loop entry; threaded per-iteration.
         let long_chain_threshold = crate::dispatcher::long_chain_threshold_from_env();
+        // Task #5105 δ (INV-GEO-1): same shape — snapshot the Engine's
+        // mesh-contract posture into a local BEFORE the `&mut self` borrows
+        // taken by `RealizationOpsInput::new` below, then thread it
+        // per-iteration.
+        let mesh_contract_mode = self.mesh_contract_mode;
 
         for (t_idx, template) in module.templates.iter().enumerate() {
             let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
@@ -5201,7 +5246,10 @@ impl Engine {
                     // VolumeMesh, so the morph arm never fires here.
                     .with_morph_io(crate::morph_producer::MorphDispatchIo::disabled())
                     // GR-034: resolved once at entry (see above).
-                    .with_long_chain_threshold(long_chain_threshold),
+                    .with_long_chain_threshold(long_chain_threshold)
+                    // Task #5105 δ (INV-GEO-1): mesh-contract posture for the
+                    // tessellate→ingest handoff, resolved once at entry (see above).
+                    .with_mesh_contract_mode(mesh_contract_mode),
                     RealizationOutputs::new(
                         &mut step_handles,
                         &mut named_steps,
@@ -6067,6 +6115,14 @@ impl Engine {
         });
         // GR-034: resolve once per eval-loop entry; threaded per-iteration.
         let long_chain_threshold = crate::dispatcher::long_chain_threshold_from_env();
+        // Task #5105 δ (INV-GEO-1): resolved from the env here rather than
+        // snapshotted off `Engine`, because this is an associated fn with no
+        // `self` — exactly the same reason `long_chain_threshold` is read via
+        // `long_chain_threshold_from_env()` on the line above instead of being
+        // threaded in. `from_env` fails closed (Enforce unless
+        // `REIFY_MESH_CONTRACT=warn`), so the break-glass still reaches this
+        // path even though the `set_mesh_contract_mode` test seam does not.
+        let mesh_contract_mode = reify_ir::geometry::MeshContractMode::from_env();
 
         for (t_idx, template) in module.templates.iter().enumerate() {
             // Task 5033 Gap D: the isosurface-pipeline exception to this
@@ -6278,7 +6334,10 @@ impl Engine {
                     // VolumeMesh, so the morph arm never fires here.
                     .with_morph_io(crate::morph_producer::MorphDispatchIo::disabled())
                     // GR-034: resolved once at entry (see above).
-                    .with_long_chain_threshold(long_chain_threshold),
+                    .with_long_chain_threshold(long_chain_threshold)
+                    // Task #5105 δ (INV-GEO-1): mesh-contract posture for the
+                    // tessellate→ingest handoff, resolved once at entry (see above).
+                    .with_mesh_contract_mode(mesh_contract_mode),
                     RealizationOutputs::new(
                         &mut step_handles,
                         &mut named_steps,
@@ -6810,6 +6869,7 @@ impl Engine {
             is_terminal_realization,
             morph_io,
             long_chain_threshold,
+            mesh_contract_mode,
         } = input;
         if Self::probe_realization_cache(
             realization_cache,
@@ -7688,34 +7748,51 @@ impl Engine {
                                                 break 'convert;
                                             }
                                         };
-                                        // Task #5103 (kernel-seam β, INV-GEO-1): check the
+                                        // Tasks #5103 (β) / #5105 (δ), INV-GEO-1: check the
                                         // interchange Mesh against the mesh contract
                                         // (PRD docs/prds/kernel-seam-contracts.md §4 site 1)
                                         // right after it's produced by the Tessellate
-                                        // (BRep→Mesh) source. WARN-default during rollout —
-                                        // on a violation, push a Severity::Warning diagnostic
-                                        // and fall through to ingest as normal; never abort
-                                        // the build here. The fail-closed enforce flip
-                                        // (reading a policy env var and aborting instead) is
-                                        // task δ's scope, not β's. Scoped to the tessellate
-                                        // producer only — the MarchingCubes (Voxel→Mesh)
-                                        // producer is task γ's domain and is backstopped by
-                                        // PRD site 2 (Manifold-ingest validation).
+                                        // (BRep→Mesh) source. β wired this warn-only; δ makes
+                                        // it mode-governed and flips the default to ENFORCE.
+                                        //
+                                        // Enforce (default): feed the violation into the
+                                        // existing `conversion_error`/`break 'convert` abort
+                                        // path, which pushes the Severity::Error diagnostic,
+                                        // sets `kernel_error_out`, and triggers the
+                                        // intermediate-cache rollback — no parallel abort
+                                        // machinery. Note this aborts BEFORE the ingest below.
+                                        //
+                                        // Warn (`REIFY_MESH_CONTRACT=warn`, break-glass):
+                                        // push a Severity::Warning and fall through to ingest
+                                        // as normal, never aborting — the pre-δ behavior.
+                                        //
+                                        // Scoped to the tessellate producer only — the
+                                        // MarchingCubes (Voxel→Mesh) producer is task γ's
+                                        // domain and is backstopped by PRD site 2
+                                        // (Manifold-ingest validation).
                                         if !from_marching_cubes
                                             && let Err(violation) =
                                                 mesh.validate(per_stage_tol)
                                         {
-                                            diagnostics.push(
-                                                Diagnostic::warning(
-                                                    violation
-                                                        .into_geometry_error(source_name)
-                                                        .to_string(),
-                                                )
-                                                .with_label(DiagnosticLabel::new(
-                                                    realization_span,
-                                                    "in this realization",
-                                                )),
-                                            );
+                                            let message = violation
+                                                .into_geometry_error(source_name)
+                                                .to_string();
+                                            match mesh_contract_mode {
+                                                reify_ir::geometry::MeshContractMode::Enforce => {
+                                                    conversion_error = Some(message);
+                                                    break 'convert;
+                                                }
+                                                reify_ir::geometry::MeshContractMode::Warn => {
+                                                    diagnostics.push(
+                                                        Diagnostic::warning(message).with_label(
+                                                            DiagnosticLabel::new(
+                                                                realization_span,
+                                                                "in this realization",
+                                                            ),
+                                                        ),
+                                                    );
+                                                }
+                                            }
                                         }
                                         // Ingest into the target kernel (`&mut`).
                                         // For a Manifold kernel this is Mesh→Mesh;

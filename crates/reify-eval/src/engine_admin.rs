@@ -277,6 +277,12 @@ impl Engine {
             // to UnifiedDag; REIFY_BUILD_SCHEDULER=legacy is the kill-switch.
             // Tests override post-construction via `set_build_scheduler`.
             build_scheduler: crate::engine_fixpoint::BuildScheduler::from_env(),
+            // Task #5105 δ (INV-GEO-1): mesh-contract enforcement posture at
+            // kernel-seam site 1, read ONCE from the environment. `from_env`
+            // fails closed — it defaults to Enforce, and only
+            // REIFY_MESH_CONTRACT=warn downgrades. Tests override
+            // post-construction via `set_mesh_contract_mode`.
+            mesh_contract_mode: reify_ir::geometry::MeshContractMode::from_env(),
             demand: DemandRegistry::new(),
             // Task 4532: passive observed-demand side-channel + would-prune
             // measurement. Both ALWAYS present (not cfg-gated) — the GUI prod
@@ -1987,6 +1993,20 @@ impl Engine {
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn set_build_scheduler(&mut self, scheduler: crate::engine_fixpoint::BuildScheduler) {
         self.build_scheduler = scheduler;
+    }
+
+    /// **Test-instrumentation only — not a stable public surface.**
+    ///
+    /// Force the mesh-contract (INV-GEO-1) enforcement posture used at
+    /// kernel-seam site 1, bypassing
+    /// [`reify_ir::geometry::MeshContractMode::from_env`] (task #5105 δ).
+    /// Lets integration tests pin `Warn` or `Enforce` deterministically
+    /// WITHOUT mutating process env — `std::env::set_var` is `unsafe` in
+    /// Rust 2024 and races other parallel tests. Mirrors the
+    /// `set_build_scheduler` seam directly above.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn set_mesh_contract_mode(&mut self, mode: reify_ir::geometry::MeshContractMode) {
+        self.mesh_contract_mode = mode;
     }
 
     /// GHR-δ §5: reset the geometry-handle revalidation slow-path counter to 0.
