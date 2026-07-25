@@ -80,6 +80,8 @@ mod fuse_all_integration;
 mod geo_equiv;
 #[path = "harness_occt/half_space_integration.rs"]
 mod half_space_integration;
+#[path = "harness_occt/helix_sweep_integration.rs"]
+mod helix_sweep_integration;
 #[path = "harness_occt/interference_integration.rs"]
 mod interference_integration;
 #[path = "harness_occt/inventory_registration.rs"]
