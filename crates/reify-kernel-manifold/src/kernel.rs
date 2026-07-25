@@ -1765,6 +1765,77 @@ mod tests {
         }
     }
 
+    // --- mode-governed site-2 gate (task #5105 δ, INV-GEO-1) ---
+
+    /// A single open triangle: three boundary edges, no closing surface.
+    /// Shared by the mode-governed site-2 tests below (same shape as the γ
+    /// test's `bad_mesh` fixture above).
+    fn open_triangle_mesh() -> Mesh {
+        Mesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // v0
+                1.0, 0.0, 0.0, // v1
+                0.0, 1.0, 0.0, // v2
+            ],
+            indices: vec![0, 1, 2],
+            normals: None,
+        }
+    }
+
+    /// `Enforce` (the default) front-runs `from_mesh_f64` with the structured
+    /// contract violation — the pre-δ hardcoded behavior, now the mode
+    /// default. Calls the inner `_with_mode` helper directly so no env
+    /// mutation is needed (`std::env::set_var` is unsafe in Rust 2024).
+    #[test]
+    fn manifold_from_reify_mesh_enforce_mode_returns_mesh_contract_violation() {
+        let mesh = open_triangle_mesh();
+
+        match manifold_from_reify_mesh_with_mode(&mesh, MeshContractMode::Enforce) {
+            Err(GeometryError::MeshContractViolation {
+                kernel: kernel_name,
+                invariant,
+                counts,
+                ..
+            }) => {
+                assert_eq!(kernel_name, "manifold");
+                assert!(
+                    matches!(invariant, reify_ir::geometry::MeshInvariant::Closed),
+                    "expected the Closed obligation; got {invariant:?}"
+                );
+                assert_eq!(counts.open_edges, 3, "got {counts:?}");
+            }
+            other => panic!(
+                "Enforce mode must front-run from_mesh_f64 with a structured \
+                 MeshContractViolation; got {other:?}"
+            ),
+        }
+    }
+
+    /// `Warn` is the break-glass downgrade: the contract gate is BYPASSED, so
+    /// the mesh falls through to `from_mesh_f64`. The open triangle is still
+    /// rejected there — but as the generic `OperationFailed`, NOT a
+    /// `MeshContractViolation`. That difference is exactly what pins "the
+    /// contract gate did not fire".
+    #[test]
+    fn manifold_from_reify_mesh_warn_mode_bypasses_contract_gate() {
+        let mesh = open_triangle_mesh();
+
+        match manifold_from_reify_mesh_with_mode(&mesh, MeshContractMode::Warn) {
+            Err(GeometryError::MeshContractViolation { .. }) => panic!(
+                "Warn mode must BYPASS the contract gate — a MeshContractViolation \
+                 means the gate still fired, so the break-glass downgrade is broken"
+            ),
+            Err(GeometryError::OperationFailed(_)) => {
+                // Expected: gate bypassed, from_mesh_f64's own defensive
+                // NotManifold rejection is what surfaces.
+            }
+            other => panic!(
+                "Warn mode must fall through to from_mesh_f64, which rejects the \
+                 open triangle with the generic OperationFailed; got {other:?}"
+            ),
+        }
+    }
+
     /// Pins the equivalence-boundary half of the [`MANIFOLD_INGEST_TOL`]
     /// claim: pre-ingest validation must not reject any triangle
     /// `from_mesh_f64` would itself have accepted. The genuine risk is
