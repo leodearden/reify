@@ -278,7 +278,8 @@ arithmetic AND per-hole `CYLINDRICAL_SURFACE` census in STEP:
   5318 blamed (13/13 holes, mass exact to ~1e-7 g).
 - Committed as the two-file discriminator pair
   `probe_5318_bare_spacing.ri` / `probe_5318_unit_spacing.ri`
-  (identical geometry, only spacings differ).
+  (identical geometry, only spacings differ) — the bare-spacing arm has
+  since been retired, see the task 5356 update below.
 
 **Update (task 5356, after 5214 landed):** 5214 added an eval-layer gate
 that REJECTS bare (dimensionless) spacing/offset/origin args to
