@@ -72,6 +72,10 @@ pub const COMPILE_STACK_SIZE: usize = 256 * 1024 * 1024;
 /// and `std` silently ignores the failure, so a longer name would just not show
 /// up in `/proc`.
 pub const COMPILE_THREAD_NAME: &str = "reify-compile";
+const _: () = assert!(
+    COMPILE_THREAD_NAME.len() <= 15,
+    "thread name must fit Linux's 15-byte pthread_setname_np limit"
+);
 
 /// Thread name for [`spawn_on_large_stack`]'s fire-and-forget engine thread.
 ///
@@ -79,6 +83,10 @@ pub const COMPILE_THREAD_NAME: &str = "reify-compile";
 /// immediately says whether the work arrived via a Tauri command or via the
 /// debug/MCP server. Same 15-byte budget as [`COMPILE_THREAD_NAME`].
 pub const ENGINE_THREAD_NAME: &str = "reify-engine";
+const _: () = assert!(
+    ENGINE_THREAD_NAME.len() <= 15,
+    "thread name must fit Linux's 15-byte pthread_setname_np limit"
+);
 
 /// Run `f` to completion on a dedicated OS thread with a [`COMPILE_STACK_SIZE`]
 /// stack, BLOCKING the caller until it returns, and hand back its value.

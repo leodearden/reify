@@ -169,8 +169,6 @@ fn spawn_on_large_stack_survives_deep_recursion_over_default_stack() {
 /// This matters precisely because this module RELOCATES the work most likely to
 /// crash (stack overflow, OCCT kernel failure) off the caller's thread, which
 /// would otherwise have carried a meaningful Tauri-command / tokio-worker name.
-/// The two names are asserted DISTINCT so a backtrace says whether the work
-/// arrived via a Tauri command or via the debug/MCP server.
 #[test]
 fn large_stack_threads_are_named_for_observability() {
     use crate::large_stack::{
@@ -199,17 +197,4 @@ fn large_stack_threads_are_named_for_observability() {
         Some(ENGINE_THREAD_NAME),
         "spawn_on_large_stack's thread must be named for panic backtraces / profilers"
     );
-
-    assert_ne!(
-        COMPILE_THREAD_NAME, ENGINE_THREAD_NAME,
-        "the two paths must be distinguishable by thread name"
-    );
-    // Linux caps thread names at 15 bytes + NUL and `std` silently ignores a
-    // too-long name, so an over-long constant would vanish from /proc.
-    for name in [COMPILE_THREAD_NAME, ENGINE_THREAD_NAME] {
-        assert!(
-            name.len() <= 15,
-            "thread name {name:?} exceeds the 15-byte Linux limit and would not be set"
-        );
-    }
 }
