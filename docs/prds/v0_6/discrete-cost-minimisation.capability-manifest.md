@@ -123,3 +123,44 @@ v1 scopes catalogs to the stdlib surface (PRD §2.3/§3.7/§9).
 No code premises (design-first trigger task; `execution_class: decision`).
 Substrate it will consume (`solve_all`, mixed enumeration, honesty channels) is
 delivered by its hard deps ε/ζ — DAG-direction verified (producers upstream).
+
+---
+
+## D3 verification addendum (2026-07-24, workflow run `wf_161cdaab-c53`, 20 agents)
+
+The Enumerator → Prover‖Adversary → Synthesize workflow returned 5 blocking
+findings; **all resolved without a PRD change — zero genuine substrate
+failures**. Dispositions:
+
+1. **α "build_dependent_cells present" — UNPROVABLE (harness vocabulary).**
+   The α probe runner binds only grammar/check/ir probes over `.ri` fixtures;
+   source-level premises are not bindable (the Prover mis-ran `reify eval` on
+   the `.rs` file). Fact verified by direct source inspection (this manifest's
+   α table: `engine_eval.rs:1553`, production call sites `:1842/:2179`) and
+   independently by the γ/δ Adversaries (registry.rs:60-67 `None/None`,
+   cpsat.rs:43-114 Int/Enum arms — both PASS, "not harness-bindable").
+2. **α baseline-bug binding — polarity misbinding, fact TRUE.** The Adversary
+   confirmed the baseline byte-exact (`eval` exit 0, both `W_UNDERDETERMINED`
+   lines, all-undef) and supplied the harness-expressible corrected binding:
+   **probe_kind=`check`, observation=present** — `reify check
+   fixtures/discrete_let_cont.ri` emits `W_UNDERDETERMINED` at exit 0 today
+   and **flips red when α lands** (the ir-kind binding was structurally
+   unsatisfiable: ir maps exit 0 → ABSENT). Adopted as α's baseline tripwire.
+3. **γ/δ "fixtures untracked" — timing, resolved by landing.** True at probe
+   time (fixtures + PRD lived on branch `task/5396` awaiting the merge
+   queue). The decompose sequencing already gates batch filing on the PRD
+   landing on `origin/main` (commit-first invariant); re-confirmed tracked
+   before `submit_task`.
+4. **ε stdlib-catalog probe — prover ENOENT (unwritten fixture).** Re-run
+   with a written fixture: `structure def` + `@solver_hint("discrete_set",
+   standard_bolt_lengths)` + `Length = auto` → `reify check` **exit 0**
+   (`No constraints violated (1 indeterminate)` — indeterminate because
+   nothing solves the auto yet: exactly the δ baseline).
+5. **ζ — no blocking findings** (all premises PASS, including the mixed
+   baseline `exit 1` residual failure).
+
+Adversary value adds folded in: `harness_engine.rs` confirmed tracked on main
+(C1 consolidated harness, #5056, last change `ff6874fcbe`); δ polarity trap
+recorded — today `reify eval` on the `discrete_set` fixture is a SILENT
+success (hint unenforced), so δ's membership assertion is a real behavioural
+flip, not a tautology.
