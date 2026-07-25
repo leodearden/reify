@@ -1,0 +1,13 @@
+// TARGET fixture for constrained-2d-sketch.md task α: per-scalar auto(seed)
+// in entity-constructor argument position (PRD §5 D6).
+// EXPECTED TO FAIL parse until α lands.
+structure def T {
+    sketch s {
+        let a = point(0mm, 0mm)
+        let b = point(auto(10mm), 0mm)
+        let ab = line(a, b)
+        horizontal(ab)
+        fix(a)
+    }
+    let body = extrude(s, 5mm)
+}
