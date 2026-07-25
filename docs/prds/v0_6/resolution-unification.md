@@ -169,10 +169,21 @@ instead of discarding them.
   still compiles (preserves module_dag.rs:868-875 contract). Each CLI command's
   existing exit-code policy is preserved as-is in P1 (the error⇒nonzero *invariant*
   belongs to the silent-failure investigation / #5403 — see §6).
+  *Amended 2026-07-25 (stdlib-namespace session):* "broken" covers all **three**
+  failure shapes — unresolvable (missing file), parse error, **and a satisfied
+  import that compiles `Ok` but carries Error diagnostics**. The third shape is
+  silently swallowed today: the diagnostics sit unread on the DAG module
+  (module_dag.rs:474-486; only the `Err` path reaches `import_error_diags`).
+  *(probe 2026-07-24: an imported `param q : Frobnicate = zorp()` yields
+  "All constraints satisfied")*. β aggregates each `CompiledImportUnit.module`'s
+  Error+Warning diagnostics into `entry.diagnostics` with file attribution.
 - **I3 (cfg inertness).** A cfg-unsatisfied import is never resolved, compiled, merged,
   or listed in `imports`/`sources`.
 - **I4 (stdlib skip).** `std`/`std.*` imports are never DAG-walked (stdlib is always in
-  the environment).
+  the environment). *Amended 2026-07-25:* correct for this PRD's ambient interim;
+  deliberately **superseded** by `stdlib-namespace.md` N2/N3 (strict imports — `std.*`
+  imports become DAG-walked over an embedded mount, and they determine visibility).
+  Not drift; see §6 row for the namespace PRD.
 - **I5 (interim merge, P1 only).** `entry.templates` contains merged direct-import pub
   templates under the existing policy, verbatim. **Post-P2:** `entry.templates` =
   entry-declared only; cross-module exposure moves to `DefEnv`. I5's deletion is a
@@ -231,6 +242,10 @@ across a subsystem boundary is retired. `Engine::prelude`, `prelude_functions`, 
   (`prelude_module_unit_collision_emits_warning` et al., `unit_registry_tests.rs`)
   are inverted in the same diff, and the prelude_context.rs policy-divergence doc
   block is replaced by a pointer to DefEnv. Functions gain the warning they never had.
+  *Amended 2026-07-25:* compile-side alignment of the same rule (template-registry
+  last-wins collects, enum `prelude ++ local` inversion) plus the intra-stdlib
+  collision=Error escalation live in `stdlib-namespace.md` N0 — scope fence: ι/κ here
+  do not absorb those sites.
 - **D-7 (`pub import` = re-export edge).** In `compile_program`'s frontier walk, a pub
   import in module M extends M's exported surface with the target's pub defs,
   transitively through pub edges (cycles already impossible: DAG check). Non-pub
@@ -273,7 +288,7 @@ freshness caveat: tasks re-probing behavior must rebuild (`include_str!` stdlib)
 | #5391 standard-parts library program (bookmark) | consumes | multi-file eval/build (γ), enum crossing + re-export (λ, μ), mirror-free stdlib eval (α) | this PRD produces; #5391 gates on it | dep edges wired at decompose (`add_dependency` 5391 → γ, λ, μ, α) |
 | #5387 pub-enum crossing (narrow fix, filed) | overlaps | enum defs across the import boundary | **this PRD** (λ) owns the mechanism per #5387's own scope note; if #5387 lands first as a narrow merge extension, λ subsumes/replaces its mechanism and keeps its acceptance tests | reference, don't duplicate; resolve at decompose (dep or supersession per task-state at that time) |
 | #5386 visibility unenforced + exit-0 (narrow fix, filed; dep #5403) | adjacent | visibility filter in `sub_component_validation`; exit-code invariant | #5386/#5403 own both | this PRD preserves current exit policies (D-11); no edge needed |
-| stdlib-namespace / shadowing PRD (parallel 2026-07-24 session; **not yet committed**) | consumes | qualified-name lookup over DefEnv's `(module_key, name)` keying (I7) | namespace PRD owns qualified semantics; this PRD owns env structure | hook shipped in P1 (D-3); nothing here depends on them |
+| `stdlib-namespace.md` (v0_6, committed 2026-07-25 alongside these amendments) | both | (a) qualified-name lookup over DefEnv's `(module_key, name)` keying (I7) — namespace PRD's ν consumes; (b) compile-side collision alignment + intra-stdlib collision=Error — namespace N0 owns (scope fence in D-6 amendment); (c) this PRD's I4 + β's interim import-unit stdlib seeding are deliberately superseded by namespace N2/N3 (strict flip; `std.*` DAG-walked over an embedded mount; StdlibMode deleted) — not drift; (d) `pub import` re-export (μ here) is the substrate for its `std.prelude` facade (ι there) | per-item | amendments folded in-file 2026-07-25 |
 | `conditional-compilation.md` (v0_6, landed) | consumes | `import_cfg_satisfied` gating threaded through `compile_program` (I3) + `--cfg` on six more commands (D-4) | this PRD | extends, semantics unchanged |
 | `module-and-visibility-hardening.md` (v0_6) | consumes | `attach_module_path_diag` applied to imported files (ξ) | this PRD (ξ) | extension of landed mechanism |
 
@@ -288,7 +303,7 @@ touched.
 |---|---|---|---|---|
 | 1 | Import-free entry through `compile_program` | any existing single-file example | diagnostics + definitions identical to legacy path (I1) | P1 (β) |
 | 2 | Same importing entry through check / eval / GUI load_file | probe-imports `main.ri`+`parts.ri` shape | identical diagnostic sets (text + severity), Pulley sub evaluates in all three | P1 (η) |
-| 3 | Broken import (missing file / parse error inside import) | entry imports a broken sibling | Error diagnostic attributed to imported file; entry still compiles; per-command exit policy unchanged (I2) | P1 (η) |
+| 3 | Broken import (missing file / parse error / **type-error inside a satisfied import** — I2 amendment) | entry imports a broken sibling | Error diagnostic attributed to imported file; entry still compiles; per-command exit policy unchanged (I2) | P1 (η) |
 | 4 | cfg-gated import unsatisfied | `#cfg(target=...)` non-host import | inert everywhere: DAG, prelude, merge/env, `imports`, `sources` (I3) | P1 (η) |
 | 5 | `load_from_source` buffer containing an import | GUI text-only load | explicit Warning (D-10), no crash, single-file compile proceeds | P1 (ε) |
 | 6 | GUI dirty-buffer edit on importing entry | multi-file project open | import graph retained (engine.rs:2250-2260 behavior preserved) | P1 (ε) |
@@ -304,6 +319,7 @@ touched.
 | 16 | Imported-file module-header mismatch | import whose file has wrong/missing `module` decl | Warning naming the *imported* file path | P3 (ξ) |
 | 17 | GUI files panel | multi-file project | imported files listed (from `sources`), debug-MCP observable | P3 (ο) |
 | 18 | Stale-mirror removal | ports_breadth.ri stripped | eval output shows stdlib `thread_form`; examples_smoke green | P0 (α) |
+| 19 | Imported module *consuming* stdlib names (β amendment 2026-07-25) | imported module with a dimensioned param + si-unit default + stdlib trait bound (`param w : Length = 10mm`, `: ElasticMaterial`) | resolves at check AND eval — today it silently compiles poison (import units get no stdlib prelude: module_dag.rs:474-486, GUI twin engine.rs:946) *(probe)* | P1 (β) |
 
 ---
 
@@ -332,6 +348,15 @@ sentinel (`docs/notes/verify-scope-throughput.md`) in-diff if they add build_pla
   Refactor `compile_entry_with_stdlib_cfg_checked` into `compile_program`; keep the old
   name as a thin deprecated wrapper for one phase. I1 equivalence pin + I2/I3/I4 tests
   (#1). Unlocks: every other P1 task.
+  *Amended 2026-07-25 (stdlib-namespace session):* β also closes two probe-verified
+  gaps inherited from the current internals: **(1)** import units compile with the
+  full stdlib prelude seeded — today they see only their direct imports, so an
+  imported `param w : Length = 10mm` silently poisons (#19); reuse the cached
+  `load_stdlib_context()`, do not rebuild a `PreludeContext` per unit. This is the
+  sanctioned ambient interim, superseded later by `stdlib-namespace.md` N3's
+  strict flip (recorded there as D-11). **(2)** the I2 amendment: aggregate each
+  `CompiledImportUnit.module`'s Error+Warning diagnostics into `entry.diagnostics`
+  with file attribution (#3's third shape).
 - **γ — eval + build go multi-file, `--cfg`** *(leaf)*. Modules: reify-cli/main.rs.
   Signal: probe-imports `main.ri` — `reify eval` prints `Rig.p = Pulley {…}` members and
   `reify build` produces geometry, no "import not resolved" warning; `--cfg target=x`
@@ -359,6 +384,11 @@ runs against P1's landed net)
   normalization** *(intermediate → ι)*. Modules: reify-eval (lib.rs, engine_admin),
   reify-compiler (prelude_context doc block). All kinds resolvable per I6/I7; D-6
   policy incl. units flip with pins inverted in-diff; D-9 enum fixup pass. Deps: β, η.
+  *Amended 2026-07-25:* the D-6 units flip MUST include the compile-side seed loop
+  (`compile_builder/units_phase.rs::phase_units`, where last-wins + the overwrite-site
+  Warning live) in the same diff — flipping only inside DefEnv would make compile and
+  eval newly disagree on colliding units, the exact defect class this program buries
+  (cf. the `Mode` compile/eval divergence, stdlib-namespace.md §1).
 - **ι — Flat-slice call-site migration** *(intermediate → κ, λ)*. Modules: reify-eval
   (unfold, graph, structural_query, engine_build, engine_eval),
   reify-compiler/conformance (sub_component_validation mirrors the env lookup set).
