@@ -886,3 +886,250 @@ fn fea_pressure_smoke_example_has_no_ctor_conformance_diagnostics() {
         errors_only(&module)
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step-11 probes: per-family false-positive fences + α-value-floor guards.
+//
+// The general concrete-leaf arm shipped with a NEGATIVE skip list (`!matches!(
+// param_type, Type::Geometry | Type::TypeParam(_))`), i.e. every present and
+// future `Type` variant was opted IN to raw `type_compatible` unless someone
+// remembered to carve it out. `type_compatible` is a call-site coercion
+// predicate that assumes both sides carry genuinely inferred types; it is not
+// valid against the expression compiler's placeholder/erased result_types, nor
+// against literal shapes for which no coercion rule exists. Five families were
+// therefore false-rejected across 15+ shipped examples.
+//
+// Step-12 inverts the gate to a positive, explicitly-vetted allowlist. The two
+// groups below are the fence on either side of that narrowing:
+//
+//   (b) EXCLUDED families — each must emit ZERO ctor-conformance diagnostics.
+//       RED on the current branch tip. These pin the MECHANISM, so a future
+//       re-broadening cannot silently reintroduce the regression even if the
+//       examples corpus changes shape and the corpus gate stops covering it.
+//
+//   (c) RETAINED families — each must still emit exactly one Warning. GREEN
+//       both before and after step-12. Their presence is what makes step-12 a
+//       narrowing rather than a revert.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── (b) excluded family: Point ← numeric-fallback placeholder ────────────────
+//
+// `point3(0m, 0m, 0m)` is a `CompiledExprKind::FunctionCall` whose result_type
+// is the expression compiler's numeric fallback `Scalar[m]`, NOT `Type::Point`.
+// `type_compatible` has a Point-vs-Point arm but no Point-vs-Scalar arm, so the
+// general leaf arm false-rejects. This is the same placeholder class the
+// pre-existing `Type::Geometry` carve-out and `promote_function_call_to_structure_ref`
+// exist for. Shape taken from examples/anisotropic_bar.ri and the five
+// examples/tensegrity_*.ri files.
+const SRC_FAMILY_POINT: &str = r#"module test.family_point
+structure def Anchor { param origin : Point3<Length> }
+structure def Root {
+    let a = Anchor(origin: point3(0m, 0m, 0m))
+}
+"#;
+
+#[test]
+fn excluded_family_point_given_placeholder_function_call_is_silent() {
+    let module = compile_source_with_stdlib(SRC_FAMILY_POINT);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a Point3<Length> param given `point3(0m, 0m, 0m)` must emit ZERO ctor-conformance \
+         diagnostics — the arg's result_type is the numeric-fallback placeholder Scalar[m], \
+         not Type::Point, so `type_compatible` cannot judge it. Got: {diags:#?}"
+    );
+}
+
+// ── (b) excluded family: Matrix ← nested list literal ────────────────────────
+//
+// A nested list literal is the idiomatic spelling of a Matrix3x3, but it
+// compiles to `List<List<Real>>` and `type_compatible` has no
+// `List<List<Real>>` → Matrix arm. Unlike the Point family this is NOT a
+// placeholder artifact — it is a genuinely missing coercion rule, so it cannot
+// be fixed by placeholder detection alone. Shape from the MassProperties ctor
+// in every examples/dynamics/*_idyn.ri.
+const SRC_FAMILY_MATRIX: &str = r#"module test.family_matrix
+structure def Body { param inertia : Matrix<3, 3, MomentOfInertia> }
+structure def Root {
+    let b = Body(inertia: [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+}
+"#;
+
+#[test]
+fn excluded_family_matrix_given_nested_list_literal_is_silent() {
+    let module = compile_source_with_stdlib(SRC_FAMILY_MATRIX);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a Matrix<3,3,_> param given a nested list literal must emit ZERO ctor-conformance \
+         diagnostics — the literal compiles to List<List<Real>> and no List→Matrix coercion \
+         rule exists in type_compat.rs. Got: {diags:#?}"
+    );
+}
+
+// ── (b) excluded family: Field ← erased Field<Real, Real> ────────────────────
+//
+// An analytical `field def` erases both slots to the numeric fallback, so its
+// result_type is `Field<Real, Real>` whatever the declared domain/codomain.
+// Shape from examples/fea_shell_channels.ri, which alone emitted six such
+// warnings (top / mid / bottom / displacement / stress / frame).
+const SRC_FAMILY_FIELD: &str = r#"module test.family_field
+field def scalar_field : Real -> Real { source = analytical { |x| 100.0 } }
+structure def Holder { param mode_shape : Field<Point3<Length>, Vector3<Length>> }
+structure def Root {
+    let h = Holder(mode_shape: scalar_field)
+}
+"#;
+
+#[test]
+fn excluded_family_field_given_erased_field_type_is_silent() {
+    let module = compile_source_with_stdlib(SRC_FAMILY_FIELD);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a Field<Point3<Length>, Vector3<Length>> param given an analytical field whose \
+         result_type erases to Field<Real, Real> must emit ZERO ctor-conformance diagnostics. \
+         Got: {diags:#?}"
+    );
+}
+
+// ── (b) excluded family: generic enum ← bare Type::Enum under erasure ────────
+//
+// Under enum erasure a constructed variant's result_type is always the bare
+// `Type::Enum(name)`, never the applied form — which is precisely why
+// `enum_payload_compatible` exists in type_compat.rs (its own doc notes that a
+// naive `type_compatible` "would spuriously fail") and why variant_construct.rs
+// already guards with it. Shape from examples/m6_generic_enum.ri and the
+// reify-cli result_match_bore_{ok,err}.ri / result_prelude_pinned_mismatch.ri
+// fixtures.
+const SRC_FAMILY_GENERIC_ENUM: &str = r#"module test.family_generic_enum
+enum Result<T, E> {
+    Ok { value: T },
+    Err { error: E },
+}
+structure def Root {
+    param r : Result<Length, String> = Ok { value: 12mm }
+}
+"#;
+
+#[test]
+fn excluded_family_generic_enum_given_erased_variant_is_silent() {
+    let module = compile_source_with_stdlib(SRC_FAMILY_GENERIC_ENUM);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a `Result<Length, String>` param defaulted to `Ok {{ value: 12mm }}` must emit ZERO \
+         ctor-conformance diagnostics — enum erasure gives the constructed variant the bare \
+         result_type Enum(\"Result\"), never the applied form. Got: {diags:#?}"
+    );
+}
+
+// ── (b) excluded family: dimensioned Scalar ← dimensionless Real ─────────────
+//
+// Supplying a bare dimensionless numeric literal at a dimensioned slot is an
+// idiomatic spelling throughout the corpus. Shape from
+// examples/trajectory/{printer_print_envelope,tots_optimal_ptp}.ri.
+const SRC_FAMILY_DIMENSIONED_SCALAR: &str = r#"module test.family_dim_scalar
+structure def Limit {
+    param velocity_limit : Scalar<Velocity>
+    param acceleration_limit : Scalar<Acceleration>
+}
+structure def Root {
+    let l = Limit(velocity_limit: 300.0, acceleration_limit: 5000.0)
+}
+"#;
+
+#[test]
+fn excluded_family_dimensioned_scalar_given_dimensionless_real_is_silent() {
+    let module = compile_source_with_stdlib(SRC_FAMILY_DIMENSIONED_SCALAR);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "dimensioned Scalar params given dimensionless Real args must emit ZERO \
+         ctor-conformance diagnostics — a bare numeric literal at a dimensioned slot is \
+         idiomatic across the corpus. Got: {diags:#?}"
+    );
+}
+
+// ── (c) α-value-floor guards: the RETAINED families must still warn ──────────
+
+/// Assert `source` emits exactly one ctor-conformance diagnostic, and that it is
+/// a `Warning`-severity `ArgTypeMismatch` naming `param_name`.
+///
+/// Shared by the four value-floor guards below so each stays a one-liner and the
+/// four cases cannot drift apart in what they check.
+fn assert_single_arg_type_mismatch_warning(source: &str, param_name: &str, label: &str) {
+    let module = compile_source_with_stdlib(source);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "{label}: expected exactly one ctor-conformance diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].severity,
+        Severity::Warning,
+        "{label}: α ctor field conformance is Warning-severity, got: {:?}",
+        diags[0]
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "{label}: expected ArgTypeMismatch, got: {:?}",
+        diags[0].code
+    );
+    assert!(
+        diags[0].message.contains(param_name),
+        "{label}: message must name the offending param {param_name:?}, got: {:?}",
+        diags[0].message
+    );
+}
+
+const SRC_FLOOR_STRING: &str = r#"module test.floor_string
+structure def W { param label : String }
+structure def Root { let a = W(label: 42) }
+"#;
+
+const SRC_FLOOR_BOOL: &str = r#"module test.floor_bool
+structure def W { param flag : Bool }
+structure def Root { let a = W(flag: "yes") }
+"#;
+
+const SRC_FLOOR_INT: &str = r#"module test.floor_int
+structure def W { param n : Int }
+structure def Root { let a = W(n: "seven") }
+"#;
+
+const SRC_FLOOR_REAL: &str = r#"module test.floor_real
+structure def W { param mag : Real }
+structure def Root { let a = W(mag: "big") }
+"#;
+
+/// Value floor: `String` stays validated. Deliberately a standalone fn rather
+/// than a reliance on the step-1 row-2 probe — this group is the regression
+/// fence around the step-12 narrowing itself, so it must fail loudly and by name
+/// if the allowlist ever loses a family.
+#[test]
+fn value_floor_string_param_given_int_still_warns() {
+    assert_single_arg_type_mismatch_warning(SRC_FLOOR_STRING, "label", "String ← Int");
+}
+
+/// Value floor: `Bool` stays validated.
+#[test]
+fn value_floor_bool_param_given_string_still_warns() {
+    assert_single_arg_type_mismatch_warning(SRC_FLOOR_BOOL, "flag", "Bool ← String");
+}
+
+/// Value floor: `Int` stays validated.
+#[test]
+fn value_floor_int_param_given_string_still_warns() {
+    assert_single_arg_type_mismatch_warning(SRC_FLOOR_INT, "n", "Int ← String");
+}
+
+/// Value floor: dimensionless `Scalar` (spelled `Real`) stays validated. Note
+/// this is the DIMENSIONLESS half of the Scalar family only — the dimensioned
+/// half is excluded above, and the two must not be conflated.
+#[test]
+fn value_floor_dimensionless_real_param_given_string_still_warns() {
+    assert_single_arg_type_mismatch_warning(SRC_FLOOR_REAL, "mag", "Real ← String");
+}

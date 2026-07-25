@@ -170,6 +170,74 @@ fn all_examples_parse_and_compile_with_stdlib() {
     }
 }
 
+/// Corpus gate (task 5302 α): NO example file may emit a struct-ctor
+/// field-conformance diagnostic, at ANY severity.
+///
+/// This is a deliberate sibling to [`all_examples_parse_and_compile_with_stdlib`]
+/// rather than an extension of it, because the two gates filter on different
+/// axes and only the pair is sufficient:
+///
+/// * the bulk test filters on `Severity::Error`, so a *Warning*-severity
+///   regression across the whole corpus passes it silently.  That is exactly
+///   how task 5302's first cut shipped five families of false-positive ctor
+///   warnings (Point, Matrix, Field, generic-enum, dimensioned-Scalar) across
+///   15+ previously-clean shipped examples without tripping the branch's own
+///   gate;
+/// * this test filters on the ctor-conformance diagnostic *code* set and
+///   ignores severity entirely, so it stays meaningful after the planned δ
+///   flip of `CTOR_FIELD_CONFORMANCE_SEVERITY` from Warning to Error.
+///
+/// Every violation across the whole corpus is accumulated and reported in one
+/// panic — the gate exists for corpus-wide visibility, so it must NOT fail fast.
+///
+/// A newly-failing file must be fixed at the conformance walker (or the arg
+/// genuinely corrected), NOT silenced by a `SKIP_SET` entry: `SKIP_SET` exists
+/// for files that cannot reach a clean compile at all, and a ctor-conformance
+/// false positive is never that.
+#[test]
+fn no_example_emits_ctor_field_conformance_diagnostics() {
+    use std::collections::HashSet;
+
+    let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _)| *name).collect();
+    let mut violations: Vec<(String, String, String)> = Vec::new();
+
+    let paths = discover_ri_files();
+    let mut exercised = 0usize;
+    for path in &paths {
+        let rel_key = relative_to_examples_dir(path);
+        if skip.contains(rel_key.as_str()) {
+            continue;
+        }
+        exercised += 1;
+        ctor_conformance_one(path, &rel_key, &mut violations);
+    }
+
+    assert!(
+        exercised >= 40,
+        "ctor-conformance corpus gate exercised only {} .ri files — expected ~40+; \
+         did the examples/ directory move, or did SKIP_SET grow unexpectedly?",
+        exercised
+    );
+
+    if !violations.is_empty() {
+        let n = violations.len();
+        let lines: Vec<String> = violations
+            .into_iter()
+            .map(|(file, code, message)| format!("  {} [{}] {}", file, code, message))
+            .collect();
+        panic!(
+            "ctor-conformance corpus gate: {} diagnostic(s) across {} exercised example files.\n\
+             Every one is a struct-ctor field-conformance diagnostic fired against a shipped \
+             example — i.e. a false positive from the conformance walker, not a broken example.\n\
+             Fix the walker (see `general_leaf_param_family_is_validated` in \
+             crates/reify-compiler/src/conformance/mod.rs); do NOT add a SKIP_SET entry.\n\n{}",
+            n,
+            exercised,
+            lines.join("\n")
+        );
+    }
+}
+
 /// Sanity guard: every entry in SKIP_SET must name a relative path that actually
 /// exists under `examples/`.  Catches mis-typed or stale skip entries before they
 /// silently disable coverage.
@@ -337,5 +405,70 @@ fn smoke_one(path: &Path, rel_key: &str, failures: &mut Vec<(String, String)>) {
 
     if !errors.is_empty() {
         failures.push((rel_key.to_owned(), errors.join("\n")));
+    }
+}
+
+/// True when `code` is one of the diagnostic codes emitted by the struct-ctor
+/// field-conformance pass (tasks 5302 / 4584 / 4598 / 4622 / 4444).
+///
+/// Kept deliberately in sync with the identically-named helper in
+/// `struct_ctor_field_conformance_tests.rs`; integration tests are separate
+/// binaries and cannot share a private helper without a support-crate hop, and
+/// the set is small enough that duplication is cheaper than the indirection.
+fn is_ctor_conformance_code(code: Option<reify_core::diagnostics::DiagnosticCode>) -> bool {
+    use reify_core::diagnostics::DiagnosticCode;
+    matches!(
+        code,
+        Some(
+            DiagnosticCode::ArgTypeMismatch
+                | DiagnosticCode::SelectorKindMismatch
+                | DiagnosticCode::TypeNotConformingToTrait
+                | DiagnosticCode::TypeNotConformingToStructureRef
+                | DiagnosticCode::TypeNotConformingToVector
+        )
+    )
+}
+
+/// Parse `path`, compile it with the stdlib prelude, and append one entry to
+/// `violations` for EVERY ctor-conformance-coded diagnostic found, regardless of
+/// severity.
+///
+/// Files whose parse phase fails contribute nothing: they cannot produce
+/// meaningful compile diagnostics, and their parse breakage is already the
+/// business of [`all_examples_parse_and_compile_with_stdlib`].  Splitting the
+/// concerns this way keeps a parse regression from being reported twice under
+/// two different failure headings.
+fn ctor_conformance_one(
+    path: &Path,
+    rel_key: &str,
+    violations: &mut Vec<(String, String, String)>,
+) {
+    use reify_compiler::{compile_with_stdlib, parse_with_stdlib};
+    use reify_core::ModulePath;
+
+    let source = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("examples_smoke: cannot read '{}': {}", rel_key, e));
+
+    let stem = path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let parsed = parse_with_stdlib(&source, ModulePath::single(&stem));
+    if !parsed.errors.is_empty() {
+        return;
+    }
+
+    let compiled = compile_with_stdlib(&parsed);
+    for d in compiled
+        .diagnostics
+        .iter()
+        .filter(|d| is_ctor_conformance_code(d.code))
+    {
+        violations.push((
+            rel_key.to_owned(),
+            format!("{:?}", d.code.expect("filtered to Some(code) above")),
+            d.message.clone(),
+        ));
     }
 }
