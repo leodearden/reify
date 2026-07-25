@@ -1504,7 +1504,7 @@ pub(crate) fn expand_solver_position_expr(
 /// be re-folded through plain `reify_expr::eval_expr` (which carries no registry)
 /// in the post-solve write-back or β's per-trial fold — doing so would clobber
 /// the dispatched result with the inline-fallback/Undef.
-fn is_optimized_userfn_cell(expr: &CompiledExpr, functions: &[CompiledFunction]) -> bool {
+pub(crate) fn is_optimized_userfn_cell(expr: &CompiledExpr, functions: &[CompiledFunction]) -> bool {
     matches!(
         &expr.kind,
         CompiledExprKind::UserFunctionCall { function_name, args }

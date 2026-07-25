@@ -744,6 +744,7 @@ fn union_via_transitive_auto_owners(
     seeds: &[ValueCellId],
     cell_map: &HashMap<ValueCellId, &CompiledExpr>,
     auto_owner: &HashMap<ValueCellId, usize>,
+    functions: &[CompiledFunction],
     parent: &mut [usize],
 ) {
     let mut visited: HashSet<ValueCellId> = HashSet::new();
@@ -762,8 +763,19 @@ fn union_via_transitive_auto_owners(
             }
             continue;
         }
-        // (ii) Derived non-auto cell: follow its reads transitively.
+        // (ii) Derived non-auto cell: follow its reads transitively — UNLESS it is
+        // an `@optimized` UserFunctionCall cell, whose dependency frontier is
+        // deliberately suppressed (PRD design decision 5 / §11). Such a cell's
+        // value comes from the compute-dispatch registry, so `build_dependent_cells`
+        // excludes it from the per-trial fold with this SAME predicate
+        // (engine_eval.rs): a child whose `line_cost` cannot be recomputed per trial
+        // must not be co-solved, because the merged problem's objective would be
+        // constant in that child's auto. The cell stays `visited`, so the walk
+        // terminates normally; only its frontier is cut.
         if let Some(expr) = cell_map.get(&id) {
+            if crate::engine_eval::is_optimized_userfn_cell(expr, functions) {
+                continue;
+            }
             for dep in extract_value_deps(expr) {
                 if visited.insert(dep.clone()) {
                     frontier.push(dep);
@@ -854,7 +866,7 @@ fn compute_clusters(
             let cell_map = build_non_auto_cell_map(templates);
             let expanded_reads = expanded_objective_reads(templates, ctx);
             for (j, reads) in expanded_reads.iter().enumerate() {
-                union_via_transitive_auto_owners(j, reads, &cell_map, auto_owner, &mut parent);
+                union_via_transitive_auto_owners(j, reads, &cell_map, auto_owner, ctx.functions, &mut parent);
             }
         }
     }
