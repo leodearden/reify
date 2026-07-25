@@ -49,7 +49,9 @@
 //! 'BRep'"). Site 1 IS reachable from the tessellate surfaces, but only via
 //! the `voxel_pipeline_demand_overrides` exception (an isosurface consumer
 //! whose demand is overridden to `Mesh`), which needs a Voxel-capable mock
-//! harness this file does not have. Tracked as a follow-up.
+//! harness this file does not have. Closing that gap (plus the
+//! `test_registry_override` seam the tessellate surfaces never consult) is the
+//! scope of task #5530, which owns the tessellate-surface coverage.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
