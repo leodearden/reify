@@ -11555,6 +11555,90 @@ mod tests {
         }
     }
 
+    // --- MeshContractMode env-knob parser (task #5105 δ, INV-GEO-1) ---
+
+    /// Exhaustive string→mode cases for the pure `from_env_value` parser.
+    ///
+    /// Mirrors `build_scheduler_from_env_value_parsing` (engine_fixpoint.rs).
+    /// The critical property is that the parser fails **CLOSED**: only an
+    /// exact (trimmed, case-insensitive) `warn` downgrades the contract to a
+    /// diagnostic; unset / empty / unrecognized values all resolve to
+    /// `Enforce` so a typo can never silently disable INV-GEO-1.
+    #[test]
+    fn mesh_contract_mode_from_env_value_parsing() {
+        // Unset: post-flip default is the strict mode.
+        assert_eq!(
+            MeshContractMode::from_env_value(None),
+            MeshContractMode::Enforce,
+            "an unset REIFY_MESH_CONTRACT must enforce (post-flip default)"
+        );
+        // Shell `VAR=` yields an empty string — treated as absent.
+        assert_eq!(
+            MeshContractMode::from_env_value(Some("")),
+            MeshContractMode::Enforce,
+            "an empty REIFY_MESH_CONTRACT must be treated as absent, i.e. enforce"
+        );
+
+        // The one break-glass string that flips the default off.
+        assert_eq!(
+            MeshContractMode::from_env_value(Some("warn")),
+            MeshContractMode::Warn
+        );
+        assert_eq!(
+            MeshContractMode::from_env_value(Some("WARN")),
+            MeshContractMode::Warn,
+            "matching must be case-insensitive"
+        );
+        assert_eq!(
+            MeshContractMode::from_env_value(Some("  warn  ")),
+            MeshContractMode::Warn,
+            "surrounding whitespace must be tolerated"
+        );
+
+        // Explicit strict spelling.
+        assert_eq!(
+            MeshContractMode::from_env_value(Some("enforce")),
+            MeshContractMode::Enforce
+        );
+
+        // Fail-closed: an unrecognized value must NEVER disable the contract.
+        assert_eq!(
+            MeshContractMode::from_env_value(Some("bogus")),
+            MeshContractMode::Enforce,
+            "an unknown REIFY_MESH_CONTRACT value must fail CLOSED, never silently \
+             disable the mesh contract"
+        );
+        assert_eq!(
+            MeshContractMode::from_env_value(Some("enfroce")),
+            MeshContractMode::Enforce,
+            "a typo'd strict spelling must still enforce"
+        );
+    }
+
+    /// `Default` must agree with the unset-env parse: enforce.
+    #[test]
+    fn mesh_contract_mode_default_is_enforce() {
+        assert_eq!(MeshContractMode::default(), MeshContractMode::Enforce);
+        assert_eq!(
+            MeshContractMode::default(),
+            MeshContractMode::from_env_value(None)
+        );
+    }
+
+    /// The thin env wrapper must delegate to the pure parser rather than
+    /// hard-coding a variant — checked against whatever the real environment
+    /// currently holds.
+    ///
+    /// No `std::env::set_var` — `unsafe` in Rust 2024 + race-prone across
+    /// parallel tests.
+    #[test]
+    fn mesh_contract_mode_from_env_delegates_to_parser_over_real_env() {
+        let expected = MeshContractMode::from_env_value(
+            std::env::var(MeshContractMode::ENV_VAR).ok().as_deref(),
+        );
+        assert_eq!(MeshContractMode::from_env(), expected);
+    }
+
     #[test]
     fn geometry_error_mesh_contract_violation_display_and_bridge() {
         let counts = MeshViolationCounts {
