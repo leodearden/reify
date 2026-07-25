@@ -6431,43 +6431,6 @@ impl Engine {
             .resolve_solver_for_module(module, &mut diagnostics)
             .is_some();
 
-        // β #4822: compute dependency-ordered resolve order so the solver sub-pass
-        // (post-loop below) runs in read-DAG order — a later-declared scope that reads
-        // an earlier scope's auto cell will see the SOLVED value.  Pure structural
-        // analysis, requires no solved values.  eval_cached does NOT emit
-        // W_SCOPE_COUPLING (unchanged).
-        //
-        // M-WHOLE (#5118): warm now ALSO computes the M-WHOLE α pre-solve
-        // `clusters` set via `resolve_order_ordering_and_clusters`, so the
-        // solver sub-pass below can co-solve within-cap `MergedSolve` clusters
-        // via `dispatch_merged_cluster_solve_cached` — exactly as the cold
-        // `eval()` driver does via `dispatch_merged_cluster_solve` — closing
-        // the cold/warm fidelity divergence recorded at esc-5014-10 for
-        // constraint-only clusters (objective-bearing clusters retain a
-        // documented, permitted solve()/solve_ranked divergence — see
-        // `dispatch_merged_cluster_solve_cached`'s doc, design decision #4).
-        // `resolve_order_ordering_and_clusters` clears `coupling_diagnostics`
-        // unconditionally, so this still never emits W_SCOPE_COUPLING /
-        // W_COUPLING_APPROXIMATED (eval() alone owns that emission).
-        //
-        // Cost (reviewer_comprehensive, task #5118 amendment): this reinstates
-        // the per-call `compute_clusters` pass on the warm/keystroke path that
-        // `resolve_order_ordering_only` (#5013) was introduced to skip.
-        // `compute_clusters` is a near-linear union-find over template count
-        // (see its doc), reusing the `sccs_topo`/`objective_reads` that the
-        // unconditional SCC/topo-sort above already computes every warm call
-        // regardless — it adds no new asymptotic cost tier, just extends
-        // existing O(templates + read-edges) work already paid per keystroke.
-        // Negligible for the single-digit-template modules this path targets
-        // today.
-        // TODO(#5224): if module sizes large enough to matter come into
-        // scope, cache the cluster set across cached evaluations keyed by
-        // structural module identity instead of recomputing it every warm
-        // call (tracked alongside that task's reverse-dependency-index
-        // follow-up — both are "warm state recomputed/reset every call
-        // instead of persisted" regressions from this task).
-        let ro = crate::resolve_order::resolve_order_ordering_and_clusters(&module.templates, None);
-
         for template in &module.templates {
             // Pre-seed Auto cells (unchanged; processed separately before the
             // unified Param+Let pass so Auto leaves are visible to topo-ordered
@@ -7146,6 +7109,79 @@ impl Engine {
                     .flat_map(|m| m.trait_defs.iter())
                     .chain(module.trait_defs.iter()),
             );
+
+            // β #4822: compute dependency-ordered resolve order so the solver sub-pass
+            // (below) runs in read-DAG order — a later-declared scope that reads
+            // an earlier scope's auto cell will see the SOLVED value.  Pure structural
+            // analysis, requires no solved values.  eval_cached does NOT emit
+            // W_SCOPE_COUPLING (unchanged).
+            //
+            // M-WHOLE (#5118): warm now ALSO computes the M-WHOLE α pre-solve
+            // `clusters` set via `resolve_order_ordering_and_clusters`, so the
+            // solver sub-pass below can co-solve within-cap `MergedSolve` clusters
+            // via `dispatch_merged_cluster_solve_cached` — exactly as the cold
+            // `eval()` driver does via `dispatch_merged_cluster_solve` — closing
+            // the cold/warm fidelity divergence recorded at esc-5014-10 for
+            // constraint-only clusters (objective-bearing clusters retain a
+            // documented, permitted solve()/solve_ranked divergence — see
+            // `dispatch_merged_cluster_solve_cached`'s doc, design decision #4).
+            // `resolve_order_ordering_and_clusters` clears `coupling_diagnostics`
+            // unconditionally, so this still never emits W_SCOPE_COUPLING /
+            // W_COUPLING_APPROXIMATED (eval() alone owns that emission).
+            //
+            // JOINT-DRIVE δ (#5334, Gap C): cluster formation is expansion-aware
+            // here too, receiving the same `ClusterFormationCtx` shape the cold
+            // `eval()` site passes. Cold and warm MUST agree on the cluster set —
+            // warm computes its own through this entry point, so wiring only cold
+            // would silently re-open the very divergence #5118 closed (pinned by
+            // `resolve_order.rs`'s `cold_and_warm_entry_points_agree_on_delta_cluster_set`).
+            //
+            // SITE (#5334): this call was SUNK from before the per-template loop
+            // into this block, because expansion-aware clustering reads `values` —
+            // and `values` is only fully populated (including the `__count_*`
+            // collection cells `enumerate_descendants` needs) once that loop has
+            // run. Safe: `ro` had no reader between its old site and here, and
+            // `resolve_order_ordering_and_clusters` is side-effect-free, so the
+            // no-solver path merely skips work it never consumed.
+            //
+            // BORROW SHAPE: the ctx and its `Arc::clone`d function table are
+            // confined to this block (the clone mirrors `eval()`'s local), so no
+            // borrow of `self` or `values` survives into the `&mut self` /
+            // `&mut values` dispatch loop below.
+            //
+            // Cost (reviewer_comprehensive, task #5118 amendment): this reinstates
+            // the per-call `compute_clusters` pass on the warm/keystroke path that
+            // `resolve_order_ordering_only` (#5013) was introduced to skip.
+            // `compute_clusters` is a near-linear union-find over template count
+            // (see its doc), reusing the `sccs_topo`/`objective_reads` that the
+            // unconditional SCC/topo-sort above already computes every warm call
+            // regardless — it adds no new asymptotic cost tier, just extends
+            // existing O(templates + read-edges) work already paid per keystroke.
+            // Negligible for the single-digit-template modules this path targets
+            // today. δ adds one objective-expression clone + expansion per
+            // objective-bearing template, and `expand_solver_position_expr`'s
+            // `contains_structural_query` fast path makes that ~free for plain
+            // objectives.
+            // TODO(#5224): if module sizes large enough to matter come into
+            // scope, cache the cluster set across cached evaluations keyed by
+            // structural module identity instead of recomputing it every warm
+            // call (tracked alongside that task's reverse-dependency-index
+            // follow-up — both are "warm state recomputed/reset every call
+            // instead of persisted" regressions from this task).
+            let ro = {
+                let functions = Arc::clone(&self.functions);
+                let cluster_ctx = crate::resolve_order::ClusterFormationCtx {
+                    values: &values,
+                    functions: &functions,
+                    trait_registry: &expansion_trait_registry,
+                    max_unfold_depth: self.max_unfold_depth,
+                    max_unfold_nodes: self.max_unfold_nodes,
+                };
+                crate::resolve_order::resolve_order_ordering_and_clusters(
+                    &module.templates,
+                    Some(&cluster_ctx),
+                )
+            };
 
             // M-WHOLE (#5118): precompute which templates belong to a within-cap
             // `MergedSolve` cluster, and track which clusters have already been
