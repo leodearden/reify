@@ -159,3 +159,57 @@ fn spawn_on_large_stack_survives_deep_recursion_over_default_stack() {
         "deep recursion must run to completion on the fire-and-forget large stack"
     );
 }
+
+// ── Observability: named threads (review amendment) ──────────────────────────
+
+/// (f) Both helpers NAME their thread, so a panic backtrace, `RUST_BACKTRACE`
+/// dump, `top -H` row or debugger thread list identifies compile-bearing work
+/// instead of reading `<unnamed>`.
+///
+/// This matters precisely because this module RELOCATES the work most likely to
+/// crash (stack overflow, OCCT kernel failure) off the caller's thread, which
+/// would otherwise have carried a meaningful Tauri-command / tokio-worker name.
+/// The two names are asserted DISTINCT so a backtrace says whether the work
+/// arrived via a Tauri command or via the debug/MCP server.
+#[test]
+fn large_stack_threads_are_named_for_observability() {
+    use crate::large_stack::{
+        COMPILE_THREAD_NAME, ENGINE_THREAD_NAME, run_on_large_stack, spawn_on_large_stack,
+    };
+    use std::sync::mpsc;
+
+    // Blocking helper: read the name from inside the worker.
+    let blocking_name = run_on_large_stack(|| std::thread::current().name().map(str::to_owned));
+    assert_eq!(
+        blocking_name.as_deref(),
+        Some(COMPILE_THREAD_NAME),
+        "run_on_large_stack's thread must be named for panic backtraces / profilers"
+    );
+
+    // Fire-and-forget helper: same, reported out-of-band via a channel.
+    let (tx, rx) = mpsc::channel::<Option<String>>();
+    let handle = spawn_on_large_stack(move || {
+        let _ = tx.send(std::thread::current().name().map(str::to_owned));
+    })
+    .expect("spawn_on_large_stack should create the thread");
+    let spawn_name = rx.recv().expect("closure must report its thread name");
+    handle.join().expect("large-stack thread must join cleanly");
+    assert_eq!(
+        spawn_name.as_deref(),
+        Some(ENGINE_THREAD_NAME),
+        "spawn_on_large_stack's thread must be named for panic backtraces / profilers"
+    );
+
+    assert_ne!(
+        COMPILE_THREAD_NAME, ENGINE_THREAD_NAME,
+        "the two paths must be distinguishable by thread name"
+    );
+    // Linux caps thread names at 15 bytes + NUL and `std` silently ignores a
+    // too-long name, so an over-long constant would vanish from /proc.
+    for name in [COMPILE_THREAD_NAME, ENGINE_THREAD_NAME] {
+        assert!(
+            name.len() <= 15,
+            "thread name {name:?} exceeds the 15-byte Linux limit and would not be set"
+        );
+    }
+}
