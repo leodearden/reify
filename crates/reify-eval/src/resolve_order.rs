@@ -676,14 +676,27 @@ fn compute_clusters(
 
 #[cfg(test)]
 mod tests {
-    use reify_core::Type;
-    use reify_ir::{BinOp, ObjectiveSense, ObjectiveSet};
-    use reify_test_support::{TopologyTemplateBuilder, binop, gt, literal, mm, value_ref};
+    use std::collections::HashMap;
+
+    use reify_compiler::CompiledTrait;
+    use reify_core::{DimensionVector, Type};
+    use reify_ir::{BinOp, CompiledFunction, ObjectiveSense, ObjectiveSet, ValueMap};
+    use reify_test_support::{
+        TopologyTemplateBuilder, binop, gt, literal, mm, value_ref, value_ref_typed,
+    };
 
     use super::{
-        ClusterDisposition, WHOLE_MODEL_CLUSTER_DIM_CAP, resolve_order,
+        ClusterDisposition, ClusterFormationCtx, WHOLE_MODEL_CLUSTER_DIM_CAP, resolve_order,
         resolve_order_ordering_and_clusters,
     };
+
+    /// Money-dimensioned scalar type shared by the derived-cost cluster fixtures
+    /// (`line_cost : Money`), mirroring the stdlib `Costed` shape.
+    fn money_ty() -> Type {
+        Type::Scalar {
+            dimension: DimensionVector::MONEY,
+        }
+    }
 
     // -------------------------------------------------------------------------
     // step-1 cases: acyclic read-DAG reorder + back-compat identity (INV-2)
@@ -1259,6 +1272,92 @@ mod tests {
             ordering_and_clusters.coupling_diagnostics.is_empty(),
             "resolve_order_ordering_and_clusters must not emit coupling diagnostics; got: {:?}",
             ordering_and_clusters.coupling_diagnostics
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Gap C (JOINT-DRIVE δ, task #5334): derived-cost coupling cluster formation.
+    //
+    // These tests drive the expansion-aware `Some(&ClusterFormationCtx)` branch of
+    // `compute_clusters`, which forms a MergedSolve cluster for the joint-drive
+    // leaf shape — a parent objective coupled to a child auto ONLY through a
+    // derived Let cell (`line_cost`). The legacy `None` branch (exercised by every
+    // test above) keeps the direct-auto seed byte-for-byte, which is the executable
+    // INV-2 fence.
+    // -------------------------------------------------------------------------
+
+    /// (BT-8a, pre-expanded) A Parent (idx 0) objective that ALREADY reads the
+    /// child's derived `line_cost` cell as a plain `ValueRef` (no `cost()`
+    /// expansion needed, so ONLY the C2 transitive walk is under test) must form a
+    /// single MergedSolve cluster with the Child (idx 1): the walk follows
+    /// `line_cost`'s `default_expr` (`unit_cost * quantity_produced`) down to the
+    /// child's auto `quantity_produced` and unions the two scopes.
+    ///
+    /// dim = 1 (the single child auto) ⇒ within cap ⇒ `MergedSolve`.
+    #[test]
+    fn bt8_pre_expanded_derived_cost_forms_single_merged_cluster() {
+        // Parent (idx 0): objective minimize Child.line_cost — a plain ValueRef.
+        let parent = TopologyTemplateBuilder::new("Parent")
+            .objective(ObjectiveSet::single(
+                ObjectiveSense::Minimize,
+                value_ref_typed("Child", "line_cost", money_ty()),
+            ))
+            .build();
+
+        // Child (idx 1): owns auto `quantity_produced`; derived Let
+        // `line_cost = unit_cost * quantity_produced` transitively reads the auto.
+        let child = TopologyTemplateBuilder::new("Child")
+            .trait_bound("Costed")
+            .auto_param_free("Child", "quantity_produced", Type::dimensionless_scalar())
+            .let_binding(
+                "Child",
+                "line_cost",
+                money_ty(),
+                binop(
+                    BinOp::Mul,
+                    value_ref_typed("Child", "unit_cost", money_ty()),
+                    value_ref("Child", "quantity_produced"),
+                ),
+            )
+            .build();
+
+        let templates = vec![parent, child];
+
+        let values = ValueMap::default();
+        let no_fns: [CompiledFunction; 0] = [];
+        let registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let ctx = ClusterFormationCtx {
+            values: &values,
+            functions: &no_fns,
+            trait_registry: &registry,
+            max_unfold_depth: 64,
+            max_unfold_nodes: 10_000,
+        };
+        let ro = resolve_order(&templates, Some(&ctx));
+
+        assert_eq!(
+            ro.clusters.len(),
+            1,
+            "derived-cost coupling must form exactly one cluster; got: {:?}",
+            ro.clusters
+        );
+        let cluster = &ro.clusters[0];
+        assert_eq!(
+            cluster.scopes,
+            vec![0, 1],
+            "cluster must span Parent + Child (sorted indices); got: {:?}",
+            cluster.scopes
+        );
+        assert_eq!(
+            cluster.dim, 1,
+            "dim = 1 (the single child auto `quantity_produced`); got: {}",
+            cluster.dim
+        );
+        assert_eq!(
+            cluster.disposition,
+            ClusterDisposition::MergedSolve,
+            "dim 1 is within cap ⇒ MergedSolve; got: {:?}",
+            cluster.disposition
         );
     }
 }
