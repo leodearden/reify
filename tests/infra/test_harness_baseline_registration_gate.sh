@@ -464,6 +464,46 @@ assert "N2: the registered-rename run emits no FAIL line" \
     bash -c '! grep -qE "^HARNESS_BASELINE_REG FAIL" "$1"' _ "$_P2_OUT"
 
 # ===========================================================================
+# Section P: remediation hint on STDERR (violation run) — task #5381.
+#
+# A tripped gate today carries zero remediation steering: `_emit FAIL` writes
+# only the structured verdict line to stdout (the ONLY existing stderr write
+# in the whole script is the fail-open lib-missing line). This section pins
+# that a violation run ALSO emits a human-readable remediation hint, and that
+# the hint lives EXCLUSIVELY on stderr so the stdout verdict grammar pinned by
+# Section I stays byte-for-byte untouched.
+# ===========================================================================
+echo ""
+echo "--- Section P: remediation hint on STDERR (violation run) ---"
+
+_P_OUT="$(mktemp)"; _TMPDIRS+=("$_P_OUT")
+_P_ERR="$(mktemp)"; _TMPDIRS+=("$_P_ERR")
+_P_RC=0
+( cd "$_G_ROOT" && REIFY_HARNESS_LAYOUT_BASELINE="$_G_BASELINE_MISSING" bash "$GATE" \
+    crates/reify-eval/tests/newthing.rs </dev/null ) > "$_P_OUT" 2> "$_P_ERR" || _P_RC=$?
+
+assert "P: gate still exits 1 on a violation (hint must not perturb the exit code)" \
+    test "$_P_RC" -eq 1
+assert "P: stderr carries a '[hint] remedy:' anchor line" \
+    grep -Eq '^\[hint\] remedy:' "$_P_ERR"
+assert "P: stderr names the consolidation target shape (harness_<subsystem>/)" \
+    grep -qF 'harness_<subsystem>/' "$_P_ERR"
+assert "P: stderr names the declaration mechanism (#[path])" \
+    grep -qF '#[path]' "$_P_ERR"
+assert "P: stderr names the concrete exemplar (harness_geometry.rs)" \
+    grep -qF 'harness_geometry.rs' "$_P_ERR"
+assert "P: stderr names the supersession (SUPERSEDED + esc-5056-11)" \
+    bash -c 'grep -qF "SUPERSEDED" "$1" && grep -qF "esc-5056-11" "$1"' _ "$_P_ERR"
+
+_P_EXPECTED_OUT="$(mktemp)"; _TMPDIRS+=("$_P_EXPECTED_OUT")
+printf 'HARNESS_BASELINE_REG FAIL crate=reify-eval file=crates/reify-eval/tests/newthing.rs reason=unregistered-standalone\nHARNESS_BASELINE_REG SUMMARY added=1 violations=1\n' \
+    > "$_P_EXPECTED_OUT"
+assert "P: stdout is byte-for-byte the pre-change FAIL+SUMMARY grammar (hint must not perturb stdout)" \
+    diff -u "$_P_EXPECTED_OUT" "$_P_OUT"
+assert "P: no hint text leaks onto stdout" \
+    bash -c '! grep -qE "\[hint\]|remedy:" "$1"' _ "$_P_OUT"
+
+# ===========================================================================
 # Section O: plan-shape — verify.sh emits the gate EARLY under RUN_RUST=1, among
 # the cheap fail-fast poles before check-manifold-deps.sh / psi-gate / run_all.sh.
 # Hermetic --print-plan oracle + `grep -n` relative-index technique (mirrors
