@@ -141,3 +141,136 @@ fn whole_handle_geometry_query_oracle_parity() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Binder-scope pins (task 5345 review round 2)
+//
+// The hoist lifts a matched query's arg[0] VERBATIM out to the STRUCTURE member
+// list, so any identifier bound by an enclosing lambda param / quantifier
+// variable / match `VariantBind` binder would become UNBOUND at member scope.
+// `ExprKind` has exactly three binder-introducing variants (`Lambda`,
+// `Quantifier`, `Match` arms), so there are exactly three negative pins below,
+// plus one positive over-scoping guard proving the fix suppresses only the
+// binder-scoped hoist and never the legitimate member-level one.
+//
+// HARNESS NOTE — the assertions are deliberately scoped to the two
+// HOIST-SPECIFIC invariants ((a) zero `__geoq_` realizations, (b) zero Error
+// diagnostics whose message contains "unresolved name") rather than "zero
+// Error-severity diagnostics" outright. These tests compile via the bare
+// `reify_syntax::parse` + `compile(&parsed)` path with NO prelude / unit
+// registry, under which ANY exponent-or-compound unit literal (`1mm^3`, `1m^3`,
+// `1mm^2`, even `7850kg/m^3` — a form used throughout `examples/`) emits a
+// spurious `unknown unit: <u>` plus a declared-vs-initializer dimension
+// mismatch, while the plain `1mm` control is clean. That is a harness artifact
+// of the minimal compile entry point (`compile_with_prelude` is the
+// registry-carrying entry point — see `user_defined_unit_tests.rs`), NOT a
+// product defect and NOT quantifier-specific, so it must not be "fixed" here
+// and must not be allowed to make these assertions flaky. The fixtures
+// otherwise avoid exponent/compound unit literals where practical.
+// ---------------------------------------------------------------------------
+
+/// Parse + compile `source`, returning (every Error-severity diagnostic message,
+/// the names of all `__geoq_`-prefixed realizations across all templates).
+fn compile_probe(source: &str) -> (Vec<String>, Vec<String>) {
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_geoq_binder"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = compile(&parsed);
+    let errors: Vec<String> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.clone())
+        .collect();
+    let hoisted: Vec<String> = compiled
+        .templates
+        .iter()
+        .flat_map(|t| t.realizations.iter())
+        .filter_map(|r| r.name.clone())
+        .filter(|n| n.starts_with("__geoq_"))
+        .collect();
+    (errors, hoisted)
+}
+
+/// Assert the two hoist-specific invariants: exactly `expected_hoists`
+/// `__geoq_` realizations, and zero `unresolved name` Error diagnostics.
+fn assert_hoist_scope(what: &str, source: &str, expected_hoists: usize) {
+    let (errors, hoisted) = compile_probe(source);
+    let unresolved: Vec<&String> = errors
+        .iter()
+        .filter(|m| m.contains("unresolved name"))
+        .collect();
+    assert!(
+        unresolved.is_empty(),
+        "{what}: hoisting out of a binder scope leaked unbound identifiers; \
+         expected no \"unresolved name\" diagnostics, got {unresolved:?} \
+         (all errors: {errors:?})"
+    );
+    assert_eq!(
+        hoisted.len(),
+        expected_hoists,
+        "{what}: expected exactly {expected_hoists} `__geoq_` realization(s), \
+         got {}: {hoisted:?}",
+        hoisted.len()
+    );
+}
+
+/// `ExprKind::Quantifier` binder: `forall s in sizes: volume(box(s, s, s))`. The
+/// quantifier variable `s` is bound only inside the predicate, so hoisting
+/// `box(s, s, s)` to the member list makes `s` unbound there. The query under the
+/// binder must simply retain the pre-existing base behaviour (`Value::Undef`).
+#[test]
+fn quantifier_bound_var_is_not_hoisted() {
+    let source = r#"structure def G {
+    param sizes: List<Length> = [1mm, 2mm]
+    let gref = box(2mm, 2mm, 2mm)
+    let vmax = volume(gref)
+    let ok = forall s in sizes: volume(box(s, s, s)) < vmax
+}"#;
+    assert_hoist_scope("quantifier-bound `s`", source, 0);
+}
+
+/// `ExprKind::Lambda` binder: `flat_map(sizes, |s| [volume(box(s, s, s))])`. The
+/// lambda param `s` is bound only inside the lambda body. (The free-function
+/// `flat_map(list, |x| [f(x)])` form is used because `map(list, |x| f(x))` does
+/// not parse.)
+#[test]
+fn lambda_param_is_not_hoisted() {
+    let source = r#"structure def L {
+    param sizes: List<Length> = [1mm, 2mm]
+    let vs = flat_map(sizes, |s| [volume(box(s, s, s))])
+}"#;
+    assert_hoist_scope("lambda-param `s`", source, 0);
+}
+
+/// `MatchPattern::VariantBind` binder: a match arm's destructured field binding
+/// `Circle { radius: r }` is bound only inside that arm's body.
+#[test]
+fn match_pattern_binder_is_not_hoisted() {
+    let source = r#"enum Sh { Circle { radius: Length }, Flat }
+
+structure def M {
+    let shape = Sh.Flat
+    let v = match shape {
+        Circle { radius: r } => volume(cylinder(r, 1mm)),
+        Flat => 0mm^3
+    }
+}"#;
+    assert_hoist_scope("match-pattern binder `r`", source, 0);
+}
+
+/// Over-scoping guard: binder opacity must suppress ONLY the binder-scoped
+/// hoist. A member-level inline query in the SAME structure as a binder-scoped
+/// one still hoists, so exactly one `__geoq_` realization survives here.
+#[test]
+fn binder_opacity_does_not_suppress_top_level_hoist() {
+    let source = r#"structure def J {
+    param sizes: List<Length> = [1mm, 2mm]
+    let outer = volume(box(1mm, 1mm, 1mm))
+    let vs = flat_map(sizes, |s| [volume(box(s, s, s))])
+}"#;
+    assert_hoist_scope("mixed member-level + lambda-scoped", source, 1);
+}
