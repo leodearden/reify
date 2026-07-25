@@ -111,12 +111,17 @@ _check_candidates() {
         rest="${path#crates/}"
         crate="${rest%%/*}"
         _emit FAIL "crate=$crate" "file=$path" "reason=unregistered-standalone"
-        _hint
         violations=$((violations + 1))
     done
 
     if [ "$violations" -eq 0 ]; then
         _emit PASS
+    else
+        # Steering is per-RUN, not per-violation: a diff adding N unregistered
+        # standalones gets ONE remedy block, not N copies of the same paragraph.
+        # The remedy is remedy-generic (<c>/<subsystem> placeholders), so nothing
+        # per-file is lost — each offending path is already named on stdout.
+        _hint
     fi
     _emit SUMMARY "added=$added" "violations=$violations"
     [ "$violations" -eq 0 ]
