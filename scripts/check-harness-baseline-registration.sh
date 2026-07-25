@@ -41,14 +41,12 @@
 #     HARNESS_BASELINE_REG FAIL crate=<c> file=<path> reason=unregistered-standalone
 #     HARNESS_BASELINE_REG PASS
 #     HARNESS_BASELINE_REG SUMMARY added=<n> violations=<v>
-#   STDERR (human steering, '[hint] '-prefixed, emitted ONCE per run when v>0;
-#   task #5381): points at the SANCTIONED remedy — consolidate into
-#   crates/<c>/tests/harness_<subsystem>/<file>.rs declared via #[path] from a
-#   harness_<subsystem>.rs root (exemplar: crates/reify-eval/tests/harness_geometry.rs).
-#   Grandfathering a harness-layout-baseline.manifest row is SUPERSEDED (Leo
-#   2026-07-22, esc-5056-11). The gate is mechanically remedy-AGNOSTIC — both
-#   remedies clear it — so the hint is the only thing steering the human to the
-#   ratchet-shrinking fix rather than the ratchet-growing one.
+#   STDERR ('[hint] '-prefixed remediation steering, emitted ONCE per run when
+#   v>0; task #5381). The gate is mechanically remedy-AGNOSTIC — a consolidated
+#   test and a grandfathered manifest row both clear it — so this hint is the
+#   only thing steering the human toward the sanctioned remedy. See _hint()
+#   below for the exact wording (single source of truth — do not restate it
+#   here).
 #
 # EXIT: 0 when clean (v==0), 1 when any violation (v>0). Honors
 # REIFY_HARNESS_LAYOUT_BASELINE (via the lib) for testability.
@@ -78,10 +76,10 @@ _emit() {
 # _hint — remediation steering on STDERR ONLY. The stdout grammar
 # (HARNESS_BASELINE_REG FAIL/PASS/SUMMARY) is a machine-parseable contract
 # pinned byte-for-byte by the gate's test file, so guidance for humans must
-# never share that stream. Prefix every line with '[hint] ' (the err()/hint()
-# convention of scripts/warm-lane-preflight.sh and
-# check-infra-classification-manifest.sh) and deliberately NOT with the
-# HARNESS_BASELINE_REG tag, so a 2>&1-merged log stays unambiguous.
+# never share that stream. Prefix every line with '[hint] ' (the convention
+# used by scripts/warm-lane-ref-check.sh and scripts/ensure-warm-base.sh) and
+# deliberately NOT with the HARNESS_BASELINE_REG tag, so a 2>&1-merged log
+# stays unambiguous.
 _hint() {
     printf '[hint] %s\n' \
         'remedy: consolidate the new test into crates/<c>/tests/harness_<subsystem>/<file>.rs,' \
