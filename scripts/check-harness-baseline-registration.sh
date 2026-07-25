@@ -66,6 +66,23 @@ _emit() {
     printf 'HARNESS_BASELINE_REG %s %s\n' "$verdict" "$*"
 }
 
+# _hint — remediation steering on STDERR ONLY. The stdout grammar
+# (HARNESS_BASELINE_REG FAIL/PASS/SUMMARY) is a machine-parseable contract
+# pinned byte-for-byte by the gate's test file, so guidance for humans must
+# never share that stream. Prefix every line with '[hint] ' (the err()/hint()
+# convention of scripts/warm-lane-preflight.sh and
+# check-infra-classification-manifest.sh) and deliberately NOT with the
+# HARNESS_BASELINE_REG tag, so a 2>&1-merged log stays unambiguous.
+_hint() {
+    printf '[hint] %s\n' \
+        'remedy: consolidate the new test into crates/<c>/tests/harness_<subsystem>/<file>.rs,' \
+        'declared via a #[path] attribute (#[path = "harness_<subsystem>/<file>.rs"] mod <file>;)' \
+        'from a harness_<subsystem>.rs root (see crates/reify-eval/tests/harness_geometry.rs).' \
+        'Grandfathering a harness-layout-baseline.manifest row is SUPERSEDED (Leo 2026-07-22,' \
+        'esc-5056-11: "actually start using the ratchet") — the manifest is a shrinking ratchet,' \
+        'not an allow-list to grow.' >&2
+}
+
 # _check_candidates <path>... — the PURE core. Classify each candidate
 # repo-relative added path; emit a structured FAIL per unregistered in-scope
 # standalone; end with a PASS (when clean) and always a SUMMARY. Returns 0 iff
@@ -94,6 +111,7 @@ _check_candidates() {
         rest="${path#crates/}"
         crate="${rest%%/*}"
         _emit FAIL "crate=$crate" "file=$path" "reason=unregistered-standalone"
+        _hint
         violations=$((violations + 1))
     done
 
