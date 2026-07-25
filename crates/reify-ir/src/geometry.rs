@@ -2636,6 +2636,67 @@ impl MeshContractViolation {
     }
 }
 
+/// Enforcement posture for the mesh contract (INV-GEO-1) at the kernel
+/// seam wiring sites (task #5105 δ).
+///
+/// After the δ rollout flip, [`MeshContractMode::Enforce`] is the default:
+/// a mesh failing [`Mesh::validate`] aborts the operation with a structured
+/// `GeometryError::MeshContractViolation`. `REIFY_MESH_CONTRACT=warn` is the
+/// break-glass escape hatch that downgrades a violation to a diagnostic and
+/// lets the mesh through.
+///
+/// Lives in `reify-ir` — the only crate both wiring sites can share (site 1
+/// is in `reify-eval`, site 2 in `reify-kernel-manifold`, whose dependency on
+/// `reify-eval` is dev-only) — next to the rest of the mesh-contract
+/// mechanism. Reading an env var is not a kernel dependency, so the layering
+/// stays clean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MeshContractMode {
+    /// Break-glass: report a violation (diagnostic / log) but let the mesh
+    /// through (`REIFY_MESH_CONTRACT=warn`).
+    Warn,
+    /// Fail closed: a violation aborts the operation with a structured
+    /// `GeometryError::MeshContractViolation`. The default.
+    #[default]
+    Enforce,
+}
+
+impl MeshContractMode {
+    /// Environment variable consulted by [`MeshContractMode::from_env`].
+    pub const ENV_VAR: &'static str = "REIFY_MESH_CONTRACT";
+
+    /// Pure parser: map an optional configuration string to a mode.
+    ///
+    /// Fails **CLOSED**. Only `Some("warn")` (case-insensitive, surrounding
+    /// whitespace tolerated) yields [`MeshContractMode::Warn`]; every other
+    /// value — `None`, empty, `"enforce"`, garbage, a typo like `"enfroce"`
+    /// — yields [`MeshContractMode::Enforce`]. Unlike the usual
+    /// "unparseable → benign default" convention, the safe fallback here is
+    /// the STRICT one: a typo must never silently disable INV-GEO-1.
+    pub fn from_env_value(value: Option<&str>) -> Self {
+        let normalized = value.map(|v| v.trim().to_ascii_lowercase());
+        match normalized.as_deref() {
+            Some("warn") => MeshContractMode::Warn,
+            _ => MeshContractMode::Enforce,
+        }
+    }
+
+    /// Production selection: read `REIFY_MESH_CONTRACT`.
+    ///
+    /// # Unit-test coverage
+    ///
+    /// This thin env-reading wrapper delegates to the pure
+    /// [`MeshContractMode::from_env_value`] parser, which carries the
+    /// exhaustive string→mode cases (`mesh_contract_mode_from_env_value_parsing`).
+    /// Mirroring the codebase convention, the wrapper is intentionally NOT
+    /// unit-tested with `std::env::set_var`/`remove_var` — both are `unsafe`
+    /// in Rust 2024 and race-prone across parallel tests. The delegation is
+    /// pinned by `mesh_contract_mode_from_env_delegates_to_parser_over_real_env`.
+    pub fn from_env() -> Self {
+        Self::from_env_value(std::env::var(Self::ENV_VAR).ok().as_deref())
+    }
+}
+
 impl Mesh {
     /// Position-weld the raw vertex buffer: map every distinct `(x, y, z)`
     /// triple to one canonical index, in first-seen order.
