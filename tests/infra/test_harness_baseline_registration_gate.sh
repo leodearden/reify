@@ -478,26 +478,26 @@ assert "N2: the registered-rename run emits no FAIL line" \
 echo ""
 echo "--- Section P: remediation hint on STDERR (violation run) ---"
 
-_P_OUT="$(mktemp)"; _TMPDIRS+=("$_P_OUT")
-_P_ERR="$(mktemp)"; _TMPDIRS+=("$_P_ERR")
-_P_RC=0
+_HINT_OUT="$(mktemp)"; _TMPDIRS+=("$_HINT_OUT")
+_HINT_ERR="$(mktemp)"; _TMPDIRS+=("$_HINT_ERR")
+_HINT_RC=0
 ( cd "$_G_ROOT" && REIFY_HARNESS_LAYOUT_BASELINE="$_G_BASELINE_MISSING" bash "$GATE" \
-    crates/reify-eval/tests/newthing.rs </dev/null ) > "$_P_OUT" 2> "$_P_ERR" || _P_RC=$?
+    crates/reify-eval/tests/newthing.rs </dev/null ) > "$_HINT_OUT" 2> "$_HINT_ERR" || _HINT_RC=$?
 
 assert "P: gate still exits 1 on a violation (hint must not perturb the exit code)" \
-    test "$_P_RC" -eq 1
+    test "$_HINT_RC" -eq 1
 assert "P: stderr carries a '[hint] remedy:' anchor line" \
-    grep -Eq '^\[hint\] remedy:' "$_P_ERR"
-assert "P: the exemplar harness root the hint cites is a real file" \
-    test -f "$REPO_ROOT/crates/reify-eval/tests/harness_geometry.rs"
+    grep -Eq '^\[hint\] remedy:' "$_HINT_ERR"
+assert "P: the exemplar harness root the hint cites (extracted from the emitted text) is a real file" \
+    bash -c 'p=$(grep -oE "crates/[A-Za-z0-9_./-]+harness_[A-Za-z0-9_]+\.rs" "$1" | head -1); [ -n "$p" ] && [ -f "$2/$p" ]' _ "$_HINT_ERR" "$REPO_ROOT"
 
-_P_EXPECTED_OUT="$(mktemp)"; _TMPDIRS+=("$_P_EXPECTED_OUT")
+_HINT_EXPECTED_OUT="$(mktemp)"; _TMPDIRS+=("$_HINT_EXPECTED_OUT")
 printf 'HARNESS_BASELINE_REG FAIL crate=reify-eval file=crates/reify-eval/tests/newthing.rs reason=unregistered-standalone\nHARNESS_BASELINE_REG SUMMARY added=1 violations=1\n' \
-    > "$_P_EXPECTED_OUT"
+    > "$_HINT_EXPECTED_OUT"
 assert "P: stdout is byte-for-byte the pre-change FAIL+SUMMARY grammar (hint must not perturb stdout)" \
-    diff -u "$_P_EXPECTED_OUT" "$_P_OUT"
+    diff -u "$_HINT_EXPECTED_OUT" "$_HINT_OUT"
 assert "P: no hint text leaks onto stdout" \
-    bash -c '! grep -qE "\[hint\]|remedy:" "$1"' _ "$_P_OUT"
+    bash -c '! grep -qE "\[hint\]|remedy:" "$1"' _ "$_HINT_OUT"
 
 # ===========================================================================
 # Section P2: hint is absent on a clean pass and on an empty candidate list,
