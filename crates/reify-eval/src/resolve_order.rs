@@ -901,11 +901,13 @@ mod tests {
     use std::collections::HashMap;
 
     use reify_compiler::CompiledTrait;
-    use reify_core::{DimensionVector, Type};
-    use reify_ir::{BinOp, CompiledFunction, ObjectiveSense, ObjectiveSet, ValueMap};
+    use reify_core::{ContentHash, DimensionVector, Type};
+    use reify_ir::{
+        BinOp, CompiledFnBody, CompiledFunction, ObjectiveSense, ObjectiveSet, ValueMap,
+    };
     use reify_test_support::{
-        TopologyTemplateBuilder, binop, fn_call, gt, literal, method_call_expr, mm, value_ref,
-        value_ref_typed,
+        TopologyTemplateBuilder, binop, fn_call, gt, literal, method_call_expr, mm, user_fn_call,
+        value_ref, value_ref_typed,
     };
 
     use super::{
@@ -1687,6 +1689,93 @@ mod tests {
             ClusterDisposition::MergedSolve,
             "dim 1 is within cap ⇒ MergedSolve; got: {:?}",
             cluster.disposition
+        );
+    }
+
+    /// A `CompiledFunction` named `name` with one `length` param carrying
+    /// `optimized_target = Some(target)` — the static marker
+    /// `is_optimized_userfn_cell` reads to identify an `@optimized` call (copied
+    /// from `tests/joint_drive_expansion_boundary.rs`). Its body is inert; cluster
+    /// formation only inspects the name/arity/param-type match + optimized_target.
+    /// The param type is `length` so it matches a bare `value_ref(..)` argument
+    /// (which defaults to a length result type) under
+    /// `find_matching_compiled_function`'s exact-type rule.
+    fn optimized_length_fn(name: &str, target: &str) -> CompiledFunction {
+        CompiledFunction {
+            name: name.to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![("x".to_string(), Type::length())],
+            param_defaults: vec![None],
+            return_type: Type::length(),
+            body: CompiledFnBody {
+                let_bindings: vec![],
+                result_expr: literal(mm(0.0)),
+            },
+            content_hash: ContentHash::of_str(name),
+            annotations: vec![],
+            optimized_target: Some(target.to_string()),
+            type_params: vec![],
+        }
+    }
+
+    /// (BT-9, negative) The SAME elaborated shape as BT-8b, but the child's
+    /// `line_cost` is an `@optimized` `UserFunctionCall` (`opt_fn(...)` whose
+    /// `CompiledFunction.optimized_target` is `Some`). The walk must STOP at the
+    /// `@optimized` cell and never reach the auto behind it, so NO cluster forms.
+    ///
+    /// PRD design decision 5 / §11: an `@optimized` cell's value comes from the
+    /// compute-dispatch registry and is excluded from the per-trial fold, so a
+    /// child whose `line_cost` cannot be recomputed per trial must NOT be
+    /// co-solved — this is a deliberate non-coupling, not a missed edge.
+    #[test]
+    fn bt9_optimized_line_cost_forms_no_cluster() {
+        let parent = TopologyTemplateBuilder::new("Parent")
+            .sub_component("childinst", "Child", vec![])
+            .objective(cost_self_descendants_objective())
+            .build();
+
+        let child = TopologyTemplateBuilder::new("Child")
+            .trait_bound("Costed")
+            .auto_param_free(
+                "Parent.childinst",
+                "quantity_produced",
+                Type::dimensionless_scalar(),
+            )
+            // line_cost = opt_fn(quantity_produced) — an @optimized UserFunctionCall
+            // that still transitively reads the child's auto.
+            .let_binding(
+                "Parent.childinst",
+                "line_cost",
+                money_ty(),
+                user_fn_call(
+                    "opt_fn",
+                    vec![value_ref("Parent.childinst", "quantity_produced")],
+                    money_ty(),
+                ),
+            )
+            .build();
+
+        let templates = vec![parent, child];
+
+        let values = ValueMap::default();
+        let fns = [optimized_length_fn("opt_fn", "kernel::line_cost")];
+        let registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let ctx = ClusterFormationCtx {
+            values: &values,
+            functions: &fns,
+            trait_registry: &registry,
+            max_unfold_depth: 64,
+            max_unfold_nodes: 10_000,
+        };
+        let ro = resolve_order(&templates, Some(&ctx));
+
+        assert!(
+            ro.clusters.is_empty(),
+            "an @optimized derived cost deliberately decouples the child (PRD design \
+             decision 5 / §11 documented limitation): the walk must stop at the \
+             @optimized cell and form NO cluster; got: {:?}",
+            ro.clusters
         );
     }
 }
