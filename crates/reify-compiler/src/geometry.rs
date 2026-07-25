@@ -4078,6 +4078,9 @@ mod tests {
                 // `Vec<Expr>` chain; leak it so a drop-time overflow cannot
                 // contaminate the result on this small stack. The thread is about
                 // to exit and the process reclaims the memory regardless.
+                // Drop-time recursion is itself an unguarded surface, deferred to
+                // the follow-up filed from this task's amendment pass
+                // (fused-memory ticket `tkt_0RRPM0KWBRVFJRA82Q761N2HF9`).
                 std::mem::forget(nested);
                 outcome
             })
@@ -4094,6 +4097,89 @@ mod tests {
                 "the 2 MB compile thread panicked instead of returning cleanly"
             ),
         }
+    }
+
+    /// END-TO-END regression for the reported crash: real `.ri` **source**,
+    /// compiled through the **public `compile()` entry point**, on a 2 MiB
+    /// stack. This is the shape of the bug that was reported (the GUI opening
+    /// `designs/litter_tray/bottom_deck_split.ri`), as opposed to the
+    /// programmatically-built-AST tests above which drive internals directly.
+    ///
+    /// 64 nested `difference(…)` levels is the *rescue* band: comfortably below
+    /// `MAX_COMPILE_RECURSION_DEPTH`, so the correct outcome is a CLEAN compile
+    /// — but ~64 × ~143 KiB ≈ 9 MiB of compiler frames, far more than the 2 MiB
+    /// stack holds, so without `stacker::maybe_grow` this SIGSEGVs the test
+    /// binary exactly as the GUI did.
+    ///
+    /// Why the cap is not exercised end-to-end here: an expression deeper than
+    /// 256 trips `compile_builder::dot_chain_lint` / `shadow_lint`, whose own
+    /// `MAX_EXPR_DEPTH = 256` fires a deliberate `debug_assert!(false, …)` in
+    /// debug/test builds (they pre-walk the parsed module in `lib.rs`, before
+    /// expression compilation). So the >256 path through `compile()` panics in
+    /// a *lint* before this task's cap can answer, and only the internal-entry
+    /// tests above can pin the cap's diagnostic. Parse-time recursion (a deep
+    /// source overflows the recursive-descent parser, which is why the parse
+    /// below runs on its own big stack) and drop-time AST recursion are the two
+    /// other unguarded surfaces on this input class. All three are deferred to
+    /// the follow-up filed from this task's amendment pass (fused-memory ticket
+    /// `tkt_0RRPM0KWBRVFJRA82Q761N2HF9`, escalation id
+    /// `agent-followup-5337-recursion-surfaces`), not fixed here.
+    #[test]
+    fn deeply_nested_geometry_source_compiles_via_public_api_on_2mb_stack() {
+        use crate::recursion_guard::MAX_COMPILE_RECURSION_DEPTH;
+
+        const NEST_DEPTH: usize = 64;
+        const {
+            assert!(
+                NEST_DEPTH < MAX_COMPILE_RECURSION_DEPTH,
+                "this test must stay in the rescue band (below the cap): the \
+                 expected outcome is a clean compile, not a diagnostic"
+            )
+        };
+
+        let mut geom = "box(w, w, w)".to_string();
+        for _ in 0..NEST_DEPTH {
+            geom = format!("difference({geom}, box(w, w, w))");
+        }
+        let source = format!("structure S {{\n    param w: Length = 1mm\n    let g = {geom}\n}}");
+
+        // Parse on a deliberately large stack: the recursive-descent parser is
+        // NOT covered by this task's fix, and a deep source overflows it first.
+        let parsed = std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || reify_syntax::parse(&source, reify_core::ModulePath::single("test")))
+            .expect("spawn parse thread")
+            .join()
+            .expect("the parser must not crash on this depth with a big stack");
+        assert!(
+            parsed.errors.is_empty(),
+            "the nested source must parse cleanly, got: {:?}",
+            parsed.errors
+        );
+
+        // Compile on tokio's default 2 MiB worker stack — the GUI's condition.
+        let diagnostics = std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || crate::compile(&parsed).diagnostics)
+            .expect("spawn 2 MiB compile thread")
+            .join()
+            .expect("compiling nested geometry on a 2 MiB stack must not crash");
+
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)),
+            "depth {NEST_DEPTH} is below the cap, so it must compile rather than \
+             be refused, got: {diagnostics:?}"
+        );
+        let errors: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.severity == reify_core::Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "nested-but-under-cap geometry must compile without errors, got: {errors:?}"
+        );
     }
 
     /// `is_geometry_let` must classify the 2-arg CSG `sweep(profile, path)` as
