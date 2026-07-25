@@ -123,6 +123,7 @@ crates/reify-compiler/tests/generate_combinator_tests.rs
 crates/reify-compiler/tests/generic_enum_pattern_binder_tests.rs
 crates/reify-compiler/tests/geometry_arg_count_span_tests.rs
 crates/reify-compiler/tests/geometry_centered_primitives_tests.rs
+crates/reify-compiler/tests/geometry_chunk_smoke.rs
 crates/reify-compiler/tests/geometry_let_value_cell_lowering.rs
 crates/reify-compiler/tests/geometry_profile_precondition_tests.rs
 crates/reify-compiler/tests/geometry_traits_inference_tests.rs
