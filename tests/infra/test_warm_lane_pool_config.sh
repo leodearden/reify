@@ -88,7 +88,7 @@ Checks (no <script_path>):
   no_hardcoded_task_pool_size        — warm_lane_pool has NO integer 'task_pool_size' key (D9 negative guard)
   has_sizing_block                   — warm_lane_pool.sizing is a mapping (β, task #5173)
   safety_divisor_is_number_gt1       — warm_lane_pool.sizing.safety_divisor is int|float AND > 1 (§9.2)
-  has_spare_warm_lanes               — top-level 'spare_warm_lanes' key exists (effective_N input)
+  has_spare_warm_lanes               — git.spare_warm_lanes key exists (moved under git: by task 5358; effective_N input)
   no_frozen_resident_divergent_budget — NO frozen 'resident_divergent_budget_gib'/'budget_gib' integer
                                         under warm_lane_pool or warm_lane_pool.sizing (P4 negative guard)
   min_free_gib_is_int                — warm_lane_pool.min_free_gib is an int (task 5175, B7)
@@ -178,7 +178,7 @@ if check == "safety_divisor_is_number_gt1":
     sys.exit(0 if isinstance(val, (int, float)) and val > 1 else 1)
 
 if check == "has_spare_warm_lanes":
-    sys.exit(0 if "spare_warm_lanes" in d else 1)
+    sys.exit(0 if "spare_warm_lanes" in (d.get("git") or {}) else 1)
 
 if check == "no_frozen_resident_divergent_budget":
     # P4 negative guard (mirrors D9 above): the computed budget must stay
@@ -420,7 +420,7 @@ PYEOF
     assert "warm_lane_pool.sizing.safety_divisor is a number > 1 (§9.2: a DIVISOR, not a subtractive GiB reserve)" \
         python3 "$_PARSE_PY" "$ORCH_YAML" safety_divisor_is_number_gt1
 
-    assert "top-level 'spare_warm_lanes' key exists (effective_N = max_concurrent_tasks + spare_warm_lanes)" \
+    assert "git.spare_warm_lanes key exists (moved under git: by task 5358; effective_N = max_concurrent_tasks + spare_warm_lanes)" \
         python3 "$_PARSE_PY" "$ORCH_YAML" has_spare_warm_lanes
 
     assert "no frozen resident_divergent_budget_gib/budget_gib integer under warm_lane_pool(.sizing) (P4 negative guard)" \

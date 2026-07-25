@@ -300,28 +300,34 @@ fn tarjan_visit(v: usize, adj: &[Vec<usize>], st: &mut TarjanState) {
 /// 6. For SCCs of size ≥ 2, emit W_SCOPE_COUPLING for every intra-SCC
 ///    cross-scope auto read crossing (deduped per (owner, reader, cell)).
 pub(crate) fn resolve_order(templates: &[TopologyTemplate]) -> ResolveOrder {
-    resolve_order_impl(templates, true)
+    resolve_order_impl(templates)
 }
 
-/// Ordering-only variant for the warm `eval_cached` path.
+/// Ordering-AND-clusters variant for the warm `eval_cached` path (M-WHOLE
+/// whole-model co-solve, task #5118).
 ///
-/// Computes `order` (and `coupling_diagnostics`) identically to
-/// [`resolve_order`] but SKIPS the M-WHOLE α pre-solve cluster set: `eval_cached`
-/// consumes only `order` and never reads `clusters` (cluster-driven
-/// `W_COUPLING_APPROXIMATED` is emitted solely from the cold `eval()` path), so
-/// recomputing the union-find + objective clustering on every cached evaluation
-/// would be wasted work (task #5013).  Returns an empty `clusters` vec.
-pub(crate) fn resolve_order_ordering_only(templates: &[TopologyTemplate]) -> ResolveOrder {
-    resolve_order_impl(templates, false)
+/// Computes `order` AND `clusters` identically to [`resolve_order`] — both
+/// share [`resolve_order_impl`] and clusters are always computed — and
+/// differs only in `coupling_diagnostics`, which this variant always clears
+/// to empty: `eval()` alone owns `W_SCOPE_COUPLING` / `W_COUPLING_APPROXIMATED`
+/// emission (engine_eval.rs comment near the warm solver sub-pass) —
+/// `eval_cached` must never emit these, so the contract is made explicit
+/// here rather than relying on the caller to ignore the field.
+pub(crate) fn resolve_order_ordering_and_clusters(templates: &[TopologyTemplate]) -> ResolveOrder {
+    let mut ro = resolve_order_impl(templates);
+    ro.coupling_diagnostics = Vec::new();
+    ro
 }
 
-/// Shared implementation of [`resolve_order`] / [`resolve_order_ordering_only`].
+/// Shared implementation of [`resolve_order`] / [`resolve_order_ordering_and_clusters`].
 ///
-/// `compute_cluster_set` gates the pre-solve clustering pass: `true` for the cold
-/// `eval()` path (which emits `W_COUPLING_APPROXIMATED` from the clusters),
-/// `false` for the warm `eval_cached` path (which discards them).  `order` is
-/// computed identically either way, so the gate never perturbs resolution.
-fn resolve_order_impl(templates: &[TopologyTemplate], compute_cluster_set: bool) -> ResolveOrder {
+/// Both callers need the same `order` and `clusters` computation; they differ
+/// only in whether `coupling_diagnostics` is kept (`resolve_order`, for the
+/// cold `eval()` path's `W_COUPLING_APPROXIMATED` emission) or cleared
+/// (`resolve_order_ordering_and_clusters`, for the warm `eval_cached` path,
+/// which must never emit coupling diagnostics) — each wrapper handles that
+/// difference itself after calling this shared implementation.
+fn resolve_order_impl(templates: &[TopologyTemplate]) -> ResolveOrder {
     let n = templates.len();
     if n == 0 {
         return ResolveOrder {
@@ -428,15 +434,14 @@ fn resolve_order_impl(templates: &[TopologyTemplate], compute_cluster_set: bool)
     // condensation (step-4) and, in step-6, cross-scope objective reads. Never
     // touches `order`. Empty for uncoupled modules (INV-2).
     //
-    // Gated on `compute_cluster_set`: the warm `eval_cached` path
-    // (resolve_order_ordering_only) discards `clusters`, so it skips this work and
-    // gets an empty set — `order` above is already fully computed and is all that
-    // path consumes (task #5013).
-    let clusters = if compute_cluster_set {
-        compute_clusters(templates, &auto_owner, &sccs_topo, &objective_reads)
-    } else {
-        Vec::new()
-    };
+    // Unconditional as of task #5118: both callers (the cold `resolve_order`
+    // and the warm `resolve_order_ordering_and_clusters`) need `clusters` —
+    // warm co-solves within-cap `MergedSolve` clusters exactly as cold does —
+    // so there is no remaining caller that only wants `order`. Previously
+    // gated behind a `compute_cluster_set` bool (task #5013) that a warm-only
+    // caller set `false`; that caller (`resolve_order_ordering_only`) was
+    // deleted when #5118 switched `eval_cached` onto this variant.
+    let clusters = compute_clusters(templates, &auto_owner, &sccs_topo, &objective_reads);
 
     // --- Step 5: Coupling diagnostics for SCCs of size ≥ 2 ---
     //
@@ -675,7 +680,10 @@ mod tests {
     use reify_ir::{BinOp, ObjectiveSense, ObjectiveSet};
     use reify_test_support::{TopologyTemplateBuilder, binop, gt, literal, mm, value_ref};
 
-    use super::{ClusterDisposition, WHOLE_MODEL_CLUSTER_DIM_CAP, resolve_order};
+    use super::{
+        ClusterDisposition, WHOLE_MODEL_CLUSTER_DIM_CAP, resolve_order,
+        resolve_order_ordering_and_clusters,
+    };
 
     // -------------------------------------------------------------------------
     // step-1 cases: acyclic read-DAG reorder + back-compat identity (INV-2)
@@ -1180,6 +1188,77 @@ mod tests {
             ClusterDisposition::ApproximatedFallback,
             "dim {} > cap {} ⇒ ApproximatedFallback; got: {:?}",
             cluster.dim, cap, cluster.disposition
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // task #5118: `resolve_order_ordering_and_clusters` — the warm `eval_cached`
+    // variant. It DOES compute the M-WHOLE α cluster set (so warm can co-solve
+    // within-cap MergedSolve clusters), but — like the cold `resolve_order` —
+    // must NOT let that leak into a diagnostic contract change: it clears
+    // `coupling_diagnostics` unconditionally, since `eval()` alone owns
+    // W_SCOPE_COUPLING / W_COUPLING_APPROXIMATED emission (engine_eval.rs
+    // comment near :6459).
+    // -------------------------------------------------------------------------
+
+    /// A within-cap irreducible 2-cycle {A, B} (same fixture as
+    /// `irreducible_two_cycle_forms_single_merged_cluster`) must, under the new
+    /// warm variant: (a) resolve to the SAME `order` as the cold
+    /// `resolve_order` (both share `resolve_order_impl`, so `order` is
+    /// identical); (b) form exactly one `MergedSolve` cluster spanning both
+    /// scopes; (c) emit ZERO coupling diagnostics.
+    #[test]
+    fn resolve_order_ordering_and_clusters_returns_within_cap_cluster_and_no_coupling_diags() {
+        // A reads B.m, B reads A.k → irreducible 2-cycle (SCC of size 2), within-cap.
+        let a = TopologyTemplateBuilder::new("A")
+            .auto_param("A", "k", Type::length())
+            .constraint("A", 0, None, gt(value_ref("B", "m"), literal(mm(0.0))))
+            .build();
+
+        let b = TopologyTemplateBuilder::new("B")
+            .auto_param("B", "m", Type::length())
+            .constraint("B", 0, None, gt(value_ref("A", "k"), literal(mm(0.0))))
+            .build();
+
+        let templates = vec![a, b];
+
+        let cold = resolve_order(&templates);
+        let ordering_and_clusters = resolve_order_ordering_and_clusters(&templates);
+
+        // (a) `order` must be identical to the cold `resolve_order`'s order.
+        assert_eq!(
+            ordering_and_clusters.order, cold.order,
+            "order must be identical to resolve_order's order (shared resolve_order_impl); got: {:?} vs {:?}",
+            ordering_and_clusters.order, cold.order
+        );
+
+        // (b) exactly one MergedSolve cluster spanning both scopes.
+        assert_eq!(
+            ordering_and_clusters.clusters.len(),
+            1,
+            "within-cap 2-cycle must form exactly one cluster; got: {:?}",
+            ordering_and_clusters.clusters
+        );
+        let cluster = &ordering_and_clusters.clusters[0];
+        assert_eq!(
+            cluster.scopes,
+            vec![0, 1],
+            "cluster must span both scopes (sorted indices); got: {:?}",
+            cluster.scopes
+        );
+        assert_eq!(
+            cluster.disposition,
+            ClusterDisposition::MergedSolve,
+            "dim 2 is within cap ⇒ MergedSolve; got: {:?}",
+            cluster.disposition
+        );
+
+        // (c) warm must NOT emit coupling diagnostics (eval() alone owns
+        // W_SCOPE_COUPLING / W_COUPLING_APPROXIMATED).
+        assert!(
+            ordering_and_clusters.coupling_diagnostics.is_empty(),
+            "resolve_order_ordering_and_clusters must not emit coupling diagnostics; got: {:?}",
+            ordering_and_clusters.coupling_diagnostics
         );
     }
 }

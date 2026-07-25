@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use reify_core::diagnostics::{DiagnosticCode, SourceSpan};
 use reify_core::dimension::DimensionVector;
@@ -2867,12 +2868,29 @@ pub fn format_display_number(v: f64) -> String {
 
 /// Map a DimensionVector to a human-readable SI unit label.
 ///
-/// Used by [`Value::format_hover`] for user-facing display.
+/// Used by [`Value::format_hover`] for user-facing display, which renders
+/// the RAW (unscaled) `si_value` — so a curated name is only safe to adopt
+/// here when it is valid *at that raw magnitude*.
 ///
-/// For dimensions without a curated arm, the fallback composes the base-SI
-/// unit label from [`Display`](std::fmt::Display) (e.g. `"kg·m^-3"` for mass
-/// density) rather than a bare placeholder — hence the `Cow` return: known
-/// arms borrow a `'static` string, the composed fallback owns a freshly
+/// `LENGTH`/`AREA`/`VOLUME`/`ANGLE` keep their own hardcoded raw-SI arms
+/// (`"m"`/`"m²"`/`"m³"`/`"rad"`) rather than the unit-ladder registry's
+/// curated name, because their registry default rung is *scaled*
+/// (mm/mm²/mm³/deg) — adopting it here would misrender the raw magnitude
+/// (e.g. a raw `0.08` m would read `"0.08 mm"`). `MONEY` and dimensionless
+/// keep their own arms too: Money is not a registry ladder dimension, and
+/// dimensionless has no unit at all.
+///
+/// For any other dimension, this consults [`registry_display_default`]
+/// (task #5232's unit-ladder registry, PRD display-unit-preference §4) and
+/// adopts its curated name ONLY when the default rung's `si_scale` is
+/// exactly `1.0` — i.e. the curated name is itself a raw-SI unit, valid at
+/// the raw magnitude `format_hover` renders. This curates Mass, Pressure,
+/// Density, Force, Energy, and Power (all coherent-SI by construction).
+/// Any dimension without a scale-1.0 registry entry falls back to
+/// composing the base-SI unit label from
+/// [`Display`](std::fmt::Display) (e.g. `"kg·m^-3"` for mass density)
+/// rather than a bare placeholder — hence the `Cow` return: known arms
+/// borrow a `'static` string, the composed fallback owns a freshly
 /// formatted one.
 fn dimension_unit_label(dim: &DimensionVector) -> Cow<'static, str> {
     if *dim == DimensionVector::LENGTH {
@@ -2881,17 +2899,115 @@ fn dimension_unit_label(dim: &DimensionVector) -> Cow<'static, str> {
         Cow::Borrowed("m\u{00B2}")
     } else if *dim == DimensionVector::VOLUME {
         Cow::Borrowed("m\u{00B3}")
-    } else if *dim == DimensionVector::MASS {
-        Cow::Borrowed("kg")
     } else if *dim == DimensionVector::ANGLE {
         Cow::Borrowed("rad")
     } else if *dim == DimensionVector::MONEY {
         Cow::Borrowed("USD")
     } else if dim.is_dimensionless() {
         Cow::Borrowed("")
+    } else if let Some((si_scale, label)) = registry_display_default(dim) {
+        if si_scale == 1.0 {
+            Cow::Borrowed(label)
+        } else {
+            Cow::Owned(format!("{dim}"))
+        }
     } else {
         Cow::Owned(format!("{dim}"))
     }
+}
+
+/// A single resolved display rung: a unit label and its SI scale factor.
+///
+/// Represents a rung that has *already won* PRD display-unit-preference
+/// §6.1's precedence order (e.g. an explicit `@display` annotation or a
+/// user-picked GUI unit) — [`resolve_display`] renders `si_value /
+/// si_scale` under `label` directly and does **not** re-run that
+/// precedence itself.
+// G-allow: shared display formatter input type (PRD display-unit-preference §6.2); the four surfaces route onto it in L4 task #5235 (pending) — no non-test caller until then
+#[derive(Debug, Clone, PartialEq)]
+pub struct DisplayPreference {
+    /// User-facing unit label (e.g. `"mm"`, `"L"`, `"kPa"`).
+    pub label: String,
+    /// `display_magnitude = si_value / si_scale`.
+    pub si_scale: f64,
+}
+
+impl DisplayPreference {
+    /// Construct a resolved display preference from a label and SI scale factor.
+    pub fn new(label: impl Into<String>, si_scale: f64) -> Self {
+        Self {
+            label: label.into(),
+            si_scale,
+        }
+    }
+}
+
+/// Process-wide cache of [`reify_core::unit_ladders`]'s registry, populated
+/// once on first use.
+///
+/// Both [`resolve_display`] and [`dimension_unit_label`] consult this via
+/// [`registry_display_default`] rather than calling `unit_ladders()`
+/// directly, so the registry's ~30 `String`s are allocated once per
+/// process (not once per format call) and both callers can return
+/// borrowed `&'static str` labels.
+static LADDERS: OnceLock<Vec<reify_core::DimensionLadder>> = OnceLock::new();
+
+/// Look up `dim`'s curated default display rung in the cached unit-ladder
+/// registry (task #5232 / PRD display-unit-preference §4), keyed by
+/// [`DimensionVector::canonical_name`].
+///
+/// Returns `Some((si_scale, label))` for the ladder's `is_default` rung, or
+/// `None` when `dim` has no `canonical_name()` (e.g. dimensionless or a
+/// composite dimension) or is not present in the registry (e.g. `Money`,
+/// `Velocity`) — callers fall through to their own uncurated handling in
+/// that case.
+fn registry_display_default(dim: &DimensionVector) -> Option<(f64, &'static str)> {
+    let name = dim.canonical_name()?;
+    let ladders = LADDERS.get_or_init(reify_core::unit_ladders);
+    let ladder = ladders.iter().find(|l| l.dimension == name)?;
+    let default_rung = ladder.units.iter().find(|u| u.is_default)?;
+    Some((default_rung.si_scale, default_rung.label.as_str()))
+}
+
+/// Shared display formatter (PRD display-unit-preference §6.2): resolve an
+/// SI-stored scalar to a `(formatted_magnitude, unit_label)` pair.
+///
+/// `preference`, when `Some`, is a rung that has already won §6.1's
+/// precedence order — this renders `si_value / preference.si_scale` under
+/// `preference.label` directly and does not re-run precedence. A
+/// `preference` whose `si_scale` is zero or non-finite is treated as if it
+/// were absent (guards against a garbage `DisplayPreference` producing an
+/// `inf`/`NaN` display magnitude): this falls through to the `None`
+/// handling below instead. When `None` (or the preference was degenerate),
+/// falls through §6.1 rungs 3-5: the dimension's curated registry default
+/// (rungs 3/4, via [`registry_display_default`]), then
+/// `is_dimensionless()` (empty label), then the composed base-SI
+/// [`Display`](std::fmt::Display) fallback (rung 5).
+///
+/// The magnitude is always formatted via [`format_display_number`], so
+/// this stays numerically consistent with [`Value::format_display_pair`].
+// G-allow: shared display formatter (PRD display-unit-preference §6.2); the four surfaces route onto it in L4 task #5235 (pending) — no non-test caller until then
+pub fn resolve_display(
+    si_value: f64,
+    dimension: &DimensionVector,
+    preference: Option<&DisplayPreference>,
+) -> (String, String) {
+    if let Some(pref) = preference
+        && pref.si_scale.is_finite()
+        && pref.si_scale != 0.0
+    {
+        return (
+            format_display_number(si_value / pref.si_scale),
+            pref.label.clone(),
+        );
+    }
+    if let Some((si_scale, label)) = registry_display_default(dimension) {
+        return (format_display_number(si_value / si_scale), label.to_string());
+    }
+    if dimension.is_dimensionless() {
+        return (format_display_number(si_value), String::new());
+    }
+    (format_display_number(si_value), format!("{dimension}"))
 }
 
 /// Bit-identity equality for `Value`.
@@ -10315,30 +10431,37 @@ mod tests {
         );
     }
 
-    // ── dimension_unit_label / format_display_pair composed base-unit tests ──
-    // (task 5198 fix b) — MASS_DENSITY has no curated arm in either fallback,
-    // so both must compose from Display ("kg·m^-3") instead of leaking "SI".
+    // ── dimension_unit_label registry curation tests (task #5234) ────────────
+    // dimension_unit_label now sources curated names from L1's unit-ladder
+    // registry (reify_core::unit_ladders, via registry_display_default) for
+    // any dimension whose default rung has si_scale == 1.0 — Mass, Pressure,
+    // Density, Force, Energy, Power. format_display_pair's `to_display_units`
+    // is UNCHANGED by this task and still composes MASS_DENSITY's base-SI
+    // symbols ("kg·m^-3") — seeing "kg/m³" here (hover) and "kg·m^-3" there
+    // (GUI-cell / format_display_pair) for the same dimension is an
+    // expected, temporary divergence that L4/L6 (tasks #5235/#5237) unify.
 
     #[test]
-    fn dimension_unit_label_mass_density_composes_base_units() {
+    fn dimension_unit_label_mass_density_uses_curated_registry_name() {
         assert_eq!(
             dimension_unit_label(&DimensionVector::MASS_DENSITY),
-            "kg\u{b7}m^-3",
-            "dimension_unit_label(MASS_DENSITY) should compose the Display form, not fall through to \"SI\""
+            "kg/m\u{00B3}",
+            "dimension_unit_label(MASS_DENSITY) should adopt the registry's curated \"kg/m³\", not compose \"kg·m^-3\""
         );
     }
 
     #[test]
-    fn format_hover_mass_density_scalar_renders_composed_units() {
-        // body_density-style scalar must render composed base units, never "1270 SI".
+    fn format_hover_mass_density_scalar_uses_curated_registry_name() {
+        // body_density-style scalar must render the registry-curated unit,
+        // not the composed "kg·m^-3" (nor the old "1270 SI" leak).
         let v = Value::Scalar {
             si_value: 1270.0,
             dimension: DimensionVector::MASS_DENSITY,
         };
         assert_eq!(
             v.format_hover(),
-            "1270 kg\u{b7}m^-3",
-            "format_hover() on a MASS_DENSITY scalar should render composed base units, not \"1270 SI\""
+            "1270 kg/m\u{00B3}",
+            "format_hover() on a MASS_DENSITY scalar should render the registry-curated \"kg/m³\""
         );
     }
 
@@ -10351,8 +10474,57 @@ mod tests {
         assert_eq!(
             v.format_display_pair(),
             ("1270".to_string(), "kg\u{b7}m^-3".to_string()),
-            "format_display_pair() on a MASS_DENSITY scalar should return composed base units, not \"SI\""
+            "format_display_pair() on a MASS_DENSITY scalar should return composed base units, not \"SI\" — to_display_units is unchanged by task #5234"
         );
+    }
+
+    #[test]
+    fn dimension_unit_label_curates_scale_one_registry_dims() {
+        // Pressure/Force/Energy/Power all have a coherent-SI (si_scale ==
+        // 1.0) default rung in the registry, so dimension_unit_label should
+        // now adopt their curated names instead of composing base-SI symbols.
+        assert_eq!(dimension_unit_label(&DimensionVector::PRESSURE), "Pa");
+        assert_eq!(dimension_unit_label(&DimensionVector::FORCE), "N");
+        assert_eq!(dimension_unit_label(&DimensionVector::ENERGY), "J");
+        assert_eq!(dimension_unit_label(&DimensionVector::POWER), "W");
+    }
+
+    #[test]
+    fn format_hover_pressure_scalar_uses_curated_registry_name() {
+        let v = Value::Scalar {
+            si_value: 101_325.0,
+            dimension: DimensionVector::PRESSURE,
+        };
+        assert_eq!(v.format_hover(), "101325 Pa");
+    }
+
+    #[test]
+    fn dimension_unit_label_scaled_default_rung_dims_stay_on_raw_si_label() {
+        // Length/Angle's registry default rung is SCALED (mm @ 1e-3, deg @
+        // π/180), but dimension_unit_label's caller (format_hover) renders
+        // the RAW si_value — so these must NOT adopt the registry's scaled
+        // label (which would misrender the raw magnitude, e.g. "0.08 mm" for
+        // a raw 0.08 m) and must stay on their existing raw-SI arms.
+        assert_eq!(
+            dimension_unit_label(&DimensionVector::LENGTH),
+            "m",
+            "LENGTH must stay \"m\" (raw SI), not adopt the registry's scaled \"mm\" label"
+        );
+        assert_eq!(
+            dimension_unit_label(&DimensionVector::ANGLE),
+            "rad",
+            "ANGLE must stay \"rad\" (raw SI), not adopt the registry's scaled \"deg\" label"
+        );
+    }
+
+    #[test]
+    fn dimension_unit_label_unaffected_arms_unchanged() {
+        // Mass's registry default rung is already si_scale == 1.0 with label
+        // "kg", so curation is a no-op in output (even though it now flows
+        // through the registry lookup instead of a hardcoded arm).
+        // Dimensionless is untouched by the registry lookup entirely.
+        assert_eq!(dimension_unit_label(&DimensionVector::MASS), "kg");
+        assert_eq!(dimension_unit_label(&DimensionVector::DIMENSIONLESS), "");
     }
 
     // ── Value::Complex format_display_pair scaling (task 5198 amend) ─────────
@@ -10391,6 +10563,136 @@ mod tests {
             ("1270 + 4i".to_string(), "kg\u{b7}m^-3".to_string()),
             "im must render correctly through the composed-fallback (identity-scale) path too"
         );
+    }
+
+    // ── resolve_display shared formatter tests (task #5234 step-1) ───────────
+    // PRD display-unit-preference §6.2: `resolve_display` is the new shared
+    // formatter the four L4 call sites (task #5235) will route onto. These
+    // lock its contract ahead of any caller: `preference: None` falls through
+    // §6.1 rungs 3-5 (curated registry default, dimensionless, composed
+    // fallback); `preference: Some` renders the already-resolved rung
+    // directly without re-running precedence.
+
+    #[test]
+    fn resolve_display_none_curated_scale_one_dims_render_raw_magnitude() {
+        assert_eq!(
+            resolve_display(101_325.0, &DimensionVector::PRESSURE, None),
+            ("101325".to_string(), "Pa".to_string()),
+            "Pressure's default rung has si_scale 1.0, so the raw SI magnitude is the display magnitude"
+        );
+        assert_eq!(
+            resolve_display(2.5, &DimensionVector::MASS, None),
+            ("2.5".to_string(), "kg".to_string())
+        );
+        assert_eq!(
+            resolve_display(1270.0, &DimensionVector::MASS_DENSITY, None),
+            ("1270".to_string(), "kg/m\u{00B3}".to_string())
+        );
+        assert_eq!(
+            resolve_display(250.0, &DimensionVector::FORCE, None),
+            ("250".to_string(), "N".to_string())
+        );
+        assert_eq!(
+            resolve_display(1500.0, &DimensionVector::ENERGY, None),
+            ("1500".to_string(), "J".to_string())
+        );
+        assert_eq!(
+            resolve_display(750.0, &DimensionVector::POWER, None),
+            ("750".to_string(), "W".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_display_none_scaled_default_rung_dims_scale_magnitude_and_label() {
+        assert_eq!(
+            resolve_display(0.08, &DimensionVector::LENGTH, None),
+            ("80".to_string(), "mm".to_string())
+        );
+        assert_eq!(
+            resolve_display(0.0045, &DimensionVector::AREA, None),
+            ("4500".to_string(), "mm\u{00B2}".to_string())
+        );
+        assert_eq!(
+            resolve_display(0.007, &DimensionVector::VOLUME, None),
+            ("7000000".to_string(), "mm\u{00B3}".to_string())
+        );
+        assert_eq!(
+            resolve_display(std::f64::consts::PI, &DimensionVector::ANGLE, None),
+            ("180".to_string(), "deg".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_display_none_dimensionless_renders_empty_label() {
+        assert_eq!(
+            resolve_display(3.0, &DimensionVector::DIMENSIONLESS, None),
+            ("3".to_string(), "".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_display_none_uncurated_dims_compose_base_unit_fallback() {
+        assert_eq!(
+            resolve_display(2.0, &DimensionVector::VELOCITY, None),
+            ("2".to_string(), "m\u{b7}s^-1".to_string()),
+            "Velocity has no registry ladder, so it falls through to the composed Display fallback"
+        );
+        assert_eq!(
+            resolve_display(25.0, &DimensionVector::MONEY, None),
+            ("25".to_string(), "USD".to_string()),
+            "Money is not a ladder dimension, so composed Display yields \"USD\" naturally"
+        );
+    }
+
+    #[test]
+    fn resolve_display_some_preference_renders_the_resolved_rung_directly() {
+        let liters = DisplayPreference::new("L", 1e-3);
+        assert_eq!(
+            resolve_display(0.007, &DimensionVector::VOLUME, Some(&liters)),
+            ("7".to_string(), "L".to_string()),
+            "explicit preference overrides the registry default rung (mm\u{00B3})"
+        );
+
+        let cm = DisplayPreference::new("cm", 1e-2);
+        assert_eq!(
+            resolve_display(0.08, &DimensionVector::LENGTH, Some(&cm)),
+            ("8".to_string(), "cm".to_string())
+        );
+
+        let kpa = DisplayPreference::new("kPa", 1e3);
+        assert_eq!(
+            resolve_display(101_325.0, &DimensionVector::PRESSURE, Some(&kpa)),
+            ("101.325".to_string(), "kPa".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_display_some_degenerate_scale_falls_back_to_none_handling() {
+        // A `DisplayPreference` with a zero or non-finite `si_scale` must not
+        // reach `si_value / si_scale` (that would render `inf`/`NaN`).
+        // `resolve_display` treats it as if `preference` were absent, so the
+        // result matches the `None` path for the same `(si_value, dimension)`.
+        for degenerate_scale in [0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let broken = DisplayPreference::new("bogus", degenerate_scale);
+
+            assert_eq!(
+                resolve_display(101_325.0, &DimensionVector::PRESSURE, Some(&broken)),
+                resolve_display(101_325.0, &DimensionVector::PRESSURE, None),
+                "degenerate si_scale {degenerate_scale} must fall back to the curated registry default, not \"bogus\"/inf/NaN"
+            );
+            assert_eq!(
+                resolve_display(101_325.0, &DimensionVector::PRESSURE, Some(&broken)),
+                ("101325".to_string(), "Pa".to_string())
+            );
+
+            // Also lock the rung-5 (uncurated) fallback path for a dimension
+            // with no registry ladder, so the guard is verified independent
+            // of `registry_display_default` returning `Some`.
+            assert_eq!(
+                resolve_display(2.0, &DimensionVector::VELOCITY, Some(&broken)),
+                resolve_display(2.0, &DimensionVector::VELOCITY, None),
+            );
+        }
     }
 
     // --- Freshness::is_final tests (task #2356) ---

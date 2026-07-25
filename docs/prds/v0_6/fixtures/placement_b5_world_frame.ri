@@ -1,0 +1,12 @@
+module placement_b5_world_frame
+
+structure Part {
+    let shank = cylinder(3mm, 20mm)
+    let shank_axis : Axis = shank.axis
+}
+structure Asm {
+    sub a : Part at auto
+    sub b : Part
+    relate { concentric(a.shank_axis, b.shank_axis) }
+    let f = a.world_frame
+}

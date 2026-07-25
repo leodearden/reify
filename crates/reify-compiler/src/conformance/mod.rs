@@ -11,6 +11,40 @@ use crate::geometry_traits_inference::{
 };
 use std::cell::RefCell;
 
+/// Severity knob for struct-constructor field-conformance diagnostics
+/// (task 5302, struct-ctor-conformance α).
+///
+/// α generalizes the 4584 struct-ctor conformance chokepoint from its original
+/// 4-family allowlist (`List<TraitObject>` / `StructureRef` / `Vector` /
+/// `Selector`) to ALL concrete field types, at **Warning** severity behind this
+/// single const. The ctor field-conformance surface reads its severity from
+/// here (threaded through `WalkCtx.severity`), so the δ follow-up is a literal
+/// one-const flip to `Severity::Error` that promotes that surface uniformly.
+///
+/// **Two emit sites are deliberately outside this knob** and will NOT flip with
+/// the const: (1) the fn-call conformance entry (`check_fn_arg_conformance`)
+/// hard-codes `Severity::Error` (out of scope; see the `WalkCtx.severity` field
+/// doc); (2) the geometry-trait leaf (`Bounded` / `Connected` / `Convex`, reached
+/// via [`emit_geometry_unbounded`] / [`emit_geometry_trait_violation`]) hard-codes
+/// `Severity::Error` because those codes (`GeometryUnbounded` and the geometry
+/// `TypeNotConformingToTrait`) belong to the geometry-primitive-constructors PRD,
+/// not to this ctor-field knob (see the `WalkCtx.severity` doc's carve-out note).
+const CTOR_FIELD_CONFORMANCE_SEVERITY: Severity = Severity::Warning;
+
+/// Build a `Diagnostic` at an explicit `severity`.
+///
+/// The `Diagnostic` builder exposes `error`/`warning`/`info` constructors but no
+/// severity-parameterized one; the ctor-conformance walker needs the severity to
+/// be read from `WalkCtx.severity` at every emit site so the single knob above
+/// governs the whole surface. `Diagnostic.severity` is a public field, so this
+/// sets it directly after building — keeping the change confined to this crate
+/// (no reify-core change, per task 5302).
+fn diag_at(severity: Severity, message: impl Into<String>) -> Diagnostic {
+    let mut d = Diagnostic::error(message);
+    d.severity = severity;
+    d
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check_trait_conformance(
     structure: &EntityDefRef<'_>,
@@ -295,6 +329,9 @@ pub(crate) fn check_trait_arg_conformance(
         templates: template_registry,
         traits: trait_registry,
         diagnostics,
+        // Ctor-conformance entry (value-cell + sub `=` paths): knob-governed
+        // (Warning at α). task 5302.
+        severity: CTOR_FIELD_CONFORMANCE_SEVERITY,
     };
     walk_param_against_arg(&cell.cell_type, compiled_arg, &mut ctx);
 }
@@ -343,6 +380,9 @@ pub(crate) fn check_fn_arg_conformance(
         templates: template_registry,
         traits: trait_registry,
         diagnostics,
+        // Fn-call trait-conformance is OUT OF SCOPE for the 5302 ctor knob and
+        // must stay a hard error (preserves task-4081 fn-call semantics).
+        severity: Severity::Error,
     };
     walk_param_against_arg(param_type, compiled_arg, &mut ctx);
 }
@@ -413,6 +453,9 @@ pub(crate) fn check_param_default_conformance(
                     templates: template_registry,
                     traits: trait_registry,
                     diagnostics,
+                    // Param-default conformance is a ctor-conformance entry:
+                    // knob-governed (Warning at α). task 5302.
+                    severity: CTOR_FIELD_CONFORMANCE_SEVERITY,
                 };
                 emit_structure_ref_mismatch(&vc.cell_type, effective_ty, &mut ctx);
             }
@@ -434,11 +477,18 @@ pub(crate) fn check_param_default_conformance(
                         .map(is_geometry_function)
                         .unwrap_or(false);
                 if !is_geometry_default {
+                    // task 5302 α (D8): emit at the ctor-conformance knob severity
+                    // (Warning at α), not a hard error — so ALL param-default
+                    // diagnostics are governed by the single knob and the δ flip
+                    // promotes them uniformly. Previously `Diagnostic::error`.
                     diagnostics.push(
-                        Diagnostic::error(format!(
-                            "param '{}' has type 'Geometry' but its default expression has non-geometry type '{}'",
-                            vc.id.member, default.result_type
-                        ))
+                        diag_at(
+                            CTOR_FIELD_CONFORMANCE_SEVERITY,
+                            format!(
+                                "param '{}' has type 'Geometry' but its default expression has non-geometry type '{}'",
+                                vc.id.member, default.result_type
+                            ),
+                        )
                         .with_code(DiagnosticCode::TypeNotConformingToStructureRef)
                         .with_label(DiagnosticLabel::new(
                             vc.span,
@@ -450,7 +500,44 @@ pub(crate) fn check_param_default_conformance(
                     );
                 }
             }
-            _ => continue,
+            // General concrete-leaf param defaults (task 5302 α, D8): every param
+            // type beyond `StructureRef`/`Geometry` — `String`, `Int`, `Real`,
+            // `Bool`, `Selector`, `Vector`, `Option<…>`, `List<…>`, `TraitObject`,
+            // … — routes its compiled default through the SAME shared walker used
+            // by the call-site ctor entries, at the knob severity. This closes the
+            // param-default half of the "all concrete field types" generalization:
+            // a `param label : String = 42` default now diagnoses identically to a
+            // call-site `Widget(label: 42)` (same `ArgTypeMismatch`, same message).
+            //
+            // The old `_ => continue` silently accepted every non-StructureRef/
+            // non-Geometry default (the "future work" hole this task fills). The
+            // walker single-sources both the anti-cascade skip list and the
+            // param-family gating: its `reject_if_incompatible` skips
+            // `Error`/`TypeParam`/`Geometry`/`TraitObject` ARG types, and its
+            // general concrete-leaf arm judges a PARAM type only when
+            // [`general_leaf_param_family_is_validated`] vets it. So routing here
+            // is unconditional but diagnosing is not — a default at an
+            // un-vetted family stays silent, and no gating logic is duplicated
+            // at this call site. Only the top-level `Error`-default guard is
+            // repeated, matching the `StructureRef`/`Geometry` arms above.
+            _ => {
+                // Anti-cascade: skip when the default expression itself had a
+                // compile error (its root-cause diagnostic was already emitted).
+                if matches!(default.result_type, Type::Error) {
+                    continue;
+                }
+                let mut ctx = WalkCtx {
+                    arg_name: vc.id.member.as_str(),
+                    span: vc.span,
+                    templates: template_registry,
+                    traits: trait_registry,
+                    diagnostics,
+                    // Param-default conformance is a ctor-conformance entry:
+                    // knob-governed (Warning at α). task 5302.
+                    severity: CTOR_FIELD_CONFORMANCE_SEVERITY,
+                };
+                walk_param_against_arg(&vc.cell_type, default, &mut ctx);
+            }
         }
     }
 }
@@ -471,6 +558,33 @@ struct WalkCtx<'a> {
     templates: &'a HashMap<String, &'a TopologyTemplate>,
     traits: &'a HashMap<String, &'a CompiledTrait>,
     diagnostics: &'a mut Vec<Diagnostic>,
+    /// Severity at which conformance diagnostics emitted through this walk are
+    /// built (task 5302). The two ctor-conformance entries
+    /// (`check_trait_arg_conformance`, `check_param_default_conformance`) set
+    /// this to [`CTOR_FIELD_CONFORMANCE_SEVERITY`] (Warning at α); the fn-call
+    /// entry (`check_fn_arg_conformance`) sets it to `Severity::Error` so the
+    /// out-of-scope fn-call trait-conformance semantics stay hard errors. Every
+    /// *field-conformance* emit site (leaf-trait, StructureRef, Vector, selector,
+    /// wrapper-shape, and the general concrete-leaf `ArgTypeMismatch`) builds its
+    /// `Diagnostic` via [`diag_at`]`(ctx.severity, …)`, so severity is read from
+    /// exactly one place per walk (C2(iv) severity-invariance); the δ follow-up
+    /// flips only the const.
+    ///
+    /// **Carve-out — geometry-trait conformance stays always-Error.** The
+    /// `Bounded` / `Connected` / `Convex` geometry-trait leaf (reached inside
+    /// [`check_leaf_trait_conformance`] via [`emit_geometry_unbounded`] /
+    /// [`emit_geometry_trait_violation`]) intentionally does NOT read
+    /// `ctx.severity` — those two helpers hard-code `Severity::Error`. Their codes
+    /// (`GeometryUnbounded` and the geometry `TypeNotConformingToTrait`) belong to
+    /// the geometry-primitive-constructors PRD, not to this knob's ctor-field
+    /// surface, and are therefore excluded from α's Warning downgrade set
+    /// (Vector / Selector / StructureRef / wrapped-trait / wrapper-shape /
+    /// general-leaf). Consequence: the δ one-const flip will NOT promote the
+    /// geometry-trait ctor diagnostics; a δ author who wants them under the knob
+    /// must route those two emit sites through `ctx.severity` explicitly (and
+    /// update the `emit_geometry_*_helper_produces_error_*` unit tests +
+    /// `geometry_traits_inference_tests`, which currently pin Error).
+    severity: Severity,
 }
 
 /// Extract the callee function name from a compiled expression if it is a
@@ -582,6 +696,13 @@ fn walk_param_against_arg(param_type: &Type, compiled_arg: &CompiledExpr, ctx: &
 /// canonical message wording is documented on the variant declaration in
 /// `crates/reify-types/src/diagnostics.rs` — keep the two in sync.
 ///
+/// **Always Error — carve-out from the task 5302 ctor-field severity knob.**
+/// This helper is reached on the ctor walk path but intentionally hard-codes
+/// `Severity::Error` rather than reading `WalkCtx.severity`, so the δ one-const
+/// flip does NOT govern it (see the `CTOR_FIELD_CONFORMANCE_SEVERITY` /
+/// `WalkCtx.severity` carve-out docs). `emit_geometry_unbounded_helper_produces_error_*`
+/// pins this.
+///
 /// Reserved for the **Bounded** case only. `Connected`/`Convex` violations
 /// at the same call-site shape reuse [`DiagnosticCode::TypeNotConformingToTrait`]
 /// per the task's design decision §2 (the PRD only allocates
@@ -654,6 +775,12 @@ pub(crate) fn emit_geometry_profile_required(
 /// only allocates `E_GEOMETRY_UNBOUNDED` for missing `Bounded`; `Connected`/`Convex`
 /// reuse `TypeNotConformingToTrait`.
 ///
+/// **Always Error — carve-out from the task 5302 ctor-field severity knob**, for the
+/// same reason as its sibling [`emit_geometry_unbounded`]: geometry-trait conformance
+/// is not part of α's Warning downgrade set, so this hard-codes `Severity::Error` and
+/// is not flipped by the δ const. `emit_geometry_trait_violation_helper_produces_error_*`
+/// pins this.
+///
 /// The message intentionally does **not** include a separate param-name slot. Under
 /// reify's keyword-arg convention the arg name and param name are identical in practice,
 /// so appending `required by param '{}'` a second time is redundant and was dropped.
@@ -700,10 +827,13 @@ fn emit_leaf_conformance_for_arg_type(
             };
             if !satisfies_trait_bound(&arg_template.trait_bounds, required_trait, ctx.traits) {
                 ctx.diagnostics.push(
-                    Diagnostic::error(format!(
-                        "type '{}' does not conform to trait '{}' required by param '{}'",
-                        struct_name, required_trait, ctx.arg_name
-                    ))
+                    diag_at(
+                        ctx.severity,
+                        format!(
+                            "type '{}' does not conform to trait '{}' required by param '{}'",
+                            struct_name, required_trait, ctx.arg_name
+                        ),
+                    )
                     .with_code(DiagnosticCode::TypeNotConformingToTrait)
                     .with_label(DiagnosticLabel::new(
                         ctx.span,
@@ -719,10 +849,13 @@ fn emit_leaf_conformance_for_arg_type(
             let mut visited = HashSet::new();
             if !trait_satisfies(arg_trait_name, required_trait, ctx.traits, &mut visited) {
                 ctx.diagnostics.push(
-                    Diagnostic::error(format!(
-                        "type '{}' does not conform to trait '{}' required by param '{}'",
-                        arg_trait_name, required_trait, ctx.arg_name
-                    ))
+                    diag_at(
+                        ctx.severity,
+                        format!(
+                            "type '{}' does not conform to trait '{}' required by param '{}'",
+                            arg_trait_name, required_trait, ctx.arg_name
+                        ),
+                    )
                     .with_code(DiagnosticCode::TypeNotConformingToTrait)
                     .with_label(DiagnosticLabel::new(
                         ctx.span,
@@ -747,10 +880,13 @@ fn emit_leaf_conformance_for_arg_type(
 /// at `ctx.span`, message names the required structure and the offending type.
 fn emit_structure_ref_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<'_>) {
     ctx.diagnostics.push(
-        Diagnostic::error(format!(
-            "argument '{}' has type '{}' but param '{}' requires structure type '{}'",
-            ctx.arg_name, arg_type, ctx.arg_name, param_type,
-        ))
+        diag_at(
+            ctx.severity,
+            format!(
+                "argument '{}' has type '{}' but param '{}' requires structure type '{}'",
+                ctx.arg_name, arg_type, ctx.arg_name, param_type,
+            ),
+        )
         .with_code(DiagnosticCode::TypeNotConformingToStructureRef)
         .with_label(DiagnosticLabel::new(
             ctx.span,
@@ -776,10 +912,13 @@ fn emit_structure_ref_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// message names the required vector type and the offending arg type.
 fn emit_vector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<'_>) {
     ctx.diagnostics.push(
-        Diagnostic::error(format!(
-            "argument '{}' has type '{}' but param '{}' requires vector type '{}'",
-            ctx.arg_name, arg_type, ctx.arg_name, param_type,
-        ))
+        diag_at(
+            ctx.severity,
+            format!(
+                "argument '{}' has type '{}' but param '{}' requires vector type '{}'",
+                ctx.arg_name, arg_type, ctx.arg_name, param_type,
+            ),
+        )
         .with_code(DiagnosticCode::TypeNotConformingToVector)
         .with_label(DiagnosticLabel::new(
             ctx.span,
@@ -788,26 +927,86 @@ fn emit_vector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<'_
     );
 }
 
-/// Emit a single `Diagnostic::error` with [`DiagnosticCode::ArgTypeMismatch`] when an arg
-/// type does not match a `Type::Selector` or `Type::AnySelector` param (task-4598).
+/// Emit a single diagnostic when an arg type does not match a `Type::Selector` or
+/// `Type::AnySelector` param (task-4598), branching the code on the *nature* of the
+/// mismatch (task 5302 α, D2):
 ///
-/// Modelled on [`emit_structure_ref_mismatch`] / [`emit_vector_mismatch`]: one diagnostic,
-/// one label at `ctx.span`, message names the required selector type and the offending arg type.
-/// Uses `DiagnosticCode::ArgTypeMismatch` (rather than minting a new code) per design decision D0
-/// in plan.json: the task directs the existing `E_ARG_TYPE_MISMATCH` code, so no diagnostics.rs
-/// change is needed.
+/// - **Selector-kind mismatch** — a concrete `Selector(j)` arg with `j != k`, or a
+///   bare `AnySelector` arg, against a single-kind `Selector(k)` param — carries
+///   [`DiagnosticCode::SelectorKindMismatch`] and names the expected/found selector
+///   kinds (the `SelectorKind` Display strings, e.g. `FaceSelector`/`EdgeSelector`).
+///   This mirrors the fn-call param-binding path's `SelectorKindMismatch` tagging
+///   (task 4581 / 4371 BT1) so the same wrong-kind error is coded uniformly in both
+///   the ctor and fn-call surfaces.
+/// - **Pose-vs-set** — a coordinate-pose arg (`Frame`/`Transform`/`Point`) against
+///   a selector-typed param — keeps [`DiagnosticCode::ArgTypeMismatch`] but appends
+///   the fixed hint substring `a coordinate pose is not a region target; select a
+///   face/edge/vertex instead` (PRD §4 D2; task 4833's fixtures assert on it). A
+///   message variant, not a new failure class.
+/// - **Every other selector-slot mismatch** — a non-selector arg (`String`, `Int`,
+///   …), or any arg against a bare `AnySelector` param — keeps
+///   [`DiagnosticCode::ArgTypeMismatch`] with the plain message (the disallow-string
+///   over-tag guard per 4581).
+///
+/// Modelled on [`emit_structure_ref_mismatch`] / [`emit_vector_mismatch`]: one
+/// diagnostic, one label at `ctx.span`. No new code minted (both already exist in
+/// diagnostics.rs). Severity is `ctx.severity` in BOTH branches (severity-invariant:
+/// the 5302 knob governs the whole selector surface uniformly — see design decision
+/// Q3/Option-A). The same-kind case (`Selector(k)` arg vs `Selector(k)` param) never
+/// reaches here — `reject_if_incompatible`'s `type_compatible` gate accepts it — so
+/// the `j != k` guard is defensive, not load-bearing.
 fn emit_selector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<'_>) {
-    ctx.diagnostics.push(
-        Diagnostic::error(format!(
+    let is_kind_mismatch = match (param_type, arg_type) {
+        (Type::Selector(k), Type::Selector(j)) => j != k,
+        (Type::Selector(_), Type::AnySelector) => true,
+        _ => false,
+    };
+    if is_kind_mismatch {
+        ctx.diagnostics.push(
+            diag_at(
+                ctx.severity,
+                format!(
+                    "argument '{}' has selector kind '{}' but param '{}' requires selector kind '{}'",
+                    ctx.arg_name, arg_type, ctx.arg_name, param_type,
+                ),
+            )
+            .with_code(DiagnosticCode::SelectorKindMismatch)
+            .with_label(DiagnosticLabel::new(
+                ctx.span,
+                format!("expected '{}', got '{}'", param_type, arg_type),
+            )),
+        );
+    } else {
+        // Pose-vs-set (task 5302 α, PRD §4 D2): a coordinate pose — `Frame(n)`,
+        // `Transform(n)`, or `Point { .. }` — passed to a selector-typed field is
+        // a common authoring confusion (a pose locates a datum; a selector names a
+        // region target). It stays `ArgTypeMismatch` (a message variant, NOT a new
+        // failure class / code) but carries a fixed hint substring — the
+        // deterministic string task 4833's pose-vs-set fixtures assert on
+        // verbatim. Every non-pose non-selector arg (`String`, `Int`, …) keeps the
+        // plain message (disallow-string over-tag guard, 4581).
+        let is_pose = matches!(
+            arg_type,
+            Type::Frame(_) | Type::Transform(_) | Type::Point { .. }
+        );
+        let mut message = format!(
             "argument '{}' has type '{}' but param '{}' requires selector type '{}'",
             ctx.arg_name, arg_type, ctx.arg_name, param_type,
-        ))
-        .with_code(DiagnosticCode::ArgTypeMismatch)
-        .with_label(DiagnosticLabel::new(
-            ctx.span,
-            format!("expected '{}', got '{}'", param_type, arg_type),
-        )),
-    );
+        );
+        if is_pose {
+            message.push_str(
+                "; a coordinate pose is not a region target; select a face/edge/vertex instead",
+            );
+        }
+        ctx.diagnostics.push(
+            diag_at(ctx.severity, message)
+                .with_code(DiagnosticCode::ArgTypeMismatch)
+                .with_label(DiagnosticLabel::new(
+                    ctx.span,
+                    format!("expected '{}', got '{}'", param_type, arg_type),
+                )),
+        );
+    }
 }
 
 /// Skip-guard + `type_compatible` gate shared by the `StructureRef` and `Selector/AnySelector`
@@ -823,6 +1022,34 @@ fn emit_selector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<
 /// delegates to `emit` to push the mismatch diagnostic. Encapsulating the three-line
 /// body prevents the anti-cascade skip list from drifting between the two arms.
 ///
+/// Emit a single `DiagnosticCode::ArgTypeMismatch` diagnostic (at `ctx.severity`)
+/// for a general concrete-leaf param/arg type mismatch (task 5302 α — the fully
+/// general arg-shape pass that replaces the old silent `_` fall-through in
+/// [`walk_param_against_arg_type`]).
+///
+/// Message shape mirrors the 4598 selector wording (`emit_selector_mismatch`):
+/// `"argument 'X' has type 'A' but param 'X' requires type 'B'"`. Reused for any
+/// non-wrapper / non-trait / non-selector / non-vector / non-structure leaf whose
+/// arg type is not `type_compatible` with the declared param type (String←Int,
+/// Bool←String, dimensioned-scalar mismatch, …). No new diagnostic code is minted
+/// — `ArgTypeMismatch` already exists.
+fn emit_arg_type_mismatch(param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_>) {
+    ctx.diagnostics.push(
+        diag_at(
+            ctx.severity,
+            format!(
+                "argument '{}' has type '{}' but param '{}' requires type '{}'",
+                ctx.arg_name, arg_ty, ctx.arg_name, param_type,
+            ),
+        )
+        .with_code(DiagnosticCode::ArgTypeMismatch)
+        .with_label(DiagnosticLabel::new(
+            ctx.span,
+            format!("expected '{}', got '{}'", param_type, arg_ty),
+        )),
+    );
+}
+
 /// Vector's bespoke arity logic (`emit_vector_mismatch`) is intentionally separate.
 fn reject_if_incompatible<F>(param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_>, emit: F)
 where
@@ -916,10 +1143,13 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
             // covered by the literal walker's own fallback arm.
             _ => {
                 ctx.diagnostics.push(
-                    Diagnostic::error(format!(
-                        "type '{}' does not conform to trait '{}' required by param '{}'",
-                        arg_ty, required_trait, ctx.arg_name
-                    ))
+                    diag_at(
+                        ctx.severity,
+                        format!(
+                            "type '{}' does not conform to trait '{}' required by param '{}'",
+                            arg_ty, required_trait, ctx.arg_name
+                        ),
+                    )
                     .with_code(DiagnosticCode::TypeNotConformingToTrait)
                     .with_label(DiagnosticLabel::new(
                         ctx.span,
@@ -978,29 +1208,124 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         (Type::Selector(_) | Type::AnySelector, arg_ty) => {
             reject_if_incompatible(param_type, arg_ty, ctx, emit_selector_mismatch);
         }
-        // Wrapper-shape mismatch or non-wrapper/non-trait param type.
-        // Emit a diagnostic when param_type is a wrapper (Option/List/Set/Map) and
-        // arg_type doesn't match that wrapper — e.g. bare leaf passed to Option<T>,
-        // or List<T> passed to Option<T>. Non-wrapper non-trait params (Real, Int,
-        // etc.) fall through silently; a fully general arg-shape pass is future work.
+        // Option-unwrap (implicit-Some, C1 rule 6 — task 5302 α): an `Option<T>`
+        // param supplied a bare non-Option arg of type `T` is a valid `Some(arg)`.
+        // Recurse on the inner param type so the arg is checked against `T`. This
+        // MUST precede the wrapper-shape catch-all below: without it, a valid
+        // implicit-Some arg (e.g. `Option<FaceSelector>` ← `Selector(Face)`) would
+        // fall through to the wrapper-shape arm and spuriously warn — the live hole
+        // this task closes. The `Option`/`Option` pair is handled by the wrapper-
+        // pair arm at the top of this match, so the guard here only ever fires for a
+        // non-Option arg.
+        (Type::Option(inner_p), arg_ty) if !matches!(arg_ty, Type::Option(_)) => {
+            walk_param_against_arg_type(inner_p, arg_ty, ctx);
+        }
+        // Wrapper-shape mismatch OR general concrete-leaf mismatch.
         _ => {
             if matches!(
                 param_type,
-                Type::Option(_) | Type::List(_) | Type::Set(_) | Type::Map(_, _)
+                Type::List(_) | Type::Set(_) | Type::Map(_, _)
             ) {
+                // Wrapper-shape mismatch: a `List/Set/Map<T>` param supplied an arg
+                // whose shape doesn't match (e.g. a bare leaf, or a differently-
+                // shaped wrapper). (`Option<T>` params never reach here — the
+                // Option-unwrap arm above handles every non-Option arg, and the
+                // wrapper-pair arm handles `Option`/`Option`.) Emitted at ctx.severity.
                 ctx.diagnostics.push(
-                    Diagnostic::error(format!(
-                        "type '{}' does not match wrapper shape required by param '{}' (expected '{}')",
-                        arg_type, ctx.arg_name, param_type
-                    ))
+                    diag_at(
+                        ctx.severity,
+                        format!(
+                            "type '{}' does not match wrapper shape required by param '{}' (expected '{}')",
+                            arg_type, ctx.arg_name, param_type
+                        ),
+                    )
                     .with_code(DiagnosticCode::TypeNotConformingToTrait)
                     .with_label(DiagnosticLabel::new(
                         ctx.span,
                         format!("expected '{}', got '{}'", param_type, arg_type),
                     )),
                 );
+            } else if general_leaf_param_family_is_validated(param_type) {
+                // GENERAL CONCRETE-LEAF arm (task 5302 α): this replaces the former
+                // silent `_` fall-through for the param families that
+                // [`general_leaf_param_family_is_validated`] vets, routing them
+                // through the shared `reject_if_incompatible` → `type_compatible`
+                // gate and emitting `ArgTypeMismatch` at ctx.severity for a genuine
+                // mismatch. Every other family keeps falling through silently,
+                // exactly as before α — see that predicate's doc comment for the
+                // per-family rationale and the sound-by-construction posture.
+                reject_if_incompatible(param_type, arg_type, ctx, emit_arg_type_mismatch);
             }
         }
+    }
+}
+
+/// Whether `param_type` belongs to a param family whose args are safe to judge
+/// with raw [`type_compatible`] at the general concrete-leaf arm of
+/// [`walk_param_against_arg_type`].
+///
+/// # Why this is an allowlist and not a skip list
+///
+/// The α cut of the general-leaf arm used a NEGATIVE guard
+/// (`!matches!(param_type, Type::Geometry | Type::TypeParam(_))`), which made it
+/// unsound BY DEFAULT: every present and future [`Type`] variant was opted in to
+/// `type_compatible` unless somebody remembered to carve it out. Five families
+/// were false-rejected across 15+ shipped examples before the corpus gate in
+/// `examples_smoke.rs` caught it.
+///
+/// The inversion here makes the arm sound BY CONSTRUCTION — a newly-added `Type`
+/// variant defaults to silence, not to a false positive. Broadening the list is
+/// a deliberate act that must come with corpus evidence.
+///
+/// # Why these four
+///
+/// `type_compatible` is a *call-site coercion* predicate: it presumes both sides
+/// carry genuinely inferred types. `Bool`, `Int`, `String` and DIMENSIONLESS
+/// `Scalar` (spelled `Real` in source, and by `Display`) are the families for
+/// which that presumption actually holds at a struct-ctor arg position — the
+/// expression compiler infers them precisely, and `type_compat.rs` has real arms
+/// for each.
+///
+/// # Deliberately excluded, with evidence
+///
+/// Generalizing any of these needs new `type_compat.rs` coercion rules, which is
+/// an explicit α non-goal; it is tracked as a separate follow-up.
+///
+/// * **`Point` / `Vector` quantity slots, `Field`** — args routinely compile to
+///   the expression compiler's numeric-fallback or erased placeholder rather
+///   than the nominal type. `point3(0m, 0m, 0m)` is a `FunctionCall` whose
+///   result_type is `Scalar[m]`, never `Type::Point`; an analytical `field def`
+///   erases both slots to `Field<Real, Real>` whatever its declaration says.
+///   This is the same placeholder class the `Type::Geometry` exclusion and
+///   [`promote_function_call_to_structure_ref`] already exist for.
+/// * **`Matrix` / `Tensor`** — a nested list literal is the idiomatic spelling
+///   of a `Matrix3x3`, but it compiles to `List<List<Real>>` and no
+///   `List`→`Matrix` arm exists. Unlike the placeholder families this is a
+///   genuinely missing coercion rule, so no amount of placeholder detection
+///   fixes it.
+/// * **`Enum`** — under enum erasure a constructed variant's result_type is
+///   always the bare `Type::Enum(name)`, never the applied form. That is
+///   precisely why `type_compat.rs::enum_payload_compatible` exists (its own doc
+///   notes a naive `type_compatible` "would spuriously fail") and why
+///   `variant_construct.rs` guards with it instead.
+/// * **Dimensioned `Scalar`** — supplying a bare dimensionless numeric literal
+///   at a dimensioned slot is idiomatic throughout the corpus.
+/// * **`Geometry`** — geometry constructors compile to a dimensionless-scalar
+///   placeholder (GHR-γ) and `type_compatible` has no `Geometry` arm at all;
+///   geometry conformance is decided only through the literal walker's op-array
+///   inference.
+/// * **`TypeParam`** — an unresolved generic param, whose real conformance is
+///   decided when the type var is bound at instantiation (mirrors the arg-side
+///   `TypeParam` skip inside [`reject_if_incompatible`]).
+///
+/// The last two were the α negative guard's explicit carve-outs; they are
+/// subsumed by simple absence from the allowlist, so the redundant `matches!`
+/// is gone rather than left as dead belt-and-braces.
+fn general_leaf_param_family_is_validated(param_type: &Type) -> bool {
+    match param_type {
+        Type::Bool | Type::Int | Type::String => true,
+        Type::Scalar { dimension } => dimension.is_dimensionless(),
+        _ => false,
     }
 }
 
@@ -1193,6 +1518,16 @@ fn check_leaf_trait_conformance(
             };
             let inferred = infer_traits_for_expr_in_env(compiled_arg, &env);
             if !inferred.has(trait_kind) {
+                // CARVE-OUT (task 5302 α): these two geometry-trait emit sites
+                // deliberately stay `Severity::Error` — they do NOT read
+                // `ctx.severity`. `GeometryUnbounded` and the geometry
+                // `TypeNotConformingToTrait` belong to the geometry-primitive-
+                // constructors PRD, not to this task's ctor-field knob, so they
+                // are excluded from α's Warning downgrade set and the δ one-const
+                // flip will NOT promote them. A future author who wants
+                // geometry-trait ctor diagnostics governed by the knob must thread
+                // `ctx.severity` through these helpers (see the
+                // `CTOR_FIELD_CONFORMANCE_SEVERITY` / `WalkCtx.severity` docs).
                 if matches!(trait_kind, GeometryTrait::Bounded) {
                     emit_geometry_unbounded(ctx.arg_name, ctx.span, ctx.diagnostics);
                 } else {
@@ -1243,10 +1578,13 @@ fn check_leaf_trait_conformance(
             // The original arg_type is used in the message (not the effective type,
             // which equals arg_type here since promotion didn't apply).
             ctx.diagnostics.push(
-                Diagnostic::error(format!(
-                    "type '{}' does not conform to trait '{}' required by param '{}'",
-                    arg_type, required_trait, ctx.arg_name
-                ))
+                diag_at(
+                    ctx.severity,
+                    format!(
+                        "type '{}' does not conform to trait '{}' required by param '{}'",
+                        arg_type, required_trait, ctx.arg_name
+                    ),
+                )
                 .with_code(DiagnosticCode::TypeNotConformingToTrait)
                 .with_label(DiagnosticLabel::new(
                     ctx.span,
@@ -5692,7 +6030,11 @@ mod tests {
             diagnostics.len(),
         );
         let d = &diagnostics[0];
-        assert_eq!(d.severity, Severity::Error);
+        // task 5302 α (Option-A uniform downgrade): check_trait_arg_conformance is a
+        // ctor-conformance entry, so its diagnostics are emitted at
+        // CTOR_FIELD_CONFORMANCE_SEVERITY (Warning) rather than Error. Code/count/message
+        // are unchanged; δ later flips the knob back to Error.
+        assert_eq!(d.severity, Severity::Warning);
         assert_eq!(
             d.code,
             Some(DiagnosticCode::TypeNotConformingToTrait),

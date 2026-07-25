@@ -1,0 +1,19 @@
+// Fixture (γ decompose-phase ADVERSARY premise, indexed-sub-instantiation §7 ε
+// out-of-range baseline): a LITERAL out-of-range index (5, static count 2) is
+// SILENT today — `reify eval` exits 0 with `Rig.d5 = undef` and `reify check`
+// reports "All constraints satisfied." No diagnostic of any kind. This is the
+// silent-default defect ε's compile-time out-of-range error exists to fix;
+// post-ε this fixture must be REJECTED at compile time.
+module indexed_sub_oob_literal_silent_undef
+
+structure def Pulley {
+    param od : Length = 36mm
+    let body = cylinder(od / 2, 8mm)
+}
+
+structure def Rig {
+    sub idlers : List<Pulley>
+    constraint idlers.count == 2
+
+    let d5 = idlers[5].od
+}

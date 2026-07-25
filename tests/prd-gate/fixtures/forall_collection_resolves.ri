@@ -1,0 +1,14 @@
+// γ-verification baseline fixture for indexed-sub-instantiation §7 δ (PRD probe #5).
+// Premise: forall over a collection sub works TODAY (task 2364 lowering).
+// Expected: `reify check` exits 0; output contains per-element
+// "OK forall@v[0]" / "OK forall@v[1]" lines.
+// Verified 2026-07-25 against target/debug/reify (built same day): exit 0, both lines present.
+structure def P {
+    param od : Length = 5mm
+}
+
+structure def Rig {
+    sub vs : List<P>
+    constraint vs.count == 2
+    forall v in vs : constraint v.od > 1mm
+}

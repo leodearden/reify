@@ -1,0 +1,18 @@
+/// α regression-floor baseline (indexed-sub-instantiation.md §7 α, decompose
+/// 2026-07-25, adversary-added): the EXISTING specialization arm
+/// (`sub name : StructName { body }`) must keep parsing after the
+/// indexer-clause grammar delta. Canonical CI regression for this arm:
+/// crates/reify-syntax/tests/sub_decl_specialization_body_parser_tests.rs.
+module spec_arm
+
+structure ElectricMotor {
+    param shaft_diameter : Length = 8mm
+}
+
+structure Rig {
+    sub motor : ElectricMotor {
+        shaft_diameter = 8mm
+        let m = shaft_diameter * 2
+        constraint shaft_diameter > 1mm
+    }
+}

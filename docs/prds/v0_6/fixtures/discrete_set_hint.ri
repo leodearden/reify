@@ -1,0 +1,11 @@
+module discrete_set_hint
+
+// The SUPPORTED @solver_hint("discrete_set", ...) surface (examples/m11_annotations.ri
+// shape): registered stdlib collection ident. NOTE (probe 2026-07-24): a LOCAL
+// let-bound catalog ident is compile-REJECTED today ("unknown selector kind
+// '@solver_hint'", exit 1) — v1 catalogs are stdlib collections only.
+structure def DiscreteSetHint {
+    @solver_hint("discrete_set", standard_bolt_lengths)
+    param bolt_length : Length = auto
+    constraint bolt_length >= 11mm
+}

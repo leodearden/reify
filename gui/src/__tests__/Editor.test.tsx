@@ -393,6 +393,196 @@ describe('Editor active file switching', () => {
   });
 });
 
+// task-5359: switching back to a file whose store content was refreshed while it
+// was inactive (debug open_file / reload of an already-open path) must show the
+// fresh content — not the stale per-URI cached EditorState — while still
+// preserving a dirty buffer's unsaved edits.
+describe('switching back to an already-open file refreshed while inactive (task-5359)', () => {
+  it('Case 1 (clean refresh): switch-back shows the refreshed store content, not the stale cached buffer', () => {
+    const fileA: FileData = { path: '/project/src/refresh_a.ri', content: 'A0' };
+    const fileB: FileData = { path: '/project/src/refresh_b.ri', content: 'B0' };
+    // Both files already open (switch via the tab bar) so the switch-away does not
+    // append a tab — isolating this test to the file-switch cache-vs-refresh policy.
+    const store = setupStore([fileA, fileB]);
+    store.setActiveFile(fileA.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    expect(getEditorView(container).state.doc.toString()).toBe('A0');
+
+    // Switch away — the file-switch effect caches fileA's EditorState (doc 'A0').
+    store.setActiveFile(fileB.path);
+    expect(getEditorView(container).state.doc.toString()).toBe('B0');
+
+    // Disk changed under the inactive CLEAN tab (e.g. debug open_file / reload).
+    store.updateFileContent(fileA.path, 'A1');
+
+    // Switch back to fileA — the CM view must show the refreshed content, not the
+    // stale cached 'A0' buffer.
+    store.setActiveFile(fileA.path);
+    expect(getEditorView(container).state.doc.toString()).toBe('A1');
+  });
+
+  it('Case 2 (dirty preservation): switch-back keeps the unsaved edited buffer, not the store content', () => {
+    const fileA: FileData = { path: '/project/src/dirty_a.ri', content: 'A0' };
+    const fileB: FileData = { path: '/project/src/dirty_b.ri', content: 'B0' };
+    const store = setupStore([fileA, fileB]);
+    store.setActiveFile(fileA.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // User edits fileA (marks it dirty); the store's fileA.content stays 'A0'.
+    view.dispatch({ changes: { from: 0, insert: 'X' } });
+    expect(getEditorView(container).state.doc.toString()).toBe('XA0');
+    expect(store.state.dirtyFiles).toContain(fileA.path);
+
+    // Switch away and back via the tab bar (both files already open).
+    store.setActiveFile(fileB.path);
+    store.setActiveFile(fileA.path);
+
+    // The dirty buffer (with the unsaved 'X') must be preserved — NOT rebuilt from
+    // the store's clean 'A0' content.
+    expect(getEditorView(container).state.doc.toString()).toBe('XA0');
+  });
+
+  it('Case 3 (dirty + disk diverged while inactive): switch-back keeps the unsaved buffer; the conflict flag surfaces the divergence instead of clobbering', () => {
+    const fileA: FileData = { path: '/project/src/conflict_a.ri', content: 'A0' };
+    const fileB: FileData = { path: '/project/src/conflict_b.ri', content: 'B0' };
+    const store = setupStore([fileA, fileB]);
+    store.setActiveFile(fileA.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // User edits fileA → buffer 'XA0' (dirty); the store snapshot stays 'A0'.
+    view.dispatch({ changes: { from: 0, insert: 'X' } });
+    expect(getEditorView(container).state.doc.toString()).toBe('XA0');
+    expect(store.state.dirtyFiles).toContain(fileA.path);
+
+    // Switch away — fileA's EditorState (doc 'XA0') is cached while it is inactive.
+    store.setActiveFile(fileB.path);
+
+    // A concurrent disk refresh lands 'A1' under the inactive DIRTY tab. markExternallyChanged
+    // is exactly what App.onFileChanged / openFile's dirty branch raise for a dirty external
+    // change, routing a later save to the conflict prompt; updateFileContent forces the store
+    // to the fresh disk content 'A1' so the switch-back must choose between the dirty buffer
+    // ('XA0') and diverged store/disk content ('A1') — a genuine three-way divergence.
+    store.updateFileContent(fileA.path, 'A1');
+    store.markExternallyChanged(fileA.path);
+    expect(store.state.externallyChanged).toContain(fileA.path);
+
+    // Switch back — the isDirty guard (Editor.tsx:666) must restore the cached dirty buffer
+    // 'XA0' rather than rebuilding from the store's 'A1'. Unsaved edits win over the concurrent
+    // disk refresh; the conflict is surfaced by the still-set externallyChanged flag (which the
+    // switch-back must not clear), not by silently clobbering the edit.
+    store.setActiveFile(fileA.path);
+    expect(getEditorView(container).state.doc.toString()).toBe('XA0');
+    expect(store.state.externallyChanged).toContain(fileA.path);
+    expect(store.state.dirtyFiles).toContain(fileA.path);
+  });
+});
+
+// task-5359 capstone: faithfully mirror the dogfood repro (printer_v01, 2026-07-22/23).
+// Reopening an already-open file via the debug bridge (open printer, open a second
+// file, reopen printer, disk changes, reopen printer) must keep exactly one printer
+// tab AND show the fresh disk content in the active CM view — not a stale first-load
+// buffer.  Passes only with BOTH fix A (clean-refresh in the store) and fix B (rebuild
+// the EditorState from fresh store content on a clean diverged switch-back).
+describe('reopen of an already-open file via the debug bridge shows fresh content in one tab (task-5359 capstone)', () => {
+  it('one printer tab and the active view reflects disk after a reopen with new content', () => {
+    const printer: FileData = { path: '/project/src/printer_v01.ri', content: 'V0' };
+    const devCapstan: FileData = { path: '/project/src/dev_capstan.ri', content: 'D' };
+    const store = setupStore([printer]);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    expect(getEditorView(container).state.doc.toString()).toBe('V0');
+
+    // Open a second file, then reopen the printer (still V0 on disk) — back to printer.
+    store.openFile({ path: devCapstan.path, content: 'D' });
+    store.openFile({ path: printer.path, content: 'V0' });
+    expect(getEditorView(container).state.doc.toString()).toBe('V0');
+
+    // Disk edit to the printer → 'V1' happens while it is inactive: switch to the
+    // second file, then reopen the printer with the fresh disk content.
+    store.openFile({ path: devCapstan.path, content: 'D' });
+    store.openFile({ path: printer.path, content: 'V1' });
+
+    // Exactly one printer tab (dedup), two tabs total — no duplicate spawned.
+    expect(store.state.openFiles.filter((f) => f.path === printer.path)).toHaveLength(1);
+    expect(store.state.openFiles).toHaveLength(2);
+    // Printer is focused and the CM view shows disk == what the engine evaluates.
+    expect(store.state.activeFile).toBe(printer.path);
+    expect(getEditorView(container).state.doc.toString()).toBe('V1');
+  });
+});
+
+// task-5366: the store→view content-sync effect reads openFiles.find(...), which
+// subscribes it to STRUCTURAL changes of openFiles (append/removal) — not merely to
+// the active file's content signal. editorStore.openFile/closeFile issue un-batched
+// setState calls, so a structural mutation re-runs the effect while activeFile is
+// unchanged; without content-level tracking it dispatches the (unchanged) store
+// snapshot over a dirty view buffer, silently clobbering unsaved edits.
+describe('openFile of a not-yet-open file must not clobber a dirty active buffer (task-5366)', () => {
+  it('Case 1 (openFile-append): opening a new file does not clobber the dirty active buffer, and switch-back keeps the edit', () => {
+    const fileA: FileData = { path: '/project/src/sync_a.ri', content: 'A0' };
+    const store = setupStore([fileA]);
+    store.setActiveFile(fileA.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Dirty the active buffer: view holds 'XA0', store snapshot stays 'A0'.
+    view.dispatch({ changes: { from: 0, insert: 'X' } });
+    expect(getEditorView(container).state.doc.toString()).toBe('XA0');
+    expect(store.state.dirtyFiles).toContain(fileA.path);
+
+    // Open a BRAND-NEW file — a structural openFiles append while fileA is still
+    // dirty. This must not clobber fileA's cached buffer.
+    const fileB: FileData = { path: '/project/src/sync_b.ri', content: 'B0' };
+    store.openFile(fileB);
+    expect(getEditorView(container).state.doc.toString()).toBe('B0');
+
+    // Switch back to fileA — must show the preserved unsaved edit, not the
+    // store's clean 'A0' snapshot.
+    store.setActiveFile(fileA.path);
+    expect(getEditorView(container).state.doc.toString()).toBe('XA0');
+    expect(store.state.dirtyFiles).toContain(fileA.path);
+  });
+
+  it('Case 2 (closeFile of a non-active tab): closing an unrelated tab does not clobber the dirty active buffer', () => {
+    const fileA: FileData = { path: '/project/src/close_a.ri', content: 'A0' };
+    const fileC: FileData = { path: '/project/src/close_c.ri', content: 'C0' };
+    const store = setupStore([fileA, fileC]);
+    store.setActiveFile(fileA.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Dirty the active buffer: view holds 'XA0', store snapshot stays 'A0'.
+    view.dispatch({ changes: { from: 0, insert: 'X' } });
+    expect(getEditorView(container).state.doc.toString()).toBe('XA0');
+    expect(store.state.dirtyFiles).toContain(fileA.path);
+
+    // Close a DIFFERENT, non-active tab — a structural openFiles removal with no
+    // tab switch. This must not clobber fileA's cached buffer either.
+    store.closeFile(fileC.path);
+    expect(getEditorView(container).state.doc.toString()).toBe('XA0');
+  });
+
+  it('Case 3 (regression guard): a genuine external content change to the active file still auto-reloads', () => {
+    const fileA: FileData = { path: '/project/src/reload_a.ri', content: 'A0' };
+    const store = setupStore([fileA]);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    expect(getEditorView(container).state.doc.toString()).toBe('A0');
+
+    // Genuine external content change to the ACTIVE file (e.g. auto-reload) must
+    // still flow through the content-sync effect's dispatch.
+    store.updateFileContent(fileA.path, 'A1');
+    expect(getEditorView(container).state.doc.toString()).toBe('A1');
+  });
+});
+
 describe('Editor scrollToLocation', () => {
   const BASELINE_HEAD = 9; // file2 'structure Mount {}': end_column 10 -> 0-indexed offset 9
 
@@ -2015,5 +2205,61 @@ describe('Editor F2 inline rename', () => {
     // The refusal path performs zero edits → no debounced backend source update.
     vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS + 100);
     expect(updateSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('PRIMARY-selection guard integration (task #5361)', () => {
+  it('mounts drawSelection (.cm-selectionLayer present) and blur preserves the logical selection', () => {
+    const store = setupStore();
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // drawSelection — wired via reifyPrimarySelectionGuard — renders its own
+    // selection layer. This is absent until the guard is added to the
+    // extensions array (step-10), so this assertion is the RED signal.
+    expect(container.querySelector('.cm-selectionLayer')).not.toBeNull();
+
+    // Give the editor a non-empty selection, then blur the content DOM. The
+    // guard collapses ONLY the native DOM selection; it must never throw and
+    // must never mutate view.state.selection (the logical selection is the
+    // source of truth). We deliberately do NOT assert on jsdom's native
+    // getSelection contents — jsdom has no real Selection semantics.
+    view.dispatch({ selection: { anchor: 0, head: 5 } });
+    expect(() => view.contentDOM.dispatchEvent(new Event('blur'))).not.toThrow();
+    expect(view.state.selection.main.empty).toBe(false);
+  });
+
+  it('blur→focus round-trip leaves view.state.selection.main {from,to,anchor,head} byte-for-byte unchanged', () => {
+    const store = setupStore();
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Establish a REVERSED (leftward) non-empty selection: anchor=6 > head=1,
+    // so main.from=1, main.to=6 while anchor/head keep the direction. This
+    // exercises two invariants at once against a real CM mount:
+    //   (1) neither handler ever dispatches, so a future CM DOMObserver syncing
+    //       the transiently-collapsed native selection back into state on blur
+    //       cannot corrupt the logical selection (the guard's core promise);
+    //   (2) the focus handler rebuilds a FORWARD native range from from/to, but
+    //       because view.state is never mutated the reversed anchor/head survive.
+    view.dispatch({ selection: { anchor: 6, head: 1 } });
+    const before = view.state.selection.main;
+    const snapshot = { from: before.from, to: before.to, anchor: before.anchor, head: before.head };
+    // Sanity: this really is a reversed selection (head < anchor).
+    expect(snapshot).toEqual({ from: 1, to: 6, anchor: 6, head: 1 });
+
+    // Full round-trip: blur (collapses only the native selection) then focus
+    // (rebuilds it). Must never throw and must never touch view.state.
+    expect(() => {
+      view.contentDOM.dispatchEvent(new Event('blur'));
+      view.contentDOM.dispatchEvent(new Event('focus'));
+    }).not.toThrow();
+
+    const after = view.state.selection.main;
+    expect({ from: after.from, to: after.to, anchor: after.anchor, head: after.head }).toEqual(
+      snapshot,
+    );
   });
 });

@@ -1583,29 +1583,46 @@ fn check_expr_struct_ctor_args(
         let CompiledExprKind::StructureInstanceCtor {
             type_name,
             ordered_args,
+            span: ctor_span,
             ..
         } = &node.kind
         else {
             return;
         };
+        // task 5302 (Q1 span anchoring): prefer the ctor call-site's own span
+        // (task 4089 `StructureInstanceCtor.span`, populated from the AST
+        // `FunctionCall` node) so the emitted label anchors at the offending
+        // `Foo(...)` call rather than the representative cell span — which is
+        // `SourceSpan::empty(0)` for fn / forall / guard / objective bodies, and
+        // the whole-declaration span for value cells. Falls back to
+        // `representative_span` for synthetic ctors with no source span. The sub
+        // `=` path keeps its own per-arg `arg_expr.span` via PendingBoundCheck
+        // (entity.rs), so this change only refines the StructureInstanceCtor
+        // (expression) path — no per-arg span is added to `ordered_args`.
+        let anchor_span = ctor_span.unwrap_or(representative_span);
         // Resolve the target template once; skip if not found.
         let Some(template) = template_registry.get(type_name.as_str()) else {
             return;
         };
         for (arg_name, compiled_arg) in ordered_args {
-            // Scope to List<TraitObject>, StructureRef, Type::Vector, and Selector/AnySelector
-            // params. Bare TraitObject params are skipped — see fn doc-comment rationale.
+            // task 5302 (struct-ctor-conformance α): check ALL named params EXCEPT
+            // a bare `Type::TraitObject(_)`. This generalizes the original 4584
+            // 4-family allowlist (List<TraitObject> / StructureRef / Vector /
+            // Selector) to every concrete field type, routed through the shared
+            // conformance walker at Warning severity (CTOR_FIELD_CONFORMANCE_SEVERITY).
+            //
+            // Bare TraitObject params stay EXEMPT here (D6): they are deliberate
+            // type-coercion escape hatches (e.g. `ConstitutiveLawInput.law :
+            // ConstitutiveLaw`) and are already covered by the fn-call / sub-
+            // component paths. REVISIT this exemption once those escape-hatch call
+            // sites are migrated — see docs/prds/struct-ctor-conformance.md; at that
+            // point the `!matches!(… TraitObject …)` guard can be dropped so bare
+            // trait params are checked too.
             let should_check = template
                 .value_cells
                 .iter()
                 .find(|vc| vc.id.member == arg_name.as_str())
-                .is_some_and(|vc| {
-                    matches!(&vc.cell_type,
-                        Type::List(inner) if matches!(inner.as_ref(), Type::TraitObject(_)))
-                        || matches!(&vc.cell_type, Type::StructureRef(_))
-                        || matches!(&vc.cell_type, Type::Vector { .. })
-                        || matches!(&vc.cell_type, Type::Selector(_) | Type::AnySelector)
-                });
+                .is_some_and(|vc| !matches!(&vc.cell_type, Type::TraitObject(_)));
             if !should_check {
                 continue;
             }
@@ -1613,7 +1630,7 @@ fn check_expr_struct_ctor_args(
                 type_name,
                 arg_name,
                 compiled_arg,
-                representative_span,
+                anchor_span,
                 template_registry,
                 trait_registry,
                 diagnostics,

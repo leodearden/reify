@@ -12,7 +12,7 @@
 
 #![allow(clippy::mutable_key_type)]
 
-use reify_core::ValueCellId;
+use reify_core::{Severity, ValueCellId};
 use reify_ir::{PersistentMap, Value};
 use reify_test_support::{
     collect_errors, compile_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib,
@@ -201,19 +201,26 @@ structure def BadUsage {
 "#;
 
     let compiled = compile_source_with_stdlib(SOURCE);
-    let errors = collect_errors(&compiled.diagnostics);
+    // task 5302 α: ctor-site trait conformance (the `sub =` path) now emits at
+    // Severity::Warning under the CTOR_FIELD_CONFORMANCE_SEVERITY knob, not Error.
+    // Filter warnings (was collect_errors). Diagnostic code/message unchanged.
+    let warnings: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
     // Match "trait 'Support'" specifically so a stray mention of the consumer
     // structure name "SupportConsumer" cannot accidentally satisfy the check.
     // The conformance module emits messages of the form:
     //   "type 'NotASupport' does not conform to trait 'Support' required by param 'sup'"
     // (see crates/reify-compiler/src/conformance/mod.rs:374-376).
     assert!(
-        errors
+        warnings
             .iter()
             .any(|d| d.message.contains("does not conform to trait")
                 && d.message.contains("trait 'Support'")),
         "NotASupport must be rejected for a Support-typed param with a 'does not conform \
-         to trait Support' error (empty-marker trait still enforces nominal identity); \
-         got errors: {errors:?}"
+         to trait Support' warning (empty-marker trait still enforces nominal identity); \
+         got warnings: {warnings:?}"
     );
 }

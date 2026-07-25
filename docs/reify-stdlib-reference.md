@@ -347,6 +347,14 @@ parameters are unit-less in the joint's local frame.
 
 ### 3.2 `std.geometry.primitive`
 
+**Note on the signatures below:** these describe the target `std.geometry` stdlib
+API — the structured/typed argument forms designers should expect. The
+compiler's current lowering for a few of these constructors (`polygon`,
+`line_segment`, `arc`, `interp`, `bezier`) accepts only flat positional
+coordinate arguments rather than the structured types shown; each is annotated
+below with a `// current compiler form:` comment giving the form that compiles
+today.
+
 **3D solids:**
 
 ```
@@ -406,6 +414,8 @@ kernel error instead of a diagnostic.
 fn rectangle(width: Length, height: Length) -> Surface
 fn circle(radius: Length) -> Surface
 fn polygon(vertices: List<Point2<Length>>) -> Surface
+// current compiler form: polygon(x1, y1, x2, y2, ...) — variadic flat
+// coordinate pairs, at least 6 args (3 points), even count; see geometry.rs:1570
 fn ellipse(semi_major: Length, semi_minor: Length) -> Surface
 fn rounded_rect(width: Length, depth: Length, corner_r: Length) -> Surface
 ```
@@ -418,10 +428,17 @@ the caller's explicit vertex coordinates, not auto-centred.
 
 ```
 fn line_segment<N: Nat>(start: Point<N,Length>, end: Point<N,Length>) -> Curve
+// current compiler form: line_segment(x1, y1, z1, x2, y2, z2) — 6 flat
+// scalars; see geometry_curve.rs:22
 fn arc(center: Point3<Length>, radius: Length, start_angle: Angle, end_angle: Angle) -> Curve
+// current compiler form: arc(cx, cy, cz, radius, start_angle, end_angle, ax,
+// ay, az) — 9 flat args (adds an explicit axis ax/ay/az); see geometry_curve.rs:47
 fn helix(radius: Length, pitch: Length, height: Length) -> Curve
 fn interp<N: Nat>(points: List<Point<N,Length>>) -> Curve
+// current compiler form: same list -> flat-args divergence as `polygon` /
+// `line_segment` above (flat coordinate args, not a structured List<Point<N,Length>>)
 fn bezier<N: Nat>(control_points: List<Point<N,Length>>) -> Curve
+// current compiler form: same list -> flat-args divergence as `interp` above
 fn nurbs<N: Nat>(control_points: List<Point<N,Length>>, weights: List<Real>, knots: List<Real>, degree: Int) -> Curve
 
 // Planned — not yet implemented; standalone feature; see PRD docs/prds/geometry-primitive-constructors.md

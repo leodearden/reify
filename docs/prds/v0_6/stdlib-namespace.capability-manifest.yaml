@@ -1,0 +1,326 @@
+prd: docs/prds/v0_6/stdlib-namespace.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 5493
+  title: 'stdlib-namespace α: compile-side collision/direction unification (NS-P1/P3
+    shared policy point) + NS-P4 Mode parity test'
+  capabilities:
+  - name: collision-census-sites-real
+    binding: 'signal premise — per-kind collision sites verified on main 2026-07-25:
+      entities_phase.rs HashMap-collect last-wins, enums_phase.rs prelude++local inversion
+      (type_resolution.rs .iter().find), eval-side first-wins find_template_with_prelude
+      (reify-eval/src/engine_eval.rs:64-68); both `structure def Mode` decls live
+      (solver_buckling.ri:174, modal_analysis.ri:192)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn find_template_with_prelude
+      paths:
+      - crates/reify-eval/src/engine_eval.rs
+      expect: present
+  - name: mode-compile-eval-divergence-real
+    binding: 'signal premise — probe 2026-07-24 (PRD §0/§1) re-verified 2026-07-25
+      against fresh 07:44 binary: tests/prd-gate/fixtures/stdlib_ns_mode_member.ri
+      (m.eigenvalue) exits 1 with "structure ''Mode'' has no member ''eigenvalue''";
+      control stdlib_ns_mode_member_modal.ri (m.frequency) exits 0 — compile binds
+      modal Mode (last-wins) while eval binds buckling Mode (first-wins)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: post-α parity (NS-P4) is pinned by the task's own harness-resident parity
+        test; the shared policy point is implementer-named, not grep-able ex ante
+- label: β
+  task_id: 5496
+  title: 'stdlib-namespace β: intra-stdlib pub-name collision = Error at stdlib build
+    + BucklingMode rename'
+  capabilities:
+  - name: duplicate-pub-name-rejection-fires
+    binding: 'capability→producer (this leaf) — negative-assertion #3: rejection mechanism
+      ABSENT today by design of the pre-state (collision is silent last-wins/first-wins
+      per §1 census; stdlib_ns_mode_member.ri proves the silent divergence). β builds
+      the Error-at-stdlib-build panic path naming both modules; boundary #3''s injected-duplicate
+      test observes it fire'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: structure def Mode \{
+      paths:
+      - crates/reify-compiler/stdlib/solver_buckling.ri
+      expect: absent
+  - name: buckling-rename-blast-radius-stdlib-internal
+    binding: 'signal premise — buckling Mode fields unreachable from user code today
+      (probe: eigenvalue member error), so the rename cannot break user code; accessors
+      critical_load (solver_buckling_fns.ri:74) + mode_shape are the stdlib-internal
+      blast radius, covered by boundary #4'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: structure def BucklingMode
+      paths:
+      - crates/reify-compiler/stdlib/solver_buckling.ri
+      expect: present
+- label: γ
+  task_id: 5494
+  title: 'stdlib-namespace γ: authoritative templates before fn bodies — delete build_structure_def_skeleton
+    mirror'
+  capabilities:
+  - name: skeleton-mirror-exists-with-documented-hazards
+    binding: signal premise — build_structure_def_skeleton at crates/reify-compiler/src/entity.rs:5951
+      (grep verified 2026-07-25) with the two documented silent-divergence hazards
+      (poison defaults with discarded diagnostics entity.rs:5935-5950; nested-ctor-in-let
+      entity.rs:5972-5984); two-sub-pass split direction anticipated in-file
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: build_structure_def_skeleton
+      paths:
+      - crates/reify-compiler/src
+      expect: absent
+- label: δ
+  task_id: 5498
+  title: 'stdlib-namespace δ: fold solver_buckling_fns/modal_analysis_fns/trajectory_fns
+    into parent modules'
+  capabilities:
+  - name: vestigial-fns-files-exist
+    binding: signal premise — the three files exist and are registered in stdlib_loader.rs
+      stdlib_sources() (verified 2026-07-25); same-module capability substrate landed
+      via 3895+4544 (solver_elastic.ri:717)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: solver_buckling_fns|modal_analysis_fns|trajectory_fns
+      paths:
+      - crates/reify-compiler/src/stdlib_loader.rs
+      expect: absent
+  - name: fold-safety-producer
+    binding: 'capability→producer (upstream, in-batch) — γ (phase order: fn bodies
+      compile after own-module templates) and β (buckling rename lands before the
+      buckling file fold). Signal phrased as RELATIVE delta (the three files gone);
+      absolute stdlib counts NOT asserted (sibling PRDs add stdlib modules concurrently
+      — thread-hole std.features.holes, discrete standard_stock)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: dependency-edge property (γ, β upstream), wired at decompose; not grep-able
+- label: ε
+  task_id: 5497
+  title: 'stdlib-namespace ε: import-header generation tooling (unresolved name →
+    defining module → import list)'
+  capabilities:
+  - name: shared-tooling-consumed-twice
+    binding: 'capability→consumer — D-9: one tool consumed by ζ (stdlib conversion)
+      and λ (user corpus migration + fix --imports). Reuse proof is boundary #13 second
+      clause (tool output on a stripped file reproduces ζ''s committed headers). Packaging
+      decided in-task (§10 Q5; λ needs it user-facing)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: tool surface/packaging is implementer-decided per §10 Q5 (xtask vs reify
+        subcommand); ζ and λ signals prove delivery
+- label: ζ
+  task_id: 5499
+  title: 'stdlib-namespace ζ: stdlib declared imports + strict per-module compile
+    + module std.* headers + NS-M3 determinism test'
+  capabilities:
+  - name: ordering-comments-and-identity-test-exist
+    binding: signal premise — ~20 comment-only ordering constraints in stdlib_loader.rs:37-48ff;
+      identity-order pin signal_2_real_stdlib_compiles_clean_and_order_is_stable exists
+      (D-10 retires it, replaced by NS-M3 determinism test); std-skip of attach_module_path_diag
+      at module_dag.rs:527 (NS-V3 removes)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: order_is_stable
+      paths:
+      - crates/reify-compiler
+      expect: absent
+  - name: stdlib-modules-gain-declared-imports
+    binding: 'capability→producer (this leaf, headers generated by upstream ε tool)
+      — boundary #7 negative fixture (undeclared sibling reference fails stdlib build)
+      + #8 (order permutation → byte-identical output)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^import std\.
+      paths:
+      - crates/reify-compiler/stdlib
+      expect: present
+- label: η
+  task_id: 5500
+  title: 'stdlib-namespace η: embedded mount — std.* through ModuleDag; delete StdlibMode
+    + overlay diagnostics'
+  capabilities:
+  - name: stdlibmode-machinery-exists
+    binding: 'signal premise — StdlibMode enum at crates/reify-compiler/src/module_dag.rs:89
+      + partial-overlay diagnostics (module_dag.rs:88-230), grep verified 2026-07-25;
+      fs mode broken for any std module with cross-std deps (§1 Smell 2c), no known
+      real consumer. D3-corrected attribution (wf_ed2243d0-e66 adversary): entry-level
+      `import std.*` is FILTERED out of the DAG walk (module_dag.rs:931 is_std_import_path)
+      — `import std.nonexistent` exits 0 with only a W-level "not resolved by this
+      entry point" warning, no Error; stdlib resolves via prelude seeding, StdlibMode
+      governs the seeding SOURCE only. η signal gains the negative control (fixture
+      stdlib_ns_std_nonexistent_import.ri): post-η that import is an ordinary Error'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: StdlibMode
+      paths:
+      - crates/reify-compiler/src
+      expect: absent
+  - name: compiled-program-imports-surface
+    binding: 'capability→producer (CROSS-PRD) — CompiledProgram.imports / compile_program
+      is resolution-unification.md §8 β''s deliverable (PRD committed on main in the
+      same merge as this PRD; its decompose runs as a separate session — task id pending,
+      textual gate recorded in η''s description, real add_dependency edge wired when
+      its batch files). Anti-orphan: named committed producer, not producer-absent'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: cross-PRD producer task id pending resolution-unification decompose;
+        η's description carries the textual gate
+- label: θ
+  task_id: 5501
+  title: 'stdlib-namespace θ: fold modal_mechanism_fns into std.modal.analysis'
+  capabilities:
+  - name: cross-module-artifact-exists
+    binding: signal premise — modal_mechanism_fns.ri exists with pub fn mechanism_modal_analysis
+      (line 72, grep verified 2026-07-25); a CROSS-module ordering artifact (needs
+      std.modal.analysis + std.kinematic) curable only by ζ's declared imports — producer
+      ζ upstream (in-batch, wired)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: modal_mechanism_fns
+      paths:
+      - crates/reify-compiler/src/stdlib_loader.rs
+      expect: absent
+- label: ι
+  task_id: 5502
+  title: 'stdlib-namespace ι: std.prelude facade module (pub-import re-export of curated
+    core)'
+  capabilities:
+  - name: pub-import-reexport-substrate
+    binding: 'capability→producer (CROSS-PRD) — pub import re-export semantics are
+      resolution-unification.md §8 μ''s deliverable (its P3; ImportKind pub form parses
+      today per its §1 — parser-only, zero compiler consumers). Task id pending its
+      decompose — textual gate in ι''s description, edge wired when filed. D-4: facade
+      is an ordinary curated module, no #ambient_imports pragma'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: cross-PRD producer task id pending resolution-unification decompose
+  - name: facade-module-committed
+    binding: 'capability→producer (this leaf) — curation list finalized in-task (§10
+      Q1 baseline: units, si_units, option_recovery, result, determinacy.purposes,
+      geometry traits, io); boundary #11 one-liner proof'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: module std\.prelude
+      paths:
+      - crates/reify-compiler/stdlib
+      expect: present
+- label: κ
+  task_id: 5503
+  title: 'stdlib-namespace κ: strict-visibility flip + NS-V2 fix-it diagnostics +
+    user-shadows-stdlib Error escalation'
+  capabilities:
+  - name: strict-flip-substrate
+    binding: 'capability→producer (CROSS-PRD) — flips visibility against the unified
+      env: resolution-unification P2 (its θ/ι/κ — DefEnv authoritative, flat-slice
+      migration, interim deletion). Task ids pending its decompose — textual gate
+      in κ''s description, edges wired when filed. Supersedes its I4 + β-interim stdlib
+      seeding per D-11 (recorded in BOTH PRDs, amendments landed same branch — not
+      drift)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: cross-PRD producer task ids pending resolution-unification decompose
+  - name: fixit-diagnostic-structured
+    binding: 'capability→producer (this leaf) — NS-V2: unresolved name in exactly
+      one stdlib module → structured fix-it naming module + std.prelude (INV-SF-6:
+      carries a DiagnosticCode; #cfg row #14 via existing import_cfg_satisfied mechanism
+      — conditional-compilation.md landed)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'diagnostic code name is implementer-chosen; boundary #12/#14 pin behavior'
+- label: λ
+  task_id: 5504
+  title: 'stdlib-namespace λ: fix --imports + strict corpus migration (examples/,
+    prj/, gui templates)'
+  capabilities:
+  - name: corpus-compiles-today
+    binding: signal premise — examples/ + prj/ compile under the ambient regime (examples_smoke
+      gate green on main); migration = mechanical header insertion via ε's tool under
+      κ's strict regime (both upstream, wired)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^import std\.
+      paths:
+      - examples
+      expect: present
+  - name: tool-reuse-proof
+    binding: 'capability→producer (upstream ε) — boundary #13 second clause: fix --imports
+      on a stripped file reproduces the committed headers (D-9 built once, consumed
+      twice)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: reuse equivalence asserted by λ's own test, not grep-able
+- label: μ
+  task_id: 5495
+  title: 'stdlib-namespace μ: qualified-reference grammar production (expression +
+    type position) — tree-sitter + reify-syntax + lezer'
+  capabilities:
+  - name: qualified-ref-does-not-parse-today
+    binding: 'grammar-fixture (anti-mismatch, rejection direction) — probes 2026-07-25:
+      tree-sitter parse tests/prd-gate/fixtures/stdlib_ns_qualified_expr.ri exit 1,
+      stdlib_ns_qualified_type.ri exit 1 (matches PRD §0 grammar-gate probe). μ IS
+      the grammar producer (grammar_confirmed: false); the passing forms of both fixtures
+      are committed with μ (§6 last row)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'post-μ parse success is pinned by the fixtures μ commits + boundary
+        #15; production name in grammar.js is implementer-chosen'
+  - name: grammar-disambiguation-from-member-access
+    binding: 'signal premise — NS-Q2: grammar must disambiguate qualified ref from
+      member access; resolution-phase rewrite mirrors resolution-unification D-9''s
+      MemberAccess→EnumAccess fixup pattern (landed PRD, mechanism precedent named)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: design-pattern reference; enforced by μ/ν boundary tests
+- label: ν
+  task_id: 5505
+  title: 'stdlib-namespace ν: qualified-reference resolution over DefEnv (module_key,name)
+    keying'
+  capabilities:
+  - name: grammar-producer-upstream
+    binding: grammar-fixture — names upstream in-batch grammar-producer μ (dep wired);
+      pre-state parse failure verified (both fixtures exit 1, 2026-07-25)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: dependency-edge property (μ upstream), wired at decompose
+  - name: defenv-keying-substrate
+    binding: 'capability→producer (CROSS-PRD) — (module_key,name) internal keying
+      is resolution-unification β''s I7 deliverable (NS-Q3: no re-plumbing of call
+      sites). Task id pending its decompose — textual gate in ν''s description, edge
+      wired when filed'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: cross-PRD producer task id pending resolution-unification decompose
+  - name: no-fallback-rejection-fires
+    binding: 'rejection-check (negative-assertion #17) — pp.NotThere → Error naming
+      pp''s module, never unqualified fallback; rejection mechanism built BY this
+      leaf, observed by its own boundary test (INV-SF-6: carries a code; INV-SF-2:
+      Error exits nonzero via existing severity gates)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'post-state rejection pinned by ν''s boundary tests #16/#17'

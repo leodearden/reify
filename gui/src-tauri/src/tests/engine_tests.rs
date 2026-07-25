@@ -199,6 +199,42 @@ fn make_session() -> EngineSession {
     EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
 }
 
+/// Shared 3-level nested-composed fixture (task 5348). `Top` composes two `Mid`
+/// subs; each `Mid` composes two `Leaf` subs; each `Leaf` owns a self-contained
+/// box. This yields 4 independent leaf realizations at the composed dotted paths
+/// `Top.a.p` / `Top.a.q` / `Top.b.p` / `Top.b.q` — 3 nesting levels, matching the
+/// repro's `Printer.motion.head_block` depth.
+///
+/// Leaf geometry is self-contained (a plain `box`, no cross-sub `GeomRef`), so no
+/// realization references `self.inner.body`; that would trip the documented v0.1
+/// nested sub-of-sub override scope boundary (cross_sub_geometry_e2e.rs:1583-1672).
+const NESTED_COMPOSED_SRC: &str = r#"pub structure Leaf {
+    let g = box(10mm, 10mm, 10mm)
+}
+pub structure Mid {
+    sub p = Leaf()
+    sub q = Leaf()
+}
+pub structure Top {
+    sub a = Mid()
+    sub b = Mid()
+}"#;
+
+/// Build an `EngineSession` (MockGeometryKernel + SimpleConstraintChecker) with
+/// [`NESTED_COMPOSED_SRC`] loaded — the shared nested-composed fixture for the
+/// full-scene debug-read tests (task 5348). Mirrors the `EngineSession::new`
+/// usage at the `sync_demand` harness below.
+fn make_nested_composed_session() -> EngineSession {
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session
+        .load_from_source(NESTED_COMPOSED_SRC, "nested_composed")
+        .expect("load_from_source of NESTED_COMPOSED_SRC should succeed");
+    session
+}
+
 #[test]
 fn get_mechanism_descriptors_extracts_prismatic_and_revolute_joints() {
     // Step-5 RED: load a 2-body open-chain mechanism and assert the descriptor
@@ -11243,9 +11279,9 @@ fn apply_shell_channels_leaves_non_matching_mesh_untouched() {
 
 /// element_kind_count histograms the per-face bytes; None → empty map.
 ///
-/// `debug_server` is gated behind the `gui` feature, so this test compiles and
-/// runs only under `--features gui` (the OCCT/Tauri build).
-#[cfg(feature = "gui")]
+/// `element_kind_count` was moved to the ungated `commands` module (task 5348) so
+/// the headless `mesh_stats_json` can reuse it, so this test no longer needs the
+/// `gui` feature.
 #[test]
 fn element_kind_count_histograms_element_kind_bytes() {
     let make = |element_kind: Option<Vec<u8>>| crate::types::MeshData {
@@ -11262,21 +11298,21 @@ fn element_kind_count_histograms_element_kind_bytes() {
         appearance: None,
     };
 
-    let all_shell = crate::debug_server::element_kind_count(&make(Some(vec![1, 1, 1])));
+    let all_shell = crate::commands::element_kind_count(&make(Some(vec![1, 1, 1])));
     assert_eq!(
         all_shell,
         std::collections::BTreeMap::from([(1u8, 3usize)]),
         "three shell faces → {{1: 3}}"
     );
 
-    let mixed = crate::debug_server::element_kind_count(&make(Some(vec![0, 1, 1])));
+    let mixed = crate::commands::element_kind_count(&make(Some(vec![0, 1, 1])));
     assert_eq!(
         mixed,
         std::collections::BTreeMap::from([(0u8, 1usize), (1u8, 2usize)]),
         "mixed faces → {{0: 1, 1: 2}}"
     );
 
-    let none = crate::debug_server::element_kind_count(&make(None));
+    let none = crate::commands::element_kind_count(&make(None));
     assert!(none.is_empty(), "None element_kind → empty histogram");
 }
 
@@ -13585,6 +13621,84 @@ fn sync_demand_populates_production_demand_selectively() {
             "body_a remains demanded after skipping the garbage key"
         );
     }
+}
+
+/// step-1 (task 5348): `build_gui_state_full_scene` returns the COMPLETE realized
+/// scene even after the frontend has flipped PRODUCTION demand to selective — the
+/// fix for the debug-MCP `mesh_stats`/`engine_state` under-report.
+///
+/// On the 3-level nested-composed fixture (`Top` → `Mid` → `Leaf`, 4 leaf
+/// realizations), the cold full-scope `build_gui_state` is the complete scene the
+/// frontend receives. Hiding one leaf branch via `sync_demand` (mirrors the
+/// frontend post-render selective flip) makes the NEXT `build_gui_state` return an
+/// incremental DELTA that under-reports the scene (DELTA CONTRACT,
+/// engine_build.rs:5440-5465). `build_gui_state_full_scene` must instead force the
+/// cold full-scope override and return every realization's mesh, then RESTORE the
+/// selective scope so subsequent warm edits stay incremental.
+///
+/// RED until step-2 adds `EngineSession::build_gui_state_full_scene` (compile-error
+/// RED, consistent with the sync_demand "RED until step-10" house pattern above).
+#[test]
+fn build_gui_state_full_scene_returns_complete_scene_under_selective_demand() {
+    let mut session = make_nested_composed_session();
+
+    // (1) Cold-build ground truth: production demand is full_scope right after
+    //     load, so this is the COMPLETE scene the frontend receives.
+    let cold = session
+        .build_gui_state()
+        .expect("cold build_gui_state should succeed");
+    let n = cold.meshes.len();
+    assert!(
+        n >= 4,
+        "nested-composed fixture must realize the 4 leaf bodies (Top.a.p/a.q/b.p/b.q); got {n}"
+    );
+    let all_paths: Vec<String> = cold.meshes.iter().map(|m| m.entity_path.clone()).collect();
+
+    // (2) Hide exactly one leaf branch: sync all OTHER entity_paths as the visible
+    //     set → flips PRODUCTION demand SELECTIVE (mirrors the frontend sync).
+    let hidden_path = all_paths
+        .last()
+        .expect("cold scene must have at least one mesh")
+        .clone();
+    let visible: Vec<String> = all_paths
+        .iter()
+        .filter(|p| **p != hidden_path)
+        .cloned()
+        .collect();
+    session.sync_demand(&visible);
+
+    // (3) The selective `build_gui_state` under-reports: absent HIDDEN + HASH-EXEMPT
+    //     realizations mean the delta carries strictly fewer meshes than the scene.
+    let selective = session
+        .build_gui_state()
+        .expect("selective build_gui_state should succeed");
+    assert!(
+        selective.meshes.len() < n,
+        "selective build_gui_state must under-report the scene (delta); got {} vs cold {n}",
+        selective.meshes.len()
+    );
+
+    // (4) The fix: `build_gui_state_full_scene` returns the COMPLETE scene (== n)
+    //     and the hidden body's entity_path is present.
+    let full = session
+        .build_gui_state_full_scene()
+        .expect("build_gui_state_full_scene should succeed");
+    assert_eq!(
+        full.meshes.len(),
+        n,
+        "full-scene read must return every realized body (the complete cold scene)"
+    );
+    assert!(
+        full.meshes.iter().any(|m| m.entity_path == hidden_path),
+        "full-scene read must include the hidden body's entity_path {hidden_path:?}"
+    );
+
+    // (5) The full-scene read is READ-ONLY: it restores the frontend's selective
+    //     scope (full_scope OFF) so subsequent warm edits stay incremental.
+    assert!(
+        !session.core_state_for_test().engine().demand_is_full_scope(),
+        "build_gui_state_full_scene must restore the selective (non-full-scope) demand state"
+    );
 }
 
 // --- ValueData::last_substantive_value population (demand-prune prior value, §8 γ #4739) ---

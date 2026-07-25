@@ -350,23 +350,26 @@ structure def NegRig {
     let h = AxisHolder(axis: 1.0)
 }"#;
     let compiled = parse_and_compile(source);
-    let errors: Vec<_> = compiled
+    // task 5302 α (Option-A uniform downgrade): Vector ctor conformance (task 4622)
+    // is emitted at CTOR_FIELD_CONFORMANCE_SEVERITY (Warning) rather than Error;
+    // code/count are unchanged, δ later flips the knob back to Error.
+    let warnings: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.severity == Severity::Warning)
         .collect();
     assert_eq!(
-        errors.len(),
+        warnings.len(),
         1,
-        "scalar arg for Vector3<Length> param must produce exactly 1 Error; \
+        "scalar arg for Vector3<Length> param must produce exactly 1 Warning; \
          got {}: {:#?}",
-        errors.len(),
-        errors
+        warnings.len(),
+        warnings
     );
     assert_eq!(
-        errors[0].code,
+        warnings[0].code,
         Some(DiagnosticCode::TypeNotConformingToVector),
         "expected TypeNotConformingToVector, got {:?}",
-        errors[0].code,
+        warnings[0].code,
     );
 }

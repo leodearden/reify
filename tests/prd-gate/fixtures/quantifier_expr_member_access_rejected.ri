@@ -1,0 +1,21 @@
+// γ-verification ADVERSARY baseline fixture for indexed-sub-instantiation §7 δ.
+// Statement/expression ASYMMETRY the prover's probe #5 masks: the forall
+// STATEMENT over a collection sub supports member access on the binder
+// (task 2364 lowering — prover fixture forall_collection_resolves.ri), but the
+// same shape as a QUANTIFIER EXPRESSION fails today with
+// "member access not yet supported: .od" (crates/reify-compiler/src/expr.rs:6301
+// residual member-access tail). Any δ/ζ assumption of statement/expression
+// parity (e.g. writing the neighbor constraint as an expression-position
+// quantifier whose predicate does `ps[i].od`) is FALSE on today's substrate;
+// δ's expression-side deliverable is domain acceptance + Int binding only.
+// Expected: `reify check` exits 1; stderr contains
+// "member access not yet supported: .od" (verified 2026-07-25 against
+// target/debug/reify built same day).
+structure def P {
+    param od : Length = 5mm
+}
+structure def Rig {
+    sub vs : List<P>
+    constraint vs.count == 2
+    let all_big = forall v in vs : v.od > 1mm
+}

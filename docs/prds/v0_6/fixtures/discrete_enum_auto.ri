@@ -1,0 +1,8 @@
+module discrete_enum_auto
+
+enum Supplier { Acme, Bolt, Corex }
+
+structure DCM3 {
+    param s : Supplier = auto
+    constraint s == Supplier.Acme || s == Supplier.Bolt
+}

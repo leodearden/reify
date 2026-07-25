@@ -1,0 +1,12 @@
+module dic_string_auto
+
+// INV-SF-3 probe: an auto param of a kind NO registered solver can represent.
+// Baseline 2026-07-24: routed to DimensionalSolver (classifier String no-op ->
+// Dimensional default), which fails with the MISLEADING "constraints could not
+// be satisfied (max absolute residual: 1.00e0)". PRD-2-stable: String autos
+// are outside every solver envelope before AND after CpSat registration.
+
+structure DicStringAuto {
+    param s : String = auto
+    constraint s == "acme"
+}

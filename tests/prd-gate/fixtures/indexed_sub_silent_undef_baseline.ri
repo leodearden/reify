@@ -1,0 +1,17 @@
+// Fixture (γ decompose-phase premise, indexed-sub-instantiation PRD probe #2):
+// silent-undef baseline that leaf γ replaces. A collection sub whose element
+// type has a geometry member is accepted by `reify check` (exit 0) and
+// `reify eval` completes with exit 0 and ZERO error diagnostics, while the
+// per-element bodies are undef (eval stdout: `Rig.ps[0].body = undef`,
+// `Rig.__list_ps__body = [undef, undef]` — enumerator-verified 2026-07-25).
+module indexed_sub_silent_undef_baseline
+
+structure def P {
+    param r : Length = 5mm
+    let body = cylinder(r, 10mm)
+}
+
+structure def Rig {
+    sub ps : List<P>
+    constraint ps.count == 2
+}

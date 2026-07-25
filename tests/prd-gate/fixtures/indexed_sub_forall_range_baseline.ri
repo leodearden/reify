@@ -1,0 +1,17 @@
+/// α whole-fixture-signal baseline (indexed-sub-instantiation.md §7 α,
+/// decompose 2026-07-25, adversary-added): forall-over-range + index_access
+/// in constraint position ALREADY parses today (grammar level; the compiler
+/// rejects the Range domain loudly — that lift is task δ). Load-bearing for
+/// α's signal: the committed target-surface fixture must reach 0 ERROR nodes
+/// from the indexer delta alone.
+module forall_range
+
+structure Pulley {
+    param od : Length = 36mm
+}
+
+structure Rig {
+    sub idlers : List<Pulley>
+
+    forall i in 0..3 : constraint idlers[i].od < idlers[i + 1].od
+}

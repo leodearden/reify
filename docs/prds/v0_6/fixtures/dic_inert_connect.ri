@@ -1,0 +1,19 @@
+module dic_inert_connect
+
+// INV-SF-4 probe: ad-hoc @-selector connect generates a frame_align constraint
+// that is INDETERMINATE in every possible run (structurally inert). Baseline
+// 2026-07-24: non-strict check reports "No constraints violated (1
+// indeterminate)." exit 0; strict detail MISATTRIBUTES the reason as "inputs
+// undefined" while the recorded reason is "operator undefined for these
+// operand kinds".
+
+trait T {
+    param d : Length
+}
+
+structure def DicInertRig {
+    let shape = cylinder(10mm, 20mm)
+    port a : out T { param d : Length = 5mm }
+    port b : in T { param d : Length = 5mm }
+    connect a @ face("top") -> b @ face("bottom")
+}

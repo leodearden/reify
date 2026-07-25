@@ -1891,10 +1891,14 @@ assert "P3c: build/cxx-AAAA/output WAS relocated in this same run (guards non-va
 # Block Q — acquisition-time lane-lock exclusivity (task #5223, PRD
 # docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.11)
 #
-# The opt-in --lane-lock flag holds an exclusive flock on the sibling-path
-# ${LANE_DIR}.lock (the SAME convention thin-warm-lane.sh T3 / warm-lane-gc.sh's
-# live-consumer probe already use) across the destructive replace+clone, so a
-# reseed never clobbers a lane a live consumer still holds (inv.2).
+# The lane lock is an exclusive flock on the sibling-path ${LANE_DIR}.lock (the
+# SAME convention thin-warm-lane.sh T3 / warm-lane-gc.sh's live-consumer probe
+# already use) held across the destructive replace+clone, so a reseed never
+# clobbers a lane a live consumer still holds (inv.2). Acquired by DEFAULT under
+# --fresh-checkout (esc-5214/task 5354 fail-safe flip: the #5223 --lane-lock
+# guard was opt-in and thus bypassable by a caller that simply omitted it — the
+# exact esc-5214 acquire-path clobber). --lane-lock stays accepted (implied under
+# --fresh-checkout; still the explicit opt-in for the --reset-in-place control arm).
 #
 # Uses run_helper_real (real fixture: a non-empty <lane_dir>/target containing
 # a sentinel file) so the mv/clobber actually executes or is actually refused.
@@ -1910,6 +1914,20 @@ assert "P3c: build/cxx-AAAA/output WAS relocated in this same run (guards non-va
 # done-marker file); H6a/H6b confirm the lock block genuinely spans
 # --reset-in-place too, not just the --fresh-checkout path every case above
 # exercises.
+# H3 (task 5354, REWRITTEN) + H9 (task 5354, NEW) pin the fail-safe DEFAULT:
+# with the lock HELD and --fresh-checkout but NO --lane-lock, seed REFUSES
+# (H3, WAIT=0 → exit 75) or QUEUEs (H9, WAIT=unlimited → blocks then reseeds)
+# rather than clobbering the live consumer (the esc-5214 acquire-path regression).
+# H7/H8 (task 5354, NEW) pin the --assume-lane-lock-held opt-out that a caller
+# already holding ${LANE_DIR}.lock (thin --reseed FD 9, gc reclaim FD 8) uses to
+# skip the default acquire without self-refusing: H7 = the opt-out is honored
+# (seed reseeds instead of refusing), H8 = --assume-lane-lock-held + --lane-lock
+# is a contradiction (usage error, exit 2).
+# H10 (task 5354, NEW) pins the complementary SCOPING property: the fail-safe
+# default acquire is gated on --fresh-checkout || --lane-lock and does NOT extend
+# to the bare --reset-in-place control arm — a held lock is ignored there (exit 0,
+# not 75), the property H6a/H6b (reset-in-place WITH --lane-lock) and E1/H3a
+# (reset-in-place, no held lock) leave unpinned.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block Q: acquisition-time lane-lock exclusivity (--lane-lock) ---"
@@ -1979,8 +1997,12 @@ assert "H2: base_artifact.a IS present in <lane>/target (clone from base succeed
 assert "H2: cp invoked with --reflink=always" \
     bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
 
-# ── H3: opt-in default-off — lock HELD but --lane-lock NOT passed → seed still
-# clobbers/replaces as today (byte-for-byte unchanged for existing callers). ──
+# ── H3: fail-safe DEFAULT — lock HELD, --fresh-checkout but NO --lane-lock →
+# seed acquires the lane lock BY DEFAULT (esc-5214/task 5354) and REFUSES
+# (EX_TEMPFAIL 75) rather than clobbering a live consumer's lane. This is the
+# task-required regression: the #5223 guard is no longer bypassable by a caller
+# that simply forgets --lane-lock (the exact esc-5214 acquire-path clobber).
+# Pairs with H9 (queue instead of refuse under WAIT=unlimited). ───────────────
 Q_LANE3="$(mktemp -d /tmp/test-seed-Q-lane3-XXXXXX)"
 _TMPDIRS+=("$Q_LANE3")
 mkdir -p "$Q_LANE3/target"
@@ -1999,14 +2021,18 @@ _wait_for_reader_lock "$Q_READY3" 30
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
     run_helper_real "$Q_BASE" "$Q_LANE3" --fresh-checkout
-# NOTE: no --lane-lock above -- opt-in default-off.
+# NOTE: no --lane-lock above -- the lock is acquired by DEFAULT under --fresh-checkout.
 
-assert "H3: opt-in default-off: lock held but no --lane-lock → still exits 0" \
-    test "$RC" -eq 0
-assert "H3: opt-in default-off: sentinel GONE (still replaced, unchanged behavior)" \
-    bash -c '[ ! -e "'"$Q_LANE3/target/SENTINEL.txt"'" ]'
-assert "H3: opt-in default-off: cp invoked with --reflink=always (replace path ran)" \
-    bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
+assert "H3: fail-safe default: lock held, no --lane-lock → exit 75 (EX_TEMPFAIL)" \
+    test "$RC" -eq 75
+assert "H3: fail-safe default: stderr mentions the lock/live-consumer refusal" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "lock|consumer"' _ "$ERR_OUT"
+assert "H3: fail-safe default: STDOUT is EMPTY (fail-closed, no path emitted)" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+assert "H3: fail-safe default: sentinel survives (lane NOT clobbered)" \
+    test -f "$Q_LANE3/target/SENTINEL.txt"
+assert "H3: fail-safe default: cp NEVER invoked (refused before clone)" \
+    bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
 
 kill "$Q_LOCK3_PID" 2>/dev/null || true
 wait "$Q_LOCK3_PID" 2>/dev/null || true
@@ -2246,5 +2272,185 @@ assert "H6b: base_artifact.a IS present in <lane>/target (clone from base succee
     test -f "$Q_LANE10/target/debug/base_artifact.a"
 assert "H6b: cp invoked with --reflink=always" \
     bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
+
+# ── H7: --assume-lane-lock-held opt-out is HONORED — a caller that already holds
+# ${LANE_DIR}.lock passes --assume-lane-lock-held so seed SKIPS its own default
+# acquisition and does NOT self-refuse. The held-lock fixture (H1's backgrounded
+# flock -x holder) simulates the caller's own hold; with the opt-out seed reseeds
+# normally (RC 0, target replaced) instead of refusing (75). This is the
+# mechanism thin --reseed (FD 9) and gc reclaim (FD 8) rely on to avoid the
+# flock-non-reentrancy self-refuse under the fail-safe default. ───────────────
+Q_LANE12="$(mktemp -d /tmp/test-seed-Q-lane12-XXXXXX)"
+_TMPDIRS+=("$Q_LANE12")
+mkdir -p "$Q_LANE12/target"
+echo "sentinel content" > "$Q_LANE12/target/SENTINEL.txt"
+
+Q_LOCK12="${Q_LANE12}.lock"
+_TMPDIRS+=("$Q_LOCK12")
+Q_READY12="${Q_LOCK12}.ready-marker"
+_TMPDIRS+=("$Q_READY12")
+touch "$Q_LOCK12"
+( flock -x 9 && touch "$Q_READY12" && sleep 300 ) 9>"$Q_LOCK12" &
+Q_LOCK12_PID=$!
+_BGPIDS+=("$Q_LOCK12_PID")
+_wait_for_reader_lock "$Q_READY12" 30
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE12" --fresh-checkout --assume-lane-lock-held
+
+assert "H7: --assume-lane-lock-held + lock held → exit 0 (seed skipped its own acquire, no self-refuse)" \
+    test "$RC" -eq 0
+assert "H7: STDOUT is exactly <lane_dir>/target" \
+    bash -c '[ "$1" = "'"$Q_LANE12/target"'" ]' _ "$OUT"
+assert "H7: sentinel GONE (target replaced from base — the reseed actually ran)" \
+    bash -c '[ ! -e "'"$Q_LANE12/target/SENTINEL.txt"'" ]'
+assert "H7: base_artifact.a present in <lane>/target (clone from base succeeded)" \
+    test -f "$Q_LANE12/target/debug/base_artifact.a"
+assert "H7: cp invoked with --reflink=always" \
+    bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
+
+kill "$Q_LOCK12_PID" 2>/dev/null || true
+wait "$Q_LOCK12_PID" 2>/dev/null || true
+
+# ── H8: --assume-lane-lock-held + --lane-lock is a CONTRADICTION → usage error
+# (exit 2). --lane-lock says "acquire the lane lock yourself"; --assume-lane-lock-held
+# says "the caller already holds it, do NOT acquire" — passing both is caller
+# confusion, rejected loudly (naming BOTH flags) rather than silently picking a
+# precedence. No held lock needed; rejected before any target mutation. ───────
+Q_LANE13="$(mktemp -d /tmp/test-seed-Q-lane13-XXXXXX)"
+_TMPDIRS+=("$Q_LANE13")
+mkdir -p "$Q_LANE13/target"
+echo "sentinel content" > "$Q_LANE13/target/SENTINEL.txt"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE13" --fresh-checkout --lane-lock --assume-lane-lock-held
+
+assert "H8: --lane-lock + --assume-lane-lock-held → exit 2 (usage error)" \
+    test "$RC" -eq 2
+assert "H8: stderr names --lane-lock (the contradiction names both flags)" \
+    bash -c 'printf "%s\n" "$1" | grep -q -- "--lane-lock"' _ "$ERR_OUT"
+assert "H8: stderr names --assume-lane-lock-held (the contradiction names both flags)" \
+    bash -c 'printf "%s\n" "$1" | grep -q -- "--assume-lane-lock-held"' _ "$ERR_OUT"
+assert "H8: sentinel file in <lane>/target still present (no target mutation)" \
+    test -f "$Q_LANE13/target/SENTINEL.txt"
+assert "H8: cp NEVER invoked (rejected before any mutation)" \
+    bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
+# ── H9: fail-safe DEFAULT queues under WAIT=unlimited — lock HELD,
+# --fresh-checkout but NO --lane-lock + REIFY_WARM_LANE_LANE_LOCK_WAIT=unlimited
+# → the default-acquired lane lock BLOCKS until the live consumer releases
+# (never refuses), then reseeds. Pairs with H3 (refuse at WAIT=0): together they
+# pin "refuse OR queue rather than clobber" for the no-`--lane-lock` acquire path
+# (the esc-5214 regression). Mirrors H5d's backgrounded-seed + done-marker
+# pattern, but WITHOUT --lane-lock (the lock is now default-on). ──────────────
+Q_LANE11="$(mktemp -d /tmp/test-seed-Q-lane11-XXXXXX)"
+_TMPDIRS+=("$Q_LANE11")
+mkdir -p "$Q_LANE11/target"
+echo "sentinel content" > "$Q_LANE11/target/SENTINEL.txt"
+
+Q_LOCK11="${Q_LANE11}.lock"
+_TMPDIRS+=("$Q_LOCK11")
+Q_READY11="${Q_LOCK11}.ready-marker"
+_TMPDIRS+=("$Q_READY11")
+touch "$Q_LOCK11"
+( flock -x 9 && touch "$Q_READY11" && sleep 300 ) 9>"$Q_LOCK11" &
+Q_LOCK11_PID=$!
+_BGPIDS+=("$Q_LOCK11_PID")
+_wait_for_reader_lock "$Q_READY11" 30
+
+# Run seed in the BACKGROUND -- with WAIT=unlimited and the lock held it must
+# block until the holder below is killed. Completion signal is a done-marker
+# file (touched only after run_helper_real returns), NOT PID liveness (a
+# finished-but-unreaped bg job is a zombie whose PID `kill -0` still succeeds).
+Q_DONE11="${Q_LANE11}.done-marker"
+_TMPDIRS+=("$Q_DONE11" "${Q_DONE11}.rc" "${Q_DONE11}.out")
+
+reset_calls
+(
+    RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_LANE_LOCK_WAIT=unlimited \
+        run_helper_real "$Q_BASE" "$Q_LANE11" --fresh-checkout
+    printf '%s' "$RC" > "${Q_DONE11}.rc"
+    printf '%s' "$OUT" > "${Q_DONE11}.out"
+    touch "$Q_DONE11"
+) &
+Q_SEED11_PID=$!
+_BGPIDS+=("$Q_SEED11_PID")
+
+# Brief settle so the backgrounded job has reached the flock call. NOT a
+# wall-clock upper bound -- the "not done yet" check can only false-fail, never
+# false-pass, since the holder genuinely holds the lock until killed below.
+sleep 0.3
+assert "H9: WAIT=unlimited + no --lane-lock is still BLOCKED while the lock is held (no done-marker yet)" \
+    bash -c '[ ! -e "$1" ]' _ "$Q_DONE11"
+assert "H9: sentinel survives while blocked (no clobber yet)" \
+    test -f "$Q_LANE11/target/SENTINEL.txt"
+
+# Release the holder; the queued seed should now acquire the lock and reseed.
+kill "$Q_LOCK11_PID" 2>/dev/null || true
+wait "$Q_LOCK11_PID" 2>/dev/null || true
+
+_wait_for_reader_lock "$Q_DONE11" 30
+wait "$Q_SEED11_PID" 2>/dev/null || true
+
+Q_H9_RC="$(cat "${Q_DONE11}.rc" 2>/dev/null || echo "unset")"
+Q_H9_OUT="$(cat "${Q_DONE11}.out" 2>/dev/null || echo "")"
+
+assert "H9: after the holder releases, the queued seed completes with exit 0 (got '${Q_H9_RC}')" \
+    test "$Q_H9_RC" -eq 0
+assert "H9: STDOUT is exactly <lane_dir>/target" \
+    bash -c '[ "$1" = "'"$Q_LANE11/target"'" ]' _ "$Q_H9_OUT"
+assert "H9: sentinel GONE (target replaced from base after unblocking, queued-then-clobbered)" \
+    bash -c '[ ! -e "'"$Q_LANE11/target/SENTINEL.txt"'" ]'
+assert "H9: base_artifact.a present in <lane>/target (clone from base succeeded)" \
+    test -f "$Q_LANE11/target/debug/base_artifact.a"
+
+# ── H10: scoping guard — the fail-safe default acquire is SCOPED to
+# --fresh-checkout (|| explicit --lane-lock) and DOES NOT extend to the bare
+# --reset-in-place control arm (seed-warm-lane.sh:510 gates on
+# `[ -n "$FRESH_CHECKOUT" ] || [ -n "$LANE_LOCK_OPT" ]`, deliberately NOT
+# $RESET_IN_PLACE; the PRD keeps --lane-lock the explicit opt-in for the
+# reset-in-place arm). H6a/H6b exercise reset-in-place WITH --lane-lock, and
+# E1/H3a exercise reset-in-place with NO held lock — so a leak of the default-on
+# acquire into reset-in-place would silently pass every case above. H10 pins it
+# directly: a live consumer HOLDS ${LANE}.lock (H7's backgrounded flock -x holder
+# fixture) and seed runs --reset-in-place WITHOUT --lane-lock/--assume-lane-lock-held
+# on an EMPTY lane (H6b's success-path fixture — reset-in-place refuses a
+# non-empty target). Because reset-in-place does NOT default-acquire, the held
+# lock is simply ignored and seed proceeds (RC 0, cp ran); if the default acquire
+# leaked into reset-in-place this would instead refuse with exit 75. ───────────
+Q_LANE14="$(mktemp -d /tmp/test-seed-Q-lane14-XXXXXX)"
+_TMPDIRS+=("$Q_LANE14")
+
+Q_LOCK14="${Q_LANE14}.lock"
+_TMPDIRS+=("$Q_LOCK14")
+Q_READY14="${Q_LOCK14}.ready-marker"
+_TMPDIRS+=("$Q_READY14")
+touch "$Q_LOCK14"
+# Same causal handshake as H1/H7: the holder touches Q_READY14 only AFTER
+# acquiring flock -x, so the run below fires with the lock provably held.
+( flock -x 9 && touch "$Q_READY14" && sleep 300 ) 9>"$Q_LOCK14" &
+Q_LOCK14_PID=$!
+_BGPIDS+=("$Q_LOCK14_PID")
+_wait_for_reader_lock "$Q_READY14" 30
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE14" --reset-in-place
+# NOTE: no --lane-lock and no --assume-lane-lock-held -- the bare reset-in-place
+# control arm must NOT default-acquire, so the held lock above is ignored.
+
+assert "H10: reset-in-place + lock HELD + no --lane-lock → exit 0 (default acquire is NOT scoped to reset-in-place; not 75)" \
+    test "$RC" -eq 0
+assert "H10: STDOUT is exactly <lane_dir>/target" \
+    bash -c '[ "$1" = "'"$Q_LANE14/target"'" ]' _ "$OUT"
+assert "H10: base_artifact.a present in <lane>/target (reset-in-place clone from base ran despite the held lock)" \
+    test -f "$Q_LANE14/target/debug/base_artifact.a"
+assert "H10: cp invoked with --reflink=always (reset-in-place proceeded, not refused)" \
+    bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
+
+kill "$Q_LOCK14_PID" 2>/dev/null || true
+wait "$Q_LOCK14_PID" 2>/dev/null || true
 
 test_summary
