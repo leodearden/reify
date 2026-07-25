@@ -35,11 +35,20 @@
 #   stdin             if no args, newline-separated repo-relative paths
 #   --from-git        self-derive the added-file set from git (see step-6)
 #
-# OUTPUT (structured verdict grammar, rule-(c) style — machine-parseable, not a
-# log-scrape):
-#   HARNESS_BASELINE_REG FAIL crate=<c> file=<path> reason=unregistered-standalone
-#   HARNESS_BASELINE_REG PASS
-#   HARNESS_BASELINE_REG SUMMARY added=<n> violations=<v>
+# OUTPUT — TWO STREAMS, deliberately separated:
+#   STDOUT (structured verdict grammar, rule-(c) style — machine-parseable,
+#   a byte-for-byte contract pinned by tests/infra/test_harness_baseline_registration_gate.sh):
+#     HARNESS_BASELINE_REG FAIL crate=<c> file=<path> reason=unregistered-standalone
+#     HARNESS_BASELINE_REG PASS
+#     HARNESS_BASELINE_REG SUMMARY added=<n> violations=<v>
+#   STDERR (human steering, '[hint] '-prefixed, emitted ONCE per run when v>0;
+#   task #5381): points at the SANCTIONED remedy — consolidate into
+#   crates/<c>/tests/harness_<subsystem>/<file>.rs declared via #[path] from a
+#   harness_<subsystem>.rs root (exemplar: crates/reify-eval/tests/harness_geometry.rs).
+#   Grandfathering a harness-layout-baseline.manifest row is SUPERSEDED (Leo
+#   2026-07-22, esc-5056-11). The gate is mechanically remedy-AGNOSTIC — both
+#   remedies clear it — so the hint is the only thing steering the human to the
+#   ratchet-shrinking fix rather than the ratchet-growing one.
 #
 # EXIT: 0 when clean (v==0), 1 when any violation (v>0). Honors
 # REIFY_HARNESS_LAYOUT_BASELINE (via the lib) for testability.

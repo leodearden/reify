@@ -24,7 +24,9 @@
 #     baseline-membership predicate (this file, step-1);
 #   - the gate scripts/check-harness-baseline-registration.sh in args/stdin
 #     input mode (step-3) and --from-git self-derivation mode (step-5);
-#   - verify.sh plan-shape: the gate is emitted early under RUN_RUST=1 (step-7).
+#   - verify.sh plan-shape: the gate is emitted early under RUN_RUST=1 (step-7);
+#   - the STDERR remediation hint and the stdout/stderr stream separation
+#     (task #5381, Sections P/P2).
 #
 # Hermetic: pure bash + filesystem (+ throwaway `git init` temp repos for the
 # --from-git cases); never runs cargo/npm; never mutates the real baseline or
