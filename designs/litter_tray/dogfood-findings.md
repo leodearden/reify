@@ -278,7 +278,21 @@ arithmetic AND per-hole `CYLINDRICAL_SURFACE` census in STEP:
   5318 blamed (13/13 holes, mass exact to ~1e-7 g).
 - Committed as the two-file discriminator pair
   `probe_5318_bare_spacing.ri` / `probe_5318_unit_spacing.ri`
-  (identical geometry, only spacings differ).
+  (identical geometry, only spacings differ) — the bare-spacing arm has
+  since been retired, see the task 5356 update below.
+
+**Update (task 5356, after 5214 landed):** 5214 added an eval-layer gate
+that REJECTS bare (dimensionless) spacing/offset/origin args to
+`linear_pattern_2d`, `linear_pattern`, `arbitrary_pattern`, and `mirror` —
+a bare spacing now produces a compile/eval `Error` diagnostic and the op
+is dropped, instead of the silent SI-metres mis-cut described above.
+`probe_5318_bare_spacing.ri` (which demonstrated the old silent 2/13-hole
+behavior) has been retired: its regression intent is now covered by
+`crates/reify-eval/tests/pattern_spacing_units_e2e.rs`
+(`linear_pattern_2d_bare_spacing_drops_op_with_error`,
+`linear_pattern_1d_bare_spacing_drops_op_dimensioned_builds`).
+`probe_5318_unit_spacing.ri` (the unit-ful control) remains as a live
+dogfood example.
 
 Mechanism (all three seams verified in source): compiler passes spacing
 untyped (geometry.rs:1768) → eval wraps raw Value, no dimension check
