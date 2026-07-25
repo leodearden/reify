@@ -19,29 +19,47 @@ Signature Catalog below. This note is a two-part deliverable mirroring task
 2. **A reusable remediation recipe**
    ([Remediation Recipe](#remediation-recipe-part-b)) codifying how a
    confirmed corruption on a `done`/`cancelled` task gets corrected, so a
-   future recurrence — which is expected, since Signature 1's root cause is
-   **unfixed** (see below) — doesn't need a bespoke investigation each time.
+   future recurrence doesn't need a bespoke investigation each time.
 
-**Signature 1's root cause is not being fixed.** Task #5308, which tracked the
-auto-filer parser fix, was **cancelled** (terminal) on 2026-07-24 without the
-fix landing. The nearest live work, task #5368
-(`docs/prds/verify-confirm-failed-self-discovery.md`, now `done`), is
-explicitly scoped as the *complementary* deliverable, not a successor: its own
-description says "Keep SEPARATE from task 5308 (the auto-filer parser-bug fix
-that CAUSED the mis-scrape). 5308 stops the false premise recurring; THIS task
-delivers the actually-missing capability." So `--confirm-failed` now exists,
-removing *one* trigger of the argument-error path, but the auto-filer will
-still ingest usage text as `failing_tests` for **any** future unsupported
-flag. Signature 1 can recur indefinitely.
+**Signature 1's root cause is fixed at the source — the guard landed, even
+though its task record was later cancelled.** Task #5308's Taskmaster record
+is `cancelled` (2026-07-24), but that is a bookkeeping outcome, not a
+statement about the code. The guard shipped to dark-factory `main` two days
+earlier, on **2026-07-22 17:25:54 +0100**, as commit
+`2d178af457967e10905398c44cb2d462d9841625` ("feat(offline-lane): GREEN —
+`_parse_confirmed_failures` rejects verify.sh usage/help/error dumps
+(reify:5308 step impl-1)"). Verified reachable from dark-factory `main`:
+
+```bash
+git -C /home/leo/src/dark-factory log -S'_VERIFY_USAGE_MARKER_RE' \
+  -- orchestrator/src/orchestrator/offline_lane.py
+git -C /home/leo/src/dark-factory merge-base --is-ancestor 2d178af457 main   # passes
+```
+
+> **Do not infer "the fix never landed" from a `cancelled` task record.** An
+> earlier revision of this note did exactly that and was wrong in five places.
+> A terminal task record and the state of the code are independent facts;
+> check the repo. This is the same class of error as trusting a
+> `done_provenance.commit` without an ancestor check (see the Signature 2
+> warning below) — in both cases the task DB was believed over ground truth.
+
+What the guard actually covers, from its own docstring
+(`orchestrator/src/orchestrator/offline_lane.py:129-160`):
+`_VERIFY_USAGE_MARKER_RE` matches a `Usage:`/`Options:` line or a
+`verify.sh: ERROR` banner; if **any** line of the confirmation seam's output
+matches, `_parse_confirmed_failures` rejects the whole output and returns
+`[]`, which routes into `_handle_red_run`'s existing empty-`confirmed` guard
+(log-only — no fix task, no escalation). The sibling seam
+`_parse_infra_failures` is **exempt by design**, not by oversight: it only
+captures `RESULT: FAIL (<name>)` lines, a shape a usage/help/error dump never
+produces. So the filing path that produced #5264 and #5368 is closed.
 
 This note remains a documentation runbook rather than a new automated
-detector, but on narrower grounds than "the root cause is going away": the
-audit surface is three tasks, the remediation for each is a human-judgment
-git-history adjudication (§4) that a detector could flag but not perform, and
-a Signature-1 detector would need new `TaskMetadata` fields that do not exist
-today. See "Automation home" at the end of the Detection Procedure for what to
-build if a permanent detector becomes warranted — with Signature 1's root
-cause unfixed, that bar is now materially closer than it was.
+detector: the audit surface is three tasks, all corrected; Signature 1's
+filing path is guarded at the source; and the remediation for a Signature-2
+hit is a human-judgment git-history adjudication (§4) that a detector could
+flag but not perform. See "Automation home" at the end of the Detection
+Procedure for what to build if that ever changes.
 
 ## Corruption signature catalog
 
@@ -50,14 +68,20 @@ cause unfixed, that bar is now materially closer than it was.
 `scripts/verify.sh`'s argument-error path prints the full `--help` usage text
 to stdout instead of a clean one-line error (triggered e.g. by an
 as-yet-unsupported flag such as `--test-threads=1`). The offline-lane
-auto-filer (`orchestrator/offline_lane.py` in dark-factory; root-cause fix was
+auto-filer (`orchestrator/offline_lane.py` in dark-factory; root-cause fix
 tracked by task **#5308**, Stage 1 finding
-`1ff0eacb-496a-4298-bad6-84976a8edf9b` — **#5308 is `cancelled`/terminal as of
-2026-07-24 and the fix never landed**, so this signature is live) mis-parsed
-that dump, ingesting each
+`1ff0eacb-496a-4298-bad6-84976a8edf9b`) mis-parsed that dump, ingesting each
 usage/help line as if it were an individual failing-test identifier —
 fabricating dozens of bogus `metadata.failing_tests` entries and folding them
 into the task's title and description verbatim.
+
+**Status: guarded at the source since 2026-07-22** (commit `2d178af457` on
+dark-factory `main` — see Purpose and scope). Both known victims predate the
+guard's *deployment*, not merely its commit; see the #5368 row in Audit
+Findings for the deploy-lag reasoning. This signature is retained in the
+catalog because the runbook still needs to explain the two historical
+victims, and because a guarded filing path is not the same as an impossible
+one.
 
 **Detection markers:**
 - Any `metadata.failing_tests` entry containing `Usage:`, `Options:`, or the
@@ -198,19 +222,22 @@ No other task has ever carried `spawn_context=offline_lane_red`.
 
 | Task | Signature 1 — help-text-as-failing-tests | Signature 2 — misattributed files/commit |
 |---|---|---|
-| **#5264** — "offline-lane red: verify.sh: ERROR — unknown argument '--test-threads=1'…" | **Present, corrected.** Title/description/`metadata.failing_tests` originally listed ~48 fabricated entries (verify.sh `--help` usage lines mis-ingested by the auto-filer parser bug). Corrected 2026-07-21 to the single real triggering line, `"verify.sh: ERROR — unknown argument '--test-threads=1'"` — the task's current description states this explicitly ("CORRECTED 2026-07-21 (esc-5315-1): the ONLY real failure was…") and `metadata.record_correction` records the same. Human-gate: **esc-5315-1**, tracked by task **#5315** ("Human gate: confirm real failure for task 5264…"), now `cancelled` — closed once the correction was verified landed, mirroring #5309's closure. Root-cause parser fix: task **#5308**, now `cancelled` without landing — this signature remains live. | **Present, corrected 2026-07-26 (this audit).** Recorded `done_provenance.commit` was `56380a8f8adcc74886bd46459e0d6115a1d388bc`, which is **not an ancestor of `main`** — `git branch -a --contains` places it only on `task/5259`. It is a *discarded duplicate* merge: correct subject ("Merge task/5264 into main"), correct parents (`0362506f`, `61134e64`), and a diff touching exactly the three expected files, which is why the first pass's `git show --stat` check cleared it. The merge that actually landed is **`f84836f06268a0e492526d7bea10c6ee6e4412c5`** — identical parents, committed 2h later (2026-07-20 12:51:35 +0100), additionally touching `docs/prds/v0_6/fea-load-support-selector-migration.md`, and confirmed via `git merge-base --is-ancestor f84836f062 main`. Corrected via the §3(a) path (`set_task_status(id=5264, status="done", done_provenance={…})` → `{"success": true, "no_op": true, "done_provenance_repaired": true}`) under **esc-5316-17**. `metadata.files=["scripts/verify.sh","tests/infra/test_verify_test_threads.sh"]` was already correct and is unchanged. |
+| **#5264** — "offline-lane red: verify.sh: ERROR — unknown argument '--test-threads=1'…" | **Present, corrected.** Title/description/`metadata.failing_tests` originally listed ~48 fabricated entries (verify.sh `--help` usage lines mis-ingested by the auto-filer parser bug). Corrected 2026-07-21 to the single real triggering line, `"verify.sh: ERROR — unknown argument '--test-threads=1'"` — the task's current description states this explicitly ("CORRECTED 2026-07-21 (esc-5315-1): the ONLY real failure was…") and `metadata.record_correction` records the same. Human-gate: **esc-5315-1**, tracked by task **#5315** ("Human gate: confirm real failure for task 5264…"), now `cancelled` — closed once the correction was verified landed, mirroring #5309's closure. Root-cause guard: task **#5308**, landed on dark-factory `main` 2026-07-22 as `2d178af457` (the task record's later `cancelled` status is bookkeeping, not an indication the fix is absent). | **Present, corrected 2026-07-26 (this audit).** Recorded `done_provenance.commit` was `56380a8f8adcc74886bd46459e0d6115a1d388bc`, which is **not an ancestor of `main`** — `git branch -a --contains` places it only on `task/5259`. It is a *discarded duplicate* merge: correct subject ("Merge task/5264 into main"), correct parents (`0362506f`, `61134e64`), and a diff touching exactly the three expected files, which is why the first pass's `git show --stat` check cleared it. The merge that actually landed is **`f84836f06268a0e492526d7bea10c6ee6e4412c5`** — identical parents, committed 2h later (2026-07-20 12:51:35 +0100), additionally touching `docs/prds/v0_6/fea-load-support-selector-migration.md`, and confirmed via `git merge-base --is-ancestor f84836f062 main`. Corrected via the §3(a) path (`set_task_status(id=5264, status="done", done_provenance={…})` → `{"success": true, "no_op": true, "done_provenance_repaired": true}`) under **esc-5316-17**. `metadata.files=["scripts/verify.sh","tests/infra/test_verify_test_threads.sh"]` was already correct and is unchanged. |
 | **#5295** — "offline-lane: fix 1 failing test(s) (test_cpu_load_governance_deflake.sh)" | Not present. Task #5308's own investigation names 5295 as the clean comparison sample showing the parser working correctly on a normal per-test-failure report: `metadata.failing_tests=["test_cpu_load_governance_deflake.sh"]` is a real test name, not a `--help` dump. | **Present, corrected.** `metadata.files` originally read `["tests/infra/test_run_all_content_skip.sh"]` with `done_provenance.commit=264ee8cd202393a1bb6bad5b68d00016c7b7ddad` — both misattributed from task #5273's unrelated commit ("amend(5273): document drift-guard is best-effort + broaden its anchor set", which indeed touches `tests/infra/run-all-skip-closures.manifest` and `tests/infra/test_run_all_content_skip.sh`, confirmed via `git show --stat`). Corrected 2026-07-20 to `metadata.files=["tests/infra/test_cpu_load_governance_deflake.sh"]`, `done_provenance.commit=b470abbbad7965a4b3ebb736d744f130100a4527` — verified an ancestor of `main` and the last commit to touch that test file (`git show --stat` confirms the message "fix(5295): GREEN — restore SUT hermeticity via REIFY_CPU_GOVERN_DISABLE=1"; this is the rebased/landed form of pre-rebase branch commit `b29f086`, which is itself not on `main`). Human-gate: **esc-5309-1**, tracked by task **#5309**, now `cancelled`/terminal — the precedent this note's Remediation Recipe generalizes. |
-| **#5368** — "DESIGN: reify-side verify.sh `--confirm-failed` self-discovery protocol" (re-scoped; originally auto-filed as "56 failing tests") | **Present, corrected — and it is a post-#5264 RECURRENCE.** Auto-filed 2026-07-23 from `bash scripts/verify.sh test --confirm-failed` → exit 64 + usage dump; the auto-filer ingested the 59-line `usage()` output as 56 `failing_tests` entries and folded them into the title/description, exactly as for #5264. Cleared 2026-07-24 by the L2 escalation-watcher (`metadata.corrupted_autofile_metadata_cleared`, `metadata.failing_tests=[]`), and the task re-scoped to the real underlying need per Leo's decision on **esc-5368-2** (option B); it has since landed `done`. **This is the load-bearing audit finding:** Signature 1 recurred on a *different* unsupported flag three days after #5264, confirming the corruption is flag-agnostic and that #5308's cancellation leaves it live. | Not present. `done_provenance.commit=ef6863e77009a2ddf0a2523f3a6241230f6b688b` ("Merge task/5368 into main") is an ancestor of `main`, and `metadata.files=["docs/prds/verify-confirm-failed-self-discovery.md"]` matches both the re-scoped title and the landed diff. |
+| **#5368** — "DESIGN: reify-side verify.sh `--confirm-failed` self-discovery protocol" (re-scoped; originally auto-filed as "56 failing tests") | **Present, corrected — and it is a post-#5264 RECURRENCE.** Auto-filed 2026-07-23 from `bash scripts/verify.sh test --confirm-failed` → exit 64 + usage dump; the auto-filer ingested the 59-line `usage()` output as 56 `failing_tests` entries and folded them into the title/description, exactly as for #5264. Cleared 2026-07-24 by the L2 escalation-watcher (`metadata.corrupted_autofile_metadata_cleared`, `metadata.failing_tests=[]`), and the task re-scoped to the real underlying need per Leo's decision on **esc-5368-2** (option B); it has since landed `done`. **Timing — this victim postdates the guard's commit.** The #5308 guard landed on dark-factory `main` 2026-07-22 17:25:54, and #5368 was filed ~2026-07-23 16:28 (its `last_blocked_at`), ~23h later. Since `_parse_confirmed_failures` would have returned `[]` and filed nothing had the guard been active in the running worker, the guard was evidently not yet live in that process. *Hypothesis (not verified — the orchestrator's restart timestamp was not readable from the audit sandbox):* deploy lag. Per CLAUDE.md the orchestrator loads its code/config **once at startup with no hot-reload**, and a task running under it must not restart it, so a ~23h gap between a dark-factory commit landing and the worker picking it up is unremarkable. The alternative — that a second, unguarded filing path exists — was checked against the code and not supported: `_handle_red_run` files only via `_file_new_fix_task` on a non-empty `confirmed` from the guarded parse. **What this victim does establish:** Signature 1 was triggered by a *different* flag (`--confirm-failed`, vs `--test-threads=1` for #5264), so the underlying defect keyed off `verify.sh`'s generic unknown-argument path rather than any one flag — which is exactly what the marker-based guard, rather than a per-flag fix, addresses. | Not present. `done_provenance.commit=ef6863e77009a2ddf0a2523f3a6241230f6b688b` ("Merge task/5368 into main") is an ancestor of `main`, and `metadata.files=["docs/prds/verify-confirm-failed-self-discovery.md"]` matches both the re-scoped title and the landed diff. |
 
 **Conclusion:** the sweep finds **three** `offline_lane_red` tasks, not two.
 All three are corrected as of 2026-07-26 — but two of those corrections
 (#5264's Signature-2 misattribution, #5368's Signature-1 ingestion) were
 *missed* by this note's own first-pass audit, and #5264's was still live in
-the DB until this audit repaired it. The correct standing conclusion is
-therefore **not** "no victims remain" but: *no known-uncorrected victim
-remains, and new victims should be expected* — Signature 1's root cause is
-unfixed (#5308 cancelled), and #5368 demonstrates it recurring on a new flag
-within three days. See the re-run trigger below.
+the DB until this audit repaired it.
+
+Standing position: **no known-uncorrected victim remains, and Signature 1's
+filing path is guarded at the source** (commit `2d178af457`, dark-factory
+`main`, 2026-07-22). Both Signature-1 victims predate that guard being live
+in the running worker. Signature 2 is a separate attribution defect with no
+equivalent source-level guard and no known root-cause owner — it is the one
+that should still be actively watched for. See the re-run trigger below.
 
 ## Remediation Recipe (part b)
 
@@ -353,8 +380,8 @@ closure-staleness pattern (see Cross-references).
 
 | Task | Role |
 |---|---|
-| **#5308** | Was to be the root-cause parser fix for Signature 1 (auto-filer `--help`-usage-text ingestion). **`cancelled` 2026-07-24 without landing** — Signature 1 therefore remains live and unowned. No successor task currently owns this fix. |
-| **#5368** | Signature-1 victim (2026-07-23 recurrence); corrected 2026-07-24 via **esc-5368-2**. Separately, its *deliverable* — the `--confirm-failed` primitive, `docs/prds/verify-confirm-failed-self-discovery.md` — removes one trigger of the argument-error path, but is explicitly **not** #5308's parser fix and does not prevent the next unsupported flag from re-triggering Signature 1. |
+| **#5308** | Root-cause guard for Signature 1 (auto-filer usage-text ingestion). **The fix LANDED** on dark-factory `main` 2026-07-22 as `2d178af457`, guarding `_parse_confirmed_failures`. The Taskmaster record was later `cancelled` (2026-07-24) — that is bookkeeping and does **not** mean the fix is absent. Do not cite the cancelled record as evidence the signature is unfixed. |
+| **#5368** | Signature-1 victim (filed 2026-07-23, ~23h after the guard commit — see Audit Findings for the deploy-lag reasoning); corrected 2026-07-24 via **esc-5368-2**. Its *deliverable* is a **design PRD**, `docs/prds/verify-confirm-failed-self-discovery.md` — **not** an implementation. `scripts/verify.sh` contains zero occurrences of `confirm-failed` as of this sweep, so `verify.sh test --confirm-failed` still hits the `*)` arm and exits 64 with the usage dump. The PRD itself (§ at line 21) records that the offline lane "already carries a defensive guard, landed as task 5308 … this guard is precisely what stopped the original false-premise mis-scrape from recurring". |
 | **#5264** | Signature-1 victim; corrected. Human-gate: **#5315** (cancelled). Also a Signature-2 victim — corrected 2026-07-26 under **esc-5316-17** (see Audit Findings). |
 | **#5295** | Signature-2 victim; corrected. Human-gate: **#5309** (cancelled) — the precedent this recipe generalizes. |
 | **#5321** | Standing recon capability generalizing the human-gate closure-staleness check (§5's "close the loop" step) beyond `offline_lane_red`; depends on this note. |
@@ -364,17 +391,28 @@ closure-staleness pattern (see Cross-references).
 Re-run the Detection Procedure's Step 1 enumeration whenever a new task
 appears with `metadata.spawn_context=offline_lane_red`, and in particular:
 
-- **On every new `offline_lane_red` task, indefinitely.** There is no longer a
-  "once #5308 lands" end date: #5308 was cancelled without landing and nothing
-  else owns the parser fix, so Signature 1 is a permanent standing risk.
+- **On every new `offline_lane_red` task.** Signature 1's filing path is
+  guarded since 2026-07-22, so a *new* Signature-1 victim would be a
+  regression (or a guard gap) and is worth investigating as such rather than
+  just correcting. Signature 2 has no source-level guard and remains the
+  likelier find.
+- **After any dark-factory orchestrator restart or offline-lane change** —
+  the guard only protects a worker process that actually loaded it, and the
+  orchestrator has no hot-reload. A guard commit landing is not a guard
+  deploying.
 - **Promptly — a victim can be auto-filed and swept on the same day.** Task
   #5368 was auto-filed and corrupted on 2026-07-23 and was still missed by
   that day's sweep. Do not assume a recent sweep covers a recently-filed task;
   re-run the Step 1 enumeration rather than trusting the last recorded table.
-- **On any unsupported-flag invocation of `verify.sh`.** Signature 1 is
-  flag-agnostic — `--test-threads=1` triggered it for #5264 and
-  `--confirm-failed` for #5368. Any future flag the offline lane passes that
-  `verify.sh`'s arg parser does not know will reproduce it.
+- **On any unsupported-flag invocation of `verify.sh`** — as a check that the
+  guard is doing its job, not because a victim is expected. Signature 1 was
+  flag-agnostic *before* the guard (`--test-threads=1` for #5264,
+  `--confirm-failed` for #5368), because it keyed off `verify.sh`'s generic
+  unknown-argument path rather than any one flag. Note this path is still
+  reachable today: `scripts/verify.sh` has no `--confirm-failed` case, so
+  `verify.sh test --confirm-failed` still exits 64 with a usage dump — the
+  guard's job is to stop that dump becoming a corrupt task, not to stop the
+  dump.
 - **Whenever a `done`/`cancelled` offline-lane task's `metadata.files` looks
   inconsistent with its own title/description** — Signature 2 is a
   filer/attribution bug independent of the parser fix and can recur from a
