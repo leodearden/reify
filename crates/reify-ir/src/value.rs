@@ -2565,41 +2565,19 @@ impl Value {
             } => format!("Field<{}, {}>({:?})", domain_type, codomain_type, source),
             Value::Tensor(items) => {
                 let reference = aggregate_magnitude(self);
-                let strs: Vec<String> = items
-                    .iter()
-                    .map(|v| v.format_display_rel(reference))
-                    .collect();
-                format!("[{}]", strs.join(", "))
+                format!("[{}]", join_rel(items, reference))
             }
             Value::Point(items) => {
                 let reference = aggregate_magnitude(self);
-                let strs: Vec<String> = items
-                    .iter()
-                    .map(|v| v.format_display_rel(reference))
-                    .collect();
-                format!("point({})", strs.join(", "))
+                format!("point({})", join_rel(items, reference))
             }
             Value::Vector(items) => {
                 let reference = aggregate_magnitude(self);
-                let strs: Vec<String> = items
-                    .iter()
-                    .map(|v| v.format_display_rel(reference))
-                    .collect();
-                format!("vec({})", strs.join(", "))
+                format!("vec({})", join_rel(items, reference))
             }
             Value::Matrix(rows) => {
                 let reference = aggregate_magnitude(self);
-                let row_strs: Vec<String> = rows
-                    .iter()
-                    .map(|row| {
-                        let inner: Vec<String> = row
-                            .iter()
-                            .map(|v| v.format_display_rel(reference))
-                            .collect();
-                        format!("[{}]", inner.join(", "))
-                    })
-                    .collect();
-                format!("[{}]", row_strs.join(", "))
+                format!("[{}]", join_rows_rel(rows, reference))
             }
             Value::Complex { re, im, dimension } => {
                 let (display_re, _) = dimension.to_display_units(*re);
@@ -2715,8 +2693,18 @@ impl Value {
     /// component, so a component is judged against the *whole* containing
     /// aggregate, not just its own subtree.
     ///
-    /// Only `Scalar` and `Real` leaves apply the relative snap; every other
-    /// variant falls back to the unchanged [`format_display`](Value::format_display).
+    /// `Scalar`/`Real` leaves apply the relative snap; `Tensor`/`Point`/
+    /// `Vector`/`Matrix` recurse, threading `reference` unchanged into every
+    /// nested element instead of recomputing it — this is what lets, e.g., a
+    /// `Point` nested inside a `Tensor` snap against the *outer* aggregate's
+    /// magnitude rather than a smaller one recomputed from just its own
+    /// components. Every other variant falls back to the unchanged
+    /// [`format_display`](Value::format_display).
+    ///
+    /// Also reached, via [`Value::format_display`], from `reify-expr`'s
+    /// string-interpolation renderer (`interp_render`) — a `.ri` string like
+    /// `"${part.centroid}"` observes the same snap-to-zero as the GUI values
+    /// panel and debug MCP snapshot.
     fn format_display_rel(&self, reference: f64) -> String {
         match self {
             Value::Scalar {
@@ -2727,26 +2715,10 @@ impl Value {
                 format_display_number_rel(display_value, reference)
             }
             Value::Real(r) => format_display_number_rel(*r, reference),
-            Value::Tensor(items) => {
-                let strs: Vec<String> = items
-                    .iter()
-                    .map(|v| v.format_display_rel(reference))
-                    .collect();
-                format!("[{}]", strs.join(", "))
-            }
-            Value::Matrix(rows) => {
-                let row_strs: Vec<String> = rows
-                    .iter()
-                    .map(|row| {
-                        let inner: Vec<String> = row
-                            .iter()
-                            .map(|v| v.format_display_rel(reference))
-                            .collect();
-                        format!("[{}]", inner.join(", "))
-                    })
-                    .collect();
-                format!("[{}]", row_strs.join(", "))
-            }
+            Value::Tensor(items) => format!("[{}]", join_rel(items, reference)),
+            Value::Point(items) => format!("point({})", join_rel(items, reference)),
+            Value::Vector(items) => format!("vec({})", join_rel(items, reference)),
+            Value::Matrix(rows) => format!("[{}]", join_rows_rel(rows, reference)),
             _ => self.format_display(),
         }
     }
@@ -2938,6 +2910,17 @@ pub fn format_display_number(v: f64) -> String {
 /// the value the task explicitly suggests: a component 9 orders of
 /// magnitude below its dominant sibling carries no display-meaningful
 /// signal at [`DISPLAY_SIG_FIGS`] significant figures.
+///
+/// This is deliberately three orders coarser than the ~1e-12 relative
+/// resolution [`DISPLAY_SIG_FIGS`] already provides on its own: a component
+/// whose ratio to `reference` falls in the 1e-12..1e-9 band (e.g. a genuine
+/// `1e-10` off-axis term next to a `1.0` sibling) is display-representable
+/// at that pinned precision but is snapped to `"0"` by this threshold
+/// anyway. That band is knowingly sacrificed, not overlooked: the two data
+/// points above are the only evidence in hand, both several orders outside
+/// the band, so `1e-9` was chosen with margin on both sides rather than
+/// fit tightly to the sig-fig floor. Tighten only on a newly observed case
+/// that actually falls inside the band.
 const DISPLAY_REL_ZERO_EPSILON: f64 = 1e-9;
 
 /// Format `v` for display the same way [`format_display_number`] does, but
@@ -2964,7 +2947,11 @@ const DISPLAY_REL_ZERO_EPSILON: f64 = 1e-9;
 ///
 /// Delegating to the byte-identical `format_display_number` keeps this
 /// purely additive: the existing task-5198 test suite is unaffected.
-pub fn format_display_number_rel(v: f64, reference: f64) -> String {
+///
+/// Private: the sole caller is [`Value::format_display_rel`] in this same
+/// module; every other reference is a `#[cfg(test)]` case in this file's
+/// `mod tests`, both of which see private items fine via `use super::*`.
+fn format_display_number_rel(v: f64, reference: f64) -> String {
     if reference.is_finite() && reference > 0.0 && v != 0.0 && v.abs() < DISPLAY_REL_ZERO_EPSILON * reference {
         return "0".to_string();
     }
@@ -2980,14 +2967,32 @@ pub fn format_display_number_rel(v: f64, reference: f64) -> String {
 /// (e.g. `moment_of_inertia`) is measured against the largest entry in the
 /// *whole* tensor, not just its own row — so an off-diagonal component is
 /// judged dust relative to the dominant term anywhere in the aggregate, not
-/// merely within its immediate row.
+/// merely within its immediate row. The same whole-aggregate rule covers a
+/// `Point`/`Vector` nested inside a `Tensor`/`Matrix`:
+/// [`Value::format_display_rel`] has matching `Point`/`Vector`/`Tensor`/
+/// `Matrix` arms that thread this SAME reference into every nesting level
+/// instead of recomputing a local one, so this function and
+/// `format_display_rel` always agree on what "the aggregate" spans.
 ///
 /// `Scalar` magnitudes are computed via [`DimensionVector::display_scale`]
 /// (the same scale [`Value::format_display`] applies via `to_display_units`),
 /// so the reference is comparable to the display-unit values
 /// `format_display_rel` will snap against. Non-numeric, non-aggregate
 /// variants contribute `0.0` (the `fold` seed), and `f64::max`'s NaN-ignoring
-/// semantics mean a NaN leaf never poisons the reference.
+/// semantics mean a NaN leaf is silently dropped from the reference instead
+/// of poisoning it — deliberately asymmetric with a non-finite `inf`
+/// sibling, which instead propagates *into* the reference and disables
+/// snapping entirely via [`format_display_number_rel`]'s
+/// `reference.is_finite()` guard.
+///
+/// Assumes the aggregate is dimensionally homogeneous — every `Scalar` leaf
+/// shares one [`DimensionVector`]. This holds for every `Value` reachable
+/// through normal type-checked evaluation: `reify-core`'s `Type::Point`,
+/// `Type::Vector`, and `Type::Tensor` each carry a single `quantity` type
+/// for every component, so a mixed-dimension aggregate can only arise from
+/// a hand-constructed `Value` that bypasses the type checker — out of
+/// contract here (it would silently compare magnitudes across incompatible
+/// units, e.g. treating a volume in mm³ and a length in mm as commensurable).
 fn aggregate_magnitude(v: &Value) -> f64 {
     match v {
         Value::Scalar {
@@ -3006,6 +3011,31 @@ fn aggregate_magnitude(v: &Value) -> f64 {
             .fold(0.0, f64::max),
         _ => 0.0,
     }
+}
+
+/// Render a flat aggregate's items by mapping each through
+/// [`Value::format_display_rel`] with the given `reference`, joining with
+/// `", "` (task 5339). Shared by the `Tensor`/`Point`/`Vector` arms of both
+/// [`Value::format_display`] and [`Value::format_display_rel`] so the
+/// map-then-join logic lives in exactly one place instead of drifting across
+/// near-identical copies.
+fn join_rel(items: &[Value], reference: f64) -> String {
+    items
+        .iter()
+        .map(|v| v.format_display_rel(reference))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Render a `Matrix`'s rows by mapping each row's cells through
+/// [`join_rel`] and wrapping each row in `[..]`, producing
+/// `"[a, b], [c, d]"`-style joined rows (task 5339). Shared by the `Matrix`
+/// arm of both [`Value::format_display`] and [`Value::format_display_rel`].
+fn join_rows_rel(rows: &[Vec<Value>], reference: f64) -> String {
+    rows.iter()
+        .map(|row| format!("[{}]", join_rel(row, reference)))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Map a DimensionVector to a human-readable SI unit label.
@@ -11488,6 +11518,15 @@ mod tests {
         assert_eq!(format_display_number_rel(0.0, 21.5), "0");
     }
 
+    #[test]
+    fn format_display_number_rel_negative_dust_snaps_to_positive_zero() {
+        // The snap branch returns the literal "0", never "-0" — must hold
+        // even for a negative dust value, since the moment_of_inertia
+        // off-diagonals in this task's motivating example are negative
+        // (e.g. -8.681e-18).
+        assert_eq!(format_display_number_rel(-4e-13, 21.5), "0");
+    }
+
     // ── Value::format_display Point/Vector relative snap-to-zero (task 5339) ──
     //
     // format_display_number_rel alone isn't reachable from real GUI output —
@@ -11552,13 +11591,23 @@ mod tests {
         // All three components are equally tiny in absolute terms, so none
         // is dust *relative to* a sibling — the relative test must not
         // collapse the whole aggregate to zero just because every component
-        // is small in absolute magnitude.
+        // is small in absolute magnitude. Pin the exact rendering (not just
+        // "isn't all-zero") so a partial snap or a garbled fallback also
+        // fails this test.
         let v = Value::Point(vec![
             Value::Real(1e-13),
             Value::Real(1e-13),
             Value::Real(1e-13),
         ]);
-        assert_ne!(v.format_display(), "point(0, 0, 0)");
+        assert_eq!(
+            v.format_display(),
+            format!(
+                "point({}, {}, {})",
+                format_display_number(1e-13),
+                format_display_number(1e-13),
+                format_display_number(1e-13)
+            )
+        );
     }
 
     #[test]
@@ -11566,16 +11615,43 @@ mod tests {
         // A non-finite sibling must never zero out an otherwise-dust finite
         // component: the aggregate reference becomes non-finite, which
         // disables the relative snap entirely (format_display_number_rel's
-        // guard), so 4e-13 falls through to its own decimal rendering.
+        // guard), so every component falls through to its own unsnapped
+        // decimal rendering. Pin the exact string (not just "doesn't start
+        // with point(0, ") so a partial snap of a later component, or a
+        // garbled inf/NaN rendering, also fails this test.
         let v = Value::Point(vec![
             Value::Real(4e-13),
             Value::Real(f64::INFINITY),
             Value::Real(21.5),
         ]);
-        assert!(
-            !v.format_display().starts_with("point(0, "),
-            "an infinite sibling must not cause the 4e-13 component to snap to zero: {}",
-            v.format_display()
+        assert_eq!(
+            v.format_display(),
+            format!(
+                "point({}, {}, {})",
+                format_display_number(4e-13),
+                format_display_number(f64::INFINITY),
+                format_display_number(21.5)
+            )
+        );
+    }
+
+    #[test]
+    fn format_display_point_nan_sibling_does_not_poison_reference() {
+        // f64::max's NaN-ignoring semantics mean a NaN leaf is silently
+        // dropped when folding the aggregate reference (unlike an inf
+        // sibling, tested above, which propagates into the reference and
+        // disables snapping entirely). Here the reference is still 21.5 —
+        // computed from the finite 4e-13/21.5 pair alone — so 4e-13 snaps to
+        // "0" exactly as it would without the NaN sibling present, and the
+        // NaN component itself renders via the unchanged absolute path.
+        let v = Value::Point(vec![
+            Value::Real(4e-13),
+            Value::Real(f64::NAN),
+            Value::Real(21.5),
+        ]);
+        assert_eq!(
+            v.format_display(),
+            format!("point(0, {}, {})", format_display_number(f64::NAN), format_display_number(21.5))
         );
     }
 
@@ -11583,9 +11659,18 @@ mod tests {
     fn format_display_list_excluded_from_relative_snap() {
         // List is a heterogeneous collection, not a geometric/tensor
         // aggregate sharing a coordinate frame — relative snapping must not
-        // apply, unlike the Point case above with the same magnitudes.
+        // apply, unlike the Point case above with the same magnitudes. Pin
+        // the exact absolute-path rendering (not just "isn't the snapped
+        // form") so any other corruption also fails this test.
         let v = Value::List(vec![Value::Real(4e-13), Value::Real(21.5)]);
-        assert_ne!(v.format_display(), "[0, 21.5]");
+        assert_eq!(
+            v.format_display(),
+            format!(
+                "[{}, {}]",
+                format_display_number(4e-13),
+                format_display_number(21.5)
+            )
+        );
     }
 
     #[test]
@@ -11618,13 +11703,14 @@ mod tests {
 
     // ── Value::format_display Tensor relative snap-to-zero (task 5339) ───────
     //
-    // Tensor is not yet wired to the relative snap (that's the whole point of
-    // this RED step) — the Tensor arm of format_display still maps children
-    // via the plain format_display(), and format_display_rel has no Tensor
-    // arm yet, so a nested Tensor-of-Tensor falls back to format_display()
-    // at the outer level too. These tests exercise the moment_of_inertia
-    // shape: a 3×3 nested Tensor whose off-diagonals are ~1e-18 dust next to
-    // O(1) diagonals, plus a flat-Tensor case and a no-op preservation case.
+    // Tensor is wired to the relative snap: the Tensor arm of format_display
+    // computes reference = aggregate_magnitude(self) over the WHOLE tensor,
+    // and format_display_rel's Tensor arm threads that same reference,
+    // unchanged, into every nested row — so a 3×3 nested Tensor-of-Tensor
+    // (the moment_of_inertia shape) judges an off-diagonal in any row
+    // against the global max, not just that row's own max. These tests
+    // exercise that shape (off-diagonals ~1e-18 dust next to O(1)
+    // diagonals), plus a flat-Tensor case and a no-op preservation case.
 
     #[test]
     fn format_display_tensor_snaps_inertia_off_diagonals_relative_to_whole_tensor_max() {
@@ -11667,14 +11753,37 @@ mod tests {
         assert_eq!(v.format_display(), "[1, 2]");
     }
 
+    #[test]
+    fn format_display_tensor_nested_point_threads_outer_reference() {
+        // A Point nested inside a Tensor must snap relative to the WHOLE
+        // tensor's magnitude, not a magnitude recomputed from just its own
+        // components: aggregate_magnitude recurses into a nested Point's
+        // items when folding the outer reference, and format_display_rel's
+        // Point arm threads that SAME outer reference back in — it does not
+        // fall back to format_display() (which would recompute a smaller
+        // local reference scoped to just that one Point). Without the Point
+        // arm, the first Point below would render its own 4e-13 unsnapped,
+        // since 4e-13 is its own row's max (ratio 1.0) even though it is
+        // dust (ratio ~1.86e-14) relative to the second Point's 21.5.
+        let v = Value::Tensor(vec![
+            Value::Point(vec![Value::Real(4e-13), Value::Real(0.0), Value::Real(0.0)]),
+            Value::Point(vec![Value::Real(21.5), Value::Real(0.0), Value::Real(0.0)]),
+        ]);
+        assert_eq!(
+            v.format_display(),
+            "[point(0, 0, 0), point(21.5, 0, 0)]"
+        );
+    }
+
     // ── Value::format_display Matrix relative snap-to-zero (task 5339) ───────
     //
-    // Matrix is not yet wired to the relative snap — the Matrix arm of
-    // format_display still maps cells via the plain format_display(). These
-    // tests cover the near-zero-relative-entries case and a comparable-
-    // entries preservation case that guards the existing matrix golden shape
-    // (gui types_tests / cli_eval_geometry pin `[[1, 2], [3, 4]]`-style
-    // output).
+    // Matrix is wired to the relative snap: the Matrix arm of format_display
+    // computes reference = aggregate_magnitude(self) over the WHOLE matrix,
+    // and format_display_rel's Matrix arm threads that same reference into
+    // every cell of every row. These tests cover the near-zero-relative-
+    // entries case and a comparable-entries preservation case that guards
+    // the existing matrix golden shape (gui types_tests / cli_eval_geometry
+    // pin `[[1, 2], [3, 4]]`-style output).
 
     #[test]
     fn format_display_matrix_snaps_near_zero_entries_relative_to_whole_matrix_max() {
