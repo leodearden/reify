@@ -564,10 +564,80 @@ fn for_each_child_mut(expr: &mut reify_ast::Expr, f: &mut dyn FnMut(&mut reify_a
     }
 }
 
+/// Does `expr` introduce a name binding over its own sub-expressions?
+///
+/// Exactly three `ExprKind` variants do: `Lambda` (its `LambdaParam` names bind
+/// over the body), `Quantifier` (its `variable` binds over the collection's
+/// element in the predicate), and `Match` (an arm's
+/// `MatchPattern::VariantBind { binders }` names bind over that arm's body).
+/// `Auto { params }` is named-argument syntax, not a binder.
+///
+/// This is the binder-level scope guard for the inline geometry-query hoist
+/// (task 5345). [`hoist_queries_in_expr`] lifts a matched query's arg[0]
+/// **verbatim** out to the STRUCTURE member list, where any identifier bound by
+/// an enclosing lambda param / quantifier variable / match-pattern binder would
+/// be UNBOUND — turning a cell that merely evaluated to `Value::Undef` into hard
+/// `unresolved name` Error diagnostics plus a bogus product realization injected
+/// into the template's export set.
+///
+/// Deliberately a per-VARIANT structural classification, not a free-identifier
+/// analysis: binder-FREE sub-positions of these nodes (a `Quantifier`'s
+/// `collection`, a `Match` discriminant, a binder-less arm body) are left
+/// un-hoisted too, even though they would be safe. That is conservative and
+/// correct — a query under a binder simply retains the pre-existing base
+/// behaviour (`Value::Undef`), so no regression is possible and the only thing
+/// forgone is a hoist that never worked. A free-identifier check would add a
+/// whole scope-tracking surface for an exotic payoff.
+///
+/// The `false` arm is written out EXHAUSTIVELY with no `_ =>` catch-all (the
+/// style [`for_each_child`] already uses): a future binder-introducing
+/// `ExprKind` must then fail to compile until someone classifies it here, rather
+/// than silently reopening this hole.
+fn expr_introduces_binder(expr: &reify_ast::Expr) -> bool {
+    use reify_ast::ExprKind;
+    match &expr.kind {
+        ExprKind::Lambda { .. } | ExprKind::Quantifier { .. } | ExprKind::Match { .. } => true,
+        ExprKind::NumberLiteral { .. }
+        | ExprKind::QuantityLiteral { .. }
+        | ExprKind::StringLiteral(_)
+        | ExprKind::BoolLiteral(_)
+        | ExprKind::Ident(_)
+        | ExprKind::BinOp { .. }
+        | ExprKind::UnOp { .. }
+        | ExprKind::FunctionCall { .. }
+        | ExprKind::MemberAccess { .. }
+        | ExprKind::EnumAccess { .. }
+        | ExprKind::Conditional { .. }
+        | ExprKind::ListLiteral(_)
+        | ExprKind::SetLiteral(_)
+        | ExprKind::MapLiteral(_)
+        | ExprKind::IndexAccess { .. }
+        | ExprKind::Auto { .. }
+        | ExprKind::Undef
+        | ExprKind::AdHocSelector { .. }
+        | ExprKind::QualifiedAccess { .. }
+        | ExprKind::InstanceQualifiedAccess { .. }
+        | ExprKind::Range { .. }
+        | ExprKind::TraitMethodCall { .. }
+        | ExprKind::TraitStaticCall { .. }
+        | ExprKind::VariantConstruct { .. }
+        | ExprKind::InterpolatedString(_) => false,
+    }
+}
+
 /// Read-only: does any sub-expression of `expr` contain a hoistable inline
 /// geometry-query call (per [`is_hoistable_query_call`])? Drives the cheap
 /// pre-scan so the common path (no inline query) clones nothing.
+///
+/// Scoped identically to [`hoist_queries_in_expr`] — the two MUST stay in
+/// lockstep, since this pre-scan drives the member-clone decision while the
+/// rewrite drives the actual hoist, and a guard on only one would leave them
+/// disagreeing about which members carry hoistable work. In particular a
+/// binder-introducing node ([`expr_introduces_binder`]) is opaque here too.
 fn expr_has_hoistable_query(expr: &reify_ast::Expr, functions: &[CompiledFunction]) -> bool {
+    if expr_introduces_binder(expr) {
+        return false;
+    }
     if let reify_ast::ExprKind::FunctionCall { name, args, .. } = &expr.kind
         && is_hoistable_query_call(name, args, functions)
     {
@@ -587,12 +657,24 @@ fn expr_has_hoistable_query(expr: &reify_ast::Expr, functions: &[CompiledFunctio
 /// `volume(a) + area(b)` are hoisted. In-place mutation: an `ExprKind` not
 /// enumerated by [`for_each_child_mut`] is left untouched — a missed nested
 /// query would remain `Undef`, never silent corruption.
+///
+/// A binder-introducing node ([`expr_introduces_binder`]) is OPAQUE: neither
+/// descended nor rewritten, because arg[0] is lifted verbatim to the STRUCTURE
+/// member list where a lambda param / quantifier variable / match-pattern binder
+/// would be unbound. [`expr_has_hoistable_query`] carries the same guard — keep
+/// the two in lockstep. Note this is scoped at BOTH levels: only top-level
+/// `Let`/`Param` members are descended (see
+/// [`desugar_inline_geometry_query_args`]), and within those, only binder-free
+/// sub-expressions.
 fn hoist_queries_in_expr(
     expr: &mut reify_ast::Expr,
     counter: &mut usize,
     functions: &[CompiledFunction],
     out: &mut Vec<reify_ast::MemberDecl>,
 ) {
+    if expr_introduces_binder(expr) {
+        return;
+    }
     for_each_child_mut(expr, &mut |child| {
         hoist_queries_in_expr(child, counter, functions, out);
     });
@@ -663,6 +745,12 @@ fn member_value_expr(member: &reify_ast::MemberDecl) -> Option<&reify_ast::Expr>
 /// `structure.members` walks in [`compile_entity`]. Only top-level `Let`/`Param`
 /// members are descended (guarded-group / match-cluster members are out of
 /// scope, consistent with the whole-handle-query acceptance surface).
+///
+/// The scope is bounded at TWO levels, both because a hoisted arg[0] is lifted
+/// verbatim to the STRUCTURE member list: at the member level as above, and
+/// within a member's expression at every binder-introducing node — a lambda,
+/// quantifier, or match arm ([`expr_introduces_binder`]), whose bound names would
+/// be unbound at member scope.
 fn desugar_inline_geometry_query_args(
     members: &[reify_ast::MemberDecl],
     functions: &[CompiledFunction],
