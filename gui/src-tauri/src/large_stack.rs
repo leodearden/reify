@@ -20,7 +20,14 @@
 //! compile over source the user just handed us, of arbitrary nesting depth:
 //!
 //! * `main.rs::open_file_engine` → `commands::open_file_engine_impl`
-//! * `main.rs::update_source` → `commands::reload_for_watch_impl` (watch reload)
+//! * `main.rs::update_source` (the frontend-invoked Tauri command) →
+//!   `commands::reload_for_watch_impl`
+//! * `main.rs::create_watcher`'s `FileEvent::Changed` callback →
+//!   `commands::reload_for_watch_impl`. This is the on-disk watch-reload path,
+//!   a DIFFERENT entry point from `update_source` above and the
+//!   highest-frequency full recompile; it also runs on the `FileWatcher`'s own
+//!   `std::thread::spawn` worker (default ~2 MiB stack), so it needs the
+//!   wrapper for the same reason a tokio worker does.
 //! * `debug_server.rs::run_on_engine` → every debug/MCP engine closure, which
 //!   includes the compile-bearing `open_file` / `load_fixture` tools
 //!

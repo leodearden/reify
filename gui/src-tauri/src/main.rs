@@ -255,11 +255,23 @@ fn create_watcher(
                         // The failure path therefore surfaces a compile-diagnostics Tauri
                         // event to the frontend instead of being silently dropped (the
                         // former behaviour with update_source_impl's Err branch).
-                        if let Ok(gui_state) = reify_gui::commands::reload_for_watch_impl(
-                            &state.engine,
-                            &path_str,
-                            &content,
-                        ) {
+                        // Defense-in-depth (task 5357): this is the
+                        // highest-frequency full-recompile path (edit the .ri on
+                        // disk → notify event → recompile), and it runs on the
+                        // FileWatcher's own worker thread (watcher.rs spawns it
+                        // with a bare `std::thread::spawn`, i.e. the default
+                        // ~2 MiB stack). Route it onto the large-stack thread
+                        // like the Tauri-command entry points. The scoped helper
+                        // borrows the locals/`State` deref directly — no clone.
+                        let reload_result =
+                            reify_gui::large_stack::run_on_large_stack(|| {
+                                reify_gui::commands::reload_for_watch_impl(
+                                    &state.engine,
+                                    &path_str,
+                                    &content,
+                                )
+                            });
+                        if let Ok(gui_state) = reload_result {
                             let delta = compute_delta(&state.last_state, &gui_state);
                             emit_delta(&handle, &delta);
                         }

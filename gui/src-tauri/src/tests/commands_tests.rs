@@ -1846,12 +1846,13 @@ fn open_file_engine_impl_runs_correctly_through_large_stack() {
 /// `reload_for_watch_impl` invoked THROUGH `run_on_large_stack` returns the same
 /// salient state as a direct (un-wrapped) call.
 ///
-/// The sibling of the guard above, for the OTHER half of the step-6 wiring:
-/// `main.rs::update_source` performs exactly this composition and is equally
-/// un-headless-testable (it takes `tauri::AppHandle` / `tauri::State`). Worth
-/// covering separately because it is the recompile reached on EVERY watch-
-/// triggered reload, not just on file open — i.e. the higher-frequency of the
-/// two wrapped compile paths.
+/// The sibling of the guard above, for the OTHER half of the step-6 wiring.
+/// TWO distinct call sites perform exactly this composition, and both are
+/// un-headless-testable (they take `tauri::AppHandle` / `tauri::State`):
+/// the frontend-invoked `main.rs::update_source` command, and
+/// `main.rs::create_watcher`'s `FileEvent::Changed` callback — the latter being
+/// the recompile reached on EVERY watch-triggered on-disk reload, i.e. the
+/// highest-frequency of the wrapped compile paths.
 #[test]
 fn reload_for_watch_impl_runs_correctly_through_large_stack() {
     use crate::commands::reload_for_watch_impl;
