@@ -280,10 +280,16 @@ dispatch (`is_none_or`, like PTODO) + no jcodemunch dependency.
 
 ## 8. Decomposition plan
 
-Labels α–η; filed 2026-07-24 (planning_mode batch): α=#5408, β=#5409, γ=#5413,
+Labels α–η; filed 2026-07-24 (planning_mode batch): α=#5476, β=#5409, γ=#5413,
 δ=#5414, ε=#5411, ζ=#5410, η=#5412. All `task_kind="normal"`, `grammar_confirmed:
 true`. Ordering (real `add_dependency` edges): α ∥ ζ ∥ (β after #5306); γ after
 {α, β}; δ after γ; ε after #5306; η after β.
+
+> Provenance note (2026-07-25): α was first filed as #5408, but the PRD docs were
+> landed on a branch named `task/5408` and the orchestrator's pre-dispatch reconcile
+> marked #5408 done via found_on_main before any α code existed. #5408 is re-purposed
+> as the docs-landing record; α was re-filed verbatim as #5476 (deps rewired). Never
+> name a docs-landing branch after a live batch task id.
 
 - **α — FlexureJoint marker vertical slice** (headline leaf; consumer: every flexures
   author + BT1–BT3). `structure def FlexureJoint : DrivingJoint {}`; flexure ctor
