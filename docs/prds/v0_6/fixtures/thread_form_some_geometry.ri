@@ -1,0 +1,3 @@
+structure def Test {
+    let g = some(cylinder(2mm, 5mm))
+}
