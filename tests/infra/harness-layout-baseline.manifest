@@ -437,6 +437,7 @@ crates/reify-eval/tests/option_recovery_map_or_e2e.rs
 crates/reify-eval/tests/param_default_sibling_let_order.rs
 crates/reify-eval/tests/parse_length_e2e.rs
 crates/reify-eval/tests/pattern_single_pass_e2e.rs
+crates/reify-eval/tests/pattern_spacing_units_e2e.rs
 crates/reify-eval/tests/persistent_cache_compute_round_trip.rs
 crates/reify-eval/tests/pinned_support.rs
 crates/reify-eval/tests/pointwise_field_combinators_e2e.rs
