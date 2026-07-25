@@ -16,21 +16,24 @@
 //!   unit tetrahedron — satisfies every `Mesh::validate` obligation (the
 //!   no-false-positive control).
 //!
-//! ## RED → GREEN
+//! ## Task #5105 (kernel-seam δ) — both modes are pinned here
 //!
-//! RED: no `validate()` call is wired at the handoff yet, so the VIOLATION
-//! build's `diagnostics` carries no `Severity::Warning` mentioning "mesh
-//! contract" — assertion (a) fails.
+//! β wired site 1 as warn-only. δ makes it mode-governed and flips the
+//! default to [`MeshContractMode::Enforce`], with `REIFY_MESH_CONTRACT=warn`
+//! as the break-glass downgrade. This file now pins BOTH postures against the
+//! same harness, each mode set explicitly via the `set_mesh_contract_mode`
+//! test seam so neither test depends on the ambient env var:
 //!
-//! GREEN: once `engine_build.rs::execute_realization_ops` calls
-//! `mesh.validate(per_stage_tol)` right after `mesh` is bound and, on `Err`,
-//! pushes a `Diagnostic::warning` built from
-//! `violation.into_geometry_error(source_name).to_string()`, assertion (a)
-//! passes: a Warning naming both "occt" and "mesh contract" appears, no
-//! Error diagnostic is emitted (warn-default never aborts), and
-//! `manifold.ingest_mesh` still fires once per union input (2). The VALID
-//! build's assertion (b) — zero mesh-contract warnings — holds on both sides
-//! of the RED→GREEN line, pinning the no-false-positive guard.
+//! - [`tessellate_handoff_warn_mode_warns_without_aborting`] — `Warn`: a
+//!   `Severity::Warning` naming "occt" and "mesh contract", NO Error, and the
+//!   ingest still fires once per union input (2).
+//! - [`tessellate_handoff_enforce_mode_aborts_the_build`] — `Enforce`: a
+//!   `Severity::Error` naming "occt" and "mesh contract", the conversion
+//!   aborts BEFORE ingest (counter stays 0), and no geometry output is
+//!   produced.
+//!
+//! Both tests carry the VALID-tetra control half, so the no-false-positive
+//! guard holds under either mode.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -38,6 +41,7 @@ use std::sync::{Arc, Mutex};
 use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
 use reify_core::{ModulePath, Severity, Type};
 use reify_eval::Engine;
+use reify_ir::geometry::MeshContractMode;
 use reify_ir::{CapabilityDescriptor, CompiledExpr, ExportFormat, Operation, ReprKind};
 use reify_test_support::builders::{CompiledModuleBuilder, TopologyTemplateBuilder};
 use reify_test_support::mocks::MockGeometryKernel;
@@ -243,20 +247,27 @@ fn registry() -> BTreeMap<String, CapabilityDescriptor> {
     registry
 }
 
-/// PRD `kernel-seam-contracts.md` §4 site 1 / DAG leaf β (task #5103,
-/// INV-GEO-1): `execute_realization_ops`'s tessellate→ingest conversion
-/// executor must call `Mesh::validate()` on the interchange mesh and, on a
-/// contract violation, push a `Severity::Warning` diagnostic naming the
-/// producing kernel and the mesh contract — WITHOUT aborting the build
-/// (warn-default during rollout; the enforce flip is task δ).
+/// PRD `kernel-seam-contracts.md` §4 site 1 (tasks #5103 β / #5105 δ,
+/// INV-GEO-1) under [`MeshContractMode::Warn`]: `execute_realization_ops`'s
+/// tessellate→ingest conversion executor must call `Mesh::validate()` on the
+/// interchange mesh and, on a contract violation, push a `Severity::Warning`
+/// diagnostic naming the producing kernel and the mesh contract — WITHOUT
+/// aborting the build.
+///
+/// Warn is no longer the rollout default: after the δ flip it is the
+/// explicitly-selected break-glass mode (`REIFY_MESH_CONTRACT=warn` in
+/// production). This test therefore pins it via the `set_mesh_contract_mode`
+/// seam rather than relying on the default, which also makes it independent
+/// of whatever `REIFY_MESH_CONTRACT` happens to be set to in the environment
+/// running the suite. The enforce counterpart is
+/// [`tessellate_handoff_enforce_mode_aborts_the_build`].
 ///
 /// Asserts both directions with two independent builds (fresh `Engine`s, so
-/// there is no cross-build caching to account for) so this test is RED
-/// before the impl (the violation half finds no mesh-contract warning)
-/// while also pinning the no-false-positive guard (the valid half must
-/// never warn).
+/// there is no cross-build caching to account for): the violation half pins
+/// warn's downgrade-and-continue behavior, the valid half pins the
+/// no-false-positive guard.
 #[test]
-fn tessellate_handoff_validates_mesh_contract_and_warns_without_aborting() {
+fn tessellate_handoff_warn_mode_warns_without_aborting() {
     let module = CompiledModuleBuilder::new(ModulePath::new(vec![
         "test_mesh_contract_handoff".to_string(),
     ]))
@@ -289,6 +300,7 @@ fn tessellate_handoff_validates_mesh_contract_and_warns_without_aborting() {
         registry(),
         Some("occt".to_string()),
     );
+    engine.set_mesh_contract_mode(MeshContractMode::Warn);
     let _eval = engine.eval(&module);
     engine.activate_purpose("manufacturing", "MyDesign");
 
@@ -301,7 +313,7 @@ fn tessellate_handoff_validates_mesh_contract_and_warns_without_aborting() {
         .collect();
     assert!(
         errors.is_empty(),
-        "warn-default must never abort the build on a mesh-contract \
+        "Warn mode must never abort the build on a mesh-contract \
          violation; got error diagnostics: {errors:?}"
     );
 
@@ -325,7 +337,7 @@ fn tessellate_handoff_validates_mesh_contract_and_warns_without_aborting() {
     assert_eq!(
         *ingest_count.lock().unwrap(),
         2,
-        "warn-default must not skip the ingest: manifold.ingest_mesh must still fire \
+        "Warn mode must not skip the ingest: manifold.ingest_mesh must still fire \
          once per union input (2) despite the per-input mesh-contract warning"
     );
 
@@ -353,6 +365,7 @@ fn tessellate_handoff_validates_mesh_contract_and_warns_without_aborting() {
         registry(),
         Some("occt".to_string()),
     );
+    valid_engine.set_mesh_contract_mode(MeshContractMode::Warn);
     let _valid_eval = valid_engine.eval(&module);
     valid_engine.activate_purpose("manufacturing", "MyDesign");
 
@@ -375,5 +388,158 @@ fn tessellate_handoff_validates_mesh_contract_and_warns_without_aborting() {
         valid_contract_warnings.is_empty(),
         "a closed, consistently-wound tetra must satisfy the mesh contract and \
          produce zero mesh-contract warnings; got: {valid_contract_warnings:?}"
+    );
+}
+
+/// Task #5105 (kernel-seam δ, INV-GEO-1): the enforce locking test — site 1
+/// under [`MeshContractMode::Enforce`], which is the DEFAULT after the δ flip.
+///
+/// Same harness as [`tessellate_handoff_warn_mode_warns_without_aborting`],
+/// only the asserted outcome differs. Under enforce, a contract violation at
+/// the tessellate→ingest handoff must FAIL CLOSED: the conversion sets
+/// `conversion_error` and `break 'convert`s, which routes into the existing
+/// abort machinery (a `Severity::Error` diagnostic labelled with the
+/// realization span, plus `kernel_error_out`). Three things follow, and all
+/// three are asserted:
+///
+/// 1. a `Severity::Error` diagnostic naming both "occt" and "mesh contract";
+/// 2. the abort happens BEFORE ingest, so `manifold.ingest_mesh` never fires
+///    (counter stays 0) — this is what distinguishes enforce from warn, where
+///    the same build ingests twice;
+/// 3. no geometry output is emitted for the aborted realization.
+///
+/// The valid-tetra control half pins the no-false-positive guard under
+/// enforce: the strictest mode must still build a well-formed mesh cleanly.
+///
+/// The mode is set explicitly rather than left to the default so the test
+/// pins enforce behavior even when the suite runs with
+/// `REIFY_MESH_CONTRACT=warn` in the environment.
+#[test]
+fn tessellate_handoff_enforce_mode_aborts_the_build() {
+    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_mesh_contract_handoff_enforce".to_string(),
+    ]))
+    .template(step_output_template(1e-6))
+    .template(my_design_template_with_union_realization())
+    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
+    .build();
+
+    // ── (a) VIOLATION build: occt.tessellate returns a NaN-vertex mesh. ────
+    let ingest_count = Arc::new(Mutex::new(0usize));
+    let mut kernels: BTreeMap<String, Box<dyn reify_ir::GeometryKernel>> = BTreeMap::new();
+    kernels.insert(
+        "occt".to_string(),
+        Box::new(CorruptTessellateKernel {
+            inner: MockGeometryKernel::new(),
+        }),
+    );
+    kernels.insert(
+        "manifold".to_string(),
+        Box::new(CountingManifoldKernel {
+            inner: MockGeometryKernel::new(),
+            ingest_count: Arc::clone(&ingest_count),
+            next_ingest_id: 3000,
+        }),
+    );
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::with_test_kernels_and_registry(
+        Box::new(checker),
+        kernels,
+        registry(),
+        Some("occt".to_string()),
+    );
+    engine.set_mesh_contract_mode(MeshContractMode::Enforce);
+    let _eval = engine.eval(&module);
+    engine.activate_purpose("manufacturing", "MyDesign");
+
+    let violation_build = engine.build(&module, ExportFormat::Stl);
+
+    let contract_errors: Vec<_> = violation_build
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, Severity::Error) && d.message.contains("mesh contract"))
+        .collect();
+    assert!(
+        !contract_errors.is_empty(),
+        "Enforce mode must FAIL CLOSED on a mesh-contract violation: a \
+         Severity::Error mesh-contract diagnostic is required; got diagnostics: {:?}",
+        violation_build.diagnostics
+    );
+    assert!(
+        contract_errors.iter().all(|d| d.message.contains("occt")),
+        "the mesh-contract error must name the producing kernel ('occt'); got: \
+         {contract_errors:?}"
+    );
+
+    assert!(
+        violation_build
+            .diagnostics
+            .iter()
+            .all(|d| !(matches!(d.severity, Severity::Warning)
+                && d.message.contains("mesh contract"))),
+        "Enforce must not ALSO emit the warn-mode diagnostic — the violation is \
+         reported exactly once, as an Error; got diagnostics: {:?}",
+        violation_build.diagnostics
+    );
+
+    assert_eq!(
+        *ingest_count.lock().unwrap(),
+        0,
+        "Enforce must abort the conversion BEFORE the ingest: manifold.ingest_mesh \
+         must never fire (contrast the warn-mode test, where the same build \
+         ingests twice)"
+    );
+
+    assert!(
+        violation_build.geometry_output.is_none(),
+        "an aborted conversion must not produce geometry output; got {:?} bytes",
+        violation_build.geometry_output.as_ref().map(|b| b.len())
+    );
+
+    // ── (b) VALID build under the SAME enforce mode: a closed, outward-wound
+    //    tetrahedron must still build cleanly (no false positive). ──────────
+    let valid_ingest_count = Arc::new(Mutex::new(0usize));
+    let mut valid_kernels: BTreeMap<String, Box<dyn reify_ir::GeometryKernel>> = BTreeMap::new();
+    valid_kernels.insert(
+        "occt".to_string(),
+        Box::new(ValidTessellateKernel {
+            inner: MockGeometryKernel::new(),
+        }),
+    );
+    valid_kernels.insert(
+        "manifold".to_string(),
+        Box::new(CountingManifoldKernel {
+            inner: MockGeometryKernel::new(),
+            ingest_count: Arc::clone(&valid_ingest_count),
+            next_ingest_id: 4000,
+        }),
+    );
+    let valid_checker = MockConstraintChecker::new();
+    let mut valid_engine = Engine::with_test_kernels_and_registry(
+        Box::new(valid_checker),
+        valid_kernels,
+        registry(),
+        Some("occt".to_string()),
+    );
+    valid_engine.set_mesh_contract_mode(MeshContractMode::Enforce);
+    let _valid_eval = valid_engine.eval(&module);
+    valid_engine.activate_purpose("manufacturing", "MyDesign");
+
+    let valid_build = valid_engine.build(&module, ExportFormat::Stl);
+    let valid_errors: Vec<_> = valid_build
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, Severity::Error))
+        .collect();
+    assert!(
+        valid_errors.is_empty(),
+        "a valid closed tetra must build cleanly even under Enforce; got error \
+         diagnostics: {valid_errors:?}"
+    );
+    assert_eq!(
+        *valid_ingest_count.lock().unwrap(),
+        2,
+        "the valid build must reach the ingest normally under Enforce: \
+         manifold.ingest_mesh fires once per union input (2)"
     );
 }
