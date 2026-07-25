@@ -168,6 +168,32 @@ because co-resident Error diagnostics are code-less.
 **House pattern**: `DiagnosticCode` registry + typed-code test assertions
 (tasks 2255, 3416 flipped substring tests to code identity).
 
+## INV-SF-7 `parse-is-value-faithful`
+
+**Rule**: No grammar or parser ambiguity may silently change an
+expression's value. Where the grammar admits more than one reading of a
+token sequence (e.g. quantity-literal juxtaposition absorbing a
+following line), the resolution is a parse error at the ambiguity site —
+never a quiet pick. A misparse that yields a well-typed WRONG value is
+the worst silent-failure shape: it satisfies SF-1..SF-6 while the number
+is garbage.
+
+**Checkable design question(s)**: Does this feature add grammar that
+composes with quantity-literal juxtaposition or any other
+adjacency-sensitive rule? If so, does it carry ambiguity-regression
+corpus tests pinning that adjacent-token variation cannot change a
+parsed value? Can any statement/expression boundary in the new grammar
+absorb a following line without a diagnostic?
+
+**Evidence**: #5392 (functional-enumeration probe 2026-07-24): a fn body
+`let x0 = cos(0deg)` followed on the next line by `x0 * sgn(i, 0)` — no
+semicolon — returned -1 where +1 is correct, with zero diagnostics; the
+same seam yields four outcomes (correct / silently wrong / undef /
+parse-error-at-wrong-line) depending on adjacent tokens. #5492's corpus
+red on main is suspected drift of the same seam. Ratified by Leo
+2026-07-25 (seam review); #5392 is the enforcement vehicle for the
+fn-body seam.
+
 ## Census seam
 
 Reify's confusion-codebook entries
