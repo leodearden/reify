@@ -373,8 +373,9 @@ landed (re-`get_task` the victim and confirm the field values), transition
 the human-gate task itself to `cancelled` — do not leave it `blocked`. Task
 #5315 initially missed this closure step (left `blocked` after its gated
 correction had already landed) until task #5321 flagged the gap and it was
-cancelled to match; #5321 is now building a standing sweep for exactly this
-closure-staleness pattern (see Cross-references).
+cancelled to match; #5321 is *filed* to generalize exactly this
+closure-staleness pattern into a standing sweep, but has not been delivered —
+perform this closure step by hand (see Cross-references).
 
 ## Cross-references
 
@@ -384,7 +385,7 @@ closure-staleness pattern (see Cross-references).
 | **#5368** | Signature-1 victim (filed 2026-07-23, ~23h after the guard commit — see Audit Findings for the deploy-lag reasoning); corrected 2026-07-24 via **esc-5368-2**. Its *deliverable* is a **design PRD**, `docs/prds/verify-confirm-failed-self-discovery.md` — **not** an implementation. `scripts/verify.sh` contains zero occurrences of `confirm-failed` as of this sweep, so `verify.sh test --confirm-failed` still hits the `*)` arm and exits 64 with the usage dump. The PRD itself (§ at line 21) records that the offline lane "already carries a defensive guard, landed as task 5308 … this guard is precisely what stopped the original false-premise mis-scrape from recurring". |
 | **#5264** | Signature-1 victim; corrected. Human-gate: **#5315** (cancelled). Also a Signature-2 victim — corrected 2026-07-26 under **esc-5316-17** (see Audit Findings). |
 | **#5295** | Signature-2 victim; corrected. Human-gate: **#5309** (cancelled) — the precedent this recipe generalizes. |
-| **#5321** | Standing recon capability generalizing the human-gate closure-staleness check (§5's "close the loop" step) beyond `offline_lane_red`; depends on this note. |
+| **#5321** | Standing recon capability generalizing the human-gate closure-staleness check (§5's "close the loop" step) beyond `offline_lane_red`; builds on this note. **Not yet delivered** (`pending` as of this sweep) — do not assume an automated sweep covers §5's closure step. |
 
 ## Re-run trigger
 
