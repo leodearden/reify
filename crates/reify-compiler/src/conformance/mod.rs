@@ -511,12 +511,15 @@ pub(crate) fn check_param_default_conformance(
             //
             // The old `_ => continue` silently accepted every non-StructureRef/
             // non-Geometry default (the "future work" hole this task fills). The
-            // walker single-sources the anti-cascade skip list: its
-            // `reject_if_incompatible` skips `Error`/`TypeParam`/`Geometry`/
-            // `TraitObject` ARG types, and the general-leaf arm skips
-            // `Geometry`/`TypeParam` PARAM types — so no skip logic is duplicated
-            // here. Only the top-level `Error`-default guard is repeated, matching
-            // the `StructureRef`/`Geometry` arms above.
+            // walker single-sources both the anti-cascade skip list and the
+            // param-family gating: its `reject_if_incompatible` skips
+            // `Error`/`TypeParam`/`Geometry`/`TraitObject` ARG types, and its
+            // general concrete-leaf arm judges a PARAM type only when
+            // [`general_leaf_param_family_is_validated`] vets it. So routing here
+            // is unconditional but diagnosing is not — a default at an
+            // un-vetted family stays silent, and no gating logic is duplicated
+            // at this call site. Only the top-level `Error`-default guard is
+            // repeated, matching the `StructureRef`/`Geometry` arms above.
             _ => {
                 // Anti-cascade: skip when the default expression itself had a
                 // compile error (its root-cause diagnostic was already emitted).
@@ -1242,26 +1245,87 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
                         format!("expected '{}', got '{}'", param_type, arg_type),
                     )),
                 );
-            } else if !matches!(param_type, Type::Geometry | Type::TypeParam(_)) {
+            } else if general_leaf_param_family_is_validated(param_type) {
                 // GENERAL CONCRETE-LEAF arm (task 5302 α): this replaces the former
-                // silent `_` fall-through. Route any remaining concrete leaf (Real,
-                // Int, String, Bool, Point, Frame, dimensioned scalar, enum, …)
+                // silent `_` fall-through for the param families that
+                // [`general_leaf_param_family_is_validated`] vets, routing them
                 // through the shared `reject_if_incompatible` → `type_compatible`
-                // gate, emitting `ArgTypeMismatch` at ctx.severity for a genuine
-                // mismatch. Two param kinds are deliberately skipped:
-                //   • `Type::Geometry` — geometry constructors compile to a
-                //     dimensionless-scalar PLACEHOLDER (GHR-γ), so a type-level
-                //     `type_compatible(Geometry, Scalar)` would false-reject every
-                //     legitimate geometry arg (there is no Geometry arm in
-                //     type_compatible). Geometry conformance is decided only through
-                //     the literal walker's op-array inference, never here.
-                //   • `Type::TypeParam` — an unresolved generic param; its real
-                //     conformance is decided when the type var is bound at
-                //     instantiation (mirrors the arg-side TypeParam skip in
-                //     `reject_if_incompatible`).
+                // gate and emitting `ArgTypeMismatch` at ctx.severity for a genuine
+                // mismatch. Every other family keeps falling through silently,
+                // exactly as before α — see that predicate's doc comment for the
+                // per-family rationale and the sound-by-construction posture.
                 reject_if_incompatible(param_type, arg_type, ctx, emit_arg_type_mismatch);
             }
         }
+    }
+}
+
+/// Whether `param_type` belongs to a param family whose args are safe to judge
+/// with raw [`type_compatible`] at the general concrete-leaf arm of
+/// [`walk_param_against_arg_type`].
+///
+/// # Why this is an allowlist and not a skip list
+///
+/// The α cut of the general-leaf arm used a NEGATIVE guard
+/// (`!matches!(param_type, Type::Geometry | Type::TypeParam(_))`), which made it
+/// unsound BY DEFAULT: every present and future [`Type`] variant was opted in to
+/// `type_compatible` unless somebody remembered to carve it out. Five families
+/// were false-rejected across 15+ shipped examples before the corpus gate in
+/// `examples_smoke.rs` caught it.
+///
+/// The inversion here makes the arm sound BY CONSTRUCTION — a newly-added `Type`
+/// variant defaults to silence, not to a false positive. Broadening the list is
+/// a deliberate act that must come with corpus evidence.
+///
+/// # Why these four
+///
+/// `type_compatible` is a *call-site coercion* predicate: it presumes both sides
+/// carry genuinely inferred types. `Bool`, `Int`, `String` and DIMENSIONLESS
+/// `Scalar` (spelled `Real` in source, and by `Display`) are the families for
+/// which that presumption actually holds at a struct-ctor arg position — the
+/// expression compiler infers them precisely, and `type_compat.rs` has real arms
+/// for each.
+///
+/// # Deliberately excluded, with evidence
+///
+/// Generalizing any of these needs new `type_compat.rs` coercion rules, which is
+/// an explicit α non-goal; it is tracked as a separate follow-up.
+///
+/// * **`Point` / `Vector` quantity slots, `Field`** — args routinely compile to
+///   the expression compiler's numeric-fallback or erased placeholder rather
+///   than the nominal type. `point3(0m, 0m, 0m)` is a `FunctionCall` whose
+///   result_type is `Scalar[m]`, never `Type::Point`; an analytical `field def`
+///   erases both slots to `Field<Real, Real>` whatever its declaration says.
+///   This is the same placeholder class the `Type::Geometry` exclusion and
+///   [`promote_function_call_to_structure_ref`] already exist for.
+/// * **`Matrix` / `Tensor`** — a nested list literal is the idiomatic spelling
+///   of a `Matrix3x3`, but it compiles to `List<List<Real>>` and no
+///   `List`→`Matrix` arm exists. Unlike the placeholder families this is a
+///   genuinely missing coercion rule, so no amount of placeholder detection
+///   fixes it.
+/// * **`Enum`** — under enum erasure a constructed variant's result_type is
+///   always the bare `Type::Enum(name)`, never the applied form. That is
+///   precisely why `type_compat.rs::enum_payload_compatible` exists (its own doc
+///   notes a naive `type_compatible` "would spuriously fail") and why
+///   `variant_construct.rs` guards with it instead.
+/// * **Dimensioned `Scalar`** — supplying a bare dimensionless numeric literal
+///   at a dimensioned slot is idiomatic throughout the corpus.
+/// * **`Geometry`** — geometry constructors compile to a dimensionless-scalar
+///   placeholder (GHR-γ) and `type_compatible` has no `Geometry` arm at all;
+///   geometry conformance is decided only through the literal walker's op-array
+///   inference.
+/// * **`TypeParam`** — an unresolved generic param, whose real conformance is
+///   decided when the type var is bound at instantiation (mirrors the arg-side
+///   `TypeParam` skip inside [`reject_if_incompatible`]).
+///
+/// The last two were the α negative guard's explicit carve-outs; they are
+/// subsumed by simple absence from the allowlist, so the redundant `matches!`
+/// is gone rather than left as dead belt-and-braces.
+fn general_leaf_param_family_is_validated(param_type: &Type) -> bool {
+    match param_type {
+        Type::Bool | Type::Int | Type::String => true,
+        Type::Scalar { dimension } => dimension.is_dimensionless(),
+        _ => false,
     }
 }
 
