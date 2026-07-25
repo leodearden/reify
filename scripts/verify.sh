@@ -134,8 +134,57 @@
 #                                  DF_VERIFY_ROLE=merge → immediate bypass (CAVEAT 1).
 #
 # Host-relative compile timeout knobs (task 4621):
-#   REIFY_VERIFY_TEST_TIMEOUT   — outer timeout for `cargo nextest run` passes.
-#                                  Default 60m (workstation budget, η/4521 × 4.5).
+#   REIFY_VERIFY_TEST_TIMEOUT   — outer timeout for the DEBUG (`--workspace`)
+#                                  `cargo nextest run` pass. Default 60m
+#                                  (workstation budget, η/4521 × 4.5).
+#   REIFY_VERIFY_TEST_TIMEOUT_RELEASE — outer timeout for the RELEASE (`--release`)
+#                                  `cargo nextest run` pass ONLY. Default 90m. A cold
+#                                  sccache native-kernel relink (OCCT/OpenVDB/gmsh/
+#                                  manifold — a separate sccache profile from debug)
+#                                  pushes the combined release build+exec past the 60m
+#                                  debug budget (task 5382, esc-5370-2). The merge OUTER
+#                                  wall that must not preempt this pass is
+#                                  merge_verify_cold_command_timeout_secs (task 5383) in
+#                                  dark-factory-orchestrator.yaml — that key's comment
+#                                  block is the single source for the relationship.
+#   REIFY_VERIFY_PREBUILD_TIMEOUT — outer timeout for the merge-path RELEASE
+#                                  pre-builds (`cargo build --release -p reify-audit`
+#                                  and `-p reify-cli`). Default 45m. These run ONLY on
+#                                  the merge/background path and are the step that
+#                                  actually COLD-BUILDS the release native-kernel cone
+#                                  (manifold-csg-sys/manifold3d/OCCT) — the release
+#                                  nextest pass afterwards inherits a warm cone, so this
+#                                  budget is transferred FROM the release nextest budget,
+#                                  not added to it.
+#                                  DERIVATION — read this before re-tuning. Unlike the
+#                                  debug 60m (η/4521's 798.9 s worst-observed COMPLETION
+#                                  × 4.5), the cold pre-build's true duration is
+#                                  UNMEASURED. The only datum is a strict LOWER bound:
+#                                  the former fixed 10m ceiling SIGTERM'd reify-cli
+#                                  mid-`Compiling reify-runtime` on a cold merge lane
+#                                  with zero failing assertions (esc-5382-1, same class
+#                                  as esc-5370-2) — so the true cold duration is >10m,
+#                                  by an unknown amount. 45m applies this file's house
+#                                  4.5× production-weighted margin idiom to that lower
+#                                  bound (10m × 4.5 = 45m), landing on the same tier as
+#                                  clippy — the other full-scale cold compile wave here.
+#                                  Because the margin multiplies a TRUNCATION point and
+#                                  not an observed completion, 45m carries strictly less
+#                                  assurance than the debug 60m does: if a cold pre-build
+#                                  ever SIGTERMs at 45m, the correct response is to
+#                                  MEASURE the real duration and re-derive, NOT to
+#                                  multiply again. The earlier 25m was reverse-derived
+#                                  from a 10800 − 3600 − 5400 ceiling-sum residual; that
+#                                  constraint is not real (see the
+#                                  merge_verify_cold_command_timeout_secs comment in
+#                                  dark-factory-orchestrator.yaml for why the outer wall
+#                                  never bounded the sum of inner ceilings), so nothing
+#                                  caps this knob at 25m.
+#                                  NB this step runs at `nice -n 5` OUTSIDE
+#                                  compile_gate()/psi_gate()/the test semaphore (see the
+#                                  ADMISSION CONTROLS note at the pre-build block), so a
+#                                  contended cold merge lane is exactly the case the
+#                                  margin has to absorb.
 #   REIFY_VERIFY_CLIPPY_TIMEOUT — outer timeout for `cargo clippy` and the
 #                                  gui-feature `cargo check -p reify-gui` pass.
 #                                  Default 45m.
@@ -325,9 +374,14 @@ _resolve_timeout_knob() {
     esac
 }
 
-# Resolve three compile-budget tiers once at startup.  Defaults match the
+# Resolve the compile-budget tiers once at startup.  Defaults match the
 # workstation-measured budgets (unset → identical render, no-op on workstation).
+# The test budget splits PER PROFILE (task 5382): the DEBUG (--workspace) pass uses
+# REIFY_VERIFY_TEST_TIMEOUT (60m); the RELEASE (--release) pass uses its own cold-aware
+# REIFY_VERIFY_TEST_TIMEOUT_RELEASE (90m) — see add_test_passes for the derivation.
 _VERIFY_TEST_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT 60m)"
+_VERIFY_TEST_TIMEOUT_RELEASE="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE 90m)"
+_VERIFY_PREBUILD_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_PREBUILD_TIMEOUT 45m)"
 _VERIFY_CLIPPY_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_CLIPPY_TIMEOUT 45m)"
 _VERIFY_CHECK_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_CHECK_TIMEOUT 30m)"
 
@@ -1600,18 +1654,31 @@ add_test_passes() {
     add "@@SEMAPHORE_ACQUIRE@@"
 
     # Emit one combined build+execution nextest pass per profile (slot held).
-    # Outer timeout: single unified budget re-derived from η/4521's authoritative
-    # real-load floor (task 4520/ζ′).
-    # Floor: 798.9 s (worst-observed cold real-load, genuinely cold-cache, quiet box
-    # with warm host sccache — see docs/prds/jobserver-merge-priority-balancer
-    # .acceptance-report.md §"ζ′/4520 budget floor (authoritative)").
-    # Derivation: ceil(798.9 × 4.5 production-weighted margin) = ceil(3595.05 s) =
-    # 3596 s → rounded up to clean minute-granularity = 60m (3600 s).
-    # Bound 3600 s > floor 798.9 s by construction.
+    # Outer timeout: PER-PROFILE budgets (task 5382 restored the pre-4520 split).
+    #  - DEBUG (--workspace): _VERIFY_TEST_TIMEOUT (60m). Re-derived from η/4521's
+    #    real-load floor (task 4520/ζ′): 798.9 s worst-observed cold real-load on a
+    #    quiet box with WARM host sccache (docs/prds/jobserver-merge-priority-balancer
+    #    .acceptance-report.md §"ζ′/4520 budget floor (authoritative)");
+    #    ceil(798.9 × 4.5 production-weighted margin) = ceil(3595.05 s) = 3596 s →
+    #    rounded up to 60m (3600 s). Bound 3600 s > floor 798.9 s by construction.
+    #  - RELEASE (--release): _VERIFY_TEST_TIMEOUT_RELEASE (90m). The 798.9 s floor
+    #    was measured cold-TARGET / WARM-sccache; it NEVER included a cold-SCCACHE
+    #    native-kernel relink (OCCT/OpenVDB/gmsh/manifold — a SEPARATE sccache profile
+    #    from debug, so a cleared debug pass does not warm the release compile), which
+    #    pushed the combined release build+exec past the unified 60m and SIGTERM'd it
+    #    at the inner timeout (esc-5370-2, false "integration_skew"). 90m is the
+    #    cold-aware release budget. The merge OUTER wall that must not preempt these
+    #    two inner budgets is merge_verify_cold_command_timeout_secs (sibling task
+    #    5383) in dark-factory-orchestrator.yaml. That key's comment block is the
+    #    SINGLE SOURCE for the inner/outer relationship — what it does and does NOT
+    #    model, and why the inner ceilings are not summed against it. Do not restate
+    #    its arithmetic here; it drifted once already (esc-5382-1 amendment review).
+    #    tests/infra/test_occt_flock_gate.sh T10 mechanises that relationship.
     # NOTE: outer timeouts asserted in tests/infra/test_occt_flock_gate.sh
-    # (Test 17 — debug pass, Test 17b — release pass) — keep in sync.
+    # (Test 17 — debug pass, Test 17b — release pass; T1/T2/T8/T9 knob behavior) — keep in sync.
     local _profile _rel
-    local _outer_timeout="${_VERIFY_TEST_TIMEOUT}"  # identical for all profiles
+    local _outer_timeout="${_VERIFY_TEST_TIMEOUT}"             # debug (--workspace) budget
+    local _rel_outer_timeout="${_VERIFY_TEST_TIMEOUT_RELEASE}" # release (--release) budget
 
     # retry_failed_only (task 5287) — precompute subset eligibility ONCE, before
     # the profile loop, so emit_nextest_pass just consumes the decision.
@@ -1688,9 +1755,9 @@ add_test_passes() {
             # release-sensitive -p set so offline's heavy coverage never silently
             # narrows if a heavy crate is ever dropped from release-sensitive-crates.txt.
             if [ "$DF_VERIFY_ROLE" = "offline" ]; then
-                emit_nextest_pass "--workspace" "$_rel" "$_outer_timeout"
+                emit_nextest_pass "--workspace" "$_rel" "$_rel_outer_timeout"
             else
-                emit_nextest_pass "$_RELEASE_ALL_FLAGS" "$_rel" "$_outer_timeout"
+                emit_nextest_pass "$_RELEASE_ALL_FLAGS" "$_rel" "$_rel_outer_timeout"
             fi
         else
             _rel=""
@@ -2045,8 +2112,11 @@ build_plan() {
         # By the time run_all.sh runs, target/release/{reify-audit,ptodo-baseline-gen}
         # are fresh so the in-wall freshness guard finds them fresh and skips the cold
         # build.  sccache (RUSTC_WRAPPER) makes this cheap when already cached.
-        # Timeout is 10m (distinct from the run_all wall) so the plan-shape test can assert
-        # the pre-step is not the walled run_all.sh line.
+        # Timeout is _VERIFY_PREBUILD_TIMEOUT (45m default, esc-5382-1 — see the
+        # REIFY_VERIFY_PREBUILD_TIMEOUT knob-doc above for the derivation), which is
+        # distinct from the run_all wall so the plan-shape test
+        # (tests/infra/test_verify_failfast_order.sh) can still assert the pre-step is
+        # not the walled run_all.sh line.
         #
         # ADMISSION CONTROLS: this pre-step runs OUTSIDE compile_gate()/psi_gate()/
         # @@SEMAPHORE_ACQUIRE@@ — build_plan() emits this whole block (the
@@ -2094,7 +2164,11 @@ build_plan() {
         # archives verify.sh's stdout stream only (same premise as the
         # run_all.sh fix below). 2>&1 routes cargo's diagnostics into the
         # captured stream.
-        add "if test -f crates/reify-audit/Cargo.toml; then timeout --kill-after=60 10m ${CARGO_PRIO}cargo build --release -p reify-audit 2>&1; fi"
+        # task 5382 (esc-5382-1): budget via _VERIFY_PREBUILD_TIMEOUT (25m), not a
+        # fixed 10m. These two pre-builds are the merge path's COLD release
+        # native-kernel build; 10m SIGTERM'd reify-cli mid-compile with zero failing
+        # assertions. See the knob-doc block in the header for the derivation.
+        add "if test -f crates/reify-audit/Cargo.toml; then timeout --kill-after=60 ${_VERIFY_PREBUILD_TIMEOUT} ${CARGO_PRIO}cargo build --release -p reify-audit 2>&1; fi"
         # Positive assertion: if the Cargo.toml exists but the pre-build did not
         # produce the binary, abort loudly rather than silently degrading to SKIP.
         # Guards against the pre-step being removed or reordered without updating
@@ -2128,7 +2202,7 @@ build_plan() {
         # never stamps a false HEAD onto a missing binary.
         # task 5139: dropped -q and merged stderr into stdout via 2>&1 (same
         # rationale as the reify-audit pre-step above).
-        add "if test -f crates/reify-cli/Cargo.toml; then timeout --kill-after=60 10m ${CARGO_PRIO}cargo build --release -p reify-cli 2>&1; fi"
+        add "if test -f crates/reify-cli/Cargo.toml; then timeout --kill-after=60 ${_VERIFY_PREBUILD_TIMEOUT} ${CARGO_PRIO}cargo build --release -p reify-cli 2>&1; fi"
         add "if test -f target/release/reify; then git rev-parse HEAD > target/.reify-bin-sha 2>/dev/null || true; fi"
         # Arm the budget-safe backstop: REIFY_AUDIT_NO_COLD_BUILD=1 tells the
         # freshness guard to skip rather than cold-build if somehow the pre-step

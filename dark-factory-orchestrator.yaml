@@ -57,17 +57,51 @@ lock_depth: 10
 # (5400) is now < this warm budget; if cold-cache verifies under saturation start hitting exit-124,
 # add verify_cold_command_timeout_secs >= 7200.
 verify_command_timeout_secs: 7200
-# merge_verify_cold_command_timeout_secs (task #5383, sibling of #5382 which
-# lifts verify_command_timeout_secs above to this same 10800): the merge path
-# (DF_VERIFY_ROLE=merge) is NOT bounded by verify_command_timeout_secs above.
+# merge_verify_cold_command_timeout_secs (task #5383; sibling task #5382 delivers the
+# RELEASE inner nextest budget REIFY_VERIFY_TEST_TIMEOUT_RELEASE=90m in scripts/verify.sh
+# and deliberately does NOT lift verify_command_timeout_secs above — that key bounds only
+# the non-merge path, which verify.sh runs --profile debug, so no non-merge path runs the
+# debug+release passes cold together): the merge path (DF_VERIFY_ROLE=merge) is NOT bounded
+# by verify_command_timeout_secs above.
 # dark-factory orchestrator/src/orchestrator/verify.py's
 # `_resolve_verify_timeout` resolves the cold merge-verify OUTER wall via a
 # cascade whose FIRST branch returns this key when set (the is_merge_verify
 # branch), overriding dark-factory defaults.yaml's 7200s default. 180m (10800s)
 # covers the cold OCCT/OpenVDB/gmsh/manifold native-kernel compile that
-# precedes nextest on a cold cache, plus the debug(60m=3600s)+release(90m=5400s)
-# = 9000s inner nextest budget, with ~1800s margin. Only ever widens the wall
-# versus the 7200s default it overrides.
+# precedes nextest on a cold cache, and is sized above the
+# debug(60m=3600s)+release(90m=5400s) = 9000s inner nextest budgets it must not
+# preempt (see the model note below). Only ever widens the wall versus the 7200s
+# default it overrides.
+# esc-5382-1 amendment: that cold native-kernel compile is now explicitly
+# budgeted as REIFY_VERIFY_PREBUILD_TIMEOUT (45m), the merge-path
+# `cargo build --release -p {reify-audit,reify-cli}` pre-builds that run BEFORE
+# both nextest passes (the former fixed 10m ceiling SIGTERM'd reify-cli
+# mid-`Compiling reify-runtime` with zero failing assertions).
+#
+# WHAT THIS WALL MODELS — read before "fixing" any margin arithmetic here.
+# This wall bounds the EXPECTED cold merge-verify duration. It is NOT, and has
+# never been, the sum of the inner per-step GNU-`timeout` ceilings. Rendering
+# the command this wall actually bounds (`DF_VERIFY_ROLE=merge scripts/verify.sh
+# all --profile both --scope all --print-plan`) yields inner ceilings summing to
+# ~2x this wall, and did so before this task landed (clippy 45m x2 and check 30m
+# predate it). Inner ceilings are per-step SIGTERM backstops for a PATHOLOGICAL
+# step, not a budget allocation: in a healthy run every step finishes far below
+# its ceiling, so the ceilings do not sum into anything meaningful. There is
+# therefore no "remaining margin" to defend here, and no inner budget is capped
+# by 10800 minus the others — an earlier revision of this comment claimed a
+# 300s margin and was wrong on both the model and the arithmetic.
+#
+# What tests/infra/test_occt_flock_gate.sh T10 guards is accordingly NOT a
+# worst case but a NECESSARY-CONDITION lower bound over a deliberately chosen
+# SUBSET: the two terminal nextest passes, debug(3600s) + release(5400s) =
+# 9000s <= 10800s. Rationale for that subset: those two passes run back-to-back
+# at the very end of the plan, so if their inner budgets ever summed past this
+# wall the release inner budget would be unreachable BY CONSTRUCTION — the wall
+# would always fire first — which is exactly the false-timeout class
+# (esc-5370-2) this budget split exists to remove. The pre-build is deliberately
+# EXCLUDED from that subset: its cost is transferred FROM the release nextest
+# pass (which then runs against a warm release cone) rather than added to it, so
+# folding it in would double-count the same cold native-kernel compile.
 merge_verify_cold_command_timeout_secs: 10800
 # Verify kill-tree hardening (merge-gate-health W1b, 2026-07-19 survey): run each verify
 # in a systemd df-verify-*.scope so the whole subtree is enumerable/killable — eliminates
