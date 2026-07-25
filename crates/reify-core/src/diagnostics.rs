@@ -3753,7 +3753,13 @@ pub enum DiagnosticCode {
     /// thread's stack and SIGSEGV the whole process (uncatchable by an
     /// embedder's `catch_unwind`) — the compiler bails loudly: the expression
     /// site is poisoned (`Type::Error`, anti-cascade) / the geometry call
-    /// returns `None`, and exactly one diagnostic surfaces.
+    /// returns `None`.
+    ///
+    /// Reporting cardinality: **at most one per outermost compile entry**.
+    /// A wide node at the cap boundary fails every over-deep child, but only
+    /// the first pushes this diagnostic — `recursion_guard` latches emission
+    /// and re-arms when the recursion depth returns to 0 — so the error panel
+    /// shows one error per over-deep top-level expression, not one per child.
     ///
     /// Canonical message form:
     /// `"E_EXPR_NESTING_TOO_DEEP: expression nests too deeply (exceeded <N> levels); bind intermediate results with \`let\` to reduce nesting depth"`.

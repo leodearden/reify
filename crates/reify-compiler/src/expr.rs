@@ -1339,32 +1339,18 @@ pub(crate) fn compile_expr_guarded_with_expected(
     lambda_counter: &mut u32,
     expected_type: Option<&Type>,
 ) -> CompiledExpr {
-    // Bound compiler expression-recursion depth (task #5337): enter the shared
-    // thread-local depth guard (RAII — decremented on every return path,
-    // including this poison bail and panic-unwind). Past the cap, refuse loudly
-    // with an E_EXPR_NESTING_TOO_DEEP diagnostic + Type::Error poison rather
-    // than recursing further and overflowing the stack (an uncatchable SIGSEGV
-    // on small-stack embedder threads). On-demand stack growth is added in
-    // step-10 so realistic-but-deep input reaches the cap instead of crashing.
-    let _depth_guard = crate::recursion_guard::RecursionDepthGuard::enter();
-    if _depth_guard.depth() > crate::recursion_guard::MAX_COMPILE_RECURSION_DEPTH {
-        return make_poison_literal(
-            diagnostics,
-            crate::recursion_guard::recursion_too_deep_diagnostic(expr.span),
-        );
-    }
-    // Task #5337 (step-10): grow the stack on demand before descending into the
-    // (recursive) body so realistic-but-deep expressions reach the depth cap
-    // above on a small embedder stack — notably the GUI's 2 MB tokio worker —
-    // instead of overflowing the guard page (an uncatchable SIGSEGV). The
-    // depth-guard/cap ran first on the original frame; `_depth_guard` stays live
-    // (it is not captured) so its RAII decrement still fires when this call
-    // returns. The `move` closure takes the `&mut`/ref params and returns the
-    // body's `CompiledExpr`, which we return directly.
-    stacker::maybe_grow(
-        crate::recursion_guard::RECURSION_RED_ZONE,
-        crate::recursion_guard::RECURSION_STACK_GROWTH,
-        move || {
+    // Bound compiler expression-recursion depth (task #5337) — depth cap plus
+    // on-demand stack growth; rationale and tuning live in
+    // `crate::recursion_guard`. Past the cap the expression is poisoned
+    // (Type::Error, anti-cascade). `with_recursion_guard` is the diagnostic
+    // *producer* (it pushes E_EXPR_NESTING_TOO_DEEP, latched to once per
+    // outermost entry), so this site only propagates the poison value —
+    // `propagate_poison`, not `make_poison_literal`.
+    crate::recursion_guard::with_recursion_guard(
+        expr.span,
+        diagnostics,
+        propagate_poison,
+        |diagnostics| {
             compile_expr_guarded_with_expected_inner(
                 expr,
                 scope,
@@ -7201,6 +7187,70 @@ mod tests {
                 .iter()
                 .any(|d| d.code == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)),
             "expected the ExpressionNestingTooDeep diagnostic, got: {:?}",
+            diagnostics
+        );
+
+        // Releasing the pre-seeded guards must return the counter to 0 (and
+        // re-arm the report latch), so the NEXT compile on this thread is not
+        // permanently poisoned. Without this re-run, an early-return path that
+        // leaked a count (or dropped the guard eagerly) would go unnoticed.
+        drop(guards);
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let compiled = compile_expr(&trivial, &scope, &enum_defs, &functions, &mut diagnostics);
+        assert_ne!(
+            compiled.result_type,
+            Type::Error,
+            "a later compile on the same thread must not inherit the cap"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)),
+            "the depth counter must return to 0 once the guards drop, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// A WIDE node sitting at the cap boundary reports the too-deep error ONCE,
+    /// not once per over-deep child (the `recursion_guard` reporting contract —
+    /// otherwise a 3-element literal would spam three identical diagnostics into
+    /// the GUI error panel). Every child still fails: the list's element type
+    /// comes out poisoned.
+    #[test]
+    fn compile_expr_recursion_cap_reports_once_for_wide_boundary_node() {
+        use crate::recursion_guard::{MAX_COMPILE_RECURSION_DEPTH, RecursionDepthGuard};
+
+        let num = || reify_ast::Expr {
+            kind: reify_ast::ExprKind::NumberLiteral {
+                value: 1.0,
+                is_real: false,
+            },
+            span: reify_core::SourceSpan::new(0, 1),
+        };
+        // Three children, so pre-latch this node would emit three diagnostics.
+        let wide = reify_ast::Expr {
+            kind: reify_ast::ExprKind::ListLiteral(vec![num(), num(), num()]),
+            span: reify_core::SourceSpan::new(0, 1),
+        };
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+
+        // MAX-1 pre-seeded guards: the list literal itself enters at exactly MAX
+        // (allowed, so its arm runs and compiles every element), and each child
+        // enters at MAX+1 — the cap fires once per child.
+        let guards: Vec<RecursionDepthGuard> = (0..MAX_COMPILE_RECURSION_DEPTH - 1)
+            .map(|_| RecursionDepthGuard::enter())
+            .collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let _ = compile_expr(&wide, &scope, &enum_defs, &functions, &mut diagnostics);
+        let too_deep = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep))
+            .count();
+        assert_eq!(
+            too_deep, 1,
+            "a wide over-deep node must report once, not once per child: {:?}",
             diagnostics
         );
         drop(guards);

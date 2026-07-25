@@ -1103,32 +1103,17 @@ pub(crate) fn compile_geometry_call(
     geometry_lets: &HashMap<&str, &reify_ast::Expr>,
     visiting: &mut HashSet<String>,
 ) -> Option<Vec<CompiledGeometryOp>> {
-    // Bound compiler expression-recursion depth (task #5337): enter the SAME
-    // shared thread-local depth guard used by compile_expr_guarded_with_expected
-    // (RAII — decremented on every return path, including this None bail and
-    // panic-unwind), so the combined cross-function on-stack depth is bounded
-    // uniformly. Past the cap, refuse loudly with an E_EXPR_NESTING_TOO_DEEP
-    // diagnostic and return None (the established geometry failure signal)
-    // rather than recursing further and overflowing the stack (an uncatchable
-    // SIGSEGV on small-stack embedder threads). On-demand stack growth is added
-    // in step-10 so realistic-but-deep input reaches the cap instead of crashing.
-    let _depth_guard = crate::recursion_guard::RecursionDepthGuard::enter();
-    if _depth_guard.depth() > crate::recursion_guard::MAX_COMPILE_RECURSION_DEPTH {
-        diagnostics.push(crate::recursion_guard::recursion_too_deep_diagnostic(expr.span));
-        return None;
-    }
-    // Task #5337 (step-10): grow the stack on demand before descending into the
-    // (recursive) body so realistic-but-deep nested boolean geometry reaches the
-    // depth cap above on a small embedder stack — notably the GUI's 2 MB tokio
-    // worker — instead of overflowing the guard page (an uncatchable SIGSEGV).
-    // The depth-guard/cap ran first on the original frame; `_depth_guard` stays
-    // live (it is not captured) so its RAII decrement still fires when this call
-    // returns. The `move` closure takes the `&mut`/ref params and returns the
-    // body's `Option<Vec<CompiledGeometryOp>>`, which we return directly.
-    stacker::maybe_grow(
-        crate::recursion_guard::RECURSION_RED_ZONE,
-        crate::recursion_guard::RECURSION_STACK_GROWTH,
-        move || {
+    // Bound compiler expression-recursion depth (task #5337) — the SAME depth
+    // cap and on-demand stack growth used by compile_expr_guarded_with_expected,
+    // so the combined cross-function on-stack depth is bounded uniformly;
+    // rationale and tuning live in `crate::recursion_guard`. Past the cap this
+    // site returns None (the established geometry failure signal); the
+    // diagnostic is pushed by the guard.
+    crate::recursion_guard::with_recursion_guard(
+        expr.span,
+        diagnostics,
+        || None,
+        |diagnostics| {
             compile_geometry_call_inner(
                 expr,
                 scope,
@@ -3983,7 +3968,34 @@ mod tests {
             "expected the ExpressionNestingTooDeep diagnostic, got: {:?}",
             diagnostics
         );
+
+        // Releasing the pre-seeded guards must return the shared counter to 0
+        // (and re-arm the report latch), so the NEXT compile on this thread is
+        // not permanently poisoned by a leaked count.
         drop(guards);
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = compile_geometry_call(
+            &box_expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+        assert!(
+            result.is_some(),
+            "a later compile on the same thread must not inherit the cap; diags: {:?}",
+            diagnostics
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)),
+            "the depth counter must return to 0 once the guards drop, got: {:?}",
+            diagnostics
+        );
     }
 
     /// Regression for the reported SIGSEGV (task #5337): compiling a deeply-
@@ -4022,7 +4034,10 @@ mod tests {
         };
 
         let handle = std::thread::Builder::new()
-            // Simulate the GUI's default 2 MB tokio-worker stack (main.rs:398).
+            // 2 MiB = tokio's default worker-thread stack size, which is what
+            // the GUI compiles on (the synchronous `open_file_engine` Tauri
+            // command) because nothing under `gui/src-tauri` overrides
+            // `stack_size`/`thread_stack_size`.
             .stack_size(2 * 1024 * 1024)
             .spawn(move || {
                 // Build difference(difference(… box(1,1,1) …), box(1,1,1)) nested
