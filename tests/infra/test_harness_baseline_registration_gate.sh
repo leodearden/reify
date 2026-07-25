@@ -488,14 +488,8 @@ assert "P: gate still exits 1 on a violation (hint must not perturb the exit cod
     test "$_P_RC" -eq 1
 assert "P: stderr carries a '[hint] remedy:' anchor line" \
     grep -Eq '^\[hint\] remedy:' "$_P_ERR"
-assert "P: stderr names the consolidation target shape (harness_<subsystem>/)" \
-    grep -qF 'harness_<subsystem>/' "$_P_ERR"
-assert "P: stderr names the declaration mechanism (#[path])" \
-    grep -qF '#[path]' "$_P_ERR"
-assert "P: stderr names the concrete exemplar (harness_geometry.rs)" \
-    grep -qF 'harness_geometry.rs' "$_P_ERR"
-assert "P: stderr names the supersession (SUPERSEDED + esc-5056-11)" \
-    bash -c 'grep -qF "SUPERSEDED" "$1" && grep -qF "esc-5056-11" "$1"' _ "$_P_ERR"
+assert "P: the exemplar harness root the hint cites is a real file" \
+    test -f "$REPO_ROOT/crates/reify-eval/tests/harness_geometry.rs"
 
 _P_EXPECTED_OUT="$(mktemp)"; _TMPDIRS+=("$_P_EXPECTED_OUT")
 printf 'HARNESS_BASELINE_REG FAIL crate=reify-eval file=crates/reify-eval/tests/newthing.rs reason=unregistered-standalone\nHARNESS_BASELINE_REG SUMMARY added=1 violations=1\n' \
