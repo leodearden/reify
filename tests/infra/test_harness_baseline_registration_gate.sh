@@ -24,7 +24,9 @@
 #     baseline-membership predicate (this file, step-1);
 #   - the gate scripts/check-harness-baseline-registration.sh in args/stdin
 #     input mode (step-3) and --from-git self-derivation mode (step-5);
-#   - verify.sh plan-shape: the gate is emitted early under RUN_RUST=1 (step-7).
+#   - verify.sh plan-shape: the gate is emitted early under RUN_RUST=1 (step-7);
+#   - the STDERR remediation hint and the stdout/stderr stream separation
+#     (task #5381, Sections P/P2).
 #
 # Hermetic: pure bash + filesystem (+ throwaway `git init` temp repos for the
 # --from-git cases); never runs cargo/npm; never mutates the real baseline or
@@ -462,6 +464,97 @@ assert "N2: --from-git exits 0 when the rename destination is registered in the 
     test "$_P2_RC" -eq 0
 assert "N2: the registered-rename run emits no FAIL line" \
     bash -c '! grep -qE "^HARNESS_BASELINE_REG FAIL" "$1"' _ "$_P2_OUT"
+
+# ===========================================================================
+# Section P: remediation hint on STDERR (violation run) — task #5381.
+#
+# A tripped gate today carries zero remediation steering: `_emit FAIL` writes
+# only the structured verdict line to stdout (the ONLY existing stderr write
+# in the whole script is the fail-open lib-missing line). This section pins
+# that a violation run ALSO emits a human-readable remediation hint, and that
+# the hint lives EXCLUSIVELY on stderr so the stdout verdict grammar pinned by
+# Section I stays byte-for-byte untouched.
+# ===========================================================================
+echo ""
+echo "--- Section P: remediation hint on STDERR (violation run) ---"
+
+_HINT_OUT="$(mktemp)"; _TMPDIRS+=("$_HINT_OUT")
+_HINT_ERR="$(mktemp)"; _TMPDIRS+=("$_HINT_ERR")
+_HINT_RC=0
+( cd "$_G_ROOT" && REIFY_HARNESS_LAYOUT_BASELINE="$_G_BASELINE_MISSING" bash "$GATE" \
+    crates/reify-eval/tests/newthing.rs </dev/null ) > "$_HINT_OUT" 2> "$_HINT_ERR" || _HINT_RC=$?
+
+assert "P: gate still exits 1 on a violation (hint must not perturb the exit code)" \
+    test "$_HINT_RC" -eq 1
+assert "P: stderr carries a '[hint] remedy:' anchor line" \
+    grep -Eq '^\[hint\] remedy:' "$_HINT_ERR"
+assert "P: the exemplar harness root the hint cites (extracted from the emitted text) is a real file" \
+    bash -c 'p=$(grep -oE "crates/[A-Za-z0-9_./-]+harness_[A-Za-z0-9_]+\.rs" "$1" | head -1); [ -n "$p" ] && [ -f "$2/$p" ]' _ "$_HINT_ERR" "$REPO_ROOT"
+
+_HINT_EXPECTED_OUT="$(mktemp)"; _TMPDIRS+=("$_HINT_EXPECTED_OUT")
+printf 'HARNESS_BASELINE_REG FAIL crate=reify-eval file=crates/reify-eval/tests/newthing.rs reason=unregistered-standalone\nHARNESS_BASELINE_REG SUMMARY added=1 violations=1\n' \
+    > "$_HINT_EXPECTED_OUT"
+assert "P: stdout is byte-for-byte the pre-change FAIL+SUMMARY grammar (hint must not perturb stdout)" \
+    diff -u "$_HINT_EXPECTED_OUT" "$_HINT_OUT"
+assert "P: no hint text leaks onto stdout" \
+    bash -c '! grep -qE "\[hint\]|remedy:" "$1"' _ "$_HINT_OUT"
+
+# ===========================================================================
+# Section P2: hint is absent on a clean pass and on an empty candidate list,
+# and is emitted at most ONCE per run (not once per violation) — task #5381.
+# ===========================================================================
+echo ""
+echo "--- Section P2: hint absent on clean/empty runs; emitted exactly once on multi-violation runs ---"
+
+: > "$_G_ROOT/crates/reify-eval/tests/newthing2.rs"   # 2nd in-scope, unregistered
+
+# (i) CLEAN PASS — the Section-H shape (registered baseline, single registered arg).
+_P2_CLEAN_OUT="$(mktemp)"; _TMPDIRS+=("$_P2_CLEAN_OUT")
+_P2_CLEAN_ERR="$(mktemp)"; _TMPDIRS+=("$_P2_CLEAN_ERR")
+_P2_CLEAN_RC=0
+( cd "$_G_ROOT" && REIFY_HARNESS_LAYOUT_BASELINE="$_G_BASELINE_PRESENT" bash "$GATE" \
+    crates/reify-eval/tests/newthing.rs </dev/null ) > "$_P2_CLEAN_OUT" 2> "$_P2_CLEAN_ERR" || _P2_CLEAN_RC=$?
+
+assert "P2: clean-pass run exits 0" \
+    test "$_P2_CLEAN_RC" -eq 0
+assert "P2: clean-pass run emits no hint on stderr" \
+    test ! -s "$_P2_CLEAN_ERR"
+assert "P2: clean-pass run still emits the structured PASS line on stdout" \
+    grep -Eq '^HARNESS_BASELINE_REG PASS' "$_P2_CLEAN_OUT"
+
+# (ii) EMPTY CANDIDATE LIST — the Section-J shape (no args). added=0 is not a
+# violation, so a hint here would spam every green RUN_RUST=1 verify run.
+_P2_EMPTY_OUT="$(mktemp)"; _TMPDIRS+=("$_P2_EMPTY_OUT")
+_P2_EMPTY_ERR="$(mktemp)"; _TMPDIRS+=("$_P2_EMPTY_ERR")
+_P2_EMPTY_RC=0
+( cd "$_G_ROOT" && REIFY_HARNESS_LAYOUT_BASELINE="$_G_BASELINE_MISSING" bash "$GATE" </dev/null ) \
+    > "$_P2_EMPTY_OUT" 2> "$_P2_EMPTY_ERR" || _P2_EMPTY_RC=$?
+
+assert "P2: empty-candidate-list run exits 0" \
+    test "$_P2_EMPTY_RC" -eq 0
+assert "P2: empty-candidate-list run emits no hint on stderr" \
+    test ! -s "$_P2_EMPTY_ERR"
+
+# (iii) TWO VIOLATIONS in one run — the hint must fire EXACTLY ONCE, not once
+# per violating file.
+_P2_TWO_OUT="$(mktemp)"; _TMPDIRS+=("$_P2_TWO_OUT")
+_P2_TWO_ERR="$(mktemp)"; _TMPDIRS+=("$_P2_TWO_ERR")
+_P2_TWO_RC=0
+( cd "$_G_ROOT" && REIFY_HARNESS_LAYOUT_BASELINE="$_G_BASELINE_MISSING" bash "$GATE" \
+    crates/reify-eval/tests/newthing.rs crates/reify-eval/tests/newthing2.rs </dev/null ) \
+    > "$_P2_TWO_OUT" 2> "$_P2_TWO_ERR" || _P2_TWO_RC=$?
+
+assert "P2: two-violation run exits 1" \
+    test "$_P2_TWO_RC" -eq 1
+
+_P2_TWO_EXPECTED_OUT="$(mktemp)"; _TMPDIRS+=("$_P2_TWO_EXPECTED_OUT")
+printf 'HARNESS_BASELINE_REG FAIL crate=reify-eval file=crates/reify-eval/tests/newthing.rs reason=unregistered-standalone\nHARNESS_BASELINE_REG FAIL crate=reify-eval file=crates/reify-eval/tests/newthing2.rs reason=unregistered-standalone\nHARNESS_BASELINE_REG SUMMARY added=2 violations=2\n' \
+    > "$_P2_TWO_EXPECTED_OUT"
+assert "P2: two-violation stdout is byte-for-byte FAIL+FAIL+SUMMARY (one line per violation)" \
+    diff -u "$_P2_TWO_EXPECTED_OUT" "$_P2_TWO_OUT"
+
+assert "P2: the remediation block is emitted EXACTLY ONCE per run, not once per violation" \
+    bash -c '[ "$(grep -cE "^\[hint\] remedy:" "$1")" -eq 1 ]' _ "$_P2_TWO_ERR"
 
 # ===========================================================================
 # Section O: plan-shape — verify.sh emits the gate EARLY under RUN_RUST=1, among

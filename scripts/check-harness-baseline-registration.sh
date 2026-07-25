@@ -35,11 +35,18 @@
 #   stdin             if no args, newline-separated repo-relative paths
 #   --from-git        self-derive the added-file set from git (see step-6)
 #
-# OUTPUT (structured verdict grammar, rule-(c) style — machine-parseable, not a
-# log-scrape):
-#   HARNESS_BASELINE_REG FAIL crate=<c> file=<path> reason=unregistered-standalone
-#   HARNESS_BASELINE_REG PASS
-#   HARNESS_BASELINE_REG SUMMARY added=<n> violations=<v>
+# OUTPUT — TWO STREAMS, deliberately separated:
+#   STDOUT (structured verdict grammar, rule-(c) style — machine-parseable,
+#   a byte-for-byte contract pinned by tests/infra/test_harness_baseline_registration_gate.sh):
+#     HARNESS_BASELINE_REG FAIL crate=<c> file=<path> reason=unregistered-standalone
+#     HARNESS_BASELINE_REG PASS
+#     HARNESS_BASELINE_REG SUMMARY added=<n> violations=<v>
+#   STDERR ('[hint] '-prefixed remediation steering, emitted ONCE per run when
+#   v>0; task #5381). The gate is mechanically remedy-AGNOSTIC — a consolidated
+#   test and a grandfathered manifest row both clear it — so this hint is the
+#   only thing steering the human toward the sanctioned remedy. See _hint()
+#   below for the exact wording (single source of truth — do not restate it
+#   here).
 #
 # EXIT: 0 when clean (v==0), 1 when any violation (v>0). Honors
 # REIFY_HARNESS_LAYOUT_BASELINE (via the lib) for testability.
@@ -64,6 +71,23 @@ _emit() {
     local verdict="$1"
     shift
     printf 'HARNESS_BASELINE_REG %s %s\n' "$verdict" "$*"
+}
+
+# _hint — remediation steering on STDERR ONLY. The stdout grammar
+# (HARNESS_BASELINE_REG FAIL/PASS/SUMMARY) is a machine-parseable contract
+# pinned byte-for-byte by the gate's test file, so guidance for humans must
+# never share that stream. Prefix every line with '[hint] ' (the convention
+# used by scripts/warm-lane-ref-check.sh and scripts/ensure-warm-base.sh) and
+# deliberately NOT with the HARNESS_BASELINE_REG tag, so a 2>&1-merged log
+# stays unambiguous.
+_hint() {
+    printf '[hint] %s\n' \
+        'remedy: consolidate the new test into crates/<c>/tests/harness_<subsystem>/<file>.rs,' \
+        'declared via a #[path] attribute (#[path = "harness_<subsystem>/<file>.rs"] mod <file>;)' \
+        'from a harness_<subsystem>.rs root (see crates/reify-eval/tests/harness_geometry.rs).' \
+        'Grandfathering a harness-layout-baseline.manifest row is SUPERSEDED (Leo 2026-07-22,' \
+        'esc-5056-11: "actually start using the ratchet") — the manifest is a shrinking ratchet,' \
+        'not an allow-list to grow.' >&2
 }
 
 # _check_candidates <path>... — the PURE core. Classify each candidate
@@ -99,6 +123,12 @@ _check_candidates() {
 
     if [ "$violations" -eq 0 ]; then
         _emit PASS
+    else
+        # Steering is per-RUN, not per-violation: a diff adding N unregistered
+        # standalones gets ONE remedy block, not N copies of the same paragraph.
+        # The remedy is remedy-generic (<c>/<subsystem> placeholders), so nothing
+        # per-file is lost — each offending path is already named on stdout.
+        _hint
     fi
     _emit SUMMARY "added=$added" "violations=$violations"
     [ "$violations" -eq 0 ]
