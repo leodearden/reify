@@ -1442,14 +1442,6 @@ fn build_auto_param_list(cells: &[&ValueCellDecl]) -> Vec<AutoParam> {
         .collect()
 }
 
-/// Builds the `ResolutionProblem` for the constraint solver from `template`'s
-/// auto-param cells and constraints, returning `None` when there are no auto
-/// cells (signalling "skip solver invocation").
-///
-/// Also returns any strict connector-instance autos that were pinned from their
-/// child template (task #4710): these are excluded from `auto_params` (and hence
-/// from strict-uniqueness verification) and must be written as `Determined` by the
-/// caller alongside the solver-resolved autos.
 /// Run the SAME three structural-query passes as the Let-cell expansion loop
 /// (`expand_structural_query` → `apply_trait_filters` → `apply_cost_aggregation`)
 /// over an objective-term or constraint expression IN PLACE, against its OWNING
@@ -1465,8 +1457,15 @@ fn build_auto_param_list(cells: &[&ValueCellDecl]) -> Vec<AutoParam> {
 /// expression with no `self.children`/`.members`/`.descendants` placeholder is
 /// left byte-identical, so a plain `minimize x` objective / non-structural
 /// constraint is untouched (`dependent_cells`-empty ⇒ legacy behaviour).
+///
+/// `pub(crate)` because cluster formation
+/// (`resolve_order::expanded_objective_reads`, JOINT-DRIVE δ task #5334) runs the
+/// identical sequence over THROWAWAY clones of the objective terms so it can see
+/// the derived reads an expanded `cost(self.descendants)` surfaces. Reusing this
+/// one function keeps the PRD-mandated three-pass order a single source of truth
+/// (PRD `docs/prds/v0_6/whole-model-joint-drive-seam.md` §10 Phase 1.5).
 #[allow(clippy::too_many_arguments)]
-fn expand_solver_position_expr(
+pub(crate) fn expand_solver_position_expr(
     expr: &mut CompiledExpr,
     template: &TopologyTemplate,
     all_templates: &[TopologyTemplate],
@@ -1706,6 +1705,14 @@ fn materialize_dependent_cells(
     }
 }
 
+/// Builds the `ResolutionProblem` for the constraint solver from `template`'s
+/// auto-param cells and constraints, returning `None` when there are no auto
+/// cells (signalling "skip solver invocation").
+///
+/// Also returns any strict connector-instance autos that were pinned from their
+/// child template (task #4710): these are excluded from `auto_params` (and hence
+/// from strict-uniqueness verification) and must be written as `Determined` by the
+/// caller alongside the solver-resolved autos.
 #[allow(clippy::too_many_arguments)]
 fn build_solver_problem(
     template: &reify_compiler::TopologyTemplate,

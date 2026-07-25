@@ -670,6 +670,58 @@ fn build_non_auto_cell_map(templates: &[TopologyTemplate]) -> HashMap<ValueCellI
     cell_map
 }
 
+/// Per-template objective reads harvested from CLUSTER-TIME-EXPANDED objective
+/// terms (JOINT-DRIVE δ, task #5334, C1).
+///
+/// For each template carrying an objective, every term's expr is CLONED (PRD §10
+/// Phase 1.5: "over throwaway copies — templates not mutated pre-solve"; the
+/// templates are only reachable as `&[TopologyTemplate]` here anyway) and run
+/// through the engine's own `expand_solver_position_expr`, so
+/// `cost(self.descendants)` becomes `[ValueRef(<descendant>.line_cost) ...].sum`
+/// and surfaces the derived reads that couple this scope to a child auto.  Plain
+/// objectives are left byte-identical by that function's
+/// `contains_structural_query` fast path, so this costs ~nothing for the
+/// overwhelming majority of modules.
+///
+/// This vector is consumed ONLY by [`compute_clusters`] — PRD design decision 7's
+/// "at cluster time only".  [`build_read_dag`]'s own `objective_reads` (and hence
+/// `adj`, `order` and `emit_cycle_coupling_diagnostics`' W_SCOPE_COUPLING text)
+/// are deliberately left untouched: feeding expanded reads back into the read-DAG
+/// would add ordering edges and change both, breaking INV-2 and the scope_coupling
+/// A–G diagnostic surface.
+///
+/// Expansion diagnostics are collected into a throwaway vec and dropped: the same
+/// expansion runs again inside `build_solver_problem` /
+/// `build_merged_solver_problem` over the same exprs, so surfacing them here would
+/// duplicate every unfold-budget warning in user output (design decision 4).
+fn expanded_objective_reads(
+    templates: &[TopologyTemplate],
+    ctx: &ClusterFormationCtx,
+) -> Vec<Vec<ValueCellId>> {
+    let mut out: Vec<Vec<ValueCellId>> = vec![Vec::new(); templates.len()];
+    let mut throwaway_diags: Vec<Diagnostic> = Vec::new();
+    for (j, template) in templates.iter().enumerate() {
+        let Some(obj) = &template.objective else {
+            continue;
+        };
+        for term in &obj.terms {
+            let mut expanded = term.expr.clone();
+            crate::engine_eval::expand_solver_position_expr(
+                &mut expanded,
+                template,
+                templates,
+                ctx.values,
+                ctx.max_unfold_depth,
+                ctx.max_unfold_nodes,
+                ctx.trait_registry,
+                &mut throwaway_diags,
+            );
+            out[j].extend(extract_dependency_trace(&expanded).reads);
+        }
+    }
+    out
+}
+
 /// Forward-reachability walk that unions scope `j` with the owning scope of
 /// every auto cell reachable from `seeds` through derived (non-auto) cells
 /// (JOINT-DRIVE δ, task #5334, C2).
@@ -793,19 +845,16 @@ fn compute_clusters(
         // (`line_cost = unit_cost * quantity_produced`) down to the child auto
         // behind it — the joint-drive leaf coupling.
         //
-        // step-2 still seeds from the UNEXPANDED `objective_reads`; step-4
-        // replaces the seed with the cluster-time-EXPANDED objective reads so
-        // `cost(self.descendants)` surfaces its `line_cost` reads too.
-        Some(_ctx) => {
+        // The walk is seeded from the CLUSTER-TIME-EXPANDED objective reads (C1,
+        // [`expanded_objective_reads`]) rather than the unexpanded
+        // `objective_reads` cache, so `cost(self.descendants)` surfaces its
+        // `line_cost` reads before the walk starts. The unexpanded cache is still
+        // what the `None` branch — and the read-DAG / cycle diagnostics — use.
+        Some(ctx) => {
             let cell_map = build_non_auto_cell_map(templates);
-            for (j, reads) in objective_reads.iter().enumerate() {
-                union_via_transitive_auto_owners(
-                    j,
-                    reads,
-                    &cell_map,
-                    auto_owner,
-                    &mut parent,
-                );
+            let expanded_reads = expanded_objective_reads(templates, ctx);
+            for (j, reads) in expanded_reads.iter().enumerate() {
+                union_via_transitive_auto_owners(j, reads, &cell_map, auto_owner, &mut parent);
             }
         }
     }
