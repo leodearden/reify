@@ -4507,7 +4507,38 @@ impl Engine {
         // β #4822: compute dependency-ordered resolve order BEFORE the solver
         // gate so `ro` is in scope at the detect_scope_coupling site below.
         // Pure structural analysis — requires no solved values.
-        let mut ro = crate::resolve_order::resolve_order(&module.templates, None);
+        //
+        // JOINT-DRIVE δ (#5334, Gap C): cluster formation is expansion-aware,
+        // so it receives a `ClusterFormationCtx`. `order` and
+        // `coupling_diagnostics` are unaffected by it — only `clusters` widens,
+        // to include derived-cost couplings (a parent objective reaching a child
+        // auto through a `line_cost` Let cell, possibly only after
+        // `cost(self.descendants)` is expanded).
+        //
+        // PRECONDITION — `values` is fully populated here: the field, Param+Let,
+        // Auto-preseed, sub-component, structural-query and self-datum phases
+        // have all run above, so the `__count_*` collection cells cluster-time
+        // `enumerate_descendants` needs are live (the same precondition the
+        // Let-cell structural-query pass above documents). Autos are still
+        // `Undef`, which is exactly what this pass wants — it is structural
+        // analysis, not evaluation.
+        //
+        // BORROW SHAPE: the ctx is confined to this block so its shared borrows
+        // of `values` and `functions` end at the call, leaving both free for the
+        // `&mut values` / `Arc::clone(&functions)` dispatch loop below.
+        let mut ro = {
+            let cluster_ctx = crate::resolve_order::ClusterFormationCtx {
+                values: &values,
+                functions: &functions,
+                // Reuses the registry built for the Let-cell structural-query
+                // pass above; it borrows only &'static prelude + &module (never
+                // self), so there is no &mut self clash.
+                trait_registry: &sq_trait_registry,
+                max_unfold_depth: self.max_unfold_depth,
+                max_unfold_nodes: self.max_unfold_nodes,
+            };
+            crate::resolve_order::resolve_order(&module.templates, Some(&cluster_ctx))
+        };
         let has_active_solver = self
             .resolve_solver_for_module(module, &mut diagnostics)
             .is_some();
