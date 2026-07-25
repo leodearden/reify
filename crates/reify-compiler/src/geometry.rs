@@ -4011,7 +4011,15 @@ mod tests {
         // Depth well past the cap AND deep enough to overflow a 2 MB stack
         // pre-fix (each level consumes fat compile_geometry_call debug frames).
         const NEST_DEPTH: usize = 1500;
-        assert!(NEST_DEPTH > MAX_COMPILE_RECURSION_DEPTH);
+        // Both operands are `const`, so this is compile-time foldable and a
+        // runtime `assert!` would trip `clippy::assertions_on_constants`; the
+        // `const` block pins the relationship at compile time instead.
+        const {
+            assert!(
+                NEST_DEPTH > MAX_COMPILE_RECURSION_DEPTH,
+                "the nesting depth must overshoot the cap for this to exercise it"
+            )
+        };
 
         let handle = std::thread::Builder::new()
             // Simulate the GUI's default 2 MB tokio-worker stack (main.rs:398).

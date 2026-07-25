@@ -166,11 +166,19 @@ mod tests {
     /// realistic nesting (> 128).
     #[test]
     fn max_compile_recursion_depth_has_headroom() {
-        assert!(
-            MAX_COMPILE_RECURSION_DEPTH > 128,
-            "MAX_COMPILE_RECURSION_DEPTH must exceed realistic-nesting headroom (128), got {}",
-            MAX_COMPILE_RECURSION_DEPTH
-        );
+        // Both operands are `const`, so the comparison is compile-time
+        // foldable; a runtime `assert!` on it trips
+        // `clippy::assertions_on_constants`. A `const` block makes the check
+        // (and the lint-satisfying intent) explicit: this pins the headroom at
+        // compile time rather than at test-run time. Const-eval `panic!` takes
+        // only a `&'static str`, so the actual value cannot be interpolated
+        // into the message — the constant's definition is one hop away.
+        const {
+            assert!(
+                MAX_COMPILE_RECURSION_DEPTH > 128,
+                "MAX_COMPILE_RECURSION_DEPTH must exceed realistic-nesting headroom (128)"
+            )
+        };
     }
 
     /// `recursion_too_deep_diagnostic(span)` builds the canonical
