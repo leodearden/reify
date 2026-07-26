@@ -1528,6 +1528,134 @@ mod cli {
         );
     }
 
+    /// The SHIPPED binary must honour its own `--project-root` over an
+    /// ambient `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE`.
+    ///
+    /// This is the production half of the hook-environment defect. Git
+    /// exports those three vars into a hook's whole process tree, and for
+    /// `git commit --only` `GIT_INDEX_FILE` names a *temporary* index. An
+    /// unsanitized `git -C <root> ls-files` then reads the PARENT repo's
+    /// index instead of the fixture repo's, so the PTODO sweep enumerates a
+    /// different file set — silently, with no error. Observed as a divergent
+    /// finding set: exit `Some(1)` where `Some(2)` was expected.
+    ///
+    /// Deliberately a near-clone of
+    /// `ptodo_fixture_tree_emits_three_kinds_and_suppresses_allowlist_and_escape`:
+    /// same fixture tree, same helpers, same expectations. The ONLY delta is
+    /// the three poison vars, which makes "a hook environment changes
+    /// nothing" the literal claim under test.
+    ///
+    /// The poison is applied to the CHILD ONLY via `.env(..)`. This test
+    /// never touches its own process environment — `std::env::set_var` is
+    /// process-global and would race sibling tests under `cargo test`'s
+    /// thread-per-test model.
+    #[test]
+    fn ptodo_fixture_sweep_survives_ambient_hook_git_env() {
+        let repo = tempfile::tempdir().expect("create repo tempdir");
+        let aux = tempfile::tempdir().expect("create aux tempdir");
+
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ptodo");
+        copy_dir_recursive(&fixtures, repo.path());
+        git_init_commit_all(repo.path());
+
+        let tasks_file = write_tasks_json(aux.path(), &[]);
+        let runs_db = write_empty_runs_db(aux.path());
+
+        // A decoy repo standing in for the parent repo a hook would point at.
+        // The stale `index.lock` makes an unsanitized index WRITE fail loudly
+        // as well as wrongly, so a regression cannot hide as a silent no-op.
+        let decoy = tempfile::tempdir().expect("create decoy tempdir");
+        let decoy_status = Command::new("git")
+            .arg("-C")
+            .arg(decoy.path())
+            .args(["init", "--initial-branch=main"])
+            .status()
+            .expect("git init decoy failed to spawn");
+        assert!(decoy_status.success(), "decoy git init exited {:?}", decoy_status.code());
+        let decoy_git_dir = decoy.path().join(".git");
+        std::fs::write(decoy_git_dir.join("index.lock"), b"")
+            .expect("plant stale index.lock in decoy repo");
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--pattern",
+                "PTODO",
+                "--no-jcodemunch",
+                "--project-root",
+                repo.path().to_str().unwrap(),
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+            ])
+            // The exact set git exports into a hook's process tree.
+            .env("GIT_DIR", &decoy_git_dir)
+            .env("GIT_WORK_TREE", decoy.path())
+            .env("GIT_INDEX_FILE", decoy_git_dir.join("index"))
+            .output()
+            .expect("invoke reify-audit --pattern PTODO under poisoned git env");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        // Same expectations as the clean-env test — that is the point.
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "PTODO fixture sweep must exit 2 under an ambient hook git env exactly as it \
+             does without one (2 High untracked findings); got {:?}\nstderr: {}",
+            out.status.code(),
+            stderr
+        );
+
+        let findings = parse_findings_from_stderr(&stderr);
+        assert_eq!(
+            findings.len(),
+            4,
+            "PTODO fixture sweep must emit exactly 4 findings under an ambient hook git \
+             env (an unsanitized ls-files reads the decoy index and enumerates a \
+             different file set); got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+
+        let severity_of = |path: &str, kind_prefix: &str| -> Option<&str> {
+            findings.iter().find_map(|f| {
+                if f["task_id"].as_str() == Some(path)
+                    && f["summary"].as_str().is_some_and(|s| s.starts_with(kind_prefix))
+                {
+                    f["severity"].as_str()
+                } else {
+                    None
+                }
+            })
+        };
+        assert_eq!(
+            severity_of("scenario01_untracked.rs", "untracked:"),
+            Some("High"),
+            "untracked must be High under an ambient hook git env"
+        );
+        assert_eq!(
+            severity_of("scenario07_ignore_blocker_prose.rs", "untracked:"),
+            Some("High"),
+            "blocker-prose untracked must be High under an ambient hook git env"
+        );
+        assert_eq!(
+            severity_of("scenario04_malformed_cite.rs", "malformed-cite:"),
+            Some("Medium"),
+            "malformed-cite must stay Medium under an ambient hook git env"
+        );
+        assert_eq!(
+            severity_of("scenario05_phantom_tracking.rs", "phantom-tracking:"),
+            Some("Medium"),
+            "phantom-tracking must stay Medium under an ambient hook git env"
+        );
+
+        // Keep every TempDir guard alive until the assertions are done.
+        drop(repo);
+        drop(aux);
+        drop(decoy);
+    }
+
     /// §6.7 PTODO liveness degradation (end-to-end): `--pattern PTODO` over a
     /// repo with a cited marker and an untracked marker but NO
     /// `.taskmaster/tasks/tasks.db` must (1) emit the EXACT §6.7 breadcrumb on
