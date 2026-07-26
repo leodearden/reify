@@ -183,3 +183,196 @@ fn compute_eval_set_is_the_kahn_core() {
         "all four dirty ∩ demanded nodes must be scheduled"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-3: RESULT-SET equivalence across the reorder.
+//
+// Steps 1-2 pin that the flat sort now emits the core's order. That is a pure
+// ORDERING change, and the done-criteria signal is that ordering is all it is:
+// both the retired level order and the core's order are valid linear extensions
+// of the same dependency DAG, and a pure dataflow fold over a DAG is invariant
+// across its linear extensions. These tests hold that claim to the fire on the
+// surfaces that consume the changed order.
+//
+// They are characterization / safety-net assertions and are expected GREEN
+// immediately — that IS the point. A RED here would mean the reorder surfaced a
+// real trace-extraction gap (a read a node performs but does not declare in its
+// `DependencyTrace`), which is a latent correctness bug the delegation EXPOSED
+// rather than caused. The response is to escalate `design_concern` naming the
+// divergent cell, never to weaken the assertion.
+//
+// The shared differential harness is wired via the in-repo `#[path]` idiom;
+// `common/differential.rs` deliberately is NOT re-exported through
+// `common/mod.rs`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[path = "common/differential.rs"]
+mod differential;
+
+use differential::{
+    GOLDEN_CORPUS, SEED_CORPUS, assert_edit_matches_cold, assert_equivalent_or_allowed, build_case,
+    build_case_keep_engine,
+};
+use reify_constraints::SimpleConstraintChecker;
+use reify_eval::{BuildScheduler, Engine};
+use reify_ir::{GeometryKernel, Value};
+use reify_test_support::{MockGeometryKernel, compile_source};
+
+/// The shape on which the two sorts provably diverge, as a real `.ri` module:
+/// editing `p` dirties `{a, b, c, z}` where `a→b→c` is a depth-2 chain and `z`
+/// is a `DebugOrd`-larger shallow sibling. The retired level sort re-evaluated
+/// `[a, z, b, c]`; the core re-evaluates `[a, b, c, z]`. Same module as
+/// `unified_dag_edit_path.rs`'s DRIVER_ORDER fixture, deliberately — this is the
+/// sharpest available signal, since a corpus case that happens to be a chain or
+/// happens to be flat would not exercise the divergence at all.
+const DIVERGENT_SHAPE_P1_SRC: &str = r#"structure DriverOrder {
+    param p: Real = 1.0
+    let a = p * 1.0
+    let b = a * 1.0
+    let c = b * 1.0
+    let z = p * 2.0
+}"#;
+
+/// Post-edit-equivalent cold reference: the same module with `p = 2.0`.
+const DIVERGENT_SHAPE_P2_SRC: &str = r#"structure DriverOrder {
+    param p: Real = 2.0
+    let a = p * 1.0
+    let b = a * 1.0
+    let c = b * 1.0
+    let z = p * 2.0
+}"#;
+
+fn fresh_engine(scheduler: BuildScheduler) -> Engine {
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new()) as Box<dyn GeometryKernel>),
+    );
+    engine.set_build_scheduler(scheduler);
+    engine
+}
+
+#[test]
+fn flat_sort_reorder_preserves_results_on_the_divergent_shape() {
+    let p = reify_core::ValueCellId::new("DriverOrder", "p");
+
+    // The warm/edited ValueMap must equal a cold eval of the post-edit-equivalent
+    // module, bit-exact on canonical content-hash — across the exact re-evaluation
+    // order the reorder changed.
+    assert_edit_matches_cold(
+        DIVERGENT_SHAPE_P1_SRC,
+        &[(p, Value::Real(2.0))],
+        DIVERGENT_SHAPE_P2_SRC,
+        BuildScheduler::LegacyMultiPass,
+        false,
+    );
+
+    // Anti-vacuity: `assert_edit_matches_cold` compares warm against cold, so a
+    // regression that left EVERY cell Undef on BOTH sides would satisfy it. Pin
+    // the concrete cold values so an all-Undef collapse cannot pass silently.
+    let mut engine = fresh_engine(BuildScheduler::LegacyMultiPass);
+    let cold = engine.eval(&compile_source(DIVERGENT_SHAPE_P1_SRC));
+    for (member, expected) in [
+        ("a", Value::Real(1.0)),
+        ("b", Value::Real(1.0)),
+        ("c", Value::Real(1.0)),
+        ("z", Value::Real(2.0)),
+    ] {
+        let cell = reify_core::ValueCellId::new("DriverOrder", member);
+        assert_eq!(
+            cold.values.get(&cell),
+            Some(&expected),
+            "cold eval of the divergent-shape fixture must produce a definite \
+             {member} = {expected:?}; an Undef here means the fixture stopped \
+             exercising the dataflow and the parity assertion above is vacuous"
+        );
+    }
+}
+
+#[test]
+fn flat_sort_reorder_preserves_corpus_results() {
+    // The `unified_dag_differential_corpus`-class gate, re-anchored on the
+    // flat-sort surface: identical projected values, constraint verdicts,
+    // diagnostics and geometry output under both schedulers, for every case.
+    for case in SEED_CORPUS.iter().chain(GOLDEN_CORPUS.iter()) {
+        let legacy = build_case(case, BuildScheduler::LegacyMultiPass);
+        let unified = build_case(case, BuildScheduler::UnifiedDag);
+        assert_equivalent_or_allowed(case, &legacy, &unified);
+    }
+}
+
+/// The stale-Undef violations that are PRE-EXISTING on `build()` over this
+/// corpus, measured on BOTH the pre-delegation level sort and the delegated core
+/// and found byte-identical — so they are order-INVARIANT and demonstrably not
+/// caused by task 5045's reorder. Keyed `"<case>/<cell>"`, sorted.
+///
+/// Both cells are outputs of `tensegrity_t_prism.ri`'s `@optimized`
+/// `form_find_free` ComputeNode, reached through the optimized trampoline on the
+/// `build()` surface. No pre-existing gate covers this combination:
+/// `no_stale_undef_invariant_gate` walks `examples/*.ri` through `eval()`, and
+/// `unified_dag_differential_corpus` builds this very case but never runs the
+/// stale-Undef checker over it. This test is the first thing to look, which is
+/// why it is the first thing to see them.
+///
+/// Filed as a follow-up (see the task 5045 iteration log); NOT fixed here — the
+/// owning code is the `@optimized` compute-dispatch/exemption path in
+/// `invariants.rs`/`engine_build.rs`, outside this task's declared file scope.
+///
+/// This list is asserted by EXACT equality, matching the differential harness's
+/// own `CorpusCase::allowed` convention: a NEW violation fails the gate (the
+/// regression signal this test exists for), and a STALE entry also fails it, so
+/// whoever fixes the underlying defect is told to delete the entry rather than
+/// leaving a blanket exemption behind. Never widen this to a prefix/blanket
+/// match.
+const PREEXISTING_STALE_UNDEF: &[&str] = &[
+    "golden:tensegrity_t_prism/TPrism.forces",
+    "golden:tensegrity_t_prism/TPrism.solved",
+];
+
+#[test]
+fn flat_sort_reorder_leaves_no_stale_undef() {
+    // Task 4952's checker applied on the reordered path: a cell left Undef while
+    // every one of its declared reads resolved is exactly the failure mode an
+    // out-of-order schedule would produce, so this is the sharpest available
+    // correctness gate on a scheduling change.
+    //
+    // The assertion is "exactly the known pre-existing set, and nothing else",
+    // not "empty" — see PREEXISTING_STALE_UNDEF for why those two entries are
+    // there and why the check is still tight. Detail strings are collected
+    // alongside so a failure names the cells rather than just a count.
+    let mut observed: Vec<String> = Vec::new();
+    let mut details: Vec<String> = Vec::new();
+    for case in SEED_CORPUS.iter().chain(GOLDEN_CORPUS.iter()) {
+        for scheduler in [BuildScheduler::LegacyMultiPass, BuildScheduler::UnifiedDag] {
+            let (engine, _result) = build_case_keep_engine(case, scheduler);
+            for violation in engine.check_no_stale_undef() {
+                // Both schedulers are swept, but the key is scheduler-free: a
+                // violation under ONE scheduler only would appear as an unexpected
+                // duplicate-free entry either way, and the per-scheduler detail is
+                // preserved in `details` for the failure message.
+                let key = format!("{}/{}", case.name, violation.cell);
+                if !observed.contains(&key) {
+                    observed.push(key.clone());
+                }
+                details.push(format!(
+                    "[{}/{scheduler:?}] {} — {}",
+                    case.name, violation.cell, violation.detail
+                ));
+            }
+        }
+    }
+    observed.sort();
+
+    let expected: Vec<String> = PREEXISTING_STALE_UNDEF.iter().map(|s| s.to_string()).collect();
+    assert_eq!(
+        observed, expected,
+        "the stale-Undef violation set over the differential corpus changed.\n\
+         Every cell listed is Undef while all of its declared reads resolved.\n\
+         NEW entries mean this reorder (or a later change to the ONE scheduling \
+         core) left a demanded cell unevaluated — a real correctness regression, \
+         do NOT add it to PREEXISTING_STALE_UNDEF to make this pass.\n\
+         MISSING entries mean a pre-existing defect got fixed — delete its entry \
+         from PREEXISTING_STALE_UNDEF.\n\
+         full detail:\n  {}",
+        details.join("\n  ")
+    );
+}
