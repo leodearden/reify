@@ -452,3 +452,19 @@ resolve #5387 relationship per its live status (§6 row 2).
    in θ against the existing `eval_is_idempotent_for_prelude_functions` pins.
 5. **α's sweep breadth** — whether any non-examples `.ri` (prj/, dogfood worktree)
    carries the mirror pattern worth cleaning in the same task. Decide in α via grep.
+   *Resolved 2026-07-26 (α, task 5515):* **no non-examples `.ri` needed cleaning.**
+   `prj/` exists but is clean — both tracked files (`printer_v01/printer.ri`,
+   `dev_capstan.ri`) carry zero `import`, zero `enum`, zero `structure def`.
+   `designs/` (7 files) is likewise clean: zero imports, zero enums, and its seven
+   `structure def`s are the designs' own parts, none of which names a stdlib type.
+   Within `examples/stdlib/`, `ports_breadth.ri` was the sole instance. The
+   **m8_tolerancing lineage** does carry the pattern — `examples/m8_tolerancing.ri`,
+   `examples/io_export.ri`, `examples/gdt_conformance_{satisfied,violated}.ri`,
+   `examples/tolerancing/gdt_pass_weave.ri`,
+   `docs/prds/v0_6/fixtures/surface_finish_functional.ri` — but every member sits
+   outside α's declared `examples/stdlib/` scope and is deferred to a filed
+   follow-up. That lineage needs a per-file probe rather than a blind sweep:
+   `gdt_conformance_violated.ri:19-24` cites a *distinct* and possibly-live
+   rationale (the η pass resolves a callout's type against `module.templates`, so
+   the local re-declaration is what carries the `: GeometricTolerance` bound past
+   `satisfies_trait_bound`), so stripping it blindly could turn a green example red.
