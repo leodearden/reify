@@ -157,10 +157,15 @@ fn build_solved_values(params: &[AutoParam], x: &[f64]) -> HashMap<ValueCellId, 
 /// - An empty `dependent_cells` skips the fold entirely, leaving the returned
 ///   map byte-identical to the pre-β behaviour (PRD §6.2). Every non-clustered
 ///   solve therefore takes exactly the path it took before.
-/// - The fold must never overwrite an auto param's trial scalar. Membership
+/// - The fold must NEVER overwrite an auto param's trial scalar. Membership
 ///   (reify-eval's `build_dependent_cells`) already excludes autos by
-///   construction; the defensive backstop for upstream drift is added
-///   separately.
+///   construction — stage (a) keeps only non-auto cells — so this is a
+///   backstop against upstream DRIFT, not the primary mechanism. It is
+///   enforced rather than assumed because a clobbered auto is silent: the
+///   solver would go on to report a solved value for a point it never actually
+///   evaluated. A collision is a membership BUG, so debug builds trip a
+///   `debug_assert!` naming the offending cell; release builds skip the entry
+///   and keep the trial point intact.
 fn build_trial_values(
     base: &ValueMap,
     params: &[AutoParam],
@@ -179,12 +184,26 @@ fn build_trial_values(
         );
     }
 
-    // Zero-cost early skip for the (overwhelmingly common) non-clustered case.
+    // Zero-cost early skip for the (overwhelmingly common) non-clustered case:
+    // no fold, and none of the collision-guard work below.
     if dependent_cells.is_empty() {
         return values;
     }
 
     for (id, expr) in dependent_cells {
+        // Auto-collision guard. A linear scan over `params` beats a HashSet at
+        // the expected 1–3 autos, and this is the per-Nelder-Mead-iteration hot
+        // path; revisit only if a problem with many autos shows up.
+        if params.iter().any(|p| &p.id == id) {
+            debug_assert!(
+                false,
+                "build_trial_values: dependent cell {id:?} collides with an auto \
+                 param — reify-eval's `build_dependent_cells` excludes autos by \
+                 construction, so this means upstream membership drifted. \
+                 Skipping the entry to keep the trial point intact."
+            );
+            continue;
+        }
         let v = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, functions));
         values.insert(id.clone(), v);
     }
@@ -5651,7 +5670,22 @@ mod tests {
     ///
     /// This guards against upstream membership DRIFT, not against today's
     /// contract — which is exactly why it must be enforced rather than assumed.
+    ///
+    /// The guard is profile-split, and this one test pins BOTH halves rather
+    /// than taking either on trust — the `should_panic` attribute is itself
+    /// `cfg_attr`-gated on `debug_assertions`, so the same body asserts a
+    /// different contract per profile:
+    ///
+    /// * debug (`cargo test`) — the `debug_assert!` fires, and the expected
+    ///   panic substring pins that the alarm NAMES the offending cell. A
+    ///   membership regression in reify-eval must not reach production quietly.
+    /// * release — there is no alarm, so the entry is skipped, the body runs to
+    ///   completion, and its assertions pin that the trial scalar survived.
     #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "collides with an auto param")
+    )]
     fn fold_must_never_overwrite_an_auto_param() {
         use super::build_trial_values;
         use reify_core::{DimensionVector, Type, ValueCellId};
