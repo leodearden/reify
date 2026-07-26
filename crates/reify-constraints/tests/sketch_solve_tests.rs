@@ -860,3 +860,145 @@ fn curve_curve_tangent_lines_up_both_centres_with_the_shared_point() {
         "collinearity of centre A, the touch point and centre B",
     );
 }
+
+// ---------------------------------------------------------------------------
+// The remaining 2D relations
+// ---------------------------------------------------------------------------
+
+/// `PtOnLine` drops a point onto its line and leaves it free to slide.
+///
+/// Both facts are asserted, because each alone is satisfiable the wrong way:
+/// `y == 0` without the DOF check is also what a mapping that anchored the
+/// point would produce, and `dof == 1` without the position check is what
+/// dropping the constraint produces. Together they say "one equation, and it is
+/// the right one".
+///
+/// The remaining degree of freedom is the point's position *along* the line —
+/// `PtOnLine` says the point is on the line's infinite extension, not where.
+#[test]
+fn point_on_line_lands_on_the_line_and_keeps_one_dof() {
+    let mut s = Sketch::new();
+    let a = s.point(0.0, 0.0);
+    let b = s.point(0.020, 0.0);
+    let rail = s.line(a, b);
+    // Seeded off the line in y, and short of both endpoints in x.
+    let p = s.point(0.008, 0.003);
+
+    // `Fix` on a line anchors both of its endpoints — one declaration, two slvs
+    // constraints — which is the expansion the attribution map has to survive.
+    s.constrain(SketchConstraint::Fix(rail));
+    s.constrain(SketchConstraint::PtOnLine { pt: p, line: rail });
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    let (start, end) = line_of(&result, rail);
+    assert_point_near(start, (0.0, 0.0), "anchored line start");
+    assert_point_near(end, (0.020, 0.0), "anchored line end");
+
+    let (px, py) = point_of(&result, p);
+    assert_near(py, 0.0, "constrained point's distance off the y = 0 rail");
+    assert_eq!(
+        dof_of(&result),
+        1,
+        "a point on a fixed line keeps exactly one DOF — where along it it sits"
+    );
+    // The solver had no reason to move the point along the rail, so it should
+    // not have: this is what says the constraint added one equation, not two.
+    assert_near(
+        px,
+        0.008,
+        "position along the rail, which nothing constrains",
+    );
+}
+
+/// `AtMidpoint` puts a point at the middle of a fixed line, with nothing left
+/// over.
+///
+/// `dof == 0` is the load-bearing half: a midpoint is two equations, so a
+/// mapping that emitted only one would still land the point *somewhere*
+/// plausible while leaving a degree of freedom behind.
+#[test]
+fn at_midpoint_centres_the_point_with_no_dof_left() {
+    let mut s = Sketch::new();
+    let a = s.point(0.0, 0.0);
+    let b = s.point(0.020, 0.0);
+    let span = s.line(a, b);
+    // Seeded off centre in both axes.
+    let m = s.point(0.006, 0.002);
+
+    s.constrain(SketchConstraint::Fix(span));
+    s.constrain(SketchConstraint::AtMidpoint { pt: m, line: span });
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert_point_near(point_of(&result, m), (0.010, 0.0), "the line's midpoint");
+    assert_eq!(
+        dof_of(&result),
+        0,
+        "a midpoint on a fixed line is fully determined"
+    );
+}
+
+/// `SymmetricLine` mirrors a point across a line.
+///
+/// The mirror image is *derived*, not dimensioned: nothing in the fixture names
+/// `(+4 mm, +4 mm)`, so reading it back is only possible if both halves of the
+/// constraint — the pair straddles the centreline, and the segment joining them
+/// crosses it square — actually reached libslvs.
+#[test]
+fn symmetric_line_mirrors_a_point_across_the_centreline() {
+    let mut s = Sketch::new();
+    // A vertical centreline through the origin.
+    let c0 = s.point(0.0, 0.0);
+    let c1 = s.point(0.0, 0.020);
+    let centreline = s.line(c0, c1);
+
+    let a = s.point(-0.004, 0.004);
+    // Seeded on the wrong side of the centreline entirely.
+    let b = s.point(0.001, -0.002);
+
+    s.constrain(SketchConstraint::Fix(centreline));
+    s.constrain(SketchConstraint::Fix(a));
+    s.constrain(SketchConstraint::SymmetricLine {
+        a,
+        b,
+        about: centreline,
+    });
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert_point_near(point_of(&result, a), (-0.004, 0.004), "the anchored point");
+    assert_point_near(point_of(&result, b), (0.004, 0.004), "its mirror image");
+}
+
+/// `EqualLengthLines` propagates one line's length to another.
+///
+/// Length only: the second line is free to point wherever the rest of the
+/// fixture leaves it, which is why the assertion is on its length rather than on
+/// its far endpoint. It is seeded at 3 mm, so 10 mm has to be driven.
+#[test]
+fn equal_length_lines_propagates_a_single_length() {
+    let mut s = Sketch::new();
+    let a0 = s.point(0.0, 0.0);
+    let a1 = s.point(0.010, 0.0);
+    let driver = s.line(a0, a1);
+
+    let b0 = s.point(0.020, 0.0);
+    let b1 = s.point(0.020, 0.003);
+    let follower = s.line(b0, b1);
+
+    s.constrain(SketchConstraint::Fix(driver));
+    s.constrain(SketchConstraint::Fix(b0));
+    s.constrain(SketchConstraint::Vertical(follower));
+    s.constrain(SketchConstraint::EqualLengthLines {
+        a: driver,
+        b: follower,
+    });
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    let (d_start, d_end) = line_of(&result, driver);
+    let (f_start, f_end) = line_of(&result, follower);
+    assert_near(dist(d_start, d_end), 0.010, "the anchored driving length");
+    assert_near(dist(f_start, f_end), 0.010, "the length equated to it");
+}
