@@ -714,13 +714,16 @@ pub structure def FEAMaterialInput {
 //     tightened from `List<Real>` placeholders in task ζ/4444 (resolved).
 //
 //   `options : ElasticOptions = ElasticOptions()`:
-//     The same-module ctor default `ElasticOptions()` now works because
-//     task-3895's same-module skeleton pre-pass (`phase_functions` in
-//     functions_phase.rs) builds `build_structure_def_skeleton` templates for
-//     all module `structure_refs` and threads them into the `neutral_scope`
-//     used to compile param defaults (functions.rs:107-110).  The esc-3851-32
-//     phase-functions-before-phase-entities ordering blocker is therefore
-//     resolved at the def-site level.
+//     The same-module ctor default `ElasticOptions()` resolves because
+//     `structure def ElasticOptions` is declared ABOVE this function (see the
+//     `ElasticOptions` block earlier in this file), so its AUTHORITATIVE
+//     `TopologyTemplate` is already in the fn-body template registry when this
+//     default is compiled.  Task 5494 made function param defaults and bodies
+//     compile in the same source-order pass that builds entity templates, which
+//     is what resolves the esc-3851-32 ordering blocker at the def-site level —
+//     and it means DECLARATION ORDER IS LOAD-BEARING here: moving this function
+//     above `structure def ElasticOptions` would make the default a compile
+//     error (the compiler reports the ordering rule explicitly).
 //     Callers may omit `options` to use the all-defaults instance, or pass a
 //     custom `ElasticOptions(...)` to override specific fields.
 @optimized("solver::elastic_static")

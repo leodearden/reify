@@ -12,12 +12,14 @@
 //!   a fn body constructs a same-module structure against that structure's
 //!   AUTHORITATIVE [`TopologyTemplate`].
 //!
-//! There is no mirror/skeleton template registry any more: the transient
-//! `build_structure_def_skeleton` templates task 3895 fabricated for every
-//! `structure_def` — and the two silent-divergence hazards they carried (poison
-//! defaults compiled with discarded diagnostics; nested-ctor-in-let lowering to
-//! a generic `FunctionCall` because no template registry was installed) — are
-//! deleted.
+//! There is no mirror/skeleton template registry any more.  Task 3895's
+//! skeleton pre-pass fabricated a transient [`TopologyTemplate`] for every
+//! `structure_def` regardless of declaration position, and paid for it with two
+//! silent-divergence hazards (poison defaults compiled with discarded
+//! diagnostics; nested-ctor-in-let lowering to a generic `FunctionCall` because
+//! no template registry was installed).  Both are now unrepresentable: there is
+//! exactly one place a `structure_def` becomes a template, and fn bodies read
+//! that one.
 
 use std::collections::HashMap;
 

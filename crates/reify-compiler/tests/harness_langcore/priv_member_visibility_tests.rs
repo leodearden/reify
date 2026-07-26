@@ -528,12 +528,13 @@ purpose okp(subject : Motor) {
 // `<sub>.<port>.<member>` shape) via a dedicated AST-pattern branch in
 // `compile_member_access` (see the `_emits_error` tests below). Function-body
 // access reached neither member kind for as long as fn bodies type-checked
-// against the `build_structure_def_skeleton` mirror (whose `ports` and
-// `guarded_groups` were always empty); task 5494 deleted that mirror, so fn
-// bodies now use the authoritative template and are gated identically (see the
-// `..._is_priv_gated` tests further below). Part D itself asserts only the
-// lowered `visibility` field, not dot-access enforcement, so it stays green
-// independent of either follow-up's status.
+// against the skeleton mirror (whose `ports` and `guarded_groups` were always
+// empty); task 5494 deleted that mirror, so fn bodies now use the authoritative
+// template. That gates the GUARDED kind; the PORT kind needs #5171's
+// `sub_component_types`-keyed branch widened to fn-param receivers and remains
+// open as #5222 (see the function-body coda further below for the full seam).
+// Part D itself asserts only the lowered `visibility` field, not dot-access
+// enforcement, so it stays green independent of either follow-up's status.
 
 /// Locate a template by name in the compiled module (generalizes `motor_template`
 /// for the Part D fixtures below, which use distinct structure names).
@@ -809,10 +810,11 @@ structure def PerDeclGuardHost {
 // `_emits_error` tests below), while their default-visible siblings still
 // fail via their pre-existing, unrelated diagnostics — StructureMemberNotFound
 // for guarded members, "member access not yet supported" for port members —
-// unchanged. FUNCTION-BODY access reaches the same verdict since task 5494
-// deleted the `build_structure_def_skeleton` mirror: fn bodies type-check
-// against the authoritative template, so both member kinds resolve and the priv
-// gate fires there too (see the `..._is_priv_gated` tests further below).
+// unchanged. FUNCTION-BODY access now type-checks against that same
+// authoritative template (task 5494 deleted the skeleton mirror), which gates
+// the guarded kind identically; the port kind converges instead on the generic
+// nested-port-member gap, still open as #5222 (see the function-body coda
+// further below).
 
 /// Shared `PortHost`+`Parent` fixture for the external port-member
 /// enforcement tests below (reviewer_comprehensive suggestion #2): the priv
@@ -1191,7 +1193,7 @@ structure def Parent {
     );
 }
 
-// ── Part D coda, function-body variant — priv-gated on the authoritative path ─
+// ── Part D coda, function-body variant — the authoritative-template path ──────
 //
 // Function bodies used to type-check against `build_structure_def_skeleton`, a
 // mirror template that unconditionally returned `ports: vec![]` and
@@ -1199,18 +1201,47 @@ structure def Parent {
 // them: the port or guarded member simply wasn't found, and access died at
 // E_STRUCTURE_MEMBER_NOT_FOUND before any visibility check could fire. Task 5494
 // deleted that mirror — function bodies now see the SAME authoritative template
-// as external access, which carries real `ports` and `guarded_groups`. Both
-// member kinds therefore resolve, and the priv gate that #5171 landed for
-// external access fires here too: exactly one E_PRIV_MEMBER_ACCESS and zero
-// E_STRUCTURE_MEMBER_NOT_FOUND. Function-body and external access are now the
-// same code path with the same answer — no divergence left to track.
+// as external access, which carries real `ports` and `guarded_groups`.
+//
+// The two member kinds land differently, because #5171 enforces them by two
+// different mechanisms:
+//
+//   * GUARDED members are reached by a TWO-level access (`m.g`). The receiver's
+//     static type is `StructureRef("GuardHost")`, so the access flows into the
+//     structure-like member-access block whose priv check consults the
+//     template's `value_cells` — which guarded members inhabit. Removing the
+//     mirror is sufficient: the gate now fires (`..._is_priv_gated` below).
+//
+//   * PORT members are reached by a THREE-level access (`m.secret.main`). Ports
+//     are absent from `value_cells`, so #5171 gates them with a dedicated
+//     AST-pattern branch in `compile_member_access` keyed on
+//     `scope.sub_component_types` — an ENTITY-scope map. A function parameter is
+//     not a sub-component, so that branch structurally cannot fire for a fn-body
+//     receiver no matter how complete the template is. Removing the mirror moves
+//     this case from E_STRUCTURE_MEMBER_NOT_FOUND to the generic
+//     "member access not yet supported" gap — converging fn-body access with
+//     EXTERNAL access to a *default-visible* port member (see
+//     `external_pub_port_member_access_not_yet_supported_unchanged`), which is
+//     the same pre-existing nested-port-member-resolution gap #5171 explicitly
+//     left open. Closing it means widening that branch to accept a
+//     `StructureRef`-typed non-sub receiver, which is follow-up task #5222.
+//
+// Both outcomes are LOUD errors — neither member kind leaks a priv value.
 
 /// A function body reaching a `priv` param nested inside a `port { }` block is
-/// priv-gated: the authoritative template carries the port, so the member
-/// resolves and the visibility check fires (E_PRIV_MEMBER_ACCESS), rather than
-/// dying earlier at E_STRUCTURE_MEMBER_NOT_FOUND.
+/// NOT yet priv-gated — it fails via the generic nested-port-member gap instead.
+///
+/// Deleting the skeleton mirror (task 5494) moved this from
+/// E_STRUCTURE_MEMBER_NOT_FOUND to "member access not yet supported", but did
+/// not gate it: #5171's port-member branch is keyed on
+/// `scope.sub_component_types`, and a fn param is not a sub-component. Gating it
+/// is follow-up task #5222, which depends on this task precisely so it can build
+/// on the authoritative template. This test is that task's grep anchor and a
+/// fail-closed trip-wire: if the access ever compiled with ZERO diagnostics, the
+/// zero-`StructureMemberNotFound` + at-least-one-generic-error pair below would
+/// catch the leak.
 #[test]
-fn function_body_priv_port_member_access_is_priv_gated() {
+fn function_body_priv_port_member_access_not_yet_priv_gated() {
     let module = compile_source(
         r#"
 trait Iface {}
@@ -1227,11 +1258,10 @@ fn leak(m : PortHost) -> Length { m.secret.main }
 
     assert_eq!(
         priv_access_errors(&module).len(),
-        1,
-        "function-body access to a priv port-member must emit exactly one \
-         E_PRIV_MEMBER_ACCESS — the authoritative template carries the port, so \
-         the member resolves and the visibility check fires; all \
-         diagnostics: {:?}",
+        0,
+        "function-body access to a priv port-member is not yet gated (#5222): \
+         #5171's port-member branch keys on `sub_component_types`, which a fn \
+         param never inhabits; all diagnostics: {:?}",
         module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
     let not_found = module
@@ -1242,8 +1272,20 @@ fn leak(m : PortHost) -> Length { m.secret.main }
     assert_eq!(
         not_found, 0,
         "function-body access to `m.secret` must no longer fail at \
-         E_STRUCTURE_MEMBER_NOT_FOUND — the port resolves on the authoritative \
-         template, so the priv gate is what rejects it; all diagnostics: {:?}",
+         E_STRUCTURE_MEMBER_NOT_FOUND — that death was the skeleton mirror's \
+         empty `ports`, which task 5494 deleted; all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let not_yet_supported = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("member access not yet supported"))
+        .count();
+    assert!(
+        not_yet_supported >= 1,
+        "the access must still fail LOUDLY via the generic nested-port-member \
+         gap — the same diagnostic external pub port-member access gets; a \
+         silent success here would be a priv leak; all diagnostics: {:?}",
         module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
