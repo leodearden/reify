@@ -9,16 +9,23 @@ use crate::watcher::{ChangeKind, Debouncer, FileEvent, FileWatcher};
 
 /// Poll `condition` every 20ms until it holds or `timeout` elapses.
 /// Returns immediately, before any sleep, if `condition` already holds.
+///
+/// The 20ms poll interval is clamped to whatever time remains before
+/// `deadline`, so the final sleep of a call never overshoots `timeout` by
+/// a full interval -- without this, a caller chaining many short windows
+/// (e.g. `wait_until_with_retry`'s per-attempt windows) would accumulate
+/// up to ~20ms of drift per window.
 fn wait_until(timeout: Duration, condition: impl Fn() -> bool) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
         if condition() {
             return true;
         }
-        if Instant::now() >= deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
             return false;
         }
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(Duration::from_millis(20).min(remaining));
     }
 }
 
@@ -49,6 +56,17 @@ fn wait_for<T>(
 /// one: no amount of polling can recover it, only re-issuing the write
 /// after the watch goes live can. Every attempt gets its own `retry_every`
 /// window to succeed before the next one is issued.
+///
+/// When `attempt` is a filesystem write feeding a debounced watcher (as
+/// above), `retry_every` MUST be strictly greater than the watcher's
+/// debounce window (`DEBOUNCE_DURATION` in `watcher.rs`) -- `Debouncer`'s
+/// `record` is insert-or-update and resets a path's quiet window on every
+/// call, so a retry cadence faster than the debounce window would
+/// perpetually reset the pending entry and the worker would never drain
+/// it. That failure mode spins for the full `timeout` and then fails with
+/// a message blaming the watcher for never delivering anything, rather
+/// than the retry cadence being too fast -- so pick `retry_every` with
+/// this in mind rather than by feel.
 fn wait_until_with_retry(
     mut attempt: impl FnMut(),
     retry_every: Duration,
@@ -106,6 +124,45 @@ where
         }
         Err(e) => panic!("unexpected watcher error: {e}"),
     }
+}
+
+/// Registration barrier for a directory watch: repeatedly (re)writes a
+/// sibling `probe.ri` file inside `dir` until `probe_seen` reports true,
+/// positively confirming the directory watch is live before the caller
+/// issues a write it can't afford to lose. See `wait_until_with_retry`'s
+/// doc comment for why re-issuing -- not just polling harder -- is
+/// required: a write issued before the watch is live produces no inotify
+/// event at all, not a late one.
+///
+/// The caller must construct its `FileWatcher` (with a callback that sets
+/// `probe_seen`, e.g. on any `Changed` event whose path ends with
+/// `"probe.ri"`, returning early so probe content can never reach the
+/// caller's own content-gated branches) BEFORE calling this. `probe.ri`
+/// itself is created lazily by the first attempt below rather than
+/// pre-created by the caller: the notify wiring in `watcher.rs` treats a
+/// path's initial `Create` the same as a later `Modify` (both collapse to
+/// `FileEvent::Changed`), so there's nothing to gain from pre-creating it.
+///
+/// `retry_every` (150ms) exceeds the production debounce window
+/// (`DEBOUNCE_DURATION` in `watcher.rs`, 100ms) so each retry gets its own
+/// trailing-edge quiet window instead of perpetually resetting one pending
+/// entry -- see `wait_until_with_retry`'s doc comment.
+fn wait_for_watch_registration(dir: &std::path::Path, probe_seen: &Arc<AtomicBool>) -> bool {
+    let probe_file = dir.join("probe.ri");
+    let mut probe_attempt = 0u32;
+    wait_until_with_retry(
+        || {
+            probe_attempt += 1;
+            std::fs::write(
+                &probe_file,
+                format!("structure Probe {{ param n = {probe_attempt} }}"),
+            )
+            .unwrap();
+        },
+        Duration::from_millis(150),
+        Duration::from_secs(10),
+        || probe_seen.load(Ordering::SeqCst),
+    )
 }
 
 // --- Debouncer unit tests (deterministic, clock-injected, no filesystem/threads) ---
@@ -326,7 +383,7 @@ fn wait_until_with_retry_reissues_the_attempt_until_the_condition_holds() {
     let found = wait_until_with_retry(
         move || attempt_counter.set(attempt_counter.get() + 1),
         Duration::from_millis(20),
-        Duration::from_millis(300),
+        Duration::from_secs(2),
         move || condition_counter.get() >= 3,
     );
 
@@ -348,12 +405,12 @@ fn wait_until_with_retry_returns_true_without_waiting_when_already_satisfied() {
     let found = wait_until_with_retry(
         || {},
         Duration::from_millis(150),
-        Duration::from_millis(300),
+        Duration::from_secs(10),
         || true,
     );
     assert!(found, "already-satisfied condition should return true");
     assert!(
-        start.elapsed() < Duration::from_secs(1),
+        start.elapsed() < Duration::from_millis(200),
         "should return promptly when already satisfied, took {:?}",
         start.elapsed()
     );
@@ -367,7 +424,7 @@ fn wait_until_with_retry_returns_false_after_the_timeout_when_never_satisfied() 
     let start = Instant::now();
     let found = wait_until_with_retry(
         move || attempt_counter.set(attempt_counter.get() + 1),
-        Duration::from_millis(50),
+        Duration::from_millis(20),
         Duration::from_millis(200),
         || false,
     );
@@ -793,8 +850,6 @@ fn watcher_survives_a_panicking_callback_and_keeps_delivering_later_events() {
     let dir = tempfile::tempdir().unwrap();
     let ri_file = dir.path().join("flaky.ri");
     std::fs::write(&ri_file, "structure Flaky {}").unwrap();
-    let probe_file = dir.path().join("probe.ri");
-    std::fs::write(&probe_file, "structure Probe {}").unwrap();
 
     let first_write_content = "structure Flaky { param x = 1mm }";
     let second_write_content = "structure Flaky { param x = 2mm }";
@@ -831,20 +886,7 @@ fn watcher_survives_a_panicking_callback_and_keeps_delivering_later_events() {
 
     // Registration barrier -- see the doc comment above for why this
     // replaces a fixed "give the watcher time to register" sleep.
-    let mut probe_attempt = 0u32;
-    let registered = wait_until_with_retry(
-        || {
-            probe_attempt += 1;
-            std::fs::write(
-                &probe_file,
-                format!("structure Probe {{ param n = {probe_attempt} }}"),
-            )
-            .unwrap();
-        },
-        Duration::from_millis(150),
-        Duration::from_secs(10),
-        || probe_seen.load(Ordering::SeqCst),
-    );
+    let registered = wait_for_watch_registration(dir.path(), &probe_seen);
     assert!(
         registered,
         "the watcher never delivered a probe event, so the directory watch \
@@ -855,7 +897,11 @@ fn watcher_survives_a_panicking_callback_and_keeps_delivering_later_events() {
     // First-event barrier -- see the doc comment above for why this
     // replaces a fixed "let the debounce window elapse" sleep. If the
     // worker thread didn't catch the panic's unwind, it would terminate
-    // here and no further event would ever be delivered.
+    // here and no further event would ever be delivered. `retry_every`
+    // (300ms) exceeds the production debounce window (100ms) for the same
+    // reason as the registration barrier's above: a faster cadence would
+    // perpetually reset the pending entry instead of letting it drain --
+    // see `wait_until_with_retry`'s doc comment.
     let panic_observed = wait_until_with_retry(
         || std::fs::write(&ri_file, first_write_content).unwrap(),
         Duration::from_millis(300),
