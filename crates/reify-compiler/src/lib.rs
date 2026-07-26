@@ -578,6 +578,16 @@ pub fn compile_with_prelude_context_checked_with_config(
         prelude_enums,
     );
 
+    // Resolve fn SIGNATURES first (task 5494 / PRD stdlib-namespace.md D-8).
+    // Signature resolution compiles no expression, so it runs before any
+    // structure template exists; it seeds `ctx.resolution_functions` with
+    // signature-only stubs for the phases that follow.
+    compile_builder::functions_phase::phase_fn_signatures(
+        &mut compile_ctx,
+        prelude_refs,
+        &decl_refs.fn_refs,
+    );
+
     compile_builder::functions_phase::phase_functions(
         &mut compile_ctx,
         prelude_refs,

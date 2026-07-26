@@ -174,8 +174,14 @@ pub(crate) fn phase_traits(
                     None, // v1: no prelude template registry for static fn bodies
                     &mut ctx.diagnostics,
                 );
+                // Buffer instead of pushing into `ctx.functions` directly.
+                // `phase_traits` now runs BEFORE user fn bodies are compiled, so a
+                // direct push would invert today's observable order
+                // (`[user fns …, trait-static fns …]`), which `compute_module_hash`
+                // folds and `CompiledModule::functions` first-match dispatch depends
+                // on.  The unified pass appends this vec after the user fns.
                 if let Some(f) = compiled_fn {
-                    ctx.functions.push(f);
+                    ctx.trait_static_fns.push(f);
                     any_static_fn_registered = true;
                 }
             }
@@ -192,6 +198,10 @@ pub(crate) fn phase_traits(
     // Skipped entirely when no static fns were registered: resolution_functions is
     // already correct from phase_functions and the O(prelude) clone+merge is redundant.
     if any_static_fn_registered {
+        // Append the buffered trait-static fns to `ctx.functions` at the END of the
+        // phase, preserving today's `[user fns in source order …, trait-static fns …]`
+        // order while `phase_functions` still precedes this phase.
+        ctx.functions.append(&mut ctx.trait_static_fns);
         let prelude_fns: Vec<CompiledFunction> = prelude
             .iter()
             .flat_map(|m| m.functions.iter().cloned())

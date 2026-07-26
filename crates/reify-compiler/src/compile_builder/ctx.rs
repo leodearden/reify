@@ -18,6 +18,7 @@ use reify_core::{ContentHash, Diagnostic, DiagnosticLabel, SourceSpan};
 
 use crate::connect::PendingConnectAutoParam;
 use crate::entity::{AutoResolutionRequest, PendingBoundCheck, PendingSubOverrideAuto};
+use crate::functions::FnSignature;
 use crate::type_resolution::TypeAliasRegistry;
 use crate::types::{
     AutoTypeSubstitution, CompiledConstraintDef, CompiledField, CompiledImport, CompiledModule,
@@ -45,6 +46,25 @@ pub(crate) struct CompilationCtx {
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) imports: Vec<CompiledImport>,
     pub(crate) functions: Vec<CompiledFunction>,
+    /// Resolved signatures of the module's own `fn` declarations, in source
+    /// order — the output of `functions_phase::phase_fn_signatures`.
+    ///
+    /// Written before any structure template exists; consumed by the unified
+    /// source-order pass in `phase_entities`, which compiles each fn's param
+    /// defaults and body against the authoritative template registry.
+    /// Parallel to `decl_refs.fn_refs` (same length, same order), so a
+    /// declaration index indexes both.
+    pub(crate) fn_signatures: Vec<FnSignature>,
+    /// Trait-static fns compiled by `phase_traits`, buffered here instead of
+    /// being pushed straight into `functions`.
+    ///
+    /// `phase_traits` now runs BEFORE user fn bodies are compiled, so appending
+    /// its output to `functions` directly would invert today's observable order
+    /// (`[user fns in source order …, trait-static fns …]`) — which
+    /// `compute_module_hash` folds and `CompiledModule::functions` first-match
+    /// dispatch depends on.  Buffering keeps that order byte-identical: the
+    /// unified pass appends this vec to `functions` after the user fns.
+    pub(crate) trait_static_fns: Vec<CompiledFunction>,
     pub(crate) fields: Vec<CompiledField>,
     pub(crate) templates: Vec<TopologyTemplate>,
     pub(crate) enum_defs: Vec<reify_ir::EnumDef>,
@@ -112,6 +132,8 @@ impl CompilationCtx {
             diagnostics: Vec::new(),
             imports: Vec::new(),
             functions: Vec::new(),
+            fn_signatures: Vec::new(),
+            trait_static_fns: Vec::new(),
             fields: Vec::new(),
             templates: Vec::new(),
             enum_defs: Vec::new(),
@@ -131,6 +153,51 @@ impl CompilationCtx {
             resolution_trait_names: HashSet::new(),
             resolution_structure_names: HashSet::new(),
         }
+    }
+
+    /// Build a signature-only `CompiledFunction` table from `fn_signatures`.
+    ///
+    /// Each stub carries the real name/params/return_type/type_params/
+    /// annotations — everything `resolve_function_overload` reads — with
+    /// `param_defaults: CompiledFunction::no_defaults_for(&params)` (satisfying
+    /// the strict `param_defaults.len() == params.len()` invariant) and an empty
+    /// body.  `compile_expr` never reads `CompiledFunction::body`, so a stub is
+    /// sufficient for compile-time overload dispatch.
+    ///
+    /// It is NOT sufficient for `try_default_padding`, which clones the callee's
+    /// compiled `param_defaults` into the caller's IR: a call that omits a
+    /// defaulted arg resolved against a stub loses its padding and produces a
+    /// LOUD arity diagnostic, never a silent wrong value.  Consumers that run
+    /// before the unified pass (`phase_traits`' static-fn bodies, `phase_fields`,
+    /// `phase_constraint_defs`) accept that residual; the unified pass itself
+    /// replaces each stub with the real `CompiledFunction` as soon as it is
+    /// compiled, so structures resolve against real defaults.
+    ///
+    /// Same synthetic-stub idiom as `geometry.rs`'s and `annotations.rs`'s
+    /// `CompiledFunction` literals.
+    pub(crate) fn fn_signature_stubs(&self) -> Vec<CompiledFunction> {
+        self.fn_signatures
+            .iter()
+            .map(|sig| CompiledFunction {
+                name: sig.name.clone(),
+                doc: sig.doc.clone(),
+                is_pub: sig.is_pub,
+                param_defaults: CompiledFunction::no_defaults_for(&sig.params),
+                params: sig.params.clone(),
+                return_type: sig.return_type.clone(),
+                body: reify_ir::CompiledFnBody {
+                    let_bindings: Vec::new(),
+                    result_expr: reify_ir::CompiledExpr::literal(
+                        reify_ir::Value::Real(0.0),
+                        reify_core::Type::dimensionless_scalar(),
+                    ),
+                },
+                content_hash: ContentHash::of_str(&sig.name),
+                annotations: sig.annotations.clone(),
+                optimized_target: sig.optimized_target.clone(),
+                type_params: sig.type_params.clone(),
+            })
+            .collect()
     }
 
     /// Returns `true` when `name` is either absent from `seen_entity_names` or
@@ -367,6 +434,14 @@ mod tests {
         assert!(ctx.diagnostics.is_empty(), "diagnostics should be empty");
         assert!(ctx.imports.is_empty(), "imports should be empty");
         assert!(ctx.functions.is_empty(), "functions should be empty");
+        assert!(
+            ctx.fn_signatures.is_empty(),
+            "fn_signatures should be empty"
+        );
+        assert!(
+            ctx.trait_static_fns.is_empty(),
+            "trait_static_fns should be empty"
+        );
         assert!(ctx.fields.is_empty(), "fields should be empty");
         assert!(ctx.templates.is_empty(), "templates should be empty");
         assert!(ctx.enum_defs.is_empty(), "enum_defs should be empty");

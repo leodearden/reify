@@ -10,9 +10,47 @@ use reify_ir::CompiledFunction;
 use crate::CompiledModule;
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::entity::build_structure_def_skeleton;
-use crate::functions::compile_function;
+use crate::functions::{compile_function_with_signature, resolve_fn_signature};
 use crate::merge_prelude_functions;
 use crate::types::{EntityKind, TopologyTemplate};
+
+/// Resolve every `fn` declaration's SIGNATURE, in source order.
+///
+/// The first half of the two-sub-pass split (task 5494 / PRD
+/// `stdlib-namespace.md` D-8).  Signature resolution compiles no expression, so
+/// it needs no template registry — which is what lets it run before any
+/// structure template exists.  Param defaults and bodies are compiled later, by
+/// the unified source-order pass in `phase_entities`, against the authoritative
+/// registry.
+///
+/// Seeds `ctx.resolution_functions` with signature-only stubs merged with the
+/// prelude via [`merge_prelude_functions`] — the same composition
+/// `phase_functions` uses — so the phases that run between this one and the
+/// unified pass (`phase_traits`, `phase_fields`, `phase_constraint_defs`) can
+/// resolve calls to same-module fns.
+pub(crate) fn phase_fn_signatures(
+    ctx: &mut CompilationCtx,
+    prelude: &[&CompiledModule],
+    fn_refs: &[&FnDef],
+) {
+    for fn_def in fn_refs {
+        let sig = resolve_fn_signature(
+            fn_def,
+            &ctx.resolution_enums,
+            &ctx.alias_registry,
+            &ctx.resolution_structure_names,
+            &ctx.resolution_trait_names,
+            &mut ctx.diagnostics,
+        );
+        ctx.fn_signatures.push(sig);
+    }
+
+    let prelude_fns: Vec<CompiledFunction> = prelude
+        .iter()
+        .flat_map(|m| m.functions.iter().cloned())
+        .collect();
+    ctx.resolution_functions = merge_prelude_functions(&ctx.fn_signature_stubs(), &prelude_fns);
+}
 
 /// Run phase-7 (functions).
 ///
@@ -71,19 +109,23 @@ pub(crate) fn phase_functions(
             merged_registry.insert(sk.name.clone(), sk);
         }
 
-        // Compile user functions in source order.
+        // Compile user function param defaults + bodies in source order.
+        //
+        // Signatures were already resolved (and their diagnostics already emitted
+        // exactly once) by `phase_fn_signatures`; `ctx.fn_signatures` is parallel
+        // to `fn_refs`, so the declaration index indexes both.  Re-resolving here
+        // would double every signature-level diagnostic.
         //
         // Passing `&ctx.functions` as the "prior compiled functions" parameter lets
         // a function resolve a call to an earlier sibling declaration (forward
         // references are not supported at the function layer).
-        for fn_def in fn_refs {
-            if let Some(compiled_fn) = compile_function(
+        for (i, fn_def) in fn_refs.iter().enumerate() {
+            let sig = &ctx.fn_signatures[i];
+            if let Some(compiled_fn) = compile_function_with_signature(
                 fn_def,
+                sig,
                 &ctx.resolution_enums,
                 &ctx.functions,
-                &ctx.alias_registry,
-                &ctx.resolution_structure_names,
-                &ctx.resolution_trait_names,
                 Some(&merged_registry),
                 &mut ctx.diagnostics,
             ) {
