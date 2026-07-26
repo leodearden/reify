@@ -228,6 +228,97 @@ fn stdlib_thread_spec_thread_form_resolves_at_eval() {
     );
 }
 
+/// Structural drift guard for resolution-unification α: the example must
+/// re-declare NOTHING that stdlib already owns.
+///
+/// Asserts on the *compiled module* rather than the .ri source text, so the
+/// guard pins compiler output (what actually shadows) and survives
+/// reformatting or comment edits. `compile_with_stdlib` emits only the user's
+/// own definitions — prelude defs are resolution context, not output (see
+/// `compile_with_prelude_context` docs) — so anything appearing here was
+/// declared by ports_breadth.ri itself.
+///
+/// RED after the ThreadSpec strip: `Frame3` is still a local template and all
+/// five enums (ThreadSystem, ThreadClass, ThreadTighteningDirection, FluidType,
+/// FittingStandard) are still local enum defs.
+#[test]
+fn example_declares_no_stdlib_shadowing_defs() {
+    let compiled = compile_breadth();
+
+    // Structures genuinely owned by this example — everything else is a mirror
+    // of a stdlib type and must resolve through the prelude instead.
+    const LOCAL_STRUCTURES: [&str; 3] = ["ThreadAssembly", "AsymmetricRig", "HydroConformer"];
+
+    // Names stdlib owns that this example historically mirrored, mapped to the
+    // stdlib file that owns them — so a failure names the real owner. Paths are
+    // relative to crates/reify-compiler/stdlib/.
+    const STDLIB_OWNER: [(&str, &str); 7] = [
+        ("ThreadSpec", "ports_mechanical.ri"),
+        ("ThreadSystem", "ports_mechanical.ri"),
+        ("ThreadClass", "ports_mechanical.ri"),
+        ("ThreadTighteningDirection", "ports_mechanical.ri"),
+        ("Frame3", "ports.ri"),
+        ("FluidType", "ports_fluid.ri"),
+        ("FittingStandard", "ports_fluid.ri"),
+    ];
+    let owner_of = |name: &str| -> String {
+        let file = STDLIB_OWNER
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, f)| *f)
+            .unwrap_or("<some std.ports submodule>");
+        format!("crates/reify-compiler/stdlib/{}", file)
+    };
+
+    // (a) The only Structure templates are the three genuinely-local ones.
+    let mut structures: Vec<&str> = compiled
+        .templates
+        .iter()
+        .filter(|t| t.entity_kind == EntityKind::Structure)
+        .map(|t| t.name.as_str())
+        .collect();
+    structures.sort_unstable();
+
+    let shadowed: Vec<&str> = structures
+        .iter()
+        .copied()
+        .filter(|n| !LOCAL_STRUCTURES.contains(n))
+        .collect();
+    assert!(
+        shadowed.is_empty(),
+        "examples/stdlib/ports_breadth.ri re-declares structure(s) stdlib already owns: {}. \
+         Delete the local mirror and let it resolve through the stdlib prelude \
+         (resolution-unification.md §8 α / boundary #18).",
+        shadowed
+            .iter()
+            .map(|n| format!("`{}` (owned by {})", n, owner_of(n)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    let mut expected = LOCAL_STRUCTURES.to_vec();
+    expected.sort_unstable();
+    assert_eq!(
+        structures, expected,
+        "ports_breadth.ri should declare exactly its three own structures; \
+         a missing one means the example lost a signal carrier"
+    );
+
+    // (b) No user-declared enums at all — every enum it uses is stdlib's.
+    let local_enums: Vec<&str> = compiled.enum_defs.iter().map(|e| e.name.as_str()).collect();
+    assert!(
+        local_enums.is_empty(),
+        "examples/stdlib/ports_breadth.ri re-declares enum(s) stdlib already owns: {}. \
+         Delete the local mirrors — stdlib enum variants resolve through the prelude \
+         at both compile and eval (resolution-unification.md §8 α / boundary #18).",
+        local_enums
+            .iter()
+            .map(|n| format!("`{}` (owned by {})", n, owner_of(n)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+}
+
 // ─── step-3/4 (task η signal b): asymmetric LocatedPort warning ───────────────
 
 /// PRD task-η signal (b): connecting a stdlib MechanicalPort (LocatedPort) to a
