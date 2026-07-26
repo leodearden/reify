@@ -54,12 +54,13 @@
 //! assertions.
 //!
 //! Note (task #5282): this compile unit's real size is the root file plus every
-//! `harness_cache/*.rs` module below, plus the shared `differential` module — at
-//! consolidation time, 101 (root) + 7,525 (modules) + 2,128 (differential) = 9,754 raw
-//! lines against the PRD §7 20,000-line cap (~51% headroom). Before the dedup the same
-//! set would have compiled 6,384 lines more (4 copies of differential.rs, not 1). `tests/infra/test_harness_kloc_cap.sh` rule
-//! (a) currently `wc -l`s only this root file, so it cannot see this unit approach the
-//! cap; a follow-up to make the guard sum root + module-dir LOC was filed against task
+//! `harness_cache/*.rs` module below, plus the shared `differential` module — measured
+//! post-move, 102 (root) + 7,525 (modules) + 2,128 (differential) = 9,755 raw lines
+//! against the PRD §7 20,000-line cap (~51% headroom). Before the dedup the same set
+//! would have compiled 6,384 lines more (4 copies of differential.rs, not 1).
+//! `tests/infra/test_harness_kloc_cap.sh` rule (a) currently `wc -l`s only this root
+//! file, so it cannot see this unit approach the cap; a follow-up to make the guard sum
+//! root + module-dir LOC was filed against task
 //! 5281. Once that follow-up is assigned a task id, replace this note with a properly
 //! numbered debt-marker citation per the repo's TODO-citation convention (CLAUDE.md).
 #[path = "common/differential.rs"]

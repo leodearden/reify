@@ -21,11 +21,14 @@
 //! and `../../../examples/…` → `../../../../examples/…` in `tolerance_member_access_e2e`
 //! (1). `crates/reify-eval/tests/fixtures/` itself did not move. A wrong `../` depth is
 //! a compile error rather than a silent skip, but these modules were RUN as well as
-//! compiled so the fixture *content* is confirmed to still reach the assertions.
+//! compiled so the fixture *content* is confirmed to still reach the assertions. The
+//! `tolerance_member_access_e2e` site is the one place where the extra `../` had a
+//! knock-on effect: it pushed that line from 98 to 101 columns, past rustfmt's
+//! 100-column `max_width`, so the `const` was wrapped onto two lines.
 //!
 //! Note (task #5282): this compile unit's real size is the root file plus every
-//! `harness_tolerance/*.rs` module below — at consolidation time, 71 (root) + 5,834
-//! (modules) = 5,905 raw lines against the PRD §7 20,000-line cap (~70% headroom).
+//! `harness_tolerance/*.rs` module below — measured post-move, 74 (root) + 5,835
+//! (modules) = 5,909 raw lines against the PRD §7 20,000-line cap (~70% headroom).
 //! `tests/infra/test_harness_kloc_cap.sh` rule (a) currently `wc -l`s only this root
 //! file, so it cannot see this unit approach the cap; a follow-up to make the guard sum
 //! root + module-dir LOC was filed against task 5281. Once that follow-up is assigned a

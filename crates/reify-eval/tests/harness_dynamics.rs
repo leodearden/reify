@@ -25,7 +25,7 @@
 //! saved instead of two.
 //!
 //! Note (task #5282): this compile unit's real size is the root file plus every
-//! `harness_dynamics/*.rs` module below — at consolidation time, 38 (root) + 517
+//! `harness_dynamics/*.rs` module below — measured post-move, 38 (root) + 517
 //! (modules) = 555 raw lines against the PRD §7 20,000-line cap (~97% headroom).
 //! `tests/infra/test_harness_kloc_cap.sh` rule (a) currently `wc -l`s only this root
 //! file, so it cannot see a unit approach the cap; a follow-up to make the guard sum
