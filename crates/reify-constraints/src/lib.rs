@@ -9,6 +9,7 @@ mod cpsat;
 mod decompose;
 pub mod relate_solve;
 mod registry;
+pub mod sketch;
 mod slvs_sys;
 mod solver;
 mod solvespace;
@@ -36,6 +37,14 @@ pub use reify_stdlib::loop_closure_solver::{
 // integration tests) don't need a direct `reify-stdlib` dev-dep to use the
 // loop-closure API.  See `JointValue` in `crates/reify-stdlib/src/loop_closure_value.rs`.
 pub use reify_stdlib::loop_closure_value::{JointKind, JointValue};
+// Constrained-2D-sketch solver substrate (docs/prds/v0_6/constrained-2d-sketch.md
+// §7 C5).  The typed data model is re-exported at the crate root so consumers
+// name `reify_constraints::SketchSystem` rather than reaching into the module;
+// the slvs-facing builder stays private.
+pub use sketch::{
+    SketchBuildError, SketchConstraint, SketchConstraintDef, SketchConstraintId, SketchEntity,
+    SketchEntityDef, SketchEntityId, SketchSolveResult, SketchSystem, SolvedSketchEntity,
+};
 pub use solver::DimensionalSolver;
 // γ cost_robustness_tradeoff (task #4791): re-exported so integration tests can
 // compute the λ=0 Chebyshev-centre reference independently of the tradeoff blend
