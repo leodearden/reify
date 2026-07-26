@@ -69,6 +69,25 @@ _note_shared_trash_use() {
     return 0
 }
 
+# _BARE_TMP_LANES / _note_bare_tmp_lane: structural companion to the R1
+# behavioural detector above — flags any run_helper_real lane arg ($2) whose
+# dirname is bare /tmp, regardless of whether THIS run actually triggered a
+# rename-to-trash (defence-in-depth for lanes that don't reach that path
+# today but could after a future fixture tweak). Every run_helper_real call
+# site passes <base_dir> <lane_dir> [flags...] positionally, so $2 is always
+# the lane. Deliberately NOT wired into run_helper: run_helper's lanes
+# outside this task's scope would false-positive (e.g. Blocks A/B/E/F/G/J/K/
+# L1/O), and run_helper's own genuine offenders are already covered by the
+# stronger, behaviour-based R1 detector. As with _note_shared_trash_use, the
+# trailing `return 0` is mandatory: this runs as a bare unguarded statement.
+_BARE_TMP_LANES=()
+_note_bare_tmp_lane() {
+    case "${2:-}" in
+        /*) [ "$(dirname "$2")" = "/tmp" ] && _BARE_TMP_LANES+=("$2") ;;
+    esac
+    return 0
+}
+
 cleanup() {
     for pid in "${_BGPIDS[@]+${_BGPIDS[@]}}"; do
         kill "$pid" 2>/dev/null || true
@@ -206,6 +225,7 @@ run_helper() {
 # which asserts actual mtime changes on a real fixture tree.
 run_helper_real() {
     local rc=0
+    _note_bare_tmp_lane "$@"
     > "$ERR_FILE"
     # Only stub cp and git; let find/touch be real binaries
     local real_stub_dir
@@ -2559,6 +2579,18 @@ _assert_no_shared_trash_use() {
 }
 assert "R1: no seed invocation in this suite wrote into the machine-shared $_SHARED_TRASH_DIR" \
     _assert_no_shared_trash_use
+
+# ── R3: structural guard — every run_helper_real lane dir had a private
+# parent, never bare /tmp. Fed by _note_bare_tmp_lane, called at the top of
+# run_helper_real for every one of its 36 call sites. ───────────────────────
+_assert_no_bare_tmp_lanes() {
+    [ "${#_BARE_TMP_LANES[@]}" -eq 0 ] && return 0
+    printf 'run_helper_real lane dir was bare /tmp (no private parent): %s\n' \
+        "${_BARE_TMP_LANES[@]}"
+    return 1
+}
+assert "R3: every run_helper_real lane dir had a private parent (never bare /tmp)" \
+    _assert_no_bare_tmp_lanes
 
 # ── R2: positive control for R1 — proves the detector actually fires on a
 # real rename, so R1 cannot silently pass forever if seed's rename message is
