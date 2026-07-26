@@ -668,7 +668,7 @@ fn compile_draft_produces_realization() {
 fn compile_circular_pattern_produces_realization() {
     let source = r#"structure S {
     param w: Length = 10mm
-    let pattern = circular_pattern(w, 0, 0, 0, 0, 0, 1, 6, 360)
+    let pattern = circular_pattern(w, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_circpat"));
     assert!(
