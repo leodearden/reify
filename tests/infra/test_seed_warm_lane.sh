@@ -44,6 +44,31 @@ echo "=== scripts/seed-warm-lane.sh hermetic tests (task 4660) ==="
 # ─────────────────────────────────────────────────────────────────────────────
 _TMPDIRS=()
 _BGPIDS=()
+
+# _SHARED_TRASH_DIR / _SHARED_TRASH_HITS / _note_shared_trash_use: runtime
+# detector for task 5590's invariant — no seed invocation may write into the
+# machine-shared /tmp/.reseed-trash. scripts/seed-warm-lane.sh:663 computes
+# RESEED_TRASH_DIR as dirname(LANE_DIR)/.reseed-trash and logs the rename to
+# stderr via `info` (scripts/seed-warm-lane.sh:86), so ERR_OUT mentioning
+# _SHARED_TRASH_DIR is exact evidence this invocation renamed into it.
+# _SHARED_TRASH_DIR is overridable so Block R's R2 positive control can
+# redirect it to an isolated lane's own private trash dir and prove the
+# detector fires without littering the real shared path. The variable is
+# quoted inside the case pattern (*"$_SHARED_TRASH_DIR"*) so any glob
+# metacharacter in the path is matched literally, not interpreted as a
+# wildcard. The trailing `return 0` is mandatory: this is called as a bare
+# unguarded statement inside run_helper/run_helper_real, so under
+# `set -euo pipefail` any nonzero return here would abort the entire suite
+# instead of just failing one assert.
+_SHARED_TRASH_DIR="/tmp/.reseed-trash"
+_SHARED_TRASH_HITS=()
+_note_shared_trash_use() {
+    case "$ERR_OUT" in
+        *"$_SHARED_TRASH_DIR"*) _SHARED_TRASH_HITS+=("$*") ;;
+    esac
+    return 0
+}
+
 cleanup() {
     for pid in "${_BGPIDS[@]+${_BGPIDS[@]}}"; do
         kill "$pid" 2>/dev/null || true
@@ -173,6 +198,7 @@ run_helper() {
             bash "$SCRIPT" "$@" 2>"$ERR_FILE"
     )" || rc=$?
     ERR_OUT="$(cat "$ERR_FILE")"
+    _note_shared_trash_use "$@"
     RC=$rc
 }
 
@@ -270,6 +296,7 @@ REAL_SLEEP_RM_STUB_EOF
         bash "$SCRIPT" "$@" >"$OUT_FILE" 2>"$ERR_FILE" || rc=$?
     OUT="$(cat "$OUT_FILE")"
     ERR_OUT="$(cat "$ERR_FILE")"
+    _note_shared_trash_use "$@"
     RC=$rc
     rm -rf "$real_stub_dir"
 }
@@ -2528,5 +2555,52 @@ assert "R0e: dirname(<lane>)/.reseed-trash does not already exist (run-private)"
     bash -c '[ -n "$1" ] || exit 1; [ ! -e "$(dirname "$1")/.reseed-trash" ]' _ "$R0_LANE_A"
 assert "R0f: returned path is nested under the per-run lane root (_LANE_ROOT), which the EXIT trap reclaims" \
     bash -c '[ -n "$1" ] && [ -n "$2" ] || exit 1; case "$1" in "$2"/*) exit 0 ;; *) exit 1 ;; esac' _ "$R0_LANE_A" "${_LANE_ROOT:-}"
+
+# ── R1: runtime detector — no seed invocation in this whole suite may write
+# into the machine-shared /tmp/.reseed-trash. Fed by _note_shared_trash_use,
+# called from inside run_helper/run_helper_real after every invocation
+# throughout the file, so this observes every prior Block's fixtures too. ───
+_assert_no_shared_trash_use() {
+    [ "${#_SHARED_TRASH_HITS[@]}" -eq 0 ] && return 0
+    printf 'seed invocation wrote into machine-shared %s: %s\n' \
+        "$_SHARED_TRASH_DIR" "${_SHARED_TRASH_HITS[@]}"
+    return 1
+}
+assert "R1: no seed invocation in this suite wrote into the machine-shared $_SHARED_TRASH_DIR" \
+    _assert_no_shared_trash_use
+
+# ── R2: positive control for R1 — proves the detector actually fires on a
+# real rename, so R1 cannot silently pass forever if seed's rename message is
+# ever reworded or moved. Redirects _SHARED_TRASH_DIR to an isolated lane's
+# OWN private sibling .reseed-trash for one real seed run (rather than
+# deliberately littering the real shared path once per suite run). ─────────
+R2_BASE_PARENT="$(make_isolated_lane R2-base)"
+R2_BASE="$R2_BASE_PARENT/target"
+mkdir -p "$R2_BASE/debug"
+echo "base artifact" > "$R2_BASE/debug/base_artifact.a"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$R2_BASE_PARENT/.warm-base-meta"
+
+R2_LANE="$(make_isolated_lane R2-poscontrol)"
+mkdir -p "$R2_LANE/target"
+echo "stale artifact" > "$R2_LANE/target/stale.a"
+
+# Redirect the detector at this lane's own sibling trash dir — exactly what
+# seed-warm-lane.sh:663 will independently compute as dirname(LANE_DIR)/.reseed-trash.
+_SHARED_TRASH_DIR="$(dirname "$R2_LANE")/.reseed-trash"
+_SHARED_TRASH_HITS=()
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$R2_BASE" "$R2_LANE" --fresh-checkout
+
+assert "R2: positive control: redirected-trash seed run exits 0" \
+    test "$RC" -eq 0
+assert "R2: positive control: detector recorded exactly one hit against the redirected trash dir" \
+    test "${#_SHARED_TRASH_HITS[@]}" -eq 1
+
+# Restore the real shared-path target and clear the positive-control hit
+# before R1 (already asserted above) or any later block could see it.
+_SHARED_TRASH_DIR="/tmp/.reseed-trash"
+_SHARED_TRASH_HITS=()
 
 test_summary
