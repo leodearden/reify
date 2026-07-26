@@ -205,15 +205,31 @@ _now_iso() {
 }
 
 # run_sweep <args>... — invoke the SUT, capturing OUT (stdout), ERR_OUT
-# (stderr) and RC. Never `set -e`-aborts on a non-zero exit.
+# (stderr) and RC. Never `set -e`-aborts on a non-zero exit. Set the
+# _SWEEP_ENV array (e.g. _SWEEP_ENV=(REIFY_LANE_TASK_DB="$DB")) to inject env
+# knobs for a flag<->env parity assert; reset it to () afterwards.
+_SWEEP_ENV=()
 run_sweep() {
     local rc=0
     : > "$ERR_FILE"
-    OUT="$("$SCRIPT" "$@" 2>"$ERR_FILE")" || rc=$?
+    OUT="$(env "${_SWEEP_ENV[@]+${_SWEEP_ENV[@]}}" "$SCRIPT" "$@" 2>"$ERR_FILE")" || rc=$?
     ERR_OUT="$(cat "$ERR_FILE")"
     RC="$rc"
     return 0
 }
+
+# Report accessors, usable directly as assert commands.
+_rc_is()    { test "$RC" = "$1"; }
+_out_has()  { _matches "$1" "$OUT"; }
+_err_has()  { _matches "$1" "$ERR_OUT"; }
+_out_empty() { test -z "$OUT"; }
+
+# _sweep_line — the trailing SWEEP: summary line from the table report.
+_sweep_line() { printf '%s' "$OUT" | grep '^SWEEP:' | tail -1; }
+_sweep_line_is() { test "$(_sweep_line)" = "$1"; }
+
+# _out_json_check <expr> — _json_check against the captured stdout.
+_out_json_check() { printf '%s' "$OUT" | python3 "$_JSON_CHECK_PY" - "$1"; }
 
 # _json_check <json_file|-> <python_expr> — parse the JSON and evaluate
 # <python_expr> with `d` bound to the parsed document; exit 0 iff truthy. A
@@ -319,5 +335,134 @@ assert "S6a: run_sweep populates RC without aborting" test -n "${RC:-}"
 _s7_before="$(_snapshot_readonly "$DB" "$ESC_DIR")"
 assert "S7: _snapshot_readonly is stable when nothing mutates" \
     test "$_s7_before" = "$(_snapshot_readonly "$DB" "$ESC_DIR")"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block A — CLI contract + empty-input degradation
+#
+# The advisory-only posture is the load-bearing property here: EVERY valid
+# invocation exits 0 (a sweep must never gate anything), and exit 2 is
+# reserved exclusively for usage errors. A missing/unreadable input degrades
+# to a zero-candidate report + a [warn], never an abort.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block A: CLI contract + empty-input degradation ---"
+
+# An empty fixture: production schema present, zero rows.
+_mk_tasks_db
+EMPTY_DB="$DB"
+_mk_esc_dir
+EMPTY_ESC="$ESC_DIR"
+_mk_repo
+EMPTY_REPO="$REPO_DIR"
+
+# The canonical all-zero summary, asserted as one exact string so a counter
+# rename or reordering is caught rather than silently tolerated.
+ZERO_SWEEP="SWEEP: candidates=0 gate_closure=0 merge_verify_red=0 unmet_dependency=0 corrupt_hold=0 live_skipped=0 unknown=0"
+
+# Every value-taking flag, in one place: the A1 usage-completeness check and
+# the A3 missing-value sweep both iterate this list, so a future flag cannot
+# be added to the parser without both checks noticing.
+VALUE_FLAGS=(--db --tag --escalations --repo --main-ref --format --class --stale-heartbeat-min --emit-requests)
+
+# _usage_names_all_flags — every VALUE_FLAGS entry appears in the usage text.
+# One assert over the whole set (rather than one per flag) keeps the fork
+# count of this `pool`-classified suite low; the failure message names the
+# specific flags that were missing.
+_usage_names_all_flags() {
+    local f missing=()
+    for f in "${VALUE_FLAGS[@]}"; do
+        printf '%s' "$ERR_OUT" | grep -qF -- "$f" || missing+=("$f")
+    done
+    [ "${#missing[@]}" -eq 0 ] || { echo "usage text is missing: ${missing[*]}"; return 1; }
+}
+
+# --- A1: -h / --help -> usage on STDERR, stdout empty, exit 0 -----------------
+for _h in -h --help; do
+    run_sweep "$_h"
+    assert "A1[$_h]: exits 0" _rc_is 0
+    assert "A1[$_h]: stdout stays empty (usage goes to stderr)" _out_empty
+    assert "A1[$_h]: usage block is printed to stderr" _err_has '^Usage: '
+    assert "A1[$_h]: usage names every value-taking flag" _usage_names_all_flags
+done
+
+# --- A2: unknown flag -> exit 2, [error] naming the flag ----------------------
+run_sweep --bogus
+assert "A2: unknown flag exits 2" _rc_is 2
+assert "A2: unknown flag produces an [error] line naming the flag" _err_has '\[error\].*--bogus'
+
+# --- A3: every value-taking flag requires a value ----------------------------
+# One assert over the whole set, for the same fork-count reason as A1; the
+# failure message names the flags that did NOT exit 2.
+_all_value_flags_require_a_value() {
+    local f bad=()
+    for f in "${VALUE_FLAGS[@]}"; do
+        run_sweep "$f"
+        [ "$RC" = 2 ] || bad+=("$f(rc=$RC)")
+    done
+    [ "${#bad[@]}" -eq 0 ] || { echo "flags that did not exit 2 on a missing value: ${bad[*]}"; return 1; }
+}
+assert "A3: every value-taking flag exits 2 when its value is missing" \
+    _all_value_flags_require_a_value
+
+# --- A4: enum / numeric validation ------------------------------------------
+run_sweep --db "$EMPTY_DB" --format bogus
+assert "A4a: --format bogus exits 2" _rc_is 2
+run_sweep --db "$EMPTY_DB" --class bogus
+assert "A4b: --class bogus exits 2" _rc_is 2
+run_sweep --db "$EMPTY_DB" --stale-heartbeat-min abc
+assert "A4c: --stale-heartbeat-min abc exits 2" _rc_is 2
+run_sweep --db "$EMPTY_DB" --stale-heartbeat-min -1
+assert "A4d: --stale-heartbeat-min -1 exits 2" _rc_is 2
+
+# --- A5: unreadable DB degrades, never aborts -------------------------------
+run_sweep --db "$EMPTY_REPO/definitely-not-here.db" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO"
+assert "A5a: a nonexistent --db still exits 0 (advisory-only)" _rc_is 0
+assert "A5a: a nonexistent --db reports zero candidates" _sweep_line_is "$ZERO_SWEEP"
+assert "A5a: a nonexistent --db warns on stderr" _err_has '\[warn\]'
+
+_A5_STUB="$(mktemp "${TMPDIR:-/tmp}/gate-staleness-stub-XXXXXX.db")"
+_TMPDIRS+=("$_A5_STUB")
+: > "$_A5_STUB"
+run_sweep --db "$_A5_STUB" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO"
+assert "A5b: a 0-byte DB stub still exits 0" _rc_is 0
+assert "A5b: a 0-byte DB stub reports zero candidates" _sweep_line_is "$ZERO_SWEEP"
+assert "A5b: a 0-byte DB stub warns on stderr" _err_has '\[warn\]'
+
+# --- A6: empty fixture, table format ----------------------------------------
+run_sweep --db "$EMPTY_DB" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO" --format table
+assert "A6: empty fixture exits 0" _rc_is 0
+assert "A6: trailing SWEEP: line carries all seven counters at zero" _sweep_line_is "$ZERO_SWEEP"
+
+# --- A7: empty fixture, json format -----------------------------------------
+run_sweep --db "$EMPTY_DB" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO" --format json
+assert "A7: --format json exits 0" _rc_is 0
+assert "A7: stdout is a single valid JSON object" _out_json_check 'isinstance(d, dict)'
+assert "A7: candidates == []" _out_json_check 'd["candidates"] == []'
+assert "A7: summary keys exactly match the A6 counter set" _out_json_check \
+    'sorted(d["summary"]) == ["candidates","corrupt_hold","gate_closure","live_skipped","merge_verify_red","unknown","unmet_dependency"]'
+assert "A7: every summary counter is 0" _out_json_check 'all(v == 0 for v in d["summary"].values())'
+
+# --- A8: flag <-> env parity for the task-DB knob ---------------------------
+run_sweep --db "$EMPTY_DB" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO"
+_A8_FLAG_OUT="$OUT"
+_SWEEP_ENV=(REIFY_LANE_TASK_DB="$EMPTY_DB")
+run_sweep --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO"
+_SWEEP_ENV=()
+assert "A8a: REIFY_LANE_TASK_DB produces byte-identical stdout to --db" \
+    test "$OUT" = "$_A8_FLAG_OUT"
+
+# An explicit --db must WIN over the env value: point the env at a
+# nonexistent path and the flag at the good fixture — no [warn] must fire.
+_SWEEP_ENV=(REIFY_LANE_TASK_DB="$EMPTY_REPO/env-not-here.db")
+run_sweep --db "$EMPTY_DB" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO"
+_SWEEP_ENV=()
+assert "A8b: an explicit --db overrides REIFY_LANE_TASK_DB" _rc_is 0
+assert "A8b: the overridden (bad) env path never warns" _not _err_has '\[warn\].*env-not-here'
+
+# --- A9: every --class value is accepted -------------------------------------
+for _c in all gate_closure merge_verify_red unmet_dependency; do
+    run_sweep --db "$EMPTY_DB" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO" --class "$_c"
+    assert "A9[$_c]: accepted on the empty fixture (exit 0)" _rc_is 0
+done
 
 test_summary
