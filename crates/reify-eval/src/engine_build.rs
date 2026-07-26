@@ -7504,6 +7504,14 @@ impl Engine {
         // `realized_reprs_tess: HashMap<_,_> = HashMap::new()` comment).
         let empty_realized_reprs: HashMap<RealizationNodeId, ReprKind> = HashMap::new();
         let realized_reprs_for_ops = realized_reprs.unwrap_or(&empty_realized_reprs);
+        // Task 5208: memo for the inline-curated-selector pre-hydration below,
+        // scoped to exactly this realization walk (see `InlineSelectorMemo`'s
+        // key-sufficiency argument — it holds only while `named_steps` /
+        // `values` / `topology_attribute_table` / `realized_reprs_for_ops` stay
+        // fixed, which is precisely this function body). The same authored op
+        // re-dispatches once per parent realization; without this each repeat
+        // pays another out-of-process kernel topology query.
+        let mut inline_selector_memo = crate::geometry_ops::InlineSelectorMemo::new();
         for (op_idx, op) in operations.iter().enumerate() {
             // Task 5208: an INLINE curated edge/face selector argument (e.g.
             // `fillet(b, edges_parallel_to(b, up, 1deg), 3mm)`) is not a value
@@ -7528,6 +7536,7 @@ impl Engine {
                     k.as_mut(),
                     topology_attribute_table,
                     realized_reprs_for_ops,
+                    &mut inline_selector_memo,
                     diagnostics,
                 )
             });

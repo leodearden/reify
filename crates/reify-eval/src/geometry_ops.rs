@@ -1230,6 +1230,36 @@ pub(crate) fn resolve_subhandle_list(
 /// call sites in `compile_geometry_op`.
 const CURATED_SELECTOR_ARG_NAMES: &[&str] = &["edges", "faces", "open_faces"];
 
+/// Per-realization-walk memo for [`prehydrate_inline_curated_selector_args`],
+/// keyed on the selector argument's [`reify_ir::CompiledExpr::content_hash`]
+/// (task 5208).
+///
+/// # Why memoize
+///
+/// The same AUTHORED op is dispatched once per realization of its parent, and
+/// an entity that is both its own named realization AND an operand of a later
+/// boolean realizes twice — `examples/topology_selectors/bottom_deck_selectors.ri`
+/// records 10 curated `Fillet` ops for 7 authored fillets for exactly that
+/// reason. A named-let selector pays its kernel query once (at its scheduled
+/// `HydrateCell` slot); without this memo the INLINE form — the authoring
+/// shape the docs steer designers toward — would pay a full
+/// `resolve_with_attributes` round-trip (out-of-process under
+/// `OcctKernelHandle::spawn()`) on every one of those dispatches.
+///
+/// # Why the key is sufficient
+///
+/// A resolution is a pure function of `(selector_expr, named_steps, values,
+/// table, realized_reprs, kernel)`. Across one call of the realization walk
+/// that owns the memo, all five non-expr inputs are FIXED: `named_steps`,
+/// `values`, `table` and `realized_reprs` are shared `&` borrows for the
+/// walk's whole lifetime, and kernel handles are immutable once created (an op
+/// produces a NEW handle rather than mutating an input), so re-resolving an
+/// already-resolved selector against an already-realized parent is guaranteed
+/// to yield the same ids. The expression's content hash therefore identifies
+/// the resolution completely. The memo MUST NOT outlive one walk — construct
+/// it at the top of the realization loop and drop it there.
+pub(crate) type InlineSelectorMemo = HashMap<reify_core::ContentHash, reify_ir::Value>;
+
 /// Pre-resolve an **inline** curated edge/face selector argument of a
 /// `Modify` op to a concrete `Value::List<Geometry>` literal, using the kernel
 /// at the in-loop slot where the op's parent solid is already realized
@@ -1291,6 +1321,15 @@ const CURATED_SELECTOR_ARG_NAMES: &[&str] = &["edges", "faces", "open_faces"];
 /// * An **empty** resolved list is substituted verbatim: distinguishing
 ///   "selector present but matched nothing" from "no selector at all" is the
 ///   eval arm's `E_EMPTY_SELECTION` guard's job, not this helper's.
+/// * **Silent on failure.** Diagnostics that [`resolve_selector_to_list`]
+///   pushes on a path whose result is then DISCARDED (the #4812 capability
+///   gate's `QueryNotSupportedOnRepr` Error, the kernel-error / `ByRole` /
+///   provenance warnings — all of which return `Undef`) are buffered and
+///   dropped, so the eval arm stays the single reporter for a selector that
+///   did not resolve. Without this the designer would see the same authoring
+///   mistake reported twice per dispatch (and the op is re-dispatched
+///   whenever its parent realizes more than once).
+/// * **Memoized per realization walk** via `memo`: see [`InlineSelectorMemo`].
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prehydrate_inline_curated_selector_args(
     op: &reify_compiler::CompiledGeometryOp,
@@ -1301,6 +1340,7 @@ pub(crate) fn prehydrate_inline_curated_selector_args(
     kernel: &mut dyn GeometryKernel,
     table: &reify_ir::TopologyAttributeTable,
     realized_reprs: &HashMap<reify_core::identity::RealizationNodeId, reify_ir::ReprKind>,
+    memo: &mut InlineSelectorMemo,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_compiler::CompiledGeometryOp> {
     let reify_compiler::CompiledGeometryOp::Modify { args, .. } = op else {
@@ -1323,6 +1363,24 @@ pub(crate) fn prehydrate_inline_curated_selector_args(
         ) {
             continue;
         }
+        // Memo hit: this exact selector expression already resolved during this
+        // realization walk (the SAME authored op re-dispatches once per parent
+        // realization). Reuse the list — a repeat is a pure kernel round-trip
+        // with no new information. A memoized entry is by construction a
+        // `List` (only the success path is inserted), and the resolution that
+        // produced it emitted no diagnostics (see below), so replaying it
+        // needs no diagnostic replay either.
+        if let Some(cached) = memo.get(&expr.content_hash) {
+            resolved.push((idx, cached.clone()));
+            continue;
+        }
+        // Buffer-then-merge — the same scratch-buffer contract
+        // [`eval_variadic_composition_symbolic`] already uses in this file:
+        // `resolve_selector_to_list` reports on paths
+        // whose value we discard, and a discarded resolution must stay silent —
+        // the eval arm's own "did not resolve to a concrete edge list" Err is
+        // the single designer-facing report for that case.
+        let mut scratch: Vec<Diagnostic> = Vec::new();
         if let Some(value @ reify_ir::Value::List(_)) = resolve_selector_to_list(
             expr,
             named_steps,
@@ -1330,8 +1388,10 @@ pub(crate) fn prehydrate_inline_curated_selector_args(
             kernel,
             table,
             realized_reprs,
-            diagnostics,
+            &mut scratch,
         ) {
+            diagnostics.append(&mut scratch);
+            memo.insert(expr.content_hash, value.clone());
             resolved.push((idx, value));
         }
     }
