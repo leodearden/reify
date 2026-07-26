@@ -156,7 +156,12 @@ echo "--- Cycle C: PROFILE default by DF_VERIFY_ROLE ---"
 
 # Capture full plan and commands-only plan for each case.
 # C1: merge + no explicit --profile => profile=both (release coverage on merge path)
-C1_FULL="$(DF_VERIFY_ROLE=merge bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan)"
+# REIFY_RELEASE_DELTA_SKIP is unset: that knob is consulted ONLY under
+# DF_VERIFY_ROLE=merge (scripts/verify.sh, the _RELEASE_DELTA_SKIP decision
+# block) and, when 1 on a delta-clean tree, replaces the release nextest pass
+# with the frozen `echo 'RELEASE-PASS: skipped (delta-clean)'` marker — which
+# would spuriously fail the release-pass-present assertion below (task 5460).
+C1_FULL="$(env -u REIFY_RELEASE_DELTA_SKIP DF_VERIFY_ROLE=merge bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan)"
 C1_CMDS="$(printf '%s\n' "$C1_FULL" | grep -v '^#')"
 
 # C2: merge + explicit --profile debug => profile=debug (explicit wins)
