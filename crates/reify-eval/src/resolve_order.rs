@@ -1066,6 +1066,21 @@ mod tests {
         resolve_order_ordering_and_clusters,
     };
 
+    // DIVISION OF LABOUR (task #5334, review round 2). The
+    // `TopologyTemplateBuilder` fixtures below pin the union RULE in isolation —
+    // that is the right tool for it. They do NOT pin the compiler's actual
+    // CELL-ID SHAPE; `delta_cluster_forms_on_compiler_emitted_cell_ids` (built
+    // from real `.ri` source) and tests/harness_engine/joint_drive_cluster_formation.rs
+    // do that. Both halves are required: before this round the builder fixtures
+    // declared each CHILD's own cells with entity `"Parent.childinst"` — a shape
+    // reify-compiler never emits — and that synthetic scoping was the only reason
+    // a walk which unioned nothing on every real module looked green. Every
+    // builder fixture here now uses structure-name entities, matching
+    // `ValueCellId::new(&structure.name, ..)` (reify-compiler/src/entity.rs:6066,
+    // :6197). The single deliberate exception is
+    // `derived_cell_reading_sub_member_path_reaches_child_auto`, where the
+    // instance-path spelling IS the thing under test.
+
     /// Money-dimensioned scalar type shared by the derived-cost cluster fixtures
     /// (`line_cost : Money`), mirroring the stdlib `Costed` shape.
     fn money_ty() -> Type {
@@ -1767,11 +1782,11 @@ mod tests {
     /// `[ValueRef(Parent.childinst.line_cost)].sum`, and the C2 walk follows that
     /// derived cell down to the child auto `quantity_produced`.
     ///
-    /// The Child template is NAMED "Child" (so `find_template` + Costed
-    /// conformance resolve during expansion) but its value cells are
-    /// entity-scoped under the instance path "Parent.childinst" — mirroring real
-    /// sub-component elaboration — so the expanded ValueRef resolves against them
-    /// and their `auto_owner` entry.
+    /// The Child's value cells are STRUCTURE-NAME-scoped (`Child.line_cost`,
+    /// `Child.quantity_produced`), exactly as reify-compiler mints them
+    /// (entity.rs:6066/:6197), so the instance-path ValueRef that C1 produces
+    /// only resolves via [`normalize_cell_id`] — this fixture therefore exercises
+    /// the real end-to-end shape rather than a synthetic one.
     ///
     /// An EMPTY trait registry suffices: `satisfies_trait_bound` short-circuits on
     /// name equality (`trait_satisfies`, reify-compiler/src/entity.rs), so the
@@ -1786,19 +1801,15 @@ mod tests {
 
         let child = TopologyTemplateBuilder::new("Child")
             .trait_bound("Costed")
-            .auto_param_free(
-                "Parent.childinst",
-                "quantity_produced",
-                Type::dimensionless_scalar(),
-            )
+            .auto_param_free("Child", "quantity_produced", Type::dimensionless_scalar())
             .let_binding(
-                "Parent.childinst",
+                "Child",
                 "line_cost",
                 money_ty(),
                 binop(
                     BinOp::Mul,
-                    value_ref_typed("Parent.childinst", "unit_cost", money_ty()),
-                    value_ref("Parent.childinst", "quantity_produced"),
+                    value_ref_typed("Child", "unit_cost", money_ty()),
+                    value_ref("Child", "quantity_produced"),
                 ),
             )
             .build();
@@ -1888,20 +1899,16 @@ mod tests {
 
         let child = TopologyTemplateBuilder::new("Child")
             .trait_bound("Costed")
-            .auto_param_free(
-                "Parent.childinst",
-                "quantity_produced",
-                Type::dimensionless_scalar(),
-            )
+            .auto_param_free("Child", "quantity_produced", Type::dimensionless_scalar())
             // line_cost = opt_fn(quantity_produced) — an @optimized UserFunctionCall
             // that still transitively reads the child's auto.
             .let_binding(
-                "Parent.childinst",
+                "Child",
                 "line_cost",
                 money_ty(),
                 user_fn_call(
                     "opt_fn",
-                    vec![value_ref("Parent.childinst", "quantity_produced")],
+                    vec![value_ref("Child", "quantity_produced")],
                     money_ty(),
                 ),
             )
@@ -2126,19 +2133,15 @@ mod tests {
 
         let child = TopologyTemplateBuilder::new("Child")
             .trait_bound("Costed")
-            .auto_param_free(
-                "Parent.childinst",
-                "quantity_produced",
-                Type::dimensionless_scalar(),
-            )
+            .auto_param_free("Child", "quantity_produced", Type::dimensionless_scalar())
             .let_binding(
-                "Parent.childinst",
+                "Child",
                 "line_cost",
                 money_ty(),
                 binop(
                     BinOp::Mul,
-                    value_ref_typed("Parent.childinst", "unit_cost", money_ty()),
-                    value_ref("Parent.childinst", "quantity_produced"),
+                    value_ref_typed("Child", "unit_cost", money_ty()),
+                    value_ref("Child", "quantity_produced"),
                 ),
             )
             .build();
