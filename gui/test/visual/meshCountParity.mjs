@@ -160,3 +160,157 @@ export function checkMeshCountParity({
 
   return { ok: failures.length === 0, failures };
 }
+
+// ─── Payload extraction ──────────────────────────────────────────────────────
+
+/**
+ * Detect the in-band error shape returned by reify-debug handlers.
+ *
+ * Debug handlers report failure as `Ok(json!({"error": "<msg>", ...}))` — no MCP
+ * `isError` flag is set, so the error rides inside the content block and is
+ * indistinguishable from a success value to a naive caller. The inlined `rpc()`
+ * helper in every `.mjs` smoke driver only throws on TRANSPORT errors and hands
+ * back the parsed text block verbatim, so without this check a tool-level
+ * failure would surface as `undefined` counts and get misreported as a shape
+ * problem instead of the outage it is.
+ *
+ * Discriminator: a non-null object whose `error` field is a string. Mirrors
+ * `inBandError` in ./rpc.ts and the §2a contract in docs/debug-mcp-contract.md,
+ * which is authoritative.
+ *
+ * @param {unknown} v
+ * @returns {boolean}
+ */
+function isInBandError(v) {
+  return v !== null && typeof v === "object" && typeof (/** @type {any} */ (v).error) === "string";
+}
+
+/**
+ * Validate one tool payload down to a usable object, appending a named failure
+ * on any problem.
+ *
+ * @param {unknown} payload
+ * @param {string} toolName  Debug-MCP tool name, used verbatim in failures.
+ * @param {string[]} failures  Accumulator, mutated in place.
+ * @returns {Record<string, unknown> | null} The payload, or null if unusable.
+ */
+function usablePayload(payload, toolName, failures) {
+  if (isInBandError(payload)) {
+    failures.push(
+      `${toolName} returned an in-band error: ${JSON.stringify(/** @type {any} */ (payload).error)} ` +
+        `(docs/debug-mcp-contract.md §2a — a handler failure, not a shape problem)`,
+    );
+    return null;
+  }
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+    failures.push(`${toolName} payload is not an object: ${describeValue(payload)}`);
+    return null;
+  }
+  return /** @type {Record<string, unknown>} */ (payload);
+}
+
+/**
+ * Read `<payload>.meshes.length` defensively.
+ *
+ * @param {Record<string, unknown> | null} payload
+ * @param {string} toolName
+ * @param {string[]} failures
+ * @returns {number | undefined}
+ */
+function meshesLength(payload, toolName, failures) {
+  if (payload === null) return undefined;
+  const meshes = payload["meshes"];
+  if (!Array.isArray(meshes)) {
+    failures.push(`${toolName}.meshes is missing or not an array: ${describeValue(meshes)}`);
+    return undefined;
+  }
+  return meshes.length;
+}
+
+/**
+ * @typedef {object} MeshCountExtraction
+ * @property {{viewportMeshCount: number|undefined, meshStatsCount: number|undefined,
+ *            engineStateCount: number|undefined, fullScope: boolean|undefined}} inputs
+ *           Flat shape accepted by {@link checkMeshCountParity}; a field is
+ *           `undefined` exactly when its extraction failed.
+ * @property {string[]} failures Per-tool extraction problems, named by tool.
+ */
+
+/**
+ * Flatten the four live debug-MCP payloads into the checker's input shape.
+ *
+ * Shapes read (all verified against base — note the casing seam, the frontend
+ * speaks camelCase and Rust speaks snake_case):
+ *   `viewport_state`  → `{ meshCount, meshInfo: [{entityPath, …}], … }`  (bridge.ts)
+ *   `mesh_stats`      → `{ meshes: [{entity_path, vertex_count, …}] }`   (commands.rs)
+ *   `engine_state`    → `{ meshes: [{entity_path, …}], values, … }`      (commands.rs)
+ *   `demand_dispatch` → `{ dispatch_by_realization, eval_set, full_scope }` (commands.rs)
+ *
+ * `viewport_state.meshCount` is `meshes.size` — the mesh registry itself — and
+ * is authoritative here; `meshInfo` is a separately-rebuilt traversal and is NOT
+ * used as the count.
+ *
+ * Never throws: every violation becomes a named failure, so a driver can report
+ * extraction and parity problems through a single path.
+ *
+ * @param {{viewportState?: unknown, meshStats?: unknown, engineState?: unknown,
+ *          demandDispatch?: unknown}} payloads
+ * @returns {MeshCountExtraction}
+ */
+export function extractMeshCountInputs({
+  viewportState,
+  meshStats,
+  engineState,
+  demandDispatch,
+} = {}) {
+  /** @type {string[]} */
+  const failures = [];
+
+  // viewport_state.meshCount — the rendered-scene reference.
+  const viewport = usablePayload(viewportState, "viewport_state", failures);
+  /** @type {number | undefined} */
+  let viewportMeshCount;
+  if (viewport !== null) {
+    const raw = viewport["meshCount"];
+    if (!isUsableCount(raw)) {
+      failures.push(
+        `viewport_state.meshCount is missing or not a non-negative integer: ${describeValue(raw)}`,
+      );
+    } else {
+      viewportMeshCount = /** @type {number} */ (raw);
+    }
+  }
+
+  const meshStatsCount = meshesLength(
+    usablePayload(meshStats, "mesh_stats", failures),
+    "mesh_stats",
+    failures,
+  );
+  const engineStateCount = meshesLength(
+    usablePayload(engineState, "engine_state", failures),
+    "engine_state",
+    failures,
+  );
+
+  // demand_dispatch.full_scope — snake_case, and the ONLY debug read exposing
+  // the scope flag (engine_state / mesh_stats deliberately force a full-scope
+  // snapshot and so cannot reveal the live scope).
+  const dispatch = usablePayload(demandDispatch, "demand_dispatch", failures);
+  /** @type {boolean | undefined} */
+  let fullScope;
+  if (dispatch !== null) {
+    const raw = dispatch["full_scope"];
+    if (typeof raw !== "boolean") {
+      failures.push(
+        `demand_dispatch.full_scope is missing or not a boolean: ${describeValue(raw)}`,
+      );
+    } else {
+      fullScope = raw;
+    }
+  }
+
+  return {
+    inputs: { viewportMeshCount, meshStatsCount, engineStateCount, fullScope },
+    failures,
+  };
+}
