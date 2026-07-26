@@ -109,6 +109,19 @@
 #        degrades that row to `unknown`, never to `STALE`. A failed oracle
 #        lookup must never manufacture an actionable verdict — the same
 #        posture as warm-lane-audit.sh invariant A3.
+#   L3 — every candidate contributes to EXACTLY ONE class counter and appears
+#        exactly once in the report. Classes are tried in the fixed precedence
+#        order gate_closure > merge_verify_red > unmet_dependency; the first
+#        match becomes the row's primary class and is the only one
+#        adjudicated, and any further match is disclosed in `evidence` as
+#        `also:<class>` without incrementing a counter. So `--class all`
+#        never double-counts a multi-class row.
+#   L4 — classes A (gate_closure) and C (unmet_dependency) are `blocked`-ONLY.
+#        Only class B (merge_verify_red) spans `in-progress`. Measured on
+#        2026-07-26, all ten live `in-progress` tasks had every dependency
+#        `done` (task 5321 itself among them), so a class C that spanned
+#        `in-progress` would re-dispatch actively-running agents — it would
+#        destroy work rather than recover it.
 #   (Further invariants are recorded as each classifier lands.)
 
 set -euo pipefail
@@ -452,8 +465,49 @@ _MAIN_REF_SHA="$(git -C "$REPO" rev-parse --verify --quiet "${MAIN_REF}^{commit}
 
 # _classify_merge_verify_red <task_id> — sets _MVR_MATCHED plus, when matched,
 # _MVR_VERDICT / _MVR_ACTION / _MVR_EVIDENCE.
+# _classify_gate_closure <task_id> <status> <adjudicate:0|1> — sets
+# _GC_MATCHED plus, when matched and adjudicating, _GC_VERDICT / _GC_ACTION /
+# _GC_EVIDENCE. `blocked`-only (invariant L4).
+_classify_gate_closure() {
+    local id="$1" status="$2" adjudicate="$3" always
+    _GC_MATCHED=0
+    _GC_VERDICT="unknown"
+    _GC_ACTION="none"
+    _GC_EVIDENCE=""
+
+    [ "$status" = "blocked" ] || return 0
+    [ "$(_meta "$id" '$.task_kind')" = "deterministic" ] || return 0
+    # SQLite stores the JSON `true` as 1, so accept either spelling.
+    always="$(_meta "$id" '$.always_escalates')"
+    case "$always" in
+        1|true) _GC_MATCHED=1 ;;
+        *)      return 0 ;;
+    esac
+    [ "$adjudicate" = 1 ] || return 0
+
+    _esc_state "$id"
+    case "$_ESC_STATE" in
+        gated)
+            _GC_VERDICT="GATED"
+            _GC_EVIDENCE="a live status=pending escalation still gates this task" ;;
+        clear)
+            _GC_VERDICT="STALE"
+            # `close`, not `redispatch`: per #5316 §5 the correct closure for a
+            # satisfied deterministic gate is a transition to `cancelled`, not
+            # a re-run.
+            _GC_ACTION="close"
+            _GC_EVIDENCE="no live pending escalation remains in $ESCALATIONS (found ${_ESC_FOUND:-0} terminal file(s))" ;;
+        *)
+            _GC_VERDICT="unknown"
+            _GC_EVIDENCE="escalation state could not be read; not upgraded to STALE" ;;
+    esac
+}
+
+# _classify_merge_verify_red <task_id> <adjudicate:0|1> — sets _MVR_MATCHED
+# plus, when matched and adjudicating, _MVR_VERDICT / _MVR_ACTION /
+# _MVR_EVIDENCE. Spans `blocked` AND `in-progress` (invariant L4).
 _classify_merge_verify_red() {
-    local id="$1" raw out b_reason b_class b_main_sha b_head_sha
+    local id="$1" adjudicate="$2" raw out b_reason b_class b_main_sha b_head_sha
     local resolved touched first_path resolving
     local -a lines=()
     _MVR_MATCHED=0
@@ -483,6 +537,10 @@ _classify_merge_verify_red() {
         "Post-merge verification failed"*) _MVR_MATCHED=1 ;;
     esac
     [ "$_MVR_MATCHED" = 1 ] || return 0
+    # A non-primary class is disclosed but never adjudicated: skipping the git
+    # work here also keeps its warnings out of the report, which would
+    # otherwise be noise about a premise nobody is acting on.
+    [ "$adjudicate" = 1 ] || return 0
 
     if [ "${#_MVR_FILES[@]}" -eq 0 ]; then
         warn "Task $id: merge_verify_red proposal records no files_referenced — no diff surface to adjudicate; reporting unknown, not STALE."
@@ -537,9 +595,71 @@ _classify_merge_verify_red() {
     _MVR_EVIDENCE="premise resolved: ${first_path} was touched by ${resolving:-?} in ${b_main_sha}..${MAIN_REF}"
 }
 
+# ── class C: unmet_dependency ─────────────────────────────────────────────────
+# `blocked`-ONLY, per invariant L4. This is not a stylistic scoping choice:
+# measured on 2026-07-26, every one of the ten live `in-progress` tasks had
+# all of its dependencies `done` (task 5321 itself among them), so a class C
+# that spanned `in-progress` would emit a re-dispatch request for every
+# actively-running agent.
+#
+# One tag-scoped LEFT JOIN, not a lookup per dependency: `tasks` is
+# PRIMARY KEY (tag, id), so an unqualified `id =` would silently conflate tags
+# the moment a second tag exists. An EMPTY status column means the depends_on
+# resolves to no row under this tag — that degrades the row to `unknown`,
+# because an unresolvable dependency must never read as a satisfied one.
+#
+# _classify_unmet_dependency <task_id> <status> <adjudicate:0|1>
+_classify_unmet_dependency() {
+    local id="$1" status="$2" adjudicate="$3"
+    local rows dep_id dep_status pairs="" n=0 unresolved=0 unresolvable=0
+    _UD_MATCHED=0
+    _UD_VERDICT="unknown"
+    _UD_ACTION="none"
+    _UD_EVIDENCE=""
+
+    [ "$status" = "blocked" ] || return 0
+    [ -n "$_SQLITE_BIN" ] || return 0
+
+    rows="$("$_SQLITE_BIN" -readonly -separator "$_FS" "$DB" \
+        "SELECT d.depends_on, coalesce(dt.status,'')
+           FROM dependencies d
+           LEFT JOIN tasks dt ON dt.tag = d.tag AND dt.id = d.depends_on
+          WHERE d.tag='$TAG' AND d.task_id=$id
+          ORDER BY d.depends_on;" 2>/dev/null || true)"
+    # An EMPTY dependency set is NOT "all satisfied" — it is not class C at all.
+    [ -n "$rows" ] || return 0
+    _UD_MATCHED=1
+    [ "$adjudicate" = 1 ] || return 0
+
+    while IFS="$_FS" read -r dep_id dep_status; do
+        [ -n "${dep_id:-}" ] || continue
+        n=$((n + 1))
+        pairs="${pairs:+$pairs, }${dep_id}=${dep_status:-<no row>}"
+        case "$dep_status" in
+            done|cancelled) ;;
+            "")             unresolvable=$((unresolvable + 1)) ;;
+            *)              unresolved=$((unresolved + 1)) ;;
+        esac
+    done <<EOF
+$rows
+EOF
+
+    if [ "$unresolvable" -gt 0 ]; then
+        warn "Task $id: $unresolvable dependency id(s) resolve to no row under tag='$TAG' — reporting unknown, not STALE (an unresolvable dependency must never read as a satisfied one)."
+        _UD_EVIDENCE="dependencies: ${pairs}; ${unresolvable} unresolvable under tag='$TAG'"
+        return 0
+    fi
+    if [ "$unresolved" -gt 0 ]; then
+        _UD_VERDICT="UNRESOLVED"
+        _UD_EVIDENCE="dependencies: ${pairs}; ${unresolved} of ${n} not yet terminal"
+        return 0
+    fi
+    _UD_VERDICT="STALE"
+    _UD_ACTION="redispatch"
+    _UD_EVIDENCE="all ${n} dependency(ies) terminal: ${pairs}"
+}
+
 # ── classify ──────────────────────────────────────────────────────────────────
-# (Class predicates land in later steps. Until then every non-LIVE candidate
-# is reported `unknown` — the fail-safe verdict, which never emits a request.)
 while IFS="$_FS" read -r task_id status heartbeat_at claimant_run_id; do
     [ -n "${task_id:-}" ] || continue
 
@@ -559,53 +679,53 @@ while IFS="$_FS" read -r task_id status heartbeat_at claimant_run_id; do
     row_class="-"
     row_verdict="unknown"
     row_action="none"
-    row_evidence="no classifier has evaluated this row yet"
+    row_evidence="no trigger class matched this candidate"
     row_flags="-"
 
-    # ── class A: gate_closure ────────────────────────────────────────────────
-    # blocked ∧ task_kind=deterministic ∧ always_escalates truthy. SQLite
-    # stores the JSON `true` as 1, so test for either spelling.
-    if [ "$status" = "blocked" ] \
-       && [ "$(_meta "$task_id" '$.task_kind')" = "deterministic" ]; then
-        _always="$(_meta "$task_id" '$.always_escalates')"
-        case "$_always" in
-            1|true)
-                row_class="gate_closure"
-                _esc_state "$task_id"
-                case "$_ESC_STATE" in
-                    gated)
-                        row_verdict="GATED"
-                        row_action="none"
-                        row_evidence="a live status=pending escalation still gates this task" ;;
-                    clear)
-                        row_verdict="STALE"
-                        # `close`, not `redispatch`: per #5316 §5 the correct
-                        # closure for a satisfied deterministic gate is a
-                        # transition to `cancelled`, not a re-run.
-                        row_action="close"
-                        row_evidence="no live pending escalation remains in $ESCALATIONS (found ${_ESC_FOUND:-0} terminal file(s))" ;;
-                    *)
-                        row_verdict="unknown"
-                        row_action="none"
-                        row_evidence="escalation state could not be read; not upgraded to STALE" ;;
-                esac ;;
-        esac
+    # ── class-precedence dispatcher (invariant L3) ───────────────────────────
+    # Fixed order: gate_closure > merge_verify_red > unmet_dependency. The
+    # FIRST match becomes the row's primary class and is the only one
+    # adjudicated; any further match is disclosed as `also:<class>` in
+    # evidence but never adjudicated and never counted, so a multi-class row
+    # increments exactly one counter and appears exactly once.
+    #
+    # The order is load-bearing, not alphabetical: class A's action is `close`
+    # (a satisfied deterministic gate is transitioned to `cancelled`, per
+    # #5316 §5) while class C's is `redispatch`. Letting C win would RE-RUN a
+    # gate task that should simply be closed.
+    _primary=""
+    _also=""
+
+    _classify_gate_closure "$task_id" "$status" 1
+    if [ "$_GC_MATCHED" = 1 ]; then
+        _primary="gate_closure"
+        row_verdict="$_GC_VERDICT"; row_action="$_GC_ACTION"; row_evidence="$_GC_EVIDENCE"
     fi
 
-    # ── class B: merge_verify_red ────────────────────────────────────────────
-    # Unlike classes A and C this one spans `blocked` AND `in-progress`: a
-    # merge-verify red can strand a row in either state. It is still gated by
-    # the L1 liveness guard above. Evaluated only when no earlier class
-    # matched (the precedence chain is formalized in a later step).
-    if [ "$row_class" = "-" ]; then
-        _classify_merge_verify_red "$task_id"
-        if [ "$_MVR_MATCHED" = 1 ]; then
-            row_class="merge_verify_red"
-            row_verdict="$_MVR_VERDICT"
-            row_action="$_MVR_ACTION"
-            row_evidence="$_MVR_EVIDENCE"
+    if [ -z "$_primary" ]; then _adj=1; else _adj=0; fi
+    _classify_merge_verify_red "$task_id" "$_adj"
+    if [ "$_MVR_MATCHED" = 1 ]; then
+        if [ -z "$_primary" ]; then
+            _primary="merge_verify_red"
+            row_verdict="$_MVR_VERDICT"; row_action="$_MVR_ACTION"; row_evidence="$_MVR_EVIDENCE"
+        else
+            _also="$_also also:merge_verify_red"
         fi
     fi
+
+    if [ -z "$_primary" ]; then _adj=1; else _adj=0; fi
+    _classify_unmet_dependency "$task_id" "$status" "$_adj"
+    if [ "$_UD_MATCHED" = 1 ]; then
+        if [ -z "$_primary" ]; then
+            _primary="unmet_dependency"
+            row_verdict="$_UD_VERDICT"; row_action="$_UD_ACTION"; row_evidence="$_UD_EVIDENCE"
+        else
+            _also="$_also also:unmet_dependency"
+        fi
+    fi
+
+    if [ -n "$_primary" ]; then row_class="$_primary"; fi
+    if [ -n "$_also" ]; then row_evidence="${row_evidence}; ${_also# }"; fi
 
     # ── --class filtering ────────────────────────────────────────────────────
     # A restricted sweep emits only rows of that class; the summary counters
