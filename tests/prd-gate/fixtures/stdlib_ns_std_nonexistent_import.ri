@@ -1,0 +1,15 @@
+// Fixture (stdlib-namespace decompose-phase premise, leaf η — NEGATIVE
+// CONTROL, D3 adversary finding 2026-07-25): `import std.nonexistent` exits 0
+// TODAY with only a Warning ("import "std.nonexistent" not resolved by this
+// entry point") — no Error, gate-invisible — because entry-level `import
+// std.*` is filtered out of the DAG walk (module_dag.rs is_std_import_path).
+// POST-η this must be an ordinary Error (std.* resolved through the ModuleDag
+// → missing module fails like any missing user module). Without this control,
+// exit-0 on a valid std import cannot discriminate DAG resolution from the
+// filtered skip.
+
+import std.nonexistent
+
+structure def NonexistentImportProbe {
+    param x : Real = 1.0
+}

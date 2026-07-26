@@ -1,0 +1,17 @@
+// Fixture (stdlib-namespace decompose-phase premise, leaf η): a program with
+// `import std.units` exits 0 today AND must still exit 0 after η routes std.*
+// through the ordinary ModuleDag (boundary #9 behavior preservation).
+// PRE-STATE HONESTY (D3 adversary, 2026-07-25): today this exit 0 does NOT
+// come from any std-import resolution — entry-level `import std.*` is
+// filtered out of the DAG walk entirely (module_dag.rs is_std_import_path)
+// and stdlib names resolve via ambient prelude seeding. Post-η the import is
+// genuinely resolved (CompiledProgram.imports lists it). Pair with
+// stdlib_ns_std_nonexistent_import.ri: the exit-0 here is only meaningful
+// once that negative control diagnoses.
+
+import std.units
+
+structure def StdUnitsImportProbe {
+    param width : Length = 25mm
+    param mass  : Mass   = 2kg
+}
