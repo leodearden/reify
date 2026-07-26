@@ -21,57 +21,30 @@
 # age_min · classification (LIVE|PINNED|RECLAIMABLE|LEAKED|PRESERVED-OK,
 # ranked in that order).
 #
-# A trailing HEADROOM line summarizes the pool. Its occupancy figures are an
-# ORDERED, mutually exclusive PARTITION of the resident set:
+# `live`, `assigned` and `pin` answer THREE independent questions, and are
+# three columns for that reason: is a consumer PROCESS holding this lane's
+# flock; has the pool RESERVED it (read from the orchestrator's own record at
+# <state-dir>/<lane>.json, never inferred from the lock); and, when it is
+# reserved with nothing running, WHO holds it.
 #
-#     resident = live + pinned + quarantined + free
+# Two summary lines follow the per-lane rows:
 #
-#   live         a consumer process holds the lane's exclusive flock.
-#   pinned       ASSIGNED but not live: reserved by work that is not running.
-#   quarantined  withheld from the pool (and not live).
-#   free         the RESIDUE -- neither live, nor reserved, nor withheld.
+#     HEADROOM resident=… live=… pinned=… quarantined=… free=… assigned=…
+#              state_unknown=… reclaimable=… leaked=… leak_unknown=…
+#              divergent_gib=… free_gib=… budget_gib=…
+#     PINNED   total=… pending=… infra-hold=… blocked=… terminal=… other=…
+#              unknown=…
 #
-# `free` is that residue and nothing else. It used to be `resident - live`,
-# which counted every reserved-but-idle lane as available capacity: that is
-# exactly the 2026-07-22 misread, where 53 lanes the orchestrator had reserved
-# were reported free because no consumer happened to hold their lock.
+# HEADROOM's occupancy figures are an ORDERED, mutually exclusive PARTITION --
+# `resident = live + pinned + quarantined + free`, with `free` the residue --
+# while `assigned` and `state_unknown` are CROSS-CUTS never added into it (see
+# the counter block at the resident walk, which is where that identity is
+# enforced). PINNED breaks `pinned` down by WHY each pin is held: a fixed,
+# closed bucket vocabulary in a fixed order, always emitted, zeros included
+# (JSON: a sibling "pinned_by_status" object whose total is headroom.pinned).
 #
-# Two CROSS-CUTS accompany the partition and are never added into it:
-#   assigned        lanes the pool has reserved, live or not (= live∧ASSIGNED
-#                   + pinned); `pinned` is the standing capacity loss within it.
-#   state_unknown   lanes whose assignment state could not be resolved (A5).
-#
-# Plus reclaimable/leaked counts + leak_unknown (idle/stale/ORPHAN lanes whose
-# LEAKED verdict could NOT be confirmed because the backing-task status is
-# unknown -- see A3) + divergent_gib/free_gib/budget_gib.
-#
-# A PINNED line follows it, breaking `pinned` down by WHY each pin is held --
-# a fixed, closed bucket vocabulary in a fixed order, always emitted, zeros
-# included (JSON: a sibling "pinned_by_status" object with the six buckets;
-# their total is headroom.pinned):
-#
-#     PINNED total=… pending=… infra-hold=… blocked=… terminal=… other=…
-#            unknown=…
-#
-#   terminal    the holder is done/cancelled -- reclaim now.
-#   pending     |  a reservation held by work that is not running: capacity
-#   blocked     |  lost to scheduling, not to a leak.
-#   infra-hold  |
-#   other       any other live status; notably `in-progress` with no live
-#               consumer, i.e. a probably-crashed consumer.
-#   unknown     the holder could not be resolved (A3).
-#
-# `live` is a LIVENESS column, and only that: it answers "is a consumer
-# PROCESS running and holding this lane's exclusive flock right now?". It is
-# NOT the orchestrator's assignment state -- a lane can be reserved for a task
-# with no process running against it (see the `assigned` column). Conflating
-# the two is what produced the 2026-07-22 pool misread, where lanes the
-# orchestrator had reserved were reported as free because no consumer happened
-# to hold their lock.
-#
-# `assigned` is that second, independent question -- "has the pool RESERVED
-# this lane?" -- answered from the orchestrator's own durable record at
-# <state-dir>/<lane>.json, never inferred from the lock.
+# Why the columns are split this way, the two pool misreads that motivated it,
+# and how to read a PINNED-heavy pool: docs/notes/warm-lane-audit-runbook.md.
 #
 # Options (env defaults shown):
 #   --mount DIR           Warm-lane worktrees dir (env: REIFY_WARM_LANE_MOUNT;
@@ -321,12 +294,10 @@ _lane_role() {
 }
 
 # ── helper: non-mutating LIVE/IDLE liveness probe (A1/A2/DD1) ─────────────────
-# Measures LIVENESS and nothing else: is a consumer PROCESS running and holding
-# this lane's exclusive flock at this instant? This is NOT the orchestrator's
-# assignment state -- a lane reserved for a task whose consumer is not running
-# probes IDLE while remaining very much assigned (see _lane_assigned_state).
-# Reporting this probe under the key `assigned=` is precisely the category
-# error that produced the 2026-07-22 misread; the two are separate columns.
+# Measures LIVENESS and nothing else, which is why it feeds `live=` and NOT
+# `assigned=`: a lane reserved for a task whose consumer is not running probes
+# IDLE while remaining very much assigned (see _lane_assigned_state, the
+# separate answer).
 #
 # Opens an EXISTING <dir>.lock read-only and attempts a non-blocking SHARED
 # flock on that read-only fd: success (lock acquired) => IDLE, released
@@ -372,20 +343,14 @@ _probe_live() {
 # hand-rolls _json_escape), runs from a systemd timer and from the disk-pressure
 # paths, and is forbidden from ever aborting -- a hard jq requirement would be a
 # new environmental failure mode for an advisory-only tool. Only two flat
-# top-level string scalars are ever needed (`state`, `task_id`): no nesting, no
-# arrays.
+# top-level string scalars are ever needed (`state`, `task_id`).
 #
-# Newlines are stripped first so the capture is indifferent to the producer's
-# formatting -- dark-factory writes json.dumps(indent=2) today, and a future
-# compact single-line record parses identically.
-#
-# The capture requires a BARE double quote immediately before <key>, which is
-# what makes it safe against a value that merely contains the key text: json
-# escapes any quote inside a string as \", so the byte sequence "state" can
-# only ever occur as a real key, never inside a title or branch value.
-#
-# A `null` value yields empty (the quotes are required), which is exactly the
-# desired reading for an unassigned task_id.
+# Three properties the regex depends on: newlines are stripped first, so indent=2
+# and compact records parse identically; the BARE double quote before <key> is
+# what makes it safe against a value CONTAINING the key text (json escapes any
+# inner quote as \", so `"state"` can only be a real key); and the required
+# quotes make a `null` value yield empty -- the desired reading for an
+# unassigned task_id.
 _record_scalar() {
     local file="$1" key="$2"
     [ -f "$file" ] && [ -r "$file" ] || return 0
@@ -736,12 +701,11 @@ _divergent_bytes() {
 #
 # The rank is LIVE > PINNED > (RECLAIMABLE | LEAKED | PRESERVED-OK).
 #
-# PINNED sits directly below LIVE because it answers a question the FREE ladder
-# structurally cannot: the lane is RESERVED by the pool, so it is unavailable
-# capacity, yet nothing is running against it. Ranking it above the FREE ladder
-# is also what keeps a pinned lane out of `leaked=`: a reservation the pool
-# still holds is not a leak, it is a lane held by work that is not running, and
-# reporting it as a leak would invite a reclaim of live-but-idle state.
+# PINNED ranks above the whole FREE ladder, which is what keeps a pinned lane
+# out of `leaked=` even when it satisfies the LEAKED predicate exactly: a
+# reservation the pool still holds is a scheduling problem, not a leak, and
+# reporting it as one would invite reclaiming state a consumer may return to.
+# (Runbook: "Classification".)
 _classify() {
     local live="$1" assigned_state="$2" status="$3" recoverable="$4" dirty="$5" age_min="$6"
     if [ "$live" = "LIVE" ]; then
