@@ -72,37 +72,34 @@ enum SkipKind {
 }
 
 /// Files to skip in the corpus perf regression walk. Each entry is
-/// `(relative_path, reason)` — the same `(&str, &str)` shape used in
-/// `examples_smoke.rs::SKIP_SET`.
+/// `(relative_path, kind, reason)`, where `relative_path` is forward-slash
+/// separated and rooted at `examples/` and `kind` is a [`SkipKind`]
+/// classifying why the entry exists.
 ///
-/// Mirrored from `crates/reify-compiler/tests/examples_smoke.rs` with
-/// attribution; update both sets when a new entry is needed.
+/// This set is NOT expected to equal `examples_smoke.rs::SKIP_SET` — the
+/// two serve different contracts. That sibling set is correctness-only
+/// (its own header describes it as "reserved for files that do not yet
+/// compile"). This set is a strict SUPERSET: `SkipKind::CompileError`
+/// entries (needed because `check_source_with_stdlib` panics on a parse or
+/// compile error — see its `# Panics` docs in
+/// `crates/reify-test-support/src/helpers.rs`) UNION `SkipKind::PerfBudget`
+/// entries that compile clean but exceed `PER_FILE_BUDGET`, which are
+/// deliberately NOT mirrored into `examples_smoke.rs::SKIP_SET`.
+///
+/// The superset relation is enforced locally by
+/// `compile_correctness_skips_still_fail_to_compile` below (every
+/// `SkipKind::CompileError` entry must still fail to compile) rather than
+/// by any cross-crate parity assertion: both `SKIP_SET` consts are private
+/// to separate crates' `tests/` integration binaries, so neither can
+/// import the other to compare directly.
 const SKIP_SET: &[(&str, SkipKind, &str)] = &[
-    (
-        "topology_selectors/block_inertia.ri",
-        SkipKind::CompileError,
-        "topology-selectors PRD task 7 worked example; \
-         compile_with_stdlib gated on task 2699 (moment_of_inertia language-level wiring) \
-         and task 2696 (Tensor surface-syntax + MomentOfInertia named dim). \
-         Parse-only smoke is in crates/reify-eval/tests/topology_selector_smoke_tests.rs; \
-         full coverage will land via task 2691.",
-    ),
-    (
-        "topology_selectors/fillet_top_edges.ri",
-        SkipKind::CompileError,
-        "topology-selectors PRD task 7 worked example; \
-         compile_with_stdlib gated on tasks 2698 (single/flat_map list helpers) \
-         and 2699 (faces_by_normal/adjacent_faces/shared_edges language-level wiring). \
-         Parse-only smoke is in crates/reify-eval/tests/topology_selector_smoke_tests.rs; \
-         full coverage will land via task 2691.",
-    ),
     (
         "trajectory/tots_optimal_ptp.ri",
         SkipKind::PerfBudget,
         "complex TOTS SQP example (task 3872) exceeds the 10s per-file compile \
-         budget on loaded CI (~13.4s observed). Unlike the two entries above, \
-         this file DOES compile cleanly — it is a perf-only skip and is \
-         deliberately NOT mirrored into examples_smoke.rs::SKIP_SET (which is \
+         budget on loaded CI (~13.4s observed). This file DOES compile cleanly \
+         — it is a perf-only skip (SkipKind::PerfBudget) and is deliberately \
+         NOT mirrored into examples_smoke.rs::SKIP_SET (which is \
          reserved for files that do not yet compile). Compile-correctness stays \
          covered by examples_smoke.rs::all_examples_parse_and_compile_with_stdlib \
          and crates/reify-compiler/tests/tots_optimal_ptp_example_tests.rs.",
@@ -134,17 +131,6 @@ const SKIP_SET: &[(&str, SkipKind, &str)] = &[
          auto_type_param_completion_e2e harness under SimpleConstraintChecker. \
          Per-candidate ValueMap setup is delivered by task 4433 β \
          (seed_candidate_value_map); loop wiring by γ.",
-    ),
-    (
-        "auto/bounded_fallback_unsound.ri",
-        SkipKind::CompileError,
-        "7 strict `auto: Layer` params (> max_depth=6 → depth-bound BFS fallback) with a \
-         joint constraint coupling all param member fields. Under the compile-time stub \
-         checker the TypeParam member reads emit code:None \"member access not yet supported\" \
-         Errors at structure-compile time — check_source_with_stdlib panics on compile \
-         errors (Panics docs). The joint-infeasibility hard error \
-         (E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE) is a REAL-checker behaviour exercised by \
-         task ζ's reify-eval e2e. Mirrored from examples_smoke.rs::SKIP_SET (task 4434 γ).",
     ),
     (
         "auto/bearing_unsat.ri",
