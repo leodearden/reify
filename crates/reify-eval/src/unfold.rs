@@ -288,7 +288,9 @@ pub(crate) fn unfold_recursive_sub<'t>(
 ///
 /// Between the two phases this also elaborates the child template's *own*
 /// PLAIN sub-components at the nested scope `{scoped_entity}.{sub.name}`,
-/// leaves-first, then hands their names to `elaborate_child_lets_only` so its
+/// leaves-first and interleaved with the child's own lets in dependency order
+/// (see `elaborate_child_instance_nested`), then hands their names to
+/// `elaborate_child_lets_only` so its
 /// projection BFS remaps the freshly-committed global cells
 /// `{scoped_entity}.{sub}.{member}` onto the template-scoped key
 /// `{child_template.name}.{sub}.{member}` — exactly what a cross-sub read
@@ -363,6 +365,30 @@ pub(crate) fn elaborate_child_instance<'t>(
 /// sub fan-out; a wide *acyclic* nest could in principle be exponential in
 /// depth, but no such shape exists in-tree and bounding it would need a node
 /// budget like `unfold_recursive_sub`'s.
+///
+/// # Phase 1.5 ordering (task 5360 round 2)
+///
+/// Phase 1.5 is NOT a declaration-order loop over `sub_components`: the child's
+/// own `let` cells and its plain nested subs form ONE dependency-ordered walk
+/// ([`build_phase15_nodes`] + [`phase15_node_traces`] + [`topological_sort`]).
+/// A nested sub's constructor arg is compiled in `child_template`'s scope, so it
+/// may read anything that scope offers — a param (already in phase 1's
+/// `child_values`), a `let` of the child, or a sibling sub's member via
+/// `self.<sub>.<member>`. Only the param case needs no ordering; the other two
+/// must be produced *before* the consuming sub's args are evaluated, or the read
+/// falls through to the TEMPLATE-scope entry in the global map and silently
+/// substitutes the template default for this instance's value.
+///
+/// The walk therefore threads a running `overlay` (template-scoped keys, seeded
+/// with phase 1's params): a LET node evaluates into it as a SCRATCH value, and
+/// a SUB node pre-evaluates its args against it, recurses, then projects its
+/// freshly-committed cells back into it for later nodes. Ordering by dependency
+/// rather than by declaration also makes the result order-insensitive: a sub
+/// declared before the sibling it reads resolves identically.
+///
+/// Phase 2 ([`elaborate_child_lets_only`]) is deliberately NOT restructured — it
+/// still owns the authoritative let commits, and the recursive path via
+/// `unfold_recursive_sub` reaches it unchanged.
 #[allow(clippy::too_many_arguments)]
 fn elaborate_child_instance_nested<'t>(
     values: &mut ValueMap,
@@ -392,22 +418,24 @@ fn elaborate_child_instance_nested<'t>(
         meta_map,
     );
 
-    // Phase 1.5 (leaves-first): elaborate the child template's own plain subs
-    // at nested instance scope, so their cells exist before this instance's
-    // lets are evaluated and can be projected into the let context below.
+    // Phase 1.5 (leaves-first, dependency-ordered): elaborate the child
+    // template's own plain subs at nested instance scope, so their cells exist
+    // before this instance's lets are evaluated and can be projected into the
+    // let context below.
     //
     // `runtime_sink`/`containment` mirror the other two phases: the sink's
     // contents are discarded (this path never surfaced eval-time diagnostics)
     // and containment stays a no-op, matching `NoContainment`'s rationale.
     let arg_runtime_sink = RefCell::new(Vec::new());
     let arg_containment = NoContainment;
-    let mut nested_sub_names: Vec<&str> = Vec::new();
-    // Every sub this loop declines to descend into, with the reason. Handed to
+    // Every sub this phase declines to descend into, with the reason. Handed to
     // `report_unresolvable_nested_reads` below so a child let left `Undef` by a
     // skip is named rather than silently dropped. All four skip arms feed it,
-    // the cycle cut included.
+    // the cycle cut included. Classified in DECLARATION order so the diagnostic
+    // prose is order-stable.
     let mut skipped_subs: Vec<(&str, &'static str)> = Vec::new();
     ancestors.push(child_template.name.as_str());
+    let mut nestable: Vec<(&'t reify_compiler::SubComponentDecl, &'t TopologyTemplate)> = Vec::new();
     for sub in &child_template.sub_components {
         if !is_plain_nestable_sub(sub) {
             skipped_subs.push((sub.name.as_str(), skip_reason_for_shape(sub)));
@@ -429,70 +457,165 @@ fn elaborate_child_instance_nested<'t>(
             skipped_subs.push((sub.name.as_str(), "cyclic sub nesting cut"));
             continue;
         }
+        nestable.push((sub, nested_template));
+    }
 
-        // Pre-evaluate the nested sub's constructor args HERE, in this
-        // instance's own scope, and pass them down as literals — mirroring
-        // `unfold_recursive_sub`'s `concrete_args` above. Without this the
-        // nested `elaborate_child_params_only` would evaluate the raw arg
-        // expressions against the global `values` map instead.
-        //
-        // That matters because arg expressions are compiled in
-        // `child_template`'s scope, so they reference `{child_template}.{param}`
-        // keys. The global map holds the TEMPLATE DEFAULT for those keys
-        // (`Mid.scale = 1mm`), whereas `child_values` holds THIS INSTANCE's
-        // value (`Parent.m.scale = 30mm`, keyed `Mid.scale`). Reading the
-        // global map would silently drop the parent's override and yield a
-        // wrong value rather than an `Undef` — nothing downstream would catch
-        // it.
-        //
-        // The context overlays `child_values` ON TOP OF the global map rather
-        // than replacing it, so the instance wins wherever both hold a key
-        // while every reference the global map alone could already resolve
-        // still resolves. `ValueMap` is an `im::HashMap`, so the clone is an
-        // O(1) structural-sharing clone, not a deep copy.
-        let mut arg_scope = values.clone();
-        for (id, v) in child_values.iter() {
-            arg_scope.insert(id.clone(), v.clone());
-        }
-        let concrete_args: Vec<(String, reify_ir::CompiledExpr)> = sub
-            .args
+    let (nodes, declaration_order) = build_phase15_nodes(child_template, &nestable);
+    let node_ids: HashSet<NodeId> = nodes.keys().cloned().collect();
+    let node_traces = phase15_node_traces(child_template, &nodes, &nestable);
+    let sorted = topological_sort(&node_ids, &node_traces);
+    // `topological_sort` (Kahn) silently omits cycle members. Append them in
+    // declaration order so evaluation still terminates and produces values;
+    // step i5 additionally diagnoses them, so they are never silently wrong.
+    let mut walk_order = sorted;
+    if walk_order.len() < node_ids.len() {
+        let placed: HashSet<&NodeId> = walk_order.iter().collect();
+        let dropped: Vec<NodeId> = declaration_order
             .iter()
-            .map(|(name, arg_expr)| {
+            .filter(|nid| !placed.contains(nid))
+            .cloned()
+            .collect();
+        walk_order.extend(dropped);
+    }
+
+    // The running overlay: template-scoped keys visible to this instance's
+    // nested-arg evaluation, seeded with phase 1's params and extended as the
+    // walk goes. `child_values` itself stays untouched — phase 2 must recompute
+    // its lets against its own BFS-enriched map, and seeding it with these
+    // scratch values would mask a phase-2 regression.
+    let mut overlay = child_values.clone();
+    let mut elaborated: HashSet<&str> = HashSet::new();
+
+    for node_id in &walk_order {
+        // `walk_order` only ever contains keys of `nodes` (topological_sort
+        // returns a subset of its input set, and the fallback is drawn from
+        // `declaration_order`), so a miss is an unreachable construction bug:
+        // loud in debug/test builds, a skip rather than a panic in release.
+        debug_assert!(
+            nodes.contains_key(node_id),
+            "phase 1.5 walk order contains a non-node {:?} (entity {})",
+            node_id,
+            scoped_entity,
+        );
+        let Some(node) = nodes.get(node_id) else {
+            continue;
+        };
+        match node {
+            // A LET node computes a SCRATCH value only: it is inserted into the
+            // overlay so later nodes' args can read it, and deliberately NOT
+            // committed to `values`/snapshot/journal/cache. Phase 2 still owns
+            // the authoritative write; double-committing would duplicate
+            // journal entries. Evaluating against the overlay alone (rather
+            // than the overlay over the global map) matches phase 2's own
+            // let-eval scope, so the scratch value equals the value phase 2
+            // will commit.
+            Phase15Node::Let { key, expr } => {
                 let v = eval_child_expr(
-                    &arg_scope,
-                    arg_expr,
+                    &overlay,
+                    expr,
                     functions,
                     meta_map,
                     &snapshot.values,
                     &arg_runtime_sink,
                     &arg_containment,
                 );
-                (
-                    name.clone(),
-                    reify_ir::CompiledExpr::literal(v, arg_expr.result_type.clone()),
-                )
-            })
-            .collect();
+                overlay.insert(key.clone(), v);
+            }
+            // Pre-evaluate the nested sub's constructor args HERE, in this
+            // instance's own scope, and pass them down as literals — mirroring
+            // `unfold_recursive_sub`'s `concrete_args` above. Without this the
+            // nested `elaborate_child_params_only` would evaluate the raw arg
+            // expressions against the global `values` map instead.
+            //
+            // That matters because arg expressions are compiled in
+            // `child_template`'s scope, so they reference
+            // `{child_template}.{member}` keys. The global map holds the
+            // TEMPLATE DEFAULT for those keys (`Mid.scale = 1mm`), whereas the
+            // overlay holds THIS INSTANCE's value (`Parent.m.scale = 30mm`,
+            // keyed `Mid.scale`). Reading the global map would silently drop
+            // the parent's override and yield a wrong value rather than an
+            // `Undef` — nothing downstream would catch it.
+            //
+            // The context overlays the running overlay ON TOP OF the global map
+            // rather than replacing it, so the instance wins wherever both hold
+            // a key while every reference the global map alone could already
+            // resolve still resolves. `ValueMap` is an `im::HashMap`, so the
+            // clone is an O(1) structural-sharing clone, not a deep copy.
+            Phase15Node::Sub { sub, template } => {
+                let mut arg_scope = values.clone();
+                for (id, v) in overlay.iter() {
+                    arg_scope.insert(id.clone(), v.clone());
+                }
+                let concrete_args: Vec<(String, reify_ir::CompiledExpr)> = sub
+                    .args
+                    .iter()
+                    .map(|(name, arg_expr)| {
+                        let v = eval_child_expr(
+                            &arg_scope,
+                            arg_expr,
+                            functions,
+                            meta_map,
+                            &snapshot.values,
+                            &arg_runtime_sink,
+                            &arg_containment,
+                        );
+                        (
+                            name.clone(),
+                            reify_ir::CompiledExpr::literal(v, arg_expr.result_type.clone()),
+                        )
+                    })
+                    .collect();
 
-        let nested_entity = format!("{}.{}", scoped_entity, sub.name);
-        elaborate_child_instance_nested(
-            values,
-            snapshot,
-            functions,
-            journal,
-            cache,
-            version_id,
-            nested_template,
-            &nested_entity,
-            &concrete_args,
-            meta_map,
-            diagnostics,
-            templates,
-            ancestors,
-        );
-        nested_sub_names.push(sub.name.as_str());
+                let nested_entity = format!("{}.{}", scoped_entity, sub.name);
+                elaborate_child_instance_nested(
+                    values,
+                    snapshot,
+                    functions,
+                    journal,
+                    cache,
+                    version_id,
+                    // Deref, not deref-coercion: the callee needs the `'t`
+                    // template reference itself, not one reborrowed for the
+                    // shorter lifetime of the `nodes` lookup above.
+                    *template,
+                    &nested_entity,
+                    &concrete_args,
+                    meta_map,
+                    diagnostics,
+                    templates,
+                    ancestors,
+                );
+
+                // Project the freshly-committed nested cells into the overlay
+                // under the template-scoped key a cross-sub read
+                // `self.<sub>.<member>` compiles to — the same remap phase 2's
+                // BFS performs, applied incrementally so LATER nodes in this
+                // walk see it.
+                let projected_entity = format!("{}.{}", child_template.name, sub.name);
+                for cell in &template.value_cells {
+                    let committed = ValueCellId::new(&nested_entity, &cell.id.member);
+                    if let Some(v) = values.get(&committed) {
+                        overlay.insert(
+                            ValueCellId::new(&projected_entity, &cell.id.member),
+                            v.clone(),
+                        );
+                    }
+                }
+                elaborated.insert(sub.name.as_str());
+            }
+        }
     }
     ancestors.pop();
+
+    // Declaration order, not walk order: phase 2 only uses these as BFS seeds,
+    // and keeping the original order keeps its (unchanged) behaviour and any
+    // seed diagnostics byte-identical.
+    let nested_sub_names: Vec<&str> = child_template
+        .sub_components
+        .iter()
+        .map(|sub| sub.name.as_str())
+        .filter(|name| elaborated.contains(name))
+        .collect();
 
     elaborate_child_lets_only(
         values,
@@ -522,6 +645,149 @@ fn elaborate_child_instance_nested<'t>(
             diagnostics,
         );
     }
+}
+
+/// One orderable unit of phase 1.5: either a `let` of the child template or one
+/// of its plain nested subs. Both kinds go into a single dependency order, which
+/// is what lets an arg read a let (and a let read an earlier sub) at instance
+/// scope — see [`elaborate_child_instance_nested`].
+enum Phase15Node<'t> {
+    /// A `let` cell of the child template. `key` is the cell's own
+    /// template-scoped id — the key a same-template read compiles to, and the
+    /// key phase 1 already uses for params, so the overlay stays one namespace.
+    Let {
+        key: ValueCellId,
+        expr: &'t reify_ir::CompiledExpr,
+    },
+    /// A plain nested sub of the child template, with its already-resolved
+    /// target template.
+    Sub {
+        sub: &'t reify_compiler::SubComponentDecl,
+        template: &'t TopologyTemplate,
+    },
+}
+
+/// Member name reserved for phase-1.5 SUB nodes.
+///
+/// [`topological_sort`] orders `NodeId`s and derives its edges from
+/// `DependencyTrace::reads`, which are `ValueCellId`s — so a sub has to be
+/// addressable as one. A cross-sub read carries a real member
+/// (`{tmpl}.{sub}`/`off`), and every member of a real cell is an identifier, so
+/// the empty member cannot collide with any read or with any let node key: it
+/// names the sub as a whole. Reads are normalised onto it by
+/// [`phase15_node_traces`].
+const PHASE15_SUB_NODE_MEMBER: &str = "";
+
+/// The phase-1.5 node key for `sub` — see [`PHASE15_SUB_NODE_MEMBER`].
+fn phase15_sub_node_key(
+    child_template: &TopologyTemplate,
+    sub: &reify_compiler::SubComponentDecl,
+) -> ValueCellId {
+    ValueCellId::new(
+        format!("{}.{}", child_template.name, sub.name),
+        PHASE15_SUB_NODE_MEMBER,
+    )
+}
+
+/// Build phase 1.5's node set: one node per `let` cell of `child_template` that
+/// has a `default_expr`, plus one per already-classified nestable sub.
+///
+/// Returns the nodes by id and a declaration-order listing of the same ids
+/// (lets in `value_cells` order, then subs in `sub_components` order), used as
+/// the deterministic fallback order for nodes a dependency cycle keeps out of
+/// the topological sort.
+fn build_phase15_nodes<'t>(
+    child_template: &'t TopologyTemplate,
+    nestable: &[(&'t reify_compiler::SubComponentDecl, &'t TopologyTemplate)],
+) -> (HashMap<NodeId, Phase15Node<'t>>, Vec<NodeId>) {
+    let mut nodes: HashMap<NodeId, Phase15Node<'t>> = HashMap::new();
+    let mut declaration_order: Vec<NodeId> = Vec::new();
+
+    for cell in &child_template.value_cells {
+        if cell.kind != ValueCellKind::Let {
+            continue;
+        }
+        let Some(expr) = cell.default_expr.as_ref() else {
+            continue;
+        };
+        let node_id = NodeId::Value(cell.id.clone());
+        nodes.insert(
+            node_id.clone(),
+            Phase15Node::Let {
+                key: cell.id.clone(),
+                expr,
+            },
+        );
+        declaration_order.push(node_id);
+    }
+
+    for &(sub, template) in nestable {
+        let node_id = NodeId::Value(phase15_sub_node_key(child_template, sub));
+        nodes.insert(node_id.clone(), Phase15Node::Sub { sub, template });
+        declaration_order.push(node_id);
+    }
+
+    (nodes, declaration_order)
+}
+
+/// Dependency traces for phase 1.5's node set, with every read normalised onto
+/// a node key so [`topological_sort`] can see the edges.
+///
+/// A read resolves to a node in exactly two ways:
+/// - it *is* a let node's cell id (a same-template read of one of this
+///   template's own lets), or
+/// - its entity is `{child_template}.{sub}` for a node sub — the key a cross-sub
+///   read `self.<sub>.<member>` compiles to, whichever member it names.
+///
+/// Everything else contributes no edge: a read of a PARAM is already resolved in
+/// phase 1's `child_values`, a read under a SKIPPED sub has no node to wait for
+/// (it is reported by [`report_unresolvable_nested_reads`] / the phase-1.5
+/// stale-read guard instead), and reads of other templates or globals are
+/// outside this instance entirely.
+fn phase15_node_traces<'t>(
+    child_template: &'t TopologyTemplate,
+    nodes: &HashMap<NodeId, Phase15Node<'t>>,
+    nestable: &[(&'t reify_compiler::SubComponentDecl, &'t TopologyTemplate)],
+) -> HashMap<NodeId, DependencyTrace> {
+    // `{child_template}.{sub}` -> that sub's node cell id.
+    let sub_node_keys: HashMap<String, ValueCellId> = nestable
+        .iter()
+        .map(|&(sub, _)| {
+            (
+                format!("{}.{}", child_template.name, sub.name),
+                phase15_sub_node_key(child_template, sub),
+            )
+        })
+        .collect();
+
+    let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+    for (node_id, node) in nodes {
+        let raw: Vec<ValueCellId> = match node {
+            Phase15Node::Let { expr, .. } => extract_dependency_trace(expr).reads,
+            Phase15Node::Sub { sub, .. } => sub
+                .args
+                .iter()
+                .flat_map(|(_, arg_expr)| extract_dependency_trace(arg_expr).reads)
+                .collect(),
+        };
+        let reads: Vec<ValueCellId> = raw
+            .into_iter()
+            .filter_map(|read| {
+                if nodes.contains_key(&NodeId::Value(read.clone())) {
+                    return Some(read);
+                }
+                sub_node_keys.get(read.entity.as_str()).cloned()
+            })
+            .collect();
+        traces.insert(
+            node_id.clone(),
+            DependencyTrace {
+                reads,
+                ..DependencyTrace::default()
+            },
+        );
+    }
+    traces
 }
 
 /// Why [`is_plain_nestable_sub`] rejected `sub` — the shape half of the skip
