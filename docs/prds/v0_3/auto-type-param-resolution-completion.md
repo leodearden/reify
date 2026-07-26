@@ -106,8 +106,11 @@ end-to-end fixtures and they all pass:
 
 **Soundness regression signal (hard acceptance):**
 
-- `cargo test -p reify-compiler --test auto_fallback_soundness` asserts the
-  invariant directly: for a generated family of depth/cap-exceeding declarations,
+- `cargo test -p reify-compiler --test harness_auto_binding auto_fallback_soundness::`
+  (former standalone binary `auto_fallback_soundness` was folded into the
+  `harness_auto_binding` compile unit by task #5283; the test name now carries
+  an `auto_fallback_soundness::` module prefix) asserts the invariant directly:
+  for a generated family of depth/cap-exceeding declarations,
   every BFS-fallback result is either (a) jointly feasible under the real
   checker, or (b) a hard `E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE` — never a
   substitution that the joint recheck would reject.
@@ -563,7 +566,7 @@ integration gate; θ supersedes v0.1.
 
 - **γ — Joint-recheck + `E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE` + revert the post-substitution hoists.**
   - Crates: `reify-compiler/src/auto_type_param.rs` (fallback recheck; revert hoists at `:777,1383,2045`), `reify-ir/src/diagnostics.rs` (new code).
-  - Observable signal (LEAF): `examples/auto/bounded_fallback_unsound.ri` emits the hard error; `cargo test -p reify-compiler --test auto_fallback_soundness` proves the invariant (fallback never emits a joint-infeasible substitution); a jointly-feasible bounded fixture still compiles with a Warning.
+  - Observable signal (LEAF): `examples/auto/bounded_fallback_unsound.ri` emits the hard error; `cargo test -p reify-compiler --test harness_auto_binding auto_fallback_soundness::` (former standalone binary folded into `harness_auto_binding` by task #5283) proves the invariant (fallback never emits a joint-infeasible substitution); a jointly-feasible bounded fixture still compiles with a Warning.
   - Prereqs: β.
 
 ### Phase 4 — L3 value population (δ)

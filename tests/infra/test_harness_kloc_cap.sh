@@ -26,11 +26,24 @@
 #
 # declared from the harness root with `mod <file>;` (or, when the on-disk
 # name cannot be a bare module ident, `#[path = "harness_<subsystem>/<file>.rs"]
-# mod <file>;`). Declaring it under its ORIGINAL stem PRESERVES the module
-# path, so existing `cargo test` filtersets of the form `test(/^<file>::/)`
-# (and every `<file>::<test_name>` selector the merge gate already runs)
-# resolve UNCHANGED after consolidation — consolidation is layout-only, never
-# a test-selector break.
+# mod <file>;`). Declaring it under its ORIGINAL stem is what gives the merged
+# test a stable, predictable module path GOING FORWARD (post-consolidation
+# selectors are `<file>::<test_name>`) — it does NOT preserve the pre-
+# consolidation id. The files being consolidated declare their `#[test]` fns
+# at file top level with no enclosing `mod`, so before consolidation the
+# nextest test name has NO module prefix and the binary id is `<crate>::<file>`;
+# after, the binary id becomes `<crate>::harness_<subsystem>` and the test name
+# gains the `<file>::` prefix. Both halves of the id change (measured,
+# task #5283: `reify-compiler::trait_bounds_tests both_bound_check_paths_combined`
+# -> `reify-compiler::harness_traits trait_bounds_tests::both_bound_check_paths_combined`
+# — space-separated, the form `cargo nextest list` actually prints; `binary$test`
+# appears nowhere in this repo). Consolidation IS layout-only in that no `#[test]`
+# fn is added or removed (invariant I3) — it is NOT test-id-preserving. A
+# hand-written `binary(…)`/`test(=…)` selector naming a former id must be updated
+# in the same diff; nothing in-repo does today (no script/nextest-override/
+# heavy-filter selects a consolidatable stem), and verify.sh's failed-only retry
+# is unaffected — it derives `test(=…)` at run time from its own attempt-0 and
+# refuses on tree_oid drift (scripts/verify.sh retry_failed_only).
 #
 # WITHIN-CRATE ONLY (invariant I2). Consolidation never moves a test across a
 # crate boundary; `harness_<subsystem>.rs` only ever absorbs `tests/*.rs` from
