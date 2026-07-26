@@ -11574,6 +11574,67 @@ fn get_entity_tree_aux_realization_default_visible_false() {
     );
 }
 
+// ---- #5195: consumed-downstream intermediates are hidden by default ----
+
+/// #5195 step-1 RED: an m5-flange-shaped template (modelled on
+/// `examples/m5_geometry_flange.ri:4-22`) whose `let body` / `let hole` /
+/// `let holes` realizations are all consumed downstream by the terminal
+/// `param geometry : Solid = difference(body, holes)`.
+///
+/// Intermediate (consumed) realizations must be hidden by default so the
+/// viewport shows only the finished part; the terminal `geometry`
+/// realization stays visible.
+///
+/// Fails today because `build_template_node` only checks `aux`
+/// (`default_visible: !(aux_ancestor || real.is_aux)`), so all four are true.
+#[test]
+fn get_entity_tree_consumed_realizations_default_visible_false() {
+    let source = r#"structure def Flange : Rigid {
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+
+    let body = cylinder(60mm, 12mm)
+    let hole = translate(cylinder(4mm, 12mm), 45mm, 0mm, 0mm)
+    let holes = circular_pattern(hole, 0mm, 0mm, 0mm, 0, 0, 1, 8, 360deg)
+    param geometry : Solid = difference(body, holes)
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "flange").expect("load");
+
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "Flange")
+        .expect("Flange root must exist");
+
+    let realization = |name: &str| -> &crate::types::EntityTreeNode {
+        root.children
+            .iter()
+            .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("realization node for '{name}' must be present"))
+    };
+
+    // `body` is consumed by `difference(body, holes)`.
+    assert!(
+        !realization("body").default_visible,
+        "`let body` is consumed by `difference(body, holes)` — must be hidden by default"
+    );
+    // `hole` is consumed by `circular_pattern(hole, ...)`.
+    assert!(
+        !realization("hole").default_visible,
+        "`let hole` is consumed by `circular_pattern(hole, ...)` — must be hidden by default"
+    );
+    // `holes` is consumed by `difference(body, holes)`.
+    assert!(
+        !realization("holes").default_visible,
+        "`let holes` is consumed by `difference(body, holes)` — must be hidden by default"
+    );
+    // The terminal realization is consumed by nothing → stays visible.
+    assert!(
+        realization("geometry").default_visible,
+        "terminal `param geometry : Solid` is consumed by nothing — must stay visible"
+    );
+}
+
 /// step-3 RED: a root assembly with a plain `sub part : Part at <pose>` and an
 /// `aux sub jig : Jig at <pose>`, where Part and Jig each declare a plain
 /// `let body = box(...)` (NOT directly aux).
