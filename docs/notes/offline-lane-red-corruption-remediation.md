@@ -67,10 +67,16 @@ emits bare section headers — `usage()` is `sed -n '2,59p' "${BASH_SOURCE[0]}"
 the `verify.sh: ERROR` banner alone. A cosmetic `usage()` edit is therefore a
 guard-relevant change — see the Re-run trigger.
 
-The sibling seam `_parse_infra_failures` is **exempt by design**, not by
-oversight: it only captures `RESULT: FAIL (<name>)` lines, a shape a
-usage/help/error dump never produces. So the filing path that produced #5264
-and #5368 is closed.
+**The guard covers one of `_handle_red_run`'s three seams — deliberately.**
+`_parse_confirmed_failures` is the numeric seam only; the infra seam
+(`_parse_infra_failures`) and the generic-command seam
+(`_default_confirm_command`) are **exempt by design**, not by oversight,
+because neither can produce this signature in the first place: one captures
+only `RESULT: FAIL (<name>)` lines, the other only pytest node-ids plus a
+single `<cmd>::nonzero-exit` sentinel. A usage/help/error dump has neither
+shape. So the numeric filing path — the one that produced #5264 and #5368 —
+is closed, and the other two were never open. (The per-seam breakdown, with
+line numbers, is in the #5368 row of Audit Findings.)
 
 This note remains a documentation runbook rather than a new automated
 detector: the audit surface is three tasks, all corrected; Signature 1's
