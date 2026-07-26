@@ -122,6 +122,16 @@
 #        `done` (task 5321 itself among them), so a class C that spanned
 #        `in-progress` would re-dispatch actively-running agents — it would
 #        destroy work rather than recover it.
+#   L5 — a #5316 corruption flag SUPPRESSES auto-re-dispatch. A flagged row
+#        whose verdict would otherwise be STALE is reported as CORRUPT-HOLD
+#        with action=human_gate, is counted in `corrupt_hold` INSTEAD OF its
+#        class counter, and never emits a re-dispatch request. Flags are
+#        still computed and reported on non-stale rows, so #5316's audit
+#        coverage is not lost for records that are corrupt but not yet
+#        stranded. A corrupt record has an untrustworthy block premise, so
+#        re-dispatching on it would act on a false premise, and #5316 §4
+#        establishes that remediation there is a human git-history
+#        adjudication a detector can flag but not perform.
 #   (Further invariants are recorded as each classifier lands.)
 
 set -euo pipefail
@@ -659,6 +669,69 @@ EOF
     _UD_EVIDENCE="all ${n} dependency(ies) terminal: ${pairs}"
 }
 
+# ── #5316 corruption signatures (invariant L5) ────────────────────────────────
+# Both signatures are catalogued in docs/notes/offline-lane-red-corruption-
+# remediation.md; they are lifted here from prose into executable checks and
+# wired as SUPPRESSORS rather than as a fourth trigger class.
+#
+# Signature 1 — help-text-as-failing-tests: an auto-filed record whose
+# `metadata.failing_tests` holds harness OUTPUT rather than test names. This
+# marker set is the single source of truth; the docs note points at this
+# variable rather than restating it.
+_CORRUPT_AUTOFILE_MARKERS=('Usage:' 'Options:' 'verify.sh: ERROR')
+
+# The matching predicate, built once from the marker set. `instr()` and NOT
+# `LIKE`, because SQLite's LIKE is case-insensitive for ASCII by default and a
+# lowercase 'usage:' inside a real test name must not read as harness output.
+_CORRUPT_MARKER_SQL=""
+for _m in "${_CORRUPT_AUTOFILE_MARKERS[@]}"; do
+    _CORRUPT_MARKER_SQL="${_CORRUPT_MARKER_SQL:+$_CORRUPT_MARKER_SQL OR }instr(value,'${_m//\'/\'\'}')>0"
+done
+unset _m
+
+# _compute_flags <task_id> — sets _FLAGS to a comma-separated list in a FIXED
+# order (corrupt_autofile, then the provenance flag), or `-` when clean.
+_compute_flags() {
+    local id="$1" hits prov
+    local -a flags=()
+
+    # Signature 1. Evaluated inside SQLite (one cheap query) rather than a
+    # python3 pass, so the sweep stays timer-friendly on a large store. A
+    # malformed / absent / non-array failing_tests makes json_each error; that
+    # is swallowed and read as "no marker found" — an unreadable field is not
+    # positive evidence of harness output.
+    if [ -n "$_SQLITE_BIN" ]; then
+        hits="$("$_SQLITE_BIN" -readonly "$DB" \
+            "SELECT count(*) FROM json_each((SELECT json_extract(metadata,'\$.failing_tests')
+                                               FROM tasks WHERE tag='$TAG' AND id=$id LIMIT 1))
+              WHERE $_CORRUPT_MARKER_SQL;" 2>/dev/null || true)"
+        [ "${hits:-0}" -gt 0 ] 2>/dev/null && flags+=("corrupt_autofile")
+    fi
+
+    # Signature 2 — misattributed provenance. REACHABILITY, never diff
+    # inspection: #5316 records that `git show --stat` alone MIS-CLEARED #5264,
+    # because a discarded duplicate merge shows a perfectly plausible diff and
+    # fails only the ancestor test. Reachability is therefore checked first and
+    # is the only evidence that clears a recorded provenance SHA.
+    prov="$(_meta "$id" '$.done_provenance.commit')"
+    if [ -n "$prov" ]; then
+        if ! git -C "$REPO" rev-parse --verify --quiet "${prov}^{commit}" >/dev/null 2>&1; then
+            # Conservative: a provenance SHA we cannot resolve is held, not
+            # cleared. The fail-safe direction for a re-dispatch decision is
+            # always "do nothing".
+            flags+=("provenance_unresolvable")
+        elif ! git -C "$REPO" merge-base --is-ancestor "$prov" "$MAIN_REF" >/dev/null 2>&1; then
+            flags+=("misattributed_provenance")
+        fi
+    fi
+
+    if [ "${#flags[@]}" -eq 0 ]; then
+        _FLAGS="-"
+    else
+        _FLAGS="$(IFS=,; printf '%s' "${flags[*]}")"
+    fi
+}
+
 # ── classify ──────────────────────────────────────────────────────────────────
 while IFS="$_FS" read -r task_id status heartbeat_at claimant_run_id; do
     [ -n "${task_id:-}" ] || continue
@@ -727,6 +800,20 @@ while IFS="$_FS" read -r task_id status heartbeat_at claimant_run_id; do
     if [ -n "$_primary" ]; then row_class="$_primary"; fi
     if [ -n "$_also" ]; then row_evidence="${row_evidence}; ${_also# }"; fi
 
+    # ── #5316 corruption suppression (invariant L5) ──────────────────────────
+    # Flags are computed for EVERY non-live row, not just for hits, so the
+    # sweep keeps 5316's audit coverage on records that are corrupt but not
+    # yet stranded. Only a row that would otherwise be a confirmed hit is
+    # demoted — a corrupt record's block premise is untrustworthy, so
+    # auto-re-dispatching it would act on a false premise.
+    _compute_flags "$task_id"
+    row_flags="$_FLAGS"
+    if [ "$row_verdict" = "STALE" ] && [ "$row_flags" != "-" ]; then
+        row_verdict="CORRUPT-HOLD"
+        row_action="human_gate"
+        row_evidence="${row_evidence}; held for a human gate on #5316 corruption flag(s): ${row_flags}"
+    fi
+
     # ── --class filtering ────────────────────────────────────────────────────
     # A restricted sweep emits only rows of that class; the summary counters
     # are computed over emitted rows, so a filtered report is internally
@@ -743,6 +830,7 @@ while IFS="$_FS" read -r task_id status heartbeat_at claimant_run_id; do
                 merge_verify_red) N_MERGE_VERIFY_RED=$((N_MERGE_VERIFY_RED + 1)) ;;
                 unmet_dependency) N_UNMET_DEPENDENCY=$((N_UNMET_DEPENDENCY + 1)) ;;
             esac ;;
+        CORRUPT-HOLD) N_CORRUPT_HOLD=$((N_CORRUPT_HOLD + 1)) ;;
         unknown) N_UNKNOWN=$((N_UNKNOWN + 1)) ;;
     esac
     _emit_row "$task_id" "$status" "$row_class" "$row_verdict" "$row_action" "$row_evidence" "$row_flags"
