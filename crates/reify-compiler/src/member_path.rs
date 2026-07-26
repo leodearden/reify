@@ -240,6 +240,48 @@ pub(crate) fn resolve_hop(
         });
     }
 
+    let hop = |member_kind, visibility| Hop {
+        object_type: object_type.clone(),
+        object_structure: Some(struct_name.to_string()),
+        member: member.to_string(),
+        member_kind,
+        visibility,
+    };
+
+    if let Some(sc) = template.sub_components.iter().find(|sc| sc.name == member) {
+        return Ok(HopResolution {
+            hop: hop(MemberKind::Sub, MemberVisibility::Public),
+            // `structure_name` is what makes the NEXT hop resolvable against a
+            // concrete template — the whole point of typed chain traversal.
+            next_type: Type::StructureRef(sc.structure_name.clone()),
+            value_cell_type: None,
+        });
+    }
+
+    if template.ports.iter().any(|p| p.name == member) {
+        return Ok(HopResolution {
+            hop: hop(MemberKind::Port, MemberVisibility::Public),
+            // A port is not a structure instance; there is no further typed hop
+            // to take from it. Widening this is PRD task η's (its two-level
+            // `<sub>.<port>.<member>` matcher owns that shape today).
+            next_type: Type::dimensionless_scalar(),
+            value_cell_type: None,
+        });
+    }
+
+    if template
+        .realizations
+        .iter()
+        .any(|r| r.name.as_deref() == Some(member))
+    {
+        return Ok(HopResolution {
+            hop: hop(MemberKind::Realization, MemberVisibility::Public),
+            // The same type `expr.rs` stamps on a `CrossSubGeometryRef`.
+            next_type: Type::Geometry,
+            value_cell_type: None,
+        });
+    }
+
     Err(MemberPathError::UnknownMember {
         hop_index: 0,
         object_type: object_type.clone(),
