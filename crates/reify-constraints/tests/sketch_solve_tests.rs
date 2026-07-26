@@ -199,6 +199,22 @@ fn radius_of(result: &SketchSolveResult, id: SketchEntityId) -> f64 {
     }
 }
 
+/// The solved `(center, radius)` of the circle entity `id`.
+fn circle_of(result: &SketchSolveResult, id: SketchEntityId) -> ((f64, f64), f64) {
+    match lookup(result, id) {
+        SolvedSketchEntity::Circle { center, radius } => (*center, *radius),
+        other => panic!("entity {id:?} is not a Circle in the solved readback: {other:?}"),
+    }
+}
+
+/// The solved `(center, start, end)` of the arc entity `id`.
+fn arc_of(result: &SketchSolveResult, id: SketchEntityId) -> ((f64, f64), (f64, f64), (f64, f64)) {
+    match lookup(result, id) {
+        SolvedSketchEntity::Arc { center, start, end } => (*center, *start, *end),
+        other => panic!("entity {id:?} is not an Arc in the solved readback: {other:?}"),
+    }
+}
+
 fn lookup(result: &SketchSolveResult, id: SketchEntityId) -> &SolvedSketchEntity {
     let entities = solved(result);
     match entities.iter().find(|(eid, _)| *eid == id) {
@@ -558,5 +574,153 @@ fn angle_constraint_drives_the_direction_cosine() {
         dot(da, db),
         45.0_f64.to_radians().cos(),
         "direction cosine between the two lines",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Circles and arcs: the radius family
+// ---------------------------------------------------------------------------
+
+/// Solve a single circle with a fixed centre, seeded at 4 mm, under one
+/// dimensional constraint, and report the radius it lands on.
+///
+/// The seed is deliberately neither of the answers the callers expect, so a
+/// mapping that dropped the dimension entirely would read back 0.004 and fail.
+fn solved_radius(dimension: impl Fn(SketchEntityId) -> SketchConstraint) -> f64 {
+    let mut s = Sketch::new();
+    let c = s.point(0.0, 0.0);
+    let circle = s.circle(c, 0.004);
+    s.constrain(SketchConstraint::Fix(c));
+    s.constrain(dimension(circle));
+
+    let result = reify_constraints::solve_sketch(s.system());
+    radius_of(&result, circle)
+}
+
+/// `Diameter` drives the circle's radius to half its value.
+#[test]
+fn diameter_drives_the_circle_radius() {
+    let r = solved_radius(|circle| SketchConstraint::Diameter {
+        circle,
+        value: 0.010,
+    });
+    assert_near(r, 0.005, "radius solved from a 10 mm diameter");
+}
+
+/// `Radius` and `Diameter` are the same constraint with a factor of two.
+///
+/// libslvs has no radius constraint — `SLVS_C_DIAMETER` is the only member of
+/// the radius family — so the doubling has to happen somewhere. Pinning both
+/// spellings against each other is what keeps the surface vocabulary honest:
+/// `radius` has to mean radius, not "diameter under another name".
+#[test]
+fn radius_is_half_the_diameter() {
+    let from_diameter = solved_radius(|circle| SketchConstraint::Diameter {
+        circle,
+        value: 0.010,
+    });
+    let from_radius = solved_radius(|circle| SketchConstraint::Radius {
+        circle,
+        value: 0.005,
+    });
+
+    assert_near(from_diameter, 0.005, "radius solved from a 10 mm diameter");
+    assert_near(from_radius, 0.005, "radius solved from a 5 mm radius");
+    assert_near(
+        from_radius,
+        from_diameter,
+        "radius(5 mm) and diameter(10 mm) name the same circle",
+    );
+}
+
+/// `PtOnCircle` lands a point on the solved circumference.
+///
+/// Checked against the circle's *own* readback centre, not just the centre
+/// point's, so the composite readback has to resolve its operand rather than
+/// report placeholder geometry.
+#[test]
+fn point_on_circle_lands_on_the_solved_circumference() {
+    let mut s = Sketch::new();
+    let c = s.point(0.0, 0.0);
+    let circle = s.circle(c, 0.004);
+    // Seeded well off the circumference, in both radius and angle.
+    let p = s.point(0.009, 0.001);
+    s.constrain(SketchConstraint::Fix(c));
+    s.constrain(SketchConstraint::Diameter {
+        circle,
+        value: 0.010,
+    });
+    s.constrain(SketchConstraint::PtOnCircle { pt: p, circle });
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    let (center, radius) = circle_of(&result, circle);
+    assert_point_near(
+        center,
+        point_of(&result, c),
+        "circle centre vs centre point",
+    );
+    assert_near(radius, 0.005, "solved radius");
+    assert_near(
+        dist(point_of(&result, p), center),
+        0.005,
+        "distance from the constrained point to the centre",
+    );
+}
+
+/// `EqualRadius` propagates one circle's dimension to another.
+#[test]
+fn equal_radius_propagates_a_single_dimension() {
+    let mut s = Sketch::new();
+    let c1 = s.point(0.0, 0.0);
+    let k1 = s.circle(c1, 0.004);
+    let c2 = s.point(0.020, 0.0);
+    // Seeded at a different radius, so equality has to be driven, not inherited.
+    let k2 = s.circle(c2, 0.007);
+    s.constrain(SketchConstraint::Fix(c1));
+    s.constrain(SketchConstraint::Fix(c2));
+    s.constrain(SketchConstraint::Diameter {
+        circle: k1,
+        value: 0.010,
+    });
+    s.constrain(SketchConstraint::EqualRadius { a: k1, b: k2 });
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert_near(radius_of(&result, k1), 0.005, "dimensioned circle");
+    assert_near(radius_of(&result, k2), 0.005, "circle equated to it");
+}
+
+/// An arc's two endpoints are equidistant from its centre without anyone
+/// saying so.
+///
+/// libslvs contributes that equation itself for every `ARC_OF_CIRCLE`, which is
+/// why the fixture dimensions only the *start* radius and still expects the end
+/// to follow. It is also why DOF accounting over arcs must not count the
+/// equal-radius relation a second time.
+#[test]
+fn arc_endpoints_share_a_radius_implicitly() {
+    let mut s = Sketch::new();
+    let c = s.point(0.0, 0.0);
+    let start = s.point(0.004, 0.0);
+    // Seeded at a different distance from the centre than the start.
+    let end = s.point(0.0, 0.006);
+    let arc = s.arc(c, start, end);
+    s.constrain(SketchConstraint::Fix(c));
+    s.constrain(SketchConstraint::Distance {
+        a: c,
+        b: start,
+        value: 0.005,
+    });
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    let (center, arc_start, arc_end) = arc_of(&result, arc);
+    assert_point_near(center, (0.0, 0.0), "anchored arc centre");
+    assert_near(dist(center, arc_start), 0.005, "dimensioned start radius");
+    assert_near(
+        dist(center, arc_end),
+        0.005,
+        "end radius, from libslvs' implicit equal-radius equation",
     );
 }
