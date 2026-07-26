@@ -62,6 +62,7 @@ Every `TODO`/`FIXME`/`HACK` comment, `todo!()`/`unimplemented!()` stub, and bloc
 | Warm-lane CoW pool lifecycle & invariants | `docs/prds/warm-lane-pool-cow-seeding.md` §9.3/§9.5; sizing, audit & admission: `docs/prds/warm-lane-pool-sizing-lifecycle.md` |
 | Warm-lane audit CLI, output fields & run cadence | `docs/notes/warm-lane-audit-runbook.md` (operational digest); `scripts/warm-lane-audit.sh` header |
 | Orphaned test-binary reaper (two layers + `REIFY_REAPER_*` knobs) | `docs/notes/orphaned-test-binary-reaper.md`; `scripts/lib_proc_reaper.sh` |
+| offline_lane_red task-record corruption: audit + remediation recipe | `docs/notes/offline-lane-red-corruption-remediation.md` |
 | Orchestrator safe-restart modes & knobs | `scripts/orchestrator-redeploy-restart.sh` header |
 | Debug-port provisioning contract | `scripts/setup-worktree-debug-port.sh` header |
 | PTODO grammar & violation taxonomy | `docs/prds/reify-audit-ptodo-detector.md` §8 |
