@@ -1795,17 +1795,46 @@ fn build_dependent_cells(
     //     neither β's per-trial fold nor α's post-solve write-back may ever see
     //     a cycle member.
     //
-    //     ALIAS RATIONALE (task #5189 step-10): the objective term reads the
-    //     INSTANCE-PATH id (`RivetedPanel.rivets.line_cost`) while the only
-    //     declaration — and hence the only foldable `default_expr` — is
-    //     TEMPLATE-keyed (`Rivet.line_cost`). Normalising the LOOKUP alone
-    //     therefore yields a `dependent_cells` list that writes an id nothing
-    //     reads, leaving the objective Undef. Emitting the alias against the
-    //     SAME expr closes the loop: that expr's inner reads are template-keyed
-    //     (`Rivet.unit_cost`, `Rivet.quantity_produced`) and both are live in the
-    //     solver's values namespace, so the alias folds to the same number its
-    //     template source does. The alias is pushed AFTER its source so a
-    //     downstream cell reading either spelling sees a fresh value first.
+    //     ALIAS RATIONALE (task #5189 step-10, corrected in step-14/15): the
+    //     objective term reads the INSTANCE-PATH id
+    //     (`RivetedPanel.rivets.line_cost`) while the only declaration — and
+    //     hence the only foldable `default_expr` — is TEMPLATE-keyed
+    //     (`Rivet.line_cost`). Normalising the LOOKUP alone therefore yields a
+    //     `dependent_cells` list that writes an id nothing reads, leaving the
+    //     objective Undef. Emitting an alias entry closes the loop.
+    //
+    //     The alias expr is RESCOPED, not a verbatim clone. Cloning verbatim
+    //     keeps the inner reads template-keyed, which is harmless only while
+    //     every sub is a bare `Rivet()`; the moment a sub carries an argument
+    //     override (`sub rivets = Rivet(unit_cost: 0.90USD)` — a shape the DSL
+    //     supports, cf. `examples/auto_binding_sites.ri`) the alias folds the
+    //     TEMPLATE DEFAULT, so the solver minimises the wrong objective at every
+    //     trial point and `materialize_dependent_cells` then clobbers the
+    //     correctly-elaborated per-instance value with it. Same
+    //     template→instance-path bridge, same `map_value_refs` remedy, as
+    //     `Engine::post_process_cross_sub_value_cells` (engine_build.rs).
+    //
+    //     TWO GUARDS, and BOTH are load-bearing:
+    //       * `vid.entity == id.entity` — only the alias'd template's OWN
+    //         members move; a cross-template read is already correctly keyed.
+    //       * `!auto_ids.contains(&vid)` — the SOLVER keeps autos TEMPLATE-keyed
+    //         (that is the namespace `build_trial_values` inserts trial scalars
+    //         into), so an auto read must STAY template-keyed. Getting this
+    //         backwards makes the alias fold against an id that holds nothing
+    //         and silently reintroduces the step-10 Undef-objective failure.
+    //
+    //     NOT MIRRORED from the precedent: `post_process_cross_sub_value_cells`
+    //     declines to overwrite an already-folded (non-`Undef`) scoped cell.
+    //     That guard is deliberately absent here, and its absence is not an
+    //     oversight — this builder runs at solver-problem BUILD time and emits a
+    //     list consumed once PER TRIAL POINT. The trial point moves every
+    //     Nelder-Mead iteration, so a pre-solve elaborated value must never win:
+    //     pinning the cell to it would make the objective constant in the auto,
+    //     which is exactly the coupling failure BT-1 exists to reject. (It is
+    //     also unavailable — `build_dependent_cells` takes no `ValueMap`.)
+    //
+    //     The alias is pushed AFTER its source so a downstream cell reading
+    //     either spelling sees a fresh value first.
     let alias_paths =
         build_single_instance_alias_paths(all_templates, max_unfold_depth, max_unfold_nodes);
     let mut out: Vec<(ValueCellId, CompiledExpr)> = Vec::with_capacity(sorted.len());
@@ -1816,16 +1845,28 @@ fn build_dependent_cells(
         let Some(expr) = cell_map.get(&id) else {
             continue;
         };
-        let alias = alias_paths
+        let aliased = alias_paths
             .get(id.entity.as_str())
             .map(|path| ValueCellId::new(path.as_str(), id.member.as_str()))
             // An instance-path SUB-OVERRIDE auto (a decl with `kind: Auto` and
             // no `default_expr`) can occupy the alias id. Never shadow an auto —
             // the same INVARIANT β's `build_trial_values` enforces defensively.
-            .filter(|alias| !auto_ids.contains(alias));
+            .filter(|alias| !auto_ids.contains(alias))
+            .map(|alias| {
+                let instance_path = alias.entity.clone();
+                let source_entity = id.entity.clone();
+                let rescoped = (*expr).clone().map_value_refs(&mut |vid| {
+                    if vid.entity == source_entity && !auto_ids.contains(&vid) {
+                        ValueCellId::new(instance_path.as_str(), vid.member)
+                    } else {
+                        vid
+                    }
+                });
+                (alias, rescoped)
+            });
         out.push((id, (*expr).clone()));
-        if let Some(alias) = alias {
-            out.push((alias, (*expr).clone()));
+        if let Some(entry) = aliased {
+            out.push(entry);
         }
     }
     out
