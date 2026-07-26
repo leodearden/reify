@@ -45,6 +45,22 @@
 # LEAKED verdict could NOT be confirmed because the backing-task status is
 # unknown -- see A3) + divergent_gib/free_gib/budget_gib.
 #
+# A PINNED line follows it, breaking `pinned` down by WHY each pin is held --
+# a fixed, closed bucket vocabulary in a fixed order, always emitted, zeros
+# included (JSON: a sibling "pinned_by_status" object with the six buckets;
+# their total is headroom.pinned):
+#
+#     PINNED total=… pending=… infra-hold=… blocked=… terminal=… other=…
+#            unknown=…
+#
+#   terminal    the holder is done/cancelled -- reclaim now.
+#   pending     |  a reservation held by work that is not running: capacity
+#   blocked     |  lost to scheduling, not to a leak.
+#   infra-hold  |
+#   other       any other live status; notably `in-progress` with no live
+#               consumer, i.e. a probably-crashed consumer.
+#   unknown     the holder could not be resolved (A3).
+#
 # `live` is a LIVENESS column, and only that: it answers "is a consumer
 # PROCESS running and holding this lane's exclusive flock right now?". It is
 # NOT the orchestrator's assignment state -- a lane can be reserved for a task
@@ -470,6 +486,39 @@ _status_bucket() {
     esac
 }
 
+# _pin_bucket <pin>
+# Buckets a PINNED lane's `pin` column value into the fixed, closed vocabulary
+# the aggregate PINNED line reports. The per-lane column keeps full raw
+# fidelity; only this rollup bucketizes, and it does so because the buckets are
+# the TRIAGE, not a summary:
+#   terminal              the holder is done/cancelled -- reclaim now.
+#   pending|blocked|      a reservation held by work that is not running; the
+#     infra-hold          lane is lost to scheduling, not to a leak.
+#   other                 any other live status; notably `in-progress` with no
+#                         live consumer, i.e. a probably-crashed agent.
+#   unknown               the holder could not be resolved (A3).
+#
+# `terminal` delegates to _status_bucket so the done|cancelled predicate keeps
+# exactly ONE definition in this script. The literal `unknown` is the pin
+# column's own sentinel for an unresolvable holder, so it buckets as unknown
+# rather than falling through to `other`.
+_pin_bucket() {
+    local pin="$1"
+    case "$pin" in
+        ''|unknown) printf 'unknown'; return 0 ;;
+    esac
+    if [ "$(_status_bucket "$pin")" = "terminal" ]; then
+        printf 'terminal'; return 0
+    fi
+    case "$pin" in
+        pending)    printf 'pending' ;;
+        infra-hold) printf 'infra-hold' ;;
+        blocked)    printf 'blocked' ;;
+        *)          printf 'other' ;;
+    esac
+    return 0
+}
+
 # _pin_holder_id <dir>
 # The task id that HOLDS this lane's reservation. The record's `task_id` is
 # authoritative when present: a lane's branch name can be stale (or absent, on
@@ -693,6 +742,16 @@ QUARANTINED_COUNT=0
 FREE_COUNT=0
 ASSIGNED_COUNT=0
 STATE_UNKNOWN_COUNT=0
+# The PINNED breakdown's six buckets (see _pin_bucket). They partition
+# PINNED_COUNT exactly -- every pinned lane increments exactly one -- and are
+# emitted unconditionally, zeros included, so "no pins" is a readable value
+# rather than an absent line.
+PIN_PENDING_COUNT=0
+PIN_INFRA_HOLD_COUNT=0
+PIN_BLOCKED_COUNT=0
+PIN_TERMINAL_COUNT=0
+PIN_OTHER_COUNT=0
+PIN_UNKNOWN_COUNT=0
 RECLAIMABLE_COUNT=0
 LEAKED_COUNT=0
 LEAK_UNKNOWN_COUNT=0
@@ -778,6 +837,18 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
         case "$classification" in
             RECLAIMABLE) RECLAIMABLE_COUNT=$((RECLAIMABLE_COUNT + 1)) ;;
             LEAKED) LEAKED_COUNT=$((LEAKED_COUNT + 1)) ;;
+            PINNED)
+                # Keyed off the CLASSIFICATION, not the raw predicate, so the
+                # breakdown can never drift out of sync with PINNED_COUNT.
+                case "$(_pin_bucket "$pin")" in
+                    pending)    PIN_PENDING_COUNT=$((PIN_PENDING_COUNT + 1)) ;;
+                    infra-hold) PIN_INFRA_HOLD_COUNT=$((PIN_INFRA_HOLD_COUNT + 1)) ;;
+                    blocked)    PIN_BLOCKED_COUNT=$((PIN_BLOCKED_COUNT + 1)) ;;
+                    terminal)   PIN_TERMINAL_COUNT=$((PIN_TERMINAL_COUNT + 1)) ;;
+                    unknown)    PIN_UNKNOWN_COUNT=$((PIN_UNKNOWN_COUNT + 1)) ;;
+                    *)          PIN_OTHER_COUNT=$((PIN_OTHER_COUNT + 1)) ;;
+                esac
+                ;;
         esac
 
         # A3 observability: surface (never reclassify) a lane whose LEAKED
@@ -826,12 +897,20 @@ if [ "$FORMAT" = "json" ]; then
         lanes_json="${JSON_LANE_OBJS[*]}"
         unset IFS
     fi
-    printf '{"lanes":[%s],"headroom":{"resident":%d,"live":%d,"pinned":%d,"quarantined":%d,"free":%d,"assigned":%d,"state_unknown":%d,"reclaimable":%d,"leaked":%d,"leak_unknown":%d,"divergent_gib":%d,"free_gib":%d,"budget_gib":%d}}\n' \
-        "$lanes_json" "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB"
+    # pinned_by_status sits ALONGSIDE headroom rather than inside it, and
+    # carries only the six buckets: their total is headroom.pinned, so
+    # repeating it here would be a second copy of a number that must agree.
+    printf '{"lanes":[%s],"headroom":{"resident":%d,"live":%d,"pinned":%d,"quarantined":%d,"free":%d,"assigned":%d,"state_unknown":%d,"reclaimable":%d,"leaked":%d,"leak_unknown":%d,"divergent_gib":%d,"free_gib":%d,"budget_gib":%d},"pinned_by_status":{"pending":%d,"infra-hold":%d,"blocked":%d,"terminal":%d,"other":%d,"unknown":%d}}\n' \
+        "$lanes_json" "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB" \
+        "$PIN_PENDING_COUNT" "$PIN_INFRA_HOLD_COUNT" "$PIN_BLOCKED_COUNT" "$PIN_TERMINAL_COUNT" "$PIN_OTHER_COUNT" "$PIN_UNKNOWN_COUNT"
 else
     printf '%s' "$TABLE_OUT"
     printf 'HEADROOM resident=%d live=%d pinned=%d quarantined=%d free=%d assigned=%d state_unknown=%d reclaimable=%d leaked=%d leak_unknown=%d divergent_gib=%d free_gib=%d budget_gib=%d\n' \
         "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB"
+    # Always emitted, zeros included: a stable grep shape means "no pins" reads
+    # as a value an operator can see, never as an absent line.
+    printf 'PINNED total=%d pending=%d infra-hold=%d blocked=%d terminal=%d other=%d unknown=%d\n' \
+        "$PINNED_COUNT" "$PIN_PENDING_COUNT" "$PIN_INFRA_HOLD_COUNT" "$PIN_BLOCKED_COUNT" "$PIN_TERMINAL_COUNT" "$PIN_OTHER_COUNT" "$PIN_UNKNOWN_COUNT"
 fi
 
 exit 0
