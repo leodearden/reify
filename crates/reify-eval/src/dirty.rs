@@ -143,21 +143,52 @@ pub fn compute_dirty_cone_with_realizations(
     dirty
 }
 
-/// Topologically sort a set of nodes using Kahn's algorithm.
+/// Topologically sort a set of nodes — a thin delegate to the ONE scheduling core.
 ///
-/// Only considers edges within the node set (external dependencies are ignored).
-/// Tie-breaking uses Debug representation for deterministic output.
+/// This function owns no scheduling logic of its own. It forwards to
+/// [`crate::engine_fixpoint::run_unified_pass_seeded`], the single Kahn core
+/// (INV-EVAL-5) shared with the cold, build, edit and concurrent paths. There is
+/// exactly one scheduler in this crate; a second implementation here would be
+/// free to drift from it silently, which is precisely what happened before
+/// (a level-batched drain that diverged on both drain shape and edge kinds).
 ///
-/// This is a convenience wrapper around [`compute_levels`] that flattens the
-/// leveled output into a single ordered vector.
+/// The returned order is therefore the core's own, with two properties callers
+/// may rely on:
+///
+/// - It is the GLOBAL `DebugOrd`-priority Kahn order — a single `pop_first` off
+///   one ready set, NOT a per-level batch drain. A deep chain drains completely
+///   before a `DebugOrd`-larger shallow sibling, rather than the two interleaving
+///   level by level.
+/// - It is REALIZATION-AWARE: in-degree counts both `reads` (→ [`NodeId::Value`])
+///   and `realization_reads` (→ [`NodeId::Realization`]) whenever the predecessor
+///   is itself in `nodes`, and the decrement fires uniformly for every scheduled
+///   node kind. A `realization_reads` consumer can no longer be emitted ahead of
+///   its producer.
+///
+/// Only edges *within* `nodes` are considered: a read naming an out-of-set
+/// producer is not counted, so a node whose producer was already evaluated
+/// upstream still reaches in-degree 0 and is scheduled.
+///
+/// # Cycle-drop contract
+///
+/// This delegate is deliberately PURE — it must never append cyclic residue to
+/// recover a total order. A node inside a dependency cycle never reaches
+/// in-degree 0, so it is absent from the returned vector, and `sorted.len() <
+/// nodes.len()` is exactly the cycle signal three production sites rely on:
+/// [`crate::engine_eval`]'s `detect_let_cycle` and `build_combined_param_let_graph`
+/// (which checks it twice — once on the combined param+let graph, once on the
+/// let-only re-check), and [`crate::unfold`]'s `elaborate_child_lets_only`.
+/// Appending residue here would silently disable all three cycle diagnostics
+/// while leaving their call sites looking correct. Callers that need a total
+/// order over a possibly-cyclic set must append the residue *themselves*, at
+/// their own call site, where the choice is visible (the edit executor in
+/// [`crate::engine_edit`] does exactly that).
 pub fn topological_sort(
     nodes: &HashSet<NodeId>,
     traces: &HashMap<NodeId, DependencyTrace>,
 ) -> Vec<NodeId> {
-    compute_levels(nodes, traces)
-        .into_iter()
-        .flatten()
-        .collect()
+    // Argument order is the core's: (traces, seed).
+    crate::engine_fixpoint::run_unified_pass_seeded(traces, nodes)
 }
 
 /// Compute topological levels from a set of nodes using Kahn's algorithm.
@@ -233,6 +264,13 @@ pub fn compute_levels(
 
 /// Compute the evaluation set: intersection of dirty cone and demand cone,
 /// topologically sorted so dependencies are evaluated before dependents.
+///
+/// The sort is [`topological_sort`], so this entry point inherits the ONE
+/// scheduling core's order transitively: the global `DebugOrd`-priority Kahn
+/// order, realization-aware, with cyclic members dropped rather than appended.
+/// This is the order the edit path re-evaluates in, and it is the same order the
+/// cold/build paths schedule — the two surfaces cannot diverge because there is
+/// only one implementation to diverge from.
 pub fn compute_eval_set(
     dirty: &HashSet<NodeId>,
     demand: &DemandRegistry,
