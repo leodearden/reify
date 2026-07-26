@@ -198,6 +198,64 @@ make_lane_state_raw() {
     printf '%s' "$text" > "$state_dir/$lane.json"
 }
 
+# ── summary-line readers (shared: first used in Block L, again in N/O/P) ──────
+# _report_field <audit-stdout> <line-prefix> <key>
+# Prints the integer value of <key> on the <line-prefix> summary line, or
+# NOTHING when the field is absent. Deliberately does not default to 0: a
+# missing field must read as missing, so an assertion can never pass against a
+# field the script does not actually emit.
+_report_field() {
+    local out="$1" prefix="$2" key="$3"
+    printf '%s\n' "$out" | grep "^${prefix} " | tr ' ' '\n' \
+        | sed -n -E "s/^${key}=([0-9]+)$/\1/p" || true
+    return 0
+}
+
+# _headroom_field <audit-stdout> <key> — the HEADROOM line's <key>.
+_headroom_field() { _report_field "$1" HEADROOM "$2"; }
+
+# _pinned_field <audit-stdout> <key> — the PINNED breakdown line's <key>.
+_pinned_field() { _report_field "$1" PINNED "$2"; }
+
+# _sum_holds <total> <part>...
+# True iff every argument is a non-empty integer AND <total> equals the sum of
+# the parts. An ABSENT field fails (empty is NOT 0): a summing identity must be
+# proven against fields that actually exist, or it passes vacuously against a
+# report that never emitted them.
+_sum_holds() {
+    local total="$1"; shift
+    local v sum=0
+    for v in "$total" "$@"; do
+        case "$v" in
+            ''|*[!0-9]*) return 1 ;;
+        esac
+    done
+    for v in "$@"; do
+        sum=$(( sum + v ))
+    done
+    [ "$total" -eq "$sum" ]
+}
+
+# _partition_holds <resident> <live> <pinned> <quarantined> <free>
+_partition_holds() { _sum_holds "$@"; }
+
+# _strict_max <candidate> <other>...
+# True iff every argument is a non-empty integer AND <candidate> is STRICTLY
+# greater than each of the others. Absent fields fail, for _sum_holds' reason.
+_strict_max() {
+    local cand="$1"; shift
+    local v
+    for v in "$cand" "$@"; do
+        case "$v" in
+            ''|*[!0-9]*) return 1 ;;
+        esac
+    done
+    for v in "$@"; do
+        [ "$cand" -gt "$v" ] || return 1
+    done
+    return 0
+}
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block B — ASSIGNED/FREE probe + LIVE + headroom counts
 # ──────────────────────────────────────────────────────────────────────────────
@@ -879,26 +937,31 @@ echo "--- Block L: assigned= from the .lane-state record ---"
 L_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-l-XXXXXX)"
 _TMPDIRS+=("$L_MOUNT")
 
-# lane:raw-record-state:expected-column. The raw states are exactly
-# dark-factory's LaneState enum (lane_lifecycle.py: seed/registered/assigned/
-# in_use/released/quarantined) plus the three unresolvable cases.
+# lane:raw-record-state:expected-column:expected-unknown-cause. The raw states
+# are exactly dark-factory's LaneState enum (lane_lifecycle.py: seed/registered/
+# assigned/in_use/released/quarantined) plus the three unresolvable cases. The
+# cause field is `-` for a resolvable record, and otherwise the A5 cause the
+# stderr warning must name -- the three UNKNOWN lanes are UNKNOWN for three
+# DIFFERENT reasons, and a warning that cannot tell them apart sends triage
+# after a missing file that is sitting right there.
+#
+# The cause is LAST because `unrecognized-state:wat` itself contains the
+# delimiter: `read` assigns the unsplit remainder to its final variable.
 L_CASES=(
-    "_lane-assigned:assigned:ASSIGNED"
-    "_lane-inuse:in_use:ASSIGNED"
-    "_lane-released:released:RELEASED"
-    "_lane-seed:seed:RELEASED"
-    "_lane-registered:registered:RELEASED"
-    "_lane-quarantined:quarantined:QUARANTINED"
-    "_lane-norecord::UNKNOWN"
-    "_lane-corrupt:CORRUPT:UNKNOWN"
-    "_lane-badstate:wat:UNKNOWN"
-    "_lane-compact:COMPACT:ASSIGNED"
+    "_lane-assigned:assigned:ASSIGNED:-"
+    "_lane-inuse:in_use:ASSIGNED:-"
+    "_lane-released:released:RELEASED:-"
+    "_lane-seed:seed:RELEASED:-"
+    "_lane-registered:registered:RELEASED:-"
+    "_lane-quarantined:quarantined:QUARANTINED:-"
+    "_lane-norecord::UNKNOWN:no-readable-record"
+    "_lane-corrupt:CORRUPT:UNKNOWN:unparseable-record"
+    "_lane-badstate:wat:UNKNOWN:unrecognized-state:wat"
+    "_lane-compact:COMPACT:ASSIGNED:-"
 )
 
 for l_case in "${L_CASES[@]}"; do
-    l_lane="${l_case%%:*}"
-    l_rest="${l_case#*:}"
-    l_state="${l_rest%%:*}"
+    IFS=':' read -r l_lane l_state l_expected l_cause <<< "$l_case"
     make_lane "$L_MOUNT/$l_lane"
     case "$l_state" in
         "")        : ;;  # no record at all
@@ -911,14 +974,36 @@ for l_case in "${L_CASES[@]}"; do
     esac
 done
 
+# Every aggregate below is DERIVED from L_CASES, never typed: no lane in this
+# block is live, so the four-way partition collapses onto the assigned column
+# alone (live=0, ASSIGNED=>pinned, QUARANTINED=>quarantined, the rest=>free).
+# That makes `free` the direct proof of A5's conservative-accounting claim --
+# an UNKNOWN lane is counted free -- for all three unresolvable causes, not
+# just the no-record one.
+l_exp_live=0
+l_exp_pinned=0
+l_exp_quarantined=0
+l_exp_free=0
+l_exp_state_unknown=0
+for l_case in "${L_CASES[@]}"; do
+    IFS=':' read -r l_lane l_state l_expected l_cause <<< "$l_case"
+    case "$l_expected" in
+        ASSIGNED)    l_exp_pinned=$(( l_exp_pinned + 1 )) ;;
+        QUARANTINED) l_exp_quarantined=$(( l_exp_quarantined + 1 )) ;;
+        RELEASED)    l_exp_free=$(( l_exp_free + 1 )) ;;
+        UNKNOWN)     l_exp_free=$(( l_exp_free + 1 ))
+                     l_exp_state_unknown=$(( l_exp_state_unknown + 1 )) ;;
+    esac
+done
+l_exp_resident="${#L_CASES[@]}"
+
 run_helper --mount "$L_MOUNT"
 
 assert "L1: exit 0 over a pool spanning every LaneState + every unresolvable record" \
     test "$RC" -eq 0
 
 for l_case in "${L_CASES[@]}"; do
-    l_lane="${l_case%%:*}"
-    l_expected="${l_case##*:}"
+    IFS=':' read -r l_lane l_state l_expected l_cause <<< "$l_case"
     assert "L2: $l_lane reports assigned=$l_expected" \
         bash -c 'printf "%s\n" "$1" | grep -q "lane=$2 .*assigned=$3"' _ "$OUT" "$l_lane" "$l_expected"
 done
@@ -926,30 +1011,142 @@ done
 # The state dir is dot-prefixed, so the resident glob must already skip it --
 # asserted rather than assumed, since a counted .lane-state would inflate every
 # headroom figure. resident is DERIVED from the fixture array, never typed.
-L_EXPECTED_RESIDENT="${#L_CASES[@]}"
 assert "L3: HEADROOM resident==seeded lane count (.lane-state is not a resident)" \
-    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -qE "(^| )resident=$2( |$)"' _ "$OUT" "$L_EXPECTED_RESIDENT"
+    bash -c '[ "$1" = "$2" ]' _ "$(_headroom_field "$OUT" resident)" "$l_exp_resident"
 
-# ── L4: REIFY_WARM_LANE_AUDIT_STATE_DIR override, pointed OUTSIDE the mount ──
+# L4: the pool-wide figures, so each of the three unresolvable causes is proven
+# at the HEADROOM cross-cut too -- not only at its own row's column. Without
+# `state_unknown` here, a reader that resolved the column correctly but forgot
+# to COUNT the corrupt/unrecognized lanes would pass every per-lane assertion.
+L_FIELDS=(
+    "live:$l_exp_live"
+    "pinned:$l_exp_pinned"
+    "quarantined:$l_exp_quarantined"
+    "free:$l_exp_free"
+    "state_unknown:$l_exp_state_unknown"
+)
+for l_f in "${L_FIELDS[@]}"; do
+    l_key="${l_f%%:*}"
+    l_want="${l_f##*:}"
+    assert "L4: HEADROOM $l_key=$l_want (derived from L_CASES)" \
+        bash -c '[ "$1" = "$2" ]' _ "$(_headroom_field "$OUT" "$l_key")" "$l_want"
+done
+assert "L5: partition identity holds across every LaneState + unresolvable record" \
+    _partition_holds \
+    "$(_headroom_field "$OUT" resident)" \
+    "$(_headroom_field "$OUT" live)" \
+    "$(_headroom_field "$OUT" pinned)" \
+    "$(_headroom_field "$OUT" quarantined)" \
+    "$(_headroom_field "$OUT" free)"
+
+# L6: A5's stderr warning must name the lane AND the cause that actually fired.
+# Asserting the DISTINCT text per lane is what keeps the three causes separable:
+# a single hardcoded message satisfies "a warning was emitted" while telling an
+# operator to go look for a file that is present and readable.
+for l_case in "${L_CASES[@]}"; do
+    IFS=':' read -r l_lane l_state l_expected l_cause <<< "$l_case"
+    [ "$l_expected" = "UNKNOWN" ] || continue
+    assert "L6: stderr names $l_lane with cause ($l_cause)" \
+        bash -c 'printf "%s\n" "$1" | grep -qF "lane=$2: assignment state unknown ($3)"' \
+        _ "$ERR_OUT" "$l_lane" "$l_cause"
+done
+
+# L7: `pin` is gated on assigned==ASSIGNED, so the QUARANTINED and UNKNOWN arms
+# of that gate must report `-` just as the LIVE (M5) and RELEASED (M6) arms do.
+# A gate that leaked a pin for a withheld or unresolvable lane would name a
+# holder for a lane nothing has reserved.
+for l_case in "${L_CASES[@]}"; do
+    IFS=':' read -r l_lane l_state l_expected l_cause <<< "$l_case"
+    case "$l_expected" in
+        QUARANTINED|UNKNOWN) : ;;
+        *) continue ;;
+    esac
+    assert "L7: $l_lane is $l_expected, not ASSIGNED -- not pinned (pin=-)" \
+        bash -c 'printf "%s\n" "$1" | grep -qE "lane=$2 .*pin=-( |\$)"' _ "$OUT" "$l_lane"
+done
+
+# L8: the JSON emitter's own `assigned` VALUES. The table row and the JSON
+# object are two separate interpolations, so a JSON path that hardcoded the
+# column or interpolated the wrong variable would satisfy every table-side
+# assertion above plus H6's key-set check. `assigned` is the column this whole
+# change exists to add; its JSON values must be pinned, not merely present.
+L_PY_ASSIGNED="$(mktemp /tmp/test-warm-lane-audit-l-assigned-XXXXXX.py)"
+_TMPDIRS+=("$L_PY_ASSIGNED")
+cat > "$L_PY_ASSIGNED" << 'PYEOF'
+import json, sys
+data = json.load(sys.stdin)
+by_lane = {o["lane"]: o for o in data["lanes"]}
+want = dict(kv.split("=", 1) for kv in sys.argv[1:])
+assert set(by_lane) == set(want), (sorted(by_lane), sorted(want))
+for lane, expected in want.items():
+    got = by_lane[lane].get("assigned")
+    assert got == expected, f"{lane}: assigned == {got!r}, want {expected!r}"
+# Not every lane may carry the same value -- a JSON path that hardcoded one
+# constant would otherwise satisfy a fixture that happened to be uniform.
+assert len(set(want.values())) > 1, want
+PYEOF
+
+L_PY_ARGS=()
+for l_case in "${L_CASES[@]}"; do
+    IFS=':' read -r l_lane l_state l_expected l_cause <<< "$l_case"
+    L_PY_ARGS+=("$l_lane=$l_expected")
+done
+run_helper --mount "$L_MOUNT" --format json
+assert "L8a: exit 0 (json)" test "$RC" -eq 0
+assert "L8b: json lane objects carry the same assigned= values as the table rows" \
+    bash -c 'printf "%s" "$1" | python3 "$2" "${@:3}"' _ "$OUT" "$L_PY_ASSIGNED" "${L_PY_ARGS[@]}"
+
+# ── L9: a present-but-UNREADABLE record is the third way _lane_record's
+# readability guard can fire, and the only one no other fixture reaches.
+# Skipped under root, for whom mode 000 is not a barrier.
+if [ "$(id -u)" -ne 0 ]; then
+    L9_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-l9-XXXXXX)"
+    _TMPDIRS+=("$L9_MOUNT")
+    make_lane "$L9_MOUNT/_lane-unreadable"
+    make_lane_state "$L9_MOUNT" "_lane-unreadable" "assigned" "7200"
+    chmod 000 "$L9_MOUNT/.lane-state/_lane-unreadable.json"
+    run_helper --mount "$L9_MOUNT"
+    # Restore before any assertion can abort the suite, so cleanup's rm -rf works.
+    chmod 644 "$L9_MOUNT/.lane-state/_lane-unreadable.json"
+    assert "L9a: exit 0 with an unreadable record (degrades, never aborts)" test "$RC" -eq 0
+    assert "L9b: an unreadable record reports assigned=UNKNOWN (never the state inside it)" \
+        bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-unreadable .*assigned=UNKNOWN"' _ "$OUT"
+    assert "L9c: stderr names the unreadable record's cause" \
+        bash -c 'printf "%s\n" "$1" | grep -qF "lane=_lane-unreadable: assignment state unknown (no-readable-record)"' \
+        _ "$ERR_OUT"
+else
+    echo "  SKIP: L9 (running as root — mode 000 does not make a file unreadable)"
+fi
+
+# ── L10: with NO status oracle at all, a pinned lane's holder is unresolvable.
+# That is _task_status_raw's `unset STATUS_CMD` early return, a DIFFERENT branch
+# from M9's failing-oracle path, and it must reach the same pin=unknown sentinel
+# rather than a blank column or an aborted run.
+REIFY_LANE_LEAK_STATUS_CMD= run_helper --mount "$L_MOUNT"
+assert "L10a: exit 0 with no status oracle configured at all" test "$RC" -eq 0
+assert "L10b: a pinned lane with no oracle reports pin=unknown (never blank)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-assigned .*pin=unknown( |\$)"' _ "$OUT"
+
+# ── L11: REIFY_WARM_LANE_AUDIT_STATE_DIR override, pointed OUTSIDE the mount ─
 # Run twice against the SAME lane: once bare (no record findable -> UNKNOWN),
 # once with the override (record found -> ASSIGNED). The pair proves the
 # override is what resolved the state, not a coincidence of the fixture.
-L4_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-l4-XXXXXX)"
-_TMPDIRS+=("$L4_MOUNT")
-L4_STATE="$(mktemp -d /tmp/test-warm-lane-audit-l4-state-XXXXXX)"
-_TMPDIRS+=("$L4_STATE")
-make_lane "$L4_MOUNT/_lane-ext"
+L11_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-l11-XXXXXX)"
+_TMPDIRS+=("$L11_MOUNT")
+L11_STATE="$(mktemp -d /tmp/test-warm-lane-audit-l11-state-XXXXXX)"
+_TMPDIRS+=("$L11_STATE")
+make_lane "$L11_MOUNT/_lane-ext"
 # make_lane_state writes <arg>/.lane-state/<lane>.json, so pass the parent and
 # point the override at the .lane-state dir it creates.
-make_lane_state "$L4_STATE" "_lane-ext" "assigned" "7100" "task/7100"
+make_lane_state "$L11_STATE" "_lane-ext" "assigned" "7100" "task/7100"
 
-run_helper --mount "$L4_MOUNT"
-assert "L4a: without the override the out-of-mount record is not found (assigned=UNKNOWN)" \
+run_helper --mount "$L11_MOUNT"
+assert "L11a: without the override the out-of-mount record is not found (assigned=UNKNOWN)" \
     bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-ext .*assigned=UNKNOWN"' _ "$OUT"
 
-REIFY_WARM_LANE_AUDIT_STATE_DIR="$L4_STATE/.lane-state" run_helper --mount "$L4_MOUNT"
-assert "L4b: exit 0 under REIFY_WARM_LANE_AUDIT_STATE_DIR" test "$RC" -eq 0
-assert "L4c: REIFY_WARM_LANE_AUDIT_STATE_DIR outside the mount is honoured (assigned=ASSIGNED)" \
+REIFY_WARM_LANE_AUDIT_STATE_DIR="$L11_STATE/.lane-state" run_helper --mount "$L11_MOUNT"
+assert "L11b: exit 0 under REIFY_WARM_LANE_AUDIT_STATE_DIR" test "$RC" -eq 0
+assert "L11c: REIFY_WARM_LANE_AUDIT_STATE_DIR outside the mount is honoured (assigned=ASSIGNED)" \
     bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-ext .*assigned=ASSIGNED"' _ "$OUT"
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1153,63 +1350,6 @@ for n_case in "${N_CASES[@]}"; do
     esac
 done
 n_exp_resident="${#N_CASES[@]}"
-
-# _report_field <audit-stdout> <line-prefix> <key>
-# Prints the integer value of <key> on the <line-prefix> summary line, or
-# NOTHING when the field is absent. Deliberately does not default to 0: a
-# missing field must read as missing, so an assertion can never pass against a
-# field the script does not actually emit.
-_report_field() {
-    local out="$1" prefix="$2" key="$3"
-    printf '%s\n' "$out" | grep "^${prefix} " | tr ' ' '\n' \
-        | sed -n -E "s/^${key}=([0-9]+)$/\1/p" || true
-    return 0
-}
-
-# _headroom_field <audit-stdout> <key> — the HEADROOM line's <key>.
-_headroom_field() { _report_field "$1" HEADROOM "$2"; }
-
-# _pinned_field <audit-stdout> <key> — the PINNED breakdown line's <key>.
-_pinned_field() { _report_field "$1" PINNED "$2"; }
-
-# _sum_holds <total> <part>...
-# True iff every argument is a non-empty integer AND <total> equals the sum of
-# the parts. An ABSENT field fails (empty is NOT 0): a summing identity must be
-# proven against fields that actually exist, or it passes vacuously against a
-# report that never emitted them.
-_sum_holds() {
-    local total="$1"; shift
-    local v sum=0
-    for v in "$total" "$@"; do
-        case "$v" in
-            ''|*[!0-9]*) return 1 ;;
-        esac
-    done
-    for v in "$@"; do
-        sum=$(( sum + v ))
-    done
-    [ "$total" -eq "$sum" ]
-}
-
-# _partition_holds <resident> <live> <pinned> <quarantined> <free>
-_partition_holds() { _sum_holds "$@"; }
-
-# _strict_max <candidate> <other>...
-# True iff every argument is a non-empty integer AND <candidate> is STRICTLY
-# greater than each of the others. Absent fields fail, for _sum_holds' reason.
-_strict_max() {
-    local cand="$1"; shift
-    local v
-    for v in "$cand" "$@"; do
-        case "$v" in
-            ''|*[!0-9]*) return 1 ;;
-        esac
-    done
-    for v in "$@"; do
-        [ "$cand" -gt "$v" ] || return 1
-    done
-    return 0
-}
 
 ORACLE_MAP="$N_MAP" run_helper --mount "$N_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
 
