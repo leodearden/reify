@@ -305,16 +305,19 @@ fn circular_pattern_value_form_axis_z_emits_correct_op() {
     }
 }
 
-/// (b) Back-compat: legacy 9-arg scalar form circular_pattern(box, 0,0,0, 0,0,1, 6, 60deg)
-/// still builds without errors and emits CircularPattern with count==6.
+/// (b) Back-compat: legacy 9-arg scalar form
+/// circular_pattern(box, 0mm,0mm,0mm, 0,0,1, 6, 60deg) still builds without
+/// errors and emits CircularPattern with count==6.
 ///
-/// GREEN before and after step-8 (back-compat must hold).
+/// GREEN before and after step-8 (back-compat must hold). The axis ORIGIN is
+/// dimensioned since task 5350 gated it as a Length; the axis DIRECTION stays
+/// a bare dimensionless unit vector.
 #[test]
 fn circular_pattern_scalar_back_compat_emits_correct_op() {
     let source = r#"
         structure def S {
             let b = box(2mm, 2mm, 2mm)
-            let p = circular_pattern(b, 0, 0, 0, 0, 0, 1, 6, 60deg)
+            let p = circular_pattern(b, 0mm, 0mm, 0mm, 0, 0, 1, 6, 60deg)
         }
     "#;
 
