@@ -353,6 +353,58 @@ mod tests {
         }
     }
 
+    fn sub_component(name: &str, structure_name: &str, visibility: Visibility) -> SubComponentDecl {
+        SubComponentDecl {
+            name: name.to_string(),
+            structure_name: structure_name.to_string(),
+            visibility,
+            args: Vec::new(),
+            type_args: Vec::new(),
+            is_collection: false,
+            count_cell: None,
+            guard_state: GuardState::None,
+            pose: None,
+            auto_pose: None,
+            is_aux: false,
+            keyed_members: Vec::new(),
+            keyed_member_overrides: Vec::new(),
+            span: SourceSpan::new(0, 0),
+            content_hash: ContentHash::of_str(name),
+        }
+    }
+
+    fn port(name: &str, is_priv: bool) -> CompiledPort {
+        CompiledPort {
+            name: name.to_string(),
+            direction: reify_core::PortDirection::Bidi,
+            type_name: "SomeTrait".to_string(),
+            members: Vec::new(),
+            constraints: Vec::new(),
+            frame_expr: None,
+            is_priv,
+        }
+    }
+
+    fn realization(entity: &str, index: u32, name: &str) -> RealizationDecl {
+        RealizationDecl {
+            id: RealizationNodeId::new(entity, index),
+            name: Some(name.to_string()),
+            is_aux: false,
+            operations: Vec::new(),
+            span: SourceSpan::new(0, 0),
+        }
+    }
+
+    /// `structure def C { sub child = Child()  port p : SomeTrait { }  let body = <geom> }`
+    fn template_c() -> TopologyTemplate {
+        TopologyTemplate {
+            sub_components: vec![sub_component("child", "Child", Visibility::Public)],
+            ports: vec![port("p", false)],
+            realizations: vec![realization("C", 0, "body")],
+            ..empty_template("C")
+        }
+    }
+
     /// Run `body` with a scope whose template registry holds `templates`.
     ///
     /// The registry borrows the templates, so it cannot escape the closure —
@@ -420,6 +472,101 @@ mod tests {
             );
             assert_eq!(r.hop.visibility, MemberVisibility::Public);
             assert_eq!(r.value_cell_type, Some(Type::length()));
+        });
+    }
+
+    // ── step-3: the remaining member containers ───────────────────────
+
+    #[test]
+    fn resolve_hop_classifies_a_sub_component_and_types_the_next_hop_from_it() {
+        let templates = [template_c()];
+        with_scope("Test", &templates, |scope| {
+            let r = resolve_hop(&Type::StructureRef("C".to_string()), "child", scope)
+                .expect("'child' is a declared sub of C");
+            assert_eq!(r.hop.member_kind, MemberKind::Sub);
+            // `SubComponentDecl.structure_name` is what makes the NEXT hop
+            // resolvable against a concrete template.
+            assert_eq!(r.next_type, Type::StructureRef("Child".to_string()));
+            // Not a value cell → the caller's `value_cells`-only read-back must
+            // still fall back to its permissive dimensionless type (D9).
+            assert_eq!(r.value_cell_type, None);
+        });
+    }
+
+    #[test]
+    fn resolve_hop_classifies_a_port() {
+        let templates = [template_c()];
+        with_scope("Test", &templates, |scope| {
+            let r = resolve_hop(&Type::StructureRef("C".to_string()), "p", scope)
+                .expect("'p' is a declared port of C");
+            assert_eq!(r.hop.member_kind, MemberKind::Port);
+            assert_eq!(r.value_cell_type, None);
+        });
+    }
+
+    #[test]
+    fn resolve_hop_classifies_a_named_realization_as_geometry() {
+        let templates = [template_c()];
+        with_scope("Test", &templates, |scope| {
+            let r = resolve_hop(&Type::StructureRef("C".to_string()), "body", scope)
+                .expect("'body' is a named realization of C");
+            assert_eq!(r.hop.member_kind, MemberKind::Realization);
+            // The same type `expr.rs` stamps on a `CrossSubGeometryRef`.
+            assert_eq!(r.next_type, Type::Geometry);
+            assert_eq!(r.value_cell_type, None);
+        });
+    }
+
+    /// C1-iii: an unknown member names the CONCRETE structure at that hop and
+    /// carries that hop's concrete `Type` — never a generic geometry sentence.
+    #[test]
+    fn resolve_hop_reports_unknown_member_against_the_concrete_structure() {
+        let templates = [template_c()];
+        with_scope("Test", &templates, |scope| {
+            let err = resolve_hop(&Type::StructureRef("C".to_string()), "nope", scope)
+                .expect_err("'nope' is declared by no container of C");
+            assert_eq!(
+                err,
+                MemberPathError::UnknownMember {
+                    hop_index: 0,
+                    object_type: Type::StructureRef("C".to_string()),
+                    structure: "C".to_string(),
+                    member: "nope".to_string(),
+                }
+            );
+        });
+    }
+
+    /// The containers must partition the name space: a name present only in
+    /// `sub_components` must never report `ValueCell`, and vice versa. This is
+    /// the property that makes `MemberKind` a faithful classification rather
+    /// than a first-match-wins guess.
+    #[test]
+    fn the_member_containers_are_disjoint_in_the_classification() {
+        let templates = [TopologyTemplate {
+            value_cells: vec![value_cell(
+                "D",
+                "vc",
+                ValueCellKind::Param,
+                Visibility::Public,
+                Type::length(),
+            )],
+            sub_components: vec![sub_component("sc", "Child", Visibility::Public)],
+            ports: vec![port("pt", false)],
+            realizations: vec![realization("D", 0, "rz")],
+            ..empty_template("D")
+        }];
+        with_scope("Test", &templates, |scope| {
+            let obj = Type::StructureRef("D".to_string());
+            let kind = |m: &str| resolve_hop(&obj, m, scope).map(|r| r.hop.member_kind);
+            assert_eq!(
+                kind("vc"),
+                Ok(MemberKind::ValueCell(ValueCellKind::Param)),
+                "a value-cell name must not be claimed by another container"
+            );
+            assert_eq!(kind("sc"), Ok(MemberKind::Sub));
+            assert_eq!(kind("pt"), Ok(MemberKind::Port));
+            assert_eq!(kind("rz"), Ok(MemberKind::Realization));
         });
     }
 }
