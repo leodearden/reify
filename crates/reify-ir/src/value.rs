@@ -11675,12 +11675,47 @@ mod tests {
 
     #[test]
     fn format_display_point_scalar_reference_computed_in_display_units() {
-        // Same magnitudes as format_display_point_snaps_centroid_dust_relative_to_z,
-        // but expressed as Value::Scalar{si_value in metres, LENGTH} instead
-        // of Value::Real — proves aggregate_magnitude computes the reference
-        // from the *display*-unit value (mm, via display_scale's *1000) and
-        // not the raw SI value, matching format_display's own to_display_units
-        // conversion for each component.
+        // The centroid case expressed as Value::Scalar{si_value in metres,
+        // LENGTH} instead of Value::Real — proves aggregate_magnitude computes
+        // the reference from the *display*-unit value (mm, via display_scale's
+        // ×1000) and not the raw SI value, matching format_display's own
+        // to_display_units conversion for each component.
+        //
+        // The dust magnitude is chosen to sit inside the band where the ×1000
+        // LENGTH scale flips the outcome, so the test actually discriminates
+        // the raw-SI bug rather than passing under both:
+        //   correct (display reference 21.5084347502 mm):
+        //     1e-9 < 1e-9 * 21.5084347502 = 2.15e-8  → snaps to "0"
+        //   bug (raw-SI reference 0.0215084347502 m):
+        //     1e-9 < 1e-9 * 0.0215084347502 = 2.15e-11 is FALSE
+        //     → renders "0.000000001" and this assertion fails.
+        // Don't retune these magnitudes without re-checking both lines.
+        let v = Value::Point(vec![
+            Value::Scalar {
+                si_value: 1e-12,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 1e-12,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0215084347502,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        assert_eq!(
+            v.format_display(),
+            format!("point(0, 0, {})", format_display_number(21.5084347502))
+        );
+    }
+
+    #[test]
+    fn format_display_point_scalar_pins_real_centroid_artifact() {
+        // The real BottomDeck.centroid magnitudes in Scalar form (x/y ~3.9e-13
+        // and ~1.6e-13 mm next to a 21.5084347502 mm z). Kept alongside the
+        // discriminating case above so the reported artifact stays pinned
+        // end-to-end through the Scalar/display-units path.
         let v = Value::Point(vec![
             Value::Scalar {
                 si_value: 3.86564423998e-16,
