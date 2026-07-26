@@ -651,3 +651,37 @@ fn e2e_result_unwrap_or_ok_with_stdlib() {
          the placeholder .ri body would return the default 0mm"
     );
 }
+
+/// End-to-end: `or_else(Err { error: "e" }, Ok { value: 7mm })` compiled with
+/// the real stdlib must evaluate to the ALTERNATIVE, `Ok{value:7mm}`.
+///
+/// DISCRIMINATION: `result.ri` ships
+/// `pub fn or_else<T, E>(r: Result<T, E>, alt: Result<T, E>) -> Result<T, E> { r }`,
+/// a typecheck-only placeholder that ALWAYS returns the SUBJECT and never
+/// looks at `alt`. With the intercept removed this call therefore returns
+/// `Err{error:"e"}` and this assert fails.
+///
+/// The `Err` subject is MANDATORY here. Measured negative: the Ok-subject form
+/// `or_else(Ok{value:5mm}, Ok{value:7mm})` compiles and returns `Ok{value:5mm}`
+/// — but the placeholder returns the subject `Ok{value:5mm}` too, so intercept
+/// and placeholder agree and the test would be a coincidentally-green no-op.
+/// Only an `Err` subject makes the two paths diverge.
+#[test]
+fn e2e_result_or_else_err_with_stdlib() {
+    let module = reify_test_support::compile_source_with_stdlib(
+        r#"structure S { let v = or_else(Err { error: "e" }, Ok { value: 7mm }) }"#,
+    );
+    let expr = cell_expr_stdlib(&module, "v");
+    let values = ValueMap::new();
+    let ctx = EvalContext::new(&values, &module.functions);
+    let val_7mm = Value::Scalar {
+        si_value: 0.007,
+        dimension: DimensionVector::LENGTH,
+    };
+    assert_eq!(
+        eval_expr(expr, &ctx),
+        val_ok(val_7mm),
+        "e2e: or_else(Err{{error:\"e\"}}, Ok{{value:7mm}}) compiled via stdlib must evaluate to \
+         the alternative Ok{{value:7mm}} — the placeholder .ri body would return the Err subject"
+    );
+}
