@@ -474,3 +474,78 @@ describe('defaultVisibilityFor — default_visible field (T6 aux hidden-by-defau
     expect(view.visibility['Asm#realization[1]']).toBe('hidden');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #5195 step-7: DisplayOutput explicit routing
+// ---------------------------------------------------------------------------
+
+/**
+ * When a design declares one or more `DisplayOutput`s, the author has stated
+ * explicitly what they want to see. The auto:default view then shows ONLY the
+ * subjects — explicit routing outranks every per-node default, including a
+ * subject whose own `default_visible` is false.
+ *
+ * Scoped to realization nodes (the things that carry meshes) and to the
+ * auto:default view; the All-Geometry escape hatch and user views are
+ * untouched.
+ */
+describe('DisplayOutput explicit routing (#5195)', () => {
+  const subjectTree = () => [
+    makeNode({
+      entity_path: 'P',
+      kind: 'structure',
+      children: [
+        makeNode({ entity_path: 'P.width', kind: 'param', type_name: 'Length' }),
+        makeNode({ entity_path: 'P#realization[0]', kind: 'realization', default_visible: true }),
+        makeNode({ entity_path: 'P#realization[1]', kind: 'realization', default_visible: true }),
+      ],
+    }),
+  ];
+
+  it('defaultVisibilityFor: subject realization → "show"', () => {
+    const node = makeNode({ entity_path: 'P#realization[0]', kind: 'realization', default_visible: true });
+    expect(defaultVisibilityFor(node, new Set(['P#realization[0]']))).toBe('show');
+  });
+
+  it('defaultVisibilityFor: non-subject realization → "hidden"', () => {
+    const node = makeNode({ entity_path: 'P#realization[1]', kind: 'realization', default_visible: true });
+    expect(defaultVisibilityFor(node, new Set(['P#realization[0]']))).toBe('hidden');
+  });
+
+  it('defaultVisibilityFor: routing outranks default_visible:false on a subject', () => {
+    const node = makeNode({ entity_path: 'P#realization[0]', kind: 'realization', default_visible: false });
+    expect(defaultVisibilityFor(node, new Set(['P#realization[0]']))).toBe('show');
+  });
+
+  it('defaultVisibilityFor: a non-realization node is unaffected by routing', () => {
+    const node = makeNode({ entity_path: 'P.width', kind: 'param', type_name: 'Length' });
+    expect(defaultVisibilityFor(node, new Set(['P#realization[0]']))).toBe('show');
+  });
+
+  it('generateDefaultView: only the subject realization is shown', () => {
+    const view = generateDefaultView(subjectTree(), new Set(['P#realization[0]']));
+    expect(view.visibility['P#realization[0]']).toBe('show');
+    expect(view.visibility['P#realization[1]']).toBe('hidden');
+    // Non-realization nodes keep their normal rules.
+    expect(view.visibility['P']).toBe('show');
+    expect(view.visibility['P.width']).toBe('show');
+  });
+
+  it('generateDefaultView: an EMPTY subject set means no DisplayOutputs → normal rules', () => {
+    const view = generateDefaultView(subjectTree(), new Set());
+    expect(view.visibility['P#realization[0]']).toBe('show');
+    expect(view.visibility['P#realization[1]']).toBe('show');
+  });
+
+  it('generateDefaultView: an omitted subject set behaves exactly as before', () => {
+    const view = generateDefaultView(subjectTree());
+    expect(view.visibility['P#realization[0]']).toBe('show');
+    expect(view.visibility['P#realization[1]']).toBe('show');
+  });
+
+  it('generateAllGeometryView stays the escape hatch — routing does not reach it', () => {
+    const view = generateAllGeometryView(subjectTree());
+    expect(view.visibility['P#realization[0]']).toBe('show');
+    expect(view.visibility['P#realization[1]']).toBe('show');
+  });
+});
