@@ -2778,7 +2778,15 @@ assert "R6a: \$_HELPER_LANES_FILE exists, is non-empty, and recorded \$I_SC_BASE
 # the checker is ever refactored. Mirrors R2/R5's positive-control role for
 # the other detector. Synthetic log files only (no real seed run needed):
 # the checker only inspects path STRINGS line by line, never touches disk
-# itself. ─────────────────────────────────────────────────────────────────
+# itself.
+#
+# The mixed-log branch also inspects the OFFENDER MESSAGE content, not just
+# the exit status: <label> is the one new surface the task 5609 amendment
+# added to _assert_no_bare_tmp_lanes (parameterizing it for R6's benefit), so
+# an exit-status-only check would stay green through a refactor that broke
+# the message (dropped the offenders expansion, or swapped the label/offender
+# argument order between R3 and R6) — the exact regression this positive
+# control exists to catch. ──────────────────────────────────────────────────
 R6B_NESTED_LANE="$_LANE_ROOT/synthetic-nested-lane"
 R6B_MIXED_LOG="$_LANE_ROOT/.r6b-mixed-log"
 R6B_CLEAN_LOG="$_LANE_ROOT/.r6b-clean-log"
@@ -2786,12 +2794,15 @@ printf '%s\n%s\n' "/tmp/synthetic-bare-lane" "$R6B_NESTED_LANE" > "$R6B_MIXED_LO
 printf '%s\n' "$R6B_NESTED_LANE" > "$R6B_CLEAN_LOG"
 _r6b_positive_control() {
     local mixed_log="$1" clean_log="$2" label="$3"
-    if _assert_no_bare_tmp_lanes "$mixed_log" "$label" >/dev/null 2>&1; then
-        return 1
-    fi
+    local out
+    out="$(_assert_no_bare_tmp_lanes "$mixed_log" "$label" 2>&1)" && return 1
+    case "$out" in
+        *"$label"*"/tmp/synthetic-bare-lane"*) ;;
+        *) return 1 ;;
+    esac
     _assert_no_bare_tmp_lanes "$clean_log" "$label" >/dev/null 2>&1
 }
-assert "R6b: _assert_no_bare_tmp_lanes flags a bare-/tmp entry in a mixed log as an offender AND passes a clean nested-only log" \
+assert "R6b: _assert_no_bare_tmp_lanes flags a bare-/tmp entry in a mixed log as an offender (message names both the label and the offending path) AND passes a clean nested-only log" \
     _r6b_positive_control "$R6B_MIXED_LOG" "$R6B_CLEAN_LOG" "R6b-synthetic"
 
 # ── R2: positive control for R1 — proves the detector actually fires on a
