@@ -251,7 +251,8 @@ pub(crate) enum LengthArg {
 /// and require a finite LENGTH-dimensioned `Value::Scalar`.
 ///
 /// This is the units chokepoint for the pattern/mirror length-semantic args
-/// (spacing, mirror-plane origin, arbitrary-pattern offsets). Unlike
+/// (spacing, mirror-plane origin, circular-pattern axis origin,
+/// arbitrary-pattern offsets). Unlike
 /// [`eval_named_arg_f64`] — whose `Value::as_f64` silently reads a BARE
 /// `Value::Real(10.0)` as **10 SI metres** and a `10mm` Scalar as `0.01` m —
 /// this helper REJECTS a bare `Real`/`Int` or a wrong-dimension `Scalar`
@@ -2557,6 +2558,16 @@ fn pattern_circular(
             angle,
         })
     } else {
+        // The axis ORIGIN is length-semantic (a point in space): require a
+        // finite LENGTH Scalar (reject a bare/dimensionless component, which
+        // `Value::as_f64` would silently read as SI metres — the `12` vs `12mm`
+        // 1000× hazard). Read ox/oy/oz directly here — NOT via the `f64_arg`
+        // closure below — so their `&mut diagnostics` borrows don't overlap
+        // with the closure's capture.
+        let ox = required_length_arg("ox", kind, args, values, functions, meta_map, diagnostics)?;
+        let oy = required_length_arg("oy", kind, args, values, functions, meta_map, diagnostics)?;
+        let oz = required_length_arg("oz", kind, args, values, functions, meta_map, diagnostics)?;
+        // The axis DIRECTION is a dimensionless unit vector — stays bare f64.
         let mut f64_arg = |name: &str| -> Result<f64, String> {
             eval_named_arg_f64(
                 name,
@@ -2571,15 +2582,7 @@ fn pattern_circular(
                 format!("missing or non-finite argument '{}' for {}", name, kind)
             })
         };
-        // The axis ORIGIN is length-semantic (a point in space) and is still read
-        // BARE here — `Value::as_f64` silently reads it as SI metres — unlike
-        // mirror's plane origin, which task 5214 gated as a Length. That
-        // asymmetry is deliberate, not an oversight: `circular_pattern` was
-        // outside 5214's enumerated audit list, and closing it also has to
-        // migrate its own bare call sites + characterization fixtures.
-        // TODO(#5350): route ox/oy/oz through `required_length_arg`. The axis
-        // DIRECTION ax/ay/az stays bare — a unit vector is dimensionless.
-        let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
+        let axis_origin = [ox, oy, oz];
         let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
         let count_raw = f64_arg("count")?;
         let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;

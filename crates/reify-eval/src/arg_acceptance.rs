@@ -3,9 +3,10 @@
 //! Provides [`accept_arg`] and the associated types (`ArgSpec`, `Acceptance`,
 //! `ArgRejection`) used by Contract A (`resolve_density_arg` in `geometry_ops`),
 //! Contract B (`body_mass_props` density ladder in `dynamics_ops`; task δ), and
-//! Contract C — the LENGTH-semantic args (task 5214): `geometry_ops`'
-//! `eval_named_arg_length` (pattern spacing, mirror-plane origin,
-//! arbitrary-pattern offsets) and `resolve_length_scalar_arg`
+//! Contract C — the LENGTH-semantic args (task 5214, extended by 5350):
+//! `geometry_ops`' `eval_named_arg_length` (pattern spacing, mirror-plane
+//! origin, circular-pattern axis origin, arbitrary-pattern offsets)
+//! and `resolve_length_scalar_arg`
 //! (`edges_at_height` z/tol, `geo_equiv` tol), which share the single
 //! [`length_spec`] so both emit identical rejection text.
 //!
@@ -84,12 +85,14 @@ pub fn density_spec() -> ArgSpec {
 }
 
 /// Returns the [`ArgSpec`] for a LENGTH-semantic builtin argument — pattern
-/// spacing, mirror-plane origin, or arbitrary-pattern offset: a `Value::Scalar`
-/// with `DimensionVector::LENGTH` (metres). Mirrors [`density_spec`].
+/// spacing, mirror-plane origin, circular-pattern axis origin, or
+/// arbitrary-pattern offset: a `Value::Scalar` with `DimensionVector::LENGTH`
+/// (metres). Mirrors [`density_spec`].
 ///
 /// A bare `Value::Real`/`Int` in one of these positions is silently read as SI
 /// **metres** by `Value::as_f64` (the `10` vs `10mm` = 1000× hazard); this spec
-/// drives the eval-layer rejection that closes that hole (task 5214).
+/// drives the eval-layer rejection that closes that hole (task 5214; the
+/// circular-pattern axis origin was added by task 5350).
 pub fn length_spec() -> ArgSpec {
     ArgSpec {
         type_name: "Length",

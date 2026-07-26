@@ -2750,9 +2750,11 @@
             kind: PatternKind::Circular,
             target: GeomRef::Step(0),
             args: vec![
-                ("ox".into(), literal_f64(0.0)),
-                ("oy".into(), literal_f64(0.0)),
-                ("oz".into(), literal_f64(0.0)),
+                // Axis ORIGIN is length-semantic → must be dimensioned Length.
+                ("ox".into(), literal_length(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
+                // Axis DIRECTION is a dimensionless unit vector → stays bare f64.
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
@@ -2993,9 +2995,11 @@
             kind: PatternKind::Circular,
             target: GeomRef::Step(0),
             args: vec![
-                ("ox".into(), literal_f64(0.0)),
-                ("oy".into(), literal_f64(0.0)),
-                ("oz".into(), literal_f64(0.0)),
+                // Axis ORIGIN is length-semantic → must be dimensioned Length.
+                ("ox".into(), literal_length(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
+                // Axis DIRECTION is a dimensionless unit vector → stays bare f64.
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
@@ -3057,9 +3061,11 @@
             kind: reify_compiler::PatternKind::Circular,
             target: GeomRef::Step(0),
             args: vec![
-                ("ox".into(), literal_f64(0.0)),
-                ("oy".into(), literal_f64(0.0)),
-                ("oz".into(), literal_f64(0.0)),
+                // Axis ORIGIN is length-semantic → must be dimensioned Length.
+                ("ox".into(), literal_length(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
+                // Axis DIRECTION is a dimensionless unit vector → stays bare f64.
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
@@ -3105,9 +3111,11 @@
             kind: reify_compiler::PatternKind::Circular,
             target: GeomRef::Step(0),
             args: vec![
-                ("ox".into(), literal_f64(0.0)),
-                ("oy".into(), literal_f64(0.0)),
-                ("oz".into(), literal_f64(0.0)),
+                // Axis ORIGIN is length-semantic → must be dimensioned Length.
+                ("ox".into(), literal_length(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
+                // Axis DIRECTION is a dimensionless unit vector → stays bare f64.
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
@@ -3148,9 +3156,11 @@
             kind: reify_compiler::PatternKind::Circular,
             target: GeomRef::Step(0),
             args: vec![
-                ("ox".into(), literal_f64(0.0)),
-                ("oy".into(), literal_f64(0.0)),
-                ("oz".into(), literal_f64(0.0)),
+                // Axis ORIGIN is length-semantic → must be dimensioned Length.
+                ("ox".into(), literal_length(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
+                // Axis DIRECTION is a dimensionless unit vector → stays bare f64.
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
@@ -3193,9 +3203,11 @@
             kind: reify_compiler::PatternKind::Circular,
             target: GeomRef::Step(0),
             args: vec![
-                ("ox".into(), literal_f64(0.0)),
-                ("oy".into(), literal_f64(0.0)),
-                ("oz".into(), literal_f64(0.0)),
+                // Axis ORIGIN is length-semantic → must be dimensioned Length.
+                ("ox".into(), literal_length(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
+                // Axis DIRECTION is a dimensionless unit vector → stays bare f64.
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
