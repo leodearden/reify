@@ -623,3 +623,31 @@ fn map_err_undef_subject_returns_undef() {
 // These are deliberate REGRESSION LOCKS, not RED-first tests: the intercept is
 // already live, so they are GREEN the moment they are written. That is the same
 // framing `result_fallback_eval_tests.rs` already documents for itself.
+
+/// End-to-end: `unwrap_or(Ok { value: 5mm }, 0mm)` compiled with the real
+/// stdlib must evaluate to 5mm — the unboxed inner `Ok` payload.
+///
+/// DISCRIMINATION: `result.ri` ships
+/// `pub fn unwrap_or<T, E>(r: Result<T, E>, dflt: T) -> T { dflt }`, a
+/// typecheck-only placeholder that ALWAYS returns the default and never looks
+/// at `r`. With the intercept removed this call therefore returns `0mm` and
+/// this assert fails.
+///
+/// The `Ok` subject is what makes the fixture discriminating: an `Err` subject
+/// would make the correct answer `0mm` too, agreeing with the placeholder, and
+/// the test would be a coincidentally-green no-op.
+#[test]
+fn e2e_result_unwrap_or_ok_with_stdlib() {
+    let module = reify_test_support::compile_source_with_stdlib(
+        "structure S { let v = unwrap_or(Ok { value: 5mm }, 0mm) }",
+    );
+    let expr = cell_expr_stdlib(&module, "v");
+    let values = ValueMap::new();
+    let ctx = EvalContext::new(&values, &module.functions);
+    assert_eq!(
+        eval_expr(expr, &ctx),
+        val_5mm(),
+        "e2e: unwrap_or(Ok{{value:5mm}}, 0mm) compiled via stdlib must evaluate to 5mm — \
+         the placeholder .ri body would return the default 0mm"
+    );
+}
