@@ -46,7 +46,7 @@ use reify_test_support::{
 // ── fixture helpers ───────────────────────────────────────────────────────────
 
 fn representative_module() -> reify_compiler::CompiledModule {
-    let src = include_str!("fixtures/undef_boundary_representative.ri");
+    let src = include_str!("../fixtures/undef_boundary_representative.ri");
     let m = compile_source_with_stdlib(src);
     let errors = collect_errors(&m.diagnostics);
     assert!(
@@ -170,7 +170,7 @@ fn bt8_transparency_representative_design() {
 /// than shared — matching the repo convention, e.g. `undef_cause_op_contract.rs`
 /// also defines its own local fixture helpers).
 fn layer1_module() -> reify_compiler::CompiledModule {
-    let src = include_str!("fixtures/undef_causes_layer1.ri");
+    let src = include_str!("../fixtures/undef_causes_layer1.ri");
     let m = compile_source_with_stdlib(src);
     let errors = collect_errors(&m.diagnostics);
     assert!(
@@ -181,7 +181,7 @@ fn layer1_module() -> reify_compiler::CompiledModule {
 }
 
 fn solve_failed_module() -> reify_compiler::CompiledModule {
-    let src = include_str!("fixtures/undef_cause_solve_failed.ri");
+    let src = include_str!("../fixtures/undef_cause_solve_failed.ri");
     let m = compile_source_with_stdlib(src);
     let errors = collect_errors(&m.diagnostics);
     assert!(

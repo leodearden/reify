@@ -14,7 +14,7 @@ use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_w
 // ── fixture helpers ───────────────────────────────────────────────────────────
 
 fn layer1_module() -> reify_compiler::CompiledModule {
-    let src = include_str!("fixtures/undef_causes_layer1.ri");
+    let src = include_str!("../fixtures/undef_causes_layer1.ri");
     let m = compile_source_with_stdlib(src);
     let errors = collect_errors(&m.diagnostics);
     assert!(
@@ -25,7 +25,7 @@ fn layer1_module() -> reify_compiler::CompiledModule {
 }
 
 fn undef_trace_module() -> reify_compiler::CompiledModule {
-    let src = include_str!("fixtures/undef_trace.ri");
+    let src = include_str!("../fixtures/undef_trace.ri");
     let m = compile_source_with_stdlib(src);
     let errors = collect_errors(&m.diagnostics);
     assert!(

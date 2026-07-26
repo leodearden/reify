@@ -17,7 +17,7 @@ use reify_test_support::{
 // ── Helper: load and compile the Layer-1 fixture ─────────────────────────────
 
 fn layer1_module() -> reify_compiler::CompiledModule {
-    let src = include_str!("fixtures/undef_causes_layer1.ri");
+    let src = include_str!("../fixtures/undef_causes_layer1.ri");
     let m = compile_source_with_stdlib(src);
     let errors = collect_errors(&m.diagnostics);
     assert!(
@@ -28,7 +28,7 @@ fn layer1_module() -> reify_compiler::CompiledModule {
 }
 
 fn solve_failed_module() -> reify_compiler::CompiledModule {
-    let src = include_str!("fixtures/undef_cause_solve_failed.ri");
+    let src = include_str!("../fixtures/undef_cause_solve_failed.ri");
     let m = compile_source_with_stdlib(src);
     let errors = collect_errors(&m.diagnostics);
     assert!(
