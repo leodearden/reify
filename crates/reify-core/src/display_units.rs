@@ -193,8 +193,7 @@ impl DimensionLadder {
         candidates.sort_by_key(|(idx, _)| (idx.abs_diff(default_idx), *idx));
 
         for (_, rung) in &candidates {
-            let mantissa = (si_value / rung.si_scale).abs();
-            if mantissa >= auto.band_lo && mantissa < auto.band_hi {
+            if in_band(si_value / rung.si_scale, auto.band_lo, auto.band_hi) {
                 return AutoScaleChoice::Rung(rung);
             }
         }
@@ -229,6 +228,12 @@ impl DimensionLadder {
 /// mantissa (`powi` under/overflow at the extremes) or a magnitude the bounded
 /// correction failed to bring in band. Callers degrade to
 /// [`AutoScaleChoice::Static`] on `None`.
+///
+/// Band membership is decided by [`in_band`] / [`at_or_above`], i.e. at
+/// *display* precision — see [`BAND_EDGE_EPS`]. Both the settle test and the
+/// step direction must use the same comparator: deciding "settled?" at display
+/// precision while stepping on the raw `>=` would oscillate a mantissa that
+/// sits between the two thresholds until the correction cap gave up.
 fn engineering_parts(magnitude: f64, band_hi: f64) -> Option<(f64, i32)> {
     if !magnitude.is_finite() || magnitude == 0.0 {
         return None;
@@ -247,17 +252,61 @@ fn engineering_parts(magnitude: f64, band_hi: f64) -> Option<(f64, i32)> {
     const MAX_CORRECTIONS: u32 = 8;
     let mut corrections = 0;
     while mantissa.is_finite() && mantissa != 0.0 && corrections < MAX_CORRECTIONS {
-        if mantissa.abs() >= band_hi {
+        if at_or_above(mantissa, band_hi) {
             exponent += 3;
-        } else if mantissa.abs() < 1.0 {
+        } else if !at_or_above(mantissa, 1.0) {
             exponent -= 3;
         } else {
+            // Settling at display precision admits a mantissa a few ULPs
+            // *below* 1.0 (Volume `1000 m³` over the `mm³` default rung is
+            // `999_999_999_999.9999`, whose ×10¹² mantissa is
+            // `0.999_999_999_999_999_9` — it renders as `1`). Snap it onto the
+            // edge so the returned split satisfies `1 ≤ |mantissa| < band_hi`
+            // exactly rather than a hair under it. The snap is bounded by
+            // `BAND_EDGE_EPS` by construction, so it cannot move the value by
+            // more than half a display ULP.
+            if mantissa.abs() < 1.0 {
+                mantissa = mantissa.signum();
+            }
             return Some((mantissa, exponent));
         }
         mantissa = magnitude / 10f64.powi(exponent);
         corrections += 1;
     }
     None
+}
+
+/// Relative tolerance the §5a band edges are compared at.
+///
+/// §5a's `1 ≤ |mantissa| < 1000` band is a promise about the magnitude the user
+/// *reads*, and the display formatter (`reify_ir`'s `format_display_number`)
+/// rounds to twelve significant figures before rendering. A raw quotient a few
+/// ULPs below an edge therefore still prints *at* that edge: Volume's
+/// `1e-6 m³` over the `mm³` default rung is `999.999_999_999_999_9`, not
+/// `1000.0`, so a raw `< band_hi` test would select `mm³` and print the
+/// magnitude `1000` that the band promises never to appear. `5e-13` is half an
+/// ULP at twelve significant figures, so comparing against `edge * (1 - EPS)`
+/// reproduces exactly where that display rounding lands, at both edges.
+///
+/// This deliberately does **not** widen the band — it narrows the top edge and
+/// widens the bottom one by the same half-ULP, keeping "in band" and "renders
+/// in band" the same predicate. Pinned end-to-end by reify-ir's
+/// `resolve_display_none_honours_section5e_across_the_whole_registry`, which
+/// parses the rendered string back and rejects any out-of-band magnitude.
+const BAND_EDGE_EPS: f64 = 5e-13;
+
+/// Is `|magnitude|` at or above the band edge `edge`, compared at display
+/// precision ([`BAND_EDGE_EPS`])?
+fn at_or_above(magnitude: f64, edge: f64) -> bool {
+    magnitude.abs() >= edge * (1.0 - BAND_EDGE_EPS)
+}
+
+/// Does `|magnitude|` fall in `[band_lo, band_hi)` at display precision?
+///
+/// §5a bands the *absolute* mantissa, so a negative magnitude selects the same
+/// rung as its positive twin.
+fn in_band(magnitude: f64, band_lo: f64, band_hi: f64) -> bool {
+    at_or_above(magnitude, band_lo) && !at_or_above(magnitude, band_hi)
 }
 
 /// Is `si_scale` a power-of-ten multiple of `default_si_scale`?
@@ -597,7 +646,10 @@ mod tests {
             );
             let rung = &l.units[0];
             assert_eq!(rung.label, label, "{dimension:?} rung label mismatch");
-            assert_eq!(rung.si_scale, 1.0, "{dimension:?} rung si_scale must be 1.0");
+            assert_eq!(
+                rung.si_scale, 1.0,
+                "{dimension:?} rung si_scale must be 1.0"
+            );
             assert!(rung.is_default, "{dimension:?} rung must be is_default");
             assert_eq!(
                 l.derived_unit_name, label,
@@ -636,8 +688,14 @@ mod tests {
         ];
         for &(dimension, label, si_scale, is_default) in expected {
             let u = unit(ladder(&ladders, dimension), label);
-            assert_eq!(u.si_scale, si_scale, "{dimension}/{label} si_scale mismatch");
-            assert_eq!(u.is_default, is_default, "{dimension}/{label} is_default mismatch");
+            assert_eq!(
+                u.si_scale, si_scale,
+                "{dimension}/{label} si_scale mismatch"
+            );
+            assert_eq!(
+                u.is_default, is_default,
+                "{dimension}/{label} is_default mismatch"
+            );
         }
 
         // Pressure lists additional rungs above Pa; scales aren't pinned
@@ -750,7 +808,11 @@ mod tests {
         for l in &ladders {
             if let Some(a) = &l.auto_scale {
                 assert_eq!(a.band_lo, 1.0, "ladder {:?} band_lo mismatch", l.dimension);
-                assert_eq!(a.band_hi, 1000.0, "ladder {:?} band_hi mismatch", l.dimension);
+                assert_eq!(
+                    a.band_hi, 1000.0,
+                    "ladder {:?} band_hi mismatch",
+                    l.dimension
+                );
             }
         }
     }
@@ -1192,6 +1254,63 @@ mod tests {
                 mantissa: -500.0,
                 exponent: 3,
             }
+        );
+    }
+
+    /// The band edge is decided at *display* precision, not on the raw f64
+    /// quotient — see [`BAND_EDGE_EPS`].
+    ///
+    /// Both cases are real registry magnitudes whose quotient lands a few ULPs
+    /// under `band_hi` and so *renders* as the excluded `1000`:
+    ///
+    /// * `1e-6 m³ / 1e-9` (the `mm³` default rung) is `999.999_999_999_999_9`.
+    ///   A raw `< 1000.0` test admits it and prints `1000 mm³`; the display
+    ///   comparator rejects it and the one-hop `cm³` rung prints `1 cm³`.
+    /// * `1000 m³ / 1e-9` is `999_999_999_999.999_9`, whose ×10⁹ mantissa is
+    ///   likewise `999.999_999_999_999_9`. The engineering split must step on
+    ///   to ×10¹² and snap its `0.999_999_999_999_999_9` mantissa to `1`.
+    ///
+    /// Regression lock for the two failures reify-ir's
+    /// `resolve_display_none_honours_section5e_across_the_whole_registry`
+    /// sweep surfaced: §5e admits no third outcome, and "renders `1000`" is
+    /// out of band just as surely as "computes to `1000`".
+    #[test]
+    fn auto_scaled_band_edge_is_decided_at_display_precision() {
+        let ladders = unit_ladders();
+        let volume = ladder(&ladders, "Volume");
+
+        assert!(
+            (1e-6f64 / 1e-9).abs() < 1000.0,
+            "premise: the raw quotient really is under the band's top edge"
+        );
+        assert_eq!(
+            volume.auto_scaled(1e-6),
+            AutoScaleChoice::Rung(unit(volume, "cm\u{00B3}")),
+            "1e-6 m³ renders as 1000 mm³, so mm³ is out of band and cm³ wins"
+        );
+        assert_eq!(
+            volume.auto_scaled(-1e-6),
+            AutoScaleChoice::Rung(unit(volume, "cm\u{00B3}")),
+            "the band is on |mantissa|, so the sign must not change the rung"
+        );
+
+        assert_eq!(
+            volume.auto_scaled(1000.0),
+            AutoScaleChoice::Engineering {
+                rung: unit(volume, "mm\u{00B3}"),
+                mantissa: 1.0,
+                exponent: 12,
+            },
+            "1000 m³ must normalize to 1×10¹² mm³, not 1000×10⁹ mm³"
+        );
+        assert_eq!(
+            volume.auto_scaled(-1000.0),
+            AutoScaleChoice::Engineering {
+                rung: unit(volume, "mm\u{00B3}"),
+                mantissa: -1.0,
+                exponent: 12,
+            },
+            "the lower-edge snap must preserve the mantissa's sign"
         );
     }
 }
