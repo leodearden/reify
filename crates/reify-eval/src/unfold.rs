@@ -303,8 +303,17 @@ pub(crate) fn unfold_recursive_sub<'t>(
 /// skipped is surfaced by the never-silent-undef diagnostic below, never
 /// dropped quietly.
 ///
-/// Termination rests on the compiler's structural-acyclicity guarantee: plain
-/// sub nesting is a finite DAG, so the recursion has finite depth.
+/// Termination does NOT rest on structural acyclicity — plain sub nesting is
+/// *not* guaranteed to be a DAG. The compiler admits both self-recursive
+/// (`structure Node { sub child : Node }`) and mutually-recursive
+/// (`A { sub b : B }` / `B { sub a : A }`) UNGUARDED plain subs; it reports
+/// "recursive sub has no termination condition" as a COMPILE-time diagnostic
+/// but still emits the templates, so eval sees a cyclic sub graph. Termination
+/// therefore comes from the ancestor-chain cycle guard in
+/// `elaborate_child_instance_nested`: a nested sub whose target template is
+/// already being elaborated on the current chain is skipped. (The surfacing
+/// walk guards the same cycles with its own `depth > templates.len()` bound —
+/// see `tests/sub_placement_surfacing.rs`.)
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn elaborate_child_instance<'t>(
     values: &mut ValueMap,
@@ -319,6 +328,55 @@ pub(crate) fn elaborate_child_instance<'t>(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
     templates: &'t [TopologyTemplate],
+) {
+    elaborate_child_instance_nested(
+        values,
+        snapshot,
+        functions,
+        journal,
+        cache,
+        version_id,
+        child_template,
+        scoped_entity,
+        args,
+        meta_map,
+        diagnostics,
+        templates,
+        &mut Vec::new(),
+    );
+}
+
+/// Recursion body of [`elaborate_child_instance`], carrying the extra
+/// `ancestors` chain the public entry point seeds empty.
+///
+/// `ancestors` holds the template names currently being elaborated on this
+/// nesting chain, innermost last. A nested sub whose target template already
+/// appears there would re-enter a cycle, so it is skipped — that check is what
+/// makes the recursion terminate on the compiler's admitted cyclic sub graphs.
+/// Cutting at the exact cycle (rather than at a fixed depth bound) keeps the
+/// materialised entity set minimal: a self-recursive `Node` still elaborates
+/// exactly `Node.child` and stops, matching pre-task-5360 behaviour.
+///
+/// Depth is bounded by the number of distinct templates, since each chain is a
+/// simple path in the template graph. Total work is that times the per-level
+/// sub fan-out; a wide *acyclic* nest could in principle be exponential in
+/// depth, but no such shape exists in-tree and bounding it would need a node
+/// budget like `unfold_recursive_sub`'s.
+#[allow(clippy::too_many_arguments)]
+fn elaborate_child_instance_nested<'t>(
+    values: &mut ValueMap,
+    snapshot: &mut Snapshot,
+    functions: &[CompiledFunction],
+    journal: &mut EventJournal,
+    cache: &mut CacheStore,
+    version_id: u64,
+    child_template: &'t TopologyTemplate,
+    scoped_entity: &str,
+    args: &[(String, reify_ir::CompiledExpr)],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+    templates: &'t [TopologyTemplate],
+    ancestors: &mut Vec<&'t str>,
 ) {
     let child_values = elaborate_child_params_only(
         values,
@@ -336,7 +394,14 @@ pub(crate) fn elaborate_child_instance<'t>(
     // Phase 1.5 (leaves-first): elaborate the child template's own plain subs
     // at nested instance scope, so their cells exist before this instance's
     // lets are evaluated and can be projected into the let context below.
+    //
+    // `runtime_sink`/`containment` mirror the other two phases: the sink's
+    // contents are discarded (this path never surfaced eval-time diagnostics)
+    // and containment stays a no-op, matching `NoContainment`'s rationale.
+    let arg_runtime_sink = RefCell::new(Vec::new());
+    let arg_containment = NoContainment;
     let mut nested_sub_names: Vec<&str> = Vec::new();
+    ancestors.push(child_template.name.as_str());
     for sub in &child_template.sub_components {
         if !is_plain_nestable_sub(sub) {
             continue;
@@ -344,8 +409,61 @@ pub(crate) fn elaborate_child_instance<'t>(
         let Some(nested_template) = find_template(templates, &sub.structure_name) else {
             continue;
         };
+        // Cycle guard — see this function's doc comment. Re-entering a
+        // template already on the chain would recurse forever on the
+        // compiler-admitted unguarded cyclic sub graphs (`Node { sub child :
+        // Node }`, `A { sub b : B }` / `B { sub a : A }`), which is a stack
+        // overflow, not a hang.
+        if ancestors.contains(&nested_template.name.as_str()) {
+            continue;
+        }
+
+        // Pre-evaluate the nested sub's constructor args HERE, in this
+        // instance's own scope, and pass them down as literals — mirroring
+        // `unfold_recursive_sub`'s `concrete_args` above. Without this the
+        // nested `elaborate_child_params_only` would evaluate the raw arg
+        // expressions against the global `values` map instead.
+        //
+        // That matters because arg expressions are compiled in
+        // `child_template`'s scope, so they reference `{child_template}.{param}`
+        // keys. The global map holds the TEMPLATE DEFAULT for those keys
+        // (`Mid.scale = 1mm`), whereas `child_values` holds THIS INSTANCE's
+        // value (`Parent.m.scale = 30mm`, keyed `Mid.scale`). Reading the
+        // global map would silently drop the parent's override and yield a
+        // wrong value rather than an `Undef` — nothing downstream would catch
+        // it.
+        //
+        // The context overlays `child_values` ON TOP OF the global map rather
+        // than replacing it, so the instance wins wherever both hold a key
+        // while every reference the global map alone could already resolve
+        // still resolves. `ValueMap` is an `im::HashMap`, so the clone is an
+        // O(1) structural-sharing clone, not a deep copy.
+        let mut arg_scope = values.clone();
+        for (id, v) in child_values.iter() {
+            arg_scope.insert(id.clone(), v.clone());
+        }
+        let concrete_args: Vec<(String, reify_ir::CompiledExpr)> = sub
+            .args
+            .iter()
+            .map(|(name, arg_expr)| {
+                let v = eval_child_expr(
+                    &arg_scope,
+                    arg_expr,
+                    functions,
+                    meta_map,
+                    &snapshot.values,
+                    &arg_runtime_sink,
+                    &arg_containment,
+                );
+                (
+                    name.clone(),
+                    reify_ir::CompiledExpr::literal(v, arg_expr.result_type.clone()),
+                )
+            })
+            .collect();
+
         let nested_entity = format!("{}.{}", scoped_entity, sub.name);
-        elaborate_child_instance(
+        elaborate_child_instance_nested(
             values,
             snapshot,
             functions,
@@ -354,13 +472,15 @@ pub(crate) fn elaborate_child_instance<'t>(
             version_id,
             nested_template,
             &nested_entity,
-            &sub.args,
+            &concrete_args,
             meta_map,
             diagnostics,
             templates,
+            ancestors,
         );
         nested_sub_names.push(sub.name.as_str());
     }
+    ancestors.pop();
 
     elaborate_child_lets_only(
         values,
