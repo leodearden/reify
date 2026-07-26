@@ -23,6 +23,28 @@
 //! dropped from `is_combinator`, the call would fall through to the
 //! placeholder `.ri` body `{ dflt }`, which always returns the default
 //! (ignoring `Ok`) — silently wrong, and this test would catch it.
+//!
+//! ## Stdlib-compiled drift guard (task 5410 / PRD
+//! docs/prds/v0_6/placeholder-type-eradication-ratchet.md §3 item 10, §8 task
+//! ζ, BT10)
+//!
+//! Every test above the `e2e_*_with_stdlib` section evaluates under
+//! `EvalContext::simple`, whose function table is EMPTY. The `.ri` placeholder
+//! body was therefore never even registered in those tests, so it could never
+//! have shadowed the intercept — the "would fall through to the placeholder
+//! body" claim in the paragraph above was, until task 5410, an argument rather
+//! than something this file actually exercised.
+//!
+//! The stdlib-compiled section at the end of this file closes that gap: it
+//! compiles the real stdlib via
+//! `reify_test_support::compile_source_with_stdlib` and evaluates under
+//! `EvalContext::new(&values, &module.functions)`, so the compiler-emitted
+//! `UserFunctionCall` genuinely competes with the loaded placeholder body, and
+//! the Ok-subject discrimination is now pinned end-to-end against the real
+//! compiled stdlib. FILE-WIDE INVARIANT for that section: every fixture is
+//! chosen so the `.ri` placeholder body's value DIFFERS from the intercept's,
+//! making each test a discriminating drift guard rather than a
+//! coincidentally-green no-op.
 
 use reify_core::{DimensionVector, Type};
 use reify_expr::{EvalContext, eval_expr};
@@ -97,6 +119,25 @@ fn eval_simple(expr: &CompiledExpr) -> Value {
     eval_expr(expr, &EvalContext::simple(&ValueMap::new()))
 }
 
+/// Locate the `default_expr` of a named value cell in the first template.
+///
+/// Mirrors the helper of the same name in `option_recovery_eval_tests.rs` —
+/// used only by the stdlib-compiled e2e section at the end of this file.
+fn cell_expr_stdlib<'a>(
+    module: &'a reify_compiler::CompiledModule,
+    member: &str,
+) -> &'a reify_ir::CompiledExpr {
+    let template = &module.templates[0];
+    template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == member)
+        .unwrap_or_else(|| panic!("value cell '{member}' not found"))
+        .default_expr
+        .as_ref()
+        .unwrap_or_else(|| panic!("value cell '{member}' has no default_expr"))
+}
+
 // ── fallback over a Result subject ───────────────────────────────────────────
 
 /// [CORE SIGNAL / recognition] `fallback(Ok{value:5mm}, 0mm) == 5mm` — the
@@ -168,3 +209,16 @@ fn fallback_option_subject_regression_guard() {
         "fallback(some(5mm), 0mm) must still return 5mm — Option-subject regression guard"
     );
 }
+
+// ── task 5410 (PRD ζ / BT10): discriminating stdlib-compiled e2e drift guards ─
+//
+// Everything below compiles the REAL stdlib and evaluates against
+// `module.functions`, so the `.ri` placeholder body is loaded and would be
+// reached if the reify-expr intercept ever stopped firing. Each fixture is
+// chosen so the placeholder's value differs from the intercept's; the
+// per-test doc comments record the measured placeholder-path value observed
+// under an intercept-removal experiment.
+//
+// Like the rest of this file these are deliberate REGRESSION LOCKS, not
+// RED-first tests: the intercept is already live, so they are GREEN the moment
+// they are written.

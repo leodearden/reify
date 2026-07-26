@@ -15,6 +15,26 @@
 //! Result arms share the existing `unwrap_or`/`or_else` match statements by
 //! subject tag). `map_err` is ctx-aware (must apply its lambda argument) and
 //! is covered separately by the step-5/6 tests appended to this file later.
+//!
+//! ## Stdlib-compiled drift guards (task 5410 / PRD
+//! docs/prds/v0_6/placeholder-type-eradication-ratchet.md §3 item 10, §8 task
+//! ζ, BT10)
+//!
+//! Every test above the `e2e_*_with_stdlib` section evaluates under
+//! `EvalContext::simple`, whose function table is EMPTY. The `.ri` stdlib
+//! bodies are therefore never even registered in those tests, so they could
+//! not have shadowed the intercept no matter what they returned — the tests
+//! pin the intercept's behaviour but say nothing about which of the two paths
+//! a *real compiled program* takes.
+//!
+//! The stdlib-compiled section at the end of this file closes that gap: it
+//! compiles the real stdlib via
+//! `reify_test_support::compile_source_with_stdlib` and evaluates under
+//! `EvalContext::new(&values, &module.functions)`, so the compiler-emitted
+//! `UserFunctionCall` genuinely competes with the loaded placeholder body.
+//! FILE-WIDE INVARIANT for that section: every fixture is chosen so the `.ri`
+//! placeholder body's value DIFFERS from the intercept's, making each test a
+//! discriminating drift guard rather than a coincidentally-green no-op.
 
 use reify_core::{DimensionVector, Type, ValueCellId};
 use reify_expr::{EvalContext, eval_expr};
@@ -102,6 +122,25 @@ fn expr_undef_option_length() -> CompiledExpr {
 
 fn eval_simple(expr: &CompiledExpr) -> Value {
     eval_expr(expr, &EvalContext::simple(&ValueMap::new()))
+}
+
+/// Locate the `default_expr` of a named value cell in the first template.
+///
+/// Mirrors the helper of the same name in `option_recovery_eval_tests.rs` —
+/// used only by the stdlib-compiled e2e section at the end of this file.
+fn cell_expr_stdlib<'a>(
+    module: &'a reify_compiler::CompiledModule,
+    member: &str,
+) -> &'a reify_ir::CompiledExpr {
+    let template = &module.templates[0];
+    template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == member)
+        .unwrap_or_else(|| panic!("value cell '{member}' not found"))
+        .default_expr
+        .as_ref()
+        .unwrap_or_else(|| panic!("value cell '{member}' has no default_expr"))
 }
 
 // ── unwrap_or over a Result subject ──────────────────────────────────────────
@@ -571,3 +610,16 @@ fn map_err_undef_subject_returns_undef() {
         "map_err(undef, f) must propagate Undef — undef subject passthrough (INV-2)"
     );
 }
+
+// ── task 5410 (PRD ζ / BT10): discriminating stdlib-compiled e2e drift guards ─
+//
+// Everything below compiles the REAL stdlib and evaluates against
+// `module.functions`, so the `.ri` placeholder body is loaded and would be
+// reached if the reify-expr intercept ever stopped firing. Each fixture is
+// chosen so the placeholder's value differs from the intercept's; the
+// per-test doc comments record the measured placeholder-path value observed
+// under an intercept-removal experiment.
+//
+// These are deliberate REGRESSION LOCKS, not RED-first tests: the intercept is
+// already live, so they are GREEN the moment they are written. That is the same
+// framing `result_fallback_eval_tests.rs` already documents for itself.
