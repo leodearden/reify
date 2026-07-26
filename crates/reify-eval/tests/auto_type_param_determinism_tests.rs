@@ -767,6 +767,63 @@ fn compile_correctness_skips_still_fail_to_compile() {
     );
 }
 
+// ─── SKIP_SET existence guard unit test: missing_skip_set_paths contract ──
+
+/// `missing_skip_set_paths` must flag entries whose relative path does not
+/// exist under `examples_dir`, regardless of [`SkipKind`], and must not flag
+/// entries that do exist. Mixes one present + one missing entry of each kind
+/// so the assertion cannot pass by accident (e.g. by ignoring `SkipKind`
+/// entirely, or by checking only one kind's entries).
+///
+/// No short-circuit case: the two bogus entries sit on either side of the
+/// two present entries in the input slice, so an implementation that stopped
+/// at the first miss would return only one of the two and fail this test.
+#[test]
+fn missing_skip_set_paths_contract() {
+    let entries: &[(&str, SkipKind, &str)] = &[
+        (
+            "trajectory/tots_optimal_ptp.ri",
+            SkipKind::PerfBudget,
+            "present, PerfBudget",
+        ),
+        (
+            "topology_selectors/deleted_by_a_rename.ri",
+            SkipKind::PerfBudget,
+            "bogus, PerfBudget",
+        ),
+        (
+            "auto/bearing_unsat.ri",
+            SkipKind::CompileError,
+            "present, CompileError",
+        ),
+        (
+            "auto/never_existed.ri",
+            SkipKind::CompileError,
+            "bogus, CompileError",
+        ),
+    ];
+
+    let mut names = missing_skip_set_paths(entries, Path::new(EXAMPLES_DIR));
+
+    // Sort before comparing: `missing_skip_set_paths` is documented as a
+    // filter with no order-preservation guarantee (mirroring
+    // `per_file_violations` above), so pin the offending *set* rather than
+    // incidental iteration order.
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        vec![
+            "auto/never_existed.ri",
+            "topology_selectors/deleted_by_a_rename.ri",
+        ],
+        "expected both bogus paths (one per SkipKind) to be flagged as missing — \
+         confirming the helper flags missing paths regardless of SkipKind and \
+         returns the full offending set rather than short-circuiting on the first \
+         miss; the two real, present files (one per SkipKind) must not be flagged, \
+         got: {names:?}"
+    );
+}
+
 // ─── step-13: fixture is included in corpus ───────────────────────────────────
 
 /// Assert that `bearing_auto_seal.ri` is discovered by the corpus walker.
