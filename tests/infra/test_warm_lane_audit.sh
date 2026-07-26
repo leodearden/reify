@@ -863,4 +863,92 @@ assert "K6b: json lane objects carry a 'live' key with the same LIVE/IDLE values
 kill "$K_LOCK_PID" 2>/dev/null || true
 _BGPIDS=()  # clear so cleanup doesn't double-kill
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block L — `assigned=` is sourced from the orchestrator's OWN assignment
+#           record at <state-dir>/<lane>.json
+# ──────────────────────────────────────────────────────────────────────────────
+# Liveness (Block K) cannot answer "has the pool reserved this lane?". Only the
+# orchestrator's durable record can, so `assigned=` reads it directly. Every
+# LaneState the producer can write is pinned here to its reported column, and
+# every way the read can fail degrades to UNKNOWN with exit 0 -- the read is
+# advisory, so it must never abort and must never invent an assignment.
+echo ""
+echo "--- Block L: assigned= from the .lane-state record ---"
+
+L_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-l-XXXXXX)"
+_TMPDIRS+=("$L_MOUNT")
+
+# lane:raw-record-state:expected-column. The raw states are exactly
+# dark-factory's LaneState enum (lane_lifecycle.py: seed/registered/assigned/
+# in_use/released/quarantined) plus the three unresolvable cases.
+L_CASES=(
+    "_lane-assigned:assigned:ASSIGNED"
+    "_lane-inuse:in_use:ASSIGNED"
+    "_lane-released:released:RELEASED"
+    "_lane-seed:seed:RELEASED"
+    "_lane-registered:registered:RELEASED"
+    "_lane-quarantined:quarantined:QUARANTINED"
+    "_lane-norecord::UNKNOWN"
+    "_lane-corrupt:CORRUPT:UNKNOWN"
+    "_lane-badstate:wat:UNKNOWN"
+    "_lane-compact:COMPACT:ASSIGNED"
+)
+
+for l_case in "${L_CASES[@]}"; do
+    l_lane="${l_case%%:*}"
+    l_rest="${l_case#*:}"
+    l_state="${l_rest%%:*}"
+    make_lane "$L_MOUNT/$l_lane"
+    case "$l_state" in
+        "")        : ;;  # no record at all
+        CORRUPT)   make_lane_state_raw "$L_MOUNT" "$l_lane" 'not json{' ;;
+        # A compact, single-line record: the reader must not depend on the
+        # producer's current indent=2 pretty-printing.
+        COMPACT)   make_lane_state_raw "$L_MOUNT" "$l_lane" \
+                       '{"state":"assigned","task_id":"7001","title":null,"branch":null,"seeded_from_sha":null,"updated_at":"2026-07-26T12:43:10.704531+00:00"}' ;;
+        *)         make_lane_state "$L_MOUNT" "$l_lane" "$l_state" ;;
+    esac
+done
+
+run_helper --mount "$L_MOUNT"
+
+assert "L1: exit 0 over a pool spanning every LaneState + every unresolvable record" \
+    test "$RC" -eq 0
+
+for l_case in "${L_CASES[@]}"; do
+    l_lane="${l_case%%:*}"
+    l_expected="${l_case##*:}"
+    assert "L2: $l_lane reports assigned=$l_expected" \
+        bash -c 'printf "%s\n" "$1" | grep -q "lane=$2 .*assigned=$3"' _ "$OUT" "$l_lane" "$l_expected"
+done
+
+# The state dir is dot-prefixed, so the resident glob must already skip it --
+# asserted rather than assumed, since a counted .lane-state would inflate every
+# headroom figure. resident is DERIVED from the fixture array, never typed.
+L_EXPECTED_RESIDENT="${#L_CASES[@]}"
+assert "L3: HEADROOM resident==seeded lane count (.lane-state is not a resident)" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -qE "(^| )resident=$2( |$)"' _ "$OUT" "$L_EXPECTED_RESIDENT"
+
+# ── L4: REIFY_WARM_LANE_AUDIT_STATE_DIR override, pointed OUTSIDE the mount ──
+# Run twice against the SAME lane: once bare (no record findable -> UNKNOWN),
+# once with the override (record found -> ASSIGNED). The pair proves the
+# override is what resolved the state, not a coincidence of the fixture.
+L4_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-l4-XXXXXX)"
+_TMPDIRS+=("$L4_MOUNT")
+L4_STATE="$(mktemp -d /tmp/test-warm-lane-audit-l4-state-XXXXXX)"
+_TMPDIRS+=("$L4_STATE")
+make_lane "$L4_MOUNT/_lane-ext"
+# make_lane_state writes <arg>/.lane-state/<lane>.json, so pass the parent and
+# point the override at the .lane-state dir it creates.
+make_lane_state "$L4_STATE" "_lane-ext" "assigned" "7100" "task/7100"
+
+run_helper --mount "$L4_MOUNT"
+assert "L4a: without the override the out-of-mount record is not found (assigned=UNKNOWN)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-ext .*assigned=UNKNOWN"' _ "$OUT"
+
+REIFY_WARM_LANE_AUDIT_STATE_DIR="$L4_STATE/.lane-state" run_helper --mount "$L4_MOUNT"
+assert "L4b: exit 0 under REIFY_WARM_LANE_AUDIT_STATE_DIR" test "$RC" -eq 0
+assert "L4c: REIFY_WARM_LANE_AUDIT_STATE_DIR outside the mount is honoured (assigned=ASSIGNED)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-ext .*assigned=ASSIGNED"' _ "$OUT"
+
 test_summary
