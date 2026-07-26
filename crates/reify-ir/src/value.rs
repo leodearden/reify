@@ -11100,9 +11100,7 @@ mod tests {
                     '\u{00B9}' => '1',
                     '\u{00B2}' => '2',
                     '\u{00B3}' => '3',
-                    '\u{2074}'..='\u{2079}' => {
-                        char::from(b'4' + (c as u32 - 0x2074) as u8)
-                    }
+                    '\u{2074}'..='\u{2079}' => char::from(b'4' + (c as u32 - 0x2074) as u8),
                     other => panic!("unexpected glyph {other:?} in exponent {exponent:?}"),
                 })
                 .collect();
