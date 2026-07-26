@@ -96,11 +96,12 @@ pub struct TestResult {
 /// [`Engine::register_production_compute_fns`] (INV-FEA-1, PRD
 /// `docs/prds/compute-fea-hardening.md` task A4). It must pass
 /// `MorphRegistration::Unavailable`, not `Enabled`, because `reify-mesh-morph`
-/// is a **dev-dep-only** of `reify-eval` (Cargo.toml:169-175:
-/// `reify-mesh-morph` normal-deps `reify-eval`, so a normal dep back would
-/// cycle) while `build_test_engine` is regular non-`#[cfg(test)]` library
-/// code reached from production `run_tests`, so it may not name
-/// `reify_mesh_morph::*` at all.
+/// is a **dev-dep-only** of `reify-eval` (see the `[dev-dependencies]
+/// reify-mesh-morph` entry and its task-4744 comment in
+/// `crates/reify-eval/Cargo.toml`: `reify-mesh-morph` normal-deps
+/// `reify-eval`, so a normal dep back would cycle) while `build_test_engine`
+/// is regular non-`#[cfg(test)]` library code reached from production
+/// `run_tests`, so it may not name `reify_mesh_morph::*` at all.
 ///
 /// # No `SolverRegistry`
 ///
@@ -550,51 +551,23 @@ constraint def Positive {
         );
     }
 
-    /// Pin for task 5075 (PRD A4): `build_test_engine` passes
-    /// `MorphRegistration::Unavailable` — never `Enabled` — to the canonical
-    /// bundler `Engine::register_production_compute_fns`. The deterministic
-    /// observable at THIS call site is `morph_producer() == None`; the
-    /// bundler's own `Unavailable`-arm semantics are covered separately by
-    /// `compute_targets::tests::register_production_compute_fns_unavailable_does_not_install_morph`.
-    /// The two are not redundant: that sibling pins the bundler's generic
-    /// arm behavior, while this one pins that *this* call site passes
-    /// `Unavailable` rather than `Enabled` — swapping `build_test_engine` to
-    /// `Enabled` would keep the sibling green and turn this test red.
-    ///
-    /// This test asserts structurally rather than by capturing the
-    /// `Unavailable`-arm `tracing::debug!` event: `tracing` caches callsite
-    /// `Interest` process-globally while `tracing::subscriber::with_default`
-    /// is only thread-local, so a sibling test reaching the same callsite
-    /// first with no subscriber installed can poison the cache to `never`
-    /// and silently drop the event — an earlier revision of this test hit
-    /// exactly that flake. It also does not grep source text for the
-    /// bundler call — grep-based drift detection is sibling task A5's
-    /// deliverable (`scripts/check-compute-trampoline-registration.sh`);
-    /// duplicating it here would be lockstep duplication.
+    /// Pin for task 5075 (PRD A4): asserts that the engine `build_test_engine`
+    /// returns has no mesh-morph producer installed — this call site's
+    /// `MorphRegistration::Unavailable` effect, not proof that `Unavailable`
+    /// was chosen over `Enabled` (a no-op `Enabled` closure would also leave
+    /// this `None`; variant-level drift detection is sibling task A5's job via
+    /// `scripts/check-compute-trampoline-registration.sh`). The sibling
+    /// `build_test_engine_registers_compute_trampolines` above already proves
+    /// the shared bundle body ran.
     #[test]
     fn build_test_engine_delegates_to_production_bundler() {
         use reify_constraints::SimpleConstraintChecker;
 
         let engine = super::build_test_engine(Box::new(SimpleConstraintChecker));
 
-        // Structural semantics of the Unavailable arm: the Enabled arm was
-        // not taken, so no mesh-morph producer is installed.
         assert!(
             engine.morph_producer().is_none(),
             "Unavailable arm must not install a mesh-morph producer"
-        );
-
-        // Negative control (cannot pass trivially): the shared bundle body
-        // must still actually have run.
-        assert!(
-            engine.compute_dispatch("shell-extract::extract").is_some(),
-            "shell-extract::extract trampoline not registered"
-        );
-        assert!(
-            engine
-                .compute_dispatch("reify::unregistered::sentinel")
-                .is_none(),
-            "sentinel target must not be registered"
         );
     }
 }
