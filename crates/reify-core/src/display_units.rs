@@ -950,4 +950,168 @@ mod tests {
             }
         }
     }
+
+    // ── §5c engineering-notation fallback (task #5236) ───────────────────────
+
+    /// The ladders auto-scaling actually engages for (§5b default-ON).
+    fn default_on_ladders(ladders: &[DimensionLadder]) -> Vec<&DimensionLadder> {
+        ladders
+            .iter()
+            .filter(|l| l.auto_scale.as_ref().is_some_and(|a| a.enabled))
+            .collect()
+    }
+
+    /// The `is_default` rung — §5d/§5e both name the *static default rung* as
+    /// the anchor an engineering-notation magnitude is expressed against.
+    fn default_rung(l: &DimensionLadder) -> &UnitOption {
+        l.units
+            .iter()
+            .find(|u| u.is_default)
+            .unwrap_or_else(|| panic!("ladder {:?} has no is_default rung", l.dimension))
+    }
+
+    /// §5c's real coverage gap, on the registry as it actually ships.
+    ///
+    /// With §5a's decimal-sibling filter, Area's eligible rungs (mm² 1e-6,
+    /// cm² 1e-4, m² 1.0) put a magnitude in band over SI
+    /// `[1e-6, 0.1) ∪ [1, 1000)` — so `[0.1, 1) m²` is a genuine hole, and
+    /// `0.5 m²` reads 5e5 mm² / 5e3 cm² / 0.5 m², none of them in band. This
+    /// is precisely the case §5c's fallback exists for: "a Length small enough
+    /// that no rung lands in `[1,1000)`", generalized. Length (`[1e-3, 1000)`)
+    /// and Volume (`[1e-9, 1000)`) are contiguous by contrast, so they only
+    /// reach engineering notation outside those spans.
+    #[test]
+    fn auto_scaled_falls_back_to_engineering_notation_in_the_area_gap() {
+        let ladders = unit_ladders();
+        let area = ladder(&ladders, "Area");
+        assert_eq!(
+            area.auto_scaled(0.5),
+            AutoScaleChoice::Engineering {
+                rung: unit(area, "mm\u{00B2}"),
+                mantissa: 500.0,
+                exponent: 3,
+            },
+            "no Area rung lands in band at 0.5 m², so §5c's fallback applies"
+        );
+    }
+
+    /// §5d/§5e: engineering notation is anchored on the ladder's static
+    /// default rung — the label stays the dimension's familiar one and only
+    /// the magnitude changes form.
+    #[test]
+    fn auto_scaled_engineering_notation_anchors_on_the_default_rung() {
+        let ladders = unit_ladders();
+
+        let length = ladder(&ladders, "Length");
+        assert_eq!(
+            length.auto_scaled(1e-9),
+            AutoScaleChoice::Engineering {
+                rung: default_rung(length),
+                mantissa: 1.0,
+                exponent: -6,
+            },
+            "1e-9 m is below every Length rung's band, so it reads 1×10⁻⁶ mm"
+        );
+
+        let volume = ladder(&ladders, "Volume");
+        assert_eq!(
+            volume.auto_scaled(5000.0),
+            AutoScaleChoice::Engineering {
+                rung: default_rung(volume),
+                mantissa: 5.0,
+                exponent: 12,
+            },
+            "5000 m³ is above every Volume rung's band, so it reads 5×10¹² mm³"
+        );
+    }
+
+    /// §5c normalization invariants, swept. The exact powers of ten in the
+    /// sweep are the point: a naive exponent seeded from `log10` can floor one
+    /// step low when `log10` of an exact power of ten lands a hair below the
+    /// integer, which would silently produce a mantissa outside the band.
+    #[test]
+    fn auto_scaled_engineering_notation_normalizes_mantissa_and_exponent() {
+        let ladders = unit_ladders();
+        for l in default_on_ladders(&ladders) {
+            let band_hi = l
+                .auto_scale
+                .as_ref()
+                .expect("default-ON ladder has auto_scale")
+                .band_hi;
+            for si_value in magnitude_sweep(-12, 12) {
+                for signed in [si_value, -si_value] {
+                    let AutoScaleChoice::Engineering {
+                        rung,
+                        mantissa,
+                        exponent,
+                    } = l.auto_scaled(signed)
+                    else {
+                        continue;
+                    };
+                    let dim = &l.dimension;
+                    assert_eq!(
+                        exponent % 3,
+                        0,
+                        "{dim:?} @ {signed}: exponent {exponent} is not a multiple of three"
+                    );
+                    assert!(
+                        mantissa.abs() >= 1.0 && mantissa.abs() < band_hi,
+                        "{dim:?} @ {signed}: mantissa {mantissa} outside [1, {band_hi})"
+                    );
+
+                    let expected = signed / rung.si_scale;
+                    let reconstructed = mantissa * 10f64.powi(exponent);
+                    assert!(
+                        (reconstructed - expected).abs() <= 1e-12 * expected.abs(),
+                        "{dim:?} @ {signed}: {mantissa}×10^{exponent} = {reconstructed} \
+                         does not reproduce {expected}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// §5e's rule is exhaustive for a default-ON dimension: every finite
+    /// non-zero magnitude either hops to an in-band rung or falls back to
+    /// engineering notation. There is no third outcome — an out-of-band plain
+    /// magnitude would mean the policy silently gave up.
+    ///
+    /// The mirror half (default-OFF and `auto_scale: None` are `Static`
+    /// everywhere) is owned by
+    /// `auto_scaled_posture_gate_keeps_excluded_and_default_off_dims_static`
+    /// above and deliberately not restated here.
+    #[test]
+    fn auto_scaled_default_on_dims_are_never_static_for_usable_magnitudes() {
+        let ladders = unit_ladders();
+        for l in default_on_ladders(&ladders) {
+            for si_value in magnitude_sweep(-12, 12) {
+                for signed in [si_value, -si_value] {
+                    assert_ne!(
+                        l.auto_scaled(signed),
+                        AutoScaleChoice::Static,
+                        "ladder {:?} gave up on si_value {signed}: §5e requires a rung hop \
+                         or engineering notation, never a bare out-of-band magnitude",
+                        l.dimension
+                    );
+                }
+            }
+        }
+    }
+
+    /// §5a's band is stated on `|mantissa|`, but the *rendered* mantissa keeps
+    /// its sign — a negative magnitude must not lose it on the way through the
+    /// engineering split.
+    #[test]
+    fn auto_scaled_engineering_notation_preserves_sign() {
+        let ladders = unit_ladders();
+        let area = ladder(&ladders, "Area");
+        assert_eq!(
+            area.auto_scaled(-0.5),
+            AutoScaleChoice::Engineering {
+                rung: unit(area, "mm\u{00B2}"),
+                mantissa: -500.0,
+                exponent: 3,
+            }
+        );
+    }
 }
