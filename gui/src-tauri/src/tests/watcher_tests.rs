@@ -761,19 +761,40 @@ fn watcher_rereads_final_content_after_nonatomic_truncate_then_append() {
 /// panic, and `received` would still end up empty. Only a genuine delivery
 /// of the second write proves the worker kept draining after the panic.
 ///
-/// A shared `panicked` flag additionally confirms the panic branch itself
-/// was reached, set immediately before the `panic!` call. Without this, a
-/// run where the first write's `Changed` event is dropped or coalesced
-/// away before ever reaching the callback (e.g. the notify layer only
-/// delivers the second, latest content on a slow host) would still pass
-/// off the second write's delivery alone -- green, but without ever
-/// exercising panic survival at all. Asserting the flag turns that silent,
-/// vacuous pass into a loud failure.
+/// Two `wait_until_with_retry` barriers stand in for what used to be fixed
+/// sleeps, because a fixed sleep can only wait for a stimulus -- it can't
+/// recover one that was already lost:
+///
+/// - **Registration barrier**: a fixed "give the watcher time to register"
+///   sleep can still expire before the directory watch is actually live
+///   under load -- this is exactly what flaked. A write issued before that
+///   happens produces no inotify event AT ALL, not a late one, so once
+///   lost, `first_write_content` below could never be recovered by polling
+///   harder. Instead, a sibling `probe.ri` is repeatedly rewritten with
+///   distinct content until the callback positively reports having seen a
+///   probe event, proving the directory watch is live before the write
+///   that actually matters is ever issued.
+/// - **First-event barrier**: replaces the old "let the debounce window
+///   elapse" sleep. `first_write_content` is re-written on each attempt
+///   (identical content still yields a fresh `IN_MODIFY`) until the shared
+///   `panicked` flag confirms the callback actually observed it and hit
+///   the panic branch, recovering the write the same way the registration
+///   probe's write is recovered.
+///
+/// The shared `panicked` flag is what the first-event barrier polls, so its
+/// assertion is the single gate on "the panic branch was actually reached"
+/// -- without it, a run where the first write's `Changed` event is dropped
+/// or coalesced away before ever reaching the callback (e.g. the notify
+/// layer only delivers the second, latest content on a slow host) would
+/// still pass off the second write's delivery alone: green, but without
+/// ever exercising panic survival at all.
 #[test]
 fn watcher_survives_a_panicking_callback_and_keeps_delivering_later_events() {
     let dir = tempfile::tempdir().unwrap();
     let ri_file = dir.path().join("flaky.ri");
     std::fs::write(&ri_file, "structure Flaky {}").unwrap();
+    let probe_file = dir.path().join("probe.ri");
+    std::fs::write(&probe_file, "structure Probe {}").unwrap();
 
     let first_write_content = "structure Flaky { param x = 1mm }";
     let second_write_content = "structure Flaky { param x = 2mm }";
@@ -782,38 +803,71 @@ fn watcher_survives_a_panicking_callback_and_keeps_delivering_later_events() {
     let received_clone = received.clone();
     let panicked = Arc::new(AtomicBool::new(false));
     let panicked_clone = panicked.clone();
+    let probe_seen = Arc::new(AtomicBool::new(false));
+    let probe_seen_clone = probe_seen.clone();
 
     let Some(_watcher) = try_watcher(dir.path(), None, move |event| {
-        if let FileEvent::Changed(path) = event
-            && let Ok(text) = std::fs::read_to_string(&path)
-        {
-            // Simulate a callback bug specifically on the first write's
-            // content -- see the doc comment above for why gating on
-            // content (not a call counter) matters here.
-            if text == first_write_content {
-                panicked_clone.store(true, Ordering::SeqCst);
-                panic!("simulated callback panic on first-write content");
+        if let FileEvent::Changed(path) = event {
+            if path.ends_with("probe.ri") {
+                probe_seen_clone.store(true, Ordering::SeqCst);
+                return;
             }
-            if text == second_write_content {
-                received_clone.lock().unwrap().push(text);
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                // Simulate a callback bug specifically on the first write's
+                // content -- see the doc comment above for why gating on
+                // content (not a call counter) matters here.
+                if text == first_write_content {
+                    panicked_clone.store(true, Ordering::SeqCst);
+                    panic!("simulated callback panic on first-write content");
+                }
+                if text == second_write_content {
+                    received_clone.lock().unwrap().push(text);
+                }
             }
         }
     }) else {
         return;
     };
 
-    // Give the watcher time to register.
-    std::thread::sleep(Duration::from_millis(200));
+    // Registration barrier -- see the doc comment above for why this
+    // replaces a fixed "give the watcher time to register" sleep.
+    let mut probe_attempt = 0u32;
+    let registered = wait_until_with_retry(
+        || {
+            probe_attempt += 1;
+            std::fs::write(
+                &probe_file,
+                format!("structure Probe {{ param n = {probe_attempt} }}"),
+            )
+            .unwrap();
+        },
+        Duration::from_millis(150),
+        Duration::from_secs(10),
+        || probe_seen.load(Ordering::SeqCst),
+    );
+    assert!(
+        registered,
+        "the watcher never delivered a probe event, so the directory watch \
+         was never confirmed live -- this run could not exercise panic \
+         survival"
+    );
 
-    // First modification: reaches the callback, which panics. If the
-    // worker thread didn't catch that unwind, it would terminate here and
-    // no further event would ever be delivered.
-    std::fs::write(&ri_file, first_write_content).unwrap();
-
-    // Let the debounce window elapse so the panicking call is fully
-    // processed (and, if uncaught, the worker fully dead) before the
-    // second write.
-    std::thread::sleep(Duration::from_millis(300));
+    // First-event barrier -- see the doc comment above for why this
+    // replaces a fixed "let the debounce window elapse" sleep. If the
+    // worker thread didn't catch the panic's unwind, it would terminate
+    // here and no further event would ever be delivered.
+    let panic_observed = wait_until_with_retry(
+        || std::fs::write(&ri_file, first_write_content).unwrap(),
+        Duration::from_millis(300),
+        Duration::from_secs(10),
+        || panicked.load(Ordering::SeqCst),
+    );
+    assert!(
+        panic_observed,
+        "the callback never observed first_write_content and so never hit \
+         the panic branch -- this run wouldn't have exercised panic \
+         survival at all"
+    );
 
     // Second modification, with content DISTINCT from the first: only
     // observable if the worker survived the first callback's panic and is
@@ -828,18 +882,6 @@ fn watcher_survives_a_panicking_callback_and_keeps_delivering_later_events() {
     assert!(
         found,
         "watcher should keep delivering events after a callback panic, got: {:?}",
-        *texts
-    );
-
-    // Positive confirmation that the panic branch actually fired -- see the
-    // doc comment above for why the `found` assertion alone can't rule out
-    // a vacuous pass (e.g. the first write's event never reaching the
-    // callback at all).
-    assert!(
-        panicked.load(Ordering::SeqCst),
-        "the callback never observed first_write_content and so never hit \
-         the panic branch -- this run wouldn't have exercised panic \
-         survival at all, got: {:?}",
         *texts
     );
 }
