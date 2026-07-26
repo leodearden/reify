@@ -632,6 +632,51 @@ fn e2e_get_or_present_key_with_stdlib() {
     );
 }
 
+// ── task 5410 (PRD ζ / BT10): discriminating get_or absence-path guard ───────
+
+/// End-to-end: `get_or(undef, "k", 0mm)` compiled with the real stdlib must
+/// evaluate to `Undef` — the undef-subject passthrough, NOT the default.
+///
+/// This is the discriminating guard for `get_or`'s recovery/absence path
+/// (task 5410 / PRD ζ / BT10 "absent-key get_or"). The argument, in full:
+///
+/// (a) DISCRIMINATION. `option_recovery.ri` ships
+///     `pub fn get_or<K, V>(m: Map<K, V>, key: K, dflt: V) -> V { dflt }`, a
+///     typecheck-only placeholder that ALWAYS returns `dflt`. With the
+///     intercept removed this call returns `0mm` ≠ `Undef` and this assert
+///     fails.
+///
+/// (b) WHY NOT A PLAIN ABSENT KEY. A plain absent key can NEVER discriminate:
+///     the placeholder returns `dflt`, and the CORRECT absent-key answer is
+///     also `dflt` — the two agree by construction. That is precisely why
+///     `e2e_get_or_absent_key_with_stdlib` above is coincidentally green and
+///     does not prove the intercept fires.
+///
+/// (c) WHY THE UNDEF-MAP SUBJECT WORKS. The intercept's Kleene INV-2 subject
+///     passthrough returns `Undef` for an undef map, while the placeholder
+///     still returns `dflt`. The two paths diverge, so the guard bites.
+///
+/// (d) MEASURED NEGATIVE. The undef-KEY form
+///     `get_or(map{"k" => 1mm}, undef, 0mm)` does NOT compile:
+///     `E_FALLBACK_TYPE: conflicting type arguments for type parameter 'K'
+///     ... String vs <error>`. The undef-map subject is therefore the only
+///     available stdlib-compiled form on this path.
+#[test]
+fn e2e_get_or_undef_map_with_stdlib() {
+    let module = reify_test_support::compile_source_with_stdlib(
+        r#"structure S { let v = get_or(undef, "k", 0mm) }"#,
+    );
+    let expr = cell_expr_stdlib(&module, "v");
+    let values = ValueMap::new();
+    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    assert_eq!(
+        reify_expr::eval_expr(expr, &ctx),
+        Value::Undef,
+        "e2e: get_or(undef, \"k\", 0mm) compiled via stdlib must propagate Undef (INV-2) — \
+         the placeholder .ri body would return the default 0mm"
+    );
+}
+
 // ── get_or: undef key propagation ────────────────────────────────────────────
 
 /// get_or(map{"k"=>1mm}, undef_key, 0mm) == Value::Undef
