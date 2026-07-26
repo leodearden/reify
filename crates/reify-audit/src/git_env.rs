@@ -22,6 +22,16 @@
 //! `GIT_DIR` points at that same repository and is therefore correct;
 //! stripping it would be a behaviour change, not a fix.
 //!
+//! ## Sweep status
+//!
+//! `git grep -n 'Command::new("git")' -- '*.rs'` over the whole workspace
+//! returns, besides this module and prose references to it, exactly the three
+//! `git --version` probes named above. Every repo-targeting site — the three
+//! `RealGitOps` methods (`spawn_once`, `is_gitignored`, `is_ancestor`) and the
+//! six fixture helpers in `tests/cli.rs` and `tests/real_git_ops.rs` — is
+//! routed through here. Re-run that grep when adding a git call site: a new
+//! hit that is not a `--version` probe is a defect.
+//!
 //! # The failure mode this prevents
 //!
 //! Git exports `GIT_DIR`, `GIT_WORK_TREE` and `GIT_INDEX_FILE` into a hook's
