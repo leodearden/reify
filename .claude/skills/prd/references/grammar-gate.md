@@ -26,7 +26,7 @@ Write fixtures to `/tmp/prd-gate-fixtures/<slug>-<n>.ri` or a directory the skil
 
 ### Step 2 — Parse each fixture
 
-From the repo root (or `tree-sitter-reify/` directory — both work because the build.rs locates the grammar):
+The CWD must be `tree-sitter-reify/` — running `tree-sitter parse` from the repo root fails with "No language found" because nothing outside `tree-sitter-reify/` maps `.ri` to the grammar (`build.rs` only regenerates the parser into `OUT_DIR` for cargo builds; it doesn't make the standalone `tree-sitter` CLI resolve the language from an arbitrary CWD):
 
 ```bash
 cd /home/leo/src/reify/tree-sitter-reify
