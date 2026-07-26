@@ -72,10 +72,15 @@
 #   (c) STRUCTURED VERDICT. Every pass/fail is emitted as a machine-parseable
 #       token line (NOT a log-scrape) so a failing developer reads the exact
 #       offending crate/file/reason directly:
-#           HARNESS_KLOC_CAP FAIL crate=<c> file=<path> reason=exceeds-cap lines=<n> cap=<n>
+#           HARNESS_KLOC_CAP FAIL crate=<c> file=<path> reason=exceeds-cap lines=<n> cap=<n> root_lines=<n> module_lines=<n> module_files=<n>
 #           HARNESS_KLOC_CAP FAIL crate=<c> file=<path> reason=unsanctioned-standalone
 #           HARNESS_KLOC_CAP PASS crate=<c>
 #           HARNESS_KLOC_CAP SUMMARY crates=<n> violations=<n>
+#       On exceeds-cap, `lines=` is the WHOLE-UNIT total (root file +
+#       harness_<subsystem>/ module dir); `root_lines`/`module_lines`/
+#       `module_files` decompose that total so an operator reading an
+#       archived merge-verify log knows immediately whether to split the
+#       module dir or trim the root, without re-deriving it by hand.
 #
 # ===========================================================================
 # THE GRANDFATHER-BASELINE RATCHET (harness-layout-baseline.manifest).
@@ -224,7 +229,8 @@ harness_layout_violations() {
                     <<<"$(harness_layout_unit_lines "$f")" || true
                 if [ "$lines" -gt "$cap_lines" ]; then
                     _emit FAIL "crate=$crate" "file=$f" "reason=exceeds-cap" \
-                        "lines=$lines" "cap=$cap_lines"
+                        "lines=$lines" "cap=$cap_lines" \
+                        "root_lines=$root_lines" "module_lines=$module_lines" "module_files=$module_files"
                     violations=$((violations + 1))
                 fi
                 continue
