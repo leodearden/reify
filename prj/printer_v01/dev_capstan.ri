@@ -25,9 +25,6 @@
 // tension) is reacted by its own shaft bearings — benign.
 //
 // MODELLING CAVEATS:
-//  - The HELICAL GROOVE itself is not modelled (no helical-sweep / thread feature;
-//    same gap class as the missing `torus` seat). The drum renders as a smooth core
-//    at root-Ø with `lead` annotated; the wrap band is the grooved axial region.
 //  - Override drop (task 4147): the 4 shuttle idlers are identical IdlerPulley
 //    DEFAULTS placed by pose only (`at` works), so 4147 never bites here. The
 //    ShuttlePlate size is hand-matched to the idler corner spacing for the same
@@ -80,9 +77,19 @@ pub structure IdlerPulley {
 // ── Capstan (dual-anchor winch drum) ────────────────────────────────────────
 /// Helically-grooved winch drum, axis = local +Z, centred. Both belt ends anchor
 /// to it; rotation reels one end in / pays the other out. Carries BOTH windings of
-/// the belt's ±z moment pair (axially adjacent on the one drum). Smooth core at
-/// root-Ø + two retaining flanges + axial shaft bore. Groove helix not modelled —
-/// `lead` is the (clearance) pitch.
+/// the belt's ±z moment pair (axially adjacent on the one drum).
+///
+/// The rope channel is modelled: a circular section of radius `groove_r` swept
+/// along `helix(pitch_r, lead, groove_len)` and subtracted from the land cylinder
+/// at `land_r`, between two retaining flanges and over an axial shaft bore.
+/// `groove_mouth` is how far the land is cut back below the rope crest — the width
+/// the channel opens onto the land surface. `blank_volume` − `body_volume` is the
+/// stock the groove removes.
+///
+/// The channel is modelled FULLY SEATED: the swept section is submerged in the
+/// land, so the mouth is a narrow slot rather than an open half-round seat (the
+/// bound is pinned in `constraint groove_mouth < groove_r * 0.2`, not restated
+/// here).
 ///
 /// Sizing (D/d = 8 start): drum Ø = d_ratio·rope_dia = 48mm; pitch circ ≈ 151mm;
 /// max per-belt feed = X+Y travel = 500+800 = 1.3m → ≈ 8.6 → 9 active turns;
