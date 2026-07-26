@@ -219,7 +219,10 @@ structure def Parent {
 #[test]
 fn unsupported_nested_read_emits_diagnostic_not_silent_undef() {
     // guard: n > 0  (references Rec.n)
-    let guard = gt(value_ref_typed("Rec", "n", Type::Int), literal(Value::Int(0)));
+    let guard = gt(
+        value_ref_typed("Rec", "n", Type::Int),
+        literal(Value::Int(0)),
+    );
     // arg: n = n - 1  (references Rec.n)
     let n_minus_1 = binop(
         BinOp::Sub,
@@ -265,12 +268,14 @@ fn unsupported_nested_read_emits_diagnostic_not_silent_undef() {
 
     // The cross-sub read cannot resolve: the guarded `child` is skipped at
     // instance scope, so `Parent.m.child` was never materialised.
+    let nested_n = ValueCellId::new("Parent.m.child", "n");
     assert!(
-        !result.values.contains(&ValueCellId::new("Parent.m.child", "n")),
+        !result.values.contains(&nested_n),
         "Parent.m.child.n must not exist (a guarded sub is not elaborated at instance scope)",
     );
+    let instance_let = ValueCellId::new("Parent.m", "echo_child");
     assert_eq!(
-        result.values.get(&ValueCellId::new("Parent.m", "echo_child")),
+        result.values.get(&instance_let),
         Some(&Value::Undef),
         "Parent.m.echo_child is expected to be Undef — the point of this test is that it must \
          not be SILENTLY so",

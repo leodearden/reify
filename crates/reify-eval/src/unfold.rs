@@ -300,8 +300,9 @@ pub(crate) fn unfold_recursive_sub<'t>(
 /// (non-empty `keyed_members`) need `__list_`/indexed/per-key scoping that is
 /// not modelled at instance nesting; guarded subs belong to recursive
 /// templates, which `unfold_recursive_sub` handles at template scope. Anything
-/// skipped is surfaced by the never-silent-undef diagnostic below, never
-/// dropped quietly.
+/// skipped is surfaced by [`report_unresolvable_nested_reads`], never dropped
+/// quietly: a child let left `Undef` *because* of a skip gets an error
+/// diagnostic naming both it and the nested cell it could not read.
 ///
 /// Termination does NOT rest on structural acyclicity — plain sub nesting is
 /// *not* guaranteed to be a DAG. The compiler admits both self-recursive
@@ -401,12 +402,22 @@ fn elaborate_child_instance_nested<'t>(
     let arg_runtime_sink = RefCell::new(Vec::new());
     let arg_containment = NoContainment;
     let mut nested_sub_names: Vec<&str> = Vec::new();
+    // Every sub this loop declines to descend into, with the reason. Handed to
+    // `report_unresolvable_nested_reads` below so a child let left `Undef` by a
+    // skip is named rather than silently dropped. All four skip arms feed it,
+    // the cycle cut included.
+    let mut skipped_subs: Vec<(&str, &'static str)> = Vec::new();
     ancestors.push(child_template.name.as_str());
     for sub in &child_template.sub_components {
         if !is_plain_nestable_sub(sub) {
+            skipped_subs.push((sub.name.as_str(), skip_reason_for_shape(sub)));
             continue;
         }
         let Some(nested_template) = find_template(templates, &sub.structure_name) else {
+            skipped_subs.push((
+                sub.name.as_str(),
+                "target structure not found in this module",
+            ));
             continue;
         };
         // Cycle guard — see this function's doc comment. Re-entering a
@@ -415,6 +426,7 @@ fn elaborate_child_instance_nested<'t>(
         // Node }`, `A { sub b : B }` / `B { sub a : A }`), which is a stack
         // overflow, not a hang.
         if ancestors.contains(&nested_template.name.as_str()) {
+            skipped_subs.push((sub.name.as_str(), "cyclic sub nesting cut"));
             continue;
         }
 
@@ -497,6 +509,116 @@ fn elaborate_child_instance_nested<'t>(
         templates,
         diagnostics,
     );
+
+    // Never-silent-undef: any child let the loop above knowingly starved must
+    // say so. Gated on a non-empty skip list so the common all-plain case pays
+    // nothing.
+    if !skipped_subs.is_empty() {
+        report_unresolvable_nested_reads(
+            values,
+            child_template,
+            scoped_entity,
+            &skipped_subs,
+            diagnostics,
+        );
+    }
+}
+
+/// Why [`is_plain_nestable_sub`] rejected `sub` — the shape half of the skip
+/// reasons carried in `elaborate_child_instance_nested`'s `skipped_subs`.
+///
+/// Only called on subs that already failed `is_plain_nestable_sub`, so the
+/// final arm is unreachable in practice; it degrades to a generic phrase rather
+/// than panicking, since this only ever feeds diagnostic prose.
+fn skip_reason_for_shape(sub: &reify_compiler::SubComponentDecl) -> &'static str {
+    if sub.is_collection {
+        "collection sub"
+    } else if !sub.keyed_members.is_empty() {
+        "keyed sub"
+    } else if sub.guard_state.is_compiled() {
+        "guarded sub (recursive-context only)"
+    } else {
+        "unsupported sub shape"
+    }
+}
+
+/// Emit an error diagnostic for every child `let` that is `Undef` *because* the
+/// nesting recursion declined to elaborate a sub it reads across.
+///
+/// Without this, an unsupported nesting shape degrades exactly like the task
+/// 5360 bug it fixes: the let resolves to `Value::Undef` and nothing anywhere
+/// says why. The diagnostic names both ends — the undefined instance cell
+/// `{scoped_entity}.{member}` and the nested cell
+/// `{scoped_entity}.{skipped}.{target}` it could not read — plus the reason the
+/// sub was skipped.
+///
+/// Deliberately NARROW: a let qualifies only when its read set contains a
+/// `ValueCellId` whose entity is exactly `{child_template.name}.{skipped}` —
+/// the key a cross-sub read `self.<skipped>.<member>` compiles to (expr.rs
+/// sub-member lowering). A blanket "child let is Undef → diagnostic" would fire
+/// on legitimately-`Undef` lets (auto params the solver resolves later, genuine
+/// upstream undefs), regressing shipped designs. Same-template reads are
+/// excluded by construction: their entity is `{child_template.name}` with no
+/// nested segment, so it can never equal a `{name}.{sub}` key.
+///
+/// Residual: reads *deeper* under a skipped sub (entity
+/// `{name}.{skipped}.{deeper}`) are not matched. Only one level of
+/// `self.<sub>.<member>` lowers to a scoped cell, so no such read reaches here
+/// today; broadening to a prefix match would widen the false-positive surface
+/// for no in-tree gain.
+fn report_unresolvable_nested_reads(
+    values: &ValueMap,
+    child_template: &TopologyTemplate,
+    scoped_entity: &str,
+    skipped_subs: &[(&str, &'static str)],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // The read-set entity key each skipped sub would have been reached through.
+    let skipped_keys: Vec<(String, &str, &'static str)> = skipped_subs
+        .iter()
+        .map(|(name, reason)| (format!("{}.{}", child_template.name, name), *name, *reason))
+        .collect();
+
+    for cell in &child_template.value_cells {
+        if cell.kind != ValueCellKind::Let {
+            continue;
+        }
+        let Some(expr) = cell.default_expr.as_ref() else {
+            continue;
+        };
+        // Only lets that actually landed `Undef` at this instance scope. A let
+        // that resolved (e.g. a conditional that never took the starved branch)
+        // is not a defect.
+        let scoped_id = ValueCellId::new(scoped_entity, &cell.id.member);
+        if !matches!(values.get(&scoped_id), Some(Value::Undef)) {
+            continue;
+        }
+
+        let reads = extract_dependency_trace(expr).reads;
+        let mut starved: Vec<String> = Vec::new();
+        for read in &reads {
+            if let Some((_, sub, reason)) =
+                skipped_keys.iter().find(|(key, _, _)| *key == read.entity)
+            {
+                let named = format!("\"{}.{}.{}\" ({})", scoped_entity, sub, read.member, reason);
+                if !starved.contains(&named) {
+                    starved.push(named);
+                }
+            }
+        }
+        if starved.is_empty() {
+            continue;
+        }
+
+        diagnostics.push(Diagnostic::error(format!(
+            "unresolvable nested sub-component read: let \"{}.{}\" is undefined because it reads {}, \
+             which structure \"{}\" does not elaborate at instance scope",
+            scoped_entity,
+            cell.id.member,
+            starved.join(" and "),
+            child_template.name,
+        )));
+    }
 }
 
 /// True iff `sub` is a PLAIN sub-component — the only shape
