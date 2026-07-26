@@ -36,7 +36,7 @@
 
 use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
 use reify_eval::TessellateResult;
-use reify_ir::Value;
+use reify_ir::{Satisfaction, Value};
 use std::f64::consts::PI;
 
 /// The real design file under test, reached from this crate's manifest dir.
@@ -187,5 +187,105 @@ fn capstan_groove_volume_delta_matches_pi_r2_l() {
          groove_len = {groove_len:.6} m)",
         rel_err * 100.0,
         VOLUME_DELTA_REL_TOL * 100.0
+    );
+}
+
+// ── The viewport shows ONE grooved drum, and the design still checks clean ───
+
+/// Entity-path prefix of the capstan's surfaces.
+///
+/// `Capstan` is contained by the file's `CapstanDrive` assembly (`sub capstan =
+/// Capstan()`), so it does not surface as a root template — its bodies come
+/// back in the composed descendant form `CapstanDrive.capstan#realization[i]`
+/// (sub-placement Phase B). The realization index `i` is the same slot the
+/// value map reports for the corresponding `Capstan.<let>` cell.
+const CAPSTAN_SURFACE_PREFIX: &str = "CapstanDrive.capstan#realization[";
+
+/// Modelling the groove for real means composing the drum from several named
+/// intermediate bodies (profile, spine, cutter, blank). Exactly one of them —
+/// the finished `body` — may surface in the viewport; the construction
+/// geometry must be realized-but-hidden, or the consumer sees a pile of stray
+/// meshes instead of a grooved drum.
+///
+/// Also pins that the design still checks clean at its defaults, so the
+/// `groove_mouth` / `land_r` constraints added alongside the groove cannot
+/// silently regress (equivalent to `reify check` reporting "All constraints
+/// satisfied").
+#[test]
+fn capstan_surfaces_only_the_finished_drum() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let result = tessellate_dev_capstan();
+
+    // The realization slot backing `Capstan.body` — resolved from the value map,
+    // so the test never hard-codes a realization index.
+    let body_path = match result.values.get(&ValueCellId::new("Capstan", "body")) {
+        Some(Value::GeometryHandle {
+            realization_ref, ..
+        }) => format!("{CAPSTAN_SURFACE_PREFIX}{}]", realization_ref.index),
+        other => panic!("Capstan.body must be a realized Value::GeometryHandle, got {other:?}"),
+    };
+
+    let capstan_surfaces: Vec<_> = result
+        .meshes
+        .iter()
+        .filter(|s| s.entity_path.starts_with(CAPSTAN_SURFACE_PREFIX))
+        .collect();
+    assert!(
+        !capstan_surfaces.is_empty(),
+        "expected Capstan root-template surfaces, got none; all surfaces: {:?}",
+        result
+            .meshes
+            .iter()
+            .map(|s| &s.entity_path)
+            .collect::<Vec<_>>()
+    );
+
+    let visible: Vec<_> = capstan_surfaces
+        .iter()
+        .filter(|s| s.default_visible)
+        .collect();
+    assert_eq!(
+        visible.len(),
+        1,
+        "exactly one Capstan surface may be visible by default (the finished drum); \
+         got {} visible out of {} — the groove's construction geometry \
+         (groove_profile / groove_path / groove_cutter / drum_blank) must be `aux`. \
+         Capstan surfaces (path, default_visible): {:?}",
+        visible.len(),
+        capstan_surfaces.len(),
+        capstan_surfaces
+            .iter()
+            .map(|s| (&s.entity_path, s.default_visible))
+            .collect::<Vec<_>>()
+    );
+
+    let drum = visible[0];
+    assert_eq!(
+        drum.entity_path, body_path,
+        "the one visible Capstan surface must be the finished `body`, not a \
+         construction body"
+    );
+    assert!(
+        !drum.mesh.vertices.is_empty(),
+        "the visible grooved drum must have vertices"
+    );
+    assert!(
+        !drum.mesh.indices.is_empty(),
+        "the visible grooved drum must have triangles"
+    );
+
+    // The design still checks clean at its defaults (`reify check` equivalent).
+    let violated: Vec<_> = result
+        .constraint_results
+        .iter()
+        .filter(|c| c.satisfaction == Satisfaction::Violated)
+        .collect();
+    assert!(
+        violated.is_empty(),
+        "{DEV_CAPSTAN} must satisfy every constraint at its defaults; violated: {violated:#?}"
     );
 }
