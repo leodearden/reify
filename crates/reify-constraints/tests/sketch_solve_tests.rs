@@ -177,6 +177,17 @@ fn point_of(result: &SketchSolveResult, id: SketchEntityId) -> (f64, f64) {
     }
 }
 
+/// The solved `(start, end)` of the line entity `id`.
+///
+/// Panics — descriptively — if the result is not `Solved`, if `id` is absent
+/// from the readback, or if `id` names something other than a line.
+fn line_of(result: &SketchSolveResult, id: SketchEntityId) -> ((f64, f64), (f64, f64)) {
+    match lookup(result, id) {
+        SolvedSketchEntity::Line { start, end } => (*start, *end),
+        other => panic!("entity {id:?} is not a Line in the solved readback: {other:?}"),
+    }
+}
+
 /// The solved radius of the circle entity `id`.
 ///
 /// Panics — descriptively — if the result is not `Solved`, if `id` is absent
@@ -334,5 +345,218 @@ fn solve_sketch_is_bit_deterministic() {
         ids_first,
         vec![a, b],
         "readback must follow declaration order"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Lines: anchoring, orientation, dimensioning
+// ---------------------------------------------------------------------------
+
+/// A line anchored at one end, held horizontal, and dimensioned is fully
+/// constrained.
+///
+/// `dof == 0` is combinatorial: four params (two 2D points), four independent
+/// equations (`Fix` pins two, `Horizontal` one, `Distance` one).  The endpoint
+/// positions are not "wherever the solver went" either — with the anchor at the
+/// origin and the line held horizontal, `(0.010, 0)` is the only solution on the
+/// seed's side of the origin.
+#[test]
+fn anchored_horizontal_dimensioned_line_is_fully_constrained() {
+    let mut s = Sketch::new();
+    let a = s.point(0.0, 0.0);
+    let b = s.point(0.008, 0.002);
+    let line = s.line(a, b);
+    s.constrain(SketchConstraint::Fix(a));
+    s.constrain(SketchConstraint::Horizontal(line));
+    s.constrain(SketchConstraint::Distance { a, b, value: 0.010 });
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert_eq!(
+        dof_of(&result),
+        0,
+        "4 params less 4 independent equations = 0 DOF"
+    );
+    assert_point_near(point_of(&result, a), (0.0, 0.0), "anchored end");
+    assert_point_near(point_of(&result, b), (0.010, 0.0), "dimensioned free end");
+
+    // A composite entity reads back as geometry, not as another round of id
+    // chasing: the line's endpoints are the solved positions of its points.
+    let (start, end) = line_of(&result, line);
+    assert_point_near(start, point_of(&result, a), "line start vs point a");
+    assert_point_near(end, point_of(&result, b), "line end vs point b");
+}
+
+/// Dropping the dimension leaves exactly one degree of freedom.
+///
+/// The same fixture minus `Distance`: `b` may still slide along the horizontal
+/// through the anchor, and nothing else. `dof == 1` distinguishes "under-
+/// constrained by exactly one" from both "fully constrained" and "the solver
+/// lost track of the constraint" — which a tolerance-based check could not.
+#[test]
+fn undimensioned_horizontal_line_leaves_one_dof() {
+    let mut s = Sketch::new();
+    let a = s.point(0.0, 0.0);
+    let b = s.point(0.008, 0.002);
+    let line = s.line(a, b);
+    s.constrain(SketchConstraint::Fix(a));
+    s.constrain(SketchConstraint::Horizontal(line));
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert_eq!(
+        dof_of(&result),
+        1,
+        "4 params less 3 independent equations = 1 DOF (b slides along the horizontal)"
+    );
+    // The orientation constraint still holds even though the length is free.
+    assert_near(
+        point_of(&result, b).1,
+        0.0,
+        "free end stays on the horizontal",
+    );
+}
+
+/// `Vertical` drives the free end along the v axis rather than the u axis.
+///
+/// The mirror of the horizontal fixture, and the reason both exist: a mapping
+/// that emitted `SLVS_C_HORIZONTAL` for both variants would pass the horizontal
+/// test alone.
+#[test]
+fn anchored_vertical_dimensioned_line_drives_the_free_end_up() {
+    let mut s = Sketch::new();
+    let a = s.point(0.0, 0.0);
+    let b = s.point(0.002, 0.018);
+    let line = s.line(a, b);
+    s.constrain(SketchConstraint::Fix(a));
+    s.constrain(SketchConstraint::Vertical(line));
+    s.constrain(SketchConstraint::Distance { a, b, value: 0.020 });
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert_eq!(dof_of(&result), 0, "anchored + oriented + dimensioned");
+    assert_point_near(point_of(&result, a), (0.0, 0.0), "anchored end");
+    assert_point_near(
+        point_of(&result, b),
+        (0.0, 0.020),
+        "free end above the anchor",
+    );
+}
+
+/// `Coincident` drives two points seeded apart onto the same location.
+#[test]
+fn coincident_drives_two_seeded_apart_points_together() {
+    let mut s = Sketch::new();
+    let p = s.point(0.005, 0.003);
+    let q = s.point(-0.001, 0.008);
+    s.constrain(SketchConstraint::Fix(p));
+    s.constrain(SketchConstraint::Coincident { a: p, b: q });
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert_eq!(dof_of(&result), 0, "4 params less 4 independent equations");
+    // The anchored point did not move to meet the free one; the free one moved.
+    assert_point_near(point_of(&result, p), (0.005, 0.003), "anchored point");
+    assert_point_near(point_of(&result, q), (0.005, 0.003), "coincident point");
+}
+
+// ---------------------------------------------------------------------------
+// Lines: relative orientation
+// ---------------------------------------------------------------------------
+
+/// `Fix` on a line pins both of its endpoints, and `Parallel` zeroes the cross
+/// product of the two line directions.
+///
+/// The residual is the normalized 2D cross product, which is exactly zero iff
+/// the directions are collinear — the formulation already used for the legacy
+/// parallel test in `solvespace_tests.rs`.
+#[test]
+fn parallel_lines_solve_to_a_zero_cross_product() {
+    let mut s = Sketch::new();
+    let a1 = s.point(0.0, 0.0);
+    let a2 = s.point(0.010, 0.010);
+    let la = s.line(a1, a2);
+    let b1 = s.point(0.020, 0.0);
+    // Seeded deliberately off-parallel, so a no-op mapping cannot pass.
+    let b2 = s.point(0.030, 0.012);
+    let lb = s.line(b1, b2);
+    s.constrain(SketchConstraint::Fix(la));
+    s.constrain(SketchConstraint::Fix(b1));
+    s.constrain(SketchConstraint::Parallel { a: la, b: lb });
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    // `Fix` applied to a line really did anchor both endpoints.
+    assert_point_near(point_of(&result, a1), (0.0, 0.0), "anchored line start");
+    assert_point_near(point_of(&result, a2), (0.010, 0.010), "anchored line end");
+    assert_point_near(point_of(&result, b1), (0.020, 0.0), "anchored second start");
+
+    let da = unit(delta(point_of(&result, a1), point_of(&result, a2)));
+    let db = unit(delta(point_of(&result, b1), point_of(&result, b2)));
+    assert!(
+        cross(da, db).abs() < TOL,
+        "parallel: cross({da:?}, {db:?}) = {} should be 0",
+        cross(da, db)
+    );
+}
+
+/// `Perpendicular` zeroes the dot product of the two normalized directions.
+#[test]
+fn perpendicular_lines_solve_to_a_zero_dot_product() {
+    let mut s = Sketch::new();
+    let a1 = s.point(0.0, 0.0);
+    let a2 = s.point(0.010, 0.010);
+    let la = s.line(a1, a2);
+    let b1 = s.point(0.020, 0.0);
+    // Seeded near — but not at — the perpendicular direction (-1, 1).
+    let b2 = s.point(0.013, 0.008);
+    let lb = s.line(b1, b2);
+    s.constrain(SketchConstraint::Fix(la));
+    s.constrain(SketchConstraint::Fix(b1));
+    s.constrain(SketchConstraint::Perpendicular { a: la, b: lb });
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    let da = unit(delta(point_of(&result, a1), point_of(&result, a2)));
+    let db = unit(delta(point_of(&result, b1), point_of(&result, b2)));
+    assert!(
+        dot(da, db).abs() < TOL,
+        "perpendicular: dot({da:?}, {db:?}) = {} should be 0",
+        dot(da, db)
+    );
+}
+
+/// `Angle` drives the direction cosine between two lines to `cos(degrees)`.
+///
+/// Degrees, not radians: libslvs' `SLVS_C_ANGLE` takes `valA` in degrees, and
+/// the surface vocabulary matches it rather than converting at the boundary. A
+/// mapping that passed 45 as radians would land the lines ~2.6 degrees apart,
+/// which this assertion catches.
+#[test]
+fn angle_constraint_drives_the_direction_cosine() {
+    let mut s = Sketch::new();
+    let a1 = s.point(0.0, 0.0);
+    let a2 = s.point(0.010, 0.0);
+    let la = s.line(a1, a2);
+    let b1 = s.point(0.020, 0.0);
+    // Seeded at roughly 32 degrees, so the solver has to move it to 45.
+    let b2 = s.point(0.028, 0.005);
+    let lb = s.line(b1, b2);
+    s.constrain(SketchConstraint::Fix(la));
+    s.constrain(SketchConstraint::Fix(b1));
+    s.constrain(SketchConstraint::Angle {
+        a: la,
+        b: lb,
+        degrees: 45.0,
+    });
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    let da = unit(delta(point_of(&result, a1), point_of(&result, a2)));
+    let db = unit(delta(point_of(&result, b1), point_of(&result, b2)));
+    assert_near(
+        dot(da, db),
+        45.0_f64.to_radians().cos(),
+        "direction cosine between the two lines",
     );
 }
