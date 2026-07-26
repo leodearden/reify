@@ -76,22 +76,27 @@ enum SkipKind {
 /// separated and rooted at `examples/` and `kind` is a [`SkipKind`]
 /// classifying why the entry exists.
 ///
-/// This set is NOT expected to equal `examples_smoke.rs::SKIP_SET` — the
-/// two serve different contracts. That sibling set is correctness-only
-/// (its own header describes it as "reserved for files that do not yet
-/// compile"). This set is a strict SUPERSET: `SkipKind::CompileError`
-/// entries (needed because `check_source_with_stdlib` panics on a parse or
-/// compile error — see its `# Panics` docs in
-/// `crates/reify-test-support/src/helpers.rs`) UNION `SkipKind::PerfBudget`
-/// entries that compile clean but exceed `PER_FILE_BUDGET`, which are
-/// deliberately NOT mirrored into `examples_smoke.rs::SKIP_SET`.
+/// This set and `examples_smoke.rs::SKIP_SET` serve different contracts —
+/// that sibling set is correctness-only (its own header describes it as
+/// "reserved for files that do not yet compile"), while this set mixes
+/// `SkipKind::CompileError` entries (needed because
+/// `check_source_with_stdlib` panics on a parse or compile error — see its
+/// `# Panics` docs in `crates/reify-test-support/src/helpers.rs`) with
+/// `SkipKind::PerfBudget` entries that compile clean but exceed
+/// `PER_FILE_BUDGET` and are deliberately not mirrored into
+/// `examples_smoke.rs::SKIP_SET`. No fixed relation (equal, superset, or
+/// subset) between the two sets is asserted or enforced anywhere, and none
+/// should be assumed from either set's contents at any given moment — each
+/// crate's fixtures can gain or lose entries independently of the other.
 ///
-/// The superset relation is enforced locally by
-/// `compile_correctness_skips_still_fail_to_compile` below (every
-/// `SkipKind::CompileError` entry must still fail to compile) rather than
-/// by any cross-crate parity assertion: both `SKIP_SET` consts are private
-/// to separate crates' `tests/` integration binaries, so neither can
-/// import the other to compare directly.
+/// Instead, each set validates itself locally. Here,
+/// `compile_correctness_skips_still_fail_to_compile` below asserts every
+/// `SkipKind::CompileError` entry still fails to compile, and
+/// `skip_set_entries_exist_under_examples_dir` asserts every entry names a
+/// path that still exists; `examples_smoke.rs` has its own analogous pair.
+/// There is no cross-crate parity assertion between the two `SKIP_SET`
+/// consts — both are private to separate crates' `tests/` integration
+/// binaries, so neither can import the other to compare directly.
 const SKIP_SET: &[(&str, SkipKind, &str)] = &[
     (
         "trajectory/tots_optimal_ptp.ri",
@@ -729,6 +734,15 @@ fn per_file_gate_violation_contract() {
 /// compiling them would re-pay the ~13-15s the skip exists to avoid, which
 /// would defeat its purpose and materially slow this test file.
 ///
+/// Uses `compile_source_with_stdlib_allow_parse_errors` rather than
+/// `compile_source_with_stdlib`: the latter PANICS on a parse error (see its
+/// own `# Panics` docs), which would abort this loop before every later
+/// entry is checked and defeat the report-everything design below. The
+/// `_allow_parse_errors` variant instead folds parse-layer diagnostics into
+/// the returned module's `diagnostics`, so a `CompileError` entry that now
+/// fails at the parse layer is still correctly counted as "still fails to
+/// compile" by `errors_only` rather than aborting the whole test.
+///
 /// Every offending entry is accumulated and reported in a single panic,
 /// mirroring `examples_smoke.rs::all_examples_parse_and_compile_with_stdlib`'s
 /// report-everything style, so one run surfaces every stale entry rather
@@ -746,7 +760,7 @@ fn compile_correctness_skips_still_fail_to_compile() {
         let src = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e));
 
-        let module = reify_test_support::compile_source_with_stdlib(&src);
+        let module = reify_test_support::compile_source_with_stdlib_allow_parse_errors(&src);
         if reify_test_support::errors_only(&module).is_empty() {
             stale.push(rel.to_string());
         }
@@ -828,21 +842,42 @@ fn skip_set_entries_exist_under_examples_dir() {
 /// No short-circuit case: the two bogus entries sit on either side of the
 /// two present entries in the input slice, so an implementation that stopped
 /// at the first miss would return only one of the two and fail this test.
+///
+/// Hermetic by construction: the "present" fixtures are written into a fresh
+/// `tempfile::TempDir` rather than named from the live `examples/` corpus, so
+/// a future rename/deletion of an unrelated example file cannot make this
+/// unit test of a pure helper fail — that live-corpus signal already belongs
+/// to `skip_set_entries_exist_under_examples_dir` above, whose failure
+/// message points at the real dead key instead of at this helper.
 #[test]
 fn missing_skip_set_paths_contract() {
+    let dir = tempfile::TempDir::new().expect("tempdir creation should succeed");
+    std::fs::create_dir(dir.path().join("trajectory")).expect("create trajectory/ subdir");
+    std::fs::create_dir(dir.path().join("auto")).expect("create auto/ subdir");
+    std::fs::write(
+        dir.path().join("trajectory/present.ri"),
+        "// present fixture, PerfBudget\n",
+    )
+    .expect("write trajectory/present.ri fixture");
+    std::fs::write(
+        dir.path().join("auto/present.ri"),
+        "// present fixture, CompileError\n",
+    )
+    .expect("write auto/present.ri fixture");
+
     let entries: &[(&str, SkipKind, &str)] = &[
         (
-            "trajectory/tots_optimal_ptp.ri",
+            "trajectory/present.ri",
             SkipKind::PerfBudget,
             "present, PerfBudget",
         ),
         (
-            "topology_selectors/deleted_by_a_rename.ri",
+            "trajectory/deleted_by_a_rename.ri",
             SkipKind::PerfBudget,
             "bogus, PerfBudget",
         ),
         (
-            "auto/bearing_unsat.ri",
+            "auto/present.ri",
             SkipKind::CompileError,
             "present, CompileError",
         ),
@@ -853,7 +888,7 @@ fn missing_skip_set_paths_contract() {
         ),
     ];
 
-    let mut names = missing_skip_set_paths(entries, Path::new(EXAMPLES_DIR));
+    let mut names = missing_skip_set_paths(entries, dir.path());
 
     // Sort before comparing: `missing_skip_set_paths` is documented as a
     // filter with no order-preservation guarantee (mirroring
@@ -862,15 +897,12 @@ fn missing_skip_set_paths_contract() {
     names.sort_unstable();
     assert_eq!(
         names,
-        vec![
-            "auto/never_existed.ri",
-            "topology_selectors/deleted_by_a_rename.ri",
-        ],
-        "expected both bogus paths (one per SkipKind) to be flagged as missing — \
-         confirming the helper flags missing paths regardless of SkipKind and \
-         returns the full offending set rather than short-circuiting on the first \
-         miss; the two real, present files (one per SkipKind) must not be flagged, \
-         got: {names:?}"
+        vec!["auto/never_existed.ri", "trajectory/deleted_by_a_rename.ri"],
+        "expected both bogus paths (one per SkipKind) to be flagged as missing against a \
+         hermetic tempdir fixture — confirming the helper flags missing paths regardless \
+         of SkipKind and returns the full offending set rather than short-circuiting on \
+         the first miss; the two synthetic, present files (one per SkipKind) must not be \
+         flagged, got: {names:?}"
     );
 }
 
