@@ -39,6 +39,32 @@
 #                                          comment/blank stripping as
 #                                          run-all-classification-lib.sh; exact
 #                                          full-line fixed-string match.
+#   harness_layout_unit_lines <root-harness-rs>
+#                                          print "<total> <root_lines>
+#                                          <module_lines> <module_files>" for
+#                                          the COMPILE UNIT rooted at
+#                                          <root-harness-rs>: <root_lines> is
+#                                          the root file's own `wc -l` (0 if
+#                                          absent); <module_lines>/<module_files>
+#                                          sum `wc -l`/count over the files in
+#                                          its own harness_<subsystem>/ module
+#                                          directory (0/0 if that dir does not
+#                                          exist — the single-file-harness
+#                                          case); <total> = <root_lines> +
+#                                          <module_lines>. KNOWN, BOUNDED
+#                                          LIMITATION: files pulled in from
+#                                          OUTSIDE the module dir (a shared
+#                                          tests/common/ helper via
+#                                          `#[path = "common/x.rs"]` or a bare
+#                                          `mod common;`) are deliberately NOT
+#                                          attributed to the unit — measured,
+#                                          e.g. attributing
+#                                          crates/reify-eval/tests/harness_topology_selector.rs's
+#                                          `#[path = "common/differential.rs"]`
+#                                          include (2128 lines) would put it at
+#                                          21470 lines, 7.4% over CAP_LINES —
+#                                          a cap/split call for the PRD owner,
+#                                          not a measurement fix.
 #
 # Environment:
 #   REIFY_HARNESS_LAYOUT_BASELINE  Override the baseline manifest path. Defaults
@@ -146,4 +172,73 @@ harness_layout_baseline_contains() {
     grep -vE '^[[:space:]]*#' "$baseline" \
         | grep -vE '^[[:space:]]*$' \
         | grep -xF -- "$path" >/dev/null
+}
+
+# harness_layout_unit_lines <root-harness-rs> — print "<total> <root_lines>
+# <module_lines> <module_files>" (space-separated) for the compile unit
+# rooted at <root-harness-rs>.
+#
+# <root_lines>  = `wc -l` of the root file itself (0 if the root is absent).
+# module dir    = ${root%.rs}, i.e. the harness_<subsystem>/ directory next
+#                 to the root.
+# <module_lines>/<module_files> = sum of `wc -l` / count over every *.rs
+#                 file at ANY DEPTH under the module dir (0/0 when the dir
+#                 does not exist — the single-file-harness case — or when it
+#                 has no *.rs entries; see the recursive-walk / .rs-only
+#                 rationale below).
+# <total>       = <root_lines> + <module_lines>.
+#
+# Per-file `wc -l` is summed rather than `cat`-ing every file through a
+# single `wc -l` because per-file counting is what also yields
+# <module_files>, and it matches the existing root-file counting call shape
+# (`wc -l < "$root"`) exactly — NOT because the two approaches would ever
+# disagree on the total: `wc -l` counts newline characters, and
+# concatenation neither adds nor removes them, so summing per-file counts
+# and counting the single `cat`-ed stream always agree exactly, even when an
+# interior file's last line is unterminated (PRD
+# docs/prds/merge-gate-compile-cost.md §5 C2 settles raw line count as the
+# measure).
+#
+# Recursive walk over the module dir via `find <moddir> -type f -name
+# '*.rs'` (plain `-type f`, no `-L`: symlinked module files are out of
+# contract), counting every `.rs` file at any depth — NOT just the module
+# dir's direct entries. `.rs`-only because rule (a) caps a COMPILE UNIT (PRD
+# docs/prds/merge-gate-compile-cost.md §5 C2 wording) and only `.rs` is
+# compiled into it: a colocated fixture (`.ri`/`.json`/golden output, etc.)
+# must not be able to push a harness over a hard merge-gate cap. This is a
+# live risk, not hypothetical — crates/reify-syntax/tests/ already colocates
+# `fixtures/` and `common/` directories with its tests.
+#
+# `find ... -print0` feeds a `while IFS= read -r -d ''` loop via process
+# substitution (not a pipe) that drains the stream to completion — never an
+# early-closing consumer, which under the callers' `set -o pipefail` would
+# reproduce the esc-5172-1 SIGPIPE-141 hazard (harness_layout_baseline_contains
+# above, and test_harness_kloc_cap.sh's Section-1 fixture generator, hit the
+# same class of hazard). `-print0` + `read -r -d ''` keeps the walk correct
+# for any path a plain glob would mangle.
+harness_layout_unit_lines() {
+    local root="$1"
+    local root_lines=0 module_lines=0 module_files=0 n f
+    local moddir="${root%.rs}"
+
+    if [ -f "$root" ]; then
+        root_lines="$(wc -l < "$root")"
+        root_lines="${root_lines//[[:space:]]/}"   # portable: strip any wc padding
+    fi
+
+    # Guard `[ -d "$moddir" ]` before invoking find: a missing module dir is
+    # the single-file-harness case (0/0), and `find` on a non-existent path
+    # exits non-zero, which would otherwise abort the sourcing script under
+    # `set -e`.
+    if [ -d "$moddir" ]; then
+        while IFS= read -r -d '' f; do
+            n="$(wc -l < "$f")"
+            n="${n//[[:space:]]/}"   # portable: strip any wc padding
+            module_lines=$((module_lines + n))
+            module_files=$((module_files + 1))
+        done < <(find "$moddir" -type f -name '*.rs' -print0)
+    fi
+
+    printf '%s %s %s %s\n' \
+        "$((root_lines + module_lines))" "$root_lines" "$module_lines" "$module_files"
 }

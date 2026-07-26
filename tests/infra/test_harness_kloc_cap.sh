@@ -52,11 +52,14 @@
 # For each of the 5 CONSOLIDATABLE crates, enumerate its top-level `tests/*.rs`
 # and assert:
 #
-#   (a) kLOC CAP. Every `harness_<subsystem>.rs` compile unit is <= the cap
-#       (CAP_LINES, measured as RAW `wc -l` line count — simplest and
-#       conservative, PRD §11; ~20 kLOC is the upper end of the §7 10-20 kLOC
-#       band). A harness that grows past the cap must be SPLIT into a second
-#       `harness_<subsystem2>.rs`, never allowed to balloon unbounded.
+#   (a) kLOC CAP. Every `harness_<subsystem>.rs` compile unit — the ROOT file
+#       PLUS its own `harness_<subsystem>/` module directory (NOT the root
+#       file alone) — is <= the cap (CAP_LINES, measured as RAW `wc -l` line
+#       count summed across the root and every file in the module directory —
+#       simplest and conservative, PRD §11; ~20 kLOC is the upper end of the
+#       §7 10-20 kLOC band). A harness that grows past the cap must be SPLIT
+#       into a second `harness_<subsystem2>.rs`, never allowed to balloon
+#       unbounded.
 #
 #   (b) NAMING / NO RE-ACCRETION. Every top-level `tests/*.rs` is EITHER a
 #       sanctioned `harness_<subsystem>.rs`, OR one of the 7 override binaries,
@@ -69,10 +72,15 @@
 #   (c) STRUCTURED VERDICT. Every pass/fail is emitted as a machine-parseable
 #       token line (NOT a log-scrape) so a failing developer reads the exact
 #       offending crate/file/reason directly:
-#           HARNESS_KLOC_CAP FAIL crate=<c> file=<path> reason=exceeds-cap lines=<n> cap=<n>
+#           HARNESS_KLOC_CAP FAIL crate=<c> file=<path> reason=exceeds-cap lines=<n> cap=<n> root_lines=<n> module_lines=<n> module_files=<n>
 #           HARNESS_KLOC_CAP FAIL crate=<c> file=<path> reason=unsanctioned-standalone
 #           HARNESS_KLOC_CAP PASS crate=<c>
 #           HARNESS_KLOC_CAP SUMMARY crates=<n> violations=<n>
+#       On exceeds-cap, `lines=` is the WHOLE-UNIT total (root file +
+#       harness_<subsystem>/ module dir); `root_lines`/`module_lines`/
+#       `module_files` decompose that total so an operator reading an
+#       archived merge-verify log knows immediately whether to split the
+#       module dir or trim the root, without re-deriving it by hand.
 #
 # ===========================================================================
 # THE GRANDFATHER-BASELINE RATCHET (harness-layout-baseline.manifest).
@@ -175,7 +183,9 @@ _emit() {
 # live driver drives the real crate tests dirs.
 #
 # rule (a) — kLOC cap: for each harness_<subsystem>.rs, take the raw `wc -l`
-# line count and flag it if it exceeds <cap_lines>.
+# line count of the WHOLE compile unit (the root file plus its own
+# harness_<subsystem>/ module directory, via harness_layout_unit_lines) and
+# flag it if it exceeds <cap_lines>.
 # ---------------------------------------------------------------------------
 harness_layout_violations() {
     local crate="$1"
@@ -184,7 +194,7 @@ harness_layout_violations() {
     local cap_lines="$4"
 
     local violations=0
-    local f base lines key
+    local f base lines key root_lines module_lines module_files
 
     # Graceful degradation: a missing crate tests dir is an explicit FAIL, never
     # a silent pass — a non-existent dir would otherwise glob to zero files and
@@ -215,11 +225,12 @@ harness_layout_violations() {
         # rule (a): kLOC cap governs the harness_<subsystem>.rs compile units.
         case "$base" in
             harness_*.rs)
-                lines="$(wc -l < "$f")"
-                lines="${lines//[[:space:]]/}"   # portable: strip any wc padding
+                IFS=' ' read -r lines root_lines module_lines module_files \
+                    <<<"$(harness_layout_unit_lines "$f")" || true
                 if [ "$lines" -gt "$cap_lines" ]; then
                     _emit FAIL "crate=$crate" "file=$f" "reason=exceeds-cap" \
-                        "lines=$lines" "cap=$cap_lines"
+                        "lines=$lines" "cap=$cap_lines" \
+                        "root_lines=$root_lines" "module_lines=$module_lines" "module_files=$module_files"
                     violations=$((violations + 1))
                 fi
                 continue
@@ -319,6 +330,137 @@ assert "1: over-cap harness_big.rs fires the kLOC cap (returns 1)" \
     test "$_s1_rc" -eq 1
 assert "1: cap violation emitted as a structured FAIL line (exceeds-cap, lines=21000 cap=20000)" \
     grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_big\.rs reason=exceeds-cap lines=21000 cap=20000' "$_s1_out"
+
+# ===========================================================================
+# Section 1b: rule (a) — the kLOC cap AGGREGATES the harness root + its own
+# harness_<subsystem>/ module directory, not the root file alone.
+# ===========================================================================
+echo ""
+echo "--- Section 1b: kLOC cap aggregates the harness module dir ---"
+
+_s1b_baseline="$(mktemp)"; _TMPDIRS+=("$_s1b_baseline")
+: > "$_s1b_baseline"   # empty fixture baseline (rule (a) never consults it)
+
+# Fixture A: a SMALL root (100 lines, innocuous under a root-only measure)
+# with a module dir that pushes the aggregate to 20100 > cap 20000.
+_s1b_dir="$(mktemp -d)"; _TMPDIRS+=("$_s1b_dir")
+mkdir -p "$_s1b_dir/harness_split"
+awk 'BEGIN { for (i = 0; i < 100; i++) print "// x" }'  > "$_s1b_dir/harness_split.rs"
+awk 'BEGIN { for (i = 0; i < 6667; i++) print "// x" }' > "$_s1b_dir/harness_split/a.rs"
+awk 'BEGIN { for (i = 0; i < 6667; i++) print "// x" }' > "$_s1b_dir/harness_split/b.rs"
+awk 'BEGIN { for (i = 0; i < 6666; i++) print "// x" }' > "$_s1b_dir/harness_split/c.rs"
+
+_s1b_out="$(mktemp)"; _TMPDIRS+=("$_s1b_out")
+_s1b_rc=0
+harness_layout_violations synthcrate "$_s1b_dir" "$_s1b_baseline" 20000 \
+    > "$_s1b_out" 2>/dev/null || _s1b_rc=$?
+
+assert "1b: a 100-line root with a 20000-line module dir fires the kLOC cap (returns 1, aggregate 20100 > 20000)" \
+    test "$_s1b_rc" -eq 1
+assert "1b: cap violation reports the AGGREGATE (lines=20100), not the 100-line root" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_split\.rs reason=exceeds-cap lines=20100 cap=20000' "$_s1b_out"
+
+# BOUNDARY PRECISION companion: aggregate EXACTLY AT the cap (1-line root +
+# 19999-line module dir = 20000) must NOT fire — pins `-gt` (strictly
+# greater), not `-ge`, now that the aggregate (not the root) is the compared
+# quantity.
+_s1b2_dir="$(mktemp -d)"; _TMPDIRS+=("$_s1b2_dir")
+mkdir -p "$_s1b2_dir/harness_boundary"
+awk 'BEGIN { for (i = 0; i < 1; i++) print "// x" }'     > "$_s1b2_dir/harness_boundary.rs"
+awk 'BEGIN { for (i = 0; i < 19999; i++) print "// x" }' > "$_s1b2_dir/harness_boundary/only.rs"
+
+_s1b2_out="$(mktemp)"; _TMPDIRS+=("$_s1b2_out")
+_s1b2_rc=0
+harness_layout_violations synthcrate "$_s1b2_dir" "$_s1b_baseline" 20000 \
+    > "$_s1b2_out" 2>/dev/null || _s1b2_rc=$?
+
+assert "1b: aggregate EXACTLY at the cap (20000) does not fire (returns 0, boundary is -gt not -ge)" \
+    test "$_s1b2_rc" -eq 0
+assert "1b: at-boundary crate emits a structured PASS line" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS crate=synthcrate' "$_s1b2_out"
+assert "1b: at-boundary crate emits no FAIL line" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s1b2_out"
+
+# ===========================================================================
+# Section 1c: rule (a) — the module-dir walk RECURSES into nested subdirs and
+# counts ONLY *.rs files.
+# ===========================================================================
+echo ""
+echo "--- Section 1c: module-dir walk is recursive and .rs-only ---"
+
+_s1c_baseline="$(mktemp)"; _TMPDIRS+=("$_s1c_baseline")
+: > "$_s1c_baseline"   # empty fixture baseline (rule (a) never consults it)
+
+_s1c_dir="$(mktemp -d)"; _TMPDIRS+=("$_s1c_dir")
+mkdir -p "$_s1c_dir/harness_nested/deep"
+awk 'BEGIN { for (i = 0; i < 10; i++) print "// x" }'    > "$_s1c_dir/harness_nested.rs"
+awk 'BEGIN { for (i = 0; i < 5; i++) print "// x" }'     > "$_s1c_dir/harness_nested/a.rs"
+awk 'BEGIN { for (i = 0; i < 7; i++) print "// x" }'     > "$_s1c_dir/harness_nested/deep/b.rs"
+awk 'BEGIN { for (i = 0; i < 50000; i++) print "// x" }' > "$_s1c_dir/harness_nested/notes.txt"
+
+_s1c_tuple="$(harness_layout_unit_lines "$_s1c_dir/harness_nested.rs")"
+assert "1c: harness_layout_unit_lines recurses into nested subdirs and counts only *.rs (total=22 root=10 module=12 files=2)" \
+    test "$_s1c_tuple" = "22 10 12 2"
+
+_s1c_out="$(mktemp)"; _TMPDIRS+=("$_s1c_out")
+_s1c_rc=0
+harness_layout_violations synthcrate "$_s1c_dir" "$_s1c_baseline" 20000 \
+    > "$_s1c_out" 2>/dev/null || _s1c_rc=$?
+
+assert "1c: a 50000-line colocated non-.rs fixture file never REDs the merge gate (returns 0)" \
+    test "$_s1c_rc" -eq 0
+assert "1c: clean scan emits a structured PASS line" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS crate=synthcrate' "$_s1c_out"
+assert "1c: clean scan emits no FAIL line" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s1c_out"
+
+# Companion precision: an ORPHAN module dir (no sibling harness_orphan.rs
+# root) is not a compile unit and must be silently ignored — pins the
+# existing `for f in "$tests_dir"/*.rs` glob behavior against a future
+# rewrite that starts walking directories directly.
+_s1c_orphan_dir="$(mktemp -d)"; _TMPDIRS+=("$_s1c_orphan_dir")
+mkdir -p "$_s1c_orphan_dir/harness_orphan"
+awk 'BEGIN { for (i = 0; i < 3; i++) print "// x" }' > "$_s1c_orphan_dir/harness_orphan/x.rs"
+
+_s1c_orphan_out="$(mktemp)"; _TMPDIRS+=("$_s1c_orphan_out")
+_s1c_orphan_rc=0
+harness_layout_violations synthcrate "$_s1c_orphan_dir" "$_s1c_baseline" 20000 \
+    > "$_s1c_orphan_out" 2>/dev/null || _s1c_orphan_rc=$?
+
+assert "1c: an orphan module dir with no sibling root is silently ignored (returns 0)" \
+    test "$_s1c_orphan_rc" -eq 0
+assert "1c: orphan-dir scan emits a structured PASS line" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS crate=synthcrate' "$_s1c_orphan_out"
+assert "1c: orphan-dir scan emits no FAIL line" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s1c_orphan_out"
+
+# ===========================================================================
+# Section 1d: rule (c) — the exceeds-cap verdict carries the root/module
+# breakdown, not just the aggregate total (diagnosability: a developer
+# reading `lines=20100` on a 100-line root file must be told where the lines
+# actually are).
+# ===========================================================================
+echo ""
+echo "--- Section 1d: exceeds-cap verdict carries the root/module breakdown ---"
+
+# Reuses Section 1b's already-captured $_s1b_out (100-line root + 20000-line
+# module dir, aggregate 20100 > cap 20000) and Section 1's already-captured
+# $_s1_out (21000-line single-file harness, no module dir) instead of
+# regenerating either ~20k-line fixture and re-scanning: both sections drive
+# the same harness_layout_violations code path / _emit call this section
+# pins, so their captured output already carries whatever breakdown fields
+# rule (a) emits. Section 1/1b's own asserts are NOT `$`-anchored, so they
+# pass regardless of whether the breakdown fields are present; the anchored
+# asserts below are what actually pin the fields' presence, values, AND that
+# they are appended AFTER `cap=` (not inserted before `lines=`, which would
+# break Section 1's existing regex).
+assert "1d: exceeds-cap verdict appends root_lines/module_lines/module_files AFTER cap= (module-dir case)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_split\.rs reason=exceeds-cap lines=20100 cap=20000 root_lines=100 module_lines=20000 module_files=3$' "$_s1b_out"
+
+# Coherence for a single-file harness (no module dir): root_lines equals the
+# whole total and module_lines/module_files are both 0.
+assert "1d: exceeds-cap verdict reports a coherent breakdown for a single-file harness (no module dir: root_lines=21000 module_lines=0 module_files=0)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_big\.rs reason=exceeds-cap lines=21000 cap=20000 root_lines=21000 module_lines=0 module_files=0$' "$_s1_out"
 
 # ===========================================================================
 # Section 2: rule (b) — an unsanctioned standalone tests/*.rs fires.
@@ -482,5 +624,46 @@ assert "5: live scan is green on the current tree (rc 0, zero violations)" \
     test "$_live_rc" -eq 0
 assert "5: live SUMMARY line reads exactly crates=5 violations=0" \
     test "$_live_summary" = "HARNESS_KLOC_CAP SUMMARY crates=5 violations=0"
+
+# ===========================================================================
+# Section 5b: live non-vacuity — the live measure actually reads module dirs,
+# not just the harness_<subsystem>.rs root file.
+# ===========================================================================
+echo ""
+echo "--- Section 5b: live non-vacuity (measure actually reads module dirs) ---"
+
+# Under a root-only measure the largest live root is 170 lines
+# (harness_cli.rs) — no live harness could ever report an aggregate over
+# 10000 lines. This is a direct non-vacuity witness that the shared measure
+# `harness_layout_unit_lines` is wired to the module dir at all: at least one
+# live harness must show a SMALL root (<500 lines) alongside a LARGE aggregate
+# (>10000 lines).
+_s5b_nonvacuous() {
+    local c f tuple total root mod files
+    for c in "${CONSOLIDATABLE_CRATES[@]}"; do
+        for f in "$REPO_ROOT/crates/$c/tests"/harness_*.rs; do
+            [ -f "$f" ] || continue
+            tuple="$(harness_layout_unit_lines "$f" 2>/dev/null)" || continue
+            read -r total root mod files <<<"$tuple"
+            [[ "$root" =~ ^[0-9]+$ ]] || continue
+            [[ "$total" =~ ^[0-9]+$ ]] || continue
+            if [ "$root" -lt 500 ] && [ "$total" -gt 10000 ]; then
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+assert "5b: at least one live harness has root<500 lines yet aggregate>10000 lines (module dir is actually read)" \
+    _s5b_nonvacuous
+
+# NOTE: deliberately no second assert re-checking $_live_summary here — it
+# would be byte-identical to Section 5's "live SUMMARY line reads exactly
+# crates=5 violations=0" assert (same variable, same expected string, no
+# re-scan in between), so a real regression would report two failures for
+# one cause. The measured max aggregate across all 13 live harness units is
+# 19342 (harness_topology_selector) against CAP_LINES=20000, so aggregating
+# never flips Section 5's live scan red; the non-vacuity check above is what
+# this section actually contributes.
 
 test_summary
