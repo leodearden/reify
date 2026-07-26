@@ -1549,11 +1549,40 @@ pub(crate) fn is_optimized_userfn_cell(expr: &CompiledExpr, functions: &[Compile
 /// REMAIN in the closure/reachability computation (so their transitive
 /// auto-reachability still propagates to genuine downstream coupled cells); only
 /// the FINAL surviving node set drops them.
+///
+/// ## SCC-admissibility guardrail (task #5189 step-8, PRD §6.4)
+///
+/// Stage (f) rejects any INADMISSIBLE data cycle by comparing
+/// `topological_sort`'s output length against the stage-(e) node set — the same
+/// Kahn-drop test `detect_let_cycle` (`:472`) and `build_combined_param_let_graph`
+/// (`:559`) already apply to their own graphs — and pushing a
+/// [`DiagnosticCode::EvalCycle`] error naming the dropped cells. A length check
+/// IS the admissibility test, not an approximation of one:
+///
+/// THE NODE SET EXCLUDES AUTO PARAMS BY CONSTRUCTION (stage (a) only retains
+/// non-auto cells carrying a plain `default_expr`), and the sole ADMISSIBLE
+/// back-edge — the solver feedback edge — runs THROUGH an auto. It therefore can
+/// never appear in this graph; the induced sub-DAG is acyclic for every
+/// admissible SCC; and any Kahn drop is, by construction, an INADMISSIBLE data
+/// cycle. That equivalence is exactly §6.4's INVARIANT ("admitted iff its only
+/// back-edge is a solver feedback edge"), which is why no fresh SCC analysis is
+/// needed here.
+///
+/// The guardrail is load-bearing precisely because this builder is CROSS-TEMPLATE
+/// (it walks `all_templates`): an `A.x ↔ B.y` value cycle is out of reach of all
+/// three per-template emitters (`detect_let_cycle`,
+/// `build_combined_param_let_graph`, `unfold.rs`'s let-cycle pass), and
+/// `topological_sort` is Kahn's — it returns a `Vec`, cannot error, and silently
+/// omits cycle members. Without the check such a cycle is swallowed with zero
+/// user-visible signal.
+///
+/// * `diagnostics` — sink for that error. Both call sites already carry one.
 fn build_dependent_cells(
     seed_exprs: &[&CompiledExpr],
     all_templates: &[TopologyTemplate],
     auto_ids: &HashSet<ValueCellId>,
     functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<(ValueCellId, CompiledExpr)> {
     // (a) Cross-template map: every non-auto cell that carries a plain
     //     default_expr, keyed by id. Autos have no default_expr and are skipped;
@@ -1623,8 +1652,12 @@ fn build_dependent_cells(
     // (e) Restrict to surviving cells (non-auto, in-map, transitively reads an
     //     auto) and topologically sort the induced sub-DAG via the same
     //     primitive `detect_let_cycle` uses (in-set edges only; deps precede
-    //     readers). Cells dropped by a cycle are simply absent — cycle
-    //     diagnostics remain `detect_let_cycle`'s single-template job.
+    //     readers). Any cell Kahn's algorithm drops here is an INADMISSIBLE data
+    //     cycle (see the SCC-admissibility argument in the fn doc-comment: an
+    //     admissible back-edge runs through an auto, and autos are absent from
+    //     this node set by construction), so stage (f) reports it rather than
+    //     letting it vanish — this builder is cross-template, so no per-template
+    //     emitter can see such a cycle.
     let mut nodes: HashSet<NodeId> = HashSet::new();
     let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
     for id in &closure {
@@ -1648,8 +1681,50 @@ fn build_dependent_cells(
         }
     }
 
-    // (f) Pair each surviving id with a clone of its default_expr, in topo order.
-    topological_sort(&nodes, &traces)
+    // (f) Topologically sort, then pair each surviving id with a clone of its
+    //     default_expr, in topo order.
+    //
+    //     SCC-ADMISSIBILITY GUARDRAIL (task #5189, PRD §6.4): Kahn's algorithm
+    //     silently omits cycle members, so a short output means an INADMISSIBLE
+    //     data cycle (the admissible solver feedback edge runs through an auto,
+    //     and autos cannot be in `nodes`). Report it with the EXISTING
+    //     `DiagnosticCode::EvalCycle` — §6.4 requires "every other cycle still
+    //     errors with the existing diagnostic", not a new code. Ids are rendered
+    //     FULLY QUALIFIED (`entity.member`, via `ValueCellId`'s Display), not by
+    //     the bare member name `detect_let_cycle` uses: this detector is
+    //     cross-template, so a bare member is ambiguous.
+    let sorted = topological_sort(&nodes, &traces);
+    if sorted.len() < nodes.len() {
+        let sorted_set: HashSet<&NodeId> = sorted.iter().collect();
+        let mut cyclic: Vec<String> = nodes
+            .iter()
+            .filter(|nid| !sorted_set.contains(nid))
+            .filter_map(|nid| match nid {
+                NodeId::Value(vcid) => Some(vcid.to_string()),
+                _ => None,
+            })
+            .collect();
+        // Sorted for determinism, mirroring `detect_let_cycle`'s
+        // `cyclic_members.sort()`.
+        cyclic.sort();
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "circular value-cell dependency across the coupled solve scopes: \
+                 [{}] -- these cells depend on each other WITHOUT passing through \
+                 a solver auto, so no evaluation order exists for them. Break the \
+                 cycle by making one of them read a solver-resolved auto instead \
+                 of its cyclic peer.",
+                cyclic.join(", "),
+            ))
+            .with_code(DiagnosticCode::EvalCycle),
+        );
+    }
+
+    // Dropped cycle members are DELIBERATELY excluded from the returned list (the
+    // `filter_map` walks `sorted`, not `nodes`): the diagnostic above is the
+    // user-visible signal, and neither β's per-trial fold nor α's post-solve
+    // write-back may ever see a cycle member.
+    sorted
         .into_iter()
         .filter_map(|node| match node {
             NodeId::Value(id) => cell_map.get(&id).map(|expr| (id.clone(), (*expr).clone())),
@@ -1846,7 +1921,13 @@ fn build_solver_problem(
         }
         let dep_auto_ids: HashSet<ValueCellId> =
             regular_auto_cells.iter().map(|c| c.id.clone()).collect();
-        build_dependent_cells(&seed_exprs, all_templates, &dep_auto_ids, &functions)
+        build_dependent_cells(
+            &seed_exprs,
+            all_templates,
+            &dep_auto_ids,
+            &functions,
+            diagnostics,
+        )
     };
 
     // Pre-populate current_values with pinned connector values so any remaining
@@ -2183,7 +2264,13 @@ fn build_merged_solver_problem(
         }
         let dep_auto_ids: HashSet<ValueCellId> =
             auto_cells.iter().map(|c| c.id.clone()).collect();
-        build_dependent_cells(&seed_exprs, templates, &dep_auto_ids, &functions)
+        build_dependent_cells(
+            &seed_exprs,
+            templates,
+            &dep_auto_ids,
+            &functions,
+            diagnostics,
+        )
     };
 
     ResolutionProblem {
