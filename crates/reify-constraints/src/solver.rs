@@ -128,14 +128,46 @@ fn build_solved_values(params: &[AutoParam], x: &[f64]) -> HashMap<ValueCellId, 
         .collect()
 }
 
-/// Build a ValueMap from a base map with trial auto-param values inserted.
+/// Build a ValueMap from a base map with trial auto-param values inserted,
+/// then recompute the cluster's dependent cells AT that trial point.
 ///
 /// Clones the base map (O(1) via PersistentMap structural sharing) and
 /// inserts each auto param as a Value::Scalar with the correct dimension.
 /// Maps params directly to avoid the intermediate HashMap allocation that
 /// `build_solved_values` would create — this is the hot path called on
 /// every Nelder-Mead iteration.
-fn build_trial_values(base: &ValueMap, params: &[AutoParam], x: &[f64]) -> ValueMap {
+///
+/// # Why the fold exists (task #5189 β, PRD §6.2)
+///
+/// In a whole-model joint drive the objective typically does not read the auto
+/// directly — it reads a DERIVED cell that is a function of the auto (the
+/// stdlib `Costed` trait's `line_cost = unit_cost * quantity_produced` is the
+/// canonical case). Those derived cells are non-auto values living in `base`,
+/// so without this fold every trial point re-reads their STALE base value: the
+/// objective is constant in the auto and Nelder-Mead has no gradient to follow.
+///
+/// `dependent_cells` is consumed IN STORED ORDER, and the `EvalContext` is
+/// rebuilt against the RUNNING map each iteration so an earlier dependent cell
+/// is visible to a later one. That order is a topologically-sorted guarantee
+/// produced once by `build_dependent_cells` (reify-eval) and CONSUMED here —
+/// never re-derived, so the two can never disagree.
+///
+/// # INVARIANTS
+///
+/// - An empty `dependent_cells` skips the fold entirely, leaving the returned
+///   map byte-identical to the pre-β behaviour (PRD §6.2). Every non-clustered
+///   solve therefore takes exactly the path it took before.
+/// - The fold must never overwrite an auto param's trial scalar. Membership
+///   (reify-eval's `build_dependent_cells`) already excludes autos by
+///   construction; the defensive backstop for upstream drift is added
+///   separately.
+fn build_trial_values(
+    base: &ValueMap,
+    params: &[AutoParam],
+    x: &[f64],
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
+    functions: &[CompiledFunction],
+) -> ValueMap {
     let mut values = base.clone();
     for (param, &val) in params.iter().zip(x.iter()) {
         values.insert(
@@ -145,6 +177,16 @@ fn build_trial_values(base: &ValueMap, params: &[AutoParam], x: &[f64]) -> Value
                 dimension: dimension_of(&param.param_type),
             },
         );
+    }
+
+    // Zero-cost early skip for the (overwhelmingly common) non-clustered case.
+    if dependent_cells.is_empty() {
+        return values;
+    }
+
+    for (id, expr) in dependent_cells {
+        let v = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, functions));
+        values.insert(id.clone(), v);
     }
     values
 }
@@ -789,6 +831,10 @@ struct ConstraintCostFunction<'a> {
     base_values: &'a ValueMap,
     objective: Option<&'a ObjectiveSet>,
     functions: &'a [CompiledFunction],
+    /// Cluster cells that must be recomputed at every trial point — see
+    /// [`build_trial_values`]. Empty for every non-clustered solve, which is
+    /// what keeps the legacy cost surface bit-identical.
+    dependent_cells: &'a [(ValueCellId, CompiledExpr)],
 }
 
 /// Evaluate an `ObjectiveSet` as a single f64 cost using the I2-preserving
@@ -867,7 +913,13 @@ impl CostFunction for ConstraintCostFunction<'_> {
             clamped.push(cv);
         }
 
-        let values = build_trial_values(self.base_values, self.auto_params, &clamped);
+        let values = build_trial_values(
+            self.base_values,
+            self.auto_params,
+            &clamped,
+            self.dependent_cells,
+            self.functions,
+        );
         let violation = compute_total_violation(self.constraints, &values, self.functions);
 
         let cost = match self.objective {
@@ -1046,7 +1098,13 @@ fn solve_core_with_sd_tolerance(
     // fallback objective validation when the optimizer drifts infeasible.
     // Building it here before the floor block eliminates the redundant second
     // call that was previously inside the floor synthesis branch.
-    let trial_values = build_trial_values(&problem.current_values, &problem.auto_params, initial);
+    let trial_values = build_trial_values(
+        &problem.current_values,
+        &problem.auto_params,
+        initial,
+        &problem.dependent_cells,
+        &problem.functions,
+    );
 
     let mut effective_constraints: Vec<(ConstraintNodeId, CompiledExpr)> =
         problem.constraints.clone();
@@ -1137,6 +1195,7 @@ fn solve_core_with_sd_tolerance(
         base_values: &problem.current_values,
         objective: effective_objective,
         functions: &problem.functions,
+        dependent_cells: &problem.dependent_cells,
     };
 
     // Build simplex from the provided initial point
@@ -1218,7 +1277,13 @@ fn solve_core_with_sd_tolerance(
 
     // Check feasibility by re-evaluating constraint violations
     // (best_cost may include the objective term, so we check violations separately)
-    let final_values = build_trial_values(&problem.current_values, &problem.auto_params, &clamped);
+    let final_values = build_trial_values(
+        &problem.current_values,
+        &problem.auto_params,
+        &clamped,
+        &problem.dependent_cells,
+        &problem.functions,
+    );
     let final_max_residual =
         max_constraint_residual(&effective_constraints, &final_values, &problem.functions);
     if final_max_residual > FEASIBILITY_THRESHOLD {
@@ -2162,7 +2227,7 @@ mod tests {
             free: false,
         }];
 
-        let trial = build_trial_values(&base, &params, &[0.005]);
+        let trial = build_trial_values(&base, &params, &[0.005], &[], &[]);
 
         // Auto param should be inserted with correct dimension
         let thickness = trial.get(&thickness_id).expect("thickness should exist");
@@ -2226,7 +2291,7 @@ mod tests {
             },
         ];
 
-        let trial = build_trial_values(&base, &params, &[0.005, 1.2]);
+        let trial = build_trial_values(&base, &params, &[0.005, 1.2], &[], &[]);
 
         // First auto param: length with correct dimension
         let thickness = trial.get(&thickness_id).expect("thickness should exist");
@@ -2663,7 +2728,7 @@ mod tests {
         );
 
         // Empty params slice — should return base unchanged
-        let trial = build_trial_values(&base, &[], &[]);
+        let trial = build_trial_values(&base, &[], &[], &[], &[]);
 
         // Base value preserved
         let width = trial.get(&width_id).expect("width should be preserved");
@@ -3983,6 +4048,7 @@ mod tests {
             base_values: &base_values,
             objective: None,
             functions: &[],
+            dependent_cells: &[],
         };
 
         // In bounds: x=0.005
@@ -4038,6 +4104,7 @@ mod tests {
             base_values: &base_values,
             objective: objective.as_ref(),
             functions: &[],
+            dependent_cells: &[],
         };
 
         // x=0.005 is in bounds and satisfies x > 0, but objective is Undef
@@ -5363,8 +5430,7 @@ mod tests {
     #[test]
     fn dependent_cells_make_the_objective_vary_with_the_auto() {
         use super::{
-            ConstraintCostFunction, UNDEF_OBJECTIVE_PENALTY, build_trial_values,
-            eval_objective_set,
+            ConstraintCostFunction, UNDEF_OBJECTIVE_PENALTY, build_trial_values, eval_objective_set,
         };
         use argmin::core::CostFunction;
 
