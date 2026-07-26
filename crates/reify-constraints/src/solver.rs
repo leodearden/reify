@@ -5253,4 +5253,188 @@ mod tests {
             "best_found_reason(false) must be BestFoundReason::ConvergedWithinBudget"
         );
     }
+
+    // ---- per-trial dependent-cell recompute (task #5189 β, PRD §6.2 / §7) ----
+
+    /// The minimal whole-model joint-drive shape, hand-built.
+    ///
+    /// Mirrors `examples/whole_model_joint_drive.ri`: a `Costed` child whose
+    /// derived cell `line_cost = unit_cost * quantity_produced` is a DEPENDENT
+    /// cell — a non-auto value that is a function of the cluster's auto — and a
+    /// parent objective that reads `line_cost`, NEVER the auto directly.
+    ///
+    /// That indirection is the whole point of the seam: a solver that does not
+    /// recompute dependent cells per trial evaluates the objective against
+    /// `line_cost`'s STALE base value, so the objective is CONSTANT in the auto
+    /// and Nelder-Mead has no gradient to follow.
+    ///
+    /// Returns `(auto_params, constraints, base_values, dependent_cells, objective)`.
+    /// `base_values` deliberately seeds `line_cost` with a stale number that
+    /// matches NO trial point, so any test reading the stale value gets an
+    /// unmistakable wrong answer rather than a coincidentally-right one.
+    #[allow(clippy::type_complexity)]
+    fn joint_drive_dependent_cell_fixture() -> (
+        Vec<reify_ir::AutoParam>,
+        Vec<(reify_core::ConstraintNodeId, reify_ir::CompiledExpr)>,
+        ValueMap,
+        Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)>,
+        reify_ir::ObjectiveSet,
+    ) {
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, ObjectiveSense, ObjectiveSet, Value};
+
+        let money = Type::Scalar {
+            dimension: DimensionVector::MONEY,
+        };
+        let q_id = ValueCellId::new("Rivet", "quantity_produced");
+        let unit_cost_id = ValueCellId::new("Rivet", "unit_cost");
+        let line_cost_id = ValueCellId::new("Rivet", "line_cost");
+
+        let mut base = ValueMap::new();
+        base.insert(
+            unit_cost_id.clone(),
+            Value::Scalar {
+                si_value: 0.5,
+                dimension: DimensionVector::MONEY,
+            },
+        );
+        // STALE: matches no trial point used by any test below.
+        base.insert(
+            line_cost_id.clone(),
+            Value::Scalar {
+                si_value: 999.0,
+                dimension: DimensionVector::MONEY,
+            },
+        );
+
+        let auto_params = vec![AutoParam {
+            id: q_id.clone(),
+            param_type: Type::dimensionless_scalar(),
+            bounds: Some((1.0, 100.0)),
+            free: true,
+        }];
+
+        // Trivially satisfied at every trial point used below (q >= 1.0), so
+        // the cost function's violation term stays 0 and the objective term is
+        // the only thing that can vary.
+        let one = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+            Type::dimensionless_scalar(),
+        );
+        let constraints = vec![(
+            ConstraintNodeId::new("Rivet", 0),
+            CompiledExpr::binop(
+                BinOp::Ge,
+                CompiledExpr::value_ref(q_id.clone(), Type::dimensionless_scalar()),
+                one,
+                Type::Bool,
+            ),
+        )];
+
+        // line_cost = unit_cost * quantity_produced — the stdlib `Costed` Let.
+        let dependent_cells = vec![(
+            line_cost_id.clone(),
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::value_ref(unit_cost_id, money.clone()),
+                CompiledExpr::value_ref(q_id, Type::dimensionless_scalar()),
+                money.clone(),
+            ),
+        )];
+
+        let objective = ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            CompiledExpr::value_ref(line_cost_id, money),
+        );
+
+        (auto_params, constraints, base, dependent_cells, objective)
+    }
+
+    /// BT-1 (PRD §7) — per-trial recompute makes the objective NON-CONSTANT.
+    ///
+    /// The objective reads only `line_cost`, which is not an auto. Without the
+    /// per-trial fold, `line_cost` keeps its stale base value at every trial
+    /// point, so the objective is a constant function of the auto and the
+    /// solver cannot minimise it. Both halves are pinned: the helper itself and
+    /// the hot Nelder-Mead path through `ConstraintCostFunction::cost`.
+    #[test]
+    fn dependent_cells_make_the_objective_vary_with_the_auto() {
+        use super::{
+            ConstraintCostFunction, UNDEF_OBJECTIVE_PENALTY, build_trial_values,
+            eval_objective_set,
+        };
+        use argmin::core::CostFunction;
+
+        let (auto_params, constraints, base, dependent_cells, objective) =
+            joint_drive_dependent_cell_fixture();
+
+        // ---- half 1: the helper folds, so the objective moves ----
+        let lo = build_trial_values(&base, &auto_params, &[2.0], &dependent_cells, &[]);
+        let hi = build_trial_values(&base, &auto_params, &[8.0], &dependent_cells, &[]);
+
+        let obj_lo = eval_objective_set(&objective, &lo, &[])
+            .expect("objective must be numeric at q=2 once line_cost is folded");
+        let obj_hi = eval_objective_set(&objective, &hi, &[])
+            .expect("objective must be numeric at q=8 once line_cost is folded");
+
+        // 0.5 USD * q — the closed form of the stdlib `Costed` line_cost Let.
+        assert!(
+            (obj_lo - 1.0).abs() < 1e-12,
+            "objective at q=2 must be unit_cost*q = 0.5*2 = 1.0; got {obj_lo}. \
+             999.0 here means `line_cost` was read STALE from the base map \
+             instead of being recomputed for the trial point."
+        );
+        assert!(
+            (obj_hi - 4.0).abs() < 1e-12,
+            "objective at q=8 must be unit_cost*q = 0.5*8 = 4.0; got {obj_hi}"
+        );
+        assert!(
+            obj_lo < obj_hi,
+            "the objective must be STRICTLY increasing in the auto \
+             (0.5*2 < 0.5*8); got {obj_lo} vs {obj_hi} — a constant objective \
+             is exactly the pre-fold failure this test exists to catch"
+        );
+        for v in [obj_lo, obj_hi] {
+            assert!(
+                v < UNDEF_OBJECTIVE_PENALTY,
+                "objective must be a real number, not the Undef sentinel; got {v}"
+            );
+        }
+
+        // ---- half 2: the hot Nelder-Mead path folds too ----
+        // Pinning only the helper would leave `cost()` free to keep calling an
+        // unfolded variant, which is precisely the divergence β must prevent.
+        let cost_fn = ConstraintCostFunction {
+            auto_params: &auto_params,
+            constraints: &constraints,
+            base_values: &base,
+            objective: Some(&objective),
+            functions: &[],
+            dependent_cells: &dependent_cells,
+        };
+        let cost_lo = cost_fn.cost(&vec![2.0]).expect("cost at q=2");
+        let cost_hi = cost_fn.cost(&vec![8.0]).expect("cost at q=8");
+
+        assert!(
+            cost_lo < cost_hi,
+            "ConstraintCostFunction::cost must be strictly increasing in the \
+             auto for this fixture (both trial points are feasible and in \
+             bounds, so the objective term is the only varying term); \
+             got {cost_lo} vs {cost_hi}"
+        );
+        assert!(
+            (cost_hi - cost_lo - 3.0).abs() < 1e-9,
+            "the cost gap must be exactly the objective gap (4.0 - 1.0 = 3.0) \
+             since violation and bound penalties are both zero here; \
+             got {}",
+            cost_hi - cost_lo
+        );
+        assert!(
+            cost_lo < UNDEF_OBJECTIVE_PENALTY,
+            "cost must not be the Undef sentinel; got {cost_lo}"
+        );
+    }
 }
