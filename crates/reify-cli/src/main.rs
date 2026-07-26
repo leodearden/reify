@@ -1267,19 +1267,16 @@ fn cmd_build(args: &[String]) -> ExitCode {
     }
 }
 
-/// Register the production compute-trampoline bundle on `engine`: the
-/// FEA/buckling/modal compute fns, the shell-extract compute fn, and the
-/// mesh-morph producer.
-///
-/// Delegates to
+/// CLI-local alias for
 /// [`Engine::register_production_compute_fns`][reify_eval::Engine::register_production_compute_fns]
-/// (task 5072 / PRD `compute-fea-hardening.md` A1), which is now the single
-/// source of truth for the trampoline set (INV-FEA-1) — adding a new
-/// trampoline there automatically covers every caller. This wrapper survives
-/// as the CLI-local alias that names the `MorphRegistration::Enabled` choice
-/// and keeps both call sites — `cmd_build` (solver-free, calls this directly)
-/// and [`configured_eval_engine`] (full solver) — one-line, with no drift
-/// between them.
+/// (task 5072 / PRD `compute-fea-hardening.md` A1 — see there for the bundle
+/// membership, ordering, and the INV-FEA-1 single-source-of-truth rationale;
+/// this wrapper does not restate them).
+///
+/// Exists to name the `MorphRegistration::Enabled` choice once and keep both
+/// call sites — `cmd_build` (solver-free, calls this directly) and
+/// [`configured_eval_engine`] (full solver) — one-line, with no drift between
+/// them.
 ///
 /// The morph producer is dormant-safe (task 4744 β): the dispatch only
 /// attempts a morph when a prior source mesh carries a `BoundaryAssociation`,
@@ -4371,18 +4368,23 @@ mod persistent_cache_cli_wiring_tests {
 /// `Engine::register_production_compute_fns` bundler (task 5072 / PRD A1),
 /// which runs the identical three registrars in the identical order as the
 /// pre-migration hand-rolled body — so this test is GREEN both before and
-/// after that migration. Its job is to fail if a bundle leg (the
-/// FEA/buckling/modal compute fns, the shell-extract compute fn, or the
-/// mesh-morph producer) is accidentally dropped during the body swap.
+/// after that migration. Its job is to pin CLI *delegation*: that calling
+/// `register_compute_trampolines` actually runs all three bundle legs and
+/// enables the morph producer. Like A1's own tests (`compute_targets/mod.rs`),
+/// it probes one representative target per leg rather than every target
+/// `register_compute_fns` registers — completeness of that full target set is
+/// A1's suite's job, not this CLI-local wrapper's, so this test will not catch
+/// a partial regression inside `register_compute_fns` itself (e.g. an
+/// unrelated target silently dropped).
 #[cfg(test)]
 mod compute_trampoline_registration_tests {
     use super::*;
 
-    /// `register_compute_trampolines` must install all three production
+    /// `register_compute_trampolines` must delegate to all three production
     /// trampoline legs: the FEA/buckling/modal compute fns
-    /// (`register_compute_fns`), the shell-extract compute fn
-    /// (`register_shell_extract_compute_fns`), and the mesh-morph producer
-    /// (`reify_mesh_morph::register_morph_producer`).
+    /// (`register_compute_fns`, probed via one representative target), the
+    /// shell-extract compute fn (`register_shell_extract_compute_fns`), and
+    /// the mesh-morph producer (`reify_mesh_morph::register_morph_producer`).
     #[test]
     fn cli_trampolines_install_full_production_bundle() {
         let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
