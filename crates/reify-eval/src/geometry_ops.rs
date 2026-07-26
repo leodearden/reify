@@ -1217,6 +1217,138 @@ pub(crate) fn resolve_subhandle_list(
     Ok(canonical_subhandle_ids(ids))
 }
 
+/// The curated sub-shape selector argument names carried by a
+/// [`reify_compiler::CompiledGeometryOp::Modify`] op (task 5208).
+///
+/// **Lockstep invariant** — this set MUST mirror the selector argument names
+/// emitted by `reify_compiler::geometry_modify::compile_modify_op`: `"edges"`
+/// (3-arg `fillet` / `chamfer`, 4-arg `chamfer_asymmetric`), `"faces"` (4-arg
+/// curated `draft`) and `"open_faces"` (3-arg `shell_open`). A curated form
+/// added there without a matching name here silently loses inline-selector
+/// pre-hydration (it would fall back to the pure-eval `Undef` error path);
+/// the eval arms that consume these args are the `resolve_curated_edges_p2`
+/// call sites in `compile_geometry_op`.
+const CURATED_SELECTOR_ARG_NAMES: &[&str] = &["edges", "faces", "open_faces"];
+
+/// Pre-resolve an **inline** curated edge/face selector argument of a
+/// `Modify` op to a concrete `Value::List<Geometry>` literal, using the kernel
+/// at the in-loop slot where the op's parent solid is already realized
+/// (task 5208).
+///
+/// # Why this exists (the inline-vs-named-let reachability gap)
+///
+/// The curated eval arms (`modify_fillet` / `modify_chamfer` / …) evaluate
+/// their `edges`/`faces` argument with the **pure, kernel-free**
+/// [`reify_expr::eval_expr`]. That works when the designer binds the selector
+/// to its own `let` —
+///
+/// ```ri
+/// let e = edges_parallel_to(b, up, 1deg)   // ← a top-level value CELL
+/// let f = fillet(b, e, 3mm)                // ← arg is ValueRef(e): already a List
+/// ```
+///
+/// — because the cell is hydrated to a `List<Geometry>` by
+/// [`crate::Engine::hydrate_value_cell_in_loop`] at its scheduled `HydrateCell`
+/// slot, so the pure evaluator just reads the resolved list out of `values`.
+///
+/// It does **not** work when the selector is written INLINE at the call site —
+///
+/// ```ri
+/// let f = fillet(b, edges_parallel_to(b, up, 1deg), 3mm)   // ← no cell exists
+/// ```
+///
+/// — because an inline argument expression is not a top-level value cell, so
+/// nothing hydrates it: the kernel-free evaluator cannot execute the
+/// kernel-bearing topology query and yields `Value::Undef`, and the eval arm
+/// then rejects the op ("the edge selector cannot be resolved at the point this
+/// fillet runs"). Inline selectors are the natural authoring form (every
+/// curated fillet in `examples/topology_selectors/bottom_deck_selectors.ri`
+/// writes one), so the capability was unreachable from the production `.ri`
+/// pipeline despite the named-let path passing its e2e.
+///
+/// This helper closes that gap at the realization slot: it performs the same
+/// resolution `hydrate_value_cell_in_loop` branch (b) performs for a cell —
+/// [`resolve_selector_to_list`], the kernel-bearing query — but for an
+/// argument expression, and rewrites the argument to a literal carrying the
+/// result so the downstream pure eval arm reads a `List` exactly as it would
+/// for the named-let form. The two forms therefore converge on ONE resolution
+/// policy (`resolve_selector_to_list`), rather than the inline form getting a
+/// second, divergent one.
+///
+/// # Contract
+///
+/// * Returns `None` — meaning "use the original op unchanged" — for every op
+///   that is not a `Modify`, that carries no curated selector argument, or
+///   whose curated arguments the pure evaluator can ALREADY produce as a
+///   `List` (the named-let form). Every such op is byte-identical to
+///   pre-5208 behaviour; the fast path is a match + a name compare.
+/// * Only an argument whose pure evaluation is **not** a `Value::List` is
+///   offered to `resolve_selector_to_list`, and only a `Value::List` result is
+///   substituted. A selector that genuinely cannot resolve (`None`, or the
+///   gated `Value::Undef`) is left untouched so the eval arm emits its own
+///   actionable diagnostic — this helper never converts a hard failure into a
+///   silent all-edges fallback.
+/// * An **empty** resolved list is substituted verbatim: distinguishing
+///   "selector present but matched nothing" from "no selector at all" is the
+///   eval arm's `E_EMPTY_SELECTION` guard's job, not this helper's.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prehydrate_inline_curated_selector_args(
+    op: &reify_compiler::CompiledGeometryOp,
+    named_steps: &HashMap<String, KernelHandle>,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    kernel: &mut dyn GeometryKernel,
+    table: &reify_ir::TopologyAttributeTable,
+    realized_reprs: &HashMap<reify_core::identity::RealizationNodeId, reify_ir::ReprKind>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_compiler::CompiledGeometryOp> {
+    let reify_compiler::CompiledGeometryOp::Modify { args, .. } = op else {
+        return None;
+    };
+    // Collect (arg index, resolved list) for every curated selector argument the
+    // PURE evaluator cannot already produce as a `List<Geometry>`. Collected
+    // first (rather than mutating as we go) so the common no-op case never
+    // clones the op.
+    let mut resolved: Vec<(usize, reify_ir::Value)> = Vec::new();
+    for (idx, (name, expr)) in args.iter().enumerate() {
+        if !CURATED_SELECTOR_ARG_NAMES.contains(&name.as_str()) {
+            continue;
+        }
+        // Named-let form: the cell is already hydrated, the pure eval yields the
+        // list. Leave it alone — re-resolving would re-run the kernel query.
+        if matches!(
+            reify_expr::eval_expr(expr, &eval_ctx_with_meta(values, functions, meta_map)),
+            reify_ir::Value::List(_)
+        ) {
+            continue;
+        }
+        if let Some(value @ reify_ir::Value::List(_)) = resolve_selector_to_list(
+            expr,
+            named_steps,
+            values,
+            kernel,
+            table,
+            realized_reprs,
+            diagnostics,
+        ) {
+            resolved.push((idx, value));
+        }
+    }
+    if resolved.is_empty() {
+        return None;
+    }
+    let mut rewritten = op.clone();
+    let reify_compiler::CompiledGeometryOp::Modify { args, .. } = &mut rewritten else {
+        unreachable!("`rewritten` is a clone of the `Modify` op matched above");
+    };
+    let list_geometry = reify_core::Type::List(Box::new(reify_core::Type::Geometry));
+    for (idx, value) in resolved {
+        args[idx].1 = reify_ir::CompiledExpr::literal(value, list_geometry.clone());
+    }
+    Some(rewritten)
+}
+
 /// Op-specific user-facing wording for the shared legacy-P2 curated-edge
 /// resolver [`resolve_curated_edges_p2`]. The resolution POLICY is identical
 /// across the three local-feature ops (Fillet, Chamfer, ChamferAsymmetric);
