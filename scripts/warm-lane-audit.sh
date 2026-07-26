@@ -190,6 +190,19 @@ Usage: $(basename "$0") [--mount DIR] [--format table|json] [--status-cmd CMD]
               pending / infra-hold / in-progress / done. \`unknown\` when it
               cannot be resolved; \`-\` when the lane is not pinned.
 
+  Classification, ranked: LIVE > PINNED > RECLAIMABLE|LEAKED|PRESERVED-OK.
+  A PINNED lane is never additionally reported LEAKED.
+
+  Summary lines:
+    HEADROOM  occupancy is an ordered, exclusive PARTITION --
+              resident = live + pinned + quarantined + free -- so \`free\` is
+              the residue and never absorbs a reserved-but-idle lane.
+              \`assigned\` and \`state_unknown\` are cross-cuts, not partition
+              members.
+    PINNED    why the pins are held: total + the fixed buckets pending,
+              infra-hold, blocked, terminal, other, unknown. Always emitted,
+              zeros included.
+
   Options:
     --mount DIR           Warm-lane worktrees dir (default: \$REIFY_WARM_LANE_MOUNT).
     --format table|json   Output format (default: table).
