@@ -34,7 +34,9 @@ tree-sitter parse --quiet /tmp/prd-gate-fixtures/<slug>-<n>.ri
 ```
 
 - **Exit 0** → fixture parses. Gate passes for that fragment.
-- **Exit 1** → fixture fails. Gate fails for that fragment.
+- **Exit 1** → fixture fails. Gate fails for that fragment — but only once both preconditions above hold (correct CWD, generated grammar present).
+
+**Before escalating any failure to Step 3:** if *every* fixture in the batch fails identically with "No language found", that is not a grammar fiction — it's a sign one of the two preconditions above isn't met (wrong CWD, or the generated grammar files are missing). Re-check both, re-run, and only carry fixtures that fail for a genuine parse reason forward to Step 3's resolution paths. Filing a prerequisite grammar task off an environmental failure wastes the PRD's decomposition on phantom work.
 
 To inspect a failure, drop `--quiet` and look for `(ERROR ...)` nodes in the CST:
 
