@@ -333,16 +333,23 @@ fi
 # Test 6: attempt-0 sidecar STAMP (plan-shape, mirroring test_reify_bin_freshness
 # Check 18). On a full attempt-0 merge run the plan must emit a line writing the
 # reify-verify-attempt.json sidecar (tree_oid via `git rev-parse HEAD:`,
-# profiles, timestamp), ordered AFTER the nextest passes so it records only a
-# tree that passed the whole gate. A retry (scope=failed_only) must NOT
-# re-stamp; a per-task plan must be unchanged. Comment lines are stripped
-# (grep -v '^#') so indices count command leaves only, per the Check-18 idiom.
-# This asserts plan SHAPE only — the writer executes at run time; sibling task
-# δ's e2e boundary test exercises the real write.
-# RED at this point (steps 1-10 done): no sidecar-stamp line exists yet.
+# profiles, timestamp), ordered BEFORE the first nextest pass (but still after
+# the pre-build poles: lint/compile wave, gui block, run_all.sh) so the pin is
+# written on a RED attempt-0 too — task 5548, PRD verify-retry-failed-only α2.
+# The sidecar asserts "the warm target/ was built FROM this tree", NOT "this
+# tree passed the gate". A retry (scope=failed_only) must NOT re-stamp; a
+# per-task plan must be unchanged. Comment lines are stripped (grep -v '^#')
+# so indices count command leaves only, per the Check-18 idiom.
+# The ordering asserts below are plan SHAPE only; Test 6b further down EXECUTES
+# the extracted stamp line hermetically (one plan line, no cargo) to prove the
+# pin is actually reachable on a red pole — sibling task δ's e2e boundary test
+# still owns the real-nextest end-to-end write, so the level split stays
+# explicit and this is not read as G7 duplication.
+# RED at base (task 5548 not yet applied): the stamp is the LAST line of
+# add_test_passes, so the inverted ordering assert below and Test 6b both fail.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Test 6: attempt-0 merge plan stamps reify-verify-attempt.json after the passes; retry & task do not ---"
+echo "--- Test 6: attempt-0 merge plan stamps reify-verify-attempt.json before the first pass (survives red); retry & task do not ---"
 
 MERGE_PLAN="$(DF_VERIFY_ROLE=merge bash "$VERIFY" all --scope all --print-plan 2>/dev/null | grep -v '^#')" || true
 
@@ -359,12 +366,113 @@ assert "merge attempt-0: sidecar stamp line references tree_oid, profiles, times
     ' _ "$MERGE_PLAN"
 
 if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
-    assert "merge attempt-0: sidecar stamp index > last cargo nextest run index (stamp after the passes)" \
+    assert "merge attempt-0: sidecar stamp index < first cargo nextest run index (stamp BEFORE the first pass, survives a red test pole)" \
         bash -c '
-            STAMP_IDX=$(printf "%s\n" "$1" | grep -nF "reify-verify-attempt.json" | tail -1 | cut -d: -f1)
-            NEXTEST_IDX=$(printf "%s\n" "$1" | grep -nE "(^| )cargo nextest run " | tail -1 | cut -d: -f1)
-            [ -n "$STAMP_IDX" ] && [ -n "$NEXTEST_IDX" ] && [ "$STAMP_IDX" -gt "$NEXTEST_IDX" ]
+            STAMP_IDX=$(printf "%s\n" "$1" | grep -nF "reify-verify-attempt.json" | head -1 | cut -d: -f1)
+            FIRST_NEXTEST_IDX=$(printf "%s\n" "$1" | grep -nE "(^| )cargo nextest run " | head -1 | cut -d: -f1)
+            [ -n "$STAMP_IDX" ] && [ -n "$FIRST_NEXTEST_IDX" ] && [ "$STAMP_IDX" -lt "$FIRST_NEXTEST_IDX" ]
         ' _ "$MERGE_PLAN"
+fi
+
+# Companion: the stamp must still land AFTER the pre-build poles (lint/compile
+# wave, gui block, run_all.sh) — it only moved above the FIRST nextest pass,
+# not to the very top of the plan. Vacuously PASSES when RUNALL_IDX is empty
+# (the run_all.sh plan line is suppressed under REIFY_INFRA_SUITE_ACTIVE —
+# verify.sh ~:2110 — so a nested-suite caller must not spuriously FAIL this
+# secondary sanity check).
+assert "merge attempt-0: sidecar stamp index > run_all.sh index (still after the pre-build poles), or vacuous if absent" \
+    bash -c '
+        RUNALL_IDX=$(printf "%s\n" "$1" | grep -nF "run_all.sh" | head -1 | cut -d: -f1)
+        STAMP_IDX=$(printf "%s\n" "$1" | grep -nF "reify-verify-attempt.json" | head -1 | cut -d: -f1)
+        [ -z "$RUNALL_IDX" ] && exit 0
+        [ -n "$STAMP_IDX" ] && [ "$STAMP_IDX" -gt "$RUNALL_IDX" ]
+    ' _ "$MERGE_PLAN"
+
+# ---------------------------------------------------------------------------
+# Test 6b: RED-ATTEMPT-0 SURVIVAL (executed, not just positional). Rebuilds the
+# real merge plan with REIFY_VERIFY_ATTEMPT_SIDECAR pointed at a sandbox so the
+# build-time-baked path in the emitted stamp line writes there; extracts, IN
+# PLAN ORDER (never hardcoded — derived from the plan's own grep -n indices),
+# the {stamp line, first `cargo nextest run` line} sub-sequence; replays them
+# in a sandbox CWD through a minimal first-failure-exit loop mirroring the real
+# executor (verify.sh's `for _cmd in "${PLAN[@]}"; do eval "$_cmd" || exit
+# "$_rc"; done`), substituting the nextest line with `false` as a simulated RED
+# test pole. Proves the pin is USABLE after a red pole, not merely early: at
+# base the plan order is [nextest, stamp], so this replay hits the substituted
+# `false` first and never reaches the stamp — RED for a structural reason, not
+# a cosmetic one. GIT_DIR is pointed at this worktree's real gitdir so `git
+# rev-parse HEAD:` in the replayed stamp line returns the REAL tree OID (not
+# the `|| echo unknown` sentinel) from a sandbox CWD with no .git of its own —
+# that is what makes the written pin actually usable by the drift guard, which
+# the last two asserts confirm by feeding it back through the real
+# (unmodified) guard at scripts/verify.sh:~1684-1714.
+# Guarded on NEXTEST_AVAILABLE + both indices present, so a nextest-less host
+# skips the case rather than FAILing it.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 6b: a RED attempt-0 (simulated failing test pole) still leaves a usable tree-OID pin ---"
+
+RED_DIR="$_TMP/red"
+mkdir -p "$RED_DIR/target"
+RED_SIDECAR="$RED_DIR/target/reify-verify-attempt.json"
+
+RED_PLAN="$(REIFY_VERIFY_ATTEMPT_SIDECAR="$RED_SIDECAR" \
+    DF_VERIFY_ROLE=merge bash "$VERIFY" all --scope all --print-plan 2>/dev/null | grep -v '^#')" || true
+
+RED_STAMP_IDX="$(printf '%s\n' "$RED_PLAN" | grep -nF "reify-verify-attempt.json" | head -1 | cut -d: -f1)"
+RED_STAMP_LINE="$(printf '%s\n' "$RED_PLAN" | grep -F "reify-verify-attempt.json" | head -1)"
+RED_NEXTEST_IDX="$(printf '%s\n' "$RED_PLAN" | grep -nE "(^| )cargo nextest run " | head -1 | cut -d: -f1)"
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ] && [ -n "$RED_STAMP_IDX" ] && [ -n "$RED_NEXTEST_IDX" ]; then
+    # Order the replay sequence from the plan's OWN indices — never hardcode
+    # which comes first, since that is exactly the property under test.
+    if [ "$RED_STAMP_IDX" -lt "$RED_NEXTEST_IDX" ]; then
+        REPLAY_SEQ=("$RED_STAMP_LINE" "false")
+    else
+        REPLAY_SEQ=("false" "$RED_STAMP_LINE")
+    fi
+
+    REPO_GIT_DIR="$(git -C "$REPO_ROOT" rev-parse --absolute-git-dir)"
+    EXPECT_TREE="$(git -C "$REPO_ROOT" rev-parse HEAD:)"
+
+    RED_RC=0
+    (
+        cd "$RED_DIR"
+        export GIT_DIR="$REPO_GIT_DIR"
+        for _c in "${REPLAY_SEQ[@]}"; do
+            eval "$_c" || { _rc=$?; exit "$_rc"; }
+        done
+    ) || RED_RC=$?
+
+    assert "red-attempt-0: the simulated failing test pole really failed (nonzero replay exit)" \
+        bash -c '[ "$1" -ne 0 ]' _ "$RED_RC"
+
+    assert "red-attempt-0: the tree-OID pin file EXISTS despite the failure" \
+        bash -c 'test -f "$1"' _ "$RED_SIDECAR"
+
+    assert "red-attempt-0: the pin holds the REAL tree_oid (not the || echo unknown sentinel)" \
+        bash -c '
+            grep -qF "\"tree_oid\":\"$2\"" "$1" && ! grep -qF "\"tree_oid\":\"unknown\"" "$1"
+        ' _ "$RED_SIDECAR" "$EXPECT_TREE"
+
+    # Close the loop on the user-observable signal: feed the red-written
+    # sidecar back into a FRESH scope=failed_only merge plan and assert the
+    # real (unmodified) drift guard now takes the eligible branch. Reuses the
+    # existing FILTER/ID1 fixture (:69-72).
+    LOOP_ERR="$RED_DIR/loop-err.txt"
+    LOOP_PLAN="$(REIFY_VERIFY_RETRY_SCOPE=failed_only \
+        REIFY_VERIFY_RETRY_TREE_OID="$EXPECT_TREE" \
+        REIFY_VERIFY_ATTEMPT_SIDECAR="$RED_SIDECAR" \
+        REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER" \
+        DF_VERIFY_ROLE=merge bash "$VERIFY" test --scope all --print-plan 2>"$LOOP_ERR")" || true
+
+    assert "red-attempt-0: retry against the red-written pin does NOT log 'retry refused: tree drift'" \
+        bash -c '! grep -qF "retry refused: tree drift" "$1"' \
+        _ "$LOOP_ERR"
+
+    assert "red-attempt-0: retry against the red-written pin applies the subset (debug nextest line carries test(=$ID1))" \
+        bash -c 'printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -v -- " --release" | grep -qF -- "test(=$2)"' \
+        _ "$LOOP_PLAN" "$ID1"
 fi
 
 # (b) A retry (scope=failed_only) merge run must NOT re-stamp (DF re-runs a full
