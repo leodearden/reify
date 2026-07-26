@@ -997,9 +997,10 @@ I14_BASE_PARENT="$(mktemp -d /tmp/test-seed-I14-parent-XXXXXX)"
 I14_BASE="$I14_BASE_PARENT/target"
 I14_LANE_PARENT="$(mktemp -d /tmp/test-seed-I14-lane-parent-XXXXXX)"
 I14_LANE="$(mktemp -d "$I14_LANE_PARENT/lane-XXXXXX")"
-# Set I14_SIBLING_TRASH_DIR early so (a) the pre-clean below and (b) the I14g
-# assertion both reference the same computed path. Because I14_LANE_PARENT is a
-# fresh per-run dir, this sibling trash dir is likewise private to this run.
+# Set I14_SIBLING_TRASH_DIR early so the I14g assertion below references the
+# same computed path. Because I14_LANE_PARENT is a fresh per-run mktemp'd dir
+# (see above), this sibling trash dir is private to this run and is
+# guaranteed not to exist yet, so no pre-clean of stale entries is needed.
 I14_SIBLING_TRASH_DIR="$(dirname "$I14_LANE")/.reseed-trash"
 _TMPDIRS+=("$I14_BASE_PARENT" "$I14_LANE_PARENT")
 mkdir -p "$I14_BASE/debug"
@@ -1012,14 +1013,6 @@ echo "fn main() {}" > "$I14_LANE/src/main.rs"
 mkdir -p "$I14_LANE/target"
 echo "stale" > "$I14_LANE/target/stale.a"
 echo "sentinel content" > "$I14_LANE/target/TRASH_SENTINEL.txt"
-
-# Pre-clean: defense-in-depth in case I14_SIBLING_TRASH_DIR is non-empty (it should
-# be fresh, since I14_LANE_PARENT is a private per-run mktemp'd dir — see above).
-# REIFY_TEST_PIN_RESEED_TRASH=1 is a no-op rm so entries would otherwise accumulate;
-# scoping to $(basename I14_LANE).* removes only this run's lane's stale litter.
-# This ensures I14g tests THIS seed's output, not a leftover from a prior run.
-find "$I14_SIBLING_TRASH_DIR" -maxdepth 1 -name "$(basename "$I14_LANE").*" \
-    -print0 2>/dev/null | xargs -0 rm -rf 2>/dev/null || true
 
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_TEST_PIN_RESEED_TRASH=1 \
