@@ -113,6 +113,7 @@ test_lock_charter_lifecycle.sh pool
 test_main_gate_worktree_config.sh pool
 test_merge_role_lint_first_seam.sh pool
 test_merge_verify_cold_outer_timeout.sh pool
+test_mesh_count_parity_smoke_runner.sh pool
 test_nan_safe_ordering_guard_wired.sh pool
 test_nextest_slow_priority.sh pool
 test_no_dead_taskmaster_artifacts.sh pool
