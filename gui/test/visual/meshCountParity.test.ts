@@ -340,9 +340,10 @@ describe("extractMeshCountInputs — (a) real payload shapes", () => {
 
 describe("extractMeshCountInputs — (b) in-band tool errors", () => {
   // docs/debug-mcp-contract.md §2a: debug handlers report failure as
-  // Ok({error: "..."}) with no MCP isError flag. The inlined rpc() helper in
-  // every .mjs driver returns that payload verbatim, so without this check the
-  // counts would silently come back `undefined`.
+  // Ok({error: "..."}) with no MCP isError flag. A driver's rpc() hands that
+  // payload back verbatim — normalizeRpcEnvelope shapes both dialects into it
+  // but deliberately does not judge them — so without this check the counts
+  // would silently come back `undefined`.
   const TOOLS = [
     ["viewportState", "viewport_state", "viewportMeshCount"],
     ["meshStats", "mesh_stats", "meshStatsCount"],

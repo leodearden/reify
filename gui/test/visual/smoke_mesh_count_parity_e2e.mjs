@@ -250,9 +250,10 @@ async function main() {
   const meshStats = await rpc('mesh_stats');
   const engineState = await rpc('engine_state');
 
-  // extractMeshCountInputs also performs the in-band `{error: ...}` detection
-  // (docs/debug-mcp-contract.md §2a) that the inlined rpc() above does NOT — it
-  // only throws on transport errors and returns the payload verbatim.
+  // rpc() above only NORMALISES the two failure dialects into one shape; it
+  // throws on transport errors and otherwise hands the payload back verbatim.
+  // Actually DETECTING the in-band `{error: ...}` (docs/debug-mcp-contract.md
+  // §2a) and naming the tool that failed is extractMeshCountInputs' job.
   const { inputs, failures: extractionFailures } = extractMeshCountInputs({
     viewportState,
     meshStats,
@@ -303,7 +304,7 @@ async function main() {
 
   // ── Visual-regression record ────────────────────────────────────────────────
   // Best-effort: the parity verdict is already decided above, and `screenshot`
-  // returns an image content block that the inlined rpc() reports as null.
+  // returns an image content block, which normalizeRpcEnvelope reports as null.
   log('Capturing screenshot for the visual-regression record…');
   try {
     await rpc('screenshot', { viewportId: 'design-main' });

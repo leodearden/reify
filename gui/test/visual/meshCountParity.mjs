@@ -168,11 +168,12 @@ export function checkMeshCountParity({
  *
  * Debug handlers report failure as `Ok(json!({"error": "<msg>", ...}))` — no MCP
  * `isError` flag is set, so the error rides inside the content block and is
- * indistinguishable from a success value to a naive caller. The inlined `rpc()`
- * helper in every `.mjs` smoke driver only throws on TRANSPORT errors and hands
- * back the parsed text block verbatim, so without this check a tool-level
- * failure would surface as `undefined` counts and get misreported as a shape
- * problem instead of the outage it is.
+ * indistinguishable from a success value to a naive caller. The `rpc()` helper in
+ * a `.mjs` smoke driver only throws on TRANSPORT errors and hands back the parsed
+ * text block (see {@link normalizeRpcEnvelope}, which shapes it but deliberately
+ * does not judge it), so without this check a tool-level failure would surface as
+ * `undefined` counts and get misreported as a shape problem instead of the outage
+ * it is.
  *
  * Discriminator: a non-null object whose `error` field is a string. Mirrors
  * `inBandError` in ./rpc.ts and the §2a contract in docs/debug-mcp-contract.md,
