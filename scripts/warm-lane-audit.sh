@@ -122,9 +122,16 @@
 #        --stale-age-min/--safety.
 #
 # Invariants:
-#   A1 — read-only: never mutates a lane (no reset/rm/reclaim); the LIVE/IDLE
-#        probe opens an EXISTING <dir>.lock read-only and never creates
-#        a missing one.
+#   A1 — read-only: never mutates a lane (no reset/rm/reclaim). This binds
+#        BOTH on-disk surfaces the audit touches, and identically:
+#          · the LIVE/IDLE probe opens an EXISTING <dir>.lock read-only and
+#            never creates a missing one;
+#          · the assignment-state read opens an EXISTING
+#            <state-dir>/<lane>.json read-only and never creates the record
+#            OR the directory -- neither a default <mount>/.lane-state nor an
+#            explicitly-pointed-at REIFY_WARM_LANE_AUDIT_STATE_DIR.
+#        No `>`-open, touch, or mkdir occurs anywhere on either path; an
+#        advisory reader that materializes pool state is not a reader.
 #   A2 — the flock -n -s (shared) probe is non-blocking and released
 #        immediately. A shared request still correctly detects LIVE (a
 #        live consumer's exclusive flock blocks a new shared request too),
@@ -372,6 +379,22 @@ _record_scalar() {
     return 0
 }
 
+# _lane_record <lane>
+# The ONLY site in this script that composes a state-record path. Prints
+# <STATE_DIR>/<lane>.json when that record exists and is readable, and NOTHING
+# otherwise -- so every caller's access is guarded by construction, and A1's
+# non-creating guarantee has exactly one place it could be broken rather than
+# one per caller. Purely existence/readability tests: no `>`-open, no touch, no
+# mkdir, on either the directory or the record.
+_lane_record() {
+    local lane="$1"
+    [ -n "$STATE_DIR" ] && [ -d "$STATE_DIR" ] || return 0
+    local record="$STATE_DIR/$lane.json"
+    [ -f "$record" ] && [ -r "$record" ] || return 0
+    printf '%s' "$record"
+    return 0
+}
+
 # _lane_assigned_state <lane>
 # Prints ASSIGNED|RELEASED|QUARANTINED|UNKNOWN for <lane>, read from
 # <STATE_DIR>/<lane>.json. This is the pool's RESERVATION truth and is wholly
@@ -385,14 +408,13 @@ _record_scalar() {
 #   quarantined                   -> QUARANTINED  (withheld from the pool)
 #   anything else / unresolvable  -> UNKNOWN      (A5)
 #
-# Every access is guarded by an existence/readability test before reading: the
-# read is strictly NON-CREATING, exactly as the <dir>.lock probe never creates
-# a lock (A1). No `>`-open, no touch, no mkdir anywhere on the state path.
+# The read is strictly NON-CREATING, exactly as the <dir>.lock probe never
+# creates a lock (A1) -- guaranteed by _lane_record, which yields a path only
+# for a record that already exists and is readable.
 _lane_assigned_state() {
-    local lane="$1"
-    [ -n "$STATE_DIR" ] && [ -d "$STATE_DIR" ] || { printf 'UNKNOWN'; return 0; }
-    local record="$STATE_DIR/$lane.json"
-    [ -f "$record" ] && [ -r "$record" ] || { printf 'UNKNOWN'; return 0; }
+    local record
+    record="$(_lane_record "$1")"
+    [ -n "$record" ] || { printf 'UNKNOWN'; return 0; }
 
     local raw
     raw="$(_record_scalar "$record" state)"
@@ -528,16 +550,13 @@ _pin_bucket() {
 # empty because it requires a quoted value.
 _pin_holder_id() {
     local dir="$1"
-    local lane record id
-    lane="$(basename "$dir")"
-    if [ -n "$STATE_DIR" ] && [ -d "$STATE_DIR" ]; then
-        record="$STATE_DIR/$lane.json"
-        if [ -f "$record" ] && [ -r "$record" ]; then
-            id="$(_record_scalar "$record" task_id)"
-            if [ -n "$id" ]; then
-                printf '%s' "$id"
-                return 0
-            fi
+    local record id
+    record="$(_lane_record "$(basename "$dir")")"
+    if [ -n "$record" ]; then
+        id="$(_record_scalar "$record" task_id)"
+        if [ -n "$id" ]; then
+            printf '%s' "$id"
+            return 0
         fi
     fi
     _backing_task_id "$dir"
