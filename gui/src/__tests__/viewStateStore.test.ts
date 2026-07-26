@@ -2791,3 +2791,91 @@ describe('viewStateStore — resetToDefaultView (step-1)', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// #5195 step-9: DisplayOutput subjects threaded through regenerateAutoViews
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — regenerateAutoViews DisplayOutput routing (#5195)', () => {
+  function makeTwoRealizationTree() {
+    return [
+      makeNode({
+        entity_path: 'P',
+        kind: 'structure',
+        children: [
+          makeNode({ entity_path: 'P#realization[0]', kind: 'realization', has_mesh: true, default_visible: true }),
+          makeNode({ entity_path: 'P#realization[1]', kind: 'realization', has_mesh: true, default_visible: true }),
+        ],
+      }),
+    ];
+  }
+
+  it('(a) a subject set routes auto:default — subject shown, other realizations hidden', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTwoRealizationTree(), [], new Set(['P#realization[0]']));
+      const view = store.state.views['auto:default'];
+      expect(view.visibility['P#realization[0]']).toBe('show');
+      expect(view.visibility['P#realization[1]']).toBe('hidden');
+      dispose();
+    });
+  });
+
+  it('(b) routing reaches effective visibility, not just the stored view map', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTwoRealizationTree(), [], new Set(['P#realization[0]']));
+      expect(store.getEffectiveVisibility('P#realization[0]')).toBe('show');
+      expect(store.getEffectiveVisibility('P#realization[1]')).toBe('hidden');
+      dispose();
+    });
+  });
+
+  it('(c) omitting the third argument leaves existing behaviour unchanged', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTwoRealizationTree());
+      const view = store.state.views['auto:default'];
+      expect(view.visibility['P#realization[0]']).toBe('show');
+      expect(view.visibility['P#realization[1]']).toBe('show');
+      dispose();
+    });
+  });
+
+  it('(d) an empty subject set means no DisplayOutputs → normal rules', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTwoRealizationTree(), [], new Set());
+      const view = store.state.views['auto:default'];
+      expect(view.visibility['P#realization[0]']).toBe('show');
+      expect(view.visibility['P#realization[1]']).toBe('show');
+      dispose();
+    });
+  });
+
+  it('(e) auto:all-geometry stays the escape hatch while routing is active', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTwoRealizationTree(), [], new Set(['P#realization[0]']));
+      const allGeo = store.state.views['auto:all-geometry'];
+      expect(allGeo.visibility['P#realization[0]']).toBe('show');
+      expect(allGeo.visibility['P#realization[1]']).toBe('show');
+      dispose();
+    });
+  });
+
+  it('(f) purpose views are not routed', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTwoRealizationTree(), ['manufacturing_ready'], new Set(['P#realization[0]']));
+      const purpose = store.state.views['auto:purpose:manufacturing_ready'];
+      expect(purpose).toBeDefined();
+      // Whatever the purpose heuristic decides, it must be the SAME with and
+      // without routing — routing is scoped to auto:default.
+      const store2 = createViewStateStore();
+      store2.regenerateAutoViews(makeTwoRealizationTree(), ['manufacturing_ready']);
+      expect(purpose.visibility).toEqual(store2.state.views['auto:purpose:manufacturing_ready'].visibility);
+      dispose();
+    });
+  });
+});
