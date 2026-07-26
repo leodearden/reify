@@ -585,3 +585,70 @@ fn fn_returned_struct_ctor_excludes_geometry_let_alias() {
         ),
     }
 }
+
+// ─── task-5494 step-1: boundary #5, hazard 1 (poison default in a fn-body ctor) ─
+
+/// A structure-def param default that calls a SAME-MODULE fn, consumed through a
+/// fn-returned ctor, must evaluate to the fn's real value.
+///
+/// Declaration order is load-bearing and is the point of the fixture: `tol` is
+/// declared before `Widget` (which calls it in a param default), and `Widget` is
+/// declared before `make_widget` (which constructs it).  Every edge points
+/// backwards, so a strict source-order compilation satisfies all of them.
+///
+/// Hazard 1 (entity.rs:5935-5950): `build_structure_def_skeleton` is invoked at
+/// functions_phase.rs:46-59 BEFORE the `compile_function` loop at :79, so it is
+/// handed `&ctx.functions` while that vec is still EMPTY.  `tol()` therefore
+/// cannot resolve in the skeleton's neutral scope, `compile_expr` returns a
+/// poison expr, its diagnostic is swallowed by the throwaway buffer
+/// (entity.rs:5958), and the poison is baked verbatim into
+/// `StructureInstanceCtor.defaults` at the `Widget()` lowering site.  The failure
+/// is therefore SILENT — a wrong/`Undef` value with no diagnostic — which is
+/// precisely the divergence boundary #5 forbids.
+#[test]
+fn fn_returned_ctor_default_referencing_same_module_fn_evaluates_correctly() {
+    let src = r#"
+module test.slack
+
+fn tol() -> Real { 0.25 }
+
+structure def Widget {
+    param w     : Real = 3.5
+    param slack : Real = tol()
+}
+
+pub fn make_widget() -> Widget { Widget() }
+
+structure App {
+    let x = make_widget()
+    let s = x.slack
+}
+"#;
+
+    // (a) No compile-time errors — the whole fixture is correctly source-ordered.
+    let module = reify_test_support::helpers::compile_source_with_stdlib(src);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "same-module fn-call param default should compile with zero errors; \
+         got: {:#?}",
+        errors
+    );
+
+    // (b) No eval-time errors, and (c) the ctor default carries `tol()`'s REAL
+    //     value — not a poison/Undef baked in by a neutral-scope skeleton.
+    let result = eval_source_with_stdlib(src);
+    reify_test_support::assert_no_eval_errors(&result);
+    let s = reify_test_support::cell_value(&result, "App", "s");
+    assert_eq!(
+        s,
+        Value::Real(0.25),
+        "App.s must be tol()'s real value 0.25 — a `Value::Undef`/wrong number \
+         here is the silent divergence hazard 1 describes; got: {:?}",
+        s
+    );
+}
