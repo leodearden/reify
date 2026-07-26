@@ -1204,4 +1204,242 @@ run_sweep --db "$F_DB" --escalations "$F_ESC" --repo "$F_REPO" --format table
 assert "F8: the table report renders flags as a comma-separated list" \
     _out_has 'corrupt_autofile,misattributed_provenance'
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block G — --emit-requests and the read-only invariant
+#
+# The sweep EMITS a re-dispatch request; it never performs the task-state
+# write. CLAUDE.md is categorical that all task operations go through the
+# fused-memory MCP tools, and a bash script cannot call MCP — writing tasks.db
+# directly would bypass the reconciliation that status transitions trigger,
+# turning an advisory sweep into an unaudited mutator of the canonical task
+# store. This is the house cross-repo seam verbatim: reify ships the
+# primitive, dark-factory wires the invocation that performs the
+# set_task_status / update_task write.
+#
+# G3 is the emission-boundary re-pinning of B2 / C2 / E5 / F6: STALE is the
+# ONLY verdict that emits, asserted once per non-emitting verdict so a
+# regression in any one of them cannot hide behind the others. G8 is the
+# read-only proof — a byte-level before/after comparison of the fixture store
+# plus a source-level check that no mutating SQL and no non-read-only sqlite
+# handle exists in the SUT at all.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block G: --emit-requests + the read-only proof ---"
+
+# Block-local helpers.
+# _request_count_is <dir> <n> — exactly n files in dir (any name).
+_request_count_is() {
+    local dir="$1" want="$2" got
+    got="$(find "$dir" -maxdepth 1 -type f 2>/dev/null | wc -l)"
+    [ "$got" = "$want" ] || { echo "expected $want file(s) in $dir, found $got"; return 1; }
+}
+# _only_request_files <dir> — nothing but redispatch-*.json survives, so a
+# leaked mktemp intermediate (which by construction cannot end in `.json`) is
+# caught by name rather than only by timing.
+_only_request_files() {
+    local dir="$1" f base bad=""
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        base="$(basename "$f")"
+        case "$base" in
+            redispatch-*.json) ;;
+            *) bad="${bad:+$bad }$base" ;;
+        esac
+    done < <(find "$dir" -maxdepth 1 -mindepth 1 2>/dev/null)
+    [ -z "$bad" ] || { echo "unexpected non-request entries: $bad"; return 1; }
+}
+# _request_snapshot <dir> — name+sha256 of every file, sorted; the idempotence
+# oracle.
+_request_snapshot() {
+    local dir="$1" f
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        printf '%s %s\n' "$(basename "$f")" "$(sha256sum <"$f" | awk '{print $1}')"
+    done < <(find "$dir" -maxdepth 1 -type f 2>/dev/null | LC_ALL=C sort)
+}
+# _all_requests_parse <dir> — every emitted file is valid JSON.
+_all_requests_parse() {
+    local dir="$1" f
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$f" || {
+            echo "unparseable request file: $f"; return 1; }
+    done < <(find "$dir" -maxdepth 1 -type f 2>/dev/null)
+}
+# _sqlite_all_readonly — every sqlite handle the SUT opens is read-only. The
+# `-n "$_SQLITE_BIN"` emptiness guards are not invocations, so they are
+# excluded before the -readonly requirement is applied.
+_sqlite_all_readonly() {
+    local bad
+    bad="$(grep -n '"\$_SQLITE_BIN"' "$SCRIPT" | grep -v -- '-n "\$_SQLITE_BIN"' \
+           | grep -v -- '-readonly' || true)"
+    [ -z "$bad" ] || { echo "non-readonly sqlite invocation(s): $bad"; return 1; }
+    bad="$(grep -n 'sqlite3\.connect' "$SCRIPT" | grep -v 'mode=ro' || true)"
+    [ -z "$bad" ] || { echo "sqlite3.connect without mode=ro: $bad"; return 1; }
+}
+
+_mk_tasks_db
+G_DB="$DB"
+_mk_esc_dir
+G_ESC="$ESC_DIR"
+_mk_repo
+G_REPO="$REPO_DIR"
+G_C1="$(_commit_touching docs/g-premise.md)"
+G_TIP="$(_commit_touching docs/g-resolver.md)"
+
+G_GATE='"task_kind":"deterministic","always_escalates":true,"gate_escalated_at":"2026-07-26T08:00:00Z"'
+G_PROP_B="$(_d_prop 'Post-merge verification failed: cargo test --workspace returned 101' \
+    "$G_C1" '["docs/g-resolver.md"]' 2026-07-24T10:00:00Z)"
+
+_add_task 9790 done    '{}'
+_add_task 9791 pending '{}'
+
+# One confirmed hit per trigger class — the three files G1 expects.
+_add_task 9701 blocked "{$G_GATE}"
+_add_task 9702 blocked "{\"dry_run_proposals\":[$G_PROP_B]}"
+_add_task 9703 blocked '{}'; _add_dep 9703 9790
+# One row per NON-emitting verdict. 9704 carries a premise that WOULD fire, so
+# the liveness guard is what suppresses it and not an inert fixture.
+_add_task 9704 in-progress "{\"dry_run_proposals\":[$G_PROP_B]}" \
+    "$(_now_iso -60)" "run-7c8e838c39e7/9704-abc123/pid=3551081"
+_add_task 9705 blocked "{$G_GATE}"; _add_esc 9705 1 pending
+_add_task 9706 blocked '{}'; _add_dep 9706 9791
+_add_task 9707 blocked "{$G_GATE,\"failing_tests\":[\"Usage:\"]}"
+_add_task 9708 blocked '{}'
+
+G_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-greq-XXXXXX")"
+_TMPDIRS+=("$G_REQ")
+
+# --- G8 read-only proof: snapshot the store BEFORE the emitting run ----------
+G_BEFORE="$(_snapshot_readonly "$G_DB" "$G_ESC")"
+
+run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+    --emit-requests "$G_REQ" --format json
+assert "G0: the emission fixture sweep exits 0" _rc_is 0
+
+G_AFTER="$(_snapshot_readonly "$G_DB" "$G_ESC")"
+
+# --- G1: one file per confirmed hit, named for the task and its class -------
+assert "G1: the class-A hit emits redispatch-9701-gate_closure.json" \
+    test -f "$G_REQ/redispatch-9701-gate_closure.json"
+assert "G1: the class-B hit emits redispatch-9702-merge_verify_red.json" \
+    test -f "$G_REQ/redispatch-9702-merge_verify_red.json"
+assert "G1: the class-C hit emits redispatch-9703-unmet_dependency.json" \
+    test -f "$G_REQ/redispatch-9703-unmet_dependency.json"
+assert "G1: exactly three files — one per hit, and nothing else" \
+    _request_count_is "$G_REQ" 3
+
+# --- G2: the consumer contract ----------------------------------------------
+assert "G2: the request carries the full consumer field set" \
+    _json_check "$G_REQ/redispatch-9701-gate_closure.json" \
+    'set(["schema_version","task_id","class","action","verdict","evidence","main_ref_sha","emitted_by"]) <= set(d)'
+assert "G2: the class-A request records task_id, class, verdict and the close action" \
+    _json_check "$G_REQ/redispatch-9701-gate_closure.json" \
+    'd["task_id"] == 9701 and d["class"] == "gate_closure" and d["verdict"] == "STALE" and d["action"] == "close"'
+assert "G2: the class-B request's action is reverify" \
+    _json_check "$G_REQ/redispatch-9702-merge_verify_red.json" 'd["action"] == "reverify"'
+assert "G2: the class-C request's action is redispatch" \
+    _json_check "$G_REQ/redispatch-9703-unmet_dependency.json" 'd["action"] == "redispatch"'
+assert "G2: evidence is carried through verbatim from the row" \
+    _json_check "$G_REQ/redispatch-9703-unmet_dependency.json" '"9790=done" in d["evidence"]'
+assert "G2: main_ref_sha is the resolved --main-ref tip, not the recorded premise sha" \
+    _json_check "$G_REQ/redispatch-9702-merge_verify_red.json" "d['main_ref_sha'] == '$G_TIP'"
+assert "G2: emitted_by names this script" \
+    _json_check "$G_REQ/redispatch-9701-gate_closure.json" \
+    '"deterministic-gate-closure-staleness-sweep" in d["emitted_by"]'
+
+# --- G3: STALE is the ONLY verdict that emits -------------------------------
+# Pinned against the fixture's own verdicts first, so none of the five
+# no-request asserts below can pass vacuously against a mis-built row.
+assert "G3: the fixture really does produce one row of each non-emitting verdict" \
+    _json_is '[t[i]["verdict"] for i in (9704, 9705, 9706, 9707, 9708)] == ["LIVE", "GATED", "UNRESOLVED", "CORRUPT-HOLD", "unknown"]'
+assert "G3: a LIVE row emits no request (re-pins B2 at the emission boundary)" \
+    _no_request_for "$G_REQ" 9704
+assert "G3: a GATED row emits no request (re-pins C2)" _no_request_for "$G_REQ" 9705
+assert "G3: an UNRESOLVED row emits no request" _no_request_for "$G_REQ" 9706
+assert "G3: a CORRUPT-HOLD row emits no request (re-pins F6)" _no_request_for "$G_REQ" 9707
+assert "G3: an unknown row emits no request" _no_request_for "$G_REQ" 9708
+
+# --- G4/G5: idempotence and atomicity ---------------------------------------
+G_SNAP1="$(_request_snapshot "$G_REQ")"
+assert "G5: every emitted request file parses as JSON" _all_requests_parse "$G_REQ"
+assert "G5: no mktemp intermediate survives the first run" _only_request_files "$G_REQ"
+
+run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+    --emit-requests "$G_REQ" --format json
+assert "G4: a second sweep still exits 0" _rc_is 0
+assert "G4: re-emission leaves the request set byte-identical" \
+    test "$G_SNAP1" = "$(_request_snapshot "$G_REQ")"
+assert "G4: re-emission does not duplicate files" _request_count_is "$G_REQ" 3
+assert "G5: no mktemp intermediate survives the second run either" _only_request_files "$G_REQ"
+
+# --- G6: request emission never gates the sweep ------------------------------
+G_PARENT="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-gparent-XXXXXX")"
+_TMPDIRS+=("$G_PARENT")
+run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+    --emit-requests "$G_PARENT/created-on-demand" --format json
+assert "G6: a nonexistent DIR whose parent exists is created" \
+    test -d "$G_PARENT/created-on-demand"
+assert "G6: and it receives the same three requests" \
+    _request_count_is "$G_PARENT/created-on-demand" 3
+
+run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+    --emit-requests "$G_PARENT/no/such/parent" --format json
+assert "G6: a DIR whose parent does not exist still exits 0" _rc_is 0
+assert "G6: ... warns on stderr" _err_has '\[warn\]'
+assert "G6: ... and still prints a complete report on stdout" \
+    _json_is 's["gate_closure"] == 1 and s["merge_verify_red"] == 1 and s["unmet_dependency"] == 1'
+
+if [ "$(id -u)" != 0 ]; then
+    G_RO="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-gro-XXXXXX")"
+    _TMPDIRS+=("$G_RO")
+    chmod 500 "$G_RO"
+    run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+        --emit-requests "$G_RO" --format json
+    assert "G6: a non-writable DIR still exits 0" _rc_is 0
+    assert "G6: a non-writable DIR warns on stderr" _err_has '\[warn\]'
+    assert "G6: a non-writable DIR still prints a complete report" \
+        _json_is 's["gate_closure"] == 1'
+    assert "G6: nothing was written into the non-writable DIR" _request_count_is "$G_RO" 0
+    chmod 700 "$G_RO"
+else
+    echo "  SKIP: G6 non-writable-DIR asserts (running as uid 0; mode bits do not apply)"
+fi
+
+# --- G7: --emit-requests honours --class ------------------------------------
+G_REQ_A="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-greqa-XXXXXX")"
+_TMPDIRS+=("$G_REQ_A")
+run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+    --class gate_closure --emit-requests "$G_REQ_A" --format json
+assert "G7: a --class-restricted sweep emits only that class's request" \
+    _request_count_is "$G_REQ_A" 1
+assert "G7: and it is the class-A request" \
+    test -f "$G_REQ_A/redispatch-9701-gate_closure.json"
+
+# --- G8: the read-only proof -------------------------------------------------
+assert "G8: the fixture tasks.db and escalation store are byte-identical after an emitting sweep" \
+    test "$G_BEFORE" = "$G_AFTER"
+assert "G8: no -wal / -shm sidecar was created alongside the fixture DB" \
+    _not test -e "$G_DB-wal"
+assert "G8: the SUT source contains no UPDATE / INSERT INTO / DELETE FROM SQL" \
+    _not grep -qiE '\b(UPDATE|INSERT +INTO|DELETE +FROM)\b' "$SCRIPT"
+assert "G8: every sqlite handle the SUT opens is read-only" _sqlite_all_readonly
+
+# --- G9: flag<->env parity, and the default writes nothing -------------------
+G_REQ_ENV="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-greqenv-XXXXXX")"
+_TMPDIRS+=("$G_REQ_ENV")
+_SWEEP_ENV=(REIFY_GATE_STALENESS_REQUESTS_DIR="$G_REQ_ENV")
+run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" --format json
+_SWEEP_ENV=()
+assert "G9: REIFY_GATE_STALENESS_REQUESTS_DIR emits the same request set as the flag" \
+    test "$G_SNAP1" = "$(_request_snapshot "$G_REQ_ENV")"
+
+G_NONE="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-gnone-XXXXXX")"
+_TMPDIRS+=("$G_NONE")
+run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" --format json
+assert "G9: with neither the flag nor its env knob set, the sweep writes nothing" \
+    _request_count_is "$G_NONE" 0
+assert "G9: ... and the previously-emitted request set is left untouched" \
+    test "$G_SNAP1" = "$(_request_snapshot "$G_REQ")"
+
 test_summary
