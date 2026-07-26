@@ -611,4 +611,232 @@ mod tests {
             assert_eq!(kind("rz"), Ok(MemberKind::Realization));
         });
     }
+
+    // ── step-5: the D6 visibility verdict, one per priv-able member kind ──
+
+    /// `structure def P {
+    ///     priv param secret : Length     param plain : Length
+    ///     let internal : Length          priv sub hidden = Leaf()
+    ///     sub open = Leaf()              priv port pp : SomeTrait { }
+    ///     port op : SomeTrait { }
+    ///     where on { priv param gsecret : Length  param gplain : Length }
+    /// }`
+    fn template_p() -> TopologyTemplate {
+        TopologyTemplate {
+            value_cells: vec![
+                value_cell(
+                    "P",
+                    "secret",
+                    ValueCellKind::Param,
+                    Visibility::Private,
+                    Type::length(),
+                ),
+                value_cell(
+                    "P",
+                    "plain",
+                    ValueCellKind::Param,
+                    Visibility::Public,
+                    Type::length(),
+                ),
+                // A default (non-`pub`) `let` is `Visibility::Private` in the IR
+                // but is NEVER externally nameable — the load-bearing negative.
+                value_cell(
+                    "P",
+                    "internal",
+                    ValueCellKind::Let,
+                    Visibility::Private,
+                    Type::length(),
+                ),
+            ],
+            sub_components: vec![
+                sub_component("hidden", "Leaf", Visibility::Private),
+                sub_component("open", "Leaf", Visibility::Public),
+            ],
+            ports: vec![port("pp", true), port("op", false)],
+            guarded_groups: vec![CompiledGuardedGroup {
+                guard_expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+                guard_value_cell: ValueCellId::new("P", "__guard_on"),
+                members: vec![
+                    value_cell(
+                        "P",
+                        "gsecret",
+                        ValueCellKind::Param,
+                        Visibility::Private,
+                        Type::length(),
+                    ),
+                    value_cell(
+                        "P",
+                        "gplain",
+                        ValueCellKind::Param,
+                        Visibility::Public,
+                        Type::length(),
+                    ),
+                ],
+                constraints: Vec::new(),
+                else_members: Vec::new(),
+                else_constraints: Vec::new(),
+                parent_guard: None,
+            }],
+            ..empty_template("P")
+        }
+    }
+
+    fn priv_member_err(member: &str) -> MemberPathError {
+        MemberPathError::PrivateMember {
+            hop_index: 0,
+            structure: "P".to_string(),
+            member: member.to_string(),
+        }
+    }
+
+    #[test]
+    fn resolve_hop_denies_a_priv_param() {
+        let templates = [template_p()];
+        with_scope("Test", &templates, |scope| {
+            let obj = Type::StructureRef("P".to_string());
+            assert_eq!(
+                resolve_hop(&obj, "secret", scope),
+                Err(priv_member_err("secret"))
+            );
+            assert!(resolve_hop(&obj, "plain", scope).is_ok(), "public control");
+        });
+    }
+
+    #[test]
+    fn resolve_hop_denies_a_priv_sub() {
+        let templates = [template_p()];
+        with_scope("Test", &templates, |scope| {
+            let obj = Type::StructureRef("P".to_string());
+            assert_eq!(
+                resolve_hop(&obj, "hidden", scope),
+                Err(priv_member_err("hidden"))
+            );
+            assert!(resolve_hop(&obj, "open", scope).is_ok(), "public control");
+        });
+    }
+
+    #[test]
+    fn resolve_hop_denies_a_priv_port() {
+        let templates = [template_p()];
+        with_scope("Test", &templates, |scope| {
+            let obj = Type::StructureRef("P".to_string());
+            assert_eq!(resolve_hop(&obj, "pp", scope), Err(priv_member_err("pp")));
+            assert!(resolve_hop(&obj, "op", scope).is_ok(), "public control");
+        });
+    }
+
+    /// Task #5171: a `priv param` nested in a block-form `where` guarded group.
+    #[test]
+    fn resolve_hop_denies_a_priv_param_inside_a_guarded_group() {
+        let templates = [template_p()];
+        with_scope("Test", &templates, |scope| {
+            let obj = Type::StructureRef("P".to_string());
+            assert_eq!(
+                resolve_hop(&obj, "gsecret", scope),
+                Err(priv_member_err("gsecret"))
+            );
+            assert!(resolve_hop(&obj, "gplain", scope).is_ok(), "public control");
+        });
+    }
+
+    /// The load-bearing negative behind `template_member_is_priv`'s
+    /// `kind == Param` guard: `value_cells` also holds `let` bindings, and a
+    /// default (non-`pub`) `let` carries `Visibility::Private` — but `let`s are
+    /// never externally accessible by name, so reporting one as a priv
+    /// violation would be an out-of-scope behaviour change.
+    #[test]
+    fn resolve_hop_does_not_report_a_default_visibility_let_as_private() {
+        let templates = [template_p()];
+        with_scope("Test", &templates, |scope| {
+            let r = resolve_hop(&Type::StructureRef("P".to_string()), "internal", scope)
+                .expect("a `let` cell is not a priv violation");
+            assert_eq!(r.hop.visibility, MemberVisibility::Public);
+        });
+    }
+
+    /// The ordering invariant `expr.rs` calls load-bearing (task #5171): a priv
+    /// param declared inside a guarded group must report `PrivateMember`, never
+    /// `UnknownMember`. Asserting on the VARIANT catches a future reorder that
+    /// lets not-found win.
+    #[test]
+    fn priv_beats_unknown_for_a_guarded_group_member() {
+        let templates = [template_p()];
+        with_scope("Test", &templates, |scope| {
+            let err = resolve_hop(&Type::StructureRef("P".to_string()), "gsecret", scope)
+                .expect_err("a priv guarded member must be denied");
+            assert!(
+                matches!(err, MemberPathError::PrivateMember { .. }),
+                "expected PrivateMember, got {err:?} — the priv check must run \
+                 over the full container union BEFORE the unknown-member fallback"
+            );
+        });
+    }
+
+    // ── step-5: diagnostic rendering is byte-identical to today's ─────
+
+    #[test]
+    fn to_diagnostic_renders_the_existing_priv_member_access_text() {
+        let span = SourceSpan::new(3, 9);
+        let d = MemberPathError::PrivateMember {
+            hop_index: 1,
+            structure: "Inner".to_string(),
+            member: "gp".to_string(),
+        }
+        .to_diagnostic(span)
+        .expect("PrivateMember renders a diagnostic");
+        assert_eq!(
+            d.message,
+            "E_PRIV_MEMBER_ACCESS: member 'gp' of structure 'Inner' is private"
+        );
+        assert_eq!(d.code, Some(DiagnosticCode::PrivMemberAccess));
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.labels.len(), 1);
+        assert_eq!(d.labels[0].message, "private member accessed here");
+        assert_eq!(d.labels[0].span, span);
+    }
+
+    #[test]
+    fn to_diagnostic_renders_the_existing_structure_member_not_found_text() {
+        let span = SourceSpan::new(3, 9);
+        let d = MemberPathError::UnknownMember {
+            hop_index: 0,
+            object_type: Type::StructureRef("Inner".to_string()),
+            structure: "Inner".to_string(),
+            member: "nope".to_string(),
+        }
+        .to_diagnostic(span)
+        .expect("UnknownMember renders a diagnostic");
+        assert_eq!(d.message, "structure 'Inner' has no member 'nope'");
+        assert_eq!(d.code, Some(DiagnosticCode::StructureMemberNotFound));
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.labels.len(), 1);
+        assert_eq!(d.labels[0].message, "unknown member");
+        assert_eq!(d.labels[0].span, span);
+    }
+
+    /// `NotAMemberPath` / `Indeterminate` have nothing to say — the caller falls
+    /// through to its existing path rather than reporting.
+    #[test]
+    fn to_diagnostic_is_silent_for_the_defer_variants() {
+        let span = SourceSpan::new(0, 0);
+        assert!(
+            MemberPathError::NotAMemberPath
+                .to_diagnostic(span)
+                .is_none()
+        );
+        for reason in [
+            IndeterminateReason::WildcardStructure,
+            IndeterminateReason::TraitObjectReceiver,
+            IndeterminateReason::TemplateNotInRegistry,
+            IndeterminateReason::NoTemplateRegistry,
+            IndeterminateReason::UnresolvableRoot,
+        ] {
+            assert!(
+                MemberPathError::Indeterminate(reason)
+                    .to_diagnostic(span)
+                    .is_none(),
+                "{reason:?} must defer, not report"
+            );
+        }
+    }
 }
