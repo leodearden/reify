@@ -43,17 +43,23 @@ export interface ViewDefinition {
 // ---------------------------------------------------------------------------
 
 /**
- * Matches the canonical geometry type tokens (Solid, Surface, Curve) at word
- * boundaries so generic wrappers like `Option<Solid>` or `List<Curve>` are
- * recognised while substring-only matches like `MySolid`, `Solidarity`, or
- * `SolidBody` are correctly rejected.
+ * Matches the canonical geometry type tokens at word boundaries so generic
+ * wrappers like `Option<Geometry>` or `List<Curve>` are recognised while
+ * substring-only matches like `MySolid`, `Solidarity`, `SolidBody`, or
+ * `GeometryReference` are correctly rejected.
  *
- * Note: the backend type system does not emit digit-suffix variants such as
- * `Solid3D` or `Curve2D` (`Solid` resolves to `Type::Geometry` and emits
- * `"Geometry"`; `Surface`/`Curve` are `StructureRef` types with fixed names).
+ * `Geometry` is the token that actually fires in practice (#5195): the backend
+ * resolves BOTH the `Solid` and the `Geometry` source spellings to
+ * `Type::Geometry`, whose `Display` emits the literal `"Geometry"`. A
+ * value-cell node's `type_name` therefore reads `"Geometry"` and never
+ * `"Solid"` — without this token the whole rule was dead against real trees.
+ * `Solid` is kept for hand-built fixtures and any future type that Displays
+ * under that name; `Surface`/`Curve` are `StructureRef` types with fixed names.
+ *
+ * The backend emits no digit-suffix variants such as `Solid3D` or `Curve2D`.
  * If that ever changes, extend this pattern accordingly.
  */
-const GEOMETRY_TYPE_NAME_RE = /\b(?:Solid|Surface|Curve)\b/;
+const GEOMETRY_TYPE_NAME_RE = /\b(?:Solid|Surface|Curve|Geometry)\b/;
 
 /**
  * Matches the canonical Material token at a word boundary, accepting wrappers
@@ -63,10 +69,11 @@ const MATERIAL_TYPE_NAME_RE = /\bMaterial\b/;
 
 /**
  * Returns true when a node is a let-binding whose type matches
- * `\b(Solid|Surface|Curve)\b` (anchored on word boundaries).  Generic wrappers
- * such as `Option<Solid>` are recognised; substring-only names such as `MySolid`
- * or `SolidBody` are not.  Used by both `defaultVisibilityFor` and
- * `manufacturingReadyVisibilityFor` so the two rules cannot drift.
+ * `\b(Solid|Surface|Curve|Geometry)\b` (anchored on word boundaries).  Generic
+ * wrappers such as `Option<Geometry>` are recognised; substring-only names such
+ * as `MySolid`, `SolidBody`, or `GeometryReference` are not.  Used by both
+ * `defaultVisibilityFor` and `manufacturingReadyVisibilityFor` so the two rules
+ * cannot drift.
  */
 function isLetGeometryType(node: EntityTreeNode): boolean {
   return (
@@ -87,7 +94,7 @@ function isLetGeometryType(node: EntityTreeNode): boolean {
  *    takes precedence over trait_geometry so an aux realization that happens to be
  *    trait_geometry is still hidden until the user toggles it on).
  * 1. `trait_geometry` → 'show'
- * 2. `kind === 'let'` AND `type_name` matches `\b(Solid|Surface|Curve)\b` (anchored) → 'hidden'
+ * 2. `kind === 'let'` AND `type_name` matches `\b(Solid|Surface|Curve|Geometry)\b` (anchored) → 'hidden'
  * 3. Everything else (structure, sub, param, occurrence, auto, port, …) → 'show'
  */
 export function defaultVisibilityFor(node: EntityTreeNode): VisibilityState {
@@ -165,7 +172,7 @@ export function generateAllGeometryView(tree: EntityTreeNode[]): ViewDefinition 
 function manufacturingReadyVisibilityFor(node: EntityTreeNode): VisibilityState {
   // trait_geometry → show
   if (node.trait_geometry) return 'show';
-  // let node matching \b(Solid|Surface|Curve)\b → ghost (still visible as context)
+  // let node matching \b(Solid|Surface|Curve|Geometry)\b → ghost (still visible as context)
   if (isLetGeometryType(node)) return 'ghost';
   // Material params (type_name matches \bMaterial\b, including wrappers such as
   // List<Material>) are specifically kept visible (material assignments matter
