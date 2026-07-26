@@ -1075,7 +1075,10 @@ const STRUCTURAL_QUERY_ACCESSORS: &[&str] = &["children", "members", "descendant
 /// If a sibling wildcard kind is ever added (e.g., `"Occurrence"` gains first-class
 /// wildcard status), add it here alongside this constant rather than embedding
 /// another bare string literal at the call site.
-const WILDCARD_STRUCTURE_KIND: &str = "Structure";
+/// `pub(crate)` so `member_path::resolve_hop` — the single member-shape
+/// authority (task 5424) — applies the same wildcard skip rather than
+/// re-embedding the bare `"Structure"` literal.
+pub(crate) const WILDCARD_STRUCTURE_KIND: &str = "Structure";
 
 /// Extract the `free` flag from an `ExprKind::Auto` expression.
 ///

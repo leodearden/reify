@@ -29,8 +29,224 @@
 //! position acceptance) and task η (sub-matcher retirement) — are same-crate
 //! callers, so no `pub` export is warranted yet.
 
-#[allow(unused_imports)]
 use super::*;
+
+// ─────────────────────────── vocabulary ───────────────────────────
+
+/// Whether a member is reachable through an *external* `obj.member` access.
+///
+/// This is the resolver's D6 verdict, not a verbatim mirror of
+/// `types::Visibility`: a default (non-`pub`) `let` cell carries
+/// `Visibility::Private` in the IR yet is never externally nameable, so it is
+/// reported `Public` here rather than as a `priv` violation. Only member kinds
+/// a user can actually write `priv` on map to `Private`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MemberVisibility {
+    Public,
+    Private,
+}
+
+/// A member that no `TopologyTemplate` container declares, but which the
+/// language nonetheless makes accessible on a receiver — the PRD §7 **extension
+/// point**.
+///
+/// `Count` is the only inhabitant today (`<collection_sub>.count`, typed
+/// `Type::Int`, matching the existing `"count" => Type::Int` arms in `expr.rs`).
+///
+/// The placement-relations belt's `.world_frame` slots in here later. Adding a
+/// variant is deliberately a *compile error* at the terminal classifier (which
+/// matches exhaustively with no `_` arm), so a new synthesized member cannot
+/// silently fall through. Its SEMANTICS — world posing, `RealizedBodySet` —
+/// remain that belt's to define; this resolver only supplies the access
+/// mechanism.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SynthesizedMember {
+    Count,
+}
+
+/// Which `TopologyTemplate` container (or synthesized category) claims a member.
+///
+/// The five declared containers this resolver scans are `value_cells`,
+/// `guarded_groups[].members`, `sub_components`, `ports` and `realizations`;
+/// the first two both classify as [`MemberKind::ValueCell`] because a
+/// `where`-guarded `param` is the same member kind as a top-level one — it is
+/// only its *activation* that is guarded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MemberKind {
+    ValueCell(ValueCellKind),
+    Sub,
+    Port,
+    Realization,
+    Synthesized(SynthesizedMember),
+}
+
+/// One resolved `.member` step of a dotted path.
+///
+/// `object_type` is the type the hop was taken FROM (so a chain's hops record
+/// the concrete type at each position, which is what C1-iii's attribution
+/// needs); `object_structure` is its structure name when it has one.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Hop {
+    pub(crate) object_type: Type,
+    pub(crate) object_structure: Option<String>,
+    pub(crate) member: String,
+    pub(crate) member_kind: MemberKind,
+    pub(crate) visibility: MemberVisibility,
+}
+
+/// The outcome of resolving a single hop.
+///
+/// `value_cell_type` is `Some` only for a member actually present in
+/// `value_cells` / `guarded_groups[].members`. It exists so the rewired caller
+/// in `expr.rs` can keep feeding its existing
+/// `unwrap_or(Type::dimensionless_scalar())` fallback and lower byte-identically
+/// — see the D9 note at that call site for why the read-back is deliberately
+/// NOT widened to sub/port/realization members here.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct HopResolution {
+    pub(crate) hop: Hop,
+    pub(crate) next_type: Type,
+    pub(crate) value_cell_type: Option<Type>,
+}
+
+/// Why a path could not be resolved *and the caller should not treat that as an
+/// error*.
+///
+/// Today's code carefully distinguishes "the member is genuinely absent"
+/// (poison + `StructureMemberNotFound`) from "we cannot know" (the permissive
+/// `dimensionless_scalar()` fallback, byte-for-byte `TraitObject` preservation,
+/// the `struct_name != WILDCARD_STRUCTURE_KIND` belt-and-braces guards).
+/// Keeping the second class a distinct variant is what makes "fall through to
+/// the caller's existing path" an explicit, greppable decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IndeterminateReason {
+    /// Receiver is the wildcard `"Structure"` subject kind — no static template.
+    WildcardStructure,
+    /// Receiver is a `Type::TraitObject`; traits are not in `template_registry`,
+    /// so the concrete runtime type is not statically known.
+    TraitObjectReceiver,
+    /// A concrete structure name with no entry in the template registry.
+    TemplateNotInRegistry,
+    /// The scope carries no template registry at all (function/field scopes).
+    NoTemplateRegistry,
+    /// The chain's innermost node is not a form this resolver types (a call, an
+    /// `IndexAccess` root such as `subs[i].member`, an unbound identifier, …).
+    UnresolvableRoot,
+}
+
+/// Why a member path did not resolve.
+///
+/// # D9 honesty
+///
+/// [`MemberPathError::Indeterminate`] is the explicit "defer to the caller's
+/// existing path" signal, **not** a silent drop. Every *other* variant carries
+/// enough data to render a real, attributed diagnostic — see
+/// [`MemberPathError::to_diagnostic`]. So a caller can never lose an access:
+/// it either resolves, defers deliberately, or reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MemberPathError {
+    /// The expression is not a `.`-chain at all.
+    NotAMemberPath,
+    /// Resolution is not statically decidable here; fall through.
+    Indeterminate(IndeterminateReason),
+    /// Hop `hop_index` names a member `structure` does not declare (C1-iii: the
+    /// attribution is the CONCRETE structure at that hop, not the chain root).
+    UnknownMember {
+        hop_index: usize,
+        object_type: Type,
+        structure: String,
+        member: String,
+    },
+    /// Hop `hop_index` names a `priv` member of `structure` (C1-ii: enforced at
+    /// every hop, not only the terminal).
+    PrivateMember {
+        hop_index: usize,
+        structure: String,
+        member: String,
+    },
+}
+
+// ─────────────────────────── single-hop resolution ───────────────────────────
+
+/// Resolve ONE `<object_type>.<member>` step — the single member-shape
+/// authority (C1-iv).
+///
+/// Purely static (C1-i): takes no diagnostic sink and evaluates nothing.
+///
+/// `hop_index` on a returned error is always `0` here; the chain walk in
+/// [`resolve_member_path`] overwrites it with the real position. A direct
+/// single-hop caller must therefore not read it as meaningful.
+pub(crate) fn resolve_hop(
+    object_type: &Type,
+    member: &str,
+    scope: &CompilationScope,
+) -> Result<HopResolution, MemberPathError> {
+    let struct_name = match object_type {
+        Type::StructureRef(name) => name.as_str(),
+        // Traits are absent from `template_registry`, so their members are not
+        // statically knowable — preserved byte-for-byte from today's behaviour.
+        Type::TraitObject(_) => {
+            return Err(MemberPathError::Indeterminate(
+                IndeterminateReason::TraitObjectReceiver,
+            ));
+        }
+        _ => {
+            return Err(MemberPathError::Indeterminate(
+                IndeterminateReason::UnresolvableRoot,
+            ));
+        }
+    };
+    if struct_name == crate::expr::WILDCARD_STRUCTURE_KIND {
+        return Err(MemberPathError::Indeterminate(
+            IndeterminateReason::WildcardStructure,
+        ));
+    }
+    let Some(registry) = scope.template_registry else {
+        return Err(MemberPathError::Indeterminate(
+            IndeterminateReason::NoTemplateRegistry,
+        ));
+    };
+    let Some(template) = registry.get(struct_name) else {
+        return Err(MemberPathError::Indeterminate(
+            IndeterminateReason::TemplateNotInRegistry,
+        ));
+    };
+
+    // Container scan. Ordered so it reproduces the existing five-container
+    // union exactly: value_cells → guarded_groups[].members → sub_components →
+    // ports → realizations.
+    let value_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == member)
+        .or_else(|| {
+            template
+                .guarded_groups
+                .iter()
+                .flat_map(|g| g.members.iter())
+                .find(|vc| vc.id.member == member)
+        });
+    if let Some(vc) = value_cell {
+        return Ok(HopResolution {
+            hop: Hop {
+                object_type: object_type.clone(),
+                object_structure: Some(struct_name.to_string()),
+                member: member.to_string(),
+                member_kind: MemberKind::ValueCell(vc.kind),
+                visibility: MemberVisibility::Public,
+            },
+            next_type: vc.cell_type.clone(),
+            value_cell_type: Some(vc.cell_type.clone()),
+        });
+    }
+
+    Err(MemberPathError::UnknownMember {
+        hop_index: 0,
+        object_type: object_type.clone(),
+        structure: struct_name.to_string(),
+        member: member.to_string(),
+    })
+}
 
 #[cfg(test)]
 mod tests {
