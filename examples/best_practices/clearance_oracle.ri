@@ -1,0 +1,71 @@
+module clearance_oracle
+
+// clearance_oracle.ri — IDIOM: ask the kernel whether parts collide, instead of
+// eyeballing the viewport. Run this before shipping an assembly.
+//
+//     let fouls = intersects(housing, bracket)   // Bool: do they overlap?
+//     let gap   = distance(housing, bracket)     // Length: how far apart?
+//     constraint gap > min_gap
+//
+// ANTI-PATTERN this replaces: shipping an assembly whose clearances were only
+// ever confirmed by looking at it, or by hand-computing a gap from parameters
+// and hoping the arithmetic still matches the geometry after the next edit.
+//
+// Verified contracts:
+//
+//   ARG SHAPE — both arguments must be LET-BOUND cells (ValueRefs), never
+//   inline calls. `resolve_geometry_handle_arg` only matches a ValueRef; every
+//   other expression kind returns None, which short-circuits dispatch and
+//   leaves the cell at `Value::Undef` with NO diagnostic. So
+//       let bad = intersects(box(10mm,10mm,10mm), bracket)   // silently undef
+//   is a silent-wrong-answer trap, not an error. `examples/kernel_queries/
+//   intersects_smoke.ri` ships a live `undef_inline` cell demonstrating exactly
+//   this; read it there rather than trusting a green check here.
+//
+//   EVAL/BUILD ONLY — `intersects` and `distance` are geometry-consumer
+//   builtins: they need a realized kernel and only resolve on the
+//   build()/tessellate() path, not on the pure value-eval surface. Under
+//   `reify check` this file reports
+//       INDETERMINATE ClearanceOracle#constraint[0]
+//       INDETERMINATE ClearanceOracle#constraint[1]
+//   plus "`intersects` could not be resolved: geometry-consumer builtins
+//   require a realized geometry kernel". THAT IS EXPECTED, NOT A FAILURE. The
+//   real answers come from `reify eval` / the GUI, which resolve the same cells
+//   to `false` and `0.01 m`. Do not "fix" an indeterminate clearance constraint
+//   by deleting it — run it on a surface that can answer it.
+//
+//   ASSEMBLY-GRADE — for a real mechanism with joints and poses, use the
+//   `mechanism` / `body` / `snapshot` / `min_clearance` chain instead of a pair
+//   of raw queries. Worked example, with the GD&T virtual-condition boundary
+//   maths: `examples/tolerancing/vc_bolt_pattern_clearance.ri`. Its hard-won
+//   rule (see its lines 84-88): `min_clearance` must be LET-BOUND before use in
+//   a constraint. Writing `constraint min_clearance(s, a, b) > 0mm` directly
+//   bypasses kinematic dispatch and yields Indeterminate.
+
+structure def ClearanceOracle {
+    param bore_r   : Length = 10mm
+    param shaft_r  : Length = 8mm
+    param length   : Length = 40mm
+    param offset_x : Length = 30mm
+    param min_gap  : Length = 1mm
+
+    // Let-bind every operand FIRST. This is the arg-shape contract, not style.
+    let housing = cylinder_centered(bore_r, length)
+    let bracket = translate(box(20mm, 20mm, 20mm), offset_x, 0mm, 0mm)
+
+    // THE IDIOM: two questions the kernel can answer exactly.
+    let fouls = intersects(housing, bracket)
+    let gap   = distance(housing, bracket)
+
+    // The clearance requirement, stated as a constraint so it is re-checked on
+    // every edit rather than re-eyeballed. INDETERMINATE under `reify check`
+    // (see above); genuinely evaluated by `reify eval` and the GUI.
+    constraint not fouls
+    constraint gap > min_gap
+
+    // Ordinary value-surface constraints, for contrast: these resolve
+    // everywhere, including under `reify check`.
+    constraint bore_r > shaft_r
+    constraint min_gap > 0mm
+    constraint offset_x > bore_r
+}
