@@ -340,9 +340,12 @@ function meshesLength(payload, toolName, failures) {
  *   `engine_state`    → `{ meshes: [{entity_path, …}], values, … }`      (commands.rs)
  *   `demand_dispatch` → `{ dispatch_by_realization, eval_set, full_scope }` (commands.rs)
  *
- * `viewport_state.meshCount` is `meshes.size` — the mesh registry itself — and
- * is authoritative here; `meshInfo` is a separately-rebuilt traversal and is NOT
- * used as the count.
+ * `viewport_state.meshCount` is `getSceneMeshes().size` — the VISIBILITY-FILTERED
+ * scene map, `show`-state meshes only (meshManager.ts; bridge.ts reads it via
+ * `vp.getMeshes()`), NOT the whole mesh registry. That filter is why the invariant
+ * is conditional on every realized body being visible, as
+ * docs/debug-mcp-contract.md spells out. This field is the authoritative count
+ * here; `meshInfo` is a per-mesh detail list and is NOT used as the count.
  *
  * Never throws: every violation becomes a named failure, so a driver can report
  * extraction and parity problems through a single path.

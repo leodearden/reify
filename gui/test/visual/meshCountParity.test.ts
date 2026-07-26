@@ -325,9 +325,13 @@ describe("extractMeshCountInputs — (a) real payload shapes", () => {
     expect(inputs.engineStateCount).toBe(3);
   });
 
-  it("reads viewport meshCount, not meshInfo.length, when they disagree", () => {
-    // meshCount is `meshes.size` (the mesh registry); meshInfo is rebuilt by a
-    // traversal. Pinning which one is authoritative catches a silent swap.
+  it("selects the meshCount FIELD, never meshInfo.length", () => {
+    // A field-selection pin on the extractor, not a production-drift guard:
+    // bridge.ts builds `meshCount` (getSceneMeshes().size) and `meshInfo` from
+    // the SAME map in the SAME call, so they cannot actually disagree live. The
+    // divergence below is synthetic, and exists only to make the extractor's
+    // choice of field observable — otherwise a silent swap to `meshInfo.length`
+    // would pass every other case in this file unchanged.
     const p = livePayloads();
     p.viewportState.meshInfo = p.viewportState.meshInfo.slice(0, 1);
     expect(extractMeshCountInputs(p).inputs.viewportMeshCount).toBe(3);
