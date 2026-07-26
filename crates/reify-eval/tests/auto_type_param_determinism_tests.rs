@@ -767,6 +767,56 @@ fn compile_correctness_skips_still_fail_to_compile() {
     );
 }
 
+// ─── SKIP_SET existence guard ─────────────────────────────────────────────
+
+/// Return the subset of `entries`' relative paths that do not exist under
+/// `examples_dir`, regardless of [`SkipKind`].
+///
+/// Pure and deterministic (no I/O beyond `Path::exists`) — the single source
+/// of truth for the SKIP_SET dead-key check, unit-tested directly by
+/// `missing_skip_set_paths_contract` below.
+fn missing_skip_set_paths<'a>(
+    entries: &'a [(&'a str, SkipKind, &'a str)],
+    examples_dir: &Path,
+) -> Vec<&'a str> {
+    entries
+        .iter()
+        .map(|(rel, _, _)| *rel)
+        .filter(|rel| !examples_dir.join(rel).exists())
+        .collect()
+}
+
+/// Sanity guard: every entry in [`SKIP_SET`] must name a relative path that
+/// actually exists under `examples/`, regardless of [`SkipKind`]. A stale key
+/// silently narrows this file's perf-gate coverage forever — for a
+/// `SkipKind::PerfBudget` key in particular, nothing else in this file would
+/// ever notice, since `compile_correctness_skips_still_fail_to_compile` only
+/// reads `SkipKind::CompileError` entries. Delete the entry or fix the path.
+///
+/// Mirrors the guard of the same name in
+/// `crates/reify-compiler/tests/examples_smoke.rs`
+/// (`skip_set_entries_exist_under_examples_dir`, which performs the same
+/// check inline against its own two-tuple `SKIP_SET`) so the shape stays
+/// recognisable across the two files; this asserts nothing about that
+/// file's contents.
+#[test]
+fn skip_set_entries_exist_under_examples_dir() {
+    let missing = missing_skip_set_paths(SKIP_SET, Path::new(EXAMPLES_DIR));
+    assert!(
+        missing.is_empty(),
+        "SKIP_SET entry/entries name a relative path that does not exist under {}: {}. \
+         A stale key silently narrows this file's perf-gate coverage forever (for a \
+         SkipKind::PerfBudget key, nothing else in this file would ever notice) — \
+         delete the entry or fix the path.",
+        EXAMPLES_DIR,
+        missing
+            .iter()
+            .map(|s| format!("'{s}'"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+}
+
 // ─── SKIP_SET existence guard unit test: missing_skip_set_paths contract ──
 
 /// `missing_skip_set_paths` must flag entries whose relative path does not
