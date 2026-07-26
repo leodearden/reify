@@ -181,15 +181,21 @@ harness_layout_baseline_contains() {
 # <root_lines>  = `wc -l` of the root file itself (0 if the root is absent).
 # module dir    = ${root%.rs}, i.e. the harness_<subsystem>/ directory next
 #                 to the root.
-# <module_lines>/<module_files> = sum of `wc -l` / count over the files
-#                 directly inside the module dir (0/0 when the dir does not
-#                 exist — the single-file-harness case).
+# <module_lines>/<module_files> = sum of `wc -l` / count over every *.rs
+#                 file at ANY DEPTH under the module dir (0/0 when the dir
+#                 does not exist — the single-file-harness case — or when it
+#                 has no *.rs entries; see the recursive-walk / .rs-only
+#                 rationale below).
 # <total>       = <root_lines> + <module_lines>.
 #
-# Per-file `wc -l` is summed rather than `cat`-ing the files through a single
-# `wc -l`: it matches the existing root-file counting semantics exactly and
-# avoids `cat` merging one file's unterminated last line into the next file's
-# first line, which would silently undercount (PRD
+# Per-file `wc -l` is summed rather than `cat`-ing every file through a
+# single `wc -l` because per-file counting is what also yields
+# <module_files>, and it matches the existing root-file counting call shape
+# (`wc -l < "$root"`) exactly — NOT because the two approaches would ever
+# disagree on the total: `wc -l` counts newline characters, and
+# concatenation neither adds nor removes them, so summing per-file counts
+# and counting the single `cat`-ed stream always agree exactly, even when an
+# interior file's last line is unterminated (PRD
 # docs/prds/merge-gate-compile-cost.md §5 C2 settles raw line count as the
 # measure).
 #
