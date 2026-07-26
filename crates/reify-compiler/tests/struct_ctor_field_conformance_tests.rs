@@ -993,7 +993,7 @@ fn excluded_family_field_given_erased_field_type_is_silent() {
     );
 }
 
-// ── (b) excluded family: generic enum ← bare Type::Enum under erasure ────────
+// ── promoted family: generic enum / `Applied` (task 5465, family 4) ──────────
 //
 // Under enum erasure a constructed variant's result_type is always the bare
 // `Type::Enum(name)`, never the applied form — which is precisely why
@@ -1012,8 +1012,25 @@ structure def Root {
 }
 "#;
 
+/// Clean fixture for the promoted enum family.
+///
+/// The declared param type is the applied form `Type::Applied { name: "Result",
+/// args: [Length, String] }`, but the supplied arg's `result_type` under D1 /
+/// F-Mono erasure is the BARE `Type::Enum("Result")` — the applied form is never
+/// persisted on a value (`type_compat.rs::enum_payload_compatible` doc, §7.1:
+/// "resolved args live only in the per-site substitution map"). Raw
+/// `type_compatible` therefore has nothing to match on and would spuriously
+/// fail.
+///
+/// Before task 5465 this passed for the WRONG reason — the whole enum family was
+/// absent from `general_leaf_param_family_is_validated`, so every enum-typed
+/// param fell through silently, including genuine mismatches. It now passes
+/// because the general concrete-leaf arm short-circuits on
+/// `enum_payload_compatible`, exactly as `variant_construct.rs:325` already
+/// does — a targeted erasure tolerance, not a blanket family bypass (probe
+/// `enum_param_given_wrong_enum_warns_arg_type_mismatch` below is the fence).
 #[test]
-fn excluded_family_generic_enum_given_erased_variant_is_silent() {
+fn generic_enum_param_given_erased_variant_stays_clean() {
     let module = compile_source_with_stdlib(SRC_FAMILY_GENERIC_ENUM);
     let diags = ctor_conformance_diags(&module);
     assert!(
@@ -1022,6 +1039,67 @@ fn excluded_family_generic_enum_given_erased_variant_is_silent() {
          ctor-conformance diagnostics — enum erasure gives the constructed variant the bare \
          result_type Enum(\"Result\"), never the applied form. Got: {diags:#?}"
     );
+}
+
+const SRC_GENERIC_ENUM_GIVEN_STRING: &str = r#"module test.generic_enum_string
+enum Result<T, E> {
+    Ok { value: T },
+    Err { error: E },
+}
+structure def Root {
+    param r : Result<Length, String> = "nope"
+}
+"#;
+
+/// Value floor for the promoted `Applied`-enum family: a `String` default at a
+/// `Result<Length, String>` param is a genuine mismatch and must warn.
+///
+/// This exercises the param-DEFAULT entry (`check_param_default_conformance`),
+/// which is the shape the reify-cli `result_match_bore_ok.ri:10` fixture uses —
+/// not the call-site ctor entry. Without it, promoting the family would only be
+/// pinned on its tolerance half.
+#[test]
+fn generic_enum_param_given_string_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_GENERIC_ENUM_GIVEN_STRING,
+        "r",
+        "Result<Length, String> ← String",
+    );
+}
+
+// NOTE ON NAMING: the two enums are deliberately spelled `Hue` / `Outline`
+// rather than the obvious `Color` / `Shape`. The prelude declares
+// `structure def Color` (crates/reify-compiler/stdlib/materials_appearance.ri:17),
+// so a local `enum Color` annotation resolves to the prelude's
+// `Type::StructureRef("Color")` instead of `Type::Enum("Color")` and the probe
+// would exercise the StructureRef arm, not the enum family.
+const SRC_ENUM_CROSS_ENUM_MISMATCH: &str = r#"module test.enum_cross_mismatch
+enum Hue {
+    Red { level: Real },
+    Blue { level: Real },
+}
+enum Outline {
+    Round { radius: Length },
+    Square { side: Length },
+}
+structure def Root {
+    param c : Hue = Round { radius: 5mm }
+}
+"#;
+
+/// Fence on the `enum_payload_compatible` short-circuit: it tolerates ONLY the
+/// erasure gap (same base name), and still rejects a genuine cross-enum
+/// mismatch.
+///
+/// A `Hue` param defaulted to a constructed `Outline::Round { .. }` variant
+/// gives declared `Type::Enum("Hue")` vs supplied `Type::Enum("Outline")` —
+/// different base names, so `enum_payload_compatible` returns false and the
+/// general concrete-leaf arm's `type_compatible` gate rejects. Without this
+/// probe the short-circuit could be widened into a blanket enum bypass without
+/// any test noticing.
+#[test]
+fn enum_param_given_wrong_enum_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(SRC_ENUM_CROSS_ENUM_MISMATCH, "c", "Hue ← Outline");
 }
 
 // ── (b) excluded family: dimensioned Scalar ← dimensionless Real ─────────────
