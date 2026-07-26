@@ -219,10 +219,12 @@
 #                                  refused (tree-pin soundness, §5 INV-1).
 #   REIFY_VERIFY_ATTEMPT_SIDECAR        — attempt-0 sidecar path (default
 #                                  target/reify-verify-attempt.json). Stamped as the
-#                                  final plan line on a full DF_VERIFY_ROLE=merge
-#                                  attempt-0 (NOT on a failed_only retry); records
-#                                  {tree_oid, profiles, timestamp} of the tree that
-#                                  passed the whole gate. Survives a warm-lane reseed.
+#                                  FIRST line of add_test_passes on a full
+#                                  DF_VERIFY_ROLE=merge attempt-0 (NOT on a
+#                                  failed_only retry) — whether that attempt-0 goes
+#                                  on to PASS or FAIL; records {tree_oid, profiles,
+#                                  timestamp} of the tree target/ was built FROM
+#                                  (task 5548). Survives a warm-lane reseed.
 #   REIFY_VERIFY_RETRY_MAX_SUBSET       — tunable subset-size ceiling (default 5000,
 #                                  a heuristic comfortably below the full-suite size,
 #                                  §11): a subset larger than this is refused as a
@@ -709,9 +711,10 @@ fi
 # single construction site in emit_nextest_pass). Default (all retry envs
 # unset) → every fragment empty → plan byte-for-byte identical to today.
 #
-# Path of the attempt-0 sidecar (written on a full merge run, read here to
-# tree-pin the retry). Overridable for hermetic tests. Relative default is
-# resolved against REPO_ROOT (verify.sh cds there before build_plan/execute).
+# Path of the attempt-0 sidecar (written on every merge-role attempt-0, green
+# or red — task 5548 — read here to tree-pin the retry). Overridable for
+# hermetic tests. Relative default is resolved against REPO_ROOT (verify.sh
+# cds there before build_plan/execute).
 _ATTEMPT_SIDECAR_PATH="${REIFY_VERIFY_ATTEMPT_SIDECAR:-target/reify-verify-attempt.json}"
 # Precomputed once in add_test_passes (before the profile loop); initialized
 # here so emit_nextest_pass stays nounset-safe (set -u) on any call path.
@@ -719,7 +722,7 @@ _ATTEMPT_SIDECAR_PATH="${REIFY_VERIFY_ATTEMPT_SIDECAR:-target/reify-verify-attem
 # (failed_only) AND the on-disk attempt-0 sidecar tree_oid matches the tree DF
 # intends to retry — i.e. the warm target/ provably corresponds to it. The
 # scope=failed_only decision is re-read directly from REIFY_VERIFY_RETRY_SCOPE
-# where it is independently needed (the sidecar-stamp guard at the tail of
+# where it is independently needed (the sidecar-stamp guard at the HEAD of
 # add_test_passes), so no separate "retry active" flag is carried.
 _RETRY_SUBSET_ELIGIBLE=0
 # Per-suite APPLIED subset sizes for the δ honest marker (task 5290). Recorded
@@ -1671,13 +1674,21 @@ emit_nextest_pass() {
 add_test_passes() {
     # retry_failed_only (task 5287): attempt-0 sidecar stamp. On a FULL merge
     # gate (DF_VERIFY_ROLE=merge AND NOT a failed_only retry), record the tree
-    # that just passed so a later retry can tree-pin its narrowed subset against
-    # the warm _merge-verify target/. Emitted as the FINAL plan line — after
-    # @@SEMAPHORE_RELEASE@@, and add_test_passes is build_plan's last
-    # contributor — so, the plan being sequential with the executor exiting on
-    # first failure, it writes ONLY once the whole attempt-0 gate (run_all + gui
-    # + every pass, all emitted earlier) has already passed. tree_oid (git
-    # rev-parse HEAD: = the TREE OID) and timestamp are computed at RUN time;
+    # target/ was BUILT FROM, so a later retry can tree-pin its narrowed
+    # subset against the warm _merge-verify target/. Emitted as the FIRST
+    # plan line of add_test_passes — after build_plan's lint/compile wave, the
+    # gui block, and the merge pre-build/run_all.sh poles, but BEFORE every
+    # test pole (psi-gate, compile-gate, every nextest pass) — so the pin is
+    # written on a RED attempt-0 too, not only a fully green one (task 5548,
+    # PRD verify-retry-failed-only α2). The old tail position (after
+    # @@SEMAPHORE_RELEASE@@) was unreachable on any retry-eligible run: the
+    # plan executor exits on the first failing command, and a narrowed retry
+    # by definition follows a RED attempt-0. target/ is already built from
+    # THIS tree by this point — the check/clippy wave and the `cargo build
+    # --release -p reify-audit` pre-build precede add_test_passes, and a warm
+    # lane pre-seeds target/ — so `test -d target` is satisfiable and the
+    # built-from-this-tree claim holds even here. tree_oid (git rev-parse
+    # HEAD: = the TREE OID) and timestamp are computed at RUN time;
     # ${PROFILES[*]} is baked at build time. Guarded on `test -d target` and
     # tolerant of git failure (|| echo unknown) and write failure (|| true),
     # mirroring the target/.reify-bin-sha stamp (task 5133). Survives a warm-lane
