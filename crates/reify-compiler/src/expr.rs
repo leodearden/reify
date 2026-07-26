@@ -2690,6 +2690,47 @@ fn compile_expr_guarded_with_expected_inner(
                 .map(|a| a.result_type.clone())
                 .collect();
 
+            // ── task 5494: same-module structure declared BELOW this fn ─────
+            //
+            // Fn bodies and fn param defaults are compiled in source order,
+            // interleaved with entity templates, so `scope.template_registry`
+            // holds only the structures declared ABOVE this function — the same
+            // no-forward-reference rule `compile_entity` already obeys for
+            // entity → entity references. A `Foo()` call whose name IS a
+            // same-module `structure def` but has no template yet is therefore a
+            // DECLARATION-ORDER error, and must be reported as one.
+            //
+            // Without this branch the call falls through the ordinary
+            // function-call ladder and lands on the zero-arg return-type
+            // fallback below, which merely WARNS ("cannot infer return type of
+            // zero-arg function 'Foo', defaulting to Real") and lowers a generic
+            // `FunctionCall`. The module then compiles with zero errors while
+            // the function silently returns a `Real` instead of a `Foo` — the
+            // silent divergence PRD `stdlib-namespace.md` boundary #5 forbids.
+            //
+            // Guarded on `local_structure_names` being set, so only fn scopes
+            // opt in; entity scopes leave it `None` and keep their own
+            // forward-reference reporting.
+            if scope
+                .local_structure_names
+                .is_some_and(|names| names.contains(name.as_str()))
+                && !scope
+                    .template_registry
+                    .is_some_and(|registry| registry.contains_key(name.as_str()))
+            {
+                return make_poison_literal(
+                    diagnostics,
+                    Diagnostic::error(format!(
+                        "structure '{name}' is declared after this function; \
+                         move `structure def {name}` above it"
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        expr.span,
+                        "structure declared later in the file",
+                    )),
+                );
+            }
+
             // ── task 3540 (SIR-α): structure-instance ctor lowering ─────────
             // When the callee name resolves to a `structure def`
             // `TopologyTemplate` in `scope.template_registry`, emit a

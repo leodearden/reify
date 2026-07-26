@@ -134,6 +134,21 @@ pub(crate) struct CompilationScope<'u> {
     /// Set by compile_purpose so that concrete subject types can be validated
     /// against their declared value cells (task-2200). None for entity/function scopes.
     pub(crate) template_registry: Option<&'u HashMap<String, &'u TopologyTemplate>>,
+    /// Every `structure def` name declared in the module being compiled (task 5494).
+    ///
+    /// Set by `compile_function_with_signature` on both the param-default and
+    /// body scopes. Lets the ctor-lowering site in `expr.rs` distinguish two
+    /// otherwise-identical misses on `template_registry`:
+    ///
+    ///   * the name is not a structure at all → fall through to the ordinary
+    ///     function-call ladder (an unknown-function error, or a stdlib builtin);
+    ///   * the name IS a same-module structure that simply has no template YET →
+    ///     it is declared BELOW this function, so emit the ordering diagnostic.
+    ///
+    /// Only fn scopes set this. Entity scopes leave it `None`: `compile_entity`
+    /// already reports a forward entity → entity reference through its own path,
+    /// and firing this diagnostic there would double-report it.
+    pub(crate) local_structure_names: Option<&'u HashSet<String>>,
     /// Whether this scope is an entity (structure or occurrence) scope where `self` is valid.
     /// False for function and purpose scopes, where `self` must produce an "unresolved name" error.
     pub(crate) is_entity_scope: bool,
@@ -242,6 +257,7 @@ impl<'u> CompilationScope<'u> {
             has_meta_block: false,
             unit_registry: None,
             template_registry: None,
+            local_structure_names: None,
             is_entity_scope: false,
             sub_member_types: HashMap::new(),
             sub_realization_names: HashMap::new(),
@@ -265,6 +281,13 @@ impl<'u> CompilationScope<'u> {
         registry: &'u HashMap<String, &'u TopologyTemplate>,
     ) {
         self.template_registry = Some(registry);
+    }
+
+    /// Set the module's `structure def` name set (task 5494).  Mirrors
+    /// `set_template_registry`; called from `compile_function_with_signature`
+    /// for the param-default and body scopes.
+    pub(crate) fn set_local_structure_names(&mut self, names: &'u HashSet<String>) {
+        self.local_structure_names = Some(names);
     }
 
     /// Register an identifier as a purpose param in this scope (task-2181 β, contract C1).

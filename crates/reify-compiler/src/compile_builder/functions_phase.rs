@@ -21,7 +21,7 @@
 //! exactly one place a `structure_def` becomes a template, and fn bodies read
 //! that one.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use reify_ast::FnDef;
 
@@ -94,6 +94,7 @@ pub(crate) fn compile_function_decl(
     sig: &FnSignature,
     enum_defs: &[EnumDef],
     functions: &[CompiledFunction],
+    structure_names: &HashSet<String>,
     template_registry: &HashMap<String, &TopologyTemplate>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
@@ -102,6 +103,7 @@ pub(crate) fn compile_function_decl(
         sig,
         enum_defs,
         functions,
+        structure_names,
         Some(template_registry),
         diagnostics,
     )

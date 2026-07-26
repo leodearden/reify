@@ -287,6 +287,7 @@ pub(crate) fn compile_function_with_signature(
     sig: &FnSignature,
     enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
+    structure_names: &HashSet<String>,
     template_registry: Option<&HashMap<String, &TopologyTemplate>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
@@ -306,6 +307,10 @@ pub(crate) fn compile_function_with_signature(
     if let Some(reg) = template_registry {
         neutral_scope.set_template_registry(reg);
     }
+    // task 5494: lets the ctor-lowering site tell "not a structure" from "a
+    // same-module structure declared BELOW this fn" and report the latter as an
+    // ordering error instead of silently degrading to a generic FunctionCall.
+    neutral_scope.set_local_structure_names(structure_names);
     let param_defaults: Vec<Option<CompiledExpr>> = fn_def
         .params
         .iter()
@@ -369,6 +374,7 @@ pub(crate) fn compile_function_with_signature(
     if let Some(reg) = template_registry {
         scope.set_template_registry(reg);
     }
+    scope.set_local_structure_names(structure_names);
     for (name, ty) in &sig.params {
         scope.register(name, ty.clone());
     }
@@ -490,6 +496,7 @@ pub(crate) fn compile_function(
         &sig,
         enum_defs,
         functions,
+        structure_names,
         prelude_template_registry,
         diagnostics,
     )

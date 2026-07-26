@@ -268,6 +268,7 @@ pub(crate) fn phase_entities(
                             sig,
                             &ctx.resolution_enums,
                             &ctx.functions,
+                            &ctx.resolution_structure_names,
                             &fn_template_registry,
                             &mut ctx.diagnostics,
                         )
