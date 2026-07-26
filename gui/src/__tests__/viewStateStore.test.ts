@@ -2810,13 +2810,14 @@ describe('viewStateStore — regenerateAutoViews DisplayOutput routing (#5195)',
     ];
   }
 
-  it('(a) a subject set routes auto:default — subject shown, other realizations hidden', () => {
+  it('(a) a subject set routes auto:default — subject shown, non-subjects keep their own rules', () => {
     createRoot((dispose) => {
       const store = createViewStateStore();
       store.regenerateAutoViews(makeTwoRealizationTree(), [], new Set(['P#realization[0]']));
       const view = store.state.views['auto:default'];
       expect(view.visibility['P#realization[0]']).toBe('show');
-      expect(view.visibility['P#realization[1]']).toBe('hidden');
+      // ADDITIVE routing: naming one subject must not delete the other body.
+      expect(view.visibility['P#realization[1]']).toBe('show');
       dispose();
     });
   });
@@ -2826,7 +2827,7 @@ describe('viewStateStore — regenerateAutoViews DisplayOutput routing (#5195)',
       const store = createViewStateStore();
       store.regenerateAutoViews(makeTwoRealizationTree(), [], new Set(['P#realization[0]']));
       expect(store.getEffectiveVisibility('P#realization[0]')).toBe('show');
-      expect(store.getEffectiveVisibility('P#realization[1]')).toBe('hidden');
+      expect(store.getEffectiveVisibility('P#realization[1]')).toBe('show');
       dispose();
     });
   });
