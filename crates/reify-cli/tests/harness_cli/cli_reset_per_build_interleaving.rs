@@ -24,7 +24,7 @@
 //! mirroring `cli_gdt_conformance.rs` / `cli_representation_within.rs`; skips
 //! cleanly in stub-mode builds where `cfg(has_occt)` is not set.
 
-mod common;
+use crate::common;
 
 /// Leaf-(d): `reify check dfm_with_repr_within.ri` — under OCCT, BOTH the DFM
 /// kind (`realization_handles`-backed) and the RepresentationWithin kind
