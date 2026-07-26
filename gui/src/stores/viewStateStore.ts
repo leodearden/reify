@@ -612,14 +612,26 @@ export function createViewStateStore() {
    * branch (the only branch that preserves `s.explicit` rather than replacing it
    * wholesale).  Auto:* and unknown branches overwrite `s.explicit` with a fresh
    * view map, so a prior prune pass would be wasted work.
+   *
+   * @param displaySubjects `entity_path`s named by the design's `DisplayOutput`
+   *   directives (#5195), forwarded to `generateDefaultView` only.  Routing is
+   *   deliberately NOT applied to `generateAllGeometryView` (the see-everything
+   *   escape hatch), to `generatePurposeViews` (which has its own heuristics),
+   *   or to the walk-up `defaultRuleFor` used by `user:*` views — a manual view
+   *   must never be silently overridden by a DisplayOutput.  Optional and inert
+   *   when empty, so existing 1-/2-arg callers are unaffected.
    */
-  function regenerateAutoViews(tree: EntityTreeNode[], activePurposes: string[] = []): void {
+  function regenerateAutoViews(
+    tree: EntityTreeNode[],
+    activePurposes: string[] = [],
+    displaySubjects?: Set<string>,
+  ): void {
     // Rebuild the internal maps without triggering a reactive setState so that
     // the stale-explicit prune below can be folded into the same produce block
     // as the view replacement — one reactive notification total.
     rebuildTreeMaps(tree);
 
-    const freshDefault = generateDefaultView(tree);
+    const freshDefault = generateDefaultView(tree, displaySubjects);
     const freshAllGeo = generateAllGeometryView(tree);
     const freshPurpose = generatePurposeViews(tree, activePurposes);
 
