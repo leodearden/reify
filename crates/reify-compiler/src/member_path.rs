@@ -226,20 +226,12 @@ pub(crate) fn resolve_hop(
                 .flat_map(|g| g.members.iter())
                 .find(|vc| vc.id.member == member)
         });
-    if let Some(vc) = value_cell {
-        return Ok(HopResolution {
-            hop: Hop {
-                object_type: object_type.clone(),
-                object_structure: Some(struct_name.to_string()),
-                member: member.to_string(),
-                member_kind: MemberKind::ValueCell(vc.kind),
-                visibility: MemberVisibility::Public,
-            },
-            next_type: vc.cell_type.clone(),
-            value_cell_type: Some(vc.cell_type.clone()),
-        });
-    }
-
+    // Every `Ok` below carries a visibility verdict, and the shared tail turns a
+    // `Private` verdict into `Err(PrivateMember)`. That is what makes the priv
+    // check run over the FULL container union BEFORE the `UnknownMember`
+    // fallback: a priv guarded-group member is denied as private rather than
+    // shadowed by not-found (task #5171 — the ordering `expr.rs` calls
+    // load-bearing).
     let hop = |member_kind, visibility| Hop {
         object_type: object_type.clone(),
         object_structure: Some(struct_name.to_string()),
@@ -248,46 +240,127 @@ pub(crate) fn resolve_hop(
         visibility,
     };
 
-    if let Some(sc) = template.sub_components.iter().find(|sc| sc.name == member) {
-        return Ok(HopResolution {
-            hop: hop(MemberKind::Sub, MemberVisibility::Public),
+    let resolution = if let Some(vc) = value_cell {
+        Some(HopResolution {
+            hop: hop(MemberKind::ValueCell(vc.kind), value_cell_visibility(vc)),
+            next_type: vc.cell_type.clone(),
+            value_cell_type: Some(vc.cell_type.clone()),
+        })
+    } else if let Some(sc) = template.sub_components.iter().find(|sc| sc.name == member) {
+        Some(HopResolution {
+            hop: hop(MemberKind::Sub, visibility_of(sc.visibility)),
             // `structure_name` is what makes the NEXT hop resolvable against a
             // concrete template — the whole point of typed chain traversal.
             next_type: Type::StructureRef(sc.structure_name.clone()),
             value_cell_type: None,
-        });
-    }
-
-    if template.ports.iter().any(|p| p.name == member) {
-        return Ok(HopResolution {
-            hop: hop(MemberKind::Port, MemberVisibility::Public),
+        })
+    } else if let Some(p) = template.ports.iter().find(|p| p.name == member) {
+        Some(HopResolution {
+            hop: hop(
+                MemberKind::Port,
+                if p.is_priv {
+                    MemberVisibility::Private
+                } else {
+                    MemberVisibility::Public
+                },
+            ),
             // A port is not a structure instance; there is no further typed hop
             // to take from it. Widening this is PRD task η's (its two-level
             // `<sub>.<port>.<member>` matcher owns that shape today).
             next_type: Type::dimensionless_scalar(),
             value_cell_type: None,
-        });
-    }
-
-    if template
+        })
+    } else if template
         .realizations
         .iter()
         .any(|r| r.name.as_deref() == Some(member))
     {
-        return Ok(HopResolution {
+        Some(HopResolution {
+            // Realizations carry no `priv` axis of their own.
             hop: hop(MemberKind::Realization, MemberVisibility::Public),
             // The same type `expr.rs` stamps on a `CrossSubGeometryRef`.
             next_type: Type::Geometry,
             value_cell_type: None,
-        });
-    }
+        })
+    } else {
+        None
+    };
 
-    Err(MemberPathError::UnknownMember {
-        hop_index: 0,
-        object_type: object_type.clone(),
-        structure: struct_name.to_string(),
-        member: member.to_string(),
-    })
+    match resolution {
+        Some(r) if r.hop.visibility == MemberVisibility::Private => {
+            Err(MemberPathError::PrivateMember {
+                hop_index: 0,
+                structure: struct_name.to_string(),
+                member: member.to_string(),
+            })
+        }
+        Some(r) => Ok(r),
+        None => Err(MemberPathError::UnknownMember {
+            hop_index: 0,
+            object_type: object_type.clone(),
+            structure: struct_name.to_string(),
+            member: member.to_string(),
+        }),
+    }
+}
+
+/// The externally-visible verdict for a value cell.
+///
+/// The `kind == Param` guard is load-bearing and reproduces
+/// `template_member_is_priv`'s: `value_cells` (and `guarded_groups[].members`)
+/// also hold `let` bindings, and a default (non-`pub`) `let` is
+/// `Visibility::Private` too — but `let`s are never externally accessible by
+/// name, so reporting them as priv violations would be an out-of-scope
+/// behaviour change. Only a `priv param` carries `Param` + `Private`.
+fn value_cell_visibility(vc: &ValueCellDecl) -> MemberVisibility {
+    if vc.kind == ValueCellKind::Param {
+        visibility_of(vc.visibility)
+    } else {
+        MemberVisibility::Public
+    }
+}
+
+fn visibility_of(v: Visibility) -> MemberVisibility {
+    match v {
+        Visibility::Public => MemberVisibility::Public,
+        Visibility::Private => MemberVisibility::Private,
+    }
+}
+
+impl MemberPathError {
+    /// Render this error as the diagnostic the CALLER should push, or `None`
+    /// when there is nothing to say and the caller should fall through to its
+    /// existing path.
+    ///
+    /// The message text, label text and `DiagnosticCode`s are copied verbatim
+    /// from the two producer sites in `expr.rs` this resolver replaced, because
+    /// several suites assert on the literal strings (`priv_member_visibility_tests.rs`,
+    /// `priv_import_boundary_tests.rs`, `cli_module_visibility_example.rs`,
+    /// `examples_smoke.rs`). No new `DiagnosticCode` variant is introduced —
+    /// that would ripple through reify-core and
+    /// `tests/diagnostic_coverage_checkpoint.rs`.
+    pub(crate) fn to_diagnostic(&self, span: reify_core::SourceSpan) -> Option<Diagnostic> {
+        match self {
+            // Nothing to report: the caller keeps its existing behaviour.
+            MemberPathError::NotAMemberPath | MemberPathError::Indeterminate(_) => None,
+            MemberPathError::PrivateMember {
+                structure, member, ..
+            } => Some(
+                Diagnostic::error(format!(
+                    "E_PRIV_MEMBER_ACCESS: member '{member}' of structure '{structure}' is private"
+                ))
+                .with_label(DiagnosticLabel::new(span, "private member accessed here"))
+                .with_code(DiagnosticCode::PrivMemberAccess),
+            ),
+            MemberPathError::UnknownMember {
+                structure, member, ..
+            } => Some(
+                Diagnostic::error(format!("structure '{structure}' has no member '{member}'"))
+                    .with_label(DiagnosticLabel::new(span, "unknown member"))
+                    .with_code(DiagnosticCode::StructureMemberNotFound),
+            ),
+        }
+    }
 }
 
 #[cfg(test)]
