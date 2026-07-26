@@ -29,6 +29,14 @@ fn val_0mm() -> Value {
     }
 }
 
+/// 10mm — the result of doubling 5mm, used by the task-5410 `map_or` e2e guard.
+fn val_10mm() -> Value {
+    Value::Scalar {
+        si_value: 0.01,
+        dimension: DimensionVector::LENGTH,
+    }
+}
+
 fn expr_5mm() -> CompiledExpr {
     CompiledExpr::literal(val_5mm(), Type::length())
 }
@@ -776,6 +784,43 @@ fn map_or_non_option_subject_degrades_to_undef() {
         eval_simple(&call),
         Value::Undef,
         "map_or with non-Option subject must degrade to Undef (graceful type-error)"
+    );
+}
+
+// ── task 5410 (PRD ζ / BT10): stdlib-compiled map_or drift guard ─────────────
+
+/// End-to-end: `map_or(some(5mm), 0mm, |x: Length| x * 2)` compiled with the
+/// real stdlib must evaluate to 10mm — the lambda APPLIED to the inner value.
+///
+/// DISCRIMINATION: `option_recovery.ri` ships
+/// `pub fn map_or<T, U>(o: Option<T>, dflt: U, f: (T) -> U) -> U { dflt }`, a
+/// typecheck-only placeholder that ALWAYS returns `dflt` and never applies `f`.
+/// With the intercept removed this call therefore returns `0mm` and this
+/// assert fails.
+///
+/// BOTH the some-subject and the NON-IDENTITY lambda are load-bearing. A
+/// `none` subject would make `dflt` the correct answer, agreeing with the
+/// placeholder. And while `f = |x| x` would still return 5mm ≠ 0mm and so
+/// technically discriminate, doubling additionally proves the lambda BODY is
+/// really evaluated rather than the argument merely being unboxed.
+///
+/// Measured negative: the none-path form `map_or(none, 7mm, |x: Length| x * 2)`
+/// does NOT compile — `conflicting type arguments for 'T': Real vs Scalar[m]`,
+/// because a bare `none` infers `T = Real`. The some-path is therefore the only
+/// inline stdlib-compiled form available for this combinator.
+#[test]
+fn e2e_map_or_some_with_stdlib() {
+    let module = reify_test_support::compile_source_with_stdlib(
+        "structure S { let v = map_or(some(5mm), 0mm, |x: Length| x * 2) }",
+    );
+    let expr = cell_expr_stdlib(&module, "v");
+    let values = ValueMap::new();
+    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    assert_eq!(
+        reify_expr::eval_expr(expr, &ctx),
+        val_10mm(),
+        "e2e: map_or(some(5mm), 0mm, |x| x * 2) compiled via stdlib must evaluate to 10mm — \
+         the placeholder .ri body would return the default 0mm with f never applied"
     );
 }
 
