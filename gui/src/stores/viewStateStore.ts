@@ -614,7 +614,9 @@ export function createViewStateStore() {
    * view map, so a prior prune pass would be wasted work.
    *
    * @param displaySubjects `entity_path`s named by the design's `DisplayOutput`
-   *   directives (#5195), forwarded to `generateDefaultView` only.  Routing is
+   *   directives (#5195), forwarded to `generateDefaultView` only.  ADDITIVE:
+   *   named subjects are forced visible; every other realization keeps its own
+   *   `default_visible` rule (routing never hides).  Routing is
    *   deliberately NOT applied to `generateAllGeometryView` (the see-everything
    *   escape hatch), to `generatePurposeViews` (which has its own heuristics),
    *   or to the walk-up `defaultRuleFor` used by `user:*` views — a manual view
