@@ -665,6 +665,47 @@ describe('DisplayOutput explicit routing (#5195)', () => {
     expect(view.visibility['AppearanceViewportEgress.raw#realization[0]']).toBe('show');
   });
 
+  /**
+   * Pins the OUTLINE PAIR the newly-live `Geometry` token produces (#5195
+   * amendment). Since #4954 a geometry binding emits two sibling nodes; rule 2
+   * fires on the value-cell one for every geometry `let`, consumed or not, so a
+   * plain `let body` in a non-Physical structure yields value cell 'hidden' +
+   * realization 'show'.
+   *
+   * Deliberate, and not a viewport bug: meshes key on `#realization[N]` and
+   * `engineStore.syncDemand` filters on `'#realization['`, so a value cell's
+   * visibility reaches neither the renderer nor demand pruning — only
+   * DesignTree's per-row glyph. `param geometry` is a `param`, so the finished
+   * part's own row is untouched. The real-tree shape these hand-built nodes
+   * stand in for (`type_name: 'Geometry'`, let vs param) is pinned by
+   * engine_tests.rs::examples_m5_geometry_flange_hides_consumed_intermediates.
+   */
+  it('a geometry value cell and its realization sibling render as hidden + shown', () => {
+    const tree = [
+      makeNode({
+        entity_path: 'W',
+        kind: 'structure',
+        children: [
+          // The #4954 value-cell half of `let body = box(...)`: no mesh.
+          makeNode({ entity_path: 'W.body', kind: 'let', type_name: 'Geometry' }),
+          // The realization half: carries the mesh, consumed by nothing.
+          makeNode({
+            entity_path: 'W#realization[0]',
+            kind: 'realization',
+            has_mesh: true,
+            default_visible: true,
+          }),
+          // `param geometry` is a param, so rule 2 never reaches it.
+          makeNode({ entity_path: 'W.geometry', kind: 'param', type_name: 'Geometry' }),
+        ],
+      }),
+    ];
+    const view = generateDefaultView(tree);
+    expect(view.visibility['W.body']).toBe('hidden');
+    expect(view.visibility['W#realization[0]']).toBe('show');
+    expect(view.visibility['W.geometry']).toBe('show');
+  });
+
   it('a non-subject consumed intermediate stays hidden (primary #5195 observable survives)', () => {
     // Guards the inverse over-correction: making routing additive must not
     // un-hide the engine-classified intermediates (body/hole/holes on the m5

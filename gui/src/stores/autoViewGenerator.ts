@@ -74,6 +74,28 @@ const MATERIAL_TYPE_NAME_RE = /\bMaterial\b/;
  * as `MySolid`, `SolidBody`, or `GeometryReference` are not.  Used by both
  * `defaultVisibilityFor` and `manufacturingReadyVisibilityFor` so the two rules
  * cannot drift.
+ *
+ * # Blast radius of the `Geometry` token (#5195)
+ * Adding `Geometry` revived a rule that was dead against every real tree, and
+ * its reach is WIDER than the consumed-intermediate feature it was added for:
+ * since #4954 a geometry binding emits TWO sibling nodes, and this rule fires
+ * on the value-cell one (`kind: 'let'`) for EVERY geometry `let`, consumed or
+ * not.  So a non-consumed `let body` in a non-`Physical` structure now renders
+ * as an outline PAIR: the value cell 'hidden', its realization sibling 'show'.
+ *
+ * That is deliberate and it is not a viewport bug — meshes key on the
+ * `#realization[N]` node, and `engineStore.syncDemand` filters on
+ * `'#realization['`, so a value cell's visibility reaches neither the renderer
+ * nor demand pruning.  It is purely the outline's per-row glyph
+ * (`DesignTree.tsx:214`), where the two rows describe the same binding at
+ * different layers and the mesh-bearing one governs.  `param geometry` is a
+ * `param`, not a `let`, so the finished part's own row is never touched.
+ * Pinned against the real compiled tree by
+ * `engine_tests.rs::examples_m5_geometry_flange_hides_consumed_intermediates`
+ * (value-cell `type_name`/`kind`) and by the pair test in
+ * `autoViewGenerator.test.ts`.  If the paired glyphs ever read as a bug, the
+ * fix is to scope this rule to nodes without a realization sibling — NOT to
+ * drop the `Geometry` token, which would make the rule dead again.
  */
 function isLetGeometryType(node: EntityTreeNode): boolean {
   return (
