@@ -18,10 +18,7 @@
 //! infrastructure is wired and GREEN on the existing edit behavior.
 #![allow(dead_code, unused_imports)]
 
-#[path = "common/differential.rs"]
-mod differential;
-
-use differential::{
+use crate::differential::{
     BRACKET_EDIT_SRC, WARM_PREDICATE_K5_SRC, WARM_PREDICATE_SRC, assert_edit_matches_cold,
     assert_edit_matches_cold_with_solver, assert_edit_source_matches_cold, bracket_source,
 };
@@ -971,7 +968,7 @@ fn edit_check_values_match_edit_param() {
 fn edit_param_p0_latency_gate_bracket_width() {
     // RecordingKernel wraps MockGeometryKernel and records export/compound calls.
     // Grab the Arc recorders BEFORE moving the kernel into the engine.
-    let kernel = differential::RecordingKernel::new();
+    let kernel = crate::differential::RecordingKernel::new();
     let exported = kernel.exported_handles_ref();
     let compounds = kernel.compound_members_ref();
 

@@ -218,7 +218,6 @@ crates/reify-eval/tests/circular_pattern_angle.rs
 crates/reify-eval/tests/collection_sub_eval.rs
 crates/reify-eval/tests/compile_geometry_op_characterization.rs
 crates/reify-eval/tests/compose_example_smoke.rs
-crates/reify-eval/tests/compute_cache_key_population.rs
 crates/reify-eval/tests/compute_contract_reexport_compat.rs
 crates/reify-eval/tests/compute_dispatch_registry.rs
 crates/reify-eval/tests/cone_primitive_e2e.rs
@@ -248,7 +247,6 @@ crates/reify-eval/tests/e2e_bracket.rs
 crates/reify-eval/tests/e2e_meta.rs
 crates/reify-eval/tests/edit_source.rs
 crates/reify-eval/tests/ensure_openvdb_kernel.rs
-crates/reify-eval/tests/eval_cached_diagnostics.rs
 crates/reify-eval/tests/eval_instrumentation_counters.rs
 crates/reify-eval/tests/eval_param_overrides.rs
 crates/reify-eval/tests/evaluate_profile_eval_e2e.rs
@@ -275,10 +273,6 @@ crates/reify-eval/tests/fn_field_example_smoke.rs
 crates/reify-eval/tests/fn_param_default_eval_tests.rs
 crates/reify-eval/tests/forall_runtime_re_elaboration.rs
 crates/reify-eval/tests/forward_kinematics_e2e.rs
-crates/reify-eval/tests/freshness_only_production_trigger.rs
-crates/reify-eval/tests/freshness_only_propagation.rs
-crates/reify-eval/tests/freshness_pending_compute_dispatch.rs
-crates/reify-eval/tests/freshness_propagation.rs
 crates/reify-eval/tests/from_samples_example_smoke.rs
 crates/reify-eval/tests/gcode_import_eval_e2e.rs
 crates/reify-eval/tests/gdt_legality.rs
@@ -349,7 +343,6 @@ crates/reify-eval/tests/param_default_sibling_let_order.rs
 crates/reify-eval/tests/parse_length_e2e.rs
 crates/reify-eval/tests/pattern_single_pass_e2e.rs
 crates/reify-eval/tests/pattern_spacing_units_e2e.rs
-crates/reify-eval/tests/persistent_cache_compute_round_trip.rs
 crates/reify-eval/tests/pinned_support.rs
 crates/reify-eval/tests/pointwise_field_combinators_e2e.rs
 crates/reify-eval/tests/polymorphic_zero_eval.rs
@@ -384,7 +377,6 @@ crates/reify-eval/tests/rounded_primitives_e2e.rs
 crates/reify-eval/tests/scale_non_uniform_e2e.rs
 crates/reify-eval/tests/scope_coupling.rs
 crates/reify-eval/tests/self_keyword_eval.rs
-crates/reify-eval/tests/snapshot_cache_divergence_gate.rs
 crates/reify-eval/tests/snapshot_graph.rs
 crates/reify-eval/tests/solve_elastic_static_body_e2e.rs
 crates/reify-eval/tests/solver_optimality_unproven.rs
@@ -413,19 +405,10 @@ crates/reify-eval/tests/tube_pipe_e2e.rs
 crates/reify-eval/tests/type_hygiene_integration_gate.rs
 crates/reify-eval/tests/underdetermined.rs
 crates/reify-eval/tests/unfold_commit_parity.rs
-crates/reify-eval/tests/unified_dag_boundary_cases.rs
-crates/reify-eval/tests/unified_dag_cycle_contract.rs
-crates/reify-eval/tests/unified_dag_differential_corpus.rs
-crates/reify-eval/tests/unified_dag_edit_path.rs
-crates/reify-eval/tests/unified_dag_geometry_executors.rs
-crates/reify-eval/tests/unified_dag_warm_path.rs
 crates/reify-eval/tests/unit_expressions_e2e.rs
 crates/reify-eval/tests/version_id_discipline_gate.rs
 crates/reify-eval/tests/volume_mesh_realization_e2e.rs
 crates/reify-eval/tests/voxel_to_mesh_e2e.rs
-crates/reify-eval/tests/warm_determinacy_predicate.rs
-crates/reify-eval/tests/warm_pool_drain_steady_state.rs
-crates/reify-eval/tests/warm_state_budget_config.rs
 crates/reify-eval/tests/warm_state_donation.rs
 crates/reify-eval/tests/wedge_e2e.rs
 crates/reify-eval/tests/zone_constructors_e2e.rs

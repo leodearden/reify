@@ -39,7 +39,7 @@ use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 /// Cantilever smoke source (compile-time include for binary/source sync).
 fn cantilever_source() -> &'static str {
-    include_str!("../../../examples/fea_cantilever_smoke.ri")
+    include_str!("../../../../examples/fea_cantilever_smoke.ri")
 }
 
 /// Extract `max_von_mises` scalar from an `ElasticResult`
