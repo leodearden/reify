@@ -925,4 +925,122 @@ run_sweep --db "$D_DB" --escalations "$D_ESC" --repo "$D_NOGIT" --format json
 assert "D10c: --repo is honoured — a non-git --repo degrades class B to unknown" \
     _json_is 't[9301]["verdict"] == "unknown" and s["merge_verify_red"] == 0'
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block E — trigger class C: unmet_dependency
+#
+# A `blocked` task whose every dependency has since reached a terminal status.
+# Reproduces 5372's live shape (blocked, its one dependency 5271 `done`).
+#
+# E5 IS THE LOAD-BEARING ASSERT OF THIS ENTIRE SUITE. Measured live on
+# 2026-07-26, ALL TEN in-progress tasks had every dependency `done` — task
+# 5321 itself among them. A "dependency premise resolved => re-dispatch" rule
+# that spanned in-progress would therefore have emitted re-dispatch requests
+# for ten actively-running agents: the capability would DESTROY work rather
+# than recover it. Class C is `blocked`-only for exactly that reason, and E5
+# pins it independently of the heartbeat guard — a stale heartbeat plus fully
+# satisfied dependencies still must not fire.
+#
+# The two fail-safe directions are pinned too: an empty dependency set must
+# not read as "all satisfied" (E4), and a depends_on id that resolves to no
+# row must not read as satisfied (E6) — including the tag-scoped variant,
+# where the row exists only under a DIFFERENT tag (E7). `tasks` is
+# PRIMARY KEY (tag, id), so an unqualified lookup would silently conflate
+# tags the moment a second one exists.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block E: trigger class C (unmet_dependency) ---"
+
+_mk_tasks_db
+E_DB="$DB"
+_mk_esc_dir
+E_ESC="$ESC_DIR"
+_mk_repo
+E_REPO="$REPO_DIR"
+
+# Dependency targets, one per terminal / non-terminal status.
+_add_task 9490 done      '{}'
+_add_task 9491 cancelled '{}'
+_add_task 9492 pending   '{}'
+_add_task 9493 in-progress '{}' "$(_now_iso -90000)" ""
+_add_task 9494 blocked   '{}'
+_add_task 9495 deferred  '{}'
+# 9496 exists ONLY under a different tag (E7). It is `done` there, so a
+# tag-blind lookup would wrongly read task 9410's dependency as satisfied.
+_add_task 9496 done      '{}' "" "" other
+
+# E1 — the 5372 shape: one dependency, and it is done.
+_add_task 9401 blocked '{}'; _add_dep 9401 9490
+# E2 — several dependencies, all terminal, done and cancelled mixed.
+_add_task 9402 blocked '{}'; _add_dep 9402 9490; _add_dep 9402 9491
+# E3 — one non-terminal dependency is enough to keep the premise unresolved.
+_add_task 9403 blocked '{}'; _add_dep 9403 9490; _add_dep 9403 9492
+_add_task 9404 blocked '{}'; _add_dep 9404 9493
+_add_task 9405 blocked '{}'; _add_dep 9405 9494
+_add_task 9406 blocked '{}'; _add_dep 9406 9495
+# E4 — zero dependency rows: an empty set is NOT "all satisfied".
+_add_task 9407 blocked '{}'
+# E5 — the flood guard: in-progress, stale heartbeat, every dependency done.
+_add_task 9408 in-progress '{}' "$(_now_iso -90000)" ""; _add_dep 9408 9490
+# E6 — a depends_on id with no row in tasks at all.
+_add_task 9409 blocked '{}'; _add_dep 9409 9999
+# E7 — a depends_on whose row exists only under tag='other'.
+_add_task 9410 blocked '{}'; _add_dep 9410 9496
+# E8 — matches class A AND class C: A must win, and the row must be counted
+# exactly once. Class A's action is `close` (a satisfied deterministic gate is
+# cancelled, per #5316 §5); silently downgrading it to class C's `redispatch`
+# would re-run a gate task that should simply be closed.
+_add_task 9411 blocked "$C_GATE_META"; _add_dep 9411 9490
+
+E_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-ereq-XXXXXX")"
+_TMPDIRS+=("$E_REQ")
+
+run_sweep --db "$E_DB" --escalations "$E_ESC" --repo "$E_REPO" \
+    --emit-requests "$E_REQ" --format json
+assert "E0: the class-C fixture sweep exits 0" _rc_is 0
+
+# --- E1/E2: every dependency terminal => STALE + redispatch ------------------
+assert "E1: a blocked task whose only dependency is done is a class-C hit (the 5372 shape)" \
+    _json_is 't[9401]["class"] == "unmet_dependency" and t[9401]["verdict"] == "STALE"'
+assert "E1: the emitted action is redispatch" _json_is 't[9401]["action"] == "redispatch"'
+assert "E1: evidence names the satisfied dependency id and its status" \
+    _json_is '"9490=done" in t[9401]["evidence"]'
+assert "E2: done and cancelled are both terminal" \
+    _json_is 't[9402]["verdict"] == "STALE" and "9491=cancelled" in t[9402]["evidence"]'
+
+# --- E3: any non-terminal dependency keeps the premise unresolved ------------
+assert "E3: pending / in-progress / blocked / deferred dependencies all block the hit" \
+    _json_is 'all(t[i]["verdict"] == "UNRESOLVED" for i in (9403, 9404, 9405, 9406))'
+assert "E3: an UNRESOLVED class-C row is still reported as class C" \
+    _json_is 't[9403]["class"] == "unmet_dependency"'
+
+# --- E4: an empty dependency set is not "all satisfied" ----------------------
+assert "E4: a blocked task with zero dependency rows is not class C" \
+    _json_is 't[9407]["class"] != "unmet_dependency"'
+
+# --- E5: THE FLOOD GUARD ------------------------------------------------------
+assert "E5: an in-progress task with a stale heartbeat and all deps done is NOT class C" \
+    _json_is 't[9408]["class"] != "unmet_dependency"'
+assert "E5: the flood-guard row is not counted in unmet_dependency" \
+    _json_is 's["unmet_dependency"] == 2'
+assert "E5: the flood-guard row emits no re-dispatch request" _no_request_for "$E_REQ" 9408
+
+# --- E6/E7: an unresolvable dependency is not a satisfied one ----------------
+assert "E6: a depends_on with no row in tasks degrades to unknown, never STALE" \
+    _json_is 't[9409]["verdict"] == "unknown"'
+assert "E6: an unresolvable dependency warns on stderr" _err_has '\[warn\].*9409'
+assert "E7: dependency lookup is tag-scoped — a done row under another tag does not satisfy" \
+    _json_is 't[9410]["verdict"] == "unknown"'
+
+# --- E8: class precedence — gate_closure > merge_verify_red > unmet_dependency
+assert "E8: a row matching both A and C reports gate_closure as its primary class" \
+    _json_is 't[9411]["class"] == "gate_closure" and t[9411]["verdict"] == "STALE"'
+assert "E8: A's close action is not downgraded to C's redispatch" \
+    _json_is 't[9411]["action"] == "close"'
+assert "E8: the secondary class is still disclosed in evidence" \
+    _json_is '"also:unmet_dependency" in t[9411]["evidence"]'
+assert "E8: a multi-class row increments exactly one class counter" \
+    _json_is 's["gate_closure"] == 1 and s["unmet_dependency"] == 2'
+assert "E8: a multi-class row appears exactly once in the report" \
+    _json_is 'len([c for c in d["candidates"] if c["task_id"] == 9411]) == 1'
+
 test_summary
