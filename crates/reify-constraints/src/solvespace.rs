@@ -15,15 +15,15 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Mutex;
 
-use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, Type, ValueCellId};
+use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, SourceSpan, Type, ValueCellId};
 use reify_ir::{
     AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, ResolutionProblem,
     SolveResult, Value, ValueMap,
 };
 
 use crate::sketch::{
-    SketchBuildError, SketchConstraint, SketchConstraintDef, SketchEntity, SketchEntityId,
-    SketchHandleMap, SketchSolveResult, SketchSystem,
+    SketchBuildError, SketchConstraint, SketchConstraintDef, SketchConstraintId, SketchEntity,
+    SketchEntityId, SketchHandleMap, SketchSolveResult, SketchSystem,
 };
 use crate::slvs_sys::{
     self, SLVS_C_ANGLE, SLVS_C_ARC_LINE_TANGENT, SLVS_C_AT_MIDPOINT, SLVS_C_CURVE_CURVE_TANGENT,
@@ -484,6 +484,21 @@ struct SystemBuilder {
     /// unchanged; `add_sketch` repoints it at the group it allocated for the
     /// sketch.
     solve_group: Slvs_hGroup,
+    /// The sketch declaration currently being lowered, if any.
+    ///
+    /// Held on the builder rather than threaded through each emit call so that
+    /// attribution is automatic: every slvs constraint allocated while this is
+    /// set is recorded against that declaration, including the several a single
+    /// `Fix` on a line expands into.  A per-call-site `record(...)` would be one
+    /// forgotten line away from an unattributable failure.
+    ///
+    /// `None` outside `add_sketch`, which is what keeps the legacy route's
+    /// constraints out of the map entirely.
+    attributing: Option<(SketchConstraintId, SourceSpan)>,
+    /// Reverse index from emitted slvs constraint handle to the sketch
+    /// declaration it came from.  Handed to the `SketchHandleMap` on the way
+    /// out of `add_sketch`.
+    constraint_attribution: HashMap<Slvs_hConstraint, (SketchConstraintId, SourceSpan)>,
 }
 
 const FIXED_GROUP: Slvs_hGroup = Slvs_hGroup(1);
@@ -523,6 +538,8 @@ impl SystemBuilder {
             workplane: None,
             sketch_normal: None,
             solve_group: SOLVE_GROUP,
+            attributing: None,
+            constraint_attribution: HashMap::new(),
         }
     }
 
@@ -825,6 +842,12 @@ impl SystemBuilder {
     ) {
         let ch = self.alloc.constraint();
         let group = self.solve_group;
+        // Every handle allocated while a sketch declaration is being lowered is
+        // attributed to it, whether the declaration produced one constraint or
+        // several.  Outside `add_sketch` this is a no-op.
+        if let Some(origin) = self.attributing {
+            self.constraint_attribution.insert(ch, origin);
+        }
         self.constraints.push(
             Slvs_Constraint::new(
                 ch, group, type_, wrkpl, val_a, pt_a, pt_b, entity_a, entity_b,
@@ -961,10 +984,17 @@ impl SystemBuilder {
         }
 
         // Pass 3: constraints.
+        //
+        // The declaration under emission is announced on the builder rather than
+        // passed down, so every slvs handle allocated below it is attributed
+        // without the emit sites having to remember to say so.
         for def in &system.constraints {
+            self.attributing = Some((def.id, def.span));
             self.emit_sketch_constraint(def, wrkpl, &emitted);
         }
+        self.attributing = None;
 
+        handles.set_attribution(std::mem::take(&mut self.constraint_attribution));
         Ok(handles)
     }
 
@@ -1520,15 +1550,13 @@ pub fn solve_sketch(system: &SketchSystem) -> SketchSolveResult {
                 }
             }
         }
-        SlvsSolveResult::Inconsistent { failed_ids } => {
-            // The failing slvs handles are resolved back to their declaring
-            // constraints (and spans) by the attribution map; until that map
-            // exists there is nothing to resolve them through.
-            let _ = failed_ids;
-            SketchSolveResult::Inconsistent {
-                failing: Vec::new(),
-            }
-        }
+        SlvsSolveResult::Inconsistent { failed_ids } => SketchSolveResult::Inconsistent {
+            // libslvs names the constraints that contradict by slvs handle; the
+            // attribution map turns those back into the declarations — and the
+            // spans — the author actually wrote, which is the difference between
+            // a diagnostic that points at source and a bare count.
+            failing: handles.resolve_failing(&failed_ids),
+        },
         SlvsSolveResult::DidntConverge => SketchSolveResult::DidntConverge,
         SlvsSolveResult::TooManyUnknowns => SketchSolveResult::TooManyUnknowns,
         SlvsSolveResult::TooLarge => SketchSolveResult::TooLarge,

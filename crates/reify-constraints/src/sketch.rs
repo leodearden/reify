@@ -27,7 +27,7 @@ use std::collections::HashMap;
 
 use reify_core::SourceSpan;
 
-use crate::slvs_sys::Slvs_hParam;
+use crate::slvs_sys::{Slvs_hConstraint, Slvs_hParam};
 
 /// Identifies a sketch entity within one [`SketchSystem`].
 ///
@@ -275,6 +275,16 @@ pub enum SketchSolveResult {
 /// a function of the input rather than of allocation timing (O9).
 pub(crate) struct SketchHandleMap {
     entries: Vec<SketchEntityHandles>,
+    /// Reverse map from an emitted slvs constraint back to the declaration that
+    /// produced it.
+    ///
+    /// Not one-to-one in the emit direction: one declaration can expand into
+    /// several slvs constraints (`Fix` on a line anchors both endpoints), and
+    /// each of those handles maps back to the same declaration.  That is the
+    /// whole point — libslvs reports failures by slvs handle, and a diagnostic
+    /// has to name the line the author wrote, not the second of two anonymous
+    /// anchors.
+    attribution: HashMap<Slvs_hConstraint, (SketchConstraintId, SourceSpan)>,
 }
 
 /// One sketch entity and how to reconstruct it from solved params.
@@ -315,7 +325,57 @@ impl SketchHandleMap {
     pub(crate) fn new() -> Self {
         Self {
             entries: Vec::new(),
+            attribution: HashMap::new(),
         }
+    }
+
+    /// Carry the emit side's handle→declaration index out with the map.
+    pub(crate) fn set_attribution(
+        &mut self,
+        attribution: HashMap<Slvs_hConstraint, (SketchConstraintId, SourceSpan)>,
+    ) {
+        self.attribution = attribution;
+    }
+
+    /// Resolve the slvs handles libslvs reported as failing back to the
+    /// declarations that produced them.
+    ///
+    /// Deduplicated by [`SketchConstraintId`] — a `Fix` that expanded into two
+    /// anchors and failed at both is one failing declaration, not two — and
+    /// sorted by id, so the set is a function of the input rather than of
+    /// libslvs' internal ordering.  Sorting by *id* rather than by handle also
+    /// keeps the order stable if the emit order ever changes.
+    ///
+    /// A handle with no entry cannot happen: every constraint in a sketch
+    /// system is emitted through the attributing path, so the map covers all of
+    /// them.  It is therefore reported rather than quietly skipped — a
+    /// diagnostic that silently names fewer culprits than libslvs found is
+    /// worse than one that admits it lost track.
+    pub(crate) fn resolve_failing(
+        &self,
+        failed: &[Slvs_hConstraint],
+    ) -> Vec<(SketchConstraintId, SourceSpan)> {
+        let mut out: Vec<(SketchConstraintId, SourceSpan)> = Vec::with_capacity(failed.len());
+        for handle in failed {
+            match self.attribution.get(handle) {
+                Some(origin) => out.push(*origin),
+                None => {
+                    tracing::error!(
+                        constraint_handle = handle.0,
+                        "libslvs reported a failing constraint this sketch never emitted; \
+                         it cannot be attributed to a declaration"
+                    );
+                    debug_assert!(
+                        false,
+                        "unattributable failing constraint handle {}",
+                        handle.0
+                    );
+                }
+            }
+        }
+        out.sort_by_key(|(id, _)| *id);
+        out.dedup_by_key(|(id, _)| *id);
+        out
     }
 
     fn push(&mut self, id: SketchEntityId, readback: SketchReadback) {
