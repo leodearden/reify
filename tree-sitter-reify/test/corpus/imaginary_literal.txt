@@ -14,9 +14,12 @@
 ; `(UNEXPECTED 'j')` (originally pinned by #3947) under a later
 ; grammar/scanner change. A future grammar change — e.g. #5392, which
 ; reworks the quantity-literal juxtaposition seam — may legitimately
-; move it again. If it moves: re-pin FROM LIVE OUTPUT (`tree-sitter
-; parse` / the `tree-sitter test` diff); do not treat a detail-only
-; move as a regression, and do not guess the token.
+; move it again. If it moves: re-pin from the `tree-sitter test` diff
+; ONLY. Do NOT use `tree-sitter parse` output as the source of the pin —
+; it renders errors differently (a nested `(ERROR (ERROR))` shape here,
+; vs. this harness's `(UNEXPECTED ...)` form) and copying it in will
+; produce a pin that fails `tree-sitter test`. Do not treat a
+; detail-only move as a regression, and do not guess the token.
 ;
 ; What must NEVER change is the SEMANTIC invariant: `2 j`
 ; (space-separated) is REJECTED and never forms an imaginary_literal.
