@@ -5,7 +5,7 @@
 //! intersection of the dirty cone and the demand cone, topologically sorted
 //! so that dependencies are evaluated before their dependents.
 
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::cache::NodeId;
 use crate::demand::DemandRegistry;
@@ -189,77 +189,6 @@ pub fn topological_sort(
 ) -> Vec<NodeId> {
     // Argument order is the core's: (traces, seed).
     crate::engine_fixpoint::run_unified_pass_seeded(traces, nodes)
-}
-
-/// Compute topological levels from a set of nodes using Kahn's algorithm.
-///
-/// Each level contains nodes whose in-set dependencies have all been placed
-/// in earlier levels. Nodes within a level have no dependencies on each other
-/// and can safely execute concurrently.
-///
-/// Only considers edges within the node set (external dependencies are ignored).
-/// Tie-breaking uses Debug representation for deterministic output within each level.
-pub fn compute_levels(
-    nodes: &HashSet<NodeId>,
-    traces: &HashMap<NodeId, DependencyTrace>,
-) -> Vec<Vec<NodeId>> {
-    if nodes.is_empty() {
-        return Vec::new();
-    }
-
-    // Build in-degree map (only counting edges within the node set)
-    let mut in_degree: HashMap<NodeId, usize> = nodes.iter().map(|n| (n.clone(), 0)).collect();
-
-    for node in nodes {
-        if let Some(trace) = traces.get(node) {
-            // Deduplicate reads to avoid over-counting in-degree
-            // (e.g. expression `a * a` reads 'a' twice but has only 1 unique dep)
-            let unique_deps: HashSet<&ValueCellId> = trace.reads.iter().collect();
-            for dep_cell in unique_deps {
-                let dep_node = NodeId::Value(dep_cell.clone());
-                if nodes.contains(&dep_node) {
-                    *in_degree.get_mut(node).unwrap() += 1;
-                }
-            }
-        }
-    }
-
-    // Use BTreeSet with Debug repr for deterministic tie-breaking
-    let mut ready: BTreeSet<DebugOrd> = in_degree
-        .iter()
-        .filter(|(_, deg)| **deg == 0)
-        .map(|(n, _)| DebugOrd(n.clone()))
-        .collect();
-
-    let mut levels = Vec::new();
-
-    while !ready.is_empty() {
-        // All nodes currently ready form one level
-        let current_level: Vec<NodeId> = ready.iter().map(|d| d.0.clone()).collect();
-        ready.clear();
-
-        // Decrement in-degree for dependents of nodes in this level
-        for node in &current_level {
-            if let NodeId::Value(vcid) = node {
-                for candidate in nodes {
-                    if let Some(trace) = traces.get(candidate)
-                        && trace.reads.contains(vcid)
-                    {
-                        let deg = in_degree.get_mut(candidate).unwrap();
-                        debug_assert!(*deg > 0, "in-degree underflow: node {:?}", candidate);
-                        *deg -= 1;
-                        if *deg == 0 {
-                            ready.insert(DebugOrd(candidate.clone()));
-                        }
-                    }
-                }
-            }
-        }
-
-        levels.push(current_level);
-    }
-
-    levels
 }
 
 /// Compute the evaluation set: intersection of dirty cone and demand cone,
@@ -1545,102 +1474,6 @@ mod tests {
             !eval_set.contains(&NodeId::Realization(RealizationNodeId::new(e, 0))),
             "realization should not be in eval_set"
         );
-    }
-
-    // --- compute_levels tests ---
-
-    #[test]
-    fn compute_levels_empty_input() {
-        use crate::deps::DependencyTrace;
-        use crate::dirty::compute_levels;
-        use std::collections::HashMap;
-
-        let nodes: HashSet<NodeId> = HashSet::new();
-        let traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
-        let levels = compute_levels(&nodes, &traces);
-        assert!(levels.is_empty());
-    }
-
-    #[test]
-    fn compute_levels_fan_out() {
-        // a -> b, a -> c => levels: [[a], [b, c]]
-        use crate::deps::DependencyTrace;
-        use crate::dirty::compute_levels;
-        use std::collections::HashMap;
-
-        let a = NodeId::Value(ValueCellId::new("X", "a"));
-        let b = NodeId::Value(ValueCellId::new("X", "b"));
-        let c = NodeId::Value(ValueCellId::new("X", "c"));
-
-        let mut nodes = HashSet::new();
-        nodes.insert(a.clone());
-        nodes.insert(b.clone());
-        nodes.insert(c.clone());
-
-        let mut traces = HashMap::new();
-        traces.insert(a.clone(), DependencyTrace::default());
-        traces.insert(
-            b.clone(),
-            DependencyTrace {
-                realization_reads: Vec::new(),
-                reads: vec![ValueCellId::new("X", "a")],
-            },
-        );
-        traces.insert(
-            c.clone(),
-            DependencyTrace {
-                realization_reads: Vec::new(),
-                reads: vec![ValueCellId::new("X", "a")],
-            },
-        );
-
-        let levels = compute_levels(&nodes, &traces);
-        assert_eq!(levels.len(), 2, "expected 2 levels, got {:?}", levels);
-        assert_eq!(levels[0], vec![a.clone()]);
-        // b and c should both be in level 1 (order determined by DebugOrd)
-        assert_eq!(levels[1].len(), 2);
-        assert!(levels[1].contains(&b));
-        assert!(levels[1].contains(&c));
-    }
-
-    #[test]
-    fn compute_levels_chain() {
-        // a -> b -> c => levels: [[a], [b], [c]]
-        use crate::deps::DependencyTrace;
-        use crate::dirty::compute_levels;
-        use std::collections::HashMap;
-
-        let a = NodeId::Value(ValueCellId::new("X", "a"));
-        let b = NodeId::Value(ValueCellId::new("X", "b"));
-        let c = NodeId::Value(ValueCellId::new("X", "c"));
-
-        let mut nodes = HashSet::new();
-        nodes.insert(a.clone());
-        nodes.insert(b.clone());
-        nodes.insert(c.clone());
-
-        let mut traces = HashMap::new();
-        traces.insert(a.clone(), DependencyTrace::default());
-        traces.insert(
-            b.clone(),
-            DependencyTrace {
-                realization_reads: Vec::new(),
-                reads: vec![ValueCellId::new("X", "a")],
-            },
-        );
-        traces.insert(
-            c.clone(),
-            DependencyTrace {
-                realization_reads: Vec::new(),
-                reads: vec![ValueCellId::new("X", "b")],
-            },
-        );
-
-        let levels = compute_levels(&nodes, &traces);
-        assert_eq!(levels.len(), 3, "expected 3 levels, got {:?}", levels);
-        assert_eq!(levels[0], vec![a]);
-        assert_eq!(levels[1], vec![b]);
-        assert_eq!(levels[2], vec![c]);
     }
 
     // --- check_dag_complete positive tests (step-1) ---

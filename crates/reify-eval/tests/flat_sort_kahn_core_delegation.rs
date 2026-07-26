@@ -362,9 +362,13 @@ fn flat_sort_reorder_leaves_no_stale_undef() {
     }
     observed.sort();
 
-    let expected: Vec<String> = PREEXISTING_STALE_UNDEF.iter().map(|s| s.to_string()).collect();
+    let expected: Vec<String> = PREEXISTING_STALE_UNDEF
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     assert_eq!(
-        observed, expected,
+        observed,
+        expected,
         "the stale-Undef violation set over the differential corpus changed.\n\
          Every cell listed is Undef while all of its declared reads resolved.\n\
          NEW entries mean this reorder (or a later change to the ONE scheduling \
