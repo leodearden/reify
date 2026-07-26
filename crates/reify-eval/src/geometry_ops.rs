@@ -1366,9 +1366,9 @@ struct CuratedEdgeLabels {
     /// Short op name: the prefix of the returned `Err` strings and the
     /// "at the point this {short} runs" phrasing.
     short: &'static str,
-    /// User-actionable tail for the unresolved-selector (legacy-P2 `Undef`)
-    /// `Err`. The 2-arg fallback hint differs per op; `chamfer_asymmetric` has
-    /// no 2-arg form, so its tail only points at the η/ε follow-up.
+    /// User-actionable tail for the unresolved-selector `Err`: the all-edges
+    /// escape hatch, when the op has one. `chamfer_asymmetric` has no 2-arg
+    /// form, so its tail names the only remaining move — fix the selector.
     unresolved_hint: &'static str,
 }
 
@@ -1377,24 +1377,20 @@ impl CuratedEdgeLabels {
         call_form: "fillet(solid, edges, radius)",
         verb: "fillet",
         short: "fillet",
-        unresolved_hint: "Use 2-arg fillet(solid, radius) to fillet all edges, or \
-                          wait for curated edge selection (engine-unified-build-dag \
-                          tasks 4360/4358).",
+        unresolved_hint: "Use 2-arg fillet(solid, radius) to fillet all edges instead.",
     };
     const CHAMFER: Self = Self {
         call_form: "chamfer(solid, edges, distance)",
         verb: "chamfer",
         short: "chamfer",
-        unresolved_hint: "Use 2-arg chamfer(solid, distance) to chamfer all edges, or \
-                          wait for curated edge selection (engine-unified-build-dag \
-                          tasks 4360/4358).",
+        unresolved_hint: "Use 2-arg chamfer(solid, distance) to chamfer all edges instead.",
     };
     const CHAMFER_ASYMMETRIC: Self = Self {
         call_form: "chamfer_asymmetric(solid, edges, d1, d2)",
         verb: "chamfer",
         short: "chamfer_asymmetric",
-        unresolved_hint: "Wait for curated edge selection (engine-unified-build-dag \
-                          tasks 4360/4358).",
+        unresolved_hint: "chamfer_asymmetric has no all-edges form, so the selector \
+                          itself must be corrected.",
     };
 }
 
@@ -1431,18 +1427,21 @@ fn resolve_curated_edges_p2(
 ) -> Result<Vec<GeometryHandleId>, String> {
     let elems = match edges_val {
         reify_ir::Value::List(elems) => elems,
-        // The selector did not resolve to a List — on the legacy pipeline it is
-        // `Undef` (the edges selector resolves in P4, after this P2 arm). This
-        // is NOT an empty selection, so do NOT emit `EmptyEdgeSelection` (that
-        // would false-positive on every legacy 3-arg/4-arg call); return a
-        // USER-ACTIONABLE `Err` so the cell stays Undef and η resolves it
-        // in-loop. Removed once engine-unified-build-dag η/ε (tasks 4360/4358)
-        // make curated selection reachable end-to-end.
+        // The selector did not resolve to a List. This is NOT an empty
+        // selection, so do NOT emit `EmptyEdgeSelection` (that would
+        // false-positive whenever the value is simply `Undef`); return a
+        // USER-ACTIONABLE `Err` and leave the cell Undef.
+        //
+        // Task 5208 rewording: curated selection IS reachable through the
+        // production `.ri` pipeline now, so this `Err` is a genuine authoring
+        // failure — THIS selector did not resolve — not a staging notice. The
+        // message must therefore describe what went wrong and what to check,
+        // never tell the designer to wait for a pending task.
         other => {
             return Err(format!(
-                "{}: curated edge selection is not yet available on the current \
-                 build pipeline — the edge selector cannot be resolved at the \
-                 point this {} runs. {} [edge selector evaluated to {:?}]",
+                "{}: the edge selector did not resolve to a concrete edge list \
+                 at the point this {} runs — check that it selects edges from a \
+                 realized solid in scope. {} [edge selector evaluated to {:?}]",
                 labels.call_form, labels.short, labels.unresolved_hint, other
             ));
         }
@@ -2909,13 +2908,12 @@ fn modify_shell(
             }
             other => {
                 return Err(format!(
-                    "shell_open(solid, thickness, open_faces): curated \
-                     face selection is not yet available on the current \
-                     build pipeline — the face selector cannot be resolved \
-                     at the point this shell_open runs. Use numeric \
+                    "shell_open(solid, thickness, open_faces): the face \
+                     selector did not resolve to a concrete face list at the \
+                     point this shell_open runs — check that it selects faces \
+                     from a realized solid in scope. Use numeric \
                      shell(solid, thickness, face_N) to remove specific \
-                     faces by index, or wait for curated face selection \
-                     (engine-unified-build-dag tasks 4360/4358). \
+                     faces by index instead. \
                      [face selector evaluated to {:?}]",
                     other
                 ));
@@ -3065,13 +3063,12 @@ fn modify_draft(
                     })
                 }
                 other => Err(format!(
-                    "draft(solid, faces, angle, neutral_plane): curated \
-                     face selection is not yet available on the current \
-                     build pipeline — the face selector cannot be resolved \
-                     at the point this draft runs. Use 3-arg \
+                    "draft(solid, faces, angle, neutral_plane): the face \
+                     selector did not resolve to a concrete face list at the \
+                     point this draft runs — check that it selects faces from \
+                     a realized solid in scope. Use 3-arg \
                      draft(solid, angle, neutral_plane) to draft all \
-                     faces, or wait for curated face selection \
-                     (engine-unified-build-dag tasks 4360/4358). \
+                     faces instead. \
                      [face selector evaluated to {:?}]",
                     other
                 )),

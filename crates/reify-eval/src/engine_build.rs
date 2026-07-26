@@ -10628,8 +10628,10 @@ impl Engine {
     /// kernel-FREE `Value::Selector` DESCRIPTOR (task 4118 γ). A consuming curated
     /// `fillet(solid, edges, radius)` realization, however, reads its `edges` arg
     /// as a `Value::List<Geometry>` — the legacy `compile_geometry_op` Fillet arm
-    /// errors ("curated edge selection is not yet available …") on a bare
-    /// descriptor, the exact P2-before-P4 staging gap tasks 4360/4358 close. So
+    /// errors ("the edge selector did not resolve to a concrete edge list …") on
+    /// a bare descriptor — the P2-before-P4 gap tasks 4360/4358 opened and task
+    /// 5208 closed for the production `.ri` pipeline (that `Err` now fires only
+    /// for a selector that genuinely cannot resolve). So
     /// when this selector cell is read by ANY realization (`realization_read_cells`
     /// = the union of every realization trace's `reads`), the descriptor is
     /// resolved one step further to its concrete sub-handle `List` via
