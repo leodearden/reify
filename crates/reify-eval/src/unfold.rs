@@ -283,19 +283,42 @@ pub(crate) fn unfold_recursive_sub<'t>(
 /// For non-recursive subs both phases run atomically (params then lets).
 /// For recursive subs, use `elaborate_child_params_only` + `elaborate_child_lets_only`
 /// to allow leaves-first ordering (recurse between the two phases).
+///
+/// # Instance-nested sub-components (task 5360)
+///
+/// Between the two phases this also elaborates the child template's *own*
+/// PLAIN sub-components at the nested scope `{scoped_entity}.{sub.name}`,
+/// leaves-first, then hands their names to `elaborate_child_lets_only` so its
+/// projection BFS remaps the freshly-committed global cells
+/// `{scoped_entity}.{sub}.{member}` onto the template-scoped key
+/// `{child_template.name}.{sub}.{member}` — exactly what a cross-sub read
+/// `self.<sub>.<member>` compiles to. Without this, an instance-scope let such
+/// as `Parent.m.relay = self.k.off` had no `Mid.k.off` entry to read and
+/// silently resolved to `Value::Undef`.
+///
+/// Only PLAIN subs recurse. Collection subs (`is_collection`) and keyed subs
+/// (non-empty `keyed_members`) need `__list_`/indexed/per-key scoping that is
+/// not modelled at instance nesting; guarded subs belong to recursive
+/// templates, which `unfold_recursive_sub` handles at template scope. Anything
+/// skipped is surfaced by the never-silent-undef diagnostic below, never
+/// dropped quietly.
+///
+/// Termination rests on the compiler's structural-acyclicity guarantee: plain
+/// sub nesting is a finite DAG, so the recursion has finite depth.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn elaborate_child_instance(
+pub(crate) fn elaborate_child_instance<'t>(
     values: &mut ValueMap,
     snapshot: &mut Snapshot,
     functions: &[CompiledFunction],
     journal: &mut EventJournal,
     cache: &mut CacheStore,
     version_id: u64,
-    child_template: &TopologyTemplate,
+    child_template: &'t TopologyTemplate,
     scoped_entity: &str,
     args: &[(String, reify_ir::CompiledExpr)],
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
+    templates: &'t [TopologyTemplate],
 ) {
     let child_values = elaborate_child_params_only(
         values,
@@ -309,6 +332,36 @@ pub(crate) fn elaborate_child_instance(
         args,
         meta_map,
     );
+
+    // Phase 1.5 (leaves-first): elaborate the child template's own plain subs
+    // at nested instance scope, so their cells exist before this instance's
+    // lets are evaluated and can be projected into the let context below.
+    let mut nested_sub_names: Vec<&str> = Vec::new();
+    for sub in &child_template.sub_components {
+        if !is_plain_nestable_sub(sub) {
+            continue;
+        }
+        let Some(nested_template) = find_template(templates, &sub.structure_name) else {
+            continue;
+        };
+        let nested_entity = format!("{}.{}", scoped_entity, sub.name);
+        elaborate_child_instance(
+            values,
+            snapshot,
+            functions,
+            journal,
+            cache,
+            version_id,
+            nested_template,
+            &nested_entity,
+            &sub.args,
+            meta_map,
+            diagnostics,
+            templates,
+        );
+        nested_sub_names.push(sub.name.as_str());
+    }
+
     elaborate_child_lets_only(
         values,
         snapshot,
@@ -320,10 +373,22 @@ pub(crate) fn elaborate_child_instance(
         scoped_entity,
         child_values,
         meta_map,
-        &[],
-        &[],
+        &nested_sub_names,
+        templates,
         diagnostics,
     );
+}
+
+/// True iff `sub` is a PLAIN sub-component — the only shape
+/// `elaborate_child_instance` recurses into at nested instance scope.
+///
+/// Excluded shapes and why (see the `elaborate_child_instance` doc comment):
+/// - `is_collection`: needs `__list_`/indexed scoping, unmodelled when nested.
+/// - non-empty `keyed_members`: needs per-key `sub["key"]` scoping, ditto.
+/// - `guard_state.is_compiled()`: a guarded sub is only meaningful in a
+///   recursive context, which `unfold_recursive_sub` owns at template scope.
+fn is_plain_nestable_sub(sub: &reify_compiler::SubComponentDecl) -> bool {
+    !sub.is_collection && sub.keyed_members.is_empty() && !sub.guard_state.is_compiled()
 }
 
 /// Builds a [`cell_eval_ctx`] from the given capabilities and evaluates
@@ -517,8 +582,10 @@ fn elaborate_child_lets_only<'t>(
     let containment = NoContainment;
 
     // Enrich child_values with sub-component values projected from the global map.
-    // Only needed for recursive subs where deeper levels have already been elaborated
-    // (leaves-first ordering).
+    // Only needed where the named subs' entities have already been elaborated
+    // (leaves-first ordering): recursive subs unfolded by `unfold_recursive_sub`,
+    // and — since task 5360 — plain instance-nested subs elaborated by
+    // `elaborate_child_instance`'s phase 1.5. Both feed the same key remap.
     //
     // Uses BFS over the entity tree rooted at scoped_entity: starts with one immediate
     // child per sub name, then expands branches where values exist. This handles both
@@ -716,7 +783,7 @@ mod tests {
     fn elaborate_child_instance_accessible() {
         let _: fn() -> String = || {
             // Reference the function to prove it exists in this module's namespace.
-            let _ = elaborate_child_instance as fn(_, _, _, _, _, _, _, _, _, _, _);
+            let _ = elaborate_child_instance as fn(_, _, _, _, _, _, _, _, _, _, _, _);
             String::new()
         };
     }

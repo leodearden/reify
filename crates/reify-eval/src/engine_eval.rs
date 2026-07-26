@@ -4400,6 +4400,7 @@ impl Engine {
                                 &sub.args,
                                 &self.meta_map,
                                 &mut diagnostics,
+                                &module.templates,
                             );
                         }
 
@@ -4456,6 +4457,7 @@ impl Engine {
                             overrides,
                             &self.meta_map,
                             &mut diagnostics,
+                            &module.templates,
                         );
 
                         // Per-key SIR-α StructureInstance at
@@ -4538,6 +4540,7 @@ impl Engine {
                     &sub.args,
                     &self.meta_map,
                     &mut diagnostics,
+                    &module.templates,
                 );
 
                 // task 3540 (SIR-α), handler esc-3540-182 (A): expose the
