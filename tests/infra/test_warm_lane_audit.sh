@@ -801,4 +801,66 @@ assert "J4: _lane-live's flock is still held by the background job after the run
 kill "$J_LOCK_PID" 2>/dev/null || true
 _BGPIDS=()  # clear so cleanup doesn't double-kill
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block K — the flock probe is a LIVENESS column (live=LIVE|IDLE), not an
+#           assignment one
+# ──────────────────────────────────────────────────────────────────────────────
+# The <lane>.lock flock probe measures exactly one thing: whether a consumer
+# PROCESS is running and holding the lane's exclusive lock right now. Reporting
+# that under the key `assigned=` conflated liveness with the orchestrator's
+# assignment state, which is the category error behind both pool misreads this
+# task exists to fix. Here the probe's own column is asserted under its honest
+# name; `assigned=` is re-sourced from the real assignment record in Block L.
+echo ""
+echo "--- Block K: flock probe reports liveness (live=LIVE|IDLE) ---"
+
+K_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-k-XXXXXX)"
+_TMPDIRS+=("$K_MOUNT")
+
+# _lane-live: a live consumer holds the exclusive flock (causal handshake).
+make_lane "$K_MOUNT/_lane-live"
+_hold_lane_lock "$K_MOUNT" "_lane-live"
+K_LOCK_PID="$LANE_LOCK_PID"
+
+# _lane-idle: an unheld, pre-created lock file -- no consumer process.
+make_lane "$K_MOUNT/_lane-idle"
+touch "$K_MOUNT/_lane-idle.lock"
+
+run_helper --mount "$K_MOUNT"
+
+assert "K1: exit 0" test "$RC" -eq 0
+assert "K2: _lane-live row reports live=LIVE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-live .*live=LIVE"' _ "$OUT"
+assert "K3: _lane-idle row reports live=IDLE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-idle .*live=IDLE"' _ "$OUT"
+assert "K4: HEADROOM reports live=1" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -qE "(^| )live=1( |$)"' _ "$OUT"
+# The retired value must be GONE, not silently repurposed: any unknown consumer
+# still grepping `assigned=FREE` now matches nothing (fail-loud) rather than
+# matching a string whose meaning changed underneath it.
+assert "K5: the retired value 'assigned=FREE' appears nowhere in the output" \
+    bash -c '! printf "%s\n" "$1" | grep -q "assigned=FREE"' _ "$OUT"
+
+K_PY_LIVE="$(mktemp /tmp/test-warm-lane-audit-k-live-XXXXXX.py)"
+_TMPDIRS+=("$K_PY_LIVE")
+cat > "$K_PY_LIVE" << 'PYEOF'
+import json, sys
+data = json.load(sys.stdin)
+by_lane = {o["lane"]: o for o in data["lanes"]}
+assert set(by_lane) == {"_lane-live", "_lane-idle"}, sorted(by_lane)
+for name, obj in by_lane.items():
+    assert "live" in obj, f"{name} has no 'live' key: {sorted(obj)}"
+assert by_lane["_lane-live"]["live"] == "LIVE", by_lane["_lane-live"]
+assert by_lane["_lane-idle"]["live"] == "IDLE", by_lane["_lane-idle"]
+PYEOF
+
+run_helper --mount "$K_MOUNT" --format json
+assert "K6a: exit 0 (json)" test "$RC" -eq 0
+assert "K6b: json lane objects carry a 'live' key with the same LIVE/IDLE values" \
+    bash -c 'printf "%s" "$1" | python3 "$2"' _ "$OUT" "$K_PY_LIVE"
+
+# Release the live-flock lock.
+kill "$K_LOCK_PID" 2>/dev/null || true
+_BGPIDS=()  # clear so cleanup doesn't double-kill
+
 test_summary
