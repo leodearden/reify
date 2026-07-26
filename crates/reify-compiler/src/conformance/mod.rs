@@ -1462,36 +1462,56 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// variant defaults to silence, not to a false positive. Broadening the list is
 /// a deliberate act that must come with corpus evidence.
 ///
-/// # Why these four
+/// # Why these families
 ///
 /// `type_compatible` is a *call-site coercion* predicate: it presumes both sides
 /// carry genuinely inferred types. `Bool`, `Int`, `String` and DIMENSIONLESS
 /// `Scalar` (spelled `Real` in source, and by `Display`) are the families for
-/// which that presumption actually holds at a struct-ctor arg position — the
-/// expression compiler infers them precisely, and `type_compat.rs` has real arms
-/// for each.
+/// which that presumption holds unconditionally at a struct-ctor arg position —
+/// the expression compiler infers them precisely, and `type_compat.rs` has real
+/// arms for each. `Type::Enum` and enum-named `Type::Applied` joined them in
+/// task 5465, conditionally: see *Enum families* below.
 ///
-/// # Deliberately excluded, with evidence
+/// # Handled by dedicated shape-based arms instead (task 5465)
 ///
-/// Generalizing any of these needs new `type_compat.rs` coercion rules, which is
-/// an explicit α non-goal; it is tracked as a separate follow-up.
+/// `Point`, `Field`, `Matrix` and `Tensor` are NOT excluded — they are handled
+/// by dedicated SHAPE-BASED arms in [`walk_param_against_arg_type`], exactly as
+/// `Type::Vector` is, so none ever reaches this predicate. The
+/// placeholder/erasure/missing-coercion rationale below is still why those arms
+/// are shape-based rather than `type_compatible`-based:
 ///
-/// **`Point`, `Field` and `Matrix`/`Tensor` are no longer excluded** (task 5465,
-/// families 1, 3 and 2). Each is handled by a dedicated SHAPE-BASED arm in
-/// [`walk_param_against_arg_type`], exactly as `Type::Vector` is, so none ever
-/// reaches this predicate. The placeholder/erasure/missing-coercion rationale is
-/// still why those arms are shape-based rather than `type_compatible`-based —
-/// `point3(0m, 0m, 0m)` is a `FunctionCall` whose result_type is the numeric
-/// fallback `Scalar[m]`, never `Type::Point`; an analytical `field def` erases
-/// both slots to `Field<Real, Real>` whatever its declaration says; a nested list
-/// literal is the idiomatic `Matrix3x3` spelling but compiles to
-/// `List<List<Real>>`, for which no `List`→`Matrix` coercion arm exists — but
-/// "unverifiable SLOTS" is not the same as "unverifiable FAMILY", and the
+/// * `point3(0m, 0m, 0m)` is a `FunctionCall` whose result_type is the numeric
+///   fallback `Scalar[m]`, never `Type::Point`;
+/// * an analytical `field def` erases both slots to `Field<Real, Real>` whatever
+///   its declaration says;
+/// * a nested list literal is the idiomatic `Matrix3x3` spelling but compiles to
+///   `List<List<Real>>`, for which no `List`→`Matrix` coercion arm exists.
+///
+/// But "unverifiable SLOTS" is not the same as "unverifiable FAMILY", and the
 /// families themselves are now checked. For the two placeholder families this is
 /// the same class the `Type::Geometry` exclusion below and
 /// [`promote_function_call_to_structure_ref`] already exist for.
+///
+/// # Deliberately excluded, with evidence
+///
+/// Contrary to what this comment claimed before task 5465, promoting those four
+/// families needed NO new `type_compat.rs` coercion rule — the shape-based arms
+/// and the [`enum_payload_compatible`] short-circuit sit entirely inside this
+/// walker. What remains excluded is excluded for its own stated reason, and each
+/// entry names an owner (INV-SF-5 `placeholders-owned-and-loud`,
+/// `docs/legibility/design-invariants.md:126-128`, forbids a blanket escape that
+/// names none):
+///
 /// * **Dimensioned `Scalar`** — supplying a bare dimensionless numeric literal
-///   at a dimensioned slot is idiomatic throughout the corpus.
+///   at a dimensioned slot is idiomatic throughout the corpus. HELD, not
+///   forgotten: whether it should be legal is a language-semantics question
+///   about the dimensionless↔dimensioned slot convention, and today's answer is
+///   position-dependent across six gates (legal at ctor field slots, literal
+///   `param`/`let` defaults and constraint-def args; illegal at user-fn param
+///   slots, fn-param defaults, ambient defaults, compound initializers and all
+///   arithmetic). Owner: follow-up ticket `tkt_0RRQW5X0WYH2ZW0TZY1JZ6E189`
+///   (escalation `agent-followup-5465`), which carries the four candidate
+///   resolutions and their costs.
 /// * **`Geometry`** — geometry constructors compile to a dimensionless-scalar
 ///   placeholder (GHR-γ) and `type_compatible` has no `Geometry` arm at all;
 ///   geometry conformance is decided only through the literal walker's op-array
@@ -1503,6 +1523,18 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// The last two were the α negative guard's explicit carve-outs; they are
 /// subsumed by simple absence from the allowlist, so the redundant `matches!`
 /// is gone rather than left as dead belt-and-braces.
+///
+/// # Still unexamined
+///
+/// Every other [`Type`] variant defaults to silence and has simply not been
+/// looked at yet. Enumerated against the real `Type` enum
+/// (`crates/reify-core/src/ty.rs:120-345`) so the list cannot quietly rot:
+/// `Complex`, `Orientation`, `Frame`, `Transform`, `AffineMap`, `Range`,
+/// `Plane`, `Axis`, `Direction`, `BoundingBox`, `Feature`, `Function`, `Keyed`,
+/// `Union`, `Projection`, `ScalarParam`. Promoting any of them is the same
+/// deliberate act the four families above went through: a per-family probe pair
+/// (clean fixture + value floor) plus a green corpus gate, with no new
+/// `SKIP_SET` entry.
 ///
 /// # Enum families (task 5465, family 4)
 ///

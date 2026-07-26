@@ -899,17 +899,31 @@ fn fea_pressure_smoke_example_has_no_ctor_conformance_diagnostics() {
 // against literal shapes for which no coercion rule exists. Five families were
 // therefore false-rejected across 15+ shipped examples.
 //
-// Step-12 inverts the gate to a positive, explicitly-vetted allowlist. The two
-// groups below are the fence on either side of that narrowing:
+// Step-12 inverted the gate to a positive, explicitly-vetted allowlist. Task
+// 5465 then PROMOTED four of those five families back in — not by re-broadening
+// the gate, but by giving each family a rule that is valid against the
+// placeholder/erased types the expression compiler actually produces: dedicated
+// shape-based arms for Point / Field / Matrix / Tensor, and an
+// `enum_payload_compatible` short-circuit for Enum / Applied.
 //
-//   (b) EXCLUDED families — each must emit ZERO ctor-conformance diagnostics.
-//       RED on the current branch tip. These pin the MECHANISM, so a future
-//       re-broadening cannot silently reintroduce the regression even if the
-//       examples corpus changes shape and the corpus gate stops covering it.
+// The groups below are the fence around that promotion:
 //
-//   (c) RETAINED families — each must still emit exactly one Warning. GREEN
-//       both before and after step-12. Their presence is what makes step-12 a
-//       narrowing rather than a revert.
+//   (b) PROMOTED families — each contributes a PAIR: a clean fixture that must
+//       stay at ZERO ctor-conformance diagnostics (the false positive that
+//       caused the family's original exclusion), and at least one value floor
+//       that must emit exactly one Warning (proving the family is genuinely
+//       checked and not merely re-excluded under a new name). Several families
+//       add a wrapper-composition probe so a leaf arm cannot be added in a
+//       position the List/Option recursion never reaches.
+//
+//       One family — dimensioned `Scalar` — is deliberately still HELD, with a
+//       clean-only probe and a doc comment naming its owner. It is the fifth
+//       family, and its absence from group (b)'s pair pattern is the signal.
+//
+//   (c) α-VALUE-FLOOR guards — the families that were vetted at α must still
+//       emit exactly one Warning. GREEN before and after both step-12 and 5465.
+//       Their presence is what keeps each change a re-shaping rather than a
+//       revert.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── (b) excluded family: Point ← numeric-fallback placeholder ────────────────
@@ -1312,7 +1326,7 @@ fn enum_param_given_wrong_enum_warns_arg_type_mismatch() {
     assert_single_arg_type_mismatch_warning(SRC_ENUM_CROSS_ENUM_MISMATCH, "c", "Hue ← Outline");
 }
 
-// ── (b) excluded family: dimensioned Scalar ← dimensionless Real ─────────────
+// ── (b) HELD family: dimensioned Scalar ← dimensionless Real ─────────────────
 //
 // Supplying a bare dimensionless numeric literal at a dimensioned slot is an
 // idiomatic spelling throughout the corpus. Shape from
@@ -1327,6 +1341,33 @@ structure def Root {
 }
 "#;
 
+/// The one family task 5465 did NOT promote — a deliberate, owned hold, not an
+/// oversight.
+///
+/// **Held pending a language-semantics ruling.** Whether a dimensionless arg is
+/// legal at a dimensioned `Scalar<Q>` slot is a question about the
+/// dimensionless↔dimensioned slot convention, not about this walker. Today's
+/// answer is position-dependent across six gates: LEGAL at struct-ctor field
+/// slots (here), at literal `param`/`let` defaults
+/// (`crates/reify-compiler/src/entity.rs:459-478`) and at constraint-def args;
+/// ILLEGAL at user-fn param slots, fn-param defaults, ambient defaults,
+/// compound-expression initializers, and all arithmetic/comparison operators.
+/// `implicitly_converts_to` encodes no Scalar-vs-Scalar rule in EITHER
+/// direction. Owner: follow-up ticket `tkt_0RRQW5X0WYH2ZW0TZY1JZ6E189`
+/// (escalation `agent-followup-5465`), which carries the four candidate
+/// resolutions and their costs.
+///
+/// **What this probe pins, precisely.** Zero *ctor-conformance* diagnostics —
+/// i.e. exclusion from ONE pass. It does NOT assert that the program is
+/// well-typed, and it must not be read as one.
+///
+/// **The corpus dependency is acknowledged placeholder work, not a settled
+/// idiom.** `crates/reify-compiler/stdlib/trajectory.ri:568-569` tightened
+/// `velocity_limit` / `acceleration_limit` from `Real` to `Scalar<Velocity>` /
+/// `Scalar<Acceleration>` in task 4580 without updating the call sites, and
+/// `examples/trajectory/printer_print_envelope.ri:146-147` calls its own
+/// arguments "(mm/s placeholder Real)". So the ruling may well be to fix the
+/// call sites rather than to relax the walker.
 #[test]
 fn excluded_family_dimensioned_scalar_given_dimensionless_real_is_silent() {
     let module = compile_source_with_stdlib(SRC_FAMILY_DIMENSIONED_SCALAR);

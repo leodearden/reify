@@ -229,8 +229,11 @@ fn no_example_emits_ctor_field_conformance_diagnostics() {
             "ctor-conformance corpus gate: {} diagnostic(s) across {} exercised example files.\n\
              Every one is a struct-ctor field-conformance diagnostic fired against a shipped \
              example — i.e. a false positive from the conformance walker, not a broken example.\n\
-             Fix the walker (see `general_leaf_param_family_is_validated` in \
-             crates/reify-compiler/src/conformance/mod.rs); do NOT add a SKIP_SET entry.\n\n{}",
+             Fix the walker in crates/reify-compiler/src/conformance/mod.rs — either the \
+             family's dedicated shape-based arm in `walk_param_against_arg_type` \
+             (Vector / Point / Field / Matrix / Tensor) or the \
+             `general_leaf_param_family_is_validated` allowlist that gates the general \
+             concrete-leaf arm; do NOT add a SKIP_SET entry.\n\n{}",
             n,
             exercised,
             lines.join("\n")
