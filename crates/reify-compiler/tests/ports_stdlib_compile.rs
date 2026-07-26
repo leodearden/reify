@@ -3115,27 +3115,44 @@ fn example_ports_mechanical_ri_compiles_clean() {
             .collect::<Vec<_>>()
     );
 
-    // Anti-recollision guard (task #5594): this example must never declare a
-    // template named exactly "Coupling" again.  `std.kinematic` and
-    // `std.ports.mechanical` are both in the stdlib prelude, so a local
-    // `Coupling` here shadows the unrelated stdlib kinematic joint
-    // `Coupling<P: DrivingJoint + HasMotion>` during name resolution — same
+    // Anti-recollision guard (task #5594), stated at the level of the bug
+    // CLASS rather than the one name that tripped it: no template this
+    // example declares may share a name with ANY template exported by a
+    // stdlib prelude module.  Every stdlib module is in the same prelude, so
+    // a same-named local decl wins name resolution and silently shadows the
+    // stdlib definition — which is exactly what a local `Coupling` here did
+    // to the unrelated stdlib kinematic joint
+    // `Coupling<P: DrivingJoint + HasMotion>` from `std.kinematic`: same
     // name, different semantics, different type params/bounds.
     //
     // Note the deliberately NEGATIVE form: `compiled.templates` is
     // user-module-only (prelude definitions are resolution context, not
-    // output — see crates/reify-compiler/src/lib.rs:273-275), so the stdlib
-    // `Coupling` never appears in this vec and a positive "exactly one
-    // Coupling, and it is the stdlib one" assertion would be unsatisfiable.
-    // Exact string equality is safe against synthetic monomorph clones,
-    // whose names always contain `$`.
+    // output — see the `compile_with_prelude` doc comment in
+    // crates/reify-compiler/src/lib.rs), so no stdlib template ever appears
+    // in this vec and a positive "exactly one Coupling, and it is the stdlib
+    // one" assertion would be unsatisfiable.  Synthetic monomorph clones are
+    // skipped: their names always contain `$`.
+    let prelude_template_names: std::collections::HashSet<&str> = stdlib_loader::load_stdlib()
+        .iter()
+        .flat_map(|m| m.templates.iter())
+        .map(|t| t.name.as_str())
+        .collect();
+    let shadowed: Vec<&str> = compiled
+        .templates
+        .iter()
+        .map(|t| t.name.as_str())
+        .filter(|name| !name.contains('$') && prelude_template_names.contains(name))
+        .collect();
     assert!(
-        !compiled.templates.iter().any(|t| t.name == "Coupling"),
-        "examples/stdlib/ports_mechanical.ri must not declare a template named \
-         'Coupling': it would shadow the unrelated stdlib kinematic \
-         'Coupling<P: DrivingJoint + HasMotion>' from std.kinematic, since both \
-         modules are in the same prelude (task #5594 renamed it to \
-         'ShaftCoupling'); found templates: {:?}",
+        shadowed.is_empty(),
+        "examples/stdlib/ports_mechanical.ri must not declare a template whose name \
+         collides with a stdlib prelude template; these shadow same-named prelude \
+         definitions during name resolution: {:?}. Task #5594 hit exactly this with \
+         'Coupling', which shadowed the unrelated stdlib kinematic \
+         'Coupling<P: DrivingJoint + HasMotion>' from std.kinematic (both modules are \
+         in the same prelude), and renamed it to 'ShaftCoupling'; \
+         found templates: {:?}",
+        shadowed,
         compiled
             .templates
             .iter()
