@@ -826,29 +826,32 @@ fn e2e_get_or_present_key_with_stdlib() {
 /// evaluates to `Undef` — the Kleene INV-2 undef-subject passthrough, NOT the
 /// default. This pins undef PROPAGATION through a stdlib-compiled call site.
 ///
-/// NOT A DRIFT GUARD — read this before citing it as one.
+/// PAIRED WITH A LIVENESS WITNESS. `Value::Undef` is this evaluator's universal
+/// degradation value, so an `assert_eq!(.., Undef)` on its own also passes when
+/// nothing works: the compiler failing to resolve `get_or`, `get_let_expr`
+/// returning some other degrading expression, the any-arg-undef short-circuit
+/// in `eval_user_function_call` firing early, or the map subject not compiling
+/// at all. The fixture therefore compiles a SECOND cell `w` in the same
+/// `structure S` whose value is non-Undef (`1mm`) and asserts it FIRST. `w`
+/// failing means the harness is dead; `w` passing and `v` failing means undef
+/// propagation genuinely regressed. Without `w` this test pins no behaviour a
+/// broken harness would not also satisfy.
 ///
-/// MEASURED (task 5410 step-11, three intercept gates disabled): this test
-/// stays GREEN. It is the only `e2e_*_with_stdlib` test in this file that does.
-/// Reason: `module.functions` is user-source-only, so with the intercept
-/// removed the call falls through to `eval_user_function_call`, matches
-/// nothing, and returns `Value::Undef` — which is EXACTLY this test's expected
-/// value. The fallthrough result and the intercept result coincide, so the
-/// assertion cannot tell them apart. Every OTHER guard here expects a non-Undef
-/// value and therefore does bite. See the section banner above
-/// `e2e_or_default_some_with_stdlib`.
+/// MEASURED (task 5410 step-11, three intercept gates disabled): the `w`
+/// assertion FAILS with `left: Undef` — so, unlike the single-cell version this
+/// replaces, the test as a whole is RED under intercept removal. The `v`
+/// assertion alone would stay GREEN, because the `eval_user_function_call`
+/// fallthrough value and the correct INV-2 answer are both `Undef`.
 ///
-/// WHERE THE ABSENT-PATH DRIFT COVERAGE ACTUALLY LIVES:
-/// `e2e_get_or_absent_key_with_stdlib` (above), which MEASURABLY fails with
-/// `left: Undef` under intercept removal. Its own doc comment used to call it
-/// "coincidentally correct"; task 5410 corrected that — the claim was reasoning
-/// about the `.ri` placeholder body, which this harness never registers.
+/// The absent-KEY path's own drift coverage lives in
+/// `e2e_get_or_absent_key_with_stdlib` (above), which also fails with
+/// `left: Undef` under intercept removal.
 ///
-/// Kept anyway because the INV-2 propagation property is worth pinning at a
-/// compiled call site: it is the only stdlib-compiled test showing that an
-/// undef map SUBJECT is not silently conflated with a key miss (contrast
-/// `get_or_undef_key_returns_undef` / `get_or_absent_key_returns_default`
-/// below, which prove the same distinction under `EvalContext::simple`).
+/// The propagation property is worth pinning at a compiled call site even
+/// though `get_or_undef_map_returns_undef` covers it under
+/// `EvalContext::simple`: this is the only stdlib-compiled test showing that an
+/// undef map SUBJECT is not silently conflated with a key miss — `v` and `w`
+/// here are exactly that contrast, in one compiled module.
 ///
 /// MEASURED NEGATIVE, recorded so it is not re-attempted: the undef-KEY form
 /// `get_or(map{"k" => 1mm}, undef, 0mm)` does NOT compile —
@@ -857,16 +860,24 @@ fn e2e_get_or_present_key_with_stdlib() {
 #[test]
 fn e2e_get_or_undef_map_with_stdlib() {
     let module = reify_test_support::compile_source_with_stdlib(
-        r#"structure S { let v = get_or(undef, "k", 0mm) }"#,
+        r#"structure S { let v = get_or(undef, "k", 0mm)  let w = get_or(map{"k" => 1mm}, "k", 0mm) }"#,
     );
-    let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
     let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+
+    // Liveness witness first: a non-Undef expectation on the same compiled
+    // module, so the Undef assertion below cannot pass on a dead harness.
     assert_eq!(
-        reify_expr::eval_expr(expr, &ctx),
+        reify_expr::eval_expr(reify_test_support::get_let_expr(&module, "w"), &ctx),
+        val_1mm(),
+        "harness liveness: get_or(map{{k=>1mm}}, \"k\", 0mm) in the same compiled module must \
+         evaluate to 1mm — if THIS fails, the Undef assertion below proves nothing"
+    );
+
+    assert_eq!(
+        reify_expr::eval_expr(reify_test_support::get_let_expr(&module, "v"), &ctx),
         Value::Undef,
-        "e2e: get_or(undef, \"k\", 0mm) compiled via stdlib must propagate Undef (INV-2) — \
-         propagation test, NOT a drift guard: it stays green under intercept removal"
+        "e2e: get_or(undef, \"k\", 0mm) compiled via stdlib must propagate Undef (INV-2)"
     );
 }
 
