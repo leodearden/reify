@@ -37,3 +37,4 @@ cargo test -p reify-compiler --test examples_smoke --test best_practices_index_s
 | Exemplar | Idiom | Anti-pattern it replaces |
 |---|---|---|
 | `negation.ri` | Unary minus is a first-class prefix operator on dimensioned and dimensionless values, and composes in operand position. | `0mm - x` / `x * -1` as a sign-flip workaround. |
+| `hollow_primitives.ri` | `tube(outer_r, inner_r, height)` (base at z=0; needs `inner_r < outer_r`) and `cylinder_centered(radius, height)` for hollow and origin-centred solids. `box_centered` is an op-identical alias for `box`. | `difference(cylinder(R,h), cylinder(r,h))`; a manual `translate(..., -h/2)` to centre a cylinder. |
