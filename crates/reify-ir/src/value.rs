@@ -2712,6 +2712,11 @@ impl Value {
                 format_display_number_rel(display_value, reference)
             }
             Value::Real(r) => format_display_number_rel(*r, reference),
+            Value::Complex { re, im, dimension } => format!(
+                "{} + {}i",
+                format_display_number_rel(dimension.display_scale(*re), reference),
+                format_display_number_rel(dimension.display_scale(*im), reference)
+            ),
             Value::Tensor(items) => format!("[{}]", join_rel(items, reference)),
             Value::Point(items) => format!("point({})", join_rel(items, reference)),
             Value::Vector(items) => format!("vec({})", join_rel(items, reference)),
@@ -2998,6 +3003,10 @@ fn aggregate_magnitude(v: &Value) -> f64 {
         } => dimension.display_scale(*si_value).abs(),
         Value::Real(r) => r.abs(),
         Value::Int(i) => (*i as f64).abs(),
+        Value::Complex { re, im, dimension } => dimension
+            .display_scale(*re)
+            .abs()
+            .max(dimension.display_scale(*im).abs()),
         Value::Point(items) | Value::Vector(items) | Value::Tensor(items) => {
             items.iter().map(aggregate_magnitude).fold(0.0, f64::max)
         }
@@ -11833,6 +11842,87 @@ mod tests {
             vec![Value::Real(3.0), Value::Real(4.0)],
         ]);
         assert_eq!(v.format_display(), "[[1, 2], [3, 4]]");
+    }
+
+    // ── Complex as an aggregate member (task 5339) ───────────────────────────
+    //
+    // Complex is a numeric leaf that format_display renders through
+    // format_display_number, so it must participate symmetrically in the
+    // relative snap: it contributes its larger |re|/|im| display magnitude to
+    // aggregate_magnitude's reference, and format_display_rel snaps its own
+    // parts against the outer reference rather than falling through to the
+    // absolute path. Without both halves a Tensor/Matrix of Complex (e.g. a
+    // frequency-domain or modal result) would fold to reference == 0.0 and
+    // silently lose the snap for the entire aggregate.
+
+    #[test]
+    fn format_display_tensor_complex_member_contributes_to_reference() {
+        // Without the aggregate_magnitude Complex arm the reference folds to
+        // 4e-13 (the Complex contributing 0.0), so the dust component is its
+        // own max and renders unsnapped.
+        let v = Value::Tensor(vec![
+            Value::Real(4e-13),
+            Value::Complex {
+                re: 21.5,
+                im: 0.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+        ]);
+        assert_eq!(v.format_display(), "[0, 21.5 + 0i]");
+    }
+
+    #[test]
+    fn format_display_tensor_complex_parts_snap_against_outer_reference() {
+        // Without the format_display_rel Complex arm this falls through to
+        // format_display and renders "21.5 + 0.0000000000008i".
+        let v = Value::Tensor(vec![
+            Value::Complex {
+                re: 21.5,
+                im: 8e-13,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+            Value::Real(1.0),
+        ]);
+        assert_eq!(v.format_display(), "[21.5 + 0i, 1]");
+    }
+
+    #[test]
+    fn format_display_tensor_complex_reference_computed_in_display_units() {
+        // Both the Complex's contribution to the reference and its own parts
+        // are taken in display units (mm, via display_scale's ×1000), matching
+        // format_display's to_display_units rendering: reference is 21.5 mm,
+        // not 0.0215 m, so the 1e-9 mm dust part snaps (1e-9 < 2.15e-8) where
+        // a raw-SI reference (threshold 2.15e-11) would leave it rendered.
+        let v = Value::Tensor(vec![
+            Value::Complex {
+                re: 0.0215,
+                im: 1e-12,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 1e-12,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        assert_eq!(v.format_display(), "[21.5 + 0i, 0]");
+    }
+
+    #[test]
+    fn format_display_standalone_complex_is_not_relatively_snapped() {
+        // A lone Complex is a leaf, not an aggregate: like a lone Scalar it
+        // has no containing aggregate to be judged dust against, so it keeps
+        // the unchanged absolute-path rendering (matching
+        // format_display_pair's Complex arm). The snap only applies once it
+        // is a member of a Tensor/Point/Vector/Matrix, as pinned above.
+        let v = Value::Complex {
+            re: 21.5,
+            im: 8e-13,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_eq!(
+            v.format_display(),
+            format!("21.5 + {}i", format_display_number(8e-13))
+        );
     }
 
     // ── Value::Selector substrate tests (step-3 RED / task 4116 α) ───────────
