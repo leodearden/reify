@@ -1690,6 +1690,46 @@ for pb_case in "${PB_CASES[@]}"; do
 done
 pb_exp_resident="${#PB_CASES[@]}"
 
+# ── P-c baselines, captured HERE — before the FIRST audit run over this mount.
+# _snapshot_state_dir <mount> — a sorted path/size/mtime/content manifest of
+# every record under <mount>/.lane-state, or a sentinel when the dir is absent.
+# Two snapshots compare byte-identical iff no record was created, removed,
+# resized, re-stamped, or rewritten. Complements Block J's per-lane
+# _snapshot_lane proof at the SAME fidelity (J's manifest carries %T@ too, so an
+# mtime-touching read cannot hide in either): the audit now reads a second
+# on-disk surface, and that surface gets the same guarantee.
+#
+# The ordering is load-bearing, and is why these live above the P-b run rather
+# than beside the P-c assertions that consume them. A baseline taken AFTER an
+# earlier run over the same mount cannot see a FIRST-RUN-ONLY mutation of an
+# existing record — a normalizing rewrite, a trailing-newline append, a backfill
+# of a missing field: run #1 performs it, the baseline bakes it in, run #2 is
+# idempotent, and the comparison goes green while A1 is violated. Block J takes
+# its baselines before its first run for exactly this reason. (P-c4-P-c8 cover
+# the other half of A1 — never CREATING a record or dir — on a fresh mount.)
+_snapshot_state_dir() {
+    local mount="$1"
+    local dir="$mount/.lane-state"
+    if [ ! -d "$dir" ]; then
+        printf '(no .lane-state)\n'
+        return 0
+    fi
+    local line f
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        f="${line%% *}"
+        printf '%s %s\n' "$line" "$(cat "$f")"
+    done < <(find "$dir" -type f -printf '%p %s %T@\n' 2>/dev/null | sort)
+    return 0
+}
+
+pc_state_before="$(_snapshot_state_dir "$PB_MOUNT")"
+declare -A PC_LANE_BEFORE
+for pb_case in "${PB_CASES[@]}"; do
+    IFS=':' read -r pb_lane _ _ _ _ <<< "$pb_case"
+    PC_LANE_BEFORE["$pb_lane"]="$(_snapshot_lane "$PB_MOUNT/$pb_lane")"
+done
+
 ORACLE_MAP="$PB_MAP" run_helper --mount "$PB_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
 
 assert "P-b1: exit 0" test "$RC" -eq 0
@@ -1736,40 +1776,15 @@ assert "P-b8: pending is the strictly dominant pin bucket" \
     "$(_pinned_field "$OUT" unknown)"
 
 # ── P-c — the state dir is read strictly read-only, and never created ────────
-# _snapshot_state_dir <mount> — a sorted path/size/content manifest of every
-# record under <mount>/.lane-state, or a sentinel when the dir is absent. Two
-# snapshots compare byte-identical iff no record was created, removed, resized,
-# or rewritten. Complements Block J's per-lane _snapshot_lane proof: the audit
-# now reads a second on-disk surface, and that surface needs the same guarantee.
-_snapshot_state_dir() {
-    local mount="$1"
-    local dir="$mount/.lane-state"
-    if [ ! -d "$dir" ]; then
-        printf '(no .lane-state)\n'
-        return 0
-    fi
-    local f
-    while IFS= read -r f; do
-        [ -n "$f" ] || continue
-        printf '%s %s %s\n' "$f" "$(wc -c < "$f")" "$(cat "$f")"
-    done < <(find "$dir" -type f 2>/dev/null | sort)
-    return 0
-}
-
-pc_state_before="$(_snapshot_state_dir "$PB_MOUNT")"
-declare -A PC_LANE_BEFORE
-for pb_case in "${PB_CASES[@]}"; do
-    IFS=':' read -r pb_lane _ _ _ _ <<< "$pb_case"
-    PC_LANE_BEFORE["$pb_lane"]="$(_snapshot_lane "$PB_MOUNT/$pb_lane")"
-done
-
+# The baselines were captured BEFORE P-b's run above, not here: see the comment
+# at their capture site for why that ordering is the whole proof.
 ORACLE_MAP="$PB_MAP" run_helper --mount "$PB_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
 assert "P-c1: exit 0" test "$RC" -eq 0
-assert "P-c2: the .lane-state manifest is byte-identical before/after the run (A1/A5)" \
+assert "P-c2: the .lane-state manifest is byte-identical across BOTH runs (A1/A5)" \
     bash -c '[ "$1" = "$2" ]' _ "$pc_state_before" "$(_snapshot_state_dir "$PB_MOUNT")"
 for pb_case in "${PB_CASES[@]}"; do
     IFS=':' read -r pb_lane _ _ _ _ <<< "$pb_case"
-    assert "P-c3: $pb_lane is byte-identical before/after the run over a state-bearing pool" \
+    assert "P-c3: $pb_lane is byte-identical across BOTH runs over a state-bearing pool" \
         bash -c '[ "$1" = "$2" ]' _ \
         "${PC_LANE_BEFORE[$pb_lane]}" "$(_snapshot_lane "$PB_MOUNT/$pb_lane")"
 done
