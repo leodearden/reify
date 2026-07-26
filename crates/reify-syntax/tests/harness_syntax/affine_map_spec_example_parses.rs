@@ -13,8 +13,7 @@
 
 use reify_core::ModulePath;
 
-mod common;
-use common::make_ts_parser;
+use crate::common::make_ts_parser;
 
 /// Asserts that the canonical AffineMap fixture parses without errors.
 ///

@@ -12,8 +12,7 @@
 //!
 //! User-observable signal: `cargo test -p reify-syntax --test undef_literal_tests`
 
-mod common;
-use common::{find_cst_node, make_ts_parser};
+use crate::common::{find_cst_node, make_ts_parser};
 
 // ── CST section ──────────────────────────────────────────────────────────────
 
