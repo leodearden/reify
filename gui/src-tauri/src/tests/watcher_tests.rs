@@ -284,17 +284,24 @@ fn wait_until_with_retry_reissues_the_attempt_until_the_condition_holds() {
     // not-yet-live watcher must be re-issued, not just waited on.
     let counter = Rc::new(Cell::new(0u32));
     let attempt_counter = counter.clone();
+    let condition_counter = counter.clone();
 
     let found = wait_until_with_retry(
         move || attempt_counter.set(attempt_counter.get() + 1),
         Duration::from_millis(20),
         Duration::from_millis(300),
-        || counter.get() >= 3,
+        move || condition_counter.get() >= 3,
     );
 
     assert!(
         found,
         "condition should be satisfied once attempt has been reissued enough times"
+    );
+    assert!(
+        counter.get() >= 3,
+        "attempt should have been reissued (not just invoked once) before \
+         the condition held, got {} invocations",
+        counter.get()
     );
 }
 
