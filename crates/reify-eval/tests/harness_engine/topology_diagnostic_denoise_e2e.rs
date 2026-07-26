@@ -6,13 +6,33 @@
 //!
 //! - (A) A healthy, selector-free multi-boolean model (mirroring the
 //!   litter-tray dogfooding example that motivated this task) must emit
-//!   ZERO `Severity::Warning` diagnostics carrying either
-//!   `DiagnosticCode::TopologyCorrespondenceDropped` or
-//!   `DiagnosticCode::TopologyAttributeLocalIndexReassigned`, and no
-//!   `Severity::Error`. L1's equal-index guard suppresses the coincident-
-//!   union tie false-positives; L3's Warning→Info downgrade makes "zero
-//!   Warning-severity" true even for any diagnostic that does fire; L2
-//!   skips the tie-scan entirely since the model binds no selector.
+//!   ZERO diagnostics carrying `DiagnosticCode::TopologyCorrespondenceDropped`
+//!   or `DiagnosticCode::TopologyAttributeLocalIndexReassigned` **at any
+//!   severity**, and no `Severity::Error`.
+//!
+//!   The severity-AGNOSTIC (code-only) count is the load-bearing assertion,
+//!   mirroring the pattern
+//!   `engine_build_emits_local_index_reassignment_for_coincident_box_union`
+//!   (`tests/harness_topology_selector/topology_attribute_e2e.rs`) uses. A
+//!   severity-qualified `== Severity::Warning` filter would be VACUOUS here:
+//!   after L3 neither production emit site can produce `Warning` for either
+//!   code, so such an assertion holds unconditionally — independent of L1,
+//!   L2, and the fixture. That vacuity was this test's original defect; the
+//!   zero-Warning check is retained below only as a secondary *global*
+//!   severity contract (nothing anywhere in the build re-Warns these codes),
+//!   never as the primary signal.
+//!
+//!   What the code-only assertion actually pins, jointly: L1's equal-index
+//!   guard suppresses the coincident-union tie false-positives, and L2's
+//!   selector gate skips the tie-scan entirely because this model binds no
+//!   selector (`module_binds_selector` is `false` for it — pinned directly by
+//!   `module_binds_selector_false_for_selector_free_multi_boolean_model` in
+//!   `engine_build/tests.rs`). Because the two mechanisms are in series here,
+//!   this case alone cannot separate them; the single-mechanism pins live at
+//!   unit level (`detect_local_index_reassignment_*` in
+//!   `topology_attribute_propagation.rs` for L1, the `module_binds_selector`
+//!   group in `engine_build/tests.rs` for L2), and case (B) below supplies
+//!   the two-sided engine-level control for the gate.
 //!
 //! - (B) A model that binds a topology selector over a boolean must still
 //!   surface real correspondence-degradation signal at `Severity::Info`,
@@ -163,16 +183,26 @@ impl GeometryKernel for DropInjectingKernel {
 
 /// A healthy, selector-free multi-boolean model — chaining several
 /// `union(box, box)` ops, mirroring the litter-tray dogfooding example that
-/// motivated task #5196 — must emit ZERO `Severity::Warning` diagnostics
-/// carrying either topology-bookkeeping code, and no `Severity::Error`.
+/// motivated task #5196 — must emit ZERO diagnostics carrying either
+/// topology-bookkeeping code **at any severity**, and no `Severity::Error`.
 ///
 /// Every union here is between coincident (fully-overlapping, equal-index)
 /// boxes, exactly the shape the L1 guard targets: before task #5196 this
 /// fixture emitted ~dozens of spurious `TopologyAttributeLocalIndexReassigned`
 /// warnings (one per tied face/edge/vertex pair per union). Real OCCT,
 /// self-skips without it.
+///
+/// The primary assertions filter by CODE ONLY, never by severity — see the
+/// module doc for why a `severity == Severity::Warning` filter is vacuous
+/// post-L3 and cannot fail. Both zero-counts below are EMPIRICALLY observed,
+/// not assumed: this build emits an entirely empty diagnostics list under
+/// real OCCT. The `TopologyCorrespondenceDropped` zero-count is additionally
+/// backed by contract — `reify-kernel-occt/tests/boolean_op_history_integration.rs`
+/// pins `silent_drop_count == 0` for well-formed OCCT boolean fixtures, so a
+/// drop line here would signal genuine kernel-correspondence degradation on
+/// healthy geometry, which is exactly what this case exists to catch.
 #[test]
-fn healthy_selector_free_multi_boolean_model_emits_zero_warning_topology_diagnostics() {
+fn healthy_selector_free_multi_boolean_model_emits_no_topology_bookkeeping_diagnostics() {
     if !OCCT_AVAILABLE {
         eprintln!("skipping: OCCT not available");
         return;
@@ -199,10 +229,46 @@ fn healthy_selector_free_multi_boolean_model_emits_zero_warning_topology_diagnos
         errors
     );
 
+    // PRIMARY (severity-agnostic, and therefore able to fail): the L1 guard +
+    // L2 gate must leave zero tie diagnostics on this healthy fixture.
+    let tie_diags: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned))
+        .collect();
+    assert!(
+        tie_diags.is_empty(),
+        "expected ZERO TopologyAttributeLocalIndexReassigned diagnostics AT ANY SEVERITY on a \
+         healthy, selector-free multi-boolean model (every tie this fixture can produce is \
+         equal-index, and the model binds no selector so the tie-scan is gated off entirely); \
+         got:\n{:#?}",
+        tie_diags
+    );
+
+    // PRIMARY (severity-agnostic): empirically observed to be zero here, and
+    // contract-backed by the OCCT boolean-history integration fixture.
+    let drop_diags: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TopologyCorrespondenceDropped))
+        .collect();
+    assert!(
+        drop_diags.is_empty(),
+        "expected ZERO TopologyCorrespondenceDropped diagnostics AT ANY SEVERITY on a healthy, \
+         well-formed multi-boolean model (real OCCT reports silent_drop_count == 0 for such \
+         fixtures); got:\n{:#?}",
+        drop_diags
+    );
+
+    // SECONDARY, global severity contract only: nothing anywhere in the build
+    // may re-emit either code at Warning severity after L3's downgrade. This
+    // cannot fail while the two code-only assertions above hold — it is kept
+    // as a cheap tripwire for a future third emit site, NOT as this case's
+    // signal.
     assert!(
         !has_warning_topology_diagnostic(&build_result.diagnostics),
-        "expected ZERO Warning-severity topology-bookkeeping diagnostics on a healthy, \
-         selector-free multi-boolean model; got:\n{:#?}",
+        "expected ZERO Warning-severity topology-bookkeeping diagnostics anywhere in the build \
+         (task #5196 L3 downgraded both codes to Info); got:\n{:#?}",
         build_result.diagnostics
     );
 }
