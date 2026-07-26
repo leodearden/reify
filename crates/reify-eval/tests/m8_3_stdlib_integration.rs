@@ -13,7 +13,7 @@
 
 use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::{DiagnosticCode, DimensionVector, ModulePath, Severity, Type, ValueCellId};
+use reify_core::{DiagnosticCode, DimensionVector, ModulePath, Severity, ValueCellId};
 use reify_ir::{CompiledExprKind, ExportFormat, Value};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
@@ -660,58 +660,22 @@ fn m8_tolerancing_resolves_stdlib_position_and_flatness() {
     );
 }
 
-// ── task #3116 step-7: tolerancing_m8_feature_type_is_geometry (RED) ─────────
-
-/// RED (step-7): m8_tolerancing.ri's local `Position` and `Flatness` struct
-/// definitions must declare `feature` with `Type::Geometry` (not `Type::dimensionless_scalar()`).
-///
-/// Assertions:
-///   - `Position.feature`  cell_type == `Type::Geometry`
-///   - `Flatness.feature`  cell_type == `Type::Geometry`
-///
-/// Fails before step-8 because both local structs still bind
-/// `param feature : Real = 0.0` → cell_type is `Type::dimensionless_scalar()`.
-/// Passes after step-8 flips them to `param feature : Geometry`.
-#[test]
-fn tolerancing_m8_feature_type_is_geometry() {
-    let module = compiled_ri(PATH_TOLERANCING);
-
-    // ── Position.feature must be Type::Geometry ───────────────────────────────
-    let position = module
-        .templates
-        .iter()
-        .find(|t| t.name == "Position")
-        .expect("Position template should exist in compiled m8_tolerancing");
-    let pos_feature = position
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "feature")
-        .expect("Position must have a 'feature' value cell");
-    assert_eq!(
-        pos_feature.cell_type,
-        Type::Geometry,
-        "Position.feature must be Type::Geometry (not {:?}) — step-8 flips m8_tolerancing.ri",
-        pos_feature.cell_type
-    );
-
-    // ── Flatness.feature must be Type::Geometry ───────────────────────────────
-    let flatness = module
-        .templates
-        .iter()
-        .find(|t| t.name == "Flatness")
-        .expect("Flatness template should exist in compiled m8_tolerancing");
-    let flat_feature = flatness
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "feature")
-        .expect("Flatness must have a 'feature' value cell");
-    assert_eq!(
-        flat_feature.cell_type,
-        Type::Geometry,
-        "Flatness.feature must be Type::Geometry (not {:?}) — step-8 flips m8_tolerancing.ri",
-        flat_feature.cell_type
-    );
-}
+// ── task #3116 step-7: tolerancing_m8_feature_type_is_geometry (RETIRED) ─────
+//
+// `tolerancing_m8_feature_type_is_geometry` lived here. Its premise was
+// m8_tolerancing.ri's LOCAL `Position` / `Flatness` `structure def`s, resolved
+// via `module.templates.iter().find(|t| t.name == "Position")`. Task #5582
+// stripped those mirrors, and stdlib templates are deliberately NOT merged into
+// `compiled.templates` (presentation purity — resolution-unification PRD §1,
+// Regime B), so the lookup no longer has anything to find.
+//
+// The #3116 signal it guarded — `Flatness.feature` must be `Type::Geometry`,
+// not the old `Real = 0.0` placeholder — is owned at the stdlib level by
+// crates/reify-compiler/tests/tolerancing_tests.rs::
+// `stdlib_feature_datum_refs_have_geometry_type`. It was NOT ported
+// here: re-asserting a stdlib contract from an example-file test is lockstep
+// duplication, and the example's own use of the tightened type is covered by
+// `m8_tolerancing_resolves_stdlib_position_and_flatness` above.
 
 // ── step-11: tolerancing_position_mmc_flatness_ra ────────────────────────────
 
