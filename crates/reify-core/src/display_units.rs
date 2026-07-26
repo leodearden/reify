@@ -76,6 +76,155 @@ pub struct DimensionLadder {
     pub auto_scale: Option<AutoScale>,
 }
 
+/// What PRD display-unit-preference §5's auto-scaling policy decided for one
+/// SI magnitude on one [`DimensionLadder`].
+///
+/// Deliberately carries **no** serde derive, unlike its sibling types in this
+/// module: [`UnitOption`] / [`AutoScale`] / [`DimensionLadder`] are the data
+/// *table* (shipped to the frontend by the `get_unit_ladders` Tauri command),
+/// whereas this is a computed result over borrowed table rows — it has a
+/// lifetime, it is recomputed per magnitude, and nothing transports it across
+/// the process boundary.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AutoScaleChoice<'a> {
+    /// No auto-scaling applies — render at the ladder's static `is_default`
+    /// rung exactly as before §5 existed. Returned for a dimension excluded
+    /// from the policy (`auto_scale: None`), a default-OFF one
+    /// (`enabled: false`, §5b), and for magnitudes the policy cannot act on
+    /// (zero, non-finite).
+    Static,
+    /// Render at this rung: `display_magnitude = si_value / rung.si_scale`,
+    /// which §5a's `1 ≤ |mantissa| < 1000` band is satisfied by.
+    Rung(&'a UnitOption),
+    /// §5c's engineering-notation fallback: auto-scaling is enabled for this
+    /// dimension but *no* eligible rung keeps the mantissa in band, so the
+    /// magnitude is rendered at the ladder's static default `rung` as
+    /// `mantissa × 10^exponent` with `exponent` a multiple of three.
+    ///
+    /// §5c is explicit that this is a fallback mode *within* the auto-scaling
+    /// policy, "not a separate feature with its own on/off switch" — and §5e
+    /// that it "does **not** apply to default-OFF dimensions either". Both
+    /// hold structurally here: this variant is only ever reachable past
+    /// [`DimensionLadder::auto_scaled`]'s posture gate, so a default-OFF or
+    /// `auto_scale: None` dimension can never produce it.
+    Engineering {
+        /// The ladder's `is_default` rung — §5d/§5e both name the static
+        /// default rung as the anchor the magnitude is expressed against.
+        rung: &'a UnitOption,
+        /// Signed mantissa, `1 ≤ |mantissa| < band_hi`.
+        mantissa: f64,
+        /// Power-of-ten exponent, always a multiple of three (§5c).
+        exponent: i32,
+    },
+}
+
+impl DimensionLadder {
+    /// Apply PRD display-unit-preference §5's auto-scaling policy to one SI
+    /// magnitude, returning the rung to render at.
+    ///
+    /// This is the *policy* half of §5; the rendering half (the magnitude
+    /// string, and §5c's `×10ⁿ` glyphs) lives with the display formatter in
+    /// `reify-ir` so an auto-scaled magnitude stays numerically identical in
+    /// convention to every other display magnitude.
+    ///
+    /// Three normative choices, each pinned to its clause:
+    ///
+    /// * **Posture gate (§5e).** The policy engages only for a default-ON
+    ///   dimension. `auto_scale: None` (structurally excluded — Angle's
+    ///   discrete deg/rad, the single-rung Force/Energy/Power ladders) and
+    ///   `enabled: false` (default-OFF — Mass, Pressure, Density) both yield
+    ///   [`AutoScaleChoice::Static`] at every magnitude: §5e's "renders its
+    ///   static default rung's raw magnitude, full stop", including its
+    ///   explicit statement that engineering notation does not apply to them
+    ///   either. Note §5d needs no code here — the pin-suppression rule lives
+    ///   at `resolve_display`'s explicit-preference early return, which never
+    ///   reaches this function.
+    ///
+    /// * **Decimal-sibling eligibility (§5a).** §5a scopes the band to "one
+    ///   SI-prefix step", so a rung is a candidate only when its `si_scale` is
+    ///   a power-of-ten multiple of the default rung's. Length's `in` rung
+    ///   (`si_scale 0.0254`, ratio 25.4) is the sole exclusion in the whole
+    ///   registry. Without it a magnitude-driven rule could render an unpinned
+    ///   *metric* length in inches — a unit-**system** flip, strictly worse
+    ///   than the magnitude flip §5b's rationale is already written to avoid.
+    ///
+    /// * **Minimal hop (§5b).** Among eligible in-band rungs the one nearest
+    ///   the ladder's default index wins, so auto-scaling moves as few rungs
+    ///   as possible off the dimension's familiar default — §5b's stability
+    ///   argument, applied to the choice *within* an enabled dimension.
+    ///
+    /// Returns [`AutoScaleChoice::Static`] for a zero or non-finite
+    /// `si_value`, and for a ladder with a degenerate band or no `is_default`
+    /// rung. `Static` means "render exactly as before §5", so each of those
+    /// degradations is byte-identical to the pre-§5 output.
+    pub fn auto_scaled(&self, si_value: f64) -> AutoScaleChoice<'_> {
+        let Some(auto) = &self.auto_scale else {
+            return AutoScaleChoice::Static;
+        };
+        if !auto.enabled
+            || !auto.band_lo.is_finite()
+            || !auto.band_hi.is_finite()
+            || auto.band_lo >= auto.band_hi
+        {
+            return AutoScaleChoice::Static;
+        }
+        // Zero must render `0 mm`, never `0×10⁰ mm`; a non-finite magnitude
+        // has no meaningful mantissa to band at all.
+        if !si_value.is_finite() || si_value == 0.0 {
+            return AutoScaleChoice::Static;
+        }
+        let Some((default_idx, default_rung)) =
+            self.units.iter().enumerate().find(|(_, u)| u.is_default)
+        else {
+            return AutoScaleChoice::Static;
+        };
+        if !default_rung.si_scale.is_finite() || default_rung.si_scale <= 0.0 {
+            return AutoScaleChoice::Static;
+        }
+
+        let mut candidates: Vec<(usize, &UnitOption)> = self
+            .units
+            .iter()
+            .enumerate()
+            .filter(|(_, u)| is_decimal_sibling(u.si_scale, default_rung.si_scale))
+            .collect();
+        // Minimal hop off the default rung, ties broken by ladder order so the
+        // choice is deterministic and independent of `sort_by_key` stability.
+        candidates.sort_by_key(|(idx, _)| (idx.abs_diff(default_idx), *idx));
+
+        for (_, rung) in &candidates {
+            let mantissa = (si_value / rung.si_scale).abs();
+            if mantissa >= auto.band_lo && mantissa < auto.band_hi {
+                return AutoScaleChoice::Rung(rung);
+            }
+        }
+
+        // §5c: auto-scaling is on but no rung fits — the engineering-notation
+        // fallback is supplied by the follow-up step; until then, degrade to
+        // the pre-§5 static rendering.
+        AutoScaleChoice::Static
+    }
+}
+
+/// Is `si_scale` a power-of-ten multiple of `default_si_scale`?
+///
+/// PRD display-unit-preference §5a's "one SI-prefix step" eligibility rule —
+/// see [`DimensionLadder::auto_scaled`] for why it is load-bearing rather than
+/// decorative. Compared against an epsilon rather than `==` because the ratio
+/// is a float quotient of two table constants (`1e-2 / 1e-3` is `10.000000000000002`,
+/// not `10.0`).
+fn is_decimal_sibling(si_scale: f64, default_si_scale: f64) -> bool {
+    if !si_scale.is_finite() || si_scale <= 0.0 {
+        return false;
+    }
+    let ratio = si_scale / default_si_scale;
+    if !ratio.is_finite() || ratio <= 0.0 {
+        return false;
+    }
+    let log = ratio.log10();
+    log.is_finite() && (log - log.round()).abs() < 1e-9
+}
+
 /// Return the full set of per-dimension unit ladders.
 ///
 /// Each dimension's `is_default` entry is numerically identical to the unit
