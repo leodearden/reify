@@ -1061,11 +1061,17 @@ impl EngineSession {
         // esc-2962-66-class gap this migration closes — the mesh-morph producer.
         //
         // The cfg split is forced by the dependency graph, not a choice:
-        // `reify-mesh-morph` is an OPTIONAL dep enabled only by this crate's `gui`
-        // feature (Cargo.toml:18,24) while this module is ungated (lib.rs:21), and
-        // the workspace-wide `cargo check`/`clippy`/`nextest` passes build
-        // reify-gui WITHOUT `--features gui` (scripts/verify.sh:2016-2018). An
-        // ungated `reify_mesh_morph::` path would not resolve there.
+        // `reify-mesh-morph` is an OPTIONAL (non-dev) dep, enabled only by
+        // this crate's `gui` feature (`gui/src-tauri/Cargo.toml`'s
+        // `[features] gui = [...]` list), while this module is ungated —
+        // `gui/src-tauri/src/lib.rs`'s `pub mod engine;` carries no
+        // `#[cfg(feature = "gui")]`, unlike `debug_server`/`event_bus` in
+        // that same file. The workspace-wide `cargo check`/`clippy`/
+        // `nextest` passes build reify-gui WITHOUT `--features gui` (see
+        // `scripts/verify.sh`'s "gui-feature compile-check" block, which
+        // type-checks the gui-gated code separately and documents that the
+        // default passes run without the feature). An ungated
+        // `reify_mesh_morph::` path would not resolve in that lib/bin build.
         // `MorphRegistration::Unavailable` is A1's variant for exactly this
         // "caller structurally cannot link reify-mesh-morph in this build" case.
         #[cfg(feature = "gui")]
@@ -1073,8 +1079,17 @@ impl EngineSession {
             reify_eval::MorphRegistration::Enabled(reify_mesh_morph::register_morph_producer);
         #[cfg(not(feature = "gui"))]
         let morph = reify_eval::MorphRegistration::Unavailable {
-            reason: "reify-gui built without the `gui` feature: reify-mesh-morph is an \
-                     optional dep gated on that feature, so no producer fn is linkable",
+            // Scoped to the lib/bin (shipping) build, not the test build:
+            // reify-mesh-morph is also an unconditional *dev*-dependency
+            // (`features = ["testing"]`), so it IS on the crate graph for
+            // `cargo test`'s gui-off compilation and this arm still runs
+            // there (the split is on `feature = "gui"`, not `cfg(test)`) —
+            // the reason text must not overclaim un-linkability in that
+            // configuration, only in a real shipping build.
+            reason: "reify-gui lib/bin built without the `gui` feature: \
+                     reify-mesh-morph is an optional (non-dev) dep gated on \
+                     that feature, so no producer fn is linkable in a \
+                     shipping build",
         };
         engine.register_production_compute_fns(morph);
         // Enable undef-cause capture before any check/eval so the per-cell
