@@ -1,4 +1,4 @@
-//! Integration test: a `helix()` wire must be a usable sweep spine.
+//! Integration test: a `helix()` wire must be a usable sweep *and* pipe spine.
 //!
 //! Root-cause discriminator for task #5342. `make_helix_wire`
 //! (crates/reify-kernel-occt/cpp/occt_wrapper.cpp) builds its edge from a
@@ -10,18 +10,27 @@
 //! error `"OCCT make_pipe_with_history: "`. The fix is one call to
 //! `BRepLib::BuildCurves3d` inside `make_helix_wire`.
 //!
-//! We exercise the fix through `GeometryOp::Sweep { profile, path }` (an
-//! explicit posed profile along an arbitrarily-oriented spine), NOT
-//! `GeometryOp::Pipe { path, radius }` — Pipe applies a +Z start-tangent
-//! guard that rejects a helix spine (its start tangent is ~+Y), which is a
-//! separate concern. Sweep has no such guard, so it isolates THIS bug.
+//! #5342 exercised that fix through `GeometryOp::Sweep { profile, path }` (an
+//! explicit posed profile along an arbitrarily-oriented spine) rather than
+//! `GeometryOp::Pipe { path, radius }`: at the time, Pipe applied a +Z
+//! start-tangent guard that rejected a helix spine outright (its start tangent
+//! is ~+Y), so only Sweep could isolate the missing-3D-curve bug. That is why
+//! the Sweep test below still poses its profile by hand.
+//!
+//! Task #5343 has since removed that +Z guard — Pipe now poses the circular
+//! cross-section on the path's own start frame, so it accepts any finite start
+//! tangent. This file therefore also carries the Pipe variant. Together the two
+//! tests pin that a helix wire is usable as BOTH a sweep spine and a pipe
+//! spine, and their side-by-side form documents the ergonomic difference: the
+//! Sweep test needs three posing ops, the Pipe test needs none.
 //!
 //! Mirrors the OCCT-gated skeleton of `sweep_with_history_integration.rs` /
 //! `curve_constructors_integration.rs`: `#![cfg(has_occt)]` plus an
 //! `OCCT_AVAILABLE` early-return so non-OCCT builds skip cleanly.
 //!
-//! RED before the fix: the `Sweep` execute returns `Err` and the `.expect`
-//! panics before the volume assertion is ever reached.
+//! RED before the #5342 fix: the `Sweep` execute returns `Err` and the
+//! `.expect` panics before the volume assertion is ever reached. (Each test's
+//! own doc comment records its individual RED condition.)
 
 #![cfg(has_occt)]
 
@@ -209,9 +218,7 @@ fn helix_wire_pipes_to_positive_volume_solid() {
     let len = kernel
         .query(&GeometryQuery::EdgeLength(helix.id))
         .expect("EdgeLength query on the helix spine wire should succeed");
-    let l = len
-        .as_f64()
-        .expect("edge length value should be numeric");
+    let l = len.as_f64().expect("edge length value should be numeric");
 
     let vol = kernel
         .query(&GeometryQuery::Volume(piped.id))
