@@ -24,9 +24,34 @@
 #
 #     crates/<c>/tests/harness_<subsystem>/<file>.rs
 #
-# declared from the harness root with `mod <file>;` (or, when the on-disk
-# name cannot be a bare module ident, `#[path = "harness_<subsystem>/<file>.rs"]
-# mod <file>;`). Declaring it under its ORIGINAL stem is what gives the merged
+# declared from the harness root with a MANDATORY `#[path]` attribute — the
+# form is always:
+#
+#     #[path = "harness_<subsystem>/<file>.rs"]
+#     mod <file>;
+#
+# `#[path]` is the NORM here, not a fallback for awkward module idents.
+# `crates/<c>/tests/harness_<subsystem>.rs` IS an integration-test CRATE ROOT,
+# and Rust resolves a bare `mod <file>;` in a crate root against the crate
+# root's OWN directory — i.e. `tests/<file>.rs` or `tests/<file>/mod.rs`, never
+# `tests/harness_<subsystem>/<file>.rs`. So without `#[path]` the declaration
+# either fails to compile (no such file) or silently binds the WRONG file (a
+# still-present top-level `tests/<file>.rs` mid-move). Measured across all 12
+# harness roots: every file MOVED under `tests/harness_<subsystem>/` carries
+# `#[path]` — 0 exceptions. (`scripts/check-harness-baseline-registration.sh`
+# states the same rule.)
+#
+# THE ONE PRINCIPLED EXCEPTION is a module that genuinely still lives as a
+# `tests/` SIBLING because it was deliberately NOT moved — the shared `common`
+# helper at `crates/<c>/tests/common/mod.rs`. There a bare `mod common;` is
+# correct precisely BECAUSE crate-root-relative resolution lands on it
+# (harness_cli, harness_occt, harness_fea_solver_e2e do this; harness_langcore
+# and harness_patterns spell the equivalent `#[path = "common/mod.rs"]`, and
+# harness_topology_selector does the same for `common/differential.rs`). The
+# rule is therefore scoped: `#[path]` is mandatory for every former-standalone
+# file moved under the harness directory, not for a retained `tests/` sibling.
+#
+# Declaring the moved file under its ORIGINAL stem is what gives the merged
 # test a stable, predictable module path GOING FORWARD (post-consolidation
 # selectors are `<file>::<test_name>`) — it does NOT preserve the pre-
 # consolidation id. The files being consolidated declare their `#[test]` fns
