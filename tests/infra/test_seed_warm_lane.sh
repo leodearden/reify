@@ -464,8 +464,7 @@ assert "C4: stderr names reflink failure" \
 
 # C5: --fresh-checkout + pre-existing NON-EMPTY <lane_dir>/target → replaced (task 4715)
 # D10 replace semantics: non-empty target is replaced, NOT refused.
-C_LANE3="$(mktemp -d /tmp/test-seed-C-lane3-XXXXXX)"
-_TMPDIRS+=("$C_LANE3")
+C_LANE3="$(make_isolated_lane C-lane3)"
 mkdir -p "$C_LANE3/target"
 echo "existing artifact" > "$C_LANE3/target/artifact.a"
 reset_calls
@@ -891,8 +890,7 @@ printf 'RUSTFLAGS=\nINVOCATION=\n' > "$I_BASE_PARENT/.warm-base-meta"
 
 # ── I1-I3: hermetic replace assertions (stub cp, REIFY_TEST_REFLINK_OK=1) ────
 # Lane has a pre-existing NON-EMPTY target (stale content from prior lane use).
-I_LANE1="$(mktemp -d /tmp/test-seed-I-lane1-XXXXXX)"
-_TMPDIRS+=("$I_LANE1")
+I_LANE1="$(make_isolated_lane I-lane1)"
 mkdir -p "$I_LANE1/target"
 echo "stale artifact" > "$I_LANE1/target/stale.a"
 reset_calls
@@ -919,8 +917,7 @@ assert "I3: STDOUT is exactly <lane_dir>/target" \
 # async branch (e.g. syntax error in the subshell after &) would be invisible
 # to I4-I7 which always force SYNC=1.
 # No trash-leak assertion (async cleanup is inherently race-conditional).
-I_LANE_ASYNC="$(mktemp -d /tmp/test-seed-I-async-XXXXXX)"
-_TMPDIRS+=("$I_LANE_ASYNC")
+I_LANE_ASYNC="$(make_isolated_lane I-async)"
 mkdir -p "$I_LANE_ASYNC/target"
 echo "stale artifact" > "$I_LANE_ASYNC/target/stale.a"
 reset_calls
@@ -2047,8 +2044,7 @@ wait "$Q_LOCK1_PID" 2>/dev/null || true
 
 # ── H2: lock FREE → --lane-lock succeeds (RC 0, stdout resolved <lane>/target,
 # target replaced from base). ─────────────────────────────────────────────────
-Q_LANE2="$(mktemp -d /tmp/test-seed-Q-lane2-XXXXXX)"
-_TMPDIRS+=("$Q_LANE2")
+Q_LANE2="$(make_isolated_lane Q-lane2)"
 mkdir -p "$Q_LANE2/target"
 echo "sentinel content" > "$Q_LANE2/target/SENTINEL.txt"
 
@@ -2113,8 +2109,7 @@ wait "$Q_LOCK3_PID" 2>/dev/null || true
 # real non-empty target so a background trash rm is actually spawned; the
 # sleeping rm stub (REIFY_TEST_SLEEP_RESEED_TRASH_RM=1) keeps that background
 # process alive for ~2s so the immediate lock re-probe below is deterministic.
-Q_LANE4="$(mktemp -d /tmp/test-seed-Q-lane4-XXXXXX)"
-_TMPDIRS+=("$Q_LANE4")
+Q_LANE4="$(make_isolated_lane Q-lane4)"
 mkdir -p "$Q_LANE4/target"
 echo "stale artifact" > "$Q_LANE4/target/stale.a"
 Q_LOCK4="${Q_LANE4}.lock"
@@ -2177,8 +2172,7 @@ wait "$Q_LOCK5_PID" 2>/dev/null || true
 # H5b: lock FREE + WAIT=1 -> succeeds exactly as H2 (the knob only changes
 # behavior when the lock is contended; an uncontended flock -w N acquires on
 # the very first try, same as flock -n or a bare blocking flock).
-Q_LANE6="$(mktemp -d /tmp/test-seed-Q-lane6-XXXXXX)"
-_TMPDIRS+=("$Q_LANE6")
+Q_LANE6="$(make_isolated_lane Q-lane6)"
 mkdir -p "$Q_LANE6/target"
 echo "sentinel content" > "$Q_LANE6/target/SENTINEL.txt"
 
@@ -2217,8 +2211,7 @@ assert "H5c: cp NEVER invoked (rejected before any mutation)" \
 # SINGLETON _merge-verify lane is documented to rely on (queue forever
 # rather than refuse, since it has no alternate FREE lane to fall back to).
 # Mixed-case "UnLiMiTeD" also covers the case-insensitive glob match. ───────
-Q_LANE8="$(mktemp -d /tmp/test-seed-Q-lane8-XXXXXX)"
-_TMPDIRS+=("$Q_LANE8")
+Q_LANE8="$(make_isolated_lane Q-lane8)"
 mkdir -p "$Q_LANE8/target"
 echo "sentinel content" > "$Q_LANE8/target/SENTINEL.txt"
 
@@ -2349,8 +2342,7 @@ assert "H6b: cp invoked with --reflink=always" \
 # normally (RC 0, target replaced) instead of refusing (75). This is the
 # mechanism thin --reseed (FD 9) and gc reclaim (FD 8) rely on to avoid the
 # flock-non-reentrancy self-refuse under the fail-safe default. ───────────────
-Q_LANE12="$(mktemp -d /tmp/test-seed-Q-lane12-XXXXXX)"
-_TMPDIRS+=("$Q_LANE12")
+Q_LANE12="$(make_isolated_lane Q-lane12)"
 mkdir -p "$Q_LANE12/target"
 echo "sentinel content" > "$Q_LANE12/target/SENTINEL.txt"
 
@@ -2414,8 +2406,7 @@ assert "H8: cp NEVER invoked (rejected before any mutation)" \
 # pin "refuse OR queue rather than clobber" for the no-`--lane-lock` acquire path
 # (the esc-5214 regression). Mirrors H5d's backgrounded-seed + done-marker
 # pattern, but WITHOUT --lane-lock (the lock is now default-on). ──────────────
-Q_LANE11="$(mktemp -d /tmp/test-seed-Q-lane11-XXXXXX)"
-_TMPDIRS+=("$Q_LANE11")
+Q_LANE11="$(make_isolated_lane Q-lane11)"
 mkdir -p "$Q_LANE11/target"
 echo "sentinel content" > "$Q_LANE11/target/SENTINEL.txt"
 
