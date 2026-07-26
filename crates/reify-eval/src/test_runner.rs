@@ -544,4 +544,84 @@ constraint def Positive {
             "sentinel target must not be registered"
         );
     }
+
+    /// RED→GREEN pin for task 5075 (PRD A4): `build_test_engine` must delegate
+    /// to the canonical bundler `Engine::register_production_compute_fns`
+    /// instead of hand-rolling the two `register_*` calls.
+    ///
+    /// The migration is runtime-set-neutral by construction:
+    /// `register_production_compute_fns` == `register_compute_fns` +
+    /// `register_shell_extract_compute_fns` + the morph arm, and the morph arm
+    /// here is `MorphRegistration::Unavailable`, so the registered trampoline
+    /// set and `morph_producer() == None` are identical before and after this
+    /// migration — that observable is already covered (and stays green
+    /// unchanged) by `build_test_engine_registers_compute_trampolines` above.
+    /// The one genuinely new runtime observable is the `Unavailable`-arm
+    /// `tracing::debug!` event: it fires zero times pre-migration (the
+    /// hand-rolled calls never construct a `MorphRegistration` at all) and
+    /// exactly once post-migration, carrying this call site's `reason`. That
+    /// event is the RED signal this test pins.
+    ///
+    /// This test does not grep source text for the bundler call — grep-based
+    /// drift detection is sibling task A5's deliverable
+    /// (`scripts/check-compute-trampoline-registration.sh`); duplicating it
+    /// here would be lockstep duplication.
+    #[test]
+    fn build_test_engine_delegates_to_production_bundler() {
+        use reify_constraints::SimpleConstraintChecker;
+
+        let (subscriber, capture) =
+            reify_test_support::CapturingSubscriberBuilder::new(tracing::Level::DEBUG)
+                .target_prefix("reify_eval::compute_targets")
+                .build();
+        let engine = tracing::subscriber::with_default(subscriber, || {
+            super::build_test_engine(Box::new(SimpleConstraintChecker))
+        });
+
+        // PRIMARY: exactly one captured event carries a `reason` field, and
+        // that field names both the task that established the dev-dep
+        // boundary (4744) and why (a dependency cycle) — this proves
+        // `register_production_compute_fns` ran with
+        // `MorphRegistration::Unavailable { reason }` carrying THIS call
+        // site's dep-boundary reason. Filtering by field presence (not a
+        // total event count) keeps this robust against an unrelated future
+        // DEBUG callsite under `reify_eval::compute_targets`.
+        let reasons: Vec<String> = capture
+            .fields_by_event()
+            .iter()
+            .filter_map(|f| f.get("reason").cloned())
+            .collect();
+        assert_eq!(
+            reasons.len(),
+            1,
+            "expected exactly one DEBUG event with a `reason` field from the \
+             Unavailable arm; captured events: {:?}",
+            capture.fields_by_event()
+        );
+        assert!(
+            reasons[0].contains("4744") && reasons[0].contains("cycle"),
+            "reason field must cite task 4744 and the dependency cycle; got {:?}",
+            reasons[0]
+        );
+
+        // Structural semantics of the Unavailable arm: the Enabled arm was
+        // not taken, so no mesh-morph producer is installed.
+        assert!(
+            engine.morph_producer().is_none(),
+            "Unavailable arm must not install a mesh-morph producer"
+        );
+
+        // Negative control (cannot pass trivially): the shared bundle body
+        // must still actually have run.
+        assert!(
+            engine.compute_dispatch("shell-extract::extract").is_some(),
+            "shell-extract::extract trampoline not registered"
+        );
+        assert!(
+            engine
+                .compute_dispatch("reify::unregistered::sentinel")
+                .is_none(),
+            "sentinel target must not be registered"
+        );
+    }
 }
