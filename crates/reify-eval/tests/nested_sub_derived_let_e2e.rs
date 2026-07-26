@@ -140,3 +140,56 @@ structure def L3 {
 
     assert_no_error_diagnostics(&result.diagnostics, "three_level_chain_resolves");
 }
+
+/// A parent override must thread through the nesting recursion into a nested
+/// sub's constructor arg.
+///
+/// `Parent` overrides `Mid.scale` to 30mm; `Mid` forwards it to its own nested
+/// sub as `Kid(w: scale)`. The arg expression is compiled in `Mid`'s scope, so
+/// it references the cell `Mid.scale`. Evaluating it against the GLOBAL values
+/// map reads the *template default* (1mm) and silently produces `w = 1mm` /
+/// `echo = 2mm` — a wrong value, not an `Undef`, so nothing else would catch
+/// it. Evaluating it against the instance's own `child_values` (which carries
+/// `Parent.m.scale = 30mm` under the template-scoped key `Mid.scale`) gives the
+/// correct 30mm / 60mm.
+#[test]
+fn nested_constructor_arg_threads_through_two_levels() {
+    const SOURCE: &str = r#"
+structure def Kid {
+    param w : Length = 10mm
+    let off = w * 2.0
+}
+
+structure def Mid {
+    param scale : Length = 1mm
+    sub k = Kid(w: scale)
+    let relay = self.k.off
+}
+
+structure def Parent {
+    sub m = Mid(scale: 30mm)
+    let echo = self.m.relay
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    // Control: the one-level override already lands on the instance's own
+    // param cell today. This is the value the nested arg must be evaluated
+    // against — the template default `Mid.scale` is 1mm.
+    assert_scalar_si(&result.values, "Parent.m", "scale", 0.03);
+    assert_scalar_si(&result.values, "Mid", "scale", 0.001);
+
+    // The override must reach the nested sub's own param and everything
+    // derived from it: 30mm -> off 60mm -> relay 60mm -> echo 60mm.
+    assert_scalar_si(&result.values, "Parent.m.k", "w", 0.03);
+    assert_scalar_si(&result.values, "Parent.m.k", "off", 0.06);
+    assert_scalar_si(&result.values, "Parent.m", "relay", 0.06);
+    assert_scalar_si(&result.values, "Parent", "echo", 0.06);
+
+    assert_no_error_diagnostics(
+        &result.diagnostics,
+        "nested_constructor_arg_threads_through_two_levels",
+    );
+}
