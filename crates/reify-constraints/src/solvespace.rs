@@ -26,11 +26,12 @@ use crate::sketch::{
     SketchHandleMap, SketchSolveResult, SketchSystem,
 };
 use crate::slvs_sys::{
-    self, SLVS_C_ANGLE, SLVS_C_DIAMETER, SLVS_C_EQUAL_RADIUS, SLVS_C_HORIZONTAL, SLVS_C_PARALLEL,
-    SLVS_C_PERPENDICULAR, SLVS_C_POINTS_COINCIDENT, SLVS_C_PT_ON_CIRCLE, SLVS_C_PT_PT_DISTANCE,
-    SLVS_C_VERTICAL, SLVS_C_WHERE_DRAGGED, SLVS_FREE_IN_3D, SLVS_RESULT_DIDNT_CONVERGE,
-    SLVS_RESULT_INCONSISTENT, SLVS_RESULT_OKAY, SLVS_RESULT_TOO_MANY_UNKNOWNS, Slvs_Constraint,
-    Slvs_Entity, Slvs_Param, Slvs_System, Slvs_hConstraint, Slvs_hEntity, Slvs_hGroup, Slvs_hParam,
+    self, SLVS_C_ANGLE, SLVS_C_ARC_LINE_TANGENT, SLVS_C_CURVE_CURVE_TANGENT, SLVS_C_DIAMETER,
+    SLVS_C_EQUAL_RADIUS, SLVS_C_HORIZONTAL, SLVS_C_PARALLEL, SLVS_C_PERPENDICULAR,
+    SLVS_C_POINTS_COINCIDENT, SLVS_C_PT_ON_CIRCLE, SLVS_C_PT_PT_DISTANCE, SLVS_C_VERTICAL,
+    SLVS_C_WHERE_DRAGGED, SLVS_FREE_IN_3D, SLVS_RESULT_DIDNT_CONVERGE, SLVS_RESULT_INCONSISTENT,
+    SLVS_RESULT_OKAY, SLVS_RESULT_TOO_MANY_UNKNOWNS, Slvs_Constraint, Slvs_Entity, Slvs_Param,
+    Slvs_System, Slvs_hConstraint, Slvs_hEntity, Slvs_hGroup, Slvs_hParam,
 };
 
 /// Global mutex to serialize access to the libslvs solver.
@@ -795,11 +796,40 @@ impl SystemBuilder {
         entity_a: Slvs_hEntity,
         entity_b: Slvs_hEntity,
     ) {
+        // Both endpoint selectors zero: every constraint but the tangency pair
+        // ignores them entirely.
+        self.add_constraint_wrkpl_other(type_, wrkpl, val_a, pt_a, pt_b, entity_a, entity_b, 0, 0);
+    }
+
+    /// Add a workplane constraint that also selects *which end* of each curve it
+    /// is talking about.
+    ///
+    /// slvs carries that choice in `other` / `other2`: 0 names a curve's start
+    /// point, 1 its end point.  Only the tangency constraints read them, which
+    /// is why [`Self::add_constraint_wrkpl`] — the form every other constraint
+    /// uses — is this function with both selectors zero rather than a second
+    /// copy of the push.
+    #[allow(clippy::too_many_arguments)]
+    fn add_constraint_wrkpl_other(
+        &mut self,
+        type_: std::os::raw::c_int,
+        wrkpl: Slvs_hEntity,
+        val_a: f64,
+        pt_a: Slvs_hEntity,
+        pt_b: Slvs_hEntity,
+        entity_a: Slvs_hEntity,
+        entity_b: Slvs_hEntity,
+        other: std::os::raw::c_int,
+        other2: std::os::raw::c_int,
+    ) {
         let ch = self.alloc.constraint();
         let group = self.solve_group;
-        self.constraints.push(Slvs_Constraint::new(
-            ch, group, type_, wrkpl, val_a, pt_a, pt_b, entity_a, entity_b,
-        ));
+        self.constraints.push(
+            Slvs_Constraint::new(
+                ch, group, type_, wrkpl, val_a, pt_a, pt_b, entity_a, entity_b,
+            )
+            .with_other(other, other2),
+        );
     }
 
     /// Lower a [`SketchSystem`] directly into this builder's slvs system.
@@ -982,6 +1012,32 @@ impl SystemBuilder {
             }
         }
 
+        /// Resolve `id` to an arc handle, or report and yield `None`.
+        ///
+        /// Deliberately stricter than [`curve`]: the tangency constraints read
+        /// the *endpoints* of the curves they name, and a circle has none.
+        /// Handing libslvs a circle there makes it resolve a zero point handle
+        /// and abort the process, so this kind check is load-bearing rather than
+        /// tidy.
+        fn arc(
+            emitted: &HashMap<SketchEntityId, EmittedEntity>,
+            def: &SketchConstraintDef,
+            id: SketchEntityId,
+        ) -> Option<Slvs_hEntity> {
+            match emitted.get(&id) {
+                Some(EmittedEntity::Arc { entity }) => Some(*entity),
+                _ => {
+                    unresolved_constraint_ref(def, id, "arc");
+                    None
+                }
+            }
+        }
+
+        /// slvs' endpoint selector for a curve: 0 = its start, 1 = its end.
+        fn endpoint(at_end: bool) -> std::os::raw::c_int {
+            if at_end { 1 } else { 0 }
+        }
+
         /// Resolve `id` to a line entity handle, or report and yield `None`.
         fn line(
             emitted: &HashMap<SketchEntityId, EmittedEntity>,
@@ -1106,11 +1162,57 @@ impl SystemBuilder {
                 };
                 self.add_constraint_wrkpl(SLVS_C_EQUAL_RADIUS, wrkpl, 0.0, NONE, NONE, ae, be);
             }
-            // Tangency and the remaining 2D relations land with their own
-            // fixtures.
+            // Tangency, both arms.
+            //
+            // These constrain *directions* only: they say the line is square to
+            // the arc's radius at the chosen end, or that two arcs' radii there
+            // are parallel.  Neither makes the curves touch — a caller who wants
+            // them to meet pairs the tangency with a `Coincident` on the two
+            // endpoints, which is what the fixtures do.
+            SketchConstraint::ArcLineTangent {
+                arc: arc_id,
+                line: line_id,
+                at_end,
+            } => {
+                let (Some(ae), Some(le)) = (arc(emitted, def, arc_id), line(emitted, def, line_id))
+                else {
+                    return;
+                };
+                self.add_constraint_wrkpl_other(
+                    SLVS_C_ARC_LINE_TANGENT,
+                    wrkpl,
+                    0.0,
+                    NONE,
+                    NONE,
+                    ae,
+                    le,
+                    endpoint(at_end),
+                    0,
+                );
+            }
+            SketchConstraint::CurveCurveTangent {
+                a,
+                a_at_end,
+                b,
+                b_at_end,
+            } => {
+                let (Some(ae), Some(be)) = (arc(emitted, def, a), arc(emitted, def, b)) else {
+                    return;
+                };
+                self.add_constraint_wrkpl_other(
+                    SLVS_C_CURVE_CURVE_TANGENT,
+                    wrkpl,
+                    0.0,
+                    NONE,
+                    NONE,
+                    ae,
+                    be,
+                    endpoint(a_at_end),
+                    endpoint(b_at_end),
+                );
+            }
+            // The remaining 2D relations land with their own fixtures.
             SketchConstraint::PtOnLine { .. }
-            | SketchConstraint::ArcLineTangent { .. }
-            | SketchConstraint::CurveCurveTangent { .. }
             | SketchConstraint::SymmetricLine { .. }
             | SketchConstraint::AtMidpoint { .. }
             | SketchConstraint::EqualLengthLines { .. } => {}
