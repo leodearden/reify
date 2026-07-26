@@ -121,18 +121,31 @@ _note_real_lane() {
 # identify the lane arg reliably instead of logging $2 unconditionally.
 #
 # Audit (task 5609, exhaustive over every run_helper call site in this
-# file): exactly 4 are flag-first with no lane arg at all — :393 --help,
-# :400 --unknown-flag-xyz, :405 --fresh-checkout, :713 --record-base
-# "$G_BASE" (there $2 is $G_BASE, a base, not a lane) — and every other call
-# site passes <base_dir> <lane_dir> [flags...] positionally. The filter
-# below — record $2 only when $1 is non-empty and does not start with "-",
-# AND $2 is non-empty and does not start with "-" — classifies every one of
-# them correctly: the 4 flag-first sites are skipped because $1 fails the
-# filter (which is also what correctly excludes :713's $G_BASE, regardless
-# of its own value), and every canonical site is recorded. Being shape-based
-# rather than an enumerated allowlist, it keeps classifying correctly as
-# call sites are added or removed, unlike a hardcoded list which would
-# silently rot.
+# file): exactly 4 are flag-first with no lane arg at all — --help,
+# --unknown-flag-xyz, --fresh-checkout, --record-base "$G_BASE" (there the
+# only non-flag arg is $G_BASE, a base, not a lane) — and every other call
+# site passes <base_dir> <lane_dir> [flags...] positionally, sometimes with
+# a further non-flag positional AFTER the lane too (e.g. --base-commit shaX).
+# Cited here by flag text rather than line number, which does not rot as
+# lines are inserted above (an amendment to this same task had to repair a
+# set of numeric citations that had already gone stale mid-task).
+#
+# The filter walks every arg of the call, collects the ones that do NOT
+# start with "-" (in order), and — only if at least two were collected —
+# records the SECOND one as the lane. This is shape-based over the WHOLE
+# call, not just $1/$2: unlike an earlier version keyed only on whether $1
+# itself looked like a flag, this also classifies correctly for a
+# flag-FIRST call that still carries a lane further along, e.g. a
+# hypothetical `run_helper --lane-lock "$BASE" "$LANE"` (--lane-lock and
+# --assume-lane-lock-held are real scripts/seed-warm-lane.sh flags, not
+# currently used at any run_helper call site in this file, but the script's
+# own CLI already makes that shape plausible for a future call site). Verified
+# against all 44 current call sites plus both hypothetical flag-first-with-lane
+# shapes: --record-base "$G_BASE" contributes exactly ONE non-flag arg
+# ($G_BASE itself), so it never reaches the two-collected threshold and needs
+# no separate exclusion. Being shape-based rather than an enumerated
+# allowlist, it keeps classifying correctly as call sites are added or
+# removed, unlike a hardcoded list which would silently rot.
 #
 # As with _note_shared_trash_use/_note_real_lane, the trailing `return 0` is
 # mandatory: this runs as a bare unguarded statement at the top of
@@ -140,13 +153,16 @@ _note_real_lane() {
 # set -euo pipefail. State is file-backed (_HELPER_LANES_FILE, defined below
 # near _LANE_ROOT) for the same subshell-visibility reason documented above.
 _note_helper_lane() {
-    case "${1:-}" in
-        ''|-*) return 0 ;;
-    esac
-    case "${2:-}" in
-        ''|-*) return 0 ;;
-    esac
-    printf '%s\n' "$2" >> "$_HELPER_LANES_FILE"
+    local a=() x
+    for x in "$@"; do
+        case "$x" in
+            -*) ;;
+            *) a+=("$x") ;;
+        esac
+    done
+    if [ "${#a[@]}" -ge 2 ]; then
+        printf '%s\n' "${a[1]}" >> "$_HELPER_LANES_FILE"
+    fi
     return 0
 }
 
