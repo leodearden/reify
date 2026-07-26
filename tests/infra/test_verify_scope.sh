@@ -36,6 +36,21 @@ _TMPDIRS=()
 cleanup() { for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done; }
 trap cleanup EXIT
 
+# Hermetic against the ambient REIFY_RELEASE_DELTA_SKIP knob (task #5280 zeta;
+# dark-factory-orchestrator.yaml exports it into the whole merge-gate verify.sh
+# process tree once armed). The knob is consulted ONLY under DF_VERIFY_ROLE=merge
+# (scripts/verify.sh's _RELEASE_DELTA_SKIP block) and, when 1 on a delta-clean
+# tree, swaps a captured release nextest pass for the frozen
+# 'RELEASE-PASS: skipped (delta-clean)' marker. This file re-asserts
+# DF_VERIFY_ROLE=merge inline for several --print-plan fixtures below (e.g.
+# B-KLOC-merge, MG-B5, MG-B6A/B6B), so neutralize the knob for the WHOLE file
+# exactly once here -- mirroring tests/infra/run_all.sh's pool-wide
+# `export REIFY_RELEASE_DELTA_SKIP=0` -- rather than per-capture, so a future
+# merge-role capture can't reintroduce the same masking gap (task 5460). A
+# test that legitimately exercises the knob would set it inline per-command,
+# which overrides this export.
+export REIFY_RELEASE_DELTA_SKIP=0
+
 echo "=== verify.sh scope picker tests ==="
 
 # make_fixture VARNAME — create an isolated git repo with the three scripts
@@ -933,13 +948,10 @@ mkdir -p "$FIX_MG_B5/crates/reify-doc/src"
 printf 'x\n' > "$FIX_MG_B5/crates/reify-doc/src/lib.rs"
 git -C "$FIX_MG_B5" add crates
 git -C "$FIX_MG_B5" commit -q -m "task changes"
-# REIFY_RELEASE_DELTA_SKIP is unset: that knob is consulted ONLY under
-# DF_VERIFY_ROLE=merge (scripts/verify.sh, the _RELEASE_DELTA_SKIP decision
-# block) and, when 1 on a delta-clean tree, replaces the release nextest pass
-# with the frozen `echo 'RELEASE-PASS: skipped (delta-clean)'` marker — which
-# would spuriously fail the MG-B5 release-pass-present assertion below (task
-# 5460).
-PLAN_MG_B5="$(cd "$FIX_MG_B5" && env -u REIFY_RELEASE_DELTA_SKIP DF_VERIFY_ROLE=merge REIFY_AFFECTED_CRATES_OVERRIDE="reify-doc reify-ir" bash scripts/verify.sh all --profile both --scope all --include-infra --print-plan 2>/dev/null)" || true
+# (the file-level REIFY_RELEASE_DELTA_SKIP=0 export near the top of this file
+# keeps this capture's release-pass-present assertion below hermetic against
+# the ambient knob)
+PLAN_MG_B5="$(cd "$FIX_MG_B5" && DF_VERIFY_ROLE=merge REIFY_AFFECTED_CRATES_OVERRIDE="reify-doc reify-ir" bash scripts/verify.sh all --profile both --scope all --include-infra --print-plan 2>/dev/null)" || true
 git -C "$FIX_MG_B5" checkout -q main
 git -C "$FIX_MG_B5" branch -q -D task-branch
 assert "MG-B5: scope=all in plan header" \
