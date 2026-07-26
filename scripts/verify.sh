@@ -2317,10 +2317,11 @@ build_plan() {
     # nextest_release recorded by emit_nextest_pass as it applied each profile's
     # within-ceiling subset (0 when that profile fell back / is not in the plan);
     # gui recorded by the gui block from its validated REIFY_GUI_RETRY_SPECS;
-    # run_all a build-time word-count of REIFY_RUN_ALL_MEMBER_SUBSET here
-    # (verify.sh COUNTS only — run_all.sh still owns the actual member-skip;
-    # this is a best-effort upper bound, not a post-validation count — see the
-    # detailed caveat at the counting site below).
+    # run_all the POST-VALIDATION matched count sourced from run_all.sh's OWN
+    # count-only probe (task 5373): verify.sh forks run_all.sh in a hermetic
+    # count-only mode so run_all.sh — which owns the member-skip predicate — is
+    # the single source of truth (INV-5), and a stale/renamed basename it would
+    # drop no longer inflates the count. See the counting site below.
     # Fire IFF scope=failed_only AND ≥1 suite ACTUALLY narrowed — the honest-
     # events gate (INV-6): a within-ceiling nextest subset applied for ≥1
     # profile (_RETRY_NEXTEST_*_APPLIED>0 ⇒ eligible AND usable), OR a non-empty
@@ -2334,37 +2335,61 @@ build_plan() {
     # REIFY_VERIFY_RETRY_SCOPE=failed_only ⇒ no echo, so the ~30 existing
     # plan-shape tests stay green.
     if [ "${REIFY_VERIFY_RETRY_SCOPE:-}" = "failed_only" ]; then
-        # run_all subset size: a word-count of the DF-supplied member list
-        # (verify.sh COUNTS only — run_all.sh owns the member-skip). This is a
-        # BEST-EFFORT count, not a post-validation one: if a supplied member
-        # basename doesn't exist under run_all's INFRA_DIR (e.g. renamed or
-        # deleted between DF's attempt-0 failure-set discovery and this
-        # retry's dispatch), run_all.sh WARNs and silently ignores it
-        # ("member '...' not found in $INFRA_DIR (ignored)") while this
-        # word-count still includes it — inflating run_all=N and the marker
-        # relative to what actually ran. Accepted (code-review amend, task
-        # 5290): DF constructs the subset from {failed members} that already
-        # passed attempt-0 discovery (PRD verify-retry-failed-only.md §4.2),
-        # so a dropped member is a rare edge, not the common case; fully
-        # closing it needs run_all.sh to report its post-validation member
-        # count back to verify.sh, a cross-file protocol change touching
-        # tests/infra/run_all.sh, which this task does not hold a lock on
-        # (locks: scripts/verify.sh + tests/infra/test_verify_retry_failed_only.sh
-        # only — filed as a follow-up rather than done here). set -f around
-        # the split so a stray glob in a member name cannot pathname-expand
-        # (members are .sh basenames; belt-and-suspenders), then RESTORE the
-        # caller's prior noglob state rather than unconditionally clearing it
-        # — verify.sh does not run under -f today, but a bare `set +f` would
-        # silently clobber a noglob caller for any code after build_plan.
+        # run_all subset size: the POST-VALIDATION matched count, sourced from
+        # run_all.sh's OWN count-only probe rather than a raw word-count of the
+        # DF-supplied member list (task 5373, closing task 5290's accepted gap).
+        # Previously this was a BEST-EFFORT word-count: a supplied member
+        # basename absent under run_all's INFRA_DIR (renamed/deleted between
+        # DF's attempt-0 failure-set discovery and this retry's dispatch) is
+        # WARNed-and-dropped by run_all.sh ("member '...' not found in
+        # $INFRA_DIR (ignored)") while the word-count still counted it —
+        # inflating run_all=N vs. what actually ran (INV-6 honesty gap). Now
+        # verify.sh forks run_all.sh's hermetic count-only probe
+        # (REIFY_RUN_ALL_SUBSET_COUNT_ONLY=1), which applies run_all.sh's own
+        # member-skip predicate and reports the matched count WITHOUT running
+        # any member — so run_all.sh is the single source of truth (INV-5) and
+        # the gap is CLOSED. A defensive word-count fallback (below) still
+        # fires the marker on the impossible-in-tree case where run_all.sh is
+        # missing or predates the probe.
         local _mk_run_all=0
         if [ -n "${REIFY_RUN_ALL_MEMBER_SUBSET:-}" ]; then
-            local -a _mk_ra_toks
-            local _mk_had_f=0
-            case $- in *f*) _mk_had_f=1 ;; esac
-            set -f
-            _mk_ra_toks=(${REIFY_RUN_ALL_MEMBER_SUBSET})
-            [ "$_mk_had_f" -eq 1 ] || set +f
-            _mk_run_all=${#_mk_ra_toks[@]}
+            # Fork the count-only probe. It resolves cwd-relative because
+            # build_plan runs after the `cd "$REPO_ROOT"` near verify.sh's top,
+            # exactly like the run_all.sh plan line above (both guard on
+            # `test -f tests/infra/run_all.sh`). REIFY_RUN_ALL_MEMBER_SUBSET is
+            # forwarded explicitly (it is already in the environment, but
+            # forwarding is robust to a non-exported caller). The pipe is
+            # terminated with `|| true` to stay set -e/pipefail-safe, and the
+            # anchored grep pulls exactly the machine token.
+            local _mk_ra_tok=""
+            if [ -f tests/infra/run_all.sh ]; then
+                _mk_ra_tok="$(REIFY_RUN_ALL_SUBSET_COUNT_ONLY=1 \
+                    REIFY_RUN_ALL_MEMBER_SUBSET="${REIFY_RUN_ALL_MEMBER_SUBSET}" \
+                    bash tests/infra/run_all.sh 2>/dev/null \
+                    | grep -oE '@@REIFY_RUN_ALL_SUBSET_MATCHED=[0-9]+@@' | head -n1 || true)"
+            fi
+            if [ -n "$_mk_ra_tok" ]; then
+                # Strip the @@…=<n>@@ wrapper down to the bare integer.
+                _mk_ra_tok="${_mk_ra_tok#@@REIFY_RUN_ALL_SUBSET_MATCHED=}"
+                _mk_run_all="${_mk_ra_tok%@@}"
+            else
+                # Defensive fallback — impossible in-tree (run_all.sh present
+                # and 5373-aware always emits the token). Only reached if
+                # run_all.sh is missing or predates task 5373, so it prints no
+                # token: use the prior noglob-guarded word-count so the marker
+                # still FIRES (INV-6 fire-when-narrowed) rather than
+                # under-reporting to 0. set -f around the split so a stray glob
+                # in a member name cannot pathname-expand (members are .sh
+                # basenames; belt-and-suspenders), then RESTORE the caller's
+                # prior noglob state rather than unconditionally clearing it.
+                local -a _mk_ra_toks
+                local _mk_had_f=0
+                case $- in *f*) _mk_had_f=1 ;; esac
+                set -f
+                _mk_ra_toks=(${REIFY_RUN_ALL_MEMBER_SUBSET})
+                [ "$_mk_had_f" -eq 1 ] || set +f
+                _mk_run_all=${#_mk_ra_toks[@]}
+            fi
         fi
         if [ "$_RETRY_NEXTEST_DEBUG_APPLIED" -gt 0 ] \
             || [ "$_RETRY_NEXTEST_RELEASE_APPLIED" -gt 0 ] \
