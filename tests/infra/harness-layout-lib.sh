@@ -39,6 +39,32 @@
 #                                          comment/blank stripping as
 #                                          run-all-classification-lib.sh; exact
 #                                          full-line fixed-string match.
+#   harness_layout_unit_lines <root-harness-rs>
+#                                          print "<total> <root_lines>
+#                                          <module_lines> <module_files>" for
+#                                          the COMPILE UNIT rooted at
+#                                          <root-harness-rs>: <root_lines> is
+#                                          the root file's own `wc -l` (0 if
+#                                          absent); <module_lines>/<module_files>
+#                                          sum `wc -l`/count over the files in
+#                                          its own harness_<subsystem>/ module
+#                                          directory (0/0 if that dir does not
+#                                          exist — the single-file-harness
+#                                          case); <total> = <root_lines> +
+#                                          <module_lines>. KNOWN, BOUNDED
+#                                          LIMITATION: files pulled in from
+#                                          OUTSIDE the module dir (a shared
+#                                          tests/common/ helper via
+#                                          `#[path = "common/x.rs"]` or a bare
+#                                          `mod common;`) are deliberately NOT
+#                                          attributed to the unit — measured,
+#                                          e.g. attributing
+#                                          crates/reify-eval/tests/harness_topology_selector.rs's
+#                                          `#[path = "common/differential.rs"]`
+#                                          include (2128 lines) would put it at
+#                                          21470 lines, 7.4% over CAP_LINES —
+#                                          a cap/split call for the PRD owner,
+#                                          not a measurement fix.
 #
 # Environment:
 #   REIFY_HARNESS_LAYOUT_BASELINE  Override the baseline manifest path. Defaults
@@ -146,4 +172,50 @@ harness_layout_baseline_contains() {
     grep -vE '^[[:space:]]*#' "$baseline" \
         | grep -vE '^[[:space:]]*$' \
         | grep -xF -- "$path" >/dev/null
+}
+
+# harness_layout_unit_lines <root-harness-rs> — print "<total> <root_lines>
+# <module_lines> <module_files>" (space-separated) for the compile unit
+# rooted at <root-harness-rs>.
+#
+# <root_lines>  = `wc -l` of the root file itself (0 if the root is absent).
+# module dir    = ${root%.rs}, i.e. the harness_<subsystem>/ directory next
+#                 to the root.
+# <module_lines>/<module_files> = sum of `wc -l` / count over the files
+#                 directly inside the module dir (0/0 when the dir does not
+#                 exist — the single-file-harness case).
+# <total>       = <root_lines> + <module_lines>.
+#
+# Per-file `wc -l` is summed rather than `cat`-ing the files through a single
+# `wc -l`: it matches the existing root-file counting semantics exactly and
+# avoids `cat` merging one file's unterminated last line into the next file's
+# first line, which would silently undercount (PRD
+# docs/prds/merge-gate-compile-cost.md §5 C2 settles raw line count as the
+# measure).
+#
+# Flat, non-recursive walk over the module dir's direct entries, filtered to
+# regular files only (`[ -f "$f" ] || continue`) — it does not descend into
+# nested subdirectories and does not filter by extension.
+harness_layout_unit_lines() {
+    local root="$1"
+    local root_lines=0 module_lines=0 module_files=0 n f
+    local moddir="${root%.rs}"
+
+    if [ -f "$root" ]; then
+        root_lines="$(wc -l < "$root")"
+        root_lines="${root_lines//[[:space:]]/}"   # portable: strip any wc padding
+    fi
+
+    if [ -d "$moddir" ]; then
+        for f in "$moddir"/*; do
+            [ -f "$f" ] || continue
+            n="$(wc -l < "$f")"
+            n="${n//[[:space:]]/}"   # portable: strip any wc padding
+            module_lines=$((module_lines + n))
+            module_files=$((module_files + 1))
+        done
+    fi
+
+    printf '%s %s %s %s\n' \
+        "$((root_lines + module_lines))" "$root_lines" "$module_lines" "$module_files"
 }

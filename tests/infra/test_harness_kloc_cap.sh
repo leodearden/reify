@@ -52,11 +52,14 @@
 # For each of the 5 CONSOLIDATABLE crates, enumerate its top-level `tests/*.rs`
 # and assert:
 #
-#   (a) kLOC CAP. Every `harness_<subsystem>.rs` compile unit is <= the cap
-#       (CAP_LINES, measured as RAW `wc -l` line count — simplest and
-#       conservative, PRD §11; ~20 kLOC is the upper end of the §7 10-20 kLOC
-#       band). A harness that grows past the cap must be SPLIT into a second
-#       `harness_<subsystem2>.rs`, never allowed to balloon unbounded.
+#   (a) kLOC CAP. Every `harness_<subsystem>.rs` compile unit — the ROOT file
+#       PLUS its own `harness_<subsystem>/` module directory (NOT the root
+#       file alone) — is <= the cap (CAP_LINES, measured as RAW `wc -l` line
+#       count summed across the root and every file in the module directory —
+#       simplest and conservative, PRD §11; ~20 kLOC is the upper end of the
+#       §7 10-20 kLOC band). A harness that grows past the cap must be SPLIT
+#       into a second `harness_<subsystem2>.rs`, never allowed to balloon
+#       unbounded.
 #
 #   (b) NAMING / NO RE-ACCRETION. Every top-level `tests/*.rs` is EITHER a
 #       sanctioned `harness_<subsystem>.rs`, OR one of the 7 override binaries,
@@ -175,7 +178,9 @@ _emit() {
 # live driver drives the real crate tests dirs.
 #
 # rule (a) — kLOC cap: for each harness_<subsystem>.rs, take the raw `wc -l`
-# line count and flag it if it exceeds <cap_lines>.
+# line count of the WHOLE compile unit (the root file plus its own
+# harness_<subsystem>/ module directory, via harness_layout_unit_lines) and
+# flag it if it exceeds <cap_lines>.
 # ---------------------------------------------------------------------------
 harness_layout_violations() {
     local crate="$1"
@@ -184,7 +189,7 @@ harness_layout_violations() {
     local cap_lines="$4"
 
     local violations=0
-    local f base lines key
+    local f base lines key root_lines module_lines module_files
 
     # Graceful degradation: a missing crate tests dir is an explicit FAIL, never
     # a silent pass — a non-existent dir would otherwise glob to zero files and
@@ -215,8 +220,8 @@ harness_layout_violations() {
         # rule (a): kLOC cap governs the harness_<subsystem>.rs compile units.
         case "$base" in
             harness_*.rs)
-                lines="$(wc -l < "$f")"
-                lines="${lines//[[:space:]]/}"   # portable: strip any wc padding
+                IFS=' ' read -r lines root_lines module_lines module_files \
+                    <<<"$(harness_layout_unit_lines "$f")" || true
                 if [ "$lines" -gt "$cap_lines" ]; then
                     _emit FAIL "crate=$crate" "file=$f" "reason=exceeds-cap" \
                         "lines=$lines" "cap=$cap_lines"
