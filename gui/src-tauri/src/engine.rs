@@ -1060,20 +1060,11 @@ impl EngineSession {
         // trampolines, the shell-extract trampoline, and — new here, the
         // esc-2962-66-class gap this migration closes — the mesh-morph producer.
         //
-        // The cfg split is forced by the dependency graph, not a choice:
-        // `reify-mesh-morph` is an OPTIONAL (non-dev) dep, enabled only by
-        // this crate's `gui` feature (`gui/src-tauri/Cargo.toml`'s
-        // `[features] gui = [...]` list), while this module is ungated —
-        // `gui/src-tauri/src/lib.rs`'s `pub mod engine;` carries no
-        // `#[cfg(feature = "gui")]`, unlike `debug_server`/`event_bus` in
-        // that same file. The workspace-wide `cargo check`/`clippy`/
-        // `nextest` passes build reify-gui WITHOUT `--features gui` (see
-        // `scripts/verify.sh`'s "gui-feature compile-check" block, which
-        // type-checks the gui-gated code separately and documents that the
-        // default passes run without the feature). An ungated
-        // `reify_mesh_morph::` path would not resolve in that lib/bin build.
-        // `MorphRegistration::Unavailable` is A1's variant for exactly this
-        // "caller structurally cannot link reify-mesh-morph in this build" case.
+        // `reify-mesh-morph` is optional, gated on this crate's `gui` feature,
+        // while this module is ungated — so the non-`gui` lib/bin build cannot
+        // name `reify_mesh_morph::` directly, forcing the cfg split below. See
+        // `MorphRegistration`'s rustdoc (reify-eval's `compute_targets` module)
+        // for the `Unavailable` contract this feeds.
         #[cfg(feature = "gui")]
         let morph =
             reify_eval::MorphRegistration::Enabled(reify_mesh_morph::register_morph_producer);
