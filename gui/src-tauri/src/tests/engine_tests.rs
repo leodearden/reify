@@ -19768,10 +19768,7 @@ fn build_gui_state_surfaces_build_time_geometry_error_in_compile_diagnostics() {
         .collect();
     for msg in &non_error_tess {
         assert!(
-            !state
-                .compile_diagnostics
-                .iter()
-                .any(|c| &&c.message == msg),
+            !state.compile_diagnostics.iter().any(|c| &&c.message == msg),
             "non-Error tessellation diagnostic {msg:?} must not be folded into \
              compile_diagnostics — only the Error class crosses over.\n\
              compile_diagnostics: {:?}",
