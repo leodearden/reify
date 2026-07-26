@@ -582,17 +582,17 @@ pub fn compile_with_prelude_context_checked_with_config(
     // Signature resolution compiles no expression, so it runs before any
     // structure template exists; it seeds `ctx.resolution_functions` with
     // signature-only stubs for the phases that follow.
+    //
+    // Phase order from here: signatures → traits → fields → constraint_defs →
+    // **entities + fn bodies (one unified pass, source order)** → post-passes.
+    // Function param defaults and bodies are compiled by `phase_entities`,
+    // interleaved with entity templates in declaration order, so a fn body
+    // constructing a same-module structure gets that structure's AUTHORITATIVE
+    // template. There is no separate `phase_functions` and no skeleton mirror.
     compile_builder::functions_phase::phase_fn_signatures(
         &mut compile_ctx,
         prelude_refs,
         &decl_refs.fn_refs,
-    );
-
-    compile_builder::functions_phase::phase_functions(
-        &mut compile_ctx,
-        prelude_refs,
-        &decl_refs.fn_refs,
-        &decl_refs.structure_refs,
     );
 
     let trait_names = compile_builder::traits_phase::phase_traits(

@@ -143,6 +143,31 @@ pub(crate) fn phase_entities(
         &mut ctx.diagnostics,
     );
 
+    // ── Pass-local function resolution table (task 5494) ──
+    //
+    // This pass is the UNIFIED source-order pass: it compiles fn param defaults
+    // and bodies interleaved with entity templates, in declaration order, so each
+    // side sees the authoritative output of everything declared above it.  That
+    // requires mutating the function table mid-loop (a structure declared after
+    // `fn run(...)` must pad an omitted defaulted arg from `run`'s REAL
+    // `param_defaults`, not from its signature stub — `try_default_padding`).
+    //
+    // The table is pass-LOCAL rather than a `ctx` field because `compile_entity_decl`
+    // already takes 20 split `ctx` borrows (rationale at the bottom of this file); a
+    // `&mut` on a `ctx` field aliased by those borrows would not compile.  Written
+    // back into `ctx.resolution_functions` at the end of the pass.
+    //
+    // Entries `0..ctx.fn_signatures.len()` are the signature stubs seeded by
+    // `phase_fn_signatures` (and preserved by `phase_traits`' rebuild), in
+    // declaration order — so a fn's declaration index indexes this table directly.
+    let mut resolution_functions: Vec<CompiledFunction> =
+        std::mem::take(&mut ctx.resolution_functions);
+    // Declaration index of the next `Declaration::Function` — parallel to
+    // `decl_refs.fn_refs` and hence to `ctx.fn_signatures`, because
+    // `pre_pass::collect_decl_refs` pushes every `Declaration::Function` in source
+    // order with no filtering.
+    let mut fn_decl_index: usize = 0;
+
     for decl in &parsed.declarations {
         match decl {
             reify_ast::Declaration::Structure(structure) => {
@@ -151,7 +176,7 @@ pub(crate) fn phase_entities(
                         EntityDefRef::from(structure),
                         EntityKind::Structure,
                         &ctx.resolution_enums,
-                        &ctx.resolution_functions,
+                        &resolution_functions,
                         &trait_registry,
                         &structure_names,
                         trait_names,
@@ -203,8 +228,63 @@ pub(crate) fn phase_entities(
                     );
                 }
             }
-            reify_ast::Declaration::Function(_) => {
-                // Already compiled by functions_phase::phase_functions.
+            reify_ast::Declaration::Function(fn_def) => {
+                // task 5494 (PRD `stdlib-namespace.md` D-8): a fn's param defaults
+                // and body compile HERE, in source order, against the AUTHORITATIVE
+                // structure templates built so far — never against a mirror.
+                //
+                // The registry composition is the same as `compile_entity`'s
+                // `entity_template_registry`: prelude structure_defs first, then the
+                // module's own already-compiled structure templates (local shadows
+                // prelude).  A fn body may therefore construct a same-module
+                // structure declared ABOVE it; one declared BELOW is not in the
+                // registry, matching the no-forward-reference rule `compile_entity`
+                // already obeys for entity → entity references.
+                let idx = fn_decl_index;
+                fn_decl_index += 1;
+                let fn_template_registry: HashMap<String, &TopologyTemplate> =
+                    prelude_template_registry
+                        .iter()
+                        .map(|(k, v)| (k.clone(), *v))
+                        .chain(
+                            ctx.templates
+                                .iter()
+                                .filter(|t| t.entity_kind == EntityKind::Structure)
+                                .map(|t| (t.name.clone(), t)),
+                        )
+                        .collect();
+                let compiled = match ctx.fn_signatures.get(idx) {
+                    Some(sig) => {
+                        debug_assert_eq!(
+                            sig.name, fn_def.name,
+                            "fn_signatures must stay parallel to the source-order \
+                             Declaration::Function sequence"
+                        );
+                        // `&ctx.functions` is the prior-siblings table: a fn resolves
+                        // calls to EARLIER sibling declarations only (forward
+                        // references are not supported at the function layer).
+                        crate::compile_builder::functions_phase::compile_function_decl(
+                            fn_def,
+                            sig,
+                            &ctx.resolution_enums,
+                            &ctx.functions,
+                            &fn_template_registry,
+                            &mut ctx.diagnostics,
+                        )
+                    }
+                    None => None,
+                };
+                drop(fn_template_registry);
+                if let Some(f) = compiled {
+                    // Replace this fn's signature stub with the real
+                    // `CompiledFunction` so a LATER structure calling it pads an
+                    // omitted defaulted arg from real `param_defaults`
+                    // (`try_default_padding`), not from the stub's empty ones.
+                    if let Some(slot) = resolution_functions.get_mut(idx) {
+                        *slot = f.clone();
+                    }
+                    ctx.functions.push(f);
+                }
             }
             reify_ast::Declaration::Trait(_) => {
                 // Already compiled by traits_phase::phase_traits.
@@ -215,7 +295,7 @@ pub(crate) fn phase_entities(
                         EntityDefRef::from(occurrence),
                         EntityKind::Occurrence,
                         &ctx.resolution_enums,
-                        &ctx.resolution_functions,
+                        &resolution_functions,
                         &trait_registry,
                         &structure_names,
                         trait_names,
@@ -260,7 +340,7 @@ pub(crate) fn phase_entities(
                             EntityDefRef::from(s),
                             EntityKind::Structure,
                             &ctx.resolution_enums,
-                            &ctx.resolution_functions,
+                            &resolution_functions,
                             &trait_registry,
                             &structure_names,
                             trait_names,
@@ -312,12 +392,25 @@ pub(crate) fn phase_entities(
                     trait_names,
                     &ctx.alias_registry,
                     &ctx.resolution_enums,
-                    &ctx.resolution_functions,
+                    &resolution_functions,
                     &mut ctx.diagnostics,
                 );
             }
         }
     }
+
+    // ── Unified-pass epilogue (task 5494) ──
+    //
+    // Append the trait-static fns buffered by `phase_traits` AFTER the user fns,
+    // reproducing the pre-5494 observable order `[user fns in source order …,
+    // trait-static fns …]` that `compute_module_hash` folds and
+    // `CompiledModule::functions` first-match dispatch depends on.
+    let mut trait_static_fns = std::mem::take(&mut ctx.trait_static_fns);
+    ctx.functions.append(&mut trait_static_fns);
+
+    // Publish the pass-local table (real `CompiledFunction`s in place of the
+    // signature stubs) for the post-passes that read `ctx.resolution_functions`.
+    ctx.resolution_functions = resolution_functions;
 }
 
 /// Ambient-default collection — file scope AND purpose scope (task B).

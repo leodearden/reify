@@ -1,18 +1,36 @@
-//! Phase-7 functions: compile every `fn` declaration, then build the merged
-//! user+prelude resolution table for later phases.
+//! Function compilation, split into two sub-passes (task 5494 / PRD
+//! `stdlib-namespace.md` D-8).
+//!
+//! * [`phase_fn_signatures`] runs EARLY — before any structure template exists —
+//!   and resolves every `fn` declaration's signature.  It seeds
+//!   `ctx.resolution_functions` with signature-only stubs so the phases between
+//!   it and the unified pass (`phase_traits`, `phase_fields`,
+//!   `phase_constraint_defs`) can resolve calls to same-module fns.
+//! * [`compile_function_decl`] compiles one fn's param defaults and body.  It is
+//!   driven by the unified source-order pass in `entities_phase::phase_entities`,
+//!   which interleaves fn bodies with entity templates in declaration order, so
+//!   a fn body constructs a same-module structure against that structure's
+//!   AUTHORITATIVE [`TopologyTemplate`].
+//!
+//! There is no mirror/skeleton template registry any more: the transient
+//! `build_structure_def_skeleton` templates task 3895 fabricated for every
+//! `structure_def` — and the two silent-divergence hazards they carried (poison
+//! defaults compiled with discarded diagnostics; nested-ctor-in-let lowering to
+//! a generic `FunctionCall` because no template registry was installed) — are
+//! deleted.
 
 use std::collections::HashMap;
 
-use reify_ast::{FnDef, StructureDef};
+use reify_ast::FnDef;
 
-use reify_ir::CompiledFunction;
+use reify_core::Diagnostic;
+use reify_ir::{CompiledFunction, EnumDef};
 
 use crate::CompiledModule;
 use crate::compile_builder::ctx::CompilationCtx;
-use crate::entity::build_structure_def_skeleton;
-use crate::functions::{compile_function_with_signature, resolve_fn_signature};
+use crate::functions::{FnSignature, compile_function_with_signature, resolve_fn_signature};
 use crate::merge_prelude_functions;
-use crate::types::{EntityKind, TopologyTemplate};
+use crate::types::TopologyTemplate;
 
 /// Resolve every `fn` declaration's SIGNATURE, in source order.
 ///
@@ -24,8 +42,8 @@ use crate::types::{EntityKind, TopologyTemplate};
 /// registry.
 ///
 /// Seeds `ctx.resolution_functions` with signature-only stubs merged with the
-/// prelude via [`merge_prelude_functions`] — the same composition
-/// `phase_functions` uses — so the phases that run between this one and the
+/// prelude via [`merge_prelude_functions`] — the same composition the old
+/// `phase_functions` used — so the phases that run between this one and the
 /// unified pass (`phase_traits`, `phase_fields`, `phase_constraint_defs`) can
 /// resolve calls to same-module fns.
 pub(crate) fn phase_fn_signatures(
@@ -52,97 +70,37 @@ pub(crate) fn phase_fn_signatures(
     ctx.resolution_functions = merge_prelude_functions(&ctx.fn_signature_stubs(), &prelude_fns);
 }
 
-/// Run phase-7 (functions).
+/// Compile ONE `fn` declaration's param defaults and body — the second half of
+/// the two-sub-pass split.
 ///
-/// 1. If `fn_refs` is non-empty: build a merged template registry from
-///    (a) prelude structure_def templates and (b) skeleton templates from the
-///    module's own `structure_def`s (task 3895 — same-module construction
-///    support); then iterate `fn_refs` in source order calling
-///    [`compile_function`] with the registry, `ctx.resolution_enums`,
-///    accumulated `ctx.functions`, and `ctx.alias_registry`.  When `fn_refs`
-///    is empty this block is skipped — skeleton compilation would be wasted.
-///    Prelude entries are inserted first so same-module skeletons shadow them,
-///    mirroring the prelude-first / local-shadows composition in
-///    `compile_entity`.
-/// 2. (always) Build `ctx.resolution_functions` by merging user functions with
-///    prelude functions via [`merge_prelude_functions`] — the canonical shadow
-///    predicate for the Reify function table. User functions appear first so
-///    first-match-wins dispatch shadows duplicate prelude entries.
-pub(crate) fn phase_functions(
-    ctx: &mut CompilationCtx,
-    prelude: &[&CompiledModule],
-    fn_refs: &[&FnDef],
-    structure_refs: &[&StructureDef],
-) {
-    // Build skeleton TopologyTemplates and compile user functions only when
-    // fn_refs is non-empty.  When the module has no functions the merged
-    // registry is never consumed, so building skeletons (and compiling their
-    // param defaults) is entirely wasted work.
-    if !fn_refs.is_empty() {
-        // Skeletons are declared BEFORE `merged_registry` so they outlive the
-        // &-borrows taken by the registry (drop order is reverse-declaration).
-        let skeletons: Vec<TopologyTemplate> = structure_refs
-            .iter()
-            .map(|s| {
-                build_structure_def_skeleton(
-                    s,
-                    &ctx.resolution_enums,
-                    &ctx.functions,
-                    &ctx.alias_registry,
-                    &ctx.resolution_structure_names,
-                    &ctx.resolution_trait_names,
-                    &ctx.unit_registry,
-                )
-            })
-            .collect();
-
-        // Build the merged registry: prelude entries first (so same-module skeletons
-        // shadow prelude templates of the same name — mirrors compile_entity's
-        // entity_template_registry composition at entity.rs:396-405).
-        let mut merged_registry: HashMap<String, &TopologyTemplate> = prelude
-            .iter()
-            .flat_map(|m| m.templates.iter())
-            .filter(|t| t.entity_kind == EntityKind::Structure)
-            .map(|t| (t.name.clone(), t))
-            .collect();
-        for sk in skeletons.iter() {
-            merged_registry.insert(sk.name.clone(), sk);
-        }
-
-        // Compile user function param defaults + bodies in source order.
-        //
-        // Signatures were already resolved (and their diagnostics already emitted
-        // exactly once) by `phase_fn_signatures`; `ctx.fn_signatures` is parallel
-        // to `fn_refs`, so the declaration index indexes both.  Re-resolving here
-        // would double every signature-level diagnostic.
-        //
-        // Passing `&ctx.functions` as the "prior compiled functions" parameter lets
-        // a function resolve a call to an earlier sibling declaration (forward
-        // references are not supported at the function layer).
-        for (i, fn_def) in fn_refs.iter().enumerate() {
-            let sig = &ctx.fn_signatures[i];
-            if let Some(compiled_fn) = compile_function_with_signature(
-                fn_def,
-                sig,
-                &ctx.resolution_enums,
-                &ctx.functions,
-                Some(&merged_registry),
-                &mut ctx.diagnostics,
-            ) {
-                ctx.functions.push(compiled_fn);
-            }
-        }
-    }
-
-    // 3. Build the resolution function list for compile-time overload dispatch.
-    //
-    // User functions appear first (shadowing priority); prelude functions with
-    // distinct `(name, arity, param_types)` triples are appended. See
-    // `merge_prelude_functions()` for the canonical shadow predicate.
-    // `ctx.functions` (user-only) remains the output stored in CompiledModule.
-    let prelude_fns: Vec<CompiledFunction> = prelude
-        .iter()
-        .flat_map(|m| m.functions.iter().cloned())
-        .collect();
-    ctx.resolution_functions = merge_prelude_functions(&ctx.functions, &prelude_fns);
+/// Called from the `Declaration::Function` arm of
+/// `entities_phase::phase_entities`, in source order, so `template_registry`
+/// holds the prelude structure_defs plus every same-module structure template
+/// compiled SO FAR.  A fn body may therefore construct a same-module structure
+/// declared ABOVE it and get that structure's authoritative template — the same
+/// no-forward-reference rule `compile_entity` already obeys for entity → entity
+/// references (`compiled_templates` = templates so far).
+///
+/// `functions` is the prior-siblings table: a fn resolves calls to earlier
+/// sibling declarations only (forward references are not supported at the
+/// function layer).
+///
+/// Signature-level diagnostics are NOT emitted here — [`phase_fn_signatures`]
+/// already emitted them exactly once.
+pub(crate) fn compile_function_decl(
+    fn_def: &FnDef,
+    sig: &FnSignature,
+    enum_defs: &[EnumDef],
+    functions: &[CompiledFunction],
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<CompiledFunction> {
+    compile_function_with_signature(
+        fn_def,
+        sig,
+        enum_defs,
+        functions,
+        Some(template_registry),
+        diagnostics,
+    )
 }

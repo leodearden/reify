@@ -6,7 +6,7 @@
 //! phase modules.
 
 use reify_ast::{
-    Declaration, FieldDef, FnDef, ParsedModule, StructureDef, TraitDecl, TypeAliasDecl, UnitDecl,
+    Declaration, FieldDef, FnDef, ParsedModule, TraitDecl, TypeAliasDecl, UnitDecl,
 };
 use reify_core::{Diagnostic, DiagnosticLabel, ModulePath};
 
@@ -101,12 +101,6 @@ pub(crate) struct DeclRefs<'a> {
     pub(crate) field_refs: Vec<&'a FieldDef>,
     pub(crate) unit_refs: Vec<&'a UnitDecl>,
     pub(crate) alias_refs: Vec<&'a TypeAliasDecl>,
-    /// Same-module `structure_def` declarations, in source order, first-def only.
-    ///
-    /// Used by `phase_functions` to build skeleton [`TopologyTemplate`]s so that
-    /// fn bodies can lower `Foo()` to `StructureInstanceCtor` before
-    /// `phase_entities` runs (task 3895).
-    pub(crate) structure_refs: Vec<&'a StructureDef>,
 }
 
 /// Single-pass scan over `parsed.declarations` that:
@@ -131,7 +125,6 @@ pub(crate) fn collect_decl_refs<'a>(
         field_refs: Vec::new(),
         unit_refs: Vec::new(),
         alias_refs: Vec::new(),
-        structure_refs: Vec::new(),
     };
 
     for decl in &parsed.declarations {
@@ -165,9 +158,7 @@ pub(crate) fn collect_decl_refs<'a>(
                 }
             }
             Declaration::Structure(structure) => {
-                if ctx.record_or_report_duplicate(&structure.name, structure.span, "structure") {
-                    refs.structure_refs.push(structure);
-                }
+                ctx.record_or_report_duplicate(&structure.name, structure.span, "structure");
             }
             Declaration::Occurrence(occurrence) => {
                 ctx.record_or_report_duplicate(&occurrence.name, occurrence.span, "occurrence");
@@ -186,19 +177,18 @@ pub(crate) fn collect_decl_refs<'a>(
             Declaration::Purpose(p) => {
                 // task 4639: reserve nested structure names in the entity
                 // namespace (spec §4.2.1) for duplicate detection and so they
-                // flow into `structure_names`. NOT pushed to refs.structure_refs
-                // — compiled by the Purpose arm in phase_entities instead.
+                // flow into `structure_names`. Compiled by the Purpose arm in
+                // phase_entities.
                 //
-                // Intentional limitation: because purpose-nested structures are
-                // absent from `structure_refs`, `phase_functions` will NOT build a
-                // skeleton TopologyTemplate for them (it only walks `structure_refs`).
-                // This means a function body that refers to a purpose-nested structure
-                // as a type parameter (e.g. `fn foo(x: InPurpose)`) has a name that
-                // resolves via `structure_names` but no matching skeleton — an
-                // unresolved-type error will be emitted at that function's compile
-                // site. This is the intended behaviour for the v1 ambient-default
-                // scope (task 4639): purpose-nested structures are not referenceable
-                // from function signatures/bodies.
+                // Intentional limitation: a purpose-nested structure's template is
+                // built by the Purpose arm, so a function body referring to one
+                // (e.g. `fn foo(x: InPurpose)`) has a name that resolves via
+                // `structure_names` but — depending on declaration order — may have
+                // no matching template in the fn-body registry, drawing an
+                // unresolved-type error at that function's compile site. This is the
+                // intended behaviour for the v1 ambient-default scope (task 4639):
+                // purpose-nested structures are not referenceable from function
+                // signatures/bodies.
                 for s in &p.structures {
                     ctx.record_or_report_duplicate(&s.name, s.span, "structure");
                 }
