@@ -321,51 +321,44 @@ handler acting on their behalf) has reviewed and authorized it — the guard in
 §2 is scoped to the automated recon-stage caller, not to `update_task` as
 such.
 
+**The `update_task` tool schema is the authority for the write semantics —
+re-read it, don't trust this note.** Fetch it with
+`ToolSearch(query="select:mcp__fused-memory__update_task")` before performing
+a correction. This note deliberately does **not** reproduce the
+`metadata_mode` mode table, the `replace` semantics, or the `append`
+deprecation story: that text can change independently of this runbook, and a
+stale second source of truth for a destructive operation is worse than a
+pointer. What follows is only the part the schema does *not* tell you — how
+its knobs map onto the specific fields this section is about, and the one way
+a plausible-looking choice silently fails.
+
 **Three fields, three different knobs.** This section's heading spans
-`metadata.files`, `metadata.failing_tests`, title and description, but they
-are written through three separate mechanisms. Every quotation below is from
-the live `update_task` MCP tool schema, which is the **authority** here —
-re-read it with `ToolSearch(query="select:mcp__fused-memory__update_task")`
-before performing a correction rather than re-deriving these semantics from
-memory or from this note.
+`metadata.files`, `metadata.failing_tests`, title and description, which are
+written through three separate mechanisms — do not route one through
+another's knob:
 
-- **`metadata.files` / `metadata.failing_tests`** — inside the `metadata`
-  blob; governed by `metadata_mode`.
-- **`title` / `description`** — top-level structured columns, *unaffected by
-  `metadata_mode`*: "Each non-None field overwrites the corresponding
-  column." Never route a title/description correction through `metadata`.
-- **`details` / `prompt`** — governed by `append`, which the schema calls
-  "the only knob that governs `details`/`prompt` append — `metadata_mode`
-  does NOT affect the details path".
+| Field | Knob |
+|---|---|
+| `metadata.files`, `metadata.failing_tests` | `metadata_mode` (the `metadata` blob only) |
+| `title`, `description` | neither — top-level structured columns, each non-None field overwrites its column, *unaffected by `metadata_mode`* |
+| `details`, `prompt` | `append` — which per the schema is the **only** knob governing the details path, and which `metadata_mode` does not affect |
 
-**For a scoped metadata correction, use the default `merge` mode.** Omitting
-`metadata_mode` selects `'merge'`: "shallow last-write-wins. Omitted keys
-preserved; supplied keys overwrite wholesale" (`{**existing, **incoming}`).
-That is exactly what a Signature-1 or Signature-2 field repair wants —
-supply *only* the key being fixed, its new value overwrites the old one
-wholesale, and every unrelated metadata key is preserved automatically.
+**Use the default `merge` mode for a scoped field repair.** Omitting
+`metadata_mode` is correct for a Signature-1 or Signature-2 correction:
+supply *only* the key being fixed, its new value replaces the old one
+wholesale, and unrelated metadata keys survive untouched. `replace` is for a
+structurally corrupt metadata blob, not a single-key fix — see the schema.
 
 > **Warning: `metadata_mode='additive'` (and its deprecated `append=true`
-> shim) CANNOT correct an existing wrong value.** `'additive'` is "recursive
-> list union+dedup, scalar/type-collision OLD-wins". Worked through this
-> runbook's own headline case: correcting #5295's `metadata.files` from
-> `["tests/infra/test_run_all_content_skip.sh"]` to
-> `["tests/infra/test_cpu_load_governance_deflake.sh"]` under `'additive'`
+> shim) CANNOT correct an existing wrong value.** This is the non-obvious
+> failure mode, worked through this runbook's own headline case: correcting
+> #5295's `metadata.files` from `["tests/infra/test_run_all_content_skip.sh"]`
+> to `["tests/infra/test_cpu_load_governance_deflake.sh"]` under `'additive'`
 > yields the *union* of the two lists — the misattributed Signature-2 path
 > survives while the task now reads as "corrected", which is worse than the
 > original corruption because it looks remediated. For a scalar metadata
-> value, OLD-wins makes the write a silent no-op. Do not use
-> `additive`/`append=true` on this path.
-
-`metadata_mode='replace'` — "whole-blob overwrite. Bypasses the corrupt-blob
-guard; the sanctioned repair path" — is for the case where the metadata
-**blob itself** is corrupt (unparseable or structurally wrong), not for a
-scoped single-key fix; using it for a scoped fix needlessly makes every
-sibling key depend on your resending it verbatim. A bare `append=False` with
-no `metadata_mode` on a metadata write is **rejected** by the backend (it
-used to silently whole-blob replace and wiped a live in-progress task — the
-task-2180 metadata-wipe incident), so it is *not* a silent-key-drop hazard to
-defend against: the backend refuses it outright.
+> value, additive's OLD-wins collision rule makes the write a silent no-op.
+> Do not use `additive`/`append=true` on this path.
 
 Reading the victim task with `get_task` before the write is still worth
 doing — but to capture the pre-correction values for the §5 human-gate audit
