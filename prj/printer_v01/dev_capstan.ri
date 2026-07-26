@@ -126,12 +126,12 @@ pub structure Capstan {
     // helix start tangent (rotate -90° about +X takes the profile's +Z normal onto
     // +Y) and stood off onto the helix start point at +pitch_r, swept along the
     // helical spine and re-centred on the band.
-    let groove_profile = translate(rotate(circle(groove_r), 1.0, 0.0, 0.0, 0deg - 90deg), pitch_r, 0mm, 0mm)
-    let groove_path    = helix(pitch_r, lead, groove_len)
-    let groove_cutter  = translate(sweep(groove_profile, groove_path), 0mm, 0mm, 0mm - groove_len / 2)
+    aux let groove_profile = translate(rotate(circle(groove_r), 1.0, 0.0, 0.0, 0deg - 90deg), pitch_r, 0mm, 0mm)
+    aux let groove_path    = helix(pitch_r, lead, groove_len)
+    aux let groove_cutter  = translate(sweep(groove_profile, groove_path), 0mm, 0mm, 0mm - groove_len / 2)
 
     // Stock: land + two flanges, bored through — the drum before the groove is cut.
-    let drum_blank = difference(
+    aux let drum_blank = difference(
         union(
             union(
                 translate(cylinder(land_r, groove_len), 0mm, 0mm, 0mm - groove_len / 2),
