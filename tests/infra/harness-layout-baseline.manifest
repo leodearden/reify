@@ -242,7 +242,6 @@ crates/reify-eval/tests/differential_field_ops_e2e.rs
 crates/reify-eval/tests/dimensionless_real_arithmetic_e2e.rs
 crates/reify-eval/tests/dimensionless_unification_example_e2e.rs
 crates/reify-eval/tests/drivebelt_trait_bounds.rs
-crates/reify-eval/tests/dynamics_body_mass_props.rs
 crates/reify-eval/tests/e2e_bracket.rs
 crates/reify-eval/tests/e2e_meta.rs
 crates/reify-eval/tests/edit_source.rs
@@ -400,7 +399,6 @@ crates/reify-eval/tests/tessellation.rs
 crates/reify-eval/tests/test_runner.rs
 crates/reify-eval/tests/thin_walled_bracket_e2e.rs
 crates/reify-eval/tests/toolhead_motor_sizing_e2e.rs
-crates/reify-eval/tests/trajectory_gcode_dialect_eval.rs
 crates/reify-eval/tests/tube_pipe_e2e.rs
 crates/reify-eval/tests/type_hygiene_integration_gate.rs
 crates/reify-eval/tests/underdetermined.rs
