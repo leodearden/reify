@@ -86,7 +86,13 @@ assert "runner exits non-zero when launcher dies immediately" \
 assert "runner aborts within 15s (liveness guard, not 600s deadline)" \
     bash -c '[ "$1" -lt 15 ]' _ "$_mcp_elapsed" # wallclock:allow — liveness: discriminated by rc!=0 + launcher-death message, not by elapsed magnitude
 
-assert "runner emits a message about launcher death or early exit" \
-    bash -c 'printf "%s\n" "$1" | grep -qiE "launcher|exited|early|died|liveness|kill"' _ "$_mcp_out"
+# Match the liveness guard's OWN diagnostic, not a broad alternation. The runner
+# unconditionally announces `launcher PID=<pid>` before the readiness loop is even
+# entered, so a pattern with a bare `launcher` branch matches on EVERY run —
+# including one where the liveness guard was deleted outright. Only the
+# abort-on-launcher-death path prints this string, so it is the one that
+# discriminates.
+assert "runner emits the launcher-death diagnostic (not just its startup banner)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "launcher exited early (rc="' _ "$_mcp_out"
 
 test_summary
