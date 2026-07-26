@@ -297,6 +297,18 @@ enum SketchReadback {
         start: (Slvs_hParam, Slvs_hParam),
         end: (Slvs_hParam, Slvs_hParam),
     },
+    /// A circle is the one composite that *does* own a param — its radius,
+    /// which libslvs holds in a separate distance-entity carrier.
+    Circle {
+        center: (Slvs_hParam, Slvs_hParam),
+        radius: Slvs_hParam,
+    },
+    /// An arc owns no radius param: its radius is implied by centre→start.
+    Arc {
+        center: (Slvs_hParam, Slvs_hParam),
+        start: (Slvs_hParam, Slvs_hParam),
+        end: (Slvs_hParam, Slvs_hParam),
+    },
 }
 
 impl SketchHandleMap {
@@ -325,6 +337,27 @@ impl SketchHandleMap {
         self.push(id, SketchReadback::Line { start, end });
     }
 
+    /// Record a circle: its centre point's params and its own radius param.
+    pub(crate) fn push_circle(
+        &mut self,
+        id: SketchEntityId,
+        center: (Slvs_hParam, Slvs_hParam),
+        radius: Slvs_hParam,
+    ) {
+        self.push(id, SketchReadback::Circle { center, radius });
+    }
+
+    /// Record an arc and the params of the three points defining it.
+    pub(crate) fn push_arc(
+        &mut self,
+        id: SketchEntityId,
+        center: (Slvs_hParam, Slvs_hParam),
+        start: (Slvs_hParam, Slvs_hParam),
+        end: (Slvs_hParam, Slvs_hParam),
+    ) {
+        self.push(id, SketchReadback::Arc { center, start, end });
+    }
+
     /// Resolve every recorded entity against the solved param values.
     ///
     /// `values` maps param handle to solved value.  A param missing from
@@ -346,6 +379,15 @@ impl SketchHandleMap {
                     y: at(y)?,
                 },
                 SketchReadback::Line { start, end } => SolvedSketchEntity::Line {
+                    start: xy(start)?,
+                    end: xy(end)?,
+                },
+                SketchReadback::Circle { center, radius } => SolvedSketchEntity::Circle {
+                    center: xy(center)?,
+                    radius: at(radius)?,
+                },
+                SketchReadback::Arc { center, start, end } => SolvedSketchEntity::Arc {
+                    center: xy(center)?,
                     start: xy(start)?,
                     end: xy(end)?,
                 },

@@ -26,11 +26,11 @@ use crate::sketch::{
     SketchHandleMap, SketchSolveResult, SketchSystem,
 };
 use crate::slvs_sys::{
-    self, SLVS_C_ANGLE, SLVS_C_HORIZONTAL, SLVS_C_PARALLEL, SLVS_C_PERPENDICULAR,
-    SLVS_C_POINTS_COINCIDENT, SLVS_C_PT_PT_DISTANCE, SLVS_C_VERTICAL, SLVS_C_WHERE_DRAGGED,
-    SLVS_FREE_IN_3D, SLVS_RESULT_DIDNT_CONVERGE, SLVS_RESULT_INCONSISTENT, SLVS_RESULT_OKAY,
-    SLVS_RESULT_TOO_MANY_UNKNOWNS, Slvs_Constraint, Slvs_Entity, Slvs_Param, Slvs_System,
-    Slvs_hConstraint, Slvs_hEntity, Slvs_hGroup, Slvs_hParam,
+    self, SLVS_C_ANGLE, SLVS_C_DIAMETER, SLVS_C_EQUAL_RADIUS, SLVS_C_HORIZONTAL, SLVS_C_PARALLEL,
+    SLVS_C_PERPENDICULAR, SLVS_C_POINTS_COINCIDENT, SLVS_C_PT_ON_CIRCLE, SLVS_C_PT_PT_DISTANCE,
+    SLVS_C_VERTICAL, SLVS_C_WHERE_DRAGGED, SLVS_FREE_IN_3D, SLVS_RESULT_DIDNT_CONVERGE,
+    SLVS_RESULT_INCONSISTENT, SLVS_RESULT_OKAY, SLVS_RESULT_TOO_MANY_UNKNOWNS, Slvs_Constraint,
+    Slvs_Entity, Slvs_Param, Slvs_System, Slvs_hConstraint, Slvs_hEntity, Slvs_hGroup, Slvs_hParam,
 };
 
 /// Global mutex to serialize access to the libslvs solver.
@@ -471,6 +471,11 @@ struct SystemBuilder {
     point_entities: HashMap<PointKey, Slvs_hEntity>,
     /// Lazily-created XY workplane entity handle for 2D constraints.
     workplane: Option<Slvs_hEntity>,
+    /// Lazily-created in-plane normal, shared by every circle and arc.
+    ///
+    /// libslvs requires a normal entity per circle/arc, but in a 2D sketch they
+    /// all lie in the one workplane, so one instance serves all of them.
+    sketch_normal: Option<Slvs_hEntity>,
     /// The group `solve()` hands to `Slvs_Solve` — i.e. the params it may vary.
     ///
     /// Defaults to `SOLVE_GROUP` so the legacy pattern-recognition route is
@@ -514,6 +519,7 @@ impl SystemBuilder {
             mapping: ParamMapping::new(),
             point_entities: HashMap::new(),
             workplane: None,
+            sketch_normal: None,
             solve_group: SOLVE_GROUP,
         }
     }
@@ -754,6 +760,23 @@ impl SystemBuilder {
         wp_e
     }
 
+    /// Get or create the in-plane normal that circles and arcs point at.
+    ///
+    /// Lives in `FIXED_GROUP` alongside the workplane it names: it carries no
+    /// params, and a normal that the solver was free to move would be a datum
+    /// that drifts.
+    fn get_sketch_normal(&mut self) -> Slvs_hEntity {
+        if let Some(n) = self.sketch_normal {
+            return n;
+        }
+        let wrkpl = self.get_workplane();
+        let n = self.alloc.entity();
+        self.entities
+            .push(Slvs_Entity::normal_in_2d(n, FIXED_GROUP, wrkpl));
+        self.sketch_normal = Some(n);
+        n
+    }
+
     /// Add a constraint on a specific workplane (or `SLVS_FREE_IN_3D` for 3D).
     ///
     /// The constraint lands in `self.solve_group`, which is what makes it
@@ -860,8 +883,49 @@ impl SystemBuilder {
                     );
                     handles.push_line(def.id, ap, bp);
                 }
-                // Circles and arcs are emitted with the radius-family mappings.
-                SketchEntity::Circle { .. } | SketchEntity::Arc { .. } => {}
+                SketchEntity::Circle { center, radius } => {
+                    let Some((ce, cp)) = emitted.get(&center).and_then(EmittedEntity::as_point)
+                    else {
+                        unresolved_entity_ref(def.id, center, center);
+                        continue;
+                    };
+                    // libslvs has no radius param: a circle points at a
+                    // *distance entity*, which is what holds the param.
+                    let rp = self.alloc.param();
+                    self.params.push(Slvs_Param::new(rp, group, radius));
+                    let rc = self.alloc.entity();
+                    self.entities
+                        .push(Slvs_Entity::distance(rc, group, wrkpl, rp));
+                    let normal = self.get_sketch_normal();
+                    let eh = self.alloc.entity();
+                    self.entities
+                        .push(Slvs_Entity::circle(eh, group, wrkpl, ce, normal, rc));
+                    emitted.insert(def.id, EmittedEntity::Circle { entity: eh });
+                    handles.push_circle(def.id, cp, rp);
+                }
+                SketchEntity::Arc { center, start, end } => {
+                    let pts = [center, start, end]
+                        .iter()
+                        .map(|id| emitted.get(id).and_then(EmittedEntity::as_point))
+                        .collect::<Option<Vec<_>>>();
+                    let Some(pts) = pts else {
+                        unresolved_entity_ref(def.id, start, end);
+                        continue;
+                    };
+                    let [(ce, cp), (se, sp), (ee, ep)] = pts[..] else {
+                        unresolved_entity_ref(def.id, start, end);
+                        continue;
+                    };
+                    // No radius param of its own: an arc's radius is implied by
+                    // centre→start, and libslvs supplies |c-s| = |c-e| itself.
+                    let normal = self.get_sketch_normal();
+                    let eh = self.alloc.entity();
+                    self.entities.push(Slvs_Entity::arc_of_circle(
+                        eh, group, wrkpl, normal, ce, se, ee,
+                    ));
+                    emitted.insert(def.id, EmittedEntity::Arc { entity: eh });
+                    handles.push_arc(def.id, cp, sp, ep);
+                }
             }
         }
 
@@ -897,6 +961,22 @@ impl SystemBuilder {
                 Some((entity, _)) => Some(entity),
                 None => {
                     unresolved_constraint_ref(def, id, "point");
+                    None
+                }
+            }
+        }
+
+        /// Resolve `id` to a curve (circle or arc) handle, or report and yield
+        /// `None`.
+        fn curve(
+            emitted: &HashMap<SketchEntityId, EmittedEntity>,
+            def: &SketchConstraintDef,
+            id: SketchEntityId,
+        ) -> Option<Slvs_hEntity> {
+            match emitted.get(&id).and_then(EmittedEntity::as_curve) {
+                Some(entity) => Some(entity),
+                None => {
+                    unresolved_constraint_ref(def, id, "circle or arc");
                     None
                 }
             }
@@ -989,13 +1069,46 @@ impl SystemBuilder {
                 // which is also the convention the legacy pattern route uses.
                 self.add_constraint_wrkpl(SLVS_C_ANGLE, wrkpl, degrees, NONE, NONE, ae, be);
             }
-            // The radius family, tangency, and the remaining 2D relations are
-            // mapped alongside the circle/arc entities they operate on.
+            SketchConstraint::Diameter { circle, value } => {
+                let Some(ce) = curve(emitted, def, circle) else {
+                    return;
+                };
+                self.add_constraint_wrkpl(SLVS_C_DIAMETER, wrkpl, value, NONE, NONE, ce, NONE);
+            }
+            SketchConstraint::Radius { circle, value } => {
+                let Some(ce) = curve(emitted, def, circle) else {
+                    return;
+                };
+                // libslvs exposes no radius constraint — `SLVS_C_DIAMETER` is
+                // the whole radius family — so the doubling happens here, at the
+                // single emit site, rather than being pushed onto callers. That
+                // keeps `radius` meaning radius in the surface vocabulary.
+                self.add_constraint_wrkpl(
+                    SLVS_C_DIAMETER,
+                    wrkpl,
+                    2.0 * value,
+                    NONE,
+                    NONE,
+                    ce,
+                    NONE,
+                );
+            }
+            SketchConstraint::PtOnCircle { pt, circle } => {
+                let (Some(pe), Some(ce)) = (point(emitted, def, pt), curve(emitted, def, circle))
+                else {
+                    return;
+                };
+                self.add_constraint_wrkpl(SLVS_C_PT_ON_CIRCLE, wrkpl, 0.0, pe, NONE, ce, NONE);
+            }
+            SketchConstraint::EqualRadius { a, b } => {
+                let (Some(ae), Some(be)) = (curve(emitted, def, a), curve(emitted, def, b)) else {
+                    return;
+                };
+                self.add_constraint_wrkpl(SLVS_C_EQUAL_RADIUS, wrkpl, 0.0, NONE, NONE, ae, be);
+            }
+            // Tangency and the remaining 2D relations land with their own
+            // fixtures.
             SketchConstraint::PtOnLine { .. }
-            | SketchConstraint::PtOnCircle { .. }
-            | SketchConstraint::Diameter { .. }
-            | SketchConstraint::Radius { .. }
-            | SketchConstraint::EqualRadius { .. }
             | SketchConstraint::ArcLineTangent { .. }
             | SketchConstraint::CurveCurveTangent { .. }
             | SketchConstraint::SymmetricLine { .. }
@@ -1159,6 +1272,12 @@ enum EmittedEntity {
         start: SketchEntityId,
         end: SketchEntityId,
     },
+    Circle {
+        entity: Slvs_hEntity,
+    },
+    Arc {
+        entity: Slvs_hEntity,
+    },
 }
 
 impl EmittedEntity {
@@ -1169,7 +1288,18 @@ impl EmittedEntity {
     fn as_point(&self) -> Option<(Slvs_hEntity, (Slvs_hParam, Slvs_hParam))> {
         match self {
             EmittedEntity::Point { entity, params } => Some((*entity, *params)),
-            EmittedEntity::Line { .. } => None,
+            _ => None,
+        }
+    }
+
+    /// The slvs entity handle, if this is a curve — a circle or an arc.
+    ///
+    /// The radius family and `PtOnCircle` accept either: libslvs treats an arc
+    /// as a circle with two ends for all of them.
+    fn as_curve(&self) -> Option<Slvs_hEntity> {
+        match self {
+            EmittedEntity::Circle { entity } | EmittedEntity::Arc { entity } => Some(*entity),
+            _ => None,
         }
     }
 }
