@@ -55,6 +55,37 @@ trap cleanup EXIT
 STUB_DIR="$(mktemp -d /tmp/test-seed-warm-lane-stub-XXXXXX)"
 _TMPDIRS+=("$STUB_DIR")
 
+# _LANE_ROOT: a single per-run grandparent for every lane fixture created by
+# this file, via make_isolated_lane() below. WHY: scripts/seed-warm-lane.sh:663
+# computes RESEED_TRASH_DIR as dirname(LANE_DIR)/.reseed-trash, and renames a
+# non-empty <lane>/target there before re-seeding. A lane created bare under
+# /tmp (dirname == /tmp) makes that path the machine-shared /tmp/.reseed-trash
+# — shared across every concurrent agent/test run on the host. Nesting each
+# lane under its own private parent directory makes dirname(LANE_DIR) unique
+# per lane, so the computed trash dir is run-private (task 5384 introduced this
+# pattern for I_LANE_REAL/I14_LANE/I15_LANE; task 5590 factors it out and
+# applies it to the rest of the file's lanes).
+#
+# Subshell trap: call sites read `X_LANE="$(make_isolated_lane prefix)"`, so
+# the function body below runs in a command-substitution SUBSHELL — any
+# `_TMPDIRS+=(...)` performed inside make_isolated_lane itself would be
+# silently discarded once the subshell exits, leaking every private parent
+# into /tmp. So cleanup is anchored on this ONE root, registered here in the
+# main shell, which the existing `cleanup()` EXIT trap `rm -rf`s — reclaiming
+# every lane, its sibling ${lane}.lock/.ready-marker/.done-marker files, and
+# its private .reseed-trash, all in one shot.
+_LANE_ROOT="$(mktemp -d /tmp/test-seed-lane-root-XXXXXX)"
+_TMPDIRS+=("$_LANE_ROOT")
+
+# make_isolated_lane <prefix> — mktemps a private parent under $_LANE_ROOT and
+# a lane dir nested inside it, then echoes the lane path on stdout. See the
+# comment above _LANE_ROOT for why the lane must never be bare /tmp.
+make_isolated_lane() {
+    local prefix="$1" parent
+    parent="$(mktemp -d "$_LANE_ROOT/${prefix}-XXXXXX")"
+    mktemp -d "$parent/lane-XXXXXX"
+}
+
 CALLS_FILE="$(mktemp /tmp/test-seed-warm-lane-calls-XXXXXX)"
 _TMPDIRS+=("$CALLS_FILE")
 
