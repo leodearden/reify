@@ -1046,10 +1046,12 @@ impl SystemBuilder {
         /// Resolve `id` to an arc handle, or report and yield `None`.
         ///
         /// Deliberately stricter than [`curve`]: the tangency constraints read
-        /// the *endpoints* of the curves they name, and a circle has none.
-        /// Handing libslvs a circle there makes it resolve a zero point handle
-        /// and abort the process, so this kind check is load-bearing rather than
-        /// tidy.
+        /// the *endpoints* of the curves they name, and a circle has none —
+        /// `Slvs_Entity::circle` leaves `point[1]`/`point[2]` at zero.  Handing
+        /// libslvs a circle here would have it resolve point handles the entity
+        /// does not carry, which is a C-side lookup on a null handle rather than
+        /// anything this binding can catch afterwards.  Hence a kind check
+        /// before the call, not a hope about what happens after it.
         fn arc(
             emitted: &HashMap<SketchEntityId, EmittedEntity>,
             def: &SketchConstraintDef,
