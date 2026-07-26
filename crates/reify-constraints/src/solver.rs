@@ -245,13 +245,30 @@ fn fold_dependent_cells(
 /// values, overlaid with the solver's `solved` autos, then folded through
 /// `dependent_cells`.
 ///
-/// Both post-solve scoring sites (the multistart loop and `rank_single`) used to
-/// build this map inline and WITHOUT the fold, which meant they scored a
-/// dependent-cell-driven objective at its stale base value. With the per-trial
-/// fold in place that made the optimiser and the ranker measure different
-/// objectives: the reported `objective_score` disagreed with the optimum
-/// actually achieved, and a ranking over identical stale scores degenerated to a
-/// tie broken by start index (PRD §12 Q2).
+/// Every post-solve scoring site used to build this map inline and WITHOUT the
+/// fold, which meant they scored a dependent-cell-driven objective at its stale
+/// base value. With the per-trial fold in place that made the optimiser and the
+/// scorer measure different objectives. There were three such sites, and each
+/// failed differently — which is why they are now routed through ONE function
+/// rather than fixed one at a time:
+///
+/// - the multistart scoring loop and `rank_single`: the reported
+///   `objective_score` disagreed with the optimum actually achieved, and a
+///   ranking over identical stale scores degenerated to a tie broken by start
+///   index (PRD §12 Q2);
+/// - `solve_cost_robustness_tradeoff`'s two anchor evaluations: `cost_expr`
+///   returned the identical stale number at BOTH anchors, so `cost_max −
+///   cost_min` collapsed to 0 and [`normalised_blend_term`]'s
+///   [`TRADEOFF_NORMALISATION_RANGE_EPS`] guard dropped the cost axis from the
+///   blend entirely, for every λ, with no diagnostic.
+///
+/// INVARIANT: no site in this module may materialise a scoring map by hand from
+/// `current_values.clone()` overlaid with the solved autos. `SolveResult::Solved`
+/// carries only the AUTOS (`build_solved_values`), so a hand-rolled overlay
+/// always leaves dependent cells stale — the failure is silent every time, and
+/// the third occurrence is the argument for enforcing the rule rather than
+/// restating it. A `grep` for `current_values.clone()` outside this function and
+/// [`build_trial_values`] should return nothing.
 fn build_scoring_values(
     base: &ValueMap,
     solved: &HashMap<ValueCellId, Value>,
@@ -1629,14 +1646,30 @@ fn solve_cost_robustness_tradeoff(
     };
 
     // ── Evaluate both axes at both anchors ──────────────────────────────────
-    let mut values_at_cost = problem.current_values.clone();
-    for (id, v) in &x_cost {
-        values_at_cost.insert(id.clone(), v.clone());
-    }
-    let mut values_at_rob = problem.current_values.clone();
-    for (id, v) in &x_rob {
-        values_at_rob.insert(id.clone(), v.clone());
-    }
+    //
+    // Both maps go through [`build_scoring_values`], NOT a hand-rolled
+    // `current_values.clone()` + solved-autos overlay. `SolveResult::Solved`
+    // carries only the AUTOS (`build_solved_values`), so an unfolded overlay
+    // leaves every dependent cell at its stale base value. When the money
+    // expression is a READ of a dependent cell — the joint-drive shape — that
+    // makes `cost_expr` evaluate to the identical stale number at BOTH anchors,
+    // so `cost_max - cost_min` collapses to 0 and `normalised_blend_term`'s
+    // [`TRADEOFF_NORMALISATION_RANGE_EPS`] guard silently drops the cost axis
+    // from the blend for EVERY λ. The anchor SOLVES already fold (they inherit
+    // `dependent_cells` via `..problem.clone()`), so only this scoring step was
+    // stale — the anchors moved, but the axes were measured at the wrong place.
+    let values_at_cost = build_scoring_values(
+        &problem.current_values,
+        &x_cost,
+        &problem.dependent_cells,
+        &problem.functions,
+    );
+    let values_at_rob = build_scoring_values(
+        &problem.current_values,
+        &x_rob,
+        &problem.dependent_cells,
+        &problem.functions,
+    );
 
     let ctx_cost = reify_expr::EvalContext::new(&values_at_cost, &problem.functions);
     let ctx_rob = reify_expr::EvalContext::new(&values_at_rob, &problem.functions);
