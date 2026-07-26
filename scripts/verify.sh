@@ -1097,31 +1097,49 @@ select_infra_tests
 #
 # tests/infra/test_harness_kloc_cap.sh (the C2 anti-re-accretion guard) has no
 # row in verify-pipeline-infra-tests.txt: its trigger isn't a single artifact
-# path, it's *growing* a harness's measured compile unit — a new top-level
-# standalone crates/<c>/tests/*.rs file, OR an added/modified
+# path, it's *growing* a harness — a new top-level standalone
+# crates/<c>/tests/*.rs file, OR an added/modified
 # crates/<c>/tests/harness_<subsystem>.rs root or harness_<subsystem>/**
 # nested file (recursive), in one of the 5 consolidatable crates. A nested
 # path OUTSIDE a harness_*/ module dir (tests/common/, fixtures/, …) is
-# deliberately excluded — it isn't part of any harness's measured compile
-# unit. This selector runs the guard ONLY under --scope branch (hermetic
-# static reads, no cargo — seconds), so an introducer sees the violation on
-# their own branch instead of first at the merge gate 40+ min in (tasks 5213,
-# 5053).
+# deliberately excluded. This selector runs the guard ONLY under --scope
+# branch (hermetic static reads, no cargo — seconds), so an introducer sees
+# the violation on their own branch instead of first at the merge gate 40+
+# min in (tasks 5213, 5053).
+#
+# What rule (a) actually measures TODAY, precisely: harness_layout_violations()
+# in test_harness_kloc_cap.sh globs only the TOP-LEVEL "$tests_dir"/*.rs
+# (non-recursive) and runs `wc -l` on each harness_*.rs ROOT alone — it never
+# descends into a harness_<subsystem>/ dir and never sums nested-file lines
+# into the root's measured value. So a nested harness_*/** file does NOT
+# itself move today's landed rule-(a) number; only the root does. Task #5463
+# (in-progress, tracked, un-landed) is what will change rule (a) to sum the
+# root plus its whole harness_<subsystem>/ subtree recursively. The
+# harness_*/* arm below is kept ahead of that landing for two reasons: (i) it
+# is the forward-compatible trigger for #5463's future behaviour, so this
+# verify-pipeline artifact (which forces the full merge gate to edit) doesn't
+# need an immediate follow-up the day #5463 lands; (ii) even today it is a
+# cheap, redundant belt-and-braces net for a nested edit whose C1-required
+# root `#[path] mod` companion edit is somehow missing from the same branch
+# diff — the ordinary C1-compliant case is already caught by the harness_*.rs
+# root arm, since adding or growing a nested module requires a corresponding
+# root edit.
 #
 # Diff-status policy (git diff --diff-filter=AM), per path shape: (i) a
-# harness root (harness_*.rs) or a nested harness-module file (harness_*/**)
-# accepts BOTH A and M — both contribute lines to the harness's rule-(a) kLOC
-# measure, and a modified root is also the only visible diff trace a
-# rename-based consolidation absorb leaves (a `git mv tests/foo.rs
-# tests/harness_x/foo.rs` plus the C1-required `#[path =
+# harness root (harness_*.rs) accepts BOTH A and M — the root's own line count
+# IS what rule (a) measures today, and a modified root is also the only
+# visible diff trace a rename-based consolidation absorb leaves (a `git mv
+# tests/foo.rs tests/harness_x/foo.rs` plus the C1-required `#[path =
 # "harness_x/foo.rs"] mod foo;` root edit — git's --diff-filter excludes R
-# entries, verified empirically); (ii) a top-level non-harness standalone
-# accepts ONLY A — rule-(b) re-accretion is an ADD by construction, so
-# widening to M would fire on ordinary edits to an already-grandfathered file
-# for zero possible signal. Either way, the residual
-# latency-not-a-coverage-hole doctrine is unchanged: the merge gate remains
-# the wholesale authority, so anything this selector misses is still caught
-# there.
+# entries, verified empirically); (ii) a nested harness-module file
+# (harness_*/**) ALSO accepts BOTH A and M, for the forward-looking /
+# belt-and-braces reasons above — NOT because it moves today's measure; (iii)
+# a top-level non-harness standalone accepts ONLY A — rule-(b) re-accretion is
+# an ADD by construction, so widening to M would fire on ordinary edits to an
+# already-grandfathered file for zero possible signal. Either way, the
+# residual latency-not-a-coverage-hole doctrine is unchanged: the merge gate
+# remains the wholesale authority, so anything this selector misses is still
+# caught there.
 #
 # Appends into the SAME SELECTED_INFRA_GLOBS the selective-infra block above
 # populates, so it inherits for free: (a) merge/background suppression — the
@@ -1158,11 +1176,13 @@ select_harness_kloc_guard() {
         # depth under a harness_<subsystem>/ module dir (same gotcha
         # documented at tests/infra/harness-layout-lib.sh:86-89). harness_*.rs
         # (a root has no slash, so neither prior arm can catch it) is checked
-        # after the generic */* reject. Both harness compile-unit shapes
-        # accept A or M; a top-level standalone stays adds-only (see the
-        # block header comment for the full rationale).
+        # after the generic */* reject. harness_*.rs and harness_*/* both
+        # accept A or M (see the block header for why the nested arm's A|M is
+        # a forward-looking/belt-and-braces trigger rather than a claim that
+        # it moves today's rule-(a) measure); a top-level standalone stays
+        # adds-only.
         case "$_tail" in
-            harness_*/*)  : ;;                       # nested module file: A or M
+            harness_*/*)  : ;;                       # nested module file: A or M (see block header)
             */*)          continue ;;                # nested, not a harness module dir
             harness_*.rs) : ;;                       # harness root compile unit: A or M
             *)  [ "$_status" = "A" ] || continue ;;  # top-level standalone: adds only
