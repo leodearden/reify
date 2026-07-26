@@ -6,8 +6,16 @@
 //! `reify_gui::display_units::{DimensionLadder, UnitOption, unit_ladders}`
 //! resolving unchanged for `main.rs`'s `get_unit_ladders` Tauri command and
 //! the Parameters panel's unit picker.
+//!
+//! PRD display-unit-preference §5's auto-scaling policy travels *with* the
+//! table (task #5236): `DimensionLadder::auto_scaled` and its
+//! [`AutoScaleChoice`] result are re-exported alongside the data, so this
+//! module stays a complete view of the registry module rather than a
+//! data-only slice a GUI-side consumer would have to reach past.
 
-pub use reify_core::display_units::{AutoScale, DimensionLadder, UnitOption, unit_ladders};
+pub use reify_core::display_units::{
+    AutoScale, AutoScaleChoice, DimensionLadder, UnitOption, unit_ladders,
+};
 
 #[cfg(test)]
 mod tests {
