@@ -45,46 +45,64 @@ echo "=== scripts/seed-warm-lane.sh hermetic tests (task 4660) ==="
 _TMPDIRS=()
 _BGPIDS=()
 
-# _SHARED_TRASH_DIR / _SHARED_TRASH_HITS / _note_shared_trash_use: runtime
-# detector for task 5590's invariant — no seed invocation may write into the
-# machine-shared /tmp/.reseed-trash. scripts/seed-warm-lane.sh:663 computes
-# RESEED_TRASH_DIR as dirname(LANE_DIR)/.reseed-trash and logs the rename to
-# stderr via `info` (scripts/seed-warm-lane.sh:86), so ERR_OUT mentioning
-# _SHARED_TRASH_DIR is exact evidence this invocation renamed into it.
-# _SHARED_TRASH_DIR is overridable so Block R's R2 positive control can
-# redirect it to an isolated lane's own private trash dir and prove the
-# detector fires without littering the real shared path. The variable is
-# quoted inside the case pattern (*"$_SHARED_TRASH_DIR"*) so any glob
-# metacharacter in the path is matched literally, not interpreted as a
-# wildcard. The trailing `return 0` is mandatory: this is called as a bare
-# unguarded statement inside run_helper/run_helper_real, so under
-# `set -euo pipefail` any nonzero return here would abort the entire suite
-# instead of just failing one assert.
+# _SHARED_TRASH_DIR / _note_shared_trash_use: runtime detector for task 5590's
+# invariant — no seed invocation may write into the machine-shared
+# /tmp/.reseed-trash. scripts/seed-warm-lane.sh:663 computes RESEED_TRASH_DIR
+# as dirname(LANE_DIR)/.reseed-trash and logs the rename to stderr via `info`
+# (scripts/seed-warm-lane.sh:86), so ERR_OUT mentioning _SHARED_TRASH_DIR is
+# exact evidence this invocation renamed into it. _SHARED_TRASH_DIR is
+# overridable so Block R's R2 positive control can redirect it to an isolated
+# lane's own private trash dir and prove the detector fires without littering
+# the real shared path. The variable is quoted inside the case pattern
+# (*"$_SHARED_TRASH_DIR"*) so any glob metacharacter in the path is matched
+# literally, not interpreted as a wildcard. The trailing `return 0` is
+# mandatory: this is called as a bare unguarded statement inside
+# run_helper/run_helper_real, so under `set -euo pipefail` any nonzero return
+# here would abort the entire suite instead of just failing one assert.
+#
+# State lives in an append-only FILE (_TRASH_HITS_FILE, defined below near
+# _LANE_ROOT), not a bash array: two run_helper_real call sites — H5d
+# (Q_LANE8, ~2253) and H9 (Q_LANE11, ~2443) — invoke the helper inside a
+# backgrounded ( ... ) & subshell, and a bash array append made there is
+# discarded when the subshell exits, silently blinding the detector to
+# exactly the two --fresh-checkout-against-non-empty-target runs most likely
+# to reach seed's rename-into-trash path. A `>>` append performed inside a
+# subshell IS visible to the parent shell, so file-backed state fixes this
+# without changing the call convention at any fixture site — this mirrors the
+# subshell hazard already documented above for _TMPDIRS at _LANE_ROOT. A
+# single-line `printf` append to an O_APPEND file is atomic well below
+# PIPE_BUF (4096), so the H5d/H9 background job appending while the main
+# shell asserts cannot corrupt a record. The function definition can stay
+# here even though _TRASH_HITS_FILE is not assigned until later: bash
+# resolves the variable at CALL time, and the first call happens far later,
+# in Block A.
 _SHARED_TRASH_DIR="/tmp/.reseed-trash"
-_SHARED_TRASH_HITS=()
 _note_shared_trash_use() {
     case "$ERR_OUT" in
-        *"$_SHARED_TRASH_DIR"*) _SHARED_TRASH_HITS+=("$*") ;;
+        *"$_SHARED_TRASH_DIR"*) printf '%s\n' "$*" >> "$_TRASH_HITS_FILE" ;;
     esac
     return 0
 }
 
-# _BARE_TMP_LANES / _note_bare_tmp_lane: structural companion to the R1
-# behavioural detector above — flags any run_helper_real lane arg ($2) whose
-# dirname is bare /tmp, regardless of whether THIS run actually triggered a
+# _note_real_lane: structural companion to the R1 behavioural detector above —
+# logs EVERY run_helper_real lane arg ($2) to _REAL_LANES_FILE (defined below
+# near _LANE_ROOT), regardless of whether THIS run actually triggered a
 # rename-to-trash (defence-in-depth for lanes that don't reach that path
-# today but could after a future fixture tweak). Every run_helper_real call
-# site passes <base_dir> <lane_dir> [flags...] positionally, so $2 is always
-# the lane. Deliberately NOT wired into run_helper: run_helper's lanes
-# outside this task's scope would false-positive (e.g. Blocks A/B/E/F/G/J/K/
-# L1/O), and run_helper's own genuine offenders are already covered by the
-# stronger, behaviour-based R1 detector. As with _note_shared_trash_use, the
-# trailing `return 0` is mandatory: this runs as a bare unguarded statement.
-_BARE_TMP_LANES=()
-_note_bare_tmp_lane() {
-    case "${2:-}" in
-        /*) [ "$(dirname "$2")" = "/tmp" ] && _BARE_TMP_LANES+=("$2") ;;
-    esac
+# today but could after a future fixture tweak, and the source of R4's
+# end-to-end coverage signal). Every run_helper_real call site passes
+# <base_dir> <lane_dir> [flags...] positionally, so $2 is always the lane.
+# The bare-/tmp filtering itself is deliberately NOT done here — it moves into
+# the _assert_no_bare_tmp_lanes checker in Block R, which runs in the main
+# shell (via `assert`'s no-subshell "$@" invocation) and so can safely
+# aggregate into a local array. Deliberately NOT wired into run_helper:
+# run_helper's lanes outside this task's scope would false-positive (e.g.
+# Blocks A/B/E/F/G/J/K/L1/O), and run_helper's own genuine offenders are
+# already covered by the stronger, behaviour-based R1 detector. As with
+# _note_shared_trash_use, the trailing `return 0` is mandatory (bare unguarded
+# statement), and the state is file-backed for the same subshell-visibility
+# reason documented above.
+_note_real_lane() {
+    printf '%s\n' "${2:-}" >> "$_REAL_LANES_FILE"
     return 0
 }
 
@@ -120,6 +138,18 @@ _TMPDIRS+=("$STUB_DIR")
 # its private .reseed-trash, all in one shot.
 _LANE_ROOT="$(mktemp -d /tmp/test-seed-lane-root-XXXXXX)"
 _TMPDIRS+=("$_LANE_ROOT")
+
+# _TRASH_HITS_FILE / _REAL_LANES_FILE: append-only detector state for
+# _note_shared_trash_use / _note_real_lane above. Nested directly under
+# $_LANE_ROOT (a sibling of each lane's own private parent, never inside one),
+# so the existing cleanup() EXIT trap's `rm -rf "$_LANE_ROOT"` reclaims them
+# with no new _TMPDIRS entry and no extra top-level /tmp entry, and R0c's
+# "parent contains the lane and nothing else" check (which inspects a lane's
+# own private parent, not _LANE_ROOT itself) is unaffected.
+_TRASH_HITS_FILE="$_LANE_ROOT/.shared-trash-hits"
+_REAL_LANES_FILE="$_LANE_ROOT/.real-lanes"
+: > "$_TRASH_HITS_FILE"
+: > "$_REAL_LANES_FILE"
 
 # make_isolated_lane <prefix> — mktemps a private parent under $_LANE_ROOT and
 # a lane dir nested inside it, then echoes the lane path on stdout. See the
@@ -225,7 +255,7 @@ run_helper() {
 # which asserts actual mtime changes on a real fixture tree.
 run_helper_real() {
     local rc=0
-    _note_bare_tmp_lane "$@"
+    _note_real_lane "$@"
     > "$ERR_FILE"
     # Only stub cp and git; let find/touch be real binaries
     local real_stub_dir
@@ -2561,23 +2591,37 @@ assert "R0f: returned path is nested under the per-run lane root (_LANE_ROOT), w
 # ── R1: runtime detector — no seed invocation in this whole suite may write
 # into the machine-shared /tmp/.reseed-trash. Fed by _note_shared_trash_use,
 # called from inside run_helper/run_helper_real after every invocation
-# throughout the file, so this observes every prior Block's fixtures too. ───
+# throughout the file, so this observes every prior Block's fixtures too.
+# State is file-backed (see _TRASH_HITS_FILE above) so appends made from
+# inside a backgrounded subshell (H5d/H9) are not silently discarded. ───────
 _assert_no_shared_trash_use() {
-    [ "${#_SHARED_TRASH_HITS[@]}" -eq 0 ] && return 0
-    printf 'seed invocation wrote into machine-shared %s: %s\n' \
-        "$_SHARED_TRASH_DIR" "${_SHARED_TRASH_HITS[@]}"
+    [ ! -s "$_TRASH_HITS_FILE" ] && return 0
+    printf 'seed invocation wrote into machine-shared %s:\n' "$_SHARED_TRASH_DIR"
+    cat "$_TRASH_HITS_FILE"
     return 1
 }
 assert "R1: no seed invocation in this suite wrote into the machine-shared $_SHARED_TRASH_DIR" \
     _assert_no_shared_trash_use
 
 # ── R3: structural guard — every run_helper_real lane dir had a private
-# parent, never bare /tmp. Fed by _note_bare_tmp_lane, called at the top of
-# run_helper_real for every one of its 36 call sites. ───────────────────────
+# parent, never bare /tmp. Fed by _note_real_lane, called at the top of
+# run_helper_real for every one of its 36 call sites, which logs EVERY lane
+# unconditionally — the bare-/tmp filtering happens here, reading the
+# file-backed log line by line (this checker runs in the main shell via
+# `assert`'s no-subshell "$@" invocation, so a local array is safe here even
+# though the recorder itself cannot use one). ───────────────────────────────
 _assert_no_bare_tmp_lanes() {
-    [ "${#_BARE_TMP_LANES[@]}" -eq 0 ] && return 0
+    local lane
+    local offenders=()
+    while IFS= read -r lane; do
+        [ -n "$lane" ] || continue
+        case "$lane" in
+            /*) [ "$(dirname "$lane")" = "/tmp" ] && offenders+=("$lane") ;;
+        esac
+    done < "$_REAL_LANES_FILE"
+    [ "${#offenders[@]}" -eq 0 ] && return 0
     printf 'run_helper_real lane dir was bare /tmp (no private parent): %s\n' \
-        "${_BARE_TMP_LANES[@]}"
+        "${offenders[@]}"
     return 1
 }
 assert "R3: every run_helper_real lane dir had a private parent (never bare /tmp)" \
@@ -2590,12 +2634,14 @@ assert "R3: every run_helper_real lane dir had a private parent (never bare /tmp
 # — every other `( ... ) &` in Block Q is a
 # `( flock -x 9 && touch ... && sleep 300 ) 9>"$LOCK" &` lock-holder, not a
 # seed run. $Q_LANE8/$Q_LANE11 are assigned in the MAIN shell (2229/2421) via
-# make_isolated_lane, so both are in scope here. Asserted against a
-# to-be-introduced observation log of every run_helper_real lane (populated by
-# a later step); until that log exists, ${_REAL_LANES_FILE:-/nonexistent}
-# defaults to a nonexistent path, so this is a plain assert FAILURE rather
-# than an unbound-variable abort under set -u. grep -Fxq matches the lane path
-# literally and as a whole line. ─────────────────────────────────────────────
+# make_isolated_lane, so both are in scope here. Asserted against
+# _REAL_LANES_FILE, the observation log every run_helper_real invocation
+# appends to via _note_real_lane (including from inside H5d/H9's backgrounded
+# subshells, now that the log is file-backed rather than an array). The
+# ${_REAL_LANES_FILE:-/nonexistent} fallback is defensive only — it keeps this
+# a plain assert FAILURE rather than an unbound-variable abort under set -u if
+# the variable were ever undefined. grep -Fxq matches the lane path literally
+# and as a whole line. ───────────────────────────────────────────────────────
 assert "R4: the structural detector observed the run_helper_real invocations made from inside a backgrounded subshell (H5d/H9)" \
     bash -c 'grep -Fxq -- "$2" "$1" && grep -Fxq -- "$3" "$1"' _ "${_REAL_LANES_FILE:-/nonexistent}" "$Q_LANE8" "$Q_LANE11"
 
@@ -2617,7 +2663,7 @@ echo "stale artifact" > "$R2_LANE/target/stale.a"
 # Redirect the detector at this lane's own sibling trash dir — exactly what
 # seed-warm-lane.sh:663 will independently compute as dirname(LANE_DIR)/.reseed-trash.
 _SHARED_TRASH_DIR="$(dirname "$R2_LANE")/.reseed-trash"
-_SHARED_TRASH_HITS=()
+: > "$_TRASH_HITS_FILE"
 
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
@@ -2626,12 +2672,12 @@ RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
 assert "R2: positive control: redirected-trash seed run exits 0" \
     test "$RC" -eq 0
 assert "R2: positive control: detector recorded exactly one hit against the redirected trash dir" \
-    test "${#_SHARED_TRASH_HITS[@]}" -eq 1
+    test "$(wc -l < "$_TRASH_HITS_FILE")" -eq 1
 
 # Restore the real shared-path target and clear the positive-control hit
 # before R1 (already asserted above) or any later block could see it.
 _SHARED_TRASH_DIR="/tmp/.reseed-trash"
-_SHARED_TRASH_HITS=()
+: > "$_TRASH_HITS_FILE"
 
 # ── R5: mechanism guard — a recorder append made from inside a backgrounded
 # ( ... ) & subshell must be visible to the parent shell. Drives the REAL
@@ -2643,7 +2689,7 @@ _SHARED_TRASH_HITS=()
 # go vacuous if H5d/H9 were ever un-backgrounded (it would then silently test
 # nothing while still passing), but R5 constructs its own subshell, so it
 # always exercises the subshell-visibility property directly. ──────────────
-_SHARED_TRASH_HITS=()
+: > "$_TRASH_HITS_FILE"
 (
     ERR_OUT="Renaming non-empty /x/target → $_SHARED_TRASH_DIR before re-seed"
     _note_shared_trash_use R5-subshell-probe
@@ -2652,9 +2698,9 @@ R5_PID=$!
 wait "$R5_PID" 2>/dev/null || true
 
 assert "R5: a shared-trash-use append made inside a backgrounded subshell is visible to the parent shell" \
-    test "${#_SHARED_TRASH_HITS[@]}" -eq 1
+    test "$(wc -l < "$_TRASH_HITS_FILE")" -eq 1
 
 # Clear the probe's state so nothing leaks past test_summary.
-_SHARED_TRASH_HITS=()
+: > "$_TRASH_HITS_FILE"
 
 test_summary
