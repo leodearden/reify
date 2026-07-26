@@ -34,11 +34,24 @@
 //!   group in `engine_build/tests.rs` for L2), and case (B) below supplies
 //!   the two-sided engine-level control for the gate.
 //!
-//! - (B) A model that binds a topology selector over a boolean must still
-//!   surface real correspondence-degradation signal at `Severity::Info`,
-//!   with at most one aggregated silent-drop line per realization (L4).
-//!   This proves the L2 gate — which only affects the tie-scan — does not
-//!   accidentally suppress the always-on silent-drop tally/flush path.
+//! - (B) A TWO-SIDED control for the L2 gate, plus the L4 contract.
+//!
+//!   A model that binds a topology selector over a boolean must (i) RUN the
+//!   gated tie-scan block, and (ii) still surface real correspondence-
+//!   degradation signal at `Severity::Info`, with at most one aggregated
+//!   silent-drop line per realization (L4). Its NEGATIVE TWIN — the same
+//!   source with only the `let fs = faces(u)` line removed — must NOT run
+//!   the gated block, and must still emit the aggregated silent-drop line.
+//!
+//!   (ii) on its own proves NOTHING about the gate, and originally it was the
+//!   whole of case (B): `TopologyCorrespondenceDropped` comes from the
+//!   UNGATED tally/flush path, so it fires identically whether the gate opens
+//!   or closes. The gate-ran marker in (i) is the centroid pre-pass's failure
+//!   summary, whose sole call site sits inside the gated block — see
+//!   `has_gated_tie_scan_marker`. Only the PAIR pins the gate: stubbing the
+//!   gate condition to a constant `false` fails the positive half, stubbing
+//!   it to a constant `true` fails the twin. Both directions were run and
+//!   observed to fail at step-14/step-15 time.
 //!
 //!   Case (B) drives `Engine::build` with the `DropInjectingKernel` mock
 //!   (same harness as `topology_correspondence_drop_diagnostic_e2e.rs`,
@@ -59,14 +72,28 @@
 //!   genuine DISTINCT-index centroid coincidence (only equal-index
 //!   coincidences are possible without a transform breaking the symmetry,
 //!   and equal-index is exactly what L1's guard suppresses) — so a
-//!   real-OCCT engine-level positive control for case (B) is not
-//!   constructible with the primitives/transforms available today. Routing
-//!   through the mock keeps the assertion deterministic and CI-stable
-//!   while still proving the L2 gate's on/off boundary honestly: the module
-//!   is compiled from real DSL source (not a hand-built `CompiledModule`),
-//!   so `let fs = faces(u)` genuinely populates the module's `values`
-//!   `ValueMap` with a `Value::Selector` entry — the exact signal
-//!   `values_contain_selector` inspects.
+//!   real-OCCT engine-level positive control via a genuine DISTINCT-index
+//!   tie is not constructible with the primitives/transforms available
+//!   today. Routing through the mock keeps the assertion deterministic and
+//!   CI-stable, and — because the mock answers no centroid query — it is
+//!   what makes the gate-ran marker in (i) fire at all.
+//!
+//!   On the `ValueMap`: this module is compiled from real DSL source (never a
+//!   hand-built `CompiledModule`), and the real evaluator does land a
+//!   `Value::Selector` in `values` for an UNCONSUMED `let fs = faces(u)` —
+//!   directly observed by `values_contain_selector_true_for_evaluated_
+//!   unconsumed_selector_let` in `engine_build/tests.rs` (step-11c). But that
+//!   is no longer what carries the gate, and the earlier version of this doc
+//!   overstated it: post-step-12 the gate's PRIMARY term is the module-STATIC
+//!   `module_binds_selector` walk over every `CompiledExpr` in the module,
+//!   with `values_contain_selector` demoted to a secondary belt-and-braces
+//!   term. The runtime probe does not generalize — a selector ctor passed
+//!   inline as a call argument (`fillet(b, edges(b), 2mm)`, the dominant
+//!   idiom) never reaches the `ValueMap` at all, and a selector cell that a
+//!   realization CONSUMES is hydrated to `Value::List<Geometry>` rather than
+//!   staying a `Value::Selector`. `faces(u)` is left deliberately unconsumed
+//!   in these fixtures, so both terms are true here; the gate would still
+//!   open on the static term alone.
 //!
 //! Self-skips (case A only; case B needs no OCCT) when
 //! `reify_kernel_occt::OCCT_AVAILABLE` is false, mirroring the other
@@ -115,6 +142,72 @@ fn has_warning_topology_diagnostic(diagnostics: &[reify_core::Diagnostic]) -> bo
     })
 }
 
+// ─── L2 gate-ran marker (task #5196 step-14) ────────────────────────────────
+
+/// True iff the task #5196 L2-gated block ACTUALLY RAN for at least one
+/// realization of this build.
+///
+/// The marker is the centroid pre-pass's failure summary
+/// (`collect_centroids_with_failure_summary`, `engine_build.rs`). That helper
+/// has exactly ONE call site in the whole crate and it sits INSIDE the gated
+/// block, so its diagnostics cannot be produced by any ungated path — unlike
+/// `TopologyCorrespondenceDropped`, which the always-on tally/flush path emits
+/// regardless of the gate and which therefore proves nothing about it.
+///
+/// Under a mock kernel with no registered query fixtures every centroid /
+/// bounding-box query fails, so the summary fires deterministically whenever
+/// the gate opens over a non-empty attribute set — no genuine geometric tie
+/// (which real OCCT cannot produce on demand, see the module doc) is needed.
+///
+/// Matched on message text because these two diagnostics deliberately carry
+/// `code == None`: they report an auxiliary-metadata query failure, not one of
+/// the two user-facing topology-bookkeeping codes.
+fn has_gated_tie_scan_marker(diagnostics: &[reify_core::Diagnostic]) -> bool {
+    diagnostics.iter().any(|d| {
+        d.message
+            .starts_with("topology-attribute centroid query failed")
+            || d.message
+                .starts_with("topology-attribute centroid parse failed")
+    })
+}
+
+/// Highest op-result handle id the fixtures below can allocate.
+/// `MockGeometryKernel` hands out `GeometryHandleId(1)`, `(2)`, … in
+/// `execute` order; the case-(B)/(C) fixture issues five ops (three spheres,
+/// two unions). Fixtures are registered for a generous superset so a future
+/// op-count change cannot silently un-seed the table and turn the positive
+/// control vacuous.
+const MAX_OP_HANDLE_ID: u64 = 16;
+
+/// A `MockGeometryKernel` pre-loaded with topology-extraction fixtures for
+/// every handle id an op in these fixtures can be assigned.
+///
+/// Without this, `seed_primitive_attributes_for_handle` fails at
+/// `kernel.extract_faces(...)`, the `TopologyAttributeTable` stays empty for
+/// the realization, and the gated block's inner `if !realization_attrs
+/// .is_empty()` short-circuits — making the gate UNOBSERVABLE at engine level.
+/// (That is exactly why the original case (B) could assert nothing about it.)
+///
+/// `sphere` is the deliberate primitive choice: its seeding arm reads only
+/// `extract_faces` / `extract_edges` and never queries the kernel, whereas the
+/// `Box` arm issues a `GeometryQuery::BoundingBox` per vertex — which a mock
+/// with no query fixtures fails, aborting seeding before any entry lands.
+///
+/// Face handle ids are offset well past `MAX_OP_HANDLE_ID` so a face id can
+/// never collide with an op-result id.
+fn seeding_mock_kernel() -> MockGeometryKernel {
+    let mut kernel = MockGeometryKernel::new();
+    for parent in 1..=MAX_OP_HANDLE_ID {
+        kernel = kernel
+            .with_extracted_faces(
+                GeometryHandleId(parent),
+                vec![GeometryHandleId(1000 + parent)],
+            )
+            .with_extracted_edges(GeometryHandleId(parent), vec![]);
+    }
+    kernel
+}
+
 // ─── DropInjectingKernel (copied from topology_correspondence_drop_diagnostic_e2e.rs, task #4545) ──
 //
 // Each `tests/*.rs` file compiles as an independent integration-test binary,
@@ -132,9 +225,14 @@ struct DropInjectingKernel {
 }
 
 impl DropInjectingKernel {
-    fn new(boolean_history: BooleanOpHistoryRecords) -> Self {
+    /// Task #5196 step-14 delta from the #4545 original: the inner mock is
+    /// supplied by the caller rather than default-constructed, so these
+    /// fixtures can register the topology-extraction results that
+    /// `seed_primitive_attributes_for_handle` needs (see
+    /// [`seeding_mock_kernel`]).
+    fn new(inner: MockGeometryKernel, boolean_history: BooleanOpHistoryRecords) -> Self {
         Self {
-            inner: MockGeometryKernel::new(),
+            inner,
             boolean_history,
         }
     }
@@ -176,6 +274,32 @@ impl GeometryKernel for DropInjectingKernel {
 
     fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
         self.inner.tessellate(handle, tolerance)
+    }
+
+    // Task #5196 step-14 delta from the #4545 original: forward topology
+    // extraction to the inner mock. Without these three, the trait's default
+    // impls answer "topology extraction not supported by this kernel", primitive
+    // attribute seeding fails, and the gated tie-scan's attribute set is empty —
+    // which makes the L2 gate unobservable at engine level.
+    fn extract_faces(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        self.inner.extract_faces(handle)
+    }
+
+    fn extract_edges(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        self.inner.extract_edges(handle)
+    }
+
+    fn extract_vertices(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        self.inner.extract_vertices(handle)
     }
 }
 
@@ -275,31 +399,65 @@ fn healthy_selector_free_multi_boolean_model_emits_no_topology_bookkeeping_diagn
 
 // ─── Case (B): selector-bound boolean with degraded correspondence ─────────
 
+/// Number of silent drops `DropInjectingKernel` injects per boolean op in the
+/// case-(B) fixtures.
+const DROP_COUNT_PER_OP: u32 = 4;
+
+/// The case-(B) selector-BOUND source. `sphere` rather than `box` because the
+/// sphere seeding arm never queries the kernel — see [`seeding_mock_kernel`].
+const SELECTOR_BOUND_SOURCE: &str = r#"structure S {
+    let u = union(union(sphere(10mm), sphere(5mm)), sphere(3mm))
+    let fs = faces(u)
+}"#;
+
+/// The case-(B) NEGATIVE TWIN: byte-for-byte the same as
+/// [`SELECTOR_BOUND_SOURCE`] with the single `let fs = faces(u)` line removed,
+/// and nothing else changed. Any other difference would confound the
+/// comparison.
+const SELECTOR_FREE_TWIN_SOURCE: &str = r#"structure S {
+    let u = union(union(sphere(10mm), sphere(5mm)), sphere(3mm))
+}"#;
+
+/// Builds `source` against a `DropInjectingKernel` whose inner mock is
+/// pre-seeded with topology-extraction fixtures.
+fn build_with_drop_injecting_kernel(source: &str) -> reify_eval::BuildResult {
+    let compiled = compile_no_errors_for_engine(source);
+    let kernel = DropInjectingKernel::new(
+        seeding_mock_kernel(),
+        BooleanOpHistoryRecords {
+            silent_drop_count: DROP_COUNT_PER_OP,
+            ..Default::default()
+        },
+    );
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), Some(Box::new(kernel)));
+    engine.build(&compiled, ExportFormat::Step)
+}
+
 /// A model that binds a topology selector over a chain of booleans whose
 /// fuse degrades correspondence (injected via `DropInjectingKernel`, see
-/// module doc for why real OCCT cannot serve this role) must still surface
-/// ≥1 `Severity::Info` diagnostic carrying one of the two topology-
-/// bookkeeping codes, with at most one aggregated silent-drop line for the
-/// single realization (L4 summarization) — proving the L2 selector-presence
-/// gate does not suppress genuine correspondence-degradation signal when a
-/// selector is actually bound.
+/// module doc for why real OCCT cannot serve this role) must:
+///
+///   1. RUN the L2-gated tie-scan block — the POSITIVE half of the gate's
+///      two-sided control (see [`has_gated_tie_scan_marker`] for why the
+///      centroid pre-pass failure summary is a sound gate-ran marker and the
+///      drop diagnostic is not). Its negative twin is
+///      `selector_free_twin_does_not_run_the_gated_tie_scan` below.
+///   2. still surface ≥1 `Severity::Info` diagnostic carrying one of the two
+///      topology-bookkeeping codes, with at most one aggregated silent-drop
+///      line for the single realization (L4 summarization) — the always-on
+///      tally/flush path must stay independent of the gate.
+///
+/// Assertion (2) alone proves NOTHING about the gate: `TopologyCorrespondence
+/// Dropped` is emitted by the UNGATED tally/flush path, so it fires whether
+/// the gate opens or not. That was this test's original defect — it claimed to
+/// prove the gate did not suppress genuine signal while asserting only a
+/// gate-independent fact. Assertion (1) is what actually pins the gate, and
+/// only as a PAIR with the negative twin: with both, stubbing the gate
+/// condition to a constant `false` fails this test and stubbing it to a
+/// constant `true` fails the twin.
 #[test]
 fn selector_bound_boolean_with_degraded_correspondence_emits_info_diagnostic() {
-    const DROP_COUNT_PER_OP: u32 = 4;
-
-    let compiled = compile_no_errors_for_engine(
-        r#"structure S {
-    let u = union(union(box(10mm, 10mm, 10mm), box(5mm, 5mm, 5mm)), box(3mm, 3mm, 3mm))
-    let fs = faces(u)
-}"#,
-    );
-
-    let kernel = DropInjectingKernel::new(BooleanOpHistoryRecords {
-        silent_drop_count: DROP_COUNT_PER_OP,
-        ..Default::default()
-    });
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), Some(Box::new(kernel)));
-    let build_result = engine.build(&compiled, ExportFormat::Step);
+    let build_result = build_with_drop_injecting_kernel(SELECTOR_BOUND_SOURCE);
 
     let errors: Vec<_> = build_result
         .diagnostics
@@ -312,6 +470,16 @@ fn selector_bound_boolean_with_degraded_correspondence_emits_info_diagnostic() {
         errors
     );
 
+    // (1) POSITIVE CONTROL for the L2 gate's TRUE branch.
+    assert!(
+        has_gated_tie_scan_marker(&build_result.diagnostics),
+        "the task #5196 L2-gated tie-scan block must RUN for a module that binds a selector \
+         (`let fs = faces(u)`); its centroid pre-pass emits a failure summary under the mock \
+         kernel, and no such diagnostic is reachable from any ungated path. Got:\n{:#?}",
+        build_result.diagnostics
+    );
+
+    // (2) The ungated tally/flush path must still surface genuine signal.
     let info_topology_diags: Vec<_> = build_result
         .diagnostics
         .iter()
@@ -342,5 +510,54 @@ fn selector_bound_boolean_with_degraded_correspondence_emits_info_diagnostic() {
          (task #5196 L4 summarization), got {}: {:#?}",
         drop_diags.len(),
         drop_diags
+    );
+}
+
+/// NEGATIVE TWIN of the case-(B) positive control: the same fixture with the
+/// `let fs = faces(u)` binding removed must NOT run the gated tie-scan block.
+///
+/// This is the half that makes the pair two-sided. Without it, a gate stubbed
+/// to a constant `true` would leave the whole suite green — which is precisely
+/// the defect this step repairs.
+///
+/// It also pins the L4 tally/flush path's INDEPENDENCE from the gate from the
+/// other side: the silent-drop diagnostic must still fire here, with the gate
+/// closed.
+#[test]
+fn selector_free_twin_does_not_run_the_gated_tie_scan() {
+    let build_result = build_with_drop_injecting_kernel(SELECTOR_FREE_TWIN_SOURCE);
+
+    let errors: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "selector-free twin build must not regress to Failed: {:#?}",
+        errors
+    );
+
+    assert!(
+        !has_gated_tie_scan_marker(&build_result.diagnostics),
+        "the task #5196 L2-gated tie-scan block must be SKIPPED for a module that binds no \
+         selector — the only textual difference from the positive control above is the removed \
+         `let fs = faces(u)` line. Got:\n{:#?}",
+        build_result.diagnostics
+    );
+
+    // Gate-independence of the L4 path, asserted from the closed-gate side:
+    // the drop tally must still flush its one aggregated line.
+    let drop_diags: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TopologyCorrespondenceDropped))
+        .collect();
+    assert_eq!(
+        drop_diags.len(),
+        1,
+        "the ungated silent-drop tally must still emit exactly one aggregated line with the \
+         gate CLOSED; got:\n{:#?}",
+        build_result.diagnostics
     );
 }
