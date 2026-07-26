@@ -23,7 +23,11 @@
 //! `SketchSolveOutcome` and its DOF ledger — belongs to the consumer, which is
 //! the only place that knows which DOFs were declared `auto`.
 
+use std::collections::HashMap;
+
 use reify_core::SourceSpan;
+
+use crate::slvs_sys::{Slvs_hEntity, Slvs_hParam};
 
 /// Identifies a sketch entity within one [`SketchSystem`].
 ///
@@ -261,10 +265,83 @@ pub enum SketchSolveResult {
 ///
 /// Crate-internal by design: it carries raw `Slvs_*` handles, which must not
 /// cross the crate boundary (see the `solve_sketch`-as-the-only-seam decision).
-// Declared here alongside the rest of the sketch data model; populated and
-// consumed by the direct-build spine in `solvespace.rs`.
-#[allow(dead_code)]
-pub(crate) struct SketchHandleMap {}
+///
+/// Entries are appended in [`SketchSystem::entities`] declaration order and read
+/// back in that same order, which is what makes the solved output order a
+/// function of the input rather than of allocation timing (O9).
+pub(crate) struct SketchHandleMap {
+    entries: Vec<SketchEntityHandles>,
+}
+
+/// The slvs handles emitted for one sketch entity, plus how to read it back.
+struct SketchEntityHandles {
+    id: SketchEntityId,
+    /// The slvs entity handle. Recorded for every entity because composite
+    /// entities and constraints reference their operands by entity handle, not
+    /// by param — the emit paths that read it back out land with those.
+    #[allow(dead_code)]
+    entity: Slvs_hEntity,
+    readback: SketchReadback,
+}
+
+/// Where a solved entity's geometry comes from once `Slvs_Solve` returns.
+///
+/// Points own their params; composite entities own none, and are reconstructed
+/// from the already-solved points they reference.  That indirection is why the
+/// readback resolves ids rather than just copying param values.
+enum SketchReadback {
+    Point { x: Slvs_hParam, y: Slvs_hParam },
+}
+
+impl SketchHandleMap {
+    pub(crate) fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, id: SketchEntityId, entity: Slvs_hEntity, readback: SketchReadback) {
+        self.entries.push(SketchEntityHandles {
+            id,
+            entity,
+            readback,
+        });
+    }
+
+    /// Record a point entity and the two params carrying its coordinates.
+    pub(crate) fn push_point(
+        &mut self,
+        id: SketchEntityId,
+        entity: Slvs_hEntity,
+        x: Slvs_hParam,
+        y: Slvs_hParam,
+    ) {
+        self.push(id, entity, SketchReadback::Point { x, y });
+    }
+
+    /// Resolve every recorded entity against the solved param values.
+    ///
+    /// `values` maps param handle to solved value.  A param missing from
+    /// `values` is impossible by construction — every param this map references
+    /// was pushed into the same system that produced them — so it is reported
+    /// rather than defaulted to zero, which would fabricate geometry.
+    pub(crate) fn read_back(
+        &self,
+        values: &HashMap<Slvs_hParam, f64>,
+    ) -> Result<Vec<(SketchEntityId, SolvedSketchEntity)>, Slvs_hParam> {
+        let mut out = Vec::with_capacity(self.entries.len());
+        for entry in &self.entries {
+            let solved = match &entry.readback {
+                SketchReadback::Point { x, y } => SolvedSketchEntity::Point {
+                    x: *values.get(x).ok_or(*x)?,
+                    y: *values.get(y).ok_or(*y)?,
+                },
+            };
+            out.push((entry.id, solved));
+        }
+        Ok(out)
+    }
+}
 
 /// Why a [`SketchSystem`] could not be lowered into a slvs system at all.
 ///

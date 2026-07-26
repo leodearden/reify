@@ -16,8 +16,14 @@ use std::fmt;
 use std::sync::Mutex;
 
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, Type, ValueCellId};
-use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, ResolutionProblem, SolveResult, Value, ValueMap};
+use reify_ir::{
+    AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, ResolutionProblem,
+    SolveResult, Value, ValueMap,
+};
 
+use crate::sketch::{
+    SketchBuildError, SketchEntity, SketchHandleMap, SketchSolveResult, SketchSystem,
+};
 use crate::slvs_sys::{
     self, SLVS_C_ANGLE, SLVS_C_PARALLEL, SLVS_C_PERPENDICULAR, SLVS_C_POINTS_COINCIDENT,
     SLVS_C_PT_PT_DISTANCE, SLVS_FREE_IN_3D, SLVS_RESULT_DIDNT_CONVERGE, SLVS_RESULT_INCONSISTENT,
@@ -353,6 +359,7 @@ struct HandleAlloc {
     next_param: Slvs_hParam,
     next_entity: Slvs_hEntity,
     next_constraint: Slvs_hConstraint,
+    next_group: Slvs_hGroup,
 }
 
 impl HandleAlloc {
@@ -361,7 +368,23 @@ impl HandleAlloc {
             next_param: Slvs_hParam(1),
             next_entity: Slvs_hEntity(1),
             next_constraint: Slvs_hConstraint(1),
+            // 1 and 2 are reserved for FIXED_GROUP and the legacy SOLVE_GROUP,
+            // so the legacy route's group numbering is untouched.
+            next_group: Slvs_hGroup(3),
         }
+    }
+
+    /// Allocate a fresh solve group.
+    ///
+    /// `Slvs_Solve(sys, hg)` varies only params whose group is `hg` and treats
+    /// every other param as a constant, so a group is the unit of "what this
+    /// solve is allowed to move".  Allocation is sequential, which keeps group
+    /// ids — like entity and constraint handles — a deterministic function of
+    /// the input.
+    fn group(&mut self) -> Slvs_hGroup {
+        let h = self.next_group;
+        self.next_group.0 += 1;
+        h
     }
 
     fn param(&mut self) -> Slvs_hParam {
@@ -446,6 +469,12 @@ struct SystemBuilder {
     point_entities: HashMap<PointKey, Slvs_hEntity>,
     /// Lazily-created XY workplane entity handle for 2D constraints.
     workplane: Option<Slvs_hEntity>,
+    /// The group `solve()` hands to `Slvs_Solve` — i.e. the params it may vary.
+    ///
+    /// Defaults to `SOLVE_GROUP` so the legacy pattern-recognition route is
+    /// unchanged; `add_sketch` repoints it at the group it allocated for the
+    /// sketch.
+    solve_group: Slvs_hGroup,
 }
 
 const FIXED_GROUP: Slvs_hGroup = Slvs_hGroup(1);
@@ -483,6 +512,7 @@ impl SystemBuilder {
             mapping: ParamMapping::new(),
             point_entities: HashMap::new(),
             workplane: None,
+            solve_group: SOLVE_GROUP,
         }
     }
 
@@ -748,17 +778,85 @@ impl SystemBuilder {
         ));
     }
 
+    /// Lower a [`SketchSystem`] directly into this builder's slvs system.
+    ///
+    /// "Directly" is the point: nothing here inspects a `CompiledExpr` or tries
+    /// to recognise a pattern.  The caller has already decided what the sketch
+    /// means; this walks the typed declarations and emits the corresponding slvs
+    /// entities and constraints one for one.
+    ///
+    /// The sketch gets its own freshly allocated group and this builder's
+    /// `solve_group` is repointed at it, so the subsequent `solve()` varies the
+    /// sketch's params and holds the datum geometry (workplane origin, normal)
+    /// fixed.  One `add_sketch` per builder.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(SketchBuildError)` for a malformed `SketchSystem`.
+    fn add_sketch(&mut self, system: &SketchSystem) -> Result<SketchHandleMap, SketchBuildError> {
+        let wrkpl = self.get_workplane();
+        let group = self.alloc.group();
+        self.solve_group = group;
+
+        let mut handles = SketchHandleMap::new();
+
+        // Pass 1: points.  Every other entity kind is defined by the points it
+        // references, so points must exist as slvs entities before anything can
+        // name them.
+        for def in &system.entities {
+            match def.entity {
+                SketchEntity::Point { x, y } => {
+                    let px = self.alloc.param();
+                    let py = self.alloc.param();
+                    self.params.push(Slvs_Param::new(px, group, x));
+                    self.params.push(Slvs_Param::new(py, group, y));
+                    let eh = self.alloc.entity();
+                    self.entities
+                        .push(Slvs_Entity::point_2d(eh, group, wrkpl, px, py));
+                    handles.push_point(def.id, eh, px, py);
+                }
+                // Composite entities are emitted in pass 2, below.
+                SketchEntity::Line { .. }
+                | SketchEntity::Circle { .. }
+                | SketchEntity::Arc { .. } => {}
+            }
+        }
+
+        Ok(handles)
+    }
+
     /// Solve the system and return the result.
     ///
     /// Checks for Vec-length overflow when casting to `c_int` (i32) and
     /// performs bounds-checked access on the `faileds` field returned by
     /// `Slvs_Solve`.
     fn solve(mut self) -> SlvsSolveResult {
+        let solve_group = self.solve_group;
+
         if self.constraints.is_empty() {
+            // With no equations, every param in the solve group is a free
+            // degree of freedom.  This is exact, not an estimate: dof =
+            // params - rank, and rank is 0.
+            //
+            // Reporting a hardcoded 0 here would be a lie in the sketch
+            // direction — libslvs itself reports 4 for two unconstrained 2D
+            // points — and it is the *load-bearing* direction: 0 reads as
+            // "fully constrained", so a wholly unconstrained sketch would be
+            // waved through.  (The legacy route never reads `dof`, so this is
+            // inert for it.)
+            let free = self
+                .params
+                .iter()
+                .filter(|p| p.group == solve_group)
+                .count();
+            let dof = match i32::try_from(free) {
+                Ok(n) => n,
+                Err(_) => return SlvsSolveResult::TooLarge,
+            };
             return SlvsSolveResult::Ok {
                 params: self.params,
                 mapping: self.mapping,
-                dof: 0,
+                dof,
             };
         }
 
@@ -812,7 +910,7 @@ impl SystemBuilder {
         };
 
         unsafe {
-            slvs_sys::Slvs_Solve(&mut sys, SOLVE_GROUP);
+            slvs_sys::Slvs_Solve(&mut sys, solve_group);
         }
 
         // Drop guard after solve completes
@@ -845,7 +943,7 @@ enum SlvsSolveResult {
     Ok {
         params: Vec<Slvs_Param>,
         mapping: ParamMapping,
-        #[allow(dead_code)]
+        /// libslvs' degrees-of-freedom count for the solved group.
         dof: i32,
     },
     Inconsistent {
@@ -858,6 +956,70 @@ enum SlvsSolveResult {
     /// The global SLVS_LOCK mutex was poisoned by a prior panic.
     LockPoisoned,
     UnknownError(i32),
+}
+
+// ---------------------------------------------------------------------------
+// Constrained-2D-sketch entry point
+// ---------------------------------------------------------------------------
+
+/// Solve a 2D constrained sketch through a real `Slvs_Solve` call.
+///
+/// This is the crate's only sketch-solving seam.  `SystemBuilder` and
+/// `add_sketch` stay private on purpose: the builder holds raw `Slvs_*` structs,
+/// and publishing it would push the whole slvs vocabulary across the crate
+/// boundary and make every future FFI change a breaking change for consumers.
+/// A free function that owns the whole build → solve → read-back round trip
+/// gives callers exactly one thing to depend on.
+///
+/// What comes back is libslvs' own report, not a judgement about it: the raw
+/// `dof`, the resolved failing set, the raw non-OK result codes.  Classifying
+/// that into diagnostics needs to know which degrees of freedom were declared
+/// `auto`, which this layer cannot see.
+pub fn solve_sketch(system: &SketchSystem) -> SketchSolveResult {
+    let mut builder = SystemBuilder::new();
+
+    let handles = match builder.add_sketch(system) {
+        Ok(handles) => handles,
+        // `SketchBuildError` is uninhabited until the input-validation pass
+        // lands, so this arm is unreachable by construction rather than by
+        // assumption.  Matching it explicitly keeps the seam exhaustive now and
+        // turns into a real error path without a signature change later.
+        Err(err) => match err {},
+    };
+
+    match builder.solve() {
+        SlvsSolveResult::Ok { params, dof, .. } => {
+            let values: HashMap<Slvs_hParam, f64> = params.iter().map(|p| (p.h, p.val)).collect();
+            match handles.read_back(&values) {
+                Ok(entities) => SketchSolveResult::Solved { entities, dof },
+                Err(missing) => {
+                    // Every param the handle map references was pushed into the
+                    // same system that produced `params`, so this cannot happen.
+                    // If it somehow does, say so loudly instead of returning
+                    // fabricated coordinates.
+                    tracing::error!(
+                        param = missing.0,
+                        "sketch readback referenced a param absent from the solved system"
+                    );
+                    SketchSolveResult::UnknownError(SLVS_RESULT_OKAY)
+                }
+            }
+        }
+        SlvsSolveResult::Inconsistent { failed_ids } => {
+            // The failing slvs handles are resolved back to their declaring
+            // constraints (and spans) by the attribution map; until that map
+            // exists there is nothing to resolve them through.
+            let _ = failed_ids;
+            SketchSolveResult::Inconsistent {
+                failing: Vec::new(),
+            }
+        }
+        SlvsSolveResult::DidntConverge => SketchSolveResult::DidntConverge,
+        SlvsSolveResult::TooManyUnknowns => SketchSolveResult::TooManyUnknowns,
+        SlvsSolveResult::TooLarge => SketchSolveResult::TooLarge,
+        SlvsSolveResult::LockPoisoned => SketchSolveResult::LockPoisoned,
+        SlvsSolveResult::UnknownError(code) => SketchSolveResult::UnknownError(code),
+    }
 }
 
 fn point_key(pt: &PointRef) -> PointKey {

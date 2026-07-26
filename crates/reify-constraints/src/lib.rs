@@ -50,7 +50,7 @@ pub use solver::DimensionalSolver;
 // compute the λ=0 Chebyshev-centre reference independently of the tradeoff blend
 // dispatch under test (see `cost_robustness_tradeoff_blend.rs`).
 pub use solver::build_centrality_objective;
-pub use solvespace::SolveSpaceSolver;
+pub use solvespace::{SolveSpaceSolver, solve_sketch};
 
 use reify_core::{Diagnostic, DiagnosticCode};
 use reify_ir::{ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction, Value};
