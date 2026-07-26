@@ -1204,13 +1204,17 @@ pub struct EntityTreeNode {
     pub freshness: String,
     /// Whether the GUI should show this node by default.
     ///
-    /// `false` means this is an aux body or a descendant of an `aux sub` —
-    /// hidden by default in the outline and excluded from `viewport_state.meshCount`.
+    /// `false` means this node is either **aux** (an aux body or a descendant
+    /// of an `aux sub`) or a **consumed intermediate** (a realization taken as
+    /// an operand by a sibling realization in the same template, e.g. `let body`
+    /// feeding `param geometry = difference(body, holes)`) — hidden by default
+    /// in the outline and excluded from `viewport_state.meshCount`.
     /// The mesh payload is still shipped; the outline toggle (setVisibility) reveals it.
     ///
-    /// Mirrors `reify_eval::MeshSurface.default_visible`. The authoritative rule
-    /// (shared with the surfacing walk in `geometry_ops.rs:4875`) is:
-    /// `!(aux_ancestor || real.is_aux)`.
+    /// Mirrors `reify_eval::MeshSurface.default_visible` and extends it with the
+    /// consumed-intermediate rule (#5195). The authoritative rule (whose aux half
+    /// is shared with the surfacing walk in `geometry_ops.rs:4875`) is:
+    /// `!(aux_ancestor || real.is_aux || is_consumed)`.
     ///
     /// Uses `#[serde(default)]` → true so older/partial wire payloads
     /// (every non-realization node, backward-compat) deserialise as visible.

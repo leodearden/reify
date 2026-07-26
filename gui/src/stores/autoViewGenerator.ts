@@ -43,17 +43,23 @@ export interface ViewDefinition {
 // ---------------------------------------------------------------------------
 
 /**
- * Matches the canonical geometry type tokens (Solid, Surface, Curve) at word
- * boundaries so generic wrappers like `Option<Solid>` or `List<Curve>` are
- * recognised while substring-only matches like `MySolid`, `Solidarity`, or
- * `SolidBody` are correctly rejected.
+ * Matches the canonical geometry type tokens at word boundaries so generic
+ * wrappers like `Option<Geometry>` or `List<Curve>` are recognised while
+ * substring-only matches like `MySolid`, `Solidarity`, `SolidBody`, or
+ * `GeometryReference` are correctly rejected.
  *
- * Note: the backend type system does not emit digit-suffix variants such as
- * `Solid3D` or `Curve2D` (`Solid` resolves to `Type::Geometry` and emits
- * `"Geometry"`; `Surface`/`Curve` are `StructureRef` types with fixed names).
+ * `Geometry` is the token that actually fires in practice (#5195): the backend
+ * resolves BOTH the `Solid` and the `Geometry` source spellings to
+ * `Type::Geometry`, whose `Display` emits the literal `"Geometry"`. A
+ * value-cell node's `type_name` therefore reads `"Geometry"` and never
+ * `"Solid"` — without this token the whole rule was dead against real trees.
+ * `Solid` is kept for hand-built fixtures and any future type that Displays
+ * under that name; `Surface`/`Curve` are `StructureRef` types with fixed names.
+ *
+ * The backend emits no digit-suffix variants such as `Solid3D` or `Curve2D`.
  * If that ever changes, extend this pattern accordingly.
  */
-const GEOMETRY_TYPE_NAME_RE = /\b(?:Solid|Surface|Curve)\b/;
+const GEOMETRY_TYPE_NAME_RE = /\b(?:Solid|Surface|Curve|Geometry)\b/;
 
 /**
  * Matches the canonical Material token at a word boundary, accepting wrappers
@@ -63,10 +69,33 @@ const MATERIAL_TYPE_NAME_RE = /\bMaterial\b/;
 
 /**
  * Returns true when a node is a let-binding whose type matches
- * `\b(Solid|Surface|Curve)\b` (anchored on word boundaries).  Generic wrappers
- * such as `Option<Solid>` are recognised; substring-only names such as `MySolid`
- * or `SolidBody` are not.  Used by both `defaultVisibilityFor` and
- * `manufacturingReadyVisibilityFor` so the two rules cannot drift.
+ * `\b(Solid|Surface|Curve|Geometry)\b` (anchored on word boundaries).  Generic
+ * wrappers such as `Option<Geometry>` are recognised; substring-only names such
+ * as `MySolid`, `SolidBody`, or `GeometryReference` are not.  Used by both
+ * `defaultVisibilityFor` and `manufacturingReadyVisibilityFor` so the two rules
+ * cannot drift.
+ *
+ * # Blast radius of the `Geometry` token (#5195)
+ * Adding `Geometry` revived a rule that was dead against every real tree, and
+ * its reach is WIDER than the consumed-intermediate feature it was added for:
+ * since #4954 a geometry binding emits TWO sibling nodes, and this rule fires
+ * on the value-cell one (`kind: 'let'`) for EVERY geometry `let`, consumed or
+ * not.  So a non-consumed `let body` in a non-`Physical` structure now renders
+ * as an outline PAIR: the value cell 'hidden', its realization sibling 'show'.
+ *
+ * That is deliberate and it is not a viewport bug — meshes key on the
+ * `#realization[N]` node, and `engineStore.syncDemand` filters on
+ * `'#realization['`, so a value cell's visibility reaches neither the renderer
+ * nor demand pruning.  It is purely the outline's per-row glyph
+ * (`DesignTree.tsx:214`), where the two rows describe the same binding at
+ * different layers and the mesh-bearing one governs.  `param geometry` is a
+ * `param`, not a `let`, so the finished part's own row is never touched.
+ * Pinned against the real compiled tree by
+ * `engine_tests.rs::examples_m5_geometry_flange_hides_consumed_intermediates`
+ * (value-cell `type_name`/`kind`) and by the pair test in
+ * `autoViewGenerator.test.ts`.  If the paired glyphs ever read as a bug, the
+ * fix is to scope this rule to nodes without a realization sibling — NOT to
+ * drop the `Geometry` token, which would make the rule dead again.
  */
 function isLetGeometryType(node: EntityTreeNode): boolean {
   return (
@@ -83,14 +112,54 @@ function isLetGeometryType(node: EntityTreeNode): boolean {
  * produces an explicit per-node entry rather than a fallback.
  *
  * Rule (in precedence order):
- * 0. `default_visible === false` → 'hidden' (aux body / aux-subtree hidden-by-default;
- *    takes precedence over trait_geometry so an aux realization that happens to be
- *    trait_geometry is still hidden until the user toggles it on).
+ * -1. DisplayOutput routing (#5195), ADDITIVE: a realization named by a
+ *     `DisplayOutput` subject → 'show', outranking even its own
+ *     `default_visible === false`. A MISS falls through to the rules below —
+ *     routing never hides anything.
+ * 0. `default_visible === false` → 'hidden' (aux body / aux-subtree / consumed
+ *    intermediate hidden-by-default; takes precedence over trait_geometry so an
+ *    aux realization that happens to be trait_geometry is still hidden until the
+ *    user toggles it on).
  * 1. `trait_geometry` → 'show'
- * 2. `kind === 'let'` AND `type_name` matches `\b(Solid|Surface|Curve)\b` (anchored) → 'hidden'
+ * 2. `kind === 'let'` AND `type_name` matches `\b(Solid|Surface|Curve|Geometry)\b` (anchored) → 'hidden'
  * 3. Everything else (structure, sub, param, occurrence, auto, port, …) → 'show'
+ *
+ * @param displaySubjects `entity_path`s named by the design's `DisplayOutput`
+ *   directives. ADDITIVE: forces named subjects to 'show'; never hides a
+ *   non-subject. Optional, and inert when empty or omitted.
  */
-export function defaultVisibilityFor(node: EntityTreeNode): VisibilityState {
+export function defaultVisibilityFor(
+  node: EntityTreeNode,
+  displaySubjects?: Set<string>,
+): VisibilityState {
+  // Rule -1: explicit DisplayOutput routing (#5195). Restricted to realization
+  // nodes — those are what carry meshes and what a DisplayOutput subject names
+  // — so params/structures/subs keep their normal rules. Deliberately ahead of
+  // rule 0: an author who names a subject explicitly gets it shown even if it
+  // is an aux or consumed intermediate.
+  //
+  // MUST STAY ADDITIVE — do not "simplify" a miss back to 'hidden'.
+  // `DisplayOutput` is OVERLOADED: the same occurrence carries layer-3
+  // appearance overrides (`AppearanceDirective`) AND multi-pane routing, and
+  // `collect_display_routing` (engine.rs:4080-4086) emits a `DisplayDirective`
+  // for EVERY DisplayDeferred occurrence, reading `pane` from the hydrated
+  // instance (engine.rs:4048-4055) where it is ALWAYS present, defaulted to 0.
+  // A directive therefore proves NOTHING about visibility intent: an
+  // appearance-only `DisplayOutput(subject:, style:)` is byte-identical on the
+  // wire to an explicit `pane: 0`. An exhaustive `subject ? 'show' : 'hidden'`
+  // rule consequently made styling one body delete every other body from the
+  // viewport (examples/appearance_viewport_egress.ri), and made routing a
+  // subject to `pane: 1` blank pane 0 — all panes share one visibility map
+  // (App.tsx:810) and unrouted meshes bucket into pane 0 (App.tsx:213).
+  //
+  // Hiding intermediates is the ENGINE's job (`default_visible === false` on
+  // consumed/aux realizations, rule 0 below), not the routing rule's. No
+  // `size > 0` guard is needed: an empty set simply has no members, which also
+  // removes the cliff where adding one DisplayOutput changed every other
+  // realization's visibility.
+  if (node.kind === 'realization' && displaySubjects?.has(node.entity_path)) {
+    return 'show';
+  }
   // Rule 0: aux hidden-by-default (T6). Strict === false so absent/true nodes
   // fall through to the existing rules unchanged (backward-compatible).
   if (node.default_visible === false) return 'hidden';
@@ -127,11 +196,23 @@ function collectAllNodes(nodes: EntityTreeNode[]): EntityTreeNode[] {
 /**
  * Generate the `auto:default` view by walking the tree and applying
  * `defaultVisibilityFor` to each node.
+ *
+ * @param displaySubjects `entity_path`s named by the design's `DisplayOutput`
+ *   directives (#5195). ADDITIVE: those realizations are forced visible; every
+ *   other realization keeps its own `default_visible` rule, so naming a subject
+ *   never removes a body from the view.
+ *   Routing is deliberately scoped to THIS view: `generateAllGeometryView`
+ *   stays the see-everything escape hatch, `generatePurposeViews` keeps its own
+ *   heuristics, and the walk-up `defaultRuleFor` used by user views is
+ *   untouched so a manual view is never silently overridden.
  */
-export function generateDefaultView(tree: EntityTreeNode[]): ViewDefinition {
+export function generateDefaultView(
+  tree: EntityTreeNode[],
+  displaySubjects?: Set<string>,
+): ViewDefinition {
   const visibility: Record<string, VisibilityState> = {};
   for (const node of collectAllNodes(tree)) {
-    visibility[node.entity_path] = defaultVisibilityFor(node);
+    visibility[node.entity_path] = defaultVisibilityFor(node, displaySubjects);
   }
   return {
     id: 'auto:default',
@@ -165,7 +246,7 @@ export function generateAllGeometryView(tree: EntityTreeNode[]): ViewDefinition 
 function manufacturingReadyVisibilityFor(node: EntityTreeNode): VisibilityState {
   // trait_geometry → show
   if (node.trait_geometry) return 'show';
-  // let node matching \b(Solid|Surface|Curve)\b → ghost (still visible as context)
+  // let node matching \b(Solid|Surface|Curve|Geometry)\b → ghost (still visible as context)
   if (isLetGeometryType(node)) return 'ghost';
   // Material params (type_name matches \bMaterial\b, including wrappers such as
   // List<Material>) are specifically kept visible (material assignments matter
