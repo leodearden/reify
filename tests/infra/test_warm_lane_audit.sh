@@ -531,8 +531,9 @@ import json, sys
 data = json.load(sys.stdin)
 lanes = data["lanes"] if isinstance(data, dict) and "lanes" in data else data
 assert isinstance(lanes, list) and len(lanes) == 2, lanes
-expected_keys = {"lane", "role", "live", "branch", "status", "recoverable",
-                  "dirty", "divergent_gib", "age_min", "classification"}
+expected_keys = {"lane", "role", "live", "assigned", "branch", "status",
+                  "recoverable", "dirty", "divergent_gib", "age_min",
+                  "classification"}
 for obj in lanes:
     assert expected_keys.issubset(obj.keys()), obj
 names = {obj["lane"] for obj in lanes}

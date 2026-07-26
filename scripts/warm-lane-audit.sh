@@ -12,7 +12,8 @@
 #       [--status-cmd CMD] [--stale-age-min N] [--main-ref REF] [--safety N]
 #
 # For each resident worktree under --mount (lanes _lane-*/_spec-* and orphan
-# git-worktree dirs), emits: lane · role · live (LIVE|IDLE) · branch ·
+# git-worktree dirs), emits: lane · role · live (LIVE|IDLE) · assigned
+# (ASSIGNED|RELEASED|QUARANTINED|UNKNOWN) · branch ·
 # backing-task-status (terminal|non-terminal|unknown) · recoverable
 # (LANDED|PUSHED|ORPHAN) · dirty (clean|residue-only|wip) · divergent_gib ·
 # age_min · classification (LIVE|RECLAIMABLE|LEAKED|PRESERVED-OK). A trailing
@@ -28,6 +29,10 @@
 # the two is what produced the 2026-07-22 pool misread, where lanes the
 # orchestrator had reserved were reported as free because no consumer happened
 # to hold their lock.
+#
+# `assigned` is that second, independent question -- "has the pool RESERVED
+# this lane?" -- answered from the orchestrator's own durable record at
+# <state-dir>/<lane>.json, never inferred from the lock.
 #
 # Options (env defaults shown):
 #   --mount DIR           Warm-lane worktrees dir (env: REIFY_WARM_LANE_MOUNT;
@@ -60,6 +65,14 @@
 #                                         don't count as unrecoverable WIP
 #                                         (default: data/queue/*.db*, the
 #                                         §2/D1 write_queue.db residue).
+#   REIFY_WARM_LANE_AUDIT_STATE_DIR      Directory holding the orchestrator's
+#                                         durable per-lane assignment records
+#                                         <lane>.json (default:
+#                                         <mount>/.lane-state, dark-factory's
+#                                         LANE_STATE_DIRNAME). Read-only; a
+#                                         missing dir is not an error (every
+#                                         lane simply reports
+#                                         assigned=UNKNOWN -- see A5).
 #
 # Exit codes:
 #   0  — Always, on every valid invocation (advisory/observability — this
@@ -89,6 +102,13 @@
 #        "leaks could not be evaluated".
 #   A4 — `stale` is always the relation age_min >= stale_age_min against the
 #        declared knob — never an inline/undeclared literal.
+#   A5 — the assignment-state read is fail-safe: a missing state dir, a
+#        missing/unreadable record, corrupt JSON, or an unrecognized `state`
+#        value all degrade that lane to `assigned=UNKNOWN`. It never aborts
+#        and never invents an assignment. UNKNOWN lanes keep the conservative
+#        accounting (counted free), but are surfaced separately so "no pins"
+#        stays distinguishable from "pins could not be evaluated" — the same
+#        treatment A3 gives an unresolvable backing-task status.
 
 set -euo pipefail
 
@@ -115,6 +135,10 @@ Usage: $(basename "$0") [--mount DIR] [--format table|json] [--status-cmd CMD]
   Per-lane columns:
     live      LIVE|IDLE — is a consumer PROCESS holding the lane's exclusive
               flock right now? Liveness only; NOT the assignment state.
+    assigned  ASSIGNED|RELEASED|QUARANTINED|UNKNOWN — has the pool RESERVED
+              this lane? Read from the orchestrator's own record at
+              \$REIFY_WARM_LANE_AUDIT_STATE_DIR/<lane>.json (default:
+              <mount>/.lane-state). Unresolvable => UNKNOWN, never an error.
 
   Options:
     --mount DIR           Warm-lane worktrees dir (default: \$REIFY_WARM_LANE_MOUNT).
@@ -144,6 +168,8 @@ MAIN_REF="${REIFY_WARM_LANE_AUDIT_MAIN_REF:-main}"
 SAFETY="${REIFY_WARM_LANE_AUDIT_SAFETY:-1.5}"
 DF="${REIFY_WARM_LANE_AUDIT_DF:-df}"
 RESIDUE_GLOB="${REIFY_WARM_LANE_AUDIT_RESIDUE_GLOB:-data/queue/*.db*}"
+# Resolved after arg parsing (the default is derived from the final --mount).
+STATE_DIR="${REIFY_WARM_LANE_AUDIT_STATE_DIR:-}"
 
 # ── arg parsing ────────────────────────────────────────────────────────────────
 while [ $# -gt 0 ]; do
@@ -200,7 +226,14 @@ if ! printf '%s\n' "$SAFETY" | grep -qE '^[0-9]+(\.[0-9]+)?$' || ! awk -v s="$SA
     exit 2
 fi
 
-info "warm-lane-audit.sh: mount=$MOUNT format=$FORMAT stale_age_min=$STALE_AGE_MIN main_ref=$MAIN_REF safety=$SAFETY"
+# The state dir defaults to <mount>/.lane-state, so it can only be resolved
+# once --mount is final. An explicit REIFY_WARM_LANE_AUDIT_STATE_DIR wins and
+# may point anywhere, including outside the mount.
+if [ -z "$STATE_DIR" ] && [ -n "$MOUNT" ]; then
+    STATE_DIR="$MOUNT/.lane-state"
+fi
+
+info "warm-lane-audit.sh: mount=$MOUNT format=$FORMAT stale_age_min=$STALE_AGE_MIN main_ref=$MAIN_REF safety=$SAFETY state_dir=$STATE_DIR"
 
 # ── helper: is this dir a git worktree? ───────────────────────────────────────
 _is_git_worktree() {
@@ -261,6 +294,71 @@ _probe_live() {
         fi
     fi
     printf '%s' "$result"
+    return 0
+}
+
+# ── assignment state: read the orchestrator's own durable record (A5) ─────────
+# _record_scalar <file> <key>
+# Prints the value of a flat top-level STRING scalar in <file>, or nothing on
+# any miss (unreadable file, absent key, or a non-string value such as `null`).
+#
+# No jq/python3 dependency by design: this script has none today (it even
+# hand-rolls _json_escape), runs from a systemd timer and from the disk-pressure
+# paths, and is forbidden from ever aborting -- a hard jq requirement would be a
+# new environmental failure mode for an advisory-only tool. Only two flat
+# top-level string scalars are ever needed (`state`, `task_id`): no nesting, no
+# arrays.
+#
+# Newlines are stripped first so the capture is indifferent to the producer's
+# formatting -- dark-factory writes json.dumps(indent=2) today, and a future
+# compact single-line record parses identically.
+#
+# The capture requires a BARE double quote immediately before <key>, which is
+# what makes it safe against a value that merely contains the key text: json
+# escapes any quote inside a string as \", so the byte sequence "state" can
+# only ever occur as a real key, never inside a title or branch value.
+#
+# A `null` value yields empty (the quotes are required), which is exactly the
+# desired reading for an unassigned task_id.
+_record_scalar() {
+    local file="$1" key="$2"
+    [ -f "$file" ] && [ -r "$file" ] || return 0
+    tr -d '\n' < "$file" 2>/dev/null \
+        | sed -n -E "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"([^\"]*)\".*/\1/p" \
+        || true
+    return 0
+}
+
+# _lane_assigned_state <lane>
+# Prints ASSIGNED|RELEASED|QUARANTINED|UNKNOWN for <lane>, read from
+# <STATE_DIR>/<lane>.json. This is the pool's RESERVATION truth and is wholly
+# independent of the liveness probe.
+#
+# The raw-state -> column mapping below is the normative table (it lives in the
+# code, not only in a comment). Raw values are dark-factory's LaneState enum
+# (orchestrator/src/orchestrator/lane_lifecycle.py):
+#   assigned, in_use              -> ASSIGNED     (reserved for a task)
+#   released, seed, registered    -> RELEASED     (in the pool, not reserved)
+#   quarantined                   -> QUARANTINED  (withheld from the pool)
+#   anything else / unresolvable  -> UNKNOWN      (A5)
+#
+# Every access is guarded by an existence/readability test before reading: the
+# read is strictly NON-CREATING, exactly as the <dir>.lock probe never creates
+# a lock (A1). No `>`-open, no touch, no mkdir anywhere on the state path.
+_lane_assigned_state() {
+    local lane="$1"
+    [ -n "$STATE_DIR" ] && [ -d "$STATE_DIR" ] || { printf 'UNKNOWN'; return 0; }
+    local record="$STATE_DIR/$lane.json"
+    [ -f "$record" ] && [ -r "$record" ] || { printf 'UNKNOWN'; return 0; }
+
+    local raw
+    raw="$(_record_scalar "$record" state)"
+    case "$raw" in
+        assigned|in_use)          printf 'ASSIGNED' ;;
+        released|seed|registered) printf 'RELEASED' ;;
+        quarantined)              printf 'QUARANTINED' ;;
+        *)                        printf 'UNKNOWN' ;;
+    esac
     return 0
 }
 
@@ -531,6 +629,9 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
             FREE_COUNT=$((FREE_COUNT + 1))
         fi
 
+        # Independent of `live`: the pool's own reservation truth (A5).
+        assigned_state="$(_lane_assigned_state "$name")"
+
         raw_branch="$(_lane_branch_raw "$entry")"
         branch="${raw_branch:-(detached)}"
         status="$(_backing_task_status "$entry")"
@@ -554,9 +655,9 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
             warn "lane=$name: backing-task status unknown -- cannot confirm LEAKED (would classify LEAKED if status resolved non-terminal); reported PRESERVED-OK. See HEADROOM leak_unknown."
         fi
 
-        TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} live=${live} branch=${branch} status=${status} recoverable=${recoverable} dirty=${dirty} divergent_gib=${divergent_gib} age_min=${age_min} classification=${classification}
+        TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} live=${live} assigned=${assigned_state} branch=${branch} status=${status} recoverable=${recoverable} dirty=${dirty} divergent_gib=${divergent_gib} age_min=${age_min} classification=${classification}
 "
-        JSON_LANE_OBJS+=("{\"lane\":\"$(_json_escape "$name")\",\"role\":\"${role}\",\"live\":\"${live}\",\"branch\":\"$(_json_escape "$branch")\",\"status\":\"${status}\",\"recoverable\":\"${recoverable}\",\"dirty\":\"${dirty}\",\"divergent_gib\":${divergent_gib},\"age_min\":${age_min},\"classification\":\"${classification}\"}")
+        JSON_LANE_OBJS+=("{\"lane\":\"$(_json_escape "$name")\",\"role\":\"${role}\",\"live\":\"${live}\",\"assigned\":\"${assigned_state}\",\"branch\":\"$(_json_escape "$branch")\",\"status\":\"${status}\",\"recoverable\":\"${recoverable}\",\"dirty\":\"${dirty}\",\"divergent_gib\":${divergent_gib},\"age_min\":${age_min},\"classification\":\"${classification}\"}")
     done
 fi
 
