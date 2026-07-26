@@ -228,4 +228,7 @@ echo "--- S: covered suites reach test_summary with rc=0 / 0 FAIL without cargo-
 assert "S1: test_verify_compile_gate.sh reaches test_summary with rc=0 / 0 FAIL on a nextest-less host" \
     _suite_is_clean_without_nextest test_verify_compile_gate.sh
 
+assert "S2: test_verify_semaphore_wiring.sh reaches test_summary with rc=0 / 0 FAIL on a nextest-less host" \
+    _suite_is_clean_without_nextest test_verify_semaphore_wiring.sh
+
 test_summary
