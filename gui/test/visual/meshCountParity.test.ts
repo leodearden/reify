@@ -15,7 +15,11 @@
  * construction, so the equality is trivially true and proves nothing.
  */
 import { describe, it, expect } from "vitest";
-import { checkMeshCountParity, MESH_COUNT_PARITY_MIN_BODIES } from "./meshCountParity.mjs";
+import {
+  checkMeshCountParity,
+  extractMeshCountInputs,
+  MESH_COUNT_PARITY_MIN_BODIES,
+} from "./meshCountParity.mjs";
 
 /** A three-way-consistent, non-vacuous baseline the cases below perturb. */
 const OK_INPUT = {
@@ -222,5 +226,257 @@ describe("checkMeshCountParity — (g) malformed counts fail loudly", () => {
     // unusable value against the reference would just add noise.
     const { failures } = checkMeshCountParity({ ...OK_INPUT, engineStateCount: undefined });
     expect(failures.filter((f) => f.includes("engine_state"))).toHaveLength(1);
+  });
+});
+
+// ─── extractMeshCountInputs ──────────────────────────────────────────────────
+//
+// The layer where drift against the real Rust / frontend payload shapes would
+// bite. Every literal below mirrors a shape verified on base:
+//   viewport_state  → { meshCount, meshInfo: [{ entityPath, ... }], ... }   bridge.ts
+//   mesh_stats      → { meshes: [{ entity_path, vertex_count, ... }] }      commands.rs
+//   engine_state    → { meshes: [{ entity_path, ... }], values, ... }       commands.rs
+//   demand_dispatch → { dispatch_by_realization, eval_set, full_scope }     commands.rs
+// Note the casing seam: the frontend speaks camelCase, Rust speaks snake_case.
+
+/** Realistic 3-body payload set, selective demand active. */
+function livePayloads() {
+  return {
+    viewportState: {
+      camera: { position: { x: 0, y: 0, z: 10 }, fov: 50, near: 0.1, far: 1000 },
+      meshCount: 3,
+      meshInfo: [
+        { entityPath: "BoxPart#realization[0]", vertexCount: 24, faceCount: 12, material: null },
+        { entityPath: "TubePin#realization[0]", vertexCount: 96, faceCount: 64, material: null },
+        { entityPath: "BasePlate#realization[0]", vertexCount: 24, faceCount: 12, material: null },
+      ],
+      selectedEntity: null,
+      selectedEntities: [],
+      sceneBounds: null,
+    },
+    meshStats: {
+      meshes: [
+        {
+          entity_path: "BoxPart#realization[0]",
+          vertex_count: 24,
+          face_count: 12,
+          element_kind_count: { "1": 12 },
+          bounding_box: { min: [0, 0, 0], max: [1, 1, 1] },
+        },
+        {
+          entity_path: "TubePin#realization[0]",
+          vertex_count: 96,
+          face_count: 64,
+          element_kind_count: { "1": 64 },
+          bounding_box: { min: [0, 0, 0], max: [2, 2, 2] },
+        },
+        {
+          entity_path: "BasePlate#realization[0]",
+          vertex_count: 24,
+          face_count: 12,
+          element_kind_count: { "1": 12 },
+          bounding_box: { min: [0, 0, 0], max: [5, 5, 1] },
+        },
+      ],
+    },
+    engineState: {
+      meshes: [
+        { entity_path: "BoxPart#realization[0]", vertex_count: 24, face_count: 12, has_normals: true },
+        { entity_path: "TubePin#realization[0]", vertex_count: 96, face_count: 64, has_normals: true },
+        { entity_path: "BasePlate#realization[0]", vertex_count: 24, face_count: 12, has_normals: true },
+      ],
+      values: {},
+      constraints: [],
+      files: [],
+      compile_diagnostics: [],
+      tessellation_diagnostics: [],
+      stale: false,
+      reload_error: null,
+    },
+    demandDispatch: {
+      dispatch_by_realization: { "BoxPart#realization[0]": 1 },
+      eval_set: ["BoxPart#realization[0]", "TubePin#realization[0]", "BasePlate#realization[0]"],
+      full_scope: false,
+    },
+  };
+}
+
+describe("extractMeshCountInputs — (a) real payload shapes", () => {
+  it("flattens the four live payloads into the checker's input shape", () => {
+    const { inputs, failures } = extractMeshCountInputs(livePayloads());
+    expect(failures).toEqual([]);
+    expect(inputs).toEqual({
+      viewportMeshCount: 3,
+      meshStatsCount: 3,
+      engineStateCount: 3,
+      fullScope: false,
+    });
+  });
+
+  it("feeds straight into checkMeshCountParity", () => {
+    const { inputs } = extractMeshCountInputs(livePayloads());
+    expect(checkMeshCountParity({ ...inputs, minBodies: 2 })).toEqual({ ok: true, failures: [] });
+  });
+
+  it("counts mesh_stats/engine_state array LENGTH, not some sibling field", () => {
+    // Drop one entry from mesh_stats only: the extractor must report 2, which
+    // is what makes the parity comparison downstream meaningful.
+    const p = livePayloads();
+    p.meshStats.meshes = p.meshStats.meshes.slice(0, 2);
+    const { inputs } = extractMeshCountInputs(p);
+    expect(inputs.meshStatsCount).toBe(2);
+    expect(inputs.viewportMeshCount).toBe(3);
+    expect(inputs.engineStateCount).toBe(3);
+  });
+
+  it("reads viewport meshCount, not meshInfo.length, when they disagree", () => {
+    // meshCount is `meshes.size` (the mesh registry); meshInfo is rebuilt by a
+    // traversal. Pinning which one is authoritative catches a silent swap.
+    const p = livePayloads();
+    p.viewportState.meshInfo = p.viewportState.meshInfo.slice(0, 1);
+    expect(extractMeshCountInputs(p).inputs.viewportMeshCount).toBe(3);
+  });
+});
+
+describe("extractMeshCountInputs — (b) in-band tool errors", () => {
+  // docs/debug-mcp-contract.md §2a: debug handlers report failure as
+  // Ok({error: "..."}) with no MCP isError flag. The inlined rpc() helper in
+  // every .mjs driver returns that payload verbatim, so without this check the
+  // counts would silently come back `undefined`.
+  const TOOLS = [
+    ["viewportState", "viewport_state"],
+    ["meshStats", "mesh_stats"],
+    ["engineState", "engine_state"],
+    ["demandDispatch", "demand_dispatch"],
+  ] as const;
+
+  for (const [key, toolName] of TOOLS) {
+    it(`names ${toolName} when it returns {error: ...}`, () => {
+      const p = { ...livePayloads(), [key]: { error: "no active session" } };
+      const { failures } = extractMeshCountInputs(p as never);
+      expect(failures.some((f) => f.includes(toolName))).toBe(true);
+      expect(failures.some((f) => f.includes("no active session"))).toBe(true);
+    });
+
+    it(`does not silently yield undefined for an errored ${toolName}`, () => {
+      const p = { ...livePayloads(), [key]: { error: "boom" } };
+      const { failures } = extractMeshCountInputs(p as never);
+      expect(failures.length).toBeGreaterThan(0);
+    });
+  }
+
+  it("treats a non-string error field as a normal payload, not an in-band error", () => {
+    // §2a's discriminator is specifically a top-level STRING `error`; a handler
+    // is free to use other shapes, and misfiring here would mask real data.
+    const p = livePayloads();
+    (p.engineState as Record<string, unknown>).error = null;
+    const { inputs, failures } = extractMeshCountInputs(p);
+    expect(failures).toEqual([]);
+    expect(inputs.engineStateCount).toBe(3);
+  });
+});
+
+describe("extractMeshCountInputs — (c) missing / malformed payloads", () => {
+  it("names each tool whose payload is null or undefined", () => {
+    const { failures } = extractMeshCountInputs({
+      viewportState: null,
+      meshStats: undefined,
+      engineState: null,
+      demandDispatch: undefined,
+    });
+    for (const tool of ["viewport_state", "mesh_stats", "engine_state", "demand_dispatch"]) {
+      expect(failures.some((f) => f.includes(tool))).toBe(true);
+    }
+  });
+
+  it("does not throw on a wholly empty argument", () => {
+    expect(() => extractMeshCountInputs({})).not.toThrow();
+    expect(extractMeshCountInputs({}).failures.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("names mesh_stats when the meshes key is missing", () => {
+    const p = livePayloads();
+    delete (p.meshStats as Record<string, unknown>).meshes;
+    const { failures } = extractMeshCountInputs(p);
+    expect(failures.some((f) => f.includes("mesh_stats"))).toBe(true);
+    expect(failures.some((f) => f.includes("engine_state"))).toBe(false);
+  });
+
+  it("names engine_state when meshes is present but not an array", () => {
+    const p = livePayloads();
+    (p.engineState as Record<string, unknown>).meshes = { "0": {} };
+    const { failures } = extractMeshCountInputs(p);
+    expect(failures.some((f) => f.includes("engine_state"))).toBe(true);
+    expect(failures.some((f) => f.includes("mesh_stats"))).toBe(false);
+  });
+
+  it("names viewport_state when meshCount is absent or not a count", () => {
+    const p = livePayloads();
+    delete (p.viewportState as Record<string, unknown>).meshCount;
+    expect(extractMeshCountInputs(p).failures.some((f) => f.includes("viewport_state"))).toBe(true);
+
+    const q = livePayloads();
+    (q.viewportState as Record<string, unknown>).meshCount = "3";
+    expect(extractMeshCountInputs(q).failures.some((f) => f.includes("viewport_state"))).toBe(true);
+  });
+
+  it("names demand_dispatch when full_scope is absent or not a boolean", () => {
+    const p = livePayloads();
+    delete (p.demandDispatch as Record<string, unknown>).full_scope;
+    expect(extractMeshCountInputs(p).failures.some((f) => f.includes("full_scope"))).toBe(true);
+
+    const q = livePayloads();
+    (q.demandDispatch as Record<string, unknown>).full_scope = "false";
+    expect(extractMeshCountInputs(q).failures.some((f) => f.includes("full_scope"))).toBe(true);
+  });
+
+  it("does not read fullScope from the camelCase key (the Rust payload is snake_case)", () => {
+    const p = livePayloads();
+    delete (p.demandDispatch as Record<string, unknown>).full_scope;
+    (p.demandDispatch as Record<string, unknown>).fullScope = false;
+    expect(extractMeshCountInputs(p).failures.some((f) => f.includes("full_scope"))).toBe(true);
+  });
+});
+
+describe("extractMeshCountInputs — (d) full_scope: true extracts faithfully", () => {
+  it("does not normalise a full-scope reading away", () => {
+    const p = livePayloads();
+    p.demandDispatch.full_scope = true;
+    const { inputs, failures } = extractMeshCountInputs(p);
+    expect(failures).toEqual([]);
+    expect(inputs.fullScope).toBe(true);
+  });
+
+  it("leaves rejection of full scope to checkMeshCountParity's vacuity gate", () => {
+    const p = livePayloads();
+    p.demandDispatch.full_scope = true;
+    const { inputs } = extractMeshCountInputs(p);
+    const parity = checkMeshCountParity(inputs);
+    expect(parity.ok).toBe(false);
+    expect(parity.failures.some((f) => f.includes("full_scope"))).toBe(true);
+  });
+});
+
+describe("extractMeshCountInputs — composes with checkMeshCountParity", () => {
+  it("routes extraction and parity problems through one failure list", () => {
+    const p = livePayloads();
+    p.meshStats = { error: "engine poisoned" } as never;
+    p.engineState.meshes = p.engineState.meshes.slice(0, 1);
+
+    const { inputs, failures } = extractMeshCountInputs(p);
+    const parity = checkMeshCountParity(inputs);
+    const all = [...failures, ...parity.failures];
+
+    expect(parity.ok).toBe(false);
+    expect(all.some((f) => f.includes("mesh_stats"))).toBe(true);
+    expect(all.some((f) => f.includes("engine poisoned"))).toBe(true);
+    expect(all.some((f) => f.includes("engine_state"))).toBe(true);
+  });
+
+  it("yields a clean pass for a healthy selective-demand run", () => {
+    const { inputs, failures } = extractMeshCountInputs(livePayloads());
+    const parity = checkMeshCountParity(inputs);
+    expect([...failures, ...parity.failures]).toEqual([]);
+    expect(parity.ok).toBe(true);
   });
 });
