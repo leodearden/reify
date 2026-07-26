@@ -711,4 +711,218 @@ run_sweep --db "$C_DB" --escalations "$C_ESC" --repo "$C_REPO" \
 assert "C9b: --class merge_verify_red suppresses the class-A hit" \
     _json_is '9201 not in t and s["gate_closure"] == 0'
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block D — trigger class B: merge_verify_red
+#
+# A post-merge-verification-failed block whose premise has since resolved on
+# main. Unlike classes A and C this one spans `blocked` AND `in-progress`
+# (D9), because a merge-verify red can strand a row in either state.
+#
+# "Premise resolved" is adjudicated by a REAL git diff, never by prose: the
+# proposal records `main_sha` (where main was when the gate went red) and
+# `files_referenced` (what the red implicated), so the question "has main
+# since moved in a way that could change this verdict?" reduces to
+# `git diff <main_sha>..<main-ref> -- <files_referenced>`. This reproduces
+# 5236's recorded shape verbatim (main_sha=40bbe0b6e4, files_referenced
+# naming tests/infra/test_warm_lane_pool_config.sh, premise later resolved by
+# #5369 touching that very file).
+#
+# REACHABILITY IS CHECKED BEFORE THE DIFF (D8), per #5316 §3: a
+# plausible-looking main_sha can be a DISCARDED DUPLICATE merge that passes a
+# diff test and fails the ancestor test. That ordering is exactly what #5264
+# was mis-cleared on when only `git show --stat` was consulted.
+#
+# Classification keys primarily off the `block_reason` prose prefix, with
+# `block_class` as a confirming hint (D2) — measured live, `block_class` is
+# present on only 2 of 55 dry_run_proposals entries, so keying on it alone
+# would miss nearly every real merge_verify_red block.
+#
+# Every SHA below is COMPUTED from the fixture repo; none is frozen.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block D: trigger class B (merge_verify_red) ---"
+
+_mk_tasks_db
+D_DB="$DB"
+_mk_esc_dir
+D_ESC="$ESC_DIR"
+
+# Fixture main history (linear):
+#   c0 root
+#   c1 docs/unrelated-a.md                          <- the recorded main_sha
+#   c2 tests/infra/test_warm_lane_pool_config.sh    <- the RESOLVING commit
+#   c3 docs/unrelated-b.md                          <- main tip
+# plus a side-branch commit that is NOT an ancestor of main (the #5316
+# Signature-2 / discarded-duplicate shape, reused here for D8).
+_mk_repo
+D_REPO="$REPO_DIR"
+D_C1="$(_commit_touching docs/unrelated-a.md)"
+D_C2="$(_commit_touching tests/infra/test_warm_lane_pool_config.sh)"
+D_C3="$(_commit_touching docs/unrelated-b.md)"
+D_SIDE="$(_commit_on_side_branch discarded-dup-d dark-factory-orchestrator.yaml)"
+
+# A 40-hex SHA that resolves in no repo (D8's unresolvable case).
+D_FAKE_SHA="3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f"
+
+# files_referenced payloads. dark-factory-orchestrator.yaml exists ONLY on the
+# side branch, so it is never touched anywhere in c1..c3 — which is what makes
+# D4 a true negative rather than an accident of fixture ordering.
+D_FILES_BOTH='["tests/infra/test_warm_lane_pool_config.sh","dark-factory-orchestrator.yaml"]'
+D_FILES_TEST='["tests/infra/test_warm_lane_pool_config.sh"]'
+D_FILES_YAML='["dark-factory-orchestrator.yaml"]'
+
+# The class-B block_reason prose, in the live recorded shape.
+D_REASON_B='Post-merge verification failed: cargo test --workspace returned 101'
+# Non-class-B reasons, drawn verbatim from the live distinct-value set (D5).
+D_REASON_ITER='Execution iterations exhausted'
+D_REASON_STEWARD='Steward re-escalated to human'
+D_REASON_THRASH='Repeated merge-phase thrash (counter=2)'
+D_REASON_NOPLAN='Architect filed L0 without plan: no plan.json at handoff'
+
+# _d_prop <block_reason> <main_sha> <files_json|-> <investigated_at> [block_class]
+# One proposal object in the live dry_run_proposals shape. Pass `-` for
+# files_json to OMIT the files_referenced key entirely (D7's absent-key case).
+_d_prop() {
+    local reason="$1" main_sha="$2" files="$3" at="$4" bc="${5:-}"
+    local bc_frag="" files_frag=""
+    if [ -n "$bc" ]; then bc_frag="\"block_class\":\"$bc\","; fi
+    if [ "$files" != "-" ]; then files_frag="\"files_referenced\":$files,"; fi
+    printf '{"proposal_text":"fixture proposal","risk_label":"medium",%s"block_reason":"%s","head_sha":"0123456789abcdef0123456789abcdef01234567","main_sha":"%s",%s"investigated_at":"%s","timestamp":"%s"}' \
+        "$bc_frag" "$reason" "$main_sha" "$files_frag" "$at" "$at"
+}
+
+# _d_meta <proposal>... — wrap proposals into a metadata document, preserving
+# the given ARRAY ORDER (D6 depends on array order and recency disagreeing).
+_d_meta() {
+    local out="" p
+    for p in "$@"; do
+        if [ -z "$out" ]; then out="$p"; else out="$out,$p"; fi
+    done
+    printf '{"dry_run_proposals":[%s]}' "$out"
+}
+
+# D1 — the 5236 shape: recorded at c1, resolved by c2 touching the named test.
+_add_task 9301 blocked "$(_d_meta "$(_d_prop "$D_REASON_B" "$D_C1" "$D_FILES_BOTH" 2026-07-24T10:00:00Z)")"
+# D2 — block_class hint present, block_reason does NOT match the prose prefix.
+_add_task 9302 blocked "$(_d_meta "$(_d_prop 'Merge worker reported a red gate' "$D_C1" "$D_FILES_TEST" 2026-07-24T10:00:00Z merge_verify_red)")"
+# D3 — recorded main_sha IS the current tip: main has not advanced.
+_add_task 9303 blocked "$(_d_meta "$(_d_prop "$D_REASON_B" "$D_C3" "$D_FILES_TEST" 2026-07-24T10:00:00Z)")"
+# D4 — main advanced (c2..c3) but no files_referenced path was touched in it.
+_add_task 9304 blocked "$(_d_meta "$(_d_prop "$D_REASON_B" "$D_C2" "$D_FILES_YAML" 2026-07-24T10:00:00Z)")"
+# D5 — a resolvable premise in every case; ONLY the block_reason differs.
+_add_task 9305 blocked "$(_d_meta "$(_d_prop "$D_REASON_ITER"    "$D_C1" "$D_FILES_TEST" 2026-07-24T10:00:00Z)")"
+_add_task 9306 blocked "$(_d_meta "$(_d_prop "$D_REASON_STEWARD" "$D_C1" "$D_FILES_TEST" 2026-07-24T10:00:00Z)")"
+_add_task 9307 blocked "$(_d_meta "$(_d_prop "$D_REASON_THRASH"  "$D_C1" "$D_FILES_TEST" 2026-07-24T10:00:00Z)")"
+_add_task 9308 blocked "$(_d_meta "$(_d_prop "$D_REASON_NOPLAN"  "$D_C1" "$D_FILES_TEST" 2026-07-24T10:00:00Z)")"
+# D6 — array order and recency DISAGREE, in both directions, so neither
+# proposals[0] nor proposals[-1] can satisfy both rows: only real
+# investigated_at keying does.
+#   9309: the newest entry is FIRST in the array and is not class B.
+_add_task 9309 blocked "$(_d_meta \
+    "$(_d_prop "$D_REASON_ITER" "$D_C1" "$D_FILES_TEST" 2026-07-25T10:00:00Z)" \
+    "$(_d_prop "$D_REASON_B"    "$D_C1" "$D_FILES_TEST" 2026-07-23T10:00:00Z)" \
+    "$(_d_prop "$D_REASON_B"    "$D_C1" "$D_FILES_TEST" 2026-07-21T10:00:00Z)")"
+#   9310: the newest entry is LAST in the array and is a resolved class-B red.
+_add_task 9310 blocked "$(_d_meta \
+    "$(_d_prop "$D_REASON_ITER" "$D_C1" "$D_FILES_TEST" 2026-07-21T10:00:00Z)" \
+    "$(_d_prop "$D_REASON_B"    "$D_C1" "$D_FILES_TEST" 2026-07-25T10:00:00Z)")"
+# D7 — no diff surface to adjudicate: empty list, then the key absent entirely.
+_add_task 9311 blocked "$(_d_meta "$(_d_prop "$D_REASON_B" "$D_C1" '[]' 2026-07-24T10:00:00Z)")"
+_add_task 9312 blocked "$(_d_meta "$(_d_prop "$D_REASON_B" "$D_C1" '-'  2026-07-24T10:00:00Z)")"
+# D8 — reachability failures: a SHA in no repo, and a real-but-side-branch SHA.
+_add_task 9313 blocked "$(_d_meta "$(_d_prop "$D_REASON_B" "$D_FAKE_SHA" "$D_FILES_TEST" 2026-07-24T10:00:00Z)")"
+_add_task 9314 blocked "$(_d_meta "$(_d_prop "$D_REASON_B" "$D_SIDE"     "$D_FILES_TEST" 2026-07-24T10:00:00Z)")"
+# D9 — class B spans in-progress (with a 25h-stale heartbeat, well outside the
+# 30m default window, so the fixture cannot drift into the liveness guard).
+_add_task 9315 in-progress "$(_d_meta "$(_d_prop "$D_REASON_B" "$D_C1" "$D_FILES_TEST" 2026-07-24T10:00:00Z)")" \
+    "$(_now_iso -90000)" ""
+
+D_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-dreq-XXXXXX")"
+_TMPDIRS+=("$D_REQ")
+
+run_sweep --db "$D_DB" --escalations "$D_ESC" --repo "$D_REPO" \
+    --emit-requests "$D_REQ" --format json
+assert "D0: the class-B fixture sweep exits 0" _rc_is 0
+
+# --- D1: the 5236 shape — premise resolved by a later main commit ------------
+assert "D1: a post-merge-verify red whose referenced path was touched later is class B" \
+    _json_is 't[9301]["class"] == "merge_verify_red" and t[9301]["verdict"] == "STALE"'
+assert "D1: the emitted action is reverify" _json_is 't[9301]["action"] == "reverify"'
+assert "D1: evidence names the resolving commit SHA and the touched path" \
+    _json_is "'${D_C2:0:7}' in t[9301]['evidence'] and 'test_warm_lane_pool_config.sh' in t[9301]['evidence']"
+
+# --- D2: block_class is a confirming hint, not the primary key ---------------
+assert "D2: block_class=merge_verify_red classifies even without the prose prefix" \
+    _json_is 't[9302]["class"] == "merge_verify_red" and t[9302]["verdict"] == "STALE"'
+
+# --- D3/D4: the premise has NOT resolved ------------------------------------
+assert "D3: main_sha == the --main-ref tip => main has not advanced => UNRESOLVED" \
+    _json_is 't[9303]["class"] == "merge_verify_red" and t[9303]["verdict"] == "UNRESOLVED"'
+assert "D4: main advanced but no files_referenced path was touched => UNRESOLVED" \
+    _json_is 't[9304]["class"] == "merge_verify_red" and t[9304]["verdict"] == "UNRESOLVED"'
+
+# --- D5: a different block class is not class B ------------------------------
+assert "D5: none of the four live non-merge-verify block reasons classify as class B" \
+    _json_is 'all(t[i]["class"] != "merge_verify_red" for i in (9305, 9306, 9307, 9308))'
+
+# --- D6: only the NEWEST proposal is classified ------------------------------
+assert "D6a: a non-class-B newest proposal wins over older class-B ones" \
+    _json_is 't[9309]["class"] != "merge_verify_red"'
+assert "D6b: a class-B newest proposal wins over an older non-class-B one" \
+    _json_is 't[9310]["class"] == "merge_verify_red" and t[9310]["verdict"] == "STALE"'
+
+# --- D7: no diff surface => unknown, never STALE -----------------------------
+assert "D7a: an empty files_referenced degrades to unknown" \
+    _json_is 't[9311]["verdict"] == "unknown"'
+assert "D7b: an absent files_referenced key degrades to unknown" \
+    _json_is 't[9312]["verdict"] == "unknown"'
+assert "D7: a row with no diff surface warns on stderr" _err_has '\[warn\].*931[12]'
+assert "D7: a row with no diff surface emits no re-dispatch request" \
+    _no_request_for "$D_REQ" 9311
+
+# --- D8: reachability is checked BEFORE the diff (#5316 §3) ------------------
+assert "D8a: an unresolvable main_sha degrades to unknown, never STALE" \
+    _json_is 't[9313]["verdict"] == "unknown"'
+assert "D8a: an unresolvable main_sha warns on stderr" _err_has '\[warn\].*9313'
+assert "D8b: a main_sha that is NOT an ancestor of --main-ref degrades to unknown" \
+    _json_is 't[9314]["verdict"] == "unknown"'
+assert "D8b: the discarded-duplicate (side-branch) main_sha warns on stderr" \
+    _err_has '\[warn\].*9314'
+assert "D8: neither reachability failure emits a re-dispatch request" \
+    _no_request_for "$D_REQ" 9313
+
+# --- D9: class B spans in-progress ------------------------------------------
+assert "D9: an in-progress row with a stale heartbeat and a resolved premise fires" \
+    _json_is 't[9315]["class"] == "merge_verify_red" and t[9315]["verdict"] == "STALE"'
+assert "D9: the in-progress hit is not counted as live_skipped" \
+    _json_is 's["live_skipped"] == 0'
+
+# --- the class-B counter counts exactly the confirmed hits -------------------
+assert "D: merge_verify_red counts exactly the four STALE class-B rows" \
+    _json_is 's["merge_verify_red"] == 4'
+
+# --- D10: --repo / --main-ref are honoured, and the real repo is never read --
+run_sweep --db "$D_DB" --escalations "$D_ESC" --repo "$D_REPO" \
+    --main-ref "$D_C1" --format json
+assert "D10a: --main-ref is honoured (pinning main-ref at main_sha => UNRESOLVED)" \
+    _json_is 't[9301]["verdict"] == "UNRESOLVED" and s["merge_verify_red"] == 0'
+_D10_FLAG_OUT="$OUT"
+
+_SWEEP_ENV=(REIFY_GATE_STALENESS_MAIN_REF="$D_C1" REIFY_GATE_STALENESS_REPO="$D_REPO")
+run_sweep --db "$D_DB" --escalations "$D_ESC" --format json
+_SWEEP_ENV=()
+assert "D10b: REIFY_GATE_STALENESS_MAIN_REF/_REPO match the --main-ref/--repo flags" \
+    test "$OUT" = "$_D10_FLAG_OUT"
+
+# Pointing --repo at a non-git directory must degrade every class-B row to
+# unknown: the fixture SHAs exist ONLY in the fixture repo, so an adjudication
+# that ran anywhere else can never resolve them. This pins that the git
+# adjudication is scoped to --repo and to nothing else — the suite must never
+# reach the real repo.
+D_NOGIT="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-nogit-XXXXXX")"
+_TMPDIRS+=("$D_NOGIT")
+run_sweep --db "$D_DB" --escalations "$D_ESC" --repo "$D_NOGIT" --format json
+assert "D10c: --repo is honoured — a non-git --repo degrades class B to unknown" \
+    _json_is 't[9301]["verdict"] == "unknown" and s["merge_verify_red"] == 0'
+
 test_summary
