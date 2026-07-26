@@ -1577,11 +1577,44 @@ pub(crate) fn is_optimized_userfn_cell(expr: &CompiledExpr, functions: &[Compile
 /// user-visible signal.
 ///
 /// * `diagnostics` — sink for that error. Both call sites already carry one.
+///
+/// ## The two-namespace bridge (task #5189 step-10)
+///
+/// Cell ids arrive in TWO namespaces and this builder must speak both:
+///
+/// * TEMPLATE-KEYED (`Rivet.line_cost`) — what the compiler mints for a
+///   `value_cells` decl, hence what stage (a)'s `cell_map` and `auto_ids` hold.
+/// * INSTANCE-PATH (`RivetedPanel.rivets.line_cost`) — what
+///   `apply_cost_aggregation` mints for an expanded `cost(self.descendants)`
+///   term, and what the compiler mints for a `self.<sub>.<member>` read. These
+///   ids have NO `ValueCellDecl` at all; only sub-elaboration writes them, into
+///   the runtime `values` map.
+///
+/// Both directions of the bridge are needed, and δ (task #5334) already shipped
+/// the primitive for each:
+///
+/// * LOOKUP — every hop (seeds, closure, reverse-edge map, and the sort traces)
+///   runs its ids through [`crate::resolve_order::normalize_cell_id`], so an
+///   instance-path read finds its declaring template's `default_expr`. Without
+///   it the stage-(b) seed `RivetedPanel.rivets.line_cost` misses `cell_map`
+///   entirely, the closure terminates at the seed, and `dependent_cells` is
+///   empty for exactly the merged-cluster shape this seam exists to drive.
+/// * EMISSION — normalising the lookup alone is not enough: the objective's
+///   `ValueRef` still names the INSTANCE-PATH id, so the fold must WRITE that
+///   id too. Stage (g) therefore emits, for each surviving template-keyed cell,
+///   an instance-path ALIAS entry carrying the SAME `default_expr` (whose inner
+///   reads are template-keyed and so resolve against the solver's namespace),
+///   ordered immediately AFTER its template source.
+///
+/// v1 BOUNDARY on the alias: emitted only for a structure with EXACTLY ONE
+/// non-collection instance path (see [`build_single_instance_alias_paths`]).
 fn build_dependent_cells(
     seed_exprs: &[&CompiledExpr],
     all_templates: &[TopologyTemplate],
     auto_ids: &HashSet<ValueCellId>,
     functions: &[CompiledFunction],
+    max_unfold_depth: usize,
+    max_unfold_nodes: usize,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<(ValueCellId, CompiledExpr)> {
     // (a) Cross-template map: every non-auto cell that carries a plain
@@ -1599,13 +1632,33 @@ fn build_dependent_cells(
         }
     }
 
+    // (a′) δ's INSTANCE-PATH → STRUCTURE-NAME map (task #5334), built ONCE and
+    //      consumed at every hop below. Same budgets δ's own call site uses, so
+    //      the two sides of the seam truncate identically. See the fn
+    //      doc-comment's "two-namespace bridge" section for why this is needed
+    //      at all, and `normalize_cell_id`'s doc for the two-sided root cause.
+    let path_map = crate::resolve_order::build_instance_path_structure_map(
+        all_templates,
+        max_unfold_depth,
+        max_unfold_nodes,
+    );
+    // Identity for an already-template-keyed id (`normalize_cell_id` returns
+    // `None` when `entity` is not a known instance path).
+    let normalize = |id: ValueCellId| -> ValueCellId {
+        crate::resolve_order::normalize_cell_id(&id, &path_map).unwrap_or(id)
+    };
+
     // (b) Seed the closure with the DIRECT reads of every expanded objective
     //     term / constraint expr, then (c) take the transitive closure by
-    //     following each in-map cell's default_expr reads.
+    //     following each in-map cell's default_expr reads. Both hops NORMALISE:
+    //     a seed read is instance-path-keyed whenever the objective went through
+    //     `apply_cost_aggregation`, and instance-path ids also surface MID-WALK
+    //     (a parent's own `default_expr` reading `self.<sub>.<member>`).
     let mut closure: HashSet<ValueCellId> = HashSet::new();
     let mut frontier: Vec<ValueCellId> = Vec::new();
     for expr in seed_exprs {
         for id in crate::deps::extract_value_deps(expr) {
+            let id = normalize(id);
             if closure.insert(id.clone()) {
                 frontier.push(id);
             }
@@ -1614,6 +1667,7 @@ fn build_dependent_cells(
     while let Some(id) = frontier.pop() {
         if let Some(expr) = cell_map.get(&id) {
             for dep in crate::deps::extract_value_deps(expr) {
+                let dep = normalize(dep);
                 if closure.insert(dep.clone()) {
                     frontier.push(dep);
                 }
@@ -1623,12 +1677,14 @@ fn build_dependent_cells(
 
     // (d) Auto-reachability over the closure: reverse-propagate "transitively
     //     reads an auto" from `auto_ids` up through reader edges.
-    //     `reverse[d]` = cells whose default_expr reads `d`.
+    //     `reverse[d]` = cells whose default_expr reads `d`. Reader ids come
+    //     from `closure` (already normalised); dep ids are normalised here, so
+    //     the reverse edges land in the same namespace as `auto_ids`.
     let mut reverse: HashMap<ValueCellId, Vec<ValueCellId>> = HashMap::new();
     for id in &closure {
         if let Some(expr) = cell_map.get(id) {
             for dep in crate::deps::extract_value_deps(expr) {
-                reverse.entry(dep).or_default().push(id.clone());
+                reverse.entry(normalize(dep)).or_default().push(id.clone());
             }
         }
     }
@@ -1676,7 +1732,18 @@ fn build_dependent_cells(
                 continue;
             }
             let node = NodeId::Value(id.clone());
-            traces.insert(node.clone(), extract_dependency_trace(expr));
+            // Trace reads are NORMALISED for the same reason the closure hops
+            // are: `topological_sort` counts in-set edges only, and `nodes` is
+            // template-keyed. A parent cell reading `self.<sub>.<member>` would
+            // otherwise contribute an unmatchable instance-path edge and could
+            // sort BEFORE the child cell it reads.
+            let mut trace = extract_dependency_trace(expr);
+            for read in &mut trace.reads {
+                if let Some(normalized) = crate::resolve_order::normalize_cell_id(read, &path_map) {
+                    *read = normalized;
+                }
+            }
+            traces.insert(node.clone(), trace);
             nodes.insert(node);
         }
     }
@@ -1720,15 +1787,139 @@ fn build_dependent_cells(
         );
     }
 
-    // Dropped cycle members are DELIBERATELY excluded from the returned list (the
-    // `filter_map` walks `sorted`, not `nodes`): the diagnostic above is the
-    // user-visible signal, and neither β's per-trial fold nor α's post-solve
-    // write-back may ever see a cycle member.
-    sorted
+    // (g) Pair each surviving id with a clone of its default_expr, in topo
+    //     order, and emit the INSTANCE-PATH ALIAS entries alongside.
+    //
+    //     Dropped cycle members are DELIBERATELY excluded (this walks `sorted`,
+    //     not `nodes`): the diagnostic above is the user-visible signal, and
+    //     neither β's per-trial fold nor α's post-solve write-back may ever see
+    //     a cycle member.
+    //
+    //     ALIAS RATIONALE (task #5189 step-10): the objective term reads the
+    //     INSTANCE-PATH id (`RivetedPanel.rivets.line_cost`) while the only
+    //     declaration — and hence the only foldable `default_expr` — is
+    //     TEMPLATE-keyed (`Rivet.line_cost`). Normalising the LOOKUP alone
+    //     therefore yields a `dependent_cells` list that writes an id nothing
+    //     reads, leaving the objective Undef. Emitting the alias against the
+    //     SAME expr closes the loop: that expr's inner reads are template-keyed
+    //     (`Rivet.unit_cost`, `Rivet.quantity_produced`) and both are live in the
+    //     solver's values namespace, so the alias folds to the same number its
+    //     template source does. The alias is pushed AFTER its source so a
+    //     downstream cell reading either spelling sees a fresh value first.
+    let alias_paths =
+        build_single_instance_alias_paths(all_templates, max_unfold_depth, max_unfold_nodes);
+    let mut out: Vec<(ValueCellId, CompiledExpr)> = Vec::with_capacity(sorted.len());
+    for node in sorted {
+        let NodeId::Value(id) = node else {
+            continue;
+        };
+        let Some(expr) = cell_map.get(&id) else {
+            continue;
+        };
+        let alias = alias_paths
+            .get(id.entity.as_str())
+            .map(|path| ValueCellId::new(path.as_str(), id.member.as_str()))
+            // An instance-path SUB-OVERRIDE auto (a decl with `kind: Auto` and
+            // no `default_expr`) can occupy the alias id. Never shadow an auto —
+            // the same INVARIANT β's `build_trial_values` enforces defensively.
+            .filter(|alias| !auto_ids.contains(alias));
+        out.push((id, (*expr).clone()));
+        if let Some(alias) = alias {
+            out.push((alias, (*expr).clone()));
+        }
+    }
+    out
+}
+
+/// Structure name → its SINGLE non-collection instance path, for the
+/// instance-path alias entries stage (g) of [`build_dependent_cells`] emits
+/// (task #5189 step-10, PRD `docs/prds/v0_6/whole-model-joint-drive-seam.md`
+/// §12).
+///
+/// Shape and budgeting mirror δ's [`crate::resolve_order::build_instance_path_structure_map`]
+/// (one shared `max_nodes` budget across all roots, `max_depth` pruned at entry);
+/// this is the ALIAS direction of the same walk, so it is deliberately NARROWER
+/// on both axes:
+///
+/// * COLLECTION subs are skipped outright — `N` runtime instance paths collapse
+///   onto ONE template `default_expr` whose inner reads are template-keyed, so
+///   every element would fold to the identical value, silently clobbering
+///   genuinely per-element values. Same boundary, same reason, as
+///   `Engine::post_process_cross_sub_value_cells`'s `if sub.is_collection`
+///   (engine_build.rs).
+/// * A structure reachable by ≥2 distinct instance paths (two plain subs of the
+///   same type, or a recursive containment the depth budget unrolls) is dropped
+///   for the identical reason: one expr, many paths, one value.
+///
+/// Dropping is SAFE in the conservative direction — no alias means the
+/// pre-#5189 behaviour for that cell (its template-keyed entry still folds).
+/// This is the fixture's documented depth-1 / single-instance v1 boundary.
+fn build_single_instance_alias_paths(
+    all_templates: &[TopologyTemplate],
+    max_depth: usize,
+    max_nodes: usize,
+) -> HashMap<String, String> {
+    fn walk(
+        template: &TopologyTemplate,
+        templates: &[TopologyTemplate],
+        prefix: &str,
+        depth: usize,
+        max_depth: usize,
+        node_budget: &mut usize,
+        out: &mut HashMap<String, Vec<String>>,
+    ) {
+        if depth >= max_depth {
+            return;
+        }
+        for sub in &template.sub_components {
+            if sub.is_collection {
+                continue;
+            }
+            if *node_budget == 0 {
+                return;
+            }
+            *node_budget -= 1;
+            let node_path = format!("{}.{}", prefix, sub.name);
+            out.entry(sub.structure_name.clone())
+                .or_default()
+                .push(node_path.clone());
+            let Some(child) = templates.iter().find(|t| t.name == sub.structure_name) else {
+                continue;
+            };
+            walk(
+                child,
+                templates,
+                &node_path,
+                depth + 1,
+                max_depth,
+                node_budget,
+                out,
+            );
+        }
+    }
+
+    let mut collected: HashMap<String, Vec<String>> = HashMap::new();
+    let mut node_budget = max_nodes;
+    for template in all_templates {
+        walk(
+            template,
+            all_templates,
+            &template.name,
+            0,
+            max_depth,
+            &mut node_budget,
+            &mut collected,
+        );
+    }
+    collected
         .into_iter()
-        .filter_map(|node| match node {
-            NodeId::Value(id) => cell_map.get(&id).map(|expr| (id.clone(), (*expr).clone())),
-            _ => None,
+        .filter_map(|(structure, mut paths)| {
+            paths.sort();
+            paths.dedup();
+            match paths.len() {
+                1 => Some((structure, paths.remove(0))),
+                _ => None,
+            }
         })
         .collect()
 }
@@ -1926,6 +2117,8 @@ fn build_solver_problem(
             all_templates,
             &dep_auto_ids,
             &functions,
+            max_unfold_depth,
+            max_unfold_nodes,
             diagnostics,
         )
     };
@@ -2269,6 +2462,8 @@ fn build_merged_solver_problem(
             templates,
             &dep_auto_ids,
             &functions,
+            max_unfold_depth,
+            max_unfold_nodes,
             diagnostics,
         )
     };
@@ -10852,6 +11047,13 @@ mod dependent_cells_admissibility_tests {
 
     use super::build_dependent_cells;
 
+    /// Expansion budgets for the instance-path bridge. Matching δ's own
+    /// `build_instance_path_structure_map` fixtures (`resolve_order.rs`), these
+    /// are far above anything these hand-built two-template graphs need — the
+    /// budgets are not what is under test here.
+    const TEST_MAX_UNFOLD_DEPTH: usize = 64;
+    const TEST_MAX_UNFOLD_NODES: usize = 10_000;
+
     /// Money-dimensioned scalar, mirroring the stdlib `Costed` `line_cost` shape
     /// (same helper δ's cluster-formation fixtures use).
     fn money_ty() -> Type {
@@ -10948,6 +11150,8 @@ mod dependent_cells_admissibility_tests {
             &templates,
             &auto_ids,
             &no_fns,
+            TEST_MAX_UNFOLD_DEPTH,
+            TEST_MAX_UNFOLD_NODES,
             &mut diagnostics,
         );
         let got = ids(&cells);
@@ -11051,6 +11255,8 @@ mod dependent_cells_admissibility_tests {
             &templates,
             &auto_ids,
             &no_fns,
+            TEST_MAX_UNFOLD_DEPTH,
+            TEST_MAX_UNFOLD_NODES,
             &mut diagnostics,
         );
         let got = ids(&cells);

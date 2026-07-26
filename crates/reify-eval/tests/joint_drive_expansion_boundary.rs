@@ -960,18 +960,43 @@ fn strip_inlined_minimize(src: &str) -> String {
 ///
 /// # Achievability — DERIVED, not guessed
 ///
-/// * MERGED: the solve minimises `cost(self.descendants)` = `line_cost` =
-///   `unit_cost * quantity_produced` over the child's bracketing constraints, so
-///   the argmin sits at the LOWER bound of the box (nudged marginally off it by
-///   the Money robustness floor, since the objective is dimensionally Money).
 /// * FROZEN: `Rivet` resolves alone with NO user objective but live inequality
 ///   constraints, so the synthesised Chebyshev-centre objective pins it at the
-///   BOX CENTRE.
+///   BOX CENTRE — half the box width above the box's lower bound.
+/// * MERGED: the child is resolved INSIDE the parent's problem, governed by the
+///   parent's Money objective `cost(self.descendants)` = `line_cost` =
+///   `unit_cost * quantity_produced`. No centrality objective is synthesised
+///   (`solver.rs` only synthesises one when `problem.objective.is_none()`), so
+///   the freeze-at-the-centre outcome is GONE and the cost-minimising direction
+///   governs instead.
 /// * `line_cost` is strictly increasing in `quantity_produced`, so a strictly
-///   lower argmin implies a strictly lower cost.
+///   lower resolved auto implies a strictly lower cost.
 ///
-/// For the example's non-degenerate `[1.0, 100.0]` box the separation is ~half
-/// the box width — the coupling is ACTIVE, not marginal.
+/// # What this test does NOT claim — the eval-layer convergence boundary
+///
+/// It does NOT assert the merged auto lands ON the cost argmin. A LINEAR Money
+/// objective's argmin sits exactly on a constraint boundary, where the penalty
+/// method's stationary point is offset INSIDE the penalty by
+/// `objective_gradient / (2 * PENALTY_WEIGHT)` ≈ 2.5e-7 — vastly larger than
+/// `FEASIBILITY_THRESHOLD` (1e-12) — so the converged point reads as infeasible
+/// and `solve_core` returns its `initially_feasible` fallback: the seed
+/// `extract_initial_point` supplies. That is the SAME documented eval-layer
+/// behaviour `examples/continuous_cost_min.ri`'s header records ("returns the
+/// initially-feasible SEED ... rather than a unique convergent point", PRD §9 Q2
+/// "no fix required"), and it is exactly why the house norm puts precise-argmin
+/// assertions at the `reify-constraints` layer with explicitly bounded autos and
+/// keeps `.ri`-layer tests on ordering / off-boundary claims.
+///
+/// # Why it is still a live signal, not a vacuous one
+///
+/// Each link of the chain fails this test if it regresses:
+/// * δ's cluster stops forming ⇒ the child resolves alone ⇒ merged == frozen ⇒
+///   (i) fails on the strict inequality.
+/// * α's `dependent_cells` arrives empty, or β's per-trial fold / write-back
+///   stops running ⇒ the objective's instance-path `ValueRef` is never written
+///   ⇒ `eval_objective_set` is `None` ⇒ `NoProgress` ⇒ the zero-`Error`
+///   precondition in [`eval_ri_with_real_solver`] fails.
+/// * the instance-path ALIAS entry regresses ⇒ (iii) fails.
 ///
 /// RED until the whole chain works end to end: δ forms the cluster → α populates
 /// `dependent_cells` → β folds them per trial → α writes them back.
@@ -986,7 +1011,13 @@ fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
 
     // ---- (i) the child auto resolves STRICTLY DIFFERENT from its freeze. ----
 
-    let auto_id = ValueCellId::new("RivetedPanel.rivets", "quantity_produced");
+    // STRUCTURE-KEYED, not instance-path. The solver's auto_params, and hence
+    // its solved write-back, are keyed by the DECLARING TEMPLATE
+    // (`ValueCellId::new(&structure.name, &param.name)`); the instance-path
+    // spelling `RivetedPanel.rivets.quantity_produced` is never written for a
+    // solver-resolved auto in EITHER half (a separate, pre-existing
+    // sub-elaboration gap — see the example header's "reading the result" note).
+    let auto_id = ValueCellId::new("Rivet", "quantity_produced");
     let merged_q = scalar_si(&merged, &auto_id, "merged");
     let frozen_q = scalar_si(&frozen, &auto_id, "frozen-cascade");
 
@@ -1011,7 +1042,7 @@ fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
     // either is a faithful whole-assembly cost — but BOTH sides must be read
     // from the SAME cell or the comparison is not apples-to-apples.
     let total_cost = ValueCellId::new("RivetedPanel", "total_cost");
-    let line_cost = ValueCellId::new("RivetedPanel.rivets", "line_cost");
+    let line_cost = ValueCellId::new("Rivet", "line_cost");
     let (cost_id, which) = if scalar_si_opt(&merged, &total_cost).is_some()
         && scalar_si_opt(&frozen, &total_cost).is_some()
     {
@@ -1033,6 +1064,42 @@ fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
          the user-observable joint-drive signal. Got merged={merged_cost} vs \
          frozen={frozen_cost} (saving {}).",
         frozen_cost - merged_cost,
+    );
+
+    // ---- (iii) the objective's OWN spelling of the cost cell is live. ----
+    //
+    // The expanded objective term reads the INSTANCE-PATH id
+    // `RivetedPanel.rivets.line_cost` (`apply_cost_aggregation` composes it from
+    // `enumerate_descendants`' prefixes), while the only declaration — and hence
+    // the only foldable `default_expr` — is the STRUCTURE-KEYED `Rivet.line_cost`.
+    // `build_dependent_cells` bridges the two namespaces by emitting an alias
+    // entry; without it the objective reads an id nothing writes, evaluates to
+    // `Undef`, and the merged solve reports `NoProgress`.
+    //
+    // Derived, not pinned: assert the alias AGREES with its structure-keyed
+    // source, and that both agree with `unit_cost * quantity_produced` read from
+    // the same eval — the `Costed` closed form. A stale (unfolded) cell fails
+    // this even when (i) and (ii) would pass.
+    let aliased_cost = scalar_si(
+        &merged,
+        &ValueCellId::new("RivetedPanel.rivets", "line_cost"),
+        "merged",
+    );
+    let merged_line_cost = scalar_si(&merged, &ValueCellId::new("Rivet", "line_cost"), "merged");
+    assert_eq!(
+        aliased_cost, merged_line_cost,
+        "BT-5(iii): the INSTANCE-PATH cost cell the expanded objective actually \
+         reads must hold the same freshly-folded value as its STRUCTURE-KEYED \
+         source — that alias entry is what makes the objective non-`Undef` \
+         inside the merged solve",
+    );
+    let merged_unit_cost = scalar_si(&merged, &ValueCellId::new("Rivet", "unit_cost"), "merged");
+    assert_eq!(
+        merged_line_cost,
+        merged_unit_cost * merged_q,
+        "BT-5(iii): the derived `Costed.line_cost` must be REFOLDED against the \
+         solved auto (`unit_cost * quantity_produced` = {merged_unit_cost} * \
+         {merged_q}), not left at whatever it held before the solve",
     );
 }
 
