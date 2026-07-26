@@ -1284,6 +1284,53 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
                 emit_arg_type_mismatch(param_type, arg_ty, ctx);
             }
         }
+        // Leaf: param type is a Matrix or Tensor (task 5465, family 2).
+        // SHAPE-BASED, sharing the `Type::Vector` arm's anti-cascade/unverifiable
+        // skip guard verbatim. Handled as ONE arm because `type_compat.rs`
+        // already treats the two families as interconvertible.
+        //
+        // Accepts, each for a stated reason:
+        //   • `Type::Matrix` / `Type::Tensor` — the nominal families themselves.
+        //     Rule 3 (`type_compat.rs:163-179`) already makes
+        //     `Tensor<2,N,Q> → Matrix<N,N,Q>` legal, and the quantity slot is
+        //     loose per the ty.rs convention.
+        //   • `Type::Vector` — Rules 1a/1b (`type_compat.rs:83-108`) make
+        //     `Vector<N,Q>` and `Tensor<1,N,Q>` interconvertible.
+        //   • `Type::List` — the idiomatic nested-list-literal spelling of a
+        //     matrix, which compiles to `List<List<Real>>`.
+        //   • `Type::Int | Type::Scalar` — rank-0 scalar equivalence (Rules
+        //     2a/2b) plus matrix/tensor-builtin numeric-fallback placeholders,
+        //     the same narrow predicate the `Point` arm uses.
+        //
+        // Everything else (`String`, `Bool`, `Selector`/`AnySelector`, `Enum`,
+        // `Applied`, `StructureRef`, `Field`, `Point`, `Frame`, `Transform`,
+        // `Set`, `Map`, …) is rejected via the shared `emit_arg_type_mismatch`.
+        //
+        // NO ARITY CHECK, in deliberate contrast to the `Point` and `Vector`
+        // arms. `List<List<Real>>` — the idiomatic spelling — carries no element
+        // counts in its type, so an m/n (or rank) check would either false-reject
+        // every list-literal matrix or be silently unenforceable for exactly the
+        // shape that matters. Arity/PSD validation for `MassProperties.inertia`
+        // is the ctor-time inertia hook's job (see
+        // `examples/dynamics/pendulum_idyn.ri:24-26`), not this walker's.
+        (Type::Matrix { .. } | Type::Tensor { .. }, arg_ty)
+            if !matches!(
+                arg_ty,
+                Type::Error | Type::TypeParam(_) | Type::Geometry | Type::TraitObject(_)
+            ) =>
+        {
+            if !matches!(
+                arg_ty,
+                Type::Matrix { .. }
+                    | Type::Tensor { .. }
+                    | Type::Vector { .. }
+                    | Type::List(_)
+                    | Type::Int
+                    | Type::Scalar { .. }
+            ) {
+                emit_arg_type_mismatch(param_type, arg_ty, ctx);
+            }
+        }
         // Leaf: param type is a Selector or AnySelector (task-4598).
         // Skip/gate logic is in `reject_if_incompatible`; `type_compat.rs` AnySelector
         // arms encode: AnySelector accepts any Selector(k), rejects Real/String/Int/…;
@@ -1429,23 +1476,20 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// Generalizing any of these needs new `type_compat.rs` coercion rules, which is
 /// an explicit α non-goal; it is tracked as a separate follow-up.
 ///
-/// **`Point` and `Field` are no longer excluded** (task 5465, families 1 and 3).
-/// Each is handled by a dedicated SHAPE-BASED arm in
-/// [`walk_param_against_arg_type`], exactly as `Type::Vector` is, so neither ever
-/// reaches this predicate. The placeholder/erasure rationale is still why those
-/// arms are shape-based rather than `type_compatible`-based —
+/// **`Point`, `Field` and `Matrix`/`Tensor` are no longer excluded** (task 5465,
+/// families 1, 3 and 2). Each is handled by a dedicated SHAPE-BASED arm in
+/// [`walk_param_against_arg_type`], exactly as `Type::Vector` is, so none ever
+/// reaches this predicate. The placeholder/erasure/missing-coercion rationale is
+/// still why those arms are shape-based rather than `type_compatible`-based —
 /// `point3(0m, 0m, 0m)` is a `FunctionCall` whose result_type is the numeric
 /// fallback `Scalar[m]`, never `Type::Point`; an analytical `field def` erases
-/// both slots to `Field<Real, Real>` whatever its declaration says — but
+/// both slots to `Field<Real, Real>` whatever its declaration says; a nested list
+/// literal is the idiomatic `Matrix3x3` spelling but compiles to
+/// `List<List<Real>>`, for which no `List`→`Matrix` coercion arm exists — but
 /// "unverifiable SLOTS" is not the same as "unverifiable FAMILY", and the
-/// families themselves are now checked. The placeholder class is the same one
-/// the `Type::Geometry` exclusion below and
+/// families themselves are now checked. For the two placeholder families this is
+/// the same class the `Type::Geometry` exclusion below and
 /// [`promote_function_call_to_structure_ref`] already exist for.
-/// * **`Matrix` / `Tensor`** — a nested list literal is the idiomatic spelling
-///   of a `Matrix3x3`, but it compiles to `List<List<Real>>` and no
-///   `List`→`Matrix` arm exists. Unlike the placeholder families this is a
-///   genuinely missing coercion rule, so no amount of placeholder detection
-///   fixes it.
 /// * **Dimensioned `Scalar`** — supplying a bare dimensionless numeric literal
 ///   at a dimensioned slot is idiomatic throughout the corpus.
 /// * **`Geometry`** — geometry constructors compile to a dimensionless-scalar
