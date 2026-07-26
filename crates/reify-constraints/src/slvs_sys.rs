@@ -45,17 +45,13 @@ pub const SLVS_E_POINT_IN_3D: c_int = 50000;
 #[allow(dead_code)]
 pub const SLVS_E_POINT_IN_2D: c_int = 50001;
 pub const SLVS_E_NORMAL_IN_3D: c_int = 60000;
-#[allow(dead_code)]
 pub const SLVS_E_NORMAL_IN_2D: c_int = 60001;
-#[allow(dead_code)]
 pub const SLVS_E_DISTANCE: c_int = 70000;
 pub const SLVS_E_WORKPLANE: c_int = 80000;
 pub const SLVS_E_LINE_SEGMENT: c_int = 80001;
 #[allow(dead_code)]
 pub const SLVS_E_CUBIC: c_int = 80002;
-#[allow(dead_code)]
 pub const SLVS_E_CIRCLE: c_int = 80003;
-#[allow(dead_code)]
 pub const SLVS_E_ARC_OF_CIRCLE: c_int = 80004;
 
 // --- Constraint type constants ---
@@ -69,11 +65,9 @@ pub const SLVS_C_PT_LINE_DISTANCE: c_int = 100003;
 pub const SLVS_C_PT_FACE_DISTANCE: c_int = 100004;
 #[allow(dead_code)]
 pub const SLVS_C_PT_IN_PLANE: c_int = 100005;
-#[allow(dead_code)]
 pub const SLVS_C_PT_ON_LINE: c_int = 100006;
 #[allow(dead_code)]
 pub const SLVS_C_PT_ON_FACE: c_int = 100007;
-#[allow(dead_code)]
 pub const SLVS_C_EQUAL_LENGTH_LINES: c_int = 100008;
 #[allow(dead_code)]
 pub const SLVS_C_LENGTH_RATIO: c_int = 100009;
@@ -91,34 +85,24 @@ pub const SLVS_C_SYMMETRIC: c_int = 100014;
 pub const SLVS_C_SYMMETRIC_HORIZ: c_int = 100015;
 #[allow(dead_code)]
 pub const SLVS_C_SYMMETRIC_VERT: c_int = 100016;
-#[allow(dead_code)]
 pub const SLVS_C_SYMMETRIC_LINE: c_int = 100017;
-#[allow(dead_code)]
 pub const SLVS_C_AT_MIDPOINT: c_int = 100018;
-#[allow(dead_code)]
 pub const SLVS_C_HORIZONTAL: c_int = 100019;
-#[allow(dead_code)]
 pub const SLVS_C_VERTICAL: c_int = 100020;
-#[allow(dead_code)]
 pub const SLVS_C_DIAMETER: c_int = 100021;
-#[allow(dead_code)]
 pub const SLVS_C_PT_ON_CIRCLE: c_int = 100022;
 #[allow(dead_code)]
 pub const SLVS_C_SAME_ORIENTATION: c_int = 100023;
 pub const SLVS_C_ANGLE: c_int = 100024;
 pub const SLVS_C_PARALLEL: c_int = 100025;
 pub const SLVS_C_PERPENDICULAR: c_int = 100026;
-#[allow(dead_code)]
 pub const SLVS_C_ARC_LINE_TANGENT: c_int = 100027;
 #[allow(dead_code)]
 pub const SLVS_C_CUBIC_LINE_TANGENT: c_int = 100028;
-#[allow(dead_code)]
 pub const SLVS_C_EQUAL_RADIUS: c_int = 100029;
 #[allow(dead_code)]
 pub const SLVS_C_PROJ_PT_DISTANCE: c_int = 100030;
-#[allow(dead_code)]
 pub const SLVS_C_WHERE_DRAGGED: c_int = 100031;
-#[allow(dead_code)]
 pub const SLVS_C_CURVE_CURVE_TANGENT: c_int = 100032;
 #[allow(dead_code)]
 pub const SLVS_C_LENGTH_DIFFERENCE: c_int = 100033;
@@ -298,6 +282,99 @@ impl Slvs_Entity {
         e.point = [pt_a, pt_b, Slvs_hEntity(0), Slvs_hEntity(0)];
         e
     }
+
+    /// A line segment scoped to `wrkpl`, mirroring `Slvs_MakeLineSegment`.
+    ///
+    /// Distinct from [`Slvs_Entity::line_segment`], which leaves `wrkpl` at
+    /// `SLVS_FREE_IN_3D`.  `SLVS_C_HORIZONTAL`, `SLVS_C_VERTICAL` and the
+    /// tangent constraints are only meaningful against a workplane-scoped line,
+    /// so the 2D sketch path needs this form; the 3D-scoped sibling is kept
+    /// unchanged because the legacy pattern-recognition route depends on it.
+    /// Having two builders rather than one workplane argument makes the choice
+    /// visible at the call site instead of hidden in a parameter.
+    pub fn line_segment_2d(
+        h: Slvs_hEntity,
+        group: Slvs_hGroup,
+        wrkpl: Slvs_hEntity,
+        pt_a: Slvs_hEntity,
+        pt_b: Slvs_hEntity,
+    ) -> Self {
+        let mut e = Self::zeroed_with(h, group, SLVS_E_LINE_SEGMENT);
+        e.wrkpl = wrkpl;
+        e.point = [pt_a, pt_b, Slvs_hEntity(0), Slvs_hEntity(0)];
+        e
+    }
+
+    /// The in-plane normal of `wrkpl`, mirroring `Slvs_MakeNormal2d`.
+    ///
+    /// Carries no params of its own — it just names the workplane whose normal
+    /// it is.  Circles and arcs need a normal entity; in a 2D sketch every one
+    /// of them shares this single instance.
+    pub fn normal_in_2d(h: Slvs_hEntity, group: Slvs_hGroup, wrkpl: Slvs_hEntity) -> Self {
+        let mut e = Self::zeroed_with(h, group, SLVS_E_NORMAL_IN_2D);
+        e.wrkpl = wrkpl;
+        e
+    }
+
+    /// A scalar-distance entity wrapping the param `d`, mirroring
+    /// `Slvs_MakeDistance`.
+    ///
+    /// libslvs has no "circle radius param" — a circle points at a *distance
+    /// entity*, which in turn holds the radius param.  This is that carrier.
+    pub fn distance(
+        h: Slvs_hEntity,
+        group: Slvs_hGroup,
+        wrkpl: Slvs_hEntity,
+        d: Slvs_hParam,
+    ) -> Self {
+        let mut e = Self::zeroed_with(h, group, SLVS_E_DISTANCE);
+        e.wrkpl = wrkpl;
+        e.param = [d, Slvs_hParam(0), Slvs_hParam(0), Slvs_hParam(0)];
+        e
+    }
+
+    /// A full circle, mirroring `Slvs_MakeCircle`.
+    ///
+    /// `radius` is a [`Slvs_Entity::distance`] carrier, not a param and not a
+    /// point — it goes in the dedicated `distance` slot.
+    pub fn circle(
+        h: Slvs_hEntity,
+        group: Slvs_hGroup,
+        wrkpl: Slvs_hEntity,
+        center: Slvs_hEntity,
+        normal: Slvs_hEntity,
+        radius: Slvs_hEntity,
+    ) -> Self {
+        let mut e = Self::zeroed_with(h, group, SLVS_E_CIRCLE);
+        e.wrkpl = wrkpl;
+        e.point = [center, Slvs_hEntity(0), Slvs_hEntity(0), Slvs_hEntity(0)];
+        e.normal = normal;
+        e.distance = radius;
+        e
+    }
+
+    /// An arc of a circle, mirroring `Slvs_MakeArcOfCircle`.
+    ///
+    /// Unlike [`Slvs_Entity::circle`] an arc carries no radius carrier: its
+    /// radius is implied by `center`→`start`, and libslvs contributes the
+    /// `|center - start| = |center - end|` equation itself.  DOF accounting over
+    /// a sketch containing arcs must not count that equation a second time.
+    #[allow(clippy::too_many_arguments)]
+    pub fn arc_of_circle(
+        h: Slvs_hEntity,
+        group: Slvs_hGroup,
+        wrkpl: Slvs_hEntity,
+        normal: Slvs_hEntity,
+        center: Slvs_hEntity,
+        start: Slvs_hEntity,
+        end: Slvs_hEntity,
+    ) -> Self {
+        let mut e = Self::zeroed_with(h, group, SLVS_E_ARC_OF_CIRCLE);
+        e.wrkpl = wrkpl;
+        e.normal = normal;
+        e.point = [center, start, end, Slvs_hEntity(0)];
+        e
+    }
 }
 
 impl Slvs_Constraint {
@@ -328,6 +405,20 @@ impl Slvs_Constraint {
             other: 0,
             other2: 0,
         }
+    }
+
+    /// Set the `other` / `other2` endpoint selectors, chained off [`Self::new`].
+    ///
+    /// `Slvs_MakeConstraint` has no parameters for these, so [`Self::new`]
+    /// leaves both at 0 — the right default for every constraint that ignores
+    /// them.  `SLVS_C_ARC_LINE_TANGENT` and `SLVS_C_CURVE_CURVE_TANGENT` do not
+    /// ignore them: they select which endpoint of each curve is the tangent
+    /// point (`0` = the curve's start, `1` = its end).  Chaining keeps this
+    /// additive, so no existing call site changes.
+    pub fn with_other(mut self, other: c_int, other2: c_int) -> Self {
+        self.other = other;
+        self.other2 = other2;
+        self
     }
 }
 
