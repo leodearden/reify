@@ -1052,7 +1052,7 @@ mod tests {
     use std::collections::HashMap;
 
     use reify_compiler::CompiledTrait;
-    use reify_core::{ContentHash, DimensionVector, Type};
+    use reify_core::{ContentHash, Diagnostic, DimensionVector, Type, ValueCellId};
     use reify_ir::{
         BinOp, CompiledFnBody, CompiledFunction, ObjectiveSense, ObjectiveSet, Value, ValueMap,
     };
@@ -2319,6 +2319,272 @@ structure Rig {
             ClusterDisposition::MergedSolve,
             "dim 1 is within cap ⇒ MergedSolve; got: {:?}",
             cluster.disposition
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // step-13: fences for the instance-path normalisation layer
+    // -------------------------------------------------------------------------
+
+    /// DRIFT GUARD — [`build_instance_path_structure_map`] deliberately
+    /// re-implements `enumerate_descendants`' two `format!` shapes
+    /// (structural_query.rs:213 `{prefix}.{sub}`, :187 `{prefix}.{sub}[{idx}]`)
+    /// rather than calling it. If either side is edited independently, the δ
+    /// walk silently reverts to unioning nothing — exactly the failure class
+    /// review round 2 caught, where the whole suite was green over a no-op.
+    ///
+    /// Uses `enumerate_descendants` itself as the ORACLE: every path it emits
+    /// must, after `[...]` index-stripping, appear in the map with the SAME
+    /// structure name. The fixture carries BOTH a plain sub and a collection sub
+    /// (with a populated `__count_*` cell, so the collection arm actually fires)
+    /// and recurses one level deeper through each, so a drift in either arm or
+    /// in the recursion prefix fails loudly here.
+    #[test]
+    fn instance_path_map_matches_enumerate_descendants_paths() {
+        let count_cell = ValueCellId::new("Rig", "__count_bolts");
+        let rig = TopologyTemplateBuilder::new("Rig")
+            .sub_component("head", "Head", vec![])
+            .collection_sub_component("bolts", "Bolt", count_cell.clone())
+            .build();
+        // Both children carry their own sub, so the map's recursion (which
+        // re-derives the prefix on each hop) is exercised through the plain arm
+        // AND through the collection arm's `[idx]`-suffixed prefix.
+        let head = TopologyTemplateBuilder::new("Head")
+            .sub_component("washer", "Washer", vec![])
+            .build();
+        let bolt = TopologyTemplateBuilder::new("Bolt")
+            .sub_component("washer", "Washer", vec![])
+            .build();
+        let washer = TopologyTemplateBuilder::new("Washer").build();
+        let templates = vec![rig, head, bolt, washer];
+
+        let mut values = ValueMap::default();
+        values.insert(count_cell, Value::Int(2));
+
+        let mut node_budget = 10_000usize;
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let emitted = crate::structural_query::enumerate_descendants(
+            &templates[0],
+            &templates,
+            &values,
+            "Rig",
+            0,
+            64,
+            &mut node_budget,
+            &mut diags,
+        );
+        assert!(
+            diags.is_empty(),
+            "the oracle must enumerate cleanly (no budget/depth truncation), else this \
+             guard is comparing against a partial path set; got: {:?}",
+            diags
+        );
+
+        let map = super::build_instance_path_structure_map(&templates);
+        assert!(
+            !map.is_empty(),
+            "the instance-path map must be non-empty, else this guard passes vacuously"
+        );
+
+        let mut saw_collection_path = false;
+        let mut checked = 0usize;
+        for elem in &emitted {
+            let (path, structure_name) = match (&elem.kind, &elem.result_type) {
+                (reify_ir::CompiledExprKind::Literal(Value::String(p)), Type::StructureRef(tn)) => {
+                    (p, tn)
+                }
+                other => panic!(
+                    "enumerate_descendants must emit Literal(String) : StructureRef; got: {:?}",
+                    other
+                ),
+            };
+            if path.contains('[') {
+                saw_collection_path = true;
+            }
+            let stripped = super::strip_collection_indices(path);
+            assert_eq!(
+                map.get(stripped.as_ref()),
+                Some(structure_name),
+                "enumerate_descendants emitted path {:?} (structure {:?}), whose \
+                 index-stripped form {:?} is absent from / disagrees with \
+                 `build_instance_path_structure_map`. The two path formats have DRIFTED \
+                 — δ cluster formation is now a silent no-op for this shape. Map: {:?}",
+                path,
+                structure_name,
+                stripped,
+                map
+            );
+            checked += 1;
+        }
+        assert!(
+            saw_collection_path,
+            "the collection arm must have contributed at least one `[idx]` path, else \
+             this guard never exercises structural_query.rs:187; emitted: {:?}",
+            emitted
+                .iter()
+                .map(|e| format!("{:?}", e.kind))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            checked >= 5,
+            "expected ≥5 enumerated descendants (Rig.head, Rig.head.washer, \
+             Rig.bolts[0..2] + their washers); got {}",
+            checked
+        );
+    }
+
+    /// MID-WALK normalisation — a seed-only fix would fail this.
+    ///
+    /// The Parent's objective reads its OWN structure-scoped let cell
+    /// (`Parent.total`), whose `default_expr` reads
+    /// `ValueCellId::new("Parent.childinst", "line_cost")` — the exact shape
+    /// reify-compiler/src/expr.rs:843 emits for a sub-member access
+    /// (`format!("{}.{}", scope.entity_name, sub_name)`) — while the Child
+    /// declares its own cells structure-scoped as `Child.line_cost` /
+    /// `Child.quantity_produced`.
+    ///
+    /// The instance-path id therefore appears MID-WALK, downstream of the seed
+    /// vector, which is why [`normalize_cell_id`] is applied at every hop rather
+    /// than only to the seeds. This is a DISTINCT code path from step-11's
+    /// seed-level normalisation of `apply_cost_aggregation`'s output; verified
+    /// non-vacuous by temporarily restricting normalisation to the seed set,
+    /// under which THIS test is the only one in the module that goes red.
+    ///
+    /// The instance-path spelling here is the thing under test — do NOT "clean
+    /// it up" to a structure-name entity (unlike the sibling fixtures, which
+    /// step-15 realigned onto the compiler's real structure-name scoping).
+    #[test]
+    fn derived_cell_reading_sub_member_path_reaches_child_auto() {
+        let parent = TopologyTemplateBuilder::new("Parent")
+            .sub_component("childinst", "Child", vec![])
+            .let_binding(
+                "Parent",
+                "total",
+                money_ty(),
+                // INTENTIONAL instance-path read (reify-compiler/src/expr.rs:843).
+                value_ref_typed("Parent.childinst", "line_cost", money_ty()),
+            )
+            .objective(ObjectiveSet::single(
+                ObjectiveSense::Minimize,
+                value_ref_typed("Parent", "total", money_ty()),
+            ))
+            .build();
+
+        // Child cells are STRUCTURE-scoped, as reify-compiler/src/entity.rs
+        // :6066/:6197 mint them.
+        let child = TopologyTemplateBuilder::new("Child")
+            .trait_bound("Costed")
+            .auto_param_free("Child", "quantity_produced", Type::dimensionless_scalar())
+            .let_binding(
+                "Child",
+                "line_cost",
+                money_ty(),
+                binop(
+                    BinOp::Mul,
+                    value_ref_typed("Child", "unit_cost", money_ty()),
+                    value_ref("Child", "quantity_produced"),
+                ),
+            )
+            .build();
+
+        let templates = vec![parent, child];
+
+        let values = ValueMap::default();
+        let no_fns: [CompiledFunction; 0] = [];
+        let registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let ctx = ClusterFormationCtx {
+            values: &values,
+            functions: &no_fns,
+            trait_registry: &registry,
+            max_unfold_depth: 64,
+            max_unfold_nodes: 10_000,
+        };
+        let ro = resolve_order(&templates, Some(&ctx));
+
+        assert_eq!(
+            ro.clusters.len(),
+            1,
+            "a derived Parent cell reading `Parent.childinst.line_cost` must reach the \
+             Child's auto through MID-WALK normalisation; zero clusters means \
+             normalisation is seed-only; got: {:?}",
+            ro.clusters
+        );
+        assert_eq!(
+            ro.clusters[0].scopes,
+            vec![0, 1],
+            "the cluster must span Parent + Child; got: {:?}",
+            ro.clusters[0].scopes
+        );
+    }
+
+    /// C1 BOUNDARY FENCE — a documented limitation, deliberately recorded as an
+    /// executable expectation rather than left latent.
+    ///
+    /// [`expanded_objective_reads`] (C1) expands objective TERMS only, while
+    /// [`build_non_auto_cell_map`] stores each cell's RAW, UNEXPANDED
+    /// `default_expr`. So an objective that reads a let cell whose own expr is
+    /// `cost(self.descendants)` surfaces no `line_cost` read at all: the walk
+    /// sees only the unexpanded `Parent.__self` placeholder and forms ZERO
+    /// clusters.
+    ///
+    /// This is EXPECTED AND KNOWN, not a regression. The working form is to keep
+    /// the aggregate inlined in the `minimize` (`minimize cost(self.descendants)`
+    /// — see `delta_cluster_forms_on_compiler_emitted_cell_ids` and
+    /// `bt8_cost_self_descendants_forms_single_merged_cluster`, both of which do
+    /// form a cluster over the identical child shape). Lifting this boundary
+    /// would mean expanding derived cells at cluster time too, which is a design
+    /// change requiring review — a follow-up task, not a silent local fix.
+    #[test]
+    fn objective_must_inline_the_aggregate_to_couple() {
+        let aggregate_term = cost_self_descendants_objective().terms[0].expr.clone();
+        let parent = TopologyTemplateBuilder::new("Parent")
+            .sub_component("childinst", "Child", vec![])
+            // The aggregate lives in a derived cell, NOT in the objective term.
+            .let_binding("Parent", "subtree_cost", money_ty(), aggregate_term)
+            .objective(ObjectiveSet::single(
+                ObjectiveSense::Minimize,
+                value_ref_typed("Parent", "subtree_cost", money_ty()),
+            ))
+            .build();
+
+        let child = TopologyTemplateBuilder::new("Child")
+            .trait_bound("Costed")
+            .auto_param_free("Child", "quantity_produced", Type::dimensionless_scalar())
+            .let_binding(
+                "Child",
+                "line_cost",
+                money_ty(),
+                binop(
+                    BinOp::Mul,
+                    value_ref_typed("Child", "unit_cost", money_ty()),
+                    value_ref("Child", "quantity_produced"),
+                ),
+            )
+            .build();
+
+        let templates = vec![parent, child];
+
+        let values = ValueMap::default();
+        let no_fns: [CompiledFunction; 0] = [];
+        let registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let ctx = ClusterFormationCtx {
+            values: &values,
+            functions: &no_fns,
+            trait_registry: &registry,
+            max_unfold_depth: 64,
+            max_unfold_nodes: 10_000,
+        };
+        let ro = resolve_order(&templates, Some(&ctx));
+
+        assert!(
+            ro.clusters.is_empty(),
+            "EXPECTED AND KNOWN (C1 boundary): an aggregate hidden behind a derived cell \
+             forms no cluster, because cluster-time expansion runs over objective TERMS \
+             only while the cell map stores raw `default_expr`s. If this now forms a \
+             cluster the boundary moved — that is a design change needing review, not a \
+             test to update. Working form: keep the aggregate inlined in the `minimize`; \
+             got: {:?}",
+            ro.clusters
         );
     }
 }
