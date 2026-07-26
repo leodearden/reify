@@ -10726,6 +10726,25 @@ mod tests {
         );
     }
 
+    /// Rung-3 output for the dimensions whose curated default rung is a
+    /// *scaled* one.
+    ///
+    /// The Area and Volume expectations moved with task #5236: PRD §5e makes
+    /// rung 3 the point where a default-ON dimension auto-scales, so Area
+    /// `0.0045` is now `45 cm²` (was `4500 mm²`) and Volume `0.007` is now
+    /// `7 L` (was `7000000 mm³` — and `7 L` is the PRD's own G1 figure,
+    /// reached here with no `@display` pin at all). These lines encoded
+    /// pre-§5 rung-3 behaviour that §5 changes on purpose, so they are
+    /// updated rather than preserved.
+    ///
+    /// The other two rows are unchanged and say why the change is narrow:
+    /// Length `0.08` already reads `80 mm` in band, so it hops zero rungs;
+    /// Angle carries `auto_scale: None` (§5b excludes discrete deg/rad), so
+    /// the policy never engages for it.
+    ///
+    /// No user-visible surface moves yet either way — `resolve_display` still
+    /// has no production caller until L4 (#5235) routes the four surfaces
+    /// onto it.
     #[test]
     fn resolve_display_none_scaled_default_rung_dims_scale_magnitude_and_label() {
         assert_eq!(
@@ -10734,15 +10753,133 @@ mod tests {
         );
         assert_eq!(
             resolve_display(0.0045, &DimensionVector::AREA, None),
-            ("4500".to_string(), "mm\u{00B2}".to_string())
+            ("45".to_string(), "cm\u{00B2}".to_string())
         );
         assert_eq!(
             resolve_display(0.007, &DimensionVector::VOLUME, None),
-            ("7000000".to_string(), "mm\u{00B3}".to_string())
+            ("7".to_string(), "L".to_string())
         );
         assert_eq!(
             resolve_display(std::f64::consts::PI, &DimensionVector::ANGLE, None),
             ("180".to_string(), "deg".to_string())
+        );
+    }
+
+    /// §5e rung 3, default-ON: an unpinned Length hops to whichever rung keeps
+    /// the mantissa in `[1, 1000)`, and — per §5b's stability argument — hops
+    /// as few rungs off the familiar default as possible.
+    #[test]
+    fn resolve_display_none_default_on_dims_hop_to_the_in_band_rung() {
+        assert_eq!(
+            resolve_display(5.0, &DimensionVector::LENGTH, None),
+            ("500".to_string(), "cm".to_string()),
+            "5 m is 5000 mm (out of band), so it hops one rung to 500 cm"
+        );
+        assert_eq!(
+            resolve_display(50.0, &DimensionVector::LENGTH, None),
+            ("50".to_string(), "m".to_string()),
+            "50 m needs two hops: 50000 mm and 5000 cm are both out of band"
+        );
+        assert_eq!(
+            resolve_display(0.5, &DimensionVector::LENGTH, None),
+            ("500".to_string(), "mm".to_string()),
+            "0.5 m is in band at BOTH mm (500) and cm (50); the minimal hop wins"
+        );
+
+        // §5a's decimal-sibling eligibility, observed end-to-end: an unpinned
+        // metric Length can never flip unit *system* into inches, at any
+        // magnitude.
+        for exponent in -6..=6 {
+            for mantissa in [1.0, 2.5, 4.2, 7.5] {
+                let si_value = mantissa * 10f64.powi(exponent);
+                for signed in [si_value, -si_value] {
+                    let (_, label) = resolve_display(signed, &DimensionVector::LENGTH, None);
+                    assert_ne!(
+                        label, "in",
+                        "auto-scaling flipped an unpinned metric Length to inches at {signed}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// §5b/§5e, the no-op half: a default-OFF dimension (Mass, Pressure,
+    /// Density — `enabled: false`) and a structurally excluded one (Angle,
+    /// Force, Energy, Power — `auto_scale: None`) render their static default
+    /// rung's raw magnitude, full stop, however far out of band it sits. §5e
+    /// also states engineering notation does not apply to them either, so no
+    /// output here may contain `×10`.
+    ///
+    /// This is the behavioural anchor for the `enabled` posture pinned in
+    /// `reify_core::display_units`: it observes the *consequence* of the
+    /// default-ON/OFF split rather than echoing the flag.
+    #[test]
+    fn resolve_display_none_default_off_and_excluded_dims_never_auto_scale() {
+        let cases: &[(DimensionVector, f64, &str, &str)] = &[
+            // Default-OFF (§5b): each magnitude is far outside [1, 1000), and
+            // each ladder has a rung that would take it in band — g for Mass,
+            // kPa for Pressure, g/cm³ for Density — which the posture forbids.
+            (DimensionVector::MASS, 2.5e-6, "0.0000025", "kg"),
+            (DimensionVector::PRESSURE, 1.01325e5, "101325", "Pa"),
+            (DimensionVector::MASS_DENSITY, 7850.0, "7850", "kg/m\u{00B3}"),
+            // Structurally excluded (`auto_scale: None`).
+            (DimensionVector::ANGLE, std::f64::consts::PI, "180", "deg"),
+            (DimensionVector::FORCE, 250_000.0, "250000", "N"),
+            (DimensionVector::ENERGY, 1.5e-5, "0.000015", "J"),
+            (DimensionVector::POWER, 750_000.0, "750000", "W"),
+        ];
+
+        for (dimension, si_value, magnitude, label) in cases {
+            let actual = resolve_display(*si_value, dimension, None);
+            assert_eq!(
+                actual,
+                (magnitude.to_string(), label.to_string()),
+                "{dimension:?} @ {si_value} must render its static default rung unchanged"
+            );
+            assert!(
+                !actual.0.contains('\u{00D7}'),
+                "{dimension:?} @ {si_value} reached engineering notation, which §5e forbids \
+                 for default-OFF and excluded dimensions: {actual:?}"
+            );
+        }
+    }
+
+    /// §5d: an explicit unit pin is authoritative and stable regardless of
+    /// magnitude — auto-scaling only acts on a cell with no pin. This is a
+    /// regression lock on `resolve_display`'s existing `Some(pref)` early
+    /// return rather than new behaviour: that early return **is** the
+    /// pin-suppression rule, so §5d needs no separate flag or guard.
+    ///
+    /// The Volume cases are §5d's own worked tie-in to G1: `capacity` is
+    /// pinned to `"L"`, and even if an edit drove it to `0.0007 m³` or
+    /// `0.7 m³` the cell stays in liters rather than hopping to mL or m³.
+    #[test]
+    fn resolve_display_some_preference_suppresses_auto_scaling() {
+        let liters = DisplayPreference::new("L", 1e-3);
+        assert_eq!(
+            resolve_display(0.0007, &DimensionVector::VOLUME, Some(&liters)),
+            ("0.7".to_string(), "L".to_string()),
+            "a pinned rung stays pinned below the band — no hop to mL"
+        );
+        assert_eq!(
+            resolve_display(0.7, &DimensionVector::VOLUME, Some(&liters)),
+            ("700".to_string(), "L".to_string())
+        );
+
+        // A pin can also hold a Length at a rung auto-scaling would have moved
+        // off, in both directions — including one far enough out of band that
+        // an unpinned cell would reach §5c's engineering notation.
+        let mm = DisplayPreference::new("mm", 1e-3);
+        assert_eq!(
+            resolve_display(5.0, &DimensionVector::LENGTH, Some(&mm)),
+            ("5000".to_string(), "mm".to_string()),
+            "unpinned this would read 500 cm; the pin holds it at mm"
+        );
+        let tiny = resolve_display(1e-9, &DimensionVector::LENGTH, Some(&mm));
+        assert_eq!(tiny, ("0.000001".to_string(), "mm".to_string()));
+        assert!(
+            !tiny.0.contains('\u{00D7}'),
+            "a pinned rung must never render in engineering notation: {tiny:?}"
         );
     }
 
@@ -10815,6 +10952,21 @@ mod tests {
             assert_eq!(
                 resolve_display(2.0, &DimensionVector::VELOCITY, Some(&broken)),
                 resolve_display(2.0, &DimensionVector::VELOCITY, None),
+            );
+
+            // A default-ON dimension (task #5236): "treated as absent" must
+            // land on the full §5e rung-3 result — the AUTO-SCALED rung —
+            // not on the static default rung. Pressure above cannot
+            // distinguish these (it is default-OFF, so both are "Pa"); Volume
+            // can, because unpinned it hops mm³ → L.
+            assert_eq!(
+                resolve_display(0.007, &DimensionVector::VOLUME, Some(&broken)),
+                resolve_display(0.007, &DimensionVector::VOLUME, None),
+            );
+            assert_eq!(
+                resolve_display(0.007, &DimensionVector::VOLUME, Some(&broken)),
+                ("7".to_string(), "L".to_string()),
+                "a degenerate pin falls through to auto-scaled rung 3, not the static mm³ rung"
             );
         }
     }
