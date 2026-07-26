@@ -11063,6 +11063,129 @@ mod tests {
         }
     }
 
+    /// §5e end-to-end over the *whole* registry — the no-silent-gap guard.
+    ///
+    /// Every ladder is driven through `resolve_display` at rung 3, so a newly
+    /// added dimension is picked up automatically rather than needing a
+    /// hand-maintained list. The dimension→`DimensionVector` mapping comes off
+    /// `reify_core::NAMED_DIMENSIONS`, the same way
+    /// `every_ladder_dimension_round_trips_through_canonical_name` does in
+    /// reify-core.
+    ///
+    /// §5e admits exactly three outcomes and this pins all three:
+    ///   * **default-ON, finite non-zero** — the magnitude either parses back
+    ///     to an in-band value (a rung hop landed) or is engineering notation
+    ///     with an in-band mantissa and a multiple-of-three exponent. There is
+    ///     no third case: a bare out-of-band plain magnitude would mean the
+    ///     policy silently gave up;
+    ///   * **default-OFF or excluded** — the label is always the ladder's
+    ///     curated `derived_unit_name` (L1's invariant: that equals the
+    ///     `is_default` rung's label) and the string never contains `×10`;
+    ///   * **zero or non-finite, any dimension** — the static default rung's
+    ///     label, and no `×10`.
+    #[test]
+    fn resolve_display_none_honours_section5e_across_the_whole_registry() {
+        /// Split an engineering-notation magnitude into its mantissa and
+        /// exponent halves, or `None` if it is a plain magnitude.
+        fn split_engineering(magnitude: &str) -> Option<(f64, i32)> {
+            let (mantissa, exponent) = magnitude.split_once('\u{00D7}')?;
+            let exponent = exponent
+                .strip_prefix("10")
+                .expect("engineering notation must read <mantissa>×10<exponent>");
+            let digits: String = exponent
+                .chars()
+                .map(|c| match c {
+                    '\u{207B}' => '-',
+                    '\u{2070}' => '0',
+                    '\u{00B9}' => '1',
+                    '\u{00B2}' => '2',
+                    '\u{00B3}' => '3',
+                    '\u{2074}'..='\u{2079}' => {
+                        char::from(b'4' + (c as u32 - 0x2074) as u8)
+                    }
+                    other => panic!("unexpected glyph {other:?} in exponent {exponent:?}"),
+                })
+                .collect();
+            Some((
+                mantissa.parse().expect("mantissa must parse"),
+                digits.parse().expect("exponent must parse"),
+            ))
+        }
+
+        let mut sweep: Vec<f64> = Vec::new();
+        for exponent in -12..=12 {
+            for mantissa in [1.0, 2.5, 4.2, 7.5] {
+                sweep.push(mantissa * 10f64.powi(exponent));
+                sweep.push(-mantissa * 10f64.powi(exponent));
+            }
+        }
+        let degenerate = [0.0, -0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY];
+
+        for ladder in reify_core::unit_ladders() {
+            let dim = *reify_core::NAMED_DIMENSIONS
+                .iter()
+                .find(|(_, name)| *name == ladder.dimension)
+                .map(|(dim, _)| dim)
+                .unwrap_or_else(|| panic!("no NAMED_DIMENSIONS entry for {:?}", ladder.dimension));
+            let name = &ladder.dimension;
+            let default_on = ladder.auto_scale.as_ref().is_some_and(|a| a.enabled);
+
+            // Zero and non-finite never auto-scale, whatever the posture.
+            for si_value in degenerate {
+                let (magnitude, label) = resolve_display(si_value, &dim, None);
+                assert_eq!(
+                    label, ladder.derived_unit_name,
+                    "{name} @ {si_value} left the static default rung"
+                );
+                assert!(
+                    !magnitude.contains('\u{00D7}'),
+                    "{name} @ {si_value} reached engineering notation: {magnitude:?}"
+                );
+            }
+
+            for &si_value in &sweep {
+                let (magnitude, label) = resolve_display(si_value, &dim, None);
+
+                if !default_on {
+                    assert_eq!(
+                        label, ladder.derived_unit_name,
+                        "{name} @ {si_value} hopped a rung despite its §5b posture"
+                    );
+                    assert!(
+                        !magnitude.contains('\u{00D7}'),
+                        "{name} @ {si_value} reached engineering notation, which §5e \
+                         forbids for default-OFF and excluded dimensions: {magnitude:?}"
+                    );
+                    continue;
+                }
+
+                match split_engineering(&magnitude) {
+                    Some((mantissa, exponent)) => {
+                        assert_eq!(
+                            exponent % 3,
+                            0,
+                            "{name} @ {si_value}: exponent {exponent} is not a multiple of three"
+                        );
+                        assert!(
+                            mantissa.abs() >= 1.0 && mantissa.abs() < 1000.0,
+                            "{name} @ {si_value}: mantissa {mantissa} outside [1, 1000)"
+                        );
+                    }
+                    None => {
+                        let rendered: f64 = magnitude
+                            .parse()
+                            .unwrap_or_else(|e| panic!("{name} @ {si_value}: {magnitude:?} {e}"));
+                        assert!(
+                            rendered.abs() >= 1.0 && rendered.abs() < 1000.0,
+                            "{name} @ {si_value}: rendered {magnitude:?} is out of band and is \
+                             not engineering notation — §5e admits no third outcome"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// The exponent glyph mapper, direct. Covers every digit `0-9` at least
     /// once plus the `⁻` (U+207B) sign prefix, because the glyphs come from
     /// two different Unicode blocks — `¹²³` are Latin-1 Supplement code
