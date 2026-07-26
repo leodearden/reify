@@ -20,16 +20,17 @@ design sessions repeatedly burn verification runs on throwaway probe files
 re-discovering the same semantics. If the idiom is listed below, read the
 exemplar instead of probing.
 
-**Before adding a file, add its row.** `crates/reify-compiler/tests/best_practices_index_sync.rs`
-pins a bidirectional invariant — every `.ri` here is named in this index, and
-every file named here exists — so a file and its row land in one commit, never
-two. The full graduation procedure is in `.claude/skills/reify-design/SKILL.md`
-under "Session wrap — graduate your probes".
+**Before adding a file, add its row.** `examples_smoke.rs`'s
+`best_practices_index_matches_corpus_directory` pins a bidirectional invariant —
+every `.ri` here is named in this index, and every file named here exists — so a
+file and its row land in one commit, never two. The full graduation procedure is
+in `.claude/skills/reify-design/SKILL.md` under "Session wrap — graduate your
+probes".
 
 Verify both with:
 
 ```sh
-cargo test -p reify-compiler --test examples_smoke --test best_practices_index_sync
+cargo test -p reify-compiler --test examples_smoke
 ```
 
 ## Idioms
