@@ -138,6 +138,57 @@ If the GUI isn't running and the iteration is non-trivial, ask the user whether 
 - **Trait conformance** (`: Rigid`, `: Physical`, `: MaterialSpec`) requires the structure to declare the trait's required members — see the `traits` chunk and `m5_geometry_flange.ri` for the concrete pattern (Material struct, density, moment_of_inertia, etc.).
 - **Sub-component composition** is preferred over monolithic geometry when a feature has independent meaning. Use `sub`, `connect`, and ports rather than embedding everything in one structure's `let body = ...`.
 
+### 4. Session wrap — graduate your probes
+
+At the end of a design session, spend a couple of minutes turning what you
+learned about the *language* into something the next session can grep.
+
+**Why this is worth doing.** The printer_v01 dogfood session spent ~40% of its
+CLI verification runs (13 of 19) on probe files interrogating language
+semantics rather than the design itself, and the 2026-07-24 probe wave wrote
+~25 more. Nearly every one of those findings would have been a single grep away
+if a prior session had preserved its probes. This step is how that stops
+repeating.
+
+1. **Identify this session's probes.** A probe is a throwaway `.ri` file
+   written purely to interrogate language or stdlib semantics — "does `mirror`
+   take a plane or an axis?", "what arity does `tube` want?". The user's actual
+   design files are **never** graduated, no matter how instructive they were.
+
+2. **Discard what's already covered.** Grep `examples/best_practices/INDEX.md`
+   first. If the idiom is already there, the probe has served its purpose —
+   delete it. That grep is the entire point of the index; do not skip it and
+   add a near-duplicate exemplar.
+
+3. **Minimise what's left.** For each genuinely new finding, reduce the probe
+   to the smallest file that still demonstrates the idiom, then:
+   - rename it to an idiom-descriptive `snake_case` name (`symmetry_mirror.ri`,
+     not `probe3.ri`);
+   - add a `module <file_stem>` decl — the module path **must** match the file
+     stem or you get `E_MODULE_PATH_MISMATCH`;
+   - add a header comment stating the idiom **and the anti-pattern it
+     replaces** — the anti-pattern is what makes it findable by someone who
+     doesn't yet know the right answer;
+   - drop it in `examples/best_practices/`.
+
+4. **Add its INDEX.md row — not optional.**
+   `crates/reify-compiler/tests/best_practices_index_sync.rs` fails the build
+   if a corpus file has no index entry, or an entry names a missing file. File
+   and row land in one commit.
+
+5. **Verify before you commit:**
+   ```sh
+   cargo test -p reify-compiler --test examples_smoke --test best_practices_index_sync
+   ```
+   Also run `reify eval` on the new file, not just `reify check` — check is
+   silent about several classes of geometry error (see the note at the end of
+   the idiom index).
+
+**A file that cannot reach a clean compile must NOT be added.** The corpus is
+compile-gated by construction, and an exemplar that doesn't work is worse than
+no exemplar. Do not add a `SKIP_SET` entry to get one in. If the finding is
+that something is *broken*, that is a bug report, not an exemplar.
+
 ## What this skill is *not* for
 
 Don't trigger this skill for:
