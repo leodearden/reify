@@ -7,27 +7,64 @@ use std::time::{Duration, Instant};
 
 use crate::watcher::{ChangeKind, Debouncer, FileEvent, FileWatcher};
 
-/// Poll `sink` until `predicate` holds or `timeout` elapses.
-///
-/// The lock is dropped before each sleep so a concurrent producer (e.g. the
-/// watcher's callback thread) can still push into `sink` while we wait.
-fn wait_for<T>(
-    sink: &Arc<Mutex<Vec<T>>>,
-    timeout: Duration,
-    predicate: impl Fn(&[T]) -> bool,
-) -> bool {
+/// Poll `condition` every 20ms until it holds or `timeout` elapses.
+/// Returns immediately, before any sleep, if `condition` already holds.
+fn wait_until(timeout: Duration, condition: impl Fn() -> bool) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
-        {
-            let guard = sink.lock().unwrap();
-            if predicate(&guard) {
-                return true;
-            }
+        if condition() {
+            return true;
         }
         if Instant::now() >= deadline {
             return false;
         }
         std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Poll `sink` until `predicate` holds or `timeout` elapses.
+///
+/// The lock is dropped before each sleep so a concurrent producer (e.g. the
+/// watcher's callback thread) can still push into `sink` while we wait: the
+/// `MutexGuard` created inside the closure below is a temporary, scoped to
+/// the single `predicate(&sink.lock().unwrap())` call, so it's released
+/// before `wait_until` ever reaches its deadline check or sleep.
+fn wait_for<T>(
+    sink: &Arc<Mutex<Vec<T>>>,
+    timeout: Duration,
+    predicate: impl Fn(&[T]) -> bool,
+) -> bool {
+    wait_until(timeout, || predicate(&sink.lock().unwrap()))
+}
+
+/// Like [`wait_until`], but also invokes `attempt` before each poll window,
+/// up to `retry_every` apart, until `condition` holds or the OVERALL
+/// `timeout` budget elapses (`retry_every` bounds a single attempt's poll
+/// window, not the whole call).
+///
+/// This is necessary -- rather than just polling harder -- whenever
+/// `condition` can only become true as a side effect of re-issuing the
+/// stimulus `attempt` performs. For example, a filesystem write issued
+/// before an inotify watch is live produces no event at all, not a late
+/// one: no amount of polling can recover it, only re-issuing the write
+/// after the watch goes live can. Every attempt gets its own `retry_every`
+/// window to succeed before the next one is issued.
+fn wait_until_with_retry(
+    mut attempt: impl FnMut(),
+    retry_every: Duration,
+    timeout: Duration,
+    condition: impl Fn() -> bool,
+) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        attempt();
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if wait_until(remaining.min(retry_every), &condition) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
     }
 }
 
