@@ -1509,9 +1509,9 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 ///   position-dependent across six gates (legal at ctor field slots, literal
 ///   `param`/`let` defaults and constraint-def args; illegal at user-fn param
 ///   slots, fn-param defaults, ambient defaults, compound initializers and all
-///   arithmetic). Owner: follow-up ticket `tkt_0RRQW5X0WYH2ZW0TZY1JZ6E189`
-///   (escalation `agent-followup-5465`), which carries the four candidate
-///   resolutions and their costs.
+///   arithmetic). Owner: task #5627 (filed from this task as ticket
+///   `tkt_0RRQW5X0WYH2ZW0TZY1JZ6E189`, escalation `agent-followup-5465`), which
+///   carries the four candidate resolutions and their costs.
 /// * **`Geometry`** — geometry constructors compile to a dimensionless-scalar
 ///   placeholder (GHR-γ) and `type_compatible` has no `Geometry` arm at all;
 ///   geometry conformance is decided only through the literal walker's op-array

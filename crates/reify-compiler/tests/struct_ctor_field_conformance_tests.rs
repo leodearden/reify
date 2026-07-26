@@ -1353,9 +1353,9 @@ structure def Root {
 /// ILLEGAL at user-fn param slots, fn-param defaults, ambient defaults,
 /// compound-expression initializers, and all arithmetic/comparison operators.
 /// `implicitly_converts_to` encodes no Scalar-vs-Scalar rule in EITHER
-/// direction. Owner: follow-up ticket `tkt_0RRQW5X0WYH2ZW0TZY1JZ6E189`
-/// (escalation `agent-followup-5465`), which carries the four candidate
-/// resolutions and their costs.
+/// direction. Owner: task #5627 (filed from this task as ticket
+/// `tkt_0RRQW5X0WYH2ZW0TZY1JZ6E189`, escalation `agent-followup-5465`), which
+/// carries the four candidate resolutions and their costs.
 ///
 /// **What this probe pins, precisely.** Zero *ctor-conformance* diagnostics —
 /// i.e. exclusion from ONE pass. It does NOT assert that the program is
