@@ -796,3 +796,55 @@ fn e2e_ok_or_none_with_stdlib() {
          the placeholder .ri body would return the bare, unwrapped String(\"e\")"
     );
 }
+
+/// End-to-end: `map_err(Err { error: 3mm }, |e: Length| e * 2)` compiled with
+/// the real stdlib must evaluate to `Err{error:6mm}` — the lambda APPLIED to
+/// the error payload.
+///
+/// This is the first stdlib-compiled guard for the CTX-AWARE `map_err/2`
+/// intercept, which lives in its own branch of reify-expr's `UserFunctionCall`
+/// arm rather than in `option_recovery::is_combinator` (that gate stays pure,
+/// INV-1, and cannot apply a lambda).
+///
+/// DISCRIMINATION: `result.ri` ships
+/// `pub fn map_err<T, E, F>(r: Result<T, E>, f: (E) -> F) -> Result<T, F> { r }`
+/// — a typecheck-only placeholder that returns the subject with `f` NEVER
+/// applied. With the intercept removed this call therefore returns
+/// `Err{error:3mm}` (undoubled) and this assert fails.
+///
+/// Unique value of this guard: it is the ONLY test in task 5410 that proves the
+/// compiled LAMBDA argument reaches `apply_lambda` end-to-end. Every other
+/// guard would still pass if the intercept merely matched name+arity and
+/// ignored its function argument; here the 3mm→6mm doubling can only happen if
+/// the real compiled arrow-typed arg is actually invoked.
+///
+/// Asserted on the VALUE, not on `result_type`: for an inline `Err`
+/// construction the compiled `result_type` is
+/// `Applied{"Result", [TypeParam("T"), Scalar[m]]}` — `T` stays erased because
+/// nothing constrains it. That erasure is correct for the resolver and is
+/// already covered by the compiler-side resolution tests; re-asserting it here
+/// would be lockstep duplication and brittle to unrelated inference work.
+#[test]
+fn e2e_map_err_err_with_stdlib() {
+    let module = reify_test_support::compile_source_with_stdlib(
+        "structure S { let v = map_err(Err { error: 3mm }, |e: Length| e * 2) }",
+    );
+    let expr = cell_expr_stdlib(&module, "v");
+    let values = ValueMap::new();
+    let ctx = EvalContext::new(&values, &module.functions);
+    let val_6mm = Value::Scalar {
+        si_value: 0.006,
+        dimension: DimensionVector::LENGTH,
+    };
+    assert_eq!(
+        eval_expr(expr, &ctx),
+        Value::Enum {
+            type_name: "Result".to_string(),
+            variant: "Err".to_string(),
+            payload: vec![("error".to_string(), val_6mm)],
+        },
+        "e2e: map_err(Err{{error:3mm}}, |e| e * 2) compiled via stdlib must evaluate to \
+         Err{{error:6mm}} — the placeholder .ri body would return Err{{error:3mm}} with f \
+         never applied"
+    );
+}
