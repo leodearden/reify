@@ -132,7 +132,29 @@
 #        re-dispatching on it would act on a false premise, and #5316 §4
 #        establishes that remediation there is a human git-history
 #        adjudication a detector can flag but not perform.
-#   (Further invariants are recorded as each classifier lands.)
+#   L6 — READ-ONLY on all task state. Every sqlite handle is opened
+#        -readonly / mode=ro, the escalation store is only ever read, and the
+#        ONLY side effect of any invocation is the request files written
+#        under --emit-requests. The sweep never writes tasks.db: CLAUDE.md
+#        requires all task operations to go through the fused-memory MCP
+#        tools, and writing the store directly would bypass the
+#        reconciliation that status transitions trigger — turning an
+#        advisory sweep into an unaudited mutator of the canonical task
+#        store. So this script EMITS a request and the dark-factory consumer
+#        performs the set_task_status / update_task write. That is the house
+#        cross-repo seam verbatim: reify ships the primitive, dark-factory
+#        wires the invocation.
+#
+# --emit-requests consumer contract:
+#   One file per confirmed hit, named redispatch-<task_id>-<class>.json,
+#   holding schema_version, task_id, class, verdict, action, evidence,
+#   main_ref_sha and emitted_by. Written via a mktemp intermediate in the
+#   SAME directory followed by mv, so a consumer polling the directory never
+#   observes a partial file. The body carries NO wall-clock field, so
+#   re-emission is byte-idempotent and a consumer can diff rather than
+#   re-process; read the file mtime if recency is needed. Emission never
+#   gates the sweep — an uncreatable or unwritable directory warns, and the
+#   report on stdout is still complete and the exit code still 0.
 
 set -euo pipefail
 
@@ -876,6 +898,85 @@ else
     printf 'SWEEP: candidates=%d gate_closure=%d merge_verify_red=%d unmet_dependency=%d corrupt_hold=%d live_skipped=%d unknown=%d\n' \
         "$N_CANDIDATES" "$N_GATE_CLOSURE" "$N_MERGE_VERIFY_RED" "$N_UNMET_DEPENDENCY" \
         "$N_CORRUPT_HOLD" "$N_LIVE_SKIPPED" "$N_UNKNOWN"
+fi
+
+# ── --emit-requests (invariant L6) ────────────────────────────────────────────
+# Runs AFTER the report is fully assembled and printed, so a request-emission
+# failure can never truncate the report — the sweep is advisory and emission
+# is a side channel, not a gate.
+_EMITTED_BY="scripts/deterministic-gate-closure-staleness-sweep.sh"
+
+# _write_request <task_id> <class> <verdict> <action> <evidence> — render one
+# request atomically: a mktemp intermediate in the SAME directory (so the mv
+# is a rename within one filesystem, never a copy) followed by mv. The
+# intermediate is removed on every failure path. python3 does the rendering so
+# prose `evidence` is escaped correctly rather than hand-quoted.
+_write_request() {
+    local id="$1" cls="$2" verdict="$3" action="$4" evidence="$5"
+    local dest tmp
+    dest="$REQUESTS_DIR/redispatch-${id}-${cls}.json"
+    if ! tmp="$(mktemp "$REQUESTS_DIR/redispatch-tmp-XXXXXX" 2>/dev/null)"; then
+        warn "Task $id: could not create a temp file in $REQUESTS_DIR — no request emitted."
+        return 0
+    fi
+    if _GS_ID="$id" _GS_CLASS="$cls" _GS_VERDICT="$verdict" _GS_ACTION="$action" \
+       _GS_EVIDENCE="$evidence" _GS_MAIN_SHA="$_MAIN_REF_SHA" _GS_EMITTER="$_EMITTED_BY" \
+       python3 - > "$tmp" 2>/dev/null <<'PY'
+import json, os, sys
+# No wall-clock field, deliberately: re-emission must be byte-idempotent so a
+# consumer can diff the directory instead of re-processing it. Recency, when
+# needed, is the file's mtime.
+json.dump({
+    "schema_version": 1,
+    "task_id": int(os.environ["_GS_ID"]),
+    "class": os.environ["_GS_CLASS"],
+    "verdict": os.environ["_GS_VERDICT"],
+    "action": os.environ["_GS_ACTION"],
+    "evidence": os.environ["_GS_EVIDENCE"],
+    "main_ref_sha": os.environ["_GS_MAIN_SHA"],
+    "emitted_by": os.environ["_GS_EMITTER"],
+}, sys.stdout, indent=2, sort_keys=True)
+sys.stdout.write("\n")
+PY
+    then
+        if ! mv -f "$tmp" "$dest" 2>/dev/null; then
+            rm -f "$tmp"
+            warn "Task $id: could not place its re-dispatch request at $dest — none emitted."
+        fi
+    else
+        rm -f "$tmp"
+        warn "Task $id: failed to render its re-dispatch request — none emitted."
+    fi
+}
+
+if [ -n "$REQUESTS_DIR" ]; then
+    _emit_ok=1
+    if [ ! -d "$REQUESTS_DIR" ]; then
+        # Created on demand only when its PARENT already exists: silently
+        # materializing a whole missing path would hide a typo'd --emit-requests
+        # as "0 requests emitted" rather than surfacing it.
+        if [ -d "$(dirname "$REQUESTS_DIR")" ] && mkdir "$REQUESTS_DIR" 2>/dev/null; then
+            info "Created request dir $REQUESTS_DIR."
+        else
+            warn "Request dir could not be created: $REQUESTS_DIR (its parent does not exist, or is not writable) — the report above is complete; no requests were emitted."
+            _emit_ok=0
+        fi
+    fi
+    if [ "$_emit_ok" = 1 ] && [ ! -w "$REQUESTS_DIR" ]; then
+        warn "Request dir is not writable: $REQUESTS_DIR — the report above is complete; no requests were emitted."
+        _emit_ok=0
+    fi
+    if [ "$_emit_ok" = 1 ]; then
+        # STALE only — every other verdict is skipped, CORRUPT-HOLD included
+        # (invariant L5). ROWS_TSV already holds exactly the rows the report
+        # printed, so --class filtering carries through for free and a
+        # filtered sweep can never emit a request it did not report.
+        while IFS="$_FS" read -r r_id r_status r_class r_verdict r_action r_evidence r_flags; do
+            [ -n "${r_id:-}" ] || continue
+            [ "$r_verdict" = "STALE" ] || continue
+            _write_request "$r_id" "$r_class" "$r_verdict" "$r_action" "$r_evidence"
+        done < "$ROWS_TSV"
+    fi
 fi
 
 exit 0
