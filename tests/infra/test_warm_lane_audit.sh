@@ -952,4 +952,107 @@ assert "L4b: exit 0 under REIFY_WARM_LANE_AUDIT_STATE_DIR" test "$RC" -eq 0
 assert "L4c: REIFY_WARM_LANE_AUDIT_STATE_DIR outside the mount is honoured (assigned=ASSIGNED)" \
     bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-ext .*assigned=ASSIGNED"' _ "$OUT"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block M — `pin=`: WHO is holding a reserved-but-idle lane, and in what state
+# ──────────────────────────────────────────────────────────────────────────────
+# A lane that is ASSIGNED but not LIVE is reserved by a task that is not
+# running. `pin=` names that task's RAW backing status, because that raw value
+# is exactly what an operator triaging one specific lane needs: `in-progress`
+# with no live consumer means a crashed agent, `done` means a terminal task
+# still holding a reservation, `pending` means work that never started. The
+# fixed bucketing exists only in the aggregate rollup (Block O), never here.
+echo ""
+echo "--- Block M: pin= (raw backing status of a reserved-but-idle lane) ---"
+
+M_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-m-XXXXXX)"
+_TMPDIRS+=("$M_MOUNT")
+M_MAP="$(mktemp /tmp/test-warm-lane-audit-m-map-XXXXXX)"
+_TMPDIRS+=("$M_MAP")
+printf '8001 pending\n8002 infra-hold\n8003 blocked\n8004 in-progress\n8005 done\n8006 done\n8007 pending\n8008 blocked\n8009 pending\n8010 pending\n' > "$M_MAP"
+
+# Raw-fidelity cases: idle + ASSIGNED, pin id carried by the RECORD. These
+# lanes stay on main (no task/ branch), so the record is the ONLY possible
+# source of the id -- the branch cannot silently supply it.
+M_RAW_CASES=(
+    "_lane-pin-pending:8001:pending"
+    "_lane-pin-infrahold:8002:infra-hold"
+    "_lane-pin-blocked:8003:blocked"
+    "_lane-pin-inprogress:8004:in-progress"
+    "_lane-pin-done:8005:done"
+)
+for m_case in "${M_RAW_CASES[@]}"; do
+    m_lane="${m_case%%:*}"
+    m_rest="${m_case#*:}"
+    m_id="${m_rest%%:*}"
+    make_lane "$M_MOUNT/$m_lane"
+    make_lane_state "$M_MOUNT" "$m_lane" "assigned" "$m_id"
+done
+
+# Record-vs-branch disagreement: branch says task/8006 (done), record says
+# 8007 (pending). The RECORD is the authoritative pin holder -- a lane's
+# branch name can be stale, the reservation record cannot.
+make_lane "$M_MOUNT/_lane-pin-mismatch" "task/8006"
+make_lane_state "$M_MOUNT" "_lane-pin-mismatch" "assigned" "8007" "task/8007"
+
+# Record with an explicitly null task_id -> fall back to the branch-derived id.
+make_lane "$M_MOUNT/_lane-pin-nullid" "task/8008"
+make_lane_state "$M_MOUNT" "_lane-pin-nullid" "assigned"
+
+# A LIVE lane is not pinned (someone IS using it) -> pin=-
+make_lane "$M_MOUNT/_lane-pin-live"
+make_lane_state "$M_MOUNT" "_lane-pin-live" "assigned" "8009"
+_hold_lane_lock "$M_MOUNT" "_lane-pin-live"
+M_LOCK_PID="$LANE_LOCK_PID"
+
+# A RELEASED lane is not pinned (nothing reserves it) -> pin=-
+make_lane "$M_MOUNT/_lane-pin-released"
+make_lane_state "$M_MOUNT" "_lane-pin-released" "released" "8010"
+
+ORACLE_MAP="$M_MAP" run_helper --mount "$M_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+
+assert "M1: exit 0" test "$RC" -eq 0
+
+for m_case in "${M_RAW_CASES[@]}"; do
+    m_lane="${m_case%%:*}"
+    m_expected="${m_case##*:}"
+    assert "M2: $m_lane reports the RAW status pin=$m_expected (no per-lane bucketing)" \
+        bash -c 'printf "%s\n" "$1" | grep -qE "lane=$2 .*pin=$3( |\$)"' _ "$OUT" "$m_lane" "$m_expected"
+done
+
+assert "M3: record task_id wins over a disagreeing branch id (pin=pending, not done)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-pin-mismatch .*pin=pending( |\$)"' _ "$OUT"
+assert "M4: a null record task_id falls back to the branch-derived id (pin=blocked)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-pin-nullid .*pin=blocked( |\$)"' _ "$OUT"
+assert "M5: a LIVE lane is not pinned (pin=-)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-pin-live .*pin=-( |\$)"' _ "$OUT"
+assert "M6: a RELEASED lane is not pinned (pin=-)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-pin-released .*pin=-( |\$)"' _ "$OUT"
+
+M_PY_PIN="$(mktemp /tmp/test-warm-lane-audit-m-pin-XXXXXX.py)"
+_TMPDIRS+=("$M_PY_PIN")
+cat > "$M_PY_PIN" << 'PYEOF'
+import json, sys
+data = json.load(sys.stdin)
+by_lane = {o["lane"]: o for o in data["lanes"]}
+for name, obj in by_lane.items():
+    assert "pin" in obj, f"{name} has no 'pin' key: {sorted(obj)}"
+assert by_lane["_lane-pin-inprogress"]["pin"] == "in-progress", by_lane["_lane-pin-inprogress"]
+assert by_lane["_lane-pin-live"]["pin"] == "-", by_lane["_lane-pin-live"]
+PYEOF
+
+ORACLE_MAP="$M_MAP" run_helper --mount "$M_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh" --format json
+assert "M7: json lane objects carry a 'pin' key with the same raw values" \
+    bash -c 'printf "%s" "$1" | python3 "$2"' _ "$OUT" "$M_PY_PIN"
+
+# A failing oracle must not abort and must not invent a status: a pinned lane
+# whose holder cannot be resolved reports pin=unknown (A3's treatment, applied
+# to the pin column).
+ORACLE_MAP="$M_MAP" run_helper --mount "$M_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle-fail.sh"
+assert "M8: exit 0 under a failing status oracle" test "$RC" -eq 0
+assert "M9: an unresolvable pin holder reports pin=unknown (never invented)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-pin-pending .*pin=unknown( |\$)"' _ "$OUT"
+
+kill "$M_LOCK_PID" 2>/dev/null || true
+_BGPIDS=()  # clear so cleanup doesn't double-kill
+
 test_summary
