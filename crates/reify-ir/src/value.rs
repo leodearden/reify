@@ -10934,6 +10934,96 @@ mod tests {
         );
     }
 
+    /// §5c: when auto-scaling is on but no rung keeps the mantissa in band,
+    /// the magnitude renders in engineering notation at the ladder's static
+    /// default rung — the `4.2×10⁻³`-style form the PRD's own example shows.
+    ///
+    /// Area `0.5 m²` is the registry's genuine coverage gap: its eligible
+    /// rungs span SI `[1e-6, 0.1) ∪ [1, 1000)`, so nothing lands in band
+    /// there (5e5 mm², 5e3 cm², 0.5 m²).
+    #[test]
+    fn resolve_display_none_renders_engineering_notation_when_no_rung_fits() {
+        assert_eq!(
+            resolve_display(0.5, &DimensionVector::AREA, None),
+            ("500\u{00D7}10\u{00B3}".to_string(), "mm\u{00B2}".to_string()),
+            "no Area rung lands in band at 0.5 m²"
+        );
+
+        // Negative and multi-digit exponents, pinning ⁻ (U+207B), the
+        // Latin-1 ¹²³ code points and the two-digit exponent path.
+        assert_eq!(
+            resolve_display(1e-9, &DimensionVector::LENGTH, None),
+            ("1\u{00D7}10\u{207B}\u{2076}".to_string(), "mm".to_string())
+        );
+        assert_eq!(
+            resolve_display(5000.0, &DimensionVector::VOLUME, None),
+            (
+                "5\u{00D7}10\u{00B9}\u{00B2}".to_string(),
+                "mm\u{00B3}".to_string()
+            )
+        );
+
+        // The mantissa goes through `format_display_number` like every other
+        // display magnitude, so its sig-fig/trailing-zero convention holds and
+        // no float noise leaks: 4.2e-9 m divides to a mantissa of
+        // 4.200000000000001, which must render "4.2" — the exact shape of
+        // §5c's own `4.2×10⁻³` example.
+        assert_eq!(
+            resolve_display(4.2e-9, &DimensionVector::LENGTH, None),
+            ("4.2\u{00D7}10\u{207B}\u{2076}".to_string(), "mm".to_string())
+        );
+        assert_eq!(
+            resolve_display(0.5678, &DimensionVector::AREA, None),
+            (
+                "567.8\u{00D7}10\u{00B3}".to_string(),
+                "mm\u{00B2}".to_string()
+            )
+        );
+    }
+
+    /// Zero and non-finite magnitudes render at the static default rung and
+    /// never reach engineering notation — a cell reading `0×10⁰ mm` instead of
+    /// `0 mm` would be strictly worse than the pre-§5 output.
+    #[test]
+    fn resolve_display_none_zero_and_non_finite_never_reach_engineering_notation() {
+        assert_eq!(
+            resolve_display(0.0, &DimensionVector::LENGTH, None),
+            ("0".to_string(), "mm".to_string())
+        );
+        for si_value in [0.0, -0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let (magnitude, label) = resolve_display(si_value, &DimensionVector::LENGTH, None);
+            assert_eq!(label, "mm", "{si_value} must stay on the static default rung");
+            assert!(
+                !magnitude.contains('\u{00D7}'),
+                "{si_value} reached engineering notation: {magnitude:?}"
+            );
+        }
+    }
+
+    /// The exponent glyph mapper, direct. Covers every digit `0-9` at least
+    /// once plus the `⁻` (U+207B) sign prefix, because the glyphs come from
+    /// two different Unicode blocks — `¹²³` are Latin-1 Supplement code
+    /// points while `⁰⁴⁵⁶⁷⁸⁹` live in Superscripts and Subscripts — so a
+    /// naive contiguous-range mapping would silently mangle three of them.
+    #[test]
+    fn superscript_exponent_maps_every_digit_and_the_sign() {
+        assert_eq!(superscript_exponent(0), "\u{2070}");
+        assert_eq!(superscript_exponent(3), "\u{00B3}");
+        assert_eq!(superscript_exponent(-3), "\u{207B}\u{00B3}");
+        assert_eq!(superscript_exponent(12), "\u{00B9}\u{00B2}");
+        assert_eq!(superscript_exponent(-6), "\u{207B}\u{2076}");
+        assert_eq!(superscript_exponent(123), "\u{00B9}\u{00B2}\u{00B3}");
+        assert_eq!(
+            superscript_exponent(-123),
+            "\u{207B}\u{00B9}\u{00B2}\u{00B3}"
+        );
+        // 4, 5, 7, 8, 9 — the remaining glyphs, all from the second block.
+        assert_eq!(
+            superscript_exponent(45_789),
+            "\u{2074}\u{2075}\u{2077}\u{2078}\u{2079}"
+        );
+    }
+
     #[test]
     fn resolve_display_none_dimensionless_renders_empty_label() {
         assert_eq!(
