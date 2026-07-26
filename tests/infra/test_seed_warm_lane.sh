@@ -44,6 +44,74 @@ echo "=== scripts/seed-warm-lane.sh hermetic tests (task 4660) ==="
 # ─────────────────────────────────────────────────────────────────────────────
 _TMPDIRS=()
 _BGPIDS=()
+
+# _SHARED_TRASH_DIR / _note_shared_trash_use: runtime detector for task 5590's
+# invariant — no seed invocation may write into the machine-shared
+# /tmp/.reseed-trash. scripts/seed-warm-lane.sh:663 computes RESEED_TRASH_DIR
+# as dirname(LANE_DIR)/.reseed-trash and logs the rename to stderr via `info`
+# (scripts/seed-warm-lane.sh:86), so ERR_OUT mentioning _SHARED_TRASH_DIR is
+# exact evidence this invocation renamed into it. _SHARED_TRASH_DIR is
+# overridable so Block R's R2 positive control can redirect it to an isolated
+# lane's own private trash dir and prove the detector fires without littering
+# the real shared path. The variable is quoted inside the case pattern
+# (*"$_SHARED_TRASH_DIR"*) so any glob metacharacter in the path is matched
+# literally, not interpreted as a wildcard. The trailing `return 0` is
+# mandatory: this is called as a bare unguarded statement inside
+# run_helper/run_helper_real, so under `set -euo pipefail` any nonzero return
+# here would abort the entire suite instead of just failing one assert.
+#
+# State lives in an append-only FILE (_TRASH_HITS_FILE, defined below near
+# _LANE_ROOT), not a bash array: two run_helper_real call sites — H5d
+# (Q_LANE8) and H9 (Q_LANE11) — invoke the helper inside a
+# backgrounded ( ... ) & subshell, and a bash array append made there is
+# discarded when the subshell exits, silently blinding the detector to
+# exactly the two --fresh-checkout-against-non-empty-target runs most likely
+# to reach seed's rename-into-trash path. A `>>` append performed inside a
+# subshell IS visible to the parent shell, so file-backed state fixes this
+# without changing the call convention at any fixture site — this mirrors the
+# subshell hazard already documented above for _TMPDIRS at _LANE_ROOT. A
+# single-line `printf` append to an O_APPEND file is atomic well below
+# PIPE_BUF (4096), so the H5d/H9 background job appending while the main
+# shell asserts cannot corrupt a record. The function definition can stay
+# here even though _TRASH_HITS_FILE is not assigned until later: bash
+# resolves the variable at CALL time, and the first call happens far later,
+# in Block A.
+_SHARED_TRASH_DIR="/tmp/.reseed-trash"
+_note_shared_trash_use() {
+    case "$ERR_OUT" in
+        *"$_SHARED_TRASH_DIR"*) printf '%s\n' "$*" >> "$_TRASH_HITS_FILE" ;;
+    esac
+    return 0
+}
+
+# _note_real_lane: structural companion to the R1 behavioural detector above —
+# logs EVERY run_helper_real lane arg ($2) to _REAL_LANES_FILE (defined below
+# near _LANE_ROOT), regardless of whether THIS run actually triggered a
+# rename-to-trash (defence-in-depth for lanes that don't reach that path
+# today but could after a future fixture tweak, and the source of R4's
+# end-to-end coverage signal). Every run_helper_real call site passes
+# <base_dir> <lane_dir> [flags...] positionally, so $2 is always the lane.
+# The bare-/tmp filtering itself is deliberately NOT done here — it moves into
+# the _assert_no_bare_tmp_lanes checker in Block R, which runs in the main
+# shell (via `assert`'s no-subshell "$@" invocation) and so can safely
+# aggregate into a local array. Deliberately NOT wired into run_helper (task
+# 5590 amend): every run_helper *_LANE fixture is now ALSO migrated to
+# make_isolated_lane (review follow-up, same defence-in-depth rationale as
+# run_helper_real's lanes), but wiring the structural check itself into
+# run_helper would still false-positive on I_SC_BASE_PARENT (Block I11-I12's
+# self-clobber fixture, which intentionally passes a bare-/tmp base-parent as
+# the lane arg on purpose) without a full audit of every run_helper call
+# site's positional signature — a bigger, separately-reviewable change than
+# this migration sweep, tracked as follow-up. run_helper's genuine offenders
+# are already covered by the stronger, behaviour-based R1 detector regardless.
+# As with _note_shared_trash_use, the trailing `return 0` is mandatory (bare
+# unguarded statement), and the state is file-backed for the same
+# subshell-visibility reason documented above.
+_note_real_lane() {
+    printf '%s\n' "${2:-}" >> "$_REAL_LANES_FILE"
+    return 0
+}
+
 cleanup() {
     for pid in "${_BGPIDS[@]+${_BGPIDS[@]}}"; do
         kill "$pid" 2>/dev/null || true
@@ -54,6 +122,49 @@ trap cleanup EXIT
 
 STUB_DIR="$(mktemp -d /tmp/test-seed-warm-lane-stub-XXXXXX)"
 _TMPDIRS+=("$STUB_DIR")
+
+# _LANE_ROOT: a single per-run grandparent for every lane fixture created by
+# this file, via make_isolated_lane() below. WHY: scripts/seed-warm-lane.sh:663
+# computes RESEED_TRASH_DIR as dirname(LANE_DIR)/.reseed-trash, and renames a
+# non-empty <lane>/target there before re-seeding. A lane created bare under
+# /tmp (dirname == /tmp) makes that path the machine-shared /tmp/.reseed-trash
+# — shared across every concurrent agent/test run on the host. Nesting each
+# lane under its own private parent directory makes dirname(LANE_DIR) unique
+# per lane, so the computed trash dir is run-private (task 5384 introduced this
+# pattern for I_LANE_REAL/I14_LANE/I15_LANE; task 5590 factors it out and
+# applies it to the rest of the file's lanes).
+#
+# Subshell trap: call sites read `X_LANE="$(make_isolated_lane prefix)"`, so
+# the function body below runs in a command-substitution SUBSHELL — any
+# `_TMPDIRS+=(...)` performed inside make_isolated_lane itself would be
+# silently discarded once the subshell exits, leaking every private parent
+# into /tmp. So cleanup is anchored on this ONE root, registered here in the
+# main shell, which the existing `cleanup()` EXIT trap `rm -rf`s — reclaiming
+# every lane, its sibling ${lane}.lock/.ready-marker/.done-marker files, and
+# its private .reseed-trash, all in one shot.
+_LANE_ROOT="$(mktemp -d /tmp/test-seed-lane-root-XXXXXX)"
+_TMPDIRS+=("$_LANE_ROOT")
+
+# _TRASH_HITS_FILE / _REAL_LANES_FILE: append-only detector state for
+# _note_shared_trash_use / _note_real_lane above. Nested directly under
+# $_LANE_ROOT (a sibling of each lane's own private parent, never inside one),
+# so the existing cleanup() EXIT trap's `rm -rf "$_LANE_ROOT"` reclaims them
+# with no new _TMPDIRS entry and no extra top-level /tmp entry, and R0c's
+# "parent contains the lane and nothing else" check (which inspects a lane's
+# own private parent, not _LANE_ROOT itself) is unaffected.
+_TRASH_HITS_FILE="$_LANE_ROOT/.shared-trash-hits"
+_REAL_LANES_FILE="$_LANE_ROOT/.real-lanes"
+: > "$_TRASH_HITS_FILE"
+: > "$_REAL_LANES_FILE"
+
+# make_isolated_lane <prefix> — mktemps a private parent under $_LANE_ROOT and
+# a lane dir nested inside it, then echoes the lane path on stdout. See the
+# comment above _LANE_ROOT for why the lane must never be bare /tmp.
+make_isolated_lane() {
+    local prefix="$1" parent
+    parent="$(mktemp -d "$_LANE_ROOT/${prefix}-XXXXXX")"
+    mktemp -d "$parent/lane-XXXXXX"
+}
 
 CALLS_FILE="$(mktemp /tmp/test-seed-warm-lane-calls-XXXXXX)"
 _TMPDIRS+=("$CALLS_FILE")
@@ -142,6 +253,7 @@ run_helper() {
             bash "$SCRIPT" "$@" 2>"$ERR_FILE"
     )" || rc=$?
     ERR_OUT="$(cat "$ERR_FILE")"
+    _note_shared_trash_use "$@"
     RC=$rc
 }
 
@@ -149,6 +261,7 @@ run_helper() {
 # which asserts actual mtime changes on a real fixture tree.
 run_helper_real() {
     local rc=0
+    _note_real_lane "$@"
     > "$ERR_FILE"
     # Only stub cp and git; let find/touch be real binaries
     local real_stub_dir
@@ -239,6 +352,7 @@ REAL_SLEEP_RM_STUB_EOF
         bash "$SCRIPT" "$@" >"$OUT_FILE" 2>"$ERR_FILE" || rc=$?
     OUT="$(cat "$OUT_FILE")"
     ERR_OUT="$(cat "$ERR_FILE")"
+    _note_shared_trash_use "$@"
     RC=$rc
     rm -rf "$real_stub_dir"
 }
@@ -294,8 +408,8 @@ assert "A3: missing positional args exits non-zero" test "$RC" -ne 0
 # A4: neither --fresh-checkout nor --reset-in-place exits non-zero
 reset_calls
 A_BASE="$(mktemp -d /tmp/test-seed-A-base-XXXXXX)"
-A_LANE="$(mktemp -d /tmp/test-seed-A-lane-XXXXXX)"
-_TMPDIRS+=("$A_BASE" "$A_LANE")
+A_LANE="$(make_isolated_lane A-lane)"
+_TMPDIRS+=("$A_BASE")
 run_helper "$A_BASE" "$A_LANE"
 assert "A4: neither mode flag exits non-zero" test "$RC" -ne 0
 
@@ -313,8 +427,8 @@ echo "--- Block B: RUSTFLAGS guard (B5) ---"
 # Fixture: a base dir with a sidecar recording RUSTFLAGS
 B_BASE_PARENT="$(mktemp -d /tmp/test-seed-B-parent-XXXXXX)"
 B_BASE="$B_BASE_PARENT/target"
-B_LANE="$(mktemp -d /tmp/test-seed-B-lane-XXXXXX)"
-_TMPDIRS+=("$B_BASE_PARENT" "$B_LANE")
+B_LANE="$(make_isolated_lane B-lane)"
+_TMPDIRS+=("$B_BASE_PARENT")
 mkdir -p "$B_BASE"
 # Write sidecar with recorded RUSTFLAGS=old-flags
 cat > "$B_BASE_PARENT/.warm-base-meta" <<'SIDECAR_EOF'
@@ -340,8 +454,7 @@ assert "B4: cp NEVER invoked on RUSTFLAGS mismatch" \
     bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
 
 # B5: matching RUSTFLAGS (recorded "old-flags" == env "old-flags") → guard passes → cp IS called
-B_LANE2="$(mktemp -d /tmp/test-seed-B-lane2-XXXXXX)"
-_TMPDIRS+=("$B_LANE2")
+B_LANE2="$(make_isolated_lane B-lane2)"
 reset_calls
 RUSTFLAGS="old-flags" REIFY_TEST_REFLINK_OK=1 \
     run_helper "$B_BASE" "$B_LANE2" --fresh-checkout
@@ -351,8 +464,8 @@ assert "B5: matching RUSTFLAGS passes guard → cp invoked" \
 # B6: also test: no sidecar → recorded RUSTFLAGS defaults to "" → empty-env RUSTFLAGS matches
 B_BASE2_PARENT="$(mktemp -d /tmp/test-seed-B2-parent-XXXXXX)"
 B_BASE2="$B_BASE2_PARENT/target"
-B_LANE3="$(mktemp -d /tmp/test-seed-B-lane3-XXXXXX)"
-_TMPDIRS+=("$B_BASE2_PARENT" "$B_LANE3")
+B_LANE3="$(make_isolated_lane B-lane3)"
+_TMPDIRS+=("$B_BASE2_PARENT")
 mkdir -p "$B_BASE2"
 # No sidecar: recorded defaults to ""
 reset_calls
@@ -375,8 +488,7 @@ mkdir -p "$C_BASE"
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$C_BASE_PARENT/.warm-base-meta"
 
 # C1: cp invoked with --reflink=always and destination <lane_dir>/target
-C_LANE1="$(mktemp -d /tmp/test-seed-C-lane1-XXXXXX)"
-_TMPDIRS+=("$C_LANE1")
+C_LANE1="$(make_isolated_lane C-lane1)"
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
     run_helper "$C_BASE" "$C_LANE1" --fresh-checkout
@@ -393,8 +505,7 @@ assert "C3: cp destination is <lane_dir>/target" \
     bash -c 'grep "^cp" "$1" | grep -qF "'"$C_LANE1/target"'"' _ "$CALLS_FILE"
 
 # C4: cp failure (non-reflink FS) → script exits non-zero with EMPTY stdout (fail-closed)
-C_LANE2="$(mktemp -d /tmp/test-seed-C-lane2-XXXXXX)"
-_TMPDIRS+=("$C_LANE2")
+C_LANE2="$(make_isolated_lane C-lane2)"
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=0 \
     run_helper "$C_BASE" "$C_LANE2" --fresh-checkout
@@ -406,8 +517,7 @@ assert "C4: stderr names reflink failure" \
 
 # C5: --fresh-checkout + pre-existing NON-EMPTY <lane_dir>/target → replaced (task 4715)
 # D10 replace semantics: non-empty target is replaced, NOT refused.
-C_LANE3="$(mktemp -d /tmp/test-seed-C-lane3-XXXXXX)"
-_TMPDIRS+=("$C_LANE3")
+C_LANE3="$(make_isolated_lane C-lane3)"
 mkdir -p "$C_LANE3/target"
 echo "existing artifact" > "$C_LANE3/target/artifact.a"
 reset_calls
@@ -437,8 +547,8 @@ EPOCH_2020=1577836800
 # Fixture: a base_target_dir + a lane_dir with real source files and target/ + .git/
 D_BASE_PARENT="$(mktemp -d /tmp/test-seed-D-parent-XXXXXX)"
 D_BASE="$D_BASE_PARENT/target"
-D_LANE="$(mktemp -d /tmp/test-seed-D-lane-XXXXXX)"
-_TMPDIRS+=("$D_BASE_PARENT" "$D_LANE")
+D_LANE="$(make_isolated_lane D-lane)"
+_TMPDIRS+=("$D_BASE_PARENT")
 mkdir -p "$D_BASE"
 # Seed a build artifact so run_helper_real's /bin/cp -a propagates it to
 # $D_LANE/target; allows D4 to assert that target/ files keep their mtime.
@@ -504,8 +614,8 @@ echo "--- Block E: reset-in-place (no bulk stamp) ---"
 # Fixture: a fresh base (sidecar with no RUSTFLAGS/INVOCATION) + a lane dir
 E_BASE_PARENT="$(mktemp -d /tmp/test-seed-E-parent-XXXXXX)"
 E_BASE="$E_BASE_PARENT/target"
-E_LANE="$(mktemp -d /tmp/test-seed-E-lane-XXXXXX)"
-_TMPDIRS+=("$E_BASE_PARENT" "$E_LANE")
+E_LANE="$(make_isolated_lane E-lane)"
+_TMPDIRS+=("$E_BASE_PARENT")
 mkdir -p "$E_BASE"
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$E_BASE_PARENT/.warm-base-meta"
 mkdir -p "$E_LANE/src"
@@ -544,8 +654,7 @@ INVOCATION=my-invocation-fingerprint
 SIDECAR_EOF
 
 # F1: invocation mismatch → non-zero exit
-F_LANE1="$(mktemp -d /tmp/test-seed-F-lane1-XXXXXX)"
-_TMPDIRS+=("$F_LANE1")
+F_LANE1="$(make_isolated_lane F-lane1)"
 reset_calls
 RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="wrong-invocation" \
     run_helper "$F_BASE" "$F_LANE1" --fresh-checkout
@@ -564,8 +673,7 @@ assert "F4: cp NEVER invoked on invocation mismatch" \
     bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
 
 # F5: matching invocation → guard passes → cp IS called
-F_LANE2="$(mktemp -d /tmp/test-seed-F-lane2-XXXXXX)"
-_TMPDIRS+=("$F_LANE2")
+F_LANE2="$(make_isolated_lane F-lane2)"
 reset_calls
 RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="my-invocation-fingerprint" REIFY_TEST_REFLINK_OK=1 \
     run_helper "$F_BASE" "$F_LANE2" --fresh-checkout
@@ -575,8 +683,8 @@ assert "F5: matching invocation passes guard → cp invoked" \
 # F6: no sidecar recorded invocation → defaults "" → empty env matches
 F_BASE2_PARENT="$(mktemp -d /tmp/test-seed-F2-parent-XXXXXX)"
 F_BASE2="$F_BASE2_PARENT/target"
-F_LANE3="$(mktemp -d /tmp/test-seed-F-lane3-XXXXXX)"
-_TMPDIRS+=("$F_BASE2_PARENT" "$F_LANE3")
+F_LANE3="$(make_isolated_lane F-lane3)"
+_TMPDIRS+=("$F_BASE2_PARENT")
 mkdir -p "$F_BASE2"
 # No sidecar → recorded invocation defaults to ""
 reset_calls
@@ -622,8 +730,7 @@ assert "G5: STDOUT is exactly the sidecar path" \
     bash -c '[ "$1" = "'"$EXPECTED_SIDECAR"'" ]' _ "$OUT"
 
 # G6: round-trip — a subsequent seed against the recorded base passes the guards
-G_LANE="$(mktemp -d /tmp/test-seed-G-lane-XXXXXX)"
-_TMPDIRS+=("$G_LANE")
+G_LANE="$(make_isolated_lane G-lane)"
 reset_calls
 RUSTFLAGS="my-rustflags" REIFY_WARM_LANE_INVOCATION="my-invocation" REIFY_TEST_REFLINK_OK=1 \
     run_helper "$G_BASE" "$G_LANE" --fresh-checkout
@@ -631,8 +738,7 @@ assert "G6: round-trip: matching env passes both guards → cp invoked" \
     bash -c 'grep -q "^cp" "$1"' _ "$CALLS_FILE"
 
 # G7: round-trip mismatch — different RUSTFLAGS is still refused after record-base
-G_LANE2="$(mktemp -d /tmp/test-seed-G-lane2-XXXXXX)"
-_TMPDIRS+=("$G_LANE2")
+G_LANE2="$(make_isolated_lane G-lane2)"
 reset_calls
 RUSTFLAGS="wrong-flags" REIFY_WARM_LANE_INVOCATION="my-invocation" REIFY_TEST_REFLINK_OK=1 \
     run_helper "$G_BASE" "$G_LANE2" --fresh-checkout
@@ -650,8 +756,8 @@ echo "--- Block H: build-script output-dir invalidation (tauri-* + reify-gui-*) 
 # The sidecar has empty RUSTFLAGS/INVOCATION so guards pass.
 H_BASE_PARENT="$(mktemp -d /tmp/test-seed-H-parent-XXXXXX)"
 H_BASE="$H_BASE_PARENT/target"
-H_LANE="$(mktemp -d /tmp/test-seed-H-lane-XXXXXX)"
-_TMPDIRS+=("$H_BASE_PARENT" "$H_LANE")
+H_LANE="$(make_isolated_lane H-lane)"
+_TMPDIRS+=("$H_BASE_PARENT")
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$H_BASE_PARENT/.warm-base-meta"
 
 # Build dirs under two profiles:
@@ -711,8 +817,8 @@ assert "H1d: info line reports Invalidated 4 non-relocatable dirs (matcher fired
 # The invalidation block must live entirely inside `if [ -n "$FRESH_CHECKOUT" ]`.
 H3a_BASE_PARENT="$(mktemp -d /tmp/test-seed-H3a-parent-XXXXXX)"
 H3a_BASE="$H3a_BASE_PARENT/target"
-H3a_LANE="$(mktemp -d /tmp/test-seed-H3a-lane-XXXXXX)"
-_TMPDIRS+=("$H3a_BASE_PARENT" "$H3a_LANE")
+H3a_LANE="$(make_isolated_lane H3a-lane)"
+_TMPDIRS+=("$H3a_BASE_PARENT")
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$H3a_BASE_PARENT/.warm-base-meta"
 mkdir -p "$H3a_BASE/debug/build/tauri-XXXX"
 echo "out" > "$H3a_BASE/debug/build/tauri-XXXX/output"
@@ -728,8 +834,8 @@ assert "H3a: debug/build/tauri-XXXX PRESERVED under --reset-in-place (scope guar
 # Case 1: build/ exists but contains only unlisted dirs (serde-YYYY)
 H3b1_BASE_PARENT="$(mktemp -d /tmp/test-seed-H3b1-parent-XXXXXX)"
 H3b1_BASE="$H3b1_BASE_PARENT/target"
-H3b1_LANE="$(mktemp -d /tmp/test-seed-H3b1-lane-XXXXXX)"
-_TMPDIRS+=("$H3b1_BASE_PARENT" "$H3b1_LANE")
+H3b1_LANE="$(make_isolated_lane H3b1-lane)"
+_TMPDIRS+=("$H3b1_BASE_PARENT")
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$H3b1_BASE_PARENT/.warm-base-meta"
 mkdir -p "$H3b1_BASE/debug/build/serde-YYYY"
 echo "out" > "$H3b1_BASE/debug/build/serde-YYYY/output"
@@ -744,8 +850,8 @@ assert "H3b: no-match: STDOUT is exactly <lane>/target" \
 # Case 2: target/ has NO build/ dir at all
 H3b2_BASE_PARENT="$(mktemp -d /tmp/test-seed-H3b2-parent-XXXXXX)"
 H3b2_BASE="$H3b2_BASE_PARENT/target"
-H3b2_LANE="$(mktemp -d /tmp/test-seed-H3b2-lane-XXXXXX)"
-_TMPDIRS+=("$H3b2_BASE_PARENT" "$H3b2_LANE")
+H3b2_LANE="$(make_isolated_lane H3b2-lane)"
+_TMPDIRS+=("$H3b2_BASE_PARENT")
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$H3b2_BASE_PARENT/.warm-base-meta"
 # Only a deps/ dir — no build/ dir at all
 mkdir -p "$H3b2_BASE/debug/deps"
@@ -761,8 +867,8 @@ assert "H3b: no-build-dir: STDOUT is exactly <lane>/target" \
 # ── H3c: sibling non-build dirs untouched (deps/, .fingerprint/ preserved) ───
 H3c_BASE_PARENT="$(mktemp -d /tmp/test-seed-H3c-parent-XXXXXX)"
 H3c_BASE="$H3c_BASE_PARENT/target"
-H3c_LANE="$(mktemp -d /tmp/test-seed-H3c-lane-XXXXXX)"
-_TMPDIRS+=("$H3c_BASE_PARENT" "$H3c_LANE")
+H3c_LANE="$(make_isolated_lane H3c-lane)"
+_TMPDIRS+=("$H3c_BASE_PARENT")
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$H3c_BASE_PARENT/.warm-base-meta"
 mkdir -p "$H3c_BASE/debug/build/tauri-ZZZZ"
 mkdir -p "$H3c_BASE/debug/deps"
@@ -788,8 +894,8 @@ assert "H3c: debug/build/tauri-ZZZZ GONE (allow-listed)" \
 # build dirs; they must NOT be invalidated (false-invalidation risk).
 H3d_BASE_PARENT="$(mktemp -d /tmp/test-seed-H3d-parent-XXXXXX)"
 H3d_BASE="$H3d_BASE_PARENT/target"
-H3d_LANE="$(mktemp -d /tmp/test-seed-H3d-lane-XXXXXX)"
-_TMPDIRS+=("$H3d_BASE_PARENT" "$H3d_LANE")
+H3d_LANE="$(make_isolated_lane H3d-lane)"
+_TMPDIRS+=("$H3d_BASE_PARENT")
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$H3d_BASE_PARENT/.warm-base-meta"
 # Depth-2 profile build dir: target/debug/build/tauri-OUTER — should be invalidated
 mkdir -p "$H3d_BASE/debug/build/tauri-OUTER"
@@ -833,8 +939,7 @@ printf 'RUSTFLAGS=\nINVOCATION=\n' > "$I_BASE_PARENT/.warm-base-meta"
 
 # ── I1-I3: hermetic replace assertions (stub cp, REIFY_TEST_REFLINK_OK=1) ────
 # Lane has a pre-existing NON-EMPTY target (stale content from prior lane use).
-I_LANE1="$(mktemp -d /tmp/test-seed-I-lane1-XXXXXX)"
-_TMPDIRS+=("$I_LANE1")
+I_LANE1="$(make_isolated_lane I-lane1)"
 mkdir -p "$I_LANE1/target"
 echo "stale artifact" > "$I_LANE1/target/stale.a"
 reset_calls
@@ -861,8 +966,7 @@ assert "I3: STDOUT is exactly <lane_dir>/target" \
 # async branch (e.g. syntax error in the subshell after &) would be invisible
 # to I4-I7 which always force SYNC=1.
 # No trash-leak assertion (async cleanup is inherently race-conditional).
-I_LANE_ASYNC="$(mktemp -d /tmp/test-seed-I-async-XXXXXX)"
-_TMPDIRS+=("$I_LANE_ASYNC")
+I_LANE_ASYNC="$(make_isolated_lane I-async)"
 mkdir -p "$I_LANE_ASYNC/target"
 echo "stale artifact" > "$I_LANE_ASYNC/target/stale.a"
 reset_calls
@@ -880,13 +984,12 @@ assert "I3b: async-branch: cp invoked with --reflink=always (async path reached 
 # no-trash-leak assertion is race-free (no background rm -rf &).
 I_BASE_REAL_PARENT="$(mktemp -d /tmp/test-seed-I-real-parent-XXXXXX)"
 I_BASE_REAL="$I_BASE_REAL_PARENT/target"
-# I_LANE_REAL is nested under a private per-run parent (I_LANE_REAL_PARENT), NOT
-# bare /tmp (task 5384 amendment; same rationale as I14 below): I7b's sibling-
-# trash assertion resolves dirname(I_LANE_REAL)/.reseed-trash, so a bare-/tmp
-# lane would put it at the machine-shared /tmp/.reseed-trash.
-I_LANE_REAL_PARENT="$(mktemp -d /tmp/test-seed-I-real-lane-parent-XXXXXX)"
-I_LANE_REAL="$(mktemp -d "$I_LANE_REAL_PARENT/lane-XXXXXX")"
-_TMPDIRS+=("$I_BASE_REAL_PARENT" "$I_LANE_REAL_PARENT")
+# I_LANE_REAL is created via make_isolated_lane (task 5590), NOT bare /tmp
+# (task 5384 amendment; same rationale as I14 below): I7b's sibling-trash
+# assertion resolves dirname(I_LANE_REAL)/.reseed-trash, so a bare-/tmp lane
+# would put it at the machine-shared /tmp/.reseed-trash.
+I_LANE_REAL="$(make_isolated_lane I-real-lane)"
+_TMPDIRS+=("$I_BASE_REAL_PARENT")
 # Seed base with a known artifact so we can verify it appears after the clone.
 mkdir -p "$I_BASE_REAL/debug"
 echo "base artifact" > "$I_BASE_REAL/debug/base_artifact.a"
@@ -934,11 +1037,12 @@ _TMPDIRS+=("$I_MOUNT")
 # Empty target: no rename-to-trash fires, so only the mount check can refuse.
 I_OUTSIDE_BASE_PARENT="$(mktemp -d /tmp/test-seed-I-out-parent-XXXXXX)"
 I_OUTSIDE_BASE="$I_OUTSIDE_BASE_PARENT/target"
-I_OUTSIDE_LANE="$(mktemp -d /tmp/test-seed-I-out-lane-XXXXXX)"
-_TMPDIRS+=("$I_OUTSIDE_BASE_PARENT" "$I_OUTSIDE_LANE")
+I_OUTSIDE_LANE="$(make_isolated_lane I-out-lane)"
+_TMPDIRS+=("$I_OUTSIDE_BASE_PARENT")
 mkdir -p "$I_OUTSIDE_BASE"
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$I_OUTSIDE_BASE_PARENT/.warm-base-meta"
-# I_OUTSIDE_LANE is a /tmp tmpdir, NOT under I_MOUNT (a different /tmp tmpdir).
+# I_OUTSIDE_LANE is a make_isolated_lane tmpdir, NOT under I_MOUNT (a
+# different /tmp tmpdir) — that's the only property this fixture needs.
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_MOUNT="$I_MOUNT" \
     run_helper "$I_OUTSIDE_BASE" "$I_OUTSIDE_LANE" --fresh-checkout
@@ -971,6 +1075,9 @@ assert "I12: self-clobber: cp NEVER invoked (refused before clone)" \
 
 # I13: POSITIVE CONTROL UNDER MOUNT — lane IS under REIFY_WARM_LANE_MOUNT, non-empty target.
 # The replace path must still succeed when the mount check passes.
+# NOT migrated to make_isolated_lane (task 5590): I_UNDER_LANE must stay nested
+# under $I_MOUNT because REIFY_WARM_LANE_MOUNT="$I_MOUNT" is set below and the
+# mount guard would refuse a lane outside it — a later sweep should not "fix" this.
 I_UNDER_LANE="$(mktemp -d "$I_MOUNT/test-seed-I-under-XXXXXX")"
 # I_UNDER_LANE is inside I_MOUNT, so the cleanup trap picks it up via I_MOUNT.
 mkdir -p "$I_UNDER_LANE/target"
@@ -993,21 +1100,20 @@ assert "I13b: positive-control-under-mount: cp IS invoked" \
 # After fix (#4896, pool-level sibling):  I14d: no in-lane trash → PASSES (GREEN);
 #                                         I14g: trash in sibling → PASSES (GREEN).
 #
-# I14_LANE is nested under a private per-run parent (I14_LANE_PARENT), NOT bare /tmp
+# I14_LANE is created via make_isolated_lane (task 5590), NOT bare /tmp
 # (task 5384; esc-5354-6): the script under test computes RESEED_TRASH_DIR as
 # dirname(LANE_DIR)/.reseed-trash, so a bare-/tmp lane would put I14_SIBLING_TRASH_DIR
 # at the machine-shared /tmp/.reseed-trash — vulnerable to a flaky I14g on hosts running
 # many concurrent agents/test runs. Same pattern I13 already uses for I_MOUNT above.
 I14_BASE_PARENT="$(mktemp -d /tmp/test-seed-I14-parent-XXXXXX)"
 I14_BASE="$I14_BASE_PARENT/target"
-I14_LANE_PARENT="$(mktemp -d /tmp/test-seed-I14-lane-parent-XXXXXX)"
-I14_LANE="$(mktemp -d "$I14_LANE_PARENT/lane-XXXXXX")"
+I14_LANE="$(make_isolated_lane I14-lane)"
 # Set I14_SIBLING_TRASH_DIR early so the I14g assertion below references the
-# same computed path. Because I14_LANE_PARENT is a fresh per-run mktemp'd dir
-# (see above), this sibling trash dir is private to this run and is
+# same computed path. Because make_isolated_lane's private parent is a fresh
+# per-run mktemp'd dir, this sibling trash dir is private to this run and is
 # guaranteed not to exist yet, so no pre-clean of stale entries is needed.
 I14_SIBLING_TRASH_DIR="$(dirname "$I14_LANE")/.reseed-trash"
-_TMPDIRS+=("$I14_BASE_PARENT" "$I14_LANE_PARENT")
+_TMPDIRS+=("$I14_BASE_PARENT")
 mkdir -p "$I14_BASE/debug"
 echo "base artifact" > "$I14_BASE/debug/base_artifact.a"
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$I14_BASE_PARENT/.warm-base-meta"
@@ -1058,13 +1164,12 @@ assert "I14g: relocation: trash IS under pool-level sibling .reseed-trash/ for t
 # rooted walker).  Confirms exit 0 and correct cloning under real async conditions.
 I15_BASE_PARENT="$(mktemp -d /tmp/test-seed-I15-parent-XXXXXX)"
 I15_BASE="$I15_BASE_PARENT/target"
-# I15_LANE is nested under a private per-run parent (I15_LANE_PARENT), NOT bare
-# /tmp (task 5384 amendment; same rationale as I14 above): the script under test
+# I15_LANE is created via make_isolated_lane (task 5590), NOT bare /tmp (task
+# 5384 amendment; same rationale as I14 above): the script under test
 # mkdir -p's dirname(LANE_DIR)/.reseed-trash for trash relocation, so a bare-/tmp
 # lane would write into the machine-shared /tmp/.reseed-trash.
-I15_LANE_PARENT="$(mktemp -d /tmp/test-seed-I15-lane-parent-XXXXXX)"
-I15_LANE="$(mktemp -d "$I15_LANE_PARENT/lane-XXXXXX")"
-_TMPDIRS+=("$I15_BASE_PARENT" "$I15_LANE_PARENT")
+I15_LANE="$(make_isolated_lane I15-lane)"
+_TMPDIRS+=("$I15_BASE_PARENT")
 mkdir -p "$I15_BASE/debug"
 echo "base artifact" > "$I15_BASE/debug/base_artifact.a"
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$I15_BASE_PARENT/.warm-base-meta"
@@ -1191,8 +1296,7 @@ echo "--- Block J: authoritative base-commit resolution ---"
 
 # Shared: a lane dir for all J fixtures (git diff is stubbed, so we only need
 # the directory to exist; no real git repo needed)
-J_LANE="$(mktemp -d /tmp/test-seed-J-lane-XXXXXX)"
-_TMPDIRS+=("$J_LANE")
+J_LANE="$(make_isolated_lane J-lane)"
 # Create a file that the stubbed git diff "reports as changed" so we can assert
 # the touch stub was called for it (REIFY_TEST_GIT_DIFF_FILES).
 mkdir -p "$J_LANE/src"
@@ -1221,8 +1325,8 @@ assert "J1: touch stub called for diff file (delta-touch ran)" \
 # ── J2: PRIORITY — .basecommit=shaAUTH beats .warm-base-meta BASE_COMMIT=shaMETA ──
 J2_BASE_PARENT="$(mktemp -d /tmp/test-seed-J2-parent-XXXXXX)"
 J2_BASE="$J2_BASE_PARENT/target"
-J2_LANE="$(mktemp -d /tmp/test-seed-J2-lane-XXXXXX)"
-_TMPDIRS+=("$J2_BASE_PARENT" "$J2_LANE")
+J2_LANE="$(make_isolated_lane J2-lane)"
+_TMPDIRS+=("$J2_BASE_PARENT")
 mkdir -p "$J2_BASE"
 # Sidecar records a DIVERGENT BASE_COMMIT=shaMETA (legacy, should lose priority)
 printf 'RUSTFLAGS=\nINVOCATION=\nBASE_COMMIT=shaMETA\n' > "$J2_BASE_PARENT/.warm-base-meta"
@@ -1241,8 +1345,8 @@ assert "J2: git diff did NOT use shaMETA (legacy sidecar ignored)" \
 # ── J3: CLI --base-commit shaCLI beats .basecommit (highest priority) ──
 J3_BASE_PARENT="$(mktemp -d /tmp/test-seed-J3-parent-XXXXXX)"
 J3_BASE="$J3_BASE_PARENT/target"
-J3_LANE="$(mktemp -d /tmp/test-seed-J3-lane-XXXXXX)"
-_TMPDIRS+=("$J3_BASE_PARENT" "$J3_LANE")
+J3_LANE="$(make_isolated_lane J3-lane)"
+_TMPDIRS+=("$J3_BASE_PARENT")
 mkdir -p "$J3_BASE"
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$J3_BASE_PARENT/.warm-base-meta"
 # .basecommit present but CLI wins
@@ -1260,8 +1364,8 @@ assert "J3: git diff did NOT use shaAUTH (CLI beats .basecommit)" \
 # ── J4: legacy fallback — no .basecommit, .warm-base-meta has BASE_COMMIT=shaLEGACY ──
 J4_BASE_PARENT="$(mktemp -d /tmp/test-seed-J4-parent-XXXXXX)"
 J4_BASE="$J4_BASE_PARENT/target"
-J4_LANE="$(mktemp -d /tmp/test-seed-J4-lane-XXXXXX)"
-_TMPDIRS+=("$J4_BASE_PARENT" "$J4_LANE")
+J4_LANE="$(make_isolated_lane J4-lane)"
+_TMPDIRS+=("$J4_BASE_PARENT")
 mkdir -p "$J4_BASE"
 printf 'RUSTFLAGS=\nINVOCATION=\nBASE_COMMIT=shaLEGACY\n' > "$J4_BASE_PARENT/.warm-base-meta"
 # No .basecommit file: fallback to .warm-base-meta
@@ -1282,8 +1386,8 @@ assert "J4: git diff used shaLEGACY (legacy .warm-base-meta fallback)" \
 J5_PARENT="$(mktemp -d /tmp/test-seed-J5-parent-XXXXXX)"
 J5_GEN="$J5_PARENT/target.gen.1"
 J5_SYMLINK="$J5_PARENT/target"   # symlink → target.gen.1
-J5_LANE="$(mktemp -d /tmp/test-seed-J5-lane-XXXXXX)"
-_TMPDIRS+=("$J5_PARENT" "$J5_LANE")
+J5_LANE="$(make_isolated_lane J5-lane)"
+_TMPDIRS+=("$J5_PARENT")
 mkdir -p "$J5_GEN"
 ln -s target.gen.1 "$J5_SYMLINK"
 # Authoritative stamp is on the CONCRETE gen sibling — NOT reachable via symlink
@@ -1320,8 +1424,7 @@ mkdir -p "$K_BASE"
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$K_BASE_PARENT/.warm-base-meta"
 
 # ── K1: git diff fails → seed exits NON-ZERO, STDOUT EMPTY (fail-closed) ──
-K1_LANE="$(mktemp -d /tmp/test-seed-K1-lane-XXXXXX)"
-_TMPDIRS+=("$K1_LANE")
+K1_LANE="$(make_isolated_lane K1-lane)"
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_TEST_GIT_DIFF_FAIL=1 \
     run_helper "$K_BASE" "$K1_LANE" --fresh-checkout --base-commit shaX
@@ -1334,8 +1437,7 @@ assert "K1: stderr names the git-diff failure" \
 
 # ── K2: empty diff output (zero changed files) exits 0 (not an error) ──
 # REIFY_TEST_GIT_DIFF_FILES="" + REIFY_TEST_GIT_DIFF_FAIL unset → diff returns ""
-K2_LANE="$(mktemp -d /tmp/test-seed-K2-lane-XXXXXX)"
-_TMPDIRS+=("$K2_LANE")
+K2_LANE="$(make_isolated_lane K2-lane)"
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_TEST_GIT_DIFF_FILES="" \
     run_helper "$K_BASE" "$K2_LANE" --fresh-checkout --base-commit shaX
@@ -1369,8 +1471,7 @@ mkdir -p "$L_BASE"
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$L_BASE_PARENT/.warm-base-meta"
 
 # ── L1: stubbed run_helper — touch no-ops → file stays at 2020 → RED ──────
-L1_LANE="$(mktemp -d /tmp/test-seed-L1-lane-XXXXXX)"
-_TMPDIRS+=("$L1_LANE")
+L1_LANE="$(make_isolated_lane L1-lane)"
 mkdir -p "$L1_LANE/src"
 # Pre-stamp diagnostics.rs to 2020-01-01T00:00:00 (the bulk-stamp epoch)
 touch -d "2020-01-01T00:00:00" "$L1_LANE/src/diagnostics.rs"
@@ -1392,8 +1493,7 @@ assert "L1: stderr names the violating stale path" \
     bash -c 'printf "%s\n" "$1" | grep -q "diagnostics.rs"' _ "$ERR_OUT"
 
 # ── L2: run_helper_real — real touch re-stamps → post-condition passes → GREEN ──
-L2_LANE="$(mktemp -d /tmp/test-seed-L2-lane-XXXXXX)"
-_TMPDIRS+=("$L2_LANE")
+L2_LANE="$(make_isolated_lane L2-lane)"
 # Seed base with a real file so run_helper_real's /bin/cp -a propagates something
 mkdir -p "$L_BASE/debug"
 echo "artifact" > "$L_BASE/debug/artifact.a"
@@ -1430,8 +1530,8 @@ echo "--- Block N: env!()-baked-path test relink on buildroot mismatch ---"
 # the consuming lane, so the relink must fire.
 N_BASE_PARENT="$(mktemp -d /tmp/test-seed-N-parent-XXXXXX)"
 N_BASE="$N_BASE_PARENT/target"
-N_LANE="$(mktemp -d /tmp/test-seed-N-lane-XXXXXX)"
-_TMPDIRS+=("$N_BASE_PARENT" "$N_LANE")
+N_LANE="$(make_isolated_lane N-lane)"
+_TMPDIRS+=("$N_BASE_PARENT")
 mkdir -p "$N_BASE"
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$N_BASE_PARENT/.warm-base-meta"
 # Recorded build-worktree is a DIFFERENT (nonexistent) path — the differ branch.
@@ -1495,8 +1595,8 @@ assert "N5: tests/env_probe.rs byte content unchanged (mtime-only touch)" \
 # worktree path — re-baking would be a no-op).
 N_EQ_BASE_PARENT="$(mktemp -d /tmp/test-seed-N-eq-parent-XXXXXX)"
 N_EQ_BASE="$N_EQ_BASE_PARENT/target"
-N_EQ_LANE="$(mktemp -d /tmp/test-seed-N-eq-lane-XXXXXX)"
-_TMPDIRS+=("$N_EQ_BASE_PARENT" "$N_EQ_LANE")
+N_EQ_LANE="$(make_isolated_lane N-eq-lane)"
+_TMPDIRS+=("$N_EQ_BASE_PARENT")
 mkdir -p "$N_EQ_BASE"
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$N_EQ_BASE_PARENT/.warm-base-meta"
 # Recorded build-worktree EQUALS the consuming lane's own realpath.
@@ -1529,8 +1629,8 @@ assert "N7: tests/env_probe.rs mtime == 2020 epoch (buildroot equal -> skip)" \
 # same as a confirmed mismatch.
 N_ABS_BASE_PARENT="$(mktemp -d /tmp/test-seed-N-abs-parent-XXXXXX)"
 N_ABS_BASE="$N_ABS_BASE_PARENT/target"
-N_ABS_LANE="$(mktemp -d /tmp/test-seed-N-abs-lane-XXXXXX)"
-_TMPDIRS+=("$N_ABS_BASE_PARENT" "$N_ABS_LANE")
+N_ABS_LANE="$(make_isolated_lane N-abs-lane)"
+_TMPDIRS+=("$N_ABS_BASE_PARENT")
 mkdir -p "$N_ABS_BASE"
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$N_ABS_BASE_PARENT/.warm-base-meta"
 # No ${N_ABS_BASE}.buildroot written.
@@ -1575,8 +1675,8 @@ echo "--- Block O: base-absent vs reflink-unsupported discrimination (task 4989)
 # ── O1-O5: base target dir ABSENT (never created) ────────────────────────────
 O_BASE_PARENT="$(mktemp -d /tmp/test-seed-O-parent-XXXXXX)"
 O_BASE="$O_BASE_PARENT/target"     # NEVER created — absent base
-O_LANE="$(mktemp -d /tmp/test-seed-O-lane-XXXXXX)"
-_TMPDIRS+=("$O_BASE_PARENT" "$O_LANE")
+O_LANE="$(make_isolated_lane O-lane)"
+_TMPDIRS+=("$O_BASE_PARENT")
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$O_BASE_PARENT/.warm-base-meta"
 
 reset_calls
@@ -1598,8 +1698,8 @@ assert "O5: base-absent: cp NEVER invoked (guard fires before clone)" \
 # ── O6: base target dir is a BROKEN/DANGLING SYMLINK (removed-base scenario) ──
 O_BASE2_PARENT="$(mktemp -d /tmp/test-seed-O2-parent-XXXXXX)"
 O_BASE2="$O_BASE2_PARENT/target"
-O_LANE2="$(mktemp -d /tmp/test-seed-O2-lane-XXXXXX)"
-_TMPDIRS+=("$O_BASE2_PARENT" "$O_LANE2")
+O_LANE2="$(make_isolated_lane O-lane2)"
+_TMPDIRS+=("$O_BASE2_PARENT")
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$O_BASE2_PARENT/.warm-base-meta"
 ln -s /nonexistent/xyz "$O_BASE2"
 
@@ -1615,8 +1715,8 @@ assert "O6: broken-symlink base exits 76 (same discrimination as absent dir)" \
 # support reflinks" message + exit 1 — the new guard must not shadow this path.
 O_BASE3_PARENT="$(mktemp -d /tmp/test-seed-O3-parent-XXXXXX)"
 O_BASE3="$O_BASE3_PARENT/target"
-O_LANE3="$(mktemp -d /tmp/test-seed-O3-lane-XXXXXX)"
-_TMPDIRS+=("$O_BASE3_PARENT" "$O_LANE3")
+O_LANE3="$(make_isolated_lane O-lane3)"
+_TMPDIRS+=("$O_BASE3_PARENT")
 mkdir -p "$O_BASE3"     # base PRESENT this time
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$O_BASE3_PARENT/.warm-base-meta"
 
@@ -1642,8 +1742,8 @@ assert "O7c: base-present + reflink-fail: stderr still names reflink failure (pa
 O_GONE_ROOT="$(mktemp -d /tmp/test-seed-O-gone-XXXXXX)"
 O_GONE_PARENT="$O_GONE_ROOT/base-parent-never-created"    # parent (+ sidecar) never created
 O_GONE_BASE="$O_GONE_PARENT/target"                        # never created
-O_GONE_LANE="$(mktemp -d /tmp/test-seed-O-gone-lane-XXXXXX)"
-_TMPDIRS+=("$O_GONE_ROOT" "$O_GONE_LANE")
+O_GONE_LANE="$(make_isolated_lane O-gone-lane)"
+_TMPDIRS+=("$O_GONE_ROOT")
 # Deliberately no .warm-base-meta sidecar anywhere — simulates the base's entire
 # parent directory having been torn down, not just the target dir.
 
@@ -1679,8 +1779,8 @@ P_FOREIGN="/tmp/foreign-wt"
 
 P_BASE_PARENT="$(mktemp -d /tmp/test-seed-P-parent-XXXXXX)"
 P_BASE="$P_BASE_PARENT/target"
-P_LANE="$(mktemp -d /tmp/test-seed-P-lane-XXXXXX)"
-_TMPDIRS+=("$P_BASE_PARENT" "$P_LANE")
+P_LANE="$(make_isolated_lane P-lane)"
+_TMPDIRS+=("$P_BASE_PARENT")
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$P_BASE_PARENT/.warm-base-meta"
 printf '%s' "$P_FOREIGN" > "${P_BASE}.buildroot"
 
@@ -1736,8 +1836,8 @@ assert "P2: build/ahash-CCCC/root-output reads the lane's OUT_DIR (no FOREIGN su
 # — skip, and say so on stderr, rather than guess.
 P_ABS_BASE_PARENT="$(mktemp -d /tmp/test-seed-P-abs-parent-XXXXXX)"
 P_ABS_BASE="$P_ABS_BASE_PARENT/target"
-P_ABS_LANE="$(mktemp -d /tmp/test-seed-P-abs-lane-XXXXXX)"
-_TMPDIRS+=("$P_ABS_BASE_PARENT" "$P_ABS_LANE")
+P_ABS_LANE="$(make_isolated_lane P-abs-lane)"
+_TMPDIRS+=("$P_ABS_BASE_PARENT")
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$P_ABS_BASE_PARENT/.warm-base-meta"
 # Deliberately no ${P_ABS_BASE}.buildroot written.
 
@@ -1764,8 +1864,8 @@ assert "P-abs: stderr names the absent buildroot stamp (actionable warn)" \
 # already reflects the lane's own root, so relocation must be a pure no-op.
 P_EQ_BASE_PARENT="$(mktemp -d /tmp/test-seed-P-eq-parent-XXXXXX)"
 P_EQ_BASE="$P_EQ_BASE_PARENT/target"
-P_EQ_LANE="$(mktemp -d /tmp/test-seed-P-eq-lane-XXXXXX)"
-_TMPDIRS+=("$P_EQ_BASE_PARENT" "$P_EQ_LANE")
+P_EQ_LANE="$(make_isolated_lane P-eq-lane)"
+_TMPDIRS+=("$P_EQ_BASE_PARENT")
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$P_EQ_BASE_PARENT/.warm-base-meta"
 P_EQ_LANE_RP="$(realpath -m "$P_EQ_LANE")"
 printf '%s' "$P_EQ_LANE_RP" > "${P_EQ_BASE}.buildroot"
@@ -1798,8 +1898,8 @@ assert "P-eq: no relocation count > 0 reported on stderr" \
 # "Relocated 0" so the drift is visible rather than reading as success.
 P_MISMATCH_BASE_PARENT="$(mktemp -d /tmp/test-seed-P-mismatch-parent-XXXXXX)"
 P_MISMATCH_BASE="$P_MISMATCH_BASE_PARENT/target"
-P_MISMATCH_LANE="$(mktemp -d /tmp/test-seed-P-mismatch-lane-XXXXXX)"
-_TMPDIRS+=("$P_MISMATCH_BASE_PARENT" "$P_MISMATCH_LANE")
+P_MISMATCH_LANE="$(make_isolated_lane P-mismatch-lane)"
+_TMPDIRS+=("$P_MISMATCH_BASE_PARENT")
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$P_MISMATCH_BASE_PARENT/.warm-base-meta"
 printf '%s' "$P_FOREIGN" > "${P_MISMATCH_BASE}.buildroot"
 
@@ -1826,8 +1926,8 @@ assert "P-mismatch: stderr warns of the canonicalization-drift possibility (not 
 # The relocation sweep must live entirely inside `if [ -n "$FRESH_CHECKOUT" ]`.
 P3A_BASE_PARENT="$(mktemp -d /tmp/test-seed-P3a-parent-XXXXXX)"
 P3A_BASE="$P3A_BASE_PARENT/target"
-P3A_LANE="$(mktemp -d /tmp/test-seed-P3a-lane-XXXXXX)"
-_TMPDIRS+=("$P3A_BASE_PARENT" "$P3A_LANE")
+P3A_LANE="$(make_isolated_lane P3a-lane)"
+_TMPDIRS+=("$P3A_BASE_PARENT")
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$P3A_BASE_PARENT/.warm-base-meta"
 printf '%s' "$P_FOREIGN" > "${P3A_BASE}.buildroot"
 
@@ -1856,10 +1956,10 @@ assert "P3a: build/cxx-AAAA/output UNCHANGED under --reset-in-place (scope guard
 #         BYTE-UNCHANGED (filename-scoped match, not a content scan).
 P3BC_BASE_PARENT="$(mktemp -d /tmp/test-seed-P3bc-parent-XXXXXX)"
 P3BC_BASE="$P3BC_BASE_PARENT/target"
-P3BC_LANE="$(mktemp -d /tmp/test-seed-P3bc-lane-XXXXXX)"
+P3BC_LANE="$(make_isolated_lane P3bc-lane)"
 P3BC_D_SNAPSHOT="$(mktemp /tmp/test-seed-P3bc-d-snapshot-XXXXXX)"
 P3BC_A_SNAPSHOT="$(mktemp /tmp/test-seed-P3bc-a-snapshot-XXXXXX)"
-_TMPDIRS+=("$P3BC_BASE_PARENT" "$P3BC_LANE" "$P3BC_D_SNAPSHOT" "$P3BC_A_SNAPSHOT")
+_TMPDIRS+=("$P3BC_BASE_PARENT" "$P3BC_D_SNAPSHOT" "$P3BC_A_SNAPSHOT")
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$P3BC_BASE_PARENT/.warm-base-meta"
 printf '%s' "$P_FOREIGN" > "${P3BC_BASE}.buildroot"
 
@@ -1953,8 +2053,7 @@ printf 'RUSTFLAGS=\nINVOCATION=\n' > "$Q_BASE_PARENT/.warm-base-meta"
 
 # ── H1: lock HELD by a live consumer → --lane-lock refuses (EX_TEMPFAIL 75),
 # does NOT clobber the lane (sentinel survives), cp never invoked. ───────────
-Q_LANE1="$(mktemp -d /tmp/test-seed-Q-lane1-XXXXXX)"
-_TMPDIRS+=("$Q_LANE1")
+Q_LANE1="$(make_isolated_lane Q-lane1)"
 mkdir -p "$Q_LANE1/target"
 echo "sentinel content" > "$Q_LANE1/target/SENTINEL.txt"
 
@@ -1989,8 +2088,7 @@ wait "$Q_LOCK1_PID" 2>/dev/null || true
 
 # ── H2: lock FREE → --lane-lock succeeds (RC 0, stdout resolved <lane>/target,
 # target replaced from base). ─────────────────────────────────────────────────
-Q_LANE2="$(mktemp -d /tmp/test-seed-Q-lane2-XXXXXX)"
-_TMPDIRS+=("$Q_LANE2")
+Q_LANE2="$(make_isolated_lane Q-lane2)"
 mkdir -p "$Q_LANE2/target"
 echo "sentinel content" > "$Q_LANE2/target/SENTINEL.txt"
 
@@ -2014,8 +2112,7 @@ assert "H2: cp invoked with --reflink=always" \
 # task-required regression: the #5223 guard is no longer bypassable by a caller
 # that simply forgets --lane-lock (the exact esc-5214 acquire-path clobber).
 # Pairs with H9 (queue instead of refuse under WAIT=unlimited). ───────────────
-Q_LANE3="$(mktemp -d /tmp/test-seed-Q-lane3-XXXXXX)"
-_TMPDIRS+=("$Q_LANE3")
+Q_LANE3="$(make_isolated_lane Q-lane3)"
 mkdir -p "$Q_LANE3/target"
 echo "sentinel content" > "$Q_LANE3/target/SENTINEL.txt"
 
@@ -2055,8 +2152,7 @@ wait "$Q_LOCK3_PID" 2>/dev/null || true
 # real non-empty target so a background trash rm is actually spawned; the
 # sleeping rm stub (REIFY_TEST_SLEEP_RESEED_TRASH_RM=1) keeps that background
 # process alive for ~2s so the immediate lock re-probe below is deterministic.
-Q_LANE4="$(mktemp -d /tmp/test-seed-Q-lane4-XXXXXX)"
-_TMPDIRS+=("$Q_LANE4")
+Q_LANE4="$(make_isolated_lane Q-lane4)"
 mkdir -p "$Q_LANE4/target"
 echo "stale artifact" > "$Q_LANE4/target/stale.a"
 Q_LOCK4="${Q_LANE4}.lock"
@@ -2083,8 +2179,7 @@ assert "H4: lane lock is re-acquirable immediately after seed exits (no FD-9 lea
 # flaky wall-clock UPPER bound (tests/infra/test_no_new_wallclock_upper_bounds.sh
 # only flags -le/-lt time comparisons; a slower CI host only ever makes an
 # elapsed-queued wait LONGER, never shorter, so -ge 1 cannot flake high).
-Q_LANE5="$(mktemp -d /tmp/test-seed-Q-lane5-XXXXXX)"
-_TMPDIRS+=("$Q_LANE5")
+Q_LANE5="$(make_isolated_lane Q-lane5)"
 mkdir -p "$Q_LANE5/target"
 echo "sentinel content" > "$Q_LANE5/target/SENTINEL.txt"
 
@@ -2119,8 +2214,7 @@ wait "$Q_LOCK5_PID" 2>/dev/null || true
 # H5b: lock FREE + WAIT=1 -> succeeds exactly as H2 (the knob only changes
 # behavior when the lock is contended; an uncontended flock -w N acquires on
 # the very first try, same as flock -n or a bare blocking flock).
-Q_LANE6="$(mktemp -d /tmp/test-seed-Q-lane6-XXXXXX)"
-_TMPDIRS+=("$Q_LANE6")
+Q_LANE6="$(make_isolated_lane Q-lane6)"
 mkdir -p "$Q_LANE6/target"
 echo "sentinel content" > "$Q_LANE6/target/SENTINEL.txt"
 
@@ -2136,8 +2230,7 @@ assert "H5b: sentinel file GONE (target was replaced from base)" \
 
 # H5c: invalid WAIT knob value ("abc") -> usage error (exit 64), no target
 # mutation -- rejected before the flock is even attempted.
-Q_LANE7="$(mktemp -d /tmp/test-seed-Q-lane7-XXXXXX)"
-_TMPDIRS+=("$Q_LANE7")
+Q_LANE7="$(make_isolated_lane Q-lane7)"
 mkdir -p "$Q_LANE7/target"
 echo "sentinel content" > "$Q_LANE7/target/SENTINEL.txt"
 
@@ -2159,8 +2252,7 @@ assert "H5c: cp NEVER invoked (rejected before any mutation)" \
 # SINGLETON _merge-verify lane is documented to rely on (queue forever
 # rather than refuse, since it has no alternate FREE lane to fall back to).
 # Mixed-case "UnLiMiTeD" also covers the case-insensitive glob match. ───────
-Q_LANE8="$(mktemp -d /tmp/test-seed-Q-lane8-XXXXXX)"
-_TMPDIRS+=("$Q_LANE8")
+Q_LANE8="$(make_isolated_lane Q-lane8)"
 mkdir -p "$Q_LANE8/target"
 echo "sentinel content" > "$Q_LANE8/target/SENTINEL.txt"
 
@@ -2234,8 +2326,7 @@ assert "H5d: base_artifact.a IS present in <lane>/target (clone from base succee
 # (which --reset-in-place's OWN clobber guard would otherwise refuse with
 # exit 1) -> exit 75, not 1: proves the lock check runs and refuses BEFORE
 # the clobber guard gets a chance to run its own (different) refusal.
-Q_LANE9="$(mktemp -d /tmp/test-seed-Q-lane9-XXXXXX)"
-_TMPDIRS+=("$Q_LANE9")
+Q_LANE9="$(make_isolated_lane Q-lane9)"
 mkdir -p "$Q_LANE9/target"
 echo "sentinel content" > "$Q_LANE9/target/SENTINEL.txt"
 
@@ -2269,8 +2360,7 @@ wait "$Q_LOCK9_PID" 2>/dev/null || true
 # pre-existing target/ at all, mirroring Block E's E1 fixture) -> exit 0:
 # confirms the lock genuinely spans --reset-in-place's uncontended success
 # path too, not just its held-lock refusal path in H6a.
-Q_LANE10="$(mktemp -d /tmp/test-seed-Q-lane10-XXXXXX)"
-_TMPDIRS+=("$Q_LANE10")
+Q_LANE10="$(make_isolated_lane Q-lane10)"
 
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
@@ -2291,8 +2381,7 @@ assert "H6b: cp invoked with --reflink=always" \
 # normally (RC 0, target replaced) instead of refusing (75). This is the
 # mechanism thin --reseed (FD 9) and gc reclaim (FD 8) rely on to avoid the
 # flock-non-reentrancy self-refuse under the fail-safe default. ───────────────
-Q_LANE12="$(mktemp -d /tmp/test-seed-Q-lane12-XXXXXX)"
-_TMPDIRS+=("$Q_LANE12")
+Q_LANE12="$(make_isolated_lane Q-lane12)"
 mkdir -p "$Q_LANE12/target"
 echo "sentinel content" > "$Q_LANE12/target/SENTINEL.txt"
 
@@ -2329,8 +2418,7 @@ wait "$Q_LOCK12_PID" 2>/dev/null || true
 # says "the caller already holds it, do NOT acquire" — passing both is caller
 # confusion, rejected loudly (naming BOTH flags) rather than silently picking a
 # precedence. No held lock needed; rejected before any target mutation. ───────
-Q_LANE13="$(mktemp -d /tmp/test-seed-Q-lane13-XXXXXX)"
-_TMPDIRS+=("$Q_LANE13")
+Q_LANE13="$(make_isolated_lane Q-lane13)"
 mkdir -p "$Q_LANE13/target"
 echo "sentinel content" > "$Q_LANE13/target/SENTINEL.txt"
 
@@ -2356,8 +2444,7 @@ assert "H8: cp NEVER invoked (rejected before any mutation)" \
 # pin "refuse OR queue rather than clobber" for the no-`--lane-lock` acquire path
 # (the esc-5214 regression). Mirrors H5d's backgrounded-seed + done-marker
 # pattern, but WITHOUT --lane-lock (the lock is now default-on). ──────────────
-Q_LANE11="$(mktemp -d /tmp/test-seed-Q-lane11-XXXXXX)"
-_TMPDIRS+=("$Q_LANE11")
+Q_LANE11="$(make_isolated_lane Q-lane11)"
 mkdir -p "$Q_LANE11/target"
 echo "sentinel content" > "$Q_LANE11/target/SENTINEL.txt"
 
@@ -2431,8 +2518,7 @@ assert "H9: base_artifact.a present in <lane>/target (clone from base succeeded)
 # non-empty target). Because reset-in-place does NOT default-acquire, the held
 # lock is simply ignored and seed proceeds (RC 0, cp ran); if the default acquire
 # leaked into reset-in-place this would instead refuse with exit 75. ───────────
-Q_LANE14="$(mktemp -d /tmp/test-seed-Q-lane14-XXXXXX)"
-_TMPDIRS+=("$Q_LANE14")
+Q_LANE14="$(make_isolated_lane Q-lane14)"
 
 Q_LOCK14="${Q_LANE14}.lock"
 _TMPDIRS+=("$Q_LOCK14")
@@ -2463,5 +2549,171 @@ assert "H10: cp invoked with --reflink=always (reset-in-place proceeded, not ref
 
 kill "$Q_LOCK14_PID" 2>/dev/null || true
 wait "$Q_LOCK14_PID" 2>/dev/null || true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block R: lane isolation guards (task 5590) — every lane created in this file
+# must be nested under a private per-run parent, never bare /tmp, because
+# scripts/seed-warm-lane.sh:663 computes RESEED_TRASH_DIR as
+# dirname(LANE_DIR)/.reseed-trash: a bare-/tmp lane makes that the
+# machine-shared /tmp/.reseed-trash, shared across every concurrent agent/test
+# run on the host. R0 pins the contract of the `make_isolated_lane <prefix>`
+# helper introduced to fix this; later sub-blocks verify the fix itself.
+#
+# Ordering note (task 5590 amend): R1/R3/R4 assert ONCE, before R2/R5 run.
+# R2 and R5 both transiently mutate _SHARED_TRASH_DIR/_TRASH_HITS_FILE and
+# restore/clear them when done, so by the end of this block the detector
+# state is back to a clean slate — but R1 does NOT re-run against it. A new
+# block appended AFTER Block R that calls run_helper/run_helper_real gets no
+# shared-trash-litter coverage unless it is inserted BEFORE R2 (so the
+# existing R1 assert still covers it) or it re-asserts
+# _assert_no_shared_trash_use itself after R5.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block R: lane isolation guards ---"
+
+# ── R0: make_isolated_lane <prefix> contract ─────────────────────────────────
+# Guarded with `2>/dev/null || true`: make_isolated_lane does not exist yet, so
+# without the guard the command substitution would still just yield rc=127
+# captured by `|| true` (set -e does not abort on a substitution used in an
+# assignment) — but the guard keeps a "command not found" line off the console
+# and lets the not-yet-implemented state read as ordinary assert FAILures below.
+R0_LANE_A="$(make_isolated_lane R0-a 2>/dev/null || true)"
+R0_LANE_B="$(make_isolated_lane R0-a 2>/dev/null || true)"
+
+assert "R0a: make_isolated_lane returns a path that exists and is a directory" \
+    bash -c '[ -n "$1" ] && [ -d "$1" ]' _ "$R0_LANE_A"
+assert "R0b: dirname of the returned lane is NOT bare /tmp (private parent)" \
+    bash -c '[ -n "$1" ] || exit 1; [ "$(dirname "$1")" != "/tmp" ]' _ "$R0_LANE_A"
+assert "R0c: the parent contains the lane and nothing else (private, freshly minted)" \
+    bash -c '[ -n "$1" ] || exit 1; [ "$(ls -A "$(dirname "$1")")" = "$(basename "$1")" ]' _ "$R0_LANE_A"
+assert "R0d: two calls with the same prefix return different parents" \
+    bash -c '[ -n "$1" ] && [ -n "$2" ] || exit 1; [ "$(dirname "$1")" != "$(dirname "$2")" ]' _ "$R0_LANE_A" "$R0_LANE_B"
+assert "R0e: dirname(<lane>)/.reseed-trash does not already exist (run-private)" \
+    bash -c '[ -n "$1" ] || exit 1; [ ! -e "$(dirname "$1")/.reseed-trash" ]' _ "$R0_LANE_A"
+assert "R0f: returned path is nested under the per-run lane root (_LANE_ROOT), which the EXIT trap reclaims" \
+    bash -c '[ -n "$1" ] && [ -n "$2" ] || exit 1; case "$1" in "$2"/*) exit 0 ;; *) exit 1 ;; esac' _ "$R0_LANE_A" "${_LANE_ROOT:-}"
+
+# ── R1: runtime detector — no seed invocation in this whole suite may write
+# into the machine-shared /tmp/.reseed-trash. Fed by _note_shared_trash_use,
+# called from inside run_helper/run_helper_real after every invocation
+# throughout the file, so this observes every prior Block's fixtures too.
+# State is file-backed (see _TRASH_HITS_FILE above) so appends made from
+# inside a backgrounded subshell (H5d/H9) are not silently discarded. ───────
+_assert_no_shared_trash_use() {
+    [ ! -s "$_TRASH_HITS_FILE" ] && return 0
+    printf 'seed invocation wrote into machine-shared %s:\n' "$_SHARED_TRASH_DIR"
+    cat "$_TRASH_HITS_FILE"
+    return 1
+}
+assert "R1: no seed invocation in this suite wrote into the machine-shared $_SHARED_TRASH_DIR" \
+    _assert_no_shared_trash_use
+
+# ── R3: structural guard — every run_helper_real lane dir had a private
+# parent, never bare /tmp. Fed by _note_real_lane, called at the top of
+# run_helper_real for every one of its call sites, which logs EVERY lane
+# unconditionally — the bare-/tmp filtering happens here, reading the
+# file-backed log line by line (this checker runs in the main shell via
+# `assert`'s no-subshell "$@" invocation, so a local array is safe here even
+# though the recorder itself cannot use one). ───────────────────────────────
+_assert_no_bare_tmp_lanes() {
+    local lane
+    local offenders=()
+    while IFS= read -r lane; do
+        [ -n "$lane" ] || continue
+        case "$lane" in
+            /*) [ "$(dirname "$lane")" = "/tmp" ] && offenders+=("$lane") ;;
+        esac
+    done < "$_REAL_LANES_FILE"
+    [ "${#offenders[@]}" -eq 0 ] && return 0
+    printf 'run_helper_real lane dir was bare /tmp (no private parent): %s\n' \
+        "${offenders[@]}"
+    return 1
+}
+assert "R3: every run_helper_real lane dir had a private parent (never bare /tmp)" \
+    _assert_no_bare_tmp_lanes
+
+# ── R4: end-to-end coverage — the structural detector must have observed the
+# two run_helper_real invocations made from inside a backgrounded ( ... ) &
+# subshell: H5d's Q_LANE8 and H9's Q_LANE11. These are the ONLY two such
+# sites in the file — every other `( ... ) &` in Block Q is a
+# `( flock -x 9 && touch ... && sleep 300 ) 9>"$LOCK" &` lock-holder, not a
+# seed run. $Q_LANE8/$Q_LANE11 are assigned in the MAIN shell (Block Q, in
+# the H5d/H9 fixture setup, before their respective backgrounded subshells)
+# via make_isolated_lane, so both are in scope here. Asserted against
+# _REAL_LANES_FILE, the observation log every run_helper_real invocation
+# appends to via _note_real_lane (including from inside H5d/H9's backgrounded
+# subshells, now that the log is file-backed rather than an array). The
+# ${_REAL_LANES_FILE:-/nonexistent} fallback is defensive only — it keeps this
+# a plain assert FAILURE rather than an unbound-variable abort under set -u if
+# the variable were ever undefined. grep -Fxq matches the lane path literally
+# and as a whole line. ───────────────────────────────────────────────────────
+assert "R4: the structural detector observed the run_helper_real invocations made from inside a backgrounded subshell (H5d/H9)" \
+    bash -c 'grep -Fxq -- "$2" "$1" && grep -Fxq -- "$3" "$1"' _ "${_REAL_LANES_FILE:-/nonexistent}" "$Q_LANE8" "$Q_LANE11"
+
+# ── R2: positive control for R1 — proves the detector actually fires on a
+# real rename, so R1 cannot silently pass forever if seed's rename message is
+# ever reworded or moved. Redirects _SHARED_TRASH_DIR to an isolated lane's
+# OWN private sibling .reseed-trash for one real seed run (rather than
+# deliberately littering the real shared path once per suite run). ─────────
+R2_BASE_PARENT="$(make_isolated_lane R2-base)"
+R2_BASE="$R2_BASE_PARENT/target"
+mkdir -p "$R2_BASE/debug"
+echo "base artifact" > "$R2_BASE/debug/base_artifact.a"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$R2_BASE_PARENT/.warm-base-meta"
+
+R2_LANE="$(make_isolated_lane R2-poscontrol)"
+mkdir -p "$R2_LANE/target"
+echo "stale artifact" > "$R2_LANE/target/stale.a"
+
+# Redirect the detector at this lane's own sibling trash dir — exactly what
+# seed-warm-lane.sh:663 will independently compute as dirname(LANE_DIR)/.reseed-trash.
+# Save the pre-redirect value rather than re-typing the literal default at
+# restore time below (task 5590 amend): if the canonical default near the top
+# of the file is ever changed, restoring a hardcoded literal here would
+# silently revert that change instead of tracking it, and every detector
+# check after this point (R5 today, plus any block appended later) would
+# match against a path seed never actually produces.
+_SHARED_TRASH_DIR_SAVED="$_SHARED_TRASH_DIR"
+_SHARED_TRASH_DIR="$(dirname "$R2_LANE")/.reseed-trash"
+: > "$_TRASH_HITS_FILE"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$R2_BASE" "$R2_LANE" --fresh-checkout
+
+assert "R2: positive control: redirected-trash seed run exits 0" \
+    test "$RC" -eq 0
+assert "R2: positive control: detector recorded exactly one hit against the redirected trash dir" \
+    test "$(wc -l < "$_TRASH_HITS_FILE")" -eq 1
+
+# Restore the real shared-path target and clear the positive-control hit
+# before R1 (already asserted above) or any later block could see it. Restore
+# FROM THE SAVED COPY, not a re-typed literal — see the save above.
+_SHARED_TRASH_DIR="$_SHARED_TRASH_DIR_SAVED"
+: > "$_TRASH_HITS_FILE"
+
+# ── R5: mechanism guard — a recorder append made from inside a backgrounded
+# ( ... ) & subshell must be visible to the parent shell. Drives the REAL
+# _note_shared_trash_use recorder through the exact H5d/H9 shape (a subshell
+# that sets ERR_OUT and calls the recorder, backgrounded, then waited on) with
+# a synthetic ERR_OUT rather than a second real seed run: R2 above already
+# covers "real seed → detector fires" end-to-end, so R5 only needs to prove
+# storage survives a subshell. This is the durable companion to R4 — R4 could
+# go vacuous if H5d/H9 were ever un-backgrounded (it would then silently test
+# nothing while still passing), but R5 constructs its own subshell, so it
+# always exercises the subshell-visibility property directly. ──────────────
+: > "$_TRASH_HITS_FILE"
+(
+    ERR_OUT="Renaming non-empty /x/target → $_SHARED_TRASH_DIR before re-seed"
+    _note_shared_trash_use R5-subshell-probe
+) &
+R5_PID=$!
+wait "$R5_PID" 2>/dev/null || true
+
+assert "R5: a shared-trash-use append made inside a backgrounded subshell is visible to the parent shell" \
+    test "$(wc -l < "$_TRASH_HITS_FILE")" -eq 1
+
+# Clear the probe's state so nothing leaks past test_summary.
+: > "$_TRASH_HITS_FILE"
 
 test_summary
