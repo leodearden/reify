@@ -880,8 +880,13 @@ assert "I3b: async-branch: cp invoked with --reflink=always (async path reached 
 # no-trash-leak assertion is race-free (no background rm -rf &).
 I_BASE_REAL_PARENT="$(mktemp -d /tmp/test-seed-I-real-parent-XXXXXX)"
 I_BASE_REAL="$I_BASE_REAL_PARENT/target"
-I_LANE_REAL="$(mktemp -d /tmp/test-seed-I-real-lane-XXXXXX)"
-_TMPDIRS+=("$I_BASE_REAL_PARENT" "$I_LANE_REAL")
+# I_LANE_REAL is nested under a private per-run parent (I_LANE_REAL_PARENT), NOT
+# bare /tmp (task 5384 amendment; same rationale as I14 below): I7b's sibling-
+# trash assertion resolves dirname(I_LANE_REAL)/.reseed-trash, so a bare-/tmp
+# lane would put it at the machine-shared /tmp/.reseed-trash.
+I_LANE_REAL_PARENT="$(mktemp -d /tmp/test-seed-I-real-lane-parent-XXXXXX)"
+I_LANE_REAL="$(mktemp -d "$I_LANE_REAL_PARENT/lane-XXXXXX")"
+_TMPDIRS+=("$I_BASE_REAL_PARENT" "$I_LANE_REAL_PARENT")
 # Seed base with a known artifact so we can verify it appears after the clone.
 mkdir -p "$I_BASE_REAL/debug"
 echo "base artifact" > "$I_BASE_REAL/debug/base_artifact.a"
@@ -1053,8 +1058,13 @@ assert "I14g: relocation: trash IS under pool-level sibling .reseed-trash/ for t
 # rooted walker).  Confirms exit 0 and correct cloning under real async conditions.
 I15_BASE_PARENT="$(mktemp -d /tmp/test-seed-I15-parent-XXXXXX)"
 I15_BASE="$I15_BASE_PARENT/target"
-I15_LANE="$(mktemp -d /tmp/test-seed-I15-lane-XXXXXX)"
-_TMPDIRS+=("$I15_BASE_PARENT" "$I15_LANE")
+# I15_LANE is nested under a private per-run parent (I15_LANE_PARENT), NOT bare
+# /tmp (task 5384 amendment; same rationale as I14 above): the script under test
+# mkdir -p's dirname(LANE_DIR)/.reseed-trash for trash relocation, so a bare-/tmp
+# lane would write into the machine-shared /tmp/.reseed-trash.
+I15_LANE_PARENT="$(mktemp -d /tmp/test-seed-I15-lane-parent-XXXXXX)"
+I15_LANE="$(mktemp -d "$I15_LANE_PARENT/lane-XXXXXX")"
+_TMPDIRS+=("$I15_BASE_PARENT" "$I15_LANE_PARENT")
 mkdir -p "$I15_BASE/debug"
 echo "base artifact" > "$I15_BASE/debug/base_artifact.a"
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$I15_BASE_PARENT/.warm-base-meta"
