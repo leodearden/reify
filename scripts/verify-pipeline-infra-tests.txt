@@ -145,3 +145,8 @@ hooks/main-gate-lib.sh               tests/infra/test_reference_transaction_gate
 # both as fail-fast poles when the lib is edited on a task-scope verify.
 # Mirrors the run-all-classification-lib.sh rows above.
 tests/infra/run_all_ambient_isolation_lib.sh    tests/infra/test_run_all_ambient_isolation*.sh
+
+# Task 5321: the read-only closure-staleness sweep. Mirrors the
+# scripts/warm-lane-audit.sh row above — a task-scope verify runs the sweep's
+# hermetic suite whenever the SUT changes.
+scripts/deterministic-gate-closure-staleness-sweep.sh    tests/infra/test_deterministic_gate_closure_staleness_sweep.sh
