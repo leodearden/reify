@@ -184,30 +184,88 @@ fn build_trial_values(
         );
     }
 
-    // Zero-cost early skip for the (overwhelmingly common) non-clustered case:
-    // no fold, and none of the collision-guard work below.
-    if dependent_cells.is_empty() {
-        return values;
-    }
+    // Auto-collision guard: a linear scan over `params` beats a HashSet at the
+    // expected 1–3 autos, and this is the per-Nelder-Mead-iteration hot path.
+    fold_dependent_cells(&mut values, dependent_cells, functions, |id| {
+        params.iter().any(|p| &p.id == id)
+    });
+    values
+}
 
+/// Fold `dependent_cells` into `values` IN STORED ORDER — the single fold
+/// authority shared by the per-trial cost surface ([`build_trial_values`]) and
+/// the post-solve objective scoring ([`build_scoring_values`]).
+///
+/// Having one implementation rather than two copies is the drift guard: it
+/// extends the PRD §6.3 "single authority" principle from the ORDER itself to
+/// its consumers, so the cost surface Nelder-Mead minimises, the score the
+/// ranker reports, and reify-eval's post-solve write-back cannot disagree about
+/// what a dependent cell is worth at a given point.
+///
+/// The `EvalContext` is rebuilt against the RUNNING map on each iteration, so
+/// an earlier dependent cell is visible to a later one — which is exactly what
+/// makes the stored topological order load-bearing rather than incidental.
+///
+/// `is_solver_owned` identifies ids the SOLVER owns at this point (trial autos
+/// for the cost path, solved autos for the scoring path). Such an id must never
+/// be overwritten by the fold: reify-eval's `build_dependent_cells` excludes
+/// autos by construction, so a collision means upstream membership drifted.
+/// Debug builds trip a `debug_assert!` naming the cell; release builds skip the
+/// entry and keep the solver's own value.
+///
+/// An empty `dependent_cells` returns without touching `values` OR running any
+/// of the guard work — that zero-cost skip is what keeps every non-clustered
+/// solve byte-identical to its pre-joint-drive behaviour (PRD §6.2).
+fn fold_dependent_cells(
+    values: &mut ValueMap,
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
+    functions: &[CompiledFunction],
+    is_solver_owned: impl Fn(&ValueCellId) -> bool,
+) {
+    if dependent_cells.is_empty() {
+        return;
+    }
     for (id, expr) in dependent_cells {
-        // Auto-collision guard. A linear scan over `params` beats a HashSet at
-        // the expected 1–3 autos, and this is the per-Nelder-Mead-iteration hot
-        // path; revisit only if a problem with many autos shows up.
-        if params.iter().any(|p| &p.id == id) {
+        if is_solver_owned(id) {
             debug_assert!(
                 false,
-                "build_trial_values: dependent cell {id:?} collides with an auto \
-                 param — reify-eval's `build_dependent_cells` excludes autos by \
-                 construction, so this means upstream membership drifted. \
-                 Skipping the entry to keep the trial point intact."
+                "fold_dependent_cells: dependent cell {id:?} collides with an \
+                 auto param — reify-eval's `build_dependent_cells` excludes \
+                 autos by construction, so this means upstream membership \
+                 drifted. Skipping the entry to keep the solver's value."
             );
             continue;
         }
-        let v = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, functions));
+        let v = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions));
         values.insert(id.clone(), v);
     }
-    values
+}
+
+/// Materialise the ValueMap an objective SCORE is read from: the problem's base
+/// values, overlaid with the solver's `solved` autos, then folded through
+/// `dependent_cells`.
+///
+/// Both post-solve scoring sites (the multistart loop and `rank_single`) used to
+/// build this map inline and WITHOUT the fold, which meant they scored a
+/// dependent-cell-driven objective at its stale base value. With the per-trial
+/// fold in place that made the optimiser and the ranker measure different
+/// objectives: the reported `objective_score` disagreed with the optimum
+/// actually achieved, and a ranking over identical stale scores degenerated to a
+/// tie broken by start index (PRD §12 Q2).
+fn build_scoring_values(
+    base: &ValueMap,
+    solved: &HashMap<ValueCellId, Value>,
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
+    functions: &[CompiledFunction],
+) -> ValueMap {
+    let mut full = base.clone();
+    for (id, v) in solved {
+        full.insert(id.clone(), v.clone());
+    }
+    fold_dependent_cells(&mut full, dependent_cells, functions, |id| {
+        solved.contains_key(id)
+    });
+    full
 }
 
 /// Extract initial parameter values from the problem.
@@ -1866,10 +1924,12 @@ fn rank_single(
             // per I3/I4: a feasibility-only solve reports FeasibilityOnly + None even
             // when the solver internally optimized a synthetic centrality objective.
             let objective_score = problem.objective.as_ref().and_then(|obj| {
-                let mut full = problem.current_values.clone();
-                for (id, v) in &values {
-                    full.insert(id.clone(), v.clone());
-                }
+                let full = build_scoring_values(
+                    &problem.current_values,
+                    &values,
+                    &problem.dependent_cells,
+                    &problem.functions,
+                );
                 eval_objective_set(obj, &full, &problem.functions)
             });
             // Key optimality off objective_score (not problem.objective.is_some())
@@ -2003,10 +2063,12 @@ impl ConstraintSolver for DimensionalSolver {
             let (result, meta) = solve_core(problem, start);
             if let SolveResult::Solved { values, .. } = result {
                 let objective_score = problem.objective.as_ref().and_then(|obj| {
-                    let mut full = problem.current_values.clone();
-                    for (id, v) in &values {
-                        full.insert(id.clone(), v.clone());
-                    }
+                    let full = build_scoring_values(
+                        &problem.current_values,
+                        &values,
+                        &problem.dependent_cells,
+                        &problem.functions,
+                    );
                     eval_objective_set(obj, &full, &problem.functions)
                 });
                 if let Some(score) = objective_score {
