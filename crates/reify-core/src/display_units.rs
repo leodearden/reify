@@ -692,16 +692,42 @@ mod tests {
     ///   * every *included* dimension carries the §5a `1 ≤ |mantissa| < 1000`
     ///     target band (`band_lo == 1.0`, `band_hi == 1000.0`).
     ///
-    /// The per-dimension default-ON/OFF `enabled` literal is deliberately NOT
-    /// re-asserted here: with no auto-scaling consumer to anchor the posture
-    /// against, pinning it would only re-state the constructor's own constants
-    /// back at itself (same rationale as the sibling
-    /// `ladder_units_pin_expected_scale_and_default` amend). Restore that pin
-    /// in the follow-up that implements §5 rung-hopping (task #5200), which
-    /// gives a real consumer to anchor the `enabled` posture against.
+    /// The per-dimension default-ON/OFF `enabled` literal *is* pinned here as
+    /// of task #5236 (L1 deferred it, citing the umbrella #5200 rather than
+    /// this leaf). It is no longer a tautological echo of the constructor:
+    /// [`DimensionLadder::auto_scaled`] branches on `enabled`, so the split
+    /// §5b draws — Length/Area/Volume ON, Mass/Pressure/Density OFF — is now
+    /// load-bearing policy. The *behavioural* anchor for that posture lives
+    /// where a consumer can observe it: `auto_scaled`'s own posture-gate test
+    /// below, and `resolve_display`'s no-op test in `reify-ir`, which pin the
+    /// consequence (hop vs. no hop) rather than the flag.
     #[test]
     fn auto_scale_metadata_matches_prd_section5() {
         let ladders = unit_ladders();
+
+        // §5b default posture, per dimension. The split mirrors the ladder's
+        // existing default-rung choices (§2c): the dimensions that already
+        // default to a *scaled* rung (mm/mm²/mm³) auto-scale by default; the
+        // ones defaulting to the bare SI base rung (kg/Pa/kg·m⁻³) do not,
+        // because hopping them would silently flip a familiar unit as the
+        // magnitude crosses a threshold.
+        for (dimension, enabled) in [
+            ("Length", true),
+            ("Area", true),
+            ("Volume", true),
+            ("Mass", false),
+            ("Pressure", false),
+            ("Density", false),
+        ] {
+            let auto = ladder(&ladders, dimension)
+                .auto_scale
+                .as_ref()
+                .unwrap_or_else(|| panic!("ladder {dimension:?} must carry an auto_scale posture"));
+            assert_eq!(
+                auto.enabled, enabled,
+                "ladder {dimension:?} §5b default posture mismatch"
+            );
+        }
 
         // Structural include/exclude partition: exactly these four dimensions
         // are excluded from auto-scaling (auto_scale == None). Pinning the
