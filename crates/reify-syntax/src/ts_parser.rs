@@ -2694,6 +2694,25 @@ impl<'a> Lowering<'a> {
             .map(|n| self.lower_relation_members(n))
             .unwrap_or_default();
 
+        // Lower the optional indexer clause `[<binder> in <domain>]` from the
+        // instantiation arm (indexed-sub-instantiation.md §3.1, task α). The
+        // grammar exposes the two halves as the named fields "binder" and
+        // "domain"; both are absent on the other arms, so both lower to None
+        // there. The binder keeps its own narrow span (an unused-binder
+        // diagnostic must underline the binder alone).
+        let index_binder = node
+            .child_by_field_name("binder")
+            .map(|n| SpannedIdent {
+                name: self.node_text(n).to_string(),
+                span: self.span(n),
+            });
+        // Plain `lower_expr`, NOT `lower_binding_value`: unlike `at <pose>`, the
+        // domain is not an `auto` binding site. α stores it syntactically only —
+        // checking it is a `Range<Int>` is task β's.
+        let index_domain = node
+            .child_by_field_name("domain")
+            .and_then(|n| self.lower_expr(n));
+
         Some(SubDecl {
             name,
             structure_name,
@@ -2707,6 +2726,8 @@ impl<'a> Lowering<'a> {
             is_aux,
             is_priv: self.has_priv_keyword(node),
             pose_expr,
+            index_binder,
+            index_domain,
             relate_relations,
             span: self.span(node),
             content_hash: self.content_hash(node),
@@ -3650,6 +3671,8 @@ impl<'a> Lowering<'a> {
             is_aux: false,
             is_priv: false,
             pose_expr: None,
+            index_binder: None,
+            index_domain: None,
             relate_relations: Vec::new(),
             span: self.span(member_node),
             content_hash: self.content_hash(member_node),

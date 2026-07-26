@@ -351,6 +351,8 @@ fn match_arm_sub_pose_is_lowered() {
             keyed_members: vec![],
             is_aux: false,
             pose_expr: Some(ident_expr("kind")),
+            index_binder: None,
+            index_domain: None,
             relate_relations: vec![],
             span: zero_span(),
             content_hash: ContentHash(0),
