@@ -372,6 +372,63 @@ describe('anchored type-name matching (regression for substring-match bug)', () 
 });
 
 // ---------------------------------------------------------------------------
+// #5195 step-5: "Geometry" is the spelling the backend actually emits
+// ---------------------------------------------------------------------------
+
+/**
+ * The `Solid` source spelling and the `Geometry` source spelling BOTH resolve
+ * to the backend's `Type::Geometry`, whose `Display` emits the literal string
+ * `"Geometry"` — never `"Solid"`. So the geometry-type rule could not fire on
+ * any real value-cell node until `Geometry` joined the pattern.
+ */
+describe('defaultVisibilityFor — "Geometry" type_name (#5195)', () => {
+  it('let with type_name="Geometry" → "hidden" (the spelling Type::Geometry actually Displays)', () => {
+    const node = makeNode({ entity_path: 'Root.body', kind: 'let', type_name: 'Geometry' });
+    expect(defaultVisibilityFor(node)).toBe('hidden');
+  });
+
+  it('let with type_name="Option<Geometry>" → "hidden" (wrapper tolerance)', () => {
+    const node = makeNode({ entity_path: 'Root.body', kind: 'let', type_name: 'Option<Geometry>' });
+    expect(defaultVisibilityFor(node)).toBe('hidden');
+  });
+
+  it('let with type_name="GeometryReference" → "show" (word boundary rejects substring)', () => {
+    const node = makeNode({ entity_path: 'Root.ref', kind: 'let', type_name: 'GeometryReference' });
+    expect(defaultVisibilityFor(node)).toBe('show');
+  });
+
+  it('generateDefaultView hides a "Geometry"-typed let while leaving a "GeometryReference" let shown', () => {
+    const tree = [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({ entity_path: 'Root.body', kind: 'let', type_name: 'Geometry' }),
+          makeNode({ entity_path: 'Root.ref', kind: 'let', type_name: 'GeometryReference' }),
+        ],
+      }),
+    ];
+    const view = generateDefaultView(tree);
+    expect(view.visibility['Root.body']).toBe('hidden');
+    expect(view.visibility['Root.ref']).toBe('show');
+  });
+
+  it('generatePurposeViews manufacturing_ready: let with type_name="Geometry" → "ghost" (shared helper stays in sync)', () => {
+    const tree = [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({ entity_path: 'Root.body', kind: 'let', type_name: 'Geometry' }),
+        ],
+      }),
+    ];
+    const [view] = generatePurposeViews(tree, ['manufacturing_ready']);
+    expect(view.visibility['Root.body']).toBe('ghost');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // default_visible: aux hidden-by-default (step-5 T6)
 // ---------------------------------------------------------------------------
 
