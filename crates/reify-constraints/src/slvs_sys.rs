@@ -330,3 +330,162 @@ impl Slvs_Constraint {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const H: Slvs_hEntity = Slvs_hEntity(7);
+    const G: Slvs_hGroup = Slvs_hGroup(3);
+    const WP: Slvs_hEntity = Slvs_hEntity(9);
+
+    /// Every entity field slvs.h's `Slvs_Make*` leaves at its memset-zero value.
+    ///
+    /// Asserting the *absence* of writes is the load-bearing half of these
+    /// tests: a stray `point[1]` or `distance` on an entity libslvs expects to
+    /// be zero is read as a real handle and silently changes the equations.
+    fn assert_points_zero(e: &Slvs_Entity, expected: [Slvs_hEntity; 4]) {
+        assert_eq!(e.point, expected, "point[] mismatch");
+    }
+
+    fn assert_params_zero(e: &Slvs_Entity) {
+        assert_eq!(e.param, [Slvs_hParam(0); 4], "param[] should be all-zero");
+    }
+
+    /// `Slvs_MakeNormal2d`: type + wrkpl only, nothing else touched.
+    #[test]
+    fn normal_in_2d_matches_slvs_h() {
+        let e = Slvs_Entity::normal_in_2d(H, G, WP);
+        assert_eq!(e.h, H);
+        assert_eq!(e.group, G);
+        assert_eq!(e.type_, SLVS_E_NORMAL_IN_2D);
+        assert_eq!(e.wrkpl, WP);
+        assert_points_zero(&e, [Slvs_hEntity(0); 4]);
+        assert_params_zero(&e);
+        assert_eq!(e.normal, Slvs_hEntity(0));
+        assert_eq!(e.distance, Slvs_hEntity(0));
+    }
+
+    /// `Slvs_MakeDistance`: the radius carrier — one param, no points.
+    #[test]
+    fn distance_matches_slvs_h() {
+        let d = Slvs_hParam(42);
+        let e = Slvs_Entity::distance(H, G, WP, d);
+        assert_eq!(e.h, H);
+        assert_eq!(e.group, G);
+        assert_eq!(e.type_, SLVS_E_DISTANCE);
+        assert_eq!(e.wrkpl, WP);
+        assert_eq!(e.param, [d, Slvs_hParam(0), Slvs_hParam(0), Slvs_hParam(0)]);
+        assert_points_zero(&e, [Slvs_hEntity(0); 4]);
+        assert_eq!(e.normal, Slvs_hEntity(0));
+        assert_eq!(e.distance, Slvs_hEntity(0));
+    }
+
+    /// `Slvs_MakeCircle`: center in `point[0]`, normal and radius-carrier in
+    /// their own dedicated slots — not in `point[]`.
+    #[test]
+    fn circle_matches_slvs_h() {
+        let center = Slvs_hEntity(11);
+        let normal = Slvs_hEntity(12);
+        let radius = Slvs_hEntity(13);
+        let e = Slvs_Entity::circle(H, G, WP, center, normal, radius);
+        assert_eq!(e.h, H);
+        assert_eq!(e.group, G);
+        assert_eq!(e.type_, SLVS_E_CIRCLE);
+        assert_eq!(e.wrkpl, WP);
+        assert_points_zero(
+            &e,
+            [center, Slvs_hEntity(0), Slvs_hEntity(0), Slvs_hEntity(0)],
+        );
+        assert_eq!(e.normal, normal);
+        assert_eq!(e.distance, radius);
+        assert_params_zero(&e);
+    }
+
+    /// `Slvs_MakeArcOfCircle`: center/start/end in `point[0..3]` in that order.
+    ///
+    /// Order is not cosmetic — libslvs derives the arc's radius from
+    /// `point[0]`→`point[1]` and its sweep from `point[1]`→`point[2]`.
+    #[test]
+    fn arc_of_circle_matches_slvs_h() {
+        let normal = Slvs_hEntity(21);
+        let center = Slvs_hEntity(22);
+        let start = Slvs_hEntity(23);
+        let end = Slvs_hEntity(24);
+        let e = Slvs_Entity::arc_of_circle(H, G, WP, normal, center, start, end);
+        assert_eq!(e.h, H);
+        assert_eq!(e.group, G);
+        assert_eq!(e.type_, SLVS_E_ARC_OF_CIRCLE);
+        assert_eq!(e.wrkpl, WP);
+        assert_points_zero(&e, [center, start, end, Slvs_hEntity(0)]);
+        assert_eq!(e.normal, normal);
+        assert_eq!(e.distance, Slvs_hEntity(0));
+        assert_params_zero(&e);
+    }
+
+    /// `Slvs_MakeLineSegment` sets `wrkpl`; the 3D-scoped [`Slvs_Entity::line_segment`]
+    /// leaves it at `SLVS_FREE_IN_3D`.
+    ///
+    /// The two builders differ in exactly that one field, and that field is what
+    /// `SLVS_C_HORIZONTAL` / `SLVS_C_VERTICAL` / the tangent constraints need —
+    /// so this test pins both halves of the contrast, not just the new builder.
+    #[test]
+    fn line_segment_2d_is_workplane_scoped_unlike_line_segment() {
+        let a = Slvs_hEntity(31);
+        let b = Slvs_hEntity(32);
+
+        let scoped = Slvs_Entity::line_segment_2d(H, G, WP, a, b);
+        assert_eq!(scoped.h, H);
+        assert_eq!(scoped.group, G);
+        assert_eq!(scoped.type_, SLVS_E_LINE_SEGMENT);
+        assert_eq!(scoped.wrkpl, WP);
+        assert_points_zero(&scoped, [a, b, Slvs_hEntity(0), Slvs_hEntity(0)]);
+        assert_eq!(scoped.normal, Slvs_hEntity(0));
+        assert_eq!(scoped.distance, Slvs_hEntity(0));
+        assert_params_zero(&scoped);
+
+        let free = Slvs_Entity::line_segment(H, G, a, b);
+        assert_eq!(
+            free.wrkpl, SLVS_FREE_IN_3D,
+            "the 3D-scoped builder must stay unscoped — the legacy route depends on it"
+        );
+        assert_eq!(free.type_, scoped.type_);
+        assert_eq!(free.point, scoped.point);
+    }
+
+    /// `with_other` sets only `other`/`other2`, leaving the rest of the
+    /// constraint exactly as [`Slvs_Constraint::new`] built it.
+    #[test]
+    fn with_other_sets_only_the_endpoint_selectors() {
+        let ch = Slvs_hConstraint(5);
+        let base = Slvs_Constraint::new(
+            ch,
+            G,
+            SLVS_C_ARC_LINE_TANGENT,
+            WP,
+            1.5,
+            Slvs_hEntity(41),
+            Slvs_hEntity(42),
+            Slvs_hEntity(43),
+            Slvs_hEntity(44),
+        );
+        assert_eq!(base.other, 0, "new() must default the selectors to 0");
+        assert_eq!(base.other2, 0);
+
+        let c = base.with_other(1, 2);
+        assert_eq!(c.other, 1);
+        assert_eq!(c.other2, 2);
+
+        assert_eq!(c.h, base.h);
+        assert_eq!(c.group, base.group);
+        assert_eq!(c.type_, base.type_);
+        assert_eq!(c.wrkpl, base.wrkpl);
+        assert_eq!(c.valA, base.valA);
+        assert_eq!(c.ptA, base.ptA);
+        assert_eq!(c.ptB, base.ptB);
+        assert_eq!(c.entityA, base.entityA);
+        assert_eq!(c.entityB, base.entityB);
+        assert_eq!(c.entityC, base.entityC);
+        assert_eq!(c.entityD, base.entityD);
+    }
+}
