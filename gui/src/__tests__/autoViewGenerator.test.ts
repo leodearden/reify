@@ -1,4 +1,4 @@
-import { describe, it, expect, expectTypeOf } from 'vitest';
+import { describe, it, expect, expectTypeOf, vi } from 'vitest';
 import {
   generateDefaultView,
   generateAllGeometryView,
@@ -6,7 +6,28 @@ import {
   defaultVisibilityFor,
 } from '../stores/autoViewGenerator';
 import type { ViewDefinition } from '../stores/autoViewGenerator';
-import type { EntityTreeNode } from '../types';
+import type { DisplayDirective, EntityTreeNode, MeshData } from '../types';
+
+// `computePaneGroups` lives in App.tsx, whose module graph reaches the Tauri
+// bridge and (via `./viewport`) three.js at import time. Mocked as App.test.tsx
+// does so this store-level suite can compose the two halves of the #5195
+// routing path (visibility map × pane bucketing) without rendering App.
+// The viewport stub covers exactly App.tsx's imports from './viewport'
+// (`DualViewport`, `MultiViewport`); without it three's lottie_canvas module
+// calls `HTMLCanvasElement.getContext` at import and jsdom throws.
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] }),
+}));
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+}));
+vi.mock('../viewport', () => ({
+  Viewport: () => document.createElement('div'),
+  DualViewport: () => document.createElement('div'),
+  MultiViewport: () => document.createElement('div'),
+}));
+// eslint-disable-next-line import/first
+import { computePaneGroups } from '../App';
 
 // ---------------------------------------------------------------------------
 // Local fixture builder
@@ -21,6 +42,16 @@ function makeNode(overrides: Partial<EntityTreeNode> & { entity_path: string }):
     freshness: 'final',
     children: [],
     ...overrides,
+  };
+}
+
+/** Minimal `MeshData`; mirrors App.test.tsx's `makeMesh`. */
+function makeMesh(entityPath: string): MeshData {
+  return {
+    entity_path: entityPath,
+    vertices: new Float32Array([0, 0, 0]),
+    indices: new Uint32Array([0]),
+    normals: null,
   };
 }
 
@@ -528,9 +559,27 @@ describe('DisplayOutput explicit routing (#5195)', () => {
     expect(defaultVisibilityFor(node, new Set(['P#realization[0]']))).toBe('show');
   });
 
-  it('defaultVisibilityFor: a non-realization node is unaffected by routing', () => {
-    const node = makeNode({ entity_path: 'P.width', kind: 'param', type_name: 'Length' });
-    expect(defaultVisibilityFor(node, new Set(['P#realization[0]']))).toBe('show');
+  it('defaultVisibilityFor: routing never reaches a non-realization node, even one named as a subject', () => {
+    // The subject set contains the node's OWN path, so the path lookup in rule
+    // -1 succeeds and `node.kind === 'realization'` is the only thing left
+    // holding it back. Both nodes below resolve to 'hidden' under the normal
+    // rules, so deleting the kind guard would flip them to 'show' — an
+    // arrangement where the subject set and the node path never intersect
+    // cannot detect that, since a param resolves to 'show' either way.
+    const letGeometry = makeNode({
+      entity_path: 'P.body',
+      kind: 'let',
+      type_name: 'Geometry',
+    });
+    expect(defaultVisibilityFor(letGeometry, new Set(['P.body']))).toBe('hidden');
+
+    const hiddenParam = makeNode({
+      entity_path: 'P.width',
+      kind: 'param',
+      type_name: 'Length',
+      default_visible: false,
+    });
+    expect(defaultVisibilityFor(hiddenParam, new Set(['P.width']))).toBe('hidden');
   });
 
   it('generateDefaultView: subject forced show; non-subject keeps its own rule', () => {
@@ -629,14 +678,40 @@ describe('DisplayOutput explicit routing (#5195)', () => {
     expect(defaultVisibilityFor(node, new Set(['BoltFlange#realization[3]']))).toBe('hidden');
   });
 
-  it('a subject routed to pane >= 1 does not blank the remaining bodies', () => {
-    // Every pane shares ONE visibility map (App.tsx:810 `get entityVisibility()`),
-    // and computePaneGroups buckets unrouted meshes into pane 0 via
-    // `subjectMap.get(path) ?? 0` (App.tsx:213). Hiding non-subjects therefore
-    // left pane 0 (design-main) rendering empty whenever a design routed one
-    // subject to a secondary pane without routing every other body too.
-    const view = generateDefaultView(subjectTree(), new Set(['P#realization[0]']));
-    expect(view.visibility['P#realization[0]']).toBe('show');
+  it('a subject routed to pane >= 1 does not blank pane 0 (generateDefaultView ∘ computePaneGroups)', () => {
+    // The COMPOSITION is the thing that broke, so this test runs it rather than
+    // re-asserting `generateDefaultView` alone: every pane shares ONE visibility
+    // map (App.tsx `get entityVisibility()`), while computePaneGroups buckets
+    // unrouted meshes into pane 0 via `subjectMap.get(path) ?? 0` (App.tsx:213).
+    // Under the old exhaustive rule, routing realization[0] to pane 1 hid
+    // realization[1] — which is exactly the mesh computePaneGroups puts in pane
+    // 0 — so design-main rendered empty.
+    const displayPanes: DisplayDirective[] = [{ subject: 'P#realization[0]', pane: 1 }];
+    const meshes: Record<string, MeshData> = {
+      'P#realization[0]': makeMesh('P#realization[0]'),
+      'P#realization[1]': makeMesh('P#realization[1]'),
+    };
+
+    const view = generateDefaultView(
+      subjectTree(),
+      new Set(displayPanes.map((d) => d.subject)),
+    );
+    const { groups, dropped } = computePaneGroups(displayPanes, meshes);
+    expect(dropped).toEqual([]);
+
+    // Pane 0 (design-main) holds the UNROUTED body …
+    const pane0 = groups.find((g) => g.pane === 0);
+    expect(pane0).toBeDefined();
+    expect(Object.keys(pane0!.meshes)).toEqual(['P#realization[1]']);
+    // … and the shared visibility map must not have hidden it. This pairing is
+    // the regression: a non-empty pane-0 bucket whose only member is 'hidden'
+    // renders as a blank viewport.
     expect(view.visibility['P#realization[1]']).toBe('show');
+
+    // The routed subject lands in pane 1 and is shown there.
+    const pane1 = groups.find((g) => g.pane === 1);
+    expect(pane1).toBeDefined();
+    expect(Object.keys(pane1!.meshes)).toEqual(['P#realization[0]']);
+    expect(view.visibility['P#realization[0]']).toBe('show');
   });
 });
