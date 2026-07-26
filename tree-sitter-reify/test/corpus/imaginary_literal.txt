@@ -129,7 +129,7 @@ structure S {
       name: (identifier)
       value: (number_literal))
     (ERROR
-      (UNEXPECTED 'j'))))
+      (UNEXPECTED '\n'))))
 
 ================================================================================
 composition: 2j + 3j forms a binary_expression over two imaginary_literals
