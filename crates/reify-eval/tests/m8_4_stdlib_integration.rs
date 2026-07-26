@@ -40,7 +40,16 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
     let source =
         std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
 
-    let parsed = reify_syntax::parse(&source, reify_core::ModulePath::single(module_name));
+    // Use prelude-aware parsing so `Type.Variant` references against stdlib
+    // enums (e.g. `MaterialCondition.RFS`) resolve as `EnumAccess` nodes — see
+    // `parse_with_stdlib` for details.  This matches the `compile_with_stdlib`
+    // companion below, and is what `reify check` / `reify eval` already do, so
+    // these fixtures parse in-process exactly as the product parses them.
+    // Required once a fixture stops re-declaring the stdlib enum locally: the
+    // bare `reify_syntax::parse` would degrade `MaterialCondition.RFS` to a
+    // `MemberAccess`.  Precedent: crates/reify-compiler/tests/examples_smoke.rs.
+    let parsed =
+        reify_compiler::parse_with_stdlib(&source, reify_core::ModulePath::single(module_name));
     assert!(
         parsed.errors.is_empty(),
         "parse errors in {}: {:?}",
@@ -686,6 +695,127 @@ fn io_export_flatness_tolerance() {
         "ExportPart.flat",
         "tolerance_value",
         0.00002,
+        1e-12,
+        DimensionVector::LENGTH,
+    );
+}
+
+// ── task #5582 step-3: io_export_flatness_resolves_stdlib_geometry_feature ───
+
+/// Sorted `member` list of every cell `result` produced for `entity` — used to
+/// make a missing-cell panic read as "mirror reintroduced" rather than
+/// "cell renamed".
+fn members_of(result: &reify_eval::EvalResult, entity: &str) -> Vec<String> {
+    let mut members: Vec<String> = result
+        .values
+        .iter()
+        .filter(|(id, _)| id.entity == entity)
+        .map(|(id, _)| id.member.clone())
+        .collect();
+    members.sort();
+    members
+}
+
+/// io_export.ri's `ExportPart.flat` must resolve against the STDLIB `Flatness`,
+/// not a local eval-time mirror — and the mirror here is actively DRIFTED, not
+/// merely redundant:
+///   - The local mirror declares `param feature : Real = 0.0` and the call site
+///     passes `feature: 0.0`, whereas stdlib has declared `feature : Geometry`
+///     since #3116 (crates/reify-compiler/stdlib/tolerancing.ri:79-83). So
+///     `ExportPart.flat.feature` must be a `Value::GeometryHandle`, not a
+///     dimensionless `Value::Scalar { si_value: 0.0, .. }`.
+///   - The mirror carries no trait bound, so it also suppresses
+///     `nominal_zone` — the `GeometricTolerance` trait's
+///     `let nominal_zone = effective_tolerance_zone(...)` (tolerancing.ri:56).
+///
+/// The `ExportPart.flat.tolerance_value` and `ExportPart.tol.*` limits are
+/// pinned alongside so the strip is proven VALUE-PRESERVING.
+///
+/// RED before the mirrors are stripped from examples/io_export.ri.
+#[test]
+fn io_export_flatness_resolves_stdlib_geometry_feature() {
+    let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
+
+    // ── (i) nominal_zone from the GeometricTolerance trait `let` ─────────────
+    let nominal_zone = result
+        .values
+        .get(&ValueCellId::new("ExportPart.flat", "nominal_zone"))
+        .unwrap_or_else(|| {
+            panic!(
+                "ExportPart.flat.nominal_zone missing — it is the `GeometricTolerance` trait's \
+                 `let nominal_zone = effective_tolerance_zone(...)` \
+                 (stdlib/tolerancing.ri:56), which a local `structure def Flatness` mirror \
+                 without the trait bound suppresses. A mirror has been reintroduced into \
+                 examples/io_export.ri. ExportPart.flat members produced: {:?}",
+                members_of(&result, "ExportPart.flat")
+            )
+        });
+    match nominal_zone {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert!(
+                (si_value - 2e-5).abs() < 1e-12,
+                "ExportPart.flat.nominal_zone should be 2e-5 m (0.02mm), got {si_value}"
+            );
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "ExportPart.flat.nominal_zone should have LENGTH dimension"
+            );
+        }
+        other => panic!("ExportPart.flat.nominal_zone should be Value::Scalar, got {other:?}"),
+    }
+
+    // ── (ii) feature is a live geometry handle, not the 0.0 placeholder ──────
+    let feature = result
+        .values
+        .get(&ValueCellId::new("ExportPart.flat", "feature"))
+        .unwrap_or_else(|| {
+            panic!(
+                "ExportPart.flat.feature missing. ExportPart.flat members produced: {:?}",
+                members_of(&result, "ExportPart.flat")
+            )
+        });
+    assert!(
+        matches!(feature, Value::GeometryHandle { .. }),
+        "ExportPart.flat.feature must be a geometry handle — stdlib `Flatness` declares \
+         `feature : Geometry` (#3116, stdlib/tolerancing.ri:79-83). A dimensionless \
+         Scalar here means the drifted local mirror (`param feature : Real = 0.0`) \
+         has been reintroduced into examples/io_export.ri. Got: {feature:?}"
+    );
+
+    // ── (iii) the strip is value-preserving ──────────────────────────────────
+    assert_scalar(
+        &result,
+        "ExportPart.flat",
+        "tolerance_value",
+        2e-5,
+        1e-12,
+        DimensionVector::LENGTH,
+    );
+    assert_scalar(
+        &result,
+        "ExportPart.tol",
+        "upper_limit",
+        0.10005,
+        1e-12,
+        DimensionVector::LENGTH,
+    );
+    assert_scalar(
+        &result,
+        "ExportPart.tol",
+        "lower_limit",
+        0.099_950_000_000_000_01,
+        1e-12,
+        DimensionVector::LENGTH,
+    );
+    assert_scalar(
+        &result,
+        "ExportPart.tol",
+        "tolerance_band",
+        0.0001,
         1e-12,
         DimensionVector::LENGTH,
     );
