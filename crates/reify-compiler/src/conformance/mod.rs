@@ -1233,6 +1233,39 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         (Type::Selector(_) | Type::AnySelector, arg_ty) => {
             reject_if_incompatible(param_type, arg_ty, ctx, emit_selector_mismatch);
         }
+        // Leaf: param type is a Field (task 5465, family 3). SHAPE-BASED, and
+        // deliberately WITHOUT a domain/codomain check.
+        //
+        // Both `Field` slots erase to the expression compiler's numeric
+        // fallback: a legitimate arg's `result_type` is `Field<Real, Real>`
+        // however the field was declared (an analytical `field def` is the
+        // common case — `examples/fea_shell_channels.ri` alone produced six such
+        // false warnings before this arm existed: top / mid / bottom /
+        // displacement / stress / frame). Comparing the declared slots against
+        // that placeholder would compare a declaration against a hole, so this
+        // arm is NOT routed through `type_compatible` — the same reason the
+        // `Type::Vector` arm above is shape-based (task-4622 D1).
+        //
+        // The skip guard is character-for-character the `Type::Vector` arm's, so
+        // the anti-cascade / unverifiable set cannot drift between the two arms:
+        // Error (anti-cascade), TypeParam (unresolved generic, decided at
+        // instantiation), Geometry (unverifiable at the type level), TraitObject
+        // (may resolve to a field-producing type).
+        (Type::Field { .. }, arg_ty)
+            if !matches!(
+                arg_ty,
+                Type::Error | Type::TypeParam(_) | Type::Geometry | Type::TraitObject(_)
+            ) =>
+        {
+            // Accept any field-shaped arg, plus a lambda: `Type::Function` is a
+            // legitimate spelling of a field-shaped arg at a `Field` slot.
+            // Everything else (String, Bool, Int, Scalar, Point, List, …) is
+            // rejected through the shared `emit_arg_type_mismatch`, which already
+            // emits `ArgTypeMismatch` at `ctx.severity` — no new DiagnosticCode.
+            if !matches!(arg_ty, Type::Field { .. } | Type::Function { .. }) {
+                emit_arg_type_mismatch(param_type, arg_ty, ctx);
+            }
+        }
         // Option-unwrap (implicit-Some, C1 rule 6 — task 5302 α): an `Option<T>`
         // param supplied a bare non-Option arg of type `T` is a valid `Some(arg)`.
         // Recurse on the inner param type so the arg is checked against `T`. This
@@ -1338,13 +1371,20 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// Generalizing any of these needs new `type_compat.rs` coercion rules, which is
 /// an explicit α non-goal; it is tracked as a separate follow-up.
 ///
-/// * **`Point` / `Vector` quantity slots, `Field`** — args routinely compile to
-///   the expression compiler's numeric-fallback or erased placeholder rather
-///   than the nominal type. `point3(0m, 0m, 0m)` is a `FunctionCall` whose
-///   result_type is `Scalar[m]`, never `Type::Point`; an analytical `field def`
-///   erases both slots to `Field<Real, Real>` whatever its declaration says.
-///   This is the same placeholder class the `Type::Geometry` exclusion and
-///   [`promote_function_call_to_structure_ref`] already exist for.
+/// * **`Point` quantity slots** — args routinely compile to the expression
+///   compiler's numeric-fallback placeholder rather than the nominal type.
+///   `point3(0m, 0m, 0m)` is a `FunctionCall` whose result_type is `Scalar[m]`,
+///   never `Type::Point`. This is the same placeholder class the
+///   `Type::Geometry` exclusion and [`promote_function_call_to_structure_ref`]
+///   already exist for.
+///
+/// **`Field` is no longer excluded** (task 5465, family 3): it is handled by a
+/// dedicated SHAPE-BASED arm in [`walk_param_against_arg_type`], exactly as
+/// `Type::Vector` is, so it never reaches this predicate. The erasure rationale
+/// above is still why that arm is shape-based rather than `type_compatible`-based
+/// — an analytical `field def` erases both slots to `Field<Real, Real>` whatever
+/// its declaration says — but "unverifiable slots" is not the same as
+/// "unverifiable family", and the family itself is now checked.
 /// * **`Matrix` / `Tensor`** — a nested list literal is the idiomatic spelling
 ///   of a `Matrix3x3`, but it compiles to `List<List<Real>>` and no
 ///   `List`→`Matrix` arm exists. Unlike the placeholder families this is a
