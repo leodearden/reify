@@ -987,13 +987,21 @@ assert "I13b: positive-control-under-mount: cp IS invoked" \
 #                                         I14g: sibling dir absent → FAILS (RED).
 # After fix (#4896, pool-level sibling):  I14d: no in-lane trash → PASSES (GREEN);
 #                                         I14g: trash in sibling → PASSES (GREEN).
+#
+# I14_LANE is nested under a private per-run parent (I14_LANE_PARENT), NOT bare /tmp
+# (task 5384; esc-5354-6): the script under test computes RESEED_TRASH_DIR as
+# dirname(LANE_DIR)/.reseed-trash, so a bare-/tmp lane would put I14_SIBLING_TRASH_DIR
+# at the machine-shared /tmp/.reseed-trash — vulnerable to a flaky I14g on hosts running
+# many concurrent agents/test runs. Same pattern I13 already uses for I_MOUNT above.
 I14_BASE_PARENT="$(mktemp -d /tmp/test-seed-I14-parent-XXXXXX)"
 I14_BASE="$I14_BASE_PARENT/target"
-I14_LANE="$(mktemp -d /tmp/test-seed-I14-lane-XXXXXX)"
+I14_LANE_PARENT="$(mktemp -d /tmp/test-seed-I14-lane-parent-XXXXXX)"
+I14_LANE="$(mktemp -d "$I14_LANE_PARENT/lane-XXXXXX")"
 # Set I14_SIBLING_TRASH_DIR early so (a) the pre-clean below and (b) the I14g
-# assertion both reference the same computed path.
+# assertion both reference the same computed path. Because I14_LANE_PARENT is a
+# fresh per-run dir, this sibling trash dir is likewise private to this run.
 I14_SIBLING_TRASH_DIR="$(dirname "$I14_LANE")/.reseed-trash"
-_TMPDIRS+=("$I14_BASE_PARENT" "$I14_LANE")
+_TMPDIRS+=("$I14_BASE_PARENT" "$I14_LANE_PARENT")
 mkdir -p "$I14_BASE/debug"
 echo "base artifact" > "$I14_BASE/debug/base_artifact.a"
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$I14_BASE_PARENT/.warm-base-meta"
@@ -1005,10 +1013,10 @@ mkdir -p "$I14_LANE/target"
 echo "stale" > "$I14_LANE/target/stale.a"
 echo "sentinel content" > "$I14_LANE/target/TRASH_SENTINEL.txt"
 
-# Pre-clean: remove any trash entries for THIS lane left by prior runs.
-# REIFY_TEST_PIN_RESEED_TRASH=1 is a no-op rm so entries accumulate under the shared
-# /tmp/.reseed-trash; scoping to $(basename I14_LANE).* removes only this run's lane's
-# stale litter without disturbing concurrent test lanes under the same parent.
+# Pre-clean: defense-in-depth in case I14_SIBLING_TRASH_DIR is non-empty (it should
+# be fresh, since I14_LANE_PARENT is a private per-run mktemp'd dir — see above).
+# REIFY_TEST_PIN_RESEED_TRASH=1 is a no-op rm so entries would otherwise accumulate;
+# scoping to $(basename I14_LANE).* removes only this run's lane's stale litter.
 # This ensures I14g tests THIS seed's output, not a leftover from a prior run.
 find "$I14_SIBLING_TRASH_DIR" -maxdepth 1 -name "$(basename "$I14_LANE").*" \
     -print0 2>/dev/null | xargs -0 rm -rf 2>/dev/null || true
