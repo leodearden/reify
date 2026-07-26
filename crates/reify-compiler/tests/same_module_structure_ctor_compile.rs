@@ -652,3 +652,112 @@ structure App {
         s
     );
 }
+
+// ─── task-5494 step-2: boundary #5, hazard 2 (nested-ctor-in-let lowering) ─────
+
+/// A `let` inside a same-module structure that itself constructs another
+/// same-module structure must lower to a nested `StructureInstanceCtor` on the
+/// fn-returned path — not to a generic function call — and must carry the inner
+/// structure's own `lets` so `o.h.b` resolves at eval.
+///
+/// Hazard 2 (entity.rs:5972-5984): `set_template_registry` is deliberately NOT
+/// called on the skeleton's scope, so `let h = Inner()` compiles to a generic
+/// FunctionCall and does not carry Inner's lets — "a narrow sub-consistency gap
+/// for nested-ctor-in-let cases on the fn-returned path … latent but untested".
+/// This test makes it tested, asserting both the IR shape and the value.
+#[test]
+fn fn_returned_ctor_nested_ctor_in_let_carries_inner_lets() {
+    let src = r#"
+module test.nested
+
+structure def Inner {
+    param a : Real = 1.0
+    let b = a + 1.0
+}
+
+structure def Outer {
+    param k : Real = 2.0
+    let h = Inner()
+}
+
+pub fn make_outer() -> Outer { Outer() }
+
+structure App {
+    let o = make_outer()
+    let v = o.h.b
+}
+"#;
+
+    let module = reify_test_support::helpers::compile_source_with_stdlib(src);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "nested-ctor-in-let module should compile with zero errors; got: {:#?}",
+        errors
+    );
+
+    // (a) IR shape: Outer's ctor `lets["h"]` must itself be a
+    //     StructureInstanceCtor{Inner}, and must not be poison.
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "make_outer")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `make_outer` in compiled module; found functions: {:?}",
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        });
+
+    match &func.body.result_expr.kind {
+        CompiledExprKind::StructureInstanceCtor {
+            type_name, lets, ..
+        } => {
+            assert_eq!(type_name, "Outer", "fn body ctor type_name must be Outer");
+            let h = lets.iter().find(|(n, _)| n == "h").unwrap_or_else(|| {
+                panic!(
+                    "Outer ctor `lets` must contain \"h\"; got: {:?}",
+                    lets.iter().map(|(n, _)| n).collect::<Vec<_>>()
+                )
+            });
+            assert_ne!(
+                h.1.result_type,
+                Type::Error,
+                "`h` let expr result_type must not be Error"
+            );
+            match &h.1.kind {
+                CompiledExprKind::StructureInstanceCtor { type_name, .. } => {
+                    assert_eq!(
+                        type_name, "Inner",
+                        "`let h = Inner()` must lower to StructureInstanceCtor{{Inner}}"
+                    );
+                }
+                other => panic!(
+                    "`let h = Inner()` must lower to a nested StructureInstanceCtor, \
+                     not a generic call — this is hazard 2 (entity.rs:5972-5984); \
+                     got: {:?}",
+                    other
+                ),
+            }
+        }
+        other => panic!(
+            "make_outer body should be StructureInstanceCtor; got: {:?}",
+            other
+        ),
+    }
+
+    // (b) Value: `o.h.b` == Inner's `a + 1.0` == 2.0.
+    let result = eval_source_with_stdlib(src);
+    reify_test_support::assert_no_eval_errors(&result);
+    let v = reify_test_support::cell_value(&result, "App", "v");
+    assert_eq!(
+        v,
+        Value::Real(2.0),
+        "App.v must be Inner's derived let `a + 1.0` == 2.0; got: {:?}",
+        v
+    );
+}
