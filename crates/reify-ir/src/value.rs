@@ -2563,21 +2563,18 @@ impl Value {
                 source,
                 ..
             } => format!("Field<{}, {}>({:?})", domain_type, codomain_type, source),
-            Value::Tensor(items) => {
-                let reference = aggregate_magnitude(self);
-                format!("[{}]", join_rel(items, reference))
-            }
-            Value::Point(items) => {
-                let reference = aggregate_magnitude(self);
-                format!("point({})", join_rel(items, reference))
-            }
-            Value::Vector(items) => {
-                let reference = aggregate_magnitude(self);
-                format!("vec({})", join_rel(items, reference))
-            }
-            Value::Matrix(rows) => {
-                let reference = aggregate_magnitude(self);
-                format!("[{}]", join_rows_rel(rows, reference))
+            // Aggregate variants (task 5339): compute the whole-aggregate
+            // reference once here — this is the only place it is seeded — and
+            // hand off to `format_display_rel`, which owns every aggregate's
+            // rendering and threads that same reference through nesting.
+            // Keeping one delegating arm instead of four inlined copies means
+            // adding an aggregate variant is a two-site edit
+            // (`aggregate_magnitude` + `format_display_rel`), and a variant
+            // reachable here but missing there can only ever under-snap via
+            // `format_display_rel`'s `_` fallback, never recompute a smaller
+            // local reference.
+            Value::Tensor(_) | Value::Point(_) | Value::Vector(_) | Value::Matrix(_) => {
+                self.format_display_rel(aggregate_magnitude(self))
             }
             Value::Complex { re, im, dimension } => {
                 let (display_re, _) = dimension.to_display_units(*re);
