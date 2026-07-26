@@ -5503,4 +5503,298 @@ mod tests {
             "cost must not be the Undef sentinel; got {cost_lo}"
         );
     }
+
+    /// Assert two `ValueMap`s hold exactly the same keys bound to exactly the
+    /// same values — the teeth behind BT-2's "byte-identical" claim (a
+    /// per-key spot check would not catch an EXTRA key the fold inserted).
+    #[track_caller]
+    fn assert_same_value_map(actual: &ValueMap, expected: &ValueMap, ctx: &str) {
+        assert_eq!(
+            actual.len(),
+            expected.len(),
+            "{ctx}: key COUNT differs — actual {:?} vs expected {:?}",
+            actual.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+            expected.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+        );
+        for (id, want) in expected.iter() {
+            let got = actual
+                .get(id)
+                .unwrap_or_else(|| panic!("{ctx}: expected key {id:?} is missing"));
+            assert_eq!(got, want, "{ctx}: value at {id:?} differs");
+        }
+    }
+
+    /// BT-2 (PRD §6.2 second INVARIANT) — an empty `dependent_cells` leaves
+    /// `build_trial_values` byte-identical to its pre-β 3-arg behaviour.
+    ///
+    /// This is the regression fence for every non-clustered solve, which is
+    /// almost all of them: they must take exactly the path they took before.
+    /// The three legacy `build_trial_values_*` tests above already witness the
+    /// empty case per-key; this one adds whole-map equality, so an extra key
+    /// leaking in from a future fold cannot slip through.
+    #[test]
+    fn empty_dependent_cells_leaves_build_trial_values_byte_identical() {
+        use super::build_trial_values;
+        use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, Value};
+
+        let thickness_id = ValueCellId::new("Bracket", "thickness");
+        let angle_id = ValueCellId::new("Bracket", "angle");
+        let width_id = ValueCellId::new("Bracket", "width");
+
+        let mut base = ValueMap::new();
+        base.insert(
+            width_id.clone(),
+            Value::Scalar {
+                si_value: 0.080,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let params = vec![
+            AutoParam {
+                id: thickness_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: false,
+            },
+            AutoParam {
+                id: angle_id.clone(),
+                param_type: Type::angle(),
+                bounds: Some((0.0, std::f64::consts::PI)),
+                free: false,
+            },
+        ];
+
+        // Hand-built expectation: base ++ the trial autos, nothing else.
+        let mut expected = base.clone();
+        expected.insert(
+            thickness_id,
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        expected.insert(
+            angle_id,
+            Value::Scalar {
+                si_value: 1.2,
+                dimension: DimensionVector::ANGLE,
+            },
+        );
+
+        assert_same_value_map(
+            &build_trial_values(&base, &params, &[0.005, 1.2], &[], &[]),
+            &expected,
+            "multi-param, empty dependent_cells",
+        );
+
+        // Empty params AND empty dependent_cells: the base map, untouched.
+        assert_same_value_map(
+            &build_trial_values(&base, &[], &[], &[], &[]),
+            &base,
+            "empty params, empty dependent_cells",
+        );
+    }
+
+    /// BT-2 (PRD §7) — an empty `dependent_cells` preserves the LEGACY cost
+    /// surface through `ConstraintCostFunction::cost`, not just the helper.
+    ///
+    /// Uses the same joint-drive fixture as BT-1, so the two tests read as a
+    /// matched pair and the difference is unmistakable: WITH the fold the
+    /// objective moves (1.0 → 4.0); WITHOUT dependent cells it is pinned at
+    /// `line_cost`'s stale base value at every trial point. That constant is
+    /// precisely the pre-β behaviour every non-clustered solve must keep.
+    #[test]
+    fn empty_dependent_cells_preserves_the_legacy_cost_surface() {
+        use super::ConstraintCostFunction;
+        use argmin::core::CostFunction;
+
+        let (auto_params, constraints, base, _dependent_cells, objective) =
+            joint_drive_dependent_cell_fixture();
+
+        let cost_fn = ConstraintCostFunction {
+            auto_params: &auto_params,
+            constraints: &constraints,
+            base_values: &base,
+            objective: Some(&objective),
+            functions: &[],
+            dependent_cells: &[],
+        };
+
+        let cost_lo = cost_fn.cost(&vec![2.0]).expect("cost at q=2");
+        let cost_hi = cost_fn.cost(&vec![8.0]).expect("cost at q=8");
+
+        assert!(
+            (cost_lo - 999.0).abs() < 1e-9,
+            "with NO dependent cells the objective must read `line_cost`'s \
+             stale base value (999.0) verbatim — the pre-β surface; got {cost_lo}"
+        );
+        assert!(
+            (cost_lo - cost_hi).abs() < 1e-12,
+            "with NO dependent cells the cost must be CONSTANT in the auto \
+             (that constancy IS the legacy behaviour, and is exactly what the \
+              fold exists to remove when dependent cells ARE present); \
+             got {cost_lo} vs {cost_hi}"
+        );
+    }
+
+    /// BT-2 never-overwrite-auto INVARIANT (PRD §6.2 first INVARIANT).
+    ///
+    /// Hands the fold a hostile/malformed `dependent_cells` list whose entry id
+    /// COLLIDES with an auto param — a list reify-eval's `build_dependent_cells`
+    /// would never emit, since stage (a) drops autos by construction. The trial
+    /// auto scalar must survive: silently clobbering it would corrupt the point
+    /// Nelder-Mead thinks it is evaluating, and the corruption would be
+    /// invisible (the solver would report a solved auto it never actually
+    /// tested).
+    ///
+    /// This guards against upstream membership DRIFT, not against today's
+    /// contract — which is exactly why it must be enforced rather than assumed.
+    #[test]
+    fn fold_must_never_overwrite_an_auto_param() {
+        use super::build_trial_values;
+        use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, Value};
+
+        let q_id = ValueCellId::new("Rivet", "quantity_produced");
+        let unit_cost_id = ValueCellId::new("Rivet", "unit_cost");
+
+        let mut base = ValueMap::new();
+        base.insert(
+            unit_cost_id.clone(),
+            Value::Scalar {
+                si_value: 0.5,
+                dimension: DimensionVector::MONEY,
+            },
+        );
+
+        let auto_params = vec![AutoParam {
+            id: q_id.clone(),
+            param_type: Type::dimensionless_scalar(),
+            bounds: Some((1.0, 100.0)),
+            free: true,
+        }];
+
+        // HOSTILE: a dependent cell keyed on the AUTO's own id. Evaluating it
+        // would yield 0.5 * 0.5 = 0.25, which is neither trial point — so a
+        // clobber is unmistakable.
+        let money = Type::Scalar {
+            dimension: DimensionVector::MONEY,
+        };
+        let hostile = vec![(
+            q_id.clone(),
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::value_ref(unit_cost_id.clone(), money.clone()),
+                CompiledExpr::value_ref(unit_cost_id, money),
+                Type::dimensionless_scalar(),
+            ),
+        )];
+
+        for trial in [2.0_f64, 8.0_f64] {
+            let values = build_trial_values(&base, &auto_params, &[trial], &hostile, &[]);
+            match values.get(&q_id) {
+                Some(&Value::Scalar { si_value, .. }) => assert!(
+                    (si_value - trial).abs() < 1e-12,
+                    "the fold must NEVER overwrite an auto param's trial \
+                     scalar: expected {trial}, got {si_value}. A dependent-cell \
+                     id colliding with an auto id means upstream membership \
+                     drifted; the trial point must still win."
+                ),
+                other => panic!("expected a Scalar at the auto id, got {other:?}"),
+            }
+        }
+    }
+
+    /// BT-7(b) (PRD §5 decision 5) — the solver-side half of the `@optimized`
+    /// exclusion: a cell that reify-eval's membership rule left OUT of
+    /// `dependent_cells` must keep its base value across every trial point.
+    ///
+    /// An `@optimized` cell's value comes from the compute-dispatch registry.
+    /// `build_trial_values` folds through plain `reify_expr::eval_expr`, which
+    /// carries no registry, so re-folding such a cell would clobber the
+    /// dispatched result with the inline-fallback/Undef. The membership rule
+    /// (asserted end-to-end by reify-eval's
+    /// `dependent_cells_excludes_optimized_userfunctioncall_cell`) keeps it out
+    /// of the list; THIS test pins the consequence at the fold: absent means
+    /// frozen, with no bypass path back in.
+    #[test]
+    fn fold_leaves_cells_absent_from_dependent_cells_untouched() {
+        use super::build_trial_values;
+        use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, Value};
+
+        let q_id = ValueCellId::new("Rivet", "quantity_produced");
+        let unit_cost_id = ValueCellId::new("Rivet", "unit_cost");
+        let line_cost_id = ValueCellId::new("Rivet", "line_cost");
+        // Stands in for an @optimized cell: excluded from `dependent_cells`,
+        // its value having come from the compute-dispatch registry.
+        let dispatched_id = ValueCellId::new("Rivet", "opt_cost");
+
+        let money = Type::Scalar {
+            dimension: DimensionVector::MONEY,
+        };
+
+        let mut base = ValueMap::new();
+        base.insert(
+            unit_cost_id.clone(),
+            Value::Scalar {
+                si_value: 0.5,
+                dimension: DimensionVector::MONEY,
+            },
+        );
+        base.insert(
+            dispatched_id.clone(),
+            Value::Scalar {
+                si_value: 42.0,
+                dimension: DimensionVector::MONEY,
+            },
+        );
+
+        let auto_params = vec![AutoParam {
+            id: q_id.clone(),
+            param_type: Type::dimensionless_scalar(),
+            bounds: Some((1.0, 100.0)),
+            free: true,
+        }];
+
+        // Only the plain coupled cell is present — mirroring what membership
+        // emits once the @optimized cell has been dropped.
+        let dependent_cells = vec![(
+            line_cost_id.clone(),
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::value_ref(unit_cost_id, money.clone()),
+                CompiledExpr::value_ref(q_id, Type::dimensionless_scalar()),
+                money,
+            ),
+        )];
+
+        for trial in [2.0_f64, 8.0_f64] {
+            let values = build_trial_values(&base, &auto_params, &[trial], &dependent_cells, &[]);
+
+            match values.get(&dispatched_id) {
+                Some(&Value::Scalar { si_value, .. }) => assert!(
+                    (si_value - 42.0).abs() < 1e-12,
+                    "a cell absent from `dependent_cells` must keep its base \
+                     (compute-dispatched) value at trial q={trial}: expected \
+                     42.0, got {si_value}"
+                ),
+                other => panic!("expected the dispatched Scalar, got {other:?}"),
+            }
+
+            // Sanity: the cell that IS listed did move, so the test is not
+            // passing merely because the fold never ran.
+            match values.get(&line_cost_id) {
+                Some(&Value::Scalar { si_value, .. }) => assert!(
+                    (si_value - 0.5 * trial).abs() < 1e-12,
+                    "the LISTED cell must be recomputed at q={trial}: expected \
+                     {}, got {si_value}",
+                    0.5 * trial
+                ),
+                other => panic!("expected a Scalar at line_cost, got {other:?}"),
+            }
+        }
+    }
 }
