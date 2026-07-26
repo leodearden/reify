@@ -782,13 +782,27 @@ fn union_via_transitive_auto_owners(
         // must not be co-solved, because the merged problem's objective would be
         // constant in that child's auto. The cell stays `visited`, so the walk
         // terminates normally; only its frontier is cut.
-        if let Some(expr) = cell_map
-            .get(&id)
-            .or_else(|| normalized.as_ref().and_then(|n| cell_map.get(n)))
-        {
-            // Mark the normalised spelling visited too, so an id reached by both
-            // spellings is expanded once and the walk still terminates.
-            if let Some(n) = normalized {
+        //
+        // Resolve the derived-cell hit while remembering WHICH spelling produced
+        // it. The normalised spelling is retired into `visited` ONLY when it was
+        // the one actually expanded: marking it unconditionally would retire a
+        // DIFFERENT, real cell that the as-is hit merely shadowed. Concretely, a
+        // parent declaring its own `Parent.childinst.line_cost` cell (the
+        // reify-compiler/src/expr.rs:843 shape) normalises to `Child.line_cost`;
+        // if that child cell also exists and carries the `default_expr` chain
+        // reaching the child's auto, blanket-marking it visited would drop that
+        // chain and silently under-cluster. Termination does not depend on this
+        // insert — every frontier push is already guarded by `visited.insert`.
+        let hit = match cell_map.get(&id) {
+            Some(expr) => Some((*expr, None)),
+            None => normalized
+                .as_ref()
+                .and_then(|n| cell_map.get(n).map(|expr| (*expr, Some(n.clone())))),
+        };
+        if let Some((expr, expanded_via_normalized)) = hit {
+            // Retire only the spelling actually expanded, so an id reached by
+            // both spellings is expanded once.
+            if let Some(n) = expanded_via_normalized {
                 visited.insert(n);
             }
             if crate::engine_eval::is_optimized_userfn_cell(expr, functions) {
@@ -816,23 +830,63 @@ fn union_via_transitive_auto_owners(
 ///
 /// Deliberately NOT implemented by calling `enumerate_descendants`: that needs a
 /// populated `ValueMap` for collection counts (unavailable on the warm path
-/// before counts exist), consumes a node budget whose exhaustion would silently
-/// truncate the map, and emits runtime-count-dependent `[idx]` paths.  Because
+/// before counts exist) and emits runtime-count-dependent `[idx]` paths.  Because
 /// this re-implements those two `format!` shapes, the two sides are pinned
 /// together by `instance_path_map_matches_enumerate_descendants_paths` rather
 /// than by convention.
 ///
-/// Recursion is bounded by a structure-name visited set along the CURRENT path,
-/// so cyclic/self-containment terminates.
-fn build_instance_path_structure_map(templates: &[TopologyTemplate]) -> HashMap<String, String> {
+/// BOUNDS (task #5334, review round 3). The number of distinct instance paths is
+/// multiplicative in branching factor across containment depth, so this walk is
+/// bounded exactly the way its oracle is (structural_query.rs:157 depth guard,
+/// :179/:205 node budget) — it must not be the one unbudgeted structural
+/// enumeration on the interactive keystroke path:
+///
+/// * `max_depth` prunes at entry, `depth >= max_depth`, matching
+///   `enumerate_descendants` — deliberately NOT a structure-name cycle set,
+///   which would stop at the first repeat and so DIVERGE from the oracle for
+///   recursive containment (`A` contains `B` contains `A`), silently missing
+///   normalisations for exactly the deeply-nested designs this feature targets.
+/// * ONE `max_nodes` budget is shared across every root, so total map size (and
+///   hence the `format!`/`String` allocation count) is hard-bounded by
+///   `max_nodes` regardless of template count.  A per-root budget would bound
+///   only `templates.len() * max_nodes` — still multiplicative in the dimension
+///   this guard exists to contain.
+///
+/// Truncation is SAFE in the conservative direction: a missing entry means
+/// [`normalize_cell_id`] returns `None`, the walk finds no auto owner for that
+/// id, and the affected scopes simply do not cluster — the pre-#5334 behaviour.
+/// Unlike the oracle, exhaustion emits no diagnostic: cluster formation is an
+/// optimisation, and the same expansion runs again (with the same budgets, and
+/// there surfacing its own warnings) inside `build_solver_problem`.
+///
+/// One deliberate narrowing versus the oracle: a collection sub decrements the
+/// budget ONCE (for its index-stripped base path) rather than once per runtime
+/// index, so this side is strictly cheaper and can only ever truncate later.
+fn build_instance_path_structure_map(
+    templates: &[TopologyTemplate],
+    max_depth: usize,
+    max_nodes: usize,
+) -> HashMap<String, String> {
     fn walk(
         template: &TopologyTemplate,
         templates: &[TopologyTemplate],
         prefix: &str,
-        on_path: &mut HashSet<String>,
+        depth: usize,
+        max_depth: usize,
+        node_budget: &mut usize,
         out: &mut HashMap<String, String>,
     ) {
+        // Entry depth guard, mirroring structural_query.rs:157.
+        if depth >= max_depth {
+            return;
+        }
         for sub in &template.sub_components {
+            // Node budget, mirroring structural_query.rs:179/:205 — one decrement
+            // per emitted path, truncating (never panicking) on exhaustion.
+            if *node_budget == 0 {
+                return;
+            }
+            *node_budget -= 1;
             // Collection subs contribute the same index-stripped base path as a
             // plain sub — see the doc comment above.
             let node_path = format!("{}.{}", prefix, sub.name);
@@ -841,18 +895,30 @@ fn build_instance_path_structure_map(templates: &[TopologyTemplate]) -> HashMap<
             let Some(child) = templates.iter().find(|t| t.name == sub.structure_name) else {
                 continue;
             };
-            if !on_path.insert(sub.structure_name.clone()) {
-                continue; // already on the current path — cyclic containment
-            }
-            walk(child, templates, &node_path, on_path, out);
-            on_path.remove(&sub.structure_name);
+            walk(
+                child,
+                templates,
+                &node_path,
+                depth + 1,
+                max_depth,
+                node_budget,
+                out,
+            );
         }
     }
 
     let mut out: HashMap<String, String> = HashMap::new();
+    let mut node_budget = max_nodes;
     for template in templates {
-        let mut on_path: HashSet<String> = HashSet::from([template.name.clone()]);
-        walk(template, templates, &template.name, &mut on_path, &mut out);
+        walk(
+            template,
+            templates,
+            &template.name,
+            0,
+            max_depth,
+            &mut node_budget,
+            &mut out,
+        );
     }
     out
 }
@@ -987,16 +1053,37 @@ fn compute_clusters(
         // `objective_reads` cache, so `cost(self.descendants)` surfaces its
         // `line_cost` reads before the walk starts. The unexpanded cache is still
         // what the `None` branch — and the read-DAG / cycle diagnostics — use.
-        Some(ctx) => {
+        //
+        // OBJECTIVELESS FAST PATH (task #5334, review round 3). Only objective
+        // reads ever seed the union-find, so a module where NO template carries
+        // an objective can never form a δ cluster — every structure built below
+        // would be constructed and immediately discarded. This arm now runs on
+        // the cold eval()/check() path for every module and, on the warm path,
+        // on every keystroke whenever a solver is active, and objectiveless is
+        // the common case; the `contains_structural_query` fast path inside
+        // `expanded_objective_reads` covers only that one of the three builds.
+        // Skipping is exactly equivalent: `expanded_objective_reads` would
+        // return all-empty read vectors, over which the walk is a no-op.
+        Some(ctx) if templates.iter().any(|t| t.objective.is_some()) => {
             let cell_map = build_non_auto_cell_map(templates);
             // Built ONCE per call (not once per scope): the instance-path →
             // structure-name map that lets the walk resolve compiler-emitted
             // instance-path ids (`Rig.bolts.line_cost`) against the
             // structure-name-keyed `auto_owner` / `cell_map` (`Bolt.line_cost`).
-            // See [`normalize_cell_id`] for the two-sided root cause.
-            let path_map = build_instance_path_structure_map(templates);
+            // See [`normalize_cell_id`] for the two-sided root cause, and
+            // [`build_instance_path_structure_map`] for why it is budgeted.
+            let path_map = build_instance_path_structure_map(
+                templates,
+                ctx.max_unfold_depth,
+                ctx.max_unfold_nodes,
+            );
             let expanded_reads = expanded_objective_reads(templates, ctx);
             for (j, reads) in expanded_reads.iter().enumerate() {
+                // An objectiveless scope contributes no seeds; skip the walk's
+                // per-scope HashSet/Vec allocation rather than entering it empty.
+                if reads.is_empty() {
+                    continue;
+                }
                 union_via_transitive_auto_owners(
                     j,
                     reads,
@@ -1008,6 +1095,8 @@ fn compute_clusters(
                 );
             }
         }
+        // `Some(ctx)` with no objective anywhere — nothing can seed; see above.
+        Some(_) => {}
     }
 
     // Group members by union-find root.
@@ -2325,6 +2414,129 @@ structure Rig {
         );
     }
 
+    /// The same fixture as [`COMPILER_REAL_DELTA_SOURCE`], but instantiating the
+    /// Costed child through a COLLECTION sub — the way real `.ri` modules put
+    /// many identical Costed children under one parent.
+    ///
+    /// This is the shape that exercises `enumerate_descendants`' `[idx]` arm
+    /// (structural_query.rs:187), so the ids reaching the walk are
+    /// `Rig.bolts[0].line_cost` … `Rig.bolts[2].line_cost`.
+    const COMPILER_REAL_DELTA_COLLECTION_SOURCE: &str = r#"
+structure def Bolt : Costed {
+    param supplier          : String = "Acme"
+    param part_number       : String = "B-1"
+    param unit_cost         : Money  = 0.50USD
+    param lead_time         : Time   = 24h
+    param quantity_produced : Real   = auto
+    constraint quantity_produced >= 1.0
+    constraint quantity_produced <= 100.0
+}
+structure Rig {
+    sub bolts : List<Bolt>
+    constraint bolts.count == 3
+    minimize cost(self.descendants)
+}
+"#;
+
+    /// δ cluster formation must fire for a COLLECTION sub too (task #5334,
+    /// review round 3).
+    ///
+    /// [`strip_collection_indices`] exists solely so an indexed instance path
+    /// resolves, but every other cluster-formation fixture — the sibling
+    /// compiler-real test, the integration test, and all the builder ones — uses
+    /// a plain sub, leaving the indexed end-to-end chain
+    /// (`apply_cost_aggregation` minting `Rig.bolts[0].line_cost` →
+    /// `strip_collection_indices` → [`normalize_cell_id`] → union) pinned only
+    /// by `instance_path_map_matches_enumerate_descendants_paths`, which checks
+    /// the MAP in isolation and never runs the walk. A regression in that chain
+    /// would leave the feature a no-op for collection-based designs with a fully
+    /// green suite.
+    #[test]
+    fn delta_cluster_forms_over_a_collection_sub_instance_path() {
+        let compiled = reify_test_support::parse_and_compile_with_stdlib(
+            COMPILER_REAL_DELTA_COLLECTION_SOURCE,
+        );
+        let templates = &compiled.templates;
+
+        let rig = template_index(templates, "Rig");
+        let bolt = template_index(templates, "Bolt");
+        let mut expected_scopes = vec![rig, bolt];
+        expected_scopes.sort_unstable();
+
+        // Required for the same reason as in the sibling test: an under-populated
+        // registry makes `apply_cost_aggregation` drop every descendant.
+        let prelude = reify_compiler::stdlib_loader::load_stdlib();
+        let registry = crate::structural_query::build_trait_registry(
+            prelude
+                .iter()
+                .flat_map(|m| m.trait_defs.iter())
+                .chain(compiled.trait_defs.iter()),
+        );
+
+        // Unlike the plain-sub fixture, the count MUST be populated: the
+        // collection arm reads the sub's synthetic `__count_bolts` cell out of
+        // the ValueMap and folds a missing/undef value to 0 (structural_query.rs
+        // :171-177), which would enumerate nothing and pass vacuously with zero
+        // clusters.
+        let count_cell = templates[rig]
+            .sub_components
+            .iter()
+            .find(|s| s.name == "bolts")
+            .and_then(|s| s.count_cell.clone())
+            .expect("collection sub `bolts` must carry a synthetic count cell");
+        let mut values = ValueMap::default();
+        values.insert(count_cell, Value::Int(3));
+
+        let ctx = ClusterFormationCtx {
+            values: &values,
+            functions: &compiled.functions,
+            trait_registry: &registry,
+            max_unfold_depth: 64,
+            max_unfold_nodes: 10_000,
+        };
+
+        // Non-vacuity: the seeds really are INDEXED instance paths, so the union
+        // below can only succeed by going through `strip_collection_indices`.
+        let reads = super::expanded_objective_reads(templates, &ctx);
+        assert!(
+            reads[rig].iter().any(|r| r.entity.contains('[')),
+            "the expanded objective must carry `[idx]` instance-path reads \
+             (`Rig.bolts[0].line_cost`), else this test does not exercise \
+             `strip_collection_indices` at all; got: {:?}",
+            reads[rig]
+        );
+
+        let ro = resolve_order(templates, Some(&ctx));
+
+        assert_eq!(
+            ro.clusters.len(),
+            1,
+            "a collection-instantiated Costed child must couple exactly as a plain \
+             sub does. Zero clusters means the indexed seed (`Rig.bolts[0].line_cost`) \
+             failed to normalise to `Bolt.line_cost` — the feature is a no-op for \
+             collection-based designs; got: {:?}",
+            ro.clusters
+        );
+        let cluster = &ro.clusters[0];
+        assert_eq!(
+            cluster.scopes, expected_scopes,
+            "the cluster must span BOTH the Rig (idx {}) and Bolt (idx {}) scopes; got: {:?}",
+            rig, bolt, cluster.scopes
+        );
+        assert_eq!(
+            cluster.dim, 1,
+            "dim is the STRUCTURAL per-template auto sum (Bolt's single \
+             `quantity_produced`), not per collection instance; got: {}",
+            cluster.dim
+        );
+        assert_eq!(
+            cluster.disposition,
+            ClusterDisposition::MergedSolve,
+            "dim 1 is within cap ⇒ MergedSolve; got: {:?}",
+            cluster.disposition
+        );
+    }
+
     // -------------------------------------------------------------------------
     // step-13: fences for the instance-path normalisation layer
     // -------------------------------------------------------------------------
@@ -2383,7 +2595,11 @@ structure Rig {
             diags
         );
 
-        let map = super::build_instance_path_structure_map(&templates);
+        // SAME budgets as the oracle above — the two sides are only comparable
+        // when both run unbudgeted-in-practice (asserted for the oracle by
+        // `diags.is_empty()`); under truncation the map is a strict subset by
+        // design.
+        let map = super::build_instance_path_structure_map(&templates, 64, 10_000);
         assert!(
             !map.is_empty(),
             "the instance-path map must be non-empty, else this guard passes vacuously"
@@ -2433,6 +2649,107 @@ structure Rig {
             "expected ≥5 enumerated descendants (Rig.head, Rig.head.washer, \
              Rig.bolts[0..2] + their washers); got {}",
             checked
+        );
+    }
+
+    /// DRIFT GUARD, RECURSIVE-CONTAINMENT ARM (task #5334, review round 3).
+    ///
+    /// The sibling guard's fixture (Rig → Head/bolts → Washer) is acyclic, so it
+    /// cannot see the one place the two walks used to diverge: the map pruned on
+    /// a structure-name `on_path` set (stopping at the FIRST repeat of a
+    /// structure name along the path) while `enumerate_descendants` prunes on
+    /// `max_depth` (descending THROUGH the repeat until the depth budget runs
+    /// out). For `A` containing `B` containing `A`, the oracle therefore emitted
+    /// paths past the first cycle turn that the map did not contain —
+    /// `normalize_cell_id` missed, and δ formation silently under-clustered for
+    /// exactly the deeply-nested designs the feature targets, with the acyclic
+    /// guard fully green.
+    ///
+    /// Both sides now prune on depth alone, so this pins that agreement
+    /// executably: same `max_depth` in, same path set out, including the
+    /// past-the-cycle-turn paths — and nothing DEEPER than the shared bound.
+    #[test]
+    fn instance_path_map_matches_enumerate_descendants_under_recursive_containment() {
+        // Deliberately small, so the shared depth bound is reached inside a
+        // fixture whose full path set can be written out by hand below.
+        const MAX_DEPTH: usize = 4;
+
+        // A contains B contains A — recursive containment.
+        let a = TopologyTemplateBuilder::new("A")
+            .sub_component("b", "B", vec![])
+            .build();
+        let b = TopologyTemplateBuilder::new("B")
+            .sub_component("a", "A", vec![])
+            .build();
+        let templates = vec![a, b];
+        let values = ValueMap::default();
+
+        let mut node_budget = 10_000usize;
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let emitted = crate::structural_query::enumerate_descendants(
+            &templates[0],
+            &templates,
+            &values,
+            "A",
+            0,
+            MAX_DEPTH,
+            &mut node_budget,
+            &mut diags,
+        );
+        let oracle_paths: Vec<(String, String)> = emitted
+            .iter()
+            .map(|elem| match (&elem.kind, &elem.result_type) {
+                (reify_ir::CompiledExprKind::Literal(Value::String(p)), Type::StructureRef(tn)) => {
+                    (p.clone(), tn.clone())
+                }
+                other => panic!(
+                    "enumerate_descendants must emit Literal(String) : StructureRef; got: {:?}",
+                    other
+                ),
+            })
+            .collect();
+
+        // Non-vacuity: the oracle must actually descend PAST the first repeat of
+        // structure `A`, else this fixture exercises nothing the acyclic guard
+        // does not already cover.
+        assert!(
+            oracle_paths.iter().any(|(p, _)| p == "A.b.a.b"),
+            "the oracle must descend past the first cycle turn (expected `A.b.a.b`); got: {:?}",
+            oracle_paths
+        );
+
+        let map = super::build_instance_path_structure_map(&templates, MAX_DEPTH, 10_000);
+        for (path, structure_name) in &oracle_paths {
+            assert_eq!(
+                map.get(path.as_str()),
+                Some(structure_name),
+                "enumerate_descendants emitted {:?} (structure {:?}) under recursive \
+                 containment, but the map lacks it / disagrees. The two guards have \
+                 DRIFTED — the map is pruning earlier than the oracle, so \
+                 `normalize_cell_id` misses and δ formation silently under-clusters \
+                 for deeply-nested designs. Map: {:?}",
+                path,
+                structure_name,
+                map
+            );
+        }
+
+        // The shared depth bound is real in BOTH directions: `A.b.a.b.a` is the
+        // last path within `MAX_DEPTH` (emitted at depth 3), and the map must
+        // stop there rather than running away on the cycle.
+        assert_eq!(
+            map.get("A.b.a.b.a"),
+            Some(&"A".to_string()),
+            "the map must reach the deepest in-bounds path `A.b.a.b.a`; got: {:?}",
+            map
+        );
+        assert_eq!(
+            map.get("A.b.a.b.a.b"),
+            None,
+            "the map must not exceed `max_depth` = {}; `A.b.a.b.a.b` sits one hop \
+             past the bound the oracle also stops at. Map: {:?}",
+            MAX_DEPTH,
+            map
         );
     }
 
@@ -2510,6 +2827,120 @@ structure Rig {
             "a derived Parent cell reading `Parent.childinst.line_cost` must reach the \
              Child's auto through MID-WALK normalisation; zero clusters means \
              normalisation is seed-only; got: {:?}",
+            ro.clusters
+        );
+        assert_eq!(
+            ro.clusters[0].scopes,
+            vec![0, 1],
+            "the cluster must span Parent + Child; got: {:?}",
+            ro.clusters[0].scopes
+        );
+    }
+
+    /// SHADOWED SPELLING — a hit on the AS-IS id must not retire the normalised
+    /// id, which may name a DIFFERENT, real cell (task #5334, review round 3).
+    ///
+    /// The walk resolves each popped id AS-IS first and falls back to its
+    /// normalised spelling only on a miss. When the as-is lookup hits, the
+    /// normalised spelling was NOT the one expanded, so retiring it into
+    /// `visited` would permanently drop whatever chain it carries.
+    ///
+    /// The fixture makes that concrete: `Parent` declares its own cell with the
+    /// instance-path entity `Parent.childinst` (the reify-compiler/src/expr.rs:843
+    /// shape) whose `default_expr` is a constant, SHADOWING the normalised
+    /// `Child.line_cost` — which is the only route to the child's auto. The
+    /// shadow is popped BEFORE `Child.line_cost` is discovered (the frontier is
+    /// LIFO and `Parent.total` lists `other` first), so an unconditional
+    /// `visited.insert(normalized)` retires `Child.line_cost` unexpanded and the
+    /// module forms ZERO clusters — the pre-fix behaviour, silently
+    /// under-clustering.
+    ///
+    /// The ordering above is deterministic, not incidental; should the frontier
+    /// discipline ever change, this test still asserts the correct OUTCOME (it
+    /// would simply stop being the tightest witness of the shadowing bug).
+    #[test]
+    fn as_is_cell_hit_must_not_retire_a_distinct_normalised_cell() {
+        /// A MONEY-dimensioned constant for the shadow cell. Its VALUE is
+        /// irrelevant — what matters is that the expr carries no reads, so the
+        /// shadow contributes nothing to the frontier.
+        fn money(v: f64) -> Value {
+            Value::Scalar {
+                si_value: v,
+                dimension: DimensionVector::MONEY,
+            }
+        }
+
+        let parent = TopologyTemplateBuilder::new("Parent")
+            .sub_component("childinst", "Child", vec![])
+            // `other` is the LEFT operand so the shadow id (the right operand)
+            // is pushed last and therefore popped FIRST — see the doc comment.
+            .let_binding(
+                "Parent",
+                "total",
+                money_ty(),
+                binop(
+                    BinOp::Add,
+                    value_ref_typed("Parent", "other", money_ty()),
+                    value_ref_typed("Parent.childinst", "line_cost", money_ty()),
+                ),
+            )
+            // THE SHADOW: same id as the normalisation target of
+            // `Parent.childinst.line_cost`, but a constant — no reads to follow.
+            .let_binding(
+                "Parent.childinst",
+                "line_cost",
+                money_ty(),
+                literal(money(1.0)),
+            )
+            // The ONLY route to the child's auto, and it is discovered strictly
+            // AFTER the shadow has been popped.
+            .let_binding(
+                "Parent",
+                "other",
+                money_ty(),
+                value_ref_typed("Child", "line_cost", money_ty()),
+            )
+            .objective(ObjectiveSet::single(
+                ObjectiveSense::Minimize,
+                value_ref_typed("Parent", "total", money_ty()),
+            ))
+            .build();
+
+        let child = TopologyTemplateBuilder::new("Child")
+            .trait_bound("Costed")
+            .auto_param_free("Child", "quantity_produced", Type::dimensionless_scalar())
+            .let_binding(
+                "Child",
+                "line_cost",
+                money_ty(),
+                binop(
+                    BinOp::Mul,
+                    value_ref_typed("Child", "unit_cost", money_ty()),
+                    value_ref("Child", "quantity_produced"),
+                ),
+            )
+            .build();
+
+        let templates = vec![parent, child];
+
+        let values = ValueMap::default();
+        let no_fns: [CompiledFunction; 0] = [];
+        let registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let ctx = ClusterFormationCtx {
+            values: &values,
+            functions: &no_fns,
+            trait_registry: &registry,
+            max_unfold_depth: 64,
+            max_unfold_nodes: 10_000,
+        };
+        let ro = resolve_order(&templates, Some(&ctx));
+
+        assert_eq!(
+            ro.clusters.len(),
+            1,
+            "hitting the parent's shadow cell `Parent.childinst.line_cost` must NOT \
+             retire the distinct, real `Child.line_cost`; zero clusters means the \
+             child's chain to `quantity_produced` was dropped unexpanded; got: {:?}",
             ro.clusters
         );
         assert_eq!(
