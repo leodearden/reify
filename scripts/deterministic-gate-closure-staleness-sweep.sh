@@ -258,17 +258,29 @@ N_CORRUPT_HOLD=0
 N_LIVE_SKIPPED=0
 N_UNKNOWN=0
 
+# ── field separator ───────────────────────────────────────────────────────────
+# ASCII US (0x1f), deliberately NOT a tab. `read` treats runs of IFS
+# *whitespace* — space, tab, newline — as ONE delimiter and strips leading and
+# trailing ones, so with IFS=$'\t' an EMPTY field silently collapses and every
+# field after it shifts left. That is not hypothetical: a proposal with no
+# block_class shifted its head_sha into main_sha, and a candidate row with a
+# NULL heartbeat_at but a populated claimant_run_id would have had its
+# claimant read as its heartbeat. US is not IFS whitespace, so empty fields
+# round-trip intact.
+_FS=$'\x1f'
+
 # ── row accumulator ───────────────────────────────────────────────────────────
-# One tab-separated line per candidate:
-#   task_id \t status \t class \t verdict \t action \t evidence \t flags
-# The TSV intermediate exists so the JSON emitter can be a python3 pass that
-# escapes `evidence` prose correctly instead of hand-rolling JSON quoting.
+# One US-separated line per candidate:
+#   task_id ␟ status ␟ class ␟ verdict ␟ action ␟ evidence ␟ flags
+# The separated intermediate exists so the JSON emitter can be a python3 pass
+# that escapes `evidence` prose correctly instead of hand-rolling JSON quoting.
 ROWS_TSV="$(mktemp "${TMPDIR:-/tmp}/gate-staleness-rows-XXXXXX")"
-_cleanup() { rm -f "$ROWS_TSV"; }
+_NEWEST_PROPOSAL_PY="$(mktemp "${TMPDIR:-/tmp}/gate-staleness-proposal-XXXXXX.py")"
+_cleanup() { rm -f "$ROWS_TSV" "$_NEWEST_PROPOSAL_PY"; }
 trap _cleanup EXIT
 
 _emit_row() {
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6" "$7" >> "$ROWS_TSV"
+    printf '%s\n' "$1$_FS$2$_FS$3$_FS$4$_FS$5$_FS$6$_FS$7" >> "$ROWS_TSV"
 }
 
 # ── read-only candidate enumeration ───────────────────────────────────────────
@@ -292,7 +304,7 @@ else
     _query="SELECT id, status, coalesce(heartbeat_at,''), coalesce(claimant_run_id,'')
             FROM tasks WHERE tag='$TAG' AND status IN ('blocked','in-progress') ORDER BY id;"
     if [ -n "$_SQLITE_BIN" ]; then
-        _CANDIDATES="$("$_SQLITE_BIN" -readonly -separator "$(printf '\t')" "$DB" "$_query" 2>/dev/null || true)"
+        _CANDIDATES="$("$_SQLITE_BIN" -readonly -separator "$_FS" "$DB" "$_query" 2>/dev/null || true)"
     fi
     if [ -z "$_CANDIDATES" ] && command -v python3 >/dev/null 2>&1; then
         _CANDIDATES="$(_GS_DB="$DB" _GS_TAG="$TAG" python3 - <<'PY' 2>/dev/null || true
@@ -306,7 +318,7 @@ try:
     ).fetchall()
     con.close()
     for r in rows:
-        sys.stdout.write("\t".join(str(c) for c in r) + "\n")
+        sys.stdout.write("\x1f".join(str(c) for c in r) + "\n")
 except Exception:
     pass
 PY
@@ -392,10 +404,143 @@ except Exception:
     fi
 }
 
+# ── class B: merge_verify_red ─────────────────────────────────────────────────
+# Newest-proposal extractor. Recency is keyed on investigated_at, then
+# timestamp — NOT on array position: the store appends without reordering and
+# a re-investigation can rewrite an earlier entry in place, so proposals[-1]
+# is not reliably the newest. Emits on stdout:
+#   line 1        block_reason ␟ block_class ␟ main_sha ␟ head_sha (US-separated)
+#   lines 2..n+1  one files_referenced path each (absent when there are none)
+# Nothing at all is emitted when the row records no usable proposal.
+cat > "$_NEWEST_PROPOSAL_PY" <<'PY'
+import json, sys
+try:
+    props = json.loads(sys.stdin.read() or "[]")
+except Exception:
+    props = []
+if not isinstance(props, list):
+    props = []
+props = [p for p in props if isinstance(p, dict)]
+if not props:
+    sys.exit(0)
+newest = max(props, key=lambda p: (str(p.get("investigated_at") or ""),
+                                   str(p.get("timestamp") or "")))
+files = newest.get("files_referenced") or []
+if not isinstance(files, list):
+    files = []
+
+
+def flat(v):
+    # Neutralize BOTH the field separator (US) and any newline, so a prose
+    # block_reason can never forge a field boundary or a row boundary.
+    return str(v if v is not None else "").replace("\x1f", " ").replace("\n", " ")
+
+
+sys.stdout.write("\x1f".join(flat(newest.get(k)) for k in
+                             ("block_reason", "block_class", "main_sha", "head_sha")) + "\n")
+for f in files:
+    f = flat(f)
+    if f:
+        sys.stdout.write(f + "\n")
+PY
+
+# --main-ref is constant across candidates, so resolve it ONCE rather than
+# once per row. Empty means it does not resolve inside --repo (including the
+# case where --repo is not a git repo at all), which degrades every class-B
+# row to `unknown` — the adjudication is scoped to --repo and nothing else.
+_MAIN_REF_SHA="$(git -C "$REPO" rev-parse --verify --quiet "${MAIN_REF}^{commit}" 2>/dev/null || true)"
+
+# _classify_merge_verify_red <task_id> — sets _MVR_MATCHED plus, when matched,
+# _MVR_VERDICT / _MVR_ACTION / _MVR_EVIDENCE.
+_classify_merge_verify_red() {
+    local id="$1" raw out b_reason b_class b_main_sha b_head_sha
+    local resolved touched first_path resolving
+    local -a lines=()
+    _MVR_MATCHED=0
+    _MVR_VERDICT="unknown"
+    _MVR_ACTION="none"
+    _MVR_EVIDENCE=""
+    _MVR_FILES=()
+
+    raw="$(_meta "$id" '$.dry_run_proposals')"
+    [ -n "$raw" ] || return 0
+    out="$(printf '%s' "$raw" | python3 "$_NEWEST_PROPOSAL_PY" 2>/dev/null || true)"
+    [ -n "$out" ] || return 0
+
+    # Here-string, not a pipe — see the SIGPIPE/pipefail note in the test suite.
+    mapfile -t lines <<<"$out"
+    IFS="$_FS" read -r b_reason b_class b_main_sha b_head_sha <<<"${lines[0]}"
+    _MVR_FILES=("${lines[@]:1}")
+
+    # block_class is a CONFIRMING hint, not the primary key: measured live it
+    # is present on only 2 of 55 dry_run_proposals entries, so keying on it
+    # alone would miss nearly every real merge-verify red. The block_reason
+    # prose prefix is populated on all of them.
+    case "$b_class" in
+        merge_verify_red) _MVR_MATCHED=1 ;;
+    esac
+    case "$b_reason" in
+        "Post-merge verification failed"*) _MVR_MATCHED=1 ;;
+    esac
+    [ "$_MVR_MATCHED" = 1 ] || return 0
+
+    if [ "${#_MVR_FILES[@]}" -eq 0 ]; then
+        warn "Task $id: merge_verify_red proposal records no files_referenced — no diff surface to adjudicate; reporting unknown, not STALE."
+        _MVR_EVIDENCE="post-merge-verify red with no files_referenced recorded; nothing to diff"
+        return 0
+    fi
+    if [ -z "$b_main_sha" ]; then
+        warn "Task $id: merge_verify_red proposal records no main_sha — reporting unknown, not STALE."
+        _MVR_EVIDENCE="post-merge-verify red with no main_sha recorded; premise not adjudicable"
+        return 0
+    fi
+    if [ -z "$_MAIN_REF_SHA" ]; then
+        warn "Task $id: --main-ref '$MAIN_REF' does not resolve in repo '$REPO' — reporting unknown, not STALE."
+        _MVR_EVIDENCE="--main-ref ${MAIN_REF} does not resolve in ${REPO}; premise not adjudicable"
+        return 0
+    fi
+
+    # ── premise-resolved adjudication ────────────────────────────────────────
+    # REACHABILITY IS CHECKED BEFORE ANY DIFF, per #5316 §3. A plausible
+    # main_sha can be a DISCARDED DUPLICATE merge: it resolves, its diff looks
+    # right, and it is nonetheless unreachable from main. That is exactly how
+    # #5264 was mis-cleared when only `git show --stat` was consulted — a diff
+    # inspection cannot distinguish a landed commit from a discarded twin, and
+    # only `git merge-base --is-ancestor` can.
+    if ! resolved="$(git -C "$REPO" rev-parse --verify --quiet "${b_main_sha}^{commit}" 2>/dev/null)" \
+       || [ -z "$resolved" ]; then
+        warn "Task $id: recorded main_sha '$b_main_sha' does not resolve in repo '$REPO' — reporting unknown, not STALE."
+        _MVR_EVIDENCE="recorded main_sha=${b_main_sha} does not resolve in ${REPO}"
+        return 0
+    fi
+    if ! git -C "$REPO" merge-base --is-ancestor "$resolved" "$_MAIN_REF_SHA" 2>/dev/null; then
+        warn "Task $id: recorded main_sha '$b_main_sha' resolves but is NOT an ancestor of ${MAIN_REF} (a discarded-duplicate / side-branch commit) — reporting unknown, not STALE."
+        _MVR_EVIDENCE="main_sha=${b_main_sha} is not an ancestor of ${MAIN_REF}; premise not adjudicable"
+        return 0
+    fi
+    if [ "$resolved" = "$_MAIN_REF_SHA" ]; then
+        _MVR_VERDICT="UNRESOLVED"
+        _MVR_EVIDENCE="${MAIN_REF} is still at the recorded main_sha ${b_main_sha}; main has not advanced"
+        return 0
+    fi
+
+    touched="$(git -C "$REPO" diff --name-only "$resolved".."$_MAIN_REF_SHA" -- "${_MVR_FILES[@]}" 2>/dev/null || true)"
+    if [ -z "$touched" ]; then
+        _MVR_VERDICT="UNRESOLVED"
+        _MVR_EVIDENCE="main advanced ${b_main_sha}..${MAIN_REF} but touched none of the ${#_MVR_FILES[@]} referenced path(s)"
+        return 0
+    fi
+    first_path="${touched%%$'\n'*}"
+    resolving="$(git -C "$REPO" log --format=%h -1 "$resolved".."$_MAIN_REF_SHA" -- "$first_path" 2>/dev/null || true)"
+    _MVR_VERDICT="STALE"
+    _MVR_ACTION="reverify"
+    _MVR_EVIDENCE="premise resolved: ${first_path} was touched by ${resolving:-?} in ${b_main_sha}..${MAIN_REF}"
+}
+
 # ── classify ──────────────────────────────────────────────────────────────────
 # (Class predicates land in later steps. Until then every non-LIVE candidate
 # is reported `unknown` — the fail-safe verdict, which never emits a request.)
-while IFS="$(printf '\t')" read -r task_id status heartbeat_at claimant_run_id; do
+while IFS="$_FS" read -r task_id status heartbeat_at claimant_run_id; do
     [ -n "${task_id:-}" ] || continue
 
     # L1: the liveness guard is the FIRST predicate, and it short-circuits —
@@ -447,6 +592,21 @@ while IFS="$(printf '\t')" read -r task_id status heartbeat_at claimant_run_id; 
         esac
     fi
 
+    # ── class B: merge_verify_red ────────────────────────────────────────────
+    # Unlike classes A and C this one spans `blocked` AND `in-progress`: a
+    # merge-verify red can strand a row in either state. It is still gated by
+    # the L1 liveness guard above. Evaluated only when no earlier class
+    # matched (the precedence chain is formalized in a later step).
+    if [ "$row_class" = "-" ]; then
+        _classify_merge_verify_red "$task_id"
+        if [ "$_MVR_MATCHED" = 1 ]; then
+            row_class="merge_verify_red"
+            row_verdict="$_MVR_VERDICT"
+            row_action="$_MVR_ACTION"
+            row_evidence="$_MVR_EVIDENCE"
+        fi
+    fi
+
     # ── --class filtering ────────────────────────────────────────────────────
     # A restricted sweep emits only rows of that class; the summary counters
     # are computed over emitted rows, so a filtered report is internally
@@ -484,7 +644,7 @@ with open(os.environ["_GS_ROWS"]) as fh:
         line = line.rstrip("\n")
         if not line:
             continue
-        p = line.split("\t")
+        p = line.split("\x1f")
         rows.append({
             "task_id": int(p[0]),
             "status": p[1],
@@ -500,7 +660,7 @@ PY
 else
     printf '%-8s %-12s %-18s %-13s %-11s %-52s %s\n' \
         task_id status class verdict action evidence flags
-    while IFS="$(printf '\t')" read -r c_id c_status c_class c_verdict c_action c_evidence c_flags; do
+    while IFS="$_FS" read -r c_id c_status c_class c_verdict c_action c_evidence c_flags; do
         [ -n "${c_id:-}" ] || continue
         printf '%-8s %-12s %-18s %-13s %-11s %-52s %s\n' \
             "$c_id" "$c_status" "$c_class" "$c_verdict" "$c_action" "$c_evidence" "$c_flags"
