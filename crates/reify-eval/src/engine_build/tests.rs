@@ -9760,12 +9760,22 @@ structure Assembly {
     // These back the L2 gate (step-8): the per-realization local-index-
     // reassignment tie-scan (`detect_local_index_reassignment_diagnostics`) is
     // about *selector-resolution* stability, so it is vacuous work on a build
-    // that produced no `Value::Selector` at all (e.g. the litter-tray
-    // multi-boolean model, which has none). `value_contains_selector` recurses
-    // fail-open through the container `Value` variants — `List`/`Set`/`Map`/
+    // whose module binds no selector at all (e.g. the litter-tray
+    // multi-boolean model, which binds none). `value_contains_selector`
+    // recurses through the container `Value` variants — `List`/`Set`/`Map`/
     // `Option`/`Field` — mirroring `invariants::value_is_or_contains_undef`'s
     // shape (plus a `Field` arm, since a selector can be carried inside a
-    // `Field`'s `lambda`, e.g. a `Restricted` region).
+    // `Field`'s `lambda`, e.g. a `Restricted` region), widened at step-12 with
+    // `Lambda { captures }` and `StructureInstance { fields }` arms.
+    //
+    // STATUS after step-12: these two helpers are no longer the gate's primary
+    // signal. The runtime `ValueMap` probe alone is fail-CLOSED — it cannot see
+    // a selector ctor passed inline as a call argument, nor a selector cell a
+    // realization has hydrated to `Value::List<Geometry>`. The load-bearing
+    // term is the module-STATIC `module_binds_selector` walk, pinned by the
+    // step-11 group below; the probe is a secondary belt-and-braces term. The
+    // gate's engine-level two-sided control lives in
+    // `tests/harness_engine/topology_diagnostic_denoise_e2e.rs`.
 
     /// A top-level `Value::Selector` and one nested one level inside a
     /// `Value::List` must both be detected; a plain non-selector scalar must
@@ -9807,7 +9817,11 @@ structure Assembly {
 
     /// A `ValueMap` holding only non-selector values (a scalar, a string, and
     /// a selector-free nested list) must report `false` — the zero-selector /
-    /// litter-tray case the L2 gate (step-8) fails open to skip.
+    /// litter-tray case the L2 gate skips.
+    ///
+    /// Deliberately carries NO `Value::Lambda` and no `Value::StructureInstance`,
+    /// so step-12's two widened arms cannot flip this negative case (checked at
+    /// step-15).
     #[test]
     fn values_contain_selector_false_for_map_of_non_selector_values() {
         use reify_core::ValueCellId;
