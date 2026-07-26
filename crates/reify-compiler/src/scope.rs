@@ -489,7 +489,11 @@ mod tests {
             "register_if_absent should hand back the rejected type on conflict"
         );
         let (_, ty, _) = scope.names["x"].clone();
-        assert_eq!(ty, Type::dimensionless_scalar(), "existing type must not be overwritten");
+        assert_eq!(
+            ty,
+            Type::dimensionless_scalar(),
+            "existing type must not be overwritten"
+        );
     }
 
     /// Task 2612 step-4: registering the same cluster name twice must panic in
@@ -517,7 +521,8 @@ mod tests {
     /// Returns true when the member is a named realization on the sub (e.g. a
     /// geometry-producing let binding or geometry param on the child template).
     #[test]
-    fn sub_member_is_cross_sub_geometry_or_forward_declared_returns_true_when_member_is_realization() {
+    fn sub_member_is_cross_sub_geometry_or_forward_declared_returns_true_when_member_is_realization()
+     {
         let mut scope = CompilationScope::new("TestEntity");
         scope
             .sub_component_types
@@ -525,10 +530,9 @@ mod tests {
         scope
             .sub_member_types
             .insert("bolt".to_string(), BTreeMap::new());
-        scope.sub_realization_names.insert(
-            "bolt".to_string(),
-            BTreeSet::from(["body".to_string()]),
-        );
+        scope
+            .sub_realization_names
+            .insert("bolt".to_string(), BTreeSet::from(["body".to_string()]));
         assert!(
             scope.sub_member_is_cross_sub_geometry_or_forward_declared("bolt", "body"),
             "should return true when member is a realization"
@@ -538,7 +542,8 @@ mod tests {
     /// Returns true for a forward-declared sub: `sub_component_types` has the
     /// sub but `sub_member_types` does not (parent compiled before child).
     #[test]
-    fn sub_member_is_cross_sub_geometry_or_forward_declared_returns_true_for_forward_declared_sub() {
+    fn sub_member_is_cross_sub_geometry_or_forward_declared_returns_true_for_forward_declared_sub()
+    {
         let mut scope = CompilationScope::new("TestEntity");
         scope
             .sub_component_types
@@ -556,7 +561,8 @@ mod tests {
     /// (`body`).  Ensures `has_realization` correctly wins for `body` and that
     /// scalar members are NOT mistaken for geometry handles.
     #[test]
-    fn sub_member_is_cross_sub_geometry_or_forward_declared_mixed_sub_realization_wins_scalars_do_not() {
+    fn sub_member_is_cross_sub_geometry_or_forward_declared_mixed_sub_realization_wins_scalars_do_not()
+     {
         let mut scope = CompilationScope::new("TestEntity");
         scope
             .sub_component_types
@@ -565,10 +571,9 @@ mod tests {
             "bolt".to_string(),
             BTreeMap::from([("length".to_string(), Type::length())]),
         );
-        scope.sub_realization_names.insert(
-            "bolt".to_string(),
-            BTreeSet::from(["body".to_string()]),
-        );
+        scope
+            .sub_realization_names
+            .insert("bolt".to_string(), BTreeSet::from(["body".to_string()]));
 
         // has_realization wins: "body" is in sub_realization_names.
         assert!(
@@ -591,8 +596,8 @@ mod tests {
     /// forward-declared (sub_member_types is populated, so it's fully resolved,
     /// but the queried member is not in sub_realization_names).
     #[test]
-    fn sub_member_is_cross_sub_geometry_or_forward_declared_returns_false_when_member_is_unknown_on_populated_sub(
-    ) {
+    fn sub_member_is_cross_sub_geometry_or_forward_declared_returns_false_when_member_is_unknown_on_populated_sub()
+     {
         let mut scope = CompilationScope::new("TestEntity");
         scope
             .sub_component_types
@@ -601,10 +606,9 @@ mod tests {
             "bolt".to_string(),
             BTreeMap::from([("length".to_string(), Type::length())]),
         );
-        scope.sub_realization_names.insert(
-            "bolt".to_string(),
-            BTreeSet::from(["body".to_string()]),
-        );
+        scope
+            .sub_realization_names
+            .insert("bolt".to_string(), BTreeSet::from(["body".to_string()]));
         // "head" is neither a realization nor the sub is forward-declared.
         assert!(
             !scope.sub_member_is_cross_sub_geometry_or_forward_declared("bolt", "head"),

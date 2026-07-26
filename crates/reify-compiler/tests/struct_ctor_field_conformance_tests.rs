@@ -465,7 +465,8 @@ fn row9_value_cell_string_to_selector_param_warns_arg_type_mismatch() {
 /// The verbatim pose-vs-set hint substring (PRD §4 D2; task 4833's fixtures
 /// assert on exactly this string). Kept as one const so the RED test and the
 /// step-6 impl cannot drift.
-const POSE_HINT: &str = "a coordinate pose is not a region target; select a face/edge/vertex instead";
+const POSE_HINT: &str =
+    "a coordinate pose is not a region target; select a face/edge/vertex instead";
 
 // ── row 1: value-cell Option<FaceSelector> param given a Frame pose → hint ──
 const SOURCE_ROW1_OPTION_SELECTOR_POSE_FRAME: &str = r#"module test.row1
@@ -781,7 +782,9 @@ fn has_string_int_arg_type_mismatch_warning(module: &CompiledModule) -> bool {
     ctor_conformance_diags(module).iter().any(|d| {
         d.severity == Severity::Warning
             && d.code == Some(DiagnosticCode::ArgTypeMismatch)
-            && ["label", "String", "Int"].iter().all(|n| d.message.contains(n))
+            && ["label", "String", "Int"]
+                .iter()
+                .all(|n| d.message.contains(n))
     })
 }
 

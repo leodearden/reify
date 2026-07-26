@@ -2692,8 +2692,7 @@ mod tests {
     }
 
     #[test]
-    fn add_sub_dimensioned_complex_reject_true_for_dimensioned_complex_plus_dimensionless_scalar()
-    {
+    fn add_sub_dimensioned_complex_reject_true_for_dimensioned_complex_plus_dimensionless_scalar() {
         let dimensioned = Type::complex(Type::length());
         assert!(add_sub_dimensioned_complex_reject(
             &dimensioned,
@@ -2702,8 +2701,7 @@ mod tests {
     }
 
     #[test]
-    fn add_sub_dimensioned_complex_reject_true_for_dimensionless_scalar_plus_dimensioned_complex()
-    {
+    fn add_sub_dimensioned_complex_reject_true_for_dimensionless_scalar_plus_dimensioned_complex() {
         let dimensioned = Type::complex(Type::length());
         assert!(add_sub_dimensioned_complex_reject(
             &Type::dimensionless_scalar(),
@@ -2713,8 +2711,7 @@ mod tests {
 
     /// Must NOT reject — this is the pre-existing D3 widening case (`3 + 4j`).
     #[test]
-    fn add_sub_dimensioned_complex_reject_false_for_dimensionless_complex_plus_int_widening_case()
-    {
+    fn add_sub_dimensioned_complex_reject_false_for_dimensionless_complex_plus_int_widening_case() {
         let dimensionless = Type::complex(Type::dimensionless_scalar());
         assert!(!add_sub_dimensioned_complex_reject(
             &dimensionless,
@@ -2741,8 +2738,7 @@ mod tests {
     /// Complex)` arm returns `Value::Undef` when the two dimensions differ.
     /// Must reject in BOTH operand orders, mirroring the other rows above.
     #[test]
-    fn add_sub_dimensioned_complex_reject_true_for_mismatched_dimension_complex_plus_complex()
-    {
+    fn add_sub_dimensioned_complex_reject_true_for_mismatched_dimension_complex_plus_complex() {
         let length_complex = Type::complex(Type::length());
         let angle_complex = Type::complex(Type::angle());
         assert!(add_sub_dimensioned_complex_reject(
@@ -2777,8 +2773,7 @@ mod tests {
     /// reject in BOTH operand orders, mirroring the bare-dimensionless-numeric
     /// row above.
     #[test]
-    fn add_sub_dimensioned_complex_reject_true_for_dimensioned_complex_plus_dimensioned_scalar()
-    {
+    fn add_sub_dimensioned_complex_reject_true_for_dimensioned_complex_plus_dimensioned_scalar() {
         let dimensioned_complex = Type::complex(Type::length());
         assert!(add_sub_dimensioned_complex_reject(
             &dimensioned_complex,
@@ -3436,8 +3431,9 @@ mod tests {
             name: "Result".to_string(),
             args: vec![tp("A"), tp("B")],
         };
-        let err = unify(&tp("T"), &leaky_result, &mut subst)
-            .expect_err("concrete Length binding vs a differently-headed concrete arg must still conflict");
+        let err = unify(&tp("T"), &leaky_result, &mut subst).expect_err(
+            "concrete Length binding vs a differently-headed concrete arg must still conflict",
+        );
         assert_eq!(err.param, "T");
         assert_eq!(err.existing, Type::length());
         assert_eq!(err.incoming, leaky_result);
@@ -3450,8 +3446,9 @@ mod tests {
             args: vec![tp("A"), tp("B")],
         };
         assert!(unify(&tp("T"), &leaky_result2, &mut subst2).is_ok());
-        let err2 = unify(&tp("T"), &Type::length(), &mut subst2)
-            .expect_err("headed concrete binding vs a differently-headed concrete arg must still conflict");
+        let err2 = unify(&tp("T"), &Type::length(), &mut subst2).expect_err(
+            "headed concrete binding vs a differently-headed concrete arg must still conflict",
+        );
         assert_eq!(err2.param, "T");
     }
 
@@ -4657,8 +4654,10 @@ mod tests {
             &["T", "E"],
             tp("T"),
         );
-        let non_generic_overload =
-            make_fn("fallback", vec![("r", Type::length()), ("dflt", Type::length())]);
+        let non_generic_overload = make_fn(
+            "fallback",
+            vec![("r", Type::length()), ("dflt", Type::length())],
+        );
         let fns = vec![option_overload, result_overload, non_generic_overload];
         match resolve_function_overload("fallback", &[leaky_result, Type::length()], &fns) {
             OverloadResolution::Resolved(matched) => assert_eq!(

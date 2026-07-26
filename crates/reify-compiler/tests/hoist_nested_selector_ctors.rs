@@ -43,7 +43,10 @@ fn pressure_face_arg(expr: &reify_ir::CompiledExpr) -> &reify_ir::CompiledExpr {
                 .map(|(_, e)| e)
                 .expect("PressureLoad ctor must carry a `face` field")
         }
-        other => panic!("expected PressureLoad StructureInstanceCtor, got {:?}", other),
+        other => panic!(
+            "expected PressureLoad StructureInstanceCtor, got {:?}",
+            other
+        ),
     }
 }
 
@@ -118,7 +121,12 @@ fn hoist_mints_synthetic_sel_cells_and_rewrites_fields() {
         .iter()
         .find(|c| c.id.member == "loads")
         .expect("loads cell");
-    let elem = match &loads.default_expr.as_ref().expect("loads default_expr").kind {
+    let elem = match &loads
+        .default_expr
+        .as_ref()
+        .expect("loads default_expr")
+        .kind
+    {
         CompiledExprKind::ListLiteral(elems) => &elems[0],
         other => panic!("loads default_expr must be a ListLiteral, got {:?}", other),
     };
