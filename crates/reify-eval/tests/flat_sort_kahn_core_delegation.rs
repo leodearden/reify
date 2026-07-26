@@ -214,9 +214,13 @@ use differential::{
     build_case_keep_engine,
 };
 use reify_constraints::SimpleConstraintChecker;
+use reify_core::{ModulePath, Severity, Type};
 use reify_eval::{BuildScheduler, Engine};
 use reify_ir::{GeometryKernel, Value};
-use reify_test_support::{MockGeometryKernel, compile_source};
+use reify_test_support::{
+    CompiledModuleBuilder, MockGeometryKernel, TopologyTemplateBuilder, compile_source,
+    value_ref_typed,
+};
 
 /// The shape on which the two sorts provably diverge, as a real `.ri` module:
 /// editing `p` dirties `{a, b, c, z}` where `a→b→c` is a depth-2 chain and `z`
@@ -379,4 +383,148 @@ fn flat_sort_reorder_leaves_no_stale_undef() {
          full detail:\n  {}",
         details.join("\n  ")
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-5: the two contracts the delegation must not silently break.
+//
+// (a) CYCLE-DROP is load-bearing, not incidental. Three production sites detect
+//     a dependency cycle by exactly `sorted.len() < nodes.len()`:
+//     `engine_eval::detect_let_cycle`, `engine_eval::build_combined_param_let_graph`
+//     (twice — once on the combined param+let graph, once on the let-only
+//     re-check) and `unfold::elaborate_child_lets_only`. If a future change made
+//     the delegate append cyclic residue to return a total order, all three would
+//     silently stop firing while their call sites still read as correct. That is
+//     the failure this test exists to make loud.
+//
+// (b) The ONE genuinely new behavior of the delegation: a realization-edge cycle
+//     inside a seed is now detected. It was invisible to the retired reads-only
+//     level sort, which never counted realization edges at all and so scheduled
+//     both members of such a cycle as though they were independent roots.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A two-cycle over value cells (`x` reads `y`, `y` reads `x`) plus one acyclic
+/// node must schedule ONLY the acyclic node — the cycle members are residue.
+#[test]
+fn delegated_sort_still_drops_value_cycle_members() {
+    let nodes: HashSet<NodeId> = [v("x"), v("y"), v("ok")].into_iter().collect();
+    let traces: HashMap<NodeId, DependencyTrace> = [
+        (v("x"), reads(&["y"])),
+        (v("y"), reads(&["x"])),
+        (v("ok"), reads(&[])),
+    ]
+    .into_iter()
+    .collect();
+
+    let sorted = topological_sort(&nodes, &traces);
+
+    assert_eq!(
+        sorted.len(),
+        1,
+        "the 2-cycle members must be DROPPED, leaving only the acyclic node — \
+         `sorted.len() < nodes.len()` is the cycle signal three production sites \
+         key on, so a delegate that appended residue to reach len()==3 would \
+         silently disable engine_eval::detect_let_cycle, \
+         engine_eval::build_combined_param_let_graph (both of its checks) and \
+         unfold::elaborate_child_lets_only. Got {sorted:?}"
+    );
+    assert_eq!(
+        sorted,
+        vec![v("ok")],
+        "the single scheduled node must be the acyclic one, not an arbitrary \
+         cycle member: {sorted:?}"
+    );
+}
+
+/// A realization-edge two-cycle must be dropped ENTIRELY.
+///
+/// This is the one behavior the delegation genuinely adds. The retired
+/// reads-only level sort counted in-degree from `trace.reads` alone and
+/// decremented only for `NodeId::Value` level members, so neither member of a
+/// `realization_reads` cycle ever had a non-zero in-degree: both were emitted in
+/// level 0 as though independent. The realization-aware core gives each member
+/// in-degree 1, so neither ever becomes ready and the schedule is empty.
+///
+/// Dropping them is correct. A realization cycle is a genuine bug, already gated
+/// by `dirty::check_dag_complete` and `tests/assert_dag_complete_gate.rs`. And on
+/// the edit path `engine_edit.rs`'s driver-schedule block retains a defensive
+/// residue-append (`for node_id in &eval_set { if !scheduled … }`), so no
+/// demanded cell is silently skipped there even when the schedule is short.
+#[test]
+fn delegated_sort_drops_realization_cycle_members() {
+    let nodes: HashSet<NodeId> = [r(0), r(1)].into_iter().collect();
+    let traces: HashMap<NodeId, DependencyTrace> = [
+        (r(0), realization_reads(&[1])),
+        (r(1), realization_reads(&[0])),
+    ]
+    .into_iter()
+    .collect();
+
+    let sorted = topological_sort(&nodes, &traces);
+
+    assert!(
+        sorted.is_empty(),
+        "both members of a realization_reads 2-cycle must be residue, so the \
+         schedule is EMPTY. The retired reads-only level sort emitted both in \
+         level 0 (it never counted realization edges), which is exactly the \
+         blind spot the delegation closes. Got {sorted:?}"
+    );
+}
+
+/// The unit-level cycle-drop contract, tied to the user-visible behavior it
+/// protects: a template whose two let-bindings read each other must still emit
+/// the circular-let-binding error diagnostic. `dirty::topological_sort` dropping
+/// the cycle members is the mechanism that detection rests on, so this and
+/// `delegated_sort_still_drops_value_cycle_members` are two ends of one contract.
+#[test]
+fn cyclic_let_bindings_still_emit_the_circular_dependency_diagnostic() {
+    // `x = y` / `y = x` — a direct 2-cycle between two let-bindings.
+    let template = TopologyTemplateBuilder::new("Cyc")
+        .let_binding(
+            "Cyc",
+            "x",
+            Type::Int,
+            value_ref_typed("Cyc", "y", Type::Int),
+        )
+        .let_binding(
+            "Cyc",
+            "y",
+            Type::Int,
+            value_ref_typed("Cyc", "x", Type::Int),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+    let mut engine = fresh_engine(BuildScheduler::LegacyMultiPass);
+    let result = engine.eval(&module);
+
+    let has_cycle_error = result.diagnostics.iter().any(|d| {
+        d.severity == Severity::Error
+            && (d.message.contains("circular")
+                || d.message.contains("cycle")
+                || d.message.contains("cyclic"))
+            && d.message.contains('x')
+            && d.message.contains('y')
+    });
+    assert!(
+        has_cycle_error,
+        "a let-binding 2-cycle must still produce an error diagnostic naming both \
+         cells — this is the user-visible consequence of the cycle-drop contract, \
+         and it fires ONLY because topological_sort returns fewer nodes than it \
+         was given. Got: {:?}",
+        result.diagnostics
+    );
+
+    // Neither cycle member may hold a definite value.
+    for member in ["x", "y"] {
+        let got = result
+            .values
+            .get(&reify_core::ValueCellId::new("Cyc", member));
+        assert!(
+            got.is_none() || got == Some(&Value::Undef),
+            "Cyc.{member} must be absent or Undef inside a dependency cycle, got {got:?}"
+        );
+    }
 }
