@@ -15,17 +15,13 @@
 //
 // This file is auto-covered by examples_smoke.rs (directory walk).
 
+// All types here come from the stdlib prelude with no inline redeclaration:
+// std.ports supplies Frame3; the three submodules supply the port traits,
+// ThreadSpec, and the thread/fluid enums.
+import std.ports
 import std.ports.mechanical
 import std.ports.thermal
 import std.ports.fluid
-
-// ── Local enum re-declarations (eval availability) ───────────────────────────
-// Required because compile_with_stdlib does not emit stdlib enum defs into the
-// user CompiledModule; the eval engine resolves enum constructors from user defs.
-
-enum ThreadSystem { ISO_Metric, ISO_Metric_Fine, UNC, UNF }
-enum ThreadClass { Class_6g6H, Class_4g6H }
-enum ThreadTighteningDirection { Clockwise, Counterclockwise }
 
 // ── (a) Signal: ThreadSpec derived-let eval numerics ─────────────────────────
 // ThreadAssembly.spec is an M6×1 ISO metric thread.
@@ -41,17 +37,6 @@ structure def ThreadAssembly {
         pitch: 1mm,
         thread_class: ThreadClass.Class_6g6H
     )
-}
-
-// ── Local Frame3 re-declaration (eval-time availability) ─────────────────────
-// Required for Frame3(...) constructions in AsymmetricRig and HydroConformer.
-// Mirrors stdlib ports.ri's structure def Frame3.
-
-structure def Frame3 {
-    param origin : Vector3<Length>
-    param x_axis : Vector3<Length>
-    param y_axis : Vector3<Length>
-    param z_axis : Vector3<Length>
 }
 
 // ── (b) Signal: asymmetric-LocatedPort warning from stdlib-derived ports ──────
@@ -75,11 +60,6 @@ structure def AsymmetricRig {
     }
     connect mech -> heat
 }
-
-// ── Local enum re-declarations for fluid domain ───────────────────────────────
-
-enum FluidType { Liquid, Gas, TwoPhase }
-enum FittingStandard { NPT, BSP, JIC, ORFS }
 
 // ── (c) Signal: HydraulicPort multi-domain conformance ────────────────────────
 // HydraulicPort refines both FluidPort and MechanicalPort (ζ task 4259, landed).

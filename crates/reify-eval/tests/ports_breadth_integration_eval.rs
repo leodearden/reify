@@ -44,7 +44,14 @@ fn eval_breadth() -> reify_eval::EvalResult {
     let source = std::fs::read_to_string(EXAMPLE_PATH)
         .unwrap_or_else(|e| panic!("{} should exist: {}", EXAMPLE_PATH, e));
 
-    let parsed = reify_syntax::parse(&source, ModulePath::single("ports_breadth"));
+    // Prelude-aware parsing, so `Type.Variant` references against stdlib enums
+    // (`ThreadSystem.ISO_Metric`, `FluidType.Liquid`, …) lower to `EnumAccess`
+    // rather than `MemberAccess` — see `parse_with_stdlib`. Required now that
+    // the example no longer re-declares those enums locally: a bare
+    // `reify_syntax::parse` only disambiguates enums it can see in-file, so it
+    // would report them as `unresolved name`. Matches the `compile_with_stdlib`
+    // companion below and `examples_smoke.rs`.
+    let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single("ports_breadth"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors in ports_breadth.ri: {:?}",
@@ -88,7 +95,14 @@ fn compile_breadth() -> CompiledModule {
     let source = std::fs::read_to_string(EXAMPLE_PATH)
         .unwrap_or_else(|e| panic!("{} should exist: {}", EXAMPLE_PATH, e));
 
-    let parsed = reify_syntax::parse(&source, ModulePath::single("ports_breadth"));
+    // Prelude-aware parsing, so `Type.Variant` references against stdlib enums
+    // (`ThreadSystem.ISO_Metric`, `FluidType.Liquid`, …) lower to `EnumAccess`
+    // rather than `MemberAccess` — see `parse_with_stdlib`. Required now that
+    // the example no longer re-declares those enums locally: a bare
+    // `reify_syntax::parse` only disambiguates enums it can see in-file, so it
+    // would report them as `unresolved name`. Matches the `compile_with_stdlib`
+    // companion below and `examples_smoke.rs`.
+    let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single("ports_breadth"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors in ports_breadth.ri: {:?}",
