@@ -53,15 +53,34 @@ const EXAMPLE_PATH: &str = concat!(
 /// Mirrors `EXAMPLES_DIR` in `crates/reify-compiler/tests/examples_smoke.rs`.
 const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
 
+/// Classifies *why* a [`SKIP_SET`] entry is excluded from the v0.1
+/// example-corpus perf regression walk
+/// (`v0_1_example_corpus_compile_and_check_time_is_bounded`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkipKind {
+    /// The file emits Error-severity diagnostics, so
+    /// `check_source_with_stdlib` would PANIC in the corpus walk (see its
+    /// `# Panics` docs in `crates/reify-test-support/src/helpers.rs`).
+    /// Verified automatically by
+    /// `compile_correctness_skips_still_fail_to_compile`.
+    CompileError,
+    /// The file compiles CLEAN (zero Error-severity diagnostics) but exceeds
+    /// the 10s `PER_FILE_BUDGET`. Deliberately NOT verified by
+    /// `compile_correctness_skips_still_fail_to_compile` — compiling it
+    /// would re-pay the multi-second cost the skip exists to avoid.
+    PerfBudget,
+}
+
 /// Files to skip in the corpus perf regression walk. Each entry is
 /// `(relative_path, reason)` — the same `(&str, &str)` shape used in
 /// `examples_smoke.rs::SKIP_SET`.
 ///
 /// Mirrored from `crates/reify-compiler/tests/examples_smoke.rs` with
 /// attribution; update both sets when a new entry is needed.
-const SKIP_SET: &[(&str, &str)] = &[
+const SKIP_SET: &[(&str, SkipKind, &str)] = &[
     (
         "topology_selectors/block_inertia.ri",
+        SkipKind::CompileError,
         "topology-selectors PRD task 7 worked example; \
          compile_with_stdlib gated on task 2699 (moment_of_inertia language-level wiring) \
          and task 2696 (Tensor surface-syntax + MomentOfInertia named dim). \
@@ -70,6 +89,7 @@ const SKIP_SET: &[(&str, &str)] = &[
     ),
     (
         "topology_selectors/fillet_top_edges.ri",
+        SkipKind::CompileError,
         "topology-selectors PRD task 7 worked example; \
          compile_with_stdlib gated on tasks 2698 (single/flat_map list helpers) \
          and 2699 (faces_by_normal/adjacent_faces/shared_edges language-level wiring). \
@@ -78,6 +98,7 @@ const SKIP_SET: &[(&str, &str)] = &[
     ),
     (
         "trajectory/tots_optimal_ptp.ri",
+        SkipKind::PerfBudget,
         "complex TOTS SQP example (task 3872) exceeds the 10s per-file compile \
          budget on loaded CI (~13.4s observed). Unlike the two entries above, \
          this file DOES compile cleanly — it is a perf-only skip and is \
@@ -88,6 +109,7 @@ const SKIP_SET: &[(&str, &str)] = &[
     ),
     (
         "trajectory/printer_print_envelope.ri",
+        SkipKind::PerfBudget,
         "complex four-PRD stack dogfood example (task 3878) that exceeds the 10s \
          per-file compile budget on loaded CI (~14.7s observed). Task 4547 step-8 \
          removed ProfileInput/ShaperInput/GcodeDialectInput coercion shims and \
@@ -103,6 +125,7 @@ const SKIP_SET: &[(&str, &str)] = &[
     ),
     (
         "auto/bearing_constraint_select.ri",
+        SkipKind::CompileError,
         "strict `auto: Seal` with two stub-feasible candidates (ThinSeal, ThickSeal) \
          resolves Ambiguous under the compile-time stub checker → E_AUTO_TYPE_PARAM_AMBIGUOUS \
          Error; the zero-Error gate cannot pass. The unique-survivor selection \
@@ -114,6 +137,7 @@ const SKIP_SET: &[(&str, &str)] = &[
     ),
     (
         "auto/bounded_fallback_unsound.ri",
+        SkipKind::CompileError,
         "7 strict `auto: Layer` params (> max_depth=6 → depth-bound BFS fallback) with a \
          joint constraint coupling all param member fields. Under the compile-time stub \
          checker the TypeParam member reads emit code:None \"member access not yet supported\" \
@@ -124,6 +148,7 @@ const SKIP_SET: &[(&str, &str)] = &[
     ),
     (
         "auto/bearing_unsat.ri",
+        SkipKind::CompileError,
         "ζ negative fixture: strict `auto: Seal` with TWO candidates that BOTH violate the \
          member constraint `seal.thickness < bore_radius=3mm` (ThickSeal=5mm, HugeSeal=8mm). \
          Emits an Error under any checker (NoCandidate under real checker, Ambiguous under stub) \
@@ -133,6 +158,7 @@ const SKIP_SET: &[(&str, &str)] = &[
     ),
     (
         "auto/bearing_computed_default_unevaluated.ri",
+        SkipKind::CompileError,
         "Gap-C fixture (task #4616): strict `auto: Seal` with a computed-default template \
          cell (`clearance = bore_radius - 0.5mm`) whose default is a non-literal BinOp. \
          The literal-only seeder skips `clearance`, so the constraint `seal.thickness < \
@@ -145,6 +171,7 @@ const SKIP_SET: &[(&str, &str)] = &[
     ),
     (
         "conditional_compilation/main.ri",
+        SkipKind::CompileError,
         "Multi-file cfg-gated entry: `param p : Platform` in type position resolves only \
          through the #cfg(target)-gated import (platform_linux or platform_wasm), using the \
          reify check cfg DAG (compile_entry_with_stdlib_cfg_checked). The single-file \
@@ -159,6 +186,7 @@ const SKIP_SET: &[(&str, &str)] = &[
     ),
     (
         "module_visibility/consumer.ri",
+        SkipKind::CompileError,
         "Cross-module consumer that fails the single-file smoke for two independent reasons: \
          (1) its `import producer` edge cannot be followed by check_source_with_stdlib (Motor is \
          unresolved → unresolved-type Error on `sub m = Motor()`); \
@@ -172,6 +200,7 @@ const SKIP_SET: &[(&str, &str)] = &[
     ),
     (
         "multi_aspect_objective_mixed.ri",
+        SkipKind::CompileError,
         "PRD δ (#5020) BT1 negative fixture — intentionally emits \
          E_OBJECTIVE_MIXED_DIMENSION (ObjectiveDimensionIncoherent) at compile: two \
          same-sense minimize decls over incommensurable dimensions (Money cost, Mass \
@@ -599,7 +628,7 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
     // cross-crate change outside this single-file task's scope.
     const EXPECTED_MIN_FILES: usize = 100;
 
-    let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _)| *name).collect();
+    let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _, _)| *name).collect();
     let paths = discover_ri_files();
 
     // Resolve the skip-filtered candidate list — and fail fast on the
@@ -695,6 +724,60 @@ fn per_file_gate_violation_contract() {
          short-circuiting on the first match; sub-budget files (500ms, 9s) and the \
          exact-boundary file (10s — strict `>` means duration == budget is NOT a \
          violation) must not be flagged, got: {names:?}"
+    );
+}
+
+// ─── SKIP_SET classification guard ────────────────────────────────────────
+
+/// Every `SkipKind::CompileError` entry in [`SKIP_SET`] must still emit at
+/// least one Error-severity diagnostic when compiled with stdlib — that is
+/// the premise that justifies skipping it in
+/// `v0_1_example_corpus_compile_and_check_time_is_bounded`, whose
+/// `check_source_with_stdlib` call PANICS on a compile error (see its
+/// `# Panics` docs in `crates/reify-test-support/src/helpers.rs`). If a fix
+/// lands elsewhere and the file starts compiling clean, this guard catches
+/// the resulting stale skip mechanically instead of letting it silently
+/// narrow the corpus walk's coverage forever.
+///
+/// `SkipKind::PerfBudget` entries are deliberately NOT verified here:
+/// compiling them would re-pay the ~13-15s the skip exists to avoid, which
+/// would defeat its purpose and materially slow this test file.
+///
+/// Every offending entry is accumulated and reported in a single panic,
+/// mirroring `examples_smoke.rs::all_examples_parse_and_compile_with_stdlib`'s
+/// report-everything style, so one run surfaces every stale entry rather
+/// than stopping at the first.
+#[test]
+fn compile_correctness_skips_still_fail_to_compile() {
+    let mut stale: Vec<String> = Vec::new();
+
+    for (rel, kind, _reason) in SKIP_SET {
+        if *kind != SkipKind::CompileError {
+            continue;
+        }
+
+        let path = Path::new(EXAMPLES_DIR).join(rel);
+        let src = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e));
+
+        let module = reify_test_support::compile_source_with_stdlib(&src);
+        if reify_test_support::errors_only(&module).is_empty() {
+            stale.push(rel.to_string());
+        }
+    }
+
+    assert!(
+        stale.is_empty(),
+        "SKIP_SET entry/entries tagged SkipKind::CompileError have gone stale — \
+         each named file below now compiles with zero Error-severity diagnostics, \
+         so the corpus walk would NOT panic on it. Delete the entry and re-run \
+         v0_1_example_corpus_compile_and_check_time_is_bounded, or re-classify it \
+         as SkipKind::PerfBudget with a measured timing:\n{}",
+        stale
+            .iter()
+            .map(|s| format!("  {s}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }
 
