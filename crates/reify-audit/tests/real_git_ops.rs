@@ -13,9 +13,25 @@ use reify_audit::{GitOps, RealGitOps};
 use std::process::Command;
 use tempfile::TempDir;
 
+mod common;
+
 // -----------------------------------------------------------------------
 // Shared real-repo helpers
 // -----------------------------------------------------------------------
+
+/// Every test in this file builds a real temporary repository, so every test
+/// in this file is exposed to an ambient hook git environment — where
+/// `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` are exported into the whole
+/// process tree and override `-C <tempdir>`.
+///
+/// An empty filter therefore re-runs EVERY test here inside a child process
+/// that has the poison ambient, which is the real hook condition rather than
+/// a simulation of it. The helper's `REIFY_AUDIT_HOOK_ENV_REPLAY` guard stops
+/// this test recursing when the child reaches it.
+#[test]
+fn real_git_ops_helpers_survive_ambient_hook_git_env() {
+    common::git_env::replay_self_under_hook_git_env("");
+}
 
 /// Initialise a bare git repo in `dir` with identity + gpgsign disabled.
 fn git_init(dir: &std::path::Path) {
