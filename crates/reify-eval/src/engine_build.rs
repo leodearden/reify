@@ -11850,11 +11850,13 @@ fn expr_contains_selector_ctor(expr: &reify_ir::CompiledExpr) -> bool {
                 }
             }
             // `walk` treats `Literal` as a leaf, but `Value::Lambda` embeds a
-            // whole `CompiledExpr` body inside one.
-            reify_ir::CompiledExprKind::Literal(reify_ir::Value::Lambda { body, .. }) => {
-                if expr_contains_selector_ctor(body) {
-                    found = true;
-                }
+            // whole `CompiledExpr` body inside one. (Guard rather than a
+            // nested `if` per `clippy::collapsible_match`; a failed guard
+            // falls through to the no-op `_` arm, same as the `if` did.)
+            reify_ir::CompiledExprKind::Literal(reify_ir::Value::Lambda { body, .. })
+                if expr_contains_selector_ctor(body) =>
+            {
+                found = true;
             }
             _ => {}
         }
