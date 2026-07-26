@@ -2464,4 +2464,38 @@ assert "H10: cp invoked with --reflink=always (reset-in-place proceeded, not ref
 kill "$Q_LOCK14_PID" 2>/dev/null || true
 wait "$Q_LOCK14_PID" 2>/dev/null || true
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block R: lane isolation guards (task 5590) — every lane created in this file
+# must be nested under a private per-run parent, never bare /tmp, because
+# scripts/seed-warm-lane.sh:663 computes RESEED_TRASH_DIR as
+# dirname(LANE_DIR)/.reseed-trash: a bare-/tmp lane makes that the
+# machine-shared /tmp/.reseed-trash, shared across every concurrent agent/test
+# run on the host. R0 pins the contract of the `make_isolated_lane <prefix>`
+# helper introduced to fix this; later sub-blocks verify the fix itself.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block R: lane isolation guards ---"
+
+# ── R0: make_isolated_lane <prefix> contract ─────────────────────────────────
+# Guarded with `2>/dev/null || true`: make_isolated_lane does not exist yet, so
+# without the guard the command substitution would still just yield rc=127
+# captured by `|| true` (set -e does not abort on a substitution used in an
+# assignment) — but the guard keeps a "command not found" line off the console
+# and lets the not-yet-implemented state read as ordinary assert FAILures below.
+R0_LANE_A="$(make_isolated_lane R0-a 2>/dev/null || true)"
+R0_LANE_B="$(make_isolated_lane R0-a 2>/dev/null || true)"
+
+assert "R0a: make_isolated_lane returns a path that exists and is a directory" \
+    bash -c '[ -n "$1" ] && [ -d "$1" ]' _ "$R0_LANE_A"
+assert "R0b: dirname of the returned lane is NOT bare /tmp (private parent)" \
+    bash -c '[ -n "$1" ] || exit 1; [ "$(dirname "$1")" != "/tmp" ]' _ "$R0_LANE_A"
+assert "R0c: the parent contains the lane and nothing else (private, freshly minted)" \
+    bash -c '[ -n "$1" ] || exit 1; [ "$(ls -A "$(dirname "$1")")" = "$(basename "$1")" ]' _ "$R0_LANE_A"
+assert "R0d: two calls with the same prefix return different parents" \
+    bash -c '[ -n "$1" ] && [ -n "$2" ] || exit 1; [ "$(dirname "$1")" != "$(dirname "$2")" ]' _ "$R0_LANE_A" "$R0_LANE_B"
+assert "R0e: dirname(<lane>)/.reseed-trash does not already exist (run-private)" \
+    bash -c '[ -n "$1" ] || exit 1; [ ! -e "$(dirname "$1")/.reseed-trash" ]' _ "$R0_LANE_A"
+assert "R0f: returned path is nested under the per-run lane root (_LANE_ROOT), which the EXIT trap reclaims" \
+    bash -c '[ -n "$1" ] && [ -n "$2" ] || exit 1; case "$1" in "$2"/*) exit 0 ;; *) exit 1 ;; esac' _ "$R0_LANE_A" "${_LANE_ROOT:-}"
+
 test_summary
