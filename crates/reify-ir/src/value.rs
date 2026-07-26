@@ -2685,23 +2685,14 @@ impl Value {
     /// Format this value for GUI display like [`format_display`](Value::format_display),
     /// but snap to `"0"` when this value is dust relative to `reference` (task 5339).
     ///
-    /// `reference` is the whole-aggregate magnitude computed once by the
-    /// caller (see [`aggregate_magnitude`]) and threaded unchanged into every
-    /// component, so a component is judged against the *whole* containing
-    /// aggregate, not just its own subtree.
-    ///
-    /// `Scalar`/`Real` leaves apply the relative snap; `Tensor`/`Point`/
-    /// `Vector`/`Matrix` recurse, threading `reference` unchanged into every
-    /// nested element instead of recomputing it — this is what lets, e.g., a
-    /// `Point` nested inside a `Tensor` snap against the *outer* aggregate's
-    /// magnitude rather than a smaller one recomputed from just its own
-    /// components. Every other variant falls back to the unchanged
+    /// `reference` is the whole-aggregate magnitude seeded once by
+    /// [`format_display`](Value::format_display) (see [`aggregate_magnitude`])
+    /// and threaded *unchanged* through every nesting level — never
+    /// recomputed per-subtree, so a `Point` inside a `Tensor` is judged
+    /// against the outer aggregate rather than its own smaller local max.
+    /// Aggregate variants must stay in sync with `aggregate_magnitude`; any
+    /// variant missing here falls back to the unsnapped
     /// [`format_display`](Value::format_display).
-    ///
-    /// Also reached, via [`Value::format_display`], from `reify-expr`'s
-    /// string-interpolation renderer (`interp_render`) — a `.ri` string like
-    /// `"${part.centroid}"` observes the same snap-to-zero as the GUI values
-    /// panel and debug MCP snapshot.
     fn format_display_rel(&self, reference: f64) -> String {
         match self {
             Value::Scalar {
@@ -2903,56 +2894,33 @@ pub fn format_display_number(v: f64) -> String {
 /// Relative snap-to-zero threshold for [`format_display_number_rel`] (task
 /// 5339, follow-up papercut to 5198).
 ///
-/// Derived from the reported magnitudes, not guessed: the observed dust
-/// ratio in `BottomDeck.centroid` is `3.86564423998e-13 / 21.5084347502 ≈
-/// 1.80e-14` (~5 orders below this threshold, so it snaps), while the
-/// smallest legitimate tolerance ratio the fix must preserve is `0.00005 /
-/// 21.5 ≈ 2.33e-6` (task 5198's small-tolerance case, ~3 orders above this
-/// threshold, so it survives). `1e-9` sits cleanly between the two and is
-/// the value the task explicitly suggests: a component 9 orders of
-/// magnitude below its dominant sibling carries no display-meaningful
-/// signal at [`DISPLAY_SIG_FIGS`] significant figures.
+/// Bracketed by the two observed ratios, not guessed: the `BottomDeck.centroid`
+/// dust ratio is `3.86564423998e-13 / 21.5084347502 ≈ 1.80e-14` (must snap),
+/// and the smallest legitimate tolerance ratio is `0.00005 / 21.5 ≈ 2.33e-6`
+/// (task 5198; must survive). `1e-9` sits ~5 and ~3 orders from them
+/// respectively.
 ///
-/// This is deliberately three orders coarser than the ~1e-12 relative
-/// resolution [`DISPLAY_SIG_FIGS`] already provides on its own: a component
-/// whose ratio to `reference` falls in the 1e-12..1e-9 band (e.g. a genuine
-/// `1e-10` off-axis term next to a `1.0` sibling) is display-representable
-/// at that pinned precision but is snapped to `"0"` by this threshold
-/// anyway. That band is knowingly sacrificed, not overlooked: the two data
-/// points above are the only evidence in hand, both several orders outside
-/// the band, so `1e-9` was chosen with margin on both sides rather than
-/// fit tightly to the sig-fig floor. Tighten only on a newly observed case
-/// that actually falls inside the band.
+/// This is three orders coarser than the ~1e-12 relative resolution
+/// [`DISPLAY_SIG_FIGS`] already provides, so a genuine term in the
+/// 1e-12..1e-9 band (e.g. `1e-10` next to a `1.0` sibling) is
+/// display-representable yet snapped anyway. That band is knowingly
+/// sacrificed for margin on both sides — tighten only on a newly observed
+/// case that actually falls inside it.
 const DISPLAY_REL_ZERO_EPSILON: f64 = 1e-9;
 
-/// Format `v` for display the same way [`format_display_number`] does, but
-/// additionally snap `v` to `"0"` when it is dust *relative to* `reference`
-/// — the max-magnitude sibling in the containing aggregate (e.g. the other
-/// components of a `Value::Point`).
+/// Format `v` like [`format_display_number`] does, but additionally snap it
+/// to `"0"` when it is dust *relative to* `reference` — the max-magnitude
+/// leaf in the containing aggregate (task 5339).
 ///
 /// This is the relative counterpart to `format_display_number`'s absolute
-/// 1-ulp cleanup: `format_display_number` has no sibling context, so it
-/// cannot see that a component like `3.86564423998e-13` is numerical dust
-/// next to a sibling like `21.5084347502` (the `BottomDeck.centroid` case).
-/// `format_display_number_rel` snaps `v` to `"0"` when `v != 0.0 &&
-/// v.abs() < DISPLAY_REL_ZERO_EPSILON * reference`; otherwise it delegates
-/// to the unchanged `format_display_number(v)`.
+/// 1-ulp cleanup, which has no sibling context and so cannot see that
+/// `3.86564423998e-13` is dust next to `21.5084347502`. Non-snapping
+/// values delegate to the byte-identical `format_display_number`, keeping
+/// this purely additive over the task-5198 behaviour.
 ///
-/// `reference` must be finite and positive for the relative snap to apply —
-/// a non-finite reference (an `inf`/`NaN` sibling in the aggregate) or a
-/// zero reference (an all-zero or all-comparable-tiny aggregate) disables
-/// snapping entirely, falling through to the absolute path. This guards
-/// against a single non-finite or zero sibling ever zeroing out otherwise
-/// legitimate finite components. An exact-zero `v` always renders `"0"`
-/// regardless of `reference`, via the same path `format_display_number`
-/// already takes.
-///
-/// Delegating to the byte-identical `format_display_number` keeps this
-/// purely additive: the existing task-5198 test suite is unaffected.
-///
-/// Private: the sole caller is [`Value::format_display_rel`] in this same
-/// module; every other reference is a `#[cfg(test)]` case in this file's
-/// `mod tests`, both of which see private items fine via `use super::*`.
+/// The `reference` finite-and-positive guard is load-bearing: it is what
+/// stops a single `inf` or zero sibling from zeroing out otherwise
+/// legitimate finite components.
 fn format_display_number_rel(v: f64, reference: f64) -> String {
     if reference.is_finite() && reference > 0.0 && v != 0.0 && v.abs() < DISPLAY_REL_ZERO_EPSILON * reference {
         return "0".to_string();
@@ -2962,39 +2930,26 @@ fn format_display_number_rel(v: f64, reference: f64) -> String {
 
 /// Compute the reference magnitude for [`format_display_number_rel`]'s
 /// relative snap: the max absolute display-unit magnitude over every numeric
-/// leaf reachable from `v`, recursing through nested `Point`/`Vector`/
-/// `Tensor`/`Matrix` (task 5339).
+/// leaf reachable from `v` (task 5339).
 ///
-/// Recursing into nested composites means a 3×3 `Tensor`-of-`Tensor`
-/// (e.g. `moment_of_inertia`) is measured against the largest entry in the
-/// *whole* tensor, not just its own row — so an off-diagonal component is
-/// judged dust relative to the dominant term anywhere in the aggregate, not
-/// merely within its immediate row. The same whole-aggregate rule covers a
-/// `Point`/`Vector` nested inside a `Tensor`/`Matrix`:
-/// [`Value::format_display_rel`] has matching `Point`/`Vector`/`Tensor`/
-/// `Matrix` arms that thread this SAME reference into every nesting level
-/// instead of recomputing a local one, so this function and
-/// `format_display_rel` always agree on what "the aggregate" spans.
+/// Magnitudes are taken via [`DimensionVector::display_scale`] — the same
+/// scale [`Value::format_display`] applies via `to_display_units` — so the
+/// reference is commensurable with the values `format_display_rel` snaps.
+/// The recursing arms must stay in sync with [`Value::format_display_rel`]'s:
+/// both must agree on what "the aggregate" spans, or a nested member gets
+/// judged against a reference it did not contribute to.
 ///
-/// `Scalar` magnitudes are computed via [`DimensionVector::display_scale`]
-/// (the same scale [`Value::format_display`] applies via `to_display_units`),
-/// so the reference is comparable to the display-unit values
-/// `format_display_rel` will snap against. Non-numeric, non-aggregate
-/// variants contribute `0.0` (the `fold` seed), and `f64::max`'s NaN-ignoring
-/// semantics mean a NaN leaf is silently dropped from the reference instead
-/// of poisoning it — deliberately asymmetric with a non-finite `inf`
-/// sibling, which instead propagates *into* the reference and disables
-/// snapping entirely via [`format_display_number_rel`]'s
-/// `reference.is_finite()` guard.
+/// Members with no arm here (`List`/`Set`/`Map`/`Option`/…) contribute `0.0`,
+/// which in an otherwise-empty aggregate leaves `reference == 0.0` and so
+/// disables snapping for that container. That is a deliberate under-snap,
+/// never a wrong snap.
 ///
-/// Assumes the aggregate is dimensionally homogeneous — every `Scalar` leaf
-/// shares one [`DimensionVector`]. This holds for every `Value` reachable
-/// through normal type-checked evaluation: `reify-core`'s `Type::Point`,
-/// `Type::Vector`, and `Type::Tensor` each carry a single `quantity` type
-/// for every component, so a mixed-dimension aggregate can only arise from
-/// a hand-constructed `Value` that bypasses the type checker — out of
-/// contract here (it would silently compare magnitudes across incompatible
-/// units, e.g. treating a volume in mm³ and a length in mm as commensurable).
+/// PRECONDITION: the aggregate is dimensionally homogeneous — every `Scalar`
+/// leaf shares one [`DimensionVector`]. `reify-core`'s `Type::Point`,
+/// `Type::Vector`, and `Type::Tensor` each carry a single `quantity` type, so
+/// this holds for every type-checked `Value`; a hand-constructed
+/// mixed-dimension aggregate is out of contract and would compare across
+/// incompatible units (e.g. mm³ against mm).
 fn aggregate_magnitude(v: &Value) -> f64 {
     match v {
         Value::Scalar {
@@ -3021,10 +2976,8 @@ fn aggregate_magnitude(v: &Value) -> f64 {
 
 /// Render a flat aggregate's items by mapping each through
 /// [`Value::format_display_rel`] with the given `reference`, joining with
-/// `", "` (task 5339). Shared by the `Tensor`/`Point`/`Vector` arms of both
-/// [`Value::format_display`] and [`Value::format_display_rel`] so the
-/// map-then-join logic lives in exactly one place instead of drifting across
-/// near-identical copies.
+/// `", "` (task 5339). Shared by that method's `Tensor`/`Point`/`Vector`
+/// arms.
 fn join_rel(items: &[Value], reference: f64) -> String {
     items
         .iter()
@@ -3035,8 +2988,7 @@ fn join_rel(items: &[Value], reference: f64) -> String {
 
 /// Render a `Matrix`'s rows by mapping each row's cells through
 /// [`join_rel`] and wrapping each row in `[..]`, producing
-/// `"[a, b], [c, d]"`-style joined rows (task 5339). Shared by the `Matrix`
-/// arm of both [`Value::format_display`] and [`Value::format_display_rel`].
+/// `"[a, b], [c, d]"`-style joined rows (task 5339).
 fn join_rows_rel(rows: &[Vec<Value>], reference: f64) -> String {
     rows.iter()
         .map(|row| format!("[{}]", join_rel(row, reference)))
@@ -11461,15 +11413,6 @@ mod tests {
     }
 
     // ── format_display_number_rel relative-to-aggregate snap-to-zero (task 5339) ──
-    //
-    // format_display_number cleans up 1-ulp *relative* noise but has no
-    // sibling context, so it cannot see that a component like
-    // 3.86564423998e-13 is dust relative to a sibling like 21.5084347502 (the
-    // BottomDeck.centroid case). format_display_number_rel adds a second,
-    // reference-relative snap-to-zero on top of the unchanged
-    // format_display_number: values below DISPLAY_REL_ZERO_EPSILON * reference
-    // render as "0", everything else falls through to format_display_number
-    // verbatim.
 
     #[test]
     fn format_display_number_rel_snaps_near_zero_relative_to_reference() {
@@ -11535,12 +11478,10 @@ mod tests {
 
     // ── Value::format_display Point/Vector relative snap-to-zero (task 5339) ──
     //
-    // format_display_number_rel alone isn't reachable from real GUI output —
-    // Value::format_display's Point/Vector arms must compute a whole-aggregate
-    // reference and thread it into each component. These tests exercise that
-    // wiring end-to-end. Value::Real components keep the ratios transparent
-    // (no display-unit scaling); a dedicated case below (h) proves the
-    // reference is computed in display units for Value::Scalar aggregates.
+    // End-to-end wiring: format_display seeds the whole-aggregate reference
+    // and threads it into each component. Value::Real components keep the
+    // ratios transparent; a dedicated case below covers Value::Scalar's
+    // display-unit scaling.
 
     #[test]
     fn format_display_point_snaps_centroid_dust_relative_to_z() {
@@ -11744,14 +11685,9 @@ mod tests {
 
     // ── Value::format_display Tensor relative snap-to-zero (task 5339) ───────
     //
-    // Tensor is wired to the relative snap: the Tensor arm of format_display
-    // computes reference = aggregate_magnitude(self) over the WHOLE tensor,
-    // and format_display_rel's Tensor arm threads that same reference,
-    // unchanged, into every nested row — so a 3×3 nested Tensor-of-Tensor
-    // (the moment_of_inertia shape) judges an off-diagonal in any row
-    // against the global max, not just that row's own max. These tests
-    // exercise that shape (off-diagonals ~1e-18 dust next to O(1)
-    // diagonals), plus a flat-Tensor case and a no-op preservation case.
+    // The reference spans the WHOLE tensor, so a 3×3 nested Tensor-of-Tensor
+    // (the moment_of_inertia shape) judges an off-diagonal in any row against
+    // the global max, not just that row's own.
 
     #[test]
     fn format_display_tensor_snaps_inertia_off_diagonals_relative_to_whole_tensor_max() {
@@ -11818,13 +11754,9 @@ mod tests {
 
     // ── Value::format_display Matrix relative snap-to-zero (task 5339) ───────
     //
-    // Matrix is wired to the relative snap: the Matrix arm of format_display
-    // computes reference = aggregate_magnitude(self) over the WHOLE matrix,
-    // and format_display_rel's Matrix arm threads that same reference into
-    // every cell of every row. These tests cover the near-zero-relative-
-    // entries case and a comparable-entries preservation case that guards
-    // the existing matrix golden shape (gui types_tests / cli_eval_geometry
-    // pin `[[1, 2], [3, 4]]`-style output).
+    // The reference spans the whole matrix and is threaded into every cell of
+    // every row. The comparable-entries case guards the existing golden shape
+    // (gui types_tests / cli_eval_geometry pin `[[1, 2], [3, 4]]` output).
 
     #[test]
     fn format_display_matrix_snaps_near_zero_entries_relative_to_whole_matrix_max() {
@@ -11846,14 +11778,10 @@ mod tests {
 
     // ── Complex as an aggregate member (task 5339) ───────────────────────────
     //
-    // Complex is a numeric leaf that format_display renders through
-    // format_display_number, so it must participate symmetrically in the
-    // relative snap: it contributes its larger |re|/|im| display magnitude to
-    // aggregate_magnitude's reference, and format_display_rel snaps its own
-    // parts against the outer reference rather than falling through to the
-    // absolute path. Without both halves a Tensor/Matrix of Complex (e.g. a
-    // frequency-domain or modal result) would fold to reference == 0.0 and
-    // silently lose the snap for the entire aggregate.
+    // Complex is a numeric leaf, so it must participate on BOTH sides: it
+    // contributes to aggregate_magnitude's reference, and its own parts snap
+    // against that reference. Missing either half silently folds a
+    // Tensor/Matrix of Complex to reference == 0.0, losing the snap wholesale.
 
     #[test]
     fn format_display_tensor_complex_member_contributes_to_reference() {
