@@ -1530,3 +1530,45 @@ fn unified_dag_curated_fillet_result_consumed_blank_let_builds_clean() {
     let (result, ops) = build_occt_recording(source);
     assert_one_curated_fillet_no_errors(&result, &ops);
 }
+
+/// step-3: BOOLEAN-PARENT + CONSUMED — a curated fillet whose target is a
+/// BOOLEAN-composed body (`difference(outer, inner)` bound to the named let `d`),
+/// selected by an INLINE `edges_at_height` over that same boolean result, whose
+/// own result `f` is then consumed by a downstream `translate` realization.
+///
+/// Selector height: `box(40mm,30mm,20mm)` is origin-centered, so its top face
+/// loop sits at z = +H/2 = 10mm. Querying at `10mm` therefore hits REAL edges of
+/// the boolean result rather than an empty band — the zero-edge case would be
+/// masked by the orthogonal empty-selection error path instead of exercising the
+/// resolution seam this test targets.
+///
+/// GREEN ON ARRIVAL, not RED-first (see esc-5208-2). The plan predicted this
+/// shape needed its own compiler fix (register a boolean-result named let as a
+/// resolvable realization). Measurement disproved that: the compiler already
+/// lowers `d` to `GeomRef::Sub("d")` and eval already resolves it — the ONLY
+/// defect was that the INLINE selector argument is not a value cell, so nothing
+/// hydrated it (step-2). This test is a genuine discriminator of that fix, not a
+/// tautology: at the pre-fix parent commit `838f4ab8d4` it fails with
+///   error: … curated edge selection is not yet available … [edge selector evaluated to Undef]
+///   error: unresolvable GeomRef::Sub('f') — no such named sub-reference in scope
+/// It is retained as the regression pin for the boolean-parent shape, which no
+/// pre-5208 test covered (every prior in-loop scenario filleted a BLANK box).
+#[test]
+fn unified_dag_curated_fillet_on_boolean_result_consumed_builds_clean() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping unified_dag_curated_fillet_on_boolean_result_consumed_builds_clean: \
+             OCCT not available"
+        );
+        return;
+    }
+    let source = r#"pub structure S {
+    let outer = box(40mm, 30mm, 20mm)
+    let inner = box(30mm, 20mm, 40mm)
+    let d = difference(outer, inner)
+    let f = fillet(d, edges_at_height(d, 10mm, 0.5mm), 2mm)
+    let g = translate(f, 0mm, 0mm, 5mm)
+}"#;
+    let (result, ops) = build_occt_recording(source);
+    assert_one_curated_fillet_no_errors(&result, &ops);
+}
