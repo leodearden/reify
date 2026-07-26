@@ -27,7 +27,7 @@ use std::collections::HashMap;
 
 use reify_core::SourceSpan;
 
-use crate::slvs_sys::{Slvs_hEntity, Slvs_hParam};
+use crate::slvs_sys::Slvs_hParam;
 
 /// Identifies a sketch entity within one [`SketchSystem`].
 ///
@@ -261,36 +261,42 @@ pub enum SketchSolveResult {
     UnknownError(i32),
 }
 
-/// Reverse map from [`SketchSystem`] ids to the slvs handles emitted for them.
+/// Reverse map from [`SketchSystem`] ids to the params that carry their solved
+/// geometry.
 ///
 /// Crate-internal by design: it carries raw `Slvs_*` handles, which must not
 /// cross the crate boundary (see the `solve_sketch`-as-the-only-seam decision).
 ///
-/// Entries are appended in [`SketchSystem::entities`] declaration order and read
-/// back in that same order, which is what makes the solved output order a
-/// function of the input rather than of allocation timing (O9).
+/// This is the *readback* index specifically — the emit side keeps its own
+/// index of slvs entity handles, because the two want different things (emission
+/// resolves operands by entity handle and kind; readback resolves geometry by
+/// param).  Entries are appended in [`SketchSystem::entities`] declaration order
+/// and read back in that same order, which is what makes the solved output order
+/// a function of the input rather than of allocation timing (O9).
 pub(crate) struct SketchHandleMap {
     entries: Vec<SketchEntityHandles>,
 }
 
-/// The slvs handles emitted for one sketch entity, plus how to read it back.
+/// One sketch entity and how to reconstruct it from solved params.
 struct SketchEntityHandles {
     id: SketchEntityId,
-    /// The slvs entity handle. Recorded for every entity because composite
-    /// entities and constraints reference their operands by entity handle, not
-    /// by param — the emit paths that read it back out land with those.
-    #[allow(dead_code)]
-    entity: Slvs_hEntity,
     readback: SketchReadback,
 }
 
 /// Where a solved entity's geometry comes from once `Slvs_Solve` returns.
 ///
 /// Points own their params; composite entities own none, and are reconstructed
-/// from the already-solved points they reference.  That indirection is why the
-/// readback resolves ids rather than just copying param values.
+/// from the params of the points they are defined by.  That indirection is why
+/// a composite records its operands' params rather than params of its own.
 enum SketchReadback {
-    Point { x: Slvs_hParam, y: Slvs_hParam },
+    Point {
+        x: Slvs_hParam,
+        y: Slvs_hParam,
+    },
+    Line {
+        start: (Slvs_hParam, Slvs_hParam),
+        end: (Slvs_hParam, Slvs_hParam),
+    },
 }
 
 impl SketchHandleMap {
@@ -300,23 +306,23 @@ impl SketchHandleMap {
         }
     }
 
-    fn push(&mut self, id: SketchEntityId, entity: Slvs_hEntity, readback: SketchReadback) {
-        self.entries.push(SketchEntityHandles {
-            id,
-            entity,
-            readback,
-        });
+    fn push(&mut self, id: SketchEntityId, readback: SketchReadback) {
+        self.entries.push(SketchEntityHandles { id, readback });
     }
 
-    /// Record a point entity and the two params carrying its coordinates.
-    pub(crate) fn push_point(
+    /// Record a point and the two params carrying its coordinates.
+    pub(crate) fn push_point(&mut self, id: SketchEntityId, x: Slvs_hParam, y: Slvs_hParam) {
+        self.push(id, SketchReadback::Point { x, y });
+    }
+
+    /// Record a line and the params of the two points defining it.
+    pub(crate) fn push_line(
         &mut self,
         id: SketchEntityId,
-        entity: Slvs_hEntity,
-        x: Slvs_hParam,
-        y: Slvs_hParam,
+        start: (Slvs_hParam, Slvs_hParam),
+        end: (Slvs_hParam, Slvs_hParam),
     ) {
-        self.push(id, entity, SketchReadback::Point { x, y });
+        self.push(id, SketchReadback::Line { start, end });
     }
 
     /// Resolve every recorded entity against the solved param values.
@@ -329,12 +335,19 @@ impl SketchHandleMap {
         &self,
         values: &HashMap<Slvs_hParam, f64>,
     ) -> Result<Vec<(SketchEntityId, SolvedSketchEntity)>, Slvs_hParam> {
+        let at = |p: &Slvs_hParam| values.get(p).copied().ok_or(*p);
+        let xy = |p: &(Slvs_hParam, Slvs_hParam)| Ok((at(&p.0)?, at(&p.1)?));
+
         let mut out = Vec::with_capacity(self.entries.len());
         for entry in &self.entries {
             let solved = match &entry.readback {
                 SketchReadback::Point { x, y } => SolvedSketchEntity::Point {
-                    x: *values.get(x).ok_or(*x)?,
-                    y: *values.get(y).ok_or(*y)?,
+                    x: at(x)?,
+                    y: at(y)?,
+                },
+                SketchReadback::Line { start, end } => SolvedSketchEntity::Line {
+                    start: xy(start)?,
+                    end: xy(end)?,
                 },
             };
             out.push((entry.id, solved));
