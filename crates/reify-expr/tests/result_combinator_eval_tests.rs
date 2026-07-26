@@ -741,3 +741,58 @@ fn e2e_result_is_err_err_with_stdlib() {
          the placeholder .ri body hardcodes false"
     );
 }
+
+/// End-to-end: `ok_or(some(5mm), "e")` compiled with the real stdlib must
+/// evaluate to `Ok{value:5mm}` — the Option→Result bridge's some-path.
+///
+/// DISCRIMINATION: `result.ri` ships
+/// `pub fn ok_or<T, E>(o: Option<T>, err: E) -> Result<T, E> { err }` — a
+/// typecheck-only placeholder that returns the BARE `err` payload and never
+/// constructs a `Result` enum at all. With the intercept removed this call
+/// therefore returns `Value::String("e")` and this assert fails.
+///
+/// Beyond discriminating, the some-path additionally proves the Ok-WRAPPING
+/// direction of the bridge: the intercept must not merely unbox `o`, it must
+/// re-wrap the payload as `Result::Ok{value:..}`.
+#[test]
+fn e2e_ok_or_some_with_stdlib() {
+    let module = reify_test_support::compile_source_with_stdlib(
+        r#"structure S { let v = ok_or(some(5mm), "e") }"#,
+    );
+    let expr = cell_expr_stdlib(&module, "v");
+    let values = ValueMap::new();
+    let ctx = EvalContext::new(&values, &module.functions);
+    assert_eq!(
+        eval_expr(expr, &ctx),
+        val_ok(val_5mm()),
+        "e2e: ok_or(some(5mm), \"e\") compiled via stdlib must evaluate to Ok{{value:5mm}} — \
+         the placeholder .ri body would return the bare err payload String(\"e\")"
+    );
+}
+
+/// End-to-end: `ok_or(none, "e")` compiled with the real stdlib must evaluate
+/// to `Err{error:"e"}` — the Option→Result bridge's none-path.
+///
+/// DISCRIMINATION: the same placeholder `{ err }` returns the BARE
+/// `Value::String("e")`, never an `Err` ENUM. So even on the none-path — where
+/// the error payload is "the same string" — intercept and placeholder differ
+/// in SHAPE: `Enum{Result::Err{error:String("e")}}` vs a naked `String("e")`.
+/// With the intercept removed this assert fails.
+///
+/// Note: a bare `none` here infers a DIMENSIONLESS `T`, which is harmless
+/// because the assertion inspects only the `Err` payload.
+#[test]
+fn e2e_ok_or_none_with_stdlib() {
+    let module = reify_test_support::compile_source_with_stdlib(
+        r#"structure S { let v = ok_or(none, "e") }"#,
+    );
+    let expr = cell_expr_stdlib(&module, "v");
+    let values = ValueMap::new();
+    let ctx = EvalContext::new(&values, &module.functions);
+    assert_eq!(
+        eval_expr(expr, &ctx),
+        val_err("e"),
+        "e2e: ok_or(none, \"e\") compiled via stdlib must evaluate to Err{{error:\"e\"}} — \
+         the placeholder .ri body would return the bare, unwrapped String(\"e\")"
+    );
+}
