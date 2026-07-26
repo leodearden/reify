@@ -1,15 +1,33 @@
 //! Consolidated integration-test harness for the engine subsystem.
 //!
-//! Task #5056 (PRD docs/prds/merge-gate-compile-cost.md §5 C1): this is the C1
-//! consolidated harness compile unit for the engine subsystem cluster, seeded ahead
-//! of leaf EVAL-3 (task #5282, the planned full engine-subsystem consolidation) so
-//! #5056's new test lands under the C1 layout instead of grandfathering another
-//! top-level standalone binary into the baseline manifest. Layout-only — no `#[test]`
-//! fn is added or removed. Each former file is included as a stem-named module so its
-//! `<file>::<test>` module path (and thus every `test(/^<file>::/)` filterset)
-//! resolves unchanged. Explicit `#[path]` is required: this harness root is an
-//! integration-test crate root, where a bare `mod <file>;` would resolve to the
-//! sibling `tests/<file>.rs`, not the `harness_engine/` subdir.
+//! Task #5282 (PRD docs/prds/merge-gate-compile-cost.md §3 W1 / §5 C1, leaf EVAL-3):
+//! folds the former standalone `tests/<file>.rs` binaries for the `auto_`/`engine_`/
+//! `m8_`/`m9_` clusters — the Engine resolution+commit pipeline — into this single
+//! compile unit to cut the merge-gate link count. Task #5056 seeded this root ahead of
+//! EVAL-3 with three modules so its new test would land under the C1 layout instead of
+//! grandfathering another top-level standalone binary into the baseline manifest; this
+//! is the leaf that fills it. Layout-only — no `#[test]` fn is added or removed. Each
+//! former file is included as a stem-named module so its `<file>::<test>` module path
+//! (and thus every `test(/^<file>::/)` filterset) resolves unchanged. Explicit `#[path]`
+//! is required: this harness root is an integration-test crate root, where a bare
+//! `mod <file>;` would resolve to the sibling `tests/<file>.rs`, not the
+//! `harness_engine/` subdir.
+//!
+//! No path fixups were needed for the 16 files EVAL-3 moved here: every path-sensitive
+//! construct in them is either `env!("CARGO_MANIFEST_DIR")`-anchored (crate-root
+//! relative, so unaffected by an extra source subdirectory) or a runtime
+//! `std::fs::read_to_string` (process-CWD relative — the crate root under `cargo test`;
+//! `m8_stdlib_integration`'s 14 `../../examples/*.ri` reads are all of this kind).
+//! There are no `include_str!`/`include!` sites and no `#[global_allocator]`.
+//!
+//! Note (task #5282): this compile unit's real size is the root file plus every
+//! `harness_engine/*.rs` module below — at consolidation time, 68 (root) + 11,601
+//! (modules) = 11,669 raw lines against the PRD §7 20,000-line cap (~42% headroom).
+//! `tests/infra/test_harness_kloc_cap.sh` rule (a) currently `wc -l`s only this root
+//! file, so it cannot see this unit approach the cap; a follow-up to make the guard sum
+//! root + module-dir LOC was filed against task 5281. Once that follow-up is assigned a
+//! task id, replace this note with a properly numbered debt-marker citation per the
+//! repo's TODO-citation convention (CLAUDE.md).
 //!
 //! The shared `common/differential.rs` harness is included HERE, at the unit root,
 //! rather than inside the one submodule that consumes it — the same placement
@@ -20,12 +38,44 @@
 #[path = "common/differential.rs"]
 mod differential;
 
-#[path = "harness_engine/edit_param_cell_commit_migration.rs"]
-mod edit_param_cell_commit_migration;
+#[path = "harness_engine/auto_backtracking_e2e.rs"]
+mod auto_backtracking_e2e;
+#[path = "harness_engine/auto_binding_sites_remaining_resolution.rs"]
+mod auto_binding_sites_remaining_resolution;
+#[path = "harness_engine/auto_sub_override_resolution.rs"]
+mod auto_sub_override_resolution;
+#[path = "harness_engine/auto_type_param_completion_e2e.rs"]
+mod auto_type_param_completion_e2e;
+#[path = "harness_engine/auto_type_param_determinism_tests.rs"]
+mod auto_type_param_determinism_tests;
+#[path = "harness_engine/auto_type_param_topology_trigger_tests.rs"]
+mod auto_type_param_topology_trigger_tests;
+#[path = "harness_engine/auto_type_param_value_population_e2e.rs"]
+mod auto_type_param_value_population_e2e;
 #[path = "harness_engine/diagnostics_cache_replay_migration.rs"]
 mod diagnostics_cache_replay_migration;
+#[path = "harness_engine/edit_param_cell_commit_migration.rs"]
+mod edit_param_cell_commit_migration;
+#[path = "harness_engine/engine_eval_commit_migration.rs"]
+mod engine_eval_commit_migration;
 #[path = "harness_engine/joint_drive_cluster_formation.rs"]
 mod joint_drive_cluster_formation;
+#[path = "harness_engine/m8_3_stdlib_integration.rs"]
+mod m8_3_stdlib_integration;
+#[path = "harness_engine/m8_4_stdlib_integration.rs"]
+mod m8_4_stdlib_integration;
+#[path = "harness_engine/m8_m11_regression_checkpoint.rs"]
+mod m8_m11_regression_checkpoint;
+#[path = "harness_engine/m8_stdlib_integration.rs"]
+mod m8_stdlib_integration;
+#[path = "harness_engine/m9_combined.rs"]
+mod m9_combined;
+#[path = "harness_engine/m9_constraint_def.rs"]
+mod m9_constraint_def;
+#[path = "harness_engine/m9_integration.rs"]
+mod m9_integration;
+#[path = "harness_engine/m9_trait_conformance.rs"]
+mod m9_trait_conformance;
 #[path = "harness_engine/reset_per_build_state_classification.rs"]
 mod reset_per_build_state_classification;
 // Task #5196's capstone acceptance e2e lands here for the same reason #5056's

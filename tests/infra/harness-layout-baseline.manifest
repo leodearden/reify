@@ -204,13 +204,6 @@ crates/reify-eval/tests/arbitrary_pattern_transform_e2e.rs
 crates/reify-eval/tests/aspect_massive_eval.rs
 crates/reify-eval/tests/as_printed_zones_test_fixtures.rs
 crates/reify-eval/tests/assert_dag_complete_gate.rs
-crates/reify-eval/tests/auto_backtracking_e2e.rs
-crates/reify-eval/tests/auto_binding_sites_remaining_resolution.rs
-crates/reify-eval/tests/auto_sub_override_resolution.rs
-crates/reify-eval/tests/auto_type_param_completion_e2e.rs
-crates/reify-eval/tests/auto_type_param_determinism_tests.rs
-crates/reify-eval/tests/auto_type_param_topology_trigger_tests.rs
-crates/reify-eval/tests/auto_type_param_value_population_e2e.rs
 crates/reify-eval/tests/bom_report_eval.rs
 crates/reify-eval/tests/boolean_ops_e2e.rs
 crates/reify-eval/tests/boundary2_consumer.rs
@@ -254,7 +247,6 @@ crates/reify-eval/tests/dynamics_body_mass_props.rs
 crates/reify-eval/tests/e2e_bracket.rs
 crates/reify-eval/tests/e2e_meta.rs
 crates/reify-eval/tests/edit_source.rs
-crates/reify-eval/tests/engine_eval_commit_migration.rs
 crates/reify-eval/tests/ensure_openvdb_kernel.rs
 crates/reify-eval/tests/eval_cached_diagnostics.rs
 crates/reify-eval/tests/eval_instrumentation_counters.rs
@@ -328,14 +320,6 @@ crates/reify-eval/tests/m11_field_calculus.rs
 crates/reify-eval/tests/m11_full_integration.rs
 crates/reify-eval/tests/m5_integration.rs
 crates/reify-eval/tests/m6_data_carrying_enum.rs
-crates/reify-eval/tests/m8_3_stdlib_integration.rs
-crates/reify-eval/tests/m8_4_stdlib_integration.rs
-crates/reify-eval/tests/m8_m11_regression_checkpoint.rs
-crates/reify-eval/tests/m8_stdlib_integration.rs
-crates/reify-eval/tests/m9_combined.rs
-crates/reify-eval/tests/m9_constraint_def.rs
-crates/reify-eval/tests/m9_integration.rs
-crates/reify-eval/tests/m9_trait_conformance.rs
 crates/reify-eval/tests/manifold_cross_kernel_real.rs
 crates/reify-eval/tests/manifold_ingest_attribute_forwarding_e2e.rs
 crates/reify-eval/tests/match_block_decls_e2e.rs
