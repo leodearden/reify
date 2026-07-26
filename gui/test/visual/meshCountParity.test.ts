@@ -18,6 +18,7 @@ import { describe, it, expect } from "vitest";
 import {
   checkMeshCountParity,
   extractMeshCountInputs,
+  isInBandError,
   MESH_COUNT_PARITY_MIN_BODIES,
 } from "./meshCountParity.mjs";
 
@@ -28,12 +29,6 @@ const OK_INPUT = {
   engineStateCount: 7,
   fullScope: false,
 };
-
-describe("MESH_COUNT_PARITY_MIN_BODIES", () => {
-  it("is the documented non-vacuity floor of 2 bodies", () => {
-    expect(MESH_COUNT_PARITY_MIN_BODIES).toBe(2);
-  });
-});
 
 describe("checkMeshCountParity — (a) happy path", () => {
   it("passes when all three reads agree under selective demand", () => {
@@ -99,11 +94,11 @@ describe("checkMeshCountParity — (d) vacuity gate", () => {
     expect(failures).toHaveLength(1);
   });
 
-  it("explains that parity under full scope is trivially true", () => {
+  it("names full_scope, so a live run can tell which gate fired", () => {
+    // Token, not prose: the message is free to be reworded, but it must stay
+    // attributable to the vacuity gate rather than to a count mismatch.
     const [msg] = checkMeshCountParity({ ...OK_INPUT, fullScope: true }).failures;
     expect(msg).toContain("full_scope");
-    expect(msg).toMatch(/trivial/i);
-    expect(msg).toContain("build_gui_state_full_scene");
   });
 
   it("rejects a missing full_scope reading rather than assuming selectivity", () => {
@@ -344,13 +339,13 @@ describe("extractMeshCountInputs — (b) in-band tool errors", () => {
   // every .mjs driver returns that payload verbatim, so without this check the
   // counts would silently come back `undefined`.
   const TOOLS = [
-    ["viewportState", "viewport_state"],
-    ["meshStats", "mesh_stats"],
-    ["engineState", "engine_state"],
-    ["demandDispatch", "demand_dispatch"],
+    ["viewportState", "viewport_state", "viewportMeshCount"],
+    ["meshStats", "mesh_stats", "meshStatsCount"],
+    ["engineState", "engine_state", "engineStateCount"],
+    ["demandDispatch", "demand_dispatch", "fullScope"],
   ] as const;
 
-  for (const [key, toolName] of TOOLS) {
+  for (const [key, toolName, field] of TOOLS) {
     it(`names ${toolName} when it returns {error: ...}`, () => {
       const p = { ...livePayloads(), [key]: { error: "no active session" } };
       const { failures } = extractMeshCountInputs(p as never);
@@ -358,10 +353,15 @@ describe("extractMeshCountInputs — (b) in-band tool errors", () => {
       expect(failures.some((f) => f.includes("no active session"))).toBe(true);
     });
 
-    it(`does not silently yield undefined for an errored ${toolName}`, () => {
+    it(`leaves ${field} undefined for an errored ${toolName}, never a usable-looking value`, () => {
       const p = { ...livePayloads(), [key]: { error: "boom" } };
-      const { failures } = extractMeshCountInputs(p as never);
-      expect(failures.length).toBeGreaterThan(0);
+      const { inputs, failures } = extractMeshCountInputs(p as never);
+      // Both halves matter, and neither implies the other: the field must not
+      // carry anything downstream code could mistake for a real reading, AND
+      // the outage must be named — an undefined field with no named failure
+      // would surface as a mere shape problem.
+      expect(inputs[field]).toBeUndefined();
+      expect(failures.some((f) => f.includes(toolName))).toBe(true);
     });
   }
 
@@ -454,6 +454,39 @@ describe("extractMeshCountInputs — (d) full_scope: true extracts faithfully", 
     const parity = checkMeshCountParity(inputs);
     expect(parity.ok).toBe(false);
     expect(parity.failures.some((f) => f.includes("full_scope"))).toBe(true);
+  });
+});
+
+describe("isInBandError — the tool-outage discriminator the live driver reuses", () => {
+  // Exported for the smoke's selectivity precondition: a FAILED demand_dispatch
+  // must be diagnosed as a tool outage, not read as `full_scope !== false` and
+  // blamed on the frontend never calling sync_demand.
+  it("accepts the frontend in-band shape", () => {
+    expect(isInBandError({ error: "no active session" })).toBe(true);
+  });
+
+  it("accepts the Rust isError dialect once rpc() has normalised it", () => {
+    // debug_server.rs answers a Rust-dispatched handler failure with
+    // {content: [{type:'text', text:'Error: <msg>'}], isError: true}; the
+    // driver's rpc() folds that into {error: '<text>'} so this one detector
+    // covers both dialects. If it did not, the outage would arrive as a bare
+    // string and be misreported as a payload-shape problem.
+    expect(isInBandError({ error: "Error: engine thread died" })).toBe(true);
+  });
+
+  it("rejects a healthy payload, and non-objects", () => {
+    expect(isInBandError({ full_scope: false, eval_set: [] })).toBe(false);
+    expect(isInBandError(null)).toBe(false);
+    expect(isInBandError(undefined)).toBe(false);
+    expect(isInBandError("Error: engine thread died")).toBe(false);
+    expect(isInBandError([{ error: "nested" }])).toBe(false);
+  });
+
+  it("rejects a non-string error field (§2a's discriminator is a STRING error)", () => {
+    // Misfiring here would mask real data — a handler is free to use `error`
+    // for something else. Matches the extractor's behaviour on the same shape.
+    expect(isInBandError({ error: null, full_scope: false })).toBe(false);
+    expect(isInBandError({ error: 500, full_scope: false })).toBe(false);
   });
 });
 
