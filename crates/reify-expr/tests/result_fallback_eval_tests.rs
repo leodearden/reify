@@ -222,3 +222,39 @@ fn fallback_option_subject_regression_guard() {
 // Like the rest of this file these are deliberate REGRESSION LOCKS, not
 // RED-first tests: the intercept is already live, so they are GREEN the moment
 // they are written.
+
+/// End-to-end: `fallback(Ok { value: 5mm }, 0mm)` compiled with the real
+/// stdlib must evaluate to 5mm — the unboxed inner `Ok` payload.
+///
+/// DISCRIMINATION: `result.ri` ships
+/// `pub fn fallback<T, E>(r: Result<T, E>, dflt: T) -> T { dflt }`, a
+/// typecheck-only placeholder that ALWAYS returns the default and never looks
+/// at `r`. With the intercept removed — or with just `"fallback"` dropped from
+/// `option_recovery::is_combinator` — this call returns `0mm` and this assert
+/// fails.
+///
+/// This closes the gap this file's own header names. The `eval_simple` tests
+/// above prove the shared `eval_extract_or_default` arm's BEHAVIOUR, but they
+/// run with an EMPTY function table, so the placeholder body was never loaded
+/// and the header's "would fall through to the placeholder `.ri` body" claim
+/// was an argument rather than something the file exercised. Here the
+/// placeholder really is loaded and really would win if the intercept stopped
+/// firing.
+///
+/// The `Ok` subject is what makes the fixture discriminating: an `Err` subject
+/// recovers to `0mm`, which is exactly what the placeholder returns.
+#[test]
+fn e2e_result_fallback_ok_with_stdlib() {
+    let module = reify_test_support::compile_source_with_stdlib(
+        "structure S { let v = fallback(Ok { value: 5mm }, 0mm) }",
+    );
+    let expr = cell_expr_stdlib(&module, "v");
+    let values = ValueMap::new();
+    let ctx = EvalContext::new(&values, &module.functions);
+    assert_eq!(
+        eval_expr(expr, &ctx),
+        val_5mm(),
+        "e2e: fallback(Ok{{value:5mm}}, 0mm) compiled via stdlib must evaluate to 5mm — \
+         the placeholder .ri body would return the default 0mm"
+    );
+}
