@@ -231,4 +231,7 @@ assert "S1: test_verify_compile_gate.sh reaches test_summary with rc=0 / 0 FAIL 
 assert "S2: test_verify_semaphore_wiring.sh reaches test_summary with rc=0 / 0 FAIL on a nextest-less host" \
     _suite_is_clean_without_nextest test_verify_semaphore_wiring.sh
 
+assert "S3: test_verify_offline_partition.sh reaches test_summary with rc=0 / 0 FAIL on a nextest-less host" \
+    _suite_is_clean_without_nextest test_verify_offline_partition.sh
+
 test_summary
