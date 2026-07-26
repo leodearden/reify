@@ -620,10 +620,13 @@ interface DemandSyncViewState {
  * correctly (PRD §12 Q3). Debouncing coalesces a rapid toggle burst (cascading
  * show/hide) into a single engine round-trip.
  *
- * `defer: true` skips the initial run, so the sync fires only on genuine
- * visibility/mesh CHANGES — the backend keeps its cold full-scope default until
- * the user first hides something, which is the safe default (evaluate everything
- * until explicitly pruned).
+ * `defer: true` skips the initial tracking run, so no sync fires at mount.
+ * Note this does NOT mean the backend stays full-scope until a body is
+ * hidden: the first mesh-set change (0 -> N on file load) is itself a
+ * genuine change, so an ordinary open already pushes the all-visible set
+ * and leaves demand selective (`is_full_scope() == false`) with nothing
+ * pruned. A cold `eval()` resets full_scope to true (engine_eval.rs:5301)
+ * until the next sync.
  *
  * Distinct from the idle-gated `syncObservedDemand` measurement effect (task
  * 4532), which is left intact. Must be called within a reactive root (createRoot
