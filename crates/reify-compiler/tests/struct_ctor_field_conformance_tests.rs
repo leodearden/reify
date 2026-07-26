@@ -981,8 +981,22 @@ structure def Root {
 }
 "#;
 
+/// Clean fixture for the promoted `Field` family.
+///
+/// BOTH slots of a `Field` erase to the expression compiler's numeric fallback:
+/// an analytical `field def` carries `result_type = Field<Real, Real>` however
+/// its domain/codomain were declared. Comparing the declaration against that
+/// placeholder would be comparing a declaration against a hole, which is exactly
+/// why the dedicated arm added for this family is SHAPE-based and is not routed
+/// through `type_compatible` (same posture as the adjacent `Type::Vector` arm).
+///
+/// Before task 5465 this passed via blanket family exclusion; it now passes
+/// because the `Type::Field` arm accepts any `Type::Field { .. }` regardless of
+/// domain/codomain. This is the same 6-warning shape
+/// `examples/fea_shell_channels.ri` exhibited (top / mid / bottom /
+/// displacement / stress / frame).
 #[test]
-fn excluded_family_field_given_erased_field_type_is_silent() {
+fn field_param_given_erased_analytical_field_stays_clean() {
     let module = compile_source_with_stdlib(SRC_FAMILY_FIELD);
     let diags = ctor_conformance_diags(&module);
     assert!(
@@ -990,6 +1004,45 @@ fn excluded_family_field_given_erased_field_type_is_silent() {
         "a Field<Point3<Length>, Vector3<Length>> param given an analytical field whose \
          result_type erases to Field<Real, Real> must emit ZERO ctor-conformance diagnostics. \
          Got: {diags:#?}"
+    );
+}
+
+const SRC_FIELD_GIVEN_STRING: &str = r#"module test.field_string
+structure def Holder { param mode_shape : Field<Point3<Length>, Vector3<Length>> }
+structure def Root {
+    let h = Holder(mode_shape: "shape")
+}
+"#;
+
+/// Value floor for the promoted `Field` family: a `String` at a `Field` slot is
+/// not field-shaped by any reading and must warn.
+#[test]
+fn field_param_given_string_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_FIELD_GIVEN_STRING,
+        "mode_shape",
+        "Field<Point3<Length>, Vector3<Length>> ← String",
+    );
+}
+
+const SRC_LIST_OF_FIELD_GIVEN_STRING_ELEMENT: &str = r#"module test.list_field_string
+structure def Holder { param modes : List<Field<Point3<Length>, Vector3<Length>>> }
+structure def Root {
+    let h = Holder(modes: ["a"])
+}
+"#;
+
+/// Wrapper composition: the new `Field` leaf arm must be reachable THROUGH the
+/// walker's `ListLiteral` recursion, not only at the top level.
+///
+/// Without this probe a leaf arm could be added in a position the wrapper
+/// recursion never reaches and the top-level probe above would not notice.
+#[test]
+fn list_of_field_param_given_string_element_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_LIST_OF_FIELD_GIVEN_STRING_ELEMENT,
+        "modes",
+        "List<Field<…>> ← [String]",
     );
 }
 
