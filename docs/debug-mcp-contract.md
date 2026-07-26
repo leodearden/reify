@@ -51,6 +51,14 @@ a drift surface.  The invariant is enforced at test time (see below).
 > with `viewport_state.meshCount` even while the frontend's delta path runs
 > selective demand (where the plain `build_gui_state` returns only the incremental
 > delta subset, per the engine_build.rs DELTA CONTRACT).
+> That consistency is ENFORCED end-to-end (task 5367) by
+> `gui/test/visual/smoke_mesh_count_parity_e2e.mjs` — live-only,
+> `npm --prefix gui run test:smoke:mesh-count-parity` — which asserts
+> `viewport_state.meshCount === mesh_stats.meshes.length === engine_state.meshes.length`;
+> its decision logic is CI-covered by `gui/test/visual/meshCountParity.test.ts`.
+> The smoke first requires `demand_dispatch.full_scope === false`, because under
+> full scope `build_gui_state` and `build_gui_state_full_scene` agree by
+> construction, so the parity would be trivially true and prove nothing.
 
 ### REST-only handlers (not advertised in tools/list)
 
