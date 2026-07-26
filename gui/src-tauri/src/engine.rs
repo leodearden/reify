@@ -5182,6 +5182,72 @@ fn build_preview_gui_state(
 /// guarantees this for well-formed modules. `get_entity_tree` performs a runtime
 /// uniqueness check (O(N)) before iterating templates, emitting a `tracing::warn!`
 /// in release builds and panicking via `debug_assert!` in debug builds.
+/// Collect the names of realizations that are consumed as an operand by some
+/// other realization in the SAME template (#5195).
+///
+/// A consumed realization is intermediate construction geometry — `let body`
+/// and `let holes` in `param geometry = difference(body, holes)` — and is
+/// hidden by default so the viewport shows only the finished part.
+///
+/// # Shared contract anchor
+/// The match arms MIRROR `reify_eval::deps::extract_realization_edges`
+/// (`crates/reify-eval/src/deps.rs`), which performs exactly this scan to build
+/// the dependency graph: `Boolean{left,right}`, `Modify|Transform|Pattern{target}`,
+/// `Sweep{profiles}`, `Isosurface{grid}`; `GeomRef::Step(_)` is skipped
+/// (intra-realization, not a cross-realization edge) and Primitive/Curve/
+/// Profile/Surface carry no `GeomRef` operands. That fn is private and not
+/// re-exported through `pub mod deps`, so it cannot be called from here — keep
+/// the two arm sets in sync so this notion of "consumption" cannot drift from
+/// the dependency graph's.
+///
+/// # Namespace split (safe by construction)
+/// Only BARE `GeomRef::Sub(name)` operands (0 dots) are collected: Reify DSL
+/// identifiers never contain '.', so bare keys ("body") name a same-template
+/// sibling realization while compound keys ("sub.member") name a cross-sub
+/// output that is not one of `template.realizations`. Documented at
+/// `geometry_ops.rs` (with a `debug_assert!`) and `deps.rs`.
+fn collect_consumed_sibling_names(
+    realizations: &[reify_compiler::RealizationDecl],
+) -> HashSet<&str> {
+    /// Record a bare `GeomRef::Sub(name)` operand as consumed; skip
+    /// `GeomRef::Step(_)` (intra-realization) and dotted cross-sub names.
+    fn take<'a>(consumed: &mut HashSet<&'a str>, geom_ref: &'a reify_compiler::GeomRef) {
+        if let reify_compiler::GeomRef::Sub(name) = geom_ref
+            && !name.contains('.')
+        {
+            consumed.insert(name.as_str());
+        }
+    }
+
+    let mut consumed: HashSet<&str> = HashSet::new();
+    for real in realizations {
+        for op in &real.operations {
+            match op {
+                reify_compiler::CompiledGeometryOp::Boolean { left, right, .. } => {
+                    take(&mut consumed, left);
+                    take(&mut consumed, right);
+                }
+                reify_compiler::CompiledGeometryOp::Modify { target, .. }
+                | reify_compiler::CompiledGeometryOp::Transform { target, .. }
+                | reify_compiler::CompiledGeometryOp::Pattern { target, .. } => {
+                    take(&mut consumed, target)
+                }
+                reify_compiler::CompiledGeometryOp::Sweep { profiles, .. } => {
+                    for geom_ref in profiles {
+                        take(&mut consumed, geom_ref);
+                    }
+                }
+                reify_compiler::CompiledGeometryOp::Isosurface { grid, .. } => {
+                    take(&mut consumed, grid)
+                }
+                // Primitive/Curve/Profile/Surface carry no GeomRef operands.
+                _ => {}
+            }
+        }
+    }
+    consumed
+}
+
 pub(crate) fn build_template_node(
     template: &reify_compiler::TopologyTemplate,
     entity_path: &str,
@@ -5229,17 +5295,26 @@ pub(crate) fn build_template_node(
 
     // Realizations (geometry-producing bindings: Solid-typed lets/params).
     //
-    // These are NOT in `value_cells` — the compiler routes Solid-typed
-    // bindings into `RealizationDecl` so they can be tessellated. Without
-    // this loop the outline omits exactly the entries the user wants to
-    // toggle visibility on (`let body`, `let hole`, `param geometry: Solid`,
-    // …) and shows only scalar params, which can't be hidden in 3D.
+    // Since #4954 a geometry binding emits BOTH a value cell (above, the
+    // scalar/typed view: `kind: "let"`, `has_mesh: false`) and a realization
+    // node here (`kind: "realization"`, `has_mesh: true`). Meshes key on the
+    // realization node, so this loop emits exactly the entries the user wants
+    // to toggle visibility on (`let body`, `let hole`, `param geometry: Solid`,
+    // …); the value-cell siblings carry no mesh.
     //
     // `entity_path` is the mesh key form (`Entity#realization[N]`) so it
     // matches `engineStore.meshes` and `viewStateStore` directly. The
     // user-friendly binding name is carried in `display_name`. Realizations
     // without a name (test-helper-only code path — see `RealizationDecl.name`
     // doc) fall back to deriving one from the path.
+
+    // Sibling realizations consumed downstream by another realization in this
+    // same template are INTERMEDIATE construction geometry (`let body` feeding
+    // `param geometry = difference(body, holes)`), so they are hidden by
+    // default — the viewport shows the finished part, and the outline toggle
+    // reveals the construction steps (#5195).
+    let consumed = collect_consumed_sibling_names(&template.realizations);
+
     for real in &template.realizations {
         let real_path = format!("{}#realization[{}]", entity_path, real.id.index);
         let display_name = real.name.clone();
@@ -5258,11 +5333,18 @@ pub(crate) fn build_template_node(
             trait_geometry: false,
             children: vec![],
             freshness,
-            // Mirrors the surfacing-walk rule — shared contract anchor:
+            // Extends the surfacing-walk rule — shared contract anchor:
             // `geometry_ops::surface_subtree` / `geometry_ops::realization_is_aux`
-            // (rule: `!(aux_ancestor || realization_is_aux(realization))`).
-            // aux_ancestor is inherited from any containing `aux sub` up the tree.
-            default_visible: !(aux_ancestor || real.is_aux),
+            // (rule: `!(aux_ancestor || realization_is_aux(realization))`) — with
+            // the consumed-intermediate rule (#5195). aux_ancestor is inherited
+            // from any containing `aux sub` up the tree; `is_consumed` means some
+            // sibling realization in this template takes this one as an operand.
+            default_visible: !(aux_ancestor
+                || real.is_aux
+                || real
+                    .name
+                    .as_deref()
+                    .is_some_and(|n| consumed.contains(n))),
         });
     }
 
