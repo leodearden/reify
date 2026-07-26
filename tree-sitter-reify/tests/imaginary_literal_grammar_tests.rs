@@ -188,3 +188,52 @@ fn guard_f_capital_j_stays_quantity_literal() {
         "guard (f): `4.1J` must NOT produce an `imaginary_literal` node (D1: lowercase j only)"
     );
 }
+
+// ── Regression guard (g): 2 j (space-separated) is rejected, never imaginary_literal ──
+
+/// Regression guard (g): `let x = 2 j` (mantissa and `j` separated by whitespace)
+/// must be REJECTED. The space breaks j-suffix adjacency; D1 requires the `j`
+/// to be lexically fused to the mantissa for an `imaginary_literal` to form.
+///
+/// This is the CI-exercised (`cargo test`) home for the rejection invariant that
+/// `test/corpus/imaginary_literal.txt`'s "no-whitespace: 2 j with a space must
+/// NOT form an imaginary_literal" case also pins — `test/corpus/` is NOT run by
+/// any gate (see #5492). Unlike the corpus pin, this guard deliberately does NOT
+/// assert on the `UNEXPECTED` pseudo-token that `tree-sitter test` renders: that
+/// token is a GLR error-recovery rendering detail, not reachable via `Node`'s
+/// kind/span API, and it is precisely the detail that drifted under #5492 (it
+/// moved from `'j'` to `'\n'` without the rejection itself regressing). Task
+/// 3947 lineage: see fixture (a) and guards (d)-(f) above.
+#[test]
+fn guard_g_space_separated_j_is_rejected() {
+    let mut parser = make_parser();
+    let source = b"structure S { let x = 2 j }";
+    let tree = parser.parse(source, None).expect("parse failed");
+    assert!(
+        tree.root_node().has_error(),
+        "guard (g): `2 j` (space-separated) must be REJECTED; got kinds: {:?}",
+        collect_kinds(tree.root_node())
+    );
+    let imag = find_node_by_kind(tree.root_node(), "imaginary_literal");
+    assert!(
+        imag.is_none(),
+        "guard (g): `2 j` (space-separated) must NEVER produce an `imaginary_literal` \
+         node; got kinds: {:?}",
+        collect_kinds(tree.root_node())
+    );
+    let num = find_node_by_kind(tree.root_node(), "number_literal");
+    assert!(
+        num.is_some(),
+        "guard (g): the mantissa `2` must still parse as a bare `number_literal`; \
+         got kinds: {:?}",
+        collect_kinds(tree.root_node())
+    );
+    let err =
+        find_node_by_kind(tree.root_node(), "ERROR").expect("guard (g): expected an ERROR node");
+    let err_text = &source[err.start_byte()..err.end_byte()];
+    assert_eq!(
+        err_text, b"j",
+        "guard (g): the ERROR node must span exactly the `j`, but got `{}`",
+        String::from_utf8_lossy(err_text)
+    );
+}
