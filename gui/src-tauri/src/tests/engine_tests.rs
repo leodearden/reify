@@ -17578,46 +17578,32 @@ fn rigid_mass_props_stay_determined_after_warm_edit() {
 // production-compute-fns bundler (PRD docs/prds/compute-fea-hardening.md
 // task A3), not hand-roll register_compute_fns + register_shell_extract_compute_fns.
 //
-// TEST A is ungated: it compiles and executes in BOTH feature configurations
-// (the default gui-off nextest pass and `--features gui`), and owns the
-// no-regression pin for the two pre-existing bundle halves in both. It
-// deliberately does NOT try to runtime-distinguish "delegates to
-// register_production_compute_fns" from "still hand-rolled" — an earlier
-// version did this via a tracing::debug! event count at the
-// `reify_eval::compute_targets` target prefix, but `target_prefix` matches by
-// `starts_with`, so that probe silently covered the whole compute_targets
-// submodule subtree (not just the one `Unavailable`-arm log line it meant to
-// isolate) and pinned an incidental log line as a behavioural proxy: a
-// legitimate refactor of the bundler's logging, with no registration
-// behaviour change, would have failed this test with a misleading message.
-// PRD task A5's planned static drift guard is the durable "did you delegate"
-// signal; this test's job is just the runtime no-regression pin.
+// TEST A is a runtime no-regression pin only (both pre-existing bundle halves
+// still dispatch); it does not attempt to distinguish "delegates to
+// register_production_compute_fns" from "still hand-rolled; only mesh-morph
+// missing", since both implementations satisfy it identically. Proving actual
+// delegation is PRD task A5's static drift guard (tracked as task 5076), not
+// this test's job.
 #[test]
-fn from_engine_delegates_to_canonical_production_bundle() {
+fn engine_session_registers_fea_and_shell_extract_dispatch() {
     let session = EngineSession::new(
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
     let engine = session.engine();
 
-    // No-regression pins: both pre-existing bundle halves must still dispatch
-    // after the migration — register_production_compute_fns runs
-    // register_compute_fns then register_shell_extract_compute_fns internally,
-    // in the same order the hand-rolled calls used. Covers both feature
-    // configurations; TEST B (gui_feature_tests, below) does not repeat these.
+    // Runs in both feature configurations; TEST B (gui_feature_tests, below)
+    // does not repeat these pins.
     assert!(
         engine.compute_dispatch("solver::elastic_static").is_some(),
-        "EngineSession::from_engine must delegate to \
-         Engine::register_production_compute_fns — PRD compute-fea-hardening \
-         task A3 / INV-FEA-1 — which must still register the FEA trampoline \
-         (solver::elastic_static) via register_compute_fns"
+        "EngineSession must register the FEA trampoline dispatch target \
+         (solver::elastic_static) — PRD compute-fea-hardening task A3 / INV-FEA-1"
     );
     assert!(
         engine.compute_dispatch("shell-extract::extract").is_some(),
-        "EngineSession::from_engine must delegate to \
-         Engine::register_production_compute_fns — PRD compute-fea-hardening \
-         task A3 / INV-FEA-1 — which must still register the shell-extract \
-         trampoline (shell-extract::extract) via register_shell_extract_compute_fns"
+        "EngineSession must register the shell-extract trampoline dispatch \
+         target (shell-extract::extract) — PRD compute-fea-hardening task A3 \
+         / INV-FEA-1"
     );
 }
 
@@ -17629,15 +17615,21 @@ fn from_engine_delegates_to_canonical_production_bundle() {
 /// mesh-morph producer.
 ///
 /// Gated because `reify-mesh-morph` is only on the graph under `--features
-/// gui` (gui/src-tauri/Cargo.toml:18,24). Compile-verified in CI via
-/// `cargo check -p reify-gui --features gui --tests`
-/// (scripts/verify.sh:2032) but never executed there — OCCT/tauri linking
-/// makes gui-feature test execution a local-only step. Precedent for this
-/// gated-module shape: kernel_status_tests.rs:36, event_bus_tests.rs:22.
+/// gui` (see the `gui` feature list in `gui/src-tauri/Cargo.toml`).
+/// Compile-verified in CI by the gui-feature compile-check block in
+/// `scripts/verify.sh` but never executed there — OCCT/tauri linking makes
+/// gui-feature test execution a local-only step, so this specific assertion
+/// (the only one exercising the new mesh-morph registration) has no
+/// CI-executed regression coverage today: a future change that flipped the
+/// `#[cfg(feature = "gui")]` arm in `from_engine` to `Unavailable` would
+/// compile clean and pass every CI pass silently. Closing that gap is task
+/// 5076 (PRD task A5's static drift guard + gui-feature test execution),
+/// out of this task's scope. Precedent for this gated-module shape:
+/// `kernel_status_tests` and `event_bus_tests` in this same directory.
 ///
 /// Asserts only `morph_producer().is_some()`: TEST A above
-/// (`from_engine_delegates_to_canonical_production_bundle`, ungated) already
-/// pins the two pre-existing dispatch targets (`solver::elastic_static`,
+/// (`engine_session_registers_fea_and_shell_extract_dispatch`, ungated)
+/// already pins the two pre-existing dispatch targets (`solver::elastic_static`,
 /// `shell-extract::extract`) and runs in both feature configurations, so
 /// re-asserting them here would just duplicate TEST A under `--features gui`.
 #[cfg(feature = "gui")]
