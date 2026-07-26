@@ -999,3 +999,119 @@ fn equal_length_lines_propagates_a_single_length() {
     assert_near(dist(d_start, d_end), 0.010, "the anchored driving length");
     assert_near(dist(f_start, f_end), 0.010, "the length equated to it");
 }
+
+// ---------------------------------------------------------------------------
+// Failing-constraint attribution
+// ---------------------------------------------------------------------------
+
+/// The failing set, or a descriptive panic naming the actual arm.
+fn failing(result: &SketchSolveResult) -> &Vec<(SketchConstraintId, SourceSpan)> {
+    match result {
+        SketchSolveResult::Inconsistent { failing } => failing,
+        other => panic!("expected SketchSolveResult::Inconsistent, got {other:?}"),
+    }
+}
+
+/// An anchored vertical segment told to be both 10 mm and 20 mm long.
+///
+/// Returns the sketch plus the ids of the two constraints that contradict each
+/// other, so a test can name the culprits it expects without re-deriving them.
+/// The two anchoring constraints are *not* in conflict: they are there to make
+/// the contradiction reachable, and a failing set that named them would be
+/// attributing the failure to the wrong declarations.
+fn contradictory_dimensions() -> (Sketch, SketchConstraintId, SketchConstraintId) {
+    let mut s = Sketch::new();
+    let a = s.point(0.0, 0.0);
+    let b = s.point(0.0, 0.010);
+    let segment = s.line(a, b);
+
+    s.constrain(SketchConstraint::Fix(a));
+    s.constrain(SketchConstraint::Vertical(segment));
+    let ten = s.constrain(SketchConstraint::Distance { a, b, value: 0.010 });
+    let twenty = s.constrain(SketchConstraint::Distance { a, b, value: 0.020 });
+
+    (s, ten, twenty)
+}
+
+/// An over-constrained sketch names the declarations that contradict, each with
+/// its own span.
+///
+/// This is the difference between a diagnostic that can point at source and one
+/// that can only say "something is over-constrained": a bare count is not
+/// attributable, and neither is a set of synthetic ids. Every pair that comes
+/// back has to resolve to a constraint the caller actually declared, carrying
+/// the span that caller wrote it at.
+///
+/// The span check is what makes this more than a plausibility test — the fixture
+/// gives every constraint a distinct span, so a failing set that paired the
+/// right ids with the wrong spans (an off-by-one in the reverse map, say) fails
+/// here rather than reading as correct.
+#[test]
+fn contradictory_dimensions_resolve_to_their_own_constraints() {
+    let (s, ten, twenty) = contradictory_dimensions();
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert!(
+        matches!(result, SketchSolveResult::Inconsistent { .. }),
+        "10 mm and 20 mm cannot both hold, got {result:?}"
+    );
+
+    let failing = failing(&result);
+    assert!(
+        !failing.is_empty(),
+        "an inconsistent solve must name what failed"
+    );
+
+    // Every pair resolves to a constraint that is really in the input, with
+    // really that constraint's span.
+    for (id, span) in failing {
+        let def = s
+            .system()
+            .constraints
+            .iter()
+            .find(|d| d.id == *id)
+            .unwrap_or_else(|| {
+                panic!("failing set names {id:?}, which is not a constraint in the input sketch")
+            });
+        assert_eq!(
+            *span, def.span,
+            "{id:?} came back paired with a span that is not its own"
+        );
+    }
+
+    let named: Vec<SketchConstraintId> = failing.iter().map(|(id, _)| *id).collect();
+    assert!(
+        named.contains(&ten) && named.contains(&twenty),
+        "both contradictory dimensions must be named, got {named:?} \
+         (expected to contain {ten:?} and {twenty:?})"
+    );
+
+    // Distinct ids carry distinct spans, so the two culprits cannot have been
+    // handed the same one.
+    assert_ne!(
+        span_for(ten),
+        span_for(twenty),
+        "the fixture itself must give the two culprits different spans"
+    );
+}
+
+/// The failing set comes back in the same order every time.
+///
+/// Ordering is part of the contract, not an accident of iteration: a diagnostic
+/// whose constraint list reshuffles between runs makes its own output
+/// unreviewable and any test over it flaky. Compared as a whole `Vec`, so both
+/// membership and order are pinned.
+#[test]
+fn the_failing_set_is_ordered_deterministically() {
+    let (s, _, _) = contradictory_dimensions();
+
+    let first = reify_constraints::solve_sketch(s.system());
+    let second = reify_constraints::solve_sketch(s.system());
+
+    assert_eq!(
+        failing(&first),
+        failing(&second),
+        "the failing set must be identical across identical solves"
+    );
+}
