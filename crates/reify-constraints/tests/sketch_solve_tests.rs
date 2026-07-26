@@ -235,3 +235,104 @@ fn dot(a: (f64, f64), b: (f64, f64)) -> f64 {
 fn cross(a: (f64, f64), b: (f64, f64)) -> f64 {
     a.0 * b.1 - a.1 * b.0
 }
+
+/// Assert `actual` is within [`TOL`] of `expected`, naming both in the failure.
+fn assert_near(actual: f64, expected: f64, what: &str) {
+    assert!(
+        (actual - expected).abs() < TOL,
+        "{what}: expected {expected}, got {actual} (delta {})",
+        (actual - expected).abs()
+    );
+}
+
+/// Assert a solved point is within [`TOL`] of `(x, y)`.
+fn assert_point_near(actual: (f64, f64), expected: (f64, f64), what: &str) {
+    assert!(
+        dist(actual, expected) < TOL,
+        "{what}: expected {expected:?}, got {actual:?} (distance {})",
+        dist(actual, expected)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The direct-build spine: entry point, DOF surfacing, determinism
+// ---------------------------------------------------------------------------
+
+/// A sketch of two free points with *no* constraints solves, and reports its
+/// degrees of freedom honestly.
+///
+/// `dof == 4` is an exact combinatorial identity, not a measurement: a 2D point
+/// contributes two params to the solved group, there are two points, and there
+/// are no equations to reduce the rank. libslvs itself reports 4 for exactly
+/// this system.
+///
+/// This is the case a hardcoded `dof: 0` short-circuit would get wrong, and
+/// getting it wrong is not cosmetic — it reports a wholly unconstrained sketch
+/// as fully constrained.
+#[test]
+fn points_only_sketch_solves_and_reports_honest_dof() {
+    let mut s = Sketch::new();
+    let a = s.point(0.003, 0.004);
+    let b = s.point(-0.002, 0.007);
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert!(
+        matches!(result, SketchSolveResult::Solved { .. }),
+        "an unconstrained sketch is solvable, got {result:?}"
+    );
+    assert_eq!(
+        dof_of(&result),
+        4,
+        "two free 2D points and no constraints = 4 DOF"
+    );
+
+    // Nothing constrains the points, so the solver must leave them at their seeds.
+    assert_point_near(point_of(&result, a), (0.003, 0.004), "point a");
+    assert_point_near(point_of(&result, b), (-0.002, 0.007), "point b");
+}
+
+/// Solving the same `SketchSystem` twice yields bit-identical coordinates.
+///
+/// Compared with `f64::to_bits`, not within `TOL`: O9 determinism is a claim
+/// about reproducibility, and a tolerance-based check would pass for a solver
+/// that wandered by 1e-12 between runs. Handle allocation walks the declaration
+/// -ordered `Vec`s, so the same input must produce the same slvs system and
+/// therefore the same output.
+#[test]
+fn solve_sketch_is_bit_deterministic() {
+    let mut s = Sketch::new();
+    let a = s.point(0.003, 0.004);
+    let b = s.point(-0.002, 0.007);
+
+    let first = reify_constraints::solve_sketch(s.system());
+    let second = reify_constraints::solve_sketch(s.system());
+
+    assert_eq!(
+        dof_of(&first),
+        dof_of(&second),
+        "dof must be reproducible across identical solves"
+    );
+
+    for id in [a, b] {
+        let (x1, y1) = point_of(&first, id);
+        let (x2, y2) = point_of(&second, id);
+        assert_eq!(
+            (x1.to_bits(), y1.to_bits()),
+            (x2.to_bits(), y2.to_bits()),
+            "{id:?} must be bit-identical across identical solves: \
+             ({x1}, {y1}) vs ({x2}, {y2})"
+        );
+    }
+
+    // The readback order is the declaration order, not whatever a hash map
+    // iteration happened to produce.
+    let ids_first: Vec<_> = solved(&first).iter().map(|(id, _)| *id).collect();
+    let ids_second: Vec<_> = solved(&second).iter().map(|(id, _)| *id).collect();
+    assert_eq!(ids_first, ids_second, "readback order must be stable");
+    assert_eq!(
+        ids_first,
+        vec![a, b],
+        "readback must follow declaration order"
+    );
+}
