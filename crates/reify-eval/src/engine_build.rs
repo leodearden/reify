@@ -349,6 +349,14 @@ struct RealizationOpsInput<'a> {
     // inject either posture deterministically — env mutation is unsafe in
     // edition 2024, exactly as for `long_chain_threshold` above.
     mesh_contract_mode: reify_ir::geometry::MeshContractMode,
+    // Task #5196 step-12: the module-STATIC term of the L2 selector gate —
+    // `module_binds_selector(module)`, computed ONCE per build above the
+    // template loop and threaded per-iteration (same shape as
+    // `long_chain_threshold` / `mesh_contract_mode` above). The gate on the
+    // per-realization tie-scan below ORs this with the runtime
+    // `values_contain_selector(values)` probe. Hoisting it here also removes
+    // the per-realization recompute of what is a module-global answer.
+    module_binds_selector: bool,
 }
 
 impl<'a> RealizationOpsInput<'a> {
@@ -417,6 +425,13 @@ impl<'a> RealizationOpsInput<'a> {
             // override with `Engine::mesh_contract_mode`, which honours the
             // `REIFY_MESH_CONTRACT` break-glass.
             mesh_contract_mode: reify_ir::geometry::MeshContractMode::Enforce,
+            // Fail-OPEN default (task #5196 step-12): a call site that omits
+            // `.with_module_binds_selector(...)` always runs the tie-scan, so
+            // the tessellate/query paths and the `run`/`run_demand` test
+            // wrapper stay behaviourally identical to before the gate existed.
+            // Only the two build paths (`build_snapshot`,
+            // `build_with_geometry_output`) opt in with a real answer.
+            module_binds_selector: true,
         }
     }
 
@@ -484,6 +499,15 @@ impl<'a> RealizationOpsInput<'a> {
     /// [`Self::new`]).
     fn with_mesh_contract_mode(mut self, v: reify_ir::geometry::MeshContractMode) -> Self {
         self.mesh_contract_mode = v;
+        self
+    }
+
+    /// Override the module-static term of the L2 selector gate (default
+    /// `true`, fail-open — see the comment above this field's initializer in
+    /// [`Self::new`]). Build paths pass [`module_binds_selector`], computed
+    /// once per build.
+    fn with_module_binds_selector(mut self, v: bool) -> Self {
+        self.module_binds_selector = v;
         self
     }
 }
@@ -3254,6 +3278,11 @@ impl Engine {
             // borrows taken by `RealizationOpsInput::new` below, then thread
             // it per-iteration.
             let mesh_contract_mode = self.mesh_contract_mode;
+            // Task #5196 step-12: the module-STATIC term of the L2 selector
+            // gate. Module-GLOBAL, so it is resolved ONCE here — above the
+            // template loop — and threaded per-iteration, exactly like the two
+            // locals above.
+            let module_binds_selector_flag = module_binds_selector(module);
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -3365,7 +3394,12 @@ impl Engine {
                         .with_long_chain_threshold(long_chain_threshold)
                         // Task #5105 δ (INV-GEO-1): mesh-contract posture for the
                         // tessellate→ingest handoff, resolved once at entry (see above).
-                        .with_mesh_contract_mode(mesh_contract_mode),
+                        .with_mesh_contract_mode(mesh_contract_mode)
+                        // Task #5196 step-12: the module-static term of the
+                        // L2 selector gate, resolved once above the template
+                        // loop. Only the build paths opt in; tessellate/query
+                        // keep the fail-open `true` default.
+                        .with_module_binds_selector(module_binds_selector_flag),
                         RealizationOutputs::new(
                             &mut step_handles,
                             &mut named_steps,
@@ -4034,6 +4068,11 @@ impl Engine {
             // borrows taken by `RealizationOpsInput::new` below, then thread
             // it per-iteration.
             let mesh_contract_mode = self.mesh_contract_mode;
+            // Task #5196 step-12: the module-STATIC term of the L2 selector
+            // gate. Module-GLOBAL, so it is resolved ONCE here — above the
+            // template loop — and threaded per-iteration, exactly like the two
+            // locals above.
+            let module_binds_selector_flag = module_binds_selector(module);
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -4263,7 +4302,12 @@ impl Engine {
                         .with_long_chain_threshold(long_chain_threshold)
                         // Task #5105 δ (INV-GEO-1): mesh-contract posture for the
                         // tessellate→ingest handoff, resolved once at entry (see above).
-                        .with_mesh_contract_mode(mesh_contract_mode),
+                        .with_mesh_contract_mode(mesh_contract_mode)
+                        // Task #5196 step-12: the module-static term of the
+                        // L2 selector gate, resolved once above the template
+                        // loop. Only the build paths opt in; tessellate/query
+                        // keep the fail-open `true` default.
+                        .with_module_binds_selector(module_binds_selector_flag),
                         RealizationOutputs::new(
                             &mut step_handles,
                             &mut named_steps,
@@ -6910,6 +6954,7 @@ impl Engine {
             morph_io,
             long_chain_threshold,
             mesh_contract_mode,
+            module_binds_selector: module_binds_selector_flag,
         } = input;
         if Self::probe_realization_cache(
             realization_cache,
@@ -8410,26 +8455,31 @@ impl Engine {
             }
             // task #5196 L2 gate: the tie-scan below is about *selector-
             // resolution* stability, so it is vacuous work when this module
-            // bound no `Value::Selector` at all (e.g. the litter-tray
-            // multi-boolean model, which binds none). Fail-open GLOBAL check
-            // over `values` (already in scope here — see design decision in
-            // `.task/plan.json`): any selector anywhere runs every
-            // realization's scan, so a diagnostic is never missed; the cost
-            // is occasionally scanning a realization whose own geometry no
-            // selector actually touches.
+            // binds no selector at all (e.g. the litter-tray multi-boolean
+            // model, which binds none).
             //
-            // The result is module-global (identical for every realization),
-            // so this recomputes the same boolean once per realization instead
-            // of hoisting it to a single pre-loop pass. That redundancy is
-            // deliberate, not an oversight: design decision #4 weighed a
-            // once-per-build hoist and rejected it as threading churn across
-            // `RealizationOpsInput`'s four construction sites for negligible
-            // benefit (`values_contain_selector` short-circuits on the first
-            // selector and the top-level `values` map is small). The hoist
-            // target is the `compute_demanded_*` per-build pre-pass named in
-            // the plan's reuse notes, available if profiling ever flags this
-            // site — see the same design decision for the O(R·V) analysis.
-            if values_contain_selector(values) {
+            // TWO terms, OR'd, short-circuiting on the first. The LOAD-BEARING
+            // one is `module_binds_selector_flag` — the module-STATIC walk of
+            // every `CompiledExpr` reachable from any template, computed once
+            // per build and threaded in (it is a module-global answer, so
+            // recomputing it per realization would be pure waste). The runtime
+            // `values_contain_selector(values)` probe is a secondary
+            // belt-and-braces term.
+            //
+            // The runtime probe alone would be fail-CLOSED, not fail-open: the
+            // `ValueMap` carries no anonymous sub-expression entries, so a
+            // selector ctor consumed inline as a call argument
+            // (`fillet(b, edges(b), 2mm)` — the dominant idiom) leaves no
+            // trace in it; and a declared selector cell that a realization
+            // consumes is hydrated to `Value::List<Geometry>` rather than
+            // staying a `Value::Selector`. See the section header above
+            // `expr_contains_selector_ctor` for the full analysis and the
+            // residual gap.
+            //
+            // Off the build path (tessellate/query, the `run`/`run_demand`
+            // test wrapper) the flag keeps its fail-open `true` default, so
+            // those paths run the scan exactly as they did before the gate.
+            if module_binds_selector_flag || values_contain_selector(values) {
             // v0.2 persistent-naming-v2 (PRD task 4 / #2654): construction-time
             // fragility detection for local_index reassignment. The
             // topology_attribute_table is fully populated for this realization
@@ -11698,37 +11748,300 @@ fn collect_centroids_with_failure_summary(
     (centroids, diags)
 }
 
-// ── L2 selector-presence gate (task #5196 step-8) ────────────────────────────
+// ── L2 selector-presence gate (task #5196 step-8, corrected at step-12) ──────
+//
+// The gate on the per-realization local-index-reassignment tie-scan in
+// [`Engine::execute_realization_ops`]. That scan warns about
+// *selector-resolution* stability, so it is vacuous work on a build that
+// binds no selector at all (e.g. the litter-tray multi-boolean model).
+//
+// The gate has TWO terms, OR'd:
+//
+//   1. [`module_binds_selector`] — the LOAD-BEARING signal. A module-static
+//      walk of every `CompiledExpr` reachable from any template, looking for
+//      a selector-ctor `FunctionCall`. Computed ONCE per build and threaded
+//      in via `RealizationOpsInput::module_binds_selector`.
+//
+//   2. [`values_contain_selector`] — a secondary belt-and-braces term over
+//      the runtime `ValueMap`.
+//
+// Term 2 CANNOT carry the gate alone, and step-8's doc claiming otherwise was
+// wrong in the worst possible direction — it was fail-CLOSED on the dominant
+// selector idiom, not fail-open. Two independent reasons:
+//
+//   (a) The `ValueMap` has no entries for anonymous sub-expressions. The
+//       compiler's only ANF hoist (`phase_hoist_nested_selector_ctors`) lifts
+//       selector ctors ONLY out of `StructureInstanceCtor` field values —
+//       `hoist_in_expr`'s catch-all is literally `_ => {}`
+//       (crates/reify-compiler/src/hoist_nested_selectors.rs). So in the
+//       curated-modify idiom `fillet(b, edges(b), 2mm)` the ctor sits in
+//       ordinary `FunctionCall` ARGUMENT position, never earns a cell, and no
+//       `Value::Selector` is ever written anywhere.
+//   (b) Even a DECLARED selector let can be invisible: once a realization
+//       consumes it, `hydrate_value_cell_in_loop` branch (b) resolves the
+//       cell to `Value::List<Geometry>` rather than leaving a
+//       `Value::Selector` behind.
+//
+// Under term 2 alone, `DiagnosticCode::TopologyAttributeLocalIndexReassigned`
+// was therefore unreachable for exactly the models whose selector resolution
+// is at risk of shuffling.
+//
+// RESIDUAL GAP, stated honestly: term 1 walks `CompiledExpr` trees reachable
+// from `module.templates` only. A selector ctor that exists *exclusively*
+// inside a module-level `CompiledFunction` body, a `CompiledField` source
+// expr, or a `CompiledPurpose` is not seen by term 1 (see
+// [`module_binds_selector`] for why walking `module.functions` is actively
+// harmful). Term 2 still covers the sub-case where such a ctor's *result*
+// lands in a value cell. What survives both terms is a selector ctor that is
+// (i) declared only outside any template AND (ii) consumed inline so its
+// result never reaches `values`. That is a bounded gap on an advisory
+// `Severity::Info` diagnostic, not a silent correctness loss.
+
+/// True iff `expr`'s tree contains a selector-ctor `FunctionCall` at ANY
+/// position.
+///
+/// Leaf test is the compiler's OWN predicate,
+/// [`reify_compiler::topology_selector_result_type`] — the same one
+/// `is_hoistable_selector_ctor` uses — so this gate and the ANF hoist cannot
+/// drift apart on what counts as a selector ctor. The difference is
+/// positional: the hoist tests only `StructureInstanceCtor` field values,
+/// this tests EVERY expression position. That positional restriction is
+/// precisely the bug being fixed.
+///
+/// Traversal reuses [`reify_ir::CompiledExpr::walk`], the canonical
+/// pre-order walk, per its own doc contract ("All callers that need to visit
+/// expression nodes should use this method rather than implementing their own
+/// match on `CompiledExprKind`"). That contract is what makes this
+/// future-proof: `walk` is exhaustive over every `CompiledExprKind` variant
+/// with no `_ =>` catch-all, so a newly-added variant is a compile error
+/// *there* rather than a silent fail-closed hole here.
+///
+/// Two positions `walk` deliberately does not reach are covered explicitly
+/// below, since for this predicate they are real carriers:
+/// `StructureInstanceCtor::lets` (skipped by `walk` because it references
+/// template-local cells) and a `Value::Lambda` body embedded in a `Literal`
+/// (skipped because `walk` treats `Literal` as a leaf).
+fn expr_contains_selector_ctor(expr: &reify_ir::CompiledExpr) -> bool {
+    fn is_selector_ctor(expr: &reify_ir::CompiledExpr) -> bool {
+        match &expr.kind {
+            reify_ir::CompiledExprKind::FunctionCall { function, .. } => matches!(
+                reify_compiler::topology_selector_result_type(&function.name),
+                Some(reify_core::Type::Selector(_))
+            ),
+            _ => false,
+        }
+    }
+
+    let mut found = false;
+    expr.walk(&mut |node| {
+        if found {
+            return;
+        }
+        if is_selector_ctor(node) {
+            found = true;
+            return;
+        }
+        match &node.kind {
+            // `walk` skips `lets` (it references template-local cells), so
+            // descend them here.
+            reify_ir::CompiledExprKind::StructureInstanceCtor { lets, .. } => {
+                if lets.iter().any(|(_, e)| expr_contains_selector_ctor(e)) {
+                    found = true;
+                }
+            }
+            // `walk` treats `Literal` as a leaf, but `Value::Lambda` embeds a
+            // whole `CompiledExpr` body inside one.
+            reify_ir::CompiledExprKind::Literal(reify_ir::Value::Lambda { body, .. }) => {
+                if expr_contains_selector_ctor(body) {
+                    found = true;
+                }
+            }
+            _ => {}
+        }
+    });
+    found
+}
+
+/// The `args` slice of a compiled geometry op, or empty for the one arm that
+/// has none.
+///
+/// Exhaustive by construction (no `_ =>` catch-all) so a newly-added
+/// `CompiledGeometryOp` arm is a compile error rather than a silently
+/// unwalked expression carrier.
+fn geometry_op_arg_exprs(
+    op: &reify_compiler::CompiledGeometryOp,
+) -> &[(String, reify_ir::CompiledExpr)] {
+    use reify_compiler::CompiledGeometryOp as Op;
+    match op {
+        Op::Primitive { args, .. }
+        | Op::Modify { args, .. }
+        | Op::Transform { args, .. }
+        | Op::Pattern { args, .. }
+        | Op::Curve { args, .. }
+        | Op::Profile { args, .. }
+        | Op::Surface { args, .. }
+        | Op::Sweep { args, .. }
+        | Op::Isosurface { args, .. } => args,
+        // The sole arm carrying no `CompiledExpr`: pure `GeomRef` operands.
+        Op::Boolean { .. } => &[],
+    }
+}
+
+/// True iff any `CompiledExpr` reachable from any of `module`'s templates
+/// contains a selector-ctor `FunctionCall` (see
+/// [`expr_contains_selector_ctor`]).
+///
+/// Module-GLOBAL by design, not per-realization: a `fillet` in realization R2
+/// may consume geometry realized in R1, so a per-realization op-walk would
+/// reintroduce a fail-closed gap at the realization boundary. Short-circuits
+/// on the first hit.
+///
+/// # Coverage
+///
+/// Every `TopologyTemplate` field whose type transitively holds a
+/// `CompiledExpr` is walked. Enumerated from the struct rather than inherited
+/// from a plan document, because two prior revisions of this task were wrong
+/// about which collections carry the relevant expressions:
+///
+/// - `value_cells[*].default_expr`
+/// - `constraints[*]` — `.expr` and `.arg_bindings[*]`
+/// - `realizations[*].operations[*]` — see [`geometry_op_arg_exprs`]
+/// - `sub_components[*]` — `.args`, `.guard_state` (`GuardState::Compiled`),
+///   `.pose`, `.auto_pose.params`, `.keyed_member_overrides[*]`
+/// - `relations[*]` — a bare `Vec<CompiledExpr>`
+/// - `ports[*]` — `.members[*].default_expr`, `.constraints[*]`, `.frame_expr`
+/// - `guarded_groups[*]` — `.guard_expr`, `.members`, `.constraints`,
+///   `.else_members`, `.else_constraints`
+/// - `objective` — `.terms[*].expr`
+/// - `match_arm_groups[*].arms[*].guard_expr`
+/// - `forall_templates[*].body` — `Constraint{body_expr}` / `Connect{params}`
+/// - `assoc_fns[*].function` — `.param_defaults[*]`, `.body.let_bindings[*]`,
+///   `.body.result_expr`
+///
+/// `guarded_groups` is stored FLAT: nesting is a `parent_guard` back-pointer
+/// to the enclosing group's `guard_value_cell`, not containment, so a flat
+/// iteration visits every group at every depth exactly once. It is also a
+/// collection wholly separate from `value_cells` — walking only `value_cells`
+/// would miss `where <cond> { let fs = faces(u) }` entirely and re-create the
+/// exact fail-closed hole this function exists to close, one layer up.
+///
+/// # Deliberate exclusions
+///
+/// - `module.functions` — `compile_with_stdlib` compiles the ENTIRE stdlib
+///   into every module's `functions`. Walking it would make this predicate
+///   universally true and turn the gate back into a no-op, which is strictly
+///   worse than the bounded gap documented at the top of this section.
+/// - `module.fields` / `module.compiled_purposes` — same stdlib-contamination
+///   risk class, and neither is a template-reachable expression carrier.
+/// - `template.annotations` — carries `reify_ast::Expr`, an UNCOMPILED AST
+///   expression evaluated at materialization; not a `CompiledExpr` channel.
+/// - `template.connections`, `.assoc_types`, `.type_params` — no
+///   `CompiledExpr` anywhere in their types.
+/// - `module.trait_defs`, `module.constraint_defs` — hold raw
+///   `reify_ast::Expr` / AST decls, deliberately un-lowered.
+fn module_binds_selector(module: &reify_compiler::CompiledModule) -> bool {
+    fn cell_binds(cell: &reify_compiler::ValueCellDecl) -> bool {
+        cell.default_expr
+            .as_ref()
+            .is_some_and(expr_contains_selector_ctor)
+    }
+    fn constraint_binds(c: &reify_compiler::CompiledConstraint) -> bool {
+        expr_contains_selector_ctor(&c.expr)
+            || c.arg_bindings
+                .iter()
+                .any(|(_, e)| expr_contains_selector_ctor(e))
+    }
+    fn fn_binds(f: &reify_compiler::CompiledFunction) -> bool {
+        f.param_defaults
+            .iter()
+            .flatten()
+            .any(expr_contains_selector_ctor)
+            || f.body
+                .let_bindings
+                .iter()
+                .any(|(_, e)| expr_contains_selector_ctor(e))
+            || expr_contains_selector_ctor(&f.body.result_expr)
+    }
+
+    module.templates.iter().any(|template| {
+        template.value_cells.iter().any(cell_binds)
+            || template.constraints.iter().any(constraint_binds)
+            || template.realizations.iter().any(|r| {
+                r.operations.iter().any(|op| {
+                    geometry_op_arg_exprs(op)
+                        .iter()
+                        .any(|(_, e)| expr_contains_selector_ctor(e))
+                })
+            })
+            || template.sub_components.iter().any(|sub| {
+                sub.args.iter().any(|(_, e)| expr_contains_selector_ctor(e))
+                    || sub
+                        .guard_state
+                        .compiled()
+                        .is_some_and(expr_contains_selector_ctor)
+                    || sub.pose.as_ref().is_some_and(expr_contains_selector_ctor)
+                    || sub.auto_pose.as_ref().is_some_and(|ap| {
+                        ap.params.iter().any(|(_, e)| expr_contains_selector_ctor(e))
+                    })
+                    || sub
+                        .keyed_member_overrides
+                        .iter()
+                        .any(|(_, args)| args.iter().any(|(_, e)| expr_contains_selector_ctor(e)))
+            })
+            || template.relations.iter().any(expr_contains_selector_ctor)
+            || template.ports.iter().any(|p| {
+                p.members.iter().any(cell_binds)
+                    || p.constraints.iter().any(constraint_binds)
+                    || p.frame_expr
+                        .as_ref()
+                        .is_some_and(expr_contains_selector_ctor)
+            })
+            || template.guarded_groups.iter().any(|g| {
+                expr_contains_selector_ctor(&g.guard_expr)
+                    || g.members.iter().any(cell_binds)
+                    || g.constraints.iter().any(constraint_binds)
+                    || g.else_members.iter().any(cell_binds)
+                    || g.else_constraints.iter().any(constraint_binds)
+            })
+            || template.objective.as_ref().is_some_and(|o| {
+                o.terms
+                    .iter()
+                    .any(|t| expr_contains_selector_ctor(&t.expr))
+            })
+            || template
+                .match_arm_groups
+                .iter()
+                .any(|g| g.arms.iter().any(|a| expr_contains_selector_ctor(&a.guard_expr)))
+            || template.forall_templates.iter().any(|ft| {
+                use reify_compiler::CompiledForallBody as Body;
+                match &ft.body {
+                    Body::Constraint { body_expr, .. } => expr_contains_selector_ctor(body_expr),
+                    Body::Connect { params, .. } => {
+                        params.iter().any(|(_, e)| expr_contains_selector_ctor(e))
+                    }
+                }
+            })
+            || template.assoc_fns.iter().any(|af| fn_binds(&af.function))
+    })
+}
 
 /// True iff `value` is a [`reify_ir::Value::Selector`], or contains one
-/// nested inside a container variant.
+/// nested inside a composite variant.
 ///
-/// Backs the L2 gate on the per-realization local-index-reassignment
-/// tie-scan in [`Engine::execute_realization_ops`]: that scan exists to warn
-/// about *selector-resolution* stability, so it is vacuous work on a build
-/// that bound no selector at all (e.g. the litter-tray multi-boolean model).
+/// The SECONDARY term of the L2 gate — see the section header above for why
+/// it cannot be the primary one. Recurses through every composite `Value`
+/// variant a selector is known to reach: `List`, `Set`, `Map` (both keys and
+/// values), `Option`, `Field`'s `lambda` (a `Restricted` field's lambda holds
+/// `Value::List[inner_field, region]`, where `region` can itself be a
+/// selector), `Lambda`'s `captures` (itself a whole nested `ValueMap`), and
+/// `StructureInstance`'s `fields`.
 ///
-/// Fail-open *across the container variants a selector is known to reach*:
-/// recurses through every such `Value` variant — `List`, `Set`, `Map` (both
-/// keys and values), `Option`, and `Field`'s `lambda` (a `Restricted`
-/// field's lambda holds `Value::List[inner_field, region]`, where `region`
-/// can itself be a selector) — so a selector nested inside any of them is
-/// still found and any doubt there errs toward running the scan.
-///
-/// It is NOT total coverage, and the earlier bare "fail-open" framing
-/// overstated the guarantee. Mirroring
-/// [`crate::invariants::value_is_or_contains_undef`]'s shape, it deliberately
-/// does NOT recurse into the single-composite scalar-wrapper variants
-/// (`StructureInstance` / `Enum` payloads, `Tensor`, `Point`, `Frame`, …) for
-/// the same reason that helper doesn't: no corpus fixture forces it, and
-/// extending there would be speculative rather than evidence-driven. For
-/// those variants the check is therefore fail-CLOSED, not fail-open — a
-/// selector reachable *exclusively* through one of them (with no other
-/// selector anywhere in the module) is missed, so the gated tie-scan is
-/// skipped and its `TopologyAttributeLocalIndexReassigned` diagnostic is not
-/// emitted. Accepted as a bounded gap: that diagnostic is advisory
-/// `Severity::Info`. Add a recursion arm here the moment a fixture actually
-/// exercises a selector nested exclusively within one of those variants.
+/// The remaining `_ => false` catch-all covers `Value`'s large scalar tail
+/// (`Int`, `Real`, `String`, `Tensor`, `Point`, `Frame`, …), where a selector
+/// cannot occur. The earlier claim that the uncovered set was merely
+/// "single-composite scalar-wrapper variants" was false — `Lambda.captures`
+/// and `StructureInstance.fields` are both genuine composite carriers and are
+/// now walked explicitly.
 fn value_contains_selector(value: &reify_ir::Value) -> bool {
     match value {
         reify_ir::Value::Selector(_) => true,
@@ -11739,18 +12052,16 @@ fn value_contains_selector(value: &reify_ir::Value) -> bool {
             .any(|(k, v)| value_contains_selector(k) || value_contains_selector(v)),
         reify_ir::Value::Option(inner) => inner.as_deref().is_some_and(value_contains_selector),
         reify_ir::Value::Field { lambda, .. } => value_contains_selector(lambda),
+        reify_ir::Value::Lambda { captures, .. } => values_contain_selector(captures),
+        reify_ir::Value::StructureInstance(data) => {
+            data.fields.iter().any(|(_, v)| value_contains_selector(v))
+        }
         _ => false,
     }
 }
 
 /// True iff any value bound in `values` is or contains a
 /// [`reify_ir::Value::Selector`] (see [`value_contains_selector`]).
-///
-/// Global rather than per-realization: a fail-open presence check over the
-/// whole module's `ValueMap` (design decision in `.task/plan.json` —
-/// per-realization precision was judged marginal post-L1-guard, since the
-/// only surviving ties are geometrically-rare distinct-index pairs, and
-/// would add threading churn for negligible benefit).
 fn values_contain_selector(values: &ValueMap) -> bool {
     values.iter().any(|(_, v)| value_contains_selector(v))
 }
