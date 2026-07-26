@@ -685,3 +685,59 @@ fn e2e_result_or_else_err_with_stdlib() {
          the alternative Ok{{value:7mm}} — the placeholder .ri body would return the Err subject"
     );
 }
+
+/// End-to-end: `is_ok(Err { error: "e" })` compiled with the real stdlib must
+/// evaluate to `false`.
+///
+/// DISCRIMINATION: `result.ri` ships
+/// `pub fn is_ok<T, E>(r: Result<T, E>) -> Bool { true }` — a typecheck-only
+/// placeholder that HARDCODES `true` and never inspects `r`. With the
+/// intercept removed this call therefore returns `true` and this assert
+/// inverts.
+///
+/// The `Err` subject is what makes the fixture discriminating: an `Ok` subject
+/// would coincide with the placeholder's hardcoded `true` and be a no-op guard.
+#[test]
+fn e2e_result_is_ok_err_with_stdlib() {
+    let module = reify_test_support::compile_source_with_stdlib(
+        r#"structure S { let v = is_ok(Err { error: "e" }) }"#,
+    );
+    let expr = cell_expr_stdlib(&module, "v");
+    let values = ValueMap::new();
+    let ctx = EvalContext::new(&values, &module.functions);
+    assert_eq!(
+        eval_expr(expr, &ctx),
+        Value::Bool(false),
+        "e2e: is_ok(Err{{error:\"e\"}}) compiled via stdlib must evaluate to false — \
+         the placeholder .ri body hardcodes true"
+    );
+}
+
+/// End-to-end: `is_err(Err { error: "e" })` compiled with the real stdlib must
+/// evaluate to `true`.
+///
+/// DISCRIMINATION: `result.ri` ships
+/// `pub fn is_err<T, E>(r: Result<T, E>) -> Bool { false }` — a typecheck-only
+/// placeholder that HARDCODES `false` and never inspects `r`. With the
+/// intercept removed this call therefore returns `false` and this assert
+/// inverts.
+///
+/// Shares the `Err { error: "e" }` fixture with `e2e_result_is_ok_err_with_stdlib`
+/// above: the same subject discriminates BOTH predicates at once, because the
+/// two placeholder constants are the exact inverses of the correct answers for
+/// an `Err`. An `Ok` subject would coincide with both constants instead.
+#[test]
+fn e2e_result_is_err_err_with_stdlib() {
+    let module = reify_test_support::compile_source_with_stdlib(
+        r#"structure S { let v = is_err(Err { error: "e" }) }"#,
+    );
+    let expr = cell_expr_stdlib(&module, "v");
+    let values = ValueMap::new();
+    let ctx = EvalContext::new(&values, &module.functions);
+    assert_eq!(
+        eval_expr(expr, &ctx),
+        Value::Bool(true),
+        "e2e: is_err(Err{{error:\"e\"}}) compiled via stdlib must evaluate to true — \
+         the placeholder .ri body hardcodes false"
+    );
+}
