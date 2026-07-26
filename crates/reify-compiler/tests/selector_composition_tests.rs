@@ -644,12 +644,14 @@ structure def GuardedBlockUnionAllIdent {
 /// All-ident union where BOTH operands are per-decl-guarded selector lets.
 ///
 /// `let s = faces(b) where active` and `let t = faces(c) where active` are per-decl
-/// guarded; `let u = union(s, t)` is unguarded.  The authoritative pre-pass populates
-/// `known_selector_lets` regardless of `where_clause`, so this routes correctly on
-/// the authoritative path.  The skeleton pass (build_structure_def_skeleton, used for
-/// fn-returned structures) requires the amendment-1 fix to also populate
-/// `known_selector_lets` before the `where_clause` continue.  Including a `pub fn`
-/// that returns the structure in the source exercises the skeleton path as well.
+/// guarded; `let u = union(s, t)` is unguarded.  The pre-pass populates
+/// `known_selector_lets` regardless of `where_clause`, so `u` routes to the selector
+/// path rather than being mis-classified as a geometry let.  Amendment 1 originally
+/// had to be applied twice — once here and once on the mirror lowering used for
+/// fn-returned structures — which is exactly the lockstep-duplication liability task
+/// 5494 removed by deleting the mirror.  The `pub fn` in the fixture below dates from
+/// that era; it is harmless and now simply exercises a fn-returned position against
+/// the same authoritative template.
 /// (task 4527 amendment)
 const SOURCE_PER_DECL_GUARDED_BOTH_SELECTOR_LETS: &str = r#"
 module test.perdeclguarded
@@ -739,12 +741,13 @@ fn guarded_block_union_all_ident_compiles_clean_with_face_selector_type() {
 /// `union(s, t)` where BOTH `s` and `t` are per-decl-guarded selector lets
 /// (`let s = faces(b) where active`).
 ///
-/// On the authoritative path the pre-pass populates `known_selector_lets` regardless
-/// of `where_clause`, so `u = union(s, t)` routes to the selector path. The source
-/// also includes a `pub fn make_it()` so the skeleton path
-/// (`build_structure_def_skeleton`) is exercised; without the amendment-1 fix both
-/// `s` and `t` would be absent from `known_selector_lets` on the skeleton pass and
-/// `u` would be mis-classified as a geometry let.
+/// The pre-pass populates `known_selector_lets` regardless of `where_clause`, so
+/// `u = union(s, t)` routes to the selector path; without amendment 1 both `s` and
+/// `t` would be absent from `known_selector_lets` and `u` would be mis-classified as
+/// a geometry let.  The fixture's `pub fn make_it()` once existed to exercise a
+/// SECOND lowering of the same rule; task 5494 deleted that mirror, so there is now
+/// one place this can be got wrong.  The assertions below read
+/// `compiled.templates[0]` — the authoritative template — and are unchanged.
 /// (task 4527 amendment)
 #[test]
 fn per_decl_guarded_both_selector_lets_union_compiles_clean() {

@@ -1,13 +1,29 @@
 //! Integration test: a fn body can construct a structure_def from the SAME module.
 //!
-//! This file is the acceptance gate for task 3895: after the same-module skeleton
-//! pre-pass lands in `phase_functions`, `Widget()` inside `make_widget()` must lower
-//! to `CompiledExprKind::StructureInstanceCtor` (not a generic `UserFunctionCall`),
-//! and eval must produce a `Value::StructureInstance` with the structure_def defaults.
+//! `Widget()` inside `make_widget()` must lower to
+//! `CompiledExprKind::StructureInstanceCtor` (not a generic `UserFunctionCall`), and
+//! eval must produce a `Value::StructureInstance` carrying the structure_def's real
+//! defaults.
 //!
-//! Today (step-1, RED) this fails: `Widget()` in a same-module fn body is not in the
-//! prelude_template_registry, so it lowers to a `UserFunctionCall` with no matching
-//! overload → poison diagnostic + error.  Step-2 (GREEN) adds the skeleton pre-pass.
+//! Originally the acceptance gate for task 3895, which delivered this by fabricating
+//! a transient mirror template for every `structure_def` ahead of the fn pass. Task
+//! 5494 deleted that mirror: fn param defaults and fn bodies are now compiled by the
+//! unified source-order pass in `entities_phase::phase_entities`, interleaved with
+//! entity templates in declaration order, so a fn body reads the ONE AUTHORITATIVE
+//! `TopologyTemplate` — the same object external access reads.
+//!
+//! Two consequences this file pins:
+//!
+//!   * There is no second, diverging lowering of a `structure_def` to drift against,
+//!     so the mirror's two silent-divergence hazards (defaults compiled in a neutral
+//!     scope with their diagnostics discarded; nested `Inner()` in a `let` lowering
+//!     to a generic `FunctionCall` because no template registry was installed) are
+//!     unrepresentable rather than merely fixed.
+//!   * Declaration order is load-bearing: a fn body may construct a same-module
+//!     structure declared ABOVE it; one declared BELOW is an ordering ERROR (see
+//!     `fn_body_ctor_of_later_declared_structure_reports_ordering_error`), matching
+//!     the no-forward-reference rule `compile_entity` already obeys for entity →
+//!     entity references.
 
 use reify_core::*;
 use reify_ir::*;
@@ -54,10 +70,9 @@ fn eval_source_with_stdlib(source: &str) -> reify_eval::EvalResult {
 
 // ─── step-1: zero errors ──────────────────────────────────────────────────────
 
-/// The module must compile with zero `Severity::Error` diagnostics once the
-/// same-module skeleton pre-pass (step-2) is in place.  RED today: `Widget()` in
-/// a same-module fn body is not in the prelude_template_registry, so it lowers
-/// to a `UserFunctionCall` with no matching overload → error diagnostic.
+/// The module must compile with zero `Severity::Error` diagnostics: `Widget()` in
+/// a same-module fn body resolves against `Widget`'s authoritative template, which
+/// the unified source-order pass has already built by the time the fn body compiles.
 #[test]
 fn same_module_widget_zero_errors() {
     let module = load_widget_module();
@@ -77,8 +92,8 @@ fn same_module_widget_zero_errors() {
 // ─── step-2: make_widget body is StructureInstanceCtor ────────────────────────
 
 /// `make_widget()`'s result_expr must lower to
-/// `CompiledExprKind::StructureInstanceCtor` with `type_name == "Widget"`.
-/// RED today: `Widget()` lowers to `UserFunctionCall` instead.
+/// `CompiledExprKind::StructureInstanceCtor` with `type_name == "Widget"` — not a
+/// generic `UserFunctionCall`.
 #[test]
 fn make_widget_body_is_structure_instance_ctor() {
     let module = load_widget_module();
@@ -240,14 +255,23 @@ fn eval_make_widget_partial_covers_first_param() {
 /// fn-returned ctor.
 ///
 /// This test was `sibling_param_default_accepted_limitation_body_is_ctor` — the
-/// task-3895 pin for design decision #3, which recorded sibling-param defaults
-/// as unresolvable in `build_structure_def_skeleton`'s neutral scope and
-/// deferred the eval assertion ("If a future task implements sibling-param
-/// resolution in skeleton scope, this test must be updated to assert the correct
-/// eval result for `y`").  Task 5494 is that task: the mirror is gone and the
-/// authoritative template is what the fn body sees, so the deferred assertion is
-/// now made.  The zero-errors and `StructureInstanceCtor{Point}` assertions are
-/// carried over unchanged.
+/// task-3895 pin for design decision #3, which recorded sibling-param defaults as
+/// unresolvable in the mirror's neutral scope and deferred the eval assertion ("If
+/// a future task implements sibling-param resolution, this test must be updated to
+/// assert the correct eval result for `y`").  Task 5494 is that task, and closing
+/// it took BOTH halves:
+///
+///   * compile — the authoritative template is what the fn body sees, so `x + 1.0`
+///     lowers to a real `ValueRef(ValueCellId{Point, x})` instead of the poison the
+///     mirror's neutral scope produced (with its diagnostic discarded);
+///   * eval — `eval_structure_instance_ctor` evaluated defaults in the OUTER
+///     context, where a `Point`-stamped cell does not exist on the fn-returned
+///     path, so the field silently became `Undef`. Defaults are now evaluated
+///     against a child scope keyed by `ValueCellId::new(type_name, member)`, the
+///     same mechanism `materialize_template_lets` already used for lets.
+///
+/// The zero-errors and `StructureInstanceCtor{Point}` assertions are carried over
+/// unchanged.
 #[test]
 fn sibling_param_default_in_fn_returned_ctor_evaluates_correctly() {
     let src = r#"
@@ -304,34 +328,15 @@ structure App {
     );
 }
 
-// ─── step-6: alias-registry dedup isolation guard ────────────────────────────
+// Deleted with the mirror (task 5494): `skeleton_pass_produces_no_spurious_-
+// parametric_alias_info_diagnostics`. Its rationale was skeleton-internal — it
+// guarded a `TypeAliasRegistry` clone the mirror was believed to take before
+// resolving param types — and was already stale (the mirror read the registry
+// read-only, no clone). The Info machinery it pinned the absence of was retired
+// by task 4792, which owns that guarantee now. There is no second alias-resolution
+// path left for a fn-body ctor to drift from, so the test has no subject.
 
-/// Regression guard: the skeleton pass must not emit spurious
-/// `Severity::Info` diagnostics about parametric prelude aliases.
-///
-/// `build_structure_def_skeleton` clones the caller's `TypeAliasRegistry`
-/// before resolving param types (task 3895 bugfix).  After task 4792, the
-/// skip/Info machinery for parametric prelude aliases has been retired:
-/// parametric aliases are now seeded directly and resolved at use-site via
-/// `resolve_parameterized_alias`.  No Info diagnostics of this kind can be
-/// emitted.  This test pins the **absence** of any such spurious Info messages.
-#[test]
-fn skeleton_pass_produces_no_spurious_parametric_alias_info_diagnostics() {
-    let module = load_widget_module();
-    let spurious: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Info && d.message.contains("parametric prelude alias"))
-        .collect();
-    assert!(
-        spurious.is_empty(),
-        "skeleton pass must not produce spurious parametric-alias Info diagnostics; \
-         got: {:#?}",
-        spurious
-    );
-}
-
-// ─── task-4342 step-3b: fn-returned struct carries lets in skeleton ────────────
+// ─── task-4342 step-3b: fn-returned struct carries its template's lets ─────────
 
 const TOL_SRC: &str = r#"
 module test.tol
@@ -382,7 +387,6 @@ fn fn_returned_struct_ctor_carries_non_poison_lets() {
             type_name, lets, ..
         } => {
             assert_eq!(type_name, "Tol", "fn body ctor type_name must be Tol");
-            // RED: currently lets is Vec::new() because step_4 skeleton doesn't attach lets.
             assert_eq!(
                 lets.len(),
                 1,
@@ -394,12 +398,13 @@ fn fn_returned_struct_ctor_carries_non_poison_lets() {
                 lets[0].0, "upper_limit",
                 "let member name must be upper_limit"
             );
-            // The let expr must not be poison — the skeleton must register sibling
-            // params before compiling let exprs so the sibling refs resolve.
+            // The let expr must not be poison: the authoritative template
+            // registers sibling params before compiling let exprs, so the
+            // sibling refs resolve.
             assert_ne!(
                 lets[0].1.result_type,
                 Type::Error,
-                "let expr result_type must not be Error (sibling refs must resolve in skeleton)"
+                "let expr result_type must not be Error (sibling refs must resolve)"
             );
         }
         other => panic!(
@@ -409,17 +414,18 @@ fn fn_returned_struct_ctor_carries_non_poison_lets() {
     }
 }
 
-// ─── task-4342 step-9: guarded lets excluded from skeleton ctor ────────────────
+// ─── task-4342 step-9: guarded lets excluded from the fn-returned ctor ────────
 
 /// A structure with both an unguarded `let` and a per-decl-guarded `let … where cond`
 /// in a same-module fn-returned position.
 ///
-/// RED: `build_structure_def_skeleton`'s second pass currently pushes every non-geometry
-/// let into value_cells unconditionally — including guarded lets.  The ctor-lets
-/// collection (expr.rs) then harvests guarded_limit alongside plain_limit.
+/// The mirror's second pass pushed every non-geometry let into value_cells
+/// unconditionally — including guarded lets — so the ctor-lets collection (expr.rs)
+/// harvested `guarded_limit` alongside `plain_limit`, which the sub path never did.
 ///
-/// After step_10 GREEN: the skeleton skips `where_clause.is_some()` lets, matching
-/// the authoritative path (entity.rs:1457-1472) which routes them to guarded_groups.
+/// There is now only ONE lowering: `where_clause.is_some()` lets are routed to
+/// `guarded_groups`, never to the ctor's `lets` — so a fn-returned ctor and a `sub`
+/// agree by construction rather than by two implementations staying in step.
 const GUARDED_LET_SRC: &str = r#"
 module test.guarded
 
@@ -492,20 +498,19 @@ fn fn_returned_struct_ctor_excludes_guarded_lets() {
     }
 }
 
-// ─── task-4342 (esc-4342-21): geometry-let alias excluded from skeleton ctor ────
+// ─── task-4342 (esc-4342-21): geometry-let alias excluded from the ctor ────────
 
 /// A structure with a geometry let (`base = box(...)`), an Ident *alias* to that
 /// geometry let (`shifted = base`), and a scalar derived let, in a fn-returned
 /// position.
 ///
-/// Regression for the path-consistency divergence flagged in esc-4342-21: the
-/// skeleton's second pass previously used an EMPTY `known_geometry_lets` set, so
-/// `is_geometry_let` could not recognize `shifted` as an alias of the geometry
-/// let `base`.  `shifted` would then be `compile_expr`'d against a scope where
-/// `base` was never registered as geometry, yielding a poison/Undef expr that
-/// leaked into the ctor `lets` — a field the authoritative/sub path never
-/// produces.  After the fix the skeleton builds `known_geometry_lets`
-/// incrementally (mirroring entity.rs:853-856), so both `base` and `shifted` are
+/// Regression for the path-consistency divergence flagged in esc-4342-21, where a
+/// mirror lowering built `known_geometry_lets` differently from the authoritative
+/// one: `is_geometry_let` could not recognize `shifted` as an alias of the geometry
+/// let `base`, so `shifted` compiled against a scope where `base` was never
+/// registered as geometry and a poison/Undef expr leaked into the ctor `lets` — a
+/// field the sub path never produces.  Task 5494 removed the second lowering
+/// entirely, so `known_geometry_lets` is built once: both `base` and `shifted` are
 /// routed out of value_cells, while the scalar `scaled` survives.
 const GEOMETRY_ALIAS_SRC: &str = r#"
 module test.geomalias
@@ -603,14 +608,12 @@ fn fn_returned_struct_ctor_excludes_geometry_let_alias() {
 /// declared before `make_widget` (which constructs it).  Every edge points
 /// backwards, so a strict source-order compilation satisfies all of them.
 ///
-/// Hazard 1 (entity.rs:5935-5950): `build_structure_def_skeleton` is invoked at
-/// functions_phase.rs:46-59 BEFORE the `compile_function` loop at :79, so it is
-/// handed `&ctx.functions` while that vec is still EMPTY.  `tol()` therefore
-/// cannot resolve in the skeleton's neutral scope, `compile_expr` returns a
-/// poison expr, its diagnostic is swallowed by the throwaway buffer
-/// (entity.rs:5958), and the poison is baked verbatim into
+/// Hazard 1, now unrepresentable: the mirror was built BEFORE any user fn was
+/// compiled, so it was handed an EMPTY function table.  `tol()` could not resolve
+/// in its neutral scope, `compile_expr` returned a poison expr, that expr's
+/// diagnostic went to a throwaway buffer, and the poison was baked verbatim into
 /// `StructureInstanceCtor.defaults` at the `Widget()` lowering site.  The failure
-/// is therefore SILENT — a wrong/`Undef` value with no diagnostic — which is
+/// was therefore SILENT — a wrong/`Undef` value with no diagnostic — which is
 /// precisely the divergence boundary #5 forbids.
 #[test]
 fn fn_returned_ctor_default_referencing_same_module_fn_evaluates_correctly() {
@@ -647,7 +650,7 @@ structure App {
     );
 
     // (b) No eval-time errors, and (c) the ctor default carries `tol()`'s REAL
-    //     value — not a poison/Undef baked in by a neutral-scope skeleton.
+    //     value — not a poison/Undef baked in by a neutral-scope mirror.
     let result = eval_source_with_stdlib(src);
     reify_test_support::assert_no_eval_errors(&result);
     let s = reify_test_support::cell_value(&result, "App", "s");
@@ -667,11 +670,12 @@ structure App {
 /// fn-returned path — not to a generic function call — and must carry the inner
 /// structure's own `lets` so `o.h.b` resolves at eval.
 ///
-/// Hazard 2 (entity.rs:5972-5984): `set_template_registry` is deliberately NOT
-/// called on the skeleton's scope, so `let h = Inner()` compiles to a generic
-/// FunctionCall and does not carry Inner's lets — "a narrow sub-consistency gap
-/// for nested-ctor-in-let cases on the fn-returned path … latent but untested".
-/// This test makes it tested, asserting both the IR shape and the value.
+/// Hazard 2, now unrepresentable: the mirror deliberately never had a template
+/// registry installed on its scope, so `let h = Inner()` compiled to a generic
+/// FunctionCall and did not carry Inner's lets — "a narrow sub-consistency gap for
+/// nested-ctor-in-let cases on the fn-returned path … latent but untested".  The
+/// authoritative registry is complete, so the nested ctor lowers as a ctor; this
+/// test asserts both the IR shape and the value.
 #[test]
 fn fn_returned_ctor_nested_ctor_in_let_carries_inner_lets() {
     let src = r#"
@@ -774,8 +778,8 @@ structure App {
 /// Constructing a same-module `structure def` declared BELOW the function is an
 /// ordering ERROR that names the structure and the remedy.
 ///
-/// This is the one capability the deleted skeleton mirror provided that
-/// source-order interleaving removes: the mirror fabricated a template for every
+/// This is the one capability the deleted mirror provided that source-order
+/// interleaving removes: the mirror fabricated a template for every
 /// `structure_def` regardless of declaration position, so a fn body could
 /// construct a structure declared anywhere in the file. The unified pass gives a
 /// fn body only the templates built ABOVE it — the same no-forward-reference rule

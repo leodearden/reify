@@ -1195,8 +1195,8 @@ structure def Parent {
 
 // ── Part D coda, function-body variant — the authoritative-template path ──────
 //
-// Function bodies used to type-check against `build_structure_def_skeleton`, a
-// mirror template that unconditionally returned `ports: vec![]` and
+// Function bodies used to type-check against a mirror template that
+// unconditionally returned `ports: vec![]` and
 // `guarded_groups: vec![]`, so task #5161's priv-aware lowering never ran for
 // them: the port or guarded member simply wasn't found, and access died at
 // E_STRUCTURE_MEMBER_NOT_FOUND before any visibility check could fire. Task 5494

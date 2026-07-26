@@ -5,8 +5,19 @@
 //! `same_module_struct_ctor_default_compiles_and_consumes` — a fn whose sole
 //! param has a same-module StructureInstanceCtor default compiles clean, the
 //! default is recorded as a StructureInstanceCtor, and a call-site that omits
-//! the arg is padded to a 1-arg UserFunctionCall.  GREEN via task-3895 skeleton
-//! pre-pass + task-4544 step-2's prefix wildcard fix.
+//! the arg is padded to a 1-arg UserFunctionCall.  GREEN via task-4544 step-2's
+//! prefix wildcard fix, over the source-order compilation task 5494 installed.
+//!
+//! This test pins BOTH directions of the fn <-> structure dependency cycle, which
+//! is why source-order interleaving (rather than "all templates, then all fn
+//! bodies", or the reverse) is the only workable order:
+//!   * `Opts` -> `run`: a fn param default constructing a same-module structure
+//!     needs that structure's template, so `structure def Opts` must be compiled
+//!     first;
+//!   * `run` -> `App`: a structure member calling a same-module fn with an omitted
+//!     defaulted arg needs that fn's compiled `param_defaults` to pad from
+//!     (`try_default_padding`), so `run` must be compiled before `App`.
+//! Source order `Opts` -> `run` -> `App` satisfies both.
 //!
 //! ## Test (b): elastic def-site + consumption (RED until step-4)
 //!
@@ -22,7 +33,7 @@ use reify_test_support::compile_source_with_stdlib;
 
 // ─── test (a): same-module struct-ctor default regression pin ────────────────
 
-/// Regression pin (task-4544, task-3895 skeleton pre-pass).
+/// Regression pin (task-4544; source-order compilation, task 5494).
 ///
 /// A same-module fn `run(o : Opts = Opts()) -> Int` must:
 /// 1. Compile with zero Error-severity diagnostics.
@@ -30,8 +41,9 @@ use reify_test_support::compile_source_with_stdlib;
 /// 3. Allow a call-site `run()` (0 args) that pads to a 1-arg UserFunctionCall
 ///    carrying the compiled Opts() default.
 ///
-/// GREEN on main after steps 1-2 — serves as the regression anchor for the
-/// same-module skeleton pre-pass AND the `try_default_padding` prefix wildcard fix.
+/// Serves as the regression anchor for source-order fn/structure compilation AND
+/// the `try_default_padding` prefix wildcard fix — see the module header for why
+/// this one fixture pins both directions of the dependency cycle.
 #[test]
 fn same_module_struct_ctor_default_compiles_and_consumes() {
     let src = r#"
