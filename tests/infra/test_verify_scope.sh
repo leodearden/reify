@@ -308,6 +308,27 @@ plan_for_branch() {
     for f in "$@"; do rm -f "$FIX_B/$f"; done
 }
 
+# plan_for_branch_modify <file...> — like plan_for_branch, but exercises the
+# MODIFY (not ADD) vector: each given file must already exist at the
+# merge-base so it shows up as an `M`, not an `A`, in `git diff
+# "$_MERGE_BASE"`. plan_for_branch's shared FIX_B fixture can't be reused for
+# this — seeding files into FIX_B's `main` base commit would leak them into
+# every OTHER branch scenario's diff (they all share FIX_B's base). So this
+# helper builds its own private fixture per call, seeds+commits the file(s)
+# on `main` (the merge-base), then grows them on a task-branch (an `M`, not
+# an `A`). Left dirty; reclaimed by the existing EXIT trap via _TMPDIRS
+# (FIX_B5/FIX_C5/FIX_KLOC_MERGE dedicated-inline-fixture idiom).
+plan_for_branch_modify() {
+    local _mfix="" f            # NB: not `dir`/`_var` — make_branch_fixture's own locals
+    make_branch_fixture _mfix   # base commit holds scripts/ only
+    for f in "$@"; do mkdir -p "$_mfix/$(dirname "$f")"; printf 'seed\n' > "$_mfix/$f"; git -C "$_mfix" add "$f"; done
+    git -C "$_mfix" commit -q -m "seed base"     # now on main -> file exists at the merge-base
+    git -C "$_mfix" checkout -q -b task-branch
+    for f in "$@"; do printf 'grown\n' >> "$_mfix/$f"; done
+    git -C "$_mfix" commit -q -am "grow"          # M, not A, in `git diff <merge-base>`
+    PLAN_OUT="$(cd "$_mfix" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+}
+
 # ---------------------------------------------------------------------------
 # Scenario B1: docs-only branch -> nothing heavy (empty plan)
 # ---------------------------------------------------------------------------
@@ -496,6 +517,41 @@ echo ""
 echo "--- Scenario B-KLOC-noncons: crates/reify-doc/tests/probe.rs branch (crate NOT one of the 5 consolidatable) -> guard NOT selected (no-op boundary) ---"
 plan_for_branch crates/reify-doc/tests/probe.rs
 assert "B-KLOC-noncons: plan LACKS test_harness_kloc_cap.sh (reify-doc is not consolidatable)" \
+    plan_lacks 'tests/infra/test_harness_kloc_cap\.sh'
+
+# ---------------------------------------------------------------------------
+# Scenario B-KLOC-mod-*: MODIFY (not ADD) vector, task 5621. --diff-filter is
+# broadened to A+M for harness compile-unit contributors ONLY: a modified
+# nested harness-module file or harness root grows that harness's rule-(a)
+# kLOC measure exactly like an added one (and a root M is also the only diff
+# trace a rename-based consolidation absorb leaves, since --diff-filter
+# excludes R entries). A modified top-level non-harness standalone stays
+# ADDS-ONLY — rule-(b) re-accretion is an ADD by construction, so widening
+# that shape to M would fire on ordinary edits to an already-grandfathered
+# file for zero possible signal.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario B-KLOC-mod-nested: crates/reify-eval/tests/harness_probe/nested.rs branch MODIFY -> guard selected (RED until step-4) ---"
+plan_for_branch_modify crates/reify-eval/tests/harness_probe/nested.rs
+assert "B-KLOC-mod-nested: plan contains test_harness_kloc_cap.sh (modified nested harness-module file grows the measure)" \
+    plan_has 'tests/infra/test_harness_kloc_cap\.sh'
+
+echo ""
+echo "--- Scenario B-KLOC-mod-root: crates/reify-eval/tests/harness_probe.rs branch MODIFY -> guard selected (RED until step-4) ---"
+plan_for_branch_modify crates/reify-eval/tests/harness_probe.rs
+assert "B-KLOC-mod-root: plan contains test_harness_kloc_cap.sh (modified harness root grows the measure; also the only visible trace of a rename-based absorb)" \
+    plan_has 'tests/infra/test_harness_kloc_cap\.sh'
+
+echo ""
+echo "--- Scenario B-KLOC-mod-standalone: crates/reify-eval/tests/zz_grandfathered.rs branch MODIFY -> guard NOT selected (adds-only boundary) ---"
+plan_for_branch_modify crates/reify-eval/tests/zz_grandfathered.rs
+assert "B-KLOC-mod-standalone: plan LACKS test_harness_kloc_cap.sh (top-level non-harness standalone stays adds-only; modifying an already-grandfathered file is a no-op)" \
+    plan_lacks 'tests/infra/test_harness_kloc_cap\.sh'
+
+echo ""
+echo "--- Scenario B-KLOC-mod-src: crates/reify-eval/src/lib.rs branch MODIFY -> guard NOT selected (helper sanity) ---"
+plan_for_branch_modify crates/reify-eval/src/lib.rs
+assert "B-KLOC-mod-src: plan LACKS test_harness_kloc_cap.sh (modified non-test file never fires)" \
     plan_lacks 'tests/infra/test_harness_kloc_cap\.sh'
 
 # ---------------------------------------------------------------------------
