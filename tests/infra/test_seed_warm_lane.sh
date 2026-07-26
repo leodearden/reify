@@ -1073,6 +1073,18 @@ assert "I11: self-clobber: exit 1 (misuse guard refuses)" \
 assert "I12: self-clobber: cp NEVER invoked (refused before clone)" \
     bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
 
+# I12b/I12c: pin the sibling lane-lock leak (task 5609). scripts/seed-warm-lane.sh
+# unconditionally enters its lane-lock path for --fresh-checkout (:510) and
+# computes LANE_LOCK="${LANE_DIR}.lock" — a SIBLING of LANE_DIR, not a child —
+# creating it (:527) BEFORE the self-clobber misuse guard above refuses. So the
+# lock exists even though RC != 0 (I12b), and it must be nested under
+# $_LANE_ROOT so the existing cleanup() EXIT trap's `rm -rf "$_LANE_ROOT"`
+# reclaims it as a sibling of I_SC_BASE_PARENT's own private parent (I12c).
+assert "I12b: self-clobber: sibling lane-lock \${I_SC_BASE_PARENT}.lock exists (seed-warm-lane.sh:527 creates it before the misuse guard refuses)" \
+    bash -c '[ -n "$1" ] && [ -e "$1.lock" ]' _ "$I_SC_BASE_PARENT"
+assert "I12c: self-clobber: the sibling lane-lock is nested under \$_LANE_ROOT (so cleanup()'s rm -rf reclaims it)" \
+    bash -c '[ -n "$1" ] || exit 1; case "$1" in "$2"/*) exit 0 ;; *) exit 1 ;; esac' _ "${I_SC_BASE_PARENT}.lock" "${_LANE_ROOT:-/nonexistent}"
+
 # I13: POSITIVE CONTROL UNDER MOUNT — lane IS under REIFY_WARM_LANE_MOUNT, non-empty target.
 # The replace path must still succeed when the mount check passes.
 # NOT migrated to make_isolated_lane (task 5590): I_UNDER_LANE must stay nested
