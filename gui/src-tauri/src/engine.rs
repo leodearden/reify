@@ -5189,59 +5189,74 @@ fn build_preview_gui_state(
 /// and `let holes` in `param geometry = difference(body, holes)` — and is
 /// hidden by default so the viewport shows only the finished part.
 ///
-/// # Shared contract anchor
-/// The match arms MIRROR `reify_eval::deps::extract_realization_edges`
-/// (`crates/reify-eval/src/deps.rs`), which performs exactly this scan to build
-/// the dependency graph: `Boolean{left,right}`, `Modify|Transform|Pattern{target}`,
-/// `Sweep{profiles}`, `Isosurface{grid}`; `GeomRef::Step(_)` is skipped
-/// (intra-realization, not a cross-realization edge) and Primitive/Curve/
-/// Profile/Surface carry no `GeomRef` operands. That fn is private and not
-/// re-exported through `pub mod deps`, so it cannot be called from here — keep
-/// the two arm sets in sync so this notion of "consumption" cannot drift from
-/// the dependency graph's.
+/// # Why the VALUE-CELL layer, not `RealizationDecl.operations` (esc-5195-1)
+/// The obvious-looking source — scanning each realization's `operations` for a
+/// bare `GeomRef::Sub(name)` operand — is NOT viable, and this was MEASURED
+/// rather than assumed. The compiler lowers a sibling-let reference to
+/// `GeomRef::Sub` only on the Modify/Transform/Pattern argument path (the
+/// #4668 sibling pre-check, `reify-compiler/src/geometry.rs:1374-1385`). The
+/// Boolean argument path (`resolve_boolean_arg`,
+/// `reify-compiler/src/geometry_boolean.rs:28-107`) instead INLINES the
+/// operand's initializer as extra ops and refers to it by `GeomRef::Step(n)`,
+/// so the sibling NAME is absent from the consuming realization entirely —
+/// Booleans early-return at `geometry.rs:1290-1308`, above that pre-check.
+/// For `param geometry : Solid = difference(body, holes)` an operations-scan
+/// yields only `{hole}` (the Pattern operand); `body` and `holes` are
+/// invisible to it. That inlining is PINNED by an existing test
+/// (`reify-compiler/tests/harness_langcore/let_scope_tests.rs:552-603`), so it
+/// is deliberate behaviour, not an oversight to patch here.
+/// `reify_eval::deps::extract_realization_edges` gates every arm on
+/// `GeomRef::Sub` and so shares this blind spot — it is deliberately NOT the
+/// contract anchor for this rule.
 ///
-/// # Namespace split (safe by construction)
-/// Only BARE `GeomRef::Sub(name)` operands (0 dots) are collected: Reify DSL
-/// identifiers never contain '.', so bare keys ("body") name a same-template
-/// sibling realization while compound keys ("sub.member") name a cross-sub
-/// output that is not one of `template.realizations`. Documented at
-/// `geometry_ops.rs` (with a `debug_assert!`) and `deps.rs`.
-fn collect_consumed_sibling_names(
-    realizations: &[reify_compiler::RealizationDecl],
-) -> HashSet<&str> {
-    /// Record a bare `GeomRef::Sub(name)` operand as consumed; skip
-    /// `GeomRef::Step(_)` (intra-realization) and dotted cross-sub names.
-    fn take<'a>(consumed: &mut HashSet<&'a str>, geom_ref: &'a reify_compiler::GeomRef) {
-        if let reify_compiler::GeomRef::Sub(name) = geom_ref
-            && !name.contains('.')
-        {
-            consumed.insert(name.as_str());
-        }
-    }
-
+/// `template.value_cells` does carry the names: since #4954 every geometry
+/// binding emits a value cell alongside its realization, and that cell's
+/// `default_expr` holds the un-inlined `ValueRef(ValueCellId)` operands.
+///
+/// # Only GEOMETRY-typed cells count as consumers
+/// This filter is load-bearing, not a tidiness rule. A `: Rigid` structure
+/// auto-derives `mass`/`centroid`/`moment_of_inertia` lets that all reference
+/// `geometry` — but they are `Scalar`/`Point3`/`Tensor`-typed, not
+/// `Type::Geometry`. Counting them would mark the TERMINAL realization as
+/// consumed and hide the finished part: the exact inverse of this feature.
+///
+/// # Traversal
+/// Recursion over `CompiledExpr` is delegated to the existing exhaustive
+/// [`reify_ir::CompiledExpr::collect_value_refs`], the repo's
+/// dependency-tracking walk — it covers every nesting variant (`FunctionCall`
+/// args, `BinOp`, `IndexAccess`, `StructureInstanceCtor`, lambda `captures`,
+/// …) and treats `CrossSubGeometryRef` as a `ValueRef` leaf. Reusing it means
+/// `difference(body, translate(holes, ...))` is handled for free, and this
+/// notion of "consumption" cannot drift from the dependency graph's.
+fn collect_consumed_sibling_names(template: &reify_compiler::TopologyTemplate) -> HashSet<&str> {
     let mut consumed: HashSet<&str> = HashSet::new();
-    for real in realizations {
-        for op in &real.operations {
-            match op {
-                reify_compiler::CompiledGeometryOp::Boolean { left, right, .. } => {
-                    take(&mut consumed, left);
-                    take(&mut consumed, right);
-                }
-                reify_compiler::CompiledGeometryOp::Modify { target, .. }
-                | reify_compiler::CompiledGeometryOp::Transform { target, .. }
-                | reify_compiler::CompiledGeometryOp::Pattern { target, .. } => {
-                    take(&mut consumed, target)
-                }
-                reify_compiler::CompiledGeometryOp::Sweep { profiles, .. } => {
-                    for geom_ref in profiles {
-                        take(&mut consumed, geom_ref);
-                    }
-                }
-                reify_compiler::CompiledGeometryOp::Isosurface { grid, .. } => {
-                    take(&mut consumed, grid)
-                }
-                // Primitive/Curve/Profile/Surface carry no GeomRef operands.
-                _ => {}
+    for cell in &template.value_cells {
+        // Non-geometry consumers (the `: Rigid` mass/centroid/moment_of_inertia
+        // lets) must NOT count — see the doc-comment above.
+        if cell.cell_type != reify_core::ty::Type::Geometry {
+            continue;
+        }
+        let Some(expr) = &cell.default_expr else {
+            continue;
+        };
+        for id in expr.collect_value_refs() {
+            // Same-template siblings only. Both `id.entity` and
+            // `cell.id.entity` are TEMPLATE-scoped (not instance paths), so a
+            // sibling reference shares the consuming cell's entity string;
+            // anything else is a cross-sub/cross-entity ref naming no member
+            // of `template.realizations`. A cell is not a consumer of itself.
+            if id.entity != cell.id.entity || id.member == cell.id.member {
+                continue;
+            }
+            // Re-borrow the name from `template` (the walk returns owned
+            // `ValueCellId`s), which also confirms the referent really is a
+            // value cell of this template.
+            if let Some(sibling) = template
+                .value_cells
+                .iter()
+                .find(|c| c.id.member == id.member)
+            {
+                consumed.insert(sibling.id.member.as_str());
             }
         }
     }
@@ -5313,7 +5328,7 @@ pub(crate) fn build_template_node(
     // `param geometry = difference(body, holes)`), so they are hidden by
     // default — the viewport shows the finished part, and the outline toggle
     // reveals the construction steps (#5195).
-    let consumed = collect_consumed_sibling_names(&template.realizations);
+    let consumed = collect_consumed_sibling_names(template);
 
     for real in &template.realizations {
         let real_path = format!("{}#realization[{}]", entity_path, real.id.index);
