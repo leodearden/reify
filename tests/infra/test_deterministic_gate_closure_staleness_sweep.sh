@@ -1043,4 +1043,165 @@ assert "E8: a multi-class row increments exactly one class counter" \
 assert "E8: a multi-class row appears exactly once in the report" \
     _json_is 'len([c for c in d["candidates"] if c["task_id"] == 9411]) == 1'
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block F — the #5316 corruption signatures, wired in as SUPPRESSORS
+#
+# #5316 (docs/notes/offline-lane-red-corruption-remediation.md) catalogued two
+# task-record corruption signatures. This task's brief requires preserving that
+# coverage "as one input heuristic feeding the unified sweep — do not regress
+# it", so both are lifted from prose into executable checks here:
+#
+#   Signature 1 — help-text-as-failing-tests: an auto-filed record whose
+#     `metadata.failing_tests` holds harness OUTPUT rather than test names
+#     (a bare `Usage:` / `Options:` line, or a `verify.sh: ERROR` line).
+#   Signature 2 — misattributed provenance: a `metadata.done_provenance.commit`
+#     that is NOT an ancestor of --main-ref. #5316 warns explicitly that
+#     `git show --stat` alone MIS-CLEARED #5264 here, because the discarded
+#     duplicate merge shows a plausible diff and only fails the REACHABILITY
+#     test — so F3 pins the check as reachability, never diff inspection.
+#
+# They are suppressors, not a fourth class: a corrupt record has an
+# untrustworthy block premise, so auto-re-dispatching it would act on a false
+# premise, and #5316 §4 establishes that remediation there is a human
+# git-history adjudication a detector "could flag but not perform". Hence F6:
+# a flagged hit becomes CORRUPT-HOLD / human_gate and emits no request. F7
+# pins the other half — flags are still computed on NON-stale rows, so 5316's
+# audit coverage is not lost for records that are corrupt but not yet
+# stranded.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block F: the #5316 corruption suppressors ---"
+
+_mk_tasks_db
+F_DB="$DB"
+# No escalation files are ever written into F_ESC: the class-A rows in this
+# block must reach STALE so F6's suppression is observable on a real hit.
+_mk_esc_dir
+F_ESC="$ESC_DIR"
+
+# Fixture history:
+#   c0 root
+#   F_C1 docs/f-premise.md    <- the class-B recorded main_sha
+#   F_SIDE (branch)           <- resolves, but NOT an ancestor of main
+#   F_C2 docs/f-resolver.md   <- main tip; resolves the class-B premise
+_mk_repo
+F_REPO="$REPO_DIR"
+F_C1="$(_commit_touching docs/f-premise.md)"
+F_SIDE="$(_commit_on_side_branch discarded-dup-f docs/f-discarded.md)"
+F_C2="$(_commit_touching docs/f-resolver.md)"
+# A 40-hex SHA that resolves in no repo (F5).
+F_FAKE_SHA="7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e"
+
+# --- Signature-1 fixtures, in the shapes #5316 recorded on its real victims --
+F_SIG1_USAGE='{"failing_tests":["Usage:"]}'
+F_SIG1_OPTIONS='{"failing_tests":["Options:"]}'
+F_SIG1_VERIFY="{\"failing_tests\":[\"verify.sh: ERROR — unknown argument '--test-threads=1'\"]}"
+# #5295's clean comparison sample, plus a path-shaped entry (F2).
+F_CLEAN_TESTS='{"failing_tests":["test_cpu_load_governance_deflake.sh","tests/infra/test_warm_lane_audit.sh"]}'
+
+# --- Signature-2 fixtures ----------------------------------------------------
+F_PROV_SIDE="{\"done_provenance\":{\"commit\":\"$F_SIDE\"}}"
+F_PROV_ANCESTOR="{\"done_provenance\":{\"commit\":\"$F_C1\"}}"
+F_PROV_FAKE="{\"done_provenance\":{\"commit\":\"$F_FAKE_SHA\"}}"
+
+# Dependency targets for the class-C rows below.
+_add_task 9690 done    '{}'
+_add_task 9691 pending '{}'
+
+# F1 — each Signature-1 marker on its own row.
+_add_task 9601 blocked "$F_SIG1_USAGE"
+_add_task 9602 blocked "$F_SIG1_OPTIONS"
+_add_task 9603 blocked "$F_SIG1_VERIFY"
+# F2 — real test names / paths are NOT corruption.
+_add_task 9604 blocked "$F_CLEAN_TESTS"
+# F3/F4/F5 — the three Signature-2 outcomes plus the absent-key control.
+_add_task 9605 blocked "$F_PROV_SIDE"
+_add_task 9606 blocked "$F_PROV_ANCESTOR"
+_add_task 9607 blocked '{}'
+_add_task 9608 blocked "$F_PROV_FAKE"
+
+# F6 — one confirmed STALE hit per trigger class, each carrying a corruption
+# flag, so suppression is pinned on all three classes rather than just one.
+F_GATE_FIELDS='"task_kind":"deterministic","always_escalates":true,"gate_escalated_at":"2026-07-26T08:00:00Z"'
+_add_task 9610 blocked "{$F_GATE_FIELDS,\"failing_tests\":[\"Usage:\"]}"
+F_PROP_B="$(_d_prop 'Post-merge verification failed: cargo test --workspace returned 101' \
+    "$F_C1" '["docs/f-resolver.md"]' 2026-07-24T10:00:00Z)"
+_add_task 9611 blocked "{\"dry_run_proposals\":[$F_PROP_B],\"done_provenance\":{\"commit\":\"$F_SIDE\"}}"
+_add_task 9612 blocked "$F_SIG1_USAGE"; _add_dep 9612 9690
+# The unflagged control: the SAME class-A shape with a clean record must stay
+# STALE in the same sweep, so F6 measures suppression and not a blanket
+# downgrade of every hit.
+_add_task 9613 blocked "{$F_GATE_FIELDS}"
+# F5's suppression half: an UNRESOLVABLE provenance SHA is treated
+# conservatively as corrupt, so an otherwise-confirmed hit is still held.
+_add_task 9616 blocked "{$F_GATE_FIELDS,\"done_provenance\":{\"commit\":\"$F_FAKE_SHA\"}}"
+
+# F7 — corrupt but NOT stale: one dependency still pending, so the row is
+# UNRESOLVED. The flag must still be computed and reported.
+_add_task 9614 blocked "$F_SIG1_USAGE"; _add_dep 9614 9691
+# F8 — both signatures on one row.
+_add_task 9615 blocked "{\"failing_tests\":[\"Options:\"],\"done_provenance\":{\"commit\":\"$F_SIDE\"}}"
+
+F_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-freq-XXXXXX")"
+_TMPDIRS+=("$F_REQ")
+
+run_sweep --db "$F_DB" --escalations "$F_ESC" --repo "$F_REPO" \
+    --emit-requests "$F_REQ" --format json
+assert "F0: the corruption-suppressor fixture sweep exits 0" _rc_is 0
+
+# --- F1/F2: Signature 1, help-text-as-failing-tests --------------------------
+assert "F1a: a bare 'Usage:' failing_tests entry flags corrupt_autofile" \
+    _json_is '"corrupt_autofile" in t[9601]["flags"]'
+assert "F1b: a bare 'Options:' failing_tests entry flags corrupt_autofile" \
+    _json_is '"corrupt_autofile" in t[9602]["flags"]'
+assert "F1c: a 'verify.sh: ERROR' failing_tests entry flags corrupt_autofile" \
+    _json_is '"corrupt_autofile" in t[9603]["flags"]'
+assert "F2: real test names and tests/infra paths are not corruption" \
+    _json_is 't[9604]["flags"] == []'
+
+# --- F3/F4/F5: Signature 2, misattributed provenance -------------------------
+# Reachability, NOT diff inspection: the side-branch commit has a perfectly
+# plausible diff, which is exactly how #5316's first pass mis-cleared #5264.
+assert "F3: a done_provenance.commit reachable only from a side branch flags misattributed_provenance" \
+    _json_is '"misattributed_provenance" in t[9605]["flags"]'
+assert "F4a: a done_provenance.commit that IS an ancestor of --main-ref is clean" \
+    _json_is 't[9606]["flags"] == []'
+assert "F4b: an absent done_provenance is clean" \
+    _json_is 't[9607]["flags"] == []'
+assert "F5: an unresolvable done_provenance.commit flags provenance_unresolvable" \
+    _json_is '"provenance_unresolvable" in t[9608]["flags"]'
+
+# --- F6: THE SUPPRESSION COUPLING --------------------------------------------
+assert "F6a: a flagged class-A hit is held as CORRUPT-HOLD / human_gate" \
+    _json_is 't[9610]["verdict"] == "CORRUPT-HOLD" and t[9610]["action"] == "human_gate"'
+assert "F6b: a flagged class-B hit is held as CORRUPT-HOLD / human_gate" \
+    _json_is 't[9611]["verdict"] == "CORRUPT-HOLD" and t[9611]["action"] == "human_gate"'
+assert "F6c: a flagged class-C hit is held as CORRUPT-HOLD / human_gate" \
+    _json_is 't[9612]["verdict"] == "CORRUPT-HOLD" and t[9612]["action"] == "human_gate"'
+assert "F5/F6: an unresolvable provenance SHA holds the hit conservatively too" \
+    _json_is 't[9616]["verdict"] == "CORRUPT-HOLD"'
+assert "F6: a held row still reports the primary class it matched" \
+    _json_is 't[9610]["class"] == "gate_closure" and t[9611]["class"] == "merge_verify_red" and t[9612]["class"] == "unmet_dependency"'
+assert "F6: held rows are counted in corrupt_hold, never in a class counter" \
+    _json_is 's["corrupt_hold"] == 4 and s["merge_verify_red"] == 0 and s["unmet_dependency"] == 0'
+assert "F6: an unflagged hit in the same sweep is still STALE" \
+    _json_is 't[9613]["verdict"] == "STALE" and s["gate_closure"] == 1'
+assert "F6: a held class-A row emits no re-dispatch request" _no_request_for "$F_REQ" 9610
+assert "F6: a held class-B row emits no re-dispatch request" _no_request_for "$F_REQ" 9611
+assert "F6: a held class-C row emits no re-dispatch request" _no_request_for "$F_REQ" 9612
+assert "F5/F6: the conservatively-held row emits no re-dispatch request" _no_request_for "$F_REQ" 9616
+
+# --- F7: audit coverage is not lost on non-stale rows ------------------------
+assert "F7: a corrupt but UNRESOLVED row still reports its flag" \
+    _json_is 't[9614]["verdict"] == "UNRESOLVED" and "corrupt_autofile" in t[9614]["flags"]'
+assert "F7: a flagged non-stale row is not counted in corrupt_hold" \
+    _json_is 'len([c for c in d["candidates"] if c["verdict"] == "CORRUPT-HOLD"]) == s["corrupt_hold"]'
+
+# --- F8: multiple flags, stable order ----------------------------------------
+assert "F8: two signatures on one row are reported in a deterministic order" \
+    _json_is 't[9615]["flags"] == ["corrupt_autofile", "misattributed_provenance"]'
+run_sweep --db "$F_DB" --escalations "$F_ESC" --repo "$F_REPO" --format table
+assert "F8: the table report renders flags as a comma-separated list" \
+    _out_has 'corrupt_autofile,misattributed_provenance'
+
 test_summary
