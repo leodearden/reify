@@ -152,9 +152,12 @@
 #        missing/unreadable record, corrupt JSON, or an unrecognized `state`
 #        value all degrade that lane to `assigned=UNKNOWN`. It never aborts
 #        and never invents an assignment. UNKNOWN lanes keep the conservative
-#        accounting (counted free), but are surfaced separately so "no pins"
-#        stays distinguishable from "pins could not be evaluated" — the same
-#        treatment A3 gives an unresolvable backing-task status.
+#        accounting (counted free), but are surfaced separately -- a stderr
+#        warning naming the lane AND which of those causes fired
+#        (no-readable-record | unparseable-record | unrecognized-state:<raw>;
+#        see _lane_unknown_cause), plus the HEADROOM state_unknown field -- so
+#        "no pins" stays distinguishable from "pins could not be evaluated",
+#        the same treatment A3 gives an unresolvable backing-task status.
 
 set -euo pipefail
 
@@ -437,6 +440,43 @@ _lane_assigned_state() {
         quarantined)              printf 'QUARANTINED' ;;
         *)                        printf 'UNKNOWN' ;;
     esac
+    return 0
+}
+
+# _lane_unknown_cause <lane>
+# WHY <lane> resolved to assigned=UNKNOWN. A5 folds three DISTINCT causes into
+# one column value, and they send an operator to three different places, so the
+# stderr warning names which one fired rather than asserting a single guess:
+#   no-readable-record        no state dir, or no readable <lane>.json there --
+#                             the only cause that is a filesystem/permissions
+#                             question, and the only one where the file an
+#                             operator is told to look for may not exist.
+#   unparseable-record        the record IS present and readable, but no `state`
+#                             string could be read out of it -- a corrupt,
+#                             truncated, or reshaped write.
+#   unrecognized-state:<raw>  the record parsed and named a state this script's
+#                             mapping does not know. Reported VERBATIM, because
+#                             a mass state_unknown spike carrying one repeated
+#                             raw value is the SCHEMA-DRIFT signal (a new
+#                             dark-factory LaneState member), and no other cause
+#                             looks like that.
+#
+# Called only on the UNKNOWN branch, so it never restates the recognized-state
+# table: arriving here already proves the raw value did not map, and a second
+# copy of that table is exactly the drift risk _lane_assigned_state's single
+# normative `case` exists to avoid.
+_lane_unknown_cause() {
+    local record
+    record="$(_lane_record "$1")"
+    [ -n "$record" ] || { printf 'no-readable-record'; return 0; }
+
+    local raw
+    raw="$(_record_scalar "$record" state)"
+    if [ -z "$raw" ]; then
+        printf 'unparseable-record'
+    else
+        printf 'unrecognized-state:%s' "$raw"
+    fi
     return 0
 }
 
@@ -830,8 +870,10 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
             # A5 observability, mirroring A3's leak_unknown warning: the lane
             # keeps the conservative accounting (counted free), but is named
             # here so "no pins" stays distinguishable from "pins could not be
-            # evaluated".
-            warn "lane=$name: assignment state unknown -- no readable record at ${STATE_DIR:-<unset>}/$name.json; counted free (conservative). See HEADROOM state_unknown."
+            # evaluated". The CAUSE is resolved rather than assumed -- naming a
+            # single one would send triage after a missing file that is often
+            # sitting right there (see _lane_unknown_cause).
+            warn "lane=$name: assignment state unknown ($(_lane_unknown_cause "$name")) at ${STATE_DIR:-<unset>}/$name.json; counted free (conservative). See HEADROOM state_unknown."
         fi
 
         raw_branch="$(_lane_branch_raw "$entry")"

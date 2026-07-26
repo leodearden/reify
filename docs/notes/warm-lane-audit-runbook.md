@@ -195,9 +195,10 @@ Evaluated per lane, most-specific first:
 - **A5 — fail-safe assignment-state read.** A missing state dir, a missing/unreadable record,
   corrupt JSON, or an unrecognized `state` value all degrade that lane to `assigned=UNKNOWN`. It
   never aborts and never invents an assignment. UNKNOWN lanes keep the conservative accounting
-  (counted `free`) but are surfaced separately — a stderr warning naming the lane plus the HEADROOM
-  `state_unknown` field — so "no pins" stays distinguishable from "pins could not be evaluated",
-  exactly as A3 treats an unresolvable backing-task status.
+  (counted `free`) but are surfaced separately — a stderr warning naming the lane **and which of the
+  three causes fired**, plus the HEADROOM `state_unknown` field — so "no pins" stays distinguishable
+  from "pins could not be evaluated", exactly as A3 treats an unresolvable backing-task status. See
+  "Reading a PINNED-heavy pool" for the cause vocabulary and what each one means.
 
 ## Reading a PINNED-heavy pool
 
@@ -226,9 +227,16 @@ What to do per bucket:
 | `other` (notably `in-progress`) | The task is running but nothing holds the lane's lock. | A **likely-crashed consumer**. Investigate the agent/process before reclaiming. |
 | `unknown` | The holder could not be resolved (A3). | Check the `--status-cmd` oracle; the count is unverified, not zero. |
 
-A high `state_unknown` means the *assignment* read is failing (missing/unreadable
-`<state-dir>/<lane>.json`), so `pinned` itself is an undercount — resolve that before trusting any
-of the occupancy figures.
+A high `state_unknown` means the *assignment* read is failing, so `pinned` itself is an undercount —
+resolve that before trusting any of the occupancy figures. Three distinct causes produce it, and the
+stderr warning names which one fired per lane (`lane=… assignment state unknown (<cause>) at <path>`)
+rather than assuming the file is absent:
+
+| Cause | Reading | Action |
+|---|---|---|
+| `no-readable-record` | No state dir, or no readable `<state-dir>/<lane>.json`. | The only filesystem/permissions case. Check `--mount` / `REIFY_WARM_LANE_AUDIT_STATE_DIR` resolves to the dir the orchestrator actually writes, and that it is readable. |
+| `unparseable-record` | The record is present and readable but no `state` string could be read out of it. | A corrupt, truncated, or reshaped write — inspect the named file; it *is* there. |
+| `unrecognized-state:<raw>` | The record parsed and named a state this script does not map. | **Schema drift.** A mass spike carrying one repeated `<raw>` value means dark-factory's `LaneState` gained a member; extend the mapping table above. Nothing is wrong with the pool. |
 
 ## Exit codes
 
