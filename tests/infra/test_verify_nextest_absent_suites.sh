@@ -234,4 +234,15 @@ assert "S2: test_verify_semaphore_wiring.sh reaches test_summary with rc=0 / 0 F
 assert "S3: test_verify_offline_partition.sh reaches test_summary with rc=0 / 0 FAIL on a nextest-less host" \
     _suite_is_clean_without_nextest test_verify_offline_partition.sh
 
+# S4 is the reason the harness uses a symlink farm rather than the naive
+# PATH="$STUB:/usr/bin:/bin" recipe (see the header). test_verify_semaphore_e2e.sh
+# gates Sections A/B/C/F1/H behind ensure_tree_sitter_ready, and the tree-sitter
+# CLI lives in ~/.cargo/bin alongside cargo-nextest — stripping that directory
+# wholesale would add 5 "tree-sitter artifacts not ready" failures that have
+# nothing to do with nextest, making "0 FAIL" unreachable. H3 above pins that
+# tree-sitter still resolves under the harness, so a regression in the farm
+# surfaces there rather than as a confusing failure here.
+assert "S4: test_verify_semaphore_e2e.sh reaches test_summary with rc=0 / 0 FAIL on a nextest-less host" \
+    _suite_is_clean_without_nextest test_verify_semaphore_e2e.sh
+
 test_summary
