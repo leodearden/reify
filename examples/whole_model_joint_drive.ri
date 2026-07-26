@@ -1,0 +1,115 @@
+module whole_model_joint_drive
+
+// Example: WHOLE-MODEL JOINT DRIVE — the parent's cost objective drives the
+// CHILD's auto param directly, in one merged solve, instead of the child
+// freezing bottom-up first and the parent merely reading the frozen result.
+//
+// See `docs/prds/v0_6/whole-model-joint-drive-seam.md` (tasks #5188 α,
+// #5334 δ, #5189 β) for the design rationale.
+//
+// # The shape
+//
+//   RivetedPanel
+//     sub rivets = Rivet()                 — Costed, one free auto
+//     minimize cost(self.descendants)      — INLINED aggregate (load-bearing)
+//
+// `Rivet` implements the stdlib `Costed` trait (crates/reify-compiler/stdlib/io.ri),
+// which supplies the derived cell
+//
+//     let line_cost : Money = unit_cost * quantity_produced
+//
+// `Rivet` must NOT re-declare `line_cost` — that derived cell IS the coupling
+// the whole seam exists to drive through.  `cost(self.descendants)` expands to
+// `[RivetedPanel.rivets.line_cost].sum`, so the parent's objective reads a cell
+// that is itself a function of the child's auto `quantity_produced`.
+//
+// # Merged vs. frozen — the hand-derived arithmetic
+//
+// The auto is bracketed by a NON-DEGENERATE box:  1.0 ≤ quantity_produced ≤ 100.0,
+// and `unit_cost = 0.50USD`, so `line_cost = 0.50USD × quantity_produced` is
+// strictly increasing in the auto over a 99-wide interval.
+//
+//   MERGED (this file, with the `minimize`):
+//     The δ cluster spans {RivetedPanel, Rivet}; the solver minimises
+//     `line_cost` over the child's auto, so the argmin sits at the LOWER bound.
+//       quantity_produced → 1.0        (nudged marginally off the bound by α's
+//                                       Money robustness floor, since the
+//                                       objective is dimensionally Money)
+//       line_cost         → ≈ 0.50 USD
+//
+//   FROZEN CASCADE (the same model with the parent's `minimize` removed):
+//     No cluster forms, so `Rivet` resolves ALONE, bottom-up, with no user
+//     objective.  It still has live inequality constraints, so the solver
+//     synthesises a Chebyshev-centre objective (`build_centrality_objective`,
+//     crates/reify-constraints/src/solver.rs) and the freeze lands at the BOX
+//     CENTRE:
+//       quantity_produced → ≈ 50.5      ((1.0 + 100.0) / 2)
+//       line_cost         → ≈ 25.25 USD
+//     Both figures are the derivation, and both were OBSERVED verbatim by
+//     evaluating this model minus the `minimize` (50.499999999999915 /
+//     25.249999999999957 USD).
+//
+// The separation is ~half the box width — roughly 50× in cost.  That gap IS the
+// user-observable signal: without the joint drive, the parent's cost objective
+// cannot reach the child's auto at all and the design is pinned at the
+// arbitrary centre of its feasible box.
+//
+// Both published assertions are COMPARATIVE (strict inequality + strict
+// difference), never an absolute converged value — the numbers above are the
+// derivation, not the pins.
+//
+// Integration test:
+//   crates/reify-eval/tests/joint_drive_expansion_boundary.rs (BT-5) asserts
+//   (i) the child auto resolves STRICTLY DIFFERENT from its frozen-cascade
+//   freeze, and (ii) the merged whole-assembly cost is STRICTLY LESS than the
+//   frozen-cascade baseline — with that baseline derived in-test by evaluating
+//   this same model minus the `minimize`, not from a recorded constant.
+//
+// # TRAP — the aggregate MUST stay inlined in the `minimize`
+//
+// Writing `let subtree_cost : Money = cost(self.descendants)` + `minimize
+// subtree_cost` forms NO cluster: δ's C1 rule expands objective TERMS only,
+// while the non-auto cell map stores each cell's RAW unexpanded `default_expr`,
+// so an unexpanded `cost(self.descendants)` surfaces no `line_cost` read at
+// all.  That boundary is pinned executably by
+// `objective_must_inline_the_aggregate_to_couple`
+// (crates/reify-eval/src/resolve_order.rs).  `examples/cost_subtree_aggregate.ri`
+// is exactly that non-coupling `let` shape — do not copy its form here.
+//
+// # Why auto(free), not strict auto
+//
+// A strict `auto` triggers the uniqueness re-solve, and a `ConstraintNonUnique`
+// error would mask the cost signal this example exists to publish.  Same
+// reasoning, and the same house precedent, as `examples/continuous_cost_min.ri`
+// — uniqueness is not the concern here, the joint drive is.
+//
+// # v1 boundary
+//
+// DEPTH-1 Costed descendants only (see `examples/cost_subtree_aggregate.ri`),
+// and one auto — well inside the whole-model cluster dimension cap.
+
+structure def Rivet : Costed {
+    param supplier          : String = "Acme Fastener"
+    param part_number       : String = "R-4210"
+    param unit_cost         : Money  = 0.50USD
+    param lead_time         : Time   = 24h
+
+    // The joint-drive target.  Bracketed by a NON-DEGENERATE box so the
+    // cost-min argmin (lower bound) and the frozen Chebyshev centre (~50.5)
+    // are far apart — that separation is what makes the coupling observable.
+    param quantity_produced : Real   = auto(free)
+    constraint quantity_produced >= 1.0
+    constraint quantity_produced <= 100.0
+}
+
+structure RivetedPanel {
+    sub rivets = Rivet()
+
+    // INLINED — never behind a `let`.  This is the whole point of the fixture.
+    minimize cost(self.descendants)
+
+    // Observational only, for `reify eval` legibility.  Reading the aggregate
+    // through a `let` is fine ALONGSIDE the inlined `minimize`; it is only
+    // fatal as a REPLACEMENT for it.
+    let total_cost : Money = cost(self.descendants)
+}
