@@ -402,3 +402,113 @@ fn circular_pattern_wrong_variant_plane_rejected_with_error_diagnostic() {
         cp_ops.len()
     );
 }
+
+// ── task 5350: scalar-form axis-origin units lock ─────────────────────────────
+
+/// Build `source` against a mock kernel and return
+/// `(error_diagnostic_count, circular_pattern_ops)`. Shared by the bare-origin /
+/// mm-origin pair below, which differ only in the source and expected counts.
+/// Modelled on `pattern_spacing_units_e2e.rs`'s `build_and_count`, but returns
+/// the ops themselves so the positive control can inspect `axis_origin`.
+fn build_circular_ops(source: &str) -> (usize, Vec<GeometryOp>) {
+    let compiled = parse_and_compile(source);
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = Engine::new(
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(kernel)),
+    );
+    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
+
+    let error_count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .count();
+    let ops = ops_ref.lock().unwrap();
+    let circular_ops: Vec<GeometryOp> = ops
+        .iter()
+        .filter(|r| matches!(&r.op, GeometryOp::CircularPattern { .. }))
+        .map(|r| r.op.clone())
+        .collect();
+    (error_count, circular_ops)
+}
+
+/// The headline behaviour of task 5350, locked at the outermost seam: a BARE
+/// (dimensionless) axis origin in the 9-arg scalar form must be REJECTED, so the
+/// op is DROPPED rather than silently placing the rotation axis 12 SI **metres**
+/// out (1000× a plausible 12 mm offset).
+///
+/// The unit tests in `geometry_ops/tests.rs` hand-build `CompiledExpr` fixtures;
+/// this drives the real parser and unit system, so it would catch a regression
+/// introduced anywhere between the `.ri` surface and the kernel call.
+#[test]
+fn circular_pattern_scalar_bare_origin_drops_op_with_error() {
+    let (error_count, circular_ops) = build_circular_ops(
+        r#"
+        structure def BareOriginRing {
+            let b = box(2mm, 2mm, 2mm)
+            let p = circular_pattern(b, 12, 0, 0, 0, 0, 1, 6, 60deg)
+        }
+        "#,
+    );
+
+    assert!(
+        error_count > 0,
+        "a bare (dimensionless) circular_pattern axis origin must produce at \
+         least one Error diagnostic; got {error_count}"
+    );
+    assert!(
+        circular_ops.is_empty(),
+        "a bare-origin circular_pattern must be DROPPED, not silently built with \
+         a 12 SI-metre axis origin; emitted CircularPattern ops: {:?}",
+        circular_ops
+    );
+}
+
+/// The positive control that keeps the rejection case above from passing
+/// vacuously: a DIMENSIONED `12mm, 0mm, 0mm` origin builds with zero Errors and
+/// reaches the kernel with `axis_origin[0] == 0.012`, not `12`.
+///
+/// A tolerance rather than `==` because the parser computes `12 * 1e-3`; the f64
+/// error is at most ~1 ulp (order 1e-18 absolute at this magnitude), so `1e-12`
+/// clears it by six orders of magnitude while staying far tighter than the 1000×
+/// defect being guarded against.
+#[test]
+fn circular_pattern_scalar_mm_origin_builds_op() {
+    let (error_count, circular_ops) = build_circular_ops(
+        r#"
+        structure def MmOriginRing {
+            let b = box(2mm, 2mm, 2mm)
+            let p = circular_pattern(b, 12mm, 0mm, 0mm, 0, 0, 1, 6, 60deg)
+        }
+        "#,
+    );
+
+    assert_eq!(
+        error_count, 0,
+        "a dimensioned circular_pattern axis origin must build with zero Error \
+         diagnostics; got {error_count}"
+    );
+    assert_eq!(
+        circular_ops.len(),
+        1,
+        "expected exactly one CircularPattern op to reach the kernel, got {:?}",
+        circular_ops
+    );
+    match &circular_ops[0] {
+        GeometryOp::CircularPattern { axis_origin, .. } => {
+            assert!(
+                (axis_origin[0] - 0.012).abs() < 1e-12,
+                "12mm must reach the kernel as 0.012 SI metres (NOT 12), got {}",
+                axis_origin[0]
+            );
+            assert!(
+                axis_origin[1].abs() < 1e-12 && axis_origin[2].abs() < 1e-12,
+                "0mm components must reach the kernel as 0.0, got {:?}",
+                axis_origin
+            );
+        }
+        other => panic!("expected GeometryOp::CircularPattern, got {:?}", other),
+    }
+}
