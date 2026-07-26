@@ -768,3 +768,72 @@ structure App {
         v
     );
 }
+
+// ─── step-8: a fn body constructing a LATER-declared structure fails LOUDLY ───
+
+/// Constructing a same-module `structure def` declared BELOW the function is an
+/// ordering ERROR that names the structure and the remedy.
+///
+/// This is the one capability the deleted skeleton mirror provided that
+/// source-order interleaving removes: the mirror fabricated a template for every
+/// `structure_def` regardless of declaration position, so a fn body could
+/// construct a structure declared anywhere in the file. The unified pass gives a
+/// fn body only the templates built ABOVE it — the same no-forward-reference rule
+/// `compile_entity` already obeys for entity → entity references.
+///
+/// Before task 5494's step-9 the fallback was SILENT (measured): the module
+/// compiled with zero errors, `Thing()` lowered to a generic
+/// `FunctionCall{std::Thing}`, and the only diagnostic was a Warning — "cannot
+/// infer return type of zero-arg function 'Thing', defaulting to Real" — so
+/// `make_it` claimed to return `Thing` while actually yielding a `Real`. That is
+/// exactly the silent divergence PRD boundary #5 forbids ("correct value at eval
+/// OR a loud diagnostic — never silent divergence"); this test pins the loud
+/// half.
+#[test]
+fn fn_body_ctor_of_later_declared_structure_reports_ordering_error() {
+    let src = r#"
+module test.fwd
+pub fn make_it() -> Thing { Thing() }
+structure def Thing { param a : Real = 1.0 }
+"#;
+    let module = reify_test_support::helpers::compile_source_with_stdlib(src);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "constructing a later-declared same-module structure must be exactly one \
+         Error — never a Warning-only silent fallback; all diagnostics: {:#?}",
+        module
+            .diagnostics
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+
+    let msg = &errors[0].message;
+    assert!(
+        msg.contains("Thing"),
+        "the ordering error must name the structure it could not construct; got: {msg}"
+    );
+    assert!(
+        msg.contains("declared after"),
+        "the ordering error must state the ordering RULE (fix-it shaped: \
+         `structure def Thing` is declared after this function), not a bare \
+         unknown-function message; got: {msg}"
+    );
+
+    // Not a silent success: the body must NOT have lowered to a ctor.
+    if let Some(f) = module.functions.iter().find(|f| f.name == "make_it")
+        && let CompiledExprKind::StructureInstanceCtor { type_name, .. } = &f.body.result_expr.kind
+    {
+        panic!(
+            "`make_it` must not lower to StructureInstanceCtor{{{type_name}}} — \
+             `Thing`'s template does not exist yet at this point in the source"
+        );
+    }
+}
