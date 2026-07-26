@@ -193,9 +193,23 @@ harness_layout_baseline_contains() {
 # docs/prds/merge-gate-compile-cost.md §5 C2 settles raw line count as the
 # measure).
 #
-# Flat, non-recursive walk over the module dir's direct entries, filtered to
-# regular files only (`[ -f "$f" ] || continue`) — it does not descend into
-# nested subdirectories and does not filter by extension.
+# Recursive walk over the module dir via `find <moddir> -type f -name
+# '*.rs'` (plain `-type f`, no `-L`: symlinked module files are out of
+# contract), counting every `.rs` file at any depth — NOT just the module
+# dir's direct entries. `.rs`-only because rule (a) caps a COMPILE UNIT (PRD
+# docs/prds/merge-gate-compile-cost.md §5 C2 wording) and only `.rs` is
+# compiled into it: a colocated fixture (`.ri`/`.json`/golden output, etc.)
+# must not be able to push a harness over a hard merge-gate cap. This is a
+# live risk, not hypothetical — crates/reify-syntax/tests/ already colocates
+# `fixtures/` and `common/` directories with its tests.
+#
+# `find ... -print0` feeds a `while IFS= read -r -d ''` loop via process
+# substitution (not a pipe) that drains the stream to completion — never an
+# early-closing consumer, which under the callers' `set -o pipefail` would
+# reproduce the esc-5172-1 SIGPIPE-141 hazard (harness_layout_baseline_contains
+# above, and test_harness_kloc_cap.sh's Section-1 fixture generator, hit the
+# same class of hazard). `-print0` + `read -r -d ''` keeps the walk correct
+# for any path a plain glob would mangle.
 harness_layout_unit_lines() {
     local root="$1"
     local root_lines=0 module_lines=0 module_files=0 n f
@@ -206,14 +220,17 @@ harness_layout_unit_lines() {
         root_lines="${root_lines//[[:space:]]/}"   # portable: strip any wc padding
     fi
 
+    # Guard `[ -d "$moddir" ]` before invoking find: a missing module dir is
+    # the single-file-harness case (0/0), and `find` on a non-existent path
+    # exits non-zero, which would otherwise abort the sourcing script under
+    # `set -e`.
     if [ -d "$moddir" ]; then
-        for f in "$moddir"/*; do
-            [ -f "$f" ] || continue
+        while IFS= read -r -d '' f; do
             n="$(wc -l < "$f")"
             n="${n//[[:space:]]/}"   # portable: strip any wc padding
             module_lines=$((module_lines + n))
             module_files=$((module_files + 1))
-        done
+        done < <(find "$moddir" -type f -name '*.rs' -print0)
     fi
 
     printf '%s %s %s %s\n' \
