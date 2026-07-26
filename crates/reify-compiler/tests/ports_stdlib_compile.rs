@@ -2930,7 +2930,7 @@ structure def HydroConformer {
 /// std.ports.fluid; declares
 ///   `structure def ActuatorInterface<P: PowerPort, T: ThermalPort, F: FluidPort>`
 /// with three ports.  No concrete conformer is instantiated (PRD §4 decision 4;
-/// mirrors Coupling in examples/stdlib/ports_mechanical.ri).
+/// mirrors ShaftCoupling in examples/stdlib/ports_mechanical.ri).
 #[test]
 fn example_ports_domains_ri_compiles_clean() {
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -3066,7 +3066,10 @@ structure def S {
 // ─── step-9: capstone example compile ─────────────────────────────────────────
 
 /// examples/stdlib/ports_mechanical.ri must compile without errors and
-/// structurally declare a template named "Coupling" of EntityKind::Structure.
+/// structurally declare a template named "ShaftCoupling" of EntityKind::Structure.
+/// (Renamed from "Coupling" in task #5594 to resolve an accidental name
+/// collision with the unrelated stdlib `Coupling<P: DrivingJoint + HasMotion>`
+/// kinematic joint type in crates/reify-compiler/stdlib/kinematic.ri.)
 ///
 /// Note: direction/Bidi/StructurePort/Bore/Shaft and torque_capacity/max_speed
 /// params are not exercised through an actual conformance path in this example
@@ -3101,9 +3104,9 @@ fn example_ports_mechanical_ri_compiles_clean() {
         compiled
             .templates
             .iter()
-            .any(|t| { t.name == "Coupling" && t.entity_kind == EntityKind::Structure }),
+            .any(|t| { t.name == "ShaftCoupling" && t.entity_kind == EntityKind::Structure }),
         "examples/stdlib/ports_mechanical.ri should declare \
-         'structure def Coupling<D: RotaryPort, N: RotaryPort>'; \
+         'structure def ShaftCoupling<D: RotaryPort, N: RotaryPort>'; \
          found templates: {:?}",
         compiled
             .templates
