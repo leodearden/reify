@@ -651,7 +651,13 @@ const App: Component = () => {
   // Increment treeGeneration AFTER regenerateAutoViews so that effectiveVisibility
   // always evaluates getAllEffective() with an up-to-date nodeByPath.
   createEffect(() => {
-    viewStateStore.regenerateAutoViews(entityTree());
+    // DisplayOutput subjects route the auto:default view (#5195): when the
+    // design declares any, only those realizations are shown by default. Read
+    // state.displayPanes INSIDE the effect so adding or removing a
+    // DisplayOutput re-runs this and re-routes the view. Same subject strings
+    // computePaneGroups keys panes on (see :199).
+    const displaySubjects = new Set(engineStore.state.displayPanes.map((d) => d.subject));
+    viewStateStore.regenerateAutoViews(entityTree(), [], displaySubjects);
     setTreeGeneration((v) => v + 1);
   });
 

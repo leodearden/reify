@@ -11703,6 +11703,68 @@ fn get_entity_tree_realization_trait_geometry_propagates() {
     );
 }
 
+/// #5195 step-11 end-to-end: the task's stated observable, asserted against the
+/// COMMITTED example rather than a hand-modelled copy of it.
+///
+/// `examples/m5_geometry_flange.ri` is the file a user opens to see this
+/// feature. Loading it through the real pipeline closes the gap between "the
+/// shape I wrote in a test" and "the shape that actually ships" — the
+/// inline-source test above could stay green while the example drifted.
+///
+/// Observable: the viewport shows only the finished flange. `body`, `hole` and
+/// `holes` are construction geometry, listed in the outline but hidden until
+/// toggled; the terminal `geometry` is the part.
+///
+/// Uses the `CARGO_MANIFEST_DIR`-relative idiom of
+/// `examples_multi_pane_viewport_realizes_section8_display_routing` (and
+/// `reify-compiler/tests/examples_smoke.rs`).
+#[test]
+fn examples_m5_geometry_flange_hides_consumed_intermediates() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m5_geometry_flange.ri");
+    let contents =
+        std::fs::read_to_string(path).expect("examples/m5_geometry_flange.ri must exist");
+
+    let mut session = make_session();
+    session
+        .load_from_source(&contents, "m5_geometry_flange")
+        .expect("the committed flange example must compile");
+
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "BoltFlange")
+        .expect("BoltFlange root must exist");
+
+    let visible: Vec<&str> = root
+        .children
+        .iter()
+        .filter(|n| n.kind == "realization" && n.default_visible)
+        .map(|n| n.display_name.as_deref().unwrap_or(&n.entity_path))
+        .collect();
+
+    // Asserted as a SET rather than per-name so a newly-added intermediate that
+    // this rule fails to classify shows up as an extra visible body.
+    assert_eq!(
+        visible,
+        vec!["geometry"],
+        "only the finished part may be visible by default; got {visible:?}"
+    );
+
+    // …and the intermediates are still LISTED (hidden ≠ absent — the outline
+    // must offer them to toggle).
+    for name in ["body", "hole", "holes"] {
+        let node = root
+            .children
+            .iter()
+            .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("intermediate '{name}' must still be listed in the tree"));
+        assert!(
+            !node.default_visible,
+            "intermediate '{name}' must be hidden by default"
+        );
+    }
+}
+
 /// step-3 RED: a root assembly with a plain `sub part : Part at <pose>` and an
 /// `aux sub jig : Jig at <pose>`, where Part and Jig each declare a plain
 /// `let body = box(...)` (NOT directly aux).
