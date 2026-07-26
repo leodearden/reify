@@ -1341,3 +1341,108 @@ fn bt6b_cross_scope_value_cycle_surfaces_eval_cycle_through_engine_eval() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// [JOINT-DRIVE β] (task #5189 step-14) — BT-11, per-sub PARAMETER OVERRIDES.
+//
+// PRD: docs/prds/v0_6/whole-model-joint-drive-seam.md §12.
+// ---------------------------------------------------------------------------
+
+/// The joint-drive model with a per-sub PARAMETER OVERRIDE on the child.
+///
+/// Deliberately an INLINE source rather than an edit to the shipped
+/// `examples/whole_model_joint_drive.ri`: changing that file would perturb
+/// BT-5's hand-derived arithmetic and re-trigger the three example
+/// auto-enrolling gates (`examples_smoke`, the determinism walk, the
+/// no-bare-`Scalar` corpus check) for no benefit.
+///
+/// `unit_cost: 0.90USD` against a template default of `0.50USD` — an 80% gap, so
+/// an override-honouring fold and a template-default fold are unmistakably
+/// different numbers at any non-zero solved quantity.
+const OVERRIDE_SRC: &str = r#"
+module joint_drive_sub_override
+
+structure def Rivet : Costed {
+    param supplier          : String = "Acme Fastener"
+    param part_number       : String = "R-4210"
+    param unit_cost         : Money  = 0.50USD
+    param lead_time         : Time   = 24h
+
+    param quantity_produced : Real   = auto(free)
+    constraint quantity_produced >= 0.0
+    constraint quantity_produced <= 100.0
+}
+
+structure RivetedPanel {
+    sub rivets = Rivet(unit_cost: 0.90USD)
+
+    minimize cost(self.descendants)
+
+    let total_cost : Money = cost(self.descendants)
+}
+"#;
+
+/// BT-11(b) — the per-sub override must reach the folded instance-path cost
+/// cell that the expanded objective actually reads.
+///
+/// The DSL supports per-sub parameter overrides (`examples/auto_binding_sites.ri`,
+/// `examples/bom_lifecycle.ri`), but stage (g) of `build_dependent_cells` emits
+/// the instance-path ALIAS entry as a VERBATIM clone of the template-keyed
+/// `default_expr`. Its inner reads therefore stay template-keyed, so
+/// `RivetedPanel.rivets.line_cost` folds to `Rivet.unit_cost × q` — the TEMPLATE
+/// DEFAULT — with two silent consequences: the per-trial fold makes the solver
+/// minimise the wrong objective, and `materialize_dependent_cells` writes that
+/// same wrong number back as `Determined`, clobbering the correctly-elaborated
+/// per-instance value.
+///
+/// Asserted as a RELATIONSHIP (`line_cost == unit_cost_override × solved_q`),
+/// never a hand-computed absolute: the auto is solver-determined, so a literal
+/// would re-break on any solver retuning while the invariant would not.
+#[test]
+fn bt11_per_sub_parameter_override_reaches_the_folded_instance_path_cost() {
+    let result = eval_ri_with_real_solver(OVERRIDE_SRC, "per-sub override");
+
+    let scoped_unit_cost = ValueCellId::new("RivetedPanel.rivets", "unit_cost");
+    let template_unit_cost = ValueCellId::new("Rivet", "unit_cost");
+
+    let override_cost = scalar_si(&result, &scoped_unit_cost, "per-sub override");
+    let default_cost = scalar_si(&result, &template_unit_cost, "per-sub override");
+
+    // Fixture integrity — if elaboration collapsed the two spellings onto one
+    // value there would be nothing to distinguish, and every assertion below
+    // would pass vacuously.
+    assert_ne!(
+        override_cost, default_cost,
+        "fixture integrity: the instance-path `RivetedPanel.rivets.unit_cost` \
+         must carry the OVERRIDE (0.90USD) while the template-keyed \
+         `Rivet.unit_cost` keeps its default (0.50USD); both read {override_cost}",
+    );
+
+    let solved_q = scalar_si(
+        &result,
+        &ValueCellId::new("Rivet", "quantity_produced"),
+        "per-sub override",
+    );
+    // A zero auto would make the two candidate products equal and the
+    // discriminating assertion vacuous.
+    assert!(
+        solved_q != 0.0,
+        "fixture integrity: the solved auto must be non-zero for the \
+         override-vs-default products to differ; got {solved_q}",
+    );
+
+    let aliased = scalar_si(&result, &ValueCellId::new("RivetedPanel.rivets", "line_cost"), "per-sub override");
+
+    assert_eq!(
+        aliased,
+        override_cost * solved_q,
+        "BT-11: the instance-path cost cell the expanded objective reads must \
+         fold against the PER-SUB OVERRIDE ({override_cost} × {solved_q}), not \
+         the template default ({default_cost} × {solved_q} = {}). A \
+         template-default value here means stage (g) emitted the alias as a \
+         verbatim clone of the template-keyed `default_expr`, so the override \
+         was silently ignored at every trial point AND clobbered in the \
+         post-solve write-back.",
+        default_cost * solved_q,
+    );
+}

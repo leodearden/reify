@@ -11275,4 +11275,160 @@ mod dependent_cells_admissibility_tests {
              before `Parent.total` (which reads it); got {got:?}",
         );
     }
+
+    /// BT-11(a) (task #5189 step-14) — the INSTANCE-PATH ALIAS entry stage (g)
+    /// emits must be RESCOPED, not a verbatim clone of the template-keyed
+    /// `default_expr`.
+    ///
+    /// The DSL supports per-sub parameter overrides (`sub rivets =
+    /// Rivet(unit_cost: 0.90USD)`, cf. `examples/auto_binding_sites.ri`,
+    /// `examples/bom_lifecycle.ri`). A verbatim alias clone keeps the inner
+    /// reads TEMPLATE-keyed, so `RivetedPanel.rivets.line_cost` folds to
+    /// `Rivet.unit_cost × q` — the TEMPLATE DEFAULT — and the override is
+    /// silently ignored, at every trial point and again in the post-solve
+    /// write-back.
+    ///
+    /// The established idiom for this same template→instance-path bridge,
+    /// `Engine::post_process_cross_sub_value_cells` (engine_build.rs), already
+    /// rescopes the child's `default_expr` via `map_value_refs` for exactly this
+    /// reason. The alias must do the same.
+    ///
+    /// TWO GUARDS, and the test pins BOTH — getting either backwards is silent:
+    ///
+    /// * a NON-AUTO read of the alias'd template's own member MOVES to the
+    ///   instance path (`Rivet.unit_cost` → `RivetedPanel.rivets.unit_cost`), so
+    ///   the per-sub override is honoured;
+    /// * an AUTO read STAYS template-keyed (`Rivet.q`), because that is the
+    ///   namespace the solver inserts trial scalars into (`build_trial_values`
+    ///   keys off `problem.auto_params`). Moving it would make the alias fold
+    ///   against an id holding nothing and send the objective `Undef`.
+    ///
+    /// Asserted on the expr's READ SET (`extract_value_deps`), i.e. on shape,
+    /// never on a rendered string.
+    #[test]
+    fn instance_path_alias_expr_is_rescoped_but_keeps_auto_reads_template_keyed() {
+        let rivet_q = ValueCellId::new("Rivet", "quantity_produced");
+        let rivet_unit_cost = ValueCellId::new("Rivet", "unit_cost");
+        let rivet_line_cost = ValueCellId::new("Rivet", "line_cost");
+        let scoped_unit_cost = ValueCellId::new("RivetedPanel.rivets", "unit_cost");
+        let scoped_line_cost = ValueCellId::new("RivetedPanel.rivets", "line_cost");
+
+        // The parent declares the sub WITH a parameter override — the case the
+        // shipped `examples/whole_model_joint_drive.ri` (a bare `Rivet()`) does
+        // not exercise, which is how this survived to review.
+        let parent = TopologyTemplateBuilder::new("RivetedPanel")
+            .sub_component(
+                "rivets",
+                "Rivet",
+                vec![("unit_cost".to_string(), literal(mm(0.90)))],
+            )
+            .let_binding(
+                "RivetedPanel",
+                "total_cost",
+                money_ty(),
+                value_ref("RivetedPanel.rivets", "line_cost"),
+            )
+            .build();
+
+        let child = TopologyTemplateBuilder::new("Rivet")
+            .trait_bound("Costed")
+            .auto_param_free("Rivet", "quantity_produced", Type::dimensionless_scalar())
+            .param("Rivet", "unit_cost", money_ty(), Some(literal(mm(0.50))))
+            .let_binding(
+                "Rivet",
+                "line_cost",
+                money_ty(),
+                binop(
+                    BinOp::Mul,
+                    value_ref("Rivet", "unit_cost"),
+                    value_ref("Rivet", "quantity_produced"),
+                ),
+            )
+            .build();
+
+        let templates = vec![parent, child];
+        // The objective reads the INSTANCE PATH, exactly as `apply_cost_aggregation`
+        // expands `cost(self.descendants)`.
+        let seed = value_ref("RivetedPanel.rivets", "line_cost");
+        let seed_exprs: Vec<&CompiledExpr> = vec![&seed];
+        let auto_ids: HashSet<ValueCellId> = [rivet_q.clone()].into_iter().collect();
+        let no_fns: [CompiledFunction; 0] = [];
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let cells = build_dependent_cells(
+            &seed_exprs,
+            &templates,
+            &auto_ids,
+            &no_fns,
+            TEST_MAX_UNFOLD_DEPTH,
+            TEST_MAX_UNFOLD_NODES,
+            &mut diagnostics,
+        );
+
+        // Fixture integrity: the alias must actually be emitted, or every
+        // assertion below would pass vacuously.
+        let (_, alias_expr) = cells
+            .iter()
+            .find(|(id, _)| id == &scoped_line_cost)
+            .unwrap_or_else(|| {
+                panic!(
+                    "fixture integrity: stage (g) must emit the instance-path \
+                     alias `RivetedPanel.rivets.line_cost` (single non-collection \
+                     instance path); got {:?}",
+                    ids(&cells),
+                )
+            });
+        let alias_reads: HashSet<ValueCellId> =
+            crate::deps::extract_value_deps(alias_expr).into_iter().collect();
+
+        // GUARD 1 — the non-auto read MOVED to the instance path, so the per-sub
+        // override is the value that folds.
+        assert!(
+            alias_reads.contains(&scoped_unit_cost),
+            "the alias expr must read the INSTANCE-PATH \
+             `RivetedPanel.rivets.unit_cost`, so a per-sub override \
+             (`sub rivets = Rivet(unit_cost: 0.90USD)`) is honoured; got reads \
+             {alias_reads:?}",
+        );
+        assert!(
+            !alias_reads.contains(&rivet_unit_cost),
+            "the alias expr must NOT still read the TEMPLATE-keyed \
+             `Rivet.unit_cost` — that is the template DEFAULT, and folding it \
+             silently overwrites the correctly-elaborated per-instance value at \
+             every trial point and again in the write-back; got reads \
+             {alias_reads:?}",
+        );
+
+        // GUARD 2 — the AUTO read STAYED template-keyed. The solver owns that
+        // namespace; moving it would fold against an empty id ⇒ Undef objective.
+        assert!(
+            alias_reads.contains(&rivet_q),
+            "the alias expr must keep the AUTO read TEMPLATE-keyed \
+             (`Rivet.quantity_produced`) — that is the namespace \
+             `build_trial_values` inserts trial scalars into. Rescoping it would \
+             make the alias fold against an id that holds nothing and send the \
+             objective Undef; got reads {alias_reads:?}",
+        );
+
+        // The TEMPLATE-keyed source entry is untouched: it is the template
+        // default's own cell and must keep folding in its own namespace.
+        let (_, source_expr) = cells
+            .iter()
+            .find(|(id, _)| id == &rivet_line_cost)
+            .expect("the template-keyed source entry must still be emitted");
+        let source_reads: HashSet<ValueCellId> =
+            crate::deps::extract_value_deps(source_expr).into_iter().collect();
+        assert!(
+            source_reads.contains(&rivet_unit_cost) && source_reads.contains(&rivet_q),
+            "the TEMPLATE-keyed `Rivet.line_cost` entry must be unchanged \
+             (reads `Rivet.unit_cost` and `Rivet.quantity_produced`); got \
+             {source_reads:?}",
+        );
+
+        assert!(
+            diagnostics.is_empty(),
+            "this shape is admissible — no cycle, one instance path; got \
+             {diagnostics:?}",
+        );
+    }
 }
