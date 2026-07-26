@@ -176,6 +176,58 @@ fn thread_spec_derived_lets_eval_from_example() {
     );
 }
 
+// ─── resolution-unification α (boundary #18): stdlib ThreadSpec resolves ──────
+
+/// PRD docs/prds/v0_6/resolution-unification.md §7 boundary #18: once the stale
+/// eval-time mirror is stripped from `examples/stdlib/ports_breadth.ri`, the
+/// `ThreadSpec` constructed by `ThreadAssembly.spec` resolves against the
+/// *stdlib* definition, not a local shadow — and therefore carries the stdlib
+/// param the mirror had drifted away from.
+///
+/// The signal is `thread_form : Option<Geometry> = none`
+/// (crates/reify-compiler/stdlib/ports_mechanical.ri:72), which the local
+/// `structure def ThreadSpec` mirror at ports_breadth.ri:44-55 does not declare.
+/// A local re-declaration silently shadows the stdlib prelude def, so while the
+/// mirror is present no `ThreadAssembly.spec.thread_form` cell exists at all.
+///
+/// RED on base HEAD: `reify eval examples/stdlib/ports_breadth.ri` yields zero
+/// occurrences of `thread_form`, so the cell lookup below fails.
+///
+/// This test doubles as a durable mirror-reintroduction guard: if someone
+/// re-adds a local `ThreadSpec`, the cell disappears again and this goes red
+/// with a readout of the members that *were* produced.
+#[test]
+fn stdlib_thread_spec_thread_form_resolves_at_eval() {
+    let result = eval_breadth();
+
+    let id = ValueCellId::new("ThreadAssembly.spec", "thread_form");
+    let val = result.values.get(&id).unwrap_or_else(|| {
+        let mut members: Vec<&str> = result
+            .values
+            .iter()
+            .filter(|(k, _)| k.entity == "ThreadAssembly.spec")
+            .map(|(k, _)| k.member.as_str())
+            .collect();
+        members.sort_unstable();
+        panic!(
+            "ThreadAssembly.spec.thread_form not found in eval result — the stdlib \
+             ThreadSpec (crates/reify-compiler/stdlib/ports_mechanical.ri:72, \
+             `param thread_form : Option<Geometry> = none`) did not reach eval. \
+             Most likely a local `structure def ThreadSpec` mirror was reintroduced \
+             into examples/stdlib/ports_breadth.ri and is shadowing it. \
+             ThreadAssembly.spec members present: {:?}",
+            members
+        )
+    });
+
+    assert!(
+        matches!(val, Value::Option(None)),
+        "ThreadAssembly.spec.thread_form should be Value::Option(None) (the stdlib \
+         default `= none`), got {:?}",
+        val
+    );
+}
+
 // ─── step-3/4 (task η signal b): asymmetric LocatedPort warning ───────────────
 
 /// PRD task-η signal (b): connecting a stdlib MechanicalPort (LocatedPort) to a
