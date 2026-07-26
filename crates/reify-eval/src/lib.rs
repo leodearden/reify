@@ -487,6 +487,23 @@ pub struct Engine {
     /// a specific scheduler without mutating process env. Consulted only at
     /// the δ wiring site in `Engine::build` (engine_build.rs).
     build_scheduler: BuildScheduler,
+    /// Mesh-contract (INV-GEO-1) enforcement posture at kernel-seam site 1,
+    /// the tessellate→ingest conversion handoff in `execute_realization_ops`
+    /// (task #5105 δ; PRD `docs/prds/kernel-seam-contracts.md` §4). Set once
+    /// at construction from
+    /// [`reify_ir::geometry::MeshContractMode::from_env`] — which defaults to
+    /// `Enforce` after the δ flip; `REIFY_MESH_CONTRACT=warn` is the
+    /// break-glass downgrade. The `#[cfg(any(test, feature =
+    /// "test-instrumentation"))]` setter `Engine::set_mesh_contract_mode`
+    /// (engine_admin.rs) overrides it DIRECTLY so integration tests can pin
+    /// either posture without mutating process env. Threaded into the build
+    /// path via `RealizationOpsInput::with_mesh_contract_mode`
+    /// (engine_build.rs), since the consuming `execute_realization_ops` is a
+    /// free fn with no `self`; the tessellate paths
+    /// (`tessellate_realizations` / `tessellate_snapshot`) forward this field
+    /// as an explicit `tessellate_from_values` parameter for the same reason,
+    /// so ALL four entry points honour the seam identically.
+    mesh_contract_mode: reify_ir::geometry::MeshContractMode,
     /// Demand registry tracking which nodes are demanded.
     demand: DemandRegistry,
     /// Observed-demand registry (selective-demand precondition, task 4532).

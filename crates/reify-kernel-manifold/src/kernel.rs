@@ -37,6 +37,7 @@
 use std::collections::HashMap;
 
 use manifold3d::Manifold;
+use reify_ir::geometry::MeshContractMode;
 use reify_ir::{ExportError, ExportFormat, ExportOptions, ExportWarning, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, KernelHandle, KernelId, Mesh, QueryError, TessError, ThreeMfOptions, ThreeMfWarning, TopologyAttributeTable, Value, write_3mf, write_stl_binary};
 
 /// Error message used by the v0.2 stub paths (`query`/`export`) that
@@ -264,11 +265,27 @@ impl Default for ManifoldKernel {
 /// position weld (pinned to `from_mesh_f64`'s default weld — see
 /// `docs/prds/kernel-seam-contracts.md` §13 Q2), so it evaluates the
 /// closed/consistently-wound obligations on the same quotient topology this
-/// function welds above. A violation short-circuits with
-/// `Err(GeometryError::MeshContractViolation { kernel: "manifold", invariant,
-/// counts, witness })` — a structured diagnostic that surfaces the failing
-/// obligation, per-category offender counts, and a concrete witness *earlier*
-/// than (and instead of) `from_mesh_f64`'s generic `NotManifold` error.
+/// function welds above. Under [`MeshContractMode::Enforce`] a violation
+/// short-circuits with `Err(GeometryError::MeshContractViolation { kernel:
+/// "manifold", invariant, counts, witness })` — a structured diagnostic that
+/// surfaces the failing obligation, per-category offender counts, and a
+/// concrete witness *earlier* than (and instead of) `from_mesh_f64`'s generic
+/// `NotManifold` error.
+///
+/// ## Enforcement mode (`REIFY_MESH_CONTRACT`)
+///
+/// This is the mode-reading wrapper: it resolves
+/// [`MeshContractMode::from_env`] once per call and delegates to
+/// [`manifold_from_reify_mesh_with_mode`], which carries the actual logic and
+/// is the seam the unit tests drive directly (env mutation is unsafe in Rust
+/// 2024 and race-prone across parallel tests, so mode-governed behavior is
+/// pinned through the explicit-mode entry point, never by setting the var).
+///
+/// `Enforce` is the default and the shipped posture. `REIFY_MESH_CONTRACT=warn`
+/// is the break-glass downgrade: the gate is bypassed with a `tracing::warn!`
+/// and the mesh falls through to `from_mesh_f64`, whose own defensive weld and
+/// `NotManifold` rejection still apply — warn mode never makes an invalid mesh
+/// *succeed*, it only forfeits the structured diagnostic.
 ///
 /// ## Known hot-path cost (accepted)
 ///
@@ -303,6 +320,33 @@ impl Default for ManifoldKernel {
 /// `from_mesh_f64` itself rejects the welded mesh after contract validation
 /// passed (e.g. a defect `Mesh::validate` doesn't check for).
 pub(crate) fn manifold_from_reify_mesh(mesh: &Mesh) -> Result<Manifold, GeometryError> {
+    // Task #5105 δ: resolve `REIFY_MESH_CONTRACT` ONCE per process, not once
+    // per ingest. This is the per-input Manifold ingest path — called once per
+    // boolean operand per build, and repeatedly under GUI live re-eval — and
+    // `std::env::var` takes the process-wide environment lock and allocates a
+    // `String` on every call. Caching matches how every other env knob in the
+    // codebase is resolved (`BuildScheduler::from_env` once at Engine
+    // construction, `long_chain_threshold_from_env` once per eval-loop entry);
+    // the break-glass knob is a deployment-time posture, so re-reading it
+    // mid-process would be meaningless anyway. The explicit-mode
+    // `manifold_from_reify_mesh_with_mode` seam the tests drive bypasses this
+    // cache entirely, so pinning either posture stays deterministic.
+    static MODE: std::sync::OnceLock<MeshContractMode> = std::sync::OnceLock::new();
+    manifold_from_reify_mesh_with_mode(mesh, *MODE.get_or_init(MeshContractMode::from_env))
+}
+
+/// [`manifold_from_reify_mesh`] with the mesh-contract enforcement posture
+/// supplied explicitly instead of read from the environment.
+///
+/// See that function's rustdoc for the weld, the contract check, and the
+/// accepted hot-path cost — this is where all of it actually happens. The
+/// split exists purely so tests can pin both `Warn` and `Enforce` behavior
+/// without `std::env::set_var` (`unsafe` in Rust 2024, and race-prone across
+/// parallel test threads).
+fn manifold_from_reify_mesh_with_mode(
+    mesh: &Mesh,
+    mode: MeshContractMode,
+) -> Result<Manifold, GeometryError> {
     // --- bit-exact vertex weld ---
     // Map (x.to_bits(), y.to_bits(), z.to_bits()) → canonical vertex index.
     let mut seen: HashMap<(u32, u32, u32), u64> = HashMap::new();
@@ -352,8 +396,25 @@ pub(crate) fn manifold_from_reify_mesh(mesh: &Mesh) -> Result<Manifold, Geometry
     // diagnostic; the ValidatedMesh witness itself isn't needed here, only
     // the check — see this function's rustdoc "Known hot-path cost" section
     // for the accepted redundant-weld/clone tradeoff this implies.
-    mesh.validate(MANIFOLD_INGEST_TOL)
-        .map_err(|v| v.into_geometry_error("manifold"))?;
+    if let Err(violation) = mesh.validate(MANIFOLD_INGEST_TOL) {
+        match mode {
+            // Fail closed (the default): front-run from_mesh_f64's generic
+            // NotManifold with the structured contract diagnostic.
+            MeshContractMode::Enforce => return Err(violation.into_geometry_error("manifold")),
+            // Break-glass (`REIFY_MESH_CONTRACT=warn`): the gate is bypassed
+            // and the mesh falls through to from_mesh_f64 below, whose own
+            // defensive rejection still applies — warn forfeits the structured
+            // diagnostic, it does not admit an invalid mesh.
+            MeshContractMode::Warn => tracing::warn!(
+                kernel = "manifold",
+                invariant = ?violation.invariant,
+                counts = ?violation.counts,
+                witness = ?violation.witness,
+                "mesh contract violation ({}=warn — not enforced)",
+                MeshContractMode::ENV_VAR,
+            ),
+        }
+    }
 
     Manifold::from_mesh_f64(&canonical_f64, 3, &tri_indices_u64).map_err(|e| {
         GeometryError::OperationFailed(format!(
@@ -1700,6 +1761,28 @@ mod tests {
         }
     }
 
+    /// A single open triangle — three vertices, one triangle face. Not a
+    /// closed manifold: three boundary edges, no closing surface, so
+    /// `Mesh::validate` rejects it under `MeshInvariant::Closed` with
+    /// `counts.open_edges == 3`.
+    ///
+    /// THE single definition of this fixture in the module — the γ
+    /// contract-violation test, the mode-governed site-2 tests (task #5105 δ),
+    /// and (via struct-update, overriding only `indices`) the out-of-range
+    /// index test all source it from here, so a future correction cannot leave
+    /// one copy behind.
+    fn open_triangle_mesh() -> Mesh {
+        Mesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // v0
+                1.0, 0.0, 0.0, // v1
+                0.0, 1.0, 0.0, // v2
+            ],
+            indices: vec![0, 1, 2],
+            normals: None,
+        }
+    }
+
     /// Pins that `GeometryKernel::ingest_mesh` returns
     /// `Err(GeometryError::MeshContractViolation { kernel: "manifold", .. })`
     /// when given an invalid (non-closed) mesh — INV-GEO-1 kernel-seam γ.
@@ -1721,17 +1804,7 @@ mod tests {
     #[test]
     fn ingest_mesh_non_closed_mesh_returns_mesh_contract_violation() {
         let mut kernel = ManifoldKernel::new();
-        // A single open triangle — three vertices, one triangle face.
-        // Not a closed manifold: three boundary edges, no closing surface.
-        let bad_mesh = Mesh {
-            vertices: vec![
-                0.0_f32, 0.0, 0.0, // v0
-                1.0, 0.0, 0.0, // v1
-                0.0, 1.0, 0.0, // v2
-            ],
-            indices: vec![0, 1, 2],
-            normals: None,
-        };
+        let bad_mesh = open_triangle_mesh();
 
         let result = kernel.ingest_mesh(&bad_mesh);
 
@@ -1761,6 +1834,62 @@ mod tests {
                 "ingest_mesh with a single-triangle (non-closed) mesh must return \
                  Err(GeometryError::MeshContractViolation {{ kernel: \"manifold\", .. }}); \
                  got {other:?}"
+            ),
+        }
+    }
+
+    // --- mode-governed site-2 gate (task #5105 δ, INV-GEO-1) ---
+
+    /// `Enforce` (the default) front-runs `from_mesh_f64` with the structured
+    /// contract violation — the pre-δ hardcoded behavior, now the mode
+    /// default. Calls the inner `_with_mode` helper directly so no env
+    /// mutation is needed (`std::env::set_var` is unsafe in Rust 2024).
+    #[test]
+    fn manifold_from_reify_mesh_enforce_mode_returns_mesh_contract_violation() {
+        let mesh = open_triangle_mesh();
+
+        match manifold_from_reify_mesh_with_mode(&mesh, MeshContractMode::Enforce) {
+            Err(GeometryError::MeshContractViolation {
+                kernel: kernel_name,
+                invariant,
+                counts,
+                ..
+            }) => {
+                assert_eq!(kernel_name, "manifold");
+                assert!(
+                    matches!(invariant, reify_ir::geometry::MeshInvariant::Closed),
+                    "expected the Closed obligation; got {invariant:?}"
+                );
+                assert_eq!(counts.open_edges, 3, "got {counts:?}");
+            }
+            other => panic!(
+                "Enforce mode must front-run from_mesh_f64 with a structured \
+                 MeshContractViolation; got {other:?}"
+            ),
+        }
+    }
+
+    /// `Warn` is the break-glass downgrade: the contract gate is BYPASSED, so
+    /// the mesh falls through to `from_mesh_f64`. The open triangle is still
+    /// rejected there — but as the generic `OperationFailed`, NOT a
+    /// `MeshContractViolation`. That difference is exactly what pins "the
+    /// contract gate did not fire".
+    #[test]
+    fn manifold_from_reify_mesh_warn_mode_bypasses_contract_gate() {
+        let mesh = open_triangle_mesh();
+
+        match manifold_from_reify_mesh_with_mode(&mesh, MeshContractMode::Warn) {
+            Err(GeometryError::MeshContractViolation { .. }) => panic!(
+                "Warn mode must BYPASS the contract gate — a MeshContractViolation \
+                 means the gate still fired, so the break-glass downgrade is broken"
+            ),
+            Err(GeometryError::OperationFailed(_)) => {
+                // Expected: gate bypassed, from_mesh_f64's own defensive
+                // NotManifold rejection is what surfaces.
+            }
+            other => panic!(
+                "Warn mode must fall through to from_mesh_f64, which rejects the \
+                 open triangle with the generic OperationFailed; got {other:?}"
             ),
         }
     }
@@ -1871,16 +2000,13 @@ mod tests {
     #[test]
     fn ingest_mesh_out_of_range_triangle_index_returns_operation_failed() {
         let mut kernel = ManifoldKernel::new();
+        // Shares `open_triangle_mesh`'s 3 vertices and overrides ONLY the
+        // indices, so the single deliberate difference from the shared fixture
+        // is the thing under test: only 3 vertices exist (valid indices
+        // 0..=2), and index 3 is out of range for the weld's bounds check.
         let bad_mesh = Mesh {
-            vertices: vec![
-                0.0_f32, 0.0, 0.0, // v0
-                1.0, 0.0, 0.0, // v1
-                0.0, 1.0, 0.0, // v2
-            ],
-            // Only 3 vertices exist (valid indices 0..=2); index 3 is out
-            // of range and must be caught by the weld's bounds check.
             indices: vec![0, 1, 3],
-            normals: None,
+            ..open_triangle_mesh()
         };
 
         let result = kernel.ingest_mesh(&bad_mesh);

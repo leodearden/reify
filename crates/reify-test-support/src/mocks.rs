@@ -827,6 +827,61 @@ impl QueryKey {
     }
 }
 
+/// The canned interchange mesh the mock kernels hand back from `tessellate`
+/// and `realize_mesh_from_voxel`: a closed, consistently outward-wound unit
+/// tetrahedron (V0=(0,0,0), V1=(1,0,0), V2=(0,1,0), V3=(0,0,1)).
+///
+/// # Why a tetra and not a triangle (task #5105 δ, INV-GEO-1)
+///
+/// These mocks used to return a single triangle, described in-comment as "a
+/// minimal valid mesh". It is not: a lone triangle has three boundary edges,
+/// so `reify_ir::geometry::Mesh::validate` rejects it under
+/// `MeshInvariant::Closed` (`open_edges == 3`). That was harmless only while
+/// the kernel-seam mesh contract was warn-only. Once site 1 (the
+/// tessellate→ingest handoff in `reify-eval`) flipped to enforce-by-default,
+/// every test routing this mock through a BRep→Mesh conversion would abort on
+/// a contract violation that has nothing to do with what those tests assert
+/// (routing, caching, attribute forwarding, rollback).
+///
+/// A tetrahedron is the smallest mesh that actually satisfies the contract, so
+/// it keeps those tests asserting what they always intended while letting them
+/// exercise the enforcing seam for real, rather than opting out of it with a
+/// per-test `set_mesh_contract_mode(Warn)`.
+///
+/// `with_normals` selects whether per-vertex normals are attached — callers
+/// that previously emitted `normals: Some(..)` keep doing so, preserving the
+/// "normals present" property some consumers check.
+pub fn minimal_valid_mesh(with_normals: bool) -> Mesh {
+    Mesh {
+        #[rustfmt::skip]
+        vertices: vec![
+            0.0, 0.0, 0.0, // V0
+            1.0, 0.0, 0.0, // V1
+            0.0, 1.0, 0.0, // V2
+            0.0, 0.0, 1.0, // V3
+        ],
+        #[rustfmt::skip]
+        indices: vec![
+            0, 2, 1, // face 0
+            0, 1, 3, // face 1
+            0, 3, 2, // face 2
+            1, 2, 3, // face 3
+        ],
+        // Outward per-vertex normals: the unit vector from the centroid
+        // (0.25, 0.25, 0.25) to each vertex.
+        normals: with_normals.then(|| {
+            #[rustfmt::skip]
+            let n = vec![
+                -0.5774, -0.5774, -0.5774, // V0
+                 0.9045, -0.3015, -0.3015, // V1
+                -0.3015,  0.9045, -0.3015, // V2
+                -0.3015, -0.3015,  0.9045, // V3
+            ];
+            n
+        }),
+    }
+}
+
 /// Mock geometry kernel that tracks operations and returns dummy handles.
 pub struct MockGeometryKernel {
     next_id: u64,
@@ -1792,12 +1847,7 @@ impl GeometryKernel for MockGeometryKernel {
         // tolerance through to the kernel rather than the module-level
         // `effective_tessellation_tolerance` default.
         self.tessellate_tolerances.lock().unwrap().push(tolerance);
-        // Return a minimal valid mesh (one triangle)
-        Ok(Mesh {
-            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-            indices: vec![0, 1, 2],
-            normals: Some(vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]),
-        })
+        Ok(minimal_valid_mesh(true))
     }
 
     /// Realization-read VolumeMesh accessor (task γ): return a clone of the
@@ -1815,20 +1865,17 @@ impl GeometryKernel for MockGeometryKernel {
 
     /// Task 5001 (γ): override the trait default so this mock can act as a
     /// Voxel→Mesh MarchingCubes source in conversion-executor tests. Always
-    /// succeeds with a minimal non-empty triangle, mirroring `tessellate`'s
-    /// canned-mesh pattern above (the caller-supplied `handle` need not name
-    /// a real voxel grid — this is a test double, not the real FFI kernel).
+    /// succeeds with a minimal non-empty contract-valid mesh, mirroring
+    /// `tessellate`'s canned-mesh pattern above (the caller-supplied `handle`
+    /// need not name a real voxel grid — this is a test double, not the real
+    /// FFI kernel).
     fn realize_mesh_from_voxel(
         &self,
         _handle: GeometryHandleId,
         _iso_level: f64,
         _adaptive: bool,
     ) -> Result<Mesh, GeometryError> {
-        Ok(Mesh {
-            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-            indices: vec![0, 1, 2],
-            normals: None,
-        })
+        Ok(minimal_valid_mesh(false))
     }
 
     /// Task 5001 (γ): a non-trivial, field-derived `ContentHash` — distinct
