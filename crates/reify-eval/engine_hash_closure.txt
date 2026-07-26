@@ -36,6 +36,7 @@
 aho-corasick
 anyhow
 approx
+ar_archive_writer
 argmin
 argmin-math
 autocfg
@@ -100,6 +101,7 @@ num_cpus
 num-integer
 num-rational
 num-traits
+object
 once_cell
 paste
 pin-project-lite
@@ -107,6 +109,7 @@ pkg-config
 ppv-lite86
 private-gemm-x86
 proc-macro2
+psm
 pulp
 pulp-wasm-simd-flag
 qd
@@ -152,6 +155,7 @@ serde_spanned
 shlex
 simba
 sized-chunks
+stacker
 streaming-iterator
 strum
 strum_macros

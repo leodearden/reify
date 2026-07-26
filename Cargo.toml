@@ -85,6 +85,12 @@ im = "15"
 indexmap = "2"
 inventory = "0.3"
 
+# On-demand stack growth for bounded compiler expression recursion
+# (crates/reify-compiler/src/recursion_guard.rs). Pure-Rust (pulls psm/cfg-if/
+# libc — all standard); used to convert a would-be stack-overflow SIGSEGV on
+# deeply-nested geometry into a clean E_EXPR_NESTING_TOO_DEEP diagnostic.
+stacker = "0.1"
+
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-std", "io-util"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 

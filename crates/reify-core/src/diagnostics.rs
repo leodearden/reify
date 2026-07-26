@@ -3739,6 +3739,39 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_ENUM_TYPE_ARG_CONFLICT`
     /// (see `docs/prds/v0_6/generic-data-carrying-enums.md` §5 D3 / §7.3 / §9 G6).
     EnumTypeArgConflict,
+
+    /// Origin: `crates/reify-compiler/src/recursion_guard.rs` — the shared
+    /// depth cap enforced at both compiler expression-recursion entry points
+    /// (`compile_expr_guarded_with_expected` in `expr.rs` and
+    /// `compile_geometry_call` in `geometry.rs`, task #5337).
+    ///
+    /// Emitted as a `Severity::Error` when the live cross-function compile
+    /// recursion depth exceeds `MAX_COMPILE_RECURSION_DEPTH`, i.e. an
+    /// expression (typically deeply-nested boolean geometry such as
+    /// `difference(difference(…), …)`) nests past the cap. Rather than
+    /// recursing further — which would eventually overflow the compile
+    /// thread's stack and SIGSEGV the whole process (uncatchable by an
+    /// embedder's `catch_unwind`) — the compiler bails loudly: the expression
+    /// site is poisoned (`Type::Error`, anti-cascade) / the geometry call
+    /// returns `None`.
+    ///
+    /// Reporting cardinality: **at most one per outermost compile entry**.
+    /// A wide node at the cap boundary fails every over-deep child, but only
+    /// the first pushes this diagnostic — `recursion_guard` latches emission
+    /// and re-arms when the recursion depth returns to 0 — so the error panel
+    /// shows one error per over-deep top-level expression, not one per child.
+    ///
+    /// Canonical message form:
+    /// `"E_EXPR_NESTING_TOO_DEEP: expression nests too deeply (exceeded <N> levels); bind intermediate results with \`let\` to reduce nesting depth"`.
+    ///
+    /// PRD-prose mnemonic: `E_EXPR_NESTING_TOO_DEEP` (severity convention:
+    /// `E_*` → Error).
+    /// Minting rationale: `DiagnosticCode` is `#[non_exhaustive]` with no
+    /// exhaustive match-on-self and derives serde `Serialize`/`Deserialize`, so
+    /// adding one variant is non-breaking for downstream consumers and it
+    /// round-trips automatically (follows the `TraitRefinementChainTooDeep`
+    /// too-deep precedent).
+    ExpressionNestingTooDeep,
 }
 
 /// A diagnostic message with location and optional labels.
