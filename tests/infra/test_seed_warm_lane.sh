@@ -94,21 +94,75 @@ _note_shared_trash_use() {
 # The bare-/tmp filtering itself is deliberately NOT done here — it moves into
 # the _assert_no_bare_tmp_lanes checker in Block R, which runs in the main
 # shell (via `assert`'s no-subshell "$@" invocation) and so can safely
-# aggregate into a local array. Deliberately NOT wired into run_helper (task
-# 5590 amend): every run_helper *_LANE fixture is now ALSO migrated to
-# make_isolated_lane (review follow-up, same defence-in-depth rationale as
-# run_helper_real's lanes), but wiring the structural check itself into
-# run_helper would still false-positive on I_SC_BASE_PARENT (Block I11-I12's
-# self-clobber fixture, which intentionally passes a bare-/tmp base-parent as
-# the lane arg on purpose) without a full audit of every run_helper call
-# site's positional signature — a bigger, separately-reviewable change than
-# this migration sweep, tracked as follow-up. run_helper's genuine offenders
-# are already covered by the stronger, behaviour-based R1 detector regardless.
+# aggregate into a local array. _note_helper_lane below is the analogous
+# recorder for plain run_helper (task 5609): unlike run_helper_real, whose
+# every call site passes <base> <lane> positionally with no exception,
+# run_helper has 4 flag-first call sites with no lane arg at all (--help,
+# --unknown-flag-xyz, --fresh-checkout, --record-base "$G_BASE" — note $2
+# there is a base, not a lane), so it cannot log $2 unconditionally the way
+# _note_real_lane does. It instead applies a filter keyed on the shape of
+# $1/$2 (see _note_helper_lane's own comment below for the full audit) rather
+# than an enumerated allowlist of exempt sites, so it keeps classifying
+# correctly as call sites are added or removed. I_SC_BASE_PARENT (Block
+# I11-I12's self-clobber fixture, the one exception task 5590 deferred this
+# wiring over) is NO LONGER a false-positive risk: task 5609 migrated it off
+# bare /tmp onto make_isolated_lane, which is what made this wiring safe.
 # As with _note_shared_trash_use, the trailing `return 0` is mandatory (bare
 # unguarded statement), and the state is file-backed for the same
 # subshell-visibility reason documented above.
 _note_real_lane() {
     printf '%s\n' "${2:-}" >> "$_REAL_LANES_FILE"
+    return 0
+}
+
+# _note_helper_lane: analogous to _note_real_lane above, but for plain
+# run_helper (task 5609), whose call sites are NOT uniformly
+# <base> <lane> [flags...] — a positional-shape filter is required to
+# identify the lane arg reliably instead of logging $2 unconditionally.
+#
+# Audit (task 5609, exhaustive over every run_helper call site in this
+# file): exactly 4 are flag-first with no lane arg at all — --help,
+# --unknown-flag-xyz, --fresh-checkout, --record-base "$G_BASE" (there the
+# only non-flag arg is $G_BASE, a base, not a lane) — and every other call
+# site passes <base_dir> <lane_dir> [flags...] positionally, sometimes with
+# a further non-flag positional AFTER the lane too (e.g. --base-commit shaX).
+# Cited here by flag text rather than line number, which does not rot as
+# lines are inserted above (an amendment to this same task had to repair a
+# set of numeric citations that had already gone stale mid-task).
+#
+# The filter walks every arg of the call, collects the ones that do NOT
+# start with "-" (in order), and — only if at least two were collected —
+# records the SECOND one as the lane. This is shape-based over the WHOLE
+# call, not just $1/$2: unlike an earlier version keyed only on whether $1
+# itself looked like a flag, this also classifies correctly for a
+# flag-FIRST call that still carries a lane further along, e.g. a
+# hypothetical `run_helper --lane-lock "$BASE" "$LANE"` (--lane-lock and
+# --assume-lane-lock-held are real scripts/seed-warm-lane.sh flags, not
+# currently used at any run_helper call site in this file, but the script's
+# own CLI already makes that shape plausible for a future call site). Verified
+# against all 44 current call sites plus both hypothetical flag-first-with-lane
+# shapes: --record-base "$G_BASE" contributes exactly ONE non-flag arg
+# ($G_BASE itself), so it never reaches the two-collected threshold and needs
+# no separate exclusion. Being shape-based rather than an enumerated
+# allowlist, it keeps classifying correctly as call sites are added or
+# removed, unlike a hardcoded list which would silently rot.
+#
+# As with _note_shared_trash_use/_note_real_lane, the trailing `return 0` is
+# mandatory: this runs as a bare unguarded statement at the top of
+# run_helper, and a nonzero return here would abort the whole suite under
+# set -euo pipefail. State is file-backed (_HELPER_LANES_FILE, defined below
+# near _LANE_ROOT) for the same subshell-visibility reason documented above.
+_note_helper_lane() {
+    local a=() x
+    for x in "$@"; do
+        case "$x" in
+            -*) ;;
+            *) a+=("$x") ;;
+        esac
+    done
+    if [ "${#a[@]}" -ge 2 ]; then
+        printf '%s\n' "${a[1]}" >> "$_HELPER_LANES_FILE"
+    fi
     return 0
 }
 
@@ -145,17 +199,26 @@ _TMPDIRS+=("$STUB_DIR")
 _LANE_ROOT="$(mktemp -d /tmp/test-seed-lane-root-XXXXXX)"
 _TMPDIRS+=("$_LANE_ROOT")
 
-# _TRASH_HITS_FILE / _REAL_LANES_FILE: append-only detector state for
-# _note_shared_trash_use / _note_real_lane above. Nested directly under
-# $_LANE_ROOT (a sibling of each lane's own private parent, never inside one),
-# so the existing cleanup() EXIT trap's `rm -rf "$_LANE_ROOT"` reclaims them
-# with no new _TMPDIRS entry and no extra top-level /tmp entry, and R0c's
-# "parent contains the lane and nothing else" check (which inspects a lane's
-# own private parent, not _LANE_ROOT itself) is unaffected.
+# _TRASH_HITS_FILE / _REAL_LANES_FILE / _HELPER_LANES_FILE: append-only
+# detector state for _note_shared_trash_use / _note_real_lane /
+# _note_helper_lane above. Nested directly under $_LANE_ROOT (a sibling of
+# each lane's own private parent, never inside one), so the existing
+# cleanup() EXIT trap's `rm -rf "$_LANE_ROOT"` reclaims them with no new
+# _TMPDIRS entry and no extra top-level /tmp entry, and R0c's "parent
+# contains the lane and nothing else" check (which inspects a lane's own
+# private parent, not _LANE_ROOT itself) is unaffected. _HELPER_LANES_FILE is
+# kept SEPARATE from _REAL_LANES_FILE (task 5609) rather than merged into it:
+# R3's offender message names the call convention ("run_helper_real lane dir
+# was bare /tmp"), and R4 asserts specific run_helper_real lanes are present
+# in _REAL_LANES_FILE as an H5d/H9 subshell-visibility coverage signal —
+# merging the two streams would make R3's message wrong for half its inputs
+# and let a run_helper lane silently satisfy R4's coverage check.
 _TRASH_HITS_FILE="$_LANE_ROOT/.shared-trash-hits"
 _REAL_LANES_FILE="$_LANE_ROOT/.real-lanes"
+_HELPER_LANES_FILE="$_LANE_ROOT/.helper-lanes"
 : > "$_TRASH_HITS_FILE"
 : > "$_REAL_LANES_FILE"
+: > "$_HELPER_LANES_FILE"
 
 # make_isolated_lane <prefix> — mktemps a private parent under $_LANE_ROOT and
 # a lane dir nested inside it, then echoes the lane path on stdout. See the
@@ -246,6 +309,7 @@ chmod +x "$STUB_DIR/git"
 # Sets OUT (stdout), ERR_OUT (stderr), RC (exit code) as globals.
 run_helper() {
     local rc=0
+    _note_helper_lane "$@"
     > "$ERR_FILE"
     OUT="$(
         REIFY_TEST_CALLS_FILE="$CALLS_FILE" \
@@ -1058,9 +1122,23 @@ assert "I10b: outside-mount: stderr names mount/misuse" \
 
 # I11-I12: SELF-CLOBBER — LANE_DIR = dirname(BASE_TARGET_DIR) so LANE_TARGET == BASE_TARGET_DIR.
 # Catastrophic: would rename the base target to trash and clone it onto itself.
-I_SC_BASE_PARENT="$(mktemp -d /tmp/test-seed-I-sc-parent-XXXXXX)"
+#
+# I_SC_BASE_PARENT is created via make_isolated_lane (task 5609), NOT bare
+# /tmp: this is a DIFFERENT hazard than the dirname()/.reseed-trash collision
+# that motivated _LANE_ROOT for other lanes (this fixture's misuse guard
+# refuses before ever reaching the rename-to-trash path, so R1 never sees
+# it). The hazard here is a SIBLING lane-lock: scripts/seed-warm-lane.sh
+# computes LANE_LOCK="${LANE_DIR}.lock" (:522) — a sibling of LANE_DIR, not a
+# child — and creates it (:563, `exec 9>"$LANE_LOCK"`) BEFORE the
+# self-clobber misuse guard refuses (I11), so the lock is created even
+# though RC != 0. A bare-/tmp
+# I_SC_BASE_PARENT would strand that sibling lock at top-level /tmp, outside
+# every _TMPDIRS entry — the sibling is not INSIDE the registered directory,
+# so cleanup()'s `rm -rf` never sees it (the leak I12b/I12c above pin).
+# Nesting under $_LANE_ROOT via make_isolated_lane makes the sibling lock a
+# descendant of $_LANE_ROOT instead, which cleanup() DOES reclaim.
+I_SC_BASE_PARENT="$(make_isolated_lane I-sc-parent)"
 I_SC_BASE="$I_SC_BASE_PARENT/target"
-_TMPDIRS+=("$I_SC_BASE_PARENT")
 mkdir -p "$I_SC_BASE"
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$I_SC_BASE_PARENT/.warm-base-meta"
 # LANE_DIR = I_SC_BASE_PARENT → LANE_TARGET = I_SC_BASE_PARENT/target = I_SC_BASE = BASE_TARGET_DIR
@@ -1072,6 +1150,19 @@ assert "I11: self-clobber: exit 1 (misuse guard refuses)" \
     test "$RC" -ne 0
 assert "I12: self-clobber: cp NEVER invoked (refused before clone)" \
     bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
+# I12b/I12c: pin the sibling lane-lock leak (task 5609). scripts/seed-warm-lane.sh
+# unconditionally enters its lane-lock path for --fresh-checkout (:510) and
+# computes LANE_LOCK="${LANE_DIR}.lock" — a SIBLING of LANE_DIR, not a child —
+# creating it (:563, `exec 9>"$LANE_LOCK"`) BEFORE the self-clobber misuse
+# guard above refuses. So the lock exists even though RC != 0 (I12b), and it
+# must be nested under $_LANE_ROOT so the existing cleanup() EXIT trap's
+# `rm -rf "$_LANE_ROOT"` reclaims it as a child of I_SC_BASE_PARENT's own
+# private parent (i.e. a sibling of I_SC_BASE_PARENT itself) (I12c).
+assert "I12b: self-clobber: sibling lane-lock \${I_SC_BASE_PARENT}.lock exists (seed-warm-lane.sh:563's exec 9>\"\$LANE_LOCK\" creates it before the misuse guard refuses)" \
+    bash -c '[ -n "$1" ] && [ -e "$1.lock" ]' _ "$I_SC_BASE_PARENT"
+assert "I12c: self-clobber: the sibling lane-lock is nested under \$_LANE_ROOT (so cleanup()'s rm -rf reclaims it)" \
+    bash -c '[ -n "$1" ] || exit 1; case "$1" in "$2"/*) exit 0 ;; *) exit 1 ;; esac' _ "${I_SC_BASE_PARENT}.lock" "${_LANE_ROOT:-/nonexistent}"
 
 # I13: POSITIVE CONTROL UNDER MOUNT — lane IS under REIFY_WARM_LANE_MOUNT, non-empty target.
 # The replace path must still succeed when the mount check passes.
@@ -2614,8 +2705,14 @@ assert "R1: no seed invocation in this suite wrote into the machine-shared $_SHA
 # unconditionally — the bare-/tmp filtering happens here, reading the
 # file-backed log line by line (this checker runs in the main shell via
 # `assert`'s no-subshell "$@" invocation, so a local array is safe here even
-# though the recorder itself cannot use one). ───────────────────────────────
+# though the recorder itself cannot use one).
+#
+# _assert_no_bare_tmp_lanes <log-file> <label>: parameterized (task 5609) so
+# R6 below can share this ONE implementation for run_helper's lanes instead
+# of a near-duplicate checker — <label> names the call convention in the
+# offender message (e.g. "run_helper_real" here, "run_helper" for R6). ─────
 _assert_no_bare_tmp_lanes() {
+    local log="$1" label="$2"
     local lane
     local offenders=()
     while IFS= read -r lane; do
@@ -2623,14 +2720,14 @@ _assert_no_bare_tmp_lanes() {
         case "$lane" in
             /*) [ "$(dirname "$lane")" = "/tmp" ] && offenders+=("$lane") ;;
         esac
-    done < "$_REAL_LANES_FILE"
+    done < "$log"
     [ "${#offenders[@]}" -eq 0 ] && return 0
-    printf 'run_helper_real lane dir was bare /tmp (no private parent): %s\n' \
-        "${offenders[@]}"
+    printf '%s lane dir was bare /tmp (no private parent): %s\n' \
+        "$label" "${offenders[@]}"
     return 1
 }
 assert "R3: every run_helper_real lane dir had a private parent (never bare /tmp)" \
-    _assert_no_bare_tmp_lanes
+    _assert_no_bare_tmp_lanes "$_REAL_LANES_FILE" "run_helper_real"
 
 # ── R4: end-to-end coverage — the structural detector must have observed the
 # two run_helper_real invocations made from inside a backgrounded ( ... ) &
@@ -2649,6 +2746,64 @@ assert "R3: every run_helper_real lane dir had a private parent (never bare /tmp
 # and as a whole line. ───────────────────────────────────────────────────────
 assert "R4: the structural detector observed the run_helper_real invocations made from inside a backgrounded subshell (H5d/H9)" \
     bash -c 'grep -Fxq -- "$2" "$1" && grep -Fxq -- "$3" "$1"' _ "${_REAL_LANES_FILE:-/nonexistent}" "$Q_LANE8" "$Q_LANE11"
+
+# ── R6: regression guard — no run_helper (as opposed to run_helper_real)
+# lane arg was bare /tmp either (task 5609). This pays off the follow-up the
+# _note_real_lane comment above used to defer: run_helper's call sites are
+# NOT uniformly <base> <lane> [flags...] (4 are flag-first with no lane arg
+# at all), so wiring this in safely required auditing every call site's
+# positional shape first — see _note_helper_lane's own comment for that
+# audit. Shares the SAME _assert_no_bare_tmp_lanes checker R3 uses above,
+# parameterized by <log-file, label> so R3 and R6 are one implementation,
+# two callers, rather than a near-duplicate checker. ────────────────────────
+assert "R6: no run_helper lane arg was bare /tmp" \
+    _assert_no_bare_tmp_lanes "${_HELPER_LANES_FILE:-/nonexistent}" "run_helper"
+
+# ── R6a: coverage signal for R6, mirroring R4's role for R3 — proves
+# _note_helper_lane is actually wired in and recording, so R6 above cannot
+# pass vacuously forever against an empty log. Checks for I_SC_BASE_PARENT
+# specifically: task 5609's own I11-I12 fixture (the lane this whole task
+# migrated off bare /tmp), which is a plain run_helper call and so must have
+# been recorded once _note_helper_lane exists. The
+# ${_HELPER_LANES_FILE:-/nonexistent} fallback is defensive only, mirroring
+# R4's ${_REAL_LANES_FILE:-/nonexistent} idiom: it keeps this a plain assert
+# FAILURE rather than a set -u abort before _HELPER_LANES_FILE is wired up.
+# grep -Fxq matches the lane path literally and as a whole line. ───────────
+assert "R6a: \$_HELPER_LANES_FILE exists, is non-empty, and recorded \$I_SC_BASE_PARENT" \
+    bash -c '[ -s "$1" ] && grep -Fxq -- "$2" "$1"' _ "${_HELPER_LANES_FILE:-/nonexistent}" "$I_SC_BASE_PARENT"
+
+# ── R6b: positive control for the shared _assert_no_bare_tmp_lanes checker —
+# proves it actually flags a bare-/tmp entry (even amid a good entry in the
+# same log) and passes a clean log, so R6/R3 cannot silently stop firing if
+# the checker is ever refactored. Mirrors R2/R5's positive-control role for
+# the other detector. Synthetic log files only (no real seed run needed):
+# the checker only inspects path STRINGS line by line, never touches disk
+# itself.
+#
+# The mixed-log branch also inspects the OFFENDER MESSAGE content, not just
+# the exit status: <label> is the one new surface the task 5609 amendment
+# added to _assert_no_bare_tmp_lanes (parameterizing it for R6's benefit), so
+# an exit-status-only check would stay green through a refactor that broke
+# the message (dropped the offenders expansion, or swapped the label/offender
+# argument order between R3 and R6) — the exact regression this positive
+# control exists to catch. ──────────────────────────────────────────────────
+R6B_NESTED_LANE="$_LANE_ROOT/synthetic-nested-lane"
+R6B_MIXED_LOG="$_LANE_ROOT/.r6b-mixed-log"
+R6B_CLEAN_LOG="$_LANE_ROOT/.r6b-clean-log"
+printf '%s\n%s\n' "/tmp/synthetic-bare-lane" "$R6B_NESTED_LANE" > "$R6B_MIXED_LOG"
+printf '%s\n' "$R6B_NESTED_LANE" > "$R6B_CLEAN_LOG"
+_r6b_positive_control() {
+    local mixed_log="$1" clean_log="$2" label="$3"
+    local out
+    out="$(_assert_no_bare_tmp_lanes "$mixed_log" "$label" 2>&1)" && return 1
+    case "$out" in
+        *"$label"*"/tmp/synthetic-bare-lane"*) ;;
+        *) return 1 ;;
+    esac
+    _assert_no_bare_tmp_lanes "$clean_log" "$label" >/dev/null 2>&1
+}
+assert "R6b: _assert_no_bare_tmp_lanes flags a bare-/tmp entry in a mixed log as an offender (message names both the label and the offending path) AND passes a clean nested-only log" \
+    _r6b_positive_control "$R6B_MIXED_LOG" "$R6B_CLEAN_LOG" "R6b-synthetic"
 
 # ── R2: positive control for R1 — proves the detector actually fires on a
 # real rename, so R1 cannot silently pass forever if seed's rename message is
