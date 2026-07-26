@@ -3086,11 +3086,23 @@ static LADDERS: OnceLock<Vec<reify_core::DimensionLadder>> = OnceLock::new();
 /// `Velocity`) — callers fall through to their own uncurated handling in
 /// that case.
 fn registry_display_default(dim: &DimensionVector) -> Option<(f64, &'static str)> {
-    let name = dim.canonical_name()?;
-    let ladders = LADDERS.get_or_init(reify_core::unit_ladders);
-    let ladder = ladders.iter().find(|l| l.dimension == name)?;
+    let ladder = registry_ladder(dim)?;
     let default_rung = ladder.units.iter().find(|u| u.is_default)?;
     Some((default_rung.si_scale, default_rung.label.as_str()))
+}
+
+/// Look up `dim`'s whole ladder in the cached unit-ladder registry, keyed by
+/// [`DimensionVector::canonical_name`].
+///
+/// The single lookup path both [`registry_display_default`] (which narrows to
+/// the `is_default` rung) and [`resolve_display`]'s §5 auto-scaling arm share,
+/// so the two can never disagree about which ladder a dimension resolves to.
+/// Returns `None` when `dim` has no `canonical_name()` or is not in the
+/// registry — see [`registry_display_default`] for the caller contract.
+fn registry_ladder(dim: &DimensionVector) -> Option<&'static reify_core::DimensionLadder> {
+    let name = dim.canonical_name()?;
+    let ladders = LADDERS.get_or_init(reify_core::unit_ladders);
+    ladders.iter().find(|l| l.dimension == name)
 }
 
 /// Shared display formatter (PRD display-unit-preference §6.2): resolve an
@@ -3110,12 +3122,28 @@ fn registry_display_default(dim: &DimensionVector) -> Option<(f64, &'static str)
 ///
 /// The magnitude is always formatted via [`format_display_number`], so
 /// this stays numerically consistent with [`Value::format_display_pair`].
+///
+/// **§5d — an explicit pin suppresses auto-scaling.** The `Some(pref)` early
+/// return below *is* that rule: a pin that has won §6.1's precedence renders
+/// at its own rung regardless of magnitude, and never reaches the auto-scaling
+/// arm at all. No separate flag, guard or bypass implements §5d — it is
+/// structural.
+///
+/// **§5e — rung 3 is where auto-scaling engages.** With no pin (or a
+/// degenerate one), the dimension's ladder decides via
+/// [`DimensionLadder::auto_scaled`](reify_core::DimensionLadder::auto_scaled):
+/// a default-ON dimension (Length, Area, Volume) hops to whichever rung keeps
+/// the mantissa in band, falling back to §5c engineering notation when none
+/// does; a default-OFF or structurally excluded one stays on its static
+/// default rung, which is byte-identical to the pre-§5 output.
 // G-allow: shared display formatter (PRD display-unit-preference §6.2); the four surfaces route onto it in L4 task #5235 (pending) — no non-test caller until then
 pub fn resolve_display(
     si_value: f64,
     dimension: &DimensionVector,
     preference: Option<&DisplayPreference>,
 ) -> (String, String) {
+    // §5d: an explicit pin is authoritative and stable regardless of
+    // magnitude, so it returns before auto-scaling is ever consulted.
     if let Some(pref) = preference
         && pref.si_scale.is_finite()
         && pref.si_scale != 0.0
@@ -3124,6 +3152,29 @@ pub fn resolve_display(
             format_display_number(si_value / pref.si_scale),
             pref.label.clone(),
         );
+    }
+    // §5e rung 3: unpinned, so the dimension's auto-scale posture decides.
+    if let Some(ladder) = registry_ladder(dimension) {
+        match ladder.auto_scaled(si_value) {
+            reify_core::AutoScaleChoice::Rung(rung) => {
+                return (
+                    format_display_number(si_value / rung.si_scale),
+                    rung.label.clone(),
+                );
+            }
+            // §5c's engineering-notation rendering lands in the next step;
+            // until then this renders at the same anchor rung as a plain
+            // magnitude, which is the pre-§5 output for these magnitudes.
+            reify_core::AutoScaleChoice::Engineering { rung, .. } => {
+                return (
+                    format_display_number(si_value / rung.si_scale),
+                    rung.label.clone(),
+                );
+            }
+            // Posture gate said no (or the magnitude is unusable) — fall
+            // through to the unchanged rungs 3-5 below.
+            reify_core::AutoScaleChoice::Static => {}
+        }
     }
     if let Some((si_scale, label)) = registry_display_default(dimension) {
         return (format_display_number(si_value / si_scale), label.to_string());
