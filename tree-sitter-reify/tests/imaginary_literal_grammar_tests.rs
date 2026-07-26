@@ -192,8 +192,9 @@ fn guard_f_capital_j_stays_quantity_literal() {
 // ── Regression guard (g): 2 j (space-separated) is rejected, never imaginary_literal ──
 
 /// Regression guard (g): `let x = 2 j` (mantissa and `j` separated by whitespace)
-/// must be REJECTED. The space breaks j-suffix adjacency; D1 requires the `j`
-/// to be lexically fused to the mantissa for an `imaginary_literal` to form.
+/// must be REJECTED, for any whitespace form separating them. The space breaks
+/// j-suffix adjacency; D1 requires the `j` to be lexically fused to the mantissa
+/// for an `imaginary_literal` to form.
 ///
 /// This is the CI-exercised (`cargo test`) home for the rejection invariant that
 /// `test/corpus/imaginary_literal.txt`'s "no-whitespace: 2 j with a space must
@@ -204,36 +205,68 @@ fn guard_f_capital_j_stays_quantity_literal() {
 /// kind/span API, and it is precisely the detail that drifted under #5492 (it
 /// moved from `'j'` to `'\n'` without the rejection itself regressing). Task
 /// 3947 lineage: see fixture (a) and guards (d)-(f) above.
+///
+/// Table-driven over several separator forms so the invariant isn't pinned to
+/// one incidental layout, including the corpus fixture's own multi-line source
+/// verbatim — that makes the "CI-exercised home for [the corpus] invariant"
+/// claim above literally true, rather than true-in-spirit via a single-line
+/// stand-in that merely happens to reject the same way today.
+///
+/// The ERROR-text check below is deliberately loose (a `j`-suffix-plus-mantissa-
+/// absence check, not an exact span match) for the same reason the `UNEXPECTED`
+/// pseudo-token above is left unpinned: `tree-sitter parse` shows the single-line
+/// case as a nested `(ERROR (ERROR))` whose outer span today happens to be
+/// exactly `j`, but a grammar change (e.g. #5392's juxtaposition rework) could
+/// legitimately widen or renest that ERROR without the rejection itself
+/// regressing. Pinning the exact span would just relocate the #5492 drift
+/// problem into this CI-gated guard; asserting "ends with `j`, excludes the
+/// mantissa" instead proves the thing that actually matters — the mantissa
+/// parses cleanly and only the stray `j` is unparsed — and survives a
+/// widened/renested ERROR.
 #[test]
 fn guard_g_space_separated_j_is_rejected() {
-    let mut parser = make_parser();
-    let source = b"structure S { let x = 2 j }";
-    let tree = parser.parse(source, None).expect("parse failed");
-    assert!(
-        tree.root_node().has_error(),
-        "guard (g): `2 j` (space-separated) must be REJECTED; got kinds: {:?}",
-        collect_kinds(tree.root_node())
-    );
-    let imag = find_node_by_kind(tree.root_node(), "imaginary_literal");
-    assert!(
-        imag.is_none(),
-        "guard (g): `2 j` (space-separated) must NEVER produce an `imaginary_literal` \
-         node; got kinds: {:?}",
-        collect_kinds(tree.root_node())
-    );
-    let num = find_node_by_kind(tree.root_node(), "number_literal");
-    assert!(
-        num.is_some(),
-        "guard (g): the mantissa `2` must still parse as a bare `number_literal`; \
-         got kinds: {:?}",
-        collect_kinds(tree.root_node())
-    );
-    let err =
-        find_node_by_kind(tree.root_node(), "ERROR").expect("guard (g): expected an ERROR node");
-    let err_text = &source[err.start_byte()..err.end_byte()];
-    assert_eq!(
-        err_text, b"j",
-        "guard (g): the ERROR node must span exactly the `j`, but got `{}`",
-        String::from_utf8_lossy(err_text)
-    );
+    // (source, mantissa text that must NOT appear inside the ERROR node's text).
+    let cases: [(&[u8], &str); 5] = [
+        (b"structure S { let x = 2 j }", "2"),
+        // Matches test/corpus/imaginary_literal.txt's "no-whitespace" fixture verbatim.
+        (b"structure S {\n  let x = 2 j\n}", "2"),
+        (b"structure S { let x = 4.1 j }", "4.1"),
+        (b"structure S { let x = 2\tj }", "2"),
+        (b"structure S { let x = 2   j }", "2"),
+    ];
+
+    for (source, mantissa) in cases {
+        let source_display = String::from_utf8_lossy(source);
+        let mut parser = make_parser();
+        let tree = parser.parse(source, None).expect("parse failed");
+        assert!(
+            tree.root_node().has_error(),
+            "guard (g): `{source_display}` (space-separated) must be REJECTED; got kinds: {:?}",
+            collect_kinds(tree.root_node())
+        );
+        let imag = find_node_by_kind(tree.root_node(), "imaginary_literal");
+        assert!(
+            imag.is_none(),
+            "guard (g): `{source_display}` must NEVER produce an `imaginary_literal` \
+             node; got kinds: {:?}",
+            collect_kinds(tree.root_node())
+        );
+        let num = find_node_by_kind(tree.root_node(), "number_literal");
+        assert!(
+            num.is_some(),
+            "guard (g): the mantissa in `{source_display}` must still parse as a bare \
+             `number_literal`; got kinds: {:?}",
+            collect_kinds(tree.root_node())
+        );
+        let err = find_node_by_kind(tree.root_node(), "ERROR")
+            .unwrap_or_else(|| panic!("guard (g): expected an ERROR node for `{source_display}`"));
+        let err_text = &source[err.start_byte()..err.end_byte()];
+        let err_display = String::from_utf8_lossy(err_text);
+        assert!(
+            err_display.ends_with('j') && !err_display.contains(mantissa),
+            "guard (g): the ERROR node for `{source_display}` must be localized to the \
+             stray `j` (end with `j`, exclude the mantissa `{mantissa}`), but got \
+             `{err_display}`"
+        );
+    }
 }
