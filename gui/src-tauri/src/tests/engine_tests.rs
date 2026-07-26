@@ -11763,6 +11763,190 @@ fn examples_m5_geometry_flange_hides_consumed_intermediates() {
             "intermediate '{name}' must be hidden by default"
         );
     }
+
+    // ── Real-tree pin for the frontend's `Geometry` type-name rule (#5195) ──
+    //
+    // `GEOMETRY_TYPE_NAME_RE` in gui/src/stores/autoViewGenerator.ts gained the
+    // `Geometry` token this task; before that the whole `kind === 'let'` rule
+    // was dead against real trees. Every vitest fixture for it hand-writes
+    // `type_name: 'Geometry'`, so this asserts the REAL compiled tree actually
+    // emits that spelling — if the backend ever Displays `Solid` (or anything
+    // else) here, the frontend rule silently goes dead again and only this
+    // assertion notices.
+    let value_cell = |member: &str| -> &crate::types::EntityTreeNode {
+        let path = format!("BoltFlange.{member}");
+        root.children
+            .iter()
+            .find(|n| n.entity_path == path && n.kind != "realization")
+            .unwrap_or_else(|| panic!("value-cell node '{path}' must be present"))
+    };
+    for member in ["body", "hole", "holes", "geometry"] {
+        assert_eq!(
+            value_cell(member).type_name.as_deref(),
+            Some("Geometry"),
+            "value cell '{member}' must Display as \"Geometry\" — the token the \
+             frontend rule matches on"
+        );
+    }
+    // The `let` cells are the ones rule 2 (`kind === 'let'` + geometry type →
+    // 'hidden') reaches; `param geometry` is a `param`, so rule 2 never touches
+    // it and it stays shown. That asymmetry is what makes the newly-live rule
+    // safe here: nothing the user needs to see is hidden by it alone.
+    for member in ["body", "hole", "holes"] {
+        assert_eq!(
+            value_cell(member).kind,
+            "let",
+            "'{member}' must be a `let` value cell (the kind rule 2 gates on)"
+        );
+    }
+    assert_eq!(
+        value_cell("geometry").kind,
+        "param",
+        "`param geometry` must stay a `param` cell so the frontend's let-only \
+         rule 2 cannot hide the finished part's outline row"
+    );
+
+    // ── `: Rigid` does NOT set trait_geometry (KNOWN LIMITATION pin) ──
+    //
+    // `parent_has_physical` matches DECLARED trait names only, so the
+    // refinement `Rigid : Physical` is invisible to it and every committed
+    // example — including this one — evaluates the flag to false. Pinned at the
+    // CURRENT value deliberately: the follow-up that resolves the refinement
+    // chain via `reify_eval::conforms_to_trait` must land as a visible flip of
+    // this assertion rather than silently. See `build_template_node`'s
+    // `parent_has_physical` comment.
+    //
+    // The observable does not depend on the flag: `geometry` is un-consumed, so
+    // `default_visible == true` shows it either way (asserted above).
+    assert!(
+        !root
+            .children
+            .iter()
+            .any(|n| n.trait_geometry),
+        "no BoltFlange node may report trait_geometry while the heuristic is \
+         declared-name-only and the example declares `: Rigid`; got {:?}",
+        root.children
+            .iter()
+            .filter(|n| n.trait_geometry)
+            .map(|n| &n.entity_path)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// #5195 amendment (reviewer: robustness): a CONTAINER-typed geometry binding
+/// consumes its siblings too.
+///
+/// `let ribs = [rib_a, rib_b]` is typed `List<Geometry>`, not `Type::Geometry`.
+/// The original exact-variant filter skipped such a cell entirely, so `rib_a`
+/// and `rib_b` stayed classified as products and rendered as stray bodies
+/// beside the finished part. `is_geometry_valued` recurses into containers.
+///
+/// `shell` is consumed by nothing and keeps the template off the consumed-rule
+/// floor, so this test measures the container path in isolation rather than the
+/// floor's fallback.
+#[test]
+fn get_entity_tree_container_typed_binding_consumes_its_siblings() {
+    let source = r#"structure def RibbedPlate {
+    let rib_a = box(10mm, 2mm, 2mm)
+    let rib_b = box(2mm, 10mm, 2mm)
+    let ribs = [rib_a, rib_b]
+    let shell = box(20mm, 20mm, 20mm)
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "ribbed_plate").expect("load");
+
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "RibbedPlate")
+        .expect("RibbedPlate root must exist");
+
+    // PREMISE PIN: `ribs` must really be a CONTAINER type, not bare
+    // `Type::Geometry`. Without this the test could pass for the wrong reason
+    // (the old exact-variant filter would have caught a `Geometry`-typed cell
+    // too) and would silently stop covering the container path.
+    let ribs_cell = root
+        .children
+        .iter()
+        .find(|n| n.entity_path == "RibbedPlate.ribs" && n.kind != "realization")
+        .expect("value-cell node for 'ribs' must be present");
+    assert_eq!(
+        ribs_cell.type_name.as_deref(),
+        Some("List<Geometry>"),
+        "the consuming cell must be container-typed — that is the whole point of \
+         this test; got {:?}",
+        ribs_cell.type_name
+    );
+
+    let realization = |name: &str| -> &crate::types::EntityTreeNode {
+        root.children
+            .iter()
+            .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("realization node for '{name}' must be present"))
+    };
+
+    for name in ["rib_a", "rib_b"] {
+        assert!(
+            !realization(name).default_visible,
+            "'{name}' is collected by the `List<Geometry>`-typed `ribs`, so it is \
+             an intermediate and must be hidden by default"
+        );
+    }
+    assert!(
+        realization("shell").default_visible,
+        "'shell' is consumed by nothing and must stay visible"
+    );
+}
+
+/// #5195 amendment (reviewer: robustness): the consumed rule has a FLOOR.
+///
+/// A geometry-valued sibling may DERIVE from the finished part rather than feed
+/// it — `let clearance = translate(geometry, ...)` kept for a clearance check
+/// puts `geometry` in the consumed set. Without a floor the finished part is
+/// hidden and only the helper renders: a blank-looking viewport, no diagnostic.
+///
+/// Guard 1 (the trait terminal `geometry` is never consumed-hidden) is what
+/// this test pins; guard 2 (never hide EVERY realization) is a backstop for
+/// templates with no `geometry` terminal at all.
+#[test]
+fn get_entity_tree_terminal_geometry_survives_a_derived_consumer() {
+    let source = r#"structure def Derived : Physical {
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+
+    let body = box(20mm, 20mm, 20mm)
+    let notch = box(5mm, 5mm, 30mm)
+    param geometry : Solid = difference(body, notch)
+    let clearance = translate(geometry, 0mm, 0mm, 30mm)
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "derived").expect("load");
+
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "Derived")
+        .expect("Derived root must exist");
+
+    let realization = |name: &str| -> &crate::types::EntityTreeNode {
+        root.children
+            .iter()
+            .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("realization node for '{name}' must be present"))
+    };
+
+    assert!(
+        realization("geometry").default_visible,
+        "the trait terminal must survive being referenced by a DERIVED sibling \
+         (`let clearance = translate(geometry, ...)`) — hiding it would leave the \
+         viewport showing only the helper"
+    );
+    // The rule is floored, not disabled: genuine intermediates still hide.
+    for name in ["body", "notch"] {
+        assert!(
+            !realization(name).default_visible,
+            "'{name}' feeds `difference(body, notch)` and must still be hidden"
+        );
+    }
 }
 
 /// step-3 RED: a root assembly with a plain `sub part : Part at <pose>` and an
@@ -15502,6 +15686,31 @@ fn examples_appearance_viewport_egress_display_output_defaults_pane_and_raw_stay
          leave it visible — additive routing then keeps it on screen even though no \
          DisplayOutput names it (entity_path {:?})",
         raw_realization.entity_path
+    );
+
+    // ── (c) the subject ↔ entity_path SEAM (#5195 amendment) ──
+    //
+    // App.tsx builds the routing set as
+    // `new Set(state.displayPanes.map(d => d.subject))` and rule -1 tests it
+    // against `node.entity_path`. That is the ONE place the two string forms
+    // are assumed identical, and nothing else composes them: the frontend
+    // fixtures hard-code matching strings, and (a)/(b) above pin each side
+    // separately. If either format gains a prefix (an instance path, say) the
+    // rule simply stops matching — and because routing is ADDITIVE the failure
+    // is invisible: everything just stays visible. Byte-equality here is the
+    // only thing that would notice.
+    assert!(
+        all.iter()
+            .any(|n| n.kind == "realization" && n.entity_path == directive.subject),
+        "DisplayDirective.subject {:?} must be BYTE-EQUAL to some realization \
+         node's entity_path in the same tree snapshot — App.tsx matches the \
+         routing set against entity_path directly. Realization paths present: \
+         {:?}",
+        directive.subject,
+        all.iter()
+            .filter(|n| n.kind == "realization")
+            .map(|n| &n.entity_path)
+            .collect::<Vec<_>>()
     );
 }
 

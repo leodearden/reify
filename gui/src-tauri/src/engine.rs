@@ -5213,12 +5213,18 @@ fn build_preview_gui_state(
 /// binding emits a value cell alongside its realization, and that cell's
 /// `default_expr` holds the un-inlined `ValueRef(ValueCellId)` operands.
 ///
-/// # Only GEOMETRY-typed cells count as consumers
+/// # Only GEOMETRY-VALUED cells count as consumers
 /// This filter is load-bearing, not a tidiness rule. A `: Rigid` structure
 /// auto-derives `mass`/`centroid`/`moment_of_inertia` lets that all reference
 /// `geometry` — but they are `Scalar`/`Point3`/`Tensor`-typed, not
-/// `Type::Geometry`. Counting them would mark the TERMINAL realization as
+/// geometry-valued. Counting them would mark the TERMINAL realization as
 /// consumed and hide the finished part: the exact inverse of this feature.
+///
+/// "Geometry-valued" is [`is_geometry_valued`], NOT an exact `Type::Geometry`
+/// match: a binding that COLLECTS siblings (`let ribs = [rib_a, rib_b]`, typed
+/// `List<Geometry>`) consumes them just as surely as `union(rib_a, rib_b)`
+/// does. Under an exact-variant match such a realization stayed classified as
+/// a product and rendered as a stray body beside the finished part.
 ///
 /// # Traversal
 /// Recursion over `CompiledExpr` is delegated to the existing exhaustive
@@ -5228,12 +5234,39 @@ fn build_preview_gui_state(
 /// …) and treats `CrossSubGeometryRef` as a `ValueRef` leaf. Reusing it means
 /// `difference(body, translate(holes, ...))` is handled for free, and this
 /// notion of "consumption" cannot drift from the dependency graph's.
+///
+/// # Cost
+/// O(geometry_cells × expr_size) plus one O(value_cells) index build; the
+/// per-reference membership test is O(1). `build_template_node` recurses per
+/// sub-component INSTANCE, so an assembly holding N instances of the same
+/// template repeats this scan N times. That is deliberate for now — the scan
+/// is linear and template expressions are small — but if wide assemblies of
+/// repeated instances become common, memoize the result per template name in
+/// the caller rather than making the scan itself cleverer.
 fn collect_consumed_sibling_names(template: &reify_compiler::TopologyTemplate) -> HashSet<&str> {
+    // Index over this template's own value cells (member → owning entity),
+    // built ONCE. The walk below yields OWNED `ValueCellId`s, so a hit here
+    // does triple duty at O(1): it confirms the referent really is a value cell
+    // of this template, it re-borrows the member name with `template`'s
+    // lifetime (via `get_key_value`), and it checks the OWNING ENTITY too — the
+    // same pair the sibling guard tests, so this existence check can never be
+    // weaker than that guard. Value-cell members are unique within a template,
+    // so keying on the member alone loses nothing.
+    //
+    // Keyed on `str` rather than a `(&str, &str)` tuple deliberately: a tuple
+    // key would force the lookup's short-lived `id.member.as_str()` borrow to
+    // unify with the index's `template` lifetime (E0515).
+    let cells_by_member: HashMap<&str, &str> = template
+        .value_cells
+        .iter()
+        .map(|c| (c.id.member.as_str(), c.id.entity.as_str()))
+        .collect();
+
     let mut consumed: HashSet<&str> = HashSet::new();
     for cell in &template.value_cells {
         // Non-geometry consumers (the `: Rigid` mass/centroid/moment_of_inertia
         // lets) must NOT count — see the doc-comment above.
-        if cell.cell_type != reify_core::ty::Type::Geometry {
+        if !is_geometry_valued(&cell.cell_type) {
             continue;
         }
         let Some(expr) = &cell.default_expr else {
@@ -5248,19 +5281,38 @@ fn collect_consumed_sibling_names(template: &reify_compiler::TopologyTemplate) -
             if id.entity != cell.id.entity || id.member == cell.id.member {
                 continue;
             }
-            // Re-borrow the name from `template` (the walk returns owned
-            // `ValueCellId`s), which also confirms the referent really is a
-            // value cell of this template.
-            if let Some(sibling) = template
-                .value_cells
-                .iter()
-                .find(|c| c.id.member == id.member)
-            {
-                consumed.insert(sibling.id.member.as_str());
+            if let Some((&member, &owner)) = cells_by_member.get_key_value(id.member.as_str()) {
+                if owner == id.entity {
+                    consumed.insert(member);
+                }
             }
         }
     }
     consumed
+}
+
+/// True when a value of this type is (or contains) realized geometry (#5195).
+///
+/// Used to decide whether a value cell counts as a CONSUMER of its sibling
+/// realizations. Container variants recurse on the element type because
+/// geometry-ness rides on the element, not the container: `let ribs = [rib_a,
+/// rib_b]` is typed `List<Geometry>` and consumes both ribs.
+///
+/// Deliberately NOT geometry-valued: `Scalar`/`Point`/`Tensor` (the `: Rigid`
+/// auto-derived `mass`/`centroid`/`moment_of_inertia` lets, which reference
+/// `geometry` without consuming it) and `Type::Feature` (a structured identity
+/// token, not a realized-geometry handle — see `reify_core::ty::Type::Feature`).
+fn is_geometry_valued(ty: &reify_core::ty::Type) -> bool {
+    use reify_core::ty::Type;
+    match ty {
+        Type::Geometry => true,
+        Type::List(inner)
+        | Type::Set(inner)
+        | Type::Option(inner)
+        | Type::Keyed(inner)
+        | Type::Map(_, inner) => is_geometry_valued(inner),
+        _ => false,
+    }
 }
 
 pub(crate) fn build_template_node(
@@ -5346,6 +5398,33 @@ pub(crate) fn build_template_node(
     // reveals the construction steps (#5195).
     let consumed = collect_consumed_sibling_names(template);
 
+    // FLOOR on the consumed rule (#5195). The rule classifies by "some
+    // geometry-valued sibling references this name", which a DERIVATION of the
+    // finished part satisfies just as well as a step toward it — `let clearance
+    // = translate(geometry, ...)` or `let envelope = hull(geometry)` kept for a
+    // clearance check both put `geometry` in `consumed`. Without a floor that
+    // hides the part and leaves only the helper on screen: a blank-looking
+    // viewport with no diagnostic. Two guards, applied in order:
+    //
+    //  1. The trait terminal `geometry` is NEVER consumed-hidden. It is the
+    //     structure's published product (`Physical::geometry`), so a sibling
+    //     referencing it is by construction a derivation OF the part.
+    //  2. If the rule would STILL leave this template with zero visible
+    //     realizations, drop it wholesale here. Aux hiding is deliberately NOT
+    //     floored — an all-aux template legitimately shows nothing.
+    //
+    // Unnamed realizations (test-helper-only path) are never consumed-hidden:
+    // `consumed` holds names, so there is nothing to match them against.
+    let is_consumed_intermediate = |name: Option<&str>| -> bool {
+        match name {
+            Some("geometry") | None => false,
+            Some(n) => consumed.contains(n),
+        }
+    };
+    let apply_consumed_rule = template.realizations.iter().any(|r| {
+        !(aux_ancestor || r.is_aux || is_consumed_intermediate(r.name.as_deref()))
+    });
+
     for real in &template.realizations {
         let real_path = format!("{}#realization[{}]", entity_path, real.id.index);
         let display_name = real.name.clone();
@@ -5371,14 +5450,12 @@ pub(crate) fn build_template_node(
             // `geometry_ops::surface_subtree` / `geometry_ops::realization_is_aux`
             // (rule: `!(aux_ancestor || realization_is_aux(realization))`) — with
             // the consumed-intermediate rule (#5195). aux_ancestor is inherited
-            // from any containing `aux sub` up the tree; `is_consumed` means some
-            // sibling realization in this template takes this one as an operand.
+            // from any containing `aux sub` up the tree; `is_consumed_intermediate`
+            // means some geometry-valued sibling cell in this template takes this
+            // realization as an operand, subject to the floor documented above.
             default_visible: !(aux_ancestor
                 || real.is_aux
-                || real
-                    .name
-                    .as_deref()
-                    .is_some_and(|n| consumed.contains(n))),
+                || (apply_consumed_rule && is_consumed_intermediate(real.name.as_deref()))),
         });
     }
 
