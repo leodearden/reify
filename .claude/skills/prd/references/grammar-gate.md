@@ -26,7 +26,7 @@ Write fixtures to `/tmp/prd-gate-fixtures/<slug>-<n>.ri` or a directory the skil
 
 ### Step 2 — Parse each fixture
 
-The CWD must be `tree-sitter-reify/` — running `tree-sitter parse` from the repo root fails with "No language found" because nothing outside `tree-sitter-reify/` maps `.ri` to the grammar (`build.rs` only regenerates the parser into `OUT_DIR` for cargo builds; it doesn't make the standalone `tree-sitter` CLI resolve the language from an arbitrary CWD):
+The CWD must be `tree-sitter-reify/` — running `tree-sitter parse` from the repo root fails with "No language found" because the CLI reads `src/grammar.json` relative to CWD, and no file by that name exists outside `tree-sitter-reify/`. A second, independent precondition: `src/parser.c`, `src/grammar.json`, and `src/node-types.json` are gitignored generated artifacts (see `tree-sitter-reify/.gitignore`), so they're **absent** in a fresh warm-lane or task worktree even when the CWD is already correct — producing the identical "No language found" / exit 1. `build.rs` regenerates these three files into the crate's `src/` tree on a cargo build (only the staleness stamp lands in `OUT_DIR`), so if they're missing, run `bash scripts/tree-sitter-generate.sh` or any `cargo build -p tree-sitter-reify` once first:
 
 ```bash
 cd /home/leo/src/reify/tree-sitter-reify
