@@ -26,7 +26,12 @@ Write fixtures to `/tmp/prd-gate-fixtures/<slug>-<n>.ri` or a directory the skil
 
 ### Step 2 — Parse each fixture
 
-The CWD must be `tree-sitter-reify/` — running `tree-sitter parse` from the repo root fails with "No language found" because the CLI reads `src/grammar.json` relative to CWD, and no file by that name exists outside `tree-sitter-reify/`. A second, independent precondition: `src/parser.c`, `src/grammar.json`, and `src/node-types.json` are gitignored generated artifacts (see `tree-sitter-reify/.gitignore`), so they're **absent** in a fresh warm-lane or task worktree even when the CWD is already correct — producing the identical "No language found" / exit 1. `build.rs` regenerates these three files into the crate's `src/` tree on a cargo build (only the staleness stamp lands in `OUT_DIR`), so if they're missing, run `bash scripts/tree-sitter-generate.sh` or any `cargo build -p tree-sitter-reify` once first:
+**Preconditions** (both must hold — if either doesn't, `tree-sitter parse` fails with "No language found" / exit 1 regardless of whether the fixture's syntax is valid):
+
+1. **CWD is `tree-sitter-reify/`** — the CLI reads `src/grammar.json` relative to CWD; no such file exists outside `tree-sitter-reify/`.
+2. **The generated grammar files exist**: `src/parser.c`, `src/grammar.json`, `src/node-types.json`. They're gitignored (see `tree-sitter-reify/.gitignore`) and therefore absent in a fresh warm-lane or task worktree even when CWD is already correct (`build.rs` regenerates them into `src/` on a cargo build — only the staleness stamp goes to `OUT_DIR`). If missing, regenerate once first, from anywhere: `bash "$(git rev-parse --show-toplevel)/scripts/tree-sitter-generate.sh"`.
+
+Then, from `tree-sitter-reify/`, parse the fixture:
 
 ```bash
 cd /home/leo/src/reify/tree-sitter-reify
