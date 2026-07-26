@@ -1237,10 +1237,7 @@ fn a_coincidence_on_a_circle_is_rejected() {
     let center = s.point(0.0, 0.0);
     let circle = s.circle(center, 0.004);
     let free = s.point(0.010, 0.0);
-    let cid = s.constrain(SketchConstraint::Coincident {
-        a: free,
-        b: circle,
-    });
+    let cid = s.constrain(SketchConstraint::Coincident { a: free, b: circle });
 
     let result = reify_constraints::solve_sketch(s.system());
 

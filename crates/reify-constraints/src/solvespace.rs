@@ -872,6 +872,12 @@ impl SystemBuilder {
     ///
     /// Returns `Err(SketchBuildError)` for a malformed `SketchSystem`.
     fn add_sketch(&mut self, system: &SketchSystem) -> Result<SketchHandleMap, SketchBuildError> {
+        // Before anything is emitted, so a malformed system is refused whole
+        // instead of being lowered with the offending declaration dropped — a
+        // partial lowering still solves, and returns a plausible answer to a
+        // question the caller never asked.
+        system.validate()?;
+
         let wrkpl = self.get_workplane();
         let group = self.alloc.group();
         self.solve_group = group;
@@ -1480,32 +1486,46 @@ impl EmittedEntity {
 
 /// Report a composite entity whose defining points could not be resolved.
 ///
-/// Reachable only for a malformed `SketchSystem` — a dangling id, or an
-/// endpoint slot naming something that is not a point.  The typed rejection for
-/// those inputs is the `SketchBuildError` validation pass, which runs before any
-/// emission and makes this unreachable; until it lands, the entity is dropped
-/// loudly rather than emitting a null handle into the C system.
+/// Unreachable for any input: `SketchSystem::validate` runs before emission
+/// starts and rejects a dangling id or a non-point endpoint as a typed
+/// `SketchBuildError::BadEntityRef`.  What remains here is a guard against
+/// *this crate* drifting — the validator's slot table and the emit path's
+/// per-kind lookups describe the same rule in two places, and if they ever
+/// disagree the entity would otherwise vanish from the readback in silence.
+/// Hence a loud report and a debug assertion, not a warning.
 fn unresolved_entity_ref(owner: SketchEntityId, start: SketchEntityId, end: SketchEntityId) {
-    tracing::warn!(
+    tracing::error!(
         entity = owner.0,
         start = start.0,
         end = end.0,
-        "sketch entity is defined by ids that are not emitted points; skipping it"
+        "a validated sketch entity is defined by ids that are not emitted points; \
+         the validator's slot table and the emit path disagree"
+    );
+    debug_assert!(
+        false,
+        "unresolvable entity ref after validation: entity {} references {}/{}",
+        owner.0, start.0, end.0
     );
 }
 
 /// Report a constraint operand that could not be resolved to an entity of the
 /// kind that slot requires.
 ///
-/// Same provenance as [`unresolved_entity_ref`]: a well-formed `SketchSystem`
-/// cannot reach it.
+/// Same provenance as [`unresolved_entity_ref`]: `SketchSystem::validate` has
+/// already rejected every input that could reach this, so arriving here means
+/// the validator and the emit path disagree about a slot's kind.
 fn unresolved_constraint_ref(def: &SketchConstraintDef, entity: SketchEntityId, expected: &str) {
-    tracing::warn!(
+    tracing::error!(
         constraint = def.id.0,
         entity = entity.0,
         expected,
-        "sketch constraint operand is not an emitted entity of the expected kind; \
-         skipping the constraint"
+        "a validated sketch constraint operand is not an emitted entity of the \
+         expected kind; the validator's slot table and the emit path disagree"
+    );
+    debug_assert!(
+        false,
+        "unresolvable constraint operand after validation: constraint {} wants {} at entity {}",
+        def.id.0, expected, entity.0
     );
 }
 
@@ -1527,11 +1547,9 @@ pub fn solve_sketch(system: &SketchSystem) -> SketchSolveResult {
 
     let handles = match builder.add_sketch(system) {
         Ok(handles) => handles,
-        // `SketchBuildError` is uninhabited until the input-validation pass
-        // lands, so this arm is unreachable by construction rather than by
-        // assumption.  Matching it explicitly keeps the seam exhaustive now and
-        // turns into a real error path without a signature change later.
-        Err(err) => match err {},
+        // Nothing was emitted, so there is nothing to solve and nothing to tear
+        // down: the builder is dropped and the typed error goes back verbatim.
+        Err(err) => return SketchSolveResult::Malformed(err),
     };
 
     match builder.solve() {

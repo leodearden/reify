@@ -43,7 +43,8 @@ pub use reify_stdlib::loop_closure_value::{JointKind, JointValue};
 // the slvs-facing builder stays private.
 pub use sketch::{
     SketchBuildError, SketchConstraint, SketchConstraintDef, SketchConstraintId, SketchEntity,
-    SketchEntityDef, SketchEntityId, SketchSolveResult, SketchSystem, SolvedSketchEntity,
+    SketchEntityDef, SketchEntityId, SketchEntityKind, SketchSlotKind, SketchSolveResult,
+    SketchSystem, SolvedSketchEntity,
 };
 pub use solver::DimensionalSolver;
 // γ cost_robustness_tradeoff (task #4791): re-exported so integration tests can

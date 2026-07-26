@@ -24,6 +24,7 @@
 //! the only place that knows which DOFs were declared `auto`.
 
 use std::collections::HashMap;
+use std::fmt;
 
 use reify_core::SourceSpan;
 
@@ -71,6 +72,115 @@ pub enum SketchEntity {
         start: SketchEntityId,
         end: SketchEntityId,
     },
+}
+
+/// Which kind of entity a declaration is.
+///
+/// The `found` half of a kind mismatch: what the slot was actually handed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SketchEntityKind {
+    Point,
+    Line,
+    Circle,
+    Arc,
+}
+
+/// What a slot in an entity or constraint declaration will accept.
+///
+/// Deliberately a different type from [`SketchEntityKind`] rather than the same
+/// one reused: several slots accept more than one kind — the radius family takes
+/// a circle *or* an arc, [`SketchConstraint::Fix`] takes a point *or* a line —
+/// and collapsing those to a single kind would report a rule narrower than the
+/// one actually enforced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SketchSlotKind {
+    Point,
+    Line,
+    /// A circle or an arc: libslvs treats an arc as a circle with two ends for
+    /// the whole radius family and for point-on-circle.
+    Curve,
+    /// An arc specifically — narrower than [`SketchSlotKind::Curve`].
+    ///
+    /// The tangency constraints read the curve's *endpoints*, and a full circle
+    /// has none, so accepting one here would hand libslvs point handles the
+    /// entity does not carry.
+    Arc,
+    /// A point or a line.
+    PointOrLine,
+}
+
+impl SketchSlotKind {
+    /// Whether an entity of kind `found` satisfies this slot.
+    fn accepts(self, found: SketchEntityKind) -> bool {
+        matches!(
+            (self, found),
+            (SketchSlotKind::Point, SketchEntityKind::Point)
+                | (SketchSlotKind::Line, SketchEntityKind::Line)
+                | (
+                    SketchSlotKind::Curve,
+                    SketchEntityKind::Circle | SketchEntityKind::Arc
+                )
+                | (SketchSlotKind::Arc, SketchEntityKind::Arc)
+                | (
+                    SketchSlotKind::PointOrLine,
+                    SketchEntityKind::Point | SketchEntityKind::Line
+                )
+        )
+    }
+}
+
+impl fmt::Display for SketchEntityKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            SketchEntityKind::Point => "a point",
+            SketchEntityKind::Line => "a line",
+            SketchEntityKind::Circle => "a circle",
+            SketchEntityKind::Arc => "an arc",
+        })
+    }
+}
+
+impl fmt::Display for SketchSlotKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            SketchSlotKind::Point => "a point",
+            SketchSlotKind::Line => "a line",
+            SketchSlotKind::Curve => "a circle or an arc",
+            SketchSlotKind::Arc => "an arc",
+            SketchSlotKind::PointOrLine => "a point or a line",
+        })
+    }
+}
+
+impl SketchEntity {
+    /// Which kind this entity is.
+    pub fn kind(&self) -> SketchEntityKind {
+        match self {
+            SketchEntity::Point { .. } => SketchEntityKind::Point,
+            SketchEntity::Line { .. } => SketchEntityKind::Line,
+            SketchEntity::Circle { .. } => SketchEntityKind::Circle,
+            SketchEntity::Arc { .. } => SketchEntityKind::Arc,
+        }
+    }
+
+    /// The entities this one is defined by, each paired with what its slot
+    /// requires.
+    ///
+    /// Every composite is defined by points and nothing else, so every pair here
+    /// is [`SketchSlotKind::Point`] — but the slot kind is returned rather than
+    /// assumed, so a future composite with a non-point slot cannot slip past the
+    /// validator by inheriting an assumption made here.
+    fn defining_refs(&self) -> Vec<(SketchEntityId, SketchSlotKind)> {
+        let point = SketchSlotKind::Point;
+        match *self {
+            SketchEntity::Point { .. } => Vec::new(),
+            SketchEntity::Line { start, end } => vec![(start, point), (end, point)],
+            SketchEntity::Circle { center, .. } => vec![(center, point)],
+            SketchEntity::Arc { center, start, end } => {
+                vec![(center, point), (start, point), (end, point)]
+            }
+        }
+    }
 }
 
 /// One entity declaration: its id, its geometry, and whether it is construction.
@@ -183,6 +293,45 @@ pub enum SketchConstraint {
     Fix(SketchEntityId),
 }
 
+impl SketchConstraint {
+    /// The entities this constraint names, each paired with what its slot
+    /// requires.
+    ///
+    /// This is the *single* statement of which slot takes which kind. The emit
+    /// path in `solvespace.rs` resolves the same operands through its own
+    /// per-kind lookups, and the two have to agree — so this table is what the
+    /// validator reads, and the emit path's own kind checks became a guard
+    /// against the two drifting apart rather than a check on caller input.
+    ///
+    /// Order matters: the validator reports the first offending operand, so
+    /// operands are listed in the order they are written in the declaration.
+    fn operands(&self) -> Vec<(SketchEntityId, SketchSlotKind)> {
+        use SketchSlotKind::{Arc, Curve, Line, Point, PointOrLine};
+        match *self {
+            SketchConstraint::Coincident { a, b } => vec![(a, Point), (b, Point)],
+            SketchConstraint::PtOnLine { pt, line } => vec![(pt, Point), (line, Line)],
+            SketchConstraint::PtOnCircle { pt, circle } => vec![(pt, Point), (circle, Curve)],
+            SketchConstraint::Distance { a, b, .. } => vec![(a, Point), (b, Point)],
+            SketchConstraint::Angle { a, b, .. } => vec![(a, Line), (b, Line)],
+            SketchConstraint::Parallel { a, b } => vec![(a, Line), (b, Line)],
+            SketchConstraint::Perpendicular { a, b } => vec![(a, Line), (b, Line)],
+            SketchConstraint::Diameter { circle, .. } => vec![(circle, Curve)],
+            SketchConstraint::Radius { circle, .. } => vec![(circle, Curve)],
+            SketchConstraint::EqualRadius { a, b } => vec![(a, Curve), (b, Curve)],
+            SketchConstraint::ArcLineTangent { arc, line, .. } => vec![(arc, Arc), (line, Line)],
+            SketchConstraint::CurveCurveTangent { a, b, .. } => vec![(a, Arc), (b, Arc)],
+            SketchConstraint::Horizontal(line) => vec![(line, Line)],
+            SketchConstraint::Vertical(line) => vec![(line, Line)],
+            SketchConstraint::SymmetricLine { a, b, about } => {
+                vec![(a, Point), (b, Point), (about, Line)]
+            }
+            SketchConstraint::AtMidpoint { pt, line } => vec![(pt, Point), (line, Line)],
+            SketchConstraint::EqualLengthLines { a, b } => vec![(a, Line), (b, Line)],
+            SketchConstraint::Fix(id) => vec![(id, PointOrLine)],
+        }
+    }
+}
+
 /// One constraint declaration: its id, the relation, and where it came from.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SketchConstraintDef {
@@ -202,6 +351,89 @@ pub struct SketchConstraintDef {
 pub struct SketchSystem {
     pub entities: Vec<SketchEntityDef>,
     pub constraints: Vec<SketchConstraintDef>,
+}
+
+impl SketchSystem {
+    /// Check that every id is declared once and every slot holds the kind of
+    /// entity it requires.
+    ///
+    /// Run before anything is emitted, so a malformed system is refused whole
+    /// rather than lowered with the offending declaration quietly dropped. That
+    /// distinction is the entire point: a partial lowering still *solves*, and
+    /// what comes back is a plausible answer to a question the caller did not
+    /// ask.
+    ///
+    /// Reports the first error in declaration order, entities before
+    /// constraints. Deterministic by construction (O9), which is what lets a
+    /// consumer fix what it is told about and re-solve without the diagnostic
+    /// shuffling underneath it. Entities are checked first because a constraint
+    /// naming an entity whose own declaration is broken would otherwise produce
+    /// a derivative complaint about a slot that was never well-defined.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`SketchBuildError`] found, or `Ok(())` for a
+    /// well-formed system.
+    pub(crate) fn validate(&self) -> Result<(), SketchBuildError> {
+        // Pass 1: ids are unique — and the index everything else resolves
+        // against.
+        let mut kinds: HashMap<SketchEntityId, SketchEntityKind> =
+            HashMap::with_capacity(self.entities.len());
+        for def in &self.entities {
+            if kinds.insert(def.id, def.entity.kind()).is_some() {
+                return Err(SketchBuildError::DuplicateEntity { entity: def.id });
+            }
+        }
+
+        // Pass 2: each composite's defining slots.
+        //
+        // A second pass rather than folded into the first: entities may name one
+        // another in any order — emission creates every point before any
+        // composite regardless of declaration order — so a forward-only check
+        // would reject a line written above its own endpoints.
+        for def in &self.entities {
+            for (referenced, expected) in def.entity.defining_refs() {
+                match kinds.get(&referenced) {
+                    Some(found) if expected.accepts(*found) => {}
+                    found => {
+                        return Err(SketchBuildError::BadEntityRef {
+                            owner: def.id,
+                            referenced,
+                            expected,
+                            found: found.copied(),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Pass 3: constraint operands.
+        for def in &self.constraints {
+            for (entity, expected) in def.constraint.operands() {
+                match kinds.get(&entity) {
+                    Some(found) if expected.accepts(*found) => {}
+                    Some(found) => {
+                        return Err(SketchBuildError::WrongEntityKind {
+                            constraint: def.id,
+                            entity,
+                            expected,
+                            found: *found,
+                            span: def.span,
+                        });
+                    }
+                    None => {
+                        return Err(SketchBuildError::UnknownEntity {
+                            referenced_by: def.id,
+                            entity,
+                            span: def.span,
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// A solved entity, with every reference resolved to concrete coordinates.
@@ -259,6 +491,14 @@ pub enum SketchSolveResult {
     LockPoisoned,
     /// libslvs returned a result code this binding does not know.
     UnknownError(i32),
+    /// The system was malformed and was never handed to libslvs at all.
+    ///
+    /// The one arm that is not a solver report: it says the question was
+    /// ill-posed, not that the solver could not answer it. Kept here rather than
+    /// wrapping the whole return in a `Result` so callers match one exhaustive
+    /// enum — a malformed sketch is one more way not to get geometry back, and
+    /// the readback arms stay in a single place.
+    Malformed(SketchBuildError),
 }
 
 /// Reverse map from [`SketchSystem`] ids to the params that carry their solved
@@ -466,5 +706,91 @@ impl SketchHandleMap {
 /// variant carries the offending ids as structured fields so the consumer can
 /// render a diagnostic without scraping a message string.
 ///
-/// Uninhabited until the validation pass that produces it exists.
-pub enum SketchBuildError {}
+/// Reported by [`SketchSystem::validate`], which runs before any slvs entity or
+/// constraint is emitted — so a system that trips one of these is refused
+/// whole, never partially lowered and solved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SketchBuildError {
+    /// A constraint names an entity id the system never declares.
+    UnknownEntity {
+        referenced_by: SketchConstraintId,
+        entity: SketchEntityId,
+        /// The referencing constraint's span — the place a diagnostic points at,
+        /// since the missing entity has no declaration to point at.
+        span: SourceSpan,
+    },
+    /// The same entity id is declared more than once, which makes every
+    /// reference to it ambiguous.
+    DuplicateEntity { entity: SketchEntityId },
+    /// A constraint slot was handed an entity of a kind it does not accept.
+    WrongEntityKind {
+        constraint: SketchConstraintId,
+        entity: SketchEntityId,
+        expected: SketchSlotKind,
+        found: SketchEntityKind,
+        span: SourceSpan,
+    },
+    /// A composite entity's defining slot was handed the wrong kind of entity,
+    /// or one that does not exist.
+    ///
+    /// `found` is `None` for a reference to an undeclared id. That case is not
+    /// folded into [`SketchBuildError::UnknownEntity`] because that variant
+    /// names the *constraint* that reached for the missing id, and an entity's
+    /// defining slot has no constraint to name — `owner` is the entity itself.
+    BadEntityRef {
+        owner: SketchEntityId,
+        referenced: SketchEntityId,
+        expected: SketchSlotKind,
+        found: Option<SketchEntityKind>,
+    },
+}
+
+impl fmt::Display for SketchBuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SketchBuildError::UnknownEntity {
+                referenced_by,
+                entity,
+                ..
+            } => write!(
+                f,
+                "constraint {} references entity {}, which the sketch does not declare",
+                referenced_by.0, entity.0
+            ),
+            SketchBuildError::DuplicateEntity { entity } => {
+                write!(f, "entity {} is declared more than once", entity.0)
+            }
+            SketchBuildError::WrongEntityKind {
+                constraint,
+                entity,
+                expected,
+                found,
+                ..
+            } => write!(
+                f,
+                "constraint {} expects {expected} but entity {} is {found}",
+                constraint.0, entity.0
+            ),
+            SketchBuildError::BadEntityRef {
+                owner,
+                referenced,
+                expected,
+                found,
+            } => match found {
+                Some(found) => write!(
+                    f,
+                    "entity {} is defined by entity {}, which must be {expected} but is {found}",
+                    owner.0, referenced.0
+                ),
+                None => write!(
+                    f,
+                    "entity {} is defined by entity {}, which must be {expected} \
+                     but is not declared",
+                    owner.0, referenced.0
+                ),
+            },
+        }
+    }
+}
+
+impl std::error::Error for SketchBuildError {}
