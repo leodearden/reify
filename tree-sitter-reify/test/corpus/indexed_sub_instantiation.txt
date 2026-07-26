@@ -1,0 +1,104 @@
+; NOTE: This corpus is developer documentation for the CST shape of the
+; indexer clause on the sub instantiation arm — `sub idlers[i in 0..4] = …`
+; (task α, docs/prds/v0_6/indexed-sub-instantiation.md §3.1). The expected
+; S-expressions below are NOT validated by CI (dark-factory-orchestrator.yaml does not run
+; `tree-sitter test`). The canonical CI regression signal is the Rust integration
+; test file tree-sitter-reify/tests/indexed_sub_grammar_tests.rs.
+;
+; Heads-up for future readers: `tree-sitter test` is 218/219 on main because of
+; the pre-existing and unrelated test/corpus/imaginary_literal.txt failure
+; (task #5492). That red is NOT your regression — scope any run with
+; `tree-sitter test -f 'indexed sub'` rather than reading a bare full-suite red.
+
+================================================================================
+indexed sub — indexer clause + named ctor args + at pose
+================================================================================
+
+structure S {
+  sub idlers[i in 0..4] = Pulley(od: 30mm + i * 2mm) at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      binder: (identifier)
+      domain: (range_expression
+        lower: (number_literal)
+        upper: (number_literal))
+      structure_name: (identifier)
+      (named_argument_list
+        (named_argument
+          name: (identifier)
+          value: (binary_expression
+            left: (quantity_literal
+              value: (number_literal)
+              unit: (unit_expr
+                (unit_name)))
+            right: (binary_expression
+              left: (identifier)
+              right: (quantity_literal
+                value: (number_literal)
+                unit: (unit_expr
+                  (unit_name)))))))
+      pose: (function_call
+        name: (identifier)
+        (argument_list
+          (function_call
+            name: (identifier))
+          (function_call
+            name: (identifier)
+            (argument_list
+              (quantity_literal
+                value: (number_literal)
+                unit: (unit_expr
+                  (unit_name)))
+              (quantity_literal
+                value: (number_literal)
+                unit: (unit_expr
+                  (unit_name)))
+              (quantity_literal
+                value: (number_literal)
+                unit: (unit_expr
+                  (unit_name))))))))))
+
+================================================================================
+indexed sub — indexer clause + bare ctor, no pose
+================================================================================
+
+structure S {
+  sub legs[k in 0..3] = Leg()
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      binder: (identifier)
+      domain: (range_expression
+        lower: (number_literal)
+        upper: (number_literal))
+      structure_name: (identifier))))
+
+================================================================================
+indexed sub — bare instantiation unchanged (no indexer, no binder/domain fields)
+================================================================================
+
+structure S {
+  sub a = Foo()
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier))))
