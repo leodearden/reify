@@ -853,7 +853,7 @@ mod tests {
     /// (Resolution→Value). `run_unified_pass` must produce a valid topological
     /// schedule covering EXACTLY the trace-map keys, with empty residue and zero
     /// diagnostics. The realization→realization edge pins that `realization_reads`
-    /// participates in in-degree (which `compute_levels` ignores).
+    /// participates in in-degree (which the retired reads-only level sort ignored).
     ///
     /// RED until step-8 implements `run_unified_pass`.
     #[test]
@@ -1124,8 +1124,8 @@ mod tests {
     }
 
     /// Task 4357 δ (step-11c): a cross-kind cycle of a DIFFERENT pair —
-    /// realization ↔ realization via `realization_reads` (the GeomRef::Sub edge
-    /// `compute_levels` ignores) — must emit one `E_EVAL_CYCLE`, proving the
+    /// realization ↔ realization via `realization_reads` (the GeomRef::Sub edge the
+    /// retired reads-only level sort ignored) — must emit one `E_EVAL_CYCLE`, proving the
     /// detector is kind-agnostic over every edge kind α's trace map encodes.
     #[test]
     fn unified_pass_realization_cycle_is_kind_agnostic() {

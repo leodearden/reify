@@ -943,14 +943,23 @@ impl Engine {
 
         // θ2 (task 4531): order the value re-evaluation through the SAME unified
         // driver as cold/build/concurrent (`run_unified_pass_seeded`), seeded from
-        // the dirty∩demand `eval_set`. Both `compute_eval_set`'s level order and the
-        // driver's global Kahn order are valid topological orders, so FINAL values /
-        // freshness are identical; only the iteration ORDER changes — making
-        // "warm output == cold output" structural on the edit surface. Bounded cost:
-        // the seeded planner restricts its node set to `eval_set` (O(eval_set), not
-        // O(graph)) so the P0 latency gate holds. Any eval_set node absent from the
-        // schedule (defensive: a cyclic/untraced cone member, not expected here) is
-        // appended in `eval_set` order so every demanded cell still evaluates.
+        // the dirty∩demand `eval_set` — making "warm output == cold output"
+        // structural on the edit surface. Bounded cost: the seeded planner
+        // restricts its node set to `eval_set` (O(eval_set), not O(graph)) so the
+        // P0 latency gate holds.
+        //
+        // ν (task 5045): `compute_eval_set` now RETURNS this same driver order —
+        // `dirty::topological_sort` delegates to `run_unified_pass_seeded` rather
+        // than running its own level-batched pass — so the call below is an
+        // IDEMPOTENT re-sort of an already-core-ordered vector, not a reordering.
+        // The block is RETAINED deliberately, for its second half: the
+        // `for node_id in &eval_set { if !scheduled … }` residue-append is a
+        // defensive guarantee that every demanded cell evaluates even when the
+        // schedule is short (a cyclic/untraced cone member — not expected here, and
+        // note the delegated sort now also drops REALIZATION-edge cycle members,
+        // which the retired reads-only level sort scheduled blindly). Dropping the
+        // redundant second Kahn pass while keeping that append is a behavior-neutral
+        // simplification, filed as a follow-up rather than done inline.
         let driver_schedule: Vec<NodeId> = {
             let seed: std::collections::HashSet<NodeId> = eval_set.iter().cloned().collect();
             let mut sched = crate::engine_fixpoint::run_unified_pass_seeded(&state.trace_map, &seed);

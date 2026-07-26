@@ -1,9 +1,9 @@
 //! Task 5045 (eval cell-commit ν): `dirty.rs`'s flat sort IS the one Kahn core.
 //!
-//! `dirty::topological_sort` used to run its own level-batched Kahn pass
-//! (`dirty::compute_levels`), a second scheduling implementation that diverged
-//! from `engine_fixpoint::run_unified_pass_seeded` — the single scheduling core
-//! shared by the cold/build/edit paths — along two independent axes:
+//! `dirty::topological_sort` used to run its own level-batched Kahn pass — a
+//! second scheduling implementation (retired by this task) that diverged from
+//! `engine_fixpoint::run_unified_pass_seeded`, the single scheduling core shared
+//! by the cold/build/edit paths, along two independent axes:
 //!
 //! 1. **Drain shape.** The level sort emitted *every* in-degree-0 node as one
 //!    batch per round; the core pops ONE node at a time off a
