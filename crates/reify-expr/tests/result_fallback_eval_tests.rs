@@ -24,32 +24,18 @@
 //! placeholder `.ri` body `{ dflt }`, which always returns the default
 //! (ignoring `Ok`) — silently wrong, and this test would catch it.
 //!
-//! ## Stdlib-compiled drift guard (task 5410 / PRD
-//! docs/prds/v0_6/placeholder-type-eradication-ratchet.md §3 item 10, §8 task
-//! ζ, BT10)
-//!
-//! Every test above the `e2e_*_with_stdlib` section evaluates under
-//! `EvalContext::simple`, whose function table is EMPTY, so those tests pin the
-//! intercept's behaviour but say nothing about which path a *real compiled
-//! program* takes.
-//!
-//! The stdlib-compiled section at the end of this file closes that half of the
-//! gap: it compiles the real stdlib via
-//! `reify_test_support::compile_source_with_stdlib` and evaluates under
-//! `EvalContext::new(&values, &module.functions)`, so the compiler-emitted
-//! `UserFunctionCall` runs on the same path a real program takes.
+//! The `e2e_*_with_stdlib` test at the end of this file instead compiles the
+//! real stdlib and evaluates under
+//! `EvalContext::new(&values, &module.functions)` — task 5410, PRD
+//! docs/prds/v0_6/placeholder-type-eradication-ratchet.md §8 task ζ / BT10.
 //!
 //! IMPORTANT CORRECTION to the "would fall through to the placeholder `.ri`
 //! body" sentence in the paragraph above: that is true of a real compiled
-//! program, but it is NOT what happens in this test harness even with the
-//! stdlib compiled in. `module.functions` is user-source-only, so the
-//! placeholder body is never registered here; with the intercept removed the
-//! call falls through to `eval_user_function_call`, matches nothing, and
-//! returns `Value::Undef`. The stdlib-compiled test therefore guards "THE
-//! INTERCEPT FIRES" (measured), not "the placeholder does not silently win".
-//! See the section banner above `e2e_result_fallback_ok_with_stdlib` for the
-//! full mechanism, the measured evidence, and the scope residue (follow-up
-//! ticket tkt_0RRQDAY187DZW2V1Q5N5P9679F).
+//! program, but NOT of this test harness even with the stdlib compiled in. The
+//! stdlib-compiled test guards "THE INTERCEPT FIRES" (measured), not "the
+//! placeholder does not silently win". Why, in full, exactly once: the
+//! CANONICAL MECHANISM NOTE above `e2e_or_default_some_with_stdlib` in
+//! `option_recovery_eval_tests.rs`.
 
 use reify_core::{DimensionVector, Type};
 use reify_expr::{EvalContext, eval_expr};
@@ -202,37 +188,17 @@ fn fallback_option_subject_regression_guard() {
 
 // ── task 5410 (PRD ζ / BT10): stdlib-compiled intercept-fires drift guard ────
 //
-// CANONICAL MECHANISM NOTE for the `e2e_*_with_stdlib` test in this file.
+// MECHANISM: see the CANONICAL MECHANISM NOTE above
+// `e2e_or_default_some_with_stdlib` in `option_recovery_eval_tests.rs` — the
+// single copy for all three combinator eval-test files. In short: this guards
+// that THE INTERCEPT FIRES, measured; it never observes the `.ri` placeholder
+// body, because `module.functions` is user-source-only and the
+// intercept-removed fallthrough to `eval_user_function_call` yields
+// `Value::Undef`. Reproducing the PRD's silent-WRONG-VALUE mode needs a
+// prelude-backed function table, deferred to #5593.
 //
-// It compiles the REAL stdlib via `compile_source_with_stdlib` and evaluates
-// against `module.functions`, so the compiler-emitted `UserFunctionCall` runs
-// on the same path a real program takes.
-//
-// WHAT IT GUARDS, MEASURED — *not* what the `.ri` placeholder body returns.
-// `module.functions` is USER-SOURCE-ONLY: the compiler merges the prelude /
-// stdlib `.ri` functions into `resolution_functions` for compile-time overload
-// dispatch, but stores only user-source functions in `CompiledModule` (see
-// reify-compiler `src/compile_builder/functions_phase.rs:100-105`). So in THIS
-// harness the stdlib bodies are never registered. With the intercept removed
-// the call falls through to `eval_user_function_call`, finds no matching
-// entry, and returns `Value::Undef` (reify-expr `src/lib.rs:1625`).
-//
-// MEASURED (task 5410 step-11; the three gates in reify-expr's
-// `UserFunctionCall` arm — `option_recovery::is_combinator`, `map_or`/3 and
-// `map_err`/2 — locally set to `if false && …`): the guard below fails with
-// `left: Undef`.  Never a placeholder value.
-//
-// SCOPE, stated honestly: it guards "THE INTERCEPT FIRES", which is the drift
-// mode this harness can observe. It does NOT reproduce the PRD's
-// silent-WRONG-VALUE mode (intercept gone → placeholder `{ dflt }` silently
-// returns the default), because that needs a prelude-backed function table.
-// Deferred to follow-up ticket tkt_0RRQDAY187DZW2V1Q5N5P9679F (prelude-backed
-// eval harness via reify-eval `merge_functions`, or a new public
-// reify-compiler prelude accessor).
-//
-// The `.ri` placeholder value quoted in the per-test doc comment is TRUE ABOUT
-// THE `.ri` SOURCE — it is the PRD linkage and the reason the fixture was
-// chosen — but this harness does not observe it.
+// MEASURED (task 5410 step-11, three intercept gates disabled): the guard
+// below fails with `left: Undef`.  Never a placeholder value.
 //
 // Like the rest of this file this is a deliberate REGRESSION LOCK, not a
 // RED-first test: the intercept is already live, so it is GREEN the moment it
@@ -242,14 +208,8 @@ fn fallback_option_subject_regression_guard() {
 /// stdlib must evaluate to 5mm — the unboxed inner `Ok` payload.
 ///
 /// MEASURED under intercept removal (equivalently: with just `"fallback"`
-/// dropped from `option_recovery::is_combinator`): fails with `left: Undef`.
-/// The call falls through to `eval_user_function_call`, whose
-/// `module.functions` table holds no `fallback` body (user-source-only — see
-/// the section banner above). (`result.ri` ships
-/// `pub fn fallback<T, E>(r: Result<T, E>, dflt: T) -> T { dflt }`, a
-/// typecheck-only placeholder that would return `0mm`; that body is never
-/// registered in this harness, so the guard observes the fallthrough, not the
-/// placeholder.)
+/// dropped from `option_recovery::is_combinator`): fails with `left: Undef`
+/// (see the section banner above).
 ///
 /// What this adds over the `eval_simple` tests above: those prove the shared
 /// `eval_extract_or_default` arm's BEHAVIOUR under a hand-built
@@ -257,10 +217,11 @@ fn fallback_option_subject_regression_guard() {
 /// the real compiled `UserFunctionCall` — the exact `function_name` + arity the
 /// compiler emits for `fallback` — is what reaches the gate.
 ///
-/// FIXTURE RATIONALE (against the `.ri` source, for the prelude-backed harness
-/// of ticket tkt_0RRQDAY187DZW2V1Q5N5P9679F): the `Ok` subject is chosen so the
-/// fixture would discriminate there too — an `Err` subject recovers to `0mm`,
-/// exactly what the placeholder returns.
+/// FIXTURE RATIONALE — `result.ri` ships the typecheck-only
+/// `pub fn fallback<T, E>(r: Result<T, E>, dflt: T) -> T { dflt }`, so under
+/// #5593's prelude-backed harness the `Ok` subject is what makes this
+/// discriminate: an `Err` subject recovers to `0mm`, exactly what the
+/// placeholder returns.
 #[test]
 fn e2e_result_fallback_ok_with_stdlib() {
     let module = reify_test_support::compile_source_with_stdlib(

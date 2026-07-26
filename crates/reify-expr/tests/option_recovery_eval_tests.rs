@@ -9,24 +9,13 @@
 //! placeholder behaviour that makes them fail today.  End-to-end cases using
 //! `compile_source_with_stdlib` appear in steps 1 and 9.
 //!
-//! ## Stdlib-compiled drift guards (task 5410 / PRD
-//! docs/prds/v0_6/placeholder-type-eradication-ratchet.md §3 item 10, §8 task
-//! ζ, BT10)
-//!
-//! Tests that evaluate under `EvalContext::simple` have an EMPTY function
-//! table, so they pin the intercept's behaviour but say nothing about which
-//! path a *real compiled program* takes.  The `e2e_*_with_stdlib` tests close
-//! that half of the gap: they compile the real stdlib and evaluate under
-//! `EvalContext::new(&values, &module.functions)`, so the compiler-emitted
-//! `UserFunctionCall` is exercised on the same path a real program takes.
-//!
-//! WHAT THEY ACTUALLY GUARD, MEASURED: that THE INTERCEPT FIRES.  They do NOT
-//! observe the `.ri` placeholder body at all — `module.functions` is
-//! user-source-only, so with the intercept removed every such call falls
-//! through to `eval_user_function_call`, matches nothing, and returns
-//! `Value::Undef`.  See the section banner above `e2e_or_default_some_with_stdlib`
-//! for the full mechanism, the measured evidence, and the scope residue
-//! (follow-up ticket tkt_0RRQDAY187DZW2V1Q5N5P9679F).
+//! The `e2e_*_with_stdlib` tests instead compile the real stdlib and evaluate
+//! under `EvalContext::new(&values, &module.functions)` — task 5410, PRD
+//! docs/prds/v0_6/placeholder-type-eradication-ratchet.md §8 task ζ / BT10.
+//! What they do and do not guard is explained ONCE, in the CANONICAL MECHANISM
+//! NOTE above `e2e_or_default_some_with_stdlib` below; the sibling files
+//! `result_combinator_eval_tests.rs` and `result_fallback_eval_tests.rs` point
+//! at that note rather than restate it.
 
 use reify_core::{DimensionVector, Type, ValueCellId};
 use reify_expr::{EvalContext, eval_expr};
@@ -281,40 +270,42 @@ fn fallback_undef_subject_returns_undef() {
 
 // ── task 5410 (PRD ζ / BT10): stdlib-compiled intercept-fires drift guards ───
 //
-// CANONICAL MECHANISM NOTE for every `e2e_*_with_stdlib` test in this file.
+// CANONICAL MECHANISM NOTE — the single copy for all three combinator eval-test
+// files. `result_combinator_eval_tests.rs` and `result_fallback_eval_tests.rs`
+// point here. PRD: docs/prds/v0_6/placeholder-type-eradication-ratchet.md §3
+// item 10, §8 task ζ, BT10.
 //
-// These compile the REAL stdlib via `compile_source_with_stdlib` and evaluate
-// against `module.functions`, so the compiler-emitted `UserFunctionCall` runs
-// on the same path a real program takes.
+// Every `e2e_*_with_stdlib` test compiles the REAL stdlib via
+// `compile_source_with_stdlib` and evaluates against `module.functions`, so the
+// compiler-emitted `UserFunctionCall` runs on the same path a real program
+// takes.
 //
 // WHAT THEY GUARD, MEASURED — *not* what the `.ri` placeholder body returns.
-// `module.functions` is USER-SOURCE-ONLY: the compiler merges the prelude /
-// stdlib `.ri` functions into `resolution_functions` for compile-time overload
-// dispatch, but stores only user-source functions in `CompiledModule` (see
-// reify-compiler `src/compile_builder/functions_phase.rs:100-105`). So in THIS
-// harness the stdlib bodies are never registered. With the intercept removed
-// each call falls through to `eval_user_function_call`, finds no matching
-// entry, and returns `Value::Undef` (reify-expr `src/lib.rs:1625`).
+// `module.functions` is USER-SOURCE-ONLY: reify-compiler routes prelude/stdlib
+// `.ri` functions through `merge_prelude_functions` into `resolution_functions`
+// for compile-time overload dispatch, but stores only user-source functions in
+// `CompiledModule`. So in THIS harness the stdlib bodies are never registered;
+// with the intercept removed each call falls through to reify-expr's
+// `eval_user_function_call`, finds no matching entry, and returns
+// `Value::Undef`.
 //
 // MEASURED (task 5410 step-11; the three gates in reify-expr's
 // `UserFunctionCall` arm — `option_recovery::is_combinator`, `map_or`/3 and
-// `map_err`/2 — locally set to `if false && …`): every guard listed below
-// fails with `left: Undef`.  Never a placeholder value.  The one exception is
-// `e2e_get_or_undef_map_with_stdlib`, which stays GREEN because its expected
-// value is *itself* `Undef`; it is documented there as a propagation test, not
-// a drift guard.
+// `map_err`/2 — locally set to `if false && …`): every `e2e_*_with_stdlib` test
+// across the three files fails with `left: Undef`.  Never a placeholder value.
 //
-// SCOPE, stated honestly: these guard "THE INTERCEPT FIRES", which is the
-// drift mode this harness can observe. They do NOT reproduce the PRD's
-// silent-WRONG-VALUE mode (intercept gone → placeholder body silently returns
-// `dflt` / `true` / the subject), because that needs a prelude-backed function
-// table. Deferred to follow-up ticket tkt_0RRQDAY187DZW2V1Q5N5P9679F
-// (prelude-backed eval harness via reify-eval `merge_functions`, or a new
-// public reify-compiler prelude accessor).
+// SCOPE, stated honestly: these guard "THE INTERCEPT FIRES", the drift mode
+// this harness can observe. They do NOT reproduce the PRD's silent-WRONG-VALUE
+// mode (intercept gone → placeholder body silently returns `dflt` / `true` /
+// the subject), which needs a prelude-backed function table. Deferred to #5593
+// (originally filed as ticket tkt_0RRQDAY187DZW2V1Q5N5P9679F): a prelude-backed
+// eval harness via reify-eval's `merge_functions`, or a new public
+// reify-compiler prelude accessor.
 //
-// The `.ri` placeholder values quoted in the per-test doc comments are TRUE
-// ABOUT THE `.ri` SOURCE — they are the PRD linkage and the reason each
-// fixture was chosen — but this harness does not observe them.
+// Consequently the `.ri` placeholder values quoted in the per-test "FIXTURE
+// RATIONALE" notes are TRUE ABOUT THE `.ri` SOURCE — they are the PRD linkage
+// and the reason each fixture was chosen — but this harness does not observe
+// them.
 //
 // These are deliberate REGRESSION LOCKS, not RED-first tests: the intercept is
 // already live, so they are GREEN the moment they are written.
@@ -322,19 +313,15 @@ fn fallback_undef_subject_returns_undef() {
 /// End-to-end: `or_default(some(5mm), 0mm)` compiled with the real stdlib must
 /// evaluate to 5mm — the unboxed inner value.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef`. The call falls
-/// through to `eval_user_function_call`, whose `module.functions` table holds
-/// no `or_default` body (user-source-only — see the section banner above).
-/// (`option_recovery.ri` ships
-/// `pub fn or_default<T>(o: Option<T>, dflt: T) -> T { dflt }`, a
-/// typecheck-only placeholder that would return `0mm`; that body is never
-/// registered in this harness, so the guard observes the fallthrough, not the
-/// placeholder.)
+/// MEASURED under intercept removal: fails with `left: Undef` (see the
+/// mechanism note above for why the fallthrough, not the placeholder, is what
+/// this harness observes).
 ///
-/// FIXTURE RATIONALE (against the `.ri` source, for the prelude-backed harness
-/// of ticket tkt_0RRQDAY187DZW2V1Q5N5P9679F): the `some` subject is chosen so
-/// the fixture would discriminate there too — a `none` subject makes `0mm` the
-/// correct answer, agreeing with the placeholder's `dflt`.
+/// FIXTURE RATIONALE — `option_recovery.ri` ships the typecheck-only
+/// `pub fn or_default<T>(o: Option<T>, dflt: T) -> T { dflt }`, so under
+/// #5593's prelude-backed harness the `some` subject is what makes this
+/// discriminate: a `none` subject makes `0mm` the correct answer, agreeing with
+/// the placeholder's `dflt`.
 ///
 /// NOT redundant with `e2e_unwrap_or_some_5mm_with_stdlib`. `or_default`,
 /// `unwrap_or` and `fallback` share the `eval_extract_or_default` ARM, but each
@@ -590,18 +577,13 @@ fn is_none_undef_returns_undef() {
 /// End-to-end: `is_some(none)` compiled with the real stdlib must evaluate to
 /// `false`.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef`. The call falls
-/// through to `eval_user_function_call`, whose `module.functions` table holds
-/// no `is_some` body (user-source-only — see the section banner above
-/// `e2e_or_default_some_with_stdlib`). (`option_recovery.ri` ships
-/// `pub fn is_some<T>(o: Option<T>) -> Bool { true }`, a typecheck-only
-/// placeholder that hardcodes `true`; that body is never registered in this
-/// harness, so the guard observes the fallthrough, not the placeholder.)
+/// MEASURED under intercept removal: fails with `left: Undef` (mechanism note
+/// above `e2e_or_default_some_with_stdlib`).
 ///
-/// FIXTURE RATIONALE (against the `.ri` source, for the prelude-backed harness
-/// of ticket tkt_0RRQDAY187DZW2V1Q5N5P9679F): the `none` subject is chosen so
-/// the fixture would discriminate there too — a `some` subject coincides with
-/// the placeholder's hardcoded `true`.
+/// FIXTURE RATIONALE — `option_recovery.ri` ships the typecheck-only
+/// `pub fn is_some<T>(o: Option<T>) -> Bool { true }`, so under #5593's
+/// prelude-backed harness the `none` subject is what makes this discriminate:
+/// a `some` subject coincides with the placeholder's hardcoded `true`.
 ///
 /// Note a bare `none` DOES type-infer here — `is_some` has a single type
 /// parameter and no competing constraint — even though the same bare `none`
@@ -626,20 +608,15 @@ fn e2e_is_some_none_with_stdlib() {
 /// End-to-end: `is_none(none)` compiled with the real stdlib must evaluate to
 /// `true`.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef`. The call falls
-/// through to `eval_user_function_call`, whose `module.functions` table holds
-/// no `is_none` body (user-source-only — see the section banner above
-/// `e2e_or_default_some_with_stdlib`). (`option_recovery.ri` ships
-/// `pub fn is_none<T>(o: Option<T>) -> Bool { false }`, a typecheck-only
-/// placeholder that hardcodes `false`; that body is never registered in this
-/// harness, so the guard observes the fallthrough, not the placeholder.)
+/// MEASURED under intercept removal: fails with `left: Undef` (mechanism note
+/// above `e2e_or_default_some_with_stdlib`).
 ///
-/// FIXTURE RATIONALE (against the `.ri` source, for the prelude-backed harness
-/// of ticket tkt_0RRQDAY187DZW2V1Q5N5P9679F): shares the `none` subject with
-/// `e2e_is_some_none_with_stdlib` above, because one subject discriminates BOTH
-/// predicates there — the two placeholder constants are the exact inverses of
-/// the correct answers for a `none`, whereas a `some` subject would coincide
-/// with both.
+/// FIXTURE RATIONALE — `option_recovery.ri` ships the typecheck-only
+/// `pub fn is_none<T>(o: Option<T>) -> Bool { false }`. Shares the `none`
+/// subject with `e2e_is_some_none_with_stdlib` above, because under #5593's
+/// prelude-backed harness one subject discriminates BOTH predicates: the two
+/// placeholder constants are the exact inverses of the correct answers for a
+/// `none`, whereas a `some` subject would coincide with both.
 #[test]
 fn e2e_is_none_none_with_stdlib() {
     let module =
@@ -756,20 +733,14 @@ fn get_or_undef_map_returns_undef() {
 /// CORRECTED BY TASK 5410 (this comment previously called the test
 /// "coincidentally correct" and therefore a no-op — that premise was WRONG for
 /// this harness). MEASURED under intercept removal: this test FAILS with
-/// `left: Undef`. It is a real, working drift guard.
-///
-/// Mechanism: `module.functions` is user-source-only, so the `.ri` placeholder
-/// body is never registered here; with the intercept removed the call falls
-/// through to `eval_user_function_call`, matches nothing, and returns
-/// `Value::Undef` — which differs from the expected `0mm`. The old note
-/// reasoned about `option_recovery.ri`'s `{ dflt }` body returning `0mm` and
-/// so agreeing with the expected value, but this harness never runs that body.
-/// See the section banner above `e2e_or_default_some_with_stdlib` for the full
-/// mechanism and the scope residue (ticket tkt_0RRQDAY187DZW2V1Q5N5P9679F).
-///
-/// This is the drift guard for `get_or`'s ABSENT-KEY path (task 5410 / PRD ζ /
-/// BT10). Pinned here to prove the compiler-emitted UserFunctionCall
+/// `left: Undef`. It is a real, working drift guard for `get_or`'s ABSENT-KEY
+/// path (PRD ζ / BT10), proving the compiler-emitted `UserFunctionCall`
 /// function_name+arity reaches the intercept.
+///
+/// The old note reasoned about `option_recovery.ri`'s `{ dflt }` body returning
+/// `0mm` and so agreeing with the expected value — true of the `.ri` SOURCE,
+/// but this harness never registers that body. See the mechanism note above
+/// `e2e_or_default_some_with_stdlib` (and #5593 for the scope residue).
 #[test]
 fn e2e_get_or_absent_key_with_stdlib() {
     let module = reify_test_support::compile_source_with_stdlib(
@@ -794,16 +765,14 @@ fn e2e_get_or_absent_key_with_stdlib() {
 /// CORRECTED BY TASK 5410: this comment previously said the absent-key e2e
 /// (`e2e_get_or_absent_key_with_stdlib`) was "coincidentally GREEN ... and does
 /// NOT prove the intercept fires". That is FALSE for this harness. MEASURED
-/// under intercept removal: BOTH tests fail, each with `left: Undef`, because
-/// `module.functions` is user-source-only and the fallthrough to
-/// `eval_user_function_call` matches nothing. Both are real drift guards; this
-/// present-key case additionally pins the map-lookup RESULT (1mm), which the
-/// absent-key case cannot.
+/// under intercept removal: BOTH tests fail, each with `left: Undef`. Both are
+/// real drift guards; this present-key case additionally pins the map-lookup
+/// RESULT (1mm), which the absent-key case cannot.
 ///
 /// The `.ri` reasoning behind the old claim remains true of the `.ri` SOURCE —
 /// `option_recovery.ri`'s `{ dflt }` body would return `0mm`, agreeing with the
 /// absent-key expectation — it is just not what this harness observes. See the
-/// section banner above `e2e_or_default_some_with_stdlib`.
+/// mechanism note above `e2e_or_default_some_with_stdlib`.
 #[test]
 fn e2e_get_or_present_key_with_stdlib() {
     let module = reify_test_support::compile_source_with_stdlib(
@@ -1043,24 +1012,19 @@ fn map_or_non_option_subject_degrades_to_undef() {
 ///
 /// MEASURED under intercept removal: fails with `left: Undef`. This one covers
 /// the SECOND gate — the bare `map_or`/3 branch in reify-expr's
-/// `UserFunctionCall` arm, which is NOT in `option_recovery::is_combinator`.
-/// With it disabled the call falls through to `eval_user_function_call`, whose
-/// `module.functions` table holds no `map_or` body (user-source-only — see the
-/// section banner above `e2e_or_default_some_with_stdlib`).
-/// (`option_recovery.ri` ships
-/// `pub fn map_or<T, U>(o: Option<T>, dflt: U, f: (T) -> U) -> U { dflt }`, a
-/// typecheck-only placeholder that would return `0mm` with `f` never applied;
-/// that body is never registered in this harness.)
+/// `UserFunctionCall` arm, which is NOT in `option_recovery::is_combinator`
+/// (mechanism note above `e2e_or_default_some_with_stdlib`).
 ///
 /// The NON-IDENTITY lambda is load-bearing IN THIS HARNESS: the 5mm→10mm
 /// doubling is the only evidence here that the compiled lambda argument really
 /// reaches `apply_lambda`, rather than the intercept merely matching name and
 /// arity.
 ///
-/// FIXTURE RATIONALE (against the `.ri` source, for the prelude-backed harness
-/// of ticket tkt_0RRQDAY187DZW2V1Q5N5P9679F): the `some` subject is chosen so
-/// the fixture would discriminate there too — a `none` subject makes `dflt` the
-/// correct answer, agreeing with the placeholder.
+/// FIXTURE RATIONALE — `option_recovery.ri` ships the typecheck-only
+/// `pub fn map_or<T, U>(o: Option<T>, dflt: U, f: (T) -> U) -> U { dflt }`
+/// (returns `dflt`, `f` never applied), so under #5593's prelude-backed harness
+/// the `some` subject is what makes this discriminate: a `none` subject makes
+/// `dflt` the correct answer, agreeing with the placeholder.
 ///
 /// Measured negative: the none-path form `map_or(none, 7mm, |x: Length| x * 2)`
 /// does NOT compile — `conflicting type arguments for 'T': Real vs Scalar[m]`,
