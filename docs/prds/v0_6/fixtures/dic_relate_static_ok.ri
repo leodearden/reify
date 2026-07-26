@@ -1,0 +1,30 @@
+module dic_relate_static_ok
+
+// Companion to dic_relate_static_violated: same zero-auto relate shape, but
+// the bushing's local datums are colocated with the plate's, so both
+// relations are TRUE at the fixed identity placements. Static verification
+// must pass this silently (and count it as verified in the ledger).
+
+structure PlateOk {
+    let boss = translate(cylinder(4mm, 12mm), 30mm, 20mm, 5mm)
+    let boss_axis : Axis = boss.axis
+    let top = translate(rectangle(10mm, 10mm), 30mm, 20mm, 5mm)
+    let top_plane : Plane = top.plane
+}
+
+structure BushingOk {
+    let bore = translate(cylinder(4mm, 12mm), 30mm, 20mm, 5mm)
+    let bore_axis : Axis = bore.axis
+    let seat = translate(rectangle(10mm, 10mm), 30mm, 20mm, 5mm)
+    let seat_plane : Plane = seat.plane
+}
+
+structure DicRelateOk {
+    sub plate : PlateOk
+    sub bush : BushingOk
+
+    relate {
+        concentric(bush.bore_axis, plate.boss_axis)
+        flush(bush.seat_plane, plate.top_plane)
+    }
+}

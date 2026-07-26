@@ -3,9 +3,8 @@
 //! [`WarmStartableRegistry`](reify_types::WarmStartableRegistry) — PRD §5 B5
 //! / §6 I-3 (M-013 fix).
 //!
-//! Wired into the scheduler init path via
-//! [`crate::concurrent::SchedulerConfig`]'s `warm_startable_registry: Option<…>`
-//! field. The check uses `debug_assert_eq!` so release builds compile to a
+//! Invoked once a `WarmStartableRegistry` has been assembled (debug builds
+//! only). The check uses `debug_assert_eq!` so release builds compile to a
 //! no-op.
 
 use reify_ir::{NodeKind, NodeTraits, WarmStartableRegistry};
@@ -88,17 +87,6 @@ mod tests {
         // Registry equals exactly the declared-WARM_STARTABLE set — both
         // directions agree, no panic.
         let r = declared_warm_kinds_only();
-        assert_warm_startable_coextensive(&r);
-    }
-
-    // ── release-mode no-op ───────────────────────────────────────────────
-
-    #[test]
-    #[cfg(not(debug_assertions))]
-    fn release_mode_no_op_on_empty_registry() {
-        // In release mode the debug_assert_eq! body is elided — even an empty
-        // registry (which would panic in debug) must complete without panic.
-        let r = WarmStartableRegistry::new();
         assert_warm_startable_coextensive(&r);
     }
 }

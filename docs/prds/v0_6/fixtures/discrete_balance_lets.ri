@@ -1,0 +1,26 @@
+module discrete_balance_lets
+
+// Same problem as n1 but the NATURAL authoring shape: forces named via lets.
+// Expected (pre-let-tracing-fix): constraints get dropped by
+// filter_constraints_reading_autos (direct-read filter), autos report
+// underdetermined/undef even with CpSat wired.
+
+structure N2 {
+    param up1 : Bool = auto(free)
+    param up2 : Bool = auto(free)
+    param up3 : Bool = auto(free)
+    param up4 : Bool = auto(free)
+    param up5 : Bool = auto(free)
+    param up6 : Bool = auto(free)
+
+    let f1 = if up1 then 1.0 else -1.0
+    let f2 = if up2 then 1.0 else -1.0
+    let f3 = if up3 then 1.0 else -1.0
+    let f4 = if up4 then 1.0 else -1.0
+    let f5 = if up5 then 1.0 else -1.0
+    let f6 = if up6 then 1.0 else -1.0
+
+    constraint f1 + f2 + f3 + f4 + f5 + f6 == 0.0
+    constraint 0.8660254 * (f2 + f3 - f5 - f6) == 0.0
+    constraint f1 + 0.5 * f2 - 0.5 * f3 - f4 - 0.5 * f5 + 0.5 * f6 == 0.0
+}

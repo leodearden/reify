@@ -782,15 +782,18 @@ mod tests {
         );
         match handle.content() {
             Some(RealizedContent::SurfaceMesh(mesh)) => {
+                // Task #5105 δ: MockGeometryKernel::tessellate now returns a
+                // contract-valid closed tetra (4 tris / 4 verts) instead of an
+                // open triangle, which site 1 rejects under enforce-default.
                 assert_eq!(
                     mesh.indices.len(),
-                    3,
-                    "projected mesh must carry the kernel's one-triangle tessellation"
+                    12,
+                    "projected mesh must carry the kernel's 4-triangle tessellation"
                 );
                 assert_eq!(
                     mesh.vertices.len(),
-                    9,
-                    "projected mesh must carry 3 vertices (9 floats)"
+                    12,
+                    "projected mesh must carry 4 vertices (12 floats)"
                 );
             }
             other => panic!("expected Some(RealizedContent::SurfaceMesh), got {other:?}"),

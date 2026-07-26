@@ -1,0 +1,190 @@
+prd: docs/prds/v0_6/declared-intent-consumption-accounting.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 5415
+  title: 'DIC α: relate zero-auto static verification arm'
+  capabilities:
+  - name: relate-verify-machinery-wired
+    binding: capability→producer (substrate) — fn solve_relate_scope + step-4 remainder
+      verification relate_solve.rs:635-797; pipeline entry solve_scopes called from
+      engine_build.rs:3710 (production, not test-only)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn solve_relate_scope
+      paths:
+      - crates/reify-eval/src/relate_solve.rs
+      expect: present
+  - name: zero-auto-drop-gap-real
+    binding: 'signal premise — solve_scopes :836 filter drops zero-auto scopes before
+      realization; probes 2026-07-24: check "All constraints satisfied." exit 0 +
+      zero relate output on dic_relate_static_violated/ok'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: post-fix violation Error asserted by α's own boundary tests (B1/B2);
+        the :836 filter expression may legitimately survive as the solve-set selector
+        alongside a new verify-set pass, so a pattern-absence check would false-fail
+- label: β
+  task_id: 5416
+  title: 'DIC β: solver capability envelope + typed unrepresentable-kind refusal'
+  capabilities:
+  - name: no-representability-check-gap-real
+    binding: 'signal premise — classifier.rs:115 String no-op → Dimensional default
+      (classifier.rs:22-37); solver.rs:138-150/:110-129 build Value::Scalar unconditionally;
+      probe 2026-07-24: dic_string_auto → misleading "max absolute residual: 1.00e0"'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn supports_auto_kind
+      paths:
+      - crates/reify-constraints/src
+      expect: present
+  - name: undef-cause-channel-available
+    binding: 'capability→producer (substrate) — record_failed_autos / capture_undef_causes
+      engine_eval.rs:4821-4857 (undef-self-describing, done); CLI note: loop renders
+      causes'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: landed substrate fact; refusal-cause recording asserted by β tests (B4)
+  - name: prd2-landing-order-independence
+    binding: design property (E3) — verdicts consult live registry contents; pinned
+      fixture kind String is outside every solver envelope before AND after PRD 2
+      (task/5396) registers CpSat
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: cross-PRD design property, checked at decompose; PRD 2 tasks unfiled
+        at this decompose (sidecar unstamped) so no ordering edge exists to wire
+- label: γ
+  task_id: 5417
+  title: 'DIC γ: objective consumption accounting (compile inert-error + zero-component
+    diagnostic)'
+  capabilities:
+  - name: registry-drop-sites-real
+    binding: 'signal premise — registry.rs:152-162 (no autos), :182-192 (components.is_empty),
+      :208-210 (no-match → component 0, comment verbatim); probes 2026-07-24: dic_min_no_autos
+      total silence; dic_min_unread objective silently useless; dic_min_unconstrained
+      "awaiting solve", objective never mentioned'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: post-fix Errors are γ's own deliverables (B6/B7); diagnostic code spellings
+        are tactical (§10 Q1) so no stable pattern exists at decompose
+  - name: transitive-reach-builder-wired
+    binding: capability→producer (substrate) — fn build_dependent_cells engine_eval.rs:1553,
+      production-wired (#5188 done); γ reads it, never re-derives connectivity (G7
+      no-lockstep-duplication)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn build_dependent_cells
+      paths:
+      - crates/reify-eval/src/engine_eval.rs
+      expect: present
+  - name: objective-diagnostic-site-exists
+    binding: capability→producer (substrate) — W_SOLVER_OPTIMALITY_UNPROVEN emission
+      engine_eval.rs:4867-4877 + :6281-6291 (#4804 done), the house pattern γ sits
+      beside
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: W_SOLVER_OPTIMALITY_UNPROVEN
+      paths:
+      - crates/reify-eval/src/engine_eval.rs
+      expect: present
+- label: δ
+  task_id: 5418
+  title: 'DIC δ: typed IndeterminateReason on the outcome carrier + recorded-reason
+    rendering'
+  capabilities:
+  - name: reason-strings-already-recorded
+    binding: capability→producer (substrate) — classify_undef reify-constraints/src/lib.rs:68-102
+      distinguishes "undefined inputs" vs "operator undefined for these operand kinds";
+      GD&T free-text reason engine_constraints.rs:2100
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: operator undefined for these operand kinds
+      paths:
+      - crates/reify-constraints/src
+      expect: present
+  - name: carrier-gap-real
+    binding: 'signal premise — ConstraintCheckEntry reify-eval/src/lib.rs:1140-1144
+      = {id, label, satisfaction} only; Satisfaction bare (reify-ir value.rs:3912-3919);
+      probe 2026-07-24: strict detail misattributes as generic "inputs undefined (e.g.
+      …)"'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: indeterminate_reason
+      paths:
+      - crates/reify-eval/src
+      expect: present
+- label: ε
+  task_id: 5419
+  title: 'DIC ε: inert-constraint detection — compile-time generation refusal + eval
+    backstop + example sweep'
+  capabilities:
+  - name: generation-site-known
+    binding: capability→producer (substrate) — connect.rs:587-619 builds frame_align_{l}_{r}
+      as Eq(left_frame, right_frame); @face/@edge placeholder eval reify-expr/src/lib.rs:1281;
+      Indeterminate bail reify-constraints/src/lib.rs:173-206
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: frame_align_
+      paths:
+      - crates/reify-compiler/src/connect.rs
+      expect: present
+  - name: inert-class-baseline
+    binding: 'signal premise — probe 2026-07-24: dic_inert_connect → OK connect_compat_a_b
+      + INDETERMINATE frame_align_a_b, reason "operator undefined for these operand
+      kinds", green non-strict exit 0; run-invariance per investigation a0d342d4 probe
+      evidence'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: post-fix generation-refusal Error is ε's own deliverable (B10); code
+        spelling tactical; connect_compat-unaffected asserted by ε tests
+- label: ζ
+  task_id: 5420
+  title: 'DIC ζ: reify check consumption ledger (integration gate)'
+  capabilities:
+  - name: check-spine-exists
+    binding: capability→producer (substrate) — report_constraint_results main.rs:2370-2400
+      → ConstraintOutcome → check_fails main.rs:2299-2305 → finish_check main.rs:2719-2746
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn finish_check
+      paths:
+      - crates/reify-cli/src/main.rs
+      expect: present
+  - name: producers-all-upstream
+    binding: DAG-direction — ζ ← {α, γ, δ, ε}; every ledger fact class delivered by
+      a hard upstream dep in this batch (anti-inversion)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: dependency-graph property, checked at decompose and by the scheduler
+  - name: inert-fails-check-outcome-native
+    binding: G4 seam property — extends ConstraintOutcome/check_fails, not the diagnostic-severity
+      exit gate (sibling silent-undef PRD owns exit codes)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: seam-ownership property; ledger format tactical (§10 Q3)
+- label: η
+  task_id: 5421
+  title: 'DIC η: companion docs — spec ledger + consumption-accounting prose'
+  capabilities:
+  - name: spec-target-exists
+    binding: capability→producer (substrate) — docs/reify-language-spec.md documents
+      reify check semantics today; ζ upstream so docs describe landed behaviour
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: docs leaf; wording tactical

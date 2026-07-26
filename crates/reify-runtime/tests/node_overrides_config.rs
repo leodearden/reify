@@ -10,7 +10,6 @@ use reify_config::{Manifest, NodeCommitmentPolicy, NodePolicyOverride};
 use reify_core::ValueCellId;
 use reify_eval::cache::NodeId;
 use reify_runtime::commitment::{NodeCommitmentOverride, NodeOverrideConfigError, NodePolicyOverrides};
-use reify_runtime::concurrent::SchedulerConfig;
 
 // --- G4 boundary + G2(b) distinguishability ---
 
@@ -25,15 +24,10 @@ commitment_policy = \"always_cancel_when_stale\"
     let overrides = NodePolicyOverrides::from_config_overrides(manifest.node_overrides())
         .expect("from_config_overrides must succeed for kind selector");
 
-    let config = SchedulerConfig {
-        node_overrides: overrides,
-        ..Default::default()
-    };
-
     // Value node → overridden to AlwaysCancelWhenStale
     let value_node = NodeId::Value(ValueCellId::new("Bracket", "width"));
     assert_eq!(
-        config.node_overrides.resolve(&value_node),
+        overrides.resolve(&value_node),
         NodeCommitmentOverride::AlwaysCancelWhenStale,
         "Value kind selector must override all Value nodes"
     );
@@ -41,7 +35,7 @@ commitment_policy = \"always_cancel_when_stale\"
     // Constraint node → not overridden → default CommitIfSlow (kind isolation)
     let constraint_node = NodeId::Constraint(reify_core::ConstraintNodeId::new("Bracket", 0));
     assert_eq!(
-        config.node_overrides.resolve(&constraint_node),
+        overrides.resolve(&constraint_node),
         NodeCommitmentOverride::CommitIfSlow,
         "kind selector for Value must not affect Constraint nodes"
     );
@@ -49,13 +43,13 @@ commitment_policy = \"always_cancel_when_stale\"
 
 #[test]
 fn g2b_default_config_resolves_to_commit_if_slow() {
-    // G2(b) distinguishability: default SchedulerConfig resolves the same node to CommitIfSlow.
-    let default_config = SchedulerConfig::default();
+    // G2(b) distinguishability: default overrides resolve the same node to CommitIfSlow.
+    let default_config = NodePolicyOverrides::default();
     let value_node = NodeId::Value(ValueCellId::new("Bracket", "width"));
     assert_eq!(
-        default_config.node_overrides.resolve(&value_node),
+        default_config.resolve(&value_node),
         NodeCommitmentOverride::CommitIfSlow,
-        "default SchedulerConfig must resolve to CommitIfSlow (no overrides)"
+        "default overrides must resolve to CommitIfSlow (no overrides)"
     );
 }
 

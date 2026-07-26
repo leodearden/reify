@@ -393,8 +393,8 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
     },
     BuiltinFunctionInfo {
         name: "polygon",
-        signature: "polygon(vertices: List<Point2<Length>>) -> Surface",
-        doc: "Creates a polygonal 2D profile from a list of vertices.",
+        signature: "polygon(x1, y1, x2, y2, ...) -> Surface",
+        doc: "Creates a polygonal 2D profile from variadic flat coordinate pairs — at least 3 vertices (6 args), and an even number of args.",
         sort_group: "01-geometry",
     },
     BuiltinFunctionInfo {
@@ -1040,6 +1040,35 @@ mod tests {
         assert!(func_labels.contains(&"abs"), "should include 'abs'");
         assert!(func_labels.contains(&"min"), "should include 'min'");
         assert!(func_labels.contains(&"max"), "should include 'max'");
+    }
+
+    #[test]
+    fn polygon_completion_advertises_compiling_flat_form() {
+        // Authoritative compiler arm: crates/reify-compiler/src/geometry.rs:1570
+        // (the `polygon` match arm in `compile_profile_op`) accepts ONLY
+        // variadic flat coordinate pairs (x1, y1, x2, y2, ...) — at least 6
+        // args (3 points), an even count — NOT a `List<Point2<Length>>`
+        // structured argument. The served completion signature must match
+        // what the compiler actually accepts, or autocomplete guides
+        // designers toward code that fails to compile.
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+        let polygon_item = items
+            .iter()
+            .find(|i| i.kind == Some(CompletionItemKind::FUNCTION) && i.label == "polygon")
+            .expect("should include 'polygon' builtin function completion");
+        let detail = polygon_item
+            .detail
+            .as_ref()
+            .expect("polygon completion should have a detail (signature)");
+        assert!(
+            !detail.contains("List<Point2"),
+            "polygon signature must not advertise the non-compiling structured-list form, got: {detail}"
+        );
+        assert!(
+            detail.contains("x1") && detail.contains("y1"),
+            "polygon signature must advertise the compiling variadic flat coordinate-pair form (x1, y1, ...), got: {detail}"
+        );
     }
 
     #[test]

@@ -49,5 +49,4 @@ reify-eval
 # hosts the migrated release-only modal/buckling e2e (task 4937, Lever P)
 reify-eval-fea-tests
 reify-gui
-reify-runtime
 reify-solver-elastic

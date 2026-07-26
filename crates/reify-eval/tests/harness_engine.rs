@@ -12,3 +12,7 @@
 //! sibling `tests/<file>.rs`, not the `harness_engine/` subdir.
 #[path = "harness_engine/edit_param_cell_commit_migration.rs"]
 mod edit_param_cell_commit_migration;
+#[path = "harness_engine/diagnostics_cache_replay_migration.rs"]
+mod diagnostics_cache_replay_migration;
+#[path = "harness_engine/joint_drive_cluster_formation.rs"]
+mod joint_drive_cluster_formation;

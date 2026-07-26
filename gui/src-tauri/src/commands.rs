@@ -182,6 +182,17 @@ pub fn update_source_impl(
 /// * New staleness keys: `compile_diagnostics`, `tessellation_diagnostics`,
 ///   `stale` (bool), `reload_error` (string or null).
 ///
+/// # Full realized scene (task 5348)
+///
+/// The `meshes` projection reflects the FULL realized scene — every realization
+/// that produces geometry — via [`EngineSession::build_gui_state_full_scene`], NOT
+/// the frontend's selective-demand incremental delta. Once the frontend has flipped
+/// production demand selective (`sync_demand`), the plain `build_gui_state` returns
+/// only the delta subset (the DELTA CONTRACT); this tool forces a full-scope
+/// snapshot so `engine_state` (and the `mesh_stats` tool, which shares the same
+/// builder) stays consistent with `viewport_state.meshCount` — the complete scene
+/// the frontend accumulates — regardless of the live selective-demand scope.
+///
 /// # One-snapshot invariant (task 4258)
 ///
 /// `files[].content` and `compile_diagnostics` are computed from the **same**
@@ -213,9 +224,11 @@ pub fn update_source_impl(
 /// `files[].content` will produce incorrect positions.  Use `get_source_location`
 /// spans only when `stale == false`.
 pub fn engine_state_json(session: &mut EngineSession) -> Result<serde_json::Value, String> {
+    // Full-scene snapshot (task 5348): report every realized body, not the
+    // frontend's selective-demand incremental delta. See the doc-comment above.
     let gui_state = session
-        .build_gui_state()
-        .map_err(|e| format!("build_gui_state failed: {e}"))?;
+        .build_gui_state_full_scene()
+        .map_err(|e| format!("build_gui_state_full_scene failed: {e}"))?;
 
     let meshes: Vec<serde_json::Value> = gui_state
         .meshes
@@ -268,6 +281,92 @@ pub fn engine_state_json(session: &mut EngineSession) -> Result<serde_json::Valu
         "demand_prune_measurement": gui_state.demand_prune_measurement,
         "last_dispatch_count_post_refresh": last_dispatch_count_post_refresh,
     }))
+}
+
+/// Histogram of a mesh's per-face `element_kind` bytes.
+///
+/// Returns an empty map when `element_kind` is `None` (tet-only / non-shell meshes
+/// carry no per-face classification). `BTreeMap` keeps the byte keys in
+/// deterministic ascending order so the serialized JSON object (`{"1": <n>}`) is
+/// stable across runs — the PRD §9 θ observable signal.
+///
+/// Lives here (ungated `commands`), not in the `#[cfg(feature = "gui")]`
+/// `debug_server`, so [`mesh_stats_json`] and its headless unit test can reuse it
+/// without pulling in the Tauri/gui feature (task 5348).
+pub(crate) fn element_kind_count(
+    mesh: &crate::types::MeshData,
+) -> std::collections::BTreeMap<u8, usize> {
+    let mut counts = std::collections::BTreeMap::new();
+    if let Some(element_kind) = &mesh.element_kind {
+        for &kind in element_kind {
+            *counts.entry(kind).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+/// Build a debug-API JSON projection of per-mesh statistics for the `mesh_stats`
+/// tool (task 5348).
+///
+/// Extracted from `debug_server::handle_mesh_stats` so tests can call it directly
+/// without a `DebugServerState` (which wraps a non-headless Tauri `AppHandle`) —
+/// the same seam pattern as [`engine_state_json`] / [`demand_dispatch_json`].
+/// `handle_mesh_stats` delegates here.
+///
+/// Uses [`EngineSession::build_gui_state_full_scene`] so the stats cover the FULL
+/// realized scene — one entry per rendered body — not the frontend's selective-
+/// demand incremental delta (the task 5348 under-report fix). Shares that builder
+/// with [`engine_state_json`], so the two debug reads can never drift apart.
+///
+/// Each entry carries `entity_path`, `vertex_count` (`vertices.len() / 3`),
+/// `face_count` (`indices.len() / 3`), `element_kind_count` (the per-face
+/// element-kind histogram via [`element_kind_count`]), and `bounding_box`
+/// (`{min, max}`, or `null` when the mesh has zero vertices).
+pub fn mesh_stats_json(session: &mut EngineSession) -> Result<serde_json::Value, String> {
+    let gui_state = session
+        .build_gui_state_full_scene()
+        .map_err(|e| format!("build_gui_state_full_scene failed: {e}"))?;
+
+    let stats: Vec<serde_json::Value> = gui_state
+        .meshes
+        .iter()
+        .map(|m| {
+            let vertex_count = m.vertices.len() / 3;
+            let face_count = m.indices.len() / 3;
+
+            let mut min = [f32::INFINITY; 3];
+            let mut max = [f32::NEG_INFINITY; 3];
+            for chunk in m.vertices.chunks_exact(3) {
+                for i in 0..3 {
+                    min[i] = min[i].min(chunk[i]);
+                    max[i] = max[i].max(chunk[i]);
+                }
+            }
+
+            // Per-face element-kind histogram, byte→count as a JSON object with
+            // string keys (e.g. {"1": <n>}) — the PRD §9 θ signal. Reuses the
+            // `pub(crate)` helper so mesh_stats and its former inline body agree.
+            let element_kind_hist: serde_json::Map<String, serde_json::Value> =
+                element_kind_count(m)
+                    .into_iter()
+                    .map(|(kind, count)| (kind.to_string(), serde_json::json!(count)))
+                    .collect();
+
+            serde_json::json!({
+                "entity_path": m.entity_path,
+                "vertex_count": vertex_count,
+                "face_count": face_count,
+                "element_kind_count": element_kind_hist,
+                "bounding_box": if vertex_count > 0 {
+                    serde_json::json!({"min": min, "max": max})
+                } else {
+                    serde_json::json!(null)
+                }
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!({ "meshes": stats }))
 }
 
 /// Build a debug-API JSON projection of the engine's selective-demand dispatch

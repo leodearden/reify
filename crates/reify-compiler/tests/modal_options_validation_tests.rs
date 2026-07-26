@@ -30,7 +30,9 @@
 use reify_compiler::*;
 use reify_core::*;
 use reify_ir::*;
-use reify_test_support::{collect_value_ref_members, compile_source_with_stdlib, errors_only};
+use reify_test_support::{
+    collect_value_ref_members, compile_source_with_stdlib, errors_only, warnings_only,
+};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -1978,17 +1980,20 @@ structure PartLeniencySmoke {
 }
 "#;
     let module = compile_source_with_stdlib(source);
-    let errors = errors_only(&module);
+    // task 5302 α (Option-A uniform downgrade): StructureRef ctor conformance
+    // (task 4584) is emitted at CTOR_FIELD_CONFORMANCE_SEVERITY (Warning); code
+    // and count are unchanged, δ later flips the knob back to Error.
+    let warnings = warnings_only(&module);
     assert_eq!(
-        errors.len(),
+        warnings.len(),
         1,
-        "expected exactly 1 Error-severity diagnostic (TypeNotConformingToStructureRef) \
+        "expected exactly 1 Warning-severity diagnostic (TypeNotConformingToStructureRef) \
          for ForcingTimeHistory(part: \"beam\", ...) where part : Part; \
          got {}: {:#?}",
-        errors.len(),
-        errors,
+        warnings.len(),
+        warnings,
     );
-    let d = &errors[0];
+    let d = &warnings[0];
     assert_eq!(
         d.code,
         Some(DiagnosticCode::TypeNotConformingToStructureRef),
@@ -2015,17 +2020,20 @@ structure PartDefaultSmoke {
 }
 "#;
     let module = compile_source_with_stdlib(source);
-    let errors = errors_only(&module);
+    // task 5302 α (Option-A uniform downgrade): StructureRef param-default
+    // conformance (task 4584) is emitted at CTOR_FIELD_CONFORMANCE_SEVERITY
+    // (Warning); code and count are unchanged, δ later flips the knob to Error.
+    let warnings = warnings_only(&module);
     assert_eq!(
-        errors.len(),
+        warnings.len(),
         1,
-        "expected exactly 1 Error-severity diagnostic (TypeNotConformingToStructureRef) \
+        "expected exactly 1 Warning-severity diagnostic (TypeNotConformingToStructureRef) \
          for `param part : Part = \"x\"`; got {}: {:#?}",
-        errors.len(),
-        errors,
+        warnings.len(),
+        warnings,
     );
-    let d = &errors[0];
-    assert_eq!(d.severity, reify_core::Severity::Error);
+    let d = &warnings[0];
+    assert_eq!(d.severity, reify_core::Severity::Warning);
     assert_eq!(
         d.code,
         Some(DiagnosticCode::TypeNotConformingToStructureRef),
@@ -2170,16 +2178,17 @@ structure StepForceRealAtSmoke {
 }
 "#;
     let module = compile_source_with_stdlib(source);
-    let errs = errors_only(&module);
+    // 5302 α: Selector ctor conformance (task 4598) downgraded Error→Warning (knob).
+    let warns = warnings_only(&module);
     assert_eq!(
-        errs.len(),
+        warns.len(),
         1,
-        "expected exactly 1 Error-severity ArgTypeMismatch diagnostic for \
+        "expected exactly 1 Warning-severity ArgTypeMismatch diagnostic for \
          StepForce(at: 0.0, ...) where at : Selector; got {}: {:#?}",
-        errs.len(),
-        errs,
+        warns.len(),
+        warns,
     );
-    let d = &errs[0];
+    let d = &warns[0];
     assert_eq!(
         d.code,
         Some(DiagnosticCode::ArgTypeMismatch),
@@ -2210,16 +2219,17 @@ structure StepForceStringAtSmoke {
 }
 "#;
     let module = compile_source_with_stdlib(source);
-    let errs = errors_only(&module);
+    // 5302 α: Selector ctor conformance (task 4598) downgraded Error→Warning (knob).
+    let warns = warnings_only(&module);
     assert_eq!(
-        errs.len(),
+        warns.len(),
         1,
-        "expected exactly 1 Error-severity ArgTypeMismatch diagnostic for \
+        "expected exactly 1 Warning-severity ArgTypeMismatch diagnostic for \
          StepForce(at: \"tip\", ...) where at : Selector; got {}: {:#?}",
-        errs.len(),
-        errs,
+        warns.len(),
+        warns,
     );
-    let d = &errs[0];
+    let d = &warns[0];
     assert_eq!(
         d.code,
         Some(DiagnosticCode::ArgTypeMismatch),
@@ -2250,16 +2260,17 @@ structure StepForceIntAtSmoke {
 }
 "#;
     let module = compile_source_with_stdlib(source);
-    let errs = errors_only(&module);
+    // 5302 α: Selector ctor conformance (task 4598) downgraded Error→Warning (knob).
+    let warns = warnings_only(&module);
     assert_eq!(
-        errs.len(),
+        warns.len(),
         1,
-        "expected exactly 1 Error-severity ArgTypeMismatch diagnostic for \
+        "expected exactly 1 Warning-severity ArgTypeMismatch diagnostic for \
          StepForce(at: 5, ...) where at : Selector; got {}: {:#?}",
-        errs.len(),
-        errs,
+        warns.len(),
+        warns,
     );
-    let d = &errs[0];
+    let d = &warns[0];
     assert_eq!(
         d.code,
         Some(DiagnosticCode::ArgTypeMismatch),
@@ -2291,16 +2302,17 @@ structure StepForceValueRefAtSmoke {
 }
 "#;
     let module = compile_source_with_stdlib(source);
-    let errs = errors_only(&module);
+    // 5302 α: Selector ctor conformance (task 4598) downgraded Error→Warning (knob).
+    let warns = warnings_only(&module);
     assert_eq!(
-        errs.len(),
+        warns.len(),
         1,
-        "expected exactly 1 Error-severity ArgTypeMismatch diagnostic for \
+        "expected exactly 1 Warning-severity ArgTypeMismatch diagnostic for \
          StepForce(at: <Real ValueRef>, ...) where at : Selector; got {}: {:#?}",
-        errs.len(),
-        errs,
+        warns.len(),
+        warns,
     );
-    let d = &errs[0];
+    let d = &warns[0];
     assert_eq!(
         d.code,
         Some(DiagnosticCode::ArgTypeMismatch),

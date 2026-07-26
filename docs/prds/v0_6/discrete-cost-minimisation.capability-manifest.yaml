@@ -1,0 +1,234 @@
+prd: docs/prds/v0_6/discrete-cost-minimisation.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 5467
+  title: 'PRD2 α: let-tracing transitive constraint↔auto closure + shared per-trial
+    dependent-cell fold'
+  capabilities:
+  - name: transitive-closure-builder-wired
+    binding: capability→producer (substrate) — fn build_dependent_cells engine_eval.rs:1553,
+      called from build_solver_problem paths :1842/:2179 (production, not test-only)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn build_dependent_cells
+      paths:
+      - crates/reify-eval/src/engine_eval.rs
+      expect: present
+  - name: registry-threads-real-dependent-cells
+    binding: 'capability→producer (this leaf) — gap verified: registry.rs:244 passes
+      dependent_cells: Vec::new() into sub-problems today; α replaces it with the
+      component slice'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: dependent_cells:\s*Vec::new\(\)
+      paths:
+      - crates/reify-constraints/src/registry.rs
+      expect: absent
+  - name: let-indirection-baseline-bug-real
+    binding: 'signal premise — probe 2026-07-24: reify eval fixtures/discrete_let_cont.ri
+      exit 0, W_UNDERDETERMINED "not touched by any constraint", all undef'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: post-fix behaviour (a=6,b=4, no W_UNDERDETERMINED) is asserted by α's
+        own boundary tests (B1/B2), not grep-able
+- label: β
+  task_id: 5468
+  title: 'PRD2 β: CP-SAT honest enumeration core — solve_all + cap-2 unique + solve_ranked
+    argmin override'
+  capabilities:
+  - name: solve-all-enumeration
+    binding: capability→producer (this leaf; reference impl = spike 75cf3b4d19 solve_all/SolveAllResult
+      + 3 unit tests, e2e 0.46s)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn solve_all
+      paths:
+      - crates/reify-constraints/src/cpsat.rs
+      expect: present
+  - name: solve-ranked-override-owned-by-prd2
+    binding: capability→producer (this leaf) — F-result §0.1/§6 assign the CP-SAT
+      override + ProvenOptimal exclusively to PRD 2; slot reachable via registry.rs:280
+      per-component dispatch (#5016) + engine call site engine_eval.rs:2897 (#4804)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn solve_ranked
+      paths:
+      - crates/reify-constraints/src/cpsat.rs
+      expect: present
+  - name: objective-scoring-available
+    binding: 'grep: eval_objective_set shipped in reify-constraints (constraint-solver-completion);
+      same scalar F-result I4 pins'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: substrate fact, already landed; no post-diff pattern to assert
+  - name: unique-lie-baseline
+    binding: 'signal premise — grep: hardcoded `unique: true` cpsat.rs:202/243 (discrete
+      twin of #5388, disjoint files)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: post-fix `unique` is computed from cap-2 enumeration; a literal-pattern
+        absence check would false-fail on legitimately computed branches/tests — asserted
+        by β unit tests + γ B4
+- label: γ
+  task_id: 5469
+  title: 'PRD2 γ: default-ON wiring — production() installs CpSat (logical) + DiscreteFirstFallback
+    (CrossDomain, all-discrete arm)'
+  capabilities:
+  - name: production-slots-populated
+    binding: 'capability→producer (this leaf) — gap verified: registry.rs:42-43 logical:
+      None / fallback: None; both binaries call production() (reify-cli main.rs:1319,
+      gui engine.rs:1981); spike proves the ~30-line wiring shape'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: DiscreteFirstFallback
+      paths:
+      - crates/reify-constraints/src/registry.rs
+      expect: present
+  - name: classifier-crossdomain-fact
+    binding: 'substrate — classifier.rs into_domain: has_numeric && has_logical ⇒
+      CrossDomain (why the logical slot alone is insufficient)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: substrate routing fact; behaviour pinned by γ boundary tests B3/B11
+  - name: natural-formulation-baselines
+    binding: 'signal premises — probes 2026-07-24: discrete_balance_inline.ri exit
+      1 misleading residual; discrete_balance_lets.ri exit 0 all-undef; spike e2e
+      proves post-wiring solve (0.46s exact Bools)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: post-wiring solve asserted by γ tests + ε harness e2e
+- label: δ
+  task_id: 5470
+  title: 'PRD2 δ: discrete domain channel — Int bound-mining + discrete_set → AutoParam.domain'
+  capabilities:
+  - name: int-arm-needs-only-bounds
+    binding: substrate — cpsat.rs build_variable_domain Int arm + MAX_INT_DOMAIN=1000;
+      engine_eval.rs:1439 bounds always None; Enum arm (cpsat.rs:89) is the in-fn
+      constraint-mining precedent
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: mining behaviour asserted by δ tests (B7); message-string absence checks
+        would be brittle
+  - name: solver-hints-cross-ir-seam
+    binding: 'capability→producer (this leaf) — gap verified (M-008 re-check 2026-07-24):
+      ValueCellDecl.solver_hints types.rs:1125 compiler-side only; zero SolverHint
+      refs in reify-ir/reify-constraints/reify-eval src'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: solver_hint
+      paths:
+      - crates/reify-ir/src
+      expect: present
+  - name: stdlib-catalog-surface-validates
+    binding: 'substrate probe 2026-07-24 — structure def + standard_bolt_lengths:
+      reify check exit 0; local-let catalog REJECTED exit 1 ("unknown selector kind")
+      → v1 stdlib-only (PRD §2.3/§9); catalogs at crates/reify-compiler/stdlib/standard_stock.ri'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: probe-captured compile behaviour; δ e2e asserts the wired resolution
+  - name: int-auto-baseline-failure
+    binding: 'signal premise — probe: discrete_int_auto.ri exit 1 "not uniquely determined"
+      + undef'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: post-fix n=4 asserted by δ tests / ε harness
+- label: ε
+  task_id: 5471
+  title: 'PRD2 ε: integration gate — CI examples (discrete balance + stock cost pick)
+    + harness e2e'
+  capabilities:
+  - name: producers-all-upstream
+    binding: DAG-direction — ε ← {γ, δ} ← β ← α; no capability owed by a downstream
+      task (anti-inversion)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: dependency-graph property, checked at decompose and by the scheduler
+  - name: harness-target-exists
+    binding: 'substrate — crates/reify-eval/tests/harness_engine.rs (harness-layout
+      ratchet: no new standalone tests/*.rs; drift-guard registrations N/A)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: discrete_pulley_balance|discrete_stock_cost
+      paths:
+      - crates/reify-eval/tests
+      expect: present
+  - name: money-over-auto-idiom-shipped
+    binding: 'substrate — examples/continuous_cost_min.ri (PRD 1 β #4790) proves the
+      Money-minimize-over-auto idiom ε reuses over a discrete domain'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: landed substrate fact
+- label: ζ
+  task_id: 5472
+  title: 'PRD2 ζ: mixed outer loop — enumerate discrete × continuous residual solve
+    (M-WHOLE §3.1)'
+  capabilities:
+  - name: mixed-baseline-failure
+    binding: 'signal premise — probe: discrete_mixed.ri exit 1 misleading residual
+      1.00e0'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: post-fix (up=true, t≈3.0, BestFound) asserted by ζ tests B9/B10
+  - name: inner-solve-machinery-landed
+    binding: substrate — DimensionalSolver + robustness floor solver.rs:487 (#4789)
+      + cost_robustness_tradeoff (#4791); floor composes by construction on the inner
+      residual solve (PRD §3.8)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: landed substrate fact; composition asserted by B10
+  - name: expected-optimum-hand-checked
+    binding: 'floor:none — combinatorial+linear: up=true ⇒ min t = 3.0 < up=false
+      branch 5.0; solver-tolerance assertion only, no accuracy-bound premise (G6 branch
+      1 N/A)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: arithmetic identity recorded in the manifest
+- label: η
+  task_id: 5473
+  title: 'PRD2 η: companion docs — spec deferred-capabilities row + F-result/M-WHOLE
+    cross-PRD rows'
+  capabilities:
+  - name: spec-unauthored-claim-removed
+    binding: 'capability→producer (this leaf) — grep: "queued and not yet authored"
+      in docs/reify-language-spec.md Deferred-capabilities block (~§2285)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: queued and not yet authored
+      paths:
+      - docs/reify-language-spec.md
+      expect: absent
+- label: θ
+  task_id: 5474
+  title: 'PRD2 θ: [MILESTONE] solutions() query surface bookmark (path c) — design-first
+    on dispatch'
+  capabilities:
+  - name: enumeration-substrate-upstream
+    binding: DAG-direction — hard deps ε/ζ deliver solve_all + mixed enumeration +
+      honesty channels this milestone consumes; design session (not implementation)
+      on dispatch
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: milestone trigger task; no code deliverable to check

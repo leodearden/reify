@@ -1071,6 +1071,11 @@ impl Engine {
                 && let Some(node) = new_snapshot.graph.value_cells.get(vcid)
                 && let Some(ref expr) = node.default_expr
             {
+                // μ (#5062): mark runtime_sink length before eval_expr so this
+                // re-evaluated cell's diagnostics delta can be stored after the
+                // commit below — keeps NodeCache.diagnostics fresh so a later
+                // warm eval_cached clean serve does not replay stale content.
+                let diag_mark = runtime_sink.borrow().len();
                 let val = reify_expr::eval_expr(
                     expr,
                     &cell_eval_ctx(
@@ -1170,6 +1175,14 @@ impl Engine {
                 let outcome = commit_outcome
                     .cache_outcome()
                     .expect("CacheLeg::Record always yields Some(cache_outcome)");
+
+                // μ (#5062): store this re-evaluated cell's diagnostics delta
+                // for replay on future cache-hit serves (empty delta clears
+                // stale content — e.g. an edit that moved a sample back in
+                // bounds must drop the prior W_FIELD_OUT_OF_BOUNDS). Covers the
+                // dominant EditReeval Record path; reads runtime_sink only, so
+                // post-pass detector diagnostics stay disjoint.
+                self.store_cell_replay_diagnostics(node_id, &runtime_sink, diag_mark);
 
                 // Early cutoff with mixed fan-in protection:
                 // - Changed: propagate has_changed_parent to dependents,
@@ -4221,12 +4234,42 @@ impl Engine {
         cell: ValueCellId,
         new_value: reify_ir::Value,
     ) -> Result<CheckResult, EngineError> {
-        let eval_result = self.edit_param(cell, new_value)?;
+        let mut eval_result = self.edit_param(cell, new_value)?;
         let (constraint_results, constraint_diagnostics) =
             self.check_constraints_with_values(&eval_result.values)?;
 
         let mut diagnostics = eval_result.diagnostics;
         diagnostics.extend(constraint_diagnostics);
+
+        // ── MassProperties PSD post-pass via λ's shared DetectorRegistry ─────────
+        // (task μ #5062, PRD §10 open-question 2 hand-off point) Run the SAME
+        // registry the eval / eval_cached paths run, so the EDIT serve mode
+        // surfaces MassProperties PSD diagnostics too — INV-EVAL-3, one owner
+        // across all paths (no post-pass detector ran on the edit path before
+        // μ). This is the correct hand-off point: `eval_result.values`, the
+        // freshly-installed `self.eval_state.snapshot.values`, and the local
+        // `diagnostics` are all live and mutably disjoint here. It is
+        // deliberately NOT edit_param's tail: edit_param has already moved the
+        // new snapshot into `self.eval_state`, so we mutate the INSTALLED
+        // snapshot in place (parity with eval(), whose PSD pass mutates
+        // `snapshot.values` before install). Freshly produced every serve —
+        // never replayed — so disjoint from the per-cell runtime-diagnostic
+        // replay class.
+        {
+            let snapshot_values = &mut self
+                .eval_state
+                .as_mut()
+                .expect("edit_check requires a prior eval()/check() baseline")
+                .snapshot
+                .values;
+            crate::detectors::DetectorRegistry::with_builtins().run_all(
+                &mut crate::detectors::PostPassState {
+                    values: &mut eval_result.values,
+                    snapshot_values,
+                    diagnostics: &mut diagnostics,
+                },
+            );
+        }
 
         Ok(CheckResult {
             values: eval_result.values,

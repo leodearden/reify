@@ -1,0 +1,12 @@
+// γ-verification ADVERSARY baseline fixture for indexed-sub-instantiation §7 δ.
+// Premise the prover missed (positive substrate for the expression half of δ):
+// the forall/exists QUANTIFIER EXPRESSION machinery works today over List<Int>
+// with an Int-typed binder and scalar predicates — exactly the element-typing
+// shape δ extends to Range<Int> domains ("binding the index as `Int`").
+// Expected: `reify check` exits 0 (verified 2026-07-25 against target/debug/reify
+// built same day: exit 0, "All constraints satisfied.").
+structure def Rig {
+    let xs : List<Int> = [1, 2, 3]
+    let all_pos = forall x in xs : x >= 1
+    let any_big = exists x in xs : x >= 3
+}

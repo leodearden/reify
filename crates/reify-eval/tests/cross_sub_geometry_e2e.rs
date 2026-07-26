@@ -378,7 +378,7 @@ fn cross_sub_mirror_uses_child_body_handle() {
 }
 pub structure Assy {
     sub stage_left = Stage()
-    let mirrored = mirror(self.stage_left.body, 0, 0, 0, 1, 0, 0)
+    let mirrored = mirror(self.stage_left.body, 0mm, 0mm, 0mm, 1, 0, 0)
 }"#;
     let compiled = compile_source(source);
 

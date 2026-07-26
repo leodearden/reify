@@ -74,3 +74,11 @@ describe('reifyHighlightStyle syntax tag coverage', () => {
     });
   }
 });
+
+describe('editorThemeSpec drawSelection compatibility (task #5361)', () => {
+  it("hides the native caret (.cm-content caretColor is 'transparent') so only the drawn .cm-cursor shows", () => {
+    // drawSelection (wired by reifyPrimarySelectionGuard) paints its own
+    // .cm-cursor; the native text caret must be hidden to avoid a double cursor.
+    expect(editorThemeSpec['.cm-content']?.caretColor).toBe('transparent');
+  });
+});

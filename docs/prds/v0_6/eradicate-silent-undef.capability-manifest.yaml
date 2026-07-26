@@ -1,0 +1,222 @@
+prd: docs/prds/v0_6/eradicate-silent-undef.md
+schema_version: 1
+# Authored at decompose time 2026-07-24; task ids filled from the same-session
+# planning_mode batch (5399-5406) so the committed sidecar is pre-stamped —
+# commit_planning's stamper re-writes the same values.
+# Narrative evidence + probe captures: eradicate-silent-undef.capability-manifest.md.
+tasks:
+- label: "α"
+  task_id: 5399
+  title: 'Unexplained-undef backstop: contains_undef census, engine W_UNDEF_UNEXPLAINED, loud CLI notes (INV-SF-1)'
+  capabilities:
+  - name: backstop-predicate-substrate
+    binding: 'capability→producer (substrate) — check_no_stale_undef free fn invariants.rs:106 + Engine wrapper :268; today consumed only by the debug-gate corpus harness'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: pre-landed substrate fact; α re-wires it into the production post-eval pass
+  - name: census-helper-added
+    binding: 'capability→producer (this leaf) — gap verified: Value::is_undef only (value.rs:1591); a List of undef elements evades the notes census (probe: printed P.holes produced no note)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'fn contains_undef'
+      paths:
+      - crates/reify-ir/src/value.rs
+      expect: present
+  - name: backstop-code-registered
+    binding: 'capability→producer (this leaf) — new coded W_UNDEF_UNEXPLAINED variant in the DiagnosticCode registry (INV-SF-6 by construction)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'UNDEF_UNEXPLAINED|UndefUnexplained'
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+      expect: present
+  - name: cli-empty-cause-loud
+    binding: 'capability→producer (this leaf) — gap verified: cmd_eval undef-notes loop `if causes.is_empty() { continue; }` (main.rs ~1640) is exactly the silent class'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'cause unrecorded'
+      paths:
+      - crates/reify-cli/src/main.rs
+      expect: present
+  - name: silent-baseline-real
+    binding: 'signal premise — probe 2026-07-24 (fixture committed): eval prints P.holes = [undef ×4], no note, exit 0; check prints All constraints satisfied., exit 0'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: post-fix behaviour (warning + note naming P.holes) asserted by α's own e2e; boundary rows 1-2
+- label: "β"
+  task_id: 5400
+  title: 'reify check reports undef causes: enable capture + root-cell notes + --explain-undef (INV-SF-1)'
+  capabilities:
+  - name: check-capture-gap-real
+    binding: 'signal premise — grep: zero set_capture_undef_causes calls in cmd_check (only cmd_eval main.rs:1570/1588 + LSP analysis.rs:106); probe: check on the unbound fixture prints no undef information while eval prints the note'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: call-site-scoped (the symbol already appears in main.rs for eval) — not pattern-discriminable; asserted by β's e2e (check prints the unbound-cause note)
+  - name: notes-machinery-upstream
+    binding: 'DAG-direction — β depends on α (5399: census + backstop); tracer/formatter substrate landed (undef_tracer.rs:50, format_undef_cause)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: dependency-graph property, wired via add_dependency and checked by the scheduler
+- label: "γ"
+  task_id: 5401
+  title: "UndefCause::MemberResolutionFailed recorded at the instance member-projection seam (#5360's diagnostic half)"
+  capabilities:
+  - name: variant-added
+    binding: 'capability→producer (this leaf) — UndefCause enum value.rs:3855 is additive-variant-friendly (OpContractFailed precedent)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'MemberResolutionFailed'
+      paths:
+      - crates/reify-ir/src/value.rs
+      expect: present
+  - name: silent-seam-real
+    binding: "signal premise — #5360 probe-anchored repro (2026-07-23, main 0408733da2): Parent.echo = undef AND Parent.m.relay = undef, zero diagnostics; functional fix owned by #5360"
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: post-diff behaviour is the DISJUNCTIVE e2e (value determined OR cause note names the member path) — robust to γ/#5360 landing order by design
+- label: "δ"
+  task_id: 5402
+  title: "UndefCause::CollectionEvalFailed recorded at the lambda/collection-eval seam (#5385's diagnostic half)"
+  capabilities:
+  - name: variant-added
+    binding: 'capability→producer (this leaf) — same additive-enum evidence as γ'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'CollectionEvalFailed'
+      paths:
+      - crates/reify-ir/src/value.rs
+      expect: present
+  - name: sink-substrate
+    binding: 'capability→producer (substrate) — reify-expr undef-cause sink exists: push_op_contract_failure lib.rs:620/2898, consumed via with_undef_cause_sink in engine_eval.rs record_op_contract_failures'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: pre-landed substrate fact; δ records through the same channel
+  - name: silent-seam-real
+    binding: 'signal premise — probe 2026-07-24 (fixture committed): generate(4, |i| cylinder(...)) → [undef ×4] under a green check, no note; functional fix owned by #5385'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: post-diff behaviour is the DISJUNCTIVE e2e (elements determined OR cause note names cell + op)
+- label: "ε"
+  task_id: 5403
+  title: 'Gate reify check exit on Error severity; seed burn-down allowlist; ratchet test; delete GD&T/DFM bolt-ons (INV-SF-2)'
+  capabilities:
+  - name: severity-gate-precedent
+    binding: 'capability→producer (substrate) — cmd_eval Severity::Error exit gate (main.rs:1661 region) + build_is_success (main.rs:2286, task 4458); ε converges check via one shared helper'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'CHECK_ERROR_EXIT_ALLOWLIST'
+      paths:
+      - crates/reify-cli/src/main.rs
+      expect: present
+  - name: bolt-ons-subsumed-and-deleted
+    binding: 'capability→producer (this leaf) — GdtIllegalModifier code-match (~:672) + E_DFM_ message-prefix (dfm_has_error_diagnostic ~:688/:2580) both match Error-severity only, so the general gate subsumes them'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'dfm_has_error_diagnostic'
+      paths:
+      - crates/reify-cli/src/main.rs
+      expect: absent
+  - name: outlier-baseline-real
+    binding: 'signal premise (rejection-mechanism, G6 branch 4) — #5386 probe: error text printed, exit 0; finish_check (main.rs:2719) decides exit from constraint outcome alone. The asserted post-ε rejection (exit 1) is delivered BY this leaf; baseline silent-accept bound as the gap'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: exit-code behaviour asserted by ε's e2e on the #5386 repro shape (boundary rows 5-7)
+  - name: healthy-path-error-exists
+    binding: 'signal premise — code-less Error "no registered compute trampoline" on kernel-less FEA check (engine_compute.rs:654, engine_admin.rs:1519, engine_eval.rs:8301); disposition owned by #5311 (pending); the seed entry cites it'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: seed-entry extent is discovered by the corpus run; the trampoline entry is asserted by ε's kernel-less-FEA e2e (still exit 0)
+- label: "ζ"
+  task_id: 5404
+  title: 'Burn the check error-exit allowlist to zero (clear all seeded entries per their dispositions)'
+  capabilities:
+  - name: producers-upstream
+    binding: 'DAG-direction — ζ ← ε (5403: mechanism + seeded entries) and ζ ← #5311 (trampoline demotion); no capability owed by a downstream task'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: dependency-graph property, wired via add_dependency
+  - name: disposition-always-exists
+    binding: 'policy (INV-SF-2 corollary) — an Error expected on a healthy path is by definition demotable/recodable, so ζ always converges to an empty list (deep fixes spawn follow-ups + re-cite, PRD §11.1)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: policy fact; end state pinned by the empty-table ratchet test
+- label: "η"
+  task_id: 5405
+  title: 'reify-audit PDIAG detector: codes-mandatory + baseline ratchet + severity policy doc (INV-SF-6)'
+  capabilities:
+  - name: pattern-module-substrate
+    binding: 'capability→producer (this leaf on the ptodo.rs precedent) — reify-audit per-pattern module layout + PTODO hard-gate infra (tests/infra/test_reify_audit_ptodo.sh)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'PDIAG'
+      paths:
+      - crates/reify-audit/src/lib.rs
+      expect: present
+  - name: infra-gate-registered-same-diff
+    binding: 'drift-guard (overlay rule, esc-4914-162 precedent) — the new tests/infra/test_reify_audit_pdiag.sh must carry its run-all-classification.manifest bucket row in the same diff'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'test_reify_audit_pdiag'
+      paths:
+      - tests/infra/run-all-classification.manifest
+      expect: present
+  - name: severity-policy-doc
+    binding: 'capability→producer (this leaf) — docs/notes/diagnostic-severity-policy.md; PDIAG failure message cites it; must agree with #5196 (in-progress) Info-as-debug-tier'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'Error'
+      paths:
+      - docs/notes/diagnostic-severity-policy.md
+      expect: present
+  - name: target-corpus-real
+    binding: 'signal premise — investigation census: ~362 Diagnostic::error/warning ctor sites in reify-eval, 67 with_code; ratchet has a real non-empty denominator'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: baseline-manifest path/format is the implementer's choice; ratchet behaviour asserted by the detector's own infra test
+- label: "ι"
+  task_id: 5406
+  title: '--deny undef flag on reify eval and reify check (opt-in undef strictness)'
+  capabilities:
+  - name: flag-added
+    binding: 'capability→producer (this leaf) — hand-rolled flag-loop precedent (--strict/--explain-undef/--purpose)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '\-\-deny'
+      paths:
+      - crates/reify-cli/src/main.rs
+      expect: present
+  - name: exit-0-baseline-real
+    binding: 'signal premise — probe 2026-07-24: eval on the unbound fixture exits 0 while printing P.d = undef'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: flag-flipped exit asserted by ι's e2e (boundary row 4)
+  - name: census-upstream
+    binding: 'DAG-direction — ι ← α (5399: contains_undef census) and ι ← β (5400: check-side census); deny binds to each command''s default census'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: dependency-graph property, wired via add_dependency

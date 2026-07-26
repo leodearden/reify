@@ -56,9 +56,9 @@ Transform is always rigid (rotation + translation). Sub-structure placement uses
 ```
 point2(x, y)          point3(x, y, z)
 vec2(x, y)            vec3(x, y, z)
-line(start, end)      arc(center, radius, start_angle, end_angle)
-circle(center, radius)
-polygon(points)       rectangle(width, height)
+line_segment(x1, y1, z1, x2, y2, z2)
+arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az)
+polygon(x1, y1, x2, y2, x3, y3, ...)   rectangle(width, height)
 ```
 
 ## Solid Primitives
@@ -84,12 +84,13 @@ vertex coordinates, not auto-centred (see the Anchoring & orientation table belo
 
 ```
 rectangle(width, height)   circle(radius)
-polygon(vertices)          ellipse(semi_major, semi_minor)
+polygon(x1, y1, x2, y2, ...)   ellipse(semi_major, semi_minor)
 rounded_rect(width, depth, corner_r)   -> Surface   // rectangle with the 4 corners rounded
 ```
 
-Note: this `circle(radius)` is the origin-centred 2D-profile form used with `extrude`/`revolve`/etc.
-— distinct from the prelude `circle(center, radius)` above, which places the circle at an explicit center.
+Note: `circle(radius)` is the only `circle` constructor — an origin-centred 2D profile consumed by
+`extrude`/`revolve`/etc. There is no separate center-placed form; `translate` the resulting profile
+to move it off-origin.
 
 `rounded_rect` shares `rounded_box`'s constraint (`corner_r > 0` and `2*corner_r < min(width, depth)`) and the same compile-time-only, constant-args-only enforcement caveat above.
 
@@ -118,7 +119,7 @@ anchor convention changes (e.g. a future `wedge_centered` variant):
 | `rounded_rect` (2D profile) | planar in the **XY plane at z=0**, **centred at origin** | same anchor as `rectangle`; all 4 corners rounded to `corner_r` |
 | `polygon` (2D profile) | planar in the **XY plane at z=0**; position set by its **explicit vertices** — not auto-centred | same consumers as above; a caller-supplied vertex set can sit off-origin, unlike the other 2D profiles |
 | `extrude(profile, distance)` | extrudes along the profile plane's normal, starting at the profile's own z=0 plane | inherits the profile's XY centring |
-| `revolve(profile, axis, angle)` | sweeps the profile about a caller-supplied `axis` | anchor is whatever the profile + axis define — no implicit centring |
+| `revolve(profile, ox, oy, oz, ax, ay, az, angle)` | sweeps the profile about a caller-supplied origin + axis direction (6 scalars) | anchor is whatever the profile + axis define — no implicit centring |
 
 **Rule of thumb:** `box`-family and `sphere`/`torus` are centred; `cylinder`-family (`cylinder`,
 `cone`, `tube`) sits base-first on the origin along +Z; `wedge` sits corner-first in the +octant.

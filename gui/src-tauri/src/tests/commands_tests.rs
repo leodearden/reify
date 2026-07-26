@@ -23,6 +23,38 @@ fn make_loaded_session() -> EngineSession {
     session
 }
 
+/// Shared 3-level nested-composed fixture (task 5348). `Top` composes two `Mid`
+/// subs; each `Mid` composes two `Leaf` subs; each `Leaf` owns a self-contained
+/// box. This yields 4 independent leaf realizations at the composed dotted paths
+/// `Top.a.p` / `Top.a.q` / `Top.b.p` / `Top.b.q` — 3 nesting levels, matching the
+/// repro's `Printer.motion.head_block` depth.
+///
+/// Leaf geometry is self-contained (a plain `box`, no cross-sub `GeomRef`), so no
+/// realization references `self.inner.body`; that would trip the documented v0.1
+/// nested sub-of-sub override scope boundary (cross_sub_geometry_e2e.rs:1583-1672).
+const NESTED_COMPOSED_SRC: &str = r#"pub structure Leaf {
+    let g = box(10mm, 10mm, 10mm)
+}
+pub structure Mid {
+    sub p = Leaf()
+    sub q = Leaf()
+}
+pub structure Top {
+    sub a = Mid()
+    sub b = Mid()
+}"#;
+
+/// Build an `EngineSession` (MockGeometryKernel + SimpleConstraintChecker) with
+/// [`NESTED_COMPOSED_SRC`] loaded — the shared nested-composed fixture for the
+/// full-scene debug-read tests (task 5348).
+fn make_nested_composed_session() -> EngineSession {
+    let mut session = make_session();
+    session
+        .load_from_source(NESTED_COMPOSED_SRC, "nested_composed")
+        .expect("load_from_source of NESTED_COMPOSED_SRC should succeed");
+    session
+}
+
 #[test]
 fn app_state_constructible() {
     let session = make_loaded_session();
@@ -890,6 +922,223 @@ fn engine_state_json_surfaces_demand_prune_measurement_and_last_dispatch_count_p
         dispatch.is_u64(),
         "last_dispatch_count_post_refresh must be an unsigned integer; got {dispatch:?}"
     );
+}
+
+/// step-3 (task 5348): the debug-MCP `engine_state` tool (via `engine_state_json`)
+/// must report the FULL realized scene, not the selective incremental delta, once
+/// the frontend has flipped production demand to selective.
+///
+/// On the nested-composed fixture, `engine_state_json` before any selective sync
+/// projects the complete cold full-scope scene (n meshes). After `sync_demand`
+/// hides one leaf branch (flipping production demand selective), `engine_state_json`
+/// must STILL report n meshes — it routes through `build_gui_state_full_scene`.
+///
+/// RED until step-4 switches `engine_state_json` to `build_gui_state_full_scene`:
+/// today it calls the selective `build_gui_state`, so the post-sync projection is
+/// the under-reporting delta (< n) — assertion-failure RED.
+#[test]
+fn engine_state_json_reports_full_scene_under_selective_demand() {
+    use crate::commands::engine_state_json;
+
+    let mut session = make_nested_composed_session();
+
+    // Cold full-scope projection = the complete scene.
+    let cold = engine_state_json(&mut session).expect("cold engine_state_json should succeed");
+    let cold_meshes = cold["meshes"].as_array().expect("meshes must be an array");
+    let n = cold_meshes.len();
+    assert!(
+        n >= 4,
+        "nested-composed fixture must project the 4 leaf bodies; got {n}"
+    );
+    let all_paths: Vec<String> = cold_meshes
+        .iter()
+        .map(|m| {
+            m["entity_path"]
+                .as_str()
+                .expect("each mesh must carry an entity_path string")
+                .to_string()
+        })
+        .collect();
+
+    // Hide one leaf branch → flip production demand SELECTIVE.
+    let hidden = all_paths
+        .last()
+        .expect("cold scene must have at least one mesh")
+        .clone();
+    let visible: Vec<String> = all_paths.iter().filter(|p| **p != hidden).cloned().collect();
+    session.sync_demand(&visible);
+
+    // The engine_state tool must report the FULL scene, not the selective delta.
+    let after = engine_state_json(&mut session).expect("post-sync engine_state_json should succeed");
+    assert_eq!(
+        after["meshes"]
+            .as_array()
+            .expect("meshes must be an array")
+            .len(),
+        n,
+        "engine_state must report the full realized scene under selective demand, not the delta"
+    );
+}
+
+/// step-5 (task 5348): the PRIMARY acceptance regression test — the debug-MCP
+/// `mesh_stats` tool (via the extracted `commands::mesh_stats_json`) must report a
+/// mesh-stats entry per rendered body == the scene's body count, on a composed
+/// fixture with nested subs at 3+ levels, even under selective demand.
+///
+/// Mirrors step-3 but through `mesh_stats_json`, and additionally pins the
+/// per-entry shape parity with the current `handle_mesh_stats` output.
+///
+/// RED until step-6 extracts `commands::mesh_stats_json` (compile-error RED).
+#[test]
+fn mesh_stats_json_reports_full_scene_under_selective_demand() {
+    use crate::commands::mesh_stats_json;
+
+    let mut session = make_nested_composed_session();
+
+    // Cold full-scope projection = the complete scene.
+    let cold = mesh_stats_json(&mut session).expect("cold mesh_stats_json should succeed");
+    let cold_meshes = cold["meshes"].as_array().expect("meshes must be an array");
+    let n = cold_meshes.len();
+    assert!(
+        n >= 4,
+        "nested-composed fixture must project the 4 leaf bodies; got {n}"
+    );
+    let all_paths: Vec<String> = cold_meshes
+        .iter()
+        .map(|m| {
+            m["entity_path"]
+                .as_str()
+                .expect("each mesh must carry an entity_path string")
+                .to_string()
+        })
+        .collect();
+
+    // Hide one leaf branch → flip production demand SELECTIVE.
+    let hidden = all_paths
+        .last()
+        .expect("cold scene must have at least one mesh")
+        .clone();
+    let visible: Vec<String> = all_paths.iter().filter(|p| **p != hidden).cloned().collect();
+    session.sync_demand(&visible);
+
+    // mesh_stats must report the FULL scene (n entries), not the selective delta.
+    let after = mesh_stats_json(&mut session).expect("post-sync mesh_stats_json should succeed");
+    let after_meshes = after["meshes"].as_array().expect("meshes must be an array");
+    assert_eq!(
+        after_meshes.len(),
+        n,
+        "mesh_stats entry count must equal the scene's rendered body count under selective demand"
+    );
+
+    // Per-entry shape parity with handle_mesh_stats.
+    for entry in after_meshes {
+        for key in [
+            "entity_path",
+            "vertex_count",
+            "face_count",
+            "bounding_box",
+            "element_kind_count",
+        ] {
+            assert!(
+                entry.get(key).is_some(),
+                "each mesh_stats entry must carry '{key}'; got {entry:?}"
+            );
+        }
+    }
+}
+
+/// step-6 amendment (task 5348, reviewer test-coverage): the full-scene
+/// regression test above only checks key *presence*, and its plain-box fixtures
+/// all carry `element_kind: None`, so their `element_kind_count` is always the
+/// empty object `{}`. That never exercises `mesh_stats_json`'s populated
+/// byte→string-key histogram projection — a regression that mis-serialized a
+/// non-empty histogram would slip through.
+///
+/// The FEA shell flexure fixture tessellates (under `MockGeometryKernel`) to a
+/// body mesh with an all-shell `element_kind` (`vec![1; face_count]`, see
+/// `build_gui_state_shell_flexure_populates_element_kind_and_von_mises_top` in
+/// engine_tests.rs), so `mesh_stats_json` must emit a NON-empty, string-keyed
+/// `element_kind_count` object — exactly `{"1": face_count}` — whose counts
+/// partition the mesh's faces. This pins the full byte→JSON-key mapping, not just
+/// the presence of the key.
+#[test]
+fn mesh_stats_json_emits_populated_element_kind_histogram() {
+    use crate::commands::mesh_stats_json;
+
+    let source = include_str!("../../../../examples/fea_shell_flexure.ri");
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(source, "FeaShellFlexure")
+        .expect("load_from_source must succeed for fea_shell_flexure.ri");
+
+    let stats = mesh_stats_json(&mut session).expect("mesh_stats_json should succeed");
+    let meshes = stats["meshes"].as_array().expect("meshes must be an array");
+
+    // The shell body's stats entry is the one whose histogram object is non-empty
+    // (the plain-box meshes all serialize `element_kind_count` as `{}`).
+    let shell_entry = meshes
+        .iter()
+        .find(|entry| {
+            entry["element_kind_count"]
+                .as_object()
+                .is_some_and(|hist| !hist.is_empty())
+        })
+        .expect(
+            "FEA shell flexure must yield a mesh_stats entry with a populated \
+             element_kind histogram (all-shell body)",
+        );
+
+    let hist = shell_entry["element_kind_count"]
+        .as_object()
+        .expect("element_kind_count must serialize as a JSON object");
+    let face_count = shell_entry["face_count"]
+        .as_u64()
+        .expect("face_count must be a JSON number");
+
+    // Byte→string-key mapping contract: keys are decimal-stringified `u8` bytes,
+    // values are positive counts. A mis-serialized populated histogram (wrong key
+    // type, dropped/duplicated counts) fails here — the full-scene test's
+    // key-presence check on box fixtures never reaches this branch.
+    for (key, value) in hist {
+        assert!(
+            key.parse::<u8>().is_ok(),
+            "element_kind_count keys must be stringified u8 bytes; got {key:?}"
+        );
+        assert!(
+            value.as_u64().is_some_and(|c| c > 0),
+            "each histogram count must be a positive JSON number; got {value:?} for {key:?}"
+        );
+    }
+
+    // The histogram partitions the faces: its counts sum to face_count, and since
+    // every face is a shell triangle (byte 1) it is exactly `{"1": face_count}`.
+    let hist_total: u64 = hist.values().filter_map(serde_json::Value::as_u64).sum();
+    assert_eq!(
+        hist_total, face_count,
+        "element_kind histogram counts must partition the mesh's faces (sum == face_count)"
+    );
+    assert_eq!(
+        hist.get("1").and_then(serde_json::Value::as_u64),
+        Some(face_count),
+        "an all-shell body must classify every face under the '1' (shell) key; got {hist:?}"
+    );
+
+    // The shell body has vertices, so its `bounding_box` is the non-null
+    // `{min, max}` branch (not the zero-vertex `null` branch) — assert its shape,
+    // which the full-scene test's `bounding_box` key-presence check (satisfied
+    // even by `null`) cannot distinguish.
+    let bbox = shell_entry["bounding_box"]
+        .as_object()
+        .expect("a mesh with vertices must carry a non-null {min,max} bounding_box");
+    for key in ["min", "max"] {
+        assert_eq!(
+            bbox[key].as_array().map(|a| a.len()),
+            Some(3),
+            "bounding_box.{key} must be a 3-element array"
+        );
+    }
 }
 
 /// Two-body, constraint-free, param-driven fixture (mirrors the engine-side

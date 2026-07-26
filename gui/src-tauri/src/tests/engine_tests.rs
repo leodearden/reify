@@ -199,6 +199,42 @@ fn make_session() -> EngineSession {
     EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
 }
 
+/// Shared 3-level nested-composed fixture (task 5348). `Top` composes two `Mid`
+/// subs; each `Mid` composes two `Leaf` subs; each `Leaf` owns a self-contained
+/// box. This yields 4 independent leaf realizations at the composed dotted paths
+/// `Top.a.p` / `Top.a.q` / `Top.b.p` / `Top.b.q` — 3 nesting levels, matching the
+/// repro's `Printer.motion.head_block` depth.
+///
+/// Leaf geometry is self-contained (a plain `box`, no cross-sub `GeomRef`), so no
+/// realization references `self.inner.body`; that would trip the documented v0.1
+/// nested sub-of-sub override scope boundary (cross_sub_geometry_e2e.rs:1583-1672).
+const NESTED_COMPOSED_SRC: &str = r#"pub structure Leaf {
+    let g = box(10mm, 10mm, 10mm)
+}
+pub structure Mid {
+    sub p = Leaf()
+    sub q = Leaf()
+}
+pub structure Top {
+    sub a = Mid()
+    sub b = Mid()
+}"#;
+
+/// Build an `EngineSession` (MockGeometryKernel + SimpleConstraintChecker) with
+/// [`NESTED_COMPOSED_SRC`] loaded — the shared nested-composed fixture for the
+/// full-scene debug-read tests (task 5348). Mirrors the `EngineSession::new`
+/// usage at the `sync_demand` harness below.
+fn make_nested_composed_session() -> EngineSession {
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session
+        .load_from_source(NESTED_COMPOSED_SRC, "nested_composed")
+        .expect("load_from_source of NESTED_COMPOSED_SRC should succeed");
+    session
+}
+
 #[test]
 fn get_mechanism_descriptors_extracts_prismatic_and_revolute_joints() {
     // Step-5 RED: load a 2-body open-chain mechanism and assert the descriptor
@@ -1912,20 +1948,24 @@ fn build_gui_state_mesh_data_structure_matches_kernel_output() {
     assert!(!state.meshes.is_empty(), "should have at least one mesh");
     let mesh = &state.meshes[0];
 
-    // MockGeometryKernel returns: vertices = [0,0,0, 1,0,0, 0,1,0] (9 floats = 3 vertices)
+    // MockGeometryKernel returns `mocks::minimal_valid_mesh(true)`: a closed
+    // unit tetrahedron (4 vertices, 4 faces). It used to be a single open
+    // triangle, which `Mesh::validate` rejects under `MeshInvariant::Closed`
+    // (3 boundary edges) — see task #5105 (INV-GEO-1) for why the shared
+    // fixture had to become contract-valid. This test asserts the GuiState
+    // mesh-data *structure* mirrors the kernel output, so the counts are
+    // re-grounded on the tetra rather than pinned to the old shape.
     assert_eq!(
         mesh.vertices.len(),
-        9,
-        "expected 9 vertex floats (3 vertices × 3 coords)"
+        12,
+        "expected 12 vertex floats (4 vertices × 3 coords)"
     );
-    // indices = [0, 1, 2] (1 triangle)
-    assert_eq!(mesh.indices.len(), 3, "expected 3 indices (1 triangle)");
-    // normals = Some([0,0,1, 0,0,1, 0,0,1]) (9 floats)
+    assert_eq!(mesh.indices.len(), 12, "expected 12 indices (4 triangles)");
     assert!(mesh.normals.is_some(), "expected normals to be present");
     assert_eq!(
         mesh.normals.as_ref().unwrap().len(),
-        9,
-        "expected 9 normal floats"
+        12,
+        "expected 12 normal floats (4 normals × 3 coords)"
     );
     // entity_path should be non-empty
     assert!(
@@ -11243,9 +11283,9 @@ fn apply_shell_channels_leaves_non_matching_mesh_untouched() {
 
 /// element_kind_count histograms the per-face bytes; None → empty map.
 ///
-/// `debug_server` is gated behind the `gui` feature, so this test compiles and
-/// runs only under `--features gui` (the OCCT/Tauri build).
-#[cfg(feature = "gui")]
+/// `element_kind_count` was moved to the ungated `commands` module (task 5348) so
+/// the headless `mesh_stats_json` can reuse it, so this test no longer needs the
+/// `gui` feature.
 #[test]
 fn element_kind_count_histograms_element_kind_bytes() {
     let make = |element_kind: Option<Vec<u8>>| crate::types::MeshData {
@@ -11262,21 +11302,21 @@ fn element_kind_count_histograms_element_kind_bytes() {
         appearance: None,
     };
 
-    let all_shell = crate::debug_server::element_kind_count(&make(Some(vec![1, 1, 1])));
+    let all_shell = crate::commands::element_kind_count(&make(Some(vec![1, 1, 1])));
     assert_eq!(
         all_shell,
         std::collections::BTreeMap::from([(1u8, 3usize)]),
         "three shell faces → {{1: 3}}"
     );
 
-    let mixed = crate::debug_server::element_kind_count(&make(Some(vec![0, 1, 1])));
+    let mixed = crate::commands::element_kind_count(&make(Some(vec![0, 1, 1])));
     assert_eq!(
         mixed,
         std::collections::BTreeMap::from([(0u8, 1usize), (1u8, 2usize)]),
         "mixed faces → {{0: 1, 1: 2}}"
     );
 
-    let none = crate::debug_server::element_kind_count(&make(None));
+    let none = crate::commands::element_kind_count(&make(None));
     assert!(none.is_empty(), "None element_kind → empty histogram");
 }
 
@@ -11532,6 +11572,381 @@ fn get_entity_tree_aux_realization_default_visible_false() {
         !blank_node.default_visible,
         "aux `let blank` realization must have default_visible == false"
     );
+}
+
+// ---- #5195: consumed-downstream intermediates are hidden by default ----
+
+/// #5195 step-1 RED: an m5-flange-shaped template (modelled on
+/// `examples/m5_geometry_flange.ri:4-22`) whose `let body` / `let hole` /
+/// `let holes` realizations are all consumed downstream by the terminal
+/// `param geometry : Solid = difference(body, holes)`.
+///
+/// Intermediate (consumed) realizations must be hidden by default so the
+/// viewport shows only the finished part; the terminal `geometry`
+/// realization stays visible.
+///
+/// Fails today because `build_template_node` only checks `aux`
+/// (`default_visible: !(aux_ancestor || real.is_aux)`), so all four are true.
+#[test]
+fn get_entity_tree_consumed_realizations_default_visible_false() {
+    let source = r#"structure def Flange : Rigid {
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+
+    let body = cylinder(60mm, 12mm)
+    let hole = translate(cylinder(4mm, 12mm), 45mm, 0mm, 0mm)
+    let holes = circular_pattern(hole, 0mm, 0mm, 0mm, 0, 0, 1, 8, 360deg)
+    param geometry : Solid = difference(body, holes)
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "flange").expect("load");
+
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "Flange")
+        .expect("Flange root must exist");
+
+    let realization = |name: &str| -> &crate::types::EntityTreeNode {
+        root.children
+            .iter()
+            .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("realization node for '{name}' must be present"))
+    };
+
+    // `body` is consumed by `difference(body, holes)`.
+    assert!(
+        !realization("body").default_visible,
+        "`let body` is consumed by `difference(body, holes)` — must be hidden by default"
+    );
+    // `hole` is consumed by `circular_pattern(hole, ...)`.
+    assert!(
+        !realization("hole").default_visible,
+        "`let hole` is consumed by `circular_pattern(hole, ...)` — must be hidden by default"
+    );
+    // `holes` is consumed by `difference(body, holes)`.
+    assert!(
+        !realization("holes").default_visible,
+        "`let holes` is consumed by `difference(body, holes)` — must be hidden by default"
+    );
+    // The terminal realization is consumed by nothing → stays visible.
+    assert!(
+        realization("geometry").default_visible,
+        "terminal `param geometry : Solid` is consumed by nothing — must stay visible"
+    );
+}
+
+// ---- #5195: trait_geometry propagates to the realization node ----
+
+/// #5195 step-3 RED: the realization node for a `Physical` structure's
+/// `geometry` member must carry `trait_geometry == true`, matching its
+/// value-cell sibling (`build_template_node`'s value-cell loop already sets
+/// `is_geometry_member && parent_has_physical`). A non-trait `let helper`
+/// realization stays `false`.
+///
+/// Fails today because the realization loop hard-codes `trait_geometry: false`
+/// for every realization.
+///
+/// `: Physical` is spelled literally so the existing `trait_bounds` substring
+/// heuristic fires — `trait_bounds` holds DECLARED names only, so a `: Rigid`
+/// structure (which refines Physical) does NOT match. That gap is pre-existing
+/// on the value-cell side and deliberately out of scope here; the feature's
+/// observable does not depend on it (see the consumed-downstream test above,
+/// which uses `: Rigid` and passes regardless).
+///
+/// `helper` is consumed by nothing, so it also stays `default_visible == true`
+/// — this test is independent of the consumed-downstream rule.
+#[test]
+fn get_entity_tree_realization_trait_geometry_propagates() {
+    let source = r#"structure def Widget : Physical {
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+
+    param geometry : Solid = box(10mm, 10mm, 10mm)
+    let helper = box(5mm, 5mm, 5mm)
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "widget").expect("load");
+
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "Widget")
+        .expect("Widget root must exist");
+
+    let realization = |name: &str| -> &crate::types::EntityTreeNode {
+        root.children
+            .iter()
+            .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("realization node for '{name}' must be present"))
+    };
+
+    assert!(
+        realization("geometry").trait_geometry,
+        "the `geometry` realization of a `: Physical` structure must have \
+         trait_geometry == true, matching its value-cell sibling"
+    );
+    assert!(
+        !realization("helper").trait_geometry,
+        "a plain `let helper` realization must have trait_geometry == false"
+    );
+
+    // The value-cell sibling is the anchor this mirrors — assert the two agree
+    // so the realization node cannot drift from the existing cell heuristic.
+    let geometry_cell = root
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Widget.geometry" && n.kind != "realization")
+        .expect("value-cell node for 'geometry' must be present");
+    assert!(
+        geometry_cell.trait_geometry,
+        "value-cell `geometry` must already have trait_geometry == true \
+         (the existing heuristic this test pins the realization node against)"
+    );
+}
+
+/// #5195 step-11 end-to-end: the task's stated observable, asserted against the
+/// COMMITTED example rather than a hand-modelled copy of it.
+///
+/// `examples/m5_geometry_flange.ri` is the file a user opens to see this
+/// feature. Loading it through the real pipeline closes the gap between "the
+/// shape I wrote in a test" and "the shape that actually ships" — the
+/// inline-source test above could stay green while the example drifted.
+///
+/// Observable: the viewport shows only the finished flange. `body`, `hole` and
+/// `holes` are construction geometry, listed in the outline but hidden until
+/// toggled; the terminal `geometry` is the part.
+///
+/// Uses the `CARGO_MANIFEST_DIR`-relative idiom of
+/// `examples_multi_pane_viewport_realizes_section8_display_routing` (and
+/// `reify-compiler/tests/examples_smoke.rs`).
+#[test]
+fn examples_m5_geometry_flange_hides_consumed_intermediates() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m5_geometry_flange.ri");
+    let contents =
+        std::fs::read_to_string(path).expect("examples/m5_geometry_flange.ri must exist");
+
+    let mut session = make_session();
+    session
+        .load_from_source(&contents, "m5_geometry_flange")
+        .expect("the committed flange example must compile");
+
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "BoltFlange")
+        .expect("BoltFlange root must exist");
+
+    let visible: Vec<&str> = root
+        .children
+        .iter()
+        .filter(|n| n.kind == "realization" && n.default_visible)
+        .map(|n| n.display_name.as_deref().unwrap_or(&n.entity_path))
+        .collect();
+
+    // Asserted as a SET rather than per-name so a newly-added intermediate that
+    // this rule fails to classify shows up as an extra visible body.
+    assert_eq!(
+        visible,
+        vec!["geometry"],
+        "only the finished part may be visible by default; got {visible:?}"
+    );
+
+    // …and the intermediates are still LISTED (hidden ≠ absent — the outline
+    // must offer them to toggle).
+    for name in ["body", "hole", "holes"] {
+        let node = root
+            .children
+            .iter()
+            .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("intermediate '{name}' must still be listed in the tree"));
+        assert!(
+            !node.default_visible,
+            "intermediate '{name}' must be hidden by default"
+        );
+    }
+
+    // ── Real-tree pin for the frontend's `Geometry` type-name rule (#5195) ──
+    //
+    // `GEOMETRY_TYPE_NAME_RE` in gui/src/stores/autoViewGenerator.ts gained the
+    // `Geometry` token this task; before that the whole `kind === 'let'` rule
+    // was dead against real trees. Every vitest fixture for it hand-writes
+    // `type_name: 'Geometry'`, so this asserts the REAL compiled tree actually
+    // emits that spelling — if the backend ever Displays `Solid` (or anything
+    // else) here, the frontend rule silently goes dead again and only this
+    // assertion notices.
+    let value_cell = |member: &str| -> &crate::types::EntityTreeNode {
+        let path = format!("BoltFlange.{member}");
+        root.children
+            .iter()
+            .find(|n| n.entity_path == path && n.kind != "realization")
+            .unwrap_or_else(|| panic!("value-cell node '{path}' must be present"))
+    };
+    for member in ["body", "hole", "holes", "geometry"] {
+        assert_eq!(
+            value_cell(member).type_name.as_deref(),
+            Some("Geometry"),
+            "value cell '{member}' must Display as \"Geometry\" — the token the \
+             frontend rule matches on"
+        );
+    }
+    // The `let` cells are the ones rule 2 (`kind === 'let'` + geometry type →
+    // 'hidden') reaches; `param geometry` is a `param`, so rule 2 never touches
+    // it and it stays shown. That asymmetry is what makes the newly-live rule
+    // safe here: nothing the user needs to see is hidden by it alone.
+    for member in ["body", "hole", "holes"] {
+        assert_eq!(
+            value_cell(member).kind,
+            "let",
+            "'{member}' must be a `let` value cell (the kind rule 2 gates on)"
+        );
+    }
+    assert_eq!(
+        value_cell("geometry").kind,
+        "param",
+        "`param geometry` must stay a `param` cell so the frontend's let-only \
+         rule 2 cannot hide the finished part's outline row"
+    );
+
+    // ── `: Rigid` does NOT set trait_geometry (KNOWN LIMITATION pin) ──
+    //
+    // `parent_has_physical` matches DECLARED trait names only, so the
+    // refinement `Rigid : Physical` is invisible to it and every committed
+    // example — including this one — evaluates the flag to false. Pinned at the
+    // CURRENT value deliberately: the follow-up that resolves the refinement
+    // chain via `reify_eval::conforms_to_trait` must land as a visible flip of
+    // this assertion rather than silently. See `build_template_node`'s
+    // `parent_has_physical` comment.
+    //
+    // The observable does not depend on the flag: `geometry` is un-consumed, so
+    // `default_visible == true` shows it either way (asserted above).
+    assert!(
+        !root
+            .children
+            .iter()
+            .any(|n| n.trait_geometry),
+        "no BoltFlange node may report trait_geometry while the heuristic is \
+         declared-name-only and the example declares `: Rigid`; got {:?}",
+        root.children
+            .iter()
+            .filter(|n| n.trait_geometry)
+            .map(|n| &n.entity_path)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// #5195 amendment (reviewer: robustness): a CONTAINER-typed geometry binding
+/// consumes its siblings too.
+///
+/// `let ribs = [rib_a, rib_b]` is typed `List<Geometry>`, not `Type::Geometry`.
+/// The original exact-variant filter skipped such a cell entirely, so `rib_a`
+/// and `rib_b` stayed classified as products and rendered as stray bodies
+/// beside the finished part. `is_geometry_valued` recurses into containers.
+///
+/// `shell` is consumed by nothing and keeps the template off the consumed-rule
+/// floor, so this test measures the container path in isolation rather than the
+/// floor's fallback.
+#[test]
+fn get_entity_tree_container_typed_binding_consumes_its_siblings() {
+    let source = r#"structure def RibbedPlate {
+    let rib_a = box(10mm, 2mm, 2mm)
+    let rib_b = box(2mm, 10mm, 2mm)
+    let ribs = [rib_a, rib_b]
+    let shell = box(20mm, 20mm, 20mm)
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "ribbed_plate").expect("load");
+
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "RibbedPlate")
+        .expect("RibbedPlate root must exist");
+
+    // PREMISE PIN: `ribs` must really be a CONTAINER type, not bare
+    // `Type::Geometry`. Without this the test could pass for the wrong reason
+    // (the old exact-variant filter would have caught a `Geometry`-typed cell
+    // too) and would silently stop covering the container path.
+    let ribs_cell = root
+        .children
+        .iter()
+        .find(|n| n.entity_path == "RibbedPlate.ribs" && n.kind != "realization")
+        .expect("value-cell node for 'ribs' must be present");
+    assert_eq!(
+        ribs_cell.type_name.as_deref(),
+        Some("List<Geometry>"),
+        "the consuming cell must be container-typed — that is the whole point of \
+         this test; got {:?}",
+        ribs_cell.type_name
+    );
+
+    let realization = |name: &str| -> &crate::types::EntityTreeNode {
+        root.children
+            .iter()
+            .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("realization node for '{name}' must be present"))
+    };
+
+    for name in ["rib_a", "rib_b"] {
+        assert!(
+            !realization(name).default_visible,
+            "'{name}' is collected by the `List<Geometry>`-typed `ribs`, so it is \
+             an intermediate and must be hidden by default"
+        );
+    }
+    assert!(
+        realization("shell").default_visible,
+        "'shell' is consumed by nothing and must stay visible"
+    );
+}
+
+/// #5195 amendment (reviewer: robustness): the consumed rule has a FLOOR.
+///
+/// A geometry-valued sibling may DERIVE from the finished part rather than feed
+/// it — `let clearance = translate(geometry, ...)` kept for a clearance check
+/// puts `geometry` in the consumed set. Without a floor the finished part is
+/// hidden and only the helper renders: a blank-looking viewport, no diagnostic.
+///
+/// Guard 1 (the trait terminal `geometry` is never consumed-hidden) is what
+/// this test pins; guard 2 (never hide EVERY realization) is a backstop for
+/// templates with no `geometry` terminal at all.
+#[test]
+fn get_entity_tree_terminal_geometry_survives_a_derived_consumer() {
+    let source = r#"structure def Derived : Physical {
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+
+    let body = box(20mm, 20mm, 20mm)
+    let notch = box(5mm, 5mm, 30mm)
+    param geometry : Solid = difference(body, notch)
+    let clearance = translate(geometry, 0mm, 0mm, 30mm)
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "derived").expect("load");
+
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "Derived")
+        .expect("Derived root must exist");
+
+    let realization = |name: &str| -> &crate::types::EntityTreeNode {
+        root.children
+            .iter()
+            .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("realization node for '{name}' must be present"))
+    };
+
+    assert!(
+        realization("geometry").default_visible,
+        "the trait terminal must survive being referenced by a DERIVED sibling \
+         (`let clearance = translate(geometry, ...)`) — hiding it would leave the \
+         viewport showing only the helper"
+    );
+    // The rule is floored, not disabled: genuine intermediates still hide.
+    for name in ["body", "notch"] {
+        assert!(
+            !realization(name).default_visible,
+            "'{name}' feeds `difference(body, notch)` and must still be hidden"
+        );
+    }
 }
 
 /// step-3 RED: a root assembly with a plain `sub part : Part at <pose>` and an
@@ -13587,6 +14002,84 @@ fn sync_demand_populates_production_demand_selectively() {
     }
 }
 
+/// step-1 (task 5348): `build_gui_state_full_scene` returns the COMPLETE realized
+/// scene even after the frontend has flipped PRODUCTION demand to selective — the
+/// fix for the debug-MCP `mesh_stats`/`engine_state` under-report.
+///
+/// On the 3-level nested-composed fixture (`Top` → `Mid` → `Leaf`, 4 leaf
+/// realizations), the cold full-scope `build_gui_state` is the complete scene the
+/// frontend receives. Hiding one leaf branch via `sync_demand` (mirrors the
+/// frontend post-render selective flip) makes the NEXT `build_gui_state` return an
+/// incremental DELTA that under-reports the scene (DELTA CONTRACT,
+/// engine_build.rs:5440-5465). `build_gui_state_full_scene` must instead force the
+/// cold full-scope override and return every realization's mesh, then RESTORE the
+/// selective scope so subsequent warm edits stay incremental.
+///
+/// RED until step-2 adds `EngineSession::build_gui_state_full_scene` (compile-error
+/// RED, consistent with the sync_demand "RED until step-10" house pattern above).
+#[test]
+fn build_gui_state_full_scene_returns_complete_scene_under_selective_demand() {
+    let mut session = make_nested_composed_session();
+
+    // (1) Cold-build ground truth: production demand is full_scope right after
+    //     load, so this is the COMPLETE scene the frontend receives.
+    let cold = session
+        .build_gui_state()
+        .expect("cold build_gui_state should succeed");
+    let n = cold.meshes.len();
+    assert!(
+        n >= 4,
+        "nested-composed fixture must realize the 4 leaf bodies (Top.a.p/a.q/b.p/b.q); got {n}"
+    );
+    let all_paths: Vec<String> = cold.meshes.iter().map(|m| m.entity_path.clone()).collect();
+
+    // (2) Hide exactly one leaf branch: sync all OTHER entity_paths as the visible
+    //     set → flips PRODUCTION demand SELECTIVE (mirrors the frontend sync).
+    let hidden_path = all_paths
+        .last()
+        .expect("cold scene must have at least one mesh")
+        .clone();
+    let visible: Vec<String> = all_paths
+        .iter()
+        .filter(|p| **p != hidden_path)
+        .cloned()
+        .collect();
+    session.sync_demand(&visible);
+
+    // (3) The selective `build_gui_state` under-reports: absent HIDDEN + HASH-EXEMPT
+    //     realizations mean the delta carries strictly fewer meshes than the scene.
+    let selective = session
+        .build_gui_state()
+        .expect("selective build_gui_state should succeed");
+    assert!(
+        selective.meshes.len() < n,
+        "selective build_gui_state must under-report the scene (delta); got {} vs cold {n}",
+        selective.meshes.len()
+    );
+
+    // (4) The fix: `build_gui_state_full_scene` returns the COMPLETE scene (== n)
+    //     and the hidden body's entity_path is present.
+    let full = session
+        .build_gui_state_full_scene()
+        .expect("build_gui_state_full_scene should succeed");
+    assert_eq!(
+        full.meshes.len(),
+        n,
+        "full-scene read must return every realized body (the complete cold scene)"
+    );
+    assert!(
+        full.meshes.iter().any(|m| m.entity_path == hidden_path),
+        "full-scene read must include the hidden body's entity_path {hidden_path:?}"
+    );
+
+    // (5) The full-scene read is READ-ONLY: it restores the frontend's selective
+    //     scope (full_scope OFF) so subsequent warm edits stay incremental.
+    assert!(
+        !session.core_state_for_test().engine().demand_is_full_scope(),
+        "build_gui_state_full_scene must restore the selective (non-full-scope) demand state"
+    );
+}
+
 // --- ValueData::last_substantive_value population (demand-prune prior value, §8 γ #4739) ---
 
 /// step-13 (RED until step-14): after a warm selective build hides body_b, the
@@ -15086,6 +15579,138 @@ fn examples_appearance_viewport_egress_realizes_section8_appearance_contract() {
     assert!(
         (dir_back.style.opacity - dir.style.opacity).abs() < eps,
         "serde round-trip: style.opacity must survive"
+    );
+}
+
+/// #5195 step-14: premise pin for the ADDITIVE DisplayOutput routing rule.
+///
+/// This test CHARACTERIZES already-committed engine behaviour and is expected
+/// to be GREEN on arrival — it is deliberately NOT a RED test. Its two jobs:
+///
+///  (i) Pin the REAL `examples/appearance_viewport_egress.ri` rather than only
+///      a hand-built frontend fixture. That example is the case that broke:
+///      it declares an appearance-only `DisplayOutput(subject: geometry,
+///      style: …)` with NO `pane:` argument, purely to stack a RAL9001 layer-3
+///      override, PLUS an independent `sub raw = RawEgress()` carrying its own
+///      geometry realization that no DisplayOutput ever names.
+///
+/// (ii) Stop the paired vitest fixture from silently drifting away from the
+///      actual wire shape. The frontend assertion is
+///      autoViewGenerator.test.ts::'appearance-only DisplayOutput does not
+///      delete sibling bodies (examples/appearance_viewport_egress.ri shape)'.
+///      If the example or `collect_display_routing` changes, this fails loudly
+///      instead of leaving the vitest fixture testing fiction.
+///
+/// The two assertions together are exactly the additive rule's premise:
+///  (a) an appearance-only DisplayOutput DOES land in `display_panes` carrying
+///      a DEFAULTED `pane: 0` — indistinguishable on the wire from an explicit
+///      `pane: 0` — so a directive proves nothing about visibility intent; and
+///  (b) the `raw` sub's realization is neither aux nor a consumed sibling (the
+///      consumption scan matches BARE same-structure names only, and nothing
+///      references `raw.geometry`), so the engine leaves it `default_visible ==
+///      true` and the frontend must not override that to 'hidden'.
+///
+/// Load harness is the same construction as
+/// `examples_appearance_viewport_egress_realizes_section8_appearance_contract`
+/// above (`SimpleConstraintChecker` + `MockGeometryKernel`, factored into
+/// `make_session()`).
+#[test]
+fn examples_appearance_viewport_egress_display_output_defaults_pane_and_raw_stays_visible() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/appearance_viewport_egress.ri"
+    );
+    let contents =
+        std::fs::read_to_string(path).expect("examples/appearance_viewport_egress.ri must exist");
+
+    let mut session = make_session();
+    let state = session
+        .load_from_source(&contents, "appearance_viewport_egress")
+        .expect("appearance_viewport_egress.ri must compile and eval without hard error");
+
+    // ── (a) appearance-only DisplayOutput → one directive with a DEFAULTED pane 0 ──
+    assert_eq!(
+        state.display_panes.len(),
+        1,
+        "the single appearance-only DisplayOutput must still emit exactly one \
+         DisplayDirective; got {:?}",
+        state.display_panes
+    );
+    let directive = &state.display_panes[0];
+    assert!(
+        directive
+            .subject
+            .starts_with("AppearanceViewportEgress#realization["),
+        "directive subject must resolve to the styled steel body's realization; got {:?}",
+        directive.subject
+    );
+    assert_eq!(
+        directive.pane, 0,
+        "the example passes NO `pane:` argument, yet the hydrated instance always \
+         carries a defaulted pane 0 — this is the wire-level ambiguity that forces \
+         the routing rule to be additive"
+    );
+
+    // ── (b) the unrouted `raw` box realization stays default_visible == true ──
+    let tree = session.get_entity_tree();
+
+    fn collect<'a>(
+        nodes: &'a [crate::types::EntityTreeNode],
+        out: &mut Vec<&'a crate::types::EntityTreeNode>,
+    ) {
+        for n in nodes {
+            out.push(n);
+            collect(&n.children, out);
+        }
+    }
+    let mut all = Vec::new();
+    collect(&tree, &mut all);
+
+    let raw_realization = all
+        .iter()
+        .find(|n| {
+            n.kind == "realization"
+                && n.entity_path
+                    .starts_with("AppearanceViewportEgress.raw#realization[")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "the `sub raw = RawEgress()` realization node must exist; got: {:?}",
+                all.iter().map(|n| &n.entity_path).collect::<Vec<_>>()
+            )
+        });
+
+    assert!(
+        raw_realization.default_visible,
+        "the raw box is neither aux nor consumed by a sibling, so the engine must \
+         leave it visible — additive routing then keeps it on screen even though no \
+         DisplayOutput names it (entity_path {:?})",
+        raw_realization.entity_path
+    );
+
+    // ── (c) the subject ↔ entity_path SEAM (#5195 amendment) ──
+    //
+    // App.tsx builds the routing set as
+    // `new Set(state.displayPanes.map(d => d.subject))` and rule -1 tests it
+    // against `node.entity_path`. That is the ONE place the two string forms
+    // are assumed identical, and nothing else composes them: the frontend
+    // fixtures hard-code matching strings, and (a)/(b) above pin each side
+    // separately. If either format gains a prefix (an instance path, say) the
+    // rule simply stops matching — and because routing is ADDITIVE the failure
+    // is invisible: everything just stays visible. Byte-equality here is the
+    // only thing that would notice.
+    assert!(
+        all.iter()
+            .any(|n| n.kind == "realization" && n.entity_path == directive.subject),
+        "DisplayDirective.subject {:?} must be BYTE-EQUAL to some realization \
+         node's entity_path in the same tree snapshot — App.tsx matches the \
+         routing set against entity_path directly. Realization paths present: \
+         {:?}",
+        directive.subject,
+        all.iter()
+            .filter(|n| n.kind == "realization")
+            .map(|n| &n.entity_path)
+            .collect::<Vec<_>>()
     );
 }
 

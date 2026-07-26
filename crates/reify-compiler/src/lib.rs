@@ -51,6 +51,7 @@ mod parse_signatures;
 pub mod module_dag;
 mod module_pragmas;
 pub mod prelude_context;
+pub(crate) mod recursion_guard;
 pub mod relation_signatures;
 mod scc;
 mod scope;

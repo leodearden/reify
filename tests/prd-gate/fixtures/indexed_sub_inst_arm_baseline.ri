@@ -1,0 +1,13 @@
+/// α regression-floor baseline (indexed-sub-instantiation.md §7 α, decompose
+/// 2026-07-25): the EXISTING instantiation arm — ctor args + `at` pose — must
+/// keep parsing (tree-sitter parse --quiet exit 0, 0 ERROR nodes) after the
+/// indexer-clause grammar delta.
+module inst_arm_baseline
+
+pub structure Pulley {
+    param od : Length = 36mm
+}
+
+structure Rig {
+    sub a = Pulley(od: 20mm) at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+}

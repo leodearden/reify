@@ -1,0 +1,8 @@
+structure def Spec {
+    param major: Length = 8mm
+    let tap = major * 0.8
+}
+structure def Test {
+    let s = Spec(major: 10mm)
+    let drill = s.tap
+}

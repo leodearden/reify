@@ -273,6 +273,24 @@ esac
 _RA_INBOUND_ROLE="${DF_VERIFY_ROLE:-unknown}"
 export DF_VERIFY_ROLE=task
 
+# Chokepoint containment for the sweep-gated release-pass delta skip (task
+# #5280 ζ, merge-gate-riders K4/K5; esc-5280-6 design ruling). Activation wires
+# REIFY_RELEASE_DELTA_SKIP=1 into the orchestrator verify_env, which exports it
+# into the WHOLE merge-gate verify.sh process tree — including this pool. The
+# knob is meant to be consulted exactly ONCE, by the top-level merge verify at
+# plan-build time (verify.sh:1160-1178), and its decision is already baked into
+# the frozen PLAN before any plan line (this run_all.sh launch included)
+# executes. But pool members that re-assert `DF_VERIFY_ROLE=merge` inline to
+# drive their own hermetic `verify.sh --print-plan` fixtures (test_verify_scope.sh
+# MG-B5, test_verify_role_prio.sh C1, and the occt/release/semaphore plan-shape
+# meta-tests) would otherwise inherit the ambient knob and see the release pass
+# wrongly suppressed on a delta-clean fixture — turning the merge gate RED on
+# every delta-clean merge. Neutralize it here for all members, exactly mirroring
+# the DF_VERIFY_ROLE=task normalization above (K4: "never ambient in the pool").
+# Members that legitimately need the knob (the knob's own drift test) set it
+# inline per command, and that per-command assignment still overrides this.
+export REIFY_RELEASE_DELTA_SKIP=0
+
 # Worktree-removal self-check "armed" gate (task #5261, W4e). The merge
 # suite runs `bash run_all.sh` with NO positional arg, so INFRA_DIR ==
 # SCRIPT_DIR and $INFRA_DIR/run_all.sh IS the running script -- present at

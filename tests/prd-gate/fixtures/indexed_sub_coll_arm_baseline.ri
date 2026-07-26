@@ -1,0 +1,13 @@
+/// α regression-floor baseline (indexed-sub-instantiation.md §7 α, decompose
+/// 2026-07-25): the EXISTING collection arm must keep parsing after the
+/// indexer-clause grammar delta.
+module coll_arm_baseline
+
+pub structure Pulley {
+    param od : Length = 36mm
+}
+
+structure Rig {
+    sub xs : List<Pulley>
+    constraint xs.count == 2
+}

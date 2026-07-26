@@ -1,0 +1,13 @@
+enum Fit { Close, Medium, Coarse }
+
+structure def Test {
+    let fit = Fit.Medium
+    param nominal: Length = 5mm
+    let extra = match fit {
+        Close => 0.2mm,
+        Medium => 0.5mm,
+        Coarse => 1.0mm
+    }
+    let hole_d = nominal + extra
+    constraint hole_d > nominal
+}

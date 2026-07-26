@@ -1,0 +1,11 @@
+module silent_undef_unbound_param
+
+// PRD fixture (eradicate-silent-undef.md): the WORKING half of undef
+// provenance today — `reify eval` prints
+//   note: P.d is undef (because: P.w unbound)
+// while `reify check` prints NO undef information at all (cause capture is
+// never enabled on the check path).  Leg A task β closes that gap.
+structure def P {
+    param w : Length
+    let d = w * 2
+}

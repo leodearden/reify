@@ -1,0 +1,16 @@
+// Fixture (γ decompose-phase premise, indexed-sub-instantiation PRD probe #3):
+// `at` on the collection sub arm is rejected LOUDLY today — `reify check`
+// exits 1 with "'at' placement is not supported on collection subs".
+// NEGATIVE-ASSERTION probe: must observe the rejection FIRE (exit_code 1 +
+// diagnostic), never encode as observation=absent.
+module collection_sub_at_placement_rejected
+
+structure def P {
+    param r : Length = 5mm
+    let body = cylinder(r, 10mm)
+}
+
+structure def Rig {
+    sub ps : List<P> at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+    constraint ps.count == 2
+}

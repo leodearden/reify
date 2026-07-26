@@ -312,14 +312,21 @@ structure def BadAsm {
 }
 "#;
     let compiled = compile_source_with_stdlib(SOURCE);
-    let errors = collect_errors(&compiled.diagnostics);
+    // task 5302 α: ctor-site trait conformance (the `sub =` path) now emits at
+    // Severity::Warning under the CTOR_FIELD_CONFORMANCE_SEVERITY knob, not Error.
+    // Filter warnings (was collect_errors). Diagnostic code/message unchanged.
+    let warnings: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
     assert!(
-        errors
+        warnings
             .iter()
             .any(|d| d.message.contains("does not conform to trait")
                 && d.message.contains("ElasticMaterial")),
         "passing a non-conforming `PointLoad()` to an ElasticMaterial-typed param \
-         must produce a trait-conformance error; got: {errors:?}"
+         must produce a trait-conformance warning; got: {warnings:?}"
     );
 }
 

@@ -1,0 +1,17 @@
+// Fixture (γ decompose-phase premise): hand-placed multi-sub posing substrate
+// works today. Two subs of the SAME structure posed at different transform3
+// offsets evaluate cleanly with two real bodies — the hand-placed-twin half of
+// ζ's parity (docs/prds/v0_6/indexed-sub-instantiation.md §7 ζ) is expressible
+// on the current substrate. Mirrors the prj/printer_v01/printer.ri idiom
+// (`sub x = IdlerPulley() at transform3(orient_identity(), vec3(...))`).
+module hand_placed_twin_two_subs_eval
+
+structure def Pulley {
+    param od : Length = 30mm
+    let body = cylinder(od / 2, 8mm)
+}
+
+structure def Rig {
+    sub left  = Pulley() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+    sub right = Pulley() at transform3(orient_identity(), vec3(50mm, 0mm, 0mm))
+}

@@ -384,6 +384,12 @@ assert "D2: --reseed run exits 0" test "$RC" -eq 0
 assert "D2: seed-script WAS invoked" bash -c '[ -s "$1" ]' _ "$D_SEED_LOG"
 assert "D2: seed-script argv includes --fresh-checkout" \
     bash -c 'grep -q -- "--fresh-checkout" "$1"' _ "$D_SEED_LOG"
+# thin holds ${LANE_DIR}.lock on FD 9 (T3, line 236) across the seed call, so
+# the seed must NOT re-acquire it — else it self-refuses under seed-warm-lane.sh's
+# fail-safe lane-lock default (esc-5214/task 5354). thin therefore passes
+# --assume-lane-lock-held so the seed skips its own acquire.
+assert "D2: seed-script argv includes --assume-lane-lock-held (thin already holds the lane lock on FD 9; task 5354)" \
+    bash -c 'grep -q -- "--assume-lane-lock-held" "$1"' _ "$D_SEED_LOG"
 assert "D2: seed-script argv includes the lane_dir" \
     bash -c 'grep -qF "$2" "$1"' _ "$D_SEED_LOG" "$D_LANE_B"
 assert "D2: seed-script observed target ABSENT at invocation (free-before-stage, T2)" \
