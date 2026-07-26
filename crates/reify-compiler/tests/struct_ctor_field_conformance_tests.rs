@@ -928,8 +928,19 @@ structure def Root {
 }
 "#;
 
+/// Clean fixture for the promoted `Point` family.
+///
+/// `point3` is a stdlib EVAL-BUILTIN (`crates/reify-stdlib/src/geometry.rs:942`)
+/// with no `.ri` signature, so it carries no declared return type at compile
+/// time and the call compiles to a `CompiledExprKind::FunctionCall` typed
+/// `Scalar[m]` — the expression compiler's numeric fallback — never
+/// `Type::Point`. The dedicated `Point` arm tolerates scalar-like args as
+/// exactly that placeholder.
+///
+/// Shape from `examples/anisotropic_bar.ri:82` (`origin: point3(0m, 0m, 0m)`)
+/// and `examples/dynamics/pendulum_idyn.ri:29` (`com:`).
 #[test]
-fn excluded_family_point_given_placeholder_function_call_is_silent() {
+fn point_param_given_placeholder_function_call_stays_clean() {
     let module = compile_source_with_stdlib(SRC_FAMILY_POINT);
     let diags = ctor_conformance_diags(&module);
     assert!(
@@ -937,6 +948,94 @@ fn excluded_family_point_given_placeholder_function_call_is_silent() {
         "a Point3<Length> param given `point3(0m, 0m, 0m)` must emit ZERO ctor-conformance \
          diagnostics — the arg's result_type is the numeric-fallback placeholder Scalar[m], \
          not Type::Point, so `type_compatible` cannot judge it. Got: {diags:#?}"
+    );
+}
+
+const SRC_LIST_OF_POINT_PLACEHOLDERS: &str = r#"module test.list_point
+structure def Truss { param nodes : List<Point3<Length>> }
+structure def Root {
+    let t = Truss(nodes: [point3(0m, 0m, 0m), point3(1m, 0m, 0m), point3(0m, 1m, 0m)])
+}
+"#;
+
+/// Wrapper composition on the clean side: the placeholder tolerance must be
+/// reached PER ELEMENT through the walker's `ListLiteral` recursion.
+///
+/// Shape from `examples/tensegrity_pavilion.ri:53-58`, where the `point3(…)`
+/// calls sit inside a list literal.
+#[test]
+fn list_of_point_param_given_placeholder_calls_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_LIST_OF_POINT_PLACEHOLDERS);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a List<Point3<Length>> param given a list literal of `point3(…)` calls must emit ZERO \
+         ctor-conformance diagnostics — each element is the same numeric-fallback placeholder. \
+         Got: {diags:#?}"
+    );
+}
+
+const SRC_POINT_GIVEN_STRING: &str = r#"module test.point_string
+structure def Anchor { param origin : Point3<Length> }
+structure def Root {
+    let a = Anchor(origin: "origin")
+}
+"#;
+
+/// Value floor for the promoted `Point` family: a `String` is not point-shaped
+/// and is not the numeric placeholder, so it must warn.
+///
+/// This is the probe that fences the placeholder tolerance: it is narrow
+/// (`Int | Scalar` only), NOT `type_compat.rs::is_scalar_like_leaf`, which also
+/// admits `Bool`/`String`/`Enum`/`StructureRef`/`TraitObject`/`Geometry`.
+#[test]
+fn point_param_given_string_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_POINT_GIVEN_STRING,
+        "origin",
+        "Point3<Length> ← String",
+    );
+}
+
+const SRC_POINT_WRONG_ARITY: &str = r#"module test.point_arity
+structure def Anchor { param origin : Point3<Length> }
+structure def Root {
+    param flat : Point2<Length>
+    let a = Anchor(origin: flat)
+}
+"#;
+
+/// Arity check: a `Point2<Length>` value is NOT a valid substitute for a
+/// `Point3<Length>` param.
+///
+/// The arg is routed through a declared value cell rather than a `point2(…)`
+/// call so it reaches the leaf as a real `Type::Point { n: 2, .. }` instead of
+/// the numeric placeholder. This mirrors the `Type::Vector` arm's rule that
+/// "`vec2` is NOT a valid substitute for a `vec3` param".
+#[test]
+fn point_param_given_wrong_arity_point_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_POINT_WRONG_ARITY,
+        "origin",
+        "Point3<Length> ← Point2<Length>",
+    );
+}
+
+const SRC_OPTION_POINT_GIVEN_STRING: &str = r#"module test.option_point_string
+structure def Anchor { param origin : Option<Point3<Length>> }
+structure def Root {
+    let a = Anchor(origin: "origin")
+}
+"#;
+
+/// Wrapper composition: the Option-unwrap arm (implicit-`Some`) must reach the
+/// new `Point` arm, not fall through to the wrapper-shape catch-all.
+#[test]
+fn option_wrapped_point_param_given_string_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_OPTION_POINT_GIVEN_STRING,
+        "origin",
+        "Option<Point3<Length>> ← String",
     );
 }
 
