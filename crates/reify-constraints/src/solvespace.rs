@@ -26,9 +26,10 @@ use crate::sketch::{
     SketchHandleMap, SketchSolveResult, SketchSystem,
 };
 use crate::slvs_sys::{
-    self, SLVS_C_ANGLE, SLVS_C_ARC_LINE_TANGENT, SLVS_C_CURVE_CURVE_TANGENT, SLVS_C_DIAMETER,
-    SLVS_C_EQUAL_RADIUS, SLVS_C_HORIZONTAL, SLVS_C_PARALLEL, SLVS_C_PERPENDICULAR,
-    SLVS_C_POINTS_COINCIDENT, SLVS_C_PT_ON_CIRCLE, SLVS_C_PT_PT_DISTANCE, SLVS_C_VERTICAL,
+    self, SLVS_C_ANGLE, SLVS_C_ARC_LINE_TANGENT, SLVS_C_AT_MIDPOINT, SLVS_C_CURVE_CURVE_TANGENT,
+    SLVS_C_DIAMETER, SLVS_C_EQUAL_LENGTH_LINES, SLVS_C_EQUAL_RADIUS, SLVS_C_HORIZONTAL,
+    SLVS_C_PARALLEL, SLVS_C_PERPENDICULAR, SLVS_C_POINTS_COINCIDENT, SLVS_C_PT_ON_CIRCLE,
+    SLVS_C_PT_ON_LINE, SLVS_C_PT_PT_DISTANCE, SLVS_C_SYMMETRIC_LINE, SLVS_C_VERTICAL,
     SLVS_C_WHERE_DRAGGED, SLVS_FREE_IN_3D, SLVS_RESULT_DIDNT_CONVERGE, SLVS_RESULT_INCONSISTENT,
     SLVS_RESULT_OKAY, SLVS_RESULT_TOO_MANY_UNKNOWNS, Slvs_Constraint, Slvs_Entity, Slvs_Param,
     Slvs_System, Slvs_hConstraint, Slvs_hEntity, Slvs_hGroup, Slvs_hParam,
@@ -1211,11 +1212,50 @@ impl SystemBuilder {
                     endpoint(b_at_end),
                 );
             }
-            // The remaining 2D relations land with their own fixtures.
-            SketchConstraint::PtOnLine { .. }
-            | SketchConstraint::SymmetricLine { .. }
-            | SketchConstraint::AtMidpoint { .. }
-            | SketchConstraint::EqualLengthLines { .. } => {}
+            SketchConstraint::PtOnLine { pt, line: line_id } => {
+                let (Some(pe), Some(le)) = (point(emitted, def, pt), line(emitted, def, line_id))
+                else {
+                    return;
+                };
+                // The line's *infinite extension*: this says the point is on the
+                // line, not that it lies between the endpoints, so it leaves the
+                // point free to slide.
+                self.add_constraint_wrkpl(SLVS_C_PT_ON_LINE, wrkpl, 0.0, pe, NONE, le, NONE);
+            }
+            SketchConstraint::AtMidpoint { pt, line: line_id } => {
+                let (Some(pe), Some(le)) = (point(emitted, def, pt), line(emitted, def, line_id))
+                else {
+                    return;
+                };
+                self.add_constraint_wrkpl(SLVS_C_AT_MIDPOINT, wrkpl, 0.0, pe, NONE, le, NONE);
+            }
+            SketchConstraint::SymmetricLine { a, b, about } => {
+                let (Some(ae), Some(be), Some(me)) = (
+                    point(emitted, def, a),
+                    point(emitted, def, b),
+                    line(emitted, def, about),
+                ) else {
+                    return;
+                };
+                // The mirrored pair goes in the point slots and the mirror in the
+                // entity slot — the asymmetry of the arguments is the whole
+                // difference between "mirror a about b" and "mirror b about a".
+                self.add_constraint_wrkpl(SLVS_C_SYMMETRIC_LINE, wrkpl, 0.0, ae, be, me, NONE);
+            }
+            SketchConstraint::EqualLengthLines { a, b } => {
+                let (Some(ae), Some(be)) = (line(emitted, def, a), line(emitted, def, b)) else {
+                    return;
+                };
+                self.add_constraint_wrkpl(
+                    SLVS_C_EQUAL_LENGTH_LINES,
+                    wrkpl,
+                    0.0,
+                    NONE,
+                    NONE,
+                    ae,
+                    be,
+                );
+            }
         }
     }
 

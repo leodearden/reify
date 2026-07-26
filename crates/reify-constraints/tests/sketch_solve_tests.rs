@@ -875,6 +875,10 @@ fn curve_curve_tangent_lines_up_both_centres_with_the_shared_point() {
 ///
 /// The remaining degree of freedom is the point's position *along* the line —
 /// `PtOnLine` says the point is on the line's infinite extension, not where.
+/// Where it actually lands is deliberately not asserted: libslvs resolves a
+/// leftover DOF itself rather than leaving the free param at its seed (measured:
+/// this fixture's point slides from x = 8 mm to x ≈ 3e-6 m), and pinning that
+/// choice would be a test of solver internals, not of the mapping.
 #[test]
 fn point_on_line_lands_on_the_line_and_keeps_one_dof() {
     let mut s = Sketch::new();
@@ -895,19 +899,12 @@ fn point_on_line_lands_on_the_line_and_keeps_one_dof() {
     assert_point_near(start, (0.0, 0.0), "anchored line start");
     assert_point_near(end, (0.020, 0.0), "anchored line end");
 
-    let (px, py) = point_of(&result, p);
+    let (_, py) = point_of(&result, p);
     assert_near(py, 0.0, "constrained point's distance off the y = 0 rail");
     assert_eq!(
         dof_of(&result),
         1,
         "a point on a fixed line keeps exactly one DOF — where along it it sits"
-    );
-    // The solver had no reason to move the point along the rail, so it should
-    // not have: this is what says the constraint added one equation, not two.
-    assert_near(
-        px,
-        0.008,
-        "position along the rail, which nothing constrains",
     );
 }
 
