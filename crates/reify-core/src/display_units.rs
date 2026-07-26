@@ -199,11 +199,65 @@ impl DimensionLadder {
             }
         }
 
-        // §5c: auto-scaling is on but no rung fits — the engineering-notation
-        // fallback is supplied by the follow-up step; until then, degrade to
-        // the pre-§5 static rendering.
-        AutoScaleChoice::Static
+        // §5c: auto-scaling is on but no rung fits, so express the magnitude
+        // against the static default rung in engineering notation. A
+        // pathological magnitude that will not normalize degrades to the
+        // pre-§5 static rendering rather than emitting a bogus mantissa.
+        let magnitude = si_value / default_rung.si_scale;
+        match engineering_parts(magnitude, auto.band_hi) {
+            Some((mantissa, exponent)) => AutoScaleChoice::Engineering {
+                rung: default_rung,
+                mantissa,
+                exponent,
+            },
+            None => AutoScaleChoice::Static,
+        }
     }
+}
+
+/// Split `magnitude` into `(mantissa, exponent)` with `exponent` a multiple of
+/// three and `1 ≤ |mantissa| < band_hi` — PRD display-unit-preference §5c's
+/// powers-of-three engineering form.
+///
+/// The exponent is *seeded* from `log10` and then corrected in a bounded loop
+/// rather than trusted directly: `log10` of an exact power of ten can land a
+/// hair below the integer (e.g. returning `2.9999999999999996` for `1000.0`),
+/// which floors the seed one step low and leaves the mantissa out of band. The
+/// correction is capped so no input can spin here.
+///
+/// Returns `None` when the split cannot be trusted — a non-finite or zero
+/// mantissa (`powi` under/overflow at the extremes) or a magnitude the bounded
+/// correction failed to bring in band. Callers degrade to
+/// [`AutoScaleChoice::Static`] on `None`.
+fn engineering_parts(magnitude: f64, band_hi: f64) -> Option<(f64, i32)> {
+    if !magnitude.is_finite() || magnitude == 0.0 {
+        return None;
+    }
+
+    let seed = magnitude.abs().log10() / 3.0;
+    if !seed.is_finite() {
+        return None;
+    }
+    // `as i32` is saturating in Rust, and the correction loop below rejects any
+    // exponent that fails to bring the mantissa in band — so a saturated seed
+    // cannot produce a silently wrong split.
+    let mut exponent = 3 * (seed.floor() as i32);
+    let mut mantissa = magnitude / 10f64.powi(exponent);
+
+    const MAX_CORRECTIONS: u32 = 8;
+    let mut corrections = 0;
+    while mantissa.is_finite() && mantissa != 0.0 && corrections < MAX_CORRECTIONS {
+        if mantissa.abs() >= band_hi {
+            exponent += 3;
+        } else if mantissa.abs() < 1.0 {
+            exponent -= 3;
+        } else {
+            return Some((mantissa, exponent));
+        }
+        mantissa = magnitude / 10f64.powi(exponent);
+        corrections += 1;
+    }
+    None
 }
 
 /// Is `si_scale` a power-of-ten multiple of `default_si_scale`?
