@@ -13,6 +13,13 @@
 //! These tests pin the chained cross-sub read at instance scope (t1), the
 //! constructor-arg threading through the new nesting recursion (t2), and the
 //! never-silent-undef diagnostic for deliberately-unsupported nesting (t3).
+//!
+//! Round 2 (t4) covers the second half of the arg-threading story: an arg that
+//! reads something which is NOT a param of the child template — a `let` of the
+//! child, a sibling sub's member, or a let chained off an earlier sub. Phase 1
+//! only populates params, so every such read used to fall through to the
+//! TEMPLATE-scope entry in the global map and silently substitute the template
+//! default for the instance value.
 
 #![allow(clippy::mutable_key_type)]
 
@@ -295,5 +302,215 @@ fn unsupported_nested_read_emits_diagnostic_not_silent_undef() {
                 && d.message.contains("Parent.m.child.n")),
         "expected an error diagnostic naming both the unresolvable instance let \
          \"Parent.m.echo_child\" and the nested cell \"Parent.m.child.n\" it reads; got: {errors:?}",
+    );
+}
+
+/// (t4a) A nested sub's constructor arg that reads a `let` of the child
+/// template must see the INSTANCE's let value, not the template default.
+///
+/// `Mid.half` is derived from the overridden param (`scale = 30mm` -> `half =
+/// 15mm`), and `sub k = Kid(w: half)` forwards it. Phase 1 of the instance
+/// elaboration populates params only, so `half` is absent from the arg scope
+/// and the read falls through to the global map — where `Mid.half` holds the
+/// TEMPLATE default (0.5mm). The instance's own `half` IS computed correctly,
+/// just later (phase 2), so nothing downstream notices the substitution: the
+/// nested param lands wrong rather than `Undef`.
+#[test]
+fn nested_arg_reading_child_let_uses_instance_value() {
+    const SOURCE: &str = r#"
+structure def Kid {
+    param w : Length = 10mm
+    let off = w * 2.0
+}
+
+structure def Mid {
+    param scale : Length = 1mm
+    let half = scale * 0.5
+    sub k = Kid(w: half)
+    let relay = self.k.off
+}
+
+structure def Parent {
+    sub m = Mid(scale: 30mm)
+    let echo = self.m.relay
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    // Control: template scope already resolves this chain against the default
+    // (scale 1mm -> half 0.5mm -> w 0.5mm -> off 1mm). That correct row is the
+    // exact value wrongly reused at instance scope today.
+    assert_scalar_si(&result.values, "Mid", "half", 0.0005);
+    assert_scalar_si(&result.values, "Mid.k", "w", 0.0005);
+
+    // Control: the instance's own derived let is right (computed in phase 2).
+    assert_scalar_si(&result.values, "Parent.m", "half", 0.015);
+
+    // The nested sub's arg must be evaluated against THAT 15mm, not Mid.half.
+    assert_scalar_si(&result.values, "Parent.m.k", "w", 0.015);
+    assert_scalar_si(&result.values, "Parent.m.k", "off", 0.03);
+    assert_scalar_si(&result.values, "Parent.m", "relay", 0.03);
+    assert_scalar_si(&result.values, "Parent", "echo", 0.03);
+
+    assert_no_error_diagnostics(
+        &result.diagnostics,
+        "nested_arg_reading_child_let_uses_instance_value",
+    );
+}
+
+/// (t4b) A nested sub's constructor arg that reads a SIBLING sub's member must
+/// see the sibling's instance value.
+///
+/// `Mid` declares `sub a = A(p: s)` and then `sub b = B(w: self.a.out)`. The
+/// sibling `a` IS elaborated first at instance scope (declaration order happens
+/// to agree with dependency order here), and `Parent.m.a.out` is correct — but
+/// its cells are never projected into the arg scope, so `self.a.out` resolves
+/// from the global map's TEMPLATE-scope `Mid.a.out` instead.
+#[test]
+fn nested_arg_reading_sibling_sub_member_uses_instance_value() {
+    const SOURCE: &str = r#"
+structure def A {
+    param p : Length = 2mm
+    let out = p * 3.0
+}
+
+structure def B {
+    param w : Length = 1mm
+    let res = w * 5.0
+}
+
+structure def Mid {
+    param s : Length = 1mm
+    sub a = A(p: s)
+    sub b = B(w: self.a.out)
+    let relay = self.b.res
+}
+
+structure def Parent {
+    sub m = Mid(s: 10mm)
+    let echo = self.m.relay
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    // Control: the template-scope sibling chain (s 1mm -> a.out 3mm -> b.w
+    // 3mm -> b.res 15mm) is the row silently reused at instance scope today.
+    assert_scalar_si(&result.values, "Mid.a", "out", 0.003);
+    assert_scalar_si(&result.values, "Mid.b", "w", 0.003);
+
+    // Control: the sibling instance is already elaborated correctly — the gap
+    // is purely that it is not visible to the consuming sub's arg.
+    assert_scalar_si(&result.values, "Parent.m.a", "out", 0.03);
+
+    assert_scalar_si(&result.values, "Parent.m.b", "w", 0.03);
+    assert_scalar_si(&result.values, "Parent.m.b", "res", 0.15);
+    assert_scalar_si(&result.values, "Parent.m", "relay", 0.15);
+    assert_scalar_si(&result.values, "Parent", "echo", 0.15);
+
+    assert_no_error_diagnostics(
+        &result.diagnostics,
+        "nested_arg_reading_sibling_sub_member_uses_instance_value",
+    );
+}
+
+/// (t4c) The two shapes chained: a `let` that reads an earlier nested sub, feeding
+/// a LATER nested sub's arg. Resolving this needs the child's lets and its subs
+/// interleaved in one dependency order (k -> via -> j), not two separate passes.
+#[test]
+fn nested_arg_reading_let_derived_from_earlier_sub() {
+    const SOURCE: &str = r#"
+structure def Kid {
+    param w : Length = 10mm
+    let off = w * 2.0
+}
+
+structure def Mid {
+    param s : Length = 1mm
+    sub k = Kid(w: s)
+    let via = self.k.off
+    sub j = Kid(w: via)
+    let relay = self.j.off
+}
+
+structure def Parent {
+    sub m = Mid(s: 7mm)
+    let echo = self.m.relay
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    // Control: the first hop is already right at instance scope (its arg reads
+    // a plain param), and `via` derives from it correctly in phase 2.
+    assert_scalar_si(&result.values, "Parent.m.k", "w", 0.007);
+    assert_scalar_si(&result.values, "Parent.m.k", "off", 0.014);
+    assert_scalar_si(&result.values, "Parent.m", "via", 0.014);
+
+    // The second hop consumes `via`; today it reads the template-scope
+    // `Mid.via` (0.002) instead. Note template scope leaves `Mid.j.w` `Undef`
+    // — the top-level sub loop in engine_eval.rs evaluates subs before lets, a
+    // separate ordering gap not in this task's scope, hence no assertion on it.
+    assert_scalar_si(&result.values, "Parent.m.j", "w", 0.014);
+    assert_scalar_si(&result.values, "Parent.m.j", "off", 0.028);
+    assert_scalar_si(&result.values, "Parent.m", "relay", 0.028);
+    assert_scalar_si(&result.values, "Parent", "echo", 0.028);
+
+    assert_no_error_diagnostics(
+        &result.diagnostics,
+        "nested_arg_reading_let_derived_from_earlier_sub",
+    );
+}
+
+/// (t4d) Byte-identical to (t4b) except `sub b` is declared BEFORE the `sub a`
+/// it reads. Pins that the ordering is derived from the dependency graph, not
+/// from declaration order — a declaration-order loop that merely projected each
+/// sub as it went would pass (t4b) and still fail here.
+#[test]
+fn nested_arg_sibling_reference_is_order_insensitive() {
+    const SOURCE: &str = r#"
+structure def A {
+    param p : Length = 2mm
+    let out = p * 3.0
+}
+
+structure def B {
+    param w : Length = 1mm
+    let res = w * 5.0
+}
+
+structure def Mid {
+    param s : Length = 1mm
+    sub b = B(w: self.a.out)
+    sub a = A(p: s)
+    let relay = self.b.res
+}
+
+structure def Parent {
+    sub m = Mid(s: 10mm)
+    let echo = self.m.relay
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    // Control: the forward reference already leaves `Mid.b.w` `Undef` at
+    // TEMPLATE scope (declaration-order elaboration there), so only the
+    // instance rows are asserted — the instance path must not depend on order.
+    assert_scalar_si(&result.values, "Parent.m.a", "out", 0.03);
+
+    assert_scalar_si(&result.values, "Parent.m.b", "w", 0.03);
+    assert_scalar_si(&result.values, "Parent.m.b", "res", 0.15);
+    assert_scalar_si(&result.values, "Parent.m", "relay", 0.15);
+    assert_scalar_si(&result.values, "Parent", "echo", 0.15);
+
+    assert_no_error_diagnostics(
+        &result.diagnostics,
+        "nested_arg_sibling_reference_is_order_insensitive",
     );
 }
