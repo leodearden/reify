@@ -117,6 +117,107 @@ fn compile_inline_volume_torus_hoists_into_realization() {
     );
 }
 
+/// MIXED fixture (task 5345 review round 3): a structure carrying BOTH real
+/// product geometry and an inline geometry query. This is the only shape in
+/// which the hoist can change pre-existing behaviour, and the shape in which it
+/// regressed: minting `__geoq_0` as an ordinary product realization made it the
+/// highest-indexed realization with a terminal handle, so eval's
+/// `non_final_realization_indices` put the user's real `body` in the skip set
+/// and exported the measurement torus instead — silent geometry loss.
+///
+/// The compile-side contract that prevents that: BOTH realizations exist, and
+/// exactly the synthetic one is flagged `is_query_only`. Asserted in BOTH
+/// declaration orders, because the eval-side failure was order-dependent (it
+/// only bit when the synthetic realization sorted last).
+#[test]
+fn mixed_product_geometry_and_inline_query_flags_only_the_synthetic_realization() {
+    for (label, source) in [
+        (
+            "body first",
+            r#"structure def Part {
+    let body = box(50mm, 50mm, 50mm)
+    let v = volume(torus(20mm, 5mm))
+}"#,
+        ),
+        (
+            "query first",
+            r#"structure def Part {
+    let v = volume(torus(20mm, 5mm))
+    let body = box(50mm, 50mm, 50mm)
+}"#,
+        ),
+    ] {
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_geoq_mixed"));
+        assert!(parsed.errors.is_empty(), "{label}: parse errors");
+        let compiled = compile(&parsed);
+        let errors: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "{label}: unexpected errors: {errors:?}");
+
+        let template = &compiled.templates[0];
+        let named: Vec<(&str, bool)> = template
+            .realizations
+            .iter()
+            .map(|r| {
+                (
+                    r.name.as_deref().expect("compiler always emits a name"),
+                    r.is_query_only,
+                )
+            })
+            .collect();
+
+        // The user's real product body survives the hoist...
+        assert!(
+            named.contains(&("body", false)),
+            "{label}: expected a non-query-only `body` realization, got {named:?}"
+        );
+        // ...alongside exactly one synthetic realization, flagged query-only.
+        let synthetic: Vec<_> = named
+            .iter()
+            .filter(|(n, _)| n.starts_with("__geoq_"))
+            .collect();
+        assert_eq!(
+            synthetic.len(),
+            1,
+            "{label}: expected exactly 1 synthetic realization, got {named:?}"
+        );
+        assert!(
+            synthetic[0].1,
+            "{label}: the synthetic `{}` realization MUST be is_query_only — otherwise it \
+             displaces `body` as eval's final realization and the real box vanishes from \
+             STEP/STL/3MF; got {named:?}",
+            synthetic[0].0
+        );
+        assert_eq!(
+            template.realizations.len(),
+            2,
+            "{label}: expected exactly 2 realizations, got {named:?}"
+        );
+    }
+}
+
+/// A user-authored member whose name collides with the synthetic `__geoq_`
+/// prefix is ordinary product geometry: `is_query_only` is keyed off the
+/// desugarer's exact minted-name set, never off a prefix test.
+#[test]
+fn user_authored_geoq_prefixed_let_is_not_query_only() {
+    let source = r#"structure def Part {
+    let __geoq_0 = box(50mm, 50mm, 50mm)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_geoq_collide"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = compile(&parsed);
+    let template = &compiled.templates[0];
+    assert_eq!(template.realizations.len(), 1);
+    assert!(
+        !template.realizations[0].is_query_only,
+        "a user-authored `__geoq_`-prefixed let must stay product geometry"
+    );
+}
+
 /// Oracle parity (task 5345): the compiler's whole-handle-query name-set is
 /// EXACTLY {volume, area, centroid, bounding_box}, and every name is a member of
 /// the broader `GEOMETRY_QUERY_NAMES`. This ties the compile-time hoist scope to

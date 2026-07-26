@@ -340,6 +340,112 @@ fn volume_inline_equals_let_bound_cylinder() {
     );
 }
 
+// ── mixed product geometry + inline query (task 5345 review round 3) ────────
+
+/// A structure carrying BOTH real product geometry and an inline geometry
+/// query — the ONLY shape in which the hoist can change pre-existing export
+/// behaviour, and the shape in which it regressed.
+///
+/// The hoisted `__geoq_0` torus was initially minted as an ordinary product
+/// realization. Eval's `non_final_realization_indices` keeps only the
+/// highest-indexed realization with a terminal handle, and the desugarer
+/// inserts `__geoq_0` immediately before its consuming member, so `body`->r0 /
+/// `__geoq_0`->r1 made the measurement torus the "final" body: the user's real
+/// 50mm box vanished from STEP/STL/3MF with no diagnostic, while the
+/// tessellation walk (which passed no skip set) still showed both — a phantom
+/// solid in the viewer. `RealizationDecl::is_query_only` fixes both halves.
+///
+/// Asserted in BOTH declaration orders because the failure was order-dependent.
+const MIXED_PRODUCT_AND_INLINE_QUERY_BODY_FIRST: &str = r#"
+structure def Part {
+    let body = box(50mm, 50mm, 50mm)
+    let v = volume(torus(20mm, 5mm))
+}
+"#;
+
+const MIXED_PRODUCT_AND_INLINE_QUERY_QUERY_FIRST: &str = r#"
+structure def Part {
+    let v = volume(torus(20mm, 5mm))
+    let body = box(50mm, 50mm, 50mm)
+}
+"#;
+
+/// Triangle count of a binary STL payload (`80`-byte header, then a `u32` LE
+/// facet count). Returns `None` for a payload too short to carry the count.
+fn binary_stl_triangle_count(bytes: &[u8]) -> Option<u32> {
+    let n = bytes.get(80..84)?;
+    Some(u32::from_le_bytes([n[0], n[1], n[2], n[3]]))
+}
+
+/// Build `source` to STL and assert (a) `Part.v` is the analytic torus volume
+/// and (b) the exported mesh is the 12-triangle BOX, not the torus.
+///
+/// A box tessellates to exactly 12 triangles (2 per planar face); a
+/// `torus(20mm,5mm)` needs hundreds, so the facet count is an unambiguous
+/// discriminator that does not depend on parsing STEP entities.
+fn assert_mixed_exports_the_box(source: &str, label: &str) {
+    let compiled = parse_and_compile_with_stdlib(source);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "{label}: fixture should compile clean, got:\n{:#?}",
+        errors_only(&compiled)
+    );
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping real-OCCT assertions: OCCT not available");
+        return;
+    }
+
+    let checker = SimpleConstraintChecker;
+    let mut planner = reify_geometry::SingleKernelHolder::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let result = engine.build(&compiled, ExportFormat::Stl);
+
+    // (a) The measurement still works: 2·π²·R·r² = 2π²·0.02·0.005².
+    let torus_v = 2.0 * std::f64::consts::PI.powi(2) * 0.020 * 0.005_f64.powi(2);
+    assert_scalar_rel_tol(
+        result.values.get(&ValueCellId::new("Part", "v")),
+        DimensionVector::VOLUME,
+        torus_v,
+        0.02,
+        &format!("{label}: volume(torus(20mm,5mm)) inline alongside real product geometry"),
+    );
+
+    // (b) The user's real `body` box is what gets exported — the hoisted
+    // measurement torus must never displace it, and must not be exported
+    // alongside it either.
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "{label}: build should emit no error diagnostics, got: {errors:#?}"
+    );
+    let bytes = result
+        .geometry_output
+        .as_ref()
+        .unwrap_or_else(|| panic!("{label}: expected STL geometry output for `body`"));
+    let facets = binary_stl_triangle_count(bytes)
+        .unwrap_or_else(|| panic!("{label}: STL payload too short ({} bytes)", bytes.len()));
+    assert_eq!(
+        facets, 12,
+        "{label}: exported mesh should be the 12-facet 50mm box `body`; {facets} facets means \
+         the hoisted `__geoq_0` torus displaced (or joined) the real product geometry"
+    );
+}
+
+#[test]
+fn mixed_product_geometry_and_inline_query_exports_real_body_declared_first() {
+    assert_mixed_exports_the_box(MIXED_PRODUCT_AND_INLINE_QUERY_BODY_FIRST, "body first");
+}
+
+#[test]
+fn mixed_product_geometry_and_inline_query_exports_real_body_declared_last() {
+    assert_mixed_exports_the_box(MIXED_PRODUCT_AND_INLINE_QUERY_QUERY_FIRST, "query first");
+}
+
 // ── area() ──────────────────────────────────────────────────────────────────
 
 const AREA_SOURCE: &str = r#"

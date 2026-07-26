@@ -3403,11 +3403,19 @@ impl Engine {
             && self.geometry_kernels.contains_key(name)
         {
             let mut step_handles: Vec<KernelHandle> = Vec::new();
+            // task 5345: query-only realizations (hoisted `__geoq_<N>` inline
+            // geometry-query arguments) are measurement scaffolding, not
+            // bodies, and are excluded from the export walk. Counting them here
+            // would turn a structure whose ONLY geometry lives inside a query
+            // arg — `structure def S { let v = volume(torus(..)) }` — into a
+            // spurious "all realized bodies are aux; no product geometry to
+            // export" error. Pre-hoist such a structure produced no realization
+            // at all and exported nothing silently; that stays true.
             let had_realization_ops = module
                 .templates
                 .iter()
                 .flat_map(|t| &t.realizations)
-                .any(|r| !r.operations.is_empty());
+                .any(|r| !r.is_query_only && !r.operations.is_empty());
 
             // θ (task 4361): record each realization's terminal handle positionally
             // by (t_idx, r_idx) for the Phase-B export walk — mirrors build()'s
@@ -4172,11 +4180,19 @@ impl Engine {
         {
             // Execute geometry operations from realizations
             let mut step_handles: Vec<KernelHandle> = Vec::new();
+            // task 5345: query-only realizations (hoisted `__geoq_<N>` inline
+            // geometry-query arguments) are measurement scaffolding, not
+            // bodies, and are excluded from the export walk. Counting them here
+            // would turn a structure whose ONLY geometry lives inside a query
+            // arg — `structure def S { let v = volume(torus(..)) }` — into a
+            // spurious "all realized bodies are aux; no product geometry to
+            // export" error. Pre-hoist such a structure produced no realization
+            // at all and exported nothing silently; that stays true.
             let had_realization_ops = module
                 .templates
                 .iter()
                 .flat_map(|t| &t.realizations)
-                .any(|r| !r.operations.is_empty());
+                .any(|r| !r.is_query_only && !r.operations.is_empty());
 
             // T7 (task 3905): record each realization's terminal handle
             // positionally by (t_idx, r_idx) — mirrors the tessellate_from_values

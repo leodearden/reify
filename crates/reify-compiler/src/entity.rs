@@ -671,12 +671,13 @@ fn hoist_queries_in_expr(
     counter: &mut usize,
     functions: &[CompiledFunction],
     out: &mut Vec<reify_ast::MemberDecl>,
+    minted: &mut HashSet<String>,
 ) {
     if expr_introduces_binder(expr) {
         return;
     }
     for_each_child_mut(expr, &mut |child| {
-        hoist_queries_in_expr(child, counter, functions, out);
+        hoist_queries_in_expr(child, counter, functions, out, minted);
     });
     if let reify_ast::ExprKind::FunctionCall { name, args, .. } = &mut expr.kind
         && is_hoistable_query_call(name, args, functions)
@@ -691,15 +692,20 @@ fn hoist_queries_in_expr(
                 span: arg0_span,
             },
         );
+        minted.insert(syn_name.clone());
         out.push(make_synthetic_geometry_let(syn_name, hoisted, arg0_span));
     }
 }
 
-/// Mint a synthetic geometry `let __geoq_N = <value>`. Non-aux (product)
-/// geometry, faithfully mirroring the hand-written `let g = torus(..); let v =
-/// volume(g)` workaround — marking it `aux` would diverge from that semantics
-/// AND risk the eval "all realized bodies are aux; no product geometry to
-/// export" error for a structure whose only geometry lives inside a query arg.
+/// Mint a synthetic geometry `let __geoq_N = <value>`.
+///
+/// The AST `LetDecl` deliberately carries NO distinguishing modifier: `is_aux`
+/// stays `false` because `aux` is the wrong axis (see
+/// [`crate::RealizationDecl::is_query_only`]). The synthetic realization is
+/// instead tagged `is_query_only: true` at lowering, keyed off the exact set of
+/// names minted here — never off a name-prefix guess — so a user-authored
+/// `let __geoq_0 = box(...)` is unaffected.
+///
 /// The AST `content_hash` is not load-bearing (the template hash is rebuilt
 /// from compiled exprs), but a name-derived hash keeps it deterministic.
 fn make_synthetic_geometry_let(
@@ -740,8 +746,14 @@ fn member_value_expr(member: &reify_ast::MemberDecl) -> Option<&reify_ast::Expr>
 /// a single structure-scoped counter in source+post-order.
 ///
 /// Returns `None` — and allocates nothing — when no member carries an inline
-/// geometry-query arg (the common path). Otherwise returns the rewritten member
-/// list, which becomes the single source consumed by all downstream
+/// geometry-query arg (the common path). Otherwise returns
+/// `(rewritten_members, minted_names)`, where `minted_names` is the EXACT set of
+/// synthetic `__geoq_<N>` names created by this call. Realization lowering keys
+/// [`crate::RealizationDecl::is_query_only`] off that set rather than off a
+/// `__geoq_` name-prefix test, so a user-authored `let __geoq_0 = box(...)`
+/// keeps ordinary product-geometry semantics.
+///
+/// The rewritten member list becomes the single source consumed by all downstream
 /// `structure.members` walks in [`compile_entity`]. Only top-level `Let`/`Param`
 /// members are descended (guarded-group / match-cluster members are out of
 /// scope, consistent with the whole-handle-query acceptance surface).
@@ -754,7 +766,7 @@ fn member_value_expr(member: &reify_ast::MemberDecl) -> Option<&reify_ast::Expr>
 fn desugar_inline_geometry_query_args(
     members: &[reify_ast::MemberDecl],
     functions: &[CompiledFunction],
-) -> Option<Vec<reify_ast::MemberDecl>> {
+) -> Option<(Vec<reify_ast::MemberDecl>, HashSet<String>)> {
     let has_any = members
         .iter()
         .any(|m| member_value_expr(m).is_some_and(|e| expr_has_hoistable_query(e, functions)));
@@ -763,6 +775,7 @@ fn desugar_inline_geometry_query_args(
     }
 
     let mut out: Vec<reify_ast::MemberDecl> = Vec::with_capacity(members.len());
+    let mut minted: HashSet<String> = HashSet::new();
     let mut counter: usize = 0;
     for member in members {
         match member {
@@ -770,7 +783,13 @@ fn desugar_inline_geometry_query_args(
                 if expr_has_hoistable_query(&let_decl.value, functions) =>
             {
                 let mut new_let = let_decl.clone();
-                hoist_queries_in_expr(&mut new_let.value, &mut counter, functions, &mut out);
+                hoist_queries_in_expr(
+                    &mut new_let.value,
+                    &mut counter,
+                    functions,
+                    &mut out,
+                    &mut minted,
+                );
                 out.push(reify_ast::MemberDecl::Let(new_let));
             }
             reify_ast::MemberDecl::Param(param)
@@ -781,14 +800,14 @@ fn desugar_inline_geometry_query_args(
             {
                 let mut new_param = param.clone();
                 if let Some(def) = new_param.default.as_mut() {
-                    hoist_queries_in_expr(def, &mut counter, functions, &mut out);
+                    hoist_queries_in_expr(def, &mut counter, functions, &mut out, &mut minted);
                 }
                 out.push(reify_ast::MemberDecl::Param(new_param));
             }
             other => out.push(other.clone()),
         }
     }
-    Some(out)
+    Some((out, minted))
 }
 
 /// Compile a single entity definition (structure or occurrence) into a topology template.
@@ -1411,7 +1430,16 @@ pub(crate) fn compile_entity(
     // runs here — not the borrow-only `EntityDefRef` `From` impls. The common
     // path (no inline geometry-query arg) clones nothing: `desugar_…` returns
     // `None`, the `map` is skipped, and `structure` is left borrowing the caller.
-    let desugared_members = desugar_inline_geometry_query_args(structure.members, functions);
+    let desugared = desugar_inline_geometry_query_args(structure.members, functions);
+    // The EXACT set of synthetic `__geoq_<N>` names minted above; empty on the
+    // common (no-hoist) path. Realization lowering consults this to set
+    // `RealizationDecl::is_query_only` — see that field's docs for why a
+    // query-only realization must not displace real product geometry.
+    let query_only_names: HashSet<String> = desugared
+        .as_ref()
+        .map(|(_, minted)| minted.clone())
+        .unwrap_or_default();
+    let desugared_members = desugared.map(|(members, _)| members);
     let desugared_entity = desugared_members.as_ref().map(|members| EntityDefRef {
         name: structure.name,
         doc: structure.doc.clone(),
@@ -4383,6 +4411,11 @@ pub(crate) fn compile_entity(
                         id: RealizationNodeId::new(entity_name, realization_index),
                         name: Some(let_decl.name.clone()),
                         is_aux: let_decl.is_aux,
+                        // task 5345: a hoisted `__geoq_<N>` arg is measurement
+                        // scaffolding, not a body. Keyed off the desugarer's
+                        // exact minted-name set, so a user-authored member that
+                        // happens to share the prefix stays product geometry.
+                        is_query_only: query_only_names.contains(&let_decl.name),
                         operations: ops,
                         span: let_decl.span,
                     });
@@ -4411,6 +4444,8 @@ pub(crate) fn compile_entity(
                         name: Some(param.name.clone()),
                         // Solid-typed params carry no `aux` modifier in the grammar.
                         is_aux: false,
+                        // The hoist only ever mints `Let` members, never params.
+                        is_query_only: false,
                         operations: ops,
                         span: param.span,
                     });
@@ -5863,6 +5898,8 @@ fn emit_guarded_geometry_realizations(
                         name: Some(param.name.clone()),
                         // Guarded Solid-typed params carry no `aux` modifier.
                         is_aux: false,
+                        // Guarded groups are outside the hoist's member scope.
+                        is_query_only: false,
                         operations: ops,
                         span: param.span,
                     });
