@@ -626,11 +626,25 @@ interface DemandSyncViewState {
  * genuine change, so an ordinary open already pushes the all-visible set
  * and leaves demand selective (`is_full_scope() == false`) with nothing
  * pruned. A cold `eval()` resets full_scope to true (`Engine::eval`,
- * engine_eval.rs:5301); selectivity is only restored when this effect next
- * fires, which requires an actual change in effective visibility or in the
- * tracked mesh COUNT above — a re-eval landing on the same cardinality (or
- * a same-size key-set swap) leaves the backend full-scope indefinitely,
- * not just "until the next sync" (safe: over-evaluates, never mis-prunes).
+ * engine_eval.rs:5301). Selectivity is restored the next time this effect
+ * fires — but `on()` performs no equality check, so the mesh COUNT above
+ * is only the callback's `input` argument, never a change filter; the
+ * effect re-runs whenever any tracked source notifies. That includes any
+ * effective-visibility change (`getAllEffective` tracks `state.explicit`
+ * per path), a wholesale `state.meshes` replacement (`initFromState`)
+ * even at unchanged cardinality, and any add or remove of a mesh key:
+ * `Object.keys()` subscribes to the meshes object's own `$SELF` node
+ * (created with `equals: false`), which every add/remove pings regardless
+ * of the resulting count, so even a same-size key-set swap re-fires. The
+ * one write that does NOT re-fire is an in-place update of an EXISTING
+ * mesh key via `applyMeshUpdate` (`setState('meshes', path, mesh)`):
+ * Solid's store merges a write when both the previous and new values are
+ * wrappable objects, so it lands on that mesh's own nodes and never
+ * touches the container's `$SELF`. Consequently, a re-eval that only
+ * re-tessellates the same body set (the streamed `onMeshUpdate` path)
+ * leaves the backend full-scope until the next visibility change, mesh
+ * add/remove, or full-state reload (safe: over-evaluates, never
+ * mis-prunes).
  *
  * Distinct from the idle-gated `syncObservedDemand` measurement effect (task
  * 4532), which is left intact. Must be called within a reactive root (createRoot
