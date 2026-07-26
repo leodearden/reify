@@ -724,3 +724,139 @@ fn arc_endpoints_share_a_radius_implicitly() {
         "end radius, from libslvs' implicit equal-radius equation",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Tangency
+// ---------------------------------------------------------------------------
+
+/// `ArcLineTangent` squares a line against the arc radius at the touch point.
+///
+/// The residual asserted here *is* the constraint's definition — libslvs
+/// generates exactly "line direction · (centre − endpoint) = 0" — rather than a
+/// proxy for it, so a solved direction cosine of zero cannot be produced by any
+/// other constraint in the fixture.
+///
+/// The arc's start is seeded on the dimensioned circle but with the line running
+/// well off tangent (direction cosine ≈ 0.83 at the seed), so the assertion is
+/// only reachable by moving the touch point — an emit path that dropped the
+/// constraint leaves the seed alone and reads back 0.83.
+///
+/// `at_end: false` selects the arc's *start* as the tangent point; the arc's end
+/// stays free, which is why the fixture says nothing about where it lands.
+#[test]
+fn arc_line_tangent_squares_the_line_against_the_radius() {
+    let mut s = Sketch::new();
+    let c = s.point(0.0, 0.0);
+    let start = s.point(0.005, 0.0);
+    let end = s.point(0.0, 0.005);
+    let arc = s.arc(c, start, end);
+    // The line runs from the arc's own start point out to an anchored far end,
+    // which is what makes tangency a statement about this arc's touch point
+    // rather than about two unrelated pieces of geometry.
+    let far = s.point(0.020, 0.010);
+    let line = s.line(start, far);
+
+    s.constrain(SketchConstraint::Fix(c));
+    s.constrain(SketchConstraint::Fix(far));
+    s.constrain(SketchConstraint::Distance {
+        a: c,
+        b: start,
+        value: 0.005,
+    });
+    s.constrain(SketchConstraint::ArcLineTangent {
+        arc,
+        line,
+        at_end: false,
+    });
+
+    let result = reify_constraints::solve_sketch(s.system());
+    assert!(
+        matches!(result, SketchSolveResult::Solved { .. }),
+        "a tangent arc and line are solvable, got {result:?}"
+    );
+
+    let (center, arc_start, _) = arc_of(&result, arc);
+    let far_end = point_of(&result, far);
+    assert_point_near(center, (0.0, 0.0), "anchored arc centre");
+    assert_point_near(far_end, (0.020, 0.010), "anchored far endpoint");
+    assert_near(dist(center, arc_start), 0.005, "dimensioned arc radius");
+    // The line still runs through the arc's start point: it is defined by that
+    // very entity, so tangency has to hold at a point on both curves.
+    assert_point_near(
+        line_of(&result, line).0,
+        arc_start,
+        "line start vs the arc's start point",
+    );
+
+    let radius_dir = unit(delta(center, arc_start));
+    let line_dir = unit(delta(arc_start, far_end));
+    assert_near(
+        dot(radius_dir, line_dir),
+        0.0,
+        "direction cosine between the radius and the line at the tangent point",
+    );
+}
+
+/// `CurveCurveTangent` puts both centres and the shared point on one line.
+///
+/// Two arcs touch tangentially exactly when their radius vectors at the touch
+/// point are collinear, which in the plane is the cross product asserted here.
+/// The touch point itself is held by a separate `Coincident`: the tangency
+/// constraint only fixes the *directions*, so without the coincidence the two
+/// arcs would be parallel-radius'd but apart.
+///
+/// Only arc A is dimensioned — B's radius follows from the shared point — so the
+/// fixture cannot be satisfied by a lucky pair of consistent dimensions.
+#[test]
+fn curve_curve_tangent_lines_up_both_centres_with_the_shared_point() {
+    let mut s = Sketch::new();
+    let c1 = s.point(0.0, 0.0);
+    let a_start = s.point(0.005, 0.001);
+    let a_end = s.point(0.0, 0.005);
+    let arc_a = s.arc(c1, a_start, a_end);
+
+    let c2 = s.point(0.015, 0.0);
+    // Seeded apart from arc A's start, and off the centre line, so both the
+    // coincidence and the collinearity have to be driven rather than inherited.
+    let b_start = s.point(0.0055, 0.0012);
+    let b_end = s.point(0.015, 0.010);
+    let arc_b = s.arc(c2, b_start, b_end);
+
+    s.constrain(SketchConstraint::Fix(c1));
+    s.constrain(SketchConstraint::Fix(c2));
+    s.constrain(SketchConstraint::Coincident {
+        a: a_start,
+        b: b_start,
+    });
+    s.constrain(SketchConstraint::Distance {
+        a: c1,
+        b: a_start,
+        value: 0.005,
+    });
+    s.constrain(SketchConstraint::CurveCurveTangent {
+        a: arc_a,
+        a_at_end: false,
+        b: arc_b,
+        b_at_end: false,
+    });
+
+    let result = reify_constraints::solve_sketch(s.system());
+    assert!(
+        matches!(result, SketchSolveResult::Solved { .. }),
+        "two tangent arcs are solvable, got {result:?}"
+    );
+
+    let centre_a = point_of(&result, c1);
+    let centre_b = point_of(&result, c2);
+    let touch = point_of(&result, a_start);
+    assert_point_near(centre_a, (0.0, 0.0), "anchored centre A");
+    assert_point_near(centre_b, (0.015, 0.0), "anchored centre B");
+    assert_point_near(point_of(&result, b_start), touch, "the shared touch point");
+    assert_near(dist(centre_a, touch), 0.005, "dimensioned arc A radius");
+
+    assert_near(
+        cross(unit(delta(centre_a, touch)), unit(delta(touch, centre_b))),
+        0.0,
+        "collinearity of centre A, the touch point and centre B",
+    );
+}
