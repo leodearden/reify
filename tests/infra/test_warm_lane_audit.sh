@@ -1055,4 +1055,205 @@ assert "M9: an unresolvable pin holder reports pin=unknown (never invented)" \
 kill "$M_LOCK_PID" 2>/dev/null || true
 _BGPIDS=()  # clear so cleanup doesn't double-kill
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block N — classification=PINNED + the HEADROOM four-way partition
+# ──────────────────────────────────────────────────────────────────────────────
+# A lane the pool has RESERVED but which no consumer process is running against
+# is neither live nor free: it is PINNED, and it is a standing capacity loss.
+# The old single ASSIGNED/FREE column had no way to say that, which is why 53
+# reserved lanes read as free on 2026-07-22. PINNED becomes a first-class
+# classification ranked immediately below LIVE, and the HEADROOM line becomes a
+# genuine PARTITION -- resident = live + pinned + quarantined + free -- so a
+# pinned lane can never again be counted as free.
+echo ""
+echo "--- Block N: classification=PINNED + the HEADROOM partition ---"
+
+N_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-n-XXXXXX)"
+_TMPDIRS+=("$N_MOUNT")
+N_MAP="$(mktemp /tmp/test-warm-lane-audit-n-map-XXXXXX)"
+_TMPDIRS+=("$N_MAP")
+printf '9101 pending\n9102 pending\n9103 done\n9104 pending\n9105 pending\n' > "$N_MAP"
+
+# lane : liveness : record state ('' = no record at all) : task id : git shape :
+#        expected assigned column : expected classification
+#
+# `orphan-stale` builds the LEAKED predicate's EXACT shape (non-terminal status
+# + ahead-of-main with no origin => ORPHAN + aged past the default 60-minute
+# knob). _lane-n-pinned and _lane-n-quarantined are byte-for-byte identical in
+# that respect and differ ONLY in their assignment record -- which is what makes
+# "the reserved one reports PINNED, the other is still LEAKED" a real
+# discrimination rather than a fixture artifact.
+N_CASES=(
+    "_lane-n-live:LIVE:assigned:9101:plain:ASSIGNED:LIVE"
+    "_lane-n-pinned:IDLE:assigned:9102:orphan-stale:ASSIGNED:PINNED"
+    "_lane-n-released:IDLE:released:9103:plain:RELEASED:RECLAIMABLE"
+    "_lane-n-quarantined:IDLE:quarantined:9104:orphan-stale:QUARANTINED:LEAKED"
+    "_lane-n-unknown:IDLE::9105:plain:UNKNOWN:RECLAIMABLE"
+)
+
+N_LIVE_PIDS=()
+for n_case in "${N_CASES[@]}"; do
+    IFS=':' read -r n_lane n_liveness n_state n_task n_shape n_assigned n_class <<< "$n_case"
+    make_lane "$N_MOUNT/$n_lane" "task/$n_task"
+    if [ "$n_shape" = "orphan-stale" ]; then
+        _add_ahead_commit "$N_MOUNT/$n_lane"
+    fi
+    if [ -n "$n_state" ]; then
+        make_lane_state "$N_MOUNT" "$n_lane" "$n_state" "$n_task" "task/$n_task"
+    fi
+    if [ "$n_liveness" = "LIVE" ]; then
+        _hold_lane_lock "$N_MOUNT" "$n_lane"
+        N_LIVE_PIDS+=("$LANE_LOCK_PID")
+    else
+        touch "$N_MOUNT/$n_lane.lock"
+    fi
+    # Backdate LAST for this lane (mirrors Block F/I): every git and lock
+    # mutation above is done, and nothing a later iteration does touches this
+    # lane's directory (records live in <mount>/.lane-state, locks in
+    # <mount>/<lane>.lock -- neither is inside the lane dir).
+    if [ "$n_shape" = "orphan-stale" ]; then
+        touch -d '90 minutes ago' "$N_MOUNT/$n_lane"
+    fi
+done
+
+# Every expected count is DERIVED from N_CASES, never typed as a literal: a
+# fixture edit that changes the pool shape must move the expectations with it.
+n_exp_live=0
+n_exp_pinned=0
+n_exp_quarantined=0
+n_exp_free=0
+n_exp_assigned=0
+n_exp_state_unknown=0
+n_exp_leaked=0
+n_exp_reclaimable=0
+for n_case in "${N_CASES[@]}"; do
+    IFS=':' read -r n_lane n_liveness n_state n_task n_shape n_assigned n_class <<< "$n_case"
+    # The partition is ORDERED and mutually exclusive -- live > pinned >
+    # quarantined > free -- mirroring the classification rank, so the four
+    # buckets sum to resident by construction rather than by coincidence.
+    if [ "$n_liveness" = "LIVE" ]; then
+        n_exp_live=$((n_exp_live + 1))
+    elif [ "$n_assigned" = "ASSIGNED" ]; then
+        n_exp_pinned=$((n_exp_pinned + 1))
+    elif [ "$n_assigned" = "QUARANTINED" ]; then
+        n_exp_quarantined=$((n_exp_quarantined + 1))
+    else
+        n_exp_free=$((n_exp_free + 1))
+    fi
+    # Cross-cuts: independent of the partition, so they may overlap it.
+    if [ "$n_assigned" = "ASSIGNED" ]; then
+        n_exp_assigned=$((n_exp_assigned + 1))
+    fi
+    if [ "$n_assigned" = "UNKNOWN" ]; then
+        n_exp_state_unknown=$((n_exp_state_unknown + 1))
+    fi
+    case "$n_class" in
+        LEAKED)      n_exp_leaked=$((n_exp_leaked + 1)) ;;
+        RECLAIMABLE) n_exp_reclaimable=$((n_exp_reclaimable + 1)) ;;
+    esac
+done
+n_exp_resident="${#N_CASES[@]}"
+
+# _headroom_field <audit-stdout> <key>
+# Prints the integer value of <key> on the HEADROOM line, or NOTHING when the
+# field is absent. Deliberately does not default to 0: a missing field must
+# read as missing, so an assertion can never pass against a field the script
+# does not actually emit.
+_headroom_field() {
+    local out="$1" key="$2"
+    printf '%s\n' "$out" | grep '^HEADROOM ' | tr ' ' '\n' \
+        | sed -n -E "s/^${key}=([0-9]+)$/\1/p" || true
+    return 0
+}
+
+# _partition_holds <resident> <live> <pinned> <quarantined> <free>
+# True iff all five are non-empty integers AND resident equals the sum of the
+# four partition buckets. An absent field fails (empty is NOT 0) -- the identity
+# must be proven against fields that exist.
+_partition_holds() {
+    local v
+    for v in "$@"; do
+        case "$v" in
+            ''|*[!0-9]*) return 1 ;;
+        esac
+    done
+    [ "$1" -eq $(( $2 + $3 + $4 + $5 )) ]
+}
+
+ORACLE_MAP="$N_MAP" run_helper --mount "$N_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+
+assert "N1: exit 0" test "$RC" -eq 0
+
+for n_case in "${N_CASES[@]}"; do
+    IFS=':' read -r n_lane n_liveness n_state n_task n_shape n_assigned n_class <<< "$n_case"
+    assert "N2: $n_lane reports classification=$n_class" \
+        bash -c 'printf "%s\n" "$1" | grep -qE "lane=$2 .*classification=$3( |\$)"' \
+        _ "$OUT" "$n_lane" "$n_class"
+done
+
+# N3 covers both the partition fields and the two cross-cuts, plus `leaked` --
+# whose expected value (1, not 2) is the assertion that a PINNED lane matching
+# the LEAKED predicate is NOT additionally counted as a leak.
+N_FIELDS=(
+    "resident:$n_exp_resident"
+    "live:$n_exp_live"
+    "pinned:$n_exp_pinned"
+    "quarantined:$n_exp_quarantined"
+    "free:$n_exp_free"
+    "assigned:$n_exp_assigned"
+    "state_unknown:$n_exp_state_unknown"
+    "leaked:$n_exp_leaked"
+    "reclaimable:$n_exp_reclaimable"
+)
+for n_f in "${N_FIELDS[@]}"; do
+    n_key="${n_f%%:*}"
+    n_want="${n_f##*:}"
+    n_got="$(_headroom_field "$OUT" "$n_key")"
+    assert "N3: HEADROOM $n_key=$n_want (derived from N_CASES)" \
+        bash -c '[ "$1" = "$2" ]' _ "$n_got" "$n_want"
+done
+
+assert "N4: partition identity resident == live + pinned + quarantined + free" \
+    _partition_holds \
+    "$(_headroom_field "$OUT" resident)" \
+    "$(_headroom_field "$OUT" live)" \
+    "$(_headroom_field "$OUT" pinned)" \
+    "$(_headroom_field "$OUT" quarantined)" \
+    "$(_headroom_field "$OUT" free)"
+
+# A5 observability, mirroring A3's leak_unknown treatment: a lane whose
+# assignment state could not be resolved is counted free (conservative), but is
+# named on stderr so "no pins" stays distinguishable from "pins could not be
+# evaluated".
+assert "N5: stderr names _lane-n-unknown as an unresolvable assignment state" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-n-unknown.*assignment state unknown"' \
+    _ "$ERR_OUT"
+
+N_PY_HEADROOM="$(mktemp /tmp/test-warm-lane-audit-n-headroom-XXXXXX.py)"
+_TMPDIRS+=("$N_PY_HEADROOM")
+cat > "$N_PY_HEADROOM" << 'PYEOF'
+import json, sys
+data = json.load(sys.stdin)
+h = data["headroom"]
+want = dict(kv.split("=", 1) for kv in sys.argv[1:])
+for k, v in want.items():
+    assert k in h, f"headroom has no {k!r} key: {sorted(h)}"
+    assert h[k] == int(v), f"headroom[{k!r}] == {h[k]!r}, want {v}"
+assert h["resident"] == h["live"] + h["pinned"] + h["quarantined"] + h["free"], h
+PYEOF
+
+ORACLE_MAP="$N_MAP" run_helper --mount "$N_MOUNT" \
+    --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh" --format json
+assert "N6a: exit 0 (json)" test "$RC" -eq 0
+assert "N6b: json headroom carries the same partition + cross-cut fields" \
+    bash -c 'printf "%s" "$1" | python3 "$2" "${@:3}"' _ "$OUT" "$N_PY_HEADROOM" \
+    "resident=$n_exp_resident" "live=$n_exp_live" "pinned=$n_exp_pinned" \
+    "quarantined=$n_exp_quarantined" "free=$n_exp_free" \
+    "assigned=$n_exp_assigned" "state_unknown=$n_exp_state_unknown"
+
+for n_pid in "${N_LIVE_PIDS[@]+${N_LIVE_PIDS[@]}}"; do
+    kill "$n_pid" 2>/dev/null || true
+done
+_BGPIDS=()  # clear so cleanup doesn't double-kill
+
 test_summary
