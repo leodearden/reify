@@ -1097,19 +1097,31 @@ select_infra_tests
 #
 # tests/infra/test_harness_kloc_cap.sh (the C2 anti-re-accretion guard) has no
 # row in verify-pipeline-infra-tests.txt: its trigger isn't a single artifact
-# path, it's *adding* a new top-level standalone crates/<c>/tests/*.rs file, OR
-# a nested crates/<c>/tests/harness_<subsystem>/** file (recursive — it
-# contributes lines to that harness's rule-(a) kLOC measure too), in one of
-# the 5 consolidatable crates. A nested path OUTSIDE a harness_*/ module dir
-# (tests/common/, fixtures/, …) is deliberately excluded — it isn't part of
-# any harness's measured compile unit. This selector runs the guard ONLY
-# under --scope branch (hermetic static reads, no cargo — seconds), so an
-# introducer sees the violation on their own branch instead of first at the
-# merge gate 40+ min in (tasks 5213, 5053). --diff-filter=A (adds only): a NEW
-# standalone binary or module file is exactly the re-accretion/growth the
-# guard catches; modifying or renaming an already-grandfathered file is a
-# no-op here and stays covered by the wholesale merge gate (no correctness
-# regression, only earlier coverage for the common add case).
+# path, it's *growing* a harness's measured compile unit — a new top-level
+# standalone crates/<c>/tests/*.rs file, OR an added/modified
+# crates/<c>/tests/harness_<subsystem>.rs root or harness_<subsystem>/**
+# nested file (recursive), in one of the 5 consolidatable crates. A nested
+# path OUTSIDE a harness_*/ module dir (tests/common/, fixtures/, …) is
+# deliberately excluded — it isn't part of any harness's measured compile
+# unit. This selector runs the guard ONLY under --scope branch (hermetic
+# static reads, no cargo — seconds), so an introducer sees the violation on
+# their own branch instead of first at the merge gate 40+ min in (tasks 5213,
+# 5053).
+#
+# Diff-status policy (git diff --diff-filter=AM), per path shape: (i) a
+# harness root (harness_*.rs) or a nested harness-module file (harness_*/**)
+# accepts BOTH A and M — both contribute lines to the harness's rule-(a) kLOC
+# measure, and a modified root is also the only visible diff trace a
+# rename-based consolidation absorb leaves (a `git mv tests/foo.rs
+# tests/harness_x/foo.rs` plus the C1-required `#[path =
+# "harness_x/foo.rs"] mod foo;` root edit — git's --diff-filter excludes R
+# entries, verified empirically); (ii) a top-level non-harness standalone
+# accepts ONLY A — rule-(b) re-accretion is an ADD by construction, so
+# widening to M would fire on ordinary edits to an already-grandfathered file
+# for zero possible signal. Either way, the residual
+# latency-not-a-coverage-hole doctrine is unchanged: the merge gate remains
+# the wholesale authority, so anything this selector misses is still caught
+# there.
 #
 # Appends into the SAME SELECTED_INFRA_GLOBS the selective-infra block above
 # populates, so it inherits for free: (a) merge/background suppression — the
@@ -1129,10 +1141,10 @@ select_infra_tests
 select_harness_kloc_guard() {
     [ "$SCOPE" = "branch" ] || return 0
     [ -n "$_MERGE_BASE" ] || return 0
-    local _added _path _rest _crate _tail
-    _added="$(git -C "$REPO_ROOT" diff --name-only --diff-filter=A "$_MERGE_BASE" 2>/dev/null)" || return 0
-    [ -n "$_added" ] || return 0
-    while IFS= read -r _path; do
+    local _changed _status _path _rest _crate _tail
+    _changed="$(git -C "$REPO_ROOT" diff --name-status --diff-filter=AM "$_MERGE_BASE" 2>/dev/null)" || return 0
+    [ -n "$_changed" ] || return 0
+    while IFS=$'\t' read -r _status _path; do
         [ -n "$_path" ] || continue
         case "$_path" in
             crates/*/tests/*.rs) : ;;
@@ -1144,14 +1156,16 @@ select_harness_kloc_guard() {
         # Ordered classification — harness_*/* MUST come first: a bash `case`
         # glob's `*` matches `/`, so this one arm covers arbitrary nesting
         # depth under a harness_<subsystem>/ module dir (same gotcha
-        # documented at tests/infra/harness-layout-lib.sh:86-89). The
-        # generic */* reject then catches everything else nested (not a
-        # harness module dir — no measured-compile-unit contribution), and
-        # the fallthrough * is a top-level tests/<base>.rs.
+        # documented at tests/infra/harness-layout-lib.sh:86-89). harness_*.rs
+        # (a root has no slash, so neither prior arm can catch it) is checked
+        # after the generic */* reject. Both harness compile-unit shapes
+        # accept A or M; a top-level standalone stays adds-only (see the
+        # block header comment for the full rationale).
         case "$_tail" in
-            harness_*/*) : ;;        # nested under a harness_<subsystem>/ module dir (recursive)
-            */*)         continue ;; # nested, but not a harness module dir
-            *)           : ;;        # top-level tests/<base>.rs
+            harness_*/*)  : ;;                       # nested module file: A or M
+            */*)          continue ;;                # nested, not a harness module dir
+            harness_*.rs) : ;;                       # harness root compile unit: A or M
+            *)  [ "$_status" = "A" ] || continue ;;  # top-level standalone: adds only
         esac
         case " reify-cli reify-syntax reify-kernel-occt reify-eval reify-compiler " in
             *" $_crate "*)
@@ -1163,7 +1177,7 @@ select_harness_kloc_guard() {
                 return 0
                 ;;
         esac
-    done <<< "$_added"
+    done <<< "$_changed"
 }
 select_harness_kloc_guard
 
