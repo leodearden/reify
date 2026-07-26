@@ -62,11 +62,11 @@ merely beginning with them. That holds today only because `scripts/verify.sh`
 emits bare section headers: `usage()` re-prints its own header comment block
 through `sed -n '2,59p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'`, so the
 comments `# Usage:` / `# Options:` (lines 9 and 12) survive the `# ` strip as
-bare `Usage:` / `Options:` lines. If
-`usage()`'s headers are ever reformatted onto one line (`Usage: verify.sh
-<test|lint|…>`), those two alternatives stop matching and the guard narrows to
-the `verify.sh: ERROR` banner alone. A cosmetic `usage()` edit is therefore a
-guard-relevant change — see the Re-run trigger.
+bare `Usage:` / `Options:` lines. If `usage()`'s headers are ever reformatted
+onto one line (`Usage: verify.sh <test|lint|…>`), those two alternatives stop
+matching and the guard narrows to the `verify.sh: ERROR` banner alone. A
+cosmetic `usage()` edit is therefore a guard-relevant change — see the Re-run
+trigger.
 
 **The guard covers one of `_handle_red_run`'s three seams — deliberately.**
 `_parse_confirmed_failures` is the numeric seam only; the infra seam
