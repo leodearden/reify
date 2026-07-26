@@ -1,0 +1,38 @@
+module negation
+
+// negation.ri — IDIOM: unary minus works everywhere. Write `-x`, never `0mm - x`.
+//
+// ANTI-PATTERN this replaces:
+//     let back = translate(stud, 0mm - offset, 0mm, 0mm)   // don't
+//     let back = translate(stud, offset * -1, 0mm, 0mm)    // don't
+//
+// Both are workarounds for a limitation that does not exist. Unary minus is a
+// first-class prefix operator on any dimensioned or dimensionless value, so the
+// direct form is always available:
+//     let back = translate(stud, -offset, 0mm, 0mm)        // do this
+//
+// It also composes in operand position, including immediately after a binary
+// operator (`offset - -offset`), so there is never a need to introduce a
+// zero-valued literal of the right unit just to get a sign flip. The negated
+// value keeps its dimension: `-offset` is a Length, not a bare scalar.
+
+structure def Negation {
+    param offset : Length = 12mm
+    param wall   : Length = 4mm
+
+    let stud = box(wall, wall, wall)
+
+    // THE IDIOM: mirror-symmetric placement about the origin. The -X copy is
+    // `-offset`, not `0mm - offset`.
+    let front = translate(stud, offset, 0mm, 0mm)
+    let back  = translate(stud, -offset, 0mm, 0mm)
+
+    let body = union(front, back)
+
+    // Unary minus in operand position, straight after a binary `-`. Parses and
+    // types cleanly: Length - Length = Length (here 2 × offset).
+    let span = offset - -offset
+
+    constraint offset > wall
+    constraint wall > 1mm
+}

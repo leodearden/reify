@@ -19,6 +19,7 @@ All paths below are relative to the Reify repo root (find it via the working dir
   - `bearing_auto_seal.ri` — `auto` + constraint-driven sizing
   - `dimensional_chains.ri`, `pattern_composition.ri` — composition idioms
   - `m5_connect_chain.ri` — `connect a.port <-> b.port`
+- **Best-practices corpus:** `examples/best_practices/` — small single-idiom exemplars, one per easy-to-get-wrong construct, each stating the anti-pattern it replaces. Catalogued in `examples/best_practices/INDEX.md`; **grep that index before probing the language**. Everything there is compile-gated, so the idioms are known to work.
 - **Embedded GUI prompt (reference only):** `gui/sidecar/src/system-prompt.ts`. Slightly stale vs. the chunks — trust the chunks where they disagree (e.g. `structure def` vs `structure`, `and/or/not` vs `&&/||/!`).
 
 ## Reify syntax — lean cheatsheet
@@ -37,7 +38,7 @@ structure def Bracket<M: Material> : Rigid {
     constraint thickness > 1mm
     constraint thickness < width / 4
 
-    auto fillet_radius : Length
+    param fillet_radius : Length = auto
 
     port mount : MechanicalPort { direction = in }
 }
@@ -52,27 +53,43 @@ Things that are easy to get wrong (the embedded GUI prompt has old forms — the
 - **Quantities:** number + unit, no space — `80mm`, `90deg`, `2.5kg`, `1.5e-3m`. *Always* units on physical quantities.
 - **Ranges:** `2mm..5mm`, `0deg..<360deg`, `>2mm`, `<=100MPa`.
 - **Specials:** `undef` (not yet decided), `auto` (solver decides), `some(v)` / `none`.
-- **Member kinds:** `param` (public input), `let` (derived), `auto` (solver-determined), `constraint` (predicate), `sub` (sub-entity instance), `port`, `connect a.port <-> b.port`, `type` (alias), `meta { ... }` (informational only, no constraint participation).
+- **Member kinds:** `param` (public input), `let` (derived), `constraint` (predicate), `sub` (sub-entity instance), `port`, `connect a.port <-> b.port`, `type` (alias), `meta { ... }` (informational only, no constraint participation).
+- **`auto` is a binding VALUE, not a declaration keyword.** Solver-determined members are ordinary `param`/`let` whose value is `auto`: `param fillet_radius : Length = auto`, `let r : Length = auto`, `param s : Real = auto(free)`. There is no `auto` member kind — `auto fillet_radius : Length` is a **parse error**. `auto` is also illegal in operand position (`x + auto`), which raises `E_AUTO_NOT_AT_BINDING_SITE`. Use `auto(free)` when the constraints admit more than one solution: strict `auto` runs a uniqueness re-solve and goes `undef` if it cannot converge.
 
 ### Probe-verified idioms — index (2026-07-24)
 
-One line per idiom. Worked, compile-gated examples live in `examples/best_practices/`
-(second-level index: its `INDEX.md`; corpus seeded by task #5397 — pointers added as files land).
+One line per idiom. Worked, compile-gated exemplars live in `examples/best_practices/` —
+**read the exemplar rather than re-probing**. Second-level index with the full list:
+`examples/best_practices/INDEX.md`.
 
-- **Unary minus** works everywhere: `-x`, never `0mm - x`.
+- **Unary minus** works everywhere: `-x`, never `0mm - x`. → `negation.ri`
 - **Hollow/centered primitives**: `tube(outer_r, inner_r, h)`, `cylinder_centered` — don't
-  difference two cylinders.
+  difference two cylinders. (`tube` is base-at-z=0 and needs `inner_r < outer_r`;
+  `box_centered` is an op-identical alias for `box`.) → `hollow_primitives.ri`
 - **Symmetric parts**: `mirror` returns a reflected copy — `let twin = union(g, mirror(g, plane_yz(0mm)))`.
+  Plane ctors take exactly one offset arg; the 7-arg scalar form needs a *dimensioned*
+  origin (`0mm`, never bare `0`), and `reify check` will not tell you when it doesn't.
+  → `symmetry_mirror.ri`
 - **Bolt circles**: `circular_pattern(hole, axis_z(point3(…)), n, 360deg)` — angle is the TOTAL
-  sweep. Never construct geometry inside `generate` lambdas: silent `undef` under a green
-  `check` (#5385); lambdas may only compute `point3`/scalar values.
+  sweep (step = total/count). Never construct geometry inside `generate` lambdas: silent `undef`
+  under a green `check` (#5385); lambdas may only compute `point3`/scalar values.
+  → `bolt_circle.ri`
 - **Imports** resolve under `reify check` + GUI; `eval`/`build` are still single-file — keep
   eval/build entry files self-contained.
 - **Interference/clearance oracle exists — run it before shipping an assembly**:
   `intersects(a, b)`/`distance(a, b)` on let-bound geometry (low ceremony), or
   `mechanism`/`snapshot`/`min_clearance` (assembly-grade). Eval/build only — `reify check`
-  reports these INDETERMINATE. Worked example: `examples/tolerancing/vc_bolt_pattern_clearance.ri`.
-- **Discrete choices**: until CP-SAT is wired, `auto s : Real` + `constraint s*s == 1` (s = ±1).
+  reports these INDETERMINATE, which is expected. → `clearance_oracle.ri`; assembly-grade
+  worked example: `examples/tolerancing/vc_bolt_pattern_clearance.ri`.
+- **Discrete choices**: until CP-SAT is wired, `param s : Real = auto(free)` +
+  `constraint s*s == 1` (s = ±1). Note `auto` is a binding *value* — `auto s : Real` is a
+  parse error — and strict `auto` goes `undef` here because two roots defeat the uniqueness
+  re-solve. → `discrete_choice.ri`
+
+A green `reify check` is weaker than it looks: geometry-argument dimension errors and
+wrong-arity datum constructors (`plane_yz(0mm, 0mm)`, `axis_z(vec3(…))`) produce no
+check-time diagnostic at all — the first silently fails at build, the second evaluates to
+`undef`. Run `reify eval` before believing a geometry expression is right.
 
 ## Workflow
 
@@ -120,6 +137,57 @@ If the GUI isn't running and the iteration is non-trivial, ask the user whether 
 - **Use `auto`** for values the solver should determine (fillet sized by stress, fit driven by tolerances). Use `constraint` to express the relationships the solver must satisfy.
 - **Trait conformance** (`: Rigid`, `: Physical`, `: MaterialSpec`) requires the structure to declare the trait's required members — see the `traits` chunk and `m5_geometry_flange.ri` for the concrete pattern (Material struct, density, moment_of_inertia, etc.).
 - **Sub-component composition** is preferred over monolithic geometry when a feature has independent meaning. Use `sub`, `connect`, and ports rather than embedding everything in one structure's `let body = ...`.
+
+### 4. Session wrap — graduate your probes
+
+At the end of a design session, spend a couple of minutes turning what you
+learned about the *language* into something the next session can grep.
+
+**Why this is worth doing.** The printer_v01 dogfood session spent ~40% of its
+CLI verification runs (13 of 19) on probe files interrogating language
+semantics rather than the design itself, and the 2026-07-24 probe wave wrote
+~25 more. Nearly every one of those findings would have been a single grep away
+if a prior session had preserved its probes. This step is how that stops
+repeating.
+
+1. **Identify this session's probes.** A probe is a throwaway `.ri` file
+   written purely to interrogate language or stdlib semantics — "does `mirror`
+   take a plane or an axis?", "what arity does `tube` want?". The user's actual
+   design files are **never** graduated, no matter how instructive they were.
+
+2. **Discard what's already covered.** Grep `examples/best_practices/INDEX.md`
+   first. If the idiom is already there, the probe has served its purpose —
+   delete it. That grep is the entire point of the index; do not skip it and
+   add a near-duplicate exemplar.
+
+3. **Minimise what's left.** For each genuinely new finding, reduce the probe
+   to the smallest file that still demonstrates the idiom, then:
+   - rename it to an idiom-descriptive `snake_case` name (`symmetry_mirror.ri`,
+     not `probe3.ri`);
+   - add a `module <file_stem>` decl — the module path **must** match the file
+     stem or you get `E_MODULE_PATH_MISMATCH`;
+   - add a header comment stating the idiom **and the anti-pattern it
+     replaces** — the anti-pattern is what makes it findable by someone who
+     doesn't yet know the right answer;
+   - drop it in `examples/best_practices/`.
+
+4. **Add its INDEX.md row — not optional.** `examples_smoke.rs`'s
+   `best_practices_index_matches_corpus_directory` fails the build if a corpus
+   file has no index entry, or an entry names a missing file. File and row land
+   in one commit.
+
+5. **Verify before you commit:**
+   ```sh
+   cargo test -p reify-compiler --test examples_smoke
+   ```
+   Also run `reify eval` on the new file, not just `reify check` — check is
+   silent about several classes of geometry error (see the note at the end of
+   the idiom index).
+
+**A file that cannot reach a clean compile must NOT be added.** The corpus is
+compile-gated by construction, and an exemplar that doesn't work is worse than
+no exemplar. Do not add a `SKIP_SET` entry to get one in. If the finding is
+that something is *broken*, that is a bug report, not an exemplar.
 
 ## What this skill is *not* for
 
