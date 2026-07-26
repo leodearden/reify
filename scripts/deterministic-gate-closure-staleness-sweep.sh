@@ -98,7 +98,14 @@
 #        --class / --stale-heartbeat-min.
 #
 # Invariants:
-#   (Populated as each classifier lands — see the operational digest.)
+#   L1 — the liveness guard is the FIRST predicate applied to every candidate
+#        and it short-circuits: a row with a fresh heartbeat is never a hit,
+#        no class predicate evaluates for it, and it never yields a
+#        re-dispatch request. A NULL/empty heartbeat is NOT live (`blocked`
+#        rows legitimately carry none). An UNPARSEABLE heartbeat degrades to
+#        LIVE, never to eligible — the fail-safe direction for a re-dispatch
+#        decision is always "do nothing".
+#   (Further invariants are recorded as each classifier lands.)
 
 set -euo pipefail
 
@@ -304,12 +311,45 @@ PY
     fi
 fi
 
+# ── liveness guard (invariant L1) ─────────────────────────────────────────────
+# Measured live on 2026-07-26: ALL TEN in-progress tasks had every dependency
+# `done` (task 5321 itself among them). A "premise resolved => re-dispatch"
+# rule without this guard would have targeted ten actively-running agents, so
+# the capability would destroy work rather than recover it.
+_LIVENESS_WINDOW_SEC=$((STALE_HEARTBEAT_MIN * 60))
+_NOW_EPOCH="$(date -u +%s)"
+
+# _is_live <task_id> <heartbeat_at> — exit 0 when the row is LIVE.
+_is_live() {
+    local id="$1" hb="$2" hb_epoch
+    # A NULL/empty heartbeat is NOT live: `blocked` rows legitimately carry
+    # none, and treating that as live would blind the sweep to class A and C
+    # entirely.
+    [ -n "$hb" ] || return 1
+    if ! hb_epoch="$(date -u -d "$hb" +%s 2>/dev/null)"; then
+        warn "Task $id: unparseable heartbeat_at '$hb' — treating as LIVE (fail-safe: an unreadable liveness signal must never license a re-dispatch)."
+        return 0
+    fi
+    [ $(( _NOW_EPOCH - hb_epoch )) -lt "$_LIVENESS_WINDOW_SEC" ]
+}
+
 # ── classify ──────────────────────────────────────────────────────────────────
-# (Classifiers land in later steps. Until then every candidate is reported
-# `unknown` — the fail-safe verdict, which never emits a re-dispatch request.)
+# (Class predicates land in later steps. Until then every non-LIVE candidate
+# is reported `unknown` — the fail-safe verdict, which never emits a request.)
 while IFS="$(printf '\t')" read -r task_id status heartbeat_at claimant_run_id; do
     [ -n "${task_id:-}" ] || continue
     N_CANDIDATES=$((N_CANDIDATES + 1))
+
+    # L1: the liveness guard is the FIRST predicate, and it short-circuits —
+    # no class predicate evaluates, no flags are computed, and no request is
+    # ever emitted for a LIVE row.
+    if _is_live "$task_id" "$heartbeat_at"; then
+        N_LIVE_SKIPPED=$((N_LIVE_SKIPPED + 1))
+        _emit_row "$task_id" "$status" "-" "LIVE" "none" \
+            "heartbeat_at=${heartbeat_at} within the ${STALE_HEARTBEAT_MIN}m liveness window; claimant=${claimant_run_id:--}" \
+            "-"
+        continue
+    fi
 
     row_class="-"
     row_verdict="unknown"
