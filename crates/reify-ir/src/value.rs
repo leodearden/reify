@@ -2990,6 +2990,55 @@ fn join_rows_rel(rows: &[Vec<Value>], reference: f64) -> String {
         .join(", ")
 }
 
+/// Render `exponent` as Unicode superscript digits, with `⁻` (U+207B) for a
+/// negative value — the exponent half of PRD display-unit-preference §5c's
+/// `4.2×10⁻³` form.
+///
+/// The glyphs come from two different Unicode blocks: `¹` `²` `³` are Latin-1
+/// Supplement code points (U+00B9/U+00B2/U+00B3) while `⁰` and `⁴`-`⁹` live in
+/// Superscripts and Subscripts (U+2070, U+2074-U+2079). A contiguous-range
+/// mapping would silently mangle three of the ten, so they are tabulated.
+fn superscript_exponent(exponent: i32) -> String {
+    const SUPERSCRIPT_DIGITS: [char; 10] = [
+        '\u{2070}', '\u{00B9}', '\u{00B2}', '\u{00B3}', '\u{2074}', '\u{2075}', '\u{2076}',
+        '\u{2077}', '\u{2078}', '\u{2079}',
+    ];
+    let mut out = String::new();
+    if exponent < 0 {
+        out.push('\u{207B}');
+    }
+    // Format the magnitude via `unsigned_abs` so `i32::MIN` cannot overflow.
+    for byte in exponent.unsigned_abs().to_string().bytes() {
+        out.push(SUPERSCRIPT_DIGITS[(byte - b'0') as usize]);
+    }
+    out
+}
+
+/// Render a `(mantissa, exponent)` split as PRD display-unit-preference §5c's
+/// engineering notation, e.g. `4.2×10⁻³`.
+///
+/// The mantissa goes through [`format_display_number`] like every other
+/// display magnitude, so an auto-scaled cell keeps the same
+/// sig-fig/trailing-zero convention as a plain one.
+///
+/// ASCII `4.2e-3` was considered and declined: §5c's worked example shows the
+/// `×10ⁿ` form, and this crate already emits Unicode in display strings
+/// (`mm²`, `mm³`, `kg/m³`, `kg·m^-3`).
+///
+/// An `exponent` of zero short-circuits to the bare mantissa. That is
+/// unreachable from
+/// [`DimensionLadder::auto_scaled`](reify_core::DimensionLadder::auto_scaled)
+/// — an exponent-0 magnitude is by definition in band at the anchor rung, so
+/// a rung would have been selected instead — but is guarded so the helper is
+/// total.
+fn format_engineering(mantissa: f64, exponent: i32) -> String {
+    let magnitude = format_display_number(mantissa);
+    if exponent == 0 {
+        return magnitude;
+    }
+    format!("{magnitude}\u{00D7}10{}", superscript_exponent(exponent))
+}
+
 /// Map a DimensionVector to a human-readable SI unit label.
 ///
 /// Used by [`Value::format_hover`] for user-facing display, which renders
@@ -3162,14 +3211,14 @@ pub fn resolve_display(
                     rung.label.clone(),
                 );
             }
-            // §5c's engineering-notation rendering lands in the next step;
-            // until then this renders at the same anchor rung as a plain
-            // magnitude, which is the pre-§5 output for these magnitudes.
-            reify_core::AutoScaleChoice::Engineering { rung, .. } => {
-                return (
-                    format_display_number(si_value / rung.si_scale),
-                    rung.label.clone(),
-                );
+            // §5c: no rung fits, so render the magnitude against the static
+            // default rung in engineering notation.
+            reify_core::AutoScaleChoice::Engineering {
+                rung,
+                mantissa,
+                exponent,
+            } => {
+                return (format_engineering(mantissa, exponent), rung.label.clone());
             }
             // Posture gate said no (or the magnitude is unusable) — fall
             // through to the unchanged rungs 3-5 below.
@@ -10872,7 +10921,12 @@ mod tests {
             // kPa for Pressure, g/cm³ for Density — which the posture forbids.
             (DimensionVector::MASS, 2.5e-6, "0.0000025", "kg"),
             (DimensionVector::PRESSURE, 1.01325e5, "101325", "Pa"),
-            (DimensionVector::MASS_DENSITY, 7850.0, "7850", "kg/m\u{00B3}"),
+            (
+                DimensionVector::MASS_DENSITY,
+                7850.0,
+                "7850",
+                "kg/m\u{00B3}",
+            ),
             // Structurally excluded (`auto_scale: None`).
             (DimensionVector::ANGLE, std::f64::consts::PI, "180", "deg"),
             (DimensionVector::FORCE, 250_000.0, "250000", "N"),
@@ -10945,7 +10999,10 @@ mod tests {
     fn resolve_display_none_renders_engineering_notation_when_no_rung_fits() {
         assert_eq!(
             resolve_display(0.5, &DimensionVector::AREA, None),
-            ("500\u{00D7}10\u{00B3}".to_string(), "mm\u{00B2}".to_string()),
+            (
+                "500\u{00D7}10\u{00B3}".to_string(),
+                "mm\u{00B2}".to_string()
+            ),
             "no Area rung lands in band at 0.5 m²"
         );
 
@@ -10970,7 +11027,10 @@ mod tests {
         // §5c's own `4.2×10⁻³` example.
         assert_eq!(
             resolve_display(4.2e-9, &DimensionVector::LENGTH, None),
-            ("4.2\u{00D7}10\u{207B}\u{2076}".to_string(), "mm".to_string())
+            (
+                "4.2\u{00D7}10\u{207B}\u{2076}".to_string(),
+                "mm".to_string()
+            )
         );
         assert_eq!(
             resolve_display(0.5678, &DimensionVector::AREA, None),
@@ -10992,7 +11052,10 @@ mod tests {
         );
         for si_value in [0.0, -0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             let (magnitude, label) = resolve_display(si_value, &DimensionVector::LENGTH, None);
-            assert_eq!(label, "mm", "{si_value} must stay on the static default rung");
+            assert_eq!(
+                label, "mm",
+                "{si_value} must stay on the static default rung"
+            );
             assert!(
                 !magnitude.contains('\u{00D7}'),
                 "{si_value} reached engineering notation: {magnitude:?}"
