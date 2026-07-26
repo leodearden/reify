@@ -5274,13 +5274,29 @@ pub(crate) fn build_template_node(
 
     let mut children = Vec::new();
 
+    // Shared by BOTH the value-cell loop and the realization loop below, so the
+    // two sibling nodes a geometry binding emits (#4954) agree on
+    // `trait_geometry` (#5195). Hoisted out of the value-cell loop, where it
+    // used to be recomputed per cell.
+    //
+    // KNOWN LIMITATION (pre-existing, shared by both call sites, out of scope
+    // for #5195): `trait_bounds` holds DECLARED trait names only, so this fires
+    // for `structure def X : Physical` but NOT for `: Rigid` — even though
+    // `Rigid : Physical` refines it (stdlib/structural_physical.ri:76). A
+    // correct check would resolve the refinement chain
+    // (`reify_eval::conforms_to_trait`) and needs the merged module + prelude
+    // trait_defs threaded in here; that is a separable follow-up. The
+    // consumed-intermediate observable does NOT depend on this flag: the
+    // terminal `geometry` realization is consumed by nothing, so it stays
+    // `default_visible == true` and renders either way.
+    let parent_has_physical = template.trait_bounds.iter().any(|b| b.contains("Physical"));
+
     // Value cells: param, let, auto
     for cell in &template.value_cells {
         let cell_kind = cell_kind_tree_str(cell.kind);
         let member = &cell.id.member;
         let cell_path = format!("{}.{}", entity_path, member);
         let is_geometry_member = member == "geometry";
-        let parent_has_physical = template.trait_bounds.iter().any(|b| b.contains("Physical"));
         // Use entity_path (the instance path, e.g. "Parent.rib") rather than
         // cell.id.entity (the template name, e.g. "Child") when constructing
         // the NodeId for the freshness lookup.  Sub-component cells are keyed
@@ -5345,7 +5361,10 @@ pub(crate) fn build_template_node(
             type_name: None,
             display_name,
             has_mesh: true,
-            trait_geometry: false,
+            // Mirrors the value-cell heuristic above so the two sibling nodes a
+            // geometry binding emits (#4954) agree — see `parent_has_physical`
+            // for the shared `: Rigid` limitation (#5195).
+            trait_geometry: real.name.as_deref() == Some("geometry") && parent_has_physical,
             children: vec![],
             freshness,
             // Extends the surfacing-walk rule — shared contract anchor:
