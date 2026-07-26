@@ -178,10 +178,23 @@ export function checkMeshCountParity({
  * `inBandError` in ./rpc.ts and the §2a contract in docs/debug-mcp-contract.md,
  * which is authoritative.
  *
+ * NOTE — the OTHER failure dialect: Rust-dispatched tools (`engine_state`,
+ * `mesh_stats`, `demand_dispatch`) surface a handler error as an MCP envelope
+ * with `isError: true` carrying a plain-text `Error: <msg>` block
+ * (debug_server.rs), NOT this JSON shape. The driver's `rpc()` normalises that
+ * envelope into `{error: "<text>"}` on the way out precisely so this one
+ * detector covers both dialects.
+ *
+ * Exported so a driver can distinguish "the tool failed" from "the tool
+ * answered" BEFORE it starts interpreting fields — see the selectivity
+ * precondition in ./smoke_mesh_count_parity_e2e.mjs, where reading a failed
+ * `demand_dispatch` as `full_scope !== false` would blame the frontend for a
+ * tool outage.
+ *
  * @param {unknown} v
  * @returns {boolean}
  */
-function isInBandError(v) {
+export function isInBandError(v) {
   return v !== null && typeof v === "object" && typeof (/** @type {any} */ (v).error) === "string";
 }
 

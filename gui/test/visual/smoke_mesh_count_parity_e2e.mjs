@@ -41,12 +41,27 @@
  *   * Edit source before the parity read. A cold `eval()` resets `full_scope`
  *     back to `true` and would re-trip the precondition.
  *
+ * FIXTURE PRECONDITION — the invariant is CONDITIONAL on every realized body
+ * being in `show` state, and that is a property of the fixture, not just of this
+ * driver's restraint. Beyond the ghost/hidden case above, AUX realizations
+ * (`default_visible: false`) are default-HIDDEN and so are excluded from
+ * `viewport_state.meshCount` while still appearing in engine_state/mesh_stats'
+ * full-scene lists — pinned by the T6 acceptance test at
+ * gui/src/__tests__/viewport/meshManager.test.ts. `large_assembly.ri` is
+ * aux-free today (7 plain sub-components) and MUST STAY aux-free for this smoke;
+ * adding an aux component to it would break parity legitimately and this gate
+ * would report it as a 5348-class regression.
+ *
  * Exit 0 on all-pass, non-zero on any failure.
  */
 
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkMeshCountParity, extractMeshCountInputs } from './meshCountParity.mjs';
+import {
+  checkMeshCountParity,
+  extractMeshCountInputs,
+  isInBandError,
+} from './meshCountParity.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -92,8 +107,23 @@ async function rpc(method, args = {}) {
   const envelope = await res.json();
   if (envelope.error) throw new Error(`RPC error: ${JSON.stringify(envelope.error)}`);
   const content = envelope?.result?.content;
-  if (!content || content.length === 0) return null;
-  const textBlock = content.find(c => c.type === 'text');
+  const textBlock = Array.isArray(content) ? content.find(c => c.type === 'text') : undefined;
+
+  // TWO FAILURE DIALECTS, one normalised shape.
+  // Frontend-mediated tools (viewport_state, via query_frontend) report failure
+  // in-band as JSON `{error: "<msg>"}`. Rust-dispatched tools — which is all
+  // THREE this smoke leans on hardest (engine_state, mesh_stats,
+  // demand_dispatch) — instead return an MCP envelope with `isError: true`
+  // carrying a plain-text `Error: <msg>` block (debug_server.rs). Without this
+  // branch a real engine-lock/engine-thread-died failure would fall through as
+  // the bare string "Error: …" and be misreported downstream as
+  // `mesh_stats payload is not an object` — a shape problem, which is exactly
+  // the misdiagnosis meshCountParity.mjs exists to prevent. Normalising to the
+  // in-band shape routes both dialects through its one `isInBandError` check.
+  if (envelope?.result?.isError === true) {
+    return { error: textBlock?.text ?? 'tool reported isError with no text content block' };
+  }
+
   if (!textBlock) return null;
   try {
     return JSON.parse(textBlock.text);
@@ -157,6 +187,22 @@ async function main() {
   log('Waiting for engine idle…');
   const idleResult = await rpc('wait_for_idle', { timeout_ms: 15000 });
   console.log('  wait_for_idle result:', JSON.stringify(idleResult));
+  // ASSERT the readiness verdict — do not merely log it. wait_for_idle returns
+  // `{ok: true, idle_after_ms}` once evalStatus settles, and an in-band
+  // `{error: 'timeout' | 'engine_phase' | 'engine_not_started'}` otherwise.
+  // Reading the mesh counts while the engine is still tessellating yields a
+  // partially-populated viewport, which the parity gate below would report as a
+  // loud 5348-class regression — a flaky false failure charged to the wrong
+  // subsystem. Name it as the readiness timeout it is, here.
+  if (!idleResult || idleResult.ok !== true) {
+    fail(
+      `wait_for_idle did not reach idle within 15000ms: ${JSON.stringify(idleResult)}. ` +
+        `This is a READINESS TIMEOUT, not a parity violation — the engine was still ` +
+        `evaluating/tessellating, so the three mesh counts below would have been read ` +
+        `mid-flight against a partially-populated viewport. Retry, or raise the idle budget, ` +
+        `before suspecting a cross-layer regression.`,
+    );
+  }
 
   // Boot: activeFile must contain 'large_assembly' — proves the intended model
   // is loaded, not a leftover from a previous run against the same window.
@@ -177,6 +223,19 @@ async function main() {
   let demandDispatch = null;
   for (let attempt = 1; attempt <= 10; attempt++) {
     demandDispatch = await rpc('demand_dispatch');
+    // A FAILED demand_dispatch is a tool outage, not a reading about the scope.
+    // Interpreting it as `full_scope !== false` would abort below with the
+    // vacuity diagnosis — blaming the frontend for never calling sync_demand
+    // when in fact the precondition could not be read at all. rpc() normalises
+    // the Rust `isError` dialect into this same in-band shape, so one check
+    // covers both.
+    if (isInBandError(demandDispatch)) {
+      fail(
+        `demand_dispatch itself failed: ${JSON.stringify(demandDispatch.error)}. The ` +
+          `selectivity precondition could not be READ at all — this is a debug-tool / engine ` +
+          `outage, NOT evidence that demand stayed full-scope, and not a parity result.`,
+      );
+    }
     const scope = demandDispatch?.full_scope;
     const evalSetLen = Array.isArray(demandDispatch?.eval_set)
       ? demandDispatch.eval_set.length
