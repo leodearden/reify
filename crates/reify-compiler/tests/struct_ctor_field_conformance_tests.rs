@@ -1041,8 +1041,17 @@ structure def Root {
 }
 "#;
 
+/// Clean fixture for the promoted `Matrix` family.
+///
+/// A nested list literal is the IDIOMATIC spelling of a `Matrix3x3` — it is what
+/// the `MassProperties` ctor in `examples/dynamics/pendulum_idyn.ri:29` writes —
+/// and it compiles to `List<List<Real>>`. `List<List<Real>>` carries no element
+/// counts in its type, so the declared m/n arity is structurally unverifiable at
+/// this leaf; the dedicated `Matrix`/`Tensor` arm therefore accepts `Type::List`
+/// and deliberately applies NO arity check (see the arm comment for the
+/// asymmetry with the `Point`/`Vector` arms).
 #[test]
-fn excluded_family_matrix_given_nested_list_literal_is_silent() {
+fn matrix_param_given_nested_list_literal_stays_clean() {
     let module = compile_source_with_stdlib(SRC_FAMILY_MATRIX);
     let diags = ctor_conformance_diags(&module);
     assert!(
@@ -1050,6 +1059,68 @@ fn excluded_family_matrix_given_nested_list_literal_is_silent() {
         "a Matrix<3,3,_> param given a nested list literal must emit ZERO ctor-conformance \
          diagnostics — the literal compiles to List<List<Real>> and no List→Matrix coercion \
          rule exists in type_compat.rs. Got: {diags:#?}"
+    );
+}
+
+const SRC_MATRIX_GIVEN_STRING: &str = r#"module test.matrix_string
+structure def Body { param inertia : Matrix<3, 3, MomentOfInertia> }
+structure def Root {
+    let b = Body(inertia: "heavy")
+}
+"#;
+
+/// Value floor for the promoted `Matrix` family.
+#[test]
+fn matrix_param_given_string_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_MATRIX_GIVEN_STRING,
+        "inertia",
+        "Matrix<3,3,MomentOfInertia> ← String",
+    );
+}
+
+const SRC_TENSOR_GIVEN_STRING: &str = r#"module test.tensor_string
+structure def Body { param stress : Tensor<2, 3, Pressure> }
+structure def Root {
+    let b = Body(stress: "t")
+}
+"#;
+
+/// Value floor for the promoted `Tensor` family (which the task title groups
+/// with `Matrix`, and which the combined arm handles).
+///
+/// `Tensor<rank, n, Q>` is the surface spelling `resolve_parameterized_builtin_type`
+/// accepts (`type_resolution.rs:3220`, three type args).
+#[test]
+fn tensor_param_given_string_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_TENSOR_GIVEN_STRING,
+        "stress",
+        "Tensor<2,3,Pressure> ← String",
+    );
+}
+
+const SRC_TENSOR_RANK1_GIVEN_VECTOR: &str = r#"module test.tensor_vector
+structure def Body { param axis : Tensor<1, 3, Length> }
+structure def Root {
+    let b = Body(axis: vec3(0m, 0m, 1m))
+}
+"#;
+
+/// Regression fence: the new arm must not reject an ALREADY-legal conversion.
+///
+/// `implicitly_converts_to` Rules 1a/1b (`type_compat.rs:83-108`) make
+/// `Vector<N, Q>` and `Tensor<1, N, Q>` interconvertible, so a `Vector3`-typed
+/// arg at a rank-1 `Tensor` param is legal today and must stay silent.
+#[test]
+fn tensor_param_given_vector_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_TENSOR_RANK1_GIVEN_VECTOR);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a Tensor<1,3,Length> param given a vec3 arg must emit ZERO ctor-conformance \
+         diagnostics — implicitly_converts_to Rules 1a/1b already make Vector<N,Q> and \
+         Tensor<1,N,Q> interconvertible. Got: {diags:#?}"
     );
 }
 
