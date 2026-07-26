@@ -3067,7 +3067,9 @@ impl Engine {
     /// mirrors the exhaustive-literal drift-guard in
     /// `crates/reify-compute-contract/src/elastic_result.rs` (:617/641/674).
     /// It is exactly what forced the classification of `realization_projection_store`
-    /// (β/#4508), a memoization field added after the design list was written.
+    /// (β/#4508), a memoization field added after the design list was written,
+    /// and then again of `mesh_contract_mode` (#5105 δ), which landed on main
+    /// mid-task and could not compile until classified below.
     ///
     /// # Classification
     ///
@@ -3084,8 +3086,11 @@ impl Engine {
     ///   engine-scoped caches/stores (`realization_cache` task 2874,
     ///   `realization_projection_store`, `warm_pool`, `morph_*`, persistent
     ///   cache), registries/kernels/solvers, all eval-state, snapshot/version
-    ///   counters, journal, config, and hooks. Clearing any of these here would
-    ///   be a regression.
+    ///   counters, journal, config (including the INV-GEO-1
+    ///   `mesh_contract_mode` posture, set once from the environment —
+    ///   sweeping it would silently restore `Enforce` and destroy the
+    ///   `REIFY_MESH_CONTRACT=warn` break-glass after the first build), and
+    ///   hooks. Clearing any of these here would be a regression.
     ///
     /// The build↔tessellate ASYMMETRY is load-bearing: the CLI
     /// combined-constraint arm (`reify-cli/src/main.rs`) runs `build()` →
@@ -3118,6 +3123,7 @@ impl Engine {
             param_overrides: _,    // set_param_and_invalidate overrides
             eval_state: _,         // consolidated eval state
             build_scheduler: _,    // build-scheduler selection (config)
+            mesh_contract_mode: _, // INV-GEO-1 mesh-contract posture (config, set once from env)
             demand: _,             // demand registry
             observed_demand: _,    // passive observed-demand side-channel
             last_demand_prune_measurement: _, // GUI prune-measurement DTO
