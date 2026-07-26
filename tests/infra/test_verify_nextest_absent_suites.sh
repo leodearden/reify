@@ -1,22 +1,45 @@
 #!/usr/bin/env bash
 # tests/infra/test_verify_nextest_absent_suites.sh — regression guard for
-# host-independence of the plan-oracle infra suites on a nextest-LESS host
-# (task 5599).
+# host-independence of FOUR NAMED plan-oracle infra suites on a nextest-LESS
+# host (task 5599):
+#
+#     tests/infra/test_verify_compile_gate.sh
+#     tests/infra/test_verify_semaphore_wiring.sh
+#     tests/infra/test_verify_offline_partition.sh
+#     tests/infra/test_verify_semaphore_e2e.sh
+#
+# Those four, and ONLY those four — see "NOT COVERED HERE" below. This file
+# does NOT claim that `tests/infra/run_all.sh` as a whole is green without
+# cargo-nextest.
 #
 # PROBLEM. scripts/verify.sh gracefully falls back to emitting `cargo test`
 # instead of `cargo nextest run` when cargo-nextest is genuinely absent from
-# PATH (plan header `nextest=0`). Several tests/infra plan-oracle suites used
-# to hard-code the literal string `cargo nextest run` inside their `bash -c`
-# assert bodies, so they FAILed spuriously on such a host — the assert is
-# checking an ordering/precedence property of the emitted plan that holds
-# identically on the cargo-test fallback path, not anything nextest-specific.
-# Worse, several other asserts passed VACUOUSLY there (their grep matched
-# nothing), silently testing nothing.
+# PATH (plan header `nextest=0`). The four suites above used to hard-code the
+# literal string `cargo nextest run` inside their `bash -c` assert bodies, so
+# they FAILed spuriously on such a host — the assert is checking an
+# ordering/precedence property of the emitted plan that holds identically on
+# the cargo-test fallback path, not anything nextest-specific. Worse, several
+# other asserts passed VACUOUSLY there (their grep matched nothing), silently
+# testing nothing.
 #
 # This suite turns the previously-manual acceptance ritual into a mechanical
 # check: it builds a nextest-absent environment ONCE and runs each covered
-# suite under it, asserting each reaches test_summary with rc=0 AND reports
-# "0 failed".
+# suite under it, asserting each reaches test_summary with rc=0, reports
+# "0 failed", AND still runs at least its pinned floor of asserts (so a future
+# change that guards coverage away instead of fixing it fails loudly rather
+# than reporting a vacuous green — see _suite_is_clean_without_nextest).
+#
+# NOT COVERED HERE (measured under this exact harness at task/5599
+# HEAD=7adf5995f2; both files are outside task 5599's module locks, so they
+# could not be fixed there — follow-up filed as ticket
+# tkt_0RRQHFMP224R3KNR2572TKCG3J):
+#   tests/infra/test_verify_scope.sh          rc=1, 133 passed, 10 failed
+#   tests/infra/test_verify_failfast_order.sh rc=1,  38 passed,  2 failed
+# Two more plan-oracle suites are GREEN under the harness but were not audited
+# for the vacuity class above, because at least some of their nextest-string
+# assertions are NEGATIVE greps: tests/infra/test_occt_gated_scope.sh (49/0)
+# and tests/infra/test_release_mode_in_test_command.sh (9/0). All four are in
+# the follow-up ticket's scope; when one is fixed, add it as a new S-row here.
 #
 # WHY NOT THE NAIVE `PATH="$STUB:/usr/bin:/bin"` RECIPE. The obvious harness
 # (stub `cargo` + fresh HOME + PATH cut down to /usr/bin:/bin) does yield
@@ -75,18 +98,42 @@ VERIFY="$REPO_ROOT/scripts/verify.sh"
 # shellcheck source=tests/infra/test_helpers.sh
 source "$SCRIPT_DIR/test_helpers.sh"
 
-echo "=== plan-oracle infra suites are host-independent on a nextest-less host (task 5599) ==="
+echo "=== the four covered plan-oracle infra suites are host-independent on a nextest-less host (task 5599) ==="
 
 # ---------------------------------------------------------------------------
 # Harness construction (once, at suite start)
 # ---------------------------------------------------------------------------
 
 CARGO_BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
-[ -d "$CARGO_BIN_DIR" ] || {
-    echo "ERROR: cargo bin dir not found at $CARGO_BIN_DIR — cannot build the"
-    echo "       nextest-absent symlink farm without something to mirror."
-    exit 1
-}
+
+# HOST PRECONDITION (skip, do NOT fail). Without a ~/.cargo/bin to mirror there
+# is nothing to build the symlink farm from. That is a property of the HOST,
+# not a defect in the code under test, so it must not surface as a red suite —
+# and it especially must not `exit 1` BEFORE test_summary, which would leave
+# run_all.sh (or any suite nesting this one the way this one nests others) with
+# a non-zero rc and no "Results:" line at all, i.e. indistinguishable from a
+# genuine mid-suite abort. Emit an explicit SKIP and a clean summary instead.
+if [ ! -d "$CARGO_BIN_DIR" ]; then
+    echo ""
+    echo "SKIP: harness unavailable on this host (cargo bin dir not found at" \
+         "$CARGO_BIN_DIR — nothing to mirror into the nextest-absent symlink farm)"
+    echo "      Reporting a clean summary: this is a host limitation, not a"
+    echo "      defect in the suites under test."
+    test_summary
+    exit 0
+fi
+
+# Is cargo-nextest installed AMBIENTLY? If not, this host IS already a
+# nextest-less host: the harness still works (and the S-section coverage below
+# is arguably more direct), but H5 — "the plan header WITHOUT the harness reads
+# nextest=1", the check that pins the simulation as MEANINGFUL here — cannot
+# hold, and asserting it would go RED with a failure that says nothing about
+# the property under test. So H5 is asserted only in the branch where
+# cargo-nextest really is installed, and skipped with a reason otherwise.
+NX_AMBIENT_HAS_NEXTEST=0
+if command -v cargo-nextest >/dev/null 2>&1; then
+    NX_AMBIENT_HAS_NEXTEST=1
+fi
 
 NX_WORKDIR="$(mktemp -d)"
 NX_FARM="$NX_WORKDIR/cargo-bin-farm"
@@ -170,15 +217,41 @@ _h5_check() {
 # Covered-suite checker
 # ---------------------------------------------------------------------------
 
-# _suite_is_clean_without_nextest <basename> — run tests/infra/<basename>
-# under the nextest-absent env and succeed ONLY if BOTH the exit rc is 0 AND
-# the final "Results:" line reports "0 failed". On failure, echo the captured
-# `FAIL:` lines (and the Results line) so assert()'s tail-50 dump names the
-# offending asserts rather than just reporting a bare non-zero rc.
+# _suite_is_clean_without_nextest <basename> <pass-floor> — run
+# tests/infra/<basename> under the nextest-absent env and succeed ONLY if ALL
+# THREE hold: the exit rc is 0, the final "Results:" line reports 0 failures,
+# and it reports at least <pass-floor> passing asserts.
+#
+# WHY THE FLOOR. rc=0 + "0 failed" alone says nothing about how many asserts
+# actually RAN. A covered suite fixes its host-dependence either by widening a
+# grep (coverage preserved) or by wrapping the assert in a NEXTEST_AVAILABLE
+# guard (coverage deliberately dropped on this path) — and nothing stops a
+# future edit from widening a guard until it wraps the whole suite. That suite
+# would still report "rc=0, 0 failed" while checking nothing, which is exactly
+# the vacuity failure mode this file exists to prevent. The floor is the
+# measured nextest-less pass count at the time of writing; a drop below it
+# fails loudly. It is a FLOOR, not equality, so legitimately ADDING asserts to
+# a covered suite does not require touching this file.
+#
+# WHY THE COUNTS ARE PARSED RATHER THAN grep'd. `grep -q '0 failed'` is an
+# unanchored substring match: "Results: 5 passed, 10 failed" contains the
+# substring "0 failed" and would pass. Today the rc=0 conjunct masks that
+# (test_summary exits 1 whenever FAIL>0), but the failure-count check is
+# precisely the check that must still hold in the case where a suite reports
+# failures yet exits 0 anyway — a suite that stops calling test_summary, or
+# whose rc gets swallowed. So both numbers are extracted from the anchored,
+# whole-line shape that test_helpers.sh:63 emits and compared numerically. A
+# Results line that does not match that shape leaves both empty, which the
+# -n guards below reject rather than silently reading as 0.
+#
+# On failure, echo the captured `FAIL:` lines (and the Results line) so
+# assert()'s tail-50 dump names the offending asserts rather than just
+# reporting a bare non-zero rc.
 _suite_is_clean_without_nextest() {
     local basename="$1"
+    local floor="$2"
     local suite="$SCRIPT_DIR/$basename"
-    local out rc results
+    local out rc results passed failed
 
     [ -f "$suite" ] || {
         echo "ERROR: covered suite not found at $suite"
@@ -191,14 +264,30 @@ _suite_is_clean_without_nextest() {
     set -e
 
     results="$(printf '%s\n' "$out" | grep -E '^Results:' | tail -1)"
+    passed="$(printf '%s\n' "$results" \
+        | sed -n 's/^Results: \([0-9]\{1,\}\) passed, \([0-9]\{1,\}\) failed$/\1/p')"
+    failed="$(printf '%s\n' "$results" \
+        | sed -n 's/^Results: \([0-9]\{1,\}\) passed, \([0-9]\{1,\}\) failed$/\2/p')"
 
-    if [ "$rc" -eq 0 ] && printf '%s\n' "$results" | grep -q '0 failed'; then
-        echo "$basename: rc=$rc  $results"
+    if [ "$rc" -eq 0 ] && [ -n "$passed" ] && [ -n "$failed" ] \
+       && [ "$failed" -eq 0 ] && [ "$passed" -ge "$floor" ]; then
+        echo "$basename: rc=$rc  $results  (>= floor $floor)"
         return 0
     fi
 
-    echo "$basename FAILED under the nextest-absent harness: rc=$rc"
+    echo "$basename FAILED under the nextest-absent harness: rc=$rc (pass floor $floor)"
     echo "  ${results:-(no Results: line — suite aborted before test_summary)}"
+    if [ -z "$passed" ] || [ -z "$failed" ]; then
+        echo "  -> the Results line does not match the canonical"
+        echo "     'Results: <N> passed, <M> failed' shape from test_helpers.sh"
+    elif [ "$failed" -ne 0 ]; then
+        echo "  -> $failed assert(s) failed on the nextest-less path"
+    elif [ "$passed" -lt "$floor" ]; then
+        echo "  -> COVERAGE SHRANK: only $passed assert(s) ran, floor is $floor."
+        echo "     The suite is green but is checking LESS than it used to on a"
+        echo "     nextest-less host — a guard was widened instead of a grep."
+        echo "     Fix the suite, or re-pin the floor here with the reason."
+    fi
     printf '%s\n' "$out" | grep -E '^\s*FAIL:' || true
     return 1
 }
@@ -215,24 +304,48 @@ assert "H3: tree-sitter IS still resolvable under the harness env (not stripped 
 assert "H4: verify.sh plan header reads nextest=0 UNDER the harness" \
     _h4_check
 
-assert "H5: verify.sh plan header reads nextest=1 WITHOUT the harness (this host has cargo-nextest, so the simulation is meaningful)" \
-    _h5_check
+# H5 is conditional on the host actually having cargo-nextest — see the
+# NX_AMBIENT_HAS_NEXTEST comment above. test_helpers.sh has no SKIP counter, so
+# a skipped assert simply does not increment PASS (same convention as the
+# guarded regions in test_verify_offline_partition.sh).
+if [ "$NX_AMBIENT_HAS_NEXTEST" -eq 1 ]; then
+    assert "H5: verify.sh plan header reads nextest=1 WITHOUT the harness (this host has cargo-nextest, so the simulation is meaningful)" \
+        _h5_check
+else
+    echo "  SKIP: H5 (harness unavailable on this host: cargo-nextest is not installed"
+    echo "        ambiently, so there is nothing for the farm to hide and 'nextest=1"
+    echo "        without the harness' cannot hold. The S-section below still runs —"
+    echo "        against a genuinely nextest-less host rather than a simulated one.)"
+fi
 
 # ---------------------------------------------------------------------------
 # S: the covered plan-oracle suites are clean on a nextest-less host
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "--- S: covered suites reach test_summary with rc=0 / 0 FAIL without cargo-nextest ---"
+echo "--- S: covered suites reach test_summary with rc=0 / 0 FAIL / >= pass floor without cargo-nextest ---"
 
-assert "S1: test_verify_compile_gate.sh reaches test_summary with rc=0 / 0 FAIL on a nextest-less host" \
-    _suite_is_clean_without_nextest test_verify_compile_gate.sh
+# PASS FLOORS — the nextest-less pass count measured for each suite at
+# task/5599 HEAD=7adf5995f2 (see _suite_is_clean_without_nextest for why a
+# bare "0 failed" is not sufficient). Where the floor is BELOW the suite's
+# ambient nextest-ful count, the difference is the asserts deliberately
+# guarded away as nextest-only, and the delta is recorded here so a further
+# shrink is visible as a diff to this table rather than as silence:
+#   compile_gate      35 nextest-less / 35 ambient  (all recovered by widening)
+#   semaphore_wiring  22 nextest-less / 22 ambient  (all recovered by widening)
+#   offline_partition 30 nextest-less / 35 ambient  (5 guarded: -E heavy-filter
+#                                                    asserts, no fallback shape)
+#   semaphore_e2e     65 nextest-less / 65 ambient  (1 guarded --config-file
+#                                                    assert, replaced 1:1 by a
+#                                                    fallback-shape else arm)
+assert "S1: test_verify_compile_gate.sh reaches test_summary with rc=0 / 0 FAIL / >= 35 passed on a nextest-less host" \
+    _suite_is_clean_without_nextest test_verify_compile_gate.sh 35
 
-assert "S2: test_verify_semaphore_wiring.sh reaches test_summary with rc=0 / 0 FAIL on a nextest-less host" \
-    _suite_is_clean_without_nextest test_verify_semaphore_wiring.sh
+assert "S2: test_verify_semaphore_wiring.sh reaches test_summary with rc=0 / 0 FAIL / >= 22 passed on a nextest-less host" \
+    _suite_is_clean_without_nextest test_verify_semaphore_wiring.sh 22
 
-assert "S3: test_verify_offline_partition.sh reaches test_summary with rc=0 / 0 FAIL on a nextest-less host" \
-    _suite_is_clean_without_nextest test_verify_offline_partition.sh
+assert "S3: test_verify_offline_partition.sh reaches test_summary with rc=0 / 0 FAIL / >= 30 passed on a nextest-less host" \
+    _suite_is_clean_without_nextest test_verify_offline_partition.sh 30
 
 # S4 is the reason the harness uses a symlink farm rather than the naive
 # PATH="$STUB:/usr/bin:/bin" recipe (see the header). test_verify_semaphore_e2e.sh
@@ -242,7 +355,7 @@ assert "S3: test_verify_offline_partition.sh reaches test_summary with rc=0 / 0 
 # nothing to do with nextest, making "0 FAIL" unreachable. H3 above pins that
 # tree-sitter still resolves under the harness, so a regression in the farm
 # surfaces there rather than as a confusing failure here.
-assert "S4: test_verify_semaphore_e2e.sh reaches test_summary with rc=0 / 0 FAIL on a nextest-less host" \
-    _suite_is_clean_without_nextest test_verify_semaphore_e2e.sh
+assert "S4: test_verify_semaphore_e2e.sh reaches test_summary with rc=0 / 0 FAIL / >= 65 passed on a nextest-less host" \
+    _suite_is_clean_without_nextest test_verify_semaphore_e2e.sh 65
 
 test_summary
