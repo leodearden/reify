@@ -1058,9 +1058,22 @@ assert "I10b: outside-mount: stderr names mount/misuse" \
 
 # I11-I12: SELF-CLOBBER — LANE_DIR = dirname(BASE_TARGET_DIR) so LANE_TARGET == BASE_TARGET_DIR.
 # Catastrophic: would rename the base target to trash and clone it onto itself.
-I_SC_BASE_PARENT="$(mktemp -d /tmp/test-seed-I-sc-parent-XXXXXX)"
+#
+# I_SC_BASE_PARENT is created via make_isolated_lane (task 5609), NOT bare
+# /tmp: this is a DIFFERENT hazard than the dirname()/.reseed-trash collision
+# that motivated _LANE_ROOT for other lanes (this fixture's misuse guard
+# refuses before ever reaching the rename-to-trash path, so R1 never sees
+# it). The hazard here is a SIBLING lane-lock: scripts/seed-warm-lane.sh
+# computes LANE_LOCK="${LANE_DIR}.lock" (:522) — a sibling of LANE_DIR, not a
+# child — and creates it (:527) BEFORE the self-clobber misuse guard refuses
+# (I11), so the lock is created even though RC != 0. A bare-/tmp
+# I_SC_BASE_PARENT would strand that sibling lock at top-level /tmp, outside
+# every _TMPDIRS entry — the sibling is not INSIDE the registered directory,
+# so cleanup()'s `rm -rf` never sees it (the leak I12b/I12c above pin).
+# Nesting under $_LANE_ROOT via make_isolated_lane makes the sibling lock a
+# descendant of $_LANE_ROOT instead, which cleanup() DOES reclaim.
+I_SC_BASE_PARENT="$(make_isolated_lane I-sc-parent)"
 I_SC_BASE="$I_SC_BASE_PARENT/target"
-_TMPDIRS+=("$I_SC_BASE_PARENT")
 mkdir -p "$I_SC_BASE"
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$I_SC_BASE_PARENT/.warm-base-meta"
 # LANE_DIR = I_SC_BASE_PARENT → LANE_TARGET = I_SC_BASE_PARENT/target = I_SC_BASE = BASE_TARGET_DIR
