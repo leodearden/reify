@@ -105,6 +105,10 @@
 #        rows legitimately carry none). An UNPARSEABLE heartbeat degrades to
 #        LIVE, never to eligible — the fail-safe direction for a re-dispatch
 #        decision is always "do nothing".
+#   L2 — an unreadable escalation oracle (missing dir, unparseable file)
+#        degrades that row to `unknown`, never to `STALE`. A failed oracle
+#        lookup must never manufacture an actionable verdict — the same
+#        posture as warm-lane-audit.sh invariant A3.
 #   (Further invariants are recorded as each classifier lands.)
 
 set -euo pipefail
@@ -273,18 +277,22 @@ _emit_row() {
 # is first on PATH) with a PATH fallback, then python3's stdlib with a
 # `file:...?mode=ro` URI. A missing / 0-byte / unreadable DB warns and yields
 # ZERO candidates rather than aborting — this script is advisory-only.
+# The sqlite3 CLI, resolved ONCE: prefer the stable system binary at an
+# absolute path so this never depends on which sqlite3 is first on PATH, then
+# fall back to a PATH lookup (the scripts/lane-task-status.sh convention).
+_SQLITE_BIN=""
+for _c in /usr/bin/sqlite3 sqlite3; do
+    if command -v "$_c" >/dev/null 2>&1; then _SQLITE_BIN="$_c"; break; fi
+done
+
 _CANDIDATES=""
 if [ ! -s "$DB" ]; then
     warn "Task DB is missing or empty: $DB — reporting zero candidates."
 else
-    _sqlite_bin=""
-    for _c in /usr/bin/sqlite3 sqlite3; do
-        if command -v "$_c" >/dev/null 2>&1; then _sqlite_bin="$_c"; break; fi
-    done
     _query="SELECT id, status, coalesce(heartbeat_at,''), coalesce(claimant_run_id,'')
             FROM tasks WHERE tag='$TAG' AND status IN ('blocked','in-progress') ORDER BY id;"
-    if [ -n "$_sqlite_bin" ]; then
-        _CANDIDATES="$("$_sqlite_bin" -readonly -separator "$(printf '\t')" "$DB" "$_query" 2>/dev/null || true)"
+    if [ -n "$_SQLITE_BIN" ]; then
+        _CANDIDATES="$("$_SQLITE_BIN" -readonly -separator "$(printf '\t')" "$DB" "$_query" 2>/dev/null || true)"
     fi
     if [ -z "$_CANDIDATES" ] && command -v python3 >/dev/null 2>&1; then
         _CANDIDATES="$(_GS_DB="$DB" _GS_TAG="$TAG" python3 - <<'PY' 2>/dev/null || true
@@ -333,17 +341,69 @@ _is_live() {
     [ $(( _NOW_EPOCH - hb_epoch )) -lt "$_LIVENESS_WINDOW_SEC" ]
 }
 
+# ── metadata accessor ─────────────────────────────────────────────────────────
+# _meta <task_id> <json_path> — read one scalar out of the row's metadata via
+# SQLite's json_extract, read-only. Empty output means absent/NULL/unreadable.
+_meta() {
+    local id="$1" path="$2"
+    [ -n "$_SQLITE_BIN" ] || return 0
+    "$_SQLITE_BIN" -readonly "$DB" \
+        "SELECT coalesce(json_extract(metadata,'$path'),'') FROM tasks WHERE tag='$TAG' AND id=$id LIMIT 1;" \
+        2>/dev/null || true
+}
+
+# ── class A: gate_closure ─────────────────────────────────────────────────────
+# Escalation-state oracle. Reads ONLY the live escalation dir: an archived
+# escalation is by construction no longer gating, and the live-dir absence is
+# precisely the signal. Matches `esc-<id>-*.json` and never the
+# `*.json.lock` sidecars the store also holds.
+#
+# Sets _ESC_STATE to one of:
+#   gated    — at least one live escalation has status=pending
+#   clear    — zero matching files, or all of them terminal
+#   unknown  — the dir is missing/unreadable, or a file failed to parse
+_esc_state() {
+    local id="$1" f found=0 pending=0 st
+    _ESC_STATE="unknown"
+    if [ ! -d "$ESCALATIONS" ]; then
+        warn "Task $id: escalations dir is missing or unreadable: $ESCALATIONS — reporting unknown (a failed oracle must never manufacture a STALE verdict)."
+        return 0
+    fi
+    for f in "$ESCALATIONS"/esc-"$id"-*.json; do
+        [ -e "$f" ] || continue
+        found=$((found + 1))
+        st="$(python3 -c 'import json,sys
+try:
+    sys.stdout.write(str(json.load(open(sys.argv[1])).get("status","")))
+except Exception:
+    sys.stdout.write("\x00")' "$f" 2>/dev/null || printf '\000')"
+        case "$st" in
+            "$(printf '\000')"|"")
+                warn "Task $id: unparseable escalation file $(basename "$f") — reporting unknown, not STALE."
+                return 0 ;;
+            pending) pending=$((pending + 1)) ;;
+        esac
+    done
+    if [ "$pending" -gt 0 ]; then
+        _ESC_STATE="gated"
+    else
+        _ESC_STATE="clear"
+        _ESC_FOUND="$found"
+    fi
+}
+
 # ── classify ──────────────────────────────────────────────────────────────────
 # (Class predicates land in later steps. Until then every non-LIVE candidate
 # is reported `unknown` — the fail-safe verdict, which never emits a request.)
 while IFS="$(printf '\t')" read -r task_id status heartbeat_at claimant_run_id; do
     [ -n "${task_id:-}" ] || continue
-    N_CANDIDATES=$((N_CANDIDATES + 1))
 
     # L1: the liveness guard is the FIRST predicate, and it short-circuits —
     # no class predicate evaluates, no flags are computed, and no request is
     # ever emitted for a LIVE row.
     if _is_live "$task_id" "$heartbeat_at"; then
+        [ "$CLASS" = "all" ] || continue
+        N_CANDIDATES=$((N_CANDIDATES + 1))
         N_LIVE_SKIPPED=$((N_LIVE_SKIPPED + 1))
         _emit_row "$task_id" "$status" "-" "LIVE" "none" \
             "heartbeat_at=${heartbeat_at} within the ${STALE_HEARTBEAT_MIN}m liveness window; claimant=${claimant_run_id:--}" \
@@ -357,7 +417,54 @@ while IFS="$(printf '\t')" read -r task_id status heartbeat_at claimant_run_id; 
     row_evidence="no classifier has evaluated this row yet"
     row_flags="-"
 
-    N_UNKNOWN=$((N_UNKNOWN + 1))
+    # ── class A: gate_closure ────────────────────────────────────────────────
+    # blocked ∧ task_kind=deterministic ∧ always_escalates truthy. SQLite
+    # stores the JSON `true` as 1, so test for either spelling.
+    if [ "$status" = "blocked" ] \
+       && [ "$(_meta "$task_id" '$.task_kind')" = "deterministic" ]; then
+        _always="$(_meta "$task_id" '$.always_escalates')"
+        case "$_always" in
+            1|true)
+                row_class="gate_closure"
+                _esc_state "$task_id"
+                case "$_ESC_STATE" in
+                    gated)
+                        row_verdict="GATED"
+                        row_action="none"
+                        row_evidence="a live status=pending escalation still gates this task" ;;
+                    clear)
+                        row_verdict="STALE"
+                        # `close`, not `redispatch`: per #5316 §5 the correct
+                        # closure for a satisfied deterministic gate is a
+                        # transition to `cancelled`, not a re-run.
+                        row_action="close"
+                        row_evidence="no live pending escalation remains in $ESCALATIONS (found ${_ESC_FOUND:-0} terminal file(s))" ;;
+                    *)
+                        row_verdict="unknown"
+                        row_action="none"
+                        row_evidence="escalation state could not be read; not upgraded to STALE" ;;
+                esac ;;
+        esac
+    fi
+
+    # ── --class filtering ────────────────────────────────────────────────────
+    # A restricted sweep emits only rows of that class; the summary counters
+    # are computed over emitted rows, so a filtered report is internally
+    # consistent rather than reporting counts it did not print.
+    if [ "$CLASS" != "all" ] && [ "$row_class" != "$CLASS" ]; then
+        continue
+    fi
+    N_CANDIDATES=$((N_CANDIDATES + 1))
+
+    case "$row_verdict" in
+        STALE)
+            case "$row_class" in
+                gate_closure)     N_GATE_CLOSURE=$((N_GATE_CLOSURE + 1)) ;;
+                merge_verify_red) N_MERGE_VERIFY_RED=$((N_MERGE_VERIFY_RED + 1)) ;;
+                unmet_dependency) N_UNMET_DEPENDENCY=$((N_UNMET_DEPENDENCY + 1)) ;;
+            esac ;;
+        unknown) N_UNKNOWN=$((N_UNKNOWN + 1)) ;;
+    esac
     _emit_row "$task_id" "$status" "$row_class" "$row_verdict" "$row_action" "$row_evidence" "$row_flags"
 done <<EOF
 $_CANDIDATES
