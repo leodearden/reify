@@ -103,8 +103,8 @@ one source of truth for a destructive remediation.
 | Flag | Signature | Check |
 |---|---|---|
 | `corrupt_autofile` | Sig 1 — help-text-as-failing-tests | any `metadata.failing_tests` entry containing a marker from `_CORRUPT_AUTOFILE_MARKERS` (the single source of truth for the marker set, in the script) |
-| `misattributed_provenance` | Sig 2 | `metadata.done_provenance.commit` resolves but is **not an ancestor** of `--main-ref` |
-| `provenance_unresolvable` | Sig 2 | `metadata.done_provenance.commit` does not resolve in `--repo` at all — held conservatively, not cleared |
+| `misattributed_provenance` | Sig 2 | `metadata.done_provenance.commit` resolves but is **not an ancestor** of `--main-ref`. The ancestry probe runs against the **pre-resolved** `--main-ref` SHA, and an unresolvable `--main-ref` yields **no provenance flag at all** — a `[warn]` and a degrade. `merge-base --is-ancestor` exits non-zero both for genuine non-ancestry and for a second argument that does not resolve, so handing it a raw ref name would let a *missing* oracle read as positive evidence of corruption |
+| `provenance_unresolvable` | Sig 2 | `metadata.done_provenance.commit` does not resolve in `--repo` at all — held conservatively, not cleared. A `--repo`-only check: unaffected by `--main-ref`, and still flagged when there is no ancestry oracle |
 
 ⚠️ **Reachability, never diff inspection.** #5316 records that `git show --stat` alone
 **mis-cleared #5264**: a discarded duplicate merge shows a perfectly plausible diff and fails only

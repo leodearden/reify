@@ -735,14 +735,37 @@ _compute_flags() {
     # because a discarded duplicate merge shows a perfectly plausible diff and
     # fails only the ancestor test. Reachability is therefore checked first and
     # is the only evidence that clears a recorded provenance SHA.
+    #
+    # The ancestry probe is handed the PRE-RESOLVED $_MAIN_REF_SHA, never the
+    # raw $MAIN_REF the operator typed, and the empty case is guarded BEFORE
+    # the probe runs. `merge-base --is-ancestor` exits non-zero for two
+    # unrelated reasons: the commit genuinely is not an ancestor, and the
+    # second argument does not resolve at all (measured: exit 128). Passing a
+    # ref NAME therefore makes a MISSING ancestry oracle indistinguishable from
+    # positive evidence of corruption — and `misattributed_provenance` means,
+    # precisely, "resolves but is NOT an ancestor". Feeding the probe an
+    # already-resolved SHA removes that second failure mode outright, so a
+    # non-zero exit now means exactly one thing. Do not "simplify" the two
+    # spellings back together. This matches the class-B path above, which
+    # guards on an empty $_MAIN_REF_SHA on the identical premise, and invariant
+    # L2: an unreadable oracle degrades, it never manufactures an actionable
+    # verdict.
+    #
+    # Ordering: the $REPO-only rev-parse runs FIRST and the ancestry guard
+    # second, because only the ancestry claim depends on --main-ref. An
+    # unresolvable provenance SHA is unresolvable no matter what main is, so
+    # a missing oracle must not silently clear it.
     prov="$(_meta "$id" '$.done_provenance.commit')"
     if [ -n "$prov" ]; then
         if ! git -C "$REPO" rev-parse --verify --quiet "${prov}^{commit}" >/dev/null 2>&1; then
             # Conservative: a provenance SHA we cannot resolve is held, not
             # cleared. The fail-safe direction for a re-dispatch decision is
-            # always "do nothing".
+            # always "do nothing". This probe reads $REPO alone, so it stays
+            # adjudicable — and keeps flagging — even with no ancestry oracle.
             flags+=("provenance_unresolvable")
-        elif ! git -C "$REPO" merge-base --is-ancestor "$prov" "$MAIN_REF" >/dev/null 2>&1; then
+        elif [ -z "$_MAIN_REF_SHA" ]; then
+            warn "Task $id: --main-ref '$MAIN_REF' does not resolve in repo '$REPO' — provenance reachability not adjudicable; no provenance flag asserted."
+        elif ! git -C "$REPO" merge-base --is-ancestor "$prov" "$_MAIN_REF_SHA" >/dev/null 2>&1; then
             flags+=("misattributed_provenance")
         fi
     fi
