@@ -1154,31 +1154,45 @@ for n_case in "${N_CASES[@]}"; do
 done
 n_exp_resident="${#N_CASES[@]}"
 
-# _headroom_field <audit-stdout> <key>
-# Prints the integer value of <key> on the HEADROOM line, or NOTHING when the
-# field is absent. Deliberately does not default to 0: a missing field must
-# read as missing, so an assertion can never pass against a field the script
-# does not actually emit.
-_headroom_field() {
-    local out="$1" key="$2"
-    printf '%s\n' "$out" | grep '^HEADROOM ' | tr ' ' '\n' \
+# _report_field <audit-stdout> <line-prefix> <key>
+# Prints the integer value of <key> on the <line-prefix> summary line, or
+# NOTHING when the field is absent. Deliberately does not default to 0: a
+# missing field must read as missing, so an assertion can never pass against a
+# field the script does not actually emit.
+_report_field() {
+    local out="$1" prefix="$2" key="$3"
+    printf '%s\n' "$out" | grep "^${prefix} " | tr ' ' '\n' \
         | sed -n -E "s/^${key}=([0-9]+)$/\1/p" || true
     return 0
 }
 
-# _partition_holds <resident> <live> <pinned> <quarantined> <free>
-# True iff all five are non-empty integers AND resident equals the sum of the
-# four partition buckets. An absent field fails (empty is NOT 0) -- the identity
-# must be proven against fields that exist.
-_partition_holds() {
-    local v
-    for v in "$@"; do
+# _headroom_field <audit-stdout> <key> — the HEADROOM line's <key>.
+_headroom_field() { _report_field "$1" HEADROOM "$2"; }
+
+# _pinned_field <audit-stdout> <key> — the PINNED breakdown line's <key>.
+_pinned_field() { _report_field "$1" PINNED "$2"; }
+
+# _sum_holds <total> <part>...
+# True iff every argument is a non-empty integer AND <total> equals the sum of
+# the parts. An ABSENT field fails (empty is NOT 0): a summing identity must be
+# proven against fields that actually exist, or it passes vacuously against a
+# report that never emitted them.
+_sum_holds() {
+    local total="$1"; shift
+    local v sum=0
+    for v in "$total" "$@"; do
         case "$v" in
             ''|*[!0-9]*) return 1 ;;
         esac
     done
-    [ "$1" -eq $(( $2 + $3 + $4 + $5 )) ]
+    for v in "$@"; do
+        sum=$(( sum + v ))
+    done
+    [ "$total" -eq "$sum" ]
 }
+
+# _partition_holds <resident> <live> <pinned> <quarantined> <free>
+_partition_holds() { _sum_holds "$@"; }
 
 ORACLE_MAP="$N_MAP" run_helper --mount "$N_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
 
@@ -1255,5 +1269,147 @@ for n_pid in "${N_LIVE_PIDS[@]+${N_LIVE_PIDS[@]}}"; do
     kill "$n_pid" 2>/dev/null || true
 done
 _BGPIDS=()  # clear so cleanup doesn't double-kill
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block O — the PINNED breakdown line (why the pins are held)
+# ──────────────────────────────────────────────────────────────────────────────
+# `pinned=N` says how much capacity is standing idle under a reservation; it
+# does not say what to DO about it. The breakdown does: a `terminal` pin is
+# reclaimable right now, a `pending`/`blocked`/`infra-hold` pin is a reservation
+# held by work that never started, and an `other` pin covering `in-progress`
+# is a likely-crashed consumer. On 2026-07-26 (esc-5556-1) that split was
+# 27 pending + 1 infra-hold, which is a scheduling problem, not a leak -- and
+# the audit had no column able to say so.
+#
+# The buckets are a FIXED, closed vocabulary emitted in a FIXED order, zeros
+# included, so an operator's grep has a stable shape and a zero is assertable
+# rather than absent.
+echo ""
+echo "--- Block O: the PINNED breakdown line ---"
+
+O_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-o-XXXXXX)"
+_TMPDIRS+=("$O_MOUNT")
+O_MAP="$(mktemp /tmp/test-warm-lane-audit-o-map-XXXXXX)"
+_TMPDIRS+=("$O_MAP")
+printf '9201 pending\n9202 infra-hold\n9203 blocked\n9204 done\n9205 cancelled\n9206 in-progress\n9207 deferred\n' > "$O_MAP"
+
+# lane : task id : raw status ('' = id absent from ORACLE_MAP) : expected bucket
+#
+# Every lane is ASSIGNED and idle, so every lane is PINNED and every lane lands
+# in exactly one bucket. Two lanes per non-singleton bucket (done+cancelled ->
+# terminal, in-progress+deferred -> other) so a bucket count of 2 distinguishes
+# a real accumulation from an off-by-one that happens to match 1.
+O_CASES=(
+    "_lane-o-pending:9201:pending:pending"
+    "_lane-o-infrahold:9202:infra-hold:infra-hold"
+    "_lane-o-blocked:9203:blocked:blocked"
+    "_lane-o-done:9204:done:terminal"
+    "_lane-o-cancelled:9205:cancelled:terminal"
+    "_lane-o-inprogress:9206:in-progress:other"
+    "_lane-o-deferred:9207:deferred:other"
+    "_lane-o-unresolvable:9299::unknown"
+)
+
+for o_case in "${O_CASES[@]}"; do
+    IFS=':' read -r o_lane o_task o_raw o_bucket <<< "$o_case"
+    # Stay on main: the record's task_id is then the ONLY possible source of
+    # the pin holder, so a bucket can never be sourced from a branch name.
+    make_lane "$O_MOUNT/$o_lane"
+    make_lane_state "$O_MOUNT" "$o_lane" "assigned" "$o_task"
+    touch "$O_MOUNT/$o_lane.lock"
+done
+
+# Bucket expectations DERIVED from O_CASES, never typed.
+declare -A O_EXPECTED=(
+    [pending]=0 [infra-hold]=0 [blocked]=0 [terminal]=0 [other]=0 [unknown]=0
+)
+o_exp_total=0
+for o_case in "${O_CASES[@]}"; do
+    IFS=':' read -r o_lane o_task o_raw o_bucket <<< "$o_case"
+    O_EXPECTED["$o_bucket"]=$(( O_EXPECTED["$o_bucket"] + 1 ))
+    o_exp_total=$(( o_exp_total + 1 ))
+done
+
+ORACLE_MAP="$O_MAP" run_helper --mount "$O_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+
+assert "O1: exit 0" test "$RC" -eq 0
+
+# The FIXED key set, in the FIXED order, with every value an integer -- the
+# stable grep shape an operator (and any future consumer) can rely on.
+assert "O2: PINNED line carries total/pending/infra-hold/blocked/terminal/other/unknown in that order" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^PINNED total=[0-9]+ pending=[0-9]+ infra-hold=[0-9]+ blocked=[0-9]+ terminal=[0-9]+ other=[0-9]+ unknown=[0-9]+$"' \
+    _ "$OUT"
+
+for o_bucket in pending infra-hold blocked terminal other unknown; do
+    o_want="${O_EXPECTED[$o_bucket]}"
+    o_got="$(_pinned_field "$OUT" "$o_bucket")"
+    assert "O3: PINNED $o_bucket=$o_want (derived from O_CASES)" \
+        bash -c '[ "$1" = "$2" ]' _ "$o_got" "$o_want"
+done
+
+assert "O4: PINNED total=$o_exp_total equals the sum of the six buckets" \
+    _sum_holds \
+    "$(_pinned_field "$OUT" total)" \
+    "$(_pinned_field "$OUT" pending)" "$(_pinned_field "$OUT" infra-hold)" \
+    "$(_pinned_field "$OUT" blocked)" "$(_pinned_field "$OUT" terminal)" \
+    "$(_pinned_field "$OUT" other)" "$(_pinned_field "$OUT" unknown)"
+
+# A done-backed pin is `terminal`, never `other`: that distinction is the
+# difference between "reclaim this lane now" and "a consumer probably crashed".
+# Asserted on a single-lane pool so the verdict cannot be masked by any other
+# lane's contribution to either bucket.
+O_DONE_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-o-done-XXXXXX)"
+_TMPDIRS+=("$O_DONE_MOUNT")
+make_lane "$O_DONE_MOUNT/_lane-o-solo"
+make_lane_state "$O_DONE_MOUNT" "_lane-o-solo" "assigned" "9204"
+ORACLE_MAP="$O_MAP" run_helper --mount "$O_DONE_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+assert "O5: a lone done-backed pin buckets terminal=1 other=0 (never 'other')" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^PINNED total=1 pending=0 infra-hold=0 blocked=0 terminal=1 other=0 unknown=0$"' \
+    _ "$OUT"
+
+ORACLE_MAP="$O_MAP" run_helper --mount "$O_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+
+assert "O6: PINNED total equals HEADROOM pinned (the breakdown covers every pin)" \
+    bash -c '[ -n "$1" ] && [ "$1" = "$2" ]' _ \
+    "$(_pinned_field "$OUT" total)" "$(_headroom_field "$OUT" pinned)"
+
+# ── O7: the line is emitted with all-zeros on a pool with NO pinned lanes ────
+# A zero must be assertable, not absent: an operator grepping `^PINNED ` on a
+# healthy pool has to see zeros, otherwise "no pins" is indistinguishable from
+# "the audit did not run".
+O2_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-o2-XXXXXX)"
+_TMPDIRS+=("$O2_MOUNT")
+make_lane "$O2_MOUNT/_lane-o2"
+
+run_helper --mount "$O2_MOUNT"
+assert "O7a: exit 0 on a pool with no pinned lanes" test "$RC" -eq 0
+assert "O7b: PINNED line still emitted, all buckets zero" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^PINNED total=0 pending=0 infra-hold=0 blocked=0 terminal=0 other=0 unknown=0$"' \
+    _ "$OUT"
+
+# ── O8: the JSON counterpart ─────────────────────────────────────────────────
+O_PY_PINNED="$(mktemp /tmp/test-warm-lane-audit-o-pinned-XXXXXX.py)"
+_TMPDIRS+=("$O_PY_PINNED")
+cat > "$O_PY_PINNED" << 'PYEOF'
+import json, sys
+data = json.load(sys.stdin)
+assert "pinned_by_status" in data, f"no pinned_by_status key: {sorted(data)}"
+p = data["pinned_by_status"]
+want = dict(kv.split("=", 1) for kv in sys.argv[1:])
+assert set(p) == set(want), f"pinned_by_status keys {sorted(p)}, want {sorted(want)}"
+for k, v in want.items():
+    assert p[k] == int(v), f"pinned_by_status[{k!r}] == {p[k]!r}, want {v}"
+# The breakdown must account for every pin the headroom partition reports.
+assert sum(p.values()) == data["headroom"]["pinned"], (p, data["headroom"])
+PYEOF
+
+ORACLE_MAP="$O_MAP" run_helper --mount "$O_MOUNT" \
+    --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh" --format json
+assert "O8a: exit 0 (json)" test "$RC" -eq 0
+assert "O8b: json pinned_by_status carries exactly the six buckets, summing to headroom.pinned" \
+    bash -c 'printf "%s" "$1" | python3 "$2" "${@:3}"' _ "$OUT" "$O_PY_PINNED" \
+    "pending=${O_EXPECTED[pending]}" "infra-hold=${O_EXPECTED[infra-hold]}" \
+    "blocked=${O_EXPECTED[blocked]}" "terminal=${O_EXPECTED[terminal]}" \
+    "other=${O_EXPECTED[other]}" "unknown=${O_EXPECTED[unknown]}"
 
 test_summary
