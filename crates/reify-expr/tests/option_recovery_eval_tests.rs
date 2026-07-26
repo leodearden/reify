@@ -272,6 +272,39 @@ fn fallback_undef_subject_returns_undef() {
     );
 }
 
+// ── task 5410 (PRD ζ / BT10): stdlib-compiled or_default guard ───────────────
+
+/// End-to-end: `or_default(some(5mm), 0mm)` compiled with the real stdlib must
+/// evaluate to 5mm — the unboxed inner value.
+///
+/// DISCRIMINATION: `option_recovery.ri` ships
+/// `pub fn or_default<T>(o: Option<T>, dflt: T) -> T { dflt }`, a
+/// typecheck-only placeholder that ALWAYS returns the default and never looks
+/// at `o`. With the intercept removed this call therefore returns `0mm` and
+/// this assert fails.
+///
+/// NOT redundant with `e2e_unwrap_or_some_5mm_with_stdlib`. `or_default`,
+/// `unwrap_or` and `fallback` share the `eval_extract_or_default` ARM, but each
+/// is a SEPARATE NAME in the `option_recovery::is_combinator` gate. Dropping
+/// just `"or_default"` from that gate would leave the `unwrap_or` e2e green
+/// while silently routing every `or_default` call to the placeholder body —
+/// that name-level independence is exactly what this guard covers.
+#[test]
+fn e2e_or_default_some_with_stdlib() {
+    let module = reify_test_support::compile_source_with_stdlib(
+        "structure S { let v = or_default(some(5mm), 0mm) }",
+    );
+    let expr = cell_expr_stdlib(&module, "v");
+    let values = ValueMap::new();
+    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    assert_eq!(
+        reify_expr::eval_expr(expr, &ctx),
+        val_5mm(),
+        "e2e: or_default(some(5mm), 0mm) compiled via stdlib must evaluate to 5mm — \
+         the placeholder .ri body would return the default 0mm"
+    );
+}
+
 // ── step-1: end-to-end via compile_source_with_stdlib ────────────────────────
 
 /// End-to-end: `unwrap_or(some(5mm), 0mm)` compiled with the stdlib must
