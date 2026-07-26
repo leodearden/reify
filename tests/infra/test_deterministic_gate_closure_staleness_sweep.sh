@@ -514,6 +514,10 @@ B_REPO="$REPO_DIR"
 #   run-<runid>/<taskid>-<hash>/pid=<pid>
 B_CLAIMANT="run-7c8e838c39e7/9101-c514828d/pid=3551081"
 
+# The liveness window every Block-B sweep runs with (minutes). Named once
+# so the fixture offsets and the flag can never drift apart.
+B_WINDOW_MIN=1440
+
 # A merge_verify_red proposal + a satisfied dependency on 9101, so the row
 # would fire TWO classes if the liveness guard were not applied first.
 B_PROPOSAL='{"dry_run_proposals":[{"block_reason":"Post-merge verification failed: cargo test",
@@ -524,18 +528,26 @@ _add_task 9199 done '{}'
 # 9101 — fresh heartbeat (60s) + live claimant => LIVE, despite both premises.
 _add_task 9101 in-progress "$B_PROPOSAL" "$(_now_iso -60)" "$B_CLAIMANT"
 _add_dep 9101 9199
-# 9102 — the 5196 shape: 3h-stale heartbeat, NO claimant => eligible.
-_add_task 9102 in-progress '{}' "$(_now_iso -10800)" ""
+# 9102 — the 5196 shape: a stale heartbeat with NO claimant => eligible.
+_add_task 9102 in-progress '{}' "$(_now_iso -90000)" ""
 # 9103 — blocked rows carry no heartbeat at all => eligible.
 _add_task 9103 blocked '{}'
-# 9104 / 9105 — the --stale-heartbeat-min 30 boundary, from both sides.
-_add_task 9104 in-progress '{}' "$(_now_iso -1740)" "$B_CLAIMANT"
-_add_task 9105 in-progress '{}' "$(_now_iso -1860)" "$B_CLAIMANT"
+# 9104 / 9105 — the boundary, from both sides.
+#
+# DRIFT-PROOFING: heartbeat offsets are frozen when the fixture is BUILT, but
+# the sweeps that assert on them run later, so a boundary row drifts toward
+# the window edge by however long the suite takes. A tight 29m/31m pair around
+# a 30m window flipped 9104 from LIVE to eligible under host load — a real
+# race in the fixture, not in the SUT. The relation under test is just
+# `now - heartbeat < window`, so it is asserted with a 1h margin on each side
+# of a 24h window (B_WINDOW_MIN), which no plausible suite runtime can cross.
+_add_task 9104 in-progress '{}' "$(_now_iso -82800)" "$B_CLAIMANT"
+_add_task 9105 in-progress '{}' "$(_now_iso -90000)" "$B_CLAIMANT"
 # 9106 — an unparseable heartbeat must fail SAFE (LIVE), never eligible.
 _add_task 9106 in-progress '{}' "not-a-timestamp" "$B_CLAIMANT"
 
 run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
-    --stale-heartbeat-min 30 --format json
+    --stale-heartbeat-min "$B_WINDOW_MIN" --format json
 
 assert "B0: the liveness fixture sweep exits 0" _rc_is 0
 
@@ -551,21 +563,21 @@ assert "B1: a LIVE row is counted in live_skipped, not in any class counter" \
 B_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-req-XXXXXX")"
 _TMPDIRS+=("$B_REQ")
 run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
-    --stale-heartbeat-min 30 --emit-requests "$B_REQ"
+    --stale-heartbeat-min "$B_WINDOW_MIN" --emit-requests "$B_REQ"
 assert "B2: a LIVE row emits no re-dispatch request" _no_request_for "$B_REQ" 9101
 
 run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
-    --stale-heartbeat-min 30 --format json
+    --stale-heartbeat-min "$B_WINDOW_MIN" --format json
 
 # --- B3/B4: genuinely stranded rows stay eligible ----------------------------
-assert "B3: a 3h-stale heartbeat with NO claimant (the 5196 shape) is eligible" \
+assert "B3: a stale heartbeat with NO claimant (the 5196 shape) is eligible" \
     _json_is 't[9102]["verdict"] != "LIVE"'
 assert "B4: a blocked row with heartbeat_at NULL is eligible" \
     _json_is 't[9103]["verdict"] != "LIVE"'
 
 # --- B5: the boundary, from both sides, with no sleep ------------------------
-assert "B5a: 29m < 30m window => LIVE" _json_is 't[9104]["verdict"] == "LIVE"'
-assert "B5b: 31m > 30m window => eligible" _json_is 't[9105]["verdict"] != "LIVE"'
+assert "B5a: inside the window (23h < 24h) => LIVE" _json_is 't[9104]["verdict"] == "LIVE"'
+assert "B5b: outside the window (25h > 24h) => eligible" _json_is 't[9105]["verdict"] != "LIVE"'
 
 # --- B6: flag <-> env parity for the window ---------------------------------
 _SWEEP_ENV=(REIFY_GATE_STALENESS_HEARTBEAT_MIN=0)
@@ -576,19 +588,127 @@ assert "B6a: REIFY_GATE_STALENESS_HEARTBEAT_MIN=0 makes a 60s heartbeat eligible
 
 _SWEEP_ENV=(REIFY_GATE_STALENESS_HEARTBEAT_MIN=0)
 run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
-    --stale-heartbeat-min 30 --format json
+    --stale-heartbeat-min "$B_WINDOW_MIN" --format json
 _SWEEP_ENV=()
 assert "B6b: an explicit --stale-heartbeat-min overrides the env value" \
     _json_is 't[9101]["verdict"] == "LIVE"'
 
 # --- B7: an unparseable heartbeat fails SAFE --------------------------------
 run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
-    --stale-heartbeat-min 30 --format json
+    --stale-heartbeat-min "$B_WINDOW_MIN" --format json
 assert "B7: an unparseable heartbeat degrades to LIVE, never to eligible" \
     _json_is 't[9106]["verdict"] == "LIVE"'
 assert "B7: an unparseable heartbeat is counted in live_skipped, not unknown" \
     _json_is 's["live_skipped"] == 3 and s["unknown"] == 3'
 assert "B7: an unparseable heartbeat warns on stderr" \
     _err_has '\[warn\].*9106'
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block C — trigger class A: gate_closure
+#
+# This task's original scope: a deterministic always-escalates gate task left
+# `blocked` after its gating escalation was resolved or dismissed elsewhere.
+# The staleness signal is the ABSENCE of a live `status=pending`
+# esc-<id>-*.json — validated against the live store on 2026-07-26, where
+# 5537/5549/5559 were blocked with always_escalates=true and zero live
+# escalation files (theirs archived `dismissed`), while every other blocked
+# gate task still had a live pending file.
+#
+# The emitted action is `close`, not `redispatch`: per #5316 §5 the correct
+# closure for a satisfied deterministic gate is a transition to `cancelled`,
+# not a re-run.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block C: trigger class A (gate_closure) ---"
+
+_mk_tasks_db
+C_DB="$DB"
+_mk_esc_dir
+C_ESC="$ESC_DIR"
+_mk_repo
+C_REPO="$REPO_DIR"
+
+# The class-A metadata predicate, as recorded on the live blocked gate tasks.
+C_GATE_META='{"task_kind":"deterministic","always_escalates":true,"gate_escalated_at":"2026-07-26T08:00:00Z"}'
+# The 5372 shape: deterministic, but with no always_escalates key at all.
+C_NO_ALWAYS_META='{"task_kind":"deterministic","gate_escalated_at":"2026-07-26T08:00:00Z"}'
+
+_add_task 9201 blocked "$C_GATE_META"                         # no esc files    => STALE
+_add_task 9202 blocked "$C_GATE_META"                         # pending         => GATED
+_add_task 9203 blocked "$C_GATE_META"                         # dismissed       => STALE
+_add_task 9204 blocked "$C_GATE_META"                         # resolved        => STALE
+_add_task 9205 blocked "$C_GATE_META"                         # dismissed+pending => GATED
+_add_task 9206 blocked "$C_NO_ALWAYS_META"                    # not class A
+_add_task 9207 in-progress "$C_GATE_META" "$(_now_iso -10800)" ""   # blocked-only => not class A
+_add_task 9208 blocked "$C_GATE_META"                         # malformed esc   => unknown
+
+_add_esc 9202 1 pending
+_add_esc 9203 1 dismissed
+_add_esc 9204 1 resolved
+_add_esc 9205 1 dismissed
+_add_esc 9205 2 pending
+printf 'this is not json\n' > "$C_ESC/esc-9208-1.json"
+# A .json.lock sidecar (the live store holds these next to the real files):
+# the glob must match *.json only, never *.json.lock, or 9201 would read as
+# gated by a lock file.
+printf 'lock\n' > "$C_ESC/esc-9201-1.json.lock"
+
+run_sweep --db "$C_DB" --escalations "$C_ESC" --repo "$C_REPO" --format json
+assert "C0: the class-A fixture sweep exits 0" _rc_is 0
+
+# --- C1: zero live escalation files => STALE + close -------------------------
+assert "C1: a blocked always-escalates gate task with no live escalation is a class-A hit" \
+    _json_is 't[9201]["class"] == "gate_closure" and t[9201]["verdict"] == "STALE"'
+assert "C1: the emitted action is close (not redispatch) per #5316 §5" \
+    _json_is 't[9201]["action"] == "close"'
+assert "C1: evidence names the absence of a live pending escalation" \
+    _json_is '"no live pending escalation" in t[9201]["evidence"]'
+assert "C1: a *.json.lock sidecar does not read as a gating escalation" \
+    _json_is 't[9201]["verdict"] == "STALE"'
+
+# --- C2/C3/C4: the escalation-state oracle ----------------------------------
+assert "C2: a live status=pending escalation still gates the task" \
+    _json_is 't[9202]["verdict"] == "GATED"'
+assert "C3a: a dismissed escalation is stale (the live 5537/5549/5559 shape)" \
+    _json_is 't[9203]["verdict"] == "STALE"'
+assert "C3b: a resolved escalation is stale" \
+    _json_is 't[9204]["verdict"] == "STALE"'
+assert "C4: any single pending escalation gates, even alongside a dismissed one" \
+    _json_is 't[9205]["verdict"] == "GATED"'
+assert "C2/C4: a GATED row is not counted as a hit" \
+    _json_is 's["gate_closure"] == 3'
+
+# --- C5/C6: the class-A predicate is narrow ---------------------------------
+assert "C5: no always_escalates key (the 5372 shape) is not class A" \
+    _json_is 't[9206]["class"] != "gate_closure"'
+assert "C6: an in-progress row matching A's metadata is not class A (blocked-only)" \
+    _json_is 't[9207]["class"] != "gate_closure"'
+
+# --- C7/C8: a failed oracle degrades to unknown, never to STALE -------------
+C_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-creq-XXXXXX")"
+_TMPDIRS+=("$C_REQ")
+run_sweep --db "$C_DB" --escalations "$C_REPO/no-such-escalations-dir" --repo "$C_REPO" \
+    --emit-requests "$C_REQ" --format json
+assert "C7: a nonexistent --escalations dir still exits 0" _rc_is 0
+assert "C7: a missing oracle degrades every class-A candidate to unknown, never STALE" \
+    _json_is 't[9201]["verdict"] == "unknown" and s["gate_closure"] == 0'
+assert "C7: a missing oracle is counted in unknown" _json_is 's["unknown"] >= 1'
+assert "C7: a missing oracle warns on stderr" _err_has '\[warn\]'
+assert "C7: a missing oracle emits no re-dispatch request" _no_request_for "$C_REQ" 9201
+
+run_sweep --db "$C_DB" --escalations "$C_ESC" --repo "$C_REPO" --format json
+assert "C8: a malformed escalation file degrades to unknown, not STALE" \
+    _json_is 't[9208]["verdict"] == "unknown"'
+assert "C8: a malformed escalation file warns on stderr" _err_has '\[warn\].*9208'
+
+# --- C9: --class filtering ---------------------------------------------------
+run_sweep --db "$C_DB" --escalations "$C_ESC" --repo "$C_REPO" \
+    --class gate_closure --format json
+assert "C9a: --class gate_closure emits only class-A rows" \
+    _json_is 'all(c["class"] == "gate_closure" for c in d["candidates"]) and len(d["candidates"]) > 0'
+run_sweep --db "$C_DB" --escalations "$C_ESC" --repo "$C_REPO" \
+    --class merge_verify_red --format json
+assert "C9b: --class merge_verify_red suppresses the class-A hit" \
+    _json_is '9201 not in t and s["gate_closure"] == 0'
 
 test_summary
