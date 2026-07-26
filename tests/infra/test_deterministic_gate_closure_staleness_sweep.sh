@@ -1204,6 +1204,59 @@ run_sweep --db "$F_DB" --escalations "$F_ESC" --repo "$F_REPO" --format table
 assert "F8: the table report renders flags as a comma-separated list" \
     _out_has 'corrupt_autofile,misattributed_provenance'
 
+# --- F9: an unresolvable --main-ref must not manufacture a corruption claim ---
+#
+# `git merge-base --is-ancestor <sha> <ref>` exits NON-ZERO for two entirely
+# different reasons: the commit genuinely is not an ancestor, and the second
+# argument does not resolve at all (measured empirically: exit 128, `fatal: Not
+# a valid object name`). Passing a raw ref NAME to that probe therefore makes a
+# MISSING ancestry oracle indistinguishable from positive evidence of
+# corruption — and `misattributed_provenance` is defined, in the docs note's
+# suppressor table, as "resolves but is NOT an ancestor". That is a confident
+# claim the sweep is not entitled to make when it has no oracle at all.
+#
+# The consequence is not cosmetic. Invariant L5 suppresses any STALE hit that
+# carries a flag, so one spurious flag silently converts a real, actionable hit
+# into a human-gate hold and drops its re-dispatch request (F9f/F9g pin both
+# halves on the unflagged control). Every other unresolvable-ref path in the
+# sweep warns and degrades — the class-B path checks the pre-resolved SHA for
+# emptiness FIRST, for this identical premise — so F9e pins the missing warn.
+#
+# --main-ref is invocation-scoped (the sweep resolves it exactly once per run),
+# so F9 needs its own run_sweep. It reuses the Block F fixtures unchanged and
+# adds no new builders.
+F9_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-f9req-XXXXXX")"
+_TMPDIRS+=("$F9_REQ")
+
+run_sweep --db "$F_DB" --escalations "$F_ESC" --repo "$F_REPO" \
+    --main-ref no-such-ref --emit-requests "$F9_REQ" --format json
+assert "F9a: an unresolvable --main-ref degrades rather than aborting" _rc_is 0
+
+# The core regression: 9606's done_provenance IS reachable from the fixture's
+# main (F4a asserts it clean under a resolvable ref), so no ancestry oracle can
+# license ANY provenance flag on it.
+assert "F9b: a reachable provenance SHA is not flagged when --main-ref does not resolve" \
+    _json_is '"misattributed_provenance" not in t[9606]["flags"] and "provenance_unresolvable" not in t[9606]["flags"]'
+# The other direction: the fix degrades, it does not merely invert. With no
+# ancestry oracle, non-ancestry is not adjudicable for the side-branch row
+# either — even though that row IS genuinely misattributed (F3).
+assert "F9c: without an ancestry oracle, a genuinely side-branch provenance is not adjudicable either" \
+    _json_is '"misattributed_provenance" not in t[9605]["flags"]'
+# rev-parse runs against --repo alone, so this check is independent of the ref.
+assert "F9d: provenance_unresolvable is a --repo check and is unaffected by --main-ref" \
+    _json_is '"provenance_unresolvable" in t[9608]["flags"]'
+assert "F9e: the missing ancestry oracle warns, naming the ref and the un-adjudicated check" \
+    _err_has '\[warn\].*no-such-ref.*provenance reachability not adjudicable'
+# F9f/F9g — the L5 consequence, and the reason this is blocking rather than
+# cosmetic: a spurious flag would demote a confirmed hit to a human-gate hold
+# and silently drop its actionable output.
+assert "F9f: an unflagged class-A hit is still STALE / close and still counted" \
+    _json_is 't[9613]["verdict"] == "STALE" and t[9613]["action"] == "close" and t[9613]["class"] == "gate_closure" and s["gate_closure"] == 1'
+assert "F9f: ... and is not rewritten to a CORRUPT-HOLD / human_gate row" \
+    _json_is 't[9613]["verdict"] != "CORRUPT-HOLD" and t[9613]["action"] != "human_gate"'
+assert "F9g: ... so its re-dispatch request is still emitted" \
+    test -f "$F9_REQ/redispatch-9613-gate_closure.json"
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block G — --emit-requests and the read-only invariant
 #
