@@ -955,13 +955,12 @@ assert "I3b: async-branch: cp invoked with --reflink=always (async path reached 
 # no-trash-leak assertion is race-free (no background rm -rf &).
 I_BASE_REAL_PARENT="$(mktemp -d /tmp/test-seed-I-real-parent-XXXXXX)"
 I_BASE_REAL="$I_BASE_REAL_PARENT/target"
-# I_LANE_REAL is nested under a private per-run parent (I_LANE_REAL_PARENT), NOT
-# bare /tmp (task 5384 amendment; same rationale as I14 below): I7b's sibling-
-# trash assertion resolves dirname(I_LANE_REAL)/.reseed-trash, so a bare-/tmp
-# lane would put it at the machine-shared /tmp/.reseed-trash.
-I_LANE_REAL_PARENT="$(mktemp -d /tmp/test-seed-I-real-lane-parent-XXXXXX)"
-I_LANE_REAL="$(mktemp -d "$I_LANE_REAL_PARENT/lane-XXXXXX")"
-_TMPDIRS+=("$I_BASE_REAL_PARENT" "$I_LANE_REAL_PARENT")
+# I_LANE_REAL is created via make_isolated_lane (task 5590), NOT bare /tmp
+# (task 5384 amendment; same rationale as I14 below): I7b's sibling-trash
+# assertion resolves dirname(I_LANE_REAL)/.reseed-trash, so a bare-/tmp lane
+# would put it at the machine-shared /tmp/.reseed-trash.
+I_LANE_REAL="$(make_isolated_lane I-real-lane)"
+_TMPDIRS+=("$I_BASE_REAL_PARENT")
 # Seed base with a known artifact so we can verify it appears after the clone.
 mkdir -p "$I_BASE_REAL/debug"
 echo "base artifact" > "$I_BASE_REAL/debug/base_artifact.a"
@@ -1046,6 +1045,9 @@ assert "I12: self-clobber: cp NEVER invoked (refused before clone)" \
 
 # I13: POSITIVE CONTROL UNDER MOUNT — lane IS under REIFY_WARM_LANE_MOUNT, non-empty target.
 # The replace path must still succeed when the mount check passes.
+# NOT migrated to make_isolated_lane (task 5590): I_UNDER_LANE must stay nested
+# under $I_MOUNT because REIFY_WARM_LANE_MOUNT="$I_MOUNT" is set below and the
+# mount guard would refuse a lane outside it — a later sweep should not "fix" this.
 I_UNDER_LANE="$(mktemp -d "$I_MOUNT/test-seed-I-under-XXXXXX")"
 # I_UNDER_LANE is inside I_MOUNT, so the cleanup trap picks it up via I_MOUNT.
 mkdir -p "$I_UNDER_LANE/target"
@@ -1068,21 +1070,20 @@ assert "I13b: positive-control-under-mount: cp IS invoked" \
 # After fix (#4896, pool-level sibling):  I14d: no in-lane trash → PASSES (GREEN);
 #                                         I14g: trash in sibling → PASSES (GREEN).
 #
-# I14_LANE is nested under a private per-run parent (I14_LANE_PARENT), NOT bare /tmp
+# I14_LANE is created via make_isolated_lane (task 5590), NOT bare /tmp
 # (task 5384; esc-5354-6): the script under test computes RESEED_TRASH_DIR as
 # dirname(LANE_DIR)/.reseed-trash, so a bare-/tmp lane would put I14_SIBLING_TRASH_DIR
 # at the machine-shared /tmp/.reseed-trash — vulnerable to a flaky I14g on hosts running
 # many concurrent agents/test runs. Same pattern I13 already uses for I_MOUNT above.
 I14_BASE_PARENT="$(mktemp -d /tmp/test-seed-I14-parent-XXXXXX)"
 I14_BASE="$I14_BASE_PARENT/target"
-I14_LANE_PARENT="$(mktemp -d /tmp/test-seed-I14-lane-parent-XXXXXX)"
-I14_LANE="$(mktemp -d "$I14_LANE_PARENT/lane-XXXXXX")"
+I14_LANE="$(make_isolated_lane I14-lane)"
 # Set I14_SIBLING_TRASH_DIR early so the I14g assertion below references the
-# same computed path. Because I14_LANE_PARENT is a fresh per-run mktemp'd dir
-# (see above), this sibling trash dir is private to this run and is
+# same computed path. Because make_isolated_lane's private parent is a fresh
+# per-run mktemp'd dir, this sibling trash dir is private to this run and is
 # guaranteed not to exist yet, so no pre-clean of stale entries is needed.
 I14_SIBLING_TRASH_DIR="$(dirname "$I14_LANE")/.reseed-trash"
-_TMPDIRS+=("$I14_BASE_PARENT" "$I14_LANE_PARENT")
+_TMPDIRS+=("$I14_BASE_PARENT")
 mkdir -p "$I14_BASE/debug"
 echo "base artifact" > "$I14_BASE/debug/base_artifact.a"
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$I14_BASE_PARENT/.warm-base-meta"
@@ -1133,13 +1134,12 @@ assert "I14g: relocation: trash IS under pool-level sibling .reseed-trash/ for t
 # rooted walker).  Confirms exit 0 and correct cloning under real async conditions.
 I15_BASE_PARENT="$(mktemp -d /tmp/test-seed-I15-parent-XXXXXX)"
 I15_BASE="$I15_BASE_PARENT/target"
-# I15_LANE is nested under a private per-run parent (I15_LANE_PARENT), NOT bare
-# /tmp (task 5384 amendment; same rationale as I14 above): the script under test
+# I15_LANE is created via make_isolated_lane (task 5590), NOT bare /tmp (task
+# 5384 amendment; same rationale as I14 above): the script under test
 # mkdir -p's dirname(LANE_DIR)/.reseed-trash for trash relocation, so a bare-/tmp
 # lane would write into the machine-shared /tmp/.reseed-trash.
-I15_LANE_PARENT="$(mktemp -d /tmp/test-seed-I15-lane-parent-XXXXXX)"
-I15_LANE="$(mktemp -d "$I15_LANE_PARENT/lane-XXXXXX")"
-_TMPDIRS+=("$I15_BASE_PARENT" "$I15_LANE_PARENT")
+I15_LANE="$(make_isolated_lane I15-lane)"
+_TMPDIRS+=("$I15_BASE_PARENT")
 mkdir -p "$I15_BASE/debug"
 echo "base artifact" > "$I15_BASE/debug/base_artifact.a"
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$I15_BASE_PARENT/.warm-base-meta"
