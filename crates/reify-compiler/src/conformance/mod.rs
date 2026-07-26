@@ -299,6 +299,7 @@ pub(crate) fn check_trait_arg_conformance(
     span: SourceSpan,
     template_registry: &HashMap<String, &TopologyTemplate>,
     trait_registry: &HashMap<String, &CompiledTrait>,
+    enum_defs: &[reify_ir::EnumDef],
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     // Anti-cascade: if the arg itself had a compilation error, skip.
@@ -328,6 +329,7 @@ pub(crate) fn check_trait_arg_conformance(
         span,
         templates: template_registry,
         traits: trait_registry,
+        enum_defs,
         diagnostics,
         // Ctor-conformance entry (value-cell + sub `=` paths): knob-governed
         // (Warning at α). task 5302.
@@ -359,6 +361,7 @@ pub(crate) fn check_trait_arg_conformance(
 /// emitted by the expression that produced the error.
 ///
 /// See task-4081 design decision §3 for rationale.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn check_fn_arg_conformance(
     param_type: &Type,
     arg_name: &str,
@@ -366,6 +369,7 @@ pub(crate) fn check_fn_arg_conformance(
     span: SourceSpan,
     template_registry: &HashMap<String, &TopologyTemplate>,
     trait_registry: &HashMap<String, &CompiledTrait>,
+    enum_defs: &[reify_ir::EnumDef],
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     // Anti-cascade: if the arg itself had a compilation error, skip.
@@ -379,6 +383,7 @@ pub(crate) fn check_fn_arg_conformance(
         span,
         templates: template_registry,
         traits: trait_registry,
+        enum_defs,
         diagnostics,
         // Fn-call trait-conformance is OUT OF SCOPE for the 5302 ctor knob and
         // must stay a hard error (preserves task-4081 fn-call semantics).
@@ -409,6 +414,7 @@ pub(crate) fn check_param_default_conformance(
     template: &TopologyTemplate,
     template_registry: &HashMap<String, &TopologyTemplate>,
     trait_registry: &HashMap<String, &CompiledTrait>,
+    enum_defs: &[reify_ir::EnumDef],
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for vc in &template.value_cells {
@@ -452,6 +458,7 @@ pub(crate) fn check_param_default_conformance(
                     span: vc.span,
                     templates: template_registry,
                     traits: trait_registry,
+                    enum_defs,
                     diagnostics,
                     // Param-default conformance is a ctor-conformance entry:
                     // knob-governed (Warning at α). task 5302.
@@ -531,6 +538,7 @@ pub(crate) fn check_param_default_conformance(
                     span: vc.span,
                     templates: template_registry,
                     traits: trait_registry,
+                    enum_defs,
                     diagnostics,
                     // Param-default conformance is a ctor-conformance entry:
                     // knob-governed (Warning at α). task 5302.
@@ -557,6 +565,23 @@ struct WalkCtx<'a> {
     span: SourceSpan,
     templates: &'a HashMap<String, &'a TopologyTemplate>,
     traits: &'a HashMap<String, &'a CompiledTrait>,
+    /// Declared enums visible at this call site — `prelude ++ module-local`, i.e.
+    /// exactly `CompilationCtx.resolution_enums` (task 5465, family 4).
+    ///
+    /// Exists SOLELY so the general concrete-leaf arm can tolerate D1/F-Mono
+    /// enum erasure: a constructed variant's `result_type` is always the bare
+    /// `Type::Enum(name)`, never the applied form, so a declared
+    /// `Type::Applied { name: "Result", args: [...] }` param would spuriously
+    /// fail raw [`type_compatible`]. The arm short-circuits on
+    /// [`enum_payload_compatible`], which needs this table both to recognise an
+    /// applied ENUM (vs. an applied generic STRUCTURE like `Coupling<T>`, which
+    /// is spelled the same way) and to keep a genuine cross-enum mismatch
+    /// rejected.
+    ///
+    /// It is also the membership oracle for
+    /// [`general_leaf_param_family_is_validated`]'s `Type::Applied` entry, so the
+    /// two decisions cannot drift.
+    enum_defs: &'a [reify_ir::EnumDef],
     diagnostics: &'a mut Vec<Diagnostic>,
     /// Severity at which conformance diagnostics emitted through this walk are
     /// built (task 5302). The two ctor-conformance entries
@@ -1245,7 +1270,29 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
                         format!("expected '{}', got '{}'", param_type, arg_type),
                     )),
                 );
-            } else if general_leaf_param_family_is_validated(param_type) {
+            } else if enum_payload_compatible(param_type, arg_type, ctx.enum_defs) {
+                // ENUM-ERASURE ACCEPT (task 5465, family 4). Placed BEFORE the
+                // allowlist branch so the erasure gap is tolerated without any
+                // `type_compatible` call.
+                //
+                // Under D1/F-Mono erasure (PRD §7.1: "resolved args live only in
+                // the per-site substitution map, never on the persisted `Type`
+                // or `Value`"), a constructed variant's `result_type` is ALWAYS
+                // the bare `Type::Enum(name)` — never the applied form. So a
+                // param declared `Result<Length, String>` (a
+                // `Type::Applied { name: "Result", .. }`) supplied a legitimate
+                // `Ok { value: 12mm }` would, in `enum_payload_compatible`'s own
+                // words, "spuriously fail raw `type_compatible`", which has no
+                // Applied-vs-Enum rule.
+                //
+                // This mirrors the guard `variant_construct.rs` already applies
+                // at the payload-field site: same predicate, same enum table, so
+                // the two cannot drift. It is a TARGETED tolerance, not a family
+                // bypass — `enum_payload_compatible` accepts only when both
+                // sides name the SAME base enum, so a genuine cross-enum
+                // mismatch still falls through to the allowlist branch below and
+                // is rejected.
+            } else if general_leaf_param_family_is_validated(param_type, ctx.enum_defs) {
                 // GENERAL CONCRETE-LEAF arm (task 5302 α): this replaces the former
                 // silent `_` fall-through for the param families that
                 // [`general_leaf_param_family_is_validated`] vets, routing them
@@ -1303,11 +1350,6 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 ///   `List`→`Matrix` arm exists. Unlike the placeholder families this is a
 ///   genuinely missing coercion rule, so no amount of placeholder detection
 ///   fixes it.
-/// * **`Enum`** — under enum erasure a constructed variant's result_type is
-///   always the bare `Type::Enum(name)`, never the applied form. That is
-///   precisely why `type_compat.rs::enum_payload_compatible` exists (its own doc
-///   notes a naive `type_compatible` "would spuriously fail") and why
-///   `variant_construct.rs` guards with it instead.
 /// * **Dimensioned `Scalar`** — supplying a bare dimensionless numeric literal
 ///   at a dimensioned slot is idiomatic throughout the corpus.
 /// * **`Geometry`** — geometry constructors compile to a dimensionless-scalar
@@ -1321,10 +1363,33 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// The last two were the α negative guard's explicit carve-outs; they are
 /// subsumed by simple absence from the allowlist, so the redundant `matches!`
 /// is gone rather than left as dead belt-and-braces.
-fn general_leaf_param_family_is_validated(param_type: &Type) -> bool {
+///
+/// # Enum families (task 5465, family 4)
+///
+/// `Type::Enum(_)` and enum-named `Type::Applied` are vetted here, but ONLY
+/// because the caller short-circuits on [`enum_payload_compatible`] first: the
+/// erasure gap that made raw `type_compatible` unusable for these two is
+/// absorbed there, and what reaches this predicate is a residual genuine
+/// mismatch (`Hue` ← `Outline`, `Result<…>` ← `String`) that `type_compatible`
+/// judges correctly.
+///
+/// `Type::Applied` is DELIBERATELY not blanket-allowlisted: it also represents
+/// generic STRUCTURE refs (e.g. `Coupling<T>`, see
+/// `type_arg_applied_resolution_tests.rs`), and `implicitly_converts_to` has no
+/// Applied-vs-StructureRef arm, so a blanket entry would reintroduce exactly the
+/// class of false positive this allowlist exists to prevent. The membership test
+/// is the SAME `enum_defs.iter().any(|e| e.name == *name)` that
+/// [`enum_payload_compatible`] uses, so the accept-side and the judge-side
+/// cannot disagree about what counts as an applied enum.
+fn general_leaf_param_family_is_validated(
+    param_type: &Type,
+    enum_defs: &[reify_ir::EnumDef],
+) -> bool {
     match param_type {
         Type::Bool | Type::Int | Type::String => true,
         Type::Scalar { dimension } => dimension.is_dimensionless(),
+        Type::Enum(_) => true,
+        Type::Applied { name, .. } => enum_defs.iter().any(|e| e.name == *name),
         _ => false,
     }
 }
@@ -6018,6 +6083,7 @@ mod tests {
             SourceSpan::empty(0),
             &template_registry,
             &trait_registry,
+            &[],
             &mut diagnostics,
         );
 
@@ -6134,6 +6200,7 @@ mod tests {
             SourceSpan::empty(0),
             &template_registry,
             &trait_registry,
+            &[],
             &mut diagnostics,
         );
 
@@ -6183,6 +6250,7 @@ mod tests {
             SourceSpan::empty(0),
             &template_registry,
             &trait_registry,
+            &[],
             &mut diagnostics,
         );
 
@@ -6208,6 +6276,7 @@ mod tests {
             SourceSpan::empty(0),
             &template_registry,
             &trait_registry,
+            &[],
             &mut diagnostics,
         );
 
@@ -6246,6 +6315,7 @@ mod tests {
             SourceSpan::empty(0),
             &template_registry,
             &trait_registry,
+            &[],
             &mut diagnostics,
         );
 
@@ -6283,6 +6353,7 @@ mod tests {
             SourceSpan::empty(0),
             &template_registry,
             &trait_registry,
+            &[],
             &mut diagnostics,
         );
 
@@ -6390,6 +6461,7 @@ mod tests {
             SourceSpan::empty(0),
             &template_registry,
             &trait_registry,
+            &[],
             &mut diagnostics,
         );
         assert_eq!(
@@ -6428,6 +6500,7 @@ mod tests {
             SourceSpan::empty(0),
             &template_registry,
             &trait_registry,
+            &[],
             &mut diagnostics,
         );
         assert_eq!(
@@ -6458,6 +6531,7 @@ mod tests {
             SourceSpan::empty(0),
             &template_registry,
             &trait_registry,
+            &[],
             &mut diagnostics,
         );
         assert_eq!(
@@ -6498,6 +6572,7 @@ mod tests {
             SourceSpan::empty(0),
             &template_registry,
             &trait_registry,
+            &[],
             &mut diagnostics,
         );
         assert_eq!(
@@ -6519,6 +6594,7 @@ mod tests {
             SourceSpan::empty(0),
             &template_registry,
             &trait_registry,
+            &[],
             &mut diagnostics2,
         );
         assert_eq!(
@@ -6575,6 +6651,7 @@ mod tests {
             &template,
             &template_registry,
             &trait_registry,
+            &[],
             &mut diagnostics,
         );
         assert_eq!(
@@ -6612,6 +6689,7 @@ mod tests {
             SourceSpan::empty(0),
             &template_registry,
             &trait_registry,
+            &[],
             &mut diagnostics,
         );
         assert_eq!(
@@ -6663,6 +6741,7 @@ mod tests {
             SourceSpan::empty(0),
             &template_registry,
             &trait_registry,
+            &[],
             &mut diagnostics,
         );
         assert_eq!(
@@ -6704,6 +6783,7 @@ mod tests {
             SourceSpan::empty(0),
             &template_registry,
             &trait_registry,
+            &[],
             &mut diagnostics,
         );
         assert_eq!(

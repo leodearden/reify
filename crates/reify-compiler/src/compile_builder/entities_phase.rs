@@ -880,6 +880,11 @@ pub(crate) fn phase_pending_bound_checks(ctx: &mut CompilationCtx, prelude: &[&C
                     span,
                     &template_registry,
                     &trait_registry,
+                    // task 5465 (family 4): `prelude ++ module-local` enums, so
+                    // the walker's general concrete-leaf arm can tolerate D1 /
+                    // F-Mono enum erasure. A disjoint-field shared borrow
+                    // alongside the `&mut ctx.diagnostics` below.
+                    &ctx.resolution_enums,
                     &mut ctx.diagnostics,
                 );
             }
@@ -1303,6 +1308,13 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
     // per call (see doc-comment) requires the full table, not a name-keyed map.
     let resolution_functions: &[CompiledFunction] = &ctx.resolution_functions;
 
+    // task 5465 (family 4): `prelude ++ module-local` enum table, threaded into
+    // the conformance walker so its general concrete-leaf arm can tolerate
+    // D1/F-Mono enum erasure (see `WalkCtx.enum_defs`). Bound here next to
+    // `resolution_functions` because the `walk` closure below borrows `ctx`
+    // immutably while `new_diagnostics` is borrowed mutably.
+    let resolution_enums: &[EnumDef] = &ctx.resolution_enums;
+
     // Fast-path gate for type-param bound checking (task-4232 γ D5):
     // compute ONCE whether any function in the resolution table has bounded
     // type-params.  If not (e.g. non-generic sources like bracket_source, or any
@@ -1329,6 +1341,7 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
             resolution_functions,
             &template_registry,
             &trait_registry,
+            resolution_enums,
             span,
             has_bounded_generic_fns,
             diags,
@@ -1341,7 +1354,14 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
         // (queued in entity.rs at sub-lowering time); value-cell `let c = Foo(...)`
         // bindings lower to StructureInstanceCtor expressions and were NOT checked.
         // Walking every StructureInstanceCtor here closes that gap.
-        check_expr_struct_ctor_args(expr, &template_registry, &trait_registry, span, diags);
+        check_expr_struct_ctor_args(
+            expr,
+            &template_registry,
+            &trait_registry,
+            resolution_enums,
+            span,
+            diags,
+        );
     };
 
     // Walk EVERY CompiledExpr-bearing root field of each entity template via the
@@ -1361,6 +1381,7 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
             template,
             &template_registry,
             &trait_registry,
+            resolution_enums,
             &mut new_diagnostics,
         );
     }
@@ -1442,11 +1463,14 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
 /// Reuses the structure-side bound diagnostic message (no new `DiagnosticCode`
 /// — PRD §7.3).  The caller (`phase_fn_arg_conformance`) already owns the
 /// registries; no additional registry build is required.
+#[allow(clippy::too_many_arguments)]
 fn check_expr_fn_calls(
     expr: &CompiledExpr,
     functions: &[CompiledFunction],
     template_registry: &HashMap<String, &TopologyTemplate>,
     trait_registry: &HashMap<String, &CompiledTrait>,
+    // task 5465 (family 4): forwarded verbatim to `check_fn_arg_conformance`.
+    enum_defs: &[EnumDef],
     representative_span: SourceSpan,
     check_bounds: bool,
     diagnostics: &mut Vec<reify_core::Diagnostic>,
@@ -1488,6 +1512,7 @@ fn check_expr_fn_calls(
                 representative_span,
                 template_registry,
                 trait_registry,
+                enum_defs,
                 diagnostics,
             );
         }
@@ -1576,6 +1601,8 @@ fn check_expr_struct_ctor_args(
     expr: &CompiledExpr,
     template_registry: &HashMap<String, &TopologyTemplate>,
     trait_registry: &HashMap<String, &CompiledTrait>,
+    // task 5465 (family 4): forwarded verbatim to `check_trait_arg_conformance`.
+    enum_defs: &[EnumDef],
     representative_span: SourceSpan,
     diagnostics: &mut Vec<reify_core::Diagnostic>,
 ) {
@@ -1633,6 +1660,7 @@ fn check_expr_struct_ctor_args(
                 anchor_span,
                 template_registry,
                 trait_registry,
+                enum_defs,
                 diagnostics,
             );
         }
