@@ -11635,6 +11635,74 @@ fn get_entity_tree_consumed_realizations_default_visible_false() {
     );
 }
 
+// ---- #5195: trait_geometry propagates to the realization node ----
+
+/// #5195 step-3 RED: the realization node for a `Physical` structure's
+/// `geometry` member must carry `trait_geometry == true`, matching its
+/// value-cell sibling (`build_template_node`'s value-cell loop already sets
+/// `is_geometry_member && parent_has_physical`). A non-trait `let helper`
+/// realization stays `false`.
+///
+/// Fails today because the realization loop hard-codes `trait_geometry: false`
+/// for every realization.
+///
+/// `: Physical` is spelled literally so the existing `trait_bounds` substring
+/// heuristic fires — `trait_bounds` holds DECLARED names only, so a `: Rigid`
+/// structure (which refines Physical) does NOT match. That gap is pre-existing
+/// on the value-cell side and deliberately out of scope here; the feature's
+/// observable does not depend on it (see the consumed-downstream test above,
+/// which uses `: Rigid` and passes regardless).
+///
+/// `helper` is consumed by nothing, so it also stays `default_visible == true`
+/// — this test is independent of the consumed-downstream rule.
+#[test]
+fn get_entity_tree_realization_trait_geometry_propagates() {
+    let source = r#"structure def Widget : Physical {
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+
+    param geometry : Solid = box(10mm, 10mm, 10mm)
+    let helper = box(5mm, 5mm, 5mm)
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "widget").expect("load");
+
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "Widget")
+        .expect("Widget root must exist");
+
+    let realization = |name: &str| -> &crate::types::EntityTreeNode {
+        root.children
+            .iter()
+            .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("realization node for '{name}' must be present"))
+    };
+
+    assert!(
+        realization("geometry").trait_geometry,
+        "the `geometry` realization of a `: Physical` structure must have \
+         trait_geometry == true, matching its value-cell sibling"
+    );
+    assert!(
+        !realization("helper").trait_geometry,
+        "a plain `let helper` realization must have trait_geometry == false"
+    );
+
+    // The value-cell sibling is the anchor this mirrors — assert the two agree
+    // so the realization node cannot drift from the existing cell heuristic.
+    let geometry_cell = root
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Widget.geometry" && n.kind != "realization")
+        .expect("value-cell node for 'geometry' must be present");
+    assert!(
+        geometry_cell.trait_geometry,
+        "value-cell `geometry` must already have trait_geometry == true \
+         (the existing heuristic this test pins the realization node against)"
+    );
+}
+
 /// step-3 RED: a root assembly with a plain `sub part : Part at <pose>` and an
 /// `aux sub jig : Jig at <pose>`, where Part and Jig each declare a plain
 /// `let body = box(...)` (NOT directly aux).
