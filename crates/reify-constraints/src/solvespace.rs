@@ -113,6 +113,23 @@ struct LineRef {
 }
 
 /// Try to recognize a geometric constraint pattern from an expression tree.
+///
+/// **Superseded for 2D sketches only** (`docs/prds/v0_6/constrained-2d-sketch.md`,
+/// D8).  A sketch no longer arrives as an expression tree to be pattern-matched:
+/// it arrives as a typed `SketchSystem` and is lowered declaration-by-declaration
+/// by `add_sketch` behind `solve_sketch`.  Guessing a constraint's meaning back
+/// out of an expression is inherently partial — an unrecognized shape reports
+/// `NoProgress` — where direct lowering cannot fail to understand what the caller
+/// declared.
+///
+/// This route stays live regardless: it serves the registry's auto-param path
+/// (`ConstraintSolver::solve` over a `ResolutionProblem`), whose input really is
+/// expressions and which has no `SketchSystem` to hand over.  Nothing here is
+/// deprecated, and nothing here changed.
+///
+/// Consolidating the three geometric solvers now in the crate — relate-solve's
+/// Gauss–Newton, this pattern path, and the sketch path — is explicitly out of
+/// scope (PRD §11, "Solver consolidation"): breadcrumbs only, no unification.
 fn recognize_pattern(expr: &CompiledExpr, auto_params: &[AutoParam]) -> Option<GeometricPattern> {
     match &expr.kind {
         // eq(distance_call, literal) or eq(literal, distance_call)
