@@ -1085,11 +1085,52 @@ fn eval_structure_instance_ctor(
     for (name, arg) in ordered_args {
         fields.insert(name.clone(), eval_expr(arg, ctx));
     }
+    // Defaults that reference a SIBLING param must be evaluated against a child
+    // scope keyed by `ValueCellId::new(type_name, member)` — exactly like
+    // `materialize_template_lets` below, and for exactly the same reason.  The
+    // compiler compiles a structure-def param default in a `CompilationScope`
+    // registering the structure's own members, so `param y : Real = x + 1.0`
+    // lowers to `ValueRef(ValueCellId{entity: type_name, member: "x"})`.  In the
+    // OUTER `ctx` that cell exists only when the caller's own value map happens
+    // to carry it, which is true when the enclosing entity materializes the
+    // instance itself but NOT when the instance arrives from a fn-returned ctor
+    // — there the ref missed and the field silently became `Undef` (task 5494,
+    // boundary #5: correct value at eval or a loud diagnostic, never silent
+    // divergence).  The same SCOPE INVARIANT documented on
+    // `materialize_template_lets` applies: `with_scope` REPLACES the value map,
+    // which is correct because a well-compiled default can only carry
+    // `type_name`-stamped refs, all of which are in `child`.
+    //
+    // The child map is built LAZILY: a literal default (the overwhelmingly
+    // common case) needs no scope at all, so ctors whose defaults are all
+    // constants pay nothing — the same "gate the O(fields) deep-clone on actual
+    // need" discipline `materialize_template_lets` gets from its
+    // `!lets.is_empty()` caller guard.  Once built, every subsequent default is
+    // written into BOTH maps so a later default sees earlier ones, matching the
+    // left-to-right scoping the compiler enforces.
+    let mut child: Option<ValueMap> = None;
     for (name, def) in defaults {
-        if !fields.contains_key(name) {
-            fields.insert(name.clone(), eval_expr(def, ctx));
+        if fields.contains_key(name) {
+            continue;
         }
+        let value = if matches!(def.kind, CompiledExprKind::Literal(_)) {
+            eval_expr(def, ctx)
+        } else {
+            let scope = child.get_or_insert_with(|| {
+                let mut m = ValueMap::new();
+                for (member, value) in fields.iter() {
+                    m.insert(ValueCellId::new(type_name, member.as_str()), value.clone());
+                }
+                m
+            });
+            eval_expr(def, &ctx.with_scope(scope))
+        };
+        if let Some(scope) = child.as_mut() {
+            scope.insert(ValueCellId::new(type_name, name.as_str()), value.clone());
+        }
+        fields.insert(name.clone(), value);
     }
+    drop(child);
     if !lets.is_empty() {
         materialize_template_lets(type_name, lets, &mut fields, ctx);
     }
