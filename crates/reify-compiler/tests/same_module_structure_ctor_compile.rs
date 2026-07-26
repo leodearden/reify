@@ -233,39 +233,35 @@ fn eval_make_widget_partial_covers_first_param() {
     );
 }
 
-// ─── step-5: accepted limitation — sibling-param default is pinned ────────────
+// ─── step-5: sibling-param default survives the fn-returned ctor ──────────────
 
-/// Accepted limitation (task 3895 design decision #3): a structure-def param
-/// whose default expression references a sibling param will not resolve in the
-/// neutral skeleton scope used by `build_structure_def_skeleton`.
+/// A structure-def param whose default expression references a SIBLING param
+/// must keep that default's real value when the structure is built through a
+/// fn-returned ctor.
 ///
-/// **Current behavior (pinned by this test):**
-/// - The module compiles with **zero `Severity::Error` diagnostics.**
-///   `compile_expr` fails to resolve `y = x + 1.0` in the neutral scope; the
-///   diagnostic is routed to the throwaway buffer and discarded.
-///   `phase_entities` re-compiles `Point` authoritatively (siblings resolve
-///   there) and emits no Error.
-/// - `make_point()`'s fn body **still lowers to `StructureInstanceCtor`.**
-///   The skeleton successfully identifies `Point` as a structure; only `y`'s
-///   default expr is a poison value in the skeleton.
-/// - Eval is intentionally **not** asserted: `y`'s skeleton-baked poison
-///   default produces implementation-defined behavior at eval time.  The
-///   authoritative `Point` entity template (from `phase_entities`) has the
-///   correct default `x + 1.0` for direct entity instantiation.
-///
-/// If a future task implements sibling-param resolution in skeleton scope, this
-/// test must be updated to assert the correct eval result for `y`.
+/// This test was `sibling_param_default_accepted_limitation_body_is_ctor` — the
+/// task-3895 pin for design decision #3, which recorded sibling-param defaults
+/// as unresolvable in `build_structure_def_skeleton`'s neutral scope and
+/// deferred the eval assertion ("If a future task implements sibling-param
+/// resolution in skeleton scope, this test must be updated to assert the correct
+/// eval result for `y`").  Task 5494 is that task: the mirror is gone and the
+/// authoritative template is what the fn body sees, so the deferred assertion is
+/// now made.  The zero-errors and `StructureInstanceCtor{Point}` assertions are
+/// carried over unchanged.
 #[test]
-fn sibling_param_default_accepted_limitation_body_is_ctor() {
+fn sibling_param_default_in_fn_returned_ctor_evaluates_correctly() {
     let src = r#"
 module test.sibling_default
 structure def Point { param x : Real = 1.0  param y : Real = x + 1.0 }
 pub fn make_point() -> Point { Point() }
+structure App {
+    let p = make_point()
+    let py = p.y
+}
 "#;
     let module = reify_test_support::helpers::compile_source_with_stdlib(src);
 
-    // Zero errors: skeleton's poisoned y-default diagnostic is discarded;
-    // phase_entities re-compiles authoritatively with no error.
+    // Zero errors.
     let errors: Vec<_> = module
         .diagnostics
         .iter()
@@ -277,8 +273,7 @@ pub fn make_point() -> Point { Point() }
         errors
     );
 
-    // The fn body IS a StructureInstanceCtor: the skeleton correctly identifies
-    // Point as a structure even though y's default is poisoned.
+    // The fn body IS a StructureInstanceCtor.
     let func = module
         .functions
         .iter()
@@ -290,11 +285,23 @@ pub fn make_point() -> Point { Point() }
             assert_eq!(type_name, "Point");
         }
         other => panic!(
-            "make_point body should be StructureInstanceCtor (sibling-default \
-             skeleton still lowers the ctor); got: {:?}",
+            "make_point body should be StructureInstanceCtor; got: {:?}",
             other
         ),
     }
+
+    // The deferred assertion: `y`'s sibling-referencing default must carry its
+    // real value (`x + 1.0` == 2.0) through the fn-returned ctor, not a poison.
+    let result = eval_source_with_stdlib(src);
+    reify_test_support::assert_no_eval_errors(&result);
+    let py = reify_test_support::cell_value(&result, "App", "py");
+    assert_eq!(
+        py,
+        Value::Real(2.0),
+        "App.py must be Point's sibling-referencing default `x + 1.0` == 2.0; \
+         got: {:?}",
+        py
+    );
 }
 
 // ─── step-6: alias-registry dedup isolation guard ────────────────────────────
