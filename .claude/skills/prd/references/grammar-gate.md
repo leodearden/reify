@@ -34,7 +34,7 @@ Write fixtures to `/tmp/prd-gate-fixtures/<slug>-<n>.ri` or a directory the skil
 Then, from `tree-sitter-reify/`, parse the fixture:
 
 ```bash
-cd /home/leo/src/reify/tree-sitter-reify
+cd "$(git rev-parse --show-toplevel)/tree-sitter-reify"
 tree-sitter parse --quiet /tmp/prd-gate-fixtures/<slug>-<n>.ri
 ```
 
