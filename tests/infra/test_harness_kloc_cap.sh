@@ -443,39 +443,24 @@ assert "1c: orphan-dir scan emits no FAIL line" \
 echo ""
 echo "--- Section 1d: exceeds-cap verdict carries the root/module breakdown ---"
 
-_s1d_baseline="$(mktemp)"; _TMPDIRS+=("$_s1d_baseline")
-: > "$_s1d_baseline"   # empty fixture baseline (rule (a) never consults it)
-
-# Re-drive Section 1b's over-cap fixture shape: a 100-line root with a
-# 20000-line module dir (aggregate 20100 > cap 20000).
-_s1d_dir="$(mktemp -d)"; _TMPDIRS+=("$_s1d_dir")
-mkdir -p "$_s1d_dir/harness_split"
-awk 'BEGIN { for (i = 0; i < 100; i++) print "// x" }'  > "$_s1d_dir/harness_split.rs"
-awk 'BEGIN { for (i = 0; i < 6667; i++) print "// x" }' > "$_s1d_dir/harness_split/a.rs"
-awk 'BEGIN { for (i = 0; i < 6667; i++) print "// x" }' > "$_s1d_dir/harness_split/b.rs"
-awk 'BEGIN { for (i = 0; i < 6666; i++) print "// x" }' > "$_s1d_dir/harness_split/c.rs"
-
-_s1d_out="$(mktemp)"; _TMPDIRS+=("$_s1d_out")
-_s1d_rc=0
-harness_layout_violations synthcrate "$_s1d_dir" "$_s1d_baseline" 20000 \
-    > "$_s1d_out" 2>/dev/null || _s1d_rc=$?
-
+# Reuses Section 1b's already-captured $_s1b_out (100-line root + 20000-line
+# module dir, aggregate 20100 > cap 20000) and Section 1's already-captured
+# $_s1_out (21000-line single-file harness, no module dir) instead of
+# regenerating either ~20k-line fixture and re-scanning: both sections drive
+# the same harness_layout_violations code path / _emit call this section
+# pins, so their captured output already carries whatever breakdown fields
+# rule (a) emits. Section 1/1b's own asserts are NOT `$`-anchored, so they
+# pass regardless of whether the breakdown fields are present; the anchored
+# asserts below are what actually pin the fields' presence, values, AND that
+# they are appended AFTER `cap=` (not inserted before `lines=`, which would
+# break Section 1's existing regex).
 assert "1d: exceeds-cap verdict appends root_lines/module_lines/module_files AFTER cap= (module-dir case)" \
-    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_split\.rs reason=exceeds-cap lines=20100 cap=20000 root_lines=100 module_lines=20000 module_files=3$' "$_s1d_out"
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_split\.rs reason=exceeds-cap lines=20100 cap=20000 root_lines=100 module_lines=20000 module_files=3$' "$_s1b_out"
 
-# Re-drive Section 1's harness_big.rs fixture (single-file harness, no
-# module dir): the breakdown must still be coherent — root_lines equals the
+# Coherence for a single-file harness (no module dir): root_lines equals the
 # whole total and module_lines/module_files are both 0.
-_s1d_single_dir="$(mktemp -d)"; _TMPDIRS+=("$_s1d_single_dir")
-awk 'BEGIN { for (i = 0; i < 21000; i++) print "// x" }' > "$_s1d_single_dir/harness_big.rs"
-
-_s1d_single_out="$(mktemp)"; _TMPDIRS+=("$_s1d_single_out")
-_s1d_single_rc=0
-harness_layout_violations synthcrate "$_s1d_single_dir" "$_s1d_baseline" 20000 \
-    > "$_s1d_single_out" 2>/dev/null || _s1d_single_rc=$?
-
 assert "1d: exceeds-cap verdict reports a coherent breakdown for a single-file harness (no module dir: root_lines=21000 module_lines=0 module_files=0)" \
-    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_big\.rs reason=exceeds-cap lines=21000 cap=20000 root_lines=21000 module_lines=0 module_files=0$' "$_s1d_single_out"
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_big\.rs reason=exceeds-cap lines=21000 cap=20000 root_lines=21000 module_lines=0 module_files=0$' "$_s1_out"
 
 # ===========================================================================
 # Section 2: rule (b) — an unsanctioned standalone tests/*.rs fires.
@@ -672,13 +657,13 @@ _s5b_nonvacuous() {
 assert "5b: at least one live harness has root<500 lines yet aggregate>10000 lines (module dir is actually read)" \
     _s5b_nonvacuous
 
-# Re-assert (unchanged) that the live SUMMARY stays green under the new
-# aggregate measure: the measured max aggregate across all 13 live harness
-# units is 19342 (harness_topology_selector) against CAP_LINES=20000, so
-# aggregating never flips the live scan red. Reuses Section 5's already
-# captured $_live_summary rather than re-running the (hermetic, but
-# non-trivial) live scan a second time.
-assert "5b: live SUMMARY still reads exactly crates=5 violations=0 under the aggregate measure" \
-    test "$_live_summary" = "HARNESS_KLOC_CAP SUMMARY crates=5 violations=0"
+# NOTE: deliberately no second assert re-checking $_live_summary here — it
+# would be byte-identical to Section 5's "live SUMMARY line reads exactly
+# crates=5 violations=0" assert (same variable, same expected string, no
+# re-scan in between), so a real regression would report two failures for
+# one cause. The measured max aggregate across all 13 live harness units is
+# 19342 (harness_topology_selector) against CAP_LINES=20000, so aggregating
+# never flips Section 5's live scan red; the non-vacuity check above is what
+# this section actually contributes.
 
 test_summary
