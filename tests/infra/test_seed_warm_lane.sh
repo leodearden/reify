@@ -1129,8 +1129,9 @@ assert "I10b: outside-mount: stderr names mount/misuse" \
 # refuses before ever reaching the rename-to-trash path, so R1 never sees
 # it). The hazard here is a SIBLING lane-lock: scripts/seed-warm-lane.sh
 # computes LANE_LOCK="${LANE_DIR}.lock" (:522) — a sibling of LANE_DIR, not a
-# child — and creates it (:527) BEFORE the self-clobber misuse guard refuses
-# (I11), so the lock is created even though RC != 0. A bare-/tmp
+# child — and creates it (:563, `exec 9>"$LANE_LOCK"`) BEFORE the
+# self-clobber misuse guard refuses (I11), so the lock is created even
+# though RC != 0. A bare-/tmp
 # I_SC_BASE_PARENT would strand that sibling lock at top-level /tmp, outside
 # every _TMPDIRS entry — the sibling is not INSIDE the registered directory,
 # so cleanup()'s `rm -rf` never sees it (the leak I12b/I12c above pin).
@@ -1153,11 +1154,12 @@ assert "I12: self-clobber: cp NEVER invoked (refused before clone)" \
 # I12b/I12c: pin the sibling lane-lock leak (task 5609). scripts/seed-warm-lane.sh
 # unconditionally enters its lane-lock path for --fresh-checkout (:510) and
 # computes LANE_LOCK="${LANE_DIR}.lock" — a SIBLING of LANE_DIR, not a child —
-# creating it (:527) BEFORE the self-clobber misuse guard above refuses. So the
-# lock exists even though RC != 0 (I12b), and it must be nested under
-# $_LANE_ROOT so the existing cleanup() EXIT trap's `rm -rf "$_LANE_ROOT"`
-# reclaims it as a sibling of I_SC_BASE_PARENT's own private parent (I12c).
-assert "I12b: self-clobber: sibling lane-lock \${I_SC_BASE_PARENT}.lock exists (seed-warm-lane.sh:527 creates it before the misuse guard refuses)" \
+# creating it (:563, `exec 9>"$LANE_LOCK"`) BEFORE the self-clobber misuse
+# guard above refuses. So the lock exists even though RC != 0 (I12b), and it
+# must be nested under $_LANE_ROOT so the existing cleanup() EXIT trap's
+# `rm -rf "$_LANE_ROOT"` reclaims it as a child of I_SC_BASE_PARENT's own
+# private parent (i.e. a sibling of I_SC_BASE_PARENT itself) (I12c).
+assert "I12b: self-clobber: sibling lane-lock \${I_SC_BASE_PARENT}.lock exists (seed-warm-lane.sh:563's exec 9>\"\$LANE_LOCK\" creates it before the misuse guard refuses)" \
     bash -c '[ -n "$1" ] && [ -e "$1.lock" ]' _ "$I_SC_BASE_PARENT"
 assert "I12c: self-clobber: the sibling lane-lock is nested under \$_LANE_ROOT (so cleanup()'s rm -rf reclaims it)" \
     bash -c '[ -n "$1" ] || exit 1; case "$1" in "$2"/*) exit 0 ;; *) exit 1 ;; esac' _ "${I_SC_BASE_PARENT}.lock" "${_LANE_ROOT:-/nonexistent}"
