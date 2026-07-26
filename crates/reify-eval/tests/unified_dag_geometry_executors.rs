@@ -1572,3 +1572,137 @@ fn unified_dag_curated_fillet_on_boolean_result_consumed_builds_clean() {
     let (result, ops) = build_occt_recording(source);
     assert_one_curated_fillet_no_errors(&result, &ops);
 }
+
+/// Assert the build produced NO `Severity::Error` diagnostic, and return the
+/// per-op resolved sub-shape counts for every curated (non-empty edge list)
+/// `Fillet`/`Chamfer` op in dispatch order. An op with an EMPTY list is the
+/// all-edges back-compat path, i.e. an unresolved curated selector that silently
+/// degraded — excluded here so a caller asserting "N curated stages" cannot be
+/// satisfied by N degraded ops.
+fn curated_stage_edge_counts(result: &BuildResult, ops: &[GeometryOp]) -> Vec<usize> {
+    let errors: Vec<String> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.clone())
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "every stage of a CHAINED curated fillet/chamfer must build with NO \
+         Severity::Error geometry-op diagnostic; errors={errors:#?}"
+    );
+    ops.iter()
+        .filter_map(|op| match op {
+            GeometryOp::Fillet { edges, .. } | GeometryOp::Chamfer { edges, .. }
+                if !edges.is_empty() =>
+            {
+                Some(edges.len())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Read `S.<member>` out of the build's value map as a finite, strictly positive
+/// scalar — the volume-query cell over the final chained-fillet body.
+fn positive_scalar(result: &BuildResult, member: &str) -> f64 {
+    let id = reify_core::ValueCellId::new("S", member);
+    let value = result.values.get(&id).unwrap_or_else(|| {
+        panic!(
+            "expected S.{member} in values; cells={:?}",
+            result
+                .values
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>()
+        )
+    });
+    let Value::Scalar { si_value, .. } = value else {
+        panic!("S.{member} should be a Scalar, got {value:?}");
+    };
+    assert!(
+        si_value.is_finite() && *si_value > 0.0,
+        "S.{member} must be a finite, strictly positive volume, got {si_value}"
+    );
+    *si_value
+}
+
+/// step-5: CHAINED curated fillets — each stage is a named `let` whose parent is
+/// the PRIOR stage's result, selected by an INLINE `edges_at_height` over that
+/// same prior stage. This is the shape the repro design uses for its four
+/// rim/ledge/floor/base loops, and the one the plan flagged as "no such named
+/// sub-reference in scope" for `rim`/`ledge`.
+///
+/// The chain starts from a BOOLEAN body so both the boolean-parent and the
+/// chained-parent axes compose in one program. Heights pick real loops of the
+/// origin-centered `box(40mm,30mm,20mm)`: `+10mm` is its top face loop, `-10mm`
+/// its bottom face loop. A `volume` query over the final body pins that the
+/// chained result is a real solid AND that a whole-handle geometry query still
+/// resolves over a curated-fillet result (the mass/volume cell the CLI surfaces).
+///
+/// GREEN ON ARRIVAL, not RED-first (esc-5208-2), for the same reason as
+/// `unified_dag_curated_fillet_on_boolean_result_consumed_builds_clean`: each
+/// intermediate stage was already lowered to a resolvable `GeomRef::Sub`, and
+/// step-2's inline-selector hydration is what makes every stage resolve.
+/// Verified to be a genuine discriminator: with only the two src files reverted
+/// to the pre-fix parent `838f4ab8d4` it fails on the FIRST stage
+/// ("[edge selector evaluated to Undef]") and then cascades through the chain.
+#[test]
+fn unified_dag_chained_curated_fillets_resolve_every_stage() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping unified_dag_chained_curated_fillets_resolve_every_stage: OCCT not available"
+        );
+        return;
+    }
+    let source = r#"pub structure S {
+    let outer = box(40mm, 30mm, 20mm)
+    let inner = box(30mm, 20mm, 40mm)
+    let hollowed = difference(outer, inner)
+    let rim = fillet(hollowed, edges_at_height(hollowed, 10mm, 0.5mm), 1mm)
+    let ledge = fillet(rim, edges_at_height(rim, -10mm, 0.5mm), 1mm)
+    let v = volume(ledge)
+}"#;
+    let (result, ops) = build_occt_recording(source);
+    let counts = curated_stage_edge_counts(&result, &ops);
+    assert_eq!(
+        counts.len(),
+        2,
+        "both chained curated fillet stages must dispatch with a RESOLVED (non-empty) \
+         edge list — a stage missing here silently degraded to the all-edges path; \
+         recorded ops={ops:?}"
+    );
+    positive_scalar(&result, "v");
+}
+
+/// step-5 parity: the same chained shape driven through `chamfer`, so the
+/// inline-selector resolution is pinned for BOTH curated local-feature ops
+/// rather than only the one the repro happened to use. `modify_chamfer` reads
+/// its `edges` argument through the same pure-eval path `modify_fillet` does, so
+/// a fix that covered only `fillet` would leave this red.
+#[test]
+fn unified_dag_chained_curated_chamfers_resolve_every_stage() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping unified_dag_chained_curated_chamfers_resolve_every_stage: OCCT not available"
+        );
+        return;
+    }
+    let source = r#"pub structure S {
+    let outer = box(40mm, 30mm, 20mm)
+    let inner = box(30mm, 20mm, 40mm)
+    let hollowed = difference(outer, inner)
+    let rim = chamfer(hollowed, edges_at_height(hollowed, 10mm, 0.5mm), 1mm)
+    let ledge = chamfer(rim, edges_at_height(rim, -10mm, 0.5mm), 1mm)
+    let v = volume(ledge)
+}"#;
+    let (result, ops) = build_occt_recording(source);
+    let counts = curated_stage_edge_counts(&result, &ops);
+    assert_eq!(
+        counts.len(),
+        2,
+        "both chained curated CHAMFER stages must dispatch with a RESOLVED \
+         (non-empty) edge list; recorded ops={ops:?}"
+    );
+    positive_scalar(&result, "v");
+}
