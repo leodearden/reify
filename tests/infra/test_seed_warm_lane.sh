@@ -2583,6 +2583,22 @@ _assert_no_bare_tmp_lanes() {
 assert "R3: every run_helper_real lane dir had a private parent (never bare /tmp)" \
     _assert_no_bare_tmp_lanes
 
+# ── R4: end-to-end coverage — the structural detector must have observed the
+# two run_helper_real invocations made from inside a backgrounded ( ... ) &
+# subshell: H5d's Q_LANE8 (opener ~2253, closer ~2259) and H9's Q_LANE11
+# (opener ~2443, closer ~2449). These are the ONLY two such sites in the file
+# — every other `( ... ) &` in Block Q is a
+# `( flock -x 9 && touch ... && sleep 300 ) 9>"$LOCK" &` lock-holder, not a
+# seed run. $Q_LANE8/$Q_LANE11 are assigned in the MAIN shell (2229/2421) via
+# make_isolated_lane, so both are in scope here. Asserted against a
+# to-be-introduced observation log of every run_helper_real lane (populated by
+# a later step); until that log exists, ${_REAL_LANES_FILE:-/nonexistent}
+# defaults to a nonexistent path, so this is a plain assert FAILURE rather
+# than an unbound-variable abort under set -u. grep -Fxq matches the lane path
+# literally and as a whole line. ─────────────────────────────────────────────
+assert "R4: the structural detector observed the run_helper_real invocations made from inside a backgrounded subshell (H5d/H9)" \
+    bash -c 'grep -Fxq -- "$2" "$1" && grep -Fxq -- "$3" "$1"' _ "${_REAL_LANES_FILE:-/nonexistent}" "$Q_LANE8" "$Q_LANE11"
+
 # ── R2: positive control for R1 — proves the detector actually fires on a
 # real rename, so R1 cannot silently pass forever if seed's rename message is
 # ever reworded or moved. Redirects _SHARED_TRASH_DIR to an isolated lane's
@@ -2615,6 +2631,30 @@ assert "R2: positive control: detector recorded exactly one hit against the redi
 # Restore the real shared-path target and clear the positive-control hit
 # before R1 (already asserted above) or any later block could see it.
 _SHARED_TRASH_DIR="/tmp/.reseed-trash"
+_SHARED_TRASH_HITS=()
+
+# ── R5: mechanism guard — a recorder append made from inside a backgrounded
+# ( ... ) & subshell must be visible to the parent shell. Drives the REAL
+# _note_shared_trash_use recorder through the exact H5d/H9 shape (a subshell
+# that sets ERR_OUT and calls the recorder, backgrounded, then waited on) with
+# a synthetic ERR_OUT rather than a second real seed run: R2 above already
+# covers "real seed → detector fires" end-to-end, so R5 only needs to prove
+# storage survives a subshell. This is the durable companion to R4 — R4 could
+# go vacuous if H5d/H9 were ever un-backgrounded (it would then silently test
+# nothing while still passing), but R5 constructs its own subshell, so it
+# always exercises the subshell-visibility property directly. ──────────────
+_SHARED_TRASH_HITS=()
+(
+    ERR_OUT="Renaming non-empty /x/target → $_SHARED_TRASH_DIR before re-seed"
+    _note_shared_trash_use R5-subshell-probe
+) &
+R5_PID=$!
+wait "$R5_PID" 2>/dev/null || true
+
+assert "R5: a shared-trash-use append made inside a backgrounded subshell is visible to the parent shell" \
+    test "${#_SHARED_TRASH_HITS[@]}" -eq 1
+
+# Clear the probe's state so nothing leaks past test_summary.
 _SHARED_TRASH_HITS=()
 
 test_summary
