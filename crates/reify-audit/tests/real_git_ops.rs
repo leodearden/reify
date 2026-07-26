@@ -1,7 +1,9 @@
 //! Real-git-ops integration tests.
 //!
 //! These tests build a real temporary git repository using `tempfile::tempdir()`
-//! and `std::process::Command("git")` to validate that `RealGitOps` shells out
+//! and `common::git_env::git_cmd` — the shared `reify_audit::git_env`
+//! constructor, which yields a `git -C <dir>` with the repo-redirect
+//! environment variables stripped — to validate that `RealGitOps` shells out
 //! the correct git command with the correct argument form.  They exist because a
 //! mock cannot catch a wrong range string (e.g. `^1..^2` instead of `^1..`) —
 //! the exact production bug class this task fixes: RealGitOps was returning empty
@@ -10,7 +12,6 @@
 //! Run with: `cargo test -p reify-audit real_git_ops`
 
 use reify_audit::{GitOps, RealGitOps};
-use std::process::Command;
 use tempfile::TempDir;
 
 mod common;
@@ -33,17 +34,23 @@ fn real_git_ops_helpers_survive_ambient_hook_git_env() {
     common::git_env::replay_self_under_hook_git_env("");
 }
 
+/// Run `git <args…>` against the repository at `dir` and assert it succeeded.
+///
+/// The single entry point for every repo-targeting git invocation in this
+/// file, so the `reify_audit::git_env` sanitizing is applied in exactly one
+/// place. Without it an ambient hook `GIT_INDEX_FILE`/`GIT_DIR` overrides
+/// `-C <dir>` and the command silently operates on the parent repository.
+fn git_run(dir: &std::path::Path, args: &[&str]) {
+    let status = common::git_env::git_cmd(dir)
+        .args(args)
+        .status()
+        .expect("git command failed to spawn");
+    assert!(status.success(), "git {:?} exited {:?}", args, status.code());
+}
+
 /// Initialise a bare git repo in `dir` with identity + gpgsign disabled.
 fn git_init(dir: &std::path::Path) {
-    let run = |args: &[&str]| {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .status()
-            .expect("git command failed to spawn");
-        assert!(status.success(), "git {:?} exited {:?}", args, status.code());
-    };
+    let run = |args: &[&str]| git_run(dir, args);
     run(&["init", "--initial-branch=main"]);
     run(&["config", "user.email", "test@example.com"]);
     run(&["config", "user.name", "Test"]);
@@ -61,24 +68,14 @@ fn write_file(dir: &std::path::Path, path: &str, content: &str) {
 
 /// Stage + commit all tracked changes in `dir`.
 fn git_commit(dir: &std::path::Path, msg: &str) {
-    let run = |args: &[&str]| {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .status()
-            .expect("git command failed to spawn");
-        assert!(status.success(), "git {:?} exited {:?}", args, status.code());
-    };
+    let run = |args: &[&str]| git_run(dir, args);
     run(&["add", "."]);
     run(&["commit", "-m", msg]);
 }
 
 /// Return the SHA of HEAD in `dir`.
 fn rev_parse_head(dir: &std::path::Path) -> String {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let out = common::git_env::git_cmd(dir)
         .args(["rev-parse", "HEAD"])
         .output()
         .expect("git rev-parse HEAD");
@@ -116,15 +113,9 @@ fn diff_added_lines_in_commit_real_merge() {
     git_commit(root, "base commit A");
 
     // branch feature — append one stub line
-    let run_branch = |args: &[&str]| {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(root)
-            .args(args)
-            .status()
-            .expect("git spawn");
-        assert!(status.success(), "git {:?} failed", args);
-    };
+    // Folded onto the shared `git_run` helper rather than kept as a fourth
+    // private copy of the same closure.
+    let run_branch = |args: &[&str]| git_run(root, args);
 
     run_branch(&["checkout", "-b", "feature"]);
     // Append the stub line (line 3)
@@ -276,9 +267,7 @@ fn last_commit_for_path_real_repo() {
     git_commit(root, "add deleted.rs");
 
     // Commit 2: remove deleted.rs
-    let rm_status = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let rm_status = common::git_env::git_cmd(root)
         .args(["rm", "deleted.rs"])
         .status()
         .expect("git rm spawn");
