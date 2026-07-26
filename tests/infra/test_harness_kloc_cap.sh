@@ -376,6 +376,59 @@ assert "1b: at-boundary crate emits no FAIL line" \
     bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s1b2_out"
 
 # ===========================================================================
+# Section 1c: rule (a) — the module-dir walk RECURSES into nested subdirs and
+# counts ONLY *.rs files.
+# ===========================================================================
+echo ""
+echo "--- Section 1c: module-dir walk is recursive and .rs-only ---"
+
+_s1c_baseline="$(mktemp)"; _TMPDIRS+=("$_s1c_baseline")
+: > "$_s1c_baseline"   # empty fixture baseline (rule (a) never consults it)
+
+_s1c_dir="$(mktemp -d)"; _TMPDIRS+=("$_s1c_dir")
+mkdir -p "$_s1c_dir/harness_nested/deep"
+awk 'BEGIN { for (i = 0; i < 10; i++) print "// x" }'    > "$_s1c_dir/harness_nested.rs"
+awk 'BEGIN { for (i = 0; i < 5; i++) print "// x" }'     > "$_s1c_dir/harness_nested/a.rs"
+awk 'BEGIN { for (i = 0; i < 7; i++) print "// x" }'     > "$_s1c_dir/harness_nested/deep/b.rs"
+awk 'BEGIN { for (i = 0; i < 50000; i++) print "// x" }' > "$_s1c_dir/harness_nested/notes.txt"
+
+_s1c_tuple="$(harness_layout_unit_lines "$_s1c_dir/harness_nested.rs")"
+assert "1c: harness_layout_unit_lines recurses into nested subdirs and counts only *.rs (total=22 root=10 module=12 files=2)" \
+    test "$_s1c_tuple" = "22 10 12 2"
+
+_s1c_out="$(mktemp)"; _TMPDIRS+=("$_s1c_out")
+_s1c_rc=0
+harness_layout_violations synthcrate "$_s1c_dir" "$_s1c_baseline" 20000 \
+    > "$_s1c_out" 2>/dev/null || _s1c_rc=$?
+
+assert "1c: a 50000-line colocated non-.rs fixture file never REDs the merge gate (returns 0)" \
+    test "$_s1c_rc" -eq 0
+assert "1c: clean scan emits a structured PASS line" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS crate=synthcrate' "$_s1c_out"
+assert "1c: clean scan emits no FAIL line" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s1c_out"
+
+# Companion precision: an ORPHAN module dir (no sibling harness_orphan.rs
+# root) is not a compile unit and must be silently ignored — pins the
+# existing `for f in "$tests_dir"/*.rs` glob behavior against a future
+# rewrite that starts walking directories directly.
+_s1c_orphan_dir="$(mktemp -d)"; _TMPDIRS+=("$_s1c_orphan_dir")
+mkdir -p "$_s1c_orphan_dir/harness_orphan"
+awk 'BEGIN { for (i = 0; i < 3; i++) print "// x" }' > "$_s1c_orphan_dir/harness_orphan/x.rs"
+
+_s1c_orphan_out="$(mktemp)"; _TMPDIRS+=("$_s1c_orphan_out")
+_s1c_orphan_rc=0
+harness_layout_violations synthcrate "$_s1c_orphan_dir" "$_s1c_baseline" 20000 \
+    > "$_s1c_orphan_out" 2>/dev/null || _s1c_orphan_rc=$?
+
+assert "1c: an orphan module dir with no sibling root is silently ignored (returns 0)" \
+    test "$_s1c_orphan_rc" -eq 0
+assert "1c: orphan-dir scan emits a structured PASS line" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS crate=synthcrate' "$_s1c_orphan_out"
+assert "1c: orphan-dir scan emits no FAIL line" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s1c_orphan_out"
+
+# ===========================================================================
 # Section 2: rule (b) — an unsanctioned standalone tests/*.rs fires.
 # ===========================================================================
 echo ""
