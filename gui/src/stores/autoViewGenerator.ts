@@ -90,14 +90,35 @@ function isLetGeometryType(node: EntityTreeNode): boolean {
  * produces an explicit per-node entry rather than a fallback.
  *
  * Rule (in precedence order):
- * 0. `default_visible === false` → 'hidden' (aux body / aux-subtree hidden-by-default;
- *    takes precedence over trait_geometry so an aux realization that happens to be
- *    trait_geometry is still hidden until the user toggles it on).
+ * -1. DisplayOutput routing (#5195): if `displaySubjects` is non-empty and the
+ *     node is a realization → 'show' iff it is a subject, else 'hidden'.
+ *     Explicit authorial routing outranks every per-node default, including
+ *     `default_visible === false` on a subject.
+ * 0. `default_visible === false` → 'hidden' (aux body / aux-subtree / consumed
+ *    intermediate hidden-by-default; takes precedence over trait_geometry so an
+ *    aux realization that happens to be trait_geometry is still hidden until the
+ *    user toggles it on).
  * 1. `trait_geometry` → 'show'
  * 2. `kind === 'let'` AND `type_name` matches `\b(Solid|Surface|Curve|Geometry)\b` (anchored) → 'hidden'
  * 3. Everything else (structure, sub, param, occurrence, auto, port, …) → 'show'
+ *
+ * @param displaySubjects `entity_path`s named by the design's `DisplayOutput`
+ *   directives. Optional and, when empty, inert — a design with no
+ *   DisplayOutputs behaves exactly as before.
  */
-export function defaultVisibilityFor(node: EntityTreeNode): VisibilityState {
+export function defaultVisibilityFor(
+  node: EntityTreeNode,
+  displaySubjects?: Set<string>,
+): VisibilityState {
+  // Rule -1: explicit DisplayOutput routing (#5195). Restricted to realization
+  // nodes — those are what carry meshes and what a DisplayOutput subject names
+  // — so params/structures/subs keep their normal rules and the outline does
+  // not collapse to a single row. Deliberately ahead of rule 0: an author who
+  // names a subject explicitly gets it shown even if it is an aux or consumed
+  // intermediate.
+  if (displaySubjects && displaySubjects.size > 0 && node.kind === 'realization') {
+    return displaySubjects.has(node.entity_path) ? 'show' : 'hidden';
+  }
   // Rule 0: aux hidden-by-default (T6). Strict === false so absent/true nodes
   // fall through to the existing rules unchanged (backward-compatible).
   if (node.default_visible === false) return 'hidden';
@@ -134,11 +155,21 @@ function collectAllNodes(nodes: EntityTreeNode[]): EntityTreeNode[] {
 /**
  * Generate the `auto:default` view by walking the tree and applying
  * `defaultVisibilityFor` to each node.
+ *
+ * @param displaySubjects `entity_path`s named by the design's `DisplayOutput`
+ *   directives (#5195). When non-empty, only those realizations are shown.
+ *   Routing is deliberately scoped to THIS view: `generateAllGeometryView`
+ *   stays the see-everything escape hatch, `generatePurposeViews` keeps its own
+ *   heuristics, and the walk-up `defaultRuleFor` used by user views is
+ *   untouched so a manual view is never silently overridden.
  */
-export function generateDefaultView(tree: EntityTreeNode[]): ViewDefinition {
+export function generateDefaultView(
+  tree: EntityTreeNode[],
+  displaySubjects?: Set<string>,
+): ViewDefinition {
   const visibility: Record<string, VisibilityState> = {};
   for (const node of collectAllNodes(tree)) {
-    visibility[node.entity_path] = defaultVisibilityFor(node);
+    visibility[node.entity_path] = defaultVisibilityFor(node, displaySubjects);
   }
   return {
     id: 'auto:default',
