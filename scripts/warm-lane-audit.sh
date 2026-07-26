@@ -13,7 +13,9 @@
 #
 # For each resident worktree under --mount (lanes _lane-*/_spec-* and orphan
 # git-worktree dirs), emits: lane · role · live (LIVE|IDLE) · assigned
-# (ASSIGNED|RELEASED|QUARANTINED|UNKNOWN) · branch ·
+# (ASSIGNED|RELEASED|QUARANTINED|UNKNOWN) · pin (the RAW backing status of a
+# reserved-but-idle lane's holder, `unknown` if unresolvable, `-` when the
+# lane is not pinned) · branch ·
 # backing-task-status (terminal|non-terminal|unknown) · recoverable
 # (LANDED|PUSHED|ORPHAN) · dirty (clean|residue-only|wip) · divergent_gib ·
 # age_min · classification (LIVE|RECLAIMABLE|LEAKED|PRESERVED-OK). A trailing
@@ -139,6 +141,10 @@ Usage: $(basename "$0") [--mount DIR] [--format table|json] [--status-cmd CMD]
               this lane? Read from the orchestrator's own record at
               \$REIFY_WARM_LANE_AUDIT_STATE_DIR/<lane>.json (default:
               <mount>/.lane-state). Unresolvable => UNKNOWN, never an error.
+    pin       For a lane that is ASSIGNED but not LIVE (reserved, nothing
+              running): the RAW backing status of the task holding it, e.g.
+              pending / infra-hold / in-progress / done. \`unknown\` when it
+              cannot be resolved; \`-\` when the lane is not pinned.
 
   Options:
     --mount DIR           Warm-lane worktrees dir (default: \$REIFY_WARM_LANE_MOUNT).
@@ -413,23 +419,58 @@ _backing_task_id() {
     return 0
 }
 
-# _backing_task_status <dir>
-# Prints terminal|non-terminal|unknown (A3: a status-lookup failure/unresolved
-# id/unset STATUS_CMD always degrades to unknown, never aborts). Oracle
-# contract mirrors warm-lane-preflight.sh Check 6 / warm-lane-gc.sh
-# _backing_task_terminal byte-for-byte: non-zero exit / empty output = unknown.
-_backing_task_status() {
-    local dir="$1"
-    local id st
-    [ -n "$STATUS_CMD" ] || { printf 'unknown'; return 0; }
-    id="$(_backing_task_id "$dir")"
-    [ -n "$id" ] || { printf 'unknown'; return 0; }
-    st="$("$STATUS_CMD" "$id" 2>/dev/null | tr -d '[:space:]' || true)"
-    case "$st" in
+# _task_status_raw <id>
+# The SINGLE site in this script that invokes the status oracle. Prints the
+# whitespace-trimmed RAW status string (e.g. pending / infra-hold / done), or
+# nothing when it cannot be resolved. Oracle contract mirrors
+# warm-lane-preflight.sh Check 6 / warm-lane-gc.sh _backing_task_terminal
+# byte-for-byte: unset STATUS_CMD, empty id, non-zero exit, or empty output
+# all yield empty (A3 -- never aborts, never invents a status).
+_task_status_raw() {
+    local id="$1"
+    [ -n "$STATUS_CMD" ] || return 0
+    [ -n "$id" ] || return 0
+    # `|| true` covers the whole pipeline: under `set -o pipefail` a non-zero
+    # oracle exit fails the pipeline even though `tr` itself succeeds.
+    "$STATUS_CMD" "$id" 2>/dev/null | tr -d '[:space:]' || true
+    return 0
+}
+
+# _status_bucket <raw_status>
+# The SINGLE definition of the terminal/non-terminal/unknown mapping. Kept
+# apart from _task_status_raw so the raw string stays available to callers
+# that need full fidelity (the `pin` column) while classification consumers
+# share one predicate.
+_status_bucket() {
+    case "$1" in
         done|cancelled) printf 'terminal' ;;
-        '') printf 'unknown' ;;
-        *) printf 'non-terminal' ;;
+        '')             printf 'unknown' ;;
+        *)              printf 'non-terminal' ;;
     esac
+}
+
+# _pin_holder_id <dir>
+# The task id that HOLDS this lane's reservation. The record's `task_id` is
+# authoritative when present: a lane's branch name can be stale (or absent, on
+# a detached HEAD), whereas the reservation record is written by whoever made
+# the reservation. Falls back to the branch-derived id when the record carries
+# no usable id -- notably `"task_id": null`, which _record_scalar reports as
+# empty because it requires a quoted value.
+_pin_holder_id() {
+    local dir="$1"
+    local lane record id
+    lane="$(basename "$dir")"
+    if [ -n "$STATE_DIR" ] && [ -d "$STATE_DIR" ]; then
+        record="$STATE_DIR/$lane.json"
+        if [ -f "$record" ] && [ -r "$record" ]; then
+            id="$(_record_scalar "$record" task_id)"
+            if [ -n "$id" ]; then
+                printf '%s' "$id"
+                return 0
+            fi
+        fi
+    fi
+    _backing_task_id "$dir"
     return 0
 }
 
@@ -634,7 +675,28 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
 
         raw_branch="$(_lane_branch_raw "$entry")"
         branch="${raw_branch:-(detached)}"
-        status="$(_backing_task_status "$entry")"
+
+        # Resolve the backing task's raw status ONCE, then bucket it. The raw
+        # value is kept because the `pin` column needs full fidelity while
+        # `status` needs only the terminal/non-terminal/unknown bucket.
+        backing_id="$(_backing_task_id "$entry")"
+        backing_raw="$(_task_status_raw "$backing_id")"
+        status="$(_status_bucket "$backing_raw")"
+
+        # pin: WHO holds a reserved-but-idle lane, and in what state. Only a
+        # lane that is both ASSIGNED and not LIVE is pinned -- a live lane is
+        # in use, and a released lane is not reserved at all.
+        pin='-'
+        if [ "$assigned_state" = "ASSIGNED" ] && [ "$live" != "LIVE" ]; then
+            pin_id="$(_pin_holder_id "$entry")"
+            if [ "$pin_id" = "$backing_id" ]; then
+                pin_raw="$backing_raw"   # same task -- don't ask the oracle twice
+            else
+                pin_raw="$(_task_status_raw "$pin_id")"
+            fi
+            pin="${pin_raw:-unknown}"
+        fi
+
         recoverable="$(_recoverable "$entry" "$raw_branch")"
         dirty="$(_dirty_state "$entry")"
         divergent_bytes="$(_divergent_bytes "$entry")"
@@ -655,9 +717,9 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
             warn "lane=$name: backing-task status unknown -- cannot confirm LEAKED (would classify LEAKED if status resolved non-terminal); reported PRESERVED-OK. See HEADROOM leak_unknown."
         fi
 
-        TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} live=${live} assigned=${assigned_state} branch=${branch} status=${status} recoverable=${recoverable} dirty=${dirty} divergent_gib=${divergent_gib} age_min=${age_min} classification=${classification}
+        TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} live=${live} assigned=${assigned_state} pin=${pin} branch=${branch} status=${status} recoverable=${recoverable} dirty=${dirty} divergent_gib=${divergent_gib} age_min=${age_min} classification=${classification}
 "
-        JSON_LANE_OBJS+=("{\"lane\":\"$(_json_escape "$name")\",\"role\":\"${role}\",\"live\":\"${live}\",\"assigned\":\"${assigned_state}\",\"branch\":\"$(_json_escape "$branch")\",\"status\":\"${status}\",\"recoverable\":\"${recoverable}\",\"dirty\":\"${dirty}\",\"divergent_gib\":${divergent_gib},\"age_min\":${age_min},\"classification\":\"${classification}\"}")
+        JSON_LANE_OBJS+=("{\"lane\":\"$(_json_escape "$name")\",\"role\":\"${role}\",\"live\":\"${live}\",\"assigned\":\"${assigned_state}\",\"pin\":\"$(_json_escape "$pin")\",\"branch\":\"$(_json_escape "$branch")\",\"status\":\"${status}\",\"recoverable\":\"${recoverable}\",\"dirty\":\"${dirty}\",\"divergent_gib\":${divergent_gib},\"age_min\":${age_min},\"classification\":\"${classification}\"}")
     done
 fi
 
