@@ -14,13 +14,17 @@
 //!      type_name == "HydraulicPort" (FluidPort+MechanicalPort diamond resolves,
 //!      zero Error diagnostics).
 //!
-//! EVAL-TIME RE-DECLARATION NOTE: compile_with_stdlib provides stdlib
-//! definitions as a compilation prelude but only user templates appear in the
-//! output CompiledModule. The eval engine resolves sub/structure constructions
-//! exclusively from user templates, so every structure constructed at eval time
-//! (ThreadSpec, Frame3) must be locally re-declared in the example .ri file.
-//! This is the established m8_tolerancing.ri / ports_mechanical_thread_eval.rs
-//! workaround (PRD §8 "Eval-time sub re-declaration").
+//! and two resolution-unification α signals (boundary #18):
+//!
+//!   d. `stdlib_thread_spec_thread_form_resolves_at_eval` — ThreadAssembly.spec
+//!      carries the stdlib-only `thread_form` param, proving the construction
+//!      resolves against stdlib rather than a local shadow.
+//!   e. `example_declares_no_stdlib_shadowing_defs` — structural drift guard:
+//!      the example re-declares no structure or enum that stdlib owns.
+//!
+//! The example .ri file re-declares nothing: stdlib defs resolve through the
+//! prelude fallback at eval, so the mirrors it used to carry are gone
+//! (docs/prds/v0_6/resolution-unification.md §8 α, boundary #18).
 
 use reify_compiler::{CompiledModule, EntityKind};
 use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
@@ -156,8 +160,9 @@ fn assert_scalar_cell(
 // ─── step-1/2 (task η signal a): ThreadSpec derived-let eval readout ─────────
 
 /// PRD task-η signal (a): ThreadSpec derived lets (M6×1) resolve to ISO 68-1
-/// standards-table values via the locally-re-declared ThreadSpec + ThreadAssembly
-/// in ports_breadth.ri:
+/// standards-table values. The lets come from the stdlib ThreadSpec
+/// (crates/reify-compiler/stdlib/ports_mechanical.ri), constructed by
+/// ThreadAssembly in ports_breadth.ri:
 ///   minor_diameter = 6 − 1·1.0825 = 4.9175mm = 0.0049175m
 ///   pitch_diameter = 6 − 1·0.6495 = 5.3505mm = 0.0053505m
 ///   tap_drill      = 6 − 1        = 5mm      = 0.005m
