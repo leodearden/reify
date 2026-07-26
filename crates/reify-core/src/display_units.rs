@@ -583,4 +583,222 @@ mod tests {
             );
         }
     }
+
+    // ── §5 auto-scaling policy: rung selection (task #5236) ──────────────────
+    //
+    // PRD display-unit-preference §5a/§5b/§5e. [`DimensionLadder::auto_scaled`]
+    // is the *policy* half of the leaf: given an SI magnitude it decides which
+    // rung (if any) this ladder should render at, or that no rung fits and the
+    // §5c engineering-notation fallback applies. The *rendering* half (the
+    // magnitude string and §5c's `×10ⁿ` glyphs) lives in reify-ir beside
+    // `format_display_number`, so an auto-scaled magnitude stays numerically
+    // identical in convention to every other display magnitude.
+
+    /// Magnitudes spanning `10^lo_exp ..= 10^hi_exp`, four samples per decade.
+    ///
+    /// The exact powers of ten are deliberately included: `log10` on an exact
+    /// power of ten can land a hair below the integer, which would floor an
+    /// engineering exponent one step low — the §5c normalization invariants
+    /// below exist to catch exactly that.
+    fn magnitude_sweep(lo_exp: i32, hi_exp: i32) -> Vec<f64> {
+        let mut out = Vec::new();
+        for e in lo_exp..=hi_exp {
+            let decade = 10f64.powi(e);
+            for mantissa in [1.0, 2.5, 4.2, 7.5] {
+                out.push(mantissa * decade);
+            }
+        }
+        out
+    }
+
+    /// The label of whichever rung a choice selected (the anchor rung, for the
+    /// engineering variant), or `None` for [`AutoScaleChoice::Static`].
+    fn chosen_label<'a>(choice: &AutoScaleChoice<'a>) -> Option<&'a str> {
+        match choice {
+            AutoScaleChoice::Static => None,
+            AutoScaleChoice::Rung(u) => Some(u.label.as_str()),
+            AutoScaleChoice::Engineering { rung, .. } => Some(rung.label.as_str()),
+        }
+    }
+
+    /// §5b/§5e posture gate. A dimension structurally *excluded* from
+    /// auto-scaling (`auto_scale: None` — Angle's discrete deg/rad, and the
+    /// single-rung Force/Energy/Power ladders with no rung to hop) or
+    /// *default-OFF* (`enabled: false` — Mass, Pressure, Density) never hops a
+    /// rung, at any magnitude. §5e states this as one rule: a default-OFF
+    /// dimension "renders its static default rung's raw magnitude, full stop",
+    /// and engineering notation "does **not** apply to default-OFF dimensions
+    /// either" — so `Static` is the only admissible answer for both groups.
+    #[test]
+    fn auto_scaled_posture_gate_keeps_excluded_and_default_off_dims_static() {
+        let ladders = unit_ladders();
+        for dimension in [
+            "Angle", "Force", "Energy", "Power", "Mass", "Pressure", "Density",
+        ] {
+            let l = ladder(&ladders, dimension);
+            for si_value in magnitude_sweep(-12, 12) {
+                assert_eq!(
+                    l.auto_scaled(si_value),
+                    AutoScaleChoice::Static,
+                    "ladder {dimension:?} must not auto-scale at si_value {si_value}"
+                );
+            }
+        }
+
+        // The out-of-band magnitudes §5b's rationale names explicitly: a Mass
+        // that would otherwise flip 2.5 kg → 2500 g, a Pressure hopping
+        // Pa→kPa→MPa→GPa, and a Density well past the band's top.
+        for (dimension, si_value) in [
+            ("Mass", 2.5e-6),
+            ("Pressure", 1.01325e5),
+            ("Density", 7850.0),
+        ] {
+            assert_eq!(
+                ladder(&ladders, dimension).auto_scaled(si_value),
+                AutoScaleChoice::Static,
+                "{dimension:?} is default-OFF/excluded; {si_value} must not trigger a hop"
+            );
+        }
+    }
+
+    /// §5a rung hops. A default-ON dimension picks the rung that keeps
+    /// `|mantissa|` inside the `1 ≤ |mantissa| < 1000` band. `0.08 m` needs no
+    /// hop at all (mm already reads 80), while larger and smaller magnitudes
+    /// walk the ladder. The Volume case is the PRD's own G1 figure
+    /// (`0.007 m³ → 7 L`) — reached here at §6(1) rung 3 with no `@display`
+    /// pin whatsoever, which is what §5e's unpinned rule buys.
+    #[test]
+    fn auto_scaled_hops_to_the_rung_that_lands_in_band() {
+        let ladders = unit_ladders();
+
+        let length = ladder(&ladders, "Length");
+        assert_eq!(
+            length.auto_scaled(0.08),
+            AutoScaleChoice::Rung(unit(length, "mm")),
+            "0.08 m already reads 80 mm — in band, so no hop"
+        );
+        assert_eq!(
+            length.auto_scaled(5.0),
+            AutoScaleChoice::Rung(unit(length, "cm")),
+            "5.0 m is 5000 mm (out of band) but 500 cm — one hop"
+        );
+        assert_eq!(
+            length.auto_scaled(50.0),
+            AutoScaleChoice::Rung(unit(length, "m")),
+            "50.0 m is 50000 mm / 5000 cm (both out of band) but 50 m — two hops"
+        );
+
+        let area = ladder(&ladders, "Area");
+        assert_eq!(
+            area.auto_scaled(0.0045),
+            AutoScaleChoice::Rung(unit(area, "cm\u{00B2}")),
+            "0.0045 m² is 4500 mm² (out of band) but 45 cm²"
+        );
+
+        let volume = ladder(&ladders, "Volume");
+        assert_eq!(
+            volume.auto_scaled(0.007),
+            AutoScaleChoice::Rung(unit(volume, "L")),
+            "PRD G1: 0.007 m³ is 7000000 mm³ / 7000 cm³ (both out of band) but 7 L"
+        );
+    }
+
+    /// §5b stability rationale, expressed as the tie-break: when several
+    /// eligible rungs are simultaneously in band, the winner is the one
+    /// *nearest the ladder's default rung index* — auto-scaling moves as few
+    /// rungs as possible off the dimension's familiar default. `0.5 m` is both
+    /// `500 mm` and `50 cm`; a mm-default CAD DSL must read it as 500 mm.
+    #[test]
+    fn auto_scaled_tie_break_prefers_the_rung_nearest_the_default() {
+        let ladders = unit_ladders();
+        let length = ladder(&ladders, "Length");
+
+        // Both mm (500) and cm (50) are in [1, 1000); mm is the default rung.
+        assert_eq!(
+            length.auto_scaled(0.5),
+            AutoScaleChoice::Rung(unit(length, "mm"))
+        );
+        // Both cm (500) and m (5) are in band; cm is one hop from the default,
+        // m is two — so the nearer rung wins even when neither is the default.
+        assert_eq!(
+            length.auto_scaled(5.0),
+            AutoScaleChoice::Rung(unit(length, "cm"))
+        );
+    }
+
+    /// §5a's "one SI-prefix step": a candidate rung is eligible only when its
+    /// `si_scale` is a power-of-ten multiple of the default rung's. Length's
+    /// `in` rung (`si_scale 0.0254`, ratio 25.4 to the mm default) is the one
+    /// exclusion in the whole registry — every other rung across all seven
+    /// multi-rung ladders is already a decimal sibling of its default. Without
+    /// the filter, a magnitude-driven rule could render an unpinned *metric*
+    /// length in inches: a unit-*system* flip, strictly worse than the
+    /// magnitude flip §5b's rationale is written to avoid.
+    ///
+    /// The filter is belt-and-braces here rather than the sole guard: under the
+    /// minimal-hop tie-break `in` sits last in candidate order, and its in-band
+    /// SI span `[0.0254, 25.4)` is fully subsumed by mm ∪ cm ∪ m
+    /// (`[1e-3, 1000)`), so it would be unreachable by subsumption too. Pinning
+    /// it explicitly keeps the §5a eligibility rule normative in code rather
+    /// than an accident of the current rung ordering.
+    #[test]
+    fn auto_scaled_never_selects_the_non_decimal_inch_rung() {
+        let ladders = unit_ladders();
+        let length = ladder(&ladders, "Length");
+
+        for si_value in magnitude_sweep(-4, 4) {
+            for signed in [si_value, -si_value] {
+                let choice = length.auto_scaled(signed);
+                assert_ne!(
+                    chosen_label(&choice),
+                    Some("in"),
+                    "auto-scaling must never flip an unpinned metric Length into inches \
+                     (si_value {signed}, choice {choice:?})"
+                );
+            }
+        }
+    }
+
+    /// Guards that must degrade to [`AutoScaleChoice::Static`] — i.e. to
+    /// today's static-default-rung rendering — rather than hop or reach §5c's
+    /// engineering notation. Zero is the load-bearing case: it must render as
+    /// `0 mm`, never `0×10⁰ mm`.
+    #[test]
+    fn auto_scaled_zero_and_non_finite_magnitudes_stay_static() {
+        let ladders = unit_ladders();
+        for dimension in ["Length", "Area", "Volume"] {
+            let l = ladder(&ladders, dimension);
+            for si_value in [0.0, -0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                assert_eq!(
+                    l.auto_scaled(si_value),
+                    AutoScaleChoice::Static,
+                    "ladder {dimension:?} must stay static at si_value {si_value}"
+                );
+            }
+        }
+    }
+
+    /// §5a's band is stated on `|mantissa|`, so a negative magnitude selects
+    /// exactly the rung its absolute value would.
+    #[test]
+    fn auto_scaled_selects_on_absolute_magnitude() {
+        let ladders = unit_ladders();
+        let area = ladder(&ladders, "Area");
+        assert_eq!(
+            area.auto_scaled(-0.0045),
+            AutoScaleChoice::Rung(unit(area, "cm\u{00B2}")),
+            "the band is on |mantissa|, so -0.0045 m² picks the same rung as +0.0045"
+        );
+
+        for dimension in ["Length", "Area", "Volume"] {
+            let l = ladder(&ladders, dimension);
+            for si_value in magnitude_sweep(-6, 6) {
+                assert_eq!(
+                    chosen_label(&l.auto_scaled(si_value)),
+                    chosen_label(&l.auto_scaled(-si_value)),
+                    "ladder {dimension:?} picked different rungs for ±{si_value}"
+                );
+            }
+        }
+    }
 }
