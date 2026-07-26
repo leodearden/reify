@@ -333,7 +333,7 @@ fi
 # Test 6: attempt-0 sidecar STAMP (plan-shape, mirroring test_reify_bin_freshness
 # Check 18). On a full attempt-0 merge run the plan must emit a line writing the
 # reify-verify-attempt.json sidecar (tree_oid via `git rev-parse HEAD:`,
-# profiles, timestamp), ordered BEFORE the first nextest pass (but still after
+# planned_profiles, timestamp), ordered BEFORE the first nextest pass (but still after
 # the pre-build poles: lint/compile wave, gui block, run_all.sh) so the pin is
 # written on a RED attempt-0 too — task 5548, PRD verify-retry-failed-only α2.
 # The sidecar asserts "the warm target/ was built FROM this tree", NOT "this
@@ -357,11 +357,11 @@ assert "merge attempt-0: a plan line writes reify-verify-attempt.json via 'git r
     bash -c 'printf "%s\n" "$1" | grep -F "reify-verify-attempt.json" | grep -qF "git rev-parse HEAD:"' \
     _ "$MERGE_PLAN"
 
-assert "merge attempt-0: sidecar stamp line references tree_oid, profiles, timestamp" \
+assert "merge attempt-0: sidecar stamp line references tree_oid, planned_profiles, timestamp" \
     bash -c '
         L=$(printf "%s\n" "$1" | grep -F "reify-verify-attempt.json" | head -1)
         printf "%s\n" "$L" | grep -qF "tree_oid" && \
-        printf "%s\n" "$L" | grep -qF "profiles" && \
+        printf "%s\n" "$L" | grep -qF "planned_profiles" && \
         printf "%s\n" "$L" | grep -qF "timestamp"
     ' _ "$MERGE_PLAN"
 
@@ -390,40 +390,72 @@ assert "merge attempt-0: sidecar stamp index > run_all.sh index (still after the
 
 # ---------------------------------------------------------------------------
 # Test 6b: RED-ATTEMPT-0 SURVIVAL (executed, not just positional). Rebuilds the
-# real merge plan with REIFY_VERIFY_ATTEMPT_SIDECAR pointed at a sandbox so the
-# build-time-baked path in the emitted stamp line writes there; extracts, IN
-# PLAN ORDER (never hardcoded — derived from the plan's own grep -n indices),
-# the {stamp line, first `cargo nextest run` line} sub-sequence; replays them
-# in a sandbox CWD through a minimal first-failure-exit loop mirroring the real
-# executor (verify.sh's `for _cmd in "${PLAN[@]}"; do eval "$_cmd" || exit
-# "$_rc"; done`), substituting the nextest line with `false` as a simulated RED
-# test pole. Proves the pin is USABLE after a red pole, not merely early: at
-# base the plan order is [nextest, stamp], so this replay hits the substituted
-# `false` first and never reaches the stamp — RED for a structural reason, not
-# a cosmetic one. GIT_DIR is pointed at this worktree's real gitdir so `git
+# real merge plan with REIFY_VERIFY_ATTEMPT_SIDECAR pointed at a sandbox (named
+# distinctly from the real default filename — see the RED_SIDECAR comment
+# below — so this actually exercises the override) so the build-time-baked
+# path in the emitted stamp line writes there; extracts, IN PLAN ORDER (never
+# hardcoded — derived from the plan's own grep -n indices), the {stamp line,
+# first `cargo nextest run` line} sub-sequence; replays them in a sandbox CWD
+# through a minimal first-failure-exit loop mirroring the real executor's
+# per-command dispatch (verify.sh:2442-2480): the real loop runs most plan
+# lines — including this stamp line — through `reaper_run_in_pgroup "$_cmd"`
+# (bare `eval` there is reserved for `_VERIFY_NODE_BG_PID` lines only). This
+# replay uses bare `eval` as an acceptable stand-in: the stamp line is a
+# side-effect-only file write with no process-group semantics to exercise.
+# The nextest line is substituted with `false` as a simulated RED test pole.
+# Proves the pin is USABLE after a red pole, not merely early: at base the
+# plan order is [nextest, stamp], so this replay hits the substituted `false`
+# first and never reaches the stamp — RED for a structural reason, not a
+# cosmetic one. GIT_DIR is pointed at this worktree's real gitdir so `git
 # rev-parse HEAD:` in the replayed stamp line returns the REAL tree OID (not
 # the `|| echo unknown` sentinel) from a sandbox CWD with no .git of its own —
 # that is what makes the written pin actually usable by the drift guard, which
 # the last two asserts confirm by feeding it back through the real
 # (unmodified) guard at scripts/verify.sh:~1684-1714.
-# Guarded on NEXTEST_AVAILABLE + both indices present, so a nextest-less host
-# skips the case rather than FAILing it.
+# The stamp-line fixture itself (RED_STAMP_IDX) is asserted UNCONDITIONALLY:
+# the stamp is emitted independently of nextest availability, so a missing
+# stamp line is a loud FAIL, not a silent skip. Only the replay and its
+# downstream assertions are guarded on NEXTEST_AVAILABLE/RED_NEXTEST_IDX,
+# since a nextest-less host legitimately emits `cargo test` instead of `cargo
+# nextest run ` — that branch echoes an explicit skip note rather than
+# asserting nothing.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Test 6b: a RED attempt-0 (simulated failing test pole) still leaves a usable tree-OID pin ---"
 
 RED_DIR="$_TMP/red"
 mkdir -p "$RED_DIR/target"
-RED_SIDECAR="$RED_DIR/target/reify-verify-attempt.json"
+# Deliberately NOT named reify-verify-attempt.json: that is verify.sh's own
+# DEFAULT relative path, and $RED_DIR is also the replay's CWD below, so a
+# same-named override would resolve to the exact same file the default would
+# use — making this fixture unable to distinguish "the override was honored"
+# from "the override was silently ignored and the writer fell back to its
+# default". A distinctly-named sidecar under target/ (still satisfying the
+# `test -d target` guard) closes that gap.
+RED_SIDECAR="$RED_DIR/target/red-pin.json"
 
 RED_PLAN="$(REIFY_VERIFY_ATTEMPT_SIDECAR="$RED_SIDECAR" \
     DF_VERIFY_ROLE=merge bash "$VERIFY" all --scope all --print-plan 2>/dev/null | grep -v '^#')" || true
 
-RED_STAMP_IDX="$(printf '%s\n' "$RED_PLAN" | grep -nF "reify-verify-attempt.json" | head -1 | cut -d: -f1)" || true
-RED_STAMP_LINE="$(printf '%s\n' "$RED_PLAN" | grep -F "reify-verify-attempt.json" | head -1)" || true
+# Anchor on "tree_oid" (part of the printf's own format string) rather than the
+# sidecar filename: RED_SIDECAR is deliberately renamed off the default above,
+# so the plan's redirect target no longer contains the literal
+# "reify-verify-attempt.json" substring that MERGE_PLAN's extraction (above)
+# relies on. "tree_oid" uniquely identifies the stamp line regardless of the
+# configured sidecar path (verified: exactly one match in both the raw and
+# comment-stripped plan).
+RED_STAMP_IDX="$(printf '%s\n' "$RED_PLAN" | grep -nF "tree_oid" | head -1 | cut -d: -f1)" || true
+RED_STAMP_LINE="$(printf '%s\n' "$RED_PLAN" | grep -F "tree_oid" | head -1)" || true
 RED_NEXTEST_IDX="$(printf '%s\n' "$RED_PLAN" | grep -nE "(^| )cargo nextest run " | head -1 | cut -d: -f1)" || true
 
-if [ "$NEXTEST_AVAILABLE" -eq 1 ] && [ -n "$RED_STAMP_IDX" ] && [ -n "$RED_NEXTEST_IDX" ]; then
+# The stamp-line fixture is unconditional: it is emitted independently of
+# nextest availability, so its absence is a real FAIL, not a silent skip
+# (contrast the nextest-gated block below, which legitimately skips on a
+# nextest-less host).
+assert "red-attempt-0 fixture: RED_PLAN carries a stamp line" \
+    bash -c '[ -n "$1" ]' _ "$RED_STAMP_IDX"
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ] && [ -n "$RED_NEXTEST_IDX" ]; then
     # Order the replay sequence from the plan's OWN indices — never hardcode
     # which comes first, since that is exactly the property under test.
     if [ "$RED_STAMP_IDX" -lt "$RED_NEXTEST_IDX" ]; then
@@ -473,6 +505,8 @@ if [ "$NEXTEST_AVAILABLE" -eq 1 ] && [ -n "$RED_STAMP_IDX" ] && [ -n "$RED_NEXTE
     assert "red-attempt-0: retry against the red-written pin applies the subset (debug nextest line carries test(=$ID1))" \
         bash -c 'printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -v -- " --release" | grep -qF -- "test(=$2)"' \
         _ "$LOOP_PLAN" "$ID1"
+else
+    echo "(skipped Test 6b: nextest unavailable)"
 fi
 
 # (b) A retry (scope=failed_only) merge run must NOT re-stamp (DF re-runs a full

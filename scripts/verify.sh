@@ -218,13 +218,22 @@
 #                                  attempt-0 sidecar's tree_oid, else the subset is
 #                                  refused (tree-pin soundness, §5 INV-1).
 #   REIFY_VERIFY_ATTEMPT_SIDECAR        — attempt-0 sidecar path (default
-#                                  target/reify-verify-attempt.json). Stamped as the
-#                                  FIRST line of add_test_passes on a full
-#                                  DF_VERIFY_ROLE=merge attempt-0 (NOT on a
-#                                  failed_only retry) — whether that attempt-0 goes
-#                                  on to PASS or FAIL; records {tree_oid, profiles,
-#                                  timestamp} of the tree target/ was built FROM
-#                                  (task 5548). Survives a warm-lane reseed.
+#                                  target/reify-verify-attempt.json). Stamped as
+#                                  the FIRST line of add_test_passes, i.e. once
+#                                  attempt-0 REACHES THE TEST PHASE: survives a
+#                                  red psi-gate/compile-gate/nextest pole, but NOT
+#                                  a red clippy/gui/run_all.sh pole (those precede
+#                                  add_test_passes and still exit before the
+#                                  stamp). Stamped on a full DF_VERIFY_ROLE=merge
+#                                  attempt-0 (NOT on a failed_only retry); records
+#                                  {tree_oid, planned_profiles, timestamp} of the
+#                                  tree target/ was built FROM (task 5548).
+#                                  planned_profiles is the build-time-intended
+#                                  ${PROFILES[*]}, NOT proof any of them executed
+#                                  or passed (the eligibility guard reads tree_oid
+#                                  only) — a red attempt-0 can name a profile whose
+#                                  nextest pass never ran. Survives a warm-lane
+#                                  reseed.
 #   REIFY_VERIFY_RETRY_MAX_SUBSET       — tunable subset-size ceiling (default 5000,
 #                                  a heuristic comfortably below the full-suite size,
 #                                  §11): a subset larger than this is refused as a
@@ -1678,9 +1687,13 @@ add_test_passes() {
     # subset against the warm _merge-verify target/. Emitted as the FIRST
     # plan line of add_test_passes — after build_plan's lint/compile wave, the
     # gui block, and the merge pre-build/run_all.sh poles, but BEFORE every
-    # test pole (psi-gate, compile-gate, every nextest pass) — so the pin is
-    # written on a RED attempt-0 too, not only a fully green one (task 5548,
-    # PRD verify-retry-failed-only α2). The old tail position (after
+    # test pole (psi-gate, compile-gate, every nextest pass) — so the pin
+    # survives a RED psi-gate/compile-gate/nextest pole too, not only a fully
+    # green attempt-0 (task 5548, PRD verify-retry-failed-only α2). It does NOT
+    # survive a red clippy/gui/run_all.sh pole: those precede add_test_passes,
+    # so the plan executor's first-failure exit means such a red attempt-0
+    # never reaches this line either — stamped once attempt-0 reaches the test
+    # phase, not on every possible red. The old tail position (after
     # @@SEMAPHORE_RELEASE@@) was unreachable on any retry-eligible run: the
     # plan executor exits on the first failing command, and a narrowed retry
     # by definition follows a RED attempt-0. target/ is already built from
@@ -1695,7 +1708,7 @@ add_test_passes() {
     # reseed (under target/, git clean -xfd -e target). A retry (scope=failed_only)
     # deliberately does NOT re-stamp — DF re-runs a full attempt-0 for a new tree.
     if [ "$DF_VERIFY_ROLE" = "merge" ] && [ "${REIFY_VERIFY_RETRY_SCOPE:-}" != "failed_only" ]; then
-        add "if test -d target; then printf '{\"tree_oid\":\"%s\",\"profiles\":\"%s\",\"timestamp\":\"%s\"}\\n' \"\$(git rev-parse HEAD: 2>/dev/null || echo unknown)\" \"${PROFILES[*]}\" \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" > \"${_ATTEMPT_SIDECAR_PATH}\" 2>/dev/null || true; fi"
+        add "if test -d target; then printf '{\"tree_oid\":\"%s\",\"planned_profiles\":\"%s\",\"timestamp\":\"%s\"}\\n' \"\$(git rev-parse HEAD: 2>/dev/null || echo unknown)\" \"${PROFILES[*]}\" \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" > \"${_ATTEMPT_SIDECAR_PATH}\" 2>/dev/null || true; fi"
     fi
 
     # PSI gate: must pass before any cargo test work starts.
