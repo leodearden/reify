@@ -56,10 +56,7 @@ pub enum SketchEntity {
         end: SketchEntityId,
     },
     /// A full circle. `radius` is a seed radius in metres.
-    Circle {
-        center: SketchEntityId,
-        radius: f64,
-    },
+    Circle { center: SketchEntityId, radius: f64 },
     /// An arc of a circle, defined by its center and two endpoints.
     ///
     /// The two endpoints are equidistant from the center by construction —
@@ -126,15 +123,9 @@ pub enum SketchConstraint {
         b: SketchEntityId,
     },
     /// A circle or arc has diameter `value` metres.
-    Diameter {
-        circle: SketchEntityId,
-        value: f64,
-    },
+    Diameter { circle: SketchEntityId, value: f64 },
     /// A circle or arc has radius `value` metres.
-    Radius {
-        circle: SketchEntityId,
-        value: f64,
-    },
+    Radius { circle: SketchEntityId, value: f64 },
     /// Two circles/arcs share a radius.
     EqualRadius {
         a: SketchEntityId,
