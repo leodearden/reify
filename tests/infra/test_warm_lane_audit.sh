@@ -221,16 +221,16 @@ touch "$B_MOUNT/_lane-free.lock"
 run_helper --mount "$B_MOUNT"
 
 assert "B1: exit 0" test "$RC" -eq 0
-assert "B2: _lane-live row shows ASSIGNED" \
-    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-live .*assigned=ASSIGNED"' _ "$OUT"
+assert "B2: _lane-live row shows live=LIVE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-live .*live=LIVE"' _ "$OUT"
 assert "B3: _lane-live classification LIVE" \
     bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-live .*classification=LIVE"' _ "$OUT"
-assert "B4: _lane-free row shows FREE" \
-    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-free .*assigned=FREE"' _ "$OUT"
+assert "B4: _lane-free row shows live=IDLE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-free .*live=IDLE"' _ "$OUT"
 assert "B5: HEADROOM line shows resident=2" \
     bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "resident=2"' _ "$OUT"
-assert "B6: HEADROOM line shows assigned=1" \
-    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "assigned=1"' _ "$OUT"
+assert "B6: HEADROOM line shows live=1" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -qE "(^| )live=1( |$)"' _ "$OUT"
 assert "B7: HEADROOM line shows free=1" \
     bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "free=1"' _ "$OUT"
 
@@ -531,7 +531,7 @@ import json, sys
 data = json.load(sys.stdin)
 lanes = data["lanes"] if isinstance(data, dict) and "lanes" in data else data
 assert isinstance(lanes, list) and len(lanes) == 2, lanes
-expected_keys = {"lane", "role", "assigned", "branch", "status", "recoverable",
+expected_keys = {"lane", "role", "live", "branch", "status", "recoverable",
                   "dirty", "divergent_gib", "age_min", "classification"}
 for obj in lanes:
     assert expected_keys.issubset(obj.keys()), obj
@@ -625,8 +625,8 @@ assert "I5: _lane-leaked classification LEAKED" \
     bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-leaked .*classification=LEAKED"' _ "$OUT"
 assert "I6: HEADROOM resident=4" \
     bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "resident=4"' _ "$OUT"
-assert "I7: HEADROOM assigned=1" \
-    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "assigned=1"' _ "$OUT"
+assert "I7: HEADROOM live=1" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -qE "(^| )live=1( |$)"' _ "$OUT"
 assert "I8: HEADROOM free=3" \
     bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "free=3"' _ "$OUT"
 assert "I9: HEADROOM reclaimable=2" \

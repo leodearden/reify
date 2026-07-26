@@ -12,14 +12,22 @@
 #       [--status-cmd CMD] [--stale-age-min N] [--main-ref REF] [--safety N]
 #
 # For each resident worktree under --mount (lanes _lane-*/_spec-* and orphan
-# git-worktree dirs), emits: lane · role · ASSIGNED|FREE · branch ·
+# git-worktree dirs), emits: lane · role · live (LIVE|IDLE) · branch ·
 # backing-task-status (terminal|non-terminal|unknown) · recoverable
 # (LANDED|PUSHED|ORPHAN) · dirty (clean|residue-only|wip) · divergent_gib ·
 # age_min · classification (LIVE|RECLAIMABLE|LEAKED|PRESERVED-OK). A trailing
-# HEADROOM line summarizes: resident/assigned/free/reclaimable/leaked counts
-# + leak_unknown (FREE/stale/ORPHAN lanes whose LEAKED verdict could NOT be
+# HEADROOM line summarizes: resident/live/free/reclaimable/leaked counts
+# + leak_unknown (idle/stale/ORPHAN lanes whose LEAKED verdict could NOT be
 # confirmed because the backing-task status is unknown -- see A3)
 # + divergent_gib/free_gib/budget_gib.
+#
+# `live` is a LIVENESS column, and only that: it answers "is a consumer
+# PROCESS running and holding this lane's exclusive flock right now?". It is
+# NOT the orchestrator's assignment state -- a lane can be reserved for a task
+# with no process running against it (see the `assigned` column). Conflating
+# the two is what produced the 2026-07-22 pool misread, where lanes the
+# orchestrator had reserved were reported as free because no consumer happened
+# to hold their lock.
 #
 # Options (env defaults shown):
 #   --mount DIR           Warm-lane worktrees dir (env: REIFY_WARM_LANE_MOUNT;
@@ -62,11 +70,11 @@
 #        --stale-age-min/--safety.
 #
 # Invariants:
-#   A1 — read-only: never mutates a lane (no reset/rm/reclaim); the ASSIGNED/
-#        FREE probe opens an EXISTING <dir>.lock read-only and never creates
+#   A1 — read-only: never mutates a lane (no reset/rm/reclaim); the LIVE/IDLE
+#        probe opens an EXISTING <dir>.lock read-only and never creates
 #        a missing one.
 #   A2 — the flock -n -s (shared) probe is non-blocking and released
-#        immediately. A shared request still correctly detects ASSIGNED (a
+#        immediately. A shared request still correctly detects LIVE (a
 #        live consumer's exclusive flock blocks a new shared request too),
 #        but never contends with another concurrent reader (e.g. a second
 #        audit run) — only a genuine writer's non-blocking attempt could
@@ -103,6 +111,10 @@ Usage: $(basename "$0") [--mount DIR] [--format table|json] [--status-cmd CMD]
 
   Standalone, timer-friendly audit/telemetry report for the warm-lane CoW
   pool. Read-only: never mutates a lane; never gates dispatch/reclaim/merge.
+
+  Per-lane columns:
+    live      LIVE|IDLE — is a consumer PROCESS holding the lane's exclusive
+              flock right now? Liveness only; NOT the assignment state.
 
   Options:
     --mount DIR           Warm-lane worktrees dir (default: \$REIFY_WARM_LANE_MOUNT).
@@ -209,11 +221,18 @@ _lane_role() {
     esac
 }
 
-# ── helper: non-mutating ASSIGNED/FREE probe (A1/A2/DD1) ──────────────────────
+# ── helper: non-mutating LIVE/IDLE liveness probe (A1/A2/DD1) ─────────────────
+# Measures LIVENESS and nothing else: is a consumer PROCESS running and holding
+# this lane's exclusive flock at this instant? This is NOT the orchestrator's
+# assignment state -- a lane reserved for a task whose consumer is not running
+# probes IDLE while remaining very much assigned (see _lane_assigned_state).
+# Reporting this probe under the key `assigned=` is precisely the category
+# error that produced the 2026-07-22 misread; the two are separate columns.
+#
 # Opens an EXISTING <dir>.lock read-only and attempts a non-blocking SHARED
-# flock on that read-only fd: success (lock acquired) => FREE, released
+# flock on that read-only fd: success (lock acquired) => IDLE, released
 # immediately; failure (blocked by a live consumer's exclusive flock) =>
-# ASSIGNED. A missing lock file is FREE and is NEVER created (no `>`-open/
+# LIVE. A missing lock file is IDLE and is NEVER created (no `>`-open/
 # truncation, no `flock <file> <cmd>` convenience form -- both would mutate
 # the pool).
 #
@@ -222,21 +241,21 @@ _lane_role() {
 # (mirroring warm-lane-gc.sh's own `flock -n <lock>` reclaim-eligibility
 # check, which defaults to exclusive because IT proceeds to a real mutation
 # on success -- this script never does). A shared request still correctly
-# fails against a live consumer's exclusive lock, so ASSIGNED detection is
+# fails against a live consumer's exclusive lock, so LIVE detection is
 # unchanged; but two readers (e.g. two concurrent audit runs) never contend
 # with each other. Only a genuine writer's non-blocking attempt could still
 # be transiently perturbed, and only for the instant this fd is open (A2) --
 # an unavoidable characteristic of any momentary lock-state probe, and
 # benign for this script's advisory-only output.
-_probe_assigned() {
+_probe_live() {
     local lock="$1"
-    local result='FREE'
+    local result='IDLE'
     if [ -e "$lock" ]; then
         if exec 7<"$lock" 2>/dev/null; then
             if flock -n -s 7 2>/dev/null; then
                 flock -u 7 2>/dev/null || true
             else
-                result='ASSIGNED'
+                result='LIVE'
             fi
             exec 7<&- 2>/dev/null || true
         fi
@@ -432,13 +451,13 @@ _divergent_bytes() {
 }
 
 # ── classification (monotonically refined across the walk's build-out) ───────
-# _classify assigned status recoverable dirty age_min
+# _classify live status recoverable dirty age_min
 _classify() {
-    local assigned="$1" status="$2" recoverable="$3" dirty="$4" age_min="$5"
-    if [ "$assigned" = "ASSIGNED" ]; then
+    local live="$1" status="$2" recoverable="$3" dirty="$4" age_min="$5"
+    if [ "$live" = "LIVE" ]; then
         printf 'LIVE'; return 0
     fi
-    # FREE lane.
+    # Idle lane.
     if [ "$status" = "terminal" ] || [ "$recoverable" = "LANDED" ] || [ "$recoverable" = "PUSHED" ] || [ "$dirty" = "residue-only" ]; then
         printf 'RECLAIMABLE'; return 0
     fi
@@ -456,7 +475,7 @@ _classify() {
 # ── leak-unknown suspect (A3 observability) ───────────────────────────────────
 # _is_leak_unknown_suspect status recoverable age_min
 # Mirrors _classify's LEAKED predicate exactly, substituting status=="unknown"
-# for status=="non-terminal": true iff the ONLY reason a FREE lane isn't
+# for status=="non-terminal": true iff the ONLY reason an idle lane isn't
 # classified LEAKED is that its backing-task status could not be resolved.
 # Never changes the reported classification -- PRESERVED-OK remains A3's
 # conservative default -- this purely flags the ambiguity (stderr warning +
@@ -484,7 +503,7 @@ _json_escape() {
 
 # ── resident walk ──────────────────────────────────────────────────────────────
 RESIDENT=0
-ASSIGNED_COUNT=0
+LIVE_COUNT=0
 FREE_COUNT=0
 RECLAIMABLE_COUNT=0
 LEAKED_COUNT=0
@@ -505,9 +524,9 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
         RESIDENT=$((RESIDENT + 1))
         role="$(_lane_role "$name")"
 
-        assigned="$(_probe_assigned "$MOUNT/$name.lock")"
-        if [ "$assigned" = "ASSIGNED" ]; then
-            ASSIGNED_COUNT=$((ASSIGNED_COUNT + 1))
+        live="$(_probe_live "$MOUNT/$name.lock")"
+        if [ "$live" = "LIVE" ]; then
+            LIVE_COUNT=$((LIVE_COUNT + 1))
         else
             FREE_COUNT=$((FREE_COUNT + 1))
         fi
@@ -522,7 +541,7 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
         age_min="$(_age_min "$entry")"
         DIVERGENT_TOTAL_BYTES=$((DIVERGENT_TOTAL_BYTES + divergent_bytes))
 
-        classification="$(_classify "$assigned" "$status" "$recoverable" "$dirty" "$age_min")"
+        classification="$(_classify "$live" "$status" "$recoverable" "$dirty" "$age_min")"
         case "$classification" in
             RECLAIMABLE) RECLAIMABLE_COUNT=$((RECLAIMABLE_COUNT + 1)) ;;
             LEAKED) LEAKED_COUNT=$((LEAKED_COUNT + 1)) ;;
@@ -535,9 +554,9 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
             warn "lane=$name: backing-task status unknown -- cannot confirm LEAKED (would classify LEAKED if status resolved non-terminal); reported PRESERVED-OK. See HEADROOM leak_unknown."
         fi
 
-        TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} assigned=${assigned} branch=${branch} status=${status} recoverable=${recoverable} dirty=${dirty} divergent_gib=${divergent_gib} age_min=${age_min} classification=${classification}
+        TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} live=${live} branch=${branch} status=${status} recoverable=${recoverable} dirty=${dirty} divergent_gib=${divergent_gib} age_min=${age_min} classification=${classification}
 "
-        JSON_LANE_OBJS+=("{\"lane\":\"$(_json_escape "$name")\",\"role\":\"${role}\",\"assigned\":\"${assigned}\",\"branch\":\"$(_json_escape "$branch")\",\"status\":\"${status}\",\"recoverable\":\"${recoverable}\",\"dirty\":\"${dirty}\",\"divergent_gib\":${divergent_gib},\"age_min\":${age_min},\"classification\":\"${classification}\"}")
+        JSON_LANE_OBJS+=("{\"lane\":\"$(_json_escape "$name")\",\"role\":\"${role}\",\"live\":\"${live}\",\"branch\":\"$(_json_escape "$branch")\",\"status\":\"${status}\",\"recoverable\":\"${recoverable}\",\"dirty\":\"${dirty}\",\"divergent_gib\":${divergent_gib},\"age_min\":${age_min},\"classification\":\"${classification}\"}")
     done
 fi
 
@@ -574,12 +593,12 @@ if [ "$FORMAT" = "json" ]; then
         lanes_json="${JSON_LANE_OBJS[*]}"
         unset IFS
     fi
-    printf '{"lanes":[%s],"headroom":{"resident":%d,"assigned":%d,"free":%d,"reclaimable":%d,"leaked":%d,"leak_unknown":%d,"divergent_gib":%d,"free_gib":%d,"budget_gib":%d}}\n' \
-        "$lanes_json" "$RESIDENT" "$ASSIGNED_COUNT" "$FREE_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB"
+    printf '{"lanes":[%s],"headroom":{"resident":%d,"live":%d,"free":%d,"reclaimable":%d,"leaked":%d,"leak_unknown":%d,"divergent_gib":%d,"free_gib":%d,"budget_gib":%d}}\n' \
+        "$lanes_json" "$RESIDENT" "$LIVE_COUNT" "$FREE_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB"
 else
     printf '%s' "$TABLE_OUT"
-    printf 'HEADROOM resident=%d assigned=%d free=%d reclaimable=%d leaked=%d leak_unknown=%d divergent_gib=%d free_gib=%d budget_gib=%d\n' \
-        "$RESIDENT" "$ASSIGNED_COUNT" "$FREE_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB"
+    printf 'HEADROOM resident=%d live=%d free=%d reclaimable=%d leaked=%d leak_unknown=%d divergent_gib=%d free_gib=%d budget_gib=%d\n' \
+        "$RESIDENT" "$LIVE_COUNT" "$FREE_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB"
 fi
 
 exit 0
