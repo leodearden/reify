@@ -419,9 +419,9 @@ RED_SIDECAR="$RED_DIR/target/reify-verify-attempt.json"
 RED_PLAN="$(REIFY_VERIFY_ATTEMPT_SIDECAR="$RED_SIDECAR" \
     DF_VERIFY_ROLE=merge bash "$VERIFY" all --scope all --print-plan 2>/dev/null | grep -v '^#')" || true
 
-RED_STAMP_IDX="$(printf '%s\n' "$RED_PLAN" | grep -nF "reify-verify-attempt.json" | head -1 | cut -d: -f1)"
-RED_STAMP_LINE="$(printf '%s\n' "$RED_PLAN" | grep -F "reify-verify-attempt.json" | head -1)"
-RED_NEXTEST_IDX="$(printf '%s\n' "$RED_PLAN" | grep -nE "(^| )cargo nextest run " | head -1 | cut -d: -f1)"
+RED_STAMP_IDX="$(printf '%s\n' "$RED_PLAN" | grep -nF "reify-verify-attempt.json" | head -1 | cut -d: -f1)" || true
+RED_STAMP_LINE="$(printf '%s\n' "$RED_PLAN" | grep -F "reify-verify-attempt.json" | head -1)" || true
+RED_NEXTEST_IDX="$(printf '%s\n' "$RED_PLAN" | grep -nE "(^| )cargo nextest run " | head -1 | cut -d: -f1)" || true
 
 if [ "$NEXTEST_AVAILABLE" -eq 1 ] && [ -n "$RED_STAMP_IDX" ] && [ -n "$RED_NEXTEST_IDX" ]; then
     # Order the replay sequence from the plan's OWN indices — never hardcode
@@ -537,7 +537,7 @@ PLAN_FOLD="$(REIFY_VERIFY_RETRY_SCOPE=failed_only \
     REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER" \
     DF_VERIFY_ROLE=merge REIFY_GATE_EXCLUDE_HEAVY=1 \
     bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
-NLINE_FOLD="$(printf '%s\n' "$PLAN_FOLD" | grep -E "(^| )cargo nextest run " | grep -v -- " --release" | head -1)"
+NLINE_FOLD="$(printf '%s\n' "$PLAN_FOLD" | grep -E "(^| )cargo nextest run " | grep -v -- " --release" | head -1)" || true
 
 if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
     # (a) ANTI-UNION CRUX: exactly ONE ` -E ` on the folded line, never two.
@@ -569,7 +569,7 @@ fi
 # gate path is not folded).
 PLAN_INACTIVE="$(DF_VERIFY_ROLE=merge REIFY_GATE_EXCLUDE_HEAVY=1 \
     bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
-NLINE_INACTIVE="$(printf '%s\n' "$PLAN_INACTIVE" | grep -E "(^| )cargo nextest run " | grep -v -- " --release" | head -1)"
+NLINE_INACTIVE="$(printf '%s\n' "$PLAN_INACTIVE" | grep -E "(^| )cargo nextest run " | grep -v -- " --release" | head -1)" || true
 
 if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
     assert "regression: merge+heavy, retry INACTIVE — line keeps standalone $NOT_DQ fragment" \
@@ -589,7 +589,7 @@ PLAN_OFFLINE="$(REIFY_VERIFY_RETRY_SCOPE=failed_only \
     REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER" \
     DF_VERIFY_ROLE=offline \
     bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
-NLINE_OFFLINE="$(printf '%s\n' "$PLAN_OFFLINE" | grep -E "(^| )cargo nextest run " | head -1)"
+NLINE_OFFLINE="$(printf '%s\n' "$PLAN_OFFLINE" | grep -E "(^| )cargo nextest run " | head -1)" || true
 
 if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
     assert "offline fold: nextest line has EXACTLY ONE ' -E ' (positive heavy select folded with subset)" \
