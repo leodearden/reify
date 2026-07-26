@@ -131,6 +131,73 @@ _wait_for_reader_lock() {
     return 1
 }
 
+# _hold_lane_lock <mount> <lane>
+# Marks <lane> LIVE: creates <mount>/<lane>.lock, backgrounds a consumer that
+# takes the EXCLUSIVE flock, touches its READY marker and then parks, and
+# blocks until _wait_for_reader_lock observes that marker -- so the flock is
+# causally guaranteed held at the caller's next statement (technique R,
+# docs/prds/infra-test-wallclock-deflake.md; never a fixed `sleep`).
+#
+# Publishes the background pid in the GLOBAL `LANE_LOCK_PID` rather than on
+# stdout deliberately: a `pid=$(_hold_lane_lock ...)` command substitution
+# would run the body in a subshell, so the `_BGPIDS` registration below would
+# be discarded and the 300s sleeper would outlive the suite's cleanup trap.
+# Callers that need a per-lane handle copy LANE_LOCK_PID immediately.
+LANE_LOCK_PID=""
+_hold_lane_lock() {
+    local mount="$1" lane="$2"
+    local lock="$mount/$lane.lock"
+    local ready="$lock.ready-marker"
+    touch "$lock"
+    ( flock -x 9 && touch "$ready" && sleep 300 ) 9>"$lock" &
+    LANE_LOCK_PID=$!
+    _BGPIDS+=("$LANE_LOCK_PID")
+    _wait_for_reader_lock "$ready" 30
+}
+
+# make_lane_state <mount> <lane> <state> [task_id] [branch]
+# Writes <mount>/.lane-state/<lane>.json in the EXACT byte shape dark-factory's
+# LaneRecord.to_json() emits (orchestrator/src/orchestrator/lane_lifecycle.py:
+# json.dumps(to_dict(), indent=2) -- dataclass field order state/task_id/title/
+# branch/seeded_from_sha/updated_at, unquoted `null` for a None field, and NO
+# trailing newline). Creates the state dir on first use.
+#
+# An omitted/empty task_id or branch is emitted as JSON `null`, not `""` --
+# that is the real producer's shape for an unassigned lane, and it is the
+# fixture the record-vs-branch pin fallback is asserted against.
+#
+# updated_at is a FIXED timestamp, not `date`: no fixture in this suite may
+# depend on wall-clock (DD5); the audit never reads this field.
+make_lane_state() {
+    local mount="$1" lane="$2" state="$3" task_id="${4:-}" branch="${5:-}"
+    local state_dir="$mount/.lane-state"
+    mkdir -p "$state_dir"
+    # Plain `if`, not `[ -n .. ] && ..`: an AND-list whose left side fails
+    # yields a non-zero list status, which `set -e` may treat as a function
+    # failure at the call site. Never worth the subtlety in fixture code.
+    local task_json='null' branch_json='null' title_json='null'
+    if [ -n "$task_id" ]; then
+        task_json="\"$task_id\""
+        title_json="\"lane fixture task $task_id\""
+    fi
+    if [ -n "$branch" ]; then
+        branch_json="\"$branch\""
+    fi
+    printf '{\n  "state": "%s",\n  "task_id": %s,\n  "title": %s,\n  "branch": %s,\n  "seeded_from_sha": null,\n  "updated_at": "2026-07-26T12:43:10.704531+00:00"\n}' \
+        "$state" "$task_json" "$title_json" "$branch_json" \
+        > "$state_dir/$lane.json"
+}
+
+# make_lane_state_raw <mount> <lane> <text>
+# Writes arbitrary bytes to <mount>/.lane-state/<lane>.json -- the corrupt- and
+# compact-record cases, which by construction cannot go through make_lane_state.
+make_lane_state_raw() {
+    local mount="$1" lane="$2" text="$3"
+    local state_dir="$mount/.lane-state"
+    mkdir -p "$state_dir"
+    printf '%s' "$text" > "$state_dir/$lane.json"
+}
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block B — ASSIGNED/FREE probe + LIVE + headroom counts
 # ──────────────────────────────────────────────────────────────────────────────
@@ -144,12 +211,8 @@ _TMPDIRS+=("$B_MOUNT")
 # Causal READY-marker handshake instead of a fixed sleep (de-flake convention,
 # tests/infra/test_warm_lane_gc.sh Block I6 precedent).
 make_lane "$B_MOUNT/_lane-live"
-touch "$B_MOUNT/_lane-live.lock"
-B_READY="$B_MOUNT/_lane-live.lock.ready-marker"
-( flock -x 9 && touch "$B_READY" && sleep 300 ) 9>"$B_MOUNT/_lane-live.lock" &
-B_LOCK_PID=$!
-_BGPIDS+=("$B_LOCK_PID")
-_wait_for_reader_lock "$B_READY" 30
+_hold_lane_lock "$B_MOUNT" "_lane-live"
+B_LOCK_PID="$LANE_LOCK_PID"
 
 # _lane-free: unheld, pre-created lock file (FREE).
 make_lane "$B_MOUNT/_lane-free"
@@ -519,12 +582,8 @@ printf '900 done\n901 pending\n902 pending\n' > "$I_MAP"
 # (1) _lane-live: a live consumer holds the lane's exclusive flock (causal
 # READY-marker handshake, no fixed sleep) -> ASSIGNED -> LIVE.
 make_lane "$I_MOUNT/_lane-live"
-touch "$I_MOUNT/_lane-live.lock"
-I_READY="$I_MOUNT/_lane-live.lock.ready-marker"
-( flock -x 9 && touch "$I_READY" && sleep 300 ) 9>"$I_MOUNT/_lane-live.lock" &
-I_LOCK_PID=$!
-_BGPIDS+=("$I_LOCK_PID")
-_wait_for_reader_lock "$I_READY" 30
+_hold_lane_lock "$I_MOUNT" "_lane-live"
+I_LOCK_PID="$LANE_LOCK_PID"
 
 # (2) _lane-done: FREE, task/900, oracle=done, ahead-of-main -> RECLAIMABLE
 # (via terminal status).
@@ -652,12 +711,8 @@ printf '910 done\n911 pending\n912 pending\n' > "$J_MAP"
 # target/ directory on one lane (none of Block I's fixtures had one), so the
 # content/size/mtime manifest check is exercised for real, not vacuously.
 make_lane "$J_MOUNT/_lane-live"
-touch "$J_MOUNT/_lane-live.lock"
-J_READY="$J_MOUNT/_lane-live.lock.ready-marker"
-( flock -x 9 && touch "$J_READY" && sleep 300 ) 9>"$J_MOUNT/_lane-live.lock" &
-J_LOCK_PID=$!
-_BGPIDS+=("$J_LOCK_PID")
-_wait_for_reader_lock "$J_READY" 30
+_hold_lane_lock "$J_MOUNT" "_lane-live"
+J_LOCK_PID="$LANE_LOCK_PID"
 
 make_lane "$J_MOUNT/_lane-done" "task/910"
 _add_ahead_commit "$J_MOUNT/_lane-done"
