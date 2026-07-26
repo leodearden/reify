@@ -1267,24 +1267,29 @@ fn cmd_build(args: &[String]) -> ExitCode {
     }
 }
 
-/// Register all FEA/buckling/modal and shell-extract compute trampolines on `engine`.
+/// Register the production compute-trampoline bundle on `engine`: the
+/// FEA/buckling/modal compute fns, the shell-extract compute fn, and the
+/// mesh-morph producer.
 ///
-/// This is the single source of truth for the trampoline set shared between
-/// `cmd_build` (solver-free, calls this directly) and [`configured_eval_engine`]
-/// (full solver).  Adding a new trampoline here automatically covers both paths and
-/// prevents silent drift between them.
+/// Delegates to
+/// [`Engine::register_production_compute_fns`][reify_eval::Engine::register_production_compute_fns]
+/// (task 5072 / PRD `compute-fea-hardening.md` A1), which is now the single
+/// source of truth for the trampoline set (INV-FEA-1) — adding a new
+/// trampoline there automatically covers every caller. This wrapper survives
+/// as the CLI-local alias that names the `MorphRegistration::Enabled` choice
+/// and keeps both call sites — `cmd_build` (solver-free, calls this directly)
+/// and [`configured_eval_engine`] (full solver) — one-line, with no drift
+/// between them.
+///
+/// The morph producer is dormant-safe (task 4744 β): the dispatch only
+/// attempts a morph when a prior source mesh carries a `BoundaryAssociation`,
+/// which today requires an explicit boundary demand — a plain `reify build`
+/// never triggers the (#4876-crashing) attributed path. Every non-success
+/// morph honestly falls back to a remesh.
 fn register_compute_trampolines(engine: &mut reify_eval::Engine) {
-    reify_eval::compute_targets::register_compute_fns(engine);
-    reify_eval::register_shell_extract_compute_fns(engine);
-    // Task 4744 β (step-22): install the mesh-morph producer so a warm
-    // VolumeMesh rebuild can deform the prior mesh in place instead of remeshing
-    // from scratch. Dormant-safe: the dispatch only attempts a morph when a
-    // prior source mesh carries a `BoundaryAssociation`, which today requires an
-    // explicit boundary demand — a plain `reify build` never triggers the
-    // (#4876-crashing) attributed path. Every non-success morph honestly falls
-    // back to a remesh. Registered here (the shared trampoline hook) so both the
-    // `cmd_build` geometry path and `configured_eval_engine` get it.
-    reify_mesh_morph::register_morph_producer(engine);
+    engine.register_production_compute_fns(reify_eval::MorphRegistration::Enabled(
+        reify_mesh_morph::register_morph_producer,
+    ));
 }
 
 /// Configure a freshly-constructed [`reify_eval::Engine`] for use in `cmd_eval`:
