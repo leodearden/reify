@@ -4354,3 +4354,49 @@ mod persistent_cache_cli_wiring_tests {
         );
     }
 }
+
+// ── Task 5073 (PRD compute-fea-hardening.md task A2): characterization safety
+// net for `register_compute_trampolines` ────────────────────────────────────
+
+/// Characterization test for `register_compute_trampolines` (task 5073 / PRD
+/// `compute-fea-hardening.md` task A2).
+///
+/// This is a *refactor safety net*, not a red-bar test: this task migrates
+/// `register_compute_trampolines` to delegate to the canonical
+/// `Engine::register_production_compute_fns` bundler (task 5072 / PRD A1),
+/// which runs the identical three registrars in the identical order as the
+/// pre-migration hand-rolled body — so this test is GREEN both before and
+/// after that migration. Its job is to fail if a bundle leg (the
+/// FEA/buckling/modal compute fns, the shell-extract compute fn, or the
+/// mesh-morph producer) is accidentally dropped during the body swap.
+#[cfg(test)]
+mod compute_trampoline_registration_tests {
+    use super::*;
+
+    /// `register_compute_trampolines` must install all three production
+    /// trampoline legs: the FEA/buckling/modal compute fns
+    /// (`register_compute_fns`), the shell-extract compute fn
+    /// (`register_shell_extract_compute_fns`), and the mesh-morph producer
+    /// (`reify_mesh_morph::register_morph_producer`).
+    #[test]
+    fn cli_trampolines_install_full_production_bundle() {
+        let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+        register_compute_trampolines(&mut engine);
+
+        assert!(
+            engine.compute_dispatch("solver::elastic_static").is_some(),
+            "register_compute_trampolines must register the FEA/buckling/modal \
+             compute fns (register_compute_fns leg)"
+        );
+        assert!(
+            engine.compute_dispatch("shell-extract::extract").is_some(),
+            "register_compute_trampolines must register the shell-extract \
+             compute fn (register_shell_extract_compute_fns leg)"
+        );
+        assert!(
+            engine.morph_producer().is_some(),
+            "register_compute_trampolines must install the mesh-morph producer \
+             (reify_mesh_morph::register_morph_producer leg)"
+        );
+    }
+}
