@@ -47,7 +47,15 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
     let source =
         std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
 
-    let parsed = reify_syntax::parse(&source, ModulePath::single(module_name));
+    // Use prelude-aware parsing so `Type.Variant` references against stdlib
+    // enums (e.g. `MaterialCondition.MMC`) resolve as `EnumAccess` nodes — see
+    // `parse_with_stdlib` for details.  This matches the `compile_with_stdlib`
+    // companion below, and is what `reify check` / `reify eval` already do, so
+    // these fixtures parse in-process exactly as the product parses them.
+    // Required once a fixture stops re-declaring the stdlib enum locally: the
+    // bare `reify_syntax::parse` would degrade `MaterialCondition.MMC` to a
+    // `MemberAccess`.  Precedent: crates/reify-compiler/tests/examples_smoke.rs.
+    let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single(module_name));
     assert!(
         parsed.errors.is_empty(),
         "parse errors in {}: {:?}",
@@ -501,6 +509,154 @@ fn m8_tolerancing_smoke() {
     assert!(
         !result.values.is_empty(),
         "m8_tolerancing.ri eval should produce non-empty values"
+    );
+}
+
+// ── task #5582 step-1: stdlib Position/Flatness reach eval (RED) ─────────────
+
+/// Sorted `member` list of every cell `result` produced for `entity` — used to
+/// make a missing-cell panic read as "mirror reintroduced" rather than
+/// "cell renamed".
+fn members_of(result: &reify_eval::EvalResult, entity: &str) -> Vec<String> {
+    let mut members: Vec<String> = result
+        .values
+        .iter()
+        .filter(|(id, _)| id.entity == entity)
+        .map(|(id, _)| id.member.clone())
+        .collect();
+    members.sort();
+    members
+}
+
+/// m8_tolerancing.ri's `Flange` subs must resolve against the STDLIB
+/// `Position` / `Flatness` / `SurfaceFinish` / `DimensionalTolerance`
+/// definitions, not against local eval-time mirrors.
+///
+/// The mirrors in the fixture carry NO trait bound, so three cells the stdlib
+/// types own are missing while they are present:
+///   - `Flange.pos.zone_shape` — stdlib `Position : LocationTolerance` declares
+///     `param zone_shape : ZoneShape = ZoneShape.Cylindrical`
+///     (crates/reify-compiler/stdlib/tolerancing.ri:168).
+///   - `Flange.pos.nominal_zone` / `Flange.flat.nominal_zone` — the
+///     `GeometricTolerance` trait's
+///     `let nominal_zone = effective_tolerance_zone(tolerance_value, material_condition, 0mm)`
+///     (tolerancing.ri:56), inherited by `Position` and `Flatness`.
+///
+/// The local `structure def`s additionally become module ROOTS, so today the
+/// eval result carries spurious standalone `Position.*` / `Flatness.*` /
+/// `DimensionalTolerance.*` cells (the latter feeding an INDETERMINATE
+/// `DimensionalTolerance#constraint[0]`). Those must be gone.
+///
+/// The `Flange.dim_tol` limits are pinned here too so the strip is proven
+/// VALUE-PRESERVING, not merely non-erroring.
+///
+/// RED before the mirrors are stripped from examples/m8_tolerancing.ri.
+#[test]
+fn m8_tolerancing_resolves_stdlib_position_and_flatness() {
+    let result = eval_ri_file(PATH_TOLERANCING, "m8_tolerancing");
+
+    // ── (i) Flange.pos.zone_shape = ZoneShape::Cylindrical ───────────────────
+    let zone_shape = result
+        .values
+        .get(&ValueCellId::new("Flange.pos", "zone_shape"))
+        .unwrap_or_else(|| {
+            panic!(
+                "Flange.pos.zone_shape missing — stdlib `Position : LocationTolerance` \
+                 (stdlib/tolerancing.ri:168) owns it, so a local `structure def Position` \
+                 mirror has been reintroduced into examples/m8_tolerancing.ri. \
+                 Flange.pos members produced: {:?}",
+                members_of(&result, "Flange.pos")
+            )
+        });
+    match zone_shape {
+        Value::Enum { variant, .. } => assert_eq!(
+            variant, "Cylindrical",
+            "Flange.pos.zone_shape should be ZoneShape::Cylindrical, got {variant}"
+        ),
+        other => panic!("Flange.pos.zone_shape should be Value::Enum, got {other:?}"),
+    }
+
+    // ── (ii) nominal_zone from the GeometricTolerance trait `let` ────────────
+    for (entity, expected) in [("Flange.pos", 1e-4_f64), ("Flange.flat", 5e-5_f64)] {
+        let cell = result
+            .values
+            .get(&ValueCellId::new(entity, "nominal_zone"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "{entity}.nominal_zone missing — it is the `GeometricTolerance` trait's \
+                     `let nominal_zone = effective_tolerance_zone(...)` \
+                     (stdlib/tolerancing.ri:56), which a local mirror without the trait bound \
+                     suppresses. A mirror has been reintroduced into \
+                     examples/m8_tolerancing.ri. {entity} members produced: {:?}",
+                    members_of(&result, entity)
+                )
+            });
+        match cell {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!(
+                    (si_value - expected).abs() < 1e-12,
+                    "{entity}.nominal_zone should be {expected} m, got {si_value}"
+                );
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::LENGTH,
+                    "{entity}.nominal_zone should have LENGTH dimension"
+                );
+            }
+            other => panic!("{entity}.nominal_zone should be Value::Scalar, got {other:?}"),
+        }
+    }
+
+    // ── (iii) no standalone mirror ROOT entities ─────────────────────────────
+    let mirror_roots = [
+        "Position",
+        "Flatness",
+        "DimensionalTolerance",
+        "SurfaceFinish",
+    ];
+    let stray: Vec<String> = mirror_roots
+        .iter()
+        .flat_map(|entity| {
+            members_of(&result, entity)
+                .into_iter()
+                .map(move |m| format!("{entity}.{m}"))
+        })
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "examples/m8_tolerancing.ri produced standalone stdlib-mirror root cells {stray:?} — \
+         these exist only when the file re-declares the stdlib `structure def`s locally \
+         (each mirror becomes its own module root, which is what leaves \
+         DimensionalTolerance#constraint[0] INDETERMINATE)"
+    );
+
+    // ── (iv) the strip is value-preserving: dim_tol limits unchanged ─────────
+    assert_scalar_cell(
+        &result,
+        "Flange.dim_tol",
+        "upper_limit",
+        0.050_100_000_000_000_006,
+        1e-12,
+        DimensionVector::LENGTH,
+    );
+    assert_scalar_cell(
+        &result,
+        "Flange.dim_tol",
+        "lower_limit",
+        0.0499,
+        1e-12,
+        DimensionVector::LENGTH,
+    );
+    assert_scalar_cell(
+        &result,
+        "Flange.dim_tol",
+        "tolerance_band",
+        0.0002,
+        1e-12,
+        DimensionVector::LENGTH,
     );
 }
 
