@@ -2563,16 +2563,10 @@ impl Value {
                 source,
                 ..
             } => format!("Field<{}, {}>({:?})", domain_type, codomain_type, source),
-            // Aggregate variants (task 5339): compute the whole-aggregate
-            // reference once here — this is the only place it is seeded — and
-            // hand off to `format_display_rel`, which owns every aggregate's
-            // rendering and threads that same reference through nesting.
-            // Keeping one delegating arm instead of four inlined copies means
-            // adding an aggregate variant is a two-site edit
-            // (`aggregate_magnitude` + `format_display_rel`), and a variant
-            // reachable here but missing there can only ever under-snap via
-            // `format_display_rel`'s `_` fallback, never recompute a smaller
-            // local reference.
+            // Aggregate variants (task 5339): the only place the
+            // whole-aggregate reference is seeded. One delegating arm, not
+            // four inlined copies, so `format_display_rel` solely owns
+            // aggregate rendering and cannot drift from it.
             Value::Tensor(_) | Value::Point(_) | Value::Vector(_) | Value::Matrix(_) => {
                 self.format_display_rel(aggregate_magnitude(self))
             }
