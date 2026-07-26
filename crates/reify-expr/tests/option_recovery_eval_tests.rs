@@ -489,6 +489,67 @@ fn is_none_undef_returns_undef() {
     );
 }
 
+// ── task 5410 (PRD ζ / BT10): stdlib-compiled is_some / is_none guards ───────
+
+/// End-to-end: `is_some(none)` compiled with the real stdlib must evaluate to
+/// `false`.
+///
+/// DISCRIMINATION: `option_recovery.ri` ships
+/// `pub fn is_some<T>(o: Option<T>) -> Bool { true }` — a typecheck-only
+/// placeholder that HARDCODES `true` and never inspects `o`. With the
+/// intercept removed this call therefore returns `true` and this assert
+/// inverts.
+///
+/// The `none` subject is what makes the fixture discriminating: a `some`
+/// subject would coincide with the placeholder's hardcoded `true`.
+///
+/// Note a bare `none` DOES type-infer here — `is_some` has a single type
+/// parameter and no competing constraint — even though the same bare `none`
+/// fails to infer in the two-argument `or_else`/`map_or` calls, where a second
+/// argument pins a conflicting `T`.
+#[test]
+fn e2e_is_some_none_with_stdlib() {
+    let module =
+        reify_test_support::compile_source_with_stdlib("structure S { let v = is_some(none) }");
+    let expr = cell_expr_stdlib(&module, "v");
+    let values = ValueMap::new();
+    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    assert_eq!(
+        reify_expr::eval_expr(expr, &ctx),
+        Value::Bool(false),
+        "e2e: is_some(none) compiled via stdlib must evaluate to false — \
+         the placeholder .ri body hardcodes true"
+    );
+}
+
+/// End-to-end: `is_none(none)` compiled with the real stdlib must evaluate to
+/// `true`.
+///
+/// DISCRIMINATION: `option_recovery.ri` ships
+/// `pub fn is_none<T>(o: Option<T>) -> Bool { false }` — a typecheck-only
+/// placeholder that HARDCODES `false` and never inspects `o`. With the
+/// intercept removed this call therefore returns `false` and this assert
+/// inverts.
+///
+/// Shares the `none` subject with `e2e_is_some_none_with_stdlib` above: one
+/// subject discriminates BOTH predicates, because the two placeholder
+/// constants are the exact inverses of the correct answers for a `none`. A
+/// `some` subject would coincide with both constants instead.
+#[test]
+fn e2e_is_none_none_with_stdlib() {
+    let module =
+        reify_test_support::compile_source_with_stdlib("structure S { let v = is_none(none) }");
+    let expr = cell_expr_stdlib(&module, "v");
+    let values = ValueMap::new();
+    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    assert_eq!(
+        reify_expr::eval_expr(expr, &ctx),
+        Value::Bool(true),
+        "e2e: is_none(none) compiled via stdlib must evaluate to true — \
+         the placeholder .ri body hardcodes false"
+    );
+}
+
 // ── step-9: get_or (Map<K,V> miss recovery) ───────────────────────────────────
 //
 // get_or(m, key, dflt): key present -> m[key]; key absent -> dflt (§9.2.6
