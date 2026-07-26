@@ -140,14 +140,19 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
 }
 
 /// `git init` + add + commit every file under `dir` (identity + gpgsign
-/// disabled, mirroring `tests/real_git_ops.rs`). After this, `git -C <dir>
-/// ls-files` returns every fixture path so `RealGitOps::ls_files` enumerates
-/// them for the PTODO structural sweep.
+/// disabled). After this, `git -C <dir> ls-files` returns every fixture path
+/// so `RealGitOps::ls_files` enumerates them for the PTODO structural sweep.
+///
+/// Builds every invocation through `common::git_env::git_cmd`, as does
+/// `tests/real_git_ops.rs` — both now share the single
+/// `reify_audit::git_env` constructor. That is load-bearing, not tidiness:
+/// under a git hook, `GIT_INDEX_FILE` (a *temporary* index, especially for
+/// `git commit --only`) and `GIT_DIR` are exported into the whole process
+/// tree and override `-C <tempdir>`, so a bare `git -C <tempdir> add .`
+/// writes the PARENT repository's index instead of this one.
 fn git_init_commit_all(dir: &Path) {
     let run = |args: &[&str]| {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(dir)
+        let status = common::git_env::git_cmd(dir)
             .args(args)
             .status()
             .expect("git command failed to spawn");
@@ -1565,9 +1570,12 @@ mod cli {
         // The stale `index.lock` makes an unsanitized index WRITE fail loudly
         // as well as wrongly, so a regression cannot hide as a silent no-op.
         let decoy = tempfile::tempdir().expect("create decoy tempdir");
-        let decoy_status = Command::new("git")
-            .arg("-C")
-            .arg(decoy.path())
+        // Via the shared constructor like every other repo-targeting call:
+        // this test is itself re-run under an ambient hook env by
+        // `hook_env_replay_of_ptodo_git_fixture_tests`, and a bare
+        // `Command::new("git")` here would re-init THAT harness's decoy
+        // instead of creating this one.
+        let decoy_status = common::git_env::git_cmd(decoy.path())
             .args(["init", "--initial-branch=main"])
             .status()
             .expect("git init decoy failed to spawn");
