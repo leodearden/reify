@@ -992,8 +992,19 @@ echo "--- Block FC: fail-closed wiring (B5/B2/preflight) ---"
 # ── FC fixture: a base dir whose .warm-base-meta records a DIFFERENT RUSTFLAGS
 FC_BASE_PARENT="$(mktemp -d /tmp/test-warm-pool-FC-base-XXXXXX)"
 FC_BASE="$FC_BASE_PARENT/target"
-FC_LANE="$(mktemp -d /tmp/test-warm-pool-FC-lane-XXXXXX)"
-_TMPDIRS+=("$FC_BASE_PARENT" "$FC_LANE")
+# FC_LANE/FC_LANE2 are LANE_DIR args passed to run_helper -> SEED_SCRIPT, whose
+# --fresh-checkout acquire-time lane-lock flocks the SIBLING path
+# "${LANE_DIR}.lock" (scripts/seed-warm-lane.sh) -- a path OUTSIDE whatever
+# directory is registered in _TMPDIRS. A bare `mktemp -d /tmp/...` registered
+# directly (as this used to do) leaves that sibling .lock unreachable by
+# `rm -rf` on the registered dir, leaking it into machine-shared /tmp on every
+# green run (task #5628; same shape task #5609 fixed for
+# tests/infra/test_seed_warm_lane.sh). Nesting each lane under a private
+# per-run parent -- and registering ONLY the parent -- makes the sibling lock
+# a child of the registered dir, so `rm -rf "$FC_LANE_ROOT"` reclaims it.
+FC_LANE_ROOT="$(mktemp -d /tmp/test-warm-pool-FC-lane-root-XXXXXX)"
+_TMPDIRS+=("$FC_BASE_PARENT" "$FC_LANE_ROOT")
+FC_LANE="$(mktemp -d "$FC_LANE_ROOT/FC-lane-XXXXXX")"
 mkdir -p "$FC_BASE"
 cat > "$FC_BASE_PARENT/.warm-base-meta" <<'SIDECAR_EOF'
 RUSTFLAGS=original-flags
@@ -1012,8 +1023,10 @@ assert "FC1: cp never invoked on RUSTFLAGS mismatch (guard fires first)" \
     bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
 
 # ── FC2: B2 — reflink-failure → non-zero exit with actionable message
-FC_LANE2="$(mktemp -d /tmp/test-warm-pool-FC-lane2-XXXXXX)"
-_TMPDIRS+=("$FC_LANE2")
+# Nested under FC_LANE_ROOT (see FC_LANE comment above) — NOT registered as
+# its own _TMPDIRS entry — so its sibling ${FC_LANE2}.lock is reclaimed by
+# the existing `rm -rf "$FC_LANE_ROOT"` rather than leaking into bare /tmp.
+FC_LANE2="$(mktemp -d "$FC_LANE_ROOT/FC-lane2-XXXXXX")"
 reset_calls
 RUSTFLAGS="original-flags" REIFY_TEST_REFLINK_OK=0 \
     run_helper "$FC_BASE" "$FC_LANE2" --fresh-checkout
