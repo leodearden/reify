@@ -5281,10 +5281,10 @@ fn collect_consumed_sibling_names(template: &reify_compiler::TopologyTemplate) -
             if id.entity != cell.id.entity || id.member == cell.id.member {
                 continue;
             }
-            if let Some((&member, &owner)) = cells_by_member.get_key_value(id.member.as_str()) {
-                if owner == id.entity {
-                    consumed.insert(member);
-                }
+            if let Some((&member, &owner)) = cells_by_member.get_key_value(id.member.as_str())
+                && owner == id.entity
+            {
+                consumed.insert(member);
             }
         }
     }
@@ -5421,9 +5421,10 @@ pub(crate) fn build_template_node(
             Some(n) => consumed.contains(n),
         }
     };
-    let apply_consumed_rule = template.realizations.iter().any(|r| {
-        !(aux_ancestor || r.is_aux || is_consumed_intermediate(r.name.as_deref()))
-    });
+    let apply_consumed_rule = template
+        .realizations
+        .iter()
+        .any(|r| !(aux_ancestor || r.is_aux || is_consumed_intermediate(r.name.as_deref())));
 
     for real in &template.realizations {
         let real_path = format!("{}#realization[{}]", entity_path, real.id.index);
