@@ -20,18 +20,32 @@ mod common;
 // Shared real-repo helpers
 // -----------------------------------------------------------------------
 
-/// Every test in this file builds a real temporary repository, so every test
-/// in this file is exposed to an ambient hook git environment — where
-/// `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` are exported into the whole
-/// process tree and override `-C <tempdir>`.
+/// Every test in this file — including the two injected-spawn-failure retry
+/// tests, which build a real repo before injecting — calls `git_init` and
+/// `git_commit`. So every test here is exposed to an ambient hook git
+/// environment, where `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` are exported
+/// into the whole process tree and override `-C <tempdir>`.
 ///
-/// An empty filter therefore re-runs EVERY test here inside a child process
-/// that has the poison ambient, which is the real hook condition rather than
-/// a simulation of it. The helper's `REIFY_AUDIT_HOOK_ENV_REPLAY` guard stops
-/// this test recursing when the child reaches it.
+/// That measured fact is why the filter is empty: it re-runs EVERY test here
+/// inside a child process that has the poison ambient, which is the real hook
+/// condition rather than a simulation of it, and no test in the selection is
+/// along for the ride. The helper's `REIFY_AUDIT_HOOK_ENV_REPLAY` guard stops
+/// this test recursing when the child reaches it, and it is itself counted in
+/// the selection (it passes trivially in the child, via that guard).
+///
+/// A caveat for whoever reads a failure here: an empty filter means a future
+/// test added to this file is re-run too, and a failure of *that* test would
+/// surface both in the clean parent run and again inside this one. The
+/// helper's assertion message says so — always diagnose against the clean
+/// parent run first.
+///
+/// The floor of 8 is today's selection (7 real tests + this one). It exists
+/// because libtest exits 0 on a zero-match filter; with an empty filter that
+/// cannot happen today, but the floor also catches a test being deleted or
+/// moved out of this binary, which would silently shrink the proof.
 #[test]
 fn real_git_ops_helpers_survive_ambient_hook_git_env() {
-    common::git_env::replay_self_under_hook_git_env("");
+    common::git_env::replay_self_under_hook_git_env(&[""], 8);
 }
 
 /// Run `git <args…>` against the repository at `dir` and assert it succeeded.

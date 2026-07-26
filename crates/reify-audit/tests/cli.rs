@@ -1566,45 +1566,28 @@ mod cli {
         let tasks_file = write_tasks_json(aux.path(), &[]);
         let runs_db = write_empty_runs_db(aux.path());
 
-        // A decoy repo standing in for the parent repo a hook would point at.
-        // The stale `index.lock` makes an unsanitized index WRITE fail loudly
-        // as well as wrongly, so a regression cannot hide as a silent no-op.
-        let decoy = tempfile::tempdir().expect("create decoy tempdir");
-        // Via the shared constructor like every other repo-targeting call:
-        // this test is itself re-run under an ambient hook env by
-        // `hook_env_replay_of_ptodo_git_fixture_tests`, and a bare
-        // `Command::new("git")` here would re-init THAT harness's decoy
-        // instead of creating this one.
-        let decoy_status = common::git_env::git_cmd(decoy.path())
-            .args(["init", "--initial-branch=main"])
-            .status()
-            .expect("git init decoy failed to spawn");
-        assert!(
-            decoy_status.success(),
-            "decoy git init exited {:?}",
-            decoy_status.code()
-        );
-        let decoy_git_dir = decoy.path().join(".git");
-        std::fs::write(decoy_git_dir.join("index.lock"), b"")
-            .expect("plant stale index.lock in decoy repo");
+        // A decoy repo standing in for the parent repo a hook would point at,
+        // built by the shared helper so the poisoned variable list has exactly
+        // one home on the test side (`common::git_env::hook_git_env`) rather
+        // than one copy here and one in the replay harness.
+        let decoy = common::git_env::decoy_repo();
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
-            .args([
-                "--pattern",
-                "PTODO",
-                "--no-jcodemunch",
-                "--project-root",
-                repo.path().to_str().unwrap(),
-                "--tasks-file",
-                tasks_file.to_str().unwrap(),
-                "--runs-db",
-                runs_db.to_str().unwrap(),
-            ])
-            // The exact set git exports into a hook's process tree.
-            .env("GIT_DIR", &decoy_git_dir)
-            .env("GIT_WORK_TREE", decoy.path())
-            .env("GIT_INDEX_FILE", decoy_git_dir.join("index"))
+        let mut cmd = Command::new(bin);
+        cmd.args([
+            "--pattern",
+            "PTODO",
+            "--no-jcodemunch",
+            "--project-root",
+            repo.path().to_str().unwrap(),
+            "--tasks-file",
+            tasks_file.to_str().unwrap(),
+            "--runs-db",
+            runs_db.to_str().unwrap(),
+        ]);
+        common::git_env::poison_with_hook_git_env(&mut cmd, &decoy);
+
+        let out = cmd
             .output()
             .expect("invoke reify-audit --pattern PTODO under poisoned git env");
 
@@ -1679,14 +1662,24 @@ mod cli {
     /// Some(128)` was observed, the fixture repo's `add` colliding with the
     /// parent repository's `index.lock`.
     ///
-    /// So re-run the four `cli::ptodo_*` git-fixture tests in a child process
-    /// that has the poison ambient. The name of this test is deliberately
-    /// outside the `ptodo_` filter prefix so the replay cannot select itself;
-    /// the helper's `REIFY_AUDIT_HOOK_ENV_REPLAY` guard is the second line of
+    /// So re-run the `cli::ptodo_*` git-fixture tests in a child process that
+    /// has the poison ambient. The name of this test is deliberately outside
+    /// the `ptodo_` filter prefix so the replay cannot select itself; the
+    /// helper's `REIFY_AUDIT_HOOK_ENV_REPLAY` guard is the second line of
     /// defence.
+    ///
+    /// The floor of 5 is the selection measured today (`--list` with this
+    /// filter names `ptodo_degrades_fail_soft_when_tasks_db_absent`,
+    /// `ptodo_env_override_redirects_tasks_db`,
+    /// `ptodo_fixture_sweep_survives_ambient_hook_git_env`,
+    /// `ptodo_fixture_tree_emits_three_kinds_and_suppresses_allowlist_and_escape`
+    /// and `ptodo_orphaned_cite_resolved_against_default_tasks_db`). It exists
+    /// because libtest exits 0 on a zero-match filter: without the floor, a
+    /// rename here would silently downgrade this harness to a vacuous pass.
+    /// Adding a `ptodo_*` test raises the selection freely; losing one fails.
     #[test]
     fn hook_env_replay_of_ptodo_git_fixture_tests() {
-        common::git_env::replay_self_under_hook_git_env("cli::ptodo_");
+        common::git_env::replay_self_under_hook_git_env(&["cli::ptodo_"], 5);
     }
 
     /// §6.7 PTODO liveness degradation (end-to-end): `--pattern PTODO` over a
