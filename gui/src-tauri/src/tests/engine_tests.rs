@@ -15398,6 +15398,113 @@ fn examples_appearance_viewport_egress_realizes_section8_appearance_contract() {
     );
 }
 
+/// #5195 step-14: premise pin for the ADDITIVE DisplayOutput routing rule.
+///
+/// This test CHARACTERIZES already-committed engine behaviour and is expected
+/// to be GREEN on arrival — it is deliberately NOT a RED test. Its two jobs:
+///
+///  (i) Pin the REAL `examples/appearance_viewport_egress.ri` rather than only
+///      a hand-built frontend fixture. That example is the case that broke:
+///      it declares an appearance-only `DisplayOutput(subject: geometry,
+///      style: …)` with NO `pane:` argument, purely to stack a RAL9001 layer-3
+///      override, PLUS an independent `sub raw = RawEgress()` carrying its own
+///      geometry realization that no DisplayOutput ever names.
+///
+/// (ii) Stop the paired vitest fixture from silently drifting away from the
+///      actual wire shape. The frontend assertion is
+///      autoViewGenerator.test.ts::'appearance-only DisplayOutput does not
+///      delete sibling bodies (examples/appearance_viewport_egress.ri shape)'.
+///      If the example or `collect_display_routing` changes, this fails loudly
+///      instead of leaving the vitest fixture testing fiction.
+///
+/// The two assertions together are exactly the additive rule's premise:
+///  (a) an appearance-only DisplayOutput DOES land in `display_panes` carrying
+///      a DEFAULTED `pane: 0` — indistinguishable on the wire from an explicit
+///      `pane: 0` — so a directive proves nothing about visibility intent; and
+///  (b) the `raw` sub's realization is neither aux nor a consumed sibling (the
+///      consumption scan matches BARE same-structure names only, and nothing
+///      references `raw.geometry`), so the engine leaves it `default_visible ==
+///      true` and the frontend must not override that to 'hidden'.
+///
+/// Load harness is the same construction as
+/// `examples_appearance_viewport_egress_realizes_section8_appearance_contract`
+/// above (`SimpleConstraintChecker` + `MockGeometryKernel`, factored into
+/// `make_session()`).
+#[test]
+fn examples_appearance_viewport_egress_display_output_defaults_pane_and_raw_stays_visible() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/appearance_viewport_egress.ri"
+    );
+    let contents =
+        std::fs::read_to_string(path).expect("examples/appearance_viewport_egress.ri must exist");
+
+    let mut session = make_session();
+    let state = session
+        .load_from_source(&contents, "appearance_viewport_egress")
+        .expect("appearance_viewport_egress.ri must compile and eval without hard error");
+
+    // ── (a) appearance-only DisplayOutput → one directive with a DEFAULTED pane 0 ──
+    assert_eq!(
+        state.display_panes.len(),
+        1,
+        "the single appearance-only DisplayOutput must still emit exactly one \
+         DisplayDirective; got {:?}",
+        state.display_panes
+    );
+    let directive = &state.display_panes[0];
+    assert!(
+        directive
+            .subject
+            .starts_with("AppearanceViewportEgress#realization["),
+        "directive subject must resolve to the styled steel body's realization; got {:?}",
+        directive.subject
+    );
+    assert_eq!(
+        directive.pane, 0,
+        "the example passes NO `pane:` argument, yet the hydrated instance always \
+         carries a defaulted pane 0 — this is the wire-level ambiguity that forces \
+         the routing rule to be additive"
+    );
+
+    // ── (b) the unrouted `raw` box realization stays default_visible == true ──
+    let tree = session.get_entity_tree();
+
+    fn collect<'a>(
+        nodes: &'a [crate::types::EntityTreeNode],
+        out: &mut Vec<&'a crate::types::EntityTreeNode>,
+    ) {
+        for n in nodes {
+            out.push(n);
+            collect(&n.children, out);
+        }
+    }
+    let mut all = Vec::new();
+    collect(&tree, &mut all);
+
+    let raw_realization = all
+        .iter()
+        .find(|n| {
+            n.kind == "realization"
+                && n.entity_path
+                    .starts_with("AppearanceViewportEgress.raw#realization[")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "the `sub raw = RawEgress()` realization node must exist; got: {:?}",
+                all.iter().map(|n| &n.entity_path).collect::<Vec<_>>()
+            )
+        });
+
+    assert!(
+        raw_realization.default_visible,
+        "the raw box is neither aux nor consumed by a sibling, so the engine must \
+         leave it visible — additive routing then keeps it on screen even though no \
+         DisplayOutput names it (entity_path {:?})",
+        raw_realization.entity_path
+    );
+}
+
 // ---- R3b-2 (#4818): build_gui_state threads structured_detail → fea_diagnostics ---
 // RED (step-3): these tests compile but fail assertions until step-4 populates
 // fea_diagnostics from last_check().structured_detail in build_gui_state.
