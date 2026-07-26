@@ -2044,4 +2044,142 @@ mod tests {
             warm.coupling_diagnostics
         );
     }
+
+    // -------------------------------------------------------------------------
+    // step-11: δ cluster formation over the COMPILER's real cell-id shape
+    // -------------------------------------------------------------------------
+
+    /// The `Bolt` / `Rig` source fixture used by the compiler-real δ test.
+    ///
+    /// `Costed` refines `Buy`, so an implementing structure must also declare
+    /// `supplier` / `part_number` / `unit_cost` / `lead_time` (the `CapScrew`
+    /// def in `tests/cost_subtree_aggregate_eval.rs` is the working template
+    /// this is modelled on).
+    ///
+    /// TRAP — the aggregate MUST stay inlined in the `minimize`. Writing it as
+    /// `let subtree_cost : Money = cost(self.descendants)` + `minimize
+    /// subtree_cost` forms NO cluster even with a correct normaliser, because
+    /// C1 ([`expanded_objective_reads`]) expands objective TERMS only while
+    /// [`build_non_auto_cell_map`] stores each cell's RAW unexpanded
+    /// `default_expr` — `extract_value_deps` on an unexpanded
+    /// `cost(self.descendants)` surfaces no `line_cost` read at all. That
+    /// boundary is pinned separately by
+    /// `objective_must_inline_the_aggregate_to_couple`.
+    const COMPILER_REAL_DELTA_SOURCE: &str = r#"
+structure def Bolt : Costed {
+    param supplier          : String = "Acme"
+    param part_number       : String = "B-1"
+    param unit_cost         : Money  = 0.50USD
+    param lead_time         : Time   = 24h
+    param quantity_produced : Real   = auto
+    constraint quantity_produced >= 1.0
+    constraint quantity_produced <= 100.0
+}
+structure Rig {
+    sub bolts = Bolt()
+    minimize cost(self.descendants)
+}
+"#;
+
+    /// Index of the template named `name` in `templates`.
+    #[track_caller]
+    fn template_index(templates: &[reify_compiler::TopologyTemplate], name: &str) -> usize {
+        templates
+            .iter()
+            .position(|t| t.name == name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "template {:?} must be present; got: {:?}",
+                    name,
+                    templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+                )
+            })
+    }
+
+    /// δ cluster formation must fire on a module built by the REAL COMPILER, not
+    /// only on hand-built `TopologyTemplateBuilder` fixtures (task #5334,
+    /// review round 2, blocking issue 1).
+    ///
+    /// Unlike every other fixture in this module, the templates here come from
+    /// real `.ri` source via `reify_test_support::parse_and_compile_with_stdlib`
+    /// (a dev-dependency, hence visible to this in-crate `#[cfg(test)]` module),
+    /// so the cell ids carry the compiler's ACTUAL entity scoping. That is the
+    /// whole point: it is simultaneously compiler-real AND has direct visibility
+    /// into the `pub(crate)` `ro.clusters`, which the integration-test
+    /// diagnostic proxy cannot offer.
+    ///
+    /// RED before step-12, and the failure is a two-sided scoping mismatch:
+    /// C1 expands `minimize cost(self.descendants)` to
+    /// `[ValueRef(Rig.bolts.line_cost)].sum` — an INSTANCE-PATH id, composed by
+    /// `enumerate_descendants` (structural_query.rs:187/:213) and minted by
+    /// `apply_cost_aggregation` (structural_query.rs:686) — whereas
+    /// `build_non_auto_cell_map` and `auto_owner` are both keyed by STRUCTURE
+    /// NAME (`Bolt.line_cost` / `Bolt.quantity_produced`, minted at
+    /// reify-compiler/src/entity.rs:6066/:6197). The seed therefore misses both
+    /// maps on hop 1, the frontier empties, and the walk unions nothing.
+    #[test]
+    fn delta_cluster_forms_on_compiler_emitted_cell_ids() {
+        let compiled =
+            reify_test_support::parse_and_compile_with_stdlib(COMPILER_REAL_DELTA_SOURCE);
+        let templates = &compiled.templates;
+
+        let rig = template_index(templates, "Rig");
+        let bolt = template_index(templates, "Bolt");
+        let mut expected_scopes = vec![rig, bolt];
+        expected_scopes.sort_unstable();
+
+        // The trait registry is REQUIRED, not decorative: `apply_cost_aggregation`
+        // drops every descendant whose structure fails
+        // `satisfies_trait_bound(.., "Costed", registry)`, so an under-populated
+        // registry silently yields an empty sum and a vacuous pass. Built the same
+        // way `eval()` builds `sq_trait_registry` — prelude traits first so module
+        // traits shadow them.
+        let prelude = reify_compiler::stdlib_loader::load_stdlib();
+        let registry = crate::structural_query::build_trait_registry(
+            prelude
+                .iter()
+                .flat_map(|m| m.trait_defs.iter())
+                .chain(compiled.trait_defs.iter()),
+        );
+
+        // `bolts` is a plain (non-collection) sub, so its `count_cell` is `None`
+        // and `enumerate_descendants` needs no populated counts.
+        let values = ValueMap::default();
+        let ctx = ClusterFormationCtx {
+            values: &values,
+            functions: &compiled.functions,
+            trait_registry: &registry,
+            max_unfold_depth: 64,
+            max_unfold_nodes: 10_000,
+        };
+        let ro = resolve_order(templates, Some(&ctx));
+
+        assert_eq!(
+            ro.clusters.len(),
+            1,
+            "a compiler-emitted module whose objective couples to a child's derived \
+             `line_cost` must form exactly ONE δ cluster. Zero clusters means the \
+             instance-path seed (`Rig.bolts.line_cost`) missed the structure-name-keyed \
+             `auto_owner` / cell map (`Bolt.line_cost`) — the walk unions nothing and \
+             the whole feature is a no-op on real `.ri` designs; got: {:?}",
+            ro.clusters
+        );
+        let cluster = &ro.clusters[0];
+        assert_eq!(
+            cluster.scopes, expected_scopes,
+            "the cluster must span BOTH the Rig (idx {}) and Bolt (idx {}) scopes; got: {:?}",
+            rig, bolt, cluster.scopes
+        );
+        assert_eq!(
+            cluster.dim, 1,
+            "dim = 1 (Bolt's single auto `quantity_produced`); got: {}",
+            cluster.dim
+        );
+        assert_eq!(
+            cluster.disposition,
+            ClusterDisposition::MergedSolve,
+            "dim 1 is within cap ⇒ MergedSolve; got: {:?}",
+            cluster.disposition
+        );
+    }
 }
