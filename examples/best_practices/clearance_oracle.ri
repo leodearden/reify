@@ -38,8 +38,9 @@ module clearance_oracle
 //   `mechanism` / `body` / `snapshot` / `min_clearance` chain instead of a pair
 //   of raw queries. Worked example, with the GD&T virtual-condition boundary
 //   maths: `examples/tolerancing/vc_bolt_pattern_clearance.ri`. Its hard-won
-//   rule (see its lines 84-88): `min_clearance` must be LET-BOUND before use in
-//   a constraint. Writing `constraint min_clearance(s, a, b) > 0mm` directly
+//   rule (grep it for `let clr = min_clearance(` and read the comment block
+//   directly above that binding): `min_clearance` must be LET-BOUND before use
+//   in a constraint. Writing `constraint min_clearance(s, a, b) > 0mm` directly
 //   bypasses kinematic dispatch and yields Indeterminate.
 
 structure def ClearanceOracle {
