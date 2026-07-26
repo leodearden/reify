@@ -12557,6 +12557,14 @@ mod reset_per_build_state_tests {
         engine.next_snapshot_id = 42;
         engine.persistent_hit_count = 9;
         engine.capture_repr_tol = true;
+        // Seeded to the NON-default `Warn` deliberately (#5069 step-6): both
+        // `MeshContractMode::default()` and `from_env()` yield `Enforce`, so a
+        // mis-classification into a reset arm would read back as the same value
+        // the fixture started with — an INVISIBLE no-op that neither this pin
+        // nor the byte-identical corpus differential could catch. `Warn` (the
+        // `REIFY_MESH_CONTRACT=warn` break-glass posture) is destroyed by a
+        // sweep, so it makes the classification observable.
+        engine.mesh_contract_mode = reify_ir::geometry::MeshContractMode::Warn;
 
         engine
     }
@@ -12604,6 +12612,13 @@ mod reset_per_build_state_tests {
         assert!(
             engine.capture_repr_tol,
             "capture_repr_tol MUST survive ({surface:?})"
+        );
+        assert_eq!(
+            engine.mesh_contract_mode,
+            reify_ir::geometry::MeshContractMode::Warn,
+            "mesh_contract_mode is construction-time config (#5105 δ) → MUST survive \
+             ({surface:?}); sweeping it would reset the REIFY_MESH_CONTRACT=warn \
+             break-glass to Enforce after the first build"
         );
     }
 
