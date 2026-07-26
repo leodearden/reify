@@ -61,6 +61,7 @@ import {
   checkMeshCountParity,
   extractMeshCountInputs,
   isInBandError,
+  normalizeRpcEnvelope,
 } from './meshCountParity.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -104,32 +105,19 @@ async function rpc(method, args = {}) {
       params: { name: method, arguments: args },
     }),
   });
-  const envelope = await res.json();
-  if (envelope.error) throw new Error(`RPC error: ${JSON.stringify(envelope.error)}`);
-  const content = envelope?.result?.content;
-  const textBlock = Array.isArray(content) ? content.find(c => c.type === 'text') : undefined;
-
-  // TWO FAILURE DIALECTS, one normalised shape.
-  // Frontend-mediated tools (viewport_state, via query_frontend) report failure
-  // in-band as JSON `{error: "<msg>"}`. Rust-dispatched tools — which is all
-  // THREE this smoke leans on hardest (engine_state, mesh_stats,
-  // demand_dispatch) — instead return an MCP envelope with `isError: true`
-  // carrying a plain-text `Error: <msg>` block (debug_server.rs). Without this
-  // branch a real engine-lock/engine-thread-died failure would fall through as
-  // the bare string "Error: …" and be misreported downstream as
-  // `mesh_stats payload is not an object` — a shape problem, which is exactly
-  // the misdiagnosis meshCountParity.mjs exists to prevent. Normalising to the
-  // in-band shape routes both dialects through its one `isInBandError` check.
-  if (envelope?.result?.isError === true) {
-    return { error: textBlock?.text ?? 'tool reported isError with no text content block' };
-  }
-
-  if (!textBlock) return null;
-  try {
-    return JSON.parse(textBlock.text);
-  } catch {
-    return textBlock.text;
-  }
+  // TWO FAILURE DIALECTS, one normalised shape — and the fold that unifies them
+  // lives in meshCountParity.mjs (CI-covered by meshCountParity.test.ts) rather
+  // than inline here, because this file can never run in CI. Frontend-mediated
+  // tools (viewport_state, via query_frontend) report failure in-band as JSON
+  // `{error: "<msg>"}`; Rust-dispatched tools — all THREE this smoke leans on
+  // hardest (engine_state, mesh_stats, demand_dispatch) — instead answer with
+  // `isError: true` plus a plain-text `Error: <msg>` block (debug_server.rs).
+  // Normalising the latter into the former routes both through the one
+  // `isInBandError` check below. A top-level envelope error is a TRANSPORT
+  // failure and still throws, so waitForServer's catch keeps polling.
+  const { transportError, payload } = normalizeRpcEnvelope(await res.json());
+  if (transportError !== undefined) throw new Error(transportError);
+  return payload;
 }
 
 function sleep(ms) {
@@ -273,10 +261,26 @@ async function main() {
   });
   console.log('  extracted:', JSON.stringify(inputs));
 
-  const parity = checkMeshCountParity(inputs);
-  const allFailures = [...extractionFailures, ...parity.failures];
+  // A failed READ is not a failed INVARIANT — and must not be reported as one.
+  // When a tool answers with an in-band error, extraction names the outage and
+  // leaves that field `undefined`; running the parity checker over it would then
+  // append a SECOND, misleading message (`viewport_state.meshCount is not a
+  // non-negative integer: undefined`) under a headline blaming a 5348-class
+  // cross-layer regression. That is precisely the misdiagnosis meshCountParity.mjs
+  // exists to prevent, so short-circuit: parity is simply NOT EVALUATED when the
+  // inputs could not be read.
+  if (extractionFailures.length > 0) {
+    fail(
+      `debug-MCP read failed — parity NOT evaluated:\n  - ${extractionFailures.join('\n  - ')}\n` +
+        `These are tool/engine-level read failures (docs/debug-mcp-contract.md §2a), NOT ` +
+        `evidence of a mesh-count regression: the invariant was never tested. Restore the ` +
+        `failing read, then re-run.`,
+    );
+  }
 
-  if (allFailures.length > 0) {
+  const parity = checkMeshCountParity(inputs);
+
+  if (!parity.ok) {
     // Triage aid: a bare number mismatch says nothing about WHICH bodies went
     // missing. The symmetric difference of the two entity-path sets does.
     const viewportPaths = pathSet(viewportState?.meshInfo, 'entityPath');
@@ -287,7 +291,9 @@ async function main() {
     console.error('  mesh_stats.meshes entity_paths:      ', JSON.stringify(statsPaths));
     console.error('  only in viewport_state:', JSON.stringify(onlyViewport));
     console.error('  only in mesh_stats:    ', JSON.stringify(onlyStats));
-    fail(`mesh-count parity violated under selective demand:\n  - ${allFailures.join('\n  - ')}`);
+    fail(
+      `mesh-count parity violated under selective demand:\n  - ${parity.failures.join('\n  - ')}`,
+    );
   }
 
   console.log(

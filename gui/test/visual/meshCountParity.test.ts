@@ -19,6 +19,7 @@ import {
   checkMeshCountParity,
   extractMeshCountInputs,
   isInBandError,
+  normalizeRpcEnvelope,
   MESH_COUNT_PARITY_MIN_BODIES,
 } from "./meshCountParity.mjs";
 
@@ -490,20 +491,112 @@ describe("isInBandError — the tool-outage discriminator the live driver reuses
   });
 });
 
+describe("normalizeRpcEnvelope — the two failure dialects folded into one shape", () => {
+  // The live driver's rpc() used to inline this branch, which made the ONE piece
+  // of genuinely new transport logic in the smoke — folding the Rust `isError`
+  // envelope into the frontend's in-band `{error}` shape so a single
+  // isInBandError check covers both dialects — the only part with no CI cover.
+  const textEnvelope = (value: unknown) => ({
+    result: { content: [{ type: "text", text: JSON.stringify(value) }] },
+  });
+
+  it("returns the parsed payload for a healthy JSON text block", () => {
+    const { transportError, payload } = normalizeRpcEnvelope(
+      textEnvelope({ full_scope: false, eval_set: ["a"] }),
+    );
+    expect(transportError).toBeUndefined();
+    expect(payload).toEqual({ full_scope: false, eval_set: ["a"] });
+  });
+
+  it("reports a top-level (transport) error separately from a payload", () => {
+    // The driver throws on this branch; it must never be mistaken for a tool
+    // payload, in-band error or otherwise.
+    const { transportError, payload } = normalizeRpcEnvelope({
+      error: { code: -32601, message: "Method not found" },
+    });
+    expect(typeof transportError).toBe("string");
+    expect(transportError).toContain("Method not found");
+    expect(payload).toBeUndefined();
+  });
+
+  it("folds the Rust isError envelope into the in-band {error} shape", () => {
+    // debug_server.rs answers a Rust-dispatched handler failure with
+    // isError:true plus a plain-text `Error: <msg>` block. Normalising it here
+    // is what lets the driver's ONE isInBandError check cover engine_state,
+    // mesh_stats and demand_dispatch as well as the frontend-mediated tools.
+    const { transportError, payload } = normalizeRpcEnvelope({
+      result: {
+        content: [{ type: "text", text: "Error: engine thread died" }],
+        isError: true,
+      },
+    });
+    expect(transportError).toBeUndefined();
+    expect(isInBandError(payload)).toBe(true);
+    expect((payload as { error: string }).error).toContain("engine thread died");
+  });
+
+  it("still yields an in-band error when isError carries no text block", () => {
+    // Degrading to `null` here would send the outage downstream as a shape
+    // problem — the misdiagnosis this module exists to prevent.
+    const { payload } = normalizeRpcEnvelope({ result: { content: [], isError: true } });
+    expect(isInBandError(payload)).toBe(true);
+  });
+
+  it("yields null for an image content block", () => {
+    // `screenshot` answers with an image block; the driver treats that as
+    // "nothing to interpret", not as a failure.
+    const { transportError, payload } = normalizeRpcEnvelope({
+      result: { content: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] },
+    });
+    expect(transportError).toBeUndefined();
+    expect(payload).toBeNull();
+  });
+
+  it("hands back the raw text when the block is not JSON", () => {
+    const { payload } = normalizeRpcEnvelope({
+      result: { content: [{ type: "text", text: "pong" }] },
+    });
+    expect(payload).toBe("pong");
+  });
+
+  it("never throws on a malformed or absent envelope", () => {
+    for (const envelope of [undefined, null, {}, { result: null }, { result: {} }, 42]) {
+      expect(() => normalizeRpcEnvelope(envelope as never)).not.toThrow();
+    }
+  });
+
+  it("leaves a frontend in-band error untouched for isInBandError to catch", () => {
+    // viewport_state (via query_frontend) already speaks this dialect natively;
+    // normalisation must be a no-op for it rather than double-wrapping.
+    const { payload } = normalizeRpcEnvelope(textEnvelope({ error: "no active session" }));
+    expect(isInBandError(payload)).toBe(true);
+    expect((payload as { error: string }).error).toBe("no active session");
+  });
+});
+
 describe("extractMeshCountInputs — composes with checkMeshCountParity", () => {
-  it("routes extraction and parity problems through one failure list", () => {
+  it("keeps read failures in their OWN list, so a caller can refuse to evaluate parity", () => {
+    // The two lists stay SEPARATE, and that separation is load-bearing: a tool
+    // outage leaves its field `undefined`, over which the parity checker would
+    // emit a second, misleading "not a non-negative integer" message. The live
+    // driver therefore reports extraction failures under their own headline and
+    // never calls checkMeshCountParity at all — a failed READ is not a failed
+    // INVARIANT. This pins that the extractor gives it what it needs to tell
+    // the two apart.
     const p = livePayloads();
     p.meshStats = { error: "engine poisoned" } as never;
     p.engineState.meshes = p.engineState.meshes.slice(0, 1);
 
     const { inputs, failures } = extractMeshCountInputs(p);
-    const parity = checkMeshCountParity(inputs);
-    const all = [...failures, ...parity.failures];
 
+    // The outage is fully diagnosed WITHOUT consulting the parity checker.
+    expect(failures.some((f) => f.includes("mesh_stats"))).toBe(true);
+    expect(failures.some((f) => f.includes("engine poisoned"))).toBe(true);
+
+    // Genuine drift in a read that DID succeed is still the parity gate's call.
+    const parity = checkMeshCountParity(inputs);
     expect(parity.ok).toBe(false);
-    expect(all.some((f) => f.includes("mesh_stats"))).toBe(true);
-    expect(all.some((f) => f.includes("engine poisoned"))).toBe(true);
-    expect(all.some((f) => f.includes("engine_state"))).toBe(true);
+    expect(parity.failures.some((f) => f.includes("engine_state"))).toBe(true);
   });
 
   it("yields a clean pass for a healthy selective-demand run", () => {
