@@ -1097,15 +1097,19 @@ select_infra_tests
 #
 # tests/infra/test_harness_kloc_cap.sh (the C2 anti-re-accretion guard) has no
 # row in verify-pipeline-infra-tests.txt: its trigger isn't a single artifact
-# path, it's *adding* a new top-level standalone crates/<c>/tests/*.rs file in
-# one of the 5 consolidatable crates. This selector runs the guard ONLY under
-# --scope branch (hermetic static reads, no cargo — seconds), so an
+# path, it's *adding* a new top-level standalone crates/<c>/tests/*.rs file, OR
+# a nested crates/<c>/tests/harness_<subsystem>/** file (recursive — it
+# contributes lines to that harness's rule-(a) kLOC measure too), in one of
+# the 5 consolidatable crates. A nested path OUTSIDE a harness_*/ module dir
+# (tests/common/, fixtures/, …) is deliberately excluded — it isn't part of
+# any harness's measured compile unit. This selector runs the guard ONLY
+# under --scope branch (hermetic static reads, no cargo — seconds), so an
 # introducer sees the violation on their own branch instead of first at the
 # merge gate 40+ min in (tasks 5213, 5053). --diff-filter=A (adds only): a NEW
-# standalone binary is exactly the re-accretion the guard catches; modifying
-# or renaming an already-grandfathered file is a no-op here and stays covered
-# by the wholesale merge gate (no correctness regression, only earlier
-# coverage for the common add case).
+# standalone binary or module file is exactly the re-accretion/growth the
+# guard catches; modifying or renaming an already-grandfathered file is a
+# no-op here and stays covered by the wholesale merge gate (no correctness
+# regression, only earlier coverage for the common add case).
 #
 # Appends into the SAME SELECTED_INFRA_GLOBS the selective-infra block above
 # populates, so it inherits for free: (a) merge/background suppression — the
@@ -1137,8 +1141,17 @@ select_harness_kloc_guard() {
         _rest="${_path#crates/}"
         _crate="${_rest%%/*}"
         _tail="${_path#crates/$_crate/tests/}"
+        # Ordered classification — harness_*/* MUST come first: a bash `case`
+        # glob's `*` matches `/`, so this one arm covers arbitrary nesting
+        # depth under a harness_<subsystem>/ module dir (same gotcha
+        # documented at tests/infra/harness-layout-lib.sh:86-89). The
+        # generic */* reject then catches everything else nested (not a
+        # harness module dir — no measured-compile-unit contribution), and
+        # the fallthrough * is a top-level tests/<base>.rs.
         case "$_tail" in
-            */*) continue ;;  # nested harness-module file — not top-level
+            harness_*/*) : ;;        # nested under a harness_<subsystem>/ module dir (recursive)
+            */*)         continue ;; # nested, but not a harness module dir
+            *)           : ;;        # top-level tests/<base>.rs
         esac
         case " reify-cli reify-syntax reify-kernel-occt reify-eval reify-compiler " in
             *" $_crate "*)
