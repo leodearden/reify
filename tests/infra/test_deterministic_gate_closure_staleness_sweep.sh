@@ -225,11 +225,20 @@ _err_has()  { _matches "$1" "$ERR_OUT"; }
 _out_empty() { test -z "$OUT"; }
 
 # _sweep_line — the trailing SWEEP: summary line from the table report.
-_sweep_line() { printf '%s' "$OUT" | grep '^SWEEP:' | tail -1; }
+_sweep_line() { grep '^SWEEP:' <<<"$OUT" | tail -1; }
 _sweep_line_is() { test "$(_sweep_line)" = "$1"; }
 
 # _out_json_check <expr> — _json_check against the captured stdout.
-_out_json_check() { printf '%s' "$OUT" | python3 "$_JSON_CHECK_PY" - "$1"; }
+_out_json_check() { python3 "$_JSON_CHECK_PY" - "$1" <<<"$OUT"; }
+# _json_is is the same predicate, named for readability at the assert site.
+_json_is() { _out_json_check "$1"; }
+
+# _no_request_for <dir> <task_id> — no request file was emitted for that task.
+_no_request_for() {
+    local dir="$1" id="$2" hits
+    hits="$(find "$dir" -maxdepth 1 -name "redispatch-${id}-*.json" 2>/dev/null)"
+    [ -z "$hits" ] || { echo "unexpected request file(s): $hits"; return 1; }
+}
 
 # _json_check <json_file|-> <python_expr> — parse the JSON and evaluate
 # <python_expr> with `d` bound to the parsed document; exit 0 iff truthy. A
@@ -237,10 +246,18 @@ _out_json_check() { printf '%s' "$OUT" | python3 "$_JSON_CHECK_PY" - "$1"; }
 # assertions free of nested-quoting hazards inside assert "..." invocations.
 _JSON_CHECK_PY="$(mktemp "${TMPDIR:-/tmp}/gate-staleness-jsoncheck-XXXXXX.py")"
 _TMPDIRS+=("$_JSON_CHECK_PY")
+# Bound names inside <python_expr>:
+#   d — the parsed document
+#   t — {task_id: candidate} index (report documents only)
+#   s — the summary object    (report documents only)
 cat > "$_JSON_CHECK_PY" <<'PY'
 import json, sys
 src = sys.stdin if sys.argv[1] == "-" else open(sys.argv[1])
 d = json.load(src)
+t, s = {}, {}
+if isinstance(d, dict):
+    t = {c["task_id"]: c for c in d.get("candidates", [])}
+    s = d.get("summary", {})
 sys.exit(0 if eval(sys.argv[2]) else 1)
 PY
 _json_check() { python3 "$_JSON_CHECK_PY" "$1" "$2"; }
@@ -249,7 +266,12 @@ _json_check() { python3 "$_JSON_CHECK_PY" "$1" "$2"; }
 # (`!`) or a redirect (`<<<`) cannot appear in an assert argument list — these
 # wrap those forms as real commands.
 _not() { ! "$@"; }
-_matches() { printf '%s' "$2" | grep -qE "$1"; }
+# NOTE: a here-string, deliberately NOT `printf ... | grep -q`. Under
+# `set -o pipefail`, grep -q exits on the FIRST match and the upstream printf
+# then dies of SIGPIPE (141), which pipefail propagates as the pipeline's
+# status — so a successful match intermittently reads as a failure. The race
+# is load-dependent, which made it a genuine heisenflake here.
+_matches() { grep -qE "$1" <<<"$2"; }
 
 # _snapshot_readonly <db> <esc_dir> — emit a sha256 of the DB plus a sorted
 # listing (path/size/mtime) of the escalations dir AND of the DB's directory,
@@ -371,7 +393,8 @@ VALUE_FLAGS=(--db --tag --escalations --repo --main-ref --format --class --stale
 _usage_names_all_flags() {
     local f missing=()
     for f in "${VALUE_FLAGS[@]}"; do
-        printf '%s' "$ERR_OUT" | grep -qF -- "$f" || missing+=("$f")
+        # Here-string, not a pipe — see the _matches SIGPIPE/pipefail note.
+        grep -qF -- "$f" <<<"$ERR_OUT" || missing+=("$f")
     done
     [ "${#missing[@]}" -eq 0 ] || { echo "usage text is missing: ${missing[*]}"; return 1; }
 }
@@ -464,5 +487,108 @@ for _c in all gate_closure merge_verify_red unmet_dependency; do
     run_sweep --db "$EMPTY_DB" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO" --class "$_c"
     assert "A9[$_c]: accepted on the empty fixture (exit 0)" _rc_is 0
 done
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block B — the liveness guard
+#
+# The suite's highest-consequence safety property: a false hit here would
+# re-dispatch a task an agent is actively running. Measured live on
+# 2026-07-26, ALL TEN in-progress tasks had every dependency `done` (task 5321
+# itself among them), so a naive "premise resolved => re-dispatch" rule would
+# have targeted ten live agents. heartbeat_at/claimant_run_id discriminate,
+# and the fail-safe direction for a re-dispatch decision is always "do
+# nothing" — hence an UNPARSEABLE heartbeat degrades to LIVE (B7), never to
+# eligible.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block B: the liveness guard ---"
+
+_mk_tasks_db
+B_DB="$DB"
+_mk_esc_dir
+B_ESC="$ESC_DIR"
+_mk_repo
+B_REPO="$REPO_DIR"
+
+# The live claimant shape, copied from the rows measured on 2026-07-26:
+#   run-<runid>/<taskid>-<hash>/pid=<pid>
+B_CLAIMANT="run-7c8e838c39e7/9101-c514828d/pid=3551081"
+
+# A merge_verify_red proposal + a satisfied dependency on 9101, so the row
+# would fire TWO classes if the liveness guard were not applied first.
+B_PROPOSAL='{"dry_run_proposals":[{"block_reason":"Post-merge verification failed: cargo test",
+"main_sha":"deadbeef","files_referenced":["tests/infra/test_warm_lane_pool_config.sh"],
+"investigated_at":"2026-07-26T08:00:00Z","timestamp":"2026-07-26T08:00:00Z"}]}'
+
+_add_task 9199 done '{}'
+# 9101 — fresh heartbeat (60s) + live claimant => LIVE, despite both premises.
+_add_task 9101 in-progress "$B_PROPOSAL" "$(_now_iso -60)" "$B_CLAIMANT"
+_add_dep 9101 9199
+# 9102 — the 5196 shape: 3h-stale heartbeat, NO claimant => eligible.
+_add_task 9102 in-progress '{}' "$(_now_iso -10800)" ""
+# 9103 — blocked rows carry no heartbeat at all => eligible.
+_add_task 9103 blocked '{}'
+# 9104 / 9105 — the --stale-heartbeat-min 30 boundary, from both sides.
+_add_task 9104 in-progress '{}' "$(_now_iso -1740)" "$B_CLAIMANT"
+_add_task 9105 in-progress '{}' "$(_now_iso -1860)" "$B_CLAIMANT"
+# 9106 — an unparseable heartbeat must fail SAFE (LIVE), never eligible.
+_add_task 9106 in-progress '{}' "not-a-timestamp" "$B_CLAIMANT"
+
+run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
+    --stale-heartbeat-min 30 --format json
+
+assert "B0: the liveness fixture sweep exits 0" _rc_is 0
+
+# --- B1: a fresh heartbeat is LIVE even with two premises resolved -----------
+assert "B1: a 60s-old heartbeat with a live claimant is LIVE" \
+    _json_is 't[9101]["verdict"] == "LIVE"'
+assert "B1: a LIVE row is not classified (class=-, action=none)" \
+    _json_is 't[9101]["class"] == "-" and t[9101]["action"] == "none"'
+assert "B1: a LIVE row is counted in live_skipped, not in any class counter" \
+    _json_is 's["live_skipped"] == 3 and s["merge_verify_red"] == 0 and s["unmet_dependency"] == 0'
+
+# --- B2: a LIVE row never yields a request file ------------------------------
+B_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-req-XXXXXX")"
+_TMPDIRS+=("$B_REQ")
+run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
+    --stale-heartbeat-min 30 --emit-requests "$B_REQ"
+assert "B2: a LIVE row emits no re-dispatch request" _no_request_for "$B_REQ" 9101
+
+run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
+    --stale-heartbeat-min 30 --format json
+
+# --- B3/B4: genuinely stranded rows stay eligible ----------------------------
+assert "B3: a 3h-stale heartbeat with NO claimant (the 5196 shape) is eligible" \
+    _json_is 't[9102]["verdict"] != "LIVE"'
+assert "B4: a blocked row with heartbeat_at NULL is eligible" \
+    _json_is 't[9103]["verdict"] != "LIVE"'
+
+# --- B5: the boundary, from both sides, with no sleep ------------------------
+assert "B5a: 29m < 30m window => LIVE" _json_is 't[9104]["verdict"] == "LIVE"'
+assert "B5b: 31m > 30m window => eligible" _json_is 't[9105]["verdict"] != "LIVE"'
+
+# --- B6: flag <-> env parity for the window ---------------------------------
+_SWEEP_ENV=(REIFY_GATE_STALENESS_HEARTBEAT_MIN=0)
+run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" --format json
+_SWEEP_ENV=()
+assert "B6a: REIFY_GATE_STALENESS_HEARTBEAT_MIN=0 makes a 60s heartbeat eligible" \
+    _json_is 't[9101]["verdict"] != "LIVE"'
+
+_SWEEP_ENV=(REIFY_GATE_STALENESS_HEARTBEAT_MIN=0)
+run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
+    --stale-heartbeat-min 30 --format json
+_SWEEP_ENV=()
+assert "B6b: an explicit --stale-heartbeat-min overrides the env value" \
+    _json_is 't[9101]["verdict"] == "LIVE"'
+
+# --- B7: an unparseable heartbeat fails SAFE --------------------------------
+run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
+    --stale-heartbeat-min 30 --format json
+assert "B7: an unparseable heartbeat degrades to LIVE, never to eligible" \
+    _json_is 't[9106]["verdict"] == "LIVE"'
+assert "B7: an unparseable heartbeat is counted in live_skipped, not unknown" \
+    _json_is 's["live_skipped"] == 3 and s["unknown"] == 3'
+assert "B7: an unparseable heartbeat warns on stderr" \
+    _err_has '\[warn\].*9106'
 
 test_summary
