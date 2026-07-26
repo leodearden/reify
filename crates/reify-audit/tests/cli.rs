@@ -1571,7 +1571,11 @@ mod cli {
             .args(["init", "--initial-branch=main"])
             .status()
             .expect("git init decoy failed to spawn");
-        assert!(decoy_status.success(), "decoy git init exited {:?}", decoy_status.code());
+        assert!(
+            decoy_status.success(),
+            "decoy git init exited {:?}",
+            decoy_status.code()
+        );
         let decoy_git_dir = decoy.path().join(".git");
         std::fs::write(decoy_git_dir.join("index.lock"), b"")
             .expect("plant stale index.lock in decoy repo");

@@ -82,6 +82,14 @@ pub const REPO_REDIRECT_VARS: &[&str] = &[
 /// Removal (`env_remove`) rather than assignment is deliberate: there is no
 /// correct value to assign, and an inherited-but-empty var is not the same as
 /// an absent one to git.
+///
+/// Currently the only non-test caller is [`command`], because every
+/// repo-targeting call site in this workspace wants the `git -C <root>` shape.
+/// It stays public anyway: a caller needing another shape (e.g. a
+/// `.current_dir()`-based invocation) must be able to reach the sanitizer
+/// rather than re-derive [`REPO_REDIRECT_VARS`] by hand, which is exactly how
+/// this class of bug reaches a new helper.
+// G-allow: public opt-in for non-`-C` call sites; only non-test caller today is command() — see doc above; behaviour pinned by the git_env unit tests.
 pub fn sanitize(cmd: &mut Command) -> &mut Command {
     for var in REPO_REDIRECT_VARS {
         cmd.env_remove(var);
