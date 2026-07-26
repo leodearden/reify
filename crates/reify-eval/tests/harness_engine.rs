@@ -39,3 +39,7 @@ mod topology_diagnostic_denoise_e2e;
 // the same anti-re-accretion reason as #5196's above.
 #[path = "harness_engine/flat_sort_kahn_core_delegation.rs"]
 mod flat_sort_kahn_core_delegation;
+// Task #5360's nested-sub derived-let e2e lands here for the same anti-re-accretion
+// reason as #5196's and #5045's above.
+#[path = "harness_engine/nested_sub_derived_let_e2e.rs"]
+mod nested_sub_derived_let_e2e;
