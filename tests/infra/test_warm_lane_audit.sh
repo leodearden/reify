@@ -1194,6 +1194,23 @@ _sum_holds() {
 # _partition_holds <resident> <live> <pinned> <quarantined> <free>
 _partition_holds() { _sum_holds "$@"; }
 
+# _strict_max <candidate> <other>...
+# True iff every argument is a non-empty integer AND <candidate> is STRICTLY
+# greater than each of the others. Absent fields fail, for _sum_holds' reason.
+_strict_max() {
+    local cand="$1"; shift
+    local v
+    for v in "$cand" "$@"; do
+        case "$v" in
+            ''|*[!0-9]*) return 1 ;;
+        esac
+    done
+    for v in "$@"; do
+        [ "$cand" -gt "$v" ] || return 1
+    done
+    return 0
+}
+
 ORACLE_MAP="$N_MAP" run_helper --mount "$N_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
 
 assert "N1: exit 0" test "$RC" -eq 0
@@ -1411,5 +1428,235 @@ assert "O8b: json pinned_by_status carries exactly the six buckets, summing to h
     "pending=${O_EXPECTED[pending]}" "infra-hold=${O_EXPECTED[infra-hold]}" \
     "blocked=${O_EXPECTED[blocked]}" "terminal=${O_EXPECTED[terminal]}" \
     "other=${O_EXPECTED[other]}" "unknown=${O_EXPECTED[unknown]}"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block P — the two incident regressions + the state-dir read-only proof
+# ──────────────────────────────────────────────────────────────────────────────
+# Both pool misreads this task exists to fix are reproduced here as fixtures, so
+# the accounting that mis-answered them can never silently return. Neither
+# incident's headline numbers (53 / 33 / 30) are frozen as literals: every
+# expectation is computed from the fixture's own arrays, so these stay
+# regression tests of the RELATION, not of one day's pool.
+echo ""
+echo "--- Block P: incident regressions + state-dir read-only ---"
+
+# ── P-a — 2026-07-22: a fully reserved pool must not read as fully free ──────
+# Every lane carries a `state: assigned` record and NO lane holds a flock: this
+# is exactly the pool that reported 53 lanes FREE while the orchestrator had
+# every one of them reserved. Under the retired accounting (free = resident -
+# live) this pool reports free == resident; the assertion that would have caught
+# the incident on the day is free == 0.
+PA_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-pa-XXXXXX)"
+_TMPDIRS+=("$PA_MOUNT")
+PA_MAP="$(mktemp /tmp/test-warm-lane-audit-pa-map-XXXXXX)"
+_TMPDIRS+=("$PA_MAP")
+
+PA_LANES=(_lane-pa-1 _lane-pa-2 _lane-pa-3 _lane-pa-4 _lane-pa-5 _lane-pa-6)
+: > "$PA_MAP"
+pa_id=9400
+for pa_lane in "${PA_LANES[@]}"; do
+    pa_id=$(( pa_id + 1 ))
+    make_lane "$PA_MOUNT/$pa_lane"
+    make_lane_state "$PA_MOUNT" "$pa_lane" "assigned" "$pa_id"
+    # An unheld lock file: the incident's exact shape -- the sidecar exists,
+    # nothing holds it.
+    touch "$PA_MOUNT/$pa_lane.lock"
+    printf '%s pending\n' "$pa_id" >> "$PA_MAP"
+done
+pa_exp_resident="${#PA_LANES[@]}"
+
+ORACLE_MAP="$PA_MAP" run_helper --mount "$PA_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+
+assert "P-a1: exit 0" test "$RC" -eq 0
+assert "P-a2: free=0 -- a fully reserved pool reports NO free capacity (the 2026-07-22 regression)" \
+    bash -c '[ "$1" = "0" ]' _ "$(_headroom_field "$OUT" free)"
+assert "P-a3: live=0 (no consumer holds any lock)" \
+    bash -c '[ "$1" = "0" ]' _ "$(_headroom_field "$OUT" live)"
+assert "P-a4: pinned=$pa_exp_resident equals the lane count" \
+    bash -c '[ -n "$1" ] && [ "$1" = "$2" ]' _ \
+    "$(_headroom_field "$OUT" pinned)" "$pa_exp_resident"
+assert "P-a5: free != resident (the retired free = resident - live rule is gone)" \
+    bash -c '[ -n "$1" ] && [ -n "$2" ] && [ "$1" != "$2" ]' _ \
+    "$(_headroom_field "$OUT" free)" "$(_headroom_field "$OUT" resident)"
+for pa_lane in "${PA_LANES[@]}"; do
+    assert "P-a6: $pa_lane reports classification=PINNED" \
+        bash -c 'printf "%s\n" "$1" | grep -qE "lane=$2 .*classification=PINNED( |\$)"' \
+        _ "$OUT" "$pa_lane"
+done
+
+# ── P-b — 2026-07-26 (esc-5556-1): pins dominated by not-running work ────────
+# A assigned lanes of which L hold a live flock, plus R released lanes. The
+# incident's own shape: a handful of genuinely live consumers, and the rest of
+# the reservations held by tasks that are not running -- overwhelmingly
+# `pending`, with a single `infra-hold`. `pinned` names that standing capacity
+# loss; the breakdown names its cause.
+PB_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-pb-XXXXXX)"
+_TMPDIRS+=("$PB_MOUNT")
+PB_MAP="$(mktemp /tmp/test-warm-lane-audit-pb-map-XXXXXX)"
+_TMPDIRS+=("$PB_MAP")
+
+# lane : liveness : record state : task id : backing status
+PB_CASES=(
+    "_lane-pb-live1:LIVE:assigned:9501:in-progress"
+    "_lane-pb-live2:LIVE:assigned:9502:in-progress"
+    "_lane-pb-live3:LIVE:assigned:9503:in-progress"
+    "_lane-pb-pin1:IDLE:assigned:9504:pending"
+    "_lane-pb-pin2:IDLE:assigned:9505:pending"
+    "_lane-pb-pin3:IDLE:assigned:9506:pending"
+    "_lane-pb-pin4:IDLE:assigned:9507:infra-hold"
+    "_lane-pb-rel1:IDLE:released:9508:done"
+    "_lane-pb-rel2:IDLE:released:9509:done"
+)
+
+: > "$PB_MAP"
+PB_LIVE_PIDS=()
+for pb_case in "${PB_CASES[@]}"; do
+    IFS=':' read -r pb_lane pb_liveness pb_state pb_task pb_status <<< "$pb_case"
+    printf '%s %s\n' "$pb_task" "$pb_status" >> "$PB_MAP"
+    make_lane "$PB_MOUNT/$pb_lane"
+    make_lane_state "$PB_MOUNT" "$pb_lane" "$pb_state" "$pb_task"
+    if [ "$pb_liveness" = "LIVE" ]; then
+        _hold_lane_lock "$PB_MOUNT" "$pb_lane"
+        PB_LIVE_PIDS+=("$LANE_LOCK_PID")
+    else
+        touch "$PB_MOUNT/$pb_lane.lock"
+    fi
+done
+
+pb_exp_assigned=0
+pb_exp_live=0
+pb_exp_pinned=0
+pb_exp_free=0
+pb_exp_pin_pending=0
+pb_exp_pin_infrahold=0
+for pb_case in "${PB_CASES[@]}"; do
+    IFS=':' read -r pb_lane pb_liveness pb_state pb_task pb_status <<< "$pb_case"
+    if [ "$pb_state" = "assigned" ]; then
+        pb_exp_assigned=$(( pb_exp_assigned + 1 ))
+    fi
+    if [ "$pb_liveness" = "LIVE" ]; then
+        pb_exp_live=$(( pb_exp_live + 1 ))
+        continue
+    fi
+    if [ "$pb_state" = "assigned" ]; then
+        pb_exp_pinned=$(( pb_exp_pinned + 1 ))
+        case "$pb_status" in
+            pending)    pb_exp_pin_pending=$(( pb_exp_pin_pending + 1 )) ;;
+            infra-hold) pb_exp_pin_infrahold=$(( pb_exp_pin_infrahold + 1 )) ;;
+        esac
+    else
+        pb_exp_free=$(( pb_exp_free + 1 ))
+    fi
+done
+pb_exp_resident="${#PB_CASES[@]}"
+
+ORACLE_MAP="$PB_MAP" run_helper --mount "$PB_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+
+assert "P-b1: exit 0" test "$RC" -eq 0
+PB_FIELDS=(
+    "resident:$pb_exp_resident"
+    "assigned:$pb_exp_assigned"
+    "live:$pb_exp_live"
+    "pinned:$pb_exp_pinned"
+    "free:$pb_exp_free"
+)
+for pb_f in "${PB_FIELDS[@]}"; do
+    pb_key="${pb_f%%:*}"
+    pb_want="${pb_f##*:}"
+    assert "P-b2: HEADROOM $pb_key=$pb_want (derived from PB_CASES)" \
+        bash -c '[ "$1" = "$2" ]' _ "$(_headroom_field "$OUT" "$pb_key")" "$pb_want"
+done
+assert "P-b3: partition identity holds on the incident-shaped pool" \
+    _partition_holds \
+    "$(_headroom_field "$OUT" resident)" \
+    "$(_headroom_field "$OUT" live)" \
+    "$(_headroom_field "$OUT" pinned)" \
+    "$(_headroom_field "$OUT" quarantined)" \
+    "$(_headroom_field "$OUT" free)"
+# `assigned` is a CROSS-CUT, so it must exceed `live` here without breaking the
+# partition -- reservations outnumber running consumers, which IS the incident.
+assert "P-b4: assigned > live (reservations outnumber running consumers)" \
+    bash -c '[ -n "$1" ] && [ -n "$2" ] && [ "$1" -gt "$2" ]' _ \
+    "$(_headroom_field "$OUT" assigned)" "$(_headroom_field "$OUT" live)"
+assert "P-b5: PINNED pending=$pb_exp_pin_pending (derived from PB_CASES)" \
+    bash -c '[ "$1" = "$2" ]' _ "$(_pinned_field "$OUT" pending)" "$pb_exp_pin_pending"
+assert "P-b6: PINNED infra-hold=$pb_exp_pin_infrahold (derived from PB_CASES)" \
+    bash -c '[ "$1" = "$2" ]' _ "$(_pinned_field "$OUT" infra-hold)" "$pb_exp_pin_infrahold"
+assert "P-b7: PINNED total equals HEADROOM pinned" \
+    bash -c '[ -n "$1" ] && [ "$1" = "$2" ]' _ \
+    "$(_pinned_field "$OUT" total)" "$(_headroom_field "$OUT" pinned)"
+# "Dominated by pending" is the incident's signature: pending is the strict
+# maximum bucket, so the pool is losing capacity to work that never started
+# rather than to leaks or crashes.
+assert "P-b8: pending is the strictly dominant pin bucket" \
+    _strict_max \
+    "$(_pinned_field "$OUT" pending)" \
+    "$(_pinned_field "$OUT" infra-hold)" "$(_pinned_field "$OUT" blocked)" \
+    "$(_pinned_field "$OUT" terminal)" "$(_pinned_field "$OUT" other)" \
+    "$(_pinned_field "$OUT" unknown)"
+
+# ── P-c — the state dir is read strictly read-only, and never created ────────
+# _snapshot_state_dir <mount> — a sorted path/size/content manifest of every
+# record under <mount>/.lane-state, or a sentinel when the dir is absent. Two
+# snapshots compare byte-identical iff no record was created, removed, resized,
+# or rewritten. Complements Block J's per-lane _snapshot_lane proof: the audit
+# now reads a second on-disk surface, and that surface needs the same guarantee.
+_snapshot_state_dir() {
+    local mount="$1"
+    local dir="$mount/.lane-state"
+    if [ ! -d "$dir" ]; then
+        printf '(no .lane-state)\n'
+        return 0
+    fi
+    local f
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        printf '%s %s %s\n' "$f" "$(wc -c < "$f")" "$(cat "$f")"
+    done < <(find "$dir" -type f 2>/dev/null | sort)
+    return 0
+}
+
+pc_state_before="$(_snapshot_state_dir "$PB_MOUNT")"
+declare -A PC_LANE_BEFORE
+for pb_case in "${PB_CASES[@]}"; do
+    IFS=':' read -r pb_lane _ _ _ _ <<< "$pb_case"
+    PC_LANE_BEFORE["$pb_lane"]="$(_snapshot_lane "$PB_MOUNT/$pb_lane")"
+done
+
+ORACLE_MAP="$PB_MAP" run_helper --mount "$PB_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+assert "P-c1: exit 0" test "$RC" -eq 0
+assert "P-c2: the .lane-state manifest is byte-identical before/after the run (A1/A5)" \
+    bash -c '[ "$1" = "$2" ]' _ "$pc_state_before" "$(_snapshot_state_dir "$PB_MOUNT")"
+for pb_case in "${PB_CASES[@]}"; do
+    IFS=':' read -r pb_lane _ _ _ _ <<< "$pb_case"
+    assert "P-c3: $pb_lane is byte-identical before/after the run over a state-bearing pool" \
+        bash -c '[ "$1" = "$2" ]' _ \
+        "${PC_LANE_BEFORE[$pb_lane]}" "$(_snapshot_lane "$PB_MOUNT/$pb_lane")"
+done
+
+# A mount with NO state dir: the audit must not conjure one. The state read is
+# non-creating for exactly the reason the <dir>.lock probe is (A1) -- an
+# advisory reader that materializes pool state is no longer a reader.
+PC_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-pc-XXXXXX)"
+_TMPDIRS+=("$PC_MOUNT")
+make_lane "$PC_MOUNT/_lane-pc"
+assert "P-c4: the fixture mount has no .lane-state dir before the run" \
+    bash -c '[ ! -e "$1" ]' _ "$PC_MOUNT/.lane-state"
+run_helper --mount "$PC_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle-fail.sh"
+assert "P-c5: exit 0" test "$RC" -eq 0
+assert "P-c6: the run did NOT create a .lane-state dir" \
+    bash -c '[ ! -e "$1" ]' _ "$PC_MOUNT/.lane-state"
+# ...nor a record under an explicitly-pointed-at, nonexistent state dir.
+PC_MISSING_STATE="$PC_MOUNT/nowhere/.lane-state"
+REIFY_WARM_LANE_AUDIT_STATE_DIR="$PC_MISSING_STATE" \
+    run_helper --mount "$PC_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle-fail.sh"
+assert "P-c7: exit 0 under a nonexistent explicit state dir" test "$RC" -eq 0
+assert "P-c8: a nonexistent explicit state dir is not created either" \
+    bash -c '[ ! -e "$1" ]' _ "$PC_MISSING_STATE"
+
+for pb_pid in "${PB_LIVE_PIDS[@]+${PB_LIVE_PIDS[@]}}"; do
+    kill "$pb_pid" 2>/dev/null || true
+done
+_BGPIDS=()  # clear so cleanup doesn't double-kill
 
 test_summary
