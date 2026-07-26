@@ -431,17 +431,24 @@ assert "C5/no-main: full scope forced (RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1)" \
 
 # ---------------------------------------------------------------------------
 # Scenario B-KLOC: new top-level standalone crate test file on a branch
-# triggers the harness-kLOC guard (task 5328).
+# triggers the harness-kLOC guard (task 5328). Task 5621 broadens the trigger
+# to ALSO accept a nested harness-module file
+# (crates/<c>/tests/harness_<subsystem>/**, recursive) as an equally valid
+# growth vector for that harness's rule-(a) kLOC measure.
 #
 # tests/infra/test_harness_kloc_cap.sh (the C2 anti-re-accretion guard) has no
 # row in scripts/verify-pipeline-infra-tests.txt (its trigger is not a single
 # artifact path — it is *adding* a new top-level standalone
-# crates/<c>/tests/*.rs file in one of the 5 consolidatable crates). This
-# exercises select_harness_kloc_guard()'s own added-file scan (git diff
-# --diff-filter=A against the merge-base), wired into SELECTED_INFRA_GLOBS
-# alongside select_infra_tests(). Positive cases pin two of the 5
-# consolidatable crates; boundary cases guard against over-firing on a source
-# file, a nested harness-module file, and a non-consolidatable crate's test.
+# crates/<c>/tests/*.rs file, OR a nested crates/<c>/tests/harness_*/** file,
+# in one of the 5 consolidatable crates). This exercises
+# select_harness_kloc_guard()'s own added-file scan (git diff --diff-filter=A
+# against the merge-base), wired into SELECTED_INFRA_GLOBS alongside
+# select_infra_tests(). Positive cases pin two of the 5 consolidatable crates
+# via the top-level vector, plus a further two via the nested-harness-module
+# vector (one exercising recursion below the module dir). Boundary cases
+# guard against over-firing on a source file, a nested file OUTSIDE any
+# harness_*/ module dir, and a non-consolidatable crate's test (both the
+# top-level and the nested-harness-module shape).
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Scenario B-KLOC: new crates/reify-eval/tests/*.rs branch -> harness-kLOC guard selected (RED until step-2) ---"
@@ -462,9 +469,27 @@ assert "B-KLOC-src: plan LACKS test_harness_kloc_cap.sh (src file, not a top-lev
     plan_lacks 'tests/infra/test_harness_kloc_cap\.sh'
 
 echo ""
-echo "--- Scenario B-KLOC-nested: crates/reify-eval/tests/harness_probe/nested.rs branch (nested harness-module file) -> guard NOT selected (no-op boundary) ---"
+echo "--- Scenario B-KLOC-nested: crates/reify-eval/tests/harness_probe/nested.rs branch (nested harness-module file) -> guard selected (growth vector, RED until step-2) ---"
 plan_for_branch crates/reify-eval/tests/harness_probe/nested.rs
-assert "B-KLOC-nested: plan LACKS test_harness_kloc_cap.sh (nested, not top-level tests/*.rs)" \
+assert "B-KLOC-nested: plan contains test_harness_kloc_cap.sh (nested harness-module file IS a growth vector)" \
+    plan_has 'tests/infra/test_harness_kloc_cap\.sh'
+
+echo ""
+echo "--- Scenario B-KLOC-nested-deep: crates/reify-cli/tests/harness_cli/sub/deep.rs branch (recursion below the module dir) -> guard selected (2nd crate, RED until step-2) ---"
+plan_for_branch crates/reify-cli/tests/harness_cli/sub/deep.rs
+assert "B-KLOC-nested-deep: plan contains test_harness_kloc_cap.sh (recursive nested harness-module file)" \
+    plan_has 'tests/infra/test_harness_kloc_cap\.sh'
+
+echo ""
+echo "--- Scenario B-KLOC-nested-nonharness: crates/reify-eval/tests/common/helper.rs branch (nested, NOT under a harness_*/ module dir) -> guard NOT selected (no-op boundary) ---"
+plan_for_branch crates/reify-eval/tests/common/helper.rs
+assert "B-KLOC-nested-nonharness: plan LACKS test_harness_kloc_cap.sh (nested file outside any harness_*/ module dir contributes nothing to a harness's measure)" \
+    plan_lacks 'tests/infra/test_harness_kloc_cap\.sh'
+
+echo ""
+echo "--- Scenario B-KLOC-nested-noncons: crates/reify-doc/tests/harness_probe/nested.rs branch (nested harness-module shape, crate NOT one of the 5 consolidatable) -> guard NOT selected (no-op boundary) ---"
+plan_for_branch crates/reify-doc/tests/harness_probe/nested.rs
+assert "B-KLOC-nested-noncons: plan LACKS test_harness_kloc_cap.sh (reify-doc is not consolidatable, even for the nested-harness-module vector)" \
     plan_lacks 'tests/infra/test_harness_kloc_cap\.sh'
 
 echo ""
