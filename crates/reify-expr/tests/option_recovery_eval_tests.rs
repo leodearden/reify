@@ -86,21 +86,9 @@ fn eval_simple(expr: &CompiledExpr) -> Value {
     eval_expr(expr, &EvalContext::simple(&ValueMap::new()))
 }
 
-/// Locate the `default_expr` of a named value cell in the first template.
-fn cell_expr_stdlib<'a>(
-    module: &'a reify_compiler::CompiledModule,
-    member: &str,
-) -> &'a reify_ir::CompiledExpr {
-    let template = &module.templates[0];
-    template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == member)
-        .unwrap_or_else(|| panic!("value cell '{member}' not found"))
-        .default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("value cell '{member}' has no default_expr"))
-}
+// The `e2e_*_with_stdlib` tests below locate a compiled cell's `default_expr`
+// with `reify_test_support::get_let_expr`, the shared helper — this file used to
+// carry a private `cell_expr_stdlib` copy of it.
 
 // ── step-1: unwrap_or ─────────────────────────────────────────────────────────
 
@@ -359,7 +347,7 @@ fn e2e_or_default_some_with_stdlib() {
     let module = reify_test_support::compile_source_with_stdlib(
         "structure S { let v = or_default(some(5mm), 0mm) }",
     );
-    let expr = cell_expr_stdlib(&module, "v");
+    let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
     let ctx = reify_expr::EvalContext::new(&values, &module.functions);
     assert_eq!(
@@ -392,7 +380,7 @@ fn e2e_unwrap_or_some_5mm_with_stdlib() {
     let module = reify_test_support::compile_source_with_stdlib(
         "structure S { let v = unwrap_or(some(5mm), 0mm) }",
     );
-    let expr = cell_expr_stdlib(&module, "v");
+    let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
     let ctx = reify_expr::EvalContext::new(&values, &module.functions);
     let result = reify_expr::eval_expr(expr, &ctx);
@@ -623,7 +611,7 @@ fn is_none_undef_returns_undef() {
 fn e2e_is_some_none_with_stdlib() {
     let module =
         reify_test_support::compile_source_with_stdlib("structure S { let v = is_some(none) }");
-    let expr = cell_expr_stdlib(&module, "v");
+    let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
     let ctx = reify_expr::EvalContext::new(&values, &module.functions);
     assert_eq!(
@@ -656,7 +644,7 @@ fn e2e_is_some_none_with_stdlib() {
 fn e2e_is_none_none_with_stdlib() {
     let module =
         reify_test_support::compile_source_with_stdlib("structure S { let v = is_none(none) }");
-    let expr = cell_expr_stdlib(&module, "v");
+    let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
     let ctx = reify_expr::EvalContext::new(&values, &module.functions);
     assert_eq!(
@@ -787,7 +775,7 @@ fn e2e_get_or_absent_key_with_stdlib() {
     let module = reify_test_support::compile_source_with_stdlib(
         r#"structure S { let v = get_or(map{"k" => 1mm}, "absent", 0mm) }"#,
     );
-    let expr = cell_expr_stdlib(&module, "v");
+    let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
     let ctx = reify_expr::EvalContext::new(&values, &module.functions);
     let result = reify_expr::eval_expr(expr, &ctx);
@@ -821,7 +809,7 @@ fn e2e_get_or_present_key_with_stdlib() {
     let module = reify_test_support::compile_source_with_stdlib(
         r#"structure S { let v = get_or(map{"k" => 1mm}, "k", 0mm) }"#,
     );
-    let expr = cell_expr_stdlib(&module, "v");
+    let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
     let ctx = reify_expr::EvalContext::new(&values, &module.functions);
     let result = reify_expr::eval_expr(expr, &ctx);
@@ -871,7 +859,7 @@ fn e2e_get_or_undef_map_with_stdlib() {
     let module = reify_test_support::compile_source_with_stdlib(
         r#"structure S { let v = get_or(undef, "k", 0mm) }"#,
     );
-    let expr = cell_expr_stdlib(&module, "v");
+    let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
     let ctx = reify_expr::EvalContext::new(&values, &module.functions);
     assert_eq!(
@@ -1072,7 +1060,7 @@ fn e2e_map_or_some_with_stdlib() {
     let module = reify_test_support::compile_source_with_stdlib(
         "structure S { let v = map_or(some(5mm), 0mm, |x: Length| x * 2) }",
     );
-    let expr = cell_expr_stdlib(&module, "v");
+    let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
     let ctx = reify_expr::EvalContext::new(&values, &module.functions);
     assert_eq!(

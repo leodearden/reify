@@ -129,24 +129,9 @@ fn eval_simple(expr: &CompiledExpr) -> Value {
     eval_expr(expr, &EvalContext::simple(&ValueMap::new()))
 }
 
-/// Locate the `default_expr` of a named value cell in the first template.
-///
-/// Mirrors the helper of the same name in `option_recovery_eval_tests.rs` —
-/// used only by the stdlib-compiled e2e section at the end of this file.
-fn cell_expr_stdlib<'a>(
-    module: &'a reify_compiler::CompiledModule,
-    member: &str,
-) -> &'a reify_ir::CompiledExpr {
-    let template = &module.templates[0];
-    template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == member)
-        .unwrap_or_else(|| panic!("value cell '{member}' not found"))
-        .default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("value cell '{member}' has no default_expr"))
-}
+// The `e2e_*_with_stdlib` section at the end of this file locates a compiled
+// cell's `default_expr` with `reify_test_support::get_let_expr`, the shared
+// helper — no private copy lives here.
 
 // ── unwrap_or over a Result subject ──────────────────────────────────────────
 
@@ -675,7 +660,7 @@ fn e2e_result_unwrap_or_ok_with_stdlib() {
     let module = reify_test_support::compile_source_with_stdlib(
         "structure S { let v = unwrap_or(Ok { value: 5mm }, 0mm) }",
     );
-    let expr = cell_expr_stdlib(&module, "v");
+    let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
     let ctx = EvalContext::new(&values, &module.functions);
     assert_eq!(
@@ -709,7 +694,7 @@ fn e2e_result_or_else_err_with_stdlib() {
     let module = reify_test_support::compile_source_with_stdlib(
         r#"structure S { let v = or_else(Err { error: "e" }, Ok { value: 7mm }) }"#,
     );
-    let expr = cell_expr_stdlib(&module, "v");
+    let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
     let ctx = EvalContext::new(&values, &module.functions);
     let val_7mm = Value::Scalar {
@@ -745,7 +730,7 @@ fn e2e_result_is_ok_err_with_stdlib() {
     let module = reify_test_support::compile_source_with_stdlib(
         r#"structure S { let v = is_ok(Err { error: "e" }) }"#,
     );
-    let expr = cell_expr_stdlib(&module, "v");
+    let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
     let ctx = EvalContext::new(&values, &module.functions);
     assert_eq!(
@@ -779,7 +764,7 @@ fn e2e_result_is_err_err_with_stdlib() {
     let module = reify_test_support::compile_source_with_stdlib(
         r#"structure S { let v = is_err(Err { error: "e" }) }"#,
     );
-    let expr = cell_expr_stdlib(&module, "v");
+    let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
     let ctx = EvalContext::new(&values, &module.functions);
     assert_eq!(
@@ -811,7 +796,7 @@ fn e2e_ok_or_some_with_stdlib() {
     let module = reify_test_support::compile_source_with_stdlib(
         r#"structure S { let v = ok_or(some(5mm), "e") }"#,
     );
-    let expr = cell_expr_stdlib(&module, "v");
+    let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
     let ctx = EvalContext::new(&values, &module.functions);
     assert_eq!(
@@ -844,7 +829,7 @@ fn e2e_ok_or_none_with_stdlib() {
     let module = reify_test_support::compile_source_with_stdlib(
         r#"structure S { let v = ok_or(none, "e") }"#,
     );
-    let expr = cell_expr_stdlib(&module, "v");
+    let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
     let ctx = EvalContext::new(&values, &module.functions);
     assert_eq!(
@@ -894,7 +879,7 @@ fn e2e_map_err_err_with_stdlib() {
     let module = reify_test_support::compile_source_with_stdlib(
         "structure S { let v = map_err(Err { error: 3mm }, |e: Length| e * 2) }",
     );
-    let expr = cell_expr_stdlib(&module, "v");
+    let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
     let ctx = EvalContext::new(&values, &module.functions);
     let val_6mm = Value::Scalar {

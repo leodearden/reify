@@ -124,24 +124,9 @@ fn eval_simple(expr: &CompiledExpr) -> Value {
     eval_expr(expr, &EvalContext::simple(&ValueMap::new()))
 }
 
-/// Locate the `default_expr` of a named value cell in the first template.
-///
-/// Mirrors the helper of the same name in `option_recovery_eval_tests.rs` —
-/// used only by the stdlib-compiled e2e section at the end of this file.
-fn cell_expr_stdlib<'a>(
-    module: &'a reify_compiler::CompiledModule,
-    member: &str,
-) -> &'a reify_ir::CompiledExpr {
-    let template = &module.templates[0];
-    template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == member)
-        .unwrap_or_else(|| panic!("value cell '{member}' not found"))
-        .default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("value cell '{member}' has no default_expr"))
-}
+// The `e2e_*_with_stdlib` test at the end of this file locates a compiled
+// cell's `default_expr` with `reify_test_support::get_let_expr`, the shared
+// helper — no private copy lives here.
 
 // ── fallback over a Result subject ───────────────────────────────────────────
 
@@ -281,7 +266,7 @@ fn e2e_result_fallback_ok_with_stdlib() {
     let module = reify_test_support::compile_source_with_stdlib(
         "structure S { let v = fallback(Ok { value: 5mm }, 0mm) }",
     );
-    let expr = cell_expr_stdlib(&module, "v");
+    let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
     let ctx = EvalContext::new(&values, &module.functions);
     assert_eq!(
