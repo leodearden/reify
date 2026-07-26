@@ -1660,6 +1660,27 @@ mod cli {
         drop(decoy);
     }
 
+    /// The fixture-repo helpers must survive a real *ambient* hook git
+    /// environment, not just a per-child one.
+    ///
+    /// `ptodo_fixture_sweep_survives_ambient_hook_git_env` above poisons only
+    /// the spawned binary, so it proves the PRODUCTION path. It cannot prove
+    /// the helper path: `git_init_commit_all` runs in the *test* process,
+    /// whose environment that test deliberately leaves clean. Under a real
+    /// hook both are poisoned — which is how `git ["add", "."] exited
+    /// Some(128)` was observed, the fixture repo's `add` colliding with the
+    /// parent repository's `index.lock`.
+    ///
+    /// So re-run the four `cli::ptodo_*` git-fixture tests in a child process
+    /// that has the poison ambient. The name of this test is deliberately
+    /// outside the `ptodo_` filter prefix so the replay cannot select itself;
+    /// the helper's `REIFY_AUDIT_HOOK_ENV_REPLAY` guard is the second line of
+    /// defence.
+    #[test]
+    fn hook_env_replay_of_ptodo_git_fixture_tests() {
+        common::git_env::replay_self_under_hook_git_env("cli::ptodo_");
+    }
+
     /// §6.7 PTODO liveness degradation (end-to-end): `--pattern PTODO` over a
     /// repo with a cited marker and an untracked marker but NO
     /// `.taskmaster/tasks/tasks.db` must (1) emit the EXACT §6.7 breadcrumb on
