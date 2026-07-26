@@ -1,4 +1,6 @@
+use std::cell::Cell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -269,6 +271,74 @@ fn wait_for_returns_false_after_timeout_when_never_satisfied() {
         start.elapsed() >= Duration::from_millis(150),
         "should wait out the full timeout, took {:?}",
         start.elapsed()
+    );
+}
+
+#[test]
+fn wait_until_with_retry_reissues_the_attempt_until_the_condition_holds() {
+    // `attempt` only flips the shared counter; `condition` reads the SAME
+    // counter and is satisfied once it reaches 3. If `wait_until_with_retry`
+    // only invoked `attempt` once (like a plain poll), the condition would
+    // never hold and this would time out. Reissuing it is exactly the
+    // property the de-flake depends on: a stimulus (e.g. a write) lost to a
+    // not-yet-live watcher must be re-issued, not just waited on.
+    let counter = Rc::new(Cell::new(0u32));
+    let attempt_counter = counter.clone();
+
+    let found = wait_until_with_retry(
+        move || attempt_counter.set(attempt_counter.get() + 1),
+        Duration::from_millis(20),
+        Duration::from_millis(300),
+        || counter.get() >= 3,
+    );
+
+    assert!(
+        found,
+        "condition should be satisfied once attempt has been reissued enough times"
+    );
+}
+
+#[test]
+fn wait_until_with_retry_returns_true_without_waiting_when_already_satisfied() {
+    let start = Instant::now();
+    let found = wait_until_with_retry(
+        || {},
+        Duration::from_millis(150),
+        Duration::from_millis(300),
+        || true,
+    );
+    assert!(found, "already-satisfied condition should return true");
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "should return promptly when already satisfied, took {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn wait_until_with_retry_returns_false_after_the_timeout_when_never_satisfied() {
+    let counter = Rc::new(Cell::new(0u32));
+    let attempt_counter = counter.clone();
+
+    let start = Instant::now();
+    let found = wait_until_with_retry(
+        move || attempt_counter.set(attempt_counter.get() + 1),
+        Duration::from_millis(50),
+        Duration::from_millis(200),
+        || false,
+    );
+
+    assert!(!found, "condition is never satisfied, should time out");
+    assert!(
+        start.elapsed() >= Duration::from_millis(200),
+        "should wait out the full timeout, took {:?}",
+        start.elapsed()
+    );
+    assert!(
+        counter.get() > 1,
+        "attempt should have been reissued more than once while waiting \
+         for the condition, got {}",
+        counter.get()
     );
 }
 
