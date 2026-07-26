@@ -6,10 +6,25 @@ module surface_finish_functional
 // vocabulary parses (tree-sitter, 0 ERROR nodes) AND type-checks (`reify check`
 // exit 0, zero unresolved type/name) AND the flat-cost BOM roll-up evaluates
 // deterministically (`reify eval` → total_finishing_cost = 24 USD). Self-contained:
-// re-declares the cosmetic Color/Finish/Appearance (reused from materials_appearance.ri)
-// and a Material stand-in so the fixture is registry-free; task α lands the NEW
-// vocabulary (Coating/CoatingProcess/FinishProcess/TreatmentProcess/Treatment/
-// SurfaceTreated + ArealCostRate) into a real stdlib module.
+// re-declares the cosmetic Color/Finish/Appearance and a Material stand-in so the
+// fixture is registry-free.
+//
+// Task α has since landed the vocabulary into real stdlib modules:
+// crates/reify-compiler/stdlib/surface_finish.ri owns Coating, CoatingProcess,
+// FinishProcess, TreatmentProcess, Treatment, SurfaceTreated and ArealCostRate;
+// crates/reify-compiler/stdlib/materials_appearance.ri owns Color, Finish and
+// Appearance. The stdlib-consuming twin of this file is
+// examples/surface_finish_functional.ri, which is examples_smoke-covered and
+// carries no redeclarations (see its :9).
+//
+// The redeclarations HERE are intentional and must not be swept. This is a
+// pre-implementation G3 gate fixture: its registry-free self-containment is
+// cited as stamped PASS evidence in
+// docs/prds/v0_6/surface-finish-functional.capability-manifest.md, from a point
+// when the stdlib modules did not exist, so rewriting it would invalidate
+// historical gate evidence. The identical arrangement is documented for the
+// sibling fixture docs/prds/v0_6/fixtures/appearance_surface.ri at
+// examples/appearance_surface.ri:6-11.
 
 enum Finish { Matte, Satin, Gloss }
 structure def Color {
