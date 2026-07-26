@@ -19663,4 +19663,153 @@ fn resolve_param_default_span_resolves_an_occurrence_entity() {
         .expect("Machining.feed_rate has a default literal");
     assert_eq!(&SRC[span.start as usize..span.end as usize], "100");
 }
+// --- task 5208: build/realization-time geometry errors reach the designer ----
+
+/// A source whose curated 3-arg `fillet` is deliberately broken: the
+/// `edges_at_height` plane (`999mm`) is nowhere near the 5mm-thick plate, so the
+/// edge selector resolves to ZERO edges and the build refuses to silently fillet
+/// all edges (`E_EMPTY_SELECTION` — the task-3295 anti-fake-done guard).
+///
+/// The source **compiles cleanly** — the breakage is a *value*, not a type or a
+/// parse error — so `load_from_source` succeeds and `compiled.diagnostics` is
+/// empty. The failure is born at build/realization time, inside
+/// `tessellate_snapshot`, which is precisely the class of error task 5208 must
+/// keep visible now that curated edge selection is genuinely reachable.
+fn broken_curated_fillet_source() -> &'static str {
+    r#"structure def BrokenFillet {
+    param plate_size: Length = 20mm
+    param plate_thickness: Length = 5mm
+    param soften: Length = 1mm
+
+    let plate = box(plate_size, plate_size, plate_thickness)
+
+    param geometry: Solid = fillet(plate, edges_at_height(plate, 999mm, 0.5mm), soften)
+}"#
+}
+
+/// Task 5208 (step-11/12): a build/realization-time geometry-op **Error** must
+/// reach the GUI's *compile-diagnostic* surface — the panel a designer actually
+/// reads — instead of vanishing into `tessellation_diagnostics` and leaving them
+/// with a blank viewport and an empty diagnostics list.
+///
+/// Task 5208 makes curated 3-arg `fillet`/`chamfer` reachable through the
+/// production `.ri` pipeline. The flip side of a live capability is that its
+/// *residual* failures become real designer-facing errors: a selector that picks
+/// zero edges, a radius the kernel cannot apply, a reference to an unrealized
+/// solid. Those are authored mistakes, and they must be reported as such.
+///
+/// Before this task `EngineSession::build_compile_diagnostics` folded in only
+/// static `compiled.diagnostics` (via `get_diagnostics`) plus live-edit and
+/// hot-reload failures. Errors raised by the build/realization pass landed only
+/// in the separate `tessellation_diagnostics` stream, so
+/// `commands::engine_state_json`'s `compile_diagnostics` came back EMPTY for a
+/// program that produced no geometry at all — the exact "silent empty viewport"
+/// failure mode task 5197 calls out.
+///
+/// Disjointness is preserved in the direction its contract states
+/// (`build_gui_state_compile_diagnostics_populated_from_warning`: compile
+/// diagnostics must not leak into `tessellation_diagnostics`). This test asserts
+/// the *reverse* flow for the Error class only — Warning/Info tessellation
+/// diagnostics (e.g. the "no topology extraction fixture" seeder warning) must
+/// stay out of `compile_diagnostics` so the designer-facing panel does not fill
+/// with kernel chatter.
+///
+/// Kernel-independent: `MockGeometryKernel` registers no extracted edges, so the
+/// selector resolves to zero edges under the mock exactly as a mis-authored
+/// `edges_at_height` does under real OCCT. No `cfg(has_occt)` gate needed.
+#[test]
+fn build_gui_state_surfaces_build_time_geometry_error_in_compile_diagnostics() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(broken_curated_fillet_source(), "broken_fillet")
+        .expect(
+            "load_from_source must succeed: the broken selector is a build-time value failure, \
+             not a compile error",
+        );
+
+    // The failure must be visible in the designer-facing compile-diagnostic
+    // surface, as an Error.
+    let errors: Vec<&DiagnosticInfo> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error")
+        .collect();
+
+    assert!(
+        !errors.is_empty(),
+        "a curated fillet that fails to build must surface an Error in compile_diagnostics — \
+         otherwise the designer gets an empty viewport with no explanation.\n\
+         compile_diagnostics: {:?}\n\
+         tessellation_diagnostics: {:?}",
+        state.compile_diagnostics,
+        state.tessellation_diagnostics
+    );
+
+    // …and it must name the offending op, not just say "something failed".
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.to_lowercase().contains("fillet")),
+        "the surfaced Error must name the failing `fillet` op so the designer can locate it; \
+         got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // Only the Error class crosses over: non-Error tessellation diagnostics must
+    // NOT be duplicated into the compile-diagnostic panel.
+    let non_error_tess: Vec<&String> = state
+        .tessellation_diagnostics
+        .iter()
+        .filter(|d| d.severity != "Error")
+        .map(|d| &d.message)
+        .collect();
+    for msg in &non_error_tess {
+        assert!(
+            !state
+                .compile_diagnostics
+                .iter()
+                .any(|c| &&c.message == msg),
+            "non-Error tessellation diagnostic {msg:?} must not be folded into \
+             compile_diagnostics — only the Error class crosses over.\n\
+             compile_diagnostics: {:?}",
+            state.compile_diagnostics
+        );
+    }
+}
+
+/// Guard for the other half of the step-12 contract: folding build-time Errors
+/// into `compile_diagnostics` must not make a CLEAN program report errors.
+///
+/// `bracket_source` tessellates successfully under `MockGeometryKernel`, so
+/// `compile_diagnostics` must stay free of Error entries. Without this, a fold
+/// that mistakenly copied *all* tessellation diagnostics (or misclassified
+/// severity) would light up the designer's panel on every clean load.
+#[test]
+fn build_gui_state_clean_source_has_no_error_compile_diagnostics() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new()
+        .with_extracted_faces(reify_ir::GeometryHandleId(1), vec![])
+        .with_extracted_edges(reify_ir::GeometryHandleId(1), vec![])
+        .with_extracted_vertices(reify_ir::GeometryHandleId(1), vec![]);
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed with valid bracket source");
+
+    let errors: Vec<&DiagnosticInfo> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error")
+        .collect();
+
+    assert!(
+        errors.is_empty(),
+        "a clean source must produce no Error compile_diagnostics; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
 
