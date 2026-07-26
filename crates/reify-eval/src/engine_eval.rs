@@ -10730,3 +10730,256 @@ mod reeval_cone_cell_provenance_and_determinacy_tests {
         );
     }
 }
+
+/// [JOINT-DRIVE β] (task #5189 step-7) — the SCC-ADMISSIBILITY guardrail on
+/// `build_dependent_cells` (PRD `docs/prds/v0_6/whole-model-joint-drive-seam.md`
+/// §6.4).
+///
+/// ## Why a length check IS the admissibility test
+///
+/// `build_dependent_cells`'s stage-(e) node set EXCLUDES auto params BY
+/// CONSTRUCTION (stage (a) only keeps non-auto cells carrying a plain
+/// `default_expr`). The one ADMISSIBLE back-edge in a joint-drive SCC — the
+/// solver feedback edge — runs THROUGH an auto, so it can never appear in this
+/// induced graph. Therefore the induced sub-DAG is acyclic for every admissible
+/// SCC, and any node Kahn's algorithm drops is, by construction, an
+/// INADMISSIBLE data cycle. That equivalence is exactly §6.4's INVARIANT
+/// ("admitted iff its only back-edge is a solver feedback edge").
+///
+/// ## Why this cycle is invisible to every existing emitter
+///
+/// `build_dependent_cells` is CROSS-TEMPLATE by construction (it walks
+/// `all_templates`), so an `A.x ↔ B.y` value cycle is out of reach of all three
+/// per-template cycle detectors (`detect_let_cycle`,
+/// `build_combined_param_let_graph`, `unfold.rs`'s let-cycle pass) — and
+/// `topological_sort` (Kahn's) returns a `Vec`, cannot error, and silently omits
+/// cycle members. Without the guardrail the cycle is swallowed with ZERO
+/// user-visible signal.
+#[cfg(test)]
+mod dependent_cells_admissibility_tests {
+    use std::collections::HashSet;
+
+    use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, Severity, Type, ValueCellId};
+    use reify_ir::{BinOp, CompiledExpr, CompiledFunction};
+    use reify_test_support::{TopologyTemplateBuilder, binop, literal, mm, value_ref};
+
+    use super::build_dependent_cells;
+
+    /// Money-dimensioned scalar, mirroring the stdlib `Costed` `line_cost` shape
+    /// (same helper δ's cluster-formation fixtures use).
+    fn money_ty() -> Type {
+        Type::Scalar {
+            dimension: DimensionVector::MONEY,
+        }
+    }
+
+    /// The ids in `dependent_cells`, in stored (topological) order.
+    fn ids(cells: &[(ValueCellId, CompiledExpr)]) -> Vec<ValueCellId> {
+        cells.iter().map(|(id, _)| id.clone()).collect()
+    }
+
+    /// The `Severity::Error` diagnostics carrying `DiagnosticCode::EvalCycle`.
+    fn cycle_errors(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> {
+        diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error && d.code == Some(DiagnosticCode::EvalCycle))
+            .collect()
+    }
+
+    /// (a)+(b) A CROSS-TEMPLATE value cycle inside the stage-(e) node set must
+    /// raise a `DiagnosticCode::EvalCycle` ERROR naming the cyclic cells by their
+    /// FULLY-QUALIFIED ids, and the returned list must hold only the acyclic
+    /// remainder — the dropped cells are never resurrected into β's per-trial
+    /// fold or α's post-solve write-back.
+    ///
+    /// Fixture (both cycle members survive stages (b)–(d), so they genuinely
+    /// enter the node set):
+    ///
+    /// ```text
+    /// Alpha.q    : auto (the cluster auto)
+    /// Alpha.x    = Beta.y + Alpha.q      ─┐ transitively reads the auto AND
+    /// Beta.y     = Alpha.x + 1           ─┘ feeds the seed ⇒ both in node set
+    /// Alpha.z    = Alpha.q * 2             the ACYCLIC remainder
+    /// seed       = Alpha.x + Alpha.z
+    /// ```
+    ///
+    /// RED today: `build_dependent_cells` takes no `&mut Vec<Diagnostic>` at all
+    /// and never compares `topological_sort`'s output length against its node
+    /// set — unlike EVERY other caller of that primitive in this file.
+    #[test]
+    fn cross_template_value_cycle_errors_and_is_dropped_from_dependent_cells() {
+        let alpha_q = ValueCellId::new("Alpha", "q");
+        let alpha_x = ValueCellId::new("Alpha", "x");
+        let alpha_z = ValueCellId::new("Alpha", "z");
+        let beta_y = ValueCellId::new("Beta", "y");
+
+        // Alpha owns the auto `q`, the cycle head `x`, and the acyclic `z`.
+        let alpha = TopologyTemplateBuilder::new("Alpha")
+            .auto_param_free("Alpha", "q", Type::dimensionless_scalar())
+            .let_binding(
+                "Alpha",
+                "x",
+                money_ty(),
+                binop(
+                    BinOp::Add,
+                    value_ref("Beta", "y"),
+                    value_ref("Alpha", "q"),
+                ),
+            )
+            .let_binding(
+                "Alpha",
+                "z",
+                money_ty(),
+                binop(BinOp::Mul, value_ref("Alpha", "q"), literal(mm(2.0))),
+            )
+            .build();
+
+        // Beta closes the cycle back onto Alpha.x — a CROSS-TEMPLATE back-edge
+        // that does NOT run through an auto, hence inadmissible.
+        let beta = TopologyTemplateBuilder::new("Beta")
+            .let_binding(
+                "Beta",
+                "y",
+                money_ty(),
+                binop(BinOp::Add, value_ref("Alpha", "x"), literal(mm(1.0))),
+            )
+            .build();
+
+        let templates = vec![alpha, beta];
+        let seed = binop(
+            BinOp::Add,
+            value_ref("Alpha", "x"),
+            value_ref("Alpha", "z"),
+        );
+        let seed_exprs: Vec<&CompiledExpr> = vec![&seed];
+        let auto_ids: HashSet<ValueCellId> = [alpha_q.clone()].into_iter().collect();
+        let no_fns: [CompiledFunction; 0] = [];
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let cells = build_dependent_cells(
+            &seed_exprs,
+            &templates,
+            &auto_ids,
+            &no_fns,
+            &mut diagnostics,
+        );
+        let got = ids(&cells);
+
+        // (a) ERROR diagnostic, coded EvalCycle, naming BOTH cyclic cells by
+        //     their fully-qualified `ValueCellId` (bare member names would be
+        //     ambiguous for a cross-template cycle: `Alpha.x` vs `Beta.x`).
+        let errors = cycle_errors(&diagnostics);
+        assert_eq!(
+            errors.len(),
+            1,
+            "the cross-template value cycle must raise EXACTLY ONE \
+             Severity::Error diagnostic coded DiagnosticCode::EvalCycle; \
+             got {diagnostics:?}",
+        );
+        let msg = &errors[0].message;
+        assert!(
+            msg.contains("Alpha.x"),
+            "the cycle diagnostic must name the cyclic cell by its \
+             FULLY-QUALIFIED id `Alpha.x` (this detector is cross-template, so \
+             the bare member name `detect_let_cycle` uses is ambiguous here); \
+             got {msg:?}",
+        );
+        assert!(
+            msg.contains("Beta.y"),
+            "the cycle diagnostic must name the cyclic cell by its \
+             FULLY-QUALIFIED id `Beta.y`; got {msg:?}",
+        );
+
+        // (b) Only the acyclic remainder survives — the dropped cycle members
+        //     must never reach the fold.
+        assert!(
+            !got.contains(&alpha_x),
+            "the cycle member `Alpha.x` must be ABSENT from dependent_cells \
+             (dropped by Kahn's algorithm, never resurrected); got {got:?}",
+        );
+        assert!(
+            !got.contains(&beta_y),
+            "the cycle member `Beta.y` must be ABSENT from dependent_cells; \
+             got {got:?}",
+        );
+        assert_eq!(
+            got,
+            vec![alpha_z],
+            "dependent_cells must be EXACTLY the acyclic remainder \
+             [`Alpha.z`]; got {got:?}",
+        );
+    }
+
+    /// NEGATIVE CONTROL — the LEGAL joint-drive shape (child auto → `line_cost`
+    /// → parent aggregate → objective, whose sole back-edge runs THROUGH the
+    /// solver) must produce ZERO diagnostics and a COMPLETE topological order.
+    ///
+    /// This is the assertion that pins §6.4's "admissible iff its only back-edge
+    /// is a solver feedback edge": the guardrail must not fire on the very shape
+    /// the whole seam exists to admit.
+    ///
+    /// ```text
+    /// Child.q         : auto            Parent.total = Child.line_cost
+    /// Child.line_cost = unit_cost * q   seed         = Parent.total
+    /// ```
+    #[test]
+    fn legal_joint_drive_shape_yields_no_diagnostic_and_a_complete_order() {
+        let line_cost = ValueCellId::new("Child", "line_cost");
+        let total = ValueCellId::new("Parent", "total");
+
+        let parent = TopologyTemplateBuilder::new("Parent")
+            .let_binding(
+                "Parent",
+                "total",
+                money_ty(),
+                value_ref("Child", "line_cost"),
+            )
+            .build();
+
+        let child = TopologyTemplateBuilder::new("Child")
+            .trait_bound("Costed")
+            .auto_param_free("Child", "q", Type::dimensionless_scalar())
+            .param("Child", "unit_cost", money_ty(), Some(literal(mm(5.0))))
+            .let_binding(
+                "Child",
+                "line_cost",
+                money_ty(),
+                binop(
+                    BinOp::Mul,
+                    value_ref("Child", "unit_cost"),
+                    value_ref("Child", "q"),
+                ),
+            )
+            .build();
+
+        let templates = vec![parent, child];
+        let seed = value_ref("Parent", "total");
+        let seed_exprs: Vec<&CompiledExpr> = vec![&seed];
+        let auto_ids: HashSet<ValueCellId> = [ValueCellId::new("Child", "q")].into_iter().collect();
+        let no_fns: [CompiledFunction; 0] = [];
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let cells = build_dependent_cells(
+            &seed_exprs,
+            &templates,
+            &auto_ids,
+            &no_fns,
+            &mut diagnostics,
+        );
+        let got = ids(&cells);
+
+        assert!(
+            diagnostics.is_empty(),
+            "the LEGAL joint-drive shape must raise NO diagnostics — its only \
+             back-edge is the solver feedback edge through the auto `Child.q`, \
+             which by construction cannot appear in this graph; got \
+             {diagnostics:?}",
+        );
+        assert_eq!(
+            got,
+            vec![line_cost, total],
+            "the admissible sub-DAG must sort COMPLETELY, `Child.line_cost` \
+             before `Parent.total` (which reads it); got {got:?}",
+        );
+    }
+}
