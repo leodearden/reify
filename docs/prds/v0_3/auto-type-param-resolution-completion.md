@@ -126,7 +126,10 @@ end-to-end fixtures and they all pass:
 
 **Substrate-invariant signal (M-007 real exercise):**
 
-- `cargo test -p reify-compiler --test auto_backjumping_real_source` exercises
+- `cargo test -p reify-compiler --test harness_auto_binding auto_backjumping_real_source::`
+  (former standalone binary `auto_backjumping_real_source` was folded into the
+  `harness_auto_binding` compile unit by task #5283; the test name now carries
+  an `auto_backjumping_real_source::` module prefix) exercises
   the M-007 backjump path from **real `.ri` source** (constraint cells typed
   `Type::TypeParam` during the search), replacing the `MockConstraintChecker`
   scripting that is the only exercise today.
