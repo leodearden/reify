@@ -15,8 +15,9 @@
 #![allow(dead_code)]
 
 use reify_constraints::{
-    SketchConstraint, SketchConstraintDef, SketchConstraintId, SketchEntity, SketchEntityDef,
-    SketchEntityId, SketchSolveResult, SketchSystem, SolvedSketchEntity,
+    SketchBuildError, SketchConstraint, SketchConstraintDef, SketchConstraintId, SketchEntity,
+    SketchEntityDef, SketchEntityId, SketchEntityKind, SketchSlotKind, SketchSolveResult,
+    SketchSystem, SolvedSketchEntity,
 };
 use reify_core::SourceSpan;
 
@@ -1113,5 +1114,320 @@ fn the_failing_set_is_ordered_deterministically() {
         failing(&first),
         failing(&second),
         "the failing set must be identical across identical solves"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Malformed input: typed rejection instead of fabricated geometry
+// ---------------------------------------------------------------------------
+//
+// `reify-constraints` is a crate boundary, so it defends itself: a malformed
+// `SketchSystem` is rejected here regardless of what the language front end does
+// or does not reject at compile time (INV-SF-1, INV-SF-5).
+//
+// What every fixture below produced before this contract existed was measured,
+// not assumed, and it was the same failure mode each time — a *successful*
+// `Solved`, with the offending declaration silently dropped:
+//
+// - a constraint on an undeclared entity  => `Solved`, dof 2, constraint gone
+// - `Diameter` on a line / `Horizontal` on a point => `Solved`, dof 4, both gone
+// - a duplicate entity id => `Solved` listing that id twice, both entries
+//   carrying the *second* declaration's coordinates — geometry the caller never
+//   wrote
+// - a line whose endpoint names a circle => `Solved`, dof 5, the line itself
+//   absent from the readback
+//
+// A caller cannot tell any of those apart from a real answer, which is why the
+// assertion here is on a typed error and not merely on "did not converge".
+
+/// The build error, or a descriptive panic naming the actual arm.
+fn build_error(result: &SketchSolveResult) -> &SketchBuildError {
+    match result {
+        SketchSolveResult::Malformed(err) => err,
+        other => panic!("expected SketchSolveResult::Malformed, got {other:?}"),
+    }
+}
+
+/// A constraint naming an entity the sketch never declares is rejected, and the
+/// error names both the dangling id and the constraint that reached for it.
+#[test]
+fn a_constraint_on_an_undeclared_entity_is_rejected() {
+    let mut s = Sketch::new();
+    let a = s.point(0.0, 0.0);
+    // Never declared: `Sketch` hands out ids from 1, so 999 cannot collide.
+    let ghost = SketchEntityId(999);
+    let cid = s.constrain(SketchConstraint::Coincident { a, b: ghost });
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert_eq!(
+        build_error(&result),
+        &SketchBuildError::UnknownEntity {
+            referenced_by: cid,
+            entity: ghost,
+            span: span_for(cid),
+        },
+        "a dangling constraint operand must name the id and the declaration \
+         that referenced it, with that declaration's own span"
+    );
+}
+
+/// A dimension aimed at a line is rejected: `Diameter` is the radius family, and
+/// a line has no radius.
+///
+/// The `expected`/`found` pair is what makes this renderable as a diagnostic
+/// without re-deriving the rule at the consumer.
+#[test]
+fn a_diameter_on_a_line_is_rejected() {
+    let mut s = Sketch::new();
+    let a = s.point(0.0, 0.0);
+    let b = s.point(0.010, 0.0);
+    let segment = s.line(a, b);
+    let cid = s.constrain(SketchConstraint::Diameter {
+        circle: segment,
+        value: 0.010,
+    });
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert_eq!(
+        build_error(&result),
+        &SketchBuildError::WrongEntityKind {
+            constraint: cid,
+            entity: segment,
+            expected: SketchSlotKind::Curve,
+            found: SketchEntityKind::Line,
+            span: span_for(cid),
+        },
+        "the radius family takes a circle or an arc, never a line"
+    );
+}
+
+/// An orientation constraint aimed at a point is rejected: `Horizontal`
+/// constrains a direction, and a point has none.
+#[test]
+fn a_horizontal_on_a_point_is_rejected() {
+    let mut s = Sketch::new();
+    let a = s.point(0.0, 0.0);
+    let cid = s.constrain(SketchConstraint::Horizontal(a));
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert_eq!(
+        build_error(&result),
+        &SketchBuildError::WrongEntityKind {
+            constraint: cid,
+            entity: a,
+            expected: SketchSlotKind::Line,
+            found: SketchEntityKind::Point,
+            span: span_for(cid),
+        },
+        "`Horizontal` orients a line, so a point in that slot is a kind error"
+    );
+}
+
+/// A point-to-point relation aimed at a circle is rejected.
+///
+/// The mirror image of the two above — the slot wants a point and was handed a
+/// curve — which is what pins that the check reads the *slot's* requirement
+/// rather than just noticing any mismatch.
+#[test]
+fn a_coincidence_on_a_circle_is_rejected() {
+    let mut s = Sketch::new();
+    let center = s.point(0.0, 0.0);
+    let circle = s.circle(center, 0.004);
+    let free = s.point(0.010, 0.0);
+    let cid = s.constrain(SketchConstraint::Coincident {
+        a: free,
+        b: circle,
+    });
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert_eq!(
+        build_error(&result),
+        &SketchBuildError::WrongEntityKind {
+            constraint: cid,
+            entity: circle,
+            expected: SketchSlotKind::Point,
+            found: SketchEntityKind::Circle,
+            span: span_for(cid),
+        },
+        "`Coincident` relates two points; a circle in either slot is a kind error"
+    );
+}
+
+/// Declaring the same entity id twice is rejected.
+///
+/// Not a pedantic uniqueness rule: ids are how everything else in the system
+/// refers to geometry, so a repeated id makes every reference to it ambiguous.
+/// The measured pre-contract behaviour was the concrete harm — a readback that
+/// listed the id twice with the *second* declaration's coordinates in both
+/// entries, silently discarding the first.
+#[test]
+fn a_duplicate_entity_id_is_rejected() {
+    let mut s = Sketch::new();
+    let a = s.point(0.0, 0.0);
+    s.entity_with_id(a, SketchEntity::Point { x: 0.005, y: 0.005 });
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert_eq!(
+        build_error(&result),
+        &SketchBuildError::DuplicateEntity { entity: a },
+        "an id declared twice makes every reference to it ambiguous"
+    );
+}
+
+/// A line whose endpoint slot names a circle is rejected.
+///
+/// This is the entity-level twin of the constraint kind check: a composite's
+/// defining slots are as typed as a constraint's, and `owner`/`referenced` name
+/// both halves so the diagnostic can point at the line, not just at the circle.
+#[test]
+fn a_line_endpoint_naming_a_circle_is_rejected() {
+    let mut s = Sketch::new();
+    let center = s.point(0.0, 0.0);
+    let circle = s.circle(center, 0.004);
+    let far = s.point(0.010, 0.0);
+    let segment = s.line(circle, far);
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert_eq!(
+        build_error(&result),
+        &SketchBuildError::BadEntityRef {
+            owner: segment,
+            referenced: circle,
+            expected: SketchSlotKind::Point,
+            found: Some(SketchEntityKind::Circle),
+        },
+        "a line is defined by two points; a circle in an endpoint slot is a kind error"
+    );
+}
+
+/// A line whose endpoint slot names nothing at all is rejected too.
+///
+/// The dangling case reports `found: None` rather than being folded into
+/// `UnknownEntity`: that variant names the *constraint* that reached for the
+/// missing id, and an entity's defining slot has no constraint to name.
+#[test]
+fn a_line_endpoint_naming_an_undeclared_entity_is_rejected() {
+    let mut s = Sketch::new();
+    let a = s.point(0.0, 0.0);
+    let ghost = SketchEntityId(999);
+    let segment = s.line(a, ghost);
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert_eq!(
+        build_error(&result),
+        &SketchBuildError::BadEntityRef {
+            owner: segment,
+            referenced: ghost,
+            expected: SketchSlotKind::Point,
+            found: None,
+        },
+        "an endpoint slot naming an undeclared id must say so, not be skipped"
+    );
+}
+
+/// With more than one malformed declaration, the one reported is the first in
+/// declaration order.
+///
+/// Which error surfaces is part of the contract, not an accident of iteration:
+/// the same input has to produce the same diagnostic every run (O9), and a
+/// consumer that fixes the reported error and re-solves needs the sequence to
+/// converge rather than to shuffle.
+#[test]
+fn the_first_malformed_declaration_in_order_is_reported() {
+    let mut s = Sketch::new();
+    let a = s.point(0.0, 0.0);
+    let b = s.point(0.010, 0.0);
+    let segment = s.line(a, b);
+    let first = s.constrain(SketchConstraint::Horizontal(a));
+    s.constrain(SketchConstraint::Diameter {
+        circle: segment,
+        value: 0.010,
+    });
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert_eq!(
+        build_error(&result),
+        &SketchBuildError::WrongEntityKind {
+            constraint: first,
+            entity: a,
+            expected: SketchSlotKind::Line,
+            found: SketchEntityKind::Point,
+            span: span_for(first),
+        },
+        "the earlier-declared error must be the reported one"
+    );
+
+    let repeat = reify_constraints::solve_sketch(s.system());
+    assert_eq!(
+        build_error(&result),
+        build_error(&repeat),
+        "the reported error must be identical across identical solves"
+    );
+}
+
+/// Entity-level errors are reported before constraint-level ones.
+///
+/// Ordering across the two passes is deliberate: a constraint naming an entity
+/// whose own declaration is malformed would otherwise produce a second,
+/// derivative error about a slot that was never well-defined to begin with.
+#[test]
+fn a_malformed_entity_is_reported_before_a_malformed_constraint() {
+    let mut s = Sketch::new();
+    let a = s.point(0.0, 0.0);
+    let ghost = SketchEntityId(999);
+    // Declared second, so a purely positional rule would report the constraint.
+    s.constrain(SketchConstraint::Horizontal(a));
+    let segment = s.line(a, ghost);
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert_eq!(
+        build_error(&result),
+        &SketchBuildError::BadEntityRef {
+            owner: segment,
+            referenced: ghost,
+            expected: SketchSlotKind::Point,
+            found: None,
+        },
+        "the entity pass runs first, so a broken entity outranks a broken constraint"
+    );
+}
+
+/// `SketchBuildError` is a real `std::error::Error` whose rendering names the
+/// ids involved.
+///
+/// The structured fields are the contract — a consumer renders its own
+/// span-bearing diagnostic and never scrapes this string — but the error still
+/// has to be usable in a plain `Box<dyn Error>` log line without printing
+/// something opaque.
+#[test]
+fn build_errors_are_std_errors_that_name_their_ids() {
+    fn assert_is_std_error<E: std::error::Error>(_: &E) {}
+
+    let mut s = Sketch::new();
+    let a = s.point(0.0, 0.0);
+    let ghost = SketchEntityId(999);
+    let cid = s.constrain(SketchConstraint::Coincident { a, b: ghost });
+
+    let result = reify_constraints::solve_sketch(s.system());
+    let err = build_error(&result);
+    assert_is_std_error(err);
+
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("999"),
+        "the rendering must name the offending entity id, got: {rendered}"
+    );
+    assert!(
+        rendered.contains(&cid.0.to_string()),
+        "the rendering must name the constraint that referenced it, got: {rendered}"
     );
 }
