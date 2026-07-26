@@ -218,4 +218,14 @@ assert "H4: verify.sh plan header reads nextest=0 UNDER the harness" \
 assert "H5: verify.sh plan header reads nextest=1 WITHOUT the harness (this host has cargo-nextest, so the simulation is meaningful)" \
     _h5_check
 
+# ---------------------------------------------------------------------------
+# S: the covered plan-oracle suites are clean on a nextest-less host
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "--- S: covered suites reach test_summary with rc=0 / 0 FAIL without cargo-nextest ---"
+
+assert "S1: test_verify_compile_gate.sh reaches test_summary with rc=0 / 0 FAIL on a nextest-less host" \
+    _suite_is_clean_without_nextest test_verify_compile_gate.sh
+
 test_summary
