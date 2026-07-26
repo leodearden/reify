@@ -997,29 +997,16 @@ fn point_param_given_string_warns_arg_type_mismatch() {
     );
 }
 
-const SRC_POINT_WRONG_ARITY: &str = r#"module test.point_arity
-structure def Anchor { param origin : Point3<Length> }
-structure def Root {
-    param flat : Point2<Length>
-    let a = Anchor(origin: flat)
-}
-"#;
-
-/// Arity check: a `Point2<Length>` value is NOT a valid substitute for a
-/// `Point3<Length>` param.
-///
-/// The arg is routed through a declared value cell rather than a `point2(…)`
-/// call so it reaches the leaf as a real `Type::Point { n: 2, .. }` instead of
-/// the numeric placeholder. This mirrors the `Type::Vector` arm's rule that
-/// "`vec2` is NOT a valid substitute for a `vec3` param".
-#[test]
-fn point_param_given_wrong_arity_point_warns_arg_type_mismatch() {
-    assert_single_arg_type_mismatch_warning(
-        SRC_POINT_WRONG_ARITY,
-        "origin",
-        "Point3<Length> ← Point2<Length>",
-    );
-}
+// The `Point` arm's ARITY rule ("a `Point2` value is not a valid substitute for
+// a `Point3` param", mirroring the `Type::Vector` arm) is NOT pinned here.
+// `resolve_parameterized_builtin_type` recognises `Point3` only
+// (crates/reify-compiler/src/type_resolution.rs:3192) — there is no `Point2`
+// surface spelling — so no inline `.ri` fixture can produce a
+// `Type::Point { n: 2, .. }` arg. It is pinned instead by
+// `point_param_rejects_wrong_arity_point_arg` in `conformance/mod.rs`'s own
+// `mod tests`, which constructs the `Type` directly, alongside
+// `point_param_accepts_dimensionless_point_arg` for the loose-quantity leg.
+// `vector_param_rejects_wrong_arity_vector_arg` sits there for the same reason.
 
 const SRC_OPTION_POINT_GIVEN_STRING: &str = r#"module test.option_point_string
 structure def Anchor { param origin : Option<Point3<Length>> }

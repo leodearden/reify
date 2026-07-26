@@ -1226,6 +1226,64 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
                 emit_vector_mismatch(param_type, arg_ty, ctx);
             }
         }
+        // Leaf: param type is a Point (task 5465, family 1). SHAPE-BASED with an
+        // arity check, modelled directly on the `Type::Vector` arm above and
+        // sharing its anti-cascade/unverifiable skip guard verbatim.
+        //
+        // Accepts:
+        //   • `Type::Point { n: arg_n, .. }` when `arg_n` matches the param's
+        //     `n`. The QUANTITY slot is intentionally loose — see the
+        //     "Point / Vector quantity-slot convention" section of
+        //     `crates/reify-core/src/ty.rs`, which records that the resolver
+        //     always wraps `Q` in `Type::Scalar` while `Value::Point::infer_type`
+        //     may yield a dimensionless or `Int` quantity, and that "the
+        //     looseness is intentional".
+        //   • Scalar-like numeric args, as the expression compiler's
+        //     numeric-fallback placeholder for point-producing builtins.
+        //
+        // The placeholder predicate is deliberately NARROW (`Int | Scalar`) and
+        // local. `type_compat.rs::is_scalar_like_leaf` is NOT reused: it also
+        // admits `Bool`, `String`, `Enum`, `StructureRef`, `TraitObject` and
+        // `Geometry`, which would make `Anchor(origin: "origin")` silent.
+        //
+        // WHY THE TOLERANCE LIVES INSIDE THIS ARM rather than as an arg-side
+        // `CompiledExpr` skip in the shared fallback. A broad "skip any
+        // FunctionCall arg whose result_type is Scalar/Int" would punch a hole
+        // through the ALREADY-allowlisted families — `Widget(label:
+        // some_scalar_fn())` at a `String` param would go silent. Keyed on
+        // `Type::Point`, this arm structurally cannot be reached by a `String` /
+        // `Bool` / `Int` / `Real` param, so that hazard is dissolved by
+        // construction. It also covers the `let p = point3(…); Anchor(origin: p)`
+        // shape, which an arg-side skip would MISS: the placeholder type
+        // propagates through the value cell and only the type-level walker sees
+        // the resulting `ValueRef`.
+        //
+        // THE BOUNDED, DELIBERATE COST: a bare numeric literal at a Point slot
+        // (`Anchor(origin: 5)`) stays silent. That is identical in kind to the
+        // pre-existing `Type::Geometry` placeholder exclusion (geometry
+        // constructors compile to a dimensionless-scalar placeholder, GHR-γ).
+        // The tolerance can be tightened to a FunctionCall-shaped check once
+        // `point3` carries a real return type — tracked by the family-5 /
+        // placeholder follow-up filed with this task.
+        (Type::Point { .. }, arg_ty)
+            if !matches!(
+                arg_ty,
+                Type::Error | Type::TypeParam(_) | Type::Geometry | Type::TraitObject(_)
+            ) =>
+        {
+            let is_conforming = match arg_ty {
+                Type::Point { n: arg_n, .. } => match param_type {
+                    Type::Point { n: param_n, .. } => param_n == arg_n,
+                    _ => true, // unreachable: outer arm guards param_type as Type::Point
+                },
+                // Numeric-fallback placeholder for point-producing builtins.
+                Type::Int | Type::Scalar { .. } => true,
+                _ => false,
+            };
+            if !is_conforming {
+                emit_arg_type_mismatch(param_type, arg_ty, ctx);
+            }
+        }
         // Leaf: param type is a Selector or AnySelector (task-4598).
         // Skip/gate logic is in `reject_if_incompatible`; `type_compat.rs` AnySelector
         // arms encode: AnySelector accepts any Selector(k), rejects Real/String/Int/…;
@@ -1371,20 +1429,18 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// Generalizing any of these needs new `type_compat.rs` coercion rules, which is
 /// an explicit α non-goal; it is tracked as a separate follow-up.
 ///
-/// * **`Point` quantity slots** — args routinely compile to the expression
-///   compiler's numeric-fallback placeholder rather than the nominal type.
-///   `point3(0m, 0m, 0m)` is a `FunctionCall` whose result_type is `Scalar[m]`,
-///   never `Type::Point`. This is the same placeholder class the
-///   `Type::Geometry` exclusion and [`promote_function_call_to_structure_ref`]
-///   already exist for.
-///
-/// **`Field` is no longer excluded** (task 5465, family 3): it is handled by a
-/// dedicated SHAPE-BASED arm in [`walk_param_against_arg_type`], exactly as
-/// `Type::Vector` is, so it never reaches this predicate. The erasure rationale
-/// above is still why that arm is shape-based rather than `type_compatible`-based
-/// — an analytical `field def` erases both slots to `Field<Real, Real>` whatever
-/// its declaration says — but "unverifiable slots" is not the same as
-/// "unverifiable family", and the family itself is now checked.
+/// **`Point` and `Field` are no longer excluded** (task 5465, families 1 and 3).
+/// Each is handled by a dedicated SHAPE-BASED arm in
+/// [`walk_param_against_arg_type`], exactly as `Type::Vector` is, so neither ever
+/// reaches this predicate. The placeholder/erasure rationale is still why those
+/// arms are shape-based rather than `type_compatible`-based —
+/// `point3(0m, 0m, 0m)` is a `FunctionCall` whose result_type is the numeric
+/// fallback `Scalar[m]`, never `Type::Point`; an analytical `field def` erases
+/// both slots to `Field<Real, Real>` whatever its declaration says — but
+/// "unverifiable SLOTS" is not the same as "unverifiable FAMILY", and the
+/// families themselves are now checked. The placeholder class is the same one
+/// the `Type::Geometry` exclusion below and
+/// [`promote_function_call_to_structure_ref`] already exist for.
 /// * **`Matrix` / `Tensor`** — a nested list literal is the idiomatic spelling
 ///   of a `Matrix3x3`, but it compiles to `List<List<Real>>` and no
 ///   `List`→`Matrix` arm exists. Unlike the placeholder families this is a
@@ -6841,6 +6897,102 @@ mod tests {
             Some(DiagnosticCode::TypeNotConformingToVector),
             "expected TypeNotConformingToVector, got {:?}",
             d.code,
+        );
+    }
+
+    /// Loose-quantity positive leg of the `Type::Point` arm (task 5465,
+    /// family 1): a DIMENSIONLESS `Point{n:3}` arg is accepted for a
+    /// `Point3<Length>` param.
+    ///
+    /// Pins the ty.rs "Point / Vector quantity-slot convention" — the resolver
+    /// always wraps `Q` in `Type::Scalar` while `Value::Point::infer_type` may
+    /// yield a dimensionless or `Int` quantity, and the looseness is
+    /// intentional. Sibling of `vector_param_accepts_dimensionless_vector_arg`.
+    #[test]
+    fn point_param_accepts_dimensionless_point_arg() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "p"),
+            Type::Point {
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar()),
+            },
+        );
+        let param_type = Type::point3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        });
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &param_type,
+            "origin",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &[],
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            0,
+            "dimensionless Point3 arg must be accepted for Point3<Length> param \
+             (loose-quantity convention), got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+    }
+
+    /// Arity leg of the `Type::Point` arm (task 5465, family 1): a `Point{n:2}`
+    /// arg against a `Point3<Length>` param is exactly one `ArgTypeMismatch`.
+    ///
+    /// **Why this is an in-module unit test and not an integration probe in
+    /// `struct_ctor_field_conformance_tests.rs` (where the other four Point
+    /// probes live).** The surface language has no `Point2` spelling —
+    /// `resolve_parameterized_builtin_type` recognises `Point3` only
+    /// (`type_resolution.rs:3192`) — so no `.ri` source can produce a
+    /// `Type::Point { n: 2, .. }` arg and the arity rule is unreachable from
+    /// inline-source fixtures. Constructing the `Type` directly is the only way
+    /// to pin it. Sibling of `vector_param_rejects_wrong_arity_vector_arg`,
+    /// which exists for the same reason.
+    #[test]
+    fn point_param_rejects_wrong_arity_point_arg() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "p"),
+            Type::Point {
+                n: 2,
+                quantity: Box::new(Type::dimensionless_scalar()),
+            },
+        );
+        let param_type = Type::point3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        });
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &param_type,
+            "origin",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &[],
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly 1 ArgTypeMismatch for Point2 arg vs Point3<Length> param \
+             (arity mismatch), got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+        assert_eq!(
+            diagnostics[0].code,
+            Some(DiagnosticCode::ArgTypeMismatch),
+            "expected ArgTypeMismatch, got {:?}",
+            diagnostics[0].code,
         );
     }
 }
