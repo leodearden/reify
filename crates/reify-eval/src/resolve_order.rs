@@ -744,6 +744,7 @@ fn union_via_transitive_auto_owners(
     seeds: &[ValueCellId],
     cell_map: &HashMap<ValueCellId, &CompiledExpr>,
     auto_owner: &HashMap<ValueCellId, usize>,
+    path_map: &HashMap<String, String>,
     functions: &[CompiledFunction],
     parent: &mut [usize],
 ) {
@@ -755,9 +756,18 @@ fn union_via_transitive_auto_owners(
         }
     }
     while let Some(id) = frontier.pop() {
+        // Instance-path fallback (task #5334, review round 2). Consult every map
+        // with `id` AS-IS first — the overwhelmingly common structure-name-scoped
+        // case — and fall back to the normalised form only on a miss, so this is
+        // provably additive and cannot perturb an already-correct lookup. The
+        // fallback is computed once per pop and reused by both lookups below.
+        let normalized = normalize_cell_id(&id, path_map);
         // (i) Auto-owned id: union j with its owner (if a different scope) and
         // stop — autos are walk leaves (no default_expr).
-        if let Some(&owner) = auto_owner.get(&id) {
+        if let Some(&owner) = auto_owner
+            .get(&id)
+            .or_else(|| normalized.as_ref().and_then(|n| auto_owner.get(n)))
+        {
             if owner != j {
                 uf_union(parent, owner, j);
             }
@@ -772,7 +782,15 @@ fn union_via_transitive_auto_owners(
         // must not be co-solved, because the merged problem's objective would be
         // constant in that child's auto. The cell stays `visited`, so the walk
         // terminates normally; only its frontier is cut.
-        if let Some(expr) = cell_map.get(&id) {
+        if let Some(expr) = cell_map
+            .get(&id)
+            .or_else(|| normalized.as_ref().and_then(|n| cell_map.get(n)))
+        {
+            // Mark the normalised spelling visited too, so an id reached by both
+            // spellings is expanded once and the walk still terminates.
+            if let Some(n) = normalized {
+                visited.insert(n);
+            }
             if crate::engine_eval::is_optimized_userfn_cell(expr, functions) {
                 continue;
             }
@@ -783,6 +801,113 @@ fn union_via_transitive_auto_owners(
             }
         }
     }
+}
+
+/// Map every statically-reachable sub-component INSTANCE PATH to the name of
+/// the structure it instantiates (JOINT-DRIVE δ, task #5334, review round 2).
+///
+/// Mirrors `enumerate_descendants`' path composition
+/// (structural_query.rs:213 `{prefix}.{sub}`, :187 `{prefix}.{sub}[{idx}]`),
+/// seeded once per template at `prefix = &template.name` exactly as
+/// `expand_structural_query` seeds it.  A COLLECTION sub contributes its
+/// INDEX-STRIPPED base path — `Rig.bolts[0]` and `Rig.bolts[7]` both denote
+/// structure `Bolt`, and the runtime index is not knowable statically — which is
+/// why [`normalize_cell_id`] strips `[...]` before consulting the map.
+///
+/// Deliberately NOT implemented by calling `enumerate_descendants`: that needs a
+/// populated `ValueMap` for collection counts (unavailable on the warm path
+/// before counts exist), consumes a node budget whose exhaustion would silently
+/// truncate the map, and emits runtime-count-dependent `[idx]` paths.  Because
+/// this re-implements those two `format!` shapes, the two sides are pinned
+/// together by `instance_path_map_matches_enumerate_descendants_paths` rather
+/// than by convention.
+///
+/// Recursion is bounded by a structure-name visited set along the CURRENT path,
+/// so cyclic/self-containment terminates.
+fn build_instance_path_structure_map(templates: &[TopologyTemplate]) -> HashMap<String, String> {
+    fn walk(
+        template: &TopologyTemplate,
+        templates: &[TopologyTemplate],
+        prefix: &str,
+        on_path: &mut HashSet<String>,
+        out: &mut HashMap<String, String>,
+    ) {
+        for sub in &template.sub_components {
+            // Collection subs contribute the same index-stripped base path as a
+            // plain sub — see the doc comment above.
+            let node_path = format!("{}.{}", prefix, sub.name);
+            out.entry(node_path.clone())
+                .or_insert_with(|| sub.structure_name.clone());
+            let Some(child) = templates.iter().find(|t| t.name == sub.structure_name) else {
+                continue;
+            };
+            if !on_path.insert(sub.structure_name.clone()) {
+                continue; // already on the current path — cyclic containment
+            }
+            walk(child, templates, &node_path, on_path, out);
+            on_path.remove(&sub.structure_name);
+        }
+    }
+
+    let mut out: HashMap<String, String> = HashMap::new();
+    for template in templates {
+        let mut on_path: HashSet<String> = HashSet::from([template.name.clone()]);
+        walk(template, templates, &template.name, &mut on_path, &mut out);
+    }
+    out
+}
+
+/// Rewrite an INSTANCE-PATH-scoped cell id to its DECLARING TEMPLATE's scoping,
+/// or `None` when `id.entity` is not a known instance path (JOINT-DRIVE δ, task
+/// #5334, review round 2).
+///
+/// Root cause this exists to bridge, recorded so the next reader need not
+/// re-derive it — the two sides are minted with DIFFERENT entity scopings:
+///
+/// * Template value cells are keyed by STRUCTURE NAME:
+///   `ValueCellId::new(&structure.name, &param.name)` (reify-compiler/src/entity.rs:6066)
+///   and `ValueCellId::new(&structure.name, &let_decl.name)` (:6197).  Both
+///   `auto_owner` and [`build_non_auto_cell_map`] iterate `template.value_cells`
+///   and key on `cell.id`, so both maps are structure-name-scoped.
+/// * `apply_cost_aggregation` mints INSTANCE-PATH ids —
+///   `ValueCellId::new(path, "line_cost")` (reify-eval/src/structural_query.rs:686)
+///   over `enumerate_descendants`' composed prefixes (:187, :213) — so a real
+///   module's expanded objective reads `Rig.bolts.line_cost`, never
+///   `Bolt.line_cost`.
+///
+/// Instance-path ids are NOT confined to the seed layer: reify-compiler/src/expr.rs:843
+/// (and :1211, :3904, :3935, :5595) compile a sub-member access as
+/// `format!("{}.{}", scope.entity_name, sub_name)`, so a PARENT template's own
+/// let/param `default_expr` reading `childinst.line_cost` yields
+/// `ValueCellId::new("Parent.childinst", "line_cost")` — an instance-path id
+/// living inside `templates[parent].value_cells` and surfaced by
+/// `extract_value_deps` MID-WALK.  Normalisation therefore runs at every hop of
+/// [`union_via_transitive_auto_owners`], not only on its seeds.
+fn normalize_cell_id(id: &ValueCellId, path_map: &HashMap<String, String>) -> Option<ValueCellId> {
+    let stripped = strip_collection_indices(&id.entity);
+    path_map
+        .get(stripped.as_ref())
+        .map(|structure_name| ValueCellId::new(structure_name.as_str(), &id.member))
+}
+
+/// Remove every `[...]` collection-index segment from an instance path
+/// (`Rig.bolts[3].head` → `Rig.bolts.head`), borrowing unchanged when there is
+/// no index to strip (the common case).
+fn strip_collection_indices(entity: &str) -> std::borrow::Cow<'_, str> {
+    if !entity.contains('[') {
+        return std::borrow::Cow::Borrowed(entity);
+    }
+    let mut out = String::with_capacity(entity.len());
+    let mut depth = 0usize;
+    for ch in entity.chars() {
+        match ch {
+            '[' => depth += 1,
+            ']' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(ch),
+            _ => {}
+        }
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 /// Compute the pre-solve cluster set (M-WHOLE α, task #5013).
@@ -864,9 +989,23 @@ fn compute_clusters(
         // what the `None` branch — and the read-DAG / cycle diagnostics — use.
         Some(ctx) => {
             let cell_map = build_non_auto_cell_map(templates);
+            // Built ONCE per call (not once per scope): the instance-path →
+            // structure-name map that lets the walk resolve compiler-emitted
+            // instance-path ids (`Rig.bolts.line_cost`) against the
+            // structure-name-keyed `auto_owner` / `cell_map` (`Bolt.line_cost`).
+            // See [`normalize_cell_id`] for the two-sided root cause.
+            let path_map = build_instance_path_structure_map(templates);
             let expanded_reads = expanded_objective_reads(templates, ctx);
             for (j, reads) in expanded_reads.iter().enumerate() {
-                union_via_transitive_auto_owners(j, reads, &cell_map, auto_owner, ctx.functions, &mut parent);
+                union_via_transitive_auto_owners(
+                    j,
+                    reads,
+                    &cell_map,
+                    auto_owner,
+                    &path_map,
+                    ctx.functions,
+                    &mut parent,
+                );
             }
         }
     }
