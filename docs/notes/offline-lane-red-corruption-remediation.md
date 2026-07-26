@@ -43,16 +43,34 @@ git -C /home/leo/src/dark-factory merge-base --is-ancestor 2d178af457 main   # p
 > `done_provenance.commit` without an ancestor check (see the Signature 2
 > warning below) — in both cases the task DB was believed over ground truth.
 
-What the guard actually covers, from its own docstring
-(`orchestrator/src/orchestrator/offline_lane.py:129-160`):
-`_VERIFY_USAGE_MARKER_RE` matches a `Usage:`/`Options:` line or a
-`verify.sh: ERROR` banner; if **any** line of the confirmation seam's output
-matches, `_parse_confirmed_failures` rejects the whole output and returns
-`[]`, which routes into `_handle_red_run`'s existing empty-`confirmed` guard
-(log-only — no fix task, no escalation). The sibling seam
-`_parse_infra_failures` is **exempt by design**, not by oversight: it only
-captures `RESULT: FAIL (<name>)` lines, a shape a usage/help/error dump never
-produces. So the filing path that produced #5264 and #5368 is closed.
+What the guard actually covers
+(`orchestrator/src/orchestrator/offline_lane.py:129-160`) — the marker regex
+verbatim, because its exact anchoring matters:
+
+```python
+_VERIFY_USAGE_MARKER_RE = re.compile(r'^\s*(?:Usage|Options):\s*$|^\s*verify\.sh:\s*ERROR\b')
+```
+
+If **any** line of the confirmation seam's output matches,
+`_parse_confirmed_failures` rejects the whole output and returns `[]`, which
+routes into `_handle_red_run`'s existing empty-`confirmed` guard (log-only —
+no fix task, no escalation).
+
+Note the first two alternatives are **whole-line-anchored** (`:\s*$`): they
+match a stripped line that is *exactly* `Usage:` or `Options:`, not a line
+merely beginning with them. That holds today only because `scripts/verify.sh`
+emits bare section headers — `usage()` is `sed -n '2,59p' "${BASH_SOURCE[0]}"
+| sed 's/^# \{0,1\}//'`, so the header comments `# Usage:` / `# Options:`
+(lines 9 and 12) survive the strip as bare `Usage:` / `Options:` lines. If
+`usage()`'s headers are ever reformatted onto one line (`Usage: verify.sh
+<test|lint|…>`), those two alternatives stop matching and the guard narrows to
+the `verify.sh: ERROR` banner alone. A cosmetic `usage()` edit is therefore a
+guard-relevant change — see the Re-run trigger.
+
+The sibling seam `_parse_infra_failures` is **exempt by design**, not by
+oversight: it only captures `RESULT: FAIL (<name>)` lines, a shape a
+usage/help/error dump never produces. So the filing path that produced #5264
+and #5368 is closed.
 
 This note remains a documentation runbook rather than a new automated
 detector: the audit surface is three tasks, all corrected; Signature 1's
@@ -144,8 +162,18 @@ Read-only, hand-runnable, no new tooling required.
 
 ```bash
 sqlite3 "file:/home/leo/src/reify/.taskmaster/tasks/tasks.db?mode=ro" \
-  "SELECT id,status FROM tasks WHERE json_extract(metadata,'$.spawn_context')='offline_lane_red';"
+  "SELECT tag,id,status FROM tasks WHERE tag='master' AND json_extract(metadata,'$.spawn_context')='offline_lane_red';"
 ```
+
+**Audit scope is the `master` tag.** `tasks` is keyed `PRIMARY KEY (tag, id)`,
+and `master` is the only tag in the store today (5516 rows, no duplicate ids),
+so an unqualified `WHERE id=…` is currently unambiguous. The `tag='master'`
+predicate is stated explicitly anyway: if a second tag is ever introduced, an
+unqualified query would silently conflate tags in Step 1 and silently return
+multiple rows in Step 2 — a quiet-wrong-answer mode in an audit whose entire
+value is completeness. If additional tags exist when you run this, widen the
+sweep deliberately (drop the predicate and keep `tag` in the projection)
+rather than by accident.
 
 MCP equivalent: `get_tasks`/`search_tasks` filtered client-side on
 `metadata.spawn_context == "offline_lane_red"`, or `get_task(id=<id>)` for a
@@ -156,16 +184,18 @@ single already-known candidate.
 ```bash
 DB=/home/leo/src/reify/.taskmaster/tasks/tasks.db
 ID=<task id>
-sqlite3 "file:$DB?mode=ro" "SELECT json_extract(metadata,'\$.failing_tests') FROM tasks WHERE id=$ID;"
-sqlite3 "file:$DB?mode=ro" "SELECT json_extract(metadata,'\$.files') FROM tasks WHERE id=$ID;"
-sqlite3 "file:$DB?mode=ro" "SELECT json_extract(metadata,'\$.done_provenance') FROM tasks WHERE id=$ID;"
+sqlite3 "file:$DB?mode=ro" "SELECT json_extract(metadata,'$.failing_tests') FROM tasks WHERE tag='master' AND id=$ID;"
+sqlite3 "file:$DB?mode=ro" "SELECT json_extract(metadata,'$.files') FROM tasks WHERE tag='master' AND id=$ID;"
+sqlite3 "file:$DB?mode=ro" "SELECT json_extract(metadata,'$.done_provenance') FROM tasks WHERE tag='master' AND id=$ID;"
 ```
 
-(The `\$` escaping above is only needed because these three lines are
-themselves embedded in a `DB=`/`ID=` variable-bearing shell snippet; run
-standalone — as in Step 1 — a bare `$.foo` needs no escaping.) MCP
-equivalent: `get_task(id=<id>)` returns all three fields under `metadata` in
-one call.
+(`$.` is never a parameter expansion in bash — `$` followed by `.` is literal
+inside double quotes whether or not other variables like `$DB`/`$ID` appear in
+the same string — so no backslash is needed here, and Step 1 and Step 2 are
+written consistently. An earlier revision escaped these as `\$.` and claimed
+nearby variables made it necessary; that rule is false and is not worth
+generalizing.) MCP equivalent: `get_task(id=<id>)` returns all three fields
+under `metadata` in one call.
 
 **Step 3 — apply the signature checks:**
 
@@ -400,7 +430,12 @@ appears with `metadata.spawn_context=offline_lane_red`, and in particular:
 - **After any dark-factory orchestrator restart or offline-lane change** —
   the guard only protects a worker process that actually loaded it, and the
   orchestrator has no hot-reload. A guard commit landing is not a guard
-  deploying.
+  deploying. **Also re-check after any reformat of `scripts/verify.sh`'s
+  `usage()` header lines**: the `Usage:`/`Options:` alternatives are
+  whole-line-anchored (see "What the guard actually covers"), so moving those
+  headers onto a single line silently narrows the guard to `verify.sh: ERROR`
+  banner invocations. A purely cosmetic edit in *this* repo can weaken a guard
+  in the *other* one.
 - **Promptly — a victim can be auto-filed and swept on the same day.** Task
   #5368 was auto-filed and corrupted on 2026-07-23 and was still missed by
   that day's sweep. Do not assume a recent sweep covers a recently-filed task;
