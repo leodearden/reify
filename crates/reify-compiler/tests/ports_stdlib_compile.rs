@@ -3114,4 +3114,32 @@ fn example_ports_mechanical_ri_compiles_clean() {
             .map(|t| (&t.name, &t.entity_kind))
             .collect::<Vec<_>>()
     );
+
+    // Anti-recollision guard (task #5594): this example must never declare a
+    // template named exactly "Coupling" again.  `std.kinematic` and
+    // `std.ports.mechanical` are both in the stdlib prelude, so a local
+    // `Coupling` here shadows the unrelated stdlib kinematic joint
+    // `Coupling<P: DrivingJoint + HasMotion>` during name resolution — same
+    // name, different semantics, different type params/bounds.
+    //
+    // Note the deliberately NEGATIVE form: `compiled.templates` is
+    // user-module-only (prelude definitions are resolution context, not
+    // output — see crates/reify-compiler/src/lib.rs:273-275), so the stdlib
+    // `Coupling` never appears in this vec and a positive "exactly one
+    // Coupling, and it is the stdlib one" assertion would be unsatisfiable.
+    // Exact string equality is safe against synthetic monomorph clones,
+    // whose names always contain `$`.
+    assert!(
+        !compiled.templates.iter().any(|t| t.name == "Coupling"),
+        "examples/stdlib/ports_mechanical.ri must not declare a template named \
+         'Coupling': it would shadow the unrelated stdlib kinematic \
+         'Coupling<P: DrivingJoint + HasMotion>' from std.kinematic, since both \
+         modules are in the same prelude (task #5594 renamed it to \
+         'ShaftCoupling'); found templates: {:?}",
+        compiled
+            .templates
+            .iter()
+            .map(|t| (&t.name, &t.entity_kind))
+            .collect::<Vec<_>>()
+    );
 }
