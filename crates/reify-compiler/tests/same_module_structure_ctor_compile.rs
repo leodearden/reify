@@ -28,10 +28,28 @@ pub fn make_widget() -> Widget { Widget() }
 pub fn make_widget_partial() -> Widget { Widget(5.5) }
 "#;
 
-// ─── helper ───────────────────────────────────────────────────────────────────
+// ─── helpers ──────────────────────────────────────────────────────────────────
 
 fn load_widget_module() -> reify_compiler::CompiledModule {
     reify_test_support::helpers::compile_source_with_stdlib(WIDGET_SRC)
+}
+
+/// Compile `source` with the stdlib/prelude in scope and evaluate it end-to-end.
+///
+/// Same 4-line idiom as `crates/reify-eval/tests/parse_length_e2e.rs` — there is
+/// no shared `eval_source_with_stdlib` in `reify-test-support`, and the prelude
+/// must be in scope for structure/fn resolution.  Pair with
+/// [`reify_test_support::cell_value`] to read a concrete cell value and with
+/// [`reify_test_support::assert_no_eval_errors`] to reject eval-phase errors:
+/// together they assert the *value*, which is strictly stronger than the
+/// `!matches!(v, Value::Undef)` non-poison idiom used elsewhere in this file.
+fn eval_source_with_stdlib(source: &str) -> reify_eval::EvalResult {
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(source);
+    let mut engine = reify_eval::Engine::new(
+        Box::new(reify_test_support::mocks::MockConstraintChecker::new()),
+        None,
+    );
+    engine.eval(&compiled)
 }
 
 // ─── step-1: zero errors ──────────────────────────────────────────────────────
