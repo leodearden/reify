@@ -18,11 +18,32 @@
 # lane is not pinned) · branch ·
 # backing-task-status (terminal|non-terminal|unknown) · recoverable
 # (LANDED|PUSHED|ORPHAN) · dirty (clean|residue-only|wip) · divergent_gib ·
-# age_min · classification (LIVE|RECLAIMABLE|LEAKED|PRESERVED-OK). A trailing
-# HEADROOM line summarizes: resident/live/free/reclaimable/leaked counts
-# + leak_unknown (idle/stale/ORPHAN lanes whose LEAKED verdict could NOT be
-# confirmed because the backing-task status is unknown -- see A3)
-# + divergent_gib/free_gib/budget_gib.
+# age_min · classification (LIVE|PINNED|RECLAIMABLE|LEAKED|PRESERVED-OK,
+# ranked in that order).
+#
+# A trailing HEADROOM line summarizes the pool. Its occupancy figures are an
+# ORDERED, mutually exclusive PARTITION of the resident set:
+#
+#     resident = live + pinned + quarantined + free
+#
+#   live         a consumer process holds the lane's exclusive flock.
+#   pinned       ASSIGNED but not live: reserved by work that is not running.
+#   quarantined  withheld from the pool (and not live).
+#   free         the RESIDUE -- neither live, nor reserved, nor withheld.
+#
+# `free` is that residue and nothing else. It used to be `resident - live`,
+# which counted every reserved-but-idle lane as available capacity: that is
+# exactly the 2026-07-22 misread, where 53 lanes the orchestrator had reserved
+# were reported free because no consumer happened to hold their lock.
+#
+# Two CROSS-CUTS accompany the partition and are never added into it:
+#   assigned        lanes the pool has reserved, live or not (= live∧ASSIGNED
+#                   + pinned); `pinned` is the standing capacity loss within it.
+#   state_unknown   lanes whose assignment state could not be resolved (A5).
+#
+# Plus reclaimable/leaked counts + leak_unknown (idle/stale/ORPHAN lanes whose
+# LEAKED verdict could NOT be confirmed because the backing-task status is
+# unknown -- see A3) + divergent_gib/free_gib/budget_gib.
 #
 # `live` is a LIVENESS column, and only that: it answers "is a consumer
 # PROCESS running and holding this lane's exclusive flock right now?". It is
@@ -590,13 +611,25 @@ _divergent_bytes() {
 }
 
 # ── classification (monotonically refined across the walk's build-out) ───────
-# _classify live status recoverable dirty age_min
+# _classify live assigned_state status recoverable dirty age_min
+#
+# The rank is LIVE > PINNED > (RECLAIMABLE | LEAKED | PRESERVED-OK).
+#
+# PINNED sits directly below LIVE because it answers a question the FREE ladder
+# structurally cannot: the lane is RESERVED by the pool, so it is unavailable
+# capacity, yet nothing is running against it. Ranking it above the FREE ladder
+# is also what keeps a pinned lane out of `leaked=`: a reservation the pool
+# still holds is not a leak, it is a lane held by work that is not running, and
+# reporting it as a leak would invite a reclaim of live-but-idle state.
 _classify() {
-    local live="$1" status="$2" recoverable="$3" dirty="$4" age_min="$5"
+    local live="$1" assigned_state="$2" status="$3" recoverable="$4" dirty="$5" age_min="$6"
     if [ "$live" = "LIVE" ]; then
         printf 'LIVE'; return 0
     fi
-    # Idle lane.
+    if [ "$assigned_state" = "ASSIGNED" ]; then
+        printf 'PINNED'; return 0
+    fi
+    # Idle, unreserved lane.
     if [ "$status" = "terminal" ] || [ "$recoverable" = "LANDED" ] || [ "$recoverable" = "PUSHED" ] || [ "$dirty" = "residue-only" ]; then
         printf 'RECLAIMABLE'; return 0
     fi
@@ -641,9 +674,25 @@ _json_escape() {
 }
 
 # ── resident walk ──────────────────────────────────────────────────────────────
+# HEADROOM's occupancy figures are an ORDERED, mutually exclusive PARTITION of
+# the resident set -- live > pinned > quarantined > free, mirroring the
+# classification rank -- so `resident = live + pinned + quarantined + free`
+# holds by construction rather than by coincidence. That identity is the whole
+# point: under the old accounting `free` was `resident - live`, so every lane
+# the pool had reserved but nothing was running against was counted as
+# available capacity (the 2026-07-22 misread). `free` is now the partition
+# RESIDUE -- neither live, nor reserved, nor withheld -- and nothing else.
+#
+# ASSIGNED_COUNT and STATE_UNKNOWN_COUNT are CROSS-CUTS, not partition members:
+# they may overlap any bucket (an ASSIGNED lane is live or pinned; an
+# UNKNOWN-state lane is counted free) and must never be added into the identity.
 RESIDENT=0
 LIVE_COUNT=0
+PINNED_COUNT=0
+QUARANTINED_COUNT=0
 FREE_COUNT=0
+ASSIGNED_COUNT=0
+STATE_UNKNOWN_COUNT=0
 RECLAIMABLE_COUNT=0
 LEAKED_COUNT=0
 LEAK_UNKNOWN_COUNT=0
@@ -664,14 +713,35 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
         role="$(_lane_role "$name")"
 
         live="$(_probe_live "$MOUNT/$name.lock")"
+
+        # Independent of `live`: the pool's own reservation truth (A5).
+        assigned_state="$(_lane_assigned_state "$name")"
+
+        # The four-way partition (see the counter block above). The if/elif
+        # chain IS the exclusivity proof -- exactly one bucket is incremented
+        # per resident, so the identity cannot drift out of true.
         if [ "$live" = "LIVE" ]; then
             LIVE_COUNT=$((LIVE_COUNT + 1))
+        elif [ "$assigned_state" = "ASSIGNED" ]; then
+            PINNED_COUNT=$((PINNED_COUNT + 1))
+        elif [ "$assigned_state" = "QUARANTINED" ]; then
+            QUARANTINED_COUNT=$((QUARANTINED_COUNT + 1))
         else
             FREE_COUNT=$((FREE_COUNT + 1))
         fi
 
-        # Independent of `live`: the pool's own reservation truth (A5).
-        assigned_state="$(_lane_assigned_state "$name")"
+        # Cross-cuts (may overlap the partition; never part of the identity).
+        if [ "$assigned_state" = "ASSIGNED" ]; then
+            ASSIGNED_COUNT=$((ASSIGNED_COUNT + 1))
+        fi
+        if [ "$assigned_state" = "UNKNOWN" ]; then
+            STATE_UNKNOWN_COUNT=$((STATE_UNKNOWN_COUNT + 1))
+            # A5 observability, mirroring A3's leak_unknown warning: the lane
+            # keeps the conservative accounting (counted free), but is named
+            # here so "no pins" stays distinguishable from "pins could not be
+            # evaluated".
+            warn "lane=$name: assignment state unknown -- no readable record at ${STATE_DIR:-<unset>}/$name.json; counted free (conservative). See HEADROOM state_unknown."
+        fi
 
         raw_branch="$(_lane_branch_raw "$entry")"
         branch="${raw_branch:-(detached)}"
@@ -704,7 +774,7 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
         age_min="$(_age_min "$entry")"
         DIVERGENT_TOTAL_BYTES=$((DIVERGENT_TOTAL_BYTES + divergent_bytes))
 
-        classification="$(_classify "$live" "$status" "$recoverable" "$dirty" "$age_min")"
+        classification="$(_classify "$live" "$assigned_state" "$status" "$recoverable" "$dirty" "$age_min")"
         case "$classification" in
             RECLAIMABLE) RECLAIMABLE_COUNT=$((RECLAIMABLE_COUNT + 1)) ;;
             LEAKED) LEAKED_COUNT=$((LEAKED_COUNT + 1)) ;;
@@ -756,12 +826,12 @@ if [ "$FORMAT" = "json" ]; then
         lanes_json="${JSON_LANE_OBJS[*]}"
         unset IFS
     fi
-    printf '{"lanes":[%s],"headroom":{"resident":%d,"live":%d,"free":%d,"reclaimable":%d,"leaked":%d,"leak_unknown":%d,"divergent_gib":%d,"free_gib":%d,"budget_gib":%d}}\n' \
-        "$lanes_json" "$RESIDENT" "$LIVE_COUNT" "$FREE_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB"
+    printf '{"lanes":[%s],"headroom":{"resident":%d,"live":%d,"pinned":%d,"quarantined":%d,"free":%d,"assigned":%d,"state_unknown":%d,"reclaimable":%d,"leaked":%d,"leak_unknown":%d,"divergent_gib":%d,"free_gib":%d,"budget_gib":%d}}\n' \
+        "$lanes_json" "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB"
 else
     printf '%s' "$TABLE_OUT"
-    printf 'HEADROOM resident=%d live=%d free=%d reclaimable=%d leaked=%d leak_unknown=%d divergent_gib=%d free_gib=%d budget_gib=%d\n' \
-        "$RESIDENT" "$LIVE_COUNT" "$FREE_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB"
+    printf 'HEADROOM resident=%d live=%d pinned=%d quarantined=%d free=%d assigned=%d state_unknown=%d reclaimable=%d leaked=%d leak_unknown=%d divergent_gib=%d free_gib=%d budget_gib=%d\n' \
+        "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB"
 fi
 
 exit 0
