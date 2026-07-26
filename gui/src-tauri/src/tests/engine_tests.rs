@@ -17574,3 +17574,119 @@ fn rigid_mass_props_stay_determined_after_warm_edit() {
     );
 }
 
+// ── Task 5074 step-1: RED — from_engine must delegate to the canonical A1
+// production-compute-fns bundler (PRD docs/prds/compute-fea-hardening.md
+// task A3), not hand-roll register_compute_fns + register_shell_extract_compute_fns.
+//
+// TEST A is ungated and executes in the default (gui-off) nextest pass. In
+// that configuration the migration is behaviourally identical for the two
+// pre-existing halves (same trampolines end up registered), so the signal
+// that distinguishes "delegates to register_production_compute_fns" from
+// "still hand-rolled" is the `Unavailable`-arm tracing::debug! emitted by
+// `register_production_compute_fns` itself (the ONLY `tracing::` call in
+// crates/reify-eval/src/compute_targets/mod.rs, at line 459) — 0 events today
+// (bundler never called), 1 event after step-2 wires the delegation.
+
+#[test]
+fn from_engine_delegates_to_canonical_production_bundle() {
+    let (subscriber, counters) = CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::DEBUG)
+        .target_prefix("reify_eval::compute_targets")
+        .build();
+
+    let session = tracing::subscriber::with_default(subscriber, || {
+        EngineSession::new(
+            Box::new(SimpleConstraintChecker),
+            Some(Box::new(MockGeometryKernel::new())),
+        )
+    });
+    let engine = session.engine();
+
+    // No-regression pins: both pre-existing bundle halves must still dispatch
+    // after the migration — register_production_compute_fns runs
+    // register_compute_fns then register_shell_extract_compute_fns internally,
+    // in the same order the hand-rolled calls used.
+    assert!(
+        engine.compute_dispatch("solver::elastic_static").is_some(),
+        "EngineSession::from_engine must delegate to \
+         Engine::register_production_compute_fns — PRD compute-fea-hardening \
+         task A3 / INV-FEA-1 — which must still register the FEA trampoline \
+         (solver::elastic_static) via register_compute_fns"
+    );
+    assert!(
+        engine.compute_dispatch("shell-extract::extract").is_some(),
+        "EngineSession::from_engine must delegate to \
+         Engine::register_production_compute_fns — PRD compute-fea-hardening \
+         task A3 / INV-FEA-1 — which must still register the shell-extract \
+         trampoline (shell-extract::extract) via register_shell_extract_compute_fns"
+    );
+
+    // THE RED ASSERTION: only register_production_compute_fns's Unavailable
+    // arm emits a DEBUG event at this target prefix (compute_targets/mod.rs:459
+    // is the sole `tracing::` call in that file). In a gui-off build (the
+    // configuration nextest actually executes), from_engine must pass
+    // MorphRegistration::Unavailable, so this event is the witness that the
+    // canonical bundler — not the old hand-rolled pair — ran. In a gui-on
+    // build from_engine passes MorphRegistration::Enabled instead, which never
+    // logs, so the expected count is 0 there.
+    let debug_count = counters[&tracing::Level::DEBUG].load(Ordering::Acquire);
+    assert_eq!(
+        debug_count,
+        if cfg!(feature = "gui") { 0 } else { 1 },
+        "EngineSession::from_engine must delegate to \
+         Engine::register_production_compute_fns — PRD compute-fea-hardening \
+         task A3 / INV-FEA-1 — expected {} DEBUG event(s) at target prefix \
+         reify_eval::compute_targets around EngineSession::new, got {}",
+        if cfg!(feature = "gui") { 0 } else { 1 },
+        debug_count
+    );
+}
+
+/// TEST B — the task's stated acceptance floor: after the `gui` feature puts
+/// `reify-mesh-morph` on the dependency graph, `from_engine` must pass
+/// `MorphRegistration::Enabled(reify_mesh_morph::register_morph_producer)` so
+/// `Engine::morph_producer()` is `Some` post-construction. This is the
+/// esc-2962-66-class gap task A3 closes: the GUI never registered the
+/// mesh-morph producer.
+///
+/// Gated because `reify-mesh-morph` is only on the graph under `--features
+/// gui` (gui/src-tauri/Cargo.toml:18,24). Compile-verified in CI via
+/// `cargo check -p reify-gui --features gui --tests`
+/// (scripts/verify.sh:2032) but never executed there — OCCT/tauri linking
+/// makes gui-feature test execution a local-only step. Precedent for this
+/// gated-module shape: kernel_status_tests.rs:36, event_bus_tests.rs:22.
+#[cfg(feature = "gui")]
+mod gui_feature_tests {
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_test_support::MockGeometryKernel;
+
+    use crate::engine::EngineSession;
+
+    #[test]
+    fn from_engine_registers_mesh_morph_producer() {
+        let session = EngineSession::new(
+            Box::new(SimpleConstraintChecker),
+            Some(Box::new(MockGeometryKernel::new())),
+        );
+        let engine = session.engine();
+
+        assert!(
+            engine.compute_dispatch("solver::elastic_static").is_some(),
+            "from_engine must still register the FEA trampoline via the \
+             canonical bundler"
+        );
+        assert!(
+            engine.compute_dispatch("shell-extract::extract").is_some(),
+            "from_engine must still register the shell-extract trampoline via \
+             the canonical bundler"
+        );
+        assert!(
+            engine.morph_producer().is_some(),
+            "the `gui` feature puts reify-mesh-morph on the graph, so \
+             from_engine must pass \
+             MorphRegistration::Enabled(reify_mesh_morph::register_morph_producer) \
+             — this is the esc-2962-66-class gap A3 closes"
+        );
+    }
+}
+
