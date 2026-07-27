@@ -52,6 +52,12 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# For nextest_available_ambient (the plan-header availability probe below).
+# Sourcing the lib installs no trap and builds no environment — only
+# nextest_absent_init does that, and this suite deliberately never calls it.
+[ -f "$SCRIPT_DIR/nextest_absent_lib.sh" ] || { echo "ERROR: nextest_absent_lib.sh not found at $SCRIPT_DIR/nextest_absent_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/nextest_absent_lib.sh"
+
 VERIFY="$REPO_ROOT/scripts/verify.sh"
 
 echo "=== verify.sh retry-subset plan-shape tests (task 5287, PRD verify-retry-failed-only α) ==="
@@ -71,13 +77,28 @@ ID1="reify_core::foo::test_alpha"
 ID2="reify_core::bar::test_beta"
 printf '%s\n%s\n' "$ID1" "$ID2" > "$FILTER"
 
-# --- nextest availability probe (off the byte-identical default plan) --------
+# --- nextest availability probe ----------------------------------------------
+#
+# The probe itself is nextest_available_ambient, from
+# tests/infra/nextest_absent_lib.sh (task 5602) — the same plan-header parse
+# three other suites had each open-coded.
+#
+# Note what does NOT happen here: this suite does not build a nextest-absent
+# simulation and must not. It deliberately tests against the host's REAL nextest
+# state, so forcing absence would silently drop every assert the
+# NEXTEST_AVAILABLE guards below protect. Consolidation here means sharing the
+# DETECTOR, not adopting the harness. (The task description lists this file as a
+# fourth hand-rolled simulation harness; it never was one — corrected in
+# esc-5602-4.)
+#
+# PLAN_DEFAULT is still captured here because Test 1's byte-identical-default
+# assert reads it; the probe runs its own capture, which costs one extra
+# --print-plan (pure bash string-building, no cargo invocation).
 PLAN_DEFAULT="$(bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
-_HEADER="$(printf '%s\n' "$PLAN_DEFAULT" | grep '^# verify.sh plan' || true)"
 NEXTEST_AVAILABLE=0
-case "$_HEADER" in
-    *"nextest=1"*) NEXTEST_AVAILABLE=1 ;;
-esac
+if nextest_available_ambient "$VERIFY"; then
+    NEXTEST_AVAILABLE=1
+fi
 echo "(nextest available on this host: $NEXTEST_AVAILABLE)"
 
 # ---------------------------------------------------------------------------
