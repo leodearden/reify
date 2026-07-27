@@ -660,12 +660,12 @@ echo "--- Section 1d: exceeds-cap verdict carries the root/module breakdown ---"
 # they are appended AFTER `cap=` (not inserted before `lines=`, which would
 # break Section 1's existing regex).
 assert "1d: exceeds-cap verdict appends root_lines/module_lines/module_files AFTER cap= (module-dir case)" \
-    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_split\.rs reason=exceeds-cap lines=20100 cap=20000 root_lines=100 module_lines=20000 module_files=3$' "$_s1b_out"
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_split\.rs reason=exceeds-cap lines=20100 cap=20000 root_lines=100 module_lines=20000 module_files=3 external_lines=0 external_files=0$' "$_s1b_out"
 
 # Coherence for a single-file harness (no module dir): root_lines equals the
 # whole total and module_lines/module_files are both 0.
 assert "1d: exceeds-cap verdict reports a coherent breakdown for a single-file harness (no module dir: root_lines=21000 module_lines=0 module_files=0)" \
-    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_big\.rs reason=exceeds-cap lines=21000 cap=20000 root_lines=21000 module_lines=0 module_files=0$' "$_s1_out"
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_big\.rs reason=exceeds-cap lines=21000 cap=20000 root_lines=21000 module_lines=0 module_files=0 external_lines=0 external_files=0$' "$_s1_out"
 
 # ===========================================================================
 # Section 1e: rule (a) — EXTERNAL (out-of-module-dir) includes are attributed
@@ -773,6 +773,59 @@ _s1e_total_coherent() {
 }
 assert "1e: total == root_lines + module_lines + external_lines across every fixture" \
     _s1e_total_coherent
+
+# ===========================================================================
+# Section 1f: rules (a)+(c) — the exceeds-cap VERDICT carries the external
+# breakdown, and a unit goes over the cap on the strength of its external
+# includes alone.
+#
+# This is the behavioural core of task #5620: before attribution, a harness
+# whose root + module dir sit comfortably under the cap could carry unbounded
+# extra compile cost through a `#[path]` include that escapes the module dir,
+# and the gate would never fire. The fixture below is exactly that shape.
+#
+# The two new fields are APPENDED after `module_files=` — never inserted before
+# `lines=` — so Section 1/1b's unanchored regexes keep passing (the same
+# append-don't-insert discipline Section 1d states). They let an operator
+# reading an archived merge-verify log tell "split the module dir" from "trim
+# the root" from "this unit is over ONLY because of a shared tests/common/
+# include" without re-deriving anything by hand.
+# ===========================================================================
+echo ""
+echo "--- Section 1f: exceeds-cap verdict carries the external breakdown ---"
+
+_s1f_baseline="$(mktemp)"; _TMPDIRS+=("$_s1f_baseline")
+: > "$_s1f_baseline"   # empty fixture baseline (rule (a) never consults it)
+
+_s1f_dir="$(mktemp -d)"; _TMPDIRS+=("$_s1f_dir")
+mkdir -p "$_s1f_dir/harness_extcap" "$_s1f_dir/shared"
+# Root + module dir = 15004 lines, comfortably UNDER the cap. The escaping
+# `#[path = "shared/big.rs"]` include adds 6000 -> 21004, OVER the cap.
+{
+    printf '#[path = "shared/big.rs"]\n'
+    printf 'mod big;\n'
+    printf '#[path = "harness_extcap/local.rs"]\n'
+    printf 'mod local;\n'
+} > "$_s1f_dir/harness_extcap.rs"                                 # root: 4 lines
+awk 'BEGIN { for (i = 0; i < 15000; i++) print "// x" }' > "$_s1f_dir/harness_extcap/local.rs"
+awk 'BEGIN { for (i = 0; i < 6000; i++) print "// x" }'  > "$_s1f_dir/shared/big.rs"
+# Second unit in the SAME scan, over cap on its own lines with NO external
+# include: pins that the external fields are emitted UNCONDITIONALLY and are
+# re-derived per file (a stale carry-over from the unit above would show up
+# here as a non-zero external_lines).
+awk 'BEGIN { for (i = 0; i < 20001; i++) print "// x" }' > "$_s1f_dir/harness_plain.rs"
+
+_s1f_out="$(mktemp)"; _TMPDIRS+=("$_s1f_out")
+_s1f_rc=0
+harness_layout_violations synthcrate "$_s1f_dir" "$_s1f_baseline" 20000 \
+    > "$_s1f_out" 2>/dev/null || _s1f_rc=$?
+
+assert "1f: a harness UNDER cap on root+module (15004) fires once its escaping #[path] include is attributed (returns 1)" \
+    test "$_s1f_rc" -eq 1
+assert "1f: exceeds-cap verdict appends external_lines/external_files AFTER module_files= (lines=21004, external_lines=6000 external_files=1)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_extcap\.rs reason=exceeds-cap lines=21004 cap=20000 root_lines=4 module_lines=15000 module_files=1 external_lines=6000 external_files=1$' "$_s1f_out"
+assert "1f: a unit with no external includes reports external_lines=0 external_files=0 in the same scan (fields unconditional, no carry-over)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_plain\.rs reason=exceeds-cap lines=20001 cap=20000 root_lines=20001 module_lines=0 module_files=0 external_lines=0 external_files=0$' "$_s1f_out"
 
 # ===========================================================================
 # Section 2: rule (b) — an unsanctioned standalone tests/*.rs fires.
@@ -951,12 +1004,12 @@ echo "--- Section 5b: live non-vacuity (measure actually reads module dirs) ---"
 # live harness must show a SMALL root (<500 lines) alongside a LARGE aggregate
 # (>10000 lines).
 _s5b_nonvacuous() {
-    local c f tuple total root mod files
+    local c f tuple total root mod files ext extfiles
     for c in "${CONSOLIDATABLE_CRATES[@]}"; do
         for f in "$REPO_ROOT/crates/$c/tests"/harness_*.rs; do
             [ -f "$f" ] || continue
             tuple="$(harness_layout_unit_lines "$f" 2>/dev/null)" || continue
-            read -r total root mod files <<<"$tuple"
+            read -r total root mod files ext extfiles <<<"$tuple"
             [[ "$root" =~ ^[0-9]+$ ]] || continue
             [[ "$total" =~ ^[0-9]+$ ]] || continue
             if [ "$root" -lt 500 ] && [ "$total" -gt 10000 ]; then
@@ -973,10 +1026,53 @@ assert "5b: at least one live harness has root<500 lines yet aggregate>10000 lin
 # would be byte-identical to Section 5's "live SUMMARY line reads exactly
 # crates=5 violations=0" assert (same variable, same expected string, no
 # re-scan in between), so a real regression would report two failures for
-# one cause. The measured max aggregate across all 13 live harness units is
-# 19342 (harness_topology_selector) against CAP_LINES=20000, so aggregating
-# never flips Section 5's live scan red; the non-vacuity check above is what
-# this section actually contributes.
+# one cause. The non-vacuity check above is what this section actually
+# contributes.
+#
+# HEADROOM (measured, task #5620, 14 live harness units). Attributing the
+# escaping tests/common/ includes (Section 1e) put
+# harness_topology_selector at 21470 = 97 root + 19245 module + 2128 external
+# (`#[path = "common/differential.rs"]`), 7.4% OVER CAP_LINES=20000. Per rule
+# (a)'s own remedy that was resolved by SPLITTING `selective_demand` out into
+# harness_selective_demand — NOT by raising the cap, which would have
+# contradicted the ratified 10-20 kLOC band of PRD §3 W1/§7 and loosened the
+# C2 ratchet to fit its first offender. Post-split the measured max aggregate
+# is 19591 (harness_fea_solver_e2e: 106 root + 19103 module + 382 external),
+# so the tightest live unit now sits ~2% under the cap.
+
+# ===========================================================================
+# Section 5c: live non-vacuity of the EXTERNAL attribution — the out-of-module-
+# dir walk is provably wired on the real tree, not silently degraded to a no-op.
+#
+# Section 1e pins the walk against hermetic fixtures, and Section 5 asserts the
+# live scan is green. But a regression that made the walk return 0/0 on real
+# paths would leave BOTH of those green while quietly reopening the bypass this
+# task closed (move code into tests/common/, `#[path]`-include it, cap evaded).
+# The live tree genuinely has such includes — every consolidated harness that
+# reaches the shared `tests/common/` helpers — so at least one live unit must
+# report external_files > 0.
+# ===========================================================================
+echo ""
+echo "--- Section 5c: live non-vacuity of the external attribution ---"
+
+_s5c_external_wired() {
+    local c f tuple total root mod files ext extfiles
+    for c in "${CONSOLIDATABLE_CRATES[@]}"; do
+        for f in "$REPO_ROOT/crates/$c/tests"/harness_*.rs; do
+            [ -f "$f" ] || continue
+            tuple="$(harness_layout_unit_lines "$f" 2>/dev/null)" || continue
+            read -r total root mod files ext extfiles <<<"$tuple"
+            [[ "$extfiles" =~ ^[0-9]+$ ]] || continue
+            [[ "$ext" =~ ^[0-9]+$ ]] || continue
+            if [ "$extfiles" -gt 0 ] && [ "$ext" -gt 0 ]; then
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+assert "5c: at least one live harness attributes an out-of-module-dir include (external_files>0 — the walk is wired on the real tree)" \
+    _s5c_external_wired
 
 # ===========================================================================
 # Section 6: C1 `#[path]` MANDATE — every `mod <ident>;` in a harness root
