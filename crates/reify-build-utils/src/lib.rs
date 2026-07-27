@@ -303,7 +303,8 @@ mod tests {
 
     #[test]
     fn read_soname_version_extracts_trailing_segment() {
-        let tmp = tempdir();
+        let guard = tempdir();
+        let tmp = guard.path().to_path_buf();
         let real = tmp.join("libTKernel.so.7.8.1");
         fs::write(&real, b"").unwrap();
         symlink("libTKernel.so.7.8.1", tmp.join("libTKernel.so.7.8")).unwrap();
@@ -315,13 +316,15 @@ mod tests {
 
     #[test]
     fn read_soname_version_returns_none_for_missing_symlink() {
-        let tmp = tempdir();
+        let guard = tempdir();
+        let tmp = guard.path().to_path_buf();
         assert_eq!(read_soname_version(&tmp, "TKernel"), None);
     }
 
     #[test]
     fn read_soname_version_handles_conda_one_level_symlink() {
-        let tmp = tempdir();
+        let guard = tempdir();
+        let tmp = guard.path().to_path_buf();
         let real = tmp.join("libTKernel.so.7.9.3");
         fs::write(&real, b"").unwrap();
         symlink("libTKernel.so.7.9.3", tmp.join("libTKernel.so")).unwrap();
@@ -334,7 +337,8 @@ mod tests {
 
     #[test]
     fn find_dir_env_var_takes_precedence() {
-        let tmp = tempdir();
+        let guard = tempdir();
+        let tmp = guard.path().to_path_buf();
         let sentinel = tmp.join("libgmsh.so");
         fs::write(&sentinel, b"").unwrap();
 
@@ -353,7 +357,8 @@ mod tests {
 
     #[test]
     fn find_dir_falls_through_candidates_when_env_unset() {
-        let tmp = tempdir();
+        let guard = tempdir();
+        let tmp = guard.path().to_path_buf();
         let sentinel = tmp.join("libgmsh.so");
         fs::write(&sentinel, b"").unwrap();
 
@@ -414,18 +419,14 @@ mod tests {
         );
     }
 
-    fn tempdir() -> PathBuf {
-        let base = env::temp_dir().join(format!(
-            "reify-build-utils-test-{}-{}",
-            std::process::id(),
-            rand_suffix(),
-        ));
-        fs::create_dir_all(&base).unwrap();
-        base
-    }
-
-    fn rand_suffix() -> u64 {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().subsec_nanos() as u64
+    /// Create a temp dir that is removed when the returned guard is dropped —
+    /// including on an unwinding panic, which a manual teardown at the end of
+    /// a test body would skip.
+    ///
+    /// Bind the result to a named local that outlives the test body. Chaining
+    /// (`tempdir().path().to_path_buf()`) drops the guard at the end of that
+    /// statement and deletes the directory before it is ever used.
+    fn tempdir() -> tempfile::TempDir {
+        tempfile::tempdir().expect("create temp dir")
     }
 }
