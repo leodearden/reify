@@ -392,4 +392,96 @@ assert "6b: nextest_absent_farm_put over an existing farm entry succeeds (mirror
 assert "6c: add/rm_nextest_stub toggle cargo-nextest presence, idempotently across repeats" _t6c
 assert "6d: the plain env is nextest-absent with no caller action (stub is out of the farm by default)" _t6d
 
+# -- Test 7: the caller-facing convenience helpers -----------------------------
+echo ""
+echo "--- Test 7: nextest_absent_assert_real / nextest_available_ambient ---"
+
+# Fresh env — Test 6 left an overlaid fake `cargo` in the farm.
+nextest_absent_init
+
+# nextest_absent_assert_real emits its checks as assert() calls against the
+# SOURCING suite's PASS/FAIL counters (rather than returning a boolean), which
+# is what keeps test_verify_nextest_absent_suites.sh's H-section pass counts —
+# and therefore its S1-S4 floors — meaningful after migration. So it must be
+# exercised in a CHILD suite whose counters we can read back.
+NX_REAL_CHILD="$NX_WORKDIR/assert_real_probe.sh"
+cat > "$NX_REAL_CHILD" <<'REAL_PROBE'
+# argv: <repo-root> <sabotage: 0|1>
+set -euo pipefail
+cd "$1"
+source tests/infra/test_helpers.sh
+source tests/infra/nextest_absent_lib.sh
+nextest_absent_init
+[ "$2" = "1" ] && nextest_absent_farm_add_nextest_stub
+nextest_absent_assert_real
+# Report the counters on a machine-readable line INSTEAD of test_summary, so
+# this probe never exits non-zero merely for having observed a FAIL.
+echo "COUNTERS: pass=$PASS fail=$FAIL"
+REAL_PROBE
+
+# How many asserts nextest_absent_assert_real must emit. The ambient-header
+# check is meaningful only where cargo-nextest is actually installed, so it is
+# conditional — same convention as 3e.
+NX_REAL_EXPECTED=6
+[ "$NX_AMBIENT_HAS_NEXTEST" -eq 1 ] && NX_REAL_EXPECTED=7
+
+_nx_counters() { bash "$NX_REAL_CHILD" "$REPO_ROOT" "$1" 2>&1 | grep -E '^COUNTERS:' | tail -1; }
+
+# (a) HEALTHY env: exactly the expected number of PASSes, zero FAILs.
+_t7a() {
+    local line pass fail
+    line="$(_nx_counters 0)"
+    echo "$line"
+    pass="$(printf '%s\n' "$line" | sed -n 's/^COUNTERS: pass=\([0-9]\{1,\}\) fail=\([0-9]\{1,\}\)$/\1/p')"
+    fail="$(printf '%s\n' "$line" | sed -n 's/^COUNTERS: pass=\([0-9]\{1,\}\) fail=\([0-9]\{1,\}\)$/\2/p')"
+    [ -n "$pass" ] && [ -n "$fail" ] || { echo "no parseable COUNTERS line"; return 1; }
+    [ "$fail" -eq 0 ] || { echo "expected 0 FAILs on a healthy env, got $fail"; return 1; }
+    [ "$pass" -eq "$NX_REAL_EXPECTED" ] || {
+        echo "expected exactly $NX_REAL_EXPECTED PASSes, got $pass — the H-section"
+        echo "count is what keeps the migrated suites' S1-S4 floors meaningful."
+        return 1
+    }
+    return 0
+}
+
+# (b) BROKEN env: must register a FAIL — not abort the suite, not pass silently.
+# THIS is the point. A realness checker that cannot fail is exactly the vacuity
+# it exists to prevent.
+_t7b() {
+    local line pass fail
+    line="$(_nx_counters 1)"
+    echo "$line"
+    pass="$(printf '%s\n' "$line" | sed -n 's/^COUNTERS: pass=\([0-9]\{1,\}\) fail=\([0-9]\{1,\}\)$/\1/p')"
+    fail="$(printf '%s\n' "$line" | sed -n 's/^COUNTERS: pass=\([0-9]\{1,\}\) fail=\([0-9]\{1,\}\)$/\2/p')"
+    [ -n "$pass" ] && [ -n "$fail" ] || {
+        echo "no parseable COUNTERS line — assert_real ABORTED the suite instead"
+        echo "of registering a FAIL against its counters."
+        return 1
+    }
+    [ "$fail" -ge 1 ] || {
+        echo "a farm containing a reachable cargo-nextest is NOT a real"
+        echo "nextest-absent env, yet assert_real registered 0 FAILs."
+        return 1
+    }
+    return 0
+}
+
+# (c) nextest_available_ambient — the idiom migrating off
+# test_verify_retry_subset.sh:74-81. Must agree with the ambient plan header.
+_t7c() {
+    local hdr want
+    hdr="$(nextest_absent_plan_header_ambient)"
+    case "$hdr" in *"nextest=1"*) want=0 ;; *) want=1 ;; esac
+    echo "ambient header: $hdr (expect rc=$want)"
+    if nextest_available_ambient; then
+        [ "$want" -eq 0 ]
+    else
+        [ "$want" -eq 1 ]
+    fi
+}
+
+assert "7a: nextest_absent_assert_real emits exactly $NX_REAL_EXPECTED PASSes / 0 FAILs on a healthy env" _t7a
+assert "7b: nextest_absent_assert_real registers a FAIL (not an abort, not a silent pass) on a broken env" _t7b
+assert "7c: nextest_available_ambient agrees with the ambient verify.sh plan header" _t7c
+
 test_summary
