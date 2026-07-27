@@ -317,6 +317,172 @@ pub const DYNAMICS_QUERY_NAMES: &[&str] = &[
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// step-15: FABRICATION direction — a chunk that documents a call the compiler
+// does not provide
+//
+// This is the direction that costs a design-authoring agent the most: it reads
+// the chunk, writes the call, and the compile fails on something the reference
+// promised. Every disposition here is pinned in a TEMPDIR, never against the
+// real tree — #5434 will delete `offset_surface` from the real stdlib.md, and a
+// test that pinned it there would flip RED for an unrelated reason.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A second chunk path, so the fabrication fixtures do not collide with the
+/// omission fixtures' `geometry.md`.
+#[allow(dead_code)]
+const FIX_STDLIB_CHUNK: &str = "crates/reify-mcp/src/tools/chunks/stdlib.md";
+/// `.ri` stdlib source — the oracle arm that has no Rust literal to harvest.
+#[allow(dead_code)]
+const FIX_RI: &str = "crates/reify-compiler/stdlib/geometry.ri";
+
+/// The chunk under test. Line numbers are load-bearing for the assertions:
+/// 3 `extrude`, 4 `revolve`, 5 `offset_surface`, 6 `planned_op`,
+/// 7 `sketchy_op`.
+#[allow(dead_code)]
+const FABRICATION_CHUNK: &str = "\
+# Stdlib
+
+- `extrude(profile, height)` — real: declared in a `*_NAMES` registry.
+- `revolve(profile, axis, angle)` — real: declared ONLY in the `.ri` stdlib.
+- `offset_surface(surface, distance)` — fabricated: exists nowhere.
+- `planned_op(x)` <!-- pdoccover:allow — planned, see #5434 -->
+- `sketchy_op(x)` <!-- pdoccover:allow -->
+";
+
+/// The fabrication lane over a tree where every disposition is represented.
+///
+/// Exactly two findings survive: the bare fabrication, and the phantom whose
+/// escape hatch has no reason. The oracle-backed names and the properly
+/// allow-marked phantom produce nothing.
+#[test]
+fn fabrication_lane_reports_names_that_exist_nowhere() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    // Oracle arm 1: a Rust registry literal.
+    write_file(
+        root,
+        FIX_UNITS,
+        "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\n    \"extrude\",\n];\n",
+    );
+    // Oracle arm 2: a `.ri` declaration with no Rust literal anywhere.
+    write_file(
+        root,
+        FIX_RI,
+        "pub fn revolve(profile: Profile, axis: Axis, angle: Angle) -> Solid { x }\n",
+    );
+    write_file(root, FIX_STDLIB_CHUNK, FABRICATION_CHUNK);
+
+    let h = Harness::new(&[FIX_UNITS, FIX_RI, FIX_STDLIB_CHUNK]);
+    let findings = reify_audit::pdoccover::check(&h.ctx(root));
+
+    let names: Vec<&str> = findings.iter().map(finding_name).collect();
+    assert_eq!(
+        names,
+        vec!["sketchy_op", "offset_surface"],
+        "expected exactly the reasonless-marker phantom and the bare \
+         fabrication, in (category, name) order. `extrude` is oracle-backed by \
+         a registry literal, `revolve` ONLY by the `.ri` stdlib arm, and \
+         `planned_op` carries a well-formed allow marker. Got {findings:?}"
+    );
+
+    // (b) the fabrication itself
+    let fab = findings
+        .iter()
+        .find(|f| finding_name(f) == "offset_surface")
+        .expect("offset_surface finding");
+    assert!(
+        fab.summary.starts_with("fabricated-name:"),
+        "got {:?}",
+        fab.summary
+    );
+    assert_eq!(fab.severity, Severity::High, "got {:?}", fab.severity);
+    assert!(
+        fab.summary.contains(&format!("{FIX_STDLIB_CHUNK}:5")),
+        "the summary must locate the claim precisely — chunk path AND line, so \
+         the fix is one jump away; got {:?}",
+        fab.summary
+    );
+    assert!(
+        fab.evidence
+            .iter()
+            .any(|e| matches!(e, EvidenceRef::File { path } if path == FIX_STDLIB_CHUNK)),
+        "evidence must point at the CHUNK (the file that lies), not at the \
+         compiler; got {:?}",
+        fab.evidence
+    );
+
+    // (d) the reasonless chunk-side marker
+    let bad_marker = findings
+        .iter()
+        .find(|f| finding_name(f) == "sketchy_op")
+        .expect("sketchy_op finding");
+    assert!(
+        bad_marker.summary.starts_with("allow-missing-reason:"),
+        "a reasonless chunk-side marker suppresses nothing and is itself the \
+         finding; got {:?}",
+        bad_marker.summary
+    );
+    assert!(
+        bad_marker
+            .evidence
+            .iter()
+            .any(|e| matches!(e, EvidenceRef::File { path } if path == FIX_STDLIB_CHUNK)),
+        "got {:?}",
+        bad_marker.evidence
+    );
+}
+
+/// The same fabricated name mentioned repeatedly in one chunk is ONE defect
+/// and one finding — otherwise a name documented in a table, a fence and a
+/// heading would cost three, and the ratchet count would track prose volume
+/// instead of drift.
+#[test]
+fn fabrication_lane_dedupes_repeat_mentions_within_a_chunk() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    write_file(
+        root,
+        FIX_UNITS,
+        "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[];\n",
+    );
+    write_file(
+        root,
+        FIX_STDLIB_CHUNK,
+        "\
+## `offset_surface(surface, distance)`
+
+| Call | Meaning |
+|---|---|
+| `offset_surface(s, d)` | offsets |
+
+```reify
+let x = offset_surface(s, 1mm)
+```
+",
+    );
+
+    let h = Harness::new(&[FIX_UNITS, FIX_STDLIB_CHUNK]);
+    let findings = reify_audit::pdoccover::check(&h.ctx(root));
+
+    assert_eq!(
+        findings.len(),
+        1,
+        "three mentions of one fabricated name in one chunk are one finding; \
+         got {}: {:?}",
+        findings.len(),
+        findings
+    );
+    assert!(
+        findings[0].summary.contains(&format!("{FIX_STDLIB_CHUNK}:1")),
+        "the finding must report the FIRST occurrence, so the reported line is \
+         stable as later mentions come and go; got {:?}",
+        findings[0].summary
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // step-9: ratchet honesty — a suppression channel that is no longer needed is
 // itself a finding
 //
