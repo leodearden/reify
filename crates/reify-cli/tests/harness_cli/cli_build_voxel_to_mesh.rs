@@ -62,16 +62,16 @@ fn build_voxel_to_mesh_prints_positive_triangle_count() {
         .lines()
         .find(|line| line.starts_with("Triangles:"))
         .unwrap_or_else(|| {
-            panic!("stdout should contain a 'Triangles: N' line\nstdout: {stdout}\nstderr: {stderr}")
+            panic!(
+                "stdout should contain a 'Triangles: N' line\nstdout: {stdout}\nstderr: {stderr}"
+            )
         });
     let n: u64 = triangles_line
         .trim_start_matches("Triangles:")
         .trim()
         .parse()
         .unwrap_or_else(|e| {
-            panic!(
-                "failed to parse triangle count from {triangles_line:?}: {e}\nstdout: {stdout}"
-            )
+            panic!("failed to parse triangle count from {triangles_line:?}: {e}\nstdout: {stdout}")
         });
     assert!(
         n > 0,

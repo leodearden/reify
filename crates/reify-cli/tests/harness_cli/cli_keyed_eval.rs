@@ -41,9 +41,9 @@ fn eval_keyed_vents_resolves_member_by_key() {
         "a (= vents[\"intake\"].area) must resolve, not be undef;\nstdout:\n{stdout}"
     );
     let si_token = rhs.split_whitespace().next().unwrap_or("");
-    let si: f64 = si_token
-        .parse()
-        .unwrap_or_else(|_| panic!("RHS leading token {si_token:?} is not f64;\nstdout:\n{stdout}"));
+    let si: f64 = si_token.parse().unwrap_or_else(|_| {
+        panic!("RHS leading token {si_token:?} is not f64;\nstdout:\n{stdout}")
+    });
     assert!(
         (si - 0.005).abs() < 1e-9,
         "a must be 5mm (0.005 m in SI), got {si} m;\nstdout:\n{stdout}"

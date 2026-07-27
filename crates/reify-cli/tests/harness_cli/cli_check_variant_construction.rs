@@ -83,10 +83,8 @@ fn check_variant_payload_type_exits_failure() {
 /// `Rect { width: 20mm, height: 10mm }` is well-formed -> checks clean.
 #[test]
 fn check_variant_valid_exits_success() {
-    let (status, stdout, stderr) = common::run_subcommand(
-        "check",
-        &common::fixture_path("variant_construct_valid.ri"),
-    );
+    let (status, stdout, stderr) =
+        common::run_subcommand("check", &common::fixture_path("variant_construct_valid.ri"));
 
     assert!(
         status.success(),

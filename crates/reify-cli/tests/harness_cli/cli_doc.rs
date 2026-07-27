@@ -668,15 +668,22 @@ fn doc_listed_in_top_level_usage() {
 // --stdlib / --out tests (step-5 / task-3565)
 // ---------------------------------------------------------------------------
 
-/// Helper: return a unique temp dir path for a test.  Creates a fresh
-/// directory under the system temp dir; the caller is responsible for the
-/// lifetime (we don't clean up in these tests since they run isolated).
-fn stdlib_out_dir(suffix: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("reify-test-stdlib-doc-{suffix}"));
-    // Remove any stale remnant then create fresh.
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create temp out dir");
-    dir
+/// Helper: a unique temp dir for a test, removed when the returned guard drops
+/// — including while unwinding out of a failed assertion.
+///
+/// Bind the guard to a NAMED LOCAL as the FIRST binding in the test body, so it
+/// outlives the `run_doc(..)` subprocess and every assertion that reads back
+/// `index.html`:
+///
+/// ```ignore
+/// let guard = stdlib_out_dir("produces");
+/// let out_dir = guard.path().to_path_buf();
+/// ```
+///
+/// `stdlib_out_dir("x").path().to_path_buf()` compiles but drops the guard at
+/// the end of that statement, deleting the directory before the CLI writes to it.
+fn stdlib_out_dir(suffix: &str) -> reify_test_support::TempDir {
+    reify_test_support::prefixed_tempdir(&format!("reify-test-stdlib-doc-{suffix}-"))
 }
 
 /// `reify doc --stdlib --out <dir>` must exit 0, write `<dir>/index.html`
@@ -684,7 +691,8 @@ fn stdlib_out_dir(suffix: &str) -> std::path::PathBuf {
 /// at least one other `*.html` file under `<dir>` (a per-symbol page).
 #[test]
 fn doc_stdlib_produces_html_pages() {
-    let out_dir = stdlib_out_dir("produces");
+    let guard = stdlib_out_dir("produces");
+    let out_dir = guard.path().to_path_buf();
     let dir_str = out_dir.to_string_lossy().into_owned();
     let (status, stdout, stderr) = run_doc(&["--stdlib", "--out", &dir_str]);
 
@@ -766,7 +774,8 @@ fn doc_stdlib_without_out_exits_two() {
 /// --stdlib is HTML-only.
 #[test]
 fn doc_stdlib_rejects_json_format() {
-    let out_dir = stdlib_out_dir("rejects-json");
+    let guard = stdlib_out_dir("rejects-json");
+    let out_dir = guard.path().to_path_buf();
     let dir_str = out_dir.to_string_lossy().into_owned();
     let (status, _stdout, stderr) = run_doc(&["--stdlib", "--out", &dir_str, "--format", "json"]);
     assert_eq!(

@@ -197,7 +197,8 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
         return Err(ExitCode::FAILURE);
     }
 
-    let mut compiled = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
+    let mut compiled =
+        reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
 
     // Enforce module-path declaration (spec §7.1/§7.2, task γ).
     // parsed.path == ModulePath::single(module_name) by construction (PRD D-6).
@@ -1103,8 +1104,10 @@ fn cmd_build(args: &[String]) -> ExitCode {
                             println!("Some constraints violated.");
                         }
                     }
-                    let has_error_diagnostic =
-                        result.diagnostics.iter().any(|d| d.severity == Severity::Error);
+                    let has_error_diagnostic = result
+                        .diagnostics
+                        .iter()
+                        .any(|d| d.severity == Severity::Error);
                     if build_is_success(&outcome, has_error_diagnostic) {
                         ExitCode::SUCCESS
                     } else {
@@ -1256,8 +1259,9 @@ fn cmd_build(args: &[String]) -> ExitCode {
                     println!("Some constraints violated.");
                 }
             }
-            let has_error_diagnostic =
-                all_diagnostics.iter().any(|d| d.severity == Severity::Error);
+            let has_error_diagnostic = all_diagnostics
+                .iter()
+                .any(|d| d.severity == Severity::Error);
             if build_is_success(&outcome, has_error_diagnostic) {
                 ExitCode::SUCCESS
             } else {
@@ -1528,9 +1532,7 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         }
     }
     let Some(path) = file_path else {
-        eprintln!(
-            "Usage: reify eval [--explain-undef] [--verbose] [--cache-dir <path>] <file>"
-        );
+        eprintln!("Usage: reify eval [--explain-undef] [--verbose] [--cache-dir <path>] <file>");
         return ExitCode::FAILURE;
     };
 
@@ -1558,10 +1560,9 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         // that run_post_processes/post_process_geometry_queries fires and resolves
         // geometry-query value cells (mass, centroid, volume, …).
         // geometry_output is discarded — reify eval is a value inspector only.
-        let mut engine =
-            configured_eval_engine(reify_eval::Engine::with_registered_kernel(Box::new(
-                SimpleConstraintChecker,
-            )));
+        let mut engine = configured_eval_engine(reify_eval::Engine::with_registered_kernel(
+            Box::new(SimpleConstraintChecker),
+        ));
         // Apply --cache-dir flag override (highest precedence over env/defaults set
         // by configured_eval_engine).
         if let Some(ref override_dir) = cache_dir_override {
@@ -3685,7 +3686,8 @@ structure def Probe {
     constraint Conforms(tolerance: tol, measured_deviation: 0mm, feature_departure: 0mm, actual: act)
 }
 "#;
-        let compiled_geometric = reify_test_support::parse_and_compile_with_stdlib(geometric_source);
+        let compiled_geometric =
+            reify_test_support::parse_and_compile_with_stdlib(geometric_source);
         assert!(
             module_has_geometric_conforms(&compiled_geometric),
             "module with a Conforms instance binding an explicit `actual` should be \
@@ -3992,7 +3994,7 @@ structure def Plain {
 
 #[cfg(test)]
 mod build_is_success_tests {
-    use super::{build_is_success, ConstraintOutcome};
+    use super::{ConstraintOutcome, build_is_success};
 
     /// (AllSatisfied, no error diagnostic) → success.
     #[test]
@@ -4011,13 +4013,19 @@ mod build_is_success_tests {
     /// Indeterminate constraints do not gate build; geometry is still written.
     #[test]
     fn some_indeterminate_no_error_is_success() {
-        assert!(build_is_success(&ConstraintOutcome::SomeIndeterminate(2), false));
+        assert!(build_is_success(
+            &ConstraintOutcome::SomeIndeterminate(2),
+            false
+        ));
     }
 
     /// (SomeIndeterminate, has error diagnostic) → failure.
     #[test]
     fn some_indeterminate_with_error_is_failure() {
-        assert!(!build_is_success(&ConstraintOutcome::SomeIndeterminate(2), true));
+        assert!(!build_is_success(
+            &ConstraintOutcome::SomeIndeterminate(2),
+            true
+        ));
     }
 
     /// (SomeViolated, no error diagnostic) → failure.
@@ -4082,7 +4090,11 @@ mod triangle_count_tests {
             indices.push(((r + 1) % 3) as u32);
             indices.push(((r + 2) % 3) as u32);
         }
-        Mesh { vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0], indices, normals: None }
+        Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices,
+            normals: None,
+        }
     }
 
     /// Normal case: reads the count straight out of the header field.
@@ -4240,8 +4252,7 @@ mod dfm_error_escalation_tests {
     #[test]
     fn dfm_error_escalation_requires_e_dfm_prefix() {
         // E_DFM_ prefix Error → escalates (DFM violation)
-        let diag_e_dfm =
-            Diagnostic::error("E_DFM_OVERHANG: face dips past the overhang limit");
+        let diag_e_dfm = Diagnostic::error("E_DFM_OVERHANG: face dips past the overhang limit");
         assert!(
             dfm_has_error_diagnostic(&[diag_e_dfm]),
             "E_DFM_ prefix Error must trigger escalation (DFM violation)"
@@ -4264,8 +4275,7 @@ mod dfm_error_escalation_tests {
         );
 
         // W_DFM_ Warning → must NOT escalate (only Errors escalate)
-        let diag_w_dfm =
-            Diagnostic::warning("W_DFM_OVERHANG: face dips past the overhang limit");
+        let diag_w_dfm = Diagnostic::warning("W_DFM_OVERHANG: face dips past the overhang limit");
         assert!(
             !dfm_has_error_diagnostic(&[diag_w_dfm]),
             "W_DFM_ Warning must NOT trigger escalation (non-fatal by design)"

@@ -107,7 +107,9 @@ const TBB_PIN_DIR: &str = "/opt/reify-deps/tbb-pin";
 /// when it is absent, so CI images without the deps host degrade to skip
 /// instead of false-failing.
 fn tbb_pin_present() -> bool {
-    std::path::Path::new(TBB_PIN_DIR).join("libtbb.so.12").exists()
+    std::path::Path::new(TBB_PIN_DIR)
+        .join("libtbb.so.12")
+        .exists()
 }
 
 /// Run `env -u LD_LIBRARY_PATH ldd <path>` and return its stdout. `None`
@@ -117,7 +119,10 @@ fn tbb_pin_present() -> bool {
 /// panicking, since a sandboxed or resource-constrained CI image can fail
 /// to spawn for reasons other than a missing binary.
 fn bare_ldd(path: &str) -> Option<String> {
-    let output = match Command::new("env").args(["-u", "LD_LIBRARY_PATH", "ldd", path]).output() {
+    let output = match Command::new("env")
+        .args(["-u", "LD_LIBRARY_PATH", "ldd", path])
+        .output()
+    {
         Ok(o) => o,
         Err(e) => {
             eprintln!("env/ldd invocation failed ({e}); skipping");
@@ -137,7 +142,10 @@ fn bare_ldd(path: &str) -> Option<String> {
 fn ldd_resolved_path<'a>(ldd_output: &'a str, soname: &str) -> Option<&'a str> {
     let needle = format!("{soname} =>");
     ldd_output.lines().find_map(|line| {
-        line.trim().strip_prefix(needle.as_str())?.split_whitespace().next()
+        line.trim()
+            .strip_prefix(needle.as_str())?
+            .split_whitespace()
+            .next()
     })
 }
 
@@ -217,7 +225,9 @@ fn reify_binary_bare_launch_does_not_crash_on_occt_example() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     const LINKER_ERROR_SUBSTRINGS: &[&str] =
         &["undefined symbol", "error while loading shared libraries"];
-    let linker_error = LINKER_ERROR_SUBSTRINGS.iter().find(|s| stderr.contains(**s));
+    let linker_error = LINKER_ERROR_SUBSTRINGS
+        .iter()
+        .find(|s| stderr.contains(**s));
     assert!(
         linker_error.is_none(),
         "bare launch of {exe} eval {example:?} crashed with a dynamic-linker \
@@ -296,15 +306,18 @@ fn reify_binary_has_direct_needed_libtbb_and_pin_first_in_runpath() {
     let Some(stdout) = readelf_d(exe) else {
         return;
     };
-    let needed_tk: Vec<&str> =
-        stdout.lines().filter(|l| l.contains("(NEEDED)") && l.contains("libTK")).collect();
+    let needed_tk: Vec<&str> = stdout
+        .lines()
+        .filter(|l| l.contains("(NEEDED)") && l.contains("libTK"))
+        .collect();
     if needed_tk.is_empty() {
         eprintln!("no NEEDED libTK* entries in {exe}; OCCT likely stubbed — skipping");
         return;
     }
 
-    let has_direct_tbb_needed =
-        stdout.lines().any(|l| l.contains("(NEEDED)") && l.contains("[libtbb.so.12]"));
+    let has_direct_tbb_needed = stdout
+        .lines()
+        .any(|l| l.contains("(NEEDED)") && l.contains("[libtbb.so.12]"));
     assert!(
         has_direct_tbb_needed,
         "readelf -d {exe} has no direct NEEDED libtbb.so.12 entry — \

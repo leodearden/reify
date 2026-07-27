@@ -63,9 +63,9 @@ fn eval_keyed_forall_resolves_both_member_areas() {
         "a (= vents[\"intake\"].area) must resolve, not be undef;\nstdout:\n{stdout}"
     );
     let a_si_token = a_rhs.split_whitespace().next().unwrap_or("");
-    let a_si: f64 = a_si_token
-        .parse()
-        .unwrap_or_else(|_| panic!("a RHS leading token {a_si_token:?} is not f64;\nstdout:\n{stdout}"));
+    let a_si: f64 = a_si_token.parse().unwrap_or_else(|_| {
+        panic!("a RHS leading token {a_si_token:?} is not f64;\nstdout:\n{stdout}")
+    });
     assert!(
         (a_si - 0.005).abs() < 1e-9,
         "a must be 5mm (0.005 m SI), got {a_si} m;\nstdout:\n{stdout}"
@@ -79,9 +79,9 @@ fn eval_keyed_forall_resolves_both_member_areas() {
         "b (= vents[\"exhaust\"].area) must resolve, not be undef;\nstdout:\n{stdout}"
     );
     let b_si_token = b_rhs.split_whitespace().next().unwrap_or("");
-    let b_si: f64 = b_si_token
-        .parse()
-        .unwrap_or_else(|_| panic!("b RHS leading token {b_si_token:?} is not f64;\nstdout:\n{stdout}"));
+    let b_si: f64 = b_si_token.parse().unwrap_or_else(|_| {
+        panic!("b RHS leading token {b_si_token:?} is not f64;\nstdout:\n{stdout}")
+    });
     assert!(
         (b_si - 0.008).abs() < 1e-9,
         "b must be 8mm (0.008 m SI), got {b_si} m;\nstdout:\n{stdout}"

@@ -34,7 +34,14 @@ fn eval_surface_finish_cost_rolls_up_total_finishing_cost_and_coat_values() {
     // The .sum roll-up has no geometry dependency and resolves through
     // Engine::build() even in OCCT-stub mode.  24 is integer-valued, so tol
     // 1e-9 (exact-arithmetic; no kernel noise).
-    assert_cell_value(&stdout, &stderr, "AssemblyBOM.total_finishing_cost", "USD", 24.0, 1e-9);
+    assert_cell_value(
+        &stdout,
+        &stderr,
+        "AssemblyBOM.total_finishing_cost",
+        "USD",
+        24.0,
+        1e-9,
+    );
 
     // ── B7: area-based coat_cost and coat_mass (kernel-gated) ───────────────
     //
@@ -56,7 +63,14 @@ fn eval_surface_finish_cost_rolls_up_total_finishing_cost_and_coat_values() {
     }
 
     assert_cell_value(&stdout, &stderr, "CoatedPlate.coat_cost", "USD", 1.2, 1e-6);
-    assert_cell_value(&stdout, &stderr, "CoatedPlate.coat_mass", "kg", 0.0018, 1e-6);
+    assert_cell_value(
+        &stdout,
+        &stderr,
+        "CoatedPlate.coat_mass",
+        "kg",
+        0.0018,
+        1e-6,
+    );
 
     // --- no error diagnostics ---
     // surface_finish_cost.ri is a clean file; stderr should contain no
@@ -78,21 +92,12 @@ fn eval_surface_finish_cost_rolls_up_total_finishing_cost_and_coat_values() {
 /// Pass `tol = 1e-9` for exact-arithmetic values (integer USD totals) and
 /// `tol = 1e-6` for kernel-realized geometry values (coat_cost/coat_mass)
 /// where OCCT floating-point variation can amplify past pure f64 epsilon.
-fn assert_cell_value(
-    stdout: &str,
-    stderr: &str,
-    name: &str,
-    unit: &str,
-    expected: f64,
-    tol: f64,
-) {
+fn assert_cell_value(stdout: &str, stderr: &str, name: &str, unit: &str, expected: f64, tol: f64) {
     let line = stdout
         .lines()
         .find(|l| l.contains(name))
         .unwrap_or_else(|| {
-            panic!(
-                "expected a '{name}' line in stdout.\nstdout: {stdout}\nstderr: {stderr}"
-            )
+            panic!("expected a '{name}' line in stdout.\nstdout: {stdout}\nstderr: {stderr}")
         });
 
     let rhs = line
@@ -112,9 +117,7 @@ fn assert_cell_value(
     );
 
     let val: f64 = num_tok.parse().unwrap_or_else(|_| {
-        panic!(
-            "could not parse {name} numeric token as f64: {num_tok:?}\nline: {line}"
-        )
+        panic!("could not parse {name} numeric token as f64: {num_tok:?}\nline: {line}")
     });
     assert!(
         (val - expected).abs() < tol,

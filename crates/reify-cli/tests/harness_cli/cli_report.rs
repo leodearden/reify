@@ -165,8 +165,11 @@ fn report_extra_positional_is_rejected() {
 /// collection-only design is not an error, so the run still exits 0.
 #[test]
 fn report_bom_collection_only_design_surfaces_warning() {
-    let (status, stdout, stderr) =
-        common::run_with_args(&["report", "--bom", &common::fixture_path("collection_bom.ri")]);
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "report",
+        "--bom",
+        &common::fixture_path("collection_bom.ri"),
+    ]);
 
     assert!(
         status.success(),

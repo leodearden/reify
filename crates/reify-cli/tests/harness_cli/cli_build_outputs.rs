@@ -163,7 +163,10 @@ fn build_no_output_flag_emits_all_occurrences() {
     let stl = dir.path().join("o.stl");
     let step = dir.path().join("o2.step");
     assert!(stl.exists(), "the STLOutput occurrence must write o.stl");
-    assert!(step.exists(), "the STEPOutput occurrence must write o2.step");
+    assert!(
+        step.exists(),
+        "the STEPOutput occurrence must write o2.step"
+    );
     assert_valid_binary_stl(&std::fs::read(&stl).expect("failed to read o.stl"));
     assert!(
         std::fs::metadata(&step).map(|m| m.len()).unwrap_or(0) > 0,

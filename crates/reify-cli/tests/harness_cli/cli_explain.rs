@@ -67,7 +67,10 @@ fn explain_prints_governing_objective_and_combination() {
 
     // ── Run 2 (determinism) ────────────────────────────────────────────────────
     let (status2, stdout2, _) = common::run_subcommand("explain", &path);
-    assert!(status2.success(), "second run of reify explain should exit 0");
+    assert!(
+        status2.success(),
+        "second run of reify explain should exit 0"
+    );
     assert_eq!(
         stdout, stdout2,
         "reify explain output must be deterministic (byte-identical across runs)"
@@ -119,7 +122,10 @@ fn explain_prints_synthetic_vs_explicit_flag() {
         "reify explain explain_weighted.ri should exit 0;\nstdout: {stdout_w}\nstderr: {stderr_w}"
     );
 
-    for line in stdout_w.lines().filter(|l| l.contains("mass") || l.contains("stiffness")) {
+    for line in stdout_w
+        .lines()
+        .filter(|l| l.contains("mass") || l.contains("stiffness"))
+    {
         assert!(
             line.contains("source=explicit"),
             "weighted cell line should contain 'source=explicit';\nline: {line:?}\nstdout:\n{stdout_w}"
@@ -168,8 +174,7 @@ fn explain_unknown_flag_prints_usage() {
 #[test]
 fn explain_extra_positional_prints_usage() {
     let path = common::fixture_path("explain_weighted.ri");
-    let (status, _stdout, stderr) =
-        common::run_with_args(&["explain", &path, "extra.ri"]);
+    let (status, _stdout, stderr) = common::run_with_args(&["explain", &path, "extra.ri"]);
 
     assert!(
         !status.success(),
@@ -230,9 +235,7 @@ fn explain_inherited_objective_prints_inherited_from() {
     let ck_line = stdout
         .lines()
         .find(|l| l.contains("C.k") || l.contains(".k"))
-        .unwrap_or_else(|| {
-            panic!("no line for C.k in stdout:\n{stdout}\nstderr:\n{stderr}")
-        });
+        .unwrap_or_else(|| panic!("no line for C.k in stdout:\n{stdout}\nstderr:\n{stderr}"));
     assert!(
         ck_line.contains("inherited from P"),
         "C.k line must contain 'inherited from P';\nline: {ck_line:?}\nstdout:\n{stdout}"
@@ -242,9 +245,7 @@ fn explain_inherited_objective_prints_inherited_from() {
     let pw_line = stdout
         .lines()
         .find(|l| l.contains("P.w") || l.contains(".w"))
-        .unwrap_or_else(|| {
-            panic!("no line for P.w in stdout:\n{stdout}\nstderr:\n{stderr}")
-        });
+        .unwrap_or_else(|| panic!("no line for P.w in stdout:\n{stdout}\nstderr:\n{stderr}"));
     assert!(
         pw_line.contains("source=explicit"),
         "P.w line must contain 'source=explicit';\nline: {pw_line:?}\nstdout:\n{stdout}"

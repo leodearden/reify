@@ -165,9 +165,7 @@ fn ensure_engine(state: &mut CliState) -> &mut reify_eval::Engine {
                 engine.set_persistent_cache_dir(Some(cache_dir));
             }
             Err(e) => {
-                tracing::debug!(
-                    "persistent-cache disabled for MCP session — resolver error: {e}"
-                );
+                tracing::debug!("persistent-cache disabled for MCP session — resolver error: {e}");
             }
         }
         engine
@@ -523,7 +521,10 @@ impl ReifyToolContext for CliToolContext {
         // Construct the appropriate Value based on the cell's type
         let new_value = match &ty {
             reify_core::ty::Type::Scalar { dimension } if !dimension.is_dimensionless() => {
-                Value::Scalar { si_value: numeric_val, dimension: *dimension }
+                Value::Scalar {
+                    si_value: numeric_val,
+                    dimension: *dimension,
+                }
             }
             reify_core::ty::Type::Int => Value::Int(numeric_val as i64),
             _ => Value::Real(numeric_val),

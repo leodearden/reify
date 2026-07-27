@@ -78,8 +78,7 @@ fn build_tapered_spacer_exports_final_realization_solid() {
         "geometry file should be written for affine_tapered_spacer.ri"
     );
 
-    let step_bytes =
-        std::fs::read(&result.output_path).expect("failed to read exported STEP file");
+    let step_bytes = std::fs::read(&result.output_path).expect("failed to read exported STEP file");
     let step_str = String::from_utf8(step_bytes).expect("STEP output must be valid UTF-8");
     let solid_count = step_str.matches("MANIFOLD_SOLID_BREP(").count();
     assert_eq!(

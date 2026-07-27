@@ -83,9 +83,7 @@ fn build_anodized_box_3mf_reflects_coating_color() {
 
     // (c-iii) <base element present inside <basematerials.
     assert!(
-        bytes
-            .windows(b"<base ".len())
-            .any(|w| w == b"<base "),
+        bytes.windows(b"<base ".len()).any(|w| w == b"<base "),
         "output must contain a <base ...> element with the colour attribute\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
