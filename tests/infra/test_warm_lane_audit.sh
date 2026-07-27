@@ -155,6 +155,41 @@ _hold_lane_lock() {
     _wait_for_reader_lock "$ready" 30
 }
 
+# _hold_lane_lock_shared <mount> <lane>
+# Block Q's SHARED counterpart to _hold_lane_lock above (§9.1 Invariant A2):
+# marks <lane> "held by a shared reader" instead of "held by an exclusive
+# consumer" -- the case scripts/warm-lane-audit.sh's own probe (_probe_live,
+# line 330-331) must read as IDLE, not LIVE.
+#
+# Two deliberate differences from _hold_lane_lock, both load-bearing:
+#   - `flock -s 9`, not `-x` -- this is the entire point of the helper.
+#   - the fd is opened READ-only (`9<"$lock"`, after the `touch`), not `9>` as
+#     the exclusive helper uses. This mirrors the production probe's own
+#     read-only open (`exec 7<"$lock"`, scripts/warm-lane-audit.sh:330), so
+#     the fixture models a real shared READER rather than an artificial
+#     write-opened shared lock, and it avoids relying on Linux's (correct but
+#     non-obvious, and not POSIX-fcntl-portable) acceptance of LOCK_SH on an
+#     O_WRONLY fd.
+# The ready-marker uses a DISTINCT suffix (`.shared-ready-marker`) so a shared
+# and an exclusive holder on two different lanes can never collide on one
+# lock file's marker.
+#
+# Publishes the pid via the GLOBAL `LANE_LOCK_PID` (and registers it in
+# `_BGPIDS`) for the same reason as _hold_lane_lock: a `$( )` capture would
+# run this body in a subshell and orphan the 300s sleeper past the cleanup
+# trap. Uses _wait_for_reader_lock (technique R) for the causal handshake --
+# never a fixed `sleep` (DD5).
+_hold_lane_lock_shared() {
+    local mount="$1" lane="$2"
+    local lock="$mount/$lane.lock"
+    local ready="$lock.shared-ready-marker"
+    touch "$lock"
+    ( flock -s 9 && touch "$ready" && sleep 300 ) 9<"$lock" &
+    LANE_LOCK_PID=$!
+    _BGPIDS+=("$LANE_LOCK_PID")
+    _wait_for_reader_lock "$ready" 30
+}
+
 # make_lane_state <mount> <lane> <state> [task_id] [branch]
 # Writes <mount>/.lane-state/<lane>.json in the EXACT byte shape dark-factory's
 # LaneRecord.to_json() emits (orchestrator/src/orchestrator/lane_lifecycle.py:
