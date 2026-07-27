@@ -155,6 +155,41 @@ _hold_lane_lock() {
     _wait_for_reader_lock "$ready" 30
 }
 
+# _hold_lane_lock_shared <mount> <lane>
+# Block Q's SHARED counterpart to _hold_lane_lock above (§9.1 Invariant A2):
+# marks <lane> "held by a shared reader" instead of "held by an exclusive
+# consumer" -- the case scripts/warm-lane-audit.sh's own probe (_probe_live,
+# line 330-331) must read as IDLE, not LIVE.
+#
+# Two deliberate differences from _hold_lane_lock, both load-bearing:
+#   - `flock -s 9`, not `-x` -- this is the entire point of the helper.
+#   - the fd is opened READ-only (`9<"$lock"`, after the `touch`), not `9>` as
+#     the exclusive helper uses. This mirrors the production probe's own
+#     read-only open (`exec 7<"$lock"`, scripts/warm-lane-audit.sh:330), so
+#     the fixture models a real shared READER rather than an artificial
+#     write-opened shared lock, and it avoids relying on Linux's (correct but
+#     non-obvious, and not POSIX-fcntl-portable) acceptance of LOCK_SH on an
+#     O_WRONLY fd.
+# The ready-marker uses a DISTINCT suffix (`.shared-ready-marker`) so a shared
+# and an exclusive holder on two different lanes can never collide on one
+# lock file's marker.
+#
+# Publishes the pid via the GLOBAL `LANE_LOCK_PID` (and registers it in
+# `_BGPIDS`) for the same reason as _hold_lane_lock: a `$( )` capture would
+# run this body in a subshell and orphan the 300s sleeper past the cleanup
+# trap. Uses _wait_for_reader_lock (technique R) for the causal handshake --
+# never a fixed `sleep` (DD5).
+_hold_lane_lock_shared() {
+    local mount="$1" lane="$2"
+    local lock="$mount/$lane.lock"
+    local ready="$lock.shared-ready-marker"
+    touch "$lock"
+    ( flock -s 9 && touch "$ready" && sleep 300 ) 9<"$lock" &
+    LANE_LOCK_PID=$!
+    _BGPIDS+=("$LANE_LOCK_PID")
+    _wait_for_reader_lock "$ready" 30
+}
+
 # make_lane_state <mount> <lane> <state> [task_id] [branch]
 # Writes <mount>/.lane-state/<lane>.json in the EXACT byte shape dark-factory's
 # LaneRecord.to_json() emits (orchestrator/src/orchestrator/lane_lifecycle.py:
@@ -1886,6 +1921,79 @@ assert "P-c8: a nonexistent explicit state dir is not created either" \
 for pb_pid in "${PB_LIVE_PIDS[@]+${PB_LIVE_PIDS[@]}}"; do
     kill "$pb_pid" 2>/dev/null || true
 done
+_BGPIDS=()  # clear so cleanup doesn't double-kill
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block Q — the liveness probe is SHARED (flock -s), so a shared-lock holder
+#           reads IDLE (§9.1 Invariant A2)
+# ──────────────────────────────────────────────────────────────────────────────
+# Block K (above) pins live=LIVE|IDLE, but its only lock-holding fixture is
+# _hold_lane_lock, which takes an EXCLUSIVE flock -- and an EXCLUSIVE holder
+# blocks both a `-x` and a `-s` probe identically. So Block K cannot tell
+# _probe_live's real `flock -n -s 7` (scripts/warm-lane-audit.sh:331) apart
+# from a regressed `flock -n -x 7`: the exact regression this block exists to
+# catch. Block Q closes that gap with a SHARED-lock lane (must read IDLE --
+# the A2 pin) alongside an EXCLUSIVE-lock lane in the SAME run (must stay
+# LIVE -- the negative control that keeps the pin from passing vacuously).
+echo ""
+echo "--- Block Q: liveness probe is SHARED (flock -s) -- a shared lock reads IDLE (A2) ---"
+
+Q_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-q-XXXXXX)"
+_TMPDIRS+=("$Q_MOUNT")
+
+# _lane-shared: a shared-lock holder -- must probe IDLE (the A2 pin).
+make_lane "$Q_MOUNT/_lane-shared"
+touch "$Q_MOUNT/_lane-shared.lock"
+_hold_lane_lock_shared "$Q_MOUNT" "_lane-shared"
+Q_SHARED_PID="$LANE_LOCK_PID"
+
+# _lane-excl: an exclusive-lock holder -- must stay LIVE (the negative
+# control; see the Q6-Q8 comment below for why it's needed).
+make_lane "$Q_MOUNT/_lane-excl"
+_hold_lane_lock "$Q_MOUNT" "_lane-excl"
+Q_EXCL_PID="$LANE_LOCK_PID"
+
+# Both holders are established BEFORE this single run_helper call so one
+# audit run observes both lanes -- the side-by-side comparison in one report
+# IS the pin (same probe, same run, two lock modes, two answers).
+run_helper --mount "$Q_MOUNT"
+
+assert "Q1: exit 0" test "$RC" -eq 0
+
+# Q2/Q3 are fixture-integrity controls, not a restatement of the READY-marker
+# handshake: an assertion that something is ABSENT (no LIVE) passes vacuously
+# if the background holder silently died or opened the wrong path -- the lane
+# would then read IDLE for the wrong reason and the pin would evaporate
+# without any test going red. Q2 (blocked exclusive request) proves the lock
+# is genuinely held; Q3 (successful shared request) proves it is held in
+# SHARED mode, not exclusive -- together they uniquely characterize "a shared
+# lock is held right now", and Q3 is what fails if a future edit flips this
+# fixture's `flock -s` back to `-x`.
+assert "Q2: an independent exclusive flock request on the lock is BLOCKED (the shared lock is genuinely held)" \
+    bash -c 'exec 8<"$1"; ! flock -n -x 8' _ "$Q_MOUNT/_lane-shared.lock"
+assert "Q3: an independent shared flock request on the same lock SUCCEEDS (the fixture's lock is SHARED, not exclusive)" \
+    bash -c 'exec 8<"$1"; flock -n -s 8' _ "$Q_MOUNT/_lane-shared.lock"
+
+assert "Q4: _lane-shared row reports live=IDLE (A2: the probe is -s, so a shared holder is IDLE)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-shared .*live=IDLE"' _ "$OUT"
+assert "Q5: _lane-shared classifies RECLAIMABLE, not LIVE (the A2 consequence downstream)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-shared .*classification=RECLAIMABLE"' _ "$OUT"
+
+# Q6-Q8 pin the other half of the same run: _lane-excl (an EXCLUSIVE holder)
+# is the negative control that keeps Q4/Q5 from passing vacuously -- a probe
+# degenerated to "always IDLE" would satisfy Q4/Q5 without ever exercising
+# the -s/-x distinction, but it would also wrongly read _lane-excl as IDLE.
+# Measured mutation table (shipped `flock -n -s 7` vs. regressed
+# `flock -n -x 7`, same two-lane mount): shipped => live=1 free=1
+# reclaimable=1; regressed => live=2 free=0 reclaimable=0.
+assert "Q6: _lane-excl row still reports live=LIVE (negative control, invariant under the -s/-x mutation)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-excl .*live=LIVE"' _ "$OUT"
+assert "Q7: HEADROOM reports live=1 (only the exclusive lane counts live)" \
+    bash -c '[ "$1" = "1" ]' _ "$(_headroom_field "$OUT" live)"
+assert "Q8: HEADROOM reports free=1 and reclaimable=1 (the shared lane's freed capacity is visible in the aggregate)" \
+    bash -c '[ "$1" = "1" ] && [ "$2" = "1" ]' _ "$(_headroom_field "$OUT" free)" "$(_headroom_field "$OUT" reclaimable)"
+
+kill "$Q_SHARED_PID" "$Q_EXCL_PID" 2>/dev/null || true
 _BGPIDS=()  # clear so cleanup doesn't double-kill
 
 test_summary
