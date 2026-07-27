@@ -165,6 +165,66 @@ fn wait_for_watch_registration(dir: &std::path::Path, probe_seen: &Arc<AtomicBoo
     )
 }
 
+/// Registration barrier for a directory watch guarded by a `target_file`
+/// filter: repeatedly (re)writes then immediately removes a sibling
+/// `probe.ri` file inside `dir` until `probe_seen` reports true, positively
+/// confirming the directory watch is live before the caller issues a write
+/// it can't afford to lose.
+///
+/// Use this instead of its Changed-probe sibling
+/// [`wait_for_watch_registration`] whenever the watcher under test was
+/// constructed with `target_file: Some(_)`; keep using the sibling for
+/// `target_file: None` watchers. The `target_file` filter applies to
+/// **`Changed`** events only (`watcher.rs:214-218`), so a watcher filtering
+/// out `probe.ri` would never deliver the sibling's `Changed("probe.ri")`
+/// probe event -- the sibling would spin its full budget and return
+/// `false`, even though the watch is genuinely live. A delivered `Removed`
+/// event bypasses that filter (by the same design -- see `watcher.rs`'s
+/// module doc), so it can confirm liveness here.
+///
+/// A delivered `Removed` still proves the watch is live for `Changed`
+/// events too: both event kinds ride the same underlying inotify directory
+/// watch, and the `target_file` filter is applied downstream, inside our
+/// own notify closure -- not by the kernel. The only thing a `Removed`
+/// delivery leaves unproven is our own filter logic, which is exactly what
+/// the tests using this barrier are testing, and must not be assumed away
+/// by the barrier itself.
+///
+/// The caller must construct its `FileWatcher` (with a callback that sets
+/// `probe_seen` on a `FileEvent::Removed(path)` whose path ends with
+/// `"probe.ri"`, returning early so probe content can never reach the
+/// caller's own content-gated branches) BEFORE calling this.
+///
+/// `retry_every` (150ms) exceeds the production debounce window
+/// (`DEBOUNCE_DURATION` in `watcher.rs`, 100ms) so each retry gets its own
+/// trailing-edge quiet window instead of perpetually resetting one pending
+/// entry -- see `wait_until_with_retry`'s doc comment.
+fn wait_for_watch_registration_via_removal(
+    dir: &std::path::Path,
+    probe_seen: &Arc<AtomicBool>,
+) -> bool {
+    let probe_file = dir.join("probe.ri");
+    let mut probe_attempt = 0u32;
+    wait_until_with_retry(
+        || {
+            probe_attempt += 1;
+            std::fs::write(
+                &probe_file,
+                format!("structure Probe {{ param n = {probe_attempt} }}"),
+            )
+            .unwrap();
+            match std::fs::remove_file(&probe_file) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => panic!("failed to remove probe file: {e}"),
+            }
+        },
+        Duration::from_millis(150),
+        Duration::from_secs(10),
+        || probe_seen.load(Ordering::SeqCst),
+    )
+}
+
 /// Discriminating test for the constraint that motivates
 /// `wait_for_watch_registration_via_removal` (defined above its
 /// Changed-probe sibling): a watcher constructed with `Some(target_file)`
