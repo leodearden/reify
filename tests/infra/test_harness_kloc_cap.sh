@@ -97,13 +97,27 @@
 # and assert:
 #
 #   (a) kLOC CAP. Every `harness_<subsystem>.rs` compile unit — the ROOT file
-#       PLUS its own `harness_<subsystem>/` module directory (NOT the root
-#       file alone) — is <= the cap (CAP_LINES, measured as RAW `wc -l` line
-#       count summed across the root and every file in the module directory —
-#       simplest and conservative, PRD §11; ~20 kLOC is the upper end of the
-#       §7 10-20 kLOC band). A harness that grows past the cap must be SPLIT
-#       into a second `harness_<subsystem2>.rs`, never allowed to balloon
-#       unbounded.
+#       PLUS its own `harness_<subsystem>/` module directory PLUS the files it
+#       includes from OUTSIDE that directory (NOT the root file alone) — is
+#       <= the cap (CAP_LINES, measured as RAW `wc -l` line count summed over
+#       the whole unit — simplest and conservative, PRD §11; ~20 kLOC is the
+#       upper end of the §7 10-20 kLOC band). A harness that grows past the
+#       cap must be SPLIT into a second `harness_<subsystem2>.rs`, never
+#       allowed to balloon unbounded — and never accommodated by raising the
+#       cap, which would loosen the C2 ratchet to fit its first offender and
+#       contradict the ratified §3 W1/§7 band.
+#
+#       EXTERNAL INCLUDES ARE IN SCOPE. A root may `#[path]`- or bare-`mod`-
+#       include a file that escapes its module dir — in this tree the shared
+#       `tests/common/` helpers. rustc compiles a SEPARATE COPY of such a file
+#       into every including binary, so those lines are real per-unit compile
+#       cost and the cap governs them; charging the same helper to two units
+#       is two real compilations, not double-counting. Excluding them would
+#       leave this ratchet guarding a quantity it does not define, and would
+#       be directionally exploitable (move code into `tests/common/`,
+#       `#[path]`-include it, cap evaded). The measure is the transitive
+#       `mod`-graph closure; the resolution rules live with the measure, in
+#       harness-layout-lib.sh's `harness_layout_unit_lines` header.
 #
 #   (b) NAMING / NO RE-ACCRETION. Every top-level `tests/*.rs` is EITHER a
 #       sanctioned `harness_<subsystem>.rs`, OR one of the 7 override binaries,
@@ -116,15 +130,27 @@
 #   (c) STRUCTURED VERDICT. Every pass/fail is emitted as a machine-parseable
 #       token line (NOT a log-scrape) so a failing developer reads the exact
 #       offending crate/file/reason directly:
-#           HARNESS_KLOC_CAP FAIL crate=<c> file=<path> reason=exceeds-cap lines=<n> cap=<n> root_lines=<n> module_lines=<n> module_files=<n>
+#           HARNESS_KLOC_CAP FAIL crate=<c> file=<path> reason=exceeds-cap lines=<n> cap=<n> root_lines=<n> module_lines=<n> module_files=<n> external_lines=<n> external_files=<n>
 #           HARNESS_KLOC_CAP FAIL crate=<c> file=<path> reason=unsanctioned-standalone
 #           HARNESS_KLOC_CAP PASS crate=<c>
 #           HARNESS_KLOC_CAP SUMMARY crates=<n> violations=<n>
-#       On exceeds-cap, `lines=` is the WHOLE-UNIT total (root file +
-#       harness_<subsystem>/ module dir); `root_lines`/`module_lines`/
-#       `module_files` decompose that total so an operator reading an
-#       archived merge-verify log knows immediately whether to split the
-#       module dir or trim the root, without re-deriving it by hand.
+#       On exceeds-cap, `lines=` is the WHOLE-UNIT total, and the four
+#       breakdown fields decompose it as
+#           lines = root_lines + module_lines + external_lines
+#       so an operator reading an ARCHIVED merge-verify log can tell the three
+#       remedies apart without re-deriving anything by hand:
+#         - module_lines dominates  -> SPLIT the module dir into a second
+#                                      harness_<subsystem2>.rs (module_files
+#                                      says across how many files);
+#         - root_lines dominates    -> trim the root;
+#         - external_lines dominates-> the unit is over ONLY because of a
+#                                      shared out-of-module-dir include (a
+#                                      `tests/common/` helper), so move the
+#                                      including submodules — and the include
+#                                      with them — into their own harness.
+#       The two external fields are APPENDED after `module_files=`, never
+#       inserted before `lines=`, so existing unanchored consumers of this
+#       grammar keep matching.
 #
 # ===========================================================================
 # THE GRANDFATHER-BASELINE RATCHET (harness-layout-baseline.manifest).
@@ -227,8 +253,9 @@ _emit() {
 # live driver drives the real crate tests dirs.
 #
 # rule (a) — kLOC cap: for each harness_<subsystem>.rs, take the raw `wc -l`
-# line count of the WHOLE compile unit (the root file plus its own
-# harness_<subsystem>/ module directory, via harness_layout_unit_lines) and
+# line count of the WHOLE compile unit (the root file, its own
+# harness_<subsystem>/ module directory, and the transitive closure of the
+# includes that escape that directory — via harness_layout_unit_lines) and
 # flag it if it exceeds <cap_lines>.
 # ---------------------------------------------------------------------------
 harness_layout_violations() {
@@ -238,7 +265,7 @@ harness_layout_violations() {
     local cap_lines="$4"
 
     local violations=0
-    local f base lines key root_lines module_lines module_files
+    local f base lines key root_lines module_lines module_files external_lines external_files
 
     # Graceful degradation: a missing crate tests dir is an explicit FAIL, never
     # a silent pass — a non-existent dir would otherwise glob to zero files and
@@ -269,12 +296,13 @@ harness_layout_violations() {
         # rule (a): kLOC cap governs the harness_<subsystem>.rs compile units.
         case "$base" in
             harness_*.rs)
-                IFS=' ' read -r lines root_lines module_lines module_files \
+                IFS=' ' read -r lines root_lines module_lines module_files external_lines external_files \
                     <<<"$(harness_layout_unit_lines "$f")" || true
                 if [ "$lines" -gt "$cap_lines" ]; then
                     _emit FAIL "crate=$crate" "file=$f" "reason=exceeds-cap" \
                         "lines=$lines" "cap=$cap_lines" \
-                        "root_lines=$root_lines" "module_lines=$module_lines" "module_files=$module_files"
+                        "root_lines=$root_lines" "module_lines=$module_lines" "module_files=$module_files" \
+                        "external_lines=$external_lines" "external_files=$external_files"
                     violations=$((violations + 1))
                 fi
                 continue
