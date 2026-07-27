@@ -100,14 +100,58 @@ _NEXTEST_ABSENT_REASON=""
 # Idempotent-ish: calling it a second time in the SAME shell tears the previous
 # workdir down first, so a re-init cannot leak a temp tree past the single
 # trap registered below.
+# _nextest_absent_mirror_source — print the directory the farm mirrors, or
+# nothing if there is none. First EXISTING candidate wins:
+#
+#   (1) $CARGO_HOME/bin, when CARGO_HOME is set
+#   (2) $HOME/.cargo/bin
+#   (3) the directory containing cargo-nextest itself, when it resolves
+#
+# (3) is a FALLBACK, not the primary rule, and it keys on cargo-nextest rather
+# than on cargo. Measured on this host: ambient `command -v cargo` resolves to
+# /home/leo/.local/bin/cargo, NOT ~/.cargo/bin/cargo — so keying the farm's
+# source on cargo's location would mirror the wrong directory, leaving the real
+# ~/.cargo/bin/cargo-nextest unhidden while also failing to carry tree-sitter
+# across. cargo-nextest's own location is BY DEFINITION the directory that must
+# be mirrored-minus-itself, which makes it the only sound fallback. It is a
+# fallback because on an already-nextest-absent host it resolves to nothing —
+# which is exactly when the empty-farm degrade below applies.
+_nextest_absent_mirror_source() {
+    local c
+    if [ -n "${CARGO_HOME:-}" ] && [ -d "$CARGO_HOME/bin" ]; then
+        printf '%s\n' "$CARGO_HOME/bin"; return 0
+    fi
+    if [ -d "$HOME/.cargo/bin" ]; then
+        printf '%s\n' "$HOME/.cargo/bin"; return 0
+    fi
+    if c="$(command -v cargo-nextest 2>/dev/null)" && [ -n "$c" ]; then
+        printf '%s\n' "$(dirname "$c")"; return 0
+    fi
+    return 0
+}
+
 nextest_absent_init() {
     local mirror_src
 
-    # Element (1)'s source directory. NOTE: this naive resolution is the one
-    # task 5599 used; it is replaced by a nest-safe ordered chain in step-6,
-    # because under an already-constructed env $HOME is the temp HOME and
-    # $HOME/.cargo/bin does not exist.
-    mirror_src="${CARGO_HOME:-$HOME/.cargo}/bin"
+    # NEST-SAFETY. Resolved through the ordered chain above, and when NOTHING
+    # resolves the farm DEGRADES TO EMPTY rather than the caller skipping.
+    #
+    # This is the difference between the lib and task 5599's inline harness.
+    # test_verify_nextest_absent_suites.sh runs test_verify_semaphore_wiring.sh
+    # inside its own nextest-absent env, so after migration this lib runs
+    # inside ITSELF — and measured under that env, 5599's
+    # ${CARGO_HOME:-$HOME/.cargo}/bin resolves to $NX_HOME/.cargo/bin, which
+    # does not exist. Copying 5599's host-precondition SKIP verbatim would make
+    # the nested semaphore_wiring emit "Results: 0 passed, 0 failed", blow its
+    # S2 floor of 22, and turn the outer suite RED.
+    #
+    # "Nothing to mirror" does NOT mean the simulation is impossible — in a
+    # nested context it means the environment is ALREADY nextest-absent, and an
+    # empty farm layered over a cargo-nextest-free PATH is still a correct
+    # simulation (the outer farm keeps supplying a real cargo). Availability is
+    # therefore keyed on the OBSERVABLE invariant below, never on any
+    # directory's existence.
+    mirror_src="$(_nextest_absent_mirror_source)"
 
     # Element (5). Resolve RUSTUP_HOME ONCE, HERE — while $HOME is still the
     # REAL home. Capturing it into a variable rather than inlining the
@@ -190,13 +234,47 @@ nx_run() {
 # VACUOUSLY, exactly the failure mode this harness exists to rule out.
 nx_which() { nx_run bash -c 'command -v "$1"' _ "$1"; }
 
-# nextest_absent_available — did a genuine simulation get built?
+# nextest_absent_available — is the constructed env a genuine simulation?
 # nextest_absent_reason   — if not, which conjunct failed?
 #
-# STUBBED always-available at step-2; step-6 keys them on the OBSERVABLE
-# invariant (cargo-nextest unreachable AND cargo executable under the env)
-# rather than on any directory's existence.
-nextest_absent_available() { return 0; }
+# Keyed on the OBSERVABLE INVARIANT, deliberately not on any directory's
+# existence: cargo-nextest must be UNREACHABLE under the env, and cargo must
+# still EXECUTE under it. That pair is what "a nextest-absent host" means
+# operationally, and it is the only formulation that survives nesting — where
+# there is no directory to mirror yet the env is perfectly correct.
+#
+# Both conjuncts are necessary and neither is sufficient:
+#   - cargo-nextest reachable  -> the simulation is vacuous; verify.sh would
+#     emit nextest=1 and every assert downstream would be testing the ambient
+#     host, not the intended variable.
+#   - cargo not executable     -> we are simulating "the toolchain is broken"
+#     rather than "cargo-nextest is not installed", which is a different (and
+#     much noisier) thing to assert against.
+#
+# `cargo --version` is executed, not merely resolved, for the reason in the
+# header: a resolvable-but-unrunnable shim is precisely the broken-toolchain
+# case this rules out.
+nextest_absent_available() {
+    _NEXTEST_ABSENT_REASON=""
+
+    if [ -z "$NX_WORKDIR" ] || [ ! -d "$NX_WORKDIR" ]; then
+        _NEXTEST_ABSENT_REASON="nextest_absent_init has not been called (no env has been constructed)"
+        return 1
+    fi
+
+    if nx_which cargo-nextest >/dev/null 2>&1; then
+        _NEXTEST_ABSENT_REASON="cargo-nextest is still REACHABLE under the constructed env ($(nx_which cargo-nextest 2>/dev/null)) — the simulation would be vacuous"
+        return 1
+    fi
+
+    if ! nx_run cargo --version >/dev/null 2>&1; then
+        _NEXTEST_ABSENT_REASON="cargo does not EXECUTE under the constructed env — this would simulate a broken toolchain rather than an absent cargo-nextest"
+        return 1
+    fi
+
+    return 0
+}
+
 nextest_absent_reason() { printf '%s\n' "$_NEXTEST_ABSENT_REASON"; }
 
 # nextest_absent_plan_header [verify-path]         — header UNDER the env
