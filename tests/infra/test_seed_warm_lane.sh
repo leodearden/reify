@@ -1355,6 +1355,10 @@ assert "I14e: relocation: src/main.rs stamped to 2020 (find walk ran)" \
 # Post-fix (#4896):  sibling dir has an entry matching THIS lane's name → PASSES (GREEN).
 # Scoped to $(basename "$I14_LANE").* (not just -mindepth 1) so a stale entry from a
 # *prior* run's different lane cannot produce a false GREEN on a non-pristine machine.
+# Safe from the run_helper_real stub-dir race (task #5633, the assertion
+# reported flaky) only because the stub dir now outlives the invocation
+# (Block T below) — do not "tidy up" that deferred teardown back into an
+# eager `rm -rf "$real_stub_dir"`.
 assert "I14g: relocation: trash IS under pool-level sibling .reseed-trash/ for this lane" \
     bash -c '[ -n "$(find "'"$I14_SIBLING_TRASH_DIR"'" -maxdepth 1 -name "'"$(basename "$I14_LANE")"'.*" -print -quit 2>/dev/null)" ]'
 
@@ -1464,6 +1468,9 @@ elif [ -n "$M_TRASH_SIBLING" ]; then
 else
     M_TRASH=""
 fi
+# Safe from the run_helper_real stub-dir race (task #5633) only because the
+# stub dir now outlives the invocation (Block T below) — do not "tidy up"
+# that deferred teardown back into an eager `rm -rf "$real_stub_dir"`.
 assert "M-setup: trash dir was pinned on disk (rm stub worked)" \
     bash -c '[ -n "$1" ]' _ "$M_TRASH"
 
