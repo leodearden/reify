@@ -123,7 +123,7 @@ All scripts follow the repo's stdout-contract convention (resolved value on stdo
 
 ```
 warm-lane-audit.sh [--mount <worktrees_dir>] [--format table|json] [--status-cmd <cmd>]
-                    [--stale-age-min <N>]
+                    [--stale-age-min <N>] [--main-ref <ref>] [--safety <N>]
   For each resident worktree under <mount> (lanes _lane-*/_spec-* and orphan dirs), emit:
     lane · role · live (LIVE|IDLE, non-blocking flock -n -s <dir>.lock probe) ·
       assigned (ASSIGNED|RELEASED|QUARANTINED|UNKNOWN, read from the orchestrator record
@@ -158,6 +158,10 @@ warm-lane-audit.sh [--mount <worktrees_dir>] [--format table|json] [--status-cmd
   Exit 0 always (advisory/observability — NEVER fail-closed; it must not gate anything).
 knobs: --stale-age-min <N>  minutes (env: REIFY_WARM_LANE_AUDIT_STALE_AGE_MIN; default: 60 —
   promotes the §2 working-set mtime<60min example from an incidental figure to a declared knob)
+  REIFY_WARM_LANE_AUDIT_STATE_DIR <dir>  orchestrator lane-record dir holding <lane>.json
+  (no dedicated flag; default: <mount>/.lane-state, dark-factory's LANE_STATE_DIRNAME) — when
+  absent, every lane reports assigned=UNKNOWN and none is counted pinned, quarantined or
+  assigned
 ```
 *Invariant A1:* read-only — `warm-lane-audit.sh` never mutates a lane (no reset/rm/reclaim); it observes. *Invariant A2:* `flock -n -s` (shared) probe is non-blocking and released immediately (never holds a lane lock across the walk); a live consumer's exclusive flock still blocks a new shared request, which is why a shared probe is a sufficient liveness test. *Invariant A3:* a status-lookup failure degrades that lane to `unknown` (never aborts the report, never reclassifies as reclaimable). *Invariant A4:* `stale` is always the relation `age_min ≥ stale_age_min` against the declared knob (default 60 min) — never an inline/undeclared literal (D8/G6 no-frozen-constant rule); B1's fixture ages its leaked lane past the knob so the assertion tests the relation, not a guessed age.
 
