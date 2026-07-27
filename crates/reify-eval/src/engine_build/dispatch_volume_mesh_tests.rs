@@ -302,7 +302,7 @@
                     &r,
                     Err(Mesh2dError::EmptyBoundary) | Err(Mesh2dError::DegenerateBoundary)
                 ));
-                gmsh_available.set(matches!(&r, Ok(_)));
+                gmsh_available.set(r.is_ok());
                 r
             },
             |_params, _mesh| Ok(make_swept_mesh(2)),
