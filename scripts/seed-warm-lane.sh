@@ -471,6 +471,42 @@ _assert_delta_newer_than_build_outputs() {
     return 1
 }
 
+# Seed-time post-condition (task 5632): under --fresh-checkout, when all three
+# delta-touch-base resolution tiers come back empty, the seed must REFUSE rather
+# than return a lane whose freshness claim it cannot substantiate.
+#
+# The normative statement, the reasoning that makes refusal the only sound
+# option, and the operator remedy live in ONE place —
+# docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13 — deliberately NOT
+# restated here (G7 no-lockstep-duplication), exactly as
+# _assert_delta_newer_than_build_outputs points at inv.12.
+#
+#   - The refusal is CONDITIONED on the clone actually carrying recorded prior
+#     compilations, because that is the only thing a stale source mtime can
+#     wrongly re-Freshen. Same "is there anything here that could be mis-gated?"
+#     test the inv.12 guard already uses for its two vacuous skips.
+#   - -maxdepth 3 mirrors the non-relocatable build-dir deletion sweep's walk
+#     below (depth 2 for <profile>/.fingerprint, depth 3 for a cross-compile
+#     <triple>/ prefix), so the guard's coverage cannot drift apart from the
+#     tree it protects. -print -quit makes it an early-exit probe rather than a
+#     full walk, and find exits 0 either way so it is safe under set -euo pipefail.
+#   - A violation errs + return 1. Under set -e that aborts the seed before
+#     `echo "$LANE_TARGET"`, leaving stdout empty → the caller falls back to a
+#     cold rebuild (slow but CORRECT).
+_assert_delta_touch_base_substantiated() {
+    local fingerprint_dir
+    fingerprint_dir="$(find "$LANE_TARGET" -maxdepth 3 -type d -name .fingerprint -print -quit)"
+    if [ -z "$fingerprint_dir" ]; then
+        info "Post-condition skipped: no .fingerprint dir under $LANE_TARGET — the clone records no prior compilation for the 2020-01-01 bulk stamp to wrongly re-Freshen"
+        return 0
+    fi
+    err "Unsubstantiated delta-touch base: no base resolved (--base-commit absent, ${BASE_TARGET_DIR}.basecommit absent, .warm-base-meta BASE_COMMIT absent), so NOTHING is delta-touched (§9.5 inv.13)"
+    err "The clone records prior compilations at $fingerprint_dir, and every tracked source keeps the 2020-01-01 bulk stamp — so no changed source can out-date any cloned artifact and cargo would report them Fresh"
+    err "Pass --base-commit <sha>, or re-run scripts/refresh-warm-base.sh so the authoritative .basecommit stamp exists"
+    err "_assert_delta_touch_base_substantiated: seed aborted (cold rebuild forced)"
+    return 1
+}
+
 # Delta path set accumulated during --fresh-checkout: the explicit --touch paths
 # plus every path _touch_git_delta actually touched. Consumed by
 # _assert_delta_newer_than_build_outputs at the end of the block, so both delta
@@ -904,6 +940,14 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         # unratified design change. Until then this at least makes the condition
         # diagnosable from seed logs instead of completely silent.
         warn "No delta-touch base resolved (--base-commit absent, ${BASE_TARGET_DIR}.basecommit absent, .warm-base-meta BASE_COMMIT absent) — no tracked source is touched to now, so every tracked source keeps the 2020-01-01 bulk stamp and cannot out-date any cloned build artifact; cargo will treat stale build-script outputs as Fresh. Pass --base-commit <sha>, or re-run scripts/refresh-warm-base.sh so the authoritative .basecommit stamp exists."
+        # Called HERE — before the non-relocatable build-dir invalidation, the
+        # links-metadata/OUT_DIR relocation sweep and the env!() relink below —
+        # so a doomed seed pays none of those walks. This is the mirror-image of
+        # _assert_delta_newer_than_build_outputs, which is called LAST because it
+        # must observe FINAL mtimes; this guard depends on nothing later.
+        # The warn above is retained: it is the human-readable diagnosis and
+        # still fires on the paths where the seed legitimately proceeds.
+        _assert_delta_touch_base_substantiated
     fi
 
     # ── non-relocatable build-script output-dir invalidation ──────────────────
