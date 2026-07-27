@@ -64,6 +64,16 @@
 #       from $CARGO_HOME/bin in ADDITION to PATH, so pointing it at the real
 #       ~/.cargo makes cargo-nextest reappear and flips the header back to
 #       nextest=1 (observed).
+#   (5) RUSTUP_HOME, by contrast, IS carried across, resolved once while HOME
+#       is still the real home. On a rustup host `cargo` is a symlink to
+#       `rustup`, which derives its toolchain store from $RUSTUP_HOME and falls
+#       back to $HOME/.rustup — so (3) alone strands the shim and it downloads
+#       a whole fresh toolchain on the first cargo invocation (measured: 935 MB
+#       into the temp HOME within 12 seconds, `cargo --version` not yet done).
+#       This does NOT weaken the simulation: cargo-nextest is a standalone
+#       binary in ~/.cargo/bin, not under ~/.rustup, so preserving the toolchain
+#       store cannot un-hide it — H1 and H4 pin that it stays hidden. See
+#       H6/H7, which fail if this is ever dropped again.
 #
 # NON-VACUITY SELF-CHECKS. Before covering any suite, the harness is checked
 # against itself: cargo-nextest must be genuinely unreachable under it, `cargo`
@@ -144,7 +154,10 @@ NX_WORKDIR="$(mktemp -d)"
 NX_FARM="$NX_WORKDIR/cargo-bin-farm"
 NX_HOME="$NX_WORKDIR/home"
 mkdir -p "$NX_FARM" "$NX_HOME"
-trap 'rm -rf "$NX_WORKDIR"' EXIT
+# INT/TERM/HUP as well as EXIT: verify.sh wraps each selected infra test in
+# `timeout --kill-after=60 <n>m` and run_all.sh applies a 30m cap, so an outer
+# timeout kill would otherwise leak the whole temp tree.
+trap 'rm -rf "$NX_WORKDIR"' EXIT INT TERM HUP
 
 # (1) Mirror every ~/.cargo/bin entry into the farm EXCEPT cargo-nextest.
 for _entry in "$CARGO_BIN_DIR"/*; do
@@ -165,10 +178,29 @@ done < <(printf '%s\n' "$PATH" | tr ':' '\n')
 NX_PATH="$NX_FARM:$_filtered_path"
 unset _p _filtered_path
 
+# (5) Resolve RUSTUP_HOME ONCE, HERE — while $HOME is still the REAL home.
+# Capturing it into a variable rather than inlining the expansion in the env
+# line below is deliberate: inline, the ${RUSTUP_HOME:-$HOME/.rustup} default
+# would be read against whichever HOME the reader assumes is in scope, and the
+# whole point is that it must be the real one, not the redirect.
+#
+# Set only when the resolved store actually exists, so a non-rustup host
+# (distro-packaged cargo, no ~/.rustup) is left completely unperturbed. Either
+# form is safe — a non-rustup cargo ignores the variable — but this keeps the
+# harness's footprint to exactly what the host needs.
+NX_RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+[ -d "$NX_RUSTUP_HOME" ] || NX_RUSTUP_HOME=""
+
 # nx_run <cmd...> — run a command under the nextest-absent environment.
-# HOME is redirected (3) and CARGO_HOME is deliberately left unset (4).
+# HOME is redirected (3), CARGO_HOME is deliberately left unset (4), and
+# RUSTUP_HOME is carried across so the rustup shim is not stranded (5).
 nx_run() {
-    env -u CARGO_HOME HOME="$NX_HOME" PATH="$NX_PATH" "$@"
+    if [ -n "$NX_RUSTUP_HOME" ]; then
+        env -u CARGO_HOME RUSTUP_HOME="$NX_RUSTUP_HOME" \
+            HOME="$NX_HOME" PATH="$NX_PATH" "$@"
+    else
+        env -u CARGO_HOME HOME="$NX_HOME" PATH="$NX_PATH" "$@"
+    fi
 }
 
 # ---------------------------------------------------------------------------
