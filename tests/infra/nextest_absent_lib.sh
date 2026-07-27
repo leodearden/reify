@@ -277,6 +277,76 @@ nextest_absent_available() {
 
 nextest_absent_reason() { printf '%s\n' "$_NEXTEST_ABSENT_REASON"; }
 
+# ---------------------------------------------------------------------------
+# Toolchain hygiene — the harness must not provoke a rustup TOOLCHAIN SYNC.
+#
+# These are not paranoia. Task 5599 measured it: a bounded 12-second probe of
+# `cargo --version` under a RUSTUP_HOME-less harness wrote 935 MB into the temp
+# HOME and had still not printed a version when it was killed. Element (5) of
+# the harness (RUSTUP_HOME carry-across, in nextest_absent_init) is what
+# prevents it; these two predicates are what NOTICE if it is ever dropped again.
+#
+# Two predicates because they fail differently — nextest_absent_no_rustup_sync
+# names the mechanism exactly, nextest_absent_home_is_small is the blunt
+# backstop for any other way the harness starts writing into a directory it
+# advertises as a throwaway.
+#
+# Both print the offending entries on failure, so assert()'s tail-50 dump names
+# the cause rather than reporting a bare non-zero rc.
+# ---------------------------------------------------------------------------
+
+# Ceiling for the throwaway HOME. On a correctly-isolated env it holds 4 KB
+# after the env has been exercised (measured, both by task 5599 and again at
+# task 5602 HEAD=27f8b62eaa) — this is ~12000x that, high enough never to flap
+# on incidental dotfile writes, low enough to trip within the first second of a
+# toolchain sync.
+NEXTEST_ABSENT_HOME_MAX_KB="${NEXTEST_ABSENT_HOME_MAX_KB:-51200}"
+
+nextest_absent_no_rustup_sync() {
+    if [ -z "$NX_HOME" ]; then
+        echo "nextest_absent_init has not been called — no throwaway HOME to check"
+        return 1
+    fi
+    if [ -e "$NX_HOME/.rustup" ]; then
+        echo "$NX_HOME/.rustup EXISTS — the harness stranded rustup and provoked"
+        echo "a toolchain sync. cargo is a rustup shim and rustup resolves its"
+        echo "store from \$RUSTUP_HOME, defaulting to \$HOME/.rustup; the harness"
+        echo "redirects HOME, so RUSTUP_HOME must be carried across explicitly"
+        echo "(element 5 in nextest_absent_init)."
+        echo "Contents:"
+        ls -la "$NX_HOME/.rustup" 2>&1 | head -20
+        return 1
+    fi
+    echo "no $NX_HOME/.rustup — the harness did not provoke a toolchain sync"
+    return 0
+}
+
+nextest_absent_home_is_small() {
+    local kb ceiling
+    ceiling="${NEXTEST_ABSENT_HOME_MAX_KB:-51200}"
+
+    if [ -z "$NX_HOME" ]; then
+        echo "nextest_absent_init has not been called — no throwaway HOME to measure"
+        return 1
+    fi
+
+    kb="$(du -sk "$NX_HOME" 2>/dev/null | awk 'NR==1 {print $1}')"
+    if [ -z "$kb" ]; then
+        echo "could not measure the throwaway HOME size at $NX_HOME"
+        return 1
+    fi
+
+    echo "throwaway HOME $NX_HOME holds ${kb} KB (ceiling ${ceiling} KB)"
+    if [ "$kb" -gt "$ceiling" ]; then
+        echo "-> the harness is writing a large amount into the throwaway HOME it"
+        echo "   redirects to. It is perturbing more than the single intended"
+        echo "   variable (cargo-nextest absent). Largest entries:"
+        du -sk "$NX_HOME"/* "$NX_HOME"/.[!.]* 2>/dev/null | sort -rn | head -10
+        return 1
+    fi
+    return 0
+}
+
 # nextest_absent_plan_header [verify-path]         — header UNDER the env
 # nextest_absent_plan_header_ambient [verify-path] — header WITHOUT the env
 #
