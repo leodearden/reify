@@ -40,29 +40,12 @@ const EXAMPLE_PATH: &str = concat!(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Read `examples/stdlib/ports_breadth.ri`, parse, compile with stdlib
-/// (asserting no Severity::Error at parse + compile), eval with
-/// `SimpleConstraintChecker` (asserting no eval errors), and return the full
+/// `compile_breadth()` plus a compile-stage Severity::Error assertion, then eval
+/// with `SimpleConstraintChecker` (asserting no eval errors), returning the full
 /// `EvalResult`. Mirrors `eval_ri_file` in m8_3_stdlib_integration.rs.
 fn eval_breadth() -> reify_eval::EvalResult {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .unwrap_or_else(|e| panic!("{} should exist: {}", EXAMPLE_PATH, e));
+    let compiled = compile_breadth();
 
-    // Prelude-aware parsing, so `Type.Variant` references against stdlib enums
-    // (`ThreadSystem.ISO_Metric`, `FluidType.Liquid`, …) lower to `EnumAccess`
-    // rather than `MemberAccess` — see `parse_with_stdlib`. Required now that
-    // the example no longer re-declares those enums locally: a bare
-    // `reify_syntax::parse` only disambiguates enums it can see in-file, so it
-    // would report them as `unresolved name`. Matches the `compile_with_stdlib`
-    // companion below and `examples_smoke.rs`.
-    let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single("ports_breadth"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors in ports_breadth.ri: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile_with_stdlib(&parsed);
     let compile_errors: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -92,9 +75,9 @@ fn eval_breadth() -> reify_eval::EvalResult {
 }
 
 /// Read `examples/stdlib/ports_breadth.ri`, parse, compile with stdlib, and
-/// return the `CompiledModule` WITHOUT asserting on warnings — so warning
-/// diagnostics are inspectable by the caller. Panics only on Severity::Error at
-/// parse or compile stages.
+/// return the `CompiledModule` WITHOUT asserting on diagnostics — so both
+/// warnings and errors are inspectable by the caller. Panics only on a parse
+/// error. `eval_breadth()` layers the compile-stage Error assertion on top.
 fn compile_breadth() -> CompiledModule {
     let source = std::fs::read_to_string(EXAMPLE_PATH)
         .unwrap_or_else(|e| panic!("{} should exist: {}", EXAMPLE_PATH, e));
@@ -104,8 +87,7 @@ fn compile_breadth() -> CompiledModule {
     // rather than `MemberAccess` — see `parse_with_stdlib`. Required now that
     // the example no longer re-declares those enums locally: a bare
     // `reify_syntax::parse` only disambiguates enums it can see in-file, so it
-    // would report them as `unresolved name`. Matches the `compile_with_stdlib`
-    // companion below and `examples_smoke.rs`.
+    // would report them as `unresolved name`. Matches `examples_smoke.rs`.
     let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single("ports_breadth"));
     assert!(
         parsed.errors.is_empty(),
@@ -197,20 +179,22 @@ fn thread_spec_derived_lets_eval_from_example() {
 
 // ─── resolution-unification α (boundary #18): stdlib ThreadSpec resolves ──────
 
-/// PRD docs/prds/v0_6/resolution-unification.md §7 boundary #18: once the stale
-/// eval-time mirror is stripped from `examples/stdlib/ports_breadth.ri`, the
+/// PRD docs/prds/v0_6/resolution-unification.md §7 boundary #18: with the stale
+/// eval-time mirror stripped from `examples/stdlib/ports_breadth.ri`, the
 /// `ThreadSpec` constructed by `ThreadAssembly.spec` resolves against the
 /// *stdlib* definition, not a local shadow — and therefore carries the stdlib
 /// param the mirror had drifted away from.
 ///
 /// The signal is `thread_form : Option<Geometry> = none`
-/// (crates/reify-compiler/stdlib/ports_mechanical.ri:72), which the local
-/// `structure def ThreadSpec` mirror at ports_breadth.ri:44-55 does not declare.
-/// A local re-declaration silently shadows the stdlib prelude def, so while the
-/// mirror is present no `ThreadAssembly.spec.thread_form` cell exists at all.
+/// (crates/reify-compiler/stdlib/ports_mechanical.ri:72). The local
+/// `structure def ThreadSpec` mirror removed in this change (task 5515) omitted
+/// it, and a local re-declaration silently shadows the stdlib prelude def — so
+/// while that mirror was present no `ThreadAssembly.spec.thread_form` cell
+/// existed at all. A re-introduced mirror would make it disappear again.
 ///
-/// RED on base HEAD: `reify eval examples/stdlib/ports_breadth.ri` yields zero
-/// occurrences of `thread_form`, so the cell lookup below fails.
+/// RED on base HEAD (mirror still present): `reify eval
+/// examples/stdlib/ports_breadth.ri` yielded zero occurrences of `thread_form`,
+/// so the cell lookup below failed.
 ///
 /// This test doubles as a durable mirror-reintroduction guard: if someone
 /// re-adds a local `ThreadSpec`, the cell disappears again and this goes red
@@ -270,7 +254,8 @@ fn example_declares_no_stdlib_shadowing_defs() {
 
     // Names stdlib owns that this example historically mirrored, mapped to the
     // stdlib file that owns them — so a failure names the real owner. Paths are
-    // relative to crates/reify-compiler/stdlib/.
+    // relative to crates/reify-compiler/stdlib/. This table is deliberately NOT
+    // a fallback: a name absent from it is not claimed to be a stdlib mirror.
     const STDLIB_OWNER: [(&str, &str); 7] = [
         ("ThreadSpec", "ports_mechanical.ri"),
         ("ThreadSystem", "ports_mechanical.ri"),
@@ -280,16 +265,34 @@ fn example_declares_no_stdlib_shadowing_defs() {
         ("FluidType", "ports_fluid.ri"),
         ("FittingStandard", "ports_fluid.ri"),
     ];
-    let owner_of = |name: &str| -> String {
-        let file = STDLIB_OWNER
+
+    // Diagnose unexpected local defs. Only names actually in STDLIB_OWNER are
+    // called mirrors; anything else is a def stdlib does not own, where the fix
+    // is to widen this test rather than to delete the def.
+    let diagnose = |names: &[&str]| -> String {
+        names
             .iter()
-            .find(|(n, _)| *n == name)
-            .map(|(_, f)| *f)
-            .unwrap_or("<some std.ports submodule>");
-        format!("crates/reify-compiler/stdlib/{}", file)
+            .map(
+                |n| match STDLIB_OWNER.iter().find(|(owned, _)| *owned == *n) {
+                    Some((_, file)) => format!(
+                        "`{}` — stale mirror of crates/reify-compiler/stdlib/{}; delete it and \
+                         let it resolve through the stdlib prelude",
+                        n, file
+                    ),
+                    None => format!(
+                        "`{}` — a def stdlib does not own; if this is genuinely the example's \
+                         own type, widen this test's expectations instead of deleting it",
+                        n
+                    ),
+                },
+            )
+            .collect::<Vec<_>>()
+            .join("; ")
     };
 
-    // (a) The only Structure templates are the three genuinely-local ones.
+    // (a) The only Structure templates are the three genuinely-local ones. One
+    // assertion covers both directions: an extra name is a reintroduced mirror
+    // (or a new local def), a missing one is a lost signal carrier.
     let mut structures: Vec<&str> = compiled
         .templates
         .iter()
@@ -298,43 +301,34 @@ fn example_declares_no_stdlib_shadowing_defs() {
         .collect();
     structures.sort_unstable();
 
-    let shadowed: Vec<&str> = structures
-        .iter()
-        .copied()
-        .filter(|n| !LOCAL_STRUCTURES.contains(n))
-        .collect();
-    assert!(
-        shadowed.is_empty(),
-        "examples/stdlib/ports_breadth.ri re-declares structure(s) stdlib already owns: {}. \
-         Delete the local mirror and let it resolve through the stdlib prelude \
-         (resolution-unification.md §8 α / boundary #18).",
-        shadowed
-            .iter()
-            .map(|n| format!("`{}` (owned by {})", n, owner_of(n)))
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-
     let mut expected = LOCAL_STRUCTURES.to_vec();
     expected.sort_unstable();
+    let extra: Vec<&str> = structures
+        .iter()
+        .copied()
+        .filter(|n| !expected.contains(n))
+        .collect();
     assert_eq!(
-        structures, expected,
-        "ports_breadth.ri should declare exactly its three own structures; \
-         a missing one means the example lost a signal carrier"
+        structures,
+        expected,
+        "examples/stdlib/ports_breadth.ri should declare exactly its own three structures. \
+         Unexpected: {}. A missing one instead means the example lost a signal carrier \
+         (resolution-unification.md §8 α / boundary #18).",
+        if extra.is_empty() {
+            "none".to_string()
+        } else {
+            diagnose(&extra)
+        }
     );
 
     // (b) No user-declared enums at all — every enum it uses is stdlib's.
     let local_enums: Vec<&str> = compiled.enum_defs.iter().map(|e| e.name.as_str()).collect();
     assert!(
         local_enums.is_empty(),
-        "examples/stdlib/ports_breadth.ri re-declares enum(s) stdlib already owns: {}. \
-         Delete the local mirrors — stdlib enum variants resolve through the prelude \
-         at both compile and eval (resolution-unification.md §8 α / boundary #18).",
-        local_enums
-            .iter()
-            .map(|n| format!("`{}` (owned by {})", n, owner_of(n)))
-            .collect::<Vec<_>>()
-            .join(", ")
+        "examples/stdlib/ports_breadth.ri declares enum(s) it should not: {}. \
+         stdlib enum variants resolve through the prelude at both compile and eval \
+         (resolution-unification.md §8 α / boundary #18).",
+        diagnose(&local_enums)
     );
 }
 
