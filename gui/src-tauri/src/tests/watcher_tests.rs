@@ -551,17 +551,29 @@ fn watcher_detects_ri_file_modification() {
 
     let changed_paths: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
     let changed_clone = changed_paths.clone();
+    let probe_seen = Arc::new(AtomicBool::new(false));
+    let probe_seen_clone = probe_seen.clone();
 
     let Some(_watcher) = try_watcher(dir.path(), None, move |event| {
         if let FileEvent::Changed(path) = event {
+            if path.ends_with("probe.ri") {
+                probe_seen_clone.store(true, Ordering::SeqCst);
+                return;
+            }
             changed_clone.lock().unwrap().push(path);
         }
     }) else {
         return;
     };
 
-    // Give the watcher time to register
-    std::thread::sleep(Duration::from_millis(200));
+    let registered = wait_for_watch_registration(dir.path(), &probe_seen);
+    assert!(
+        registered,
+        "the watcher never delivered a probe event, so the directory watch \
+         was never confirmed live -- the test.ri write below could have \
+         been lost outright and this run could not exercise change \
+         detection"
+    );
 
     // Modify the .ri file
     std::fs::write(&ri_file, "structure Bracket { param width = 80mm }").unwrap();
