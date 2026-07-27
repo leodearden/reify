@@ -995,6 +995,14 @@ impl SystemBuilder {
                     };
                     // No radius param of its own: an arc's radius is implied by
                     // centre→start, and libslvs supplies |c-s| = |c-e| itself.
+                    //
+                    // That implicit equation is why DOF is never recomputed on
+                    // this side of the FFI.  An arc's three points are six
+                    // params but only five degrees of freedom, and nothing here
+                    // declared the equation that removes the sixth.  `solve`
+                    // reports whatever `Slvs_Solve` reports, so the arc is
+                    // accounted for correctly without this emit site having to
+                    // publish its own rank contribution.
                     let normal = self.get_sketch_normal();
                     let eh = self.alloc.entity();
                     self.entities.push(Slvs_Entity::arc_of_circle(
@@ -1322,32 +1330,26 @@ impl SystemBuilder {
     fn solve(mut self) -> SlvsSolveResult {
         let solve_group = self.solve_group;
 
-        if self.constraints.is_empty() {
-            // With no equations, every param in the solve group is a free
-            // degree of freedom.  This is exact, not an estimate: dof =
-            // params - rank, and rank is 0.
-            //
-            // Reporting a hardcoded 0 here would be a lie in the sketch
-            // direction — libslvs itself reports 4 for two unconstrained 2D
-            // points — and it is the *load-bearing* direction: 0 reads as
-            // "fully constrained", so a wholly unconstrained sketch would be
-            // waved through.  (The legacy route never reads `dof`, so this is
-            // inert for it.)
-            let free = self
-                .params
-                .iter()
-                .filter(|p| p.group == solve_group)
-                .count();
-            let dof = match i32::try_from(free) {
-                Ok(n) => n,
-                Err(_) => return SlvsSolveResult::TooLarge,
-            };
-            return SlvsSolveResult::Ok {
-                params: self.params,
-                mapping: self.mapping,
-                dof,
-            };
-        }
+        // Every system goes through `Slvs_Solve`, including one with no
+        // constraints at all, so `dof` is always libslvs' own number.
+        //
+        // There is no shortcut here for the zero-constraint case, and
+        // deliberately so.  Computing `dof` in Rust as "count the free params
+        // in the solve group" requires knowing every equation libslvs
+        // generates on its own behalf, and that knowledge cannot be kept
+        // honest: an `SLVS_E_ARC_OF_CIRCLE` silently contributes
+        // `|c-s| = |c-e|`, so rank is not 0 even with zero declared
+        // constraints, and an unconstrained arc's true dof is 5 rather than
+        // its six params.  Correcting the arithmetic per entity kind would
+        // only re-derive libslvs' internal rules on this side of the FFI,
+        // where they go stale the moment another entity kind grows an
+        // implicit equation.  Asking the library is correct by construction.
+        //
+        // Nothing is lost by the removal: the legacy `recognize_pattern`
+        // route cannot reach `solve` with an empty constraint list at all —
+        // `ConstraintSolver::solve` bails with `NoProgress` unless a pattern
+        // was recognized, and every recognized pattern contributes at least
+        // one constraint — and it discards `dof` regardless.
 
         // --- Overflow checks for vec lengths → c_int (i32) ---
         // Return TooLarge instead of panicking — panics here would
@@ -1366,7 +1368,13 @@ impl SystemBuilder {
             Err(_) => return SlvsSolveResult::TooLarge,
         };
 
-        let mut failed: Vec<Slvs_hConstraint> = vec![Slvs_hConstraint(0); self.constraints.len()];
+        // At least one slot even for a constraint-free system: an empty `Vec`'s
+        // `as_mut_ptr()` is a dangling (aligned, unallocated) pointer, and now
+        // that such a system reaches the FFI it would be handed straight to C.
+        // `faileds` below still reports the *true* allocated length, so the
+        // readback's bounds check stays sound.
+        let mut failed: Vec<Slvs_hConstraint> =
+            vec![Slvs_hConstraint(0); self.constraints.len().max(1)];
         let n_failed_buf = match i32::try_from(failed.len()) {
             Ok(n) => n,
             Err(_) => return SlvsSolveResult::TooLarge,
