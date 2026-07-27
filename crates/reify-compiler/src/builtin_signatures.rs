@@ -106,12 +106,6 @@ pub(crate) enum ExpectedArg {
 /// `check_builtin_arg_types`'s `compiled_args.get(index)` bounds check; arity
 /// errors are a separate diagnostic family.
 pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableArg> {
-    // No arm consults `arg_count` yet — every current entry is a
-    // single-form (non-overloaded) builtin, so all of them stay
-    // arity-agnostic per the rule above.  Discarded explicitly rather than
-    // via `#[allow(unused)]`; the binding disappears as soon as the first
-    // guarded arm lands.
-    let _ = arg_count;
     match name {
         // ── Mass-properties topology selectors ───────────────────────────────
         // arg0: geometry handle (unchecked — ε=4358's territory)
@@ -194,6 +188,35 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
             index: 0,
             name: "n",
             expected: ExpectedArg::Int { type_name: "Int" },
+        }],
+
+        // ── Pattern CSG producers: spacing is a Length (task 5652) ───────────
+        // linear_pattern(target, dx, dy, dz, count, spacing)
+        //   arg0:   target geometry handle (unchecked — ε=4358's territory)
+        //   args1-3: dx/dy/dz — a DIMENSIONLESS direction vector, deliberately
+        //            unchecked. Task 5214 established the direction is a unit
+        //            vector, so a bare component carries no silent-metres
+        //            hazard (unlike spacing, where a bare `10` was read as 10
+        //            SI metres — 1000× a plausible 10 mm pitch).
+        //   arg4:   count — an Int, deliberately unchecked here (a wrong count
+        //           is an arity/semantic error, not a dimension error).
+        //   arg5:   spacing → LENGTH ("Length").
+        //
+        // The `arg_count == 6` guard is load-bearing forward-compat, not
+        // decoration, even though 6 is currently the only accepted arity
+        // (geometry.rs `check_arg_count_exact(..., 6, ...)`): task 5351 lands a
+        // 4-arg `(target, direction, count, spacing)` value form in which
+        // `spacing` moves to index 3. Without the guard, index 5 would denote
+        // nothing there — the slot would be semantically lying, and the only
+        // thing keeping it quiet would be the downstream `compiled_args.get(5)`
+        // bounds check, i.e. luck rather than intent.
+        "linear_pattern" if arg_count == 6 => vec![CheckableArg {
+            index: 5,
+            name: "spacing",
+            expected: ExpectedArg::Scalar {
+                dimension: DimensionVector::LENGTH,
+                type_name: "Length",
+            },
         }],
 
         // All other names: empty (no dimensioned-scalar arg to check).
