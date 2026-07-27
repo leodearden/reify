@@ -457,13 +457,16 @@ resolve #5387 relationship per its live status (§6 row 2).
    `dev_capstan.ri`) carry zero `import`, zero `enum`, zero `structure def`.
    `designs/` (7 files) is likewise clean: zero imports, zero enums, and its seven
    `structure def`s are the designs' own parts, none of which names a stdlib type.
-   Within `examples/stdlib/`, `ports_breadth.ri` was the sole instance. The
+   Within `examples/stdlib/`, `ports_breadth.ri` was the sole *mirror* instance —
+   its sibling `ports_mechanical.ri:16` `structure def Coupling` name-collides with
+   `stdlib/kinematic.ri:197` but is a genuinely different shaft-coupling type, not a
+   mirror, and is tracked separately as **#5594**. The
    **m8_tolerancing lineage** does carry the pattern — `examples/m8_tolerancing.ri`,
    `examples/io_export.ri`, `examples/gdt_conformance_{satisfied,violated}.ri`,
    `examples/tolerancing/gdt_pass_weave.ri`,
    `docs/prds/v0_6/fixtures/surface_finish_functional.ri` — but every member sits
-   outside α's declared `examples/stdlib/` scope and is deferred to a filed
-   follow-up. That lineage needs a per-file probe rather than a blind sweep:
+   outside α's declared `examples/stdlib/` scope and is deferred to filed follow-up
+   **#5582**. That lineage needs a per-file probe rather than a blind sweep:
    `gdt_conformance_violated.ri:19-24` cites a *distinct* and possibly-live
    rationale (the η pass resolves a callout's type against `module.templates`, so
    the local re-declaration is what carries the `: GeometricTolerance` bound past
