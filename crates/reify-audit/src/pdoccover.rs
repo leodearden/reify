@@ -152,6 +152,117 @@ fn strip_line_comment(line: &str) -> &str {
     line
 }
 
+/// Strip `/* … */` block-comment spans from `line`, tracking open state across
+/// lines via `in_block`.
+///
+/// Returns the code outside any block comment, with the commented spans
+/// replaced by a space so bracket depth and quoted-token extraction both see
+/// only real code. Without this a `/* … "phantom" … */` span inside a registry
+/// body would contribute a name that exists nowhere in the compiler.
+///
+/// Quote-aware in the same sense as [`strip_line_comment`]: a `/*` inside a
+/// string literal does not open a block comment. Nested block comments (legal
+/// in Rust) are depth-counted.
+/// Operates on BYTES, accumulating into a `Vec<u8>` rather than slicing the
+/// `&str`. `units.rs` doc-comments contain non-ASCII (`§`, `→`, em dashes), and
+/// any `&line[i..i+1]`-style slice would panic on a multibyte char boundary.
+/// Every retained byte is copied verbatim, so multibyte sequences survive
+/// intact; every dropped span is delimited by ASCII `/*`/`*/`/`//`, so a drop
+/// can never split a char.
+fn strip_block_comments(line: &str, depth: &mut usize) -> String {
+    let bytes = line.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut in_str = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        if *depth > 0 {
+            if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+                *depth += 1;
+                i += 2;
+                continue;
+            }
+            if bytes[i] == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                *depth -= 1;
+                out.push(b' ');
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        match bytes[i] {
+            b'\\' if in_str => {
+                // Copy the backslash and the first byte of the escaped char.
+                // A multibyte escaped char's continuation bytes are copied by
+                // the default arm on subsequent iterations.
+                out.push(bytes[i]);
+                if i + 1 < bytes.len() {
+                    out.push(bytes[i + 1]);
+                }
+                i += 2;
+                continue;
+            }
+            b'"' => in_str = !in_str,
+            // A `//` line comment outside a string ends the line; everything
+            // after it (including a `/*`) is comment text, never code.
+            b'/' if !in_str && i + 1 < bytes.len() && bytes[i + 1] == b'/' => break,
+            b'/' if !in_str && i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
+                *depth += 1;
+                out.push(b' ');
+                i += 2;
+                continue;
+            }
+            _ => {}
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    // Lossy is unreachable in practice (every retained byte comes from a valid
+    // &str and sequences are never split), but it keeps this infallible rather
+    // than panicking inside a fail-safe detector.
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Byte offset of a word-boundary-delimited [`ALLOW_TOKEN`] in `line`.
+///
+/// Left-boundary-checked so the token is never matched as the tail of a longer
+/// word (`xxpdoccover:allow`). The legacy unprefixed `doccover:allow` is a
+/// *suffix* of the prefixed token, so it simply never matches — the 2026-07-25
+/// rename means no code path consumes it.
+fn find_allow_token(line: &str) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let mut start = 0;
+    loop {
+        let rel = line[start..].find(ALLOW_TOKEN)?;
+        let idx = start + rel;
+        if idx == 0 || !is_word_byte(bytes[idx - 1]) {
+            return Some(idx);
+        }
+        start = idx + ALLOW_TOKEN.len();
+    }
+}
+
+/// `true` when `line` carries a `pdoccover:allow` marker at all — with or
+/// without a reason body.
+///
+/// Paired with [`allow_marker_reason`]: present-but-reasonless is exactly the
+/// `allow-missing-reason` trigger, and a reasonless marker confers no
+/// exemption (PRD design decision 7 — no un-reviewable escape hatch).
+fn allow_marker_present(line: &str) -> bool {
+    find_allow_token(line).is_some()
+}
+
+/// `true` when `line` (already comment-stripped) is an attribute line such as
+/// `#[cfg(feature = "x")]` or `#![allow(…)]`.
+///
+/// Attributes are skipped wholesale inside a registry body and while looking
+/// for the opening `&[`: their `[`/`]` would corrupt bracket depth and their
+/// string arguments (`"x"`) would enter the census as phantom names.
+fn is_attribute_line(code: &str) -> bool {
+    let t = code.trim_start();
+    t.starts_with("#[") || t.starts_with("#![")
+}
+
 /// Extract every double-quoted token from `s`, honouring backslash escapes.
 fn quoted_tokens(s: &str) -> Vec<String> {
     let bytes = s.as_bytes();
@@ -227,41 +338,66 @@ fn registry_header(line: &str) -> Option<&str> {
 /// without disk access (the `pdssentinel.rs` `scan_content` split).
 ///
 /// Line walk, no regex (the audit crate has no regex dep and must not gain
-/// one). Recognises the header — possibly with `&[` broken onto the following
-/// line, the real `GEOMETRY_KINEMATIC_QUERY_NAMES` shape — then accumulates
-/// quoted tokens per line until the bracket depth returns to zero. Line
-/// comments are stripped quote-aware before extraction, so neither a `//`
-/// comment line nor a trailing comment's own quoted tokens contribute entries.
-// G-allow: consumed by check()/baseline_candidates() in-module and by the
-// brittle-parse floor guard in tests/pdoccover.rs (separate crate → must be pub).
+/// one). Every line is first reduced to its CODE part in one forward pass —
+/// `/* … */` block-comment spans (tracked across lines), then the `// …` tail,
+/// then attribute lines blanked wholesale. The header is recognised on that
+/// code view — possibly with `&[` broken onto a following line, the real
+/// `GEOMETRY_KINEMATIC_QUERY_NAMES` shape — after which quoted tokens are
+/// accumulated per line until bracket depth returns to zero.
+///
+/// The comment/attribute reduction is what keeps a phantom name out of the
+/// census: a quoted token inside a `//` comment, a `/* … */` span, or an
+/// attribute's arguments (`#[cfg(feature = "x")]`) is not code, and a name
+/// that entered the census from one of those could never be satisfied by any
+/// chunk edit. Bracket depth is counted on the same reduced view, so an
+/// attribute's `[`/`]` cannot desynchronise the body scan. Nested `&[…]`
+/// inside an entry value is handled by the depth counter itself.
+// G-allow: consumed by check()/baseline_candidates() in-module, and by the registry-path brittle-parse floor guard in tests/pdoccover.rs — a separate crate, so pub is required.
 pub fn extract_registries(units_src: &str) -> Vec<Registry> {
     let lines: Vec<&str> = units_src.lines().collect();
+
+    // One forward pass reducing every line to its code part. Block-comment
+    // depth must carry across lines, so this cannot be done lazily per line.
+    let mut block_depth = 0usize;
+    let code_lines: Vec<String> = lines
+        .iter()
+        .map(|raw| {
+            let no_block = strip_block_comments(raw, &mut block_depth);
+            let code = strip_line_comment(&no_block).to_string();
+            if is_attribute_line(&code) {
+                String::new()
+            } else {
+                code
+            }
+        })
+        .collect();
+
     let mut out: Vec<Registry> = Vec::new();
     let mut i = 0;
 
     while i < lines.len() {
-        let Some(ident) = registry_header(lines[i]) else {
+        let Some(ident) = registry_header(&code_lines[i]) else {
             i += 1;
             continue;
         };
         let const_name = ident.to_string();
 
         // Locate the opening `&[`. It is either on the header line (after the
-        // `=`) or on a following line (the line-broken header form). Scan
-        // forward a bounded distance so a malformed declaration cannot run
-        // away over the rest of the file.
+        // `=`) or on a following line (the line-broken header form, possibly
+        // with doc-comment or attribute lines between). Scan forward a bounded
+        // distance so a malformed declaration cannot run away over the file.
         const HEADER_LOOKAHEAD: usize = 4;
         let mut open = None;
-        for (k, raw) in lines.iter().enumerate().skip(i).take(HEADER_LOOKAHEAD) {
-            let code = strip_line_comment(raw);
-            // On the header line, only look after the `=`.
+        for (k, code) in code_lines.iter().enumerate().skip(i).take(HEADER_LOOKAHEAD) {
+            // On the header line, only look after the `=` — the `&[&str]` type
+            // annotation's own brackets are not the registry's opening bracket.
             let hay = if k == i {
                 match code.find('=') {
                     Some(eq) => &code[eq..],
                     None => continue,
                 }
             } else {
-                code
+                code.as_str()
             };
             if hay.contains('[') {
                 open = Some(k);
@@ -282,22 +418,23 @@ pub fn extract_registries(units_src: &str) -> Vec<Registry> {
                 break;
             }
             let raw = lines[j];
-            let code = strip_line_comment(raw);
             // On the header line, restrict to the part after `=` so the
             // `&[&str]` type annotation's brackets are not counted.
             let code = if j == i {
-                match code.find('=') {
-                    Some(eq) => &code[eq..],
-                    None => code,
+                match code_lines[j].find('=') {
+                    Some(eq) => &code_lines[j][eq..],
+                    None => code_lines[j].as_str(),
                 }
             } else {
-                code
+                code_lines[j].as_str()
             };
 
             // The header line's own quoted tokens (single-line form) count as
-            // entries; a comment-only line yields none because `code` is empty.
+            // entries; a comment-only or attribute line yields none because its
+            // code view is empty. The allow marker is read from the RAW line —
+            // markers live in comments, which the code view has removed.
             let reason = allow_marker_reason(raw);
-            let has_marker = raw.contains(ALLOW_TOKEN);
+            let has_marker = allow_marker_present(raw);
             for name in quoted_tokens(code) {
                 if name.is_empty() {
                     continue;
@@ -343,23 +480,9 @@ pub fn extract_registries(units_src: &str) -> Vec<Registry> {
 /// left-boundary-checked: the byte before the token must not be a word byte,
 /// so `// doccover:allow — x` does NOT match `pdoccover:allow`… and neither
 /// does any other suffix collision.
-// G-allow: consumed in-module and by unit tests; pub for symmetry with
-// `ptodo::g_allow_marker_body`, whose contract it mirrors.
+// G-allow: consumed in-module by extract_registries/chunk_call_mentions and by unit tests; pub for symmetry with ptodo::g_allow_marker_body, whose contract it mirrors.
 pub fn allow_marker_reason(line: &str) -> Option<&str> {
-    let bytes = line.as_bytes();
-    let mut start = 0;
-    let idx = loop {
-        let rel = line[start..].find(ALLOW_TOKEN)?;
-        let idx = start + rel;
-        // Left boundary: the token must not be the tail of a longer word.
-        // (Guards the legacy `doccover:allow` → `pdoccover:allow` overlap the
-        // other way round, and any `xxpdoccover:allow` typo.)
-        if idx == 0 || !is_word_byte(bytes[idx - 1]) {
-            break idx;
-        }
-        start = idx + ALLOW_TOKEN.len();
-    };
-
+    let idx = find_allow_token(line)?;
     let body = &line[idx + ALLOW_TOKEN.len()..];
     let body = body.trim_start();
     // One optional separator.
@@ -389,8 +512,7 @@ pub fn known_name_index(_sources: &[(String, String)]) -> BTreeSet<String> {
 }
 
 /// Call-shaped API mentions in one chunk: `(name, 1-based line)`.
-// G-allow: consumed by check() in-module and by the chunk-path brittle-parse
-// floor guard in tests/pdoccover.rs (separate crate → must be pub).
+// G-allow: consumed by check() in-module, and by the chunk-path brittle-parse floor guard in tests/pdoccover.rs — a separate crate, so pub is required.
 pub fn chunk_call_mentions(_content: &str) -> Vec<(String, usize)> {
     Vec::new()
 }
@@ -705,6 +827,167 @@ pub const SOME_OTHER: &[&str] = &["not_a_registry"];
     #[test]
     fn allow_marker_reason_none_without_marker() {
         assert_eq!(allow_marker_reason(r#"    "box","#), None);
+    }
+
+    // ── step-4: hardening against the real units.rs shapes ──────────────
+
+    /// A `#[…]` attribute line inside a registry body contributes NO entry and
+    /// does not desynchronise bracket depth — its `[`/`]` are not the
+    /// registry's, and its string arguments are not builtin names.
+    #[test]
+    fn extract_registries_ignores_attribute_lines() {
+        let src = r#"pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
+    "box",
+    #[cfg(feature = "experimental")]
+    "cylinder",
+];
+pub const AFTER_NAMES: &[&str] = &["sphere"];
+"#;
+        let regs = extract_registries(src);
+        assert_eq!(
+            const_names(&regs),
+            vec!["GEOMETRY_FUNCTION_NAMES", "AFTER_NAMES"],
+            "an attribute's brackets must not desynchronise the body scan, so \
+             the FOLLOWING registry is still discovered; got: {regs:?}"
+        );
+        assert_eq!(
+            entry_names(&regs[0]),
+            vec!["box", "cylinder"],
+            "the attribute's own string argument (\"experimental\") must not \
+             enter the census; got: {:?}",
+            regs[0].entries
+        );
+    }
+
+    /// A `/* … */` block comment inside a registry body contributes no entry,
+    /// including when it spans multiple lines and contains a quoted token.
+    #[test]
+    fn extract_registries_skips_block_comments() {
+        let src = r#"pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
+    "box",
+    /* temporarily withdrawn:
+       "phantom_op",
+       "other_phantom", */
+    "sphere",
+    "cone", /* trailing "inline_phantom" */
+];
+"#;
+        let regs = extract_registries(src);
+        assert_eq!(
+            entry_names(&regs[0]),
+            vec!["box", "sphere", "cone"],
+            "quoted tokens inside block comments must contribute no entries; \
+             got: {:?}",
+            regs[0].entries
+        );
+    }
+
+    /// A trailing `//` comment containing a quoted token contributes no entry —
+    /// the comment strip is quote-aware, so only real code is scanned.
+    #[test]
+    fn extract_registries_skips_quoted_token_in_trailing_comment() {
+        let src = r#"pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
+    "box", // renamed from "cube" in #1234
+];
+"#;
+        let regs = extract_registries(src);
+        assert_eq!(
+            entry_names(&regs[0]),
+            vec!["box"],
+            "a quoted token in a trailing comment must contribute no entry; \
+             got: {:?}",
+            regs[0].entries
+        );
+    }
+
+    /// A `//` sequence INSIDE a string literal does not start a comment — the
+    /// rest of the line is still code.
+    #[test]
+    fn extract_registries_slashes_inside_string_are_not_a_comment() {
+        let src = r#"pub const PATH_NAMES: &[&str] = &["a//b", "real_name"];
+"#;
+        let regs = extract_registries(src);
+        assert_eq!(
+            entry_names(&regs[0]),
+            vec!["a//b", "real_name"],
+            "a `//` inside a string literal must not truncate the line; got: {:?}",
+            regs[0].entries
+        );
+    }
+
+    /// A doc-comment line between the header and the opening `&[` does not
+    /// prevent discovery (the bounded header lookahead skips it).
+    #[test]
+    fn extract_registries_doc_comment_between_header_and_bracket() {
+        let src = r#"pub const GEOMETRY_KINEMATIC_QUERY_NAMES: &[&str] =
+    // interference + clearance helpers
+    &["interferes", "min_clearance"];
+"#;
+        let regs = extract_registries(src);
+        assert_eq!(
+            const_names(&regs),
+            vec!["GEOMETRY_KINEMATIC_QUERY_NAMES"],
+            "a comment between the header and `&[` must not prevent discovery; \
+             got: {regs:?}"
+        );
+        assert_eq!(
+            entry_names(&regs[0]),
+            vec!["interferes", "min_clearance"],
+            "entries must still be extracted; got: {:?}",
+            regs[0].entries
+        );
+    }
+
+    /// Non-ASCII text in doc-comments and entry values must not panic the
+    /// byte-level comment stripper.
+    ///
+    /// Regression: the first block-comment implementation sliced the `&str`
+    /// with `&line[i..i+1]`-style indices and panicked with "byte index N is
+    /// not a char boundary" on the real `units.rs`, whose doc-comments contain
+    /// `§`, `→` and em dashes. The hermetic fixtures above were all-ASCII and
+    /// missed it; the step-3 floor guard against the real file caught it.
+    #[test]
+    fn extract_registries_handles_non_ascii_source() {
+        let src = "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\n\
+             \x20   // See PRD \u{a7}8 \u{2014} the box \u{2192} solid lowering.\n\
+             \x20   \"box\", // pdoccover:allow \u{2014} r\u{e9}serv\u{e9}\n\
+             \x20   /* withdrawn \u{a7}9: \"phantom\" */\n\
+             \x20   \"sphere\",\n\
+             ];\n";
+        let regs = extract_registries(src);
+        assert_eq!(
+            entry_names(&regs[0]),
+            vec!["box", "sphere"],
+            "non-ASCII comment text must be stripped without panicking and \
+             without contributing entries; got: {:?}",
+            regs[0].entries
+        );
+        assert_eq!(
+            regs[0].entries[0].allow.as_deref(),
+            Some("r\u{e9}serv\u{e9}"),
+            "a non-ASCII allow reason must round-trip intact; got: {:?}",
+            regs[0].entries[0]
+        );
+    }
+
+    /// Two registries in sequence are both discovered — the scan resumes after
+    /// the first one's closing bracket rather than swallowing the second.
+    #[test]
+    fn extract_registries_consecutive_registries_both_found() {
+        let src = r#"pub const FIRST_NAMES: &[&str] = &[
+    "a",
+];
+
+pub const SECOND_NAMES: &[&str] = &[
+    "b",
+];
+"#;
+        let regs = extract_registries(src);
+        assert_eq!(
+            const_names(&regs),
+            vec!["FIRST_NAMES", "SECOND_NAMES"],
+            "both consecutive registries must be discovered; got: {regs:?}"
+        );
     }
 
     /// `allow_missing_reason` is set on a registry entry whose line carries a
