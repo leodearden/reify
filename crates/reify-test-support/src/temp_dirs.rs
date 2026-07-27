@@ -6,6 +6,63 @@
 //! an assertion fails and the test unwinds — i.e. precisely on RED CI runs.
 //! This module supplies the RAII replacement.
 
+/// Re-exported so call sites can NAME the guard type (in a helper's return
+/// signature, say) through `reify_test_support` without their own crate
+/// gaining a `tempfile` dependency.
+pub use tempfile::TempDir;
+
+/// Create a temporary directory under [`std::env::temp_dir`] whose name starts
+/// with `prefix`, guarded by [`TempDir`]'s RAII teardown.
+///
+/// # The directory is removed on every unwinding exit path
+///
+/// `Drop` runs on normal scope exit, on early return, AND while unwinding out
+/// of a panicking assertion. That last path is the whole point: a trailing
+/// `fs::remove_dir_all(...)` at the end of a test body is skipped exactly when
+/// the test fails, so hand-rolled teardown leaks on RED runs and only on RED
+/// runs.
+///
+/// # The returned guard MUST be bound to a named local
+///
+/// It has to outlive every use of the directory — including, in `async` tests,
+/// every `.await`. Writing
+///
+/// ```ignore
+/// let dir = prefixed_tempdir("x-").path().to_path_buf(); // WRONG
+/// ```
+///
+/// compiles, but the temporary `TempDir` is dropped at the end of that
+/// statement and the directory is deleted before the test ever uses it. Write
+/// two lines instead:
+///
+/// ```ignore
+/// let guard = prefixed_tempdir("x-");
+/// let dir = guard.path().to_path_buf();
+/// ```
+///
+/// # Names stay attributable
+///
+/// `Drop` cannot run on SIGKILL, OOM-kill or power loss, so residual debris
+/// stays possible and must remain traceable to the test that made it:
+/// `find /tmp -maxdepth 1 -name '<prefix>*'` is the triage tool. That is why
+/// this wraps [`tempfile::Builder::prefix`] rather than plain
+/// `tempfile::tempdir()`, which would name every directory an anonymous
+/// `.tmpXXXXXX` and leave the next operator worse off than manual teardown.
+///
+/// Callers do not need a `{pid}` component: `Builder` creates the directory
+/// with `O_EXCL`, so uniqueness is already guaranteed.
+///
+/// # Panics
+///
+/// Panics if the directory cannot be created — this is test-support code, and
+/// an unwritable temp dir is not a condition any caller can recover from.
+pub fn prefixed_tempdir(prefix: &str) -> TempDir {
+    tempfile::Builder::new()
+        .prefix(prefix)
+        .tempdir()
+        .unwrap_or_else(|e| panic!("create temp dir with prefix {prefix:?}: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
