@@ -59,7 +59,7 @@ use reify_core::{RealizationNodeId, ValueCellId};
 use reify_eval::cache::NodeId;
 use reify_eval::{BuildScheduler, Engine};
 use reify_ir::Value;
-use reify_test_support::{MockGeometryKernel, compile_source};
+use reify_test_support::{compile_source, MockGeometryKernel};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // step-4 RED: after hide → edit_param(w, 20mm) → un-hide, body_b must
@@ -341,18 +341,11 @@ fn redemand_body_b_no_edit_reuses_cached_geometry_hash_gate() {
     // than silently DROP it (which would also give dispatch_count == 0).
     let body_b_entity_path = format!("{}#realization[1]", e);
     assert!(
-        _tess1
-            .meshes
-            .iter()
-            .any(|m| m.entity_path == body_b_entity_path),
+        _tess1.meshes.iter().any(|m| m.entity_path == body_b_entity_path),
         "precondition: body_b must appear in _tess1.meshes (both bodies demanded, \
          no exempt filter yet); entity_path expected: {body_b_entity_path:?}; \
          actual paths: {:?}",
-        _tess1
-            .meshes
-            .iter()
-            .map(|m| &m.entity_path)
-            .collect::<Vec<_>>()
+        _tess1.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
     );
 
     // Capture the snapshot.values[sb] hash at w=10mm for the oracle.

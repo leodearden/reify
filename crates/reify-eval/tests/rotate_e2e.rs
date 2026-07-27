@@ -334,44 +334,21 @@ fn rotate_orientation_overload_equals_axis_angle_form() {
     let _result_a: BuildResult = engine_a.build(&compiled_aa, ExportFormat::Step);
 
     let ops_a = ops_ref_a.lock().unwrap();
-    assert_eq!(
-        ops_a.len(),
-        2,
-        "axis+angle form: expected 2 ops, got {}",
-        ops_a.len()
-    );
+    assert_eq!(ops_a.len(), 2, "axis+angle form: expected 2 ops, got {}", ops_a.len());
 
     // Extract both Rotate ops and compare
     let (orient_axis, orient_angle) = match &ops_o[1].op {
-        GeometryOp::Rotate {
-            axis, angle_rad, ..
-        } => (*axis, *angle_rad),
-        other => panic!(
-            "orientation form: expected Rotate at ops[1], got {:?}",
-            other
-        ),
+        GeometryOp::Rotate { axis, angle_rad, .. } => (*axis, *angle_rad),
+        other => panic!("orientation form: expected Rotate at ops[1], got {:?}", other),
     };
     let (aa_axis, aa_angle) = match &ops_a[1].op {
-        GeometryOp::Rotate {
-            axis, angle_rad, ..
-        } => (*axis, *angle_rad),
-        other => panic!(
-            "axis+angle form: expected Rotate at ops[1], got {:?}",
-            other
-        ),
+        GeometryOp::Rotate { axis, angle_rad, .. } => (*axis, *angle_rad),
+        other => panic!("axis+angle form: expected Rotate at ops[1], got {:?}", other),
     };
 
     // Orientation form: axis ≈ [0,0,1], angle ≈ π/2
-    assert!(
-        orient_axis[0].abs() < 1e-12,
-        "orient axis[0] should be 0, got {}",
-        orient_axis[0]
-    );
-    assert!(
-        orient_axis[1].abs() < 1e-12,
-        "orient axis[1] should be 0, got {}",
-        orient_axis[1]
-    );
+    assert!(orient_axis[0].abs() < 1e-12, "orient axis[0] should be 0, got {}", orient_axis[0]);
+    assert!(orient_axis[1].abs() < 1e-12, "orient axis[1] should be 0, got {}", orient_axis[1]);
     assert!(
         (orient_axis[2] - 1.0).abs() < 1e-12,
         "orient axis[2] should be 1, got {}",
@@ -429,13 +406,8 @@ fn rotate_orientation_malformed_drops_op() {
     let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();
-    let has_rotate = ops
-        .iter()
-        .any(|r| matches!(r.op, GeometryOp::Rotate { .. }));
-    assert!(
-        !has_rotate,
-        "malformed orientation: Rotate op must be dropped"
-    );
+    let has_rotate = ops.iter().any(|r| matches!(r.op, GeometryOp::Rotate { .. }));
+    assert!(!has_rotate, "malformed orientation: Rotate op must be dropped");
     assert!(
         !result.diagnostics.is_empty(),
         "malformed orientation: expected at least one diagnostic"

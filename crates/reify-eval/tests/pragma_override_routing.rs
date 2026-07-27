@@ -52,7 +52,10 @@ impl reify_ir::GeometryKernel for NamedRecordingKernel {
         self.inner.execute(op)
     }
 
-    fn query(&self, q: &reify_ir::GeometryQuery) -> Result<reify_ir::Value, reify_ir::QueryError> {
+    fn query(
+        &self,
+        q: &reify_ir::GeometryQuery,
+    ) -> Result<reify_ir::Value, reify_ir::QueryError> {
         self.inner.query(q)
     }
 

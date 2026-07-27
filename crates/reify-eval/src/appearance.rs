@@ -102,56 +102,18 @@ fn hex_nibble(c: u8) -> Option<u8> {
 /// - `RAL9006` (White aluminium)
 static RAL_SEED: &[(&str, Rgb8)] = &[
     // Greys / neutrals
-    (
-        "RAL7016",
-        Rgb8 {
-            r: 41,
-            g: 49,
-            b: 51,
-        },
-    ), // Anthracite grey
-    (
-        "RAL7035",
-        Rgb8 {
-            r: 215,
-            g: 215,
-            b: 215,
-        },
-    ), // Light grey  ← PRD §3 fixture
+    ("RAL7016", Rgb8 { r: 41,  g: 49,  b: 51  }), // Anthracite grey
+    ("RAL7035", Rgb8 { r: 215, g: 215, b: 215 }), // Light grey  ← PRD §3 fixture
     // Whites / near-whites
-    (
-        "RAL9005",
-        Rgb8 {
-            r: 14,
-            g: 14,
-            b: 16,
-        },
-    ), // Jet black
-    (
-        "RAL9006",
-        Rgb8 {
-            r: 164,
-            g: 167,
-            b: 160,
-        },
-    ), // White aluminium  ← B4
-    (
-        "RAL9016",
-        Rgb8 {
-            r: 246,
-            g: 246,
-            b: 242,
-        },
-    ), // Traffic white
+    ("RAL9005", Rgb8 { r: 14,  g: 14,  b: 16  }), // Jet black
+    ("RAL9006", Rgb8 { r: 164, g: 167, b: 160 }), // White aluminium  ← B4
+    ("RAL9016", Rgb8 { r: 246, g: 246, b: 242 }), // Traffic white
 ];
 
 /// Look up a RAL Classic name in the seed table.
 /// Returns `Some(Rgb8)` on an exact case-sensitive match, `None` on miss.
 fn ral_lookup(name: &str) -> Option<Rgb8> {
-    RAL_SEED
-        .iter()
-        .find(|(n, _)| *n == name)
-        .map(|(_, rgb)| *rgb)
+    RAL_SEED.iter().find(|(n, _)| *n == name).map(|(_, rgb)| *rgb)
 }
 
 // ── public seam ───────────────────────────────────────────────────────────────
@@ -202,11 +164,7 @@ pub fn resolve_color(color: &Value, diagnostics: &mut Vec<Diagnostic>) -> Rgb8 {
 
     if named.is_empty() {
         // Path 1: rgb-component path.
-        return Rgb8 {
-            r: clamp_round(r),
-            g: clamp_round(g),
-            b: clamp_round(b),
-        };
+        return Rgb8 { r: clamp_round(r), g: clamp_round(g), b: clamp_round(b) };
     }
 
     if named.starts_with('#') {
@@ -230,11 +188,7 @@ pub fn resolve_color(color: &Value, diagnostics: &mut Vec<Diagnostic>) -> Rgb8 {
         ))
         .with_code(DiagnosticCode::UnknownColorName),
     );
-    Rgb8 {
-        r: clamp_round(r),
-        g: clamp_round(g),
-        b: clamp_round(b),
-    }
+    Rgb8 { r: clamp_round(r), g: clamp_round(g), b: clamp_round(b) }
 }
 
 /// Sentinel `StructureTypeId` for engine-assembled (registry-free) instances.
@@ -397,12 +351,7 @@ pub fn coating_appearance(coating: &Value) -> Option<Value> {
         default_color
     };
 
-    Some(make_appearance(
-        color_field,
-        finish_variant,
-        metalness,
-        roughness,
-    ))
+    Some(make_appearance(color_field, finish_variant, metalness, roughness))
 }
 
 /// Modulate the surface `Appearance` of a material with a cosmetic `FinishProcess`.
@@ -444,12 +393,8 @@ pub fn finish_modulation(finish_process: &Value, base_appearance: &Value) -> Val
         Value::StructureInstance(d) => d,
         other => return other, // non-struct base → return unchanged
     };
-    data.fields.insert(
-        "finish".to_string(),
-        Value::enum_unit("Finish", finish_variant),
-    );
-    data.fields
-        .insert("roughness".to_string(), Value::Real(roughness));
+    data.fields.insert("finish".to_string(), Value::enum_unit("Finish", finish_variant));
+    data.fields.insert("roughness".to_string(), Value::Real(roughness));
     Value::StructureInstance(data)
 }
 
@@ -496,14 +441,14 @@ pub fn resolve_appearance_opt(body: &Value) -> Option<Value> {
     // Uncoated (or malformed coating): fall through to material/finish layers.
 
     // Navigate body.material.appearance → material_app (Option<Value>).
-    let material_app: Option<Value> = if let Some(Value::StructureInstance(material)) =
-        data.fields.get("material")
-        && let Some(app @ Value::StructureInstance(_)) = material.fields.get("appearance")
-    {
-        Some(app.clone())
-    } else {
-        None
-    };
+    let material_app: Option<Value> =
+        if let Some(Value::StructureInstance(material)) = data.fields.get("material")
+            && let Some(app @ Value::StructureInstance(_)) = material.fields.get("appearance")
+        {
+            Some(app.clone())
+        } else {
+            None
+        };
 
     // Layer 2: finish-process modulation (non-AsMachined + material required).
     if let Some(fp @ Value::Enum { variant, .. }) = data.fields.get("finish_process")
@@ -578,19 +523,8 @@ mod tests {
         let c = color("#8899AA", 0.0, 0.0, 0.0);
         let mut diags: Vec<Diagnostic> = Vec::new();
         let result = resolve_color(&c, &mut diags);
-        assert_eq!(
-            result,
-            Rgb8 {
-                r: 0x88,
-                g: 0x99,
-                b: 0xAA
-            },
-            "#8899AA must parse byte-exact"
-        );
-        assert!(
-            diags.is_empty(),
-            "no diagnostics expected for valid hex, got: {diags:#?}"
-        );
+        assert_eq!(result, Rgb8 { r: 0x88, g: 0x99, b: 0xAA }, "#8899AA must parse byte-exact");
+        assert!(diags.is_empty(), "no diagnostics expected for valid hex, got: {diags:#?}");
     }
 
     /// `#RGB` (3 hex digits) → nibble-doubled parse; no diagnostics.
@@ -601,17 +535,10 @@ mod tests {
         let result = resolve_color(&c, &mut diags);
         assert_eq!(
             result,
-            Rgb8 {
-                r: 0x88,
-                g: 0xAA,
-                b: 0xFF
-            },
+            Rgb8 { r: 0x88, g: 0xAA, b: 0xFF },
             "#8AF must nibble-double to 0x88, 0xAA, 0xFF"
         );
-        assert!(
-            diags.is_empty(),
-            "no diagnostics expected for valid short hex, got: {diags:#?}"
-        );
+        assert!(diags.is_empty(), "no diagnostics expected for valid short hex, got: {diags:#?}");
     }
 
     /// Empty `named` with (r,g,b) in [0,1] → clamp_round path.
@@ -621,15 +548,7 @@ mod tests {
         let c = color("", 0.0, 0.5, 1.0);
         let mut diags: Vec<Diagnostic> = Vec::new();
         let result = resolve_color(&c, &mut diags);
-        assert_eq!(
-            result,
-            Rgb8 {
-                r: 0,
-                g: 128,
-                b: 255
-            },
-            "empty named: clamp_round((0,0.5,1))"
-        );
+        assert_eq!(result, Rgb8 { r: 0, g: 128, b: 255 }, "empty named: clamp_round((0,0.5,1))");
         assert!(
             diags.is_empty(),
             "no diagnostics expected for empty named, got: {diags:#?}"
@@ -645,11 +564,7 @@ mod tests {
         let result = resolve_color(&c, &mut diags);
         assert_eq!(
             result,
-            Rgb8 {
-                r: 0,
-                g: 255,
-                b: 107
-            },
+            Rgb8 { r: 0, g: 255, b: 107 },
             "empty named: clamp((-0.2,1.4,0.42)) → (0,255,107)"
         );
         assert!(
@@ -662,16 +577,8 @@ mod tests {
 
     /// Round-trip fixture constants for the seeded RAL entries.
     /// These exact values must match the RAL_SEED table added in S6.
-    const RAL7035_RGB: Rgb8 = Rgb8 {
-        r: 215,
-        g: 215,
-        b: 215,
-    };
-    const RAL9006_RGB: Rgb8 = Rgb8 {
-        r: 164,
-        g: 167,
-        b: 160,
-    };
+    const RAL7035_RGB: Rgb8 = Rgb8 { r: 215, g: 215, b: 215 };
+    const RAL9006_RGB: Rgb8 = Rgb8 { r: 164, g: 167, b: 160 };
 
     /// RAL9006 (White Aluminium) — seeded name → tabled sRGB, no diagnostics.
     /// The rgb fields (0,0,0) are ignored when `named` is non-empty and in the seed.
@@ -681,14 +588,8 @@ mod tests {
         let c = color("RAL9006", 0.0, 0.0, 0.0);
         let mut diags: Vec<Diagnostic> = Vec::new();
         let result = resolve_color(&c, &mut diags);
-        assert_eq!(
-            result, RAL9006_RGB,
-            "RAL9006 must return its tabled sRGB value"
-        );
-        assert!(
-            diags.is_empty(),
-            "seeded RAL name must produce no diagnostics, got: {diags:#?}"
-        );
+        assert_eq!(result, RAL9006_RGB, "RAL9006 must return its tabled sRGB value");
+        assert!(diags.is_empty(), "seeded RAL name must produce no diagnostics, got: {diags:#?}");
     }
 
     /// RAL7035 (Light Grey) — seeded name → tabled sRGB, no diagnostics.
@@ -699,14 +600,8 @@ mod tests {
         let c = color("RAL7035", 0.0, 0.0, 0.0);
         let mut diags: Vec<Diagnostic> = Vec::new();
         let result = resolve_color(&c, &mut diags);
-        assert_eq!(
-            result, RAL7035_RGB,
-            "RAL7035 must return its tabled sRGB value"
-        );
-        assert!(
-            diags.is_empty(),
-            "seeded RAL name must produce no diagnostics, got: {diags:#?}"
-        );
+        assert_eq!(result, RAL7035_RGB, "RAL7035 must return its tabled sRGB value");
+        assert!(diags.is_empty(), "seeded RAL name must produce no diagnostics, got: {diags:#?}");
     }
 
     /// Unknown name → exactly one W_UNKNOWN_COLOR_NAME Warning + clamp_round fallback.
@@ -718,18 +613,10 @@ mod tests {
         let result = resolve_color(&c, &mut diags);
         assert_eq!(
             result,
-            Rgb8 {
-                r: 102,
-                g: 102,
-                b: 107
-            },
+            Rgb8 { r: 102, g: 102, b: 107 },
             "unknown name must fall back to clamp_round(r,g,b)"
         );
-        assert_eq!(
-            diags.len(),
-            1,
-            "expected exactly one diagnostic for unknown name, got: {diags:#?}"
-        );
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic for unknown name, got: {diags:#?}");
         assert_eq!(
             diags[0].code,
             Some(DiagnosticCode::UnknownColorName),
@@ -754,11 +641,7 @@ mod tests {
         let result = resolve_color(&c, &mut diags);
         assert_eq!(
             result,
-            Rgb8 {
-                r: 26,
-                g: 51,
-                b: 77
-            },
+            Rgb8 { r: 26, g: 51, b: 77 },
             "malformed hex must fall back to clamp_round(r,g,b)"
         );
         assert_eq!(
@@ -796,7 +679,10 @@ mod tests {
         let color_val = color("", r, g, b);
         let fields: PersistentMap<String, Value> = [
             ("color".to_string(), color_val),
-            ("finish".to_string(), Value::enum_unit("Finish", "Satin")),
+            (
+                "finish".to_string(),
+                Value::enum_unit("Finish", "Satin"),
+            ),
             ("metalness".to_string(), Value::Real(0.0)),
             ("roughness".to_string(), Value::Real(0.5)),
         ]
@@ -856,11 +742,7 @@ mod tests {
         let rgb = resolve_color(&color_result, &mut diags);
         assert_eq!(
             rgb,
-            Rgb8 {
-                r: 102,
-                g: 102,
-                b: 107
-            },
+            Rgb8 { r: 102, g: 102, b: 107 },
             "r:0.4→102; g:0.4→102; b:0.42→107 via resolve_color"
         );
         assert!(diags.is_empty(), "no diags expected, got: {diags:#?}");
@@ -877,10 +759,7 @@ mod tests {
         let app = resolve_appearance(&body);
         match &app {
             Value::StructureInstance(data) => {
-                assert_eq!(
-                    data.type_name, "Appearance",
-                    "fallback type_name must be Appearance"
-                );
+                assert_eq!(data.type_name, "Appearance", "fallback type_name must be Appearance");
             }
             other => panic!("expected Appearance StructureInstance, got {other:?}"),
         }
@@ -889,11 +768,7 @@ mod tests {
         let mut diags: Vec<Diagnostic> = Vec::new();
         let rgb = resolve_color(&color_result, &mut diags);
         let n = clamp_round(0.7); // 178
-        assert_eq!(
-            rgb,
-            Rgb8 { r: n, g: n, b: n },
-            "neutral grey via clamp_round(0.7)=178"
-        );
+        assert_eq!(rgb, Rgb8 { r: n, g: n, b: n }, "neutral grey via clamp_round(0.7)=178");
         assert!(diags.is_empty(), "no diags expected, got: {diags:#?}");
     }
 
@@ -911,10 +786,7 @@ mod tests {
         let app = resolve_appearance(&body);
         match &app {
             Value::StructureInstance(data) => {
-                assert_eq!(
-                    data.type_name, "Appearance",
-                    "fallback type_name must be Appearance"
-                );
+                assert_eq!(data.type_name, "Appearance", "fallback type_name must be Appearance");
             }
             other => panic!("expected Appearance StructureInstance, got {other:?}"),
         }
@@ -936,19 +808,14 @@ mod tests {
             type_id: TEST_TYPE_ID,
             type_name: "Material".to_string(),
             version: 1,
-            fields: [("name".to_string(), Value::String("bare".to_string()))]
-                .into_iter()
-                .collect(),
+            fields: [("name".to_string(), Value::String("bare".to_string()))].into_iter().collect(),
         }));
         let body = body_with_material(material_no_app);
 
         let app = resolve_appearance(&body);
         match &app {
             Value::StructureInstance(data) => {
-                assert_eq!(
-                    data.type_name, "Appearance",
-                    "fallback type_name must be Appearance"
-                );
+                assert_eq!(data.type_name, "Appearance", "fallback type_name must be Appearance");
             }
             other => panic!("expected Appearance StructureInstance, got {other:?}"),
         }
@@ -1000,10 +867,7 @@ mod tests {
         let app_val = result.expect("body with material+appearance must yield Some");
         match &app_val {
             Value::StructureInstance(data) => {
-                assert_eq!(
-                    data.type_name, "Appearance",
-                    "must be Appearance StructureInstance"
-                );
+                assert_eq!(data.type_name, "Appearance", "must be Appearance StructureInstance");
             }
             other => panic!("expected Appearance StructureInstance, got {other:?}"),
         }
@@ -1011,15 +875,7 @@ mod tests {
             struct_field_unit(&app_val, "color").expect("Appearance must have color field");
         let mut diags: Vec<Diagnostic> = Vec::new();
         let rgb = resolve_color(&color_val, &mut diags);
-        assert_eq!(
-            rgb,
-            Rgb8 {
-                r: 102,
-                g: 102,
-                b: 107
-            },
-            "color 0.4→102, 0.42→107"
-        );
+        assert_eq!(rgb, Rgb8 { r: 102, g: 102, b: 107 }, "color 0.4→102, 0.42→107");
         assert!(diags.is_empty(), "no diags, got: {diags:#?}");
     }
 
@@ -1047,10 +903,7 @@ mod tests {
             fields: PersistentMap::new(),
         }));
         let result = resolve_appearance_opt(&body);
-        assert!(
-            result.is_none(),
-            "body with no material field must yield None; got {result:?}"
-        );
+        assert!(result.is_none(), "body with no material field must yield None; got {result:?}");
     }
 
     // ── S1: coating_appearance RED tests ──────────────────────────────────────
@@ -1061,10 +914,7 @@ mod tests {
     /// Only `process` and `color` are read by the β seam; the extra fields are defaulted.
     fn coating(process_variant: &str, color_val: Value) -> Value {
         let fields: PersistentMap<String, Value> = [
-            (
-                "process".to_string(),
-                Value::enum_unit("CoatingProcess", process_variant),
-            ),
+            ("process".to_string(), Value::enum_unit("CoatingProcess", process_variant)),
             ("color".to_string(), color_val),
             // Defaulted fields not read by the seam:
             ("thickness".to_string(), Value::Real(0.0)),
@@ -1109,34 +959,28 @@ mod tests {
         }
 
         // color field must exist and resolve via resolve_color to RAL9005 exact bytes.
-        let color_field =
-            struct_field_unit(&app, "color").expect("Appearance must have a color field");
+        let color_field = struct_field_unit(&app, "color")
+            .expect("Appearance must have a color field");
         let mut diags: Vec<Diagnostic> = Vec::new();
         let rgb = resolve_color(&color_field, &mut diags);
         assert_eq!(
             rgb,
-            Rgb8 {
-                r: 14,
-                g: 14,
-                b: 16
-            },
+            Rgb8 { r: 14, g: 14, b: 16 },
             "Anodize+RAL9005 color must resolve to {{14,14,16}} (RAL_SEED entry)"
         );
-        assert!(
-            diags.is_empty(),
-            "no color-name diagnostics expected, got: {diags:#?}"
-        );
+        assert!(diags.is_empty(), "no color-name diagnostics expected, got: {diags:#?}");
 
         // metalness == 0.0 (dielectric — Anodize is an oxide coating, not metallic).
-        let metalness =
-            struct_field_unit(&app, "metalness").expect("Appearance must have metalness field");
+        let metalness = struct_field_unit(&app, "metalness")
+            .expect("Appearance must have metalness field");
         match metalness {
             Value::Real(m) => assert_eq!(m, 0.0, "Anodize must be dielectric: metalness 0.0"),
             other => panic!("expected Real metalness, got {other:?}"),
         }
 
         // finish variant ∈ {"Matte", "Satin"}.
-        let finish = struct_field_unit(&app, "finish").expect("Appearance must have finish field");
+        let finish = struct_field_unit(&app, "finish")
+            .expect("Appearance must have finish field");
         match &finish {
             Value::Enum { variant, .. } => {
                 assert!(
@@ -1148,8 +992,8 @@ mod tests {
         }
 
         // roughness ∈ [0.0, 1.0].
-        let roughness =
-            struct_field_unit(&app, "roughness").expect("Appearance must have roughness field");
+        let roughness = struct_field_unit(&app, "roughness")
+            .expect("Appearance must have roughness field");
         match roughness {
             Value::Real(r) => {
                 assert!(
@@ -1171,8 +1015,8 @@ mod tests {
         let app = coating_appearance(&c).expect("Electroplate must yield Some(Appearance)");
 
         // metalness >= 0.7 (high-metalness metallic).
-        let metalness =
-            struct_field_unit(&app, "metalness").expect("Appearance must have metalness");
+        let metalness = struct_field_unit(&app, "metalness")
+            .expect("Appearance must have metalness");
         match metalness {
             Value::Real(m) => assert!(
                 m >= 0.7,
@@ -1182,8 +1026,8 @@ mod tests {
         }
 
         // roughness <= 0.3 (polished/low roughness).
-        let roughness =
-            struct_field_unit(&app, "roughness").expect("Appearance must have roughness");
+        let roughness = struct_field_unit(&app, "roughness")
+            .expect("Appearance must have roughness");
         match roughness {
             Value::Real(r) => assert!(
                 r <= 0.3,
@@ -1193,7 +1037,8 @@ mod tests {
         }
 
         // Color must be light (each channel >= 150) — never-silent-black + characteristic.
-        let color_field = struct_field_unit(&app, "color").expect("Appearance must have color");
+        let color_field = struct_field_unit(&app, "color")
+            .expect("Appearance must have color");
         let mut diags: Vec<Diagnostic> = Vec::new();
         let rgb = resolve_color(&color_field, &mut diags);
         assert!(
@@ -1209,30 +1054,28 @@ mod tests {
         let app = coating_appearance(&c).expect("PowderCoat must yield Some(Appearance)");
 
         // color == #3366CC exact.
-        let color_field = struct_field_unit(&app, "color").expect("Appearance must have color");
+        let color_field = struct_field_unit(&app, "color")
+            .expect("Appearance must have color");
         let mut diags: Vec<Diagnostic> = Vec::new();
         let rgb = resolve_color(&color_field, &mut diags);
         assert_eq!(
             rgb,
-            Rgb8 {
-                r: 0x33,
-                g: 0x66,
-                b: 0xCC
-            },
+            Rgb8 { r: 0x33, g: 0x66, b: 0xCC },
             "PowderCoat must pass coating color through exactly"
         );
         assert!(diags.is_empty(), "no diags expected, got: {diags:#?}");
 
         // metalness == 0.0 (dielectric).
-        let metalness =
-            struct_field_unit(&app, "metalness").expect("Appearance must have metalness");
+        let metalness = struct_field_unit(&app, "metalness")
+            .expect("Appearance must have metalness");
         match metalness {
             Value::Real(m) => assert_eq!(m, 0.0, "PowderCoat must be dielectric: metalness 0.0"),
             other => panic!("expected Real metalness, got {other:?}"),
         }
 
         // finish ∈ {"Satin","Gloss"}.
-        let finish = struct_field_unit(&app, "finish").expect("Appearance must have finish");
+        let finish = struct_field_unit(&app, "finish")
+            .expect("Appearance must have finish");
         match &finish {
             Value::Enum { variant, .. } => assert!(
                 variant == "Satin" || variant == "Gloss",
@@ -1250,29 +1093,27 @@ mod tests {
         let app = coating_appearance(&c).expect("Paint must yield Some(Appearance)");
 
         // color == #FF4400 exact.
-        let color_field = struct_field_unit(&app, "color").expect("Appearance must have color");
+        let color_field = struct_field_unit(&app, "color")
+            .expect("Appearance must have color");
         let mut diags: Vec<Diagnostic> = Vec::new();
         let rgb = resolve_color(&color_field, &mut diags);
         assert_eq!(
             rgb,
-            Rgb8 {
-                r: 0xFF,
-                g: 0x44,
-                b: 0x00
-            },
+            Rgb8 { r: 0xFF, g: 0x44, b: 0x00 },
             "Paint must pass coating color through exactly"
         );
 
         // metalness == 0.0 (dielectric).
-        let metalness =
-            struct_field_unit(&app, "metalness").expect("Appearance must have metalness");
+        let metalness = struct_field_unit(&app, "metalness")
+            .expect("Appearance must have metalness");
         match metalness {
             Value::Real(m) => assert_eq!(m, 0.0, "Paint must be dielectric: metalness 0.0"),
             other => panic!("expected Real metalness, got {other:?}"),
         }
 
         // finish ∈ {"Satin","Gloss"}.
-        let finish = struct_field_unit(&app, "finish").expect("Appearance must have finish");
+        let finish = struct_field_unit(&app, "finish")
+            .expect("Appearance must have finish");
         match &finish {
             Value::Enum { variant, .. } => assert!(
                 variant == "Satin" || variant == "Gloss",
@@ -1289,20 +1130,18 @@ mod tests {
         let app = coating_appearance(&c).expect("Passivate must yield Some(Appearance)");
 
         // metalness modest (<= 0.5).
-        let metalness =
-            struct_field_unit(&app, "metalness").expect("Appearance must have metalness");
+        let metalness = struct_field_unit(&app, "metalness")
+            .expect("Appearance must have metalness");
         match metalness {
             Value::Real(m) => {
-                assert!(
-                    m <= 0.5,
-                    "Passivate metalness must be <= 0.5 (modest), got {m}"
-                );
+                assert!(m <= 0.5, "Passivate metalness must be <= 0.5 (modest), got {m}");
             }
             other => panic!("expected Real metalness, got {other:?}"),
         }
 
         // color non-black (at least one channel > 0).
-        let color_field = struct_field_unit(&app, "color").expect("Appearance must have color");
+        let color_field = struct_field_unit(&app, "color")
+            .expect("Appearance must have color");
         let mut diags: Vec<Diagnostic> = Vec::new();
         let rgb = resolve_color(&color_field, &mut diags);
         assert!(
@@ -1345,15 +1184,7 @@ mod tests {
         let color_field = struct_field_unit(&result, "color").expect("must have color");
         let mut diags: Vec<Diagnostic> = Vec::new();
         let rgb = resolve_color(&color_field, &mut diags);
-        assert_eq!(
-            rgb,
-            Rgb8 {
-                r: 102,
-                g: 102,
-                b: 107
-            },
-            "color must be preserved by Polished"
-        );
+        assert_eq!(rgb, Rgb8 { r: 102, g: 102, b: 107 }, "color must be preserved by Polished");
         assert!(diags.is_empty(), "no diags expected, got: {diags:#?}");
 
         // metalness preserved: 0.0.
@@ -1384,15 +1215,7 @@ mod tests {
         let color_field = struct_field_unit(&result, "color").expect("must have color");
         let mut diags: Vec<Diagnostic> = Vec::new();
         let rgb = resolve_color(&color_field, &mut diags);
-        assert_eq!(
-            rgb,
-            Rgb8 {
-                r: 102,
-                g: 102,
-                b: 107
-            },
-            "color must be preserved by Ground"
-        );
+        assert_eq!(rgb, Rgb8 { r: 102, g: 102, b: 107 }, "color must be preserved by Ground");
 
         // metalness preserved.
         let metalness = struct_field_unit(&result, "metalness").expect("must have metalness");
@@ -1433,11 +1256,7 @@ mod tests {
         let rgb = resolve_color(&color_field, &mut diags);
         assert_eq!(
             rgb,
-            Rgb8 {
-                r: 102,
-                g: 102,
-                b: 107
-            },
+            Rgb8 { r: 102, g: 102, b: 107 },
             "color must be preserved by BeadBlasted"
         );
     }
@@ -1475,7 +1294,8 @@ mod tests {
         let fp = Value::enum_unit("FinishProcess", "AsMachined");
         let result = finish_modulation(&fp, &base);
         assert_eq!(
-            result, base,
+            result,
+            base,
             "AsMachined is the inert sentinel: returned Appearance must equal the base"
         );
     }
@@ -1488,9 +1308,7 @@ mod tests {
             type_id: TEST_TYPE_ID,
             type_name: "Material".to_string(),
             version: 1,
-            fields: [("name".to_string(), Value::String("bare".to_string()))]
-                .into_iter()
-                .collect(),
+            fields: [("name".to_string(), Value::String("bare".to_string()))].into_iter().collect(),
         }));
         let body = body_with_material(material_no_app);
         let result = resolve_appearance_opt(&body);
@@ -1508,9 +1326,7 @@ mod tests {
     fn resolve_color_missing_rgb_fields_returns_black() {
         // A Color struct with only `named=""` — no r, g, or b fields present.
         let fields: PersistentMap<String, Value> =
-            [("named".to_string(), Value::String(String::new()))]
-                .into_iter()
-                .collect();
+            [("named".to_string(), Value::String(String::new()))].into_iter().collect();
         let color_only_named = Value::StructureInstance(Box::new(StructureInstanceData {
             type_id: TEST_TYPE_ID,
             type_name: "Color".to_string(),
@@ -1579,11 +1395,7 @@ mod tests {
         let rgb = resolve_color(&color_field, &mut diags);
         assert_eq!(
             rgb,
-            Rgb8 {
-                r: 14,
-                g: 14,
-                b: 16
-            },
+            Rgb8 { r: 14, g: 14, b: 16 },
             "Anodize+RAL9005 must override material color; expected {{14,14,16}}, got {rgb:?}"
         );
     }
@@ -1603,24 +1415,13 @@ mod tests {
         let color_field = struct_field_unit(&result, "color").expect("must have color");
         let mut diags: Vec<Diagnostic> = Vec::new();
         let rgb = resolve_color(&color_field, &mut diags);
-        assert_eq!(
-            rgb,
-            Rgb8 {
-                r: 102,
-                g: 102,
-                b: 107
-            },
-            "color must be preserved by Polished"
-        );
+        assert_eq!(rgb, Rgb8 { r: 102, g: 102, b: 107 }, "color must be preserved by Polished");
 
         // finish == "Gloss".
         let finish = struct_field_unit(&result, "finish").expect("must have finish");
         match &finish {
             Value::Enum { variant, .. } => {
-                assert_eq!(
-                    variant, "Gloss",
-                    "Polished → Gloss finish via finish_modulation"
-                )
+                assert_eq!(variant, "Gloss", "Polished → Gloss finish via finish_modulation")
             }
             other => panic!("expected Finish Enum, got {other:?}"),
         }
@@ -1650,11 +1451,7 @@ mod tests {
         let rgb = resolve_color(&color_field, &mut diags);
         assert_eq!(
             rgb,
-            Rgb8 {
-                r: 14,
-                g: 14,
-                b: 16
-            },
+            Rgb8 { r: 14, g: 14, b: 16 },
             "Coating must win over finish_process; expected {{14,14,16}} (RAL9005), got {rgb:?}"
         );
     }
@@ -1679,11 +1476,7 @@ mod tests {
         let rgb = resolve_color(&color_field, &mut diags);
         assert_eq!(
             rgb,
-            Rgb8 {
-                r: 14,
-                g: 14,
-                b: 16
-            },
+            Rgb8 { r: 14, g: 14, b: 16 },
             "coating-only appearance must resolve to RAL9005 {{14,14,16}}"
         );
     }
@@ -1703,7 +1496,8 @@ mod tests {
         );
         let result = resolve_appearance(&body);
         assert_eq!(
-            result, app,
+            result,
+            app,
             "Uncoated+AsMachined must resolve to the bare material appearance (B5 back-compat)"
         );
     }
@@ -1731,7 +1525,8 @@ mod tests {
         let body = body_with_surface(Some(material), None, None);
         let result = resolve_appearance(&body);
         assert_eq!(
-            result, app,
+            result,
+            app,
             "material-only body must resolve to the material's appearance (unchanged from pre-β)"
         );
     }
@@ -1789,7 +1584,8 @@ mod tests {
         let fp = Value::enum_unit("FinishProcess", "Polished");
         let result = finish_modulation(&fp, &non_struct_base);
         assert_eq!(
-            result, non_struct_base,
+            result,
+            non_struct_base,
             "finish_modulation with non-StructureInstance base must return it unchanged"
         );
     }

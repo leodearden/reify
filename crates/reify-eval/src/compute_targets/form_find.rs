@@ -410,15 +410,8 @@ fn run_free(value_inputs: &[Value]) -> Result<Value, String> {
         form_find_free(&nodes, &members, &kinds, &spec)
             .map_err(|e| format!("E_FormFindInfeasible: {}", describe_free(e)))?
     } else {
-        form_find_free_surfaces(
-            &nodes,
-            &members,
-            &kinds,
-            &surfaces,
-            &surface_stresses,
-            &spec,
-        )
-        .map_err(|e| format!("E_FormFindInfeasible: {}", describe_free(e)))?
+        form_find_free_surfaces(&nodes, &members, &kinds, &surfaces, &surface_stresses, &spec)
+            .map_err(|e| format!("E_FormFindInfeasible: {}", describe_free(e)))?
     };
 
     Ok(build_result_free(

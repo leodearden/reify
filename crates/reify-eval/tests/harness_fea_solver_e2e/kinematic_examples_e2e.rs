@@ -480,7 +480,8 @@ fn dock_pickup_constraints_all_satisfied() {
 fn fbs_source() -> &'static str {
     static S: OnceLock<String> = OnceLock::new();
     S.get_or_init(|| {
-        std::fs::read_to_string(FBS_PATH).unwrap_or_else(|e| panic!("{FBS_PATH} should exist: {e}"))
+        std::fs::read_to_string(FBS_PATH)
+            .unwrap_or_else(|e| panic!("{FBS_PATH} should exist: {e}"))
     })
     .as_str()
 }

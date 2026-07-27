@@ -85,7 +85,9 @@ fn bt8_transparency_representative_design() {
         Some(Box::new(MockGeometryKernel::new())),
     );
     let result_off = engine_off.build(&module, ExportFormat::Step);
-    let snap_off = engine_off.snapshot().expect("snapshot present after build");
+    let snap_off = engine_off
+        .snapshot()
+        .expect("snapshot present after build");
 
     // Capture ON.
     let mut engine_on = Engine::new(
@@ -215,8 +217,9 @@ fn bt4_tracer_surfaces_solve_origins() {
     // (b) infeasible solve on auto param "x" → tracer surfaces SolveFailed
     // with a non-empty detail string.
     let solve_failed = solve_failed_module();
-    let solver =
-        MockConstraintSolver::new_infeasible(vec![Diagnostic::error("constraints are infeasible")]);
+    let solver = MockConstraintSolver::new_infeasible(vec![Diagnostic::error(
+        "constraints are infeasible",
+    )]);
     let mut engine2 =
         Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
     engine2.set_capture_undef_causes(true);

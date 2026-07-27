@@ -85,7 +85,8 @@ fn eval_determined_emits_no_undef_notes() {
 #[test]
 fn eval_explain_undef_surfaces_all_undef_cells() {
     let path = common::example_path("undef_self_describing.ri");
-    let (status, _stdout, stderr) = common::run_with_args(&["eval", "--explain-undef", &path]);
+    let (status, _stdout, stderr) =
+        common::run_with_args(&["eval", "--explain-undef", &path]);
 
     assert!(
         status.success(),

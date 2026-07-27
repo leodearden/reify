@@ -30,6 +30,10 @@ pub mod as_printed_material_r0;
 /// `boundary_node_set`).
 pub mod bc_resolve;
 pub mod buckling;
+/// Task 4654 (R3a): carried-topology bundle for result values — the kernel-free
+/// selector-resolvable topology that result values carry so R3b's eval-path
+/// resolver can operate against baked data, never OCCT.
+pub mod result_topology;
 pub mod buckling_multi_case;
 pub mod elastic_static;
 /// Task η (3789): the `fdm::slice` ComputeNode — invokes PrusaSlicer as a
@@ -39,23 +43,19 @@ pub mod elastic_static;
 /// honestly (degraded Toolpath + Info `FdmSlicerUnavailable`) when no slicer is
 /// on `$PATH`.
 pub mod fdm_slice;
-/// Task 4654 (R3a): carried-topology bundle for result values — the kernel-free
-/// selector-resolvable topology that result values carry so R3b's eval-path
-/// resolver can operate against baked data, never OCCT.
-pub mod result_topology;
 // Task 2929: FEA diagnostic mapping — FeaFailure → reify_core::Diagnostic.
 pub mod fea_diagnostics;
 pub mod form_find;
-/// Task η (4418): the `solver::membrane_load` ComputeNode — combined membrane +
-/// bar/cable load analysis with a tension-only active set (slack cables + slack
-/// patches). PRD `docs/prds/v0_6/tensegrity-membrane.md` §5 / §10 / §11.
-pub mod membrane_load;
 pub mod multi_case;
 pub mod shell_solve;
 /// Shared Tensegrity input-cracking helpers (node / index-pair / scalar / index
 /// validation) reused by the `form_find` and `tensegrity_load` trampolines.
 mod tensegrity_crack;
 pub mod tensegrity_load;
+/// Task η (4418): the `solver::membrane_load` ComputeNode — combined membrane +
+/// bar/cable load analysis with a tension-only active set (slack cables + slack
+/// patches). PRD `docs/prds/v0_6/tensegrity-membrane.md` §5 / §10 / §11.
+pub mod membrane_load;
 
 // ── Shared field-construction helpers ───────────────────────────────────────
 //
@@ -455,11 +455,7 @@ impl crate::Engine {
                 // through in a release build. A fallback, not a panic — this is a
                 // debug-only log path and every real caller passes a &'static str
                 // literal, so this branch is defense-in-depth, never hot.
-                let reason = if reason.is_empty() {
-                    "(unspecified)"
-                } else {
-                    reason
-                };
+                let reason = if reason.is_empty() { "(unspecified)" } else { reason };
                 tracing::debug!(reason, "mesh-morph producer not registered on this Engine");
             }
         }

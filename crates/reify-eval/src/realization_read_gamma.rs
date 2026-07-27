@@ -121,10 +121,7 @@ fn probe_receives_volume_mesh_content_through_beta_gamma_seam() {
     // Dispatch path: invoke the registered probe with the projected handles.
     let dispatched =
         engine.dispatch_compute_node("test::gamma_probe", &[], &handles, &Value::Undef, None);
-    assert!(
-        dispatched.is_ok(),
-        "probe trampoline must complete: {dispatched:?}"
-    );
+    assert!(dispatched.is_ok(), "probe trampoline must complete: {dispatched:?}");
 
     // The probe captured the handles it was invoked with — assert the content.
     let captured = PROBE_CAPTURED.with(|slot| slot.borrow().clone());
@@ -144,10 +141,7 @@ fn probe_receives_volume_mesh_content_through_beta_gamma_seam() {
         "P1 tet_indices must be a multiple of 4; got len {}",
         tet_indices.len()
     );
-    assert!(
-        tet_indices.len() / 4 > 0,
-        "projected mesh must carry ≥1 tet"
-    );
+    assert!(tet_indices.len() / 4 > 0, "projected mesh must carry ≥1 tet");
 }
 
 /// Degradation path: a VolumeMesh realization whose producing kernel's
@@ -178,11 +172,7 @@ fn probe_receives_none_content_and_diagnostic_for_degraded_kernel() {
     let (inputs, handles, proj_diags) =
         engine.build_compute_realization_inputs(&arg_values, &graph);
 
-    assert_eq!(
-        inputs,
-        vec![r0.clone()],
-        "lowering still contributes R0 when degraded"
-    );
+    assert_eq!(inputs, vec![r0.clone()], "lowering still contributes R0 when degraded");
     assert_eq!(
         proj_diags.len(),
         1,
@@ -197,11 +187,7 @@ fn probe_receives_none_content_and_diagnostic_for_degraded_kernel() {
     );
 
     let captured = PROBE_CAPTURED.with(|slot| slot.borrow().clone());
-    assert_eq!(
-        captured.len(),
-        1,
-        "probe still observes one (degraded) handle"
-    );
+    assert_eq!(captured.len(), 1, "probe still observes one (degraded) handle");
     assert!(
         captured[0].content().is_none(),
         "degraded handle must carry no content"
@@ -256,10 +242,7 @@ fn probe_receives_surface_mesh_content_through_beta_gamma_seam() {
     // Dispatch path: invoke the registered probe with the projected handles.
     let dispatched =
         engine.dispatch_compute_node("test::gamma_probe", &[], &handles, &Value::Undef, None);
-    assert!(
-        dispatched.is_ok(),
-        "probe trampoline must complete: {dispatched:?}"
-    );
+    assert!(dispatched.is_ok(), "probe trampoline must complete: {dispatched:?}");
 
     // The probe captured the handles it was invoked with — assert the content.
     let captured = PROBE_CAPTURED.with(|slot| slot.borrow().clone());

@@ -607,15 +607,15 @@ pub fn extract_output_export_spec(instance: &Value) -> Option<OutputExportSpec> 
 
     // Gate 2: `format` must be an OutputFormat enum; map variant → target.
     let format = match fields.get("format") {
-        Some(Value::Enum {
-            type_name, variant, ..
-        }) if type_name == "OutputFormat" => match variant.as_str() {
-            "STEP" => OutputTarget::File(reify_ir::ExportFormat::Step),
-            "STL" => OutputTarget::File(reify_ir::ExportFormat::Stl),
-            "ThreeMF" => OutputTarget::File(reify_ir::ExportFormat::ThreeMF),
-            "Display" => OutputTarget::DisplayDeferred,
-            _ => return None,
-        },
+        Some(Value::Enum { type_name, variant, .. }) if type_name == "OutputFormat" => {
+            match variant.as_str() {
+                "STEP" => OutputTarget::File(reify_ir::ExportFormat::Step),
+                "STL" => OutputTarget::File(reify_ir::ExportFormat::Stl),
+                "ThreeMF" => OutputTarget::File(reify_ir::ExportFormat::ThreeMF),
+                "Display" => OutputTarget::DisplayDeferred,
+                _ => return None,
+            }
+        }
         _ => return None,
     };
 
@@ -637,14 +637,14 @@ pub fn extract_output_export_spec(instance: &Value) -> Option<OutputExportSpec> 
 
     // Gate 5: `version` STEPVersion enum → STEP schema; absent/unknown → default.
     let step_schema = match fields.get("version") {
-        Some(Value::Enum {
-            type_name, variant, ..
-        }) if type_name == "STEPVersion" => match variant.as_str() {
-            "AP203" => reify_ir::StepSchema::Ap203,
-            "AP214" => reify_ir::StepSchema::Ap214,
-            "AP242" => reify_ir::StepSchema::Ap242,
-            _ => reify_ir::StepSchema::default(),
-        },
+        Some(Value::Enum { type_name, variant, .. }) if type_name == "STEPVersion" => {
+            match variant.as_str() {
+                "AP203" => reify_ir::StepSchema::Ap203,
+                "AP214" => reify_ir::StepSchema::Ap214,
+                "AP242" => reify_ir::StepSchema::Ap242,
+                _ => reify_ir::StepSchema::default(),
+            }
+        }
         _ => reify_ir::StepSchema::default(),
     };
 
@@ -1703,11 +1703,11 @@ mod tests {
     fn recognize_repr_within_returns_some_for_index_access_subject() {
         let expr = index_access_repr_within_expr(
             "bracket",
-            "self",    // base member
-            "Bracket", // base struct type
+            "self",       // base member
+            "Bracket",    // base struct type
             "fea_subject",
             Some("FeaFace"), // result struct type
-            1e-3,            // 1mm bound
+            1e-3,         // 1mm bound
         );
         let result = recognize_representation_within(&expr);
         assert!(

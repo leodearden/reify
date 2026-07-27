@@ -24,14 +24,11 @@
 //! All tests are gated on `reify_kernel_occt::OCCT_AVAILABLE` — OCCT is present
 //! in this environment via `/opt/reify-deps`, so tests execute for real.
 
-use reify_core::ContentHash;
 use reify_core::{Type, ValueCellId};
+use reify_ir::{CompiledExpr, CompiledExprKind, ExportFormat, FieldSourceKind, ResolvedFunction, Value, ValueMap};
 use reify_eval::compute_targets::register_compute_fns;
 use reify_expr::{EvalContext, eval_expr};
-use reify_ir::{
-    CompiledExpr, CompiledExprKind, ExportFormat, FieldSourceKind, ResolvedFunction, Value,
-    ValueMap,
-};
+use reify_core::ContentHash;
 
 // ── shared helpers ─────────────────────────────────────────────────────────────
 

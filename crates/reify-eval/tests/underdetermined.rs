@@ -9,8 +9,8 @@ use reify_core::{DiagnosticCode, ModulePath, Type};
 use reify_eval::Engine;
 use reify_ir::{ObjectiveSense, ObjectiveSet, SolveResult};
 use reify_test_support::{
-    CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver,
-    SequencedMockConstraintSolver, TopologyTemplateBuilder, gt, literal, mm, value_ref,
+    CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver, SequencedMockConstraintSolver,
+    TopologyTemplateBuilder, gt, literal, mm, value_ref,
 };
 
 // ---------------------------------------------------------------------------

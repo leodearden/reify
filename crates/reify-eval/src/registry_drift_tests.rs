@@ -416,8 +416,10 @@ fn geometry_query_call_oracle_agrees_with_geometry_query_names_family() {
     // equal GEOMETRY_QUERY_NAMES minus the 11 intentionally-excluded names
     // in QUERY_CALL_LEDGER (each with its own routing rationale above).
     let ledger = to_set(QUERY_CALL_LEDGER);
-    let expected_family: BTreeSet<String> =
-        geometry_query_names.difference(&ledger).cloned().collect();
+    let expected_family: BTreeSet<String> = geometry_query_names
+        .difference(&ledger)
+        .cloned()
+        .collect();
     assert_eq!(
         query_call_set, expected_family,
         "is_geometry_query_call-set must equal GEOMETRY_QUERY_NAMES minus \

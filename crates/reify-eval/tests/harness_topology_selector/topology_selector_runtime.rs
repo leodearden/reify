@@ -64,8 +64,7 @@ fn assert_selector_leaf(
     match &sv.node {
         SelectorNode::Leaf { target: t, query } => {
             assert_eq!(
-                t.kernel_handle,
-                Some(target),
+                t.kernel_handle, Some(target),
                 "{label}: leaf target must be the parent solid handle"
             );
             check_query(query);

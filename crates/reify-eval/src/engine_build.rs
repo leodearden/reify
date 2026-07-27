@@ -8,14 +8,14 @@ use reify_compiler::{
     PrimitiveKind, ProfileKind, SubComponentDecl, SweepKind, TopologyTemplate, TransformKind,
 };
 use reify_core::{Diagnostic, DiagnosticLabel, RealizationNodeId, SourceSpan, VersionId};
-use reify_ir::geometry::{ParentRole, descriptor_for};
 use reify_ir::{
     AttributeHistory, BooleanOpHistoryRecords, BooleanOpParents, CapabilityDescriptor,
-    CompiledFunction, ElementOrderTag, ErrorRef, ExportFormat, FeatureId, Freshness, GeometryError,
-    GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelHandle, KernelId,
-    LocalFeatureOpHistoryRecords, LoftOpHistoryRecords, Operation, ReprKind, Role,
+    CompiledFunction, ElementOrderTag, ErrorRef, ExportFormat, FeatureId, Freshness,
+    GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelHandle,
+    KernelId, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords, Operation, ReprKind, Role,
     SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VolumeMesh,
 };
+use reify_ir::geometry::{ParentRole, descriptor_for};
 use reify_shell_extract::{MidSurfaceMesh, ShellTetInterface};
 use reify_solver_elastic::{
     Mesh2d, Mesh2dError, Mesh2dReport, MpcRow, SweepError, SweepParams, SweptMesh3d,
@@ -790,10 +790,7 @@ fn realize_overridden_instance_into(
                 kernel: kernel_id_for_registry_name(default_kernel_name),
                 id: final_handle_id,
             };
-            named_steps.insert(
-                format!("{}.{}", binding_prefix, realization_name),
-                final_handle,
-            );
+            named_steps.insert(format!("{}.{}", binding_prefix, realization_name), final_handle);
             per_call_dedup.insert(dedup_key, final_handle);
         }
     }
@@ -895,10 +892,11 @@ fn seed_cross_let_named_steps(
 
             // 1. Locate the child template.  If absent (forward-declared / external
             //    def) skip silently — same policy as seed_cross_sub_named_steps.
-            let child_template = match reify_compiler::find_template(templates, def_name.as_str()) {
-                Some(t) => t,
-                None => continue,
-            };
+            let child_template =
+                match reify_compiler::find_template(templates, def_name.as_str()) {
+                    Some(t) => t,
+                    None => continue,
+                };
 
             // 2. Obtain the default kernel.  The build() entry-point guards verify
             //    `kernels.contains_key(default_kernel_name)` before entering the
@@ -914,7 +912,8 @@ fn seed_cross_let_named_steps(
                         "seed_cross_let_named_steps: default kernel '{}' absent on args \
                          path for binding '{}'; fold degrades to Indeterminate. \
                          build() entry-point guard should have prevented this.",
-                        default_kernel_name, binding_name,
+                        default_kernel_name,
+                        binding_name,
                     );
                     continue;
                 }
@@ -932,7 +931,8 @@ fn seed_cross_let_named_steps(
                     arg_expr,
                     &crate::eval_ctx_with_meta(values, functions, meta_map),
                 );
-                let child_key = ValueCellId::new(child_template.name.as_str(), param_name.as_str());
+                let child_key =
+                    ValueCellId::new(child_template.name.as_str(), param_name.as_str());
                 values_override.insert(child_key, val);
             }
 
@@ -1217,13 +1217,7 @@ fn populate_attribute_history(
                 }
             };
             populate_loft_op(
-                table,
-                kernel_id,
-                kernel,
-                feature_id,
-                profiles,
-                result_handle,
-                history,
+                table, kernel_id, kernel, feature_id, profiles, result_handle, history,
             )
         }
         AttributeHistory::Boolean(history) => {
@@ -1826,7 +1820,9 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         ParentRole::Pair => match op {
             GeometryOp::Union { left, right }
             | GeometryOp::Difference { left, right }
-            | GeometryOp::Intersection { left, right } => ParentHandles::Inline([*left, *right], 2),
+            | GeometryOp::Intersection { left, right } => {
+                ParentHandles::Inline([*left, *right], 2)
+            }
             _ => unreachable!("descriptor role Pair but op lacks left/right fields"),
         },
 
@@ -2494,7 +2490,11 @@ impl Engine {
             .functions
             .iter()
             .chain(self.functions.iter())
-            .filter(|f| f.optimized_target.as_deref().is_some_and(&target_demands))
+            .filter(|f| {
+                f.optimized_target
+                    .as_deref()
+                    .is_some_and(&target_demands)
+            })
             .map(|f| f.name.as_str())
             .collect();
         let local_cell_is_geometry: HashMap<&reify_core::ValueCellId, bool> = template
@@ -2944,10 +2944,8 @@ fn resolve_export_body_color(
     // value can still be matched by handle equality.
     for (_, v) in values.iter() {
         if let reify_ir::Value::StructureInstance(data) = v
-            && let Some(reify_ir::Value::GeometryHandle {
-                kernel_handle: Some(h),
-                ..
-            }) = data.fields.get("geometry")
+            && let Some(reify_ir::Value::GeometryHandle { kernel_handle: Some(h), .. }) =
+                data.fields.get("geometry")
             && *h == handle
             && data.fields.get("material").is_some()
         {
@@ -2994,9 +2992,7 @@ impl Engine {
         eval_state: &Option<EvaluationState>,
     ) -> HashMap<RealizationNodeId, ReprKind> {
         eval_state.as_ref().map_or_else(HashMap::new, |s| {
-            s.snapshot
-                .graph
-                .realizations
+            s.snapshot.graph.realizations
                 .iter()
                 .map(|(id, data)| (id.clone(), data.produced_repr))
                 .collect()
@@ -3385,8 +3381,11 @@ impl Engine {
                         // is well-defined regardless of whether ops ran.
                         // Consumer: task β recompute-then-compare seeding.
                         let input_cone_hash_snap = {
-                            let ctx =
-                                crate::eval_ctx_with_meta(&values, &self.functions, &self.meta_map);
+                            let ctx = crate::eval_ctx_with_meta(
+                                &values,
+                                &self.functions,
+                                &self.meta_map,
+                            );
                             compute_realization_upstream_values_hash(realization, &ctx)
                         };
                         node.input_cone_hash = Some(input_cone_hash_snap);
@@ -3738,12 +3737,12 @@ impl Engine {
             Some(name) => self.geometry_kernels.contains_key(name),
             None => false,
         };
-        let relate_solutions: Vec<(String, crate::relate_solve::RelateSolution)> =
-            if kernel_available {
-                crate::relate_solve::solve_scopes(module, self)
-            } else {
-                Vec::new()
-            };
+        let relate_solutions: Vec<(String, crate::relate_solve::RelateSolution)> = if kernel_available
+        {
+            crate::relate_solve::solve_scopes(module, self)
+        } else {
+            Vec::new()
+        };
 
         // Task ε (3436) step-12: reset the dispatch-count instrumentation
         // counter at the entry to every build/tessellate surface so a second
@@ -3838,10 +3837,7 @@ impl Engine {
         // `crates/reify-eval/tests/relate_mounted_joint_sweep_e2e.rs`.
         for (scope, solution) in &relate_solutions {
             for (sub, frame) in &solution.poses {
-                values.insert(
-                    crate::relate_solve::auto_pose_cell(scope, sub),
-                    frame.clone(),
-                );
+                values.insert(crate::relate_solve::auto_pose_cell(scope, sub), frame.clone());
                 // ε: write mount Frame into the mounted joint's origin, if the scope
                 // mounts one (DD1 operand-reference match, task #4399).  The Some-branch
                 // is covered by the B6 producer assertion in
@@ -3854,7 +3850,8 @@ impl Engine {
                 // ever flags it, resolve the template once outside the inner `sub` loop and
                 // pass it in, or precompute a sub→joint-cell map for the scope before
                 // iterating `solution.poses`.
-                if let Some(cell_id) = crate::relate_solve::mounted_joint_cell(scope, sub, module)
+                if let Some(cell_id) =
+                    crate::relate_solve::mounted_joint_cell(scope, sub, module)
                     && let Some(joint_val) = values.get(&cell_id).cloned()
                 {
                     values.insert(cell_id, reify_stdlib::set_mount_origin(joint_val, frame));
@@ -4084,10 +4081,7 @@ impl Engine {
                                 // not in the demand cone.  `demanded_rids_build` is
                                 // pre-extracted above so no per-iteration clone.
                                 let rid = &template.realizations[r_idx].id;
-                                if demanded_rids_build
-                                    .as_ref()
-                                    .is_none_or(|rids| rids.contains(rid))
-                                {
+                                if demanded_rids_build.as_ref().is_none_or(|rids| rids.contains(rid)) {
                                     steps.push(BuildStep::Realize(r_idx));
                                 }
                             }
@@ -4279,8 +4273,11 @@ impl Engine {
                         // (NLL allows the borrows alongside `&mut state`/`node`).
                         // Unconditional on cache-hit vs cache-miss (INPUT hash).
                         let input_cone_hash_out = {
-                            let ctx =
-                                crate::eval_ctx_with_meta(&values, &self.functions, &self.meta_map);
+                            let ctx = crate::eval_ctx_with_meta(
+                                &values,
+                                &self.functions,
+                                &self.meta_map,
+                            );
                             compute_realization_upstream_values_hash(realization, &ctx)
                         };
                         node.input_cone_hash = Some(input_cone_hash_out);
@@ -4730,7 +4727,8 @@ impl Engine {
             } else {
                 // No-kernel path: no DFM build diagnostics (DFM harvest requires
                 // a resolved bounding_box from the geometry kernel).
-                let (r, d) = self.check_constraints_against_templates(module, &values, determinacy);
+                let (r, d) =
+                    self.check_constraints_against_templates(module, &values, determinacy);
                 (r, d, Vec::new())
             };
             for entry in constraint_results.iter_mut() {
@@ -4996,14 +4994,15 @@ impl Engine {
                 } else {
                     true
                 };
-                let include_materials = if let reify_ir::Value::StructureInstance(data) = instance {
-                    match data.fields.get("include_materials") {
-                        Some(reify_ir::Value::Bool(b)) => *b,
-                        _ => true, // DSL default: include_materials = true
-                    }
-                } else {
-                    true
-                };
+                let include_materials =
+                    if let reify_ir::Value::StructureInstance(data) = instance {
+                        match data.fields.get("include_materials") {
+                            Some(reify_ir::Value::Bool(b)) => *b,
+                            _ => true, // DSL default: include_materials = true
+                        }
+                    } else {
+                        true
+                    };
                 let mut color_diags: Vec<Diagnostic> = Vec::new();
                 // Declarative ThreeMFOutput path (#4287): the `subject` resolves to a
                 // real `GeometryHandle`, so association is by handle equality — pass an
@@ -5067,16 +5066,14 @@ impl Engine {
                             template.name,
                             sub.name
                         )),
-                        reify_ir::ExportWarning::ThreeMfNoMaterials => {
-                            Diagnostic::warning(format!(
-                                "{}: ThreeMFOutput occurrence `{}.{}` requested material data \
+                        reify_ir::ExportWarning::ThreeMfNoMaterials => Diagnostic::warning(format!(
+                            "{}: ThreeMFOutput occurrence `{}.{}` requested material data \
                                  but no color was resolved for the exported body — geometry \
                                  written, materials omitted",
-                                crate::W_3MF_NO_MATERIALS,
-                                template.name,
-                                sub.name
-                            ))
-                        }
+                            crate::W_3MF_NO_MATERIALS,
+                            template.name,
+                            sub.name
+                        )),
                     })
                     .collect();
                 diagnostics.extend(color_diags);
@@ -5468,8 +5465,10 @@ impl Engine {
             // diagnostics (E_EVAL_CYCLE / E_EVAL_UNRESOLVED) preserved.
             // hash_exempt is always empty here (refresh_and_gate is a no-op
             // under full_scope), so ignoring it is safe.
-            let pass =
-                crate::engine_fixpoint::run_unified_pass(&state.snapshot.graph, &state.trace_map);
+            let pass = crate::engine_fixpoint::run_unified_pass(
+                &state.snapshot.graph,
+                &state.trace_map,
+            );
             (Some(pass), None)
         } else {
             // Selective (warm) path: seed = backward closure of demanded
@@ -5518,7 +5517,8 @@ impl Engine {
                 .filter(|n| self.demand.is_demanded(n) && !hash_exempt.contains(*n))
                 .cloned()
                 .collect();
-            let schedule = crate::engine_fixpoint::run_unified_pass_seeded(&state.trace_map, &seed);
+            let schedule =
+                crate::engine_fixpoint::run_unified_pass_seeded(&state.trace_map, &seed);
             let pass = crate::engine_fixpoint::UnifiedPassResult {
                 schedule,
                 residue: HashSet::new(),
@@ -6713,10 +6713,7 @@ impl Engine {
                 // work, not yet test-enforced) — this assert is a debug-mode
                 // detector, not a release backstop.
                 debug_assert!(
-                    outputs
-                        .topology_attribute_table
-                        .lookup(cached_handle)
-                        .is_none(),
+                    outputs.topology_attribute_table.lookup(cached_handle).is_none(),
                     "INV-BUILD-3 / INV-GEO-2 (PRD engine-build-hardening §4 D6, \
                      #3226 spec): cache-served handle {cached_handle:?} must \
                      have no topology_attribute_table entry on the second \
@@ -6729,9 +6726,7 @@ impl Engine {
                 // `RealizationOutputs::named_step_reprs` doc for why a LATER
                 // realization's cross-realization `GeomRef::Sub` parent must
                 // be resolved by name rather than by bare handle-id.
-                outputs
-                    .named_step_reprs
-                    .insert(name.to_string(), resolved_repr);
+                outputs.named_step_reprs.insert(name.to_string(), resolved_repr);
                 // Step-10 (task ε / 3436): the [`RealizationCache`] key includes
                 // the repr (see the post-success `realization_cache.insert` call
                 // at the bottom of this function), so the cached terminal handle
@@ -7166,7 +7161,13 @@ impl Engine {
                             // prefer_kernel on the fallback path would silently pick
                             // the pragma kernel at BRep demand even when the user's
                             // #kernel(X) intent was for the primary demanded repr.
-                            dispatch(registry, operation, ReprKind::BRep, &available_for_op, None)
+                            dispatch(
+                                registry,
+                                operation,
+                                ReprKind::BRep,
+                                &available_for_op,
+                                None,
+                            )
                         } else {
                             None
                         }
@@ -7776,7 +7777,8 @@ impl Engine {
                                         // domain and is backstopped by PRD site 2
                                         // (Manifold-ingest validation).
                                         if !from_marching_cubes
-                                            && let Err(violation) = mesh.validate(per_stage_tol)
+                                            && let Err(violation) =
+                                                mesh.validate(per_stage_tol)
                                         {
                                             let message = violation
                                                 .into_geometry_error(source_name)
@@ -8509,28 +8511,29 @@ impl Engine {
                 Vec<GeometryHandleId>,
                 Vec<GeometryHandleId>,
             );
-            let brep_terminal: Option<BRepTerminalSlices> = if morph_io.producer.is_some()
-                && demanded_repr == ReprKind::VolumeMesh
-                && is_terminal_realization
-                && let Some(&terminal) = step_handles[handle_start..].last()
-            {
-                let terminal_name = if kernels.contains_key(terminal.kernel.as_registry_name()) {
-                    terminal.kernel.as_registry_name().to_string()
-                } else {
-                    default_kernel_name.to_string()
-                };
-                match kernels.get_mut(&terminal_name) {
-                    Some(src) => {
-                        let faces = src.extract_faces(terminal.id).unwrap_or_default();
-                        let edges = src.extract_edges(terminal.id).unwrap_or_default();
-                        let vertices = src.extract_vertices(terminal.id).unwrap_or_default();
-                        Some((terminal_name, faces, edges, vertices))
+            let brep_terminal: Option<BRepTerminalSlices> =
+                if morph_io.producer.is_some()
+                    && demanded_repr == ReprKind::VolumeMesh
+                    && is_terminal_realization
+                    && let Some(&terminal) = step_handles[handle_start..].last()
+                {
+                    let terminal_name = if kernels.contains_key(terminal.kernel.as_registry_name()) {
+                        terminal.kernel.as_registry_name().to_string()
+                    } else {
+                        default_kernel_name.to_string()
+                    };
+                    match kernels.get_mut(&terminal_name) {
+                        Some(src) => {
+                            let faces = src.extract_faces(terminal.id).unwrap_or_default();
+                            let edges = src.extract_edges(terminal.id).unwrap_or_default();
+                            let vertices = src.extract_vertices(terminal.id).unwrap_or_default();
+                            Some((terminal_name, faces, edges, vertices))
+                        }
+                        None => None,
                     }
-                    None => None,
-                }
-            } else {
-                None
-            };
+                } else {
+                    None
+                };
             // ── Morph arm: fires only on the warm path (a prior source exists) ─
             if let Some((terminal_name, faces, edges, vertices)) = brep_terminal.as_ref()
                 && let (Some(producer), Some(source), Some(new_graph)) =
@@ -8659,54 +8662,57 @@ impl Engine {
                     // `decide_morph_or_remesh`. The morph arm is otherwise fully
                     // wired and unit-tested; the real-OCCT morph e2e is gated on
                     // #4876 (see tests/morph_arm_e2e.rs).
-                    let attributed: AttributedAnchorInput = if demanded_boundary {
-                        match kernels.get_mut(terminal_name) {
-                            Some(src) => {
-                                let anchors =
-                                    crate::compute_targets::bc_resolve::build_face_anchors(
-                                        src.as_mut(),
-                                        terminal.id,
-                                        diagnostics,
-                                    );
-                                if anchors.is_empty() {
-                                    diagnostics.push(Diagnostic::warning(format!(
-                                        "VolumeMesh realization {realization_id}: no face \
+                    let attributed: AttributedAnchorInput =
+                        if demanded_boundary {
+                            match kernels.get_mut(terminal_name) {
+                                Some(src) => {
+                                    let anchors =
+                                        crate::compute_targets::bc_resolve::build_face_anchors(
+                                            src.as_mut(),
+                                            terminal.id,
+                                            diagnostics,
+                                        );
+                                    if anchors.is_empty() {
+                                        diagnostics.push(Diagnostic::warning(format!(
+                                            "VolumeMesh realization {realization_id}: no face \
                                              anchors built for boundary attribution; degrading to \
                                              the plain producer (boundary None)"
-                                    )));
-                                    None
-                                } else {
-                                    // min bbox extent → 0.3·extent: above gmsh's
-                                    // face-entity centroid drift, below the
-                                    // inter-face spacing (faces never cross-match).
-                                    let mut lo = [f64::INFINITY; 3];
-                                    let mut hi = [f64::NEG_INFINITY; 3];
-                                    for v in surface.vertices.chunks_exact(3) {
-                                        for k in 0..3 {
-                                            let c = v[k] as f64;
-                                            if c < lo[k] {
-                                                lo[k] = c;
-                                            }
-                                            if c > hi[k] {
-                                                hi[k] = c;
+                                        )));
+                                        None
+                                    } else {
+                                        // min bbox extent → 0.3·extent: above gmsh's
+                                        // face-entity centroid drift, below the
+                                        // inter-face spacing (faces never cross-match).
+                                        let mut lo = [f64::INFINITY; 3];
+                                        let mut hi = [f64::NEG_INFINITY; 3];
+                                        for v in surface.vertices.chunks_exact(3) {
+                                            for k in 0..3 {
+                                                let c = v[k] as f64;
+                                                if c < lo[k] {
+                                                    lo[k] = c;
+                                                }
+                                                if c > hi[k] {
+                                                    hi[k] = c;
+                                                }
                                             }
                                         }
+                                        let min_extent = (0..3)
+                                            .map(|k| hi[k] - lo[k])
+                                            .fold(f64::INFINITY, f64::min);
+                                        let match_tol =
+                                            if min_extent.is_finite() && min_extent > 0.0 {
+                                                0.3 * min_extent
+                                            } else {
+                                                tol
+                                            };
+                                        Some((anchors, match_tol))
                                     }
-                                    let min_extent =
-                                        (0..3).map(|k| hi[k] - lo[k]).fold(f64::INFINITY, f64::min);
-                                    let match_tol = if min_extent.is_finite() && min_extent > 0.0 {
-                                        0.3 * min_extent
-                                    } else {
-                                        tol
-                                    };
-                                    Some((anchors, match_tol))
                                 }
+                                None => None,
                             }
-                            None => None,
-                        }
-                    } else {
-                        None
-                    };
+                        } else {
+                            None
+                        };
                     match kernels.get(KernelId::Gmsh.as_registry_name()) {
                         Some(gmsh) => {
                             // Task 4092 step-18: attributed path first (when
@@ -8750,65 +8756,63 @@ impl Engine {
                                 }
                             }
                             if !stored {
-                                let outcome = dispatch_volume_mesh(
-                                    None,  // swept_kind: force the tet path
-                                    true,  // force_tet
-                                    false, // require_hex_wedge
-                                    &realization_ops,
-                                    &realization_step_ids,
-                                    |_swept| unreachable!("gmsh_2d unreachable: force_tet=true"),
-                                    |_params, _mesh| {
-                                        unreachable!("sweep_step unreachable: force_tet=true")
-                                    },
-                                    || gmsh.mesh_surface_to_volume(&surface, ElementOrderTag::P1),
-                                );
-                                match outcome {
-                                    Ok(VolumeMeshOutcome::Tet(vm)) => {
-                                        // Task 4744 β step-20: clone for the
-                                        // source-bundle stash (store consumes vm).
-                                        let stash_vm = vm.clone();
-                                        match gmsh.store_volume_mesh(vm) {
-                                            Ok(id) => {
-                                                step_handles.push(KernelHandle {
-                                                    kernel: KernelId::Gmsh,
-                                                    id,
-                                                });
-                                                last_produced_repr = Some(ReprKind::VolumeMesh);
-                                                produced_vm = Some(stash_vm);
-                                            }
-                                            Err(e) => {
-                                                diagnostics.push(Diagnostic::warning(format!(
-                                                    "VolumeMesh realization {realization_id}: gmsh \
+                            let outcome = dispatch_volume_mesh(
+                                None,  // swept_kind: force the tet path
+                                true,  // force_tet
+                                false, // require_hex_wedge
+                                &realization_ops,
+                                &realization_step_ids,
+                                |_swept| unreachable!("gmsh_2d unreachable: force_tet=true"),
+                                |_params, _mesh| {
+                                    unreachable!("sweep_step unreachable: force_tet=true")
+                                },
+                                || gmsh.mesh_surface_to_volume(&surface, ElementOrderTag::P1),
+                            );
+                            match outcome {
+                                Ok(VolumeMeshOutcome::Tet(vm)) => {
+                                    // Task 4744 β step-20: clone for the
+                                    // source-bundle stash (store consumes vm).
+                                    let stash_vm = vm.clone();
+                                    match gmsh.store_volume_mesh(vm) {
+                                        Ok(id) => {
+                                            step_handles.push(KernelHandle {
+                                                kernel: KernelId::Gmsh,
+                                                id,
+                                            });
+                                            last_produced_repr = Some(ReprKind::VolumeMesh);
+                                            produced_vm = Some(stash_vm);
+                                        }
+                                        Err(e) => diagnostics.push(Diagnostic::warning(format!(
+                                            "VolumeMesh realization {realization_id}: gmsh \
                                              store_volume_mesh failed ({e}); leaving the \
                                              BRep/Mesh fallback"
-                                                )))
-                                            }
-                                        }
+                                        ))),
                                     }
-                                    Ok(VolumeMeshOutcome::Swept(swept)) => {
-                                        // α forces `force_tet=true`, so the swept arm is
-                                        // unreachable in practice; degrade honestly if a
-                                        // future change relaxes that. Read the swept
-                                        // payload (node/layer counts) into the diagnostic
-                                        // so the variant field is genuinely consumed (no
-                                        // dead-code allow): a swept hex/wedge mesh has no
-                                        // `volume_mesh()` tet read-back projection, so it
-                                        // is NOT stored as a tet VolumeMesh.
-                                        diagnostics.push(Diagnostic::warning(format!(
-                                            "VolumeMesh realization {realization_id}: dispatch \
+                                }
+                                Ok(VolumeMeshOutcome::Swept(swept)) => {
+                                    // α forces `force_tet=true`, so the swept arm is
+                                    // unreachable in practice; degrade honestly if a
+                                    // future change relaxes that. Read the swept
+                                    // payload (node/layer counts) into the diagnostic
+                                    // so the variant field is genuinely consumed (no
+                                    // dead-code allow): a swept hex/wedge mesh has no
+                                    // `volume_mesh()` tet read-back projection, so it
+                                    // is NOT stored as a tet VolumeMesh.
+                                    diagnostics.push(Diagnostic::warning(format!(
+                                        "VolumeMesh realization {realization_id}: dispatch \
                                          produced a swept hex/wedge mesh ({} nodes, {} layers), \
                                          which has no volume_mesh() tet read-back projection; \
                                          leaving the BRep/Mesh fallback (the tet path is α's \
                                          read path)",
-                                            swept.vertices.len() / 3,
-                                            swept.layers,
-                                        )));
-                                    }
-                                    Err(e) => diagnostics.push(Diagnostic::warning(format!(
-                                        "VolumeMesh realization {realization_id}: gmsh tet meshing \
-                                     failed ({e}); leaving the BRep/Mesh fallback"
-                                    ))),
+                                        swept.vertices.len() / 3,
+                                        swept.layers,
+                                    )));
                                 }
+                                Err(e) => diagnostics.push(Diagnostic::warning(format!(
+                                    "VolumeMesh realization {realization_id}: gmsh tet meshing \
+                                     failed ({e}); leaving the BRep/Mesh fallback"
+                                ))),
+                            }
                             }
                         }
                         None => diagnostics.push(Diagnostic::warning(format!(
@@ -8940,8 +8944,7 @@ impl Engine {
                     // computation just below: the RESOLVED repr
                     // (`last_produced_repr`), falling back to `cache_repr`
                     // only when no op captured one.
-                    named_step_reprs
-                        .insert(name.to_string(), last_produced_repr.unwrap_or(cache_repr));
+                    named_step_reprs.insert(name.to_string(), last_produced_repr.unwrap_or(cache_repr));
                 }
                 if is_terminal_realization
                     && let (Some(tol), Some(_name)) = (demanded_tol, realization_name)
@@ -9294,8 +9297,7 @@ impl Engine {
 
                 // Find the value-cell declaration (must be a Let with a default
                 // FunctionCall expression to carry the @optimized target).
-                let Some(cell_decl) = template.value_cells.iter().find(|c| c.id == *output_cell)
-                else {
+                let Some(cell_decl) = template.value_cells.iter().find(|c| c.id == *output_cell) else {
                     continue;
                 };
                 let Some(default_expr) = &cell_decl.default_expr else {
@@ -9393,16 +9395,13 @@ impl Engine {
                             .ok()
                     })
                     .map(|mesh| {
-                        crate::engine_compute::RealizedContent::SurfaceMesh(std::sync::Arc::new(
-                            mesh,
-                        ))
+                        crate::engine_compute::RealizedContent::SurfaceMesh(
+                            std::sync::Arc::new(mesh),
+                        )
                     });
                 if let Some(content) = projected {
-                    self.realization_projection_store.insert(
-                        realization_ref.clone(),
-                        content_hash,
-                        content,
-                    );
+                    self.realization_projection_store
+                        .insert(realization_ref.clone(), content_hash, content);
                 }
                 // If tessellation failed, leave store empty — dispatch degrades
                 // honestly (lambda=Undef via existing degraded_field() path).
@@ -9525,8 +9524,7 @@ impl Engine {
                 let Some(template) = module.templates.iter().find(|t| t.name == entity_name) else {
                     continue;
                 };
-                let Some(cell_decl) = template.value_cells.iter().find(|c| c.id == *output_cell)
-                else {
+                let Some(cell_decl) = template.value_cells.iter().find(|c| c.id == *output_cell) else {
                     continue;
                 };
                 let Some(default_expr) = &cell_decl.default_expr else {
@@ -9554,10 +9552,7 @@ impl Engine {
             // Re-evaluate args with the now-hydrated values (material is non-degraded).
             let arg_values: Vec<reify_ir::Value> = {
                 let ctx = crate::eval_ctx_with_meta(values, &self.functions, &self.meta_map);
-                cand.arg_exprs
-                    .iter()
-                    .map(|a| reify_expr::eval_expr(a, &ctx))
-                    .collect()
+                cand.arg_exprs.iter().map(|a| reify_expr::eval_expr(a, &ctx)).collect()
             };
 
             // Gate: at least one arg must be a non-degraded AsPrintedZones field.
@@ -9584,7 +9579,7 @@ impl Engine {
                 std::slice::from_ref(&cand.output_cell),
                 &cand.target,
                 &arg_values,
-                &[],                     // no realization handles — field input, not geometry
+                &[], // no realization handles — field input, not geometry
                 &reify_ir::Value::Undef, // options
                 &cancel,
                 version_id,
@@ -9703,16 +9698,14 @@ impl Engine {
         // Don't clobber a realized handle stamped by the build path.
         if matches!(
             values.get(cell_id),
-            Some(Value::GeometryHandle {
-                kernel_handle: Some(_),
-                ..
-            })
+            Some(Value::GeometryHandle { kernel_handle: Some(_), .. })
         ) {
             return None;
         }
         // Find the named realization matching this cell (entity + member name).
         let realization = realizations.iter().find(|r| {
-            r.name.as_deref() == Some(cell_id.member.as_str()) && r.id.entity == cell_id.entity
+            r.name.as_deref() == Some(cell_id.member.as_str())
+                && r.id.entity == cell_id.entity
         })?;
         let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
         let upstream_values_hash = compute_realization_upstream_values_hash(realization, &ctx);
@@ -9747,10 +9740,7 @@ impl Engine {
         // Don't clobber a realized handle stamped by the build path.
         if matches!(
             values.get(cell_id),
-            Some(Value::GeometryHandle {
-                kernel_handle: Some(_),
-                ..
-            })
+            Some(Value::GeometryHandle { kernel_handle: Some(_), .. })
         ) {
             return None;
         }
@@ -9814,10 +9804,7 @@ impl Engine {
                 // Do not clobber a realized handle already stamped by the build path.
                 if matches!(
                     values.get(&cell_id),
-                    Some(Value::GeometryHandle {
-                        kernel_handle: Some(_),
-                        ..
-                    })
+                    Some(Value::GeometryHandle { kernel_handle: Some(_), .. })
                 ) {
                     continue;
                 }
@@ -10193,9 +10180,12 @@ impl Engine {
         //     before resolution. Mirrors the placement of
         //     `Engine::post_process_feature_accessor` in `run_post_processes`
         //     (after the topology-selector-family passes).
-        if let Some(value) =
-            crate::geometry_ops::try_eval_feature_accessor(default_expr, values, table, diagnostics)
-        {
+        if let Some(value) = crate::geometry_ops::try_eval_feature_accessor(
+            default_expr,
+            values,
+            table,
+            diagnostics,
+        ) {
             values.insert(cell.id.clone(), value);
         }
     }
@@ -10915,7 +10905,10 @@ impl Engine {
             // Evaluate with a diagnostics sink so emit_dfm_diagnostics fires and
             // W/E/I_DFM_BUILD_VOLUME diagnostics are collected.
             diagnostics.extend(eval_folded_expr_for_dfm_diagnostics(
-                &folded, values, functions, meta_map,
+                &folded,
+                values,
+                functions,
+                meta_map,
             ));
         }
     }
@@ -11155,8 +11148,11 @@ impl Engine {
                 let new_val = {
                     // `self.functions` and `self.meta_map` are disjoint from the
                     // local `ctx_values` — no borrow conflict.
-                    let ctx =
-                        crate::eval_ctx_with_meta(&ctx_values, &self.functions, &self.meta_map);
+                    let ctx = crate::eval_ctx_with_meta(
+                        &ctx_values,
+                        &self.functions,
+                        &self.meta_map,
+                    );
                     reify_expr::eval_expr(expr, &ctx)
                 };
                 if !new_val.is_undef() {
@@ -11221,8 +11217,11 @@ impl Engine {
                     if !self.demand.is_demanded(&node) {
                         continue;
                     }
-                    let ctx =
-                        crate::eval_ctx_with_meta(&ctx_for_hash, &self.functions, &self.meta_map);
+                    let ctx = crate::eval_ctx_with_meta(
+                        &ctx_for_hash,
+                        &self.functions,
+                        &self.meta_map,
+                    );
                     let current_hash =
                         compute_realization_upstream_values_hash(realization_decl, &ctx);
                     let stored = state
@@ -11317,7 +11316,8 @@ impl Engine {
         // a shared borrow.  Both are immutable — Rust NLL allows multiple shared
         // borrows to coexist.  The `&mut self.*` borrows below start only after
         // `state`'s last use (line ~8298), which NLL confirms.
-        let (unified_pass_snap, demand_seed_snap) = self.demand_scoped_unified_pass(&hash_exempt);
+        let (unified_pass_snap, demand_seed_snap) =
+            self.demand_scoped_unified_pass(&hash_exempt);
         // realization_read_cells: union of all realization traces' reads. Used by
         // hydrate_value_cell_in_loop for eager selector resolution at scheduled
         // HydrateCell steps. Not restricted to the demand cone: cells shared
@@ -11449,7 +11449,9 @@ fn parse_bbox_all_extents(
         .strip_prefix('{')
         .and_then(|t| t.strip_suffix('}'))
         .ok_or_else(|| {
-            reify_ir::QueryError::QueryFailed(format!("BoundingBox returned malformed JSON: {s:?}"))
+            reify_ir::QueryError::QueryFailed(format!(
+                "BoundingBox returned malformed JSON: {s:?}"
+            ))
         })?;
     let mut xmin: Option<f64> = None;
     let mut ymin: Option<f64> = None;
@@ -12080,8 +12082,8 @@ pub(crate) fn eval_folded_expr_for_dfm_diagnostics(
 ) -> Vec<reify_core::Diagnostic> {
     use std::cell::RefCell;
     let sink: RefCell<Vec<reify_core::Diagnostic>> = RefCell::new(Vec::new());
-    let ctx =
-        crate::eval_ctx_with_meta(values, functions, meta_map).with_runtime_diagnostics(&sink);
+    let ctx = crate::eval_ctx_with_meta(values, functions, meta_map)
+        .with_runtime_diagnostics(&sink);
     let _ = reify_expr::eval_expr(expr, &ctx);
     sink.into_inner()
 }

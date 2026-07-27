@@ -20,9 +20,9 @@
 //! golden values.
 
 use reify_core::{ModulePath, Severity, ValueCellId};
-use reify_eval::Engine;
 use reify_ir::Value;
 use reify_test_support::mocks::MockConstraintChecker;
+use reify_eval::Engine;
 
 const EXAMPLE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -41,7 +41,10 @@ fn example_structural_query_bom_ri_evals_to_golden_counts() {
         .expect("examples/structural_query_bom.ri should exist (created by step-6)");
 
     // ── parse ──
-    let parsed = reify_syntax::parse(&source, ModulePath::single("structural_query_bom_example"));
+    let parsed = reify_syntax::parse(
+        &source,
+        ModulePath::single("structural_query_bom_example"),
+    );
     assert!(
         parsed.errors.is_empty(),
         "example parse errors: {:?}",

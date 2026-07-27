@@ -249,14 +249,8 @@ fn guarded_group_param_provenance_and_determinacy() {
     let ok_a_id = ValueCellId::new("S", "ok_a");
     let ok_r_id = ValueCellId::new("S", "ok_r");
 
-    eprintln!(
-        "x_ok started_payload = {:?}",
-        started_payload(&engine, &x_ok_id)
-    );
-    eprintln!(
-        "x_rejected started_payload = {:?}",
-        started_payload(&engine, &x_rejected_id)
-    );
+    eprintln!("x_ok started_payload = {:?}", started_payload(&engine, &x_ok_id));
+    eprintln!("x_rejected started_payload = {:?}", started_payload(&engine, &x_rejected_id));
     eprintln!("ok_a = {:?}", result.values.get(&ok_a_id));
     eprintln!("ok_r = {:?}", result.values.get(&ok_r_id));
     eprintln!("x_rejected value = {:?}", result.values.get(&x_rejected_id));
@@ -427,10 +421,7 @@ fn structural_query_post_pass_cache_skip_audit() {
     let ms_id = ValueCellId::new("S", "ms");
     let ms_det_id = ValueCellId::new("S", "ms_det");
 
-    eprintln!(
-        "ms last_started_payload = {:?}",
-        last_started_payload(&engine, &ms_id)
-    );
+    eprintln!("ms last_started_payload = {:?}", last_started_payload(&engine, &ms_id));
     eprintln!("ms = {:?}", result.values.get(&ms_id));
     eprintln!("ms_det = {:?}", result.values.get(&ms_det_id));
 
@@ -514,10 +505,7 @@ fn self_datum_projection_post_pass_cache_skip_audit() {
     let p_id = ValueCellId::new("S", "p");
     let p_det_id = ValueCellId::new("S", "p_det");
 
-    eprintln!(
-        "p last_started_payload = {:?}",
-        last_started_payload(&engine, &p_id)
-    );
+    eprintln!("p last_started_payload = {:?}", last_started_payload(&engine, &p_id));
     eprintln!("p = {:?}", result.values.get(&p_id));
     eprintln!("p_det = {:?}", result.values.get(&p_det_id));
 
@@ -601,16 +589,16 @@ fn annotation_args_materialization_success_cache_skip_audit() {
 
     let it_id = ValueCellId::new("S", "it");
 
-    eprintln!(
-        "it last_started_payload = {:?}",
-        last_started_payload(&engine, &it_id)
-    );
+    eprintln!("it last_started_payload = {:?}", last_started_payload(&engine, &it_id));
     eprintln!("it = {:?}", result.values.get(&it_id));
 
     // (1) Provenance + explicit skip marker — RED today.
     assert_eq!(
         last_started_payload(&engine, &it_id),
-        Some("post-pass-overwrite|cache-skip=annotation-args materialization overlay".to_string()),
+        Some(
+            "post-pass-overwrite|cache-skip=annotation-args materialization overlay"
+                .to_string()
+        ),
         "the annotation-args post-pass's success-arm Started event should be \
          the LAST one recorded for the cell and should carry the \
          'post-pass-overwrite' TraceSource slug plus its cache-skip reason \
@@ -628,7 +616,9 @@ fn annotation_args_materialization_success_cache_skip_audit() {
                  not have written its overlay-attached instance into the \
                  cache leg"
             ),
-            other => panic!("expected CachedResult::Value(StructureInstance(_), _), got {other:?}"),
+            other => panic!(
+                "expected CachedResult::Value(StructureInstance(_), _), got {other:?}"
+            ),
         },
     }
 
@@ -642,10 +632,7 @@ fn annotation_args_materialization_success_cache_skip_audit() {
     });
     let data = match it_val {
         Value::StructureInstance(d) => d,
-        other => panic!(
-            "expected S.it to be Value::StructureInstance, got {:?}",
-            other
-        ),
+        other => panic!("expected S.it to be Value::StructureInstance, got {:?}", other),
     };
     assert_eq!(data.type_name, "AnnoItem");
     let overlay = data
@@ -683,16 +670,16 @@ fn annotation_args_materialization_failure_cache_skip_audit() {
 
     let it_id = ValueCellId::new("BadS", "it");
 
-    eprintln!(
-        "it last_started_payload = {:?}",
-        last_started_payload(&engine, &it_id)
-    );
+    eprintln!("it last_started_payload = {:?}", last_started_payload(&engine, &it_id));
     eprintln!("it = {:?}", result.values.get(&it_id));
 
     // (1) Provenance + explicit skip marker — RED today.
     assert_eq!(
         last_started_payload(&engine, &it_id),
-        Some("post-pass-overwrite|cache-skip=annotation-args materialization overlay".to_string()),
+        Some(
+            "post-pass-overwrite|cache-skip=annotation-args materialization overlay"
+                .to_string()
+        ),
         "the annotation-args post-pass's failure-arm Started event should be \
          the LAST one recorded for the cell and should carry the \
          'post-pass-overwrite' TraceSource slug plus its cache-skip reason \
@@ -816,7 +803,10 @@ fn acceptance_parity_fixture_and_consolidated_cache_skip_audit() {
         let ms_id = ValueCellId::new("S", "ms");
         assert_eq!(
             last_started_payload(&engine, &ms_id),
-            Some("post-pass-overwrite|cache-skip=structural-query post-pass overwrite".to_string()),
+            Some(
+                "post-pass-overwrite|cache-skip=structural-query post-pass overwrite"
+                    .to_string()
+            ),
             "structural-query post-pass: LAST Started event for ms should carry its \
              cache-skip marker"
         );
@@ -881,9 +871,9 @@ fn acceptance_parity_fixture_and_consolidated_cache_skip_audit() {
                     "annotation-args post-pass's CacheLeg::Skip commit must not have \
                      written its overlay-attached instance into the cache leg"
                 ),
-                other => {
-                    panic!("expected CachedResult::Value(StructureInstance(_), _), got {other:?}")
-                }
+                other => panic!(
+                    "expected CachedResult::Value(StructureInstance(_), _), got {other:?}"
+                ),
             },
         }
     }

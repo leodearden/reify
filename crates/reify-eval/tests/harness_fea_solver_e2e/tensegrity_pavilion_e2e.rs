@@ -45,13 +45,9 @@ use std::time::{Duration, Instant};
 use reify_core::{ComputeNodeId, DimensionVector, Severity, ValueCellId, VersionId};
 use reify_eval::cache::{CachedResult, NodeCache, NodeId};
 use reify_eval::deps::DependencyTrace;
-use reify_eval::{
-    CancellationHandle, ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle,
-};
-use reify_ir::{
-    DeterminacyState, Freshness, OpaqueState, PersistentMap, StructureInstanceData,
-    StructureTypeId, Value,
-};
+use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle};
+use reify_ir::{DeterminacyState, Freshness, OpaqueState, PersistentMap, StructureInstanceData,
+               StructureTypeId, Value};
 use reify_test_support::{collect_errors, compile_source_with_stdlib, make_simple_engine};
 
 // ── pavilion source ───────────────────────────────────────────────────────────
@@ -68,10 +64,7 @@ fn pavilion_source() -> &'static str {
 // ── value-construction helpers ────────────────────────────────────────────────
 
 fn length(m: f64) -> Value {
-    Value::Scalar {
-        si_value: m,
-        dimension: DimensionVector::LENGTH,
-    }
+    Value::Scalar { si_value: m, dimension: DimensionVector::LENGTH }
 }
 
 fn real(r: f64) -> Value {
@@ -103,24 +96,18 @@ fn triple(a: i64, b: i64, c: i64) -> Value {
 /// the full eval pipeline.
 fn prism_with_membrane_tensegrity() -> Value {
     let nodes = Value::List(vec![
-        node(1.0, 0.0, 1.0),     // 0: top A
-        node(-0.5, 0.866, 1.0),  // 1: top B
-        node(-0.5, -0.866, 1.0), // 2: top C
-        node(0.866, 0.5, -1.0),  // 3: bot A'
-        node(-0.866, 0.5, -1.0), // 4: bot B'
-        node(0.0, -1.0, -1.0),   // 5: bot C'
+        node(1.0, 0.0, 1.0),          // 0: top A
+        node(-0.5, 0.866, 1.0),       // 1: top B
+        node(-0.5, -0.866, 1.0),      // 2: top C
+        node(0.866, 0.5, -1.0),       // 3: bot A'
+        node(-0.866, 0.5, -1.0),      // 4: bot B'
+        node(0.0, -1.0, -1.0),        // 5: bot C'
     ]);
     let struts = Value::List(vec![pair(0, 4), pair(1, 5), pair(2, 3)]);
     let cables = Value::List(vec![
-        pair(0, 1),
-        pair(1, 2),
-        pair(2, 0), // top triangle
-        pair(3, 4),
-        pair(4, 5),
-        pair(5, 3), // bot triangle
-        pair(0, 3),
-        pair(1, 4),
-        pair(2, 5), // verticals
+        pair(0, 1), pair(1, 2), pair(2, 0), // top triangle
+        pair(3, 4), pair(4, 5), pair(5, 3), // bot triangle
+        pair(0, 3), pair(1, 4), pair(2, 5), // verticals
     ]);
     let surfaces = Value::List(vec![triple(0, 1, 2), triple(3, 4, 5)]);
     let fields: PersistentMap<String, Value> = [
@@ -150,18 +137,10 @@ fn prism_form_find_inputs(sigma: f64) -> Vec<Value> {
     let net = prism_with_membrane_tensegrity();
     // struts-then-cables: [0,0,0, 1,1,1, 1,1,1, 2,2,2]
     let group_ids = Value::List(vec![
-        idx(0),
-        idx(0),
-        idx(0), // 3 struts
-        idx(1),
-        idx(1),
-        idx(1), // top+bot horizontals (6)
-        idx(1),
-        idx(1),
-        idx(1),
-        idx(2),
-        idx(2),
-        idx(2), // 3 verticals
+        idx(0), idx(0), idx(0),  // 3 struts
+        idx(1), idx(1), idx(1),  // top+bot horizontals (6)
+        idx(1), idx(1), idx(1),
+        idx(2), idx(2), idx(2),  // 3 verticals
     ]);
     let seeds = Value::List(vec![real(-1.0), real(1.0), real(1.0)]);
     let ref_group = Value::Int(1);
@@ -231,11 +210,7 @@ fn pavilion_form_find_e2e_combined_dispatch_and_convergence() {
         .unwrap_or_else(|| {
             panic!(
                 "no 'form' cell found in eval result; cells: {:?}",
-                eval_result
-                    .values
-                    .iter()
-                    .map(|(id, _)| id)
-                    .collect::<Vec<_>>()
+                eval_result.values.iter().map(|(id, _)| id).collect::<Vec<_>>()
             )
         });
     let form = eval_result
@@ -262,10 +237,9 @@ fn pavilion_form_find_e2e_combined_dispatch_and_convergence() {
     );
 
     // member_forces non-empty — proves lines contributed to the combined D
-    let member_forces = data
-        .fields
-        .get("member_forces")
-        .unwrap_or_else(|| panic!("FormFindResult.member_forces field missing"));
+    let member_forces = data.fields.get("member_forces").unwrap_or_else(|| {
+        panic!("FormFindResult.member_forces field missing")
+    });
     let mf_len = match member_forces {
         Value::List(v) => v.len(),
         other => panic!("member_forces must be a List; got {other:?}"),
@@ -276,10 +250,9 @@ fn pavilion_form_find_e2e_combined_dispatch_and_convergence() {
     );
 
     // surface_stresses non-empty — proves surfaces contributed to the combined D
-    let surface_stresses = data
-        .fields
-        .get("surface_stresses")
-        .unwrap_or_else(|| panic!("FormFindResult.surface_stresses field missing"));
+    let surface_stresses = data.fields.get("surface_stresses").unwrap_or_else(|| {
+        panic!("FormFindResult.surface_stresses field missing")
+    });
     let ss_len = match surface_stresses {
         Value::List(v) => v.len(),
         other => panic!("surface_stresses must be a List; got {other:?}"),
@@ -313,17 +286,10 @@ fn pavilion_surfaces_emit_membrane_kind_facets() {
         .unwrap_or_else(|| {
             panic!(
                 "no 'facets' cell in eval result; cells: {:?}",
-                eval_result
-                    .values
-                    .iter()
-                    .map(|(id, _)| id)
-                    .collect::<Vec<_>>()
+                eval_result.values.iter().map(|(id, _)| id).collect::<Vec<_>>()
             )
         });
-    let facets = eval_result
-        .values
-        .get(&facets_cell_id)
-        .expect("facets cell present");
+    let facets = eval_result.values.get(&facets_cell_id).expect("facets cell present");
 
     let list = match facets {
         Value::List(v) => v,
@@ -337,19 +303,16 @@ fn pavilion_surfaces_emit_membrane_kind_facets() {
     for (i, facet) in list.iter().enumerate() {
         let data = match facet {
             Value::StructureInstance(d) => d,
-            other => {
-                panic!("facets[{i}] must be a TensegritySurface StructureInstance; got {other:?}")
-            }
+            other => panic!("facets[{i}] must be a TensegritySurface StructureInstance; got {other:?}"),
         };
         assert_eq!(
             data.type_name, "TensegritySurface",
             "facets[{i}].type_name must be TensegritySurface; got {:?}",
             data.type_name
         );
-        let kind = data
-            .fields
-            .get("kind")
-            .unwrap_or_else(|| panic!("facets[{i}].kind field missing from TensegritySurface"));
+        let kind = data.fields.get("kind").unwrap_or_else(|| {
+            panic!("facets[{i}].kind field missing from TensegritySurface")
+        });
         assert_eq!(
             kind,
             &Value::String("membrane".to_string()),
@@ -855,11 +818,7 @@ fn pavilion_membrane_load_e2e_all_fields_populated() {
         .unwrap_or_else(|| {
             panic!(
                 "no 'load' cell in eval result; all cells: {:?}",
-                eval_result
-                    .values
-                    .iter()
-                    .map(|(id, _)| id)
-                    .collect::<Vec<_>>()
+                eval_result.values.iter().map(|(id, _)| id).collect::<Vec<_>>()
             )
         });
     let load = eval_result
@@ -869,9 +828,9 @@ fn pavilion_membrane_load_e2e_all_fields_populated() {
 
     let data = match load {
         Value::StructureInstance(d) => d,
-        other => {
-            panic!("'load' cell must be a MembraneLoadResult StructureInstance; got {other:?}")
-        }
+        other => panic!(
+            "'load' cell must be a MembraneLoadResult StructureInstance; got {other:?}"
+        ),
     };
     assert_eq!(
         data.type_name, "MembraneLoadResult",
@@ -908,7 +867,9 @@ fn pavilion_membrane_load_e2e_all_fields_populated() {
                 !items.is_empty(),
                 "MembraneLoadResult.{field_name} must be non-empty (G6); got []"
             ),
-            other => panic!("MembraneLoadResult.{field_name} must be a List (G6); got {other:?}"),
+            other => panic!(
+                "MembraneLoadResult.{field_name} must be a List (G6); got {other:?}"
+            ),
         }
     }
 }

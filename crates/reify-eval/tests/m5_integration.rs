@@ -151,8 +151,6 @@ structure def Assembly {
             panic!("compile_project failed: {:?}", errors);
         }
     }
-
-    // Cleanup
 }
 
 // ── Step 7: collection_lambda_operations ────────────────────────────
@@ -833,8 +831,6 @@ structure def Assembly {
             panic!("compile_project failed: {:?}", errors);
         }
     }
-
-    // Cleanup
 }
 
 // ── guarded_enum_multi_branch ───────────────────────────────────────

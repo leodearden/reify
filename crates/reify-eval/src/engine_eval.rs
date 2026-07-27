@@ -15,11 +15,11 @@ use reify_core::{
 };
 use reify_ir::sampled::{LinspaceError, linspace_inclusive};
 use reify_ir::{
-    AutoParam, BestFoundReason, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyState,
-    ErrorRef, Freshness, InterpolationKind, ObjectiveCombination, ObjectiveProvenance,
-    ObjectiveSense, ObjectiveSet, OptimalityStatus, PersistentMap, RankedSolveResult,
-    ResolutionProblem, SampledField, SampledGridKind, SelectorKind, SnapshotProvenance,
-    SolveResult, TermContribution, Value, ValueMap,
+    AutoParam, BestFoundReason, CompiledExpr, CompiledExprKind, CompiledFunction,
+    DeterminacyState, ErrorRef, Freshness, InterpolationKind, ObjectiveCombination,
+    ObjectiveProvenance, ObjectiveSense, ObjectiveSet, OptimalityStatus, PersistentMap,
+    RankedSolveResult, ResolutionProblem, SampledField, SampledGridKind, SelectorKind,
+    SnapshotProvenance, SolveResult, TermContribution, Value, ValueMap,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -682,7 +682,9 @@ fn detect_underdetermined(templates: &[reify_compiler::TopologyTemplate]) -> Vec
     for template in templates {
         let scope = &template.name;
         for cell in &template.value_cells {
-            if cell.kind.is_auto() && !cell.kind.is_auto_free() && !global_reads.contains(&cell.id)
+            if cell.kind.is_auto()
+                && !cell.kind.is_auto_free()
+                && !global_reads.contains(&cell.id)
             {
                 let cell_id = &cell.id;
                 let msg = format!(
@@ -744,7 +746,8 @@ fn detect_ambiguous_inherited_objectives(
                  centrality/feasibility default"
             );
             diagnostics.push(
-                Diagnostic::warning(msg).with_code(DiagnosticCode::ObjectiveInheritAmbiguous),
+                Diagnostic::warning(msg)
+                    .with_code(DiagnosticCode::ObjectiveInheritAmbiguous),
             );
         }
     }
@@ -979,7 +982,8 @@ fn value_contains_singular_snapshot(value: &Value) -> bool {
     match value {
         Value::Map(m) => {
             let kind_key = Value::String("kind".to_string());
-            let is_snapshot = matches!(m.get(&kind_key), Some(Value::String(k)) if k == "snapshot");
+            let is_snapshot =
+                matches!(m.get(&kind_key), Some(Value::String(k)) if k == "snapshot");
             if is_snapshot {
                 let is_singular_key = Value::String("is_singular".to_string());
                 if matches!(m.get(&is_singular_key), Some(Value::Bool(true))) {
@@ -1500,10 +1504,7 @@ pub(crate) fn expand_solver_position_expr(
 /// be re-folded through plain `reify_expr::eval_expr` (which carries no registry)
 /// in the post-solve write-back or β's per-trial fold — doing so would clobber
 /// the dispatched result with the inline-fallback/Undef.
-pub(crate) fn is_optimized_userfn_cell(
-    expr: &CompiledExpr,
-    functions: &[CompiledFunction],
-) -> bool {
+pub(crate) fn is_optimized_userfn_cell(expr: &CompiledExpr, functions: &[CompiledFunction]) -> bool {
     matches!(
         &expr.kind,
         CompiledExprKind::UserFunctionCall { function_name, args }
@@ -1789,7 +1790,8 @@ fn build_solver_problem(
     // `filter_constraints_reading_autos`/`build_auto_param_list` — amendment,
     // task #5014; the connector-pin partitioning above remains this
     // function's own, site-specific step.)
-    let auto_ids: HashSet<&ValueCellId> = regular_auto_cells.iter().map(|cell| &cell.id).collect();
+    let auto_ids: HashSet<&ValueCellId> =
+        regular_auto_cells.iter().map(|cell| &cell.id).collect();
 
     let mut filtered_constraints =
         filter_constraints_reading_autos(&template.constraints, &auto_ids);
@@ -2179,7 +2181,8 @@ fn build_merged_solver_problem(
         if let Some(obj) = objective.as_ref() {
             seed_exprs.extend(obj.terms.iter().map(|t| &t.expr));
         }
-        let dep_auto_ids: HashSet<ValueCellId> = auto_cells.iter().map(|c| c.id.clone()).collect();
+        let dep_auto_ids: HashSet<ValueCellId> =
+            auto_cells.iter().map(|c| c.id.clone()).collect();
         build_dependent_cells(&seed_exprs, templates, &dep_auto_ids, &functions)
     };
 
@@ -2317,10 +2320,7 @@ fn governing_objective(
                     // The loud W_OBJECTIVE_INHERIT_AMBIGUOUS diagnostic for Ambiguous
                     // is emitted by `detect_ambiguous_inherited_objectives` in the
                     // eval() post-pass (task δ #4825), NOT here in γ.
-                    _ => GoverningObjective {
-                        objective: None,
-                        inherited_from: None,
-                    },
+                    _ => GoverningObjective { objective: None, inherited_from: None },
                 }
             }
         })
@@ -2518,8 +2518,9 @@ fn detect_robustness_floor_applied(
                  use cost_robustness_tradeoff(cost_expr, \u{03bb}) to control the \
                  cost-vs-robustness balance"
             );
-            diagnostics
-                .push(Diagnostic::info(msg).with_code(DiagnosticCode::RobustnessFloorApplied));
+            diagnostics.push(
+                Diagnostic::info(msg).with_code(DiagnosticCode::RobustnessFloorApplied),
+            );
         }
     }
     diagnostics
@@ -3707,7 +3708,8 @@ impl Engine {
         let mut values = ValueMap::new();
         let mut diagnostics = Vec::new();
         // R3b-1/#4802: structured-detail accumulator threaded into EvalResult.
-        let mut structured_detail: Vec<crate::engine_compute::StructuredComputeDetail> = Vec::new();
+        let mut structured_detail: Vec<crate::engine_compute::StructuredComputeDetail> =
+            Vec::new();
 
         // Runtime diagnostics sink (task 2341 step-16): collects warnings
         // emitted by `reify_expr::eval_expr` during user-expression
@@ -4145,14 +4147,16 @@ impl Engine {
                                 fields.insert(cell.id.member.clone(), v.clone());
                             }
                         }
-                        let si =
-                            Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
+                        let si = Value::StructureInstance(Box::new(
+                            reify_ir::StructureInstanceData {
                                 type_id: reify_ir::StructureTypeId(0),
                                 type_name: effective_structure_name.to_string(),
                                 version: child_template.version(),
                                 fields,
-                            }));
-                        let sub_id = reify_ir::keyed_member_cell(&template.name, &sub.name, key);
+                            },
+                        ));
+                        let sub_id =
+                            reify_ir::keyed_member_cell(&template.name, &sub.name, key);
                         values.insert(sub_id.clone(), si.clone());
                         snapshot
                             .values
@@ -4307,9 +4311,7 @@ impl Engine {
         // structural_query.rs (prelude traits first so module traits shadow
         // them; mirrors the canonical pattern in engine_constraints.rs:1504-1511).
         let sq_trait_registry = crate::structural_query::build_trait_registry(
-            self.prelude
-                .iter()
-                .flat_map(|m| m.trait_defs.iter())
+            self.prelude.iter().flat_map(|m| m.trait_defs.iter())
                 .chain(module.trait_defs.iter()),
         );
         for template in &module.templates {
@@ -4545,7 +4547,8 @@ impl Engine {
             // the centrality/objectives loop so inherited scopes can be excluded from
             // centrality synthesis (INV-3) and the effective objective can be threaded
             // into build_solver_problem below.
-            let containment = crate::scope_containment::ContainmentIndex::new(&module.templates);
+            let containment =
+                crate::scope_containment::ContainmentIndex::new(&module.templates);
             let governance = governing_objective(&module.templates, &containment);
 
             // Refresh template-native objectives so edit_param() can access them.
@@ -5113,8 +5116,11 @@ impl Engine {
             if !all_members.is_empty() {
                 // BFS forward from the member set through the reverse index.
                 // compute_dirty_cone excludes the roots (members) themselves.
-                let cone =
-                    crate::dirty::compute_dirty_cone(&all_members, &reverse_index, &snapshot.graph);
+                let cone = crate::dirty::compute_dirty_cone(
+                    &all_members,
+                    &reverse_index,
+                    &snapshot.graph,
+                );
 
                 if !cone.is_empty() {
                     // Topological ordering over the cone via the same Kahn driver
@@ -5452,7 +5458,8 @@ impl Engine {
         // does NOT emit (mirrors its existing no-W_SCOPE_COUPLING policy — eval
         // owns diagnostic emission, avoiding double warnings across cold/warm).
         for cluster in &ro.clusters {
-            if cluster.disposition == crate::resolve_order::ClusterDisposition::ApproximatedFallback
+            if cluster.disposition
+                == crate::resolve_order::ClusterDisposition::ApproximatedFallback
             {
                 let scope_names: Vec<&str> = cluster
                     .scopes
@@ -5491,7 +5498,8 @@ impl Engine {
         // Predicate: scope_qualifies_for_robustness_floor (Money objective + inequality slack).
         // Suppressed when RobustnessFloorInfeasible is already in `diagnostics` (see fn doc).
         // NB: compute into a local first to avoid a simultaneous mut+immut borrow of `diagnostics`.
-        let floor_applied_diags = detect_robustness_floor_applied(&module.templates, &diagnostics);
+        let floor_applied_diags =
+            detect_robustness_floor_applied(&module.templates, &diagnostics);
         diagnostics.extend(floor_applied_diags);
 
         // Mechanism error diagnostics (task 4308 — E_MECHANISM_DUPLICATE_SOLID).
@@ -5626,15 +5634,19 @@ impl Engine {
                 let margs = margs_by_type
                     .entry(data.type_name.clone())
                     .or_insert_with(|| {
-                        find_template_with_prelude(module, self.prelude, &data.type_name)
-                            .map(|t| {
-                                reify_compiler::compile_materialization_annotation_args(
-                                    t,
-                                    &module.enum_defs,
-                                    functions,
-                                )
-                            })
-                            .unwrap_or_default()
+                        find_template_with_prelude(
+                            module,
+                            self.prelude,
+                            &data.type_name,
+                        )
+                        .map(|t| {
+                            reify_compiler::compile_materialization_annotation_args(
+                                t,
+                                &module.enum_defs,
+                                functions,
+                            )
+                        })
+                        .unwrap_or_default()
                     });
                 if margs.is_empty() {
                     return None;
@@ -5655,8 +5667,14 @@ impl Engine {
                 let ctx = eval_ctx_with_meta(&*values, functions, &self.meta_map);
                 for marg in &margs {
                     let val = reify_expr::eval_expr(&marg.expr, &ctx);
-                    if !matches!(val, Value::Undef) && value_kind_matches(&val, marg.expected) {
-                        collected.push((marg.annotation.clone(), marg.arg_name.clone(), val));
+                    if !matches!(val, Value::Undef)
+                        && value_kind_matches(&val, marg.expected)
+                    {
+                        collected.push((
+                            marg.annotation.clone(),
+                            marg.arg_name.clone(),
+                            val,
+                        ));
                     } else {
                         // Distinguish the two failure modes for the message.
                         let reason = if matches!(val, Value::Undef) {
@@ -6177,7 +6195,8 @@ impl Engine {
                 let objective_arc: Option<Arc<ObjectiveSet>> =
                     problem.objective.as_ref().map(|o| Arc::new(o.clone()));
                 let combination = objective_arc.as_ref().map(|o| o.combination);
-                let term_contributions: Arc<Vec<TermContribution>> = match objective_arc.as_ref() {
+                let term_contributions: Arc<Vec<TermContribution>> = match objective_arc.as_ref()
+                {
                     Some(obj) => Arc::new(self.objective_term_contributions(obj, values)),
                     None => Arc::new(Vec::new()),
                 };
@@ -6920,11 +6939,12 @@ impl Engine {
                             // (selector for Let cells, then geometry handle).
                             let was_undef = matches!(val, Value::Undef);
                             let val = if was_undef {
-                                let sel = crate::geometry_ops::try_eval_symbolic_topology_selector(
-                                    expr,
-                                    &values,
-                                    &mut diagnostics,
-                                );
+                                let sel =
+                                    crate::geometry_ops::try_eval_symbolic_topology_selector(
+                                        expr,
+                                        &values,
+                                        &mut diagnostics,
+                                    );
                                 if let Some(v) = sel {
                                     v
                                 } else {
@@ -7047,6 +7067,7 @@ impl Engine {
                     )));
                 }
             }
+
         }
 
         // β #4822: Solver sub-pass in ro.order (dependency-ordered).
@@ -7073,7 +7094,8 @@ impl Engine {
             // threaded into build_solver_problem is identical to eval() — preserving the
             // byte-identical solver-input invariant pinned by
             // `eval_and_eval_cached_emit_byte_identical_solver_no_progress_warning`.
-            let containment = crate::scope_containment::ContainmentIndex::new(&module.templates);
+            let containment =
+                crate::scope_containment::ContainmentIndex::new(&module.templates);
             let governance = governing_objective(&module.templates, &containment);
             // α (task #5188): objective/constraint-position structural-query
             // expansion registry — built identically to eval()'s
@@ -7317,8 +7339,10 @@ impl Engine {
                                 );
 
                                 let node_id = NodeId::Value(id.clone());
-                                let cached_result =
-                                    CachedResult::Value(val.clone(), DeterminacyState::Determined);
+                                let cached_result = CachedResult::Value(
+                                    val.clone(),
+                                    DeterminacyState::Determined,
+                                );
                                 self.cache.record_evaluation(
                                     node_id,
                                     cached_result,
@@ -7902,7 +7926,8 @@ impl Engine {
                                 .into_iter()
                                 .filter_map(|node_id| {
                                     if let NodeId::Value(vcid) = &node_id
-                                        && let Some(node) = es.snapshot.graph.value_cells.get(vcid)
+                                        && let Some(node) =
+                                            es.snapshot.graph.value_cells.get(vcid)
                                         && let Some(ref expr) = node.default_expr
                                     {
                                         return Some((node_id, expr.clone()));
@@ -8649,8 +8674,11 @@ impl Engine {
                                 // persistent key so loads/supports/options (dropped by
                                 // the shallow value_inputs walk) can't cause a false
                                 // cache hit. See Self::persistent_cache_key.
-                                let ck =
-                                    Self::persistent_cache_key(&node, &snapshot.graph, &arg_values);
+                                let ck = Self::persistent_cache_key(
+                                    &node,
+                                    &snapshot.graph,
+                                    &arg_values,
+                                );
                                 node.cache_key = ck;
                                 snapshot.graph.insert_compute_node(node);
 
@@ -8716,10 +8744,7 @@ impl Engine {
                                         });
                                         continue;
                                     }
-                                    Err(crate::engine_compute::DispatchError::Failed(
-                                        diags,
-                                        sd,
-                                    )) => {
+                                    Err(crate::engine_compute::DispatchError::Failed(diags, sd)) => {
                                         if let Some(n) = snapshot.graph.get_compute_node_mut(&c_id)
                                         {
                                             n.running = None;
@@ -8825,9 +8850,7 @@ impl Engine {
                     let was_undef = matches!(val, Value::Undef);
                     let val = if was_undef {
                         let sel = crate::geometry_ops::try_eval_symbolic_topology_selector(
-                            expr,
-                            values,
-                            diagnostics,
+                            expr, values, diagnostics,
                         );
                         if let Some(sel) = sel {
                             sel
@@ -8996,10 +9019,7 @@ impl Engine {
             // (see call sites in `eval`/`eval_cached`/`engine_edit::edit_param`),
             // so this holds today, but it is not structurally enforced; keep
             // them in sync if this signature ever changes.
-            if let CompiledExprKind::UserFunctionCall {
-                function_name,
-                args,
-            } = &expr.kind
+            if let CompiledExprKind::UserFunctionCall { function_name, args } = &expr.kind
                 && reify_expr::find_matching_compiled_function(functions, function_name, args)
                     .and_then(|f| f.optimized_target.clone())
                     .is_some()
@@ -9089,10 +9109,7 @@ impl Engine {
             }
             // @optimized exclusion (load-bearing) — see
             // re_eval_consumers_of_in_walk_mints's doc.
-            if let CompiledExprKind::UserFunctionCall {
-                function_name,
-                args,
-            } = &expr.kind
+            if let CompiledExprKind::UserFunctionCall { function_name, args } = &expr.kind
                 && reify_expr::find_matching_compiled_function(functions, function_name, args)
                     .and_then(|f| f.optimized_target.clone())
                     .is_some()

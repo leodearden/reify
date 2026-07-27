@@ -218,11 +218,7 @@ fn body_z_stretch_aabb_occt() {
         .iter()
         .find(|s| s.entity_path == body_path)
         .unwrap_or_else(|| {
-            let all: Vec<&str> = result
-                .meshes
-                .iter()
-                .map(|s| s.entity_path.as_str())
-                .collect();
+            let all: Vec<&str> = result.meshes.iter().map(|s| s.entity_path.as_str()).collect();
             panic!("body surface `{body_path}` not found; surfaces: {:?}", all)
         });
 

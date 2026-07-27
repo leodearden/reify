@@ -269,7 +269,9 @@ fn expr_member_segment_hit(expr: &Expr, off: u32) -> bool {
             expr_member_segment_hit(left, off) || expr_member_segment_hit(right, off)
         }
         ExprKind::UnOp { operand, .. } => expr_member_segment_hit(operand, off),
-        ExprKind::FunctionCall { args, .. } => args.iter().any(|a| expr_member_segment_hit(a, off)),
+        ExprKind::FunctionCall { args, .. } => {
+            args.iter().any(|a| expr_member_segment_hit(a, off))
+        }
         ExprKind::Conditional {
             condition,
             then_branch,
@@ -297,22 +299,19 @@ fn expr_member_segment_hit(expr: &Expr, off: u32) -> bool {
             collection,
             predicate,
             ..
-        } => expr_member_segment_hit(collection, off) || expr_member_segment_hit(predicate, off),
+        } => {
+            expr_member_segment_hit(collection, off) || expr_member_segment_hit(predicate, off)
+        }
         ExprKind::AdHocSelector { base, args, .. } => {
-            expr_member_segment_hit(base, off)
-                || args.iter().any(|a| expr_member_segment_hit(a, off))
+            expr_member_segment_hit(base, off) || args.iter().any(|a| expr_member_segment_hit(a, off))
         }
         ExprKind::QualifiedAccess { qualifier, .. } => expr_member_segment_hit(qualifier, off),
         ExprKind::InstanceQualifiedAccess { object, qualified } => {
             expr_member_segment_hit(object, off) || expr_member_segment_hit(qualified, off)
         }
         ExprKind::Range { lower, upper, .. } => {
-            lower
-                .as_ref()
-                .is_some_and(|l| expr_member_segment_hit(l, off))
-                || upper
-                    .as_ref()
-                    .is_some_and(|u| expr_member_segment_hit(u, off))
+            lower.as_ref().is_some_and(|l| expr_member_segment_hit(l, off))
+                || upper.as_ref().is_some_and(|u| expr_member_segment_hit(u, off))
         }
         ExprKind::TraitMethodCall { object, args, .. } => {
             expr_member_segment_hit(object, off)
@@ -321,9 +320,9 @@ fn expr_member_segment_hit(expr: &Expr, off: u32) -> bool {
         ExprKind::TraitStaticCall { args, .. } => {
             args.iter().any(|a| expr_member_segment_hit(a, off))
         }
-        ExprKind::VariantConstruct { fields, .. } => {
-            fields.iter().any(|(_, v)| expr_member_segment_hit(v, off))
-        }
+        ExprKind::VariantConstruct { fields, .. } => fields
+            .iter()
+            .any(|(_, v)| expr_member_segment_hit(v, off)),
         ExprKind::InterpolatedString(parts) => parts.iter().any(|p| {
             if let StringPart::Hole(e) = p {
                 expr_member_segment_hit(e, off)
@@ -368,9 +367,7 @@ fn cursor_on_member_segment(members: &[MemberDecl], off: u32, depth: usize) -> b
     for member in members {
         let direct_hit = match member {
             MemberDecl::Param(p) => {
-                p.default
-                    .as_ref()
-                    .is_some_and(|d| expr_member_segment_hit(d, off))
+                p.default.as_ref().is_some_and(|d| expr_member_segment_hit(d, off))
                     || p.where_clause
                         .as_ref()
                         .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
@@ -431,20 +428,18 @@ fn cursor_on_member_segment(members: &[MemberDecl], off: u32, depth: usize) -> b
             MemberDecl::Connect(c) => {
                 expr_member_segment_hit(&c.left.expr, off)
                     || expr_member_segment_hit(&c.right.expr, off)
-                    || c.params
-                        .iter()
-                        .any(|(_, p)| expr_member_segment_hit(p, off))
+                    || c.params.iter().any(|(_, p)| expr_member_segment_hit(p, off))
             }
-            MemberDecl::Chain(c) => c.elements.iter().any(|e| expr_member_segment_hit(e, off)),
+            MemberDecl::Chain(c) => {
+                c.elements.iter().any(|e| expr_member_segment_hit(e, off))
+            }
             MemberDecl::ForallConnect(f) => {
                 expr_member_segment_hit(&f.collection, off)
                     || match &f.body {
                         ForallConnectBody::Connect(c) => {
                             expr_member_segment_hit(&c.left.expr, off)
                                 || expr_member_segment_hit(&c.right.expr, off)
-                                || c.params
-                                    .iter()
-                                    .any(|(_, p)| expr_member_segment_hit(p, off))
+                                || c.params.iter().any(|(_, p)| expr_member_segment_hit(p, off))
                         }
                         ForallConnectBody::Chain(c) => {
                             c.elements.iter().any(|e| expr_member_segment_hit(e, off))
@@ -474,10 +469,9 @@ fn cursor_on_member_segment(members: &[MemberDecl], off: u32, depth: usize) -> b
             }
             // A member-level `relate { … }` block's relations are direct-scope
             // expressions (task δ 4384) — scan each like Chain's elements.
-            MemberDecl::Relate(r) => r
-                .relations
-                .iter()
-                .any(|rel| expr_member_segment_hit(rel, off)),
+            MemberDecl::Relate(r) => {
+                r.relations.iter().any(|rel| expr_member_segment_hit(rel, off))
+            }
             // Not walked by `collect_uses` — no tracked binding.
             MemberDecl::Fn(_) | MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => false,
         };
@@ -896,11 +890,7 @@ fn collect_uses(members: &[MemberDecl], name: &str, depth: usize, out: &mut Vec<
 }
 
 /// Collect uses inside an optional `where` clause condition.
-fn collect_uses_in_where(
-    where_clause: &Option<WhereClause>,
-    name: &str,
-    out: &mut Vec<SourceSpan>,
-) {
+fn collect_uses_in_where(where_clause: &Option<WhereClause>, name: &str, out: &mut Vec<SourceSpan>) {
     if let Some(w) = where_clause {
         collect_idents_in_expr(&w.condition, name, out);
     }
@@ -1297,11 +1287,7 @@ pub fn compute_document_highlights(
 /// dedicated traversal is the only way to surface them (κ design decision). The
 /// home declaration token is located via goto_def's `find_declaration_name_span`
 /// so a structure's rename/reference token is uniform with go-to-definition.
-fn collect_structure_name_spans(
-    source: &str,
-    parsed: &ParsedModule,
-    name: &str,
-) -> Vec<SourceSpan> {
+fn collect_structure_name_spans(source: &str, parsed: &ParsedModule, name: &str) -> Vec<SourceSpan> {
     let mut spans = Vec::new();
     // Home declaration token (`structure Name` / `occurrence def Name` / …),
     // present only when `name` is declared in THIS document.
@@ -1371,11 +1357,7 @@ enum CrossFileHome {
     ValueMember,
     /// A structure declaration named `name`, homed in document `uri` whose full
     /// `source` is carried so the home-file collector can run over it.
-    Structure {
-        uri: Url,
-        name: String,
-        source: String,
-    },
+    Structure { uri: Url, name: String, source: String },
 }
 
 /// Resolve the cursor (`offset` + the identifier `word` under it) to a cross-file
@@ -1785,13 +1767,7 @@ pub fn compute_rename_cross_file(
 
     // Renameability gate — share prepare's resolution so prepare and rename never
     // disagree on what is renameable (value member, or Structure/Occurrence home).
-    prepare_rename_cross_file(
-        primary_source,
-        primary_parsed,
-        primary_uri,
-        pos,
-        resolve_import,
-    )?;
+    prepare_rename_cross_file(primary_source, primary_parsed, primary_uri, pos, resolve_import)?;
 
     // The cross-file reference set (declaration ∪ uses) is exactly the set of
     // name-token spans to rewrite.
@@ -2359,11 +2335,7 @@ structure S {
 
         // --- Sub uses collected: MemberAccess base `widget` AND bare `widget`. ---
         let widget = occurrences(source, "widget");
-        assert_eq!(
-            widget.len(),
-            3,
-            "sub decl + 2 uses (widget.diameter, widget)"
-        );
+        assert_eq!(widget.len(), 3, "sub decl + 2 uses (widget.diameter, widget)");
         let widget_pos = offset_to_position(source, widget[0] as u32);
         let widget_set =
             collect_references(source, &parsed, widget_pos, false).expect("sub widget resolves");
@@ -2695,15 +2667,15 @@ structure S {
         // Illegal new_names: whitespace, punctuation, digit-leading, and reserved
         // keywords all fail the identifier grammar and must return None.
         for bad in [
-            "",          // empty
-            "   ",       // whitespace only
-            "foo bar",   // embedded whitespace
-            "foo-bar",   // punctuation
-            "2x",        // leading digit
-            "let",       // reserved keyword (body)
-            "param",     // reserved keyword (body)
+            "",         // empty
+            "   ",      // whitespace only
+            "foo bar",  // embedded whitespace
+            "foo-bar",  // punctuation
+            "2x",       // leading digit
+            "let",      // reserved keyword (body)
+            "param",    // reserved keyword (body)
             "structure", // reserved keyword (top-level)
-            "if",        // reserved keyword (expression)
+            "if",       // reserved keyword (expression)
         ] {
             assert!(
                 compute_rename(source, &parsed, &uri, pos, bad).is_none(),
@@ -2849,13 +2821,8 @@ structure S {
 
         // --- (a) Cursor on the TOP-LEVEL decl → owns w[0] (decl) + w[1] (top use);
         // the port-body use w[3] is ABSENT. ---
-        let top = collect_references(
-            source,
-            &parsed,
-            offset_to_position(source, w[0] as u32),
-            true,
-        )
-        .expect("top-level width declaration resolves");
+        let top = collect_references(source, &parsed, offset_to_position(source, w[0] as u32), true)
+            .expect("top-level width declaration resolves");
         assert_eq!(top.kind, RefSymbolKind::Param);
         assert_eq!(top.declaration, span_of(w[0], "width"));
         assert_eq!(
@@ -2870,13 +2837,9 @@ structure S {
 
         // --- (b) Cursor on the PORT-LOCAL decl token → owns w[2] (decl) + w[3]
         // (port-body use); the top-level use w[1] is ABSENT. ---
-        let port = collect_references(
-            source,
-            &parsed,
-            offset_to_position(source, w[2] as u32),
-            true,
-        )
-        .expect("port-local width declaration resolves");
+        let port =
+            collect_references(source, &parsed, offset_to_position(source, w[2] as u32), true)
+                .expect("port-local width declaration resolves");
         assert_eq!(port.kind, RefSymbolKind::Param);
         assert_eq!(port.declaration, span_of(w[2], "width"));
         assert_eq!(
@@ -2898,25 +2861,17 @@ structure S {
         }
 
         // --- Cursor-on-use resolves to the correct declaration on each side. ---
-        let from_top_use = collect_references(
-            source,
-            &parsed,
-            offset_to_position(source, w[1] as u32),
-            false,
-        )
-        .expect("top-level use resolves");
+        let from_top_use =
+            collect_references(source, &parsed, offset_to_position(source, w[1] as u32), false)
+                .expect("top-level use resolves");
         assert_eq!(
             from_top_use.declaration,
             span_of(w[0], "width"),
             "the top-level use must bind to the top-level declaration"
         );
-        let from_port_use = collect_references(
-            source,
-            &parsed,
-            offset_to_position(source, w[3] as u32),
-            false,
-        )
-        .expect("port-body use resolves");
+        let from_port_use =
+            collect_references(source, &parsed, offset_to_position(source, w[3] as u32), false)
+                .expect("port-body use resolves");
         assert_eq!(
             from_port_use.declaration,
             span_of(w[2], "width"),
@@ -2967,13 +2922,8 @@ structure S {
 
         // --- Cursor on the TOP-LEVEL decl → owns t[0] (decl) + t[2] (forall use).
         // Before the fix t[2] was attributed to the guarded binding instead. ---
-        let top = collect_references(
-            source,
-            &parsed,
-            offset_to_position(source, t[0] as u32),
-            true,
-        )
-        .expect("top-level tracked declaration resolves");
+        let top = collect_references(source, &parsed, offset_to_position(source, t[0] as u32), true)
+            .expect("top-level tracked declaration resolves");
         assert_eq!(top.kind, RefSymbolKind::Param);
         assert_eq!(top.declaration, span_of(t[0], "tracked"));
         assert_eq!(
@@ -2984,13 +2934,9 @@ structure S {
 
         // --- Cursor on the GUARDED decl → owns t[1] only; the trailing forall use
         // t[2] must NOT leak into it (the mis-attribution the fix removes). ---
-        let guarded = collect_references(
-            source,
-            &parsed,
-            offset_to_position(source, t[1] as u32),
-            false,
-        )
-        .expect("guarded tracked declaration resolves");
+        let guarded =
+            collect_references(source, &parsed, offset_to_position(source, t[1] as u32), false)
+                .expect("guarded tracked declaration resolves");
         assert_eq!(guarded.declaration, span_of(t[1], "tracked"));
         assert!(
             guarded.references.is_empty(),
@@ -3003,13 +2949,9 @@ structure S {
         );
 
         // --- Cursor on the forall use itself resolves to the TOP-LEVEL decl. ---
-        let from_use = collect_references(
-            source,
-            &parsed,
-            offset_to_position(source, t[2] as u32),
-            false,
-        )
-        .expect("trailing forall use resolves");
+        let from_use =
+            collect_references(source, &parsed, offset_to_position(source, t[2] as u32), false)
+                .expect("trailing forall use resolves");
         assert_eq!(
             from_use.declaration,
             span_of(t[0], "tracked"),
@@ -3135,9 +3077,7 @@ structure S {
         );
 
         // Over-refusal guard: the base `h` inside the where-block still resolves.
-        let h_off = source_nested
-            .find("h.diameter")
-            .expect("h.diameter present");
+        let h_off = source_nested.find("h.diameter").expect("h.diameter present");
         let h_pos = offset_to_position(source_nested, h_off as u32);
         assert!(
             collect_references(source_nested, &parsed_nested, h_pos, false).is_some(),
@@ -3160,9 +3100,7 @@ structure S {
             parsed_no_local.errors
         );
 
-        let seg_off = source_no_local
-            .find("h.diameter")
-            .expect("h.diameter present")
+        let seg_off = source_no_local.find("h.diameter").expect("h.diameter present")
             + "h.".len(); // point at `diameter`
         let seg_pos = offset_to_position(source_no_local, seg_off as u32);
 
@@ -3207,11 +3145,7 @@ structure S {
 
         // d[0]=`param diameter` decl (top-level), d[1]=`.diameter` in port-body param default.
         let d = occurrences(source, "diameter");
-        assert_eq!(
-            d.len(),
-            2,
-            "1 param decl + 1 port-body member-access segment"
-        );
+        assert_eq!(d.len(), 2, "1 param decl + 1 port-body member-access segment");
 
         let member_pos = offset_to_position(source, d[1] as u32);
         let uri = Url::parse("file:///portbody.ri").unwrap();
@@ -3530,11 +3464,7 @@ structure Assembly {
             &resolver,
         )
         .expect("(c) cursor on import entity token resolves to a cross-file reference set");
-        assert_eq!(
-            sorted_locations(got_c),
-            expected,
-            "(c) import entity cursor"
-        );
+        assert_eq!(sorted_locations(got_c), expected, "(c) import entity cursor");
     }
 
     #[test]
@@ -3592,7 +3522,10 @@ structure Assembly {
         ]);
         let mut map = HashMap::new();
         map.insert("parts".to_string(), (parts_uri(), PARTS_SRC.to_string()));
-        map.insert("widgets".to_string(), (widgets_uri, PARTS_SRC.to_string()));
+        map.insert(
+            "widgets".to_string(),
+            (widgets_uri, PARTS_SRC.to_string()),
+        );
         let resolver = mock_resolver(map);
 
         let parsed_parts = reify_syntax::parse(PARTS_SRC, ModulePath::single("parts"));
@@ -3710,11 +3643,7 @@ structure Assembly {
             &resolver,
         )
         .expect("(a) cross-module refusal lifted on the home declaration token");
-        assert_eq!(
-            got_a,
-            rename_target_at(PARTS_SRC, parts_decl, "Hole"),
-            "(a)"
-        );
+        assert_eq!(got_a, rename_target_at(PARTS_SRC, parts_decl, "Hole"), "(a)");
 
         // (b) main.ri `sub hole = Hole()` construction-site use.
         let main_use = occurrences(MAIN_SRC, "Hole")[1];
@@ -3738,11 +3667,7 @@ structure Assembly {
             &resolver,
         )
         .expect("(c) cross-module refusal lifted on the import entity token");
-        assert_eq!(
-            got_c,
-            rename_target_at(MAIN_SRC, main_import, "Hole"),
-            "(c)"
-        );
+        assert_eq!(got_c, rename_target_at(MAIN_SRC, main_import, "Hole"), "(c)");
     }
 
     #[test]
@@ -3852,21 +3777,13 @@ structure Assembly {
         assert_eq!(changes.len(), 2, "edit spans both parts.ri and main.ri");
 
         let parts_edits = changes.get(&parts_uri()).expect("parts.ri edits present");
-        assert_eq!(
-            parts_edits.len(),
-            1,
-            "parts.ri: 1 edit (structure decl token)"
-        );
+        assert_eq!(parts_edits.len(), 1, "parts.ri: 1 edit (structure decl token)");
         assert!(
             parts_edits.iter().all(|e| e.new_text == "Bore"),
             "every parts.ri edit writes Bore"
         );
         let main_edits = changes.get(&main_uri()).expect("main.ri edits present");
-        assert_eq!(
-            main_edits.len(),
-            2,
-            "main.ri: 2 edits (import token + sub use)"
-        );
+        assert_eq!(main_edits.len(), 2, "main.ri: 2 edits (import token + sub use)");
         assert!(
             main_edits.iter().all(|e| e.new_text == "Bore"),
             "every main.ri edit writes Bore"
@@ -3943,3 +3860,4 @@ structure Assembly {
         }
     }
 }
+

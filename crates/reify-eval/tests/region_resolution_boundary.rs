@@ -89,13 +89,11 @@ extern crate reify_kernel_gmsh as _;
 use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::diagnostics::Diagnostic;
-use reify_core::identity::ValueCellId;
 use reify_core::{DiagnosticCode, Severity};
+use reify_core::identity::ValueCellId;
 use reify_eval::{BuildResult, Engine, EvalResult};
 use reify_ir::{ExportFormat, Value};
-use reify_test_support::{
-    MockGeometryKernel, compile_source_with_stdlib, parse_and_compile_with_stdlib,
-};
+use reify_test_support::{MockGeometryKernel, compile_source_with_stdlib, parse_and_compile_with_stdlib};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -115,7 +113,8 @@ fn qns_errors(build: &BuildResult) -> Vec<&Diagnostic> {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.code == Some(DiagnosticCode::QueryNotSupportedOnRepr) && d.severity == Severity::Error
+            d.code == Some(DiagnosticCode::QueryNotSupportedOnRepr)
+                && d.severity == Severity::Error
         })
         .collect()
 }
@@ -128,9 +127,9 @@ fn assert_cell_undef(build: &BuildResult, entity: &str, member: &str) {
     let cell_id = ValueCellId::new(entity, member);
     match build.values.get(&cell_id) {
         Some(Value::Undef) => {}
-        Some(other) => {
-            panic!("{entity}.{member}: expected Value::Undef (fail-closed gate), got: {other:?}")
-        }
+        Some(other) => panic!(
+            "{entity}.{member}: expected Value::Undef (fail-closed gate), got: {other:?}"
+        ),
         None => panic!(
             "{entity}.{member}: cell absent from build result; \
              expected Value::Undef (fail-closed gate must produce Undef, not silently omit)"
@@ -146,7 +145,10 @@ fn assert_cell_undef(build: &BuildResult, entity: &str, member: &str) {
 /// before calling this.
 fn build_occt(compiled: &CompiledModule) -> BuildResult {
     let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(kernel)),
+    );
     engine.build(compiled, ExportFormat::Step)
 }
 
@@ -443,7 +445,10 @@ fn fail_closed_predicate_over_volume_mesh_produces_qns_error_and_undef() {
     let compiled = parse_and_compile_with_stdlib(VOLUME_MESH_GATE_SRC);
 
     let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(kernel)),
+    );
     engine.register_volume_mesh_demand("test::region-gate-probe");
     assert!(
         engine.ensure_gmsh_kernel(),
@@ -515,7 +520,9 @@ fn selector_content_hash_is_cross_run_stable() {
         let val = result.values.get_or_undef(&cell_id);
         match &val {
             Value::Selector(_) => val.content_hash(),
-            other => panic!("P6a run1: expected Value::Selector for Widget.top, got: {other:?}"),
+            other => panic!(
+                "P6a run1: expected Value::Selector for Widget.top, got: {other:?}"
+            ),
         }
     };
 
@@ -525,12 +532,15 @@ fn selector_content_hash_is_cross_run_stable() {
         let val = result.values.get_or_undef(&cell_id);
         match &val {
             Value::Selector(_) => val.content_hash(),
-            other => panic!("P6a run2: expected Value::Selector for Widget.top, got: {other:?}"),
+            other => panic!(
+                "P6a run2: expected Value::Selector for Widget.top, got: {other:?}"
+            ),
         }
     };
 
     assert_eq!(
-        hash1, hash2,
+        hash1,
+        hash2,
         "P6a: content_hash must be byte-identical across independent Engine::eval runs \
          (PRD §4 invariant 1 — re-eval-stable naming; kernel_handle excluded via hash_ghr)"
     );
@@ -560,14 +570,19 @@ fn selector_eval_vs_build_content_hash_equal() {
         let val = result.values.get_or_undef(&cell_id);
         match &val {
             Value::Selector(_) => val.content_hash(),
-            other => panic!("P6b eval: expected Value::Selector for Widget.top, got: {other:?}"),
+            other => panic!(
+                "P6b eval: expected Value::Selector for Widget.top, got: {other:?}"
+            ),
         }
     };
 
     // Path B: build with MockGeometryKernel — realized selector.
     let build_hash = {
         let kernel = MockGeometryKernel::new();
-        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
+        let mut engine = Engine::new(
+            Box::new(SimpleConstraintChecker),
+            Some(Box::new(kernel)),
+        );
         let result = engine.build(&compiled, ExportFormat::Step);
         let build_errors: Vec<_> = result
             .diagnostics
@@ -582,12 +597,15 @@ fn selector_eval_vs_build_content_hash_equal() {
         let val = result.values.get_or_undef(&cell_id);
         match &val {
             Value::Selector(_) => val.content_hash(),
-            other => panic!("P6b build: expected Value::Selector for Widget.top, got: {other:?}"),
+            other => panic!(
+                "P6b build: expected Value::Selector for Widget.top, got: {other:?}"
+            ),
         }
     };
 
     assert_eq!(
-        eval_hash, build_hash,
+        eval_hash,
+        build_hash,
         "P6b: content_hash must be equal between symbolic (eval) and realized (build) selectors \
          (α #4811 DD-6: kernel_handle excluded from SelectorValue.content_hash via hash_ghr)"
     );

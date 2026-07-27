@@ -179,7 +179,8 @@ fn bt2_union_eval_and_build_selectors_are_content_hash_equal() {
 
     // Path B: build with mock kernel — realized selector.
     let kernel = MockGeometryKernel::new();
-    let mut build_engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
+    let mut build_engine =
+        Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
     let build_result = build_engine.build(&compiled, ExportFormat::Step);
     let build_errors: Vec<_> = build_result
         .diagnostics
@@ -347,7 +348,8 @@ structure def R2cSolidBooleanUnion {
     // Path B: build with a mock kernel — the solid boolean DOES resolve on
     // the build() path, to a realized geometry handle.
     let kernel = MockGeometryKernel::new();
-    let mut build_engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
+    let mut build_engine =
+        Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
     let build_result = build_engine.build(&compiled, ExportFormat::Step);
     let build_errors: Vec<_> = build_result
         .diagnostics

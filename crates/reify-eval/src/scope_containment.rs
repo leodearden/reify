@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use reify_compiler::TopologyTemplate;
 use reify_compiler::sub_component_forward_adjacency;
+use reify_compiler::TopologyTemplate;
 
 /// The outcome of `nearest_container_objective` — which container (if any) provides
 /// the objective inherited by a scope that lacks its own.
@@ -95,11 +95,7 @@ impl<'a> ContainmentIndex<'a> {
             containers.sort_unstable();
         }
 
-        Self {
-            reverse,
-            templates,
-            name_to_idx,
-        }
+        Self { reverse, templates, name_to_idx }
     }
 
     /// Return the `ContainerObjective` for `template`.
@@ -225,10 +221,7 @@ impl<'a> ContainmentIndex<'a> {
                 // the old name_to_idx-lookup sort, and avoids an extra allocation.
                 found.sort_unstable();
                 ContainerObjective::Ambiguous {
-                    containers: found
-                        .iter()
-                        .map(|&i| self.templates[i].name.clone())
-                        .collect(),
+                    containers: found.iter().map(|&i| self.templates[i].name.clone()).collect(),
                 }
             }
         }
@@ -266,10 +259,8 @@ mod tests {
             Some(&i) => i,
             None => return vec![],
         };
-        let mut v: Vec<String> = idx.reverse[child_idx]
-            .iter()
-            .map(|&ci| idx.templates[ci].name.clone())
-            .collect();
+        let mut v: Vec<String> =
+            idx.reverse[child_idx].iter().map(|&ci| idx.templates[ci].name.clone()).collect();
         v.sort();
         v
     }
@@ -366,10 +357,7 @@ mod tests {
 
         // C should see A as its nearest objective-bearing ancestor.
         match nearest_container_objective(&templates[2], &templates) {
-            ContainerObjective::Inherited {
-                container,
-                objective,
-            } => {
+            ContainerObjective::Inherited { container, objective } => {
                 assert_eq!(container, "A");
                 assert_eq!(objective.terms[0].sense, ObjectiveSense::Minimize);
             }
@@ -378,10 +366,7 @@ mod tests {
 
         // B also sees A as its nearest objective-bearing ancestor.
         match nearest_container_objective(&templates[1], &templates) {
-            ContainerObjective::Inherited {
-                container,
-                objective,
-            } => {
+            ContainerObjective::Inherited { container, objective } => {
                 assert_eq!(container, "A");
                 assert_eq!(objective.terms[0].sense, ObjectiveSense::Minimize);
             }
@@ -532,10 +517,7 @@ mod tests {
                 // Must be ["Z", "A"] (index order), NOT ["A", "Z"] (alphabetical).
                 assert_eq!(containers, vec!["Z", "A"]);
             }
-            other => panic!(
-                "expected Ambiguous with Z before A (index order), got {:?}",
-                other
-            ),
+            other => panic!("expected Ambiguous with Z before A (index order), got {:?}", other),
         }
     }
 
@@ -674,10 +656,7 @@ mod tests {
 
         // The walk: C → B (recursive, HAS obj → record Inherited, STOP) → Inherited{"B"}.
         match nearest_container_objective(&templates[1], &templates) {
-            ContainerObjective::Inherited {
-                container,
-                objective,
-            } => {
+            ContainerObjective::Inherited { container, objective } => {
                 assert_eq!(container, "B");
                 assert_eq!(objective.terms[0].sense, ObjectiveSense::Minimize);
             }
@@ -710,14 +689,8 @@ mod tests {
 
         // Must not panic even though "Ghost" is absent from the slice.
         match nearest_container_objective(&templates[1], &templates) {
-            ContainerObjective::Inherited {
-                container,
-                objective,
-            } => {
-                assert_eq!(
-                    container, "P",
-                    "C should inherit from P despite Ghost dangling"
-                );
+            ContainerObjective::Inherited { container, objective } => {
+                assert_eq!(container, "P", "C should inherit from P despite Ghost dangling");
                 assert_eq!(objective.terms[0].sense, ObjectiveSense::Minimize);
             }
             other => panic!("expected Inherited{{P}}, got {:?}", other),
@@ -753,14 +726,8 @@ mod tests {
         let c_free = nearest_container_objective(&templates[2], &templates);
         match (&c_idx, &c_free) {
             (
-                ContainerObjective::Inherited {
-                    container: c1,
-                    objective: obj1,
-                },
-                ContainerObjective::Inherited {
-                    container: c2,
-                    objective: obj2,
-                },
+                ContainerObjective::Inherited { container: c1, objective: obj1 },
+                ContainerObjective::Inherited { container: c2, objective: obj2 },
             ) => {
                 assert_eq!(c1, "A", "reuse path: C should inherit from A");
                 assert_eq!(c2, "A", "free-fn path: C should inherit from A");
@@ -786,14 +753,8 @@ mod tests {
         let b_free = nearest_container_objective(&templates[1], &templates);
         match (&b_idx, &b_free) {
             (
-                ContainerObjective::Inherited {
-                    container: c1,
-                    objective: obj1,
-                },
-                ContainerObjective::Inherited {
-                    container: c2,
-                    objective: obj2,
-                },
+                ContainerObjective::Inherited { container: c1, objective: obj1 },
+                ContainerObjective::Inherited { container: c2, objective: obj2 },
             ) => {
                 assert_eq!(c1, "A", "reuse path: B should inherit from A");
                 assert_eq!(c2, "A", "free-fn path: B should inherit from A");
@@ -851,9 +812,7 @@ mod tests {
         // B_first (index 0): no subs, no objective — shadowed by last-wins
         let b_first = TopologyTemplateBuilder::new("B").build();
         // B_last (index 1): has sub "C", no objective — wins in name_to_idx
-        let b_last = TopologyTemplateBuilder::new("B")
-            .sub_component("c_inst", "C", vec![])
-            .build();
+        let b_last = TopologyTemplateBuilder::new("B").sub_component("c_inst", "C", vec![]).build();
         let c = TopologyTemplateBuilder::new("C").build(); // index 2, leaf
         let a = TopologyTemplateBuilder::new("A") // index 3, contains "B", has obj
             .sub_component("b_inst", "B", vec![])
@@ -864,10 +823,7 @@ mod tests {
         // C should inherit from A via B_last: C → B_last → A → Inherited{A}.
         // If first-wins were used, C would be disconnected from A and return None.
         match nearest_container_objective(&templates[2], &templates) {
-            ContainerObjective::Inherited {
-                container,
-                objective,
-            } => {
+            ContainerObjective::Inherited { container, objective } => {
                 assert_eq!(
                     container, "A",
                     "C should inherit from A via B_last (last-wins name resolution)"

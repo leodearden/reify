@@ -24,8 +24,8 @@
 //! - **INV-7 cycle safety**: irreducible cycles (SCC size ≥ 2) are emitted in
 //!   source order with `W_SCOPE_COUPLING` diagnostics; no panic or deadlock.
 
-use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::cmp::Reverse;
 
 use reify_compiler::{CompiledTrait, TopologyTemplate};
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, ValueCellId};
@@ -188,10 +188,9 @@ fn build_read_dag(templates: &[TopologyTemplate]) -> ReadDag {
             let reads = extract_dependency_trace(&constraint.expr).reads;
             for r in reads {
                 if let Some(&i) = auto_owner.get(&r)
-                    && i != j
-                {
-                    edge_set.insert((i, j));
-                }
+                    && i != j {
+                        edge_set.insert((i, j));
+                    }
             }
         }
         // Collect reads from objective terms — and cache them per template so the
@@ -202,10 +201,9 @@ fn build_read_dag(templates: &[TopologyTemplate]) -> ReadDag {
                 let reads = extract_dependency_trace(&term.expr).reads;
                 for r in &reads {
                     if let Some(&i) = auto_owner.get(r)
-                        && i != j
-                    {
-                        edge_set.insert((i, j));
-                    }
+                        && i != j {
+                            edge_set.insert((i, j));
+                        }
                 }
                 objective_reads[j].extend(reads);
             }
@@ -563,26 +561,24 @@ fn emit_cycle_coupling_diagnostics(
         let mut emit_for_reads = |reads: Vec<ValueCellId>, span| {
             for r in reads {
                 if let Some(&i) = auto_owner.get(&r)
-                    && i != j
-                    && cycle_set.contains(&i)
-                {
-                    let key = (i, j, r.clone());
-                    if seen.insert(key) {
-                        let owner_name = &templates[i].name;
-                        let msg = format!(
-                            "W_SCOPE_COUPLING: scope '{b_name}' reads auto cell '{r}' \
+                    && i != j && cycle_set.contains(&i) {
+                        let key = (i, j, r.clone());
+                        if seen.insert(key) {
+                            let owner_name = &templates[i].name;
+                            let msg = format!(
+                                "W_SCOPE_COUPLING: scope '{b_name}' reads auto cell '{r}' \
                                  owned by already-resolved scope '{owner_name}'; \
                                  bottom-up resolution may be approximate"
-                        );
-                        let diag =
-                            Diagnostic::warning(msg).with_code(DiagnosticCode::ScopeCoupling);
-                        diagnostics.push(if let Some(s) = span {
-                            diag.with_label(DiagnosticLabel::new(s, "scope coupling read site"))
-                        } else {
-                            diag
-                        });
+                            );
+                            let diag = Diagnostic::warning(msg)
+                                .with_code(DiagnosticCode::ScopeCoupling);
+                            diagnostics.push(if let Some(s) = span {
+                                diag.with_label(DiagnosticLabel::new(s, "scope coupling read site"))
+                            } else {
+                                diag
+                            });
+                        }
                     }
-                }
             }
         };
 
@@ -1707,9 +1703,7 @@ mod tests {
             cluster.disposition,
             ClusterDisposition::ApproximatedFallback,
             "dim {} > cap {} ⇒ ApproximatedFallback; got: {:?}",
-            cluster.dim,
-            cap,
-            cluster.disposition
+            cluster.dim, cap, cluster.disposition
         );
     }
 

@@ -104,10 +104,8 @@ impl DocumentStore {
 
     pub fn open(&mut self, uri: Url, text: String, version: i32) {
         let module_path = ModulePath::single(module_name_from_uri(&uri));
-        self.documents.insert(
-            uri,
-            Arc::new(DocumentState::new(text, version, module_path)),
-        );
+        self.documents
+            .insert(uri, Arc::new(DocumentState::new(text, version, module_path)));
     }
 
     pub fn update(&mut self, uri: &Url, text: String, version: i32) -> bool {

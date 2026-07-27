@@ -14,11 +14,7 @@ use reify_test_support::mocks::MockConstraintChecker;
 /// and return the evaluated result.
 fn eval_source(source: &str) -> EvalResult {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
 
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
@@ -153,7 +149,8 @@ fn generate_negative_count_emits_named_diagnostic() {
         d,
     );
     let has_named = result.diagnostics.iter().any(|diag| {
-        diag.severity == Severity::Error && diag.code == Some(DiagnosticCode::GenerateNegativeCount)
+        diag.severity == Severity::Error
+            && diag.code == Some(DiagnosticCode::GenerateNegativeCount)
     });
     assert!(
         has_named,
@@ -216,11 +213,13 @@ fn generate_bolt_circle_example_golden() {
     // (c) positions: 4 point3s at golden quarter-turns (within 1e-9 m = 1e-6 mm).
     const TOL_M: f64 = 1e-9; // 1e-6 mm in SI metres
     let r = 0.05; // 50 mm in SI metres
-    let golden = [(r, 0.0, 0.0), (0.0, r, 0.0), (-r, 0.0, 0.0), (0.0, -r, 0.0)];
-    match result
-        .values
-        .get(&ValueCellId::new("BoltCircle", "positions"))
-    {
+    let golden = [
+        (r, 0.0, 0.0),
+        (0.0, r, 0.0),
+        (-r, 0.0, 0.0),
+        (0.0, -r, 0.0),
+    ];
+    match result.values.get(&ValueCellId::new("BoltCircle", "positions")) {
         Some(Value::List(items)) => {
             assert_eq!(items.len(), 4, "expected 4 positions; got: {:?}", items);
             for (idx, (item, (gx, gy, gz))) in items.iter().zip(golden.iter()).enumerate() {
@@ -238,9 +237,6 @@ fn generate_bolt_circle_example_golden() {
                 );
             }
         }
-        other => panic!(
-            "BoltCircle.positions should be a List of 4 point3s; got: {:?}",
-            other
-        ),
+        other => panic!("BoltCircle.positions should be a List of 4 point3s; got: {:?}", other),
     }
 }

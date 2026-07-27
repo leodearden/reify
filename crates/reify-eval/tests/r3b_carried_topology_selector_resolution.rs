@@ -117,8 +117,9 @@ fn plus_z_resolves_to_single_face() {
     let carried = make_carried();
     let sel = normal_leaf(&carried, [0.0, 0.0, 1.0]);
 
-    let resolved = reify_eval::topology_selectors::resolve_against_carried_topology(&sel, &carried)
-        .expect("ByNormal leaf resolves against carried topology");
+    let resolved =
+        reify_eval::topology_selectors::resolve_against_carried_topology(&sel, &carried)
+            .expect("ByNormal leaf resolves against carried topology");
 
     assert_eq!(
         sorted_ids(resolved),
@@ -164,8 +165,8 @@ fn union_and_difference_compose() {
     let plus_z = normal_leaf(&carried, [0.0, 0.0, 1.0]);
     let plus_y = normal_leaf(&carried, [0.0, 1.0, 0.0]);
 
-    let union =
-        SelectorValue::union(vec![plus_z.clone(), plus_y.clone()]).expect("same-kind union");
+    let union = SelectorValue::union(vec![plus_z.clone(), plus_y.clone()])
+        .expect("same-kind union");
     let resolved_union =
         reify_eval::topology_selectors::resolve_against_carried_topology(&union, &carried)
             .expect("resolves");
@@ -194,7 +195,8 @@ fn union_and_difference_compose() {
 #[test]
 fn nodes_for_faces_excludes_edge_attachments() {
     let carried = make_carried();
-    let nodes = reify_eval::topology_selectors::nodes_for_faces(&[GeometryHandleId(10)], &carried);
+    let nodes =
+        reify_eval::topology_selectors::nodes_for_faces(&[GeometryHandleId(10)], &carried);
     assert_eq!(
         sorted_usize(nodes),
         vec![0, 2],
@@ -223,7 +225,8 @@ fn nodes_for_faces_unions_multiple_faces() {
 #[test]
 fn nodes_for_faces_unknown_face_is_empty() {
     let carried = make_carried();
-    let nodes = reify_eval::topology_selectors::nodes_for_faces(&[GeometryHandleId(999)], &carried);
+    let nodes =
+        reify_eval::topology_selectors::nodes_for_faces(&[GeometryHandleId(999)], &carried);
     assert!(
         nodes.is_empty(),
         "a face handle absent from the boundary maps to no nodes"
@@ -279,11 +282,14 @@ fn two_way_kernel_vs_carried_parity() {
     let sel_symbolic = normal_leaf(&carried, [0.0, 0.0, 1.0]);
 
     // ── Resolve both ways ─────────────────────────────────────────────────────
-    let kernel_faces = reify_eval::topology_selectors::resolve(&sel_kernel, &mut mock, &mut diags)
-        .expect("live-kernel resolution");
-    let carried_faces =
-        reify_eval::topology_selectors::resolve_against_carried_topology(&sel_symbolic, &carried)
-            .expect("carried resolution");
+    let kernel_faces =
+        reify_eval::topology_selectors::resolve(&sel_kernel, &mut mock, &mut diags)
+            .expect("live-kernel resolution");
+    let carried_faces = reify_eval::topology_selectors::resolve_against_carried_topology(
+        &sel_symbolic,
+        &carried,
+    )
+    .expect("carried resolution");
 
     // ── Face-handle SET parity ────────────────────────────────────────────────
     assert_eq!(
@@ -299,7 +305,8 @@ fn two_way_kernel_vs_carried_parity() {
 
     // ── NODE-SET parity through the shared boundary ───────────────────────────
     let kernel_nodes = reify_eval::topology_selectors::nodes_for_faces(&kernel_faces, &carried);
-    let carried_nodes = reify_eval::topology_selectors::nodes_for_faces(&carried_faces, &carried);
+    let carried_nodes =
+        reify_eval::topology_selectors::nodes_for_faces(&carried_faces, &carried);
     assert_eq!(
         sorted_usize(kernel_nodes),
         sorted_usize(carried_nodes),

@@ -22,7 +22,9 @@
 use std::collections::HashMap;
 
 use reify_compiler::CompiledModule;
-use reify_core::{Diagnostic, DiagnosticCode, ModulePath, Severity, Type, ValueCellId, VersionId};
+use reify_core::{
+    Diagnostic, DiagnosticCode, ModulePath, Severity, Type, ValueCellId, VersionId,
+};
 use reify_eval::Engine;
 use reify_eval::cache::NodeId;
 use reify_eval::journal::{EventKind, EventPayload};
@@ -167,20 +169,13 @@ fn merged_cluster_writes_back_solved_values_to_every_member_scope() {
         .values
         .get(&a_k)
         .expect("A.k missing from EvalResult.values");
-    assert_eq!(
-        *a_val,
-        mm(3.0),
-        "A.k's value must be the merged solve's result"
-    );
-    let b_val = result.values.get(&b_m).expect(
-        "B.m missing from EvalResult.values -- not just A.k (the \
-                 first-iterated cluster member)",
-    );
-    assert_eq!(
-        *b_val,
-        mm(7.0),
-        "B.m's value must be the merged solve's result"
-    );
+    assert_eq!(*a_val, mm(3.0), "A.k's value must be the merged solve's result");
+    let b_val = result
+        .values
+        .get(&b_m)
+        .expect("B.m missing from EvalResult.values -- not just A.k (the \
+                 first-iterated cluster member)");
+    assert_eq!(*b_val, mm(7.0), "B.m's value must be the merged solve's result");
 
     let snapshot = engine
         .snapshot()
@@ -457,9 +452,9 @@ fn merged_cluster_objective_passed_through_opaquely() {
         .clone()
         .expect("solver must have been called with a merged ResolutionProblem");
 
-    let objective = problem
-        .objective
-        .expect("merged problem must carry the spanning objective (Parent's) -- got None");
+    let objective = problem.objective.expect(
+        "merged problem must carry the spanning objective (Parent's) -- got None",
+    );
     assert_eq!(
         objective.combination,
         ObjectiveCombination::WeightedSum,
@@ -485,12 +480,7 @@ fn merged_cluster_objective_passed_through_opaquely() {
          concatenated verbatim, not re-folded; got {} term(s)",
         objective.terms.len(),
     );
-    for (i, (actual, want)) in objective
-        .terms
-        .iter()
-        .zip(expected.terms.iter())
-        .enumerate()
-    {
+    for (i, (actual, want)) in objective.terms.iter().zip(expected.terms.iter()).enumerate() {
         assert_eq!(
             actual.sense, want.sense,
             "term {i}'s ObjectiveSense must match Parent's verbatim",
@@ -647,9 +637,9 @@ fn merged_cluster_inherited_objective_folded_once() {
         .clone()
         .expect("solver must have been called with a merged ResolutionProblem");
 
-    let objective = problem
-        .objective
-        .expect("merged problem must carry the spanning objective (Parent's) -- got None");
+    let objective = problem.objective.expect(
+        "merged problem must carry the spanning objective (Parent's) -- got None",
+    );
 
     // Parent's objective is a single term. Even though it governs THREE cluster
     // members (Parent's own + ChildA's/ChildB's inherited copies), it must be
@@ -823,23 +813,14 @@ fn uncoupled_module_solves_per_template_not_merged() {
         problems.len(),
     );
 
-    let ids0: Vec<ValueCellId> = problems[0]
-        .auto_params
-        .iter()
-        .map(|ap| ap.id.clone())
-        .collect();
-    let ids1: Vec<ValueCellId> = problems[1]
-        .auto_params
-        .iter()
-        .map(|ap| ap.id.clone())
-        .collect();
+    let ids0: Vec<ValueCellId> = problems[0].auto_params.iter().map(|ap| ap.id.clone()).collect();
+    let ids1: Vec<ValueCellId> = problems[1].auto_params.iter().map(|ap| ap.id.clone()).collect();
     assert!(
         (ids0 == vec![x_a.clone()] && ids1 == vec![y_b.clone()])
             || (ids0 == vec![y_b.clone()] && ids1 == vec![x_a.clone()]),
         "each per-template solve must carry ONLY its own scope's single auto \
          id -- no cross-scope union; got {:?} then {:?}",
-        ids0,
-        ids1,
+        ids0, ids1,
     );
     drop(problems);
 
@@ -863,7 +844,11 @@ const OVER_CAP_AUTOS: usize = 20;
 
 /// Add `n` auto cells (`<entity>.a0..a{n-1}`) to a template builder. Mirrors
 /// coupling_approximated.rs's `with_n_autos` helper exactly.
-fn with_n_autos(mut b: TopologyTemplateBuilder, entity: &str, n: usize) -> TopologyTemplateBuilder {
+fn with_n_autos(
+    mut b: TopologyTemplateBuilder,
+    entity: &str,
+    n: usize,
+) -> TopologyTemplateBuilder {
     for i in 0..n {
         b = b.auto_param(entity, &format!("a{i}"), Type::length());
     }
@@ -883,25 +868,11 @@ fn with_n_autos(mut b: TopologyTemplateBuilder, entity: &str, n: usize) -> Topol
 /// first.
 #[test]
 fn over_cap_cluster_still_solves_per_template() {
-    let alpha = with_n_autos(
-        TopologyTemplateBuilder::new("Alpha"),
-        "Alpha",
-        OVER_CAP_AUTOS,
-    )
-    .constraint(
-        "Alpha",
-        0,
-        None,
-        gt(value_ref("Beta", "a0"), literal(mm(0.0))),
-    )
-    .build();
+    let alpha = with_n_autos(TopologyTemplateBuilder::new("Alpha"), "Alpha", OVER_CAP_AUTOS)
+        .constraint("Alpha", 0, None, gt(value_ref("Beta", "a0"), literal(mm(0.0))))
+        .build();
     let beta = with_n_autos(TopologyTemplateBuilder::new("Beta"), "Beta", OVER_CAP_AUTOS)
-        .constraint(
-            "Beta",
-            0,
-            None,
-            gt(value_ref("Alpha", "a0"), literal(mm(0.0))),
-        )
+        .constraint("Beta", 0, None, gt(value_ref("Alpha", "a0"), literal(mm(0.0))))
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -944,23 +915,13 @@ fn over_cap_cluster_still_solves_per_template() {
         problems.len(),
     );
 
-    let ids0: Vec<ValueCellId> = problems[0]
-        .auto_params
-        .iter()
-        .map(|ap| ap.id.clone())
-        .collect();
-    let ids1: Vec<ValueCellId> = problems[1]
-        .auto_params
-        .iter()
-        .map(|ap| ap.id.clone())
-        .collect();
+    let ids0: Vec<ValueCellId> = problems[0].auto_params.iter().map(|ap| ap.id.clone()).collect();
+    let ids1: Vec<ValueCellId> = problems[1].auto_params.iter().map(|ap| ap.id.clone()).collect();
     assert!(
         (ids0 == alpha_ids && ids1 == beta_ids) || (ids0 == beta_ids && ids1 == alpha_ids),
         "each per-template solve must carry ONLY its own scope's {} auto ids \
          -- no cross-scope union with the other scope; got {} then {} ids",
-        OVER_CAP_AUTOS,
-        ids0.len(),
-        ids1.len(),
+        OVER_CAP_AUTOS, ids0.len(), ids1.len(),
     );
     drop(problems);
 
@@ -1082,11 +1043,7 @@ fn merged_cluster_excludes_strict_connector_instance_auto() {
         .values
         .get(&connector_len)
         .expect("excluded connector cell must still be pre-seeded in the snapshot");
-    assert_eq!(
-        *val,
-        Value::Undef,
-        "excluded connector cell must stay Undef"
-    );
+    assert_eq!(*val, Value::Undef, "excluded connector cell must stay Undef");
     assert_eq!(
         *det,
         DeterminacyState::Auto,
@@ -1110,19 +1067,13 @@ fn two_cycle_cluster_with_differing_lambdas_module() -> CompiledModule {
     let a = TopologyTemplateBuilder::new("A")
         .auto_param("A", "k", Type::length())
         .constraint("A", 0, None, gt(value_ref("B", "m"), literal(mm(0.0))))
-        .objective(ObjectiveSet::cost_robustness_tradeoff(
-            value_ref("A", "k"),
-            0.25,
-        ))
+        .objective(ObjectiveSet::cost_robustness_tradeoff(value_ref("A", "k"), 0.25))
         .build();
 
     let b = TopologyTemplateBuilder::new("B")
         .auto_param("B", "m", Type::length())
         .constraint("B", 0, None, gt(value_ref("A", "k"), literal(mm(0.0))))
-        .objective(ObjectiveSet::cost_robustness_tradeoff(
-            value_ref("B", "m"),
-            0.75,
-        ))
+        .objective(ObjectiveSet::cost_robustness_tradeoff(value_ref("B", "m"), 0.75))
         .build();
 
     CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -1172,7 +1123,9 @@ fn merged_cluster_first_found_lambda_wins_with_divergence_warning() {
     let warnings: Vec<_> = result
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Warning && d.message.contains("cost_robustness_lambda"))
+        .filter(|d| {
+            d.severity == Severity::Warning && d.message.contains("cost_robustness_lambda")
+        })
         .collect();
     assert!(
         !warnings.is_empty(),
@@ -1216,10 +1169,9 @@ fn merged_cluster_infeasible_propagates_diagnostics_and_failed_autos_for_every_m
     let result = engine.eval(&module);
 
     assert!(
-        result
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error && d.message.contains("no feasible assignment")),
+        result.diagnostics.iter().any(
+            |d| d.severity == Severity::Error && d.message.contains("no feasible assignment")
+        ),
         "solver's Infeasible diagnostics must propagate into \
          EvalResult.diagnostics; got: {:#?}",
         result.diagnostics,
@@ -1270,11 +1222,8 @@ fn merged_cluster_no_progress_propagates_diagnostic_and_failed_autos_for_every_m
     let result = engine.eval(&module);
 
     assert!(
-        result
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Warning
-                && d.message.contains("solver stalled on the merged")),
+        result.diagnostics.iter().any(|d| d.severity == Severity::Warning
+            && d.message.contains("solver stalled on the merged")),
         "solver's NoProgress reason must surface as a warning Diagnostic; \
          got: {:#?}",
         result.diagnostics,
@@ -1513,11 +1462,7 @@ fn merged_cluster_skips_solver_when_every_auto_is_excluded() {
             .values
             .get(id)
             .unwrap_or_else(|| panic!("{id:?} must still be pre-seeded in the snapshot"));
-        assert_eq!(
-            *val,
-            Value::Undef,
-            "{id:?} must stay Undef -- no solve ever ran"
-        );
+        assert_eq!(*val, Value::Undef, "{id:?} must stay Undef -- no solve ever ran");
         assert_eq!(
             *det,
             DeterminacyState::Auto,
@@ -1866,11 +1811,9 @@ fn eval_cached_merged_cluster_infeasible_propagates_diagnostics() {
         captured.lock().unwrap().len(),
     );
     assert!(
-        result
-            .eval_result
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error && d.message.contains("no feasible assignment")),
+        result.eval_result.diagnostics.iter().any(
+            |d| d.severity == Severity::Error && d.message.contains("no feasible assignment")
+        ),
         "solver's Infeasible diagnostics must propagate into \
          EvalResult.diagnostics on the warm path too; got: {:#?}",
         result.eval_result.diagnostics,
@@ -1915,12 +1858,8 @@ fn eval_cached_merged_cluster_no_progress_propagates_diagnostic() {
         captured.lock().unwrap().len(),
     );
     assert!(
-        result
-            .eval_result
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Warning
-                && d.message.contains("solver stalled on the merged")),
+        result.eval_result.diagnostics.iter().any(|d| d.severity == Severity::Warning
+            && d.message.contains("solver stalled on the merged")),
         "solver's NoProgress reason must surface as a warning Diagnostic on \
          the warm path too; got: {:#?}",
         result.eval_result.diagnostics,
@@ -2263,9 +2202,9 @@ fn merged_cluster_preserves_lexicographic_combination_from_single_owner() {
         .clone()
         .expect("solver must have been called with a merged ResolutionProblem");
 
-    let objective = problem
-        .objective
-        .expect("merged problem must carry the spanning objective (Parent's) -- got None");
+    let objective = problem.objective.expect(
+        "merged problem must carry the spanning objective (Parent's) -- got None",
+    );
     assert_eq!(
         objective.combination,
         ObjectiveCombination::Lexicographic,
@@ -2290,10 +2229,7 @@ fn two_cycle_cluster_with_differing_combinations_module() -> CompiledModule {
         .auto_param("A", "k", Type::length())
         .constraint("A", 0, None, gt(value_ref("B", "m"), literal(mm(0.0))))
         .objective(ObjectiveSet {
-            terms: vec![ObjectiveTerm::new(
-                ObjectiveSense::Minimize,
-                value_ref("A", "k"),
-            )],
+            terms: vec![ObjectiveTerm::new(ObjectiveSense::Minimize, value_ref("A", "k"))],
             combination: ObjectiveCombination::WeightedSum,
             cost_robustness_lambda: None,
         })
@@ -2303,10 +2239,7 @@ fn two_cycle_cluster_with_differing_combinations_module() -> CompiledModule {
         .auto_param("B", "m", Type::length())
         .constraint("B", 0, None, gt(value_ref("A", "k"), literal(mm(0.0))))
         .objective(ObjectiveSet {
-            terms: vec![ObjectiveTerm::new(
-                ObjectiveSense::Minimize,
-                value_ref("B", "m"),
-            )],
+            terms: vec![ObjectiveTerm::new(ObjectiveSense::Minimize, value_ref("B", "m"))],
             combination: ObjectiveCombination::Lexicographic,
             cost_robustness_lambda: None,
         })
@@ -2379,8 +2312,7 @@ fn merged_cluster_combination_divergence_warns_and_keeps_first_found() {
         result.diagnostics,
     );
     assert!(
-        warnings[0].message.contains("Lexicographic")
-            && warnings[0].message.contains("WeightedSum"),
+        warnings[0].message.contains("Lexicographic") && warnings[0].message.contains("WeightedSum"),
         "divergence warning must name both the differing (Lexicographic) and \
          the already-governing (WeightedSum) combination; got: {}",
         warnings[0].message,

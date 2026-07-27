@@ -44,7 +44,8 @@ fn fea_unconstrained_eval_and_check_carry_structured_detail() {
         reify_eval::compute_targets::register_compute_fns(&mut engine);
         let eval_result = engine.eval(&compiled);
         assert_eq!(
-            eval_result.structured_detail, expected_detail,
+            eval_result.structured_detail,
+            expected_detail,
             "eval_result.structured_detail must carry [Fea(Unconstrained{{6 modes}})];\
              got: {:#?}",
             eval_result.structured_detail
@@ -58,7 +59,8 @@ fn fea_unconstrained_eval_and_check_carry_structured_detail() {
         reify_eval::compute_targets::register_compute_fns(&mut engine);
         let check_result = engine.check(&compiled);
         assert_eq!(
-            check_result.structured_detail, expected_detail,
+            check_result.structured_detail,
+            expected_detail,
             "check_result.structured_detail must carry [Fea(Unconstrained{{6 modes}})];\
              got: {:#?}",
             check_result.structured_detail

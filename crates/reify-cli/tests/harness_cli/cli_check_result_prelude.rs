@@ -26,8 +26,10 @@ use crate::common;
 /// RED: `result_prelude_ok_clean.ri` does not exist yet.
 #[test]
 fn check_result_prelude_ok_clean_exits_success() {
-    let (status, stdout, stderr) =
-        common::run_subcommand("check", &common::fixture_path("result_prelude_ok_clean.ri"));
+    let (status, stdout, stderr) = common::run_subcommand(
+        "check",
+        &common::fixture_path("result_prelude_ok_clean.ri"),
+    );
 
     assert!(
         status.success(),

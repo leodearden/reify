@@ -952,9 +952,10 @@ impl Engine {
         // Compute pin diagnostics BEFORE moving geometry_kernels — the
         // iterator borrows must end before the BTreeMap is consumed.
         let diagnostics = match manifest {
-            Some(m) => {
-                kernel_pin_diagnostics(registry.iter().map(|(n, reg)| (n.as_str(), reg.version)), m)
-            }
+            Some(m) => kernel_pin_diagnostics(
+                registry.iter().map(|(n, reg)| (n.as_str(), reg.version)),
+                m,
+            ),
             None => Vec::new(),
         };
         let mut engine = Self::with_prelude_and_kernels(
@@ -3094,16 +3095,8 @@ mod tests {
         );
 
         let (snap0, ver0) = engine.allocate_snapshot_version();
-        assert_eq!(
-            snap0,
-            SnapshotId(0),
-            "first allocation must mint SnapshotId(0)"
-        );
-        assert_eq!(
-            ver0,
-            VersionId(0),
-            "first allocation must mint VersionId(0)"
-        );
+        assert_eq!(snap0, SnapshotId(0), "first allocation must mint SnapshotId(0)");
+        assert_eq!(ver0, VersionId(0), "first allocation must mint VersionId(0)");
         assert_eq!(
             engine.next_snapshot_id, 1,
             "next_snapshot_id must advance by exactly 1 after one call",
@@ -3114,16 +3107,8 @@ mod tests {
         );
 
         let (snap1, ver1) = engine.allocate_snapshot_version();
-        assert_eq!(
-            snap1,
-            SnapshotId(1),
-            "second allocation must mint SnapshotId(1)"
-        );
-        assert_eq!(
-            ver1,
-            VersionId(1),
-            "second allocation must mint VersionId(1)"
-        );
+        assert_eq!(snap1, SnapshotId(1), "second allocation must mint SnapshotId(1)");
+        assert_eq!(ver1, VersionId(1), "second allocation must mint VersionId(1)");
         assert_eq!(
             engine.next_snapshot_id, 2,
             "next_snapshot_id must advance by exactly 1 again",
@@ -3232,7 +3217,8 @@ mod tests {
         use reify_test_support::mocks::MockConstraintChecker;
         use reify_test_support::parse_and_compile_with_stdlib;
 
-        let compiled = parse_and_compile_with_stdlib("structure S { param width: Length = 100mm }");
+        let compiled =
+            parse_and_compile_with_stdlib("structure S { param width: Length = 100mm }");
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
 
         let before_first_snapshot = engine.next_snapshot_id;
@@ -3313,8 +3299,8 @@ mod tests {
             .template(template)
             .build();
 
-        let mut engine =
-            Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+            .with_solver(Box::new(solver));
 
         let before_snapshot = engine.next_snapshot_id;
         let before_version = engine.next_version_id;
@@ -3393,8 +3379,8 @@ mod tests {
             .template(b)
             .build();
 
-        let mut engine =
-            Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+            .with_solver(Box::new(solver));
 
         let before_snapshot = engine.next_snapshot_id;
         let before_version = engine.next_version_id;
@@ -3664,7 +3650,8 @@ mod tests {
         use reify_test_support::mocks::MockConstraintChecker;
         use reify_test_support::parse_and_compile_with_stdlib;
 
-        let compiled = parse_and_compile_with_stdlib("structure S { param width: Length = 100mm }");
+        let compiled =
+            parse_and_compile_with_stdlib("structure S { param width: Length = 100mm }");
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
         let _ = engine.eval(&compiled);
 
@@ -3736,8 +3723,8 @@ mod tests {
         use reify_config::Manifest;
         use reify_core::{DiagnosticCode, Severity};
 
-        let manifest =
-            Manifest::from_toml_str("[kernels]\nmanifold = \"1.0.0\"\n").expect("valid manifest");
+        let manifest = Manifest::from_toml_str("[kernels]\nmanifold = \"1.0.0\"\n")
+            .expect("valid manifest");
         // occt is not pinned — arm-3 is dormant regardless of its version.
         let registered = [("occt", "7.9.3")];
         let diags =
@@ -3775,8 +3762,8 @@ mod tests {
     fn kernel_pin_diagnostics_registered_name_matches_pin_empty() {
         use reify_config::Manifest;
 
-        let manifest =
-            Manifest::from_toml_str("[kernels]\nocct = \"7.7.0\"\n").expect("valid manifest");
+        let manifest = Manifest::from_toml_str("[kernels]\nocct = \"7.7.0\"\n")
+            .expect("valid manifest");
         // Version matches the pin exactly — arm-3 stays dormant.
         let registered = [("occt", "7.7.0")];
         let diags =
@@ -3797,8 +3784,8 @@ mod tests {
         use reify_config::Manifest;
         use reify_core::{DiagnosticCode, Severity};
 
-        let manifest =
-            Manifest::from_toml_str("[kernels]\nmanifold = \"1.0.0\"\n").expect("valid manifest");
+        let manifest = Manifest::from_toml_str("[kernels]\nmanifold = \"1.0.0\"\n")
+            .expect("valid manifest");
         // manifold version matches the pin exactly — arm-3 stays dormant.
         // occt is not pinned — arm-3 also dormant.
         let registered = [("manifold", "1.0.0"), ("occt", "7.9.3")];
@@ -3817,11 +3804,7 @@ mod tests {
             .iter()
             .filter(|d| d.severity == Severity::Warning)
             .collect();
-        assert_eq!(
-            warnings.len(),
-            1,
-            "expected exactly 1 warning; got {warnings:?}"
-        );
+        assert_eq!(warnings.len(), 1, "expected exactly 1 warning; got {warnings:?}");
         assert_eq!(warnings[0].code, Some(DiagnosticCode::UnpinnedKernelLoaded));
         assert!(
             warnings[0].message.contains("occt"),
@@ -3884,11 +3867,7 @@ mod tests {
             "expected [ERROR fidget, ERROR gmsh, WARNING occt]; got {diags:?}"
         );
         // [0] ERROR PinnedKernelMissing "fidget" (lex-first missing pin).
-        assert_eq!(
-            diags[0].severity,
-            Severity::Error,
-            "diags[0] should be Error; got {diags:?}"
-        );
+        assert_eq!(diags[0].severity, Severity::Error, "diags[0] should be Error; got {diags:?}");
         assert_eq!(diags[0].code, Some(DiagnosticCode::PinnedKernelMissing));
         assert!(
             diags[0].message.contains("fidget"),
@@ -3896,11 +3875,7 @@ mod tests {
             diags[0].message
         );
         // [1] ERROR PinnedKernelMissing "gmsh" (lex-second missing pin).
-        assert_eq!(
-            diags[1].severity,
-            Severity::Error,
-            "diags[1] should be Error; got {diags:?}"
-        );
+        assert_eq!(diags[1].severity, Severity::Error, "diags[1] should be Error; got {diags:?}");
         assert_eq!(diags[1].code, Some(DiagnosticCode::PinnedKernelMissing));
         assert!(
             diags[1].message.contains("gmsh"),
@@ -3935,8 +3910,8 @@ mod tests {
         use reify_config::Manifest;
         use reify_core::{DiagnosticCode, Severity};
 
-        let manifest =
-            Manifest::from_toml_str("[kernels]\nocct = \"9.9.9\"\n").expect("valid manifest");
+        let manifest = Manifest::from_toml_str("[kernels]\nocct = \"9.9.9\"\n")
+            .expect("valid manifest");
         let registered = [("occt", "7.9.3")];
         let diags =
             super::kernel_pin_diagnostics(registered.iter().map(|&(n, v)| (n, v)), &manifest);
@@ -3974,8 +3949,8 @@ mod tests {
     fn kernel_pin_diagnostics_version_match_emits_no_mismatch() {
         use reify_config::Manifest;
 
-        let manifest =
-            Manifest::from_toml_str("[kernels]\nocct = \"7.9.3\"\n").expect("valid manifest");
+        let manifest = Manifest::from_toml_str("[kernels]\nocct = \"7.9.3\"\n")
+            .expect("valid manifest");
         let registered = [("occt", "7.9.3")];
         let diags =
             super::kernel_pin_diagnostics(registered.iter().map(|&(n, v)| (n, v)), &manifest);
@@ -4059,8 +4034,8 @@ mod tests {
         use reify_core::{DiagnosticCode, Severity};
 
         // Pin written with a leading `v`; adapter const is bare "7.9.3".
-        let manifest =
-            Manifest::from_toml_str("[kernels]\nocct = \"v7.9.3\"\n").expect("valid manifest");
+        let manifest = Manifest::from_toml_str("[kernels]\nocct = \"v7.9.3\"\n")
+            .expect("valid manifest");
         let registered = [("occt", "7.9.3")];
         let diags =
             super::kernel_pin_diagnostics(registered.iter().map(|&(n, v)| (n, v)), &manifest);

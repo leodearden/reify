@@ -43,10 +43,8 @@ fn engine_with_recording_kernel(
     let kernel = RecordingKernel::new();
     let exported = kernel.exported_handles_ref();
     let compounds = kernel.compound_members_ref();
-    let mut engine = Engine::new(
-        Box::new(SimpleConstraintChecker),
-        Some(Box::new(kernel) as Box<dyn GeometryKernel>),
-    );
+    let mut engine =
+        Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel) as Box<dyn GeometryKernel>));
     engine.set_build_scheduler(scheduler);
     (engine, exported, compounds)
 }
@@ -113,12 +111,10 @@ fn build_snapshot_multi_entity_export_uses_compound() {
     let compounds_locked = compounds.lock().unwrap();
     let snap_members = &compounds_locked[1];
     assert_eq!(
-        snap_members.len(),
-        build_members.len(),
+        snap_members.len(), build_members.len(),
         "build_snapshot compound must have the same member count as build(); \
          build_len={}, snapshot_len={}",
-        build_members.len(),
-        snap_members.len(),
+        build_members.len(), snap_members.len(),
     );
 
     // Structural check: the exported handle from build_snapshot must be the compound
@@ -171,12 +167,9 @@ fn eval_cached_warm_auto_plus_const_let_back_props() {
     // Uses Value::Scalar since DimensionalSolver writes solved Length params
     // back as Scalar { si_value, dimension: LENGTH }.
     let x_id = ValueCellId::new("WarmAutoConstLet", "x");
-    let x_val = values.get(&x_id).unwrap_or_else(|| {
-        panic!(
-            "x must be in the values map after eval_cached; map has {} entries",
-            values.len()
-        )
-    });
+    let x_val = values
+        .get(&x_id)
+        .unwrap_or_else(|| panic!("x must be in the values map after eval_cached; map has {} entries", values.len()));
     assert!(
         matches!(x_val, Value::Scalar { si_value, .. } if (*si_value - 0.01).abs() < 1e-9),
         "eval_cached back-prop: WarmAutoConstLet.x must resolve to 0.01 m (10mm, Determined); got {:?}",
@@ -185,12 +178,9 @@ fn eval_cached_warm_auto_plus_const_let_back_props() {
 
     // y must be re-evaluated to 15mm = 0.015 m (= x + 5mm = 10mm + 5mm).
     let y_id = ValueCellId::new("WarmAutoConstLet", "y");
-    let y_val = values.get(&y_id).unwrap_or_else(|| {
-        panic!(
-            "y must be in the values map after eval_cached; map has {} entries",
-            values.len()
-        )
-    });
+    let y_val = values
+        .get(&y_id)
+        .unwrap_or_else(|| panic!("y must be in the values map after eval_cached; map has {} entries", values.len()));
     assert!(
         matches!(y_val, Value::Scalar { si_value, .. } if (*si_value - 0.015).abs() < 1e-9),
         "eval_cached back-prop: WarmAutoConstLet.y must resolve to 0.015 m (15mm = x + 5mm); got {:?}",
@@ -202,24 +192,15 @@ fn eval_cached_warm_auto_plus_const_let_back_props() {
         .snapshot()
         .expect("snapshot must be set after eval_cached()");
     let (snap_x, x_det) = snap.values.get(&x_id).unwrap_or_else(|| {
-        panic!(
-            "x must be in snapshot after eval_cached; keys: {:?}",
-            snap.values
-                .iter()
-                .map(|(k, _)| format!("{k}"))
-                .collect::<Vec<_>>()
-        )
+        panic!("x must be in snapshot after eval_cached; keys: {:?}", snap.values.iter().map(|(k,_)| format!("{k}")).collect::<Vec<_>>())
     });
     assert!(
         matches!(snap_x, Value::Scalar { si_value, .. } if (*si_value - 0.01).abs() < 1e-9),
-        "snapshot.x must be 0.01 m (10mm) after back-prop; got {:?}",
-        snap_x,
+        "snapshot.x must be 0.01 m (10mm) after back-prop; got {:?}", snap_x,
     );
     assert_eq!(
-        *x_det,
-        reify_ir::DeterminacyState::Determined,
-        "snapshot.x must be Determined after back-prop; got {:?}",
-        x_det,
+        *x_det, reify_ir::DeterminacyState::Determined,
+        "snapshot.x must be Determined after back-prop; got {:?}", x_det,
     );
 }
 

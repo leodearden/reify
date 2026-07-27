@@ -117,10 +117,7 @@ fn lit_transform(q: [f64; 4], t: [f64; 3]) -> CompiledExpr {
 /// Mirrors `lit_transform` so the AffineApply characterization input is
 /// byte-faithful to the production `Value::AffineMap` shape (task 3963).
 fn lit_affine_map(linear: [[f64; 3]; 3], translation: [f64; 3]) -> CompiledExpr {
-    let v = Value::AffineMap {
-        linear,
-        translation,
-    };
+    let v = Value::AffineMap { linear, translation };
     CompiledExpr::literal(v, reify_core::Type::affine_map(3))
 }
 
@@ -132,10 +129,7 @@ fn lit_affine_map(linear: [[f64; 3]; 3], translation: [f64; 3]) -> CompiledExpr 
 /// characterization input is byte-faithful to the production reference.
 fn lit_vec3(x: f64, y: f64, z: f64) -> CompiledExpr {
     let v = Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)]);
-    CompiledExpr::literal(
-        v,
-        reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-    )
+    CompiledExpr::literal(v, reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()))
 }
 
 /// Build a `CompiledExpr` literal wrapping an arbitrary `Value`. The literal's
@@ -149,11 +143,7 @@ fn lit_raw(v: Value) -> CompiledExpr {
 /// A `Value::Vector` of 3 dimensionless `Real` components (accepted by the
 /// production `point3_components` decoder used by `decode_axis`/`decode_plane`).
 fn vec3_value(c: [f64; 3]) -> Value {
-    Value::Vector(vec![
-        Value::Real(c[0]),
-        Value::Real(c[1]),
-        Value::Real(c[2]),
-    ])
+    Value::Vector(vec![Value::Real(c[0]), Value::Real(c[1]), Value::Real(c[2])])
 }
 
 /// A `Value::Axis` for the Circular pattern value-form sub-branch (decoded by
@@ -197,11 +187,7 @@ fn coord_args(coords: &[f64]) -> Vec<(String, CompiledExpr)> {
 fn snapshot(res: &Result<GeometryOp, String>, diags: &[Diagnostic]) -> String {
     let mut s = format!("{res:#?}");
     for d in diags {
-        s.push_str(&format!(
-            "\n[diag] {} {:?}",
-            d.severity.as_wire_str(),
-            d.message
-        ));
+        s.push_str(&format!("\n[diag] {} {:?}", d.severity.as_wire_str(), d.message));
     }
     s
 }
@@ -257,9 +243,7 @@ fn characterize(
     if actual == golden {
         None
     } else {
-        Some(format!(
-            ">>>BEGIN {label}>>>\n{actual}\n<<<END {label}<<<\n"
-        ))
+        Some(format!(">>>BEGIN {label}>>>\n{actual}\n<<<END {label}<<<\n"))
     }
 }
 
@@ -350,8 +334,7 @@ fn primitive_case(k: PrimitiveKind) -> CompiledGeometryOp {
 /// (`""`) are replaced with captured actuals during the step-2 GREEN bootstrap.
 fn primitive_golden(k: PrimitiveKind) -> &'static str {
     match k {
-        PrimitiveKind::Box => {
-            r#"Ok(
+        PrimitiveKind::Box => r#"Ok(
     Box {
         width: Real(
             0.01,
@@ -363,10 +346,8 @@ fn primitive_golden(k: PrimitiveKind) -> &'static str {
             0.03,
         ),
     },
-)"#
-        }
-        PrimitiveKind::Cylinder => {
-            r#"Ok(
+)"#,
+        PrimitiveKind::Cylinder => r#"Ok(
     Cylinder {
         radius: Real(
             0.01,
@@ -375,19 +356,15 @@ fn primitive_golden(k: PrimitiveKind) -> &'static str {
             0.02,
         ),
     },
-)"#
-        }
-        PrimitiveKind::Sphere => {
-            r#"Ok(
+)"#,
+        PrimitiveKind::Sphere => r#"Ok(
     Sphere {
         radius: Real(
             0.01,
         ),
     },
-)"#
-        }
-        PrimitiveKind::Tube => {
-            r#"Ok(
+)"#,
+        PrimitiveKind::Tube => r#"Ok(
     Tube {
         outer_r: Real(
             0.02,
@@ -399,10 +376,8 @@ fn primitive_golden(k: PrimitiveKind) -> &'static str {
             0.03,
         ),
     },
-)"#
-        }
-        PrimitiveKind::Cone => {
-            r#"Ok(
+)"#,
+        PrimitiveKind::Cone => r#"Ok(
     Cone {
         bottom_radius: Real(
             0.02,
@@ -414,10 +389,8 @@ fn primitive_golden(k: PrimitiveKind) -> &'static str {
             0.03,
         ),
     },
-)"#
-        }
-        PrimitiveKind::Wedge => {
-            r#"Ok(
+)"#,
+        PrimitiveKind::Wedge => r#"Ok(
     Wedge {
         width: Real(
             0.02,
@@ -432,10 +405,8 @@ fn primitive_golden(k: PrimitiveKind) -> &'static str {
             0.01,
         ),
     },
-)"#
-        }
-        PrimitiveKind::Torus => {
-            r#"Ok(
+)"#,
+        PrimitiveKind::Torus => r#"Ok(
     Torus {
         major_radius: Real(
             0.03,
@@ -444,10 +415,8 @@ fn primitive_golden(k: PrimitiveKind) -> &'static str {
             0.01,
         ),
     },
-)"#
-        }
-        PrimitiveKind::HalfSpace => {
-            r#"Ok(
+)"#,
+        PrimitiveKind::HalfSpace => r#"Ok(
     HalfSpace {
         px: Real(
             0.0,
@@ -468,8 +437,7 @@ fn primitive_golden(k: PrimitiveKind) -> &'static str {
             1.0,
         ),
     },
-)"#
-        }
+)"#,
     }
 }
 
@@ -478,20 +446,11 @@ fn characterize_primitive_family() {
     // Tautological for [PrimitiveKind; 8] — fires only if the static-array type
     // annotation and this literal are manually out of sync. Real coverage
     // enforcement is the no-`_` match in primitive_case / primitive_golden.
-    assert_eq!(
-        ALL_PRIMITIVE.len(),
-        8,
-        "ALL_PRIMITIVE size and annotation mismatch"
-    );
+    assert_eq!(ALL_PRIMITIVE.len(), 8, "ALL_PRIMITIVE size and annotation mismatch");
     let drift: Vec<String> = ALL_PRIMITIVE
         .iter()
         .filter_map(|&k| {
-            characterize(
-                &format!("primitive:{k}"),
-                &primitive_case(k),
-                &[],
-                primitive_golden(k),
-            )
+            characterize(&format!("primitive:{k}"), &primitive_case(k), &[], primitive_golden(k))
         })
         .collect();
     assert!(drift.is_empty(), "{}", drift_report(&drift));
@@ -511,11 +470,8 @@ fn boolean_step_handles() -> Vec<GeometryHandleId> {
 /// The exhaustive match in `boolean_golden` is the sole compile-time tripwire.
 /// The `assert_eq!(len(), 3)` is tautological for `[BooleanOp; 3]`; no
 /// `VARIANT_COUNT` cross-check exists for `BooleanOp`.
-const ALL_BOOLEAN: [BooleanOp; 3] = [
-    BooleanOp::Union,
-    BooleanOp::Difference,
-    BooleanOp::Intersection,
-];
+const ALL_BOOLEAN: [BooleanOp; 3] =
+    [BooleanOp::Union, BooleanOp::Difference, BooleanOp::Intersection];
 
 /// Build a `Boolean` op for `op` with both operands resolvable via
 /// `boolean_step_handles` (`left = Step(0)`, `right = Step(1)`).
@@ -531,8 +487,7 @@ fn boolean_case(op: BooleanOp) -> CompiledGeometryOp {
 /// a golden is a compile error. Placeholders replaced during the GREEN bootstrap.
 fn boolean_golden(op: BooleanOp) -> &'static str {
     match op {
-        BooleanOp::Union => {
-            r#"Ok(
+        BooleanOp::Union => r#"Ok(
     Union {
         left: GeometryHandleId(
             10,
@@ -541,10 +496,8 @@ fn boolean_golden(op: BooleanOp) -> &'static str {
             11,
         ),
     },
-)"#
-        }
-        BooleanOp::Difference => {
-            r#"Ok(
+)"#,
+        BooleanOp::Difference => r#"Ok(
     Difference {
         left: GeometryHandleId(
             10,
@@ -553,10 +506,8 @@ fn boolean_golden(op: BooleanOp) -> &'static str {
             11,
         ),
     },
-)"#
-        }
-        BooleanOp::Intersection => {
-            r#"Ok(
+)"#,
+        BooleanOp::Intersection => r#"Ok(
     Intersection {
         left: GeometryHandleId(
             10,
@@ -565,29 +516,19 @@ fn boolean_golden(op: BooleanOp) -> &'static str {
             11,
         ),
     },
-)"#
-        }
+)"#,
     }
 }
 
 #[test]
 fn characterize_boolean_family() {
     // Tautological for [BooleanOp; 3] — see ALL_BOOLEAN doc for rationale.
-    assert_eq!(
-        ALL_BOOLEAN.len(),
-        3,
-        "ALL_BOOLEAN size and annotation mismatch"
-    );
+    assert_eq!(ALL_BOOLEAN.len(), 3, "ALL_BOOLEAN size and annotation mismatch");
     let handles = boolean_step_handles();
     let drift: Vec<String> = ALL_BOOLEAN
         .iter()
         .filter_map(|&op| {
-            characterize(
-                &format!("boolean:{op}"),
-                &boolean_case(op),
-                &handles,
-                boolean_golden(op),
-            )
+            characterize(&format!("boolean:{op}"), &boolean_case(op), &handles, boolean_golden(op))
         })
         .collect();
     assert!(drift.is_empty(), "{}", drift_report(&drift));
@@ -670,8 +611,7 @@ fn transform_case(k: TransformKind) -> CompiledGeometryOp {
 /// replaced during the GREEN bootstrap.
 fn transform_golden(k: TransformKind) -> &'static str {
     match k {
-        TransformKind::Translate => {
-            r#"Ok(
+        TransformKind::Translate => r#"Ok(
     Translate {
         target: GeometryHandleId(
             42,
@@ -680,10 +620,8 @@ fn transform_golden(k: TransformKind) -> &'static str {
         dy: 0.02,
         dz: 0.03,
     },
-)"#
-        }
-        TransformKind::Rotate => {
-            r#"Ok(
+)"#,
+        TransformKind::Rotate => r#"Ok(
     Rotate {
         target: GeometryHandleId(
             42,
@@ -695,20 +633,16 @@ fn transform_golden(k: TransformKind) -> &'static str {
         ],
         angle_rad: 1.0,
     },
-)"#
-        }
-        TransformKind::Scale => {
-            r#"Ok(
+)"#,
+        TransformKind::Scale => r#"Ok(
     Scale {
         target: GeometryHandleId(
             42,
         ),
         factor: 2.0,
     },
-)"#
-        }
-        TransformKind::RotateAround => {
-            r#"Ok(
+)"#,
+        TransformKind::RotateAround => r#"Ok(
     RotateAround {
         target: GeometryHandleId(
             42,
@@ -725,10 +659,8 @@ fn transform_golden(k: TransformKind) -> &'static str {
         ],
         angle_rad: 1.0,
     },
-)"#
-        }
-        TransformKind::ApplyTransform => {
-            r#"Ok(
+)"#,
+        TransformKind::ApplyTransform => r#"Ok(
     ApplyTransform {
         target: GeometryHandleId(
             42,
@@ -745,10 +677,8 @@ fn transform_golden(k: TransformKind) -> &'static str {
             0.03,
         ],
     },
-)"#
-        }
-        TransformKind::AffineApply => {
-            r#"Ok(
+)"#,
+        TransformKind::AffineApply => r#"Ok(
     AffineApply {
         target: GeometryHandleId(
             42,
@@ -776,10 +706,8 @@ fn transform_golden(k: TransformKind) -> &'static str {
             0.03,
         ],
     },
-)"#
-        }
-        TransformKind::ScaleNonUniform => {
-            r#"Ok(
+)"#,
+        TransformKind::ScaleNonUniform => r#"Ok(
     ScaleNonUniform {
         target: GeometryHandleId(
             42,
@@ -788,29 +716,19 @@ fn transform_golden(k: TransformKind) -> &'static str {
         sy: 1.0,
         sz: 0.5,
     },
-)"#
-        }
+)"#,
     }
 }
 
 #[test]
 fn characterize_transform_family() {
     // Tautological for [TransformKind; 7] — see ALL_TRANSFORM doc for rationale.
-    assert_eq!(
-        ALL_TRANSFORM.len(),
-        7,
-        "ALL_TRANSFORM size and annotation mismatch"
-    );
+    assert_eq!(ALL_TRANSFORM.len(), 7, "ALL_TRANSFORM size and annotation mismatch");
     let handles = transform_step_handles();
     let drift: Vec<String> = ALL_TRANSFORM
         .iter()
         .filter_map(|&k| {
-            characterize(
-                &format!("transform:{k}"),
-                &transform_case(k),
-                &handles,
-                transform_golden(k),
-            )
+            characterize(&format!("transform:{k}"), &transform_case(k), &handles, transform_golden(k))
         })
         .collect();
     assert!(drift.is_empty(), "{}", drift_report(&drift));
@@ -851,11 +769,8 @@ const ALL_MODIFY: [ModifyKind; 9] = [
 /// The Modify kinds with a distinct 2-arg (no selector) vs 3-arg (edges
 /// selector) code path. The base `modify_case` exercises the 2-arg form; the
 /// `:edges` extra cases below exercise the `Some(expr)` selector branch.
-const MODIFY_EDGES_VARIANTS: [ModifyKind; 3] = [
-    ModifyKind::Fillet,
-    ModifyKind::Chamfer,
-    ModifyKind::ChamferAsymmetric,
-];
+const MODIFY_EDGES_VARIANTS: [ModifyKind; 3] =
+    [ModifyKind::Fillet, ModifyKind::Chamfer, ModifyKind::ChamferAsymmetric];
 
 /// Build a representative base `Modify` op for `k` (the 2-arg / no-selector form
 /// for the Fillet/Chamfer/ChamferAsymmetric kinds). EXHAUSTIVE match (no `_`):
@@ -887,12 +802,7 @@ fn modify_case(k: ModifyKind) -> CompiledGeometryOp {
 /// resolver's anti-zero-edges guard (Err + `EmptyEdgeSelection` diagnostic) —
 /// distinct from the base 2-arg `Ok`, characterizing both branches.
 fn modify_case_with_edges(k: ModifyKind) -> CompiledGeometryOp {
-    let CompiledGeometryOp::Modify {
-        kind,
-        target,
-        mut args,
-    } = modify_case(k)
-    else {
+    let CompiledGeometryOp::Modify { kind, target, mut args } = modify_case(k) else {
         unreachable!("modify_case always builds a Modify op");
     };
     args.push(("edges".to_string(), lit_raw(Value::List(vec![]))));
@@ -903,8 +813,7 @@ fn modify_case_with_edges(k: ModifyKind) -> CompiledGeometryOp {
 /// `_`). Placeholders replaced during the GREEN bootstrap.
 fn modify_golden(k: ModifyKind) -> &'static str {
     match k {
-        ModifyKind::Fillet => {
-            r#"Ok(
+        ModifyKind::Fillet => r#"Ok(
     Fillet {
         target: GeometryHandleId(
             50,
@@ -914,10 +823,8 @@ fn modify_golden(k: ModifyKind) -> &'static str {
             0.005,
         ),
     },
-)"#
-        }
-        ModifyKind::Chamfer => {
-            r#"Ok(
+)"#,
+        ModifyKind::Chamfer => r#"Ok(
     Chamfer {
         target: GeometryHandleId(
             50,
@@ -927,10 +834,8 @@ fn modify_golden(k: ModifyKind) -> &'static str {
             0.005,
         ),
     },
-)"#
-        }
-        ModifyKind::ChamferAsymmetric => {
-            r#"Ok(
+)"#,
+        ModifyKind::ChamferAsymmetric => r#"Ok(
     ChamferAsymmetric {
         target: GeometryHandleId(
             50,
@@ -943,10 +848,8 @@ fn modify_golden(k: ModifyKind) -> &'static str {
             0.006,
         ),
     },
-)"#
-        }
-        ModifyKind::Shell => {
-            r#"Ok(
+)"#,
+        ModifyKind::Shell => r#"Ok(
     Shell {
         target: GeometryHandleId(
             50,
@@ -957,10 +860,8 @@ fn modify_golden(k: ModifyKind) -> &'static str {
         faces_to_remove: [],
         open_face_handles: [],
     },
-)"#
-        }
-        ModifyKind::Draft => {
-            r#"Ok(
+)"#,
+        ModifyKind::Draft => r#"Ok(
     Draft {
         target: GeometryHandleId(
             50,
@@ -973,10 +874,8 @@ fn modify_golden(k: ModifyKind) -> &'static str {
             50,
         ),
     },
-)"#
-        }
-        ModifyKind::Thicken => {
-            r#"Ok(
+)"#,
+        ModifyKind::Thicken => r#"Ok(
     Thicken {
         target: GeometryHandleId(
             50,
@@ -985,10 +884,8 @@ fn modify_golden(k: ModifyKind) -> &'static str {
             0.003,
         ),
     },
-)"#
-        }
-        ModifyKind::ZoneSlab => {
-            r#"Ok(
+)"#,
+        ModifyKind::ZoneSlab => r#"Ok(
     ZoneSlab {
         target: GeometryHandleId(
             50,
@@ -997,10 +894,8 @@ fn modify_golden(k: ModifyKind) -> &'static str {
             0.01,
         ),
     },
-)"#
-        }
-        ModifyKind::OffsetSolid => {
-            r#"Ok(
+)"#,
+        ModifyKind::OffsetSolid => r#"Ok(
     OffsetSolid {
         target: GeometryHandleId(
             50,
@@ -1009,10 +904,8 @@ fn modify_golden(k: ModifyKind) -> &'static str {
             0.002,
         ),
     },
-)"#
-        }
-        ModifyKind::OffsetCurve => {
-            r#"Ok(
+)"#,
+        ModifyKind::OffsetCurve => r#"Ok(
     OffsetCurve {
         target: GeometryHandleId(
             50,
@@ -1023,8 +916,7 @@ fn modify_golden(k: ModifyKind) -> &'static str {
         reference: None,
         direction: None,
     },
-)"#
-        }
+)"#,
     }
 }
 
@@ -1033,24 +925,18 @@ fn modify_golden(k: ModifyKind) -> &'static str {
 /// base-form coverage tripwire is `modify_golden`, which is exhaustive over 9).
 fn modify_edges_golden(k: ModifyKind) -> &'static str {
     match k {
-        ModifyKind::Fillet => {
-            r#"Err(
+        ModifyKind::Fillet => r#"Err(
     "fillet: edge selector resolved to zero edges",
 )
-[diag] Error "fillet(solid, edges, radius): edge selector resolved to zero edges — refusing to silently fillet all edges""#
-        }
-        ModifyKind::Chamfer => {
-            r#"Err(
+[diag] Error "fillet(solid, edges, radius): edge selector resolved to zero edges — refusing to silently fillet all edges""#,
+        ModifyKind::Chamfer => r#"Err(
     "chamfer: edge selector resolved to zero edges",
 )
-[diag] Error "chamfer(solid, edges, distance): edge selector resolved to zero edges — refusing to silently chamfer all edges""#
-        }
-        ModifyKind::ChamferAsymmetric => {
-            r#"Err(
+[diag] Error "chamfer(solid, edges, distance): edge selector resolved to zero edges — refusing to silently chamfer all edges""#,
+        ModifyKind::ChamferAsymmetric => r#"Err(
     "chamfer_asymmetric: edge selector resolved to zero edges",
 )
-[diag] Error "chamfer_asymmetric(solid, edges, d1, d2): edge selector resolved to zero edges — refusing to silently chamfer all edges""#
-        }
+[diag] Error "chamfer_asymmetric(solid, edges, d1, d2): edge selector resolved to zero edges — refusing to silently chamfer all edges""#,
         other => unreachable!("not an edges-selector Modify variant: {other}"),
     }
 }
@@ -1069,12 +955,7 @@ fn characterize_modify_family() {
     let mut drift: Vec<String> = ALL_MODIFY
         .iter()
         .filter_map(|&k| {
-            characterize(
-                &format!("modify:{k}"),
-                &modify_case(k),
-                &handles,
-                modify_golden(k),
-            )
+            characterize(&format!("modify:{k}"), &modify_case(k), &handles, modify_golden(k))
         })
         .collect();
     // EXTRA: the 3-arg (edges-selector) branch of Fillet/Chamfer/ChamferAsymmetric.
@@ -1183,10 +1064,7 @@ fn pattern_case(k: PatternKind) -> CompiledGeometryOp {
 fn pattern_case_value(k: PatternKind) -> CompiledGeometryOp {
     let args = match k {
         PatternKind::Circular => vec![
-            (
-                "axis".to_string(),
-                lit_raw(axis_value([0.01, 0.02, 0.03], [0.0, 0.0, 2.0])),
-            ),
+            ("axis".to_string(), lit_raw(axis_value([0.01, 0.02, 0.03], [0.0, 0.0, 2.0]))),
             ("count".to_string(), lit(4.0)),
             ("angle".to_string(), lit(90.0)),
         ],
@@ -1209,8 +1087,7 @@ fn pattern_golden(k: PatternKind) -> &'static str {
     match k {
         PatternKind::Linear => include_str!("golden/pattern_linear_base.txt"),
         PatternKind::Circular => include_str!("golden/pattern_circular_base.txt"),
-        PatternKind::Mirror => {
-            r#"Ok(
+        PatternKind::Mirror => r#"Ok(
     Mirror {
         target: GeometryHandleId(
             70,
@@ -1226,11 +1103,9 @@ fn pattern_golden(k: PatternKind) -> &'static str {
             1.0,
         ],
     },
-)"#
-        }
+)"#,
         PatternKind::Linear2D => include_str!("golden/pattern_linear2d_base.txt"),
-        PatternKind::Arbitrary => {
-            r#"Ok(
+        PatternKind::Arbitrary => r#"Ok(
     ArbitraryPattern {
         target: GeometryHandleId(
             70,
@@ -1251,8 +1126,7 @@ fn pattern_golden(k: PatternKind) -> &'static str {
             ),
         ],
     },
-)"#
-        }
+)"#,
     }
 }
 
@@ -1260,8 +1134,7 @@ fn pattern_golden(k: PatternKind) -> &'static str {
 fn pattern_value_golden(k: PatternKind) -> &'static str {
     match k {
         PatternKind::Circular => include_str!("golden/pattern_circular_value.txt"),
-        PatternKind::Mirror => {
-            r#"Ok(
+        PatternKind::Mirror => r#"Ok(
     Mirror {
         target: GeometryHandleId(
             70,
@@ -1277,8 +1150,7 @@ fn pattern_value_golden(k: PatternKind) -> &'static str {
             1.0,
         ],
     },
-)"#
-        }
+)"#,
         other => unreachable!("not a value-form Pattern variant: {other}"),
     }
 }
@@ -1286,21 +1158,12 @@ fn pattern_value_golden(k: PatternKind) -> &'static str {
 #[test]
 fn characterize_pattern_family() {
     // Tautological for [PatternKind; 5] — see ALL_PATTERN doc for rationale.
-    assert_eq!(
-        ALL_PATTERN.len(),
-        5,
-        "ALL_PATTERN size and annotation mismatch"
-    );
+    assert_eq!(ALL_PATTERN.len(), 5, "ALL_PATTERN size and annotation mismatch");
     let handles = pattern_step_handles();
     let mut drift: Vec<String> = ALL_PATTERN
         .iter()
         .filter_map(|&k| {
-            characterize(
-                &format!("pattern:{k}"),
-                &pattern_case(k),
-                &handles,
-                pattern_golden(k),
-            )
+            characterize(&format!("pattern:{k}"), &pattern_case(k), &handles, pattern_golden(k))
         })
         .collect();
     // EXTRA: the Value-form (axis/plane) sub-branch of Circular/Mirror.
@@ -1324,11 +1187,7 @@ fn characterize_pattern_family() {
 
 /// Step handles backing the Sweep profile/path/guide `GeomRef::Step(0..3)`.
 fn sweep_step_handles() -> Vec<GeometryHandleId> {
-    vec![
-        GeometryHandleId(60),
-        GeometryHandleId(61),
-        GeometryHandleId(62),
-    ]
+    vec![GeometryHandleId(60), GeometryHandleId(61), GeometryHandleId(62)]
 }
 
 /// Every `SweepKind` variant, iterated by `characterize_sweep_family`.
@@ -1393,10 +1252,7 @@ fn sweep_case(k: SweepKind) -> CompiledGeometryOp {
                 ("dx".to_string(), lit(0.0)),
                 ("dy".to_string(), lit(0.0)),
                 ("dz".to_string(), lit(1.0)),
-                (
-                    "direction".to_string(),
-                    lit_raw(Value::String("positive".into())),
-                ),
+                ("direction".to_string(), lit_raw(Value::String("positive".into()))),
             ],
         ),
     };
@@ -1411,8 +1267,7 @@ fn sweep_case(k: SweepKind) -> CompiledGeometryOp {
 /// replaced during the GREEN bootstrap.
 fn sweep_golden(k: SweepKind) -> &'static str {
     match k {
-        SweepKind::Loft => {
-            r#"Ok(
+        SweepKind::Loft => r#"Ok(
     Loft {
         profiles: [
             GeometryHandleId(
@@ -1423,10 +1278,8 @@ fn sweep_golden(k: SweepKind) -> &'static str {
             ),
         ],
     },
-)"#
-        }
-        SweepKind::Extrude => {
-            r#"Ok(
+)"#,
+        SweepKind::Extrude => r#"Ok(
     Extrude {
         profile: GeometryHandleId(
             60,
@@ -1435,10 +1288,8 @@ fn sweep_golden(k: SweepKind) -> &'static str {
             0.02,
         ),
     },
-)"#
-        }
-        SweepKind::Revolve => {
-            r#"Ok(
+)"#,
+        SweepKind::Revolve => r#"Ok(
     Revolve {
         profile: GeometryHandleId(
             60,
@@ -1455,10 +1306,8 @@ fn sweep_golden(k: SweepKind) -> &'static str {
         ],
         angle_rad: 1.0,
     },
-)"#
-        }
-        SweepKind::Sweep => {
-            r#"Ok(
+)"#,
+        SweepKind::Sweep => r#"Ok(
     Sweep {
         profile: GeometryHandleId(
             60,
@@ -1467,10 +1316,8 @@ fn sweep_golden(k: SweepKind) -> &'static str {
             61,
         ),
     },
-)"#
-        }
-        SweepKind::ExtrudeSymmetric => {
-            r#"Ok(
+)"#,
+        SweepKind::ExtrudeSymmetric => r#"Ok(
     ExtrudeSymmetric {
         profile: GeometryHandleId(
             60,
@@ -1479,10 +1326,8 @@ fn sweep_golden(k: SweepKind) -> &'static str {
             0.02,
         ),
     },
-)"#
-        }
-        SweepKind::SweepGuided => {
-            r#"Ok(
+)"#,
+        SweepKind::SweepGuided => r#"Ok(
     SweepGuided {
         profile: GeometryHandleId(
             60,
@@ -1494,10 +1339,8 @@ fn sweep_golden(k: SweepKind) -> &'static str {
             62,
         ),
     },
-)"#
-        }
-        SweepKind::LoftGuided => {
-            r#"Ok(
+)"#,
+        SweepKind::LoftGuided => r#"Ok(
     LoftGuided {
         profiles: [
             GeometryHandleId(
@@ -1513,10 +1356,8 @@ fn sweep_golden(k: SweepKind) -> &'static str {
             ),
         ],
     },
-)"#
-        }
-        SweepKind::Pipe => {
-            r#"Ok(
+)"#,
+        SweepKind::Pipe => r#"Ok(
     Pipe {
         path: GeometryHandleId(
             60,
@@ -1525,10 +1366,8 @@ fn sweep_golden(k: SweepKind) -> &'static str {
             0.005,
         ),
     },
-)"#
-        }
-        SweepKind::ExtrudeInfinite => {
-            r#"Ok(
+)"#,
+        SweepKind::ExtrudeInfinite => r#"Ok(
     ExtrudeInfinite {
         profile: GeometryHandleId(
             60,
@@ -1540,8 +1379,7 @@ fn sweep_golden(k: SweepKind) -> &'static str {
         ],
         both: false,
     },
-)"#
-        }
+)"#,
     }
 }
 
@@ -1553,12 +1391,7 @@ fn characterize_sweep_family() {
     let drift: Vec<String> = ALL_SWEEP
         .iter()
         .filter_map(|&k| {
-            characterize(
-                &format!("sweep:{k}"),
-                &sweep_case(k),
-                &handles,
-                sweep_golden(k),
-            )
+            characterize(&format!("sweep:{k}"), &sweep_case(k), &handles, sweep_golden(k))
         })
         .collect();
     assert!(drift.is_empty(), "{}", drift_report(&drift));
@@ -1631,8 +1464,7 @@ fn curve_case(k: CurveKind) -> CompiledGeometryOp {
 /// replaced during the GREEN bootstrap.
 fn curve_golden(k: CurveKind) -> &'static str {
     match k {
-        CurveKind::LineSegment => {
-            r#"Ok(
+        CurveKind::LineSegment => r#"Ok(
     LineSegment {
         x1: 0.0,
         y1: 0.0,
@@ -1641,10 +1473,8 @@ fn curve_golden(k: CurveKind) -> &'static str {
         y2: 0.02,
         z2: 0.03,
     },
-)"#
-        }
-        CurveKind::Arc => {
-            r#"Ok(
+)"#,
+        CurveKind::Arc => r#"Ok(
     Arc {
         center: [
             0.0,
@@ -1660,19 +1490,15 @@ fn curve_golden(k: CurveKind) -> &'static str {
             1.0,
         ],
     },
-)"#
-        }
-        CurveKind::Helix => {
-            r#"Ok(
+)"#,
+        CurveKind::Helix => r#"Ok(
     Helix {
         radius: 0.01,
         pitch: 0.005,
         height: 0.05,
     },
-)"#
-        }
-        CurveKind::InterpCurve => {
-            r#"Ok(
+)"#,
+        CurveKind::InterpCurve => r#"Ok(
     InterpCurve {
         points: [
             [
@@ -1687,10 +1513,8 @@ fn curve_golden(k: CurveKind) -> &'static str {
             ],
         ],
     },
-)"#
-        }
-        CurveKind::BezierCurve => {
-            r#"Ok(
+)"#,
+        CurveKind::BezierCurve => r#"Ok(
     BezierCurve {
         control_points: [
             [
@@ -1710,10 +1534,8 @@ fn curve_golden(k: CurveKind) -> &'static str {
             ],
         ],
     },
-)"#
-        }
-        CurveKind::NurbsCurve => {
-            r#"Ok(
+)"#,
+        CurveKind::NurbsCurve => r#"Ok(
     NurbsCurve {
         control_points: [
             [
@@ -1739,8 +1561,7 @@ fn curve_golden(k: CurveKind) -> &'static str {
         ],
         degree: 1,
     },
-)"#
-        }
+)"#,
     }
 }
 
@@ -1750,7 +1571,9 @@ fn characterize_curve_family() {
     assert_eq!(ALL_CURVE.len(), 6, "ALL_CURVE size and annotation mismatch");
     let drift: Vec<String> = ALL_CURVE
         .iter()
-        .filter_map(|&k| characterize(&format!("curve:{k}"), &curve_case(k), &[], curve_golden(k)))
+        .filter_map(|&k| {
+            characterize(&format!("curve:{k}"), &curve_case(k), &[], curve_golden(k))
+        })
         .collect();
     assert!(drift.is_empty(), "{}", drift_report(&drift));
 }
@@ -1794,8 +1617,7 @@ fn profile_case(k: ProfileKind) -> CompiledGeometryOp {
 /// replaced during the GREEN bootstrap.
 fn profile_golden(k: ProfileKind) -> &'static str {
     match k {
-        ProfileKind::Rectangle => {
-            r#"Ok(
+        ProfileKind::Rectangle => r#"Ok(
     RectangleProfile {
         width: Real(
             0.02,
@@ -1804,19 +1626,15 @@ fn profile_golden(k: ProfileKind) -> &'static str {
             0.03,
         ),
     },
-)"#
-        }
-        ProfileKind::Circle => {
-            r#"Ok(
+)"#,
+        ProfileKind::Circle => r#"Ok(
     CircleProfile {
         radius: Real(
             0.01,
         ),
     },
-)"#
-        }
-        ProfileKind::Polygon => {
-            r#"Ok(
+)"#,
+        ProfileKind::Polygon => r#"Ok(
     PolygonProfile {
         points: [
             [
@@ -1833,10 +1651,8 @@ fn profile_golden(k: ProfileKind) -> &'static str {
             ],
         ],
     },
-)"#
-        }
-        ProfileKind::Ellipse => {
-            r#"Ok(
+)"#,
+        ProfileKind::Ellipse => r#"Ok(
     EllipseProfile {
         semi_major: Real(
             0.02,
@@ -1845,28 +1661,18 @@ fn profile_golden(k: ProfileKind) -> &'static str {
             0.01,
         ),
     },
-)"#
-        }
+)"#,
     }
 }
 
 #[test]
 fn characterize_profile_family() {
     // Tautological for [ProfileKind; 4] — see ALL_PROFILE doc for rationale.
-    assert_eq!(
-        ALL_PROFILE.len(),
-        4,
-        "ALL_PROFILE size and annotation mismatch"
-    );
+    assert_eq!(ALL_PROFILE.len(), 4, "ALL_PROFILE size and annotation mismatch");
     let drift: Vec<String> = ALL_PROFILE
         .iter()
         .filter_map(|&k| {
-            characterize(
-                &format!("profile:{k}"),
-                &profile_case(k),
-                &[],
-                profile_golden(k),
-            )
+            characterize(&format!("profile:{k}"), &profile_case(k), &[], profile_golden(k))
         })
         .collect();
     assert!(drift.is_empty(), "{}", drift_report(&drift));
@@ -1889,8 +1695,9 @@ fn surface_case(k: SurfaceKind) -> CompiledGeometryOp {
     let args = match k {
         SurfaceKind::Nurbs => {
             // Minimal 2×2 bilinear patch (degree 1×1, clamped knots).
-            let pt =
-                |x, y, z| Value::Point(vec![Value::length(x), Value::length(y), Value::length(z)]);
+            let pt = |x, y, z| {
+                Value::Point(vec![Value::length(x), Value::length(y), Value::length(z)])
+            };
             vec![
                 (
                     "control_points".to_string(),
@@ -1939,8 +1746,7 @@ fn surface_case(k: SurfaceKind) -> CompiledGeometryOp {
 /// IR node carrying the decoded control-point/weight grids and u/v knots+degrees.
 fn surface_golden(k: SurfaceKind) -> &'static str {
     match k {
-        SurfaceKind::Nurbs => {
-            r#"Ok(
+        SurfaceKind::Nurbs => r#"Ok(
     NurbsSurface {
         control_points: [
             [
@@ -1993,28 +1799,18 @@ fn surface_golden(k: SurfaceKind) -> &'static str {
         u_degree: 1,
         v_degree: 1,
     },
-)"#
-        }
+)"#,
     }
 }
 
 #[test]
 fn characterize_surface_family() {
     // Tautological for [SurfaceKind; 1] — see ALL_SURFACE doc for rationale.
-    assert_eq!(
-        ALL_SURFACE.len(),
-        1,
-        "ALL_SURFACE size and annotation mismatch"
-    );
+    assert_eq!(ALL_SURFACE.len(), 1, "ALL_SURFACE size and annotation mismatch");
     let drift: Vec<String> = ALL_SURFACE
         .iter()
         .filter_map(|&k| {
-            characterize(
-                &format!("surface:{k}"),
-                &surface_case(k),
-                &[],
-                surface_golden(k),
-            )
+            characterize(&format!("surface:{k}"), &surface_case(k), &[], surface_golden(k))
         })
         .collect();
     assert!(drift.is_empty(), "{}", drift_report(&drift));
@@ -2073,11 +1869,7 @@ fn isosurface_golden(_k: ()) -> &'static str {
 #[test]
 fn characterize_isosurface_family() {
     // Tautological for [(); 1] — see ALL_ISOSURFACE doc for rationale.
-    assert_eq!(
-        ALL_ISOSURFACE.len(),
-        1,
-        "ALL_ISOSURFACE size and annotation mismatch"
-    );
+    assert_eq!(ALL_ISOSURFACE.len(), 1, "ALL_ISOSURFACE size and annotation mismatch");
     let handles = isosurface_step_handles();
     let drift: Vec<String> = ALL_ISOSURFACE
         .iter()
@@ -2152,52 +1944,16 @@ fn coverage_all_variant_families_and_nested_kinds() {
     // document the expected census and catch any manual desync between the literal
     // and the type annotation; but they cannot detect a variant omitted from ALL_*.
     // Modify's separate VARIANT_COUNT assert below IS a real runtime tripwire.
-    assert_eq!(
-        ALL_PRIMITIVE.len(),
-        8,
-        "ALL_PRIMITIVE census (tautological — real tripwire is exhaustive match)"
-    );
-    assert_eq!(
-        ALL_BOOLEAN.len(),
-        3,
-        "ALL_BOOLEAN census (tautological — real tripwire is exhaustive match)"
-    );
+    assert_eq!(ALL_PRIMITIVE.len(), 8, "ALL_PRIMITIVE census (tautological — real tripwire is exhaustive match)");
+    assert_eq!(ALL_BOOLEAN.len(), 3, "ALL_BOOLEAN census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_MODIFY.len(), 9, "ALL_MODIFY census");
-    assert_eq!(
-        ALL_TRANSFORM.len(),
-        7,
-        "ALL_TRANSFORM census (tautological — real tripwire is exhaustive match)"
-    );
-    assert_eq!(
-        ALL_PATTERN.len(),
-        5,
-        "ALL_PATTERN census (tautological — real tripwire is exhaustive match)"
-    );
-    assert_eq!(
-        ALL_SWEEP.len(),
-        9,
-        "ALL_SWEEP census (tautological — real tripwire is exhaustive match)"
-    );
-    assert_eq!(
-        ALL_CURVE.len(),
-        6,
-        "ALL_CURVE census (tautological — real tripwire is exhaustive match)"
-    );
-    assert_eq!(
-        ALL_PROFILE.len(),
-        4,
-        "ALL_PROFILE census (tautological — real tripwire is exhaustive match)"
-    );
-    assert_eq!(
-        ALL_SURFACE.len(),
-        1,
-        "ALL_SURFACE census (tautological — real tripwire is exhaustive match)"
-    );
-    assert_eq!(
-        ALL_ISOSURFACE.len(),
-        1,
-        "ALL_ISOSURFACE census (tautological — real tripwire is exhaustive match)"
-    );
+    assert_eq!(ALL_TRANSFORM.len(), 7, "ALL_TRANSFORM census (tautological — real tripwire is exhaustive match)");
+    assert_eq!(ALL_PATTERN.len(), 5, "ALL_PATTERN census (tautological — real tripwire is exhaustive match)");
+    assert_eq!(ALL_SWEEP.len(), 9, "ALL_SWEEP census (tautological — real tripwire is exhaustive match)");
+    assert_eq!(ALL_CURVE.len(), 6, "ALL_CURVE census (tautological — real tripwire is exhaustive match)");
+    assert_eq!(ALL_PROFILE.len(), 4, "ALL_PROFILE census (tautological — real tripwire is exhaustive match)");
+    assert_eq!(ALL_SURFACE.len(), 1, "ALL_SURFACE census (tautological — real tripwire is exhaustive match)");
+    assert_eq!(ALL_ISOSURFACE.len(), 1, "ALL_ISOSURFACE census (tautological — real tripwire is exhaustive match)");
 
     // Modify: real runtime cross-check against the compiler's source-of-truth.
     assert_eq!(
@@ -2222,19 +1978,12 @@ fn coverage_all_variant_families_and_nested_kinds() {
         ALL_SURFACE.len(),
         ALL_ISOSURFACE.len(),
     ];
-    assert_eq!(
-        family_widths.len(),
-        10,
-        "CompiledGeometryOp variant family count"
-    );
+    assert_eq!(family_widths.len(), 10, "CompiledGeometryOp variant family count");
 
     // Total nested-kind census across all families. Because the per-family widths
     // are tautological for statically-typed arrays (except Modify), this sum also
     // cannot independently detect a variant omitted from ALL_*; it documents the
     // expected census and catches any manual size change not reflected here.
     let total: usize = family_widths.iter().sum();
-    assert_eq!(
-        total, 53,
-        "total nested-kind census; update if any ALL_* array is resized"
-    );
+    assert_eq!(total, 53, "total nested-kind census; update if any ALL_* array is resized");
 }

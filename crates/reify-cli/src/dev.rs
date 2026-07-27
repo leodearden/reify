@@ -12,7 +12,7 @@ use reify_core::{
 use reify_eval::cache::NodeId;
 use reify_ir::{NodeKind, NodeTraits, NodeTraitsMap};
 use reify_runtime::commitment::{NodeCommitmentOverride, NodePolicyOverrides};
-use reify_runtime::{Priority, traits_to_priority};
+use reify_runtime::{traits_to_priority, Priority};
 
 /// Parse a `Kind(inner)` node-id string into a [`NodeId`].
 ///
@@ -258,10 +258,7 @@ mod tests {
     fn render_compute_foo() {
         let node_id = parse_node_id("Compute(foo)").unwrap();
         let out = render_inspection(&node_id);
-        assert!(
-            out.contains("kind: Compute"),
-            "missing 'kind: Compute' in:\n{out}"
-        );
+        assert!(out.contains("kind: Compute"), "missing 'kind: Compute' in:\n{out}");
         assert!(
             out.contains("declared traits: WARM_STARTABLE | COMMITTABLE"),
             "missing traits in:\n{out}"
@@ -288,10 +285,7 @@ mod tests {
     fn render_value_b_w() {
         let node_id = parse_node_id("Value(B.w)").unwrap();
         let out = render_inspection(&node_id);
-        assert!(
-            out.contains("kind: Value"),
-            "missing 'kind: Value' in:\n{out}"
-        );
+        assert!(out.contains("kind: Value"), "missing 'kind: Value' in:\n{out}");
         assert!(
             out.contains("declared traits: IMMEDIATE"),
             "missing 'declared traits: IMMEDIATE' in:\n{out}"

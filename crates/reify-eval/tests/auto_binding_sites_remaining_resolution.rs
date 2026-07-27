@@ -174,10 +174,7 @@ structure EParam {
 
     let snap_param = engine_param.snapshot().expect("snapshot for EParam");
     let id_param = ValueCellId::new("EParam", "m");
-    let (val_param, det_param) = snap_param
-        .values
-        .get(&id_param)
-        .expect("EParam.m in snapshot");
+    let (val_param, det_param) = snap_param.values.get(&id_param).expect("EParam.m in snapshot");
     assert_eq!(
         *det_param,
         DeterminacyState::Determined,
@@ -739,10 +736,7 @@ structure Parent {
     // Confirm the cold-eval fix pinned gain to 0.007 before we test the warm path.
     let snap_cold = engine.snapshot().expect("snapshot after cold eval");
     let conn_id = ValueCellId::new("Parent.__connector_0", "gain");
-    let (_, det_cold) = snap_cold
-        .values
-        .get(&conn_id)
-        .expect("gain in cold snapshot");
+    let (_, det_cold) = snap_cold.values.get(&conn_id).expect("gain in cold snapshot");
     assert_eq!(
         *det_cold,
         DeterminacyState::Determined,
@@ -836,9 +830,7 @@ structure Parent {
 #[test]
 fn connector_internal_strict_auto_resolves_when_parent_declared_before_connector() {
     use reify_core::ModulePath;
-    use reify_test_support::{
-        CompiledModuleBuilder, TopologyTemplateBuilder, eq, literal, mm, value_ref,
-    };
+    use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, eq, literal, mm, value_ref};
 
     // Parent: `let m : Length = auto; constraint self.m == 10mm`, plus the
     // connector instance `__connector_0 = Conn7` and its scoped strict auto cell
@@ -846,12 +838,7 @@ fn connector_internal_strict_auto_resolves_when_parent_declared_before_connector
     // `connect a -> b : Conn7 { gain = auto }`.
     let parent = TopologyTemplateBuilder::new("Parent")
         .auto_param("Parent", "m", reify_core::Type::length())
-        .constraint(
-            "Parent",
-            0,
-            None,
-            eq(value_ref("Parent", "m"), literal(mm(10.0))),
-        )
+        .constraint("Parent", 0, None, eq(value_ref("Parent", "m"), literal(mm(10.0))))
         .sub_component("__connector_0", "Conn7", vec![])
         .auto_param("Parent.__connector_0", "gain", reify_core::Type::length())
         .build();
@@ -859,12 +846,7 @@ fn connector_internal_strict_auto_resolves_when_parent_declared_before_connector
     // Conn7: `param gain : Length = auto; constraint self.gain == 7mm`.
     let conn7 = TopologyTemplateBuilder::new("Conn7")
         .auto_param("Conn7", "gain", reify_core::Type::length())
-        .constraint(
-            "Conn7",
-            0,
-            None,
-            eq(value_ref("Conn7", "gain"), literal(mm(7.0))),
-        )
+        .constraint("Conn7", 0, None, eq(value_ref("Conn7", "gain"), literal(mm(7.0))))
         .build();
 
     // module.templates == [Parent, Conn7] — Parent (the connecting structure) at

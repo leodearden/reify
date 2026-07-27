@@ -54,12 +54,7 @@ fn eval_solves_leaf_first_and_later_sees_solved_leaf_value() {
 
     let leaf = TopologyTemplateBuilder::new("Leaf")
         .auto_param("Leaf", "k", Type::length())
-        .constraint(
-            "Leaf",
-            0,
-            None,
-            gt(value_ref("Leaf", "k"), literal(mm(0.0))),
-        )
+        .constraint("Leaf", 0, None, gt(value_ref("Leaf", "k"), literal(mm(0.0))))
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -87,8 +82,8 @@ fn eval_solves_leaf_first_and_later_sees_solved_leaf_value() {
 
     let spy = MultiCallSpyConstraintSolver::new(vec![leaf_k_solved, later_y_solved]);
     let captured = spy.captured_problems();
-    let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(spy));
 
     let _result = engine.eval(&module);
 
@@ -108,11 +103,7 @@ fn eval_solves_leaf_first_and_later_sees_solved_leaf_value() {
     assert!(
         first_is_leaf,
         "first solve call must be Leaf's (Leaf.k in auto_params); got auto_params: {:?}",
-        first
-            .auto_params
-            .iter()
-            .map(|ap| &ap.id)
-            .collect::<Vec<_>>()
+        first.auto_params.iter().map(|ap| &ap.id).collect::<Vec<_>>()
     );
 
     // The SECOND solve call must be Later's.
@@ -121,11 +112,7 @@ fn eval_solves_leaf_first_and_later_sees_solved_leaf_value() {
     assert!(
         second_is_later,
         "second solve call must be Later's (Later.y in auto_params); got auto_params: {:?}",
-        second
-            .auto_params
-            .iter()
-            .map(|ap| &ap.id)
-            .collect::<Vec<_>>()
+        second.auto_params.iter().map(|ap| &ap.id).collect::<Vec<_>>()
     );
 
     // Later's problem must contain Leaf.k in current_values (Later sees Leaf's solved value).
@@ -173,24 +160,18 @@ fn eval_uncoupled_module_solved_in_source_order() {
     let x_solved = {
         let mut m = HashMap::new();
         m.insert(x_a.clone(), mm(1.0));
-        SolveResult::Solved {
-            values: m,
-            unique: true,
-        }
+        SolveResult::Solved { values: m, unique: true }
     };
     let y_solved = {
         let mut m = HashMap::new();
         m.insert(y_b.clone(), mm(2.0));
-        SolveResult::Solved {
-            values: m,
-            unique: true,
-        }
+        SolveResult::Solved { values: m, unique: true }
     };
 
     let spy = MultiCallSpyConstraintSolver::new(vec![x_solved, y_solved]);
     let captured = spy.captured_problems();
-    let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(spy));
 
     let _result = engine.eval(&module);
 
@@ -203,20 +184,12 @@ fn eval_uncoupled_module_solved_in_source_order() {
     assert!(
         first_is_x,
         "first call must be X's (INV-2 source order); got: {:?}",
-        problems[0]
-            .auto_params
-            .iter()
-            .map(|ap| &ap.id)
-            .collect::<Vec<_>>()
+        problems[0].auto_params.iter().map(|ap| &ap.id).collect::<Vec<_>>()
     );
     assert!(
         second_is_y,
         "second call must be Y's (INV-2 source order); got: {:?}",
-        problems[1]
-            .auto_params
-            .iter()
-            .map(|ap| &ap.id)
-            .collect::<Vec<_>>()
+        problems[1].auto_params.iter().map(|ap| &ap.id).collect::<Vec<_>>()
     );
 }
 
@@ -274,25 +247,19 @@ fn eval_cached_solver_pass_sees_leaf_k_in_later_problem() {
     let make_results = |leaf_k_id: &ValueCellId, later_y_id: &ValueCellId| {
         let mut m0 = HashMap::new();
         m0.insert(leaf_k_id.clone(), mm(5.0));
-        let r0 = SolveResult::Solved {
-            values: m0,
-            unique: true,
-        };
+        let r0 = SolveResult::Solved { values: m0, unique: true };
 
         let mut m1 = HashMap::new();
         m1.insert(later_y_id.clone(), mm(10.0));
-        let r1 = SolveResult::Solved {
-            values: m1,
-            unique: true,
-        };
+        let r1 = SolveResult::Solved { values: m1, unique: true };
         vec![r0, r1]
     };
 
     // --- eval_cached() path ---
     let spy_cached = MultiCallSpyConstraintSolver::new(make_results(&leaf_k, &later_y));
     let captured_cached = spy_cached.captured_problems();
-    let mut engine_cached =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy_cached));
+    let mut engine_cached = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(spy_cached));
 
     let _result_cached = engine_cached.eval_cached(&module, VersionId(1));
 

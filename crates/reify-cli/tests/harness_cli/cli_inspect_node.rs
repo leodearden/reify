@@ -11,7 +11,8 @@ use crate::common;
 /// at least the kind field (verifying the output routes to stdout).
 #[test]
 fn inspect_compute_foo_succeeds() {
-    let (status, stdout, stderr) = common::run_with_args(&["dev", "inspect-node", "Compute(foo)"]);
+    let (status, stdout, stderr) =
+        common::run_with_args(&["dev", "inspect-node", "Compute(foo)"]);
     assert!(
         status.success(),
         "expected exit 0;\nstdout: {stdout}\nstderr: {stderr}"
@@ -20,10 +21,7 @@ fn inspect_compute_foo_succeeds() {
         stdout.contains("kind: Compute"),
         "missing 'kind: Compute' in stdout;\nstdout: {stdout}"
     );
-    assert!(
-        stderr.is_empty(),
-        "expected empty stderr on success;\nstderr: {stderr}"
-    );
+    assert!(stderr.is_empty(), "expected empty stderr on success;\nstderr: {stderr}");
 }
 
 /// (b) Determinism: two identical runs produce byte-identical stdout.
@@ -40,21 +38,20 @@ fn inspect_compute_foo_deterministic() {
 /// (c) Kind coverage — Value node exits 0 and output routes to stdout.
 #[test]
 fn inspect_value_b_w() {
-    let (status, stdout, stderr) = common::run_with_args(&["dev", "inspect-node", "Value(B.w)"]);
+    let (status, stdout, stderr) =
+        common::run_with_args(&["dev", "inspect-node", "Value(B.w)"]);
     assert!(
         status.success(),
         "expected exit 0;\nstdout: {stdout}\nstderr: {stderr}"
     );
-    assert!(
-        stdout.contains("kind: Value"),
-        "missing 'kind: Value';\nstdout: {stdout}"
-    );
+    assert!(stdout.contains("kind: Value"), "missing 'kind: Value';\nstdout: {stdout}");
 }
 
 /// (c) Kind coverage — Constraint node exits 0 and output routes to stdout.
 #[test]
 fn inspect_constraint_a() {
-    let (status, stdout, stderr) = common::run_with_args(&["dev", "inspect-node", "Constraint(A)"]);
+    let (status, stdout, stderr) =
+        common::run_with_args(&["dev", "inspect-node", "Constraint(A)"]);
     assert!(
         status.success(),
         "expected exit 0;\nstdout: {stdout}\nstderr: {stderr}"
@@ -83,7 +80,8 @@ fn inspect_realization() {
 /// (c) Kind coverage — Resolution node exits 0 and output routes to stdout.
 #[test]
 fn inspect_resolution() {
-    let (status, stdout, stderr) = common::run_with_args(&["dev", "inspect-node", "Resolution(S)"]);
+    let (status, stdout, stderr) =
+        common::run_with_args(&["dev", "inspect-node", "Resolution(S)"]);
     assert!(
         status.success(),
         "expected exit 0;\nstdout: {stdout}\nstderr: {stderr}"
@@ -97,7 +95,8 @@ fn inspect_resolution() {
 /// (d) Error path — malformed node-id exits FAILURE with an error message on stderr.
 #[test]
 fn inspect_malformed_node_id_exits_failure() {
-    let (status, _stdout, stderr) = common::run_with_args(&["dev", "inspect-node", "NotAKind(x)"]);
+    let (status, _stdout, stderr) =
+        common::run_with_args(&["dev", "inspect-node", "NotAKind(x)"]);
     assert!(
         !status.success(),
         "expected exit FAILURE for unknown kind;\nstderr: {stderr}"

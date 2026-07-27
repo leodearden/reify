@@ -34,8 +34,8 @@ use reify_eval::{BuildScheduler, Engine};
 use reify_ir::{CompiledExpr, ConstraintSolver, GeometryKernel, SolveResult, Value};
 use reify_test_support::builders::{and, gt, literal, value_ref};
 use reify_test_support::{
-    CompiledModuleBuilder, MockGeometryKernel, SequencedMockConstraintSolver,
-    TopologyTemplateBuilder, compile_source, mm, value_ref_typed,
+    CompiledModuleBuilder, MockGeometryKernel, SequencedMockConstraintSolver, TopologyTemplateBuilder,
+    compile_source, mm, value_ref_typed,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -658,11 +658,11 @@ fn edit_param_guard_flip_then_revert_counts_single_phase() {
     use std::collections::HashMap;
 
     // Cell IDs.
-    let x_id = ValueCellId::new("S", "x");
+    let x_id    = ValueCellId::new("S", "x");
     let depth_id = ValueCellId::new("S", "depth");
     let guard_id = ValueCellId::new("S", "__guard_0");
-    let m_id = ValueCellId::new("S", "m");
-    let n_id = ValueCellId::new("S", "n");
+    let m_id    = ValueCellId::new("S", "m");
+    let n_id    = ValueCellId::new("S", "n");
 
     // Guard expr: (x > 0mm) && (depth > 5mm).
     // Reads x → guard is in Phase-1's dirty cone when x is edited.
@@ -708,7 +708,10 @@ fn edit_param_guard_flip_then_revert_counts_single_phase() {
             "S",
             0,
             Some("depth_ge_x"),
-            reify_test_support::builders::ge(value_ref("S", "depth"), value_ref("S", "x")),
+            reify_test_support::builders::ge(
+                value_ref("S", "depth"),
+                value_ref("S", "x"),
+            ),
         )
         // Guarded group: composite guard reads x AND depth.
         // members: m=99mm (active when guard=true).
@@ -717,9 +720,9 @@ fn edit_param_guard_flip_then_revert_counts_single_phase() {
             guard_expr,
             guard_id.clone(),
             vec![m_decl],
-            vec![], // no guarded constraints
+            vec![],         // no guarded constraints
             vec![n_decl],
-            vec![], // no else constraints
+            vec![],         // no else constraints
         )
         .build();
 
@@ -735,14 +738,8 @@ fn edit_param_guard_flip_then_revert_counts_single_phase() {
     let mut solved2 = HashMap::new();
     solved2.insert(depth_id.clone(), mm(3.0));
     let solver = Box::new(SequencedMockConstraintSolver::new(vec![
-        SolveResult::Solved {
-            values: solved1,
-            unique: true,
-        },
-        SolveResult::Solved {
-            values: solved2,
-            unique: true,
-        },
+        SolveResult::Solved { values: solved1, unique: true },
+        SolveResult::Solved { values: solved2, unique: true },
     ])) as Box<dyn ConstraintSolver>;
 
     let mut engine = Engine::new(
@@ -788,8 +785,7 @@ fn edit_param_guard_flip_then_revert_counts_single_phase() {
     //     Currently == 2 (Phase-1 + Phase-3 case-b). After step-4 == 1 (Phase-1 only;
     //     post-wave2 reseed re-evaluates n in driver order WITHOUT incrementing the counter).
     assert_eq!(
-        engine.last_guard_phase_group_evals(),
-        1,
+        engine.last_guard_phase_group_evals(), 1,
         "after step-4 retires Phase-3, the flip-then-revert guard must converge via a \
          SINGLE driver-ordered reseed (Phase-1 only, counter == 1). Currently == {} because \
          Phase-3 case (b) fires a second time — RED until step-4.",
@@ -871,7 +867,12 @@ fn edit_source_revaluates_in_driver_schedule_order() {
 #[test]
 fn edit_source_value_parity_with_cold() {
     for scheduler in [BuildScheduler::LegacyMultiPass, BuildScheduler::UnifiedDag] {
-        assert_edit_source_matches_cold(DRIVER_ORDER_P1_SRC, DRIVER_ORDER_P2_SRC, scheduler, false);
+        assert_edit_source_matches_cold(
+            DRIVER_ORDER_P1_SRC,
+            DRIVER_ORDER_P2_SRC,
+            scheduler,
+            false,
+        );
     }
 }
 

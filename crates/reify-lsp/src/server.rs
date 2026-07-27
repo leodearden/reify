@@ -281,9 +281,7 @@ impl LanguageServer for ReifyLanguageServer {
         // The parse uses the document's own module path (no per-call argument).
         let text = doc.text.clone();
         let ctx = crate::analysis::AnalysisContext::from_parsed(doc.parsed_module());
-        Ok(crate::hover::compute_hover_in_context(
-            &ctx, &text, position,
-        ))
+        Ok(crate::hover::compute_hover_in_context(&ctx, &text, position))
     }
 
     async fn goto_definition(
@@ -494,12 +492,12 @@ impl LanguageServer for ReifyLanguageServer {
             }
         };
 
-        Ok(
-            target.map(|target| PrepareRenameResponse::RangeWithPlaceholder {
+        Ok(target.map(|target| {
+            PrepareRenameResponse::RangeWithPlaceholder {
                 range: target.range,
                 placeholder: target.placeholder,
-            }),
-        )
+            }
+        }))
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
@@ -543,13 +541,7 @@ impl LanguageServer for ReifyLanguageServer {
                     &resolve_import,
                 )
             } else {
-                crate::references::compute_rename(
-                    primary_source,
-                    &parsed,
-                    &uri,
-                    position,
-                    &new_name,
-                )
+                crate::references::compute_rename(primary_source, &parsed, &uri, position, &new_name)
             }
         })
         .await
@@ -688,10 +680,7 @@ pub mod test_support {
 /// Files in `open` but **not** under `root` (e.g. a buffer from a different
 /// project that happens to be open) are appended at the end so the cross-file
 /// collectors still see them.
-fn build_workspace_docs(
-    root: &std::path::Path,
-    open: &HashMap<PathBuf, String>,
-) -> Vec<(Url, String)> {
+fn build_workspace_docs(root: &std::path::Path, open: &HashMap<PathBuf, String>) -> Vec<(Url, String)> {
     let mut docs: Vec<(Url, String)> = Vec::new();
     // Track canonical paths we emitted to avoid double-including open files.
     let mut covered: HashSet<PathBuf> = HashSet::new();
@@ -726,7 +715,10 @@ fn build_cross_file_rig(
     root: &std::path::Path,
     stdlib_path: Option<PathBuf>,
     open_docs: HashMap<PathBuf, String>,
-) -> (Vec<(Url, String)>, impl Fn(&str) -> Option<(Url, String)>) {
+) -> (
+    Vec<(Url, String)>,
+    impl Fn(&str) -> Option<(Url, String)>,
+) {
     let stdlib_root = stdlib_path.unwrap_or_else(|| root.join("crates/reify-compiler/stdlib"));
     let resolver = reify_compiler::module_dag::ModuleResolver::new(root.to_path_buf(), stdlib_root);
     let workspace_docs = build_workspace_docs(root, &open_docs);
@@ -781,7 +773,9 @@ fn collect_ri_files(
                 continue;
             }
             collect_ri_files(&path, docs, covered, open);
-        } else if file_type.is_file() && path.extension().and_then(|e| e.to_str()) == Some("ri") {
+        } else if file_type.is_file()
+            && path.extension().and_then(|e| e.to_str()) == Some("ri")
+        {
             // Open override wins over disk; unreadable disk files are skipped.
             let text = if let Some(t) = open.get(&path) {
                 t.clone()
@@ -1398,10 +1392,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert!(
-            comp.is_some(),
-            "completion should return items after did_open"
-        );
+        assert!(comp.is_some(), "completion should return items after did_open");
         match server
             .document_symbol(DocumentSymbolParams {
                 text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -1716,10 +1707,7 @@ mod tests {
         let server = service.inner();
         let uri = open_bracket_source(server).await;
         // 'Scalar' type position — not renameable.
-        let result = server
-            .rename(rename_params(uri, 1, 17, "girth"))
-            .await
-            .unwrap();
+        let result = server.rename(rename_params(uri, 1, 17, "girth")).await.unwrap();
         assert!(
             result.is_none(),
             "rename must refuse a non-renameable position, got {result:?}"
@@ -2780,25 +2768,18 @@ structure Assembly {
 
         // Every .ri file (outside ignored dirs) must be present.
         let has = |suffix: &str| collected.iter().any(|(p, _)| p.ends_with(suffix));
-        assert!(has("a.ri"), "a.ri must be in docs, got {collected:?}");
-        assert!(has("b.ri"), "b.ri must be in docs, got {collected:?}");
-        assert!(has("c.ri"), "sub/c.ri must be in docs, got {collected:?}");
+        assert!(has("a.ri"),   "a.ri must be in docs, got {collected:?}");
+        assert!(has("b.ri"),   "b.ri must be in docs, got {collected:?}");
+        assert!(has("c.ri"),   "sub/c.ri must be in docs, got {collected:?}");
 
         // Non-.ri file excluded.
-        assert!(
-            !has("d.txt"),
-            "d.txt must NOT be in docs, got {collected:?}"
-        );
+        assert!(!has("d.txt"), "d.txt must NOT be in docs, got {collected:?}");
         // .ri inside target/ excluded.
-        assert!(
-            !has("e.ri"),
-            "target/e.ri must NOT be in docs, got {collected:?}"
-        );
+        assert!(!has("e.ri"),  "target/e.ri must NOT be in docs, got {collected:?}");
 
         // Exactly three docs expected.
         assert_eq!(
-            docs.len(),
-            3,
+            docs.len(), 3,
             "expected 3 docs (a.ri, b.ri, sub/c.ri), got {} docs: {collected:?}",
             docs.len()
         );
@@ -2891,8 +2872,9 @@ structure Assembly {
             .await
             .unwrap();
 
-        let locations = locations
-            .expect("references on Hole declaration should return Some(locations), not None");
+        let locations = locations.expect(
+            "references on Hole declaration should return Some(locations), not None",
+        );
         // Must include at least one Location in the closed other.ri.
         assert!(
             locations.iter().any(|l| l.uri.path().ends_with("other.ri")),
@@ -2986,7 +2968,10 @@ structure Assembly {
 
         // Every edit in other.ri must write the new name.
         let other_edits = changes.get(&other_key).unwrap();
-        assert!(!other_edits.is_empty(), "other.ri edits must be non-empty");
+        assert!(
+            !other_edits.is_empty(),
+            "other.ri edits must be non-empty"
+        );
         assert!(
             other_edits.iter().all(|e| e.new_text == "Bore"),
             "all other.ri edits must write the new name 'Bore', got {other_edits:?}"

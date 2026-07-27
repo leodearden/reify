@@ -44,8 +44,8 @@ fn workspace_root() -> std::path::PathBuf {
 /// GREEN after step-6 wires the driver in engine_eval.rs.
 #[test]
 fn eval_annotation_smoke_attaches_overlay() {
-    let fixture_path =
-        workspace_root().join("crates/reify-compiler/tests/fixtures/eval_annotation_smoke.ri");
+    let fixture_path = workspace_root()
+        .join("crates/reify-compiler/tests/fixtures/eval_annotation_smoke.ri");
     let source = std::fs::read_to_string(&fixture_path).unwrap_or_else(|e| {
         panic!(
             "failed to read {:?}: {e}\n\
@@ -130,8 +130,8 @@ fn eval_annotation_smoke_attaches_overlay() {
 /// GREEN (step-8): failure branch emits the diagnostic and replaces the cell.
 #[test]
 fn eval_annotation_fail_ri_emits_failed_diagnostic_and_undef_cell() {
-    let fixture_path =
-        workspace_root().join("crates/reify-compiler/tests/fixtures/eval_annotation_fail.ri");
+    let fixture_path = workspace_root()
+        .join("crates/reify-compiler/tests/fixtures/eval_annotation_fail.ri");
     let source = std::fs::read_to_string(&fixture_path).unwrap_or_else(|e| {
         panic!(
             "failed to read {:?}: {e}\n\

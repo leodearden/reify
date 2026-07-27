@@ -317,7 +317,9 @@ impl crate::Engine {
                         .map(|o| (o.clone(), result.clone()))
                         .collect();
                     self.cache.complete_compute_dispatch_atomically(
-                        c_id, &pairs, version,
+                        c_id,
+                        &pairs,
+                        version,
                         None, // new_warm_state — no solve, no warm state
                         0.0,  // cost_per_byte unknown for a cache hit
                     );
@@ -1128,12 +1130,10 @@ mod tests {
         match result {
             Err(DispatchError::Failed(diags, _)) => {
                 assert!(
-                    diags
-                        .iter()
-                        .any(|d| d.severity == reify_core::Severity::Error
-                            && d.message.contains("test::panic_run_compute_dispatch")
-                            && d.message.contains("panicked")
-                            && d.message.contains("boom_str")),
+                    diags.iter().any(|d| d.severity == reify_core::Severity::Error
+                        && d.message.contains("test::panic_run_compute_dispatch")
+                        && d.message.contains("panicked")
+                        && d.message.contains("boom_str")),
                     "expected an Error diagnostic naming the target, \"panicked\", and \
                      the panic payload \"boom_str\" — the same enriched conversion \
                      invoke_compute_trampoline/dispatch_compute_node perform — got \
@@ -1833,10 +1833,7 @@ mod tests {
         // No warm state reported → no Compute entry must exist
         // (auto-seed only fires when new_warm_state is Some).
         assert!(
-            engine
-                .cache_store()
-                .get(&NodeId::Compute(c_id.clone()))
-                .is_none(),
+            engine.cache_store().get(&NodeId::Compute(c_id.clone())).is_none(),
             "no Compute entry must exist when trampoline returned new_warm_state=None",
         );
         // Explicit cold + None-warm branch pin: cost_per_byte_of also returns None
@@ -3346,10 +3343,10 @@ mod tests {
         ComputeOutcome::Completed {
             result: make_elastic_result_ec(
                 &[0.0_f64 + 1e-12, 0.001_f64 + 1e-12], // sub-tol displacement
-                &[0.0_f64, 0.001_f64],                 // stress: bit-identical
-                1e8_f64,                               // max_von_mises: bit-identical
-                true,                                  // converged: bit-identical
-                5,                                     // iterations: bit-identical
+                &[0.0_f64, 0.001_f64],                   // stress: bit-identical
+                1e8_f64,                                 // max_von_mises: bit-identical
+                true,                                    // converged: bit-identical
+                5,                                       // iterations: bit-identical
             ),
             new_warm_state: None,
             cost_per_byte: None,
@@ -3388,7 +3385,8 @@ mod tests {
             true,
             5,
         );
-        let prior_result = CachedResult::Value(prior_value.clone(), DeterminacyState::Determined);
+        let prior_result =
+            CachedResult::Value(prior_value.clone(), DeterminacyState::Determined);
         let prior_hash = prior_result.content_hash();
 
         engine.cache_store_mut().put(
@@ -3446,7 +3444,8 @@ mod tests {
             true, // seed tolerance 1e-6
         );
         assert_eq!(
-            after_hash, prior_hash,
+            after_hash,
+            prior_hash,
             "sub-tolerance re-dispatch (Equivalent) must preserve the output \
              VC content hash so downstream inputs are bit-identical (Unchanged)",
         );
@@ -3468,7 +3467,8 @@ mod tests {
                 true, // seed tolerance 1e-6
             );
         assert_eq!(
-            returned_value, prior_value,
+            returned_value,
+            prior_value,
             "Equivalent re-dispatch must return the prior value so the \
              engine_eval values map is consistent with the cache",
         );
@@ -3726,14 +3726,13 @@ mod tests {
         // the production downstream re-eval path: `record_evaluation_with_
         // freshness` early-cuts (Unchanged) iff the derived value is hash-
         // identical to the consumer's prior cached result.
-        let downstream_outcome: EvalOutcome =
-            engine.cache_store_mut().record_evaluation_with_freshness(
-                NodeId::Value(consumer_cell),
-                CachedResult::Value(post_output, DeterminacyState::Determined),
-                VersionId(3),
-                consumer_trace,
-                Freshness::Final,
-            );
+        let downstream_outcome: EvalOutcome = engine.cache_store_mut().record_evaluation_with_freshness(
+            NodeId::Value(consumer_cell),
+            CachedResult::Value(post_output, DeterminacyState::Determined),
+            VersionId(3),
+            consumer_trace,
+            Freshness::Final,
+        );
 
         (downstream_outcome, output_vc_preserved)
     }
@@ -3958,7 +3957,9 @@ mod tests {
                     "Ok 3-tuple structured_detail must carry the trampoline's payload"
                 );
             }
-            other => panic!("expected Ok((_value, _diags, structured_detail)), got {other:?}"),
+            other => panic!(
+                "expected Ok((_value, _diags, structured_detail)), got {other:?}"
+            ),
         }
     }
 
@@ -4013,7 +4014,9 @@ mod tests {
                     "Err Failed structured_detail must carry the trampoline's payload"
                 );
             }
-            other => panic!("expected Err(DispatchError::Failed(_diags, sd)), got {other:?}"),
+            other => panic!(
+                "expected Err(DispatchError::Failed(_diags, sd)), got {other:?}"
+            ),
         }
     }
 
@@ -4084,12 +4087,10 @@ mod tests {
         match result {
             Some(ComputeOutcome::Failed { diagnostics, .. }) => {
                 assert!(
-                    diagnostics
-                        .iter()
-                        .any(|d| d.severity == reify_core::Severity::Error
-                            && d.message.contains("test::panic_str")
-                            && d.message.contains("panicked")
-                            && d.message.contains("boom_str")),
+                    diagnostics.iter().any(|d| d.severity == reify_core::Severity::Error
+                        && d.message.contains("test::panic_str")
+                        && d.message.contains("panicked")
+                        && d.message.contains("boom_str")),
                     "expected an Error diagnostic naming the target, \"panicked\", and \
                      the panic payload \"boom_str\", got {diagnostics:?}",
                 );
@@ -4121,12 +4122,10 @@ mod tests {
         match result {
             Some(ComputeOutcome::Failed { diagnostics, .. }) => {
                 assert!(
-                    diagnostics
-                        .iter()
-                        .any(|d| d.severity == reify_core::Severity::Error
-                            && d.message.contains("test::panic_string")
-                            && d.message.contains("panicked")
-                            && d.message.contains("boom_string")),
+                    diagnostics.iter().any(|d| d.severity == reify_core::Severity::Error
+                        && d.message.contains("test::panic_string")
+                        && d.message.contains("panicked")
+                        && d.message.contains("boom_string")),
                     "expected an Error diagnostic naming the target, \"panicked\", and \
                      the panic payload \"boom_string\", got {diagnostics:?}",
                 );
@@ -4210,11 +4209,9 @@ mod tests {
         match result {
             Some(ComputeOutcome::Failed { diagnostics, .. }) => {
                 assert!(
-                    diagnostics
-                        .iter()
-                        .any(|d| d.severity == reify_core::Severity::Error
-                            && d.message.contains("test::read_then_panic")
-                            && d.message.contains("panicked")),
+                    diagnostics.iter().any(|d| d.severity == reify_core::Severity::Error
+                        && d.message.contains("test::read_then_panic")
+                        && d.message.contains("panicked")),
                     "expected an Error diagnostic naming the target and \"panicked\" \
                      (i.e. caught by catch_unwind, not a graceful Failed return that \
                      never panicked), got {diagnostics:?}",
@@ -4247,7 +4244,8 @@ mod tests {
             "boom_str"
         );
 
-        let string_payload: Box<dyn std::any::Any + Send> = Box::new(String::from("boom_string"));
+        let string_payload: Box<dyn std::any::Any + Send> =
+            Box::new(String::from("boom_string"));
         assert_eq!(
             reify_core::panic_payload_to_string(string_payload.as_ref()),
             "boom_string"
@@ -4298,12 +4296,10 @@ mod tests {
             );
 
         assert!(
-            diags
-                .iter()
-                .any(|d| d.severity == reify_core::Severity::Error
-                    && d.message.contains("test::panic_dispatch")
-                    && d.message.contains("panicked")
-                    && d.message.contains("boom_str")),
+            diags.iter().any(|d| d.severity == reify_core::Severity::Error
+                && d.message.contains("test::panic_dispatch")
+                && d.message.contains("panicked")
+                && d.message.contains("boom_str")),
             "expected an Error diagnostic naming the target, \"panicked\", and the \
              panic payload \"boom_str\" (i.e. the same enriched conversion \
              invoke_compute_trampoline performs), got {diags:?}",

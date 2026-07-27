@@ -81,13 +81,7 @@ fn seed_face_attributes(
             user_label: None,
             mod_history: Vec::new(),
         };
-        table.record(
-            KernelHandle {
-                kernel: KernelId::Occt,
-                id: face_id,
-            },
-            attr,
-        );
+        table.record(KernelHandle { kernel: KernelId::Occt, id: face_id }, attr);
     }
 }
 
@@ -220,10 +214,7 @@ fn attribute_data_model_and_brepalgoapi_propagation_end_to_end() {
     // feature_id and role.
     for (idx, &face_id) in left_face_handles.iter().enumerate() {
         let attr = table
-            .lookup(KernelHandle {
-                kernel: KernelId::Occt,
-                id: face_id,
-            })
+            .lookup(KernelHandle { kernel: KernelId::Occt, id: face_id })
             .expect("seeded left face must round-trip via lookup");
         assert_eq!(attr.feature_id, left_feature_id);
         assert_eq!(attr.role, Role::Side);
@@ -233,10 +224,7 @@ fn attribute_data_model_and_brepalgoapi_propagation_end_to_end() {
     }
     for (idx, &face_id) in right_face_handles.iter().enumerate() {
         let attr = table
-            .lookup(KernelHandle {
-                kernel: KernelId::Occt,
-                id: face_id,
-            })
+            .lookup(KernelHandle { kernel: KernelId::Occt, id: face_id })
             .expect("seeded right face must round-trip via lookup");
         assert_eq!(attr.feature_id, right_feature_id);
         assert_eq!(attr.role, Role::Side);
@@ -336,17 +324,12 @@ fn attribute_data_model_and_brepalgoapi_propagation_end_to_end() {
     };
     for (&result_subshape_index, &expected_parent_index) in last_face_record.iter() {
         let result_face_id = result_face_handles[result_subshape_index as usize];
-        let propagated = table
-            .lookup(KernelHandle {
-                kernel: KernelId::Occt,
-                id: result_face_id,
-            })
-            .unwrap_or_else(|| {
-                panic!(
-                    "result face {:?} (subshape index {}) should have a propagated attribute",
-                    result_face_id, result_subshape_index
-                )
-            });
+        let propagated = table.lookup(KernelHandle { kernel: KernelId::Occt, id: result_face_id }).unwrap_or_else(|| {
+            panic!(
+                "result face {:?} (subshape index {}) should have a propagated attribute",
+                result_face_id, result_subshape_index
+            )
+        });
         let expected_feature_id = match expected_parent_index {
             0 => &left_feature_id,
             1 => &right_feature_id,
@@ -415,12 +398,7 @@ fn attribute_data_model_and_brepalgoapi_propagation_end_to_end() {
             let parent_subshape_idx = deleted.parent_subshape_index as usize;
             let parent_handle = parent_face_slices[parent_idx][parent_subshape_idx];
             assert!(
-                table
-                    .lookup(KernelHandle {
-                        kernel: KernelId::Occt,
-                        id: parent_handle
-                    })
-                    .is_some(),
+                table.lookup(KernelHandle { kernel: KernelId::Occt, id: parent_handle }).is_some(),
                 "parent face handle for deleted record (parent {}, subshape {}) \
                  must still resolve in the table — parents aren't removed by \
                  propagation, only result entries are added",
@@ -437,12 +415,7 @@ fn attribute_data_model_and_brepalgoapi_propagation_end_to_end() {
             continue;
         }
         assert!(
-            table
-                .lookup(KernelHandle {
-                    kernel: KernelId::Occt,
-                    id: result_face_id
-                })
-                .is_none(),
+            table.lookup(KernelHandle { kernel: KernelId::Occt, id: result_face_id }).is_none(),
             "result face {:?} (index {}) was not in Modified/Generated \
              history, so propagation should NOT have written an entry for it",
             result_face_id,
@@ -454,12 +427,7 @@ fn attribute_data_model_and_brepalgoapi_propagation_end_to_end() {
     // should not write any entries for result edges.
     for &result_edge_id in result_edge_handles.iter() {
         assert!(
-            table
-                .lookup(KernelHandle {
-                    kernel: KernelId::Occt,
-                    id: result_edge_id
-                })
-                .is_none(),
+            table.lookup(KernelHandle { kernel: KernelId::Occt, id: result_edge_id }).is_none(),
             "result edge {:?} should not have an entry — only faces were seeded",
             result_edge_id,
         );
@@ -816,15 +784,10 @@ fn assert_mod_history_propagation_and_clustering(
     for (&parent_key, child_result_indices) in children_per_parent.iter() {
         let count = child_result_indices.len();
         let parent_handle = parent_face_slices[parent_key.0 as usize][parent_key.1 as usize];
-        let parent_attr = table
-            .lookup(KernelHandle {
-                kernel: KernelId::Occt,
-                id: parent_handle,
-            })
-            .expect(
-                "seeded parent face must still be in the table after propagation \
+        let parent_attr = table.lookup(KernelHandle { kernel: KernelId::Occt, id: parent_handle }).expect(
+            "seeded parent face must still be in the table after propagation \
              (parents are never removed, only result entries are added)",
-            );
+        );
         let parent_feature_id = parent_attr.feature_id.clone();
         let parent_role = parent_attr.role;
         let parent_local_index = parent_attr.local_index;
@@ -847,18 +810,13 @@ fn assert_mod_history_propagation_and_clustering(
                 }
                 authoritative_children.push(result_subshape_index);
                 let child_handle = result_face_handles[result_subshape_index as usize];
-                let child_attr = table
-                    .lookup(KernelHandle {
-                        kernel: KernelId::Occt,
-                        id: child_handle,
-                    })
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "split child (parent={:?}, result_subshape_index={}) must have a \
+                let child_attr = table.lookup(KernelHandle { kernel: KernelId::Occt, id: child_handle }).unwrap_or_else(|| {
+                    panic!(
+                        "split child (parent={:?}, result_subshape_index={}) must have a \
                          propagated entry",
-                            parent_key, result_subshape_index
-                        )
-                    });
+                        parent_key, result_subshape_index
+                    )
+                });
                 assert_eq!(
                     child_attr.feature_id, parent_feature_id,
                     "split child inherits parent feature_id verbatim"
@@ -916,18 +874,13 @@ fn assert_mod_history_propagation_and_clustering(
                 continue;
             }
             let child_handle = result_face_handles[result_subshape_index as usize];
-            let child_attr = table
-                .lookup(KernelHandle {
-                    kernel: KernelId::Occt,
-                    id: child_handle,
-                })
-                .unwrap_or_else(|| {
-                    panic!(
-                        "non-split child (parent={:?}, result_subshape_index={}) must have a \
+            let child_attr = table.lookup(KernelHandle { kernel: KernelId::Occt, id: child_handle }).unwrap_or_else(|| {
+                panic!(
+                    "non-split child (parent={:?}, result_subshape_index={}) must have a \
                      propagated entry",
-                        parent_key, result_subshape_index
-                    )
-                });
+                    parent_key, result_subshape_index
+                )
+            });
             assert_eq!(
                 child_attr.mod_history, parent_prior_history,
                 "non-split child mod_history must equal parent's prior history (no new \
@@ -948,10 +901,7 @@ fn assert_mod_history_propagation_and_clustering(
     let split_parent_handle =
         parent_face_slices[split_parent_key.0 as usize][split_parent_key.1 as usize];
     let split_parent_attr = table
-        .lookup(KernelHandle {
-            kernel: KernelId::Occt,
-            id: split_parent_handle,
-        })
+        .lookup(KernelHandle { kernel: KernelId::Occt, id: split_parent_handle })
         .expect("split-parent attribute must round-trip");
     let query = AttributeQuery {
         user_label: split_parent_attr.user_label.clone(),
@@ -1492,8 +1442,9 @@ fn engine_build_no_spurious_topology_reassignment_for_plain_distinct_box() {
     }
 
     // A single box with 3 distinct edge lengths — no two edges are geometrically tied.
-    let compiled =
-        compile_no_errors_for_engine(r#"structure S { let body = box(10mm, 20mm, 30mm) }"#);
+    let compiled = compile_no_errors_for_engine(
+        r#"structure S { let body = box(10mm, 20mm, 30mm) }"#,
+    );
     let mut engine = engine_with_occt_handle();
     let build_result = engine.build(&compiled, ExportFormat::Step);
 

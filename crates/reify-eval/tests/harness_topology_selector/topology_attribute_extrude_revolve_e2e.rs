@@ -255,14 +255,7 @@ fn collect_attrs_at(
     let table = engine.topology_attribute_table();
     indices
         .iter()
-        .map(|&idx| {
-            table
-                .lookup(KernelHandle {
-                    kernel: KernelId::Occt,
-                    id: result_face_handles[idx],
-                })
-                .cloned()
-        })
+        .map(|&idx| table.lookup(KernelHandle { kernel: KernelId::Occt, id: result_face_handles[idx] }).cloned())
         .collect()
 }
 
@@ -324,10 +317,7 @@ fn engine_build_extrude_with_mock_history_populates_table_with_cap_and_side_entr
 
         // Cap (Top) — start_cap_face_indices[0] = 5.
         let top = table
-            .lookup(KernelHandle {
-                kernel: KernelId::Occt,
-                id: result_faces[5],
-            })
+            .lookup(KernelHandle { kernel: KernelId::Occt, id: result_faces[5] })
             .expect("Cap(Top) entry at result_faces[5] missing");
         assert_eq!(top.role, Role::Cap(CapKind::Top));
         assert_eq!(top.local_index, 0);
@@ -336,28 +326,19 @@ fn engine_build_extrude_with_mock_history_populates_table_with_cap_and_side_entr
 
         // Cap (Bottom) — end_cap_face_indices[0] = 6.
         let bottom = table
-            .lookup(KernelHandle {
-                kernel: KernelId::Occt,
-                id: result_faces[6],
-            })
+            .lookup(KernelHandle { kernel: KernelId::Occt, id: result_faces[6] })
             .expect("Cap(Bottom) entry at result_faces[6] missing");
         assert_eq!(bottom.role, Role::Cap(CapKind::Bottom));
         assert_eq!(bottom.local_index, 0);
 
         // Side faces — face_generated entries with sequential local_index.
         let side_a = table
-            .lookup(KernelHandle {
-                kernel: KernelId::Occt,
-                id: result_faces[7],
-            })
+            .lookup(KernelHandle { kernel: KernelId::Occt, id: result_faces[7] })
             .expect("Side entry at result_faces[7] missing");
         assert_eq!(side_a.role, Role::Side);
         assert_eq!(side_a.local_index, 0);
         let side_b = table
-            .lookup(KernelHandle {
-                kernel: KernelId::Occt,
-                id: result_faces[8],
-            })
+            .lookup(KernelHandle { kernel: KernelId::Occt, id: result_faces[8] })
             .expect("Side entry at result_faces[8] missing");
         assert_eq!(side_b.role, Role::Side);
         assert_eq!(side_b.local_index, 1);
@@ -455,29 +436,20 @@ fn engine_build_partial_revolve_populates_cap_start_end_and_revolved_face() {
 
         // Cap (Start) — start_cap_face_indices[0] = 2.
         let start = table
-            .lookup(KernelHandle {
-                kernel: KernelId::Occt,
-                id: result_faces[2],
-            })
+            .lookup(KernelHandle { kernel: KernelId::Occt, id: result_faces[2] })
             .expect("Cap(Start) entry at result_faces[2] missing");
         assert_eq!(start.role, Role::Cap(CapKind::Start));
         assert_eq!(start.local_index, 0);
         // Cap (End) — end_cap_face_indices[0] = 3.
         let end = table
-            .lookup(KernelHandle {
-                kernel: KernelId::Occt,
-                id: result_faces[3],
-            })
+            .lookup(KernelHandle { kernel: KernelId::Occt, id: result_faces[3] })
             .expect("Cap(End) entry at result_faces[3] missing");
         assert_eq!(end.role, Role::Cap(CapKind::End));
         assert_eq!(end.local_index, 0);
 
         for (sequential_idx, result_face_idx) in [4_usize, 5, 6, 7].iter().enumerate() {
             let attr = table
-                .lookup(KernelHandle {
-                    kernel: KernelId::Occt,
-                    id: result_faces[*result_face_idx],
-                })
+                .lookup(KernelHandle { kernel: KernelId::Occt, id: result_faces[*result_face_idx] })
                 .unwrap_or_else(|| {
                     panic!(
                         "RevolvedFace entry at result_faces[{result_face_idx}] missing\
@@ -561,22 +533,14 @@ fn engine_build_full_revolve_populates_only_revolved_face_no_caps() {
         // No Cap entries at any index.
         for idx in [2_usize, 3] {
             assert!(
-                table
-                    .lookup(KernelHandle {
-                        kernel: KernelId::Occt,
-                        id: result_faces[idx]
-                    })
-                    .is_none(),
+                table.lookup(KernelHandle { kernel: KernelId::Occt, id: result_faces[idx] }).is_none(),
                 "full-2π revolve must not emit Cap entries; result_faces[{idx}] should be unkeyed",
             );
         }
         // Two RevolvedFace entries with sequential local_index.
         for (sequential_idx, result_face_idx) in [0_usize, 1].iter().enumerate() {
             let attr = table
-                .lookup(KernelHandle {
-                    kernel: KernelId::Occt,
-                    id: result_faces[*result_face_idx],
-                })
+                .lookup(KernelHandle { kernel: KernelId::Occt, id: result_faces[*result_face_idx] })
                 .expect("RevolvedFace entry missing");
             assert_eq!(attr.role, Role::RevolvedFace);
             assert_eq!(attr.local_index, sequential_idx as u32);

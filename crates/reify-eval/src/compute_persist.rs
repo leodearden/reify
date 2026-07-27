@@ -72,14 +72,16 @@ pub(crate) fn persistent_lookup(
     let input_hash = format!("{cache_key}");
     match target {
         "solver::elastic_static" => {
-            match crate::persistent_cache::read_entry::<crate::persistent_cache::ElasticResult>(
+            match crate::persistent_cache::read_entry::<
+                crate::persistent_cache::ElasticResult,
+            >(
                 cache_dir,
                 crate::persistent_cache::ENGINE_VERSION_HASH,
                 &input_hash,
             ) {
-                Ok(Some(er)) => {
-                    Some(crate::compute_targets::elastic_static::value_from_elastic_result(&er))
-                }
+                Ok(Some(er)) => Some(
+                    crate::compute_targets::elastic_static::value_from_elastic_result(&er),
+                ),
                 Ok(None) => None,
                 Err(e) => {
                     tracing::warn!(
@@ -94,14 +96,16 @@ pub(crate) fn persistent_lookup(
             }
         }
         "solver::buckling" => {
-            match crate::persistent_cache::read_entry::<crate::persistent_cache::BucklingResultCache>(
+            match crate::persistent_cache::read_entry::<
+                crate::persistent_cache::BucklingResultCache,
+            >(
                 cache_dir,
                 crate::persistent_cache::ENGINE_VERSION_HASH,
                 &input_hash,
             ) {
-                Ok(Some(brc)) => {
-                    Some(crate::compute_targets::buckling::value_from_buckling_result(&brc))
-                }
+                Ok(Some(brc)) => Some(
+                    crate::compute_targets::buckling::value_from_buckling_result(&brc),
+                ),
                 Ok(None) => None,
                 Err(e) => {
                     tracing::warn!(
@@ -117,14 +121,16 @@ pub(crate) fn persistent_lookup(
             }
         }
         "shell-extract::extract" => {
-            match crate::persistent_cache::read_entry::<reify_shell_extract::ShellExtractionResult>(
+            match crate::persistent_cache::read_entry::<
+                reify_shell_extract::ShellExtractionResult,
+            >(
                 cache_dir,
                 crate::persistent_cache::ENGINE_VERSION_HASH,
                 &input_hash,
             ) {
-                Ok(Some(ser)) => {
-                    Some(crate::shell_extract_compute::shell_extraction_result_to_value(&ser))
-                }
+                Ok(Some(ser)) => Some(
+                    crate::shell_extract_compute::shell_extraction_result_to_value(&ser),
+                ),
                 Ok(None) => None,
                 Err(e) => {
                     tracing::warn!(
@@ -191,14 +197,14 @@ pub(crate) fn persistent_write(
                 );
                 return;
             };
-            if let Err(e) =
-                crate::persistent_cache::write_entry::<crate::persistent_cache::ElasticResult>(
-                    cache_dir,
-                    crate::persistent_cache::ENGINE_VERSION_HASH,
-                    &input_hash,
-                    &er,
-                )
-            {
+            if let Err(e) = crate::persistent_cache::write_entry::<
+                crate::persistent_cache::ElasticResult,
+            >(
+                cache_dir,
+                crate::persistent_cache::ENGINE_VERSION_HASH,
+                &input_hash,
+                &er,
+            ) {
                 tracing::warn!(
                     %e,
                     cache_dir = %cache_dir.display(),
@@ -209,7 +215,8 @@ pub(crate) fn persistent_write(
             }
         }
         "solver::buckling" => {
-            let Some(brc) = crate::compute_targets::buckling::buckling_result_from_value(result)
+            let Some(brc) =
+                crate::compute_targets::buckling::buckling_result_from_value(result)
             else {
                 tracing::warn!(
                     %cache_key,
@@ -237,7 +244,8 @@ pub(crate) fn persistent_write(
             }
         }
         "shell-extract::extract" => {
-            let Some(ser) = crate::shell_extract_compute::value_to_shell_extraction_result(result)
+            let Some(ser) =
+                crate::shell_extract_compute::value_to_shell_extraction_result(result)
             else {
                 tracing::warn!(
                     %cache_key,
@@ -246,14 +254,14 @@ pub(crate) fn persistent_write(
                 );
                 return;
             };
-            if let Err(e) =
-                crate::persistent_cache::write_entry::<reify_shell_extract::ShellExtractionResult>(
-                    cache_dir,
-                    crate::persistent_cache::ENGINE_VERSION_HASH,
-                    &input_hash,
-                    &ser,
-                )
-            {
+            if let Err(e) = crate::persistent_cache::write_entry::<
+                reify_shell_extract::ShellExtractionResult,
+            >(
+                cache_dir,
+                crate::persistent_cache::ENGINE_VERSION_HASH,
+                &input_hash,
+                &ser,
+            ) {
                 tracing::warn!(
                     %e,
                     cache_dir = %cache_dir.display(),
@@ -326,30 +334,25 @@ mod tests {
     ///
     /// The trampoline sums all point loads as a tip force applied at x=length.
     fn make_point_loads(force_n: f64) -> Value {
-        let fields: PersistentMap<String, Value> = [("force".to_string(), Value::Real(force_n))]
-            .into_iter()
-            .collect();
-        Value::List(vec![Value::StructureInstance(Box::new(
-            StructureInstanceData {
-                type_id: StructureTypeId(u32::MAX),
-                type_name: "PointLoad".to_string(),
-                version: 1,
-                fields,
-            },
-        ))])
+        let fields: PersistentMap<String, Value> =
+            [("force".to_string(), Value::Real(force_n))].into_iter().collect();
+        Value::List(vec![Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "PointLoad".to_string(),
+            version: 1,
+            fields,
+        }))])
     }
 
     /// `Value::List` containing one `FixedSupport` (fields not inspected;
     /// presence clamps all DOF at x=0).
     fn make_supports() -> Value {
-        Value::List(vec![Value::StructureInstance(Box::new(
-            StructureInstanceData {
-                type_id: StructureTypeId(u32::MAX),
-                type_name: "FixedSupport".to_string(),
-                version: 1,
-                fields: [].into_iter().collect(),
-            },
-        ))])
+        Value::List(vec![Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "FixedSupport".to_string(),
+            version: 1,
+            fields: [].into_iter().collect(),
+        }))])
     }
 
     /// `ElasticOptions` with `shell_force=Off` (forces the tet path regardless
@@ -563,10 +566,15 @@ mod tests {
 
         // Extract max_von_mises from the ElasticResult StructureInstance.
         let max_vm = match &val {
-            Value::StructureInstance(data) => match data.fields.get(&"max_von_mises".to_string()) {
-                Some(Value::Scalar { si_value, .. }) => *si_value,
-                other => panic!("max_von_mises must be a Scalar, got: {:?}", other,),
-            },
+            Value::StructureInstance(data) => {
+                match data.fields.get(&"max_von_mises".to_string()) {
+                    Some(Value::Scalar { si_value, .. }) => *si_value,
+                    other => panic!(
+                        "max_von_mises must be a Scalar, got: {:?}",
+                        other,
+                    ),
+                }
+            }
             other => panic!("result must be a StructureInstance, got: {:?}", other),
         };
         assert!(
@@ -588,7 +596,8 @@ mod tests {
         let entry = read_entry::<ElasticResult>(tmp.path(), ENGINE_VERSION_HASH, &input_hash)
             .expect("read_entry must not return Err")
             .expect("read_entry must return Some after a successful write");
-        let relative_err = (entry.max_von_mises - max_vm).abs() / max_vm.abs().max(f64::EPSILON);
+        let relative_err =
+            (entry.max_von_mises - max_vm).abs() / max_vm.abs().max(f64::EPSILON);
         assert!(
             relative_err < 1e-10,
             "read_entry max_von_mises {:.6e} must match dispatch result {:.6e} (rel err {})",
@@ -797,10 +806,14 @@ mod tests {
 
         // (b) Result max_von_mises must match the seeded entry.
         let max_vm = match &val {
-            Value::StructureInstance(data) => match data.fields.get("max_von_mises") {
-                Some(Value::Scalar { si_value, .. }) => *si_value,
-                other => panic!("max_von_mises must be Scalar, got: {:?}", other),
-            },
+            Value::StructureInstance(data) => {
+                match data.fields.get("max_von_mises") {
+                    Some(Value::Scalar { si_value, .. }) => *si_value,
+                    other => panic!(
+                        "max_von_mises must be Scalar, got: {:?}", other
+                    ),
+                }
+            }
             other => panic!("result must be StructureInstance, got: {:?}", other),
         };
         let rel_err = (max_vm - known_vm).abs() / known_vm.abs().max(f64::EPSILON);
@@ -1037,8 +1050,13 @@ mod tests {
         // Seed the on-disk cache entry for a known cache_key.
         let cache_key = ContentHash(0xb0c5_1234_b0c5_5678_b0c5_1234_b0c5_5678_u128);
         let input_hash = format!("{cache_key}");
-        write_entry::<BucklingResultCache>(tmp.path(), ENGINE_VERSION_HASH, &input_hash, &brc)
-            .expect("test seed write_entry must succeed");
+        write_entry::<BucklingResultCache>(
+            tmp.path(),
+            ENGINE_VERSION_HASH,
+            &input_hash,
+            &brc,
+        )
+        .expect("test seed write_entry must succeed");
 
         // Fresh engine — same cache dir, counting trampoline for "solver::buckling".
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
@@ -1091,25 +1109,26 @@ mod tests {
 
         // (b) modes[0].eigenvalue must match the seeded 1.5.
         let eigenvalue = match &val {
-            Value::StructureInstance(data) => match data.fields.get("modes") {
-                Some(Value::List(modes)) => match modes.first() {
-                    Some(Value::StructureInstance(mode_data)) => {
-                        match mode_data.fields.get("eigenvalue") {
-                            Some(Value::Real(r)) => *r,
-                            other => panic!("modes[0].eigenvalue must be Real, got: {:?}", other),
+            Value::StructureInstance(data) => {
+                match data.fields.get("modes") {
+                    Some(Value::List(modes)) => match modes.first() {
+                        Some(Value::StructureInstance(mode_data)) => {
+                            match mode_data.fields.get("eigenvalue") {
+                                Some(Value::Real(r)) => *r,
+                                other => panic!(
+                                    "modes[0].eigenvalue must be Real, got: {:?}", other
+                                ),
+                            }
                         }
-                    }
-                    other => panic!("modes[0] must be StructureInstance, got: {:?}", other),
-                },
-                other => panic!("modes must be List, got: {:?}", other),
-            },
-            other => panic!(
-                "result must be BucklingResult StructureInstance, got: {:?}",
-                other
-            ),
+                        other => panic!("modes[0] must be StructureInstance, got: {:?}", other),
+                    },
+                    other => panic!("modes must be List, got: {:?}", other),
+                }
+            }
+            other => panic!("result must be BucklingResult StructureInstance, got: {:?}", other),
         };
-        let rel_err =
-            (eigenvalue - known_eigenvalue).abs() / known_eigenvalue.abs().max(f64::EPSILON);
+        let rel_err = (eigenvalue - known_eigenvalue).abs()
+            / known_eigenvalue.abs().max(f64::EPSILON);
         assert!(
             rel_err < 1e-10,
             "modes[0].eigenvalue {eigenvalue:.6e} must match seeded {known_eigenvalue:.6e} \
@@ -1154,8 +1173,13 @@ mod tests {
         // Seed under KEY_A.
         let key_a = ContentHash(0xaaaa_bcde_1234_5678_aaaa_bcde_1234_5678_u128);
         let input_hash_a = format!("{key_a}");
-        write_entry::<BucklingResultCache>(tmp.path(), ENGINE_VERSION_HASH, &input_hash_a, &brc)
-            .expect("test seed write_entry must succeed");
+        write_entry::<BucklingResultCache>(
+            tmp.path(),
+            ENGINE_VERSION_HASH,
+            &input_hash_a,
+            &brc,
+        )
+        .expect("test seed write_entry must succeed");
 
         // Dispatch with KEY_B — no persistent entry → miss.
         let key_b = ContentHash(0xbbbb_dcef_8765_4321_bbbb_dcef_8765_4321_u128);

@@ -4117,10 +4117,10 @@ fn cold_eval_cone_cache_coherence_with_solver_records_at_snapshot_version() {
         .guarded_group(
             guard_expr,
             guard_id.clone(),
-            vec![effective_true], // members       (use_thick=true)
-            vec![],               // constraints
-            vec![effective_else], // else_members  (use_thick=false → active here)
-            vec![],               // else_constraints
+            vec![effective_true],  // members       (use_thick=true)
+            vec![],                // constraints
+            vec![effective_else],  // else_members  (use_thick=false → active here)
+            vec![],                // else_constraints
         )
         // `derived` is a non-member let downstream of `effective`; lands in cone.
         .let_binding("S", "derived", Type::length(), derived_expr)
@@ -4179,10 +4179,12 @@ fn cold_eval_cone_cache_coherence_with_solver_records_at_snapshot_version() {
         .expect("derived must be in cache after downstream-cone pass");
 
     assert_eq!(
-        derived_cache.basis_version, thickness_cache.basis_version,
+        derived_cache.basis_version,
+        thickness_cache.basis_version,
         "amend:4707 §3: cone cell `derived` must be cached at the same basis_version \
          as solver-resolved `thickness`; \
          derived.basis_version={:?}, thickness.basis_version={:?}",
-        derived_cache.basis_version, thickness_cache.basis_version,
+        derived_cache.basis_version,
+        thickness_cache.basis_version,
     );
 }

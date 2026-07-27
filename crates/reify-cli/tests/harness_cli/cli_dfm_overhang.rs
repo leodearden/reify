@@ -81,7 +81,8 @@ fn check_dfm_overhang_emits_one_w_dfm_overhang_under_occt() {
     );
     let count = stderr.matches("W_DFM_OVERHANG").count();
     assert_eq!(
-        count, 1,
+        count,
+        1,
         "OCCT mode: stderr must carry exactly one 'W_DFM_OVERHANG' diagnostic \
          (one box bottom face violates the 0-deg overhang limit).\n\
          got {count} occurrences.\nstderr: {stderr}"
@@ -153,7 +154,8 @@ fn check_dfm_plus_repr_within_combined_arm() {
     // exactly one W_DFM_OVERHANG (Warning severity → non-fatal).
     let dfm_count = stderr.matches("W_DFM_OVERHANG").count();
     assert_eq!(
-        dfm_count, 1,
+        dfm_count,
+        1,
         "OCCT mode: exactly one W_DFM_OVERHANG expected from the DFMRule.\n\
          got {dfm_count} occurrences.\nstderr: {stderr}"
     );
@@ -210,7 +212,8 @@ fn check_dfm_overhang_error_emits_e_dfm_overhang_under_occt() {
     );
     let count = stderr.matches("E_DFM_OVERHANG").count();
     assert_eq!(
-        count, 1,
+        count,
+        1,
         "OCCT mode: stderr must carry exactly one 'E_DFM_OVERHANG' diagnostic \
          (one box bottom face violates the 0-deg overhang limit).\n\
          got {count} occurrences.\nstderr: {stderr}"

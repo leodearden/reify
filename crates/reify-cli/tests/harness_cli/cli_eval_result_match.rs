@@ -29,8 +29,10 @@ use crate::common;
 /// reports `Widget.bore = 0.012 m` (the Ok arm's `v` binder, unwrapped).
 #[test]
 fn eval_result_match_bore_ok_reports_12mm() {
-    let (status, stdout, stderr) =
-        common::run_subcommand("eval", &common::fixture_path("result_match_bore_ok.ri"));
+    let (status, stdout, stderr) = common::run_subcommand(
+        "eval",
+        &common::fixture_path("result_match_bore_ok.ri"),
+    );
 
     assert!(
         status.success(),
@@ -47,8 +49,10 @@ fn eval_result_match_bore_ok_reports_12mm() {
 /// literal `6mm` fallback).
 #[test]
 fn eval_result_match_bore_err_reports_6mm() {
-    let (status, stdout, stderr) =
-        common::run_subcommand("eval", &common::fixture_path("result_match_bore_err.ri"));
+    let (status, stdout, stderr) = common::run_subcommand(
+        "eval",
+        &common::fixture_path("result_match_bore_err.ri"),
+    );
 
     assert!(
         status.success(),

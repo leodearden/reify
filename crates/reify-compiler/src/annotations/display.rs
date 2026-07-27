@@ -129,7 +129,10 @@ mod tests {
         reify_core::Type::Scalar { dimension: dim }
     }
 
-    fn run(anns: &[reify_ir::Annotation], ty: &reify_core::Type) -> Vec<reify_core::Diagnostic> {
+    fn run(
+        anns: &[reify_ir::Annotation],
+        ty: &reify_core::Type,
+    ) -> Vec<reify_core::Diagnostic> {
         let mut diags: Vec<reify_core::Diagnostic> = vec![];
         validate_display_dimension(anns, ty, &mut diags);
         diags
@@ -150,11 +153,7 @@ mod tests {
             std::slice::from_ref(&disp("L")),
             &scalar(reify_core::DimensionVector::VOLUME),
         );
-        assert!(
-            diags.is_empty(),
-            "expected no diagnostics, got: {:?}",
-            diags
-        );
+        assert!(diags.is_empty(), "expected no diagnostics, got: {:?}", diags);
     }
 
     // ── (b) wrong-ladder rung → Error naming label + dimension ───────────────
@@ -212,11 +211,7 @@ mod tests {
             std::slice::from_ref(&disp("mm")),
             &scalar(reify_core::DimensionVector::LENGTH),
         );
-        assert!(
-            diags.is_empty(),
-            "expected no diagnostics, got: {:?}",
-            diags
-        );
+        assert!(diags.is_empty(), "expected no diagnostics, got: {:?}", diags);
     }
 
     #[test]
@@ -225,11 +220,7 @@ mod tests {
             std::slice::from_ref(&disp("Pa")),
             &scalar(reify_core::DimensionVector::PRESSURE),
         );
-        assert!(
-            diags.is_empty(),
-            "expected no diagnostics, got: {:?}",
-            diags
-        );
+        assert!(diags.is_empty(), "expected no diagnostics, got: {:?}", diags);
     }
 
     // ── (f) malformed @display → silent here (shape is arg_check's job) ───────
@@ -291,17 +282,9 @@ mod tests {
             std::slice::from_ref(&other),
             &scalar(reify_core::DimensionVector::LENGTH),
         );
-        assert!(
-            diags.is_empty(),
-            "expected no diagnostics, got: {:?}",
-            diags
-        );
+        assert!(diags.is_empty(), "expected no diagnostics, got: {:?}", diags);
         // An empty annotation slice likewise yields nothing.
         let diags = run(&[], &scalar(reify_core::DimensionVector::LENGTH));
-        assert!(
-            diags.is_empty(),
-            "expected no diagnostics, got: {:?}",
-            diags
-        );
+        assert!(diags.is_empty(), "expected no diagnostics, got: {:?}", diags);
     }
 }

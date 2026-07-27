@@ -156,10 +156,7 @@ pub fn solve_multi_case_trampoline(
     // per-case iteration so the pre-hydration contract holds independent of each
     // elastic_static sub-solve's own guard (robust to future sub-solve changes).
     if body_path && !super::elastic_static::has_usable_realized_solver_mesh(realization_inputs) {
-        return ComputeOutcome::Failed {
-            diagnostics: vec![],
-            structured_detail: vec![],
-        };
+        return ComputeOutcome::Failed { diagnostics: vec![], structured_detail: vec![] };
     }
 
     let material = &value_inputs[0];
@@ -387,8 +384,7 @@ mod tests {
         let [dx, dy, dz] = dims;
         let [rx, ry, rz] = reps;
         let (nx1, ny1, nz1) = (rx + 1, ry + 1, rz + 1);
-        let node_idx =
-            |ix: usize, iy: usize, iz: usize| -> usize { iz * ny1 * nx1 + iy * nx1 + ix };
+        let node_idx = |ix: usize, iy: usize, iz: usize| -> usize { iz * ny1 * nx1 + iy * nx1 + ix };
 
         let mut vertices: Vec<f32> = Vec::with_capacity(nx1 * ny1 * nz1 * 3);
         for iz in 0..nz1 {
@@ -470,10 +466,7 @@ mod tests {
         let fields: PersistentMap<String, Value> = [
             (
                 "youngs_modulus".to_string(),
-                Value::Scalar {
-                    si_value: youngs,
-                    dimension: DimensionVector::PRESSURE,
-                },
+                Value::Scalar { si_value: youngs, dimension: DimensionVector::PRESSURE },
             ),
             ("poisson_ratio".to_string(), Value::Real(poisson)),
         ]
@@ -495,9 +488,7 @@ mod tests {
             type_id: StructureTypeId(u32::MAX),
             type_name: "PointLoad".to_string(),
             version: 1,
-            fields: [("force".to_string(), Value::Real(force_n))]
-                .into_iter()
-                .collect(),
+            fields: [("force".to_string(), Value::Real(force_n))].into_iter().collect(),
         }));
         let support = Value::StructureInstance(Box::new(StructureInstanceData {
             type_id: StructureTypeId(u32::MAX),
@@ -624,10 +615,8 @@ mod tests {
         ];
 
         // ONE realized mesh spanning [0,2]×[0,0.5]×[0,0.5], shared across cases.
-        let realization_inputs = [vm_read_handle(make_box_tet_volume_mesh(
-            [2.0, 0.5, 0.5],
-            [2, 1, 1],
-        ))];
+        let realization_inputs =
+            [vm_read_handle(make_box_tet_volume_mesh([2.0, 0.5, 0.5], [2, 1, 1]))];
 
         let cancellation = CancellationHandle::new();
         let outcome = solve_multi_case_trampoline(
@@ -714,10 +703,7 @@ mod tests {
             &cancellation,
         );
         match outcome {
-            ComputeOutcome::Failed {
-                diagnostics,
-                structured_detail,
-            } => {
+            ComputeOutcome::Failed { diagnostics, structured_detail } => {
                 assert!(
                     diagnostics.is_empty(),
                     "pre-hydration body (Undef at [1]) must yield Failed with EMPTY \
@@ -758,10 +744,7 @@ mod tests {
             &cancellation,
         );
         match outcome {
-            ComputeOutcome::Failed {
-                diagnostics,
-                structured_detail,
-            } => {
+            ComputeOutcome::Failed { diagnostics, structured_detail } => {
                 assert!(
                     diagnostics.is_empty(),
                     "body handle present but no realized mesh must yield Failed with \

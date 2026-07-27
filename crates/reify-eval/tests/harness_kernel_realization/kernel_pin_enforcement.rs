@@ -45,8 +45,8 @@ fn with_manifest_none_produces_no_diagnostics_and_same_kernel_count() {
 /// manifold adapter is absent from the registry regardless of link flags.
 #[test]
 fn with_manifest_pinned_missing_kernel_produces_error() {
-    let manifest =
-        Manifest::from_toml_str("[kernels]\nmanifold = \"1.0.0\"\n").expect("valid manifest");
+    let manifest = Manifest::from_toml_str("[kernels]\nmanifold = \"1.0.0\"\n")
+        .expect("valid manifest");
 
     let (_engine, diags) = Engine::with_registered_kernels_and_manifest(
         Box::new(SimpleConstraintChecker),
@@ -55,9 +55,7 @@ fn with_manifest_pinned_missing_kernel_produces_error() {
 
     let errors: Vec<_> = diags
         .iter()
-        .filter(|d| {
-            d.severity == Severity::Error && d.code == Some(DiagnosticCode::PinnedKernelMissing)
-        })
+        .filter(|d| d.severity == Severity::Error && d.code == Some(DiagnosticCode::PinnedKernelMissing))
         .collect();
     assert_eq!(
         errors.len(),
@@ -80,8 +78,8 @@ fn with_manifest_pinned_missing_kernel_produces_error() {
 /// test is never vacuously green.
 #[test]
 fn with_manifest_registered_but_unpinned_kernel_warns() {
-    let manifest =
-        Manifest::from_toml_str("[kernels]\nmanifold = \"1.0.0\"\n").expect("valid manifest");
+    let manifest = Manifest::from_toml_str("[kernels]\nmanifold = \"1.0.0\"\n")
+        .expect("valid manifest");
 
     let (_engine, diags) = Engine::with_registered_kernels_and_manifest(
         Box::new(SimpleConstraintChecker),

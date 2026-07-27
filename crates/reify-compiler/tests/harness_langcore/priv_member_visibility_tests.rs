@@ -865,11 +865,7 @@ fn external_priv_port_member_access_emits_error() {
         1,
         "external access to `h.secret.main` (priv port-member) must emit exactly one \
          E_PRIV_MEMBER_ACCESS; all diagnostics: {:?}",
-        module
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
     assert!(priv_errs[0].message.contains("E_PRIV_MEMBER_ACCESS"));
     assert!(
@@ -894,11 +890,7 @@ fn external_pub_port_member_access_not_yet_supported_unchanged() {
         0,
         "external access to `h.plain.vis` (default-visible port member) must NOT \
          emit E_PRIV_MEMBER_ACCESS; all diagnostics: {:?}",
-        module
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
     let not_yet_supported = module
         .diagnostics
@@ -910,11 +902,7 @@ fn external_pub_port_member_access_not_yet_supported_unchanged() {
         "external access to `h.plain.vis` must still fail with at least one generic \
          'member access not yet supported' diagnostic (pub port-member resolution is \
          unchanged by task #5171); all diagnostics: {:?}",
-        module
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
@@ -962,11 +950,7 @@ structure def Parent {
          must NOT emit E_PRIV_MEMBER_ACCESS via this path — collection subs are explicitly \
          excluded from the new port-member branch, a pre-existing gap #5171 does not close; \
          all diagnostics: {:?}",
-        module
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
     // Assert the *specific* fail-closed diagnostic (not merely "some diagnostic"): a bare
     // `!is_empty()` check would stay green even if an unrelated diagnostic elsewhere in the
@@ -980,10 +964,7 @@ structure def Parent {
     let unknown_member_on_collection_sub = module
         .diagnostics
         .iter()
-        .filter(|d| {
-            d.message
-                .contains("unknown member 'secret' on collection sub 'bolts'")
-        })
+        .filter(|d| d.message.contains("unknown member 'secret' on collection sub 'bolts'"))
         .count();
     assert!(
         unknown_member_on_collection_sub >= 1,
@@ -991,11 +972,7 @@ structure def Parent {
          \"unknown member 'secret' on collection sub 'bolts'\" diagnostic (fails closed), not \
          resolve silently with zero diagnostics or an unrelated one — a future change that \
          made this resolve cleanly would silently leak a priv port member; all diagnostics: {:?}",
-        module
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
@@ -1032,11 +1009,7 @@ structure def Parent {
          NOT emit E_PRIV_MEMBER_ACCESS — `let`s default to Visibility::Private but are never \
          externally addressable by name, so `port_member_is_priv`'s `kind == Param` guard must \
          exclude them; all diagnostics: {:?}",
-        module
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
@@ -1076,11 +1049,7 @@ fn internal_priv_port_member_access_ok() {
         0,
         "internal access to `secret.main` (own priv port member, bare port.member path) \
          must NOT emit E_PRIV_MEMBER_ACCESS; all diagnostics: {:?}",
-        module
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
@@ -1103,11 +1072,7 @@ fn internal_priv_port_member_access_via_self_ok() {
         0,
         "internal access to `self.secret.main` (own priv port member, explicit \
          self.<port>.<member> path) must NOT emit E_PRIV_MEMBER_ACCESS; all diagnostics: {:?}",
-        module
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
@@ -1151,11 +1116,7 @@ fn external_priv_guarded_member_access_emits_error() {
         1,
         "external access to `h.g` (priv guarded-block member) must emit exactly one \
          E_PRIV_MEMBER_ACCESS; all diagnostics: {:?}",
-        module
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
     assert!(priv_errs[0].message.contains("E_PRIV_MEMBER_ACCESS"));
     assert!(
@@ -1183,11 +1144,7 @@ fn external_pub_guarded_member_access_not_found_unchanged() {
         0,
         "external access to `h.vis` (default-visible guarded-block member) must NOT \
          emit E_PRIV_MEMBER_ACCESS; all diagnostics: {:?}",
-        module
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
     let not_found = module
         .diagnostics
@@ -1199,11 +1156,7 @@ fn external_pub_guarded_member_access_not_found_unchanged() {
         "external access to `h.vis` must still fail via E_STRUCTURE_MEMBER_NOT_FOUND \
          (pub guarded-member resolution is unchanged by task #5171); all \
          diagnostics: {:?}",
-        module
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
@@ -1241,11 +1194,7 @@ structure def Parent {
          NOT emit E_PRIV_MEMBER_ACCESS — `let`s default to Visibility::Private but are never \
          externally addressable by name, so `template_member_is_priv`'s guarded_groups scan \
          must exclude them via the `kind == Param` guard; all diagnostics: {:?}",
-        module
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
@@ -1290,11 +1239,7 @@ fn leak(m : PortHost) -> Length { m.secret.main }
          E_PRIV_MEMBER_ACCESS today — the skeleton template never carries port \
          members (tracked by {NOT_YET_PRIV_GATED_FOLLOWUP}); all \
          diagnostics: {:?}",
-        module
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
     let not_found = module
         .diagnostics
@@ -1312,11 +1257,7 @@ fn leak(m : PortHost) -> Length { m.secret.main }
          E_STRUCTURE_MEMBER_NOT_FOUND (the skeleton's empty `ports` vec means \
          the port itself is unresolved) — this pins that the access fails \
          closed, not open; all diagnostics: {:?}",
-        module
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
@@ -1346,11 +1287,7 @@ fn leak(m : GuardHost) -> Length { m.g }
          E_PRIV_MEMBER_ACCESS today — the skeleton template never carries \
          guarded-group members (tracked by {NOT_YET_PRIV_GATED_FOLLOWUP}); all \
          diagnostics: {:?}",
-        module
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
     let not_found = module
         .diagnostics
@@ -1368,10 +1305,6 @@ fn leak(m : GuardHost) -> Length { m.g }
          E_STRUCTURE_MEMBER_NOT_FOUND (the skeleton's empty `guarded_groups` \
          vec means the member is unresolved) — this pins that the access fails \
          closed, not open; all diagnostics: {:?}",
-        module
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }

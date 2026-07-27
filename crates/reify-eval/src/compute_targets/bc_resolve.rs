@@ -128,9 +128,9 @@ pub fn build_face_anchors(
 
 #[cfg(test)]
 mod tests {
-    use reify_core::Diagnostic;
     use reify_core::identity::RealizationNodeId;
     use reify_core::ty::SelectorKind;
+    use reify_core::Diagnostic;
     use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
     use reify_ir::{
         BoundaryAssociation, ExportError, ExportFormat, GeometryError, GeometryHandle,
@@ -164,17 +164,12 @@ mod tests {
 
     impl GeometryKernel for FakeKernel {
         fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-            Err(GeometryError::OperationFailed(
-                "FakeKernel: execute unsupported".into(),
-            ))
+            Err(GeometryError::OperationFailed("FakeKernel: execute unsupported".into()))
         }
         fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
             let id = Self::id_of(query)
                 .ok_or_else(|| QueryError::QueryFailed("FakeKernel: unsupported query".into()))?;
-            self.responses
-                .get(&id)
-                .cloned()
-                .ok_or(QueryError::InvalidHandle(id))
+            self.responses.get(&id).cloned().ok_or(QueryError::InvalidHandle(id))
         }
         fn export(
             &self,
@@ -182,14 +177,10 @@ mod tests {
             _format: ExportFormat,
             _writer: &mut dyn std::io::Write,
         ) -> Result<(), ExportError> {
-            Err(ExportError::FormatError(
-                "FakeKernel: export unsupported".into(),
-            ))
+            Err(ExportError::FormatError("FakeKernel: export unsupported".into()))
         }
         fn tessellate(&self, _handle: GeometryHandleId, _tol: f64) -> Result<Mesh, TessError> {
-            Err(TessError::TessellationFailed(
-                "FakeKernel: tessellate unsupported".into(),
-            ))
+            Err(TessError::TessellationFailed("FakeKernel: tessellate unsupported".into()))
         }
         fn extract_faces(
             &mut self,
@@ -210,12 +201,8 @@ mod tests {
             upstream_values_hash: [0u8; 32],
             kernel_handle: Some(body),
         };
-        SelectorValue::leaf(
-            SelectorKind::Face,
-            target,
-            LeafQuery::ByNormal { dir, tol_rad: 0.1 },
-        )
-        .expect("valid Face/ByNormal leaf")
+        SelectorValue::leaf(SelectorKind::Face, target, LeafQuery::ByNormal { dir, tol_rad: 0.1 })
+            .expect("valid Face/ByNormal leaf")
     }
 
     // ── (a) boundary_node_set ────────────────────────────────────────────────
@@ -233,10 +220,7 @@ mod tests {
         // Requesting only h1 → sorted [2,5]; excludes h2's node, the edge & vertex.
         assert_eq!(super::boundary_node_set(&b, &[h(1)]), vec![2u32, 5]);
         // Requesting both faces → sorted union [2,5,7].
-        assert_eq!(
-            super::boundary_node_set(&b, &[h(1), h(2)]),
-            vec![2u32, 5, 7]
-        );
+        assert_eq!(super::boundary_node_set(&b, &[h(1), h(2)]), vec![2u32, 5, 7]);
         // Unmatched handle → empty.
         assert!(super::boundary_node_set(&b, &[h(999)]).is_empty());
         // Empty face slice → empty.
@@ -252,10 +236,7 @@ mod tests {
         // Both faces normal ≈ +Z → both within tol of dir [0,0,1].
         responses.insert(h(1), xyz(0.0, 0.0, 1.0));
         responses.insert(h(2), xyz(0.0, 0.0, 1.0));
-        let mut kernel = FakeKernel {
-            faces: vec![h(1), h(2)],
-            responses,
-        };
+        let mut kernel = FakeKernel { faces: vec![h(1), h(2)], responses };
 
         let selector = by_normal_face_selector(body, [0.0, 0.0, 1.0]);
         let mut diags: Vec<Diagnostic> = Vec::new();
@@ -272,10 +253,7 @@ mod tests {
         let mut responses = HashMap::new();
         responses.insert(h(1), xyz(0.0, 0.0, 1.0));
         responses.insert(h(2), xyz(0.0, 0.0, 1.0));
-        let mut kernel = FakeKernel {
-            faces: vec![h(1), h(2)],
-            responses,
-        };
+        let mut kernel = FakeKernel { faces: vec![h(1), h(2)], responses };
 
         let selector = by_normal_face_selector(body, [0.0, 0.0, 1.0]);
         let mut diags: Vec<Diagnostic> = Vec::new();
@@ -288,11 +266,7 @@ mod tests {
         boundary.associate(0, NodeAttachment::OnEdge(h(1)));
 
         let nodes = super::boundary_node_set(&boundary, &faces);
-        assert_eq!(
-            nodes,
-            vec![4u32, 8],
-            "composed selector→node-set must be the OnFace union"
-        );
+        assert_eq!(nodes, vec![4u32, 8], "composed selector→node-set must be the OnFace union");
     }
 
     // ── build_face_anchors ───────────────────────────────────────────────────
@@ -305,10 +279,7 @@ mod tests {
         responses.insert(h(2), xyz(-4.0, 5.0, -6.0));
         // h(3) has NO staged Centroid reply → its query errors (InvalidHandle)
         // and the face must be skipped with a diagnostic (never a panic).
-        let mut kernel = FakeKernel {
-            faces: vec![h(1), h(2), h(3)],
-            responses,
-        };
+        let mut kernel = FakeKernel { faces: vec![h(1), h(2), h(3)], responses };
 
         let mut diags: Vec<Diagnostic> = Vec::new();
         let anchors = super::build_face_anchors(&mut kernel, body, &mut diags);

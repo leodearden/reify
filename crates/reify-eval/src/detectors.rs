@@ -182,9 +182,9 @@ impl PostPassDetector for MassPropertiesPsdDetector {
         // Fast early-out: skip the O(n) extraction pass when no MassProperties
         // cell exists (the common case when std.dynamics is unused). Mirrors
         // the inline pass's guard.
-        let has_mass_props = state.values.iter().any(
-            |(_, v)| matches!(v, Value::StructureInstance(d) if d.type_name == "MassProperties"),
-        );
+        let has_mass_props = state.values.iter().any(|(_, v)| {
+            matches!(v, Value::StructureInstance(d) if d.type_name == "MassProperties")
+        });
         if !has_mass_props {
             return;
         }
@@ -469,14 +469,8 @@ mod tests {
         assert_eq!(
             diag_keys(&state_abc.diagnostics),
             vec![
-                (
-                    Some(DiagnosticCode::ConstraintViolated),
-                    "fired".to_string()
-                ),
-                (
-                    Some(DiagnosticCode::SelectorKindMismatch),
-                    "fired".to_string()
-                ),
+                (Some(DiagnosticCode::ConstraintViolated), "fired".to_string()),
+                (Some(DiagnosticCode::SelectorKindMismatch), "fired".to_string()),
                 (
                     Some(DiagnosticCode::ConstraintIndeterminate),
                     "fired".to_string()
@@ -503,14 +497,8 @@ mod tests {
                     Some(DiagnosticCode::ConstraintIndeterminate),
                     "fired".to_string()
                 ),
-                (
-                    Some(DiagnosticCode::ConstraintViolated),
-                    "fired".to_string()
-                ),
-                (
-                    Some(DiagnosticCode::SelectorKindMismatch),
-                    "fired".to_string()
-                ),
+                (Some(DiagnosticCode::ConstraintViolated), "fired".to_string()),
+                (Some(DiagnosticCode::SelectorKindMismatch), "fired".to_string()),
             ]
         );
     }
@@ -661,10 +649,7 @@ mod tests {
         // (an unsorted `im::HashMap`), so two independently-built states
         // can surface the same diagnostics in a different order — see
         // `diag_key_set`'s doc comment.
-        assert_eq!(
-            diag_key_set(&run1.diagnostics),
-            diag_key_set(&run2.diagnostics)
-        );
+        assert_eq!(diag_key_set(&run1.diagnostics), diag_key_set(&run2.diagnostics));
         assert_eq!(
             run1.diagnostics.len(),
             3,
@@ -684,11 +669,8 @@ mod tests {
         // own output — it cannot catch a wording change made only on the
         // `engine_eval.rs` side; see [`MassPropertiesPsdDetector`]'s doc
         // comment for that drift-risk trade-off (deferred to task μ, #5062).
-        let run1_messages: Vec<&str> = run1
-            .diagnostics
-            .iter()
-            .map(|d| d.message.as_str())
-            .collect();
+        let run1_messages: Vec<&str> =
+            run1.diagnostics.iter().map(|d| d.message.as_str()).collect();
         assert!(
             run1_messages
                 .iter()
@@ -696,10 +678,9 @@ mod tests {
             "detector's malformed-cell wording changed; got {run1_messages:?}"
         );
         assert!(
-            run1_messages
-                .iter()
-                .any(|m| m
-                    .contains("inertia tensor is not positive semi-definite (min eigenvalue ≈ ")),
+            run1_messages.iter().any(|m| m.contains(
+                "inertia tensor is not positive semi-definite (min eigenvalue ≈ "
+            )),
             "detector's non-PSD wording changed; got {run1_messages:?}"
         );
 
@@ -821,7 +802,8 @@ mod tests {
     #[test]
     fn mass_properties_psd_detector_accepts_nested_list_and_int_cells() {
         let psd_list_cell = ValueCellId::new("BodyG", "mass_props");
-        let psd_list_value = mass_properties(Some(list3_int([[1, 0, 0], [0, 1, 0], [0, 0, 1]])));
+        let psd_list_value =
+            mass_properties(Some(list3_int([[1, 0, 0], [0, 1, 0], [0, 0, 1]])));
         let non_psd_list_cell = ValueCellId::new("BodyH", "mass_props");
         let non_psd_list_value =
             mass_properties(Some(list3_int([[1, 0, 0], [0, 1, 0], [0, 0, -1]])));

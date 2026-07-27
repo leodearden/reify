@@ -91,10 +91,9 @@ async fn lsp_didopen_surfaces_specialization_forbidden_decl_squiggle_on_keyword_
     let forbidden: Vec<_> = diags
         .iter()
         .filter(|d| {
-            d.code
-                == Some(NumberOrString::String(
-                    "SpecializationForbiddenDecl".to_string(),
-                ))
+            d.code == Some(NumberOrString::String(
+                "SpecializationForbiddenDecl".to_string(),
+            ))
         })
         .collect();
 
@@ -137,13 +136,10 @@ async fn lsp_didopen_surfaces_specialization_forbidden_decl_squiggle_on_keyword_
         d.range.start.line
     );
     assert_eq!(
-        d.range.end.line,
-        param_x_line,
+        d.range.end.line, param_x_line,
         "SpecializationForbiddenDecl range.end.line must be on the `param x` line ({param_x_line}), \
          got {} — squiggle must not span multiple lines (the `{{ body }}` block spans lines {}-{})",
-        d.range.end.line,
-        param_x_line - 1,
-        param_x_line + 1
+        d.range.end.line, param_x_line - 1, param_x_line + 1
     );
 }
 
@@ -195,10 +191,9 @@ async fn lsp_didopen_emits_zero_specialization_forbidden_decl_for_permitted_only
     let forbidden: Vec<_> = diags
         .iter()
         .filter(|d| {
-            d.code
-                == Some(NumberOrString::String(
-                    "SpecializationForbiddenDecl".to_string(),
-                ))
+            d.code == Some(NumberOrString::String(
+                "SpecializationForbiddenDecl".to_string(),
+            ))
         })
         .collect();
 

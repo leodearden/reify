@@ -34,13 +34,8 @@ fn solve(material: Value, prior: Option<OpaqueState>) -> (Value, OpaqueState) {
         prior.as_ref(),
         &cancel,
     ) {
-        ComputeOutcome::Completed {
-            result,
-            new_warm_state,
-            ..
-        } => {
-            let warm =
-                new_warm_state.expect("solve_elastic_static_trampoline must donate warm state");
+        ComputeOutcome::Completed { result, new_warm_state, .. } => {
+            let warm = new_warm_state.expect("solve_elastic_static_trampoline must donate warm state");
             (result, warm)
         }
         other => panic!("expected Completed, got {other:?}"),
@@ -137,19 +132,13 @@ fn heuristic_never_exceeds_cold_iters_across_both_regimes() {
 
     // Cold baseline for K(100E).
     let (result_cold_big, _) = solve(m_big.clone(), None);
-    assert!(
-        converged(&result_cold_big),
-        "Regime A cold solve must converge"
-    );
+    assert!(converged(&result_cold_big), "Regime A cold solve must converge");
     let iters_cold_big = iters(&result_cold_big);
 
     // Warm-probe K(100E) with u_E as prior.
     // ‖K(100E)·u_E − f‖ ≈ 99‖f‖ ≥ ‖f‖ → heuristic must reject → warm_started=false.
     let (result_warm_big, _) = solve(m_big, Some(warm_base_a));
-    assert!(
-        converged(&result_warm_big),
-        "Regime A warm probe must converge"
-    );
+    assert!(converged(&result_warm_big), "Regime A warm probe must converge");
     assert!(
         !warm_started(&result_warm_big),
         "Regime A: ‖K(100E)·u_E−f‖≈99‖f‖ ≥ ‖f‖ → heuristic must pick COLD (warm_started=false)"
@@ -165,19 +154,13 @@ fn heuristic_never_exceeds_cold_iters_across_both_regimes() {
 
     // Cold baseline for K(1.02E).
     let (result_cold_nudge, _) = solve(m_nudge.clone(), None);
-    assert!(
-        converged(&result_cold_nudge),
-        "Regime B cold solve must converge"
-    );
+    assert!(converged(&result_cold_nudge), "Regime B cold solve must converge");
     let iters_cold_nudge = iters(&result_cold_nudge);
 
     // Warm-probe K(1.02E) with u_E as prior.
     // ‖K(1.02E)·u_E − f‖ ≈ 0.02‖f‖ ≪ ‖f‖ → heuristic must accept → warm_started=true.
     let (result_warm_nudge, _) = solve(m_nudge, Some(warm_base_b));
-    assert!(
-        converged(&result_warm_nudge),
-        "Regime B warm probe must converge"
-    );
+    assert!(converged(&result_warm_nudge), "Regime B warm probe must converge");
     assert!(
         warm_started(&result_warm_nudge),
         "Regime B: ‖K(1.02E)·u_E−f‖≈0.02‖f‖ ≪ ‖f‖ → heuristic must pick WARM (warm_started=true)"

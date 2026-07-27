@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use reify_constraints::DimensionalSolver;
 use reify_core::{ModulePath, SnapshotId, Type, ValueCellId};
-use reify_eval::Engine;
 use reify_eval::cache::NodeId;
+use reify_eval::Engine;
 use reify_ir::{DeterminacyState, ObjectiveSense, ObjectiveSet, SnapshotProvenance, Value};
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver,

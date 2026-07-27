@@ -36,9 +36,7 @@
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{DiagnosticCode, Severity, ValueCellId};
-use reify_ir::{
-    ExportFormat, GeometryError, GeometryKernel, GeometryOp, KernelId, ReprKind, Value,
-};
+use reify_ir::{ExportFormat, GeometryError, GeometryKernel, GeometryOp, KernelId, ReprKind, Value};
 use reify_kernel_manifold::ManifoldKernel;
 use reify_test_support::{errors_only, manufacturing_purpose, parse_and_compile_with_stdlib};
 

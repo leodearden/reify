@@ -74,10 +74,7 @@ fn openvdb_stress_example_compiles_and_has_expected_shape() {
 
     for cell_name in ["s_inside", "s_surface", "s_outside"] {
         assert!(
-            stress_probe
-                .value_cells
-                .iter()
-                .any(|c| c.id.member == cell_name),
+            stress_probe.value_cells.iter().any(|c| c.id.member == cell_name),
             "StressProbe is missing value cell '{}'",
             cell_name
         );

@@ -48,7 +48,7 @@
 #![cfg(feature = "test-support")]
 
 use reify_core::{DiagnosticCode, DimensionVector, Severity, Type};
-use reify_expr::{EvalContext, eval_expr};
+use reify_expr::{eval_expr, EvalContext};
 use reify_ir::{BinOp, CompiledExpr, Value, ValueMap};
 use reify_test_support::compile_source;
 
@@ -389,10 +389,9 @@ structure def P {
 }
 "#;
     let module = compile_source(source);
-    let flagged = module
-        .diagnostics
-        .iter()
-        .any(|d| d.severity == Severity::Error && d.code == Some(DiagnosticCode::ArithOperandKind));
+    let flagged = module.diagnostics.iter().any(|d| {
+        d.severity == Severity::Error && d.code == Some(DiagnosticCode::ArithOperandKind)
+    });
     assert!(
         flagged,
         "`a * a` (Vector3<Length> × Vector3<Length>) must yield \
@@ -506,8 +505,11 @@ fn int_int_nondivisible_division_is_a_ledgered_divergence() {
         !runtime.is_undef(),
         "expected non-Undef runtime result for Div(Int(7), Int(2)), got Undef"
     );
-    let static_result =
-        reify_compiler::__infer_mul_div_result_for_parity_test(BinOp::Div, &Type::Int, &Type::Int);
+    let static_result = reify_compiler::__infer_mul_div_result_for_parity_test(
+        BinOp::Div,
+        &Type::Int,
+        &Type::Int,
+    );
     let static_ty = static_result.expect("expected static Some(Type::Int) for Div(Int, Int)");
     assert!(
         !value_kind_matches_type(&runtime, &static_ty),
@@ -586,7 +588,10 @@ fn smoke_int_times_int_parity() {
     let runtime = eval_binop(BinOp::Mul, Value::Int(6), Value::Int(7));
     assert_eq!(runtime, Value::Int(42));
 
-    let static_result =
-        reify_compiler::__infer_mul_div_result_for_parity_test(BinOp::Mul, &Type::Int, &Type::Int);
+    let static_result = reify_compiler::__infer_mul_div_result_for_parity_test(
+        BinOp::Mul,
+        &Type::Int,
+        &Type::Int,
+    );
     assert_eq!(static_result, Some(Type::Int));
 }

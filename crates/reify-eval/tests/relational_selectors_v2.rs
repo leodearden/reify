@@ -192,7 +192,9 @@ fn relational_selectors_v2_compile_and_return_correct_semantics() {
 #[test]
 fn relational_selectors_v2_face_chain_resolves_end_to_end() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping relational_selectors_v2 end-to-end eval assertion: OCCT not available");
+        eprintln!(
+            "skipping relational_selectors_v2 end-to-end eval assertion: OCCT not available"
+        );
         return;
     }
 

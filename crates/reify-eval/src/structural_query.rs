@@ -103,10 +103,7 @@ pub(crate) fn enumerate_children(template: &TopologyTemplate) -> Vec<CompiledExp
 /// Entity paths:
 /// - non-collection: `{template.name}.{sub.name}`
 /// - collection instance i: `{template.name}.{sub.name}[{i}]`
-pub(crate) fn enumerate_members(
-    template: &TopologyTemplate,
-    values: &ValueMap,
-) -> Vec<CompiledExpr> {
+pub(crate) fn enumerate_members(template: &TopologyTemplate, values: &ValueMap) -> Vec<CompiledExpr> {
     let mut result = Vec::new();
     for sub in &template.sub_components {
         if sub.is_collection {
@@ -240,9 +237,7 @@ pub(crate) fn enumerate_descendants(
 pub(crate) fn contains_structural_query(expr: &CompiledExpr) -> bool {
     match &expr.kind {
         CompiledExprKind::MethodCall { object, method, .. } => {
-            if (method == "children" || method == "members" || method == "descendants")
-                && is_self_ref(object)
-            {
+            if (method == "children" || method == "members" || method == "descendants") && is_self_ref(object) {
                 return true;
             }
             // Recurse into object in case of chained calls (defensive).
@@ -518,15 +513,7 @@ pub(crate) fn expand_structural_query(
     // that are NOT structural-query placeholders are also walked here (object +
     // args), mirroring `expand_purpose_reflective_placeholders`.
     walk_children_mut(expr, &mut |child| {
-        expand_structural_query(
-            child,
-            template,
-            all_templates,
-            values,
-            max_depth,
-            node_budget,
-            diagnostics,
-        );
+        expand_structural_query(child, template, all_templates, values, max_depth, node_budget, diagnostics);
     });
 }
 

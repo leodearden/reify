@@ -735,9 +735,9 @@ mod tests {
     use tower_lsp::lsp_types::{DiagnosticSeverity, Url};
 
     // Additional imports for the eval-diagnostics regression-lock cluster.
+    use reify_test_support::MockConstraintSolver;
     use reify_core::{DimensionVector, Severity, ValueCellId};
     use reify_ir::Value;
-    use reify_test_support::MockConstraintSolver;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -1336,8 +1336,8 @@ structure S {
 
     #[test]
     fn incremental_path_uses_eval_cached_when_content_unchanged() {
-        use reify_core::ValueCellId;
         use reify_eval::cache::NodeId;
+        use reify_core::ValueCellId;
 
         let uri = test_uri();
         let source = reify_test_support::bracket_source();
@@ -2431,7 +2431,8 @@ structure S {
     #[test]
     fn fea_bearing_constraint_produces_no_false_violation_or_false_pass() {
         let uri = test_uri();
-        let parsed = reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
+        let parsed =
+            reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
         let compiled = reify_compiler::compile_with_stdlib(&parsed);
 
         // Guard: the fixture must compile with zero errors, so the
@@ -2610,7 +2611,8 @@ structure S {
     #[test]
     fn fea_indeterminate_constraint_emits_info_hint() {
         let uri = test_uri();
-        let parsed = reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
+        let parsed =
+            reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
         let compiled = reify_compiler::compile_with_stdlib(&parsed);
 
         let mut state = EvalState::new();
@@ -2961,7 +2963,8 @@ structure S {
         // `state.engine` — the registered trampoline survives into it.
         let result = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
 
-        let parsed = reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
+        let parsed =
+            reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
         let compiled = reify_compiler::compile_with_stdlib(&parsed);
         let check_result = state.engine.check_snapshot(&compiled).expect(
             "state.engine should hold a snapshot for FEA_BEARING_SRC's content hash \
@@ -3022,7 +3025,8 @@ structure S {
     #[test]
     fn fea_hint_two_fea_constraints_each_get_distinct_span_hint() {
         let uri = test_uri();
-        let parsed = reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
+        let parsed =
+            reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
         let compiled = reify_compiler::compile_with_stdlib(&parsed);
 
         let mut state = EvalState::new();

@@ -34,10 +34,8 @@ use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_w
 
 /// Path to the shipped example, resolved relative to this crate's manifest directory
 /// (mirrors `continuous_cost_min_example_e2e.rs::EXAMPLE_PATH`).
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/cost_robustness_tradeoff.ri"
-);
+const EXAMPLE_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/cost_robustness_tradeoff.ri");
 
 /// Two sibling top-level structures sharing the same shape (one `Length = auto(free)`
 /// param, one `Money` unit cost, one `>` inequality) so the ONLY variable between

@@ -50,19 +50,10 @@ pub fn toolpath_to_value(tp: &Toolpath) -> Value {
     structure(
         "Toolpath",
         vec![
-            (
-                "beads",
-                Value::List(tp.beads.iter().map(bead_to_value).collect()),
-            ),
-            (
-                "layers",
-                Value::List(tp.layers.iter().map(layer_to_value).collect()),
-            ),
+            ("beads", Value::List(tp.beads.iter().map(bead_to_value).collect())),
+            ("layers", Value::List(tp.layers.iter().map(layer_to_value).collect())),
             ("in_layer_adjacency", adjacency_list(&tp.in_layer_adjacency)),
-            (
-                "inter_layer_adjacency",
-                adjacency_list(&tp.inter_layer_adjacency),
-            ),
+            ("inter_layer_adjacency", adjacency_list(&tp.inter_layer_adjacency)),
         ],
     )
 }
@@ -147,11 +138,7 @@ fn adjacency_list(pairs: &[(usize, usize)]) -> Value {
 /// A native-unit 3-D position `Value::Point` of bare `Value::Real` millimetre
 /// coordinates (no SI conversion — see [`toolpath_to_value`]).
 fn point_raw(p: [f64; 3]) -> Value {
-    Value::Point(vec![
-        Value::Real(p[0]),
-        Value::Real(p[1]),
-        Value::Real(p[2]),
-    ])
+    Value::Point(vec![Value::Real(p[0]), Value::Real(p[1]), Value::Real(p[2])])
 }
 
 // ── ComputeNode trampoline ──────────────────────────────────────────────────
@@ -321,10 +308,7 @@ fn read_slice_settings(value_inputs: &[Value]) -> SliceSettings {
         // Undef-path fallbacks mirror the stdlib `FDMProcess` defaults
         // (walls = 3, top_bottom_layers = 4) so an Undef process yields the same
         // profile `FDMProcess()` would, all in one consistent (mm) unit system.
-        walls: process
-            .and_then(|p| field_int(p, "walls"))
-            .unwrap_or(3)
-            .max(0) as u32,
+        walls: process.and_then(|p| field_int(p, "walls")).unwrap_or(3).max(0) as u32,
         top_bottom_layers: process
             .and_then(|p| field_int(p, "top_bottom_layers"))
             .unwrap_or(4)
@@ -863,52 +847,53 @@ mod tests {
         let never = CancellationHandle::new();
 
         // ── dispatch 1: cache MISS — runs the slicer, donates warm state ─────────
-        let (result1, warm) =
-            match fdm_slice_dispatch(&inputs, &realizations, Some(&stub), None, &never) {
-                ComputeOutcome::Completed {
+        let (result1, warm) = match fdm_slice_dispatch(
+            &inputs,
+            &realizations,
+            Some(&stub),
+            None,
+            &never,
+        ) {
+            ComputeOutcome::Completed {
+                result,
+                new_warm_state,
+                cost_per_byte,
+                ..
+            } => {
+                assert!(
+                    cost_per_byte.is_some_and(|c| c > 0.0),
+                    "a fresh slice reports a positive cost_per_byte, got {cost_per_byte:?}"
+                );
+                let beads = as_list(field(&result, "beads").expect("beads field"));
+                assert!(!beads.is_empty(), "the fixture slice has beads");
+                (
                     result,
-                    new_warm_state,
-                    cost_per_byte,
-                    ..
-                } => {
-                    assert!(
-                        cost_per_byte.is_some_and(|c| c > 0.0),
-                        "a fresh slice reports a positive cost_per_byte, got {cost_per_byte:?}"
-                    );
-                    let beads = as_list(field(&result, "beads").expect("beads field"));
-                    assert!(!beads.is_empty(), "the fixture slice has beads");
-                    (
-                        result,
-                        new_warm_state.expect("a fresh slice donates warm state"),
-                    )
-                }
-                other => panic!("dispatch 1 expected Completed, got {other:?}"),
-            };
+                    new_warm_state.expect("a fresh slice donates warm state"),
+                )
+            }
+            other => panic!("dispatch 1 expected Completed, got {other:?}"),
+        };
         let runs_after_first = std::fs::read_to_string(&counter)
             .map(|s| s.lines().count())
             .unwrap_or(0);
-        assert_eq!(
-            runs_after_first, 1,
-            "the slicer ran exactly once on the MISS"
-        );
+        assert_eq!(runs_after_first, 1, "the slicer ran exactly once on the MISS");
 
         // ── dispatch 2: cache HIT — prior warm state + identical inputs ──────────
-        let result2 =
-            match fdm_slice_dispatch(&inputs, &realizations, Some(&stub), Some(&warm), &never) {
-                ComputeOutcome::Completed { result, .. } => result,
-                other => panic!("dispatch 2 expected Completed, got {other:?}"),
-            };
+        let result2 = match fdm_slice_dispatch(
+            &inputs,
+            &realizations,
+            Some(&stub),
+            Some(&warm),
+            &never,
+        ) {
+            ComputeOutcome::Completed { result, .. } => result,
+            other => panic!("dispatch 2 expected Completed, got {other:?}"),
+        };
         let runs_after_second = std::fs::read_to_string(&counter)
             .map(|s| s.lines().count())
             .unwrap_or(0);
-        assert_eq!(
-            runs_after_second, 1,
-            "the cache HIT must NOT re-run the slicer"
-        );
-        assert_eq!(
-            result1, result2,
-            "the HIT returns the cached Toolpath value"
-        );
+        assert_eq!(runs_after_second, 1, "the cache HIT must NOT re-run the slicer");
+        assert_eq!(result1, result2, "the HIT returns the cached Toolpath value");
     }
 
     /// REVIEW-FIX (blocking issue 1/2, robustness_unit_mismatch): `read_slice_settings`
@@ -945,8 +930,7 @@ mod tests {
             .position(|a| a == "--layer-height")
             .expect("--layer-height present in composed args");
         assert_eq!(
-            args[idx + 1],
-            "0.2",
+            args[idx + 1], "0.2",
             "--layer-height must be 0.2 (mm), not 0.0002; got {args:?}"
         );
         // The Undef-process fallback is mm-consistent with the converted real path.
@@ -1073,10 +1057,7 @@ mod tests {
         let count_after_first = std::fs::read_to_string(&counter)
             .map(|s| s.lines().count())
             .unwrap_or(0);
-        assert_eq!(
-            count_after_first, 1,
-            "slicer ran exactly once on dispatch 1"
-        );
+        assert_eq!(count_after_first, 1, "slicer ran exactly once on dispatch 1");
 
         // ── dispatch 2: no realization; prior warm state is the hash-0 donation ──
         // Must MISS (non-cacheable) and re-run the slicer, NOT alias hash-0 key.

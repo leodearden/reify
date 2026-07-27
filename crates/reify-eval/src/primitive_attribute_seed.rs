@@ -1185,9 +1185,7 @@ mod tests {
                     kernel: KernelId::Occt,
                     id: fh,
                 })
-                .unwrap_or_else(|| {
-                    panic!("wedge face #{idx} (handle {:?}) must have an entry", fh)
-                });
+                .unwrap_or_else(|| panic!("wedge face #{idx} (handle {:?}) must have an entry", fh));
             assert_eq!(
                 attr.role,
                 Role::Side,
@@ -1205,9 +1203,7 @@ mod tests {
                     kernel: KernelId::Occt,
                     id: eh,
                 })
-                .unwrap_or_else(|| {
-                    panic!("wedge edge #{idx} (handle {:?}) must have an entry", eh)
-                });
+                .unwrap_or_else(|| panic!("wedge edge #{idx} (handle {:?}) must have an entry", eh));
             assert_eq!(
                 attr.role,
                 Role::NewEdge,

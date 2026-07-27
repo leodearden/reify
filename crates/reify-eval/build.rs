@@ -144,10 +144,7 @@ fn main() {
         println!("cargo:rerun-if-changed={}", path.display());
     }
     let lock_text = std::fs::read_to_string(&lock_path).unwrap_or_else(|e| {
-        panic!(
-            "ENGINE_VERSION_HASH: cannot read {}: {e}",
-            lock_path.display()
-        )
+        panic!("ENGINE_VERSION_HASH: cannot read {}: {e}", lock_path.display())
     });
     let manifest_text = std::fs::read_to_string(&closure_path).unwrap_or_else(|e| {
         panic!(

@@ -107,7 +107,9 @@ fn build_colored_box_to_3mf_writes_basematerials() {
             "B7: colored box must produce a <basematerials> element with displaycolor= \
              in the 3MF — body color did not reach the file"
         );
-        let has_base_elem = bytes.windows(b"<base ".len()).any(|w| w == b"<base ");
+        let has_base_elem = bytes
+            .windows(b"<base ".len())
+            .any(|w| w == b"<base ");
         assert!(
             has_base_elem,
             "B7: <base displaycolor=...> element must be present in the model XML"

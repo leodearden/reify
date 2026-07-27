@@ -233,10 +233,7 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
             // Point to the name within the declaration, not the entire span.
             // Find the name's byte position within the declaration text.
             let name_offset = find_name_offset_in_decl(source, span.start, name);
-            return Some(SourceSpan::new(
-                name_offset,
-                name_offset + name.len() as u32,
-            ));
+            return Some(SourceSpan::new(name_offset, name_offset + name.len() as u32));
         }
     }
     None

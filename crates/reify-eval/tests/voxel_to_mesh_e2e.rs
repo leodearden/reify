@@ -143,7 +143,8 @@ fn voxel_to_mesh_builds_honest_voxel_operand_and_mesh_terminal() {
     );
     nodes.sort_by_key(|(id, _)| id.index);
 
-    let (terminal_id, terminal_node) = *nodes.last().expect("nodes is non-empty (asserted above)");
+    let (terminal_id, terminal_node) =
+        *nodes.last().expect("nodes is non-empty (asserted above)");
     assert_eq!(
         terminal_node.produced_repr,
         ReprKind::Mesh,

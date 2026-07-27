@@ -110,8 +110,8 @@ fn warm_edit_commits_identical_determinacy_to_cold_eval() {
     // solver's early-exit (T4) and the wave2 dependent reseed of y (the
     // "1624" site under test).
     let warm_compiled = compile_source(SRC);
-    let mut warm_engine = Engine::new(Box::new(SimpleConstraintChecker), None)
-        .with_solver(Box::new(DimensionalSolver));
+    let mut warm_engine =
+        Engine::new(Box::new(SimpleConstraintChecker), None).with_solver(Box::new(DimensionalSolver));
     warm_engine.eval(&warm_compiled);
     let warm_result = warm_engine
         .edit_param(x_id, Value::length(0.01))
@@ -283,9 +283,10 @@ fn warm_collection_grow_commits_identical_determinacy_to_cold_eval() {
     let cold_snapshot = cold_engine
         .snapshot()
         .expect("cold engine must have a snapshot after eval");
-    let (_, cold_det) = cold_snapshot.values.get(&target_id).unwrap_or_else(|| {
-        panic!("cold snapshot: bolts[3].is_diameter_determined must be present")
-    });
+    let (_, cold_det) = cold_snapshot
+        .values
+        .get(&target_id)
+        .unwrap_or_else(|| panic!("cold snapshot: bolts[3].is_diameter_determined must be present"));
     assert_eq!(
         *cold_val,
         Value::Bool(true),
@@ -303,15 +304,17 @@ fn warm_collection_grow_commits_identical_determinacy_to_cold_eval() {
     let warm_result = warm_engine
         .edit_param(n_id, Value::Int(4))
         .expect("edit_param(n, 4) must succeed after a cold eval at n=2");
-    let warm_val = warm_result.values.get(&target_id).unwrap_or_else(|| {
-        panic!("warm edit_param: bolts[3].is_diameter_determined must be present")
-    });
+    let warm_val = warm_result
+        .values
+        .get(&target_id)
+        .unwrap_or_else(|| panic!("warm edit_param: bolts[3].is_diameter_determined must be present"));
     let warm_snapshot = warm_engine
         .snapshot()
         .expect("warm engine must have a snapshot after edit_param");
-    let (_, warm_det) = warm_snapshot.values.get(&target_id).unwrap_or_else(|| {
-        panic!("warm snapshot: bolts[3].is_diameter_determined must be present")
-    });
+    let (_, warm_det) = warm_snapshot
+        .values
+        .get(&target_id)
+        .unwrap_or_else(|| panic!("warm snapshot: bolts[3].is_diameter_determined must be present"));
 
     assert_eq!(
         warm_val, cold_val,

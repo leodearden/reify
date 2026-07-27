@@ -199,7 +199,10 @@ fn arc_compiles() {
     // geometry.md line 60 documents the 9-arg
     // `arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az)` form
     // (geometry_curve.rs:47): center + radius + angle range + axis direction.
-    assert_compiles("arc", "arc(0mm, 0mm, 0mm, 5mm, 0deg, 90deg, 0mm, 0mm, 1mm)");
+    assert_compiles(
+        "arc",
+        "arc(0mm, 0mm, 0mm, 5mm, 0deg, 90deg, 0mm, 0mm, 1mm)",
+    );
 }
 
 #[test]

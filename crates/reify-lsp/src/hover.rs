@@ -969,8 +969,7 @@ structure B {
     /// axis). Hover must surface `-> Relation removes 4`.
     #[test]
     fn hover_on_concentric_relation_shows_delta_dof_contract() {
-        let source =
-            "structure S {\n    param a: Axis\n    param b: Axis\n    let r = concentric(a, b)\n}";
+        let source = "structure S {\n    param a: Axis\n    param b: Axis\n    let r = concentric(a, b)\n}";
         // 'concentric' on line 3 starts at column 12.
         let position = Position::new(3, 15); // on 'concentric'
         let md = hover_markdown(source, position)
@@ -1035,10 +1034,7 @@ structure B {
         let md = hover_markdown(source, position)
             .expect("hover should return info for undef param outer_d");
         assert!(md.contains("param"), "should mention 'param', got: {md}");
-        assert!(
-            md.contains("outer_d"),
-            "should mention 'outer_d', got: {md}"
-        );
+        assert!(md.contains("outer_d"), "should mention 'outer_d', got: {md}");
         assert!(
             md.to_lowercase().contains("because"),
             "undef param hover should contain cause line with 'because', got: {md}"

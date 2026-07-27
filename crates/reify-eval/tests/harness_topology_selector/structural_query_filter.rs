@@ -9,9 +9,9 @@
 //! Step numbering mirrors plan.json step IDs.
 
 use reify_core::{ModulePath, Severity, ValueCellId};
-use reify_eval::Engine;
 use reify_ir::Value;
 use reify_test_support::mocks::MockConstraintChecker;
+use reify_eval::Engine;
 
 // ─── step-3: DIRECT conformance + ordering + empty (RED) ───
 
@@ -55,10 +55,7 @@ fn filter_direct_conformance_preserves_source_order() {
     assert!(
         compile_errors.is_empty(),
         "compile errors: {:?}",
-        compile_errors
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        compile_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
     let checker = MockConstraintChecker::new();
@@ -88,7 +85,10 @@ fn filter_direct_conformance_preserves_source_order() {
                 items[1]
             );
         }
-        other => panic!("Assembly.bolts should be Value::List; got: {:?}", other),
+        other => panic!(
+            "Assembly.bolts should be Value::List; got: {:?}",
+            other
+        ),
     }
 }
 
@@ -124,10 +124,7 @@ fn filter_empty_when_no_conformers() {
     assert!(
         compile_errors.is_empty(),
         "compile errors: {:?}",
-        compile_errors
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        compile_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
     let checker = MockConstraintChecker::new();
@@ -192,10 +189,7 @@ fn filter_transitive_refinement_conformance() {
     assert!(
         compile_errors.is_empty(),
         "compile errors: {:?}",
-        compile_errors
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        compile_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
     let checker = MockConstraintChecker::new();
@@ -277,11 +271,7 @@ fn filter_nested_filter_resolves_bottom_up() {
     "#;
 
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
 
     let compiled = reify_compiler::compile(&parsed);
     let compile_errors: Vec<_> = compiled
@@ -292,10 +282,7 @@ fn filter_nested_filter_resolves_bottom_up() {
     assert!(
         compile_errors.is_empty(),
         "compile errors: {:?}",
-        compile_errors
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        compile_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
     let checker = MockConstraintChecker::new();
@@ -342,10 +329,7 @@ fn example_structural_query_filter_ri_evals_clean() {
     let source = std::fs::read_to_string(EXAMPLE_PATH)
         .expect("examples/structural_query_filter.ri should exist (created by step-8)");
 
-    let parsed = reify_syntax::parse(
-        &source,
-        ModulePath::single("structural_query_filter_example"),
-    );
+    let parsed = reify_syntax::parse(&source, ModulePath::single("structural_query_filter_example"));
     assert!(
         parsed.errors.is_empty(),
         "example parse errors: {:?}",
@@ -361,10 +345,7 @@ fn example_structural_query_filter_ri_evals_clean() {
     assert!(
         compile_errors.is_empty(),
         "example compile errors: {:?}",
-        compile_errors
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        compile_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
     let checker = MockConstraintChecker::new();
@@ -402,6 +383,9 @@ fn example_structural_query_filter_ri_evals_clean() {
                 n
             );
         }
-        other => panic!("Assembly.bolt_count should be Value::Int; got: {:?}", other),
+        other => panic!(
+            "Assembly.bolt_count should be Value::Int; got: {:?}",
+            other
+        ),
     }
 }

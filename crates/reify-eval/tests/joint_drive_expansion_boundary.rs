@@ -230,10 +230,11 @@ structure Rig {{
         Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let _result = engine.eval(&compiled);
 
-    let problem =
-        captured.lock().unwrap().clone().expect(
-            "Rig (the only auto-bearing scope) must dispatch a solve, capturing its problem",
-        );
+    let problem = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("Rig (the only auto-bearing scope) must dispatch a solve, capturing its problem");
 
     // (a) objective term expr expanded.
     let objective = problem
@@ -668,7 +669,11 @@ fn two_cycle_cross_scope_coupled_module() -> CompiledModule {
         // Spanning objective reading BOTH scopes' totals.
         .objective(ObjectiveSet::single(
             ObjectiveSense::Minimize,
-            binop(BinOp::Add, value_ref("A", "total"), value_ref("B", "total")),
+            binop(
+                BinOp::Add,
+                value_ref("A", "total"),
+                value_ref("B", "total"),
+            ),
         ))
         .build();
 

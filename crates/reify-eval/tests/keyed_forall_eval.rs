@@ -50,9 +50,7 @@ fn keyed_forall_eval_emits_per_member_constraints_and_resolves_cells() {
     // (d) no panic — reaching this line proves eval completed.
 
     // (a) Exactly 2 forall@v[*] constraints in the snapshot graph.
-    let snap = engine
-        .snapshot()
-        .expect("snapshot must be available after eval");
+    let snap = engine.snapshot().expect("snapshot must be available after eval");
     let mut forall_labels: Vec<String> = snap
         .graph
         .constraints
@@ -94,7 +92,11 @@ fn keyed_forall_eval_emits_per_member_constraints_and_resolves_cells() {
                 constraint.1.expr.kind
             );
         };
-        assert_eq!(*op, BinOp::Gt, "{label}: expected BinOp::Gt, got {op:?}");
+        assert_eq!(
+            *op,
+            BinOp::Gt,
+            "{label}: expected BinOp::Gt, got {op:?}"
+        );
 
         let CompiledExprKind::ValueRef(id) = &left.kind else {
             panic!("expected ValueRef on LHS of {label}, got {:?}", left.kind);

@@ -18,7 +18,7 @@ use reify_core::{RealizationNodeId, ValueCellId};
 use reify_eval::cache::NodeId;
 use reify_eval::{BuildScheduler, Engine};
 use reify_ir::{ExportFormat, Value};
-use reify_test_support::{MockGeometryKernel, compile_source};
+use reify_test_support::{compile_source, MockGeometryKernel};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // step-1 RED: after a structural-mutation grow, the selective cone is preserved.

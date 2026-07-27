@@ -31,9 +31,7 @@
 
 use std::collections::HashMap;
 
-use reify_eval::relate_solve::{
-    RelateScope, collect_relate_scope, realize_operand_datums, solve_relate_scope,
-};
+use reify_eval::relate_solve::{RelateScope, collect_relate_scope, realize_operand_datums, solve_relate_scope};
 use reify_ir::{ExportFormat, Value};
 use reify_test_support::compile_source_with_stdlib;
 
@@ -60,22 +58,14 @@ fn bolt_plate_source() -> String {
 /// An identity seed Frame for the bolt's `at auto` unknown.  Realization is
 /// pose-independent, so any seed yields identical local datums.
 fn identity_bolt_seeds() -> HashMap<String, Value> {
-    [(
-        "bolt".to_string(),
-        Value::Frame {
-            origin: Box::new(Value::Point(vec![
-                Value::length(0.0),
-                Value::length(0.0),
-                Value::length(0.0),
-            ])),
-            basis: Box::new(Value::Orientation {
-                w: 1.0,
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            }),
-        },
-    )]
+    [("bolt".to_string(), Value::Frame {
+        origin: Box::new(Value::Point(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ])),
+        basis: Box::new(Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
+    })]
     .into_iter()
     .collect()
 }
@@ -84,10 +74,7 @@ fn identity_bolt_seeds() -> HashMap<String, Value> {
 /// `label` on mismatch.
 fn decompose_transform(v: &Value, label: &str) -> ((f64, f64, f64, f64), [f64; 3]) {
     let (rot, trans) = match v {
-        Value::Transform {
-            rotation,
-            translation,
-        } => (rotation.as_ref(), translation.as_ref()),
+        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
         other => panic!("{label}: expected Value::Transform, got {other:?}"),
     };
     let (w, x, y, z) = match rot {
@@ -152,12 +139,7 @@ fn relate_solve_chain_writes_solved_frame_origin_into_joint() {
         .templates
         .iter()
         .find(|t| t.name == "BoltPlate")
-        .unwrap_or_else(|| {
-            panic!(
-                "BoltPlate template not found; module diagnostics: {:#?}",
-                module.diagnostics
-            )
-        });
+        .unwrap_or_else(|| panic!("BoltPlate template not found; module diagnostics: {:#?}", module.diagnostics));
     let scope: RelateScope = collect_relate_scope(bp_template);
 
     let mut engine = occt_engine();
@@ -187,25 +169,13 @@ fn relate_solve_chain_writes_solved_frame_origin_into_joint() {
         },
         _ => unreachable!(),
     };
-    let frame_tx = frame_origin_comps[0]
-        .as_f64()
-        .expect("frame origin[0] numeric");
-    let frame_ty = frame_origin_comps[1]
-        .as_f64()
-        .expect("frame origin[1] numeric");
-    let frame_tz = frame_origin_comps[2]
-        .as_f64()
-        .expect("frame origin[2] numeric");
+    let frame_tx = frame_origin_comps[0].as_f64().expect("frame origin[0] numeric");
+    let frame_ty = frame_origin_comps[1].as_f64().expect("frame origin[1] numeric");
+    let frame_tz = frame_origin_comps[2].as_f64().expect("frame origin[2] numeric");
 
     // 3a. Verify the DOF accounting (§1: 5 spent, 1 residual, 2 driving, 0 redundant).
-    assert_eq!(
-        solution.spent, 5,
-        "§1 spends 5 DOF (concentric 4 + flush net 1)"
-    );
-    assert_eq!(
-        solution.free, 1,
-        "§1 leaves 1 residual DOF (spin about shared axis)"
-    );
+    assert_eq!(solution.spent, 5, "§1 spends 5 DOF (concentric 4 + flush net 1)");
+    assert_eq!(solution.free, 1, "§1 leaves 1 residual DOF (spin about shared axis)");
     assert_eq!(solution.driving, 2, "§1 has 2 driving relations");
     assert_eq!(solution.redundant, 0, "§1 has 0 redundant relations");
 
@@ -239,14 +209,8 @@ fn relate_solve_chain_writes_solved_frame_origin_into_joint() {
         Some(&Value::String("revolute".to_string())),
         "'kind' must be preserved after set_mount_origin"
     );
-    assert!(
-        map.contains_key(&Value::String("axis".to_string())),
-        "'axis' must be preserved"
-    );
-    assert!(
-        map.contains_key(&Value::String("range".to_string())),
-        "'range' must be preserved"
-    );
+    assert!(map.contains_key(&Value::String("axis".to_string())), "'axis' must be preserved");
+    assert!(map.contains_key(&Value::String("range".to_string())), "'range' must be preserved");
 
     // "origin" must now be present and be a Transform (B5 core: the write happened).
     let origin = map
@@ -330,10 +294,7 @@ structure BoltPlateWithJoint {
 
     let compiled = compile_source_with_stdlib(source);
     assert!(
-        compiled
-            .diagnostics
-            .iter()
-            .all(|d| d.severity != reify_core::Severity::Error),
+        compiled.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
         "source must compile without errors; got: {:#?}",
         compiled.diagnostics
     );
@@ -342,9 +303,7 @@ structure BoltPlateWithJoint {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // The build must not error (relate-solve is expected to succeed).
-    let build_errors: Vec<_> = result
-        .diagnostics
-        .iter()
+    let build_errors: Vec<_> = result.diagnostics.iter()
         .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(
@@ -408,10 +367,7 @@ structure PureMechanism {
 
     let compiled = compile_source_with_stdlib(source);
     assert!(
-        compiled
-            .diagnostics
-            .iter()
-            .all(|d| d.severity != reify_core::Severity::Error),
+        compiled.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
         "source must compile without errors; got: {:#?}",
         compiled.diagnostics
     );

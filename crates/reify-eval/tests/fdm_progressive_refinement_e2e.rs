@@ -211,11 +211,7 @@ fn warm_started_fea_reduces_iterations_and_matches_solution() {
 fn deterministic_pins_one_rung_and_is_bit_stable() {
     // (a) select_rungs under #deterministic pins exactly one rung.
     let det_rungs = select_rungs(Rung::R0, true, true);
-    assert_eq!(
-        det_rungs.len(),
-        1,
-        "#deterministic must pin exactly one rung"
-    );
+    assert_eq!(det_rungs.len(), 1, "#deterministic must pin exactly one rung");
     assert_eq!(
         det_rungs,
         vec![Rung::R0],
@@ -243,10 +239,12 @@ fn deterministic_pins_one_rung_and_is_bit_stable() {
     );
     for i in 0..bits_1.len() {
         assert_eq!(
-            bits_1[i], bits_2[i],
+            bits_1[i],
+            bits_2[i],
             "deterministic repeated solve: displacement[{i}] must be bit-identical \
              (bits_1[{i}]={:#018x}, bits_2[{i}]={:#018x})",
-            bits_1[i], bits_2[i]
+            bits_1[i],
+            bits_2[i]
         );
     }
 
@@ -260,10 +258,12 @@ fn deterministic_pins_one_rung_and_is_bit_stable() {
     );
     for i in 0..bits_1.len() {
         assert_eq!(
-            bits_1[i], bits_with_prior[i],
+            bits_1[i],
+            bits_with_prior[i],
             "deterministic solve must be bit-identical regardless of prior warm-state \
              (bits[{i}]: no-prior={:#018x}, with-prior={:#018x})",
-            bits_1[i], bits_with_prior[i]
+            bits_1[i],
+            bits_with_prior[i]
         );
     }
 }
@@ -309,7 +309,13 @@ fn field_for_rung(rung: Rung) -> Value {
         }
         Rung::R0 => {
             assert_eq!(key, "fdm::as_printed_material_r0");
-            as_printed_material_r0_trampoline(&value_inputs_r0, &[], &Value::Undef, None, &cancel)
+            as_printed_material_r0_trampoline(
+                &value_inputs_r0,
+                &[],
+                &Value::Undef,
+                None,
+                &cancel,
+            )
         }
     };
     match outcome {
@@ -381,11 +387,7 @@ fn solve_field(material: Value, prior_warm_state: Option<OpaqueState>) -> Comput
 /// `new_warm_state` so callers can thread warm-state across successive solves.
 fn solve_with_warm(material: Value, prior_warm_state: Option<OpaqueState>) -> (Value, OpaqueState) {
     match solve_field(material, prior_warm_state) {
-        ComputeOutcome::Completed {
-            result,
-            new_warm_state,
-            ..
-        } => {
+        ComputeOutcome::Completed { result, new_warm_state, .. } => {
             let warm = new_warm_state
                 .expect("solve_elastic_static_trampoline must donate a warm state on Completed");
             (result, warm)
@@ -463,11 +465,7 @@ fn get_displacement_data(result: &Value) -> Vec<f64> {
 /// Extract the `f64` data slice from a `Value::Field{source:Sampled}`.
 fn extract_sampled_field_data(field: &Value) -> Vec<f64> {
     match field {
-        Value::Field {
-            source: FieldSourceKind::Sampled,
-            lambda,
-            ..
-        } => match lambda.as_ref() {
+        Value::Field { source: FieldSourceKind::Sampled, lambda, .. } => match lambda.as_ref() {
             Value::SampledField(sf) => sf.data.clone(),
             other => panic!("expected SampledField lambda, got {other:?}"),
         },

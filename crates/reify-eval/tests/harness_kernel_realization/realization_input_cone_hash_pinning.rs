@@ -161,7 +161,8 @@ fn realization_input_cone_hash_is_populated_and_input_sensitive() {
          (task 4728 s2 completed)"
     );
     assert_eq!(
-        body_a.input_cone_hash, body_b.input_cone_hash,
+        body_a.input_cone_hash,
+        body_b.input_cone_hash,
         "body realization hash must be STABLE when only the unrelated 'other' \
          realization's param changes (build A vs B)"
     );
@@ -179,7 +180,8 @@ fn realization_input_cone_hash_is_populated_and_input_sensitive() {
          (task 4728 s2 completed)"
     );
     assert_ne!(
-        body_a.input_cone_hash, body_c.input_cone_hash,
+        body_a.input_cone_hash,
+        body_c.input_cone_hash,
         "body realization hash must MOVE when the in-cone param changes \
          (build A: 10mm width vs build C: 20mm width)"
     );

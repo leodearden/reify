@@ -324,17 +324,14 @@ fn std_process_dfm_build_volume_flip_pinned() {
         fitting.satisfaction
     );
 
-    let oversized = find_fvb_entry(
-        &result.constraint_results,
-        "OversizedPart",
-        "FitsBuildVolume",
-    )
-    .unwrap_or_else(|| {
-        panic!(
-            "OversizedPart FitsBuildVolume absent; got:\n{:#?}",
-            result.constraint_results
-        )
-    });
+    let oversized =
+        find_fvb_entry(&result.constraint_results, "OversizedPart", "FitsBuildVolume")
+            .unwrap_or_else(|| {
+                panic!(
+                    "OversizedPart FitsBuildVolume absent; got:\n{:#?}",
+                    result.constraint_results
+                )
+            });
     assert_eq!(
         oversized.satisfaction,
         Satisfaction::Violated,

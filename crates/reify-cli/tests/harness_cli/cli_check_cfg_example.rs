@@ -28,7 +28,8 @@ use crate::common;
 /// the platform-correct variant in each case.
 fn assert_cfg_selects(cfg: &str, on_module: &str, off_module: &str) {
     let main = common::example_path("conditional_compilation/main.ri");
-    let (status, stdout, stderr) = common::run_with_args(&["check", "--cfg", cfg, &main]);
+    let (status, stdout, stderr) =
+        common::run_with_args(&["check", "--cfg", cfg, &main]);
 
     assert!(
         status.success(),

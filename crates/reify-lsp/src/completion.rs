@@ -1956,8 +1956,14 @@ mod tests {
             "should include 'rectangle'"
         );
         assert!(func_labels.contains(&"circle"), "should include 'circle'");
-        assert!(func_labels.contains(&"polygon"), "should include 'polygon'");
-        assert!(func_labels.contains(&"ellipse"), "should include 'ellipse'");
+        assert!(
+            func_labels.contains(&"polygon"),
+            "should include 'polygon'"
+        );
+        assert!(
+            func_labels.contains(&"ellipse"),
+            "should include 'ellipse'"
+        );
         assert!(
             func_labels.contains(&"rounded_box"),
             "should include 'rounded_box'"
@@ -2249,7 +2255,10 @@ mod tests {
             func_labels.contains(&"apply_transform"),
             "should include 'apply_transform'"
         );
-        assert!(func_labels.contains(&"project"), "should include 'project'");
+        assert!(
+            func_labels.contains(&"project"),
+            "should include 'project'"
+        );
         assert!(
             func_labels.contains(&"orient_look_at"),
             "should include 'orient_look_at'"

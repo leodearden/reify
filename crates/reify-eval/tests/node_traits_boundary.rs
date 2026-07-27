@@ -13,10 +13,8 @@ use reify_core::{
 };
 use reify_eval::cache::NodeId;
 use reify_ir::{NodeKind, NodeTraits, NodeTraitsMap};
+use reify_runtime::commitment::{CommitmentPolicy, CommitmentTracker, NodeCommitmentOverride, default_overrides};
 use reify_runtime::Priority;
-use reify_runtime::commitment::{
-    CommitmentPolicy, CommitmentTracker, NodeCommitmentOverride, default_overrides,
-};
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 

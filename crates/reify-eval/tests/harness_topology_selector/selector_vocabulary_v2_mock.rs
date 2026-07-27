@@ -12,8 +12,8 @@
 use reify_eval::selector_vocabulary_v2::{
     Axis, ExtremalSense, adjacent_to_face, ancestor_faces_of_edge, complement, created_by_feature,
     edges_by_curve_kind, edges_perpendicular_to, except, extremal_by_bbox, extremal_by_centroid,
-    faces_by_surface_kind, faces_perpendicular_to, geom_universal, intersect, owner_body_of,
-    siblings_of_face, split_by_feature, union,
+    faces_by_surface_kind, faces_perpendicular_to, geom_universal, intersect,
+    owner_body_of, siblings_of_face, split_by_feature, union,
 };
 use reify_ir::{
     CapKind, EdgeCurveKind, FaceSurfaceKind, FeatureId, GeometryHandleId, KernelHandle, KernelId,
@@ -1041,10 +1041,7 @@ fn fixture_history_table() -> (
 
     let mut table = TopologyAttributeTable::default();
     table.record(
-        KernelHandle {
-            kernel: KernelId::Occt,
-            id: a,
-        },
+        KernelHandle { kernel: KernelId::Occt, id: a },
         TopologyAttribute {
             feature_id: f1.clone(),
             role: Role::Cap(CapKind::Top),
@@ -1054,10 +1051,7 @@ fn fixture_history_table() -> (
         },
     );
     table.record(
-        KernelHandle {
-            kernel: KernelId::Occt,
-            id: b,
-        },
+        KernelHandle { kernel: KernelId::Occt, id: b },
         TopologyAttribute {
             feature_id: f2.clone(),
             role: Role::Side,
@@ -1070,10 +1064,7 @@ fn fixture_history_table() -> (
         },
     );
     table.record(
-        KernelHandle {
-            kernel: KernelId::Occt,
-            id: c,
-        },
+        KernelHandle { kernel: KernelId::Occt, id: c },
         TopologyAttribute {
             feature_id: f2.clone(),
             role: Role::Side,

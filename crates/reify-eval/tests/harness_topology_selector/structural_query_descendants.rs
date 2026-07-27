@@ -15,9 +15,9 @@
 //! Step numbering mirrors plan.json step IDs.
 
 use reify_core::{ModulePath, Severity, ValueCellId};
-use reify_eval::Engine;
 use reify_ir::Value;
 use reify_test_support::mocks::MockConstraintChecker;
+use reify_eval::Engine;
 
 // ─── step-1a: descendants pre-order nesting with aux (RED) ───
 
@@ -108,7 +108,10 @@ fn descendants_pre_order_nesting_with_aux() {
                 items[2]
             );
         }
-        other => panic!("Arm.d should be Value::List; got: {:?}", other),
+        other => panic!(
+            "Arm.d should be Value::List; got: {:?}",
+            other
+        ),
     }
 }
 
@@ -200,7 +203,10 @@ fn descendants_flattens_collection_sub() {
                 );
             }
         }
-        other => panic!("Arm.d should be Value::List; got: {:?}", other),
+        other => panic!(
+            "Arm.d should be Value::List; got: {:?}",
+            other
+        ),
     }
 }
 
@@ -264,22 +270,20 @@ fn descendants_self_reference_terminates_bounded() {
                 items
             );
         }
-        other => panic!("Node.d should be a bounded Value::List; got: {:?}", other),
+        other => panic!(
+            "Node.d should be a bounded Value::List; got: {:?}",
+            other
+        ),
     }
 
     // A Severity::Error diagnostic mentioning "depth" must be emitted.
-    let has_depth_error = result
-        .diagnostics
-        .iter()
-        .any(|d| d.severity == Severity::Error && d.message.contains("depth"));
+    let has_depth_error = result.diagnostics.iter().any(|d| {
+        d.severity == Severity::Error && d.message.contains("depth")
+    });
     assert!(
         has_depth_error,
         "expected a Severity::Error with 'depth' in message; diagnostics: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        result.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
@@ -300,10 +304,7 @@ fn example_structural_query_descendants_ri_evals_clean() {
     let source = std::fs::read_to_string(EXAMPLE_PATH)
         .expect("examples/structural_query_descendants.ri should exist (created by step-6)");
 
-    let parsed = reify_syntax::parse(
-        &source,
-        ModulePath::single("structural_query_descendants_example"),
-    );
+    let parsed = reify_syntax::parse(&source, ModulePath::single("structural_query_descendants_example"));
     assert!(
         parsed.errors.is_empty(),
         "example parse errors: {:?}",
@@ -319,10 +320,7 @@ fn example_structural_query_descendants_ri_evals_clean() {
     assert!(
         compile_errors.is_empty(),
         "example compile errors: {:?}",
-        compile_errors
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        compile_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
     let checker = MockConstraintChecker::new();

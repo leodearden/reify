@@ -1222,7 +1222,10 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         }
         // Wrapper-shape mismatch OR general concrete-leaf mismatch.
         _ => {
-            if matches!(param_type, Type::List(_) | Type::Set(_) | Type::Map(_, _)) {
+            if matches!(
+                param_type,
+                Type::List(_) | Type::Set(_) | Type::Map(_, _)
+            ) {
                 // Wrapper-shape mismatch: a `List/Set/Map<T>` param supplied an arg
                 // whose shape doesn't match (e.g. a bare leaf, or a differently-
                 // shaped wrapper). (`Option<T>` params never reach here — the

@@ -40,7 +40,9 @@ fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> 
     m.get(&k.to_string())
 }
 
-fn harness_template(module: &reify_compiler::CompiledModule) -> &reify_compiler::TopologyTemplate {
+fn harness_template(
+    module: &reify_compiler::CompiledModule,
+) -> &reify_compiler::TopologyTemplate {
     module
         .templates
         .iter()

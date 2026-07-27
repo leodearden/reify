@@ -331,8 +331,8 @@ fn b9_pass_ordering_and_weave() {
     // Display is "WeaveSphereCheck#constraint[0]" (one RepresentationWithin in
     // the WeaveSphereCheck template).
     let scalar_label = "Conforms#0[0]";
-    let geo_label = "Conforms#1[0]";
-    let rw_label = "WeaveSphereCheck#constraint[0]";
+    let geo_label    = "Conforms#1[0]";
+    let rw_label     = "WeaveSphereCheck#constraint[0]";
 
     // The three labels must appear in stdout in declaration order.
     let scalar_pos = stdout.find(scalar_label).unwrap_or_else(|| {

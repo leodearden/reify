@@ -18,7 +18,7 @@ use reify_core::{RealizationNodeId, ValueCellId};
 use reify_eval::cache::NodeId;
 use reify_eval::{BuildScheduler, Engine};
 use reify_ir::Freshness;
-use reify_test_support::{MockGeometryKernel, compile_source};
+use reify_test_support::{compile_source, MockGeometryKernel};
 
 /// step-9 (RED until step-10): a warm `tessellate_snapshot` under selective
 /// demand flips the hidden body's cell to `Pending` while preserving its
