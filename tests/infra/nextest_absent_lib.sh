@@ -278,6 +278,52 @@ nextest_absent_available() {
 nextest_absent_reason() { printf '%s\n' "$_NEXTEST_ABSENT_REASON"; }
 
 # ---------------------------------------------------------------------------
+# Farm overlay — the presence marker and the fake toolchain as PARAMETERS of
+# the shared harness rather than a reason to fork it.
+#
+# test_verify_nextest_probe.sh needs a counter-driven fake `cargo` AND needs to
+# toggle cargo-nextest's presence between cycles; test_verify_semaphore_wiring.sh
+# needs neither. Exposing the farm as an overlayable directory lets both share
+# one harness.
+# ---------------------------------------------------------------------------
+
+# nextest_absent_farm_put <name> <file> — install <file> as the farm's <name>,
+# shadowing any same-named binary later in PATH (the farm is first in NX_PATH).
+#
+# rm -f FIRST: the farm entry for a mirrored tool is a SYMLINK, and copying
+# onto an existing symlink follows it and would clobber the real binary in the
+# mirror source. Removing first makes overlaying a mirrored entry safe and
+# repeatable.
+nextest_absent_farm_put() {
+    local name="$1" src="$2"
+    [ -n "$NX_FARM" ] || { echo "nextest_absent_init has not been called"; return 1; }
+    [ -f "$src" ] || { echo "nextest_absent_farm_put: no such file: $src"; return 1; }
+    rm -f "$NX_FARM/$name"
+    cp "$src" "$NX_FARM/$name" || return 1
+    chmod +x "$NX_FARM/$name"
+}
+
+# nextest_absent_farm_add_nextest_stub / _rm_nextest_stub — flip the simulated
+# host between "cargo-nextest installed" and "cargo-nextest absent".
+#
+# The stub is a PRESENCE MARKER, not a working cargo-nextest: verify.sh's probe
+# never execs it directly — the genuine-absence disambiguation at
+# scripts/verify.sh:1412 checks only that `command -v cargo-nextest` resolves.
+# It is deliberately kept OUT of the farm by default, so the plain env is
+# nextest-absent with no caller action.
+nextest_absent_farm_add_nextest_stub() {
+    [ -n "$NX_FARM" ] || { echo "nextest_absent_init has not been called"; return 1; }
+    printf '#!/usr/bin/env bash\n# presence marker only — see nextest_absent_lib.sh\nexit 0\n' \
+        > "$NX_FARM/cargo-nextest" || return 1
+    chmod +x "$NX_FARM/cargo-nextest"
+}
+
+nextest_absent_farm_rm_nextest_stub() {
+    [ -n "$NX_FARM" ] || { echo "nextest_absent_init has not been called"; return 1; }
+    rm -f "$NX_FARM/cargo-nextest"
+}
+
+# ---------------------------------------------------------------------------
 # Toolchain hygiene — the harness must not provoke a rustup TOOLCHAIN SYNC.
 #
 # These are not paranoia. Task 5599 measured it: a bounded 12-second probe of
