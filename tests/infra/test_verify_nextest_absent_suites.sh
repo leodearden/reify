@@ -474,4 +474,7 @@ assert "S4: test_verify_semaphore_e2e.sh reaches test_summary with rc=0 / 0 FAIL
 assert "S5: test_verify_scope.sh reaches test_summary with rc=0 / 0 FAIL / >= 153 passed on a nextest-less host" \
     _suite_is_clean_without_nextest test_verify_scope.sh 153
 
+assert "S6: test_verify_failfast_order.sh reaches test_summary with rc=0 / 0 FAIL / >= 40 passed on a nextest-less host" \
+    _suite_is_clean_without_nextest test_verify_failfast_order.sh 40
+
 test_summary
