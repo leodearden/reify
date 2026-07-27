@@ -99,6 +99,16 @@ if command -v cargo-nextest >/dev/null 2>&1; then
     NX_AMBIENT_HAS_NEXTEST=1
 fi
 
+# Same shape, same reason, for H3: tree-sitter is an optional CLI, so on a host
+# without it the farm has nothing to mirror and "the farm did not strip it"
+# cannot hold. nextest_absent_assert_real skips that arm there; Test 7's
+# expected counter has to agree, or 7a goes red on exactly the hosts the guard
+# was added to protect.
+NX_AMBIENT_HAS_TREE_SITTER=0
+if command -v tree-sitter >/dev/null 2>&1; then
+    NX_AMBIENT_HAS_TREE_SITTER=1
+fi
+
 nextest_absent_init
 
 nextest_absent_assert_real "$VERIFY"
@@ -388,11 +398,15 @@ nextest_absent_assert_real
 echo "COUNTERS: pass=$PASS fail=$FAIL"
 REAL_PROBE
 
-# How many asserts nextest_absent_assert_real must emit. The ambient-header
-# check is meaningful only where cargo-nextest is actually installed, so it is
-# conditional — same convention as 3e.
-NX_REAL_EXPECTED=6
-[ "$NX_AMBIENT_HAS_NEXTEST" -eq 1 ] && NX_REAL_EXPECTED=7
+# How many asserts nextest_absent_assert_real must emit. Two of the seven are
+# conditional on host shape — same convention as 3e:
+#   H3 (tree-sitter EXECUTES)      only where tree-sitter is installed ambiently
+#   H5 (ambient header nextest=1)  only where cargo-nextest is installed ambiently
+# Both are meaningless where the tool they pin is absent, so the floor is the
+# five unconditional checks (H1, H2, H4, H6, H7) plus whichever arms apply.
+NX_REAL_EXPECTED=5
+[ "$NX_AMBIENT_HAS_TREE_SITTER" -eq 1 ] && NX_REAL_EXPECTED=$((NX_REAL_EXPECTED + 1))
+[ "$NX_AMBIENT_HAS_NEXTEST" -eq 1 ] && NX_REAL_EXPECTED=$((NX_REAL_EXPECTED + 1))
 
 _nx_counters() { bash "$NX_REAL_CHILD" "$REPO_ROOT" "$1" 2>&1 | grep -E '^COUNTERS:' | tail -1; }
 

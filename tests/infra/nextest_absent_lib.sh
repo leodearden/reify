@@ -329,10 +329,33 @@ nextest_absent_init() {
     # Element (2). PATH = farm : (real PATH minus the mirror_src element).
     # The farm goes FIRST so a nextest_absent_farm_put overlay shadows any
     # same-named binary later in PATH.
-    local filtered="" p
+    #
+    # MATCHED PHYSICALLY, NOT BY SPELLING. An exact string compare misses any
+    # PATH element that names the mirror source differently — a trailing slash
+    # (`~/.cargo/bin/`), a doubled separator (`$HOME//.cargo/bin`), a symlinked
+    # equivalent, or a CARGO_HOME spelled differently from the PATH entry. Each
+    # would leave the REAL cargo bin dir later in PATH, where `cargo-nextest`
+    # still resolves — silently degrading the simulation to nextest=1 while the
+    # farm sits in front looking correct. test_verify_semaphore_wiring.sh does
+    # not call nextest_absent_available before its (1q) capture, so on such a
+    # host that degrade would surface as a confusing "NEXTEST=0 fallback"
+    # assertion failure rather than as a harness diagnostic. Latent on this host
+    # (the PATH element is exactly /home/leo/.cargo/bin) — which is when it is
+    # cheap to close.
+    #
+    # The ORIGINAL spelling is what gets re-emitted: normalisation decides only
+    # whether an element is dropped, and never rewrites the caller's PATH.
+    local mirror_phys=""
+    mirror_phys="$(cd -- "$mirror_src" 2>/dev/null && pwd -P)" || mirror_phys=""
+
+    local filtered="" p p_phys
     while IFS= read -r p; do
         [ -z "$p" ] && continue
         [ "$p" = "$mirror_src" ] && continue
+        if [ -n "$mirror_phys" ]; then
+            p_phys="$(cd -- "$p" 2>/dev/null && pwd -P)" || p_phys=""
+            [ -n "$p_phys" ] && [ "$p_phys" = "$mirror_phys" ] && continue
+        fi
         filtered="${filtered:+$filtered:}$p"
     done < <(printf '%s\n' "$PATH" | tr ':' '\n')
     NX_PATH="$NX_FARM:$filtered"
@@ -426,7 +449,16 @@ nextest_absent_reason() { printf '%s\n' "$_NEXTEST_ABSENT_REASON"; }
 # ORDER IS PART OF THE CONTRACT — it reproduces that suite's H1-H7 one-for-one:
 #   H1  cargo-nextest unreachable       (absence, as non-resolvability)
 #   H2  cargo EXECUTES                  (presence, as executability)
-#   H3  tree-sitter EXECUTES
+#   H3  tree-sitter EXECUTES — ONLY where tree-sitter is installed ambiently;
+#       same conditional shape, and same reason, as H5 below. tree-sitter is an
+#       optional CLI (`cargo install tree-sitter-cli`), so on a host without it
+#       the farm has nothing to mirror and "the farm did not strip it" cannot
+#       hold. Asserting unconditionally would register a FAIL whose message
+#       ("tree-sitter still RUNS under the harness env") points at the farm
+#       rather than at the missing binary — and would cascade, since
+#       test_nextest_absent_lib.sh's 7a asserts on this section's exact PASS
+#       count. Guarding it is the established convention in this directory:
+#       tests/infra/test_tree_sitter_pipeline.sh:317 does the same.
 #   H4  plan header nextest=0 under the env
 #   H5  plan header nextest=1 ambiently — ONLY where cargo-nextest is installed
 #       ambiently; on a genuinely nextest-less host there is nothing for the
@@ -470,7 +502,14 @@ nextest_absent_assert_real() {
 
     assert "H1: cargo-nextest is NOT resolvable under the nextest-absent harness env" _nextest_absent_h1
     assert "H2: cargo still RUNS under the harness env (farm keeps the toolchain intact, not merely on PATH)" _nextest_absent_h2
-    assert "H3: tree-sitter still RUNS under the harness env (not stripped with ~/.cargo/bin)" _nextest_absent_h3
+    if command -v tree-sitter >/dev/null 2>&1; then
+        assert "H3: tree-sitter still RUNS under the harness env (not stripped with ~/.cargo/bin)" _nextest_absent_h3
+    else
+        echo "  SKIP: H3 (tree-sitter is not installed ambiently on this host, so"
+        echo "        the farm has nothing to mirror and 'the farm did not strip"
+        echo "        it' cannot hold.)"
+    fi
+
     assert "H4: verify.sh plan header reads nextest=0 UNDER the harness" _nextest_absent_h4 "$verify"
 
     if command -v cargo-nextest >/dev/null 2>&1; then
@@ -501,6 +540,30 @@ nextest_absent_assert_real() {
 nextest_available_ambient() {
     local hdr
     hdr="$(nextest_absent_plan_header_ambient "${1:-$NEXTEST_ABSENT_VERIFY}")"
+    case "$hdr" in *"nextest=1"*) return 0 ;; *) return 1 ;; esac
+}
+
+# nextest_available_in_plan <plan-text> — the same answer as
+# nextest_available_ambient, read out of a plan the caller ALREADY captured.
+#
+# WHY THIS EXISTS. `--print-plan` is not free: verify.sh cannot emit the
+# `nextest=` header without genuinely probing (scripts/verify.sh does
+# `if cargo nextest --version >/dev/null 2>&1`), and its own comment records
+# that the worst case — cargo-nextest installed but every probe failing — forks
+# cargo up to 4x and sleeps up to 2*REIFY_NEXTEST_PROBE_RETRY_SLEEP before
+# hard-failing. A suite that already holds a captured default plan (as
+# test_verify_retry_subset.sh does, for its byte-identical-default assert)
+# would otherwise pay that cost TWICE to learn something its first capture
+# already contains.
+#
+# Exactly equivalent to nextest_available_ambient by construction: the plan
+# nextest_absent_plan_header_ambient captures is
+# `bash "$verify" test --scope all --print-plan 2>/dev/null`, byte-identical to
+# the capture retry_subset already makes, and both route the result through the
+# same content-keyed _nextest_absent_header_of.
+nextest_available_in_plan() {
+    local hdr
+    hdr="$(_nextest_absent_header_of "${1:-}")"
     case "$hdr" in *"nextest=1"*) return 0 ;; *) return 1 ;; esac
 }
 

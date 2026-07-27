@@ -91,12 +91,20 @@ printf '%s\n%s\n' "$ID1" "$ID2" > "$FILTER"
 # fourth hand-rolled simulation harness; it never was one — corrected in
 # esc-5602-4.)
 #
-# PLAN_DEFAULT is still captured here because Test 1's byte-identical-default
-# assert reads it; the probe runs its own capture, which costs one extra
-# --print-plan (pure bash string-building, no cargo invocation).
+# ONE capture serves both readers. PLAN_DEFAULT is captured here because Test
+# 1's byte-identical-default assert reads it, and the availability answer is
+# then read back OUT of it via nextest_available_in_plan rather than by running
+# --print-plan a second time.
+#
+# That second run would not have been free, which is the reason for the shared
+# capture: verify.sh cannot emit the `nextest=` header without genuinely
+# probing (`if cargo nextest --version >/dev/null 2>&1`), and its own comment
+# records that the worst case — cargo-nextest present but every probe failing —
+# forks cargo up to 4x and sleeps up to 2*REIFY_NEXTEST_PROBE_RETRY_SLEEP
+# before hard-failing. Reading the captured plan is what is actually free.
 PLAN_DEFAULT="$(bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
 NEXTEST_AVAILABLE=0
-if nextest_available_ambient "$VERIFY"; then
+if nextest_available_in_plan "$PLAN_DEFAULT"; then
     NEXTEST_AVAILABLE=1
 fi
 echo "(nextest available on this host: $NEXTEST_AVAILABLE)"
