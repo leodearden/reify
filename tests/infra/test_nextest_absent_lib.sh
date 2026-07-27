@@ -232,4 +232,75 @@ _t4_negative() {
 assert "4b: nextest_absent_available reports UNAVAILABLE (naming the conjunct) when cargo-nextest is reachable" \
     _t4_negative
 
+# -- Test 5: toolchain hygiene -------------------------------------------------
+#
+# These exist because dropping them cost a MEASURED 935 MB download in 12
+# seconds (task 5599). On a rustup host `cargo` is a symlink to `rustup`, which
+# derives its toolchain store from $RUSTUP_HOME and falls back to
+# $HOME/.rustup — so redirecting HOME (element 3) without carrying RUSTUP_HOME
+# across (element 5) strands the shim and provokes a full toolchain sync into
+# the throwaway HOME on the first cargo invocation.
+#
+# Asserted AFTER Tests 3 and 4, so every check that actually exercises the env
+# with a real cargo invocation has already had its chance to provoke a sync.
+#
+# Two separate asserts because they fail differently: 5a names the exact
+# mechanism, 5b is the blunt backstop for any OTHER way the harness might start
+# writing into a directory it advertises as throwaway.
+echo ""
+echo "--- Test 5: the env does not perturb the toolchain (no rustup sync) ---"
+
+assert "5a: no .rustup appeared in the throwaway HOME (RUSTUP_HOME was carried across)" \
+    nextest_absent_no_rustup_sync
+
+assert "5b: the throwaway HOME is still under the size ceiling" \
+    nextest_absent_home_is_small
+
+# NON-VACUITY for both. A hygiene predicate that cannot fail is worth nothing —
+# it would report green on the very 935 MB sync it exists to catch. Each arm
+# below manufactures the exact condition the predicate claims to detect and
+# requires a non-zero return, then restores the env.
+_t5c_negative() {
+    local rc=0
+    mkdir -p "$NX_HOME/.rustup/toolchains"
+    if nextest_absent_no_rustup_sync >/dev/null 2>&1; then
+        echo "nextest_absent_no_rustup_sync returned 0 with $NX_HOME/.rustup present"
+        echo "— it cannot detect the toolchain sync it exists to catch."
+        rc=1
+    fi
+    rm -rf "$NX_HOME/.rustup"
+    nextest_absent_no_rustup_sync >/dev/null 2>&1 || {
+        echo "cleanup failed: predicate still reports a .rustup after removal"
+        rc=1
+    }
+    return "$rc"
+}
+
+_t5d_negative() {
+    local rc=0
+    # DISCRIMINATION, not just failure. Checking only "fails at a 0 KB ceiling"
+    # would itself be vacuous: a predicate that does not exist returns 127, and
+    # a predicate hard-wired to `return 1` returns 1 — both satisfy it while
+    # detecting nothing. So require BOTH directions from the same knob.
+    if NEXTEST_ABSENT_HOME_MAX_KB=0 nextest_absent_home_is_small >/dev/null 2>&1; then
+        echo "nextest_absent_home_is_small returned 0 against a 0 KB ceiling"
+        echo "— it does not honour NEXTEST_ABSENT_HOME_MAX_KB, so the ceiling is"
+        echo "decorative and a real sync would not trip it."
+        rc=1
+    fi
+    if ! NEXTEST_ABSENT_HOME_MAX_KB=1048576 nextest_absent_home_is_small >/dev/null 2>&1; then
+        echo "nextest_absent_home_is_small returned non-zero against a 1 GB ceiling"
+        echo "— it is not measuring the throwaway HOME at all (or does not exist),"
+        echo "so its 0 KB failure above proves nothing."
+        rc=1
+    fi
+    return "$rc"
+}
+
+assert "5c: nextest_absent_no_rustup_sync FAILS when a .rustup is present (it can actually detect a sync)" \
+    _t5c_negative
+
+assert "5d: nextest_absent_home_is_small honours NEXTEST_ABSENT_HOME_MAX_KB (a 0 KB ceiling fails)" \
+    _t5d_negative
+
 test_summary
