@@ -2922,6 +2922,116 @@ assert "S3b: tracked source still carries the 2020-01-01 bulk stamp ($EPOCH_2020
     test "$S3B_SRC_MTIME" -eq "$EPOCH_2020"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Block T — a --fresh-checkout that resolves NO delta-touch base must REFUSE,
+# not return a lane whose freshness claim it cannot substantiate (task 5632).
+#
+# Contract under test, its reasoning, the causal `.fingerprint` gate below and
+# the opt-out knob all live in ONE place — docs/prds/warm-lane-pool-cow-seeding.md
+# §9.5 inv.13 — deliberately NOT restated here (G7 no-lockstep-duplication).
+# Block S's S3a/S3b are the BELOW-THRESHOLD control for T1: S3's fixture carries
+# no .fingerprint dir, so it stays under inv.13's hazard gate and keeps asserting
+# the accept path unchanged.
+#
+#   Placed BEFORE Block R for the same reason Block S is: per Block R's ordering
+#   note, a block appended after R2/R5 gets no shared-trash-litter coverage
+#   from R1.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block T: no delta-touch base ⇒ seed refuses (task 5632) ---"
+
+_t_make_fixture() {
+    # <prefix> <with_fingerprint:0|1> — echoes "<base>|<lane>".
+    #
+    # Base parent and lane are BOTH minted via make_isolated_lane (i.e. under
+    # $_LANE_ROOT), NOT bare /tmp, for the SUBSHELL reason documented above
+    # _s_make_fixture and _LANE_ROOT: every call site reads this function's
+    # stdout via command substitution, so a `_TMPDIRS+=(...)` here would be
+    # silently discarded when the subshell exits and every base parent would
+    # leak into bare /tmp.
+    local prefix="$1" with_fingerprint="$2" parent base lane
+    parent="$(make_isolated_lane "$prefix-base")"
+    base="$parent/target"
+    lane="$(make_isolated_lane "$prefix-lane")"
+    # All three base-resolution tiers deliberately empty: the sidecar carries NO
+    # BASE_COMMIT line, no ${base}.basecommit stamp is written, and no
+    # --base-commit flag is passed (except by T2, which is the discriminator).
+    printf 'RUSTFLAGS=\nINVOCATION=\n' > "$parent/.warm-base-meta"
+    mkdir -p "$base/debug"
+    echo "artifact" > "$base/debug/artifact.a"
+    if [ "$with_fingerprint" = "1" ]; then
+        # target/debug/.fingerprint = depth 2 from LANE_TARGET, inside the
+        # guard's probe bound. Reaches the lane via run_helper_real's cp stub
+        # (/bin/cp -a), the same propagation mechanism Block D's D4 relies on
+        # for debug/artifact.a. Named lib-somepkg, NOT `output`, so this fixture
+        # stays clear of the inv.12 guard and only inv.13 is under test here.
+        mkdir -p "$base/debug/.fingerprint/somepkg-1111"
+        echo "fp" > "$base/debug/.fingerprint/somepkg-1111/lib-somepkg"
+    fi
+    mkdir -p "$lane/src"
+    echo 'pub fn tracked() {}' > "$lane/src/tracked.rs"
+    printf '%s|%s' "$base" "$lane"
+}
+
+# ── T1: THE RED ARM — no base resolves AND the clone carries recorded prior
+# compilations for the bulk stamp to wrongly re-Freshen ⇒ refuse.
+IFS='|' read -r T1_BASE T1_LANE <<< "$(_t_make_fixture T1 1)"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$T1_BASE" "$T1_LANE" --fresh-checkout
+
+assert "T1: seed exits NON-zero when no delta-touch base resolves and the clone carries recorded compilations" \
+    test "$RC" -ne 0
+assert "T1: STDOUT is EMPTY on the unsubstantiated-base abort (caller falls back to a cold rebuild)" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+# Both message assertions are scoped to [error]-level lines. The RETAINED no-base
+# [warn] names the very same condition, so an unscoped grep over all of stderr
+# passes even when the guard never fired at all — the same measured hazard S2c
+# documents for the inv.12 guard.
+assert "T1: an [error] line names the unresolved delta-touch base condition" \
+    bash -c 'printf "%s\n" "$1" | grep "\[error\]" | grep -q "delta-touch base"' _ "$ERR_OUT"
+assert "T1: an [error] line names the .fingerprint evidence found under the lane target" \
+    bash -c 'printf "%s\n" "$1" | grep "\[error\]" | grep -qF "$2"' _ "$ERR_OUT" \
+    "$T1_LANE/target/debug/.fingerprint"
+
+# ── T1b: POSITIVE CONTROL (green before AND after) — byte-identical fixture
+# MINUS the .fingerprint dir. Without this arm T1 would also pass against an
+# implementation that simply always aborts on a missing base; this is the arm
+# that pins the CAUSAL .fingerprint gate, and it is what keeps Block D and Block
+# S's S3 below the threshold by construction rather than by exemption.
+IFS='|' read -r T1B_BASE T1B_LANE <<< "$(_t_make_fixture T1b 0)"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$T1B_BASE" "$T1B_LANE" --fresh-checkout
+
+assert "T1b: no .fingerprint under the clone ⇒ nothing to mis-gate ⇒ seed still exits 0" \
+    test "$RC" -eq 0
+assert "T1b: STDOUT is exactly <lane>/target" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$T1B_LANE/target"
+T1B_SRC_MTIME="$(stat -c '%Y' "$T1B_LANE/src/tracked.rs")"
+assert "T1b: tracked source still carries the 2020-01-01 bulk stamp ($EPOCH_2020) — accept path unchanged" \
+    test "$T1B_SRC_MTIME" -eq "$EPOCH_2020"
+
+# ── T2: DISCRIMINATOR (green before AND after) — .fingerprint present, but a
+# base RESOLVES via --base-commit while the stub git returns an EMPTY
+# `diff --name-only` (REIFY_TEST_GIT_DIFF_FILES deliberately left unset, the
+# Block J3/K1 shape). Pins that the guard keys on BASE RESOLUTION, not on the
+# delta set being empty: a lane legitimately sitting AT the base commit has an
+# empty delta and must still seed. This is the arm that fails against the
+# plausible-but-wrong implementation keyed on an empty _DELTA_PATHS.
+IFS='|' read -r T2_BASE T2_LANE <<< "$(_t_make_fixture T2 1)"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$T2_BASE" "$T2_LANE" --fresh-checkout --base-commit shaT2
+
+assert "T2: base RESOLVES (empty delta) ⇒ seed exits 0 even with .fingerprint present" \
+    test "$RC" -eq 0
+assert "T2: STDOUT is exactly <lane>/target" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$T2_LANE/target"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Block R: lane isolation guards (task 5590) — every lane created in this file
 # must be nested under a private per-run parent, never bare /tmp, because
 # scripts/seed-warm-lane.sh:663 computes RESEED_TRASH_DIR as
