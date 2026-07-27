@@ -742,8 +742,29 @@ fn keyed(category: &'static str, name: &str, path: &str, detail: String) -> Keye
     }
 }
 
-/// Omission lane: registry names with no chunk mention, no well-formed
-/// `pdoccover:allow`, and no baseline entry.
+/// Omission lane, including its two ratchet-honesty siblings.
+///
+/// ## Exemption precedence — at most ONE finding per census name
+///
+/// A name that trips several conditions is reported once, under the category
+/// naming the edit that resolves it. Emitting two findings for one defect
+/// would inflate the ratchet count and make the same fix look like partial
+/// progress:
+///
+/// 1. **Reasonless marker** → `allow-missing-reason:`, and the marker confers
+///    no exemption. Checked FIRST because a malformed marker is a defect
+///    whatever the name's documentation status, and because this finding
+///    subsumes the `undocumented-name:` the name would otherwise earn — the
+///    one edit that adds a reason resolves both readings.
+/// 2. **Documented** → not an omission. But a suppression channel still
+///    pointed at it is now dead weight, so an allow marker yields
+///    `stale-allow-entry:` and a baseline entry yields
+///    `stale-baseline-entry:`. Allow is checked first: it is the cheaper
+///    deletion and lives next to the name. A name that is somehow both loses
+///    the allow marker first and surfaces again next run for the baseline
+///    entry — one finding, one edit, converging.
+/// 3. **Undocumented** → a well-formed allow marker or a baseline entry
+///    exempts it; otherwise `undocumented-name:`.
 fn omission_findings(inputs: &Inputs) -> Vec<Keyed> {
     let census = census_names(&inputs.registries);
     let names: Vec<String> = census.iter().map(|c| c.name.clone()).collect();
@@ -751,23 +772,64 @@ fn omission_findings(inputs: &Inputs) -> Vec<Keyed> {
 
     let mut out = Vec::new();
     for c in &census {
-        if documented.contains(&c.name) {
+        let name = c.name.as_str();
+        let declared_at = format!("{} ({UNITS_PATH}:{})", c.const_name, c.line);
+
+        // (1) A malformed escape hatch is a defect on its own terms.
+        if c.allow_missing_reason {
+            out.push(keyed(
+                "allow-missing-reason",
+                name,
+                UNITS_PATH,
+                format!(
+                    "— `{ALLOW_TOKEN}` on {declared_at} has no reason body, so it \
+                     grants no exemption; write `// {ALLOW_TOKEN} — <reason>` or \
+                     document the name under {CHUNKS_PREFIX}",
+                ),
+            ));
             continue;
         }
-        if c.allow.is_some() {
+
+        // (2) Documented: the name is covered, so any surviving suppression
+        // channel is stale.
+        if documented.contains(name) {
+            if let Some(reason) = &c.allow {
+                out.push(keyed(
+                    "stale-allow-entry",
+                    name,
+                    UNITS_PATH,
+                    format!(
+                        "— {declared_at} is documented under {CHUNKS_PREFIX}, so its \
+                         `{ALLOW_TOKEN} — {reason}` marker is obsolete; delete the marker",
+                    ),
+                ));
+            } else if inputs.baseline.contains(name) {
+                out.push(keyed(
+                    "stale-baseline-entry",
+                    name,
+                    BASELINE_PATH,
+                    format!(
+                        "— documented under {CHUNKS_PREFIX} but still listed in \
+                         {BASELINE_PATH}; delete the line so the ratchet keeps \
+                         meaning residual debt",
+                    ),
+                ));
+            }
             continue;
         }
-        if inputs.baseline.contains(&c.name) {
+
+        // (3) Undocumented: a well-formed suppression channel exempts it.
+        if c.allow.is_some() || inputs.baseline.contains(name) {
             continue;
         }
         out.push(keyed(
             "undocumented-name",
-            &c.name,
+            name,
             UNITS_PATH,
             format!(
-                "— declared in {} ({UNITS_PATH}:{}), mentioned in no chunk under {CHUNKS_PREFIX}; \
-                 document it, or mark the entry line `// {ALLOW_TOKEN} — <reason>`",
-                c.const_name, c.line,
+                "— declared in {declared_at}, mentioned in no chunk under \
+                 {CHUNKS_PREFIX}; document it, or mark the entry line \
+                 `// {ALLOW_TOKEN} — <reason>`",
             ),
         ));
     }
