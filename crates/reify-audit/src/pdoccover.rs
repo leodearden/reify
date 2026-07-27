@@ -495,13 +495,63 @@ pub fn allow_marker_reason(line: &str) -> Option<&str> {
     if body.is_empty() { None } else { Some(body) }
 }
 
+/// `true` when `needle` occurs in `haystack` delimited by word boundaries on
+/// BOTH sides — a hand-rolled `\b<needle>\b`.
+///
+/// The boundary alphabet is [`is_word_byte`]'s `[A-Za-z0-9_]`, matching
+/// `ptodo.rs`. Both sides matter: `union`, `union_all` and `intersection` are
+/// all real registry entries, so a one-sided match would let `union_all`'s
+/// documentation silently vouch for `union` and under-report coverage.
+///
+/// Case-sensitive — Reify builtin names are snake_case, and a prose `Union` is
+/// not the builtin. `needle` is assumed identifier-shaped (ASCII), so byte
+/// indexing is safe even when `haystack` contains multibyte characters: a
+/// match can only start and end at ASCII byte positions.
+fn contains_word(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let hb = haystack.as_bytes();
+    let mut start = 0;
+    while let Some(rel) = haystack[start..].find(needle) {
+        let idx = start + rel;
+        let after = idx + needle.len();
+        let left_ok = idx == 0 || !is_word_byte(hb[idx - 1]);
+        let right_ok = after >= hb.len() || !is_word_byte(hb[after]);
+        if left_ok && right_ok {
+            return true;
+        }
+        // Advance past this occurrence's first byte, not past the whole
+        // needle: overlapping occurrences must still be considered.
+        start = idx + 1;
+        if start >= haystack.len() {
+            break;
+        }
+    }
+    false
+}
+
 /// Subset of `names` that is word-boundary-mentioned in ≥1 chunk source.
 ///
 /// `chunk_sources` are pre-read `(path, content)` pairs so the matcher stays
 /// pure and unit-testable without disk access.
+///
+/// Deliberately format-agnostic: no markdown parser, no heading/fence/table
+/// awareness. A name mentioned anywhere in any chunk — code span, fence,
+/// heading, table cell, bold-prefixed prose, bare prose — counts as
+/// documented. PRD §(b) disposition 1 asks for exactly that, and it is what
+/// makes the index immune to a chunk reformat.
 // G-allow: consumed by check()/baseline_candidates() in-module and by unit tests.
-pub fn documented_names(_names: &[String], _chunk_sources: &[(String, String)]) -> BTreeSet<String> {
-    BTreeSet::new()
+pub fn documented_names(names: &[String], chunk_sources: &[(String, String)]) -> BTreeSet<String> {
+    names
+        .iter()
+        .filter(|name| {
+            chunk_sources
+                .iter()
+                .any(|(_, content)| contains_word(content, name))
+        })
+        .cloned()
+        .collect()
 }
 
 /// Existence oracle for the fabrication direction: every name that the
