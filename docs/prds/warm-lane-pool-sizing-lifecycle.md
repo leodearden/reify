@@ -131,8 +131,19 @@ warm-lane-audit.sh [--mount <worktrees_dir>] [--format table|json] [--status-cmd
     classification: LIVE | RECLAIMABLE (free ∧ (terminal ∨ recoverable ∨ residue-only-dirty)) |
                     LEAKED (free ∧ non-terminal ∧ unrecoverable-WIP ∧ stale, where
                       stale ⟺ age_min ≥ stale_age_min) | PRESERVED-OK
-  STDOUT: the table/json. Trailing one-line HEADROOM summary:
-    "resident=N assigned=A free=F reclaimable=R leaked=L divergent_gib=D free_gib=G budget_gib=B"
+  STDOUT: the table/json. Trailing two-line HEADROOM + PINNED summary (post-#5363 shape):
+    "HEADROOM resident=N live=Li pinned=Pn quarantined=Qt free=F assigned=A state_unknown=Su
+       reclaimable=R leaked=Lk leak_unknown=Lu divergent_gib=D free_gib=G budget_gib=B"
+    "PINNED total=Pt pending=Pd infra-hold=Ih blocked=Bk terminal=Tm other=Ot unknown=Uk"
+  Occupancy (live/pinned/quarantined/free) is an ORDERED, mutually exclusive PARTITION --
+    live > pinned > quarantined > free -- so `resident = live + pinned + quarantined + free`
+    holds by construction. `assigned` and `state_unknown` are CROSS-CUTS over that partition,
+    not partition members: never sum them into the identity above. `free` is the partition
+    RESIDUE (neither live, nor reserved, nor withheld) -- under the pre-#5363 accounting
+    `free` was `resident - live`, which is what made the 2026-07-22 storm read 53
+    reserved-but-idle lanes as available capacity. Operational reading guidance (how to
+    interpret a PINNED-heavy pool, etc.) is canonical in docs/notes/warm-lane-audit-runbook.md
+    (not restated here, G7 no-lockstep-duplication).
   Exit 0 always (advisory/observability — NEVER fail-closed; it must not gate anything).
 knobs: --stale-age-min <N>  minutes (env: REIFY_WARM_LANE_AUDIT_STALE_AGE_MIN; default: 60 —
   promotes the §2 working-set mtime<60min example from an incidental figure to a declared knob)
