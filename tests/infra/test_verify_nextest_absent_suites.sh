@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
 # tests/infra/test_verify_nextest_absent_suites.sh — regression guard for
-# host-independence of FOUR NAMED plan-oracle infra suites on a nextest-LESS
-# host (task 5599):
+# host-independence of EIGHT NAMED plan-oracle infra suites on a nextest-LESS
+# host (tasks 5599 + 5604):
 #
-#     tests/infra/test_verify_compile_gate.sh
-#     tests/infra/test_verify_semaphore_wiring.sh
-#     tests/infra/test_verify_offline_partition.sh
-#     tests/infra/test_verify_semaphore_e2e.sh
+#     tests/infra/test_verify_compile_gate.sh              (S1, task 5599)
+#     tests/infra/test_verify_semaphore_wiring.sh          (S2, task 5599)
+#     tests/infra/test_verify_offline_partition.sh         (S3, task 5599)
+#     tests/infra/test_verify_semaphore_e2e.sh             (S4, task 5599)
+#     tests/infra/test_verify_scope.sh                     (S5, task 5604)
+#     tests/infra/test_verify_failfast_order.sh            (S6, task 5604)
+#     tests/infra/test_occt_gated_scope.sh                 (S7, task 5604)
+#     tests/infra/test_release_mode_in_test_command.sh     (S8, task 5604)
 #
-# Those four, and ONLY those four — see "NOT COVERED HERE" below. This file
-# does NOT claim that `tests/infra/run_all.sh` as a whole is green without
-# cargo-nextest.
+# Those eight, and ONLY those eight. This file does NOT claim that
+# `tests/infra/run_all.sh` as a whole is green without cargo-nextest.
 #
 # PROBLEM. scripts/verify.sh gracefully falls back to emitting `cargo test`
 # instead of `cargo nextest run` when cargo-nextest is genuinely absent from
-# PATH (plan header `nextest=0`). The four suites above used to hard-code the
+# PATH (plan header `nextest=0`). The covered suites used to hard-code the
 # literal string `cargo nextest run` inside their `bash -c` assert bodies, so
 # they FAILed spuriously on such a host — the assert is checking an
 # ordering/precedence property of the emitted plan that holds identically on
@@ -22,24 +25,32 @@
 # other asserts passed VACUOUSLY there (their grep matched nothing), silently
 # testing nothing.
 #
+# WHY THE FALLBACK IS SHAPE-IDENTICAL. verify.sh emits the test pass from one
+# of two branches — scripts/verify.sh:1659 (nextest) and :1685 (cargo test) —
+# which share the same `${selector}${rel}` fragment. So --workspace, -p
+# <crate>, --release and the outer `timeout` wrapper are byte-identical across
+# runners; only --config-file / -E / `-- --test-threads=N` differ. That is why
+# nearly every host-dependence here is fixed by WIDENING a grep to
+# `cargo (test|nextest run)` rather than by guarding the assert away — and why
+# most floors below equal their suite's ambient count exactly.
+#
+# RUNTIME COST (measured on this lane, task 5604). Ambient wall times of the
+# four newly-nested suites: scope 59s, failfast_order 5s, occt_gated_scope 8s,
+# release_mode 2s; each runs somewhat slower under the harness (cold plan
+# capture — scope was 73s there). End to end this suite measured 155s with all
+# eight S-rows green, against ~130s for the original four; run-to-run variance
+# of roughly ±30s comes from plan-capture cache warmth, so treat ~3 min as the
+# working figure. tests/infra/run_all.sh applies NO per-member timeout — only
+# verify.sh's `timeout --kill-after=60 30m` envelope around the whole run — so
+# this sits comfortably inside budget for the intra-run-serial bucket. Weighed
+# deliberately: the alternative is a prose audit verdict that rots silently.
+#
 # This suite turns the previously-manual acceptance ritual into a mechanical
 # check: it builds a nextest-absent environment ONCE and runs each covered
 # suite under it, asserting each reaches test_summary with rc=0, reports
 # "0 failed", AND still runs at least its pinned floor of asserts (so a future
 # change that guards coverage away instead of fixing it fails loudly rather
 # than reporting a vacuous green — see _suite_is_clean_without_nextest).
-#
-# NOT COVERED HERE (measured under this exact harness at task/5599
-# HEAD=7adf5995f2; both files are outside task 5599's module locks, so they
-# could not be fixed there — follow-up filed as ticket
-# tkt_0RRQHFMP224R3KNR2572TKCG3J):
-#   tests/infra/test_verify_scope.sh          rc=1, 133 passed, 10 failed
-#   tests/infra/test_verify_failfast_order.sh rc=1,  38 passed,  2 failed
-# Two more plan-oracle suites are GREEN under the harness but were not audited
-# for the vacuity class above, because at least some of their nextest-string
-# assertions are NEGATIVE greps: tests/infra/test_occt_gated_scope.sh (49/0)
-# and tests/infra/test_release_mode_in_test_command.sh (9/0). All four are in
-# the follow-up ticket's scope; when one is fixed, add it as a new S-row here.
 #
 # WHY NOT THE NAIVE `PATH="$STUB:/usr/bin:/bin"` RECIPE. The obvious harness
 # (stub `cargo` + fresh HOME + PATH cut down to /usr/bin:/bin) does yield
@@ -113,7 +124,7 @@ VERIFY="$REPO_ROOT/scripts/verify.sh"
 # shellcheck source=tests/infra/test_helpers.sh
 source "$SCRIPT_DIR/test_helpers.sh"
 
-echo "=== the four covered plan-oracle infra suites are host-independent on a nextest-less host (task 5599) ==="
+echo "=== the eight covered plan-oracle infra suites are host-independent on a nextest-less host (tasks 5599 + 5604) ==="
 
 # ---------------------------------------------------------------------------
 # Harness construction (once, at suite start)
@@ -438,12 +449,13 @@ assert "H7: the harness's temp HOME is still small (it perturbs only cargo-nexte
 echo ""
 echo "--- S: covered suites reach test_summary with rc=0 / 0 FAIL / >= pass floor without cargo-nextest ---"
 
-# PASS FLOORS — the nextest-less pass count measured for each suite at
-# task/5599 HEAD=7adf5995f2 (see _suite_is_clean_without_nextest for why a
-# bare "0 failed" is not sufficient). Where the floor is BELOW the suite's
-# ambient nextest-ful count, the difference is the asserts deliberately
-# guarded away as nextest-only, and the delta is recorded here so a further
-# shrink is visible as a diff to this table rather than as silence:
+# PASS FLOORS — the nextest-less pass count measured for each suite (S1-S4 at
+# task/5599 HEAD=7adf5995f2; S5-S8 at task/5604 HEAD=375ae351e4, ambient and
+# under this harness). See _suite_is_clean_without_nextest for why a bare
+# "0 failed" is not sufficient. Where the floor is BELOW the suite's ambient
+# nextest-ful count, the difference is the asserts deliberately guarded away
+# as nextest-only, and the delta is recorded here so a further shrink is
+# visible as a diff to this table rather than as silence:
 #   compile_gate      35 nextest-less / 35 ambient  (all recovered by widening)
 #   semaphore_wiring  22 nextest-less / 22 ambient  (all recovered by widening)
 #   offline_partition 30 nextest-less / 35 ambient  (5 guarded: -E heavy-filter
@@ -451,6 +463,26 @@ echo "--- S: covered suites reach test_summary with rc=0 / 0 FAIL / >= pass floo
 #   semaphore_e2e     65 nextest-less / 65 ambient  (1 guarded --config-file
 #                                                    assert, replaced 1:1 by a
 #                                                    fallback-shape else arm)
+#   scope            153 nextest-less / 153 ambient (10 RED positives recovered
+#                                                    by widening; 9 further
+#                                                    NEGATIVES widened too —
+#                                                    they were passing
+#                                                    vacuously. 0 guarded away)
+#   failfast_order    40 nextest-less /  40 ambient (2 recovered by widening,
+#                                                    both halves of each
+#                                                    compound assert)
+#   occt_gated_scope  49 nextest-less /  49 ambient (already clean — extract,
+#                                                    assert-non-empty, THEN
+#                                                    negative-grep; 1
+#                                                    pre-existing genuinely
+#                                                    nextest-only assert
+#                                                    guarded by PLAN_HAS_NEXTEST)
+#   release_mode       9 nextest-less /   9 ambient (already clean — the
+#                                                    alternation was already
+#                                                    used throughout)
+# All four task-5604 rows are 1:1 nextest-less/ambient: NOTHING was guarded
+# away, every failure was recovered by widening a grep. A future row whose two
+# numbers differ should carry the reason, as S3/S4 do.
 assert "S1: test_verify_compile_gate.sh reaches test_summary with rc=0 / 0 FAIL / >= 35 passed on a nextest-less host" \
     _suite_is_clean_without_nextest test_verify_compile_gate.sh 35
 
