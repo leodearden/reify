@@ -425,6 +425,58 @@ mod tests {
         }
     }
 
+    /// Task 5652 (step-1 RED). The arg-slot table is keyed on `(name, arity)`,
+    /// not on `name` alone — `builtin_arg_slots` takes a second `arg_count`
+    /// parameter so genuinely overloaded builtins can expose different slots
+    /// per call arity (the precedent is
+    /// `relation_signatures::relation_operand_datum(name, args)`, which
+    /// discriminates `"offset" if args.len() == 3`).
+    ///
+    /// This test pins the OTHER half of that contract: the arity parameter is
+    /// *available* to every arm but *used* only by genuinely overloaded names.
+    /// Every existing non-overloaded selector arm must stay arity-AGNOSTIC, so
+    /// that adding the dimension changes no current behaviour. In particular,
+    /// gating e.g. `edges_at_height` on `arg_count == 3` would silently hollow
+    /// out `edges_at_height_short_args_no_panic` (which passes only 2 args and
+    /// expects 0 diagnostics): that test would then pass for a new and weaker
+    /// reason — no slots at all, rather than a correct `h` + an absent `tol`.
+    ///
+    /// RED for a compile reason: `builtin_arg_slots` currently takes one
+    /// parameter, so the crate's test build fails. That failure IS the pinned
+    /// deliverable — the signature change itself.
+    #[test]
+    fn arg_slots_are_arity_aware() {
+        // (a) Non-overloaded selector arms are arity-agnostic: the same slots
+        // come back regardless of how many args the call site actually passed.
+        for arity in [2usize, 3] {
+            assert_eq!(
+                builtin_arg_slots("moment_of_inertia", arity),
+                vec![mass_density_slot(1, "density")],
+                "moment_of_inertia must expose its density slot at every arity \
+                 (probed {arity}) — it is not an overloaded builtin, so adding \
+                 the arity dimension must not gate it"
+            );
+        }
+        for arity in [2usize, 3] {
+            assert_eq!(
+                builtin_arg_slots("edges_at_height", arity),
+                vec![length_slot(1, "h"), length_slot(2, "tol")],
+                "edges_at_height must expose both LENGTH slots at every arity \
+                 (probed {arity}); gating it on arity 3 would hollow out \
+                 edges_at_height_short_args_no_panic, which passes 2 args"
+            );
+        }
+
+        // (b) An unrecognized name returns empty at every arity probed — the
+        // arity parameter must never conjure slots for a name not in the table.
+        for arity in 0usize..=12 {
+            assert!(
+                builtin_arg_slots("definitely_not_a_builtin", arity).is_empty(),
+                "unrecognized name must return empty slots at arity {arity}"
+            );
+        }
+    }
+
     /// Names with no dimensioned-scalar arg or unrecognized names return empty.
     #[test]
     fn empty_for_unchecked_names() {
