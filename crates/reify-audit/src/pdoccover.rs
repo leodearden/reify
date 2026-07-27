@@ -113,22 +113,263 @@ pub struct Registry {
 // Pure scanners (stubs — filled in by the TDD steps that follow)
 // -----------------------------------------------------------------------
 
+/// The `pdoccover:allow` escape token. **Prefixed form only** — the bare
+/// `doccover:allow` of earlier PRD drafts was renamed 2026-07-25 and is
+/// deliberately not consumed by any code path.
+const ALLOW_TOKEN: &str = "pdoccover:allow";
+
+/// The identifier suffix that marks a const as a builtin-name registry.
+const REGISTRY_SUFFIX: &str = "_NAMES";
+
+/// `true` when `b` is an ASCII word byte (`[A-Za-z0-9_]`) — the alphabet for
+/// the hand-rolled `\b` word-boundary checks, matching `ptodo::is_word_byte`
+/// so `union` is never satisfied by `disunion` / `union_all` / `reunion`.
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Strip a trailing `// …` line comment from `line`, returning the code part.
+///
+/// Quote-aware: a `//` inside a double-quoted string literal is NOT a comment
+/// start. Without this, an entry line whose trailing comment itself contains a
+/// quoted token (`"box", // renamed from "cube"`) would contribute a phantom
+/// registry entry.
+fn strip_line_comment(line: &str) -> &str {
+    let bytes = line.as_bytes();
+    let mut in_str = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if in_str => i += 1, // skip the escaped byte
+            b'"' => in_str = !in_str,
+            b'/' if !in_str && i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
+                return &line[..i];
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    line
+}
+
+/// Extract every double-quoted token from `s`, honouring backslash escapes.
+fn quoted_tokens(s: &str) -> Vec<String> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            let start = i + 1;
+            let mut j = start;
+            while j < bytes.len() && bytes[j] != b'"' {
+                if bytes[j] == b'\\' {
+                    j += 1;
+                }
+                j += 1;
+            }
+            if j <= bytes.len() {
+                out.push(s[start..j.min(bytes.len())].to_string());
+            }
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Registry-header match: returns the const identifier when `line` declares a
+/// `[pub[(…)]] const <IDENT>_NAMES: &[&str] = …`.
+///
+/// Accepts `pub const`, `pub(crate) const` and bare `const`, and requires the
+/// `&[&str]` element type so tuple-slice consts (the real `SI_PREFIXES:
+/// &[(&str, f64)]`) are excluded — their quoted tokens are not builtin names.
+fn registry_header(line: &str) -> Option<&str> {
+    let s = line.trim_start();
+    // Optional visibility prefix.
+    let s = if let Some(rest) = s.strip_prefix("pub") {
+        let rest = rest.trim_start();
+        // `pub(crate)` / `pub(super)` / `pub(in …)` — skip the paren group.
+        if rest.starts_with('(') {
+            let close = rest.find(')')?;
+            rest[close + 1..].trim_start()
+        } else {
+            rest
+        }
+    } else {
+        s
+    };
+    let s = s.strip_prefix("const")?;
+    // `const` must be a whole word.
+    if !s.starts_with(|c: char| c.is_whitespace()) {
+        return None;
+    }
+    let s = s.trim_start();
+    let colon = s.find(':')?;
+    let ident = s[..colon].trim();
+    if ident.is_empty()
+        || !ident.ends_with(REGISTRY_SUFFIX)
+        || !ident.bytes().all(is_word_byte)
+    {
+        return None;
+    }
+    // Element type must be `&[&str]` — excludes `&[(&str, f64)]` etc.
+    let rest: String = s[colon + 1..].chars().filter(|c| !c.is_whitespace()).collect();
+    if !rest.starts_with("&[&str]") {
+        return None;
+    }
+    Some(ident)
+}
+
 /// Extract every `*_NAMES` string-slice registry from `units_src`.
 ///
 /// Pure `&str -> Vec<Registry>`, no IO, so the grammar is unit-testable
 /// without disk access (the `pdssentinel.rs` `scan_content` split).
+///
+/// Line walk, no regex (the audit crate has no regex dep and must not gain
+/// one). Recognises the header — possibly with `&[` broken onto the following
+/// line, the real `GEOMETRY_KINEMATIC_QUERY_NAMES` shape — then accumulates
+/// quoted tokens per line until the bracket depth returns to zero. Line
+/// comments are stripped quote-aware before extraction, so neither a `//`
+/// comment line nor a trailing comment's own quoted tokens contribute entries.
 // G-allow: consumed by check()/baseline_candidates() in-module and by the
 // brittle-parse floor guard in tests/pdoccover.rs (separate crate → must be pub).
-pub fn extract_registries(_units_src: &str) -> Vec<Registry> {
-    Vec::new()
+pub fn extract_registries(units_src: &str) -> Vec<Registry> {
+    let lines: Vec<&str> = units_src.lines().collect();
+    let mut out: Vec<Registry> = Vec::new();
+    let mut i = 0;
+
+    while i < lines.len() {
+        let Some(ident) = registry_header(lines[i]) else {
+            i += 1;
+            continue;
+        };
+        let const_name = ident.to_string();
+
+        // Locate the opening `&[`. It is either on the header line (after the
+        // `=`) or on a following line (the line-broken header form). Scan
+        // forward a bounded distance so a malformed declaration cannot run
+        // away over the rest of the file.
+        const HEADER_LOOKAHEAD: usize = 4;
+        let mut open = None;
+        for (k, raw) in lines.iter().enumerate().skip(i).take(HEADER_LOOKAHEAD) {
+            let code = strip_line_comment(raw);
+            // On the header line, only look after the `=`.
+            let hay = if k == i {
+                match code.find('=') {
+                    Some(eq) => &code[eq..],
+                    None => continue,
+                }
+            } else {
+                code
+            };
+            if hay.contains('[') {
+                open = Some(k);
+                break;
+            }
+        }
+        let Some(open_line) = open else {
+            i += 1;
+            continue;
+        };
+
+        // Accumulate entries until bracket depth returns to zero.
+        let mut entries: Vec<RegistryEntry> = Vec::new();
+        let mut depth: i32 = 0;
+        let mut j = open_line;
+        loop {
+            if j >= lines.len() {
+                break;
+            }
+            let raw = lines[j];
+            let code = strip_line_comment(raw);
+            // On the header line, restrict to the part after `=` so the
+            // `&[&str]` type annotation's brackets are not counted.
+            let code = if j == i {
+                match code.find('=') {
+                    Some(eq) => &code[eq..],
+                    None => code,
+                }
+            } else {
+                code
+            };
+
+            // The header line's own quoted tokens (single-line form) count as
+            // entries; a comment-only line yields none because `code` is empty.
+            let reason = allow_marker_reason(raw);
+            let has_marker = raw.contains(ALLOW_TOKEN);
+            for name in quoted_tokens(code) {
+                if name.is_empty() {
+                    continue;
+                }
+                entries.push(RegistryEntry {
+                    name,
+                    line: j + 1,
+                    allow: reason.map(str::to_string),
+                    allow_missing_reason: has_marker && reason.is_none(),
+                });
+            }
+
+            depth += code.matches('[').count() as i32;
+            depth -= code.matches(']').count() as i32;
+            if depth <= 0 && j >= open_line {
+                break;
+            }
+            j += 1;
+        }
+
+        out.push(Registry {
+            const_name,
+            entries,
+        });
+        i = j + 1;
+    }
+
+    out
 }
 
 /// Reason body of a `pdoccover:allow` marker on `line`, or `None` when the
 /// line carries no marker or the body is blank after trimming.
+///
+/// Contract mirrors `ptodo::g_allow_marker_body`: locate the token, skip one
+/// optional separator (em dash `—`, ASCII hyphen `-`, or colon `:`), and
+/// return the trimmed remainder only when it is non-blank. A `None` return on
+/// a line that DOES carry the token is what the caller turns into an
+/// `allow-missing-reason` finding — a reasonless escape hatch is never
+/// silently honoured (PRD design decision 7).
+///
+/// Only the prefixed [`ALLOW_TOKEN`] is recognised. Because the legacy
+/// unprefixed `doccover:allow` is a suffix of the prefixed form, the match is
+/// left-boundary-checked: the byte before the token must not be a word byte,
+/// so `// doccover:allow — x` does NOT match `pdoccover:allow`… and neither
+/// does any other suffix collision.
 // G-allow: consumed in-module and by unit tests; pub for symmetry with
 // `ptodo::g_allow_marker_body`, whose contract it mirrors.
-pub fn allow_marker_reason(_line: &str) -> Option<&str> {
-    None
+pub fn allow_marker_reason(line: &str) -> Option<&str> {
+    let bytes = line.as_bytes();
+    let mut start = 0;
+    let idx = loop {
+        let rel = line[start..].find(ALLOW_TOKEN)?;
+        let idx = start + rel;
+        // Left boundary: the token must not be the tail of a longer word.
+        // (Guards the legacy `doccover:allow` → `pdoccover:allow` overlap the
+        // other way round, and any `xxpdoccover:allow` typo.)
+        if idx == 0 || !is_word_byte(bytes[idx - 1]) {
+            break idx;
+        }
+        start = idx + ALLOW_TOKEN.len();
+    };
+
+    let body = &line[idx + ALLOW_TOKEN.len()..];
+    let body = body.trim_start();
+    // One optional separator.
+    let body = body
+        .strip_prefix('—')
+        .or_else(|| body.strip_prefix('-'))
+        .or_else(|| body.strip_prefix(':'))
+        .unwrap_or(body);
+    let body = body.trim();
+    if body.is_empty() { None } else { Some(body) }
 }
 
 /// Subset of `names` that is word-boundary-mentioned in ≥1 chunk source.
