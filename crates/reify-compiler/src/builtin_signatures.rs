@@ -219,6 +219,41 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
             },
         }],
 
+        // linear_pattern_2d(target, dx1, dy1, dz1, count1, spacing1,
+        //                           dx2, dy2, dz2, count2, spacing2)
+        //   arg5:  spacing1 → LENGTH ("Length")
+        //   arg10: spacing2 → LENGTH ("Length")
+        // Direction components and counts are unchecked for the same reasons
+        // as `linear_pattern` above.
+        //
+        // Here the `arg_count == 11` guard is not merely forward-compat — it is
+        // the case that makes the whole arity dimension necessary. Task 5351's
+        // 7-arg form is `(target, dir1, count1, spacing1, dir2, count2,
+        // spacing2)`, in which index 5 is `count2`, an `Int`. An arity-agnostic
+        // `spacing1@5 LENGTH` slot would emit a FALSE `ArgTypeMismatch` on
+        // valid code there. Unlike `linear_pattern`'s 4-arg form (which has no
+        // index 5 at all, so the `compiled_args.get(index)` bounds check
+        // happens to shield it), a 7-arg call DOES have an index 5 holding a
+        // different parameter — only this guard prevents the false positive.
+        "linear_pattern_2d" if arg_count == 11 => vec![
+            CheckableArg {
+                index: 5,
+                name: "spacing1",
+                expected: ExpectedArg::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                    type_name: "Length",
+                },
+            },
+            CheckableArg {
+                index: 10,
+                name: "spacing2",
+                expected: ExpectedArg::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                    type_name: "Length",
+                },
+            },
+        ],
+
         // All other names: empty (no dimensioned-scalar arg to check).
         _ => vec![],
     }
