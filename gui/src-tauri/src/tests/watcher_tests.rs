@@ -1,31 +1,88 @@
+use std::cell::Cell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::watcher::{ChangeKind, Debouncer, FileEvent, FileWatcher};
 
+/// Poll `condition` every 20ms until it holds or `timeout` elapses.
+/// Returns immediately, before any sleep, if `condition` already holds.
+///
+/// The 20ms poll interval is clamped to whatever time remains before
+/// `deadline`, so the final sleep of a call never overshoots `timeout` by
+/// a full interval -- without this, a caller chaining many short windows
+/// (e.g. `wait_until_with_retry`'s per-attempt windows) would accumulate
+/// up to ~20ms of drift per window.
+fn wait_until(timeout: Duration, condition: impl Fn() -> bool) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if condition() {
+            return true;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20).min(remaining));
+    }
+}
+
 /// Poll `sink` until `predicate` holds or `timeout` elapses.
 ///
 /// The lock is dropped before each sleep so a concurrent producer (e.g. the
-/// watcher's callback thread) can still push into `sink` while we wait.
+/// watcher's callback thread) can still push into `sink` while we wait: the
+/// `MutexGuard` created inside the closure below is a temporary, scoped to
+/// the single `predicate(&sink.lock().unwrap())` call, so it's released
+/// before `wait_until` ever reaches its deadline check or sleep.
 fn wait_for<T>(
     sink: &Arc<Mutex<Vec<T>>>,
     timeout: Duration,
     predicate: impl Fn(&[T]) -> bool,
 ) -> bool {
+    wait_until(timeout, || predicate(&sink.lock().unwrap()))
+}
+
+/// Like [`wait_until`], but also invokes `attempt` before each poll window,
+/// up to `retry_every` apart, until `condition` holds or the OVERALL
+/// `timeout` budget elapses (`retry_every` bounds a single attempt's poll
+/// window, not the whole call).
+///
+/// This is necessary -- rather than just polling harder -- whenever
+/// `condition` can only become true as a side effect of re-issuing the
+/// stimulus `attempt` performs. For example, a filesystem write issued
+/// before an inotify watch is live produces no event at all, not a late
+/// one: no amount of polling can recover it, only re-issuing the write
+/// after the watch goes live can. Every attempt gets its own `retry_every`
+/// window to succeed before the next one is issued.
+///
+/// When `attempt` is a filesystem write feeding a debounced watcher (as
+/// above), `retry_every` MUST be strictly greater than the watcher's
+/// debounce window (`DEBOUNCE_DURATION` in `watcher.rs`) -- `Debouncer`'s
+/// `record` is insert-or-update and resets a path's quiet window on every
+/// call, so a retry cadence faster than the debounce window would
+/// perpetually reset the pending entry and the worker would never drain
+/// it. That failure mode spins for the full `timeout` and then fails with
+/// a message blaming the watcher for never delivering anything, rather
+/// than the retry cadence being too fast -- so pick `retry_every` with
+/// this in mind rather than by feel.
+fn wait_until_with_retry(
+    mut attempt: impl FnMut(),
+    retry_every: Duration,
+    timeout: Duration,
+    condition: impl Fn() -> bool,
+) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
-        {
-            let guard = sink.lock().unwrap();
-            if predicate(&guard) {
-                return true;
-            }
+        attempt();
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if wait_until(remaining.min(retry_every), &condition) {
+            return true;
         }
         if Instant::now() >= deadline {
             return false;
         }
-        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -67,6 +124,45 @@ where
         }
         Err(e) => panic!("unexpected watcher error: {e}"),
     }
+}
+
+/// Registration barrier for a directory watch: repeatedly (re)writes a
+/// sibling `probe.ri` file inside `dir` until `probe_seen` reports true,
+/// positively confirming the directory watch is live before the caller
+/// issues a write it can't afford to lose. See `wait_until_with_retry`'s
+/// doc comment for why re-issuing -- not just polling harder -- is
+/// required: a write issued before the watch is live produces no inotify
+/// event at all, not a late one.
+///
+/// The caller must construct its `FileWatcher` (with a callback that sets
+/// `probe_seen`, e.g. on any `Changed` event whose path ends with
+/// `"probe.ri"`, returning early so probe content can never reach the
+/// caller's own content-gated branches) BEFORE calling this. `probe.ri`
+/// itself is created lazily by the first attempt below rather than
+/// pre-created by the caller: the notify wiring in `watcher.rs` treats a
+/// path's initial `Create` the same as a later `Modify` (both collapse to
+/// `FileEvent::Changed`), so there's nothing to gain from pre-creating it.
+///
+/// `retry_every` (150ms) exceeds the production debounce window
+/// (`DEBOUNCE_DURATION` in `watcher.rs`, 100ms) so each retry gets its own
+/// trailing-edge quiet window instead of perpetually resetting one pending
+/// entry -- see `wait_until_with_retry`'s doc comment.
+fn wait_for_watch_registration(dir: &std::path::Path, probe_seen: &Arc<AtomicBool>) -> bool {
+    let probe_file = dir.join("probe.ri");
+    let mut probe_attempt = 0u32;
+    wait_until_with_retry(
+        || {
+            probe_attempt += 1;
+            std::fs::write(
+                &probe_file,
+                format!("structure Probe {{ param n = {probe_attempt} }}"),
+            )
+            .unwrap();
+        },
+        Duration::from_millis(150),
+        Duration::from_secs(10),
+        || probe_seen.load(Ordering::SeqCst),
+    )
 }
 
 // --- Debouncer unit tests (deterministic, clock-injected, no filesystem/threads) ---
@@ -269,6 +365,81 @@ fn wait_for_returns_false_after_timeout_when_never_satisfied() {
         start.elapsed() >= Duration::from_millis(150),
         "should wait out the full timeout, took {:?}",
         start.elapsed()
+    );
+}
+
+#[test]
+fn wait_until_with_retry_reissues_the_attempt_until_the_condition_holds() {
+    // `attempt` only flips the shared counter; `condition` reads the SAME
+    // counter and is satisfied once it reaches 3. If `wait_until_with_retry`
+    // only invoked `attempt` once (like a plain poll), the condition would
+    // never hold and this would time out. Reissuing it is exactly the
+    // property the de-flake depends on: a stimulus (e.g. a write) lost to a
+    // not-yet-live watcher must be re-issued, not just waited on.
+    let counter = Rc::new(Cell::new(0u32));
+    let attempt_counter = counter.clone();
+    let condition_counter = counter.clone();
+
+    let found = wait_until_with_retry(
+        move || attempt_counter.set(attempt_counter.get() + 1),
+        Duration::from_millis(20),
+        Duration::from_secs(2),
+        move || condition_counter.get() >= 3,
+    );
+
+    assert!(
+        found,
+        "condition should be satisfied once attempt has been reissued enough times"
+    );
+    assert!(
+        counter.get() >= 3,
+        "attempt should have been reissued (not just invoked once) before \
+         the condition held, got {} invocations",
+        counter.get()
+    );
+}
+
+#[test]
+fn wait_until_with_retry_returns_true_without_waiting_when_already_satisfied() {
+    let start = Instant::now();
+    let found = wait_until_with_retry(
+        || {},
+        Duration::from_millis(150),
+        Duration::from_secs(10),
+        || true,
+    );
+    assert!(found, "already-satisfied condition should return true");
+    assert!(
+        start.elapsed() < Duration::from_millis(200),
+        "should return promptly when already satisfied, took {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn wait_until_with_retry_returns_false_after_the_timeout_when_never_satisfied() {
+    let counter = Rc::new(Cell::new(0u32));
+    let attempt_counter = counter.clone();
+
+    let start = Instant::now();
+    let found = wait_until_with_retry(
+        move || attempt_counter.set(attempt_counter.get() + 1),
+        Duration::from_millis(20),
+        Duration::from_millis(200),
+        || false,
+    );
+
+    assert!(!found, "condition is never satisfied, should time out");
+    assert!(
+        start.elapsed() >= Duration::from_millis(200),
+        "should wait out the full timeout, took {:?}",
+        start.elapsed()
+    );
+    assert!(
+        counter.get() > 1,
+        "attempt should have been reissued more than once while waiting \
+         for the condition, got {}",
+        counter.get()
     );
 }
 
@@ -647,14 +818,33 @@ fn watcher_rereads_final_content_after_nonatomic_truncate_then_append() {
 /// panic, and `received` would still end up empty. Only a genuine delivery
 /// of the second write proves the worker kept draining after the panic.
 ///
-/// A shared `panicked` flag additionally confirms the panic branch itself
-/// was reached, set immediately before the `panic!` call. Without this, a
-/// run where the first write's `Changed` event is dropped or coalesced
-/// away before ever reaching the callback (e.g. the notify layer only
-/// delivers the second, latest content on a slow host) would still pass
-/// off the second write's delivery alone -- green, but without ever
-/// exercising panic survival at all. Asserting the flag turns that silent,
-/// vacuous pass into a loud failure.
+/// Two `wait_until_with_retry` barriers stand in for what used to be fixed
+/// sleeps, because a fixed sleep can only wait for a stimulus -- it can't
+/// recover one that was already lost:
+///
+/// - **Registration barrier**: a fixed "give the watcher time to register"
+///   sleep can still expire before the directory watch is actually live
+///   under load -- this is exactly what flaked. A write issued before that
+///   happens produces no inotify event AT ALL, not a late one, so once
+///   lost, `first_write_content` below could never be recovered by polling
+///   harder. Instead, a sibling `probe.ri` is repeatedly rewritten with
+///   distinct content until the callback positively reports having seen a
+///   probe event, proving the directory watch is live before the write
+///   that actually matters is ever issued.
+/// - **First-event barrier**: replaces the old "let the debounce window
+///   elapse" sleep. `first_write_content` is re-written on each attempt
+///   (identical content still yields a fresh `IN_MODIFY`) until the shared
+///   `panicked` flag confirms the callback actually observed it and hit
+///   the panic branch, recovering the write the same way the registration
+///   probe's write is recovered.
+///
+/// The shared `panicked` flag is what the first-event barrier polls, so its
+/// assertion is the single gate on "the panic branch was actually reached"
+/// -- without it, a run where the first write's `Changed` event is dropped
+/// or coalesced away before ever reaching the callback (e.g. the notify
+/// layer only delivers the second, latest content on a slow host) would
+/// still pass off the second write's delivery alone: green, but without
+/// ever exercising panic survival at all.
 #[test]
 fn watcher_survives_a_panicking_callback_and_keeps_delivering_later_events() {
     let dir = tempfile::tempdir().unwrap();
@@ -668,38 +858,62 @@ fn watcher_survives_a_panicking_callback_and_keeps_delivering_later_events() {
     let received_clone = received.clone();
     let panicked = Arc::new(AtomicBool::new(false));
     let panicked_clone = panicked.clone();
+    let probe_seen = Arc::new(AtomicBool::new(false));
+    let probe_seen_clone = probe_seen.clone();
 
     let Some(_watcher) = try_watcher(dir.path(), None, move |event| {
-        if let FileEvent::Changed(path) = event
-            && let Ok(text) = std::fs::read_to_string(&path)
-        {
-            // Simulate a callback bug specifically on the first write's
-            // content -- see the doc comment above for why gating on
-            // content (not a call counter) matters here.
-            if text == first_write_content {
-                panicked_clone.store(true, Ordering::SeqCst);
-                panic!("simulated callback panic on first-write content");
+        if let FileEvent::Changed(path) = event {
+            if path.ends_with("probe.ri") {
+                probe_seen_clone.store(true, Ordering::SeqCst);
+                return;
             }
-            if text == second_write_content {
-                received_clone.lock().unwrap().push(text);
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                // Simulate a callback bug specifically on the first write's
+                // content -- see the doc comment above for why gating on
+                // content (not a call counter) matters here.
+                if text == first_write_content {
+                    panicked_clone.store(true, Ordering::SeqCst);
+                    panic!("simulated callback panic on first-write content");
+                }
+                if text == second_write_content {
+                    received_clone.lock().unwrap().push(text);
+                }
             }
         }
     }) else {
         return;
     };
 
-    // Give the watcher time to register.
-    std::thread::sleep(Duration::from_millis(200));
+    // Registration barrier -- see the doc comment above for why this
+    // replaces a fixed "give the watcher time to register" sleep.
+    let registered = wait_for_watch_registration(dir.path(), &probe_seen);
+    assert!(
+        registered,
+        "the watcher never delivered a probe event, so the directory watch \
+         was never confirmed live -- this run could not exercise panic \
+         survival"
+    );
 
-    // First modification: reaches the callback, which panics. If the
-    // worker thread didn't catch that unwind, it would terminate here and
-    // no further event would ever be delivered.
-    std::fs::write(&ri_file, first_write_content).unwrap();
-
-    // Let the debounce window elapse so the panicking call is fully
-    // processed (and, if uncaught, the worker fully dead) before the
-    // second write.
-    std::thread::sleep(Duration::from_millis(300));
+    // First-event barrier -- see the doc comment above for why this
+    // replaces a fixed "let the debounce window elapse" sleep. If the
+    // worker thread didn't catch the panic's unwind, it would terminate
+    // here and no further event would ever be delivered. `retry_every`
+    // (300ms) exceeds the production debounce window (100ms) for the same
+    // reason as the registration barrier's above: a faster cadence would
+    // perpetually reset the pending entry instead of letting it drain --
+    // see `wait_until_with_retry`'s doc comment.
+    let panic_observed = wait_until_with_retry(
+        || std::fs::write(&ri_file, first_write_content).unwrap(),
+        Duration::from_millis(300),
+        Duration::from_secs(10),
+        || panicked.load(Ordering::SeqCst),
+    );
+    assert!(
+        panic_observed,
+        "the callback never observed first_write_content and so never hit \
+         the panic branch -- this run wouldn't have exercised panic \
+         survival at all"
+    );
 
     // Second modification, with content DISTINCT from the first: only
     // observable if the worker survived the first callback's panic and is
@@ -714,18 +928,6 @@ fn watcher_survives_a_panicking_callback_and_keeps_delivering_later_events() {
     assert!(
         found,
         "watcher should keep delivering events after a callback panic, got: {:?}",
-        *texts
-    );
-
-    // Positive confirmation that the panic branch actually fired -- see the
-    // doc comment above for why the `found` assertion alone can't rule out
-    // a vacuous pass (e.g. the first write's event never reaching the
-    // callback at all).
-    assert!(
-        panicked.load(Ordering::SeqCst),
-        "the callback never observed first_write_content and so never hit \
-         the panic branch -- this run wouldn't have exercised panic \
-         survival at all, got: {:?}",
         *texts
     );
 }
