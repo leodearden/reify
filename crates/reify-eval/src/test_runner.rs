@@ -92,11 +92,16 @@ pub struct TestResult {
 ///
 /// # Registration pair
 ///
-/// Mirrors [`reify-cli::configured_eval_engine`]'s registration pair exactly:
-/// - [`crate::compute_targets::register_compute_fns`] — FEA/buckling/modal/
-///   form-find/multi-case/dynamics/trajectory trampolines.
-/// - [`crate::register_shell_extract_compute_fns`] — shell mid-surface
-///   extraction trampoline.
+/// Delegates to the single canonical bundler
+/// [`Engine::register_production_compute_fns`] (INV-FEA-1, PRD
+/// `docs/prds/compute-fea-hardening.md` task A4). It must pass
+/// `MorphRegistration::Unavailable`, not `Enabled`, because `reify-mesh-morph`
+/// is a **dev-dep-only** of `reify-eval` (see the `[dev-dependencies]
+/// reify-mesh-morph` entry and its task-4744 comment in
+/// `crates/reify-eval/Cargo.toml`: `reify-mesh-morph` normal-deps
+/// `reify-eval`, so a normal dep back would cycle) while `build_test_engine`
+/// is regular non-`#[cfg(test)]` library code reached from production
+/// `run_tests`, so it may not name `reify_mesh_morph::*` at all.
 ///
 /// # No `SolverRegistry`
 ///
@@ -108,8 +113,9 @@ pub struct TestResult {
 /// auto-params must remain `Indeterminate` when no solver is wired.
 fn build_test_engine(checker: Box<dyn ConstraintChecker>) -> Engine {
     let mut engine = Engine::new(checker, None);
-    crate::compute_targets::register_compute_fns(&mut engine);
-    crate::register_shell_extract_compute_fns(&mut engine);
+    engine.register_production_compute_fns(crate::compute_targets::MorphRegistration::Unavailable {
+        reason: "reify-mesh-morph is a dev-only dep of reify-eval (task 4744) — a normal dep back would cycle (reify-mesh-morph normal-deps reify-eval)",
+    });
     engine
 }
 
@@ -542,6 +548,26 @@ constraint def Positive {
                 .compute_dispatch("reify::unregistered::sentinel")
                 .is_none(),
             "sentinel target must not be registered"
+        );
+    }
+
+    /// Pin for task 5075 (PRD A4): asserts that the engine `build_test_engine`
+    /// returns has no mesh-morph producer installed — this call site's
+    /// `MorphRegistration::Unavailable` effect, not proof that `Unavailable`
+    /// was chosen over `Enabled` (a no-op `Enabled` closure would also leave
+    /// this `None`; variant-level drift detection is sibling task A5's job via
+    /// `scripts/check-compute-trampoline-registration.sh`). The sibling
+    /// `build_test_engine_registers_compute_trampolines` above already proves
+    /// the shared bundle body ran.
+    #[test]
+    fn build_test_engine_delegates_to_production_bundler() {
+        use reify_constraints::SimpleConstraintChecker;
+
+        let engine = super::build_test_engine(Box::new(SimpleConstraintChecker));
+
+        assert!(
+            engine.morph_producer().is_none(),
+            "Unavailable arm must not install a mesh-morph producer"
         );
     }
 }
