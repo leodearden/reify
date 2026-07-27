@@ -50,7 +50,11 @@ structure S {
     let recovered = result.values.get(&recovered_id).unwrap_or_else(|| {
         panic!(
             "eval must produce S.recovered; available: {:?}",
-            result.values.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
+            result
+                .values
+                .iter()
+                .map(|(k, _)| k.to_string())
+                .collect::<Vec<_>>()
         )
     });
     assert_eq!(
@@ -70,7 +74,10 @@ structure S {
 
     // (3) Tag-driven: some(5mm) yields 5mm, not the 6mm default.
     let kept_id = ValueCellId::new("S", "kept");
-    let kept = result.values.get(&kept_id).expect("eval must produce S.kept");
+    let kept = result
+        .values
+        .get(&kept_id)
+        .expect("eval must produce S.kept");
     assert_eq!(
         *kept,
         mm(5.0),

@@ -21,9 +21,7 @@
 
 use reify_core::{ComputeNodeId, ContentHash, ValueCellId, VersionId};
 use reify_eval::{CancellationHandle, register_shell_extract_compute_fns};
-use reify_ir::{
-    Freshness, InterpolationKind, Role, SampledField, SampledGridKind, Value,
-};
+use reify_ir::{Freshness, InterpolationKind, Role, SampledField, SampledGridKind, Value};
 use reify_test_support::make_simple_engine;
 
 // ── Shared fixture (copied verbatim from mid_surface_fold_e2e.rs) ────────────

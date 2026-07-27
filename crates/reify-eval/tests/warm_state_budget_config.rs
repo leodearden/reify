@@ -10,8 +10,8 @@
 //!
 //! Mirrors `crates/reify-runtime/tests/node_overrides_config.rs` pattern.
 
-use reify_constraints::SimpleConstraintChecker;
 use reify_config::Manifest;
+use reify_constraints::SimpleConstraintChecker;
 use reify_eval::Engine;
 use reify_eval::warm_pool::WarmStatePool;
 
@@ -62,10 +62,8 @@ fn empty_manifest_leaves_warm_pool_at_env_or_default() {
 /// budget is re-evaluated from env+config each time this setter is called.
 #[test]
 fn set_warm_state_budget_updates_pool_budget() {
-    let (mut engine, _diags) = Engine::with_registered_kernels_and_manifest(
-        Box::new(SimpleConstraintChecker),
-        None,
-    );
+    let (mut engine, _diags) =
+        Engine::with_registered_kernels_and_manifest(Box::new(SimpleConstraintChecker), None);
 
     engine.set_warm_state_budget(Some(4096));
 
@@ -79,10 +77,8 @@ fn set_warm_state_budget_updates_pool_budget() {
 /// `Engine::set_warm_state_budget(None)` must use the env-var or default budget.
 #[test]
 fn set_warm_state_budget_none_uses_env_or_default() {
-    let (mut engine, _diags) = Engine::with_registered_kernels_and_manifest(
-        Box::new(SimpleConstraintChecker),
-        None,
-    );
+    let (mut engine, _diags) =
+        Engine::with_registered_kernels_and_manifest(Box::new(SimpleConstraintChecker), None);
     // Force a non-default budget first so we can see the None case restore it.
     engine.set_warm_state_budget(Some(999_999));
     assert_eq!(engine.warm_pool().budget_bytes(), Some(999_999));

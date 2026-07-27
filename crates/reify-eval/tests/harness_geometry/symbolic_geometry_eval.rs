@@ -123,8 +123,7 @@ fn eval_and_build_handles_are_content_hash_equal() {
             kernel_handle,
         } => {
             assert_eq!(
-                *kernel_handle,
-                None,
+                *kernel_handle, None,
                 "eval path must yield kernel_handle=None (symbolic)"
             );
             (realization_ref.clone(), *upstream_values_hash)
@@ -134,8 +133,7 @@ fn eval_and_build_handles_are_content_hash_equal() {
 
     // Path B: build with mock kernel — realized handle (kernel_handle = Some).
     let kernel = MockGeometryKernel::new();
-    let mut build_engine =
-        Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
+    let mut build_engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
     let build_result = build_engine.build(&compiled, ExportFormat::Step);
     let build_errors: Vec<_> = build_result
         .diagnostics
@@ -165,15 +163,13 @@ fn eval_and_build_handles_are_content_hash_equal() {
 
     // §7.1: realization_ref must match between eval and build paths.
     assert_eq!(
-        eval_rr,
-        build_rr,
+        eval_rr, build_rr,
         "realization_ref must match between eval and build paths (§7.1)"
     );
 
     // §7.1: upstream_values_hash must be byte-identical (same fold algorithm).
     assert_eq!(
-        eval_uvh,
-        build_uvh,
+        eval_uvh, build_uvh,
         "upstream_values_hash must be byte-identical between eval-mint and build-path fold \
          (step-6 extracts the shared fn that guarantees this)"
     );
@@ -188,8 +184,7 @@ fn eval_and_build_handles_are_content_hash_equal() {
 
     // PartialEq also excludes kernel_handle (GHR-β §DD).
     assert_eq!(
-        eval_value,
-        build_value,
+        eval_value, build_value,
         "PartialEq must hold between symbolic (eval) and realized (build) handles (GHR-β)"
     );
 }
@@ -230,13 +225,11 @@ fn eval_upstream_values_hash_is_cross_run_stable() {
     };
 
     assert_eq!(
-        uvh1,
-        uvh2,
+        uvh1, uvh2,
         "upstream_values_hash must be byte-identical across independent Engine::eval runs"
     );
     assert_eq!(
-        ch1,
-        ch2,
+        ch1, ch2,
         "content_hash must be byte-identical across independent Engine::eval runs"
     );
 }

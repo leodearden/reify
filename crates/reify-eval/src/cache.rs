@@ -323,7 +323,13 @@ impl NodeCache {
         dependency_trace: DependencyTrace,
         basis_version: VersionId,
     ) -> Self {
-        Self::new_with_diagnostics(result, freshness, dependency_trace, basis_version, Vec::new())
+        Self::new_with_diagnostics(
+            result,
+            freshness,
+            dependency_trace,
+            basis_version,
+            Vec::new(),
+        )
     }
 
     /// Create a new cache entry carrying an explicit set of runtime
@@ -5776,7 +5782,10 @@ mod tests {
     fn node_cache_new_with_diagnostics_round_trips_non_empty_vec() {
         let diags = vec![reify_core::Diagnostic::warning("field index out of bounds")];
         let entry = NodeCache::new_with_diagnostics(
-            CachedResult::Value(reify_ir::Value::Int(1), reify_ir::DeterminacyState::Determined),
+            CachedResult::Value(
+                reify_ir::Value::Int(1),
+                reify_ir::DeterminacyState::Determined,
+            ),
             Freshness::Final,
             DependencyTrace::default(),
             VersionId(1),
@@ -5807,7 +5816,10 @@ mod tests {
     #[test]
     fn node_cache_clone_preserves_diagnostics() {
         let entry = NodeCache::new_with_diagnostics(
-            CachedResult::Value(reify_ir::Value::Int(1), reify_ir::DeterminacyState::Determined),
+            CachedResult::Value(
+                reify_ir::Value::Int(1),
+                reify_ir::DeterminacyState::Determined,
+            ),
             Freshness::Final,
             DependencyTrace::default(),
             VersionId(1),
@@ -5862,7 +5874,11 @@ mod tests {
             vec![reify_core::Diagnostic::warning("field 'f' out of bounds")],
         );
         let stored = &store.get(&node).unwrap().diagnostics;
-        assert_eq!(stored.len(), 1, "set_node_diagnostics must store the supplied vec");
+        assert_eq!(
+            stored.len(),
+            1,
+            "set_node_diagnostics must store the supplied vec"
+        );
         assert_eq!(stored[0].message, "field 'f' out of bounds");
         assert_eq!(stored[0].severity, reify_core::Severity::Warning);
 

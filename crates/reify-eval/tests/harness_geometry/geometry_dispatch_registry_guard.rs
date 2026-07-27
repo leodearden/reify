@@ -29,9 +29,7 @@
 /// Exhaustive per-variant + uniqueness checks are left to L1.
 #[test]
 fn descriptor_table_is_the_live_op_handled_guarantee() {
-    use reify_ir::geometry::{
-        descriptor_for, GeometryOpDiscriminants, GEOMETRY_OP_DESCRIPTORS,
-    };
+    use reify_ir::geometry::{GEOMETRY_OP_DESCRIPTORS, GeometryOpDiscriminants, descriptor_for};
     use strum::{EnumCount, IntoEnumIterator};
 
     // Table length equals the discriminant count (cross-crate read of GEOMETRY_OP_DESCRIPTORS
@@ -39,8 +37,7 @@ fn descriptor_table_is_the_live_op_handled_guarantee() {
     let disc_count = GeometryOpDiscriminants::COUNT;
     let table_len = GEOMETRY_OP_DESCRIPTORS.len();
     assert_eq!(
-        table_len,
-        disc_count,
+        table_len, disc_count,
         "GEOMETRY_OP_DESCRIPTORS has {table_len} rows but GeometryOpDiscriminants::COUNT is \
          {disc_count} — add a matching row or check for a duplicate"
     );

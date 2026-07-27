@@ -86,7 +86,10 @@ fn top_eval_yields_symbolic_selector() {
     assert!(
         compile_errors.is_empty(),
         "expected no compile-time errors; got: {:#?}",
-        compile_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        compile_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 
     // Engine::eval — kernel-free.
@@ -97,8 +100,11 @@ fn top_eval_yields_symbolic_selector() {
     let value = result.values.get(&cell_id);
 
     // Assert Selector(Face) with ByNormal leaf and symbolic target.
-    assert_selector_leaf(value, "Widget.top", SelectorKind::Face, |query| {
-        match query {
+    assert_selector_leaf(
+        value,
+        "Widget.top",
+        SelectorKind::Face,
+        |query| match query {
             LeafQuery::ByNormal { dir, tol_rad } => {
                 assert_eq!(*dir, [0.0, 0.0, 1.0], "Widget.top ByNormal dir must be +z");
                 assert!(
@@ -107,8 +113,8 @@ fn top_eval_yields_symbolic_selector() {
                 );
             }
             other => panic!("Widget.top must be a ByNormal leaf; got {other:?}"),
-        }
-    });
+        },
+    );
 
     // Also pin that the target is symbolic (kernel_handle == None).
     let sv = match value {
@@ -118,8 +124,7 @@ fn top_eval_yields_symbolic_selector() {
     match &sv.node {
         SelectorNode::Leaf { target, .. } => {
             assert_eq!(
-                target.kernel_handle,
-                None,
+                target.kernel_handle, None,
                 "symbolic eval must yield target.kernel_handle == None"
             );
         }
@@ -156,8 +161,7 @@ fn eval_and_build_selectors_are_content_hash_equal() {
 
     // Path B: build with mock kernel — realized selector.
     let kernel = MockGeometryKernel::new();
-    let mut build_engine =
-        Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
+    let mut build_engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
     let build_result = build_engine.build(&compiled, ExportFormat::Step);
     let build_errors: Vec<_> = build_result
         .diagnostics
@@ -189,8 +193,7 @@ fn eval_and_build_selectors_are_content_hash_equal() {
 
     // PartialEq also excludes kernel_handle (via GeometryHandleRef::eq).
     assert_eq!(
-        eval_value,
-        build_value,
+        eval_value, build_value,
         "PartialEq must hold between symbolic (eval) and realized (build) selectors (GHR-β §DD)"
     );
 }
@@ -223,8 +226,7 @@ fn eval_selector_content_hash_is_cross_run_stable() {
     };
 
     assert_eq!(
-        ch1,
-        ch2,
+        ch1, ch2,
         "content_hash must be byte-identical across independent Engine::eval runs"
     );
 }

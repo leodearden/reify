@@ -1911,7 +1911,11 @@ mod tests {
 
         let parent_handle = layout.parent_faces[0][0];
         let parent_feature_id = FeatureId::realization("Parent", 0);
-        table.record(KernelHandle { kernel: KernelId::Occt, id: parent_handle },
+        table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: parent_handle,
+            },
             TopologyAttribute {
                 feature_id: parent_feature_id.clone(),
                 role: Role::Side,
@@ -1951,7 +1955,10 @@ mod tests {
 
         // (a) result_faces[1] — first child (Modified record), split_index=0.
         let attr_modified = table
-            .lookup(KernelHandle { kernel: KernelId::Occt, id: layout.result_faces[1] })
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: layout.result_faces[1],
+            })
             .expect("Modified child should have a propagated entry");
         assert_eq!(
             attr_modified.mod_history,
@@ -1964,7 +1971,10 @@ mod tests {
 
         // (b) result_faces[2] — second child (Generated record), split_index=1.
         let attr_generated = table
-            .lookup(KernelHandle { kernel: KernelId::Occt, id: layout.result_faces[2] })
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: layout.result_faces[2],
+            })
             .expect("Generated child should have a propagated entry");
         assert_eq!(
             attr_generated.mod_history,
@@ -2000,7 +2010,11 @@ mod tests {
             splitting_feature_id: FeatureId::realization("Earlier", 0),
             split_index: 5,
         }];
-        table.record(KernelHandle { kernel: KernelId::Occt, id: parent_handle },
+        table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: parent_handle,
+            },
             TopologyAttribute {
                 feature_id: parent_feature_id.clone(),
                 role: Role::Side,
@@ -2033,7 +2047,10 @@ mod tests {
         .expect("propagation should succeed for a well-formed single-result history");
 
         let attr = table
-            .lookup(KernelHandle { kernel: KernelId::Occt, id: layout.result_faces[1] })
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: layout.result_faces[1],
+            })
             .expect("result face 1 should have a propagated entry");
         assert_eq!(attr.feature_id, parent_feature_id);
         assert_eq!(attr.role, Role::Side);
@@ -2066,7 +2083,11 @@ mod tests {
         // user_label is also propagated unchanged).
         let parent_handle = layout.parent_faces[0][0];
         let parent_feature_id = FeatureId::realization("Parent", 0);
-        table.record(KernelHandle { kernel: KernelId::Occt, id: parent_handle },
+        table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: parent_handle,
+            },
             TopologyAttribute {
                 feature_id: parent_feature_id.clone(),
                 role: Role::Side,
@@ -2108,7 +2129,10 @@ mod tests {
 
         // (a) result_faces[1] — first child, split_index = 0.
         let attr_1 = table
-            .lookup(KernelHandle { kernel: KernelId::Occt, id: layout.result_faces[1] })
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: layout.result_faces[1],
+            })
             .expect("result face 1 should have a propagated entry");
         assert_eq!(attr_1.feature_id, parent_feature_id);
         assert_eq!(attr_1.role, Role::Side);
@@ -2125,7 +2149,10 @@ mod tests {
 
         // (b) result_faces[2] — second child, split_index = 1.
         let attr_2 = table
-            .lookup(KernelHandle { kernel: KernelId::Occt, id: layout.result_faces[2] })
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: layout.result_faces[2],
+            })
             .expect("result face 2 should have a propagated entry");
         assert_eq!(attr_2.feature_id, parent_feature_id);
         assert_eq!(attr_2.role, Role::Side);
@@ -2222,7 +2249,10 @@ mod tests {
         .expect("step-11 history is well-formed");
 
         let attr = table
-            .lookup(KernelHandle { kernel: KernelId::Occt, id: layout.result_faces[5] })
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: layout.result_faces[5],
+            })
             .expect("start_cap_face_indices[0] = 5 should have an entry");
         assert_eq!(attr.role, Role::Cap(CapKind::Top));
         assert_eq!(attr.local_index, 0);
@@ -2254,7 +2284,10 @@ mod tests {
         .expect("step-11 history is well-formed");
 
         let attr = table
-            .lookup(KernelHandle { kernel: KernelId::Occt, id: layout.result_faces[6] })
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: layout.result_faces[6],
+            })
             .expect("end_cap_face_indices[0] = 6 should have an entry");
         assert_eq!(attr.role, Role::Cap(CapKind::Bottom));
         assert_eq!(attr.local_index, 0);
@@ -2286,7 +2319,10 @@ mod tests {
         .expect("step-11 history is well-formed");
 
         let side_a = table
-            .lookup(KernelHandle { kernel: KernelId::Occt, id: layout.result_faces[7] })
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: layout.result_faces[7],
+            })
             .expect("face_generated[0].result_subshape_index = 7 should have an entry");
         assert_eq!(side_a.role, Role::Side);
         assert_eq!(side_a.local_index, 0);
@@ -2295,7 +2331,10 @@ mod tests {
         assert!(side_a.user_label.is_none());
 
         let side_b = table
-            .lookup(KernelHandle { kernel: KernelId::Occt, id: layout.result_faces[8] })
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: layout.result_faces[8],
+            })
             .expect("face_generated[1].result_subshape_index = 8 should have an entry");
         assert_eq!(side_b.role, Role::Side);
         assert_eq!(side_b.local_index, 1);
@@ -2329,7 +2368,12 @@ mod tests {
         // Only indices 5, 6, 7, 8 are referenced; 0..=4 must remain unkeyed.
         for unkeyed_idx in [0_usize, 1, 2, 3, 4] {
             assert!(
-                table.lookup(KernelHandle { kernel: KernelId::Occt, id: layout.result_faces[unkeyed_idx] }).is_none(),
+                table
+                    .lookup(KernelHandle {
+                        kernel: KernelId::Occt,
+                        id: layout.result_faces[unkeyed_idx]
+                    })
+                    .is_none(),
                 "result face index {unkeyed_idx} should have no attribute entry",
             );
         }
@@ -2520,7 +2564,10 @@ mod tests {
         .expect("step-13 partial-revolve history is well-formed");
 
         let start_cap = table
-            .lookup(KernelHandle { kernel: KernelId::Occt, id: layout.result_faces[2] })
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: layout.result_faces[2],
+            })
             .expect("start_cap_face_indices[0] = 2 should have an entry");
         assert_eq!(start_cap.role, Role::Cap(CapKind::Start));
         assert_eq!(start_cap.local_index, 0);
@@ -2529,7 +2576,10 @@ mod tests {
         assert!(start_cap.mod_history.is_empty());
 
         let end_cap = table
-            .lookup(KernelHandle { kernel: KernelId::Occt, id: layout.result_faces[3] })
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: layout.result_faces[3],
+            })
             .expect("end_cap_face_indices[0] = 3 should have an entry");
         assert_eq!(end_cap.role, Role::Cap(CapKind::End));
         assert_eq!(end_cap.local_index, 0);
@@ -2562,7 +2612,10 @@ mod tests {
 
         for (sequential_idx, result_face_idx) in [4_usize, 5, 6, 7].iter().enumerate() {
             let attr = table
-                .lookup(KernelHandle { kernel: KernelId::Occt, id: layout.result_faces[*result_face_idx] })
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: layout.result_faces[*result_face_idx],
+                })
                 .unwrap_or_else(|| {
                     panic!(
                         "face_generated[{sequential_idx}].result_subshape_index = \
@@ -2628,7 +2681,10 @@ mod tests {
 
         for (sequential_idx, result_face_idx) in [0_usize, 1].iter().enumerate() {
             let attr = table
-                .lookup(KernelHandle { kernel: KernelId::Occt, id: layout.result_faces[*result_face_idx] })
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: layout.result_faces[*result_face_idx],
+                })
                 .expect("expected revolved face entry");
             assert_eq!(attr.role, Role::RevolvedFace);
             assert_eq!(attr.local_index, sequential_idx as u32);
@@ -2782,7 +2838,10 @@ mod tests {
         .expect("step-7 history is well-formed");
 
         let attr = table
-            .lookup(KernelHandle { kernel: KernelId::Occt, id: layout.result_faces[5] })
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: layout.result_faces[5],
+            })
             .expect("start_cap_face_indices[0] = 5 should have an entry");
         assert_eq!(attr.role, Role::Cap(CapKind::Start));
         assert_eq!(attr.local_index, 0);
@@ -2814,7 +2873,10 @@ mod tests {
         .expect("step-7 history is well-formed");
 
         let attr = table
-            .lookup(KernelHandle { kernel: KernelId::Occt, id: layout.result_faces[6] })
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: layout.result_faces[6],
+            })
             .expect("end_cap_face_indices[0] = 6 should have an entry");
         assert_eq!(attr.role, Role::Cap(CapKind::End));
         assert_eq!(attr.local_index, 0);
@@ -2846,7 +2908,10 @@ mod tests {
         .expect("step-7 history is well-formed");
 
         let side_a = table
-            .lookup(KernelHandle { kernel: KernelId::Occt, id: layout.result_faces[7] })
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: layout.result_faces[7],
+            })
             .expect("face_generated[0].result_subshape_index = 7 should have an entry");
         assert_eq!(side_a.role, Role::SweptFace);
         assert_eq!(side_a.local_index, 0);
@@ -2855,7 +2920,10 @@ mod tests {
         assert!(side_a.user_label.is_none());
 
         let side_b = table
-            .lookup(KernelHandle { kernel: KernelId::Occt, id: layout.result_faces[8] })
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: layout.result_faces[8],
+            })
             .expect("face_generated[1].result_subshape_index = 8 should have an entry");
         assert_eq!(side_b.role, Role::SweptFace);
         assert_eq!(side_b.local_index, 1);
@@ -3096,7 +3164,10 @@ mod tests {
         .expect("step-9 history is well-formed");
 
         let attr = table
-            .lookup(KernelHandle { kernel: KernelId::Occt, id: layout.result_faces[0] })
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: layout.result_faces[0],
+            })
             .expect("start_cap_face_indices[0] = 0 should have an entry");
         assert_eq!(attr.role, Role::Cap(CapKind::Start));
         assert_eq!(attr.local_index, 0);
@@ -3128,7 +3199,10 @@ mod tests {
         .expect("step-9 history is well-formed");
 
         let attr = table
-            .lookup(KernelHandle { kernel: KernelId::Occt, id: layout.result_faces[1] })
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: layout.result_faces[1],
+            })
             .expect("end_cap_face_indices[0] = 1 should have an entry");
         assert_eq!(attr.role, Role::Cap(CapKind::End));
         assert_eq!(attr.local_index, 0);
@@ -3164,7 +3238,10 @@ mod tests {
         // [1][0], [1][1] → indices 0,1,2,3).
         for (sequential_idx, result_face_idx) in [2_usize, 3, 4, 5].iter().enumerate() {
             let attr = table
-                .lookup(KernelHandle { kernel: KernelId::Occt, id: layout.result_faces[*result_face_idx] })
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: layout.result_faces[*result_face_idx],
+                })
                 .unwrap_or_else(|| {
                     panic!(
                         "face_generated[{sequential_idx}].result_subshape_index = \
@@ -3441,7 +3518,9 @@ mod tests {
         /// and an empty mod_history (the non-split case detection covers).
         fn make_attr(feature: &str, role: Role, local_index: u32) -> TopologyAttribute {
             TopologyAttribute {
-                feature_id: feature.parse::<FeatureId>().expect("test fixture must be a realization-shaped feature id"),
+                feature_id: feature
+                    .parse::<FeatureId>()
+                    .expect("test fixture must be a realization-shaped feature id"),
                 role,
                 local_index,
                 user_label: None,
@@ -3458,7 +3537,9 @@ mod tests {
             split_index: u32,
         ) -> TopologyAttribute {
             TopologyAttribute {
-                feature_id: feature.parse::<FeatureId>().expect("test fixture must be a realization-shaped feature id"),
+                feature_id: feature
+                    .parse::<FeatureId>()
+                    .expect("test fixture must be a realization-shaped feature id"),
                 role,
                 local_index,
                 user_label: None,
@@ -3806,7 +3887,10 @@ mod tests {
         for i in 0u32..4 {
             let handle = GeometryHandleId(4000 + i as u64);
             let attr = table
-                .lookup(KernelHandle { kernel: KernelId::Occt, id: handle })
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: handle,
+                })
                 .unwrap_or_else(|| panic!("start-cap vertex #{i} must have an entry"));
             assert_eq!(
                 attr.role,
@@ -3826,7 +3910,10 @@ mod tests {
         for i in 0u32..4 {
             let handle = GeometryHandleId(4004 + i as u64);
             let attr = table
-                .lookup(KernelHandle { kernel: KernelId::Occt, id: handle })
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: handle,
+                })
                 .unwrap_or_else(|| panic!("end-cap vertex #{i} must have an entry"));
             assert_eq!(
                 attr.role,
@@ -3884,7 +3971,10 @@ mod tests {
 
         for i in 0u32..4 {
             let attr = table
-                .lookup(KernelHandle { kernel: KernelId::Occt, id: GeometryHandleId(5300 + i as u64) })
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: GeometryHandleId(5300 + i as u64),
+                })
                 .unwrap_or_else(|| panic!("start-cap vertex #{i} must have an entry"));
             assert_eq!(
                 attr.role,
@@ -3896,7 +3986,10 @@ mod tests {
         }
         for i in 0u32..4 {
             let attr = table
-                .lookup(KernelHandle { kernel: KernelId::Occt, id: GeometryHandleId(5304 + i as u64) })
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: GeometryHandleId(5304 + i as u64),
+                })
                 .unwrap_or_else(|| panic!("end-cap vertex #{i} must have an entry"));
             assert_eq!(attr.role, Role::CapCornerVertex { face: CapKind::End });
             assert_eq!(attr.local_index, i);
@@ -3942,7 +4035,10 @@ mod tests {
 
         for i in 0u32..4 {
             let attr = table
-                .lookup(KernelHandle { kernel: KernelId::Occt, id: GeometryHandleId(6300 + i as u64) })
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: GeometryHandleId(6300 + i as u64),
+                })
                 .unwrap_or_else(|| panic!("start-cap vertex #{i} must have an entry"));
             assert_eq!(
                 attr.role,
@@ -3954,7 +4050,10 @@ mod tests {
         }
         for i in 0u32..4 {
             let attr = table
-                .lookup(KernelHandle { kernel: KernelId::Occt, id: GeometryHandleId(6304 + i as u64) })
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: GeometryHandleId(6304 + i as u64),
+                })
                 .unwrap_or_else(|| panic!("end-cap vertex #{i} must have an entry"));
             assert_eq!(attr.role, Role::CapCornerVertex { face: CapKind::End });
             assert_eq!(attr.local_index, i);
@@ -4005,7 +4104,10 @@ mod tests {
 
         for i in 0u32..4 {
             let attr = table
-                .lookup(KernelHandle { kernel: KernelId::Occt, id: GeometryHandleId(7500 + i as u64) })
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: GeometryHandleId(7500 + i as u64),
+                })
                 .unwrap_or_else(|| panic!("start-cap vertex #{i} must have an entry"));
             assert_eq!(
                 attr.role,
@@ -4017,7 +4119,10 @@ mod tests {
         }
         for i in 0u32..4 {
             let attr = table
-                .lookup(KernelHandle { kernel: KernelId::Occt, id: GeometryHandleId(7504 + i as u64) })
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: GeometryHandleId(7504 + i as u64),
+                })
                 .unwrap_or_else(|| panic!("end-cap vertex #{i} must have an entry"));
             assert_eq!(attr.role, Role::CapCornerVertex { face: CapKind::End });
             assert_eq!(attr.local_index, i);
@@ -4094,7 +4199,13 @@ mod tests {
                 let result_face = GeometryHandleId(11);
 
                 let mut table = TopologyAttributeTable::default();
-                table.record(KernelHandle { kernel: KernelId::Occt, id: parent_face }, make_attr(&fid, Role::Side, 0));
+                table.record(
+                    KernelHandle {
+                        kernel: KernelId::Occt,
+                        id: parent_face,
+                    },
+                    make_attr(&fid, Role::Side, 0),
+                );
 
                 let history = LocalFeatureOpHistoryRecords {
                     face_modified: vec![rec(0, 0)],
@@ -4115,7 +4226,10 @@ mod tests {
                 .expect("well-formed 1→1 face_modified should succeed");
 
                 let attr = table
-                    .lookup(KernelHandle { kernel: KernelId::Occt, id: result_face })
+                    .lookup(KernelHandle {
+                        kernel: KernelId::Occt,
+                        id: result_face,
+                    })
                     .expect("result face must have an attribute");
                 assert_eq!(
                     attr.feature_id, fid,
@@ -4147,7 +4261,13 @@ mod tests {
                 let result_face_b = GeometryHandleId(12);
 
                 let mut table = TopologyAttributeTable::default();
-                table.record(KernelHandle { kernel: KernelId::Occt, id: parent_face }, make_attr(&fid, Role::Side, 0));
+                table.record(
+                    KernelHandle {
+                        kernel: KernelId::Occt,
+                        id: parent_face,
+                    },
+                    make_attr(&fid, Role::Side, 0),
+                );
 
                 let history = LocalFeatureOpHistoryRecords {
                     face_modified: vec![rec(0, 0), rec(0, 1)],
@@ -4167,12 +4287,16 @@ mod tests {
                 )
                 .expect("well-formed face_modified split should succeed");
 
-                for (handle, expected_split_index) in
-                    [(result_face_a, 0u32), (result_face_b, 1u32)]
+                for (handle, expected_split_index) in [(result_face_a, 0u32), (result_face_b, 1u32)]
                 {
-                    let attr = table.lookup(KernelHandle { kernel: KernelId::Occt, id: handle }).unwrap_or_else(|| {
-                        panic!("result face {:?} must have an attribute", handle)
-                    });
+                    let attr = table
+                        .lookup(KernelHandle {
+                            kernel: KernelId::Occt,
+                            id: handle,
+                        })
+                        .unwrap_or_else(|| {
+                            panic!("result face {:?} must have an attribute", handle)
+                        });
                     assert_eq!(
                         attr.feature_id, fid,
                         "feature_id must be inherited from parent"
@@ -4212,7 +4336,13 @@ mod tests {
             let splitting_fid = fillet_feature_id();
 
             let mut table = TopologyAttributeTable::default();
-            table.record(KernelHandle { kernel: KernelId::Occt, id: parent_edge }, make_attr(&fid, Role::NewEdge, 5));
+            table.record(
+                KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: parent_edge,
+                },
+                make_attr(&fid, Role::NewEdge, 5),
+            );
 
             // One parent edge sponsors two generated result faces.
             let history = LocalFeatureOpHistoryRecords {
@@ -4237,7 +4367,10 @@ mod tests {
             // not the parent edge's Box/NewEdge/5 attribute.
             for (handle, expected_local_index) in [(result_face_a, 0u32), (result_face_b, 1u32)] {
                 let attr = table
-                    .lookup(KernelHandle { kernel: KernelId::Occt, id: handle })
+                    .lookup(KernelHandle {
+                        kernel: KernelId::Occt,
+                        id: handle,
+                    })
                     .unwrap_or_else(|| panic!("result face {:?} must have an attribute", handle));
                 assert_eq!(
                     attr.feature_id, splitting_fid,
@@ -4270,7 +4403,13 @@ mod tests {
             let result_edge = GeometryHandleId(21);
 
             let mut table = TopologyAttributeTable::default();
-            table.record(KernelHandle { kernel: KernelId::Occt, id: parent_edge }, make_attr(&fid, Role::NewEdge, 2));
+            table.record(
+                KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: parent_edge,
+                },
+                make_attr(&fid, Role::NewEdge, 2),
+            );
 
             let history = LocalFeatureOpHistoryRecords {
                 edge_modified: vec![rec(0, 0)],
@@ -4291,7 +4430,10 @@ mod tests {
             .expect("well-formed 1→1 edge_modified should succeed");
 
             let attr = table
-                .lookup(KernelHandle { kernel: KernelId::Occt, id: result_edge })
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: result_edge,
+                })
                 .expect("result edge must have an attribute");
             assert_eq!(attr.feature_id, fid);
             assert_eq!(attr.role, Role::NewEdge);
@@ -4322,7 +4464,13 @@ mod tests {
                 y: AxisSign::Pos,
                 z: AxisSign::Pos,
             };
-            table.record(KernelHandle { kernel: KernelId::Occt, id: parent_vertex }, make_attr(&fid, corner_role, 3));
+            table.record(
+                KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: parent_vertex,
+                },
+                make_attr(&fid, corner_role, 3),
+            );
 
             let history = LocalFeatureOpHistoryRecords {
                 edge_generated: vec![rec(0, 0), rec(0, 1)],
@@ -4344,7 +4492,10 @@ mod tests {
 
             for (handle, expected_split_index) in [(result_edge_a, 0u32), (result_edge_b, 1u32)] {
                 let attr = table
-                    .lookup(KernelHandle { kernel: KernelId::Occt, id: handle })
+                    .lookup(KernelHandle {
+                        kernel: KernelId::Occt,
+                        id: handle,
+                    })
                     .unwrap_or_else(|| panic!("result edge {:?} must have an attribute", handle));
                 assert_eq!(
                     attr.feature_id, fid,
@@ -4400,7 +4551,13 @@ mod tests {
                 let mut table = TopologyAttributeTable::default();
                 let mut attr = make_attr(&fid, Role::Side, 0);
                 attr.mod_history.push(prior_entry.clone());
-                table.record(KernelHandle { kernel: KernelId::Occt, id: parent_face }, attr);
+                table.record(
+                    KernelHandle {
+                        kernel: KernelId::Occt,
+                        id: parent_face,
+                    },
+                    attr,
+                );
 
                 let history = LocalFeatureOpHistoryRecords {
                     face_modified: vec![rec(0, 0)],
@@ -4420,7 +4577,12 @@ mod tests {
                 )
                 .expect("well-formed 1→1 face_modified should succeed");
 
-                let result_attr = table.lookup(KernelHandle { kernel: KernelId::Occt, id: result_face }).expect("result must have attr");
+                let result_attr = table
+                    .lookup(KernelHandle {
+                        kernel: KernelId::Occt,
+                        id: result_face,
+                    })
+                    .expect("result must have attr");
                 assert_eq!(
                     result_attr.mod_history,
                     vec![
@@ -4448,7 +4610,13 @@ mod tests {
                 let mut table = TopologyAttributeTable::default();
                 let mut attr = make_attr(&fid, Role::NewEdge, 0);
                 attr.mod_history.push(prior_entry.clone());
-                table.record(KernelHandle { kernel: KernelId::Occt, id: parent_edge }, attr);
+                table.record(
+                    KernelHandle {
+                        kernel: KernelId::Occt,
+                        id: parent_edge,
+                    },
+                    attr,
+                );
 
                 let history = LocalFeatureOpHistoryRecords {
                     face_generated: vec![rec(0, 0), rec(0, 1)],
@@ -4471,7 +4639,10 @@ mod tests {
                 for (handle, expected_local_index) in [(result_face_a, 0u32), (result_face_b, 1u32)]
                 {
                     let result_attr = table
-                        .lookup(KernelHandle { kernel: KernelId::Occt, id: handle })
+                        .lookup(KernelHandle {
+                            kernel: KernelId::Occt,
+                            id: handle,
+                        })
                         .unwrap_or_else(|| panic!("{:?} must have attr", handle));
                     assert!(
                         result_attr.mod_history.is_empty(),

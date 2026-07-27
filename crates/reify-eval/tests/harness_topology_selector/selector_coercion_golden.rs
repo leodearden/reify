@@ -236,9 +236,7 @@ fn vertices_index_coercion_golden() {
     // ── assertion 2: OCCT-backed runtime (gated) ──────────────────────────────
 
     if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!(
-            "skipping vertices_index_coercion OCCT assertions: OCCT not available"
-        );
+        eprintln!("skipping vertices_index_coercion OCCT assertions: OCCT not available");
         return;
     }
 

@@ -81,8 +81,7 @@ fn with_manifest_version_match_produces_no_mismatch_error() {
     let occt_mismatch_errors: Vec<_> = diags
         .iter()
         .filter(|d| {
-            d.code == Some(DiagnosticCode::KernelVersionMismatch)
-                && d.message.contains("occt")
+            d.code == Some(DiagnosticCode::KernelVersionMismatch) && d.message.contains("occt")
         })
         .collect();
 

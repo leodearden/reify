@@ -1508,10 +1508,7 @@ impl GeometryKernel for RecordingKernel {
         &mut self,
         handles: &[GeometryHandleId],
     ) -> Result<GeometryHandle, GeometryError> {
-        self.compound_members
-            .lock()
-            .unwrap()
-            .push(handles.to_vec());
+        self.compound_members.lock().unwrap().push(handles.to_vec());
         self.inner.make_compound(handles)
     }
 }
@@ -1542,12 +1539,12 @@ pub fn build_snapshot_export_matches_build(source: &str, scheduler: BuildSchedul
     // ── cold build() ──────────────────────────────────────────────────────────
     engine.build(&compiled, ExportFormat::Step);
     let build_compound_count = compounds.lock().unwrap().len();
-    let build_export_count   = exported.lock().unwrap().len();
+    let build_export_count = exported.lock().unwrap().len();
 
     // ── warm build_snapshot() ─────────────────────────────────────────────────
     engine.build_snapshot(&compiled, ExportFormat::Step);
     let snap_compound_count = compounds.lock().unwrap().len() - build_compound_count;
-    let snap_export_count   = exported.lock().unwrap().len() - build_export_count;
+    let snap_export_count = exported.lock().unwrap().len() - build_export_count;
 
     // build_snapshot must add the SAME number of make_compound calls as build().
     assert_eq!(
@@ -1573,10 +1570,9 @@ pub fn build_snapshot_export_matches_build(source: &str, scheduler: BuildSchedul
         let compounds_locked = compounds.lock().unwrap();
         for i in 0..build_compound_count {
             let build_arity = compounds_locked[i].len();
-            let snap_arity  = compounds_locked[build_compound_count + i].len();
+            let snap_arity = compounds_locked[build_compound_count + i].len();
             assert_eq!(
-                build_arity,
-                snap_arity,
+                build_arity, snap_arity,
                 "build_snapshot compound arity at slot {i} must match build()'s arity; \
                  build_arity={build_arity}, snap_arity={snap_arity}",
             );
@@ -1641,10 +1637,7 @@ pub fn bracket_source() -> String {
 /// content-hash). Returns a human-readable description of every divergence — a
 /// cell present on only one side, or a cell whose canonical content-hash differs —
 /// or `None` if the two projections are value-equivalent.
-fn diff_projected_values(
-    got: &[ProjectedValue],
-    want: &[ProjectedValue],
-) -> Option<String> {
+fn diff_projected_values(got: &[ProjectedValue], want: &[ProjectedValue]) -> Option<String> {
     use std::collections::BTreeMap;
     // cell → (canonical, display); last-writer-wins is fine — the projection
     // de-dups per cell already (a single value per ValueCellId).
@@ -1801,10 +1794,16 @@ const SOLVER_AUTO_PARITY_REL_TOL: f64 = 1e-9;
 /// divergence, or `None` if all cells match.
 fn diff_solver_eval_values(warm: &EvalResult, cold: &EvalResult) -> Option<String> {
     use std::collections::BTreeMap;
-    let got: BTreeMap<String, &Value> =
-        warm.values.iter().map(|(id, v)| (id.to_string(), v)).collect();
-    let want: BTreeMap<String, &Value> =
-        cold.values.iter().map(|(id, v)| (id.to_string(), v)).collect();
+    let got: BTreeMap<String, &Value> = warm
+        .values
+        .iter()
+        .map(|(id, v)| (id.to_string(), v))
+        .collect();
+    let want: BTreeMap<String, &Value> = cold
+        .values
+        .iter()
+        .map(|(id, v)| (id.to_string(), v))
+        .collect();
 
     let mut diffs: Vec<String> = Vec::new();
     for (cell, gv) in &got {
@@ -1967,7 +1966,12 @@ fn run_all_visible_warm_pair(
     // realizations and flips `full_scope` back OFF.
     let mut sel_engine = make(with_solver);
     sel_engine.eval(&pre_compiled);
-    sel_engine.set_demand_selective(visible_realizations.iter().cloned().map(NodeId::Realization));
+    sel_engine.set_demand_selective(
+        visible_realizations
+            .iter()
+            .cloned()
+            .map(NodeId::Realization),
+    );
     assert!(
         !sel_engine.demand_is_full_scope(),
         "all-visible selective demand must leave the cold full-scope override OFF under {scheduler:?}"

@@ -216,7 +216,9 @@ impl crate::Engine {
                         let projected: Option<RealizedContent> = self
                             .resolve_realization_kernel(node_id, produced_kernel)
                             .and_then(|(kernel, handle_id)| {
-                                kernel.tessellate(handle_id, MESH_PROJECTION_SENTINEL_TOL).ok()
+                                kernel
+                                    .tessellate(handle_id, MESH_PROJECTION_SENTINEL_TOL)
+                                    .ok()
                             })
                             .map(|mesh| RealizedContent::SurfaceMesh(Arc::new(mesh)));
 
@@ -939,7 +941,10 @@ mod tests {
 
         let (handle, diags) = engine.project_realization_read_handle(&r0, &graph);
 
-        assert!(handle.content().is_none(), "kernel Err must degrade to None content");
+        assert!(
+            handle.content().is_none(),
+            "kernel Err must degrade to None content"
+        );
         assert_eq!(diags.len(), 1, "kernel Err must emit exactly one warning");
     }
 
@@ -972,7 +977,11 @@ mod tests {
             handle.content().is_none(),
             "tessellate Err must degrade to None content"
         );
-        assert_eq!(diags.len(), 1, "tessellate Err must emit exactly one warning");
+        assert_eq!(
+            diags.len(),
+            1,
+            "tessellate Err must emit exactly one warning"
+        );
     }
 
     /// (b) A content-bearing realization whose `produced_kernel` is `None`
@@ -989,12 +998,21 @@ mod tests {
         // seed_realization leaves produced_kernel = None; insert a handle so the
         // ONLY missing link is the produced_kernel.
         seed_realization(&mut graph, r0.clone(), h, ReprKind::VolumeMesh);
-        engine.realization_handles.insert(r0.clone(), GeometryHandleId(1));
+        engine
+            .realization_handles
+            .insert(r0.clone(), GeometryHandleId(1));
 
         let (handle, diags) = engine.project_realization_read_handle(&r0, &graph);
 
-        assert!(handle.content().is_none(), "None produced_kernel must degrade to None");
-        assert_eq!(diags.len(), 1, "None produced_kernel must emit exactly one warning");
+        assert!(
+            handle.content().is_none(),
+            "None produced_kernel must degrade to None"
+        );
+        assert_eq!(
+            diags.len(),
+            1,
+            "None produced_kernel must emit exactly one warning"
+        );
     }
 
     /// (c) A realization whose `produced_kernel` names a kernel absent from
@@ -1018,8 +1036,15 @@ mod tests {
 
         let (handle, diags) = engine.project_realization_read_handle(&r0, &graph);
 
-        assert!(handle.content().is_none(), "absent kernel must degrade to None");
-        assert_eq!(diags.len(), 1, "absent kernel must emit exactly one warning");
+        assert!(
+            handle.content().is_none(),
+            "absent kernel must degrade to None"
+        );
+        assert_eq!(
+            diags.len(),
+            1,
+            "absent kernel must emit exactly one warning"
+        );
     }
 
     /// (d) A BRep realization is identity-only (PRD §4 D1): even with a capable
@@ -1043,7 +1068,10 @@ mod tests {
 
         let (handle, diags) = engine.project_realization_read_handle(&r0, &graph);
 
-        assert!(handle.content().is_none(), "BRep is identity-only: no content");
+        assert!(
+            handle.content().is_none(),
+            "BRep is identity-only: no content"
+        );
         assert!(
             diags.is_empty(),
             "BRep must emit NO diagnostic even with a kernel present"

@@ -224,7 +224,9 @@ fn scan_source(label: &str, source: &str) -> Vec<Violation> {
         // counter token is matched against `code_portion` (string-literal
         // aware), so a `//` inside a same-line string cannot mask it.
         if !raw_line.contains(ALLOW_COMMENT)
-            && TOKENS.iter().any(|tok| code_portion(raw_line).contains(tok))
+            && TOKENS
+                .iter()
+                .any(|tok| code_portion(raw_line).contains(tok))
         {
             let allowed = current_fn
                 .as_deref()

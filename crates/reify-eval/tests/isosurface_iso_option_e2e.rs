@@ -366,7 +366,8 @@ fn iso_option_out_of_band_surfaces_empty_mesh() {
              {} triangles (out-of-band, iso: 10m) vs {} (in-band, iso: 3mm), \
              which does not decrease and so looks like iso: was not \
              threaded through at all",
-            outband.triangle_count, inband.triangle_count
+            outband.triangle_count,
+            inband.triangle_count
         );
     }
 }

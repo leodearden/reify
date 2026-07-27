@@ -104,9 +104,7 @@ impl CarriedTopology {
     /// Returns `true` when face_normals, boundary, and node_coords are all
     /// empty (no topology data carried).
     pub fn is_empty(&self) -> bool {
-        self.face_normals.is_empty()
-            && self.boundary.is_empty()
-            && self.node_coords.is_empty()
+        self.face_normals.is_empty() && self.boundary.is_empty() && self.node_coords.is_empty()
     }
 
     // ── Value encoding ───────────────────────────────────────────────────────
@@ -463,12 +461,8 @@ mod tests {
         };
 
         // Flat XYZ for 4 nodes: (0,0,0), (1,0,0), (0,1,0), (0,0,1)
-        let node_coords: Vec<f32> = vec![
-            0.0, 0.0, 0.0,
-            1.0, 0.0, 0.0,
-            0.0, 1.0, 0.0,
-            0.0, 0.0, 1.0,
-        ];
+        let node_coords: Vec<f32> =
+            vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
 
         // Two per-face normals keyed by GeometryHandleId
         let face_normals = vec![
@@ -482,7 +476,12 @@ mod tests {
         boundary.associate(8, NodeAttachment::OnFace(GeometryHandleId(2)));
         boundary.associate(0, NodeAttachment::OnEdge(GeometryHandleId(1)));
 
-        CarriedTopology { part, node_coords, face_normals, boundary }
+        CarriedTopology {
+            part,
+            node_coords,
+            face_normals,
+            boundary,
+        }
     }
 
     // ── step-3 tests (RED until step-4) ──────────────────────────────────────
@@ -493,7 +492,10 @@ mod tests {
     #[test]
     fn all_finite_true_for_finite_fixture() {
         let topo = make_fixture();
-        assert!(topo.all_finite(), "all coords and normals in fixture are finite");
+        assert!(
+            topo.all_finite(),
+            "all coords and normals in fixture are finite"
+        );
     }
 
     /// RED: from_value must reject NaN/±Inf in node_coords (not implemented yet).
@@ -548,7 +550,10 @@ mod tests {
             face_normals: vec![],
             boundary: BoundaryAssociation::default(),
         };
-        assert!(!with_coords.is_empty(), "non-empty node_coords → not is_empty");
+        assert!(
+            !with_coords.is_empty(),
+            "non-empty node_coords → not is_empty"
+        );
 
         // full fixture is not empty
         assert!(!make_fixture().is_empty());
@@ -601,12 +606,7 @@ mod tests {
         };
 
         // 4-node P1 tet: 4 vertices, 4-index element
-        let vertices: Vec<f32> = vec![
-            0.0, 0.0, 0.0,
-            1.0, 0.0, 0.0,
-            0.0, 1.0, 0.0,
-            0.0, 0.0, 1.0,
-        ];
+        let vertices: Vec<f32> = vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
         let mut ba = BoundaryAssociation::default();
         ba.associate(0, NodeAttachment::OnFace(GeometryHandleId(10)));
         ba.associate(1, NodeAttachment::OnFace(GeometryHandleId(10)));
@@ -683,7 +683,10 @@ mod tests {
             ("part".to_string(), part_val),
             ("node_coords".to_string(), Value::List(vec![])),
             ("face_normals".to_string(), Value::List(vec![])),
-            ("boundary".to_string(), Value::List(vec![invalid_boundary_node])),
+            (
+                "boundary".to_string(),
+                Value::List(vec![invalid_boundary_node]),
+            ),
         ]
         .into_iter()
         .collect();
@@ -746,11 +749,7 @@ mod tests {
     /// Helper: build a minimal valid CarriedTopology Value whose boundary
     /// contains a single BoundaryNode with the given field values, so we can
     /// exercise rejection of negative/out-of-range integers.
-    fn make_carried_topology_value_with_boundary_node(
-        node: i64,
-        kind: i64,
-        handle: i64,
-    ) -> Value {
+    fn make_carried_topology_value_with_boundary_node(node: i64, kind: i64, handle: i64) -> Value {
         let topo = make_fixture();
         let part_val = Value::GeometryHandle {
             realization_ref: topo.part.realization_ref.clone(),
@@ -802,11 +801,7 @@ mod tests {
                 ("handle".to_string(), Value::Int(handle)),
                 (
                     "normal".to_string(),
-                    Value::Vector(vec![
-                        Value::Real(0.0),
-                        Value::Real(0.0),
-                        Value::Real(1.0),
-                    ]),
+                    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
                 ),
             ]
             .into_iter()
@@ -917,7 +912,14 @@ mod tests {
         // ── Lossless round-trip ──────────────────────────────────────────────
         let encoded = topo.to_value();
         let decoded = CarriedTopology::from_value(&encoded);
-        assert!(decoded.is_some(), "from_value must succeed on a valid encoding");
-        assert_eq!(decoded.unwrap(), topo, "round-trip must be exact (PartialEq)");
+        assert!(
+            decoded.is_some(),
+            "from_value must succeed on a valid encoding"
+        );
+        assert_eq!(
+            decoded.unwrap(),
+            topo,
+            "round-trip must be exact (PartialEq)"
+        );
     }
 }

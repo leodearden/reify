@@ -35,8 +35,10 @@ use reify_ir::Value;
 use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_with_stdlib};
 
 /// Path to the shipped example, resolved relative to this crate's manifest directory.
-const EXAMPLE_PATH: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/continuous_cost_min.ri");
+const EXAMPLE_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/continuous_cost_min.ri"
+);
 
 /// Integration gate (β §8.2 headline): `CostMinBracket` resolves off the 2mm boundary
 /// and emits exactly one `RobustnessFloorApplied` Info naming `cost_robustness_tradeoff`.

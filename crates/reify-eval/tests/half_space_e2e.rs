@@ -36,7 +36,11 @@ fn build_step(source: &str) -> Option<Vec<u8>> {
     }
 
     let parsed = reify_syntax::parse(source, ModulePath::single("half_space_e2e"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let compile_errors: Vec<_> = compiled
@@ -92,11 +96,13 @@ fn build_step(source: &str) -> Option<Vec<u8>> {
 /// RED: panics at `todo!()` in geometry_ops.rs until step-8.
 #[test]
 fn bounded_intersection_step_export() {
-    build_step(r#"
+    build_step(
+        r#"
 structure S {
     let result = intersection(half_space(0mm, 0mm, 0mm, 0, 0, 1), box(20mm, 20mm, 20mm))
 }
-"#);
+"#,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -126,7 +132,11 @@ structure S {
 "#;
 
     let parsed = reify_syntax::parse(source, ModulePath::single("half_space_e2e_bare"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     // A bare half_space let must not produce compile errors (E_GEOMETRY_UNBOUNDED
@@ -169,10 +179,8 @@ structure S {
 /// Path to the shipped example file (task #3465, step-10 creates it).
 ///
 /// RED until step-10 creates `examples/half_space.ri`.
-const HALF_SPACE_EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/half_space.ri"
-);
+const HALF_SPACE_EXAMPLE_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/half_space.ri");
 
 /// `examples/half_space.ri` must compile with no Error-severity diagnostics
 /// and `engine.build()` must produce non-empty STEP output (the example shows

@@ -18,7 +18,7 @@
 
 use std::sync::Arc;
 
-use crate::common::as_printed::{as_printed_options, box_mesh, fdm_process, BOX_MAX, BOX_MIN};
+use crate::common::as_printed::{BOX_MAX, BOX_MIN, as_printed_options, box_mesh, fdm_process};
 use reify_core::{ContentHash, RealizationNodeId, Type};
 use reify_eval::compute_targets::as_printed_material::as_printed_material_r_fast_trampoline;
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle, RealizedContent};

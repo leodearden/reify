@@ -109,8 +109,8 @@ fn extract_field(result: &reify_ir::Value, field: &str) -> Option<reify_ir::Valu
 /// result. Panics with a descriptive message if the field is absent or not a
 /// Sampled field (the body/scalar solve always emits Sampled displacement).
 fn sampled_field(result: &reify_ir::Value, field: &str) -> reify_ir::SampledField {
-    let field_val =
-        extract_field(result, field).unwrap_or_else(|| panic!("field '{field}' not found in result"));
+    let field_val = extract_field(result, field)
+        .unwrap_or_else(|| panic!("field '{field}' not found in result"));
     match &field_val {
         reify_ir::Value::Field { source, lambda, .. } => {
             assert!(
@@ -119,7 +119,9 @@ fn sampled_field(result: &reify_ir::Value, field: &str) -> reify_ir::SampledFiel
             );
             match lambda.as_ref() {
                 reify_ir::Value::SampledField(sf) => sf.clone(),
-                other => panic!("field '{field}' lambda must be Value::SampledField, got {other:?}"),
+                other => {
+                    panic!("field '{field}' lambda must be Value::SampledField, got {other:?}")
+                }
             }
         }
         other => panic!("field '{field}' must be Value::Field, got {other:?}"),

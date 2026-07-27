@@ -69,8 +69,7 @@ fn eval_canonical() -> &'static reify_eval::EvalResult {
             .diagnostics
             .iter()
             .filter(|d| {
-                d.severity == Severity::Error
-                    && d.code != Some(DiagnosticCode::EvalUnresolved)
+                d.severity == Severity::Error && d.code != Some(DiagnosticCode::EvalUnresolved)
             })
             .collect();
         assert!(

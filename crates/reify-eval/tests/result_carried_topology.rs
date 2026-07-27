@@ -34,11 +34,7 @@ fn make_populated_topology() -> CarriedTopology {
     ba.associate(2, NodeAttachment::OnEdge(GeometryHandleId(10)));
 
     let mesh = VolumeMesh {
-        vertices: vec![
-            0.0f32, 0.0, 0.0,
-            1.0, 0.0, 0.0,
-            0.0, 1.0, 0.0,
-        ],
+        vertices: vec![0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
         connectivity: VolumeConnectivity::Tet {
             indices: vec![],
             order: ElementOrderTag::P1,
@@ -101,15 +97,11 @@ fn carried_topology_from_modal_result_surfaces_full_topology() {
     assert_eq!(topo.face_normals()[1].1, [0.0, 1.0, 0.0]);
 
     // ── boundary non-empty with OnFace entries matching face_normal handles ───
-    assert!(
-        !topo.boundary().is_empty(),
-        "boundary must be non-empty"
+    assert!(!topo.boundary().is_empty(), "boundary must be non-empty");
+    let face_handles: Vec<GeometryHandleId> = topo.face_normals().iter().map(|(h, _)| *h).collect();
+    let has_matching_on_face = topo.boundary().iter().any(
+        |(_, attach)| matches!(attach, NodeAttachment::OnFace(h) if face_handles.contains(&h)),
     );
-    let face_handles: Vec<GeometryHandleId> =
-        topo.face_normals().iter().map(|(h, _)| *h).collect();
-    let has_matching_on_face = topo.boundary().iter().any(|(_, attach)| {
-        matches!(attach, NodeAttachment::OnFace(h) if face_handles.contains(&h))
-    });
     assert!(
         has_matching_on_face,
         "boundary must have OnFace entries whose handles match face_normals keys"

@@ -35,7 +35,7 @@ use reify_core::{RealizationNodeId, ValueCellId};
 use reify_eval::cache::NodeId;
 use reify_eval::{BuildScheduler, Engine};
 use reify_ir::{ExportFormat, Value};
-use reify_test_support::{compile_source, MockGeometryKernel};
+use reify_test_support::{MockGeometryKernel, compile_source};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // step-1 (RED until step-2): the NEW non-gated per-realization dispatch tally

@@ -86,9 +86,8 @@ fn field<'a>(v: &'a Value, type_name: &str, member: &str) -> &'a Value {
 /// Shared by all four tests to avoid repeating the ~12-line compile+eval
 /// boilerplate in each.
 fn eval_fixture() -> reify_eval::EvalResult {
-    let source = std::fs::read_to_string(EXAMPLE_PATH).expect(
-        "examples/flexures/printer_z_compliant_mount.ri should exist (authored by step-2)",
-    );
+    let source = std::fs::read_to_string(EXAMPLE_PATH)
+        .expect("examples/flexures/printer_z_compliant_mount.ri should exist (authored by step-2)");
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(
         errors_only(&compiled).is_empty(),
@@ -176,8 +175,11 @@ fn flexure_compliance_cells_populated() {
             .values
             .get(&ValueCellId::new("PrinterZCompliantMount", name))
             .unwrap_or_else(|| {
-                panic!("PrinterZCompliantMount.{name} not found in eval result; \
-                        all diagnostics: {:#?}", eval_result.diagnostics)
+                panic!(
+                    "PrinterZCompliantMount.{name} not found in eval result; \
+                        all diagnostics: {:#?}",
+                    eval_result.diagnostics
+                )
             })
     };
 
@@ -226,13 +228,9 @@ fn flexure_compliance_cells_populated() {
                     "z_parasitic_error inner must be > 0, got {si_value}"
                 );
             }
-            other => panic!(
-                "z_parasitic_error Some(inner): expected Scalar length, got {other:?}"
-            ),
+            other => panic!("z_parasitic_error Some(inner): expected Scalar length, got {other:?}"),
         },
-        other => panic!(
-            "z_parasitic_error must be Value::Option(Some(Scalar)), got {other:?}"
-        ),
+        other => panic!("z_parasitic_error must be Value::Option(Some(Scalar)), got {other:?}"),
     }
 
     // --- z_at_yield ---
@@ -360,17 +358,21 @@ fn inverse_dynamics_spring_force_present() {
     let eval_result = eval_fixture();
 
     // k = z_effective_stiffness (Value::Real from FlexureCompliance record).
-    let k = num(
-        eval_result
-            .values
-            .get(&ValueCellId::new("PrinterZCompliantMount", "z_effective_stiffness"))
-            .expect("PrinterZCompliantMount.z_effective_stiffness must exist"),
-    );
+    let k = num(eval_result
+        .values
+        .get(&ValueCellId::new(
+            "PrinterZCompliantMount",
+            "z_effective_stiffness",
+        ))
+        .expect("PrinterZCompliantMount.z_effective_stiffness must exist"));
 
     // z_spring_forces : List<List<JointForce>> — 4 samples × 1 prismatic joint.
     let cell = eval_result
         .values
-        .get(&ValueCellId::new("PrinterZCompliantMount", "z_spring_forces"))
+        .get(&ValueCellId::new(
+            "PrinterZCompliantMount",
+            "z_spring_forces",
+        ))
         .unwrap_or_else(|| {
             panic!(
                 "PrinterZCompliantMount.z_spring_forces not found in eval result; \

@@ -30,8 +30,7 @@ use reify_ir::{ExportFormat, Value};
 use reify_test_support::{MockGeometryKernel, parse_and_compile_with_stdlib};
 
 /// A fully-valid `Material(...)` constructor for steel (7850 kg/m³).
-const STEEL_CTOR: &str =
-    r#"Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)"#;
+const STEEL_CTOR: &str = r#"Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)"#;
 
 /// A fully-valid `Material(...)` constructor for aluminum (2700 kg/m³).
 const ALUMINUM_CTOR: &str =
@@ -88,23 +87,27 @@ fn purpose_nested_structure_resolves_purpose_level_aluminum() {
     // Retrieve InPurpose.rho — must be present (step-6 already ensures the
     // template is compiled and material is injected).
     let rho_id = ValueCellId::new("InPurpose", "rho");
-    let rho_val = result
-        .values
-        .get(&rho_id)
-        .unwrap_or_else(|| {
-            panic!(
-                "ValueCellId {:?} not found in eval result; \
+    let rho_val = result.values.get(&rho_id).unwrap_or_else(|| {
+        panic!(
+            "ValueCellId {:?} not found in eval result; \
                  templates in compiled module: {:?}; \
                  eval diagnostics: {:?}",
-                rho_id,
-                compiled.templates.iter().map(|t| &t.name).collect::<Vec<_>>(),
-                result.diagnostics
-            )
-        });
+            rho_id,
+            compiled
+                .templates
+                .iter()
+                .map(|t| &t.name)
+                .collect::<Vec<_>>(),
+            result.diagnostics
+        )
+    });
 
     // Must be a density-dimensioned scalar.
     let si_value = match rho_val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(
                 *dimension,
                 DimensionVector::MASS_DENSITY,
@@ -114,10 +117,7 @@ fn purpose_nested_structure_resolves_purpose_level_aluminum() {
             );
             *si_value
         }
-        other => panic!(
-            "InPurpose.rho must be a Value::Scalar; got: {:?}",
-            other
-        ),
+        other => panic!("InPurpose.rho must be a Value::Scalar; got: {:?}", other),
     };
 
     // Innermost-wins: purpose-level aluminum (2700 kg/m³) must win over

@@ -16,12 +16,12 @@
 mod common;
 
 use reify_core::{ContentHash, Severity, Type, ValueCellId};
+use reify_eval::compute_targets::register_compute_fns;
+use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{
     CompiledExpr, CompiledExprKind, ExportFormat, FieldSourceKind, ResolvedFunction, Satisfaction,
     Value, ValueMap,
 };
-use reify_eval::compute_targets::register_compute_fns;
-use reify_expr::{EvalContext, eval_expr};
 
 // ── shared helpers ────────────────────────────────────────────────────────────
 
@@ -85,7 +85,11 @@ fn law_constant(aniso: &Value, key: &str) -> f64 {
 /// Extract stride-3 displacement data from a `Value::Field { source: Sampled }`.
 fn extract_displacement_data(disp_field: &Value) -> Vec<f64> {
     match disp_field {
-        Value::Field { source: FieldSourceKind::Sampled, lambda, .. } => match lambda.as_ref() {
+        Value::Field {
+            source: FieldSourceKind::Sampled,
+            lambda,
+            ..
+        } => match lambda.as_ref() {
             Value::SampledField(sf) => sf.data.clone(),
             other => panic!("expected SampledField lambda, got {other:?}"),
         },
@@ -108,7 +112,10 @@ fn as_printed_deflects_more_than_homogeneous() {
         return;
     }
 
-    let path = format!("{}/../../examples/fdm_bracket.ri", env!("CARGO_MANIFEST_DIR"));
+    let path = format!(
+        "{}/../../examples/fdm_bracket.ri",
+        env!("CARGO_MANIFEST_DIR")
+    );
     let source = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read examples/fdm_bracket.ri: {e}"));
 
@@ -138,11 +145,12 @@ fn as_printed_deflects_more_than_homogeneous() {
     // (b) r_print and r_solid are converged ElasticResult StructureInstances
     let get_elastic_result = |cell_name: &str| -> Value {
         let cell = ValueCellId::new("FdmBracket", cell_name);
-        let (value, _) = snapshot
-            .values
-            .get(&cell)
-            .unwrap_or_else(|| panic!("FdmBracket.{cell_name} not found in snapshot — \
-                add `let {cell_name} = solve_elastic_static(...)` to fdm_bracket.ri"));
+        let (value, _) = snapshot.values.get(&cell).unwrap_or_else(|| {
+            panic!(
+                "FdmBracket.{cell_name} not found in snapshot — \
+                add `let {cell_name} = solve_elastic_static(...)` to fdm_bracket.ri"
+            )
+        });
         match value {
             Value::StructureInstance(data) => {
                 assert_eq!(
@@ -157,9 +165,7 @@ fn as_printed_deflects_more_than_homogeneous() {
                 );
                 value.clone()
             }
-            other => panic!(
-                "FdmBracket.{cell_name} must be a StructureInstance, got {other:?}"
-            ),
+            other => panic!("FdmBracket.{cell_name} must be a StructureInstance, got {other:?}"),
         }
     };
 
@@ -182,11 +188,23 @@ fn as_printed_deflects_more_than_homogeneous() {
     let disp_solid = get_displacement(&r_solid, "r_solid");
 
     assert!(
-        matches!(&disp_print, Value::Field { source: FieldSourceKind::Sampled, .. }),
+        matches!(
+            &disp_print,
+            Value::Field {
+                source: FieldSourceKind::Sampled,
+                ..
+            }
+        ),
         "r_print.displacement must be a Sampled field, got {disp_print:?}"
     );
     assert!(
-        matches!(&disp_solid, Value::Field { source: FieldSourceKind::Sampled, .. }),
+        matches!(
+            &disp_solid,
+            Value::Field {
+                source: FieldSourceKind::Sampled,
+                ..
+            }
+        ),
         "r_solid.displacement must be a Sampled field, got {disp_solid:?}"
     );
 
@@ -248,13 +266,14 @@ fn as_printed_deflects_more_than_homogeneous() {
 #[test]
 fn ri_scalar_deflection_values_and_constraint() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!(
-            "skipping ri_scalar_deflection_values_and_constraint: OCCT not available"
-        );
+        eprintln!("skipping ri_scalar_deflection_values_and_constraint: OCCT not available");
         return;
     }
 
-    let path = format!("{}/../../examples/fdm_bracket.ri", env!("CARGO_MANIFEST_DIR"));
+    let path = format!(
+        "{}/../../examples/fdm_bracket.ri",
+        env!("CARGO_MANIFEST_DIR")
+    );
     let source = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read examples/fdm_bracket.ri: {e}"));
 
@@ -291,9 +310,7 @@ fn ri_scalar_deflection_values_and_constraint() {
                 );
                 *si_value
             }
-            Some(other) => panic!(
-                "FdmBracket.{cell_name} must be a Scalar, got {other:?}"
-            ),
+            Some(other) => panic!("FdmBracket.{cell_name} must be a Scalar, got {other:?}"),
             None => panic!(
                 "FdmBracket.{cell_name} not found — \
                 add `let {cell_name} = max(r_*.displacement)` to fdm_bracket.ri"
@@ -344,7 +361,10 @@ fn fdm_bracket_golden() {
         return;
     }
 
-    let path = format!("{}/../../examples/fdm_bracket.ri", env!("CARGO_MANIFEST_DIR"));
+    let path = format!(
+        "{}/../../examples/fdm_bracket.ri",
+        env!("CARGO_MANIFEST_DIR")
+    );
     let source = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read examples/fdm_bracket.ri: {e}"));
 
@@ -427,11 +447,12 @@ fn fdm_bracket_golden() {
         return;
     }
 
-    let expected = std::fs::read_to_string(&golden_path)
-        .unwrap_or_else(|e| panic!(
+    let expected = std::fs::read_to_string(&golden_path).unwrap_or_else(|e| {
+        panic!(
             "golden file missing ({golden_path}): {e}\n\
              Run with REIFY_UPDATE_GOLDEN=1 to create it."
-        ));
+        )
+    });
 
     assert_eq!(
         actual, expected,

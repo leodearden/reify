@@ -29,7 +29,6 @@ use reify_solver_elastic::{
     element_stiffness, solve_eigen_dense, solve_eigen_shift_invert,
 };
 use reify_stdlib::dynamics::mass_props::resolve_density_strict;
-use reify_stdlib::{mass_properties_from_value, resolve_body_mass};
 use reify_stdlib::modal::free_vibration::{
     eigenvalue_to_frequency_hz, is_rigid_body_mode, mass_normalization_scale,
     modal_participation_mass, rayleigh_damping_ratio,
@@ -40,6 +39,7 @@ use reify_stdlib::modal::transient::{
     impulse_force_at, integrate_prepared, prepare_modal_integrator, reconstruct_series,
     sampled_force_at, solve_modal_response, step_force_at, uniform_time_grid,
 };
+use reify_stdlib::{mass_properties_from_value, resolve_body_mass};
 
 use crate::compute_targets::result_topology::carried_topology_from_result;
 use crate::topology_selectors::{nodes_for_faces, resolve_against_carried_topology};
@@ -1299,7 +1299,10 @@ enum StiffnessSkipKind {
 /// (which is `pub(super)` and not accessible here).
 fn spring_rate_for_lumped_dof(v: &Value) -> (Option<f64>, Option<StiffnessSkipKind>) {
     match v {
-        Value::Scalar { si_value, dimension } if si_value.is_finite() => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } if si_value.is_finite() => {
             if *dimension == DimensionVector::ROTATIONAL_STIFFNESS {
                 (None, Some(StiffnessSkipKind::Rotational))
             } else if *dimension == DimensionVector::TRANSLATIONAL_STIFFNESS
@@ -1340,9 +1343,7 @@ fn spring_rate_for_lumped_dof(v: &Value) -> (Option<f64>, Option<StiffnessSkipKi
 /// Mirrors `assemble_modal_km` for the FEA-beam path (step (3) of run_modal_analysis)
 /// but uses the lumped DOF model instead of the 3·n_nodes FEA model.
 type MechanismKm = (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>, usize);
-fn assemble_mechanism_km(
-    mechanism: &Value,
-) -> (Option<MechanismKm>, Vec<Diagnostic>) {
+fn assemble_mechanism_km(mechanism: &Value) -> (Option<MechanismKm>, Vec<Diagnostic>) {
     let mech_map = match mechanism {
         Value::Map(m) => m,
         _ => return (None, Vec::new()),
@@ -1458,7 +1459,10 @@ fn assemble_mechanism_km(
                 }
                 None => {
                     if let Some(k) = k_opt {
-                        contributions.push(JointStiffness { dof: i, stiffness: k });
+                        contributions.push(JointStiffness {
+                            dof: i,
+                            stiffness: k,
+                        });
                     }
                 }
             }
@@ -1564,7 +1568,10 @@ fn run_mechanism_modal(
             // If assemble_mechanism_km already pushed a body-specific Error
             // diagnostic, use it. Otherwise emit the generic structural error
             // (non-Map mechanism, no "bodies" field, or n_dof == 0).
-            if !diagnostics.iter().any(|d| d.severity == reify_core::Severity::Error) {
+            if !diagnostics
+                .iter()
+                .any(|d| d.severity == reify_core::Severity::Error)
+            {
                 diagnostics.push(Diagnostic::error(
                     "E_MechanismModalNoMass: the mechanism has no spanning-tree bodies \
                      or a body's mass is unresolvable or non-positive; the lumped \
@@ -1645,7 +1652,10 @@ fn run_mechanism_modal(
     // solve_eigen_dense returns eigenvalues ascending by |λ|; physical modes
     // are eigenvalues[0..n_dof].  The lumped model is always small (n_dof =
     // number of bodies), so the dense path is always correct here.
-    let eigen_opts = EigenSolverOptions { n_modes: padded_size, ..Default::default() };
+    let eigen_opts = EigenSolverOptions {
+        n_modes: padded_size,
+        ..Default::default()
+    };
     let eigen_result = solve_eigen_dense(&k_solve, &m_solve, eigen_opts);
 
     // ── (4) convert physical eigenvalues [0..n_dof] to frequencies (Hz) ──────
@@ -1699,7 +1709,10 @@ fn run_mechanism_modal(
             let fields: PersistentMap<String, Value> = [
                 (
                     "frequency".to_string(),
-                    Value::Scalar { si_value: f, dimension: DimensionVector::FREQUENCY },
+                    Value::Scalar {
+                        si_value: f,
+                        dimension: DimensionVector::FREQUENCY,
+                    },
                 ),
                 ("shape".to_string(), Value::List(Vec::new())),
                 ("participation_mass".to_string(), Value::Real(0.0)),
@@ -5971,11 +5984,7 @@ mod tests {
             ("com".to_string(), zero3),
             (
                 "inertia".to_string(),
-                Value::Matrix(vec![
-                    zero_row.clone(),
-                    zero_row.clone(),
-                    zero_row.clone(),
-                ]),
+                Value::Matrix(vec![zero_row.clone(), zero_row.clone(), zero_row.clone()]),
             ),
         ]
         .into_iter()
@@ -6098,7 +6107,10 @@ mod tests {
             assert_eq!(n_dof, 1, "one tree body → n_dof=1");
             assert_eq!(m.nrows(), 1, "M must be 1×1");
             assert_eq!(k.nrows(), 1, "K must be 1×1");
-            assert!(warnings.is_empty(), "TRANSLATIONAL_STIFFNESS spring should produce no warnings");
+            assert!(
+                warnings.is_empty(),
+                "TRANSLATIONAL_STIFFNESS spring should produce no warnings"
+            );
             let m00 = get_entry(&m, 0, 0);
             let k00 = get_entry(&k, 0, 0);
             assert!(
@@ -6118,7 +6130,10 @@ mod tests {
             let (k, m, n_dof) =
                 km_opt.expect("one-body rigid mechanism must yield Some(K,M,n_dof)");
             assert_eq!(n_dof, 1, "one tree body → n_dof=1");
-            assert!(warnings.is_empty(), "rigid joint should produce no warnings");
+            assert!(
+                warnings.is_empty(),
+                "rigid joint should produce no warnings"
+            );
             let m00 = get_entry(&m, 0, 0);
             let k00 = get_entry(&k, 0, 0);
             assert!(
@@ -6134,8 +6149,7 @@ mod tests {
         // Case C: rotational stiffness joint → K[0,0] = 0 (skipped), M[0,0] = m,
         // one W_MechanismModalRotationalDOF warning.
         {
-            let mech =
-                one_body_mechanism(mass_props_solid(m_val), rotational_flexure_joint(k_val));
+            let mech = one_body_mechanism(mass_props_solid(m_val), rotational_flexure_joint(k_val));
             let (km_opt, warnings) = assemble_mechanism_km(&mech);
             let (k, m, n_dof) =
                 km_opt.expect("one-body rotational-flexure mechanism must yield Some(...)");
@@ -6146,7 +6160,9 @@ mod tests {
                 "ROTATIONAL_STIFFNESS spring should produce exactly one warning"
             );
             assert!(
-                warnings[0].message.contains("W_MechanismModalRotationalDOF"),
+                warnings[0]
+                    .message
+                    .contains("W_MechanismModalRotationalDOF"),
                 "warning should be W_MechanismModalRotationalDOF, got: {}",
                 warnings[0].message
             );
@@ -6221,7 +6237,9 @@ mod tests {
             "unexpected-dim spring should produce exactly one warning; got {warnings:?}"
         );
         assert!(
-            warnings[0].message.contains("W_MechanismModalUnexpectedSpringDim"),
+            warnings[0]
+                .message
+                .contains("W_MechanismModalUnexpectedSpringDim"),
             "warning should be W_MechanismModalUnexpectedSpringDim, got: {}",
             warnings[0].message
         );
@@ -6248,13 +6266,22 @@ mod tests {
         body.insert(Value::String("parent".to_string()), Value::Undef);
 
         let mut mech = BTreeMap::new();
-        mech.insert(Value::String("kind".to_string()), Value::String("mechanism".to_string()));
-        mech.insert(Value::String("bodies".to_string()), Value::List(vec![Value::Map(body)]));
+        mech.insert(
+            Value::String("kind".to_string()),
+            Value::String("mechanism".to_string()),
+        );
+        mech.insert(
+            Value::String("bodies".to_string()),
+            Value::List(vec![Value::Map(body)]),
+        );
         mech.insert(
             Value::String("joint_parents".to_string()),
             Value::Map(BTreeMap::new()),
         );
-        mech.insert(Value::String("loop_closures".to_string()), Value::List(vec![]));
+        mech.insert(
+            Value::String("loop_closures".to_string()),
+            Value::List(vec![]),
+        );
         mech.insert(Value::String("next_id".to_string()), Value::Int(43));
         let mech_val = Value::Map(mech);
 
@@ -6283,7 +6310,11 @@ mod tests {
         );
 
         // The error message must contain the body list index (0) and the id (42).
-        let combined: String = error_diags.iter().map(|d| d.message.as_str()).collect::<Vec<_>>().join(" ");
+        let combined: String = error_diags
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(
             combined.contains("index 0"),
             "error message must include body list index 0; got: {combined}",
@@ -6311,10 +6342,7 @@ mod tests {
             Value::String("kind".to_string()),
             Value::String("mechanism".to_string()),
         );
-        mech.insert(
-            Value::String("bodies".to_string()),
-            Value::List(vec![]),
-        );
+        mech.insert(Value::String("bodies".to_string()), Value::List(vec![]));
         mech.insert(
             Value::String("joint_parents".to_string()),
             Value::Map(BTreeMap::new()),
@@ -6336,22 +6364,29 @@ mod tests {
             &CancellationHandle::new(),
         );
 
-        let ComputeOutcome::Completed { result, diagnostics, .. } = outcome else {
+        let ComputeOutcome::Completed {
+            result,
+            diagnostics,
+            ..
+        } = outcome
+        else {
             panic!("degenerate path must return Completed; got non-Completed outcome");
         };
 
         // Must emit at least one Error diagnostic.
         assert!(
-            diagnostics.iter().any(|d| d.severity == reify_core::Severity::Error),
+            diagnostics
+                .iter()
+                .any(|d| d.severity == reify_core::Severity::Error),
             "degenerate path must emit ≥1 Error diagnostic; got {diagnostics:?}",
         );
 
         // Result must be a ModalResult StructureInstance with an empty modes list.
         let data = match &result {
             Value::StructureInstance(d) => d,
-            other => panic!(
-                "degenerate result must be a ModalResult StructureInstance; got {other:?}"
-            ),
+            other => {
+                panic!("degenerate result must be a ModalResult StructureInstance; got {other:?}")
+            }
         };
         assert_eq!(
             data.type_name, "ModalResult",
@@ -6384,7 +6419,10 @@ mod tests {
         // at whether the list is non-empty.
         let dummy_closure = Value::Map(BTreeMap::new());
         let mut mech = BTreeMap::new();
-        mech.insert(Value::String("kind".to_string()), Value::String("mechanism".to_string()));
+        mech.insert(
+            Value::String("kind".to_string()),
+            Value::String("mechanism".to_string()),
+        );
         mech.insert(Value::String("bodies".to_string()), Value::List(vec![]));
         mech.insert(
             Value::String("joint_parents".to_string()),
@@ -6407,7 +6445,12 @@ mod tests {
             &CancellationHandle::new(),
         );
 
-        let ComputeOutcome::Completed { result, diagnostics, .. } = outcome else {
+        let ComputeOutcome::Completed {
+            result,
+            diagnostics,
+            ..
+        } = outcome
+        else {
             panic!("closed-chain path must return Completed; got non-Completed outcome");
         };
 
@@ -6421,7 +6464,9 @@ mod tests {
              got {diagnostics:?}",
         );
         assert!(
-            !diagnostics.iter().any(|d| d.message.contains("E_MechanismModalNoMass")),
+            !diagnostics
+                .iter()
+                .any(|d| d.message.contains("E_MechanismModalNoMass")),
             "closed-chain must NOT emit E_MechanismModalNoMass (wrong attribution); \
              got {diagnostics:?}",
         );
@@ -6439,7 +6484,10 @@ mod tests {
             Some(Value::List(m)) => m,
             other => panic!("modes field must be a List; got {other:?}"),
         };
-        assert!(modes.is_empty(), "degenerate result must have empty modes; got {modes:?}");
+        assert!(
+            modes.is_empty(),
+            "degenerate result must have empty modes; got {modes:?}"
+        );
     }
 
     // ── Mechanism-modal first-mode frequency tests (task 4271 steps 5–6) ────
@@ -6523,18 +6571,28 @@ mod tests {
                 None,
                 &CancellationHandle::new(),
             );
-            let ComputeOutcome::Completed { result, diagnostics, .. } = outcome else {
+            let ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } = outcome
+            else {
                 panic!("Case A: expected Completed outcome");
             };
             assert!(
-                !diagnostics.iter().any(|d| d.severity == reify_core::Severity::Error),
+                !diagnostics
+                    .iter()
+                    .any(|d| d.severity == reify_core::Severity::Error),
                 "Case A: must not produce Error diagnostics; got {diagnostics:?}",
             );
             let data = match &result {
                 Value::StructureInstance(d) => d,
                 other => panic!("Case A: expected ModalResult StructureInstance, got {other:?}"),
             };
-            assert_eq!(data.type_name, "ModalResult", "Case A: result must be ModalResult");
+            assert_eq!(
+                data.type_name, "ModalResult",
+                "Case A: result must be ModalResult"
+            );
             let modes = match data.fields.get("modes") {
                 Some(Value::List(m)) => m,
                 other => panic!("Case A: modes must be a List; got {other:?}"),
@@ -6596,7 +6654,10 @@ mod tests {
                 Some(Value::List(m)) => m,
                 other => panic!("Case B: modes must be a List; got {other:?}"),
             };
-            assert!(modes.len() >= 2, "Case B: 2-DOF solve must return ≥ 2 modes");
+            assert!(
+                modes.len() >= 2,
+                "Case B: 2-DOF solve must return ≥ 2 modes"
+            );
             let mode0 = match &modes[0] {
                 Value::StructureInstance(d) => d,
                 other => panic!("Case B: modes[0] must be a Mode StructureInstance; got {other:?}"),
@@ -6659,10 +6720,7 @@ mod tests {
     #[test]
     fn mechanism_modal_result_always_carries_topology_field() {
         let options = struct_instance("ModalOptions", vec![]);
-        let mech = one_body_mechanism(
-            mass_props_solid(0.5),
-            flexure_joint(1_000.0),
-        );
+        let mech = one_body_mechanism(mass_props_solid(0.5), flexure_joint(1_000.0));
         let value_inputs = vec![mech, options];
         let outcome = solve_mechanism_modal_trampoline(
             &value_inputs,
@@ -6676,9 +6734,9 @@ mod tests {
         };
         let data = match &result {
             Value::StructureInstance(d) => d,
-            other => panic!(
-                "mechanism_modal: expected ModalResult StructureInstance, got {other:?}"
-            ),
+            other => {
+                panic!("mechanism_modal: expected ModalResult StructureInstance, got {other:?}")
+            }
         };
         assert_eq!(data.type_name, "ModalResult");
         assert!(

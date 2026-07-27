@@ -142,8 +142,12 @@ use reify_test_support::*;
 #[test]
 fn extrude_infinite_through_full_eval_pipeline_positive() {
     let e = "TestExtrudeInfinitePositive";
-    let dimensionless = |v: f64| reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::dimensionless_scalar());
-    let string_lit = |s: &str| reify_ir::CompiledExpr::literal(reify_ir::Value::String(s.to_string()), Type::String);
+    let dimensionless = |v: f64| {
+        reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::dimensionless_scalar())
+    };
+    let string_lit = |s: &str| {
+        reify_ir::CompiledExpr::literal(reify_ir::Value::String(s.to_string()), Type::String)
+    };
     let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let circle_op = CompiledGeometryOp::Primitive {
@@ -179,19 +183,43 @@ fn extrude_infinite_through_full_eval_pipeline_positive() {
     let _result = engine.build(&module, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();
-    assert_eq!(ops.len(), 2, "expected 2 ops (circle + extrude_infinite), got {}", ops.len());
+    assert_eq!(
+        ops.len(),
+        2,
+        "expected 2 ops (circle + extrude_infinite), got {}",
+        ops.len()
+    );
 
     let profile_handle = ops[0].result_handle;
 
     match &ops[1].op {
-        GeometryOp::ExtrudeInfinite { profile, axis, both } => {
+        GeometryOp::ExtrudeInfinite {
+            profile,
+            axis,
+            both,
+        } => {
             assert_eq!(*profile, profile_handle, "profile handle mismatch");
-            assert!((axis[0]).abs() < 1e-9, "axis[0] should be ≈ 0 for positive, got {}", axis[0]);
-            assert!((axis[1]).abs() < 1e-9, "axis[1] should be ≈ 0 for positive, got {}", axis[1]);
-            assert!((axis[2] - 1.0).abs() < 1e-9, "axis[2] should be ≈ 1 for positive, got {}", axis[2]);
+            assert!(
+                (axis[0]).abs() < 1e-9,
+                "axis[0] should be ≈ 0 for positive, got {}",
+                axis[0]
+            );
+            assert!(
+                (axis[1]).abs() < 1e-9,
+                "axis[1] should be ≈ 0 for positive, got {}",
+                axis[1]
+            );
+            assert!(
+                (axis[2] - 1.0).abs() < 1e-9,
+                "axis[2] should be ≈ 1 for positive, got {}",
+                axis[2]
+            );
             assert!(!both, "both should be false for direction=\"positive\"");
         }
-        other => panic!("expected GeometryOp::ExtrudeInfinite at op[1], got {:?}", other),
+        other => panic!(
+            "expected GeometryOp::ExtrudeInfinite at op[1], got {:?}",
+            other
+        ),
     }
 }
 
@@ -201,8 +229,12 @@ fn extrude_infinite_through_full_eval_pipeline_positive() {
 #[test]
 fn extrude_infinite_through_full_eval_pipeline_negative() {
     let e = "TestExtrudeInfiniteNegative";
-    let dimensionless = |v: f64| reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::dimensionless_scalar());
-    let string_lit = |s: &str| reify_ir::CompiledExpr::literal(reify_ir::Value::String(s.to_string()), Type::String);
+    let dimensionless = |v: f64| {
+        reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::dimensionless_scalar())
+    };
+    let string_lit = |s: &str| {
+        reify_ir::CompiledExpr::literal(reify_ir::Value::String(s.to_string()), Type::String)
+    };
     let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let circle_op = CompiledGeometryOp::Primitive {
@@ -240,7 +272,11 @@ fn extrude_infinite_through_full_eval_pipeline_negative() {
 
     match &ops[1].op {
         GeometryOp::ExtrudeInfinite { axis, both, .. } => {
-            assert!((axis[2] - (-1.0)).abs() < 1e-9, "axis[2] should be ≈ -1 for negative, got {}", axis[2]);
+            assert!(
+                (axis[2] - (-1.0)).abs() < 1e-9,
+                "axis[2] should be ≈ -1 for negative, got {}",
+                axis[2]
+            );
             assert!(!both, "both should be false for direction=\"negative\"");
         }
         other => panic!("expected GeometryOp::ExtrudeInfinite, got {:?}", other),
@@ -253,8 +289,12 @@ fn extrude_infinite_through_full_eval_pipeline_negative() {
 #[test]
 fn extrude_infinite_through_full_eval_pipeline_both() {
     let e = "TestExtrudeInfiniteBoth";
-    let dimensionless = |v: f64| reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::dimensionless_scalar());
-    let string_lit = |s: &str| reify_ir::CompiledExpr::literal(reify_ir::Value::String(s.to_string()), Type::String);
+    let dimensionless = |v: f64| {
+        reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::dimensionless_scalar())
+    };
+    let string_lit = |s: &str| {
+        reify_ir::CompiledExpr::literal(reify_ir::Value::String(s.to_string()), Type::String)
+    };
     let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let circle_op = CompiledGeometryOp::Primitive {
@@ -292,7 +332,11 @@ fn extrude_infinite_through_full_eval_pipeline_both() {
 
     match &ops[1].op {
         GeometryOp::ExtrudeInfinite { axis, both, .. } => {
-            assert!((axis[2] - 1.0).abs() < 1e-9, "axis[2] should be ≈ 1 for both, got {}", axis[2]);
+            assert!(
+                (axis[2] - 1.0).abs() < 1e-9,
+                "axis[2] should be ≈ 1 for both, got {}",
+                axis[2]
+            );
             assert!(*both, "both should be true for direction=\"both\"");
         }
         other => panic!("expected GeometryOp::ExtrudeInfinite, got {:?}", other),

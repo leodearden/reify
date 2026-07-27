@@ -50,10 +50,7 @@ fn rect_default_area_is_200mm2() {
                 "expected Widget.area ≈ 0.0002 m² (20mm×10mm), got {si_value} m²"
             );
         }
-        other => panic!(
-            "expected Value::Scalar for Widget.area, got {:?}",
-            other
-        ),
+        other => panic!("expected Value::Scalar for Widget.area, got {:?}", other),
     }
 }
 
@@ -101,10 +98,7 @@ structure def Widget {
                 "expected Widget.area ≈ {expected} m² (π×(5mm)²), got {si_value} m²"
             );
         }
-        other => panic!(
-            "expected Value::Scalar for Widget.area, got {:?}",
-            other
-        ),
+        other => panic!("expected Value::Scalar for Widget.area, got {:?}", other),
     }
 }
 
@@ -130,10 +124,7 @@ fn circle_undef_area_is_undef() {
         .unwrap_or_else(|| panic!("Widget.outline not found in eval result"));
     match outline_val {
         Value::Enum { variant, .. } => {
-            assert_eq!(
-                variant, "Circle",
-                "Widget.outline should be Shape::Circle"
-            );
+            assert_eq!(variant, "Circle", "Widget.outline should be Shape::Circle");
         }
         other => panic!("expected Enum for Widget.outline, got {:?}", other),
     }

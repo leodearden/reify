@@ -608,8 +608,7 @@ structure MultiPrinter {
     // after the build.
     let ops_ref = k.operations_ref();
 
-    let unified =
-        build_with_kernel_stdlib(source, BuildScheduler::UnifiedDag, Box::new(k));
+    let unified = build_with_kernel_stdlib(source, BuildScheduler::UnifiedDag, Box::new(k));
 
     // ── (a) Both FitsBuildVolume constraints must reach a DEFINITE verdict ──
     let fits: Vec<_> = unified

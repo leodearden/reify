@@ -81,15 +81,13 @@ fn cache_key_populated_correctly_after_eval() {
          Step-2 must wire the cache key into the 3 engine_eval.rs sites."
     );
     assert_ne!(
-        stored_key,
-        computed_key,
+        stored_key, computed_key,
         "stored cache_key must be the COMPLETE persistent key (persistent_cache_key: \
          compute_cache_key folded with a hash of the evaluated arg_values), so it must \
          NOT equal the bare compute_cache_key(&node, &graph). If they are equal the \
          arg_values fold has been dropped and loads/supports/options can false-hit. \
          stored={:?} computed={:?}",
-        stored_key,
-        computed_key,
+        stored_key, computed_key,
     );
 }
 
@@ -106,12 +104,10 @@ fn cache_key_is_deterministic_across_fresh_engines() {
     let (stored_b, _) = eval_and_extract_cache_keys(CANTILEVER_SRC);
 
     assert_eq!(
-        stored_a,
-        stored_b,
+        stored_a, stored_b,
         "two fresh engines evaluating the same source must produce the same cache_key; \
          engine_A={:?} vs engine_B={:?}",
-        stored_a,
-        stored_b,
+        stored_a, stored_b,
     );
 }
 
@@ -145,8 +141,7 @@ fn cache_key_changes_when_input_changes() {
     let (key_2m, _) = eval_and_extract_cache_keys(&src_2m);
 
     assert_ne!(
-        key_1m,
-        key_2m,
+        key_1m, key_2m,
         "changing `param length` from 1000mm to 2000mm must change the cache_key \
          (the `length` value cell's content_hash encodes the default-expr and is \
          captured in value_inputs); both produced identical keys: {:?}",
@@ -181,8 +176,7 @@ fn cache_key_changes_when_load_changes() {
     let (key_2000n, _) = eval_and_extract_cache_keys(&src_2000n);
 
     assert_ne!(
-        key_1000n,
-        key_2000n,
+        key_1000n, key_2000n,
         "changing the tip-load magnitude (1000 N -> 2000 N) MUST change the \
          persistent cache_key; otherwise two solves with different loads collide \
          and the cache returns a stale result. The arg_values fold in \

@@ -250,9 +250,7 @@ fn fillet_provenance_attributes_creating_feature() {
         .iter()
         .find(|(_id, attr)| attr.role == Role::LocalFeatureFace)
         .map(|(_id, attr)| attr.feature_id.clone())
-        .expect(
-            "at least one Role::LocalFeatureFace entry must exist after fillet propagation",
-        );
+        .expect("at least one Role::LocalFeatureFace entry must exist after fillet propagation");
 
     // The box's realization FeatureId: Role::CornerVertex is a box-only
     // role (local-feature propagation never writes result vertices), so any
@@ -280,7 +278,9 @@ fn fillet_provenance_attributes_creating_feature() {
         "created_by(fillet) must be non-empty (expected ~12 generated faces)"
     );
     for id in &created_by_fillet {
-        let attr = table.lookup(*id).expect("collected handle must be in table");
+        let attr = table
+            .lookup(*id)
+            .expect("collected handle must be in table");
         assert_eq!(
             attr.role,
             Role::LocalFeatureFace,

@@ -19,8 +19,8 @@
 //! same fixture via `engine_edit`.  FAILS until step-6.
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::identity::ValueCellId;
 use reify_core::VersionId;
+use reify_core::identity::ValueCellId;
 use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, Engine, RealizationReadHandle};
 use reify_ir::{OpaqueState, Value};
 use reify_test_support::compile_source_with_stdlib;

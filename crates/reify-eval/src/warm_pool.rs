@@ -1015,7 +1015,9 @@ mod tests {
         pool.donate_with_cost(node_b.clone(), OpaqueState::new(2i32, 50), 0.1);
         // Re-donate B so its timestamp is definitively newer than A's, making A
         // the unambiguous LRU-oldest entry.
-        let b_state = pool.checkout(&node_b).expect("B must be in pool after donate");
+        let b_state = pool
+            .checkout(&node_b)
+            .expect("B must be in pool after donate");
         pool.donate_with_cost(node_b.clone(), b_state, 0.1);
         // used = 100 (A:50 + B:50 = budget exactly).
 
@@ -1082,11 +1084,7 @@ mod tests {
         // used = 160 MB (solver:10 MB + mesh:150 MB).
 
         // Donate mid to force eviction (160+60=220 MB > 200 MB budget).
-        pool.donate_with_cost(
-            mid_node.clone(),
-            OpaqueState::new(3i32, 60_000_000),
-            8e-8,
-        );
+        pool.donate_with_cost(mid_node.clone(), OpaqueState::new(3i32, 60_000_000), 8e-8);
 
         // Cost-weighted: only mesh (cheapest, 3.3e-10) is evicted.
         // Pure-LRU: solver evicted first (not enough), then mesh too — solver lost.

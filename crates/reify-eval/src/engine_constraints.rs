@@ -12,9 +12,9 @@ use reify_core::{
 };
 use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{
-    CompiledExpr, CompiledFunction, ConstraintDiagnostics, ConstraintInput,
-    ConstraintResult, DeterminacyState, GeometryHandleId, KernelHandle, OptimizedImplInput,
-    PersistentMap, Satisfaction, StructureInstanceData, StructureTypeId, Value, ValueMap,
+    CompiledExpr, CompiledFunction, ConstraintDiagnostics, ConstraintInput, ConstraintResult,
+    DeterminacyState, GeometryHandleId, KernelHandle, OptimizedImplInput, PersistentMap,
+    Satisfaction, StructureInstanceData, StructureTypeId, Value, ValueMap,
 };
 
 use crate::topology_selectors;
@@ -878,7 +878,9 @@ impl Engine {
         // expansion of constraint exprs (mirrors the Let-cell pass in
         // engine_eval.rs and the purpose precedent in engine_purposes.rs).
         let sq_trait_registry = crate::structural_query::build_trait_registry(
-            self.prelude.iter().flat_map(|m| m.trait_defs.iter())
+            self.prelude
+                .iter()
+                .flat_map(|m| m.trait_defs.iter())
                 .chain(module.trait_defs.iter()),
         );
 

@@ -93,9 +93,7 @@ fn eval_emits_eval_unresolved_for_consumer_cells() {
     let eval_unresolved: Vec<_> = result
         .diagnostics
         .iter()
-        .filter(|d| {
-            d.code == Some(DiagnosticCode::EvalUnresolved) && d.severity == Severity::Error
-        })
+        .filter(|d| d.code == Some(DiagnosticCode::EvalUnresolved) && d.severity == Severity::Error)
         .collect();
 
     assert_eq!(
@@ -159,9 +157,7 @@ fn check_surfaces_eval_unresolved_for_consumer_cells() {
     let eval_unresolved: Vec<_> = result
         .diagnostics
         .iter()
-        .filter(|d| {
-            d.code == Some(DiagnosticCode::EvalUnresolved) && d.severity == Severity::Error
-        })
+        .filter(|d| d.code == Some(DiagnosticCode::EvalUnresolved) && d.severity == Severity::Error)
         .collect();
 
     assert!(
@@ -186,7 +182,10 @@ fn eval_cached_emits_eval_unresolved_parity_with_eval() {
     use reify_core::VersionId;
 
     let compiled = parse_and_compile_with_stdlib(CONSUMER_SRC);
-    assert!(errors_only(&compiled).is_empty(), "CONSUMER_SRC must compile cleanly");
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "CONSUMER_SRC must compile cleanly"
+    );
 
     let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
     let result = engine.eval_cached(&compiled, VersionId(1));
@@ -195,9 +194,7 @@ fn eval_cached_emits_eval_unresolved_parity_with_eval() {
         .eval_result
         .diagnostics
         .iter()
-        .filter(|d| {
-            d.code == Some(DiagnosticCode::EvalUnresolved) && d.severity == Severity::Error
-        })
+        .filter(|d| d.code == Some(DiagnosticCode::EvalUnresolved) && d.severity == Severity::Error)
         .collect();
 
     assert_eq!(
@@ -306,7 +303,10 @@ fn eval_no_unresolved_error_for_construction_only_source() {
 #[test]
 fn build_path_emits_no_additional_eval_unresolved_beyond_eval() {
     let compiled = parse_and_compile_with_stdlib(CONSUMER_SRC);
-    assert!(errors_only(&compiled).is_empty(), "CONSUMER_SRC must compile cleanly");
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "CONSUMER_SRC must compile cleanly"
+    );
 
     // Reference: how many EvalUnresolved errors the eval-surface detector emits
     // (should be 2 — one for `neighbors`, one for `face_n`).
@@ -331,8 +331,7 @@ fn build_path_emits_no_additional_eval_unresolved_beyond_eval() {
         .count();
 
     assert_eq!(
-        build_count,
-        eval_count,
+        build_count, eval_count,
         "build() must emit the same number of EvalUnresolved errors as eval() — \
          no additional ones from run_unified_pass (PRD §6 no-double-fire); \
          eval_count={eval_count}, build_count={build_count} — \

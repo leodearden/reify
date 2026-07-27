@@ -46,12 +46,10 @@ fn cantilever_source() -> &'static str {
 /// `Value::StructureInstance`.
 fn extract_max_von_mises(result: &Value) -> f64 {
     match result {
-        Value::StructureInstance(data) => {
-            match data.fields.get(&"max_von_mises".to_string()) {
-                Some(Value::Scalar { si_value, .. }) => *si_value,
-                other => panic!("max_von_mises must be Scalar, got: {:?}", other),
-            }
-        }
+        Value::StructureInstance(data) => match data.fields.get(&"max_von_mises".to_string()) {
+            Some(Value::Scalar { si_value, .. }) => *si_value,
+            other => panic!("max_von_mises must be Scalar, got: {:?}", other),
+        },
         other => panic!("result must be StructureInstance, got: {:?}", other),
     }
 }
@@ -65,9 +63,7 @@ fn find_elastic_result(engine: &reify_eval::Engine) -> Value {
         .snapshot
         .values
         .values()
-        .find(|(v, _)| {
-            matches!(v, Value::StructureInstance(d) if d.type_name == "ElasticResult")
-        })
+        .find(|(v, _)| matches!(v, Value::StructureInstance(d) if d.type_name == "ElasticResult"))
         .map(|(v, _)| v.clone())
         .expect("An ElasticResult StructureInstance must exist in the snapshot")
 }

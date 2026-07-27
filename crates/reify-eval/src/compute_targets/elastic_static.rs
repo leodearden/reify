@@ -181,6 +181,7 @@ use reify_ir::{
 };
 
 use crate::persistent_cache::{AposterioriEstimate, ElasticResult, ShellChannels};
+use reify_fdm::{AxisAlignedBox, Zone, ZoneProcessParams, classify_point};
 use reify_solver_elastic::{
     AdaptiveEstimate, AdaptiveProblem, AnisotropicMaterial, AssemblyElement, BudgetReason,
     CgIterationControl, CgSolverOptions, CgWarmState, ConstantField, ConvergenceStatus,
@@ -189,12 +190,11 @@ use reify_solver_elastic::{
     StressElement, TransverseIsotropicMaterial, apply_body_force, apply_dirichlet_row_elimination,
     apply_point_load, apply_traction_load, assemble_global_stiffness, compute_zz_indicator,
     curl_from_gradient, element_gradient_p1, element_stiffness, element_stiffness_p1_with_field,
-    element_stress_p1, recover_nodal_gradient_p1, recover_nodal_scalar_p1,
-    recover_nodal_stress_p1, resample_multi_nodal_to_grid, resample_nodal_to_grid,
-    resolve_execution_modes, run_adaptive_refinement, solve_cg_with_warm_state,
-    solve_cg_with_warm_state_progress, tet_volume_p1,
+    element_stress_p1, recover_nodal_gradient_p1, recover_nodal_scalar_p1, recover_nodal_stress_p1,
+    resample_multi_nodal_to_grid, resample_nodal_to_grid, resolve_execution_modes,
+    run_adaptive_refinement, solve_cg_with_warm_state, solve_cg_with_warm_state_progress,
+    tet_volume_p1,
 };
-use reify_fdm::{AxisAlignedBox, Zone, ZoneProcessParams, classify_point};
 
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
@@ -434,12 +434,18 @@ pub fn solve_elastic_static_trampoline(
         // redispatch_geometry_consuming_compute_nodes re-invokes this trampoline
         // once the VolumeMesh is projected.
         if realized_solver_mesh_with_handle(realization_inputs).is_none() {
-            return ComputeOutcome::Failed { diagnostics: vec![], structured_detail: vec![] };
+            return ComputeOutcome::Failed {
+                diagnostics: vec![],
+                structured_detail: vec![],
+            };
         }
         // Placeholder dims (1 m each): ignored by the solve because provided_mesh
         // is Some, and the shell / thin-body advisories that would otherwise read
         // them are suppressed on the body path (see the `!body_path` guards below).
-        let unit_len = || Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH };
+        let unit_len = || Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        };
         normalized_body_inputs = vec![
             value_inputs[0].clone(),                              // material
             unit_len(),                                           // length (placeholder)
@@ -463,10 +469,17 @@ pub fn solve_elastic_static_trampoline(
     // (redispatch_as_printed_consuming_compute_nodes, task #3787) runs after
     // redispatch_geometry_consuming_compute_nodes has hydrated the material cell,
     // and re-invokes this trampoline with the non-degraded field.
-    if let Value::Field { source: FieldSourceKind::AsPrintedZones, lambda, .. } = &value_inputs[0]
+    if let Value::Field {
+        source: FieldSourceKind::AsPrintedZones,
+        lambda,
+        ..
+    } = &value_inputs[0]
         && matches!(lambda.as_ref(), Value::Undef)
     {
-        return ComputeOutcome::Failed { diagnostics: vec![], structured_detail: vec![] };
+        return ComputeOutcome::Failed {
+            diagnostics: vec![],
+            structured_detail: vec![],
+        };
     }
 
     // ── Validate-all-inputs gate (task 5087, PRD compute-fea-hardening D9) ────
@@ -650,7 +663,9 @@ pub fn solve_elastic_static_trampoline(
                 structured_detail.push(StructuredComputeDetail::Fea(detail));
             }
         } else if !any_support_targets(supports, SYNTHETIC_CLAMP_FACE) {
-            let failure = FeaFailure::UnderConstrained { support_count: supports.len() };
+            let failure = FeaFailure::UnderConstrained {
+                support_count: supports.len(),
+            };
             let span = first_instance_source_span(&value_inputs[5]);
             route_diagnostics.push(fea_diagnostic_to_core(&failure, span));
         }
@@ -663,7 +678,13 @@ pub fn solve_elastic_static_trampoline(
     // zero body-force (ρ=0 ⟹ ρ·g·V=0 for every element).  Emit a visible Warning
     // so the caller is not surprised by the zero body-force.
     // Per-zone density averaging is a natural extension deferred to a future task.
-    if matches!(&value_inputs[0], Value::Field { source: FieldSourceKind::AsPrintedZones, .. }) {
+    if matches!(
+        &value_inputs[0],
+        Value::Field {
+            source: FieldSourceKind::AsPrintedZones,
+            ..
+        }
+    ) {
         let has_gravity = matches!(&value_inputs[4], Value::List(loads)
             if loads.iter().any(|l| matches!(l, Value::StructureInstance(d)
                 if d.type_name == "Gravity")));
@@ -672,7 +693,7 @@ pub fn solve_elastic_static_trampoline(
                 "Gravity load with heterogeneous AsPrintedZones material: per-zone \
                  density is not yet supported; body force is computed as zero (gravity \
                  is silently ignored). Use a point or pressure load instead, or supply \
-                 a representative scalar density via a homogeneous material wrapper."
+                 a representative scalar density via a homogeneous material wrapper.",
             ));
         }
     }
@@ -964,7 +985,10 @@ pub fn solve_elastic_static_trampoline(
         // unsatisfiable BC (FeaFailure::SelectorNoMatch, Error severity). Surface
         // it and Fail — never silently apply an empty boundary condition (task
         // 4092 step-16; 2929 severity policy: Error → ComputeOutcome::Failed).
-        if bc_diags.iter().any(|d| d.severity == reify_core::Severity::Error) {
+        if bc_diags
+            .iter()
+            .any(|d| d.severity == reify_core::Severity::Error)
+        {
             route_diagnostics.extend(bc_diags);
             return ComputeOutcome::Failed {
                 diagnostics: route_diagnostics,
@@ -1219,129 +1243,129 @@ pub fn solve_elastic_static_trampoline(
     // `solve_and_estimate`'s `deterministic: true` comment) for iteration 1
     // only. Deferred rather than risking that subtlety in a focused amendment.
     let adaptive_params = extract_adaptive_params(options_vi);
-    let aposteriori_fields: [(String, Value); 3] =
-        if adaptive_params.adaptive && let MaterialModel::Isotropic(iso) = &model {
-            // api_design note (reviewer_comprehensive, task 4902 amendment):
-            // surface the v1 result-bundle inconsistency (primary fields are
-            // coarse-mesh, a-posteriori fields are refined-loop) as an Info
-            // diagnostic rather than leaving it discoverable only via docs.
-            route_diagnostics.push(Diagnostic::info(
-                "adaptive refinement ran: displacement/stress/max_von_mises and the other \
+    let aposteriori_fields: [(String, Value); 3] = if adaptive_params.adaptive
+        && let MaterialModel::Isotropic(iso) = &model
+    {
+        // api_design note (reviewer_comprehensive, task 4902 amendment):
+        // surface the v1 result-bundle inconsistency (primary fields are
+        // coarse-mesh, a-posteriori fields are refined-loop) as an Info
+        // diagnostic rather than leaving it discoverable only via docs.
+        route_diagnostics.push(Diagnostic::info(
+            "adaptive refinement ran: displacement/stress/max_von_mises and the other \
                  primary result fields reflect the INITIAL seed-resolution mesh, not the \
                  adaptively-refined mesh; only convergence_status/global_relative_energy_error \
                  reflect the refinement loop's outcome (v1 scope)",
-            ));
-            let mut problem = CantileverAdaptiveProblem::new(
-                *iso,
-                length,
-                width,
-                height,
-                tip_force,
-                pressures.clone(),
-                body_force,
-                bc_override.clone(),
-            );
-            let budget = RefinementBudget {
-                target_accuracy: adaptive_params.target_accuracy,
-                max_refinement_iterations: adaptive_params.max_refinement_iterations,
-                max_dofs: adaptive_params.max_dofs,
-            };
-            let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
-                .expect("CantileverAdaptiveProblem::refine is Infallible");
-            // Perf-cost visibility (reviewer_comprehensive/performance, task
-            // 4902 amendment): `refine` uniformly doubles all three grid axes
-            // per iteration (~8x DOF growth), so an `adaptive: true` request
-            // can reach a mesh far larger than the single-shot solve above
-            // with no caller-visible signal beyond this diagnostic —
-            // `max_dofs`/`max_refinement_iterations` bound the growth, but
-            // the achieved cost was otherwise only discoverable by
-            // instrumenting the solve.
-            let (nx, ny, nz) = problem.grid;
-            route_diagnostics.push(Diagnostic::info(format!(
-                "adaptive refinement finished at {} DOFs on a {nx}×{ny}×{nz} grid",
-                problem.last_n_dofs
-            )));
-            // task 4910: build the Pa-valued error_indicator Field from the
-            // COARSE seed solve (`fea` above — the SAME mesh that produced
-            // displacement/stress), resampled onto the SAME `grid`, so the
-            // result bundle stays grid-consistent (grids_equal invariant).
-            // Distinct from `global_relative_energy_error`, which reflects
-            // the REFINED loop's final iteration.
-            let coarse_elements =
-                isotropic_stress_elements(&fea.coords, &fea.tet_connectivity, &fea.u, iso);
-            let coarse_vmesh = volume_mesh_from_solver_mesh(&fea.coords, &fea.tet_connectivity);
-            let coarse_zz = compute_zz_indicator(&coarse_elements, &coarse_vmesh, iso);
-            let scalar_elements: Vec<ScalarElement<'_>> = coarse_elements
-                .iter()
-                .zip(coarse_zz.per_element_stress_error.iter())
-                .map(|(el, &value)| ScalarElement {
-                    connectivity: el.connectivity,
-                    value,
-                    volume: el.volume,
-                })
-                .collect();
-            let nodal_error_indicator =
-                recover_nodal_scalar_p1(fea.coords.len(), &scalar_elements);
-            let error_indicator_sf = resample_nodal_to_grid(
-                &fea.coords,
-                &fea.tet_connectivity,
-                &nodal_error_indicator,
-                1,
-                &grid,
-                "error_indicator",
-                1e-9,
-            );
-            let error_indicator_value = Value::Option(Some(Box::new(
-                super::sampled_error_indicator_field(error_indicator_sf),
-            )));
-            aposteriori_adaptive_fields(
-                &status,
-                problem.last_global_indicator,
-                error_indicator_value,
-            )
-        } else if adaptive_params.adaptive {
-            // step-19/20: `adaptive: true` on a non-isotropic material
-            // (anisotropic or heterogeneous) — `compute_zz_indicator` is
-            // P1-isotropic-only, so the request cannot be honoured. Rather
-            // than SILENTLY dropping it (which would look like a bug, not a
-            // documented limitation), warn and fall back to the non-adaptive
-            // trivial defaults. Mirrors the shell-route material-
-            // compatibility policy above (elastic_static.rs:~570).
-            //
-            // robustness note (reviewer_comprehensive, task 4902 amendment):
-            // any non-default budget knob is ALSO silently dropped on this
-            // fallback path (the knobs-without-adaptive warning below only
-            // fires in the `!adaptive` arm), so mention it in the same
-            // message rather than leaving a second silent no-op.
-            let mut material_warning = String::from(
-                "a-posteriori adaptive refinement is supported for isotropic materials only in \
+        ));
+        let mut problem = CantileverAdaptiveProblem::new(
+            *iso,
+            length,
+            width,
+            height,
+            tip_force,
+            pressures.clone(),
+            body_force,
+            bc_override.clone(),
+        );
+        let budget = RefinementBudget {
+            target_accuracy: adaptive_params.target_accuracy,
+            max_refinement_iterations: adaptive_params.max_refinement_iterations,
+            max_dofs: adaptive_params.max_dofs,
+        };
+        let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
+            .expect("CantileverAdaptiveProblem::refine is Infallible");
+        // Perf-cost visibility (reviewer_comprehensive/performance, task
+        // 4902 amendment): `refine` uniformly doubles all three grid axes
+        // per iteration (~8x DOF growth), so an `adaptive: true` request
+        // can reach a mesh far larger than the single-shot solve above
+        // with no caller-visible signal beyond this diagnostic —
+        // `max_dofs`/`max_refinement_iterations` bound the growth, but
+        // the achieved cost was otherwise only discoverable by
+        // instrumenting the solve.
+        let (nx, ny, nz) = problem.grid;
+        route_diagnostics.push(Diagnostic::info(format!(
+            "adaptive refinement finished at {} DOFs on a {nx}×{ny}×{nz} grid",
+            problem.last_n_dofs
+        )));
+        // task 4910: build the Pa-valued error_indicator Field from the
+        // COARSE seed solve (`fea` above — the SAME mesh that produced
+        // displacement/stress), resampled onto the SAME `grid`, so the
+        // result bundle stays grid-consistent (grids_equal invariant).
+        // Distinct from `global_relative_energy_error`, which reflects
+        // the REFINED loop's final iteration.
+        let coarse_elements =
+            isotropic_stress_elements(&fea.coords, &fea.tet_connectivity, &fea.u, iso);
+        let coarse_vmesh = volume_mesh_from_solver_mesh(&fea.coords, &fea.tet_connectivity);
+        let coarse_zz = compute_zz_indicator(&coarse_elements, &coarse_vmesh, iso);
+        let scalar_elements: Vec<ScalarElement<'_>> = coarse_elements
+            .iter()
+            .zip(coarse_zz.per_element_stress_error.iter())
+            .map(|(el, &value)| ScalarElement {
+                connectivity: el.connectivity,
+                value,
+                volume: el.volume,
+            })
+            .collect();
+        let nodal_error_indicator = recover_nodal_scalar_p1(fea.coords.len(), &scalar_elements);
+        let error_indicator_sf = resample_nodal_to_grid(
+            &fea.coords,
+            &fea.tet_connectivity,
+            &nodal_error_indicator,
+            1,
+            &grid,
+            "error_indicator",
+            1e-9,
+        );
+        let error_indicator_value = Value::Option(Some(Box::new(
+            super::sampled_error_indicator_field(error_indicator_sf),
+        )));
+        aposteriori_adaptive_fields(
+            &status,
+            problem.last_global_indicator,
+            error_indicator_value,
+        )
+    } else if adaptive_params.adaptive {
+        // step-19/20: `adaptive: true` on a non-isotropic material
+        // (anisotropic or heterogeneous) — `compute_zz_indicator` is
+        // P1-isotropic-only, so the request cannot be honoured. Rather
+        // than SILENTLY dropping it (which would look like a bug, not a
+        // documented limitation), warn and fall back to the non-adaptive
+        // trivial defaults. Mirrors the shell-route material-
+        // compatibility policy above (elastic_static.rs:~570).
+        //
+        // robustness note (reviewer_comprehensive, task 4902 amendment):
+        // any non-default budget knob is ALSO silently dropped on this
+        // fallback path (the knobs-without-adaptive warning below only
+        // fires in the `!adaptive` arm), so mention it in the same
+        // message rather than leaving a second silent no-op.
+        let mut material_warning = String::from(
+            "a-posteriori adaptive refinement is supported for isotropic materials only in \
                  v0.4; falling back to a single-shot non-adaptive solve",
-            );
-            if adaptive_params.knobs_are_nondefault {
-                material_warning.push_str(
-                    "; the adaptive refinement knobs (target_accuracy / \
+        );
+        if adaptive_params.knobs_are_nondefault {
+            material_warning.push_str(
+                "; the adaptive refinement knobs (target_accuracy / \
                      max_refinement_iterations / max_dofs) were also ignored",
-                );
-            }
-            route_diagnostics.push(Diagnostic::warning(material_warning));
-            aposteriori_nonadaptive_default_fields()
-        } else {
-            // Silent-no-op guard (step-17/18, RATIFIED requirement): a
-            // budget knob set to a non-default value without `adaptive:
-            // true` has NO effect on a non-adaptive solve — warn so the
-            // caller is not silently surprised. This arm only runs when
-            // `!adaptive_params.adaptive` (the `adaptive && !isotropic` case
-            // is handled by the sibling arm above), so the no-op wording
-            // ("adaptive is false") is always accurate here.
-            if adaptive_params.knobs_are_nondefault {
-                route_diagnostics.push(Diagnostic::warning(
-                    "adaptive refinement knobs (target_accuracy / max_refinement_iterations / \
+            );
+        }
+        route_diagnostics.push(Diagnostic::warning(material_warning));
+        aposteriori_nonadaptive_default_fields()
+    } else {
+        // Silent-no-op guard (step-17/18, RATIFIED requirement): a
+        // budget knob set to a non-default value without `adaptive:
+        // true` has NO effect on a non-adaptive solve — warn so the
+        // caller is not silently surprised. This arm only runs when
+        // `!adaptive_params.adaptive` (the `adaptive && !isotropic` case
+        // is handled by the sibling arm above), so the no-op wording
+        // ("adaptive is false") is always accurate here.
+        if adaptive_params.knobs_are_nondefault {
+            route_diagnostics.push(Diagnostic::warning(
+                "adaptive refinement knobs (target_accuracy / max_refinement_iterations / \
                      max_dofs) were set but adaptive is false; they have no effect — set \
                      adaptive: true to enable the a-posteriori refinement loop",
-                ));
-            }
-            aposteriori_nonadaptive_default_fields()
-        };
+            ));
+        }
+        aposteriori_nonadaptive_default_fields()
+    };
 
     let fields: PersistentMap<String, Value> = [
         ("displacement".to_string(), disp_field),
@@ -1491,9 +1515,7 @@ fn aabb(coords: &[[f64; 3]]) -> ([f64; 3], [f64; 3]) {
 /// rather than rebuilding them through an identity remap.
 // Lib-target caller (task 4091): reached via `realized_solver_mesh`, which the
 // `solve_elastic_static_trampoline` tet/solid path calls (step-8).
-fn volume_mesh_to_solver_mesh(
-    vm: &reify_ir::VolumeMesh,
-) -> Option<SolverMesh> {
+fn volume_mesh_to_solver_mesh(vm: &reify_ir::VolumeMesh) -> Option<SolverMesh> {
     if vm.element_order() != Some(reify_ir::ElementOrderTag::P1) {
         return None;
     }
@@ -1585,9 +1607,7 @@ fn volume_mesh_to_solver_mesh(
 // cfg(test)-only-helper convention used elsewhere in reify-eval (e.g.
 // geometry_ops.rs).
 #[allow(dead_code)]
-fn realized_solver_mesh(
-    realization_inputs: &[RealizationReadHandle],
-) -> Option<SolverMesh> {
+fn realized_solver_mesh(realization_inputs: &[RealizationReadHandle]) -> Option<SolverMesh> {
     realized_solver_mesh_with_handle(realization_inputs).map(|(_, mesh)| mesh)
 }
 
@@ -1735,7 +1755,10 @@ fn target_node_set(
             faces,
         );
         diagnostics.push(fea_diagnostic_to_core(
-            &FeaFailure::SelectorNoMatch { selector, nearest: None },
+            &FeaFailure::SelectorNoMatch {
+                selector,
+                nearest: None,
+            },
             None,
         ));
     }
@@ -1971,15 +1994,19 @@ pub(crate) fn elastic_result_from_value(v: &Value) -> Option<ElasticResult> {
     // Inline to avoid closure-returning-reference lifetime issues.
     let (grid_bounds_min, grid_bounds_max, grid_counts) = {
         fn sampled_field_from_val(v: &Value) -> Option<&SampledField> {
-            if let Value::Field { source: FieldSourceKind::Sampled, lambda, .. } = v
+            if let Value::Field {
+                source: FieldSourceKind::Sampled,
+                lambda,
+                ..
+            } = v
                 && let Value::SampledField(sf) = lambda.as_ref()
             {
                 return Some(sf);
             }
             None
         }
-        let sf_opt = sampled_field_from_val(disp_val)
-            .or_else(|| sampled_field_from_val(stress_val));
+        let sf_opt =
+            sampled_field_from_val(disp_val).or_else(|| sampled_field_from_val(stress_val));
         match sf_opt {
             Some(sf)
                 if sf.bounds_min.len() >= 3
@@ -2020,7 +2047,11 @@ pub(crate) fn elastic_result_from_value(v: &Value) -> Option<ElasticResult> {
         Some(Value::StructureInstance(sc)) if sc.type_name == "ShellStress" => {
             let top = extract_field_data(sc.fields.get("top").unwrap_or(&Value::Undef));
             let bottom = extract_field_data(sc.fields.get("bottom").unwrap_or(&Value::Undef));
-            Some(ShellChannels { top, bottom, frame: Vec::new() })
+            Some(ShellChannels {
+                top,
+                bottom,
+                frame: Vec::new(),
+            })
         }
         _ => None,
     };
@@ -2031,7 +2062,9 @@ pub(crate) fn elastic_result_from_value(v: &Value) -> Option<ElasticResult> {
     let convergence_status = fields
         .get("convergence_status")
         .and_then(value_to_convergence_status)
-        .unwrap_or(ConvergenceStatus::Converged { final_indicator: 0.0 });
+        .unwrap_or(ConvergenceStatus::Converged {
+            final_indicator: 0.0,
+        });
     let error_indicator: Option<Vec<f64>> = match fields.get("error_indicator") {
         Some(Value::Option(inner)) => inner
             .as_deref()
@@ -2039,14 +2072,14 @@ pub(crate) fn elastic_result_from_value(v: &Value) -> Option<ElasticResult> {
             .filter(|d| !d.is_empty()),
         _ => None,
     };
-    let global_relative_energy_error: Option<f64> =
-        match fields.get("global_relative_energy_error") {
-            Some(Value::Option(inner)) => match inner.as_deref() {
-                Some(Value::Real(g)) => Some(*g),
-                _ => None,
-            },
+    let global_relative_energy_error: Option<f64> = match fields.get("global_relative_energy_error")
+    {
+        Some(Value::Option(inner)) => match inner.as_deref() {
+            Some(Value::Real(g)) => Some(*g),
             _ => None,
-        };
+        },
+        _ => None,
+    };
     let is_nonadaptive_default = matches!(
         convergence_status,
         ConvergenceStatus::Converged { final_indicator } if final_indicator == 0.0
@@ -2110,8 +2143,7 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
     // so that the SampledField metadata is bit-identical to the original.
     let rebuild_axis = |bmin: f64, bmax: f64, n: u64| -> (f64, Vec<f64>) {
         let spacing = (bmax - bmin) / n.max(1) as f64;
-        let grid = linspace_inclusive(bmin, bmax, spacing)
-            .unwrap_or_else(|_| vec![bmin]);
+        let grid = linspace_inclusive(bmin, bmax, spacing).unwrap_or_else(|_| vec![bmin]);
         (spacing, grid)
     };
 
@@ -2204,7 +2236,9 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         Some(est) => {
             let error_indicator_value = match &est.error_indicator {
                 Some(slab) => match build_sf(slab.clone(), "error_indicator") {
-                    Some(sf) => Value::Option(Some(Box::new(super::sampled_error_indicator_field(sf)))),
+                    Some(sf) => {
+                        Value::Option(Some(Box::new(super::sampled_error_indicator_field(sf))))
+                    }
                     None => Value::Option(None),
                 },
                 None => Value::Option(None),
@@ -2219,7 +2253,10 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
                     convergence_status_to_value(&est.convergence_status),
                 ),
                 ("error_indicator".to_string(), error_indicator_value),
-                ("global_relative_energy_error".to_string(), global_error_value),
+                (
+                    "global_relative_energy_error".to_string(),
+                    global_error_value,
+                ),
             ]
         }
     };
@@ -2487,7 +2524,8 @@ pub(crate) fn solve_cantilever_fea(
     // (resample-grid counts only), and the `tip_nodes` / `root_nodes` BC sets.
     // Everything downstream operates on these and is mesh-agnostic.
     let realized = provided_mesh.is_some();
-    let (coords, tet_connectivity, nx, ny, nz, mut tip_nodes, mut root_nodes) = match provided_mesh {
+    let (coords, tet_connectivity, nx, ny, nz, mut tip_nodes, mut root_nodes) = match provided_mesh
+    {
         // ── Realized path ─────────────────────────────────────────────────────
         //
         // Preserve the cantilever BC model on arbitrary geometry: clamp the
@@ -2656,12 +2694,12 @@ pub(crate) fn solve_cantilever_fea(
     // element loop avoids O(n_tets) `from_law`/`rotate_voigt` work and per-element
     // `AnisotropicMaterial` clones.  The `locator` (classify_point) still runs once
     // per element to determine the zone index.
-    let het_d_mats: Option<Vec<[[f64; 6]; 6]>> =
-        if let MaterialModel::Heterogeneous(field) = model {
-            Some(field.cells.iter().map(|c| c.d_matrix_global()).collect())
-        } else {
-            None
-        };
+    let het_d_mats: Option<Vec<[[f64; 6]; 6]>> = if let MaterialModel::Heterogeneous(field) = model
+    {
+        Some(field.cells.iter().map(|c| c.d_matrix_global()).collect())
+    } else {
+        None
+    };
 
     for conn in &tet_connectivity {
         let phys: Vec<[f64; 3]> = conn.iter().map(|&n| coords[n]).collect();
@@ -2800,7 +2838,9 @@ pub(crate) fn solve_cantilever_fea(
         // ‖f − K·u_warm‖ < ‖f‖ (warm guess seeds a smaller initial residual
         // than zero, i.e. the probe is cheaper than a cold start). Costs one
         // extra SpMV (≈ one CG iteration). Returns false on DOF-count mismatch.
-        prior_cg.as_ref().filter(|ws| warm_start_beneficial(&k, &f, ws.u.as_slice()))
+        prior_cg
+            .as_ref()
+            .filter(|ws| warm_start_beneficial(&k, &f, ws.u.as_slice()))
     };
     let warm_started = warm_start.is_some();
     let (cg_result, fresh_warm) = if let Some(cb) = progress {
@@ -3092,8 +3132,12 @@ fn isotropic_stress_elements<'a>(
     tet_connectivity
         .iter()
         .map(|conn| {
-            let phys: [[f64; 3]; 4] =
-                [coords[conn[0]], coords[conn[1]], coords[conn[2]], coords[conn[3]]];
+            let phys: [[f64; 3]; 4] = [
+                coords[conn[0]],
+                coords[conn[1]],
+                coords[conn[2]],
+                coords[conn[3]],
+            ];
             let u_e: [f64; 12] = [
                 u[3 * conn[0]],
                 u[3 * conn[0] + 1],
@@ -3110,7 +3154,11 @@ fn isotropic_stress_elements<'a>(
             ];
             let stress = element_stress_p1(&phys, material, &u_e);
             let volume = tet_volume_p1(&phys);
-            StressElement { connectivity: conn.as_slice(), stress, volume }
+            StressElement {
+                connectivity: conn.as_slice(),
+                stress,
+                volume,
+            }
         })
         .collect()
 }
@@ -3241,12 +3289,8 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
         // reviewer_comprehensive/code_reuse — see its doc comment for why the
         // single-shot tet path's own stress-recovery loop is not converted to
         // share this same helper).
-        let elements = isotropic_stress_elements(
-            &fea.coords,
-            &fea.tet_connectivity,
-            &fea.u,
-            &self.material,
-        );
+        let elements =
+            isotropic_stress_elements(&fea.coords, &fea.tet_connectivity, &fea.u, &self.material);
 
         let vmesh = volume_mesh_from_solver_mesh(&fea.coords, &fea.tet_connectivity);
         let zz = compute_zz_indicator(&elements, &vmesh, &self.material);
@@ -3424,7 +3468,12 @@ fn element_stress_anisotropic(
 /// `ComputeOutcome::Failed` return, naming the offending arg.
 fn classify_material(val: &Value) -> Result<MaterialModel, FeaValueShapeError> {
     // ── AsPrintedZones field: heterogeneous per-element dispatch (task #4757) ─
-    if let Value::Field { source: FieldSourceKind::AsPrintedZones, lambda, .. } = val {
+    if let Value::Field {
+        source: FieldSourceKind::AsPrintedZones,
+        lambda,
+        ..
+    } = val
+    {
         return classify_material_as_printed_zones(lambda);
     }
 
@@ -3434,7 +3483,7 @@ fn classify_material(val: &Value) -> Result<MaterialModel, FeaValueShapeError> {
             return Err(FeaValueShapeError::ExpectedStructureInstance {
                 context: "classify_material",
                 got: format!("{other:?}"),
-            })
+            });
         }
     };
     // Identity material frame: global axes = material principal axes.
@@ -3526,7 +3575,7 @@ fn classify_material_as_printed_zones(lambda: &Value) -> Result<MaterialModel, F
             return Err(FeaValueShapeError::ExpectedList {
                 context: "classify_material_as_printed_zones (AsPrintedZones lambda)",
                 got: format!("{other:?}"),
-            })
+            });
         }
     };
     if list.len() < 7 {
@@ -3541,28 +3590,31 @@ fn classify_material_as_printed_zones(lambda: &Value) -> Result<MaterialModel, F
 
     let aabb_min = extract_point3_si(&list[0])?;
     let aabb_max = extract_point3_si(&list[1])?;
-    let params   = extract_zone_process_params(&list[2])?;
+    let params = extract_zone_process_params(&list[2])?;
     let cos_threshold = match &list[3] {
         Value::Real(r) => *r,
         other => {
             return Err(FeaValueShapeError::ExpectedReal {
                 context: "classify_material_as_printed_zones cos_threshold",
                 got: format!("{other:?}"),
-            })
+            });
         }
     };
-    let mat_wall   = anisotropic_material_from_value(&list[4])?;
-    let mat_skin   = anisotropic_material_from_value(&list[5])?;
+    let mat_wall = anisotropic_material_from_value(&list[4])?;
+    let mat_skin = anisotropic_material_from_value(&list[5])?;
     let mat_infill = anisotropic_material_from_value(&list[6])?;
 
-    let aabb = AxisAlignedBox { min: aabb_min, max: aabb_max };
+    let aabb = AxisAlignedBox {
+        min: aabb_min,
+        max: aabb_max,
+    };
 
     let field = DiscreteCellField {
         cells: vec![mat_wall, mat_skin, mat_infill],
         locator: Box::new(move |p| {
             Some(match classify_point(&aabb, &params, cos_threshold, p) {
-                Zone::Wall   => 0,
-                Zone::Skin   => 1,
+                Zone::Wall => 0,
+                Zone::Skin => 1,
                 Zone::Infill => 2,
             })
         }),
@@ -3595,7 +3647,10 @@ enum FeaValueShapeError {
     /// got something else, or the wrong arity.
     ExpectedList { context: &'static str, got: String },
     /// A required `StructureInstance` field was absent.
-    MissingField { context: &'static str, field: &'static str },
+    MissingField {
+        context: &'static str,
+        field: &'static str,
+    },
 }
 
 impl std::fmt::Display for FeaValueShapeError {
@@ -3662,7 +3717,7 @@ fn extract_point3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
             return Err(FeaValueShapeError::ExpectedList {
                 context: "extract_point3_si (Point3<Length>)",
                 got: format!("{other:?}"),
-            })
+            });
         }
     };
     extract_scalar_triple(
@@ -3683,7 +3738,7 @@ fn extract_vec3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
             return Err(FeaValueShapeError::ExpectedList {
                 context: "extract_vec3_si (Vector3<Length>)",
                 got: format!("{other:?}"),
-            })
+            });
         }
     };
     extract_scalar_triple(
@@ -3711,7 +3766,7 @@ fn extract_zone_process_params(val: &Value) -> Result<ZoneProcessParams, FeaValu
             return Err(FeaValueShapeError::ExpectedList {
                 context: "extract_zone_process_params (params list)",
                 got: format!("{other:?}"),
-            })
+            });
         }
     };
     if list.len() < 7 {
@@ -3741,11 +3796,11 @@ fn extract_zone_process_params(val: &Value) -> Result<ZoneProcessParams, FeaValu
         }),
     };
     Ok(ZoneProcessParams {
-        walls:             real(0)? as u32,
+        walls: real(0)? as u32,
         top_bottom_layers: real(1)? as u32,
-        layer_height:      real(2)?,
-        line_width:        real(3)?,
-        build_direction:   [real(4)?, real(5)?, real(6)?],
+        layer_height: real(2)?,
+        line_width: real(3)?,
+        build_direction: [real(4)?, real(5)?, real(6)?],
     })
 }
 
@@ -3779,18 +3834,24 @@ fn anisotropic_material_from_value(val: &Value) -> Result<AnisotropicMaterial, F
             return Err(FeaValueShapeError::ExpectedStructureInstance {
                 context: "anisotropic_material_from_value",
                 got: format!("{other:?}"),
-            })
+            });
         }
     };
 
-    let law_val = data.fields.get("law").ok_or(FeaValueShapeError::MissingField {
-        context: "anisotropic_material_from_value",
-        field: "law",
-    })?;
-    let frame_val = data.fields.get("frame").ok_or(FeaValueShapeError::MissingField {
-        context: "anisotropic_material_from_value",
-        field: "frame",
-    })?;
+    let law_val = data
+        .fields
+        .get("law")
+        .ok_or(FeaValueShapeError::MissingField {
+            context: "anisotropic_material_from_value",
+            field: "law",
+        })?;
+    let frame_val = data
+        .fields
+        .get("frame")
+        .ok_or(FeaValueShapeError::MissingField {
+            context: "anisotropic_material_from_value",
+            field: "frame",
+        })?;
 
     // Parse the MaterialFrame: extract x/y/z axes, build the local→global matrix
     // (columns = local basis vectors in global coordinates, i.e. frame[row][col]).
@@ -3801,21 +3862,30 @@ fn anisotropic_material_from_value(val: &Value) -> Result<AnisotropicMaterial, F
                 return Err(FeaValueShapeError::ExpectedStructureInstance {
                     context: "anisotropic_material_from_value (frame)",
                     got: format!("{other:?}"),
-                })
+                });
             }
         };
-        let x_axis = frame_data.fields.get("x_axis").ok_or(FeaValueShapeError::MissingField {
-            context: "anisotropic_material_from_value (frame)",
-            field: "x_axis",
-        })?;
-        let y_axis = frame_data.fields.get("y_axis").ok_or(FeaValueShapeError::MissingField {
-            context: "anisotropic_material_from_value (frame)",
-            field: "y_axis",
-        })?;
-        let z_axis = frame_data.fields.get("z_axis").ok_or(FeaValueShapeError::MissingField {
-            context: "anisotropic_material_from_value (frame)",
-            field: "z_axis",
-        })?;
+        let x_axis = frame_data
+            .fields
+            .get("x_axis")
+            .ok_or(FeaValueShapeError::MissingField {
+                context: "anisotropic_material_from_value (frame)",
+                field: "x_axis",
+            })?;
+        let y_axis = frame_data
+            .fields
+            .get("y_axis")
+            .ok_or(FeaValueShapeError::MissingField {
+                context: "anisotropic_material_from_value (frame)",
+                field: "y_axis",
+            })?;
+        let z_axis = frame_data
+            .fields
+            .get("z_axis")
+            .ok_or(FeaValueShapeError::MissingField {
+                context: "anisotropic_material_from_value (frame)",
+                field: "z_axis",
+            })?;
         let x = extract_vec3_si(x_axis)?;
         let y = extract_vec3_si(y_axis)?;
         let z = extract_vec3_si(z_axis)?;
@@ -3826,11 +3896,7 @@ fn anisotropic_material_from_value(val: &Value) -> Result<AnisotropicMaterial, F
         //   frame[0] = [x[0], y[0], z[0]]   (global-x components of local x, y, z)
         //   frame[1] = [x[1], y[1], z[1]]   (global-y components)
         //   frame[2] = [x[2], y[2], z[2]]   (global-z components)
-        [
-            [x[0], y[0], z[0]],
-            [x[1], y[1], z[1]],
-            [x[2], y[2], z[2]],
-        ]
+        [[x[0], y[0], z[0]], [x[1], y[1], z[1]], [x[2], y[2], z[2]]]
     };
 
     // Parse the law: OrthotropicMaterial or TransverseIsotropicMaterial.
@@ -3840,19 +3906,19 @@ fn anisotropic_material_from_value(val: &Value) -> Result<AnisotropicMaterial, F
             return Err(FeaValueShapeError::ExpectedStructureInstance {
                 context: "anisotropic_material_from_value (law)",
                 got: format!("{other:?}"),
-            })
+            });
         }
     };
 
     match law_data.type_name.as_str() {
         "OrthotropicMaterial" => {
             let law = OrthotropicMaterial {
-                e1:   scalar_si_field(law_data, "e1")?,
-                e2:   scalar_si_field(law_data, "e2")?,
-                e3:   scalar_si_field(law_data, "e3")?,
-                g12:  scalar_si_field(law_data, "g12")?,
-                g13:  scalar_si_field(law_data, "g13")?,
-                g23:  scalar_si_field(law_data, "g23")?,
+                e1: scalar_si_field(law_data, "e1")?,
+                e2: scalar_si_field(law_data, "e2")?,
+                e3: scalar_si_field(law_data, "e3")?,
+                g12: scalar_si_field(law_data, "g12")?,
+                g13: scalar_si_field(law_data, "g13")?,
+                g23: scalar_si_field(law_data, "g23")?,
                 nu12: real_field(law_data, "nu12")?,
                 nu13: real_field(law_data, "nu13")?,
                 nu23: real_field(law_data, "nu23")?,
@@ -3861,11 +3927,11 @@ fn anisotropic_material_from_value(val: &Value) -> Result<AnisotropicMaterial, F
         }
         "TransverseIsotropicMaterial" => {
             let law = TransverseIsotropicMaterial {
-                e_in_plane:  scalar_si_field(law_data, "e_in_plane")?,
-                e_axial:     scalar_si_field(law_data, "e_axial")?,
+                e_in_plane: scalar_si_field(law_data, "e_in_plane")?,
+                e_axial: scalar_si_field(law_data, "e_axial")?,
                 nu_in_plane: real_field(law_data, "nu_in_plane")?,
-                nu_axial:    real_field(law_data, "nu_axial")?,
-                g_axial:     scalar_si_field(law_data, "g_axial")?,
+                nu_axial: real_field(law_data, "nu_axial")?,
+                g_axial: scalar_si_field(law_data, "g_axial")?,
             };
             Ok(AnisotropicMaterial::from_law(&law, frame))
         }
@@ -3904,10 +3970,7 @@ fn scalar_si_field(
 }
 
 /// Read a `Value::Real` field from a StructureInstance.
-fn real_field(
-    data: &StructureInstanceData,
-    key: &'static str,
-) -> Result<f64, FeaValueShapeError> {
+fn real_field(data: &StructureInstanceData, key: &'static str) -> Result<f64, FeaValueShapeError> {
     match data.fields.get(key) {
         Some(Value::Real(r)) => Ok(*r),
         // See `scalar_si_field`'s comment above: `context` stays the fixed
@@ -3947,7 +4010,7 @@ fn extract_material(val: &Value) -> Result<IsotropicElastic, FeaValueShapeError>
             return Err(FeaValueShapeError::ExpectedStructureInstance {
                 context: "extract_material",
                 got: format!("{other:?}"),
-            })
+            });
         }
     };
     let youngs_modulus = scalar_si_field(data, "youngs_modulus")?;
@@ -4622,16 +4685,24 @@ fn value_to_budget_reason(v: &Value) -> Option<BudgetReason> {
 /// `Converged.final_indicator` payload, or a missing/unrecognised
 /// `NotConverged.reason` payload (via [`value_to_budget_reason`]).
 fn value_to_convergence_status(v: &Value) -> Option<ConvergenceStatus> {
-    let Value::Enum { variant, payload, .. } = v else {
+    let Value::Enum {
+        variant, payload, ..
+    } = v
+    else {
         return None;
     };
     match variant.as_str() {
         "Converged" => match payload.iter().find(|(k, _)| k == "final_indicator") {
-            Some((_, Value::Real(r))) => Some(ConvergenceStatus::Converged { final_indicator: *r }),
+            Some((_, Value::Real(r))) => Some(ConvergenceStatus::Converged {
+                final_indicator: *r,
+            }),
             _ => None,
         },
         "NotConverged" => {
-            let reason_val = payload.iter().find(|(k, _)| k == "reason").map(|(_, v)| v)?;
+            let reason_val = payload
+                .iter()
+                .find(|(k, _)| k == "reason")
+                .map(|(_, v)| v)?;
             Some(ConvergenceStatus::NotConverged {
                 reason: value_to_budget_reason(reason_val)?,
             })
@@ -4693,7 +4764,8 @@ mod tests {
         let [dx, dy, dz] = dims;
         let [rx, ry, rz] = reps;
         let (nx1, ny1, nz1) = (rx + 1, ry + 1, rz + 1);
-        let node_idx = |ix: usize, iy: usize, iz: usize| -> usize { iz * ny1 * nx1 + iy * nx1 + ix };
+        let node_idx =
+            |ix: usize, iy: usize, iz: usize| -> usize { iz * ny1 * nx1 + iy * nx1 + ix };
 
         let mut vertices: Vec<f32> = Vec::with_capacity(nx1 * ny1 * nz1 * 3);
         for iz in 0..nz1 {
@@ -4811,7 +4883,11 @@ mod tests {
         // (a) P1 round-trips: coords count == vertices/3, conn count == tets/4.
         let (coords, conn) =
             volume_mesh_to_solver_mesh(&vm).expect("a P1 tet VolumeMesh must convert");
-        assert_eq!(coords.len(), exp_nodes, "coords count must equal vertices.len()/3");
+        assert_eq!(
+            coords.len(),
+            exp_nodes,
+            "coords count must equal vertices.len()/3"
+        );
         assert_eq!(
             conn.len(),
             exp_tets,
@@ -4904,7 +4980,11 @@ mod tests {
         let dims = [2.0, 0.5, 0.5];
         let reps = [2usize, 1, 1];
         let exp_nodes = make_box_tet_volume_mesh(dims, reps).vertices.len() / 3;
-        let exp_tets = make_box_tet_volume_mesh(dims, reps).tet_indices().unwrap().len() / 4;
+        let exp_tets = make_box_tet_volume_mesh(dims, reps)
+            .tet_indices()
+            .unwrap()
+            .len()
+            / 4;
 
         // (a) a single VolumeMesh handle → Some(converted mesh).
         let inputs = [vm_read_handle(make_box_tet_volume_mesh(dims, reps))];
@@ -5188,8 +5268,9 @@ mod tests {
         let (coords, conn) =
             volume_mesh_to_solver_mesh(&vm).expect("a P1 tet VolumeMesh must convert");
 
-        let expected_coords: Vec<[f64; 3]> =
-            (0..n_nodes).map(|i| vm.vertex_f64(i as u32).unwrap()).collect();
+        let expected_coords: Vec<[f64; 3]> = (0..n_nodes)
+            .map(|i| vm.vertex_f64(i as u32).unwrap())
+            .collect();
         let expected_conn: Vec<[usize; 4]> = vm
             .tet_indices()
             .unwrap()
@@ -5233,8 +5314,9 @@ mod tests {
         let reps = [2usize, 1, 1];
         let mut vm = make_box_tet_volume_mesh(dims, reps);
         let original_nodes = vm.vertices.len() / 3;
-        let expected_coords: Vec<[f64; 3]> =
-            (0..original_nodes).map(|i| vm.vertex_f64(i as u32).unwrap()).collect();
+        let expected_coords: Vec<[f64; 3]> = (0..original_nodes)
+            .map(|i| vm.vertex_f64(i as u32).unwrap())
+            .collect();
         let (expected_lo, expected_hi) = aabb(&expected_coords);
 
         // Orphan A: x_min face, mirrors the single-orphan test above.
@@ -5557,8 +5639,10 @@ mod tests {
 
         // Realized mesh spans [0,2]×[0,0.5]×[0,0.5] — a DIFFERENT AABB than the
         // scalar dims, so the resample bounds prove the realized mesh drove the solve.
-        let realization_inputs =
-            [vm_read_handle(make_box_tet_volume_mesh([2.0, 0.5, 0.5], [2, 1, 1]))];
+        let realization_inputs = [vm_read_handle(make_box_tet_volume_mesh(
+            [2.0, 0.5, 0.5],
+            [2, 1, 1],
+        ))];
 
         let cancellation = CancellationHandle::new();
         let outcome = solve_elastic_static_trampoline(
@@ -5607,7 +5691,10 @@ mod tests {
 
         // max_von_mises must be a finite, positive Scalar with PRESSURE dimension.
         match fields.get("max_von_mises") {
-            Some(Value::Scalar { si_value, dimension }) => {
+            Some(Value::Scalar {
+                si_value,
+                dimension,
+            }) => {
                 assert_eq!(
                     *dimension,
                     DimensionVector::PRESSURE,
@@ -5665,8 +5752,10 @@ mod tests {
         // Realized mesh spans [0,2]×[0,0.5]×[0,0.5] — a DIFFERENT AABB than any
         // plausible scalar-dims misread, so the resample bounds prove the realized
         // mesh drove the solve.
-        let realization_inputs =
-            [vm_read_handle(make_box_tet_volume_mesh([2.0, 0.5, 0.5], [2, 1, 1]))];
+        let realization_inputs = [vm_read_handle(make_box_tet_volume_mesh(
+            [2.0, 0.5, 0.5],
+            [2, 1, 1],
+        ))];
 
         let cancellation = CancellationHandle::new();
         let outcome = solve_elastic_static_trampoline(
@@ -5714,7 +5803,10 @@ mod tests {
 
         // max_von_mises must be a finite, positive Scalar with PRESSURE dimension.
         match fields.get("max_von_mises") {
-            Some(Value::Scalar { si_value, dimension }) => {
+            Some(Value::Scalar {
+                si_value,
+                dimension,
+            }) => {
                 assert_eq!(
                     *dimension,
                     DimensionVector::PRESSURE,
@@ -5791,13 +5883,19 @@ mod tests {
                         match lambda.as_ref() {
                             Value::SampledField(sf) => sf.bounds_max.clone(),
                             other => {
-                                panic!("[{label}] {name} lambda must be SampledField, got {other:?}")
+                                panic!(
+                                    "[{label}] {name} lambda must be SampledField, got {other:?}"
+                                )
                             }
                         }
                     }
                     other => panic!("[{label}] {name} must be Value::Field, got {other:?}"),
                 };
-                assert_eq!(bounds_max.len(), 3, "[{label}] {name} bounds_max must be 3D");
+                assert_eq!(
+                    bounds_max.len(),
+                    3,
+                    "[{label}] {name} bounds_max must be 3D"
+                );
                 for axis in 0..3 {
                     assert!(
                         (bounds_max[axis] - scalar_dims[axis]).abs() < 1e-9,
@@ -5874,12 +5972,14 @@ mod tests {
                 [("target".to_string(), Value::List(vec![geom_handle(face)]))]
                     .into_iter()
                     .collect();
-            Value::List(vec![Value::StructureInstance(Box::new(StructureInstanceData {
-                type_id: StructureTypeId(u32::MAX),
-                type_name: "FixedSupport".to_string(),
-                version: 1,
-                fields,
-            }))])
+            Value::List(vec![Value::StructureInstance(Box::new(
+                StructureInstanceData {
+                    type_id: StructureTypeId(u32::MAX),
+                    type_name: "FixedSupport".to_string(),
+                    version: 1,
+                    fields,
+                },
+            ))])
         };
         let load_with_target = |face: GeometryHandleId| -> Value {
             let fields: PersistentMap<String, Value> = [
@@ -5888,12 +5988,14 @@ mod tests {
             ]
             .into_iter()
             .collect();
-            Value::List(vec![Value::StructureInstance(Box::new(StructureInstanceData {
-                type_id: StructureTypeId(u32::MAX),
-                type_name: "PointLoad".to_string(),
-                version: 1,
-                fields,
-            }))])
+            Value::List(vec![Value::StructureInstance(Box::new(
+                StructureInstanceData {
+                    type_id: StructureTypeId(u32::MAX),
+                    type_name: "PointLoad".to_string(),
+                    version: 1,
+                    fields,
+                },
+            ))])
         };
 
         let supports = support_with_target(h_clamp);
@@ -5913,16 +6015,28 @@ mod tests {
             Some(x_min_face.clone()),
             "load target (h_load) must map to the x_min-face node set"
         );
-        assert!(diags.is_empty(), "a fully-matched target set emits no diagnostics, got {diags:?}");
+        assert!(
+            diags.is_empty(),
+            "a fully-matched target set emits no diagnostics, got {diags:?}"
+        );
 
         // ── (2) No `target` → (None, None): trampoline keeps the coordinate BC ─
         let supports_no_target = shell9_make_supports();
         let loads_no_target = shell9_make_point_loads(1000.0);
         let (c0, l0, d0) =
             loads_supports_to_bc_node_sets(&handle, &loads_no_target, &supports_no_target);
-        assert_eq!(c0, None, "a support with no target must yield None (coordinate fallback)");
-        assert_eq!(l0, None, "a load with no target must yield None (coordinate fallback)");
-        assert!(d0.is_empty(), "no-target loads/supports emit no diagnostics, got {d0:?}");
+        assert_eq!(
+            c0, None,
+            "a support with no target must yield None (coordinate fallback)"
+        );
+        assert_eq!(
+            l0, None,
+            "a load with no target must yield None (coordinate fallback)"
+        );
+        assert!(
+            d0.is_empty(),
+            "no-target loads/supports emit no diagnostics, got {d0:?}"
+        );
 
         // ── (3) solve_cantilever_fea honours the override (supersedes coordinate) ─
         let model = MaterialModel::Isotropic(IsotropicElastic {
@@ -5948,13 +6062,19 @@ mod tests {
             Some((Some(clamp_usize), Some(load_usize))),
             None,
         );
-        assert!(fea.converged, "the selector-driven cantilever solve must converge");
+        assert!(
+            fea.converged,
+            "the selector-driven cantilever solve must converge"
+        );
         // The OVERRIDE moved the load to the x_min face → fea.tip_nodes == x_min face.
         let mut tip = fea.tip_nodes.clone();
         tip.sort_unstable();
         assert_eq!(
             tip,
-            x_min_face.iter().map(|&n| n as usize).collect::<Vec<usize>>(),
+            x_min_face
+                .iter()
+                .map(|&n| n as usize)
+                .collect::<Vec<usize>>(),
             "the load override must move the tip node set to the x_min face"
         );
         // The clamp override clamps the x_max face → those DOFs are ~0 (under the
@@ -5969,8 +6089,14 @@ mod tests {
             }
         }
         // The loaded x_min face deflects (nonzero displacement) under the -Z load.
-        let load_defl: f64 = x_min_face.iter().map(|&n| fea.u[3 * n as usize + 2].abs()).sum();
-        assert!(load_defl > 0.0, "the loaded x_min face must deflect, got {load_defl}");
+        let load_defl: f64 = x_min_face
+            .iter()
+            .map(|&n| fea.u[3 * n as usize + 2].abs())
+            .sum();
+        assert!(
+            load_defl > 0.0,
+            "the loaded x_min face must deflect, got {load_defl}"
+        );
 
         // ── (4) bc_override == None → coordinate cantilever (byte-identical) ──
         let (coords2, conn2) = volume_mesh_to_solver_mesh(&vm).expect("a P1 mesh converts");
@@ -5994,7 +6120,10 @@ mod tests {
         tip_coord.sort_unstable();
         assert_eq!(
             tip_coord,
-            x_max_face.iter().map(|&n| n as usize).collect::<Vec<usize>>(),
+            x_max_face
+                .iter()
+                .map(|&n| n as usize)
+                .collect::<Vec<usize>>(),
             "with no override the coordinate cantilever must load the x_max face"
         );
 
@@ -6072,19 +6201,24 @@ mod tests {
             ]
             .into_iter()
             .collect();
-            Value::List(vec![Value::StructureInstance(Box::new(StructureInstanceData {
-                type_id: StructureTypeId(u32::MAX),
-                type_name: "PointLoad".to_string(),
-                version: 1,
-                fields,
-            }))])
+            Value::List(vec![Value::StructureInstance(Box::new(
+                StructureInstanceData {
+                    type_id: StructureTypeId(u32::MAX),
+                    type_name: "PointLoad".to_string(),
+                    version: 1,
+                    fields,
+                },
+            ))])
         };
 
         // (a) an empty handle list; (b) a non-existent face handle. Both resolve
         // to ZERO boundary nodes → SelectorNoMatch.
         let cases: [(&str, Value); 2] = [
             ("empty handle list", load_with_target(vec![])),
-            ("non-existent face handle", load_with_target(vec![geom_handle(999)])),
+            (
+                "non-existent face handle",
+                load_with_target(vec![geom_handle(999)]),
+            ),
         ];
 
         for (label, loads) in cases {
@@ -6285,8 +6419,12 @@ mod tests {
                 kernel_handle: None,
             };
             Value::Selector(
-                SelectorValue::leaf(SelectorKind::Face, target, LeafQuery::Named(name.to_string()))
-                    .expect("LeafQuery::Named accepts any SelectorKind"),
+                SelectorValue::leaf(
+                    SelectorKind::Face,
+                    target,
+                    LeafQuery::Named(name.to_string()),
+                )
+                .expect("LeafQuery::Named accepts any SelectorKind"),
             )
         };
         let make_pressure_list = |face_val: Value| {
@@ -6504,7 +6642,10 @@ mod tests {
                 .into_iter()
                 .collect(),
         );
-        assert_eq!(extract_adaptive_params(&opts_e).max_refinement_iterations, 5);
+        assert_eq!(
+            extract_adaptive_params(&opts_e).max_refinement_iterations,
+            5
+        );
     }
 
     /// step-3 RED (task 4902): `budget_reason_to_value` maps each
@@ -6551,7 +6692,9 @@ mod tests {
 
         // Converged { final_indicator } → Enum { variant: "Converged",
         // payload: [("final_indicator", Real)] }.
-        let converged = ConvergenceStatus::Converged { final_indicator: 0.042 };
+        let converged = ConvergenceStatus::Converged {
+            final_indicator: 0.042,
+        };
         assert_eq!(
             convergence_status_to_value(&converged),
             Value::Enum {
@@ -6564,7 +6707,9 @@ mod tests {
 
         // NotConverged { reason } → Enum { variant: "NotConverged", payload:
         // [("reason", <nested BudgetReason Value::Enum>)] }.
-        let not_converged = ConvergenceStatus::NotConverged { reason: BudgetReason::MaxDofs };
+        let not_converged = ConvergenceStatus::NotConverged {
+            reason: BudgetReason::MaxDofs,
+        };
         assert_eq!(
             convergence_status_to_value(&not_converged),
             Value::Enum {
@@ -6629,7 +6774,9 @@ mod tests {
         // (not the trivial 0.0 non-adaptive constant), global_relative_energy_error
         // must carry the same numeric value, and error_indicator must thread
         // the passed placeholder Value verbatim.
-        let converged = ConvergenceStatus::Converged { final_indicator: 0.083 };
+        let converged = ConvergenceStatus::Converged {
+            final_indicator: 0.083,
+        };
         let converged_error_indicator = placeholder_error_indicator(100.0);
         let converged_fields: std::collections::HashMap<String, Value> =
             aposteriori_adaptive_fields(&converged, 0.083, converged_error_indicator.clone())
@@ -6655,12 +6802,18 @@ mod tests {
         // threaded through convergence_status, and DISTINCT global_error /
         // error_indicator values (proves the fn threads all three arguments
         // rather than hardcoding any of them).
-        let not_converged = ConvergenceStatus::NotConverged { reason: BudgetReason::MaxIterations };
+        let not_converged = ConvergenceStatus::NotConverged {
+            reason: BudgetReason::MaxIterations,
+        };
         let not_converged_error_indicator = placeholder_error_indicator(271.0);
         let not_converged_fields: std::collections::HashMap<String, Value> =
-            aposteriori_adaptive_fields(&not_converged, 0.271, not_converged_error_indicator.clone())
-                .into_iter()
-                .collect();
+            aposteriori_adaptive_fields(
+                &not_converged,
+                0.271,
+                not_converged_error_indicator.clone(),
+            )
+            .into_iter()
+            .collect();
         assert_eq!(
             not_converged_fields.get("convergence_status"),
             Some(&convergence_status_to_value(&not_converged)),
@@ -7519,7 +7672,11 @@ mod tests {
         let outcome =
             solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
         let (fields, diagnostics) = match outcome {
-            ComputeOutcome::Completed { result, diagnostics, .. } => match result {
+            ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } => match result {
                 Value::StructureInstance(d) => (d.fields, diagnostics),
                 other => panic!("expected ElasticResult StructureInstance, got {other:?}"),
             },
@@ -7539,9 +7696,11 @@ mod tests {
         );
 
         assert!(
-            diagnostics.iter().any(|d| d.severity == reify_core::Severity::Warning
-                && d.message.contains("adaptive")
-                && d.message.contains("false")),
+            diagnostics
+                .iter()
+                .any(|d| d.severity == reify_core::Severity::Warning
+                    && d.message.contains("adaptive")
+                    && d.message.contains("false")),
             "expected a Warning diagnostic stating the adaptive knobs have no effect because \
              adaptive is false, got: {diagnostics:?}"
         );
@@ -7616,17 +7775,26 @@ mod tests {
         let aniso_material_fields: PersistentMap<String, Value> = [
             (
                 "e_in_plane".to_string(),
-                Value::Scalar { si_value: 10e9, dimension: DimensionVector::PRESSURE },
+                Value::Scalar {
+                    si_value: 10e9,
+                    dimension: DimensionVector::PRESSURE,
+                },
             ),
             (
                 "e_axial".to_string(),
-                Value::Scalar { si_value: 140e9, dimension: DimensionVector::PRESSURE },
+                Value::Scalar {
+                    si_value: 140e9,
+                    dimension: DimensionVector::PRESSURE,
+                },
             ),
             ("nu_in_plane".to_string(), Value::Real(0.3)),
             ("nu_axial".to_string(), Value::Real(0.02)),
             (
                 "g_axial".to_string(),
-                Value::Scalar { si_value: 5e9, dimension: DimensionVector::PRESSURE },
+                Value::Scalar {
+                    si_value: 5e9,
+                    dimension: DimensionVector::PRESSURE,
+                },
             ),
         ]
         .into_iter()
@@ -7671,7 +7839,11 @@ mod tests {
         let outcome =
             solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
         let (fields, diagnostics) = match outcome {
-            ComputeOutcome::Completed { result, diagnostics, .. } => match result {
+            ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } => match result {
                 Value::StructureInstance(d) => (d.fields, diagnostics),
                 other => panic!("expected ElasticResult StructureInstance, got {other:?}"),
             },
@@ -7696,8 +7868,10 @@ mod tests {
         );
 
         assert!(
-            diagnostics.iter().any(|d| d.severity == reify_core::Severity::Warning
-                && d.message.contains("isotropic")),
+            diagnostics
+                .iter()
+                .any(|d| d.severity == reify_core::Severity::Warning
+                    && d.message.contains("isotropic")),
             "expected a Warning diagnostic stating a-posteriori adaptive refinement supports \
              isotropic materials only, got: {diagnostics:?}"
         );
@@ -8106,7 +8280,8 @@ mod tests {
 
         // (a) Standard gravity, direction [0,0,-1] → body_force≈[0,0,-76982.2]
         let loads_a = Value::List(vec![make_gravity(GRAV, [0.0, 0.0, -1.0])]);
-        let ([tfx, tfy, tfz], pressures_a, [bfx, bfy, bfz]) = extract_loads(&loads_a, DENSITY).unwrap();
+        let ([tfx, tfy, tfz], pressures_a, [bfx, bfy, bfz]) =
+            extract_loads(&loads_a, DENSITY).unwrap();
         assert!(pressures_a.is_empty(), "(a) no pressures expected");
         assert!((tfx).abs() < 1e-9, "(a) tip_force x must be 0, got {tfx}");
         assert!((tfy).abs() < 1e-9, "(a) tip_force y must be 0, got {tfy}");
@@ -8514,7 +8689,9 @@ mod tests {
     #[test]
     fn aposteriori_nonadaptive_default_fields_are_trivial_converged_and_none() {
         let fields: std::collections::HashMap<String, Value> =
-            aposteriori_nonadaptive_default_fields().into_iter().collect();
+            aposteriori_nonadaptive_default_fields()
+                .into_iter()
+                .collect();
 
         assert_eq!(
             fields.get("convergence_status"),
@@ -8691,7 +8868,9 @@ mod tests {
                 spacing: spacing.to_vec(),
                 axis_grids: axis_grids.clone(),
                 interpolation: InterpolationKind::Linear,
-                data: (0..n_nodes * stride).map(|i| seed + i as f64 * 0.25).collect(),
+                data: (0..n_nodes * stride)
+                    .map(|i| seed + i as f64 * 0.25)
+                    .collect(),
                 oob_emitted: AtomicBool::new(false),
             }
         };
@@ -8848,11 +9027,15 @@ mod tests {
         // Perimeter = x=0/1, y=0/1 faces; point [0.05, 0.5, 0.5] → min dist to x=0 = 0.05 < 0.1 → wall.
         // Point [0.5, 0.5, 0.5] → all distances = 0.5 > 0.1 → infill.
         let field = het_as_printed_field(
-            [0.0, 0.0, 0.0], [1.0, 1.0, 1.0],
-            [0.0, 0.0, 1.0],  // build_z
-            1.0, 0.1,         // walls, line_width (wall_thickness=0.1m)
-            1.0, 0.1,         // top_bottom_layers, layer_height (skin_thickness=0.1m)
-            200e9, 40e9,      // e_stiff, e_soft
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+            [0.0, 0.0, 1.0], // build_z
+            1.0,
+            0.1, // walls, line_width (wall_thickness=0.1m)
+            1.0,
+            0.1, // top_bottom_layers, layer_height (skin_thickness=0.1m)
+            200e9,
+            40e9, // e_stiff, e_soft
         );
 
         let model = classify_material(&field)
@@ -8874,7 +9057,8 @@ mod tests {
                 assert!(
                     d_wall[0][0] > d_infill[0][0],
                     "wall material D[0][0]={} should exceed infill D[0][0]={}",
-                    d_wall[0][0], d_infill[0][0],
+                    d_wall[0][0],
+                    d_infill[0][0],
                 );
             }
             _ => panic!("expected MaterialModel::Heterogeneous"),
@@ -8987,11 +9171,15 @@ mod tests {
         // Build the two-zone AsPrintedZones field for the beam AABB.
         // build_z=[1,0,0]: x is build direction → skin at x-ends, wall at y/z perimeter.
         let two_zone_field = het_as_printed_field(
-            [0.0, 0.0, 0.0], [L, W, H],
-            [1.0, 0.0, 0.0],  // build_z = +x (beam axis)
-            1.0, 0.04,        // walls=1, line_width=0.04 (wall_thickness=0.04 < 0.05 → no wall elements)
-            1.0, 0.08,        // layers=1, layer_height=0.08 (skin_thickness=0.08 > centroid-to-end≈0.067)
-            E_STIFF, E_SOFT,  // mat_skin=stiff, mat_infill=soft
+            [0.0, 0.0, 0.0],
+            [L, W, H],
+            [1.0, 0.0, 0.0], // build_z = +x (beam axis)
+            1.0,
+            0.04, // walls=1, line_width=0.04 (wall_thickness=0.04 < 0.05 → no wall elements)
+            1.0,
+            0.08, // layers=1, layer_height=0.08 (skin_thickness=0.08 > centroid-to-end≈0.067)
+            E_STIFF,
+            E_SOFT, // mat_skin=stiff, mat_infill=soft
         );
 
         // RED: MaterialModel::Heterogeneous does not exist yet.
@@ -9004,31 +9192,63 @@ mod tests {
 
         // All-stiff and all-soft homogeneous baselines.
         let g_stiff = E_STIFF / (2.0 * (1.0 + NU));
-        let g_soft  = E_SOFT  / (2.0 * (1.0 + NU));
-        let law_stiff = OrthotropicMaterial { e1: E_STIFF, e2: E_STIFF, e3: E_STIFF,
-            g12: g_stiff, g13: g_stiff, g23: g_stiff, nu12: NU, nu13: NU, nu23: NU };
-        let law_soft = OrthotropicMaterial { e1: E_SOFT, e2: E_SOFT, e3: E_SOFT,
-            g12: g_soft, g13: g_soft, g23: g_soft, nu12: NU, nu13: NU, nu23: NU };
-        const ID3: [[f64; 3]; 3] = [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]];
-        let model_stiff = MaterialModel::Anisotropic(AnisotropicMaterial::from_law(&law_stiff, ID3));
-        let model_soft  = MaterialModel::Anisotropic(AnisotropicMaterial::from_law(&law_soft,  ID3));
+        let g_soft = E_SOFT / (2.0 * (1.0 + NU));
+        let law_stiff = OrthotropicMaterial {
+            e1: E_STIFF,
+            e2: E_STIFF,
+            e3: E_STIFF,
+            g12: g_stiff,
+            g13: g_stiff,
+            g23: g_stiff,
+            nu12: NU,
+            nu13: NU,
+            nu23: NU,
+        };
+        let law_soft = OrthotropicMaterial {
+            e1: E_SOFT,
+            e2: E_SOFT,
+            e3: E_SOFT,
+            g12: g_soft,
+            g13: g_soft,
+            g23: g_soft,
+            nu12: NU,
+            nu13: NU,
+            nu23: NU,
+        };
+        const ID3: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let model_stiff =
+            MaterialModel::Anisotropic(AnisotropicMaterial::from_law(&law_stiff, ID3));
+        let model_soft = MaterialModel::Anisotropic(AnisotropicMaterial::from_law(&law_soft, ID3));
         let model_hetero = MaterialModel::Heterogeneous(field);
 
         let solve = |model: &MaterialModel| {
             let (sol, _) = solve_cantilever_fea(
-                model, L, W, H, None, tip_force, None, &[], [0.0; 3], true, None, None, None,
+                model,
+                L,
+                W,
+                H,
+                None,
+                tip_force,
+                None,
+                &[],
+                [0.0; 3],
+                true,
+                None,
+                None,
+                None,
                 None,
             );
             assert!(sol.converged, "solve_cantilever_fea did not converge");
             // Max |u_z| over tip nodes (same metric as the orthotropic band test).
-            sol.tip_nodes.iter()
-                .map(|&n| sol.u[3*n+2].abs())
+            sol.tip_nodes
+                .iter()
+                .map(|&n| sol.u[3 * n + 2].abs())
                 .fold(0.0_f64, f64::max)
         };
 
-        let tip_stiff  = solve(&model_stiff);
+        let tip_stiff = solve(&model_stiff);
         let tip_hetero = solve(&model_hetero);
-        let tip_soft   = solve(&model_soft);
+        let tip_soft = solve(&model_soft);
 
         assert!(
             tip_stiff < tip_hetero && tip_hetero < tip_soft,
@@ -9111,7 +9331,10 @@ mod tests {
     /// comes from this check and not an earlier one.
     #[test]
     fn classify_material_as_printed_zones_rejects_non_real_cos_threshold() {
-        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
+        let scalar = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         let point = Value::Point(vec![scalar(1.0), scalar(2.0), scalar(3.0)]);
         let params = Value::List(vec![
             Value::Real(2.0),
@@ -9148,11 +9371,15 @@ mod tests {
     #[test]
     fn classify_material_as_printed_zones_accepts_wellformed_lambda() {
         let field = het_as_printed_field(
-            [0.0, 0.0, 0.0], [1.0, 1.0, 1.0],
-            [0.0, 0.0, 1.0],  // build_z
-            1.0, 0.1,         // walls, line_width (wall_thickness=0.1m)
-            1.0, 0.1,         // top_bottom_layers, layer_height (skin_thickness=0.1m)
-            200e9, 40e9,      // e_stiff, e_soft
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+            [0.0, 0.0, 1.0], // build_z
+            1.0,
+            0.1, // walls, line_width (wall_thickness=0.1m)
+            1.0,
+            0.1, // top_bottom_layers, layer_height (skin_thickness=0.1m)
+            200e9,
+            40e9, // e_stiff, e_soft
         );
         let lambda = match &field {
             Value::Field { lambda, .. } => lambda,
@@ -9527,9 +9754,8 @@ mod tests {
     fn scalar_si_field_rejects_non_scalar_field() {
         use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
 
-        let fields: PersistentMap<String, Value> = [("e1".to_string(), Value::Real(1.0))]
-            .into_iter()
-            .collect();
+        let fields: PersistentMap<String, Value> =
+            [("e1".to_string(), Value::Real(1.0))].into_iter().collect();
         let data = StructureInstanceData {
             type_id: StructureTypeId(u32::MAX),
             type_name: "OrthotropicMaterial".to_string(),
@@ -9608,7 +9834,10 @@ mod tests {
 
         let fields: PersistentMap<String, Value> = [(
             "nu12".to_string(),
-            Value::Scalar { si_value: 0.3, dimension: DimensionVector::DIMENSIONLESS },
+            Value::Scalar {
+                si_value: 0.3,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
         )]
         .into_iter()
         .collect();
@@ -9710,7 +9939,10 @@ mod tests {
     /// per-component check, not `ExpectedList`.
     #[test]
     fn extract_point3_si_rejects_non_scalar_component() {
-        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
+        let scalar = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         let mixed = Value::Point(vec![scalar(1.0), Value::Real(2.0), scalar(3.0)]);
         let res = extract_point3_si(&mixed);
         assert!(
@@ -9726,7 +9958,10 @@ mod tests {
     /// error paths above.
     #[test]
     fn extract_point3_si_accepts_point() {
-        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
+        let scalar = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         let point = Value::Point(vec![scalar(1.0), scalar(2.0), scalar(3.0)]);
         assert_eq!(extract_point3_si(&point), Ok([1.0, 2.0, 3.0]));
     }
@@ -9873,7 +10108,10 @@ mod tests {
     /// must update this test deliberately.
     #[test]
     fn extract_point3_si_ignores_trailing_components_past_three() {
-        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
+        let scalar = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         let point = Value::Point(vec![scalar(1.0), scalar(2.0), scalar(3.0), scalar(4.0)]);
         assert_eq!(extract_point3_si(&point), Ok([1.0, 2.0, 3.0]));
     }
@@ -9918,7 +10156,10 @@ mod tests {
     /// per-component check, not `ExpectedList`.
     #[test]
     fn extract_vec3_si_rejects_non_scalar_component() {
-        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
+        let scalar = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         let mixed = Value::Vector(vec![scalar(1.0), scalar(2.0), Value::Real(3.0)]);
         let res = extract_vec3_si(&mixed);
         assert!(
@@ -9934,7 +10175,10 @@ mod tests {
     /// error paths above.
     #[test]
     fn extract_vec3_si_accepts_vector() {
-        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
+        let scalar = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         let vector = Value::Vector(vec![scalar(1.0), scalar(2.0), scalar(3.0)]);
         assert_eq!(extract_vec3_si(&vector), Ok([1.0, 2.0, 3.0]));
     }
@@ -10139,8 +10383,10 @@ mod tests {
     fn anisotropic_material_from_value_rejects_malformed_orthotropic_law() {
         use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
 
-        let pressure_scalar =
-            |si_value: f64| Value::Scalar { si_value, dimension: DimensionVector::PRESSURE };
+        let pressure_scalar = |si_value: f64| Value::Scalar {
+            si_value,
+            dimension: DimensionVector::PRESSURE,
+        };
         let law_fields: PersistentMap<String, Value> = [
             ("e1".to_string(), Value::Real(1.0)), // wrong-typed: the field under test
             ("e2".to_string(), pressure_scalar(1.0e9)),
@@ -10489,8 +10735,7 @@ mod tests {
             solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
         match outcome {
             ComputeOutcome::Failed { diagnostics, .. } => {
-                let expected_prefix =
-                    format!("solve_elastic_static_trampoline: {expected_label}:");
+                let expected_prefix = format!("solve_elastic_static_trampoline: {expected_label}:");
                 assert!(
                     diagnostics.iter().any(|d| {
                         d.severity == reify_core::Severity::Error
@@ -10535,7 +10780,9 @@ mod tests {
             for label in GATE_LABELS {
                 let gate_prefix = format!("solve_elastic_static_trampoline: {label}:");
                 assert!(
-                    !diagnostics.iter().any(|d| d.message.starts_with(&gate_prefix)),
+                    !diagnostics
+                        .iter()
+                        .any(|d| d.message.starts_with(&gate_prefix)),
                     "a malformed-but-structurally-valid field outside the gate's scope \
                      must not be rejected BY THE GATE, got a diagnostic with prefix \
                      {gate_prefix:?}: {diagnostics:?}"

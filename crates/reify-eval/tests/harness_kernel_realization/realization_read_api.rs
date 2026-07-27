@@ -100,15 +100,13 @@ fn probe_engine() -> Engine {
 }
 
 /// Clear [`PROBE_CAPTURED`], dispatch `handles` to the probe, return captured.
-fn dispatch_probe(engine: &Engine, handles: &[RealizationReadHandle]) -> Vec<RealizationReadHandle> {
+fn dispatch_probe(
+    engine: &Engine,
+    handles: &[RealizationReadHandle],
+) -> Vec<RealizationReadHandle> {
     PROBE_CAPTURED.with(|slot| slot.borrow_mut().clear());
-    let _ = engine.dispatch_compute_node(
-        "test::realization-probe",
-        &[],
-        handles,
-        &Value::Undef,
-        None,
-    );
+    let _ =
+        engine.dispatch_compute_node("test::realization-probe", &[], handles, &Value::Undef, None);
     PROBE_CAPTURED.with(|slot| slot.borrow().clone())
 }
 
@@ -184,15 +182,19 @@ fn probe_observes_volume_mesh_content_structurally() {
 #[cfg(has_openvdb)]
 fn box_mesh() -> reify_ir::Mesh {
     let v: Vec<f32> = vec![
-        -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0,
-        1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0,
+        -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0,
+        -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0,
     ];
     #[rustfmt::skip]
     let i: Vec<u32> = vec![
         0,2,1, 0,3,2,  4,5,6, 4,6,7,  0,1,5, 0,5,4,
         2,3,7, 2,7,6,  0,4,7, 0,7,3,  1,2,6, 1,6,5,
     ];
-    reify_ir::Mesh { vertices: v, indices: i, normals: None }
+    reify_ir::Mesh {
+        vertices: v,
+        indices: i,
+        normals: None,
+    }
 }
 
 /// Build a REAL openvdb-derived [`SampledField`] for the `box_mesh()` body.
@@ -274,9 +276,7 @@ fn probe_observes_real_body_sdf_finite_covers_bounds_interior_negative() {
     let nearest = |axis: &[f64]| {
         axis.iter()
             .enumerate()
-            .min_by(|(_, a), (_, b)| {
-                a.abs().partial_cmp(&b.abs()).expect("finite axis coord")
-            })
+            .min_by(|(_, a), (_, b)| a.abs().partial_cmp(&b.abs()).expect("finite axis coord"))
             .map(|(i, _)| i)
             .expect("axis must be non-empty")
     };
@@ -384,14 +384,20 @@ fn degraded_none_handle_yields_none_no_panic_no_fabrication() {
     let engine = probe_engine();
     let captured = dispatch_probe(&engine, &[handle]);
 
-    assert_eq!(captured.len(), 1, "probe must capture the None-content handle");
+    assert_eq!(
+        captured.len(),
+        1,
+        "probe must capture the None-content handle"
+    );
     let h = &captured[0];
     assert!(h.content().is_none(), "content() must be None");
-    assert!(h.sdf().is_none(), "sdf() must be None — no fabricated field");
+    assert!(
+        h.sdf().is_none(),
+        "sdf() must be None — no fabricated field"
+    );
     assert!(h.surface_mesh().is_none(), "surface_mesh() must be None");
     assert!(h.volume_mesh().is_none(), "volume_mesh() must be None");
 }
-
 
 // ── step-10 impl: slab_field + extent/diagnostic helpers ─────────────────────
 
@@ -555,7 +561,7 @@ fn assert_dual_source_diagnostic(diagnostics: &[reify_core::Diagnostic]) {
 fn thin_panel_mesh() -> reify_ir::Mesh {
     let v: Vec<f32> = vec![
         // z = 0.0 face (bottom)
-        0.0, 0.0, 0.0,    4.0, 0.0, 0.0,    4.0, 4.0, 0.0,    0.0, 4.0, 0.0,
+        0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 4.0, 4.0, 0.0, 0.0, 4.0, 0.0,
         // z = 0.3125 face (top)
         0.0, 0.0, 0.3125, 4.0, 0.0, 0.3125, 4.0, 4.0, 0.3125, 0.0, 4.0, 0.3125,
     ];
@@ -571,7 +577,11 @@ fn thin_panel_mesh() -> reify_ir::Mesh {
         0,4,7, 0,7,3,  // x=0
         1,2,6, 1,6,5,  // x=4
     ];
-    reify_ir::Mesh { vertices: v, indices: i, normals: None }
+    reify_ir::Mesh {
+        vertices: v,
+        indices: i,
+        normals: None,
+    }
 }
 
 /// Build a REAL openvdb-derived [`SampledField`] for the `thin_panel_mesh()`.
@@ -846,20 +856,12 @@ fn cancelled_trampoline_maps_to_err_completed_trampoline_then_succeeds() {
     COHERENCE_CALL_COUNT.with(|c| *c.borrow_mut() = 0);
 
     let mut engine = make_simple_engine();
-    engine.register_compute_fn(
-        "test::coherence-toggle",
-        coherence_toggle_fn as ComputeFn,
-    );
+    engine.register_compute_fn("test::coherence-toggle", coherence_toggle_fn as ComputeFn);
 
     // First dispatch: coherence_toggle_fn call 0 → Cancelled.
     // Must return Err (not panic, not broken state).
-    let first = engine.dispatch_compute_node(
-        "test::coherence-toggle",
-        &[],
-        &[],
-        &Value::Undef,
-        None,
-    );
+    let first =
+        engine.dispatch_compute_node("test::coherence-toggle", &[], &[], &Value::Undef, None);
     assert!(
         first.is_err(),
         "first dispatch (Cancelled trampoline) must return Err; got Ok({first:?})"
@@ -867,13 +869,8 @@ fn cancelled_trampoline_maps_to_err_completed_trampoline_then_succeeds() {
 
     // Second dispatch on the SAME target: coherence_toggle_fn call 1 → Completed.
     // Proves re-dispatching on the same target after an Err return succeeds normally.
-    let second = engine.dispatch_compute_node(
-        "test::coherence-toggle",
-        &[],
-        &[],
-        &Value::Undef,
-        None,
-    );
+    let second =
+        engine.dispatch_compute_node("test::coherence-toggle", &[], &[], &Value::Undef, None);
     assert!(
         second.is_ok(),
         "second dispatch (Completed trampoline) must return Ok after a prior Err; \
@@ -901,7 +898,9 @@ fn cancelled_trampoline_maps_to_err_completed_trampoline_then_succeeds() {
 /// to import crate-internal graph types or iterate PersistentMap manually
 /// in every test.
 fn first_realization_id_and_hash(engine: &Engine) -> (RealizationNodeId, ContentHash) {
-    let snap = engine.snapshot().expect("snapshot must be Some after eval()");
+    let snap = engine
+        .snapshot()
+        .expect("snapshot must be Some after eval()");
     snap.graph
         .realizations
         .iter()
@@ -949,7 +948,8 @@ fn first_realization_id_and_hash(engine: &Engine) -> (RealizationNodeId, Content
 /// RED until step-16 adds `first_realization_id_and_hash`.
 #[test]
 fn ri_box_realizes_with_nonzero_hash_and_shell_extract_consumes_real_openvdb_sdf() {
-    let compiled = parse_and_compile_with_stdlib(include_str!("../fixtures/realization_read_box.ri"));
+    let compiled =
+        parse_and_compile_with_stdlib(include_str!("../fixtures/realization_read_box.ri"));
 
     let mut engine = make_simple_engine();
     engine.ensure_openvdb_kernel();
@@ -1054,7 +1054,9 @@ fn compiled_box_with_dimension(dim_mm: f64) -> reify_compiler::CompiledModule {
 /// ComputeNode `cache_key` (see `compute_cache_key_population.rs`), forcing
 /// re-projection and a fresh cache key.
 fn dimension_param_cell_hashes(engine: &Engine) -> Vec<(String, ContentHash)> {
-    let snap = engine.snapshot().expect("snapshot must be Some after eval()");
+    let snap = engine
+        .snapshot()
+        .expect("snapshot must be Some after eval()");
     let mut out: Vec<(String, ContentHash)> = snap
         .graph
         .value_cells
@@ -1101,7 +1103,8 @@ fn dimension_param_cell_hashes(engine: &Engine) -> Vec<(String, ContentHash)> {
 #[test]
 fn param_edit_changes_realization_content_hash() {
     // Build 1: default dimensions (10mm × 10mm × 10mm) from the include_str! fixture.
-    let module1 = parse_and_compile_with_stdlib(include_str!("../fixtures/realization_read_box.ri"));
+    let module1 =
+        parse_and_compile_with_stdlib(include_str!("../fixtures/realization_read_box.ri"));
     let mut engine1 = make_simple_engine();
     let _ = engine1.eval(&module1);
     let (id1, hash1) = first_realization_id_and_hash(&engine1);

@@ -645,7 +645,10 @@ pub fn derive_mechanism_mass_props(
 
         let solid = body_map.get(&Value::String("solid".to_string()));
         let handle = match solid {
-            Some(Value::GeometryHandle { kernel_handle: Some(kh), .. }) => *kh,
+            Some(Value::GeometryHandle {
+                kernel_handle: Some(kh),
+                ..
+            }) => *kh,
             _ => {
                 // Not a geometry handle, or symbolic (unrealized) — leave unpatched.
                 patched_bodies.push(body_value.clone());

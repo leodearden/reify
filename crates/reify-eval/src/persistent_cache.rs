@@ -622,8 +622,7 @@ impl PersistentlyCacheable for BucklingResultCache {
 
         // Validate all slab lengths before allocation.
         let n_modes_cap = check_f64_vec_len("buckling.eigenvalues", header.n_modes)?;
-        let stride_cap =
-            check_f64_vec_len("buckling.mode_shape_stride", header.mode_shape_stride)?;
+        let stride_cap = check_f64_vec_len("buckling.mode_shape_stride", header.mode_shape_stride)?;
         // Total mode_shapes slab = n_modes × stride; check for overflow and cap.
         let mode_shapes_total = header
             .n_modes
@@ -635,8 +634,7 @@ impl PersistentlyCacheable for BucklingResultCache {
                      (corrupted or tampered cache entry?)",
                 )
             })?;
-        let mode_shapes_cap =
-            check_f64_vec_len("buckling.mode_shapes_total", mode_shapes_total)?;
+        let mode_shapes_cap = check_f64_vec_len("buckling.mode_shapes_total", mode_shapes_total)?;
         let ps_displacement_cap =
             check_f64_vec_len("buckling.ps_displacement", header.ps_displacement_len)?;
         let ps_stress_cap = check_f64_vec_len("buckling.ps_stress", header.ps_stress_len)?;
@@ -2507,7 +2505,10 @@ version = "9.9.9"
         );
         let parts_fwd = crate::engine_hash_algo::cargo_lock_closure_parts(lock_fwd, closure);
         let parts_rev = crate::engine_hash_algo::cargo_lock_closure_parts(lock_rev, closure);
-        assert_eq!(parts_fwd, parts_rev, "parts must be stanza-order-independent");
+        assert_eq!(
+            parts_fwd, parts_rev,
+            "parts must be stanza-order-independent"
+        );
         assert_eq!(
             compose_parts(&parts_fwd),
             compose_parts(&parts_rev),
@@ -2571,8 +2572,7 @@ version = "9.9.9"
             "[[package]]\nname = \"foo\"\nversion = \"2.0.0\"\n\n",
             "[[package]]\nname = \"foo\"\nversion = \"1.0.0\"\n",
         );
-        let pins =
-            crate::engine_hash_algo::cargo_lock_closure_pins(lock, &["foo", "absent-crate"]);
+        let pins = crate::engine_hash_algo::cargo_lock_closure_pins(lock, &["foo", "absent-crate"]);
         assert_eq!(
             pins,
             vec![
@@ -5038,50 +5038,61 @@ version = "9.9.9"
                 .expect("read_entry must not return Err")
                 .expect("read_entry must return Some for a just-written entry");
 
-        assert_eq!(read_back.eigenvalues, original.eigenvalues, "eigenvalues must round-trip");
-        assert_eq!(read_back.mode_shapes, original.mode_shapes, "mode_shapes must round-trip");
         assert_eq!(
-            read_back.base_node_positions,
-            original.base_node_positions,
+            read_back.eigenvalues, original.eigenvalues,
+            "eigenvalues must round-trip"
+        );
+        assert_eq!(
+            read_back.mode_shapes, original.mode_shapes,
+            "mode_shapes must round-trip"
+        );
+        assert_eq!(
+            read_back.base_node_positions, original.base_node_positions,
             "base_node_positions must round-trip"
         );
-        assert_eq!(read_back.converged, original.converged, "converged must round-trip");
-        assert_eq!(read_back.iterations, original.iterations, "iterations must round-trip");
         assert_eq!(
-            read_back.ps_displacement,
-            original.ps_displacement,
+            read_back.converged, original.converged,
+            "converged must round-trip"
+        );
+        assert_eq!(
+            read_back.iterations, original.iterations,
+            "iterations must round-trip"
+        );
+        assert_eq!(
+            read_back.ps_displacement, original.ps_displacement,
             "ps_displacement must round-trip"
         );
-        assert_eq!(read_back.ps_stress, original.ps_stress, "ps_stress must round-trip");
+        assert_eq!(
+            read_back.ps_stress, original.ps_stress,
+            "ps_stress must round-trip"
+        );
         assert_eq!(
             read_back.ps_max_von_mises.to_bits(),
             original.ps_max_von_mises.to_bits(),
             "ps_max_von_mises must round-trip bit-identically"
         );
-        assert_eq!(read_back.ps_converged, original.ps_converged, "ps_converged must round-trip");
         assert_eq!(
-            read_back.ps_iterations,
-            original.ps_iterations,
+            read_back.ps_converged, original.ps_converged,
+            "ps_converged must round-trip"
+        );
+        assert_eq!(
+            read_back.ps_iterations, original.ps_iterations,
             "ps_iterations must round-trip"
         );
         assert_eq!(
-            read_back.ps_grid_bounds_min,
-            original.ps_grid_bounds_min,
+            read_back.ps_grid_bounds_min, original.ps_grid_bounds_min,
             "ps_grid_bounds_min must round-trip"
         );
         assert_eq!(
-            read_back.ps_grid_bounds_max,
-            original.ps_grid_bounds_max,
+            read_back.ps_grid_bounds_max, original.ps_grid_bounds_max,
             "ps_grid_bounds_max must round-trip"
         );
         assert_eq!(
-            read_back.ps_grid_counts,
-            original.ps_grid_counts,
+            read_back.ps_grid_counts, original.ps_grid_counts,
             "ps_grid_counts must round-trip"
         );
         assert_eq!(
-            read_back.solve_time_ms,
-            original.solve_time_ms,
+            read_back.solve_time_ms, original.solve_time_ms,
             "solve_time_ms must round-trip (used for cost-weighted LRU eviction)"
         );
 

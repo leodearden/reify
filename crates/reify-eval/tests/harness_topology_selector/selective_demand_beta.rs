@@ -21,7 +21,7 @@ use reify_core::{DiagnosticCode, RealizationNodeId};
 use reify_eval::cache::NodeId;
 use reify_eval::{BuildScheduler, Engine};
 use reify_ir::ExportFormat;
-use reify_test_support::{compile_source, MockGeometryKernel};
+use reify_test_support::{MockGeometryKernel, compile_source};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // step-1 (RED until step-2): warm tessellate_snapshot prunes a hidden body's
@@ -87,7 +87,11 @@ fn warm_tessellate_snapshot_prunes_hidden_body_geometry_dispatch() {
             .iter()
             .find(|m| m.entity_path == body_a_path)
             .map(|m| (m.mesh.vertices.len(), m.mesh.indices.len()));
-        (engine.last_dispatch_count(), result.meshes.len(), body_a_mesh)
+        (
+            engine.last_dispatch_count(),
+            result.meshes.len(),
+            body_a_mesh,
+        )
     };
 
     // ── Session B: HIDDEN (only body_a demanded, body_b hidden) ─────────────
@@ -113,7 +117,11 @@ fn warm_tessellate_snapshot_prunes_hidden_body_geometry_dispatch() {
             .iter()
             .find(|m| m.entity_path == body_a_path)
             .map(|m| (m.mesh.vertices.len(), m.mesh.indices.len()));
-        (engine.last_dispatch_count(), result.meshes.len(), body_a_mesh)
+        (
+            engine.last_dispatch_count(),
+            result.meshes.len(),
+            body_a_mesh,
+        )
     };
 
     // All-visible session must have dispatched at least one geometry op.
@@ -164,18 +172,17 @@ fn warm_tessellate_snapshot_prunes_hidden_body_geometry_dispatch() {
     // catches over-pruning: if body_a's mesh has different dimensions or is
     // absent in the hidden session, the seed is wrong.
     let body_a_dims_all = body_a_mesh_all.expect(
-        "all-visible session must contain a mesh for body_a (SelectiveMultiBody#realization[0])"
+        "all-visible session must contain a mesh for body_a (SelectiveMultiBody#realization[0])",
     );
     let body_a_dims_hidden = body_a_mesh_hidden.expect(
         "hidden session must still contain a mesh for the visible body_a \
-         (SelectiveMultiBody#realization[0]); the demand seed over-pruned it"
+         (SelectiveMultiBody#realization[0]); the demand seed over-pruned it",
     );
     assert_eq!(
         body_a_dims_hidden, body_a_dims_all,
         "visible body_a mesh must be identical in the hidden session: \
          hidden=(vertices={}, indices={}) vs all-visible=(vertices={}, indices={})",
-        body_a_dims_hidden.0, body_a_dims_hidden.1,
-        body_a_dims_all.0, body_a_dims_all.1,
+        body_a_dims_hidden.0, body_a_dims_hidden.1, body_a_dims_all.0, body_a_dims_all.1,
     );
 }
 
@@ -212,7 +219,10 @@ fn build_preserves_eval_cycle_diagnostic_under_unified_dag() {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     assert!(
-        result.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::EvalCycle)),
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::EvalCycle)),
         "build() under UnifiedDag must emit DiagnosticCode::EvalCycle on a cyclic module; \
          got diagnostics: {:?}",
         result.diagnostics,

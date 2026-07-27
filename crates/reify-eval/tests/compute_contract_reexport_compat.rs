@@ -80,7 +80,10 @@ fn identity_trampoline(
     _cancellation: &reify_eval::CancellationHandle,
 ) -> reify_eval::ComputeOutcome {
     reify_eval::ComputeOutcome::Completed {
-        result: value_inputs.first().cloned().unwrap_or(reify_ir::Value::Undef),
+        result: value_inputs
+            .first()
+            .cloned()
+            .unwrap_or(reify_ir::Value::Undef),
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics: vec![],
@@ -179,7 +182,8 @@ fn realized_content_sdf_reexport_is_identity_and_handle_accessors_are_honest() {
 
 #[test]
 fn realized_content_surface_mesh_reexport_is_identity_and_handle_accessors_are_honest() {
-    let content = reify_eval::RealizedContent::SurfaceMesh(std::sync::Arc::new(make_surface_mesh()));
+    let content =
+        reify_eval::RealizedContent::SurfaceMesh(std::sync::Arc::new(make_surface_mesh()));
     _realized_content_identity(content.clone());
 
     let h = reify_eval::RealizationReadHandle::new(
@@ -190,12 +194,16 @@ fn realized_content_surface_mesh_reexport_is_identity_and_handle_accessors_are_h
     assert!(h.surface_mesh().is_some());
     assert!(h.sdf().is_none());
     assert!(h.volume_mesh().is_none());
-    assert!(h.boundary().is_none(), "SurfaceMesh content has no boundary");
+    assert!(
+        h.boundary().is_none(),
+        "SurfaceMesh content has no boundary"
+    );
 }
 
 #[test]
 fn realized_content_volume_mesh_reexport_is_identity_and_handle_accessors_are_honest() {
-    let content = reify_eval::RealizedContent::VolumeMesh(std::sync::Arc::new(make_volume_mesh(None)));
+    let content =
+        reify_eval::RealizedContent::VolumeMesh(std::sync::Arc::new(make_volume_mesh(None)));
     _realized_content_identity(content.clone());
 
     let h = reify_eval::RealizationReadHandle::new(
@@ -220,9 +228,9 @@ fn realization_read_handle_boundary_accessor_surfaces_threaded_association() {
     let h = reify_eval::RealizationReadHandle::new(
         reify_core::RealizationNodeId::new("b", 0),
         reify_core::ContentHash(10),
-        Some(reify_eval::RealizedContent::VolumeMesh(std::sync::Arc::new(
-            make_volume_mesh(Some(b.clone())),
-        ))),
+        Some(reify_eval::RealizedContent::VolumeMesh(
+            std::sync::Arc::new(make_volume_mesh(Some(b.clone()))),
+        )),
     );
     assert_eq!(
         h.boundary(),
@@ -312,7 +320,7 @@ fn max_deflection_magnitude_reexport_is_identity_not_duplicate() {
 
 #[test]
 fn elastic_result_with_shell_channels_and_grid_round_trips_byte_exact_and_reserializes_identically()
- {
+{
     use reify_eval::persistent_cache::{ElasticResult, PersistentlyCacheable};
 
     let original = make_elastic_result_with_shell_and_grid();

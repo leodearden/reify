@@ -158,12 +158,19 @@ fn keyed_connect_desugars_to_key_addressed_port() {
     // `vents["intake"].inlet` — byte-identical to what MemberKey::path_segment
     // builds for the "intake" key dotted with the "inlet" port member.
     let expected_right_port = r#"vents["intake"].inlet"#;
-    let conn = manifold.connections.iter().find(|c| c.right_port == expected_right_port);
+    let conn = manifold
+        .connections
+        .iter()
+        .find(|c| c.right_port == expected_right_port);
     assert!(
         conn.is_some(),
         "expected a CompiledConnection with right_port == {:?}, but connections are: {:?}",
         expected_right_port,
-        manifold.connections.iter().map(|c| &c.right_port).collect::<Vec<_>>(),
+        manifold
+            .connections
+            .iter()
+            .map(|c| &c.right_port)
+            .collect::<Vec<_>>(),
     );
 
     // No Error diagnostic about "invalid port reference" must exist — the
@@ -255,14 +262,22 @@ fn keyed_member_identity_stable_across_sibling_add() {
         m1_conn,
         "M1: expected CompiledConnection with right_port == {:?}, but connections are: {:?}",
         expected_right_port,
-        m1_manifold.connections.iter().map(|c| &c.right_port).collect::<Vec<_>>(),
+        m1_manifold
+            .connections
+            .iter()
+            .map(|c| &c.right_port)
+            .collect::<Vec<_>>(),
     );
     assert!(
         m2_conn,
         "M2: expected CompiledConnection with right_port == {:?} (key stable, not 'vents[\"bypass\"].inlet'), \
          but connections are: {:?}",
         expected_right_port,
-        m2_manifold.connections.iter().map(|c| &c.right_port).collect::<Vec<_>>(),
+        m2_manifold
+            .connections
+            .iter()
+            .map(|c| &c.right_port)
+            .collect::<Vec<_>>(),
     );
 }
 
@@ -329,7 +344,9 @@ fn from_templates_keyed_sub_count_cell_is_none_backfill_not_yet_wired() {
         .keyed_subs
         .iter()
         .find(|s| s.parent_entity == "Manifold" && s.sub_name == "vents")
-        .expect("expected a KeyedSubInfo for Manifold.vents — from_templates must populate keyed_subs");
+        .expect(
+            "expected a KeyedSubInfo for Manifold.vents — from_templates must populate keyed_subs",
+        );
 
     // Confirmed: entity.rs does NOT backfill count_cell for keyed subs.
     // Rule 3b is speculative. When the backfill is wired, change this to

@@ -22,8 +22,10 @@ pub const BOX_MAX: [f64; 3] = [0.040, 0.040, 0.010];
 
 #[allow(dead_code)]
 pub fn structure(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
-    let fields: PersistentMap<String, Value> =
-        fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+    let fields: PersistentMap<String, Value> = fields
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
     Value::StructureInstance(Box::new(StructureInstanceData {
         type_id: REGISTRY_FREE,
         type_name: type_name.to_string(),
@@ -103,7 +105,10 @@ pub fn isotropic_material(youngs_pa: f64) -> Value {
     structure(
         "ABS_Plastic",
         vec![
-            ("youngs_modulus", scalar(youngs_pa, DimensionVector::PRESSURE)),
+            (
+                "youngs_modulus",
+                scalar(youngs_pa, DimensionVector::PRESSURE),
+            ),
             ("poisson_ratio", Value::Real(0.35)),
             ("density", scalar(1040.0, DimensionVector::MASS_DENSITY)),
         ],
@@ -241,9 +246,10 @@ pub const FEA_H: f64 = 0.1;
 /// pass `deterministic: false` (the default).
 #[allow(dead_code)]
 pub fn elastic_options(deterministic: bool) -> Value {
-    let fields: PersistentMap<String, Value> = [("deterministic".to_string(), Value::Bool(deterministic))]
-        .into_iter()
-        .collect();
+    let fields: PersistentMap<String, Value> =
+        [("deterministic".to_string(), Value::Bool(deterministic))]
+            .into_iter()
+            .collect();
     Value::StructureInstance(Box::new(StructureInstanceData {
         type_id: REGISTRY_FREE,
         type_name: "ElasticOptions".to_string(),
@@ -256,24 +262,29 @@ pub fn elastic_options(deterministic: bool) -> Value {
 /// expected by `solve_elastic_static_trampoline`'s `value_inputs[4]`.
 #[allow(dead_code)]
 pub fn point_load_list(force_n: f64) -> Value {
-    let fields: PersistentMap<String, Value> =
-        [("force".to_string(), Value::Real(force_n))].into_iter().collect();
-    Value::List(vec![Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: REGISTRY_FREE,
-        type_name: "PointLoad".to_string(),
-        version: 1,
-        fields,
-    }))])
+    let fields: PersistentMap<String, Value> = [("force".to_string(), Value::Real(force_n))]
+        .into_iter()
+        .collect();
+    Value::List(vec![Value::StructureInstance(Box::new(
+        StructureInstanceData {
+            type_id: REGISTRY_FREE,
+            type_name: "PointLoad".to_string(),
+            version: 1,
+            fields,
+        },
+    ))])
 }
 
 /// A single `FixedSupport {}` inside a `Value::List`, as expected by
 /// `solve_elastic_static_trampoline`'s `value_inputs[5]`.
 #[allow(dead_code)]
 pub fn support_list() -> Value {
-    Value::List(vec![Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: REGISTRY_FREE,
-        type_name: "FixedSupport".to_string(),
-        version: 1,
-        fields: [].into_iter().collect(),
-    }))])
+    Value::List(vec![Value::StructureInstance(Box::new(
+        StructureInstanceData {
+            type_id: REGISTRY_FREE,
+            type_name: "FixedSupport".to_string(),
+            version: 1,
+            fields: [].into_iter().collect(),
+        },
+    ))])
 }

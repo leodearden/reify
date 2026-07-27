@@ -291,7 +291,12 @@ fn two_sphere_union_template() -> reify_compiler::TopologyTemplate {
     };
     TopologyTemplateBuilder::new("MyDesign")
         .param("MyDesign", "thickness", Type::dimensionless_scalar(), None)
-        .realization_named("MyDesign", 0, "body", vec![sphere_op(), sphere_op(), union_op])
+        .realization_named(
+            "MyDesign",
+            0,
+            "body",
+            vec![sphere_op(), sphere_op(), union_op],
+        )
         .build()
 }
 
@@ -496,13 +501,25 @@ fn forwarded_manifold_solid_entries_excluded_from_centroid_and_reassignment_scan
         .with_extracted_faces(GeometryHandleId(2), vec![GeometryHandleId(201)])
         .with_extracted_edges(GeometryHandleId(2), vec![GeometryHandleId(202)])
         .with_centroid_result(GeometryHandleId(101), centroid_json(1.0, 0.0, 0.0))
-        .with_bbox_result(GeometryHandleId(101), bbox_json(0.5, -0.5, -0.5, 1.5, 0.5, 0.5))
+        .with_bbox_result(
+            GeometryHandleId(101),
+            bbox_json(0.5, -0.5, -0.5, 1.5, 0.5, 0.5),
+        )
         .with_centroid_result(GeometryHandleId(201), centroid_json(5.0, 0.0, 0.0))
-        .with_bbox_result(GeometryHandleId(201), bbox_json(4.5, -0.5, -0.5, 5.5, 0.5, 0.5))
+        .with_bbox_result(
+            GeometryHandleId(201),
+            bbox_json(4.5, -0.5, -0.5, 5.5, 0.5, 0.5),
+        )
         .with_centroid_result(GeometryHandleId(102), centroid_json(1.0, 1.0, 1.0))
-        .with_bbox_result(GeometryHandleId(102), bbox_json(0.0, 0.0, 0.0, 2.0, 2.0, 2.0))
+        .with_bbox_result(
+            GeometryHandleId(102),
+            bbox_json(0.0, 0.0, 0.0, 2.0, 2.0, 2.0),
+        )
         .with_centroid_result(GeometryHandleId(202), centroid_json(11.0, 11.0, 11.0))
-        .with_bbox_result(GeometryHandleId(202), bbox_json(10.0, 10.0, 10.0, 12.0, 12.0, 12.0));
+        .with_bbox_result(
+            GeometryHandleId(202),
+            bbox_json(10.0, 10.0, 10.0, 12.0, 12.0, 12.0),
+        );
 
     let manifold_kernel = IngestTrackingManifoldKernel {
         inner: MockGeometryKernel::new(),
@@ -562,7 +579,10 @@ fn forwarded_manifold_solid_entries_excluded_from_centroid_and_reassignment_scan
     let query_failed: Vec<_> = build
         .diagnostics
         .iter()
-        .filter(|d| d.message.contains("topology-attribute centroid query failed"))
+        .filter(|d| {
+            d.message
+                .contains("topology-attribute centroid query failed")
+        })
         .collect();
     assert!(
         query_failed.is_empty(),

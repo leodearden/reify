@@ -53,12 +53,16 @@ fn bolt_plate_source() -> String {
 
 /// Find the named template, panicking with the full diagnostics on miss.
 fn template<'a>(module: &'a CompiledModule, name: &str) -> &'a TopologyTemplate {
-    module.templates.iter().find(|t| t.name == name).unwrap_or_else(|| {
-        panic!(
-            "no template {name:?} in compiled module; diagnostics: {:#?}",
-            module.diagnostics
-        )
-    })
+    module
+        .templates
+        .iter()
+        .find(|t| t.name == name)
+        .unwrap_or_else(|| {
+            panic!(
+                "no template {name:?} in compiled module; diagnostics: {:#?}",
+                module.diagnostics
+            )
+        })
 }
 
 /// The relation's function name + operand count. Each relation compiles to a
@@ -187,15 +191,22 @@ fn realize_operand_datums_yields_concrete_pose_independent_local_datums() {
     // Two DISTINCT placeholder seed Frames for the bolt's `at auto` unknown: the
     // identity pose, and a translated + 90°-about-Z pose. The plate is grounded
     // (not in `seeds`); its local datums realize at identity either way.
-    let seeds_a: HashMap<String, Value> =
-        [("bolt".to_string(), seed_frame([0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]))]
-            .into_iter()
-            .collect();
+    let seeds_a: HashMap<String, Value> = [(
+        "bolt".to_string(),
+        seed_frame([0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]),
+    )]
+    .into_iter()
+    .collect();
     let seeds_b: HashMap<String, Value> = [(
         "bolt".to_string(),
         seed_frame(
             [0.1, 0.05, 0.2],
-            [std::f64::consts::FRAC_1_SQRT_2, 0.0, 0.0, std::f64::consts::FRAC_1_SQRT_2],
+            [
+                std::f64::consts::FRAC_1_SQRT_2,
+                0.0,
+                0.0,
+                std::f64::consts::FRAC_1_SQRT_2,
+            ],
         ),
     )]
     .into_iter()
@@ -223,9 +234,15 @@ fn realize_operand_datums_yields_concrete_pose_independent_local_datums() {
         let is_axis = matches!(v, Value::Axis { .. });
         let is_plane = matches!(v, Value::Plane { .. });
         if member.ends_with("axis") {
-            assert!(is_axis, "{sub}.{member} must realize to a Value::Axis, got {v:?}");
+            assert!(
+                is_axis,
+                "{sub}.{member} must realize to a Value::Axis, got {v:?}"
+            );
         } else {
-            assert!(is_plane, "{sub}.{member} must realize to a Value::Plane, got {v:?}");
+            assert!(
+                is_plane,
+                "{sub}.{member} must realize to a Value::Plane, got {v:?}"
+            );
         }
     }
 
@@ -324,9 +341,12 @@ structure BoltPlate {{
 /// An identity placeholder seed Frame for the bolt's `at auto` unknown (the local
 /// datums are pose-independent, so the realization ignores it — see step-5).
 fn identity_bolt_seeds() -> HashMap<String, Value> {
-    [("bolt".to_string(), seed_frame([0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]))]
-        .into_iter()
-        .collect()
+    [(
+        "bolt".to_string(),
+        seed_frame([0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]),
+    )]
+    .into_iter()
+    .collect()
 }
 
 /// Compile `source`, collect the `BoltPlate` scope, realize its operand datums
@@ -368,10 +388,22 @@ fn remainder_consistent_relation_is_silent() {
     // DOF accounting: concentric(4) + flush's independent normal offset(1) = spent 5,
     // residual 1 (spin about the shank axis). The third `parallel` relation is
     // rank-redundant → driving 2, redundant 1.
-    assert_eq!(solution.spent, 5, "concentric(4) + flush net(1) spends 5 DOF");
-    assert_eq!(solution.free, 1, "the lone residual DOF is spin about the shank axis");
-    assert_eq!(solution.driving, 2, "concentric + flush are the driving set");
-    assert_eq!(solution.redundant, 1, "the parallel relation is the redundant remainder");
+    assert_eq!(
+        solution.spent, 5,
+        "concentric(4) + flush net(1) spends 5 DOF"
+    );
+    assert_eq!(
+        solution.free, 1,
+        "the lone residual DOF is spin about the shank axis"
+    );
+    assert_eq!(
+        solution.driving, 2,
+        "concentric + flush are the driving set"
+    );
+    assert_eq!(
+        solution.redundant, 1,
+        "the parallel relation is the redundant remainder"
+    );
 
     // The consistent remainder is SILENT — no assertion-conflict error.
     let errors: Vec<&str> = solution
@@ -409,7 +441,10 @@ fn remainder_violated_relation_emits_diagnostic() {
         matches!(solution.poses.get("bolt"), Some(Value::Frame { .. })),
         "the driving set (concentric + flush) still solves; the bolt is placed"
     );
-    assert_eq!(solution.driving, 2, "concentric + flush are the driving set");
+    assert_eq!(
+        solution.driving, 2,
+        "concentric + flush are the driving set"
+    );
     assert_eq!(
         solution.redundant, 1,
         "perpendicular is rank-redundant (zero gradient at the parallel config)"
@@ -680,7 +715,10 @@ fn bolt_plate_example_builds_and_places_auto_bolt() {
     }
 
     // Exact codimension counts — concentric(4) + flush net(1) = spent 5, residual 1.
-    assert_eq!(solution.spent, 5, "§1 spends 5 DOF (concentric 4 + flush net 1)");
+    assert_eq!(
+        solution.spent, 5,
+        "§1 spends 5 DOF (concentric 4 + flush net 1)"
+    );
     assert_eq!(
         solution.free, 1,
         "§1 leaves 1 residual DOF (spin about the shared axis)"
@@ -788,7 +826,10 @@ fn construction_datum_example_builds_and_places_mated_sub() {
         "the construction-datum example must build end-to-end with no errors, got: {build_errors:?}"
     );
     assert!(
-        result.geometry_output.as_ref().is_some_and(|o| !o.is_empty()),
+        result
+            .geometry_output
+            .as_ref()
+            .is_some_and(|o| !o.is_empty()),
         "the construction-datum build must produce non-empty geometry output"
     );
 
@@ -819,7 +860,10 @@ fn construction_datum_example_builds_and_places_mated_sub() {
         matches!(solution.poses.get("bolt"), Some(Value::Frame { .. })),
         "the direct solve places the bolt against the constructed seating plane"
     );
-    assert_eq!(solution.spent, 5, "concentric(4) + flush net(1) spends 5 DOF");
+    assert_eq!(
+        solution.spent, 5,
+        "concentric(4) + flush net(1) spends 5 DOF"
+    );
     assert_eq!(
         solution.free, 1,
         "the lone residual DOF is spin about the shank axis"

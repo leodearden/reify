@@ -34,12 +34,12 @@ use reify_core::Diagnostic;
 use reify_core::persistent_cache::PersistentlyCacheable;
 use reify_ir::{
     FeatureId, GeometryHandleId, KernelHandle, KernelId, OpaqueState, PersistentMap, Role,
-    SampledField, StructureInstanceData, StructureTypeId, TopologyAttribute, TopologyAttributeTable,
-    Value,
+    SampledField, StructureInstanceData, StructureTypeId, TopologyAttribute,
+    TopologyAttributeTable, Value,
 };
 use reify_shell_extract::{
-    GridValidationError, MedialError, MedialOptions, MesherError, MesherOptions, MidSurfaceError,
-    MidSurfaceOptions, MidSurfaceAttributes, MidSurfaceEdgeRecord, MidSurfaceMesh,
+    GridValidationError, MedialError, MedialOptions, MesherError, MesherOptions,
+    MidSurfaceAttributes, MidSurfaceEdgeRecord, MidSurfaceError, MidSurfaceMesh, MidSurfaceOptions,
     PruneOptions, SegmentationError, SegmentationOptions, SegmentationResult, SingleBodyMask,
     compute_medial_mask, extract_mid_surface, mesh_mid_surface, populate_mid_surface_attributes,
     prune_branches, segment_regions,
@@ -73,7 +73,9 @@ use crate::graph::CancellationHandle;
 ///   rather than from the cached `Value`.
 ///
 /// PRD §5 cache-key composition forward link: `shell-extract-engine-bridge.md §5`.
-pub(crate) fn shell_extraction_result_to_value(result: &reify_shell_extract::ShellExtractionResult) -> Value {
+pub(crate) fn shell_extraction_result_to_value(
+    result: &reify_shell_extract::ShellExtractionResult,
+) -> Value {
     // ── mid_surface ─────────────────────────────────────────────────────────
     let vertices_value = Value::List(
         result
@@ -316,9 +318,18 @@ fn decode_real3_list(v: &Value) -> Option<Vec<[f64; 3]>> {
             for row in rows {
                 match row {
                     Value::List(coords) if coords.len() == 3 => {
-                        let x = match &coords[0] { Value::Real(r) => *r, _ => return None };
-                        let y = match &coords[1] { Value::Real(r) => *r, _ => return None };
-                        let z = match &coords[2] { Value::Real(r) => *r, _ => return None };
+                        let x = match &coords[0] {
+                            Value::Real(r) => *r,
+                            _ => return None,
+                        };
+                        let y = match &coords[1] {
+                            Value::Real(r) => *r,
+                            _ => return None,
+                        };
+                        let z = match &coords[2] {
+                            Value::Real(r) => *r,
+                            _ => return None,
+                        };
                         out.push([x, y, z]);
                     }
                     _ => return None,
@@ -339,9 +350,18 @@ fn decode_u32_3_list(v: &Value) -> Option<Vec<[u32; 3]>> {
             for row in rows {
                 match row {
                     Value::List(idxs) if idxs.len() == 3 => {
-                        let a = match &idxs[0] { Value::Int(n) => *n as u32, _ => return None };
-                        let b = match &idxs[1] { Value::Int(n) => *n as u32, _ => return None };
-                        let c = match &idxs[2] { Value::Int(n) => *n as u32, _ => return None };
+                        let a = match &idxs[0] {
+                            Value::Int(n) => *n as u32,
+                            _ => return None,
+                        };
+                        let b = match &idxs[1] {
+                            Value::Int(n) => *n as u32,
+                            _ => return None,
+                        };
+                        let c = match &idxs[2] {
+                            Value::Int(n) => *n as u32,
+                            _ => return None,
+                        };
                         out.push([a, b, c]);
                     }
                     _ => return None,
@@ -494,13 +514,20 @@ pub(crate) fn value_to_shell_extraction_result(
     // Length invariant: vertices.len() == thickness.len() — holds because both
     // were faithfully recovered from the same projected Value lists.
     reify_shell_extract::ShellExtractionResult::new(
-        MidSurfaceMesh { vertices, triangles, thickness },
+        MidSurfaceMesh {
+            vertices,
+            triangles,
+            thickness,
+        },
         SegmentationResult {
             regions: vec![], // lossy — not recoverable from Value
             vertex_labels,
             triangle_labels,
         },
-        MidSurfaceAttributes { face_records, edges },
+        MidSurfaceAttributes {
+            face_records,
+            edges,
+        },
         0,      // solve_time_ms — projected as 0, lossy
         vec![], // diagnostics — lossy
     )
@@ -818,8 +845,11 @@ pub fn shell_extract_compute_fn(
     };
 
     // ── Phase 6: naming (fast in-memory; no cancellation poll needed) ────────
-    let naming =
-        populate_mid_surface_attributes(&FeatureId::realization("synthetic", 0), &meshed, &segmentation);
+    let naming = populate_mid_surface_attributes(
+        &FeatureId::realization("synthetic", 0),
+        &meshed,
+        &segmentation,
+    );
 
     let solve_time_ms = t_start.elapsed().as_millis() as u64;
 
@@ -1182,7 +1212,10 @@ mod tests {
         naming_fields.insert("face_records".to_string(), face_records_val);
         naming_fields.insert("edges".to_string(), edges_val);
         let mut outer_fields = PersistentMap::default();
-        outer_fields.insert("naming".to_string(), si("MidSurfaceAttributes", naming_fields));
+        outer_fields.insert(
+            "naming".to_string(),
+            si("MidSurfaceAttributes", naming_fields),
+        );
         si("ShellExtractionResult", outer_fields)
     }
 
@@ -1331,8 +1364,9 @@ mod tests {
 
         // B10 (task #4809): the projected Value must carry Value::Feature for
         // feature_id — not Value::String — proving the producer was flipped.
-        let expected_fid_val =
-            Value::Feature(FeatureId::derived_mid_surface(&FeatureId::realization("test", 0)));
+        let expected_fid_val = Value::Feature(FeatureId::derived_mid_surface(
+            &FeatureId::realization("test", 0),
+        ));
         let outer_si = match &value {
             Value::StructureInstance(d) => d,
             _ => panic!("shell_extraction_result_to_value must return a StructureInstance"),
@@ -1372,8 +1406,14 @@ mod tests {
             .expect("value_to_shell_extraction_result must return Some for a valid Value");
 
         // mid_surface — all three arrays must be faithfully recovered.
-        assert_eq!(reconstructed.mid_surface.vertices, verts, "vertices mismatch");
-        assert_eq!(reconstructed.mid_surface.triangles, tris, "triangles mismatch");
+        assert_eq!(
+            reconstructed.mid_surface.vertices, verts,
+            "vertices mismatch"
+        );
+        assert_eq!(
+            reconstructed.mid_surface.triangles, tris,
+            "triangles mismatch"
+        );
         for (i, (got, want)) in reconstructed
             .mid_surface
             .thickness
@@ -1389,13 +1429,11 @@ mod tests {
 
         // segmentation — labels recovered; regions defaults to vec![].
         assert_eq!(
-            reconstructed.segmentation.vertex_labels,
-            vertex_labels,
+            reconstructed.segmentation.vertex_labels, vertex_labels,
             "vertex_labels mismatch"
         );
         assert_eq!(
-            reconstructed.segmentation.triangle_labels,
-            triangle_labels,
+            reconstructed.segmentation.triangle_labels, triangle_labels,
             "triangle_labels mismatch"
         );
         assert!(
@@ -1405,24 +1443,32 @@ mod tests {
 
         // naming.face_records — feature_id (structural ==), local_index, role.
         let expected_fid = FeatureId::derived_mid_surface(&FeatureId::realization("test", 0));
-        assert_eq!(reconstructed.naming.face_records.len(), 1, "face_records len");
         assert_eq!(
-            reconstructed.naming.face_records[0].feature_id,
-            expected_fid,
+            reconstructed.naming.face_records.len(),
+            1,
+            "face_records len"
+        );
+        assert_eq!(
+            reconstructed.naming.face_records[0].feature_id, expected_fid,
             "face_records[0].feature_id must round-trip as a structured FeatureId"
         );
         assert_eq!(reconstructed.naming.face_records[0].local_index, 0);
-        assert_eq!(reconstructed.naming.face_records[0].role, Role::MidSurfaceFace);
+        assert_eq!(
+            reconstructed.naming.face_records[0].role,
+            Role::MidSurfaceFace
+        );
 
         // naming.edges — feature_id (structural ==), local_index, role (region_pair defaults to (0,0)).
         assert_eq!(reconstructed.naming.edges.len(), 1, "edges len");
         assert_eq!(
-            reconstructed.naming.edges[0].attribute.feature_id,
-            expected_fid,
+            reconstructed.naming.edges[0].attribute.feature_id, expected_fid,
             "edges[0].attribute.feature_id must round-trip as a structured FeatureId"
         );
         assert_eq!(reconstructed.naming.edges[0].attribute.local_index, 0);
-        assert_eq!(reconstructed.naming.edges[0].attribute.role, Role::MidSurfaceEdge);
+        assert_eq!(
+            reconstructed.naming.edges[0].attribute.role,
+            Role::MidSurfaceEdge
+        );
 
         // Value::Undef must return None.
         assert!(
@@ -1440,8 +1486,9 @@ mod tests {
     /// consumers correctly read a structured `Value::Feature` `feature_id` and
     /// carry it through without any `Display`/`FromStr` conversion (PRD C3).
     fn make_full_result_value_feature() -> Value {
-        let feature_id_val =
-            Value::Feature(FeatureId::derived_mid_surface(&FeatureId::realization("c", 0)));
+        let feature_id_val = Value::Feature(FeatureId::derived_mid_surface(
+            &FeatureId::realization("c", 0),
+        ));
 
         // mid_surface: 1 triangle / 3 verts / 3 thickness
         let mut mid_surface_fields = PersistentMap::default();
@@ -1473,7 +1520,10 @@ mod tests {
             "vertex_labels".to_string(),
             Value::List(vec![Value::Int(0), Value::Int(0), Value::Int(0)]),
         );
-        seg_fields.insert("triangle_labels".to_string(), Value::List(vec![Value::Int(0)]));
+        seg_fields.insert(
+            "triangle_labels".to_string(),
+            Value::List(vec![Value::Int(0)]),
+        );
         let segmentation_val = si("SegmentationResult", seg_fields);
 
         // naming: face_records[0] and edges[0] with Value::Feature feature_id
@@ -1496,7 +1546,10 @@ mod tests {
         let mut outer_fields = PersistentMap::default();
         outer_fields.insert("mid_surface".to_string(), mid_surface_val);
         outer_fields.insert("segmentation".to_string(), segmentation_val);
-        outer_fields.insert("naming".to_string(), si("MidSurfaceAttributes", naming_fields));
+        outer_fields.insert(
+            "naming".to_string(),
+            si("MidSurfaceAttributes", naming_fields),
+        );
         si("ShellExtractionResult", outer_fields)
     }
 
@@ -1509,8 +1562,7 @@ mod tests {
     /// entry whose `feature_id` equals the expected structured id.
     #[test]
     fn consumers_read_value_feature_feature_id() {
-        let expected_fid =
-            FeatureId::derived_mid_surface(&FeatureId::realization("c", 0));
+        let expected_fid = FeatureId::derived_mid_surface(&FeatureId::realization("c", 0));
         let v = make_full_result_value_feature();
 
         // (a) value_to_shell_extraction_result must return Some and carry the
@@ -1519,13 +1571,11 @@ mod tests {
             "value_to_shell_extraction_result must return Some for a Value::Feature feature_id",
         );
         assert_eq!(
-            reconstructed.naming.face_records[0].feature_id,
-            expected_fid,
+            reconstructed.naming.face_records[0].feature_id, expected_fid,
             "face_records[0].feature_id must round-trip as a structured FeatureId"
         );
         assert_eq!(
-            reconstructed.naming.edges[0].attribute.feature_id,
-            expected_fid,
+            reconstructed.naming.edges[0].attribute.feature_id, expected_fid,
             "edges[0].attribute.feature_id must round-trip as a structured FeatureId"
         );
 
@@ -1542,8 +1592,7 @@ mod tests {
             "fold must populate ≥1 MidSurfaceFace entry when feature_id is Value::Feature"
         );
         assert_eq!(
-            face_entries[0].1.feature_id,
-            expected_fid,
+            face_entries[0].1.feature_id, expected_fid,
             "fold MidSurfaceFace entry must carry the structured FeatureId"
         );
     }

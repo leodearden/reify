@@ -50,8 +50,8 @@ const EXAMPLE_PATH: &str = concat!(
 /// at the rendered-stdout binary surface.
 #[test]
 fn result_recovery_example_evals_end_to_end() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .expect("examples/m6_result_recovery.ri should exist");
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m6_result_recovery.ri should exist");
 
     let compiled = parse_and_compile_with_stdlib(&source);
 

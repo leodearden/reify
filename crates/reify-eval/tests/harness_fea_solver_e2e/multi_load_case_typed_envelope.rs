@@ -53,7 +53,11 @@ fn length_ty() -> Type {
 /// (one per grid point). `quantity` is the per-component scalar quantity (e.g.
 /// `pressure_ty()` for stress, `dimensionless_scalar()` for a rotation frame).
 fn make_matrix3x3_field(name: &str, axis: &[f64], tensors: &[[f64; 9]], quantity: Type) -> Value {
-    assert_eq!(tensors.len(), axis.len(), "tensor count must match grid count");
+    assert_eq!(
+        tensors.len(),
+        axis.len(),
+        "tensor count must match grid count"
+    );
     let mut data: Vec<f64> = Vec::with_capacity(axis.len() * 9);
     for t in tensors {
         data.extend_from_slice(t);
@@ -86,7 +90,11 @@ fn make_matrix3x3_field(name: &str, axis: &[f64], tensors: &[[f64; 9]], quantity
 /// Build a 1-D Sampled `Value::Field` carrying stride-3 [x,y,z] displacement
 /// vectors (one per grid point).
 fn make_vector3_field(name: &str, axis: &[f64], vectors: &[[f64; 3]]) -> Value {
-    assert_eq!(vectors.len(), axis.len(), "vector count must match grid count");
+    assert_eq!(
+        vectors.len(),
+        axis.len(),
+        "vector count must match grid count"
+    );
     let mut data: Vec<f64> = Vec::with_capacity(axis.len() * 3);
     for v in vectors {
         data.extend_from_slice(v);
@@ -147,7 +155,10 @@ fn cases_inner(cases: &[(&str, Value)]) -> BTreeMap<Value, Value> {
 /// `MultiCaseResult` in the raw `Value::Map { "cases" -> Map }` shape.
 fn mcr_map(cases: &[(&str, Value)]) -> Value {
     let mut outer = BTreeMap::new();
-    outer.insert(Value::String("cases".to_string()), Value::Map(cases_inner(cases)));
+    outer.insert(
+        Value::String("cases".to_string()),
+        Value::Map(cases_inner(cases)),
+    );
     Value::Map(outer)
 }
 

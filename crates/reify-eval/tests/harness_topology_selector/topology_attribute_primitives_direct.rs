@@ -147,12 +147,17 @@ fn seed_primitive_attributes_box_records_six_side_faces() {
 
     let mut local_indices: HashSet<u32> = HashSet::new();
     for (idx, &face_id) in face_handles.iter().enumerate() {
-        let attr = table.lookup(KernelHandle { kernel: KernelId::Occt, id: face_id }).unwrap_or_else(|| {
-            panic!(
-                "box face #{} (handle {:?}) must have a TopologyAttribute entry",
-                idx, face_id
-            )
-        });
+        let attr = table
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: face_id,
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "box face #{} (handle {:?}) must have a TopologyAttribute entry",
+                    idx, face_id
+                )
+            });
         assert_eq!(
             attr.feature_id, feature_id,
             "box face #{idx} feature_id should equal Body#realization[0]"
@@ -256,12 +261,17 @@ fn seed_primitive_attributes_cylinder_classifies_cap_top_cap_bottom_and_side() {
     let mut cap_bottom_count = 0;
     let mut side_count = 0;
     for (idx, &face_id) in face_handles.iter().enumerate() {
-        let attr = table.lookup(KernelHandle { kernel: KernelId::Occt, id: face_id }).unwrap_or_else(|| {
-            panic!(
-                "cylinder face #{} (handle {:?}) must have a TopologyAttribute entry",
-                idx, face_id
-            )
-        });
+        let attr = table
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: face_id,
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "cylinder face #{} (handle {:?}) must have a TopologyAttribute entry",
+                    idx, face_id
+                )
+            });
         assert_eq!(
             attr.feature_id, feature_id,
             "cylinder face #{idx} feature_id should equal Body#realization[0]"
@@ -358,12 +368,17 @@ fn seed_primitive_attributes_sphere_records_role_side_for_each_face() {
     );
 
     for (idx, &face_id) in face_handles.iter().enumerate() {
-        let attr = table.lookup(KernelHandle { kernel: KernelId::Occt, id: face_id }).unwrap_or_else(|| {
-            panic!(
-                "sphere face #{} (handle {:?}) must have a TopologyAttribute entry",
-                idx, face_id
-            )
-        });
+        let attr = table
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: face_id,
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "sphere face #{} (handle {:?}) must have a TopologyAttribute entry",
+                    idx, face_id
+                )
+            });
         assert_eq!(
             attr.feature_id, feature_id,
             "sphere face #{idx} feature_id should equal Body#realization[0]"
@@ -442,12 +457,17 @@ fn seed_primitive_attributes_torus_records_role_side_for_each_face() {
     );
 
     for (idx, &face_id) in face_handles.iter().enumerate() {
-        let attr = table.lookup(KernelHandle { kernel: KernelId::Occt, id: face_id }).unwrap_or_else(|| {
-            panic!(
-                "torus face #{} (handle {:?}) must have a TopologyAttribute entry",
-                idx, face_id
-            )
-        });
+        let attr = table
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: face_id,
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "torus face #{} (handle {:?}) must have a TopologyAttribute entry",
+                    idx, face_id
+                )
+            });
         assert_eq!(
             attr.role,
             Role::Side,
@@ -456,12 +476,17 @@ fn seed_primitive_attributes_torus_records_role_side_for_each_face() {
     }
 
     for (idx, &edge_id) in edge_handles.iter().enumerate() {
-        let attr = table.lookup(KernelHandle { kernel: KernelId::Occt, id: edge_id }).unwrap_or_else(|| {
-            panic!(
-                "torus edge #{} (handle {:?}) must have a TopologyAttribute entry",
-                idx, edge_id
-            )
-        });
+        let attr = table
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: edge_id,
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "torus edge #{} (handle {:?}) must have a TopologyAttribute entry",
+                    idx, edge_id
+                )
+            });
         assert_eq!(
             attr.role,
             Role::NewEdge,
@@ -533,7 +558,10 @@ fn seed_primitive_attributes_records_new_edge_for_every_extracted_edge() {
         // Faces still correct (regression guard for step-2's helper).
         for &face_id in face_handles.iter() {
             let attr = table
-                .lookup(KernelHandle { kernel: KernelId::Occt, id: face_id })
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: face_id,
+                })
                 .expect("box face must still have an entry after step-8");
             assert_eq!(
                 attr.role,
@@ -545,12 +573,17 @@ fn seed_primitive_attributes_records_new_edge_for_every_extracted_edge() {
         // Edges: each Role::NewEdge with local_index == idx, default metadata.
         let mut edge_local_indices: HashSet<u32> = HashSet::new();
         for (idx, &edge_id) in edge_handles.iter().enumerate() {
-            let attr = table.lookup(KernelHandle { kernel: KernelId::Occt, id: edge_id }).unwrap_or_else(|| {
-                panic!(
-                    "box edge #{} (handle {:?}) must have a TopologyAttribute entry",
-                    idx, edge_id
-                )
-            });
+            let attr = table
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: edge_id,
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "box edge #{} (handle {:?}) must have a TopologyAttribute entry",
+                        idx, edge_id
+                    )
+                });
             assert_eq!(
                 attr.feature_id, feature_id,
                 "box edge #{idx} feature_id should equal Body#realization[0]"
@@ -636,12 +669,17 @@ fn seed_primitive_attributes_records_new_edge_for_every_extracted_edge() {
         // Edges: each Role::NewEdge with sequential local_index.
         let mut edge_local_indices: HashSet<u32> = HashSet::new();
         for (idx, &edge_id) in edge_handles.iter().enumerate() {
-            let attr = table.lookup(KernelHandle { kernel: KernelId::Occt, id: edge_id }).unwrap_or_else(|| {
-                panic!(
-                    "cylinder edge #{} (handle {:?}) must have a TopologyAttribute entry",
-                    idx, edge_id
-                )
-            });
+            let attr = table
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: edge_id,
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "cylinder edge #{} (handle {:?}) must have a TopologyAttribute entry",
+                        idx, edge_id
+                    )
+                });
             assert_eq!(
                 attr.feature_id, feature_id,
                 "cylinder edge #{idx} feature_id should equal Body#realization[0]"
@@ -717,12 +755,17 @@ fn seed_primitive_attributes_records_new_edge_for_every_extracted_edge() {
         if !edge_handles.is_empty() {
             let mut edge_local_indices: HashSet<u32> = HashSet::new();
             for (idx, &edge_id) in edge_handles.iter().enumerate() {
-                let attr = table.lookup(KernelHandle { kernel: KernelId::Occt, id: edge_id }).unwrap_or_else(|| {
-                    panic!(
-                        "sphere edge #{} (handle {:?}) must have a TopologyAttribute entry",
-                        idx, edge_id
-                    )
-                });
+                let attr = table
+                    .lookup(KernelHandle {
+                        kernel: KernelId::Occt,
+                        id: edge_id,
+                    })
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "sphere edge #{} (handle {:?}) must have a TopologyAttribute entry",
+                            idx, edge_id
+                        )
+                    });
                 assert_eq!(
                     attr.feature_id, feature_id,
                     "sphere edge #{idx} feature_id should equal Body#realization[0]"
@@ -802,12 +845,17 @@ fn seed_primitive_attributes_box_records_eight_corner_vertex_entries_with_distin
     > = std::collections::HashMap::new();
 
     for (idx, &vertex_id) in vertex_handles.iter().enumerate() {
-        let attr = table.lookup(KernelHandle { kernel: KernelId::Occt, id: vertex_id }).unwrap_or_else(|| {
-            panic!(
-                "box vertex #{} (handle {:?}) must have a TopologyAttribute entry",
-                idx, vertex_id
-            )
-        });
+        let attr = table
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: vertex_id,
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "box vertex #{} (handle {:?}) must have a TopologyAttribute entry",
+                    idx, vertex_id
+                )
+            });
         assert_eq!(
             attr.feature_id, feature_id,
             "box vertex #{idx} feature_id should equal Body#realization[0]"
@@ -918,7 +966,12 @@ fn cylinder_and_sphere_do_not_record_any_vertex_entries() {
         // No vertex entries: cylinder has no analytic vertices per PRD §2 Q-MM2-1.
         for (idx, &vertex_id) in vertex_handles.iter().enumerate() {
             assert!(
-                table.lookup(KernelHandle { kernel: KernelId::Occt, id: vertex_id }).is_none(),
+                table
+                    .lookup(KernelHandle {
+                        kernel: KernelId::Occt,
+                        id: vertex_id
+                    })
+                    .is_none(),
                 "cylinder vertex #{idx} (handle {:?}) must NOT have an entry — \
                  Cylinder has no analytic vertices per PRD §2 Q-MM2-1",
                 vertex_id
@@ -960,7 +1013,12 @@ fn cylinder_and_sphere_do_not_record_any_vertex_entries() {
         // No vertex entries: sphere has no analytic vertices per PRD §2 Q-MM2-1.
         for (idx, &vertex_id) in vertex_handles.iter().enumerate() {
             assert!(
-                table.lookup(KernelHandle { kernel: KernelId::Occt, id: vertex_id }).is_none(),
+                table
+                    .lookup(KernelHandle {
+                        kernel: KernelId::Occt,
+                        id: vertex_id
+                    })
+                    .is_none(),
                 "sphere vertex #{idx} (handle {:?}) must NOT have an entry — \
                  Sphere has no analytic vertices per PRD §2 Q-MM2-1",
                 vertex_id
@@ -996,18 +1054,30 @@ fn seed_primitive_attributes_for_handle_box_extracts_and_seeds_vertices_too() {
     // 8 CornerVertex entries.
     let feature_id = body_realization_feature_id();
     let mut table = TopologyAttributeTable::default();
-    seed_primitive_attributes_for_handle(&mut table, KernelId::Occt, &mut kernel, box_id, &feature_id, &box_op())
-        .expect("seed_primitive_attributes_for_handle(box) should succeed");
+    seed_primitive_attributes_for_handle(
+        &mut table,
+        KernelId::Occt,
+        &mut kernel,
+        box_id,
+        &feature_id,
+        &box_op(),
+    )
+    .expect("seed_primitive_attributes_for_handle(box) should succeed");
 
     // Each manually-extracted vertex handle must now have a CornerVertex entry.
     for (idx, &vertex_id) in vertex_handles.iter().enumerate() {
-        let attr = table.lookup(KernelHandle { kernel: KernelId::Occt, id: vertex_id }).unwrap_or_else(|| {
-            panic!(
-                "box vertex #{} (handle {:?}) must have a CornerVertex entry after \
+        let attr = table
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: vertex_id,
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "box vertex #{} (handle {:?}) must have a CornerVertex entry after \
                  seed_primitive_attributes_for_handle",
-                idx, vertex_id
-            )
-        });
+                    idx, vertex_id
+                )
+            });
         assert!(
             matches!(attr.role, Role::CornerVertex { .. }),
             "box vertex #{idx} role must be Role::CornerVertex {{..}}, got {:?}",
@@ -1087,12 +1157,17 @@ fn seed_primitive_attributes_cone_frustum_classifies_cap_top_cap_bottom_and_side
     let mut cap_bottom_count = 0usize;
     let mut side_count = 0usize;
     for (idx, &face_id) in face_handles.iter().enumerate() {
-        let attr = table.lookup(KernelHandle { kernel: KernelId::Occt, id: face_id }).unwrap_or_else(|| {
-            panic!(
-                "cone frustum face #{} (handle {:?}) must have a TopologyAttribute entry",
-                idx, face_id
-            )
-        });
+        let attr = table
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: face_id,
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "cone frustum face #{} (handle {:?}) must have a TopologyAttribute entry",
+                    idx, face_id
+                )
+            });
         assert_eq!(
             attr.feature_id, feature_id,
             "cone frustum face #{idx} feature_id should equal Body#realization[0]"
@@ -1122,12 +1197,17 @@ fn seed_primitive_attributes_cone_frustum_classifies_cap_top_cap_bottom_and_side
 
     // All edges must be NewEdge.
     for (idx, &edge_id) in edge_handles.iter().enumerate() {
-        let attr = table.lookup(KernelHandle { kernel: KernelId::Occt, id: edge_id }).unwrap_or_else(|| {
-            panic!(
-                "cone frustum edge #{} (handle {:?}) must have a TopologyAttribute entry",
-                idx, edge_id
-            )
-        });
+        let attr = table
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: edge_id,
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "cone frustum edge #{} (handle {:?}) must have a TopologyAttribute entry",
+                    idx, edge_id
+                )
+            });
         assert_eq!(
             attr.role,
             Role::NewEdge,
@@ -1193,12 +1273,17 @@ fn seed_primitive_attributes_cone_pointed_has_no_top_cap() {
     let mut cap_bottom_count = 0usize;
     let mut side_count = 0usize;
     for (idx, &face_id) in face_handles.iter().enumerate() {
-        let attr = table.lookup(KernelHandle { kernel: KernelId::Occt, id: face_id }).unwrap_or_else(|| {
-            panic!(
-                "pointed cone face #{} (handle {:?}) must have a TopologyAttribute entry",
-                idx, face_id
-            )
-        });
+        let attr = table
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: face_id,
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "pointed cone face #{} (handle {:?}) must have a TopologyAttribute entry",
+                    idx, face_id
+                )
+            });
         assert_eq!(
             attr.feature_id, feature_id,
             "pointed cone face #{idx} feature_id should equal Body#realization[0]"
@@ -1225,12 +1310,17 @@ fn seed_primitive_attributes_cone_pointed_has_no_top_cap() {
 
     // All edges must be NewEdge.
     for (idx, &edge_id) in edge_handles.iter().enumerate() {
-        let attr = table.lookup(KernelHandle { kernel: KernelId::Occt, id: edge_id }).unwrap_or_else(|| {
-            panic!(
-                "pointed cone edge #{} (handle {:?}) must have a TopologyAttribute entry",
-                idx, edge_id
-            )
-        });
+        let attr = table
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: edge_id,
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "pointed cone edge #{} (handle {:?}) must have a TopologyAttribute entry",
+                    idx, edge_id
+                )
+            });
         assert_eq!(
             attr.role,
             Role::NewEdge,

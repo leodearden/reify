@@ -12,9 +12,9 @@
 //! Step numbering mirrors plan.json step IDs.
 
 use reify_core::{ModulePath, Severity, ValueCellId};
+use reify_eval::Engine;
 use reify_ir::Value;
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_eval::Engine;
 
 // ─── step-1: children enumeration (RED) ───
 
@@ -102,10 +102,7 @@ fn children_enumeration_plain_aux_collection() {
                 items[2]
             );
         }
-        other => panic!(
-            "Asm.cs should be Value::List; got: {:?}",
-            other
-        ),
+        other => panic!("Asm.cs should be Value::List; got: {:?}", other),
     }
 }
 
@@ -199,10 +196,7 @@ fn members_enumeration_plain_aux_collection() {
                 );
             }
         }
-        other => panic!(
-            "Asm.ms should be Value::List; got: {:?}",
-            other
-        ),
+        other => panic!("Asm.ms should be Value::List; got: {:?}", other),
     }
 }
 
@@ -304,7 +298,10 @@ fn example_structural_query_children_members_ri_evals_clean() {
     assert!(
         compile_errors.is_empty(),
         "example compile errors: {:?}",
-        compile_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        compile_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 
     let checker = MockConstraintChecker::new();

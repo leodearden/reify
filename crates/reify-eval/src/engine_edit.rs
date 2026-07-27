@@ -544,7 +544,8 @@ impl<'a> PendingWarmSeedsGuard<'a> {
             if cache.get(&nid).is_some() {
                 cache.donate_warm_state(&nid, state);
             } else {
-                self.pool.donate_preserving_lru_with_cost(nid, state, stamp, cost);
+                self.pool
+                    .donate_preserving_lru_with_cost(nid, state, stamp, cost);
             }
         }
     }
@@ -612,7 +613,8 @@ impl Drop for PendingWarmSeedsGuard<'_> {
              staging warm seeds and the post-eval drain in production)"
         );
         for (nid, (state, stamp, cost)) in self.map.drain() {
-            self.pool.donate_preserving_lru_with_cost(nid, state, stamp, cost);
+            self.pool
+                .donate_preserving_lru_with_cost(nid, state, stamp, cost);
         }
     }
 }
@@ -953,7 +955,8 @@ impl Engine {
         // appended in `eval_set` order so every demanded cell still evaluates.
         let driver_schedule: Vec<NodeId> = {
             let seed: std::collections::HashSet<NodeId> = eval_set.iter().cloned().collect();
-            let mut sched = crate::engine_fixpoint::run_unified_pass_seeded(&state.trace_map, &seed);
+            let mut sched =
+                crate::engine_fixpoint::run_unified_pass_seeded(&state.trace_map, &seed);
             let scheduled: std::collections::HashSet<NodeId> = sched.iter().cloned().collect();
             for node_id in &eval_set {
                 if !scheduled.contains(node_id) {
@@ -1118,12 +1121,13 @@ impl Engine {
                         v
                     } else {
                         let mut sel_diags: Vec<reify_core::Diagnostic> = Vec::new();
-                        let selector_val = crate::geometry_ops::try_eval_symbolic_topology_selector(
-                            expr,
-                            &values,
-                            &mut sel_diags,
-                        )
-                        .unwrap_or(val);
+                        let selector_val =
+                            crate::geometry_ops::try_eval_symbolic_topology_selector(
+                                expr,
+                                &values,
+                                &mut sel_diags,
+                            )
+                            .unwrap_or(val);
                         selector_mint_diagnostics.extend(sel_diags);
                         selector_val
                     }
@@ -1651,7 +1655,10 @@ impl Engine {
                 let mut inactive_members: std::collections::HashSet<ValueCellId> =
                     std::collections::HashSet::new();
                 for group in &graph.guarded_groups {
-                    let guard_val = values.get(&group.guard_cell).cloned().unwrap_or(Value::Undef);
+                    let guard_val = values
+                        .get(&group.guard_cell)
+                        .cloned()
+                        .unwrap_or(Value::Undef);
                     let is_true = matches!(&guard_val, Value::Bool(true));
                     let is_false = matches!(&guard_val, Value::Bool(false));
                     for (cells, is_active) in
@@ -1785,7 +1792,8 @@ impl Engine {
                 any_group = true;
                 let is_true = matches!(guard_val, Value::Bool(true));
                 let is_false = matches!(guard_val, Value::Bool(false));
-                for (cells, is_active) in [(&group.members, is_true), (&group.else_members, is_false)]
+                for (cells, is_active) in
+                    [(&group.members, is_true), (&group.else_members, is_false)]
                 {
                     for mid in cells {
                         member_active.insert(mid.clone(), is_active);
@@ -1801,9 +1809,7 @@ impl Engine {
             // Members are already seeded above (∩ demand); cone cells (non-members
             // downstream of the members) are added here. Stays demand-filtered so
             // edit remains selective (mirrors wave-2 reseed at :1325-1331).
-            if any_group
-                && let Some(es) = self.eval_state.as_ref()
-            {
+            if any_group && let Some(es) = self.eval_state.as_ref() {
                 let affected_member_ids: HashSet<ValueCellId> =
                     member_active.keys().cloned().collect();
                 let cone_dirty = crate::dirty::compute_dirty_cone(
@@ -1899,7 +1905,12 @@ impl Engine {
                             }
                         }
                         Some(false) => {
-                            deactivate_if_not_auto(graph, mid, &mut values, &mut new_snapshot.values);
+                            deactivate_if_not_auto(
+                                graph,
+                                mid,
+                                &mut values,
+                                &mut new_snapshot.values,
+                            );
                         }
                         None => {
                             // amend:4707 §2 — skip members of EXCLUDED guarded groups.
@@ -1949,11 +1960,8 @@ impl Engine {
                 }
 
                 // Update topology fingerprint to reflect final guard states.
-                let guard_state_hash = guard_state_fingerprint(
-                    &graph.guarded_groups,
-                    &values,
-                    GuardLookup::Strict,
-                );
+                let guard_state_hash =
+                    guard_state_fingerprint(&graph.guarded_groups, &values, GuardLookup::Strict);
                 new_snapshot.topology_fingerprint =
                     graph.topology_fingerprint().combine(guard_state_hash);
             }
@@ -2144,7 +2152,9 @@ impl Engine {
                             TraceSource::EditReeval,
                             DependencyTrace::default(),
                             VersionId(version_id),
-                            CacheLeg::Skip("collection-resize child re-recorded by structural rebuild"),
+                            CacheLeg::Skip(
+                                "collection-resize child re-recorded by structural rebuild",
+                            ),
                         );
                     }
                 }
@@ -2514,8 +2524,7 @@ impl Engine {
             // grow-then-read gap within the same edit_param call.
             {
                 let grown_seed: std::collections::HashSet<NodeId> = {
-                    let old_graph =
-                        &self.eval_state.as_ref().unwrap().snapshot.graph;
+                    let old_graph = &self.eval_state.as_ref().unwrap().snapshot.graph;
                     new_snapshot
                         .graph
                         .value_cells
@@ -2977,8 +2986,7 @@ impl Engine {
         // order so every demanded cell still evaluates.
         let driver_schedule: Vec<NodeId> = {
             let seed: HashSet<NodeId> = eval_set.iter().cloned().collect();
-            let mut sched =
-                crate::engine_fixpoint::run_unified_pass_seeded(&new_trace_map, &seed);
+            let mut sched = crate::engine_fixpoint::run_unified_pass_seeded(&new_trace_map, &seed);
             let scheduled: HashSet<NodeId> = sched.iter().cloned().collect();
             for node_id in &eval_set {
                 if !scheduled.contains(node_id) {
@@ -3786,7 +3794,6 @@ impl Engine {
                         );
                     }
                 }
-
             }
         }
 
@@ -3824,7 +3831,8 @@ impl Engine {
                 any_group = true;
                 let is_true = matches!(guard_val, Value::Bool(true));
                 let is_false = matches!(guard_val, Value::Bool(false));
-                for (cells, is_active) in [(&group.members, is_true), (&group.else_members, is_false)]
+                for (cells, is_active) in
+                    [(&group.members, is_true), (&group.else_members, is_false)]
                 {
                     for mid in cells {
                         member_active.insert(mid.clone(), is_active);
@@ -3859,7 +3867,12 @@ impl Engine {
                             }
                         }
                         Some(false) => {
-                            deactivate_if_not_auto(graph, mid, &mut values, &mut new_snapshot.values);
+                            deactivate_if_not_auto(
+                                graph,
+                                mid,
+                                &mut values,
+                                &mut new_snapshot.values,
+                            );
                         }
                         None => {}
                     }
@@ -6565,7 +6578,12 @@ mod tests {
             DeterminacyState::Determined,
             "{label}: snapshot determinacy"
         );
-        assert_scalar_si_approx_eq(snap_v, expected_si, 1e-9, &format!("{label}: snapshot value"));
+        assert_scalar_si_approx_eq(
+            snap_v,
+            expected_si,
+            1e-9,
+            &format!("{label}: snapshot value"),
+        );
 
         let cache_entry = engine
             .cache_store()

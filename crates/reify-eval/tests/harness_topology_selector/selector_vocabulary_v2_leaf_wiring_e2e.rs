@@ -87,8 +87,15 @@ fn selector_vocabulary_v2_leaves_compile_and_mint_typed_selectors() {
         SelectorKind::Face,
         |query| match query {
             LeafQuery::ByPerpendicular { axis, tol_rad } => {
-                assert_eq!(*axis, [0.0, 0.0, 1.0], "faces_perp ByPerpendicular axis must be +Z");
-                assert!(*tol_rad > 0.0, "faces_perp tol_rad must be positive (1°), got {tol_rad}");
+                assert_eq!(
+                    *axis,
+                    [0.0, 0.0, 1.0],
+                    "faces_perp ByPerpendicular axis must be +Z"
+                );
+                assert!(
+                    *tol_rad > 0.0,
+                    "faces_perp tol_rad must be positive (1°), got {tol_rad}"
+                );
             }
             other => panic!("faces_perp must be a ByPerpendicular leaf, got: {other:?}"),
         },
@@ -101,8 +108,15 @@ fn selector_vocabulary_v2_leaves_compile_and_mint_typed_selectors() {
         SelectorKind::Edge,
         |query| match query {
             LeafQuery::ByPerpendicular { axis, tol_rad } => {
-                assert_eq!(*axis, [0.0, 0.0, 1.0], "edges_perp ByPerpendicular axis must be +Z");
-                assert!(*tol_rad > 0.0, "edges_perp tol_rad must be positive (1°), got {tol_rad}");
+                assert_eq!(
+                    *axis,
+                    [0.0, 0.0, 1.0],
+                    "edges_perp ByPerpendicular axis must be +Z"
+                );
+                assert!(
+                    *tol_rad > 0.0,
+                    "edges_perp tol_rad must be positive (1°), got {tol_rad}"
+                );
             }
             other => panic!("edges_perp must be a ByPerpendicular leaf, got: {other:?}"),
         },
@@ -115,7 +129,11 @@ fn selector_vocabulary_v2_leaves_compile_and_mint_typed_selectors() {
         SelectorKind::Face,
         |query| match query {
             LeafQuery::BySurfaceKind(kind) => {
-                assert_eq!(*kind, FaceSurfaceKind::Plane, "faces_planar must filter on Plane");
+                assert_eq!(
+                    *kind,
+                    FaceSurfaceKind::Plane,
+                    "faces_planar must filter on Plane"
+                );
             }
             other => panic!("faces_planar must be a BySurfaceKind leaf, got: {other:?}"),
         },
@@ -128,7 +146,11 @@ fn selector_vocabulary_v2_leaves_compile_and_mint_typed_selectors() {
         SelectorKind::Edge,
         |query| match query {
             LeafQuery::ByCurveKind(kind) => {
-                assert_eq!(*kind, EdgeCurveKind::Line, "edges_linear must filter on Line");
+                assert_eq!(
+                    *kind,
+                    EdgeCurveKind::Line,
+                    "edges_linear must filter on Line"
+                );
             }
             other => panic!("edges_linear must be a ByCurveKind leaf, got: {other:?}"),
         },
@@ -140,10 +162,17 @@ fn selector_vocabulary_v2_leaves_compile_and_mint_typed_selectors() {
         "top_bbox",
         SelectorKind::Face,
         |query| match query {
-            LeafQuery::ByExtremalBbox { axis_index, max, tol_m } => {
+            LeafQuery::ByExtremalBbox {
+                axis_index,
+                max,
+                tol_m,
+            } => {
                 assert_eq!(*axis_index, 2, "top_bbox axis must be Z (index 2)");
                 assert!(*max, "top_bbox sense must be Max");
-                assert!(*tol_m >= 0.0, "top_bbox tol_m must be non-negative, got {tol_m}");
+                assert!(
+                    *tol_m >= 0.0,
+                    "top_bbox tol_m must be non-negative, got {tol_m}"
+                );
             }
             other => panic!("top_bbox must be a ByExtremalBbox leaf, got: {other:?}"),
         },
@@ -155,10 +184,17 @@ fn selector_vocabulary_v2_leaves_compile_and_mint_typed_selectors() {
         "top_cent",
         SelectorKind::Face,
         |query| match query {
-            LeafQuery::ByExtremalCentroid { axis_index, max, tol_m } => {
+            LeafQuery::ByExtremalCentroid {
+                axis_index,
+                max,
+                tol_m,
+            } => {
                 assert_eq!(*axis_index, 2, "top_cent axis must be Z (index 2)");
                 assert!(*max, "top_cent sense must be Max");
-                assert!(*tol_m >= 0.0, "top_cent tol_m must be non-negative, got {tol_m}");
+                assert!(
+                    *tol_m >= 0.0,
+                    "top_cent tol_m must be non-negative, got {tol_m}"
+                );
             }
             other => panic!("top_cent must be a ByExtremalCentroid leaf, got: {other:?}"),
         },
@@ -208,7 +244,10 @@ fn selector_vocabulary_v2_leaves_resolve_to_expected_counts() {
             &mut kernel,
             box_id,
             SelectorKind::Face,
-            LeafQuery::ByPerpendicular { axis: [0.0, 0.0, 1.0], tol_rad: one_deg },
+            LeafQuery::ByPerpendicular {
+                axis: [0.0, 0.0, 1.0],
+                tol_rad: one_deg
+            },
         ),
         4,
         "faces_perpendicular_to(+Z) must select the 4 side faces"
@@ -218,7 +257,10 @@ fn selector_vocabulary_v2_leaves_resolve_to_expected_counts() {
             &mut kernel,
             box_id,
             SelectorKind::Edge,
-            LeafQuery::ByPerpendicular { axis: [0.0, 0.0, 1.0], tol_rad: one_deg },
+            LeafQuery::ByPerpendicular {
+                axis: [0.0, 0.0, 1.0],
+                tol_rad: one_deg
+            },
         ),
         8,
         "edges_perpendicular_to(+Z) must select the 8 horizontal-ring edges"
@@ -238,7 +280,11 @@ fn selector_vocabulary_v2_leaves_resolve_to_expected_counts() {
             &mut kernel,
             box_id,
             SelectorKind::Face,
-            LeafQuery::ByExtremalBbox { axis_index: 2, max: true, tol_m: 1e-6 },
+            LeafQuery::ByExtremalBbox {
+                axis_index: 2,
+                max: true,
+                tol_m: 1e-6
+            },
         ),
         5,
         "extremal_by_bbox(Z,Max) selects every face whose bounding box reaches \
@@ -252,7 +298,11 @@ fn selector_vocabulary_v2_leaves_resolve_to_expected_counts() {
             &mut kernel,
             box_id,
             SelectorKind::Face,
-            LeafQuery::ByExtremalCentroid { axis_index: 2, max: true, tol_m: 1e-6 },
+            LeafQuery::ByExtremalCentroid {
+                axis_index: 2,
+                max: true,
+                tol_m: 1e-6
+            },
         ),
         1,
         "extremal_by_centroid(Z,Max) must select the single top face"
@@ -289,7 +339,9 @@ fn assert_selector_leaf(
 ) {
     let sv = match cell_value {
         Some(Value::Selector(sv)) => sv,
-        other => panic!("{label} must be a kernel-free Value::Selector (4119 value model), got: {other:?}"),
+        other => panic!(
+            "{label} must be a kernel-free Value::Selector (4119 value model), got: {other:?}"
+        ),
     };
     assert_eq!(sv.kind, kind, "{label}: selector kind");
     match &sv.node {

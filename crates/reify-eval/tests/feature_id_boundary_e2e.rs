@@ -33,7 +33,9 @@
 //!   `crates/reify-eval/tests/m8_m11_regression_checkpoint.rs`.
 
 use reify_eval::register_shell_extract_compute_fns;
-use reify_ir::{FeatureId, InterpolationKind, SampledField, SampledGridKind, StructureInstanceData, Value};
+use reify_ir::{
+    FeatureId, InterpolationKind, SampledField, SampledGridKind, StructureInstanceData, Value,
+};
 use reify_test_support::make_simple_engine;
 
 // ── Shared fixture (copied verbatim; see file header) ─────────────────────────
@@ -83,7 +85,13 @@ fn dispatch_shell_extract() -> Value {
     let sdf_value = Value::SampledField(synthetic_slab_field());
 
     let (result, _diags) = engine
-        .dispatch_compute_node("shell-extract::extract", &[options, sdf_value], &[], &Value::Undef, None)
+        .dispatch_compute_node(
+            "shell-extract::extract",
+            &[options, sdf_value],
+            &[],
+            &Value::Undef,
+            None,
+        )
         .expect("dispatch_compute_node must succeed on synthetic slab");
     result
 }
@@ -136,7 +144,10 @@ fn b10_production_path_carries_value_feature() {
     // The recovered FeatureId is structurally sound: it has a non-empty
     // entity name and its Display round-trips through FromStr (B3's
     // contract, now observed at the production engine boundary).
-    assert!(!fid.entity().is_empty(), "feature_id entity must be non-empty");
+    assert!(
+        !fid.entity().is_empty(),
+        "feature_id entity must be non-empty"
+    );
     let s = fid.to_string();
     assert_eq!(
         s.parse::<FeatureId>().as_ref(),

@@ -188,9 +188,12 @@ fn decode_operand(expr: &CompiledExpr) -> Option<OperandRef> {
     };
 
     let sub = match &object.kind {
-        CompiledExprKind::ValueRef(cell) | CompiledExprKind::CrossSubGeometryRef(cell) => {
-            cell.entity.rsplit('.').next().unwrap_or(&cell.entity).to_string()
-        }
+        CompiledExprKind::ValueRef(cell) | CompiledExprKind::CrossSubGeometryRef(cell) => cell
+            .entity
+            .rsplit('.')
+            .next()
+            .unwrap_or(&cell.entity)
+            .to_string(),
         _ => return None,
     };
 
@@ -292,7 +295,11 @@ fn scope_operand_refs(scope: &RelateScope) -> Vec<OperandRef> {
 /// (+ their sub-structure deps) keeps the build minimal; building the union ONCE lets
 /// a caller realize many scopes without cloning + rebuilding the whole module per
 /// scope. Empty `refs` ⇒ no build (the value map is empty).
-fn realize_structures(refs: &[OperandRef], module: &CompiledModule, engine: &mut Engine) -> ValueMap {
+fn realize_structures(
+    refs: &[OperandRef],
+    module: &CompiledModule,
+    engine: &mut Engine,
+) -> ValueMap {
     let mut keep = HashSet::new();
     for r in refs {
         keep.extend(structure_closure(&r.structure, module));
@@ -684,9 +691,17 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
     };
 
     // 3. Solve ONLY the driving set for the auto Frame.
-    let driving_rels: Vec<RelationInstance> =
-        partition.driving.iter().map(|&i| instances[i].clone()).collect();
-    let result = solve_frame(&driving_rels, &frame_unknown, &seed, tol.solver_convergence());
+    let driving_rels: Vec<RelationInstance> = partition
+        .driving
+        .iter()
+        .map(|&i| instances[i].clone())
+        .collect();
+    let result = solve_frame(
+        &driving_rels,
+        &frame_unknown,
+        &seed,
+        tol.solver_convergence(),
+    );
 
     let solved_pose = match result {
         // The solver's `unique` flag is intentionally not consumed here. For strict
@@ -748,8 +763,7 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
     if let Some(pose) = solved_pose {
         for &i in &partition.redundant {
             let rel = &instances[i];
-            let resid =
-                max_relation_residual(std::slice::from_ref(rel), &frame_unknown, &pose);
+            let resid = max_relation_residual(std::slice::from_ref(rel), &frame_unknown, &pose);
             if resid <= tol.assertion() {
                 // Satisfied within the assertion tolerance ⇒ silent (a consistent
                 // redundant relation, B2): an opt-in lint hook only, no diagnostic.
@@ -767,7 +781,9 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
                 .iter()
                 .copied()
                 .filter(|&d| {
-                    operand_refs(&scope.relations[d]).iter().any(|o| r_ops.contains(o))
+                    operand_refs(&scope.relations[d])
+                        .iter()
+                        .any(|o| r_ops.contains(o))
                 })
                 .collect();
 
@@ -823,10 +839,7 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
 /// does not recurse further. The caller MUST invoke this BEFORE the outer build's
 /// own state resets so the transient sub-build state is re-established by the main
 /// `check()` that follows.
-pub fn solve_scopes(
-    module: &CompiledModule,
-    engine: &mut Engine,
-) -> Vec<(String, RelateSolution)> {
+pub fn solve_scopes(module: &CompiledModule, engine: &mut Engine) -> Vec<(String, RelateSolution)> {
     // Collect every qualifying scope (≥1 `at auto` sub AND ≥1 relation); scopes with
     // neither are skipped before any realization — nothing to solve.
     let scopes: Vec<(String, RelateScope)> = module
@@ -1128,7 +1141,10 @@ structure Mech {
         let module = compile_source_with_stdlib(SOURCE);
         // Sanity: must compile without errors.
         assert!(
-            module.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
+            module
+                .diagnostics
+                .iter()
+                .all(|d| d.severity != reify_core::Severity::Error),
             "test fixture must compile without errors; got: {:#?}",
             module.diagnostics
         );
@@ -1203,7 +1219,10 @@ structure Mech2 {
 "#;
         let module = compile_source_with_stdlib(MULTI_JOINT_SOURCE);
         assert!(
-            module.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
+            module
+                .diagnostics
+                .iter()
+                .all(|d| d.severity != reify_core::Severity::Error),
             "multi-joint fixture must compile without errors; got: {:#?}",
             module.diagnostics
         );
@@ -1236,7 +1255,14 @@ structure Mech2 {
         use super::is_motion_joint_cell_type;
 
         // Driving-joint StructureRef tags — all must match.
-        for tag in &["Revolute", "Prismatic", "Cylindrical", "Planar", "Spherical", "Fixed"] {
+        for tag in &[
+            "Revolute",
+            "Prismatic",
+            "Cylindrical",
+            "Planar",
+            "Spherical",
+            "Fixed",
+        ] {
             assert!(
                 is_motion_joint_cell_type(&Type::StructureRef((*tag).to_string())),
                 "is_motion_joint_cell_type must return true for StructureRef({tag:?})"
@@ -1244,7 +1270,13 @@ structure Mech2 {
         }
         // Non-motion StructureRef tags — none must match.
         for tag in &[
-            "Coupling", "Mechanism", "Snapshot", "JointBinding", "BodyId", "SweepDim", "Twist",
+            "Coupling",
+            "Mechanism",
+            "Snapshot",
+            "JointBinding",
+            "BodyId",
+            "SweepDim",
+            "Twist",
         ] {
             assert!(
                 !is_motion_joint_cell_type(&Type::StructureRef((*tag).to_string())),
@@ -1324,7 +1356,10 @@ structure {mech_name} {{
             );
             let module = compile_source_with_stdlib(&source);
             assert!(
-                module.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
+                module
+                    .diagnostics
+                    .iter()
+                    .all(|d| d.severity != reify_core::Severity::Error),
                 "fixture for {kind_label} must compile without Error diagnostics; got: {:#?}",
                 module.diagnostics
             );
@@ -1344,7 +1379,10 @@ structure {mech_name} {{
         // ── Prismatic (2-arg: axis, length_range).
         check_kind("prismatic(link.hub_point, 0mm..100mm)", "Prismatic");
         // ── Cylindrical (3-arg: axis, translation_range, rotation_range).
-        check_kind("cylindrical(link.hub_point, 0mm..100mm, 0rad..1rad)", "Cylindrical");
+        check_kind(
+            "cylindrical(link.hub_point, 0mm..100mm, 0rad..1rad)",
+            "Cylindrical",
+        );
         // ── Planar (5-arg: axis_x, axis_y, range_x, range_y, range_theta).
         // Uses hub_point for both axis args; DD1 matches on the first arg.
         check_kind(
@@ -1371,13 +1409,15 @@ structure MechFixed {
 "#;
             let module = compile_source_with_stdlib(source);
             assert!(
-                module.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
+                module
+                    .diagnostics
+                    .iter()
+                    .all(|d| d.severity != reify_core::Severity::Error),
                 "fixed() fixture must compile without Error diagnostics"
             );
             let result = mounted_joint_cell("MechFixed", "link", &module);
             assert_eq!(
-                result,
-                None,
+                result, None,
                 "fixed() takes no args so mounted_joint_cell must return None — \
                  fixed joints cannot reference a sub datum by construction"
             );

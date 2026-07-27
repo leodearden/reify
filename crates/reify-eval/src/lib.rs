@@ -15,16 +15,16 @@ pub(crate) mod cell_commit;
 // eval-cell-commit-substrate.md §2.7, INV-EVAL-3). pub(crate) — no external
 // callers yet; task μ wires it into eval/eval_cached/edit_check from within
 // the crate.
-pub(crate) mod detectors;
 pub mod compute_cache_key;
 pub mod compute_targets;
+pub(crate) mod detectors;
+pub use compute_cache_key::compute_cache_key;
 /// The registration selector for
 /// [`Engine::register_production_compute_fns`][crate::Engine::register_production_compute_fns],
 /// re-exported at the crate root so downstream consumers (CLI / GUI /
 /// test_runner — tasks A2/A3/A4) name it as `reify_eval::MorphRegistration`
 /// (mirrors the `shell_extract_compute` re-export below).
 pub use compute_targets::MorphRegistration;
-pub use compute_cache_key::compute_cache_key;
 pub mod demand;
 pub mod observed_demand;
 pub use observed_demand::{DemandPruneMeasurement, WouldPruneByKind};
@@ -56,12 +56,12 @@ pub use engine_compute::ComputeDispatchRegistry;
 // reify-compute-contract foundation crate; re-exported here so the
 // crate-root `reify_eval::{Type}` paths downstream crates depend on
 // (INV-2 / BT-3) keep resolving unchanged.
+pub use graph::CancellationHandle;
+pub use graph::RealizationKernelProvenance;
 pub use reify_compute_contract::{
     ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle, RealizedContent,
     StructuredComputeDetail,
 };
-pub use graph::CancellationHandle;
-pub use graph::RealizationKernelProvenance;
 pub mod solver_progress;
 pub use solver_progress::{SolverProgressSink, SolverProgressUpdate};
 pub mod appearance;
@@ -76,12 +76,12 @@ mod engine_demand;
 mod engine_edit;
 mod engine_eval;
 mod engine_helpers;
-mod resolve_order;
-pub mod scope_containment;
 pub mod freshness_walk;
 pub mod gating;
 pub mod kernel_attribute_hook;
 pub mod kernel_registry;
+mod resolve_order;
+pub mod scope_containment;
 /// Re-exported for integration tests that need to assert against the progress
 /// throttle cadence without duplicating the constant.  Hidden from public docs.
 #[doc(hidden)]
@@ -92,11 +92,11 @@ pub use engine_eval::ASSERT_MSG_PREFIX;
 pub use engine_eval::is_representable_cell_type;
 pub(crate) mod arg_acceptance;
 mod engine_purposes;
-pub(crate) mod structural_query;
 mod engine_tolerance;
 mod geometry_ops;
 #[cfg(test)]
 mod registry_drift_tests;
+pub(crate) mod structural_query;
 // Task #4673 (geom-dispatch-registry L4): cfg-gated cross-crate test seam exposing
 // a 1:1 delegate to the `pub(crate)` `geometry_ops::compile_geometry_op` for the
 // characterization/golden harness in `tests/compile_geometry_op_characterization.rs`.
@@ -124,22 +124,22 @@ pub mod multi_load_dispatch;
 pub mod persistent_cache;
 mod shell_extract_compute;
 pub use shell_extract_compute::{register_shell_extract_compute_fns, shell_extract_compute_fn};
+mod bom_report;
 pub mod significance_filter;
 pub mod test_runner;
 pub mod tolerance_bucket;
 pub mod tolerance_budget;
 pub mod tolerance_combine;
-mod bom_report;
 pub use bom_report::{BomLine, BomReport, ProvenanceEntry, WasteEntry};
 pub(crate) mod tolerance_format;
 pub mod tolerance_gate;
 pub mod tolerance_promise;
 pub(crate) mod tolerance_scope;
+pub use morph_producer::{BRepSnapshot, MorphProducer, MorphRequest, MorphResult};
 pub use morph_stage_b::{
     BijectionFailure, CorrespondenceMap, NamingLayerErrorReason, SubShapeKind, SubShapeSide,
     stage_b_eligible,
 };
-pub use morph_producer::{BRepSnapshot, MorphProducer, MorphRequest, MorphResult};
 pub mod structural_classifier;
 pub use structural_classifier::{
     ParameterClass, classify_cell, realization_graph_shape_hash, stage_a_eligible,
@@ -150,8 +150,8 @@ pub mod selector_vocabulary_v2;
 pub use selector_vocabulary_v2::{
     Axis, ExtremalSense, adjacent_to_face, ancestor_faces_of_edge, complement, created_by_feature,
     edges_by_curve_kind, edges_perpendicular_to, except, extremal_by_bbox, extremal_by_centroid,
-    faces_by_surface_kind, faces_perpendicular_to, geom_universal, intersect,
-    owner_body_of, siblings_of_face, split_by_feature, union,
+    faces_by_surface_kind, faces_perpendicular_to, geom_universal, intersect, owner_body_of,
+    siblings_of_face, split_by_feature, union,
 };
 pub mod feature_datum;
 /// Per-scope relate-solve — geometric-relations ζ (task 4386). Collects the
@@ -399,9 +399,9 @@ fn value_type_kind_matches(
             matches!(ty, Type::AnySelector) || matches!(ty, Type::Selector(k) if *k == sv.kind)
         }
         Value::Feature(_) => matches!(ty, Type::Feature), // task 4808 / P1 γ
-        // If a future `Value::TraitObjectInstance` variant is added, add a
-        // matching arm here AND relax the runtime assertion so the compiler
-        // enforces completeness.
+                                                          // If a future `Value::TraitObjectInstance` variant is added, add a
+                                                          // matching arm here AND relax the runtime assertion so the compiler
+                                                          // enforces completeness.
     }
 }
 

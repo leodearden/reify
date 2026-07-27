@@ -130,9 +130,15 @@ structure def LibAppearance {
     let eval_result = engine.eval(&compiled);
 
     // Zero Error-severity diagnostics.
-    let errors: Vec<_> =
-        eval_result.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(errors.is_empty(), "expected no Error diagnostics, got: {errors:#?}");
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {errors:#?}"
+    );
 
     // Helper: extract an f64 from Real / Scalar / Int; panics on mismatch.
     let extract_real = |val: Option<Value>, field: &str| -> f64 {
@@ -152,9 +158,9 @@ structure def LibAppearance {
     //   (cell_name, r, g, b, finish_variant, metalness, roughness)
     let cases: &[(&str, f64, f64, f64, &str, f64, f64)] = &[
         ("steel", 0.50, 0.50, 0.52, "Satin", 0.90, 0.40),
-        ("al",    0.66, 0.67, 0.69, "Satin", 0.90, 0.45),
-        ("ti",    0.55, 0.54, 0.53, "Satin", 0.85, 0.45),
-        ("abs",   0.92, 0.91, 0.88, "Matte", 0.0,  0.85),
+        ("al", 0.66, 0.67, 0.69, "Satin", 0.90, 0.45),
+        ("ti", 0.55, 0.54, 0.53, "Satin", 0.85, 0.45),
+        ("abs", 0.92, 0.91, 0.88, "Matte", 0.0, 0.85),
     ];
 
     for &(cell_name, exp_r, exp_g, exp_b, exp_finish, exp_metalness, exp_roughness) in cases {
@@ -170,9 +176,9 @@ structure def LibAppearance {
         });
         let app_data = match &appearance {
             Value::StructureInstance(data) => data,
-            other => panic!(
-                "{STRUCT}.{cell_name}.appearance should be StructureInstance, got {other:?}"
-            ),
+            other => {
+                panic!("{STRUCT}.{cell_name}.appearance should be StructureInstance, got {other:?}")
+            }
         };
         assert_eq!(
             app_data.type_name, "Appearance",
@@ -181,9 +187,8 @@ structure def LibAppearance {
         );
 
         // appearance.color must be a non-Undef StructureInstance of type "Color".
-        let color = struct_field(&appearance, "color").unwrap_or_else(|| {
-            panic!("{STRUCT}.{cell_name}.appearance must have a `color` field")
-        });
+        let color = struct_field(&appearance, "color")
+            .unwrap_or_else(|| panic!("{STRUCT}.{cell_name}.appearance must have a `color` field"));
         let color_data = match &color {
             Value::StructureInstance(data) => data,
             other => panic!(
@@ -234,9 +239,9 @@ structure def LibAppearance {
                     "{STRUCT}.{cell_name}.appearance.finish: expected {exp_finish:?}, got {variant:?}"
                 );
             }
-            other => panic!(
-                "{STRUCT}.{cell_name}.appearance.finish should be an Enum, got {other:?}"
-            ),
+            other => {
+                panic!("{STRUCT}.{cell_name}.appearance.finish should be an Enum, got {other:?}")
+            }
         }
 
         // appearance.metalness / .roughness must round-trip within 1e-9.
@@ -294,8 +299,11 @@ structure def PlainBody {
     let eval_result = engine.eval(&compiled);
 
     // Zero errors.
-    let errors: Vec<_> =
-        eval_result.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(errors.is_empty(), "expected no errors, got: {errors:#?}");
 
     let styled_material = eval_result
@@ -316,8 +324,19 @@ structure def PlainBody {
         struct_field(&styled_app, "color").expect("Appearance must have a `color` field");
     let mut diags: Vec<reify_core::Diagnostic> = Vec::new();
     let rgb = resolve_color(&styled_color, &mut diags);
-    assert_eq!(rgb, Rgb8 { r: 102, g: 102, b: 107 }, "r:0.4→102; g:0.4→102; b:0.42→107");
-    assert!(diags.is_empty(), "no diags expected for styled color, got: {diags:#?}");
+    assert_eq!(
+        rgb,
+        Rgb8 {
+            r: 102,
+            g: 102,
+            b: 107
+        },
+        "r:0.4→102; g:0.4→102; b:0.42→107"
+    );
+    assert!(
+        diags.is_empty(),
+        "no diags expected for styled color, got: {diags:#?}"
+    );
 
     // (2) Anti-drift: plain body (stdlib Appearance() default, r=g=b=0.7) must resolve
     //     to the same neutral grey as the hand-minted neutral_appearance() fallback path.
@@ -327,7 +346,10 @@ structure def PlainBody {
         struct_field(&plain_app, "color").expect("plain Appearance must have a `color` field");
     let mut plain_diags: Vec<reify_core::Diagnostic> = Vec::new();
     let plain_rgb = resolve_color(&plain_color, &mut plain_diags);
-    assert!(plain_diags.is_empty(), "no diags expected for plain color, got: {plain_diags:#?}");
+    assert!(
+        plain_diags.is_empty(),
+        "no diags expected for plain color, got: {plain_diags:#?}"
+    );
 
     // Hand-minted fallback path: a body with NO material field → neutral_appearance().
     let no_material_body = Value::StructureInstance(Box::new(StructureInstanceData {
@@ -361,8 +383,8 @@ structure def PlainBody {
     // If the .ri defaults change, neutral_appearance() must be updated in tandem.
 
     // finish — enum variant must agree.
-    let plain_finish = struct_field(&plain_app, "finish")
-        .expect("plain Appearance must have a `finish` field");
+    let plain_finish =
+        struct_field(&plain_app, "finish").expect("plain Appearance must have a `finish` field");
     let neutral_finish = struct_field(&neutral_app, "finish")
         .expect("neutral Appearance must have a `finish` field");
     match (plain_finish, neutral_finish) {

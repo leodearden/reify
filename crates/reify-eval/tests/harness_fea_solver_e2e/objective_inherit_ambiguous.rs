@@ -340,7 +340,12 @@ fn eval_emits_objective_inherit_ambiguous_three_containers_sorted_order() {
     // C_leaf: objective-less leaf.
     let c_leaf = TopologyTemplateBuilder::new("C_leaf")
         .auto_param("C_leaf", "k", Type::length())
-        .constraint("C_leaf", 0, None, gt(value_ref("C_leaf", "k"), literal(mm(0.0))))
+        .constraint(
+            "C_leaf",
+            0,
+            None,
+            gt(value_ref("C_leaf", "k"), literal(mm(0.0))),
+        )
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))

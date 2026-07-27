@@ -223,7 +223,9 @@ fn nurbs_surface_bilinear_patch_bbox_e2e() {
     assert!(errors.is_empty(), "build errors: {errors:?}");
 
     let max = assert_bbox_max(
-        result.values.get(&ValueCellId::new("NurbsSurfaceE2e", "bb")),
+        result
+            .values
+            .get(&ValueCellId::new("NurbsSurfaceE2e", "bb")),
         "nurbs_surface bilinear patch",
     );
 

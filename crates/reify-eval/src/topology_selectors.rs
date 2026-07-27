@@ -1305,12 +1305,12 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
         // ByPerpendicular is kind-agnostic (mirrors `All`): dispatch on the
         // selector's kind to the matching v2 helper (verbatim reuse).
         LeafQuery::ByPerpendicular { axis, tol_rad } => match kind {
-            SelectorKind::Face => {
-                crate::selector_vocabulary_v2::faces_perpendicular_to(kernel, handle, *axis, *tol_rad)
-            }
-            SelectorKind::Edge => {
-                crate::selector_vocabulary_v2::edges_perpendicular_to(kernel, handle, *axis, *tol_rad)
-            }
+            SelectorKind::Face => crate::selector_vocabulary_v2::faces_perpendicular_to(
+                kernel, handle, *axis, *tol_rad,
+            ),
+            SelectorKind::Edge => crate::selector_vocabulary_v2::edges_perpendicular_to(
+                kernel, handle, *axis, *tol_rad,
+            ),
             SelectorKind::Body | SelectorKind::Vertex => Err(QueryError::QueryFailed(
                 "ByPerpendicular is only defined for Face/Edge selectors".into(),
             )),
@@ -1325,13 +1325,27 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
         // the selector's kind, then delegate to the candidate-slice v2 helper.
         // axis_index (0/1/2) → Axis and max:bool → ExtremalSense are the reify-ir
         // ↔ reify-eval encoding bridges (reify-ir cannot name Axis/ExtremalSense).
-        LeafQuery::ByExtremalBbox { axis_index, max, tol_m } => {
+        LeafQuery::ByExtremalBbox {
+            axis_index,
+            max,
+            tol_m,
+        } => {
             let axis = extremal_axis_from_index(*axis_index)?;
             let sense = extremal_sense_from_max(*max);
             let candidates = extract_by_kind(kind, handle, kernel)?;
-            crate::selector_vocabulary_v2::extremal_by_bbox(kernel, &candidates, axis, sense, *tol_m)
+            crate::selector_vocabulary_v2::extremal_by_bbox(
+                kernel,
+                &candidates,
+                axis,
+                sense,
+                *tol_m,
+            )
         }
-        LeafQuery::ByExtremalCentroid { axis_index, max, tol_m } => {
+        LeafQuery::ByExtremalCentroid {
+            axis_index,
+            max,
+            tol_m,
+        } => {
             let axis = extremal_axis_from_index(*axis_index)?;
             let sense = extremal_sense_from_max(*max);
             let candidates = extract_by_kind(kind, handle, kernel)?;
@@ -1505,10 +1519,9 @@ pub fn resolve_against_carried_topology(
         }
         SelectorNode::Difference(a, b) => {
             let a_ids = resolve_against_carried_topology(a, carried)?;
-            let b_set: HashSet<GeometryHandleId> =
-                resolve_against_carried_topology(b, carried)?
-                    .into_iter()
-                    .collect();
+            let b_set: HashSet<GeometryHandleId> = resolve_against_carried_topology(b, carried)?
+                .into_iter()
+                .collect();
             let mut out: Vec<GeometryHandleId> = Vec::new();
             let mut seen: HashSet<GeometryHandleId> = HashSet::new();
             for id in a_ids {
@@ -1604,8 +1617,8 @@ pub fn nodes_for_faces(faces: &[GeometryHandleId], carried: &CarriedTopology) ->
 pub(crate) fn region_query_capability(
     sv: &reify_ir::value::SelectorValue,
 ) -> Option<reify_ir::QueryCapability> {
-    use reify_ir::value::{LeafQuery, SelectorNode};
     use reify_ir::QueryCapability;
+    use reify_ir::value::{LeafQuery, SelectorNode};
 
     fn first_leaf_query(node: &SelectorNode) -> Option<&LeafQuery> {
         match node {
@@ -3233,9 +3246,18 @@ mod tests {
         ];
         let mut kernel = CountingKernel::new()
             .with_faces(face_ids.clone())
-            .with_response(face_ids[0], Value::String("{\"x\":0,\"y\":0,\"z\":1}".into()))
-            .with_response(face_ids[1], Value::String("{\"x\":1,\"y\":0,\"z\":0}".into()))
-            .with_response(face_ids[2], Value::String("{\"x\":0,\"y\":0,\"z\":-1}".into()));
+            .with_response(
+                face_ids[0],
+                Value::String("{\"x\":0,\"y\":0,\"z\":1}".into()),
+            )
+            .with_response(
+                face_ids[1],
+                Value::String("{\"x\":1,\"y\":0,\"z\":0}".into()),
+            )
+            .with_response(
+                face_ids[2],
+                Value::String("{\"x\":0,\"y\":0,\"z\":-1}".into()),
+            );
         let sv = SelectorValue::leaf(
             SelectorKind::Face,
             target_ref(1),
@@ -3267,9 +3289,18 @@ mod tests {
         ];
         let mut kernel = CountingKernel::new()
             .with_edges(edge_ids.clone())
-            .with_response(edge_ids[0], Value::String("{\"x\":0,\"y\":0,\"z\":1}".into()))
-            .with_response(edge_ids[1], Value::String("{\"x\":1,\"y\":0,\"z\":0}".into()))
-            .with_response(edge_ids[2], Value::String("{\"x\":0,\"y\":1,\"z\":0}".into()));
+            .with_response(
+                edge_ids[0],
+                Value::String("{\"x\":0,\"y\":0,\"z\":1}".into()),
+            )
+            .with_response(
+                edge_ids[1],
+                Value::String("{\"x\":1,\"y\":0,\"z\":0}".into()),
+            )
+            .with_response(
+                edge_ids[2],
+                Value::String("{\"x\":0,\"y\":1,\"z\":0}".into()),
+            );
         let sv = SelectorValue::leaf(
             SelectorKind::Edge,
             target_ref(1),
@@ -3402,9 +3433,8 @@ mod tests {
             GeometryHandleId(332),
             GeometryHandleId(333),
         ];
-        let centroid = |z: f64| -> Value {
-            Value::String(format!("{{\"x\":0,\"y\":0,\"z\":{z}}}"))
-        };
+        let centroid =
+            |z: f64| -> Value { Value::String(format!("{{\"x\":0,\"y\":0,\"z\":{z}}}")) };
         let mut kernel = CountingKernel::new()
             .with_faces(face_ids.clone())
             .with_response(face_ids[0], centroid(0.010))
@@ -3480,13 +3510,20 @@ mod tests {
 
     #[test]
     fn resolve_leaf_all_vertices_extracts_all_vertices() {
-        let vertex_ids = vec![GeometryHandleId(401), GeometryHandleId(402), GeometryHandleId(403)];
+        let vertex_ids = vec![
+            GeometryHandleId(401),
+            GeometryHandleId(402),
+            GeometryHandleId(403),
+        ];
         let mut kernel = CountingKernel::new().with_vertices(vertex_ids.clone());
         let sv =
             SelectorValue::leaf(SelectorKind::Vertex, target_ref(1), LeafQuery::All).expect("leaf");
         let mut diags = Vec::new();
         let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
-        assert_eq!(got, vertex_ids, "All/Vertex yields the extract_vertices order");
+        assert_eq!(
+            got, vertex_ids,
+            "All/Vertex yields the extract_vertices order"
+        );
         assert!(diags.is_empty(), "no diagnostics expected");
         assert_eq!(
             kernel.extract_vertices_calls(),
@@ -3519,8 +3556,12 @@ mod tests {
         // No staged vertices needed — the Named arm is kernel-free (short-circuits
         // before any extract_vertices call).
         let mut kernel = CountingKernel::new();
-        let sv = SelectorValue::leaf(SelectorKind::Vertex, target_ref(1), LeafQuery::Named("tip".into()))
-            .expect("leaf");
+        let sv = SelectorValue::leaf(
+            SelectorKind::Vertex,
+            target_ref(1),
+            LeafQuery::Named("tip".into()),
+        )
+        .expect("leaf");
         let mut diags = Vec::new();
         let result = resolve(&sv, &mut kernel, &mut diags);
 
@@ -3596,10 +3637,34 @@ mod tests {
         // Record face_b (local_index 1) BEFORE face_a (local_index 0) so the
         // output order is governed by the (local_index, id) sort, not by the
         // (unspecified) HashMap iteration / insertion order.
-        table.record(KernelHandle { kernel: KernelId::Occt, id: face_b }, role_attr(Role::MidSurfaceFace, 1));
-        table.record(KernelHandle { kernel: KernelId::Occt, id: face_a }, role_attr(Role::MidSurfaceFace, 0));
-        table.record(KernelHandle { kernel: KernelId::Occt, id: edge }, role_attr(Role::MidSurfaceEdge, 0));
-        table.record(KernelHandle { kernel: KernelId::Occt, id: other }, role_attr(Role::Side, 0));
+        table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: face_b,
+            },
+            role_attr(Role::MidSurfaceFace, 1),
+        );
+        table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: face_a,
+            },
+            role_attr(Role::MidSurfaceFace, 0),
+        );
+        table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: edge,
+            },
+            role_attr(Role::MidSurfaceEdge, 0),
+        );
+        table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: other,
+            },
+            role_attr(Role::Side, 0),
+        );
 
         // Disjoint sentinel sub-shapes: if the ByRole arm wrongly fell through
         // to extract_faces/extract_edges, the result would contain these.
@@ -3705,7 +3770,13 @@ mod tests {
         local_index: u32,
         mod_history: Vec<ModEntry>,
     ) -> TopologyAttribute {
-        TopologyAttribute { feature_id, role, local_index, user_label: None, mod_history }
+        TopologyAttribute {
+            feature_id,
+            role,
+            local_index,
+            user_label: None,
+            mod_history,
+        }
     }
 
     #[test]
@@ -3722,11 +3793,41 @@ mod tests {
         let mut table = TopologyAttributeTable::default();
         // f1's faces recorded OUT OF ORDER (local_index 1 before 0) so the
         // output order is governed by the (local_index, id) sort.
-        table.record(KernelHandle { kernel: KernelId::Occt, id: f1_face_b }, feature_attr(f1.clone(), Role::Cap(CapKind::Top), 1, vec![]));
-        table.record(KernelHandle { kernel: KernelId::Occt, id: f1_face_a }, feature_attr(f1.clone(), Role::Side, 0, vec![]));
-        table.record(KernelHandle { kernel: KernelId::Occt, id: f1_edge }, feature_attr(f1.clone(), Role::NewEdge, 0, vec![]));
-        table.record(KernelHandle { kernel: KernelId::Occt, id: f2_face_b }, feature_attr(f2.clone(), Role::Cap(CapKind::Bottom), 1, vec![]));
-        table.record(KernelHandle { kernel: KernelId::Occt, id: f2_face_a }, feature_attr(f2.clone(), Role::Side, 0, vec![]));
+        table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: f1_face_b,
+            },
+            feature_attr(f1.clone(), Role::Cap(CapKind::Top), 1, vec![]),
+        );
+        table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: f1_face_a,
+            },
+            feature_attr(f1.clone(), Role::Side, 0, vec![]),
+        );
+        table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: f1_edge,
+            },
+            feature_attr(f1.clone(), Role::NewEdge, 0, vec![]),
+        );
+        table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: f2_face_b,
+            },
+            feature_attr(f2.clone(), Role::Cap(CapKind::Bottom), 1, vec![]),
+        );
+        table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: f2_face_a,
+            },
+            feature_attr(f2.clone(), Role::Side, 0, vec![]),
+        );
 
         // Disjoint sentinel sub-shapes: if the arm wrongly fell through to
         // extract_faces/extract_edges, the result would contain these.
@@ -3749,7 +3850,10 @@ mod tests {
             "CreatedByFeature(f1) returns exactly f1's 2 face ids, ordered by \
              (local_index, id) — excludes f1's edge entry and all of f2's entries"
         );
-        assert!(diags.is_empty(), "the kernel-free table filter pushes no diagnostics");
+        assert!(
+            diags.is_empty(),
+            "the kernel-free table filter pushes no diagnostics"
+        );
 
         let sv_f2 = SelectorValue::leaf(
             SelectorKind::Face,
@@ -3775,8 +3879,16 @@ mod tests {
             "CreatedByFeature(f1) and CreatedByFeature(f2) must resolve to disjoint face sets"
         );
 
-        assert_eq!(kernel.extract_faces_calls(), 0, "CreatedByFeature must not call extract_faces");
-        assert_eq!(kernel.extract_edges_calls(), 0, "CreatedByFeature must not call extract_edges");
+        assert_eq!(
+            kernel.extract_faces_calls(),
+            0,
+            "CreatedByFeature must not call extract_faces"
+        );
+        assert_eq!(
+            kernel.extract_edges_calls(),
+            0,
+            "CreatedByFeature must not call extract_edges"
+        );
     }
 
     #[test]
@@ -3789,25 +3901,53 @@ mod tests {
         let split_edge = GeometryHandleId(6103); // face-gated out despite matching mod_history
         let unsplit_face = GeometryHandleId(6104); // no f3 mod_history entry
 
-        let split_entry = ModEntry { splitting_feature_id: f3.clone(), split_index: 0 };
-        let other_entry = ModEntry { splitting_feature_id: other_feature.clone(), split_index: 0 };
+        let split_entry = ModEntry {
+            splitting_feature_id: f3.clone(),
+            split_index: 0,
+        };
+        let other_entry = ModEntry {
+            splitting_feature_id: other_feature.clone(),
+            split_index: 0,
+        };
 
         let mut table = TopologyAttributeTable::default();
         // Recorded OUT OF ORDER (local_index 1 before 0).
         table.record(
-            KernelHandle { kernel: KernelId::Occt, id: split_face_b },
-            feature_attr(other_feature.clone(), Role::Cap(CapKind::Top), 1, vec![split_entry.clone()]),
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: split_face_b,
+            },
+            feature_attr(
+                other_feature.clone(),
+                Role::Cap(CapKind::Top),
+                1,
+                vec![split_entry.clone()],
+            ),
         );
         table.record(
-            KernelHandle { kernel: KernelId::Occt, id: split_face_a },
-            feature_attr(other_feature.clone(), Role::Side, 0, vec![split_entry.clone()]),
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: split_face_a,
+            },
+            feature_attr(
+                other_feature.clone(),
+                Role::Side,
+                0,
+                vec![split_entry.clone()],
+            ),
         );
         table.record(
-            KernelHandle { kernel: KernelId::Occt, id: split_edge },
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: split_edge,
+            },
             feature_attr(other_feature.clone(), Role::NewEdge, 0, vec![split_entry]),
         );
         table.record(
-            KernelHandle { kernel: KernelId::Occt, id: unsplit_face },
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: unsplit_face,
+            },
             feature_attr(other_feature, Role::Side, 2, vec![other_entry]),
         );
 
@@ -3832,8 +3972,16 @@ mod tests {
              — excludes the edge entry and the entry split by a different feature"
         );
         assert!(diags.is_empty());
-        assert_eq!(kernel.extract_faces_calls(), 0, "SplitByFeature must not call extract_faces");
-        assert_eq!(kernel.extract_edges_calls(), 0, "SplitByFeature must not call extract_edges");
+        assert_eq!(
+            kernel.extract_faces_calls(),
+            0,
+            "SplitByFeature must not call extract_faces"
+        );
+        assert_eq!(
+            kernel.extract_edges_calls(),
+            0,
+            "SplitByFeature must not call extract_edges"
+        );
     }
 
     #[test]
@@ -3851,7 +3999,10 @@ mod tests {
         let mut diags = Vec::new();
         let got = resolve_with_attributes(&sv_created, &mut kernel, &table, &mut diags)
             .expect("resolve_with_attributes ok");
-        assert!(got.is_empty(), "CreatedByFeature over an empty table resolves to empty");
+        assert!(
+            got.is_empty(),
+            "CreatedByFeature over an empty table resolves to empty"
+        );
         assert!(
             diags.is_empty(),
             "the empty→Undef decision lives in resolve_selector_to_list, not in resolve_leaf"
@@ -3865,7 +4016,10 @@ mod tests {
         .expect("leaf");
         let got = resolve_with_attributes(&sv_split, &mut kernel, &table, &mut diags)
             .expect("resolve_with_attributes ok");
-        assert!(got.is_empty(), "SplitByFeature over an empty table resolves to empty");
+        assert!(
+            got.is_empty(),
+            "SplitByFeature over an empty table resolves to empty"
+        );
         assert!(diags.is_empty());
     }
 
@@ -3899,7 +4053,10 @@ mod tests {
             },
             Role::CapCornerVertex { face: CapKind::Top },
         ] {
-            assert!(!role_is_face(role), "{role:?} must NOT classify as a face role");
+            assert!(
+                !role_is_face(role),
+                "{role:?} must NOT classify as a face role"
+            );
         }
     }
 
@@ -4059,7 +4216,10 @@ mod tests {
         use reify_ir::QueryCapability;
         let sv = body_sv(
             SelectorKind::Face,
-            LeafQuery::ByNormal { dir: [0.0, 0.0, 1.0], tol_rad: 0.01 },
+            LeafQuery::ByNormal {
+                dir: [0.0, 0.0, 1.0],
+                tol_rad: 0.01,
+            },
         );
         assert_eq!(
             super::region_query_capability(&sv),
@@ -4070,7 +4230,13 @@ mod tests {
     #[test]
     fn region_query_capability_by_area_is_brep_and_mesh() {
         use reify_ir::QueryCapability;
-        let sv = body_sv(SelectorKind::Face, LeafQuery::ByArea { min_m2: 0.0, max_m2: 1.0 });
+        let sv = body_sv(
+            SelectorKind::Face,
+            LeafQuery::ByArea {
+                min_m2: 0.0,
+                max_m2: 1.0,
+            },
+        );
         assert_eq!(
             super::region_query_capability(&sv),
             Some(QueryCapability::BRepAndMesh)
@@ -4080,7 +4246,13 @@ mod tests {
     #[test]
     fn region_query_capability_by_length_is_brep_and_mesh() {
         use reify_ir::QueryCapability;
-        let sv = body_sv(SelectorKind::Edge, LeafQuery::ByLength { min_m: 0.0, max_m: 1.0 });
+        let sv = body_sv(
+            SelectorKind::Edge,
+            LeafQuery::ByLength {
+                min_m: 0.0,
+                max_m: 1.0,
+            },
+        );
         assert_eq!(
             super::region_query_capability(&sv),
             Some(QueryCapability::BRepAndMesh)
@@ -4090,7 +4262,13 @@ mod tests {
     #[test]
     fn region_query_capability_by_height_is_brep_and_mesh() {
         use reify_ir::QueryCapability;
-        let sv = body_sv(SelectorKind::Edge, LeafQuery::ByHeight { z_m: 0.0, tol_m: 0.001 });
+        let sv = body_sv(
+            SelectorKind::Edge,
+            LeafQuery::ByHeight {
+                z_m: 0.0,
+                tol_m: 0.001,
+            },
+        );
         assert_eq!(
             super::region_query_capability(&sv),
             Some(QueryCapability::BRepAndMesh)
@@ -4102,7 +4280,10 @@ mod tests {
         use reify_ir::QueryCapability;
         let sv = body_sv(
             SelectorKind::Edge,
-            LeafQuery::ByParallel { axis: [1.0, 0.0, 0.0], tol_rad: 0.01 },
+            LeafQuery::ByParallel {
+                axis: [1.0, 0.0, 0.0],
+                tol_rad: 0.01,
+            },
         );
         assert_eq!(
             super::region_query_capability(&sv),
@@ -4115,7 +4296,10 @@ mod tests {
         use reify_ir::QueryCapability;
         let sv = body_sv(
             SelectorKind::Face,
-            LeafQuery::ByPerpendicular { axis: [0.0, 1.0, 0.0], tol_rad: 0.01 },
+            LeafQuery::ByPerpendicular {
+                axis: [0.0, 1.0, 0.0],
+                tol_rad: 0.01,
+            },
         );
         assert_eq!(
             super::region_query_capability(&sv),
@@ -4126,7 +4310,10 @@ mod tests {
     #[test]
     fn region_query_capability_by_surface_kind_is_brep_and_mesh() {
         use reify_ir::{FaceSurfaceKind, QueryCapability};
-        let sv = body_sv(SelectorKind::Face, LeafQuery::BySurfaceKind(FaceSurfaceKind::Plane));
+        let sv = body_sv(
+            SelectorKind::Face,
+            LeafQuery::BySurfaceKind(FaceSurfaceKind::Plane),
+        );
         assert_eq!(
             super::region_query_capability(&sv),
             Some(QueryCapability::BRepAndMesh)
@@ -4136,7 +4323,10 @@ mod tests {
     #[test]
     fn region_query_capability_by_curve_kind_is_brep_and_mesh() {
         use reify_ir::{EdgeCurveKind, QueryCapability};
-        let sv = body_sv(SelectorKind::Edge, LeafQuery::ByCurveKind(EdgeCurveKind::Line));
+        let sv = body_sv(
+            SelectorKind::Edge,
+            LeafQuery::ByCurveKind(EdgeCurveKind::Line),
+        );
         assert_eq!(
             super::region_query_capability(&sv),
             Some(QueryCapability::BRepAndMesh)
@@ -4148,7 +4338,11 @@ mod tests {
         use reify_ir::QueryCapability;
         let sv = body_sv(
             SelectorKind::Face,
-            LeafQuery::ByExtremalBbox { axis_index: 2, max: true, tol_m: 0.001 },
+            LeafQuery::ByExtremalBbox {
+                axis_index: 2,
+                max: true,
+                tol_m: 0.001,
+            },
         );
         assert_eq!(
             super::region_query_capability(&sv),
@@ -4161,7 +4355,11 @@ mod tests {
         use reify_ir::QueryCapability;
         let sv = body_sv(
             SelectorKind::Face,
-            LeafQuery::ByExtremalCentroid { axis_index: 1, max: false, tol_m: 0.001 },
+            LeafQuery::ByExtremalCentroid {
+                axis_index: 1,
+                max: false,
+                tol_m: 0.001,
+            },
         );
         assert_eq!(
             super::region_query_capability(&sv),
@@ -4239,7 +4437,10 @@ mod tests {
         use reify_ir::QueryCapability;
         let first = body_sv(
             SelectorKind::Face,
-            LeafQuery::ByNormal { dir: [0.0, 0.0, 1.0], tol_rad: 0.01 },
+            LeafQuery::ByNormal {
+                dir: [0.0, 0.0, 1.0],
+                tol_rad: 0.01,
+            },
         );
         let second = body_sv(SelectorKind::Face, LeafQuery::All);
         let sv = SelectorValue::union(vec![first, second]).expect("union");

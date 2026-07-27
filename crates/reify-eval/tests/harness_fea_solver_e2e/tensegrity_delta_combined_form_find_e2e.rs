@@ -244,7 +244,11 @@ fn trampoline_combined_prism_membrane_has_nonempty_surface_stresses() {
         Some(Value::List(fs)) => fs,
         other => panic!("FormFindResult.member_forces must be a List, got {other:?}"),
     };
-    assert_eq!(forces.len(), 12, "expected 12 member forces (3 struts + 9 cables)");
+    assert_eq!(
+        forces.len(),
+        12,
+        "expected 12 member forces (3 struts + 9 cables)"
+    );
     for (i, v) in forces.iter().enumerate().take(3) {
         let f = force_val(v);
         assert!(
@@ -360,9 +364,9 @@ structure def CombinedPrism {
             "form_find_free (5-arg) should return a FormFindResult; got {:?}",
             d.type_name
         ),
-        other => panic!(
-            "CombinedPrism.form should be a FormFindResult StructureInstance, got {other:?}"
-        ),
+        other => {
+            panic!("CombinedPrism.form should be a FormFindResult StructureInstance, got {other:?}")
+        }
     }
 
     // A ComputeNode with target == "solver::form_find_free" must exist in the graph
@@ -531,7 +535,7 @@ fn trampoline_four_arg_backward_compat_has_empty_surface_stresses() {
         triplex_group_ids(),
         triplex_seeds(),
         Value::Int(1), // reference_group = horizontals
-        // no 5th input — 4-arg backward-compat path
+                       // no 5th input — 4-arg backward-compat path
     ];
 
     let fields = match call_form_find_free(&value_inputs) {

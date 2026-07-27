@@ -192,10 +192,7 @@ fn multi_param_objective_emits_solver_optimality_unproven_warning() {
     let a_id = ValueCellId::new("ObjectiveMaxIters", "a");
     let a_si = match result.values.get(&a_id) {
         Some(Value::Scalar { si_value, .. }) => *si_value,
-        other => panic!(
-            "expected Scalar for ObjectiveMaxIters.a, got {:?}",
-            other
-        ),
+        other => panic!("expected Scalar for ObjectiveMaxIters.a, got {:?}", other),
     };
     assert!(
         a_si >= 0.009 - 1e-9,
@@ -219,8 +216,7 @@ fn multi_param_objective_emits_solver_optimality_unproven_warning() {
 /// deletion/renaming of the example artifact.
 #[test]
 fn example_file_solver_optimality_unproven_emits_warning() {
-    const EXAMPLE_SRC: &str =
-        include_str!("../../../examples/solver_optimality_unproven.ri");
+    const EXAMPLE_SRC: &str = include_str!("../../../examples/solver_optimality_unproven.ri");
 
     let compiled = compile_source_with_stdlib(EXAMPLE_SRC);
 
@@ -265,10 +261,7 @@ fn example_file_solver_optimality_unproven_emits_warning() {
     let a_id = ValueCellId::new("ObjectiveMaxIters", "a");
     let a_si = match result.values.get(&a_id) {
         Some(Value::Scalar { si_value, .. }) => *si_value,
-        other => panic!(
-            "expected Scalar for ObjectiveMaxIters.a, got {:?}",
-            other
-        ),
+        other => panic!("expected Scalar for ObjectiveMaxIters.a, got {:?}", other),
     };
     assert!(
         a_si >= 0.009 - 1e-9,
@@ -323,10 +316,7 @@ fn small_mm_objective_does_not_emit_solver_optimality_unproven() {
     let y_id = ValueCellId::new("SmallMmObjective", "y");
     let y_si = match result.values.get(&y_id) {
         Some(Value::Scalar { si_value, .. }) => *si_value,
-        other => panic!(
-            "expected Scalar for SmallMmObjective.y, got {:?}",
-            other
-        ),
+        other => panic!("expected Scalar for SmallMmObjective.y, got {:?}", other),
     };
     assert!(
         y_si >= 0.001 - 1e-9,
@@ -395,13 +385,15 @@ fn empty_ranked_candidates_trips_i2_assert_engine_seam() {
 /// with "removal index (is 0) should be < len (is 0)" → should_panic mismatch FAILS.
 /// GREEN after step-7: assert fires first with the seam-specific I2 message.
 #[test]
-#[should_panic(expected = "RankedSolveResult::Ranked must carry >=1 candidate (I2) (registry seam)")]
+#[should_panic(
+    expected = "RankedSolveResult::Ranked must carry >=1 candidate (I2) (registry seam)"
+)]
 fn empty_ranked_candidates_trips_i2_assert_registry_seam() {
     let compiled = compile_source_with_stdlib(S3_OBJECTIVE_SOURCE);
     // Wrap the I2-violating solver in a SolverRegistry so the registry's
     // solve_inner dispatches to EmptyRankedSolver and panics at registry.rs.
     let registry = reify_constraints::SolverRegistry::new(Box::new(EmptyRankedSolver));
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(registry));
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(registry));
     let _ = engine.eval(&compiled);
 }

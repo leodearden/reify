@@ -130,9 +130,7 @@ fn run(value_inputs: &[Value]) -> Result<Value, String> {
     // fields — violating the G6 "every field is a REAL value" invariant.
     const POISSON_MIN: f64 = -0.99;
     const POISSON_MAX: f64 = 0.49;
-    if !membrane_poisson.is_finite()
-        || !(POISSON_MIN..=POISSON_MAX).contains(&membrane_poisson)
-    {
+    if !membrane_poisson.is_finite() || !(POISSON_MIN..=POISSON_MAX).contains(&membrane_poisson) {
         return Err(format!(
             "E_MembraneLoadInfeasible: membrane_poisson {membrane_poisson} is outside the \
              physical plane-stress range [{POISSON_MIN}, {POISSON_MAX}]; the constitutive \
@@ -447,7 +445,11 @@ fn build_result(solve: &MembraneLoadSolve) -> Value {
         .iter()
         .map(|p| Value::List(super::scalar_list(&[p[0], p[1]], DimensionVector::PRESSURE)))
         .collect();
-    let surface_slack: Vec<Value> = solve.surface_slack.iter().map(|&s| Value::Bool(s)).collect();
+    let surface_slack: Vec<Value> = solve
+        .surface_slack
+        .iter()
+        .map(|&s| Value::Bool(s))
+        .collect();
 
     let fields: PersistentMap<String, Value> = [
         ("displacements".to_string(), Value::List(displacements)),

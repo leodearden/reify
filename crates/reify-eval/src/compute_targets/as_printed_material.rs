@@ -41,8 +41,8 @@ use std::sync::Arc;
 
 use reify_core::{DimensionVector, Type};
 use reify_fdm::{
-    AxisAlignedBox, BaseElastic, CouponOverride, DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD, InfillPattern,
-    OrthotropicConstants, TransverseIsoConstants, Zone, effective_orthotropic,
+    AxisAlignedBox, BaseElastic, CouponOverride, DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD,
+    InfillPattern, OrthotropicConstants, TransverseIsoConstants, Zone, effective_orthotropic,
     effective_transverse_isotropic, zone_solid_fraction,
 };
 use reify_ir::{
@@ -117,7 +117,8 @@ fn build_as_printed_field(
     let dense_rho = zone_solid_fraction(Zone::Wall, infill_density); // 1.0
     // Guard the β domain (ρ ∈ (0, 1]) so a malformed infill_density cannot trip
     // the correlation's debug_assert in test/debug builds.
-    let infill_rho = zone_solid_fraction(Zone::Infill, infill_density).clamp(f64::MIN_POSITIVE, 1.0);
+    let infill_rho =
+        zone_solid_fraction(Zone::Infill, infill_density).clamp(f64::MIN_POSITIVE, 1.0);
 
     let (mat_dense, mat_infill) = if orthotropic {
         (
@@ -418,8 +419,10 @@ fn empty_provenance() -> Value {
 // ── small value/geometry helpers ────────────────────────────────────────────
 
 pub(crate) fn structure(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
-    let fields: PersistentMap<String, Value> =
-        fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+    let fields: PersistentMap<String, Value> = fields
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
     Value::StructureInstance(Box::new(StructureInstanceData {
         type_id: REGISTRY_FREE_TYPE_ID,
         type_name: type_name.to_string(),

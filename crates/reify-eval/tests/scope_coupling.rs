@@ -402,17 +402,23 @@ fn eval_cycle_emits_scope_coupling() {
     assert!(
         any_names_both,
         "at least one W_SCOPE_COUPLING must name both 'A' and 'B'; messages: {:?}",
-        coupling_diags.iter().map(|d| &d.message).collect::<Vec<_>>(),
+        coupling_diags
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>(),
     );
 
     // At least one diagnostic must name a crossing cell.
-    let any_names_cell = coupling_diags.iter().any(|d| {
-        d.message.contains("A.k") || d.message.contains("B.m")
-    });
+    let any_names_cell = coupling_diags
+        .iter()
+        .any(|d| d.message.contains("A.k") || d.message.contains("B.m"));
     assert!(
         any_names_cell,
         "at least one W_SCOPE_COUPLING must name a crossing cell (A.k or B.m); messages: {:?}",
-        coupling_diags.iter().map(|d| &d.message).collect::<Vec<_>>(),
+        coupling_diags
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>(),
     );
 }
 

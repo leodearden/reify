@@ -955,7 +955,10 @@ pub(crate) fn value_from_buckling_result(
             },
         ),
         ("converged".to_string(), Value::Bool(cache.ps_converged)),
-        ("iterations".to_string(), Value::Int(cache.ps_iterations as i64)),
+        (
+            "iterations".to_string(),
+            Value::Int(cache.ps_iterations as i64),
+        ),
     ]
     .into_iter()
     .collect();
@@ -974,8 +977,7 @@ pub(crate) fn value_from_buckling_result(
     let modes_list: Vec<Value> = (0..n_modes)
         .map(|i| {
             let displaced_slice = &cache.mode_shapes[i * stride..(i + 1) * stride];
-            let displaced: Vec<Value> =
-                displaced_slice.iter().map(|&r| Value::Real(r)).collect();
+            let displaced: Vec<Value> = displaced_slice.iter().map(|&r| Value::Real(r)).collect();
 
             let mode_shape_map: BTreeMap<Value, Value> = [(
                 Value::String("displaced_positions".to_string()),
@@ -1001,17 +1003,26 @@ pub(crate) fn value_from_buckling_result(
         .collect();
 
     // base_node_positions: List<Real>
-    let base_node_positions: Vec<Value> =
-        cache.base_node_positions.iter().map(|&r| Value::Real(r)).collect();
+    let base_node_positions: Vec<Value> = cache
+        .base_node_positions
+        .iter()
+        .map(|&r| Value::Real(r))
+        .collect();
 
     // BucklingResult: EXACTLY 5 fields (modes, converged, iterations, pre_stress,
     // base_node_positions) — the trampoline's result_fields layout.
     let result_fields: PersistentMap<String, Value> = [
         ("modes".to_string(), Value::List(modes_list)),
         ("converged".to_string(), Value::Bool(cache.converged)),
-        ("iterations".to_string(), Value::Int(cache.iterations as i64)),
+        (
+            "iterations".to_string(),
+            Value::Int(cache.iterations as i64),
+        ),
         ("pre_stress".to_string(), pre_stress),
-        ("base_node_positions".to_string(), Value::List(base_node_positions)),
+        (
+            "base_node_positions".to_string(),
+            Value::List(base_node_positions),
+        ),
     ]
     .into_iter()
     .collect();
@@ -1228,7 +1239,10 @@ mod tests {
             ("converged".to_string(), Value::Bool(true)),
             ("iterations".to_string(), Value::Int(0_i64)),
             ("pre_stress".to_string(), pre_stress),
-            ("base_node_positions".to_string(), Value::List(base_node_positions)),
+            (
+                "base_node_positions".to_string(),
+                Value::List(base_node_positions),
+            ),
         ]
         .into_iter()
         .collect();
@@ -1252,21 +1266,18 @@ mod tests {
         let original = make_minimal_buckling_result();
         let orig_hash = original.content_hash();
 
-        let cache = super::buckling_result_from_value(&original).expect(
-            "buckling_result_from_value must return Some for a valid BucklingResult",
-        );
+        let cache = super::buckling_result_from_value(&original)
+            .expect("buckling_result_from_value must return Some for a valid BucklingResult");
 
         let reconstructed = super::value_from_buckling_result(&cache);
         let recon_hash = reconstructed.content_hash();
 
         assert_eq!(
-            orig_hash,
-            recon_hash,
+            orig_hash, recon_hash,
             "value_from_buckling_result must produce hash-identical content\n\
              original hash:     {:?}\n\
              reconstructed hash: {:?}",
-            orig_hash,
-            recon_hash,
+            orig_hash, recon_hash,
         );
     }
 
@@ -1357,8 +1368,7 @@ mod tests {
 
         // One mode, 4 active nodes → stride = 12.
         let stride = 4_usize * 3;
-        let displaced: Vec<Value> =
-            (0..stride).map(|i| Value::Real(i as f64 * 0.1)).collect();
+        let displaced: Vec<Value> = (0..stride).map(|i| Value::Real(i as f64 * 0.1)).collect();
         let mode_shape_map: std::collections::BTreeMap<Value, Value> = [(
             Value::String("displaced_positions".to_string()),
             Value::List(displaced),
@@ -1401,9 +1411,8 @@ mod tests {
         }));
 
         let orig_hash = original.content_hash();
-        let cache = super::buckling_result_from_value(&original).expect(
-            "buckling_result_from_value must return Some for nontrivial BucklingResult",
-        );
+        let cache = super::buckling_result_from_value(&original)
+            .expect("buckling_result_from_value must return Some for nontrivial BucklingResult");
         assert_eq!(
             cache.ps_grid_counts, counts,
             "ps_grid_counts must be extracted correctly from the non-trivial grid"

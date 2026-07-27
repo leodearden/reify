@@ -91,17 +91,26 @@ pub fn extract_input_tolerance_promise(
 ) -> Option<f64> {
     let provenance_id = ValueCellId::new(input_template_name, "provenance");
     let (value, _det) = values.get(&provenance_id)?; // Gate 1
-    let Value::StructureInstance(data) = value else { return None }; // Gate 2
+    let Value::StructureInstance(data) = value else {
+        return None;
+    }; // Gate 2
     let tol_value = data.fields.get("tolerance_guarantee")?; // Gate 3
-    let (si_value, dimension) = match tol_value { // Gate 4
-        Value::Scalar { si_value, dimension } => (*si_value, *dimension),
+    let (si_value, dimension) = match tol_value {
+        // Gate 4
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => (*si_value, *dimension),
         _ => return None,
     };
-    if dimension != DimensionVector::LENGTH { return None; } // Gate 5
-    if !crate::tolerance_gate::is_valid_tolerance_si(si_value) { return None; } // Gate 6
+    if dimension != DimensionVector::LENGTH {
+        return None;
+    } // Gate 5
+    if !crate::tolerance_gate::is_valid_tolerance_si(si_value) {
+        return None;
+    } // Gate 6
     Some(si_value)
 }
-
 
 /// Test whether an imported-geometry tolerance promise is insufficient to
 /// satisfy a downstream demand.
@@ -358,10 +367,7 @@ mod tests {
         //     so a scan-all regression would incorrectly win on this value.
         values.insert(
             ValueCellId::new("OtherInput", "provenance"),
-            (
-                provenance_instance(1e-9),
-                DeterminacyState::Determined,
-            ),
+            (provenance_instance(1e-9), DeterminacyState::Determined),
         );
 
         // (h) STEPInput.source — member mismatch, silently skipped by Gate 1.
@@ -577,14 +583,13 @@ mod tests {
         );
         // Use a clearly non-Provenance type_name to exercise Gate 2's
         // duck-typing posture.
-        let non_provenance_instance = Value::StructureInstance(Box::new(
-            reify_ir::StructureInstanceData {
+        let non_provenance_instance =
+            Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
                 type_id: reify_ir::StructureTypeId(42),
                 type_name: "NotProvenance".to_string(),
                 version: 0,
                 fields,
-            },
-        ));
+            }));
 
         let mut values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
             PersistentMap::default();

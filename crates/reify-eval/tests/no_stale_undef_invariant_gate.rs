@@ -76,8 +76,7 @@ fn seeded_stale_undef_violation_is_reported() {
         },
     );
 
-    let violations =
-        reify_eval::invariants::check_no_stale_undef(&graph, &values, &trace_map, &[]);
+    let violations = reify_eval::invariants::check_no_stale_undef(&graph, &values, &trace_map, &[]);
 
     assert!(
         !violations.is_empty(),
@@ -187,7 +186,10 @@ fn seeded_stale_undef_composition_violation_is_reported() {
     let mut values: PersistentMap<ValueCellId, (Value, DeterminacyState)> = PersistentMap::new();
     values.insert(
         op1_id.clone(),
-        (Value::Selector(leaf_sv.clone()), DeterminacyState::Determined),
+        (
+            Value::Selector(leaf_sv.clone()),
+            DeterminacyState::Determined,
+        ),
     );
     values.insert(
         op2_id.clone(),
@@ -209,8 +211,7 @@ fn seeded_stale_undef_composition_violation_is_reported() {
         },
     );
 
-    let violations =
-        reify_eval::invariants::check_no_stale_undef(&graph, &values, &trace_map, &[]);
+    let violations = reify_eval::invariants::check_no_stale_undef(&graph, &values, &trace_map, &[]);
 
     assert!(
         violations.iter().any(|v| v.cell == union_id),
@@ -343,8 +344,7 @@ fn seeded_solid_boolean_union_undef_is_exempted_by_geometry_clause() {
         },
     );
 
-    let violations =
-        reify_eval::invariants::check_no_stale_undef(&graph, &values, &trace_map, &[]);
+    let violations = reify_eval::invariants::check_no_stale_undef(&graph, &values, &trace_map, &[]);
 
     assert!(
         !violations.iter().any(|v| v.cell == union_id),
@@ -494,8 +494,7 @@ fn seeded_composition_over_unresolved_cross_cell_operand_is_exempted_by_dependen
         },
     );
 
-    let violations =
-        reify_eval::invariants::check_no_stale_undef(&graph, &values, &trace_map, &[]);
+    let violations = reify_eval::invariants::check_no_stale_undef(&graph, &values, &trace_map, &[]);
 
     assert!(
         !violations.iter().any(|v| v.cell == union_id),
@@ -589,10 +588,8 @@ fn seeded_kind_mismatch_composition_undef_is_unexempted_without_caller_disciplin
     // Leg 2: deliberately evaluate anyway — bypassing the errors-first
     // discipline every real caller follows — to empirically settle whether
     // the checker itself would exempt the resulting cell.
-    let mut engine = reify_eval::Engine::new(
-        Box::new(reify_constraints::SimpleConstraintChecker),
-        None,
-    );
+    let mut engine =
+        reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None);
     engine.eval(&compiled);
 
     let violations = engine.check_no_stale_undef();
@@ -635,10 +632,7 @@ const DELIBERATELY_UNDEF_FIXTURES: &[&str] = &[
 #[test]
 fn deliberately_undef_fixtures_report_zero_violations() {
     for name in DELIBERATELY_UNDEF_FIXTURES {
-        let path = format!(
-            "{}/tests/fixtures/{name}.ri",
-            env!("CARGO_MANIFEST_DIR")
-        );
+        let path = format!("{}/tests/fixtures/{name}.ri", env!("CARGO_MANIFEST_DIR"));
         let source = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("reading fixture {name}.ri at {path}: {e}"));
 
@@ -852,7 +846,9 @@ fn run_corpus_shard(shard_index: usize) {
         eprintln!("  SKIP (compile error): {s}");
     }
     for (f, reason, violation_count) in &known_residual_skips {
-        eprintln!("  SKIP (known residual, {violation_count} violation(s)): {f}\n    reason: {reason}");
+        eprintln!(
+            "  SKIP (known residual, {violation_count} violation(s)): {f}\n    reason: {reason}"
+        );
     }
 
     assert!(
@@ -947,7 +943,8 @@ corpus_shard_tests! {
 #[test]
 fn corpus_shard_count_matches_generated_tests() {
     assert_eq!(
-        GENERATED_SHARD_INDICES.len(), CORPUS_SHARD_COUNT,
+        GENERATED_SHARD_INDICES.len(),
+        CORPUS_SHARD_COUNT,
         "corpus_shard_tests! generated {} shard test(s) but CORPUS_SHARD_COUNT \
          is {CORPUS_SHARD_COUNT} — every index in 0..CORPUS_SHARD_COUNT must \
          have exactly one broad_corpus_sweep_shard_NN test, or some corpus \

@@ -63,7 +63,11 @@ fn parse_length_r_ok_case_evaluates_to_result_ok_enum() {
         } => {
             assert_eq!(type_name, "Result");
             assert_eq!(variant, "Ok");
-            assert_eq!(payload.len(), 1, "Ok payload should carry exactly one field, got {payload:?}");
+            assert_eq!(
+                payload.len(),
+                1,
+                "Ok payload should carry exactly one field, got {payload:?}"
+            );
             assert_eq!(payload[0].0, "value");
             assert_eq!(payload[0].1, mm(12.0));
         }
@@ -83,7 +87,11 @@ fn parse_length_r_err_case_evaluates_to_result_err_enum() {
         } => {
             assert_eq!(type_name, "Result");
             assert_eq!(variant, "Err");
-            assert_eq!(payload.len(), 1, "Err payload should carry exactly one field, got {payload:?}");
+            assert_eq!(
+                payload.len(),
+                1,
+                "Err payload should carry exactly one field, got {payload:?}"
+            );
             assert_eq!(payload[0].0, "error");
             assert!(
                 matches!(payload[0].1, Value::String(_)),

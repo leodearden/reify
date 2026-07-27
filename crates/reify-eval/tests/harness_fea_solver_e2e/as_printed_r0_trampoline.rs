@@ -23,7 +23,9 @@
 
 use std::sync::Arc;
 
-use crate::common::as_printed::{as_printed_options, box_mesh, fdm_process, r0_toolpath_gcode, structure};
+use crate::common::as_printed::{
+    as_printed_options, box_mesh, fdm_process, r0_toolpath_gcode, structure,
+};
 use reify_core::{ContentHash, RealizationNodeId, Type};
 use reify_eval::compute_targets::as_printed_material::as_printed_material_r_fast_trampoline;
 use reify_eval::compute_targets::as_printed_material_r0::as_printed_material_r0_trampoline;
@@ -209,7 +211,11 @@ fn r0_trampoline_produces_orthotropic_as_printed_zones_field() {
     );
 
     // (2) The lambda slot is the 7-element zone payload.
-    assert_eq!(items.len(), 7, "AsPrintedZones lambda must be a 7-element list");
+    assert_eq!(
+        items.len(),
+        7,
+        "AsPrintedZones lambda must be a 7-element list"
+    );
 
     // (3) The stored AABB matches the toolpath bead extents (mm→SI).
     let (exp_min, exp_max) = expected_toolpath_aabb(gcode);
@@ -251,7 +257,10 @@ fn r0_trampoline_produces_orthotropic_as_printed_zones_field() {
         // The frame x-axis is the dominant bead direction (+X), a unit vector.
         let x = frame_x_axis(mat);
         let n = (x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).sqrt();
-        assert!((n - 1.0).abs() < 1e-9, "{name}: frame x-axis must be unit, got {x:?}");
+        assert!(
+            (n - 1.0).abs() < 1e-9,
+            "{name}: frame x-axis must be unit, got {x:?}"
+        );
     }
 }
 
@@ -299,9 +308,8 @@ fn r0_field_differs_structurally_from_r_fast() {
     //     R-fast uses an arbitrary build-Z complement.
     let r0_x = frame_x_axis(r0_wall);
     let rfast_x = frame_x_axis(rfast_wall);
-    let dx = (r0_x[0] - rfast_x[0]).abs()
-        + (r0_x[1] - rfast_x[1]).abs()
-        + (r0_x[2] - rfast_x[2]).abs();
+    let dx =
+        (r0_x[0] - rfast_x[0]).abs() + (r0_x[1] - rfast_x[1]).abs() + (r0_x[2] - rfast_x[2]).abs();
     assert!(
         dx > 1e-6,
         "R0 frame x-axis {r0_x:?} must differ from R-fast {rfast_x:?}"

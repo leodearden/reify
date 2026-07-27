@@ -23,7 +23,7 @@ use reify_core::{RealizationNodeId, ValueCellId};
 use reify_eval::cache::NodeId;
 use reify_eval::{BuildScheduler, Engine};
 use reify_ir::Value;
-use reify_test_support::{compile_source, MockGeometryKernel};
+use reify_test_support::{MockGeometryKernel, compile_source};
 
 /// step-3 (RED until step-4): `set_demand_selective` populates the PRODUCTION
 /// demand registry from a single visible realization root.
@@ -185,7 +185,10 @@ fn cold_check_overrides_selective_demand_to_full_scope() {
     // (3) … and the cold path actually EVALUATED the whole graph: body_b's
     // exclusive `sb` is present (fresh) in the check result, not pruned away.
     assert!(
-        check_result.values.get(&ValueCellId::new(e, "sb")).is_some(),
+        check_result
+            .values
+            .get(&ValueCellId::new(e, "sb"))
+            .is_some(),
         "cold check() must evaluate the whole graph — hidden body_b's `sb` must be present in the result"
     );
 }

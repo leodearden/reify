@@ -525,7 +525,10 @@ fn gap_c_computed_default_unevaluated_emits_warning_literal_does_not() {
     // (a-iii) Selection outcome: AutoTypeParamAmbiguous Error must be present
     // (clearance unevaluated → both ThinSeal + ThickSeal Indeterminate → Ambiguous).
     assert!(
-        has_error_code(&compiled.diagnostics, DiagnosticCode::AutoTypeParamAmbiguous),
+        has_error_code(
+            &compiled.diagnostics,
+            DiagnosticCode::AutoTypeParamAmbiguous
+        ),
         "bearing_computed_default_unevaluated.ri must still emit AutoTypeParamAmbiguous \
          under real checker (clearance skipped → both candidates Indeterminate → ≥2 feasible \
          → Ambiguous — selection outcome unchanged vs pre-Gap-C, invariant 3); \

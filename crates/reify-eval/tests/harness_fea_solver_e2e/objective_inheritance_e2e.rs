@@ -92,11 +92,7 @@ fn run_eval(
 /// Assert that `stdout` matches the on-disk golden, regenerating when
 /// `REIFY_REGENERATE_GOLDEN=1` is set.  Returns `true` when regeneration
 /// happened (test should return immediately without further assertions).
-fn assert_or_regen_golden(
-    stdout: &str,
-    golden_path: &std::path::Path,
-    golden_label: &str,
-) -> bool {
+fn assert_or_regen_golden(stdout: &str, golden_path: &std::path::Path, golden_label: &str) -> bool {
     if std::env::var("REIFY_REGENERATE_GOLDEN").is_ok() {
         std::fs::create_dir_all(
             golden_path
@@ -133,10 +129,9 @@ fn assert_or_regen_golden(
 #[test]
 fn bt1_single_scope_byte_identity() {
     let (manifest, workspace_root, reify_bin) = resolve_test_paths();
-    let fixture = std::path::Path::new(manifest)
-        .join("tests/fixtures/backcompat/bt1_single_scope.ri");
-    let golden = std::path::Path::new(manifest)
-        .join("tests/golden/bt1_single_scope.txt");
+    let fixture =
+        std::path::Path::new(manifest).join("tests/fixtures/backcompat/bt1_single_scope.ri");
+    let golden = std::path::Path::new(manifest).join("tests/golden/bt1_single_scope.txt");
 
     let (success, stdout, stderr) = run_eval(&reify_bin, &workspace_root, &fixture);
     assert!(
@@ -157,8 +152,8 @@ fn bt7_objectiveless_centrality_byte_identity() {
     let (manifest, workspace_root, reify_bin) = resolve_test_paths();
     let fixture = std::path::Path::new(manifest)
         .join("tests/fixtures/backcompat/bt7_objectiveless_centrality.ri");
-    let golden = std::path::Path::new(manifest)
-        .join("tests/golden/bt7_objectiveless_centrality.txt");
+    let golden =
+        std::path::Path::new(manifest).join("tests/golden/bt7_objectiveless_centrality.txt");
 
     let (success, stdout, stderr) = run_eval(&reify_bin, &workspace_root, &fixture);
     assert!(
@@ -180,12 +175,11 @@ fn bt7_objectiveless_centrality_byte_identity() {
 fn bt2_uncoupled_declaration_order_independence() {
     let (manifest, workspace_root, reify_bin) = resolve_test_paths();
 
-    let fixture_ab = std::path::Path::new(manifest)
-        .join("tests/fixtures/backcompat/bt2_uncoupled_ab.ri");
-    let fixture_ba = std::path::Path::new(manifest)
-        .join("tests/fixtures/backcompat/bt2_uncoupled_ba.ri");
-    let golden = std::path::Path::new(manifest)
-        .join("tests/golden/bt2_uncoupled.txt");
+    let fixture_ab =
+        std::path::Path::new(manifest).join("tests/fixtures/backcompat/bt2_uncoupled_ab.ri");
+    let fixture_ba =
+        std::path::Path::new(manifest).join("tests/fixtures/backcompat/bt2_uncoupled_ba.ri");
+    let golden = std::path::Path::new(manifest).join("tests/golden/bt2_uncoupled.txt");
 
     let (success_ab, stdout_ab, stderr_ab) = run_eval(&reify_bin, &workspace_root, &fixture_ab);
     assert!(

@@ -223,9 +223,7 @@ fn m8_materials_smoke() {
     let unexpected_errors: Vec<_> = result
         .diagnostics
         .iter()
-        .filter(|d| {
-            d.severity == Severity::Error && d.code != Some(DiagnosticCode::EvalUnresolved)
-        })
+        .filter(|d| d.severity == Severity::Error && d.code != Some(DiagnosticCode::EvalUnresolved))
         .collect();
     assert!(
         unexpected_errors.is_empty(),

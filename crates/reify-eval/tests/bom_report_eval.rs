@@ -42,13 +42,17 @@ fn build_report(source: &str) -> BomReport {
 /// Locate the single BOM line for sub field `sub`. Panics with the available
 /// lines on miss so a structural regression reports what *was* enumerated.
 fn line_for<'a>(report: &'a BomReport, sub: &str) -> &'a BomLine {
-    report.lines.iter().find(|l| l.sub == sub).unwrap_or_else(|| {
-        panic!(
-            "no BOM line for sub {:?}; lines: {:?}",
-            sub,
-            report.lines.iter().map(|l| &l.sub).collect::<Vec<_>>()
-        )
-    })
+    report
+        .lines
+        .iter()
+        .find(|l| l.sub == sub)
+        .unwrap_or_else(|| {
+            panic!(
+                "no BOM line for sub {:?}; lines: {:?}",
+                sub,
+                report.lines.iter().map(|l| &l.sub).collect::<Vec<_>>()
+            )
+        })
 }
 
 // ─── step-3: two Costed line items roll up to a Money grand total ────────────
@@ -95,7 +99,10 @@ structure def Widget {
         report.lines
     );
     assert_eq!(report.lines[0].sub, "bolts", "line 0 must be the first sub");
-    assert_eq!(report.lines[1].sub, "plate", "line 1 must be the second sub");
+    assert_eq!(
+        report.lines[1].sub, "plate",
+        "line 1 must be the second sub"
+    );
 
     // Line item identity: owner template, sub field, resolved type.
     let bolt = line_for(&report, "bolts");
@@ -169,7 +176,10 @@ structure def Widget {
     assert_eq!(w.sub, "scrap");
     assert_eq!(w.type_name, "ScrapOffcut");
     assert_eq!(w.reason, "Offcut", "Discard.reason variant");
-    assert_eq!(w.disposal_method, "Recycle", "Discard.disposal_method variant");
+    assert_eq!(
+        w.disposal_method, "Recycle",
+        "Discard.disposal_method variant"
+    );
 
     assert!(
         report.lines.is_empty(),
@@ -315,7 +325,10 @@ structure def Widget {
     let mystery = line_for(&report, "mystery");
     assert!(mystery.undetermined, "undef unit_cost ⇒ undetermined line");
     assert!(mystery.unit_cost.is_none(), "undetermined ⇒ unit_cost None");
-    assert!(mystery.line_total.is_none(), "undetermined ⇒ line_total None");
+    assert!(
+        mystery.line_total.is_none(),
+        "undetermined ⇒ line_total None"
+    );
 
     let known = line_for(&report, "known");
     assert!(!known.undetermined);

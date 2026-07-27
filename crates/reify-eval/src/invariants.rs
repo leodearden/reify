@@ -419,13 +419,11 @@ fn expr_requires_build_only_resolution_inner(
             && let Some(f) =
                 reify_expr::find_matching_compiled_function(functions, function_name, args)
         {
-            let body_has_it = expr_requires_build_only_resolution_inner(
-                &f.body.result_expr,
-                functions,
-                visited,
-            ) || f.body.let_bindings.iter().any(|(_, let_expr)| {
-                expr_requires_build_only_resolution_inner(let_expr, functions, visited)
-            });
+            let body_has_it =
+                expr_requires_build_only_resolution_inner(&f.body.result_expr, functions, visited)
+                    || f.body.let_bindings.iter().any(|(_, let_expr)| {
+                        expr_requires_build_only_resolution_inner(let_expr, functions, visited)
+                    });
             if body_has_it {
                 found = true;
             }

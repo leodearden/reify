@@ -73,9 +73,7 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
     let eval_errors: Vec<_> = result
         .diagnostics
         .iter()
-        .filter(|d| {
-            d.severity == Severity::Error && d.code != Some(DiagnosticCode::EvalUnresolved)
-        })
+        .filter(|d| d.severity == Severity::Error && d.code != Some(DiagnosticCode::EvalUnresolved))
         .collect();
     assert!(
         eval_errors.is_empty(),

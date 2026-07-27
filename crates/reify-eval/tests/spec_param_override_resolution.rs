@@ -53,9 +53,7 @@ fn errors_only(diagnostics: &[reify_core::Diagnostic]) -> Vec<&reify_core::Diagn
 /// GREEN (step 2): entity.rs injects (bore, 3mm) into SubComponentDecl.args.
 #[test]
 fn non_auto_override_resolves_to_literal_value() {
-    let source = format!(
-        "{BEARING_5MM}  structure A {{ sub b : Bearing {{ bore = 3mm }} }}"
-    );
+    let source = format!("{BEARING_5MM}  structure A {{ sub b : Bearing {{ bore = 3mm }} }}");
     let compiled = parse_and_compile_with_stdlib(&source);
 
     let compile_errors = errors_only(&compiled.diagnostics);
@@ -111,9 +109,8 @@ fn non_auto_override_resolves_to_literal_value() {
 /// Pins the "first assignment wins" eval behaviour (amend 4694, suggestion 1).
 #[test]
 fn duplicate_non_auto_override_resolves_to_first_value() {
-    let source = format!(
-        "{BEARING_5MM}  structure A {{ sub b : Bearing {{ bore = 3mm  bore = 4mm }} }}"
-    );
+    let source =
+        format!("{BEARING_5MM}  structure A {{ sub b : Bearing {{ bore = 3mm  bore = 4mm }} }}");
     let compiled = parse_and_compile_with_stdlib(&source);
 
     // Duplicate is a warning, not an error.

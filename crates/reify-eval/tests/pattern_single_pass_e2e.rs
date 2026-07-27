@@ -321,11 +321,19 @@ fn perforated_plate_volume_and_topology_occt() {
         "the perforated plate must be manifold"
     );
     assert!(
-        query_bool(&kernel, GeometryQuery::IsOrientable(perforated), "perforated"),
+        query_bool(
+            &kernel,
+            GeometryQuery::IsOrientable(perforated),
+            "perforated"
+        ),
         "the perforated plate must be consistently orientable"
     );
     assert!(
-        query_bool(&kernel, GeometryQuery::IsConnected(perforated), "perforated"),
+        query_bool(
+            &kernel,
+            GeometryQuery::IsConnected(perforated),
+            "perforated"
+        ),
         "the perforated plate must be a single connected body"
     );
 }

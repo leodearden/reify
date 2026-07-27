@@ -525,8 +525,7 @@ impl EvaluationGraph {
                         let scoped_entity =
                             format!("{}.{}", template.name, key.path_segment(&sub.name));
                         for child_cell in &child_template.value_cells {
-                            let scoped_id =
-                                ValueCellId::new(&scoped_entity, &child_cell.id.member);
+                            let scoped_id = ValueCellId::new(&scoped_entity, &child_cell.id.member);
                             let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
                             let expr_hash = child_cell
                                 .default_expr

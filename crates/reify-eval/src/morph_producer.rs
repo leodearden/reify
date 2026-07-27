@@ -318,9 +318,7 @@ mod tests {
 
     fn mesh_with_tets(tets: Vec<u32>) -> VolumeMesh {
         VolumeMesh {
-            vertices: vec![
-                0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
-            ],
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
             connectivity: reify_ir::VolumeConnectivity::Tet {
                 indices: tets,
                 order: reify_ir::ElementOrderTag::P1,
@@ -690,7 +688,10 @@ mod tests {
             match self.outcome {
                 MockOutcome::Ok => {
                     let mut morphed = mesh_with_tets(
-                        ctx.source.tet_indices().expect("source is a tet mesh").to_vec(),
+                        ctx.source
+                            .tet_indices()
+                            .expect("source is a tet mesh")
+                            .to_vec(),
                     );
                     morphed.vertices[0] += 1.0; // mark as deformed
                     MorphResult::Ok(morphed)
@@ -699,9 +700,7 @@ mod tests {
                 MockOutcome::QualityReject => {
                     MorphResult::QualityReject("min-scaled-jacobian".to_string())
                 }
-                MockOutcome::SolverError => {
-                    MorphResult::SolverError("singular-system".to_string())
-                }
+                MockOutcome::SolverError => MorphResult::SolverError("singular-system".to_string()),
             }
         }
     }

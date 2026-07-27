@@ -1309,7 +1309,8 @@ mod tests {
         // later as an opaque HashMap-index panic at the `pos[&r_result]`
         // lookup below.
         assert_eq!(
-            realization_count, 3,
+            realization_count,
+            3,
             "schedule must contain exactly 3 Realization nodes (a, b, result) for this \
              module; got {realization_count} Realization node(s) in a schedule of {} node(s) \
              total",

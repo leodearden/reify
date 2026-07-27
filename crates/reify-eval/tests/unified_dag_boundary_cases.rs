@@ -24,10 +24,11 @@ use differential::{
     AUTO_GEOMETRY_CONSTRAINT_SRC, CROSS_LET_4275_SRC, CorpusCase, Divergence,
     LEX_PARENT_MULTIBODY_SRC, MULTI_ENTITY_EXPORT_SRC, MULTI_REALIZATION_SRC,
     WARM_AUTO_CONST_LET_SRC, WARM_PREDICATE_K5_SRC, WARM_PREDICATE_SRC,
-    assert_equivalent_or_allowed, build_case, build_case_keep_engine, build_snapshot_export_matches_build,
-    build_under, build_with_kernel_stdlib, cold_eval_with_solver,
-    fits_build_volume_satisfaction, project_build_result, project_eval_values,
-    residue_for, seeded_build_volume_kernel, warm_eval_after_edit, warm_eval_cached_with_solver,
+    assert_equivalent_or_allowed, build_case, build_case_keep_engine,
+    build_snapshot_export_matches_build, build_under, build_with_kernel_stdlib,
+    cold_eval_with_solver, fits_build_volume_satisfaction, project_build_result,
+    project_eval_values, residue_for, seeded_build_volume_kernel, warm_eval_after_edit,
+    warm_eval_cached_with_solver,
 };
 use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_eval::BuildScheduler;
@@ -357,8 +358,12 @@ fn warm_determinacy_predicate_let_is_scheduler_agnostic() {
 
     // (2) θ warm==cold: both warm results must equal a cold build at k=5.0
     // (WARM_PREDICATE_K5_SRC is WARM_PREDICATE_SRC with the default changed to 5.0).
-    let cold_legacy  = build_under(WARM_PREDICATE_K5_SRC, BuildScheduler::LegacyMultiPass, false);
-    let cold_unified = build_under(WARM_PREDICATE_K5_SRC, BuildScheduler::UnifiedDag,      false);
+    let cold_legacy = build_under(
+        WARM_PREDICATE_K5_SRC,
+        BuildScheduler::LegacyMultiPass,
+        false,
+    );
+    let cold_unified = build_under(WARM_PREDICATE_K5_SRC, BuildScheduler::UnifiedDag, false);
     assert_eq!(
         project_eval_values(&warm_legacy),
         project_build_result(&cold_legacy).values,
@@ -385,7 +390,8 @@ fn reserved_warm_auto_plus_const_let_theta() {
     // warm == cold under LegacyMultiPass
     let (_, warm_legacy) =
         warm_eval_cached_with_solver(WARM_AUTO_CONST_LET_SRC, BuildScheduler::LegacyMultiPass);
-    let cold_legacy = cold_eval_with_solver(WARM_AUTO_CONST_LET_SRC, BuildScheduler::LegacyMultiPass);
+    let cold_legacy =
+        cold_eval_with_solver(WARM_AUTO_CONST_LET_SRC, BuildScheduler::LegacyMultiPass);
     assert_eq!(
         project_eval_values(&warm_legacy.eval_result),
         project_eval_values(&cold_legacy),
@@ -415,12 +421,6 @@ fn reserved_warm_auto_plus_const_let_theta() {
 /// arity as `build()` and export the resulting compound handle.
 #[test]
 fn build_snapshot_multi_entity_export_matches_build() {
-    build_snapshot_export_matches_build(
-        MULTI_ENTITY_EXPORT_SRC,
-        BuildScheduler::LegacyMultiPass,
-    );
-    build_snapshot_export_matches_build(
-        MULTI_ENTITY_EXPORT_SRC,
-        BuildScheduler::UnifiedDag,
-    );
+    build_snapshot_export_matches_build(MULTI_ENTITY_EXPORT_SRC, BuildScheduler::LegacyMultiPass);
+    build_snapshot_export_matches_build(MULTI_ENTITY_EXPORT_SRC, BuildScheduler::UnifiedDag);
 }

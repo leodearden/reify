@@ -65,11 +65,25 @@ fn count_coupling_approximated(diagnostics: &[reify_core::Diagnostic]) -> usize 
 fn over_cap_cycle_emits_coupling_approximated() {
     // Alpha reads Beta.a0, Beta reads Alpha.a0 → irreducible 2-cycle. Each scope
     // owns OVER_CAP_AUTOS auto cells, so the merged cluster dim is over the cap.
-    let alpha = with_n_autos(TopologyTemplateBuilder::new("Alpha"), "Alpha", OVER_CAP_AUTOS)
-        .constraint("Alpha", 0, None, gt(value_ref("Beta", "a0"), literal(mm(0.0))))
-        .build();
+    let alpha = with_n_autos(
+        TopologyTemplateBuilder::new("Alpha"),
+        "Alpha",
+        OVER_CAP_AUTOS,
+    )
+    .constraint(
+        "Alpha",
+        0,
+        None,
+        gt(value_ref("Beta", "a0"), literal(mm(0.0))),
+    )
+    .build();
     let beta = with_n_autos(TopologyTemplateBuilder::new("Beta"), "Beta", OVER_CAP_AUTOS)
-        .constraint("Beta", 0, None, gt(value_ref("Alpha", "a0"), literal(mm(0.0))))
+        .constraint(
+            "Beta",
+            0,
+            None,
+            gt(value_ref("Alpha", "a0"), literal(mm(0.0))),
+        )
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -109,10 +123,7 @@ fn over_cap_cycle_emits_coupling_approximated() {
         m.contains(&OVER_CAP_DIM.to_string()),
         "message must contain the merged auto-dimension ({OVER_CAP_DIM}); got: {m}",
     );
-    assert!(
-        m.contains("cap"),
-        "message must name the cap; got: {m}",
-    );
+    assert!(m.contains("cap"), "message must name the cap; got: {m}",);
 }
 
 /// (within-cap) A 2-cycle with 1 auto each (merged dim 2 ≤ cap) is a
@@ -121,11 +132,21 @@ fn over_cap_cycle_emits_coupling_approximated() {
 fn within_cap_cycle_emits_no_coupling_approximated() {
     let alpha = TopologyTemplateBuilder::new("Alpha")
         .auto_param("Alpha", "k", Type::length())
-        .constraint("Alpha", 0, None, gt(value_ref("Beta", "m"), literal(mm(0.0))))
+        .constraint(
+            "Alpha",
+            0,
+            None,
+            gt(value_ref("Beta", "m"), literal(mm(0.0))),
+        )
         .build();
     let beta = TopologyTemplateBuilder::new("Beta")
         .auto_param("Beta", "m", Type::length())
-        .constraint("Beta", 0, None, gt(value_ref("Alpha", "k"), literal(mm(0.0))))
+        .constraint(
+            "Beta",
+            0,
+            None,
+            gt(value_ref("Alpha", "k"), literal(mm(0.0))),
+        )
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -190,11 +211,25 @@ fn count_scope_coupling(diagnostics: &[reify_core::Diagnostic]) -> usize {
 /// ZERO `W_SCOPE_COUPLING` — the generic warning is graduated away (§3.4).
 #[test]
 fn over_cap_cycle_graduates_away_scope_coupling() {
-    let alpha = with_n_autos(TopologyTemplateBuilder::new("Alpha"), "Alpha", OVER_CAP_AUTOS)
-        .constraint("Alpha", 0, None, gt(value_ref("Beta", "a0"), literal(mm(0.0))))
-        .build();
+    let alpha = with_n_autos(
+        TopologyTemplateBuilder::new("Alpha"),
+        "Alpha",
+        OVER_CAP_AUTOS,
+    )
+    .constraint(
+        "Alpha",
+        0,
+        None,
+        gt(value_ref("Beta", "a0"), literal(mm(0.0))),
+    )
+    .build();
     let beta = with_n_autos(TopologyTemplateBuilder::new("Beta"), "Beta", OVER_CAP_AUTOS)
-        .constraint("Beta", 0, None, gt(value_ref("Alpha", "a0"), literal(mm(0.0))))
+        .constraint(
+            "Beta",
+            0,
+            None,
+            gt(value_ref("Alpha", "a0"), literal(mm(0.0))),
+        )
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -210,7 +245,8 @@ fn over_cap_cycle_graduates_away_scope_coupling() {
     assert!(
         approx >= 1,
         "over-cap SCC must surface W_COUPLING_APPROXIMATED; got {}: {:?}",
-        approx, result.diagnostics,
+        approx,
+        result.diagnostics,
     );
     assert_eq!(
         scope, 0,
@@ -227,11 +263,21 @@ fn over_cap_cycle_graduates_away_scope_coupling() {
 fn within_cap_cycle_keeps_scope_coupling() {
     let alpha = TopologyTemplateBuilder::new("Alpha")
         .auto_param("Alpha", "k", Type::length())
-        .constraint("Alpha", 0, None, gt(value_ref("Beta", "m"), literal(mm(0.0))))
+        .constraint(
+            "Alpha",
+            0,
+            None,
+            gt(value_ref("Beta", "m"), literal(mm(0.0))),
+        )
         .build();
     let beta = TopologyTemplateBuilder::new("Beta")
         .auto_param("Beta", "m", Type::length())
-        .constraint("Beta", 0, None, gt(value_ref("Alpha", "k"), literal(mm(0.0))))
+        .constraint(
+            "Beta",
+            0,
+            None,
+            gt(value_ref("Alpha", "k"), literal(mm(0.0))),
+        )
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -247,7 +293,8 @@ fn within_cap_cycle_keeps_scope_coupling() {
     assert!(
         scope >= 1,
         "within-cap SCC must keep emitting W_SCOPE_COUPLING; got {}: {:?}",
-        scope, result.diagnostics,
+        scope,
+        result.diagnostics,
     );
     assert_eq!(
         approx, 0,

@@ -48,14 +48,16 @@ fn example_source() -> String {
         env!("CARGO_MANIFEST_DIR"),
         "/../../examples/kinematic/relate_mounted_revolute.ri"
     );
-    std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read relate_mounted_revolute.ri: {e}"))
+    std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read relate_mounted_revolute.ri: {e}"))
 }
 
 /// Decompose a `Value::Transform` into `((w,x,y,z), [tx,ty,tz])`.
 fn decompose_transform(v: &Value, label: &str) -> ((f64, f64, f64, f64), [f64; 3]) {
     let (rot, trans) = match v {
-        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+        Value::Transform {
+            rotation,
+            translation,
+        } => (rotation.as_ref(), translation.as_ref()),
         other => panic!("{label}: expected Value::Transform, got {other:?}"),
     };
     let (w, x, y, z) = match rot {
@@ -91,14 +93,19 @@ fn decompose_transform(v: &Value, label: &str) -> ((f64, f64, f64, f64), [f64; 3
 #[test]
 fn relate_mounted_revolute_build_writes_origin_into_joint() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping relate_mounted_revolute_build_writes_origin_into_joint (B6 producer): OCCT not available");
+        eprintln!(
+            "skipping relate_mounted_revolute_build_writes_origin_into_joint (B6 producer): OCCT not available"
+        );
         return;
     }
 
     let source = example_source();
     let compiled = compile_source_with_stdlib(&source);
     assert!(
-        compiled.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
+        compiled
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != reify_core::Severity::Error),
         "example must compile without errors; got: {:#?}",
         compiled.diagnostics
     );
@@ -107,14 +114,21 @@ fn relate_mounted_revolute_build_writes_origin_into_joint() {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // Build must be clean.
-    let build_errors: Vec<_> = result.diagnostics.iter()
+    let build_errors: Vec<_> = result
+        .diagnostics
+        .iter()
         .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
-    assert!(build_errors.is_empty(), "build must produce no Error diagnostics, got: {build_errors:#?}");
+    assert!(
+        build_errors.is_empty(),
+        "build must produce no Error diagnostics, got: {build_errors:#?}"
+    );
 
     // Read the mounted joint value.
     let j_id = ValueCellId::new("RelateMountedRevolute", "j");
-    let j_val = result.values.get(&j_id)
+    let j_val = result
+        .values
+        .get(&j_id)
         .unwrap_or_else(|| panic!("RelateMountedRevolute.j not in build result"));
 
     let map = match j_val {
@@ -123,7 +137,8 @@ fn relate_mounted_revolute_build_writes_origin_into_joint() {
     };
 
     // B6 producer: joint Map MUST have an "origin" key (engine_build seam fired).
-    let origin_val = map.get(&Value::String("origin".to_string()))
+    let origin_val = map
+        .get(&Value::String("origin".to_string()))
         .unwrap_or_else(|| {
             panic!(
                 "B6 producer: RelateMountedRevolute.j must have 'origin' key after build; \
@@ -141,8 +156,14 @@ fn relate_mounted_revolute_build_writes_origin_into_joint() {
         (tx - mount_m).abs() < 1e-4,
         "B6 producer: j.origin translation X must be ~{mount_m} m (relate-solved 50 mm mount), got {tx}"
     );
-    assert!(ty.abs() < 1e-4, "B6 producer: j.origin translation Y must be ~0, got {ty}");
-    assert!(tz.abs() < 1e-4, "B6 producer: j.origin translation Z must be ~0, got {tz}");
+    assert!(
+        ty.abs() < 1e-4,
+        "B6 producer: j.origin translation Y must be ~0, got {ty}"
+    );
+    assert!(
+        tz.abs() < 1e-4,
+        "B6 producer: j.origin translation Z must be ~0, got {tz}"
+    );
 
     // Rotation must be approximately identity (pure-translation mount).
     assert!(
@@ -190,7 +211,9 @@ fn relate_mounted_revolute_build_writes_origin_into_joint() {
 #[test]
 fn relate_mounted_revolute_fk_poses_at_mount_with_bind_angle() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping relate_mounted_revolute_fk_poses_at_mount_with_bind_angle (B6 consumer): OCCT not available");
+        eprintln!(
+            "skipping relate_mounted_revolute_fk_poses_at_mount_with_bind_angle (B6 consumer): OCCT not available"
+        );
         return;
     }
 
@@ -200,14 +223,21 @@ fn relate_mounted_revolute_fk_poses_at_mount_with_bind_angle() {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // Build must be clean.
-    let build_errors: Vec<_> = result.diagnostics.iter()
+    let build_errors: Vec<_> = result
+        .diagnostics
+        .iter()
         .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
-    assert!(build_errors.is_empty(), "build must produce no Error diagnostics, got: {build_errors:#?}");
+    assert!(
+        build_errors.is_empty(),
+        "build must produce no Error diagnostics, got: {build_errors:#?}"
+    );
 
     // Read the built joint (with origin written by the seam).
     let j_id = ValueCellId::new("RelateMountedRevolute", "j");
-    let j_val = result.values.get(&j_id)
+    let j_val = result
+        .values
+        .get(&j_id)
         .unwrap_or_else(|| panic!("RelateMountedRevolute.j not in build result"))
         .clone();
 
@@ -216,13 +246,16 @@ fn relate_mounted_revolute_fk_poses_at_mount_with_bind_angle() {
         Value::Map(m) => m.contains_key(&Value::String("origin".to_string())),
         _ => false,
     };
-    assert!(has_origin, "B6 consumer precondition: j must have 'origin' after build");
+    assert!(
+        has_origin,
+        "B6 consumer precondition: j must have 'origin' after build"
+    );
 
     // Evaluate transform_at(j, θ) at θ=0 and θ=30° (π/6 rad ≈ 0.5235988 rad).
-    let theta_0  = Value::angle(0.0);
+    let theta_0 = Value::angle(0.0);
     let theta_30 = Value::angle(std::f64::consts::PI / 6.0);
 
-    let t0_val  = reify_stdlib::eval_builtin("transform_at", &[j_val.clone(), theta_0]);
+    let t0_val = reify_stdlib::eval_builtin("transform_at", &[j_val.clone(), theta_0]);
     let t30_val = reify_stdlib::eval_builtin("transform_at", &[j_val, theta_30]);
 
     assert!(
@@ -241,22 +274,38 @@ fn relate_mounted_revolute_fk_poses_at_mount_with_bind_angle() {
     let tol = 1e-4_f64;
 
     // (a) Both translations must equal the solved mount translation (~0.05 m along X).
-    assert!((t0x - mount_m).abs() < tol, "B6 consumer: t0.tx = {t0x}, expected ~{mount_m}");
+    assert!(
+        (t0x - mount_m).abs() < tol,
+        "B6 consumer: t0.tx = {t0x}, expected ~{mount_m}"
+    );
     assert!(t0y.abs() < tol, "B6 consumer: t0.ty = {t0y}, expected ~0");
     assert!(t0z.abs() < tol, "B6 consumer: t0.tz = {t0z}, expected ~0");
 
-    assert!((t30x - mount_m).abs() < tol, "B6 consumer: t30.tx = {t30x}, expected ~{mount_m}");
-    assert!(t30y.abs() < tol, "B6 consumer: t30.ty = {t30y}, expected ~0");
-    assert!(t30z.abs() < tol, "B6 consumer: t30.tz = {t30z}, expected ~0");
+    assert!(
+        (t30x - mount_m).abs() < tol,
+        "B6 consumer: t30.tx = {t30x}, expected ~{mount_m}"
+    );
+    assert!(
+        t30y.abs() < tol,
+        "B6 consumer: t30.ty = {t30y}, expected ~0"
+    );
+    assert!(
+        t30z.abs() < tol,
+        "B6 consumer: t30.tz = {t30z}, expected ~0"
+    );
 
     // (b) The t30 rotation must be R_z(30°) = (cos(π/12), 0, 0, sin(π/12)) up to sign.
     // Since t0 rotation = identity (gauge-seeded), the relative rotation IS t30's rotation.
     let theta = std::f64::consts::PI / 6.0;
     let qw_exp = (theta / 2.0).cos();
     let qz_exp = (theta / 2.0).sin();
-    let matches_pos = (r30w - qw_exp).abs() < tol && r30x.abs() < tol && r30y.abs() < tol
+    let matches_pos = (r30w - qw_exp).abs() < tol
+        && r30x.abs() < tol
+        && r30y.abs() < tol
         && (r30z - qz_exp).abs() < tol;
-    let matches_neg = (r30w + qw_exp).abs() < tol && r30x.abs() < tol && r30y.abs() < tol
+    let matches_neg = (r30w + qw_exp).abs() < tol
+        && r30x.abs() < tol
+        && r30y.abs() < tol
         && (r30z + qz_exp).abs() < tol;
     assert!(
         matches_pos || matches_neg,
@@ -272,8 +321,7 @@ fn fourbar_example_source() -> String {
         env!("CARGO_MANIFEST_DIR"),
         "/../../examples/kinematic/relate_mounted_fourbar.ri"
     );
-    std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read relate_mounted_fourbar.ri: {e}"))
+    std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read relate_mounted_fourbar.ri: {e}"))
 }
 
 /// B7 closed-loop (OCCT-gated): a Grashof 4-bar with its rocker ground-pivot
@@ -302,8 +350,9 @@ fn fourbar_example_source() -> String {
 /// the post-seam joint values that do carry the correct origin.
 #[test]
 fn relate_mounted_fourbar_closed_loop_closes_with_relate_origin() {
-    use reify_constraints::{JointValue, NewtonConfig, NewtonOutcome, StartStrategy,
-                            solve_loop_closure};
+    use reify_constraints::{
+        JointValue, NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure,
+    };
     use reify_stdlib::loop_closure::loop_residual_twist;
 
     if !reify_kernel_occt::OCCT_AVAILABLE {
@@ -317,7 +366,10 @@ fn relate_mounted_fourbar_closed_loop_closes_with_relate_origin() {
     let source = fourbar_example_source();
     let compiled = compile_source_with_stdlib(&source);
     assert!(
-        compiled.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
+        compiled
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != reify_core::Severity::Error),
         "relate_mounted_fourbar.ri must compile without errors; got: {:#?}",
         compiled.diagnostics
     );
@@ -344,11 +396,11 @@ fn relate_mounted_fourbar_closed_loop_closes_with_relate_origin() {
             .unwrap_or_else(|| panic!("RelateMountedFourbar.{name} not in build result"))
             .clone()
     };
-    let j_crank       = read_joint("j_crank");
-    let j_coupler     = read_joint("j_coupler");
+    let j_crank = read_joint("j_crank");
+    let j_coupler = read_joint("j_coupler");
     let j_coupler_tip = read_joint("j_coupler_tip");
-    let j_rocker      = read_joint("j_rocker");
-    let j_rocker_tip  = read_joint("j_rocker_tip");
+    let j_rocker = read_joint("j_rocker");
+    let j_rocker_tip = read_joint("j_rocker_tip");
 
     // (a) j_rocker MUST have a relate-written "origin" at ≈ (0.14, 0, 0) m.
     let rocker_map = match &j_rocker {
@@ -370,8 +422,14 @@ fn relate_mounted_fourbar_closed_loop_closes_with_relate_origin() {
         (ox - rocker_pivot_m).abs() < 1e-4,
         "B7 (a): j_rocker.origin tx = {ox:.6} m, expected ~{rocker_pivot_m} m (140 mm)"
     );
-    assert!(oy.abs() < 1e-4, "B7 (a): j_rocker.origin ty = {oy:.6} m, expected ~0");
-    assert!(oz.abs() < 1e-4, "B7 (a): j_rocker.origin tz = {oz:.6} m, expected ~0");
+    assert!(
+        oy.abs() < 1e-4,
+        "B7 (a): j_rocker.origin ty = {oy:.6} m, expected ~0"
+    );
+    assert!(
+        oz.abs() < 1e-4,
+        "B7 (a): j_rocker.origin tz = {oz:.6} m, expected ~0"
+    );
 
     // (b) Newton converges when solve_loop_closure is called with the built joint
     // values — j_rocker carries the relate-written origin (0.14, 0, 0) so the rocker
@@ -396,8 +454,15 @@ fn relate_mounted_fourbar_closed_loop_closes_with_relate_origin() {
     let strategy = StartStrategy::WarmStart(vec![1.8, -1.0]);
     let cfg = NewtonConfig::default();
 
-    let outcome =
-        solve_loop_closure(&chain_a_b, &vals_a_b, &chain_b_b, &vals_b_init, &free_b, &strategy, &cfg);
+    let outcome = solve_loop_closure(
+        &chain_a_b,
+        &vals_a_b,
+        &chain_b_b,
+        &vals_b_init,
+        &free_b,
+        &strategy,
+        &cfg,
+    );
 
     assert!(
         matches!(outcome, NewtonOutcome::Converged { .. }),
@@ -435,10 +500,8 @@ fn relate_mounted_fourbar_closed_loop_closes_with_relate_origin() {
     // Use the actual NewtonConfig defaults so this assertion tracks solver config
     // changes rather than drifting from a hardcoded literal sum.
     let newton_cfg = NewtonConfig::default();
-    let angular_norm =
-        (twist[0] * twist[0] + twist[1] * twist[1] + twist[2] * twist[2]).sqrt();
-    let linear_norm =
-        (twist[3] * twist[3] + twist[4] * twist[4] + twist[5] * twist[5]).sqrt();
+    let angular_norm = (twist[0] * twist[0] + twist[1] * twist[1] + twist[2] * twist[2]).sqrt();
+    let linear_norm = (twist[3] * twist[3] + twist[4] * twist[4] + twist[5] * twist[5]).sqrt();
 
     assert!(
         angular_norm < newton_cfg.tol_rot_rad,

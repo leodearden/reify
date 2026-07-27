@@ -243,7 +243,10 @@ fn trampoline_combined_pavilion_solves() {
         );
     }
     let u_center = vec3(&displacements[2]);
-    assert!(u_center[2] < 0.0, "free center moves toward the -z load, got {u_center:?}");
+    assert!(
+        u_center[2] < 0.0,
+        "free center moves toward the -z load, got {u_center:?}"
+    );
     for &anchor in &[0usize, 1, 3, 4] {
         let u = vec3(&displacements[anchor]);
         assert!(
@@ -257,7 +260,10 @@ fn trampoline_combined_pavilion_solves() {
     let member_forces = list_field(&fields, "member_forces");
     assert_eq!(member_forces.len(), 2, "one member force per line member");
     for (i, f) in member_forces.iter().enumerate() {
-        assert!(coord(f).is_finite(), "member_forces[{i}] must be finite, got {f:?}");
+        assert!(
+            coord(f).is_finite(),
+            "member_forces[{i}] must be finite, got {f:?}"
+        );
     }
     let member_force_deltas = list_field(&fields, "member_force_deltas");
     assert_eq!(member_force_deltas.len(), 2, "one delta per line member");
@@ -291,7 +297,10 @@ fn trampoline_combined_pavilion_solves() {
             Value::List(comps) => {
                 assert_eq!(comps.len(), 3, "Δσ[{p}] encodes 3 Voigt components");
                 for (k, c) in comps.iter().enumerate() {
-                    assert!(coord(c).is_finite(), "Δσ[{p}][{k}] must be finite, got {c:?}");
+                    assert!(
+                        coord(c).is_finite(),
+                        "Δσ[{p}][{k}] must be finite, got {c:?}"
+                    );
                 }
             }
             other => panic!("surface_stress_deltas[{p}] must be a List, got {other:?}"),
@@ -306,9 +315,18 @@ fn trampoline_combined_pavilion_solves() {
         Value::List(pair) => {
             assert_eq!(pair.len(), 2, "principal pair is [min, max]");
             let (min, max) = (coord(&pair[0]), coord(&pair[1]));
-            assert!(min.is_finite() && max.is_finite(), "principals must be finite");
-            assert!(min <= max, "principal pair must be sorted [min, max], got [{min}, {max}]");
-            assert!(min > 0.0, "taut patch keeps a positive minimum principal, got {min}");
+            assert!(
+                min.is_finite() && max.is_finite(),
+                "principals must be finite"
+            );
+            assert!(
+                min <= max,
+                "principal pair must be sorted [min, max], got [{min}, {max}]"
+            );
+            assert!(
+                min > 0.0,
+                "taut patch keeps a positive minimum principal, got {min}"
+            );
         }
         other => panic!("surface_principal_stresses[0] must be a List, got {other:?}"),
     }
@@ -430,8 +448,13 @@ fn solver_membrane_load_target_is_registered() {
     reify_eval::compute_targets::register_compute_fns(&mut engine);
 
     let value_inputs = combined_pavilion_payload();
-    let dispatch =
-        engine.dispatch_compute_node("solver::membrane_load", &value_inputs, &[], &Value::Undef, None);
+    let dispatch = engine.dispatch_compute_node(
+        "solver::membrane_load",
+        &value_inputs,
+        &[],
+        &Value::Undef,
+        None,
+    );
 
     match dispatch {
         Ok((result, _diags)) => match result {
@@ -508,10 +531,7 @@ fn trampoline_all_anchored_is_failed_empty_free_set() {
         Value::Int(3),
         Value::Int(4),
     ]);
-    assert_failed_infeasible(
-        call_membrane_load(&value_inputs),
-        "every node is anchored",
-    );
+    assert_failed_infeasible(call_membrane_load(&value_inputs), "every node is anchored");
 }
 
 /// (b) `surface_prestress` longer than the surface (patch) count is a located
@@ -524,10 +544,7 @@ fn trampoline_surface_prestress_count_mismatch_is_failed() {
     let mut value_inputs = combined_pavilion_payload();
     // [6] surface_prestress := two σ₀ for the single patch.
     value_inputs[6] = Value::List(vec![pressure(1.0e5), pressure(2.0e5)]);
-    assert_failed_infeasible(
-        call_membrane_load(&value_inputs),
-        "surface (patch) count",
-    );
+    assert_failed_infeasible(call_membrane_load(&value_inputs), "surface (patch) count");
 }
 
 /// (c) A support index past the node array is rejected by the trampoline's own
