@@ -7201,6 +7201,65 @@ describe('App N-pane render integration tests (task-4767 δ)', () => {
     expect(pane1.onHover).toBeDefined();
   });
 
+  it('#5668: FEA props reach pane 0 only; the store is App-scope and survives a mesh-only pulse', async () => {
+    // Capture the onMeshUpdate callback so we can pulse a mesh update that does
+    // NOT change the pane set (both panes stay populated → mapArray keys unchanged).
+    let meshUpdateCallback: ((mesh: MeshData) => void) | undefined;
+    vi.mocked(bridge.onMeshUpdate).mockImplementation(async (cb: any) => {
+      meshUpdateCallback = cb;
+      return () => {};
+    });
+
+    // Non-empty fea_diagnostics + non-null fea_convergence so the forwarded values
+    // are distinguishable from engineStore's empty/null defaults.
+    const feaDiagnostics = [{ kind: 'ProblemElements' as const, ids: [3, 5] }];
+    const feaConvergence = { converged: false, reason: 'MaxDofs' };
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      fea_convergence: feaConvergence,
+      meshes: [makeMesh('A#realization[0]'), makeMesh('B#realization[0]')],
+      values: [], constraints: [], files: [],
+      tessellation_diagnostics: [], compile_diagnostics: [],
+      tensegrity_wires: [], tensegrity_surfaces: [],
+      display_panes: [
+        { subject: 'A#realization[0]', pane: 0 },
+        { subject: 'B#realization[0]', pane: 1 },
+      ],
+      display_appearance: [],
+      fea_diagnostics: feaDiagnostics,
+    });
+
+    await renderAndWaitForReady();
+    expect(capturedMultiViewportProps.panes).toHaveLength(2);
+
+    // ── Pane 0 (design-main) carries the full FEA trio ────────────────────────
+    const mainPane = capturedMultiViewportProps.panes[0];
+    expect(mainPane.viewportId).toBe('design-main');
+    // A real FeaModeStore, not a stub — mirrors the DualViewport δ assertions.
+    expect(mainPane.feaModeStore).toBeDefined();
+    expect(typeof mainPane.feaModeStore.setEnabled).toBe('function');
+    expect(mainPane.feaModeStore.state.enabled).toBe(false);
+    expect(mainPane.feaDiagnostics).toHaveLength(feaDiagnostics.length);
+    expect(mainPane.feaConvergence).toEqual(feaConvergence);
+
+    // ── Pane 1 (model pane) gets none of it ───────────────────────────────────
+    // Pane-0-only carve-out: <Viewport> renders its own <FeaModeToolbar> whenever
+    // feaModeStore is present, so a second FEA-capable pane would spawn a second
+    // toolbar (and trip the debug bridge's selectAmbiguous guard). Pinned here so
+    // a future "just share it with every pane" edit fails loudly.
+    const pane1 = capturedMultiViewportProps.panes[1];
+    expect(pane1.viewportId).toBe('pane-1');
+    expect(pane1.feaModeStore).toBeUndefined();
+    expect(pane1.feaDiagnostics).toBeUndefined();
+    expect(pane1.feaConvergence).toBeUndefined();
+
+    // ── Store identity is stable across a non-structural update ───────────────
+    // The store must be App-scope, not re-created inside the mapArray mapper.
+    const storeBefore = mainPane.feaModeStore;
+    meshUpdateCallback!(makeMesh('C#realization[0]'));
+    await flushMacrotasks();
+    expect(capturedMultiViewportProps.panes[0].feaModeStore).toBe(storeBefore);
+  });
+
   it('step-9 case B: empty display_panes → DualViewport renders, MultiViewport absent (back-compat inv.2)', async () => {
     // Default mock (beforeEach) has display_panes: [] — no model panes → DualViewport fallback
     await renderAndWaitForReady();
