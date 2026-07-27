@@ -668,20 +668,12 @@ fn doc_listed_in_top_level_usage() {
 // --stdlib / --out tests (step-5 / task-3565)
 // ---------------------------------------------------------------------------
 
-/// Helper: a unique temp dir for a test, removed when the returned guard drops
-/// — including while unwinding out of a failed assertion.
-///
-/// Bind the guard to a NAMED LOCAL as the FIRST binding in the test body, so it
-/// outlives the `run_doc(..)` subprocess and every assertion that reads back
-/// `index.html`:
-///
-/// ```ignore
-/// let guard = stdlib_out_dir("produces");
-/// let out_dir = guard.path().to_path_buf();
-/// ```
-///
-/// `stdlib_out_dir("x").path().to_path_buf()` compiles but drops the guard at
-/// the end of that statement, deleting the directory before the CLI writes to it.
+/// Panic-safe temp dir for this file's `--out` tests. Bind it as the FIRST
+/// binding in the test body so it outlives the `run_doc(..)` subprocess and
+/// every assertion that reads back `index.html`. Binding rules and the
+/// `REIFY_KEEP_TEMP_DIRS` post-mortem knob — which retains the generated HTML
+/// for inspection after a RED run — see
+/// [`reify_test_support::prefixed_tempdir`].
 fn stdlib_out_dir(suffix: &str) -> reify_test_support::TempDir {
     reify_test_support::prefixed_tempdir(&format!("reify-test-stdlib-doc-{suffix}-"))
 }

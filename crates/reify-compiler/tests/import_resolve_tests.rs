@@ -5,18 +5,9 @@ use std::fs;
 use reify_compiler::module_dag::ModuleResolver;
 use reify_test_support::TempDir;
 
-/// Create a unique temp directory for tests, removed when the returned guard
-/// drops — including while unwinding out of a failed assertion.
-///
-/// Bind the guard to a NAMED LOCAL that outlives the test body:
-///
-/// ```ignore
-/// let guard = test_dir("resolve_std");
-/// let dir = guard.path().to_path_buf();
-/// ```
-///
-/// `test_dir("x").path().to_path_buf()` compiles but drops the guard at the end
-/// of that statement, deleting the directory before the test uses it.
+/// Panic-safe temp dir for this file's tests. Binding rules and the
+/// `REIFY_KEEP_TEMP_DIRS` post-mortem knob: see
+/// [`reify_test_support::prefixed_tempdir`].
 fn test_dir(name: &str) -> TempDir {
     reify_test_support::prefixed_tempdir(&format!("reify_test-{name}-"))
 }

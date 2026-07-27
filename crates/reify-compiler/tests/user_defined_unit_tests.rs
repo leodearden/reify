@@ -24,18 +24,9 @@ fn compile_with_prelude_helper(source: &str, prelude: &[CompiledModule]) -> Comp
     compile_with_prelude(&parsed, prelude)
 }
 
-/// Create a unique temp directory for filesystem-based tests, removed when the
-/// returned guard drops — including while unwinding out of a failed assertion.
-///
-/// Bind the guard to a NAMED LOCAL that outlives the test body:
-///
-/// ```ignore
-/// let guard = test_dir("cross_module_pub_unit");
-/// let dir = guard.path().to_path_buf();
-/// ```
-///
-/// `test_dir("x").path().to_path_buf()` compiles but drops the guard at the end
-/// of that statement, deleting the directory before the test uses it.
+/// Panic-safe temp dir for this file's filesystem-based tests. Binding rules
+/// and the `REIFY_KEEP_TEMP_DIRS` post-mortem knob: see
+/// [`reify_test_support::prefixed_tempdir`].
 fn test_dir(name: &str) -> TempDir {
     reify_test_support::prefixed_tempdir(&format!("reify_unit_test_209-{name}-"))
 }
