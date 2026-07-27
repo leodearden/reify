@@ -12,6 +12,11 @@
 #   OUT     — captured stdout from the script
 #   ERR_OUT — captured stderr from the script
 #   RC      — exit code
+#   REAL_STUB_DIR — (run_helper_real only, task #5633) this invocation's
+#                    minted PATH stub dir; survives the call (reclaimed by
+#                    the suite's EXIT trap, see _REAL_STUB_ROOT) rather than
+#                    being unlinked eagerly, so a detached grandchild of the
+#                    script under test can still resolve stubs via PATH.
 #
 # Blocks:
 #   A — CLI guard (step-1 / step-2)
@@ -229,6 +234,31 @@ make_isolated_lane() {
     mktemp -d "$parent/lane-XXXXXX"
 }
 
+# _REAL_STUB_ROOT: a single per-run parent for every per-invocation PATH stub
+# dir run_helper_real mints (task #5633). WHY a per-run root registered here,
+# rather than `_TMPDIRS+=("$real_stub_dir")` inside run_helper_real itself:
+# two call sites — H5d (Q_LANE8) and H9 (Q_LANE11) — invoke run_helper_real
+# from inside a backgrounded ( ... ) & subshell, where a bash array append is
+# discarded the instant the subshell exits — the exact hazard already
+# documented above for _LANE_ROOT (and, for file-backed state, for
+# _TRASH_HITS_FILE et al.). Anchoring every per-call stub dir under ONE root
+# registered here in the main shell mirrors _LANE_ROOT exactly: it is
+# subshell-safe by construction and keeps the suite's /tmp footprint at
+# exactly one extra top-level entry, reclaimed by cleanup()'s EXIT trap.
+#
+# WHY the stub dir must be reclaimed by cleanup() at all, instead of each
+# invocation unlinking its own dir the instant its direct child exits (the
+# pre-#5633 behaviour): scripts/seed-warm-lane.sh's trash rm is a DETACHED
+# GRANDCHILD (`{ rm -rf "$RESEED_TRASH" ...; } 9<&- &`,
+# scripts/seed-warm-lane.sh:1133, and the orphan sweep at :792) that is
+# forked before seed exits but resolves `rm` through PATH at an arbitrary
+# LATER instant. An eager per-invocation unlink races that lookup; deferring
+# every stub dir's reclaim to this file's existing EXIT trap closes the race
+# for every run_helper_real caller at once. See run_helper_real below and
+# Block T (task #5633) for the full mechanism and the regression guard.
+_REAL_STUB_ROOT="$(mktemp -d /tmp/test-seed-real-stub-root-XXXXXX)"
+_TMPDIRS+=("$_REAL_STUB_ROOT")
+
 CALLS_FILE="$(mktemp /tmp/test-seed-warm-lane-calls-XXXXXX)"
 _TMPDIRS+=("$CALLS_FILE")
 
@@ -329,7 +359,20 @@ run_helper_real() {
     > "$ERR_FILE"
     # Only stub cp and git; let find/touch be real binaries
     local real_stub_dir
-    real_stub_dir="$(mktemp -d /tmp/test-seed-real-stub-XXXXXX)"
+    # Minted under $_REAL_STUB_ROOT (task #5633), not bare /tmp: the per-run
+    # root is reclaimed once by the suite's EXIT trap instead of this
+    # invocation unlinking its own dir eagerly — see REAL_STUB_DIR below and
+    # the _REAL_STUB_ROOT comment above for why an eager unlink races the
+    # seed's detached trash-rm grandchild.
+    real_stub_dir="$(mktemp -d "$_REAL_STUB_ROOT/stub-XXXXXX")"
+    # REAL_STUB_DIR: publish this invocation's stub dir as a plain global,
+    # like OUT/ERR_OUT/RC below — set immediately after mktemp so it is
+    # correct even if a later assertion in this function body were to abort.
+    # Only observable for calls made from the MAIN shell; H5d/H9's
+    # backgrounded ( ... ) & calls discard it like any other plain-variable
+    # write made inside a subshell (same hazard as _TMPDIRS, documented
+    # above).
+    REAL_STUB_DIR="$real_stub_dir"
     # cp stub that physically copies src to dest (no --reflink needed for tests)
     cat > "$real_stub_dir/cp" << 'REAL_STUB_EOF'
 #!/usr/bin/env bash
@@ -418,7 +461,25 @@ REAL_SLEEP_RM_STUB_EOF
     ERR_OUT="$(cat "$ERR_FILE")"
     _note_shared_trash_use "$@"
     RC=$rc
-    rm -rf "$real_stub_dir"
+    # Deliberately NOT `rm -rf "$real_stub_dir"` here (task #5633; a pre-#5633
+    # eager unlink lived on this line). WHY: scripts/seed-warm-lane.sh's trash
+    # rm is a DETACHED GRANDCHILD (`{ rm -rf "$RESEED_TRASH" ...; } 9<&- &`,
+    # scripts/seed-warm-lane.sh:1133, and the orphan sweep at :792) that is
+    # forked before seed exits but does its PATH lookup at an arbitrary LATER
+    # instant. Unlinking real_stub_dir the moment the DIRECT child (`bash
+    # "$SCRIPT"` above) exits races that lookup — when the unlink won, the
+    # grandchild resolved the real /bin/rm instead of the
+    # REIFY_TEST_PIN_RESEED_TRASH/REIFY_TEST_SLEEP_RESEED_TRASH_RM stub and
+    # genuinely deleted the trash the stub exists to pin (the intermittent
+    # I14g / M-setup failures #5633 fixes).
+    # WHY NOT wait for the grandchild instead: H4 (below) and Block Q/H5d/H9
+    # deliberately require this helper to return the instant the DIRECT child
+    # exits, as already documented at the OUT_FILE-vs-command-substitution
+    # NOTE above — waiting here would serialise every caller on a detached
+    # background rm those blocks are specifically testing around.
+    # LIFETIME: real_stub_dir now lives under $_REAL_STUB_ROOT (see mktemp
+    # above), reclaimed once for every invocation by this file's existing
+    # cleanup() EXIT trap — see Block T (task #5633) for the regression guard.
 }
 
 reset_calls() {
