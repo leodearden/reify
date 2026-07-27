@@ -125,9 +125,13 @@ All scripts follow the repo's stdout-contract convention (resolved value on stdo
 warm-lane-audit.sh [--mount <worktrees_dir>] [--format table|json] [--status-cmd <cmd>]
                     [--stale-age-min <N>]
   For each resident worktree under <mount> (lanes _lane-*/_spec-* and orphan dirs), emit:
-    lane · role · ASSIGNED|FREE (flock -n -x <dir>.lock) · branch · backing-task-status
-      (terminal|non-terminal|unknown, via REIFY_LANE_LEAK_STATUS_CMD — 4749 seam) ·
-      recoverable (LANDED | PUSHED | ORPHAN) · divergent_gib (du or df-delta) · age_min (mtime)
+    lane · role · live (LIVE|IDLE, non-blocking flock -n -s <dir>.lock probe) ·
+      assigned (ASSIGNED|RELEASED|QUARANTINED|UNKNOWN, read from the orchestrator record
+      at <state-dir>/<lane>.json — never inferred from the lock) · pin (raw backing
+      status of a reserved-but-idle lane's holder; `unknown` if unresolvable, `-` when
+      not pinned) · branch · backing-task-status (terminal|non-terminal|unknown, via
+      REIFY_LANE_LEAK_STATUS_CMD — 4749 seam) · recoverable (LANDED | PUSHED | ORPHAN) ·
+      dirty (clean|residue-only|wip) · divergent_gib (du or df-delta) · age_min (mtime)
     classification: LIVE | RECLAIMABLE (free ∧ (terminal ∨ recoverable ∨ residue-only-dirty)) |
                     LEAKED (free ∧ non-terminal ∧ unrecoverable-WIP ∧ stale, where
                       stale ⟺ age_min ≥ stale_age_min) | PRESERVED-OK
