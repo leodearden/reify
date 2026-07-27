@@ -554,16 +554,142 @@ pub fn documented_names(names: &[String], chunk_sources: &[(String, String)]) ->
         .collect()
 }
 
+/// `true` when `s` is identifier-shaped end-to-end: `[A-Za-z_][A-Za-z0-9_]*`.
+///
+/// The admission test for existence evidence. Without it a message template
+/// (`"unresolved type: {}"`), a phrase or a chunk id would enter the oracle and
+/// arbitrary prose could vouch for a fabricated call.
+fn is_identifier_shaped(s: &str) -> bool {
+    let mut bytes = s.bytes();
+    match bytes.next() {
+        Some(b) if b.is_ascii_alphabetic() || b == b'_' => {}
+        _ => return false,
+    }
+    bytes.all(is_word_byte)
+}
+
+/// Leading `[A-Za-z0-9_]` run of `tok` — the identifier at the head of a token
+/// like `revolute(a:` or `MaterialFrame`.
+fn leading_ident(tok: &str) -> &str {
+    let end = tok
+        .bytes()
+        .position(|b| !is_word_byte(b))
+        .unwrap_or(tok.len());
+    &tok[..end]
+}
+
+/// Declaration keywords that introduce a name in `.ri` source.
+///
+/// `structure` and `occurrence` are the two-word forms (`structure def X`) and
+/// are handled by consuming the `def` token before the name.
+const RI_DECL_KEYWORDS: &[&str] = &[
+    "fn",
+    "unit",
+    "type",
+    "constraint",
+    "purpose",
+    "enum",
+    "trait",
+    "joint",
+    "structure",
+    "occurrence",
+];
+
+/// Name declared by a `.ri` line, if it is a declaration at all.
+///
+/// `[pub] <keyword> [def] <name>…`, where the name is the leading identifier
+/// run of the following token — `joint revolute(a: Axis)` declares `revolute`.
+fn ri_declared_name(code: &str) -> Option<&str> {
+    let mut toks = code.split_whitespace();
+    let mut kw = toks.next()?;
+    if kw == "pub" {
+        kw = toks.next()?;
+    }
+    if !RI_DECL_KEYWORDS.contains(&kw) {
+        return None;
+    }
+    if (kw == "structure" || kw == "occurrence") && toks.next()? != "def" {
+        return None;
+    }
+    let ident = leading_ident(toks.next()?);
+    if is_identifier_shaped(ident) {
+        Some(ident)
+    } else {
+        None
+    }
+}
+
 /// Existence oracle for the fabrication direction: every name that the
 /// compiler/stdlib sources evidence as real.
+///
+/// ## Deliberately broader than the omission census
+///
+/// The census is the PRD-pinned `units.rs` registries; the oracle is every
+/// shred of evidence across the compiler and the stdlib. It HAS to be broader:
+/// `clamp`, `lerp` and `dot` are legitimately documented builtins declared in
+/// `math_signatures.rs`, not in any `*_NAMES` registry, and flagging them as
+/// fabrications would make the gate unusable. The trade is one-way and
+/// intentional — a false NEGATIVE (a fabricated name colliding with an
+/// unrelated literal) is acceptable; a false POSITIVE is not.
+///
+/// ## Two lanes, by source language
+///
+/// - **`.rs`** — every identifier-shaped double-quoted literal outside a
+///   comment. This strictly SUBSUMES the `*_NAMES` registry entries (each is
+///   such a literal in an in-scope file), so there is one code path rather
+///   than a union that could drift. It also admits attribute arguments and
+///   unrelated literals; that is over-broadness in the acceptable direction.
+/// - **`.ri`** — declaration lines, because the language's own grammar has no
+///   Rust literal to harvest.
+///
+/// Comments are excluded in both lanes: a name discussed in a doc-comment
+/// ("formerly known as `offset_surface`") is precisely the fabrication case,
+/// and letting the discussion vouch for it would disarm the lane for exactly
+/// the names people write about.
 // G-allow: consumed by check() in-module and by unit tests.
-pub fn known_name_index(_sources: &[(String, String)]) -> BTreeSet<String> {
-    BTreeSet::new()
+pub fn known_name_index(sources: &[(String, String)]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for (path, content) in sources {
+        let is_ri = path.ends_with(".ri");
+        let mut block_depth = 0usize;
+        for raw in content.lines() {
+            let no_block = strip_block_comments(raw, &mut block_depth);
+            let code = strip_line_comment(&no_block);
+            if is_ri {
+                if let Some(name) = ri_declared_name(code) {
+                    out.insert(name.to_string());
+                }
+            } else {
+                for tok in quoted_tokens(code) {
+                    if is_identifier_shaped(&tok) {
+                        out.insert(tok);
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 /// `true` when `path` may carry evidence that a builtin name exists.
-fn in_oracle_scope(_path: &str) -> bool {
-    false
+///
+/// Three roots, and the exclusions matter as much as the inclusions:
+/// - the chunks themselves are excluded, or every fabrication would vouch for
+///   itself and the lane would report clean by construction;
+/// - `tests/` and fixtures are excluded because they routinely name things
+///   that were proposed and never implemented — the exact class the lane
+///   exists to catch;
+/// - docs are excluded for the same reason as chunks.
+// Exercised by the unit tests now; `check()` consumes it when the fabrication
+// lane lands, at which point this attribute goes away. Scoped to `not(test)`
+// rather than a bare `allow(dead_code)` so the lint keeps working under
+// `cargo test` — a blanket allow here would also mask a genuinely orphaned
+// helper later.
+#[cfg_attr(not(test), allow(dead_code))]
+fn in_oracle_scope(path: &str) -> bool {
+    (path.starts_with("crates/reify-compiler/src/") && path.ends_with(".rs"))
+        || (path.starts_with("crates/reify-compiler/stdlib/") && path.ends_with(".ri"))
+        || (path.starts_with("crates/reify-stdlib/src/") && path.ends_with(".rs"))
 }
 
 /// Call-shaped API mentions in one chunk: `(name, 1-based line)`.
