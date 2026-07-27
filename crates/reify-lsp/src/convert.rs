@@ -274,8 +274,8 @@ pub fn convert_parse_error(err: &ParseError, source: &str, _uri: &Url) -> lsp_ty
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_test_support::CountingSubscriberBuilder;
     use reify_core::{DiagnosticCode, DiagnosticLabel};
+    use reify_test_support::CountingSubscriberBuilder;
     use std::sync::atomic::Ordering;
     use tower_lsp::lsp_types::{DiagnosticSeverity, NumberOrString, Position, Url};
 

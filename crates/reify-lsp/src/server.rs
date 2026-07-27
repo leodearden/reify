@@ -281,7 +281,9 @@ impl LanguageServer for ReifyLanguageServer {
         // The parse uses the document's own module path (no per-call argument).
         let text = doc.text.clone();
         let ctx = crate::analysis::AnalysisContext::from_parsed(doc.parsed_module());
-        Ok(crate::hover::compute_hover_in_context(&ctx, &text, position))
+        Ok(crate::hover::compute_hover_in_context(
+            &ctx, &text, position,
+        ))
     }
 
     async fn goto_definition(
@@ -492,12 +494,12 @@ impl LanguageServer for ReifyLanguageServer {
             }
         };
 
-        Ok(target.map(|target| {
-            PrepareRenameResponse::RangeWithPlaceholder {
+        Ok(
+            target.map(|target| PrepareRenameResponse::RangeWithPlaceholder {
                 range: target.range,
                 placeholder: target.placeholder,
-            }
-        }))
+            }),
+        )
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
@@ -541,7 +543,13 @@ impl LanguageServer for ReifyLanguageServer {
                     &resolve_import,
                 )
             } else {
-                crate::references::compute_rename(primary_source, &parsed, &uri, position, &new_name)
+                crate::references::compute_rename(
+                    primary_source,
+                    &parsed,
+                    &uri,
+                    position,
+                    &new_name,
+                )
             }
         })
         .await
@@ -680,7 +688,10 @@ pub mod test_support {
 /// Files in `open` but **not** under `root` (e.g. a buffer from a different
 /// project that happens to be open) are appended at the end so the cross-file
 /// collectors still see them.
-fn build_workspace_docs(root: &std::path::Path, open: &HashMap<PathBuf, String>) -> Vec<(Url, String)> {
+fn build_workspace_docs(
+    root: &std::path::Path,
+    open: &HashMap<PathBuf, String>,
+) -> Vec<(Url, String)> {
     let mut docs: Vec<(Url, String)> = Vec::new();
     // Track canonical paths we emitted to avoid double-including open files.
     let mut covered: HashSet<PathBuf> = HashSet::new();
@@ -715,10 +726,7 @@ fn build_cross_file_rig(
     root: &std::path::Path,
     stdlib_path: Option<PathBuf>,
     open_docs: HashMap<PathBuf, String>,
-) -> (
-    Vec<(Url, String)>,
-    impl Fn(&str) -> Option<(Url, String)>,
-) {
+) -> (Vec<(Url, String)>, impl Fn(&str) -> Option<(Url, String)>) {
     let stdlib_root = stdlib_path.unwrap_or_else(|| root.join("crates/reify-compiler/stdlib"));
     let resolver = reify_compiler::module_dag::ModuleResolver::new(root.to_path_buf(), stdlib_root);
     let workspace_docs = build_workspace_docs(root, &open_docs);
@@ -773,9 +781,7 @@ fn collect_ri_files(
                 continue;
             }
             collect_ri_files(&path, docs, covered, open);
-        } else if file_type.is_file()
-            && path.extension().and_then(|e| e.to_str()) == Some("ri")
-        {
+        } else if file_type.is_file() && path.extension().and_then(|e| e.to_str()) == Some("ri") {
             // Open override wins over disk; unreadable disk files are skipped.
             let text = if let Some(t) = open.get(&path) {
                 t.clone()
@@ -1392,7 +1398,10 @@ mod tests {
             })
             .await
             .unwrap();
-        assert!(comp.is_some(), "completion should return items after did_open");
+        assert!(
+            comp.is_some(),
+            "completion should return items after did_open"
+        );
         match server
             .document_symbol(DocumentSymbolParams {
                 text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -1707,7 +1716,10 @@ mod tests {
         let server = service.inner();
         let uri = open_bracket_source(server).await;
         // 'Scalar' type position — not renameable.
-        let result = server.rename(rename_params(uri, 1, 17, "girth")).await.unwrap();
+        let result = server
+            .rename(rename_params(uri, 1, 17, "girth"))
+            .await
+            .unwrap();
         assert!(
             result.is_none(),
             "rename must refuse a non-renameable position, got {result:?}"
@@ -1937,9 +1949,8 @@ mod tests {
         let (service, _socket) = test_service();
         let server = service.inner();
 
-        let tmp_dir =
-            std::env::temp_dir().join(format!("reify-lsp-refs-xfile-{}", std::process::id()));
-        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let guard = reify_test_support::prefixed_tempdir("reify-lsp-refs-xfile-");
+        let tmp_dir = guard.path().to_path_buf();
         let parts_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
         std::fs::write(tmp_dir.join("parts.ri"), parts_source).unwrap();
 
@@ -1973,8 +1984,6 @@ mod tests {
             .references(ref_params(main_uri.clone(), Position::new(2, 15), true))
             .await
             .unwrap();
-
-        let _ = std::fs::remove_dir_all(&tmp_dir);
 
         let locations =
             locations.expect("cross-file references should resolve for the imported Hole use");
@@ -2010,9 +2019,8 @@ mod tests {
         let (service, _socket) = test_service();
         let server = service.inner();
 
-        let tmp_dir =
-            std::env::temp_dir().join(format!("reify-lsp-rename-xfile-{}", std::process::id()));
-        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let guard = reify_test_support::prefixed_tempdir("reify-lsp-rename-xfile-");
+        let tmp_dir = guard.path().to_path_buf();
         let parts_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
         std::fs::write(tmp_dir.join("parts.ri"), parts_source).unwrap();
 
@@ -2055,8 +2063,6 @@ mod tests {
             .rename(rename_params(main_uri.clone(), 2, 15, "Bore"))
             .await
             .unwrap();
-
-        let _ = std::fs::remove_dir_all(&tmp_dir);
 
         // (a) assertions: a cross-module structure use is now a rename target.
         match prepared {
@@ -2286,7 +2292,8 @@ mod tests {
         let server = service.inner();
 
         // Create a temporary workspace with a custom stdlib directory
-        let tmp_dir = std::env::temp_dir().join(format!("reify-lsp-stdlib-{}", std::process::id()));
+        let guard = reify_test_support::prefixed_tempdir("reify-lsp-stdlib-");
+        let tmp_dir = guard.path().to_path_buf();
         let custom_stdlib = tmp_dir.join("custom-stdlib");
         std::fs::create_dir_all(&custom_stdlib).unwrap();
 
@@ -2339,9 +2346,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Clean up
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-
         // Should resolve to custom-stdlib/mymod.ri
         let response = goto_result.expect("goto-def should resolve Widget from custom stdlib");
         match response {
@@ -2366,8 +2370,8 @@ mod tests {
         let server = service.inner();
 
         // Create a temporary workspace with two .ri files
-        let tmp_dir = std::env::temp_dir().join(format!("reify-lsp-test-{}", std::process::id()));
-        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let guard = reify_test_support::prefixed_tempdir("reify-lsp-test-");
+        let tmp_dir = guard.path().to_path_buf();
 
         // Write the target file: parts.ri
         let parts_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
@@ -2412,9 +2416,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Clean up temp directory
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-
         // Verify the result points to parts.ri
         let response = goto_result.expect("goto-def should return a result for imported symbol");
         match response {
@@ -2439,9 +2440,8 @@ mod tests {
         let server = service.inner();
 
         // Create a temporary workspace with multiple .ri files
-        let tmp_dir =
-            std::env::temp_dir().join(format!("reify-lsp-concurrent-{}", std::process::id()));
-        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let guard = reify_test_support::prefixed_tempdir("reify-lsp-concurrent-");
+        let tmp_dir = guard.path().to_path_buf();
 
         // Write three target files
         std::fs::write(
@@ -2535,9 +2535,6 @@ structure Assembly {
                 partial_result_params: Default::default(),
             }),
         );
-
-        // Clean up temp directory
-        let _ = std::fs::remove_dir_all(&tmp_dir);
 
         // Assert all 3 completed and returned correct locations
         let resp1 = r1.unwrap().expect("request 1 should return a result");
@@ -2658,9 +2655,8 @@ structure Assembly {
         let server = service.inner();
 
         // Create a temporary workspace
-        let tmp_dir =
-            std::env::temp_dir().join(format!("reify-lsp-docstore-{}", std::process::id()));
-        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let guard = reify_test_support::prefixed_tempdir("reify-lsp-docstore-");
+        let tmp_dir = guard.path().to_path_buf();
 
         // Write parts.ri on disk with ONLY Hole (no Plate)
         let disk_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
@@ -2720,9 +2716,6 @@ structure Assembly {
             .await
             .unwrap();
 
-        // Clean up
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-
         // Should resolve to parts.ri line 0 (from editor content, not disk).
         // Disk version doesn't have Plate, so this proves DocumentStore is used.
         let response = goto_result
@@ -2755,10 +2748,8 @@ structure Assembly {
     fn build_workspace_docs_walks_ri_files_and_applies_open_override() {
         use std::path::Path;
 
-        let tmp = std::env::temp_dir()
-            .join(format!("reify-lsp-bwd-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp); // clean slate
-        std::fs::create_dir_all(&tmp).unwrap();
+        let guard = reify_test_support::prefixed_tempdir("reify-lsp-bwd-");
+        let tmp = guard.path().to_path_buf();
 
         // Two .ri files at root level.
         std::fs::write(tmp.join("a.ri"), "file_a_on_disk").unwrap();
@@ -2781,9 +2772,6 @@ structure Assembly {
 
         let docs = build_workspace_docs(Path::new(&tmp), &open);
 
-        // Clean up before assertions so a panic doesn't leave the dir behind.
-        let _ = std::fs::remove_dir_all(&tmp);
-
         // Collect the (path-suffix, content) pairs for easy assertions.
         let collected: Vec<(String, String)> = docs
             .iter()
@@ -2792,18 +2780,25 @@ structure Assembly {
 
         // Every .ri file (outside ignored dirs) must be present.
         let has = |suffix: &str| collected.iter().any(|(p, _)| p.ends_with(suffix));
-        assert!(has("a.ri"),   "a.ri must be in docs, got {collected:?}");
-        assert!(has("b.ri"),   "b.ri must be in docs, got {collected:?}");
-        assert!(has("c.ri"),   "sub/c.ri must be in docs, got {collected:?}");
+        assert!(has("a.ri"), "a.ri must be in docs, got {collected:?}");
+        assert!(has("b.ri"), "b.ri must be in docs, got {collected:?}");
+        assert!(has("c.ri"), "sub/c.ri must be in docs, got {collected:?}");
 
         // Non-.ri file excluded.
-        assert!(!has("d.txt"), "d.txt must NOT be in docs, got {collected:?}");
+        assert!(
+            !has("d.txt"),
+            "d.txt must NOT be in docs, got {collected:?}"
+        );
         // .ri inside target/ excluded.
-        assert!(!has("e.ri"),  "target/e.ri must NOT be in docs, got {collected:?}");
+        assert!(
+            !has("e.ri"),
+            "target/e.ri must NOT be in docs, got {collected:?}"
+        );
 
         // Exactly three docs expected.
         assert_eq!(
-            docs.len(), 3,
+            docs.len(),
+            3,
             "expected 3 docs (a.ri, b.ri, sub/c.ri), got {} docs: {collected:?}",
             docs.len()
         );
@@ -2855,10 +2850,8 @@ structure Assembly {
         let (service, _socket) = test_service();
         let server = service.inner();
 
-        let tmp = std::env::temp_dir()
-            .join(format!("reify-lsp-refs-closed-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
+        let guard = reify_test_support::prefixed_tempdir("reify-lsp-refs-closed-");
+        let tmp = guard.path().to_path_buf();
 
         // parts.ri — the HOME file; will be opened in LSP.
         let parts_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
@@ -2898,11 +2891,8 @@ structure Assembly {
             .await
             .unwrap();
 
-        let _ = std::fs::remove_dir_all(&tmp);
-
-        let locations = locations.expect(
-            "references on Hole declaration should return Some(locations), not None",
-        );
+        let locations = locations
+            .expect("references on Hole declaration should return Some(locations), not None");
         // Must include at least one Location in the closed other.ri.
         assert!(
             locations.iter().any(|l| l.uri.path().ends_with("other.ri")),
@@ -2938,10 +2928,8 @@ structure Assembly {
         let (service, _socket) = test_service();
         let server = service.inner();
 
-        let tmp = std::env::temp_dir()
-            .join(format!("reify-lsp-rename-closed-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
+        let guard = reify_test_support::prefixed_tempdir("reify-lsp-rename-closed-");
+        let tmp = guard.path().to_path_buf();
 
         // parts.ri — the HOME file; will be opened in LSP.
         let parts_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
@@ -2981,8 +2969,6 @@ structure Assembly {
             .await
             .unwrap();
 
-        let _ = std::fs::remove_dir_all(&tmp);
-
         let changes = edit
             .expect("rename returns a WorkspaceEdit")
             .changes
@@ -3000,10 +2986,7 @@ structure Assembly {
 
         // Every edit in other.ri must write the new name.
         let other_edits = changes.get(&other_key).unwrap();
-        assert!(
-            !other_edits.is_empty(),
-            "other.ri edits must be non-empty"
-        );
+        assert!(!other_edits.is_empty(), "other.ri edits must be non-empty");
         assert!(
             other_edits.iter().all(|e| e.new_text == "Bore"),
             "all other.ri edits must write the new name 'Bore', got {other_edits:?}"

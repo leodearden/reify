@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
-use reify_constraints::SimpleConstraintChecker;
-use reify_eval::CheckResult;
 use reify_ast::{Declaration, ParsedModule};
 pub use reify_ast::{MemberSpanInfo, find_named_member_span};
+use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
+use reify_constraints::SimpleConstraintChecker;
 use reify_core::{ModulePath, SourceSpan, Type, ValueCellId};
+use reify_eval::CheckResult;
 use reify_ir::Value;
 use tower_lsp::lsp_types::{DocumentSymbol, Range, SymbolKind, Url};
 
@@ -359,8 +359,7 @@ impl AnalysisContext {
                 continue;
             }
             if let Some(group) = template.match_arm_groups.iter().find(|g| g.name == name) {
-                let arm_types: Vec<Type> =
-                    group.arms.iter().map(|a| a.arm_type.clone()).collect();
+                let arm_types: Vec<Type> = group.arms.iter().map(|a| a.arm_type.clone()).collect();
                 return Some(Type::Union(arm_types));
             }
         }
@@ -2314,18 +2313,18 @@ mod tests {
         use tower_lsp::lsp_types::SymbolKind;
 
         // --- occurrence → CLASS with param FIELD + let VARIABLE children ---
-        let occ_source =
-            "occurrence def Joint {\n    param diameter: Length = 10mm\n    let radius = diameter / 2\n}";
+        let occ_source = "occurrence def Joint {\n    param diameter: Length = 10mm\n    let radius = diameter / 2\n}";
         let occ_symbols = compute_document_symbols(occ_source, &test_uri());
-        assert_eq!(occ_symbols.len(), 1, "one occurrence → one top-level symbol");
+        assert_eq!(
+            occ_symbols.len(),
+            1,
+            "one occurrence → one top-level symbol"
+        );
         let joint = &occ_symbols[0];
         assert_eq!(joint.name, "Joint");
         assert_eq!(joint.kind, SymbolKind::CLASS);
         assert_selection_on_name(occ_source, joint);
-        let occ_children = joint
-            .children
-            .as_ref()
-            .expect("Joint should have children");
+        let occ_children = joint.children.as_ref().expect("Joint should have children");
         assert_eq!(occ_children.len(), 2, "Joint has diameter + radius");
         assert_eq!(occ_children[0].name, "diameter");
         assert_eq!(occ_children[0].kind, SymbolKind::FIELD);
@@ -2343,10 +2342,7 @@ mod tests {
         assert_eq!(rigid.name, "Rigid");
         assert_eq!(rigid.kind, SymbolKind::INTERFACE);
         assert_selection_on_name(trait_source, rigid);
-        let trait_children = rigid
-            .children
-            .as_ref()
-            .expect("Rigid should have children");
+        let trait_children = rigid.children.as_ref().expect("Rigid should have children");
         assert_eq!(trait_children.len(), 1, "Rigid has mass");
         assert_eq!(trait_children[0].name, "mass");
         assert_eq!(trait_children[0].kind, SymbolKind::FIELD);
@@ -2368,7 +2364,11 @@ mod tests {
             .children
             .as_ref()
             .expect("Shape should have variant children");
-        assert_eq!(variants.len(), 2, "Shape has Point + Circle in source order");
+        assert_eq!(
+            variants.len(),
+            2,
+            "Shape has Point + Circle in source order"
+        );
         assert_eq!(variants[0].name, "Point");
         assert_eq!(variants[0].kind, SymbolKind::ENUM_MEMBER);
         assert_eq!(variants[1].name, "Circle");
@@ -2536,10 +2536,7 @@ fn area(w: Length) -> Length { w }"#;
         let start = source.find("guarded_x").unwrap() as u32;
         let end = start + "guarded_x".len() as u32;
         assert_eq!(span, SourceSpan::new(start, end));
-        assert_eq!(
-            &source[span.start as usize..span.end as usize],
-            "guarded_x"
-        );
+        assert_eq!(&source[span.start as usize..span.end as usize], "guarded_x");
     }
 
     #[test]
@@ -2689,5 +2686,4 @@ structure Gadget {
             "find_match_arm_group_union scoped to 'Widget' should find the 'head' cluster"
         );
     }
-
 }
