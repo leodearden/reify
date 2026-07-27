@@ -133,4 +133,103 @@ else
     echo "        nextest-less host rather than a simulated one.)"
 fi
 
+# -- Test 4: NEST-SAFETY — the assertion that protects the whole refactor ------
+#
+# test_verify_nextest_absent_suites.sh runs test_verify_semaphore_wiring.sh
+# INSIDE its own nextest-absent env (its assert S2, pass floor 22). Once both
+# are migrated, this lib runs inside ITSELF. Measured under the outer env:
+# ${CARGO_HOME:-$HOME/.cargo}/bin resolves to $NX_HOME/.cargo/bin, which does
+# NOT exist — so an implementation that treats "nothing to mirror" as a
+# host-precondition SKIP would make the nested semaphore_wiring emit
+# "Results: 0 passed, 0 failed", blow S2's floor of 22, and turn the outer
+# suite RED. S2's floor is a live tripwire on exactly this refactor.
+echo ""
+echo "--- Test 4: nest-safety (init from within an already-constructed env) ---"
+
+# The child script lives inside the outer env's workdir, so the lib's own
+# EXIT/INT/TERM/HUP trap cleans it up — no second trap to collide with the
+# first.
+NX_CHILD="$NX_WORKDIR/nested_init_probe.sh"
+cat > "$NX_CHILD" <<'NESTED_PROBE'
+# Called via `nx_run bash <this>` — i.e. from INSIDE an already-constructed
+# nextest-absent env. Builds a SECOND env from there and reports whether it is
+# still a usable simulation. Exits non-zero naming the first broken conjunct.
+set -euo pipefail
+cd "$1"
+source tests/infra/nextest_absent_lib.sh
+
+echo "inner: HOME=$HOME CARGO_HOME=${CARGO_HOME:-(unset)}"
+_ms="${CARGO_HOME:-$HOME/.cargo}/bin"
+echo "inner: naive mirror source $_ms -> $([ -d "$_ms" ] && echo EXISTS || echo MISSING)"
+
+nextest_absent_init
+echo "inner: farm entries = $(find "$NX_FARM" -mindepth 1 | wc -l)"
+
+if ! nextest_absent_available; then
+    echo "inner: FAILED — nextest_absent_available is non-zero after a nested init"
+    echo "inner: reason: $(nextest_absent_reason)"
+    exit 1
+fi
+if ! nx_run cargo --version; then
+    echo "inner: FAILED — cargo does not RUN under the nested env"
+    exit 1
+fi
+if nx_which cargo-nextest; then
+    echo "inner: FAILED — cargo-nextest is REACHABLE under the nested env"
+    exit 1
+fi
+echo "inner: OK — nested env is a usable nextest-absent simulation"
+NESTED_PROBE
+
+_t4_nested() { nx_run bash "$NX_CHILD" "$REPO_ROOT"; }
+
+assert "4a: a SECOND nextest_absent_init from inside an already-constructed env still yields a usable simulation" \
+    _t4_nested
+
+# NON-VACUITY for 4a's first conjunct. `nextest_absent_available` returning 0
+# proves nothing while it is a stub that can only ever return 0 — a checker
+# that cannot fail is exactly the vacuity it exists to prevent. So: make the
+# env genuinely NOT a nextest-absent simulation (put a reachable cargo-nextest
+# in the farm) and require that availability reports it, naming the conjunct.
+_t4_negative() {
+    local rc=0
+    printf '#!/bin/sh\nexit 0\n' > "$NX_FARM/cargo-nextest"
+    chmod +x "$NX_FARM/cargo-nextest"
+
+    # Sanity: the sabotage actually took effect on this PATH.
+    if ! nx_which cargo-nextest >/dev/null; then
+        echo "sabotage did not take: cargo-nextest still unreachable with a stub in the farm"
+        rm -f "$NX_FARM/cargo-nextest"
+        return 1
+    fi
+
+    if nextest_absent_available; then
+        echo "nextest_absent_available returned 0 on an env where cargo-nextest IS"
+        echo "reachable — it is not keyed on the observable invariant, so every"
+        echo "'available' answer elsewhere in this file is vacuous."
+        rc=1
+    else
+        local reason
+        reason="$(nextest_absent_reason)"
+        echo "reason: $reason"
+        case "$reason" in
+            *cargo-nextest*) : ;;
+            *) echo "reason does not name the failing conjunct (cargo-nextest reachable)"
+               rc=1 ;;
+        esac
+    fi
+
+    rm -f "$NX_FARM/cargo-nextest"
+    # The env must be restored, or every later assert in this file inherits the
+    # sabotage.
+    if nx_which cargo-nextest >/dev/null; then
+        echo "cleanup failed: cargo-nextest still reachable after removing the stub"
+        rc=1
+    fi
+    return "$rc"
+}
+
+assert "4b: nextest_absent_available reports UNAVAILABLE (naming the conjunct) when cargo-nextest is reachable" \
+    _t4_negative
+
 test_summary
