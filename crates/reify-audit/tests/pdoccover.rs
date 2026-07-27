@@ -1151,3 +1151,167 @@ fn baseline_candidates_exclude_fabricated_names() {
          {candidates:?}"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-23: real-repo smoke — PRD leaf γ's observable signal
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The five stable category prefixes. A summary carrying anything else means
+/// a category was added without updating the module header's contract table.
+#[allow(dead_code)]
+const KNOWN_CATEGORIES: &[&str] = &[
+    "undocumented-name",
+    "fabricated-name",
+    "stale-baseline-entry",
+    "stale-allow-entry",
+    "allow-missing-reason",
+];
+
+/// `check()` over the REAL repo, via `RealGitOps`.
+///
+/// Deliberately NOT a zero-on-main guard — the inverse of its
+/// `tests/pdssentinel.rs` sibling. PDOCCOVER is expected non-zero until #5480
+/// seeds the baseline; that residual IS the signal PRD leaf γ asks for.
+///
+/// So this asserts only invariants that no concurrent chunk edit can flip:
+/// findings exist, every one is well-formed, and the order is deterministic.
+/// It names no specific name and freezes no count — #5434 (owns
+/// `chunks/stdlib.md`), #5347 and #5389 are all editing chunk content, and any
+/// count or name assertion here would flip RED on their merge rather than on a
+/// real defect.
+#[test]
+fn real_repo_smoke_findings_are_well_formed_and_deterministic() {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+        .expect("CARGO_MANIFEST_DIR must be set by cargo test");
+    let repo_root = Path::new(&manifest_dir)
+        .join("../..")
+        .canonicalize()
+        .expect("canonicalize repo root");
+
+    let git = reify_audit::RealGitOps::new(&repo_root);
+    let conn = Connection::open_in_memory().expect("in-memory sqlite");
+    let jc = MockJCodemunchOps::new();
+    let ctx = AuditContext {
+        project_root: repo_root.clone(),
+        conn: &conn,
+        git: &git,
+        jcodemunch: &jc,
+        task_metadata: HashMap::new(),
+        target_task_id: None,
+        window: None,
+        now: None,
+        producer_branch: None,
+    };
+
+    // Guard against a vacuous pass: an empty index (a vendored/exported tree
+    // with no git work-tree) would make every loop in check() a no-op and the
+    // assertions below meaningless.
+    let tracked = ctx.git.ls_files();
+    assert!(
+        !tracked.is_empty(),
+        "ls_files() returned an empty file list — the test is likely running \
+         outside a git work-tree. Fail rather than pass vacuously."
+    );
+    for required in [
+        "crates/reify-compiler/src/units.rs",
+        "crates/reify-mcp/src/tools/chunks/stdlib.md",
+    ] {
+        assert!(
+            tracked.iter().any(|p| p == required),
+            "{required} must be tracked — it is a PDOCCOVER input, and without \
+             it the corresponding lane silently scans nothing"
+        );
+    }
+
+    // (iv) Completes without panicking on the real tree.
+    let findings = reify_audit::pdoccover::check(&ctx);
+
+    // (i) The residual backlog is visible. The capability manifest records ~79
+    // names still missing even after #5389 lands, so this holds under any
+    // sibling merge ordering — but assert only "at least one", never a count.
+    let undocumented = findings
+        .iter()
+        .filter(|f| f.summary.starts_with("undocumented-name:"))
+        .count();
+    assert!(
+        undocumented >= 1,
+        "expected at least one `undocumented-name:` finding on the real tree — \
+         the registry↔chunk gap is the residual PRD leaf γ exists to surface. \
+         Zero means the omission lane went blind (a units.rs or chunk-path \
+         change), NOT that the corpus was completed. Total findings: {}",
+        findings.len()
+    );
+
+    // (ii) Every finding is well-formed.
+    for f in &findings {
+        assert_eq!(
+            f.pattern,
+            Pattern::PDocCover,
+            "every finding must carry Pattern::PDocCover; got {:?} for {:?}",
+            f.pattern,
+            f.summary
+        );
+        assert_eq!(
+            f.severity,
+            Severity::High,
+            "every PDOCCOVER finding rides at High; got {:?} for {:?}",
+            f.severity,
+            f.summary
+        );
+        let category = finding_category(f);
+        assert!(
+            KNOWN_CATEGORIES.contains(&category),
+            "finding carries unknown category prefix {category:?}; expected one \
+             of {KNOWN_CATEGORIES:?}. A new category needs a row in the module \
+             header's contract table. Summary: {:?}",
+            f.summary
+        );
+        assert!(
+            !finding_name(f).is_empty(),
+            "finding must name the offending symbol after its category prefix; \
+             got {:?}",
+            f.summary
+        );
+        let files: Vec<&String> = f
+            .evidence
+            .iter()
+            .filter_map(|e| match e {
+                EvidenceRef::File { path } => Some(path),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            f.evidence.len(),
+            1,
+            "each finding carries exactly one evidence ref; got {:?} for {:?}",
+            f.evidence,
+            f.summary
+        );
+        assert_eq!(
+            files.len(),
+            1,
+            "that evidence ref must be an EvidenceRef::File — PDOCCOVER is a \
+             working-tree detector with no commit, runs-db or task-metadata \
+             evidence to offer; got {:?} for {:?}",
+            f.evidence,
+            f.summary
+        );
+        assert!(
+            !files[0].is_empty(),
+            "evidence path must be non-empty for {:?}",
+            f.summary
+        );
+    }
+
+    // (iii) Deterministic across two consecutive runs over an unchanged tree.
+    // Sort order is the reporting contract: /audit diffs consecutive runs, and
+    // an unstable order would show spurious churn on every sweep.
+    let again = reify_audit::pdoccover::check(&ctx);
+    let first: Vec<&str> = findings.iter().map(|f| f.summary.as_str()).collect();
+    let second: Vec<&str> = again.iter().map(|f| f.summary.as_str()).collect();
+    assert_eq!(
+        first, second,
+        "two consecutive check() runs over an unchanged tree must produce a \
+         byte-identical finding sequence"
+    );
+}
