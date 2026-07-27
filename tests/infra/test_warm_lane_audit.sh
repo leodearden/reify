@@ -1947,6 +1947,15 @@ touch "$Q_MOUNT/_lane-shared.lock"
 _hold_lane_lock_shared "$Q_MOUNT" "_lane-shared"
 Q_SHARED_PID="$LANE_LOCK_PID"
 
+# _lane-excl: an exclusive-lock holder -- must stay LIVE (the negative
+# control; see the Q6-Q8 comment below for why it's needed).
+make_lane "$Q_MOUNT/_lane-excl"
+_hold_lane_lock "$Q_MOUNT" "_lane-excl"
+Q_EXCL_PID="$LANE_LOCK_PID"
+
+# Both holders are established BEFORE this single run_helper call so one
+# audit run observes both lanes -- the side-by-side comparison in one report
+# IS the pin (same probe, same run, two lock modes, two answers).
 run_helper --mount "$Q_MOUNT"
 
 assert "Q1: exit 0" test "$RC" -eq 0
@@ -1984,7 +1993,7 @@ assert "Q7: HEADROOM reports live=1 (only the exclusive lane counts live)" \
 assert "Q8: HEADROOM reports free=1 and reclaimable=1 (the shared lane's freed capacity is visible in the aggregate)" \
     bash -c '[ "$1" = "1" ] && [ "$2" = "1" ]' _ "$(_headroom_field "$OUT" free)" "$(_headroom_field "$OUT" reclaimable)"
 
-kill "$Q_SHARED_PID" 2>/dev/null || true
+kill "$Q_SHARED_PID" "$Q_EXCL_PID" 2>/dev/null || true
 _BGPIDS=()  # clear so cleanup doesn't double-kill
 
 test_summary
