@@ -601,17 +601,33 @@ fn watcher_ignores_non_ri_file_changes() {
 
     let changed_paths: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
     let changed_clone = changed_paths.clone();
+    let probe_seen = Arc::new(AtomicBool::new(false));
+    let probe_seen_clone = probe_seen.clone();
 
     let Some(_watcher) = try_watcher(dir.path(), None, move |event| {
         if let FileEvent::Changed(path) = event {
+            // MANDATORY, not just hygiene: probe.ri IS a .ri file, and this
+            // test asserts `paths.is_empty()` below. Without this early
+            // return, the probe's own Changed event would land in
+            // `changed_paths` and fail the test outright.
+            if path.ends_with("probe.ri") {
+                probe_seen_clone.store(true, Ordering::SeqCst);
+                return;
+            }
             changed_clone.lock().unwrap().push(path);
         }
     }) else {
         return;
     };
 
-    // Give the watcher time to register
-    std::thread::sleep(Duration::from_millis(200));
+    let registered = wait_for_watch_registration(dir.path(), &probe_seen);
+    assert!(
+        registered,
+        "the watcher never delivered a probe event, so the directory watch \
+         was never confirmed live -- this test's absence assertion below \
+         would otherwise be a false PASS (a sleep that expired before \
+         registration proves nothing about filtering)"
+    );
 
     // Modify a .txt file (should be ignored)
     std::fs::write(&txt_file, "updated content").unwrap();
