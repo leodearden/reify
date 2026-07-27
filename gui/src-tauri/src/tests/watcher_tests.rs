@@ -126,28 +126,29 @@ where
     }
 }
 
-/// Registration barrier for a directory watch: repeatedly (re)writes a
-/// sibling `probe.ri` file inside `dir` until `probe_seen` reports true,
+/// Shared implementation behind [`wait_for_watch_registration`] and
+/// [`wait_for_watch_registration_via_removal`]: repeatedly (re)writes a
+/// sibling `probe.ri` file inside `dir` -- removing it again immediately
+/// when `remove_after_write` is set -- until `probe_seen` reports true,
 /// positively confirming the directory watch is live before the caller
 /// issues a write it can't afford to lose. See `wait_until_with_retry`'s
 /// doc comment for why re-issuing -- not just polling harder -- is
 /// required: a write issued before the watch is live produces no inotify
 /// event at all, not a late one.
 ///
-/// The caller must construct its `FileWatcher` (with a callback that sets
-/// `probe_seen`, e.g. on any `Changed` event whose path ends with
-/// `"probe.ri"`, returning early so probe content can never reach the
-/// caller's own content-gated branches) BEFORE calling this. `probe.ri`
-/// itself is created lazily by the first attempt below rather than
-/// pre-created by the caller: the notify wiring in `watcher.rs` treats a
-/// path's initial `Create` the same as a later `Modify` (both collapse to
-/// `FileEvent::Changed`), so there's nothing to gain from pre-creating it.
-///
-/// `retry_every` (150ms) exceeds the production debounce window
-/// (`DEBOUNCE_DURATION` in `watcher.rs`, 100ms) so each retry gets its own
-/// trailing-edge quiet window instead of perpetually resetting one pending
-/// entry -- see `wait_until_with_retry`'s doc comment.
-fn wait_for_watch_registration(dir: &std::path::Path, probe_seen: &Arc<AtomicBool>) -> bool {
+/// `retry_every` is fixed at 150ms, which exceeds the production debounce
+/// window (`DEBOUNCE_DURATION` in `watcher.rs`, 100ms) so each retry gets
+/// its own trailing-edge quiet window instead of perpetually resetting one
+/// pending entry -- see `wait_until_with_retry`'s doc comment. `timeout` is
+/// a parameter, rather than a fixed budget like the two wrappers below use,
+/// so a caller that needs to positively confirm the ABSENCE of registration
+/// within a short window can call this directly.
+fn wait_for_watch_registration_inner(
+    dir: &std::path::Path,
+    probe_seen: &Arc<AtomicBool>,
+    remove_after_write: bool,
+    timeout: Duration,
+) -> bool {
     let probe_file = dir.join("probe.ri");
     let mut probe_attempt = 0u32;
     wait_until_with_retry(
@@ -158,11 +159,39 @@ fn wait_for_watch_registration(dir: &std::path::Path, probe_seen: &Arc<AtomicBoo
                 format!("structure Probe {{ param n = {probe_attempt} }}"),
             )
             .unwrap();
+            if remove_after_write {
+                match std::fs::remove_file(&probe_file) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => panic!("failed to remove probe file: {e}"),
+                }
+            }
         },
         Duration::from_millis(150),
-        Duration::from_secs(10),
+        timeout,
         || probe_seen.load(Ordering::SeqCst),
     )
+}
+
+/// Registration barrier for a directory watch: repeatedly (re)writes a
+/// sibling `probe.ri` file inside `dir` until `probe_seen` reports true,
+/// positively confirming the directory watch is live before the caller
+/// issues a write it can't afford to lose.
+///
+/// The caller must construct its `FileWatcher` (with a callback that sets
+/// `probe_seen`, e.g. on any `Changed` event whose path ends with
+/// `"probe.ri"`, returning early so probe content can never reach the
+/// caller's own content-gated branches) BEFORE calling this. `probe.ri`
+/// itself is created lazily by the first attempt below rather than
+/// pre-created by the caller: the notify wiring in `watcher.rs` treats a
+/// path's initial `Create` the same as a later `Modify` (both collapse to
+/// `FileEvent::Changed`), so there's nothing to gain from pre-creating it.
+///
+/// Use [`wait_for_watch_registration_via_removal`] instead whenever the
+/// watcher under test was constructed with `target_file: Some(_)` -- see
+/// that function's doc comment for why.
+fn wait_for_watch_registration(dir: &std::path::Path, probe_seen: &Arc<AtomicBool>) -> bool {
+    wait_for_watch_registration_inner(dir, probe_seen, false, Duration::from_secs(10))
 }
 
 /// Registration barrier for a directory watch guarded by a `target_file`
@@ -174,13 +203,14 @@ fn wait_for_watch_registration(dir: &std::path::Path, probe_seen: &Arc<AtomicBoo
 /// Use this instead of its Changed-probe sibling
 /// [`wait_for_watch_registration`] whenever the watcher under test was
 /// constructed with `target_file: Some(_)`; keep using the sibling for
-/// `target_file: None` watchers. The `target_file` filter applies to
-/// **`Changed`** events only (`watcher.rs:214-218`), so a watcher filtering
-/// out `probe.ri` would never deliver the sibling's `Changed("probe.ri")`
-/// probe event -- the sibling would spin its full budget and return
-/// `false`, even though the watch is genuinely live. A delivered `Removed`
-/// event bypasses that filter (by the same design -- see `watcher.rs`'s
-/// module doc), so it can confirm liveness here.
+/// `target_file: None` watchers. The `target_file` guard in
+/// `FileWatcher::new`'s notify closure applies to **`Changed`** events
+/// only, so a watcher filtering out `probe.ri` would never deliver the
+/// sibling's `Changed("probe.ri")` probe event -- the sibling would spin
+/// its full budget and return `false`, even though the watch is genuinely
+/// live. A delivered `Removed` event bypasses that filter (by the same
+/// design -- see `watcher.rs`'s module doc), so it can confirm liveness
+/// here.
 ///
 /// A delivered `Removed` still proves the watch is live for `Changed`
 /// events too: both event kinds ride the same underlying inotify directory
@@ -195,58 +225,57 @@ fn wait_for_watch_registration(dir: &std::path::Path, probe_seen: &Arc<AtomicBoo
 /// `"probe.ri"`, returning early so probe content can never reach the
 /// caller's own content-gated branches) BEFORE calling this.
 ///
-/// `retry_every` (150ms) exceeds the production debounce window
-/// (`DEBOUNCE_DURATION` in `watcher.rs`, 100ms) so each retry gets its own
-/// trailing-edge quiet window instead of perpetually resetting one pending
-/// entry -- see `wait_until_with_retry`'s doc comment.
+/// Assumes an inotify-style backend that reports a create and a later
+/// delete as two separate events -- true of `notify`'s Linux backend,
+/// which is the only one this workspace builds against (native deps and CI
+/// both pin `x86_64-unknown-linux-gnu`). A coalescing backend (e.g.
+/// `notify`'s FSEvents backend on macOS, which can merge a create+delete
+/// inside its latency window into a single Create/Modify event) could drop
+/// the synthesized `Removed` entirely under a `target_file` filter, and
+/// every test relying on this barrier would spin its full budget and fail.
 fn wait_for_watch_registration_via_removal(
     dir: &std::path::Path,
     probe_seen: &Arc<AtomicBool>,
 ) -> bool {
-    let probe_file = dir.join("probe.ri");
-    let mut probe_attempt = 0u32;
-    wait_until_with_retry(
-        || {
-            probe_attempt += 1;
-            std::fs::write(
-                &probe_file,
-                format!("structure Probe {{ param n = {probe_attempt} }}"),
-            )
-            .unwrap();
-            match std::fs::remove_file(&probe_file) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => panic!("failed to remove probe file: {e}"),
-            }
-        },
-        Duration::from_millis(150),
-        Duration::from_secs(10),
-        || probe_seen.load(Ordering::SeqCst),
-    )
+    wait_for_watch_registration_inner(dir, probe_seen, true, Duration::from_secs(10))
 }
 
 /// Discriminating test for the constraint that motivates
 /// `wait_for_watch_registration_via_removal` (defined above its
 /// Changed-probe sibling): a watcher constructed with `Some(target_file)`
-/// filters `Changed` events by filename (`watcher.rs:214-218`), so the
-/// Changed-probe `wait_for_watch_registration` could never confirm
-/// registration here -- it would spin its full budget and return `false`.
-/// `Removed` events bypass that filter by design, so a removal probe can.
+/// filters `Changed` events by filename (the guard in `FileWatcher::new`'s
+/// notify closure), so the Changed-probe `wait_for_watch_registration`
+/// could never confirm registration here -- it would spin its full budget
+/// and return `false`. `Removed` events bypass that filter by design, so a
+/// removal probe can. Both halves are asserted below: that the removal
+/// probe succeeds, and that the Changed probe (run with a short budget
+/// against the very same watcher) fails.
 #[test]
 fn wait_for_watch_registration_via_removal_confirms_a_watch_behind_a_target_file_filter() {
     let dir = tempfile::tempdir().unwrap();
 
     let probe_seen = Arc::new(AtomicBool::new(false));
     let probe_seen_clone = probe_seen.clone();
+    let changed_probe_seen = Arc::new(AtomicBool::new(false));
+    let changed_probe_seen_clone = changed_probe_seen.clone();
 
     // A target_file filter that EXCLUDES probe.ri: only Changed("target.ri")
     // would ever pass the filter, so this watcher can only be confirmed
-    // live via a Removed probe.
+    // live via a Removed probe. The Changed arm below exists purely to make
+    // the negative assertion further down discriminating: it WOULD flip
+    // `changed_probe_seen` if a Changed("probe.ri") event ever reached this
+    // closure, so that flag staying false is evidence the event never
+    // arrived (filtered upstream in watcher.rs) rather than evidence this
+    // closure merely doesn't look for it.
     let Some(_watcher) = try_watcher(dir.path(), Some(PathBuf::from("target.ri")), move |event| {
-        if let FileEvent::Removed(path) = event
-            && path.ends_with("probe.ri")
-        {
-            probe_seen_clone.store(true, Ordering::SeqCst);
+        match event {
+            FileEvent::Removed(path) if path.ends_with("probe.ri") => {
+                probe_seen_clone.store(true, Ordering::SeqCst);
+            }
+            FileEvent::Changed(path) if path.ends_with("probe.ri") => {
+                changed_probe_seen_clone.store(true, Ordering::SeqCst);
+            }
+            _ => {}
         }
     }) else {
         return;
@@ -262,6 +291,27 @@ fn wait_for_watch_registration_via_removal_confirms_a_watch_behind_a_target_file
     assert!(
         !dir.path().join("probe.ri").exists(),
         "the removal probe should leave no probe.ri behind on disk"
+    );
+
+    // Discriminating half: the Changed-probe barrier, run against this same
+    // target_file-filtered watcher with a short budget, must fail to
+    // confirm registration. Not because this closure can't detect a
+    // Changed("probe.ri") -- the arm above proves it can -- but because
+    // watcher.rs's target_file filtering drops that event before it ever
+    // reaches any callback. Without this assertion, this test would still
+    // pass even if target_file filtering of Changed events were deleted
+    // from watcher.rs entirely.
+    let changed_probe_registered = wait_for_watch_registration_inner(
+        dir.path(),
+        &changed_probe_seen,
+        false,
+        Duration::from_secs(1),
+    );
+    assert!(
+        !changed_probe_registered,
+        "the Changed-probe barrier should NOT have been able to confirm \
+         this target_file-filtered watch -- if it did, target_file \
+         filtering of Changed events has regressed"
     );
 }
 
