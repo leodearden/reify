@@ -829,6 +829,146 @@ pub const SOME_OTHER: &[&str] = &["not_a_registry"];
         assert_eq!(allow_marker_reason(r#"    "box","#), None);
     }
 
+    // ── step-5: chunk documentation-mention index ───────────────────────
+
+    /// Build the `(path, content)` pair list the chunk matchers consume.
+    fn sources(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(p, c)| (p.to_string(), c.to_string()))
+            .collect()
+    }
+
+    /// Convenience: is `name` documented by these chunk sources?
+    fn documented(name: &str, srcs: &[(String, String)]) -> bool {
+        documented_names(&[name.to_string()], srcs).contains(name)
+    }
+
+    /// A name counts as documented when it appears in an inline code span, in
+    /// bold-prefixed prose (the real `stdlib.md` "**Booleans:** …" shape), in a
+    /// heading, or inside a fenced block. PRD §(b) disposition 1 asks only for
+    /// a word-boundary match somewhere in the chunk corpus.
+    #[test]
+    fn documented_names_matches_across_markdown_shapes() {
+        let cases: &[(&str, &str)] = &[
+            ("inline code span", "See `union(a, b)` for boolean ops."),
+            (
+                "bold-prefixed prose",
+                "**Booleans:** `union(a, b)`, `difference(a, b)`",
+            ),
+            ("heading", "## The union operation"),
+            (
+                "fenced block",
+                "```reify\nlet s = union(a, b)\n```",
+            ),
+            ("bare prose", "Use union to combine two solids."),
+        ];
+        for (label, content) in cases {
+            let srcs = sources(&[("chunks/geometry.md", content)]);
+            assert!(
+                documented("union", &srcs),
+                "`union` must be documented by the {label} shape: {content:?}"
+            );
+        }
+    }
+
+    /// Word boundaries on BOTH sides: a name must not be satisfied by a longer
+    /// identifier that merely contains it. `union` is a real registry entry and
+    /// so are `union_all` and `intersection` — treating `union_all` as
+    /// documentation for `union` would silently under-report coverage.
+    #[test]
+    fn documented_names_requires_word_boundaries_on_both_sides() {
+        for imposter in ["disunion", "union_all", "reunion", "unionize", "1union2"] {
+            let srcs = sources(&[("chunks/geometry.md", imposter)]);
+            assert!(
+                !documented("union", &srcs),
+                "`{imposter}` must NOT satisfy `union` — word boundary required \
+                 on both sides"
+            );
+        }
+    }
+
+    /// Backtick, paren, comma, period, colon, asterisk, pipe and end-of-line
+    /// all count as boundaries — the punctuation the chunk corpus actually
+    /// uses around API names.
+    #[test]
+    fn documented_names_punctuation_counts_as_boundary() {
+        for content in [
+            "`union`",
+            "union(a, b)",
+            "a, union, b",
+            "The op is union.",
+            "union: combine",
+            "**union**",
+            "| union | boolean |",
+            "trailing union",
+            "union",
+        ] {
+            let srcs = sources(&[("chunks/geometry.md", content)]);
+            assert!(
+                documented("union", &srcs),
+                "punctuation/EOL must count as a word boundary for: {content:?}"
+            );
+        }
+    }
+
+    /// Matching is case-sensitive — Reify builtin names are snake_case, and a
+    /// prose `Union` is not the builtin.
+    #[test]
+    fn documented_names_is_case_sensitive() {
+        let srcs = sources(&[("chunks/geometry.md", "Union and Difference are booleans.")]);
+        assert!(
+            !documented("union", &srcs),
+            "`Union` must NOT satisfy `union` — matching is case-sensitive"
+        );
+    }
+
+    /// A name mentioned in ANY of several chunk sources counts as documented —
+    /// the corpus is searched as a whole, not per-file.
+    #[test]
+    fn documented_names_matches_any_source() {
+        let srcs = sources(&[
+            ("chunks/syntax.md", "no api names here"),
+            ("chunks/types.md", "still nothing"),
+            ("chunks/geometry.md", "`extrude(profile, direction, distance)`"),
+        ]);
+        assert!(
+            documented("extrude", &srcs),
+            "a mention in ANY chunk source must count as documented"
+        );
+    }
+
+    /// The returned set contains exactly the documented subset of the input
+    /// names — undocumented names are absent, and no name is invented.
+    #[test]
+    fn documented_names_returns_documented_subset_only() {
+        let srcs = sources(&[("chunks/geometry.md", "`union(a, b)` and `extrude(p, d, l)`")]);
+        let names = [
+            "union".to_string(),
+            "extrude".to_string(),
+            "offset_solid".to_string(),
+            "zone_annulus".to_string(),
+        ];
+        let got = documented_names(&names, &srcs);
+        let want: BTreeSet<String> =
+            ["union".to_string(), "extrude".to_string()].into_iter().collect();
+        assert_eq!(
+            got, want,
+            "documented_names must return exactly the documented subset"
+        );
+    }
+
+    /// An empty corpus documents nothing and does not panic (the fail-safe
+    /// posture: a missing chunks dir must not crash the detector).
+    #[test]
+    fn documented_names_empty_corpus_documents_nothing() {
+        let got = documented_names(&["union".to_string()], &[]);
+        assert!(
+            got.is_empty(),
+            "an empty chunk corpus must document nothing; got: {got:?}"
+        );
+    }
+
     // ── step-4: hardening against the real units.rs shapes ──────────────
 
     /// A `#[…]` attribute line inside a registry body contributes NO entry and
