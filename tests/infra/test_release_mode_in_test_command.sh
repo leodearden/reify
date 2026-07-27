@@ -26,6 +26,25 @@ echo "=== release-mode test_command tests ==="
 # the UNGATED tail drops `-- --test-threads=1` (nextest isolates per test), while
 # the GATED OCCT passes keep it. So Test 3 below pins single-threaded release to
 # the gated pass, where the OCCT serialization actually matters.
+#
+# NEXTEST-LESS HOST AUDIT (task 5604): this suite needs NO change. Every grep
+# that names the test pass already uses the `cargo (test|nextest run)`
+# alternation (Tests 1, 2, 4, 5), so nothing here hard-codes a runner and
+# nothing goes RED when verify.sh falls back to `cargo test` (plan header
+# nextest=0). Why the alternation is sound at all (verify.sh's two emission
+# branches share their selector fragment): see the canonical "WHY THE FALLBACK
+# IS SHAPE-IDENTICAL" block in tests/infra/test_verify_nextest_absent_suites.sh.
+#
+# Its one NEGATIVE assert over a nextest-spelled pattern — Test 5, "lint plan
+# does NOT contain a '--release' test pass" — is not a vacuity risk either,
+# and for a reason worth stating: it runs against LINT_PLAN_SEGS, and the lint
+# plan carries no test pass under EITHER runner. So it is a genuine absence
+# check about the lint plan's content, not an artefact of nextest being
+# missing. (The vacuity class task 5604 fixed elsewhere is the opposite shape:
+# a negative grep for a nextest-ONLY spelling run against the TEST plan, which
+# passes for free once the runner changes.)
+#
+# Pinned mechanically by S8 in test_verify_nextest_absent_suites.sh (floor 9).
 TEST_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --print-plan | grep -v '^#')"
 LINT_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" lint --scope all --print-plan | grep -v '^#')"
 export TEST_PLAN_SEGS LINT_PLAN_SEGS
