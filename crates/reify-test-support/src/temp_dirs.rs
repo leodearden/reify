@@ -433,4 +433,9 @@ mod tests {
             "crates/reify-compiler/tests/user_defined_unit_tests.rs",
         );
     }
+
+    #[test]
+    fn m5_integration_has_no_unguarded_temp_dirs() {
+        assert_no_unguarded_temp_dir_sites("crates/reify-eval/tests/m5_integration.rs");
+    }
 }
