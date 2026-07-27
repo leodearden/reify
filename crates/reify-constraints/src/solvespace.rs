@@ -1586,12 +1586,15 @@ pub fn solve_sketch(system: &SketchSystem) -> SketchSolveResult {
                     // Every param the handle map references was pushed into the
                     // same system that produced `params`, so this cannot happen.
                     // If it somehow does, say so loudly instead of returning
-                    // fabricated coordinates.
+                    // fabricated coordinates — and say the *true* thing: libslvs
+                    // reported OKAY and the failure is on this side of the FFI,
+                    // so this is its own arm rather than `UnknownError(OKAY)`,
+                    // which would blame the C library for a Rust bug.
                     tracing::error!(
                         param = missing.0,
                         "sketch readback referenced a param absent from the solved system"
                     );
-                    SketchSolveResult::UnknownError(SLVS_RESULT_OKAY)
+                    SketchSolveResult::ReadbackFailed { param: missing.0 }
                 }
             }
         }

@@ -430,15 +430,20 @@ mod tests {
     const G: Slvs_hGroup = Slvs_hGroup(3);
     const WP: Slvs_hEntity = Slvs_hEntity(9);
 
-    /// Every entity field slvs.h's `Slvs_Make*` leaves at its memset-zero value.
+    /// `point[]` in full — which slot holds which handle, and which slots stay
+    /// at their memset-zero value.
     ///
-    /// Asserting the *absence* of writes is the load-bearing half of these
-    /// tests: a stray `point[1]` or `distance` on an entity libslvs expects to
-    /// be zero is read as a real handle and silently changes the equations.
-    fn assert_points_zero(e: &Slvs_Entity, expected: [Slvs_hEntity; 4]) {
+    /// Both halves are load-bearing, which is why the whole array is compared
+    /// rather than just the occupied prefix. Slot *placement* is the contract
+    /// for arcs and circles (libslvs derives an arc's radius from
+    /// `point[0]`→`point[1]`), and a stray handle in a slot libslvs expects to
+    /// be zero is read as real and silently changes the equations.
+    fn assert_points_eq(e: &Slvs_Entity, expected: [Slvs_hEntity; 4]) {
         assert_eq!(e.point, expected, "point[] mismatch");
     }
 
+    /// `param[]` really is all-zero — no expectation to pass, because every
+    /// entity built here carries its params elsewhere or not at all.
     fn assert_params_zero(e: &Slvs_Entity) {
         assert_eq!(e.param, [Slvs_hParam(0); 4], "param[] should be all-zero");
     }
@@ -451,7 +456,7 @@ mod tests {
         assert_eq!(e.group, G);
         assert_eq!(e.type_, SLVS_E_NORMAL_IN_2D);
         assert_eq!(e.wrkpl, WP);
-        assert_points_zero(&e, [Slvs_hEntity(0); 4]);
+        assert_points_eq(&e, [Slvs_hEntity(0); 4]);
         assert_params_zero(&e);
         assert_eq!(e.normal, Slvs_hEntity(0));
         assert_eq!(e.distance, Slvs_hEntity(0));
@@ -467,7 +472,7 @@ mod tests {
         assert_eq!(e.type_, SLVS_E_DISTANCE);
         assert_eq!(e.wrkpl, WP);
         assert_eq!(e.param, [d, Slvs_hParam(0), Slvs_hParam(0), Slvs_hParam(0)]);
-        assert_points_zero(&e, [Slvs_hEntity(0); 4]);
+        assert_points_eq(&e, [Slvs_hEntity(0); 4]);
         assert_eq!(e.normal, Slvs_hEntity(0));
         assert_eq!(e.distance, Slvs_hEntity(0));
     }
@@ -484,7 +489,7 @@ mod tests {
         assert_eq!(e.group, G);
         assert_eq!(e.type_, SLVS_E_CIRCLE);
         assert_eq!(e.wrkpl, WP);
-        assert_points_zero(
+        assert_points_eq(
             &e,
             [center, Slvs_hEntity(0), Slvs_hEntity(0), Slvs_hEntity(0)],
         );
@@ -508,7 +513,7 @@ mod tests {
         assert_eq!(e.group, G);
         assert_eq!(e.type_, SLVS_E_ARC_OF_CIRCLE);
         assert_eq!(e.wrkpl, WP);
-        assert_points_zero(&e, [center, start, end, Slvs_hEntity(0)]);
+        assert_points_eq(&e, [center, start, end, Slvs_hEntity(0)]);
         assert_eq!(e.normal, normal);
         assert_eq!(e.distance, Slvs_hEntity(0));
         assert_params_zero(&e);
@@ -530,7 +535,7 @@ mod tests {
         assert_eq!(scoped.group, G);
         assert_eq!(scoped.type_, SLVS_E_LINE_SEGMENT);
         assert_eq!(scoped.wrkpl, WP);
-        assert_points_zero(&scoped, [a, b, Slvs_hEntity(0), Slvs_hEntity(0)]);
+        assert_points_eq(&scoped, [a, b, Slvs_hEntity(0), Slvs_hEntity(0)]);
         assert_eq!(scoped.normal, Slvs_hEntity(0));
         assert_eq!(scoped.distance, Slvs_hEntity(0));
         assert_params_zero(&scoped);

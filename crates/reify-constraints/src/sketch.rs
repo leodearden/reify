@@ -23,7 +23,7 @@
 //! `SketchSolveOutcome` and its DOF ledger — belongs to the consumer, which is
 //! the only place that knows which DOFs were declared `auto`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use reify_core::SourceSpan;
@@ -129,6 +129,98 @@ impl SketchSlotKind {
     }
 }
 
+/// A fixed-capacity list of `(entity, required kind)` slot pairs.
+///
+/// Three is the widest declaration in either slot table — an [`SketchEntity::Arc`]'s
+/// centre plus two endpoints, a [`SketchConstraint::SymmetricLine`]'s two points
+/// plus its centreline — and both tables are closed enums, so the capacity is a
+/// property of the vocabulary rather than a guess that a future variant could
+/// outgrow unnoticed: adding a wider variant fails to compile against `CAP`.
+///
+/// Exists so [`SketchSystem::validate`]'s linear scan does not heap-allocate a
+/// throwaway `Vec` per declaration purely to iterate a fixed-arity slot list,
+/// while keeping the single-source-of-truth slot tables exactly where they are.
+#[derive(Debug, Clone, Copy)]
+struct SlotList {
+    slots: [(SketchEntityId, SketchSlotKind); SlotList::CAP],
+    len: usize,
+}
+
+impl SlotList {
+    const CAP: usize = 3;
+
+    /// The padding a shorter list's unused tail carries. Never read: `iter`
+    /// stops at `len`.
+    const PAD: (SketchEntityId, SketchSlotKind) = (SketchEntityId(0), SketchSlotKind::Point);
+
+    const EMPTY: SlotList = SlotList {
+        slots: [SlotList::PAD; SlotList::CAP],
+        len: 0,
+    };
+
+    /// The occupied slots, in declaration order.
+    fn iter(&self) -> impl Iterator<Item = (SketchEntityId, SketchSlotKind)> + '_ {
+        self.slots[..self.len].iter().copied()
+    }
+}
+
+impl From<[(SketchEntityId, SketchSlotKind); 1]> for SlotList {
+    fn from([a]: [(SketchEntityId, SketchSlotKind); 1]) -> Self {
+        SlotList {
+            slots: [a, SlotList::PAD, SlotList::PAD],
+            len: 1,
+        }
+    }
+}
+
+impl From<[(SketchEntityId, SketchSlotKind); 2]> for SlotList {
+    fn from([a, b]: [(SketchEntityId, SketchSlotKind); 2]) -> Self {
+        SlotList {
+            slots: [a, b, SlotList::PAD],
+            len: 2,
+        }
+    }
+}
+
+impl From<[(SketchEntityId, SketchSlotKind); 3]> for SlotList {
+    fn from(slots: [(SketchEntityId, SketchSlotKind); 3]) -> Self {
+        SlotList {
+            slots,
+            len: SlotList::CAP,
+        }
+    }
+}
+
+/// Which literal field of a declaration a numeric complaint is about.
+///
+/// Named rather than positional so a consumer can say *which* number was bad
+/// without re-deriving the declaration's shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SketchValueField {
+    /// A point's `x` seed coordinate.
+    X,
+    /// A point's `y` seed coordinate.
+    Y,
+    /// A circle's seed radius.
+    Radius,
+    /// A dimensional constraint's value: a length, a diameter or a radius.
+    Value,
+    /// An angle constraint's value, in degrees.
+    Degrees,
+}
+
+impl fmt::Display for SketchValueField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            SketchValueField::X => "its x coordinate",
+            SketchValueField::Y => "its y coordinate",
+            SketchValueField::Radius => "its radius",
+            SketchValueField::Value => "its value",
+            SketchValueField::Degrees => "its angle in degrees",
+        })
+    }
+}
+
 impl fmt::Display for SketchEntityKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -170,15 +262,79 @@ impl SketchEntity {
     /// is [`SketchSlotKind::Point`] — but the slot kind is returned rather than
     /// assumed, so a future composite with a non-point slot cannot slip past the
     /// validator by inheriting an assumption made here.
-    fn defining_refs(&self) -> Vec<(SketchEntityId, SketchSlotKind)> {
+    fn defining_refs(&self) -> SlotList {
         let point = SketchSlotKind::Point;
         match *self {
-            SketchEntity::Point { .. } => Vec::new(),
-            SketchEntity::Line { start, end } => vec![(start, point), (end, point)],
-            SketchEntity::Circle { center, .. } => vec![(center, point)],
+            SketchEntity::Point { .. } => SlotList::EMPTY,
+            SketchEntity::Line { start, end } => [(start, point), (end, point)].into(),
+            SketchEntity::Circle { center, .. } => [(center, point)].into(),
             SketchEntity::Arc { center, start, end } => {
-                vec![(center, point), (start, point), (end, point)]
+                [(center, point), (start, point), (end, point)].into()
             }
+        }
+    }
+
+    /// This entity's own literal seed values, each paired with the field it was
+    /// written in.
+    ///
+    /// Composites hold no literals of their own — their geometry is entirely a
+    /// function of the points they name — so they yield nothing here and are
+    /// validated numerically by way of those points.
+    fn literal_values(&self) -> SlotValues {
+        match *self {
+            SketchEntity::Point { x, y } => {
+                [(SketchValueField::X, x), (SketchValueField::Y, y)].into()
+            }
+            SketchEntity::Circle { radius, .. } => [(SketchValueField::Radius, radius)].into(),
+            SketchEntity::Line { .. } | SketchEntity::Arc { .. } => SlotValues::EMPTY,
+        }
+    }
+}
+
+/// A fixed-capacity list of `(field, literal)` pairs — the numeric twin of
+/// [`SlotList`], and allocation-free for the same reason.
+///
+/// Two is the widest literal set in either vocabulary (a point's `x` and `y`);
+/// every dimensional constraint carries exactly one.
+#[derive(Debug, Clone, Copy)]
+struct SlotValues {
+    values: [(SketchValueField, f64); SlotValues::CAP],
+    len: usize,
+}
+
+impl SlotValues {
+    const CAP: usize = 2;
+
+    /// Padding for a shorter list's unused tail. Never read: `iter` stops at
+    /// `len`. Zero rather than NaN so a padding slot that somehow *were* read
+    /// would not itself trip the non-finite check it pads out.
+    const PAD: (SketchValueField, f64) = (SketchValueField::Value, 0.0);
+
+    const EMPTY: SlotValues = SlotValues {
+        values: [SlotValues::PAD; SlotValues::CAP],
+        len: 0,
+    };
+
+    /// The occupied values, in declaration order.
+    fn iter(&self) -> impl Iterator<Item = (SketchValueField, f64)> + '_ {
+        self.values[..self.len].iter().copied()
+    }
+}
+
+impl From<[(SketchValueField, f64); 1]> for SlotValues {
+    fn from([a]: [(SketchValueField, f64); 1]) -> Self {
+        SlotValues {
+            values: [a, SlotValues::PAD],
+            len: 1,
+        }
+    }
+}
+
+impl From<[(SketchValueField, f64); 2]> for SlotValues {
+    fn from(values: [(SketchValueField, f64); 2]) -> Self {
+        SlotValues {
+            values,
+            len: SlotValues::CAP,
         }
     }
 }
@@ -189,7 +345,17 @@ pub struct SketchEntityDef {
     pub id: SketchEntityId,
     pub entity: SketchEntity,
     /// Auxiliary (construction) geometry — participates in solving but is not
-    /// part of the sketch's output profile.
+    /// part of the sketch's output profile (PRD D12).
+    ///
+    /// **This layer does not act on it.** Aux and non-aux entities are emitted
+    /// identically — that is the point: construction geometry is exactly the
+    /// geometry that constrains without being drawn, so excluding it from the
+    /// solve would change the answer. It is also read back identically, so a
+    /// consumer assembling the output profile must join
+    /// [`SketchSolveResult::Solved`]'s entity list back to this `SketchSystem`
+    /// by id and drop the aux ones itself. Filtering here would mean the solved
+    /// readback no longer covered every entity the caller declared, which is the
+    /// wrong default for a layer whose job is to report what the solver did.
     pub aux: bool,
 }
 
@@ -305,29 +471,58 @@ impl SketchConstraint {
     ///
     /// Order matters: the validator reports the first offending operand, so
     /// operands are listed in the order they are written in the declaration.
-    fn operands(&self) -> Vec<(SketchEntityId, SketchSlotKind)> {
+    fn operands(&self) -> SlotList {
         use SketchSlotKind::{Arc, Curve, Line, Point, PointOrLine};
         match *self {
-            SketchConstraint::Coincident { a, b } => vec![(a, Point), (b, Point)],
-            SketchConstraint::PtOnLine { pt, line } => vec![(pt, Point), (line, Line)],
-            SketchConstraint::PtOnCircle { pt, circle } => vec![(pt, Point), (circle, Curve)],
-            SketchConstraint::Distance { a, b, .. } => vec![(a, Point), (b, Point)],
-            SketchConstraint::Angle { a, b, .. } => vec![(a, Line), (b, Line)],
-            SketchConstraint::Parallel { a, b } => vec![(a, Line), (b, Line)],
-            SketchConstraint::Perpendicular { a, b } => vec![(a, Line), (b, Line)],
-            SketchConstraint::Diameter { circle, .. } => vec![(circle, Curve)],
-            SketchConstraint::Radius { circle, .. } => vec![(circle, Curve)],
-            SketchConstraint::EqualRadius { a, b } => vec![(a, Curve), (b, Curve)],
-            SketchConstraint::ArcLineTangent { arc, line, .. } => vec![(arc, Arc), (line, Line)],
-            SketchConstraint::CurveCurveTangent { a, b, .. } => vec![(a, Arc), (b, Arc)],
-            SketchConstraint::Horizontal(line) => vec![(line, Line)],
-            SketchConstraint::Vertical(line) => vec![(line, Line)],
+            SketchConstraint::Coincident { a, b } => [(a, Point), (b, Point)].into(),
+            SketchConstraint::PtOnLine { pt, line } => [(pt, Point), (line, Line)].into(),
+            SketchConstraint::PtOnCircle { pt, circle } => [(pt, Point), (circle, Curve)].into(),
+            SketchConstraint::Distance { a, b, .. } => [(a, Point), (b, Point)].into(),
+            SketchConstraint::Angle { a, b, .. } => [(a, Line), (b, Line)].into(),
+            SketchConstraint::Parallel { a, b } => [(a, Line), (b, Line)].into(),
+            SketchConstraint::Perpendicular { a, b } => [(a, Line), (b, Line)].into(),
+            SketchConstraint::Diameter { circle, .. } => [(circle, Curve)].into(),
+            SketchConstraint::Radius { circle, .. } => [(circle, Curve)].into(),
+            SketchConstraint::EqualRadius { a, b } => [(a, Curve), (b, Curve)].into(),
+            SketchConstraint::ArcLineTangent { arc, line, .. } => [(arc, Arc), (line, Line)].into(),
+            SketchConstraint::CurveCurveTangent { a, b, .. } => [(a, Arc), (b, Arc)].into(),
+            SketchConstraint::Horizontal(line) => [(line, Line)].into(),
+            SketchConstraint::Vertical(line) => [(line, Line)].into(),
             SketchConstraint::SymmetricLine { a, b, about } => {
-                vec![(a, Point), (b, Point), (about, Line)]
+                [(a, Point), (b, Point), (about, Line)].into()
             }
-            SketchConstraint::AtMidpoint { pt, line } => vec![(pt, Point), (line, Line)],
-            SketchConstraint::EqualLengthLines { a, b } => vec![(a, Line), (b, Line)],
-            SketchConstraint::Fix(id) => vec![(id, PointOrLine)],
+            SketchConstraint::AtMidpoint { pt, line } => [(pt, Point), (line, Line)].into(),
+            SketchConstraint::EqualLengthLines { a, b } => [(a, Line), (b, Line)].into(),
+            SketchConstraint::Fix(id) => [(id, PointOrLine)].into(),
+        }
+    }
+
+    /// This constraint's dimensional value, if it carries one.
+    ///
+    /// Exhaustive over the vocabulary rather than a catch-all, so a future
+    /// dimensional variant cannot be added without deciding — at the compiler's
+    /// insistence — whether its value is one the validator must screen.
+    fn literal_values(&self) -> SlotValues {
+        use SketchValueField::{Degrees, Value};
+        match *self {
+            SketchConstraint::Distance { value, .. } => [(Value, value)].into(),
+            SketchConstraint::Diameter { value, .. } => [(Value, value)].into(),
+            SketchConstraint::Radius { value, .. } => [(Value, value)].into(),
+            SketchConstraint::Angle { degrees, .. } => [(Degrees, degrees)].into(),
+            SketchConstraint::Coincident { .. }
+            | SketchConstraint::PtOnLine { .. }
+            | SketchConstraint::PtOnCircle { .. }
+            | SketchConstraint::Parallel { .. }
+            | SketchConstraint::Perpendicular { .. }
+            | SketchConstraint::EqualRadius { .. }
+            | SketchConstraint::ArcLineTangent { .. }
+            | SketchConstraint::CurveCurveTangent { .. }
+            | SketchConstraint::Horizontal(_)
+            | SketchConstraint::Vertical(_)
+            | SketchConstraint::SymmetricLine { .. }
+            | SketchConstraint::AtMidpoint { .. }
+            | SketchConstraint::EqualLengthLines { .. }
+            | SketchConstraint::Fix(_) => SlotValues::EMPTY,
         }
     }
 }
@@ -370,6 +565,19 @@ impl SketchSystem {
     /// naming an entity whose own declaration is broken would otherwise produce
     /// a derivative complaint about a slot that was never well-defined.
     ///
+    /// Within a single declaration the checks run premise-first: a declaration's
+    /// own literals are screened before its references (they depend on nothing
+    /// else), references' kinds before whether those references repeat (naming
+    /// "the same point twice" is only a meaningful complaint once both slots are
+    /// known to hold points at all).
+    ///
+    /// What is deliberately *not* checked: whether two distinct points happen to
+    /// be seeded at the same coordinates. Seeds are provisional by contract — the
+    /// solver is free to move them — so a coincident pair of seeds is an ordinary
+    /// starting state, not a malformed declaration. Only structural degeneracy,
+    /// where one declaration names the same entity in two slots and no constraint
+    /// could ever separate them, is refused.
+    ///
     /// # Errors
     ///
     /// Returns the first [`SketchBuildError`] found, or `Ok(())` for a
@@ -385,14 +593,28 @@ impl SketchSystem {
             }
         }
 
-        // Pass 2: each composite's defining slots.
+        // Pass 2: each entity's own literals, then its defining slots.
         //
         // A second pass rather than folded into the first: entities may name one
         // another in any order — emission creates every point before any
         // composite regardless of declaration order — so a forward-only check
         // would reject a line written above its own endpoints.
         for def in &self.entities {
-            for (referenced, expected) in def.entity.defining_refs() {
+            // A non-finite seed is not caught downstream: `Slvs_Solve` accepts
+            // NaN params and can return SLVS_RESULT_OKAY with NaN still in them,
+            // which reads back as a fully-formed `Solved` carrying coordinates
+            // that answer nothing.
+            for (field, value) in def.entity.literal_values().iter() {
+                if !value.is_finite() {
+                    return Err(SketchBuildError::NonFiniteEntityValue {
+                        entity: def.id,
+                        field,
+                    });
+                }
+            }
+
+            let refs = def.entity.defining_refs();
+            for (referenced, expected) in refs.iter() {
                 match kinds.get(&referenced) {
                     Some(found) if expected.accepts(*found) => {}
                     found => {
@@ -405,11 +627,55 @@ impl SketchSystem {
                     }
                 }
             }
+
+            // A composite naming one point in two slots is singular by
+            // construction, not merely badly seeded: a zero-length line has no
+            // direction for `Horizontal` to constrain, and an arc whose centre is
+            // its own endpoint has no radius. No constraint can separate two
+            // slots that are literally the same param pair, so this cannot be
+            // solved out of — unlike a coincident *seed*, which can.
+            for (i, (referenced, _)) in refs.iter().enumerate() {
+                if refs
+                    .iter()
+                    .take(i)
+                    .any(|(earlier, _)| earlier == referenced)
+                {
+                    return Err(SketchBuildError::DegenerateEntity {
+                        owner: def.id,
+                        repeated: referenced,
+                    });
+                }
+            }
         }
 
-        // Pass 3: constraint operands.
+        // Pass 3: constraint ids are unique.
+        //
+        // Its own scan, mirroring pass 1, and ahead of the operand check for the
+        // same reason: a duplicated id makes attribution ambiguous. Both
+        // declarations emit, both land in the attribution map, and the failing
+        // set — deduplicated by id — collapses them into one entry carrying
+        // whichever span survived. One genuine culprit would vanish from the
+        // diagnostic and the other could be reported against the wrong span.
+        let mut seen: HashSet<SketchConstraintId> = HashSet::with_capacity(self.constraints.len());
         for def in &self.constraints {
-            for (entity, expected) in def.constraint.operands() {
+            if !seen.insert(def.id) {
+                return Err(SketchBuildError::DuplicateConstraint { constraint: def.id });
+            }
+        }
+
+        // Pass 4: each constraint's own literals, then its operands.
+        for def in &self.constraints {
+            for (field, value) in def.constraint.literal_values().iter() {
+                if !value.is_finite() {
+                    return Err(SketchBuildError::NonFiniteConstraintValue {
+                        constraint: def.id,
+                        field,
+                        span: def.span,
+                    });
+                }
+            }
+
+            for (entity, expected) in def.constraint.operands().iter() {
                 match kinds.get(&entity) {
                     Some(found) if expected.accepts(*found) => {}
                     Some(found) => {
@@ -470,6 +736,11 @@ pub enum SolvedSketchEntity {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SketchSolveResult {
     /// libslvs converged. `entities` is in [`SketchSystem::entities`] order.
+    ///
+    /// Covers **every** declared entity, including the ones marked
+    /// [`SketchEntityDef::aux`]: this layer neither filters construction
+    /// geometry nor marks it in the readback, so a consumer building an output
+    /// profile joins back to its own `SketchSystem` by id to exclude it.
     Solved {
         entities: Vec<(SketchEntityId, SolvedSketchEntity)>,
         dof: i32,
@@ -491,6 +762,18 @@ pub enum SketchSolveResult {
     LockPoisoned,
     /// libslvs returned a result code this binding does not know.
     UnknownError(i32),
+    /// libslvs converged, but a param the readback needed was absent from the
+    /// solved system, so no geometry could be reconstructed.
+    ///
+    /// Impossible by construction — every param the handle map references was
+    /// pushed into the very system that produced the solved values — and kept as
+    /// its own arm precisely so it never has to be reported as something it is
+    /// not. Folding it into [`SketchSolveResult::UnknownError`] would render as
+    /// "libslvs returned unknown result code 0", which is false twice over:
+    /// libslvs returned OKAY, and the failure was entirely on this side of the
+    /// FFI. `param` is the raw slvs param handle, for a bug report rather than
+    /// for the author of the sketch.
+    ReadbackFailed { param: u32 },
     /// The system was malformed and was never handed to libslvs at all.
     ///
     /// The one arm that is not a solver report: it says the question was
@@ -722,6 +1005,52 @@ pub enum SketchBuildError {
     /// The same entity id is declared more than once, which makes every
     /// reference to it ambiguous.
     DuplicateEntity { entity: SketchEntityId },
+    /// The same constraint id is declared more than once, which makes the
+    /// failing set ambiguous.
+    ///
+    /// The constraint-side twin of [`SketchBuildError::DuplicateEntity`], and
+    /// refused for the mirror-image reason: both declarations would emit and both
+    /// would land in the attribution map, so an inconsistent solve that named
+    /// them both would report a single entry carrying one declaration's span —
+    /// losing one culprit and possibly mis-siting the other.
+    ///
+    /// Carries no span: two declarations share the id, so there is no single
+    /// place to point at, and naming either one would suggest that one is the
+    /// offender.
+    DuplicateConstraint { constraint: SketchConstraintId },
+    /// An entity's literal seed value is not a finite number.
+    ///
+    /// `Slvs_Solve` does not reject NaN or ±∞ — it can return
+    /// `SLVS_RESULT_OKAY` with them still in the params, which reads back as a
+    /// perfectly well-formed `Solved`. Screening here is what keeps that from
+    /// being indistinguishable from a real answer.
+    NonFiniteEntityValue {
+        entity: SketchEntityId,
+        field: SketchValueField,
+    },
+    /// A constraint's dimensional value is not a finite number.
+    ///
+    /// Split from [`SketchBuildError::NonFiniteEntityValue`] rather than folded
+    /// into one variant for the same reason [`SketchBuildError::UnknownEntity`]
+    /// is split from [`SketchBuildError::BadEntityRef`]: a constraint has a span
+    /// to point at and an entity declaration does not, and a variant whose span
+    /// were sometimes absent would push that check onto every consumer.
+    NonFiniteConstraintValue {
+        constraint: SketchConstraintId,
+        field: SketchValueField,
+        span: SourceSpan,
+    },
+    /// A composite entity names the same entity in two of its defining slots.
+    ///
+    /// Distinct from two *separate* points seeded at the same coordinates, which
+    /// is legal: seeds are provisional and a constraint can drive them apart.
+    /// Here the two slots are the same params, so nothing can ever separate them
+    /// — the line has no direction and the arc has no radius, and the equations
+    /// libslvs derives from them are singular.
+    DegenerateEntity {
+        owner: SketchEntityId,
+        repeated: SketchEntityId,
+    },
     /// A constraint slot was handed an entity of a kind it does not accept.
     WrongEntityKind {
         constraint: SketchConstraintId,
@@ -760,6 +1089,27 @@ impl fmt::Display for SketchBuildError {
             SketchBuildError::DuplicateEntity { entity } => {
                 write!(f, "entity {} is declared more than once", entity.0)
             }
+            SketchBuildError::DuplicateConstraint { constraint } => {
+                write!(f, "constraint {} is declared more than once", constraint.0)
+            }
+            SketchBuildError::NonFiniteEntityValue { entity, field } => write!(
+                f,
+                "entity {} was declared with {field} not a finite number",
+                entity.0
+            ),
+            SketchBuildError::NonFiniteConstraintValue {
+                constraint, field, ..
+            } => write!(
+                f,
+                "constraint {} was declared with {field} not a finite number",
+                constraint.0
+            ),
+            SketchBuildError::DegenerateEntity { owner, repeated } => write!(
+                f,
+                "entity {} names entity {} in more than one of its defining slots, \
+                 which leaves it with no shape to solve for",
+                owner.0, repeated.0
+            ),
             SketchBuildError::WrongEntityKind {
                 constraint,
                 entity,
@@ -794,3 +1144,95 @@ impl fmt::Display for SketchBuildError {
 }
 
 impl std::error::Error for SketchBuildError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The two properties `resolve_failing` promises — one entry per failing
+    /// *declaration*, ascending by id — driven directly.
+    ///
+    /// Driven here rather than through `solve_sketch` because the linked libslvs
+    /// will not produce the input that exercises them. Measured across every
+    /// over-constrained arrangement probed in `tests/sketch_solve_tests.rs`, its
+    /// failing report names at most one handle per declaration and returns them
+    /// already ascending, so an integration fixture cannot distinguish this
+    /// function from one with neither the dedup nor the sort. The collapse is
+    /// still a real contract: `Fix` on a line emits two handles for one
+    /// declaration, and an emit-path change that made libslvs name both would
+    /// otherwise start printing the same `fix(...)` twice.
+    ///
+    /// The unattributable-handle arm is deliberately not exercised: it is a
+    /// `debug_assert!(false, ..)`, so reaching it is a panic under `cfg(debug)`
+    /// and a silent skip otherwise — a test would pin the profile, not the
+    /// behaviour.
+    fn handle_map_with(attribution: &[(u32, u32, u32)]) -> SketchHandleMap {
+        let mut map = SketchHandleMap::new();
+        map.set_attribution(
+            attribution
+                .iter()
+                .map(|&(handle, id, span_start)| {
+                    (
+                        Slvs_hConstraint(handle),
+                        (
+                            SketchConstraintId(id),
+                            SourceSpan::new(span_start, span_start + 4),
+                        ),
+                    )
+                })
+                .collect(),
+        );
+        map
+    }
+
+    #[test]
+    fn resolve_failing_collapses_one_declarations_many_handles() {
+        // Handles 10 and 11 are the two anchors a `Fix` on a line lowers to:
+        // one declaration, id 7, one span.
+        let map = handle_map_with(&[(10, 7, 70), (11, 7, 70), (12, 9, 90)]);
+
+        let resolved = map.resolve_failing(&[
+            Slvs_hConstraint(10),
+            Slvs_hConstraint(11),
+            Slvs_hConstraint(12),
+        ]);
+
+        assert_eq!(
+            resolved,
+            vec![
+                (SketchConstraintId(7), SourceSpan::new(70, 74)),
+                (SketchConstraintId(9), SourceSpan::new(90, 94)),
+            ],
+            "three failing handles over two declarations are two failing declarations"
+        );
+    }
+
+    #[test]
+    fn resolve_failing_sorts_ascending_by_declaration_id() {
+        // Handle order deliberately the reverse of declaration order, which is
+        // what the sort exists to normalize.
+        let map = handle_map_with(&[(10, 9, 90), (11, 3, 30), (12, 6, 60)]);
+
+        let resolved = map.resolve_failing(&[
+            Slvs_hConstraint(10),
+            Slvs_hConstraint(11),
+            Slvs_hConstraint(12),
+        ]);
+
+        let ids: Vec<SketchConstraintId> = resolved.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                SketchConstraintId(3),
+                SketchConstraintId(6),
+                SketchConstraintId(9)
+            ],
+            "the failing set is ordered by declaration id, not by slvs handle"
+        );
+
+        // Each id kept its own span through the sort.
+        for (id, span) in &resolved {
+            assert_eq!(*span, SourceSpan::new(id.0 * 10, id.0 * 10 + 4));
+        }
+    }
+}

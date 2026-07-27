@@ -44,7 +44,7 @@ pub use reify_stdlib::loop_closure_value::{JointKind, JointValue};
 pub use sketch::{
     SketchBuildError, SketchConstraint, SketchConstraintDef, SketchConstraintId, SketchEntity,
     SketchEntityDef, SketchEntityId, SketchEntityKind, SketchSlotKind, SketchSolveResult,
-    SketchSystem, SolvedSketchEntity,
+    SketchSystem, SketchValueField, SolvedSketchEntity,
 };
 pub use solver::DimensionalSolver;
 // γ cost_robustness_tradeoff (task #4791): re-exported so integration tests can

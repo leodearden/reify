@@ -17,7 +17,7 @@
 use reify_constraints::{
     SketchBuildError, SketchConstraint, SketchConstraintDef, SketchConstraintId, SketchEntity,
     SketchEntityDef, SketchEntityId, SketchEntityKind, SketchSlotKind, SketchSolveResult,
-    SketchSystem, SolvedSketchEntity,
+    SketchSystem, SketchValueField, SolvedSketchEntity,
 };
 use reify_core::SourceSpan;
 
@@ -138,6 +138,24 @@ impl Sketch {
             id,
             entity,
             aux: false,
+        });
+        id
+    }
+
+    /// Append a constraint with a caller-chosen id, bypassing the allocator.
+    ///
+    /// The constraint twin of [`Sketch::entity_with_id`]: for duplicate-id
+    /// fixtures, and for tests that need an id distinctive enough that finding
+    /// it in a rendered string cannot be a coincidence.
+    fn constrain_with_id(
+        &mut self,
+        id: SketchConstraintId,
+        constraint: SketchConstraint,
+    ) -> SketchConstraintId {
+        self.system.constraints.push(SketchConstraintDef {
+            id,
+            constraint,
+            span: span_for(id),
         });
         id
     }
@@ -916,6 +934,73 @@ fn arc_line_tangent_squares_the_line_against_the_radius() {
     );
 }
 
+/// `at_end: true` selects the arc's *end* — the other slvs endpoint slot.
+///
+/// The mirror image of the fixture above, and the reason it exists: every other
+/// tangency fixture in this suite selects slot 0, so an inverted `at_end`
+/// mapping (`if at_end { 0 } else { 1 }`) would leave the whole suite green. Here
+/// the line meets the arc at its `end` point, so an inverted mapping constrains
+/// the arc's *start* against this line instead — a condition the solver can
+/// satisfy by swinging `start` around the circle, leaving `end` at its seed and
+/// this assertion reading the seed's direction cosine of ≈ 0.83 rather than 0.
+///
+/// That the emitted `other` really is 1 and not 0 is pinned separately by
+/// `with_other_sets_only_the_endpoint_selectors` in `slvs_sys.rs`; what this
+/// test adds is the link from the Rust `bool` to slvs' meaning of that number.
+#[test]
+fn arc_line_tangent_at_the_arc_end_selects_the_other_endpoint() {
+    let mut s = Sketch::new();
+    let c = s.point(0.0, 0.0);
+    // Declared start-then-end as always; it is `end` that the line touches.
+    let start = s.point(0.0, 0.005);
+    let end = s.point(0.005, 0.0);
+    let arc = s.arc(c, start, end);
+    let far = s.point(0.020, 0.010);
+    let line = s.line(end, far);
+
+    s.constrain(SketchConstraint::Fix(c));
+    s.constrain(SketchConstraint::Fix(far));
+    s.constrain(SketchConstraint::Distance {
+        a: c,
+        b: end,
+        value: 0.005,
+    });
+    s.constrain(SketchConstraint::ArcLineTangent {
+        arc,
+        line,
+        at_end: true,
+    });
+
+    let result = reify_constraints::solve_sketch(s.system());
+    assert!(
+        matches!(result, SketchSolveResult::Solved { .. }),
+        "a line tangent at the arc's end is solvable, got {result:?}"
+    );
+
+    let (center, _, arc_end) = arc_of(&result, arc);
+    let far_end = point_of(&result, far);
+    assert_point_near(center, (0.0, 0.0), "anchored arc centre");
+    assert_point_near(far_end, (0.020, 0.010), "anchored far endpoint");
+    assert_near(
+        dist(center, arc_end),
+        0.005,
+        "dimensioned arc radius at the end",
+    );
+    assert_point_near(
+        line_of(&result, line).0,
+        arc_end,
+        "line start vs the arc's end point",
+    );
+
+    let radius_dir = unit(delta(center, arc_end));
+    let line_dir = unit(delta(arc_end, far_end));
+    assert_near(
+        dot(radius_dir, line_dir),
+        0.0,
+        "direction cosine between the radius at the arc's END and the line",
+    );
+}
+
 /// `CurveCurveTangent` puts both centres and the shared point on one line.
 ///
 /// Two arcs touch tangentially exactly when their radius vectors at the touch
@@ -977,6 +1062,66 @@ fn curve_curve_tangent_lines_up_both_centres_with_the_shared_point() {
         cross(unit(delta(centre_a, touch)), unit(delta(touch, centre_b))),
         0.0,
         "collinearity of centre A, the touch point and centre B",
+    );
+}
+
+/// Both of `CurveCurveTangent`'s selectors, set to the arc `end` slot.
+///
+/// The two-curve twin of `arc_line_tangent_at_the_arc_end_selects_the_other_endpoint`,
+/// and the only fixture that drives `other2` off zero. The arcs meet at their
+/// `end` points; under an inverted mapping the tangency would instead line up
+/// their *start* points, leaving the touch point at its seed — well off the
+/// centre line (seed cross product ≈ 0.79) and nowhere near the collinearity
+/// asserted here.
+#[test]
+fn curve_curve_tangent_at_both_arc_ends_selects_the_other_endpoints() {
+    let mut s = Sketch::new();
+    let c1 = s.point(0.0, 0.0);
+    let a_start = s.point(0.0, 0.005);
+    // 5 mm from c1 already, so the dimension is satisfied at the seed and it is
+    // the tangency alone that has to drive the touch point onto the centre line.
+    let a_end = s.point(0.004, 0.003);
+    let arc_a = s.arc(c1, a_start, a_end);
+
+    let c2 = s.point(0.015, 0.0);
+    let b_start = s.point(0.015, 0.010);
+    // Seeded apart from arc A's end, so the coincidence has to be driven too.
+    let b_end = s.point(0.0045, 0.0035);
+    let arc_b = s.arc(c2, b_start, b_end);
+
+    s.constrain(SketchConstraint::Fix(c1));
+    s.constrain(SketchConstraint::Fix(c2));
+    s.constrain(SketchConstraint::Coincident { a: a_end, b: b_end });
+    s.constrain(SketchConstraint::Distance {
+        a: c1,
+        b: a_end,
+        value: 0.005,
+    });
+    s.constrain(SketchConstraint::CurveCurveTangent {
+        a: arc_a,
+        a_at_end: true,
+        b: arc_b,
+        b_at_end: true,
+    });
+
+    let result = reify_constraints::solve_sketch(s.system());
+    assert!(
+        matches!(result, SketchSolveResult::Solved { .. }),
+        "two arcs tangent at their end points are solvable, got {result:?}"
+    );
+
+    let centre_a = point_of(&result, c1);
+    let centre_b = point_of(&result, c2);
+    let touch = point_of(&result, a_end);
+    assert_point_near(centre_a, (0.0, 0.0), "anchored centre A");
+    assert_point_near(centre_b, (0.015, 0.0), "anchored centre B");
+    assert_point_near(point_of(&result, b_end), touch, "the shared touch point");
+    assert_near(dist(centre_a, touch), 0.005, "dimensioned arc A radius");
+
+    assert_near(
+        cross(unit(delta(centre_a, touch)), unit(delta(touch, centre_b))),
+        0.0,
+        "collinearity of centre A, the touch point at both arcs' ENDS, and centre B",
     );
 }
 
@@ -1215,12 +1360,17 @@ fn contradictory_dimensions_resolve_to_their_own_constraints() {
     );
 }
 
-/// The failing set comes back in the same order every time.
+/// The failing set comes back sorted by constraint id, identically every time.
 ///
 /// Ordering is part of the contract, not an accident of iteration: a diagnostic
 /// whose constraint list reshuffles between runs makes its own output
-/// unreviewable and any test over it flaky. Compared as a whole `Vec`, so both
-/// membership and order are pinned.
+/// unreviewable and any test over it flaky.
+///
+/// Run-to-run equality alone does *not* pin that contract — libslvs is itself
+/// deterministic, so two runs of one input agree whatever order the resolver
+/// emits, and this test would pass unchanged with the sort deleted. The
+/// ascending-by-id assertion is the half that fails if it is: it pins the
+/// documented order rather than mere reproducibility.
 #[test]
 fn the_failing_set_is_ordered_deterministically() {
     let (s, _, _) = contradictory_dimensions();
@@ -1233,6 +1383,94 @@ fn the_failing_set_is_ordered_deterministically() {
         failing(&second),
         "the failing set must be identical across identical solves"
     );
+
+    let failing = failing(&first);
+    assert!(
+        failing.windows(2).all(|w| w[0].0 < w[1].0),
+        "the failing set must be sorted ascending by constraint id — and strictly, \
+         since it is deduplicated — got {failing:?}"
+    );
+}
+
+/// A failing `Fix` on a *line* resolves to that one declaration, named once.
+///
+/// `Fix` is the only declaration that expands into more than one slvs
+/// constraint: on a line it anchors both endpoints, so two `SLVS_C_WHERE_DRAGGED`
+/// handles both map back to a single `fix(...)`. The other over-constrained
+/// fixture in this file anchors a bare *point*, which expands to exactly one
+/// handle — so until here, nothing checked that a handle belonging to a
+/// multi-handle declaration is attributed to the declaration rather than to the
+/// anonymous anchor libslvs actually reported.
+///
+/// The contradiction: the segment is seeded 10 mm long and off-horizontal, then
+/// told to be horizontal, 20 mm long, and pinned at its seed all at once.
+///
+/// On multiplicity, one measured fact bounds what this fixture can prove: across
+/// every arrangement probed against the linked libslvs, its failing report names
+/// **at most one handle per declaration** — with two point anchors in place of
+/// the line `Fix`, only the second is reported. So the raw set here never
+/// contains the same declaration twice, and `resolve_failing`'s dedup is not
+/// exercised end to end. That collapse is pinned directly instead, by
+/// `resolve_failing_collapses_one_declarations_many_handles` in `sketch.rs`.
+/// The "exactly once" assertion below is kept as the regression guard it can
+/// honestly be: it fails if the emit path ever starts attributing both anchors
+/// and the dedup is dropped.
+#[test]
+fn a_failing_fix_on_a_line_resolves_to_that_declaration_once() {
+    let mut s = Sketch::new();
+    let a = s.point(0.0, 0.0);
+    // Off-horizontal and 10 mm-ish, so the horizontal and the dimension both
+    // have to move something the anchor refuses to let move.
+    let b = s.point(0.010, 0.004);
+    let segment = s.line(a, b);
+
+    s.constrain(SketchConstraint::Distance { a, b, value: 0.020 });
+    s.constrain(SketchConstraint::Horizontal(segment));
+    // Anchors BOTH endpoints: one declaration, two SLVS_C_WHERE_DRAGGED.
+    let anchor = s.constrain(SketchConstraint::Fix(segment));
+
+    let result = reify_constraints::solve_sketch(s.system());
+    assert!(
+        matches!(result, SketchSolveResult::Inconsistent { .. }),
+        "a segment cannot be pinned at its seed and also horizontal and 20 mm, \
+         got {result:?}"
+    );
+
+    let failing = failing(&result);
+    let named: Vec<SketchConstraintId> = failing.iter().map(|(id, _)| *id).collect();
+    assert!(
+        named.contains(&anchor),
+        "the line anchor is one of the contradicting declarations — its handle \
+         must resolve to the `fix(...)` the author wrote, got {named:?}"
+    );
+
+    assert_eq!(
+        named.iter().filter(|id| **id == anchor).count(),
+        1,
+        "a Fix on a line is one declaration however many anchors it lowered to, \
+         got {named:?}"
+    );
+
+    // Not just the anchor: no declaration may repeat, since each is one thing the
+    // author wrote.
+    let mut unique = named.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(
+        unique.len(),
+        named.len(),
+        "the failing set must name each declaration at most once, got {named:?}"
+    );
+
+    // Every id still carries its own span — the multi-handle declaration
+    // included, which is the half an off-by-one in the reverse map would break.
+    for (id, span) in failing {
+        assert_eq!(
+            *span,
+            span_for(*id),
+            "{id:?} came back paired with a span that is not its own"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1394,6 +1632,211 @@ fn a_duplicate_entity_id_is_rejected() {
     );
 }
 
+/// A duplicate *constraint* id is rejected, for the mirror-image reason a
+/// duplicate entity id is.
+///
+/// Not a symmetry-for-its-own-sake check: a constraint id is what the failing
+/// set is keyed and deduplicated by. Two declarations sharing one id both emit
+/// and both land in the attribution map, so an inconsistent solve naming both
+/// collapses them into a single entry carrying whichever span survived the
+/// dedup — one real culprit vanishes from the diagnostic, and the survivor can
+/// be reported against the other declaration's span. That is the constraint-side
+/// twin of what `a_duplicate_entity_id_is_rejected` prevents.
+#[test]
+fn a_duplicate_constraint_id_is_rejected() {
+    let mut s = Sketch::new();
+    let a = s.point(0.0, 0.0);
+    let b = s.point(0.0, 0.010);
+    let first = s.constrain(SketchConstraint::Distance { a, b, value: 0.010 });
+    // Same id, different relation and — via `span_for` — a span the first
+    // declaration would be mis-attributed to.
+    s.constrain_with_id(first, SketchConstraint::Distance { a, b, value: 0.020 });
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert_eq!(
+        build_error(&result),
+        &SketchBuildError::DuplicateConstraint { constraint: first },
+        "an id declared twice makes the failing set ambiguous"
+    );
+}
+
+/// A non-finite seed coordinate is rejected rather than handed to the solver.
+///
+/// Measured before this contract existed: `Slvs_Solve` accepts NaN params and
+/// returns `SLVS_RESULT_OKAY` with NaN still in them, which reads back as a
+/// fully-formed `Solved`. A consumer cannot tell that apart from real geometry,
+/// which is the same failure mode as a silently dropped declaration.
+#[test]
+fn a_non_finite_point_coordinate_is_rejected() {
+    let mut s = Sketch::new();
+    s.point(0.0, 0.0);
+    let bad = s.point(0.005, f64::NAN);
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert_eq!(
+        build_error(&result),
+        &SketchBuildError::NonFiniteEntityValue {
+            entity: bad,
+            field: SketchValueField::Y,
+        },
+        "a NaN seed must be refused, and the error must name which coordinate"
+    );
+}
+
+/// Infinity is refused on the same footing as NaN, and on a circle's radius as
+/// well as a point's coordinates.
+///
+/// Two axes in one fixture on purpose: the check is `is_finite`, not `is_nan`,
+/// and it covers every literal in the entity vocabulary rather than just the one
+/// that happened to be tested first.
+#[test]
+fn an_infinite_circle_radius_is_rejected() {
+    let mut s = Sketch::new();
+    let center = s.point(0.0, 0.0);
+    let bad = s.circle(center, f64::INFINITY);
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert_eq!(
+        build_error(&result),
+        &SketchBuildError::NonFiniteEntityValue {
+            entity: bad,
+            field: SketchValueField::Radius,
+        },
+        "an infinite radius is as unsolvable as a NaN one"
+    );
+}
+
+/// A non-finite *dimension* is rejected, and the error carries the declaring
+/// constraint's span.
+///
+/// The span is what makes this renderable: unlike an entity seed, a dimension is
+/// something the author wrote at a place, and the whole point of the
+/// constraint-side variant is that it can point there.
+#[test]
+fn a_non_finite_dimension_is_rejected_with_its_span() {
+    let mut s = Sketch::new();
+    let a = s.point(0.0, 0.0);
+    let b = s.point(0.010, 0.0);
+    let bad = s.constrain(SketchConstraint::Distance {
+        a,
+        b,
+        value: f64::NAN,
+    });
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert_eq!(
+        build_error(&result),
+        &SketchBuildError::NonFiniteConstraintValue {
+            constraint: bad,
+            field: SketchValueField::Value,
+            span: span_for(bad),
+        },
+        "a NaN dimension must be refused, with the span it was declared at"
+    );
+}
+
+/// A line whose two endpoint slots name the same point is rejected.
+///
+/// Structurally degenerate, not merely badly seeded: the two slots resolve to one
+/// pair of params, so the segment has no direction for `Horizontal` to constrain
+/// and no length for a dimension to drive — and no constraint can ever separate
+/// them, because there is nothing to separate.
+///
+/// `Fix` on such a line compounds it, emitting two identical
+/// `SLVS_C_WHERE_DRAGGED` on the same point.
+#[test]
+fn a_line_between_one_point_and_itself_is_rejected() {
+    let mut s = Sketch::new();
+    let a = s.point(0.0, 0.0);
+    let segment = s.entity(SketchEntity::Line { start: a, end: a });
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert_eq!(
+        build_error(&result),
+        &SketchBuildError::DegenerateEntity {
+            owner: segment,
+            repeated: a,
+        },
+        "a line needs two distinct endpoints to have a direction at all"
+    );
+}
+
+/// An arc whose centre is also one of its endpoints is rejected: zero radius,
+/// and libslvs' implicit `|c-s| = |c-e|` becomes `0 = |c-e|`.
+#[test]
+fn an_arc_centred_on_its_own_endpoint_is_rejected() {
+    let mut s = Sketch::new();
+    let c = s.point(0.0, 0.0);
+    let end = s.point(0.005, 0.0);
+    let arc = s.entity(SketchEntity::Arc {
+        center: c,
+        start: c,
+        end,
+    });
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert_eq!(
+        build_error(&result),
+        &SketchBuildError::DegenerateEntity {
+            owner: arc,
+            repeated: c,
+        },
+        "an arc whose centre is its own start point has no radius"
+    );
+}
+
+/// Two *distinct* points seeded at the same coordinates are NOT degenerate.
+///
+/// The guard against over-correcting the structural check above into a numeric
+/// one. Seeds are provisional by contract — the solver moves them — so
+/// coincident starting coordinates are an ordinary starting state and a
+/// constraint drives the two points apart from there. Only structural
+/// degeneracy, where one declaration names the same entity in two slots and no
+/// constraint could ever separate them, is refused.
+///
+/// The separating constraint is a `Coincident` onto an anchored third point
+/// rather than a `Distance` between the pair: a distance equation's gradient is
+/// `(b - a) / |b - a|`, which at coincident seeds is a division by zero and
+/// leaves libslvs unable to converge for numerical reasons that have nothing to
+/// do with validation (measured: `Inconsistent`). A coincidence is linear in the
+/// params, so it drives the pair apart from a standing start and keeps this test
+/// about what it claims to be about.
+#[test]
+fn distinct_points_seeded_at_the_same_place_are_not_degenerate() {
+    let mut s = Sketch::new();
+    let a = s.point(0.0, 0.0);
+    let b = s.point(0.0, 0.0);
+    let target = s.point(0.010, 0.0);
+    let segment = s.line(a, b);
+
+    s.constrain(SketchConstraint::Fix(a));
+    s.constrain(SketchConstraint::Fix(target));
+    s.constrain(SketchConstraint::Coincident { a: b, b: target });
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert!(
+        matches!(result, SketchSolveResult::Solved { .. }),
+        "coincident seeds are a starting state, not a malformed declaration, \
+         got {result:?}"
+    );
+    assert_near(
+        dist(point_of(&result, a), point_of(&result, b)),
+        0.010,
+        "the coincidence drives the two coincident seeds apart",
+    );
+    // And the line built on them is real geometry once they separate.
+    let (start, end) = line_of(&result, segment);
+    assert_point_near(start, (0.0, 0.0), "anchored line start");
+    assert_point_near(end, (0.010, 0.0), "driven line end");
+}
+
 /// A line whose endpoint slot names a circle is rejected.
 ///
 /// This is the entity-level twin of the constraint kind check: a composite's
@@ -1523,6 +1966,12 @@ fn a_malformed_entity_is_reported_before_a_malformed_constraint() {
 /// span-bearing diagnostic and never scrapes this string — but the error still
 /// has to be usable in a plain `Box<dyn Error>` log line without printing
 /// something opaque.
+///
+/// Both ids are deliberately distinctive three-digit numbers rather than the
+/// allocator's 1, 2, 3…: `contains("1")` is satisfied by almost any sentence
+/// mentioning almost any number, so an assertion on a small id would still pass
+/// with the id dropped from the message entirely. `771` and `999` appear in the
+/// rendering only if they were really put there.
 #[test]
 fn build_errors_are_std_errors_that_name_their_ids() {
     fn assert_is_std_error<E: std::error::Error>(_: &E) {}
@@ -1530,7 +1979,10 @@ fn build_errors_are_std_errors_that_name_their_ids() {
     let mut s = Sketch::new();
     let a = s.point(0.0, 0.0);
     let ghost = SketchEntityId(999);
-    let cid = s.constrain(SketchConstraint::Coincident { a, b: ghost });
+    let cid = s.constrain_with_id(
+        SketchConstraintId(771),
+        SketchConstraint::Coincident { a, b: ghost },
+    );
 
     let result = reify_constraints::solve_sketch(s.system());
     let err = build_error(&result);
@@ -1542,7 +1994,8 @@ fn build_errors_are_std_errors_that_name_their_ids() {
         "the rendering must name the offending entity id, got: {rendered}"
     );
     assert!(
-        rendered.contains(&cid.0.to_string()),
+        rendered.contains("771"),
         "the rendering must name the constraint that referenced it, got: {rendered}"
     );
+    assert_eq!(cid, SketchConstraintId(771));
 }
