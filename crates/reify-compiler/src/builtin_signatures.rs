@@ -1173,4 +1173,138 @@ mod tests {
             diags
         );
     }
+
+    // ── linear_pattern_2d spacing1/spacing2 LENGTH slots (task 5652) ─────────
+
+    /// Build an 11-arg
+    /// `linear_pattern_2d(target, dx1, dy1, dz1, count1, spacing1,
+    ///                            dx2, dy2, dz2, count2, spacing2)`
+    /// arg list with the two given spacing types.
+    fn linear_pattern_2d_args(spacing1: Type, spacing2: Type) -> Vec<CompiledExpr> {
+        vec![
+            arg_expr(Type::Geometry),               // 0  target
+            arg_expr(Type::dimensionless_scalar()), // 1  dx1
+            arg_expr(Type::dimensionless_scalar()), // 2  dy1
+            arg_expr(Type::dimensionless_scalar()), // 3  dz1
+            arg_expr(Type::Int),                    // 4  count1
+            arg_expr(spacing1),                     // 5  spacing1
+            arg_expr(Type::dimensionless_scalar()), // 6  dx2
+            arg_expr(Type::dimensionless_scalar()), // 7  dy2
+            arg_expr(Type::dimensionless_scalar()), // 8  dz2
+            arg_expr(Type::Int),                    // 9  count2
+            arg_expr(spacing2),                     // 10 spacing2
+        ]
+    }
+
+    /// linear_pattern_2d @ arity 11 → spacing1@5 + spacing2@10 (both LENGTH);
+    /// every other arity → empty.
+    ///
+    /// Arity 7 is the CONCRETE defect the arity dimension prevents, not a
+    /// hypothetical. In task 5351's future 7-arg direction-value form
+    /// `(target, dir1, count1, spacing1, dir2, count2, spacing2)`, index 5 is
+    /// `count2` — an `Int`. An arity-agnostic `spacing1@5 LENGTH` slot would
+    /// therefore emit a FALSE `ArgTypeMismatch` on perfectly valid code.
+    ///
+    /// This is exactly what distinguishes `linear_pattern_2d` from
+    /// `linear_pattern`: the latter's 4-arg form has no index 5 at all, so it
+    /// is protected by the downstream `compiled_args.get(index)` bounds check
+    /// — i.e. by luck. `linear_pattern_2d`'s 7-arg form DOES have an index 5,
+    /// holding a different parameter, so only the arity guard protects it.
+    #[test]
+    fn linear_pattern_2d_spacing_slots_are_arity_11_only() {
+        assert_eq!(
+            builtin_arg_slots("linear_pattern_2d", 11),
+            vec![length_slot(5, "spacing1"), length_slot(10, "spacing2")],
+            "linear_pattern_2d args 5 and 10 are spacing1/spacing2 and must be LENGTH"
+        );
+        assert!(
+            builtin_arg_slots("linear_pattern_2d", 7).is_empty(),
+            "at arity 7 (task 5351's future direction-value form) index 5 is \
+             `count2`, an Int — a spacing1@5 LENGTH slot would emit a FALSE \
+             ArgTypeMismatch on valid code, so arity 7 must expose NO slots"
+        );
+        for arity in [0usize, 1, 5, 6, 10, 12] {
+            assert!(
+                builtin_arg_slots("linear_pattern_2d", arity).is_empty(),
+                "linear_pattern_2d at arity {arity} is not the 11-arg form, \
+                 so it must expose no slots"
+            );
+        }
+    }
+
+    /// CORRECT: both spacings dimensioned → 0 diagnostics.
+    #[test]
+    fn linear_pattern_2d_length_spacings_give_no_error() {
+        let mut diags = Vec::new();
+        check_builtin_arg_types(
+            "linear_pattern_2d",
+            &linear_pattern_2d_args(Type::length(), Type::length()),
+            dummy_span(),
+            &mut diags,
+        );
+        assert!(
+            diags.is_empty(),
+            "two dimensioned Length spacings must pass, got: {:?}",
+            diags
+        );
+    }
+
+    /// Each spacing slot is independently wired: a bare `spacing1` names
+    /// `spacing1`, a bare `spacing2` names `spacing2`, and both bare give 2.
+    ///
+    /// Naming the RIGHT one matters — a copy-paste slip duplicating the
+    /// `spacing1` name onto index 10 would point the user at the wrong axis.
+    #[test]
+    fn linear_pattern_2d_bare_spacings_are_reported_independently() {
+        // (a) only spacing1 bare → 1 diagnostic naming spacing1 (not spacing2).
+        let mut diags = Vec::new();
+        check_builtin_arg_types(
+            "linear_pattern_2d",
+            &linear_pattern_2d_args(Type::Int, Type::length()),
+            dummy_span(),
+            &mut diags,
+        );
+        assert_eq!(diags.len(), 1, "expected 1 diagnostic, got: {:?}", diags);
+        assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
+        assert!(
+            diags[0].message.contains("spacing1"),
+            "must name spacing1: {}",
+            diags[0].message
+        );
+        assert!(
+            !diags[0].message.contains("spacing2"),
+            "must NOT name spacing2: {}",
+            diags[0].message
+        );
+
+        // (b) only spacing2 bare → 1 diagnostic naming spacing2.
+        let mut diags = Vec::new();
+        check_builtin_arg_types(
+            "linear_pattern_2d",
+            &linear_pattern_2d_args(Type::length(), Type::Int),
+            dummy_span(),
+            &mut diags,
+        );
+        assert_eq!(diags.len(), 1, "expected 1 diagnostic, got: {:?}", diags);
+        assert!(
+            diags[0].message.contains("spacing2"),
+            "must name spacing2: {}",
+            diags[0].message
+        );
+
+        // (c) both bare → 2 diagnostics.
+        let mut diags = Vec::new();
+        check_builtin_arg_types(
+            "linear_pattern_2d",
+            &linear_pattern_2d_args(Type::Int, Type::Int),
+            dummy_span(),
+            &mut diags,
+        );
+        assert_eq!(
+            diags.len(),
+            2,
+            "both spacings bare → one diagnostic each, got: {:?}",
+            diags
+        );
+    }
 }

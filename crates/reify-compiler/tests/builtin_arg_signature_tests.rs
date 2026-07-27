@@ -290,6 +290,51 @@ fn nested_linear_pattern_bare_spacing_emits_exactly_one_diagnostic() {
     );
 }
 
+/// SIGNAL — a bare `10` as `linear_pattern_2d`'s `spacing1` (with a correct
+/// `20mm` `spacing2`) yields exactly 1 `ArgTypeMismatch` naming `spacing1`.
+///
+/// This is the shape from task 5214's litter-tray bug, where a bare-spacing
+/// grid scattered cutting tools hundreds of metres from the plate.
+#[test]
+fn linear_pattern_2d_bare_spacing1_gives_one_arg_type_mismatch() {
+    let compiled =
+        compile_struct_body("    let g = linear_pattern_2d(b, 1, 0, 0, 3, 10, 0, 1, 0, 4, 20mm)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 ArgTypeMismatch for a bare `10` spacing1.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert!(
+        errors[0].message.contains("spacing1"),
+        "message must name the offending arg `spacing1`, not the other axis: {}",
+        errors[0].message
+    );
+    assert!(
+        errors[0].message.contains("Length"),
+        "message must name the expected type `Length`: {}",
+        errors[0].message
+    );
+}
+
+/// BOUNDARY ok — both spacings dimensioned → NO `ArgTypeMismatch`. Keeps the
+/// signal case above from passing for the wrong reason.
+#[test]
+fn linear_pattern_2d_dimensioned_spacings_give_no_arg_type_mismatch() {
+    let compiled = compile_struct_body(
+        "    let g = linear_pattern_2d(b, 1, 0, 0, 3, 10mm, 0, 1, 0, 4, 20mm)\n",
+    );
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "linear_pattern_2d with dimensioned 10mm/20mm spacings must emit no \
+         ArgTypeMismatch, got: {:#?}",
+        errors
+    );
+}
+
 // ── Case 5: STDLIB REGRESSION GUARD — material.density path ──────────────────
 
 /// The stdlib `Rigid` trait (structural_physical.ri) injects
