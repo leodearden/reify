@@ -305,16 +305,19 @@ fn circular_pattern_value_form_axis_z_emits_correct_op() {
     }
 }
 
-/// (b) Back-compat: legacy 9-arg scalar form circular_pattern(box, 0,0,0, 0,0,1, 6, 60deg)
-/// still builds without errors and emits CircularPattern with count==6.
+/// (b) Back-compat: legacy 9-arg scalar form
+/// circular_pattern(box, 0mm,0mm,0mm, 0,0,1, 6, 60deg) still builds without
+/// errors and emits CircularPattern with count==6.
 ///
-/// GREEN before and after step-8 (back-compat must hold).
+/// GREEN before and after step-8 (back-compat must hold). The axis ORIGIN is
+/// dimensioned since task 5350 gated it as a Length; the axis DIRECTION stays
+/// a bare dimensionless unit vector.
 #[test]
 fn circular_pattern_scalar_back_compat_emits_correct_op() {
     let source = r#"
         structure def S {
             let b = box(2mm, 2mm, 2mm)
-            let p = circular_pattern(b, 0, 0, 0, 0, 0, 1, 6, 60deg)
+            let p = circular_pattern(b, 0mm, 0mm, 0mm, 0, 0, 1, 6, 60deg)
         }
     "#;
 
@@ -398,4 +401,125 @@ fn circular_pattern_wrong_variant_plane_rejected_with_error_diagnostic() {
         "expected NO CircularPattern op when Plane is passed where Axis is required, got {} op(s)",
         cp_ops.len()
     );
+}
+
+// ── task 5350: scalar-form axis-origin units lock ─────────────────────────────
+
+/// Build `source` against a mock kernel and return
+/// `(error_diagnostic_count, circular_pattern_ops)`. Shared by the bare-origin /
+/// mm-origin pair below, which differ only in the source and expected counts.
+/// Modelled on `pattern_spacing_units_e2e.rs`'s `build_and_count`, but returns
+/// the ops themselves so the positive control can inspect `axis_origin`.
+fn build_circular_ops(source: &str) -> (usize, Vec<GeometryOp>) {
+    let compiled = parse_and_compile(source);
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = Engine::new(
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(kernel)),
+    );
+    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
+
+    let error_count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .count();
+    let ops = ops_ref.lock().unwrap();
+    let circular_ops: Vec<GeometryOp> = ops
+        .iter()
+        .filter(|r| matches!(&r.op, GeometryOp::CircularPattern { .. }))
+        .map(|r| r.op.clone())
+        .collect();
+    (error_count, circular_ops)
+}
+
+/// The headline behaviour of task 5350, locked at the outermost seam: a BARE
+/// (dimensionless) axis origin in the 9-arg scalar form must be REJECTED, so the
+/// op is DROPPED rather than silently placing the rotation axis 12 SI **metres**
+/// out (1000× a plausible 12 mm offset).
+///
+/// The unit tests in `geometry_ops/tests.rs` hand-build `CompiledExpr` fixtures;
+/// this drives the real parser and unit system, so it would catch a regression
+/// introduced anywhere between the `.ri` surface and the kernel call.
+#[test]
+fn circular_pattern_scalar_bare_origin_drops_op_with_error() {
+    let (error_count, circular_ops) = build_circular_ops(
+        r#"
+        structure def BareOriginRing {
+            let b = box(2mm, 2mm, 2mm)
+            let p = circular_pattern(b, 12, 0, 0, 0, 0, 1, 6, 60deg)
+        }
+        "#,
+    );
+
+    assert!(
+        error_count > 0,
+        "a bare (dimensionless) circular_pattern axis origin must produce at \
+         least one Error diagnostic; got {error_count}"
+    );
+    assert!(
+        circular_ops.is_empty(),
+        "a bare-origin circular_pattern must be DROPPED, not silently built with \
+         a 12 SI-metre axis origin; emitted CircularPattern ops: {:?}",
+        circular_ops
+    );
+}
+
+/// The positive control that keeps the rejection case above from passing
+/// vacuously: a DIMENSIONED `12mm, 34mm, 56mm` origin builds with zero Errors
+/// and reaches the kernel as `[0.012, 0.034, 0.056]`, not `[12, 34, 56]`.
+///
+/// The three components are DISTINCT so this also pins the ox/oy/oz →
+/// `axis_origin` COMPONENT ORDERING end to end: the eval layer reads the triple
+/// outside its `f64_arg` closure and assembles the array separately, so a
+/// transposition to `[ox, oz, oy]` is a live regression that an all-zero (or
+/// single-non-zero) origin could not detect.
+///
+/// A tolerance rather than `==` because the parser computes `12 * 1e-3`; the f64
+/// error is at most ~1 ulp (order 1e-18 absolute at this magnitude), so `1e-12`
+/// clears it by six orders of magnitude while staying far tighter than the 1000×
+/// defect being guarded against.
+#[test]
+fn circular_pattern_scalar_mm_origin_builds_op() {
+    let (error_count, circular_ops) = build_circular_ops(
+        r#"
+        structure def MmOriginRing {
+            let b = box(2mm, 2mm, 2mm)
+            let p = circular_pattern(b, 12mm, 34mm, 56mm, 0, 0, 1, 6, 60deg)
+        }
+        "#,
+    );
+
+    assert_eq!(
+        error_count, 0,
+        "a dimensioned circular_pattern axis origin must build with zero Error \
+         diagnostics; got {error_count}"
+    );
+    assert_eq!(
+        circular_ops.len(),
+        1,
+        "expected exactly one CircularPattern op to reach the kernel, got {:?}",
+        circular_ops
+    );
+    match &circular_ops[0] {
+        GeometryOp::CircularPattern { axis_origin, .. } => {
+            // Component-wise AND in order: ox→[0], oy→[1], oz→[2].
+            for (i, (label, expected)) in
+                [("12mm", 0.012), ("34mm", 0.034), ("56mm", 0.056)]
+                    .into_iter()
+                    .enumerate()
+            {
+                assert!(
+                    (axis_origin[i] - expected).abs() < 1e-12,
+                    "{label} must reach the kernel as {expected} SI metres at \
+                     axis_origin[{i}] (NOT {} m, and NOT permuted into another \
+                     component); got axis_origin = {:?}",
+                    expected * 1000.0,
+                    axis_origin
+                );
+            }
+        }
+        other => panic!("expected GeometryOp::CircularPattern, got {:?}", other),
+    }
 }

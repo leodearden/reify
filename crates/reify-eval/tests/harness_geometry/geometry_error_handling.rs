@@ -2428,13 +2428,16 @@ fn build_circular_pattern_missing_count_no_kernel_error() {
         ],
     };
     // Circular pattern with full ox/oy/oz/ax/ay/az/angle but no `count`.
+    // The axis ORIGIN must be a dimensioned Length (task 5350): with a bare
+    // origin the Length gate short-circuits FIRST and masks the missing-`count`
+    // condition this test exercises. The axis DIRECTION stays bare.
     let circular_op = CompiledGeometryOp::Pattern {
         kind: PatternKind::Circular,
         target: GeomRef::Step(0),
         args: vec![
-            ("ox".into(), real_literal(0.0)),
-            ("oy".into(), real_literal(0.0)),
-            ("oz".into(), real_literal(0.0)),
+            ("ox".into(), mm_literal(0.0)),
+            ("oy".into(), mm_literal(0.0)),
+            ("oz".into(), mm_literal(0.0)),
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)),
@@ -2486,13 +2489,16 @@ fn build_circular_pattern_missing_axis_no_kernel_error() {
         ],
     };
     // Circular pattern missing `ax` (axis X-component).
+    // The axis ORIGIN must be a dimensioned Length (task 5350): with a bare
+    // origin the Length gate short-circuits FIRST and masks the missing-`ax`
+    // condition this test exercises. The axis DIRECTION stays bare.
     let circular_op = CompiledGeometryOp::Pattern {
         kind: PatternKind::Circular,
         target: GeomRef::Step(0),
         args: vec![
-            ("ox".into(), real_literal(0.0)),
-            ("oy".into(), real_literal(0.0)),
-            ("oz".into(), real_literal(0.0)),
+            ("ox".into(), mm_literal(0.0)),
+            ("oy".into(), mm_literal(0.0)),
+            ("oz".into(), mm_literal(0.0)),
             // ax deliberately omitted
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)),
