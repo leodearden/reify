@@ -385,8 +385,10 @@ run_harness_layout_scan() {
 # `set -o pipefail` (the esc-5172-1 hazard the lib documents).
 # ---------------------------------------------------------------------------
 _bare_mod_decls() {
+    # Shared parser emits `<file>|<kind>|<lineno>|<value>`; this detector is
+    # single-file and reports `<lineno>|<ident>`, so drop the file and the kind.
     _harness_layout_mod_decls "$1" \
-        | awk -F'|' '$1 == "bare" { print $2 "|" $3 }'
+        | awk -F'|' '$2 == "bare" { print $3 "|" $4 }'
 }
 
 # ---------------------------------------------------------------------------
@@ -1085,24 +1087,45 @@ echo "--- Section 5b: live non-vacuity (measure actually reads module dirs) ---"
 # `harness_layout_unit_lines` is wired to the module dir at all: at least one
 # live harness must show a SMALL root (<500 lines) alongside a LARGE aggregate
 # (>10000 lines).
-_s5b_nonvacuous() {
+#
+# ONE live scan feeds BOTH this section and Section 5c: the two loops were
+# byte-identical apart from their predicate, and each live unit measured costs
+# real merge-gate wall clock in a PRD about cutting merge-gate CPU. The scan
+# stops as soon as BOTH witnesses are in hand, so it never costs more than the
+# earlier separate loops did — each of those also early-exited on its first
+# witness, so the saving here is one unit's measure, not a whole traversal.
+#
+# The ASSERTS stay separate (one flag each): a module-dir-walk regression and an
+# external-walk regression are different causes, and each must report as its own
+# failure — the same one-cause-one-failure rule the NOTE below states.
+_S5BC_MODULE_WIRED=0
+_S5BC_EXTERNAL_WIRED=0
+_s5bc_scan() {
     local c f tuple total root mod files ext extfiles
     for c in "${CONSOLIDATABLE_CRATES[@]}"; do
         for f in "$REPO_ROOT/crates/$c/tests"/harness_*.rs; do
+            [ "$_S5BC_MODULE_WIRED" -eq 1 ] && [ "$_S5BC_EXTERNAL_WIRED" -eq 1 ] && return 0
             [ -f "$f" ] || continue
             tuple="$(harness_layout_unit_lines "$f" 2>/dev/null)" || continue
             read -r total root mod files ext extfiles <<<"$tuple"
-            [[ "$root" =~ ^[0-9]+$ ]] || continue
-            [[ "$total" =~ ^[0-9]+$ ]] || continue
-            if [ "$root" -lt 500 ] && [ "$total" -gt 10000 ]; then
-                return 0
+            # Each fact gates on its OWN fields being numeric, exactly as the
+            # two separate loops did — a garbled field must not suppress the
+            # other witness.
+            if [[ "$root" =~ ^[0-9]+$ ]] && [[ "$total" =~ ^[0-9]+$ ]] \
+               && [ "$root" -lt 500 ] && [ "$total" -gt 10000 ]; then
+                _S5BC_MODULE_WIRED=1
+            fi
+            if [[ "$ext" =~ ^[0-9]+$ ]] && [[ "$extfiles" =~ ^[0-9]+$ ]] \
+               && [ "$extfiles" -gt 0 ] && [ "$ext" -gt 0 ]; then
+                _S5BC_EXTERNAL_WIRED=1
             fi
         done
     done
-    return 1
+    return 0
 }
+_s5bc_scan
 assert "5b: at least one live harness has root<500 lines yet aggregate>10000 lines (module dir is actually read)" \
-    _s5b_nonvacuous
+    test "$_S5BC_MODULE_WIRED" -eq 1
 
 # NOTE: deliberately no second assert re-checking $_live_summary here — it
 # would be byte-identical to Section 5's "live SUMMARY line reads exactly
@@ -1133,28 +1156,16 @@ assert "5b: at least one live harness has root<500 lines yet aggregate>10000 lin
 # The live tree genuinely has such includes — every consolidated harness that
 # reaches the shared `tests/common/` helpers — so at least one live unit must
 # report external_files > 0.
+#
+# The witness comes from `_s5bc_scan` under Section 5b — one live scan collects
+# both non-vacuity facts. This assert reads its own flag, so an external-walk
+# regression still fails HERE and alone.
 # ===========================================================================
 echo ""
 echo "--- Section 5c: live non-vacuity of the external attribution ---"
 
-_s5c_external_wired() {
-    local c f tuple total root mod files ext extfiles
-    for c in "${CONSOLIDATABLE_CRATES[@]}"; do
-        for f in "$REPO_ROOT/crates/$c/tests"/harness_*.rs; do
-            [ -f "$f" ] || continue
-            tuple="$(harness_layout_unit_lines "$f" 2>/dev/null)" || continue
-            read -r total root mod files ext extfiles <<<"$tuple"
-            [[ "$extfiles" =~ ^[0-9]+$ ]] || continue
-            [[ "$ext" =~ ^[0-9]+$ ]] || continue
-            if [ "$extfiles" -gt 0 ] && [ "$ext" -gt 0 ]; then
-                return 0
-            fi
-        done
-    done
-    return 1
-}
 assert "5c: at least one live harness attributes an out-of-module-dir include (external_files>0 — the walk is wired on the real tree)" \
-    _s5c_external_wired
+    test "$_S5BC_EXTERNAL_WIRED" -eq 1
 
 # ===========================================================================
 # Section 6: C1 `#[path]` MANDATE — every `mod <ident>;` in a harness root
