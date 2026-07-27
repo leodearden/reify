@@ -162,8 +162,23 @@ plan_for staged crates/reify-doc/src/lib.rs
 assert "reify-doc: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
 assert "reify-doc: clippy present" plan_has 'cargo clippy --workspace'
-assert "reify-doc: nextest workspace pass present (no --exclude, OCCT folded in, task 4451)" plan_has 'cargo nextest run --workspace'
-assert "reify-doc: nextest workspace pass has NO --exclude (task 4451: OCCT in pool)" plan_lacks 'cargo nextest run --workspace.*--exclude'
+# RUNNER-AGNOSTIC PLAN-SHAPE ASSERTS (task 5604). From here on, every
+# plan_has/plan_lacks that names the test pass matches the ERE alternation
+# `cargo (test|nextest run)` rather than the literal `cargo nextest run`.
+# verify.sh emits the pass from one of two branches (scripts/verify.sh:1659
+# with nextest, :1685 without) that share the same `${selector}${rel}`
+# fragment, so --workspace / -p <crate> / --release are byte-identical across
+# runners and these asserts are checking plan SHAPE, not runner identity.
+# Widening keeps them meaningful on a nextest-less host — for the NEGATIVE
+# (plan_lacks) ones that is a strict strengthening, since without it the
+# needle matches nothing there and the assert passes vacuously.
+# Runner identity itself is pinned separately by the `nextest=N` plan header,
+# which tests/infra/test_verify_nextest_probe.sh owns; host-independence of
+# this whole suite is pinned by S5 in test_verify_nextest_absent_suites.sh.
+# The assert TITLES still say "nextest" — deliberately left alone, so they
+# keep matching the FAIL lines recorded in that guard's audit trail.
+assert "reify-doc: nextest workspace pass present (no --exclude, OCCT folded in, task 4451)" plan_has 'cargo (test|nextest run) --workspace'
+assert "reify-doc: nextest workspace pass has NO --exclude (task 4451: OCCT in pool)" plan_lacks 'cargo (test|nextest run) --workspace.*--exclude'
 assert "reify-doc: gated OCCT pass ABSENT" plan_lacks 'cargo-test-occt-gated\.sh'
 
 # ---------------------------------------------------------------------------
@@ -175,8 +190,8 @@ plan_for staged crates/reify-eval/src/cache.rs
 assert "reify-eval: scope decision RUN_OCCT_GATE=1" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_OUT"
 assert "reify-eval: no gated OCCT pass (task 4451: OCCT folded into nextest pool)" plan_lacks 'cargo-test-occt-gated\.sh'
-assert "reify-eval: nextest workspace pass present (OCCT folded in, task 4451)" plan_has 'cargo nextest run --workspace'
-assert "reify-eval: nextest workspace pass has NO --exclude (task 4451)" plan_lacks 'cargo nextest run --workspace.*--exclude'
+assert "reify-eval: nextest workspace pass present (OCCT folded in, task 4451)" plan_has 'cargo (test|nextest run) --workspace'
+assert "reify-eval: nextest workspace pass has NO --exclude (task 4451)" plan_lacks 'cargo (test|nextest run) --workspace.*--exclude'
 
 # ---------------------------------------------------------------------------
 # Scenario 5: gui/src-tauri (Rust crate, OCCT-clean) -> Rust+GUI, no gate
@@ -198,8 +213,8 @@ plan_for staged Cargo.lock
 assert "Cargo.lock: scope decision RUN_OCCT_GATE=1" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_OUT"
 assert "Cargo.lock: no gated OCCT pass (task 4451: OCCT folded into nextest pool)" plan_lacks 'cargo-test-occt-gated\.sh'
-assert "Cargo.lock: nextest workspace pass present with no --exclude (task 4451)" plan_has 'cargo nextest run --workspace'
-assert "Cargo.lock: nextest workspace pass has NO --exclude (OCCT folded in)" plan_lacks 'cargo nextest run --workspace.*--exclude'
+assert "Cargo.lock: nextest workspace pass present with no --exclude (task 4451)" plan_has 'cargo (test|nextest run) --workspace'
+assert "Cargo.lock: nextest workspace pass has NO --exclude (OCCT folded in)" plan_lacks 'cargo (test|nextest run) --workspace.*--exclude'
 
 # ---------------------------------------------------------------------------
 # Scenario 7: unrecognised path -> conservative rust+gui+gate
@@ -391,8 +406,8 @@ plan_for_branch crates/reify-doc/src/lib.rs
 assert "branch/reify-doc: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
 assert "branch/reify-doc: clippy present" plan_has 'cargo clippy --workspace'
-assert "branch/reify-doc: nextest workspace pass present (no --exclude, task 4451)" plan_has 'cargo nextest run --workspace'
-assert "branch/reify-doc: nextest workspace pass has NO --exclude (OCCT folded in, task 4451)" plan_lacks 'cargo nextest run --workspace.*--exclude'
+assert "branch/reify-doc: nextest workspace pass present (no --exclude, task 4451)" plan_has 'cargo (test|nextest run) --workspace'
+assert "branch/reify-doc: nextest workspace pass has NO --exclude (OCCT folded in, task 4451)" plan_lacks 'cargo (test|nextest run) --workspace.*--exclude'
 assert "branch/reify-doc: gated OCCT pass ABSENT" plan_lacks 'cargo-test-occt-gated\.sh'
 
 # ---------------------------------------------------------------------------
@@ -449,8 +464,8 @@ plan_for_branch crates/reify-eval/src/lib.rs
 assert "branch/reify-eval: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_OUT"
 assert "branch/reify-eval: no gated OCCT pass (task 4451: OCCT folded into nextest pool)" plan_lacks 'cargo-test-occt-gated\.sh'
-assert "branch/reify-eval: nextest workspace pass present (OCCT in pool, task 4451)" plan_has 'cargo nextest run --workspace'
-assert "branch/reify-eval: nextest workspace pass has NO --exclude (task 4451)" plan_lacks 'cargo nextest run --workspace.*--exclude'
+assert "branch/reify-eval: nextest workspace pass present (OCCT in pool, task 4451)" plan_has 'cargo (test|nextest run) --workspace'
+assert "branch/reify-eval: nextest workspace pass has NO --exclude (task 4451)" plan_lacks 'cargo (test|nextest run) --workspace.*--exclude'
 assert "branch/reify-eval: clippy present" plan_has 'cargo clippy --workspace'
 
 # ---------------------------------------------------------------------------
@@ -899,14 +914,20 @@ assert "Intersect/C3: RUN_OCCT_GATE=0 from changed file (reify-doc is non-OCCT)"
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
 assert "Intersect/C3: no cargo-test-occt-gated.sh in plan (task 4451: OCCT folded into nextest pool)" \
     bash -c '! printf "%s\n" "$1" | grep -q "cargo-test-occt-gated\.sh"' _ "$PLAN_OUT"
+# Same runner-agnostic convention as the plan_has/plan_lacks asserts above
+# (task 5604): the `grep -qE` bodies below also match the
+# `cargo (test|nextest run)` alternation, because the tokens they check
+# (-p <crate>, --workspace, --release) are emitted identically by verify.sh's
+# nextest and cargo-test branches. These sites were already `grep -qE`, so
+# only the pattern changed — no BRE/ERE switch was needed.
 assert "Intersect/C3: nextest pass has -p reify-eval (OCCT crate in narrowed nextest pass, task 4451)" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "cargo nextest run .*-p reify-eval"' _ "$PLAN_OUT"
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) .*-p reify-eval"' _ "$PLAN_OUT"
 assert "Intersect/C3: nextest pass LACKS reify-kernel-occt (only affected ∩ OCCT, not full OCCT set)" \
-    bash -c '! printf "%s\n" "$1" | grep -qE "cargo nextest run .*-p reify-kernel-occt"' _ "$PLAN_OUT"
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) .*-p reify-kernel-occt"' _ "$PLAN_OUT"
 assert "Intersect/C3: nextest tail has -p reify-doc" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "cargo nextest run .*-p reify-doc"' _ "$PLAN_OUT"
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) .*-p reify-doc"' _ "$PLAN_OUT"
 assert "Intersect/C3: nextest tail LACKS --workspace (narrowed to affected set)" \
-    bash -c '! printf "%s\n" "$1" | grep -qE "cargo nextest run --workspace"' _ "$PLAN_OUT"
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace"' _ "$PLAN_OUT"
 
 # ---------------------------------------------------------------------------
 # Scenario C1-guard: scope=all + override -> --workspace preserved, override ignored
@@ -983,9 +1004,9 @@ plan_for staged crates/reify-doc/src/lib.rs
 assert "B9-default: NARROW_ACTIVE=0 (coupling invariant — clippy & nextest --workspace both derive from this single global)" \
     test "$(plan_narrow_active "$PLAN_OUT")" = "0"
 assert "B9-default: nextest workspace pass keeps --workspace (staged, no --narrow flag, task 4451)" \
-    plan_has 'cargo nextest run --workspace'
+    plan_has 'cargo (test|nextest run) --workspace'
 assert "B9-default: nextest workspace pass has NO --exclude (OCCT folded in, task 4451)" \
-    plan_lacks 'cargo nextest run --workspace.*--exclude'
+    plan_lacks 'cargo (test|nextest run) --workspace.*--exclude'
 assert "B9-default: clippy keeps --workspace (staged, no --narrow flag)" \
     plan_has 'cargo clippy --workspace'
 
@@ -1104,9 +1125,9 @@ assert "MG-B5: scope=all in plan header" \
 assert "MG-B5: clippy keeps --workspace (scope=all ignores override, C1 contract)" \
     bash -c 'printf "%s\n" "$1" | grep -qE "cargo clippy --workspace"' _ "$PLAN_MG_B5"
 assert "MG-B5: nextest debug tail keeps --workspace (task 4451: OCCT folded in, no --exclude)" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "cargo nextest run --workspace"' _ "$PLAN_MG_B5"
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace"' _ "$PLAN_MG_B5"
 assert "MG-B5: nextest --workspace pass has NO --exclude (task 4451: OCCT in pool)" \
-    bash -c '! printf "%s\n" "$1" | grep -qE "cargo nextest run --workspace.*--exclude"' _ "$PLAN_MG_B5"
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace.*--exclude"' _ "$PLAN_MG_B5"
 assert "MG-B5: NO -p reify-doc (no branch-diff narrowing in merge gate)" \
     bash -c '! printf "%s\n" "$1" | grep -qE " -p reify-doc"' _ "$PLAN_MG_B5"
 assert "MG-B5: NO -p reify-ir (no branch-diff narrowing in merge gate)" \
@@ -1114,7 +1135,7 @@ assert "MG-B5: NO -p reify-ir (no branch-diff narrowing in merge gate)" \
 assert "MG-B5: no cargo-test-occt-gated.sh in plan (task 4451: OCCT folded into nextest pool)" \
     bash -c '! printf "%s\n" "$1" | grep -qE "cargo-test-occt-gated\.sh"' _ "$PLAN_MG_B5"
 assert "MG-B5: release-sensitivity pass present with -p reify- (permitted axis: release scope)" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "cargo nextest run .*-p reify-.*--release"' _ "$PLAN_MG_B5"
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) .*-p reify-.*--release"' _ "$PLAN_MG_B5"
 
 # ---------------------------------------------------------------------------
 # Scenario MG-hook: pre-merge-commit hook drift guard (GREEN now)
