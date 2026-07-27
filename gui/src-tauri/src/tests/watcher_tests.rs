@@ -717,18 +717,41 @@ fn watcher_detects_ri_file_removal() {
 
     let removed_paths: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
     let removed_clone = removed_paths.clone();
+    let probe_seen = Arc::new(AtomicBool::new(false));
+    let probe_seen_clone = probe_seen.clone();
 
-    // Watch with no target_file so all .ri events reach the callback.
-    let Some(_watcher) = try_watcher(dir.path(), None, move |event| {
-        if let FileEvent::Removed(path) = event {
+    // Watch with no target_file so all .ri events reach the callback. A
+    // single `match` (rather than two sequential `if let`s) is required
+    // here since `event` is owned and non-Copy: a second `if let` on the
+    // same `event` after the first has already bound a variant's field by
+    // value would not compile ("use of moved value").
+    let Some(_watcher) = try_watcher(dir.path(), None, move |event| match event {
+        FileEvent::Changed(path) => {
+            if path.ends_with("probe.ri") {
+                probe_seen_clone.store(true, Ordering::SeqCst);
+            }
+        }
+        FileEvent::Removed(path) => {
+            // Defensive: a Removed for probe.ri should never happen (the
+            // registration barrier only ever writes/rewrites probe.ri,
+            // never removes it), but guard anyway so a future change to
+            // the probe mechanism can't silently pollute removed_paths.
+            if path.ends_with("probe.ri") {
+                return;
+            }
             removed_clone.lock().unwrap().push(path);
         }
     }) else {
         return;
     };
 
-    // Give the watcher time to register
-    std::thread::sleep(Duration::from_millis(200));
+    let registered = wait_for_watch_registration(dir.path(), &probe_seen);
+    assert!(
+        registered,
+        "the watcher never delivered a probe event, so the directory watch \
+         was never confirmed live -- the remove below could have been \
+         lost outright and this run could not exercise removal detection"
+    );
 
     // Delete the .ri file
     std::fs::remove_file(&ri_file).unwrap();
