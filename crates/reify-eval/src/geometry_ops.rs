@@ -1398,6 +1398,99 @@ fn validate_pattern_count(
     Ok(raw as usize)
 }
 
+/// Read a GROUP of PROFILE DIMENSION slots — a rectangle's `width`/`height`, a
+/// circle's `radius`, an ellipse's `semi_major`/`semi_minor` — and require each
+/// to be POSITIVE.
+///
+/// This is [`required_length_values`] with one extra judgement layered on top,
+/// and the division of labour between the two is the whole design:
+///
+/// * [`required_length_args`], which this delegates to, already settles that
+///   every slot is a FINITE LENGTH — Contract C1's three-state mapping (task
+///   5743 routed the profile slots through it). A bare `Real`/`Int` or a
+///   wrong-dimension `Scalar` is an `Error` carrying
+///   [`reify_core::DiagnosticCode::DimensionedArgRejected`]; a NaN/±inf LENGTH
+///   `Scalar` is a `Warning`; an `Undef` slot drops the op with the distinct
+///   `unresolved (Undef)` wording. NONE of those states can reach the sign loop
+///   below, so this helper deliberately has no non-finite arm and no `Undef`
+///   arm — either one would be dead code implying the LENGTH gate had not run.
+/// * What that gate leaves open, and what this closes, is the SIGN.
+///   `circle(0mm)` and `rectangle(-30mm, 50mm)` are finite LENGTHs, so Contract
+///   C accepts them, and nothing downstream rejects them either: the mesher's
+///   `validate_boundary` only rejects a ring whose |signed area| falls below
+///   [`DEGENERATE_RING_AREA_TOLERANCE`], and `w*h == -0.0015` clears that
+///   comfortably. A negative dimension therefore produced a geometrically
+///   meaningless (clockwise, inside-out) cross-section with no diagnostic
+///   anywhere, and a zero one a degenerate face.
+///
+/// The OCCT kernel does already reject these inputs BY NAME inside
+/// `kernel.execute()` — `"rectangle_profile width must be a finite positive
+/// value"` and its siblings in `reify-kernel-occt/src/lib.rs` — so the gain
+/// here is NOT better wording. It is WHEN the rejection fires and WHAT it
+/// arrives as: there, a `GeometryError::OperationFailed` raised only once the
+/// op has been compiled and dispatched, and only on the OCCT path; here, a
+/// build-time `Diagnostic` ahead of dispatch, on every path.
+///
+/// # `PROFILE` is in the name because it is in the MESSAGE
+///
+/// Unlike its family-agnostic [`required_length_args`] /
+/// [`required_length_values`] siblings, this helper hardcodes the noun
+/// `profile` in its diagnostic ("… profile dropped: …", "profile dimensions
+/// must be > 0"). The same defect class exists for PRIMITIVE dimensions
+/// (`box`/`cylinder`/`sphere` — all likewise LENGTH-gated but sign-open), and
+/// reusing this verbatim there would emit "box profile dropped: …", a wrong
+/// noun in user-facing output. The name says `profile` so that mismatch is
+/// caught at the call site rather than in a user's console. Extending to the
+/// primitive family means lifting the noun to a parameter, not calling this
+/// as-is.
+///
+/// # The FIRST bad dimension short-circuits
+///
+/// [`required_length_args`] deliberately reads its whole group before
+/// returning, so a wholly bare gesture is diagnosed in one build. The SIGN loop
+/// deliberately does not: it returns on the first failure, giving exactly one
+/// `Warning` here plus one `Error` at the caller, per the anti-cascade contract
+/// on [`eval_named_arg`]. The reasoning that makes all-at-once right for the
+/// LENGTH gate does not carry over — a group is bare in every member because
+/// dimensionlessness is a property of how the author wrote the whole gesture,
+/// whereas a sign error is per-slot.
+///
+/// # An accepted dimension is stored exactly as an ungated one would be
+///
+/// The `Ok` arm hands back `si.map(reify_ir::Value::length)` — byte-identical
+/// to what [`required_length_values`] stores — so gating a profile for SIGN
+/// changes nothing about the IR representation of an accepted dimension, and
+/// the golden characterization snapshots are untouched.
+fn required_positive_profile_dimensions<const N: usize>(
+    names: [&str; N],
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<[reify_ir::Value; N], String> {
+    let si = required_length_args(
+        names,
+        kind_label,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    for (value, name) in si.iter().zip(names) {
+        if *value <= 0.0 {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} profile dropped: {}={} is not positive (profile dimensions must be > 0)",
+                kind_label, name, value
+            )));
+            return Err(format!("non-positive {} dimension '{}'", kind_label, name));
+        }
+    }
+    Ok(si.map(reify_ir::Value::length))
+}
+
 /// Extract three SI-valued `f64` components from a [`reify_ir::Value::Point`]
 /// or [`reify_ir::Value::Vector`] with exactly 3 numeric, finite components.
 ///
@@ -4574,7 +4667,7 @@ fn profile_rectangle(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let [width, height] = required_length_values(
+    let [width, height] = required_positive_profile_dimensions(
         ["width", "height"],
         kind,
         args,
