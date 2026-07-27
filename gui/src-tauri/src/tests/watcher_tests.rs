@@ -897,6 +897,7 @@ fn watcher_rereads_final_content_after_nonatomic_truncate_then_append() {
     std::fs::write(&target, "module bottom_deck\n\nvalue a = 0\n").unwrap();
 
     let contents: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
+    let probe_seen = Arc::new(AtomicBool::new(false));
 
     // Unlike the single-attempt `try_watcher` tests elsewhere in this file,
     // this one retries construction a bounded number of times against
@@ -914,14 +915,28 @@ fn watcher_rereads_final_content_after_nonatomic_truncate_then_append() {
     let watcher = loop {
         attempts += 1;
         let contents_clone = contents.clone();
+        // Cloned fresh per attempt, same as `contents_clone` above: the
+        // callback closure is rebuilt on each of the (up to MAX_ATTEMPTS)
+        // iterations, so each attempt's watcher needs its own clone of the
+        // shared flag.
+        let probe_seen_clone = probe_seen.clone();
         let attempt = try_watcher(
             dir.path(),
             Some(PathBuf::from("bottom_deck.ri")),
-            move |event| {
-                if let FileEvent::Changed(path) = event
-                    && let Ok(text) = std::fs::read_to_string(&path)
-                {
-                    contents_clone.lock().unwrap().push(text);
+            move |event| match event {
+                // Existing Changed + read-back arm, untouched: probe.ri's
+                // Changed events are filtered out by the watcher itself
+                // (target_file = "bottom_deck.ri"), so `contents` can never
+                // see probe text.
+                FileEvent::Changed(path) => {
+                    if let Ok(text) = std::fs::read_to_string(&path) {
+                        contents_clone.lock().unwrap().push(text);
+                    }
+                }
+                FileEvent::Removed(path) => {
+                    if path.ends_with("probe.ri") {
+                        probe_seen_clone.store(true, Ordering::SeqCst);
+                    }
                 }
             },
         );
@@ -939,8 +954,16 @@ fn watcher_rereads_final_content_after_nonatomic_truncate_then_append() {
         return;
     };
 
-    // Give the watcher time to register.
-    std::thread::sleep(Duration::from_millis(200));
+    // Watcher is target_file-filtered, so this MUST use the removal-probe
+    // barrier -- see wait_for_watch_registration_via_removal's doc comment.
+    let registered = wait_for_watch_registration_via_removal(dir.path(), &probe_seen);
+    assert!(
+        registered,
+        "the watcher never delivered a probe event, so the directory watch \
+         was never confirmed live -- the writes below could have been lost \
+         outright and this run could not exercise the non-atomic \
+         truncate-then-append coalescing behavior"
+    );
 
     // Simulate a non-atomic write: truncate first, then append moments
     // later in a SEPARATE syscall -- e.g. `printf '...' > f && cat other >> f`.
