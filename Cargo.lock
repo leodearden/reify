@@ -4271,6 +4271,9 @@ dependencies = [
 [[package]]
 name = "reify-build-utils"
 version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
 
 [[package]]
 name = "reify-cli"
