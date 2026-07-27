@@ -1075,16 +1075,104 @@ fn emit_arg_type_mismatch(param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_
     );
 }
 
+/// The arg types that every leaf gate in this walker conservatively SKIPS rather
+/// than judges: each is "unknown / unverifiable here", NOT "definitely
+/// non-conforming", so emitting on one would be a false positive.
+///
+/// * `Error` — anti-cascade poison sentinel; the root-cause diagnostic already fired.
+/// * `TypeParam` — an unresolved generic type variable; real conformance is
+///   decided when the var is bound at instantiation.
+/// * `Geometry` — carries no nominal identity verifiable at the type level
+///   (geometry conformance is decided from the compiled op-array, reachable only
+///   through the literal walker).
+/// * `TraitObject` — may resolve to a conforming type at evaluation; defer.
+///
+/// # Why a named helper rather than a repeated `matches!`
+///
+/// [`reject_if_incompatible`] and the four SHAPE-BASED leaf arms (`Vector`,
+/// `Point`, `Matrix`/`Tensor`, `Field`) all need exactly this set. Before task
+/// 5465's amendment pass each spelled it out inline and the arm comments claimed
+/// the copies were "character-for-character" identical so they "cannot drift" —
+/// a claim enforced only by comment. Routing every caller through one function
+/// makes it structurally true.
+///
+/// # `Type::ScalarParam` is deliberately NOT in this set
+///
+/// `Type::ScalarParam(Q)` is the unresolved *dimension*-parameter placeholder
+/// (`type_resolution.rs:3134`), which superficially looks like a sibling of
+/// `TypeParam`. It is not, for this purpose: with `TypeParam` the whole type is
+/// unknown, whereas with `ScalarParam` the FAMILY is known (it is a scalar) and
+/// only its dimension is open. Adding it here would silence genuine family-level
+/// mismatches such as `String ← Scalar<Q>` at every arm at once. Instead, the
+/// arms that already tolerate a scalar-family arg as the expression compiler's
+/// numeric-fallback placeholder (`Point`, `Matrix`/`Tensor`) accept it through
+/// [`is_numeric_placeholder_leaf`], which is where its scalar-ness — not its
+/// unknown-ness — is the load-bearing property.
+fn arg_type_is_unverifiable(arg_ty: &Type) -> bool {
+    matches!(
+        arg_ty,
+        Type::Error | Type::TypeParam(_) | Type::Geometry | Type::TraitObject(_)
+    )
+}
+
+/// The NARROW numeric-leaf predicate the `Point` and `Matrix`/`Tensor` shape
+/// arms use to accept the expression compiler's numeric-fallback placeholder
+/// (task 5465).
+///
+/// `point3(…)` and friends are stdlib eval-builtins with no `.ri` return type,
+/// so their calls compile to a `FunctionCall` typed `Scalar[m]` / `Int` rather
+/// than `Type::Point`. `Type::ScalarParam(_)` is the same shape with an
+/// unresolved dimension (see [`arg_type_is_unverifiable`]'s closing note).
+///
+/// Deliberately NOT `type_compat.rs::is_scalar_like_leaf`, which also admits
+/// `Bool`, `String`, `Enum`, `StructureRef`, `TraitObject` and `Geometry` — that
+/// would make `Anchor(origin: "origin")` silent and defeat the value floors.
+fn is_numeric_placeholder_leaf(ty: &Type) -> bool {
+    matches!(ty, Type::Int | Type::Scalar { .. } | Type::ScalarParam(_))
+}
+
+/// Whether a `Type::List` arg at a `Matrix`/`Tensor` param is plausibly the
+/// idiomatic nested-list-literal spelling of that matrix — i.e. it bottoms out
+/// in a NUMERIC (or already tensor-shaped) element type.
+///
+/// The `Matrix`/`Tensor` arm accepts `Type::List` because
+/// `[[0.0, …], [0.0, …], [0.0, …]]` is how every `examples/dynamics/*_idyn.ri`
+/// spells a `MassProperties.inertia`, and that literal compiles to
+/// `List<List<Real>>`. But "is a list" is not the same claim as "is a matrix
+/// literal": an UNCONSTRAINED `Type::List(_)` accept also swallows
+/// `Body(inertia: ["a", "b"])` (arg type `List<String>`), because a
+/// `Matrix`-typed param never pairs with the literal walker's
+/// `(Type::List(param), ListLiteral)` arm and so arrives here as a bare type.
+/// That left the just-promoted family with a hole on exactly the shape the
+/// accept was written for (reviewer_comprehensive, correctness-coverage-gap).
+///
+/// Peeling `List` recursively (rather than checking one level) keeps the rule
+/// rank-agnostic: `List<Real>` for a rank-1 tensor, `List<List<Real>>` for a
+/// 3×3 matrix, `List<List<List<Real>>>` for a rank-3 tensor. ARITY is still not
+/// checked — see the arm comment for why that asymmetry with `Point`/`Vector` is
+/// deliberate — only the element FAMILY is.
+///
+/// `Error` and `TypeParam` bottoms return true: those elements are unknown, not
+/// definitely non-numeric, and rejecting them would violate the same
+/// anti-cascade / defer-to-instantiation contract [`arg_type_is_unverifiable`]
+/// encodes at the top level. `Geometry` / `TraitObject` are NOT included: a
+/// `List<Geometry>` at a matrix slot is a genuine family mismatch, and neither
+/// is a numeric-literal shape.
+fn list_bottoms_out_numeric(ty: &Type) -> bool {
+    match ty {
+        Type::List(inner) => list_bottoms_out_numeric(inner),
+        Type::Vector { .. } | Type::Matrix { .. } | Type::Tensor { .. } => true,
+        Type::Error | Type::TypeParam(_) => true,
+        other => is_numeric_placeholder_leaf(other),
+    }
+}
+
 /// Vector's bespoke arity logic (`emit_vector_mismatch`) is intentionally separate.
 fn reject_if_incompatible<F>(param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_>, emit: F)
 where
     F: FnOnce(&Type, &Type, &mut WalkCtx<'_>),
 {
-    if !matches!(
-        arg_ty,
-        Type::Error | Type::TypeParam(_) | Type::Geometry | Type::TraitObject(_)
-    ) && !type_compatible(param_type, arg_ty)
-    {
+    if !arg_type_is_unverifiable(arg_ty) && !type_compatible(param_type, arg_ty) {
         emit(param_type, arg_ty, ctx);
     }
 }
@@ -1197,21 +1285,18 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         // (Tensor arity is not yet pinned in param signatures, so accepted conservatively).
         // Reject bare scalars, strings, bools, and any other non-vector kind.
         //
-        // Skip args that are Error (anti-cascade), TypeParam (unresolved generic —
-        // conformance decided at instantiation), Geometry (unverifiable here), or
-        // TraitObject (may resolve to a vector-producing type). For all other concrete
-        // arg types, reject unless the arg is vector-shaped with matching arity.
+        // Unverifiable arg kinds are skipped through the shared
+        // [`arg_type_is_unverifiable`] gate (Error anti-cascade, TypeParam
+        // unresolved-generic, Geometry, TraitObject) — the SAME function the other
+        // three shape arms and `reject_if_incompatible` call, so the set cannot
+        // drift between them. For all other concrete arg types, reject unless the
+        // arg is vector-shaped with matching arity.
         //
         // NOT type_compatible: implicitly_converts_to has no Vector<->Vector
         // quantity-coercion arm, so type_compatible(Vector3<Length>, Vector3<Real>)
         // is FALSE — a naive type_compatible gate would falsely reject `vec3(0,0,1)`
         // (dimensionless) for a Length-quantity param (see task-4622 design decision D1).
-        (Type::Vector { .. }, arg_ty)
-            if !matches!(
-                arg_ty,
-                Type::Error | Type::TypeParam(_) | Type::Geometry | Type::TraitObject(_)
-            ) =>
-        {
+        (Type::Vector { .. }, arg_ty) if !arg_type_is_unverifiable(arg_ty) => {
             // Accept vector-shaped args; for Type::Vector args, also require matching
             // arity (n). A Tensor{rank:1} is accepted regardless of its element count.
             let is_conforming = match arg_ty {
@@ -1228,7 +1313,8 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         }
         // Leaf: param type is a Point (task 5465, family 1). SHAPE-BASED with an
         // arity check, modelled directly on the `Type::Vector` arm above and
-        // sharing its anti-cascade/unverifiable skip guard verbatim.
+        // sharing its anti-cascade/unverifiable skip guard via the same
+        // [`arg_type_is_unverifiable`] function.
         //
         // Accepts:
         //   • `Type::Point { n: arg_n, .. }` when `arg_n` matches the param's
@@ -1241,9 +1327,10 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         //   • Scalar-like numeric args, as the expression compiler's
         //     numeric-fallback placeholder for point-producing builtins.
         //
-        // The placeholder predicate is deliberately NARROW (`Int | Scalar`) and
-        // local. `type_compat.rs::is_scalar_like_leaf` is NOT reused: it also
-        // admits `Bool`, `String`, `Enum`, `StructureRef`, `TraitObject` and
+        // The placeholder predicate is deliberately NARROW — see
+        // [`is_numeric_placeholder_leaf`] (`Int | Scalar | ScalarParam`).
+        // `type_compat.rs::is_scalar_like_leaf` is NOT reused: it also admits
+        // `Bool`, `String`, `Enum`, `StructureRef`, `TraitObject` and
         // `Geometry`, which would make `Anchor(origin: "origin")` silent.
         //
         // WHY THE TOLERANCE LIVES INSIDE THIS ARM rather than as an arg-side
@@ -1265,29 +1352,24 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         // The tolerance can be tightened to a FunctionCall-shaped check once
         // `point3` carries a real return type — tracked by the family-5 /
         // placeholder follow-up filed with this task.
-        (Type::Point { .. }, arg_ty)
-            if !matches!(
-                arg_ty,
-                Type::Error | Type::TypeParam(_) | Type::Geometry | Type::TraitObject(_)
-            ) =>
-        {
+        (Type::Point { .. }, arg_ty) if !arg_type_is_unverifiable(arg_ty) => {
             let is_conforming = match arg_ty {
                 Type::Point { n: arg_n, .. } => match param_type {
                     Type::Point { n: param_n, .. } => param_n == arg_n,
                     _ => true, // unreachable: outer arm guards param_type as Type::Point
                 },
                 // Numeric-fallback placeholder for point-producing builtins.
-                Type::Int | Type::Scalar { .. } => true,
-                _ => false,
+                other => is_numeric_placeholder_leaf(other),
             };
             if !is_conforming {
                 emit_arg_type_mismatch(param_type, arg_ty, ctx);
             }
         }
         // Leaf: param type is a Matrix or Tensor (task 5465, family 2).
-        // SHAPE-BASED, sharing the `Type::Vector` arm's anti-cascade/unverifiable
-        // skip guard verbatim. Handled as ONE arm because `type_compat.rs`
-        // already treats the two families as interconvertible.
+        // SHAPE-BASED, sharing the other shape arms' anti-cascade/unverifiable
+        // skip guard through [`arg_type_is_unverifiable`]. Handled as ONE arm
+        // because `type_compat.rs` already treats the two families as
+        // interconvertible.
         //
         // Accepts, each for a stated reason:
         //   • `Type::Matrix` / `Type::Tensor` — the nominal families themselves.
@@ -1297,37 +1379,38 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         //   • `Type::Vector` — Rules 1a/1b (`type_compat.rs:83-108`) make
         //     `Vector<N,Q>` and `Tensor<1,N,Q>` interconvertible.
         //   • `Type::List` — the idiomatic nested-list-literal spelling of a
-        //     matrix, which compiles to `List<List<Real>>`.
-        //   • `Type::Int | Type::Scalar` — rank-0 scalar equivalence (Rules
-        //     2a/2b) plus matrix/tensor-builtin numeric-fallback placeholders,
-        //     the same narrow predicate the `Point` arm uses.
+        //     matrix, which compiles to `List<List<Real>>` — but ONLY when it
+        //     bottoms out in a numeric/tensor element type. See
+        //     [`list_bottoms_out_numeric`]: an unconstrained `Type::List(_)`
+        //     accept also swallowed `Body(inertia: ["a", "b"])`, leaving the
+        //     promoted family a hole on the very shape the accept exists for.
+        //   • `Type::Int | Type::Scalar | Type::ScalarParam` — rank-0 scalar
+        //     equivalence (Rules 2a/2b) plus matrix/tensor-builtin
+        //     numeric-fallback placeholders, via the same narrow
+        //     [`is_numeric_placeholder_leaf`] the `Point` arm uses.
         //
         // Everything else (`String`, `Bool`, `Selector`/`AnySelector`, `Enum`,
         // `Applied`, `StructureRef`, `Field`, `Point`, `Frame`, `Transform`,
-        // `Set`, `Map`, …) is rejected via the shared `emit_arg_type_mismatch`.
+        // `Set`, `Map`, a non-numeric `List`, …) is rejected via the shared
+        // `emit_arg_type_mismatch`.
         //
         // NO ARITY CHECK, in deliberate contrast to the `Point` and `Vector`
         // arms. `List<List<Real>>` — the idiomatic spelling — carries no element
         // counts in its type, so an m/n (or rank) check would either false-reject
         // every list-literal matrix or be silently unenforceable for exactly the
-        // shape that matters. Arity/PSD validation for `MassProperties.inertia`
-        // is the ctor-time inertia hook's job (see
+        // shape that matters. Constraining the ELEMENT FAMILY (above) is the part
+        // that is decidable from the type alone; arity/PSD validation for
+        // `MassProperties.inertia` is the ctor-time inertia hook's job (see
         // `examples/dynamics/pendulum_idyn.ri:24-26`), not this walker's.
         (Type::Matrix { .. } | Type::Tensor { .. }, arg_ty)
-            if !matches!(
-                arg_ty,
-                Type::Error | Type::TypeParam(_) | Type::Geometry | Type::TraitObject(_)
-            ) =>
+            if !arg_type_is_unverifiable(arg_ty) =>
         {
-            if !matches!(
-                arg_ty,
-                Type::Matrix { .. }
-                    | Type::Tensor { .. }
-                    | Type::Vector { .. }
-                    | Type::List(_)
-                    | Type::Int
-                    | Type::Scalar { .. }
-            ) {
+            let is_conforming = match arg_ty {
+                Type::Matrix { .. } | Type::Tensor { .. } | Type::Vector { .. } => true,
+                Type::List(_) => list_bottoms_out_numeric(arg_ty),
+                other => is_numeric_placeholder_leaf(other),
+            };
+            if !is_conforming {
                 emit_arg_type_mismatch(param_type, arg_ty, ctx);
             }
         }
@@ -1351,17 +1434,12 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         // arm is NOT routed through `type_compatible` — the same reason the
         // `Type::Vector` arm above is shape-based (task-4622 D1).
         //
-        // The skip guard is character-for-character the `Type::Vector` arm's, so
-        // the anti-cascade / unverifiable set cannot drift between the two arms:
+        // The skip guard is the shared [`arg_type_is_unverifiable`] function, so
+        // the anti-cascade / unverifiable set cannot drift between the arms:
         // Error (anti-cascade), TypeParam (unresolved generic, decided at
         // instantiation), Geometry (unverifiable at the type level), TraitObject
         // (may resolve to a field-producing type).
-        (Type::Field { .. }, arg_ty)
-            if !matches!(
-                arg_ty,
-                Type::Error | Type::TypeParam(_) | Type::Geometry | Type::TraitObject(_)
-            ) =>
-        {
+        (Type::Field { .. }, arg_ty) if !arg_type_is_unverifiable(arg_ty) => {
             // Accept any field-shaped arg, plus a lambda: `Type::Function` is a
             // legitimate spelling of a field-shaped arg at a `Field` slot.
             // Everything else (String, Bool, Int, Scalar, Point, List, …) is

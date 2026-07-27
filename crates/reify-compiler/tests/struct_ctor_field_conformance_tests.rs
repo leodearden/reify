@@ -1093,6 +1093,57 @@ fn matrix_param_given_string_warns_arg_type_mismatch() {
     );
 }
 
+const SRC_MATRIX_GIVEN_STRING_LIST: &str = r#"module test.matrix_string_list
+structure def Body { param inertia : Matrix<3, 3, MomentOfInertia> }
+structure def Root {
+    let b = Body(inertia: ["a", "b"])
+}
+"#;
+
+/// Value floor on the `Matrix`/`Tensor` arm's `Type::List` ACCEPT itself.
+///
+/// The arm accepts `Type::List` because a nested list literal is the idiomatic
+/// `Matrix3x3` spelling — but "is a list" is a weaker claim than "is a matrix
+/// literal". A `Matrix`-typed param never pairs with the literal walker's
+/// `(Type::List(param), ListLiteral)` arm (the param is `Matrix`, not `List`),
+/// so `["a", "b"]` reaches this leaf as a bare `List<String>` type. An
+/// unconstrained `Type::List(_)` accept therefore left the just-promoted family
+/// silent on exactly the shape the accept was written to admit.
+///
+/// `list_bottoms_out_numeric` closes it by peeling `List` recursively and
+/// requiring a numeric/tensor bottom — the same narrowness the `Point` arm's
+/// placeholder tolerance already had.
+#[test]
+fn matrix_param_given_string_list_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_MATRIX_GIVEN_STRING_LIST,
+        "inertia",
+        "Matrix<3,3,MomentOfInertia> ← List<String>",
+    );
+}
+
+const SRC_LIST_OF_MATRIX_GIVEN_STRING_ELEMENT: &str = r#"module test.list_matrix_string
+structure def Body { param inertias : List<Matrix<3, 3, MomentOfInertia>> }
+structure def Root {
+    let b = Body(inertias: ["a"])
+}
+"#;
+
+/// Wrapper composition for the `Matrix`/`Tensor` family: the arm must be
+/// reachable THROUGH the walker's `List` recursion, not only at the top level.
+///
+/// The `Point` and `Field` families each have one of these; `Matrix`/`Tensor`
+/// did not, so nothing pinned that a `List<Matrix<…>>` param's elements are
+/// judged at all.
+#[test]
+fn list_of_matrix_param_given_string_element_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_LIST_OF_MATRIX_GIVEN_STRING_ELEMENT,
+        "inertias",
+        "List<Matrix<3,3,MomentOfInertia>> ← [String]",
+    );
+}
+
 const SRC_TENSOR_GIVEN_STRING: &str = r#"module test.tensor_string
 structure def Body { param stress : Tensor<2, 3, Pressure> }
 structure def Root {
