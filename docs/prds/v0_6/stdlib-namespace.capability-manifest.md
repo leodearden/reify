@@ -9,6 +9,14 @@ noted; PRD-authoring probes dated 2026-07-24 were re-verified against a fresh
 stdlib via `include_str!`). D3 workflow run: `wf_ed2243d0-e66` over the six
 leaves (β, δ, η, θ, λ, ν).
 
+**Amendment 2026-07-27 (esc-5493-2, `/unblock` session).** The α↔β edge is
+**inverted**: β lands first with no deps, α depends on β. β's leaf status is
+withdrawn (it is now `intermediate → α, δ, ζ`); the leaf set becomes
+(δ, η, θ, λ, ν). Boundary #1 moves α → β; α takes the new #1a property form.
+See PRD §8's ordering amendment for the full derivation. The D3 run above
+predates this amendment and evaluated β as a leaf — its β dispositions still
+hold (they concern β's own signal encodings, not its position in the graph).
+
 Cross-PRD note: `resolution-unification.md` landed on main in the same merge as
 this PRD (mr-2181baf9) with reconciliation amendments (its §6 row for this PRD;
 D-11 supersession recorded both sides). Its decompose runs as a separate session
@@ -17,7 +25,7 @@ names a resolution-unification producer is recorded as a textual gate in the
 consuming task's description, to be upgraded to a real `add_dependency` edge when
 its batch files.
 
-## α — compile-side collision/direction unification + NS-P4 parity test *(intermediate → β, ε, ν)*
+## α — compile-side collision/direction unification + NS-P4 parity test *(intermediate → ε, ν; deps β)*
 
 - **collision-census-sites-real** → PASS. All §1-census sites verified live on
   main: template last-wins collects (`entities_phase.rs`), enum
@@ -30,8 +38,24 @@ its batch files.
   has no member 'eigenvalue'`) vs `stdlib_ns_mode_member_modal.ri` (exit 0)
   pin the divergence direction: compile binds modal `Mode` (last-wins), eval
   binds buckling `Mode` (first-wins).
+- **flip-precondition-is-β** → BLOCKING pre-state (recorded 2026-07-27,
+  esc-5493-2; producer: β, now upstream). α's first-wins flip cannot land before
+  β's rename: `stdlib_loader.rs:113` registers `solver_buckling.ri` before
+  `modal_analysis.ri` (:158), so first-wins rebinds bare `Mode` to buckling's
+  `{eigenvalue, mode_shape}` and `modal_analysis_fns.ri`'s
+  `result.modes[0].frequency` (:72-73, :84) stops resolving — a stdlib-internal
+  break, not a fixture break. Scan evidence bounding the fix: `Mode` is the only
+  duplicate `structure def` name across the whole stdlib; zero duplicate
+  `enum def` / `occurrence def` names.
+- **parity-signal-non-vacuity** → α's signal is #1a, NOT #1. Post-β there is no
+  surviving `Mode` collision, so #1 as originally written passes with α's flip
+  absent (β alone restores parity). #1a pins the property that both sides read
+  the ONE shared policy point, seeded from #2's user-shadows-prelude fixture and
+  synthetic two-peer prelude sets — first-wins-among-peers has no live stdlib
+  witness once β's Error gate forbids peer collisions, so a synthetic vehicle is
+  mandatory, not a convenience.
 
-## β — intra-stdlib collision = Error + BucklingMode rename *(leaf; deps α)*
+## β — intra-stdlib collision = Error + BucklingMode rename *(intermediate → α, δ, ζ; deps none)*
 
 - **duplicate-pub-name-rejection-fires** → PASS (producer: this leaf). The
   rejection mechanism is absent today *by construction of the pre-state* (the
