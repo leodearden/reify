@@ -912,9 +912,16 @@ fn fea_pressure_smoke_example_has_no_ctor_conformance_diagnostics() {
 //       stay at ZERO ctor-conformance diagnostics (the false positive that
 //       caused the family's original exclusion), and at least one value floor
 //       that must emit exactly one Warning (proving the family is genuinely
-//       checked and not merely re-excluded under a new name). Several families
-//       add a wrapper-composition probe so a leaf arm cannot be added in a
+//       checked and not merely re-excluded under a new name). Each family also
+//       carries a wrapper-composition probe so a leaf arm cannot be added in a
 //       position the List/Option recursion never reaches.
+//
+//       Accepts that no inline `.ri` fixture can reach — the `Point`/`Matrix`
+//       ARITY rules, the `Matrix` nominal self-accept, the `Field` arm's lambda
+//       accept, and the enum-erasure REVERSE pairing — are pinned in
+//       `conformance/mod.rs`'s own `mod tests`, which constructs the `Type`s
+//       directly. Each site here points at its counterpart so the split stays
+//       navigable.
 //
 //       One family — dimensioned `Scalar` — is deliberately still HELD, with a
 //       clean-only probe and a doc comment naming its owner. It is the fifth
@@ -1189,6 +1196,15 @@ fn tensor_param_given_vector_stays_clean() {
     );
 }
 
+// The `Matrix`/`Tensor` arm's NOMINAL SELF-ACCEPT (a genuinely `Type::Matrix`-
+// typed arg at a `Matrix` param, and with it the deliberate ABSENCE of an m/n
+// arity check) is pinned by `matrix_param_accepts_matrix_arg_without_arity_check`
+// in `conformance/mod.rs`'s own `mod tests`, alongside the Point-arity probes
+// and for the same reason: no inline `.ri` fixture reliably yields a
+// `Type::Matrix`-typed arg, so the `Type` is constructed directly. The probes
+// above cover only the LOOSE accepts (nested list literal, `Vector` →
+// `Tensor<1,…>`).
+
 // ── (b) excluded family: Field ← erased Field<Real, Real> ────────────────────
 //
 // An analytical `field def` erases both slots to the numeric fallback, so its
@@ -1238,6 +1254,9 @@ structure def Root {
 
 /// Value floor for the promoted `Field` family: a `String` at a `Field` slot is
 /// not field-shaped by any reading and must warn.
+///
+/// The arm's OTHER accept — a lambda, i.e. a `Type::Function` arg — is pinned by
+/// `field_param_accepts_function_arg` in `conformance/mod.rs`'s own `mod tests`.
 #[test]
 fn field_param_given_string_warns_arg_type_mismatch() {
     assert_single_arg_type_mismatch_warning(
@@ -1376,6 +1395,16 @@ structure def Root {
 fn enum_param_given_wrong_enum_warns_arg_type_mismatch() {
     assert_single_arg_type_mismatch_warning(SRC_ENUM_CROSS_ENUM_MISMATCH, "c", "Hue ← Outline");
 }
+
+// The REVERSE erasure pairing — a param declared as the BARE `Type::Enum(n)`
+// supplied an APPLIED `Type::Applied { name: n, .. }` arg — is pinned by
+// `enum_param_accepts_applied_enum_arg_of_same_base` (plus its cross-base and
+// applied-generic-STRUCTURE fences) in `conformance/mod.rs`'s own `mod tests`.
+// It lives there because which surface spelling survives inference on the arg
+// side is not something an inline fixture can pin reliably, and because that
+// pairing is reachable at `Severity::Error` through the fn-call entry.
+
+
 
 // ── (b) HELD family: dimensioned Scalar ← dimensionless Real ─────────────────
 //

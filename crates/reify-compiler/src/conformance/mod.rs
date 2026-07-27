@@ -7179,6 +7179,105 @@ mod tests {
         );
     }
 
+    /// Self-accept leg of the `Matrix`/`Tensor` arm (task 5465, family 2): a
+    /// genuinely `Type::Matrix`-typed value cell at a `Matrix` param.
+    ///
+    /// The family's integration probes all exercise the LOOSE accepts — the
+    /// nested-list-literal spelling and the `Vector` → `Tensor<1,…>` conversion —
+    /// so nothing pinned that the nominal family accepts ITSELF. Note the
+    /// deliberate m/n difference (`Matrix<2,2>` arg at a `Matrix<3,3>` param):
+    /// the arm applies NO arity check, because `List<List<Real>>` — the
+    /// idiomatic spelling — carries no element counts, so an arity rule would be
+    /// unenforceable for exactly the shape that matters. This test is what makes
+    /// that asymmetry with the `Point`/`Vector` arms a pinned fact rather than
+    /// an unstated consequence.
+    #[test]
+    fn matrix_param_accepts_matrix_arg_without_arity_check() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "m"),
+            Type::Matrix {
+                m: 2,
+                n: 2,
+                quantity: Box::new(Type::dimensionless_scalar()),
+            },
+        );
+        let param_type = Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
+        };
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &param_type,
+            "inertia",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &[],
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            0,
+            "a Matrix-typed arg must be accepted at a Matrix param (nominal family self-accept, \
+             loose quantity, NO arity check), got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+    }
+
+    /// Lambda leg of the `Type::Field` arm (task 5465, family 3): a
+    /// `Type::Function` arg is a legitimate spelling of a field-shaped arg at a
+    /// `Field` slot.
+    ///
+    /// That accept is an explicit, deliberate branch in the arm and had zero
+    /// coverage — nothing would have noticed it being dropped, or the arm being
+    /// rewritten to reject lambdas. The integration probes for this family cover
+    /// only the erased-`field def` accept and the `String` value floor.
+    #[test]
+    fn field_param_accepts_function_arg() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "f"),
+            Type::Function {
+                params: vec![Type::dimensionless_scalar()],
+                return_type: Box::new(Type::dimensionless_scalar()),
+            },
+        );
+        let param_type = Type::Field {
+            domain: Box::new(Type::point3(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            })),
+            codomain: Box::new(Type::vec3(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            })),
+        };
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &param_type,
+            "mode_shape",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &[],
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            0,
+            "a lambda (Type::Function) arg must be accepted at a Field param, got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+    }
+
     /// A minimal declared-enum table for the two erasure-symmetry probes below.
     ///
     /// Only `EnumDef::name` is load-bearing here — [`base_enum_name`]'s
