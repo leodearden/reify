@@ -547,8 +547,12 @@ fn members_of(result: &reify_eval::EvalResult, entity: &str) -> Vec<String> {
 /// `DimensionalTolerance.*` cells (the latter feeding an INDETERMINATE
 /// `DimensionalTolerance#constraint[0]`). Those must be gone.
 ///
-/// The `Flange.dim_tol` limits are pinned here too so the strip is proven
-/// VALUE-PRESERVING, not merely non-erroring.
+/// Scope: only the signal the strip ADDS. The other half of the contract — that
+/// the strip is VALUE-PRESERVING — is owned by
+/// `tolerancing_dimensional_bounds_computed` below, which pins the same
+/// `Flange.dim_tol` limits against the same fixture and therefore goes red on
+/// its own if the strip perturbed them. Re-asserting them here would be
+/// lockstep duplication.
 ///
 /// RED before the mirrors are stripped from examples/m8_tolerancing.ri.
 #[test]
@@ -631,32 +635,6 @@ fn m8_tolerancing_resolves_stdlib_position_and_flatness() {
          these exist only when the file re-declares the stdlib `structure def`s locally \
          (each mirror becomes its own module root, which is what leaves \
          DimensionalTolerance#constraint[0] INDETERMINATE)"
-    );
-
-    // ── (iv) the strip is value-preserving: dim_tol limits unchanged ─────────
-    assert_scalar_cell(
-        &result,
-        "Flange.dim_tol",
-        "upper_limit",
-        0.050_100_000_000_000_006,
-        1e-12,
-        DimensionVector::LENGTH,
-    );
-    assert_scalar_cell(
-        &result,
-        "Flange.dim_tol",
-        "lower_limit",
-        0.0499,
-        1e-12,
-        DimensionVector::LENGTH,
-    );
-    assert_scalar_cell(
-        &result,
-        "Flange.dim_tol",
-        "tolerance_band",
-        0.0002,
-        1e-12,
-        DimensionVector::LENGTH,
     );
 }
 

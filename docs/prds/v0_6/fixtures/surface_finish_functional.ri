@@ -14,17 +14,20 @@ module surface_finish_functional
 // FinishProcess, TreatmentProcess, Treatment, SurfaceTreated and ArealCostRate;
 // crates/reify-compiler/stdlib/materials_appearance.ri owns Color, Finish and
 // Appearance. The stdlib-consuming twin of this file is
-// examples/surface_finish_functional.ri, which is examples_smoke-covered and
-// carries no redeclarations (see its :9).
+// examples/surface_finish_functional.ri, whose header records that it carries
+// no such redeclarations.
 //
 // The redeclarations HERE are intentional and must not be swept. This is a
 // pre-implementation G3 gate fixture: its registry-free self-containment is
 // cited as stamped PASS evidence in
 // docs/prds/v0_6/surface-finish-functional.capability-manifest.md, from a point
 // when the stdlib modules did not exist, so rewriting it would invalidate
-// historical gate evidence. The identical arrangement is documented for the
-// sibling fixture docs/prds/v0_6/fixtures/appearance_surface.ri at
-// examples/appearance_surface.ri:6-11.
+// historical gate evidence. The identical arrangement holds for the sibling
+// fixture docs/prds/v0_6/fixtures/appearance_surface.ri, whose stdlib-consuming
+// twin examples/appearance_surface.ri states it outright: "The gate fixture
+// [...] predates the stdlib module and redeclares the types inline for
+// standalone validation; this committed example is compiled WITH the new
+// prelude so it omits the redeclarations."
 
 enum Finish { Matte, Satin, Gloss }
 structure def Color {

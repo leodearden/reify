@@ -665,6 +665,28 @@ fn io_export_tolerance_upper_limit() {
     );
 }
 
+// ── task #5582: io_export_tolerance_lower_limit ──────────────────────────────
+
+/// Asserts ExportPart.tol.lower_limit ≈ 0.09995m (100mm − 0.05mm).
+/// DimensionalTolerance: nominal=100mm, lower_deviation=-0.05mm
+/// lower_limit = nominal + lower_deviation = 0.100 − 0.00005 = 0.09995m.
+///
+/// Sibling of `io_export_tolerance_upper_limit`; lives here rather than inside
+/// `io_export_flatness_resolves_stdlib_geometry_feature` so the mirror-strip
+/// test carries only mirror-strip signal.
+#[test]
+fn io_export_tolerance_lower_limit() {
+    let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
+    assert_scalar(
+        &result,
+        "ExportPart.tol",
+        "lower_limit",
+        0.09995,
+        1e-9,
+        DimensionVector::LENGTH,
+    );
+}
+
 // ── step-11: io_export_tolerance_band ────────────────────────────────────────
 
 /// Asserts ExportPart.tol.tolerance_band ≈ 0.0001m (0.1mm = 2×0.05mm).
@@ -728,8 +750,12 @@ fn members_of(result: &reify_eval::EvalResult, entity: &str) -> Vec<String> {
 ///     `nominal_zone` — the `GeometricTolerance` trait's
 ///     `let nominal_zone = effective_tolerance_zone(...)` (tolerancing.ri:56).
 ///
-/// The `ExportPart.flat.tolerance_value` and `ExportPart.tol.*` limits are
-/// pinned alongside so the strip is proven VALUE-PRESERVING.
+/// Scope: only the signal the strip ADDS. The other half of the contract — that
+/// the strip is VALUE-PRESERVING — is owned by the `io_export_tolerance_*` /
+/// `io_export_flatness_tolerance` tests above, which pin
+/// `ExportPart.flat.tolerance_value` and the `ExportPart.tol.*` limits against
+/// the same fixture and therefore go red on their own if the strip perturbed
+/// them. Re-asserting them here would be lockstep duplication.
 ///
 /// RED before the mirrors are stripped from examples/io_export.ri.
 #[test]
@@ -784,40 +810,6 @@ fn io_export_flatness_resolves_stdlib_geometry_feature() {
          `feature : Geometry` (#3116, stdlib/tolerancing.ri:79-83). A dimensionless \
          Scalar here means the drifted local mirror (`param feature : Real = 0.0`) \
          has been reintroduced into examples/io_export.ri. Got: {feature:?}"
-    );
-
-    // ── (iii) the strip is value-preserving ──────────────────────────────────
-    assert_scalar(
-        &result,
-        "ExportPart.flat",
-        "tolerance_value",
-        2e-5,
-        1e-12,
-        DimensionVector::LENGTH,
-    );
-    assert_scalar(
-        &result,
-        "ExportPart.tol",
-        "upper_limit",
-        0.10005,
-        1e-12,
-        DimensionVector::LENGTH,
-    );
-    assert_scalar(
-        &result,
-        "ExportPart.tol",
-        "lower_limit",
-        0.099_950_000_000_000_01,
-        1e-12,
-        DimensionVector::LENGTH,
-    );
-    assert_scalar(
-        &result,
-        "ExportPart.tol",
-        "tolerance_band",
-        0.0001,
-        1e-12,
-        DimensionVector::LENGTH,
     );
 }
 
