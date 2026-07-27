@@ -204,8 +204,26 @@ impl DimensionLadder {
         // against the static default rung in engineering notation. A
         // pathological magnitude that will not normalize degrades to the
         // pre-§5 static rendering rather than emitting a bogus mantissa.
+        //
+        // The engineering split is fixed to `[ENGINEERING_BAND_LO,
+        // ENGINEERING_BAND_HI)` rather than parameterized by this ladder's
+        // band, because a multiple-of-three exponent can only ever normalize a
+        // mantissa into a three-decade span — see [`engineering_parts`]. Every
+        // registry band is that span (pinned by
+        // `auto_scale_metadata_matches_prd_section5`); this asserts the two
+        // halves of §5's policy cannot silently drift apart.
+        debug_assert!(
+            (auto.band_lo - ENGINEERING_BAND_LO).abs() < f64::EPSILON
+                && (auto.band_hi - ENGINEERING_BAND_HI).abs() < f64::EPSILON * ENGINEERING_BAND_HI,
+            "ladder {:?} declares band [{}, {}), but §5c engineering notation can only \
+             normalize into [{ENGINEERING_BAND_LO}, {ENGINEERING_BAND_HI}) — the rung arm \
+             and the fallback arm would disagree about what \"in band\" means",
+            self.dimension,
+            auto.band_lo,
+            auto.band_hi
+        );
         let magnitude = si_value / default_rung.si_scale;
-        match engineering_parts(magnitude, auto.band_hi) {
+        match engineering_parts(magnitude) {
             Some((mantissa, exponent)) => AutoScaleChoice::Engineering {
                 rung: default_rung,
                 mantissa,
@@ -217,8 +235,16 @@ impl DimensionLadder {
 }
 
 /// Split `magnitude` into `(mantissa, exponent)` with `exponent` a multiple of
-/// three and `1 ≤ |mantissa| < band_hi` — PRD display-unit-preference §5c's
-/// powers-of-three engineering form.
+/// three and `|mantissa|` in `[ENGINEERING_BAND_LO, ENGINEERING_BAND_HI)` —
+/// PRD display-unit-preference §5c's powers-of-three engineering form.
+///
+/// The band is **not** a parameter, because it is not a free choice: an
+/// exponent constrained to multiples of three can only ever move a mantissa by
+/// three decades at a time, so `[1, 1000)` is the only band a powers-of-three
+/// split can settle in. Asking this function for, say, `[1, 100)` would be
+/// unsatisfiable for any magnitude in `[100, 1000)` — the correction loop below
+/// would step past it in both directions and exhaust. `auto_scaled` asserts its
+/// ladder's band is this one before calling.
 ///
 /// The exponent is *seeded* from `log10` and then corrected in a bounded loop
 /// rather than trusted directly: `log10` of an exact power of ten can land a
@@ -236,7 +262,7 @@ impl DimensionLadder {
 /// step direction must use the same comparator: deciding "settled?" at display
 /// precision while stepping on the raw `>=` would oscillate a mantissa that
 /// sits between the two thresholds until the correction cap gave up.
-fn engineering_parts(magnitude: f64, band_hi: f64) -> Option<(f64, i32)> {
+fn engineering_parts(magnitude: f64) -> Option<(f64, i32)> {
     if !magnitude.is_finite() || magnitude == 0.0 {
         return None;
     }
@@ -254,9 +280,9 @@ fn engineering_parts(magnitude: f64, band_hi: f64) -> Option<(f64, i32)> {
     const MAX_CORRECTIONS: u32 = 8;
     let mut corrections = 0;
     while mantissa.is_finite() && mantissa != 0.0 && corrections < MAX_CORRECTIONS {
-        if at_or_above(mantissa, band_hi) {
+        if at_or_above(mantissa, ENGINEERING_BAND_HI) {
             exponent += 3;
-        } else if !at_or_above(mantissa, 1.0) {
+        } else if !at_or_above(mantissa, ENGINEERING_BAND_LO) {
             exponent -= 3;
         } else {
             // Settling at display precision admits a mantissa a few ULPs
@@ -267,8 +293,8 @@ fn engineering_parts(magnitude: f64, band_hi: f64) -> Option<(f64, i32)> {
             // exactly rather than a hair under it. The snap is bounded by
             // `BAND_EDGE_EPS` by construction, so it cannot move the value by
             // more than half a display ULP.
-            if mantissa.abs() < 1.0 {
-                mantissa = mantissa.signum();
+            if mantissa.abs() < ENGINEERING_BAND_LO {
+                mantissa = mantissa.signum() * ENGINEERING_BAND_LO;
             }
             return Some((mantissa, exponent));
         }
@@ -296,6 +322,18 @@ fn engineering_parts(magnitude: f64, band_hi: f64) -> Option<(f64, i32)> {
 /// `resolve_display_none_honours_section5e_across_the_whole_registry`, which
 /// parses the rendered string back and rejects any out-of-band magnitude.
 const BAND_EDGE_EPS: f64 = 5e-13;
+
+/// Lower edge of the mantissa band [`engineering_parts`] normalizes into.
+///
+/// Fixed rather than read off the ladder — see [`engineering_parts`] for why a
+/// powers-of-three exponent leaves no choice here. Kept as a named constant
+/// (not a bare `1.0`) so the two edges of §5c's convention are stated in one
+/// place and `auto_scaled`'s `debug_assert!` can name them.
+const ENGINEERING_BAND_LO: f64 = 1.0;
+
+/// Upper edge of [`ENGINEERING_BAND_LO`]'s band — three decades up, which is
+/// exactly one step of a multiple-of-three exponent.
+const ENGINEERING_BAND_HI: f64 = 1000.0;
 
 /// Is `|magnitude|` at or above the band edge `edge`, compared at display
 /// precision ([`BAND_EDGE_EPS`])?
