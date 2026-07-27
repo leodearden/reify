@@ -78,7 +78,23 @@
 # Mtime (D5):
 #   --fresh-checkout: bulk-stamp sources to 2020-01-01 (find, pruning target/ & .git/)
 #                     then touch delta (--touch paths + git diff --name-only <base_commit>) to now.
+#                     No base resolved from any of the three tiers → nothing is
+#                     delta-touched; warns, since every tracked source then keeps
+#                     the 2020-01-01 stamp.
 #   --reset-in-place: no bulk stamp (git clean -xfd -e target already moved changed mtimes).
+#
+# Build-script freshness references (§9.5 inv.12, task 5630):
+#   Cargo's RerunIfChanged fingerprint uses target/**/build/<pkg>-<hash>/output as
+#   its staleness reference and reruns a build script only when a watched source is
+#   STRICTLY NEWER than it. So no step here may leave an `output` at or after a
+#   delta-touched source's mtime — that silently suppresses the rerun and links the
+#   base's stale compiled artifact (a FALSE GREEN, not a build failure).
+#   - The links-metadata/OUT_DIR relocation sweep PRESERVES each rewritten file's
+#     mtime across its `sed -i` (rewriting a baked path is a content correction,
+#     not evidence the build script ran).
+#   - `_assert_delta_newer_than_build_outputs` enforces the ordering fail-closed at
+#     the end of --fresh-checkout: a violation aborts the seed, leaving stdout empty
+#     so the caller falls back to a cold rebuild.
 
 set -euo pipefail
 
