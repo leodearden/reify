@@ -131,6 +131,131 @@ _wait_for_reader_lock() {
     return 1
 }
 
+# _hold_lane_lock <mount> <lane>
+# Marks <lane> LIVE: creates <mount>/<lane>.lock, backgrounds a consumer that
+# takes the EXCLUSIVE flock, touches its READY marker and then parks, and
+# blocks until _wait_for_reader_lock observes that marker -- so the flock is
+# causally guaranteed held at the caller's next statement (technique R,
+# docs/prds/infra-test-wallclock-deflake.md; never a fixed `sleep`).
+#
+# Publishes the background pid in the GLOBAL `LANE_LOCK_PID` rather than on
+# stdout deliberately: a `pid=$(_hold_lane_lock ...)` command substitution
+# would run the body in a subshell, so the `_BGPIDS` registration below would
+# be discarded and the 300s sleeper would outlive the suite's cleanup trap.
+# Callers that need a per-lane handle copy LANE_LOCK_PID immediately.
+LANE_LOCK_PID=""
+_hold_lane_lock() {
+    local mount="$1" lane="$2"
+    local lock="$mount/$lane.lock"
+    local ready="$lock.ready-marker"
+    touch "$lock"
+    ( flock -x 9 && touch "$ready" && sleep 300 ) 9>"$lock" &
+    LANE_LOCK_PID=$!
+    _BGPIDS+=("$LANE_LOCK_PID")
+    _wait_for_reader_lock "$ready" 30
+}
+
+# make_lane_state <mount> <lane> <state> [task_id] [branch]
+# Writes <mount>/.lane-state/<lane>.json in the EXACT byte shape dark-factory's
+# LaneRecord.to_json() emits (orchestrator/src/orchestrator/lane_lifecycle.py:
+# json.dumps(to_dict(), indent=2) -- dataclass field order state/task_id/title/
+# branch/seeded_from_sha/updated_at, unquoted `null` for a None field, and NO
+# trailing newline). Creates the state dir on first use.
+#
+# An omitted/empty task_id or branch is emitted as JSON `null`, not `""` --
+# that is the real producer's shape for an unassigned lane, and it is the
+# fixture the record-vs-branch pin fallback is asserted against.
+#
+# updated_at is a FIXED timestamp, not `date`: no fixture in this suite may
+# depend on wall-clock (DD5); the audit never reads this field.
+make_lane_state() {
+    local mount="$1" lane="$2" state="$3" task_id="${4:-}" branch="${5:-}"
+    local state_dir="$mount/.lane-state"
+    mkdir -p "$state_dir"
+    # Plain `if`, not `[ -n .. ] && ..`: an AND-list whose left side fails
+    # yields a non-zero list status, which `set -e` may treat as a function
+    # failure at the call site. Never worth the subtlety in fixture code.
+    local task_json='null' branch_json='null' title_json='null'
+    if [ -n "$task_id" ]; then
+        task_json="\"$task_id\""
+        title_json="\"lane fixture task $task_id\""
+    fi
+    if [ -n "$branch" ]; then
+        branch_json="\"$branch\""
+    fi
+    printf '{\n  "state": "%s",\n  "task_id": %s,\n  "title": %s,\n  "branch": %s,\n  "seeded_from_sha": null,\n  "updated_at": "2026-07-26T12:43:10.704531+00:00"\n}' \
+        "$state" "$task_json" "$title_json" "$branch_json" \
+        > "$state_dir/$lane.json"
+}
+
+# make_lane_state_raw <mount> <lane> <text>
+# Writes arbitrary bytes to <mount>/.lane-state/<lane>.json -- the corrupt- and
+# compact-record cases, which by construction cannot go through make_lane_state.
+make_lane_state_raw() {
+    local mount="$1" lane="$2" text="$3"
+    local state_dir="$mount/.lane-state"
+    mkdir -p "$state_dir"
+    printf '%s' "$text" > "$state_dir/$lane.json"
+}
+
+# ── summary-line readers (shared: first used in Block L, again in N/O/P) ──────
+# _report_field <audit-stdout> <line-prefix> <key>
+# Prints the integer value of <key> on the <line-prefix> summary line, or
+# NOTHING when the field is absent. Deliberately does not default to 0: a
+# missing field must read as missing, so an assertion can never pass against a
+# field the script does not actually emit.
+_report_field() {
+    local out="$1" prefix="$2" key="$3"
+    printf '%s\n' "$out" | grep "^${prefix} " | tr ' ' '\n' \
+        | sed -n -E "s/^${key}=([0-9]+)$/\1/p" || true
+    return 0
+}
+
+# _headroom_field <audit-stdout> <key> — the HEADROOM line's <key>.
+_headroom_field() { _report_field "$1" HEADROOM "$2"; }
+
+# _pinned_field <audit-stdout> <key> — the PINNED breakdown line's <key>.
+_pinned_field() { _report_field "$1" PINNED "$2"; }
+
+# _sum_holds <total> <part>...
+# True iff every argument is a non-empty integer AND <total> equals the sum of
+# the parts. An ABSENT field fails (empty is NOT 0): a summing identity must be
+# proven against fields that actually exist, or it passes vacuously against a
+# report that never emitted them.
+_sum_holds() {
+    local total="$1"; shift
+    local v sum=0
+    for v in "$total" "$@"; do
+        case "$v" in
+            ''|*[!0-9]*) return 1 ;;
+        esac
+    done
+    for v in "$@"; do
+        sum=$(( sum + v ))
+    done
+    [ "$total" -eq "$sum" ]
+}
+
+# _partition_holds <resident> <live> <pinned> <quarantined> <free>
+_partition_holds() { _sum_holds "$@"; }
+
+# _strict_max <candidate> <other>...
+# True iff every argument is a non-empty integer AND <candidate> is STRICTLY
+# greater than each of the others. Absent fields fail, for _sum_holds' reason.
+_strict_max() {
+    local cand="$1"; shift
+    local v
+    for v in "$cand" "$@"; do
+        case "$v" in
+            ''|*[!0-9]*) return 1 ;;
+        esac
+    done
+    for v in "$@"; do
+        [ "$cand" -gt "$v" ] || return 1
+    done
+    return 0
+}
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block B — ASSIGNED/FREE probe + LIVE + headroom counts
 # ──────────────────────────────────────────────────────────────────────────────
@@ -144,12 +269,8 @@ _TMPDIRS+=("$B_MOUNT")
 # Causal READY-marker handshake instead of a fixed sleep (de-flake convention,
 # tests/infra/test_warm_lane_gc.sh Block I6 precedent).
 make_lane "$B_MOUNT/_lane-live"
-touch "$B_MOUNT/_lane-live.lock"
-B_READY="$B_MOUNT/_lane-live.lock.ready-marker"
-( flock -x 9 && touch "$B_READY" && sleep 300 ) 9>"$B_MOUNT/_lane-live.lock" &
-B_LOCK_PID=$!
-_BGPIDS+=("$B_LOCK_PID")
-_wait_for_reader_lock "$B_READY" 30
+_hold_lane_lock "$B_MOUNT" "_lane-live"
+B_LOCK_PID="$LANE_LOCK_PID"
 
 # _lane-free: unheld, pre-created lock file (FREE).
 make_lane "$B_MOUNT/_lane-free"
@@ -158,16 +279,16 @@ touch "$B_MOUNT/_lane-free.lock"
 run_helper --mount "$B_MOUNT"
 
 assert "B1: exit 0" test "$RC" -eq 0
-assert "B2: _lane-live row shows ASSIGNED" \
-    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-live .*assigned=ASSIGNED"' _ "$OUT"
+assert "B2: _lane-live row shows live=LIVE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-live .*live=LIVE"' _ "$OUT"
 assert "B3: _lane-live classification LIVE" \
     bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-live .*classification=LIVE"' _ "$OUT"
-assert "B4: _lane-free row shows FREE" \
-    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-free .*assigned=FREE"' _ "$OUT"
+assert "B4: _lane-free row shows live=IDLE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-free .*live=IDLE"' _ "$OUT"
 assert "B5: HEADROOM line shows resident=2" \
     bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "resident=2"' _ "$OUT"
-assert "B6: HEADROOM line shows assigned=1" \
-    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "assigned=1"' _ "$OUT"
+assert "B6: HEADROOM line shows live=1" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -qE "(^| )live=1( |$)"' _ "$OUT"
 assert "B7: HEADROOM line shows free=1" \
     bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "free=1"' _ "$OUT"
 
@@ -468,8 +589,9 @@ import json, sys
 data = json.load(sys.stdin)
 lanes = data["lanes"] if isinstance(data, dict) and "lanes" in data else data
 assert isinstance(lanes, list) and len(lanes) == 2, lanes
-expected_keys = {"lane", "role", "assigned", "branch", "status", "recoverable",
-                  "dirty", "divergent_gib", "age_min", "classification"}
+expected_keys = {"lane", "role", "live", "assigned", "branch", "status",
+                  "recoverable", "dirty", "divergent_gib", "age_min",
+                  "classification"}
 for obj in lanes:
     assert expected_keys.issubset(obj.keys()), obj
 names = {obj["lane"] for obj in lanes}
@@ -519,12 +641,8 @@ printf '900 done\n901 pending\n902 pending\n' > "$I_MAP"
 # (1) _lane-live: a live consumer holds the lane's exclusive flock (causal
 # READY-marker handshake, no fixed sleep) -> ASSIGNED -> LIVE.
 make_lane "$I_MOUNT/_lane-live"
-touch "$I_MOUNT/_lane-live.lock"
-I_READY="$I_MOUNT/_lane-live.lock.ready-marker"
-( flock -x 9 && touch "$I_READY" && sleep 300 ) 9>"$I_MOUNT/_lane-live.lock" &
-I_LOCK_PID=$!
-_BGPIDS+=("$I_LOCK_PID")
-_wait_for_reader_lock "$I_READY" 30
+_hold_lane_lock "$I_MOUNT" "_lane-live"
+I_LOCK_PID="$LANE_LOCK_PID"
 
 # (2) _lane-done: FREE, task/900, oracle=done, ahead-of-main -> RECLAIMABLE
 # (via terminal status).
@@ -566,8 +684,8 @@ assert "I5: _lane-leaked classification LEAKED" \
     bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-leaked .*classification=LEAKED"' _ "$OUT"
 assert "I6: HEADROOM resident=4" \
     bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "resident=4"' _ "$OUT"
-assert "I7: HEADROOM assigned=1" \
-    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "assigned=1"' _ "$OUT"
+assert "I7: HEADROOM live=1" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -qE "(^| )live=1( |$)"' _ "$OUT"
 assert "I8: HEADROOM free=3" \
     bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "free=3"' _ "$OUT"
 assert "I9: HEADROOM reclaimable=2" \
@@ -652,12 +770,8 @@ printf '910 done\n911 pending\n912 pending\n' > "$J_MAP"
 # target/ directory on one lane (none of Block I's fixtures had one), so the
 # content/size/mtime manifest check is exercised for real, not vacuously.
 make_lane "$J_MOUNT/_lane-live"
-touch "$J_MOUNT/_lane-live.lock"
-J_READY="$J_MOUNT/_lane-live.lock.ready-marker"
-( flock -x 9 && touch "$J_READY" && sleep 300 ) 9>"$J_MOUNT/_lane-live.lock" &
-J_LOCK_PID=$!
-_BGPIDS+=("$J_LOCK_PID")
-_wait_for_reader_lock "$J_READY" 30
+_hold_lane_lock "$J_MOUNT" "_lane-live"
+J_LOCK_PID="$LANE_LOCK_PID"
 
 make_lane "$J_MOUNT/_lane-done" "task/910"
 _add_ahead_commit "$J_MOUNT/_lane-done"
@@ -744,6 +858,1034 @@ assert "J4: _lane-live's flock is still held by the background job after the run
 
 # Release the live-flock lock.
 kill "$J_LOCK_PID" 2>/dev/null || true
+_BGPIDS=()  # clear so cleanup doesn't double-kill
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block K — the flock probe is a LIVENESS column (live=LIVE|IDLE), not an
+#           assignment one
+# ──────────────────────────────────────────────────────────────────────────────
+# The <lane>.lock flock probe measures exactly one thing: whether a consumer
+# PROCESS is running and holding the lane's exclusive lock right now. Reporting
+# that under the key `assigned=` conflated liveness with the orchestrator's
+# assignment state, which is the category error behind both pool misreads this
+# task exists to fix. Here the probe's own column is asserted under its honest
+# name; `assigned=` is re-sourced from the real assignment record in Block L.
+echo ""
+echo "--- Block K: flock probe reports liveness (live=LIVE|IDLE) ---"
+
+K_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-k-XXXXXX)"
+_TMPDIRS+=("$K_MOUNT")
+
+# _lane-live: a live consumer holds the exclusive flock (causal handshake).
+make_lane "$K_MOUNT/_lane-live"
+_hold_lane_lock "$K_MOUNT" "_lane-live"
+K_LOCK_PID="$LANE_LOCK_PID"
+
+# _lane-idle: an unheld, pre-created lock file -- no consumer process.
+make_lane "$K_MOUNT/_lane-idle"
+touch "$K_MOUNT/_lane-idle.lock"
+
+run_helper --mount "$K_MOUNT"
+
+assert "K1: exit 0" test "$RC" -eq 0
+assert "K2: _lane-live row reports live=LIVE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-live .*live=LIVE"' _ "$OUT"
+assert "K3: _lane-idle row reports live=IDLE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-idle .*live=IDLE"' _ "$OUT"
+assert "K4: HEADROOM reports live=1" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -qE "(^| )live=1( |$)"' _ "$OUT"
+# The retired value must be GONE, not silently repurposed: any unknown consumer
+# still grepping `assigned=FREE` now matches nothing (fail-loud) rather than
+# matching a string whose meaning changed underneath it.
+assert "K5: the retired value 'assigned=FREE' appears nowhere in the output" \
+    bash -c '! printf "%s\n" "$1" | grep -q "assigned=FREE"' _ "$OUT"
+
+K_PY_LIVE="$(mktemp /tmp/test-warm-lane-audit-k-live-XXXXXX.py)"
+_TMPDIRS+=("$K_PY_LIVE")
+cat > "$K_PY_LIVE" << 'PYEOF'
+import json, sys
+data = json.load(sys.stdin)
+by_lane = {o["lane"]: o for o in data["lanes"]}
+assert set(by_lane) == {"_lane-live", "_lane-idle"}, sorted(by_lane)
+for name, obj in by_lane.items():
+    assert "live" in obj, f"{name} has no 'live' key: {sorted(obj)}"
+assert by_lane["_lane-live"]["live"] == "LIVE", by_lane["_lane-live"]
+assert by_lane["_lane-idle"]["live"] == "IDLE", by_lane["_lane-idle"]
+PYEOF
+
+run_helper --mount "$K_MOUNT" --format json
+assert "K6a: exit 0 (json)" test "$RC" -eq 0
+assert "K6b: json lane objects carry a 'live' key with the same LIVE/IDLE values" \
+    bash -c 'printf "%s" "$1" | python3 "$2"' _ "$OUT" "$K_PY_LIVE"
+
+# Release the live-flock lock.
+kill "$K_LOCK_PID" 2>/dev/null || true
+_BGPIDS=()  # clear so cleanup doesn't double-kill
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block L — `assigned=` is sourced from the orchestrator's OWN assignment
+#           record at <state-dir>/<lane>.json
+# ──────────────────────────────────────────────────────────────────────────────
+# Liveness (Block K) cannot answer "has the pool reserved this lane?". Only the
+# orchestrator's durable record can, so `assigned=` reads it directly. Every
+# LaneState the producer can write is pinned here to its reported column, and
+# every way the read can fail degrades to UNKNOWN with exit 0 -- the read is
+# advisory, so it must never abort and must never invent an assignment.
+echo ""
+echo "--- Block L: assigned= from the .lane-state record ---"
+
+L_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-l-XXXXXX)"
+_TMPDIRS+=("$L_MOUNT")
+
+# lane:raw-record-state:expected-column:expected-unknown-cause. The raw states
+# are exactly dark-factory's LaneState enum (lane_lifecycle.py: seed/registered/
+# assigned/in_use/released/quarantined) plus the three unresolvable cases. The
+# cause field is `-` for a resolvable record, and otherwise the A5 cause the
+# stderr warning must name -- the three UNKNOWN lanes are UNKNOWN for three
+# DIFFERENT reasons, and a warning that cannot tell them apart sends triage
+# after a missing file that is sitting right there.
+#
+# The cause is LAST because `unrecognized-state:wat` itself contains the
+# delimiter: `read` assigns the unsplit remainder to its final variable.
+L_CASES=(
+    "_lane-assigned:assigned:ASSIGNED:-"
+    "_lane-inuse:in_use:ASSIGNED:-"
+    "_lane-released:released:RELEASED:-"
+    "_lane-seed:seed:RELEASED:-"
+    "_lane-registered:registered:RELEASED:-"
+    "_lane-quarantined:quarantined:QUARANTINED:-"
+    "_lane-norecord::UNKNOWN:no-readable-record"
+    "_lane-corrupt:CORRUPT:UNKNOWN:unparseable-record"
+    "_lane-badstate:wat:UNKNOWN:unrecognized-state:wat"
+    "_lane-compact:COMPACT:ASSIGNED:-"
+)
+
+for l_case in "${L_CASES[@]}"; do
+    IFS=':' read -r l_lane l_state l_expected l_cause <<< "$l_case"
+    make_lane "$L_MOUNT/$l_lane"
+    case "$l_state" in
+        "")        : ;;  # no record at all
+        CORRUPT)   make_lane_state_raw "$L_MOUNT" "$l_lane" 'not json{' ;;
+        # A compact, single-line record: the reader must not depend on the
+        # producer's current indent=2 pretty-printing.
+        COMPACT)   make_lane_state_raw "$L_MOUNT" "$l_lane" \
+                       '{"state":"assigned","task_id":"7001","title":null,"branch":null,"seeded_from_sha":null,"updated_at":"2026-07-26T12:43:10.704531+00:00"}' ;;
+        *)         make_lane_state "$L_MOUNT" "$l_lane" "$l_state" ;;
+    esac
+done
+
+# Every aggregate below is DERIVED from L_CASES, never typed: no lane in this
+# block is live, so the four-way partition collapses onto the assigned column
+# alone (live=0, ASSIGNED=>pinned, QUARANTINED=>quarantined, the rest=>free).
+# That makes `free` the direct proof of A5's conservative-accounting claim --
+# an UNKNOWN lane is counted free -- for all three unresolvable causes, not
+# just the no-record one.
+l_exp_live=0
+l_exp_pinned=0
+l_exp_quarantined=0
+l_exp_free=0
+l_exp_state_unknown=0
+for l_case in "${L_CASES[@]}"; do
+    IFS=':' read -r l_lane l_state l_expected l_cause <<< "$l_case"
+    case "$l_expected" in
+        ASSIGNED)    l_exp_pinned=$(( l_exp_pinned + 1 )) ;;
+        QUARANTINED) l_exp_quarantined=$(( l_exp_quarantined + 1 )) ;;
+        RELEASED)    l_exp_free=$(( l_exp_free + 1 )) ;;
+        UNKNOWN)     l_exp_free=$(( l_exp_free + 1 ))
+                     l_exp_state_unknown=$(( l_exp_state_unknown + 1 )) ;;
+    esac
+done
+l_exp_resident="${#L_CASES[@]}"
+
+run_helper --mount "$L_MOUNT"
+
+assert "L1: exit 0 over a pool spanning every LaneState + every unresolvable record" \
+    test "$RC" -eq 0
+
+for l_case in "${L_CASES[@]}"; do
+    IFS=':' read -r l_lane l_state l_expected l_cause <<< "$l_case"
+    assert "L2: $l_lane reports assigned=$l_expected" \
+        bash -c 'printf "%s\n" "$1" | grep -q "lane=$2 .*assigned=$3"' _ "$OUT" "$l_lane" "$l_expected"
+done
+
+# The state dir is dot-prefixed, so the resident glob must already skip it --
+# asserted rather than assumed, since a counted .lane-state would inflate every
+# headroom figure. resident is DERIVED from the fixture array, never typed.
+assert "L3: HEADROOM resident==seeded lane count (.lane-state is not a resident)" \
+    bash -c '[ "$1" = "$2" ]' _ "$(_headroom_field "$OUT" resident)" "$l_exp_resident"
+
+# L4: the pool-wide figures, so each of the three unresolvable causes is proven
+# at the HEADROOM cross-cut too -- not only at its own row's column. Without
+# `state_unknown` here, a reader that resolved the column correctly but forgot
+# to COUNT the corrupt/unrecognized lanes would pass every per-lane assertion.
+L_FIELDS=(
+    "live:$l_exp_live"
+    "pinned:$l_exp_pinned"
+    "quarantined:$l_exp_quarantined"
+    "free:$l_exp_free"
+    "state_unknown:$l_exp_state_unknown"
+)
+for l_f in "${L_FIELDS[@]}"; do
+    l_key="${l_f%%:*}"
+    l_want="${l_f##*:}"
+    assert "L4: HEADROOM $l_key=$l_want (derived from L_CASES)" \
+        bash -c '[ "$1" = "$2" ]' _ "$(_headroom_field "$OUT" "$l_key")" "$l_want"
+done
+assert "L5: partition identity holds across every LaneState + unresolvable record" \
+    _partition_holds \
+    "$(_headroom_field "$OUT" resident)" \
+    "$(_headroom_field "$OUT" live)" \
+    "$(_headroom_field "$OUT" pinned)" \
+    "$(_headroom_field "$OUT" quarantined)" \
+    "$(_headroom_field "$OUT" free)"
+
+# L6: A5's stderr warning must name the lane AND the cause that actually fired.
+# Asserting the DISTINCT text per lane is what keeps the three causes separable:
+# a single hardcoded message satisfies "a warning was emitted" while telling an
+# operator to go look for a file that is present and readable.
+for l_case in "${L_CASES[@]}"; do
+    IFS=':' read -r l_lane l_state l_expected l_cause <<< "$l_case"
+    [ "$l_expected" = "UNKNOWN" ] || continue
+    assert "L6: stderr names $l_lane with cause ($l_cause)" \
+        bash -c 'printf "%s\n" "$1" | grep -qF "lane=$2: assignment state unknown ($3)"' \
+        _ "$ERR_OUT" "$l_lane" "$l_cause"
+done
+
+# L7: `pin` is gated on assigned==ASSIGNED, so the QUARANTINED and UNKNOWN arms
+# of that gate must report `-` just as the LIVE (M5) and RELEASED (M6) arms do.
+# A gate that leaked a pin for a withheld or unresolvable lane would name a
+# holder for a lane nothing has reserved.
+for l_case in "${L_CASES[@]}"; do
+    IFS=':' read -r l_lane l_state l_expected l_cause <<< "$l_case"
+    case "$l_expected" in
+        QUARANTINED|UNKNOWN) : ;;
+        *) continue ;;
+    esac
+    assert "L7: $l_lane is $l_expected, not ASSIGNED -- not pinned (pin=-)" \
+        bash -c 'printf "%s\n" "$1" | grep -qE "lane=$2 .*pin=-( |\$)"' _ "$OUT" "$l_lane"
+done
+
+# L8: the JSON emitter's own `assigned` VALUES. The table row and the JSON
+# object are two separate interpolations, so a JSON path that hardcoded the
+# column or interpolated the wrong variable would satisfy every table-side
+# assertion above plus H6's key-set check. `assigned` is the column this whole
+# change exists to add; its JSON values must be pinned, not merely present.
+L_PY_ASSIGNED="$(mktemp /tmp/test-warm-lane-audit-l-assigned-XXXXXX.py)"
+_TMPDIRS+=("$L_PY_ASSIGNED")
+cat > "$L_PY_ASSIGNED" << 'PYEOF'
+import json, sys
+data = json.load(sys.stdin)
+by_lane = {o["lane"]: o for o in data["lanes"]}
+want = dict(kv.split("=", 1) for kv in sys.argv[1:])
+assert set(by_lane) == set(want), (sorted(by_lane), sorted(want))
+for lane, expected in want.items():
+    got = by_lane[lane].get("assigned")
+    assert got == expected, f"{lane}: assigned == {got!r}, want {expected!r}"
+# Not every lane may carry the same value -- a JSON path that hardcoded one
+# constant would otherwise satisfy a fixture that happened to be uniform.
+assert len(set(want.values())) > 1, want
+PYEOF
+
+L_PY_ARGS=()
+for l_case in "${L_CASES[@]}"; do
+    IFS=':' read -r l_lane l_state l_expected l_cause <<< "$l_case"
+    L_PY_ARGS+=("$l_lane=$l_expected")
+done
+run_helper --mount "$L_MOUNT" --format json
+assert "L8a: exit 0 (json)" test "$RC" -eq 0
+assert "L8b: json lane objects carry the same assigned= values as the table rows" \
+    bash -c 'printf "%s" "$1" | python3 "$2" "${@:3}"' _ "$OUT" "$L_PY_ASSIGNED" "${L_PY_ARGS[@]}"
+
+# ── L9: a present-but-UNREADABLE record is the third way _lane_record's
+# readability guard can fire, and the only one no other fixture reaches.
+# Skipped under root, for whom mode 000 is not a barrier.
+if [ "$(id -u)" -ne 0 ]; then
+    L9_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-l9-XXXXXX)"
+    _TMPDIRS+=("$L9_MOUNT")
+    make_lane "$L9_MOUNT/_lane-unreadable"
+    make_lane_state "$L9_MOUNT" "_lane-unreadable" "assigned" "7200"
+    chmod 000 "$L9_MOUNT/.lane-state/_lane-unreadable.json"
+    run_helper --mount "$L9_MOUNT"
+    # Restore before any assertion can abort the suite, so cleanup's rm -rf works.
+    chmod 644 "$L9_MOUNT/.lane-state/_lane-unreadable.json"
+    assert "L9a: exit 0 with an unreadable record (degrades, never aborts)" test "$RC" -eq 0
+    assert "L9b: an unreadable record reports assigned=UNKNOWN (never the state inside it)" \
+        bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-unreadable .*assigned=UNKNOWN"' _ "$OUT"
+    assert "L9c: stderr names the unreadable record's cause" \
+        bash -c 'printf "%s\n" "$1" | grep -qF "lane=_lane-unreadable: assignment state unknown (no-readable-record)"' \
+        _ "$ERR_OUT"
+else
+    echo "  SKIP: L9 (running as root — mode 000 does not make a file unreadable)"
+fi
+
+# ── L10: with NO status oracle at all, a pinned lane's holder is unresolvable.
+# That is _task_status_raw's `unset STATUS_CMD` early return, a DIFFERENT branch
+# from M9's failing-oracle path, and it must reach the same pin=unknown sentinel
+# rather than a blank column or an aborted run.
+REIFY_LANE_LEAK_STATUS_CMD= run_helper --mount "$L_MOUNT"
+assert "L10a: exit 0 with no status oracle configured at all" test "$RC" -eq 0
+assert "L10b: a pinned lane with no oracle reports pin=unknown (never blank)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-assigned .*pin=unknown( |\$)"' _ "$OUT"
+
+# ── L11: REIFY_WARM_LANE_AUDIT_STATE_DIR override, pointed OUTSIDE the mount ─
+# Run twice against the SAME lane: once bare (no record findable -> UNKNOWN),
+# once with the override (record found -> ASSIGNED). The pair proves the
+# override is what resolved the state, not a coincidence of the fixture.
+L11_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-l11-XXXXXX)"
+_TMPDIRS+=("$L11_MOUNT")
+L11_STATE="$(mktemp -d /tmp/test-warm-lane-audit-l11-state-XXXXXX)"
+_TMPDIRS+=("$L11_STATE")
+make_lane "$L11_MOUNT/_lane-ext"
+# make_lane_state writes <arg>/.lane-state/<lane>.json, so pass the parent and
+# point the override at the .lane-state dir it creates.
+make_lane_state "$L11_STATE" "_lane-ext" "assigned" "7100" "task/7100"
+
+run_helper --mount "$L11_MOUNT"
+assert "L11a: without the override the out-of-mount record is not found (assigned=UNKNOWN)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-ext .*assigned=UNKNOWN"' _ "$OUT"
+
+REIFY_WARM_LANE_AUDIT_STATE_DIR="$L11_STATE/.lane-state" run_helper --mount "$L11_MOUNT"
+assert "L11b: exit 0 under REIFY_WARM_LANE_AUDIT_STATE_DIR" test "$RC" -eq 0
+assert "L11c: REIFY_WARM_LANE_AUDIT_STATE_DIR outside the mount is honoured (assigned=ASSIGNED)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-ext .*assigned=ASSIGNED"' _ "$OUT"
+
+# ── L12: a state dir that is absent ENTIRELY warns ONCE for the directory ─────
+# The default shape of every pool until dark-factory's LaneLifecycle has written
+# its first record: every resident resolves the SAME cause, so a per-lane line
+# for each is N copies of "the feature is not deployed here" -- and it drowns
+# the per-lane naming, whose whole value is saying "THIS lane, unlike its
+# neighbours". The count is what makes this a real assertion: one warning for a
+# multi-lane pool cannot be satisfied by the retired per-lane loop.
+L12_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-l12-XXXXXX)"
+_TMPDIRS+=("$L12_MOUNT")
+L12_LANES=(_lane-l12-a _lane-l12-b _lane-l12-c)
+for l12_lane in "${L12_LANES[@]}"; do
+    make_lane "$L12_MOUNT/$l12_lane"
+done
+l12_exp_resident="${#L12_LANES[@]}"
+
+run_helper --mount "$L12_MOUNT"
+assert "L12a: exit 0 with no state dir at all" test "$RC" -eq 0
+assert "L12b: every lane still reports state_unknown (accounting stays PER LANE)" \
+    bash -c '[ "$1" = "$2" ]' _ "$(_headroom_field "$OUT" state_unknown)" "$l12_exp_resident"
+assert "L12c: exactly ONE warning names the absent dir (not one per lane)" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -cF "state dir $2 does not exist")" = "1" ]' \
+    _ "$ERR_OUT" "$L12_MOUNT/.lane-state"
+# The PER-LANE form is `lane=<name>: assignment state unknown (...)`. The
+# dir-level line deliberately reuses the "assignment state unknown" phrase (an
+# operator greps the concept, and must hit something in BOTH shapes), so the
+# discriminator here is the `lane=` prefix, not the phrase.
+assert "L12d: no per-lane warning fires when the whole dir is missing" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "lane=[^ ]+: assignment state unknown"' _ "$ERR_OUT"
+# The converse, so L12d cannot be satisfied by suppressing the per-lane warning
+# outright: with the dir PRESENT, a single missing record still names its lane.
+# (L6 asserts the cause text; this asserts the dir-level line stays absent.)
+make_lane_state "$L12_MOUNT" "${L12_LANES[0]}" "assigned" "7300"
+run_helper --mount "$L12_MOUNT"
+assert "L12e: with the dir present, the missing records warn PER LANE again" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -cE "lane=[^ ]+: assignment state unknown")" = "$2" ]' \
+    _ "$ERR_OUT" "$(( l12_exp_resident - 1 ))"
+assert "L12f: ...and the dir-level warning is not emitted when the dir exists" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "state dir $2 does not exist"' \
+    _ "$ERR_OUT" "$L12_MOUNT/.lane-state"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block M — `pin=`: WHO is holding a reserved-but-idle lane, and in what state
+# ──────────────────────────────────────────────────────────────────────────────
+# A lane that is ASSIGNED but not LIVE is reserved by a task that is not
+# running. `pin=` names that task's RAW backing status, because that raw value
+# is exactly what an operator triaging one specific lane needs: `in-progress`
+# with no live consumer means a crashed agent, `done` means a terminal task
+# still holding a reservation, `pending` means work that never started. The
+# fixed bucketing exists only in the aggregate rollup (Block O), never here.
+echo ""
+echo "--- Block M: pin= (raw backing status of a reserved-but-idle lane) ---"
+
+M_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-m-XXXXXX)"
+_TMPDIRS+=("$M_MOUNT")
+M_MAP="$(mktemp /tmp/test-warm-lane-audit-m-map-XXXXXX)"
+_TMPDIRS+=("$M_MAP")
+printf '8001 pending\n8002 infra-hold\n8003 blocked\n8004 in-progress\n8005 done\n8006 done\n8007 pending\n8008 blocked\n8009 pending\n8010 pending\n' > "$M_MAP"
+
+# Raw-fidelity cases: idle + ASSIGNED, pin id carried by the RECORD. These
+# lanes stay on main (no task/ branch), so the record is the ONLY possible
+# source of the id -- the branch cannot silently supply it.
+M_RAW_CASES=(
+    "_lane-pin-pending:8001:pending"
+    "_lane-pin-infrahold:8002:infra-hold"
+    "_lane-pin-blocked:8003:blocked"
+    "_lane-pin-inprogress:8004:in-progress"
+    "_lane-pin-done:8005:done"
+)
+for m_case in "${M_RAW_CASES[@]}"; do
+    m_lane="${m_case%%:*}"
+    m_rest="${m_case#*:}"
+    m_id="${m_rest%%:*}"
+    make_lane "$M_MOUNT/$m_lane"
+    make_lane_state "$M_MOUNT" "$m_lane" "assigned" "$m_id"
+done
+
+# Record-vs-branch disagreement: branch says task/8006 (done), record says
+# 8007 (pending). The RECORD is the authoritative pin holder -- a lane's
+# branch name can be stale, the reservation record cannot.
+make_lane "$M_MOUNT/_lane-pin-mismatch" "task/8006"
+make_lane_state "$M_MOUNT" "_lane-pin-mismatch" "assigned" "8007" "task/8007"
+
+# Record with an explicitly null task_id -> fall back to the branch-derived id.
+make_lane "$M_MOUNT/_lane-pin-nullid" "task/8008"
+make_lane_state "$M_MOUNT" "_lane-pin-nullid" "assigned"
+
+# A LIVE lane is not pinned (someone IS using it) -> pin=-
+make_lane "$M_MOUNT/_lane-pin-live"
+make_lane_state "$M_MOUNT" "_lane-pin-live" "assigned" "8009"
+_hold_lane_lock "$M_MOUNT" "_lane-pin-live"
+M_LOCK_PID="$LANE_LOCK_PID"
+
+# A RELEASED lane is not pinned (nothing reserves it) -> pin=-
+make_lane "$M_MOUNT/_lane-pin-released"
+make_lane_state "$M_MOUNT" "_lane-pin-released" "released" "8010"
+
+ORACLE_MAP="$M_MAP" run_helper --mount "$M_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+
+assert "M1: exit 0" test "$RC" -eq 0
+
+for m_case in "${M_RAW_CASES[@]}"; do
+    m_lane="${m_case%%:*}"
+    m_expected="${m_case##*:}"
+    assert "M2: $m_lane reports the RAW status pin=$m_expected (no per-lane bucketing)" \
+        bash -c 'printf "%s\n" "$1" | grep -qE "lane=$2 .*pin=$3( |\$)"' _ "$OUT" "$m_lane" "$m_expected"
+done
+
+assert "M3: record task_id wins over a disagreeing branch id (pin=pending, not done)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-pin-mismatch .*pin=pending( |\$)"' _ "$OUT"
+assert "M4: a null record task_id falls back to the branch-derived id (pin=blocked)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-pin-nullid .*pin=blocked( |\$)"' _ "$OUT"
+assert "M5: a LIVE lane is not pinned (pin=-)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-pin-live .*pin=-( |\$)"' _ "$OUT"
+assert "M6: a RELEASED lane is not pinned (pin=-)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-pin-released .*pin=-( |\$)"' _ "$OUT"
+
+M_PY_PIN="$(mktemp /tmp/test-warm-lane-audit-m-pin-XXXXXX.py)"
+_TMPDIRS+=("$M_PY_PIN")
+cat > "$M_PY_PIN" << 'PYEOF'
+import json, sys
+data = json.load(sys.stdin)
+by_lane = {o["lane"]: o for o in data["lanes"]}
+for name, obj in by_lane.items():
+    assert "pin" in obj, f"{name} has no 'pin' key: {sorted(obj)}"
+assert by_lane["_lane-pin-inprogress"]["pin"] == "in-progress", by_lane["_lane-pin-inprogress"]
+assert by_lane["_lane-pin-live"]["pin"] == "-", by_lane["_lane-pin-live"]
+PYEOF
+
+ORACLE_MAP="$M_MAP" run_helper --mount "$M_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh" --format json
+assert "M7: json lane objects carry a 'pin' key with the same raw values" \
+    bash -c 'printf "%s" "$1" | python3 "$2"' _ "$OUT" "$M_PY_PIN"
+
+# A failing oracle must not abort and must not invent a status: a pinned lane
+# whose holder cannot be resolved reports pin=unknown (A3's treatment, applied
+# to the pin column).
+ORACLE_MAP="$M_MAP" run_helper --mount "$M_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle-fail.sh"
+assert "M8: exit 0 under a failing status oracle" test "$RC" -eq 0
+assert "M9: an unresolvable pin holder reports pin=unknown (never invented)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-pin-pending .*pin=unknown( |\$)"' _ "$OUT"
+
+kill "$M_LOCK_PID" 2>/dev/null || true
+_BGPIDS=()  # clear so cleanup doesn't double-kill
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block N — classification=PINNED + the HEADROOM four-way partition
+# ──────────────────────────────────────────────────────────────────────────────
+# A lane the pool has RESERVED but which no consumer process is running against
+# is neither live nor free: it is PINNED, and it is a standing capacity loss.
+# The old single ASSIGNED/FREE column had no way to say that, which is why 53
+# reserved lanes read as free on 2026-07-22. PINNED becomes a first-class
+# classification ranked immediately below LIVE, and the HEADROOM line becomes a
+# genuine PARTITION -- resident = live + pinned + quarantined + free -- so a
+# pinned lane can never again be counted as free.
+echo ""
+echo "--- Block N: classification=PINNED + the HEADROOM partition ---"
+
+N_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-n-XXXXXX)"
+_TMPDIRS+=("$N_MOUNT")
+N_MAP="$(mktemp /tmp/test-warm-lane-audit-n-map-XXXXXX)"
+_TMPDIRS+=("$N_MAP")
+printf '9101 pending\n9102 pending\n9103 done\n9104 pending\n9105 pending\n9106 pending\n9107 pending\n' > "$N_MAP"
+
+# lane : liveness : record state ('' = no record at all) : task id : git shape :
+#        expected assigned column : expected classification
+#
+# `orphan-stale` builds the LEAKED predicate's EXACT shape (non-terminal status
+# + ahead-of-main with no origin => ORPHAN + aged past the default 60-minute
+# knob). Three lanes here are byte-for-byte identical in that respect and differ
+# ONLY in their assignment record -- pinned / quarantined / leaked -- which is
+# what makes "the reserved one reports PINNED, the withheld one QUARANTINED, and
+# only the unreserved one is still LEAKED" a real discrimination rather than a
+# fixture artifact. Dropping the LEAKED control would leave nothing proving the
+# predicate can still fire at all, so the two suppressions would pass vacuously.
+#
+# _lane-n-live-unknown is the LIVE x UNKNOWN partition cell: a live consumer on a
+# lane with no readable record. It is counted `live`, NOT `free`, so a warning
+# that claims a fixed accounting contradicts the HEADROOM line beside it.
+N_CASES=(
+    "_lane-n-live:LIVE:assigned:9101:plain:ASSIGNED:LIVE"
+    "_lane-n-pinned:IDLE:assigned:9102:orphan-stale:ASSIGNED:PINNED"
+    "_lane-n-released:IDLE:released:9103:plain:RELEASED:RECLAIMABLE"
+    "_lane-n-quarantined:IDLE:quarantined:9104:orphan-stale:QUARANTINED:QUARANTINED"
+    "_lane-n-unknown:IDLE::9105:plain:UNKNOWN:RECLAIMABLE"
+    "_lane-n-live-unknown:LIVE::9106:plain:UNKNOWN:LIVE"
+    "_lane-n-leaked:IDLE:released:9107:orphan-stale:RELEASED:LEAKED"
+)
+
+N_LIVE_PIDS=()
+for n_case in "${N_CASES[@]}"; do
+    IFS=':' read -r n_lane n_liveness n_state n_task n_shape n_assigned n_class <<< "$n_case"
+    make_lane "$N_MOUNT/$n_lane" "task/$n_task"
+    if [ "$n_shape" = "orphan-stale" ]; then
+        _add_ahead_commit "$N_MOUNT/$n_lane"
+    fi
+    if [ -n "$n_state" ]; then
+        make_lane_state "$N_MOUNT" "$n_lane" "$n_state" "$n_task" "task/$n_task"
+    fi
+    if [ "$n_liveness" = "LIVE" ]; then
+        _hold_lane_lock "$N_MOUNT" "$n_lane"
+        N_LIVE_PIDS+=("$LANE_LOCK_PID")
+    else
+        touch "$N_MOUNT/$n_lane.lock"
+    fi
+    # Backdate LAST for this lane (mirrors Block F/I): every git and lock
+    # mutation above is done, and nothing a later iteration does touches this
+    # lane's directory (records live in <mount>/.lane-state, locks in
+    # <mount>/<lane>.lock -- neither is inside the lane dir).
+    if [ "$n_shape" = "orphan-stale" ]; then
+        touch -d '90 minutes ago' "$N_MOUNT/$n_lane"
+    fi
+done
+
+# Every expected count is DERIVED from N_CASES, never typed as a literal: a
+# fixture edit that changes the pool shape must move the expectations with it.
+n_exp_live=0
+n_exp_pinned=0
+n_exp_quarantined=0
+n_exp_free=0
+n_exp_assigned=0
+n_exp_state_unknown=0
+n_exp_leaked=0
+n_exp_reclaimable=0
+n_exp_live_unknown_lanes=()
+n_exp_idle_unknown_lanes=()
+for n_case in "${N_CASES[@]}"; do
+    IFS=':' read -r n_lane n_liveness n_state n_task n_shape n_assigned n_class <<< "$n_case"
+    # The partition is ORDERED and mutually exclusive -- live > pinned >
+    # quarantined > free -- mirroring the classification rank, so the four
+    # buckets sum to resident by construction rather than by coincidence.
+    if [ "$n_liveness" = "LIVE" ]; then
+        n_exp_live=$((n_exp_live + 1))
+    elif [ "$n_assigned" = "ASSIGNED" ]; then
+        n_exp_pinned=$((n_exp_pinned + 1))
+    elif [ "$n_assigned" = "QUARANTINED" ]; then
+        n_exp_quarantined=$((n_exp_quarantined + 1))
+    else
+        n_exp_free=$((n_exp_free + 1))
+    fi
+    # Cross-cuts: independent of the partition, so they may overlap it.
+    if [ "$n_assigned" = "ASSIGNED" ]; then
+        n_exp_assigned=$((n_exp_assigned + 1))
+    fi
+    if [ "$n_assigned" = "UNKNOWN" ]; then
+        n_exp_state_unknown=$((n_exp_state_unknown + 1))
+        # Split by liveness: A5's warning must report the bucket the lane was
+        # ACTUALLY counted in, and the two arms differ (see N5).
+        if [ "$n_liveness" = "LIVE" ]; then
+            n_exp_live_unknown_lanes+=("$n_lane")
+        else
+            n_exp_idle_unknown_lanes+=("$n_lane")
+        fi
+    fi
+    case "$n_class" in
+        LEAKED)      n_exp_leaked=$((n_exp_leaked + 1)) ;;
+        RECLAIMABLE) n_exp_reclaimable=$((n_exp_reclaimable + 1)) ;;
+    esac
+done
+n_exp_resident="${#N_CASES[@]}"
+
+ORACLE_MAP="$N_MAP" run_helper --mount "$N_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+
+assert "N1: exit 0" test "$RC" -eq 0
+
+for n_case in "${N_CASES[@]}"; do
+    IFS=':' read -r n_lane n_liveness n_state n_task n_shape n_assigned n_class <<< "$n_case"
+    assert "N2: $n_lane reports classification=$n_class" \
+        bash -c 'printf "%s\n" "$1" | grep -qE "lane=$2 .*classification=$3( |\$)"' \
+        _ "$OUT" "$n_lane" "$n_class"
+done
+
+# N3 covers both the partition fields and the two cross-cuts, plus `leaked` --
+# whose expected value (1, not 2) is the assertion that a PINNED lane matching
+# the LEAKED predicate is NOT additionally counted as a leak.
+N_FIELDS=(
+    "resident:$n_exp_resident"
+    "live:$n_exp_live"
+    "pinned:$n_exp_pinned"
+    "quarantined:$n_exp_quarantined"
+    "free:$n_exp_free"
+    "assigned:$n_exp_assigned"
+    "state_unknown:$n_exp_state_unknown"
+    "leaked:$n_exp_leaked"
+    "reclaimable:$n_exp_reclaimable"
+)
+for n_f in "${N_FIELDS[@]}"; do
+    n_key="${n_f%%:*}"
+    n_want="${n_f##*:}"
+    n_got="$(_headroom_field "$OUT" "$n_key")"
+    assert "N3: HEADROOM $n_key=$n_want (derived from N_CASES)" \
+        bash -c '[ "$1" = "$2" ]' _ "$n_got" "$n_want"
+done
+
+assert "N4: partition identity resident == live + pinned + quarantined + free" \
+    _partition_holds \
+    "$(_headroom_field "$OUT" resident)" \
+    "$(_headroom_field "$OUT" live)" \
+    "$(_headroom_field "$OUT" pinned)" \
+    "$(_headroom_field "$OUT" quarantined)" \
+    "$(_headroom_field "$OUT" free)"
+
+# A5 observability, mirroring A3's leak_unknown treatment: a lane whose
+# assignment state could not be resolved is named on stderr so "no pins" stays
+# distinguishable from "pins could not be evaluated".
+#
+# The ACCOUNTING CLAUSE is asserted per liveness arm, not as one fixed string.
+# "counted free (conservative)" is true only of an IDLE unknown lane; a LIVE one
+# is counted in `live`, and a warning claiming otherwise contradicts the
+# HEADROOM line printed directly beneath it. N3's derived live/free counts prove
+# which bucket the script really used; these two prove the warning agrees.
+for n_lane in "${n_exp_idle_unknown_lanes[@]+${n_exp_idle_unknown_lanes[@]}}"; do
+    assert "N5a: stderr names $n_lane (idle, unknown) as counted free (conservative)" \
+        bash -c 'printf "%s\n" "$1" | grep -qF "lane=$2: assignment state unknown (no-readable-record) at $3/$2.json; counted free (conservative)."' \
+        _ "$ERR_OUT" "$n_lane" "$N_MOUNT/.lane-state"
+done
+for n_lane in "${n_exp_live_unknown_lanes[@]+${n_exp_live_unknown_lanes[@]}}"; do
+    assert "N5b: stderr names $n_lane (live, unknown) as counted live -- never free" \
+        bash -c 'printf "%s\n" "$1" | grep -qF "lane=$2: assignment state unknown (no-readable-record) at $3/$2.json; counted live."' \
+        _ "$ERR_OUT" "$n_lane" "$N_MOUNT/.lane-state"
+done
+# ...and the fixture must actually exercise BOTH arms, or the pair above passes
+# vacuously the day someone drops a case from N_CASES.
+assert "N5c: the fixture covers both the live and idle UNKNOWN cells" \
+    bash -c '[ "$1" -gt 0 ] && [ "$2" -gt 0 ]' _ \
+    "${#n_exp_live_unknown_lanes[@]}" "${#n_exp_idle_unknown_lanes[@]}"
+
+N_PY_HEADROOM="$(mktemp /tmp/test-warm-lane-audit-n-headroom-XXXXXX.py)"
+_TMPDIRS+=("$N_PY_HEADROOM")
+cat > "$N_PY_HEADROOM" << 'PYEOF'
+import json, sys
+data = json.load(sys.stdin)
+h = data["headroom"]
+want = dict(kv.split("=", 1) for kv in sys.argv[1:])
+for k, v in want.items():
+    assert k in h, f"headroom has no {k!r} key: {sorted(h)}"
+    assert h[k] == int(v), f"headroom[{k!r}] == {h[k]!r}, want {v}"
+assert h["resident"] == h["live"] + h["pinned"] + h["quarantined"] + h["free"], h
+PYEOF
+
+ORACLE_MAP="$N_MAP" run_helper --mount "$N_MOUNT" \
+    --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh" --format json
+assert "N6a: exit 0 (json)" test "$RC" -eq 0
+assert "N6b: json headroom carries the same partition + cross-cut fields" \
+    bash -c 'printf "%s" "$1" | python3 "$2" "${@:3}"' _ "$OUT" "$N_PY_HEADROOM" \
+    "resident=$n_exp_resident" "live=$n_exp_live" "pinned=$n_exp_pinned" \
+    "quarantined=$n_exp_quarantined" "free=$n_exp_free" \
+    "assigned=$n_exp_assigned" "state_unknown=$n_exp_state_unknown"
+
+for n_pid in "${N_LIVE_PIDS[@]+${N_LIVE_PIDS[@]}}"; do
+    kill "$n_pid" 2>/dev/null || true
+done
+_BGPIDS=()  # clear so cleanup doesn't double-kill
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block O — the PINNED breakdown line (why the pins are held)
+# ──────────────────────────────────────────────────────────────────────────────
+# `pinned=N` says how much capacity is standing idle under a reservation; it
+# does not say what to DO about it. The breakdown does: a `terminal` pin is
+# reclaimable right now, a `pending`/`blocked`/`infra-hold` pin is a reservation
+# held by work that never started, and an `other` pin covering `in-progress`
+# is a likely-crashed consumer. On 2026-07-26 (esc-5556-1) that split was
+# 27 pending + 1 infra-hold, which is a scheduling problem, not a leak -- and
+# the audit had no column able to say so.
+#
+# The buckets are a FIXED, closed vocabulary emitted in a FIXED order, zeros
+# included, so an operator's grep has a stable shape and a zero is assertable
+# rather than absent.
+echo ""
+echo "--- Block O: the PINNED breakdown line ---"
+
+O_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-o-XXXXXX)"
+_TMPDIRS+=("$O_MOUNT")
+O_MAP="$(mktemp /tmp/test-warm-lane-audit-o-map-XXXXXX)"
+_TMPDIRS+=("$O_MAP")
+printf '9201 pending\n9202 infra-hold\n9203 blocked\n9204 done\n9205 cancelled\n9206 in-progress\n9207 deferred\n' > "$O_MAP"
+
+# lane : task id : raw status ('' = id absent from ORACLE_MAP) : expected bucket
+#
+# Every lane is ASSIGNED and idle, so every lane is PINNED and every lane lands
+# in exactly one bucket. Two lanes per non-singleton bucket (done+cancelled ->
+# terminal, in-progress+deferred -> other) so a bucket count of 2 distinguishes
+# a real accumulation from an off-by-one that happens to match 1.
+O_CASES=(
+    "_lane-o-pending:9201:pending:pending"
+    "_lane-o-infrahold:9202:infra-hold:infra-hold"
+    "_lane-o-blocked:9203:blocked:blocked"
+    "_lane-o-done:9204:done:terminal"
+    "_lane-o-cancelled:9205:cancelled:terminal"
+    "_lane-o-inprogress:9206:in-progress:other"
+    "_lane-o-deferred:9207:deferred:other"
+    "_lane-o-unresolvable:9299::unknown"
+)
+
+for o_case in "${O_CASES[@]}"; do
+    IFS=':' read -r o_lane o_task o_raw o_bucket <<< "$o_case"
+    # Stay on main: the record's task_id is then the ONLY possible source of
+    # the pin holder, so a bucket can never be sourced from a branch name.
+    make_lane "$O_MOUNT/$o_lane"
+    make_lane_state "$O_MOUNT" "$o_lane" "assigned" "$o_task"
+    touch "$O_MOUNT/$o_lane.lock"
+done
+
+# Bucket expectations DERIVED from O_CASES, never typed.
+declare -A O_EXPECTED=(
+    [pending]=0 [infra-hold]=0 [blocked]=0 [terminal]=0 [other]=0 [unknown]=0
+)
+o_exp_total=0
+for o_case in "${O_CASES[@]}"; do
+    IFS=':' read -r o_lane o_task o_raw o_bucket <<< "$o_case"
+    O_EXPECTED["$o_bucket"]=$(( O_EXPECTED["$o_bucket"] + 1 ))
+    o_exp_total=$(( o_exp_total + 1 ))
+done
+
+ORACLE_MAP="$O_MAP" run_helper --mount "$O_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+
+assert "O1: exit 0" test "$RC" -eq 0
+
+# The FIXED key set, in the FIXED order, with every value an integer -- the
+# stable grep shape an operator (and any future consumer) can rely on.
+assert "O2: PINNED line carries total/pending/infra-hold/blocked/terminal/other/unknown in that order" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^PINNED total=[0-9]+ pending=[0-9]+ infra-hold=[0-9]+ blocked=[0-9]+ terminal=[0-9]+ other=[0-9]+ unknown=[0-9]+$"' \
+    _ "$OUT"
+
+for o_bucket in pending infra-hold blocked terminal other unknown; do
+    o_want="${O_EXPECTED[$o_bucket]}"
+    o_got="$(_pinned_field "$OUT" "$o_bucket")"
+    assert "O3: PINNED $o_bucket=$o_want (derived from O_CASES)" \
+        bash -c '[ "$1" = "$2" ]' _ "$o_got" "$o_want"
+done
+
+assert "O4: PINNED total=$o_exp_total equals the sum of the six buckets" \
+    _sum_holds \
+    "$(_pinned_field "$OUT" total)" \
+    "$(_pinned_field "$OUT" pending)" "$(_pinned_field "$OUT" infra-hold)" \
+    "$(_pinned_field "$OUT" blocked)" "$(_pinned_field "$OUT" terminal)" \
+    "$(_pinned_field "$OUT" other)" "$(_pinned_field "$OUT" unknown)"
+
+# A done-backed pin is `terminal`, never `other`: that distinction is the
+# difference between "reclaim this lane now" and "a consumer probably crashed".
+# Asserted on a single-lane pool so the verdict cannot be masked by any other
+# lane's contribution to either bucket.
+O_DONE_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-o-done-XXXXXX)"
+_TMPDIRS+=("$O_DONE_MOUNT")
+make_lane "$O_DONE_MOUNT/_lane-o-solo"
+make_lane_state "$O_DONE_MOUNT" "_lane-o-solo" "assigned" "9204"
+ORACLE_MAP="$O_MAP" run_helper --mount "$O_DONE_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+assert "O5: a lone done-backed pin buckets terminal=1 other=0 (never 'other')" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^PINNED total=1 pending=0 infra-hold=0 blocked=0 terminal=1 other=0 unknown=0$"' \
+    _ "$OUT"
+
+ORACLE_MAP="$O_MAP" run_helper --mount "$O_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+
+assert "O6: PINNED total equals HEADROOM pinned (the breakdown covers every pin)" \
+    bash -c '[ -n "$1" ] && [ "$1" = "$2" ]' _ \
+    "$(_pinned_field "$OUT" total)" "$(_headroom_field "$OUT" pinned)"
+
+# ── O7: the line is emitted with all-zeros on a pool with NO pinned lanes ────
+# A zero must be assertable, not absent: an operator grepping `^PINNED ` on a
+# healthy pool has to see zeros, otherwise "no pins" is indistinguishable from
+# "the audit did not run".
+O2_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-o2-XXXXXX)"
+_TMPDIRS+=("$O2_MOUNT")
+make_lane "$O2_MOUNT/_lane-o2"
+
+run_helper --mount "$O2_MOUNT"
+assert "O7a: exit 0 on a pool with no pinned lanes" test "$RC" -eq 0
+assert "O7b: PINNED line still emitted, all buckets zero" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^PINNED total=0 pending=0 infra-hold=0 blocked=0 terminal=0 other=0 unknown=0$"' \
+    _ "$OUT"
+
+# ── O8: the JSON counterpart ─────────────────────────────────────────────────
+O_PY_PINNED="$(mktemp /tmp/test-warm-lane-audit-o-pinned-XXXXXX.py)"
+_TMPDIRS+=("$O_PY_PINNED")
+cat > "$O_PY_PINNED" << 'PYEOF'
+import json, sys
+data = json.load(sys.stdin)
+assert "pinned_by_status" in data, f"no pinned_by_status key: {sorted(data)}"
+p = data["pinned_by_status"]
+want = dict(kv.split("=", 1) for kv in sys.argv[1:])
+assert set(p) == set(want), f"pinned_by_status keys {sorted(p)}, want {sorted(want)}"
+for k, v in want.items():
+    assert p[k] == int(v), f"pinned_by_status[{k!r}] == {p[k]!r}, want {v}"
+# The breakdown must account for every pin the headroom partition reports.
+assert sum(p.values()) == data["headroom"]["pinned"], (p, data["headroom"])
+PYEOF
+
+ORACLE_MAP="$O_MAP" run_helper --mount "$O_MOUNT" \
+    --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh" --format json
+assert "O8a: exit 0 (json)" test "$RC" -eq 0
+assert "O8b: json pinned_by_status carries exactly the six buckets, summing to headroom.pinned" \
+    bash -c 'printf "%s" "$1" | python3 "$2" "${@:3}"' _ "$OUT" "$O_PY_PINNED" \
+    "pending=${O_EXPECTED[pending]}" "infra-hold=${O_EXPECTED[infra-hold]}" \
+    "blocked=${O_EXPECTED[blocked]}" "terminal=${O_EXPECTED[terminal]}" \
+    "other=${O_EXPECTED[other]}" "unknown=${O_EXPECTED[unknown]}"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block P — the two incident regressions + the state-dir read-only proof
+# ──────────────────────────────────────────────────────────────────────────────
+# Both pool misreads this task exists to fix are reproduced here as fixtures, so
+# the accounting that mis-answered them can never silently return. Neither
+# incident's headline numbers (53 / 33 / 30) are frozen as literals: every
+# expectation is computed from the fixture's own arrays, so these stay
+# regression tests of the RELATION, not of one day's pool.
+echo ""
+echo "--- Block P: incident regressions + state-dir read-only ---"
+
+# ── P-a — 2026-07-22: a fully reserved pool must not read as fully free ──────
+# Every lane carries a `state: assigned` record and NO lane holds a flock: this
+# is exactly the pool that reported 53 lanes FREE while the orchestrator had
+# every one of them reserved. Under the retired accounting (free = resident -
+# live) this pool reports free == resident; the assertion that would have caught
+# the incident on the day is free == 0.
+PA_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-pa-XXXXXX)"
+_TMPDIRS+=("$PA_MOUNT")
+PA_MAP="$(mktemp /tmp/test-warm-lane-audit-pa-map-XXXXXX)"
+_TMPDIRS+=("$PA_MAP")
+
+PA_LANES=(_lane-pa-1 _lane-pa-2 _lane-pa-3 _lane-pa-4 _lane-pa-5 _lane-pa-6)
+: > "$PA_MAP"
+pa_id=9400
+for pa_lane in "${PA_LANES[@]}"; do
+    pa_id=$(( pa_id + 1 ))
+    make_lane "$PA_MOUNT/$pa_lane"
+    make_lane_state "$PA_MOUNT" "$pa_lane" "assigned" "$pa_id"
+    # An unheld lock file: the incident's exact shape -- the sidecar exists,
+    # nothing holds it.
+    touch "$PA_MOUNT/$pa_lane.lock"
+    printf '%s pending\n' "$pa_id" >> "$PA_MAP"
+done
+pa_exp_resident="${#PA_LANES[@]}"
+
+ORACLE_MAP="$PA_MAP" run_helper --mount "$PA_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+
+assert "P-a1: exit 0" test "$RC" -eq 0
+assert "P-a2: free=0 -- a fully reserved pool reports NO free capacity (the 2026-07-22 regression)" \
+    bash -c '[ "$1" = "0" ]' _ "$(_headroom_field "$OUT" free)"
+assert "P-a3: live=0 (no consumer holds any lock)" \
+    bash -c '[ "$1" = "0" ]' _ "$(_headroom_field "$OUT" live)"
+assert "P-a4: pinned=$pa_exp_resident equals the lane count" \
+    bash -c '[ -n "$1" ] && [ "$1" = "$2" ]' _ \
+    "$(_headroom_field "$OUT" pinned)" "$pa_exp_resident"
+assert "P-a5: free != resident (the retired free = resident - live rule is gone)" \
+    bash -c '[ -n "$1" ] && [ -n "$2" ] && [ "$1" != "$2" ]' _ \
+    "$(_headroom_field "$OUT" free)" "$(_headroom_field "$OUT" resident)"
+for pa_lane in "${PA_LANES[@]}"; do
+    assert "P-a6: $pa_lane reports classification=PINNED" \
+        bash -c 'printf "%s\n" "$1" | grep -qE "lane=$2 .*classification=PINNED( |\$)"' \
+        _ "$OUT" "$pa_lane"
+done
+
+# ── P-b — 2026-07-26 (esc-5556-1): pins dominated by not-running work ────────
+# A assigned lanes of which L hold a live flock, plus R released lanes. The
+# incident's own shape: a handful of genuinely live consumers, and the rest of
+# the reservations held by tasks that are not running -- overwhelmingly
+# `pending`, with a single `infra-hold`. `pinned` names that standing capacity
+# loss; the breakdown names its cause.
+PB_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-pb-XXXXXX)"
+_TMPDIRS+=("$PB_MOUNT")
+PB_MAP="$(mktemp /tmp/test-warm-lane-audit-pb-map-XXXXXX)"
+_TMPDIRS+=("$PB_MAP")
+
+# lane : liveness : record state : task id : backing status
+PB_CASES=(
+    "_lane-pb-live1:LIVE:assigned:9501:in-progress"
+    "_lane-pb-live2:LIVE:assigned:9502:in-progress"
+    "_lane-pb-live3:LIVE:assigned:9503:in-progress"
+    "_lane-pb-pin1:IDLE:assigned:9504:pending"
+    "_lane-pb-pin2:IDLE:assigned:9505:pending"
+    "_lane-pb-pin3:IDLE:assigned:9506:pending"
+    "_lane-pb-pin4:IDLE:assigned:9507:infra-hold"
+    "_lane-pb-rel1:IDLE:released:9508:done"
+    "_lane-pb-rel2:IDLE:released:9509:done"
+)
+
+: > "$PB_MAP"
+PB_LIVE_PIDS=()
+for pb_case in "${PB_CASES[@]}"; do
+    IFS=':' read -r pb_lane pb_liveness pb_state pb_task pb_status <<< "$pb_case"
+    printf '%s %s\n' "$pb_task" "$pb_status" >> "$PB_MAP"
+    make_lane "$PB_MOUNT/$pb_lane"
+    make_lane_state "$PB_MOUNT" "$pb_lane" "$pb_state" "$pb_task"
+    if [ "$pb_liveness" = "LIVE" ]; then
+        _hold_lane_lock "$PB_MOUNT" "$pb_lane"
+        PB_LIVE_PIDS+=("$LANE_LOCK_PID")
+    else
+        touch "$PB_MOUNT/$pb_lane.lock"
+    fi
+done
+
+pb_exp_assigned=0
+pb_exp_live=0
+pb_exp_pinned=0
+pb_exp_free=0
+pb_exp_pin_pending=0
+pb_exp_pin_infrahold=0
+for pb_case in "${PB_CASES[@]}"; do
+    IFS=':' read -r pb_lane pb_liveness pb_state pb_task pb_status <<< "$pb_case"
+    if [ "$pb_state" = "assigned" ]; then
+        pb_exp_assigned=$(( pb_exp_assigned + 1 ))
+    fi
+    if [ "$pb_liveness" = "LIVE" ]; then
+        pb_exp_live=$(( pb_exp_live + 1 ))
+        continue
+    fi
+    if [ "$pb_state" = "assigned" ]; then
+        pb_exp_pinned=$(( pb_exp_pinned + 1 ))
+        case "$pb_status" in
+            pending)    pb_exp_pin_pending=$(( pb_exp_pin_pending + 1 )) ;;
+            infra-hold) pb_exp_pin_infrahold=$(( pb_exp_pin_infrahold + 1 )) ;;
+        esac
+    else
+        pb_exp_free=$(( pb_exp_free + 1 ))
+    fi
+done
+pb_exp_resident="${#PB_CASES[@]}"
+
+# ── P-c baselines, captured HERE — before the FIRST audit run over this mount.
+# _snapshot_state_dir <mount> — a sorted path/size/mtime/content manifest of
+# every record under <mount>/.lane-state, or a sentinel when the dir is absent.
+# Two snapshots compare byte-identical iff no record was created, removed,
+# resized, re-stamped, or rewritten. Complements Block J's per-lane
+# _snapshot_lane proof at the SAME fidelity (J's manifest carries %T@ too, so an
+# mtime-touching read cannot hide in either): the audit now reads a second
+# on-disk surface, and that surface gets the same guarantee.
+#
+# The ordering is load-bearing, and is why these live above the P-b run rather
+# than beside the P-c assertions that consume them. A baseline taken AFTER an
+# earlier run over the same mount cannot see a FIRST-RUN-ONLY mutation of an
+# existing record — a normalizing rewrite, a trailing-newline append, a backfill
+# of a missing field: run #1 performs it, the baseline bakes it in, run #2 is
+# idempotent, and the comparison goes green while A1 is violated. Block J takes
+# its baselines before its first run for exactly this reason. (P-c4-P-c8 cover
+# the other half of A1 — never CREATING a record or dir — on a fresh mount.)
+_snapshot_state_dir() {
+    local mount="$1"
+    local dir="$mount/.lane-state"
+    if [ ! -d "$dir" ]; then
+        printf '(no .lane-state)\n'
+        return 0
+    fi
+    local line f
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        f="${line%% *}"
+        printf '%s %s\n' "$line" "$(cat "$f")"
+    done < <(find "$dir" -type f -printf '%p %s %T@\n' 2>/dev/null | sort)
+    return 0
+}
+
+pc_state_before="$(_snapshot_state_dir "$PB_MOUNT")"
+declare -A PC_LANE_BEFORE
+for pb_case in "${PB_CASES[@]}"; do
+    IFS=':' read -r pb_lane _ _ _ _ <<< "$pb_case"
+    PC_LANE_BEFORE["$pb_lane"]="$(_snapshot_lane "$PB_MOUNT/$pb_lane")"
+done
+
+ORACLE_MAP="$PB_MAP" run_helper --mount "$PB_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+
+assert "P-b1: exit 0" test "$RC" -eq 0
+PB_FIELDS=(
+    "resident:$pb_exp_resident"
+    "assigned:$pb_exp_assigned"
+    "live:$pb_exp_live"
+    "pinned:$pb_exp_pinned"
+    "free:$pb_exp_free"
+)
+for pb_f in "${PB_FIELDS[@]}"; do
+    pb_key="${pb_f%%:*}"
+    pb_want="${pb_f##*:}"
+    assert "P-b2: HEADROOM $pb_key=$pb_want (derived from PB_CASES)" \
+        bash -c '[ "$1" = "$2" ]' _ "$(_headroom_field "$OUT" "$pb_key")" "$pb_want"
+done
+assert "P-b3: partition identity holds on the incident-shaped pool" \
+    _partition_holds \
+    "$(_headroom_field "$OUT" resident)" \
+    "$(_headroom_field "$OUT" live)" \
+    "$(_headroom_field "$OUT" pinned)" \
+    "$(_headroom_field "$OUT" quarantined)" \
+    "$(_headroom_field "$OUT" free)"
+# `assigned` is a CROSS-CUT, so it must exceed `live` here without breaking the
+# partition -- reservations outnumber running consumers, which IS the incident.
+assert "P-b4: assigned > live (reservations outnumber running consumers)" \
+    bash -c '[ -n "$1" ] && [ -n "$2" ] && [ "$1" -gt "$2" ]' _ \
+    "$(_headroom_field "$OUT" assigned)" "$(_headroom_field "$OUT" live)"
+assert "P-b5: PINNED pending=$pb_exp_pin_pending (derived from PB_CASES)" \
+    bash -c '[ "$1" = "$2" ]' _ "$(_pinned_field "$OUT" pending)" "$pb_exp_pin_pending"
+assert "P-b6: PINNED infra-hold=$pb_exp_pin_infrahold (derived from PB_CASES)" \
+    bash -c '[ "$1" = "$2" ]' _ "$(_pinned_field "$OUT" infra-hold)" "$pb_exp_pin_infrahold"
+assert "P-b7: PINNED total equals HEADROOM pinned" \
+    bash -c '[ -n "$1" ] && [ "$1" = "$2" ]' _ \
+    "$(_pinned_field "$OUT" total)" "$(_headroom_field "$OUT" pinned)"
+# "Dominated by pending" is the incident's signature: pending is the strict
+# maximum bucket, so the pool is losing capacity to work that never started
+# rather than to leaks or crashes.
+assert "P-b8: pending is the strictly dominant pin bucket" \
+    _strict_max \
+    "$(_pinned_field "$OUT" pending)" \
+    "$(_pinned_field "$OUT" infra-hold)" "$(_pinned_field "$OUT" blocked)" \
+    "$(_pinned_field "$OUT" terminal)" "$(_pinned_field "$OUT" other)" \
+    "$(_pinned_field "$OUT" unknown)"
+
+# ── P-c — the state dir is read strictly read-only, and never created ────────
+# The baselines were captured BEFORE P-b's run above, not here: see the comment
+# at their capture site for why that ordering is the whole proof.
+ORACLE_MAP="$PB_MAP" run_helper --mount "$PB_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+assert "P-c1: exit 0" test "$RC" -eq 0
+assert "P-c2: the .lane-state manifest is byte-identical across BOTH runs (A1/A5)" \
+    bash -c '[ "$1" = "$2" ]' _ "$pc_state_before" "$(_snapshot_state_dir "$PB_MOUNT")"
+for pb_case in "${PB_CASES[@]}"; do
+    IFS=':' read -r pb_lane _ _ _ _ <<< "$pb_case"
+    assert "P-c3: $pb_lane is byte-identical across BOTH runs over a state-bearing pool" \
+        bash -c '[ "$1" = "$2" ]' _ \
+        "${PC_LANE_BEFORE[$pb_lane]}" "$(_snapshot_lane "$PB_MOUNT/$pb_lane")"
+done
+
+# A mount with NO state dir: the audit must not conjure one. The state read is
+# non-creating for exactly the reason the <dir>.lock probe is (A1) -- an
+# advisory reader that materializes pool state is no longer a reader.
+PC_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-pc-XXXXXX)"
+_TMPDIRS+=("$PC_MOUNT")
+make_lane "$PC_MOUNT/_lane-pc"
+assert "P-c4: the fixture mount has no .lane-state dir before the run" \
+    bash -c '[ ! -e "$1" ]' _ "$PC_MOUNT/.lane-state"
+run_helper --mount "$PC_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle-fail.sh"
+assert "P-c5: exit 0" test "$RC" -eq 0
+assert "P-c6: the run did NOT create a .lane-state dir" \
+    bash -c '[ ! -e "$1" ]' _ "$PC_MOUNT/.lane-state"
+# ...nor a record under an explicitly-pointed-at, nonexistent state dir.
+PC_MISSING_STATE="$PC_MOUNT/nowhere/.lane-state"
+REIFY_WARM_LANE_AUDIT_STATE_DIR="$PC_MISSING_STATE" \
+    run_helper --mount "$PC_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle-fail.sh"
+assert "P-c7: exit 0 under a nonexistent explicit state dir" test "$RC" -eq 0
+assert "P-c8: a nonexistent explicit state dir is not created either" \
+    bash -c '[ ! -e "$1" ]' _ "$PC_MISSING_STATE"
+
+for pb_pid in "${PB_LIVE_PIDS[@]+${PB_LIVE_PIDS[@]}}"; do
+    kill "$pb_pid" 2>/dev/null || true
+done
 _BGPIDS=()  # clear so cleanup doesn't double-kill
 
 test_summary
