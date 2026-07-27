@@ -94,7 +94,9 @@
 #   Merge bypass, DISABLE break-glass, and admit-vs-requeue timeout semantics are
 #   identical to the CPU dimension (shared machinery in cpu_admit; v1 = staggering only).
 #   psi-gate action             — `verify.sh psi-gate` runs only the gate and exits;
-#                                  used as the first test-phase plan entry (test/all).
+#                                  used as the first *gating* test-phase plan entry
+#                                  (test/all) — a merge attempt-0 emits the tree-OID
+#                                  sidecar stamp just before it (see psi_gate()).
 #
 # Compile-phase admission gate (task 4618 — soft PSI backpressure for clippy/check):
 #   REIFY_COMPILE_GATE_THRESHOLD      — CPU avg10 % ceiling for compile admission.
@@ -213,27 +215,34 @@
 #                                  profile's own var wins when non-empty, else the
 #                                  base var is used (so --profile both can carry a
 #                                  different subset per profile).
+#                                  DF-side obligation, newly LIVE since task 5548
+#                                  made a red attempt-0 retry-eligible: a profile
+#                                  whose attempt-0 nextest pass NEVER EXECUTED
+#                                  (attempt-0 died in an earlier profile) must not
+#                                  be narrowed by the base var's fallback. DF must
+#                                  set a per-profile filter file for EVERY profile
+#                                  named in the sidecar's `profiles`, or fall back
+#                                  to a full verify. reify cannot tell "passed" from
+#                                  "never ran" — it never sees attempt-0's results —
+#                                  so this is a seam obligation, not a guard reify
+#                                  can add; the @@REIFY_RETRY_SCOPE=failed_only@@
+#                                  marker's per-profile applied counts expose the
+#                                  outcome either way.
 #   REIFY_VERIFY_RETRY_TREE_OID         — the tree DF intends to retry (a `git
 #                                  rev-parse HEAD:` TREE OID). Must equal the
 #                                  attempt-0 sidecar's tree_oid, else the subset is
 #                                  refused (tree-pin soundness, §5 INV-1).
 #   REIFY_VERIFY_ATTEMPT_SIDECAR        — attempt-0 sidecar path (default
-#                                  target/reify-verify-attempt.json). Stamped as
-#                                  the FIRST line of add_test_passes, i.e. once
-#                                  attempt-0 REACHES THE TEST PHASE: survives a
-#                                  red psi-gate/compile-gate/nextest pole, but NOT
-#                                  a red clippy/gui/run_all.sh pole (those precede
-#                                  add_test_passes and still exit before the
-#                                  stamp). Stamped on a full DF_VERIFY_ROLE=merge
-#                                  attempt-0 (NOT on a failed_only retry); records
-#                                  {tree_oid, planned_profiles, timestamp} of the
-#                                  tree target/ was built FROM (task 5548).
-#                                  planned_profiles is the build-time-intended
-#                                  ${PROFILES[*]}, NOT proof any of them executed
-#                                  or passed (the eligibility guard reads tree_oid
-#                                  only) — a red attempt-0 can name a profile whose
-#                                  nextest pass never ran. Survives a warm-lane
-#                                  reseed.
+#                                  target/reify-verify-attempt.json). Schema is
+#                                  PRD §4.1's {tree_oid, profiles, timestamp}
+#                                  verbatim, recording the tree target/ was built
+#                                  FROM — NOT proof any profile executed or passed
+#                                  (the eligibility guard reads tree_oid only).
+#                                  Stamped on a full DF_VERIFY_ROLE=merge attempt-0
+#                                  (never on a failed_only retry), at the HEAD of
+#                                  add_test_passes — see there for the single
+#                                  authoritative survives/does-not-survive matrix
+#                                  (task 5548). Survives a warm-lane reseed.
 #   REIFY_VERIFY_RETRY_MAX_SUBSET       — tunable subset-size ceiling (default 5000,
 #                                  a heuristic comfortably below the full-suite size,
 #                                  §11): a subset larger than this is refused as a
@@ -406,7 +415,9 @@ usage() {
 
 # psi_gate() — thin wrapper over cpu_admit requeue (scripts/cpu-admit.sh).
 # Called directly via `verify.sh psi-gate` (testable entry point) and wired
-# as the first test-phase plan entry by add_test_passes().
+# as the first *gating* test-phase plan entry by add_test_passes() — a merge
+# attempt-0 emits the tree-OID sidecar stamp (a side-effect-only file write,
+# not a gate) immediately before it, task 5548.
 #
 # Environment knobs (see header comment block for full doc):
 #   REIFY_PSI_GATE_THRESHOLD    — avg10 ceiling to allow dispatch (default 50)
@@ -1700,15 +1711,23 @@ add_test_passes() {
     # THIS tree by this point — the check/clippy wave and the `cargo build
     # --release -p reify-audit` pre-build precede add_test_passes, and a warm
     # lane pre-seeds target/ — so `test -d target` is satisfiable and the
-    # built-from-this-tree claim holds even here. tree_oid (git rev-parse
-    # HEAD: = the TREE OID) and timestamp are computed at RUN time;
-    # ${PROFILES[*]} is baked at build time. Guarded on `test -d target` and
+    # built-from-this-tree claim holds even here. Schema is PRD §4.1's
+    # {tree_oid, profiles, timestamp} VERBATIM — DF's D2b pins its unit fixtures
+    # to these exact bytes, so no field may be renamed here without moving the
+    # PRD's §4.1/§244 schema rows in the SAME change. tree_oid (git rev-parse
+    # HEAD: = the TREE OID) and timestamp are computed at RUN time; `profiles`
+    # is the build-time-baked ${PROFILES[*]} — the profiles this attempt PLANNED
+    # to run, NOT proof any of them executed or passed (the eligibility guard
+    # reads tree_oid only), so a red attempt-0 can name a profile whose nextest
+    # pass never ran. The consumer-side obligation that follows from that
+    # (never narrow a profile that never ran) is DF's, documented at the
+    # …_FILTER_FILE_DEBUG/_RELEASE header entry. Guarded on `test -d target` and
     # tolerant of git failure (|| echo unknown) and write failure (|| true),
     # mirroring the target/.reify-bin-sha stamp (task 5133). Survives a warm-lane
     # reseed (under target/, git clean -xfd -e target). A retry (scope=failed_only)
     # deliberately does NOT re-stamp — DF re-runs a full attempt-0 for a new tree.
     if [ "$DF_VERIFY_ROLE" = "merge" ] && [ "${REIFY_VERIFY_RETRY_SCOPE:-}" != "failed_only" ]; then
-        add "if test -d target; then printf '{\"tree_oid\":\"%s\",\"planned_profiles\":\"%s\",\"timestamp\":\"%s\"}\\n' \"\$(git rev-parse HEAD: 2>/dev/null || echo unknown)\" \"${PROFILES[*]}\" \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" > \"${_ATTEMPT_SIDECAR_PATH}\" 2>/dev/null || true; fi"
+        add "if test -d target; then printf '{\"tree_oid\":\"%s\",\"profiles\":\"%s\",\"timestamp\":\"%s\"}\\n' \"\$(git rev-parse HEAD: 2>/dev/null || echo unknown)\" \"${PROFILES[*]}\" \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" > \"${_ATTEMPT_SIDECAR_PATH}\" 2>/dev/null || true; fi"
     fi
 
     # PSI gate: must pass before any cargo test work starts.
