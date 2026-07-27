@@ -6,10 +6,32 @@
 //! an assertion fails and the test unwinds — i.e. precisely on RED CI runs.
 //! This module supplies the RAII replacement.
 
+use crate::ignore_hygiene::is_doc_comment_line;
+use std::path::Path;
+
 /// Re-exported so call sites can NAME the guard type (in a helper's return
 /// signature, say) through `reify_test_support` without their own crate
 /// gaining a `tempfile` dependency.
 pub use tempfile::TempDir;
+
+/// The per-line escape hatch, mirroring the house `// ptodo:allow — reason`
+/// convention documented in `CLAUDE.md`.  A site that legitimately builds its
+/// own directory (this module's own implementation, say) annotates the line
+/// `// temp-dir:allow — reason` and the scanner passes over it.
+const ALLOW_ESCAPE: &str = "temp-dir:allow";
+
+/// The scanned needle, assembled at runtime.
+///
+/// DO NOT inline this as a literal: `temp_dirs.rs` legitimately calls the real
+/// thing in its own attribution test, and an inlined literal would make this
+/// module self-triggering the moment it were added to the scanned set. This is
+/// the same defence `ignore_hygiene.rs` uses for its `#[ignore = "` marker.
+///
+/// One needle covers both spellings — `std::env::temp_dir()` (what every
+/// migrating file uses today) and a bare `env::temp_dir()` under `use std::env`.
+fn guarded_call_needle() -> String {
+    ["env", "::temp_dir("].concat()
+}
 
 /// Create a temporary directory under [`std::env::temp_dir`] whose name starts
 /// with `prefix`, guarded by [`TempDir`]'s RAII teardown.
@@ -61,6 +83,88 @@ pub fn prefixed_tempdir(prefix: &str) -> TempDir {
         .prefix(prefix)
         .tempdir()
         .unwrap_or_else(|e| panic!("create temp dir with prefix {prefix:?}: {e}"))
+}
+
+/// Scan `source` (a Rust source file as a string) for hand-rolled temp-dir
+/// construction — a call to `std::env::temp_dir()` that is not routed through
+/// [`prefixed_tempdir`]. Returns one human-readable violation per offending
+/// line, each carrying the 1-based line number and the trimmed line. An empty
+/// `Vec` means clean.
+///
+/// Line-oriented, in the shape of the sibling
+/// [`crate::ignore_hygiene::find_stale_plan_pointers_in_source`]:
+///
+/// - `///` and `//!` doc-comment lines are skipped, so prose that merely
+///   mentions the call does not fire. Regular `//` comments are NOT skipped —
+///   commented-out construction code is still a site worth reporting.
+/// - A line carrying the `// temp-dir:allow — reason` escape is skipped.
+/// - EVERY hit is collected, not just the first: `server.rs` holds nine sites
+///   and `m5_integration.rs` two, and a first-hit-only scan would make those
+///   look half-migrated.
+pub fn find_unguarded_temp_dir_sites(source: &str) -> Vec<String> {
+    let needle = guarded_call_needle();
+
+    source
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !is_doc_comment_line(line))
+        .filter(|(_, line)| !line.contains(ALLOW_ESCAPE))
+        .filter(|(_, line)| line.contains(needle.as_str()))
+        .map(|(idx, line)| {
+            let preview: String = line.trim().chars().take(120).collect();
+            format!("line {}: {preview:?}", idx + 1)
+        })
+        .collect()
+}
+
+/// Assert that the workspace file at `repo_relative_path` contains no
+/// hand-rolled temp-dir construction, panicking with every violation and the
+/// remediation if it does.
+///
+/// The repo root is resolved at compile time from `env!("CARGO_MANIFEST_DIR")`
+/// evaluated inside **this** crate, which always sits at
+/// `<repo>/crates/reify-test-support/`; two `.parent()` walks reach the root.
+/// This is the same resolution [`crate::orphan_audit::run_orphan_audit`] uses,
+/// so a guard here can scan a file owned by any other crate.
+///
+/// # Panics
+///
+/// Panics if the file cannot be read, naming the absolute path it attempted —
+/// a moved or renamed file must fail loudly rather than turn this guard into a
+/// vacuous pass. Panics with the collected violations if any are found.
+pub fn assert_no_unguarded_temp_dir_sites(repo_relative_path: &str) {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crates/reify-test-support has a parent (crates/)")
+        .parent()
+        .expect("crates/ has a parent (the repo root)");
+    let absolute = repo_root.join(repo_relative_path);
+
+    let source = std::fs::read_to_string(&absolute).unwrap_or_else(|e| {
+        panic!(
+            "temp-dir hygiene scan could not read {}: {e}\n\
+             If this file moved, update the guard's path — do not delete the guard.",
+            absolute.display()
+        )
+    });
+
+    let violations = find_unguarded_temp_dir_sites(&source);
+    assert!(
+        violations.is_empty(),
+        "{} unguarded temp-dir site(s) in {}:\n  {}\n\n\
+         Each builds a directory under {}) by hand and relies on a trailing \
+         `fs::remove_dir_all(..)` that is SKIPPED when the test unwinds — so it \
+         leaks precisely on RED runs. Replace with a named-local guard:\n\
+         \x20   let guard = reify_test_support::prefixed_tempdir(\"<prefix>-\");\n\
+         \x20   let dir = guard.path().to_path_buf();\n\
+         A site that is legitimately hand-rolled annotates its line \
+         `// {} — reason`.",
+        violations.len(),
+        absolute.display(),
+        violations.join("\n  "),
+        guarded_call_needle(),
+        ALLOW_ESCAPE,
+    );
 }
 
 #[cfg(test)]
