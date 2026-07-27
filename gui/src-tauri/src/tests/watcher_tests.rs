@@ -653,19 +653,41 @@ fn watcher_with_target_file_only_fires_for_that_file() {
 
     let changed_paths: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
     let changed_clone = changed_paths.clone();
+    let probe_seen = Arc::new(AtomicBool::new(false));
+    let probe_seen_clone = probe_seen.clone();
 
-    let Some(_watcher) =
-        try_watcher(dir.path(), Some(PathBuf::from("project.ri")), move |event| {
-            if let FileEvent::Changed(path) = event {
+    // The existing Changed arm is untouched: probe.ri's Changed events are
+    // filtered out by the watcher itself (target_file = "project.ri"), so
+    // they can never reach this arm and pollute changed_paths.
+    let Some(_watcher) = try_watcher(
+        dir.path(),
+        Some(PathBuf::from("project.ri")),
+        move |event| match event {
+            FileEvent::Changed(path) => {
                 changed_clone.lock().unwrap().push(path);
             }
-        })
-    else {
+            FileEvent::Removed(path) => {
+                if path.ends_with("probe.ri") {
+                    probe_seen_clone.store(true, Ordering::SeqCst);
+                }
+            }
+        },
+    ) else {
         return;
     };
 
-    // Give the watcher time to register (increased for loaded CI systems)
-    std::thread::sleep(Duration::from_millis(500));
+    // Watcher is target_file-filtered, so the Changed-probe barrier's
+    // Changed("probe.ri") event would itself be filtered out and the
+    // barrier would spin its full budget and return false -- use the
+    // removal-probe variant instead, which bypasses the filter by the same
+    // design this test exists to pin.
+    let registered = wait_for_watch_registration_via_removal(dir.path(), &probe_seen);
+    assert!(
+        registered,
+        "the watcher never delivered a probe event, so the directory watch \
+         was never confirmed live -- the writes below could have been lost \
+         outright and this run could not exercise the target_file filter"
+    );
 
     // Modify the other .ri file (should be ignored due to target_file filter)
     std::fs::write(&other_file, "structure Other { param x = 10mm }").unwrap();
