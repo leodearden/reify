@@ -3031,6 +3031,66 @@ assert "T2: base RESOLVES (empty delta) ⇒ seed exits 0 even with .fingerprint 
 assert "T2: STDOUT is exactly <lane>/target" \
     bash -c '[ "$1" = "$2" ]' _ "$OUT" "$T2_LANE/target"
 
+# ── T3: the narrow opt-out knob, honoured. REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1
+# downgrades the refusal to a warn and reaches the accept path VERBATIM (same
+# exit 0, same stdout, same 2020-01-01 bulk stamp T1b asserts) — not a new third
+# behaviour. The warn is level-scoped so an honoured downgrade is visible in a
+# production log.
+#
+# Polarity is the load-bearing choice and is the INVERSE of the esc-5214
+# mistake: the guard is default-ON and only an explicit export can downgrade it,
+# so no forgetful caller can bypass it by omission.
+IFS='|' read -r T3_BASE T3_LANE <<< "$(_t_make_fixture T3 1)"
+
+reset_calls
+REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 \
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$T3_BASE" "$T3_LANE" --fresh-checkout
+
+assert "T3: REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 downgrades the refusal ⇒ exits 0" \
+    test "$RC" -eq 0
+assert "T3: knob-honoured seed returns exactly <lane>/target on STDOUT" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$T3_LANE/target"
+T3_SRC_MTIME="$(stat -c '%Y' "$T3_LANE/src/tracked.rs")"
+assert "T3: tracked source still carries the 2020-01-01 bulk stamp ($EPOCH_2020) — accept path reached verbatim" \
+    test "$T3_SRC_MTIME" -eq "$EPOCH_2020"
+assert "T3: a [warn] line names the knob, so an honoured downgrade is visible in a production log" \
+    bash -c 'printf "%s\n" "$1" | grep "\[warn\]" | grep -qF "REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT"' \
+    _ "$ERR_OUT"
+
+# ── T3b/T3c: the EXACT-"1" contract. Without these, a truthy-ish comparison
+# (-n) would silently let =0, a stray empty-string export, or any unrecognised
+# value bypass a default-ON safety guard. Mirrors the REIFY_WARM_LANE_RESEED_TRASH_SYNC
+# = "1" idiom already used in scripts/seed-warm-lane.sh.
+#
+# Deliberately NO usage/exit-64 validation arm for the knob: unlike
+# REIFY_WARM_LANE_LANE_LOCK_WAIT (whose bad value could reach a destructive
+# flock/mv), an unrecognised value here fails SAFE — it simply leaves the
+# default fail-closed abort in force, which is exactly what these two arms pin.
+IFS='|' read -r T3B_BASE T3B_LANE <<< "$(_t_make_fixture T3b 1)"
+
+reset_calls
+REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=0 \
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$T3B_BASE" "$T3B_LANE" --fresh-checkout
+
+assert "T3b: REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=0 does NOT downgrade the guard (exact-1 match) ⇒ still exits non-zero" \
+    test "$RC" -ne 0
+assert "T3b: =0 abort still leaves STDOUT empty" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+
+IFS='|' read -r T3C_BASE T3C_LANE <<< "$(_t_make_fixture T3c 1)"
+
+reset_calls
+REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=yes \
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$T3C_BASE" "$T3C_LANE" --fresh-checkout
+
+assert "T3c: REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=yes does NOT downgrade the guard (exact-1, not truthiness) ⇒ still exits non-zero" \
+    test "$RC" -ne 0
+assert "T3c: =yes abort still leaves STDOUT empty" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block R: lane isolation guards (task 5590) — every lane created in this file
 # must be nested under a private per-run parent, never bare /tmp, because
