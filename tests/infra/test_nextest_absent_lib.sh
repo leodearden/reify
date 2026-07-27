@@ -484,4 +484,245 @@ assert "7a: nextest_absent_assert_real emits exactly $NX_REAL_EXPECTED PASSes / 
 assert "7b: nextest_absent_assert_real registers a FAIL (not an abort, not a silent pass) on a broken env" _t7b
 assert "7c: nextest_available_ambient agrees with the ambient verify.sh plan header" _t7c
 
+# -- Test 8: the consolidation guard -------------------------------------------
+#
+# Every test above this line checks that the lib WORKS. None of them checks that
+# anything USES it — a lib with perfect unit tests and zero call sites is a
+# fifth copy of the harness, not a consolidation. Test 8 is the only assertion in
+# this file that the refactor actually happened, and the only thing standing
+# between "consolidated" and "silently re-accreted" six months from now.
+#
+# It is deliberately STATIC (a scan of the call sites' source) rather than
+# behavioural, because the property is about provenance, not behaviour: a
+# hand-rolled harness that happens to work identically is exactly the duplication
+# this task exists to remove, and no runtime observation can distinguish it from
+# the shared one.
+#
+# WRITTEN BEFORE ANY MIGRATION, so all four asserts are RED here and steps 14-17
+# each turn exactly one green. A half-finished consolidation is then VISIBLE as
+# "3 of 4 asserts pass" rather than silently indistinguishable from a finished
+# one.
+echo ""
+echo "--- Test 8: the three simulation call sites are consolidated onto the lib ---"
+
+# The escape hatch, mirroring the PTODO detector's `// ptodo:allow — reason`
+# convention (docs/prds/reify-audit-ptodo-detector.md §8): a future call site
+# with a genuine reason to hand-roll one of these constructs marks the line and
+# says why, rather than being forced to either fake a migration or delete the
+# guard. Anything unmarked is a re-accretion.
+NX_ALLOW_MARKER='nextest-absent-lib:allow'
+
+# The re-accretion patterns — each names ONE construct the lib now owns, and
+# each is drawn from a line that was actually present in a call site before the
+# migration (measured at task 5602 HEAD=8cb994e2fc), so none of them is a
+# hypothetical:
+#
+#   PATH="...:/usr/bin:/bin"  the naive hermetic-PATH recipe. This is the one
+#                             that matters most: it is the recipe the lib's
+#                             header argues AGAINST (it strips the cargo bin dir
+#                             wholesale, taking tree-sitter with it), so a
+#                             re-accretion here does not merely duplicate the
+#                             harness, it duplicates the BROKEN harness.
+#                             (was: semaphore_wiring:186, probe:177)
+#   HOME="$..."               a bespoke temp-HOME redirect; nx_run owns this,
+#                             together with the CARGO_HOME unset and the
+#                             RUSTUP_HOME carry-across that must accompany it.
+#                             Anchored on a preceding line-start/space/`(` so it
+#                             does not match CARGO_HOME=/RUSTUP_HOME=/TMP_HOME=.
+#                             (was: semaphore_wiring:186, probe:176)
+#   ln -s                     a local symlink-farm loop.
+#                             (was: nextest_absent_suites:167)
+_NX_BESPOKE_RE='PATH="[^"]*:/usr/bin:/bin"|(^|[[:space:](])HOME="\$|ln -s '
+
+# _nx_bespoke_hits <path> — print `<lineno>:<line>` for every re-accretion.
+#
+# COMMENT-ONLY LINES ARE EXEMPT, and not as a convenience: step 14 keeps
+# test_verify_nextest_absent_suites.sh's WHY-NOT-THE-NAIVE-RECIPE prose, which
+# quotes `PATH="$STUB:/usr/bin:/bin"` verbatim in order to argue against it.
+# That prose is the reason the lib is shaped the way it is and must survive the
+# migration; flagging it would push the next author to delete the explanation
+# instead of the duplication. A comment cannot construct a harness, so dropping
+# comment-only lines costs the scan nothing.
+#
+# grep -n runs against the RAW file and the filtering happens after, so the
+# reported line numbers are the real ones a reader can jump to.
+_nx_bespoke_hits() {
+    grep -nE "$_NX_BESPOKE_RE" "$1" \
+        | grep -vE '^[0-9]+:[[:space:]]*#' \
+        | grep -vF "$NX_ALLOW_MARKER" \
+        || true
+}
+
+# _nx_lib_sourced <path> — does <path> source nextest_absent_lib.sh?
+_nx_lib_sourced() {
+    grep -qE '^[[:space:]]*(source|\.)[[:space:]].*nextest_absent_lib\.sh' "$1"
+}
+
+# _nx_is_consolidated <path> — BOTH conjuncts, because either alone is
+# satisfiable without migrating: a file can source the lib and still run its old
+# harness (a no-op import), or drop its harness while quietly reimplementing it
+# under new variable names. Reported separately so a failure names which half.
+_nx_is_consolidated() {
+    local file="$1" name rc=0 hits
+    name="$(basename "$file")"
+
+    [ -f "$file" ] || { echo "no such file: $file"; return 1; }
+
+    if ! _nx_lib_sourced "$file"; then
+        echo "$name does NOT source tests/infra/nextest_absent_lib.sh"
+        rc=1
+    fi
+
+    hits="$(_nx_bespoke_hits "$file")"
+    if [ -n "$hits" ]; then
+        echo "$name still hand-rolls a harness the shared lib owns:"
+        printf '%s\n' "$hits"
+        echo "  -> migrate onto nextest_absent_init / nx_run, or mark a genuinely"
+        echo "     legitimate line with a trailing '# $NX_ALLOW_MARKER — <reason>'"
+        rc=1
+    fi
+
+    if [ "$rc" -eq 0 ]; then
+        echo "$name: sources the lib, no bespoke harness"
+    fi
+    return "$rc"
+}
+
+# test_verify_retry_subset.sh is the odd one out and is asserted separately.
+# It has NO simulation harness to consolidate — verified at task 5602 planning
+# time, at both the commit the task description cites (e932e2865b) and main:
+# zero PATH/HOME/stub/farm constructs. The task description's claim that it is a
+# fourth simulation harness is wrong, and that correction is filed as esc-5602-4.
+# What it DOES duplicate is the AMBIENT plan-header probe, so that — and only
+# that — is what its migration removes. Applying the harness patterns to it
+# would assert something already true and test nothing.
+_nx_retry_subset_consolidated() {
+    local file="$SCRIPT_DIR/test_verify_retry_subset.sh"
+    local rc=0 hits
+
+    [ -f "$file" ] || { echo "no such file: $file"; return 1; }
+
+    if ! _nx_lib_sourced "$file"; then
+        echo "test_verify_retry_subset.sh does NOT source tests/infra/nextest_absent_lib.sh"
+        rc=1
+    fi
+
+    hits="$(grep -nF '*"nextest=1"*' "$file" \
+        | grep -vE '^[0-9]+:[[:space:]]*#' \
+        | grep -vF "$NX_ALLOW_MARKER" || true)"
+    if [ -n "$hits" ]; then
+        echo "test_verify_retry_subset.sh still open-codes the ambient nextest=1 header case:"
+        printf '%s\n' "$hits"
+        echo "  -> replace with nextest_available_ambient, keeping NEXTEST_AVAILABLE"
+        echo "     and every 'if [ \"\$NEXTEST_AVAILABLE\" -eq 1 ]' guard as they are"
+        rc=1
+    fi
+
+    if [ "$rc" -eq 0 ]; then
+        echo "test_verify_retry_subset.sh: sources the lib, ambient probe delegated"
+    fi
+    return "$rc"
+}
+
+assert "8a: test_verify_nextest_absent_suites.sh is consolidated onto nextest_absent_lib.sh" \
+    _nx_is_consolidated "$SCRIPT_DIR/test_verify_nextest_absent_suites.sh"
+
+assert "8b: test_verify_semaphore_wiring.sh is consolidated onto nextest_absent_lib.sh" \
+    _nx_is_consolidated "$SCRIPT_DIR/test_verify_semaphore_wiring.sh"
+
+assert "8c: test_verify_nextest_probe.sh is consolidated onto nextest_absent_lib.sh" \
+    _nx_is_consolidated "$SCRIPT_DIR/test_verify_nextest_probe.sh"
+
+assert "8d: test_verify_retry_subset.sh delegates its ambient nextest probe to the lib" \
+    _nx_retry_subset_consolidated
+
+# NON-VACUITY for the guard itself. Once steps 14-17 land, 8a-8d report green
+# forever — and a scanner that CANNOT fail reports exactly the same green while
+# a hand-rolled harness creeps back in. So the detector is pointed at synthetic
+# files carrying the constructs it claims to detect, and required to answer
+# correctly in BOTH directions. Fixtures live inside the lib's own workdir, so
+# the lib's EXIT/INT/TERM/HUP trap removes them (same idiom as Test 4's child
+# probe — a second trap would replace the first rather than compose with it).
+NX_GUARD_DIR="$NX_WORKDIR/consolidation-guard-fixtures"
+mkdir -p "$NX_GUARD_DIR"
+
+# (e) The detector FIRES. Three fixtures, one per way a migration can be faked:
+# harness kept, lib not sourced, and farm loop kept.
+_t8e() {
+    local rc=0 f
+
+    f="$NX_GUARD_DIR/kept_harness.sh"
+    cat > "$f" <<'FIXTURE'
+source "$SCRIPT_DIR/nextest_absent_lib.sh"
+OUT="$(HOME="$_TMP_HOME" PATH="$_STUB:/usr/bin:/bin" bash "$VERIFY" test --print-plan)"
+FIXTURE
+    if _nx_is_consolidated "$f" >/dev/null 2>&1; then
+        echo "detector PASSED a file that sources the lib but kept its hand-rolled"
+        echo "temp-HOME + naive-PATH harness — a no-op import reads as migrated."
+        rc=1
+    fi
+
+    f="$NX_GUARD_DIR/no_source.sh"
+    printf 'echo "clean, but never sources the lib"\n' > "$f"
+    if _nx_is_consolidated "$f" >/dev/null 2>&1; then
+        echo "detector PASSED a file that does not source the lib at all —"
+        echo "the sources-lib conjunct is not being checked."
+        rc=1
+    fi
+
+    f="$NX_GUARD_DIR/kept_farm.sh"
+    cat > "$f" <<'FIXTURE'
+source "$SCRIPT_DIR/nextest_absent_lib.sh"
+for _e in "$CARGO_BIN_DIR"/*; do ln -s "$_e" "$FARM/$(basename "$_e")"; done
+FIXTURE
+    if _nx_is_consolidated "$f" >/dev/null 2>&1; then
+        echo "detector PASSED a file that kept its local symlink-farm loop."
+        rc=1
+    fi
+
+    [ "$rc" -eq 0 ] && echo "detector fires on all three fake-migration shapes"
+    return "$rc"
+}
+
+# (f) ...and does NOT fire on the two exemptions, which is the half that keeps
+# 8a-8d from being unsatisfiable-in-practice. Without the comment exemption the
+# only way to make 8a green would be to delete the WHY-NOT-THE-NAIVE-RECIPE
+# prose — i.e. the guard would destroy the explanation it depends on.
+_t8f() {
+    local rc=0 f
+
+    f="$NX_GUARD_DIR/prose_only.sh"
+    cat > "$f" <<'FIXTURE'
+# WHY NOT THE NAIVE `PATH="$STUB:/usr/bin:/bin"` RECIPE: it strips the cargo bin
+# dir wholesale, and `ln -s` farms are the lib's job now.
+source "$SCRIPT_DIR/nextest_absent_lib.sh"
+nextest_absent_init
+FIXTURE
+    if ! _nx_is_consolidated "$f" >/dev/null 2>&1; then
+        echo "detector FIRED on comment-only prose. The migrated suites must keep"
+        echo "their WHY-NOT-THE-NAIVE-RECIPE rationale, which quotes the very"
+        echo "recipe it argues against:"
+        _nx_bespoke_hits "$f"
+        rc=1
+    fi
+
+    f="$NX_GUARD_DIR/escaped.sh"
+    cat > "$f" <<FIXTURE
+source "\$SCRIPT_DIR/nextest_absent_lib.sh"
+OUT="\$(HOME="\$_T" bash "\$V")"  # $NX_ALLOW_MARKER — pins HOME-only behaviour
+FIXTURE
+    if ! _nx_is_consolidated "$f" >/dev/null 2>&1; then
+        echo "detector FIRED on a line carrying the '$NX_ALLOW_MARKER' escape —"
+        echo "a future legitimate exception would have no way to declare itself."
+        _nx_bespoke_hits "$f"
+        rc=1
+    fi
+
+    [ "$rc" -eq 0 ] && echo "comment prose and the allow-escape are both exempt"
+    return "$rc"
+}
+
+assert "8e: the consolidation detector FIRES on a faked migration (kept harness / no source / kept farm)" _t8e
+assert "8f: the detector is exempt on comment-only prose and on '# $NX_ALLOW_MARKER' lines" _t8f
+
 test_summary
