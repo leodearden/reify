@@ -2730,6 +2730,71 @@ S1C_ROOT_OUTPUT_MTIME="$(stat -c '%Y' "$S_LANE_ROOT_OUTPUT")"
 assert "S1c: rewritten root-output KEEPS its pre-sed mtime ($S_ROOT_OUTPUT_EPOCH)" \
     test "$S1C_ROOT_OUTPUT_MTIME" -eq "$S_ROOT_OUTPUT_EPOCH"
 
+# ── S2: fail-closed post-condition — a build-script `output` that is NEWER than
+# a delta-touched tracked source must ABORT the seed, not ship a lane cargo will
+# mis-gate. This deliberately SYNTHESISES the inversion (base `output` stamped
+# into the future) so the guard itself is tested rather than the happy path;
+# mtime preservation alone cannot catch an inversion that was already baked into
+# the base. Same precedent as _assert_no_stale_delta_stamp, which shipped
+# alongside the _touch_git_delta fix in esc-3468-75: a silently-wrong mtime is a
+# FALSE GREEN, the failure class no downstream test can catch by construction.
+# ─────────────────────────────────────────────────────────────────────────────
+_s_make_fixture() {
+    # <prefix> <output_touch_stamp> — echoes "<base>|<lane>|<delta_path>".
+    local prefix="$1" stamp="$2" parent base lane delta
+    parent="$(mktemp -d "/tmp/test-seed-${prefix}-parent-XXXXXX")"
+    _TMPDIRS+=("$parent")
+    base="$parent/target"
+    lane="$(make_isolated_lane "$prefix-lane")"
+    printf 'RUSTFLAGS=\nINVOCATION=\n' > "$parent/.warm-base-meta"
+    printf '%s' "$S_FOREIGN" > "${base}.buildroot"
+    mkdir -p "$base/debug/build/fakecc-1111"
+    cat > "$base/debug/build/fakecc-1111/output" <<EOF
+cargo:rerun-if-changed=crates/k/cpp/wrapper.cpp
+cargo:rustc-link-search=native=$S_FOREIGN/target/debug/build/fakecc-1111/out
+EOF
+    touch -d "$stamp" "$base/debug/build/fakecc-1111/output"
+    # The delta: a tracked source the caller passes via --touch, i.e. exactly
+    # the `cargo:rerun-if-changed` path baked into `output` above.
+    delta="$lane/crates/k/cpp/wrapper.cpp"
+    mkdir -p "$(dirname "$delta")"
+    echo '// wrapper' > "$delta"
+    printf '%s|%s|%s' "$base" "$lane" "$delta"
+}
+
+# S2 RED arm: base `output` pre-stamped one hour into the FUTURE.
+IFS='|' read -r S2_BASE S2_LANE S2_DELTA \
+    <<< "$(_s_make_fixture S2 "$(date -d 'now + 1 hour' '+%Y-%m-%d %H:%M:%S')")"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$S2_BASE" "$S2_LANE" --fresh-checkout --touch "$S2_DELTA"
+
+assert "S2a: seed exits NON-zero when a build-script output is newer than a delta-touched source" \
+    test "$RC" -ne 0
+assert "S2b: STDOUT is EMPTY on the freshness-inversion abort (caller falls back to a cold rebuild)" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+assert "S2c: STDERR names the offending build-script output path" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "$2"' _ "$ERR_OUT" \
+    "$S2_LANE/target/debug/build/fakecc-1111/output"
+assert "S2c: STDERR names the delta path that is not newer than it" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "$2"' _ "$ERR_OUT" "$S2_DELTA"
+
+# S2 POSITIVE CONTROL: identical fixture except `output` carries the ordinary
+# past (base-build) stamp. Proves the guard does not fire on the normal path —
+# without this, S2a-c would also pass if the seed simply always aborted.
+IFS='|' read -r S2P_BASE S2P_LANE S2P_DELTA \
+    <<< "$(_s_make_fixture S2p "2024-06-01T00:00:00")"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$S2P_BASE" "$S2P_LANE" --fresh-checkout --touch "$S2P_DELTA"
+
+assert "S2d: positive control: past-stamped output + same delta exits 0 (guard does not over-fire)" \
+    test "$RC" -eq 0
+assert "S2d: positive control: STDOUT is exactly <lane>/target" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$S2P_LANE/target"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block R: lane isolation guards (task 5590) — every lane created in this file
 # must be nested under a private per-run parent, never bare /tmp, because
