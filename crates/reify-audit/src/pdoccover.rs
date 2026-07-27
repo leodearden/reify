@@ -484,7 +484,18 @@ pub fn extract_registries(units_src: &str) -> Vec<Registry> {
 pub fn allow_marker_reason(line: &str) -> Option<&str> {
     let idx = find_allow_token(line)?;
     let body = &line[idx + ALLOW_TOKEN.len()..];
-    let body = body.trim_start();
+    // Drop a trailing comment terminator BEFORE looking at the separator.
+    // A chunk-side marker naturally lives in an HTML comment (invisible in
+    // rendered markdown), and `-->` starts with the ASCII-hyphen separator:
+    // without this, `<!-- pdoccover:allow -->` would parse as a well-formed
+    // marker whose reason is `->` and would silently suppress a real claim.
+    // `*/` is the same hazard for a Rust block comment.
+    let body = body.trim_end();
+    let body = body
+        .strip_suffix("-->")
+        .or_else(|| body.strip_suffix("*/"))
+        .unwrap_or(body);
+    let body = body.trim();
     // One optional separator.
     let body = body
         .strip_prefix('—')
@@ -693,9 +704,66 @@ fn in_oracle_scope(path: &str) -> bool {
 }
 
 /// Call-shaped API mentions in one chunk: `(name, 1-based line)`.
+///
+/// A mention is an identifier immediately followed by `(` — the shape of a
+/// claim that the compiler provides a callable of that name. Backticked tokens
+/// with no parens are types, modules, units or constants (`Angle`, `std.math`,
+/// `pi`); admitting them would flood the lane with every prose noun. The
+/// left delimiter must not be `.`, because `solid.volume()` is member access
+/// on a value and the fabrication lane has no oracle for methods.
+///
+/// **Format-agnostic by construction** — no heading, fence-tag or table
+/// awareness anywhere. That is what makes extraction survive a chunk reformat,
+/// and what makes the chunk-path drift guard satisfiable at all: a
+/// markdown-structure-aware extractor would go silently blind the first time
+/// someone reflowed a table, and a silently-blind fabrication lane reports
+/// clean.
+///
+/// Chunk-side escape: a line carrying a well-formed `pdoccover:allow —
+/// <reason>` documents something deliberately ahead of the implementation, and
+/// its mentions are dropped. A REASONLESS marker drops nothing — the mention
+/// stays visible so the caller can report the malformed marker rather than
+/// silently honour it (PRD design decision 7).
+///
+/// Line numbers are 1-based over `str::lines()`, which strips a trailing `\r`,
+/// so CRLF chunks behave identically to LF ones.
 // G-allow: consumed by check() in-module, and by the chunk-path brittle-parse floor guard in tests/pdoccover.rs — a separate crate, so pub is required.
-pub fn chunk_call_mentions(_content: &str) -> Vec<(String, usize)> {
-    Vec::new()
+pub fn chunk_call_mentions(content: &str) -> Vec<(String, usize)> {
+    let mut out = Vec::new();
+    for (idx, line) in content.lines().enumerate() {
+        // A well-formed allow marker suppresses the whole line; a reasonless
+        // one suppresses nothing.
+        if allow_marker_reason(line).is_some() {
+            continue;
+        }
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] != b'(' {
+                i += 1;
+                continue;
+            }
+            // Walk back over the identifier immediately preceding the paren.
+            let end = i;
+            let mut start = end;
+            while start > 0 && is_word_byte(bytes[start - 1]) {
+                start -= 1;
+            }
+            i += 1;
+            if start == end {
+                continue; // `(` not preceded by an identifier
+            }
+            // `.foo(` is member access, not a builtin call.
+            if start > 0 && bytes[start - 1] == b'.' {
+                continue;
+            }
+            let name = &line[start..end];
+            if is_identifier_shaped(name) {
+                out.push((name.to_string(), idx + 1));
+            }
+        }
+    }
+    out
 }
 
 // -----------------------------------------------------------------------
@@ -1258,6 +1326,33 @@ pub const SOME_OTHER: &[&str] = &["not_a_registry"];
                 "a reasonless marker must yield None for line: {line:?}"
             );
         }
+    }
+
+    /// A trailing comment terminator is not reason text.
+    ///
+    /// The chunk-side marker naturally lives in an HTML comment, and `-->`
+    /// begins with the ASCII-hyphen separator: read naively,
+    /// `<!-- pdoccover:allow -->` is a well-formed marker whose reason is
+    /// `->`, and it would silently suppress a real claim. `*/` is the same
+    /// hazard on the Rust side.
+    #[test]
+    fn allow_marker_reason_ignores_comment_terminators() {
+        for line in [
+            "- `planned_op(x)` <!-- pdoccover:allow -->",
+            "- `planned_op(x)` <!-- pdoccover:allow — -->",
+            r#"    "x", /* pdoccover:allow */"#,
+        ] {
+            assert_eq!(
+                allow_marker_reason(line),
+                None,
+                "a comment terminator is not a reason body: {line:?}"
+            );
+        }
+        assert_eq!(
+            allow_marker_reason("- `planned_op(x)` <!-- pdoccover:allow — planned, see #5434 -->"),
+            Some("planned, see #5434"),
+            "a real reason inside an HTML comment survives, terminator stripped"
+        );
     }
 
     /// The legacy UNPREFIXED `doccover:allow` (earlier PRD drafts, renamed
