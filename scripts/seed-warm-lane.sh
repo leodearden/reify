@@ -381,6 +381,85 @@ _assert_no_stale_delta_stamp() {
     info "Post-condition OK: no stale 2020-01-01 stamp on delta file(s) from $sha"
 }
 
+# Seed-time post-condition: assert every delta-touched tracked source is
+# STRICTLY NEWER than every build-script replay file cargo uses as a freshness
+# reference. Sibling of _assert_no_stale_delta_stamp above, and the same
+# defense-in-depth posture: a silently-wrong mtime is a FALSE GREEN — the
+# failure class no downstream test can catch by construction, because the lane
+# builds and passes while linking the BASE's stale compiled artifact.
+#
+# WHY `output` specifically (measured, cargo 1.96.0, hermetic repro):
+#   cargo's LocalFingerprint::RerunIfChanged compares each watched source's
+#   mtime against target/<profile>/build/<pkg>-<hash>/output, and treats the
+#   source as stale only if STRICTLY NEWER than that file. So `output` newer
+#   than a changed watched source silently suppresses the build-script rerun:
+#     source=T, output=T+5s -> build script did NOT rerun (stale artifact kept)
+#     source=T, output=T-5s -> build script reran
+#   Task 5630 fixed the one site that produced this (the relocation sweep's
+#   `sed -i` temp+rename); this guard makes any future re-introduction abort
+#   the seed instead of shipping a lane cargo will mis-gate.
+#
+# Implementation:
+#   - Compares with bash's `-nt`, NOT `stat -c '%Y'` integers. `-nt` resolves at
+#     nanosecond precision and treats an exact tie as "not newer" — matching
+#     cargo's strict `>`. A whole-second integer comparison would pass a lane
+#     that cargo still mis-gates (sub-second inversion, or a same-second tie).
+#   - `-maxdepth 5`: the same bound and rationale as the relocation sweep's walk
+#     (depth 4 for <profile>/build/<pkg>-<hash>/output, depth 5 for a
+#     cross-compile <triple>/ prefix), so the guard's coverage and cost profile
+#     cannot drift apart from the sweep it protects.
+#   - Skips vacuously (info, return 0) when there is no delta path on disk or no
+#     `output` file: nothing was rescued from the bulk stamp, so there is no
+#     inversion to detect and nothing to assert.
+#   - A violation errs naming BOTH offending paths + return 1. Under set -e that
+#     aborts the seed before `echo "$LANE_TARGET"`, leaving stdout empty → the
+#     caller falls back to a cold rebuild (slow but CORRECT).
+_assert_delta_newer_than_build_outputs() {
+    if [ "${#_DELTA_PATHS[@]}" -eq 0 ]; then
+        info "Post-condition skipped: no delta-touched path to compare against build-script freshness references"
+        return 0
+    fi
+    # Oldest delta path: the weakest link. If even IT out-dates the newest
+    # `output`, every other delta path does too.
+    local oldest_delta="" _p
+    for _p in "${_DELTA_PATHS[@]}"; do
+        [ -e "$_p" ] || continue
+        if [ -z "$oldest_delta" ] || [ "$_p" -ot "$oldest_delta" ]; then
+            oldest_delta="$_p"
+        fi
+    done
+    if [ -z "$oldest_delta" ]; then
+        info "Post-condition skipped: no delta-touched path exists on disk"
+        return 0
+    fi
+    # Newest `output`: the strongest suppressor. If the oldest delta beats it,
+    # no build script anywhere in the lane can be wrongly considered Fresh.
+    local newest_output="" _f
+    while IFS= read -r -d '' _f; do
+        if [ -z "$newest_output" ] || [ "$_f" -nt "$newest_output" ]; then
+            newest_output="$_f"
+        fi
+    done < <(find "$LANE_TARGET" -maxdepth 5 -type f -name output -print0)
+    if [ -z "$newest_output" ]; then
+        info "Post-condition skipped: no build-script output file under $LANE_TARGET"
+        return 0
+    fi
+    if [ "$oldest_delta" -nt "$newest_output" ]; then
+        info "Post-condition OK: oldest delta path ($oldest_delta) is newer than the newest build-script output ($newest_output)"
+        return 0
+    fi
+    err "Build-script freshness-reference inversion: $newest_output is NOT older than the delta path $oldest_delta"
+    err "cargo compares watched sources against build/<pkg>-<hash>/output and reruns only when STRICTLY NEWER, so this lane would treat a changed source as Fresh and link the base's stale compiled artifact (task 5630 regression)"
+    err "_assert_delta_newer_than_build_outputs: seed aborted (cold rebuild forced)"
+    return 1
+}
+
+# Delta path set accumulated during --fresh-checkout: the explicit --touch paths
+# plus every path _touch_git_delta actually touched. Consumed by
+# _assert_delta_newer_than_build_outputs at the end of the block, so both delta
+# sources are visible at one call site without re-running `git diff` a third time.
+_DELTA_PATHS=()
+
 # Touch every file in LANE_DIR listed by `git diff --name-only <sha>`.
 # Fail-closed: a non-zero git diff exit aborts the seed (err + return 1 →
 # set -e propagates → stdout stays empty → caller falls back to cold rebuild).
@@ -401,6 +480,7 @@ _touch_git_delta() {
             local abs_path="$LANE_DIR/$rel_path"
             if [ -e "$abs_path" ]; then
                 touch "$abs_path"
+                _DELTA_PATHS+=("$abs_path")
                 count=$((count + 1))
             fi
         done <<< "$diff_out"
@@ -752,6 +832,7 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     if [ "${#TOUCH_PATHS[@]}" -gt 0 ]; then
         info "Touching ${#TOUCH_PATHS[@]} explicit delta path(s) to now ..."
         touch "${TOUCH_PATHS[@]}"
+        _DELTA_PATHS+=("${TOUCH_PATHS[@]}")
     fi
 
     # Resolve the delta-touch base commit with 3-tier priority (esc-3468-75):
@@ -1000,6 +1081,16 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     else
         info "Skipping env!()-baked-path relink: recorded buildroot matches this lane ($_lane_rp)"
     fi
+
+    # Seed-time post-condition (task 5630): every delta-touched tracked source
+    # must be STRICTLY NEWER than every build-script `output` in the lane, or
+    # cargo will treat a changed source as Fresh and link the base's stale
+    # compiled artifact. Called HERE — last of the mtime-mutating steps, after
+    # the relocation sweep AND the env!()-relink touch — so it observes the
+    # FINAL mtimes rather than an intermediate state any later step could
+    # invalidate. Placed before the reseed-trash rm below to honour that
+    # block's "start only once every find walk is complete" ordering.
+    _assert_delta_newer_than_build_outputs
 
     # Remove the reseed trash AFTER all find walks of LANE_DIR are complete.
     # Deferring to here (rather than immediately after the cp clone) prevents the
