@@ -708,9 +708,16 @@ assert "1d: exceeds-cap verdict reports a coherent breakdown for a single-file h
 # `harness_layout_unit_lines` therefore reports a SIX-field tuple
 #     "<total> <root_lines> <module_lines> <module_files> <external_lines> <external_files>"
 # with total = root_lines + module_lines + external_lines. The fixtures below
-# pin the resolution rules (which mirror rustc's), transitivity, visited-set
+# pin ALL THREE of rustc's resolution rules (`#[path]`-relative; bare `mod` in
+# the crate root / a `mod.rs`, against the containing dir; bare `mod` elsewhere,
+# against the file's STEM dir) in BOTH attribute spellings (attribute on its own
+# line, and the one-line `#[path = "…"] mod x;`), plus transitivity, visited-set
 # dedup, the unresolvable-target case, and the no-double-counting boundary
 # against the existing module-dir `find` walk.
+#
+# Each assert is an arithmetic equality over the whole tuple, so a resolution
+# regression cannot hide: it either drops lines or (with the Fixture E decoys)
+# binds the wrong file, and both move the total.
 # ===========================================================================
 echo ""
 echo "--- Section 1e: external (out-of-module-dir) includes are attributed ---"
@@ -788,10 +795,59 @@ _s1e3_tuple="$(harness_layout_unit_lines "$_s1e3_dir/harness_deep.rs")"
 assert "1e: a module-dir file is traversed so ITS escaping ../ include is attributed, without re-counting the module-dir file (total=29 root=2 module=10 files=1 external=17 extfiles=1)" \
     test "$_s1e3_tuple" = "29 2 10 1 17 1"
 
+# --- Fixture D: the SINGLE-LINE `#[path = "…"] mod x;` form is attributed, and
+#     it CONSUMES its own attribute — a bare `mod` on the next line must still
+#     resolve as bare. If the pending attribute leaked, `mod sibling;` would be
+#     re-resolved to the already-visited one_line.rs, dedup would drop it, and
+#     sibling.rs's 5 lines would vanish from the measure. ---
+_s1e4_dir="$(mktemp -d)"; _TMPDIRS+=("$_s1e4_dir")
+mkdir -p "$_s1e4_dir/shared"
+{
+    printf '#[path = "shared/one_line.rs"] mod one_line;\n'
+    printf 'mod sibling;\n'
+} > "$_s1e4_dir/harness_oneline.rs"                                # root: 2 lines
+awk 'BEGIN { for (i = 0; i < 11; i++) print "// x" }' > "$_s1e4_dir/shared/one_line.rs"
+awk 'BEGIN { for (i = 0; i <  5; i++) print "// x" }' > "$_s1e4_dir/sibling.rs"
+
+_s1e4_tuple="$(harness_layout_unit_lines "$_s1e4_dir/harness_oneline.rs")"
+assert "1e: a single-line \`#[path = \"…\"] mod x;\` is attributed AND consumes its own attribute, so the next bare \`mod\` still resolves as bare (total=18 root=2 module=0 files=0 external=16 extfiles=2)" \
+    test "$_s1e4_tuple" = "18 2 0 0 16 2"
+
+# --- Fixture E: rustc's THIRD resolution rule — a bare `mod X;` in a module
+#     file that is neither the crate root nor a `mod.rs` resolves against that
+#     file's STEM directory (`${F%.rs}/X.rs`, else `${F%.rs}/X/mod.rs`), not
+#     against its containing directory. Both candidate forms are exercised.
+#
+#     The two DECOYS are what make this discriminating rather than merely
+#     present: they sit exactly where a regression that collapsed the stem-dir
+#     branch to the containing dir would look. Without them such a regression
+#     would only DROP the includes; with them it silently binds the WRONG files
+#     (101+103 instead of 23+29) — the same silent-mis-bind failure mode the C1
+#     `#[path]` mandate exists to prevent, now caught by an arithmetic assert. ---
+_s1e5_dir="$(mktemp -d)"; _TMPDIRS+=("$_s1e5_dir")
+mkdir -p "$_s1e5_dir/shared/outer/other" "$_s1e5_dir/shared/other"
+{
+    printf '#[path = "shared/outer.rs"]\n'
+    printf 'mod outer;\n'
+} > "$_s1e5_dir/harness_stem.rs"                                   # root: 2 lines
+{
+    printf 'mod helper;\n'                     # -> shared/outer/helper.rs
+    printf 'mod other;\n'                      # -> shared/outer/other/mod.rs
+} > "$_s1e5_dir/shared/outer.rs"                                   # 2 lines
+awk 'BEGIN { for (i = 0; i < 23; i++) print "// x" }' > "$_s1e5_dir/shared/outer/helper.rs"
+awk 'BEGIN { for (i = 0; i < 29; i++) print "// x" }' > "$_s1e5_dir/shared/outer/other/mod.rs"
+# Decoys: reachable ONLY by a containing-dir (wrong) resolution. Never counted.
+awk 'BEGIN { for (i = 0; i < 101; i++) print "// x" }' > "$_s1e5_dir/shared/helper.rs"
+awk 'BEGIN { for (i = 0; i < 103; i++) print "// x" }' > "$_s1e5_dir/shared/other/mod.rs"
+
+_s1e5_tuple="$(harness_layout_unit_lines "$_s1e5_dir/harness_stem.rs")"
+assert "1e: a bare \`mod\` in a non-root non-mod.rs file resolves against the file's STEM dir, in both the .rs and the dir/mod.rs form, and does not bind the containing-dir decoys (total=56 root=2 module=0 files=0 external=54 extfiles=3)" \
+    test "$_s1e5_tuple" = "56 2 0 0 54 3"
+
 # --- Coherence: the total is exactly root + module + external in every case. ---
 _s1e_total_coherent() {
     local tuple total root mod files ext extfiles
-    for tuple in "$_s1e_tuple" "$_s1e2_tuple" "$_s1e3_tuple"; do
+    for tuple in "$_s1e_tuple" "$_s1e2_tuple" "$_s1e3_tuple" "$_s1e4_tuple" "$_s1e5_tuple"; do
         read -r total root mod files ext extfiles <<<"$tuple"
         [ "$total" -eq $((root + mod + ext)) ] || return 1
     done
