@@ -42,4 +42,29 @@ fi
 # shellcheck source=tests/infra/nextest_absent_lib.sh
 source "$LIB"
 
+# -- Test 1: API surface -------------------------------------------------------
+# `declare -F` rather than `grep -qF "name()"` on the file: grep would pass on a
+# definition sitting inside a comment, a heredoc, or a branch that never runs,
+# whereas declare -F asserts the function is actually DEFINED in the shell after
+# sourcing — which is the contract a caller depends on.
+echo ""
+echo "--- Test 1: API surface (declare -F after sourcing) ---"
+
+_defines() {
+    bash -c 'source "$1" && declare -F "$2" >/dev/null' _ "$LIB" "$1"
+}
+
+for _fn in nextest_absent_init nextest_absent_available nextest_absent_reason \
+           nx_run nx_which; do
+    assert "nextest_absent_lib.sh defines $_fn()" _defines "$_fn"
+done
+unset _fn
+
+# -- Test 2: source guard — double-source is a no-op ---------------------------
+echo ""
+echo "--- Test 2: source guard _REIFY_NEXTEST_ABSENT_LIB_SH_SOURCED ---"
+
+assert "double-sourcing nextest_absent_lib.sh is a no-op (guard works)" \
+    bash -c 'source "$1" && source "$1" && declare -F nextest_absent_init >/dev/null' _ "$LIB"
+
 test_summary
