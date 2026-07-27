@@ -1,0 +1,12 @@
+// Fixture (stdlib-namespace decompose-phase premise, PRD §0/§1 probe): the
+// compile-side prelude collision policy for structure templates is LAST-wins
+// (entities_phase HashMap collect), so a bare `Mode` binds std.modal.analysis's
+// Mode (frequency/shape/participation_mass/damping_ratio) and the buckling
+// Mode's `eigenvalue` member is UNREACHABLE from user code. `reify check` must
+// emit `structure 'Mode' has no member 'eigenvalue'` — the pre-state defect
+// that stdlib-namespace β's BucklingMode rename + α's NS-P4 parity fix.
+
+structure def ModeMemberProbe {
+    sub m = Mode()
+    let e = m.eigenvalue
+}

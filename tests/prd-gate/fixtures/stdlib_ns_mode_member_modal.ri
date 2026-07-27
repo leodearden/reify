@@ -1,0 +1,9 @@
+// Fixture (stdlib-namespace decompose-phase premise, control): the compile-side
+// LAST-wins binding means the bare `Mode` IS std.modal.analysis's Mode, so its
+// own `frequency` member resolves clean. Paired with stdlib_ns_mode_member.ri
+// (eigenvalue unreachable) this pins the direction of the collision bug.
+
+structure def ModeMemberModalControl {
+    sub m = Mode()
+    let f = m.frequency
+}
