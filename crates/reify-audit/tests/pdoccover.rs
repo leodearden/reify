@@ -956,3 +956,198 @@ fn chunk_call_mention_floor_guard_against_real_chunks() {
          fabricated name no chunk edit could ever satisfy."
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-19: shared-derivation contract — baseline_candidates() vs check()
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A registry exercising every disposition at once, so the contract is proved
+/// against a mixed tree rather than an all-offenders one:
+///
+/// - `alpha_op` — documented in a chunk → not a candidate;
+/// - `beta_op`  — well-formed allow marker → not a candidate;
+/// - `gamma_op` — baselined already → not a candidate;
+/// - `delta_op`, `epsilon_op` — bare → candidates;
+/// - `zeta_op`  — reasonless marker → an `allow-missing-reason:` finding, and
+///   deliberately NOT a candidate: adding it to the baseline would freeze a
+///   malformed marker into the ratchet instead of fixing it;
+/// - `eta_op`   — documented but still allow-marked → `stale-allow-entry:`,
+///   also not a candidate.
+///
+/// Declared deliberately out of alphabetical order so a `check()` that happens
+/// to emit in declaration order cannot pass the same-order assertion by luck.
+#[allow(dead_code)]
+const MIXED_UNITS: &str = "\
+//! Fixture registry for the PDOCCOVER shared-derivation contract.
+
+pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
+    \"epsilon_op\",
+    \"alpha_op\",
+    \"zeta_op\", // pdoccover:allow
+    \"delta_op\",
+    \"eta_op\", // pdoccover:allow — documented, so this marker is stale
+    \"beta_op\", // pdoccover:allow — internal lowering shim
+    \"gamma_op\",
+];
+";
+
+/// Documents `alpha_op` and `eta_op` only.
+#[allow(dead_code)]
+const MIXED_CHUNK: &str = "\
+# Geometry
+
+- `alpha_op(shape, amount)` — the alpha operation.
+- `eta_op(shape)` — the eta operation.
+";
+
+/// `baseline_candidates()` must return EXACTLY the names `check()` reports as
+/// `undocumented-name:` — same set, same order, no duplicates.
+///
+/// This is the seam #5480 consumes: its regenerator writes
+/// `pdoccover-baseline.txt` from this list, and the ratchet compares that file
+/// against `check()`'s findings. If the two derivations could disagree by even
+/// one name, a freshly regenerated baseline would immediately fail its own
+/// ratchet — the failure mode PRD §6.6 records from `ptodo-baseline-gen`. One
+/// derivation, two callers.
+#[test]
+fn baseline_candidates_match_the_undocumented_name_findings_exactly() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    write_file(root, FIX_UNITS, MIXED_UNITS);
+    write_file(root, FIX_CHUNK, MIXED_CHUNK);
+    write_file(root, FIX_BASELINE, "# ratchet baseline\n\ngamma_op\n");
+
+    let h = Harness::new(&[FIX_UNITS, FIX_CHUNK, FIX_BASELINE]);
+    let ctx = h.ctx(root);
+
+    let findings = reify_audit::pdoccover::check(&ctx);
+    let from_check: Vec<String> = findings
+        .iter()
+        .filter(|f| f.summary.starts_with("undocumented-name:"))
+        .map(|f| finding_name(f).to_string())
+        .collect();
+    let candidates = reify_audit::pdoccover::baseline_candidates(&ctx);
+
+    // Sanity: the fixture must actually exercise the lane, or the equality
+    // below would be trivially satisfied by two empty vectors.
+    assert_eq!(
+        from_check,
+        vec!["delta_op".to_string(), "epsilon_op".to_string()],
+        "fixture sanity — `check()` must report exactly the two bare names as \
+         `undocumented-name:`. Got {from_check:?} from findings {:?}",
+        findings
+            .iter()
+            .map(|f| f.summary.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    // The contract: identical content AND identical order.
+    assert_eq!(
+        candidates, from_check,
+        "`baseline_candidates()` and `check()`'s `undocumented-name:` findings \
+         must be the same list in the same order — they are one derivation with \
+         two callers. #5480's regenerator writes the former and the ratchet \
+         compares the latter; any divergence makes a freshly generated baseline \
+         fail its own ratchet."
+    );
+
+    // Sorted and deduped — a baseline file is line-diffed, so order must not
+    // depend on `units.rs` declaration order (the fixture declares them
+    // out of order on purpose).
+    let mut sorted = candidates.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(
+        candidates, sorted,
+        "`baseline_candidates()` must be sorted and deduped so the generated \
+         baseline file diffs cleanly; got {candidates:?}"
+    );
+}
+
+/// The exclusions, asserted by name rather than by count, so a future
+/// disposition change cannot quietly leak a name into the generated baseline.
+///
+/// A baseline is residual debt. Anything documented is not debt; anything
+/// already suppressed by another channel is already accounted for; and a
+/// malformed marker is a defect to fix, not debt to freeze.
+#[test]
+fn baseline_candidates_exclude_documented_allowed_and_baselined_names() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    write_file(root, FIX_UNITS, MIXED_UNITS);
+    write_file(root, FIX_CHUNK, MIXED_CHUNK);
+    write_file(root, FIX_BASELINE, "# ratchet baseline\n\ngamma_op\n");
+
+    let h = Harness::new(&[FIX_UNITS, FIX_CHUNK, FIX_BASELINE]);
+    let candidates = reify_audit::pdoccover::baseline_candidates(&h.ctx(root));
+
+    for (name, why) in [
+        ("alpha_op", "documented in a chunk"),
+        ("eta_op", "documented (its allow marker is merely stale)"),
+        ("beta_op", "carries a well-formed allow marker"),
+        ("gamma_op", "already listed in the baseline file"),
+        (
+            "zeta_op",
+            "carries a REASONLESS marker — a defect to fix, not debt to freeze",
+        ),
+    ] {
+        assert!(
+            !candidates.contains(&name.to_string()),
+            "`{name}` must NOT be a baseline candidate: it {why}. Got \
+             {candidates:?}"
+        );
+    }
+
+    for name in ["delta_op", "epsilon_op"] {
+        assert!(
+            candidates.contains(&name.to_string()),
+            "`{name}` is undocumented with no exemption channel, so it MUST be \
+             a baseline candidate. Got {candidates:?}"
+        );
+    }
+}
+
+/// The derivation is over the omission lane only. Fabrications are a chunk
+/// defect to fix, not registry debt to ratchet, and #5480's baseline file is
+/// keyed by bare name — a fabricated name has no registry entry to key on.
+#[test]
+fn baseline_candidates_exclude_fabricated_names() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    write_file(root, FIX_UNITS, MIXED_UNITS);
+    write_file(
+        root,
+        FIX_CHUNK,
+        "# Geometry\n\n- `alpha_op(shape, amount)` — real.\n\
+         - `eta_op(shape)` — real.\n- `phantom_op(x)` — not real.\n",
+    );
+    write_file(root, FIX_BASELINE, "# ratchet baseline\n\ngamma_op\n");
+
+    let h = Harness::new(&[FIX_UNITS, FIX_CHUNK, FIX_BASELINE]);
+    let ctx = h.ctx(root);
+
+    let findings = reify_audit::pdoccover::check(&ctx);
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.summary.starts_with("fabricated-name:")
+                && finding_name(f) == "phantom_op"),
+        "fixture sanity — `phantom_op` must be reported as a fabrication. Got \
+         {:?}",
+        findings
+            .iter()
+            .map(|f| f.summary.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    let candidates = reify_audit::pdoccover::baseline_candidates(&ctx);
+    assert!(
+        !candidates.contains(&"phantom_op".to_string()),
+        "a fabricated name must never enter the generated baseline — the \
+         baseline is the omission ratchet, keyed by registry name. Got \
+         {candidates:?}"
+    );
+}
