@@ -71,6 +71,52 @@ pub(crate) enum ExpectedArg {
     },
 }
 
+/// The curated exemption list for [`builtin_arg_slots`] keys that are NOT
+/// members of `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` (task 5652).
+///
+/// The table is overwhelmingly a geometry topology-selector table, and the
+/// coverage invariant `arg_slot_keys_are_registered_builtin_names` asserts
+/// exactly that — every key yielding slots is a topology selector *or* is
+/// named here.  Membership is a deliberate, reviewed decision, not a
+/// convenience escape hatch; the same invariant rejects dead entries, so a key
+/// removed from the table cannot leave a stale name behind.
+///
+/// Per entry, why it is exempt:
+///
+/// - `generate` — the task-3994 list combinator.  Its slot is an `Int` count
+///   (`ExpectedArg::Int`), the lone non-geometry, non-`Scalar` slot in the
+///   table; it hosts here only because the checking mechanism is generic
+///   (name-keyed), which avoids a parallel one-entry checker.  It is a list
+///   helper, never a selector.
+///
+/// - `linear_pattern`, `linear_pattern_2d` — CSG producers registered in
+///   `GEOMETRY_FUNCTION_NAMES` (units.rs), gaining LENGTH `spacing` slots in
+///   task 5652.  They must **not** be moved into
+///   `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` merely to satisfy the invariant:
+///   `expr.rs::infer_type`'s `NoUserFunctions` ladder consults
+///   `is_geometry_topology_selector` (expr.rs:3243) *ahead of*
+///   `is_geometry_function` (expr.rs:3360), and the selector arm resolves its
+///   result type with
+///   `topology_selector_result_type(name).expect("is_geometry_topology_selector implies result type")`.
+///   Neither pattern name has an entry in `topology_selector_result_type`, so
+///   slice membership alone would turn every `linear_pattern(…)` call into a
+///   panic on that `expect` — the names would never reach the CSG arm at all.
+///   Note this overlap is *not* otherwise pinned: units.rs's
+///   `*_are_disjoint_from_other_families` tests iterate `GEOMETRY_QUERY_NAMES`
+///   and the other sibling families, but none iterates
+///   `GEOMETRY_FUNCTION_NAMES` or `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`, so
+///   assertion (b) of `arg_slot_keys_are_registered_builtin_names` is what
+///   holds this line.
+//
+// `dead_code` is allowed because this const is a contract consumed by the
+// coverage invariant in `mod tests` (and citable from docs/review) rather than
+// by compile-time logic: deriving the table's exemptions from it at runtime
+// would invert the dependency — the match arms are the source of truth, and
+// this list is the reviewed statement of which of them are non-selectors.
+#[allow(dead_code)]
+pub(crate) const NON_SELECTOR_ARG_SLOT_KEYS: &[&str] =
+    &["generate", "linear_pattern", "linear_pattern_2d"];
+
 /// Return the checkable dimensioned-scalar argument slots for a named builtin
 /// call of a given arity.
 ///
@@ -628,11 +674,20 @@ mod tests {
     ///
     /// The probe set is `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` +
     /// `GEOMETRY_FUNCTION_NAMES` (the CSG producer family, which is where the
-    /// new pattern keys live) + the typo/non-geometry list, swept across
-    /// arities so an arity-guarded arm cannot hide from the invariant by being
-    /// empty at the single arity probed.
+    /// new pattern keys live) + `non_family_keys` + the typo/non-geometry list,
+    /// swept across arities so an arity-guarded arm cannot hide from the
+    /// invariant by being empty at the single arity probed.
     #[test]
     fn arg_slot_keys_are_registered_builtin_names() {
+        // Keys that belong to NO units.rs family slice and so cannot be reached
+        // by any slice-derived sweep — they must be probed by name or the
+        // subset assertion stays vacuous for them. `generate` is exactly the
+        // name the predecessor test structurally could not reach; listing it
+        // here is what actually closes that hole (removing it from
+        // NON_SELECTOR_ARG_SLOT_KEYS now fails the assertion below, whereas
+        // before it would have gone unnoticed).
+        let non_family_keys: &[&str] = &["generate"];
+
         // Extra non-selector names that must never map to non-empty slots.
         let extra_non_selector: &[&str] = &[
             "box",
@@ -658,6 +713,7 @@ mod tests {
         for &name in GEOMETRY_TOPOLOGY_SELECTOR_NAMES
             .iter()
             .chain(GEOMETRY_FUNCTION_NAMES.iter())
+            .chain(non_family_keys.iter())
             .chain(extra_non_selector.iter())
         {
             // Swept across arities so an arity-guarded arm cannot hide from
