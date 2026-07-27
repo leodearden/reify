@@ -320,6 +320,124 @@ fn points_only_sketch_solves_and_reports_honest_dof() {
     assert_point_near(point_of(&result, b), (-0.002, 0.007), "point b");
 }
 
+/// An unconstrained arc has five degrees of freedom, not six.
+///
+/// The arc's three points contribute six params, but libslvs emits an implicit
+/// `|c-s| = |c-e|` equation for every `SLVS_E_ARC_OF_CIRCLE` (the same equation
+/// `arc_endpoints_share_a_radius_implicitly` observes acting on the geometry),
+/// so the rank of a *zero-constraint* system containing an arc is 1, not 0.
+///
+/// `dof` is therefore only trustworthy when it comes from libslvs itself. Any
+/// Rust-side recomputation as "count the free params" must disagree here — it
+/// has no way to know about an equation the C library added on its own behalf.
+///
+/// Exact integer, no tolerance: `params - rank` is combinatorial.
+#[test]
+fn unconstrained_arc_reports_five_dof_not_its_param_count() {
+    let mut s = Sketch::new();
+    let c = s.point(0.0, 0.0);
+    let start = s.point(0.005, 0.0);
+    let end = s.point(0.0, 0.005);
+    s.arc(c, start, end);
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert!(
+        matches!(result, SketchSolveResult::Solved { .. }),
+        "an unconstrained arc is solvable, got {result:?}"
+    );
+    assert_eq!(
+        dof_of(&result),
+        5,
+        "an arc's 6 point params less libslvs' one implicit equal-radius equation"
+    );
+}
+
+/// Two unconstrained arcs have ten degrees of freedom, not eleven or twelve.
+///
+/// The companion to the single-arc case, and the reason it is not redundant:
+/// twelve params less *one* equation would be eleven. Ten pins that libslvs
+/// contributes the implicit equation once **per arc**, so the discrepancy
+/// scales with the arc count rather than being a single fixed offset that a
+/// constant correction could absorb.
+#[test]
+fn implicit_arc_equation_is_per_arc_not_a_fixed_offset() {
+    let mut s = Sketch::new();
+    let c1 = s.point(0.0, 0.0);
+    let s1 = s.point(0.005, 0.0);
+    let e1 = s.point(0.0, 0.005);
+    s.arc(c1, s1, e1);
+
+    let c2 = s.point(0.020, 0.0);
+    let s2 = s.point(0.024, 0.0);
+    let e2 = s.point(0.020, 0.004);
+    s.arc(c2, s2, e2);
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert!(
+        matches!(result, SketchSolveResult::Solved { .. }),
+        "two unconstrained arcs are solvable, got {result:?}"
+    );
+    assert_eq!(
+        dof_of(&result),
+        10,
+        "12 point params less one implicit equal-radius equation per arc"
+    );
+}
+
+/// An unconstrained circle has three degrees of freedom — centre x, centre y,
+/// and radius.
+///
+/// An over-correction guard rather than a restatement of the arc cases: a
+/// circle carries a radius param of its own and libslvs adds *no* implicit
+/// equation for it, so any fix for the arc discrepancy that subtracts per
+/// curved entity — rather than per arc — lands here as 2 instead of 3.
+#[test]
+fn unconstrained_circle_reports_three_dof() {
+    let mut s = Sketch::new();
+    let c = s.point(0.0, 0.0);
+    s.circle(c, 0.004);
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert!(
+        matches!(result, SketchSolveResult::Solved { .. }),
+        "an unconstrained circle is solvable, got {result:?}"
+    );
+    assert_eq!(
+        dof_of(&result),
+        3,
+        "circle centre (2 params) plus its radius param, with no implicit equation"
+    );
+}
+
+/// An unconstrained line has four degrees of freedom — its two endpoints.
+///
+/// The second over-correction guard. A line segment introduces no params of its
+/// own and no implicit equation: its DOF is exactly its endpoints', so this
+/// must read the same as the two-free-points case above. A blanket "subtract
+/// one per non-point entity" correction reads 3 here.
+#[test]
+fn unconstrained_line_reports_its_endpoints_dof() {
+    let mut s = Sketch::new();
+    let a = s.point(0.0, 0.0);
+    let b = s.point(0.010, 0.002);
+    s.line(a, b);
+
+    let result = reify_constraints::solve_sketch(s.system());
+
+    assert!(
+        matches!(result, SketchSolveResult::Solved { .. }),
+        "an unconstrained line is solvable, got {result:?}"
+    );
+    assert_eq!(
+        dof_of(&result),
+        4,
+        "two free endpoints; the line segment itself adds neither param nor equation"
+    );
+}
+
 /// Solving the same `SketchSystem` twice yields bit-identical coordinates.
 ///
 /// Compared with `f64::to_bits`, not within `TOL`: O9 determinism is a claim
