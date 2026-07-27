@@ -365,7 +365,7 @@ fn emit_mismatch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::units::GEOMETRY_TOPOLOGY_SELECTOR_NAMES;
+    use crate::units::{GEOMETRY_FUNCTION_NAMES, GEOMETRY_TOPOLOGY_SELECTOR_NAMES};
     use reify_core::{DimensionVector, Severity, SourceSpan, Type, identity::ValueCellId};
     use reify_ir::CompiledExpr;
 
@@ -607,19 +607,32 @@ mod tests {
         }
     }
 
-    /// Coverage invariant: every key in the table's domain is a member of
-    /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` — catching typos and keeping the
-    /// arg-slot table consistent with the recognized family even as new
-    /// selector names land.
+    /// Coverage invariant (amended by task 5652): every key in the table's
+    /// domain is either a topology selector (`GEOMETRY_TOPOLOGY_SELECTOR_NAMES`)
+    /// or a deliberately curated exemption ([`NON_SELECTOR_ARG_SLOT_KEYS`]) —
+    /// catching typos and keeping the arg-slot table consistent with the
+    /// recognized families even as new keys land.
     ///
-    /// The test probes `builtin_arg_slots` on every name in
-    /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` PLUS a set of known-non-selector
-    /// names, and asserts that every name for which it returns non-empty slots
-    /// is actually in `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`.  This ties the
-    /// invariant to the real match arms (rather than a parallel hardcoded list)
-    /// so a typo'd new key — e.g. `"moment_of_inertta"` — would be caught.
+    /// # Why this replaces `arg_slot_keys_are_subset_of_topology_selector_names`
+    ///
+    /// The predecessor asserted a strict subset of
+    /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`, but only ever *probed* names drawn
+    /// from that same slice plus a hardcoded typo list.  A non-selector key was
+    /// therefore never probed and the assertion was vacuous for it: `generate`
+    /// has been a non-selector key since task 3994 and went unchecked for the
+    /// whole time the invariant claimed to cover the table's domain.  The fix is
+    /// to CLOSE that hole (probe a genuinely wider name set, and name the
+    /// exemptions explicitly) rather than to widen the selector slice —
+    /// see the module docs on why the pattern names must NOT join
+    /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`.
+    ///
+    /// The probe set is `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` +
+    /// `GEOMETRY_FUNCTION_NAMES` (the CSG producer family, which is where the
+    /// new pattern keys live) + the typo/non-geometry list, swept across
+    /// arities so an arity-guarded arm cannot hide from the invariant by being
+    /// empty at the single arity probed.
     #[test]
-    fn arg_slot_keys_are_subset_of_topology_selector_names() {
+    fn arg_slot_keys_are_registered_builtin_names() {
         // Extra non-selector names that must never map to non-empty slots.
         let extra_non_selector: &[&str] = &[
             "box",
@@ -636,11 +649,15 @@ mod tests {
             "moment_of_inertta",
             "center_of_mas",
             "faces_by_norml",
+            // Typos of the new task-5652 pattern keys.
+            "linear_patern",
+            "linear_pattern_3d",
         ];
 
         let mut any_nonempty = false;
         for &name in GEOMETRY_TOPOLOGY_SELECTOR_NAMES
             .iter()
+            .chain(GEOMETRY_FUNCTION_NAMES.iter())
             .chain(extra_non_selector.iter())
         {
             // Swept across arities so an arity-guarded arm cannot hide from
@@ -650,10 +667,13 @@ mod tests {
                 if !slots.is_empty() {
                     any_nonempty = true;
                     assert!(
-                        GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&name),
+                        GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&name)
+                            || NON_SELECTOR_ARG_SLOT_KEYS.contains(&name),
                         "builtin_arg_slots({:?}, {}) returned non-empty slots, but {:?} \
-                         is not in GEOMETRY_TOPOLOGY_SELECTOR_NAMES; \
-                         fix the name or add it to the selector slice",
+                         is in neither GEOMETRY_TOPOLOGY_SELECTOR_NAMES nor \
+                         NON_SELECTOR_ARG_SLOT_KEYS; fix the name, or — if the key is \
+                         intentional — record it in NON_SELECTOR_ARG_SLOT_KEYS with a \
+                         rationale",
                         name,
                         arg_count,
                         name
@@ -669,8 +689,46 @@ mod tests {
              appears to be empty or unreachable"
         );
 
-        // Smoke: the five canonical checked names must individually return
-        // non-empty at their canonical call arity.
+        // (a) No dead allow-list entries: every exemption must actually earn its
+        // place by yielding slots at SOME arity. Without this, a key removed
+        // from the table would leave a stale name in the exemption list, and the
+        // invariant above would silently stop covering it.
+        for &name in NON_SELECTOR_ARG_SLOT_KEYS {
+            let yields_slots =
+                (0usize..=12).any(|arg_count| !builtin_arg_slots(name, arg_count).is_empty());
+            assert!(
+                yields_slots,
+                "NON_SELECTOR_ARG_SLOT_KEYS contains {:?}, but builtin_arg_slots({:?}, n) \
+                 is empty for every n in 0..=12 — the exemption is dead; \
+                 remove it from the list",
+                name, name
+            );
+        }
+
+        // (b) The pattern keys are deliberately NOT topology selectors. Pinning
+        // this is the point of the exemption list: adding them to
+        // GEOMETRY_TOPOLOGY_SELECTOR_NAMES would satisfy the subset assertion
+        // above while actively breaking dispatch (is_geometry_topology_selector
+        // is consulted ahead of is_geometry_function, and is_selector_expr uses
+        // selector membership to EXCLUDE names from CSG geometry-let routing).
+        for &name in &["linear_pattern", "linear_pattern_2d"] {
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&name),
+                "{:?} must NOT be in GEOMETRY_TOPOLOGY_SELECTOR_NAMES — it is a CSG \
+                 producer in GEOMETRY_FUNCTION_NAMES; it is exempted via \
+                 NON_SELECTOR_ARG_SLOT_KEYS instead",
+                name
+            );
+            assert!(
+                GEOMETRY_FUNCTION_NAMES.contains(&name),
+                "{:?} is expected to be a registered CSG producer in \
+                 GEOMETRY_FUNCTION_NAMES",
+                name
+            );
+        }
+
+        // (c) Smoke: the five canonical checked selector names must individually
+        // return non-empty at their canonical call arity.
         for &(name, arg_count) in &[
             ("center_of_mass", 2usize),
             ("moment_of_inertia", 2),
