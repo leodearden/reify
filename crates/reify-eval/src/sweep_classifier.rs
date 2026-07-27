@@ -400,8 +400,35 @@ fn sample_ellipse_ring(a: f64, b: f64) -> Vec<[f64; 2]> {
         .collect()
 }
 
+/// Reverse `ring` in place iff its signed area is negative, so the returned
+/// ring is counter-clockwise.
+///
+/// Orientation is measured with the mesher's own
+/// [`reify_solver_elastic::ring_signed_area_2d`] — the same predicate
+/// `validate_boundary` uses — so producer and consumer cannot drift apart on
+/// the convention.
+///
+/// The comparison is strictly `< 0.0`, so a zero-area ring (collinear points,
+/// fewer than 3 points, or empty) passes through untouched and still reaches
+/// [`reify_solver_elastic::mesh_swept_profile_2d`]'s existing
+/// `DegenerateBoundary` / `EmptyBoundary` rejection. Normalisation fixes
+/// winding; it must never mask degeneracy.
+fn normalise_ccw(mut ring: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
+    if reify_solver_elastic::ring_signed_area_2d(&ring) < 0.0 {
+        ring.reverse();
+    }
+    ring
+}
+
 /// Sample a 2-D profile op's outer boundary ring as a list of `[x, y]` points
 /// in the profile's local XY plane (`z = 0`).
+///
+/// Each arm emits the ring in its source op's *natural* order — the rectangle's
+/// fixed corner order, the polygon's caller-supplied vertex order, the
+/// parametric sweep direction for the curved arms. Winding is deliberately NOT
+/// this function's concern: counter-clockwise orientation is imposed once,
+/// downstream, by [`swept_kind_to_profile_boundary`], so an arm added later
+/// inherits the postcondition without having to restate it.
 ///
 /// Returns `Some(outer_ring)` for the recognised single-ring profile ops
 /// ([`GeometryOp::RectangleProfile`], [`GeometryOp::PolygonProfile`], and —
@@ -458,6 +485,23 @@ fn profile_sample_2d(op: &GeometryOp) -> Option<Vec<[f64; 2]>> {
 /// `holes` is always empty — every recognised profile op is single-ring, and
 /// multiply-connected cross-sections are Phase B (PRD task #14).
 ///
+/// # Postcondition: the outer ring is counter-clockwise
+///
+/// Any `Some(_)` result has `ring_signed_area_2d(&outer) >= 0.0`. This
+/// discharges the [`reify_solver_elastic::ProfileBoundary`] contract
+/// ("Outer-boundary points (CCW for positive area)", `mesher.rs:96`) and is
+/// what the sweep step relies on downstream: the canonical Wedge6/Hex8 node
+/// orderings "produce det J > 0 when the 2D mesher emits CCW faces"
+/// (`sweep.rs:19`). The consumer does not enforce this for us —
+/// `validate_boundary` only rejects `|area| < 1e-14` — so a clockwise profile
+/// would otherwise reach the mesher unflagged and invert the swept elements.
+///
+/// Normalisation happens here, at the single seam where a sampled ring becomes
+/// a `ProfileBoundary`, rather than inside any [`profile_sample_2d`] arm, so it
+/// holds for all four current arms and for any arm added later. A zero-area
+/// ring is passed through unreversed and left to the consumer's
+/// `DegenerateBoundary` rejection.
+///
 /// # Returns
 ///
 /// `None` when the profile handle cannot be resolved in `handles` (a
@@ -481,7 +525,10 @@ pub fn swept_kind_to_profile_boundary(
         .iter()
         .position(|h| h == profile)
         .and_then(|i| ops.get(i))?;
-    let outer = profile_sample_2d(source_op)?;
+    // Single seam: every sampled ring passes through the winding normaliser on
+    // its way to becoming a ProfileBoundary, so the CCW postcondition is a
+    // property of this function rather than of each individual sampler arm.
+    let outer = normalise_ccw(profile_sample_2d(source_op)?);
     Some(reify_solver_elastic::ProfileBoundary {
         outer,
         holes: vec![],
@@ -1555,7 +1602,10 @@ mod tests {
             .expect("a PolygonProfile-backed extrude must produce a ProfileBoundary");
         assert_eq!(
             boundary.outer, points,
-            "polygon outer ring must be the profile's points verbatim"
+            "polygon outer ring must be the profile's points verbatim — this \
+             fixture is already CCW, so 'verbatim' here is passthrough, not an \
+             unconditional guarantee; a CW ring is reversed by the winding \
+             normaliser (see ..._clockwise_polygon_is_normalised_ccw)"
         );
         assert!(
             boundary.holes.is_empty(),
