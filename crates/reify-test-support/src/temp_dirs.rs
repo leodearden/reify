@@ -448,4 +448,9 @@ mod tests {
     fn lsp_server_has_no_unguarded_temp_dirs() {
         assert_no_unguarded_temp_dir_sites("crates/reify-lsp/src/server.rs");
     }
+
+    #[test]
+    fn rpath_smoke_has_no_unguarded_temp_dirs() {
+        assert_no_unguarded_temp_dir_sites("crates/reify-kernel-gmsh/tests/rpath_smoke.rs");
+    }
 }
