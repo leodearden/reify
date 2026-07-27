@@ -450,14 +450,23 @@ mod tests {
         );
     }
 
-    /// Create a temp dir that is removed when the returned guard is dropped —
-    /// including on an unwinding panic, which a manual teardown at the end of
-    /// a test body would skip.
+    /// Create a temp dir under `env::temp_dir()` that is removed when the
+    /// returned guard is dropped — including on an unwinding panic, which a
+    /// manual teardown at the end of a test body would skip (task #5639: the
+    /// previous bare `create_dir_all` with no teardown leaked ~4.7k dirs into
+    /// the shared /tmp).
+    ///
+    /// The `reify-build-utils-test-` prefix is load-bearing, not cosmetic:
+    /// `Drop` cannot run on SIGKILL/OOM-kill, and the prefix is what makes any
+    /// surviving debris attributable to this crate during host /tmp triage.
     ///
     /// Bind the result to a named local that outlives the test body. Chaining
     /// (`tempdir().path().to_path_buf()`) drops the guard at the end of that
     /// statement and deletes the directory before it is ever used.
     fn tempdir() -> tempfile::TempDir {
-        tempfile::tempdir().expect("create temp dir")
+        tempfile::Builder::new()
+            .prefix("reify-build-utils-test-")
+            .tempdir()
+            .expect("create temp dir")
     }
 }
