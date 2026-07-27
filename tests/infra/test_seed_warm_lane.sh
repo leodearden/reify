@@ -2888,12 +2888,13 @@ assert "S2f: sub-second abort names BOTH the output and the delta path on [error
 # by a different route. Today that condition is COMPLETELY SILENT: the
 # `if [ -n "$EFFECTIVE_BASE_COMMIT" ]` block simply has no else.
 #
-# Scope note: this asserts a warn ONLY. Making the bulk stamp conditional (or
-# failing closed) would break two currently-green DECLARED contracts — Block D
-# above (D1/D2/D4 assert the bulk stamp fires with no base commit in the
-# fixture) and tests/infra/test_warm_lane_pool.sh:398 (--fresh-checkout --touch
-# with no --base-commit) — so it is a D5-contract change needing its own
-# ruling, tracked as task #5632. S3b pins that the warn stays purely additive.
+# Scope note: this asserts a warn ONLY, and S3b pins that the warn stays purely
+# additive. The ruling that question was awaiting landed as §9.5 inv.13 (task
+# 5632): a no-base seed now REFUSES — but only when the clone carries recorded
+# prior compilations for the bulk stamp to wrongly re-Freshen. S3's fixture
+# deliberately carries NO .fingerprint dir, so it stays BELOW inv.13's hazard
+# gate and keeps asserting the accept path unchanged. That makes S3a/S3b the
+# below-threshold CONTROL for Block T's T1; see Block T for the refusal arms.
 # ─────────────────────────────────────────────────────────────────────────────
 S3_BASE_PARENT="$(mktemp -d /tmp/test-seed-S3-parent-XXXXXX)"
 S3_BASE="$S3_BASE_PARENT/target"

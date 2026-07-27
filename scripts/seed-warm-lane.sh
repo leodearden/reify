@@ -477,10 +477,7 @@ _assert_delta_newer_than_build_outputs() {
     # EVERY acquire against that generation aborts identically and the pool
     # degrades to cold fallback until the base is re-promoted. Say so, so an
     # operator is not left diagnosing the lane. (Self-healing by backdating the
-    # offending `output` is strictly conservative — an older `output` can only
-    # cause an extra build-script rerun, never a stale link — but that is a
-    # behavioural change to the ratified fail-closed posture, so it is tracked as
-    # task #5632 rather than taken as a drive-by here.)
+    # offending `output` was evaluated and REJECTED — see §9.5 inv.12.)
     err "The offending mtime is under $LANE_TARGET, which is a CoW clone of ${BASE_TARGET_DIR} — if the inversion came with the base, every acquire against that generation aborts the same way; re-promote a clean base with scripts/refresh-warm-base.sh --landed-commit <sha>"
     err "_assert_delta_newer_than_build_outputs: seed aborted (cold rebuild forced)"
     return 1
@@ -947,20 +944,9 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     else
         # All three resolution tiers came back empty, so NOTHING is delta-touched
         # and every tracked source keeps the 2020-01-01 bulk stamp above. Report
-        # the condition and what it implies; do not diagnose why it happened.
-        #
-        # DELIBERATELY a warn and nothing more (task 5630). The stronger remedy —
-        # skip the bulk stamp, or fail closed, when no base resolves — would break
-        # two currently-green DECLARED contracts rather than merely require new
-        # tests: tests/infra/test_seed_warm_lane.sh Block D (D1/D2/D4 assert the
-        # bulk stamp DOES fire on a fixture with no base commit) and
-        # tests/infra/test_warm_lane_pool.sh:398 (--fresh-checkout --touch with no
-        # --base-commit, relying on the 2020 stamp for its warmth assertions).
-        # That is a D5-contract change needing its own ruling, tracked as task
-        # #5632 (pending); silently flipping it inside a task scoped to a
-        # different, measured defect would conflate a confirmed fix with an
-        # unratified design change. Until then this at least makes the condition
-        # diagnosable from seed logs instead of completely silent.
+        # the condition and what it implies; do not diagnose why it happened,
+        # then refuse via _assert_delta_touch_base_substantiated immediately
+        # below (task 5632 — full statement: §9.5 inv.13).
         warn "No delta-touch base resolved (--base-commit absent, ${BASE_TARGET_DIR}.basecommit absent, .warm-base-meta BASE_COMMIT absent) — no tracked source is touched to now, so every tracked source keeps the 2020-01-01 bulk stamp and cannot out-date any cloned build artifact; cargo will treat stale build-script outputs as Fresh. Pass --base-commit <sha>, or re-run scripts/refresh-warm-base.sh so the authoritative .basecommit stamp exists."
         # Called HERE — before the non-relocatable build-dir invalidation, the
         # links-metadata/OUT_DIR relocation sweep and the env!() relink below —
