@@ -899,17 +899,38 @@ fn fea_pressure_smoke_example_has_no_ctor_conformance_diagnostics() {
 // against literal shapes for which no coercion rule exists. Five families were
 // therefore false-rejected across 15+ shipped examples.
 //
-// Step-12 inverts the gate to a positive, explicitly-vetted allowlist. The two
-// groups below are the fence on either side of that narrowing:
+// Step-12 inverted the gate to a positive, explicitly-vetted allowlist. Task
+// 5465 then PROMOTED four of those five families back in — not by re-broadening
+// the gate, but by giving each family a rule that is valid against the
+// placeholder/erased types the expression compiler actually produces: dedicated
+// shape-based arms for Point / Field / Matrix / Tensor, and an
+// `enum_payload_compatible` short-circuit for Enum / Applied.
 //
-//   (b) EXCLUDED families — each must emit ZERO ctor-conformance diagnostics.
-//       RED on the current branch tip. These pin the MECHANISM, so a future
-//       re-broadening cannot silently reintroduce the regression even if the
-//       examples corpus changes shape and the corpus gate stops covering it.
+// The groups below are the fence around that promotion:
 //
-//   (c) RETAINED families — each must still emit exactly one Warning. GREEN
-//       both before and after step-12. Their presence is what makes step-12 a
-//       narrowing rather than a revert.
+//   (b) PROMOTED families — each contributes a PAIR: a clean fixture that must
+//       stay at ZERO ctor-conformance diagnostics (the false positive that
+//       caused the family's original exclusion), and at least one value floor
+//       that must emit exactly one Warning (proving the family is genuinely
+//       checked and not merely re-excluded under a new name). Each family also
+//       carries a wrapper-composition probe so a leaf arm cannot be added in a
+//       position the List/Option recursion never reaches.
+//
+//       Accepts that no inline `.ri` fixture can reach — the `Point`/`Matrix`
+//       ARITY rules, the `Matrix` nominal self-accept, the `Field` arm's lambda
+//       accept, and the enum-erasure REVERSE pairing — are pinned in
+//       `conformance/mod.rs`'s own `mod tests`, which constructs the `Type`s
+//       directly. Each site here points at its counterpart so the split stays
+//       navigable.
+//
+//       One family — dimensioned `Scalar` — is deliberately still HELD, with a
+//       clean-only probe and a doc comment naming its owner. It is the fifth
+//       family, and its absence from group (b)'s pair pattern is the signal.
+//
+//   (c) α-VALUE-FLOOR guards — the families that were vetted at α must still
+//       emit exactly one Warning. GREEN before and after both step-12 and 5465.
+//       Their presence is what keeps each change a re-shaping rather than a
+//       revert.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── (b) excluded family: Point ← numeric-fallback placeholder ────────────────
@@ -928,8 +949,19 @@ structure def Root {
 }
 "#;
 
+/// Clean fixture for the promoted `Point` family.
+///
+/// `point3` is a stdlib EVAL-BUILTIN (`crates/reify-stdlib/src/geometry.rs:942`)
+/// with no `.ri` signature, so it carries no declared return type at compile
+/// time and the call compiles to a `CompiledExprKind::FunctionCall` typed
+/// `Scalar[m]` — the expression compiler's numeric fallback — never
+/// `Type::Point`. The dedicated `Point` arm tolerates scalar-like args as
+/// exactly that placeholder.
+///
+/// Shape from `examples/anisotropic_bar.ri:82` (`origin: point3(0m, 0m, 0m)`)
+/// and `examples/dynamics/pendulum_idyn.ri:29` (`com:`).
 #[test]
-fn excluded_family_point_given_placeholder_function_call_is_silent() {
+fn point_param_given_placeholder_function_call_stays_clean() {
     let module = compile_source_with_stdlib(SRC_FAMILY_POINT);
     let diags = ctor_conformance_diags(&module);
     assert!(
@@ -937,6 +969,81 @@ fn excluded_family_point_given_placeholder_function_call_is_silent() {
         "a Point3<Length> param given `point3(0m, 0m, 0m)` must emit ZERO ctor-conformance \
          diagnostics — the arg's result_type is the numeric-fallback placeholder Scalar[m], \
          not Type::Point, so `type_compatible` cannot judge it. Got: {diags:#?}"
+    );
+}
+
+const SRC_LIST_OF_POINT_PLACEHOLDERS: &str = r#"module test.list_point
+structure def Truss { param nodes : List<Point3<Length>> }
+structure def Root {
+    let t = Truss(nodes: [point3(0m, 0m, 0m), point3(1m, 0m, 0m), point3(0m, 1m, 0m)])
+}
+"#;
+
+/// Wrapper composition on the clean side: the placeholder tolerance must be
+/// reached PER ELEMENT through the walker's `ListLiteral` recursion.
+///
+/// Shape from `examples/tensegrity_pavilion.ri:53-58`, where the `point3(…)`
+/// calls sit inside a list literal.
+#[test]
+fn list_of_point_param_given_placeholder_calls_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_LIST_OF_POINT_PLACEHOLDERS);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a List<Point3<Length>> param given a list literal of `point3(…)` calls must emit ZERO \
+         ctor-conformance diagnostics — each element is the same numeric-fallback placeholder. \
+         Got: {diags:#?}"
+    );
+}
+
+const SRC_POINT_GIVEN_STRING: &str = r#"module test.point_string
+structure def Anchor { param origin : Point3<Length> }
+structure def Root {
+    let a = Anchor(origin: "origin")
+}
+"#;
+
+/// Value floor for the promoted `Point` family: a `String` is not point-shaped
+/// and is not the numeric placeholder, so it must warn.
+///
+/// This is the probe that fences the placeholder tolerance: it is narrow
+/// (`Int | Scalar` only), NOT `type_compat.rs::is_scalar_like_leaf`, which also
+/// admits `Bool`/`String`/`Enum`/`StructureRef`/`TraitObject`/`Geometry`.
+#[test]
+fn point_param_given_string_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_POINT_GIVEN_STRING,
+        "origin",
+        "Point3<Length> ← String",
+    );
+}
+
+// The `Point` arm's ARITY rule ("a `Point2` value is not a valid substitute for
+// a `Point3` param", mirroring the `Type::Vector` arm) is NOT pinned here.
+// `resolve_parameterized_builtin_type` recognises `Point3` only
+// (crates/reify-compiler/src/type_resolution.rs:3192) — there is no `Point2`
+// surface spelling — so no inline `.ri` fixture can produce a
+// `Type::Point { n: 2, .. }` arg. It is pinned instead by
+// `point_param_rejects_wrong_arity_point_arg` in `conformance/mod.rs`'s own
+// `mod tests`, which constructs the `Type` directly, alongside
+// `point_param_accepts_dimensionless_point_arg` for the loose-quantity leg.
+// `vector_param_rejects_wrong_arity_vector_arg` sits there for the same reason.
+
+const SRC_OPTION_POINT_GIVEN_STRING: &str = r#"module test.option_point_string
+structure def Anchor { param origin : Option<Point3<Length>> }
+structure def Root {
+    let a = Anchor(origin: "origin")
+}
+"#;
+
+/// Wrapper composition: the Option-unwrap arm (implicit-`Some`) must reach the
+/// new `Point` arm, not fall through to the wrapper-shape catch-all.
+#[test]
+fn option_wrapped_point_param_given_string_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_OPTION_POINT_GIVEN_STRING,
+        "origin",
+        "Option<Point3<Length>> ← String",
     );
 }
 
@@ -955,8 +1062,17 @@ structure def Root {
 }
 "#;
 
+/// Clean fixture for the promoted `Matrix` family.
+///
+/// A nested list literal is the IDIOMATIC spelling of a `Matrix3x3` — it is what
+/// the `MassProperties` ctor in `examples/dynamics/pendulum_idyn.ri:29` writes —
+/// and it compiles to `List<List<Real>>`. `List<List<Real>>` carries no element
+/// counts in its type, so the declared m/n arity is structurally unverifiable at
+/// this leaf; the dedicated `Matrix`/`Tensor` arm therefore accepts `Type::List`
+/// and deliberately applies NO arity check (see the arm comment for the
+/// asymmetry with the `Point`/`Vector` arms).
 #[test]
-fn excluded_family_matrix_given_nested_list_literal_is_silent() {
+fn matrix_param_given_nested_list_literal_stays_clean() {
     let module = compile_source_with_stdlib(SRC_FAMILY_MATRIX);
     let diags = ctor_conformance_diags(&module);
     assert!(
@@ -966,6 +1082,128 @@ fn excluded_family_matrix_given_nested_list_literal_is_silent() {
          rule exists in type_compat.rs. Got: {diags:#?}"
     );
 }
+
+const SRC_MATRIX_GIVEN_STRING: &str = r#"module test.matrix_string
+structure def Body { param inertia : Matrix<3, 3, MomentOfInertia> }
+structure def Root {
+    let b = Body(inertia: "heavy")
+}
+"#;
+
+/// Value floor for the promoted `Matrix` family.
+#[test]
+fn matrix_param_given_string_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_MATRIX_GIVEN_STRING,
+        "inertia",
+        "Matrix<3,3,MomentOfInertia> ← String",
+    );
+}
+
+const SRC_MATRIX_GIVEN_STRING_LIST: &str = r#"module test.matrix_string_list
+structure def Body { param inertia : Matrix<3, 3, MomentOfInertia> }
+structure def Root {
+    let b = Body(inertia: ["a", "b"])
+}
+"#;
+
+/// Value floor on the `Matrix`/`Tensor` arm's `Type::List` ACCEPT itself.
+///
+/// The arm accepts `Type::List` because a nested list literal is the idiomatic
+/// `Matrix3x3` spelling — but "is a list" is a weaker claim than "is a matrix
+/// literal". A `Matrix`-typed param never pairs with the literal walker's
+/// `(Type::List(param), ListLiteral)` arm (the param is `Matrix`, not `List`),
+/// so `["a", "b"]` reaches this leaf as a bare `List<String>` type. An
+/// unconstrained `Type::List(_)` accept therefore left the just-promoted family
+/// silent on exactly the shape the accept was written to admit.
+///
+/// `list_bottoms_out_numeric` closes it by peeling `List` recursively and
+/// requiring a numeric/tensor bottom — the same narrowness the `Point` arm's
+/// placeholder tolerance already had.
+#[test]
+fn matrix_param_given_string_list_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_MATRIX_GIVEN_STRING_LIST,
+        "inertia",
+        "Matrix<3,3,MomentOfInertia> ← List<String>",
+    );
+}
+
+const SRC_LIST_OF_MATRIX_GIVEN_STRING_ELEMENT: &str = r#"module test.list_matrix_string
+structure def Body { param inertias : List<Matrix<3, 3, MomentOfInertia>> }
+structure def Root {
+    let b = Body(inertias: ["a"])
+}
+"#;
+
+/// Wrapper composition for the `Matrix`/`Tensor` family: the arm must be
+/// reachable THROUGH the walker's `List` recursion, not only at the top level.
+///
+/// The `Point` and `Field` families each have one of these; `Matrix`/`Tensor`
+/// did not, so nothing pinned that a `List<Matrix<…>>` param's elements are
+/// judged at all.
+#[test]
+fn list_of_matrix_param_given_string_element_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_LIST_OF_MATRIX_GIVEN_STRING_ELEMENT,
+        "inertias",
+        "List<Matrix<3,3,MomentOfInertia>> ← [String]",
+    );
+}
+
+const SRC_TENSOR_GIVEN_STRING: &str = r#"module test.tensor_string
+structure def Body { param stress : Tensor<2, 3, Pressure> }
+structure def Root {
+    let b = Body(stress: "t")
+}
+"#;
+
+/// Value floor for the promoted `Tensor` family (which the task title groups
+/// with `Matrix`, and which the combined arm handles).
+///
+/// `Tensor<rank, n, Q>` is the surface spelling `resolve_parameterized_builtin_type`
+/// accepts (`type_resolution.rs:3220`, three type args).
+#[test]
+fn tensor_param_given_string_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_TENSOR_GIVEN_STRING,
+        "stress",
+        "Tensor<2,3,Pressure> ← String",
+    );
+}
+
+const SRC_TENSOR_RANK1_GIVEN_VECTOR: &str = r#"module test.tensor_vector
+structure def Body { param axis : Tensor<1, 3, Length> }
+structure def Root {
+    let b = Body(axis: vec3(0m, 0m, 1m))
+}
+"#;
+
+/// Regression fence: the new arm must not reject an ALREADY-legal conversion.
+///
+/// `implicitly_converts_to` Rules 1a/1b (`type_compat.rs:83-108`) make
+/// `Vector<N, Q>` and `Tensor<1, N, Q>` interconvertible, so a `Vector3`-typed
+/// arg at a rank-1 `Tensor` param is legal today and must stay silent.
+#[test]
+fn tensor_param_given_vector_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_TENSOR_RANK1_GIVEN_VECTOR);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a Tensor<1,3,Length> param given a vec3 arg must emit ZERO ctor-conformance \
+         diagnostics — implicitly_converts_to Rules 1a/1b already make Vector<N,Q> and \
+         Tensor<1,N,Q> interconvertible. Got: {diags:#?}"
+    );
+}
+
+// The `Matrix`/`Tensor` arm's NOMINAL SELF-ACCEPT (a genuinely `Type::Matrix`-
+// typed arg at a `Matrix` param, and with it the deliberate ABSENCE of an m/n
+// arity check) is pinned by `matrix_param_accepts_matrix_arg_without_arity_check`
+// in `conformance/mod.rs`'s own `mod tests`, alongside the Point-arity probes
+// and for the same reason: no inline `.ri` fixture reliably yields a
+// `Type::Matrix`-typed arg, so the `Type` is constructed directly. The probes
+// above cover only the LOOSE accepts (nested list literal, `Vector` →
+// `Tensor<1,…>`).
 
 // ── (b) excluded family: Field ← erased Field<Real, Real> ────────────────────
 //
@@ -981,8 +1219,22 @@ structure def Root {
 }
 "#;
 
+/// Clean fixture for the promoted `Field` family.
+///
+/// BOTH slots of a `Field` erase to the expression compiler's numeric fallback:
+/// an analytical `field def` carries `result_type = Field<Real, Real>` however
+/// its domain/codomain were declared. Comparing the declaration against that
+/// placeholder would be comparing a declaration against a hole, which is exactly
+/// why the dedicated arm added for this family is SHAPE-based and is not routed
+/// through `type_compatible` (same posture as the adjacent `Type::Vector` arm).
+///
+/// Before task 5465 this passed via blanket family exclusion; it now passes
+/// because the `Type::Field` arm accepts any `Type::Field { .. }` regardless of
+/// domain/codomain. This is the same 6-warning shape
+/// `examples/fea_shell_channels.ri` exhibited (top / mid / bottom /
+/// displacement / stress / frame).
 #[test]
-fn excluded_family_field_given_erased_field_type_is_silent() {
+fn field_param_given_erased_analytical_field_stays_clean() {
     let module = compile_source_with_stdlib(SRC_FAMILY_FIELD);
     let diags = ctor_conformance_diags(&module);
     assert!(
@@ -993,7 +1245,49 @@ fn excluded_family_field_given_erased_field_type_is_silent() {
     );
 }
 
-// ── (b) excluded family: generic enum ← bare Type::Enum under erasure ────────
+const SRC_FIELD_GIVEN_STRING: &str = r#"module test.field_string
+structure def Holder { param mode_shape : Field<Point3<Length>, Vector3<Length>> }
+structure def Root {
+    let h = Holder(mode_shape: "shape")
+}
+"#;
+
+/// Value floor for the promoted `Field` family: a `String` at a `Field` slot is
+/// not field-shaped by any reading and must warn.
+///
+/// The arm's OTHER accept — a lambda, i.e. a `Type::Function` arg — is pinned by
+/// `field_param_accepts_function_arg` in `conformance/mod.rs`'s own `mod tests`.
+#[test]
+fn field_param_given_string_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_FIELD_GIVEN_STRING,
+        "mode_shape",
+        "Field<Point3<Length>, Vector3<Length>> ← String",
+    );
+}
+
+const SRC_LIST_OF_FIELD_GIVEN_STRING_ELEMENT: &str = r#"module test.list_field_string
+structure def Holder { param modes : List<Field<Point3<Length>, Vector3<Length>>> }
+structure def Root {
+    let h = Holder(modes: ["a"])
+}
+"#;
+
+/// Wrapper composition: the new `Field` leaf arm must be reachable THROUGH the
+/// walker's `ListLiteral` recursion, not only at the top level.
+///
+/// Without this probe a leaf arm could be added in a position the wrapper
+/// recursion never reaches and the top-level probe above would not notice.
+#[test]
+fn list_of_field_param_given_string_element_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_LIST_OF_FIELD_GIVEN_STRING_ELEMENT,
+        "modes",
+        "List<Field<…>> ← [String]",
+    );
+}
+
+// ── promoted family: generic enum / `Applied` (task 5465, family 4) ──────────
 //
 // Under enum erasure a constructed variant's result_type is always the bare
 // `Type::Enum(name)`, never the applied form — which is precisely why
@@ -1012,8 +1306,25 @@ structure def Root {
 }
 "#;
 
+/// Clean fixture for the promoted enum family.
+///
+/// The declared param type is the applied form `Type::Applied { name: "Result",
+/// args: [Length, String] }`, but the supplied arg's `result_type` under D1 /
+/// F-Mono erasure is the BARE `Type::Enum("Result")` — the applied form is never
+/// persisted on a value (`type_compat.rs::enum_payload_compatible` doc, §7.1:
+/// "resolved args live only in the per-site substitution map"). Raw
+/// `type_compatible` therefore has nothing to match on and would spuriously
+/// fail.
+///
+/// Before task 5465 this passed for the WRONG reason — the whole enum family was
+/// absent from `general_leaf_param_family_is_validated`, so every enum-typed
+/// param fell through silently, including genuine mismatches. It now passes
+/// because the general concrete-leaf arm short-circuits on
+/// `enum_payload_compatible`, exactly as `variant_construct.rs:325` already
+/// does — a targeted erasure tolerance, not a blanket family bypass (probe
+/// `enum_param_given_wrong_enum_warns_arg_type_mismatch` below is the fence).
 #[test]
-fn excluded_family_generic_enum_given_erased_variant_is_silent() {
+fn generic_enum_param_given_erased_variant_stays_clean() {
     let module = compile_source_with_stdlib(SRC_FAMILY_GENERIC_ENUM);
     let diags = ctor_conformance_diags(&module);
     assert!(
@@ -1024,7 +1335,78 @@ fn excluded_family_generic_enum_given_erased_variant_is_silent() {
     );
 }
 
-// ── (b) excluded family: dimensioned Scalar ← dimensionless Real ─────────────
+const SRC_GENERIC_ENUM_GIVEN_STRING: &str = r#"module test.generic_enum_string
+enum Result<T, E> {
+    Ok { value: T },
+    Err { error: E },
+}
+structure def Root {
+    param r : Result<Length, String> = "nope"
+}
+"#;
+
+/// Value floor for the promoted `Applied`-enum family: a `String` default at a
+/// `Result<Length, String>` param is a genuine mismatch and must warn.
+///
+/// This exercises the param-DEFAULT entry (`check_param_default_conformance`),
+/// which is the shape the reify-cli `result_match_bore_ok.ri:10` fixture uses —
+/// not the call-site ctor entry. Without it, promoting the family would only be
+/// pinned on its tolerance half.
+#[test]
+fn generic_enum_param_given_string_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_GENERIC_ENUM_GIVEN_STRING,
+        "r",
+        "Result<Length, String> ← String",
+    );
+}
+
+// NOTE ON NAMING: the two enums are deliberately spelled `Hue` / `Outline`
+// rather than the obvious `Color` / `Shape`. The prelude declares
+// `structure def Color` (crates/reify-compiler/stdlib/materials_appearance.ri:17),
+// so a local `enum Color` annotation resolves to the prelude's
+// `Type::StructureRef("Color")` instead of `Type::Enum("Color")` and the probe
+// would exercise the StructureRef arm, not the enum family.
+const SRC_ENUM_CROSS_ENUM_MISMATCH: &str = r#"module test.enum_cross_mismatch
+enum Hue {
+    Red { level: Real },
+    Blue { level: Real },
+}
+enum Outline {
+    Round { radius: Length },
+    Square { side: Length },
+}
+structure def Root {
+    param c : Hue = Round { radius: 5mm }
+}
+"#;
+
+/// Fence on the `enum_payload_compatible` short-circuit: it tolerates ONLY the
+/// erasure gap (same base name), and still rejects a genuine cross-enum
+/// mismatch.
+///
+/// A `Hue` param defaulted to a constructed `Outline::Round { .. }` variant
+/// gives declared `Type::Enum("Hue")` vs supplied `Type::Enum("Outline")` —
+/// different base names, so `enum_payload_compatible` returns false and the
+/// general concrete-leaf arm's `type_compatible` gate rejects. Without this
+/// probe the short-circuit could be widened into a blanket enum bypass without
+/// any test noticing.
+#[test]
+fn enum_param_given_wrong_enum_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(SRC_ENUM_CROSS_ENUM_MISMATCH, "c", "Hue ← Outline");
+}
+
+// The REVERSE erasure pairing — a param declared as the BARE `Type::Enum(n)`
+// supplied an APPLIED `Type::Applied { name: n, .. }` arg — is pinned by
+// `enum_param_accepts_applied_enum_arg_of_same_base` (plus its cross-base and
+// applied-generic-STRUCTURE fences) in `conformance/mod.rs`'s own `mod tests`.
+// It lives there because which surface spelling survives inference on the arg
+// side is not something an inline fixture can pin reliably, and because that
+// pairing is reachable at `Severity::Error` through the fn-call entry.
+
+
+
+// ── (b) HELD family: dimensioned Scalar ← dimensionless Real ─────────────────
 //
 // Supplying a bare dimensionless numeric literal at a dimensioned slot is an
 // idiomatic spelling throughout the corpus. Shape from
@@ -1039,6 +1421,33 @@ structure def Root {
 }
 "#;
 
+/// The one family task 5465 did NOT promote — a deliberate, owned hold, not an
+/// oversight.
+///
+/// **Held pending a language-semantics ruling.** Whether a dimensionless arg is
+/// legal at a dimensioned `Scalar<Q>` slot is a question about the
+/// dimensionless↔dimensioned slot convention, not about this walker. Today's
+/// answer is position-dependent across six gates: LEGAL at struct-ctor field
+/// slots (here), at literal `param`/`let` defaults
+/// (`crates/reify-compiler/src/entity.rs:459-478`) and at constraint-def args;
+/// ILLEGAL at user-fn param slots, fn-param defaults, ambient defaults,
+/// compound-expression initializers, and all arithmetic/comparison operators.
+/// `implicitly_converts_to` encodes no Scalar-vs-Scalar rule in EITHER
+/// direction. Owner: task #5627 (filed from this task as ticket
+/// `tkt_0RRQW5X0WYH2ZW0TZY1JZ6E189`, escalation `agent-followup-5465`), which
+/// carries the four candidate resolutions and their costs.
+///
+/// **What this probe pins, precisely.** Zero *ctor-conformance* diagnostics —
+/// i.e. exclusion from ONE pass. It does NOT assert that the program is
+/// well-typed, and it must not be read as one.
+///
+/// **The corpus dependency is acknowledged placeholder work, not a settled
+/// idiom.** `crates/reify-compiler/stdlib/trajectory.ri:568-569` tightened
+/// `velocity_limit` / `acceleration_limit` from `Real` to `Scalar<Velocity>` /
+/// `Scalar<Acceleration>` in task 4580 without updating the call sites, and
+/// `examples/trajectory/printer_print_envelope.ri:146-147` calls its own
+/// arguments "(mm/s placeholder Real)". So the ruling may well be to fix the
+/// call sites rather than to relax the walker.
 #[test]
 fn excluded_family_dimensioned_scalar_given_dimensionless_real_is_silent() {
     let module = compile_source_with_stdlib(SRC_FAMILY_DIMENSIONED_SCALAR);
