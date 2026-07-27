@@ -814,7 +814,7 @@ fn checkpoint_value_variant_coverage() {
 /// Marked `#[ignore]` because spawning a nested `cargo test` invocation is slow
 /// (~30 s) and redundant with CI. Run explicitly with:
 /// ```
-/// cargo test -p reify-eval --test m8_m11_regression_checkpoint -- --include-ignored
+/// cargo test -p reify-eval --test harness_engine -- --include-ignored m8_m11_regression_checkpoint::test_count_floor
 /// ```
 #[test]
 #[ignore = "slow subprocess; run explicitly with --include-ignored to verify test count floor"]
