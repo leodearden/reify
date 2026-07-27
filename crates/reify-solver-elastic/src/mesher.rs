@@ -313,10 +313,21 @@ pub fn auto_mesh_size_from_boundary(boundary: &ProfileBoundary, multiplier: f64)
 
 /// Shoelace-formula signed area of a closed 2D ring.
 ///
-/// CCW ring -> positive; CW ring -> negative; collinear / zero-area ring -> 0.0
-/// (within float tolerance). Private to the module; used by the
-/// `mesh_swept_profile_2d` validation pre-pass to flag degenerate outer rings.
-fn ring_signed_area_2d(ring: &[[f64; 2]]) -> f64 {
+/// # Sign convention
+///
+/// Positive = counter-clockwise (CCW); negative = clockwise (CW); collinear /
+/// zero-area ring = 0.0 (within float tolerance). This is exactly the
+/// convention [`ProfileBoundary`] documents for its own rings ("Outer-boundary
+/// points (CCW for positive area)"), so the sign of this function IS the
+/// predicate for "does this ring satisfy the `ProfileBoundary` outer contract".
+///
+/// A ring of fewer than 3 points has no area and returns `0.0`.
+///
+/// Used by the `mesh_swept_profile_2d` validation pre-pass to flag degenerate
+/// outer rings, and re-exported at the crate root so upstream *producers* of a
+/// `ProfileBoundary` can normalise their rings to the same convention rather
+/// than each re-deriving the formula.
+pub fn ring_signed_area_2d(ring: &[[f64; 2]]) -> f64 {
     if ring.len() < 3 {
         return 0.0;
     }

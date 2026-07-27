@@ -1621,20 +1621,10 @@ mod tests {
     // Curved profiles are pre-sampled into PROFILE_CIRCLE_SEGMENTS polyline
     // points. Circle: every point lies exactly on radius r (only f64 trig
     // rounding, ~1e-16). Ellipse: the θ=0 sample is [a, 0]. Both rings are
-    // non-degenerate (|shoelace signed area| > 0).
-
-    /// Signed area of a closed polygon ring via the shoelace formula (test
-    /// helper). Non-zero magnitude ⇒ the ring is a non-degenerate surface.
-    fn shoelace_area(ring: &[[f64; 2]]) -> f64 {
-        let n = ring.len();
-        let mut acc = 0.0;
-        for i in 0..n {
-            let [x0, y0] = ring[i];
-            let [x1, y1] = ring[(i + 1) % n];
-            acc += x0 * y1 - x1 * y0;
-        }
-        acc / 2.0
-    }
+    // non-degenerate (|shoelace signed area| > 0), measured with the mesher's
+    // own `ring_signed_area_2d` — the same helper `validate_boundary` uses, so
+    // these assertions are stated in the consumer's units rather than a
+    // test-local re-derivation of the shoelace formula.
 
     #[test]
     fn swept_kind_to_profile_boundary_circle_samples_on_radius() {
@@ -1672,7 +1662,7 @@ mod tests {
             );
         }
         assert!(
-            shoelace_area(&boundary.outer).abs() > 0.0,
+            reify_solver_elastic::ring_signed_area_2d(&boundary.outer).abs() > 0.0,
             "circle cross-section must be non-degenerate (|signed area| > 0)"
         );
         assert!(
@@ -1716,7 +1706,7 @@ mod tests {
             "θ=0 ellipse sample must be [a, 0] = [{a}, 0]; got {first:?}"
         );
         assert!(
-            shoelace_area(&boundary.outer).abs() > 0.0,
+            reify_solver_elastic::ring_signed_area_2d(&boundary.outer).abs() > 0.0,
             "ellipse cross-section must be non-degenerate (|signed area| > 0)"
         );
         assert!(
