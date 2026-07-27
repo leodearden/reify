@@ -443,4 +443,9 @@ mod tests {
     fn cli_doc_has_no_unguarded_temp_dirs() {
         assert_no_unguarded_temp_dir_sites("crates/reify-cli/tests/harness_cli/cli_doc.rs");
     }
+
+    #[test]
+    fn lsp_server_has_no_unguarded_temp_dirs() {
+        assert_no_unguarded_temp_dir_sites("crates/reify-lsp/src/server.rs");
+    }
 }
