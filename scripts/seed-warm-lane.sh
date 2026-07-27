@@ -892,7 +892,35 @@ if [ -n "$FRESH_CHECKOUT" ]; then
             while IFS= read -r -d '' _rl_file; do
                 _relocate_candidate_count=$((_relocate_candidate_count + 1))
                 if grep -qF "$_foreign_rp" "$_rl_file" 2>/dev/null; then
+                    # MTIME PRESERVATION (task 5630) — load-bearing, not cosmetic.
+                    # `sed -i` rewrites via temp+rename, so without this the file
+                    # lands at SEED time: strictly newer than every path
+                    # _touch_git_delta stamped two find-walks earlier. That is a
+                    # FALSE GREEN generator, because cargo's
+                    # LocalFingerprint::RerunIfChanged uses
+                    # target/<profile>/build/<pkg>-<hash>/output as its freshness
+                    # reference and treats a watched source as stale only if
+                    # STRICTLY NEWER than it. Bumping `output` past a delta-touched
+                    # source therefore makes cargo call the build script Fresh and
+                    # link the BASE's stale compiled artifact — a stale
+                    # libocct_wrapper.a / libopenvdb_wrapper.a, or (worst case) a
+                    # stale baked ENGINE_VERSION_HASH, which keys the persistent FEA
+                    # cache and turns a stale artifact into a stale-cache green.
+                    # Relocating a baked absolute path is a CONTENT correction; it
+                    # is not evidence that the build script ran, so it must not
+                    # advance the file's freshness reference.
+                    #
+                    # `stat -c '%y'` carries full sub-second precision and GNU
+                    # `touch -d` round-trips it — required, not incidental: cargo
+                    # compares at nanosecond resolution with a strict `>`, so a
+                    # whole-second-truncated restore could still read as "newer".
+                    # Deliberately NOT `|| true`-guarded: under `set -euo pipefail`
+                    # a stat/touch failure aborts the seed (empty stdout → caller
+                    # falls back to a cold rebuild), which is the correct
+                    # fail-closed posture for a freshness invariant.
+                    _rl_ts="$(stat -c '%y' "$_rl_file")"
                     sed -E -i "s/${_relocate_search_esc}/${_relocate_replace_esc}/g" "$_rl_file"
+                    touch -d "$_rl_ts" "$_rl_file"
                     _relocated_count=$((_relocated_count + 1))
                 fi
             done < <(find "$LANE_TARGET" -maxdepth 5 -type f \( -name output -o -name root-output \) -print0)
