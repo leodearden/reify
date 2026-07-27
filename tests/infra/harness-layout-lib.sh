@@ -203,16 +203,29 @@ _harness_layout_norm_path() {
     printf '%s\n' "$leading$out"
 }
 
-# _harness_layout_mod_decls <file> — print `<kind>|<value>` for every OUT-OF-LINE
-# module declaration in <file>:
-#   path|<P>       for `#[path = "<P>"] mod <ident>;`
-#   bare|<ident>   for a `mod <ident>;` carrying no `#[path]`
+# _harness_layout_mod_decls <file> — print `<kind>|<lineno>|<value>` for every
+# OUT-OF-LINE module declaration in <file>:
+#   path|<lineno>|<P>       for `#[path = "<P>"] mod <ident>;`
+#   bare|<lineno>|<ident>   for a `mod <ident>;` carrying no `#[path]`
 #
-# Attribute binding matches _bare_mod_decls in test_harness_kloc_cap.sh:
-# intervening blank lines and `//` comments preserve a pending `#[path]`; any
-# other line clears it. The attribute and its `mod` on the SAME line are handled
-# too. Only the `mod <ident>;` FORM is considered — an inline `mod x { … }`
-# block declares no out-of-line file and so pulls in no separate source file.
+# <lineno> is always the line of the `mod` ITEM (not of a preceding attribute),
+# which is the line a developer must edit to fix a violation.
+#
+# THE SINGLE OUT-OF-LINE-`mod` PARSER for both harness-layout guards (G7). The
+# C1 `#[path]`-mandate detector in test_harness_kloc_cap.sh consumes it through
+# a `bare`-only filter (`_bare_mod_decls`), and the kLOC measure below consumes
+# both kinds — so the attribute-binding rule that decides whether a `mod` is
+# `#[path]`-covered exists in exactly ONE place. It has to: that rule is what
+# makes the C1 mandate and the C2 quantity the mandate exists to bound agree,
+# and a fix applied to one of two copies (block comments, `#[cfg_attr]`,
+# `#[cfg(…)] mod x;`) would desynchronise them silently.
+#
+# Attribute binding: intervening blank lines and `//` comments preserve a
+# pending `#[path]`; any other line clears it, INCLUDING a one-line
+# `#[path = "…"] mod <ident>;` (which consumes its own attribute, so a bare
+# `mod` on the next line is correctly reported as bare, not path-covered).
+# Only the `mod <ident>;` FORM is considered — an inline `mod x { … }` block
+# declares no out-of-line file and so pulls in no separate source file.
 _harness_layout_mod_decls() {
     [ -f "$1" ] || return 0
     awk '
@@ -223,7 +236,7 @@ _harness_layout_mod_decls() {
             sub(/^[^"]*"/, "", p)
             sub(/".*$/, "", p)
             if ($0 ~ /\][[:space:]]*(pub[[:space:]]+)?mod[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*;/) {
-                printf "path|%s\n", p       # attribute and `mod` on one line
+                printf "path|%d|%s\n", NR, p   # attribute and `mod` on one line
                 pathline = 0
             } else {
                 pathval = p
@@ -233,12 +246,12 @@ _harness_layout_mod_decls() {
         }
         /^[[:space:]]*(pub[[:space:]]+)?mod[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*;/ {
             if (pathline) {
-                printf "path|%s\n", pathval
+                printf "path|%d|%s\n", NR, pathval
             } else {
                 ident = $0
                 sub(/^[[:space:]]*(pub[[:space:]]+)?mod[[:space:]]+/, "", ident)
                 sub(/[[:space:]]*;.*$/, "", ident)
-                printf "bare|%s\n", ident
+                printf "bare|%d|%s\n", NR, ident
             }
             pathline = 0
             next
@@ -351,7 +364,7 @@ harness_layout_unit_lines() {
     # producer, because the walk both consumes and appends within one pass.
     local -A _visited=()
     local -a _queue=()
-    local _cur _dir _base _kind _val _cand _target _i=0
+    local _cur _dir _base _kind _ln _val _cand _target _i=0
     local _moddir_prefix
     _moddir_prefix="$(_harness_layout_norm_path "$moddir")/"
 
@@ -371,7 +384,12 @@ harness_layout_unit_lines() {
         # completion — never an early-closing consumer, which under the
         # callers' `set -o pipefail` would reproduce the esc-5172-1 SIGPIPE-141
         # hazard (harness_layout_baseline_contains above hits the same class).
-        while IFS='|' read -r _kind _val; do
+        # `_ln` (the decl's line number) is unused by the measure — it exists
+        # for the C1 mandate detector, which reports it to the developer.
+        # Reading it into the LAST variable would be wrong: `read` gives the
+        # trailing field the rest of the line, so a `#[path]` value containing
+        # a literal `|` must land in `_val`, not be split across it.
+        while IFS='|' read -r _kind _ln _val; do
             [ -n "$_kind" ] || continue
             _target=""
             case "$_kind" in

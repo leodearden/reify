@@ -48,7 +48,7 @@
 # correct precisely BECAUSE crate-root-relative resolution lands on it
 # (harness_cli, harness_occt, harness_fea_solver_e2e do this; harness_langcore
 # and harness_patterns spell the equivalent `#[path = "common/mod.rs"]`, and
-# harness_topology_selector does the same for `common/differential.rs`). The
+# harness_selective_demand does the same for `common/differential.rs`). The
 # rule is therefore scoped: `#[path]` is mandatory for every former-standalone
 # file moved under the harness directory, not for a retained `tests/` sibling.
 # Section 6 encodes exactly this scoping — a bare `mod <ident>;` is a violation
@@ -371,28 +371,22 @@ run_harness_layout_scan() {
 # _bare_mod_decls <file> — print `<lineno>|<ident>` for every `mod <ident>;`
 # item declaration in <file> that is NOT carrying a `#[path = "…"]` attribute.
 #
-# Intervening blank lines and `//` comments between the attribute and the `mod`
-# preserve the attribute's binding; any other line clears it. Only the
-# `mod <ident>;` FORM is considered — an inline `mod x { … }` block declares no
-# out-of-line file and so is outside the C1 `#[path]` mandate entirely.
+# A THIN FILTER over the shared `_harness_layout_mod_decls` parser in
+# harness-layout-lib.sh (which emits `<kind>|<lineno>|<value>` for BOTH kinds),
+# not a second copy of it. The attribute-binding rule — blank lines and `//`
+# comments preserve a pending `#[path]`, any other line clears it, and only the
+# `mod <ident>;` form counts — is non-trivial and is what makes this C1 mandate
+# and the C2 kLOC measure agree about which declarations are `#[path]`-covered.
+# Two copies of it would desynchronise silently on the first fix applied to
+# either (block comments, `#[cfg_attr]`, `#[cfg(…)] mod x;`), so there is one.
+#
+# No `grep -q`-style early close on the pipeline: awk drains its input to
+# completion, so the upstream parser never takes a SIGPIPE under this script's
+# `set -o pipefail` (the esc-5172-1 hazard the lib documents).
 # ---------------------------------------------------------------------------
 _bare_mod_decls() {
-    awk '
-        /^[[:space:]]*$/                    { next }   # blank: attribute still binds
-        /^[[:space:]]*\/\//                 { next }   # comment: attribute still binds
-        /^[[:space:]]*#\[path[[:space:]]*=/ { pathline = 1; next }
-        /^[[:space:]]*(pub[[:space:]]+)?mod[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*;/ {
-            if (!pathline) {
-                ident = $0
-                sub(/^[[:space:]]*(pub[[:space:]]+)?mod[[:space:]]+/, "", ident)
-                sub(/[[:space:]]*;.*$/, "", ident)
-                printf "%d|%s\n", NR, ident
-            }
-            pathline = 0
-            next
-        }
-        { pathline = 0 }
-    ' "$1"
+    _harness_layout_mod_decls "$1" \
+        | awk -F'|' '$1 == "bare" { print $2 "|" $3 }'
 }
 
 # ---------------------------------------------------------------------------
@@ -418,12 +412,16 @@ _bare_mod_decls() {
 # Prints one structured FAIL line per violation; returns 1 if <crate> has any.
 # Parameterized on <tests_dir> so hermetic fixtures drive it exactly as live.
 #
-# NOTE (deferred, out of this task's lock scope): the sibling diff-scoped gate
-# scripts/check-harness-baseline-registration.sh states the same `#[path]` rule
-# in human-facing guidance text only. Hoisting this predicate into the shared
-# tests/infra/harness-layout-lib.sh so both guards execute one copy (the G7
-# no-lockstep-duplication shape the lib already exists for) needs a write to
-# that lib, which this task does not hold — filed as follow-up.
+# The PARSER half of this predicate is already hoisted: `_bare_mod_decls` above
+# is a filter over harness-layout-lib.sh's `_harness_layout_mod_decls`, so the
+# attribute-binding rule is shared with the C2 kLOC measure (task #5620).
+#
+# NOTE (deferred, out of this task's lock scope): the RESOLUTION half — this
+# function's retained-sibling test — is still local. The sibling diff-scoped
+# gate scripts/check-harness-baseline-registration.sh states the same `#[path]`
+# rule in human-facing guidance text only; making both guards execute one copy
+# (the G7 no-lockstep-duplication shape the lib exists for) needs a write to
+# that sibling script, which this task does not hold — filed as follow-up.
 # ---------------------------------------------------------------------------
 harness_path_attr_violations() {
     local crate="$1"
