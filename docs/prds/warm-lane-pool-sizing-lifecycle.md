@@ -132,9 +132,16 @@ warm-lane-audit.sh [--mount <worktrees_dir>] [--format table|json] [--status-cmd
       not pinned) · branch · backing-task-status (terminal|non-terminal|unknown, via
       REIFY_LANE_LEAK_STATUS_CMD — 4749 seam) · recoverable (LANDED | PUSHED | ORPHAN) ·
       dirty (clean|residue-only|wip) · divergent_gib (du or df-delta) · age_min (mtime)
-    classification: LIVE | RECLAIMABLE (free ∧ (terminal ∨ recoverable ∨ residue-only-dirty)) |
-                    LEAKED (free ∧ non-terminal ∧ unrecoverable-WIP ∧ stale, where
+    classification: LIVE | PINNED (idle ∧ ASSIGNED) | QUARANTINED | RECLAIMABLE (idle ∧
+                    (terminal ∨ recoverable ∨ residue-only-dirty)) | LEAKED (idle ∧
+                    non-terminal ∧ unrecoverable-WIP ∧ stale, where
                       stale ⟺ age_min ≥ stale_age_min) | PRESERVED-OK
+      PINNED and QUARANTINED both rank above the ENTIRE free ladder below them, so such a
+      lane is never additionally reported LEAKED — and never counted in leaked= — even
+      when it satisfies the LEAKED predicate exactly: a reservation the pool still holds
+      is a scheduling problem, and a quarantine is state deliberately withheld for
+      inspection; reporting either as a leak would invite reclaiming state a consumer may
+      return to.
   STDOUT: the table/json. Trailing two-line HEADROOM + PINNED summary (post-#5363 shape):
     "HEADROOM resident=N live=Li pinned=Pn quarantined=Qt free=F assigned=A state_unknown=Su
        reclaimable=R leaked=Lk leak_unknown=Lu divergent_gib=D free_gib=G budget_gib=B"
