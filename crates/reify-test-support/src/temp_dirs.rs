@@ -426,4 +426,11 @@ mod tests {
     fn import_resolve_tests_have_no_unguarded_temp_dirs() {
         assert_no_unguarded_temp_dir_sites("crates/reify-compiler/tests/import_resolve_tests.rs");
     }
+
+    #[test]
+    fn user_defined_unit_tests_have_no_unguarded_temp_dirs() {
+        assert_no_unguarded_temp_dir_sites(
+            "crates/reify-compiler/tests/user_defined_unit_tests.rs",
+        );
+    }
 }
