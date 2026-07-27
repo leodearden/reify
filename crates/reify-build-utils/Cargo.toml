@@ -6,7 +6,8 @@ license.workspace = true
 description = "Shared build-script helpers: native-dep discovery and RPATH emission for Reify kernel adapters and binary packages"
 
 # Dev-only, never a normal dependency: this crate is a `[build-dependencies]`
-# entry of six crates, and a normal dep would pull tempfile into all six
-# build-script graphs. Dev-deps are not transitively resolved for consumers.
+# entry across the workspace, and a normal dep would pull tempfile into every
+# one of those build-script graphs. Dev-deps are not transitively resolved for
+# consumers.
 [dev-dependencies]
 tempfile.workspace = true
