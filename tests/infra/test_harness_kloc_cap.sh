@@ -604,8 +604,8 @@ awk 'BEGIN { for (i = 0; i < 7; i++) print "// x" }'     > "$_s1c_dir/harness_ne
 awk 'BEGIN { for (i = 0; i < 50000; i++) print "// x" }' > "$_s1c_dir/harness_nested/notes.txt"
 
 _s1c_tuple="$(harness_layout_unit_lines "$_s1c_dir/harness_nested.rs")"
-assert "1c: harness_layout_unit_lines recurses into nested subdirs and counts only *.rs (total=22 root=10 module=12 files=2)" \
-    test "$_s1c_tuple" = "22 10 12 2"
+assert "1c: harness_layout_unit_lines recurses into nested subdirs and counts only *.rs (total=22 root=10 module=12 files=2, no external includes: 0 0)" \
+    test "$_s1c_tuple" = "22 10 12 2 0 0"
 
 _s1c_out="$(mktemp)"; _TMPDIRS+=("$_s1c_out")
 _s1c_rc=0
@@ -666,6 +666,113 @@ assert "1d: exceeds-cap verdict appends root_lines/module_lines/module_files AFT
 # whole total and module_lines/module_files are both 0.
 assert "1d: exceeds-cap verdict reports a coherent breakdown for a single-file harness (no module dir: root_lines=21000 module_lines=0 module_files=0)" \
     grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_big\.rs reason=exceeds-cap lines=21000 cap=20000 root_lines=21000 module_lines=0 module_files=0$' "$_s1_out"
+
+# ===========================================================================
+# Section 1e: rule (a) — EXTERNAL (out-of-module-dir) includes are attributed
+# to the compile unit.
+#
+# A harness root may `#[path]`- or bare-`mod`-include a file that lives OUTSIDE
+# its own `harness_<subsystem>/` module directory — in this tree, the shared
+# `tests/common/` helpers. rustc compiles a separate copy of every such file
+# into EVERY including binary, so those lines are real per-unit compile cost and
+# rule (a)'s cap governs them. Leaving them unattributed is not a neutral
+# simplification: it is a directionally exploitable bypass of the C2 ratchet
+# (move code to `tests/common/`, `#[path]`-include it, cap evaded).
+#
+# `harness_layout_unit_lines` therefore reports a SIX-field tuple
+#     "<total> <root_lines> <module_lines> <module_files> <external_lines> <external_files>"
+# with total = root_lines + module_lines + external_lines. The fixtures below
+# pin the resolution rules (which mirror rustc's), transitivity, visited-set
+# dedup, the unresolvable-target case, and the no-double-counting boundary
+# against the existing module-dir `find` walk.
+# ===========================================================================
+echo ""
+echo "--- Section 1e: external (out-of-module-dir) includes are attributed ---"
+
+# --- Fixture A: an escaping `#[path]` IS external; an in-module-dir `#[path]`
+#     is NOT double-counted (it is already counted by the find walk). ---
+_s1e_dir="$(mktemp -d)"; _TMPDIRS+=("$_s1e_dir")
+mkdir -p "$_s1e_dir/harness_ext" "$_s1e_dir/shared"
+{
+    printf '#[path = "shared/helper.rs"]\n'
+    printf 'mod helper;\n'
+    printf '#[path = "harness_ext/inner.rs"]\n'
+    printf 'mod inner;\n'
+} > "$_s1e_dir/harness_ext.rs"                                    # root: 4 lines
+awk 'BEGIN { for (i = 0; i < 30; i++) print "// x" }' > "$_s1e_dir/harness_ext/inner.rs"
+awk 'BEGIN { for (i = 0; i < 40; i++) print "// x" }' > "$_s1e_dir/shared/helper.rs"
+
+_s1e_tuple="$(harness_layout_unit_lines "$_s1e_dir/harness_ext.rs")"
+assert "1e: an escaping #[path] include is attributed as external, and an in-module-dir #[path] is NOT double-counted (total=74 root=4 module=30 files=1 external=40 extfiles=1)" \
+    test "$_s1e_tuple" = "74 4 30 1 40 1"
+
+# --- Fixture B: a bare `mod common;` resolving to the retained `tests/` sibling
+#     is external; the walk is TRANSITIVE through it; a file reachable twice is
+#     counted ONCE; an unresolvable target contributes 0 without aborting. ---
+_s1e2_dir="$(mktemp -d)"; _TMPDIRS+=("$_s1e2_dir")
+mkdir -p "$_s1e2_dir/common"
+{
+    # (ii) crate-root-relative bare `mod` onto the retained sibling directory
+    #      module `tests/common/mod.rs` — the ONE principled C1 exception.
+    printf 'mod common;\n'
+    # (iv) a SECOND declaration resolving to the very same file: visited-set
+    #      dedup must count common/mod.rs exactly once.
+    printf '#[path = "common/mod.rs"]\n'
+    printf 'mod common_again;\n'
+    # (v) a target that does not exist on disk: contributes 0, and must not
+    #     abort this `set -euo pipefail` script.
+    printf 'mod does_not_exist;\n'
+} > "$_s1e2_dir/harness_sib.rs"                                   # root: 4 lines
+# (iii) transitivity: common/mod.rs itself declares a submodule (this is the
+#       live reify-eval shape — common/mod.rs declares alloc_counter/as_printed).
+#       `mod.rs` resolves a bare `mod sub;` against its OWN directory.
+{
+    printf 'pub mod sub;\n'
+    printf 'pub fn helper() {}\n'
+} > "$_s1e2_dir/common/mod.rs"                                    # 2 lines
+awk 'BEGIN { for (i = 0; i < 13; i++) print "// x" }' > "$_s1e2_dir/common/sub.rs"
+
+_s1e2_rc=0
+_s1e2_tuple="$(harness_layout_unit_lines "$_s1e2_dir/harness_sib.rs")" || _s1e2_rc=$?
+assert "1e: an unresolvable \`mod\` target neither aborts nor errors the measure (rc 0)" \
+    test "$_s1e2_rc" -eq 0
+assert "1e: bare-\`mod\` sibling + transitive submodule are external, double-reached file counted once (total=19 root=4 module=0 files=0 external=15 extfiles=2)" \
+    test "$_s1e2_tuple" = "19 4 0 0 15 2"
+
+# --- Fixture C: a file INSIDE the module dir is TRAVERSED (its own escaping
+#     include is attributed) even though the file itself is not re-counted —
+#     the two halves of the in-module-dir rule, pinned together. Also pins that
+#     a `../`-relative `#[path]` is resolved, not string-matched: the naive
+#     prefix test would misread `harness_deep/../shared/deep.rs` as "inside the
+#     module dir" and silently drop it. ---
+_s1e3_dir="$(mktemp -d)"; _TMPDIRS+=("$_s1e3_dir")
+mkdir -p "$_s1e3_dir/harness_deep" "$_s1e3_dir/shared"
+{
+    printf '#[path = "harness_deep/inner.rs"]\n'
+    printf 'mod inner;\n'
+} > "$_s1e3_dir/harness_deep.rs"                                  # root: 2 lines
+{
+    printf '#[path = "../shared/deep.rs"]\n'
+    printf 'mod deep;\n'
+    awk 'BEGIN { for (i = 0; i < 8; i++) print "// x" }'
+} > "$_s1e3_dir/harness_deep/inner.rs"                            # 10 lines
+awk 'BEGIN { for (i = 0; i < 17; i++) print "// x" }' > "$_s1e3_dir/shared/deep.rs"
+
+_s1e3_tuple="$(harness_layout_unit_lines "$_s1e3_dir/harness_deep.rs")"
+assert "1e: a module-dir file is traversed so ITS escaping ../ include is attributed, without re-counting the module-dir file (total=29 root=2 module=10 files=1 external=17 extfiles=1)" \
+    test "$_s1e3_tuple" = "29 2 10 1 17 1"
+
+# --- Coherence: the total is exactly root + module + external in every case. ---
+_s1e_total_coherent() {
+    local tuple total root mod files ext extfiles
+    for tuple in "$_s1e_tuple" "$_s1e2_tuple" "$_s1e3_tuple"; do
+        read -r total root mod files ext extfiles <<<"$tuple"
+        [ "$total" -eq $((root + mod + ext)) ] || return 1
+    done
+    return 0
+}
+assert "1e: total == root_lines + module_lines + external_lines across every fixture" \
+    _s1e_total_coherent
 
 # ===========================================================================
 # Section 2: rule (b) — an unsanctioned standalone tests/*.rs fires.
