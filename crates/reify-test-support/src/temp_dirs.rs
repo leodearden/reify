@@ -326,6 +326,12 @@ mod tests {
     ///
     /// The path is captured in an outer cell so it outlives the closure the
     /// guard is dropped inside of.
+    ///
+    /// Constructs with retention explicitly OFF rather than through
+    /// [`prefixed_tempdir`], so that running the suite under
+    /// `REIFY_KEEP_TEMP_DIRS=1` to triage some other failure does not turn this
+    /// invariant red.  The env→retention wiring is pinned separately by
+    /// `keep_requested_reads_set_and_non_empty`.
     #[test]
     fn prefixed_tempdir_is_removed_on_panic_unwind() {
         let seen: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(None));
@@ -333,7 +339,7 @@ mod tests {
 
         let result = with_silent_panic_hook(|| {
             std::panic::catch_unwind(AssertUnwindSafe(|| {
-                let guard = prefixed_tempdir("reify-test-support-unwind-");
+                let guard = prefixed_tempdir_with_retention("reify-test-support-unwind-", false);
                 *seen_inner.borrow_mut() = Some(guard.path().to_path_buf());
                 assert!(
                     guard.path().exists(),
@@ -360,10 +366,12 @@ mod tests {
 
     /// The ordinary path: the directory is removed when the guard's scope ends
     /// normally.  Pins that the RAII teardown is not somehow panic-only.
+    ///
+    /// Retention explicitly OFF for the same reason as the unwind test above.
     #[test]
     fn prefixed_tempdir_is_removed_on_normal_scope_exit() {
         let path: PathBuf = {
-            let guard = prefixed_tempdir("reify-test-support-scope-");
+            let guard = prefixed_tempdir_with_retention("reify-test-support-scope-", false);
             let path = guard.path().to_path_buf();
             assert!(path.exists(), "the guard's directory must exist in scope");
             path
