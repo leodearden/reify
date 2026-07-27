@@ -2642,6 +2642,95 @@ kill "$Q_LOCK14_PID" 2>/dev/null || true
 wait "$Q_LOCK14_PID" 2>/dev/null || true
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Block S — relocation sweep must not advance build-script freshness references
+# (task 5630). Uses run_helper_real (real cp/find/touch + stub git), mirroring
+# Block P's fixture recipe and Block L's "pre-stamp to an explicit timestamp,
+# assert the exact epoch after the run" technique.
+#
+# WHY this block exists (measured, cargo 1.96.0, hermetic repro):
+#   Cargo's LocalFingerprint::RerunIfChanged compares each watched source's
+#   mtime against the mtime of target/<profile>/build/<pkg>-<hash>/output — a
+#   watched path is stale only if STRICTLY NEWER than that file. Bumping
+#   `output` past a changed source therefore SILENTLY suppresses the build
+#   script rerun and links the base's stale compiled artifact.
+#   Repro (throwaway crate, `cargo:rerun-if-changed=data.txt`, build script
+#   bakes data.txt into OUT_DIR):
+#     data.txt=1785113156, output=1785113161 (+5s) → baked artifact = "v1"  (rerun SUPPRESSED)
+#     data.txt=1785113156, output=1785113151 (−5s) → baked artifact = "v2"  (rerun HAPPENED)
+#   The relocation sweep rewrites `output`/`root-output` with `sed -E -i`,
+#   which replaces via temp+rename and so stamps every rewritten file to seed
+#   time — strictly AFTER the delta-touch two find-walks earlier. Relocating a
+#   baked absolute path is a CONTENT correction; it is not evidence the build
+#   script ran, so it must not advance the file's freshness reference.
+#
+#   Placed BEFORE Block R deliberately: per Block R's ordering note, a block
+#   appended after R2/R5 gets no shared-trash-litter coverage from R1.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block S: relocation sweep preserves build-script freshness refs (task 5630) ---"
+
+S_FOREIGN="/tmp/foreign-buildroot-S5630"
+
+S_BASE_PARENT="$(mktemp -d /tmp/test-seed-S-parent-XXXXXX)"
+S_BASE="$S_BASE_PARENT/target"
+S_LANE="$(make_isolated_lane S-lane)"
+_TMPDIRS+=("$S_BASE_PARENT")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$S_BASE_PARENT/.warm-base-meta"
+printf '%s' "$S_FOREIGN" > "${S_BASE}.buildroot"
+
+# A `cc`/`cxx_build`-shaped build dir: `output` carries an OUT_DIR-absolute
+# rustc-link-search (which is why occt/openvdb/eval are rewritten in a real
+# lane, while gmsh/conformance — emitting only /opt/reify-deps paths — are not)
+# alongside the rerun-if-changed line whose staleness `output`'s mtime gates.
+mkdir -p "$S_BASE/debug/build/fakecc-1111"
+cat > "$S_BASE/debug/build/fakecc-1111/output" <<EOF
+cargo:rerun-if-changed=crates/k/cpp/wrapper.cpp
+cargo:rustc-link-search=native=$S_FOREIGN/target/debug/build/fakecc-1111/out
+EOF
+printf '%s' "$S_FOREIGN/target/debug/build/fakecc-1111/out" \
+    > "$S_BASE/debug/build/fakecc-1111/root-output"
+
+# Pre-stamp both replay files to a fixed PAST timestamp and capture the exact
+# epoch. This makes every assertion below an exact integer comparison — no
+# sleep, no dependence on wall-clock granularity (Block L's technique).
+# /bin/cp -a in the run_helper_real cp stub preserves mtimes, so the lane copy
+# inherits this stamp and only the sed can move it.
+touch -d "2024-06-01T00:00:00" "$S_BASE/debug/build/fakecc-1111/output" \
+                               "$S_BASE/debug/build/fakecc-1111/root-output"
+S_OUTPUT_EPOCH="$(stat -c '%Y' "$S_BASE/debug/build/fakecc-1111/output")"
+S_ROOT_OUTPUT_EPOCH="$(stat -c '%Y' "$S_BASE/debug/build/fakecc-1111/root-output")"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$S_BASE" "$S_LANE" --fresh-checkout
+
+S_LANE_RP="$(realpath -m "$S_LANE")"
+S_LANE_OUTPUT="$S_LANE/target/debug/build/fakecc-1111/output"
+S_LANE_ROOT_OUTPUT="$S_LANE/target/debug/build/fakecc-1111/root-output"
+
+# S1a: success contract
+assert "S1a: --fresh-checkout exits 0 (relocation sweep ran)" test "$RC" -eq 0
+
+# S1b: REGRESSION PIN — the task-5126 relocation itself must still work. Without
+# this, "preserve the mtime" could be trivially satisfied by not rewriting at all.
+assert "S1b: build/fakecc-1111/output contains the LANE root prefix (relocation still works)" \
+    bash -c 'grep -qF "$1" "$2"' _ "$S_LANE_RP" "$S_LANE_OUTPUT"
+assert "S1b: build/fakecc-1111/output no longer contains the FOREIGN root" \
+    bash -c '! grep -qF "$1" "$2"' _ "$S_FOREIGN" "$S_LANE_OUTPUT"
+assert "S1b: build/fakecc-1111/root-output reads the lane's OUT_DIR (no FOREIGN substring)" \
+    bash -c '[ "$(cat "$1")" = "'"$S_LANE_RP"'/target/debug/build/fakecc-1111/out" ]' \
+    _ "$S_LANE_ROOT_OUTPUT"
+
+# S1c: THE NEW CONTRACT — the rewrite must NOT advance the freshness reference.
+S1C_OUTPUT_MTIME="$(stat -c '%Y' "$S_LANE_OUTPUT")"
+assert "S1c: rewritten output KEEPS its pre-sed mtime ($S_OUTPUT_EPOCH) — sed must not advance cargo's freshness reference" \
+    test "$S1C_OUTPUT_MTIME" -eq "$S_OUTPUT_EPOCH"
+
+S1C_ROOT_OUTPUT_MTIME="$(stat -c '%Y' "$S_LANE_ROOT_OUTPUT")"
+assert "S1c: rewritten root-output KEEPS its pre-sed mtime ($S_ROOT_OUTPUT_EPOCH)" \
+    test "$S1C_ROOT_OUTPUT_MTIME" -eq "$S_ROOT_OUTPUT_EPOCH"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Block R: lane isolation guards (task 5590) — every lane created in this file
 # must be nested under a private per-run parent, never bare /tmp, because
 # scripts/seed-warm-lane.sh:663 computes RESEED_TRASH_DIR as
