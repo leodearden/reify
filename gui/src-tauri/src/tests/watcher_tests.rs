@@ -805,6 +805,8 @@ fn watcher_emits_remove_event_even_when_target_file_filter_excludes_other_files(
 
     let events: Arc<Mutex<Vec<FileEvent>>> = Arc::new(Mutex::new(vec![]));
     let events_clone = events.clone();
+    let probe_seen = Arc::new(AtomicBool::new(false));
+    let probe_seen_clone = probe_seen.clone();
 
     // Watch with target_file="target.ri" — Changed for non-target should be filtered,
     // but Removed should still fire for any .ri file.
@@ -812,14 +814,37 @@ fn watcher_emits_remove_event_even_when_target_file_filter_excludes_other_files(
         dir.path(),
         Some(PathBuf::from("target.ri")),
         move |event| {
+            // Leading guard: this callback pushes EVERY event into
+            // `events`, so probe traffic of EITHER kind must be caught and
+            // returned early here, before it can pollute the sink (and
+            // this test's failure-dump formatting below).
+            let path = match &event {
+                FileEvent::Changed(p) | FileEvent::Removed(p) => p,
+            };
+            if path.ends_with("probe.ri") {
+                probe_seen_clone.store(true, Ordering::SeqCst);
+                return;
+            }
             events_clone.lock().unwrap().push(event);
         },
     ) else {
         return;
     };
 
-    // Give the watcher time to register
-    std::thread::sleep(Duration::from_millis(200));
+    // Watcher is target_file-filtered, so this relies on the very
+    // Removed-bypasses-target_file contract that THIS test exists to pin:
+    // a pleasing self-consistency, since a regression in that contract
+    // would make the barrier itself fail loudly here (spin its full
+    // budget and return false) rather than letting the test below pass
+    // vacuously.
+    let registered = wait_for_watch_registration_via_removal(dir.path(), &probe_seen);
+    assert!(
+        registered,
+        "the watcher never delivered a probe event, so the directory watch \
+         was never confirmed live -- the remove below could have been \
+         lost outright and this run could not exercise the \
+         Removed-bypasses-target_file contract"
+    );
 
     // Delete the scratch file (not the target) — should produce Removed event
     std::fs::remove_file(&scratch_file).unwrap();
