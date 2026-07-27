@@ -131,7 +131,24 @@ pub fn find(dep: NativeDep) -> Option<LibLoc> {
 }
 
 fn find_dir(env_var: &str, candidates: &[&str], sentinel: &str) -> Option<PathBuf> {
-    if let Ok(dir) = env::var(env_var) {
+    find_dir_with_override(env::var(env_var).ok().as_deref(), candidates, sentinel)
+}
+
+/// Resolution core of [`find_dir`], taking the override as a value rather than
+/// reading it from the environment.
+///
+/// Split out purely so precedence is testable without `env::set_var`: libtest
+/// runs tests on a thread pool, so mutating the process environ races every
+/// concurrent `getenv` in the same process — including the one
+/// `env::temp_dir()` performs for `TMPDIR`. That hazard is the reason
+/// `set_var` is `unsafe` in Rust 2024, and it is not fixable by picking a
+/// private variable name, since the race is on the environ block itself.
+fn find_dir_with_override(
+    override_dir: Option<&str>,
+    candidates: &[&str],
+    sentinel: &str,
+) -> Option<PathBuf> {
+    if let Some(dir) = override_dir {
         return Some(PathBuf::from(dir));
     }
     for p in candidates {
@@ -335,24 +352,30 @@ mod tests {
         assert_eq!(read_soname_version(tmp, "TKernel"), Some("7.9.3".to_string()));
     }
 
+    /// An override outranks a candidate that would otherwise match, and is
+    /// taken on trust — it is returned even without the sentinel present,
+    /// which is what lets an operator point a build at a lib dir we do not
+    /// know about.
     #[test]
-    fn find_dir_env_var_takes_precedence() {
-        let guard = tempdir();
-        let tmp = guard.path();
-        let sentinel = tmp.join("libgmsh.so");
-        fs::write(&sentinel, b"").unwrap();
+    fn find_dir_override_takes_precedence_over_candidates() {
+        let override_guard = tempdir();
+        let override_dir = override_guard.path();
 
-        // SAFETY: build-script unit tests run serially within a single
-        // process; we mutate a private env var name that no other test reads.
-        let env_name = "REIFY_BUILD_UTILS_TEST_OVERRIDE_LIB_DIR";
-        // SAFETY: unit tests run sequentially in this module; the env name is
-        // private to this test and not read elsewhere.
-        unsafe { env::set_var(env_name, tmp) };
-        let found = find_dir(env_name, &[], "libgmsh.so");
-        // SAFETY: same justification as the matching set_var above.
-        unsafe { env::remove_var(env_name) };
+        // A candidate that DOES contain the sentinel, so the assertion below
+        // can only pass if the override actually outranks it.
+        let candidate_guard = tempdir();
+        let candidate_dir = candidate_guard.path();
+        fs::write(candidate_dir.join("libgmsh.so"), b"").unwrap();
 
-        assert_eq!(found.as_deref(), Some(tmp));
+        let override_str = override_dir.to_string_lossy().into_owned();
+        let candidate_str = candidate_dir.to_string_lossy().into_owned();
+        let found = find_dir_with_override(
+            Some(override_str.as_str()),
+            &[candidate_str.as_str()],
+            "libgmsh.so",
+        );
+
+        assert_eq!(found.as_deref(), Some(override_dir));
     }
 
     #[test]
