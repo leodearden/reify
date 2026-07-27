@@ -377,6 +377,39 @@ pub(crate) fn required_length_value(
     .map(reify_ir::Value::length)
 }
 
+/// Read the `ox`/`oy`/`oz` ORIGIN triple of a scalar-form geometry builtin as
+/// LENGTHs, in that component order.
+///
+/// An origin is a *point in space*, so every component is length-semantic and
+/// must be a finite LENGTH `Scalar`: a bare/dimensionless component would be
+/// silently read as SI **metres** by `Value::as_f64` (the `12` vs `12mm` 1000×
+/// hazard). The co-located DIRECTION triple (`ax`/`ay`/`az`, `nx`/`ny`/`nz`) is
+/// a dimensionless unit vector and deliberately stays on the bare-accepting
+/// `eval_named_arg_f64` path — callers keep their own `f64_arg` closure for it.
+///
+/// BORROW ORDERING (the reason this is a free function and not a closure):
+/// each call takes `&mut diagnostics`, so the whole triple must be read BEFORE
+/// the caller declares its `f64_arg` closure — the closure captures
+/// `diagnostics` mutably for its own lifetime, and an interleaved read would
+/// overlap that borrow. Calling this helper first satisfies that ordering by
+/// construction instead of by convention at each call site.
+///
+/// Shared by `pattern_circular` (task 5350) and `pattern_mirror` (task 5214),
+/// whose origin reads were otherwise byte-identical.
+fn required_length_origin3(
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<[f64; 3], String> {
+    let ox = required_length_arg("ox", kind_label, args, values, functions, meta_map, diagnostics)?;
+    let oy = required_length_arg("oy", kind_label, args, values, functions, meta_map, diagnostics)?;
+    let oz = required_length_arg("oz", kind_label, args, values, functions, meta_map, diagnostics)?;
+    Ok([ox, oy, oz])
+}
+
 /// Evaluate all args in a variadic curve constructor to f64 values.
 ///
 /// Returns `None` if any arg evaluates to a non-finite value, pushing a
@@ -2558,15 +2591,10 @@ fn pattern_circular(
             angle,
         })
     } else {
-        // The axis ORIGIN is length-semantic (a point in space): require a
-        // finite LENGTH Scalar (reject a bare/dimensionless component, which
-        // `Value::as_f64` would silently read as SI metres — the `12` vs `12mm`
-        // 1000× hazard). Read ox/oy/oz directly here — NOT via the `f64_arg`
-        // closure below — so their `&mut diagnostics` borrows don't overlap
-        // with the closure's capture.
-        let ox = required_length_arg("ox", kind, args, values, functions, meta_map, diagnostics)?;
-        let oy = required_length_arg("oy", kind, args, values, functions, meta_map, diagnostics)?;
-        let oz = required_length_arg("oz", kind, args, values, functions, meta_map, diagnostics)?;
+        // The axis ORIGIN is length-semantic; see `required_length_origin3` for
+        // the units rationale AND for why it must be read before `f64_arg`.
+        let axis_origin =
+            required_length_origin3(kind, args, values, functions, meta_map, diagnostics)?;
         // The axis DIRECTION is a dimensionless unit vector — stays bare f64.
         let mut f64_arg = |name: &str| -> Result<f64, String> {
             eval_named_arg_f64(
@@ -2582,7 +2610,6 @@ fn pattern_circular(
                 format!("missing or non-finite argument '{}' for {}", name, kind)
             })
         };
-        let axis_origin = [ox, oy, oz];
         let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
         let count_raw = f64_arg("count")?;
         let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
@@ -2635,14 +2662,11 @@ fn pattern_mirror(
             plane_normal,
         })
     } else {
-        // The mirror-plane ORIGIN is length-semantic: require a finite LENGTH
-        // Scalar (reject a bare/dimensionless component, which `Value::as_f64`
-        // would silently read as SI metres). Read ox/oy/oz directly here — NOT
-        // via the `f64_arg` closure below — so their `&mut diagnostics` borrows
-        // don't overlap with the closure's capture.
-        let ox = required_length_arg("ox", kind, args, values, functions, meta_map, diagnostics)?;
-        let oy = required_length_arg("oy", kind, args, values, functions, meta_map, diagnostics)?;
-        let oz = required_length_arg("oz", kind, args, values, functions, meta_map, diagnostics)?;
+        // The mirror-plane ORIGIN is length-semantic; see
+        // `required_length_origin3` for the units rationale AND for why it must
+        // be read before `f64_arg`.
+        let plane_origin =
+            required_length_origin3(kind, args, values, functions, meta_map, diagnostics)?;
         // The plane NORMAL is a dimensionless unit vector — stays bare f64.
         let mut f64_arg = |name: &str| -> Result<f64, String> {
             eval_named_arg_f64(
@@ -2660,7 +2684,7 @@ fn pattern_mirror(
         };
         Ok(reify_ir::GeometryOp::Mirror {
             target: target_id,
-            plane_origin: [ox, oy, oz],
+            plane_origin,
             plane_normal: [f64_arg("nx")?, f64_arg("ny")?, f64_arg("nz")?],
         })
     }

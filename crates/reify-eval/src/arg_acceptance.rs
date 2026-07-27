@@ -10,6 +10,13 @@
 //! (`edges_at_height` z/tol, `geo_equiv` tol), which share the single
 //! [`length_spec`] so both emit identical rejection text.
 //!
+//! Contract C is NOT yet exhaustive: `sweep_revolve`'s axis origin
+//! (`geometry_ops`' `ox`/`oy`/`oz`, read via the bare-accepting
+//! `eval_named_arg_f64`) is the nearest un-gated LENGTH-semantic position, and
+//! `transform_translate`/`transform_rotate_around`/`curve_*` carry more. Task
+//! 5623 tracks that residual sweep; until it lands, adding a length-semantic
+//! arg here means adding it to that task's triage list too.
+//!
 //! The helper is **value-level only**: it operates on an already-resolved
 //! `reify_ir::Value` and has no knowledge of `CompiledExpr` or `ValueMap`.
 //! Callers are responsible for extracting the value from the expression
