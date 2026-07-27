@@ -1022,4 +1022,132 @@ mod tests {
             diags
         );
     }
+
+    // ── linear_pattern spacing LENGTH slot (task 5652) ────────────────────────
+
+    /// Build a 6-arg `linear_pattern(target, dx, dy, dz, count, spacing)` arg
+    /// list with the given `spacing` type. Args 1-3 are the DIMENSIONLESS
+    /// direction vector components and arg 4 the `Int` count — both
+    /// deliberately unchecked (task 5214 established the direction is a unit
+    /// vector, so there is no silent-metres hazard there).
+    fn linear_pattern_args(spacing: Type) -> Vec<CompiledExpr> {
+        vec![
+            arg_expr(Type::Geometry),               // 0 target
+            arg_expr(Type::dimensionless_scalar()), // 1 dx
+            arg_expr(Type::dimensionless_scalar()), // 2 dy
+            arg_expr(Type::dimensionless_scalar()), // 3 dz
+            arg_expr(Type::Int),                    // 4 count
+            arg_expr(spacing),                      // 5 spacing
+        ]
+    }
+
+    /// linear_pattern @ arity 6 → arg5 spacing (LENGTH); every OTHER arity → empty.
+    ///
+    /// The `arg_count == 6` guard is a forward-compat guard, not decoration:
+    /// task 5351 lands a 4-arg `(target, direction, count, spacing)` value form
+    /// in which `spacing` moves to index 3, so an arity-agnostic `spacing@5`
+    /// slot would silently point at nothing there. Pinning the empty result at
+    /// arity 4 NOW is what makes that overload safe to add later.
+    #[test]
+    fn linear_pattern_spacing_slot_is_arity_6_only() {
+        assert_eq!(
+            builtin_arg_slots("linear_pattern", 6),
+            vec![length_slot(5, "spacing")],
+            "linear_pattern(target, dx, dy, dz, count, spacing) — arg5 spacing must be LENGTH"
+        );
+        for arity in [0usize, 1, 3, 4, 5, 7, 11] {
+            assert!(
+                builtin_arg_slots("linear_pattern", arity).is_empty(),
+                "linear_pattern at arity {arity} is not the 6-arg form, so it must \
+                 expose NO slots — index 5 does not denote `spacing` there"
+            );
+        }
+    }
+
+    /// CORRECT: a dimensioned `Length` spacing → 0 diagnostics.
+    #[test]
+    fn linear_pattern_length_spacing_gives_no_error() {
+        let mut diags = Vec::new();
+        check_builtin_arg_types(
+            "linear_pattern",
+            &linear_pattern_args(Type::length()),
+            dummy_span(),
+            &mut diags,
+        );
+        assert!(
+            diags.is_empty(),
+            "a dimensioned Length spacing must pass, got: {:?}",
+            diags
+        );
+    }
+
+    /// MISMATCH: a bare `Int` spacing (`10`) → exactly 1 ArgTypeMismatch Error
+    /// naming the builtin, the `spacing` arg and the expected `Length`.
+    #[test]
+    fn linear_pattern_bare_int_spacing_gives_error_naming_length() {
+        let mut diags = Vec::new();
+        check_builtin_arg_types(
+            "linear_pattern",
+            &linear_pattern_args(Type::Int),
+            dummy_span(),
+            &mut diags,
+        );
+        assert_eq!(diags.len(), 1, "expected 1 diagnostic, got: {:?}", diags);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
+        for needle in ["linear_pattern", "spacing", "Length"] {
+            assert!(
+                diags[0].message.contains(needle),
+                "message must contain {needle:?}: {}",
+                diags[0].message
+            );
+        }
+    }
+
+    /// GRADUALISM: an unresolved `TypeParam` spacing → 0 diagnostics.
+    ///
+    /// This is the explicit proof that the compile-layer slot COMPLEMENTS and
+    /// never REPLACES task 5214's eval-layer gate (`required_length_value`): a
+    /// dynamically-typed spacing types as `TypeParam`/`Error` here and is
+    /// skipped by PRD-decision-6 gradualism, so eval remains the backstop.
+    #[test]
+    fn linear_pattern_unresolved_spacing_passes_silently() {
+        for ty in [Type::TypeParam("T".to_string()), Type::Error] {
+            let mut diags = Vec::new();
+            check_builtin_arg_types(
+                "linear_pattern",
+                &linear_pattern_args(ty.clone()),
+                dummy_span(),
+                &mut diags,
+            );
+            assert!(
+                diags.is_empty(),
+                "{ty} spacing must pass silently (gradualism) — the eval-layer \
+                 gate stays the backstop; got: {:?}",
+                diags
+            );
+        }
+    }
+
+    /// A non-6-arg call is slot-free, so even a definitely-wrong spacing type
+    /// produces nothing: the arity guard, not luck, is what keeps it quiet.
+    #[test]
+    fn linear_pattern_non_6_arity_gives_no_diagnostics() {
+        let four_args = vec![
+            arg_expr(Type::Geometry), // 0 target
+            arg_expr(Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar()),
+            }), // 1 direction (task 5351's future form)
+            arg_expr(Type::Int),      // 2 count
+            arg_expr(Type::Int),      // 3 spacing — bare, but NOT checked at this arity
+        ];
+        let mut diags = Vec::new();
+        check_builtin_arg_types("linear_pattern", &four_args, dummy_span(), &mut diags);
+        assert!(
+            diags.is_empty(),
+            "a 4-arg linear_pattern exposes no slots, got: {:?}",
+            diags
+        );
+    }
 }
