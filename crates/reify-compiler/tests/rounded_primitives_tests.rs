@@ -81,7 +81,9 @@ fn assert_signed_mul(expr: &CompiledExpr, label: &str) -> f64 {
             CompiledExprKind::Literal(Value::Real(factor)) => *factor,
             other => panic!("{label} Mul right operand must be a Real literal, got: {other:?}"),
         },
-        other => panic!("{label} expression must be a Mul(<magnitude>, <sign literal>), got: {other:?}"),
+        other => {
+            panic!("{label} expression must be a Mul(<magnitude>, <sign literal>), got: {other:?}")
+        }
     }
 }
 
@@ -152,10 +154,7 @@ fn rounded_box_lowers_to_boolean_compose() {
             assert!(
                 matches!(
                     height_expr.kind,
-                    CompiledExprKind::BinOp {
-                        op: BinOp::Sub,
-                        ..
-                    }
+                    CompiledExprKind::BinOp { op: BinOp::Sub, .. }
                 ),
                 "Box A height-slot must be a Sub expr (depth - 2*corner_r), got: {:?}",
                 height_expr.kind
@@ -178,10 +177,7 @@ fn rounded_box_lowers_to_boolean_compose() {
             assert!(
                 matches!(
                     width_expr.kind,
-                    CompiledExprKind::BinOp {
-                        op: BinOp::Sub,
-                        ..
-                    }
+                    CompiledExprKind::BinOp { op: BinOp::Sub, .. }
                 ),
                 "Box B width-slot must be a Sub expr (width - 2*corner_r), got: {:?}",
                 width_expr.kind
@@ -211,7 +207,9 @@ fn rounded_box_lowers_to_boolean_compose() {
                 );
             }
             other => {
-                panic!("op[{cyl_idx}] (corner {corner}) must be Primitive(Cylinder), got: {other:?}")
+                panic!(
+                    "op[{cyl_idx}] (corner {corner}) must be Primitive(Cylinder), got: {other:?}"
+                )
             }
         }
 
@@ -265,7 +263,9 @@ fn rounded_box_lowers_to_boolean_compose() {
                 );
             }
             other => {
-                panic!("op[{trans_idx}] (corner {corner}) must be Transform(Translate), got: {other:?}")
+                panic!(
+                    "op[{trans_idx}] (corner {corner}) must be Transform(Translate), got: {other:?}"
+                )
             }
         }
 
@@ -542,10 +542,7 @@ fn rounded_rect_lowers_to_boolean_compose() {
             assert!(
                 matches!(
                     height_expr.kind,
-                    CompiledExprKind::BinOp {
-                        op: BinOp::Sub,
-                        ..
-                    }
+                    CompiledExprKind::BinOp { op: BinOp::Sub, .. }
                 ),
                 "Rect A height-slot must be a Sub expr (depth - 2*corner_r), got: {:?}",
                 height_expr.kind
@@ -567,10 +564,7 @@ fn rounded_rect_lowers_to_boolean_compose() {
             assert!(
                 matches!(
                     width_expr.kind,
-                    CompiledExprKind::BinOp {
-                        op: BinOp::Sub,
-                        ..
-                    }
+                    CompiledExprKind::BinOp { op: BinOp::Sub, .. }
                 ),
                 "Rect B width-slot must be a Sub expr (width - 2*corner_r), got: {:?}",
                 width_expr.kind
