@@ -419,6 +419,37 @@ mod tests {
         );
     }
 
+    /// Debris must stay attributable to its producer. `Drop` covers scope
+    /// exit, early return, and unwinding panic — but it cannot run on
+    /// SIGKILL, OOM-kill, or power loss, so residual dirs remain possible.
+    /// The `reify-build-utils-test-` prefix is exactly what let this crate's
+    /// 4.7k stale entries be told apart from the rest of a shared `/tmp`
+    /// during host-hygiene triage; anonymous `.tmp*` debris would be strictly
+    /// worse for the next operator than the status quo.
+    #[test]
+    fn tempdir_name_is_attributable_to_this_crate() {
+        let guard = tempdir();
+        let path = guard.path();
+
+        // Directly under the shared temp root, so the triage glob
+        // `find /tmp -maxdepth 1 -name 'reify-build-utils-test-*'` finds it.
+        assert_eq!(
+            path.parent(),
+            Some(env::temp_dir().as_path()),
+            "temp dir must live directly under env::temp_dir(): {}",
+            path.display()
+        );
+
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("utf-8 temp dir name");
+        assert!(
+            name.starts_with("reify-build-utils-test-"),
+            "temp dir name must carry the producer prefix for /tmp triage; got {name:?}"
+        );
+    }
+
     /// Create a temp dir that is removed when the returned guard is dropped —
     /// including on an unwinding panic, which a manual teardown at the end of
     /// a test body would skip.
