@@ -1149,6 +1149,46 @@ assert "L11b: exit 0 under REIFY_WARM_LANE_AUDIT_STATE_DIR" test "$RC" -eq 0
 assert "L11c: REIFY_WARM_LANE_AUDIT_STATE_DIR outside the mount is honoured (assigned=ASSIGNED)" \
     bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-ext .*assigned=ASSIGNED"' _ "$OUT"
 
+# ── L12: a state dir that is absent ENTIRELY warns ONCE for the directory ─────
+# The default shape of every pool until dark-factory's LaneLifecycle has written
+# its first record: every resident resolves the SAME cause, so a per-lane line
+# for each is N copies of "the feature is not deployed here" -- and it drowns
+# the per-lane naming, whose whole value is saying "THIS lane, unlike its
+# neighbours". The count is what makes this a real assertion: one warning for a
+# multi-lane pool cannot be satisfied by the retired per-lane loop.
+L12_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-l12-XXXXXX)"
+_TMPDIRS+=("$L12_MOUNT")
+L12_LANES=(_lane-l12-a _lane-l12-b _lane-l12-c)
+for l12_lane in "${L12_LANES[@]}"; do
+    make_lane "$L12_MOUNT/$l12_lane"
+done
+l12_exp_resident="${#L12_LANES[@]}"
+
+run_helper --mount "$L12_MOUNT"
+assert "L12a: exit 0 with no state dir at all" test "$RC" -eq 0
+assert "L12b: every lane still reports state_unknown (accounting stays PER LANE)" \
+    bash -c '[ "$1" = "$2" ]' _ "$(_headroom_field "$OUT" state_unknown)" "$l12_exp_resident"
+assert "L12c: exactly ONE warning names the absent dir (not one per lane)" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -cF "state dir $2 does not exist")" = "1" ]' \
+    _ "$ERR_OUT" "$L12_MOUNT/.lane-state"
+# The PER-LANE form is `lane=<name>: assignment state unknown (...)`. The
+# dir-level line deliberately reuses the "assignment state unknown" phrase (an
+# operator greps the concept, and must hit something in BOTH shapes), so the
+# discriminator here is the `lane=` prefix, not the phrase.
+assert "L12d: no per-lane warning fires when the whole dir is missing" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "lane=[^ ]+: assignment state unknown"' _ "$ERR_OUT"
+# The converse, so L12d cannot be satisfied by suppressing the per-lane warning
+# outright: with the dir PRESENT, a single missing record still names its lane.
+# (L6 asserts the cause text; this asserts the dir-level line stays absent.)
+make_lane_state "$L12_MOUNT" "${L12_LANES[0]}" "assigned" "7300"
+run_helper --mount "$L12_MOUNT"
+assert "L12e: with the dir present, the missing records warn PER LANE again" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -cE "lane=[^ ]+: assignment state unknown")" = "$2" ]' \
+    _ "$ERR_OUT" "$(( l12_exp_resident - 1 ))"
+assert "L12f: ...and the dir-level warning is not emitted when the dir exists" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "state dir $2 does not exist"' \
+    _ "$ERR_OUT" "$L12_MOUNT/.lane-state"
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block M — `pin=`: WHO is holding a reserved-but-idle lane, and in what state
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1269,23 +1309,31 @@ N_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-n-XXXXXX)"
 _TMPDIRS+=("$N_MOUNT")
 N_MAP="$(mktemp /tmp/test-warm-lane-audit-n-map-XXXXXX)"
 _TMPDIRS+=("$N_MAP")
-printf '9101 pending\n9102 pending\n9103 done\n9104 pending\n9105 pending\n' > "$N_MAP"
+printf '9101 pending\n9102 pending\n9103 done\n9104 pending\n9105 pending\n9106 pending\n9107 pending\n' > "$N_MAP"
 
 # lane : liveness : record state ('' = no record at all) : task id : git shape :
 #        expected assigned column : expected classification
 #
 # `orphan-stale` builds the LEAKED predicate's EXACT shape (non-terminal status
 # + ahead-of-main with no origin => ORPHAN + aged past the default 60-minute
-# knob). _lane-n-pinned and _lane-n-quarantined are byte-for-byte identical in
-# that respect and differ ONLY in their assignment record -- which is what makes
-# "the reserved one reports PINNED, the other is still LEAKED" a real
-# discrimination rather than a fixture artifact.
+# knob). Three lanes here are byte-for-byte identical in that respect and differ
+# ONLY in their assignment record -- pinned / quarantined / leaked -- which is
+# what makes "the reserved one reports PINNED, the withheld one QUARANTINED, and
+# only the unreserved one is still LEAKED" a real discrimination rather than a
+# fixture artifact. Dropping the LEAKED control would leave nothing proving the
+# predicate can still fire at all, so the two suppressions would pass vacuously.
+#
+# _lane-n-live-unknown is the LIVE x UNKNOWN partition cell: a live consumer on a
+# lane with no readable record. It is counted `live`, NOT `free`, so a warning
+# that claims a fixed accounting contradicts the HEADROOM line beside it.
 N_CASES=(
     "_lane-n-live:LIVE:assigned:9101:plain:ASSIGNED:LIVE"
     "_lane-n-pinned:IDLE:assigned:9102:orphan-stale:ASSIGNED:PINNED"
     "_lane-n-released:IDLE:released:9103:plain:RELEASED:RECLAIMABLE"
-    "_lane-n-quarantined:IDLE:quarantined:9104:orphan-stale:QUARANTINED:LEAKED"
+    "_lane-n-quarantined:IDLE:quarantined:9104:orphan-stale:QUARANTINED:QUARANTINED"
     "_lane-n-unknown:IDLE::9105:plain:UNKNOWN:RECLAIMABLE"
+    "_lane-n-live-unknown:LIVE::9106:plain:UNKNOWN:LIVE"
+    "_lane-n-leaked:IDLE:released:9107:orphan-stale:RELEASED:LEAKED"
 )
 
 N_LIVE_PIDS=()
@@ -1323,6 +1371,8 @@ n_exp_assigned=0
 n_exp_state_unknown=0
 n_exp_leaked=0
 n_exp_reclaimable=0
+n_exp_live_unknown_lanes=()
+n_exp_idle_unknown_lanes=()
 for n_case in "${N_CASES[@]}"; do
     IFS=':' read -r n_lane n_liveness n_state n_task n_shape n_assigned n_class <<< "$n_case"
     # The partition is ORDERED and mutually exclusive -- live > pinned >
@@ -1343,6 +1393,13 @@ for n_case in "${N_CASES[@]}"; do
     fi
     if [ "$n_assigned" = "UNKNOWN" ]; then
         n_exp_state_unknown=$((n_exp_state_unknown + 1))
+        # Split by liveness: A5's warning must report the bucket the lane was
+        # ACTUALLY counted in, and the two arms differ (see N5).
+        if [ "$n_liveness" = "LIVE" ]; then
+            n_exp_live_unknown_lanes+=("$n_lane")
+        else
+            n_exp_idle_unknown_lanes+=("$n_lane")
+        fi
     fi
     case "$n_class" in
         LEAKED)      n_exp_leaked=$((n_exp_leaked + 1)) ;;
@@ -1393,12 +1450,29 @@ assert "N4: partition identity resident == live + pinned + quarantined + free" \
     "$(_headroom_field "$OUT" free)"
 
 # A5 observability, mirroring A3's leak_unknown treatment: a lane whose
-# assignment state could not be resolved is counted free (conservative), but is
-# named on stderr so "no pins" stays distinguishable from "pins could not be
-# evaluated".
-assert "N5: stderr names _lane-n-unknown as an unresolvable assignment state" \
-    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-n-unknown.*assignment state unknown"' \
-    _ "$ERR_OUT"
+# assignment state could not be resolved is named on stderr so "no pins" stays
+# distinguishable from "pins could not be evaluated".
+#
+# The ACCOUNTING CLAUSE is asserted per liveness arm, not as one fixed string.
+# "counted free (conservative)" is true only of an IDLE unknown lane; a LIVE one
+# is counted in `live`, and a warning claiming otherwise contradicts the
+# HEADROOM line printed directly beneath it. N3's derived live/free counts prove
+# which bucket the script really used; these two prove the warning agrees.
+for n_lane in "${n_exp_idle_unknown_lanes[@]+${n_exp_idle_unknown_lanes[@]}}"; do
+    assert "N5a: stderr names $n_lane (idle, unknown) as counted free (conservative)" \
+        bash -c 'printf "%s\n" "$1" | grep -qF "lane=$2: assignment state unknown (no-readable-record) at $3/$2.json; counted free (conservative)."' \
+        _ "$ERR_OUT" "$n_lane" "$N_MOUNT/.lane-state"
+done
+for n_lane in "${n_exp_live_unknown_lanes[@]+${n_exp_live_unknown_lanes[@]}}"; do
+    assert "N5b: stderr names $n_lane (live, unknown) as counted live -- never free" \
+        bash -c 'printf "%s\n" "$1" | grep -qF "lane=$2: assignment state unknown (no-readable-record) at $3/$2.json; counted live."' \
+        _ "$ERR_OUT" "$n_lane" "$N_MOUNT/.lane-state"
+done
+# ...and the fixture must actually exercise BOTH arms, or the pair above passes
+# vacuously the day someone drops a case from N_CASES.
+assert "N5c: the fixture covers both the live and idle UNKNOWN cells" \
+    bash -c '[ "$1" -gt 0 ] && [ "$2" -gt 0 ]' _ \
+    "${#n_exp_live_unknown_lanes[@]}" "${#n_exp_idle_unknown_lanes[@]}"
 
 N_PY_HEADROOM="$(mktemp /tmp/test-warm-lane-audit-n-headroom-XXXXXX.py)"
 _TMPDIRS+=("$N_PY_HEADROOM")

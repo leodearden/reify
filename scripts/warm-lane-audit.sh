@@ -18,8 +18,8 @@
 # lane is not pinned) · branch ·
 # backing-task-status (terminal|non-terminal|unknown) · recoverable
 # (LANDED|PUSHED|ORPHAN) · dirty (clean|residue-only|wip) · divergent_gib ·
-# age_min · classification (LIVE|PINNED|RECLAIMABLE|LEAKED|PRESERVED-OK,
-# ranked in that order).
+# age_min · classification (LIVE|PINNED|QUARANTINED|RECLAIMABLE|LEAKED|
+# PRESERVED-OK, ranked in that order).
 #
 # `live`, `assigned` and `pin` answer THREE independent questions, and are
 # three columns for that reason: is a consumer PROCESS holding this lane's
@@ -124,13 +124,18 @@
 #   A5 — the assignment-state read is fail-safe: a missing state dir, a
 #        missing/unreadable record, corrupt JSON, or an unrecognized `state`
 #        value all degrade that lane to `assigned=UNKNOWN`. It never aborts
-#        and never invents an assignment. UNKNOWN lanes keep the conservative
-#        accounting (counted free), but are surfaced separately -- a stderr
-#        warning naming the lane AND which of those causes fired
+#        and never invents an assignment. An UNKNOWN lane is never counted
+#        pinned, quarantined or assigned; an idle one falls to the partition
+#        residue `free` (the conservative reading), a live one is counted
+#        `live` like any other. Such lanes are surfaced separately -- a stderr
+#        warning naming the lane, which of those causes fired
 #        (no-readable-record | unparseable-record | unrecognized-state:<raw>;
-#        see _lane_unknown_cause), plus the HEADROOM state_unknown field -- so
-#        "no pins" stays distinguishable from "pins could not be evaluated",
-#        the same treatment A3 gives an unresolvable backing-task status.
+#        see _read_lane_assignment), and which bucket it was counted in, plus
+#        the HEADROOM state_unknown field -- so "no pins" stays distinguishable
+#        from "pins could not be evaluated", the same treatment A3 gives an
+#        unresolvable backing-task status. A state dir that is absent ENTIRELY
+#        warns ONCE for the directory instead of once per lane, so the per-lane
+#        naming keeps meaning "this lane, unlike its neighbours".
 
 set -euo pipefail
 
@@ -166,8 +171,9 @@ Usage: $(basename "$0") [--mount DIR] [--format table|json] [--status-cmd CMD]
               pending / infra-hold / in-progress / done. \`unknown\` when it
               cannot be resolved; \`-\` when the lane is not pinned.
 
-  Classification, ranked: LIVE > PINNED > RECLAIMABLE|LEAKED|PRESERVED-OK.
-  A PINNED lane is never additionally reported LEAKED.
+  Classification, ranked: LIVE > PINNED > QUARANTINED >
+  RECLAIMABLE|LEAKED|PRESERVED-OK -- the HEADROOM partition's order exactly.
+  A PINNED or QUARANTINED lane is never additionally reported LEAKED.
 
   Summary lines:
     HEADROOM  occupancy is an ordered, exclusive PARTITION --
@@ -335,9 +341,32 @@ _probe_live() {
 }
 
 # ── assignment state: read the orchestrator's own durable record (A5) ─────────
-# _record_scalar <file> <key>
-# Prints the value of a flat top-level STRING scalar in <file>, or nothing on
-# any miss (unreadable file, absent key, or a non-string value such as `null`).
+# _record_text <file>
+# Slurps <file> with its newlines stripped, so indent=2 and compact records
+# parse identically downstream. Returns NON-ZERO (printing nothing) when the
+# file cannot be read at all -- the `no-readable-record` cause.
+#
+# The bytes are read ONCE and every scalar is then extracted from that in-memory
+# snapshot, never by re-opening the file: see _read_lane_assignment for why a
+# second read of these records is not merely wasteful but able to report a pair
+# of values that never coexisted.
+#
+# `2>/dev/null` precedes the input redirection deliberately: bash applies
+# redirections left to right, so the stderr redirect must already be in place to
+# suppress the shell's own "No such file or directory" for a record that
+# vanished after the guard.
+_record_text() {
+    local file="$1"
+    local text
+    text="$(tr -d '\n' 2>/dev/null < "$file")" || return 1
+    printf '%s' "$text"
+    return 0
+}
+
+# _record_scalar <record-text> <key>
+# Prints the value of a flat top-level STRING scalar in an already-slurped
+# record, or nothing on any miss (absent key, or a non-string value such as
+# `null`).
 #
 # No jq/python3 dependency by design: this script has none today (it even
 # hand-rolls _json_escape), runs from a systemd timer and from the disk-pressure
@@ -345,16 +374,14 @@ _probe_live() {
 # new environmental failure mode for an advisory-only tool. Only two flat
 # top-level string scalars are ever needed (`state`, `task_id`).
 #
-# Three properties the regex depends on: newlines are stripped first, so indent=2
-# and compact records parse identically; the BARE double quote before <key> is
+# Two properties the regex depends on: the BARE double quote before <key> is
 # what makes it safe against a value CONTAINING the key text (json escapes any
 # inner quote as \", so `"state"` can only be a real key); and the required
 # quotes make a `null` value yield empty -- the desired reading for an
 # unassigned task_id.
 _record_scalar() {
-    local file="$1" key="$2"
-    [ -f "$file" ] && [ -r "$file" ] || return 0
-    tr -d '\n' < "$file" 2>/dev/null \
+    local text="$1" key="$2"
+    printf '%s' "$text" \
         | sed -n -E "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"([^\"]*)\".*/\1/p" \
         || true
     return 0
@@ -376,42 +403,35 @@ _lane_record() {
     return 0
 }
 
-# _lane_assigned_state <lane>
-# Prints ASSIGNED|RELEASED|QUARANTINED|UNKNOWN for <lane>, read from
-# <STATE_DIR>/<lane>.json. This is the pool's RESERVATION truth and is wholly
-# independent of the liveness probe.
+# _read_lane_assignment <lane>
+# Resolves EVERYTHING this script needs from <lane>'s assignment record --
+# <STATE_DIR>/<lane>.json, the pool's RESERVATION truth, wholly independent of
+# the liveness probe -- from a SINGLE read, and publishes it in three globals:
 #
-# The raw-state -> column mapping below is the normative table (it lives in the
-# code, not only in a comment). Raw values are dark-factory's LaneState enum
-# (orchestrator/src/orchestrator/lane_lifecycle.py):
+#   LANE_ASSIGNED_STATE  ASSIGNED|RELEASED|QUARANTINED|UNKNOWN
+#   LANE_UNKNOWN_CAUSE   why the state is UNKNOWN; EMPTY when it is not
+#   LANE_RECORD_TASK_ID  the record's task_id ('' when absent, null, or unread)
+#
+# Globals, and one slurp, because the three values must describe ONE observation
+# of ONE record. The orchestrator rewrites these records on every acquire and
+# release, so a second read is a DIFFERENT INSTANT: re-deriving the cause would
+# let a record that was absent during the first read and valid during the second
+# report `assigned=UNKNOWN` paired with `unrecognized-state:<raw>` -- a cause the
+# runbook tells operators to read as dark-factory LaneState schema drift, aiming
+# triage at a schema problem that does not exist. Deriving all three from one
+# in-memory snapshot makes the triple self-consistent by construction.
+#
+# The raw-state -> column mapping in the `case` below is the normative table (it
+# lives in the code, not only in a comment). Raw values are dark-factory's
+# LaneState enum (orchestrator/src/orchestrator/lane_lifecycle.py):
 #   assigned, in_use              -> ASSIGNED     (reserved for a task)
 #   released, seed, registered    -> RELEASED     (in the pool, not reserved)
 #   quarantined                   -> QUARANTINED  (withheld from the pool)
 #   anything else / unresolvable  -> UNKNOWN      (A5)
 #
-# The read is strictly NON-CREATING, exactly as the <dir>.lock probe never
-# creates a lock (A1) -- guaranteed by _lane_record, which yields a path only
-# for a record that already exists and is readable.
-_lane_assigned_state() {
-    local record
-    record="$(_lane_record "$1")"
-    [ -n "$record" ] || { printf 'UNKNOWN'; return 0; }
-
-    local raw
-    raw="$(_record_scalar "$record" state)"
-    case "$raw" in
-        assigned|in_use)          printf 'ASSIGNED' ;;
-        released|seed|registered) printf 'RELEASED' ;;
-        quarantined)              printf 'QUARANTINED' ;;
-        *)                        printf 'UNKNOWN' ;;
-    esac
-    return 0
-}
-
-# _lane_unknown_cause <lane>
-# WHY <lane> resolved to assigned=UNKNOWN. A5 folds three DISTINCT causes into
-# one column value, and they send an operator to three different places, so the
-# stderr warning names which one fired rather than asserting a single guess:
+# A5 folds three DISTINCT causes into that one UNKNOWN column value, and they
+# send an operator to three different places, so the stderr warning names which
+# one fired rather than asserting a single guess:
 #   no-readable-record        no state dir, or no readable <lane>.json there --
 #                             the only cause that is a filesystem/permissions
 #                             question, and the only one where the file an
@@ -419,29 +439,46 @@ _lane_assigned_state() {
 #   unparseable-record        the record IS present and readable, but no `state`
 #                             string could be read out of it -- a corrupt,
 #                             truncated, or reshaped write.
-#   unrecognized-state:<raw>  the record parsed and named a state this script's
-#                             mapping does not know. Reported VERBATIM, because
-#                             a mass state_unknown spike carrying one repeated
-#                             raw value is the SCHEMA-DRIFT signal (a new
+#   unrecognized-state:<raw>  the record parsed and named a state this mapping
+#                             does not know. Reported VERBATIM, because a mass
+#                             state_unknown spike carrying one repeated raw
+#                             value is the SCHEMA-DRIFT signal (a new
 #                             dark-factory LaneState member), and no other cause
 #                             looks like that.
+# Each cause is set on the arm of the single `case` that produced it, so there
+# is no second copy of the recognized-state table to drift out of sync.
 #
-# Called only on the UNKNOWN branch, so it never restates the recognized-state
-# table: arriving here already proves the raw value did not map, and a second
-# copy of that table is exactly the drift risk _lane_assigned_state's single
-# normative `case` exists to avoid.
-_lane_unknown_cause() {
-    local record
+# The read is strictly NON-CREATING, exactly as the <dir>.lock probe never
+# creates a lock (A1) -- guaranteed by _lane_record, which yields a path only
+# for a record that already exists and is readable.
+LANE_ASSIGNED_STATE='UNKNOWN'
+LANE_UNKNOWN_CAUSE=''
+LANE_RECORD_TASK_ID=''
+_read_lane_assignment() {
+    # Reset first: every lane's triple is resolved from scratch, so a lane whose
+    # record cannot be read can never inherit its predecessor's values.
+    LANE_ASSIGNED_STATE='UNKNOWN'
+    LANE_UNKNOWN_CAUSE=''
+    LANE_RECORD_TASK_ID=''
+
+    local record text
     record="$(_lane_record "$1")"
-    [ -n "$record" ] || { printf 'no-readable-record'; return 0; }
+    if [ -z "$record" ] || ! text="$(_record_text "$record")"; then
+        LANE_UNKNOWN_CAUSE='no-readable-record'
+        return 0
+    fi
+
+    LANE_RECORD_TASK_ID="$(_record_scalar "$text" task_id)"
 
     local raw
-    raw="$(_record_scalar "$record" state)"
-    if [ -z "$raw" ]; then
-        printf 'unparseable-record'
-    else
-        printf 'unrecognized-state:%s' "$raw"
-    fi
+    raw="$(_record_scalar "$text" state)"
+    case "$raw" in
+        assigned|in_use)          LANE_ASSIGNED_STATE='ASSIGNED' ;;
+        released|seed|registered) LANE_ASSIGNED_STATE='RELEASED' ;;
+        quarantined)              LANE_ASSIGNED_STATE='QUARANTINED' ;;
+        '')                       LANE_UNKNOWN_CAUSE='unparseable-record' ;;
+        *)                        LANE_UNKNOWN_CAUSE="unrecognized-state:$raw" ;;
+    esac
     return 0
 }
 
@@ -556,28 +593,6 @@ _pin_bucket() {
         blocked)    printf 'blocked' ;;
         *)          printf 'other' ;;
     esac
-    return 0
-}
-
-# _pin_holder_id <dir>
-# The task id that HOLDS this lane's reservation. The record's `task_id` is
-# authoritative when present: a lane's branch name can be stale (or absent, on
-# a detached HEAD), whereas the reservation record is written by whoever made
-# the reservation. Falls back to the branch-derived id when the record carries
-# no usable id -- notably `"task_id": null`, which _record_scalar reports as
-# empty because it requires a quoted value.
-_pin_holder_id() {
-    local dir="$1"
-    local record id
-    record="$(_lane_record "$(basename "$dir")")"
-    if [ -n "$record" ]; then
-        id="$(_record_scalar "$record" task_id)"
-        if [ -n "$id" ]; then
-            printf '%s' "$id"
-            return 0
-        fi
-    fi
-    _backing_task_id "$dir"
     return 0
 }
 
@@ -699,13 +714,20 @@ _divergent_bytes() {
 # ── classification (monotonically refined across the walk's build-out) ───────
 # _classify live assigned_state status recoverable dirty age_min
 #
-# The rank is LIVE > PINNED > (RECLAIMABLE | LEAKED | PRESERVED-OK).
+# The rank is LIVE > PINNED > QUARANTINED > (RECLAIMABLE | LEAKED |
+# PRESERVED-OK), which is the HEADROOM occupancy partition's order exactly: the
+# first three arms are one-for-one the partition's three occupied buckets, and
+# the FREE ladder is one-for-one its residue. That correspondence is the point,
+# not a coincidence -- a lane counted `quarantined=` on the summary line while
+# its own row read `LEAKED` would be the report contradicting itself.
 #
-# PINNED ranks above the whole FREE ladder, which is what keeps a pinned lane
-# out of `leaked=` even when it satisfies the LEAKED predicate exactly: a
-# reservation the pool still holds is a scheduling problem, not a leak, and
-# reporting it as one would invite reclaiming state a consumer may return to.
-# (Runbook: "Classification".)
+# PINNED and QUARANTINED both rank above the whole FREE ladder, which is what
+# keeps such a lane out of `leaked=` even when it satisfies the LEAKED predicate
+# exactly. The reason is the same for both, and it is about RECLAIM: a
+# reservation the pool still holds is a scheduling problem, and a quarantine is
+# state the pool deliberately withheld for inspection -- reporting either as a
+# leak would invite reclaiming state that a consumer may return to, or that an
+# operator is not finished with. (Runbook: "Classification".)
 _classify() {
     local live="$1" assigned_state="$2" status="$3" recoverable="$4" dirty="$5" age_min="$6"
     if [ "$live" = "LIVE" ]; then
@@ -714,7 +736,10 @@ _classify() {
     if [ "$assigned_state" = "ASSIGNED" ]; then
         printf 'PINNED'; return 0
     fi
-    # Idle, unreserved lane.
+    if [ "$assigned_state" = "QUARANTINED" ]; then
+        printf 'QUARANTINED'; return 0
+    fi
+    # Idle lane that is neither reserved nor withheld.
     if [ "$status" = "terminal" ] || [ "$recoverable" = "LANDED" ] || [ "$recoverable" = "PUSHED" ] || [ "$dirty" = "residue-only" ]; then
         printf 'RECLAIMABLE'; return 0
     fi
@@ -769,8 +794,9 @@ _json_escape() {
 # RESIDUE -- neither live, nor reserved, nor withheld -- and nothing else.
 #
 # ASSIGNED_COUNT and STATE_UNKNOWN_COUNT are CROSS-CUTS, not partition members:
-# they may overlap any bucket (an ASSIGNED lane is live or pinned; an
-# UNKNOWN-state lane is counted free) and must never be added into the identity.
+# they may overlap any bucket (an ASSIGNED lane is live or pinned; an idle
+# UNKNOWN-state lane falls to free, a live one is counted live) and must never
+# be added into the identity.
 RESIDENT=0
 LIVE_COUNT=0
 PINNED_COUNT=0
@@ -795,6 +821,26 @@ DIVERGENT_TOTAL_BYTES=0
 TABLE_OUT=""
 JSON_LANE_OBJS=()
 
+# ── A5 observability, at DIRECTORY scope ──────────────────────────────────────
+# Resolved ONCE, before the walk: does the state dir exist at all? When it does
+# not -- the shape of every pool until dark-factory's LaneLifecycle has written
+# its first record, and the shape a first rollout hits -- EVERY resident
+# resolves `no-readable-record`, and a per-lane line for each would bury the
+# per-lane naming that cause vocabulary exists for: 56 identical warnings say
+# "the feature is not deployed here", while the genuinely interesting signal is
+# ONE lane's record missing while its neighbours' are present. So the absent-dir
+# case warns once, naming the dir, and the per-lane warnings are reserved for a
+# dir that IS there. state_unknown accounting is untouched -- still per lane.
+#
+# The single warning is emitted LAZILY, on the first lane that would have warned
+# rather than here, so a mount with no lanes at all (resident=0, nothing to say
+# anything about) stays silent.
+STATE_DIR_PRESENT=0
+if [ -n "$STATE_DIR" ] && [ -d "$STATE_DIR" ]; then
+    STATE_DIR_PRESENT=1
+fi
+STATE_DIR_ABSENT_WARNED=0
+
 # A nonexistent/empty --mount is NOT an error (advisory-only script): the walk
 # below simply visits nothing and resident stays 0.
 if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
@@ -809,8 +855,11 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
 
         live="$(_probe_live "$MOUNT/$name.lock")"
 
-        # Independent of `live`: the pool's own reservation truth (A5).
-        assigned_state="$(_lane_assigned_state "$name")"
+        # Independent of `live`: the pool's own reservation truth (A5). ONE read
+        # publishes the state, its UNKNOWN cause, and the record's task_id, so
+        # all three describe the same instant of the same record.
+        _read_lane_assignment "$name"
+        assigned_state="$LANE_ASSIGNED_STATE"
 
         # The four-way partition (see the counter block above). The if/elif
         # chain IS the exclusivity proof -- exactly one bucket is incremented
@@ -831,13 +880,29 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
         fi
         if [ "$assigned_state" = "UNKNOWN" ]; then
             STATE_UNKNOWN_COUNT=$((STATE_UNKNOWN_COUNT + 1))
-            # A5 observability, mirroring A3's leak_unknown warning: the lane
-            # keeps the conservative accounting (counted free), but is named
-            # here so "no pins" stays distinguishable from "pins could not be
-            # evaluated". The CAUSE is resolved rather than assumed -- naming a
-            # single one would send triage after a missing file that is often
-            # sitting right there (see _lane_unknown_cause).
-            warn "lane=$name: assignment state unknown ($(_lane_unknown_cause "$name")) at ${STATE_DIR:-<unset>}/$name.json; counted free (conservative). See HEADROOM state_unknown."
+            # A5 observability, mirroring A3's leak_unknown warning: the lane is
+            # named here so "no pins" stays distinguishable from "pins could not
+            # be evaluated". Two things are REPORTED rather than assumed. The
+            # CAUSE, because naming a single one would send triage after a
+            # missing file that is often sitting right there (see
+            # _read_lane_assignment). And the bucket the lane was actually
+            # counted in, read off the partition above rather than asserted: an
+            # UNKNOWN lane that is LIVE lands in `live`, so a fixed "counted
+            # free" would contradict the very HEADROOM line it points at.
+            if [ "$live" = "LIVE" ]; then
+                unknown_accounting='counted live'
+            else
+                unknown_accounting='counted free (conservative)'
+            fi
+            if [ "$STATE_DIR_PRESENT" -eq 1 ]; then
+                warn "lane=$name: assignment state unknown ($LANE_UNKNOWN_CAUSE) at ${STATE_DIR:-<unset>}/$name.json; ${unknown_accounting}. See HEADROOM state_unknown."
+            elif [ "$STATE_DIR_ABSENT_WARNED" -eq 0 ]; then
+                # Whole-directory absence: ONE warning for the dir, not one per
+                # lane. No accounting clause -- it differs per lane, and the
+                # claim that holds for all of them is the one made here.
+                STATE_DIR_ABSENT_WARNED=1
+                warn "state dir ${STATE_DIR:-<unset>} does not exist: every lane reports assignment state unknown (no-readable-record) and none is counted pinned, quarantined or assigned. See HEADROOM state_unknown."
+            fi
         fi
 
         raw_branch="$(_lane_branch_raw "$entry")"
@@ -855,7 +920,15 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
         # in use, and a released lane is not reserved at all.
         pin='-'
         if [ "$assigned_state" = "ASSIGNED" ] && [ "$live" != "LIVE" ]; then
-            pin_id="$(_pin_holder_id "$entry")"
+            # WHO holds the reservation. The record's task_id is authoritative
+            # when present -- a lane's branch name can be stale (or absent, on a
+            # detached HEAD), whereas the reservation record is written by
+            # whoever made the reservation. Falls back to the branch-derived id
+            # when the record carries no usable id, notably `"task_id": null`,
+            # which _record_scalar reports as empty because it requires a quoted
+            # value. Both halves come from reads already done above, so nothing
+            # here re-opens the record or re-walks the refs.
+            pin_id="${LANE_RECORD_TASK_ID:-$backing_id}"
             if [ "$pin_id" = "$backing_id" ]; then
                 pin_raw="$backing_raw"   # same task -- don't ask the oracle twice
             else
