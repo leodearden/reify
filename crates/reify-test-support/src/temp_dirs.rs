@@ -438,4 +438,9 @@ mod tests {
     fn m5_integration_has_no_unguarded_temp_dirs() {
         assert_no_unguarded_temp_dir_sites("crates/reify-eval/tests/m5_integration.rs");
     }
+
+    #[test]
+    fn cli_doc_has_no_unguarded_temp_dirs() {
+        assert_no_unguarded_temp_dir_sites("crates/reify-cli/tests/harness_cli/cli_doc.rs");
+    }
 }
