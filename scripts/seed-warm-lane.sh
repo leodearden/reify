@@ -464,8 +464,8 @@ _assert_delta_newer_than_build_outputs() {
     # operator is not left diagnosing the lane. (Self-healing by backdating the
     # offending `output` is strictly conservative — an older `output` can only
     # cause an extra build-script rerun, never a stale link — but that is a
-    # behavioural change to the ratified fail-closed posture, filed separately
-    # rather than taken as a drive-by here.)
+    # behavioural change to the ratified fail-closed posture, so it is tracked as
+    # task #5632 rather than taken as a drive-by here.)
     err "The offending mtime is under $LANE_TARGET, which is a CoW clone of ${BASE_TARGET_DIR} — if the inversion came with the base, every acquire against that generation aborts the same way; re-promote a clean base with scripts/refresh-warm-base.sh --landed-commit <sha>"
     err "_assert_delta_newer_than_build_outputs: seed aborted (cold rebuild forced)"
     return 1
