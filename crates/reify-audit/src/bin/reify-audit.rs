@@ -1283,4 +1283,99 @@ mod tests {
             "error must list PDSSENTINEL as a valid pattern; got: {err}"
         );
     }
+
+    // -------------------------------------------------------------------
+    // PDOCCOVER CLI-wiring tests (task #5478, step-21 RED / step-22 GREEN)
+    //
+    // PDOCCOVER is the bidirectional registry↔chunk name-drift detector. Like
+    // PTODO and PDSSENTINEL it is *structural* — working-tree reads via
+    // ls_files + fs, never contacts jcodemunch. UNLIKE them it is OPT-IN
+    // (is_some_and, mirroring PDEAD/PUNTESTED/PLAYER): the chunk corpus has a
+    // known backlog of undocumented names, so until #5480 seeds
+    // pdoccover-baseline.txt the detector would add ~80 High findings to every
+    // default sweep. High severity feeds the exit code, so joining the default
+    // sweep now would turn every audit run non-zero. It joins the sweep when
+    // the baseline lands, not before.
+    // -------------------------------------------------------------------
+
+    /// `--pattern PDOCCOVER` must be accepted and stored.
+    #[test]
+    fn parse_args_accepts_pdoccover_pattern() {
+        let args = parse_args(&["--pattern".to_string(), "PDOCCOVER".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern PDOCCOVER must parse successfully; got: {e}"));
+        assert_eq!(
+            args.pattern.as_deref(),
+            Some("PDOCCOVER"),
+            "parsed pattern must be Some(\"PDOCCOVER\")"
+        );
+    }
+
+    /// PDOCCOVER is structural — must NOT require jcodemunch. Requesting it
+    /// alone must leave the run fully offline.
+    #[test]
+    fn needs_jcodemunch_pdoccover_routes_false() {
+        assert!(
+            !needs_jcodemunch(&make_args(false, Some("PDOCCOVER"))),
+            "PDOCCOVER reads units.rs, the chunk corpus and the compiler/stdlib \
+             sources from the working tree; it must not open a jcodemunch \
+             connection"
+        );
+    }
+
+    /// PDOCCOVER is OPT-IN — the assertion inverted relative to
+    /// `run_ptodo`/`run_dssentinel`. Default (None) → FALSE; explicit
+    /// PDOCCOVER → true; a named non-PDOCCOVER pattern → false.
+    #[test]
+    fn pdoccover_is_opt_in_not_in_default_sweep() {
+        assert!(
+            !run_pdoccover(&make_args(false, None)),
+            "PDOCCOVER must NOT run in the no-`--pattern` default sweep: its \
+             findings are High severity and the corpus has a known backlog, so \
+             joining the sweep before #5480 seeds the baseline would make every \
+             audit run exit non-zero"
+        );
+        assert!(
+            run_pdoccover(&make_args(false, Some("PDOCCOVER"))),
+            "PDOCCOVER must activate when --pattern PDOCCOVER is given"
+        );
+        assert!(
+            !run_pdoccover(&make_args(false, Some("P2"))),
+            "PDOCCOVER must be excluded when a named non-PDOCCOVER pattern is given"
+        );
+    }
+
+    /// PDOCCOVER must be selectable as a NON-LEADING token in a
+    /// comma-separated `--pattern` list — token-set membership, not a prefix
+    /// match.
+    #[test]
+    fn run_pdoccover_selected_via_comma_list() {
+        assert!(
+            run_pdoccover(&make_args(false, Some("P1,PDOCCOVER"))),
+            "P1,PDOCCOVER must enable PDOCCOVER"
+        );
+    }
+
+    /// Unknown pattern error message must list PDOCCOVER as a valid token —
+    /// an accepted-but-undiscoverable pattern is a usability bug.
+    #[test]
+    fn parse_args_unknown_pattern_lists_pdoccover() {
+        let err = unwrap_err(parse_args(&["--pattern".to_string(), "BOGUS".to_string()]));
+        assert!(
+            err.contains("PDOCCOVER"),
+            "error must list PDOCCOVER as a valid pattern; got: {err}"
+        );
+    }
+
+    /// `--help` must list PDOCCOVER on the `--pattern` line, for the same
+    /// discoverability reason.
+    #[test]
+    fn usage_text_lists_pdoccover() {
+        let mut buf: Vec<u8> = Vec::new();
+        print_usage(&mut buf);
+        let usage = String::from_utf8(buf).expect("usage text is UTF-8");
+        assert!(
+            usage.contains("PDOCCOVER"),
+            "--help must list PDOCCOVER among the --pattern values; got:\n{usage}"
+        );
+    }
 }
