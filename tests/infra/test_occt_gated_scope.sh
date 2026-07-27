@@ -135,6 +135,32 @@ echo "--- Test 4 (task 4451): plan has NO cargo-test-occt-gated.sh invocation (f
 assert "plan contains NO cargo-test-occt-gated.sh (gated pass dropped, OCCT in nextest pool)" \
     bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q 'cargo-test-occt-gated\.sh'"
 
+# NEXTEST-LESS HOST AUDIT (task 5604): Tests 5-8 need NO change — they are
+# host-independent BY CONSTRUCTION, and this is the shape to copy.
+#
+# Each one EXTRACTS with the `cargo (test|nextest run)` alternation into
+# FULL_WS_DEBUG / NEXTEST_RELEASE, asserts the extract is NON-EMPTY
+# (`test -n`), and only THEN negative-greps the extract. That ordering is what
+# makes them non-vacuous: a negative grep run directly against the whole plan
+# passes for free on a nextest-less host (its needle matches nothing), whereas
+# here the `test -n` assert fails first if the pass is missing. Sibling suites
+# that instead negative-grepped a hard-coded `cargo nextest run` against the
+# raw plan were silently asserting nothing on that path — see task 5604's fix
+# to test_verify_scope.sh / test_verify_failfast_order.sh.
+#
+# Two deliberate exceptions further down, neither of them a defect:
+#   - Test 9 (--config-file / reify-nextest-occt) is GENUINELY nextest-only:
+#     cargo test has no --config-file. It carries an explicit PLAN_HAS_NEXTEST
+#     guard with a written reason — the correct form when a property really is
+#     runner-specific, as opposed to widening the grep.
+#   - Tests 9b/9c are negative regression guards whose subject is a
+#     `cargo nextest run` line. When NEXTEST=0 no such line exists, so they are
+#     INERT by construction rather than vacuous by accident: the thing they
+#     forbid (a broken --config form on a nextest line) cannot occur where
+#     there are no nextest lines at all.
+#
+# Pinned mechanically by S7 in test_verify_nextest_absent_suites.sh (floor 49),
+# so this verdict fails loudly if a future edit guards an assert away here.
 echo ""
 echo "--- Test 5 (task 4451): full-workspace nextest pass has --workspace with NO --exclude ---"
 FULL_WS_DEBUG="$(printf '%s\n' "$TEST_PLAN_SEGS" \

@@ -477,4 +477,22 @@ assert "S5: test_verify_scope.sh reaches test_summary with rc=0 / 0 FAIL / >= 15
 assert "S6: test_verify_failfast_order.sh reaches test_summary with rc=0 / 0 FAIL / >= 40 passed on a nextest-less host" \
     _suite_is_clean_without_nextest test_verify_failfast_order.sh 40
 
+# S7/S8 are GREEN ON ARRIVAL — neither suite needed a code change (task 5604
+# audited both and found no vacuity; the verdict is recorded in each file).
+# They are listed here anyway, and the reason is the FLOOR, not the rc.
+#
+# The audit's finding — "these two are already host-independent and
+# non-vacuous" — is worth nothing as prose: it silently rots the moment
+# someone edits either suite. As an S-row with a measured floor it becomes
+# mechanical. If a future edit "fixes" a nextest-string assert in either file
+# by wrapping it in a NEXTEST_AVAILABLE guard instead of widening its grep,
+# the nextest-less pass count drops below 49 / 9 and this suite fails loudly,
+# instead of that suite reporting a green that is quietly checking less. Same
+# reasoning as _suite_is_clean_without_nextest's own "WHY THE FLOOR" note.
+assert "S7: test_occt_gated_scope.sh reaches test_summary with rc=0 / 0 FAIL / >= 49 passed on a nextest-less host" \
+    _suite_is_clean_without_nextest test_occt_gated_scope.sh 49
+
+assert "S8: test_release_mode_in_test_command.sh reaches test_summary with rc=0 / 0 FAIL / >= 9 passed on a nextest-less host" \
+    _suite_is_clean_without_nextest test_release_mode_in_test_command.sh 9
+
 test_summary
