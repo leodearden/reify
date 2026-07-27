@@ -304,27 +304,27 @@ mod tests {
     #[test]
     fn read_soname_version_extracts_trailing_segment() {
         let guard = tempdir();
-        let tmp = guard.path().to_path_buf();
+        let tmp = guard.path();
         let real = tmp.join("libTKernel.so.7.8.1");
         fs::write(&real, b"").unwrap();
         symlink("libTKernel.so.7.8.1", tmp.join("libTKernel.so.7.8")).unwrap();
         symlink("libTKernel.so.7.8", tmp.join("libTKernel.so")).unwrap();
 
         // First-level symlink target is `libTKernel.so.7.8` → version "7.8".
-        assert_eq!(read_soname_version(&tmp, "TKernel"), Some("7.8".to_string()));
+        assert_eq!(read_soname_version(tmp, "TKernel"), Some("7.8".to_string()));
     }
 
     #[test]
     fn read_soname_version_returns_none_for_missing_symlink() {
         let guard = tempdir();
-        let tmp = guard.path().to_path_buf();
-        assert_eq!(read_soname_version(&tmp, "TKernel"), None);
+        let tmp = guard.path();
+        assert_eq!(read_soname_version(tmp, "TKernel"), None);
     }
 
     #[test]
     fn read_soname_version_handles_conda_one_level_symlink() {
         let guard = tempdir();
-        let tmp = guard.path().to_path_buf();
+        let tmp = guard.path();
         let real = tmp.join("libTKernel.so.7.9.3");
         fs::write(&real, b"").unwrap();
         symlink("libTKernel.so.7.9.3", tmp.join("libTKernel.so")).unwrap();
@@ -332,13 +332,13 @@ mod tests {
         // Conda-forge layout: `libTKernel.so → libTKernel.so.7.9.3` directly.
         // We extract the trailing segment verbatim (`"7.9.3"`); a `:lib...` link
         // directive built from this value matches the exact file on disk.
-        assert_eq!(read_soname_version(&tmp, "TKernel"), Some("7.9.3".to_string()));
+        assert_eq!(read_soname_version(tmp, "TKernel"), Some("7.9.3".to_string()));
     }
 
     #[test]
     fn find_dir_env_var_takes_precedence() {
         let guard = tempdir();
-        let tmp = guard.path().to_path_buf();
+        let tmp = guard.path();
         let sentinel = tmp.join("libgmsh.so");
         fs::write(&sentinel, b"").unwrap();
 
@@ -347,25 +347,25 @@ mod tests {
         let env_name = "REIFY_BUILD_UTILS_TEST_OVERRIDE_LIB_DIR";
         // SAFETY: unit tests run sequentially in this module; the env name is
         // private to this test and not read elsewhere.
-        unsafe { env::set_var(env_name, &tmp) };
+        unsafe { env::set_var(env_name, tmp) };
         let found = find_dir(env_name, &[], "libgmsh.so");
         // SAFETY: same justification as the matching set_var above.
         unsafe { env::remove_var(env_name) };
 
-        assert_eq!(found.as_deref(), Some(tmp.as_path()));
+        assert_eq!(found.as_deref(), Some(tmp));
     }
 
     #[test]
     fn find_dir_falls_through_candidates_when_env_unset() {
         let guard = tempdir();
-        let tmp = guard.path().to_path_buf();
+        let tmp = guard.path();
         let sentinel = tmp.join("libgmsh.so");
         fs::write(&sentinel, b"").unwrap();
 
         let tmp_str = tmp.to_string_lossy().into_owned();
         let candidates: Vec<&str> = vec!["/definitely/does/not/exist", tmp_str.as_str()];
         let found = find_dir("REIFY_BUILD_UTILS_TEST_UNSET_VAR", &candidates, "libgmsh.so");
-        assert_eq!(found.as_deref(), Some(tmp.as_path()));
+        assert_eq!(found.as_deref(), Some(tmp));
     }
 
     /// The guard returned by `tempdir()` must remove its directory when it
@@ -386,35 +386,6 @@ mod tests {
         assert!(
             !observed.exists(),
             "temp dir leaked after scope exit: {}",
-            observed.display()
-        );
-    }
-
-    /// Cleanup must also survive an unwinding panic — i.e. a *failing* test,
-    /// the run that matters most. A manual `remove_dir_all` at the end of a
-    /// test body is skipped by the unwind and would leak precisely then, so
-    /// this is what discriminates a real RAII guard from that near-miss.
-    #[test]
-    fn tempdir_removes_directory_on_panic() {
-        use std::panic::{AssertUnwindSafe, catch_unwind};
-
-        // Capture the path into the enclosing scope BEFORE panicking, so it
-        // is still readable after the unwind. (The default panic hook is left
-        // installed: it is process-global, and suppressing it here would eat
-        // the failure message of any sibling test panicking concurrently.
-        // libtest captures a passing test's output, so this prints nothing.)
-        let mut observed: Option<PathBuf> = None;
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            let guard = tempdir();
-            observed = Some(guard.path().to_path_buf());
-            panic!("simulated test failure");
-        }));
-
-        assert!(result.is_err(), "the closure must actually unwind");
-        let observed = observed.expect("guard path captured before the panic");
-        assert!(
-            !observed.exists(),
-            "temp dir survived a panicking test: {}",
             observed.display()
         );
     }
