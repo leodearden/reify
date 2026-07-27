@@ -136,7 +136,10 @@ assert "plan contains NO cargo-test-occt-gated.sh (gated pass dropped, OCCT in n
     bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q 'cargo-test-occt-gated\.sh'"
 
 # NEXTEST-LESS HOST AUDIT (task 5604): Tests 5-8 need NO change — they are
-# host-independent BY CONSTRUCTION, and this is the shape to copy.
+# host-independent BY CONSTRUCTION, and this is the shape to copy. Why the
+# alternation is sound at all (verify.sh's two emission branches share their
+# selector fragment): see the canonical "WHY THE FALLBACK IS SHAPE-IDENTICAL"
+# block in tests/infra/test_verify_nextest_absent_suites.sh.
 #
 # Each one EXTRACTS with the `cargo (test|nextest run)` alternation into
 # FULL_WS_DEBUG / NEXTEST_RELEASE, asserts the extract is NON-EMPTY

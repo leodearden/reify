@@ -164,17 +164,13 @@ assert "reify-doc: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0" \
 assert "reify-doc: clippy present" plan_has 'cargo clippy --workspace'
 # RUNNER-AGNOSTIC PLAN-SHAPE ASSERTS (task 5604). From here on, every
 # plan_has/plan_lacks that names the test pass matches the ERE alternation
-# `cargo (test|nextest run)` rather than the literal `cargo nextest run`.
-# verify.sh emits the pass from one of two branches (scripts/verify.sh:1659
-# with nextest, :1685 without) that share the same `${selector}${rel}`
-# fragment, so --workspace / -p <crate> / --release are byte-identical across
-# runners and these asserts are checking plan SHAPE, not runner identity.
-# Widening keeps them meaningful on a nextest-less host — for the NEGATIVE
-# (plan_lacks) ones that is a strict strengthening, since without it the
-# needle matches nothing there and the assert passes vacuously.
+# `cargo (test|nextest run)` rather than the literal `cargo nextest run`, so
+# these asserts check plan SHAPE rather than runner identity. Rationale and
+# verify.sh's two emission branches: see the "WHY THE FALLBACK IS
+# SHAPE-IDENTICAL" block in tests/infra/test_verify_nextest_absent_suites.sh,
+# which is the canonical copy and is what pins this suite (S5, floor 153).
 # Runner identity itself is pinned separately by the `nextest=N` plan header,
-# which tests/infra/test_verify_nextest_probe.sh owns; host-independence of
-# this whole suite is pinned by S5 in test_verify_nextest_absent_suites.sh.
+# which tests/infra/test_verify_nextest_probe.sh owns.
 # The assert TITLES still say "nextest" — deliberately left alone, so they
 # keep matching the FAIL lines recorded in that guard's audit trail.
 assert "reify-doc: nextest workspace pass present (no --exclude, OCCT folded in, task 4451)" plan_has 'cargo (test|nextest run) --workspace'

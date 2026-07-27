@@ -82,17 +82,16 @@ assert "all plan: check_event_inventory.sh index < psi-gate index" \
 # ===========================================================================
 # RUNNER-AGNOSTIC TEST-PASS ASSERTS (task 5604). The two asserts below that
 # name the test pass accept BOTH runner spellings via the ERE alternation
-# `cargo (test|nextest run)`. verify.sh emits that pass from one of two
-# branches — scripts/verify.sh:1659 (cargo nextest run) and :1685 (cargo
-# test) — which share the same `${selector}${rel}` fragment, so the property
-# actually under test here (a --workspace pass exists and carries no
-# --exclude, i.e. OCCT is folded into the pool per task 4451) holds
-# identically on either path. Hard-coding `cargo nextest run` made the
-# positive half FAIL and the negative half pass VACUOUSLY on a nextest-less
-# host. Both halves use `grep -qE`: the alternation is ERE, so plain
-# `grep -q` would match the group literally. Host-independence of this suite
-# is pinned by S6 in test_verify_nextest_absent_suites.sh; runner identity
-# itself is pinned by the `nextest=N` plan header, which
+# `cargo (test|nextest run)`, because the property actually under test here (a
+# --workspace pass exists and carries no --exclude, i.e. OCCT is folded into
+# the pool per task 4451) holds identically on either runner path. Rationale
+# and verify.sh's two emission branches: see the "WHY THE FALLBACK IS
+# SHAPE-IDENTICAL" block in tests/infra/test_verify_nextest_absent_suites.sh,
+# which is the canonical copy and is what pins this suite (S6, floor 40).
+# Hard-coding `cargo nextest run` made the positive half FAIL and the negative
+# half pass VACUOUSLY on a nextest-less host. Both halves use `grep -qE`: the
+# alternation is ERE, so plain `grep -q` would match the group literally.
+# Runner identity itself is pinned by the `nextest=N` plan header, which
 # test_verify_nextest_probe.sh owns.
 echo ""
 echo "--- Test 3: preservation — all expected components still present ---"

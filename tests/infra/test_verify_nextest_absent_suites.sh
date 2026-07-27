@@ -25,14 +25,32 @@
 # other asserts passed VACUOUSLY there (their grep matched nothing), silently
 # testing nothing.
 #
-# WHY THE FALLBACK IS SHAPE-IDENTICAL. verify.sh emits the test pass from one
-# of two branches — scripts/verify.sh:1659 (nextest) and :1685 (cargo test) —
-# which share the same `${selector}${rel}` fragment. So --workspace, -p
-# <crate>, --release and the outer `timeout` wrapper are byte-identical across
-# runners; only --config-file / -E / `-- --test-threads=N` differ. That is why
-# nearly every host-dependence here is fixed by WIDENING a grep to
-# `cargo (test|nextest run)` rather than by guarding the assert away — and why
-# most floors below equal their suite's ambient count exactly.
+# WHY THE FALLBACK IS SHAPE-IDENTICAL. This block is the CANONICAL statement of
+# the rationale; the covered suites carry a one-line pointer back here rather
+# than their own copy, so it can be corrected in one place (task 5604).
+#
+# scripts/verify.sh builds the test pass in ONE function, emit_nextest_pass(),
+# which ends in a two-armed if/else: the nextest arm emits
+# `cargo nextest run ${selector}${rel}... --config-file <path>`, and the else
+# arm (taken when the NEXTEST probe finds cargo-nextest absent) emits
+# `cargo test ${selector}${rel} -- --test-threads=${TEST_THREADS:-1}`. Both arms
+# interpolate the SAME `${selector}${rel}` fragment and both are wrapped by the
+# same `timeout --kill-after=60 <n>m` prefix, so --workspace, -p <crate>,
+# --release and the timeout wrapper are byte-identical across runners; only
+# --config-file / -E / `-- --test-threads=N` differ.
+#
+# (Cited by enclosing FUNCTION deliberately. Earlier revisions of this note
+# named `scripts/verify.sh:1659` / `:1685` in four separate files at once —
+# unanchored line numbers in a 1700-line script that any insertion above them
+# would silently invalidate, with nothing here detecting the drift.)
+#
+# That is why nearly every host-dependence in the covered suites is fixed by
+# WIDENING a grep to `cargo (test|nextest run)` rather than by guarding the
+# assert away — and why most floors below equal their suite's ambient count
+# exactly. Where a property really IS runner-specific (cargo test has no
+# --config-file), the correct fix is a guard, and it must be written in the
+# skip-outside-assert form — see the S7/S8 note below for why the in-body
+# `exit 0` form defeats the floor that is supposed to police it.
 #
 # RUNTIME COST (measured on this lane, task 5604). Ambient wall times of the
 # four newly-nested suites: scope 59s, failfast_order 5s, occt_gated_scope 8s,

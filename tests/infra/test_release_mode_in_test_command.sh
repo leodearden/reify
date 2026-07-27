@@ -31,7 +31,9 @@ echo "=== release-mode test_command tests ==="
 # that names the test pass already uses the `cargo (test|nextest run)`
 # alternation (Tests 1, 2, 4, 5), so nothing here hard-codes a runner and
 # nothing goes RED when verify.sh falls back to `cargo test` (plan header
-# nextest=0).
+# nextest=0). Why the alternation is sound at all (verify.sh's two emission
+# branches share their selector fragment): see the canonical "WHY THE FALLBACK
+# IS SHAPE-IDENTICAL" block in tests/infra/test_verify_nextest_absent_suites.sh.
 #
 # Its one NEGATIVE assert over a nextest-spelled pattern — Test 5, "lint plan
 # does NOT contain a '--release' test pass" — is not a vacuity risk either,
