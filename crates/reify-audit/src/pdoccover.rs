@@ -568,15 +568,227 @@ pub fn chunk_call_mentions(_content: &str) -> Vec<(String, usize)> {
 }
 
 // -----------------------------------------------------------------------
+// Working-tree inputs
+// -----------------------------------------------------------------------
+
+/// One distinct census name, merged across every registry that declares it.
+///
+/// A name may legitimately appear in more than one registry (a query helper
+/// that is also a topology selector, say). The census is keyed by NAME, not by
+/// declaration site, so such a name yields at most one finding: reporting the
+/// same undocumented name twice would make the ratchet count depend on an
+/// internal `units.rs` factoring detail.
+#[derive(Debug, Clone)]
+struct CensusName {
+    name: String,
+    /// First registry that declares it — provenance for the finding text.
+    const_name: String,
+    /// 1-based line of that first declaration.
+    line: usize,
+    /// Reason body from the first declaring line that carries a well-formed
+    /// `pdoccover:allow — <reason>`.
+    allow: Option<String>,
+    /// `true` when ANY declaring line carries a reasonless marker.
+    allow_missing_reason: bool,
+}
+
+/// Distinct census names in name-sorted order.
+///
+/// Sorting here (rather than at emission) is what makes the finding list
+/// deterministic irrespective of declaration order inside `units.rs`.
+fn census_names(registries: &[Registry]) -> Vec<CensusName> {
+    let mut by_name: std::collections::BTreeMap<String, CensusName> =
+        std::collections::BTreeMap::new();
+    for reg in registries {
+        for entry in &reg.entries {
+            match by_name.get_mut(&entry.name) {
+                Some(existing) => {
+                    // Merge: the first well-formed reason wins; a reasonless
+                    // marker anywhere is still worth reporting.
+                    if existing.allow.is_none() {
+                        existing.allow.clone_from(&entry.allow);
+                    }
+                    existing.allow_missing_reason |= entry.allow_missing_reason;
+                }
+                None => {
+                    by_name.insert(
+                        entry.name.clone(),
+                        CensusName {
+                            name: entry.name.clone(),
+                            const_name: reg.const_name.clone(),
+                            line: entry.line,
+                            allow: entry.allow.clone(),
+                            allow_missing_reason: entry.allow_missing_reason,
+                        },
+                    );
+                }
+            }
+        }
+    }
+    by_name.into_values().collect()
+}
+
+/// Everything both lanes read from the working tree, gathered in ONE pass.
+///
+/// The chunk corpus is read exactly once and shared: the omission lane matches
+/// census names against it, and the fabrication lane extracts call-shaped
+/// mentions from the same strings.
+struct Inputs {
+    /// `*_NAMES` registries from `units.rs`; empty when it is untracked or
+    /// unreadable (fail-safe: a missing census reports nothing, it does not
+    /// report everything).
+    registries: Vec<Registry>,
+    /// Pre-read `(path, content)` for every tracked `chunks/*.md`, path-sorted.
+    chunk_sources: Vec<(String, String)>,
+    /// Names listed in the ratchet baseline; empty when the file is absent,
+    /// untracked, unreadable or empty.
+    baseline: BTreeSet<String>,
+}
+
+/// Names listed in a `pdoccover-baseline.txt`.
+///
+/// One name per line. Blank lines and `#` comment lines are skipped, so the
+/// file can carry a regeneration header. An empty file yields an empty set —
+/// indistinguishable from an absent one, which is exactly PRD leaf γ's
+/// "baseline may be empty/absent at this stage" contract.
+fn parse_baseline(content: &str) -> BTreeSet<String> {
+    content
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Read `path` under `ctx.project_root`, or `None` when unreadable.
+///
+/// Fail-safe by construction: an unreadable file is skipped, never escalated
+/// into a finding and never a panic (`pdssentinel::check`'s contract).
+fn read_relative(ctx: &AuditContext<'_>, path: &str) -> Option<String> {
+    std::fs::read_to_string(ctx.project_root.join(path)).ok()
+}
+
+/// `true` when `path` is a documentation chunk in the MCP corpus.
+fn is_chunk_path(path: &str) -> bool {
+    path.starts_with(CHUNKS_PREFIX) && path.ends_with(".md")
+}
+
+/// Gather the working-tree inputs.
+///
+/// Path membership comes from `ctx.git.ls_files()` — content from `std::fs`,
+/// mirroring `pdssentinel::check`. Only tracked files participate, so a stray
+/// untracked `units.rs.orig` or a scratch chunk never perturbs the census.
+fn load_inputs(ctx: &AuditContext<'_>) -> Inputs {
+    let mut tracked: Vec<String> = ctx.git.ls_files();
+    tracked.sort();
+
+    let registries = if tracked.iter().any(|p| p == UNITS_PATH) {
+        read_relative(ctx, UNITS_PATH)
+            .map(|src| extract_registries(&src))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    let chunk_sources: Vec<(String, String)> = tracked
+        .iter()
+        .filter(|p| is_chunk_path(p))
+        .filter_map(|p| read_relative(ctx, p).map(|c| (p.clone(), c)))
+        .collect();
+
+    let baseline = if tracked.iter().any(|p| p == BASELINE_PATH) {
+        read_relative(ctx, BASELINE_PATH)
+            .map(|c| parse_baseline(&c))
+            .unwrap_or_default()
+    } else {
+        BTreeSet::new()
+    };
+
+    Inputs {
+        registries,
+        chunk_sources,
+        baseline,
+    }
+}
+
+// -----------------------------------------------------------------------
+// Finding emission
+// -----------------------------------------------------------------------
+
+/// A finding plus its `(category, name)` sort key.
+///
+/// The key is carried alongside rather than re-parsed out of the summary so
+/// the ordering contract cannot silently drift if a summary is ever reworded.
+struct Keyed {
+    category: &'static str,
+    name: String,
+    finding: Finding,
+}
+
+/// Build one PDOCCOVER finding. `detail` is appended after `<category>: <name>`.
+fn keyed(category: &'static str, name: &str, path: &str, detail: String) -> Keyed {
+    Keyed {
+        category,
+        name: name.to_string(),
+        finding: Finding {
+            pattern: Pattern::PDocCover,
+            severity: Severity::High,
+            task_id: path.to_string(),
+            summary: format!("{category}: {name} {detail}"),
+            evidence: vec![EvidenceRef::File {
+                path: path.to_string(),
+            }],
+        },
+    }
+}
+
+/// Omission lane: registry names with no chunk mention, no well-formed
+/// `pdoccover:allow`, and no baseline entry.
+fn omission_findings(inputs: &Inputs) -> Vec<Keyed> {
+    let census = census_names(&inputs.registries);
+    let names: Vec<String> = census.iter().map(|c| c.name.clone()).collect();
+    let documented = documented_names(&names, &inputs.chunk_sources);
+
+    let mut out = Vec::new();
+    for c in &census {
+        if documented.contains(&c.name) {
+            continue;
+        }
+        if c.allow.is_some() {
+            continue;
+        }
+        if inputs.baseline.contains(&c.name) {
+            continue;
+        }
+        out.push(keyed(
+            "undocumented-name",
+            &c.name,
+            UNITS_PATH,
+            format!(
+                "— declared in {} ({UNITS_PATH}:{}), mentioned in no chunk under {CHUNKS_PREFIX}; \
+                 document it, or mark the entry line `// {ALLOW_TOKEN} — <reason>`",
+                c.const_name, c.line,
+            ),
+        ));
+    }
+    out
+}
+
+// -----------------------------------------------------------------------
 // check() — entry point
 // -----------------------------------------------------------------------
 
 /// Run both drift directions over the working tree.
 ///
-/// Findings are deterministically ordered. Unreadable files are skipped
-/// fail-safe (no finding, no panic).
-pub fn check(_ctx: &AuditContext<'_>) -> Vec<Finding> {
-    Vec::new()
+/// Findings are deterministically ordered by `(category, name)` — the category
+/// prefixes sort lexicographically, so the emitted list is byte-identical
+/// between runs over an unchanged tree and diffs cleanly between runs over a
+/// changed one. Unreadable files are skipped fail-safe (no finding, no panic).
+pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
+    let inputs = load_inputs(ctx);
+    let mut keyed = omission_findings(&inputs);
+    keyed.sort_by(|a, b| a.category.cmp(b.category).then_with(|| a.name.cmp(&b.name)));
+    keyed.into_iter().map(|k| k.finding).collect()
 }
 
 /// The single shared derivation #5480's baseline regenerator consumes: the
@@ -590,12 +802,6 @@ pub fn check(_ctx: &AuditContext<'_>) -> Vec<Finding> {
 pub fn baseline_candidates(_ctx: &AuditContext<'_>) -> Vec<String> {
     Vec::new()
 }
-
-// Silence unused-import warnings while the stubs are empty; every one of these
-// is consumed once the emission steps land.
-const _: fn() = || {
-    let _ = |p: Pattern, s: Severity, e: EvidenceRef| (p, s, e);
-};
 
 // -----------------------------------------------------------------------
 // Unit tests — pure scan grammar
