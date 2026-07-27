@@ -572,15 +572,15 @@ struct WalkCtx<'a> {
     /// enum erasure: a constructed variant's `result_type` is always the bare
     /// `Type::Enum(name)`, never the applied form, so a declared
     /// `Type::Applied { name: "Result", args: [...] }` param would spuriously
-    /// fail raw [`type_compatible`]. The arm short-circuits on
-    /// [`enum_payload_compatible`], which needs this table both to recognise an
-    /// applied ENUM (vs. an applied generic STRUCTURE like `Coupling<T>`, which
-    /// is spelled the same way) and to keep a genuine cross-enum mismatch
-    /// rejected.
+    /// fail raw [`type_compatible`], which has no Applied-vs-Enum arm in EITHER
+    /// direction. The arm maps BOTH sides through [`base_enum_name`], which
+    /// needs this table to recognise an applied ENUM (vs. an applied generic
+    /// STRUCTURE like `Coupling<T>`, which is spelled the same way) while
+    /// keeping a genuine cross-enum mismatch rejected.
     ///
-    /// It is also the membership oracle for
-    /// [`general_leaf_param_family_is_validated`]'s `Type::Applied` entry, so the
-    /// two decisions cannot drift.
+    /// [`base_enum_name`] is the same oracle [`enum_payload_compatible`] uses at
+    /// the payload-field site in `variant_construct.rs`, so the two decisions
+    /// cannot drift.
     enum_defs: &'a [reify_ir::EnumDef],
     diagnostics: &'a mut Vec<Diagnostic>,
     /// Severity at which conformance diagnostics emitted through this walk are
@@ -1486,29 +1486,58 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
                         format!("expected '{}', got '{}'", param_type, arg_type),
                     )),
                 );
-            } else if enum_payload_compatible(param_type, arg_type, ctx.enum_defs) {
-                // ENUM-ERASURE ACCEPT (task 5465, family 4). Placed BEFORE the
-                // allowlist branch so the erasure gap is tolerated without any
-                // `type_compatible` call.
+            } else if let Some(param_enum) = base_enum_name(param_type, ctx.enum_defs) {
+                // ENUM FAMILY (task 5465, family 4). Handled as its own branch,
+                // BEFORE the allowlist, so the D1/F-Mono erasure gap is absorbed
+                // without a `type_compatible` call that cannot express it.
                 //
-                // Under D1/F-Mono erasure (PRD §7.1: "resolved args live only in
-                // the per-site substitution map, never on the persisted `Type`
-                // or `Value`"), a constructed variant's `result_type` is ALWAYS
-                // the bare `Type::Enum(name)` — never the applied form. So a
-                // param declared `Result<Length, String>` (a
-                // `Type::Applied { name: "Result", .. }`) supplied a legitimate
-                // `Ok { value: 12mm }` would, in `enum_payload_compatible`'s own
-                // words, "spuriously fail raw `type_compatible`", which has no
-                // Applied-vs-Enum rule.
+                // Under erasure (PRD §7.1: "resolved args live only in the
+                // per-site substitution map, never on the persisted `Type` or
+                // `Value`"), a constructed variant's `result_type` is the bare
+                // `Type::Enum(name)`, while a declared annotation may be the
+                // applied `Type::Applied { name, args }`. `type_compatible` has
+                // no Applied-vs-Enum rule in EITHER direction, so both spellings
+                // must be reconciled here.
                 //
-                // This mirrors the guard `variant_construct.rs` already applies
-                // at the payload-field site: same predicate, same enum table, so
-                // the two cannot drift. It is a TARGETED tolerance, not a family
-                // bypass — `enum_payload_compatible` accepts only when both
-                // sides name the SAME base enum, so a genuine cross-enum
-                // mismatch still falls through to the allowlist branch below and
-                // is rejected.
-            } else if general_leaf_param_family_is_validated(param_type, ctx.enum_defs) {
+                // SYMMETRIC by construction. The first cut short-circuited on
+                // `enum_payload_compatible`, which only matches a bare
+                // `Type::Enum` on the SUPPLIED side (type_compat.rs:334-337).
+                // Combined with `Type::Enum(_)` joining the allowlist, the
+                // reverse pairing — a param declared bare `Enum("Result")`
+                // supplied an arg whose `result_type` is the applied
+                // `Applied { name: "Result", .. }` (a `ValueRef` to a cell
+                // declared `Result<Length, String>`, or a call to a fn whose
+                // return annotation is the applied form, cf.
+                // `examples/m6_result_recovery.ri:30`) — fell through to
+                // `type_compatible` and produced a SPURIOUS `ArgTypeMismatch`
+                // that was silent before the promotion. On the
+                // `check_fn_arg_conformance` path that is a hard Error, so it
+                // would have failed the compile rather than merely added noise
+                // (reviewer_comprehensive, robustness-false-positive).
+                //
+                // Mapping BOTH sides through [`base_enum_name`] — the same
+                // oracle `enum_payload_compatible` itself now uses, so the
+                // payload-field guard in `variant_construct.rs` and this arm
+                // cannot drift — makes the tolerance direction-agnostic. It also
+                // removes the double `enum_defs` scan the first cut performed
+                // per `Applied` leaf (once inside `enum_payload_compatible`,
+                // again inside `general_leaf_param_family_is_validated`);
+                // membership is now resolved exactly once per side, and not at
+                // all for the non-enum params that dominate the corpus
+                // (reviewer_comprehensive, efficiency).
+                //
+                // STILL A TARGETED TOLERANCE, NOT A FAMILY BYPASS: only the
+                // same-base-name pairing is accepted. A genuine cross-enum
+                // mismatch (`Hue` ← `Outline`) or a non-enum arg
+                // (`Result<…>` ← `String`) falls straight through to the shared
+                // `reject_if_incompatible` gate below and is rejected exactly as
+                // an allowlisted family would be. Type-ARG agreement is the
+                // inference/pin passes' job, not this walker's — see
+                // `enum_payload_compatible`'s doc.
+                if base_enum_name(arg_type, ctx.enum_defs) != Some(param_enum) {
+                    reject_if_incompatible(param_type, arg_type, ctx, emit_arg_type_mismatch);
+                }
+            } else if general_leaf_param_family_is_validated(param_type) {
                 // GENERAL CONCRETE-LEAF arm (task 5302 α): this replaces the former
                 // silent `_` fall-through for the param families that
                 // [`general_leaf_param_family_is_validated`] vets, routing them
@@ -1547,8 +1576,7 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// `Scalar` (spelled `Real` in source, and by `Display`) are the families for
 /// which that presumption holds unconditionally at a struct-ctor arg position —
 /// the expression compiler infers them precisely, and `type_compat.rs` has real
-/// arms for each. `Type::Enum` and enum-named `Type::Applied` joined them in
-/// task 5465, conditionally: see *Enum families* below.
+/// arms for each.
 ///
 /// # Handled by dedicated shape-based arms instead (task 5465)
 ///
@@ -1573,9 +1601,11 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// # Deliberately excluded, with evidence
 ///
 /// Contrary to what this comment claimed before task 5465, promoting those four
-/// families needed NO new `type_compat.rs` coercion rule — the shape-based arms
-/// and the [`enum_payload_compatible`] short-circuit sit entirely inside this
-/// walker. What remains excluded is excluded for its own stated reason, and each
+/// families needed NO new `type_compat.rs` coercion RULE — the shape-based arms
+/// and the [`base_enum_name`]-keyed enum branch sit entirely inside this walker
+/// (`base_enum_name` itself is a factoring of a predicate `type_compat.rs`
+/// already had, not a new coercion). What remains excluded is excluded for its
+/// own stated reason, and each
 /// entry names an owner (INV-SF-5 `placeholders-owned-and-loud`,
 /// `docs/legibility/design-invariants.md:126-128`, forbids a blanket escape that
 /// names none):
@@ -1614,32 +1644,31 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// (clean fixture + value floor) plus a green corpus gate, with no new
 /// `SKIP_SET` entry.
 ///
-/// # Enum families (task 5465, family 4)
+/// # Enum families (task 5465, family 4) — handled by the caller, not here
 ///
-/// `Type::Enum(_)` and enum-named `Type::Applied` are vetted here, but ONLY
-/// because the caller short-circuits on [`enum_payload_compatible`] first: the
-/// erasure gap that made raw `type_compatible` unusable for these two is
-/// absorbed there, and what reaches this predicate is a residual genuine
-/// mismatch (`Hue` ← `Outline`, `Result<…>` ← `String`) that `type_compatible`
-/// judges correctly.
+/// `Type::Enum(_)` and enum-named `Type::Applied` are promoted, but they never
+/// reach this predicate: the general concrete-leaf arm dispatches them into its
+/// own [`base_enum_name`]-keyed branch first, which absorbs the D1/F-Mono
+/// erasure gap SYMMETRICALLY (either side may be the bare or the applied
+/// spelling) and then falls into the same shared `reject_if_incompatible` gate
+/// for a residual genuine mismatch (`Hue` ← `Outline`, `Result<…>` ← `String`).
 ///
-/// `Type::Applied` is DELIBERATELY not blanket-allowlisted: it also represents
-/// generic STRUCTURE refs (e.g. `Coupling<T>`, see
-/// `type_arg_applied_resolution_tests.rs`), and `implicitly_converts_to` has no
-/// Applied-vs-StructureRef arm, so a blanket entry would reintroduce exactly the
-/// class of false positive this allowlist exists to prevent. The membership test
-/// is the SAME `enum_defs.iter().any(|e| e.name == *name)` that
-/// [`enum_payload_compatible`] uses, so the accept-side and the judge-side
-/// cannot disagree about what counts as an applied enum.
-fn general_leaf_param_family_is_validated(
-    param_type: &Type,
-    enum_defs: &[reify_ir::EnumDef],
-) -> bool {
+/// The first cut of family 4 instead listed both variants here and relied on a
+/// preceding `enum_payload_compatible` short-circuit. That was one-directional
+/// (it matches only a bare `Type::Enum` on the SUPPLIED side) and it scanned
+/// `enum_defs` twice per applied leaf. Keeping the whole enum decision in one
+/// branch fixes both — see the arm comment.
+///
+/// Note that `Type::Applied` was never a candidate for a BLANKET entry here
+/// regardless: it also represents generic STRUCTURE refs (e.g. `Coupling<T>`,
+/// see `type_arg_applied_resolution_tests.rs`), and `implicitly_converts_to` has
+/// no Applied-vs-StructureRef arm, so an unconditional entry would reintroduce
+/// exactly the class of false positive this allowlist exists to prevent. An
+/// applied generic structure still falls through this predicate silently.
+fn general_leaf_param_family_is_validated(param_type: &Type) -> bool {
     match param_type {
         Type::Bool | Type::Int | Type::String => true,
         Type::Scalar { dimension } => dimension.is_dimensionless(),
-        Type::Enum(_) => true,
-        Type::Applied { name, .. } => enum_defs.iter().any(|e| e.name == *name),
         _ => false,
     }
 }
@@ -7147,6 +7176,174 @@ mod tests {
             Some(DiagnosticCode::ArgTypeMismatch),
             "expected ArgTypeMismatch, got {:?}",
             diagnostics[0].code,
+        );
+    }
+
+    /// A minimal declared-enum table for the two erasure-symmetry probes below.
+    ///
+    /// Only `EnumDef::name` is load-bearing here — [`base_enum_name`]'s
+    /// membership test is what distinguishes an applied ENUM from an applied
+    /// generic STRUCTURE (`Coupling<T>`), and it reads nothing else.
+    fn enum_table(names: &[&str]) -> Vec<reify_ir::EnumDef> {
+        names
+            .iter()
+            .map(|n| reify_ir::EnumDef {
+                name: (*n).to_string(),
+                variants: vec![],
+                doc: None,
+                type_params: vec![],
+            })
+            .collect()
+    }
+
+    /// REVERSE leg of the enum-erasure tolerance (task 5465 amendment): a param
+    /// declared as the BARE `Type::Enum("Result")` supplied an arg whose
+    /// `result_type` is the APPLIED `Type::Applied { name: "Result", .. }` must
+    /// be accepted.
+    ///
+    /// **Why this is an in-module unit test.** The integration probes in
+    /// `struct_ctor_field_conformance_tests.rs` cover the forward leg (applied
+    /// param ← bare-enum arg), which is what enum erasure produces from a
+    /// constructed variant. This pairing is the mirror image, reachable from a
+    /// `ValueRef` to a cell declared with the applied annotation or from a fn
+    /// whose return annotation is the applied form (cf.
+    /// `examples/m6_result_recovery.ri:30`); constructing the two `Type`s
+    /// directly pins it without depending on which surface spellings happen to
+    /// survive inference today.
+    ///
+    /// It is a REGRESSION fence, not a new capability: the pairing was silent
+    /// before `Type::Enum(_)` was promoted, and the first cut of family 4 made
+    /// it a spurious `ArgTypeMismatch` because `enum_payload_compatible` matches
+    /// only a bare `Type::Enum` on the supplied side. Routing both sides through
+    /// [`base_enum_name`] restored the acceptance symmetrically. `Severity` here
+    /// is `Error` (this entry point is the fn-call path), which is exactly why
+    /// the false positive mattered: it failed the compile rather than warning.
+    #[test]
+    fn enum_param_accepts_applied_enum_arg_of_same_base() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let enum_defs = enum_table(&["Result"]);
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "r"),
+            Type::Applied {
+                name: "Result".to_string(),
+                args: vec![
+                    Type::Scalar {
+                        dimension: DimensionVector::LENGTH,
+                    },
+                    Type::String,
+                ],
+            },
+        );
+        let param_type = Type::Enum("Result".to_string());
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &param_type,
+            "r",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &enum_defs,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            0,
+            "a bare Enum(\"Result\") param given an Applied{{\"Result\"}} arg must be accepted — \
+             the erasure tolerance is symmetric, and type_compatible has no Applied-vs-Enum arm \
+             in EITHER direction. Got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+    }
+
+    /// Fence on the reverse leg: symmetry must not become a blanket enum bypass.
+    ///
+    /// A bare `Enum("Hue")` param supplied an applied `Result<…>` arg resolves
+    /// to two DIFFERENT base names, so it must still be exactly one
+    /// `ArgTypeMismatch` — the same verdict the forward-direction cross-enum
+    /// probe (`enum_param_given_wrong_enum_warns_arg_type_mismatch`) pins.
+    #[test]
+    fn enum_param_rejects_applied_enum_arg_of_different_base() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let enum_defs = enum_table(&["Hue", "Result"]);
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "r"),
+            Type::Applied {
+                name: "Result".to_string(),
+                args: vec![Type::String, Type::String],
+            },
+        );
+        let param_type = Type::Enum("Hue".to_string());
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &param_type,
+            "c",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &enum_defs,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly 1 ArgTypeMismatch for Applied{{\"Result\"}} arg vs Enum(\"Hue\") \
+             param (different base enums), got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+        assert_eq!(
+            diagnostics[0].code,
+            Some(DiagnosticCode::ArgTypeMismatch),
+            "expected ArgTypeMismatch, got {:?}",
+            diagnostics[0].code,
+        );
+    }
+
+    /// Fence on [`base_enum_name`]'s `enum_defs` membership test at THIS arm: an
+    /// applied generic STRUCTURE (`Coupling<T>`) is spelled `Type::Applied` too,
+    /// and must NOT be treated as an enum.
+    ///
+    /// With "Coupling" absent from the enum table both sides resolve to `None`,
+    /// so the leaf falls through to `general_leaf_param_family_is_validated`,
+    /// which does not vet `Type::Applied` — the pre-5465 silence for applied
+    /// generic structures is preserved. Without the membership test this would
+    /// instead take the enum branch.
+    #[test]
+    fn applied_generic_structure_param_is_not_treated_as_enum() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let enum_defs = enum_table(&["Result"]);
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "c"),
+            Type::Enum("Coupling".to_string()),
+        );
+        let param_type = Type::Applied {
+            name: "Coupling".to_string(),
+            args: vec![Type::String],
+        };
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &param_type,
+            "c",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &enum_defs,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            0,
+            "an applied generic STRUCTURE param must stay outside the enum branch and fall \
+             through the allowlist silently (pre-5465 behaviour), got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
         );
     }
 }
