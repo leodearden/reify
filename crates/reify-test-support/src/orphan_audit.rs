@@ -83,15 +83,12 @@ pub fn run_orphan_audit(scope: &str) -> Option<serde_json::Value> {
     let output = Command::new(&script)
         .args(["--scope", scope, "--quiet", "--format", "json"])
         .current_dir(repo_root)
-        // Sanitize repo-redirect git env vars before spawning: the script's
-        // first action is `REPO_ROOT="$(git rev-parse --show-toplevel)"`, and
-        // an ambient GIT_DIR/GIT_WORK_TREE (exported into a hook's entire
-        // process tree) overrides BOTH cwd and an explicit `-C` — so without
-        // this, the script could silently audit the wrong checkout under
-        // reify's warm-lane topology instead of erroring. reify-test-support
-        // cannot depend on reify-audit (the edge runs the other way), so this
-        // list is inlined rather than calling reify_audit::git_env::sanitize;
-        // crates/reify-audit/src/git_env.rs::REPO_REDIRECT_VARS is the
+        // Sanitize repo-redirect git env vars before spawning — an ambient
+        // GIT_DIR/GIT_WORK_TREE overrides both cwd and an explicit `-C`. Full
+        // rationale/failure mode, and why this list is inlined rather than
+        // calling reify_audit::git_env::sanitize (the dependency edge runs
+        // the other way): crates/reify-audit/src/git_env.rs module doc,
+        // "Resolved non-central case". REPO_REDIRECT_VARS there is the
         // normative source — keep this list in sync with it.
         .env_remove("GIT_DIR")
         .env_remove("GIT_INDEX_FILE")
