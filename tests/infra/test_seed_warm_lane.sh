@@ -3059,6 +3059,98 @@ assert "T1b: the stub dir is parented at _REAL_STUB_ROOT, which is registered in
         exit 1
     ' _ "${_REAL_STUB_ROOT:-/nonexistent}" "${REAL_STUB_DIR:-/nonexistent-stub}" "${_TMPDIRS[@]+${_TMPDIRS[@]}}"
 
+# T2: the property I14g actually depends on, made CAUSAL instead of racy --
+# reuses the PIN invocation above (same T_BASE/T_LANE/run_helper_real call;
+# no new seed run). Resolves the pinned trash entry the same way I14g does
+# (L1249/1250), then WAITS for a causal marker -- the PIN stub's own argv
+# line appended to CALLS_FILE -- before checking the trash still exists on
+# disk. A timeout means the detached rm was NOT the stub, i.e. it resolved
+# the real /bin/rm: exactly the #5633 failure mode. reset_calls ran before
+# the run_helper_real call above (fixture setup), so any *.reseed-trash*
+# line in CALLS_FILE is from this run; seed's foreground build-dir
+# invalidation rm (scripts/seed-warm-lane.sh:949) targets paths under
+# <lane>/target and cannot match the trash glob.
+T_TRASH="$(find "$(dirname "$T_LANE")/.reseed-trash" -maxdepth 1 -name "$(basename "$T_LANE").*" -print -quit 2>/dev/null)"
+_t2_trash_survives_causal_rm() {
+    local trash="$1" calls_file="$2"
+    _wait_for_trash_rm_recorded "$calls_file" 10 || return 1
+    [ -n "$trash" ] && [ -d "$trash" ]
+}
+assert "T2: relocation: trash IS under pool-level sibling .reseed-trash/ for this lane, and SURVIVES the detached rm (I14g's property, made causal)" \
+    _t2_trash_survives_causal_rm "$T_TRASH" "$CALLS_FILE"
+
+# T3: discrimination positive control (R6b spirit) for _wait_for_trash_rm_recorded
+# -- proves T2 cannot pass vacuously if the recorder or the trash glob is
+# ever broken. Synthetic calls files under $_LANE_ROOT (no real seed run
+# needed): one with only non-trash rm lines, one with a genuine trash line.
+T3_NONTRASH_CALLS="$_LANE_ROOT/.t3-nontrash-calls"
+T3_TRASH_CALLS="$_LANE_ROOT/.t3-trash-calls"
+printf 'rm -rf /some/other/path\ncp -a /a /b\n' > "$T3_NONTRASH_CALLS"
+printf 'rm -rf /some/other/path\nrm -rf /pool-sibling/.reseed-trash/T3-lane.12345\n' > "$T3_TRASH_CALLS"
+_t3_discriminates() {
+    local nontrash="$1" trash="$2"
+    # Deadline kept short (1s) so this control stays fast -- it is EXPECTED
+    # to time out against the non-trash log.
+    _wait_for_trash_rm_recorded "$nontrash" 1 && return 1
+    _wait_for_trash_rm_recorded "$trash" 1
+}
+assert "T3: _wait_for_trash_rm_recorded discriminates -- times out on a calls file with no trash rm line, succeeds on one that has one" \
+    _t3_discriminates "$T3_NONTRASH_CALLS" "$T3_TRASH_CALLS"
+
+# T4: mechanism positive control (R2/R5 spirit) -- proves T1 guards a REAL
+# failure mode, not a hypothetical, by reproducing the pre-#5633 shape
+# end-to-end with synthetic/throwaway state: a stub dir holding the SAME
+# no-op-on-trash-paths rm stub the PIN mode installs (L365-376), unlinked
+# EAGERLY (the pre-#5633 teardown), then a detached grandchild -- launched
+# BEFORE the unlink, exactly like seed's own trash rm -- whose PATH lookup
+# is held back by a GO marker until AFTER the unlink has completed. All
+# state lives under $_LANE_ROOT (reclaimed by the EXIT trap); nothing here
+# touches a real seed invocation or $CALLS_FILE.
+T4_STUB="$(mktemp -d "$_LANE_ROOT/t4-stub-XXXXXX")"
+cat > "$T4_STUB/rm" << 'T4_RM_STUB_EOF'
+#!/usr/bin/env bash
+echo "rm $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
+for arg in "$@"; do
+    case "$arg" in
+        *target.reseed-trash.*|*/.reseed-trash/*) exit 0 ;;
+    esac
+done
+exec /bin/rm "$@"
+T4_RM_STUB_EOF
+chmod +x "$T4_STUB/rm"
+
+T4_AREA="$(mktemp -d "$_LANE_ROOT/t4-area-XXXXXX")"
+T4_TRASH="$T4_AREA/.reseed-trash/T4-lane.99999"
+mkdir -p "$T4_TRASH"
+echo "sentinel" > "$T4_TRASH/SENTINEL.txt"
+
+T4_GO="$_LANE_ROOT/.t4-go-marker"
+T4_PID_FILE="$_LANE_ROOT/.t4-child-pid"
+
+# Detached grandchild, same shape as scripts/seed-warm-lane.sh:1133: forked
+# NOW, inside this synchronous subshell (before the subshell itself
+# returns), but blocks on the GO marker so its PATH lookup provably happens
+# AFTER the parent unlinks T4_STUB below -- a causal ordering, not a sleep
+# race. `echo $! > "$T4_PID_FILE"` runs inside the subshell, right after
+# backgrounding, so the grandchild's PID is visible to the parent shell via
+# the file even though $! itself does not survive the subshell exiting.
+( PATH="$T4_STUB:$PATH" bash -c 'while [ ! -f "$1" ]; do sleep 0.02; done; rm -rf "$2"' \
+      _ "$T4_GO" "$T4_TRASH" & echo $! > "$T4_PID_FILE" )
+
+# The pre-#5633 teardown: unlink the stub dir the instant the "direct child"
+# (the subshell above, which has already returned) has exited.
+/bin/rm -rf "$T4_STUB"
+# NOW let the grandchild proceed: its PATH lookup happens after T4_STUB is
+# already gone, so `rm` can only resolve to the real /bin/rm.
+: > "$T4_GO"
+
+if [ -s "$T4_PID_FILE" ]; then
+    _BGPIDS+=("$(cat "$T4_PID_FILE")")
+fi
+
+assert "T4: mechanism positive control — a detached grandchild whose stub dir is gone before its PATH lookup really does delete the trash (proves T1 guards a real failure mode)" \
+    _wait_for_path_gone "$T4_TRASH" 10
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block R: lane isolation guards (task 5590) — every lane created in this file
 # must be nested under a private per-run parent, never bare /tmp, because
