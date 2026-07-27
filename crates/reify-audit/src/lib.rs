@@ -37,6 +37,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::atomic::AtomicUsize;
 
+pub mod git_env;
 pub mod p5_phantom_done;
 pub mod p2_consumer_stub;
 pub mod p1_producer_orphan;
@@ -557,9 +558,7 @@ impl RealGitOps {
                 ));
             }
         }
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(&self.project_root)
+        crate::git_env::command(&self.project_root)
             .args(args)
             .output()
     }
@@ -714,9 +713,7 @@ impl GitOps for RealGitOps {
         // and surfacing a spurious finding (exit 0→1).  That is the
         // conservative / extra-finding direction — the opposite of the exit 1→0
         // flake task #4800 targets — and caught by re-running.
-        match std::process::Command::new("git")
-            .arg("-C")
-            .arg(&self.project_root)
+        match crate::git_env::command(&self.project_root)
             .args(["check-ignore", "--quiet", path])
             .output()
         {
@@ -772,9 +769,7 @@ impl GitOps for RealGitOps {
         // (exit 0→1 via a spurious finding) — caught by re-running.
         // The shell-layer run_audit retry in the PTODO infra test provides
         // defense-in-depth.
-        match std::process::Command::new("git")
-            .arg("-C")
-            .arg(&self.project_root)
+        match crate::git_env::command(&self.project_root)
             .args(["merge-base", "--is-ancestor", commit, branch])
             .output()
         {

@@ -1,7 +1,9 @@
 //! Real-git-ops integration tests.
 //!
 //! These tests build a real temporary git repository using `tempfile::tempdir()`
-//! and `std::process::Command("git")` to validate that `RealGitOps` shells out
+//! and `common::git_env::git_cmd` — the shared `reify_audit::git_env`
+//! constructor, which yields a `git -C <dir>` with the repo-redirect
+//! environment variables stripped — to validate that `RealGitOps` shells out
 //! the correct git command with the correct argument form.  They exist because a
 //! mock cannot catch a wrong range string (e.g. `^1..^2` instead of `^1..`) —
 //! the exact production bug class this task fixes: RealGitOps was returning empty
@@ -10,24 +12,59 @@
 //! Run with: `cargo test -p reify-audit real_git_ops`
 
 use reify_audit::{GitOps, RealGitOps};
-use std::process::Command;
 use tempfile::TempDir;
+
+mod common;
 
 // -----------------------------------------------------------------------
 // Shared real-repo helpers
 // -----------------------------------------------------------------------
 
+/// Every test in this file — including the two injected-spawn-failure retry
+/// tests, which build a real repo before injecting — calls `git_init` and
+/// `git_commit`. So every test here is exposed to an ambient hook git
+/// environment, where `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` are exported
+/// into the whole process tree and override `-C <tempdir>`.
+///
+/// That measured fact is why the filter is empty: it re-runs EVERY test here
+/// inside a child process that has the poison ambient, which is the real hook
+/// condition rather than a simulation of it, and no test in the selection is
+/// along for the ride. The helper's `REIFY_AUDIT_HOOK_ENV_REPLAY` guard stops
+/// this test recursing when the child reaches it, and it is itself counted in
+/// the selection (it passes trivially in the child, via that guard).
+///
+/// A caveat for whoever reads a failure here: an empty filter means a future
+/// test added to this file is re-run too, and a failure of *that* test would
+/// surface both in the clean parent run and again inside this one. The
+/// helper's assertion message says so — always diagnose against the clean
+/// parent run first.
+///
+/// The floor of 8 is today's selection (7 real tests + this one). It exists
+/// because libtest exits 0 on a zero-match filter; with an empty filter that
+/// cannot happen today, but the floor also catches a test being deleted or
+/// moved out of this binary, which would silently shrink the proof.
+#[test]
+fn real_git_ops_helpers_survive_ambient_hook_git_env() {
+    common::git_env::replay_self_under_hook_git_env(&[""], 8);
+}
+
+/// Run `git <args…>` against the repository at `dir` and assert it succeeded.
+///
+/// The single entry point for every repo-targeting git invocation in this
+/// file, so the `reify_audit::git_env` sanitizing is applied in exactly one
+/// place. Without it an ambient hook `GIT_INDEX_FILE`/`GIT_DIR` overrides
+/// `-C <dir>` and the command silently operates on the parent repository.
+fn git_run(dir: &std::path::Path, args: &[&str]) {
+    let status = common::git_env::git_cmd(dir)
+        .args(args)
+        .status()
+        .expect("git command failed to spawn");
+    assert!(status.success(), "git {:?} exited {:?}", args, status.code());
+}
+
 /// Initialise a bare git repo in `dir` with identity + gpgsign disabled.
 fn git_init(dir: &std::path::Path) {
-    let run = |args: &[&str]| {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .status()
-            .expect("git command failed to spawn");
-        assert!(status.success(), "git {:?} exited {:?}", args, status.code());
-    };
+    let run = |args: &[&str]| git_run(dir, args);
     run(&["init", "--initial-branch=main"]);
     run(&["config", "user.email", "test@example.com"]);
     run(&["config", "user.name", "Test"]);
@@ -45,24 +82,14 @@ fn write_file(dir: &std::path::Path, path: &str, content: &str) {
 
 /// Stage + commit all tracked changes in `dir`.
 fn git_commit(dir: &std::path::Path, msg: &str) {
-    let run = |args: &[&str]| {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .status()
-            .expect("git command failed to spawn");
-        assert!(status.success(), "git {:?} exited {:?}", args, status.code());
-    };
+    let run = |args: &[&str]| git_run(dir, args);
     run(&["add", "."]);
     run(&["commit", "-m", msg]);
 }
 
 /// Return the SHA of HEAD in `dir`.
 fn rev_parse_head(dir: &std::path::Path) -> String {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let out = common::git_env::git_cmd(dir)
         .args(["rev-parse", "HEAD"])
         .output()
         .expect("git rev-parse HEAD");
@@ -100,15 +127,9 @@ fn diff_added_lines_in_commit_real_merge() {
     git_commit(root, "base commit A");
 
     // branch feature — append one stub line
-    let run_branch = |args: &[&str]| {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(root)
-            .args(args)
-            .status()
-            .expect("git spawn");
-        assert!(status.success(), "git {:?} failed", args);
-    };
+    // Folded onto the shared `git_run` helper rather than kept as a fourth
+    // private copy of the same closure.
+    let run_branch = |args: &[&str]| git_run(root, args);
 
     run_branch(&["checkout", "-b", "feature"]);
     // Append the stub line (line 3)
@@ -260,9 +281,7 @@ fn last_commit_for_path_real_repo() {
     git_commit(root, "add deleted.rs");
 
     // Commit 2: remove deleted.rs
-    let rm_status = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let rm_status = common::git_env::git_cmd(root)
         .args(["rm", "deleted.rs"])
         .status()
         .expect("git rm spawn");

@@ -47,7 +47,11 @@ test_tree_sitter_pipeline.sh intra-run-serial
 # row directly below), so it inherits that file's intra-run-serial bucket —
 # running it from `pool` would let semaphore_e2e's lane-shared mutations
 # (working-tree parser.c, CoW target/) race other pool members. Conservative-
-# first per the header; it also nests three `pool` suites, which is harmless.
+# first per the header; it also nests seven `pool` suites, which is harmless
+# (task 5604 added four: scope, failfast_order, occt_gated_scope,
+# release_mode_in_test_command — all hermetic pool members that build their
+# own throwaway fixtures). semaphore_e2e remains the binding reason for this
+# bucket; the classification itself is unchanged.
 test_verify_nextest_absent_suites.sh intra-run-serial
 test_verify_semaphore_e2e.sh intra-run-serial
 
