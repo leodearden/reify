@@ -278,6 +278,85 @@ nextest_absent_available() {
 nextest_absent_reason() { printf '%s\n' "$_NEXTEST_ABSENT_REASON"; }
 
 # ---------------------------------------------------------------------------
+# Caller-facing convenience helpers
+# ---------------------------------------------------------------------------
+
+# nextest_absent_assert_real — emit the realness checks as assert() calls
+# against the SOURCING suite's PASS/FAIL counters.
+#
+# Deliberately NOT a boolean-returning predicate: a migrated suite's pass count
+# must rise exactly as its hand-rolled H-section did, because
+# test_verify_nextest_absent_suites.sh's S1-S4 pass floors are calibrated
+# against those counts. Requires test_helpers.sh to have been sourced first.
+#
+# ORDER IS PART OF THE CONTRACT — it reproduces that suite's H1-H7 one-for-one:
+#   H1  cargo-nextest unreachable       (absence, as non-resolvability)
+#   H2  cargo EXECUTES                  (presence, as executability)
+#   H3  tree-sitter EXECUTES
+#   H4  plan header nextest=0 under the env
+#   H5  plan header nextest=1 ambiently — ONLY where cargo-nextest is installed
+#       ambiently; on a genuinely nextest-less host there is nothing for the
+#       farm to hide and asserting it would go red for an irrelevant reason
+#   H6  no .rustup in the throwaway HOME
+#   H7  throwaway HOME under the ceiling
+#
+# H6/H7 come LAST so that every check which actually exercises the env (H2, H3,
+# H4 — H5 is deliberately ambient) has already had its chance to provoke a
+# toolchain sync before hygiene is measured.
+nextest_absent_assert_real() {
+    local verify="${1:-$NEXTEST_ABSENT_VERIFY}"
+
+    _nxar_h1() { ! nx_which cargo-nextest; }
+    _nxar_h2() { nx_run cargo --version; }
+    _nxar_h3() { nx_run tree-sitter --version; }
+    _nxar_h4() {
+        local hdr; hdr="$(nextest_absent_plan_header "$verify")"
+        printf '%s\n' "$hdr"
+        case "$hdr" in *"nextest=0"*) return 0 ;; *) return 1 ;; esac
+    }
+    _nxar_h5() {
+        local hdr; hdr="$(nextest_absent_plan_header_ambient "$verify")"
+        printf '%s\n' "$hdr"
+        case "$hdr" in *"nextest=1"*) return 0 ;; *) return 1 ;; esac
+    }
+
+    assert "H1: cargo-nextest is NOT resolvable under the nextest-absent harness env" _nxar_h1
+    assert "H2: cargo still RUNS under the harness env (farm keeps the toolchain intact, not merely on PATH)" _nxar_h2
+    assert "H3: tree-sitter still RUNS under the harness env (not stripped with ~/.cargo/bin)" _nxar_h3
+    assert "H4: verify.sh plan header reads nextest=0 UNDER the harness" _nxar_h4
+
+    if command -v cargo-nextest >/dev/null 2>&1; then
+        assert "H5: verify.sh plan header reads nextest=1 WITHOUT the harness (this host has cargo-nextest, so the simulation is meaningful)" _nxar_h5
+    else
+        echo "  SKIP: H5 (harness unavailable on this host: cargo-nextest is not installed"
+        echo "        ambiently, so there is nothing for the farm to hide and 'nextest=1"
+        echo "        without the harness' cannot hold.)"
+    fi
+
+    assert "H6: the harness did NOT provoke a rustup toolchain sync (no .rustup in its temp HOME)" \
+        nextest_absent_no_rustup_sync
+    assert "H7: the harness's temp HOME is still small (it perturbs only cargo-nextest's visibility)" \
+        nextest_absent_home_is_small
+}
+
+# nextest_available_ambient — does the AMBIENT host have cargo-nextest, as
+# verify.sh sees it? Returns 0 on a `nextest=1` plan header, non-zero otherwise.
+#
+# This DETECTS host state; it does not simulate absence. It is the idiom
+# test_verify_retry_subset.sh open-coded — that suite deliberately tests against
+# the host's real nextest state, and forcing absence on it would silently drop
+# every nextest-shaped assert it guards.
+#
+# The capture is guarded inside nextest_absent_plan_header_ambient, so a
+# verify.sh hiccup yields an empty header (reported as "not available") rather
+# than aborting a `set -e` caller.
+nextest_available_ambient() {
+    local hdr
+    hdr="$(nextest_absent_plan_header_ambient "${1:-$NEXTEST_ABSENT_VERIFY}")"
+    case "$hdr" in *"nextest=1"*) return 0 ;; *) return 1 ;; esac
+}
+
+# ---------------------------------------------------------------------------
 # Farm overlay — the presence marker and the fake toolchain as PARAMETERS of
 # the shared harness rather than a reason to fork it.
 #
