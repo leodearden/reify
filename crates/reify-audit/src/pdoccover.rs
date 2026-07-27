@@ -37,6 +37,36 @@
 //! identifier immediately followed by `(`) must exist somewhere in the
 //! compiler/stdlib sources. Names that do not are fabrications.
 //!
+//! ### The existence oracle is deliberately asymmetric
+//!
+//! It is much BROADER than the omission census: the union of every `*_NAMES`
+//! registry entry, every identifier-shaped double-quoted string literal under
+//! `crates/reify-compiler/src/**/*.rs` and `crates/reify-stdlib/src/**/*.rs`,
+//! and every `.ri` declaration in the bundled stdlib. Using the omission
+//! census as the oracle would false-flag legitimate builtins wholesale —
+//! `clamp`, `lerp` and `dot` are real and documented, but live in
+//! `math_signatures.rs`, not `units.rs`.
+//!
+//! The asymmetry is the design: a false NEGATIVE (a fabricated name that
+//! happens to collide with an unrelated string literal) costs one missed
+//! finding, while a false POSITIVE accuses a working builtin and makes the
+//! lane untrustworthy. When the two trade off, take the miss.
+//!
+//! ### Known imprecision — measured, not theoretical
+//!
+//! The oracle is broad but the *mention* side is not selective, and on the
+//! real corpus that is where the noise is: of 12 `fabricated-name:` findings
+//! on main, ONE (`offset_surface`) is a genuine fabrication. The other 11 are
+//! call-shaped text that was never an API claim — user-defined names inside
+//! example source (`compute_moi(...)`, `fn lateral_area(self)`, `purpose
+//! manufacturing_ready(...)`), grammar metavariables (`predicate(x)`,
+//! `primitive(...)`, `Trait::fn(args)`), and non-function call-shaped syntax
+//! (`auto(free)`, `@region(...)`). Narrowing this needs a mention-side
+//! heuristic — skipping declaration keywords, and prose vs. example-source
+//! context — which is deliberately NOT in this task; see the follow-up filed
+//! against the fabrication lane's precision. Until then the omission lane is
+//! the trustworthy half, which is one more reason the CLI arm is opt-in.
+//!
 //! ## Finding categories
 //!
 //! All five ride at [`Severity::High`] under the single [`Pattern::PDocCover`]
@@ -67,6 +97,26 @@
 //! deliberately no `reify-compiler` dependency (the audit crate stays a pure
 //! text scanner, PRD §(b)). No regex crate: the audit crate has none and must
 //! not gain one.
+//!
+//! ## CLI posture — opt-in, for now
+//!
+//! `run_pdoccover` in `bin/reify-audit.rs` uses `is_some_and`, so PDOCCOVER
+//! runs only under an explicit `--pattern PDOCCOVER`. Its two structural
+//! siblings PTODO and PDSSENTINEL use `is_none_or` and ride the default sweep;
+//! the difference is severity plus backlog. These findings are High, the exit
+//! code is the High-severity count, and the real tree currently reports ~107,
+//! so joining the default sweep today would turn every audit run non-zero.
+//! It joins when #5480 seeds the baseline and the residual reaches zero — the
+//! warn-first-then-ratchet path PTODO took.
+//!
+//! ## The #5480 seam
+//!
+//! This task ships the detector and [`baseline_candidates`]. It ships NO
+//! baseline file, NO `--emit-baseline` flag, NO generator binary, NO
+//! `tests/infra/` script and NO `run-all-classification.manifest` row — all of
+//! those are #5480 (δ). [`baseline_candidates`] is the single derivation δ's
+//! regenerator calls, sharing [`omission_dispositions`] with [`check`] so a
+//! generated baseline cannot disagree with the ratchet that checks it.
 //!
 //! ## Both scanners are deliberately format-agnostic
 //!
