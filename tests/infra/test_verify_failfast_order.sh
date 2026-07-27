@@ -80,6 +80,20 @@ assert "all plan: check_event_inventory.sh index < psi-gate index" \
 # ===========================================================================
 # Test 3: Preservation — plan still contains all expected components
 # ===========================================================================
+# RUNNER-AGNOSTIC TEST-PASS ASSERTS (task 5604). The two asserts below that
+# name the test pass accept BOTH runner spellings via the ERE alternation
+# `cargo (test|nextest run)`. verify.sh emits that pass from one of two
+# branches — scripts/verify.sh:1659 (cargo nextest run) and :1685 (cargo
+# test) — which share the same `${selector}${rel}` fragment, so the property
+# actually under test here (a --workspace pass exists and carries no
+# --exclude, i.e. OCCT is folded into the pool per task 4451) holds
+# identically on either path. Hard-coding `cargo nextest run` made the
+# positive half FAIL and the negative half pass VACUOUSLY on a nextest-less
+# host. Both halves use `grep -qE`: the alternation is ERE, so plain
+# `grep -q` would match the group literally. Host-independence of this suite
+# is pinned by S6 in test_verify_nextest_absent_suites.sh; runner identity
+# itself is pinned by the `nextest=N` plan header, which
+# test_verify_nextest_probe.sh owns.
 echo ""
 echo "--- Test 3: preservation — all expected components still present ---"
 
@@ -96,7 +110,7 @@ assert "merge test plan: gated OCCT pass ABSENT (task 4451: OCCT folded into nex
     bash -c '! printf "%s\n" "$1" | grep -q "cargo-test-occt-gated\.sh"' _ "$MERGE_TEST_PLAN"
 
 assert "merge test plan: nextest --workspace pass present, no --exclude (task 4451: OCCT in pool)" \
-    bash -c 'printf "%s\n" "$1" | grep -q "cargo nextest run --workspace" && ! printf "%s\n" "$1" | grep -qE "cargo nextest run --workspace.*--exclude"' _ "$MERGE_TEST_PLAN"
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace" && ! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace.*--exclude"' _ "$MERGE_TEST_PLAN"
 
 assert "all plan: contains cargo clippy (rust lint gate for action=all)" \
     bash -c 'printf "%s\n" "$1" | grep -q "cargo clippy"' _ "$ALL_PLAN"
@@ -114,7 +128,7 @@ assert "all plan: gated OCCT pass ABSENT (task 4451: OCCT folded into nextest po
     bash -c '! printf "%s\n" "$1" | grep -q "cargo-test-occt-gated\.sh"' _ "$ALL_PLAN"
 
 assert "all plan: nextest --workspace pass present, no --exclude (task 4451: OCCT in pool)" \
-    bash -c 'printf "%s\n" "$1" | grep -q "cargo nextest run --workspace" && ! printf "%s\n" "$1" | grep -qE "cargo nextest run --workspace.*--exclude"' _ "$ALL_PLAN"
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace" && ! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace.*--exclude"' _ "$ALL_PLAN"
 
 # ===========================================================================
 # Test 4: bounded overlap — action=all: node lane is BACKGROUNDED and joined
