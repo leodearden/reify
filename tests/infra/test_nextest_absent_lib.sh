@@ -54,8 +54,8 @@ _defines() {
     bash -c 'source "$1" && declare -F "$2" >/dev/null' _ "$LIB" "$1"
 }
 
-for _fn in nextest_absent_init nextest_absent_available nextest_absent_reason \
-           nx_run nx_which; do
+for _fn in nextest_absent_init nextest_absent_cleanup nextest_absent_available \
+           nextest_absent_reason nx_run nx_which; do
     assert "nextest_absent_lib.sh defines $_fn()" _defines "$_fn"
 done
 unset _fn
@@ -73,6 +73,16 @@ assert "double-sourcing nextest_absent_lib.sh is a no-op (guard works)" \
 # migrated call site — from passing while simulating nothing at all. A harness
 # that no longer hides cargo-nextest, or that "works" only by breaking the rest
 # of the toolchain, must fail HERE rather than silently reporting green.
+#
+# Delegated WHOLESALE to nextest_absent_assert_real rather than re-stated. An
+# earlier draft of this file open-coded H1-H5 here as _t3a.._t3e — the same
+# `! nx_which cargo-nextest`, the same executed `cargo`/`tree-sitter` version
+# probes, the same plan-header `case`, the same ambient skip arm. In the file
+# whose whole thesis is "four call sites hand-rolled the same harness, so
+# consolidate it", that was a fifth hand-rolled copy of the realness checks, free
+# to drift from the lib's (adding an H8 would have updated one and not the
+# other). Test 7 keeps the complementary job: pinning assert_real's COUNTER SHAPE
+# and proving it can actually fail.
 echo ""
 echo "--- Test 3: nextest_absent_init builds a genuine nextest-absent env ---"
 
@@ -81,9 +91,9 @@ VERIFY="$REPO_ROOT/scripts/verify.sh"
 # Is cargo-nextest installed AMBIENTLY? If not, this host IS already a
 # nextest-less host: the harness still works, but "the plan header WITHOUT the
 # harness reads nextest=1" — the check that pins the simulation as MEANINGFUL —
-# cannot hold, and asserting it would go RED with a failure that says nothing
-# about the property under test. So that arm is asserted only where
-# cargo-nextest really is installed, and skipped with a reason otherwise.
+# cannot hold. nextest_absent_assert_real makes that arm conditional on exactly
+# this condition; Test 7's expected counter shape has to agree with it, which is
+# why the probe stays here.
 NX_AMBIENT_HAS_NEXTEST=0
 if command -v cargo-nextest >/dev/null 2>&1; then
     NX_AMBIENT_HAS_NEXTEST=1
@@ -91,58 +101,16 @@ fi
 
 nextest_absent_init
 
-# (a) ABSENCE, correctly expressed as non-resolvability.
-_t3a() { ! nx_which cargo-nextest; }
-
-# (b)/(c) PRESENCE, and for that `command -v` is too weak: a harness that
-# perturbs more than intended can leave a tool resolvable-but-unrunnable (a
-# dangling symlink, a shim whose backing toolchain the harness has stranded),
-# and we would then be simulating "the toolchain is broken" rather than the
-# single intended variable "cargo-nextest is absent". So both are EXECUTED.
-# `env` performs its own PATH lookup with the environment it sets, so
-# `nx_run <tool> --version` subsumes the resolvability check rather than
-# replacing it.
-_t3b() { nx_run cargo --version; }
-_t3c() { nx_run tree-sitter --version; }
-
-# (d) The observable consequence the whole harness exists to produce.
-_t3d() {
-    local hdr
-    hdr="$(nextest_absent_plan_header "$VERIFY")"
-    printf '%s\n' "$hdr"
-    case "$hdr" in *"nextest=0"*) return 0 ;; *) return 1 ;; esac
-}
-_t3e() {
-    local hdr
-    hdr="$(nextest_absent_plan_header_ambient "$VERIFY")"
-    printf '%s\n' "$hdr"
-    case "$hdr" in *"nextest=1"*) return 0 ;; *) return 1 ;; esac
-}
-
-assert "3a: cargo-nextest is NOT resolvable under the constructed env" _t3a
-assert "3b: cargo still RUNS under the env (farm keeps the toolchain intact, not merely on PATH)" _t3b
-assert "3c: tree-sitter still RUNS under the env (not stripped along with the cargo bin dir)" _t3c
-assert "3d: verify.sh plan header reads nextest=0 UNDER the env" _t3d
-
-if [ "$NX_AMBIENT_HAS_NEXTEST" -eq 1 ]; then
-    assert "3e: verify.sh plan header reads nextest=1 WITHOUT the env (this host has cargo-nextest, so the simulation is meaningful)" _t3e
-else
-    echo "  SKIP: 3e (cargo-nextest is not installed ambiently on this host, so"
-    echo "        there is nothing for the farm to hide and 'nextest=1 without the"
-    echo "        env' cannot hold. 3a-3d still run — against a genuinely"
-    echo "        nextest-less host rather than a simulated one.)"
-fi
+nextest_absent_assert_real "$VERIFY"
 
 # -- Test 4: NEST-SAFETY — the assertion that protects the whole refactor ------
 #
 # test_verify_nextest_absent_suites.sh runs test_verify_semaphore_wiring.sh
-# INSIDE its own nextest-absent env (its assert S2, pass floor 22). Once both
-# are migrated, this lib runs inside ITSELF. Measured under the outer env:
-# ${CARGO_HOME:-$HOME/.cargo}/bin resolves to $NX_HOME/.cargo/bin, which does
-# NOT exist — so an implementation that treats "nothing to mirror" as a
-# host-precondition SKIP would make the nested semaphore_wiring emit
-# "Results: 0 passed, 0 failed", blow S2's floor of 22, and turn the outer
-# suite RED. S2's floor is a live tripwire on exactly this refactor.
+# INSIDE its own nextest-absent env (its assert S2, pass floor 22), so this lib
+# runs inside ITSELF. Asserts that a second nextest_absent_init from within an
+# already-constructed env still yields a usable simulation — the mirror-source
+# resolution chain and the empty-farm degrade that make that hold are documented
+# at nextest_absent_init in the lib.
 echo ""
 echo "--- Test 4: nest-safety (init from within an already-constructed env) ---"
 
@@ -191,15 +159,21 @@ assert "4a: a SECOND nextest_absent_init from inside an already-constructed env 
 # that cannot fail is exactly the vacuity it exists to prevent. So: make the
 # env genuinely NOT a nextest-absent simulation (put a reachable cargo-nextest
 # in the farm) and require that availability reports it, naming the conjunct.
+# The sabotage uses the lib's own presence-marker API rather than its own
+# printf/chmod — writing a second stub-installer here would be one more
+# hand-rolled copy of a construct the lib already owns, and it would keep passing
+# if the lib's version regressed.
 _t4_negative() {
     local rc=0
-    printf '#!/bin/sh\nexit 0\n' > "$NX_FARM/cargo-nextest"
-    chmod +x "$NX_FARM/cargo-nextest"
+    nextest_absent_farm_add_nextest_stub || {
+        echo "nextest_absent_farm_add_nextest_stub failed"
+        return 1
+    }
 
     # Sanity: the sabotage actually took effect on this PATH.
     if ! nx_which cargo-nextest >/dev/null; then
         echo "sabotage did not take: cargo-nextest still unreachable with a stub in the farm"
-        rm -f "$NX_FARM/cargo-nextest"
+        nextest_absent_farm_rm_nextest_stub
         return 1
     fi
 
@@ -219,7 +193,7 @@ _t4_negative() {
         esac
     fi
 
-    rm -f "$NX_FARM/cargo-nextest"
+    nextest_absent_farm_rm_nextest_stub
     # The env must be restored, or every later assert in this file inherits the
     # sabotage.
     if nx_which cargo-nextest >/dev/null; then
@@ -234,19 +208,14 @@ assert "4b: nextest_absent_available reports UNAVAILABLE (naming the conjunct) w
 
 # -- Test 5: toolchain hygiene -------------------------------------------------
 #
-# These exist because dropping them cost a MEASURED 935 MB download in 12
-# seconds (task 5599). On a rustup host `cargo` is a symlink to `rustup`, which
-# derives its toolchain store from $RUSTUP_HOME and falls back to
-# $HOME/.rustup — so redirecting HOME (element 3) without carrying RUSTUP_HOME
-# across (element 5) strands the shim and provokes a full toolchain sync into
-# the throwaway HOME on the first cargo invocation.
+# The two hygiene predicates as STANDALONE API (nextest_absent_assert_real
+# already runs them as H6/H7; these arms pin them as callable on their own), plus
+# the non-vacuity arms that no other test covers. Why they exist at all — the
+# stranded-rustup mechanism and the 935 MB measurement — is documented at
+# "Toolchain hygiene" in tests/infra/nextest_absent_lib.sh.
 #
 # Asserted AFTER Tests 3 and 4, so every check that actually exercises the env
 # with a real cargo invocation has already had its chance to provoke a sync.
-#
-# Two separate asserts because they fail differently: 5a names the exact
-# mechanism, 5b is the blunt backstop for any OTHER way the harness might start
-# writing into a directory it advertises as throwaway.
 echo ""
 echo "--- Test 5: the env does not perturb the toolchain (no rustup sync) ---"
 
@@ -502,6 +471,10 @@ assert "7c: nextest_available_ambient agrees with the ambient verify.sh plan hea
 # each turn exactly one green. A half-finished consolidation is then VISIBLE as
 # "3 of 4 asserts pass" rather than silently indistinguishable from a finished
 # one.
+#
+# IT IS A HEURISTIC, AND ITS LIMITS ARE ENUMERATED — see "KNOWN EVASIONS" beside
+# the patterns below. A green 8a-8d means "no re-accretion in the enumerated
+# shapes", not "no re-accretion".
 echo ""
 echo "--- Test 8: the three simulation call sites are consolidated onto the lib ---"
 
@@ -512,42 +485,75 @@ echo "--- Test 8: the three simulation call sites are consolidated onto the lib 
 # guard. Anything unmarked is a re-accretion.
 NX_ALLOW_MARKER='nextest-absent-lib:allow'
 
-# The re-accretion patterns — each names ONE construct the lib now owns, and
-# each is drawn from a line that was actually present in a call site before the
-# migration (measured at task 5602 HEAD=8cb994e2fc), so none of them is a
-# hypothetical:
+# The re-accretion patterns, in two tiers. Each names ONE construct the lib now
+# owns, and each is drawn from a line that was actually present in a call site
+# before the migration (measured at task 5602 HEAD=8cb994e2fc), so none of them
+# is a hypothetical.
 #
-#   PATH="...:/usr/bin:/bin"  the naive hermetic-PATH recipe. This is the one
-#                             that matters most: it is the recipe the lib's
-#                             header argues AGAINST (it strips the cargo bin dir
-#                             wholesale, taking tree-sitter with it), so a
-#                             re-accretion here does not merely duplicate the
-#                             harness, it duplicates the BROKEN harness.
-#                             (was: semaphore_wiring:186, probe:177)
-#   HOME="$..."               a bespoke temp-HOME redirect; nx_run owns this,
-#                             together with the CARGO_HOME unset and the
-#                             RUSTUP_HOME carry-across that must accompany it.
-#                             Anchored on a preceding line-start/space/`(` so it
-#                             does not match CARGO_HOME=/RUSTUP_HOME=/TMP_HOME=.
-#                             (was: semaphore_wiring:186, probe:176)
-#   ln -s                     a local symlink-farm loop.
-#                             (was: nextest_absent_suites:167)
-_NX_BESPOKE_RE='PATH="[^"]*:/usr/bin:/bin"|(^|[[:space:](])HOME="\$|ln -s '
+# TIER 1 — STRONG. The naive hermetic-PATH recipe, unambiguous on its own: no
+# code in this family builds `/usr/bin:/bin` as a whole PATH for any reason other
+# than a hermetic toolchain simulation. This is the pattern that matters most —
+# it is the recipe the lib's header argues AGAINST (it strips the cargo bin dir
+# wholesale, taking tree-sitter with it), so a re-accretion here does not merely
+# duplicate the harness, it duplicates the BROKEN one. Element order is accepted
+# either way round, since `/bin:/usr/bin` is the same recipe.
+# (was: semaphore_wiring:186, probe:177)
+_NX_BESPOKE_STRONG_RE='PATH="[^"]*(/usr/bin:/bin|/bin:/usr/bin)"'
+
+# TIER 2 — CONTEXT-KEYED. A temp-HOME redirect (nx_run owns this, together with
+# the CARGO_HOME unset and RUSTUP_HOME carry-across that must accompany it) and a
+# local symlink/copy farm loop. Both spellings are broadened past the three
+# literal forms the pre-migration files happened to use: `export HOME=`,
+# `env ... HOME=`, `ln -sf`/`ln -sfn` and `cp -s` are all counted.
+# (was: semaphore_wiring:186, probe:176, nextest_absent_suites:167)
+#
+# `HOME=` is anchored on a NON-IDENTIFIER preceding character so it does not
+# match CARGO_HOME= / RUSTUP_HOME= / TMP_HOME= / NX_HOME=.
+_NX_BESPOKE_CTX_RE='(^|[^A-Za-z0-9_])HOME=|(^|[^A-Za-z0-9_])(ln|cp)[[:space:]]+-[sfn]+[[:space:]]'
+
+# ...and the KEY that makes tier 2 a nextest-simulation detector rather than a
+# blanket ban. A tier-2 line counts only if it also mentions cargo/nextest/farm.
+# Without this, `ln -s` and `HOME=` match ANY symlink creation or HOME redirect:
+# test_verify_semaphore_wiring.sh already builds throwaway git repos in Sections
+# 2/3 and is one `HOME="$dir" git ...` away from a spurious RED on a change with
+# nothing to do with this harness. A false RED here is worse than a miss — it
+# teaches the next author that the guard is noise.
+_NX_BESPOKE_CTX_KEY_RE='cargo|nextest|farm'
+
+# KNOWN EVASIONS — read a green 8a-8d as "no re-accretion in the shapes below",
+# NOT as proof that none exists. This is a source scan, so it is defeated by any
+# spelling it does not enumerate: a farm loop built with `install`, `mkdir`+`for`
+# over `readlink`, or a Python/awk helper; a HOME redirect via `declare -x HOME`;
+# a hermetic PATH assembled from variables (`PATH="$S:$SYSBIN"`) or written
+# without the /usr/bin:/bin pair at all; and any tier-2 construct that avoids the
+# words cargo/nextest/farm on the matched line. The two-tier split is a
+# deliberate trade: tier 2 gives up those misses to buy immunity from the
+# false-positive class above. The durable guard against a full re-fork is the
+# sources-the-lib conjunct in _nx_is_consolidated, which no re-spelling evades.
 
 # _nx_bespoke_hits <path> — print `<lineno>:<line>` for every re-accretion.
 #
-# COMMENT-ONLY LINES ARE EXEMPT, and not as a convenience: step 14 keeps
-# test_verify_nextest_absent_suites.sh's WHY-NOT-THE-NAIVE-RECIPE prose, which
-# quotes `PATH="$STUB:/usr/bin:/bin"` verbatim in order to argue against it.
-# That prose is the reason the lib is shaped the way it is and must survive the
-# migration; flagging it would push the next author to delete the explanation
+# COMMENT-ONLY LINES ARE EXEMPT, and not as a convenience:
+# test_verify_nextest_absent_suites.sh keeps its WHY-NOT-THE-NAIVE-RECIPE prose,
+# which quotes `PATH="$STUB:/usr/bin:/bin"` verbatim in order to argue against
+# it. That prose is the reason the lib is shaped the way it is and must survive
+# the migration; flagging it would push the next author to delete the explanation
 # instead of the duplication. A comment cannot construct a harness, so dropping
 # comment-only lines costs the scan nothing.
 #
 # grep -n runs against the RAW file and the filtering happens after, so the
-# reported line numbers are the real ones a reader can jump to.
+# reported line numbers are the real ones a reader can jump to. Tier hits are
+# merged and deduped BY LINE NUMBER, so a line matching both tiers is reported
+# once.
 _nx_bespoke_hits() {
-    grep -nE "$_NX_BESPOKE_RE" "$1" \
+    local file="$1" merged=""
+    merged="$( {
+        grep -nE "$_NX_BESPOKE_STRONG_RE" "$file" || true
+        grep -nE "$_NX_BESPOKE_CTX_RE" "$file" | grep -iE "$_NX_BESPOKE_CTX_KEY_RE" || true
+    } | sort -t: -k1,1n -u )" || true
+
+    [ -n "$merged" ] || return 0
+    printf '%s\n' "$merged" \
         | grep -vE '^[0-9]+:[[:space:]]*#' \
         | grep -vF "$NX_ALLOW_MARKER" \
         || true
@@ -646,8 +652,10 @@ assert "8d: test_verify_retry_subset.sh delegates its ambient nextest probe to t
 NX_GUARD_DIR="$NX_WORKDIR/consolidation-guard-fixtures"
 mkdir -p "$NX_GUARD_DIR"
 
-# (e) The detector FIRES. Three fixtures, one per way a migration can be faked:
-# harness kept, lib not sourced, and farm loop kept.
+# (e) The detector FIRES. One fixture per way a migration can be faked:
+# harness kept, lib not sourced, farm loop kept — plus the RESPELLINGS the
+# original three-literal regex sailed past (`export HOME=`, `ln -sf`, and a
+# hermetic PATH with its elements reordered), which is what tightening bought.
 _t8e() {
     local rc=0 f
 
@@ -680,14 +688,42 @@ FIXTURE
         rc=1
     fi
 
-    [ "$rc" -eq 0 ] && echo "detector fires on all three fake-migration shapes"
+    # RESPELLINGS. Each line is the SAME re-accretion as one above, written a way
+    # the pre-amendment three-literal regex ('PATH="...:/usr/bin:/bin"',
+    # 'HOME="$', 'ln -s ') provably did NOT match — measured line by line at task
+    # 5602 amendment time, all five old=no / new=yes. Before the two-tier rewrite
+    # this fixture reported a clean green while carrying a full hand-rolled
+    # harness, which is the whole reason the guard needed tightening rather than
+    # just documenting.
+    f="$NX_GUARD_DIR/respelled.sh"
+    cat > "$f" <<'FIXTURE'
+source "$SCRIPT_DIR/nextest_absent_lib.sh"
+export HOME=$_TMP           # cargo must not find ~/.cargo/env
+env HOME=$_TMP CARGO_HOME= bash "$V" nextest
+ln -sf "$_e" "$_farm/cargo"
+cp -s "$_e" "$_farm/cargo-nextest"
+PATH="$_STUB:/bin:/usr/bin"
+FIXTURE
+    if _nx_is_consolidated "$f" >/dev/null 2>&1; then
+        echo "detector PASSED a hand-rolled harness spelled 'export HOME=' /"
+        echo "'env HOME=' / 'ln -sf' / 'cp -s' / reordered '/bin:/usr/bin' — five"
+        echo "spellings of the same re-accretion the original regex did not"
+        echo "enumerate, so it reported green on a harness that was fully back."
+        _nx_bespoke_hits "$f"
+        rc=1
+    fi
+
+    [ "$rc" -eq 0 ] && echo "detector fires on all four fake-migration shapes"
     return "$rc"
 }
 
-# (f) ...and does NOT fire on the two exemptions, which is the half that keeps
+# (f) ...and does NOT fire on the exemptions, which is the half that keeps
 # 8a-8d from being unsatisfiable-in-practice. Without the comment exemption the
 # only way to make 8a green would be to delete the WHY-NOT-THE-NAIVE-RECIPE
-# prose — i.e. the guard would destroy the explanation it depends on.
+# prose — i.e. the guard would destroy the explanation it depends on. And
+# without the tier-2 context key, an ordinary `HOME="$dir" git ...` in a
+# throwaway-repo fixture would go RED for a change with nothing to do with this
+# harness, which is how a guard trains its readers to ignore it.
 _t8f() {
     local rc=0 f
 
@@ -709,7 +745,7 @@ FIXTURE
     f="$NX_GUARD_DIR/escaped.sh"
     cat > "$f" <<FIXTURE
 source "\$SCRIPT_DIR/nextest_absent_lib.sh"
-OUT="\$(HOME="\$_T" bash "\$V")"  # $NX_ALLOW_MARKER — pins HOME-only behaviour
+OUT="\$(HOME="\$_T" cargo --version)"  # $NX_ALLOW_MARKER — pins HOME-only behaviour
 FIXTURE
     if ! _nx_is_consolidated "$f" >/dev/null 2>&1; then
         echo "detector FIRED on a line carrying the '$NX_ALLOW_MARKER' escape —"
@@ -718,11 +754,261 @@ FIXTURE
         rc=1
     fi
 
-    [ "$rc" -eq 0 ] && echo "comment prose and the allow-escape are both exempt"
+    # FALSE-POSITIVE IMMUNITY. This is the shape test_verify_semaphore_wiring.sh
+    # is one edit away from: Sections 2/3 build throwaway git repos, and a
+    # `HOME="$dir" git ...` there is a HOME redirect with nothing whatever to do
+    # with the nextest harness. Under a bare `HOME="$` pattern it would go RED.
+    f="$NX_GUARD_DIR/unrelated_home.sh"
+    cat > "$f" <<'FIXTURE'
+source "$SCRIPT_DIR/nextest_absent_lib.sh"
+dir="$(mktemp -d)"
+HOME="$dir" git init -q "$dir/repo"
+ln -s "$dir/repo/.git/config" "$dir/cfg"
+FIXTURE
+    if ! _nx_is_consolidated "$f" >/dev/null 2>&1; then
+        echo "detector FIRED on a HOME redirect and a symlink that have nothing to"
+        echo "do with the nextest harness (throwaway git repo). Tier 2 is not"
+        echo "context-keyed, so any unrelated change to a migrated suite can turn"
+        echo "this guard RED and teach the next author to delete it:"
+        _nx_bespoke_hits "$f"
+        rc=1
+    fi
+
+    [ "$rc" -eq 0 ] && echo "comment prose, the allow-escape and unrelated HOME/ln lines are all exempt"
     return "$rc"
 }
 
-assert "8e: the consolidation detector FIRES on a faked migration (kept harness / no source / kept farm)" _t8e
-assert "8f: the detector is exempt on comment-only prose and on '# $NX_ALLOW_MARKER' lines" _t8f
+assert "8e: the consolidation detector FIRES on a faked migration (kept harness / no source / kept farm / respellings)" _t8e
+assert "8f: the detector is exempt on comment-only prose, '# $NX_ALLOW_MARKER' lines, and unrelated HOME/ln lines" _t8f
+
+# -- Test 9: the plan header is located by CONTENT, not by position ------------
+#
+# nextest_absent_plan_header{,_ambient} used to extract the header with
+# `sed -n '1p'`. Measured today the header IS line 1 — so the bug this test pins
+# is LATENT, and latent is exactly when it is cheap to close: the day verify.sh
+# emits anything before it (a warning, a deprecation notice, an apply_env
+# diagnostic), positional extraction returns that line instead, every
+# `case ... nextest=1` rejects it, nextest_available_ambient reports "no nextest",
+# test_verify_retry_subset.sh sets NEXTEST_AVAILABLE=0 — and every assert behind
+# its guards is SILENTLY DROPPED. That is a vacuous green, the failure class this
+# whole task family exists to prevent, and it would announce itself nowhere.
+#
+# So the extraction is pointed at stub verify.sh scripts that print a preamble
+# line first, and required to find the header anyway.
+echo ""
+echo "--- Test 9: plan-header extraction survives a preamble line ---"
+
+NX_STUB_DIR="$NX_WORKDIR/header-stubs"
+mkdir -p "$NX_STUB_DIR"
+
+# $1 = path, $2 = the nextest digit to advertise. The preamble is deliberately
+# the FIRST line, which is the whole point.
+_nx_write_preamble_stub() {
+    cat > "$1" <<STUB
+#!/usr/bin/env bash
+echo "warning: apply_env — /etc/reify/env not readable, continuing"
+echo "# verify.sh plan — action=test profile=debug scope=all include_infra=0 nextest=$2 role=task"
+echo "# scope decision — RUN_RUST=1 RUN_GUI=1"
+STUB
+    chmod +x "$1"
+}
+
+NX_STUB_N0="$NX_STUB_DIR/verify_preamble_n0.sh"
+NX_STUB_N1="$NX_STUB_DIR/verify_preamble_n1.sh"
+NX_STUB_NOHDR="$NX_STUB_DIR/verify_no_header.sh"
+_nx_write_preamble_stub "$NX_STUB_N0" 0
+_nx_write_preamble_stub "$NX_STUB_N1" 1
+printf '#!/usr/bin/env bash\necho "warning: no plan was produced"\n' > "$NX_STUB_NOHDR"
+chmod +x "$NX_STUB_NOHDR"
+
+# (a)/(b) BOTH extractors — they are separate functions and a fix applied to one
+# only would leave the other positional.
+_t9a() {
+    local hdr; hdr="$(nextest_absent_plan_header "$NX_STUB_N0")"
+    printf 'header: %s\n' "$hdr"
+    case "$hdr" in "# verify.sh plan"*"nextest=0"*) return 0 ;; *) return 1 ;; esac
+}
+_t9b() {
+    local hdr; hdr="$(nextest_absent_plan_header_ambient "$NX_STUB_N1")"
+    printf 'header: %s\n' "$hdr"
+    case "$hdr" in "# verify.sh plan"*"nextest=1"*) return 0 ;; *) return 1 ;; esac
+}
+
+# (c) The consequence that actually matters: retry_subset's availability probe
+# must still answer correctly in BOTH directions through a preamble. One
+# direction alone is satisfied by a function hard-wired to that answer.
+_t9c() {
+    nextest_available_ambient "$NX_STUB_N1" || {
+        echo "nextest_available_ambient said NO on a preamble+nextest=1 plan —"
+        echo "every assert behind test_verify_retry_subset.sh's NEXTEST_AVAILABLE"
+        echo "guards would be silently dropped."
+        return 1
+    }
+    if nextest_available_ambient "$NX_STUB_N0"; then
+        echo "nextest_available_ambient said YES on a nextest=0 plan — it is not"
+        echo "reading the header at all, so its YES above proves nothing."
+        return 1
+    fi
+    return 0
+}
+
+# (d) No header at all -> empty, and reported as unavailable rather than
+# matching some unrelated line that happens to be present.
+_t9d() {
+    local hdr; hdr="$(nextest_absent_plan_header_ambient "$NX_STUB_NOHDR")"
+    printf 'header: [%s]\n' "$hdr"
+    [ -z "$hdr" ] || { echo "expected an empty header from a headerless plan"; return 1; }
+    ! nextest_available_ambient "$NX_STUB_NOHDR"
+}
+
+assert "9a: nextest_absent_plan_header finds the header behind a preamble line" _t9a
+assert "9b: nextest_absent_plan_header_ambient finds the header behind a preamble line" _t9b
+assert "9c: nextest_available_ambient answers correctly in BOTH directions through a preamble" _t9c
+assert "9d: a plan with no header yields an empty header and reports unavailable" _t9d
+
+# -- Test 10: trap ownership — the lib composes, it does not clobber -----------
+#
+# bash traps REPLACE rather than compose, so an unconditional
+# `trap 'rm -rf "$NX_WORKDIR"' EXIT` in nextest_absent_init silently disarms
+# whatever the sourcing suite had already registered. test_verify_semaphore_
+# wiring.sh registers `trap cleanup EXIT` for its throwaway git repos at suite
+# start — under the clobbering version those repos leaked unless that file
+# hand-patched around the lib, and the hand-patch in turn disarmed the LIB's
+# trap. Nothing covered either direction, so a regression in either shipped
+# green. These arms are that coverage.
+echo ""
+echo "--- Test 10: trap composition (handler registered before / after init) ---"
+
+NX_TRAP_DIR="$NX_WORKDIR/trap-probes"
+mkdir -p "$NX_TRAP_DIR"
+
+# (a) BEFORE init -> composed. Both handlers must fire, and the lib's teardown
+# must run FIRST (the caller's handler observes the workdir already gone), which
+# is what lets a caller's handler assume the lib has finished with it.
+NX_TRAP_BEFORE="$NX_TRAP_DIR/before.sh"
+cat > "$NX_TRAP_BEFORE" <<'TRAP_BEFORE'
+# argv: <repo-root> <marker-file>
+set -euo pipefail
+cd "$1"
+_m="$2"
+caller_cleanup() {
+    if [ -d "${NX_WORKDIR:-/nonexistent}" ]; then
+        echo "CALLER_SAW_WORKDIR" >> "$_m"
+    else
+        echo "CALLER_SAW_NO_WORKDIR" >> "$_m"
+    fi
+    echo "CALLER_RAN" >> "$_m"
+}
+trap caller_cleanup EXIT
+source tests/infra/nextest_absent_lib.sh
+nextest_absent_init
+echo "WORKDIR=$NX_WORKDIR" >> "$_m"
+TRAP_BEFORE
+
+_t10a() {
+    local m="$NX_TRAP_DIR/before.marker" wd rc=0
+    rm -f "$m"
+    bash "$NX_TRAP_BEFORE" "$REPO_ROOT" "$m" || { echo "probe exited non-zero"; return 1; }
+    cat "$m"
+
+    grep -q '^CALLER_RAN$' "$m" || {
+        echo "the caller's pre-init EXIT handler did NOT fire — nextest_absent_init"
+        echo "clobbered it instead of composing with it."
+        rc=1
+    }
+    grep -q '^CALLER_SAW_NO_WORKDIR$' "$m" || {
+        echo "the caller's handler ran while NX_WORKDIR still existed — the lib's"
+        echo "teardown is not sequenced before the composed handler."
+        rc=1
+    }
+    wd="$(sed -n 's/^WORKDIR=//p' "$m" | tail -1)"
+    [ -n "$wd" ] || { echo "probe never reported its workdir"; return 1; }
+    if [ -d "$wd" ]; then
+        echo "the lib's own workdir LEAKED: $wd"
+        rm -rf "$wd"
+        rc=1
+    fi
+    return "$rc"
+}
+
+# (b) AFTER init -> caller-owned, which is the documented half of the contract:
+# bash offers no retroactive compose, so the caller's handler replaces the
+# dispatcher and MUST call nextest_absent_cleanup. This arm pins that the exposed
+# function is what makes that possible — before it existed, the only recourse was
+# to reach into the lib's internals for NX_WORKDIR.
+NX_TRAP_AFTER="$NX_TRAP_DIR/after.sh"
+cat > "$NX_TRAP_AFTER" <<'TRAP_AFTER'
+# argv: <repo-root> <marker-file>
+set -euo pipefail
+cd "$1"
+_m="$2"
+source tests/infra/nextest_absent_lib.sh
+nextest_absent_init
+echo "WORKDIR=$NX_WORKDIR" >> "$_m"
+late_cleanup() { nextest_absent_cleanup; echo "LATE_RAN" >> "$_m"; }
+trap late_cleanup EXIT
+TRAP_AFTER
+
+_t10b() {
+    local m="$NX_TRAP_DIR/after.marker" wd rc=0
+    rm -f "$m"
+    bash "$NX_TRAP_AFTER" "$REPO_ROOT" "$m" || { echo "probe exited non-zero"; return 1; }
+    cat "$m"
+
+    grep -q '^LATE_RAN$' "$m" || { echo "the caller's post-init handler did not fire"; rc=1; }
+    wd="$(sed -n 's/^WORKDIR=//p' "$m" | tail -1)"
+    [ -n "$wd" ] || { echo "probe never reported its workdir"; return 1; }
+    if [ -d "$wd" ]; then
+        echo "nextest_absent_cleanup did not remove the workdir when called from a"
+        echo "caller-owned handler: $wd"
+        rm -rf "$wd"
+        rc=1
+    fi
+    return "$rc"
+}
+
+# (c) The composition is armed on ALL FOUR signals, not just EXIT — verify.sh
+# wraps infra tests in `timeout --kill-after`, so an outer kill must still tear
+# the temp tree down. Exercised by having the probe signal ITSELF: the caller's
+# EXIT-only handler is thereby upgraded to fire on TERM too.
+NX_TRAP_SIG="$NX_TRAP_DIR/signal.sh"
+cat > "$NX_TRAP_SIG" <<'TRAP_SIG'
+# argv: <repo-root> <marker-file>
+set -euo pipefail
+cd "$1"
+_m="$2"
+caller_cleanup() { echo "CALLER_RAN" >> "$_m"; }
+trap caller_cleanup EXIT
+source tests/infra/nextest_absent_lib.sh
+nextest_absent_init
+echo "WORKDIR=$NX_WORKDIR" >> "$_m"
+kill -TERM $$
+echo "RESUMED" >> "$_m"
+TRAP_SIG
+
+_t10c() {
+    local m="$NX_TRAP_DIR/signal.marker" wd rc=0
+    rm -f "$m"
+    bash "$NX_TRAP_SIG" "$REPO_ROOT" "$m" || true
+    cat "$m"
+
+    grep -q '^CALLER_RAN$' "$m" || {
+        echo "the caller's handler never fired on SIGTERM — the composed trap is"
+        echo "not armed on all four signals."
+        rc=1
+    }
+    wd="$(sed -n 's/^WORKDIR=//p' "$m" | tail -1)"
+    [ -n "$wd" ] || { echo "probe never reported its workdir"; return 1; }
+    if [ -d "$wd" ]; then
+        echo "SIGTERM left the workdir behind: $wd"
+        rm -rf "$wd"
+        rc=1
+    fi
+    return "$rc"
+}
+
+assert "10a: a handler registered BEFORE nextest_absent_init still fires, after the lib's own teardown" _t10a
+assert "10b: nextest_absent_cleanup lets a handler registered AFTER init tear the env down itself" _t10b
+assert "10c: the composed trap is armed on INT/TERM/HUP as well as EXIT" _t10c
 
 test_summary
