@@ -507,6 +507,54 @@ _wait_for_reader_lock() {
     return 1
 }
 
+# _wait_for_trash_rm_recorded <calls-file> <deadline-seconds> (task #5633)
+# Causal ordering (technique R, docs/prds/infra-test-wallclock-deflake.md),
+# same tick cadence/deadline arithmetic as _wait_for_reader_lock above:
+# returns 0 as soon as <calls-file> contains a line that both starts with
+# "rm " and mentions a trash path -- matching the SAME two globs the PIN/
+# SLEEP rm stubs match (L371/L391: */.reseed-trash/* for the pool-level
+# sibling, *target.reseed-trash.* for the legacy in-lane layout), so the
+# recorder and this waiter cannot drift apart. A timeout is a REAL signal,
+# not noise: it means the detached rm was NOT the stub -- a real /bin/rm
+# records nothing -- which is exactly the #5633 failure mode Block T's T2
+# guards against.
+_wait_for_trash_rm_recorded() {
+    local calls_file="$1"
+    local deadline_s="$2"
+    local max_ticks=$(( deadline_s * 20 ))
+    local tick=0
+    local line
+    while [ "$tick" -lt "$max_ticks" ]; do
+        if [ -f "$calls_file" ]; then
+            while IFS= read -r line; do
+                case "$line" in
+                    "rm "*"target.reseed-trash."*|"rm "*"/.reseed-trash/"*) return 0 ;;
+                esac
+            done < "$calls_file"
+        fi
+        sleep 0.05
+        tick=$(( tick + 1 ))
+    done
+    return 1
+}
+
+# _wait_for_path_gone <path> <deadline-seconds> (task #5633)
+# Causal ordering (technique R), same tick cadence/deadline arithmetic as
+# _wait_for_reader_lock above: returns 0 once <path> no longer exists
+# (`[ ! -e "$path" ]`), 1 on timeout.
+_wait_for_path_gone() {
+    local path="$1"
+    local deadline_s="$2"
+    local max_ticks=$(( deadline_s * 20 ))
+    local tick=0
+    while [ "$tick" -lt "$max_ticks" ]; do
+        [ ! -e "$path" ] && return 0
+        sleep 0.05
+        tick=$(( tick + 1 ))
+    done
+    return 1
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block A — CLI guard
 # ─────────────────────────────────────────────────────────────────────────────
