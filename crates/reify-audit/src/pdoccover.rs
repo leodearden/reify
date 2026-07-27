@@ -1757,6 +1757,170 @@ occurrence def STEPOutput : Output {
         );
     }
 
+    // -------------------------------------------------------------------
+    // chunk_call_mentions — what a chunk CLAIMS the compiler provides
+    //
+    // Format-agnostic by construction: no heading, fence-tag or table
+    // awareness anywhere. That is not laziness — it is what makes the
+    // extractor survive a chunk reformat, and what makes the step-17 drift
+    // guard satisfiable at all. A markdown-structure-aware extractor would go
+    // silently blind the first time someone reflowed a table.
+    // -------------------------------------------------------------------
+
+    /// Names only, dropping line numbers.
+    fn mention_names(content: &str) -> Vec<String> {
+        chunk_call_mentions(content)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect()
+    }
+
+    /// The canonical shape: a call in an inline code span.
+    #[test]
+    fn mentions_inline_code_span_call() {
+        let hits = chunk_call_mentions("- `offset_surface(surface, distance)` — offsets.\n");
+        assert_eq!(
+            hits,
+            vec![("offset_surface".to_string(), 1)],
+            "an inline code-span call is a documented API claim"
+        );
+    }
+
+    /// The real `stdlib.md` shape — several calls on one bold-prefixed line.
+    /// All of them are claims, and all report that line.
+    #[test]
+    fn mentions_several_calls_on_one_line() {
+        let hits = chunk_call_mentions(
+            "intro\n**Modify:** `fillet(edges, r)`, `chamfer(edges, d)`, `shell(solid, t)`\n",
+        );
+        assert_eq!(
+            hits,
+            vec![
+                ("fillet".to_string(), 2),
+                ("chamfer".to_string(), 2),
+                ("shell".to_string(), 2),
+            ],
+            "every call on the line is a separate claim, all at that line"
+        );
+    }
+
+    /// Fenced blocks are the densest source of claims. Fence tag and
+    /// indentation are both irrelevant — the extractor never looks at them.
+    #[test]
+    fn mentions_calls_inside_fences_of_any_tag_or_indent() {
+        let content = "\
+```reify
+let s = extrude(profile, 10mm)
+```
+
+```reify-schematic
+node_at(grid, 3)
+```
+
+    ```
+    indented_fence_call(x)
+    ```
+";
+        let names = mention_names(content);
+        for want in ["extrude", "node_at", "indented_fence_call"] {
+            assert!(
+                names.contains(&want.to_string()),
+                "{want:?} missing — fence tag/indent must not affect \
+                 extraction; got {names:?}"
+            );
+        }
+    }
+
+    /// Table cells and ATX headings are ordinary text to this scanner.
+    #[test]
+    fn mentions_calls_in_table_cells_and_headings() {
+        let content = "\
+## `revolve(profile, axis, angle)`
+
+| Call | Meaning |
+|---|---|
+| `loft(sections)` | lofted solid |
+";
+        let names = mention_names(content);
+        for want in ["revolve", "loft"] {
+            assert!(
+                names.contains(&want.to_string()),
+                "{want:?} missing from {names:?}"
+            );
+        }
+    }
+
+    /// CRLF chunks behave identically to LF ones — a line-ending difference
+    /// must never change what the detector reports.
+    #[test]
+    fn mentions_are_line_ending_agnostic() {
+        let lf = "intro\n- `fillet(edges, r)` — rounds.\n";
+        let crlf = "intro\r\n- `fillet(edges, r)` — rounds.\r\n";
+        assert_eq!(
+            chunk_call_mentions(crlf),
+            chunk_call_mentions(lf),
+            "CRLF and LF must produce identical mentions"
+        );
+        assert_eq!(chunk_call_mentions(lf), vec![("fillet".to_string(), 2)]);
+    }
+
+    /// A backticked token with NO parens is a type, module, constant or unit —
+    /// not a call. Flagging those would flood the lane with noise from every
+    /// prose mention of `Angle` or `pi`.
+    #[test]
+    fn mentions_ignore_backticked_tokens_without_parens() {
+        let content = "\
+Import `std.math`. An `Angle` may be `Option` or `pi`.
+See the section on booleans (union, difference) below.
+";
+        assert!(
+            chunk_call_mentions(content).is_empty(),
+            "only call-SHAPED mentions are claims; got {:?}",
+            chunk_call_mentions(content)
+        );
+    }
+
+    /// `.method(` is member access on a value, not a builtin call — the
+    /// fabrication lane has no oracle for methods and would false-positive on
+    /// every one of them.
+    #[test]
+    fn mentions_ignore_method_call_form() {
+        let hits = chunk_call_mentions("- `solid.volume()` and `p.distance_to(q)`\n");
+        assert!(
+            hits.is_empty(),
+            "a leading `.` marks member access, not a builtin; got {hits:?}"
+        );
+    }
+
+    /// The chunk-side escape hatch: a line carrying a well-formed
+    /// `pdoccover:allow — <reason>` documents something deliberately ahead of
+    /// the implementation, and its claims are suppressed.
+    #[test]
+    fn mentions_suppressed_by_well_formed_allow_marker() {
+        let content = "\
+- `planned_op(x)` <!-- pdoccover:allow — planned, see #5434 -->
+- `real_op(x)`
+";
+        assert_eq!(
+            mention_names(content),
+            vec!["real_op".to_string()],
+            "the allow-marked line is suppressed, the next line is not"
+        );
+    }
+
+    /// …but ONLY when the marker carries a reason. A reasonless marker must
+    /// leave the mention visible, so the caller can report the malformed
+    /// marker instead of silently honouring it (PRD design decision 7).
+    #[test]
+    fn mentions_not_suppressed_by_reasonless_allow_marker() {
+        let content = "- `planned_op(x)` <!-- pdoccover:allow -->\n";
+        assert_eq!(
+            mention_names(content),
+            vec!["planned_op".to_string()],
+            "a reasonless marker suppresses nothing — it is itself the defect"
+        );
+    }
+
     /// The oracle reads only sources that can carry a declaration.
     #[test]
     fn oracle_scope_covers_compiler_stdlib_rust_and_ri_sources() {
