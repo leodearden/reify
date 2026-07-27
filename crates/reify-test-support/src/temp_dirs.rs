@@ -162,4 +162,150 @@ mod tests {
              {prefix:?} so surviving debris names the test that made it"
         );
     }
+
+    // ── find_unguarded_temp_dir_sites ────────────────────────────────────────
+    //
+    // Every synthetic source below assembles the guarded call at runtime via
+    // `.concat()` — the `ignore_hygiene.rs` convention — so this file does not
+    // contain the literal adjacent sequence and cannot self-trigger.  (It
+    // legitimately calls the real thing in the attribution test above.)
+
+    /// The needle, assembled so it never appears literally in this file.
+    fn guarded_call() -> String {
+        ["env", "::temp_dir()"].concat()
+    }
+
+    /// (1) The `std::`-qualified form — what all five migrating files use today.
+    #[test]
+    fn fnuts_flags_std_qualified_call() {
+        let call = guarded_call();
+        let src = format!("    let dir = std::{call}.join(\"reify_test\");\n");
+        let violations = find_unguarded_temp_dir_sites(&src);
+        assert_eq!(
+            violations.len(),
+            1,
+            "expected exactly one violation, got: {violations:?}"
+        );
+        assert!(
+            violations[0].contains("line 1"),
+            "violation should cite the line number: {:?}",
+            violations[0]
+        );
+        assert!(
+            violations[0].contains(&call),
+            "violation should quote the offending line: {:?}",
+            violations[0]
+        );
+    }
+
+    /// (2) The bare form.  No file uses it today, but a future `use std::env;`
+    /// shortening must not silently escape the guard.
+    #[test]
+    fn fnuts_flags_bare_call() {
+        let call = guarded_call();
+        let src = format!("    let dir = {call};\n");
+        assert_eq!(
+            find_unguarded_temp_dir_sites(&src).len(),
+            1,
+            "the bare `env::temp_dir()` form must be flagged too"
+        );
+    }
+
+    /// (3) Doc-comment lines that merely mention the call in prose are skipped,
+    /// mirroring `is_doc_comment_line` in `ignore_hygiene.rs`.  Both the `///`
+    /// and `//!` arms are pinned so neither can be dropped silently.
+    #[test]
+    fn fnuts_skips_doc_comment_prose() {
+        let call = guarded_call();
+        let src = format!(
+            "/// Historically this built a dir under {call} by hand.\n\
+             //! See {call} for the pre-guard idiom.\n\
+             \x20   /// indented mention of {call}\n"
+        );
+        let violations = find_unguarded_temp_dir_sites(&src);
+        assert!(
+            violations.is_empty(),
+            "doc-comment prose must not fire, got: {violations:?}"
+        );
+    }
+
+    /// (4) The `// temp-dir:allow — reason` escape, mirroring the house
+    /// `// ptodo:allow — reason` convention in CLAUDE.md.
+    #[test]
+    fn fnuts_honours_the_allow_escape() {
+        let call = guarded_call();
+        let src = format!(
+            "    let base = {call}; // temp-dir:allow — this IS the guard's own impl\n"
+        );
+        let violations = find_unguarded_temp_dir_sites(&src);
+        assert!(
+            violations.is_empty(),
+            "an explicit `temp-dir:allow` escape must suppress the violation, got: {violations:?}"
+        );
+    }
+
+    /// (5) Clean source → empty Vec.  Pins the no-match contract.
+    #[test]
+    fn fnuts_clean_source_returns_empty_vec() {
+        assert!(find_unguarded_temp_dir_sites("").is_empty());
+        assert!(
+            find_unguarded_temp_dir_sites("fn main() {}\nlet x = 1;\n").is_empty(),
+            "source with no temp-dir call must be clean"
+        );
+    }
+
+    /// (6) Line numbers are 1-based, and EVERY hit is collected — the scanner
+    /// must not stop at the first.  `m5_integration.rs` has two sites and
+    /// `server.rs` has nine; a first-hit-only scanner would under-report both
+    /// and make those ratchet steps look half-done.
+    #[test]
+    fn fnuts_reports_every_hit_with_one_based_line_numbers() {
+        let call = guarded_call();
+        let src = format!(
+            "fn a() {{}}\n\
+             fn b() {{}}\n\
+             \x20   let first = std::{call};\n\
+             fn c() {{}}\n\
+             \x20   let second = std::{call};\n"
+        );
+        let violations = find_unguarded_temp_dir_sites(&src);
+        assert_eq!(
+            violations.len(),
+            2,
+            "both sites must be reported, not just the first: {violations:?}"
+        );
+        assert!(
+            violations[0].contains("line 3"),
+            "first hit is on line 3 (1-based): {:?}",
+            violations[0]
+        );
+        assert!(
+            violations[1].contains("line 5"),
+            "second hit is on line 5 (1-based): {:?}",
+            violations[1]
+        );
+    }
+
+    // ── assert_no_unguarded_temp_dir_sites ───────────────────────────────────
+
+    /// An unreadable target must fail LOUDLY, naming the absolute path it
+    /// tried.  Without this, a future file move would silently turn every
+    /// ratchet guard into a vacuous pass.
+    #[test]
+    fn anuts_unreadable_file_panics_naming_the_absolute_path() {
+        let rel = "crates/reify-test-support/definitely-not-a-real-file.rs";
+        let err = std::panic::catch_unwind(|| assert_no_unguarded_temp_dir_sites(rel))
+            .expect_err("scanning a nonexistent file must panic, not pass vacuously");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or("<non-string panic payload>")
+            .to_string();
+        assert!(
+            msg.contains(&format!("/{rel}")),
+            "the panic must name the ABSOLUTE path it attempted (repo root + \
+             {rel:?}), so a moved file is obvious; got: {msg:?}"
+        );
+    }
 }
