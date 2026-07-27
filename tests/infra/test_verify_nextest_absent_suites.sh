@@ -51,37 +51,21 @@
 # harness the acceptance target ("0 FAIL") is unreachable, and the confound is
 # invisible unless you already know where tree-sitter lives.
 #
-# HARNESS ACTUALLY USED — tests/infra/nextest_absent_lib.sh (task 5602).
-#
-# The five load-bearing elements first established HERE (symlink farm mirroring
-# the cargo bin dir MINUS cargo-nextest; PATH = farm : real-PATH-with-that-dir-
-# filtered-out; temp HOME so verify.sh's apply_env() finds no $HOME/.cargo/env;
-# CARGO_HOME deliberately unset because cargo resolves `cargo-<subcmd>` from
-# $CARGO_HOME/bin in ADDITION to PATH; RUSTUP_HOME carried across, resolved
-# while HOME is still real, or the stranded rustup shim downloads a whole fresh
-# toolchain) were lifted VERBATIM into that lib, together with the measurements
-# that justify each one. This file is the lib's origin rather than a client that
-# adopted it, so the simulation it runs under is unchanged — it is now shared
-# with the two other suites that had each hand-rolled the same thing.
+# HARNESS ACTUALLY USED — tests/infra/nextest_absent_lib.sh (task 5602). Its
+# five load-bearing elements, and the measurements that justify each one, were
+# lifted VERBATIM out of this file into that lib's header, which is now the
+# single source of truth for the mechanism — restating them here would leave two
+# prose sites to keep in sync and no gate that notices when they drift. This file
+# is the lib's ORIGIN, not a client that adopted it: the simulation it runs under
+# is unchanged, it is merely now shared with the two other suites that had each
+# hand-rolled the same thing.
 #
 # NON-VACUITY SELF-CHECKS. Before covering any suite, the harness is checked
-# against itself — nextest_absent_assert_real emits the same H1-H7 this file
-# used to open-code, in the same order: cargo-nextest must be genuinely
-# unreachable under it, `cargo` and `tree-sitter` must both still RUN under it
-# (executability, not merely `command -v` resolvability — a harness where cargo
-# resolves but cannot actually execute would be simulating "the toolchain is
-# broken" rather than the intended single variable), the plan header under it
-# must read nextest=0, the plan header WITHOUT it must read nextest=1, and the
-# harness must not have perturbed the toolchain enough to provoke a rustup
-# toolchain sync into its temp HOME. Without these a broken harness (e.g. one
-# that no longer hides cargo-nextest) would let this whole suite pass while
-# simulating nothing at all — or would "work" only by breaking something other
-# than nextest.
-#
-# The harness idiom itself came from tests/infra/test_verify_nextest_probe.sh
-# (temp HOME + PATH shim dir + cleanup trap), substituting the symlink farm for
-# the bare stub dir per the tree-sitter confound above; that suite now sources
-# the same lib, which is what task 5602 consolidated.
+# against itself: nextest_absent_assert_real emits the same H1-H7 this file used
+# to open-code, in the same order (see the lib). Without these, a broken harness
+# — one that no longer hides cargo-nextest, or that "works" only by breaking
+# something other than nextest — would let this whole suite pass while simulating
+# nothing at all.
 #
 # Compile-free with respect to THIS file's own harness (verify.sh --print-plan
 # is pure bash string-building); the nested suites do whatever they already do.

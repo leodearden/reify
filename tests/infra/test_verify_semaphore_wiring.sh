@@ -187,14 +187,15 @@ assert "task plan: all test passes fall BETWEEN acquire and release markers" \
 # with only cargo-nextest hidden, so verify.sh:1412 takes the NEXTEST=0 branch
 # for exactly the intended reason.
 #
-# nextest_absent_init installs its own EXIT/INT/TERM/HUP trap for its workdir,
-# and bash traps REPLACE rather than compose — so it would silently disarm this
-# file's `trap cleanup EXIT` and leak Section 2's throwaway repos. Hand its
-# workdir to this file's own cleanup list and re-arm, which also upgrades this
-# file's trap to the same four signals.
+# This file registers `trap cleanup EXIT` at line 24, BEFORE the init below —
+# which is the half of the lib's trap contract that composes: nextest_absent_init
+# stashes that handler and arms a dispatcher running its own teardown and then
+# this file's cleanup, on EXIT/INT/TERM/HUP. So Section 2/3's throwaway repos are
+# still removed, this file's trap is upgraded from bare EXIT to all four signals,
+# and NX_WORKDIR needs no hand-patching onto _TMPDIRS. Anything registered AFTER
+# this point would be caller-owned and would have to call nextest_absent_cleanup
+# itself — this file registers nothing after it.
 nextest_absent_init
-_TMPDIRS+=("$NX_WORKDIR")
-trap cleanup EXIT INT TERM HUP
 
 # Deliberately NOT guarded on nextest_absent_available. If the simulation cannot
 # be built this assert must go RED, not skip: (1q) is meaningless without it, and

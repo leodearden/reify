@@ -59,6 +59,11 @@
 # Its unit tests live in tests/infra/test_nextest_absent_lib.sh, which DOES
 # match and DOES carry a manifest row.
 #
+# TRAPS. nextest_absent_init COMPOSES with a handler the caller registered
+# BEFORE it (both fire, on EXIT/INT/TERM/HUP); a handler registered AFTER it is
+# caller-owned and must call nextest_absent_cleanup itself. Full contract at
+# "TRAP OWNERSHIP" below.
+#
 # Usage:
 #   [ -f "$SCRIPT_DIR/nextest_absent_lib.sh" ] || { echo "ERROR: nextest_absent_lib.sh not found"; exit 1; }
 #   source "$SCRIPT_DIR/nextest_absent_lib.sh"
@@ -83,6 +88,13 @@ NX_FARM=""
 NX_HOME=""
 NX_PATH=""
 NX_RUSTUP_HOME=""
+
+# Handler that was registered for each signal BEFORE nextest_absent_init armed
+# its own — replayed by _nextest_absent_trap_dispatch. See "TRAP OWNERSHIP".
+_NEXTEST_ABSENT_PREV_EXIT=""
+_NEXTEST_ABSENT_PREV_INT=""
+_NEXTEST_ABSENT_PREV_TERM=""
+_NEXTEST_ABSENT_PREV_HUP=""
 
 # Default path to the script under observation, resolved from THIS file's own
 # location so a caller need not thread it through. Overridable per-call (first
@@ -130,6 +142,96 @@ _nextest_absent_mirror_source() {
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# TRAP OWNERSHIP — the lib composes, it does not clobber.
+#
+# bash traps REPLACE rather than compose, so a bare
+# `trap 'rm -rf "$NX_WORKDIR"' EXIT` inside nextest_absent_init would silently
+# disarm whatever the sourcing suite had already registered. That is not
+# hypothetical: test_verify_semaphore_wiring.sh registers `trap cleanup EXIT` at
+# suite start for its throwaway git repos, and before this composition existed it
+# had to hand-patch around the lib (push NX_WORKDIR onto its own list, then
+# re-arm its own trap — which in turn disarmed the LIB's, so the arrangement only
+# worked because the workaround was written just so).
+#
+# The contract, in two halves:
+#
+#   (a) A handler registered BEFORE nextest_absent_init is COMPOSED — init
+#       stashes it and arms a dispatcher that runs nextest_absent_cleanup first,
+#       then replays the stashed handler. Both fire, on all four signals (the
+#       caller's handler is thereby upgraded to EXIT/INT/TERM/HUP even if it only
+#       asked for EXIT).
+#
+#   (b) A handler registered AFTER nextest_absent_init is CALLER-OWNED: bash
+#       gives the lib no hook to compose retroactively, so that handler replaces
+#       the dispatcher and MUST call nextest_absent_cleanup itself (or the temp
+#       tree leaks). nextest_absent_cleanup is exported for exactly this, and is
+#       idempotent so calling it from several handlers is safe.
+# ---------------------------------------------------------------------------
+
+# nextest_absent_cleanup — tear the constructed env down. Idempotent, and safe
+# to call when no env was ever built.
+nextest_absent_cleanup() {
+    if [ -n "$NX_WORKDIR" ] && [ -d "$NX_WORKDIR" ]; then
+        rm -rf "$NX_WORKDIR"
+    fi
+    return 0
+}
+
+# _nextest_absent_trap_body <sig> — print the handler currently registered for
+# <sig>, unquoted, or nothing.
+#
+# `eval "parts=($spec)"` rather than string-surgery on `trap -p`'s output:
+# `trap -p` emits a shell-QUOTED form (`trap -- 'rm -rf "$d"' EXIT`), so letting
+# bash re-parse its own quoting is the only extraction that survives a handler
+# containing spaces, quotes or semicolons. Verified that `trap -p` inside a
+# command substitution reports the PARENT shell's handlers rather than the
+# subshell's reset ones.
+_nextest_absent_trap_body() {
+    local spec
+    spec="$(trap -p "$1")"
+    [ -n "$spec" ] || return 0
+    local -a parts=()
+    eval "parts=($spec)" 2>/dev/null || return 0
+    printf '%s' "${parts[2]:-}"
+}
+
+# _nextest_absent_trap_dispatch <sig> — the composed handler: lib teardown
+# first, then the caller's stashed handler.
+#
+# Signals are deliberately NOT re-raised after the handler runs, matching the
+# behaviour of the plain `trap 'rm -rf ...' EXIT INT TERM HUP` this replaces.
+_nextest_absent_trap_dispatch() {
+    local sig="$1" prev=""
+    nextest_absent_cleanup
+    eval "prev=\"\${_NEXTEST_ABSENT_PREV_${sig}:-}\""
+    if [ -n "$prev" ]; then
+        eval "$prev" || true
+    fi
+    return 0
+}
+
+# _nextest_absent_arm_traps — stash-and-compose on all four signals.
+#
+# INT/TERM/HUP as well as EXIT: verify.sh wraps each selected infra test in
+# `timeout --kill-after=60 <n>m` and run_all.sh applies a 30m cap, so an outer
+# timeout kill would otherwise leak the whole temp tree.
+_nextest_absent_arm_traps() {
+    local sig prev
+    for sig in EXIT INT TERM HUP; do
+        prev="$(_nextest_absent_trap_body "$sig")"
+        case "$prev" in
+            # Already ours — a re-init in the same shell. Leave the ORIGINAL
+            # caller handler stashed rather than nesting the dispatcher inside
+            # itself (which would run the caller's handler once per init).
+            _nextest_absent_trap_dispatch*) continue ;;
+        esac
+        printf -v "_NEXTEST_ABSENT_PREV_${sig}" '%s' "$prev"
+        # shellcheck disable=SC2064  # $sig must expand NOW, not at trap time
+        trap "_nextest_absent_trap_dispatch $sig" "$sig"
+    done
+}
+
 nextest_absent_init() {
     local mirror_src
 
@@ -168,17 +270,15 @@ nextest_absent_init() {
     [ -d "$NX_RUSTUP_HOME" ] || NX_RUSTUP_HOME=""
 
     # Tear down a previous env before replacing the variable the trap reads.
-    [ -n "$NX_WORKDIR" ] && [ -d "$NX_WORKDIR" ] && rm -rf "$NX_WORKDIR"
+    nextest_absent_cleanup
 
     NX_WORKDIR="$(mktemp -d)"
     NX_FARM="$NX_WORKDIR/cargo-bin-farm"
     NX_HOME="$NX_WORKDIR/home"
     mkdir -p "$NX_FARM" "$NX_HOME"
 
-    # INT/TERM/HUP as well as EXIT: verify.sh wraps each selected infra test in
-    # `timeout --kill-after=60 <n>m` and run_all.sh applies a 30m cap, so an
-    # outer timeout kill would otherwise leak the whole temp tree.
-    trap 'rm -rf "$NX_WORKDIR"' EXIT INT TERM HUP
+    # Compose rather than clobber — see "TRAP OWNERSHIP" above.
+    _nextest_absent_arm_traps
 
     # Element (1). Mirror every mirror_src entry into the farm EXCEPT
     # cargo-nextest — its absence from the farm IS the simulation.
@@ -303,30 +403,44 @@ nextest_absent_reason() { printf '%s\n' "$_NEXTEST_ABSENT_REASON"; }
 # H6/H7 come LAST so that every check which actually exercises the env (H2, H3,
 # H4 — H5 is deliberately ambient) has already had its chance to provoke a
 # toolchain sync before hygiene is measured.
+
+# H1-H5 as file-scope, SELF-CONTAINED predicates.
+#
+# Defined here rather than nested inside nextest_absent_assert_real for two
+# reasons. (a) bash installs a nested function GLOBALLY once its enclosing
+# function runs, so nesting bought no privacy — it only delayed the definition
+# and invited a name collision under a generic prefix. (b) H4/H5 need the
+# verify.sh path: taking it as an explicit "$1" keeps them callable from
+# anywhere, whereas reading a `local` of the enclosing function relies on
+# dynamic scoping and would abort a `set -u` caller with an unbound-variable
+# error — a crash rather than a test failure — the moment either is invoked on
+# its own.
+_nextest_absent_h1() { ! nx_which cargo-nextest; }
+_nextest_absent_h2() { nx_run cargo --version; }
+_nextest_absent_h3() { nx_run tree-sitter --version; }
+
+_nextest_absent_h4() {
+    local hdr; hdr="$(nextest_absent_plan_header "${1:-$NEXTEST_ABSENT_VERIFY}")"
+    printf '%s\n' "$hdr"
+    case "$hdr" in *"nextest=0"*) return 0 ;; *) return 1 ;; esac
+}
+
+_nextest_absent_h5() {
+    local hdr; hdr="$(nextest_absent_plan_header_ambient "${1:-$NEXTEST_ABSENT_VERIFY}")"
+    printf '%s\n' "$hdr"
+    case "$hdr" in *"nextest=1"*) return 0 ;; *) return 1 ;; esac
+}
+
 nextest_absent_assert_real() {
     local verify="${1:-$NEXTEST_ABSENT_VERIFY}"
 
-    _nxar_h1() { ! nx_which cargo-nextest; }
-    _nxar_h2() { nx_run cargo --version; }
-    _nxar_h3() { nx_run tree-sitter --version; }
-    _nxar_h4() {
-        local hdr; hdr="$(nextest_absent_plan_header "$verify")"
-        printf '%s\n' "$hdr"
-        case "$hdr" in *"nextest=0"*) return 0 ;; *) return 1 ;; esac
-    }
-    _nxar_h5() {
-        local hdr; hdr="$(nextest_absent_plan_header_ambient "$verify")"
-        printf '%s\n' "$hdr"
-        case "$hdr" in *"nextest=1"*) return 0 ;; *) return 1 ;; esac
-    }
-
-    assert "H1: cargo-nextest is NOT resolvable under the nextest-absent harness env" _nxar_h1
-    assert "H2: cargo still RUNS under the harness env (farm keeps the toolchain intact, not merely on PATH)" _nxar_h2
-    assert "H3: tree-sitter still RUNS under the harness env (not stripped with ~/.cargo/bin)" _nxar_h3
-    assert "H4: verify.sh plan header reads nextest=0 UNDER the harness" _nxar_h4
+    assert "H1: cargo-nextest is NOT resolvable under the nextest-absent harness env" _nextest_absent_h1
+    assert "H2: cargo still RUNS under the harness env (farm keeps the toolchain intact, not merely on PATH)" _nextest_absent_h2
+    assert "H3: tree-sitter still RUNS under the harness env (not stripped with ~/.cargo/bin)" _nextest_absent_h3
+    assert "H4: verify.sh plan header reads nextest=0 UNDER the harness" _nextest_absent_h4 "$verify"
 
     if command -v cargo-nextest >/dev/null 2>&1; then
-        assert "H5: verify.sh plan header reads nextest=1 WITHOUT the harness (this host has cargo-nextest, so the simulation is meaningful)" _nxar_h5
+        assert "H5: verify.sh plan header reads nextest=1 WITHOUT the harness (this host has cargo-nextest, so the simulation is meaningful)" _nextest_absent_h5 "$verify"
     else
         echo "  SKIP: H5 (harness unavailable on this host: cargo-nextest is not installed"
         echo "        ambiently, so there is nothing for the farm to hide and 'nextest=1"
@@ -483,16 +597,34 @@ nextest_absent_home_is_small() {
 # The capture is guarded with `|| true` so a verify.sh hiccup yields an empty
 # header — which every caller's `case` rejects — rather than aborting a `set -e`
 # caller mid-suite with no Results line at all.
+
+# _nextest_absent_header_of <plan> — pick the plan header out of a captured plan.
+#
+# CONTENT-KEYED, NOT POSITIONAL. `sed -n '1p'` would be silently wrong the moment
+# verify.sh emits anything at all before the header on stdout — a warning, a
+# deprecation notice, an apply_env diagnostic. The failure would not be loud:
+# nextest_available_ambient would start returning non-zero, test_verify_retry_
+# subset.sh would set NEXTEST_AVAILABLE=0, and every assert behind its
+# `[ "$NEXTEST_AVAILABLE" -eq 1 ]` guards would be silently DROPPED — a vacuous
+# green, which is the exact failure class this task family exists to prevent.
+# Measured at task 5602: the header IS line 1 today, so this is latent rather
+# than live — which is precisely when it is cheap to close.
+_NEXTEST_ABSENT_HEADER_RE='^# verify\.sh plan'
+
+_nextest_absent_header_of() {
+    printf '%s\n' "$1" | grep -m1 -E "$_NEXTEST_ABSENT_HEADER_RE" || true
+}
+
 nextest_absent_plan_header() {
     local verify="${1:-$NEXTEST_ABSENT_VERIFY}"
     local full=""
     full="$(nx_run bash "$verify" test --scope all --print-plan 2>/dev/null)" || true
-    printf '%s\n' "$full" | sed -n '1p'
+    _nextest_absent_header_of "$full"
 }
 
 nextest_absent_plan_header_ambient() {
     local verify="${1:-$NEXTEST_ABSENT_VERIFY}"
     local full=""
     full="$(bash "$verify" test --scope all --print-plan 2>/dev/null)" || true
-    printf '%s\n' "$full" | sed -n '1p'
+    _nextest_absent_header_of "$full"
 }
