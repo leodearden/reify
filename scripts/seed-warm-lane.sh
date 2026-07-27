@@ -83,18 +83,13 @@
 #                     the 2020-01-01 stamp.
 #   --reset-in-place: no bulk stamp (git clean -xfd -e target already moved changed mtimes).
 #
-# Build-script freshness references (§9.5 inv.12, task 5630):
-#   Cargo's RerunIfChanged fingerprint uses target/**/build/<pkg>-<hash>/output as
-#   its staleness reference and reruns a build script only when a watched source is
-#   STRICTLY NEWER than it. So no step here may leave an `output` at or after a
-#   delta-touched source's mtime — that silently suppresses the rerun and links the
-#   base's stale compiled artifact (a FALSE GREEN, not a build failure).
-#   - The links-metadata/OUT_DIR relocation sweep PRESERVES each rewritten file's
-#     mtime across its `sed -i` (rewriting a baked path is a content correction,
-#     not evidence the build script ran).
-#   - `_assert_delta_newer_than_build_outputs` enforces the ordering fail-closed at
-#     the end of --fresh-checkout: a violation aborts the seed, leaving stdout empty
-#     so the caller falls back to a cold rebuild.
+# Build-script freshness references (task 5630 — full statement: §9.5 inv.12):
+#   No step here may leave a build-script replay file
+#   (target/**/build/<pkg>-<hash>/output) at or after a delta-touched source's
+#   mtime. So the links-metadata/OUT_DIR relocation sweep PRESERVES each rewritten
+#   file's mtime across its `sed -i`, and `_assert_delta_newer_than_build_outputs`
+#   enforces the ordering fail-closed at the end of --fresh-checkout (violation →
+#   abort → empty stdout → the caller falls back to a cold rebuild).
 
 set -euo pipefail
 
@@ -397,33 +392,28 @@ _assert_no_stale_delta_stamp() {
     info "Post-condition OK: no stale 2020-01-01 stamp on delta file(s) from $sha"
 }
 
-# Seed-time post-condition: assert every delta-touched tracked source is
-# STRICTLY NEWER than every build-script replay file cargo uses as a freshness
-# reference. Sibling of _assert_no_stale_delta_stamp above, and the same
-# defense-in-depth posture: a silently-wrong mtime is a FALSE GREEN — the
-# failure class no downstream test can catch by construction, because the lane
-# builds and passes while linking the BASE's stale compiled artifact.
+# Seed-time post-condition (§9.5 inv.12, task 5630): assert every delta-touched
+# tracked source is STRICTLY NEWER than every build-script replay file cargo uses
+# as a freshness reference. Sibling of _assert_no_stale_delta_stamp above, same
+# defense-in-depth posture. Mechanism, measured cargo repro and operator remedy
+# live in PRD §9.5 inv.12 — not restated here.
 #
-# WHY `output` specifically (measured, cargo 1.96.0, hermetic repro):
-#   cargo's LocalFingerprint::RerunIfChanged compares each watched source's
-#   mtime against target/<profile>/build/<pkg>-<hash>/output, and treats the
-#   source as stale only if STRICTLY NEWER than that file. So `output` newer
-#   than a changed watched source silently suppresses the build-script rerun:
-#     source=T, output=T+5s -> build script did NOT rerun (stale artifact kept)
-#     source=T, output=T-5s -> build script reran
-#   Task 5630 fixed the one site that produced this (the relocation sweep's
-#   `sed -i` temp+rename); this guard makes any future re-introduction abort
-#   the seed instead of shipping a lane cargo will mis-gate.
-#
-# Implementation:
-#   - Compares with bash's `-nt`, NOT `stat -c '%Y'` integers. `-nt` resolves at
-#     nanosecond precision and treats an exact tie as "not newer" — matching
-#     cargo's strict `>`. A whole-second integer comparison would pass a lane
-#     that cargo still mis-gates (sub-second inversion, or a same-second tie).
+# Implementation notes (local to this site):
+#   - Compares with bash's `-nt`, NOT `stat -c '%Y'` integers: `-nt` resolves at
+#     nanosecond precision and calls an exact tie "not newer", matching cargo's
+#     strict `>`. Pinned by Block S/S2e (tie) and S2f (sub-second) — an integer
+#     comparison keeps S2a/S2d green while re-opening both holes.
 #   - `-maxdepth 5`: the same bound and rationale as the relocation sweep's walk
 #     (depth 4 for <profile>/build/<pkg>-<hash>/output, depth 5 for a
-#     cross-compile <triple>/ prefix), so the guard's coverage and cost profile
-#     cannot drift apart from the sweep it protects.
+#     cross-compile <triple>/ prefix), so the guard's coverage cannot drift apart
+#     from the sweep it protects. This deliberately RE-walks rather than reusing
+#     a newest-`output` tracked inside the sweep loop: the guard's whole value is
+#     observing the FINAL mtimes, and a value captured before the later
+#     mtime-mutating steps would be blind to exactly the class of regression it
+#     exists to catch. Measured cost on a 185 GB lane target (53.6k entries under
+#     the depth bound, 219 `output` files): 0.27–0.64 s, and a build-dir-scoped
+#     two-stage walk measured no faster (0.24–0.41 s) — dentry-cache-warm from
+#     the sweep either way, so the simpler final-state walk stands.
 #   - Skips vacuously (info, return 0) when there is no delta path on disk or no
 #     `output` file: nothing was rescued from the bulk stamp, so there is no
 #     inversion to detect and nothing to assert.
@@ -465,7 +455,18 @@ _assert_delta_newer_than_build_outputs() {
         return 0
     fi
     err "Build-script freshness-reference inversion: $newest_output is NOT older than the delta path $oldest_delta"
-    err "cargo compares watched sources against build/<pkg>-<hash>/output and reruns only when STRICTLY NEWER, so this lane would treat a changed source as Fresh and link the base's stale compiled artifact (task 5630 regression)"
+    err "cargo compares watched sources against build/<pkg>-<hash>/output and reruns only when STRICTLY NEWER, so this lane would treat a changed source as Fresh and link the base's stale compiled artifact (§9.5 inv.12)"
+    # Where to look: this seed no longer advances those mtimes itself, so an
+    # inversion here almost always arrived IN the cloned base (clock step during
+    # the base build, or a target/ promoted under an odd clock) — in which case
+    # EVERY acquire against that generation aborts identically and the pool
+    # degrades to cold fallback until the base is re-promoted. Say so, so an
+    # operator is not left diagnosing the lane. (Self-healing by backdating the
+    # offending `output` is strictly conservative — an older `output` can only
+    # cause an extra build-script rerun, never a stale link — but that is a
+    # behavioural change to the ratified fail-closed posture, filed separately
+    # rather than taken as a drive-by here.)
+    err "The offending mtime is under $LANE_TARGET, which is a CoW clone of ${BASE_TARGET_DIR} — if the inversion came with the base, every acquire against that generation aborts the same way; re-promote a clean base with scripts/refresh-warm-base.sh --landed-commit <sha>"
     err "_assert_delta_newer_than_build_outputs: seed aborted (cold rebuild forced)"
     return 1
 }
@@ -897,11 +898,11 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         # bulk stamp DOES fire on a fixture with no base commit) and
         # tests/infra/test_warm_lane_pool.sh:398 (--fresh-checkout --touch with no
         # --base-commit, relying on the 2020 stamp for its warmth assertions).
-        # That is a D5-contract change needing its own ruling, tracked as a
-        # follow-up; silently flipping it inside a task scoped to a different,
-        # measured defect would conflate a confirmed fix with an unratified design
-        # change. Until then this at least makes the condition diagnosable from
-        # seed logs instead of completely silent.
+        # That is a D5-contract change needing its own ruling, tracked as task
+        # #5632 (pending); silently flipping it inside a task scoped to a
+        # different, measured defect would conflate a confirmed fix with an
+        # unratified design change. Until then this at least makes the condition
+        # diagnosable from seed logs instead of completely silent.
         warn "No delta-touch base resolved (--base-commit absent, ${BASE_TARGET_DIR}.basecommit absent, .warm-base-meta BASE_COMMIT absent) — no tracked source is touched to now, so every tracked source keeps the 2020-01-01 bulk stamp and cannot out-date any cloned build artifact; cargo will treat stale build-script outputs as Fresh. Pass --base-commit <sha>, or re-run scripts/refresh-warm-base.sh so the authoritative .basecommit stamp exists."
     fi
 
@@ -1007,32 +1008,18 @@ if [ -n "$FRESH_CHECKOUT" ]; then
             while IFS= read -r -d '' _rl_file; do
                 _relocate_candidate_count=$((_relocate_candidate_count + 1))
                 if grep -qF "$_foreign_rp" "$_rl_file" 2>/dev/null; then
-                    # MTIME PRESERVATION (task 5630) — load-bearing, not cosmetic.
-                    # `sed -i` rewrites via temp+rename, so without this the file
-                    # lands at SEED time: strictly newer than every path
-                    # _touch_git_delta stamped two find-walks earlier. That is a
-                    # FALSE GREEN generator, because cargo's
-                    # LocalFingerprint::RerunIfChanged uses
-                    # target/<profile>/build/<pkg>-<hash>/output as its freshness
-                    # reference and treats a watched source as stale only if
-                    # STRICTLY NEWER than it. Bumping `output` past a delta-touched
-                    # source therefore makes cargo call the build script Fresh and
-                    # link the BASE's stale compiled artifact — a stale
-                    # libocct_wrapper.a / libopenvdb_wrapper.a, or (worst case) a
-                    # stale baked ENGINE_VERSION_HASH, which keys the persistent FEA
-                    # cache and turns a stale artifact into a stale-cache green.
-                    # Relocating a baked absolute path is a CONTENT correction; it
-                    # is not evidence that the build script ran, so it must not
-                    # advance the file's freshness reference.
-                    #
-                    # `stat -c '%y'` carries full sub-second precision and GNU
-                    # `touch -d` round-trips it — required, not incidental: cargo
-                    # compares at nanosecond resolution with a strict `>`, so a
-                    # whole-second-truncated restore could still read as "newer".
-                    # Deliberately NOT `|| true`-guarded: under `set -euo pipefail`
-                    # a stat/touch failure aborts the seed (empty stdout → caller
-                    # falls back to a cold rebuild), which is the correct
-                    # fail-closed posture for a freshness invariant.
+                    # MTIME PRESERVATION (§9.5 inv.12) — load-bearing, not
+                    # cosmetic: rewriting a baked path is a CONTENT correction,
+                    # not evidence the build script ran, and `sed -i` replaces
+                    # via temp+rename so the file would otherwise land at SEED
+                    # time, above the sources delta-touched two find-walks
+                    # earlier. Pinned by Block S/S1c.
+                    # `stat -c '%y'` + GNU `touch -d` round-trip full sub-second
+                    # precision: required, since cargo compares at nanosecond
+                    # resolution. Deliberately NOT `|| true`-guarded — under
+                    # `set -euo pipefail` a stat/touch failure aborts the seed
+                    # (empty stdout → cold rebuild), the correct fail-closed
+                    # posture for a freshness invariant.
                     _rl_ts="$(stat -c '%y' "$_rl_file")"
                     sed -E -i "s/${_relocate_search_esc}/${_relocate_replace_esc}/g" "$_rl_file"
                     touch -d "$_rl_ts" "$_rl_file"
@@ -1116,14 +1103,11 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         info "Skipping env!()-baked-path relink: recorded buildroot matches this lane ($_lane_rp)"
     fi
 
-    # Seed-time post-condition (task 5630): every delta-touched tracked source
-    # must be STRICTLY NEWER than every build-script `output` in the lane, or
-    # cargo will treat a changed source as Fresh and link the base's stale
-    # compiled artifact. Called HERE — last of the mtime-mutating steps, after
-    # the relocation sweep AND the env!()-relink touch — so it observes the
-    # FINAL mtimes rather than an intermediate state any later step could
-    # invalidate. Placed before the reseed-trash rm below to honour that
-    # block's "start only once every find walk is complete" ordering.
+    # Seed-time post-condition (§9.5 inv.12). Called HERE — last of the
+    # mtime-mutating steps, after the relocation sweep AND the env!()-relink
+    # touch — so it observes the FINAL mtimes rather than an intermediate state
+    # any later step could invalidate. Placed before the reseed-trash rm below to
+    # honour that block's "start only once every find walk is complete" ordering.
     _assert_delta_newer_than_build_outputs
 
     # Remove the reseed trash AFTER all find walks of LANE_DIR are complete.
