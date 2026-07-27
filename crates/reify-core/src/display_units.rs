@@ -182,20 +182,22 @@ impl DimensionLadder {
             return AutoScaleChoice::Static;
         }
 
-        let mut candidates: Vec<(usize, &UnitOption)> = self
+        // Minimal hop off the default rung, ties broken by ladder order so the
+        // choice is deterministic. Only the single minimum is ever used, so
+        // this selects it directly rather than sorting a collected `Vec`: the
+        // key `(hop_distance, idx)` is unique per rung, so there are no ties to
+        // resolve and `min_by_key`'s first-minimum rule is exact. Allocation
+        // matters here — `resolve_display` runs once per scalar during
+        // recursive composite rendering (List/Set/Map/Matrix).
+        if let Some((_, rung)) = self
             .units
             .iter()
             .enumerate()
             .filter(|(_, u)| is_decimal_sibling(u.si_scale, default_rung.si_scale))
-            .collect();
-        // Minimal hop off the default rung, ties broken by ladder order so the
-        // choice is deterministic and independent of `sort_by_key` stability.
-        candidates.sort_by_key(|(idx, _)| (idx.abs_diff(default_idx), *idx));
-
-        for (_, rung) in &candidates {
-            if in_band(si_value / rung.si_scale, auto.band_lo, auto.band_hi) {
-                return AutoScaleChoice::Rung(rung);
-            }
+            .filter(|(_, u)| in_band(si_value / u.si_scale, auto.band_lo, auto.band_hi))
+            .min_by_key(|(idx, _)| (idx.abs_diff(default_idx), *idx))
+        {
+            return AutoScaleChoice::Rung(rung);
         }
 
         // §5c: auto-scaling is on but no rung fits, so express the magnitude
