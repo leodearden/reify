@@ -36,10 +36,11 @@
 # root's OWN directory — i.e. `tests/<file>.rs` or `tests/<file>/mod.rs`, never
 # `tests/harness_<subsystem>/<file>.rs`. So without `#[path]` the declaration
 # either fails to compile (no such file) or silently binds the WRONG file (a
-# still-present top-level `tests/<file>.rs` mid-move). Measured across all 12
-# harness roots: every file MOVED under `tests/harness_<subsystem>/` carries
-# `#[path]` — 0 exceptions. (`scripts/check-harness-baseline-registration.sh`
-# states the same rule.)
+# still-present top-level `tests/<file>.rs` mid-move). Because that second mode
+# is SILENT, the rule is not left to prose: Section 6 below ENFORCES it over
+# every `crates/*/tests/harness_<subsystem>.rs` root in the live tree, so the
+# census is re-derived on every run rather than hand-counted and left to stale.
+# (`scripts/check-harness-baseline-registration.sh` states the same rule.)
 #
 # THE ONE PRINCIPLED EXCEPTION is a module that genuinely still lives as a
 # `tests/` SIBLING because it was deliberately NOT moved — the shared `common`
@@ -50,6 +51,10 @@
 # harness_topology_selector does the same for `common/differential.rs`). The
 # rule is therefore scoped: `#[path]` is mandatory for every former-standalone
 # file moved under the harness directory, not for a retained `tests/` sibling.
+# Section 6 encodes exactly this scoping — a bare `mod <ident>;` is a violation
+# UNLESS crate-root-relative resolution actually lands on a retained sibling
+# (`tests/<ident>.rs` or `tests/<ident>/mod.rs`), which is the same condition
+# that decides whether the declaration compiles.
 #
 # Declaring the moved file under its ORIGINAL stem is what gives the merged
 # test a stable, predictable module path GOING FORWARD (post-consolidation
@@ -66,7 +71,8 @@
 # fn is added or removed (invariant I3) — it is NOT test-id-preserving. A
 # hand-written `binary(…)`/`test(=…)` selector naming a former id must be updated
 # in the same diff; nothing in-repo does today (no script/nextest-override/
-# heavy-filter selects a consolidatable stem), and verify.sh's failed-only retry
+# heavy-filter selects a consolidatable stem) — Section 7 below ENFORCES that
+# rather than asserting it in prose (PRD §6 BT-2), and verify.sh's failed-only retry
 # is unaffected — it derives `test(=…)` at run time from its own attempt-0 and
 # refuses on tree_oid drift (scripts/verify.sh retry_failed_only).
 #
@@ -331,6 +337,167 @@ run_harness_layout_scan() {
 
     _emit SUMMARY "crates=$crate_count" "violations=$total_violations"
     [ "$total_violations" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# _bare_mod_decls <file> — print `<lineno>|<ident>` for every `mod <ident>;`
+# item declaration in <file> that is NOT carrying a `#[path = "…"]` attribute.
+#
+# Intervening blank lines and `//` comments between the attribute and the `mod`
+# preserve the attribute's binding; any other line clears it. Only the
+# `mod <ident>;` FORM is considered — an inline `mod x { … }` block declares no
+# out-of-line file and so is outside the C1 `#[path]` mandate entirely.
+# ---------------------------------------------------------------------------
+_bare_mod_decls() {
+    awk '
+        /^[[:space:]]*$/                    { next }   # blank: attribute still binds
+        /^[[:space:]]*\/\//                 { next }   # comment: attribute still binds
+        /^[[:space:]]*#\[path[[:space:]]*=/ { pathline = 1; next }
+        /^[[:space:]]*(pub[[:space:]]+)?mod[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*;/ {
+            if (!pathline) {
+                ident = $0
+                sub(/^[[:space:]]*(pub[[:space:]]+)?mod[[:space:]]+/, "", ident)
+                sub(/[[:space:]]*;.*$/, "", ident)
+                printf "%d|%s\n", NR, ident
+            }
+            pathline = 0
+            next
+        }
+        { pathline = 0 }
+    ' "$1"
+}
+
+# ---------------------------------------------------------------------------
+# harness_path_attr_violations <crate> <tests_dir>
+#
+# C1 `#[path]`-MANDATE detector. For every `<tests_dir>/harness_<subsystem>.rs`
+# root, flag each bare `mod <ident>;` whose crate-root-relative resolution does
+# NOT land on a retained `tests/` sibling.
+#
+# WHY THIS IS A GUARD AND NOT A COMMENT. A harness root is an integration-test
+# CRATE root, so Rust resolves a bare `mod <ident>;` against `tests/<ident>.rs`
+# or `tests/<ident>/mod.rs` — never `tests/harness_<subsystem>/<ident>.rs`. For
+# a file MOVED under the harness dir that is either a hard compile error or,
+# mid-move while a stale top-level `tests/<ident>.rs` still exists, a SILENT
+# bind to the wrong file. The silent mode is why prose alone is insufficient.
+#
+# The predicate is exactly the C1 scoping, not a blunt "always `#[path]`": a
+# bare `mod <ident>;` is CORRECT precisely when crate-root-relative resolution
+# lands on a real retained sibling (the shared `common` helper), which is the
+# same condition that decides whether the declaration compiles at all. So the
+# check has no allow-list to drift — it re-derives the exception from disk.
+#
+# Prints one structured FAIL line per violation; returns 1 if <crate> has any.
+# Parameterized on <tests_dir> so hermetic fixtures drive it exactly as live.
+#
+# NOTE (deferred, out of this task's lock scope): the sibling diff-scoped gate
+# scripts/check-harness-baseline-registration.sh states the same `#[path]` rule
+# in human-facing guidance text only. Hoisting this predicate into the shared
+# tests/infra/harness-layout-lib.sh so both guards execute one copy (the G7
+# no-lockstep-duplication shape the lib already exists for) needs a write to
+# that lib, which this task does not hold — filed as follow-up.
+# ---------------------------------------------------------------------------
+harness_path_attr_violations() {
+    local crate="$1"
+    local tests_dir="$2"
+
+    local violations=0
+    local root ident lineno
+
+    if [ ! -d "$tests_dir" ]; then
+        _emit FAIL "crate=$crate" "dir=$tests_dir" "reason=missing-tests-dir"
+        return 1
+    fi
+
+    for root in "$tests_dir"/harness_*.rs; do
+        [ -f "$root" ] || continue          # skip a literal no-match glob
+        while IFS='|' read -r lineno ident; do
+            [ -n "$ident" ] || continue
+            # The ONE principled exception: a module that genuinely still lives
+            # as a `tests/` sibling, i.e. crate-root-relative resolution really
+            # does find it (`common` today).
+            if [ -f "$tests_dir/$ident.rs" ] || [ -f "$tests_dir/$ident/mod.rs" ]; then
+                continue
+            fi
+            _emit FAIL "crate=$crate" "file=$root" "reason=missing-path-attr" \
+                "module=$ident" "line=$lineno"
+            violations=$((violations + 1))
+        done < <(_bare_mod_decls "$root")
+    done
+
+    if [ "$violations" -gt 0 ]; then
+        return 1
+    fi
+    _emit PASS "crate=$crate"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# harness_stale_selector_violations <root_dir> <scan_path>...
+#
+# PRD §6 BT-2 detector: no repo-resident selector names a PRE-consolidation
+# compile-unit id. Derives the set of consolidated stems from disk (every
+# `*.rs` under any `crates/*/tests/harness_<subsystem>/` module directory —
+# precisely the ids that used to be standalone binaries), then flags any
+# `binary(<stem>)` filterset atom or `--test <stem>` cargo/nextest target
+# selector in <scan_path>... that names one. Such a selector silently selects
+# NOTHING (`binary()`) or hard-errors with `no test target named <stem>`
+# (`--test`) — the exact staleness this task fixed by hand in the
+# auto-type-param PRD.
+#
+# DELIBERATE LIMIT (stated, not silently capped): the third breakage form — a
+# `test(=<bare_name>)` selector naming a pre-consolidation TEST name, which now
+# needs a `<file>::` prefix — is not statically detectable, since test names
+# only exist in a compiled `cargo nextest list`. BT-1's #[test]-fn count check
+# is what covers that axis. This detector covers the two forms that ARE
+# decidable from the tree: compile-unit / target names.
+#
+# Prints one structured FAIL line per violation; returns 1 on any. <root_dir>
+# is parameterized so hermetic fixtures drive it exactly as the live tree does.
+# ---------------------------------------------------------------------------
+harness_stale_selector_violations() {
+    local root_dir="$1"
+    shift
+
+    local violations=0
+    local stems_file d p atom file stem
+
+    stems_file="$(mktemp)"; _TMPDIRS+=("$stems_file")
+    for d in "$root_dir"/crates/*/tests/harness_*/; do
+        [ -d "$d" ] || continue
+        find "$d" -type f -name '*.rs' 2>/dev/null
+    done | sed 's|.*/||; s|\.rs$||' | sort -u > "$stems_file"
+
+    # No consolidated stems yet (pre-W1 tree, or a fixture with none) => nothing
+    # can be stale. Not a vacuous pass: the live tree has 300+ stems, and
+    # Section 7's non-vacuity assert pins that.
+    if [ ! -s "$stems_file" ]; then
+        _emit PASS "scan=selectors" "stems=0"
+        return 0
+    fi
+
+    for p in "$@"; do
+        [ -e "$p" ] || continue
+        while IFS= read -r atom; do
+            [ -n "$atom" ] || continue
+            file="${atom%%:*}"
+            stem="${atom#*:}"
+            # Normalize both accepted atom shapes down to the bare stem.
+            stem="${stem#binary(}"
+            stem="${stem%)}"
+            stem="${stem##--test*[[:space:]]}"
+            grep -qxF "$stem" "$stems_file" || continue
+            _emit FAIL "crate=-" "file=$file" "reason=stale-selector" "stem=$stem"
+            violations=$((violations + 1))
+        done < <(grep -rHoE 'binary\([A-Za-z_][A-Za-z0-9_]*\)|--test[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' \
+                    "$p" 2>/dev/null || true)
+    done
+
+    if [ "$violations" -gt 0 ]; then
+        return 1
+    fi
+    _emit PASS "scan=selectors" "stems=$(wc -l < "$stems_file" | tr -d ' ')"
+    return 0
 }
 
 echo "=== Harness-layout contract + anti-re-accretion kLOC-cap drift guard ==="
@@ -703,5 +870,172 @@ assert "5b: at least one live harness has root<500 lines yet aggregate>10000 lin
 # 19342 (harness_topology_selector) against CAP_LINES=20000, so aggregating
 # never flips Section 5's live scan red; the non-vacuity check above is what
 # this section actually contributes.
+
+# ===========================================================================
+# Section 6: C1 `#[path]` MANDATE — every `mod <ident>;` in a harness root
+# either carries `#[path]` or resolves to a real retained `tests/` sibling.
+#
+# This closes the header's named SILENT failure mode: a bare `mod <file>;` for
+# a file moved under `tests/harness_<subsystem>/` resolves crate-root-relative
+# and binds a stale top-level `tests/<file>.rs` instead. Hermetic must-fire /
+# must-not-fire fixtures, then a LIVE scan over every harness root on disk.
+# ===========================================================================
+echo ""
+echo "--- Section 6: C1 #[path] mandate (must-fire / must-not-fire / live) ---"
+
+# --- must-fire: a bare `mod` for a file that lives under the harness dir ---
+_s6_bad_dir="$(mktemp -d)"; _TMPDIRS+=("$_s6_bad_dir")
+mkdir -p "$_s6_bad_dir/harness_synth"
+printf 'mod movedfile;\n' > "$_s6_bad_dir/harness_synth.rs"
+printf '#[test]\nfn t() {}\n' > "$_s6_bad_dir/harness_synth/movedfile.rs"
+# NOTE: deliberately NO "$_s6_bad_dir/movedfile.rs" — crate-root-relative
+# resolution finds nothing, which is exactly the violation.
+
+_s6_bad_out="$(mktemp)"; _TMPDIRS+=("$_s6_bad_out")
+_s6_bad_rc=0
+harness_path_attr_violations synthcrate "$_s6_bad_dir" \
+    > "$_s6_bad_out" 2>/dev/null || _s6_bad_rc=$?
+
+assert "6: a bare \`mod\` for a file moved under harness_<subsystem>/ fires (returns 1)" \
+    test "$_s6_bad_rc" -eq 1
+assert "6: violation emitted as a structured FAIL line (missing-path-attr, module+line named)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_synth\.rs reason=missing-path-attr module=movedfile line=1$' "$_s6_bad_out"
+
+# --- must-not-fire: the three shapes that are CORRECT under C1 ---
+_s6_ok_dir="$(mktemp -d)"; _TMPDIRS+=("$_s6_ok_dir")
+mkdir -p "$_s6_ok_dir/harness_synth" "$_s6_ok_dir/common"
+{
+    # (a) the mandated form for a moved file
+    printf '#[path = "harness_synth/movedfile.rs"]\n'
+    printf 'mod movedfile;\n'
+    # (b) THE principled exception: a bare `mod` onto a retained tests/ sibling
+    #     directory module (`tests/common/mod.rs`) — correct precisely BECAUSE
+    #     crate-root-relative resolution lands on it.
+    printf 'mod common;\n'
+    # (c) same, onto a retained tests/<ident>.rs sibling, with an intervening
+    #     blank line + comment between a `#[path]` and its `mod` (the attribute
+    #     must still bind, or (a)-shaped code would false-fire).
+    printf 'mod sibling;\n'
+    printf '#[path = "harness_synth/other.rs"]\n\n// still bound to the attribute above\nmod other;\n'
+} > "$_s6_ok_dir/harness_synth.rs"
+printf '#[test]\nfn t() {}\n' > "$_s6_ok_dir/harness_synth/movedfile.rs"
+printf '#[test]\nfn t() {}\n' > "$_s6_ok_dir/harness_synth/other.rs"
+printf 'pub fn helper() {}\n'  > "$_s6_ok_dir/common/mod.rs"
+printf 'pub fn helper() {}\n'  > "$_s6_ok_dir/sibling.rs"
+
+_s6_ok_out="$(mktemp)"; _TMPDIRS+=("$_s6_ok_out")
+_s6_ok_rc=0
+harness_path_attr_violations synthcrate "$_s6_ok_dir" \
+    > "$_s6_ok_out" 2>/dev/null || _s6_ok_rc=$?
+
+assert "6: mandated #[path] form + retained tests/ siblings (common/, sibling.rs) do NOT fire (returns 0)" \
+    test "$_s6_ok_rc" -eq 0
+assert "6: clean harness root emits a structured PASS line" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS crate=synthcrate' "$_s6_ok_out"
+assert "6: clean harness root emits no FAIL line (precision — no blunt \"always #[path]\")" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s6_ok_out"
+
+# --- LIVE scan: every crates/*/tests dir holding a harness root, on disk. Not
+# scoped to CONSOLIDATABLE_CRATES, so a harness root appearing in any other
+# crate is still covered. ---
+_s6_live_out="$(mktemp)"; _TMPDIRS+=("$_s6_live_out")
+_s6_live_rc=0
+_s6_live_roots=0
+: > "$_s6_live_out"
+for _d in "$REPO_ROOT"/crates/*/tests; do
+    [ -d "$_d" ] || continue
+    compgen -G "$_d/harness_*.rs" > /dev/null || continue
+    _s6_live_roots=$((_s6_live_roots + $(compgen -G "$_d/harness_*.rs" | wc -l)))
+    _c="$(basename "$(dirname "$_d")")"
+    harness_path_attr_violations "$_c" "$_d" >> "$_s6_live_out" 2>/dev/null || _s6_live_rc=1
+done
+
+# Offender lines to the archived log on failure (the Section 5 idiom).
+if [ "$_s6_live_rc" -ne 0 ]; then
+    echo "  ---- Section 6: live #[path] scan output (printed on failure) ----"
+    cat "$_s6_live_out"
+    echo "  ---- Section 6: end live scan output ----"
+fi
+
+assert "6: live tree honors the C1 #[path] mandate in every harness root (rc 0)" \
+    test "$_s6_live_rc" -eq 0
+# Non-vacuity: the live scan must actually have visited harness roots, or a
+# future glob/layout change would silently turn the assert above into a no-op.
+assert "6: live scan actually visited harness roots (>= 13 found, non-vacuity)" \
+    test "$_s6_live_roots" -ge 13
+
+# ===========================================================================
+# Section 7: PRD §6 BT-2 — no repo-resident selector names a PRE-consolidation
+# compile-unit id. Replaces BT-2's former hand-verified prose claim with a
+# mechanical check over the real selector surfaces.
+# ===========================================================================
+echo ""
+echo "--- Section 7: BT-2 no repo-resident selector names a consolidated stem ---"
+
+# --- must-fire: a synthetic root whose scanned file selects a stem that now
+#     lives under a harness_<subsystem>/ module dir. ---
+_s7_bad_root="$(mktemp -d)"; _TMPDIRS+=("$_s7_bad_root")
+mkdir -p "$_s7_bad_root/crates/synthcrate/tests/harness_synth" "$_s7_bad_root/cfg"
+printf '#[test]\nfn t() {}\n' > "$_s7_bad_root/crates/synthcrate/tests/harness_synth/synthstem.rs"
+printf "filter = 'package(synthcrate) & binary(synthstem)'\n" > "$_s7_bad_root/cfg/nextest.toml"
+printf 'cargo test -p synthcrate --test synthstem\n'          > "$_s7_bad_root/cfg/run.sh"
+
+_s7_bad_out="$(mktemp)"; _TMPDIRS+=("$_s7_bad_out")
+_s7_bad_rc=0
+harness_stale_selector_violations "$_s7_bad_root" "$_s7_bad_root/cfg" \
+    > "$_s7_bad_out" 2>/dev/null || _s7_bad_rc=$?
+
+assert "7: a binary()/--test selector naming a consolidated stem fires (returns 1)" \
+    test "$_s7_bad_rc" -eq 1
+assert "7: stale binary() selector emitted as a structured FAIL line (stale-selector)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=- file=.*nextest\.toml reason=stale-selector stem=synthstem$' "$_s7_bad_out"
+assert "7: stale --test target selector is caught too (both decidable atom shapes)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=- file=.*run\.sh reason=stale-selector stem=synthstem$' "$_s7_bad_out"
+
+# --- must-not-fire: a selector naming a stem that is still a genuine top-level
+#     standalone binary (an override, I1) must NEVER be flagged. ---
+_s7_ok_root="$(mktemp -d)"; _TMPDIRS+=("$_s7_ok_root")
+mkdir -p "$_s7_ok_root/crates/synthcrate/tests/harness_synth" "$_s7_ok_root/cfg"
+printf '#[test]\nfn t() {}\n' > "$_s7_ok_root/crates/synthcrate/tests/harness_synth/synthstem.rs"
+printf '#[test]\nfn t() {}\n' > "$_s7_ok_root/crates/synthcrate/tests/synthoverride.rs"
+printf "filter = 'package(synthcrate) & binary(synthoverride)'\n" > "$_s7_ok_root/cfg/nextest.toml"
+
+_s7_ok_out="$(mktemp)"; _TMPDIRS+=("$_s7_ok_out")
+_s7_ok_rc=0
+harness_stale_selector_violations "$_s7_ok_root" "$_s7_ok_root/cfg" \
+    > "$_s7_ok_out" 2>/dev/null || _s7_ok_rc=$?
+
+assert "7: a selector naming a still-standalone override binary does NOT fire (returns 0, I1 precision)" \
+    test "$_s7_ok_rc" -eq 0
+assert "7: clean selector scan emits a structured PASS line carrying the stem count" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS scan=selectors stems=1$' "$_s7_ok_out"
+
+# --- LIVE scan over the real selector surfaces. ---
+_s7_live_out="$(mktemp)"; _TMPDIRS+=("$_s7_live_out")
+_s7_live_rc=0
+harness_stale_selector_violations "$REPO_ROOT" \
+    "$REPO_ROOT/.config/nextest.toml" "$REPO_ROOT/scripts" "$REPO_ROOT/tests/infra" \
+    > "$_s7_live_out" 2>/dev/null || _s7_live_rc=$?
+
+if [ "$_s7_live_rc" -ne 0 ]; then
+    echo "  ---- Section 7: live selector scan output (printed on failure) ----"
+    cat "$_s7_live_out"
+    echo "  ---- Section 7: end live scan output ----"
+fi
+
+assert "7: no live repo-resident selector names a pre-consolidation id (BT-2, rc 0)" \
+    test "$_s7_live_rc" -eq 0
+
+# Non-vacuity: the stem set must be genuinely populated, or the scan above
+# would pass by having nothing to compare against. Counted INDEPENDENTLY off
+# the tree rather than parsed out of the detector's own PASS line — a detector
+# regression must surface as ONE failure here, not two (the Section 5b rule).
+_s7_live_stems=0
+for _d in "$REPO_ROOT"/crates/*/tests/harness_*/; do
+    [ -d "$_d" ] || continue
+    _s7_live_stems=$((_s7_live_stems + $(find "$_d" -type f -name '*.rs' | wc -l)))
+done
+assert "7: live consolidated-stem set is non-empty (>= 300 stems, non-vacuity)" \
+    test "$_s7_live_stems" -ge 300
 
 test_summary
