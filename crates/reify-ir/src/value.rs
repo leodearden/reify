@@ -3119,10 +3119,9 @@ impl DisplayPreference {
 /// once on first use.
 ///
 /// Both [`resolve_display`] and [`dimension_unit_label`] consult this via
-/// [`registry_display_default`] rather than calling `unit_ladders()`
-/// directly, so the registry's ~30 `String`s are allocated once per
-/// process (not once per format call) and both callers can return
-/// borrowed `&'static str` labels.
+/// [`registry_ladder`] rather than calling `unit_ladders()` directly, so the
+/// registry's ~30 `String`s are allocated once per process (not once per
+/// format call) and both callers can return borrowed `&'static str` labels.
 static LADDERS: OnceLock<Vec<reify_core::DimensionLadder>> = OnceLock::new();
 
 /// Look up `dim`'s curated default display rung in the cached unit-ladder
@@ -3143,11 +3142,13 @@ fn registry_display_default(dim: &DimensionVector) -> Option<(f64, &'static str)
 /// Look up `dim`'s whole ladder in the cached unit-ladder registry, keyed by
 /// [`DimensionVector::canonical_name`].
 ///
-/// The single lookup path both [`registry_display_default`] (which narrows to
-/// the `is_default` rung) and [`resolve_display`]'s §5 auto-scaling arm share,
-/// so the two can never disagree about which ladder a dimension resolves to.
-/// Returns `None` when `dim` has no `canonical_name()` or is not in the
-/// registry — see [`registry_display_default`] for the caller contract.
+/// The single lookup path every registry consumer shares — [`resolve_display`]
+/// (which resolves the whole of §6.1 rungs 3/4 from the ladder it gets back,
+/// auto-scaled *and* static) and [`registry_display_default`] (which narrows to
+/// the `is_default` rung for [`dimension_unit_label`]) — so no two can disagree
+/// about which ladder a dimension resolves to. Returns `None` when `dim` has no
+/// `canonical_name()` or is not in the registry — see
+/// [`registry_display_default`] for the caller contract.
 fn registry_ladder(dim: &DimensionVector) -> Option<&'static reify_core::DimensionLadder> {
     let name = dim.canonical_name()?;
     let ladders = LADDERS.get_or_init(reify_core::unit_ladders);
@@ -3164,10 +3165,10 @@ fn registry_ladder(dim: &DimensionVector) -> Option<&'static reify_core::Dimensi
 /// were absent (guards against a garbage `DisplayPreference` producing an
 /// `inf`/`NaN` display magnitude): this falls through to the `None`
 /// handling below instead. When `None` (or the preference was degenerate),
-/// falls through §6.1 rungs 3-5: the dimension's curated registry default
-/// (rungs 3/4, via [`registry_display_default`]), then
-/// `is_dimensionless()` (empty label), then the composed base-SI
-/// [`Display`](std::fmt::Display) fallback (rung 5).
+/// falls through §6.1 rungs 3-5: the dimension's curated registry ladder
+/// (rungs 3/4, via [`registry_ladder`]), then `is_dimensionless()` (empty
+/// label), then the composed base-SI [`Display`](std::fmt::Display) fallback
+/// (rung 5).
 ///
 /// The magnitude is always formatted via [`format_display_number`], so
 /// this stays numerically consistent with [`Value::format_display_pair`].
@@ -3220,13 +3221,24 @@ pub fn resolve_display(
             } => {
                 return (format_engineering(mantissa, exponent), rung.label.clone());
             }
-            // Posture gate said no (or the magnitude is unusable) — fall
-            // through to the unchanged rungs 3-5 below.
-            reify_core::AutoScaleChoice::Static => {}
+            // Posture gate said no (or the magnitude is unusable), so rungs
+            // 3/4 render at the ladder's static default rung exactly as they
+            // did before §5. Resolved from the `ladder` already in hand rather
+            // than via `registry_display_default`, which would re-run
+            // `canonical_name()` and a second scan of the registry for the
+            // ladder this arm is already holding — and this is the common path
+            // for every default-OFF and structurally-excluded dimension (Mass,
+            // Pressure, Density, Angle, Force, Energy, Power). A ladder with no
+            // `is_default` rung falls through to rung 5 below, as before.
+            reify_core::AutoScaleChoice::Static => {
+                if let Some(rung) = ladder.units.iter().find(|u| u.is_default) {
+                    return (
+                        format_display_number(si_value / rung.si_scale),
+                        rung.label.clone(),
+                    );
+                }
+            }
         }
-    }
-    if let Some((si_scale, label)) = registry_display_default(dimension) {
-        return (format_display_number(si_value / si_scale), label.to_string());
     }
     if dimension.is_dimensionless() {
         return (format_display_number(si_value), String::new());
