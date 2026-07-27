@@ -79,9 +79,24 @@
 #   --fresh-checkout: bulk-stamp sources to 2020-01-01 (find, pruning target/ & .git/)
 #                     then touch delta (--touch paths + git diff --name-only <base_commit>) to now.
 #                     No base resolved from any of the three tiers → nothing is
-#                     delta-touched; warns, since every tracked source then keeps
-#                     the 2020-01-01 stamp.
+#                     delta-touched, so every tracked source keeps the 2020-01-01
+#                     stamp; warns, and `_assert_delta_touch_base_substantiated`
+#                     then REFUSES if the clone carries recorded prior
+#                     compilations to wrongly re-Freshen (task 5632 — full
+#                     statement: §9.5 inv.13).
+#     Knobs: REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT (see below).
 #   --reset-in-place: no bulk stamp (git clean -xfd -e target already moved changed mtimes).
+#
+# REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 — HERMETIC-FIXTURE / deliberate-accept
+#   seam, NOT a production knob. Downgrades inv.13's refusal to a warn so a
+#   fixture that intentionally exercises the no-base accept path can still seed.
+#   Exporting it in production RE-OPENS the stale-artifact false green inv.13
+#   exists to prevent. Exact `= "1"` match (the REIFY_WARM_LANE_RESEED_TRASH_SYNC
+#   idiom), so 0, yes and a stray empty export all fail safe into the abort.
+#   Polarity is deliberate and is the inverse of the esc-5214 mistake: the guard
+#   is default-ON and only an explicit export can downgrade it, so no forgetful
+#   caller can bypass it by omission; honouring it emits its own [warn] so a
+#   production log shows it.
 #
 # Build-script freshness references (task 5630 — full statement: §9.5 inv.12):
 #   No step here may leave a build-script replay file
@@ -498,6 +513,13 @@ _assert_delta_touch_base_substantiated() {
     fingerprint_dir="$(find "$LANE_TARGET" -maxdepth 3 -type d -name .fingerprint -print -quit)"
     if [ -z "$fingerprint_dir" ]; then
         info "Post-condition skipped: no .fingerprint dir under $LANE_TARGET — the clone records no prior compilation for the 2020-01-01 bulk stamp to wrongly re-Freshen"
+        return 0
+    fi
+    # Probe FIRST, knob second: the vacuous no-.fingerprint skip above keeps its
+    # own distinct info line, and this warn only ever appears when the knob
+    # actually suppressed a refusal.
+    if [ "${REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT:-}" = "1" ]; then
+        warn "REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 honoured: accepting a lane with NO delta-touch base despite the recorded prior compilations at $fingerprint_dir — this lane's cloned artifacts may be treated as Fresh against un-delta-touched sources (§9.5 inv.13)"
         return 0
     fi
     err "Unsubstantiated delta-touch base: no base resolved (--base-commit absent, ${BASE_TARGET_DIR}.basecommit absent, .warm-base-meta BASE_COMMIT absent), so NOTHING is delta-touched (§9.5 inv.13)"
