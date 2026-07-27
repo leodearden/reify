@@ -969,38 +969,154 @@ _t10b() {
 
 # (c) The composition is armed on ALL FOUR signals, not just EXIT — verify.sh
 # wraps infra tests in `timeout --kill-after`, so an outer kill must still tear
-# the temp tree down. Exercised by having the probe signal ITSELF: the caller's
-# EXIT-only handler is thereby upgraded to fire on TERM too.
+# the temp tree down AND still run the caller's handler. Exercised by having the
+# probe signal ITSELF, once per child per signal, so a lib that replays on only
+# one of the three cannot pass an arm whose title claims all three.
+#
+# WHY THE PROBE SIGKILLS ITSELF AFTERWARDS — this is the whole difference between
+# this arm and a vacuous one. _nextest_absent_trap_dispatch deliberately does not
+# re-raise, so once the handler returns the shell RESUMES, runs to the end and
+# exits NORMALLY — firing the EXIT trap and appending CALLER_RAN whether or not
+# the signal dispatch replayed anything at all. Measured: the first version of
+# this arm reported PASS against a lib that stashed nothing for INT/TERM/HUP, for
+# exactly that reason. SIGKILL is uncatchable and untrappable, so it removes the
+# second path outright: past that line CALLER_RAN can only have been written by
+# the <signal> dispatch. SURVIVED_KILL is asserted ABSENT rather than assumed, so
+# a probe that somehow outlived its own KILL is reported instead of silently
+# restoring the vacuity. rc is deliberately never asserted on — the probe is
+# EXPECTED to die 137.
 NX_TRAP_SIG="$NX_TRAP_DIR/signal.sh"
 cat > "$NX_TRAP_SIG" <<'TRAP_SIG'
-# argv: <repo-root> <marker-file>
+# argv: <repo-root> <marker-file> <signal>
 set -euo pipefail
 cd "$1"
 _m="$2"
+_sig="$3"
 caller_cleanup() { echo "CALLER_RAN" >> "$_m"; }
 trap caller_cleanup EXIT
 source tests/infra/nextest_absent_lib.sh
 nextest_absent_init
 echo "WORKDIR=$NX_WORKDIR" >> "$_m"
-kill -TERM $$
+kill -"$_sig" $$
 echo "RESUMED" >> "$_m"
+kill -KILL $$
+echo "SURVIVED_KILL" >> "$_m"
 TRAP_SIG
 
 _t10c() {
-    local m="$NX_TRAP_DIR/signal.marker" wd rc=0
+    local sig m wd rc=0
+    for sig in INT TERM HUP; do
+        m="$NX_TRAP_DIR/signal-$sig.marker"
+        rm -f "$m"
+        # 2>/dev/null: the parent shell reports the child's death as "Killed",
+        # which is the expected outcome here, not evidence.
+        bash "$NX_TRAP_SIG" "$REPO_ROOT" "$m" "$sig" 2>/dev/null || true
+        echo "--- SIG$sig ---"
+        if [ ! -f "$m" ]; then
+            echo "SIG$sig: the probe wrote no marker at all"
+            rc=1
+            continue
+        fi
+        cat "$m"
+
+        if grep -q '^SURVIVED_KILL$' "$m"; then
+            echo "SIG$sig: the probe outlived its own SIGKILL, so CALLER_RAN could"
+            echo "have come from the EXIT trap — this arm would be vacuous."
+            rc=1
+        fi
+        if ! grep -q '^CALLER_RAN$' "$m"; then
+            echo "SIG$sig: the caller's pre-init handler never fired on SIG$sig. The"
+            echo "lib stashes a handler PER SIGNAL and this caller registered one"
+            echo "only for EXIT, so SIG$sig's stash is empty and the dispatcher ran"
+            echo "lib teardown alone — the documented 'upgraded to all four signals'"
+            echo "half of the trap contract (nextest_absent_lib.sh, TRAP OWNERSHIP)"
+            echo "is not implemented."
+            rc=1
+        fi
+        wd="$(sed -n 's/^WORKDIR=//p' "$m" | tail -1)"
+        if [ -z "$wd" ]; then
+            echo "SIG$sig: probe never reported its workdir"
+            rc=1
+        elif [ -d "$wd" ]; then
+            echo "SIG$sig: the signal left the lib's own workdir behind: $wd"
+            rm -rf "$wd"
+            rc=1
+        fi
+    done
+    return "$rc"
+}
+
+# (d) The REAL consumer's shape, not a reduced probe, and the filesystem
+# consequence rather than a marker.
+#
+# test_verify_semaphore_wiring.sh keeps throwaway git repos on a _TMPDIRS array
+# behind a bare `trap cleanup EXIT` registered at :24 — BEFORE the lib's init at
+# :198 — and verify.sh runs that suite under `timeout --kill-after=60 <n>m`. So
+# the operational question is not "did a marker get appended" but "when the
+# timeout fires, do the CALLER's directories get removed, or only the lib's?"
+# This arm requires the caller's dir to be gone; 10c would still pass if the
+# replay ran but the caller's own state leaked.
+#
+# Shaped deliberately like that file: the same `[@]+` empty-array guard, the
+# trap registered before the lib is sourced, and the dir pushed AFTER init (the
+# real suite creates its repos in Sections 2/3, long after). The push-after-init
+# ordering also pins that the stash captures the handler by NAME — `cleanup` is
+# resolved at dispatch time and must therefore see the dirs added since.
+NX_TRAP_CONSUMER="$NX_TRAP_DIR/consumer.sh"
+cat > "$NX_TRAP_CONSUMER" <<'TRAP_CONSUMER'
+# argv: <repo-root> <marker-file>
+set -euo pipefail
+cd "$1"
+_m="$2"
+_TMPDIRS=()
+cleanup() { for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done; }
+trap cleanup EXIT
+source tests/infra/nextest_absent_lib.sh
+nextest_absent_init
+echo "WORKDIR=$NX_WORKDIR" >> "$_m"
+_dir="$(mktemp -d)"
+_TMPDIRS+=("$_dir")
+echo "CALLERDIR=$_dir" >> "$_m"
+kill -TERM $$
+kill -KILL $$
+echo "SURVIVED_KILL" >> "$_m"
+TRAP_CONSUMER
+
+_t10d() {
+    local m="$NX_TRAP_DIR/consumer.marker" wd caller_dir rc=0
     rm -f "$m"
-    bash "$NX_TRAP_SIG" "$REPO_ROOT" "$m" || true
+    bash "$NX_TRAP_CONSUMER" "$REPO_ROOT" "$m" 2>/dev/null || true
+    if [ ! -f "$m" ]; then
+        echo "the probe wrote no marker at all"
+        return 1
+    fi
     cat "$m"
 
-    grep -q '^CALLER_RAN$' "$m" || {
-        echo "the caller's handler never fired on SIGTERM — the composed trap is"
-        echo "not armed on all four signals."
+    if grep -q '^SURVIVED_KILL$' "$m"; then
+        echo "the probe outlived its own SIGKILL — its EXIT trap could have done"
+        echo "the cleanup, which would make this arm vacuous."
         rc=1
-    }
+    fi
+
+    caller_dir="$(sed -n 's/^CALLERDIR=//p' "$m" | tail -1)"
+    if [ -z "$caller_dir" ]; then
+        echo "probe never reported its own temp dir"
+        rc=1
+    elif [ -d "$caller_dir" ]; then
+        echo "SIGTERM LEAKED the CALLER's temp dir: $caller_dir"
+        echo "The lib tore its own workdir down but did not replay the caller's"
+        echo "EXIT handler on TERM, so a timeout kill of a suite shaped like"
+        echo "test_verify_semaphore_wiring.sh strands every throwaway repo it made."
+        rm -rf "$caller_dir"
+        rc=1
+    fi
+
     wd="$(sed -n 's/^WORKDIR=//p' "$m" | tail -1)"
-    [ -n "$wd" ] || { echo "probe never reported its workdir"; return 1; }
-    if [ -d "$wd" ]; then
-        echo "SIGTERM left the workdir behind: $wd"
+    if [ -z "$wd" ]; then
+        echo "probe never reported the lib's workdir"
+        rc=1
+    elif [ -d "$wd" ]; then
+        echo "SIGTERM left the lib's own workdir behind: $wd"
         rm -rf "$wd"
         rc=1
     fi
@@ -1010,5 +1126,6 @@ _t10c() {
 assert "10a: a handler registered BEFORE nextest_absent_init still fires, after the lib's own teardown" _t10a
 assert "10b: nextest_absent_cleanup lets a handler registered AFTER init tear the env down itself" _t10b
 assert "10c: the composed trap is armed on INT/TERM/HUP as well as EXIT" _t10c
+assert "10d: a timeout kill of a semaphore_wiring-shaped consumer removes the CALLER's temp dirs too" _t10d
 
 test_summary
