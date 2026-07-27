@@ -84,6 +84,13 @@ NX_HOME=""
 NX_PATH=""
 NX_RUSTUP_HOME=""
 
+# Default path to the script under observation, resolved from THIS file's own
+# location so a caller need not thread it through. Overridable per-call (first
+# positional arg) and per-environment (NEXTEST_ABSENT_VERIFY).
+_NEXTEST_ABSENT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_NEXTEST_ABSENT_REPO_ROOT="$(cd "$_NEXTEST_ABSENT_LIB_DIR/../.." && pwd)"
+NEXTEST_ABSENT_VERIFY="${NEXTEST_ABSENT_VERIFY:-$_NEXTEST_ABSENT_REPO_ROOT/scripts/verify.sh}"
+
 # Why the constructed env is (or is not) a usable simulation — set by
 # nextest_absent_init, read out by nextest_absent_reason.
 _NEXTEST_ABSENT_REASON=""
@@ -191,3 +198,28 @@ nx_which() { nx_run bash -c 'command -v "$1"' _ "$1"; }
 # rather than on any directory's existence.
 nextest_absent_available() { return 0; }
 nextest_absent_reason() { printf '%s\n' "$_NEXTEST_ABSENT_REASON"; }
+
+# nextest_absent_plan_header [verify-path]         — header UNDER the env
+# nextest_absent_plan_header_ambient [verify-path] — header WITHOUT the env
+#
+# The plan is captured WHOLE and the header extracted afterwards, rather than
+# piping verify.sh straight into `head -1`: head exits after the first line and
+# the writer takes SIGPIPE, which under `set -o pipefail` surfaces as a
+# spurious pipeline failure that has nothing to do with the header's content.
+#
+# The capture is guarded with `|| true` so a verify.sh hiccup yields an empty
+# header — which every caller's `case` rejects — rather than aborting a `set -e`
+# caller mid-suite with no Results line at all.
+nextest_absent_plan_header() {
+    local verify="${1:-$NEXTEST_ABSENT_VERIFY}"
+    local full=""
+    full="$(nx_run bash "$verify" test --scope all --print-plan 2>/dev/null)" || true
+    printf '%s\n' "$full" | sed -n '1p'
+}
+
+nextest_absent_plan_header_ambient() {
+    local verify="${1:-$NEXTEST_ABSENT_VERIFY}"
+    local full=""
+    full="$(bash "$verify" test --scope all --print-plan 2>/dev/null)" || true
+    printf '%s\n' "$full" | sed -n '1p'
+}
