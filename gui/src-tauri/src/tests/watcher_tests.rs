@@ -165,6 +165,46 @@ fn wait_for_watch_registration(dir: &std::path::Path, probe_seen: &Arc<AtomicBoo
     )
 }
 
+/// Discriminating test for the constraint that motivates
+/// `wait_for_watch_registration_via_removal` (defined above its
+/// Changed-probe sibling): a watcher constructed with `Some(target_file)`
+/// filters `Changed` events by filename (`watcher.rs:214-218`), so the
+/// Changed-probe `wait_for_watch_registration` could never confirm
+/// registration here -- it would spin its full budget and return `false`.
+/// `Removed` events bypass that filter by design, so a removal probe can.
+#[test]
+fn wait_for_watch_registration_via_removal_confirms_a_watch_behind_a_target_file_filter() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let probe_seen = Arc::new(AtomicBool::new(false));
+    let probe_seen_clone = probe_seen.clone();
+
+    // A target_file filter that EXCLUDES probe.ri: only Changed("target.ri")
+    // would ever pass the filter, so this watcher can only be confirmed
+    // live via a Removed probe.
+    let Some(_watcher) = try_watcher(dir.path(), Some(PathBuf::from("target.ri")), move |event| {
+        if let FileEvent::Removed(path) = event
+            && path.ends_with("probe.ri")
+        {
+            probe_seen_clone.store(true, Ordering::SeqCst);
+        }
+    }) else {
+        return;
+    };
+
+    let registered = wait_for_watch_registration_via_removal(dir.path(), &probe_seen);
+    assert!(
+        registered,
+        "wait_for_watch_registration_via_removal should confirm the watch \
+         is live via a Removed probe even though target_file=\"target.ri\" \
+         would filter out the probe's Changed events"
+    );
+    assert!(
+        !dir.path().join("probe.ri").exists(),
+        "the removal probe should leave no probe.ri behind on disk"
+    );
+}
+
 // --- Debouncer unit tests (deterministic, clock-injected, no filesystem/threads) ---
 //
 // These pin the trailing-edge + per-path coalescing contract that
