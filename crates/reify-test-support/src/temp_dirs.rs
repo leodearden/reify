@@ -412,4 +412,18 @@ mod tests {
              {rel:?}), so a moved file is obvious; got: {msg:?}"
         );
     }
+
+    // ── ratchet: files migrated off hand-rolled temp dirs ────────────────────
+    //
+    // Each guard below is ratcheted on by task 5640 together with the migration
+    // that makes it pass.  The list is deliberately EXPLICIT rather than a
+    // repo-wide sweep: `crates/reify-build-utils/src/lib.rs` still holds a bare
+    // call pending task 5639's merge, and a sweep would make this crate red on
+    // an unrelated task's merge order.  Adding a file here is how you extend
+    // the ratchet — but migrate it in the same or the very next commit.
+
+    #[test]
+    fn import_resolve_tests_have_no_unguarded_temp_dirs() {
+        assert_no_unguarded_temp_dir_sites("crates/reify-compiler/tests/import_resolve_tests.rs");
+    }
 }
