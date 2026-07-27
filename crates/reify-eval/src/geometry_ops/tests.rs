@@ -30654,3 +30654,83 @@
         }
         assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
     }
+
+    #[test]
+    fn compile_geometry_op_circle_profile_negative_radius_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Circle,
+            vec![("radius".into(), literal_f64(-0.01))],
+        );
+        assert!(
+            result.is_err(),
+            "a negative circle radius must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["circle", "radius=-0.01"]);
+    }
+
+    #[test]
+    fn compile_geometry_op_circle_profile_zero_radius_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Circle,
+            vec![("radius".into(), literal_f64(0.0))],
+        );
+        assert!(
+            result.is_err(),
+            "a zero circle radius must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["circle", "radius=0"]);
+    }
+
+    /// CONSTRAINT test — see `..._rectangle_profile_undef_width_still_returns_ok`.
+    #[test]
+    fn compile_geometry_op_circle_profile_undef_radius_still_returns_ok() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Circle,
+            vec![("radius".into(), unresolved_ref("radius"))],
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::CircleProfile { radius }) => {
+                assert_eq!(
+                    radius,
+                    reify_ir::Value::Undef,
+                    "an unresolved radius must reach the IR as Undef, untouched"
+                );
+            }
+            other => panic!(
+                "an unresolved radius must degrade quietly to Ok(CircleProfile), got: {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "an unresolved dimension must be quiet — no diagnostic, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// POSITIVE control — an accepted radius reaches the IR as the ORIGINAL
+    /// `Value`, here a LENGTH `Scalar` (the validator must not re-wrap or
+    /// flatten a dimensioned value).
+    #[test]
+    fn compile_geometry_op_circle_profile_positive_length_radius_unchanged() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Circle,
+            vec![("radius".into(), literal_length(0.01))],
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::CircleProfile { radius }) => {
+                assert_eq!(
+                    radius,
+                    reify_ir::Value::Scalar {
+                        si_value: 0.01,
+                        dimension: reify_core::DimensionVector::LENGTH,
+                    },
+                    "a dimensioned radius must reach the IR untouched"
+                );
+            }
+            other => panic!("expected Ok(CircleProfile), got: {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
+    }
