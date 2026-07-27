@@ -1970,6 +1970,20 @@ assert "Q4: _lane-shared row reports live=IDLE (A2: the probe is -s, so a shared
 assert "Q5: _lane-shared classifies RECLAIMABLE, not LIVE (the A2 consequence downstream)" \
     bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-shared .*classification=RECLAIMABLE"' _ "$OUT"
 
+# Q6-Q8 pin the other half of the same run: _lane-excl (an EXCLUSIVE holder)
+# is the negative control that keeps Q4/Q5 from passing vacuously -- a probe
+# degenerated to "always IDLE" would satisfy Q4/Q5 without ever exercising
+# the -s/-x distinction, but it would also wrongly read _lane-excl as IDLE.
+# Measured mutation table (shipped `flock -n -s 7` vs. regressed
+# `flock -n -x 7`, same two-lane mount): shipped => live=1 free=1
+# reclaimable=1; regressed => live=2 free=0 reclaimable=0.
+assert "Q6: _lane-excl row still reports live=LIVE (negative control, invariant under the -s/-x mutation)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-excl .*live=LIVE"' _ "$OUT"
+assert "Q7: HEADROOM reports live=1 (only the exclusive lane counts live)" \
+    bash -c '[ "$1" = "1" ]' _ "$(_headroom_field "$OUT" live)"
+assert "Q8: HEADROOM reports free=1 and reclaimable=1 (the shared lane's freed capacity is visible in the aggregate)" \
+    bash -c '[ "$1" = "1" ] && [ "$2" = "1" ]' _ "$(_headroom_field "$OUT" free)" "$(_headroom_field "$OUT" reclaimable)"
+
 kill "$Q_SHARED_PID" 2>/dev/null || true
 _BGPIDS=()  # clear so cleanup doesn't double-kill
 
