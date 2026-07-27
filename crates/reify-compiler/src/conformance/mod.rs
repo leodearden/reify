@@ -291,15 +291,12 @@ pub(crate) fn check_trait_conformance(
 /// - The compiled_arg has `result_type == Type::Error` (anti-cascade).
 ///
 /// Emits at most one diagnostic per leaf conformance failure.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn check_trait_arg_conformance(
     target_name: &str,
     arg_name: &str,
     compiled_arg: &CompiledExpr,
     span: SourceSpan,
-    template_registry: &HashMap<String, &TopologyTemplate>,
-    trait_registry: &HashMap<String, &CompiledTrait>,
-    enum_defs: &[reify_ir::EnumDef],
+    registries: ConformanceRegistries<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     // Anti-cascade: if the arg itself had a compilation error, skip.
@@ -308,7 +305,7 @@ pub(crate) fn check_trait_arg_conformance(
     }
 
     // Look up the target template — skip if not found (external/forward-ref miss).
-    let Some(target) = template_registry.get(target_name) else {
+    let Some(target) = registries.templates.get(target_name) else {
         return;
     };
 
@@ -327,9 +324,7 @@ pub(crate) fn check_trait_arg_conformance(
     let mut ctx = WalkCtx {
         arg_name,
         span,
-        templates: template_registry,
-        traits: trait_registry,
-        enum_defs,
+        registries,
         diagnostics,
         // Ctor-conformance entry (value-cell + sub `=` paths): knob-governed
         // (Warning at α). task 5302.
@@ -361,15 +356,12 @@ pub(crate) fn check_trait_arg_conformance(
 /// emitted by the expression that produced the error.
 ///
 /// See task-4081 design decision §3 for rationale.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn check_fn_arg_conformance(
     param_type: &Type,
     arg_name: &str,
     compiled_arg: &CompiledExpr,
     span: SourceSpan,
-    template_registry: &HashMap<String, &TopologyTemplate>,
-    trait_registry: &HashMap<String, &CompiledTrait>,
-    enum_defs: &[reify_ir::EnumDef],
+    registries: ConformanceRegistries<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     // Anti-cascade: if the arg itself had a compilation error, skip.
@@ -381,9 +373,7 @@ pub(crate) fn check_fn_arg_conformance(
     let mut ctx = WalkCtx {
         arg_name,
         span,
-        templates: template_registry,
-        traits: trait_registry,
-        enum_defs,
+        registries,
         diagnostics,
         // Fn-call trait-conformance is OUT OF SCOPE for the 5302 ctor knob and
         // must stay a hard error (preserves task-4081 fn-call semantics).
@@ -412,9 +402,7 @@ pub(crate) fn check_fn_arg_conformance(
 /// All other cell types (Real, Int, List, …) are out of scope for this pass.
 pub(crate) fn check_param_default_conformance(
     template: &TopologyTemplate,
-    template_registry: &HashMap<String, &TopologyTemplate>,
-    trait_registry: &HashMap<String, &CompiledTrait>,
-    enum_defs: &[reify_ir::EnumDef],
+    registries: ConformanceRegistries<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for vc in &template.value_cells {
@@ -433,7 +421,8 @@ pub(crate) fn check_param_default_conformance(
                 // Get the effective type, accounting for FunctionCall→StructureRef promotion
                 // (e.g. `Steel_AISI_1045()` may carry a numeric fallback result_type but
                 // its callee IS a known structure template → promote to StructureRef).
-                let promoted = promote_function_call_to_structure_ref(default, template_registry);
+                let promoted =
+                    promote_function_call_to_structure_ref(default, registries.templates);
                 let effective_ty = promoted.as_ref().unwrap_or(&default.result_type);
                 // Conservatively skip when the effective type is plausibly structure-
                 // compatible at the eval level:
@@ -456,9 +445,7 @@ pub(crate) fn check_param_default_conformance(
                 let mut ctx = WalkCtx {
                     arg_name: vc.id.member.as_str(),
                     span: vc.span,
-                    templates: template_registry,
-                    traits: trait_registry,
-                    enum_defs,
+                    registries,
                     diagnostics,
                     // Param-default conformance is a ctor-conformance entry:
                     // knob-governed (Warning at α). task 5302.
@@ -536,9 +523,7 @@ pub(crate) fn check_param_default_conformance(
                 let mut ctx = WalkCtx {
                     arg_name: vc.id.member.as_str(),
                     span: vc.span,
-                    templates: template_registry,
-                    traits: trait_registry,
-                    enum_defs,
+                    registries,
                     diagnostics,
                     // Param-default conformance is a ctor-conformance entry:
                     // knob-governed (Warning at α). task 5302.
@@ -560,12 +545,33 @@ pub(crate) fn check_param_default_conformance(
 /// 7-arg call duplication.
 ///
 /// Recursive calls simply pass `ctx` — Rust auto-reborrows `&mut` correctly.
-struct WalkCtx<'a> {
-    arg_name: &'a str,
-    span: SourceSpan,
-    templates: &'a HashMap<String, &'a TopologyTemplate>,
-    traits: &'a HashMap<String, &'a CompiledTrait>,
-    /// Declared enums visible at this call site — `prelude ++ module-local`, i.e.
+/// The three immutable lookup tables every ctor/fn conformance entry point needs,
+/// bundled into one borrow-struct.
+///
+/// `templates`, `traits` and `enum_defs` were threaded as three separate
+/// trailing arguments through six functions in this module plus two phase
+/// functions in `entities_phase.rs`, which is what forced the
+/// `#[allow(clippy::too_many_arguments)]` suppressions on
+/// [`check_trait_arg_conformance`], [`check_fn_arg_conformance`] and
+/// `check_expr_fn_calls`. [`WalkCtx`] already aggregated exactly this trio, so
+/// the tuple was being unbundled at the entry points only to be re-bundled one
+/// frame later.
+///
+/// Adding a fourth table is now a one-line change here rather than a ninth
+/// parameter and a fourth suppression — which matters because
+/// [`general_leaf_param_family_is_validated`]'s "still unexamined" list names
+/// sixteen more `Type` variants, several of which will need their own lookup.
+///
+/// `Copy` because it is three shared references; callers pass it by value and
+/// [`WalkCtx`] stores it by value, so no reborrow ceremony is needed at the
+/// recursive call sites.
+#[derive(Clone, Copy)]
+pub(crate) struct ConformanceRegistries<'a> {
+    /// Structure templates visible at the call site, keyed by name.
+    pub templates: &'a HashMap<String, &'a TopologyTemplate>,
+    /// Compiled traits visible at the call site, keyed by name.
+    pub traits: &'a HashMap<String, &'a CompiledTrait>,
+    /// Declared enums visible at the call site — `prelude ++ module-local`, i.e.
     /// exactly `CompilationCtx.resolution_enums` (task 5465, family 4).
     ///
     /// Exists SOLELY so the general concrete-leaf arm can tolerate D1/F-Mono
@@ -573,15 +579,22 @@ struct WalkCtx<'a> {
     /// `Type::Enum(name)`, never the applied form, so a declared
     /// `Type::Applied { name: "Result", args: [...] }` param would spuriously
     /// fail raw [`type_compatible`], which has no Applied-vs-Enum arm in EITHER
-    /// direction. The arm maps BOTH sides through [`base_enum_name`], which
-    /// needs this table to recognise an applied ENUM (vs. an applied generic
-    /// STRUCTURE like `Coupling<T>`, which is spelled the same way) while
-    /// keeping a genuine cross-enum mismatch rejected.
+    /// direction. The general concrete-leaf arm maps BOTH sides through
+    /// [`base_enum_name`], which needs this table to recognise an applied ENUM
+    /// (vs. an applied generic STRUCTURE like `Coupling<T>`, which is spelled
+    /// the same way) while keeping a genuine cross-enum mismatch rejected.
     ///
     /// [`base_enum_name`] is the same oracle [`enum_payload_compatible`] uses at
     /// the payload-field site in `variant_construct.rs`, so the two decisions
     /// cannot drift.
-    enum_defs: &'a [reify_ir::EnumDef],
+    pub enum_defs: &'a [reify_ir::EnumDef],
+}
+
+struct WalkCtx<'a> {
+    arg_name: &'a str,
+    span: SourceSpan,
+    /// The immutable lookup tables (templates / traits / enums) this walk reads.
+    registries: ConformanceRegistries<'a>,
     diagnostics: &'a mut Vec<Diagnostic>,
     /// Severity at which conformance diagnostics emitted through this walk are
     /// built (task 5302). The two ctor-conformance entries
@@ -705,7 +718,8 @@ fn walk_param_against_arg(param_type: &Type, compiled_arg: &CompiledExpr, ctx: &
         // 'Real') instead of the structure name (e.g. 'Steel') for cases like
         // `Host(m: Steel())` where `m : Option<MaterialSpec>`.
         _ => {
-            let promoted = promote_function_call_to_structure_ref(compiled_arg, ctx.templates);
+            let promoted =
+                promote_function_call_to_structure_ref(compiled_arg, ctx.registries.templates);
             let effective_type = promoted.as_ref().unwrap_or(&compiled_arg.result_type);
             walk_param_against_arg_type(param_type, effective_type, ctx);
         }
@@ -847,10 +861,14 @@ fn emit_leaf_conformance_for_arg_type(
 ) {
     match arg_type {
         Type::StructureRef(struct_name) => {
-            let Some(arg_template) = ctx.templates.get(struct_name.as_str()) else {
+            let Some(arg_template) = ctx.registries.templates.get(struct_name.as_str()) else {
                 return;
             };
-            if !satisfies_trait_bound(&arg_template.trait_bounds, required_trait, ctx.traits) {
+            if !satisfies_trait_bound(
+                &arg_template.trait_bounds,
+                required_trait,
+                ctx.registries.traits,
+            ) {
                 ctx.diagnostics.push(
                     diag_at(
                         ctx.severity,
@@ -872,7 +890,12 @@ fn emit_leaf_conformance_for_arg_type(
         }
         Type::TraitObject(arg_trait_name) => {
             let mut visited = HashSet::new();
-            if !trait_satisfies(arg_trait_name, required_trait, ctx.traits, &mut visited) {
+            if !trait_satisfies(
+                arg_trait_name,
+                required_trait,
+                ctx.registries.traits,
+                &mut visited,
+            ) {
                 ctx.diagnostics.push(
                     diag_at(
                         ctx.severity,
@@ -1486,7 +1509,7 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
                         format!("expected '{}', got '{}'", param_type, arg_type),
                     )),
                 );
-            } else if let Some(param_enum) = base_enum_name(param_type, ctx.enum_defs) {
+            } else if let Some(param_enum) = base_enum_name(param_type, ctx.registries.enum_defs) {
                 // ENUM FAMILY (task 5465, family 4). Handled as its own branch,
                 // BEFORE the allowlist, so the D1/F-Mono erasure gap is absorbed
                 // without a `type_compatible` call that cannot express it.
@@ -1534,7 +1557,7 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
                 // an allowlisted family would be. Type-ARG agreement is the
                 // inference/pin passes' job, not this walker's — see
                 // `enum_payload_compatible`'s doc.
-                if base_enum_name(arg_type, ctx.enum_defs) != Some(param_enum) {
+                if base_enum_name(arg_type, ctx.registries.enum_defs) != Some(param_enum) {
                     reject_if_incompatible(param_type, arg_type, ctx, emit_arg_type_mismatch);
                 }
             } else if general_leaf_param_family_is_validated(param_type) {
@@ -1820,7 +1843,7 @@ fn check_leaf_trait_conformance(
     // structure's trait bounds. Int appears when the callee's first arg is a
     // whole-number literal (e.g. `Steel(density: 1000.0)` — the literal 1000.0
     // is canonicalized to Int by the expression compiler).
-    let promoted = promote_function_call_to_structure_ref(compiled_arg, ctx.templates);
+    let promoted = promote_function_call_to_structure_ref(compiled_arg, ctx.registries.templates);
     let effective_arg_type = promoted.as_ref().unwrap_or(arg_type);
 
     // Geometry args at compile-inferred trait slots (`Bounded`/`Connected`/`Convex`):
@@ -1857,7 +1880,7 @@ fn check_leaf_trait_conformance(
         };
         if let Some(trait_kind) = geom_trait {
             let env = RealizationLetEnv {
-                templates: ctx.templates,
+                templates: ctx.registries.templates,
                 in_flight: RefCell::new(Vec::new()),
             };
             let inferred = infer_traits_for_expr_in_env(compiled_arg, &env);
@@ -6360,9 +6383,11 @@ mod tests {
             "ms",
             &rcl,
             SourceSpan::empty(0),
-            &template_registry,
-            &trait_registry,
-            &[],
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
             &mut diagnostics,
         );
 
@@ -6477,9 +6502,11 @@ mod tests {
             "joint",
             &compiled_arg,
             SourceSpan::empty(0),
-            &template_registry,
-            &trait_registry,
-            &[],
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
             &mut diagnostics,
         );
 
@@ -6527,9 +6554,11 @@ mod tests {
             "joint",
             &compiled_arg,
             SourceSpan::empty(0),
-            &template_registry,
-            &trait_registry,
-            &[],
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
             &mut diagnostics,
         );
 
@@ -6553,9 +6582,11 @@ mod tests {
             "joint",
             &error_arg,
             SourceSpan::empty(0),
-            &template_registry,
-            &trait_registry,
-            &[],
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
             &mut diagnostics,
         );
 
@@ -6592,9 +6623,11 @@ mod tests {
             "joint",
             &compiled_arg,
             SourceSpan::empty(0),
-            &template_registry,
-            &trait_registry,
-            &[],
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
             &mut diagnostics,
         );
 
@@ -6630,9 +6663,11 @@ mod tests {
             "joint",
             &compiled_arg,
             SourceSpan::empty(0),
-            &template_registry,
-            &trait_registry,
-            &[],
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
             &mut diagnostics,
         );
 
@@ -6738,9 +6773,11 @@ mod tests {
             "part",
             &compiled_arg,
             SourceSpan::empty(0),
-            &template_registry,
-            &trait_registry,
-            &[],
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
             &mut diagnostics,
         );
         assert_eq!(
@@ -6777,9 +6814,11 @@ mod tests {
             "part",
             &compiled_arg,
             SourceSpan::empty(0),
-            &template_registry,
-            &trait_registry,
-            &[],
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
             &mut diagnostics,
         );
         assert_eq!(
@@ -6808,9 +6847,11 @@ mod tests {
             "part",
             &compiled_arg,
             SourceSpan::empty(0),
-            &template_registry,
-            &trait_registry,
-            &[],
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
             &mut diagnostics,
         );
         assert_eq!(
@@ -6849,9 +6890,11 @@ mod tests {
             "part",
             &typeparam_arg,
             SourceSpan::empty(0),
-            &template_registry,
-            &trait_registry,
-            &[],
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
             &mut diagnostics,
         );
         assert_eq!(
@@ -6871,9 +6914,11 @@ mod tests {
             "part",
             &error_arg,
             SourceSpan::empty(0),
-            &template_registry,
-            &trait_registry,
-            &[],
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
             &mut diagnostics2,
         );
         assert_eq!(
@@ -6928,9 +6973,11 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         check_param_default_conformance(
             &template,
-            &template_registry,
-            &trait_registry,
-            &[],
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
             &mut diagnostics,
         );
         assert_eq!(
@@ -6966,9 +7013,11 @@ mod tests {
             "axis",
             &compiled_arg,
             SourceSpan::empty(0),
-            &template_registry,
-            &trait_registry,
-            &[],
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
             &mut diagnostics,
         );
         assert_eq!(
@@ -7018,9 +7067,11 @@ mod tests {
             "axis",
             &compiled_arg,
             SourceSpan::empty(0),
-            &template_registry,
-            &trait_registry,
-            &[],
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
             &mut diagnostics,
         );
         assert_eq!(
@@ -7060,9 +7111,11 @@ mod tests {
             "axis",
             &compiled_arg,
             SourceSpan::empty(0),
-            &template_registry,
-            &trait_registry,
-            &[],
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
             &mut diagnostics,
         );
         assert_eq!(
@@ -7111,9 +7164,11 @@ mod tests {
             "origin",
             &compiled_arg,
             SourceSpan::empty(0),
-            &template_registry,
-            &trait_registry,
-            &[],
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
             &mut diagnostics,
         );
         assert_eq!(
@@ -7158,9 +7213,11 @@ mod tests {
             "origin",
             &compiled_arg,
             SourceSpan::empty(0),
-            &template_registry,
-            &trait_registry,
-            &[],
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
             &mut diagnostics,
         );
         assert_eq!(
@@ -7216,9 +7273,11 @@ mod tests {
             "inertia",
             &compiled_arg,
             SourceSpan::empty(0),
-            &template_registry,
-            &trait_registry,
-            &[],
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
             &mut diagnostics,
         );
         assert_eq!(
@@ -7264,9 +7323,11 @@ mod tests {
             "mode_shape",
             &compiled_arg,
             SourceSpan::empty(0),
-            &template_registry,
-            &trait_registry,
-            &[],
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
             &mut diagnostics,
         );
         assert_eq!(
@@ -7341,9 +7402,11 @@ mod tests {
             "r",
             &compiled_arg,
             SourceSpan::empty(0),
-            &template_registry,
-            &trait_registry,
-            &enum_defs,
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &enum_defs,
+            },
             &mut diagnostics,
         );
         assert_eq!(
@@ -7382,9 +7445,11 @@ mod tests {
             "c",
             &compiled_arg,
             SourceSpan::empty(0),
-            &template_registry,
-            &trait_registry,
-            &enum_defs,
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &enum_defs,
+            },
             &mut diagnostics,
         );
         assert_eq!(
@@ -7431,9 +7496,11 @@ mod tests {
             "c",
             &compiled_arg,
             SourceSpan::empty(0),
-            &template_registry,
-            &trait_registry,
-            &enum_defs,
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &enum_defs,
+            },
             &mut diagnostics,
         );
         assert_eq!(
