@@ -1109,6 +1109,55 @@ mod tests {
         }
     }
 
+    /// The third `Static` exit, and the only one reachable from a *finite*
+    /// non-zero `si_value`: the quotient against the default rung overflows.
+    ///
+    /// Volume's default rung is `mm³` (`si_scale 1e-9`), so `1e300 m³` divides
+    /// to `inf`. No rung is in band, and `engineering_parts` has no mantissa to
+    /// split, so it returns `None` and `auto_scaled` degrades to
+    /// [`AutoScaleChoice::Static`] — the cell renders a bare `inf mm³`.
+    ///
+    /// That is a *graceful* degradation, not a regression: the pre-§5 static
+    /// path divided by the same `si_scale` and produced the same `inf`. But it
+    /// is the one case where §5e's "hop or engineering notation, never a bare
+    /// out-of-band magnitude" does not hold, so it is pinned here rather than
+    /// left implicit — a future change to the degradation policy should have to
+    /// edit this test deliberately.
+    ///
+    /// `engineering_parts`' other `None` exit (the `MAX_CORRECTIONS` loop
+    /// exhaustion) lands on this same `None => Static` arm; it is unreachable
+    /// from the shipped registry, since the settle test and the step direction
+    /// share one comparator and so cannot oscillate.
+    #[test]
+    fn auto_scaled_degrades_to_static_when_the_quotient_overflows() {
+        let ladders = unit_ladders();
+        let volume = ladder(&ladders, "Volume");
+
+        assert!(
+            !(1e300f64 / 1e-9).is_finite(),
+            "premise: 1e300 m³ over the mm³ rung really does overflow"
+        );
+        for signed in [1e300, -1e300] {
+            assert_eq!(
+                volume.auto_scaled(signed),
+                AutoScaleChoice::Static,
+                "an overflowing quotient has no mantissa to band, so §5's policy \
+                 degrades to the pre-§5 static rendering (si_value {signed})"
+            );
+        }
+
+        // The neighbouring dimensions do *not* overflow at this magnitude
+        // (mm² is 1e-6, mm is 1e-3), so they still honour §5e — this is a
+        // property of the rung's scale, not a blanket ceiling on si_value.
+        for dimension in ["Length", "Area"] {
+            assert_ne!(
+                ladder(&ladders, dimension).auto_scaled(1e300),
+                AutoScaleChoice::Static,
+                "{dimension} does not overflow at 1e300, so §5e still applies"
+            );
+        }
+    }
+
     /// §5a's band is stated on `|mantissa|`, so a negative magnitude selects
     /// exactly the rung its absolute value would.
     #[test]
@@ -1253,10 +1302,18 @@ mod tests {
         }
     }
 
-    /// §5e's rule is exhaustive for a default-ON dimension: every finite
-    /// non-zero magnitude either hops to an in-band rung or falls back to
-    /// engineering notation. There is no third outcome — an out-of-band plain
-    /// magnitude would mean the policy silently gave up.
+    /// §5e's rule is exhaustive for a default-ON dimension: every usable
+    /// magnitude either hops to an in-band rung or falls back to engineering
+    /// notation. There is no third outcome — an out-of-band plain magnitude
+    /// would mean the policy silently gave up.
+    ///
+    /// "Usable" is the precondition this sweep actually relies on, and it is
+    /// narrower than "finite and non-zero": the *quotient* `si_value /
+    /// default_rung.si_scale` must also be finite. `magnitude_sweep(-12, 12)`
+    /// stays well inside that range for every ladder here. The boundary itself
+    /// — where the quotient overflows and the policy degrades to `Static` — is
+    /// owned by `auto_scaled_degrades_to_static_when_the_quotient_overflows`
+    /// above.
     ///
     /// The mirror half (default-OFF and `auto_scale: None` are `Static`
     /// everywhere) is owned by
