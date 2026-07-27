@@ -67,6 +67,33 @@
 //! deliberately no `reify-compiler` dependency (the audit crate stays a pure
 //! text scanner, PRD §(b)). No regex crate: the audit crate has none and must
 //! not gain one.
+//!
+//! ## Both scanners are deliberately format-agnostic
+//!
+//! Neither scanner models the syntax it reads. [`chunk_call_mentions`] runs a
+//! byte walk over each line looking for `ident(` — it knows nothing of
+//! headings, fence tags, indented fences, table pipes, bold-prefixed lists,
+//! nested backticks or trailing whitespace, and therefore cannot be broken by
+//! any of them. [`extract_registries`] is line-level for the same reason.
+//!
+//! This is a correctness property, not a shortcut. Both lanes are **silent on
+//! failure**: a blind chunk scanner makes the fabrication lane report clean
+//! (nothing is mentioned, so nothing can be fabricated), and a blind registry
+//! scanner makes the omission lane report clean (an empty census is fully
+//! covered). A markdown-aware or macro-aware parser would go dark the first
+//! time someone reflowed a table or wrapped a registry in a macro, and would
+//! announce it as GREEN. So the scanners are built to have as little to break
+//! as possible, and two floor guards in `tests/pdoccover.rs` pin what remains:
+//!
+//! | Guard | Defends |
+//! |---|---|
+//! | `registry_extraction_floor_guard_against_real_units_rs` | the real `units.rs` still yields every PRD-named registry, non-empty, above a distinct-name floor |
+//! | `chunk_call_mention_floor_guard_against_real_chunks` | the real chunk corpus still yields a call-shaped census above a floor, spanning several files, containing structural anchors |
+//!
+//! Both freeze floors, never exact counts, so ordinary source edits never flip
+//! them — only an extraction regression does. When one fails, fix the scanner;
+//! relaxing the floor restores the exact silent-false-clean failure the guard
+//! exists to prevent.
 
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 use std::collections::BTreeSet;
@@ -706,12 +733,16 @@ fn in_oracle_scope(path: &str) -> bool {
 /// left delimiter must not be `.`, because `solid.volume()` is member access
 /// on a value and the fabrication lane has no oracle for methods.
 ///
-/// **Format-agnostic by construction** — no heading, fence-tag or table
-/// awareness anywhere. That is what makes extraction survive a chunk reformat,
-/// and what makes the chunk-path drift guard satisfiable at all: a
-/// markdown-structure-aware extractor would go silently blind the first time
-/// someone reflowed a table, and a silently-blind fabrication lane reports
-/// clean.
+/// **Format-agnostic by construction** — a byte walk over each line, with no
+/// awareness of headings, fence tags, indented fences, table pipes,
+/// bold-prefixed lists (`**Modify:** `fillet(...)`, `chamfer(...)``), nested
+/// backticks or trailing whitespace. All of those shapes appear in the real
+/// corpus and all of them fall out for free, because nothing here parses
+/// markdown. That is what makes the chunk-path drift guard satisfiable at all:
+/// a structure-aware extractor would go silently blind the first time someone
+/// reflowed a table, and a silently-blind fabrication lane reports clean.
+/// `chunk_call_mention_floor_guard_against_real_chunks` is what defends the
+/// property (module header, "Both scanners are deliberately format-agnostic").
 ///
 /// Chunk-side escape: a line carrying a well-formed `pdoccover:allow —
 /// <reason>` documents something deliberately ahead of the implementation, and
