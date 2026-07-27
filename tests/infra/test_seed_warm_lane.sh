@@ -2795,6 +2795,62 @@ assert "S2d: positive control: past-stamped output + same delta exits 0 (guard d
 assert "S2d: positive control: STDOUT is exactly <lane>/target" \
     bash -c '[ "$1" = "$2" ]' _ "$OUT" "$S2P_LANE/target"
 
+# ── S3: a --fresh-checkout that resolves NO delta-touch base must SAY SO. All
+# three tiers of the resolution (--base-commit / <base>.basecommit /
+# .warm-base-meta BASE_COMMIT) coming back empty means nothing is delta-touched,
+# so every tracked source keeps the 2020-01-01 bulk stamp and cannot out-date
+# any cloned build artifact — the same freshness inversion S1/S2 target, reached
+# by a different route. Today that condition is COMPLETELY SILENT: the
+# `if [ -n "$EFFECTIVE_BASE_COMMIT" ]` block simply has no else.
+#
+# Scope note: this asserts a warn ONLY. Making the bulk stamp conditional (or
+# failing closed) would break two currently-green DECLARED contracts — Block D
+# above (D1/D2/D4 assert the bulk stamp fires with no base commit in the
+# fixture) and tests/infra/test_warm_lane_pool.sh:398 (--fresh-checkout --touch
+# with no --base-commit) — so it is a D5-contract change needing its own
+# ruling, tracked as a follow-up. S3b pins that the warn stays purely additive.
+# ─────────────────────────────────────────────────────────────────────────────
+S3_BASE_PARENT="$(mktemp -d /tmp/test-seed-S3-parent-XXXXXX)"
+S3_BASE="$S3_BASE_PARENT/target"
+S3_LANE="$(make_isolated_lane S3-lane)"
+_TMPDIRS+=("$S3_BASE_PARENT")
+# Sidecar deliberately carries NO BASE_COMMIT line; no ${S3_BASE}.basecommit
+# stamp is written; and no --base-commit flag is passed below. All three tiers
+# resolve empty.
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$S3_BASE_PARENT/.warm-base-meta"
+mkdir -p "$S3_BASE/debug"
+echo "artifact" > "$S3_BASE/debug/artifact.a"
+mkdir -p "$S3_LANE/src"
+echo 'pub fn tracked() {}' > "$S3_LANE/src/tracked.rs"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$S3_BASE" "$S3_LANE" --fresh-checkout
+
+# S3a: the condition and its consequence are both named on stderr.
+assert "S3a: STDERR carries a [warn] line about the unresolved delta-touch base" \
+    bash -c 'printf "%s\n" "$1" | grep -q "\[warn\].*delta-touch base"' _ "$ERR_OUT"
+assert "S3a: the warn names all three resolution tiers that came back empty" \
+    bash -c 'l="$(printf "%s\n" "$1" | grep "delta-touch base")"
+             printf "%s" "$l" | grep -qF -- "--base-commit" &&
+             printf "%s" "$l" | grep -qF ".basecommit" &&
+             printf "%s" "$l" | grep -qF ".warm-base-meta"' _ "$ERR_OUT"
+assert "S3a: the warn names the CONSEQUENCE (2020-01-01 stamp retained, cargo sees stale outputs as Fresh)" \
+    bash -c 'l="$(printf "%s\n" "$1" | grep "delta-touch base")"
+             printf "%s" "$l" | grep -qF "2020-01-01" &&
+             printf "%s" "$l" | grep -qiF "fresh"' _ "$ERR_OUT"
+
+# S3b: REGRESSION PIN — the warn is purely ADDITIVE. Exit code, stdout and the
+# bulk stamp itself are all unchanged (the D5 contract Block D's D1 and
+# test_warm_lane_pool.sh:398 both depend on).
+assert "S3b: no-base seed still exits 0 (warn is additive, not a new failure)" \
+    test "$RC" -eq 0
+assert "S3b: STDOUT is still exactly <lane>/target" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$S3_LANE/target"
+S3B_SRC_MTIME="$(stat -c '%Y' "$S3_LANE/src/tracked.rs")"
+assert "S3b: tracked source still carries the 2020-01-01 bulk stamp ($EPOCH_2020) — D5 unchanged" \
+    test "$S3B_SRC_MTIME" -eq "$EPOCH_2020"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block R: lane isolation guards (task 5590) — every lane created in this file
 # must be nested under a private per-run parent, never bare /tmp, because
