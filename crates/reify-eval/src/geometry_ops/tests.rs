@@ -30440,3 +30440,217 @@
             diagnostics
         );
     }
+
+    // ── Profile dimension validation (task 5664) ────────────────────────────
+    //
+    // `profile_rectangle` / `profile_circle` / `profile_ellipse` used to
+    // forward every evaluated dimension into the IR unjudged, so a negative or
+    // zero width/radius/semi-axis only surfaced much later as an opaque OCCT
+    // `OperationFailed("... must be finite and positive")` that named no
+    // argument. These tests drive `compile_geometry_op` end-to-end and pin the
+    // early, argument-level rejection, modelled on
+    // `compile_geometry_op_scale_negative_factor_returns_none` (:2265).
+
+    /// Helper: run `compile_geometry_op` on a bare `Profile` op and return its
+    /// result alongside the diagnostics it pushed. Profiles are leaf ops — no
+    /// target, no step handles, no named steps — so every context slice is
+    /// empty.
+    fn compile_profile_op(
+        kind: reify_compiler::ProfileKind,
+        args: Vec<(String, reify_ir::CompiledExpr)>,
+    ) -> (Result<reify_ir::GeometryOp, String>, Vec<Diagnostic>) {
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &CompiledGeometryOp::Profile { kind, args },
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        (result, diagnostics)
+    }
+
+    /// Helper: assert `diagnostics` holds EXACTLY one `Severity::Warning` whose
+    /// message contains every needle. The `len() == 1` half is the anti-cascade
+    /// contract (geometry_ops.rs:160) — one Warning at the origin, one Error at
+    /// the caller — and is what pins short-circuit-on-first-bad-dimension.
+    fn assert_exactly_one_warning(diagnostics: &[Diagnostic], needles: &[&str]) {
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic, got: {:?}",
+            diagnostics
+        );
+        let d = &diagnostics[0];
+        assert!(
+            matches!(d.severity, reify_core::Severity::Warning),
+            "expected Severity::Warning, got: {:?}",
+            d
+        );
+        for needle in needles {
+            assert!(
+                d.message.contains(needle),
+                "expected the warning to contain {:?}, got: {:?}",
+                needle,
+                d.message
+            );
+        }
+    }
+
+    /// Helper: a `CompiledExpr` that evaluates to `Value::Undef` — a `ValueRef`
+    /// to a cell absent from the (empty) `ValueMap`. This is the production
+    /// shape of an unresolved param or a not-yet-filled cell during a partial
+    /// or solver-fixpoint build, and it MUST keep flowing through the profile
+    /// builders untouched.
+    fn unresolved_ref(name: &str) -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new("Profile", name),
+            reify_core::Type::length(),
+        )
+    }
+
+    #[test]
+    fn compile_geometry_op_rectangle_profile_negative_width_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Rectangle,
+            vec![
+                ("width".into(), literal_f64(-0.03)),
+                ("height".into(), literal_f64(0.05)),
+            ],
+        );
+        assert!(
+            result.is_err(),
+            "a negative rectangle width must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["rectangle", "width=-0.03"]);
+    }
+
+    #[test]
+    fn compile_geometry_op_rectangle_profile_zero_width_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Rectangle,
+            vec![
+                ("width".into(), literal_f64(0.0)),
+                ("height".into(), literal_f64(0.05)),
+            ],
+        );
+        assert!(
+            result.is_err(),
+            "a zero rectangle width must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["rectangle", "width=0"]);
+    }
+
+    #[test]
+    fn compile_geometry_op_rectangle_profile_negative_height_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Rectangle,
+            vec![
+                ("width".into(), literal_f64(0.03)),
+                ("height".into(), literal_f64(-0.05)),
+            ],
+        );
+        assert!(
+            result.is_err(),
+            "a negative rectangle height must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["rectangle", "height=-0.05"]);
+    }
+
+    #[test]
+    fn compile_geometry_op_rectangle_profile_zero_height_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Rectangle,
+            vec![
+                ("width".into(), literal_f64(0.03)),
+                ("height".into(), literal_f64(0.0)),
+            ],
+        );
+        assert!(
+            result.is_err(),
+            "a zero rectangle height must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["rectangle", "height=0"]);
+    }
+
+    #[test]
+    fn compile_geometry_op_rectangle_profile_both_dimensions_negative_warns_once() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Rectangle,
+            vec![
+                ("width".into(), literal_f64(-0.03)),
+                ("height".into(), literal_f64(-0.05)),
+            ],
+        );
+        assert!(result.is_err(), "got: {:?}", result);
+        // Short-circuits on the FIRST bad dimension: `width` is read before
+        // `height`, so exactly one Warning naming `width` — no cascade.
+        assert_exactly_one_warning(&diagnostics, &["rectangle", "width=-0.03"]);
+    }
+
+    /// CONSTRAINT test — an UNRESOLVED dimension is not a rejected one.
+    ///
+    /// `profile_rectangle` returns `Ok(RectangleProfile { width: Undef, .. })`
+    /// whenever a param has not resolved yet, a normal transient state during
+    /// partial builds and solver fixpoint iteration. Rejecting `Undef` would
+    /// turn every intermediate iteration into a compile error, so the
+    /// positivity gate must key off `Value::as_f64()` (`None` for `Undef`)
+    /// rather than off "is not a positive number".
+    #[test]
+    fn compile_geometry_op_rectangle_profile_undef_width_still_returns_ok() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Rectangle,
+            vec![
+                ("width".into(), unresolved_ref("width")),
+                ("height".into(), literal_f64(0.05)),
+            ],
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::RectangleProfile { width, height }) => {
+                assert_eq!(
+                    width,
+                    reify_ir::Value::Undef,
+                    "an unresolved width must reach the IR as Undef, untouched"
+                );
+                assert_eq!(height, reify_ir::Value::Real(0.05));
+            }
+            other => panic!(
+                "an unresolved width must degrade quietly to Ok(RectangleProfile), got: {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "an unresolved dimension must be quiet — no diagnostic, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// POSITIVE control — a well-formed rectangle is untouched, and its
+    /// dimensions reach the IR as the ORIGINAL `Value`s (a bare `Real` stays a
+    /// bare `Real`; the validator never re-wraps).
+    #[test]
+    fn compile_geometry_op_rectangle_profile_positive_dimensions_unchanged() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Rectangle,
+            vec![
+                ("width".into(), literal_f64(0.02)),
+                ("height".into(), literal_f64(0.03)),
+            ],
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::RectangleProfile { width, height }) => {
+                assert_eq!(width, reify_ir::Value::Real(0.02));
+                assert_eq!(height, reify_ir::Value::Real(0.03));
+            }
+            other => panic!("expected Ok(RectangleProfile), got: {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
+    }
