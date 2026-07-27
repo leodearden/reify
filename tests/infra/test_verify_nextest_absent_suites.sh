@@ -471,4 +471,7 @@ assert "S3: test_verify_offline_partition.sh reaches test_summary with rc=0 / 0 
 assert "S4: test_verify_semaphore_e2e.sh reaches test_summary with rc=0 / 0 FAIL / >= 65 passed on a nextest-less host" \
     _suite_is_clean_without_nextest test_verify_semaphore_e2e.sh 65
 
+assert "S5: test_verify_scope.sh reaches test_summary with rc=0 / 0 FAIL / >= 153 passed on a nextest-less host" \
+    _suite_is_clean_without_nextest test_verify_scope.sh 153
+
 test_summary
