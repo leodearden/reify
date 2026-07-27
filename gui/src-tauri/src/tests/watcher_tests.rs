@@ -267,17 +267,21 @@ fn wait_for_watch_registration_via_removal_confirms_a_watch_behind_a_target_file
     // closure, so that flag staying false is evidence the event never
     // arrived (filtered upstream in watcher.rs) rather than evidence this
     // closure merely doesn't look for it.
-    let Some(_watcher) = try_watcher(dir.path(), Some(PathBuf::from("target.ri")), move |event| {
-        match event {
-            FileEvent::Removed(path) if path.ends_with("probe.ri") => {
-                probe_seen_clone.store(true, Ordering::SeqCst);
-            }
-            FileEvent::Changed(path) if path.ends_with("probe.ri") => {
-                changed_probe_seen_clone.store(true, Ordering::SeqCst);
-            }
-            _ => {}
-        }
-    }) else {
+    let Some(_watcher) =
+        try_watcher(
+            dir.path(),
+            Some(PathBuf::from("target.ri")),
+            move |event| match event {
+                FileEvent::Removed(path) if path.ends_with("probe.ri") => {
+                    probe_seen_clone.store(true, Ordering::SeqCst);
+                }
+                FileEvent::Changed(path) if path.ends_with("probe.ri") => {
+                    changed_probe_seen_clone.store(true, Ordering::SeqCst);
+                }
+                _ => {}
+            },
+        )
+    else {
         return;
     };
 
