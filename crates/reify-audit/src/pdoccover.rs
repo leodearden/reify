@@ -691,12 +691,6 @@ pub fn known_name_index(sources: &[(String, String)]) -> BTreeSet<String> {
 ///   that were proposed and never implemented — the exact class the lane
 ///   exists to catch;
 /// - docs are excluded for the same reason as chunks.
-// Exercised by the unit tests now; `check()` consumes it when the fabrication
-// lane lands, at which point this attribute goes away. Scoped to `not(test)`
-// rather than a bare `allow(dead_code)` so the lint keeps working under
-// `cargo test` — a blanket allow here would also mask a genuinely orphaned
-// helper later.
-#[cfg_attr(not(test), allow(dead_code))]
 fn in_oracle_scope(path: &str) -> bool {
     (path.starts_with("crates/reify-compiler/src/") && path.ends_with(".rs"))
         || (path.starts_with("crates/reify-compiler/stdlib/") && path.ends_with(".ri"))
@@ -842,6 +836,9 @@ struct Inputs {
     /// Names listed in the ratchet baseline; empty when the file is absent,
     /// untracked, unreadable or empty.
     baseline: BTreeSet<String>,
+    /// Pre-read `(path, content)` for every tracked oracle-scope source, from
+    /// which the fabrication lane builds its existence index.
+    oracle_sources: Vec<(String, String)>,
 }
 
 /// Names listed in a `pdoccover-baseline.txt`.
@@ -903,10 +900,17 @@ fn load_inputs(ctx: &AuditContext<'_>) -> Inputs {
         BTreeSet::new()
     };
 
+    let oracle_sources: Vec<(String, String)> = tracked
+        .iter()
+        .filter(|p| in_oracle_scope(p))
+        .filter_map(|p| read_relative(ctx, p).map(|c| (p.clone(), c)))
+        .collect();
+
     Inputs {
         registries,
         chunk_sources,
         baseline,
+        oracle_sources,
     }
 }
 
@@ -914,13 +918,17 @@ fn load_inputs(ctx: &AuditContext<'_>) -> Inputs {
 // Finding emission
 // -----------------------------------------------------------------------
 
-/// A finding plus its `(category, name)` sort key.
+/// A finding plus its `(category, name, path)` sort key.
 ///
 /// The key is carried alongside rather than re-parsed out of the summary so
 /// the ordering contract cannot silently drift if a summary is ever reworded.
+/// `path` is part of the key because one name can earn the same category from
+/// both lanes — an `allow-missing-reason` in `units.rs` and another in a chunk
+/// are two distinct defects in two distinct files.
 struct Keyed {
     category: &'static str,
     name: String,
+    path: String,
     finding: Finding,
 }
 
@@ -929,6 +937,7 @@ fn keyed(category: &'static str, name: &str, path: &str, detail: String) -> Keye
     Keyed {
         category,
         name: name.to_string(),
+        path: path.to_string(),
         finding: Finding {
             pattern: Pattern::PDocCover,
             severity: Severity::High,
@@ -1035,6 +1044,70 @@ fn omission_findings(inputs: &Inputs) -> Vec<Keyed> {
     out
 }
 
+/// Fabrication lane: call-shaped names a chunk claims that the compiler and
+/// stdlib evidence nowhere.
+///
+/// Runs over the SAME `chunk_sources` the omission lane matched against — one
+/// read of the corpus feeds both directions, which is the whole point of
+/// making this one detector rather than two.
+///
+/// Deduped per (chunk file, name) at the FIRST occurrence: a name documented in
+/// a heading, a table and a fence is one defect, not three, and reporting the
+/// first mention keeps the reported line stable as later mentions come and go.
+/// Dedup is per-file rather than global because each chunk that repeats a
+/// fabricated name needs its own edit.
+fn fabrication_findings(inputs: &Inputs) -> Vec<Keyed> {
+    let known = known_name_index(&inputs.oracle_sources);
+
+    let mut out = Vec::new();
+    for (path, content) in &inputs.chunk_sources {
+        let lines: Vec<&str> = content.lines().collect();
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+
+        for (name, line_no) in chunk_call_mentions(content) {
+            let line = lines.get(line_no - 1).copied().unwrap_or("");
+
+            // A reasonless marker on the mentioning line suppresses nothing
+            // and is itself the defect — reported once per name per file, and
+            // reported INSTEAD of any fabrication verdict, so one malformed
+            // marker costs one finding.
+            if allow_marker_present(line) && allow_marker_reason(line).is_none() {
+                if seen.insert(name.clone()) {
+                    out.push(keyed(
+                        "allow-missing-reason",
+                        &name,
+                        path,
+                        format!(
+                            "— `{ALLOW_TOKEN}` at {path}:{line_no} has no reason body, so it \
+                             grants no exemption; write `{ALLOW_TOKEN} — <reason>` or remove \
+                             the claim",
+                        ),
+                    ));
+                }
+                continue;
+            }
+
+            if known.contains(&name) {
+                continue;
+            }
+            if seen.insert(name.clone()) {
+                out.push(keyed(
+                    "fabricated-name",
+                    &name,
+                    path,
+                    format!(
+                        "— documented at {path}:{line_no} but declared nowhere in the \
+                         compiler or stdlib sources; fix the chunk, or mark the line \
+                         `{ALLOW_TOKEN} — <reason>` if it is deliberately ahead of the \
+                         implementation",
+                    ),
+                ));
+            }
+        }
+    }
+    out
+}
+
 // -----------------------------------------------------------------------
 // check() — entry point
 // -----------------------------------------------------------------------
@@ -1048,7 +1121,13 @@ fn omission_findings(inputs: &Inputs) -> Vec<Keyed> {
 pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
     let inputs = load_inputs(ctx);
     let mut keyed = omission_findings(&inputs);
-    keyed.sort_by(|a, b| a.category.cmp(b.category).then_with(|| a.name.cmp(&b.name)));
+    keyed.extend(fabrication_findings(&inputs));
+    keyed.sort_by(|a, b| {
+        a.category
+            .cmp(b.category)
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.path.cmp(&b.path))
+    });
     keyed.into_iter().map(|k| k.finding).collect()
 }
 
