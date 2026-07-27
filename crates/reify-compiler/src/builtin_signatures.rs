@@ -71,17 +71,47 @@ pub(crate) enum ExpectedArg {
     },
 }
 
-/// Return the checkable dimensioned-scalar argument slots for a named builtin.
+/// Return the checkable dimensioned-scalar argument slots for a named builtin
+/// call of a given arity.
 ///
 /// Returns an empty `Vec` for:
 /// - Unrecognized names.
 /// - Names with no checked dimensioned-scalar arg (e.g. `split`, `face`, `edge`,
 ///   `solid_body`, `volume`, `edges`, `faces`, …).
+/// - A recognized *overloaded* name called at an arity whose positional layout
+///   has no checked slot (see "Arity awareness" below).
 ///
 /// The returned slots correspond exactly to the CHECKED arg positions listed
 /// in the module-level docs.  Mirrors the name-keyed structure of
 /// `math_fn_result_type` (task 4182 result-type precedent).
-pub(crate) fn builtin_arg_slots(name: &str) -> Vec<CheckableArg> {
+///
+/// # Arity awareness (task 5652)
+///
+/// `arg_count` is the number of arguments at the call site.  The table is
+/// keyed on `(name, arity)` rather than `name` alone because a builtin's
+/// positional layout is only stable *within* one overload: for an overloaded
+/// name, index `i` denotes a different parameter in each form, so a
+/// fixed-index slot would be semantically lying and would eventually fire on
+/// valid code.  The precedent is
+/// [`crate::relation_signatures::relation_operand_datum`], which discriminates
+/// `"offset" if args.len() == 3` / `"angle" if args.len() == 3` for exactly
+/// this reason.
+///
+/// **Rule: guard only genuinely overloaded names.**  Non-overloaded arms stay
+/// unguarded (arity-agnostic) so a short or long call still has its present
+/// slots checked.  Gating a single-form builtin on its canonical arity would
+/// weaken existing coverage silently — e.g. an `arg_count == 3` guard on
+/// `edges_at_height` would make a 2-arg call slot-free instead of checking the
+/// `h` that IS present.  Short-arg calls are already handled downstream by
+/// `check_builtin_arg_types`'s `compiled_args.get(index)` bounds check; arity
+/// errors are a separate diagnostic family.
+pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableArg> {
+    // No arm consults `arg_count` yet — every current entry is a
+    // single-form (non-overloaded) builtin, so all of them stay
+    // arity-agnostic per the rule above.  Discarded explicitly rather than
+    // via `#[allow(unused)]`; the binding disappears as soon as the first
+    // guarded arm lands.
+    let _ = arg_count;
     match name {
         // ── Mass-properties topology selectors ───────────────────────────────
         // arg0: geometry handle (unchecked — ε=4358's territory)
@@ -203,7 +233,10 @@ pub(crate) fn check_builtin_arg_types(
     call_span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let slots = builtin_arg_slots(name);
+    // Arity-keyed lookup (task 5652): overloaded builtins expose different
+    // slots per call arity, so the checker must tell the table how many args
+    // this call site actually passed.
+    let slots = builtin_arg_slots(name, compiled_args.len());
     for slot in &slots {
         let Some(arg) = compiled_args.get(slot.index) else {
             // Arg absent (call is short) — skip. Arity errors are handled
@@ -316,7 +349,7 @@ mod tests {
     /// moment_of_inertia → arg1 density (MASS_DENSITY).
     #[test]
     fn moment_of_inertia_has_density_slot() {
-        let slots = builtin_arg_slots("moment_of_inertia");
+        let slots = builtin_arg_slots("moment_of_inertia", 2);
         assert_eq!(
             slots.len(),
             1,
@@ -329,7 +362,7 @@ mod tests {
     /// center_of_mass → arg1 density (MASS_DENSITY).
     #[test]
     fn center_of_mass_has_density_slot() {
-        let slots = builtin_arg_slots("center_of_mass");
+        let slots = builtin_arg_slots("center_of_mass", 2);
         assert_eq!(
             slots.len(),
             1,
@@ -342,7 +375,7 @@ mod tests {
     /// faces_by_normal → arg2 tol (ANGLE).
     #[test]
     fn faces_by_normal_has_angle_slot() {
-        let slots = builtin_arg_slots("faces_by_normal");
+        let slots = builtin_arg_slots("faces_by_normal", 3);
         assert_eq!(
             slots.len(),
             1,
@@ -355,7 +388,7 @@ mod tests {
     /// edges_parallel_to → arg2 tol (ANGLE).
     #[test]
     fn edges_parallel_to_has_angle_slot() {
-        let slots = builtin_arg_slots("edges_parallel_to");
+        let slots = builtin_arg_slots("edges_parallel_to", 3);
         assert_eq!(
             slots.len(),
             1,
@@ -373,7 +406,8 @@ mod tests {
     #[test]
     fn perpendicular_selectors_have_angle_slot() {
         for name in ["faces_perpendicular_to", "edges_perpendicular_to"] {
-            let slots = builtin_arg_slots(name);
+            // Canonical call arity: (solid, dir, tol).
+            let slots = builtin_arg_slots(name, 3);
             assert_eq!(
                 slots.len(),
                 1,
@@ -391,7 +425,7 @@ mod tests {
     /// edges_at_height → arg1 h (LENGTH) AND arg2 tol (LENGTH).
     #[test]
     fn edges_at_height_has_h_and_tol_slots() {
-        let slots = builtin_arg_slots("edges_at_height");
+        let slots = builtin_arg_slots("edges_at_height", 3);
         assert_eq!(
             slots.len(),
             2,
@@ -410,7 +444,8 @@ mod tests {
     #[test]
     fn extremal_selectors_have_length_tol_slot() {
         for name in ["extremal_by_bbox", "extremal_by_centroid"] {
-            let slots = builtin_arg_slots(name);
+            // Canonical call arity: (solid, axis, sense, tol).
+            let slots = builtin_arg_slots(name, 4);
             assert_eq!(
                 slots.len(),
                 1,
@@ -499,13 +534,18 @@ mod tests {
             "faces_by_area",
         ];
         for name in unchecked {
-            let slots = builtin_arg_slots(name);
-            assert!(
-                slots.is_empty(),
-                "builtin_arg_slots({:?}) should be empty, got {:?}",
-                name,
-                slots
-            );
+            // Swept across arities: an unchecked name must stay slot-free at
+            // EVERY call arity, so no arity guard can accidentally admit one.
+            for arg_count in 0usize..=12 {
+                let slots = builtin_arg_slots(name, arg_count);
+                assert!(
+                    slots.is_empty(),
+                    "builtin_arg_slots({:?}, {}) should be empty, got {:?}",
+                    name,
+                    arg_count,
+                    slots
+                );
+            }
         }
     }
 
@@ -545,17 +585,22 @@ mod tests {
             .iter()
             .chain(extra_non_selector.iter())
         {
-            let slots = builtin_arg_slots(name);
-            if !slots.is_empty() {
-                any_nonempty = true;
-                assert!(
-                    GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&name),
-                    "builtin_arg_slots({:?}) returned non-empty slots, but {:?} \
-                     is not in GEOMETRY_TOPOLOGY_SELECTOR_NAMES; \
-                     fix the name or add it to the selector slice",
-                    name,
-                    name
-                );
+            // Swept across arities so an arity-guarded arm cannot hide from
+            // the invariant by being empty at the one arity probed.
+            for arg_count in 0usize..=12 {
+                let slots = builtin_arg_slots(name, arg_count);
+                if !slots.is_empty() {
+                    any_nonempty = true;
+                    assert!(
+                        GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&name),
+                        "builtin_arg_slots({:?}, {}) returned non-empty slots, but {:?} \
+                         is not in GEOMETRY_TOPOLOGY_SELECTOR_NAMES; \
+                         fix the name or add it to the selector slice",
+                        name,
+                        arg_count,
+                        name
+                    );
+                }
             }
         }
 
@@ -566,16 +611,17 @@ mod tests {
              appears to be empty or unreachable"
         );
 
-        // Smoke: the five canonical checked names must individually return non-empty.
-        for &name in &[
-            "center_of_mass",
-            "moment_of_inertia",
-            "faces_by_normal",
-            "edges_parallel_to",
-            "edges_at_height",
+        // Smoke: the five canonical checked names must individually return
+        // non-empty at their canonical call arity.
+        for &(name, arg_count) in &[
+            ("center_of_mass", 2usize),
+            ("moment_of_inertia", 2),
+            ("faces_by_normal", 3),
+            ("edges_parallel_to", 3),
+            ("edges_at_height", 3),
         ] {
             assert!(
-                !builtin_arg_slots(name).is_empty(),
+                !builtin_arg_slots(name, arg_count).is_empty(),
                 "expected non-empty slots for {:?}; \
                  has the name been removed from the table?",
                 name
@@ -894,7 +940,7 @@ mod tests {
     /// generate → arg0 n (Int).
     #[test]
     fn generate_has_int_count_slot() {
-        let slots = builtin_arg_slots("generate");
+        let slots = builtin_arg_slots("generate", 2);
         assert_eq!(
             slots.len(),
             1,
