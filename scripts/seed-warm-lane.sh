@@ -869,6 +869,24 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         # no tracked file listed by git diff may still carry the 2020-01-01 bulk-stamp
         # epoch. Violations abort the seed (fail-closed → stdout empty → cold rebuild).
         _assert_no_stale_delta_stamp "$EFFECTIVE_BASE_COMMIT"
+    else
+        # All three resolution tiers came back empty, so NOTHING is delta-touched
+        # and every tracked source keeps the 2020-01-01 bulk stamp above. Report
+        # the condition and what it implies; do not diagnose why it happened.
+        #
+        # DELIBERATELY a warn and nothing more (task 5630). The stronger remedy —
+        # skip the bulk stamp, or fail closed, when no base resolves — would break
+        # two currently-green DECLARED contracts rather than merely require new
+        # tests: tests/infra/test_seed_warm_lane.sh Block D (D1/D2/D4 assert the
+        # bulk stamp DOES fire on a fixture with no base commit) and
+        # tests/infra/test_warm_lane_pool.sh:398 (--fresh-checkout --touch with no
+        # --base-commit, relying on the 2020 stamp for its warmth assertions).
+        # That is a D5-contract change needing its own ruling, tracked as a
+        # follow-up; silently flipping it inside a task scoped to a different,
+        # measured defect would conflate a confirmed fix with an unratified design
+        # change. Until then this at least makes the condition diagnosable from
+        # seed logs instead of completely silent.
+        warn "No delta-touch base resolved (--base-commit absent, ${BASE_TARGET_DIR}.basecommit absent, .warm-base-meta BASE_COMMIT absent) — no tracked source is touched to now, so every tracked source keeps the 2020-01-01 bulk stamp and cannot out-date any cloned build artifact; cargo will treat stale build-script outputs as Fresh. Pass --base-commit <sha>, or re-run scripts/refresh-warm-base.sh so the authoritative .basecommit stamp exists."
     fi
 
     # ── non-relocatable build-script output-dir invalidation ──────────────────
