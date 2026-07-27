@@ -317,6 +317,209 @@ pub const DYNAMICS_QUERY_NAMES: &[&str] = &[
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// step-9: ratchet honesty — a suppression channel that is no longer needed is
+// itself a finding
+//
+// A ratchet that lets exemptions outlive their justification decays into a
+// permanent allowlist: the count never moves, nobody notices, and the detector
+// reports clean while the debt is untouched. These four cases are the fail-safe
+// against that — the same lesson `ptodo-baseline-gen` (PRD §6.6) paid for.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// (a) A baselined name that has since been documented must be reported so the
+/// stale entry gets deleted — otherwise the baseline silently accumulates
+/// names that no longer need it and stops meaning "residual debt".
+///
+/// Evidence points at the BASELINE file, because that is the file to edit.
+#[test]
+fn baselined_name_that_is_documented_is_a_stale_baseline_entry() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    write_file(
+        root,
+        FIX_UNITS,
+        "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\n    \"alpha_op\",\n];\n",
+    );
+    write_file(root, FIX_CHUNK, ALPHA_CHUNK);
+    write_file(root, FIX_BASELINE, "alpha_op\n");
+
+    let h = Harness::new(&[FIX_UNITS, FIX_CHUNK, FIX_BASELINE]);
+    let findings = reify_audit::pdoccover::check(&h.ctx(root));
+
+    assert_eq!(
+        findings.len(),
+        1,
+        "expected exactly 1 finding (the now-redundant baseline entry); \
+         got {}: {:?}",
+        findings.len(),
+        findings
+    );
+    let f = &findings[0];
+    assert!(
+        f.summary.starts_with("stale-baseline-entry:"),
+        "a documented name that is still baselined must be reported under the \
+         `stale-baseline-entry:` category; got {:?}",
+        f.summary
+    );
+    assert_eq!(finding_name(f), "alpha_op", "got summary {:?}", f.summary);
+    assert_eq!(
+        f.severity,
+        Severity::High,
+        "ratchet-honesty findings ride at High like the rest; got {:?}",
+        f.severity
+    );
+    assert!(
+        f.evidence
+            .iter()
+            .any(|e| matches!(e, EvidenceRef::File { path } if path == FIX_BASELINE)),
+        "evidence must point at the baseline file {FIX_BASELINE:?} — the file \
+         that needs the edit; got {:?}",
+        f.evidence
+    );
+}
+
+/// (b) The allow-marker half of the same contract: an escape hatch on a name
+/// that is now documented is dead weight and must be reported.
+///
+/// Evidence points at the REGISTRY source, where the marker lives.
+#[test]
+fn allow_marked_name_that_is_documented_is_a_stale_allow_entry() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    write_file(
+        root,
+        FIX_UNITS,
+        "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\n    \
+         \"alpha_op\", // pdoccover:allow — internal lowering shim\n];\n",
+    );
+    write_file(root, FIX_CHUNK, ALPHA_CHUNK);
+
+    let h = Harness::new(&[FIX_UNITS, FIX_CHUNK]);
+    let findings = reify_audit::pdoccover::check(&h.ctx(root));
+
+    assert_eq!(
+        findings.len(),
+        1,
+        "expected exactly 1 finding (the now-redundant allow marker); got {}: {:?}",
+        findings.len(),
+        findings
+    );
+    let f = &findings[0];
+    assert!(
+        f.summary.starts_with("stale-allow-entry:"),
+        "a documented name that still carries `pdoccover:allow` must be \
+         reported under the `stale-allow-entry:` category; got {:?}",
+        f.summary
+    );
+    assert_eq!(finding_name(f), "alpha_op", "got summary {:?}", f.summary);
+    assert_eq!(f.severity, Severity::High, "got {:?}", f.severity);
+    assert!(
+        f.evidence
+            .iter()
+            .any(|e| matches!(e, EvidenceRef::File { path } if path == FIX_UNITS)),
+        "evidence must point at the registry source {FIX_UNITS:?}, where the \
+         marker lives; got {:?}",
+        f.evidence
+    );
+}
+
+/// (c) PRD design decision 7 — the escape hatch may never become
+/// un-reviewable. A `pdoccover:allow` with no reason body (bare token, or a
+/// separator with nothing after it) is itself the finding, and confers NO
+/// exemption.
+///
+/// Exactly one finding per name: `allow-missing-reason:` SUBSUMES the
+/// undocumented report rather than duplicating it, so fixing the marker is one
+/// edit against one finding.
+#[test]
+fn reasonless_allow_marker_is_reported_and_confers_no_exemption() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    write_file(
+        root,
+        FIX_UNITS,
+        "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\n    \
+         \"epsilon_op\", // pdoccover:allow\n    \
+         \"zeta_op\", // pdoccover:allow —\n];\n",
+    );
+    // No chunks at all: both names are undocumented on the merits.
+
+    let h = Harness::new(&[FIX_UNITS]);
+    let findings = reify_audit::pdoccover::check(&h.ctx(root));
+
+    let cats: Vec<&str> = findings.iter().map(finding_category).collect();
+    let names: Vec<&str> = findings.iter().map(finding_name).collect();
+
+    assert_eq!(
+        names,
+        vec!["epsilon_op", "zeta_op"],
+        "both reasonless markers must be reported, each exactly once — a bare \
+         token and an empty body after the separator are the same defect. \
+         Got {findings:?}"
+    );
+    assert!(
+        cats.iter().all(|c| *c == "allow-missing-reason"),
+        "a reasonless marker is an `allow-missing-reason:` finding; got \
+         categories {cats:?} in {findings:?}"
+    );
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.summary.starts_with("undocumented-name:")),
+        "the `allow-missing-reason:` finding SUBSUMES the undocumented report \
+         for the same name — a duplicate would make one defect cost two \
+         findings and inflate the ratchet count. Got {findings:?}"
+    );
+    assert!(
+        findings.iter().all(|f| f.severity == Severity::High),
+        "got {findings:?}"
+    );
+}
+
+/// (d) The 2026-07-25 rename is one-way: the legacy unprefixed
+/// `doccover:allow` is consumed by NO code path.
+///
+/// If it silently kept working, a stale marker written against an earlier PRD
+/// draft would suppress a real gap forever with nothing to show it.
+#[test]
+fn legacy_unprefixed_doccover_allow_confers_no_exemption() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    write_file(
+        root,
+        FIX_UNITS,
+        "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\n    \
+         \"theta_op\", // doccover:allow — legacy unprefixed token\n];\n",
+    );
+
+    let h = Harness::new(&[FIX_UNITS]);
+    let findings = reify_audit::pdoccover::check(&h.ctx(root));
+
+    assert_eq!(
+        findings.len(),
+        1,
+        "expected exactly 1 finding — the legacy token grants nothing; \
+         got {}: {:?}",
+        findings.len(),
+        findings
+    );
+    let f = &findings[0];
+    assert!(
+        f.summary.starts_with("undocumented-name:"),
+        "an undocumented name carrying only the legacy unprefixed \
+         `doccover:allow` must surface as `undocumented-name:` — not be \
+         exempted, and not be reported as a malformed prefixed marker. \
+         Got {:?}",
+        f.summary
+    );
+    assert_eq!(finding_name(f), "theta_op", "got summary {:?}", f.summary);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // step-3: brittle-parse floor guard — REGISTRY scan path
 // ─────────────────────────────────────────────────────────────────────────────
 
