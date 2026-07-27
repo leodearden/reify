@@ -1809,6 +1809,128 @@ mod tests {
         );
     }
 
+    // ── Task 5218 step-14: emitted outer ring is always CCW ─────────────────
+    // `ProfileBoundary` documents its outer ring as "CCW for positive area"
+    // (mesher.rs:96), and the downstream sweep step needs det J > 0
+    // (sweep.rs:19). Neither is enforced by the consumer: `validate_boundary`
+    // only rejects |area| < 1e-14, so a CW ring is waved through. The producer
+    // is therefore the party that must establish the postcondition, and it must
+    // do so for EVERY sampler arm — not just polygons — because a rectangle can
+    // reach the sampler with a negative width (`profile_rectangle` in
+    // geometry_ops.rs applies no positivity check). Orientation is asserted via
+    // the mesher's own `ring_signed_area_2d`, the same predicate the consumer
+    // contract is written in.
+
+    #[test]
+    fn swept_kind_to_profile_boundary_clockwise_polygon_is_normalised_ccw() {
+        // Hand-computed shoelace area of this ring is exactly -0.0015 — CW
+        // beyond any doubt (f64 summation noise here is ~1e-19, some 16 orders
+        // of magnitude below the magnitude being signed).
+        let cw_points = vec![[0.0, 0.0], [0.0, 0.05], [0.03, 0.05], [0.03, 0.0]];
+        assert!(
+            reify_solver_elastic::ring_signed_area_2d(&cw_points) < 0.0,
+            "fixture precondition: the input ring must be clockwise"
+        );
+        let profile_handle = GeometryHandleId(10);
+        let ops = vec![
+            GeometryOp::PolygonProfile {
+                points: cw_points.clone(),
+            },
+            GeometryOp::Extrude {
+                profile: profile_handle,
+                distance: Value::length(0.01),
+            },
+        ];
+        let handles = vec![profile_handle, GeometryHandleId(11)];
+        let kind = SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: Value::length(0.01),
+            profile: profile_handle,
+        };
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("a PolygonProfile-backed extrude must produce a ProfileBoundary");
+        assert!(
+            reify_solver_elastic::ring_signed_area_2d(&boundary.outer) > 0.0,
+            "a CW profile ring must be normalised to CCW (positive signed area) \
+             before it becomes a ProfileBoundary; got {}",
+            reify_solver_elastic::ring_signed_area_2d(&boundary.outer)
+        );
+        // Reversal is the minimal orientation fix and is a bit-exact element
+        // permutation, so pin the exact expected ring rather than only its sign.
+        let reversed: Vec<[f64; 2]> = cw_points.iter().rev().copied().collect();
+        assert_eq!(
+            boundary.outer, reversed,
+            "normalisation must be a plain reversal of the input ring"
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_ccw_polygon_is_not_reversed() {
+        // Same fixture as the step-3 verbatim test: area +0.0015, already CCW.
+        // Pins that the normaliser does not reverse over-eagerly.
+        let ccw_points = vec![[0.0, 0.0], [0.03, 0.0], [0.03, 0.05], [0.0, 0.05]];
+        assert!(
+            reify_solver_elastic::ring_signed_area_2d(&ccw_points) > 0.0,
+            "fixture precondition: the input ring must be counter-clockwise"
+        );
+        let profile_handle = GeometryHandleId(10);
+        let ops = vec![
+            GeometryOp::PolygonProfile {
+                points: ccw_points.clone(),
+            },
+            GeometryOp::Extrude {
+                profile: profile_handle,
+                distance: Value::length(0.01),
+            },
+        ];
+        let handles = vec![profile_handle, GeometryHandleId(11)];
+        let kind = SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: Value::length(0.01),
+            profile: profile_handle,
+        };
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("a PolygonProfile-backed extrude must produce a ProfileBoundary");
+        assert_eq!(
+            boundary.outer, ccw_points,
+            "an already-CCW ring must pass through byte-identical, not be reversed"
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_negative_width_rectangle_is_normalised_ccw() {
+        // A negative width is reachable: `profile_rectangle` (geometry_ops.rs)
+        // forwards `width` unchecked, and the rectangle sampler's corner order
+        // is CCW only for positive extents — at width < 0 the same corner order
+        // traverses clockwise. Normalisation must be total over the sampler
+        // arms, not polygon-only.
+        let profile_handle = GeometryHandleId(10);
+        let ops = vec![
+            GeometryOp::RectangleProfile {
+                width: Value::length(-0.03),
+                height: Value::length(0.05),
+            },
+            GeometryOp::Extrude {
+                profile: profile_handle,
+                distance: Value::length(0.01),
+            },
+        ];
+        let handles = vec![profile_handle, GeometryHandleId(11)];
+        let kind = SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: Value::length(0.01),
+            profile: profile_handle,
+        };
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("a RectangleProfile-backed extrude must produce a ProfileBoundary");
+        let area = reify_solver_elastic::ring_signed_area_2d(&boundary.outer);
+        assert!(
+            area > 0.0,
+            "a negative-width rectangle samples clockwise and must be normalised \
+             to CCW (positive signed area); got {area}"
+        );
+    }
+
     // ── Task 5218 step-9: build_swept_2d_mesh error/forward contract ────────
     // build_swept_2d_mesh = producer → mesh_swept_profile_2d. When the producer
     // yields None (unresolvable handle / non-profile op) it short-circuits to
