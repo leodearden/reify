@@ -2642,6 +2642,286 @@ kill "$Q_LOCK14_PID" 2>/dev/null || true
 wait "$Q_LOCK14_PID" 2>/dev/null || true
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Block S — relocation sweep must not advance build-script freshness references
+# (task 5630). Uses run_helper_real (real cp/find/touch + stub git), mirroring
+# Block P's fixture recipe and Block L's "pre-stamp to an explicit timestamp,
+# assert the exact mtime after the run" technique.
+#
+# Contract under test: no seed step may leave a build-script replay file
+# (target/**/build/<pkg>-<hash>/output) at or after a delta-touched source's
+# mtime. The normative statement, the measured cargo repro behind it, and the
+# operator remedy live in ONE place — docs/prds/warm-lane-pool-cow-seeding.md
+# §9.5 inv.12 — deliberately NOT restated here (G7 no-lockstep-duplication).
+#
+#   Placed BEFORE Block R deliberately: per Block R's ordering note, a block
+#   appended after R2/R5 gets no shared-trash-litter coverage from R1.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block S: relocation sweep preserves build-script freshness refs (task 5630) ---"
+
+S_FOREIGN="/tmp/foreign-buildroot-S5630"
+
+S_BASE_PARENT="$(mktemp -d /tmp/test-seed-S-parent-XXXXXX)"
+S_BASE="$S_BASE_PARENT/target"
+S_LANE="$(make_isolated_lane S-lane)"
+_TMPDIRS+=("$S_BASE_PARENT")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$S_BASE_PARENT/.warm-base-meta"
+printf '%s' "$S_FOREIGN" > "${S_BASE}.buildroot"
+
+# A `cc`/`cxx_build`-shaped build dir: `output` carries an OUT_DIR-absolute
+# rustc-link-search (which is why occt/openvdb/eval are rewritten in a real
+# lane, while gmsh/conformance — emitting only /opt/reify-deps paths — are not)
+# alongside the rerun-if-changed line whose staleness `output`'s mtime gates.
+mkdir -p "$S_BASE/debug/build/fakecc-1111"
+cat > "$S_BASE/debug/build/fakecc-1111/output" <<EOF
+cargo:rerun-if-changed=crates/k/cpp/wrapper.cpp
+cargo:rustc-link-search=native=$S_FOREIGN/target/debug/build/fakecc-1111/out
+EOF
+printf '%s' "$S_FOREIGN/target/debug/build/fakecc-1111/out" \
+    > "$S_BASE/debug/build/fakecc-1111/root-output"
+
+# Pre-stamp both replay files to a fixed PAST timestamp and capture it at FULL
+# precision. This makes every assertion below an exact comparison — no sleep, no
+# dependence on wall-clock granularity (Block L's technique). /bin/cp -a in the
+# run_helper_real cp stub preserves sub-second mtimes, so the lane copy inherits
+# this stamp exactly and only the sed can move it.
+#
+# The .123456789 fraction is LOAD-BEARING, not decoration: cargo compares mtimes
+# at nanosecond resolution, so a restore that truncates to whole seconds
+# (stat '%Y' + touch -d @epoch) must FAIL S1c. On a zero-nanosecond fixture such
+# a restore would pass unnoticed, leaving half the contract unpinned.
+touch -d "2024-06-01 00:00:00.123456789" "$S_BASE/debug/build/fakecc-1111/output" \
+                                         "$S_BASE/debug/build/fakecc-1111/root-output"
+S_OUTPUT_MTIME="$(stat -c '%y' "$S_BASE/debug/build/fakecc-1111/output")"
+S_ROOT_OUTPUT_MTIME="$(stat -c '%y' "$S_BASE/debug/build/fakecc-1111/root-output")"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$S_BASE" "$S_LANE" --fresh-checkout
+
+S_LANE_RP="$(realpath -m "$S_LANE")"
+S_LANE_OUTPUT="$S_LANE/target/debug/build/fakecc-1111/output"
+S_LANE_ROOT_OUTPUT="$S_LANE/target/debug/build/fakecc-1111/root-output"
+
+# S1a: success contract
+assert "S1a: --fresh-checkout exits 0 (relocation sweep ran)" test "$RC" -eq 0
+
+# S1b: REGRESSION PIN — the task-5126 relocation itself must still work. Without
+# this, "preserve the mtime" could be trivially satisfied by not rewriting at all.
+assert "S1b: build/fakecc-1111/output contains the LANE root prefix (relocation still works)" \
+    bash -c 'grep -qF "$1" "$2"' _ "$S_LANE_RP" "$S_LANE_OUTPUT"
+assert "S1b: build/fakecc-1111/output no longer contains the FOREIGN root" \
+    bash -c '! grep -qF "$1" "$2"' _ "$S_FOREIGN" "$S_LANE_OUTPUT"
+assert "S1b: build/fakecc-1111/root-output reads the lane's OUT_DIR (no FOREIGN substring)" \
+    bash -c '[ "$(cat "$1")" = "'"$S_LANE_RP"'/target/debug/build/fakecc-1111/out" ]' \
+    _ "$S_LANE_ROOT_OUTPUT"
+
+# S1c: THE NEW CONTRACT — the rewrite must NOT advance the freshness reference.
+# Compared at FULL precision (stat '%y', nanoseconds included), never '%Y': a
+# whole-second-truncated restore still leaves cargo mis-gating inside that second.
+S1C_OUTPUT_MTIME="$(stat -c '%y' "$S_LANE_OUTPUT")"
+assert "S1c: rewritten output KEEPS its pre-sed mtime to the NANOSECOND ($S_OUTPUT_MTIME) — sed must not advance cargo's freshness reference" \
+    bash -c '[ "$1" = "$2" ]' _ "$S1C_OUTPUT_MTIME" "$S_OUTPUT_MTIME"
+
+S1C_ROOT_OUTPUT_MTIME="$(stat -c '%y' "$S_LANE_ROOT_OUTPUT")"
+assert "S1c: rewritten root-output KEEPS its pre-sed mtime to the NANOSECOND ($S_ROOT_OUTPUT_MTIME)" \
+    bash -c '[ "$1" = "$2" ]' _ "$S1C_ROOT_OUTPUT_MTIME" "$S_ROOT_OUTPUT_MTIME"
+
+# ── S2: fail-closed post-condition — a build-script `output` that is NEWER than
+# a delta-touched tracked source must ABORT the seed, not ship a lane cargo will
+# mis-gate. This deliberately SYNTHESISES the inversion (base `output` stamped
+# into the future) so the guard itself is tested rather than the happy path;
+# mtime preservation alone cannot catch an inversion that was already baked into
+# the base. Same precedent as _assert_no_stale_delta_stamp, which shipped
+# alongside the _touch_git_delta fix in esc-3468-75: a silently-wrong mtime is a
+# FALSE GREEN, the failure class no downstream test can catch by construction.
+# ─────────────────────────────────────────────────────────────────────────────
+_s_make_fixture() {
+    # <prefix> <output_touch_stamp> — echoes "<base>|<lane>|<delta_path>".
+    #
+    # The base parent is minted via make_isolated_lane (i.e. under $_LANE_ROOT),
+    # NOT bare /tmp, for the SUBSHELL reason documented above _LANE_ROOT: every
+    # call site reads this function's stdout via command substitution
+    # (IFS='|' read ... <<< "$(_s_make_fixture ...)"), so a `_TMPDIRS+=(...)`
+    # here would be silently discarded when the subshell exits and every base
+    # parent would leak into bare /tmp — measured litter, the same hazard tasks
+    # 5590/5609 hardened the rest of this file against (and the same resolution
+    # I_SC_BASE_PARENT uses at ~L1140). Anchoring on $_LANE_ROOT, which is
+    # already ONE _TMPDIRS entry reclaimed by the cleanup() EXIT trap, needs no
+    # registration from inside the subshell at all.
+    local prefix="$1" stamp="$2" parent base lane delta
+    parent="$(make_isolated_lane "$prefix-base")"
+    base="$parent/target"
+    lane="$(make_isolated_lane "$prefix-lane")"
+    printf 'RUSTFLAGS=\nINVOCATION=\n' > "$parent/.warm-base-meta"
+    printf '%s' "$S_FOREIGN" > "${base}.buildroot"
+    mkdir -p "$base/debug/build/fakecc-1111"
+    cat > "$base/debug/build/fakecc-1111/output" <<EOF
+cargo:rerun-if-changed=crates/k/cpp/wrapper.cpp
+cargo:rustc-link-search=native=$S_FOREIGN/target/debug/build/fakecc-1111/out
+EOF
+    touch -d "$stamp" "$base/debug/build/fakecc-1111/output"
+    # The delta: a tracked source the caller passes via --touch, i.e. exactly
+    # the `cargo:rerun-if-changed` path baked into `output` above.
+    delta="$lane/crates/k/cpp/wrapper.cpp"
+    mkdir -p "$(dirname "$delta")"
+    echo '// wrapper' > "$delta"
+    printf '%s|%s|%s' "$base" "$lane" "$delta"
+}
+
+# S2 RED arm: base `output` pre-stamped one hour into the FUTURE.
+IFS='|' read -r S2_BASE S2_LANE S2_DELTA \
+    <<< "$(_s_make_fixture S2 "$(date -d 'now + 1 hour' '+%Y-%m-%d %H:%M:%S')")"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$S2_BASE" "$S2_LANE" --fresh-checkout --touch "$S2_DELTA"
+
+assert "S2a: seed exits NON-zero when a build-script output is newer than a delta-touched source" \
+    test "$RC" -ne 0
+assert "S2b: STDOUT is EMPTY on the freshness-inversion abort (caller falls back to a cold rebuild)" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+# Both path assertions are scoped to [error]-level lines. The guard's SUCCESS
+# info line names the very same two paths, so an unscoped grep over all of stderr
+# passes even when the guard did not fire at all (measured against a mutant).
+assert "S2c: an [error] line names the offending build-script output path" \
+    bash -c 'printf "%s\n" "$1" | grep "\[error\]" | grep -qF "$2"' _ "$ERR_OUT" \
+    "$S2_LANE/target/debug/build/fakecc-1111/output"
+assert "S2c: an [error] line names the delta path that is not newer than it" \
+    bash -c 'printf "%s\n" "$1" | grep "\[error\]" | grep -qF "$2"' _ "$ERR_OUT" "$S2_DELTA"
+
+# S2 POSITIVE CONTROL: identical fixture except `output` carries the ordinary
+# past (base-build) stamp. Proves the guard does not fire on the normal path —
+# without this, S2a-c would also pass if the seed simply always aborted.
+IFS='|' read -r S2P_BASE S2P_LANE S2P_DELTA \
+    <<< "$(_s_make_fixture S2p "2024-06-01T00:00:00")"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$S2P_BASE" "$S2P_LANE" --fresh-checkout --touch "$S2P_DELTA"
+
+assert "S2d: positive control: past-stamped output + same delta exits 0 (guard does not over-fire)" \
+    test "$RC" -eq 0
+assert "S2d: positive control: STDOUT is exactly <lane>/target" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$S2P_LANE/target"
+
+# ── S2e/S2f: the TIE and SUB-SECOND boundaries — the one behavioural difference
+# that motivates comparing with bash's `-nt` instead of `stat -c '%Y'` integers.
+# S2a-d above sit an hour / two years away from the boundary, so an integer-%Y
+# refactor would keep them all green while re-opening exactly the same-second and
+# sub-second inversion holes cargo still mis-gates on (§9.5 inv.12).
+#
+# WHY the delta path here is itself a replay file: the seed stamps every delta
+# path to NOW (`touch "${TOUCH_PATHS[@]}"`, no -d), so a fixture CANNOT pre-arrange
+# a tie against a base-stamped `output` — the pre-stamp is overwritten during the
+# run. Passing the lane's own `output` via --touch makes the oldest delta and the
+# newest `output` the SAME inode, which is a tie by construction and needs no
+# wall-clock luck. Artificial as a delta path, exact as an operator pin.
+IFS='|' read -r S2T_BASE S2T_LANE S2T_DELTA \
+    <<< "$(_s_make_fixture S2t "2024-06-01 00:00:00.123456789")"
+S2T_OUTPUT="$S2T_LANE/target/debug/build/fakecc-1111/output"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$S2T_BASE" "$S2T_LANE" --fresh-checkout --touch "$S2T_OUTPUT"
+
+assert "S2e: EXACT TIE (oldest delta IS the newest output) aborts — cargo's comparison is strict >, so equal is NOT newer" \
+    test "$RC" -ne 0
+assert "S2e: tie abort leaves STDOUT empty (cold-rebuild fallback)" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+assert "S2e: tie abort names the offending build-script output path on an [error] line" \
+    bash -c 'printf "%s\n" "$1" | grep "\[error\]" | grep -qF "$2"' _ "$ERR_OUT" "$S2T_OUTPUT"
+
+# S2f: STRICT SUB-SECOND inversion between two DISTINCT files — output newer
+# than the delta by MILLISECONDS, not seconds. Built from the seed's own two
+# separate touch phases rather than one multi-file `touch`: coreutils resolves
+# UTIME_NOW once per `touch` invocation, so `touch a b` stamps BOTH paths with
+# the identical nanosecond value (measured) — a tie, i.e. S2e again. Instead the
+# source goes through the earlier explicit --touch phase and the replay file
+# through the LATER git-delta phase (a `git diff` subprocess apart), so
+# output > delta strictly, inside the same second.
+# This is the arm an integer-%Y comparison would wave through (equal seconds)
+# while `-nt` aborts. The phase ORDER makes the abort unconditional: if the two
+# phases straddle a second boundary the arm merely degenerates into S2a's
+# whole-second inversion and still aborts, so it can never flake.
+IFS='|' read -r S2S_BASE S2S_LANE S2S_DELTA \
+    <<< "$(_s_make_fixture S2s "2024-06-01 00:00:00.123456789")"
+S2S_OUTPUT="$S2S_LANE/target/debug/build/fakecc-1111/output"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    REIFY_TEST_GIT_DIFF_FILES="target/debug/build/fakecc-1111/output" \
+    run_helper_real "$S2S_BASE" "$S2S_LANE" --fresh-checkout \
+        --touch "$S2S_DELTA" --base-commit shaS2s
+
+# Log the measured pair so a reader can see WHICH regime the arm exercised on
+# this run: same second + strictly later output ns = the discriminating case;
+# identical ns = the S2e tie; different seconds = the degenerate S2a case. All
+# three must abort. Diagnostic only — never gating.
+echo "    S2f measured: delta=$(stat -c '%y' "$S2S_DELTA" 2>/dev/null || echo '<gone>') output=$(stat -c '%y' "$S2S_OUTPUT" 2>/dev/null || echo '<gone>')"
+
+assert "S2f: SUB-SECOND inversion (delta touched MILLISECONDS before the output) aborts" \
+    test "$RC" -ne 0
+assert "S2f: sub-second abort leaves STDOUT empty (cold-rebuild fallback)" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+assert "S2f: sub-second abort names BOTH the output and the delta path on [error] lines" \
+    bash -c 'e="$(printf "%s\n" "$1" | grep "\[error\]")"
+             printf "%s\n" "$e" | grep -qF "$2" && printf "%s\n" "$e" | grep -qF "$3"' \
+    _ "$ERR_OUT" "$S2S_OUTPUT" "$S2S_DELTA"
+
+# ── S3: a --fresh-checkout that resolves NO delta-touch base must SAY SO. All
+# three tiers of the resolution (--base-commit / <base>.basecommit /
+# .warm-base-meta BASE_COMMIT) coming back empty means nothing is delta-touched,
+# so every tracked source keeps the 2020-01-01 bulk stamp and cannot out-date
+# any cloned build artifact — the same freshness inversion S1/S2 target, reached
+# by a different route. Today that condition is COMPLETELY SILENT: the
+# `if [ -n "$EFFECTIVE_BASE_COMMIT" ]` block simply has no else.
+#
+# Scope note: this asserts a warn ONLY. Making the bulk stamp conditional (or
+# failing closed) would break two currently-green DECLARED contracts — Block D
+# above (D1/D2/D4 assert the bulk stamp fires with no base commit in the
+# fixture) and tests/infra/test_warm_lane_pool.sh:398 (--fresh-checkout --touch
+# with no --base-commit) — so it is a D5-contract change needing its own
+# ruling, tracked as task #5632. S3b pins that the warn stays purely additive.
+# ─────────────────────────────────────────────────────────────────────────────
+S3_BASE_PARENT="$(mktemp -d /tmp/test-seed-S3-parent-XXXXXX)"
+S3_BASE="$S3_BASE_PARENT/target"
+S3_LANE="$(make_isolated_lane S3-lane)"
+_TMPDIRS+=("$S3_BASE_PARENT")
+# Sidecar deliberately carries NO BASE_COMMIT line; no ${S3_BASE}.basecommit
+# stamp is written; and no --base-commit flag is passed below. All three tiers
+# resolve empty.
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$S3_BASE_PARENT/.warm-base-meta"
+mkdir -p "$S3_BASE/debug"
+echo "artifact" > "$S3_BASE/debug/artifact.a"
+mkdir -p "$S3_LANE/src"
+echo 'pub fn tracked() {}' > "$S3_LANE/src/tracked.rs"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$S3_BASE" "$S3_LANE" --fresh-checkout
+
+# S3a: the condition is diagnosable from stderr. Deliberately ONE assertion on
+# the behavioural contract ("this condition is no longer silent") — the earlier
+# revision also pinned the tier names, the literal 2020-01-01 and a
+# case-insensitive "fresh" in the message body, which locked cosmetic wording:
+# any reword of the remediation sentence broke the suite with no behaviour change
+# and caught no failure mode this line misses.
+assert "S3a: STDERR carries a [warn] line about the unresolved delta-touch base" \
+    bash -c 'printf "%s\n" "$1" | grep -q "\[warn\].*delta-touch base"' _ "$ERR_OUT"
+
+# S3b: REGRESSION PIN — the warn is purely ADDITIVE. Exit code, stdout and the
+# bulk stamp itself are all unchanged (the D5 contract Block D's D1 and
+# test_warm_lane_pool.sh:398 both depend on).
+assert "S3b: no-base seed still exits 0 (warn is additive, not a new failure)" \
+    test "$RC" -eq 0
+assert "S3b: STDOUT is still exactly <lane>/target" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$S3_LANE/target"
+S3B_SRC_MTIME="$(stat -c '%Y' "$S3_LANE/src/tracked.rs")"
+assert "S3b: tracked source still carries the 2020-01-01 bulk stamp ($EPOCH_2020) — D5 unchanged" \
+    test "$S3B_SRC_MTIME" -eq "$EPOCH_2020"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Block R: lane isolation guards (task 5590) — every lane created in this file
 # must be nested under a private per-run parent, never bare /tmp, because
 # scripts/seed-warm-lane.sh:663 computes RESEED_TRASH_DIR as
