@@ -1097,16 +1097,33 @@ fn watcher_drop_joins_worker_promptly_even_with_a_pending_event() {
     let ri_file = dir.path().join("closing.ri");
     std::fs::write(&ri_file, "structure Closing {}").unwrap();
 
-    let Some(watcher) = try_watcher(dir.path(), None, |_event| {}) else {
+    let probe_seen = Arc::new(AtomicBool::new(false));
+    let probe_seen_clone = probe_seen.clone();
+
+    let Some(watcher) = try_watcher(dir.path(), None, move |event| {
+        if let FileEvent::Changed(path) = event
+            && path.ends_with("probe.ri")
+        {
+            probe_seen_clone.store(true, Ordering::SeqCst);
+        }
+    }) else {
         return;
     };
 
-    // Give the watcher time to register.
-    std::thread::sleep(Duration::from_millis(200));
+    let registered = wait_for_watch_registration(dir.path(), &probe_seen);
+    assert!(
+        registered,
+        "the watcher never delivered a probe event, so the directory watch \
+         was never confirmed live -- the write below could have been lost \
+         outright and this run could not exercise the pending-drop race"
+    );
 
     // Trigger an event and drop almost immediately -- well within the
     // 100ms debounce window, so a not-yet-drained entry is very likely
-    // still sitting in the Debouncer when Drop runs below.
+    // still sitting in the Debouncer when Drop runs below. (The barrier
+    // above may itself leave a still-pending probe.ri entry in the
+    // Debouncer at this point -- harmless here, since this test WANTS some
+    // pending entry when Drop runs and doesn't care which path it's for.)
     std::fs::write(&ri_file, "structure Closing { param x = 1mm }").unwrap();
     std::thread::sleep(Duration::from_millis(10));
 
