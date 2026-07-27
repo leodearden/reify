@@ -46,6 +46,7 @@ pub mod puntested;
 pub mod player;
 pub mod ptodo;
 pub mod pdssentinel;
+pub mod pdoccover;
 pub mod fused_memory_client;
 pub mod jcodemunch_client;
 
@@ -176,6 +177,33 @@ pub enum Pattern {
     ///
     /// Reference: `docs/prds/dimensionless-scalar-sentinel-stampout.md` §8/§10.
     PDsSentinel,
+    /// PDOCCOVER — bidirectional registry↔chunk name drift between the
+    /// compiler's builtin-name registries and the MCP language-reference
+    /// chunks (`crates/reify-mcp/src/tools/chunks/*.md`). ONE detector, two
+    /// directions, five finding categories carried as a stable summary prefix
+    /// (PTODO's `kind`-as-prefix convention above), all at
+    /// [`Severity::High`]:
+    ///
+    /// - **Omission lane** — a `*_NAMES` registry entry in
+    ///   `crates/reify-compiler/src/units.rs` that is not documented in any
+    ///   chunk, not marked `// pdoccover:allow — <reason>`, and not listed in
+    ///   `crates/reify-audit/pdoccover-baseline.txt` → `undocumented-name:`.
+    ///   Ratchet-honesty siblings: `stale-baseline-entry:` (a baselined name
+    ///   that IS documented) and `stale-allow-entry:` (an allow-marked name
+    ///   that IS documented).
+    /// - **Fabrication lane** — a call-shaped name documented in a chunk that
+    ///   exists nowhere in the compiler/stdlib sources → `fabricated-name:`.
+    /// - Both lanes share `allow-missing-reason:` — a `pdoccover:allow` token
+    ///   with a blank reason body confers NO exemption and is itself a finding.
+    ///
+    /// **Opt-in only** (`is_some_and`, mirroring PDEAD/PUNTESTED/PLAYER): the
+    /// census is non-empty until #5480 seeds the baseline, and the CLI exit
+    /// code is the High-severity count, so joining the no-`--pattern` default
+    /// sweep would drown every other detector. Structural: reads the working
+    /// tree via `ls_files()` + `std::fs`, never contacts jcodemunch.
+    ///
+    /// Reference: `docs/prds/v0_6/doc-chunk-truth-enforcement.md` §(b) / leaf γ.
+    PDocCover,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim
