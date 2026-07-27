@@ -1169,17 +1169,39 @@ fn watcher_drop_discards_a_pending_event_rather_than_delivering_it() {
 
     let received: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
     let received_clone = received.clone();
+    let probe_seen = Arc::new(AtomicBool::new(false));
+    let probe_seen_clone = probe_seen.clone();
 
     let Some(watcher) = try_watcher(dir.path(), None, move |event| {
         if let FileEvent::Changed(path) = event {
+            // MANDATORY, not just hygiene: this test asserts
+            // `paths.is_empty()` after drop, so any probe event reaching
+            // `received` would fail it outright.
+            if path.ends_with("probe.ri") {
+                probe_seen_clone.store(true, Ordering::SeqCst);
+                return;
+            }
             received_clone.lock().unwrap().push(path);
         }
     }) else {
         return;
     };
 
-    // Give the watcher time to register.
-    std::thread::sleep(Duration::from_millis(200));
+    // This barrier guards the vacuous-pass hole UPSTREAM (did the write
+    // below even reach the notify closure at all); the pending_paths()
+    // confirmation loop further down already guards it DOWNSTREAM (was the
+    // write recorded into the debouncer). Both are needed: a write issued
+    // before the watch is live produces no event at all, which the
+    // downstream loop alone couldn't distinguish from "recorded and then
+    // legitimately drained before we polled".
+    let registered = wait_for_watch_registration(dir.path(), &probe_seen);
+    assert!(
+        registered,
+        "the watcher never delivered a probe event, so the directory watch \
+         was never confirmed live -- the write below could have been lost \
+         outright and this run could not exercise the discard-on-drop \
+         contract"
+    );
 
     // Trigger an event.
     std::fs::write(&ri_file, "structure Abandoned { param x = 1mm }").unwrap();
