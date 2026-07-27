@@ -65,43 +65,55 @@ assert "task plan: acquire marker ordered AFTER psi-gate" \
         [ -n "$PSI_IDX" ] && [ -n "$ACQ_IDX" ] && [ "$ACQ_IDX" -gt "$PSI_IDX" ]
     ' _ "$TASK_FULL"
 
-# (1f) first nextest pass index > acquire marker index (build+exec pass AFTER acquire).
-# Post-4862 revert: all nextest passes are inside the slot; no --no-run filter needed.
-assert "task plan: first nextest pass ordered AFTER acquire marker" \
+# HOST-INDEPENDENCE (task 5599). The test-line greps in (1f)-(1i), (1k), (1m)
+# and (1o) match `cargo (test|nextest run)` rather than the bare
+# `cargo nextest run`, so they hold on a host WITHOUT cargo-nextest, where
+# verify.sh gracefully falls back to emitting `cargo test` (plan header
+# nextest=0). Every property asserted below is a plan-SHAPE fact — ordering
+# relative to the ACQUIRE/RELEASE markers (which are emitted on the fallback
+# plan too), the trailing FD-close, the absence of --no-run — none of which is
+# nextest-specific. Before the widening, (1f)-(1i)/(1o) FAILED on such a host
+# and (1k)/(1m) passed VACUOUSLY (their grep matched no line at all). Same
+# alternation as tests/infra/test_verify_role_prio.sh; guarded by
+# tests/infra/test_verify_nextest_absent_suites.sh.
+#
+# (1f) first test pass index > acquire marker index (build+exec pass AFTER acquire).
+# Post-4862 revert: all test passes are inside the slot; no --no-run filter needed.
+assert "task plan: first test pass ordered AFTER acquire marker" \
     bash -c '
         ACQ_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
-        NEXT_IDX=$(printf "%s\n" "$1" | grep -n "cargo nextest run" | head -1 | cut -d: -f1)
+        NEXT_IDX=$(printf "%s\n" "$1" | grep -nE "cargo (test|nextest run)" | head -1 | cut -d: -f1)
         [ -n "$ACQ_IDX" ] && [ -n "$NEXT_IDX" ] && [ "$NEXT_IDX" -gt "$ACQ_IDX" ]
     ' _ "$TASK_FULL"
 
-# (1g) release marker index > last nextest pass index (nextest BEFORE release).
-assert "task plan: release marker ordered AFTER last nextest pass" \
+# (1g) release marker index > last test pass index (test pass BEFORE release).
+assert "task plan: release marker ordered AFTER last test pass" \
     bash -c '
         REL_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*RELEASE" | head -1 | cut -d: -f1)
-        LAST_NEXT_IDX=$(printf "%s\n" "$1" | grep -n "cargo nextest run" | tail -1 | cut -d: -f1)
+        LAST_NEXT_IDX=$(printf "%s\n" "$1" | grep -nE "cargo (test|nextest run)" | tail -1 | cut -d: -f1)
         [ -n "$REL_IDX" ] && [ -n "$LAST_NEXT_IDX" ] && [ "$REL_IDX" -gt "$LAST_NEXT_IDX" ]
     ' _ "$TASK_FULL"
 
-# (1h) for --profile both: debug nextest pass BETWEEN acquire and release.
-# Post-4862 revert: all nextest passes are inside the slot; no --no-run filter needed.
-assert "both-profile plan: debug nextest pass BETWEEN acquire and release markers" \
+# (1h) for --profile both: debug test pass BETWEEN acquire and release.
+# Post-4862 revert: all test passes are inside the slot; no --no-run filter needed.
+assert "both-profile plan: debug test pass BETWEEN acquire and release markers" \
     bash -c '
         ACQ_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
         REL_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*RELEASE" | head -1 | cut -d: -f1)
-        # debug pass: nextest run --workspace without --release
-        DBG_IDX=$(printf "%s\n" "$1" | grep -n "cargo nextest run --workspace" | grep -v -- "--release" | head -1 | cut -d: -f1)
+        # debug pass: test run --workspace without --release
+        DBG_IDX=$(printf "%s\n" "$1" | grep -nE "cargo (test|nextest run) --workspace" | grep -v -- "--release" | head -1 | cut -d: -f1)
         [ -n "$ACQ_IDX" ] && [ -n "$REL_IDX" ] && [ -n "$DBG_IDX" ]
         [ "$DBG_IDX" -gt "$ACQ_IDX" ] && [ "$DBG_IDX" -lt "$REL_IDX" ]
     ' _ "$BOTH_FULL"
 
-# (1i) for --profile both: release nextest pass BETWEEN acquire and release.
-# Post-4862 revert: all nextest passes are inside the slot; no --no-run filter needed.
-assert "both-profile plan: release nextest pass BETWEEN acquire and release markers" \
+# (1i) for --profile both: release test pass BETWEEN acquire and release.
+# Post-4862 revert: all test passes are inside the slot; no --no-run filter needed.
+assert "both-profile plan: release test pass BETWEEN acquire and release markers" \
     bash -c '
         ACQ_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
         REL_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*RELEASE" | head -1 | cut -d: -f1)
-        # release pass: nextest run with --release
-        RLS_IDX=$(printf "%s\n" "$1" | grep -n "cargo nextest run.*--release" | head -1 | cut -d: -f1)
+        # release pass: test run with --release
+        RLS_IDX=$(printf "%s\n" "$1" | grep -nE "cargo (test|nextest run).*--release" | head -1 | cut -d: -f1)
         [ -n "$ACQ_IDX" ] && [ -n "$REL_IDX" ] && [ -n "$RLS_IDX" ]
         [ "$RLS_IDX" -gt "$ACQ_IDX" ] && [ "$RLS_IDX" -lt "$REL_IDX" ]
     ' _ "$BOTH_FULL"
@@ -114,13 +126,13 @@ assert "all plan: cargo clippy ordered BEFORE acquire marker (lint outside gated
         [ -n "$ACQ_IDX" ] && [ -n "$CLIP_IDX" ] && [ "$CLIP_IDX" -lt "$ACQ_IDX" ]
     ' _ "$ALL_FULL"
 
-# (1k) every cargo nextest run line in commands-only view carries trailing " 9<&-".
-assert "task plan: every nextest pass carries trailing ' 9<&-' (FD-close for children)" \
-    bash -c '! printf "%s\n" "$1" | grep "cargo nextest run" | grep -vq " 9<&-"' \
+# (1k) every cargo test/nextest run line in commands-only view carries trailing " 9<&-".
+assert "task plan: every test pass carries trailing ' 9<&-' (FD-close for children)" \
+    bash -c '! printf "%s\n" "$1" | grep -E "cargo (test|nextest run)" | grep -vq " 9<&-"' \
     _ "$TASK_CMDS"
 
-assert "both-profile plan: every nextest pass carries trailing ' 9<&-'" \
-    bash -c '! printf "%s\n" "$1" | grep "cargo nextest run" | grep -vq " 9<&-"' \
+assert "both-profile plan: every test pass carries trailing ' 9<&-'" \
+    bash -c '! printf "%s\n" "$1" | grep -E "cargo (test|nextest run)" | grep -vq " 9<&-"' \
     _ "$BOTH_CMDS"
 
 # (1l) verify.sh sources lib_test_semaphore.sh (structural wiring check).
@@ -129,19 +141,19 @@ assert "verify.sh sources scripts/lib_test_semaphore.sh" \
 
 # (1m) NO --no-run compile line anywhere in the plan (task 4862 revert: build+test
 # are one unbroken block inside the held slot; no separate compile pass outside).
-assert "task plan: NO 'cargo nextest run ... --no-run' line appears anywhere in the plan" \
-    bash -c '! printf "%s\n" "$1" | grep -q "cargo nextest run.*--no-run"' \
+assert "task plan: NO 'cargo (test|nextest run) ... --no-run' line appears anywhere in the plan" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run).*--no-run"' \
     _ "$TASK_CMDS"
 
-# (1o) all nextest build+exec passes fall BETWEEN ACQUIRE and RELEASE (task 4862 revert).
-# There is no separate compile pass outside the slot; every nextest pass is inside.
-assert "task plan: all nextest passes fall BETWEEN acquire and release markers" \
+# (1o) all build+exec test passes fall BETWEEN ACQUIRE and RELEASE (task 4862 revert).
+# There is no separate compile pass outside the slot; every test pass is inside.
+assert "task plan: all test passes fall BETWEEN acquire and release markers" \
     bash -c '
         ACQ_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
         REL_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*RELEASE" | head -1 | cut -d: -f1)
         [ -n "$ACQ_IDX" ] && [ -n "$REL_IDX" ]
-        FIRST_IDX=$(printf "%s\n" "$1" | grep -n "cargo nextest run" | head -1 | cut -d: -f1)
-        LAST_IDX=$(printf "%s\n" "$1" | grep -n "cargo nextest run" | tail -1 | cut -d: -f1)
+        FIRST_IDX=$(printf "%s\n" "$1" | grep -nE "cargo (test|nextest run)" | head -1 | cut -d: -f1)
+        LAST_IDX=$(printf "%s\n" "$1" | grep -nE "cargo (test|nextest run)" | tail -1 | cut -d: -f1)
         [ -n "$FIRST_IDX" ] && [ -n "$LAST_IDX" ]
         [ "$FIRST_IDX" -gt "$ACQ_IDX" ] && [ "$LAST_IDX" -lt "$REL_IDX" ]
     ' _ "$TASK_FULL"

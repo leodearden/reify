@@ -435,9 +435,23 @@ fi
 echo ""
 echo "--- Assertion (d): heavy (+) smoke partition -- no overlap, no orphan ---"
 
-assert "offline plan: no orphan -- every heavy atom is present in the emitted -E expression" \
-    _no_orphan_ok
+# The orphan check parses the emitted -E expression, which only exists on the
+# nextest plan -- the cargo-test fallback (nextest=0, a host without
+# cargo-nextest installed) has no -E support at all, so the property is
+# genuinely nextest-only and cannot be recovered by widening a grep (task
+# 5599). Guarded with the same NEXTEST_AVAILABLE idiom already used for
+# assertions (b) and (c-bis) above; guarded by
+# tests/infra/test_verify_nextest_absent_suites.sh.
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "offline plan: no orphan -- every heavy atom is present in the emitted -E expression" \
+        _no_orphan_ok
+else
+    assert 'offline plan, nextest unavailable: no -E expression exists to orphan-check (cargo-test fallback has no -E support)' \
+        _offline_lacks '-E "('
+fi
 
+# NOT guarded: reads the REIFY_HEAVY_NEXTEST_FILTER env manifest, not the
+# emitted plan, so it holds on both hosts.
 assert "REIFY_HEAVY_NEXTEST_FILTER has no overlap with solver_gate_smoke" \
     _no_overlap_ok
 
@@ -452,11 +466,18 @@ assert "crates/reify-solver-elastic/tests/solver_gate_smoke.rs exists on disk (r
 echo ""
 echo "--- Assertion (e): resolve-to-disk -- ACTUAL emitted offline plan atoms ---"
 
-assert "offline plan atoms: exactly 6 parsed (no silent membership drift)" \
-    _atom_count_is_6
+# Both parse atoms out of the ACTUAL emitted offline -E expression -- nextest-
+# only, same reasoning as assertion (d)'s orphan check above (task 5599).
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "offline plan atoms: exactly 6 parsed (no silent membership drift)" \
+        _atom_count_is_6
 
-assert "offline plan atoms: every parsed atom resolves to a real crates/<pkg>/tests/<bin>.rs file" \
-    _resolve_atoms_ok
+    assert "offline plan atoms: every parsed atom resolves to a real crates/<pkg>/tests/<bin>.rs file" \
+        _resolve_atoms_ok
+else
+    assert 'offline plan atoms, nextest unavailable: no -E expression exists to parse atoms from (cargo-test fallback has no -E support)' \
+        _offline_lacks '-E "('
+fi
 
 # ---------------------------------------------------------------------------
 # Non-vacuity self-check: the guard's own resolve-to-disk / orphan / overlap
@@ -466,8 +487,14 @@ assert "offline plan atoms: every parsed atom resolves to a real crates/<pkg>/te
 echo ""
 echo "--- Non-vacuity self-check: guard detects an injected partition break ---"
 
-assert "guard checks reject a deliberately-broken partition (dangling atom / dropped atom / injected overlap), and still accept the real one" \
-    assert_guard_rejects
+# Nextest-only: assert_guard_rejects mutates and re-checks the emitted -E
+# expression, which does not exist on the cargo-test fallback (task 5599).
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "guard checks reject a deliberately-broken partition (dangling atom / dropped atom / injected overlap), and still accept the real one" \
+        assert_guard_rejects
+else
+    echo "  (skipped: nextest unavailable -- no -E expression to break and re-check)"
+fi
 
 # ---------------------------------------------------------------------------
 # Dump self-check: a forced oracle miss emits the full raw plan (header incl

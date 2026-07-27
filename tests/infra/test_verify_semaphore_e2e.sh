@@ -1160,9 +1160,35 @@ echo ""
 echo "--- Section D: print-plan oracle (occt cap=24 + gated-region ordering) ---"
 
 capture_plans
-assert "test plan: all nextest run lines carry --config-file with reify-nextest-occt path" \
-    bash -c 'printf "%s\n" "$1" | grep -q "cargo nextest run" && ! printf "%s\n" "$1" | grep "cargo nextest run" | grep -v -- "--config-file.*reify-nextest-occt"' \
-    _ "$PLAN_TEST_CMDS"
+
+# HOST-INDEPENDENCE (task 5599). On a host WITHOUT cargo-nextest installed,
+# verify.sh gracefully emits `cargo test` instead (plan header nextest=0), and
+# the assertions below split into two kinds:
+#   - --config-file presence is NEXTEST-ONLY (--config-file is a nextest flag;
+#     the fallback line is `cargo test --workspace -- --test-threads=1 9<&-`
+#     with no --config-file at all), so it is guarded by NEXTEST_AVAILABLE with
+#     an else arm asserting the fallback shape;
+#   - the gated-region ORDERING and the absence of --no-run are plan-SHAPE
+#     facts that hold identically on the fallback (measured on the nx0
+#     `all --scope all` plan: ACQUIRE 24 < cargo test 29 < RELEASE 30), so they
+#     use the `cargo (test|nextest run)` alternation instead.
+# The probe reads the header off the already-captured PLAN_TEST_FULL — no extra
+# verify.sh invocation (idiom from test_verify_retry_failed_only.sh:89-93).
+# Guarded by tests/infra/test_verify_nextest_absent_suites.sh.
+NEXTEST_AVAILABLE=0
+case "$(printf '%s\n' "$PLAN_TEST_FULL" | grep '^# verify.sh plan')" in
+    *"nextest=1"*) NEXTEST_AVAILABLE=1 ;;
+esac
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "test plan: all nextest run lines carry --config-file with reify-nextest-occt path" \
+        bash -c 'printf "%s\n" "$1" | grep -q "cargo nextest run" && ! printf "%s\n" "$1" | grep "cargo nextest run" | grep -v -- "--config-file.*reify-nextest-occt"' \
+        _ "$PLAN_TEST_CMDS"
+else
+    assert "test plan, nextest unavailable: cargo-test fallback lines carry NO --config-file (nextest-only flag)" \
+        bash -c 'printf "%s\n" "$1" | grep -q "cargo test" && ! printf "%s\n" "$1" | grep -q -- "--config-file"' \
+        _ "$PLAN_TEST_CMDS"
+fi
 assert ".config/nextest.toml pins occt max-threads=24" \
     grep -qE 'occt = \{ max-threads = 24 \}' "$REPO_ROOT/.config/nextest.toml"
 assert "gen-nextest-config.sh resolves occt cap to 24 (workstation-class injection NPROC=32/MEM=128: min(24,32,64)=24)" \
@@ -1183,18 +1209,21 @@ assert "all plan: cargo check -p reify-gui ordered BEFORE acquire marker (outsid
         CHK=$(printf "%s\n" "$1" | grep -n "cargo check -p reify-gui" | head -1 | cut -d: -f1)
         [ -n "$ACQ" ] && [ -n "$CHK" ] && [ "$CHK" -lt "$ACQ" ]
     ' _ "$PLAN_ALL_FULL"
-assert "all plan: every nextest run line BETWEEN acquire and release markers (task 4862 revert: build inside slot)" \
+assert "all plan: every test run line BETWEEN acquire and release markers (task 4862 revert: build inside slot)" \
     bash -c '
         ACQ=$(printf "%s\n" "$1" | grep -n "test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
         REL=$(printf "%s\n" "$1" | grep -n "test-run semaphore.*RELEASE" | head -1 | cut -d: -f1)
-        # All nextest passes are inside the slot; no --no-run filter needed (post-4862 revert).
-        FIRST=$(printf "%s\n" "$1" | grep -n "cargo nextest run" | head -1 | cut -d: -f1)
-        LAST=$(printf "%s\n" "$1" | grep -n "cargo nextest run" | tail -1 | cut -d: -f1)
+        # All test passes are inside the slot; no --no-run filter needed (post-4862 revert).
+        FIRST=$(printf "%s\n" "$1" | grep -nE "cargo (test|nextest run)" | head -1 | cut -d: -f1)
+        LAST=$(printf "%s\n" "$1" | grep -nE "cargo (test|nextest run)" | tail -1 | cut -d: -f1)
         [ -n "$ACQ" ] && [ -n "$REL" ] && [ -n "$FIRST" ] && [ -n "$LAST" ]
         [ "$FIRST" -gt "$ACQ" ] && [ "$LAST" -lt "$REL" ]
     ' _ "$PLAN_ALL_FULL"
-assert "all plan: NO 'cargo nextest run ... --no-run' line before acquire marker (task 4862 revert: build inside slot)" \
-    bash -c '! printf "%s\n" "$1" | grep -q "cargo nextest run.*--no-run"' _ "$PLAN_ALL_FULL"
+# Vacuity hardening (task 5599): the bare `cargo nextest run` form made this
+# grep match nothing on a nextest-less host, so it passed while asserting
+# nothing. No --no-run line exists in any plan post-4862 on either host.
+assert "all plan: NO 'cargo (test|nextest run) ... --no-run' line before acquire marker (task 4862 revert: build inside slot)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run).*--no-run"' _ "$PLAN_ALL_FULL"
 
 # task 4853: compile-gate ordering on the test path — compile-gate now sits
 # BEFORE @@SEMAPHORE_ACQUIRE@@ as a block-entry load gate for the unified build+test block.
