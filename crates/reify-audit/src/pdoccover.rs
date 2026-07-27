@@ -183,3 +183,307 @@ pub fn baseline_candidates(_ctx: &AuditContext<'_>) -> Vec<String> {
 const _: fn() = || {
     let _ = |p: Pattern, s: Severity, e: EvidenceRef| (p, s, e);
 };
+
+// -----------------------------------------------------------------------
+// Unit tests — pure scan grammar
+// -----------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Names of the registries `extract_registries` found, in discovery order.
+    fn const_names(regs: &[Registry]) -> Vec<&str> {
+        regs.iter().map(|r| r.const_name.as_str()).collect()
+    }
+
+    /// `(name, line)` pairs of every entry in `reg`.
+    fn entry_pairs(reg: &Registry) -> Vec<(&str, usize)> {
+        reg.entries
+            .iter()
+            .map(|e| (e.name.as_str(), e.line))
+            .collect()
+    }
+
+    /// Just the names of every entry in `reg`.
+    fn entry_names(reg: &Registry) -> Vec<&str> {
+        reg.entries.iter().map(|e| e.name.as_str()).collect()
+    }
+
+    // ── step-1 (a): single-line registry form ────────────────────────────
+
+    /// The one-liner shape `pub const X_NAMES: &[&str] = &["nominal"];` (the
+    /// real `TOLERANCING_MARKER_NAMES`) yields one registry with one entry,
+    /// whose line is the declaration line.
+    #[test]
+    fn extract_registries_single_line_form() {
+        let src = r#"
+/// Tolerancing markers.
+pub const TOLERANCING_MARKER_NAMES: &[&str] = &["nominal"];
+"#;
+        let regs = extract_registries(src);
+        assert_eq!(
+            const_names(&regs),
+            vec!["TOLERANCING_MARKER_NAMES"],
+            "single-line registry must be discovered; got: {regs:?}"
+        );
+        assert_eq!(
+            entry_pairs(&regs[0]),
+            vec![("nominal", 3)],
+            "single-line registry must yield its one entry at the declaration \
+             line; got: {:?}",
+            regs[0].entries
+        );
+    }
+
+    // ── step-1 (b): multi-line block form ────────────────────────────────
+
+    /// The block shape (the real `GEOMETRY_FUNCTION_NAMES`) — one name per
+    /// line, trailing comma — yields every name with correct 1-based lines.
+    #[test]
+    fn extract_registries_multi_line_block_form() {
+        let src = r#"pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
+    "box",
+    "cylinder",
+    "sphere",
+];
+"#;
+        let regs = extract_registries(src);
+        assert_eq!(
+            const_names(&regs),
+            vec!["GEOMETRY_FUNCTION_NAMES"],
+            "block-form registry must be discovered; got: {regs:?}"
+        );
+        assert_eq!(
+            entry_pairs(&regs[0]),
+            vec![("box", 2), ("cylinder", 3), ("sphere", 4)],
+            "block-form entries must carry correct 1-based line numbers; got: {:?}",
+            regs[0].entries
+        );
+    }
+
+    // ── step-1 (c): line-broken header form ──────────────────────────────
+
+    /// The real `GEOMETRY_KINEMATIC_QUERY_NAMES` shape puts `=` at the end of
+    /// the declaration line and `&[` on the NEXT line. It must be parsed, not
+    /// skipped — skipping it would silently drop a whole registry from the
+    /// census, exactly the brittle-parse failure the step-3 guard defends.
+    #[test]
+    fn extract_registries_line_broken_header_form() {
+        let src = r#"pub const GEOMETRY_KINEMATIC_QUERY_NAMES: &[&str] =
+    &["interferes", "interferes_with", "min_clearance"];
+"#;
+        let regs = extract_registries(src);
+        assert_eq!(
+            const_names(&regs),
+            vec!["GEOMETRY_KINEMATIC_QUERY_NAMES"],
+            "line-broken header form must be discovered, not skipped; got: {regs:?}"
+        );
+        assert_eq!(
+            entry_names(&regs[0]),
+            vec!["interferes", "interferes_with", "min_clearance"],
+            "line-broken header form must yield all three names; got: {:?}",
+            regs[0].entries
+        );
+    }
+
+    // ── step-1 (d): visibility prefixes ──────────────────────────────────
+
+    /// `pub(crate) const` and bare `const` are accepted alongside `pub const`.
+    #[test]
+    fn extract_registries_accepts_visibility_prefixes() {
+        let src = r#"pub(crate) const ALPHA_NAMES: &[&str] = &["a"];
+const BETA_NAMES: &[&str] = &["b"];
+pub const GAMMA_NAMES: &[&str] = &["c"];
+"#;
+        let regs = extract_registries(src);
+        assert_eq!(
+            const_names(&regs),
+            vec!["ALPHA_NAMES", "BETA_NAMES", "GAMMA_NAMES"],
+            "pub(crate)/bare/pub const prefixes must all be accepted; got: {regs:?}"
+        );
+    }
+
+    // ── step-1 (e): non-`_NAMES` consts ignored ──────────────────────────
+
+    /// A const whose identifier does not end in `_NAMES` is not a builtin-name
+    /// registry and must be ignored — including tuple-slice consts like the
+    /// real `SI_PREFIXES`, whose quoted tokens are not builtin names.
+    #[test]
+    fn extract_registries_ignores_non_names_consts() {
+        let src = r#"pub const SI_PREFIXES: &[(&str, f64)] = &[("kilo", 1e3), ("milli", 1e-3)];
+pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &["box"];
+pub const SOME_OTHER: &[&str] = &["not_a_registry"];
+"#;
+        let regs = extract_registries(src);
+        assert_eq!(
+            const_names(&regs),
+            vec!["GEOMETRY_FUNCTION_NAMES"],
+            "only `*_NAMES` string-slice consts are registries; got: {regs:?}"
+        );
+    }
+
+    // ── step-1 (f): comment lines inside the block ───────────────────────
+
+    /// `//` and `///` comment lines inside a registry block contribute no
+    /// entry — including a comment that itself contains a quoted token, which
+    /// must never be mistaken for a registry name.
+    #[test]
+    fn extract_registries_skips_comment_lines_in_block() {
+        let src = r#"pub const GEOMETRY_QUERY_HELPER_NAMES: &[&str] = &[
+    // Task 2320: the original trio (see "watertight" discussion).
+    "is_watertight",
+    /// doc-comment mentioning "is_phantom"
+    "is_manifold",
+];
+"#;
+        let regs = extract_registries(src);
+        assert_eq!(
+            entry_names(&regs[0]),
+            vec!["is_watertight", "is_manifold"],
+            "comment lines (and quoted tokens inside them) must contribute no \
+             entries; got: {:?}",
+            regs[0].entries
+        );
+    }
+
+    // ── step-1 (g): pdoccover:allow marker on an entry line ──────────────
+
+    /// An entry line carrying `// pdoccover:allow — <reason>` records the
+    /// trimmed reason body in `allow`, and the marker text itself is never
+    /// mistaken for an entry.
+    #[test]
+    fn extract_registries_records_allow_reason() {
+        let src = r#"pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
+    "box",
+    "lower_shim", // pdoccover:allow — geometry-only internal
+];
+"#;
+        let regs = extract_registries(src);
+        let entries = &regs[0].entries;
+        assert_eq!(
+            entries.len(),
+            2,
+            "allow-marked line yields exactly one entry (the name), not the \
+             marker text; got: {entries:?}"
+        );
+        assert_eq!(entries[0].name, "box");
+        assert_eq!(
+            entries[0].allow, None,
+            "unmarked entry must carry allow=None; got: {:?}",
+            entries[0]
+        );
+        assert_eq!(entries[1].name, "lower_shim");
+        assert_eq!(
+            entries[1].allow.as_deref(),
+            Some("geometry-only internal"),
+            "allow-marked entry must carry the trimmed reason body; got: {:?}",
+            entries[1]
+        );
+        assert!(
+            !entries[1].allow_missing_reason,
+            "a marker WITH a reason must not set allow_missing_reason; got: {:?}",
+            entries[1]
+        );
+    }
+
+    // ── step-1 (h): two names on one line ────────────────────────────────
+
+    /// Two names on one line are both extracted, sharing that line number
+    /// (the real `DYNAMICS_CONSTRUCTOR_NAMES` shape).
+    #[test]
+    fn extract_registries_two_names_one_line() {
+        let src =
+            r#"pub const DYNAMICS_CONSTRUCTOR_NAMES: &[&str] = &["mass_properties", "point_mass"];
+"#;
+        let regs = extract_registries(src);
+        assert_eq!(
+            entry_pairs(&regs[0]),
+            vec![("mass_properties", 1), ("point_mass", 1)],
+            "both names on one line must be extracted with that shared line \
+             number; got: {:?}",
+            regs[0].entries
+        );
+    }
+
+    // ── step-2: allow_marker_reason grammar ──────────────────────────────
+
+    /// The reason separator accepts an em dash, an ASCII hyphen or a colon —
+    /// and a bare space also works. The body is returned trimmed.
+    ///
+    /// Three separators rather than only the PRD's literal em dash: a gate
+    /// that fails on an invisible typographic difference would be a trap. The
+    /// marker token plus a non-blank reason carry the normative weight.
+    #[test]
+    fn allow_marker_reason_accepts_three_separators() {
+        for line in [
+            r#"    "x", // pdoccover:allow — internal lowering shim"#,
+            r#"    "x", // pdoccover:allow - internal lowering shim"#,
+            r#"    "x", // pdoccover:allow: internal lowering shim"#,
+            r#"    "x", // pdoccover:allow   internal lowering shim  "#,
+        ] {
+            assert_eq!(
+                allow_marker_reason(line),
+                Some("internal lowering shim"),
+                "marker reason must be extracted and trimmed for line: {line:?}"
+            );
+        }
+    }
+
+    /// A reasonless marker (bare, or a separator with a blank body) yields
+    /// `None` — which is what makes `allow-missing-reason` fall out naturally,
+    /// mirroring `ptodo::g_allow_marker_body`'s blank-body contract.
+    #[test]
+    fn allow_marker_reason_none_for_blank_body() {
+        for line in [
+            r#"    "x", // pdoccover:allow"#,
+            r#"    "x", // pdoccover:allow —"#,
+            r#"    "x", // pdoccover:allow:   "#,
+        ] {
+            assert_eq!(
+                allow_marker_reason(line),
+                None,
+                "a reasonless marker must yield None for line: {line:?}"
+            );
+        }
+    }
+
+    /// The legacy UNPREFIXED `doccover:allow` (earlier PRD drafts, renamed
+    /// 2026-07-25 for uniformity with `ptodo:allow`) is NOT honoured — only
+    /// the prefixed token is consumed.
+    #[test]
+    fn allow_marker_reason_rejects_legacy_unprefixed_token() {
+        assert_eq!(
+            allow_marker_reason(r#"    "x", // doccover:allow — legacy form"#),
+            None,
+            "the legacy unprefixed `doccover:allow` must confer nothing"
+        );
+    }
+
+    /// A line with no marker at all yields `None`.
+    #[test]
+    fn allow_marker_reason_none_without_marker() {
+        assert_eq!(allow_marker_reason(r#"    "box","#), None);
+    }
+
+    /// `allow_missing_reason` is set on a registry entry whose line carries a
+    /// reasonless marker (and the marker confers no reason).
+    #[test]
+    fn extract_registries_flags_reasonless_allow_marker() {
+        let src = r#"pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
+    "lower_shim", // pdoccover:allow
+];
+"#;
+        let regs = extract_registries(src);
+        let e = &regs[0].entries[0];
+        assert_eq!(e.name, "lower_shim");
+        assert_eq!(
+            e.allow, None,
+            "a reasonless marker confers no reason; got: {e:?}"
+        );
+        assert!(
+            e.allow_missing_reason,
+            "a reasonless marker must set allow_missing_reason; got: {e:?}"
+        );
+    }
+}
