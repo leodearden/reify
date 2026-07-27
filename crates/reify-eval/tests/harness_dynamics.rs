@@ -24,14 +24,8 @@
 //! blur a subsystem boundary EVAL-1 drew. The cost of keeping it honest is one binary
 //! saved instead of two.
 //!
-//! Note (task #5282): this compile unit's real size is the root file plus every
-//! `harness_dynamics/*.rs` module below — measured post-move, 38 (root) + 517
-//! (modules) = 555 raw lines against the PRD §7 20,000-line cap (~97% headroom).
-//! `tests/infra/test_harness_kloc_cap.sh` rule (a) currently `wc -l`s only this root
-//! file, so it cannot see a unit approach the cap; a follow-up to make the guard sum
-//! root + module-dir LOC was filed against task 5281. Once that follow-up is assigned a
-//! task id, replace this note with a properly numbered debt-marker citation per the
-//! repo's TODO-citation convention (CLAUDE.md).
+//! Whole-unit size (this root plus every `harness_dynamics/*.rs` module below) is
+//! measured and capped by `tests/infra/test_harness_kloc_cap.sh` rule (a).
 #[path = "harness_dynamics/dynamics_body_mass_props.rs"]
 mod dynamics_body_mass_props;
 #[path = "harness_dynamics/trajectory_gcode_dialect_eval.rs"]

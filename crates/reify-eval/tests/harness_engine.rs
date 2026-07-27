@@ -20,14 +20,8 @@
 //! `m8_stdlib_integration`'s 14 `../../examples/*.ri` reads are all of this kind).
 //! There are no `include_str!`/`include!` sites and no `#[global_allocator]`.
 //!
-//! Note (task #5282): this compile unit's real size is the root file plus every
-//! `harness_engine/*.rs` module below — measured post-move, 68 (root) + 11,601
-//! (modules) = 11,669 raw lines against the PRD §7 20,000-line cap (~42% headroom).
-//! `tests/infra/test_harness_kloc_cap.sh` rule (a) currently `wc -l`s only this root
-//! file, so it cannot see this unit approach the cap; a follow-up to make the guard sum
-//! root + module-dir LOC was filed against task 5281. Once that follow-up is assigned a
-//! task id, replace this note with a properly numbered debt-marker citation per the
-//! repo's TODO-citation convention (CLAUDE.md).
+//! Whole-unit size (this root plus every `harness_engine/*.rs` module below) is measured
+//! and capped by `tests/infra/test_harness_kloc_cap.sh` rule (a).
 //!
 //! The shared `common/differential.rs` harness is included HERE, at the unit root,
 //! rather than inside the one submodule that consumes it — the same placement

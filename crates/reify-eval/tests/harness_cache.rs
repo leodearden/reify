@@ -18,9 +18,9 @@
 //! rather than once per includer. Four submodules below reference it —
 //! `unified_dag_boundary_cases`, `unified_dag_differential_corpus`,
 //! `unified_dag_edit_path`, `unified_dag_warm_path` — and each previously carried its own
-//! `#[path = "common/differential.rs"] mod differential;`, so the same 2,128 lines were
-//! compiled four times. One shared copy removes 3 of those 4 compilations (6,384 lines of
-//! duplicated compilation) with no behavioral difference: differential.rs declares 0
+//! `#[path = "common/differential.rs"] mod differential;`, so the same source was
+//! compiled four times. One shared copy removes 3 of those 4 duplicate compilations of
+//! `differential.rs` with no behavioral difference: differential.rs declares 0
 //! `#[test]` fns, so collapsing the copies cannot change the nextest test count.
 //! Submodules reach it via `use crate::differential::{…}`. No extra `#![allow]` is needed
 //! at this root — differential.rs carries its own `#![allow(dead_code)]`.
@@ -34,10 +34,9 @@
 //!     global allocator per compile unit, so folding both here is a hard rustc error, and
 //!     folding either would instrument every allocation in this 17-module harness. Both
 //!     files' headers state the process isolation as deliberate design.
-//!   - `fdm_bracket_e2e` and `fdm_progressive_refinement_e2e` (939 lines, `common::
-//!     as_printed` users) belong to `harness_fea_solver_e2e`, which already measures
-//!     19,209 lines against the PRD §7 20,000-line cap — folding them would breach the
-//!     band.
+//!   - `fdm_bracket_e2e` and `fdm_progressive_refinement_e2e` (`common::as_printed`
+//!     users) belong to `harness_fea_solver_e2e`, which already sits close to the PRD §7
+//!     20,000-line cap — folding them would risk breaching the band.
 //!   - `edit_source` (3,764 lines) and `guard_eval` (4,190 lines) are out-of-subsystem,
 //!     and their only use of `common` is the 46-line `ten_bool_guarded_groups` helper;
 //!     folding ~8 kLOC of foreign tests to dedup 46 lines is not a trade worth making.
@@ -53,16 +52,8 @@
 //! as well as compiled so the fixture/example *content* is confirmed to still reach the
 //! assertions.
 //!
-//! Note (task #5282): this compile unit's real size is the root file plus every
-//! `harness_cache/*.rs` module below, plus the shared `differential` module — measured
-//! post-move, 102 (root) + 7,525 (modules) + 2,128 (differential) = 9,755 raw lines
-//! against the PRD §7 20,000-line cap (~51% headroom). Before the dedup the same set
-//! would have compiled 6,384 lines more (4 copies of differential.rs, not 1).
-//! `tests/infra/test_harness_kloc_cap.sh` rule (a) currently `wc -l`s only this root
-//! file, so it cannot see this unit approach the cap; a follow-up to make the guard sum
-//! root + module-dir LOC was filed against task
-//! 5281. Once that follow-up is assigned a task id, replace this note with a properly
-//! numbered debt-marker citation per the repo's TODO-citation convention (CLAUDE.md).
+//! Whole-unit size (this root plus every `harness_cache/*.rs` module below) is measured
+//! and capped by `tests/infra/test_harness_kloc_cap.sh` rule (a).
 #[path = "common/differential.rs"]
 mod differential;
 

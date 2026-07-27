@@ -26,14 +26,8 @@
 //! knock-on effect: it pushed that line from 98 to 101 columns, past rustfmt's
 //! 100-column `max_width`, so the `const` was wrapped onto two lines.
 //!
-//! Note (task #5282): this compile unit's real size is the root file plus every
-//! `harness_tolerance/*.rs` module below — measured post-move, 74 (root) + 5,835
-//! (modules) = 5,909 raw lines against the PRD §7 20,000-line cap (~70% headroom).
-//! `tests/infra/test_harness_kloc_cap.sh` rule (a) currently `wc -l`s only this root
-//! file, so it cannot see this unit approach the cap; a follow-up to make the guard sum
-//! root + module-dir LOC was filed against task 5281. Once that follow-up is assigned a
-//! task id, replace this note with a properly numbered debt-marker citation per the
-//! repo's TODO-citation convention (CLAUDE.md).
+//! Whole-unit size (this root plus every `harness_tolerance/*.rs` module below) is
+//! measured and capped by `tests/infra/test_harness_kloc_cap.sh` rule (a).
 #[path = "harness_tolerance/result_carried_topology.rs"]
 mod result_carried_topology;
 #[path = "harness_tolerance/result_fallback_e2e.rs"]
