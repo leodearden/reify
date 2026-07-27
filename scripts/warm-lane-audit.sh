@@ -571,8 +571,13 @@ _status_bucket() {
 #   terminal              the holder is done/cancelled -- reclaim now.
 #   pending|blocked|      a reservation held by work that is not running; the
 #     infra-hold          lane is lost to scheduling, not to a leak.
-#   other                 any other live status; notably `in-progress` with no
-#                         live consumer, i.e. a probably-crashed agent.
+#   other                 the RESIDUE -- any status outside the buckets above,
+#                         and deliberately not a single reading. `in-progress`
+#                         here is a probably-crashed agent (running task, no
+#                         live consumer), but `deferred`/`review` are
+#                         not-running states in `pending`'s family. Triage reads
+#                         the per-lane `pin` column, which keeps the raw value
+#                         precisely so this rollup never has to guess.
 #   unknown               the holder could not be resolved (A3).
 #
 # `terminal` delegates to _status_bucket so the done|cancelled predicate keeps

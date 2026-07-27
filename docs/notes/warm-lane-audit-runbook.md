@@ -101,7 +101,7 @@ Raw record `state` → reported `assigned` column (raw values are dark-factory's
 | `dirty` | `clean` \| `residue-only` \| `wip` | `git status --porcelain --untracked-files=no`; `residue-only` when every changed path matches `REIFY_WARM_LANE_AUDIT_RESIDUE_GLOB`; a `git status` failure degrades fail-closed to `wip`. |
 | `divergent_gib` | integer | `du -sB1 <lane>/target`, floored to GiB; `0` if `target/` is absent or `du` fails (degrades with a stderr warning, never aborts). |
 | `age_min` | integer | Whole minutes since the worktree dir's mtime. |
-| `classification` | `LIVE` \| `PINNED` \| `RECLAIMABLE` \| `LEAKED` \| `PRESERVED-OK` | See Classification below. |
+| `classification` | `LIVE` \| `PINNED` \| `QUARANTINED` \| `RECLAIMABLE` \| `LEAKED` \| `PRESERVED-OK` | See Classification below. |
 
 **Trailing HEADROOM line** (table format: one summary line after all per-lane rows; JSON format:
 the `"headroom"` object):
@@ -127,10 +127,10 @@ bucket and must never be added into the identity.
 | `resident` | Count of resident git-worktree dirs under `--mount`. (The dot-prefixed `.lane-state` dir is not a resident.) |
 | `live` | Partition: a consumer process holds the lane's exclusive flock. |
 | `pinned` | Partition: `ASSIGNED` but not live — reserved by work that is not running. The pool's standing capacity loss. |
-| `quarantined` | Partition: withheld from the pool (and not live). |
+| `quarantined` | Partition: withheld from the pool (and not live). Classified `QUARANTINED`, never `LEAKED` — see Classification. |
 | `free` | Partition **residue**: neither live, nor reserved, nor withheld. Nothing else. It was formerly `resident - live`, which counted every reserved-but-idle lane as available capacity — that is exactly the 2026-07-22 misread. |
 | `assigned` | Cross-cut: lanes the pool has reserved, live or not (`live ∧ ASSIGNED` + `pinned`). `assigned ≫ live` is the esc-5556-1 signature. |
-| `state_unknown` | Cross-cut: lanes whose assignment state could not be resolved (A5). Counted `free` (conservative), warned by name on stderr, and counted here so "no pins" stays distinguishable from "pins could not be evaluated" — the same treatment A3 gives an unresolvable status. |
+| `state_unknown` | Cross-cut: lanes whose assignment state could not be resolved (A5). Never counted `pinned`, `quarantined` or `assigned` — an *idle* one falls to `free` (the conservative reading), a *live* one is counted `live` like any other. Warned by name on stderr (the warning names the bucket it actually used), and counted here so "no pins" stays distinguishable from "pins could not be evaluated" — the same treatment A3 gives an unresolvable status. |
 | `reclaimable` | Count classified `RECLAIMABLE`. |
 | `leaked` | Count classified `LEAKED`. |
 | `leak_unknown` | Count of FREE/stale/ORPHAN lanes whose LEAKED verdict could **not** be confirmed because the backing-task status is `unknown` (A3). |
@@ -150,12 +150,17 @@ emitted, zeros included** — a zero must be readable, never an absent line.
 | `pending` | `pending` | A reservation held by work that never started. |
 | `blocked` | `blocked` | Ditto — held by work that cannot start. |
 | `infra-hold` | `infra-hold` | Ditto — held pending infrastructure. |
-| `other` | any other live status | Notably `in-progress` with no live consumer: a **likely-crashed** consumer. |
+| `other` | any status outside the buckets above | The residue, so it is **not** one reading: `in-progress` here means a **likely-crashed** consumer, while `deferred` / `review` are not-running states in the same family as `pending`. Read the per-lane `pin` column before acting. |
 | `unknown` | unresolvable | The holder could not be resolved (A3). |
 
 ## Classification
 
 Evaluated per lane, most-specific first:
+
+The rank is the HEADROOM occupancy partition's order **exactly**: the first three verdicts are
+one-for-one the partition's three occupied buckets, and the FREE ladder below them is one-for-one
+its residue. A lane counted `quarantined=` on the summary line while its own row read `LEAKED` would
+be the report contradicting itself.
 
 1. **`LIVE`** — `live == LIVE`. A consumer process holds the lane; never touch it.
 2. **`PINNED`** — idle, **and** `assigned == ASSIGNED`. The pool has reserved this lane but nothing
@@ -165,14 +170,20 @@ Evaluated per lane, most-specific first:
    exactly (non-terminal + `ORPHAN` + stale). A reservation the pool still holds is a scheduling
    problem, not a leak, and reporting it as one would invite reclaiming state a consumer may return
    to. Use the `pin` column (per lane) and the PINNED breakdown (pool-wide) to triage.
-3. **`RECLAIMABLE`** — idle and unreserved, **and** (`status == terminal` **or**
+3. **`QUARANTINED`** — idle, unreserved, **and** `assigned == QUARANTINED`. The pool deliberately
+   withheld this lane for inspection. Ranked above the FREE ladder for the same reclaim-suppressing
+   reason as `PINNED`, and at least as strongly: **a quarantined lane is never reported `LEAKED`**
+   and never counted in `leaked=`. Quarantine is a decision someone made about this lane; the audit
+   reports it, and reclaim is that operator's call, not a verdict this script invites. Reclaim (and
+   un-quarantine) belong to the lane lifecycle, never to this script.
+4. **`RECLAIMABLE`** — idle, unreserved and not withheld, **and** (`status == terminal` **or**
    `recoverable ∈ {LANDED, PUSHED}` **or** `dirty == residue-only`). The work is either
    done/cancelled, already safely recorded elsewhere, or its only dirty content is harmless residue.
-4. **`LEAKED`** — idle and unreserved, **and** `status == non-terminal`, **and**
+5. **`LEAKED`** — idle, unreserved and not withheld, **and** `status == non-terminal`, **and**
    `recoverable == ORPHAN` (by construction, always "ahead of main" in the PRD's sense), **and**
    `age_min >= stale_age_min` (A4 — always the declared-knob relation, never an inline literal). A
    stale, unrecoverable, still-active-looking lane nobody is coming back for.
-5. **`PRESERVED-OK`** — everything else (the conservative default), including any idle lane whose
+6. **`PRESERVED-OK`** — everything else (the conservative default), including any idle lane whose
    LEAKED verdict is suppressed solely because its status is `unknown` (see `leak_unknown` above
    and Invariant A3) — reported `PRESERVED-OK`, not silently dropped, and separately counted so
    "no leaks" stays distinguishable from "leaks could not be evaluated".
@@ -194,11 +205,17 @@ Evaluated per lane, most-specific first:
   against the declared knob (default 60 min), never an inline/undeclared literal (D8/G6).
 - **A5 — fail-safe assignment-state read.** A missing state dir, a missing/unreadable record,
   corrupt JSON, or an unrecognized `state` value all degrade that lane to `assigned=UNKNOWN`. It
-  never aborts and never invents an assignment. UNKNOWN lanes keep the conservative accounting
-  (counted `free`) but are surfaced separately — a stderr warning naming the lane **and which of the
-  three causes fired**, plus the HEADROOM `state_unknown` field — so "no pins" stays distinguishable
-  from "pins could not be evaluated", exactly as A3 treats an unresolvable backing-task status. See
-  "Reading a PINNED-heavy pool" for the cause vocabulary and what each one means.
+  never aborts and never invents an assignment. An UNKNOWN lane is never counted `pinned`,
+  `quarantined` or `assigned`; an idle one falls to `free` (the conservative reading), a live one is
+  counted `live`. Such lanes are surfaced separately — a stderr warning naming the lane, **which of
+  the three causes fired**, and **which bucket it was actually counted in**, plus the HEADROOM
+  `state_unknown` field — so "no pins" stays distinguishable from "pins could not be evaluated",
+  exactly as A3 treats an unresolvable backing-task status. A state dir that is absent *entirely*
+  warns **once for the directory** instead of once per lane, so a per-lane line keeps meaning "this
+  lane, unlike its neighbours" rather than "the pool has no records yet". The state, its cause, and
+  the record's `task_id` come from a **single read** of the record, so the reported triple always
+  describes one instant of one record — the orchestrator rewrites these on every acquire/release.
+  See "Reading a PINNED-heavy pool" for the cause vocabulary and what each one means.
 
 ## Reading a PINNED-heavy pool
 
@@ -224,7 +241,7 @@ What to do per bucket:
 |---|---|---|
 | `terminal` | The holder is `done`/`cancelled` and still holds a reservation. | **Reclaim now** — this is recoverable capacity, released by the lane lifecycle, not by this script. |
 | `pending`, `blocked`, `infra-hold` | A reservation held by work that is not running. | Not a leak. Look at why the backing tasks are not dispatching (blocked deps, infra hold, scheduler admission) — reclaiming the lane does not fix it. |
-| `other` (notably `in-progress`) | The task is running but nothing holds the lane's lock. | A **likely-crashed consumer**. Investigate the agent/process before reclaiming. |
+| `other` | Any status outside the buckets above — the bucket is a residue, not a diagnosis. **Check the per-lane `pin` value first.** | `in-progress`: the task is running but nothing holds the lane's lock — a **likely-crashed consumer**; investigate the agent/process before reclaiming. Anything else (`deferred`, `review`, …): read it as `pending` above — work that is not running, so not a leak and not a crash. |
 | `unknown` | The holder could not be resolved (A3). | Check the `--status-cmd` oracle; the count is unverified, not zero. |
 
 A high `state_unknown` means the *assignment* read is failing, so `pinned` itself is an undercount —
