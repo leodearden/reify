@@ -758,7 +758,7 @@ fn watcher_with_target_file_only_fires_for_that_file() {
     // polling here would just add latency on every green run for no
     // correctness benefit. It is race-free by construction, not by
     // timeout: other.ri was modified 500ms before project.ri (above) — 5x
-    // the production debounce window (100ms, watcher.rs:15) — and the
+    // the production debounce window (`DEBOUNCE_DURATION`, 100ms, in watcher.rs) — and the
     // watcher's debounce only suppresses duplicate same-path events; it
     // does not delay or reorder emission across distinct paths. So a
     // broken target_file filter's other.ri push would already be sitting
@@ -882,18 +882,23 @@ fn watcher_emits_remove_event_even_when_target_file_filter_excludes_other_files(
     };
 
     // Watcher is target_file-filtered, so this relies on the very
-    // Removed-bypasses-target_file contract that THIS test exists to pin:
-    // a pleasing self-consistency, since a regression in that contract
-    // would make the barrier itself fail loudly here (spin its full
-    // budget and return false) rather than letting the test below pass
-    // vacuously.
+    // Removed-bypasses-target_file contract that THIS test exists to pin.
+    // That gives the barrier and the test's own assertion below a shared
+    // point of failure -- see the barrier's assert message for how a
+    // regression here is disambiguated from ordinary inotify flakiness.
     let registered = wait_for_watch_registration_via_removal(dir.path(), &probe_seen);
     assert!(
         registered,
         "the watcher never delivered a probe event, so the directory watch \
          was never confirmed live -- the remove below could have been \
          lost outright and this run could not exercise the \
-         Removed-bypasses-target_file contract"
+         Removed-bypasses-target_file contract. NOTE: this barrier probes \
+         via a Removed event, so a regression in the \
+         Removed-bypasses-target_file contract (the very thing this test \
+         pins) presents HERE rather than at the FileEvent::Removed \
+         assertion below -- check the target_file guard in \
+         FileWatcher::new's notify closure before suspecting inotify \
+         registration flakiness"
     );
 
     // Delete the scratch file (not the target) — should produce Removed event
@@ -1020,7 +1025,7 @@ fn watcher_rereads_final_content_after_nonatomic_truncate_then_append() {
     std::fs::write(&target, "module bottom_deck\n\n").unwrap();
 
     // Sub-window pause: 40ms is comfortably less than the production 100ms
-    // debounce window (DEBOUNCE_DURATION, watcher.rs:15), so the append
+    // debounce window (`DEBOUNCE_DURATION` in watcher.rs), so the append
     // below lands inside the SAME quiet-window cycle as the truncation
     // rather than starting a fresh one -- exercising per-path coalescing,
     // not two independent debounce cycles. It's also ample separation for
