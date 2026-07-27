@@ -941,7 +941,18 @@ echo "out" > "$H3c_BASE/debug/build/tauri-ZZZZ/output"
 echo "libserde.rlib" > "$H3c_BASE/debug/deps/libserde.rlib"
 echo "fp" > "$H3c_BASE/debug/.fingerprint/serde-abc123"
 
+# REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 (task 5632): this fixture resolves no
+# delta-touch base (no BASE_COMMIT in the sidecar, no ${H3c_BASE}.basecommit, no
+# --base-commit) AND the debug/.fingerprint dir it deliberately creates is
+# exactly the evidence §9.5 inv.13 refuses on, so the seed would otherwise abort
+# before reaching the build-dir invalidation sweep this arm exists to measure.
+# The knob is the semantically correct annotation rather than a workaround: the
+# .fingerprint dir is LOAD-BEARING for what H3c asserts (that the sweep
+# preserves non-build siblings), so it cannot be dropped; and passing
+# --base-commit instead would divert H3c onto the _touch_git_delta stub-git path
+# it does not otherwise exercise. Block T's T1 covers the refusal itself.
 reset_calls
+REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 \
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
     run_helper_real "$H3c_BASE" "$H3c_LANE" --fresh-checkout
 assert "H3c: --fresh-checkout exits 0 (sibling dirs preserved)" test "$RC" -eq 0
