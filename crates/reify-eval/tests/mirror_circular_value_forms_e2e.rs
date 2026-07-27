@@ -467,8 +467,14 @@ fn circular_pattern_scalar_bare_origin_drops_op_with_error() {
 }
 
 /// The positive control that keeps the rejection case above from passing
-/// vacuously: a DIMENSIONED `12mm, 0mm, 0mm` origin builds with zero Errors and
-/// reaches the kernel with `axis_origin[0] == 0.012`, not `12`.
+/// vacuously: a DIMENSIONED `12mm, 34mm, 56mm` origin builds with zero Errors
+/// and reaches the kernel as `[0.012, 0.034, 0.056]`, not `[12, 34, 56]`.
+///
+/// The three components are DISTINCT so this also pins the ox/oy/oz →
+/// `axis_origin` COMPONENT ORDERING end to end: the eval layer reads the triple
+/// outside its `f64_arg` closure and assembles the array separately, so a
+/// transposition to `[ox, oz, oy]` is a live regression that an all-zero (or
+/// single-non-zero) origin could not detect.
 ///
 /// A tolerance rather than `==` because the parser computes `12 * 1e-3`; the f64
 /// error is at most ~1 ulp (order 1e-18 absolute at this magnitude), so `1e-12`
@@ -480,7 +486,7 @@ fn circular_pattern_scalar_mm_origin_builds_op() {
         r#"
         structure def MmOriginRing {
             let b = box(2mm, 2mm, 2mm)
-            let p = circular_pattern(b, 12mm, 0mm, 0mm, 0, 0, 1, 6, 60deg)
+            let p = circular_pattern(b, 12mm, 34mm, 56mm, 0, 0, 1, 6, 60deg)
         }
         "#,
     );
@@ -498,16 +504,21 @@ fn circular_pattern_scalar_mm_origin_builds_op() {
     );
     match &circular_ops[0] {
         GeometryOp::CircularPattern { axis_origin, .. } => {
-            assert!(
-                (axis_origin[0] - 0.012).abs() < 1e-12,
-                "12mm must reach the kernel as 0.012 SI metres (NOT 12), got {}",
-                axis_origin[0]
-            );
-            assert!(
-                axis_origin[1].abs() < 1e-12 && axis_origin[2].abs() < 1e-12,
-                "0mm components must reach the kernel as 0.0, got {:?}",
-                axis_origin
-            );
+            // Component-wise AND in order: ox→[0], oy→[1], oz→[2].
+            for (i, (label, expected)) in
+                [("12mm", 0.012), ("34mm", 0.034), ("56mm", 0.056)]
+                    .into_iter()
+                    .enumerate()
+            {
+                assert!(
+                    (axis_origin[i] - expected).abs() < 1e-12,
+                    "{label} must reach the kernel as {expected} SI metres at \
+                     axis_origin[{i}] (NOT {} m, and NOT permuted into another \
+                     component); got axis_origin = {:?}",
+                    expected * 1000.0,
+                    axis_origin
+                );
+            }
         }
         other => panic!("expected GeometryOp::CircularPattern, got {:?}", other),
     }

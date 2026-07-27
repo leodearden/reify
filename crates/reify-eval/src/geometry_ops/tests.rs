@@ -3434,16 +3434,23 @@
     /// with BARE direction components is accepted, no error. Also pins the
     /// mm→metre semantics: a `12mm` origin reaches the IR as `0.012`, never
     /// `12`.
+    ///
+    /// Every component is DISTINCT so this also pins the ox/oy/oz → `axis_origin`
+    /// COMPONENT ORDERING: the three reads happen outside the `f64_arg` closure
+    /// and the array is assembled separately, so a transposition to
+    /// `[ox, oz, oy]` is a live regression that an all-zero (or single-non-zero)
+    /// fixture could not see.
     #[test]
     fn compile_geometry_op_circular_pattern_length_origin_bare_direction_accepted() {
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
         let op = circular_pattern_with_origin(
-            // 12mm — the value the bare form would have read as 12 metres.
+            // 12mm/34mm/56mm — the values the bare form would have read as
+            // 12/34/56 metres.
             literal_length(0.012),
-            literal_length(0.0),
-            literal_length(0.0),
+            literal_length(0.034),
+            literal_length(0.056),
         );
 
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -3465,9 +3472,10 @@
                 ..
             }) => {
                 assert_eq!(target, GeometryHandleId(42));
-                // Bit-exact: the SI value is an identity pass-through of the
-                // literal, with no arithmetic applied.
-                assert_eq!(axis_origin, [0.012, 0.0, 0.0]);
+                // Bit-exact: each SI value is an identity pass-through of its
+                // literal, with no arithmetic applied. Distinct components ⇒
+                // this also rejects a transposed assembly.
+                assert_eq!(axis_origin, [0.012, 0.034, 0.056]);
                 assert_eq!(axis_dir, [0.0, 0.0, 1.0]);
                 assert_eq!(count, 4);
             }
@@ -3477,22 +3485,32 @@
                 other
             ),
         }
+        // Assert on CONTENT, not severity: the units gate never emits an
+        // `Error` here — `eval_named_arg_length` pushes `Diagnostic::warning`
+        // for every rejection, and the Error only materialises when the caller
+        // maps `compile_geometry_op`'s `Err(String)`. A severity filter would
+        // therefore pass even if a valid Length origin spuriously warned. The
+        // fixture uses a dimensioned `literal_angle`, so no bare-angle
+        // deprecation warning is expected either — the clean path is silent.
         assert!(
-            !diagnostics
-                .iter()
-                .any(|d| d.severity == reify_core::Severity::Error),
-            "Length origin + dimensionless direction must not produce an Error \
-             diagnostic; got: {:?}",
+            diagnostics.is_empty(),
+            "Length origin + dimensionless direction is the fully clean path and \
+             must emit NO diagnostic at all (in particular no 'expects Length' / \
+             'non-finite Length' warning); got: {:?}",
             diagnostics
         );
     }
 
     /// NEGATIVE LOCK on the scope boundary (task 5350 decision D3): the 4-arg
     /// axis-VALUE form decodes its origin through `decode_axis`/
-    /// `point3_components`, which take DIMENSIONLESS `Value::Real` components.
-    /// That branch is deliberately NOT gated by the scalar-form Length check —
-    /// gating it would break `examples/best_practices/bolt_circle.ri:60` and the
-    /// `pattern_circular_value.txt` golden.
+    /// `point3_components`, which read each component with `Value::as_f64` and
+    /// so accept EITHER a bare `Value::Real` OR a dimensioned LENGTH `Scalar`.
+    /// That branch is deliberately permissive — it is not routed through
+    /// `accept_arg`/`length_spec`, and the scalar-form Length gate must not
+    /// leak into it. This test pins the half that a Length gate WOULD break:
+    /// `Real`-component axis origins are still accepted. The
+    /// `pattern_circular_value.txt` golden is the other fixture constraining
+    /// this branch.
     #[test]
     fn compile_geometry_op_circular_pattern_axis_value_form_origin_stays_dimensionless() {
         let step_handles = vec![GeometryHandleId(42)];
