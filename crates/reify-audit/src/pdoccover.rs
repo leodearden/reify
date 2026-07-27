@@ -561,6 +561,11 @@ pub fn known_name_index(_sources: &[(String, String)]) -> BTreeSet<String> {
     BTreeSet::new()
 }
 
+/// `true` when `path` may carry evidence that a builtin name exists.
+fn in_oracle_scope(_path: &str) -> bool {
+    false
+}
+
 /// Call-shaped API mentions in one chunk: `(name, 1-based line)`.
 // G-allow: consumed by check() in-module, and by the chunk-path brittle-parse floor guard in tests/pdoccover.rs — a separate crate, so pub is required.
 pub fn chunk_call_mentions(_content: &str) -> Vec<(String, usize)> {
@@ -1467,5 +1472,192 @@ pub const SECOND_NAMES: &[&str] = &[
             e.allow_missing_reason,
             "a reasonless marker must set allow_missing_reason; got: {e:?}"
         );
+    }
+
+    // -------------------------------------------------------------------
+    // known_name_index — the fabrication direction's existence oracle
+    //
+    // Deliberately ASYMMETRIC with the omission census. The census is the
+    // PRD-pinned `units.rs` registries; the oracle is every shred of evidence
+    // that a name is real, across the compiler and the stdlib. It has to be
+    // broader, because legitimately-documented names live outside units.rs
+    // (`clamp`, `lerp` and `dot` are in `math_signatures.rs`) and flagging
+    // those as fabrications would make the gate unusable.
+    //
+    // The trade is explicit: a false NEGATIVE (a fabricated name that happens
+    // to collide with an unrelated string literal) is acceptable; a false
+    // POSITIVE is not.
+    // -------------------------------------------------------------------
+
+    /// Convenience: `known_name_index` over one `(path, content)` pair.
+    fn oracle(path: &str, content: &str) -> BTreeSet<String> {
+        known_name_index(&[(path.to_string(), content.to_string())])
+    }
+
+    /// (a) A `*_NAMES` registry entry is evidence the name exists.
+    #[test]
+    fn oracle_accepts_registry_entries() {
+        let idx = oracle(
+            "crates/reify-compiler/src/units.rs",
+            "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\n    \"extrude\",\n];\n",
+        );
+        assert!(idx.contains("extrude"), "got: {idx:?}");
+    }
+
+    /// (b) The dispatch-match shape — `match name { "abs" => … }` — is how a
+    /// large part of the stdlib surface is declared, and none of it is in a
+    /// `*_NAMES` registry.
+    #[test]
+    fn oracle_accepts_match_arm_literals() {
+        let idx = oracle(
+            "crates/reify-stdlib/src/math.rs",
+            "fn dispatch(name: &str) -> Option<Sig> {\n    \
+             match name {\n        \"abs\" => Some(SIG_ABS),\n        \
+             _ => None,\n    }\n}\n",
+        );
+        assert!(
+            idx.contains("abs"),
+            "a dispatch-match arm is existence evidence; got: {idx:?}"
+        );
+    }
+
+    /// (c) A multi-name arm declares every alternative, not just the first.
+    #[test]
+    fn oracle_accepts_multi_name_match_arms() {
+        let idx = oracle(
+            "crates/reify-compiler/src/lower.rs",
+            "        \"translate\" | \"rotate\" | \"scale\" => lower_affine(name),\n",
+        );
+        for want in ["translate", "rotate", "scale"] {
+            assert!(
+                idx.contains(want),
+                "every alternative in a multi-name arm is evidence; \
+                 {want:?} missing from {idx:?}"
+            );
+        }
+    }
+
+    /// (d) A struct-literal `name:` field is the third common declaration
+    /// shape (signature tables built as arrays of structs).
+    #[test]
+    fn oracle_accepts_struct_literal_name_fields() {
+        let idx = oracle(
+            "crates/reify-compiler/src/math_signatures.rs",
+            "    Builtin { name: \"clamp\", arity: 3 },\n",
+        );
+        assert!(idx.contains("clamp"), "got: {idx:?}");
+    }
+
+    /// (e) `.ri` stdlib sources declare names in the language's own grammar,
+    /// where there is no Rust string literal to harvest at all. All ten
+    /// keyword forms, with and without the optional `pub`.
+    #[test]
+    fn oracle_accepts_ri_declaration_forms() {
+        let idx = oracle(
+            "crates/reify-compiler/stdlib/dynamics.ri",
+            "\
+pub fn inverse_dynamics_at_snapshot(mechanism: Mechanism) -> List<JointForce> { x }
+pub unit newton : Force = 1.0
+pub type Stress = Pressure
+    constraint von_mises_stress >= 0
+pub purpose simulation_ready(subject : Structure) {
+enum EulerConvention { XYZ, XZY }
+trait AnalysisResult {
+joint revolute(a: Axis, b: Axis)
+structure def MaterialFrame {
+occurrence def STEPOutput : Output {
+",
+        );
+        for want in [
+            "inverse_dynamics_at_snapshot",
+            "newton",
+            "Stress",
+            "von_mises_stress",
+            "simulation_ready",
+            "EulerConvention",
+            "AnalysisResult",
+            "revolute",
+            "MaterialFrame",
+            "STEPOutput",
+        ] {
+            assert!(
+                idx.contains(want),
+                "`.ri` declaration form for {want:?} was not harvested; \
+                 got: {idx:?}"
+            );
+        }
+    }
+
+    /// (f) Only identifier-shaped literals are evidence. A message template, a
+    /// phrase, a chunk id or an empty string are not names — admitting them
+    /// would let arbitrary prose vouch for a fabricated call.
+    #[test]
+    fn oracle_rejects_non_identifier_literals() {
+        let idx = oracle(
+            "crates/reify-compiler/src/entity.rs",
+            "fn f() {\n    \
+             let a = \"unresolved type: {}\";\n    \
+             let b = \"a b\";\n    \
+             let c = \"01-geometry\";\n    \
+             let d = \"\";\n}\n",
+        );
+        for reject in ["unresolved type: {}", "a b", "01-geometry", ""] {
+            assert!(
+                !idx.contains(reject),
+                "{reject:?} is not identifier-shaped and must not enter the \
+                 oracle; got: {idx:?}"
+            );
+        }
+    }
+
+    /// (g) Comments are not code. A quoted word in a doc-comment or a `//`
+    /// tail is prose — and prose that vouched for a name would silently
+    /// disarm the fabrication lane for exactly the names people write about.
+    #[test]
+    fn oracle_rejects_quoted_words_in_comments() {
+        let idx = oracle(
+            "crates/reify-compiler/src/lower.rs",
+            "/// Formerly known as \"offset_surface\" — removed in v0.5.\n\
+             // see also \"chamfer_all\"\n\
+             fn lower() {}\n",
+        );
+        assert!(
+            !idx.contains("offset_surface"),
+            "a doc-comment mention is not existence evidence; got: {idx:?}"
+        );
+        assert!(
+            !idx.contains("chamfer_all"),
+            "a line-comment mention is not existence evidence; got: {idx:?}"
+        );
+    }
+
+    /// The oracle reads only sources that can carry a declaration.
+    #[test]
+    fn oracle_scope_covers_compiler_stdlib_rust_and_ri_sources() {
+        for path in [
+            "crates/reify-compiler/src/units.rs",
+            "crates/reify-compiler/src/lower/affine.rs",
+            "crates/reify-compiler/stdlib/dynamics.ri",
+            "crates/reify-stdlib/src/lib.rs",
+        ] {
+            assert!(
+                in_oracle_scope(path),
+                "{path:?} declares builtins and must be in oracle scope"
+            );
+        }
+        for path in [
+            // Chunks are the thing being checked — treating them as evidence
+            // would make every fabrication vouch for itself.
+            "crates/reify-mcp/src/tools/chunks/stdlib.md",
+            // Tests and fixtures name things that were never implemented.
+            "crates/reify-compiler/tests/lowering.rs",
+            "crates/reify-cli/tests/fixtures/affine_algebra.ri",
+            "docs/prds/v0_6/doc-chunk-truth-enforcement.md",
+        ] {
+            assert!(
+                !in_oracle_scope(path),
+                "{path:?} must NOT be existence evidence"
+            );
+        }
     }
 }
