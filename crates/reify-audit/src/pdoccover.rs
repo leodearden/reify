@@ -981,9 +981,43 @@ fn keyed(category: &'static str, name: &str, path: &str, detail: String) -> Keye
     }
 }
 
-/// Omission lane, including its two ratchet-honesty siblings.
+/// What the three-way disposition — plus its two ratchet-honesty readings —
+/// resolves one census name to. Exactly one variant per name, by construction:
+/// making this an enum rather than a set of independent booleans is what
+/// enforces the "at most one finding per name" rule below at the type level.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Disposition {
+    /// Documented, with no suppression channel left pointing at it. Nothing to
+    /// report — the goal state.
+    Clean,
+    /// Undocumented, but a well-formed allow marker or a baseline entry
+    /// accounts for it. Nothing to report, and NOT a baseline candidate: it is
+    /// already suppressed.
+    Exempt,
+    /// `pdoccover:allow` with no reason body. Confers no exemption, and is a
+    /// defect on its own terms. Deliberately not a baseline candidate —
+    /// baselining it would freeze a malformed marker into the ratchet instead
+    /// of prompting the one edit that fixes it.
+    AllowMissingReason,
+    /// Documented, yet still allow-marked. Carries the now-obsolete reason so
+    /// the finding can quote it back.
+    StaleAllow(String),
+    /// Documented, yet still listed in the baseline file.
+    StaleBaseline,
+    /// Undocumented with no exemption channel — the offender the lane exists to
+    /// find, and the ONLY variant [`baseline_candidates`] selects.
+    Undocumented,
+}
+
+/// Resolve every census name to exactly one [`Disposition`].
 ///
-/// ## Exemption precedence — at most ONE finding per census name
+/// **The single source of truth for the omission lane.** Both consumers read
+/// it: [`omission_findings`] renders the reportable dispositions as findings,
+/// and [`baseline_candidates`] selects [`Disposition::Undocumented`]. Neither
+/// re-derives anything, which is what makes #5480's generated baseline and the
+/// ratchet that checks it structurally incapable of disagreeing.
+///
+/// ## Exemption precedence — at most ONE disposition per census name
 ///
 /// A name that trips several conditions is reported once, under the category
 /// naming the edit that resolves it. Emitting two findings for one defect
@@ -1004,19 +1038,50 @@ fn keyed(category: &'static str, name: &str, path: &str, detail: String) -> Keye
 ///    entry — one finding, one edit, converging.
 /// 3. **Undocumented** → a well-formed allow marker or a baseline entry
 ///    exempts it; otherwise `undocumented-name:`.
-fn omission_findings(inputs: &Inputs) -> Vec<Keyed> {
+fn omission_dispositions(inputs: &Inputs) -> Vec<(CensusName, Disposition)> {
     let census = census_names(&inputs.registries);
     let names: Vec<String> = census.iter().map(|c| c.name.clone()).collect();
     let documented = documented_names(&names, &inputs.chunk_sources);
 
+    census
+        .into_iter()
+        .map(|c| {
+            let name = c.name.as_str();
+
+            // (1) A malformed escape hatch is a defect on its own terms.
+            let d = if c.allow_missing_reason {
+                Disposition::AllowMissingReason
+            } else if documented.contains(name) {
+                // (2) Documented: the name is covered, so any surviving
+                // suppression channel is stale.
+                match (&c.allow, inputs.baseline.contains(name)) {
+                    (Some(reason), _) => Disposition::StaleAllow(reason.clone()),
+                    (None, true) => Disposition::StaleBaseline,
+                    (None, false) => Disposition::Clean,
+                }
+            } else if c.allow.is_some() || inputs.baseline.contains(name) {
+                // (3) Undocumented, but a well-formed channel exempts it.
+                Disposition::Exempt
+            } else {
+                Disposition::Undocumented
+            };
+            (c, d)
+        })
+        .collect()
+}
+
+/// Omission lane, including its two ratchet-honesty siblings.
+///
+/// Pure rendering of [`omission_dispositions`] — every disposition rule lives
+/// there, so this function and [`baseline_candidates`] cannot drift apart.
+fn omission_findings(inputs: &Inputs) -> Vec<Keyed> {
     let mut out = Vec::new();
-    for c in &census {
+    for (c, disposition) in omission_dispositions(inputs) {
         let name = c.name.as_str();
         let declared_at = format!("{} ({UNITS_PATH}:{})", c.const_name, c.line);
-
-        // (1) A malformed escape hatch is a defect on its own terms.
-        if c.allow_missing_reason {
-            out.push(keyed(
+        match disposition {
+            Disposition::Clean | Disposition::Exempt => {}
+            Disposition::AllowMissingReason => out.push(keyed(
                 "allow-missing-reason",
                 name,
                 UNITS_PATH,
@@ -1025,52 +1090,37 @@ fn omission_findings(inputs: &Inputs) -> Vec<Keyed> {
                      grants no exemption; write `// {ALLOW_TOKEN} — <reason>` or \
                      document the name under {CHUNKS_PREFIX}",
                 ),
-            ));
-            continue;
+            )),
+            Disposition::StaleAllow(reason) => out.push(keyed(
+                "stale-allow-entry",
+                name,
+                UNITS_PATH,
+                format!(
+                    "— {declared_at} is documented under {CHUNKS_PREFIX}, so its \
+                     `{ALLOW_TOKEN} — {reason}` marker is obsolete; delete the marker",
+                ),
+            )),
+            Disposition::StaleBaseline => out.push(keyed(
+                "stale-baseline-entry",
+                name,
+                BASELINE_PATH,
+                format!(
+                    "— documented under {CHUNKS_PREFIX} but still listed in \
+                     {BASELINE_PATH}; delete the line so the ratchet keeps \
+                     meaning residual debt",
+                ),
+            )),
+            Disposition::Undocumented => out.push(keyed(
+                "undocumented-name",
+                name,
+                UNITS_PATH,
+                format!(
+                    "— declared in {declared_at}, mentioned in no chunk under \
+                     {CHUNKS_PREFIX}; document it, or mark the entry line \
+                     `// {ALLOW_TOKEN} — <reason>`",
+                ),
+            )),
         }
-
-        // (2) Documented: the name is covered, so any surviving suppression
-        // channel is stale.
-        if documented.contains(name) {
-            if let Some(reason) = &c.allow {
-                out.push(keyed(
-                    "stale-allow-entry",
-                    name,
-                    UNITS_PATH,
-                    format!(
-                        "— {declared_at} is documented under {CHUNKS_PREFIX}, so its \
-                         `{ALLOW_TOKEN} — {reason}` marker is obsolete; delete the marker",
-                    ),
-                ));
-            } else if inputs.baseline.contains(name) {
-                out.push(keyed(
-                    "stale-baseline-entry",
-                    name,
-                    BASELINE_PATH,
-                    format!(
-                        "— documented under {CHUNKS_PREFIX} but still listed in \
-                         {BASELINE_PATH}; delete the line so the ratchet keeps \
-                         meaning residual debt",
-                    ),
-                ));
-            }
-            continue;
-        }
-
-        // (3) Undocumented: a well-formed suppression channel exempts it.
-        if c.allow.is_some() || inputs.baseline.contains(name) {
-            continue;
-        }
-        out.push(keyed(
-            "undocumented-name",
-            name,
-            UNITS_PATH,
-            format!(
-                "— declared in {declared_at}, mentioned in no chunk under \
-                 {CHUNKS_PREFIX}; document it, or mark the entry line \
-                 `// {ALLOW_TOKEN} — <reason>`",
-            ),
-        ));
     }
     out
 }
@@ -1166,12 +1216,31 @@ pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
 /// sorted, deduped set of names that [`check`] reports as `undocumented-name:`.
 ///
 /// Exported so generation and the ratchet can never disagree (PRD §6.6's
-/// `ptodo-baseline-gen` lesson). This task ships NO `--emit-baseline` flag,
-/// NO `pdoccover-baseline-gen` binary and NO baseline file — all three are
-/// #5480's deliverables.
+/// `ptodo-baseline-gen` lesson). The guarantee is structural, not a convention
+/// two functions agree to keep: this and [`check`] both read
+/// [`omission_dispositions`], selecting from one resolution rather than each
+/// re-deriving it. `tests/pdoccover.rs` pins the two outputs equal as sets AND
+/// as sequences.
+///
+/// Sorted and deduped for free — [`census_names`] is keyed by name in a
+/// `BTreeMap`, so a name declared in several registries appears once and the
+/// generated baseline file diffs cleanly against the next run.
+///
+/// Excludes, by design: documented names (not debt), allow-marked and
+/// already-baselined names (debt already accounted for), reasonless markers (a
+/// defect to fix, not debt to freeze) and fabrications (a chunk defect with no
+/// registry entry to key on).
+///
+/// **Scope** — this task ships NO `--emit-baseline` flag, NO
+/// `pdoccover-baseline-gen` binary and NO baseline file. All three are #5480's
+/// deliverables; this is the function they call.
 // G-allow: #5480's entry point (PRD open question 1); no in-repo caller yet by design.
-pub fn baseline_candidates(_ctx: &AuditContext<'_>) -> Vec<String> {
-    Vec::new()
+pub fn baseline_candidates(ctx: &AuditContext<'_>) -> Vec<String> {
+    omission_dispositions(&load_inputs(ctx))
+        .into_iter()
+        .filter(|(_, d)| *d == Disposition::Undocumented)
+        .map(|(c, _)| c.name)
+        .collect()
 }
 
 // -----------------------------------------------------------------------
