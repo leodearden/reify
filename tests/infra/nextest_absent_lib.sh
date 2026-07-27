@@ -10,6 +10,10 @@
 #     tests/infra/test_verify_nextest_probe.sh          (task 4971)
 #     tests/infra/test_verify_semaphore_wiring.sh       (task 4502)
 #
+# ADDING A NEW nextest-absent SUITE? Source this file and call
+# nextest_absent_init / nx_run — do not hand-roll a fourth temp-HOME + PATH-shim
+# harness. (See WHY NOT THE NAIVE RECIPE below for what hand-rolling gets wrong.)
+#
 # WHAT IT SIMULATES — exactly ONE variable: "cargo-nextest is not installed",
 # and nothing else. scripts/verify.sh gracefully falls back to emitting
 # `cargo test` instead of `cargo nextest run` when cargo-nextest is genuinely
