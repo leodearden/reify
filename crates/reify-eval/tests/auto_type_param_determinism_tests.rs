@@ -93,7 +93,10 @@ enum SkipKind {
 /// `compile_correctness_skips_still_fail_to_compile` below asserts every
 /// `SkipKind::CompileError` entry still fails to compile, and
 /// `skip_set_entries_exist_under_examples_dir` asserts every entry names a
-/// path that still exists; `examples_smoke.rs` has its own analogous pair.
+/// path that still exists. `examples_smoke.rs` has an analogous existence
+/// guard (also named `skip_set_entries_exist_under_examples_dir`) but no
+/// stale-compile-error guard — its `SKIP_SET` is correctness-only, so
+/// nothing there re-derives whether a skip's reason still holds.
 /// There is no cross-crate parity assertion between the two `SKIP_SET`
 /// consts — both are private to separate crates' `tests/` integration
 /// binaries, so neither can import the other to compare directly.
@@ -747,12 +750,17 @@ fn per_file_gate_violation_contract() {
 /// mirroring `examples_smoke.rs::all_examples_parse_and_compile_with_stdlib`'s
 /// report-everything style, so one run surfaces every stale entry rather
 /// than stopping at the first.
+///
+/// A `CompileError` entry whose path is missing is skipped here rather than
+/// read (which would panic on a raw `io::Error`) — `skip_set_entries_exist_under_examples_dir`
+/// owns that failure mode and reports it with an actionable message instead.
 #[test]
 fn compile_correctness_skips_still_fail_to_compile() {
+    let missing = missing_skip_set_paths(SKIP_SET, Path::new(EXAMPLES_DIR));
     let mut stale: Vec<String> = Vec::new();
 
     for (rel, kind, _reason) in SKIP_SET {
-        if *kind != SkipKind::CompileError {
+        if *kind != SkipKind::CompileError || missing.contains(rel) {
             continue;
         }
 
@@ -789,6 +797,12 @@ fn compile_correctness_skips_still_fail_to_compile() {
 /// Pure and deterministic (no I/O beyond `Path::exists`) — the single source
 /// of truth for the SKIP_SET dead-key check, unit-tested directly by
 /// `missing_skip_set_paths_contract` below.
+///
+/// Known duplication, recorded rather than fixed: `examples_smoke.rs`'s
+/// `skip_set_entries_exist_under_examples_dir` inlines the same
+/// `Path::exists` filter over its own two-tuple `SKIP_SET`. Hoisting a
+/// shared helper into `reify_test_support` is out of scope for this task
+/// (locked to this one file); tracked as a follow-up task.
 fn missing_skip_set_paths<'a>(
     entries: &'a [(&'a str, SkipKind, &'a str)],
     examples_dir: &Path,
@@ -801,11 +815,9 @@ fn missing_skip_set_paths<'a>(
 }
 
 /// Sanity guard: every entry in [`SKIP_SET`] must name a relative path that
-/// actually exists under `examples/`, regardless of [`SkipKind`]. A stale key
-/// silently narrows this file's perf-gate coverage forever — for a
-/// `SkipKind::PerfBudget` key in particular, nothing else in this file would
-/// ever notice, since `compile_correctness_skips_still_fail_to_compile` only
-/// reads `SkipKind::CompileError` entries. Delete the entry or fix the path.
+/// actually exists under `examples/`, regardless of [`SkipKind`] — see the
+/// assertion message below for why this matters most for `SkipKind::PerfBudget`
+/// keys specifically.
 ///
 /// Mirrors the guard of the same name in
 /// `crates/reify-compiler/tests/examples_smoke.rs`
@@ -835,20 +847,16 @@ fn skip_set_entries_exist_under_examples_dir() {
 
 /// `missing_skip_set_paths` must flag entries whose relative path does not
 /// exist under `examples_dir`, regardless of [`SkipKind`], and must not flag
-/// entries that do exist. Mixes one present + one missing entry of each kind
-/// so the assertion cannot pass by accident (e.g. by ignoring `SkipKind`
-/// entirely, or by checking only one kind's entries).
+/// entries that do exist. Fixture mixes one present + one missing entry of
+/// each kind, with the two missing entries bracketing the two present ones,
+/// so neither an ignore-`SkipKind` bug nor a stop-at-first-miss bug can pass
+/// by accident.
 ///
-/// No short-circuit case: the two bogus entries sit on either side of the
-/// two present entries in the input slice, so an implementation that stopped
-/// at the first miss would return only one of the two and fail this test.
-///
-/// Hermetic by construction: the "present" fixtures are written into a fresh
-/// `tempfile::TempDir` rather than named from the live `examples/` corpus, so
-/// a future rename/deletion of an unrelated example file cannot make this
-/// unit test of a pure helper fail — that live-corpus signal already belongs
-/// to `skip_set_entries_exist_under_examples_dir` above, whose failure
-/// message points at the real dead key instead of at this helper.
+/// Hermetic by construction: the "present" fixtures live in a fresh
+/// `tempfile::TempDir` rather than the real `examples/` corpus, so an
+/// unrelated example rename/deletion can't fail this pure-helper unit test —
+/// that live-corpus signal belongs to `skip_set_entries_exist_under_examples_dir`
+/// above.
 #[test]
 fn missing_skip_set_paths_contract() {
     let dir = tempfile::TempDir::new().expect("tempdir creation should succeed");
