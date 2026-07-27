@@ -8,7 +8,7 @@
 //! - `reify-audit --task <id> --pre-done`  P5 only; exit non-zero on detection.
 //! - `reify-audit --task <id>`             Spot-check, all three detectors.
 //! - `reify-audit --since <iso-date>`      Window sweep, all three detectors.
-//! - `--pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO`  Restrict which detector(s) run; comma-separated for multi-detector union (e.g. `--pattern P1,P2,P5`).
+//! - `--pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO|PDSSENTINEL|PDOCCOVER`  Restrict which detector(s) run; comma-separated for multi-detector union (e.g. `--pattern P1,P2,P5`).
 //!
 //! ## Output
 //!
@@ -102,7 +102,7 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --task <id>              Spot-check a single task (all detectors)");
     let _ = writeln!(out, "  --pre-done               With --task: run P5 pre-done check only");
     let _ = writeln!(out, "  --since <iso-date>       Window sweep from ISO date (all detectors)");
-    let _ = writeln!(out, "  --pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO|PDSSENTINEL Restrict to detector(s); comma-separated for union (e.g. --pattern P1,P2,P5)");
+    let _ = writeln!(out, "  --pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO|PDSSENTINEL|PDOCCOVER Restrict to detector(s); comma-separated for union (e.g. --pattern P1,P2,P5)");
     let _ = writeln!(out, "  --tasks-file <path>      JSON array of TaskMetadata (overrides live loader; for tests)");
     let _ = writeln!(out, "  --fused-memory-url <url> MCP endpoint (default: $FUSED_MEMORY_URL or http://localhost:8002/mcp)");
     let _ = writeln!(out, "  --runs-db <path>         SQLite runs.db path (default: data/orchestrator/runs.db)");
@@ -262,10 +262,10 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
                     if !matches!(
                         tok,
                         "P1" | "P2" | "P5" | "PDEAD" | "PUNTESTED" | "PLAYER" | "PTODO"
-                            | "PDSSENTINEL"
+                            | "PDSSENTINEL" | "PDOCCOVER"
                     ) {
                         return Err(format!(
-                            "unknown --pattern value '{}'; expected P1, P2, P5, PDEAD, PUNTESTED, PLAYER, PTODO, or PDSSENTINEL",
+                            "unknown --pattern value '{}'; expected P1, P2, P5, PDEAD, PUNTESTED, PLAYER, PTODO, PDSSENTINEL, or PDOCCOVER",
                             tok
                         ));
                     }
@@ -483,6 +483,20 @@ fn run_dssentinel(args: &Args) -> bool {
     args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "PDSSENTINEL"))
 }
 
+/// Opt-in dispatch predicate for PDOCCOVER (task #5478): true only when
+/// `PDOCCOVER` is in the comma-separated `--pattern` set.
+///
+/// Structural like PTODO and PDSSENTINEL — working-tree `ls_files` + fs reads,
+/// never jcodemunch — but `is_some_and` rather than `is_none_or`, so it stays
+/// OUT of the default all-detector sweep. PDOCCOVER findings are High, and the
+/// exit code is the High-severity count, so a detector that currently reports
+/// ~80 undocumented names would turn every default audit run non-zero. It joins
+/// the default sweep when #5480 seeds `pdoccover-baseline.txt` and the residual
+/// count is zero — the same warn-first-then-ratchet path PTODO took.
+fn run_pdoccover(args: &Args) -> bool {
+    args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PDOCCOVER"))
+}
+
 // -----------------------------------------------------------------------
 // Main
 // -----------------------------------------------------------------------
@@ -659,6 +673,15 @@ fn main() -> ExitCode {
         let run_dssentinel = run_dssentinel(&args);
         if run_dssentinel {
             all.extend(reify_audit::pdssentinel::check(&ctx));
+        }
+        // PDOCCOVER structural lane: bidirectional registry↔chunk name drift.
+        // Same working-tree-reads-only posture as PTODO and PDSSENTINEL, but
+        // OPT-IN — High-severity findings drive the exit code and the corpus
+        // still carries a known backlog, so it stays out of the default sweep
+        // until #5480 seeds the ratchet baseline.
+        let run_pdoccover = run_pdoccover(&args);
+        if run_pdoccover {
+            all.extend(reify_audit::pdoccover::check(&ctx));
         }
         all
     };
