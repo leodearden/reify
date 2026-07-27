@@ -67,10 +67,15 @@
 #
 # NON-VACUITY SELF-CHECKS. Before covering any suite, the harness is checked
 # against itself: cargo-nextest must be genuinely unreachable under it, `cargo`
-# and `tree-sitter` must both still resolve, the plan header under it must read
-# nextest=0, and the plan header WITHOUT it must read nextest=1. Without these
-# a broken harness (e.g. one that no longer hides cargo-nextest) would let this
-# whole suite pass while simulating nothing at all.
+# and `tree-sitter` must both still RUN under it (executability, not merely
+# `command -v` resolvability — a harness where cargo resolves but cannot
+# actually execute would be simulating "the toolchain is broken" rather than
+# the intended single variable), the plan header under it must read nextest=0,
+# the plan header WITHOUT it must read nextest=1, and the harness must not have
+# perturbed the toolchain enough to provoke a rustup toolchain sync into its
+# temp HOME. Without these a broken harness (e.g. one that no longer hides
+# cargo-nextest) would let this whole suite pass while simulating nothing at
+# all — or would "work" only by breaking something other than nextest.
 #
 # Modeled on tests/infra/test_verify_nextest_probe.sh:79-140 (temp HOME + PATH
 # shim dir + cleanup EXIT trap) — but substituting the symlink farm for the
@@ -182,9 +187,74 @@ echo "--- H: the nextest-absent harness genuinely simulates a nextest-less host 
 # rule out).
 nx_which() { nx_run bash -c 'command -v "$1"' _ "$1"; }
 
+# H1 checks ABSENCE, which is correctly expressed as non-resolvability.
 _h1_check() { ! nx_which cargo-nextest; }
-_h2_check() { nx_which cargo; }
-_h3_check() { nx_which tree-sitter; }
+
+# H2/H3 check PRESENCE, and for that `command -v` is too weak: a harness that
+# perturbs more than intended can leave a tool resolvable-but-unrunnable (a
+# dangling symlink, a shim whose backing toolchain the harness has stranded),
+# and the suite would then be simulating "the toolchain is broken" instead of
+# the single intended variable "cargo-nextest is absent" — the vacuity class
+# this section exists to rule out. So both are EXECUTED. `env` performs its own
+# PATH lookup with the environment it sets, so `nx_run <tool> --version`
+# subsumes the resolvability check rather than replacing it.
+_h2_check() { nx_run cargo --version; }
+_h3_check() { nx_run tree-sitter --version; }
+
+# H6/H7 — the harness must not provoke a rustup TOOLCHAIN SYNC.
+#
+# On a rustup host `~/.cargo/bin/cargo` is a symlink to `rustup`, and rustup
+# derives its store from $RUSTUP_HOME, falling back to $HOME/.rustup when that
+# is unset. The harness redirects HOME (element (3) above) — so unless it also
+# carries RUSTUP_HOME across, the shim finds no toolchain under the redirected
+# HOME and downloads a fresh one on the FIRST cargo invocation. That is not a
+# hypothetical: measured on this host, a bounded 12-second probe of
+# `cargo --version` under a RUSTUP_HOME-less harness wrote 935 MB into the temp
+# HOME and had still not printed a version when it was killed.
+#
+# Two separate asserts because they fail differently. H6 names the mechanism
+# exactly (a .rustup store appeared where none should be) and is the assert
+# that pins THIS defect; H7 is the blunt backstop that catches any other way
+# the harness might start writing hundreds of megabytes into a directory it
+# advertises as a throwaway.
+#
+# H7's ceiling: on a correctly-isolated harness the temp HOME holds 4 KB after
+# H2-H4 (measured) — the ceiling is ~12000x that, so it will not flap on
+# incidental dotfile writes, while still tripping within the first second of a
+# toolchain sync.
+NX_HOME_MAX_KB=51200
+
+_h6_check() {
+    if [ -e "$NX_HOME/.rustup" ]; then
+        echo "$NX_HOME/.rustup EXISTS — the harness stranded rustup and provoked"
+        echo "a toolchain sync. cargo is a rustup shim and rustup resolves its"
+        echo "store from \$RUSTUP_HOME, defaulting to \$HOME/.rustup; the harness"
+        echo "redirects HOME, so RUSTUP_HOME must be carried across explicitly."
+        echo "Contents:"
+        ls -la "$NX_HOME/.rustup" 2>&1 | head -20
+        return 1
+    fi
+    echo "no $NX_HOME/.rustup — the harness did not provoke a toolchain sync"
+    return 0
+}
+
+_h7_check() {
+    local kb
+    kb="$(du -sk "$NX_HOME" 2>/dev/null | awk 'NR==1 {print $1}')"
+    if [ -z "$kb" ]; then
+        echo "could not measure the temp HOME size at $NX_HOME"
+        return 1
+    fi
+    echo "temp HOME $NX_HOME holds ${kb} KB (ceiling ${NX_HOME_MAX_KB} KB)"
+    if [ "$kb" -gt "$NX_HOME_MAX_KB" ]; then
+        echo "-> the harness is writing a large amount into the throwaway HOME it"
+        echo "   redirects to. It is perturbing more than the single intended"
+        echo "   variable (cargo-nextest absent). Largest entries:"
+        du -sk "$NX_HOME"/* "$NX_HOME"/.[!.]* 2>/dev/null | sort -rn | head -10
+        return 1
+    fi
+    return 0
+}
 
 # The plan is captured WHOLE and the header extracted afterwards (rather than
 # piping verify.sh straight into `head -1`), so verify.sh never takes SIGPIPE
@@ -295,10 +365,10 @@ _suite_is_clean_without_nextest() {
 assert "H1: cargo-nextest is NOT resolvable under the nextest-absent harness env" \
     _h1_check
 
-assert "H2: cargo IS still resolvable under the harness env (farm keeps the toolchain)" \
+assert "H2: cargo still RUNS under the harness env (farm keeps the toolchain intact, not merely on PATH)" \
     _h2_check
 
-assert "H3: tree-sitter IS still resolvable under the harness env (not stripped with ~/.cargo/bin)" \
+assert "H3: tree-sitter still RUNS under the harness env (not stripped with ~/.cargo/bin)" \
     _h3_check
 
 assert "H4: verify.sh plan header reads nextest=0 UNDER the harness" \
@@ -317,6 +387,17 @@ else
     echo "        without the harness' cannot hold. The S-section below still runs —"
     echo "        against a genuinely nextest-less host rather than a simulated one.)"
 fi
+
+# H6/H7 are asserted LAST in this section, so that every check which actually
+# exercises the harness (H2, H3 and H4 — H5 is deliberately ambient) has
+# already run and any toolchain sync they would provoke has had its chance to
+# land. H4's plan capture already runs verify.sh under the harness, so these
+# two cost nothing beyond a stat and a du.
+assert "H6: the harness did NOT provoke a rustup toolchain sync (no .rustup in its temp HOME)" \
+    _h6_check
+
+assert "H7: the harness's temp HOME is still small (it perturbs only cargo-nextest's visibility)" \
+    _h7_check
 
 # ---------------------------------------------------------------------------
 # S: the covered plan-oracle suites are clean on a nextest-less host
