@@ -248,7 +248,7 @@ fn fold_dependent_cells(
 /// Every post-solve scoring site used to build this map inline and WITHOUT the
 /// fold, which meant they scored a dependent-cell-driven objective at its stale
 /// base value. With the per-trial fold in place that made the optimiser and the
-/// scorer measure different objectives. There were three such sites, and each
+/// scorer measure different objectives. There were FOUR such sites, and each
 /// failed differently — which is why they are now routed through ONE function
 /// rather than fixed one at a time:
 ///
@@ -260,16 +260,28 @@ fn fold_dependent_cells(
 ///   returned the identical stale number at BOTH anchors, so `cost_max −
 ///   cost_min` collapsed to 0 and [`normalised_blend_term`]'s
 ///   [`TRADEOFF_NORMALISATION_RANGE_EPS`] guard dropped the cost axis from the
-///   blend entirely, for every λ, with no diagnostic.
+///   blend entirely, for every λ, with no diagnostic;
+/// - `solve_lexicographic`'s ε-band anchor in `registry.rs` (esc-5189-7): the
+///   band's `obj*` LITERAL was frozen from a stale map while the band's own
+///   `cost_expr` is evaluated FOLDED by the next stage, so the two sides of one
+///   constraint were measured on different value maps — surfacing as a bogus
+///   `ConstraintUnsatisfiable` on a trivially feasible model when the stale
+///   value sat on the restrictive side, and as a silently-dropped rank ordering
+///   when it sat on the permissive side.
 ///
-/// INVARIANT: no site in this module may materialise a scoring map by hand from
+/// INVARIANT: no site in this CRATE may materialise a scoring map by hand from
 /// `current_values.clone()` overlaid with the solved autos. `SolveResult::Solved`
 /// carries only the AUTOS (`build_solved_values`), so a hand-rolled overlay
 /// always leaves dependent cells stale — the failure is silent every time, and
-/// the third occurrence is the argument for enforcing the rule rather than
+/// the fourth occurrence is the argument for enforcing the rule rather than
 /// restating it. A `grep` for `current_values.clone()` outside this function and
 /// [`build_trial_values`] should return nothing.
-fn build_scoring_values(
+///
+/// The invariant is deliberately crate-scoped rather than module-scoped: the
+/// fourth site lived in `registry.rs`, which a module-scoped rule did not
+/// reach. `pub(crate)` exists so that rule is enforceable — a sibling module
+/// needing a scoring map calls this rather than rolling its own.
+pub(crate) fn build_scoring_values(
     base: &ValueMap,
     solved: &HashMap<ValueCellId, Value>,
     dependent_cells: &[(ValueCellId, CompiledExpr)],

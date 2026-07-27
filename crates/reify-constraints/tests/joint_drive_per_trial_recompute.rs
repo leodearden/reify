@@ -30,8 +30,9 @@ use std::sync::Arc;
 use reify_constraints::{DimensionalSolver, build_centrality_objective};
 use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
 use reify_ir::{
-    AutoParam, BinOp, CompiledExpr, ConstraintSolver, ObjectiveSense, ObjectiveSet,
-    RankedSolveResult, ResolutionProblem, SolveResult, Value, ValueMap,
+    AutoParam, BinOp, CompiledExpr, ConstraintSolver, ObjectiveCombination, ObjectiveSense,
+    ObjectiveSet, ObjectiveTerm, RankedSolveResult, ResolutionProblem, SolveResult, Value,
+    ValueMap,
 };
 
 /// The stale value seeded into `current_values` for the dependent cell.
@@ -625,5 +626,177 @@ fn solver_registry_propagates_dependent_cells_into_component_subproblems() {
          with an empty `dependent_cells`, so `total` stayed pinned at its stale \
          seed {STALE_TOTAL} and the objective was constant across every trial \
          point."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Lexicographic ε-band — both sides of the band must be measured folded
+// ---------------------------------------------------------------------------
+//
+// `solve_lexicographic`'s staged loop freezes each rank's realized optimum
+// `obj*` as an ε-band constraint for the next stage. Once the stage problem
+// inherits `dependent_cells`, the band has TWO sides measured on two different
+// value maps unless `obj*` is folded too:
+//
+//   * `build_band_constraints` bakes `obj*` in as a LITERAL, computed by
+//     `eval_rank_cost` against `current_values` — which carries the warm-started
+//     solved autos but leaves every dependent cell at its stale base value,
+//     because `SolveResult::Solved` returns only the AUTOS;
+//   * the band's `cost_expr` is built from the rank's term exprs, which read the
+//     dependent cell, and the NEXT stage's solver evaluates it FOLDED.
+//
+// Stale literal vs folded expression. The gap surfaces as a bogus
+// `ConstraintUnsatisfiable` on a trivially feasible model when the stale value
+// sits on the restrictive side, and as a silently-dropped rank ordering (a band
+// that is trivially satisfied) when it sits on the permissive side.
+
+/// Priority of the rank whose realized optimum gets frozen into the ε-band.
+/// Must be strictly greater than [`P_LOW`] so `priority_order.len() == 2` and
+/// the multi-rank staged loop runs — at one distinct priority
+/// `solve_lexicographic` delegates to the degenerate WeightedSum path and never
+/// builds a band at all.
+const P_HIGH: u32 = 1;
+/// Priority of the second rank — the one that must solve UNDER the first rank's
+/// frozen band.
+const P_LOW: u32 = 0;
+
+/// A Lexicographic joint-drive problem whose FIRST rank scores through the
+/// dependent cell.
+///
+/// `total` is the coupling: the high-priority rank minimises it, so `obj*` for
+/// that rank can only be computed correctly by folding. The low-priority rank
+/// reads the auto `b` directly, so the second stage is well-posed on its own and
+/// any failure is attributable to the band rather than to the rank itself.
+///
+/// The single `a + b >= A_PLUS_B_FLOOR` constraint keeps both autos in ONE
+/// connected component, so the whole objective reaches a single staged solve
+/// instead of being split across components.
+fn lexicographic_joint_drive_problem() -> (ResolutionProblem, ValueCellId, ValueCellId) {
+    const A_PLUS_B_FLOOR: f64 = 4.0;
+
+    let a_id = ValueCellId::new("Part", "a");
+    let b_id = ValueCellId::new("Part", "b");
+    let total_id = ValueCellId::new("Part", "total");
+
+    let mut current_values = ValueMap::new();
+    current_values.insert(total_id.clone(), scalar(STALE_TOTAL));
+
+    let auto = |id: &ValueCellId| AutoParam {
+        id: id.clone(),
+        param_type: dimensionless(),
+        bounds: Some((LO, HI)),
+        free: true,
+    };
+
+    let problem = ResolutionProblem {
+        auto_params: vec![auto(&a_id), auto(&b_id)],
+        constraints: vec![(
+            ConstraintNodeId::new("Part", 0),
+            CompiledExpr::binop(
+                BinOp::Ge,
+                CompiledExpr::binop(BinOp::Add, vref(&a_id), vref(&b_id), dimensionless()),
+                lit(A_PLUS_B_FLOOR),
+                Type::Bool,
+            ),
+        )],
+        current_values,
+        objective: Some(ObjectiveSet {
+            terms: vec![
+                ObjectiveTerm {
+                    sense: ObjectiveSense::Minimize,
+                    expr: vref(&total_id),
+                    weight: 1.0,
+                    priority: P_HIGH,
+                },
+                ObjectiveTerm {
+                    sense: ObjectiveSense::Minimize,
+                    expr: vref(&b_id),
+                    weight: 1.0,
+                    priority: P_LOW,
+                },
+            ],
+            combination: ObjectiveCombination::Lexicographic,
+            cost_robustness_lambda: None,
+        }),
+        functions: Arc::from(Vec::new()),
+        dependent_cells: vec![(
+            total_id,
+            CompiledExpr::binop(BinOp::Add, vref(&a_id), vref(&b_id), dimensionless()),
+        )],
+    };
+
+    (problem, a_id, b_id)
+}
+
+/// esc-5189-7 — the ε-band anchor must be folded, so both sides of the band
+/// constraint are measured on the same value map.
+///
+/// RED before the `eval_rank_cost` fix: `obj*` is read unfolded, so the band
+/// literal is [`STALE_TOTAL`] while the band's own `cost_expr` evaluates folded
+/// (to `a + b`, at most `2·HI`). The band becomes unsatisfiable by a margin of
+/// roughly `STALE_TOTAL − (a + b)`, and a model with an obviously feasible
+/// solution reports `ConstraintUnsatisfiable` to the user.
+#[test]
+fn lexicographic_epsilon_band_anchor_is_folded_like_the_stage_it_constrains() {
+    let (problem, a_id, b_id) = lexicographic_joint_drive_problem();
+
+    let result = reify_constraints::SolverRegistry::production().solve(&problem);
+
+    let SolveResult::Solved { values, .. } = result else {
+        panic!(
+            "every point with a+b >= 4 inside [{LO}, {HI}]² is feasible — e.g. \
+             (a, b) = (3, 1) — so the staged lexicographic solve must succeed. \
+             Got: {result:?}\n\n\
+             An `Infeasible` with a residual near {STALE_TOTAL} is the ε-band \
+             defect: `eval_rank_cost` measured the rank's obj* against \
+             `current_values`, where `total` is still its stale seed, and \
+             `build_band_constraints` froze that stale number in as a literal — \
+             while the next stage evaluates the band's `cost_expr` FOLDED. The \
+             two sides of the band are then measured on different value maps."
+        );
+    };
+
+    let a = values.get(&a_id).and_then(|v| v.as_f64()).expect("`a` solved");
+    let b = values.get(&b_id).and_then(|v| v.as_f64()).expect("`b` solved");
+
+    // The band must also still BIND — otherwise the mirror failure (a band
+    // frozen on the PERMISSIVE side of stale) passes silently: the second rank
+    // would be free to sacrifice the first entirely, and the solve would still
+    // report Solved.
+    //
+    // The anchor is COMPARATIVE, deliberately. The obvious assertion — "a+b must
+    // equal its analytic argmin 4.0" — is wrong here, because it pins Nelder-Mead
+    // convergence quality rather than band correctness. Stage 1 realizes a
+    // non-global point on this 2-D surface (~11 as authored), and freezing THAT
+    // is precisely what the band is specified to do: it freezes the rank's
+    // REALIZED optimum, not its theoretical one. So the reference is what the
+    // same registry achieves on rank P_HIGH alone — which is exactly the
+    // WeightedSum sub-problem the staged loop builds for stage 1.
+    let (mut reference, ref_a, ref_b) = lexicographic_joint_drive_problem();
+    reference.objective = Some(ObjectiveSet::single(
+        ObjectiveSense::Minimize,
+        // Same expr the P_HIGH term carries: a read of the dependent cell.
+        vref(&ValueCellId::new("Part", "total")),
+    ));
+    let SolveResult::Solved { values: ref_values, .. } =
+        reify_constraints::SolverRegistry::production().solve(&reference)
+    else {
+        panic!("the single-rank reference solve must succeed");
+    };
+    let ref_total = ref_values.get(&ref_a).and_then(|v| v.as_f64()).unwrap()
+        + ref_values.get(&ref_b).and_then(|v| v.as_f64()).unwrap();
+
+    // Tolerance covers the ε-band half-width (LEX_EPSILON_BAND_REL = 1e-3
+    // relative) plus solver numerics, and is far below the stale-vs-folded gap a
+    // permissive band would open.
+    assert!(
+        a + b <= ref_total * 1.01 + 1e-2,
+        "the first rank's realized optimum must still bind the second rank: the \
+         lexicographic solve landed at a={a:.6}, b={b:.6} ⇒ a+b={:.6}, but a \
+         single-rank solve of the SAME high-priority objective achieves \
+         {ref_total:.6}. A materially larger sum means the ε-band was frozen at \
+         a value so permissive it stopped enforcing the ordering for that rank \
+         — the mirror of the stale-restrictive failure, and silent.",
+        a + b
     );
 }

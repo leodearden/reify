@@ -605,29 +605,57 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
                 // uniqueness-verified.  The final stage's own verdict is preserved —
                 // given the accumulated ε-band constraints it may be fully determined.
                 let result_unique = is_final && stage_unique;
-                last_result = Some(SolveResult::Solved { values, unique: result_unique });
-
-                if is_final {
-                    break;
-                }
 
                 // Freeze this rank's realized optimum as an ε-band for the next stage.
                 // If any term is non-finite, skip the band and warn — the lexicographic
                 // ordering is NOT enforced for this rank, so later ranks may freely
                 // sacrifice it.
-                match eval_rank_cost(&rank_terms, &current_values, &base.functions) {
-                    Some(obj_star) => {
-                        accumulated_constraints
-                            .extend(build_band_constraints(&rank_terms, obj_star, stage_idx));
+                //
+                // esc-5189-7: `obj*` MUST be measured on the same folded map the next
+                // stage evaluates the band against.  `build_band_constraints` bakes
+                // `obj*` in as a LITERAL, while the band's `cost_expr` is built from
+                // this rank's term exprs — which read the cluster's dependent cells and
+                // are therefore folded by the next stage's cost surface (the stage
+                // problem inherits `dependent_cells` via `..base.clone()` above).
+                // Reading `obj*` off `current_values` measured the two sides of ONE
+                // constraint on two different value maps: `current_values` carries the
+                // warm-started solved AUTOS, but `SolveResult::Solved` returns only
+                // autos, so every dependent cell in it is still at its stale base
+                // value.  A trivially feasible model then reported
+                // `ConstraintUnsatisfiable`, off by the full stale-vs-folded gap.
+                // `build_scoring_values` is the single fold authority (solver.rs) —
+                // this site is the reason its INVARIANT is crate-scoped, not
+                // module-scoped.
+                //
+                // Computed here, before `values` is moved into `last_result`, and only
+                // on the non-final path — the final stage builds no band.
+                if !is_final {
+                    let scored = crate::solver::build_scoring_values(
+                        &current_values,
+                        &values,
+                        &base.dependent_cells,
+                        &base.functions,
+                    );
+                    match eval_rank_cost(&rank_terms, &scored, &base.functions) {
+                        Some(obj_star) => {
+                            accumulated_constraints
+                                .extend(build_band_constraints(&rank_terms, obj_star, stage_idx));
+                        }
+                        None => {
+                            tracing::warn!(
+                                stage = stage_idx,
+                                "solve_lexicographic: stage {} rank produced non-finite obj*; \
+                                 ε-band skipped — lexicographic ordering not enforced for this rank",
+                                stage_idx,
+                            );
+                        }
                     }
-                    None => {
-                        tracing::warn!(
-                            stage = stage_idx,
-                            "solve_lexicographic: stage {} rank produced non-finite obj*; \
-                             ε-band skipped — lexicographic ordering not enforced for this rank",
-                            stage_idx,
-                        );
-                    }
+                }
+
+                last_result = Some(SolveResult::Solved { values, unique: result_unique });
+
+                if is_final {
+                    break;
                 }
             }
             infeasible_or_no_progress => {
