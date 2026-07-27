@@ -803,3 +803,156 @@ fn registry_extraction_floor_guard_against_real_units_rs() {
          leaked into the census and would be reported as an undocumented name."
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-17: brittle-parse floor guard — CHUNK scan path
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Call-shaped names whose presence in the chunk corpus is structural to the
+/// language reference rather than incidental to any one task's content edits.
+///
+/// Chosen deliberately: `union` (boolean CSG), `extrude` and `fillet` are core
+/// modelling verbs — a language reference that documented none of them would
+/// not be a language reference. Nothing here names `offset_surface` or any
+/// other name a concurrent chunk edit (#5434, #5347, #5389) is touching, so a
+/// sibling merge can never flip this guard RED.
+const CHUNK_MENTION_ANCHORS: &[&str] = &["union", "extrude", "fillet"];
+
+/// Conservative floor on the distinct call-shaped census over the real chunk
+/// corpus. 72 distinct names are extracted on main at the time of writing; the
+/// floor sits far below that so ordinary chunk edits — including whole-file
+/// rewrites of the smaller chunks — never flip this RED. Only an extraction
+/// regression that collapses the census does.
+const CHUNK_MENTION_FLOOR: usize = 30;
+
+/// The census must span more than one chunk file. A single-file census is the
+/// signature of an extractor that only survives one file's formatting.
+const CHUNK_MENTION_FILE_FLOOR: usize = 3;
+
+/// `chunk_call_mentions` over the REAL `crates/reify-mcp/src/tools/chunks/*.md`
+/// must (i) clear a conservative distinct-name floor, (ii) draw those names
+/// from several distinct chunk files, (iii) contain the structural anchors, and
+/// (iv) report only identifier-shaped names at in-range 1-based line numbers.
+///
+/// Purpose — the fabrication half of task requirement 3. The fabrication lane
+/// reports a name only when it IS mentioned in a chunk, so an extractor that
+/// goes blind reports *clean*: a heading, fence, table or list reformat that
+/// broke extraction would look exactly like a chunk corpus with no
+/// fabrications left. This guard converts that silent false-clean into a RED
+/// test. Freeze no exact count here — a count assertion would be flipped by
+/// every ordinary chunk edit and would be relaxed away within a week.
+#[test]
+fn chunk_call_mention_floor_guard_against_real_chunks() {
+    let dir = repo_root().join(reify_audit::pdoccover::CHUNKS_PREFIX);
+    let read = std::fs::read_dir(&dir).unwrap_or_else(|e| {
+        panic!(
+            "the real chunk corpus must be readable at {}; got: {e}. \
+             (If the chunks moved, PDOCCOVER's fabrication census moved with \
+             them and pdoccover::CHUNKS_PREFIX needs updating.)",
+            dir.display()
+        )
+    });
+    let mut chunk_files: Vec<PathBuf> = read
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "md"))
+        .collect();
+    chunk_files.sort();
+    assert!(
+        !chunk_files.is_empty(),
+        "no `*.md` chunk files under {} — the fabrication lane has no corpus \
+         to scan and would report clean unconditionally.",
+        dir.display()
+    );
+
+    // name -> the chunk file names that mention it.
+    let mut census: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    let mut bad_lines: Vec<String> = Vec::new();
+    let mut malformed: Vec<String> = Vec::new();
+
+    for path in &chunk_files {
+        let content = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("chunk {} must be readable; got: {e}", path.display()));
+        let total_lines = content.lines().count();
+        let file = path
+            .file_name()
+            .expect("chunk path has a file name")
+            .to_string_lossy()
+            .to_string();
+        for (name, line) in reify_audit::pdoccover::chunk_call_mentions(&content) {
+            if line == 0 || line > total_lines {
+                bad_lines.push(format!("{file}:{line} (file has {total_lines} lines)"));
+            }
+            if name.is_empty()
+                || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                || name.as_bytes()[0].is_ascii_digit()
+            {
+                malformed.push(format!("{file}:{line} {name:?}"));
+            }
+            census.entry(name).or_default().insert(file.clone());
+        }
+    }
+
+    let files_with_mentions: std::collections::BTreeSet<&String> =
+        census.values().flatten().collect();
+
+    // (iii) computed first so every failure message below can name it.
+    let missing: Vec<&str> = CHUNK_MENTION_ANCHORS
+        .iter()
+        .copied()
+        .filter(|a| !census.contains_key(*a))
+        .collect();
+
+    // (i) Distinct census clears the floor.
+    assert!(
+        census.len() >= CHUNK_MENTION_FLOOR,
+        "distinct call-shaped chunk-mention census is {} over {} chunk file(s), \
+         below the conservative floor of {CHUNK_MENTION_FLOOR}; missing \
+         anchors: {missing:?}. Chunk extraction has regressed — a reformat \
+         (headings, fences, tables, bold-prefixed lists) broke \
+         `chunk_call_mentions`. A blind extractor makes the fabrication lane \
+         report CLEAN, so fix the extractor; do NOT relax this floor.",
+        census.len(),
+        chunk_files.len(),
+    );
+
+    // (ii) Mentions come from several files, not just the one whose shape the
+    // extractor happens to survive.
+    assert!(
+        files_with_mentions.len() >= CHUNK_MENTION_FILE_FLOOR,
+        "call-shaped mentions were found in only {} chunk file(s) \
+         ({files_with_mentions:?}) out of {}; census size {}, missing anchors \
+         {missing:?}. Extraction survives one file's formatting and not the \
+         rest — that is a partial blind spot in the fabrication lane.",
+        files_with_mentions.len(),
+        chunk_files.len(),
+        census.len(),
+    );
+
+    // (iii) Structural anchors present.
+    assert!(
+        missing.is_empty(),
+        "the chunk-mention census is missing {} structural anchor(s): \
+         {missing:?}. Observed census size {} across {} chunk file(s). These \
+         are core modelling verbs the language reference cannot plausibly have \
+         dropped, so their absence means `chunk_call_mentions` stopped seeing \
+         the shape they are written in.",
+        missing.len(),
+        census.len(),
+        files_with_mentions.len(),
+    );
+
+    // (iv) Well-formed output: 1-based in-range lines, identifier-shaped names.
+    assert!(
+        bad_lines.is_empty(),
+        "these mentions carry out-of-range line numbers: {bad_lines:?}. \
+         Findings would cite lines that do not exist."
+    );
+    assert!(
+        malformed.is_empty(),
+        "these extracted 'names' are not identifier-shaped: {malformed:?}. \
+         A non-call token leaked into the census and would be reported as a \
+         fabricated name no chunk edit could ever satisfy."
+    );
+}
