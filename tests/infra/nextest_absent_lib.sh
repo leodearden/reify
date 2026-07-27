@@ -160,7 +160,15 @@ _nextest_absent_mirror_source() {
 #       stashes it and arms a dispatcher that runs nextest_absent_cleanup first,
 #       then replays the stashed handler. Both fire, on all four signals (the
 #       caller's handler is thereby upgraded to EXIT/INT/TERM/HUP even if it only
-#       asked for EXIT).
+#       asked for EXIT — see the fallback in _nextest_absent_arm_traps).
+#
+#       ONE CONSEQUENCE, and it is not new: because the dispatcher does not
+#       re-raise, a handler replayed on INT/TERM/HUP may run AGAIN at EXIT if the
+#       shell resumes and then exits normally. A COMPOSED HANDLER MUST THEREFORE
+#       BE IDEMPOTENT. That is exactly the semantics of the plain
+#       `trap cleanup EXIT INT TERM HUP` this composition replaces (and which
+#       test_verify_semaphore_wiring.sh itself used before it moved onto the
+#       lib); both live consumers' handlers are `rm -rf` loops, which are.
 #
 #   (b) A handler registered AFTER nextest_absent_init is CALLER-OWNED: bash
 #       gives the lib no hook to compose retroactively, so that handler replaces
@@ -226,6 +234,25 @@ _nextest_absent_arm_traps() {
             # itself (which would run the caller's handler once per init).
             _nextest_absent_trap_dispatch*) continue ;;
         esac
+        # THE UPGRADE, i.e. contract half (a)'s "even if it only asked for EXIT".
+        # A caller that registered `trap cleanup EXIT` alone has NOTHING of its
+        # own on INT/TERM/HUP, so without this the dispatcher would run lib
+        # teardown and stop — and a `timeout --kill-after` of that suite would
+        # strand every temp dir the CALLER made while dutifully removing the
+        # lib's own. Strictly AFTER the re-init guard above, which must keep
+        # testing the signal's OWN body.
+        #
+        # Loop order makes it sound: EXIT is resolved and stashed on the first
+        # iteration, so INT/TERM/HUP always read a populated stash. On a re-init
+        # the EXIT iteration `continue`s without re-stashing, but
+        # _NEXTEST_ABSENT_PREV_EXIT still holds the ORIGINAL caller handler from
+        # the first init, so the fallback stays correct there too (the nested
+        # semaphore_wiring under this suite's S2 is exactly that path). A caller
+        # with a genuinely distinct TERM handler keeps it — the fallback fires
+        # only where the signal is unhandled. A caller with no handler at all
+        # stashes empty, falls back to empty, and the dispatcher just runs lib
+        # teardown.
+        [ -n "$prev" ] || prev="${_NEXTEST_ABSENT_PREV_EXIT:-}"
         printf -v "_NEXTEST_ABSENT_PREV_${sig}" '%s' "$prev"
         # shellcheck disable=SC2064  # $sig must expand NOW, not at trap time
         trap "_nextest_absent_trap_dispatch $sig" "$sig"
