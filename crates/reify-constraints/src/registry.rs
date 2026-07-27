@@ -240,13 +240,30 @@ impl SolverRegistry {
                 None
             };
 
+            // β (task #5189): build from `..problem.clone()` and override only the
+            // fields that genuinely differ per component.  The functional update
+            // syntax is load-bearing, NOT cosmetic: `dependent_cells` must reach
+            // the domain solver or `fold_dependent_cells` takes its empty-vector
+            // early return and the per-trial recompute silently never runs on the
+            // production path (`SolverRegistry::production()` is what the CLI
+            // wires in `configured_eval_engine`).  Listing fields explicitly here
+            // is how that field got zeroed in the first place; spreading means the
+            // NEXT field added to `ResolutionProblem` cannot be silently dropped.
+            //
+            // `dependent_cells` is passed wholesale rather than filtered to this
+            // component's autos: the fold is idempotent for cells whose inputs did
+            // not move (re-evaluating `line_cost` from unchanged inputs reproduces
+            // the same value), and `sub_values` already carries every cell in
+            // `problem.current_values`, so every dependent expression stays
+            // evaluable.  No auto-collision is possible — reify-eval's
+            // `build_dependent_cells` excludes autos globally, and
+            // `sub_auto_params` is a subset of `problem.auto_params`.
             let sub_problem = ResolutionProblem {
-                dependent_cells: Vec::new(),
                 auto_params: sub_auto_params,
                 constraints: component.constraints.clone(),
                 current_values: sub_values,
                 objective: sub_objective,
-                functions: problem.functions.clone(),
+                ..problem.clone()
             };
 
             // Select solver based on component domain
@@ -557,13 +574,19 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
             .map(|ap| AutoParam { free: true, ..ap.clone() })
             .collect();
 
+        // β (task #5189): mirror the degenerate single-priority path above, which
+        // builds `ws_problem` as `ResolutionProblem { objective, ..base.clone() }`
+        // and therefore inherits `dependent_cells`.  Enumerating fields here made
+        // the same function behave differently depending on how many distinct
+        // priorities the objective carries — a multi-rank lexicographic objective
+        // over a joint-drive cluster dropped the per-trial fold at every stage.
+        // Override only what genuinely differs per stage.
         let stage_problem = ResolutionProblem {
-            dependent_cells: Vec::new(),
             auto_params: free_auto_params,
             constraints: accumulated_constraints.clone(),
             current_values: current_values.clone(),
             objective: Some(stage_objective),
-            functions: base.functions.clone(),
+            ..base.clone()
         };
 
         let stage_result = solver.solve(&stage_problem);

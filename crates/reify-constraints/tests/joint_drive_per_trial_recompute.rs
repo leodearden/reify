@@ -505,3 +505,125 @@ fn tradeoff_cost_dominant_lambda_lands_nearer_the_cost_argmin() {
          Equal distances mean the cost axis is not participating in the blend."
     );
 }
+
+// ---------------------------------------------------------------------------
+// Registry propagation — the PRODUCTION dispatch path (esc-5189-5)
+// ---------------------------------------------------------------------------
+//
+// Every other test in this file calls `DimensionalSolver` directly. That is the
+// right layer for argmin precision, but it is NOT the solver a user reaches:
+// `reify-cli`'s `configured_eval_engine` wires
+// `.with_solver(Box::new(SolverRegistry::production()))`, so a real
+// `reify eval` goes Engine → SolverRegistry → component decomposition →
+// DimensionalSolver. `SolverRegistry::solve_inner` rebuilds a fresh
+// `ResolutionProblem` per connected component, and it used to enumerate that
+// struct's fields by hand with `dependent_cells: Vec::new()` — silently zeroing
+// the field this whole task adds. `fold_dependent_cells` then took its
+// empty-vector early return and the per-trial recompute never ran for anyone
+// outside these tests.
+//
+// This test closes that gap: it drives a joint-drive problem through
+// `SolverRegistry::production()` and asserts the SOLVED AUTO, which only the
+// folded objective can explain.
+
+/// Coefficient on the single auto `t` in the dependent cell `total = T_COEFF*t`.
+/// Positive, so `total` is strictly increasing in `t` and the argmin is `t`'s
+/// lower bound — an analytic corner, no optimizer-quality assumption needed.
+const T_COEFF: f64 = 2.0;
+
+/// The one-dimensional joint-drive problem: ONE auto `t`, an objective that
+/// reads ONLY the dependent cell `total`, and `current_values` seeding `total`
+/// at [`STALE_TOTAL`].
+///
+/// Deliberately 1-D rather than reusing [`multistart_joint_drive_problem`].
+/// `auto_params.len() >= 2` is the multistart gate, and on a 2-D fixture the
+/// per-start Nelder-Mead runs terminate at assorted non-global points — a real
+/// optimizer-quality property, but one that would make this test's verdict
+/// depend on NM convergence rather than on the thing under test. At dim<=1 the
+/// solver takes the single-candidate `rank_single` path and descends a
+/// monotone 1-D cost surface straight to the bracket, so "did the fold reach
+/// the domain solver?" is the ONLY variable left.
+fn registry_joint_drive_problem() -> (ResolutionProblem, ValueCellId) {
+    let t_id = ValueCellId::new("Part", "t");
+    let total_id = ValueCellId::new("Part", "total");
+
+    let mut current_values = ValueMap::new();
+    current_values.insert(total_id.clone(), scalar(STALE_TOTAL));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: t_id.clone(),
+            param_type: dimensionless(),
+            bounds: Some((LO, HI)),
+            free: true,
+        }],
+        constraints: vec![(
+            ConstraintNodeId::new("Part", 0),
+            CompiledExpr::binop(BinOp::Ge, vref(&t_id), lit(LO), Type::Bool),
+        )],
+        current_values,
+        objective: Some(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            vref(&total_id),
+        )),
+        functions: Arc::from(Vec::new()),
+        dependent_cells: vec![(
+            total_id,
+            CompiledExpr::binop(BinOp::Mul, lit(T_COEFF), vref(&t_id), dimensionless()),
+        )],
+    };
+
+    (problem, t_id)
+}
+
+/// esc-5189-5 — `SolverRegistry` must propagate `dependent_cells` into every
+/// per-component sub-problem, so the per-trial fold actually runs on the
+/// production dispatch path.
+///
+/// RED before the registry fix: `solve_inner` hands the domain solver an empty
+/// `dependent_cells`, so `total` stays pinned at its [`STALE_TOTAL`] seed at
+/// every trial point. A constant objective has no gradient, so the solve
+/// degenerates to pure feasibility and settles at its already-feasible start
+/// (the midpoint of `[LO, HI]`) instead of descending to the bracket at `LO`.
+///
+/// The paired direct-`DimensionalSolver` assertion is what makes the verdict
+/// specific: it pins the fold as working one layer down, so a failure here can
+/// only be the registry's per-component rebuild dropping the field.
+#[test]
+fn solver_registry_propagates_dependent_cells_into_component_subproblems() {
+    let (problem, t_id) = registry_joint_drive_problem();
+
+    let solved_t = |result: SolveResult| -> f64 {
+        let SolveResult::Solved { values, .. } = result else {
+            panic!("`t = {LO}` is feasible, so the solve must succeed; got: {result:?}");
+        };
+        values
+            .get(&t_id)
+            .and_then(|v| v.as_f64())
+            .expect("auto `t` solved")
+    };
+
+    // Baseline: the fold demonstrably works when the domain solver is handed
+    // the problem directly, so this fixture is a valid probe.
+    let direct_t = solved_t(DimensionalSolver.solve(&problem));
+    assert!(
+        (direct_t - LO).abs() < 1e-3,
+        "precondition — the bare `DimensionalSolver` must fold `total` and \
+         descend to the bracket t={LO}; got t={direct_t:.6}. If THIS fails, the \
+         per-trial fold itself regressed, not the registry."
+    );
+
+    // The production dispatch path must reach the same answer.
+    let registry_t = solved_t(reify_constraints::SolverRegistry::production().solve(&problem));
+    assert!(
+        (registry_t - LO).abs() < 1e-3,
+        "the production path (`SolverRegistry::production()`, what \
+         `reify-cli`'s `configured_eval_engine` wires) must reach the same \
+         folded argmin as the bare solver: expected t={LO} (as the direct solve \
+         got, t={direct_t:.6}); got t={registry_t:.6}. A divergence means \
+         `SolverRegistry::solve_inner` rebuilt the per-component sub-problem \
+         with an empty `dependent_cells`, so `total` stayed pinned at its stale \
+         seed {STALE_TOTAL} and the objective was constant across every trial \
+         point."
+    );
+}
