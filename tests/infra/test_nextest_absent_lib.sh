@@ -303,4 +303,93 @@ assert "5c: nextest_absent_no_rustup_sync FAILS when a .rustup is present (it ca
 assert "5d: nextest_absent_home_is_small honours NEXTEST_ABSENT_HOME_MAX_KB (a 0 KB ceiling fails)" \
     _t5d_negative
 
+# -- Test 6: the farm-overlay API ---------------------------------------------
+#
+# This is what lets test_verify_nextest_probe.sh SHARE the lib instead of
+# forking it. That suite does not test "nextest is absent" — it tests
+# verify.sh's retry/hard-fail behaviour when the probe FAILS while cargo-nextest
+# is PRESENT (its cycles i, ii, iv, v); only cycle iii is genuine absence. A
+# harness that could only express absence would force a fork. Exposing the farm
+# as an overlayable directory plus an add/remove pair for the cargo-nextest
+# presence marker makes BOTH states parameters of one harness.
+echo ""
+echo "--- Test 6: farm overlay + the cargo-nextest presence marker ---"
+
+# Fresh env: Test 6 deliberately overlays `cargo` itself, so it must not leave
+# that overlay in place for later sections. nextest_absent_init tears the
+# previous workdir down before building the new one.
+nextest_absent_init
+
+NX_MARKER="__reify_5602_overlay_marker__"
+NX_OVERLAY="$NX_WORKDIR/fake-cargo.sh"
+cat > "$NX_OVERLAY" <<OVERLAY
+#!/usr/bin/env bash
+if [ "\${1:-}" = "$NX_MARKER" ]; then
+    echo "$NX_MARKER"
+    exit 0
+fi
+exit 7
+OVERLAY
+
+# (a) The overlay must WIN under nx_run. This proves farm-first PATH ordering
+# shadows BOTH the filtered cargo bin dir and any other cargo later in PATH —
+# measured on this host, /home/leo/.local/bin/cargo exists and is what ambient
+# `command -v cargo` resolves to, so this is not a theoretical ordering.
+_t6a() {
+    local out
+    nextest_absent_farm_put cargo "$NX_OVERLAY" || return 1
+    out="$(nx_run cargo "$NX_MARKER" 2>&1)" || {
+        echo "overlaid cargo did not run: $out"
+        return 1
+    }
+    printf '%s\n' "$out"
+    [ "$out" = "$NX_MARKER" ]
+}
+
+# (b) Putting OVER an existing farm entry must succeed. The farm entry for
+# `cargo` is already a mirrored symlink, and a bare `cp`/`ln -s` onto an
+# existing symlink fails — so this is the arm that catches the naive
+# implementation.
+_t6b() {
+    nextest_absent_farm_put cargo "$NX_OVERLAY" || {
+        echo "second nextest_absent_farm_put over an existing entry failed"
+        return 1
+    }
+    local out
+    out="$(nx_run cargo "$NX_MARKER" 2>&1)" || return 1
+    [ "$out" = "$NX_MARKER" ]
+}
+
+# (c) The presence marker as a PARAMETER — exactly the probe's
+# cycle-(iii)-vs-the-rest distinction. Toggled repeatedly, because an
+# implementation that works once but not twice would silently corrupt the
+# probe's five-cycle sequence.
+_t6c() {
+    local i
+    for i in 1 2 3; do
+        nextest_absent_farm_add_nextest_stub || return 1
+        nx_which cargo-nextest >/dev/null || {
+            echo "toggle $i: cargo-nextest NOT reachable after add_nextest_stub"
+            return 1
+        }
+        nextest_absent_farm_rm_nextest_stub || return 1
+        if nx_which cargo-nextest >/dev/null; then
+            echo "toggle $i: cargo-nextest STILL reachable after rm_nextest_stub"
+            return 1
+        fi
+    done
+    echo "3 add/remove toggles, presence tracked exactly"
+    return 0
+}
+
+# (d) The plain env must be nextest-absent with NO caller action — the stub
+# stays OUT of the farm by default. Asserted after (c) so it also proves the
+# toggles left no residue.
+_t6d() { ! nx_which cargo-nextest; }
+
+assert "6a: nextest_absent_farm_put makes the overlaid executable WIN under nx_run" _t6a
+assert "6b: nextest_absent_farm_put over an existing farm entry succeeds (mirrored symlink is replaced)" _t6b
+assert "6c: add/rm_nextest_stub toggle cargo-nextest presence, idempotently across repeats" _t6c
+assert "6d: the plain env is nextest-absent with no caller action (stub is out of the farm by default)" _t6d
+
 test_summary
