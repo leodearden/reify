@@ -53,6 +53,23 @@
 #   sidecar=$(scripts/seed-warm-lane.sh --record-base <base_target_dir>)
 #
 # Stdout (seed mode):   resolved <lane_dir>/target path on success.
+#
+#   CALLER OBLIGATION on an EMPTY stdout. Non-empty stdout is the ONLY signal
+#   that the returned lane is safe to build WARM; an empty stdout obliges the
+#   caller to REMOVE (or re-seed over) <lane_dir>/target before building
+#   anything in that lane. This is load-bearing rather than advisory because the
+#   three fail-closed post-conditions -- _assert_no_stale_delta_stamp (inv.9),
+#   _assert_delta_newer_than_build_outputs (inv.12) and
+#   _assert_delta_touch_base_substantiated (inv.13) -- all run AFTER target/ has
+#   been replaced with the CoW clone and the sources bulk-stamped to 2020-01-01.
+#   Each therefore ABORTS ONTO exactly the hazardous state it just refused to
+#   certify, and a "cold fallback" that merely re-runs cargo in the same lane
+#   inherits the stale-artifact false green the guard fired to prevent. The seed
+#   deliberately does not rm -rf the clone itself: that would destroy the
+#   forensic evidence inv.12's operator remedy sends an operator to read.
+#   (§9.5 inv.12/inv.13; the callers' side of this contract is NOT yet enforced
+#   -- see the same PRD note.)
+#
 # Stdout (record mode): resolved sidecar path on success.
 # Stderr:               all diagnostics, progress messages, and errors.
 #
@@ -497,17 +514,39 @@ _assert_delta_newer_than_build_outputs() {
 #     compilations, because that is the only thing a stale source mtime can
 #     wrongly re-Freshen. Same "is there anything here that could be mis-gated?"
 #     test the inv.12 guard already uses for its two vacuous skips.
+#   - It keys on BASE RESOLUTION only. An explicit --touch list does NOT
+#     substantiate the claim either: --touch is documented above as an
+#     ADDITIONAL path to touch after the bulk stamp — an augmentation of the
+#     git-diff delta, not a declaration that the delta set is COMPLETE — and
+#     there is no flag with which a caller could assert completeness, so the
+#     seed cannot tell the two apart. Pinned two-sided by Block T's T2 (base
+#     resolves + empty delta ⇒ seed) and T2b (no base + non-empty --touch ⇒
+#     refuse). Reasoning: §9.5 inv.13.
 #   - -maxdepth 3 mirrors the non-relocatable build-dir deletion sweep's walk
 #     below (depth 2 for <profile>/.fingerprint, depth 3 for a cross-compile
 #     <triple>/ prefix), so the guard's coverage cannot drift apart from the
-#     tree it protects. -print -quit makes it an early-exit probe rather than a
-#     full walk, and find exits 0 either way so it is safe under set -euo pipefail.
+#     tree it protects. Both bounds are pinned by Block T (T1c detects the
+#     depth-3 cross-compile shape; T1d holds the upper edge at depth 4).
+#     -print -quit makes it an early-exit probe rather than a full walk.
+#   - The probe's exit status is captured EXPLICITLY rather than left to
+#     set -e on a bare assignment: no-match and early--quit both exit 0, but a
+#     TRAVERSAL failure (unreadable subdirectory, or LANE_TARGET missing) exits
+#     non-zero, which would abort the whole seed with find's own stderr and no
+#     attribution to a seed guard. An unknown probe result cannot substantiate
+#     the claim either, so it becomes an attributed fail-closed abort.
 #   - A violation errs + return 1. Under set -e that aborts the seed before
 #     `echo "$LANE_TARGET"`, leaving stdout empty → the caller falls back to a
-#     cold rebuild (slow but CORRECT).
+#     cold rebuild (slow but CORRECT). See the CALLER OBLIGATION in the stdout
+#     contract at the top of this file: an empty stdout obliges the caller to
+#     remove <lane_dir>/target, because this abort fires AFTER the clone and
+#     bulk stamp and so leaves exactly the state it just refused to certify.
 _assert_delta_touch_base_substantiated() {
     local fingerprint_dir
-    fingerprint_dir="$(find "$LANE_TARGET" -maxdepth 3 -type d -name .fingerprint -print -quit)"
+    if ! fingerprint_dir="$(find "$LANE_TARGET" -maxdepth 3 -type d -name .fingerprint -print -quit)"; then
+        err "Delta-touch-base substantiation probe FAILED to walk $LANE_TARGET (find exited non-zero — unreadable subdirectory, or the lane target is missing), so whether the clone carries recorded prior compilations is UNKNOWN and the no-base freshness claim cannot be substantiated (§9.5 inv.13)"
+        err "_assert_delta_touch_base_substantiated: seed aborted (cold rebuild forced)"
+        return 1
+    fi
     if [ -z "$fingerprint_dir" ]; then
         info "Post-condition skipped: no .fingerprint dir under $LANE_TARGET — the clone records no prior compilation for the 2020-01-01 bulk stamp to wrongly re-Freshen"
         return 0

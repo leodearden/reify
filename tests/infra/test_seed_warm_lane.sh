@@ -2944,6 +2944,13 @@ assert "S3b: tracked source still carries the 2020-01-01 bulk stamp ($EPOCH_2020
 # no .fingerprint dir, so it stays under inv.13's hazard gate and keeps asserting
 # the accept path unchanged.
 #
+# The arms are built as two-sided pairs, so that no single-sided edit to the
+# guard can stay green: T1/T1b straddle the causal .fingerprint gate AND the
+# guard's call position relative to the invalidation sweep; T1c/T1d straddle the
+# -maxdepth 3 probe bound; T2/T2b straddle what the guard keys on (base
+# resolution — NOT an empty delta set, and NOT an explicit --touch list);
+# T3/T3b/T3c straddle the opt-out knob's exact-"1" contract.
+#
 #   Placed BEFORE Block R for the same reason Block S is: per Block R's ordering
 #   note, a block appended after R2/R5 gets no shared-trash-litter coverage
 #   from R1.
@@ -2952,7 +2959,8 @@ echo ""
 echo "--- Block T: no delta-touch base ⇒ seed refuses (task 5632) ---"
 
 _t_make_fixture() {
-    # <prefix> <with_fingerprint:0|1> — echoes "<base>|<lane>".
+    # <prefix> <with_fingerprint:0|1> [fingerprint_parent_relpath] —
+    # echoes "<base>|<lane>".
     #
     # Base parent and lane are BOTH minted via make_isolated_lane (i.e. under
     # $_LANE_ROOT), NOT bare /tmp, for the SUBSHELL reason documented above
@@ -2960,7 +2968,12 @@ _t_make_fixture() {
     # stdout via command substitution, so a `_TMPDIRS+=(...)` here would be
     # silently discarded when the subshell exits and every base parent would
     # leak into bare /tmp.
-    local prefix="$1" with_fingerprint="$2" parent base lane
+    #
+    # The optional 3rd arg is the .fingerprint dir's PARENT, relative to
+    # <base>, and defaults to the depth-2 `debug` shape. T1c/T1d override it to
+    # drive the guard's -maxdepth 3 bound from both sides; nothing else should
+    # need it.
+    local prefix="$1" with_fingerprint="$2" fp_parent="${3:-debug}" parent base lane
     parent="$(make_isolated_lane "$prefix-base")"
     base="$parent/target"
     lane="$(make_isolated_lane "$prefix-lane")"
@@ -2970,14 +2983,25 @@ _t_make_fixture() {
     printf 'RUSTFLAGS=\nINVOCATION=\n' > "$parent/.warm-base-meta"
     mkdir -p "$base/debug"
     echo "artifact" > "$base/debug/artifact.a"
+    # ORDERING WITNESS for the guard's documented call position (before the
+    # non-relocatable build-dir invalidation sweep). debug/build/tauri-TTTT
+    # matches the sweep's `tauri-*` allow-list glob, so it survives IFF the
+    # guard aborted first and is GONE on every path where the seed proceeded —
+    # a two-sided pin (T1 asserts survival, T1b asserts deletion) of a property
+    # that is otherwise only stated in a comment. The marker file is
+    # deliberately NOT named `output`: that is the inv.12 guard's freshness
+    # reference, and this fixture must exercise inv.13 alone.
+    mkdir -p "$base/debug/build/tauri-TTTT"
+    echo "marker" > "$base/debug/build/tauri-TTTT/marker"
     if [ "$with_fingerprint" = "1" ]; then
-        # target/debug/.fingerprint = depth 2 from LANE_TARGET, inside the
-        # guard's probe bound. Reaches the lane via run_helper_real's cp stub
-        # (/bin/cp -a), the same propagation mechanism Block D's D4 relies on
-        # for debug/artifact.a. Named lib-somepkg, NOT `output`, so this fixture
-        # stays clear of the inv.12 guard and only inv.13 is under test here.
-        mkdir -p "$base/debug/.fingerprint/somepkg-1111"
-        echo "fp" > "$base/debug/.fingerprint/somepkg-1111/lib-somepkg"
+        # Default fp_parent=debug ⇒ target/debug/.fingerprint = depth 2 from
+        # LANE_TARGET, inside the guard's probe bound. Reaches the lane via
+        # run_helper_real's cp stub (/bin/cp -a), the same propagation mechanism
+        # Block D's D4 relies on for debug/artifact.a. Named lib-somepkg, NOT
+        # `output`, so this fixture stays clear of the inv.12 guard and only
+        # inv.13 is under test here.
+        mkdir -p "$base/$fp_parent/.fingerprint/somepkg-1111"
+        echo "fp" > "$base/$fp_parent/.fingerprint/somepkg-1111/lib-somepkg"
     fi
     mkdir -p "$lane/src"
     echo 'pub fn tracked() {}' > "$lane/src/tracked.rs"
@@ -3005,6 +3029,14 @@ assert "T1: an [error] line names the unresolved delta-touch base condition" \
 assert "T1: an [error] line names the .fingerprint evidence found under the lane target" \
     bash -c 'printf "%s\n" "$1" | grep "\[error\]" | grep -qF "$2"' _ "$ERR_OUT" \
     "$T1_LANE/target/debug/.fingerprint"
+# ORDERING PIN (positive half; T1b holds the negative half). The guard is
+# documented as running BEFORE the non-relocatable build-dir invalidation sweep,
+# the inv.8 relocation sweep and the env!() relink, so a doomed seed pays none
+# of those walks. debug/build/tauri-TTTT matches the sweep's allow-list glob, so
+# its SURVIVAL is direct evidence the abort preceded the sweep. Without this,
+# moving the call after the sweep keeps every other T-arm green.
+assert "T1: the tauri-* build dir SURVIVES the abort ⇒ the guard ran before the invalidation sweep" \
+    test -d "$T1_LANE/target/debug/build/tauri-TTTT"
 
 # ── T1b: POSITIVE CONTROL (green before AND after) — byte-identical fixture
 # MINUS the .fingerprint dir. Without this arm T1 would also pass against an
@@ -3024,6 +3056,51 @@ assert "T1b: STDOUT is exactly <lane>/target" \
 T1B_SRC_MTIME="$(stat -c '%Y' "$T1B_LANE/src/tracked.rs")"
 assert "T1b: tracked source still carries the 2020-01-01 bulk stamp ($EPOCH_2020) — accept path unchanged" \
     test "$T1B_SRC_MTIME" -eq "$EPOCH_2020"
+# ORDERING PIN (negative half — the control that gives T1's survival assertion
+# its meaning). On a path where the guard does NOT abort, the sweep runs and the
+# allow-listed dir is gone; so T1's surviving dir cannot be explained by the
+# sweep simply never touching this fixture.
+assert "T1b: the tauri-* build dir is GONE when the seed proceeds ⇒ the sweep does run on this fixture" \
+    bash -c '[ ! -e "$1" ]' _ "$T1B_LANE/target/debug/build/tauri-TTTT"
+
+# ── T1c/T1d: the guard's -maxdepth 3 probe bound, driven from BOTH sides. The
+# bound is the load-bearing half of the causal claim (it is what makes the guard
+# cover the same tree the build-dir deletion sweep walks), yet T1/T1b/T2/T3 all
+# use the depth-2 `debug/.fingerprint` shape and would stay green under a
+# narrowed -maxdepth 2 — which would let EVERY cross-compiled warm base through
+# the gate. Mirrors the boundary arm H3d already keeps on the sweep itself.
+
+# T1c: depth 3 — the cross-compile <triple>/<profile>/.fingerprint shape, which
+# is INSIDE the bound and must still be refused.
+IFS='|' read -r T1C_BASE T1C_LANE <<< "$(_t_make_fixture T1c 1 x86_64-unknown-linux-gnu/debug)"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$T1C_BASE" "$T1C_LANE" --fresh-checkout
+
+assert "T1c: a depth-3 cross-compile <triple>/debug/.fingerprint is INSIDE the probe bound ⇒ still refuses" \
+    test "$RC" -ne 0
+assert "T1c: depth-3 abort still leaves STDOUT empty" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+assert "T1c: the [error] line names the depth-3 .fingerprint path it found" \
+    bash -c 'printf "%s\n" "$1" | grep "\[error\]" | grep -qF "$2"' _ "$ERR_OUT" \
+    "$T1C_LANE/target/x86_64-unknown-linux-gnu/debug/.fingerprint"
+
+# T1d: depth 4 — a .fingerprint nested inside a build-script output dir, OUTSIDE
+# the bound. It is not a cargo profile fingerprint dir, so it is deliberately
+# not probed and the seed must still proceed. This is the arm a WIDENED bound
+# would fail, keeping the guard's coverage tied to the sweep's rather than
+# drifting into false refusals.
+IFS='|' read -r T1D_BASE T1D_LANE <<< "$(_t_make_fixture T1d 1 debug/build/somepkg-2222)"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$T1D_BASE" "$T1D_LANE" --fresh-checkout
+
+assert "T1d: a depth-4 .fingerprint nested in a build-script out dir is OUTSIDE the bound ⇒ seed proceeds" \
+    test "$RC" -eq 0
+assert "T1d: STDOUT is exactly <lane>/target" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$T1D_LANE/target"
 
 # ── T2: DISCRIMINATOR (green before AND after) — .fingerprint present, but a
 # base RESOLVES via --base-commit while the stub git returns an EMPTY
@@ -3042,6 +3119,26 @@ assert "T2: base RESOLVES (empty delta) ⇒ seed exits 0 even with .fingerprint 
     test "$RC" -eq 0
 assert "T2: STDOUT is exactly <lane>/target" \
     bash -c '[ "$1" = "$2" ]' _ "$OUT" "$T2_LANE/target"
+
+# ── T2b: the OTHER half of the same discriminator — an explicit --touch list is
+# NOT substantiation. --touch feeds the same _DELTA_PATHS array as the git-diff
+# delta-touch, so `non-empty _DELTA_PATHS ⇒ substantiated` is the obvious
+# refactor; it is wrong, because --touch is an ADDITIONAL path to touch (see the
+# usage block in scripts/seed-warm-lane.sh), not a declaration that the delta
+# set is COMPLETE, and no flag exists with which a caller could assert
+# completeness. Together with T2 this pins the guard's key exactly: BASE
+# RESOLUTION, neither more nor less. Ruling and reasoning: §9.5 inv.13.
+IFS='|' read -r T2B_BASE T2B_LANE <<< "$(_t_make_fixture T2b 1)"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$T2B_BASE" "$T2B_LANE" --fresh-checkout \
+        --touch "$T2B_LANE/src/tracked.rs"
+
+assert "T2b: a non-empty --touch list does NOT substantiate a missing base ⇒ still refuses" \
+    test "$RC" -ne 0
+assert "T2b: --touch abort still leaves STDOUT empty" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
 
 # ── T3: the narrow opt-out knob, honoured. REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1
 # downgrades the refusal to a warn and reaches the accept path VERBATIM (same
