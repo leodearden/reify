@@ -169,6 +169,9 @@ _nextest_absent_mirror_source() {
 #       `trap cleanup EXIT INT TERM HUP` this composition replaces (and which
 #       test_verify_semaphore_wiring.sh itself used before it moved onto the
 #       lib); both live consumers' handlers are `rm -rf` loops, which are.
+#       MEASURED at task 5602 against semaphore_wiring's exact handler shape
+#       (:22-24) driven through this dispatcher — TERM dispatch then normal
+#       exit: cleanup ran exactly twice, rc=0, empty stderr, no residue.
 #
 #   (b) A handler registered AFTER nextest_absent_init is CALLER-OWNED: bash
 #       gives the lib no hook to compose retroactively, so that handler replaces
