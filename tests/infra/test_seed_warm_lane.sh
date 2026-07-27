@@ -2922,6 +2922,83 @@ assert "S3b: tracked source still carries the 2020-01-01 bulk stamp ($EPOCH_2020
     test "$S3B_SRC_MTIME" -eq "$EPOCH_2020"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Block T: run_helper_real stub-dir lifetime guard (task #5633) — the
+# per-invocation PATH stub dir run_helper_real mints (real_stub_dir, set up
+# above at L332) must outlive the invocation, not just the DIRECT
+# `bash "$SCRIPT"` child. scripts/seed-warm-lane.sh's trash rm is a DETACHED
+# GRANDCHILD — `{ rm -rf "$RESEED_TRASH" ...; } 9<&- &`
+# (scripts/seed-warm-lane.sh:1133, and the orphan sweep at :792) — forked
+# before seed exits but resolving `rm` through PATH at an arbitrary LATER
+# instant. If run_helper_real unlinks its stub dir the moment the direct
+# child exits, that grandchild's PATH lookup can miss the no-op
+# REIFY_TEST_PIN_RESEED_TRASH stub and find the real /bin/rm instead, which
+# genuinely deletes the trash the PIN stub exists to pin on disk — the
+# intermittent I14g (L1249) / M-setup (L1358) failure mode.
+#
+# Placement note: inserted AFTER Block S and BEFORE Block R (not appended at
+# EOF). Block R's own ordering note below states that a block appended AFTER
+# Block R gets no R1 shared-trash / R3 bare-/tmp detector coverage unless it
+# re-asserts them itself — inserting here keeps this block's run_helper_real
+# call inside the existing sweep, with no duplicated checker.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block T: run_helper_real stub-dir lifetime guard (task #5633) ---"
+
+# Fixture: direct copy of I14's recipe (L1199-1221) — a base with a real
+# artifact + .warm-base-meta, and a lane with a NON-EMPTY target so seed
+# takes the rename-to-trash path and REIFY_TEST_PIN_RESEED_TRASH has
+# something to pin.
+T_BASE_PARENT="$(mktemp -d /tmp/test-seed-T-parent-XXXXXX)"
+T_BASE="$T_BASE_PARENT/target"
+_TMPDIRS+=("$T_BASE_PARENT")
+mkdir -p "$T_BASE/debug"
+echo "base artifact" > "$T_BASE/debug/base_artifact.a"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$T_BASE_PARENT/.warm-base-meta"
+
+T_LANE="$(make_isolated_lane T-lane)"
+mkdir -p "$T_LANE/src"
+echo "fn main() {}" > "$T_LANE/src/main.rs"
+# Lane target: non-empty so the rename path triggers (seed renames it to trash).
+mkdir -p "$T_LANE/target"
+echo "stale" > "$T_LANE/target/stale.a"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_TEST_PIN_RESEED_TRASH=1 \
+    run_helper_real "$T_BASE" "$T_LANE" --fresh-checkout
+
+# T0/T0b: fixture sanity, mirroring I14/I14b.
+assert "T0: seed exits 0 (fixture sanity, mirrors I14)" test "$RC" -eq 0
+assert "T0b: STDOUT is <lane>/target (fixture sanity, mirrors I14b)" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$T_LANE/target"
+
+# T1: AFTER run_helper_real has returned, the invocation's stub dir must
+# still exist and still be usable — this is the exact contract the seed's
+# DETACHED trash rm depends on (see the Block T header comment above).
+# Pre-fix, run_helper_real unlinks real_stub_dir at L421 as soon as the
+# direct child exits, so REAL_STUB_DIR is unset and this FAILS.
+# "${REAL_STUB_DIR:-}" passed as a positional arg keeps this a plain assert
+# FAILURE rather than a set -u abort while the global does not exist yet.
+assert "T1: run_helper_real's stub dir survives the invocation and still holds executable cp/rm stubs" \
+    bash -c '[ -n "$1" ] && [ -d "$1" ] && [ -x "$1/cp" ] && [ -x "$1/rm" ]' _ "${REAL_STUB_DIR:-}"
+
+# T1b: the surviving stub dir is parented at the per-run root, and that root
+# is itself registered in _TMPDIRS — i.e. teardown is DEFERRED to cleanup()'s
+# EXIT trap, not simply skipped. Mirrors R4's ${_REAL_LANES_FILE:-/nonexistent}
+# defensive idiom (L3023) and cleanup()'s own "${_TMPDIRS[@]+${_TMPDIRS[@]}}"
+# expansion (L173), so a not-yet-implemented $_REAL_STUB_ROOT is a plain
+# assert FAILURE, not a set -u abort of the whole suite.
+assert "T1b: the stub dir is parented at _REAL_STUB_ROOT, which is registered in _TMPDIRS for EXIT-trap reclaim" \
+    bash -c '
+        root="$1"; stub="$2"; shift 2
+        [ -n "$stub" ] || exit 1
+        [ "$(dirname "$stub")" = "$root" ] || exit 1
+        for t in "$@"; do
+            [ "$t" = "$root" ] && exit 0
+        done
+        exit 1
+    ' _ "${_REAL_STUB_ROOT:-/nonexistent}" "${REAL_STUB_DIR:-/nonexistent-stub}" "${_TMPDIRS[@]+${_TMPDIRS[@]}}"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Block R: lane isolation guards (task 5590) — every lane created in this file
 # must be nested under a private per-run parent, never bare /tmp, because
 # scripts/seed-warm-lane.sh:663 computes RESEED_TRASH_DIR as
