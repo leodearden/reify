@@ -519,14 +519,14 @@ _assert_delta_newer_than_build_outputs() {
 #     ADDITIONAL path to touch after the bulk stamp — an augmentation of the
 #     git-diff delta, not a declaration that the delta set is COMPLETE — and
 #     there is no flag with which a caller could assert completeness, so the
-#     seed cannot tell the two apart. Pinned two-sided by Block T's T2 (base
-#     resolves + empty delta ⇒ seed) and T2b (no base + non-empty --touch ⇒
+#     seed cannot tell the two apart. Pinned two-sided by Block U's U2 (base
+#     resolves + empty delta ⇒ seed) and U2b (no base + non-empty --touch ⇒
 #     refuse). Reasoning: §9.5 inv.13.
 #   - -maxdepth 3 mirrors the non-relocatable build-dir deletion sweep's walk
 #     below (depth 2 for <profile>/.fingerprint, depth 3 for a cross-compile
 #     <triple>/ prefix), so the guard's coverage cannot drift apart from the
-#     tree it protects. Both bounds are pinned by Block T (T1c detects the
-#     depth-3 cross-compile shape; T1d holds the upper edge at depth 4).
+#     tree it protects. Both bounds are pinned by Block U (U1c detects the
+#     depth-3 cross-compile shape; U1d holds the upper edge at depth 4).
 #     -print -quit makes it an early-exit probe rather than a full walk.
 #   - The probe's exit status is captured EXPLICITLY rather than left to
 #     set -e on a bare assignment: no-match and early--quit both exit 0, but a
