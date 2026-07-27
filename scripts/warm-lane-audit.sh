@@ -302,7 +302,7 @@ _lane_role() {
 # ── helper: non-mutating LIVE/IDLE liveness probe (A1/A2/DD1) ─────────────────
 # Measures LIVENESS and nothing else, which is why it feeds `live=` and NOT
 # `assigned=`: a lane reserved for a task whose consumer is not running probes
-# IDLE while remaining very much assigned (see _lane_assigned_state, the
+# IDLE while remaining very much assigned (see _read_lane_assignment, the
 # separate answer).
 #
 # Opens an EXISTING <dir>.lock read-only and attempts a non-blocking SHARED
