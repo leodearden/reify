@@ -363,6 +363,57 @@ mod tests {
         assert_eq!(found.as_deref(), Some(tmp.as_path()));
     }
 
+    /// The guard returned by `tempdir()` must remove its directory when it
+    /// falls out of scope — the leak this crate shipped for ~4.7k dirs.
+    #[test]
+    fn tempdir_removes_directory_on_scope_exit() {
+        let observed: PathBuf;
+        {
+            let guard = tempdir();
+            observed = guard.path().to_path_buf();
+            assert!(
+                observed.is_dir(),
+                "tempdir() must create the directory eagerly: {}",
+                observed.display()
+            );
+        } // guard dropped here
+
+        assert!(
+            !observed.exists(),
+            "temp dir leaked after scope exit: {}",
+            observed.display()
+        );
+    }
+
+    /// Cleanup must also survive an unwinding panic — i.e. a *failing* test,
+    /// the run that matters most. A manual `remove_dir_all` at the end of a
+    /// test body is skipped by the unwind and would leak precisely then, so
+    /// this is what discriminates a real RAII guard from that near-miss.
+    #[test]
+    fn tempdir_removes_directory_on_panic() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        // Capture the path into the enclosing scope BEFORE panicking, so it
+        // is still readable after the unwind. (The default panic hook is left
+        // installed: it is process-global, and suppressing it here would eat
+        // the failure message of any sibling test panicking concurrently.
+        // libtest captures a passing test's output, so this prints nothing.)
+        let mut observed: Option<PathBuf> = None;
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let guard = tempdir();
+            observed = Some(guard.path().to_path_buf());
+            panic!("simulated test failure");
+        }));
+
+        assert!(result.is_err(), "the closure must actually unwind");
+        let observed = observed.expect("guard path captured before the panic");
+        assert!(
+            !observed.exists(),
+            "temp dir survived a panicking test: {}",
+            observed.display()
+        );
+    }
+
     fn tempdir() -> PathBuf {
         let base = env::temp_dir().join(format!(
             "reify-build-utils-test-{}-{}",
