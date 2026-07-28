@@ -69,6 +69,14 @@ module whole_model_cost_min
 //       Spacer: quantity_produced → 0.01        line_cost → 0.0225 USD  (2.25 × 0.01)
 //     Whole-assembly total: 0.005 + 0.0225 = 0.0275 USD.
 //
+//   Every figure above is the derivation AND was CONFIRMED OBSERVED verbatim
+//   by running both evals (the `mwhole_bt4_*` tests in
+//   crates/reify-eval/tests/joint_drive_expansion_boundary.rs read these same
+//   cells): merged/frozen `quantity_produced` = 0.01/50.0 (Plate), 0.01/20.0
+//   (Spacer); merged/frozen whole-assembly total = 0.0275/70.00 USD. The
+//   tests themselves assert none of these as absolutes — only the STRICT
+//   comparative directions — so this arithmetic is documentation, not a pin.
+//
 // ## Why the merged figures are the SEED, not the exact argmin
 //
 // A linear Money objective's argmin sits exactly ON a constraint boundary, and
