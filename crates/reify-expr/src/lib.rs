@@ -1536,7 +1536,29 @@ fn type_carries_dim_param(t: &Type) -> bool {
 /// byte-comparable with the canonical copy is worth more here than compiler-
 /// forced review of new `Type` variants, since a new variant falling to
 /// `param == arg` is the conservative answer (it can only narrow, never widen).
-fn heads_unifiable(param: &Type, arg: &Type) -> bool {
+///
+/// # Why this mirror is `pub` when its three `type_carries_*` siblings are not
+///
+/// Prose is a weak sync guard for ~120 lines of match arms, so this pair is
+/// additionally pinned by a BEHAVIOURAL differential test —
+/// `sync_drift_check_heads_unifiable_matches_eval_mirror` in
+/// `crates/reify-compiler/src/type_compat.rs` — which runs both
+/// implementations over a corpus covering every arm and asserts they agree
+/// verdict-for-verdict. The canonical copy is private to a private module
+/// (`mod type_compat` in reify-compiler's lib.rs), so that test can only live
+/// on the compiler side, which means THIS copy is the one that has to be
+/// reachable across the crate boundary. Exporting the predicate is the cost of
+/// having a real drift guard instead of a comment; it is a pure function of two
+/// `&Type`s with no state to misuse.
+///
+/// The drift guard is the second-best fix. The best one is to delete the mirror
+/// outright by hoisting this helper (and the three `type_carries_*` ones) into
+/// `reify-core` beside `Type` — already a real, non-dev dependency of BOTH
+/// crates, so the "cannot be imported" constraint above does not apply to it —
+/// and importing the single definition on each side. That is a cross-crate move
+/// touching a third crate, deliberately not attempted here; a follow-up is filed
+/// for it.
+pub fn heads_unifiable(param: &Type, arg: &Type) -> bool {
     match (param, arg) {
         // Type-param / dim-param leaves: wildcard slots, always compatible.
         (Type::TypeParam(_), _) => true,

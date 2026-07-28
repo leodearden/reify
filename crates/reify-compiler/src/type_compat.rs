@@ -5686,4 +5686,249 @@ mod tests {
             None,
         );
     }
+
+    // ── heads_unifiable: canonical-copy / eval-mirror drift guard (#5685) ────
+
+    /// `heads_unifiable` is duplicated verbatim into
+    /// `crates/reify-expr/src/lib.rs`, where it is the middle tie-break tier of
+    /// `find_matching_compiled_function`. reify-compiler is only a dev-dep of
+    /// reify-expr, so the mirror cannot be an import — and a ~120-arm match kept
+    /// in sync by nothing but a doc comment on each side is precisely the
+    /// esc-4231-120/126 / esc-4093-152 divergence class those comments warn
+    /// about.
+    ///
+    /// This is a BEHAVIOURAL differential, not a source-text comparison: it runs
+    /// both implementations over a corpus with at least one case per match arm
+    /// and asserts they agree verdict-for-verdict. A reformat or a renamed
+    /// binding does not trip it; a changed verdict does. Same shape as the
+    /// `sync_drift_check_*` tests guarding `option_recovery::is_combinator`.
+    ///
+    /// The corpus deliberately pairs each arm's MATCH case with a near-miss that
+    /// must fall to the `_ => param == arg` catch-all, so a mirror that
+    /// accidentally widened an arm (dropped an `n == n` / arity guard) is caught
+    /// as readily as one that dropped the arm entirely.
+    ///
+    /// This test lives on the compiler side because `mod type_compat` is private
+    /// in reify-compiler's `lib.rs`: the canonical copy is unreachable from
+    /// outside the crate, whereas the eval mirror is `pub`. `reify-expr` is
+    /// already a `[dev-dependencies]` entry here — no manifest change.
+    #[test]
+    fn sync_drift_check_heads_unifiable_matches_eval_mirror() {
+        let t = || Type::TypeParam("T".to_string());
+        let q = || Type::ScalarParam("Q".to_string());
+        let result_of = |args: Vec<Type>| Type::Applied {
+            name: "Result".to_string(),
+            args,
+        };
+        let proj = |base: Type, member: &str| Type::Projection {
+            base: Box::new(base),
+            member: member.to_string(),
+        };
+        let func = |params: Vec<Type>, ret: Type| Type::Function {
+            params,
+            return_type: Box::new(ret),
+        };
+        let field = |domain: Type, codomain: Type| Type::Field {
+            domain: Box::new(domain),
+            codomain: Box::new(codomain),
+        };
+
+        // (param, arg, label) — label names the arm the pair exercises.
+        let corpus: Vec<(Type, Type, &str)> = vec![
+            // Type-param / dim-param wildcard leaves.
+            (t(), Type::Int, "TypeParam vs anything"),
+            (t(), result_of(vec![Type::Int]), "TypeParam vs constructor"),
+            (q(), Type::length(), "ScalarParam vs Scalar"),
+            (q(), Type::Int, "ScalarParam vs non-Scalar (catch-all)"),
+            // Single-inner-Type constructors, match + near-miss.
+            (Type::List(Box::new(t())), Type::List(Box::new(Type::Int)), "List recurse"),
+            (
+                Type::List(Box::new(Type::Int)),
+                Type::List(Box::new(Type::String)),
+                "List inner mismatch",
+            ),
+            (Type::List(Box::new(Type::Int)), Type::Set(Box::new(Type::Int)), "List vs Set head"),
+            (Type::Set(Box::new(t())), Type::Set(Box::new(Type::Int)), "Set recurse"),
+            (Type::Keyed(Box::new(t())), Type::Keyed(Box::new(Type::Int)), "Keyed recurse"),
+            (
+                Type::Option(Box::new(t())),
+                Type::Option(Box::new(Type::length())),
+                "Option recurse",
+            ),
+            (
+                Type::Option(Box::new(t())),
+                Type::Enum("Option".to_string()),
+                "Option vs erased Enum (NOT the Applied rule)",
+            ),
+            (
+                Type::Complex(Box::new(t())),
+                Type::Complex(Box::new(Type::dimensionless_scalar())),
+                "Complex recurse",
+            ),
+            (Type::Range(Box::new(t())), Type::Range(Box::new(Type::Int)), "Range recurse"),
+            // Two-inner-Type constructors.
+            (
+                Type::Map(Box::new(Type::String), Box::new(t())),
+                Type::Map(Box::new(Type::String), Box::new(Type::Int)),
+                "Map recurse",
+            ),
+            (
+                Type::Map(Box::new(Type::String), Box::new(Type::Int)),
+                Type::Map(Box::new(Type::Int), Box::new(Type::Int)),
+                "Map key mismatch",
+            ),
+            (field(t(), t()), field(Type::length(), Type::Int), "Field recurse"),
+            (
+                field(Type::Int, Type::Int),
+                field(Type::String, Type::Int),
+                "Field domain mismatch",
+            ),
+            // Function: arity guard + recursion on params and return type.
+            (func(vec![t()], t()), func(vec![Type::Int], Type::String), "Function recurse"),
+            (func(vec![t()], t()), func(vec![Type::Int, Type::Int], Type::Int), "Function arity"),
+            (
+                func(vec![Type::Int], Type::Int),
+                func(vec![Type::String], Type::Int),
+                "Function param mismatch",
+            ),
+            // Quantity-bearing aggregates: shape guards + quantity recursion.
+            (
+                Type::Point { n: 3, quantity: Box::new(t()) },
+                Type::Point { n: 3, quantity: Box::new(Type::length()) },
+                "Point recurse",
+            ),
+            (
+                Type::Point { n: 3, quantity: Box::new(t()) },
+                Type::Point { n: 2, quantity: Box::new(Type::length()) },
+                "Point n guard",
+            ),
+            (
+                Type::Vector { n: 3, quantity: Box::new(t()) },
+                Type::Vector { n: 3, quantity: Box::new(Type::length()) },
+                "Vector recurse",
+            ),
+            (
+                Type::Vector { n: 3, quantity: Box::new(t()) },
+                Type::Vector { n: 2, quantity: Box::new(Type::length()) },
+                "Vector n guard",
+            ),
+            (
+                Type::Tensor { rank: 2, n: 3, quantity: Box::new(t()) },
+                Type::Tensor { rank: 2, n: 3, quantity: Box::new(Type::length()) },
+                "Tensor recurse",
+            ),
+            (
+                Type::Tensor { rank: 2, n: 3, quantity: Box::new(t()) },
+                Type::Tensor { rank: 3, n: 3, quantity: Box::new(Type::length()) },
+                "Tensor rank guard",
+            ),
+            (
+                Type::Tensor { rank: 2, n: 3, quantity: Box::new(t()) },
+                Type::Tensor { rank: 2, n: 2, quantity: Box::new(Type::length()) },
+                "Tensor n guard",
+            ),
+            (
+                Type::Matrix { m: 3, n: 3, quantity: Box::new(t()) },
+                Type::Matrix { m: 3, n: 3, quantity: Box::new(Type::length()) },
+                "Matrix recurse",
+            ),
+            (
+                Type::Matrix { m: 3, n: 3, quantity: Box::new(t()) },
+                Type::Matrix { m: 2, n: 3, quantity: Box::new(Type::length()) },
+                "Matrix m guard",
+            ),
+            (
+                Type::Matrix { m: 3, n: 3, quantity: Box::new(t()) },
+                Type::Matrix { m: 3, n: 2, quantity: Box::new(Type::length()) },
+                "Matrix n guard",
+            ),
+            // Union: length guard + arm-by-arm recursion.
+            (
+                Type::Union(vec![t(), Type::Int]),
+                Type::Union(vec![Type::String, Type::Int]),
+                "Union recurse",
+            ),
+            (
+                Type::Union(vec![t()]),
+                Type::Union(vec![Type::Int, Type::Int]),
+                "Union length guard",
+            ),
+            (
+                Type::Union(vec![Type::Int, Type::Int]),
+                Type::Union(vec![Type::Int, Type::String]),
+                "Union arm mismatch",
+            ),
+            // Applied: name + arity guards, element-wise recursion.
+            (
+                result_of(vec![t(), t()]),
+                result_of(vec![Type::length(), Type::String]),
+                "Applied recurse",
+            ),
+            (
+                result_of(vec![t(), t()]),
+                Type::Applied { name: "Either".to_string(), args: vec![Type::Int, Type::Int] },
+                "Applied name guard",
+            ),
+            (result_of(vec![t(), t()]), result_of(vec![Type::Int]), "Applied arity guard"),
+            // Erased-subject rule — the arm the whole #5685 fix turns on.
+            (
+                result_of(vec![t(), t()]),
+                Type::Enum("Result".to_string()),
+                "Applied vs erased Enum, same name",
+            ),
+            (
+                result_of(vec![t(), t()]),
+                Type::Enum("Option".to_string()),
+                "Applied vs erased Enum, different name",
+            ),
+            (
+                Type::Option(Box::new(t())),
+                result_of(vec![Type::length(), Type::String]),
+                "Option param vs Applied Result arg (the mis-resolution)",
+            ),
+            // Projection: member guard + base recursion.
+            (proj(t(), "Out"), proj(Type::Int, "Out"), "Projection recurse"),
+            (proj(t(), "Out"), proj(Type::Int, "In"), "Projection member guard"),
+            // Catch-all leaves.
+            (Type::Int, Type::Int, "catch-all equal"),
+            (Type::Int, Type::String, "catch-all unequal"),
+            (Type::length(), Type::length(), "catch-all equal Scalar"),
+            (
+                Type::TraitObject("Load".to_string()),
+                Type::StructureRef("PointLoad".to_string()),
+                "catch-all TraitObject vs StructureRef",
+            ),
+        ];
+
+        for (param, arg, label) in &corpus {
+            assert_eq!(
+                heads_unifiable(param, arg),
+                reify_expr::heads_unifiable(param, arg),
+                "heads_unifiable DRIFT on `{label}`: the canonical copy here and the \
+                 mirror in crates/reify-expr/src/lib.rs disagree for \
+                 param={param:?}, arg={arg:?}. Re-sync the two verbatim — a \
+                 divergence here means compile-time and eval-time overload \
+                 selection resolve the same call to different overloads."
+            );
+        }
+    }
+
+    /// The differential above is only worth its length if the corpus actually
+    /// splits — a corpus where every pair returned `true` (or every pair
+    /// `false`) would agree under any pair of implementations, including two
+    /// that had drifted. This asserts both verdicts are represented, so the
+    /// guard cannot silently degenerate into a tautology as the corpus is
+    /// edited.
+    #[test]
+    fn sync_drift_check_heads_unifiable_corpus_exercises_both_verdicts() {
+        let t = Type::TypeParam("T".to_string());
+        assert!(
+            heads_unifiable(&t, &Type::Int),
+            "corpus must contain at least one head-MATCH pair"
+        );
+        assert!(
+            !heads_unifiable(&Type::Int, &Type::String),
+            "corpus must contain at least one head-MISMATCH pair"
+        );
+    }
 }
