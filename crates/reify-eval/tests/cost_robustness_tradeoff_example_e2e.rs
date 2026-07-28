@@ -19,11 +19,11 @@
 //!     the SHIPPED `examples/cost_robustness_tradeoff.ri` from disk and evals its
 //!     three structures (λ=1.0, λ=0.5, λ=0.0 over the same Money cost and
 //!     two-sided `1mm < thickness < 25mm` box, Chebyshev centre 13mm). Asserts
-//!     the strict ordering t(λ=1) < t(λ=0.5) < t(λ=0), t(λ=0) near the 13mm
-//!     centre, and zero error-severity diagnostics. See the example file's own
-//!     header comment for why t(λ=1) is checked only via the ordering (not
-//!     pinned to the exact 1mm boundary) at this `.ri`/eval layer — that precise
-//!     invariant is verified at the solver level in
+//!     zero error-severity diagnostics, every λ strictly inside the box, and —
+//!     per task #5715 — that all three λ COINCIDE at this layer. It formerly
+//!     asserted a strict ordering; that assertion rested on the pre-#5618 fixed
+//!     seed and never proved λ drives the blend. The real λ contract is verified
+//!     seed-independently at the solver level in
 //!     `cost_robustness_tradeoff_blend.rs` with explicit tight `AutoParam` bounds.
 
 use reify_constraints::DimensionalSolver;
@@ -129,9 +129,14 @@ fn tradeoff_scope_suppresses_floor_diagnostic_sibling_does_not() {
     );
 }
 
-/// (b) HEADLINE (leaf signal): the shipped `examples/cost_robustness_tradeoff.ri`
-/// sweeps λ=1.0 → 0.5 → 0.0 across three structures sharing the same Money cost
-/// and two-sided `1mm < thickness < 25mm` box, reading boundary → blend → centre.
+/// (b) the shipped `examples/cost_robustness_tradeoff.ri` sweeps λ=1.0 → 0.5 → 0.0
+/// across three structures sharing the same Money cost and two-sided
+/// `1mm < thickness < 25mm` box.
+///
+/// NOT a λ signal — see the characterization pin below and task #5715. Both the
+/// λ=1 and λ=0 anchors land on the box midpoint at this layer, so the sweep is
+/// observably flat here; the λ contract is proven in
+/// `reify-constraints/tests/cost_robustness_tradeoff_blend.rs`.
 ///
 /// Reads the example from disk (not a fixture copy) — mirrors
 /// `continuous_cost_min_example_e2e.rs`'s disk-path convention; compile-level
@@ -180,24 +185,57 @@ fn example_lambda_sweep_boundary_blend_centre() {
     let t_blend = thickness_si("TradeoffBlend"); // λ=0.5
     let t_robust = thickness_si("TradeoffRobust"); // λ=0.0
 
-    // ── λ=0 near the 13mm interior centre (Chebyshev centre of [1mm, 25mm]) ────
-    // This anchor has an INTERIOR optimum (no constraint-boundary kink to cross),
-    // so — unlike the λ=1 cost anchor (see the example file's header comment) —
-    // it converges cleanly and reliably to the analytic target at this layer too.
-    assert!(
-        (t_robust - 0.013).abs() < 1e-4,
-        "TradeoffRobust (λ=0) should resolve near the 13mm interior centre, got {:.6e} m",
-        t_robust
-    );
+    // ── all three λ resolve strictly INSIDE the open box (1mm, 25mm) ───────────
+    // Layer-appropriate and genuinely load-bearing: the example compiles, solves,
+    // and every λ lands on a finite value satisfying both user constraints.
+    for (label, t) in [("λ=1.0", t_pure_cost), ("λ=0.5", t_blend), ("λ=0.0", t_robust)] {
+        assert!(
+            t.is_finite() && t > 0.001 && t < 0.025,
+            "{label} thickness should be finite and strictly inside (1mm, 25mm), got {:.6e} m",
+            t
+        );
+    }
 
-    // ── STRICT ordering: boundary → blend → centre ──────────────────────────────
-    // The reliable, solver-independent signal at this layer (see the example
-    // file's header comment for why t(λ=1) is not ALSO pinned to the exact 1mm
-    // boundary here): λ=1 gives the smallest thickness, λ=0 the largest, λ=0.5
-    // strictly between — proving λ actually drives the blend end-to-end.
+    // ── CHARACTERIZATION PIN (task #5715): all three λ coincide at this layer ──
+    //
+    // This test formerly asserted the strict ordering t(λ=1) < t(λ=0.5) < t(λ=0),
+    // calling it "the reliable, solver-independent signal at this layer". It was
+    // neither reliable nor solver-independent, and it never proved λ drives the
+    // blend. Two compounding facts, BOTH structural:
+    //
+    //  1. `.ri`-compiled autos always get `bounds: None` (engine_eval.rs), so the
+    //     floor-free λ=1 cost anchor cannot reach the strict `>` boundary — the
+    //     constraint penalty has zero slope at its own root — and
+    //     `solve_core_with_sd_tolerance`'s drift-fallback returns THE SEED. The
+    //     example's header comment always said so: the λ=1 value was never 1mm.
+    //  2. For a two-sided box `lo < t < hi` the constraint-derived seed midpoint
+    //     `(lo+hi)/2` IS the Chebyshev centre — the λ=0 target — BY CONSTRUCTION.
+    //     No choice of numbers separates them.
+    //
+    // So λ=1 returns the seed midpoint and λ=0 returns the Chebyshev centre, and
+    // those are one point (13mm here). The old ordering passed only because the
+    // PRE-#5618 seed was a FIXED 10mm that happened to sit below 13mm; task #5618
+    // derived the seed from the constraint box, the two collapsed, and the
+    // coincidence that had been carrying the assertion disappeared. The blend is
+    // not broken — its two anchors genuinely coincide at this layer.
+    //
+    // The λ contract itself is verified rigorously and seed-independently at the
+    // SOLVER level in `reify-constraints/tests/cost_robustness_tradeoff_blend.rs`
+    // (λ=1 → true 1mm boundary, λ=0 → 2.5mm centre, λ=0.5 strictly between), which
+    // deliberately picks bounds whose midpoint matches NEITHER target so a pass
+    // "can only come from the solver actually reaching the target, never from a
+    // seed/target coincidence". Those 3 tests are green. Nothing is uncovered here.
+    //
+    // Pinned as equality rather than deleted so this stays a tripwire: when #5715
+    // gives the λ dial a real `.ri`-layer signal, this assertion FAILS and whoever
+    // lands it restores an ordering check that actually means something.
+    let spread = t_pure_cost.max(t_blend).max(t_robust)
+        - t_pure_cost.min(t_blend).min(t_robust);
     assert!(
-        t_pure_cost < t_blend && t_blend < t_robust,
-        "expected strict ordering t(λ=1) < t(λ=0.5) < t(λ=0): got t(λ=1)={:.6e}, \
+        spread < 1e-9,
+        "#5715 pins all three λ as coincident at the .ri layer (both anchors land on \
+         the 13mm box midpoint). A nonzero spread means λ became observable here — \
+         good news: replace this pin with a real ordering assertion. got t(λ=1)={:.6e}, \
          t(λ=0.5)={:.6e}, t(λ=0)={:.6e}",
         t_pure_cost,
         t_blend,
