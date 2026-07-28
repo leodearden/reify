@@ -675,9 +675,17 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     # mislabelled-but-recoverable requeue. Defaulting to 75 lets either repo
     # land first. (Tests: Block Q H11a/H11b, H12a/H12b.)
     #
-    # The rc is only HALF the discriminant, and it is the half only a machine
-    # reads. The other half is the LANE_LOCK_CONTENDED stderr token emitted by
-    # both arms below UNCONDITIONALLY -- see there for why.
+    # The rc is only HALF the discriminant, and it is the half only a MACHINE
+    # reads. The other half is the `LANE_LOCK_CONTENDED:` token both refusal
+    # arms below prefix onto their first `err` line, for the HUMAN reading
+    # logs. That token is emitted UNCONDITIONALLY -- deliberately NOT gated on
+    # --distinct-lock-refusal-rc -- because a token that appeared only once the
+    # dark-factory arm had landed would stay dark for exactly the window most
+    # likely to need triage. Ungated, `grep LANE_LOCK_CONTENDED` separates lock
+    # contention from disk pressure on an unpatched fleet TODAY: during the
+    # 2026-07-24..26 livelock (esc-5556-1) every operator-facing signal said
+    # "disk pressure" while the mount sat at 25% used / 1% inodes, and
+    # preventing exactly that is what the token is for. (Tests: Block Q H13.)
     LANE_LOCK_REFUSAL_RC=75
     if [ -n "$DISTINCT_LOCK_REFUSAL_RC" ]; then
         LANE_LOCK_REFUSAL_RC=77
@@ -722,14 +730,14 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     elif [ "$LANE_LOCK_WAIT" = "0" ]; then
         if ! flock -n 9; then
             exec 9>&-
-            err "Lane lock held by a live consumer (flock -n failed): $LANE_LOCK"
+            err "LANE_LOCK_CONTENDED: Lane lock held by a live consumer (flock -n failed): $LANE_LOCK"
             err "Refusing to reseed an ASSIGNED lane (inv.2: one consumer per lane at a time)."
             exit "$LANE_LOCK_REFUSAL_RC"
         fi
     else
         if ! flock -w "$LANE_LOCK_WAIT" 9; then
             exec 9>&-
-            err "Lane lock still held by a live consumer after waiting ${LANE_LOCK_WAIT}s (flock -w timed out): $LANE_LOCK"
+            err "LANE_LOCK_CONTENDED: Lane lock still held by a live consumer after waiting ${LANE_LOCK_WAIT}s (flock -w timed out): $LANE_LOCK"
             err "Refusing to reseed an ASSIGNED lane (inv.2: one consumer per lane at a time)."
             exit "$LANE_LOCK_REFUSAL_RC"
         fi
