@@ -1,3 +1,42 @@
+; NOTE: This corpus is developer documentation for the CST shape of
+; imaginary_literal (j-suffix on a number, task 3947). It is NOT run by
+; CI — no gate, hook, or workflow ever invokes `tree-sitter test`
+; (scripts/verify.sh calls scripts/tree-sitter-generate.sh only, as a
+; Rust-build prerequisite). Green-ness must be checked MANUALLY:
+;   bash scripts/tree-sitter-generate.sh
+;   cd tree-sitter-reify && tree-sitter test
+; (without the generate step, `tree-sitter test` aborts with `Error: No
+; language found` — the generated parser is gitignored).
+;
+; The `(UNEXPECTED '\n')` token in the "no-whitespace: 2 j ..." case
+; below is a GLR error-recovery rendering artifact, not a language
+; contract. It was re-pinned under #5492 after drifting from
+; `(UNEXPECTED 'j')` (originally pinned by #3947) under a later
+; grammar/scanner change. A future grammar change — e.g. #5392, which
+; reworks the quantity-literal juxtaposition seam — may legitimately
+; move it again. If it moves: re-pin from the `tree-sitter test` diff
+; ONLY. Do NOT use `tree-sitter parse` output as the source of the pin —
+; it renders errors differently (a nested `(ERROR (ERROR))` shape here,
+; vs. this harness's `(UNEXPECTED ...)` form) and copying it in will
+; produce a pin that fails `tree-sitter test`. Do not treat a
+; detail-only move as a regression, and do not guess the token.
+;
+; What must NEVER change is the SEMANTIC invariant: `2 j`
+; (space-separated) is REJECTED and never forms an imaginary_literal.
+; That invariant is pinned independently — and CI-exercised via
+; `cargo test` — by guard_g_space_separated_j_is_rejected in
+; tree-sitter-reify/tests/imaginary_literal_grammar_tests.rs. If THAT
+; guard ever goes red, the rejection itself broke: escalate, do not
+; re-pin.
+;
+; CAUTION: a `:error` suffix appended to a test-NAME line (as seen in
+; auto_operand_rejection.txt) is decorative test-name text, NOT the
+; tree-sitter `:error` attribute — the real attribute requires `:error`
+; on its own line under the name and makes the harness ignore the
+; expected tree entirely. The cases in this file deliberately keep
+; exact-tree pins instead, so a case like "2 j must NOT form an
+; imaginary_literal" cannot silently start passing for the wrong reason.
+
 ================================================================================
 imaginary literal: decimal mantissa (4.1j)
 ================================================================================
@@ -129,7 +168,7 @@ structure S {
       name: (identifier)
       value: (number_literal))
     (ERROR
-      (UNEXPECTED 'j'))))
+      (UNEXPECTED '\n'))))
 
 ================================================================================
 composition: 2j + 3j forms a binary_expression over two imaginary_literals
