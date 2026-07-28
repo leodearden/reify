@@ -976,47 +976,22 @@ fn rounded_corner_dims(
     let two = CompiledExpr::literal(Value::Real(2.0), reify_core::Type::dimensionless_scalar());
 
     // two_r = corner_r * 2
-    let two_r = CompiledExpr::binop(
-        BinOp::Mul,
-        corner_r.clone(),
-        two,
-        corner_r.result_type.clone(),
-    );
+    let two_r = CompiledExpr::binop(BinOp::Mul, corner_r.clone(), two, corner_r.result_type.clone());
     // depth_minus_2r = depth - 2*corner_r ; width_minus_2r = width - 2*corner_r
-    let depth_minus_2r = CompiledExpr::binop(
-        BinOp::Sub,
-        depth.clone(),
-        two_r.clone(),
-        depth.result_type.clone(),
-    );
+    let depth_minus_2r =
+        CompiledExpr::binop(BinOp::Sub, depth.clone(), two_r.clone(), depth.result_type.clone());
     let width_minus_2r =
         CompiledExpr::binop(BinOp::Sub, width.clone(), two_r, width.result_type.clone());
 
     // half_width_minus_r = width/2 - corner_r ; half_depth_minus_r = depth/2 - corner_r
-    let half_width = CompiledExpr::binop(
-        BinOp::Mul,
-        width.clone(),
-        half.clone(),
-        width.result_type.clone(),
-    );
-    let half_depth = CompiledExpr::binop(
-        BinOp::Mul,
-        depth.clone(),
-        half.clone(),
-        depth.result_type.clone(),
-    );
-    let half_width_minus_r = CompiledExpr::binop(
-        BinOp::Sub,
-        half_width,
-        corner_r.clone(),
-        width.result_type.clone(),
-    );
-    let half_depth_minus_r = CompiledExpr::binop(
-        BinOp::Sub,
-        half_depth,
-        corner_r.clone(),
-        depth.result_type.clone(),
-    );
+    let half_width =
+        CompiledExpr::binop(BinOp::Mul, width.clone(), half.clone(), width.result_type.clone());
+    let half_depth =
+        CompiledExpr::binop(BinOp::Mul, depth.clone(), half.clone(), depth.result_type.clone());
+    let half_width_minus_r =
+        CompiledExpr::binop(BinOp::Sub, half_width, corner_r.clone(), width.result_type.clone());
+    let half_depth_minus_r =
+        CompiledExpr::binop(BinOp::Sub, half_depth, corner_r.clone(), depth.result_type.clone());
 
     RoundedCornerDims {
         width_minus_2r,
@@ -2434,13 +2409,8 @@ fn compile_geometry_call_inner(
         //   4x cylinder(corner_r, height), each Translated to a corner centre
         //   (±(w/2-r), ±(d/2-r), dz=-(height/2)) — same dz shape as cylinder_centered.
         "rounded_box" => {
-            if !check_arg_count_exact(
-                "rounded_box",
-                compiled_args.len(),
-                4,
-                expr.span,
-                diagnostics,
-            ) {
+            if !check_arg_count_exact("rounded_box", compiled_args.len(), 4, expr.span, diagnostics)
+            {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -2552,8 +2522,7 @@ fn compile_geometry_call_inner(
 
             let dims = rounded_corner_dims(&width, &depth, &corner_r);
             // dz (all 4 corner circles) = 0 — planar, no z-offset.
-            let dz =
-                CompiledExpr::literal(Value::Real(0.0), reify_core::Type::dimensionless_scalar());
+            let dz = CompiledExpr::literal(Value::Real(0.0), reify_core::Type::dimensionless_scalar());
 
             // Rect A: rectangle(width, depth-2r)
             let body_a = CompiledGeometryOp::Profile {
@@ -3965,9 +3934,8 @@ mod tests {
                 diagnostics
             );
             assert!(
-                !diagnostics
-                    .iter()
-                    .any(|d| d.code == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)),
+                !diagnostics.iter().any(|d| d.code
+                    == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)),
                 "no too-deep diagnostic without pre-seeded depth, got: {:?}",
                 diagnostics
             );
@@ -4125,7 +4093,9 @@ mod tests {
                 "deeply-nested geometry must return None + an \
                  ExpressionNestingTooDeep diagnostic on a 2 MB stack (post-fix)"
             ),
-            Err(_) => panic!("the 2 MB compile thread panicked instead of returning cleanly"),
+            Err(_) => panic!(
+                "the 2 MB compile thread panicked instead of returning cleanly"
+            ),
         }
     }
 

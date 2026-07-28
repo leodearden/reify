@@ -46,8 +46,8 @@
 use super::*;
 
 use crate::datum_projection::{
-    DATUM_PROJECTION_MEMBERS, DatumProjectionResolution, datum_projection_result_type,
-    datum_projection_unavailable_hint,
+    datum_projection_result_type, datum_projection_unavailable_hint, DatumProjectionResolution,
+    DATUM_PROJECTION_MEMBERS,
 };
 
 /// Return a `CompiledExpr` poison literal (`Value::Undef, Type::Error`) for
@@ -359,10 +359,7 @@ fn coerce_zero_operand(
     {
         return (
             CompiledExpr::literal(
-                Value::Scalar {
-                    si_value: 0.0,
-                    dimension,
-                },
+                Value::Scalar { si_value: 0.0, dimension },
                 Type::Scalar { dimension },
             ),
             right,
@@ -379,10 +376,7 @@ fn coerce_zero_operand(
         return (
             left,
             CompiledExpr::literal(
-                Value::Scalar {
-                    si_value: 0.0,
-                    dimension,
-                },
+                Value::Scalar { si_value: 0.0, dimension },
                 Type::Scalar { dimension },
             ),
         );
@@ -432,10 +426,9 @@ fn const_numeric_value(expr: &CompiledExpr) -> Option<f64> {
                 _ => None,
             }
         }
-        CompiledExprKind::UnOp {
-            op: UnOp::Neg,
-            operand,
-        } => const_numeric_value(operand).map(|v| -v),
+        CompiledExprKind::UnOp { op: UnOp::Neg, operand } => {
+            const_numeric_value(operand).map(|v| -v)
+        }
         _ => None,
     }
 }
@@ -489,9 +482,7 @@ fn emit_comparison_operand_diagnostics(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     use reify_ir::BinOp;
-    use type_compat::{
-        format_dimension_mismatch_diagnostic, is_equatable_kind, is_orderable_scalar,
-    };
+    use type_compat::{format_dimension_mismatch_diagnostic, is_equatable_kind, is_orderable_scalar};
 
     // Gradualism: Error (poison) or TypeParam (unresolved) → no secondary diagnostic.
     // Emitting a secondary kind error on a poisoned or not-yet-resolved operand would
@@ -567,7 +558,9 @@ fn emit_comparison_operand_diagnostics(
             //
             // Consequence: genuine dimensionless-vs-dimensioned bugs like
             // `efficiency > 5mm` (Real vs Scalar[Length]) now correctly error.
-            (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd }) if ld != rd => {
+            (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd })
+                if ld != rd =>
+            {
                 diagnostics.push(format_dimension_mismatch_diagnostic(
                     "comparison",
                     left_ty,
@@ -578,7 +571,8 @@ fn emit_comparison_operand_diagnostics(
             // Dimensioned Scalar vs non-dimensionless Int (e.g. mass > 5).
             // The β zero-coercion (coerce_zero_operand) already rewrites literal `0` to
             // match the sibling's dimension, so `mass > 0` never reaches this arm.
-            (Type::Scalar { dimension }, Type::Int) | (Type::Int, Type::Scalar { dimension })
+            (Type::Scalar { dimension }, Type::Int)
+            | (Type::Int, Type::Scalar { dimension })
                 if !dimension.is_dimensionless() =>
             {
                 diagnostics.push(
@@ -664,23 +658,21 @@ fn reject_auto_in_arg_list(
     position: impl FnOnce() -> String,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledExpr> {
-    args.iter()
-        .find(|a| matches!(a.kind, reify_ast::ExprKind::Auto { .. }))
-        .map(|auto_arg| {
-            make_poison_literal(
-                diagnostics,
-                Diagnostic::error(format!(
-                    "auto is not allowed in {}; to expose a free parameter, \
+    args.iter().find(|a| matches!(a.kind, reify_ast::ExprKind::Auto { .. })).map(|auto_arg| {
+        make_poison_literal(
+            diagnostics,
+            Diagnostic::error(format!(
+                "auto is not allowed in {}; to expose a free parameter, \
                  declare `param <name> = auto` at a binding site instead",
-                    position(),
-                ))
-                .with_code(DiagnosticCode::AutoNotAtBindingSite)
-                .with_label(DiagnosticLabel::new(
-                    auto_arg.span,
-                    "auto not allowed at this operand position",
-                )),
-            )
-        })
+                position(),
+            ))
+            .with_code(DiagnosticCode::AutoNotAtBindingSite)
+            .with_label(DiagnosticLabel::new(
+                auto_arg.span,
+                "auto not allowed at this operand position",
+            )),
+        )
+    })
 }
 
 /// Emit the cross-sub geometry-access diagnostic via `make_poison_literal` (task-3397).
@@ -856,10 +848,7 @@ fn try_resolve_cross_sub_geometry_value_ref(
         // so the bare-let drop site in entity.rs can recognise and silently drop it
         // (V0.1 no-op with a warning).  Safe only at bare-let top-level; the
         // `unreachable!()` in eval_expr guards this invariant.
-        Some(CompiledExpr::cross_sub_geometry_ref(
-            scoped_id,
-            Type::Geometry,
-        ))
+        Some(CompiledExpr::cross_sub_geometry_ref(scoped_id, Type::Geometry))
     } else {
         // Forward-declared child (is_forward_declared, !has_realization):
         // emit ValueCellRef so constraint expressions can be evaluated by the
@@ -1075,6 +1064,7 @@ const STRUCTURAL_QUERY_ACCESSORS: &[&str] = &["children", "members", "descendant
 /// If a sibling wildcard kind is ever added (e.g., `"Occurrence"` gains first-class
 /// wildcard status), add it here alongside this constant rather than embedding
 /// another bare string literal at the call site.
+///
 /// `pub(crate)` so `member_path::resolve_hop` — the single member-shape
 /// authority (task 5424) — applies the same wildcard skip rather than
 /// re-embedding the bare `"Structure"` literal.
@@ -1402,7 +1392,9 @@ fn compile_expr_guarded_with_expected_inner(
             // so the boundary cannot drift between literal lowering and annotation
             // lowering.
             match reify_ast::classify_number_literal(*value, *is_real) {
-                reify_ast::NumberClass::Int(i) => CompiledExpr::literal(Value::Int(i), Type::Int),
+                reify_ast::NumberClass::Int(i) => {
+                    CompiledExpr::literal(Value::Int(i), Type::Int)
+                }
                 reify_ast::NumberClass::Real(f) => {
                     CompiledExpr::literal(Value::Real(f), Type::dimensionless_scalar())
                 }
@@ -1425,19 +1417,35 @@ fn compile_expr_guarded_with_expected_inner(
                 | reify_ast::UnitExpr::Div(..)
                 | reify_ast::UnitExpr::Pow(..)) => {
                     match scope.unit_registry {
-                        Some(registry) => match resolve_unit_expr(compound, registry, expr.span) {
-                            Ok((factor, dimension)) => {
-                                let si_value = value * factor;
-                                if !si_value.is_finite() {
-                                    diagnostics.push(
-                                        Diagnostic::error(
-                                            "overflow in quantity literal: result is not finite"
-                                                .to_string(),
-                                        )
-                                        .with_label(
-                                            DiagnosticLabel::new(expr.span, "non-finite result"),
-                                        ),
+                        Some(registry) => {
+                            match resolve_unit_expr(compound, registry, expr.span) {
+                                Ok((factor, dimension)) => {
+                                    let si_value = value * factor;
+                                    if !si_value.is_finite() {
+                                        diagnostics.push(
+                                            Diagnostic::error(
+                                                "overflow in quantity literal: result is not finite"
+                                                    .to_string(),
+                                            )
+                                            .with_label(DiagnosticLabel::new(
+                                                expr.span,
+                                                "non-finite result",
+                                            )),
+                                        );
+                                        return CompiledExpr::literal(
+                                            Value::Undef,
+                                            Type::Scalar {
+                                                dimension: DimensionVector::DIMENSIONLESS,
+                                            },
+                                        );
+                                    }
+                                    return CompiledExpr::literal(
+                                        Value::Scalar { si_value, dimension },
+                                        Type::Scalar { dimension },
                                     );
+                                }
+                                Err(e) => {
+                                    diagnostics.push(unit_resolve_error_to_diagnostic(&e));
                                     return CompiledExpr::literal(
                                         Value::Undef,
                                         Type::Scalar {
@@ -1445,24 +1453,8 @@ fn compile_expr_guarded_with_expected_inner(
                                         },
                                     );
                                 }
-                                return CompiledExpr::literal(
-                                    Value::Scalar {
-                                        si_value,
-                                        dimension,
-                                    },
-                                    Type::Scalar { dimension },
-                                );
                             }
-                            Err(e) => {
-                                diagnostics.push(unit_resolve_error_to_diagnostic(&e));
-                                return CompiledExpr::literal(
-                                    Value::Undef,
-                                    Type::Scalar {
-                                        dimension: DimensionVector::DIMENSIONLESS,
-                                    },
-                                );
-                            }
-                        },
+                        }
                         None => {
                             // Defensive path: compound units require a unit registry.
                             // This branch is unreachable from entity/param scopes (which
@@ -1529,7 +1521,9 @@ fn compile_expr_guarded_with_expected_inner(
                 }
             }
         }
-        reify_ast::ExprKind::BoolLiteral(b) => CompiledExpr::literal(Value::Bool(*b), Type::Bool),
+        reify_ast::ExprKind::BoolLiteral(b) => {
+            CompiledExpr::literal(Value::Bool(*b), Type::Bool)
+        }
         reify_ast::ExprKind::StringLiteral(s) => {
             CompiledExpr::literal(Value::String(s.clone()), Type::String)
         }
@@ -1546,9 +1540,7 @@ fn compile_expr_guarded_with_expected_inner(
             // Intercept `none` before scope lookup — it's a language-level keyword.
             // Default inner type is Real; contextual override happens at param/let sites.
             if name == "none" {
-                return CompiledExpr::option_none(Type::Option(Box::new(
-                    Type::dimensionless_scalar(),
-                )));
+                return CompiledExpr::option_none(Type::Option(Box::new(Type::dimensionless_scalar())));
             }
             match scope.resolve(name) {
                 Some((id, ty)) => CompiledExpr::value_ref(id.clone(), ty.clone()),
@@ -1762,46 +1754,46 @@ fn compile_expr_guarded_with_expected_inner(
                         && let Type::Scalar { dimension } = compiled_left.result_type
                         && !dimension.is_dimensionless()
                     {
-                        // Extract a signed integer literal from the right AST node.
-                        let int_exp: Option<i32> = match &right.kind {
-                            reify_ast::ExprKind::NumberLiteral {
-                                value,
-                                is_real: false,
-                            } => Some(*value as i32),
-                            reify_ast::ExprKind::UnOp {
-                                op: unary_op,
-                                operand,
-                            } if unary_op.as_str() == "-" => match &operand.kind {
+                            // Extract a signed integer literal from the right AST node.
+                            let int_exp: Option<i32> = match &right.kind {
                                 reify_ast::ExprKind::NumberLiteral {
                                     value,
                                     is_real: false,
-                                } => Some(-(*value as i32)),
-                                _ => None,
-                            },
-                            _ => None,
-                        };
-                        if let Some(n) = int_exp {
-                            // Guard: exponent must fit in i8 for DimensionVector::pow(i8).
-                            // Mirrors units.rs:680-681 (`i8::try_from` pattern).
-                            // Lossy `as i8` truncation (e.g. 256 as i8 == 0) would silently
-                            // produce a wrong dimension with no diagnostic — exactly the
-                            // silent-wrong-dimension class "errors must be noisy" warns about.
-                            // (task-4106 / E_EXPONENT_OUT_OF_RANGE)
-                            match i8::try_from(n) {
-                                Ok(n_i8) => {
-                                    let scaled = dimension.pow(n_i8);
-                                    result_type = if scaled.is_dimensionless() {
-                                        // `5mm ^ 0` or any Scalar<Q^0> collapses to Real,
-                                        // matching the existing BinOp::Div dimensionless→Real
-                                        // convention.
-                                        Type::dimensionless_scalar()
-                                    } else {
-                                        Type::Scalar { dimension: scaled }
-                                    };
+                                } => Some(*value as i32),
+                                reify_ast::ExprKind::UnOp { op: unary_op, operand }
+                                    if unary_op.as_str() == "-" =>
+                                {
+                                    match &operand.kind {
+                                        reify_ast::ExprKind::NumberLiteral {
+                                            value,
+                                            is_real: false,
+                                        } => Some(-(*value as i32)),
+                                        _ => None,
+                                    }
                                 }
-                                Err(_) => {
-                                    result_type =
-                                        make_poison_type(
+                                _ => None,
+                            };
+                            if let Some(n) = int_exp {
+                                // Guard: exponent must fit in i8 for DimensionVector::pow(i8).
+                                // Mirrors units.rs:680-681 (`i8::try_from` pattern).
+                                // Lossy `as i8` truncation (e.g. 256 as i8 == 0) would silently
+                                // produce a wrong dimension with no diagnostic — exactly the
+                                // silent-wrong-dimension class "errors must be noisy" warns about.
+                                // (task-4106 / E_EXPONENT_OUT_OF_RANGE)
+                                match i8::try_from(n) {
+                                    Ok(n_i8) => {
+                                        let scaled = dimension.pow(n_i8);
+                                        result_type = if scaled.is_dimensionless() {
+                                            // `5mm ^ 0` or any Scalar<Q^0> collapses to Real,
+                                            // matching the existing BinOp::Div dimensionless→Real
+                                            // convention.
+                                            Type::dimensionless_scalar()
+                                        } else {
+                                            Type::Scalar { dimension: scaled }
+                                        };
+                                    }
+                                    Err(_) => {
+                                        result_type = make_poison_type(
                                             diagnostics,
                                             Diagnostic::error(format!(
                                                 "exponent {n} is out of range for dimensioned `^`; \
@@ -1813,32 +1805,32 @@ fn compile_expr_guarded_with_expected_inner(
                                                 "exponent out of range",
                                             )),
                                         );
+                                    }
                                 }
                             }
-                        }
-                        // None case: non-integer exponent on dimensioned base
-                        // (task-3805 / PRD §4.3 / E_NONINT_EXP_ON_DIMENSIONED).
-                        //
-                        // A real-valued literal (is_real:true), a non-literal exponent
-                        // (identifier, expression, etc.) all fall here.  Poison to
-                        // `Type::Error` (anti-cascade) and emit a single diagnostic so
-                        // downstream checks see `Type::Error` and suppress follow-on noise.
-                        if int_exp.is_none() {
-                            result_type = make_poison_type(
-                                diagnostics,
-                                Diagnostic::error(format!(
-                                    "non-integer exponent on dimensioned value `{}`; \
+                            // None case: non-integer exponent on dimensioned base
+                            // (task-3805 / PRD §4.3 / E_NONINT_EXP_ON_DIMENSIONED).
+                            //
+                            // A real-valued literal (is_real:true), a non-literal exponent
+                            // (identifier, expression, etc.) all fall here.  Poison to
+                            // `Type::Error` (anti-cascade) and emit a single diagnostic so
+                            // downstream checks see `Type::Error` and suppress follow-on noise.
+                            if int_exp.is_none() {
+                                result_type = make_poison_type(
+                                    diagnostics,
+                                    Diagnostic::error(format!(
+                                        "non-integer exponent on dimensioned value `{}`; \
                                          only integer-literal exponents are allowed \
                                          (use sqrt for roots)",
-                                    compiled_left.result_type,
-                                ))
-                                .with_code(DiagnosticCode::NonIntegerExponentOnDimensioned)
-                                .with_label(DiagnosticLabel::new(
-                                    right.span,
-                                    "exponent must be an integer literal",
-                                )),
-                            );
-                        }
+                                        compiled_left.result_type,
+                                    ))
+                                    .with_code(DiagnosticCode::NonIntegerExponentOnDimensioned)
+                                    .with_label(DiagnosticLabel::new(
+                                        right.span,
+                                        "exponent must be an integer literal",
+                                    )),
+                                );
+                            }
                     }
 
                     // Int-only guard for modulo (task-3916 / spec §5.1 / E_MODULO_REQUIRES_INT).
@@ -1867,7 +1859,10 @@ fn compile_expr_guarded_with_expected_inner(
                                 compiled_left.result_type, compiled_right.result_type,
                             ))
                             .with_code(DiagnosticCode::ModuloRequiresInt)
-                            .with_label(DiagnosticLabel::new(expr.span, "operands must be Int")),
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "operands must be Int",
+                            )),
                         );
                     }
 
@@ -1893,8 +1888,7 @@ fn compile_expr_guarded_with_expected_inner(
                             // Dimensioned Scalar + Int or Int + Dimensioned Scalar
                             (Type::Scalar { dimension }, Type::Int)
                             | (Type::Int, Type::Scalar { dimension })
-                                if !dimension.is_dimensionless() =>
-                            {
+                            if !dimension.is_dimensionless() => {
                                 diagnostics.push(
                                     Diagnostic::error(format!(
                                         "incompatible types in {}: {} vs {}",
@@ -1996,7 +1990,10 @@ fn compile_expr_guarded_with_expected_inner(
                                     lty,
                                 ))
                                 .with_code(DiagnosticCode::LogicalOperandNotBool)
-                                .with_label(DiagnosticLabel::new(left.span, "expected Bool here")),
+                                .with_label(DiagnosticLabel::new(
+                                    left.span,
+                                    "expected Bool here",
+                                )),
                             );
                         }
                         if right_bad {
@@ -2006,7 +2003,10 @@ fn compile_expr_guarded_with_expected_inner(
                                     rty,
                                 ))
                                 .with_code(DiagnosticCode::LogicalOperandNotBool)
-                                .with_label(DiagnosticLabel::new(right.span, "expected Bool here")),
+                                .with_label(DiagnosticLabel::new(
+                                    right.span,
+                                    "expected Bool here",
+                                )),
                             );
                         }
                     }
@@ -2135,8 +2135,7 @@ fn compile_expr_guarded_with_expected_inner(
                     }
                     (Type::Scalar { dimension }, Type::Int)
                     | (Type::Int, Type::Scalar { dimension })
-                        if !dimension.is_dimensionless() =>
-                    {
+                    if !dimension.is_dimensionless() => {
                         diagnostics.push(
                             Diagnostic::error(format!(
                                 "incompatible types in range: {} vs {}",
@@ -2180,11 +2179,7 @@ fn compile_expr_guarded_with_expected_inner(
                 result_type,
             )
         }
-        reify_ast::ExprKind::FunctionCall {
-            name,
-            args,
-            arg_names,
-        } => {
+        reify_ast::ExprKind::FunctionCall { name, args, arg_names } => {
             // ── task 3808 (δ): semantic gate — reject `auto` in function-call args ──
             // Named-arg `auto` (both strict `ExprKind::Auto { free: false }` and free
             // `ExprKind::Auto { free: true }`) is valid only at a BINDING SITE (sub
@@ -2234,7 +2229,10 @@ fn compile_expr_guarded_with_expected_inner(
                          constraint inside a purpose body",
                         name
                     ))
-                    .with_label(DiagnosticLabel::new(expr.span, "intrinsic used here"))
+                    .with_label(DiagnosticLabel::new(
+                        expr.span,
+                        "intrinsic used here",
+                    ))
                     .with_code(DiagnosticCode::DeterminacyIntrinsicScope),
                 );
             }
@@ -2273,7 +2271,9 @@ fn compile_expr_guarded_with_expected_inner(
             // guard) — user definitions take precedence.
             //
             // PRD §9: lambda/value-predicate 2nd arg is OUT OF SCOPE for v1.
-            if name == "filter" && args.len() == 2 && !functions.iter().any(|f| f.name == "filter")
+            if name == "filter"
+                && args.len() == 2
+                && !functions.iter().any(|f| f.name == "filter")
             {
                 let arg1 = &args[1];
                 if let reify_ast::ExprKind::Ident(trait_name) = &arg1.kind {
@@ -2347,7 +2347,10 @@ fn compile_expr_guarded_with_expected_inner(
                                  as the 2nd arg to filter()",
                                 trait_name
                             ))
-                            .with_label(DiagnosticLabel::new(arg1.span, "not a known trait"))
+                            .with_label(DiagnosticLabel::new(
+                                arg1.span,
+                                "not a known trait",
+                            ))
                             .with_code(DiagnosticCode::UnresolvedTrait),
                         );
                     }
@@ -2566,9 +2569,15 @@ fn compile_expr_guarded_with_expected_inner(
                             .enumerate()
                             .filter(|(_, arg)| !is_empty_coll_literal(arg))
                             .all(|(i, _)| {
-                                let compiled_type = &compiled[i].as_ref().unwrap().result_type;
+                                let compiled_type =
+                                    &compiled[i].as_ref().unwrap().result_type;
                                 let mut tmp = std::collections::HashMap::new();
-                                type_compat::unify(&f.params[i].1, compiled_type, &mut tmp).is_ok()
+                                type_compat::unify(
+                                    &f.params[i].1,
+                                    compiled_type,
+                                    &mut tmp,
+                                )
+                                .is_ok()
                             })
                     })
                     .copied()
@@ -2631,8 +2640,10 @@ fn compile_expr_guarded_with_expected_inner(
                     if !is_empty_coll_literal(arg) {
                         continue;
                     }
-                    let param_type_subst =
-                        type_resolution::substitute_type_params(&candidate.params[i].1, &subst);
+                    let param_type_subst = type_resolution::substitute_type_params(
+                        &candidate.params[i].1,
+                        &subst,
+                    );
 
                     // Classify this empty-coll arg via the 3-state helper and
                     // act on the result directly — no duplicate pattern matching.
@@ -2745,7 +2756,8 @@ fn compile_expr_guarded_with_expected_inner(
                 // as a graceful fallback so compilation can continue.
                 for (call_idx, arg_name) in arg_names.iter().enumerate() {
                     if let Some(pname) = arg_name
-                        && let Some(pidx) = params.iter().position(|(n, _)| *n == pname.as_str())
+                        && let Some(pidx) =
+                            params.iter().position(|(n, _)| *n == pname.as_str())
                     {
                         if param_arg[pidx].is_some() {
                             diagnostics.push(
@@ -2794,7 +2806,8 @@ fn compile_expr_guarded_with_expected_inner(
                     Vec::with_capacity(compiled_args.len());
                 for (pidx, (pname, _)) in params.iter().enumerate() {
                     if let Some(call_idx) = param_arg[pidx] {
-                        ordered_args.push(((*pname).to_string(), compiled_args[call_idx].clone()));
+                        ordered_args
+                            .push(((*pname).to_string(), compiled_args[call_idx].clone()));
                     }
                 }
                 // Lenient fallback: unknown named args (no matching param)
@@ -2927,12 +2940,12 @@ fn compile_expr_guarded_with_expected_inner(
                                 );
                                 return make_poison_literal(
                                     diagnostics,
-                                    Diagnostic::error(message).with_code(code).with_label(
-                                        DiagnosticLabel::new(
+                                    Diagnostic::error(message)
+                                        .with_code(code)
+                                        .with_label(DiagnosticLabel::new(
                                             expr.span,
                                             "conflicting type argument",
-                                        ),
-                                    ),
+                                        )),
                                 );
                             }
                         }
@@ -2999,7 +3012,13 @@ fn compile_expr_guarded_with_expected_inner(
                         // Deprecation check: mirror the Resolved arm — warn if the
                         // padded function is @deprecated.
                         if let Some(msg) = deprecation_message(&padded_fn.annotations) {
-                            emit_deprecation_warning("function", name, msg, expr.span, diagnostics);
+                            emit_deprecation_warning(
+                                "function",
+                                name,
+                                msg,
+                                expr.span,
+                                diagnostics,
+                            );
                         }
                         let mut padded_args = compiled_args;
                         padded_args.extend(default_exprs);
@@ -3023,7 +3042,9 @@ fn compile_expr_guarded_with_expected_inner(
                         let coerced_args: Vec<CompiledExpr> = compiled_args
                             .into_iter()
                             .zip(matched_fn.params.iter())
-                            .map(|(arg, (_, param_ty))| coerce::coerce_selector_arg(arg, param_ty))
+                            .map(|(arg, (_, param_ty))| {
+                                coerce::coerce_selector_arg(arg, param_ty)
+                            })
                             .collect();
                         return build_user_function_call_expr(name, coerced_args, result_type);
                     }
@@ -3050,13 +3071,14 @@ fn compile_expr_guarded_with_expected_inner(
                         candidate_sigs.join(", ")
                     ))
                     .with_label(DiagnosticLabel::new(expr.span, "no matching overload"));
-                    let diag =
-                        if coerce::is_selector_kind_mismatch_nomatch(&named_candidates, &arg_types)
-                        {
-                            base_diag.with_code(DiagnosticCode::SelectorKindMismatch)
-                        } else {
-                            base_diag
-                        };
+                    let diag = if coerce::is_selector_kind_mismatch_nomatch(
+                        &named_candidates,
+                        &arg_types,
+                    ) {
+                        base_diag.with_code(DiagnosticCode::SelectorKindMismatch)
+                    } else {
+                        base_diag
+                    };
                     make_poison_literal(diagnostics, diag)
                 }
                 OverloadResolution::NoUserFunctions => {
@@ -3257,7 +3279,9 @@ fn compile_expr_guarded_with_expected_inner(
                         // (Angle / Scalar<Length>). Mirrors the arg-aware
                         // `selector_composition_result_type` fall-through idiom.
                         t
-                    } else if let Some(t) = datum_constructor_result_type(name, &compiled_args) {
+                    } else if let Some(t) =
+                        datum_constructor_result_type(name, &compiled_args)
+                    {
                         // η (task 4387): the construction-datum constructor
                         // vocabulary — midplane / axis_through / plane_through /
                         // frame_at, plus the arity-2 `offset(Plane, Length)`
@@ -3302,9 +3326,12 @@ fn compile_expr_guarded_with_expected_inner(
                         // would mismatch — the first arg is a `Geometry` /
                         // `Solid` / `Surface` / `Curve` handle, not the
                         // helper's actual return type.
-                        geometry_query_arg_aware_result_type(name, compiled_args.first())
-                            .or_else(|| geometry_query_result_type(name))
-                            .expect("is_geometry_query implies result type")
+                        geometry_query_arg_aware_result_type(
+                            name,
+                            compiled_args.first(),
+                        )
+                        .or_else(|| geometry_query_result_type(name))
+                        .expect("is_geometry_query implies result type")
                     } else if let Some(t) = selector_composition_result_type(
                         name,
                         &compiled_args,
@@ -3501,15 +3528,13 @@ fn compile_expr_guarded_with_expected_inner(
                         fea_envelope_result_type(name).expect(
                             "is_fea_envelope_query guarantees fea_envelope_result_type is Some",
                         )
-                    } else if is_field_op(name)
-                        && let Some(t) = field_op_result_type(
-                            name,
-                            &compiled_args
-                                .iter()
-                                .map(|a| a.result_type.clone())
-                                .collect::<Vec<_>>(),
-                        )
-                    {
+                    } else if is_field_op(name) && let Some(t) = field_op_result_type(
+                        name,
+                        &compiled_args
+                            .iter()
+                            .map(|a| a.result_type.clone())
+                            .collect::<Vec<_>>(),
+                    ) {
                         // std.fields α (task 4219, PRD §5.1) — field-op name family:
                         //   fn_field(Function{[D]→C})        → Field<D, C>
                         //   from_samples(List<D>,List<C>,_)  → Field<D, C>
@@ -4422,12 +4447,9 @@ fn compile_expr_guarded_with_expected_inner(
                 | Type::Union(_)
                 | Type::Relation
                 | Type::Applied { .. }
-                | Type::Projection { .. } => member_access_aggregation_or_unsupported(
-                    compiled_obj,
-                    member,
-                    expr.span,
-                    diagnostics,
-                ),
+                | Type::Projection { .. } => {
+                    member_access_aggregation_or_unsupported(compiled_obj, member, expr.span, diagnostics)
+                }
             }
         }
         reify_ast::ExprKind::ListLiteral(elements) => {
@@ -4437,14 +4459,14 @@ fn compile_expr_guarded_with_expected_inner(
             // fallback differs (resolved-expected with no warning vs warn+default).
             let engagement = list_engagement(expected_type);
             let kind_mismatch = matches!(engagement, Engagement::KindMismatch);
-            let (child_expected, empty_resolved): (Option<&Type>, Option<&Type>) = match engagement
-            {
-                Engagement::Resolve(expected_elem) => (Some(expected_elem), Some(expected_elem)),
-                // KindMismatch: emit CollectionLiteralKindMismatch error below; no
-                // child propagation and no empty-literal warning (β/δ).
-                // NotEngaged: preserve existing default behaviour (§5.5 non-regression).
-                Engagement::KindMismatch | Engagement::NotEngaged => (None, None),
-            };
+            let (child_expected, empty_resolved): (Option<&Type>, Option<&Type>) =
+                match engagement {
+                    Engagement::Resolve(expected_elem) => (Some(expected_elem), Some(expected_elem)),
+                    // KindMismatch: emit CollectionLiteralKindMismatch error below; no
+                    // child propagation and no empty-literal warning (β/δ).
+                    // NotEngaged: preserve existing default behaviour (§5.5 non-regression).
+                    Engagement::KindMismatch | Engagement::NotEngaged => (None, None),
+                };
             if kind_mismatch {
                 diagnostics.push(
                     Diagnostic::error(format!(
@@ -4497,14 +4519,14 @@ fn compile_expr_guarded_with_expected_inner(
             // on the empty-literal fallback.
             let engagement = set_engagement(expected_type);
             let kind_mismatch = matches!(engagement, Engagement::KindMismatch);
-            let (child_expected, empty_resolved): (Option<&Type>, Option<&Type>) = match engagement
-            {
-                Engagement::Resolve(expected_elem) => (Some(expected_elem), Some(expected_elem)),
-                // KindMismatch: emit CollectionLiteralKindMismatch error below; no
-                // child propagation and no empty-literal warning (β/δ).
-                // NotEngaged: preserve existing default behaviour (§5.5 non-regression).
-                Engagement::KindMismatch | Engagement::NotEngaged => (None, None),
-            };
+            let (child_expected, empty_resolved): (Option<&Type>, Option<&Type>) =
+                match engagement {
+                    Engagement::Resolve(expected_elem) => (Some(expected_elem), Some(expected_elem)),
+                    // KindMismatch: emit CollectionLiteralKindMismatch error below; no
+                    // child propagation and no empty-literal warning (β/δ).
+                    // NotEngaged: preserve existing default behaviour (§5.5 non-regression).
+                    Engagement::KindMismatch | Engagement::NotEngaged => (None, None),
+                };
             if kind_mismatch {
                 diagnostics.push(
                     Diagnostic::error(format!(
@@ -4562,11 +4584,9 @@ fn compile_expr_guarded_with_expected_inner(
                 Option<&Type>,
                 Option<(&Type, &Type)>,
             ) = match engagement {
-                Engagement::Resolve((expected_key, expected_val)) => (
-                    Some(expected_key),
-                    Some(expected_val),
-                    Some((expected_key, expected_val)),
-                ),
+                Engagement::Resolve((expected_key, expected_val)) => {
+                    (Some(expected_key), Some(expected_val), Some((expected_key, expected_val)))
+                }
                 // KindMismatch: emit CollectionLiteralKindMismatch error below; no
                 // child propagation and no empty-literal warning (β/δ).
                 // NotEngaged: preserve existing default behaviour (§5.5 non-regression).
@@ -4666,12 +4686,7 @@ fn compile_expr_guarded_with_expected_inner(
                     );
                 }
                 // Non-literal (computed) keyed index: unsupported in v1 (PRD §6).
-                return keyed_computed_index_poison(
-                    diagnostics,
-                    sub_name,
-                    expr.span,
-                    structure_ref,
-                );
+                return keyed_computed_index_poison(diagnostics, sub_name, expr.span, structure_ref);
             }
             let compiled_obj = compile_expr_guarded(
                 object,
@@ -4700,8 +4715,10 @@ fn compile_expr_guarded_with_expected_inner(
             // non-indexable values pass through unchanged, preserving their
             // existing element-type / hard-error handling. Gated on the same β
             // `type_compatible` rule as sites #1/#2 (centralized in `coerce.rs`).
-            let compiled_obj =
-                coerce::coerce_selector_arg(compiled_obj, &Type::List(Box::new(Type::Geometry)));
+            let compiled_obj = coerce::coerce_selector_arg(
+                compiled_obj,
+                &Type::List(Box::new(Type::Geometry)),
+            );
 
             // Infer result type from collection's element type.
             // Anti-cascade guard (task-448): if the object is already
@@ -4800,19 +4817,22 @@ fn compile_expr_guarded_with_expected_inner(
             // Lowers a simple (non-binding) pattern to IR.  Shared by the
             // has_bind and non-bind branches below to avoid duplicating the
             // Wildcard / Variant mapping.
-            let lower_simple_pattern = |p: &reify_ast::MatchPattern| -> reify_ir::CompiledPattern {
-                match p {
-                    reify_ast::MatchPattern::Wildcard => reify_ir::CompiledPattern::Wildcard,
-                    reify_ast::MatchPattern::Variant(n) => reify_ir::CompiledPattern::variant(n),
-                    reify_ast::MatchPattern::VariantBind { name, .. } => {
-                        // Reached only from the non-bind branch where
-                        // has_bind == false, so this arm is structurally
-                        // unreachable; degrade to the bare Variant tag as a
-                        // safe fallback.
-                        reify_ir::CompiledPattern::variant(name)
+            let lower_simple_pattern =
+                |p: &reify_ast::MatchPattern| -> reify_ir::CompiledPattern {
+                    match p {
+                        reify_ast::MatchPattern::Wildcard => reify_ir::CompiledPattern::Wildcard,
+                        reify_ast::MatchPattern::Variant(n) => {
+                            reify_ir::CompiledPattern::variant(n)
+                        }
+                        reify_ast::MatchPattern::VariantBind { name, .. } => {
+                            // Reached only from the non-bind branch where
+                            // has_bind == false, so this arm is structurally
+                            // unreachable; degrade to the bare Variant tag as a
+                            // safe fallback.
+                            reify_ir::CompiledPattern::variant(name)
+                        }
                     }
-                }
-            };
+                };
 
             let compiled_arms: Vec<reify_ir::CompiledMatchArm> = arms
                 .iter()
@@ -4989,11 +5009,9 @@ fn compile_expr_guarded_with_expected_inner(
             if let Some(enum_name) = exhaustiveness_enum_name
                 && let Some(enum_def) = enum_defs.iter().find(|e| e.name == enum_name)
             {
-                let has_wildcard = compiled_arms.iter().any(|arm| {
-                    arm.patterns
-                        .iter()
-                        .any(|p| matches!(p, reify_ir::CompiledPattern::Wildcard))
-                });
+                let has_wildcard = compiled_arms
+                    .iter()
+                    .any(|arm| arm.patterns.iter().any(|p| matches!(p, reify_ir::CompiledPattern::Wildcard)));
 
                 if !has_wildcard {
                     let covered: std::collections::HashSet<&str> = compiled_arms
@@ -5661,12 +5679,7 @@ fn compile_expr_guarded_with_expected_inner(
         // is registered into the module function table only by the post-entity
         // pass, so it is not yet resolvable via overload here. Override-beats-
         // default falls out of the per-conformer symbol routing over δ's table.
-        reify_ast::ExprKind::TraitMethodCall {
-            object,
-            trait_name,
-            method,
-            args,
-        } => {
+        reify_ast::ExprKind::TraitMethodCall { object, trait_name, method, args } => {
             // (1) Reject `auto` in the argument list (not a binding site; mirrors
             //     the static-call / function-call gate). The `self` receiver is
             //     the compiled object, not a syntactic arg, so it is never scanned.
@@ -5774,7 +5787,8 @@ fn compile_expr_guarded_with_expected_inner(
                     // Trait or method absent from scope — E_TRAIT_METHOD_UNKNOWN.
                     // Refine the message using scope.trait_members (mirrors the
                     // static arm's known-trait / known-member discrimination).
-                    let detail = if let Some(members) = scope.trait_members.get(trait_name.as_str())
+                    let detail = if let Some(members) =
+                        scope.trait_members.get(trait_name.as_str())
                     {
                         if members.contains(method.as_str()) {
                             // Known member, but not an instance assoc fn — a
@@ -5801,17 +5815,18 @@ fn compile_expr_guarded_with_expected_inner(
                         diagnostics,
                         Diagnostic::error(detail)
                             .with_code(DiagnosticCode::TraitMethodUnknown)
-                            .with_label(DiagnosticLabel::new(expr.span, "unknown trait method")),
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "unknown trait method",
+                            )),
                     );
                 }
                 Some(sigs) => {
                     // Overload resolution: match compiled arg types against non-self
                     // params. `compiled_args` holds only the non-self args (the self
                     // receiver is compiled separately and prepended in step (6)).
-                    let arg_types: Vec<Type> = compiled_args
-                        .iter()
-                        .map(|a| a.result_type.clone())
-                        .collect();
+                    let arg_types: Vec<Type> =
+                        compiled_args.iter().map(|a| a.result_type.clone()).collect();
                     // Anti-cascade: if any argument failed to compile (Type::Error),
                     // skip overload resolution — the upstream arg error was already
                     // reported. Emitting an additional "no overload matches" diagnostic
@@ -5895,7 +5910,10 @@ fn compile_expr_guarded_with_expected_inner(
                                     candidate_sigs.join("; ")
                                 ))
                                 .with_code(DiagnosticCode::AmbiguousCall)
-                                .with_label(DiagnosticLabel::new(expr.span, "ambiguous call")),
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "ambiguous call",
+                                )),
                             );
                         }
                         // Zero matches: the method name exists in the trait but no
@@ -5984,11 +6002,7 @@ fn compile_expr_guarded_with_expected_inner(
         //
         // Name-drift guard: both sites call `trait_static_fn_symbol(trait, method)`
         // so the symbol is byte-for-byte identical.
-        reify_ast::ExprKind::TraitStaticCall {
-            trait_name,
-            method,
-            args,
-        } => {
+        reify_ast::ExprKind::TraitStaticCall { trait_name, method, args } => {
             // ── task 4143: semantic gate — reject `auto` in trait-static-call args ──
             // Mirrors the FunctionCall gate (task 3808). Neither TraitStaticCall nor
             // AdHocSelector is a binding site (no structure-construction exemption applies).
@@ -6067,24 +6081,30 @@ fn compile_expr_guarded_with_expected_inner(
                     //
                     // Produce a refined message using scope.trait_members when available
                     // (populated in entity bodies; empty in function-body scopes).
-                    let detail = if let Some(members) = scope.trait_members.get(trait_name.as_str())
-                    {
-                        if members.contains(method.as_str()) {
-                            // Member is known but was not registered as a static fn —
-                            // it has a self receiver (instance method).
-                            format!(
-                                "trait '{}' member '{}' requires a receiver; \
+                    let detail =
+                        if let Some(members) = scope.trait_members.get(trait_name.as_str()) {
+                            if members.contains(method.as_str()) {
+                                // Member is known but was not registered as a static fn —
+                                // it has a self receiver (instance method).
+                                format!(
+                                    "trait '{}' member '{}' requires a receiver; \
                                      to call it on an object use: obj.({}::{})(…)",
-                                trait_name, method, trait_name, method
-                            )
+                                    trait_name, method, trait_name, method
+                                )
+                            } else {
+                                // Trait is known but has no member with this name.
+                                format!(
+                                    "trait '{}' has no static function '{}'",
+                                    trait_name, method
+                                )
+                            }
                         } else {
-                            // Trait is known but has no member with this name.
-                            format!("trait '{}' has no static function '{}'", trait_name, method)
-                        }
-                    } else {
-                        // Trait not found in scope (or scope has no trait_members).
-                        format!("unknown trait-static function '{}::{}'", trait_name, method)
-                    };
+                            // Trait not found in scope (or scope has no trait_members).
+                            format!(
+                                "unknown trait-static function '{}::{}'",
+                                trait_name, method
+                            )
+                        };
                     // Anti-cascade (task-448/task-1912/task-1921): poison to suppress cascade.
                     make_poison_literal(
                         diagnostics,
@@ -6830,7 +6850,8 @@ fn resolve_datum_projection_or_poison(
                 "{} has no projection '.{}'",
                 compiled_obj.result_type, member
             );
-            if let Some(hint) = datum_projection_unavailable_hint(&compiled_obj.result_type, member)
+            if let Some(hint) =
+                datum_projection_unavailable_hint(&compiled_obj.result_type, member)
             {
                 message.push_str(&format!("; use {hint}"));
             }
@@ -7138,16 +7159,16 @@ mod tests {
         // (proves the cap only fires past MAX, not on ordinary input).
         {
             let mut diagnostics: Vec<Diagnostic> = vec![];
-            let compiled = compile_expr(&trivial, &scope, &enum_defs, &functions, &mut diagnostics);
+            let compiled =
+                compile_expr(&trivial, &scope, &enum_defs, &functions, &mut diagnostics);
             assert_ne!(
                 compiled.result_type,
                 Type::Error,
                 "trivial expr should compile without the cap engaged"
             );
             assert!(
-                !diagnostics
-                    .iter()
-                    .any(|d| d.code == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)),
+                !diagnostics.iter().any(|d| d.code
+                    == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)),
                 "no too-deep diagnostic without pre-seeded depth, got: {:?}",
                 diagnostics
             );
@@ -7379,8 +7400,8 @@ mod tests {
     /// `try_emit_cross_sub_geometry`.
     #[test]
     fn cross_sub_geometry_diagnostic_names_child_structure_type() {
-        use reify_core::Severity;
         use reify_test_support::compile_source;
+        use reify_core::Severity;
         // "Bolt" (capital-B structure type) vs "bolts" (lower-case instance name).
         // The diagnostic's "compose geometry inside '...'" phrase must use the former.
         let source = r#"pub structure Bolt {
@@ -7786,9 +7807,9 @@ pub structure Rack {
     /// `cross_sub_geometry_ref`.
     #[test]
     fn try_resolve_cross_sub_geometry_value_ref_emits_typed_discriminator() {
+        use std::collections::{BTreeMap, BTreeSet};
         use reify_core::Type;
         use reify_ir::CompiledExprKind;
-        use std::collections::{BTreeMap, BTreeSet};
 
         let mut scope = CompilationScope::new("Outer");
         scope
@@ -7804,10 +7825,7 @@ pub structure Rack {
 
         // (a) helper must return Some.
         let result = try_resolve_cross_sub_geometry_value_ref(&scope, "inner", "body");
-        assert!(
-            result.is_some(),
-            "expected Some from the helper for a known realization"
-        );
+        assert!(result.is_some(), "expected Some from the helper for a known realization");
 
         let result = result.unwrap();
 
@@ -7992,13 +8010,7 @@ pub structure Rack {
         let tmpl = sct_template(
             "PointLoad",
             &[
-                (
-                    "target",
-                    Some(CompiledExpr::literal(
-                        Value::Undef,
-                        Type::dimensionless_scalar(),
-                    )),
-                ),
+                ("target", Some(CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar()))),
                 (
                     "magnitude",
                     Some(CompiledExpr::literal(Value::Int(0), Type::Int)),
@@ -8059,10 +8071,7 @@ pub structure Rack {
             "FixedSupport",
             &[(
                 "target",
-                Some(CompiledExpr::literal(
-                    Value::Undef,
-                    Type::dimensionless_scalar(),
-                )),
+                Some(CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar())),
             )],
         );
         let mut registry: std::collections::HashMap<String, &crate::types::TopologyTemplate> =
@@ -8234,7 +8243,8 @@ pub structure Rack {
                 other => panic!("{name} must lower to a stdlib FunctionCall, got {other:?}"),
             }
             assert_eq!(
-                result.result_type, expected_type,
+                result.result_type,
+                expected_type,
                 "{name} result_type must be {expected_type:?} (joint β arm), got {:?}",
                 result.result_type
             );
@@ -8404,11 +8414,7 @@ pub structure Rack {
         let mut diags: Vec<Diagnostic> = vec![];
         let result = compile_expr(&expr, &scope, &[], &[], &mut diags);
 
-        let CompiledExprKind::Match {
-            arms: compiled_arms,
-            ..
-        } = &result.kind
-        else {
+        let CompiledExprKind::Match { arms: compiled_arms, .. } = &result.kind else {
             panic!("expected CompiledExprKind::Match, got: {:?}", result.kind);
         };
         assert_eq!(compiled_arms.len(), 2);
@@ -8427,12 +8433,7 @@ pub structure Rack {
             );
         };
         assert_eq!(name, "Circle", "VariantBind tag name mismatch");
-        assert_eq!(
-            binders.len(),
-            1,
-            "expected exactly one binder for \"radius\", got: {:?}",
-            binders
-        );
+        assert_eq!(binders.len(), 1, "expected exactly one binder for \"radius\", got: {:?}", binders);
         assert_eq!(binders[0].0, "radius", "binder field name mismatch");
     }
 
@@ -8490,11 +8491,7 @@ pub structure Rack {
         let mut diags: Vec<Diagnostic> = vec![];
         let result = compile_expr(&expr, &scope, &[], &[], &mut diags);
 
-        let CompiledExprKind::Match {
-            arms: compiled_arms,
-            ..
-        } = &result.kind
-        else {
+        let CompiledExprKind::Match { arms: compiled_arms, .. } = &result.kind else {
             panic!("expected CompiledExprKind::Match");
         };
         // Extract the binder cell from arm1's pattern.
@@ -8512,7 +8509,8 @@ pub structure Rack {
             panic!(
                 "arm body (Ident \"r\") must compile to ValueRef(binder_cell); \
                  got: {:?}\ndiags: {:?}",
-                compiled_arms[1].body.kind, diags,
+                compiled_arms[1].body.kind,
+                diags,
             );
         };
         assert_eq!(
@@ -8604,10 +8602,7 @@ pub structure Rack {
     #[test]
     fn list_engagement_kind_mismatch_on_non_list() {
         let ty = Type::Int;
-        assert_eq!(
-            list_engagement(Some(&ty)),
-            Engagement::<&Type>::KindMismatch
-        );
+        assert_eq!(list_engagement(Some(&ty)), Engagement::<&Type>::KindMismatch);
     }
 
     #[test]
@@ -8630,10 +8625,7 @@ pub structure Rack {
 
     #[test]
     fn map_engagement_not_engaged_on_none() {
-        assert_eq!(
-            map_engagement(None),
-            Engagement::<(&Type, &Type)>::NotEngaged
-        );
+        assert_eq!(map_engagement(None), Engagement::<(&Type, &Type)>::NotEngaged);
     }
 
     #[test]
@@ -8647,10 +8639,7 @@ pub structure Rack {
     #[test]
     fn map_engagement_kind_mismatch_on_non_map() {
         let ty = Type::List(Box::new(Type::Int));
-        assert_eq!(
-            map_engagement(Some(&ty)),
-            Engagement::<(&Type, &Type)>::KindMismatch
-        );
+        assert_eq!(map_engagement(Some(&ty)), Engagement::<(&Type, &Type)>::KindMismatch);
     }
     // ── end task-4701 step-1 ─────────────────────────────────────────────────
 
@@ -8664,24 +8653,19 @@ pub structure Rack {
         // Build a DimensionalTolerance-shaped template:
         //   param nominal, param upper_deviation
         //   let upper_limit = ValueRef(nominal) + ValueRef(upper_deviation)
-        let ref_nominal = CompiledExpr::value_ref(
-            ValueCellId::new("DimTol", "nominal"),
-            Type::dimensionless_scalar(),
-        );
-        let ref_upper_dev = CompiledExpr::value_ref(
-            ValueCellId::new("DimTol", "upper_deviation"),
-            Type::dimensionless_scalar(),
-        );
-        let upper_limit_expr = CompiledExpr::binop(
-            BinOp::Add,
-            ref_nominal.clone(),
-            ref_upper_dev.clone(),
-            Type::dimensionless_scalar(),
-        );
+        let ref_nominal =
+            CompiledExpr::value_ref(ValueCellId::new("DimTol", "nominal"), Type::dimensionless_scalar());
+        let ref_upper_dev =
+            CompiledExpr::value_ref(ValueCellId::new("DimTol", "upper_deviation"), Type::dimensionless_scalar());
+        let upper_limit_expr =
+            CompiledExpr::binop(BinOp::Add, ref_nominal.clone(), ref_upper_dev.clone(), Type::dimensionless_scalar());
 
         let tmpl = sct_template_with_lets(
             "DimTol",
-            &[("nominal", None), ("upper_deviation", None)],
+            &[
+                ("nominal", None),
+                ("upper_deviation", None),
+            ],
             &[("upper_limit", upper_limit_expr.clone())],
         );
 
@@ -8704,30 +8688,17 @@ pub structure Rack {
 
         // Must lower to StructureInstanceCtor.
         match &result.kind {
-            CompiledExprKind::StructureInstanceCtor {
-                ordered_args,
-                defaults,
-                lets,
-                ..
-            } => {
-                assert_eq!(
-                    ordered_args.len(),
-                    2,
-                    "both params supplied as ordered_args"
-                );
+            CompiledExprKind::StructureInstanceCtor { ordered_args, defaults, lets, .. } => {
+                assert_eq!(ordered_args.len(), 2, "both params supplied as ordered_args");
                 assert!(defaults.is_empty(), "no uncovered defaults");
                 // RED: currently lets is Vec::new() because step_4 is not yet done.
                 assert_eq!(
-                    lets.len(),
-                    1,
+                    lets.len(), 1,
                     "one Let cell (upper_limit) must be present in the ctor; got {} lets: {:?}",
                     lets.len(),
                     lets.iter().map(|(n, _)| n).collect::<Vec<_>>()
                 );
-                assert_eq!(
-                    lets[0].0, "upper_limit",
-                    "Let member name must be upper_limit"
-                );
+                assert_eq!(lets[0].0, "upper_limit", "Let member name must be upper_limit");
                 // The let expr must be non-trivial (not just Undef or Error).
                 assert_ne!(
                     lets[0].1.result_type,
@@ -8786,21 +8757,10 @@ pub structure Rack {
         let mut diags: Vec<Diagnostic> = vec![];
         let expected = Type::List(Box::new(Type::Int));
         let result = compile_expr_guarded_with_expected(
-            &expr,
-            &scope,
-            &[],
-            &[],
-            &mut diags,
-            None,
-            &mut 0,
-            Some(&expected),
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
         );
         assert_eq!(result.result_type, Type::List(Box::new(Type::Int)));
-        assert!(
-            diags.is_empty(),
-            "engaged empty list must produce no warnings, got: {:?}",
-            diags
-        );
+        assert!(diags.is_empty(), "engaged empty list must produce no warnings, got: {:?}", diags);
     }
 
     #[test]
@@ -8809,29 +8769,12 @@ pub structure Rack {
         let expr = list_lit_expr(vec![]);
         let mut diags: Vec<Diagnostic> = vec![];
         let result = compile_expr_guarded_with_expected(
-            &expr,
-            &scope,
-            &[],
-            &[],
-            &mut diags,
-            None,
-            &mut 0,
-            None,
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, None,
         );
-        assert_eq!(
-            result.result_type,
-            Type::List(Box::new(Type::dimensionless_scalar()))
-        );
-        assert_eq!(
-            diags.len(),
-            1,
-            "expected exactly one warning for unresolved empty list, got: {:?}",
-            diags
-        );
+        assert_eq!(result.result_type, Type::List(Box::new(Type::dimensionless_scalar())));
+        assert_eq!(diags.len(), 1, "expected exactly one warning for unresolved empty list, got: {:?}", diags);
         assert!(
-            diags[0]
-                .message
-                .contains("cannot infer element type of empty list"),
+            diags[0].message.contains("cannot infer element type of empty list"),
             "warning must mention 'cannot infer element type of empty list', got: {:?}",
             diags[0].message,
         );
@@ -8850,24 +8793,10 @@ pub structure Rack {
         let mut diags: Vec<Diagnostic> = vec![];
         let expected = Type::List(Box::new(Type::List(Box::new(Type::Int))));
         let result = compile_expr_guarded_with_expected(
-            &outer,
-            &scope,
-            &[],
-            &[],
-            &mut diags,
-            None,
-            &mut 0,
-            Some(&expected),
+            &outer, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
         );
-        assert_eq!(
-            result.result_type,
-            Type::List(Box::new(Type::List(Box::new(Type::Int))))
-        );
-        assert!(
-            diags.is_empty(),
-            "nested empty list must produce no warnings, got: {:?}",
-            diags
-        );
+        assert_eq!(result.result_type, Type::List(Box::new(Type::List(Box::new(Type::Int)))));
+        assert!(diags.is_empty(), "nested empty list must produce no warnings, got: {:?}", diags);
     }
 
     #[test]
@@ -8878,21 +8807,10 @@ pub structure Rack {
         let mut diags: Vec<Diagnostic> = vec![];
         let expected = Type::List(Box::new(Type::Int));
         let result = compile_expr_guarded_with_expected(
-            &list_expr,
-            &scope,
-            &[],
-            &[],
-            &mut diags,
-            None,
-            &mut 0,
-            Some(&expected),
+            &list_expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
         );
         assert_eq!(result.result_type, Type::List(Box::new(Type::Bool)));
-        assert!(
-            diags.is_empty(),
-            "non-empty engaged list must produce no warnings, got: {:?}",
-            diags
-        );
+        assert!(diags.is_empty(), "non-empty engaged list must produce no warnings, got: {:?}", diags);
     }
     // ── end task-4701 step-5 ─────────────────────────────────────────────────
 
@@ -8906,21 +8824,10 @@ pub structure Rack {
         let mut diags: Vec<Diagnostic> = vec![];
         let expected = Type::Set(Box::new(Type::Int));
         let result = compile_expr_guarded_with_expected(
-            &expr,
-            &scope,
-            &[],
-            &[],
-            &mut diags,
-            None,
-            &mut 0,
-            Some(&expected),
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
         );
         assert_eq!(result.result_type, Type::Set(Box::new(Type::Int)));
-        assert!(
-            diags.is_empty(),
-            "engaged empty set must produce no warnings, got: {:?}",
-            diags
-        );
+        assert!(diags.is_empty(), "engaged empty set must produce no warnings, got: {:?}", diags);
     }
 
     #[test]
@@ -8932,24 +8839,10 @@ pub structure Rack {
         let mut diags: Vec<Diagnostic> = vec![];
         let expected = Type::Set(Box::new(Type::List(Box::new(Type::Int))));
         let result = compile_expr_guarded_with_expected(
-            &expr,
-            &scope,
-            &[],
-            &[],
-            &mut diags,
-            None,
-            &mut 0,
-            Some(&expected),
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
         );
-        assert_eq!(
-            result.result_type,
-            Type::Set(Box::new(Type::List(Box::new(Type::Int))))
-        );
-        assert!(
-            diags.is_empty(),
-            "engaged set with nested empty list must produce no warnings, got: {:?}",
-            diags
-        );
+        assert_eq!(result.result_type, Type::Set(Box::new(Type::List(Box::new(Type::Int)))));
+        assert!(diags.is_empty(), "engaged set with nested empty list must produce no warnings, got: {:?}", diags);
     }
 
     #[test]
@@ -8960,21 +8853,10 @@ pub structure Rack {
         let mut diags: Vec<Diagnostic> = vec![];
         let expected = Type::Set(Box::new(Type::Int));
         let result = compile_expr_guarded_with_expected(
-            &expr,
-            &scope,
-            &[],
-            &[],
-            &mut diags,
-            None,
-            &mut 0,
-            Some(&expected),
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
         );
         assert_eq!(result.result_type, Type::Set(Box::new(Type::Bool)));
-        assert!(
-            diags.is_empty(),
-            "non-empty engaged set must produce no warnings, got: {:?}",
-            diags
-        );
+        assert!(diags.is_empty(), "non-empty engaged set must produce no warnings, got: {:?}", diags);
     }
 
     #[test]
@@ -8983,29 +8865,12 @@ pub structure Rack {
         let expr = set_lit_expr(vec![]);
         let mut diags: Vec<Diagnostic> = vec![];
         let result = compile_expr_guarded_with_expected(
-            &expr,
-            &scope,
-            &[],
-            &[],
-            &mut diags,
-            None,
-            &mut 0,
-            None,
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, None,
         );
-        assert_eq!(
-            result.result_type,
-            Type::Set(Box::new(Type::dimensionless_scalar()))
-        );
-        assert_eq!(
-            diags.len(),
-            1,
-            "expected exactly one warning for unresolved empty set, got: {:?}",
-            diags
-        );
+        assert_eq!(result.result_type, Type::Set(Box::new(Type::dimensionless_scalar())));
+        assert_eq!(diags.len(), 1, "expected exactly one warning for unresolved empty set, got: {:?}", diags);
         assert!(
-            diags[0]
-                .message
-                .contains("cannot infer element type of empty set"),
+            diags[0].message.contains("cannot infer element type of empty set"),
             "warning must mention 'cannot infer element type of empty set', got: {:?}",
             diags[0].message,
         );
@@ -9023,24 +8888,10 @@ pub structure Rack {
         let mut diags: Vec<Diagnostic> = vec![];
         let expected = Type::Map(Box::new(Type::String), Box::new(Type::Int));
         let result = compile_expr_guarded_with_expected(
-            &expr,
-            &scope,
-            &[],
-            &[],
-            &mut diags,
-            None,
-            &mut 0,
-            Some(&expected),
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
         );
-        assert_eq!(
-            result.result_type,
-            Type::Map(Box::new(Type::String), Box::new(Type::Int))
-        );
-        assert!(
-            diags.is_empty(),
-            "engaged empty map must produce no warnings, got: {:?}",
-            diags
-        );
+        assert_eq!(result.result_type, Type::Map(Box::new(Type::String), Box::new(Type::Int)));
+        assert!(diags.is_empty(), "engaged empty map must produce no warnings, got: {:?}", diags);
     }
 
     #[test]
@@ -9051,32 +8902,15 @@ pub structure Rack {
         let val = list_lit_expr(vec![]);
         let expr = map_lit_expr(vec![(key, val)]);
         let mut diags: Vec<Diagnostic> = vec![];
-        let expected = Type::Map(
-            Box::new(Type::String),
-            Box::new(Type::List(Box::new(Type::Int))),
-        );
+        let expected = Type::Map(Box::new(Type::String), Box::new(Type::List(Box::new(Type::Int))));
         let result = compile_expr_guarded_with_expected(
-            &expr,
-            &scope,
-            &[],
-            &[],
-            &mut diags,
-            None,
-            &mut 0,
-            Some(&expected),
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
         );
         assert_eq!(
             result.result_type,
-            Type::Map(
-                Box::new(Type::String),
-                Box::new(Type::List(Box::new(Type::Int)))
-            ),
+            Type::Map(Box::new(Type::String), Box::new(Type::List(Box::new(Type::Int)))),
         );
-        assert!(
-            diags.is_empty(),
-            "engaged map with nested empty list value must produce no warnings, got: {:?}",
-            diags
-        );
+        assert!(diags.is_empty(), "engaged map with nested empty list value must produce no warnings, got: {:?}", diags);
     }
 
     #[test]
@@ -9090,24 +8924,13 @@ pub structure Rack {
         let mut diags: Vec<Diagnostic> = vec![];
         let expected = Type::Map(Box::new(Type::String), Box::new(Type::Int));
         let result = compile_expr_guarded_with_expected(
-            &expr,
-            &scope,
-            &[],
-            &[],
-            &mut diags,
-            None,
-            &mut 0,
-            Some(&expected),
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
         );
         assert_eq!(
             result.result_type,
             Type::Map(Box::new(Type::String), Box::new(Type::Bool)),
         );
-        assert!(
-            diags.is_empty(),
-            "non-empty engaged map must produce no warnings, got: {:?}",
-            diags
-        );
+        assert!(diags.is_empty(), "non-empty engaged map must produce no warnings, got: {:?}", diags);
     }
 
     #[test]
@@ -9117,32 +8940,15 @@ pub structure Rack {
         let expr = map_lit_expr(vec![]);
         let mut diags: Vec<Diagnostic> = vec![];
         let result = compile_expr_guarded_with_expected(
-            &expr,
-            &scope,
-            &[],
-            &[],
-            &mut diags,
-            None,
-            &mut 0,
-            None,
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, None,
         );
         assert_eq!(
             result.result_type,
-            Type::Map(
-                Box::new(Type::String),
-                Box::new(Type::dimensionless_scalar())
-            ),
+            Type::Map(Box::new(Type::String), Box::new(Type::dimensionless_scalar())),
         );
-        assert_eq!(
-            diags.len(),
-            1,
-            "expected exactly one warning for unresolved empty map, got: {:?}",
-            diags
-        );
+        assert_eq!(diags.len(), 1, "expected exactly one warning for unresolved empty map, got: {:?}", diags);
         assert!(
-            diags[0]
-                .message
-                .contains("cannot infer key type of empty map"),
+            diags[0].message.contains("cannot infer key type of empty map"),
             "warning must mention 'cannot infer key type of empty map', got: {:?}",
             diags[0].message,
         );
@@ -9165,14 +8971,7 @@ pub structure Rack {
         let mut diags: Vec<Diagnostic> = vec![];
         let expected = Type::Int; // kind mismatch: Int ≠ List<_>
         let result = compile_expr_guarded_with_expected(
-            &expr,
-            &scope,
-            &[],
-            &[],
-            &mut diags,
-            None,
-            &mut 0,
-            Some(&expected),
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
         );
         assert_eq!(
             result.result_type,
@@ -9180,12 +8979,7 @@ pub structure Rack {
             "result_type must be the natural default (no Type::Error poison), got: {:?}",
             result.result_type,
         );
-        assert_eq!(
-            diags.len(),
-            1,
-            "expected exactly one diagnostic, got: {:?}",
-            diags
-        );
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got: {:?}", diags);
         assert_eq!(
             diags[0].code,
             Some(DiagnosticCode::CollectionLiteralKindMismatch),
@@ -9218,21 +9012,9 @@ pub structure Rack {
         let mut diags: Vec<Diagnostic> = vec![];
         let expected = Type::Int; // kind mismatch: Int ≠ List<_>
         let _ = compile_expr_guarded_with_expected(
-            &expr,
-            &scope,
-            &[],
-            &[],
-            &mut diags,
-            None,
-            &mut 0,
-            Some(&expected),
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
         );
-        assert_eq!(
-            diags.len(),
-            1,
-            "expected exactly one diagnostic, got: {:?}",
-            diags
-        );
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got: {:?}", diags);
         assert_eq!(
             diags[0].code,
             Some(DiagnosticCode::CollectionLiteralKindMismatch),
@@ -9261,14 +9043,7 @@ pub structure Rack {
         let mut diags: Vec<Diagnostic> = vec![];
         let expected = Type::List(Box::new(Type::Int)); // kind mismatch: List ≠ Set<_>
         let result = compile_expr_guarded_with_expected(
-            &expr,
-            &scope,
-            &[],
-            &[],
-            &mut diags,
-            None,
-            &mut 0,
-            Some(&expected),
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
         );
         assert_eq!(
             result.result_type,
@@ -9276,12 +9051,7 @@ pub structure Rack {
             "result_type must be the natural default (no Type::Error poison), got: {:?}",
             result.result_type,
         );
-        assert_eq!(
-            diags.len(),
-            1,
-            "expected exactly one diagnostic, got: {:?}",
-            diags
-        );
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got: {:?}", diags);
         assert_eq!(
             diags[0].code,
             Some(DiagnosticCode::CollectionLiteralKindMismatch),
@@ -9309,21 +9079,9 @@ pub structure Rack {
         let mut diags: Vec<Diagnostic> = vec![];
         let expected = Type::List(Box::new(Type::Int)); // kind mismatch: List ≠ Set<_>
         let _ = compile_expr_guarded_with_expected(
-            &expr,
-            &scope,
-            &[],
-            &[],
-            &mut diags,
-            None,
-            &mut 0,
-            Some(&expected),
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
         );
-        assert_eq!(
-            diags.len(),
-            1,
-            "expected exactly one diagnostic, got: {:?}",
-            diags
-        );
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got: {:?}", diags);
         assert_eq!(
             diags[0].code,
             Some(DiagnosticCode::CollectionLiteralKindMismatch),
@@ -9352,30 +9110,15 @@ pub structure Rack {
         let mut diags: Vec<Diagnostic> = vec![];
         let expected = Type::Int; // kind mismatch: Int ≠ Map<_,_>
         let result = compile_expr_guarded_with_expected(
-            &expr,
-            &scope,
-            &[],
-            &[],
-            &mut diags,
-            None,
-            &mut 0,
-            Some(&expected),
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
         );
         assert_eq!(
             result.result_type,
-            Type::Map(
-                Box::new(Type::String),
-                Box::new(Type::dimensionless_scalar())
-            ),
+            Type::Map(Box::new(Type::String), Box::new(Type::dimensionless_scalar())),
             "result_type must be the natural default (no Type::Error poison), got: {:?}",
             result.result_type,
         );
-        assert_eq!(
-            diags.len(),
-            1,
-            "expected exactly one diagnostic, got: {:?}",
-            diags
-        );
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got: {:?}", diags);
         assert_eq!(
             diags[0].code,
             Some(DiagnosticCode::CollectionLiteralKindMismatch),
@@ -9403,21 +9146,9 @@ pub structure Rack {
         let mut diags: Vec<Diagnostic> = vec![];
         let expected = Type::Int; // kind mismatch: Int ≠ Map<_,_>
         let _ = compile_expr_guarded_with_expected(
-            &expr,
-            &scope,
-            &[],
-            &[],
-            &mut diags,
-            None,
-            &mut 0,
-            Some(&expected),
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
         );
-        assert_eq!(
-            diags.len(),
-            1,
-            "expected exactly one diagnostic, got: {:?}",
-            diags
-        );
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got: {:?}", diags);
         assert_eq!(
             diags[0].code,
             Some(DiagnosticCode::CollectionLiteralKindMismatch),
@@ -10162,9 +9893,7 @@ mod member_access_completeness_canary {
 
     /// The discriminants classified into `class`, as an order-independent set.
     fn members(class: HandlerClass) -> HashSet<TypeDiscriminants> {
-        TypeDiscriminants::iter()
-            .filter(|d| classify(*d) == class)
-            .collect()
+        TypeDiscriminants::iter().filter(|d| classify(*d) == class).collect()
     }
 
     #[test]
@@ -10183,10 +9912,7 @@ mod member_access_completeness_canary {
         //     the same change — that is the point of the canary.
         assert_eq!(
             members(HandlerClass::StructureLike),
-            HashSet::from([
-                TypeDiscriminants::StructureRef,
-                TypeDiscriminants::TraitObject
-            ]),
+            HashSet::from([TypeDiscriminants::StructureRef, TypeDiscriminants::TraitObject]),
             "member_access_on_structure_like claims exactly StructureRef, TraitObject",
         );
         assert_eq!(

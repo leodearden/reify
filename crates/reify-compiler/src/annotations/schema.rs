@@ -1456,9 +1456,7 @@ mod tests {
             diags
         );
         assert!(
-            diags[0]
-                .message
-                .contains("@display is not valid on function"),
+            diags[0].message.contains("@display is not valid on function"),
             "expected context-mismatch message, got: {}",
             diags[0].message
         );
