@@ -656,6 +656,23 @@ const CONSTRUCTORS_DOCUMENTED_NOWHERE: &[&str] = &[
     "isosurface",
 ];
 
+/// Is `name` MENTIONED in this markdown — the identifier followed by `(`?
+///
+/// Deliberately loose. It exists only to justify an exclusion (does the chunk
+/// talk about this name at all?), never to pin a form or a wording, so it does
+/// not care about the surrounding prose, the section, or the arity written.
+///
+/// The looseness is a substring match, so `box` is also satisfied by
+/// `rounded_box(`. For the "documented elsewhere" direction that bias is
+/// toward NOT failing, which is the safe direction for an exclusion
+/// justification. For the known-gap direction it biases the other way — toward
+/// reporting an entry as closed — which merely asks a human to look, and is
+/// checked against the real chunks by
+/// `the_exclusion_lists_are_accurate_over_the_real_chunks`.
+fn chunk_mentions(markdown: &str, name: &str) -> bool {
+    markdown.contains(&format!("{name}("))
+}
+
 /// Every `registry` name that no chunk documents.
 ///
 /// A name counts as documented when the stdlib.md scan
@@ -738,5 +755,150 @@ fn every_implemented_geometry_op_is_documented_in_a_chunk() {
          '{CHUNK_SECTION}' table (and mirror it into \
          tests/fixtures/stdlib_geometry_ops_smoke.ri). Undocumented name(s): {}",
         undocumented.join(", ")
+    );
+}
+
+// ── Controls for the registry → chunk guard ──────────────────────────────────
+//
+// Same posture as `bogus_geometry_op_names_are_reported_as_unrecognised` /
+// `known_geometry_op_names_are_not_reported` do for the doc → registry guard:
+// a guard is only worth its green if it has been SHOWN to both fire and stay
+// silent. Extended here with two allowlist anti-rot cases, because this guard
+// has something its siblings do not — two exclusion lists. An unaudited
+// exclusion list is a silencer: anyone can make the guard pass by appending a
+// name to it, which is precisely how this class of drift recurs.
+
+/// Minimum shape `documented_geometry_op_names` recognises — the section
+/// heading plus one `**`-prefixed backticked row. Documents `documented_op`
+/// and nothing else.
+const SYNTHETIC_STDLIB_MD: &str = "\
+## Key Geometry Operations
+
+**Modify:** `documented_op(solid, radius)`
+";
+
+/// Stand-in for geometry.md. Mentions `mentioned_ctor` and nothing else.
+const SYNTHETIC_GEOMETRY_MD: &str = "`mentioned_ctor(x, y, z)` builds a thing.";
+
+/// NEGATIVE CONTROL — the guard reports a genuinely undocumented registry name,
+/// and stays silent for one that stdlib.md documents and one that a justified
+/// exclusion covers. Proves it is neither blind nor "reports everything".
+#[test]
+fn undocumented_registry_names_are_reported_and_documented_ones_are_not() {
+    let reported = undocumented_geometry_ops(
+        &["documented_op", "mentioned_ctor", "undocumented_op"],
+        SYNTHETIC_STDLIB_MD,
+        SYNTHETIC_GEOMETRY_MD,
+        &["mentioned_ctor"],
+        &[],
+    );
+
+    assert_eq!(
+        reported.len(),
+        1,
+        "exactly one of the three synthetic names is undocumented — \
+         `documented_op` is in the stdlib.md scan and `mentioned_ctor` is covered by a \
+         justified exclusion. Got: {reported:?}"
+    );
+    assert!(
+        reported[0].contains("undocumented_op"),
+        "the guard must report `undocumented_op`, which no markdown input documents and \
+         no exclusion slice carries. Got: {reported:?}"
+    );
+}
+
+/// ANTI-ROT — an exclusion claiming geometry.md coverage that does not exist
+/// must be reported.
+///
+/// Without this, [`CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK`] is an unaudited
+/// dumping ground: appending a name silences the guard while documenting
+/// nothing, recreating the very gap this guard exists to close.
+#[test]
+fn an_exclusion_claiming_coverage_that_does_not_exist_is_reported() {
+    let reported = undocumented_geometry_ops(
+        &["ghost_ctor"],
+        SYNTHETIC_STDLIB_MD,
+        SYNTHETIC_GEOMETRY_MD,
+        &["ghost_ctor"],
+        &[],
+    );
+
+    assert!(
+        reported.iter().any(|v| v.contains("ghost_ctor")),
+        "`ghost_ctor` is excluded as 'documented in geometry.md' but geometry.md does not \
+         mention it — the exclusion is a false coverage claim and must be reported. \
+         Got: {reported:?}"
+    );
+}
+
+/// ANTI-ROT — a known-gap entry that has since been documented must be
+/// reported, so the list is forced to SHRINK as the gap closes.
+///
+/// A stale entry in [`CONSTRUCTORS_DOCUMENTED_NOWHERE`] would permanently
+/// exempt a name from the guard, so a later regression (the row being deleted
+/// again) would go unnoticed.
+#[test]
+fn a_known_gap_entry_that_has_since_been_documented_is_reported() {
+    let via_stdlib = undocumented_geometry_ops(
+        &["documented_op"],
+        SYNTHETIC_STDLIB_MD,
+        SYNTHETIC_GEOMETRY_MD,
+        &[],
+        &["documented_op"],
+    );
+    assert!(
+        via_stdlib.iter().any(|v| v.contains("documented_op")),
+        "`documented_op` is carried as a known gap but stdlib.md now documents it — the \
+         stale entry must be reported so it gets deleted. Got: {via_stdlib:?}"
+    );
+
+    let via_geometry = undocumented_geometry_ops(
+        &["mentioned_ctor"],
+        SYNTHETIC_STDLIB_MD,
+        SYNTHETIC_GEOMETRY_MD,
+        &[],
+        &["mentioned_ctor"],
+    );
+    assert!(
+        via_geometry.iter().any(|v| v.contains("mentioned_ctor")),
+        "`mentioned_ctor` is carried as a known gap but geometry.md now mentions it — the \
+         stale entry must be reported so it gets deleted. Got: {via_geometry:?}"
+    );
+}
+
+/// Both exclusion lists must be accurate over the REAL chunks.
+///
+/// This is the same property the two controls above pin synthetically, asserted
+/// against the files that actually ship — so the lists cannot drift out of
+/// truth even if the helper is later refactored.
+#[test]
+fn the_exclusion_lists_are_accurate_over_the_real_chunks() {
+    let stdlib_md = read_chunk(CHUNK_PATH);
+    let geometry_md = read_chunk(GEOMETRY_CHUNK_PATH);
+
+    let unbacked: Vec<&str> = CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK
+        .iter()
+        .copied()
+        .filter(|name| !chunk_mentions(&geometry_md, name))
+        .collect();
+    assert!(
+        unbacked.is_empty(),
+        "CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK excludes name(s) from the registry → doc \
+         guard on the grounds that {GEOMETRY_CHUNK_PATH} documents them, but it does not \
+         mention them at all — either document them there or drop the exclusion: {}",
+        unbacked.join(", ")
+    );
+
+    let closed: Vec<&str> = CONSTRUCTORS_DOCUMENTED_NOWHERE
+        .iter()
+        .copied()
+        .filter(|name| chunk_mentions(&stdlib_md, name) || chunk_mentions(&geometry_md, name))
+        .collect();
+    assert!(
+        closed.is_empty(),
+        "CONSTRUCTORS_DOCUMENTED_NOWHERE carries name(s) that ARE now documented — the list \
+         must shrink as the gap closes, so delete these entries and let the guard cover \
+         them normally: {}",
+        closed.join(", ")
     );
 }
