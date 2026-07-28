@@ -1810,9 +1810,17 @@ mod tests {
                 "sampled point {p:?} must lie at distance r={r} from the origin; got {dist}"
             );
         }
+        // Signed, not |signed|: this pins BOTH halves of the contract at once —
+        // orientation (positive ⇒ CCW, the `ProfileBoundary` postcondition) and
+        // consumer-admissibility (> 1e-14 is exactly `validate_boundary`'s
+        // degeneracy floor, so a ring that clears this assertion cannot be
+        // rejected downstream). An `.abs() > 0.0` form would pass on a CW ring
+        // and on rings the consumer still rejects.
+        let area = reify_solver_elastic::ring_signed_area_2d(&boundary.outer);
         assert!(
-            reify_solver_elastic::ring_signed_area_2d(&boundary.outer).abs() > 0.0,
-            "circle cross-section must be non-degenerate (|signed area| > 0)"
+            area > 1e-14,
+            "circle cross-section must be CCW and clear validate_boundary's 1e-14 \
+             degeneracy floor; got signed area {area}"
         );
         assert!(
             boundary.holes.is_empty(),
@@ -1854,9 +1862,12 @@ mod tests {
             (first[0] - a).abs() < 1e-9 && first[1].abs() < 1e-9,
             "θ=0 ellipse sample must be [a, 0] = [{a}, 0]; got {first:?}"
         );
+        // Signed + consumer-threshold, for the reasons given on the circle test.
+        let area = reify_solver_elastic::ring_signed_area_2d(&boundary.outer);
         assert!(
-            reify_solver_elastic::ring_signed_area_2d(&boundary.outer).abs() > 0.0,
-            "ellipse cross-section must be non-degenerate (|signed area| > 0)"
+            area > 1e-14,
+            "ellipse cross-section must be CCW and clear validate_boundary's 1e-14 \
+             degeneracy floor; got signed area {area}"
         );
         assert!(
             boundary.holes.is_empty(),
@@ -2077,6 +2088,90 @@ mod tests {
             area > 0.0,
             "a negative-width rectangle samples clockwise and must be normalised \
              to CCW (positive signed area); got {area}"
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_negative_semi_minor_ellipse_is_normalised_ccw() {
+        // Exactly as reachable as the negative-width rectangle above:
+        // `profile_ellipse` (geometry_ops.rs) applies no positivity check
+        // either. With semi_minor < 0 the ring is [a·cos θ, b·sin θ] with b
+        // negative, i.e. the θ=0..τ traversal runs clockwise. Pins that
+        // normalisation is total over ALL FOUR sampler arms, not just the two
+        // (polygon, rectangle) that were previously covered.
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::EllipseProfile {
+            semi_major: Value::length(0.05),
+            semi_minor: Value::length(-0.02),
+        });
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("an EllipseProfile-backed extrude must produce a ProfileBoundary");
+        let area = reify_solver_elastic::ring_signed_area_2d(&boundary.outer);
+        assert!(
+            area > 1e-14,
+            "a negative semi-minor axis samples clockwise and must be normalised to \
+             CCW, clearing validate_boundary's 1e-14 floor; got signed area {area}"
+        );
+    }
+
+    // ── Amendment: normalisation must not mask degeneracy ───────────────────
+    // `normalise_ccw` compares strictly `< 0.0` precisely so a zero-area ring
+    // passes through untouched and is rejected by the consumer's
+    // DegenerateBoundary guard. That claim was documented but never exercised
+    // through the producer, so nothing pinned that the producer leaves a
+    // degenerate ring alone on its way to the mesher. Both cases short-circuit
+    // in `validate_boundary`, before any Gmsh call, so they are deterministic
+    // in libgmsh and stub builds alike — and both must be DegenerateBoundary,
+    // NOT EmptyBoundary (the producer DID resolve and sample a profile).
+
+    #[test]
+    fn build_swept_2d_mesh_zero_width_rectangle_is_degenerate_boundary() {
+        // width = 0 ⇒ all four corners collapse onto x = ±0.0, so the shoelace
+        // area is exactly 0.0 (every cross term has a ±0.0 factor). `< 0.0` is
+        // false at 0.0, so the ring is not reversed; `|0.0| < 1e-14` is true,
+        // so the consumer rejects it as degenerate.
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::RectangleProfile {
+            width: Value::length(0.0),
+            height: Value::length(0.05),
+        });
+        let result = build_fixture_mesh(&kind, &ops, &handles);
+        assert!(
+            matches!(
+                &result,
+                Err(reify_solver_elastic::Mesh2dError::DegenerateBoundary)
+            ),
+            "a zero-width rectangle must reach the consumer and be rejected as \
+             DegenerateBoundary (not EmptyBoundary, and not silently reversed); got {result:?}"
+        );
+    }
+
+    #[test]
+    fn build_swept_2d_mesh_collinear_polygon_is_degenerate_boundary() {
+        let collinear = vec![[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]];
+        assert_eq!(
+            reify_solver_elastic::ring_signed_area_2d(&collinear),
+            0.0,
+            "fixture precondition: a collinear ring has exactly zero signed area"
+        );
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::PolygonProfile {
+            points: collinear.clone(),
+        });
+        // The producer passes the degenerate ring through verbatim — it neither
+        // reverses it (0.0 is not < 0.0) nor perturbs it — so degeneracy is
+        // still visible to the consumer.
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("a PolygonProfile-backed extrude must produce a ProfileBoundary");
+        assert_eq!(
+            boundary.outer, collinear,
+            "a zero-area ring must pass through the winding normaliser untouched"
+        );
+        let result = build_fixture_mesh(&kind, &ops, &handles);
+        assert!(
+            matches!(
+                &result,
+                Err(reify_solver_elastic::Mesh2dError::DegenerateBoundary)
+            ),
+            "a collinear polygon profile must be rejected as DegenerateBoundary \
+             (not EmptyBoundary); got {result:?}"
         );
     }
 
