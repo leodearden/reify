@@ -203,6 +203,7 @@ test_warm_lane_degenerate_ref.sh pool
 test_warm_lane_disk_guard.sh pool
 test_warm_lane_gc.sh pool
 test_warm_lane_gc_sweep.sh pool
+test_warm_lane_lock_guard.sh pool
 test_warm_lane_pool_config.sh pool
 test_warm_lane_preflight.sh pool
 test_warm_lane_ref_visibility.sh pool
