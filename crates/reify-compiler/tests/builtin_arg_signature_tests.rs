@@ -208,6 +208,166 @@ fn edges_parallel_to_angle_tol_gives_no_arg_type_mismatch() {
     );
 }
 
+// ── Task 5652: pattern spacing must be a Length at compile time ───────────────
+
+/// Every `ArgTypeMismatch` Error in `compiled`.
+fn arg_type_mismatch_errors(
+    compiled: &reify_compiler::CompiledModule,
+) -> Vec<&reify_core::Diagnostic> {
+    compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code == Some(DiagnosticCode::ArgTypeMismatch) && d.severity == Severity::Error
+        })
+        .collect()
+}
+
+/// SIGNAL — a bare `10` passed as `linear_pattern`'s `spacing` is a DEFINITE
+/// Int-where-Length-expected mismatch.
+///
+/// Task 5214 already rejects this at EVAL (a `Warning`-then-drop via
+/// `required_length_value`). This pins the compile-layer upgrade: an `Error`
+/// with a span label, emitted before the design is ever built.
+///
+/// Exactly 1, not "at least 1": a duplicate would mean the diagnostic is being
+/// emitted from two wiring sites.
+#[test]
+fn linear_pattern_bare_spacing_gives_one_arg_type_mismatch() {
+    let compiled = compile_struct_body("    let p = linear_pattern(b, 1, 0, 0, 5, 10)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 ArgTypeMismatch for a bare `10` spacing.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    for needle in ["linear_pattern", "spacing", "Length"] {
+        assert!(
+            errors[0].message.contains(needle),
+            "message must name {needle:?}: {}",
+            errors[0].message
+        );
+    }
+}
+
+/// BOUNDARY ok — a dimensioned `10mm` spacing is the correct form and must emit
+/// NO `ArgTypeMismatch`. Without this the signal case above could pass for the
+/// wrong reason (e.g. a slot that fires on every `linear_pattern` call).
+#[test]
+fn linear_pattern_dimensioned_spacing_gives_no_arg_type_mismatch() {
+    let compiled = compile_struct_body("    let p = linear_pattern(b, 1, 0, 0, 5, 10mm)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "linear_pattern with a dimensioned 10mm spacing must emit no \
+         ArgTypeMismatch, got: {:#?}",
+        errors
+    );
+}
+
+/// SIGNAL — a DIMENSIONED but WRONG-dimension `10deg` spacing is also rejected,
+/// naming the expected `Length` and the offending unit.
+///
+/// Not a duplicate of the bare-`10` case: that one is a kind mismatch (`Int`
+/// where a dimensioned scalar is required), this one a dimension mismatch
+/// between two dimensioned scalars, and the two travel different arms of
+/// `check_builtin_arg_types`. It is also the likelier slip in practice — the
+/// user who has learned that spacing needs a unit can still reach for the wrong
+/// one, and gets a differently-worded message for it.
+///
+/// Pins the observed message end-to-end, including that the ACTUAL side renders
+/// as `Scalar[rad]` (`Type::Display`'s SI base-unit form) rather than the
+/// friendly `"Angle"` used on the expected side of other slots' messages.
+#[test]
+fn linear_pattern_wrong_dimension_spacing_gives_one_arg_type_mismatch() {
+    let compiled = compile_struct_body("    let p = linear_pattern(b, 1, 0, 0, 5, 10deg)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 ArgTypeMismatch for a `10deg` spacing.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].message, "linear_pattern: spacing argument expects Length, got Scalar[rad]",
+        "a wrong-unit spacing must name the builtin, the arg, the expected type \
+         and the offending unit"
+    );
+}
+
+/// SINGLE-EMISSION lock — a pattern call NESTED inside a CSG combinator still
+/// yields exactly 1 diagnostic.
+///
+/// A geometry-`let` routes through `entity.rs -> compile_geometry_call`, but its
+/// value expression is ALSO compiled as a value cell via
+/// `compile_expr -> resolve_function_overload`, which is where
+/// `check_builtin_arg_types` is wired (expr.rs). Adding a second call site in
+/// `compile_geometry_call_inner` would therefore DOUBLE-emit here. This test is
+/// what makes that regression loud.
+#[test]
+fn nested_linear_pattern_bare_spacing_emits_exactly_one_diagnostic() {
+    let compiled = compile_struct_body(
+        "    let c = box(1mm, 1mm, 1mm)\n\
+         \x20   let u = union(linear_pattern(b, 1, 0, 0, 5, 10), c)\n",
+    );
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "a nested linear_pattern must emit exactly 1 ArgTypeMismatch (not 2 — \
+         that would mean a duplicate wiring site).\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// SIGNAL — a bare `10` as `linear_pattern_2d`'s `spacing1` (with a correct
+/// `20mm` `spacing2`) yields exactly 1 `ArgTypeMismatch` naming `spacing1`.
+///
+/// This is the shape from task 5214's litter-tray bug, where a bare-spacing
+/// grid scattered cutting tools hundreds of metres from the plate.
+#[test]
+fn linear_pattern_2d_bare_spacing1_gives_one_arg_type_mismatch() {
+    let compiled =
+        compile_struct_body("    let g = linear_pattern_2d(b, 1, 0, 0, 3, 10, 0, 1, 0, 4, 20mm)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 ArgTypeMismatch for a bare `10` spacing1.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert!(
+        errors[0].message.contains("spacing1"),
+        "message must name the offending arg `spacing1`, not the other axis: {}",
+        errors[0].message
+    );
+    assert!(
+        errors[0].message.contains("Length"),
+        "message must name the expected type `Length`: {}",
+        errors[0].message
+    );
+}
+
+/// BOUNDARY ok — both spacings dimensioned → NO `ArgTypeMismatch`. Keeps the
+/// signal case above from passing for the wrong reason.
+#[test]
+fn linear_pattern_2d_dimensioned_spacings_give_no_arg_type_mismatch() {
+    let compiled = compile_struct_body(
+        "    let g = linear_pattern_2d(b, 1, 0, 0, 3, 10mm, 0, 1, 0, 4, 20mm)\n",
+    );
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "linear_pattern_2d with dimensioned 10mm/20mm spacings must emit no \
+         ArgTypeMismatch, got: {:#?}",
+        errors
+    );
+}
+
 // ── Case 5: STDLIB REGRESSION GUARD — material.density path ──────────────────
 
 /// The stdlib `Rigid` trait (structural_physical.ri) injects
