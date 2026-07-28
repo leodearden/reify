@@ -60,6 +60,7 @@ import { fileURLToPath } from 'node:url';
 import {
   checkMeshCountParity,
   extractMeshCountInputs,
+  formatFailures,
   isInBandError,
   normalizeRpcEnvelope,
 } from './meshCountParity.mjs';
@@ -271,8 +272,13 @@ async function main() {
   // exists to prevent, so short-circuit: parity is simply NOT EVALUATED when the
   // inputs could not be read.
   if (extractionFailures.length > 0) {
+    // `gate` is data, so the headline can name what actually went wrong: a tool
+    // that FAILED (outage, §2a) reads differently from one that answered with
+    // something unreadable (shape) — different first move for whoever triages.
+    const outages = extractionFailures.filter(f => f.gate === 'outage').map(f => f.tool);
+    const kind = outages.length > 0 ? `debug-MCP tool outage (${outages.join(', ')})` : 'debug-MCP read';
     fail(
-      `debug-MCP read failed — parity NOT evaluated:\n  - ${extractionFailures.join('\n  - ')}\n` +
+      `${kind} — parity NOT evaluated:\n  - ${formatFailures(extractionFailures).join('\n  - ')}\n` +
         `These are tool/engine-level read failures (docs/debug-mcp-contract.md §2a), NOT ` +
         `evidence of a mesh-count regression: the invariant was never tested. Restore the ` +
         `failing read, then re-run.`,
@@ -293,7 +299,8 @@ async function main() {
     console.error('  only in viewport_state:', JSON.stringify(onlyViewport));
     console.error('  only in mesh_stats:    ', JSON.stringify(onlyStats));
     fail(
-      `mesh-count parity violated under selective demand:\n  - ${parity.failures.join('\n  - ')}`,
+      `mesh-count parity violated under selective demand:\n  - ` +
+        `${formatFailures(parity.failures).join('\n  - ')}`,
     );
   }
 

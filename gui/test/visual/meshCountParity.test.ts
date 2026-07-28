@@ -13,11 +13,20 @@
  * ...but ONLY while demand is selective (demand_dispatch.full_scope === false).
  * Under full scope build_gui_state and build_gui_state_full_scene agree by
  * construction, so the equality is trivially true and proves nothing.
+ *
+ * ASSERT ON RECORDS, NOT PROSE. Every gate returns a {gate, tool, field,
+ * observed, expected} record, so the cases below check the observation itself
+ * (`f.gate`, `f.observed`) rather than substring-matching an English sentence —
+ * where `toContain("1")` would be satisfied by nearly any message and a
+ * tool-name filter silently depends on no other gate mentioning that tool. The
+ * rendered wording is pinned once, in the formatFailures block at the end,
+ * which is where the live run's self-diagnosis property actually lives.
  */
 import { describe, it, expect } from "vitest";
 import {
   checkMeshCountParity,
   extractMeshCountInputs,
+  formatFailures,
   isInBandError,
   normalizeRpcEnvelope,
   MESH_COUNT_PARITY_MIN_BODIES,
@@ -30,6 +39,17 @@ const OK_INPUT = {
   engineStateCount: 7,
   fullScope: false,
 };
+
+type Failure = {
+  gate: string;
+  tool: string;
+  field?: string;
+  observed: unknown;
+  expected?: unknown;
+};
+
+/** Every failure record for one tool. */
+const forTool = (failures: Failure[], tool: string) => failures.filter((f) => f.tool === tool);
 
 describe("checkMeshCountParity — (a) happy path", () => {
   it("passes when all three reads agree under selective demand", () => {
@@ -52,60 +72,95 @@ describe("checkMeshCountParity — (b) the 5348 regression", () => {
     expect(checkMeshCountParity(REGRESSION).ok).toBe(false);
   });
 
-  it("names BOTH drifting reads", () => {
-    const { failures } = checkMeshCountParity(REGRESSION);
-    expect(failures.some((f) => f.includes("mesh_stats"))).toBe(true);
-    expect(failures.some((f) => f.includes("engine_state"))).toBe(true);
-  });
-
-  it("reports the observed 50 vs 17 numbers", () => {
-    const joined = checkMeshCountParity(REGRESSION).failures.join("\n");
-    expect(joined).toContain("50");
-    expect(joined).toContain("17");
+  it("reports BOTH drifting reads as parity failures, with the observed numbers", () => {
+    // The whole verdict as data — nothing here can be satisfied by an unrelated
+    // message that happens to contain "50".
+    const { failures } = checkMeshCountParity(REGRESSION) as { failures: Failure[] };
+    expect(failures).toEqual([
+      {
+        gate: "parity",
+        tool: "mesh_stats",
+        field: "meshes.length",
+        observed: 17,
+        expected: 50,
+      },
+      {
+        gate: "parity",
+        tool: "engine_state",
+        field: "meshes.length",
+        observed: 17,
+        expected: 50,
+      },
+    ]);
   });
 });
 
 describe("checkMeshCountParity — (c) one-sided drift is localised", () => {
   it("names engine_state only when engine_state drifts", () => {
-    const { ok, failures } = checkMeshCountParity({ ...OK_INPUT, engineStateCount: 3 });
+    const { ok, failures } = checkMeshCountParity({ ...OK_INPUT, engineStateCount: 3 }) as {
+      ok: boolean;
+      failures: Failure[];
+    };
     expect(ok).toBe(false);
-    expect(failures.filter((f) => f.includes("engine_state"))).toHaveLength(1);
-    expect(failures.filter((f) => f.includes("mesh_stats"))).toHaveLength(0);
+    expect(failures.map((f) => f.tool)).toEqual(["engine_state"]);
   });
 
   it("names mesh_stats only when mesh_stats drifts", () => {
-    const { ok, failures } = checkMeshCountParity({ ...OK_INPUT, meshStatsCount: 3 });
+    const { ok, failures } = checkMeshCountParity({ ...OK_INPUT, meshStatsCount: 3 }) as {
+      ok: boolean;
+      failures: Failure[];
+    };
     expect(ok).toBe(false);
-    expect(failures.filter((f) => f.includes("mesh_stats"))).toHaveLength(1);
-    expect(failures.filter((f) => f.includes("engine_state"))).toHaveLength(0);
+    expect(failures.map((f) => f.tool)).toEqual(["mesh_stats"]);
   });
 
-  it("reports both observed numbers for the drifting read", () => {
-    const { failures } = checkMeshCountParity({ ...OK_INPUT, engineStateCount: 3 });
-    const msg = failures.find((f) => f.includes("engine_state"))!;
-    expect(msg).toContain("3");
-    expect(msg).toContain("7");
+  it("carries the drifting count AND the reference it was compared against", () => {
+    const { failures } = checkMeshCountParity({ ...OK_INPUT, engineStateCount: 3 }) as {
+      failures: Failure[];
+    };
+    expect(failures[0]!.observed).toBe(3);
+    expect(failures[0]!.expected).toBe(7);
   });
 });
 
 describe("checkMeshCountParity — (d) vacuity gate", () => {
   it("rejects a three-way-equal run taken under full scope", () => {
-    const { ok, failures } = checkMeshCountParity({ ...OK_INPUT, fullScope: true });
+    const { ok, failures } = checkMeshCountParity({ ...OK_INPUT, fullScope: true }) as {
+      ok: boolean;
+      failures: Failure[];
+    };
     expect(ok).toBe(false);
-    expect(failures).toHaveLength(1);
-  });
-
-  it("names full_scope, so a live run can tell which gate fired", () => {
-    // Token, not prose: the message is free to be reworded, but it must stay
-    // attributable to the vacuity gate rather than to a count mismatch.
-    const [msg] = checkMeshCountParity({ ...OK_INPUT, fullScope: true }).failures;
-    expect(msg).toContain("full_scope");
+    expect(failures).toEqual([
+      {
+        gate: "vacuity",
+        tool: "demand_dispatch",
+        field: "full_scope",
+        observed: true,
+        expected: false,
+      },
+    ]);
   });
 
   it("rejects a missing full_scope reading rather than assuming selectivity", () => {
-    const { ok, failures } = checkMeshCountParity({ ...OK_INPUT, fullScope: undefined });
+    // Same gate, but `observed` keeps "scope really was full" apart from "the
+    // scope was never read" — a distinction a single prose message loses.
+    const { ok, failures } = checkMeshCountParity({ ...OK_INPUT, fullScope: undefined }) as {
+      ok: boolean;
+      failures: Failure[];
+    };
     expect(ok).toBe(false);
-    expect(failures.some((f) => f.includes("full_scope"))).toBe(true);
+    expect(failures.map((f) => f.gate)).toEqual(["vacuity"]);
+    expect(failures[0]!.observed).toBeUndefined();
+  });
+
+  it("rejects a non-boolean full_scope reading", () => {
+    const { ok, failures } = checkMeshCountParity({ ...OK_INPUT, fullScope: "false" as never }) as {
+      ok: boolean;
+      failures: Failure[];
+    };
+    expect(ok).toBe(false);
+    expect(failures.map((f) => f.gate)).toEqual(["vacuity"]);
+    expect(failures[0]!.observed).toBe("false");
   });
 });
 
@@ -116,19 +171,30 @@ describe("checkMeshCountParity — (e) degenerate gate", () => {
       meshStatsCount: 0,
       engineStateCount: 0,
       fullScope: false,
-    });
+    }) as { ok: boolean; failures: Failure[] };
     expect(ok).toBe(false);
-    expect(failures.join("\n")).toContain(String(MESH_COUNT_PARITY_MIN_BODIES));
+    expect(failures).toEqual([
+      {
+        gate: "degenerate",
+        tool: "viewport_state",
+        field: "meshCount",
+        observed: 0,
+        expected: MESH_COUNT_PARITY_MIN_BODIES,
+      },
+    ]);
   });
 
   it("rejects a nonzero count that is still below the floor", () => {
-    const { ok } = checkMeshCountParity({
+    const { ok, failures } = checkMeshCountParity({
       viewportMeshCount: 1,
       meshStatsCount: 1,
       engineStateCount: 1,
       fullScope: false,
-    });
+    }) as { ok: boolean; failures: Failure[] };
     expect(ok).toBe(false);
+    expect(failures.map((f) => f.gate)).toEqual(["degenerate"]);
+    expect(failures[0]!.observed).toBe(1);
+    expect(failures[0]!.expected).toBe(MESH_COUNT_PARITY_MIN_BODIES);
   });
 
   it("accepts the same run when the floor is lowered via minBodies", () => {
@@ -143,16 +209,25 @@ describe("checkMeshCountParity — (e) degenerate gate", () => {
     ).toEqual({ ok: true, failures: [] });
   });
 
-  it("names the observed count and the floor", () => {
-    const { failures } = checkMeshCountParity({
-      viewportMeshCount: 1,
-      meshStatsCount: 1,
-      engineStateCount: 1,
+  it("honours a RAISED floor — the case a live driver uses to pin its fixture", () => {
+    // smoke_mesh_count_parity_e2e.mjs raises the floor to large_assembly.ri's
+    // known body count, because the generic floor of 2 only catches a TOTAL
+    // load failure: a partial load realizing 2-6 of the 7 bodies clears it and,
+    // if all three layers agree on the truncated set, reports a green run.
+    const partialLoad = {
+      viewportMeshCount: 4,
+      meshStatsCount: 4,
+      engineStateCount: 4,
       fullScope: false,
-    });
-    const msg = failures.find((f) => f.includes("viewport_state"))!;
-    expect(msg).toContain("1");
-    expect(msg).toContain("2");
+    };
+    expect(checkMeshCountParity(partialLoad).ok).toBe(true);
+    const raised = checkMeshCountParity({ ...partialLoad, minBodies: 7 }) as {
+      ok: boolean;
+      failures: Failure[];
+    };
+    expect(raised.ok).toBe(false);
+    expect(raised.failures.map((f) => f.gate)).toEqual(["degenerate"]);
+    expect(raised.failures[0]!.expected).toBe(7);
   });
 });
 
@@ -162,11 +237,10 @@ describe("checkMeshCountParity — (f) gates are independent", () => {
       ...OK_INPUT,
       meshStatsCount: 3,
       fullScope: true,
-    });
+    }) as { ok: boolean; failures: Failure[] };
     expect(ok).toBe(false);
-    expect(failures.length).toBeGreaterThanOrEqual(2);
-    expect(failures.some((f) => f.includes("full_scope"))).toBe(true);
-    expect(failures.some((f) => f.includes("mesh_stats"))).toBe(true);
+    expect(failures.map((f) => f.gate)).toEqual(["vacuity", "parity"]);
+    expect(forTool(failures, "mesh_stats").map((f) => f.observed)).toEqual([3]);
   });
 
   it("reports the degenerate failure AND both parity failures together", () => {
@@ -175,11 +249,10 @@ describe("checkMeshCountParity — (f) gates are independent", () => {
       meshStatsCount: 4,
       engineStateCount: 9,
       fullScope: false,
-    });
-    expect(failures.length).toBeGreaterThanOrEqual(3);
-    expect(failures.some((f) => f.includes("viewport_state.meshCount is"))).toBe(true);
-    expect(failures.some((f) => f.includes("mesh_stats"))).toBe(true);
-    expect(failures.some((f) => f.includes("engine_state"))).toBe(true);
+    }) as { failures: Failure[] };
+    expect(failures.map((f) => f.gate)).toEqual(["degenerate", "parity", "parity"]);
+    expect(failures.map((f) => f.tool)).toEqual(["viewport_state", "mesh_stats", "engine_state"]);
+    expect(failures.map((f) => f.observed)).toEqual([1, 4, 9]);
   });
 });
 
@@ -197,31 +270,48 @@ describe("checkMeshCountParity — (g) malformed counts fail loudly", () => {
     ["a numeric string", "7"],
   ];
 
+  const FIELDS: Array<[string, string, string]> = [
+    ["viewportMeshCount", "viewport_state", "meshCount"],
+    ["meshStatsCount", "mesh_stats", "meshes.length"],
+    ["engineStateCount", "engine_state", "meshes.length"],
+  ];
+
   for (const [label, bad] of CASES) {
-    it(`rejects ${label} viewport_state.meshCount`, () => {
-      const { ok, failures } = checkMeshCountParity({ ...OK_INPUT, viewportMeshCount: bad });
-      expect(ok).toBe(false);
-      expect(failures.some((f) => f.includes("viewport_state.meshCount"))).toBe(true);
-    });
-
-    it(`rejects ${label} mesh_stats count`, () => {
-      const { ok, failures } = checkMeshCountParity({ ...OK_INPUT, meshStatsCount: bad });
-      expect(ok).toBe(false);
-      expect(failures.some((f) => f.includes("mesh_stats"))).toBe(true);
-    });
-
-    it(`rejects ${label} engine_state count`, () => {
-      const { ok, failures } = checkMeshCountParity({ ...OK_INPUT, engineStateCount: bad });
-      expect(ok).toBe(false);
-      expect(failures.some((f) => f.includes("engine_state"))).toBe(true);
-    });
+    for (const [input, tool, field] of FIELDS) {
+      it(`rejects ${label} ${tool}.${field} as a shape problem`, () => {
+        const { ok, failures } = checkMeshCountParity({ ...OK_INPUT, [input]: bad }) as {
+          ok: boolean;
+          failures: Failure[];
+        };
+        expect(ok).toBe(false);
+        expect(forTool(failures, tool)).toEqual([
+          { gate: "shape", tool, field, observed: bad, expected: "non-negative-integer" },
+        ]);
+      });
+    }
   }
 
   it("does not emit a parity failure for a count it already rejected as malformed", () => {
-    // Exactly one engine_state failure — the malformed-shape one. Comparing an
-    // unusable value against the reference would just add noise.
-    const { failures } = checkMeshCountParity({ ...OK_INPUT, engineStateCount: undefined });
-    expect(failures.filter((f) => f.includes("engine_state"))).toHaveLength(1);
+    // Exactly one engine_state failure — the shape one. Comparing an unusable
+    // value against the reference would just add noise, and a `parity` gate on
+    // an unread field would claim the invariant was tested when it was not.
+    const { failures } = checkMeshCountParity({
+      ...OK_INPUT,
+      engineStateCount: undefined,
+    }) as { failures: Failure[] };
+    expect(forTool(failures, "engine_state").map((f) => f.gate)).toEqual(["shape"]);
+  });
+
+  it("suppresses BOTH parity comparisons when the reference itself is unusable", () => {
+    // A malformed viewport count is the reference for both comparisons; drifting
+    // reads must not be blamed against a value that was never read.
+    const { failures } = checkMeshCountParity({
+      ...OK_INPUT,
+      viewportMeshCount: undefined,
+      meshStatsCount: 3,
+    }) as { failures: Failure[] };
+    expect(failures.map((f) => f.gate)).toEqual(["shape"]);
+    expect(failures.map((f) => f.tool)).toEqual(["viewport_state"]);
   });
 });
 
@@ -241,21 +331,34 @@ describe("(h) total defensiveness — a bad ARGUMENT is a reading, not a crash",
   for (const [label, bad] of BAD_ARGS) {
     it(`checkMeshCountParity(${label}) reports failures instead of throwing`, () => {
       expect(() => checkMeshCountParity(bad as never)).not.toThrow();
-      const { ok, failures } = checkMeshCountParity(bad as never);
+      const { ok, failures } = checkMeshCountParity(bad as never) as {
+        ok: boolean;
+        failures: Failure[];
+      };
       expect(ok).toBe(false);
-      // Every field is unreadable, so every gate that can fire, fires.
-      expect(failures.some((f) => f.includes("full_scope"))).toBe(true);
-      expect(failures.some((f) => f.includes("viewport_state.meshCount"))).toBe(true);
-      expect(failures.some((f) => f.includes("mesh_stats"))).toBe(true);
-      expect(failures.some((f) => f.includes("engine_state"))).toBe(true);
+      // Every field is unreadable, so every gate that can fire, fires — and each
+      // says so as a shape/vacuity problem, never as parity.
+      expect(failures.map((f) => f.gate)).toEqual(["vacuity", "shape", "shape", "shape"]);
+      expect(failures.map((f) => f.tool)).toEqual([
+        "demand_dispatch",
+        "viewport_state",
+        "mesh_stats",
+        "engine_state",
+      ]);
     });
 
     it(`extractMeshCountInputs(${label}) names all four tools instead of throwing`, () => {
       expect(() => extractMeshCountInputs(bad as never)).not.toThrow();
-      const { inputs, failures } = extractMeshCountInputs(bad as never);
-      for (const tool of ["viewport_state", "mesh_stats", "engine_state", "demand_dispatch"]) {
-        expect(failures.some((f) => f.includes(tool))).toBe(true);
-      }
+      const { inputs, failures } = extractMeshCountInputs(bad as never) as {
+        inputs: Record<string, unknown>;
+        failures: Failure[];
+      };
+      expect(failures.map((f) => f.tool).sort()).toEqual([
+        "demand_dispatch",
+        "engine_state",
+        "mesh_stats",
+        "viewport_state",
+      ]);
       // And nothing downstream could mistake the result for a real reading.
       expect(inputs).toEqual({
         viewportMeshCount: undefined,
@@ -277,9 +380,10 @@ describe("(h) total defensiveness — a bad ARGUMENT is a reading, not a crash",
         engineStateCount: 1,
         fullScope: false,
         minBodies: badFloor as never,
-      });
+      }) as { ok: boolean; failures: Failure[] };
       expect(ok).toBe(false);
-      expect(failures.join("\n")).toContain(String(MESH_COUNT_PARITY_MIN_BODIES));
+      expect(failures.map((f) => f.gate)).toEqual(["degenerate"]);
+      expect(failures[0]!.expected).toBe(MESH_COUNT_PARITY_MIN_BODIES);
     }
   });
 });
@@ -411,22 +515,28 @@ describe("extractMeshCountInputs — (b) in-band tool errors", () => {
   ] as const;
 
   for (const [key, toolName, field] of TOOLS) {
-    it(`names ${toolName} when it returns {error: ...}`, () => {
+    it(`reports an errored ${toolName} as an OUTAGE, carrying the handler's message`, () => {
+      // gate 'outage', not 'shape': the distinction is what tells a caller the
+      // invariant was never tested rather than tested-and-violated.
       const p = { ...livePayloads(), [key]: { error: "no active session" } };
-      const { failures } = extractMeshCountInputs(p as never);
-      expect(failures.some((f) => f.includes(toolName))).toBe(true);
-      expect(failures.some((f) => f.includes("no active session"))).toBe(true);
+      const { failures } = extractMeshCountInputs(p as never) as { failures: Failure[] };
+      expect(failures).toEqual([
+        { gate: "outage", tool: toolName, observed: "no active session" },
+      ]);
     });
 
     it(`leaves ${field} undefined for an errored ${toolName}, never a usable-looking value`, () => {
       const p = { ...livePayloads(), [key]: { error: "boom" } };
-      const { inputs, failures } = extractMeshCountInputs(p as never);
+      const { inputs, failures } = extractMeshCountInputs(p as never) as {
+        inputs: Record<string, unknown>;
+        failures: Failure[];
+      };
       // Both halves matter, and neither implies the other: the field must not
       // carry anything downstream code could mistake for a real reading, AND
       // the outage must be named — an undefined field with no named failure
       // would surface as a mere shape problem.
       expect(inputs[field]).toBeUndefined();
-      expect(failures.some((f) => f.includes(toolName))).toBe(true);
+      expect(forTool(failures, toolName).map((f) => f.gate)).toEqual(["outage"]);
     });
   }
 
@@ -442,16 +552,19 @@ describe("extractMeshCountInputs — (b) in-band tool errors", () => {
 });
 
 describe("extractMeshCountInputs — (c) missing / malformed payloads", () => {
-  it("names each tool whose payload is null or undefined", () => {
+  it("names each tool whose payload is null or undefined, as a shape problem", () => {
     const { failures } = extractMeshCountInputs({
       viewportState: null,
       meshStats: undefined,
       engineState: null,
       demandDispatch: undefined,
-    });
-    for (const tool of ["viewport_state", "mesh_stats", "engine_state", "demand_dispatch"]) {
-      expect(failures.some((f) => f.includes(tool))).toBe(true);
-    }
+    }) as { failures: Failure[] };
+    expect(failures).toEqual([
+      { gate: "shape", tool: "viewport_state", observed: null, expected: "object" },
+      { gate: "shape", tool: "mesh_stats", observed: undefined, expected: "object" },
+      { gate: "shape", tool: "engine_state", observed: null, expected: "object" },
+      { gate: "shape", tool: "demand_dispatch", observed: undefined, expected: "object" },
+    ]);
   });
 
   it("does not throw on a wholly empty argument", () => {
@@ -462,44 +575,69 @@ describe("extractMeshCountInputs — (c) missing / malformed payloads", () => {
   it("names mesh_stats when the meshes key is missing", () => {
     const p = livePayloads();
     delete (p.meshStats as Record<string, unknown>).meshes;
-    const { failures } = extractMeshCountInputs(p);
-    expect(failures.some((f) => f.includes("mesh_stats"))).toBe(true);
-    expect(failures.some((f) => f.includes("engine_state"))).toBe(false);
+    const { failures } = extractMeshCountInputs(p) as { failures: Failure[] };
+    expect(failures).toEqual([
+      { gate: "shape", tool: "mesh_stats", field: "meshes", observed: undefined, expected: "array" },
+    ]);
   });
 
   it("names engine_state when meshes is present but not an array", () => {
     const p = livePayloads();
     (p.engineState as Record<string, unknown>).meshes = { "0": {} };
-    const { failures } = extractMeshCountInputs(p);
-    expect(failures.some((f) => f.includes("engine_state"))).toBe(true);
-    expect(failures.some((f) => f.includes("mesh_stats"))).toBe(false);
+    const { failures } = extractMeshCountInputs(p) as { failures: Failure[] };
+    expect(failures).toEqual([
+      {
+        gate: "shape",
+        tool: "engine_state",
+        field: "meshes",
+        observed: { "0": {} },
+        expected: "array",
+      },
+    ]);
   });
 
   it("names viewport_state when meshCount is absent or not a count", () => {
     const p = livePayloads();
     delete (p.viewportState as Record<string, unknown>).meshCount;
-    expect(extractMeshCountInputs(p).failures.some((f) => f.includes("viewport_state"))).toBe(true);
+    expect((extractMeshCountInputs(p).failures as Failure[])[0]).toEqual({
+      gate: "shape",
+      tool: "viewport_state",
+      field: "meshCount",
+      observed: undefined,
+      expected: "non-negative-integer",
+    });
 
     const q = livePayloads();
     (q.viewportState as Record<string, unknown>).meshCount = "3";
-    expect(extractMeshCountInputs(q).failures.some((f) => f.includes("viewport_state"))).toBe(true);
+    expect((extractMeshCountInputs(q).failures as Failure[])[0]!.observed).toBe("3");
   });
 
   it("names demand_dispatch when full_scope is absent or not a boolean", () => {
     const p = livePayloads();
     delete (p.demandDispatch as Record<string, unknown>).full_scope;
-    expect(extractMeshCountInputs(p).failures.some((f) => f.includes("full_scope"))).toBe(true);
+    expect((extractMeshCountInputs(p).failures as Failure[])[0]).toEqual({
+      gate: "shape",
+      tool: "demand_dispatch",
+      field: "full_scope",
+      observed: undefined,
+      expected: "boolean",
+    });
 
     const q = livePayloads();
     (q.demandDispatch as Record<string, unknown>).full_scope = "false";
-    expect(extractMeshCountInputs(q).failures.some((f) => f.includes("full_scope"))).toBe(true);
+    expect((extractMeshCountInputs(q).failures as Failure[])[0]!.observed).toBe("false");
   });
 
   it("does not read fullScope from the camelCase key (the Rust payload is snake_case)", () => {
     const p = livePayloads();
     delete (p.demandDispatch as Record<string, unknown>).full_scope;
     (p.demandDispatch as Record<string, unknown>).fullScope = false;
-    expect(extractMeshCountInputs(p).failures.some((f) => f.includes("full_scope"))).toBe(true);
+    const { inputs, failures } = extractMeshCountInputs(p) as {
+      inputs: Record<string, unknown>;
+      failures: Failure[];
+    };
+    expect(failures.map((f) => f.field)).toEqual(["full_scope"]);
+    expect(inputs.fullScope).toBeUndefined();
   });
 });
 
@@ -516,9 +654,9 @@ describe("extractMeshCountInputs — (d) full_scope: true extracts faithfully", 
     const p = livePayloads();
     p.demandDispatch.full_scope = true;
     const { inputs } = extractMeshCountInputs(p);
-    const parity = checkMeshCountParity(inputs);
+    const parity = checkMeshCountParity(inputs) as { ok: boolean; failures: Failure[] };
     expect(parity.ok).toBe(false);
-    expect(parity.failures.some((f) => f.includes("full_scope"))).toBe(true);
+    expect(parity.failures.map((f) => f.gate)).toEqual(["vacuity"]);
   });
 });
 
@@ -606,14 +744,19 @@ describe("normalizeRpcEnvelope — the two failure dialects folded into one shap
     expect(isInBandError(payload)).toBe(true);
   });
 
-  it("yields null for an image content block", () => {
-    // `screenshot` answers with an image block; the driver treats that as
-    // "nothing to interpret", not as a failure.
-    const { transportError, payload } = normalizeRpcEnvelope({
-      result: { content: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] },
-    });
-    expect(transportError).toBeUndefined();
-    expect(payload).toBeNull();
+  it("yields null when there is no text block to interpret", () => {
+    // Empty/absent content, or a non-text block such as the image one that the
+    // screenshot tools answer with: "nothing to interpret", not a failure. No
+    // caller in this module reads image data, so the block is not decoded.
+    for (const result of [
+      { content: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] },
+      { content: [] },
+      {},
+    ]) {
+      const { transportError, payload } = normalizeRpcEnvelope({ result });
+      expect(transportError).toBeUndefined();
+      expect(payload).toBeNull();
+    }
   });
 
   it("hands back the raw text when the block is not JSON", () => {
@@ -638,29 +781,118 @@ describe("normalizeRpcEnvelope — the two failure dialects folded into one shap
   });
 });
 
+describe("formatFailures — the one place a record becomes a sentence", () => {
+  // The live run is read by a human, so each rendered line must still be
+  // self-diagnosing: name the offending read AND the number observed. Pinned
+  // HERE, once, instead of re-asserted as substring matches across every gate.
+  it("renders a parity failure with both counts and the drifting tool", () => {
+    const { failures } = checkMeshCountParity({
+      viewportMeshCount: 50,
+      meshStatsCount: 17,
+      engineStateCount: 17,
+      fullScope: false,
+    });
+    const [first] = formatFailures(failures);
+    expect(first).toContain("mesh_stats.meshes.length");
+    expect(first).toContain("(17)");
+    expect(first).toContain("(50)");
+  });
+
+  it("renders the vacuity failure so a live run can tell WHICH gate fired", () => {
+    const { failures } = checkMeshCountParity({ ...OK_INPUT, fullScope: true });
+    const [msg] = formatFailures(failures);
+    expect(msg).toContain("full_scope");
+    expect(msg).toContain("VACUOUS");
+  });
+
+  it("renders the degenerate failure with the observed count and the floor", () => {
+    const { failures } = checkMeshCountParity({ ...OK_INPUT, minBodies: 9 });
+    const [msg] = formatFailures(failures);
+    expect(msg).toContain("viewport_state.meshCount is 7");
+    expect(msg).toContain("floor of 9");
+  });
+
+  it("renders an outage with the handler's message and the contract reference", () => {
+    const p = { ...livePayloads(), meshStats: { error: "engine poisoned" } };
+    const { failures } = extractMeshCountInputs(p as never);
+    const [msg] = formatFailures(failures);
+    expect(msg).toContain("mesh_stats");
+    expect(msg).toContain("engine poisoned");
+    expect(msg).toContain("§2a");
+  });
+
+  it("distinguishes a missing field from a present-but-wrong one", () => {
+    const missing = formatFailures(
+      extractMeshCountInputs({ ...livePayloads(), meshStats: {} } as never).failures,
+    );
+    expect(missing[0]).toContain("mesh_stats.meshes is missing or not an array");
+
+    const wrong = formatFailures(
+      extractMeshCountInputs({ ...livePayloads(), meshStats: { meshes: 3 } } as never).failures,
+    );
+    expect(wrong[0]).toContain("mesh_stats.meshes is not an array: 3");
+  });
+
+  it("renders one line per failure, in the order the gates fired", () => {
+    const { failures } = checkMeshCountParity({
+      viewportMeshCount: 1,
+      meshStatsCount: 4,
+      engineStateCount: 9,
+      fullScope: true,
+    });
+    expect(formatFailures(failures)).toHaveLength(failures.length);
+    expect(formatFailures(failures)).toHaveLength(4);
+  });
+
+  it("never throws on a malformed or unrecognised record", () => {
+    // A renderer that crashes takes down the diagnostic it was about to print.
+    expect(() => formatFailures(null as never)).not.toThrow();
+    expect(formatFailures(null as never)).toEqual([]);
+    expect(() =>
+      formatFailures([null, 42, { gate: "future-gate", tool: "mesh_stats", observed: 1 }] as never),
+    ).not.toThrow();
+    const rendered = formatFailures([
+      { gate: "future-gate", tool: "mesh_stats", observed: 1 },
+    ] as never);
+    expect(rendered[0]).toContain("mesh_stats");
+    expect(rendered[0]).toContain("future-gate");
+  });
+});
+
 describe("extractMeshCountInputs — composes with checkMeshCountParity", () => {
   it("keeps read failures in their OWN list, so a caller can refuse to evaluate parity", () => {
     // The two lists stay SEPARATE, and that separation is load-bearing: a tool
     // outage leaves its field `undefined`, over which the parity checker would
-    // emit a second, misleading "not a non-negative integer" message. The live
-    // driver therefore reports extraction failures under their own headline and
-    // never calls checkMeshCountParity at all — a failed READ is not a failed
-    // INVARIANT. This pins that the extractor gives it what it needs to tell
-    // the two apart.
+    // emit a second, misleading shape failure under a headline blaming a
+    // 5348-class cross-layer regression. The live driver therefore reports
+    // extraction failures under their own headline and never calls
+    // checkMeshCountParity at all — a failed READ is not a failed INVARIANT.
     const p = livePayloads();
     p.meshStats = { error: "engine poisoned" } as never;
     p.engineState.meshes = p.engineState.meshes.slice(0, 1);
 
-    const { inputs, failures } = extractMeshCountInputs(p);
+    const { inputs, failures } = extractMeshCountInputs(p) as {
+      inputs: Record<string, unknown>;
+      failures: Failure[];
+    };
 
-    // The outage is fully diagnosed WITHOUT consulting the parity checker.
-    expect(failures.some((f) => f.includes("mesh_stats"))).toBe(true);
-    expect(failures.some((f) => f.includes("engine poisoned"))).toBe(true);
+    // The outage is fully diagnosed WITHOUT consulting the parity checker, and
+    // is labelled as one — the gate a caller branches on.
+    expect(failures).toEqual([
+      { gate: "outage", tool: "mesh_stats", observed: "engine poisoned" },
+    ]);
 
-    // Genuine drift in a read that DID succeed is still the parity gate's call.
-    const parity = checkMeshCountParity(inputs);
+    // Genuine drift in a read that DID succeed is still the parity gate's call —
+    // but note what ELSE the checker emits for the errored tool: a `shape`
+    // failure over the `undefined` its outage left behind. That second, misleading
+    // line under a "parity violated" headline is precisely why the driver
+    // short-circuits on a non-empty extraction list instead of calling this at all.
+    const parity = checkMeshCountParity(inputs) as { ok: boolean; failures: Failure[] };
     expect(parity.ok).toBe(false);
-    expect(parity.failures.some((f) => f.includes("engine_state"))).toBe(true);
+    expect(parity.failures.map((f) => `${f.gate}:${f.tool}`)).toEqual([
+      "shape:mesh_stats",
+      "parity:engine_state",
+    ]);
   });
 
   it("yields a clean pass for a healthy selective-demand run", () => {
