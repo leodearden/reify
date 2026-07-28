@@ -800,17 +800,26 @@ fn get_or_undef_map_returns_undef() {
 /// End-to-end: `get_or(map{"k" => 1mm}, "absent", 0mm)` compiled with the
 /// stdlib must evaluate to 0mm (absent key recovers to default).
 ///
-/// CORRECTED BY TASK 5410 (this comment previously called the test
-/// "coincidentally correct" and therefore a no-op — that premise was WRONG for
-/// this harness). MEASURED under intercept removal: this test FAILS with
-/// `left: Undef`. It is a real, working drift guard for `get_or`'s ABSENT-KEY
-/// path (PRD ζ / BT10), proving the compiler-emitted `UserFunctionCall`
-/// function_name+arity reaches the intercept.
+/// COINCIDENCE-LIMITED under the prelude-backed harness — the single canonical
+/// statement, superseding both the original "coincidentally correct" note and
+/// #5410's retraction of it. Each was right about a different harness:
+///   - the original note said the expected 0mm coincides with
+///     `option_recovery.ri`'s `{ dflt }` placeholder, so intercept removal
+///     could not make the test fail. TRUE of a table where that body is
+///     registered — i.e. this one.
+///   - #5410 called that premise WRONG. TRUE of #5410's user-source-only
+///     harness, where the body was absent and the test failed with `Undef`.
 ///
-/// The old note reasoned about `option_recovery.ri`'s `{ dflt }` body returning
-/// `0mm` and so agreeing with the expected value — true of the `.ri` SOURCE,
-/// but this harness never registers that body. See the mechanism note above
-/// `e2e_or_default_some_with_stdlib` (and #5593 for the scope residue).
+/// MEASURED under intercept removal (task 5593): this test PASSES — the only
+/// one of the 17 guards that does. `{ dflt }` yields exactly the expected 0mm,
+/// so it carries NO value-discriminating signal here.
+///
+/// `get_or` coverage is preserved by `e2e_get_or_present_key_with_stdlib`,
+/// which expects 1mm against the same placeholder's 0mm and does fail. This
+/// guard is kept because it still pins that the compiler-emitted
+/// `UserFunctionCall` name+arity reaches the intercept at all (PRD ζ / BT10);
+/// it is simply not the guard that proves the intercept BEATS the placeholder.
+/// See the mechanism note above `e2e_or_default_some_with_stdlib`.
 #[test]
 fn e2e_get_or_absent_key_with_stdlib() {
     let module = reify_test_support::compile_source_with_stdlib(
@@ -833,17 +842,17 @@ fn e2e_get_or_absent_key_with_stdlib() {
 /// End-to-end: `get_or(map{"k" => 1mm}, "k", 0mm)` compiled with the stdlib
 /// must evaluate to 1mm (present key → intercept fires → returns map value).
 ///
-/// CORRECTED BY TASK 5410: this comment previously said the absent-key e2e
-/// (`e2e_get_or_absent_key_with_stdlib`) was "coincidentally GREEN ... and does
-/// NOT prove the intercept fires". That is FALSE for this harness. MEASURED
-/// under intercept removal: BOTH tests fail, each with `left: Undef`. Both are
-/// real drift guards; this present-key case additionally pins the map-lookup
-/// RESULT (1mm), which the absent-key case cannot.
+/// THIS IS THE DISCRIMINATING `get_or` GUARD. MEASURED under intercept removal
+/// (task 5593): fails with `left: 0mm` — `option_recovery.ri`'s `{ dflt }`
+/// placeholder — against the expected 1mm. Its sibling
+/// `e2e_get_or_absent_key_with_stdlib` expects 0mm, which the placeholder also
+/// yields, so that one PASSES and proves nothing about the placeholder; see its
+/// doc comment for the full history. Between the two, `get_or` coverage of the
+/// silent-wrong-value mode rests entirely here.
 ///
-/// The `.ri` reasoning behind the old claim remains true of the `.ri` SOURCE —
-/// `option_recovery.ri`'s `{ dflt }` body would return `0mm`, agreeing with the
-/// absent-key expectation — it is just not what this harness observes. See the
-/// mechanism note above `e2e_or_default_some_with_stdlib`.
+/// Beyond drift, this case also pins the map-lookup RESULT (1mm), which the
+/// absent-key case cannot. See the mechanism note above
+/// `e2e_or_default_some_with_stdlib`.
 #[test]
 fn e2e_get_or_present_key_with_stdlib() {
     let module = reify_test_support::compile_source_with_stdlib(
@@ -878,11 +887,18 @@ fn e2e_get_or_present_key_with_stdlib() {
 /// propagation genuinely regressed. Without `w` this test pins no behaviour a
 /// broken harness would not also satisfy.
 ///
-/// MEASURED (task 5410 step-11, three intercept gates disabled): the `w`
-/// assertion FAILS with `left: Undef` — so, unlike the single-cell version this
-/// replaces, the test as a whole is RED under intercept removal. The `v`
-/// assertion alone would stay GREEN, because the `eval_user_function_call`
-/// fallthrough value and the correct INV-2 answer are both `Undef`.
+/// MEASURED (task 5593, three intercept gates disabled): the `w` assertion
+/// FAILS with `left: 0mm` — `option_recovery.ri`'s `{ dflt }` placeholder —
+/// against the expected 1mm, so the test as a whole is RED under intercept
+/// removal.
+///
+/// THE `v` ASSERTION CANNOT DISCRIMINATE, even under the prelude-backed table,
+/// and `w` is therefore load-bearing rather than decorative. `v`'s subject is
+/// `undef`, and the any-arg-undef short-circuit at reify-expr/src/lib.rs:1610
+/// returns `Value::Undef` BEFORE `find_matching_compiled_function` is ever
+/// consulted. The placeholder body is never reached, so `v` observes `Undef`
+/// whether or not the intercept fired — which is also the correct INV-2 answer.
+/// `w` is the only half of this test that can go RED.
 ///
 /// The absent-KEY path's own drift coverage lives in
 /// `e2e_get_or_absent_key_with_stdlib` (above), which also fails with
