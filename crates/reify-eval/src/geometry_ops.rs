@@ -4703,8 +4703,44 @@ fn profile_circle(
     Ok(reify_ir::GeometryOp::CircleProfile { radius })
 }
 
+/// Shoelace-formula signed area of a closed 2D ring, in SI square metres.
+///
+/// CCW ring → positive; CW ring → negative; collinear / degenerate ring → 0.0
+/// (within float tolerance). A ring of fewer than 3 points encloses nothing,
+/// so it is 0.0 by definition.
+///
+/// Deliberately a local copy of `ring_signed_area_2d`
+/// (`reify-solver-elastic/src/mesher.rs:319`) rather than a shared import:
+/// reify-eval must not depend on reify-solver-elastic. Both operate on the
+/// same SI-metre coordinates, so [`profile_polygon`]'s build-time gate is a
+/// strict pre-image of the downstream `validate_boundary` gate.
+fn ring_signed_area_2d(ring: &[[f64; 2]]) -> f64 {
+    if ring.len() < 3 {
+        return 0.0;
+    }
+    let n = ring.len();
+    let mut acc: f64 = 0.0;
+    for i in 0..n {
+        let p = ring[i];
+        let q = ring[(i + 1) % n];
+        acc += p[0] * q[1] - q[0] * p[1];
+    }
+    acc * 0.5
+}
+
+/// Degenerate-ring tolerance, in SI square metres.
+///
+/// NOT an independently-chosen tolerance: this is the same value
+/// `validate_boundary` (`reify-solver-elastic/src/mesher.rs:353`) already
+/// applies to the sampled outer ring, on the same SI-metre coordinates.
+/// Keeping the two equal is what makes the build-time check a strict
+/// pre-image of the existing downstream gate — a ring this check accepts can
+/// still fail later for other reasons, but a ring it rejects would certainly
+/// have failed there.
+const DEGENERATE_RING_AREA_TOLERANCE: f64 = 1e-14;
+
 fn profile_polygon(
-    _kind: &reify_compiler::ProfileKind,
+    kind: &reify_compiler::ProfileKind,
     args: &[(String, reify_ir::CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
@@ -4746,6 +4782,24 @@ fn profile_polygon(
         diagnostics,
     )?;
     let points: Vec<[f64; 2]> = coords.chunks_exact(2).map(|c| [c[0], c[1]]).collect();
+    // A well-formed-arity but ZERO-AREA ring (e.g. three collinear points)
+    // clears the compiler-side arity guard and used to survive all the way to
+    // a late, opaque `Mesh2dError::DegenerateBoundary`. Catch it here instead.
+    // The check is on `abs()`, so a clockwise (negative-area) ring is fine —
+    // winding order is not this gate's business. Self-intersection is
+    // deliberately NOT detected here (an O(n²) sweep with robust predicates is
+    // materially different engineering; tracked separately).
+    let signed_area = ring_signed_area_2d(&points);
+    if points.len() < 3 || signed_area.abs() < DEGENERATE_RING_AREA_TOLERANCE {
+        diagnostics.push(Diagnostic::warning(format!(
+            "{} profile dropped: {} point(s) enclose a degenerate signed area of {} \
+             (the ring must enclose a non-zero area)",
+            kind,
+            points.len(),
+            signed_area
+        )));
+        return Err(format!("degenerate (zero-area) {} profile", kind));
+    }
     Ok(reify_ir::GeometryOp::PolygonProfile { points })
 }
 
