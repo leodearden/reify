@@ -1446,3 +1446,104 @@ fn bt11_per_sub_parameter_override_reaches_the_folded_instance_path_cost() {
         default_cost * solved_q,
     );
 }
+
+// ---------------------------------------------------------------------------
+// [M-WHOLE ε] (task #5017) — BT3/BT4 CI integration gate: the SHIPPED
+// `examples/whole_model_cost_min.ri`, a genuinely WHOLE-model cluster of TWO
+// coupled children under ONE parent cost objective.
+//
+// PRD: docs/prds/v0_6/whole-model-objective-coupling.md §1.1/§6 (BT3, BT4);
+// docs/prds/v0_6/whole-model-joint-drive-seam.md.
+//
+// NAMING TRAP: this file already has `bt3_objective_and_constraint_position_
+// cost_is_expanded`, which is the *joint-drive-seam PRD's* (#5188/#5189) own
+// "BT-3" (an objective/constraint-position `cost()` expansion check) — a
+// DIFFERENT boundary test from M-WHOLE's BT3 (the cross-scope solved-auto
+// surface read). Every M-WHOLE test below is prefixed `mwhole_` so the two
+// unrelated BT-numbering schemes never collide in a reader's mind.
+// ---------------------------------------------------------------------------
+
+/// The SHIPPED M-WHOLE ε example, read from disk rather than copied into a
+/// fixture string — so this test degrades loudly if the published example
+/// drifts away from the behaviour its own header comment advertises.
+///
+/// Idiom: this file's own `JOINT_DRIVE_EXAMPLE_PATH`;
+/// `crates/reify-eval/tests/continuous_cost_min_example_e2e.rs`.
+const WHOLE_MODEL_COST_MIN_EXAMPLE_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/whole_model_cost_min.ri"
+);
+
+/// BT4(i) — the joint-drive signal generalised to TWO coupled children under
+/// ONE parent objective (§6 BT1's shape). Unlike this file's
+/// `bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade`
+/// (a single-child, single-auto cluster), this fixture couples
+/// `{CostAssembly, Plate, Spacer}` into ONE cluster of dimension 2 — the
+/// signal BT-5 cannot show: a whole assembly, not one child.
+///
+/// Both assertions below are COMPARATIVE (strict inequality), never an
+/// absolute converged value or a tuned tolerance — the house norm for
+/// `.ri`-layer tests (see `bt5_...`'s doc comment for the full penalty-method
+/// / seed-fallback rationale this fixture inherits unchanged).
+///
+/// # Achievability — DERIVED, not guessed
+///
+/// * FROZEN (baseline derived in-test by `strip_inlined_minimize`, never
+///   transcribed): with the `minimize` stripped, NO cluster forms — each
+///   child resolves ALONE, bottom-up, with live inequality constraints, so
+///   `build_centrality_objective` synthesises a Chebyshev-centre objective
+///   per child and each auto freezes at its own BOX CENTRE.
+/// * MERGED: `compute_clusters`' union-find merges `{CostAssembly, Plate,
+///   Spacer}` into ONE cluster (each child contributes an objective-read →
+///   auto-owner edge), dimension 2 — far below `WHOLE_MODEL_CLUSTER_DIM_CAP`
+///   (12). No centrality objective is synthesised (only synthesised when
+///   `problem.objective.is_none()`), so cost-minimisation governs both autos
+///   toward their lower brackets instead.
+/// * `line_cost = unit_cost * quantity_produced` is strictly increasing in
+///   each auto, so cost-minimisation drives both children's autos strictly
+///   below their frozen box centres.
+///
+/// # Structure-keyed, not instance-path
+///
+/// The solver's `auto_params`, and hence its solved write-back, are keyed by
+/// the DECLARING TEMPLATE (`ValueCellId::new(&structure.name, &param.name)`);
+/// the instance-path spelling (e.g. `CostAssembly.plate.quantity_produced`)
+/// is never written for a solver-resolved auto in EITHER half — the same gap
+/// `bt5_...` documents at :1014-1019.
+///
+/// RED until `examples/whole_model_cost_min.ri` exists and both children's
+/// boxes/unit_costs are tuned to produce a live, non-degenerate gap.
+#[test]
+fn mwhole_bt4_parent_objective_jointly_drives_both_child_autos_below_the_frozen_cascade() {
+    let merged_src =
+        std::fs::read_to_string(WHOLE_MODEL_COST_MIN_EXAMPLE_PATH).unwrap_or_else(|e| {
+            panic!(
+                "Could not read {WHOLE_MODEL_COST_MIN_EXAMPLE_PATH}: {e} — run the next impl \
+                 step to create the example file",
+            )
+        });
+    let frozen_src = strip_inlined_minimize(&merged_src);
+
+    let merged = eval_ri_with_real_solver(&merged_src, "merged (inlined `minimize` present)");
+    let frozen = eval_ri_with_real_solver(&frozen_src, "frozen cascade (`minimize` removed)");
+
+    // Both children, structure-keyed. A `for` loop (rather than two copies of
+    // the same block) keeps the assertion — and its failure message — a
+    // single source of truth for both children.
+    for structure in ["Plate", "Spacer"] {
+        let auto_id = ValueCellId::new(structure, "quantity_produced");
+        let merged_q = scalar_si(&merged, &auto_id, "merged");
+        let frozen_q = scalar_si(&frozen, &auto_id, "frozen-cascade");
+
+        assert!(
+            merged_q < frozen_q,
+            "BT4(i) [{structure}]: the merged solve must drive this child's \
+             auto STRICTLY BELOW the value the bottom-up frozen cascade pins \
+             it at (cost-min argmin toward the box's lower bound vs. the \
+             synthesised Chebyshev centre). Got merged={merged_q} vs \
+             frozen={frozen_q} (difference {}). Equal values mean the \
+             parent's objective never reached this child's auto at all.",
+            frozen_q - merged_q,
+        );
+    }
+}
