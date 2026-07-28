@@ -3,10 +3,12 @@ use std::path::{Path, PathBuf};
 /// Returns `true` when `line` is an outer (`///`) or inner (`//!`) doc-comment
 /// line, after stripping leading whitespace.  Regular `//` line comments and
 /// `/* ... */` block comments return `false` — only `///` and `//!` are skipped
-/// by both scanners.  Note that `////` (four or more slashes) also returns
+/// by the scanners that use this predicate (the two here, plus
+/// [`crate::temp_dirs::find_unguarded_temp_dir_sites`]).  Note that `////`
+/// (four or more slashes) also returns
 /// `true` due to `starts_with("///")` semantics, preserving the existing
 /// behavior from the original field-local scanner.
-fn is_doc_comment_line(line: &str) -> bool {
+pub(crate) fn is_doc_comment_line(line: &str) -> bool {
     let trimmed = line.trim_start();
     trimmed.starts_with("///") || trimmed.starts_with("//!")
 }
