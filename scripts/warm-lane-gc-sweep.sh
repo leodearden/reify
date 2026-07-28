@@ -18,18 +18,26 @@
 # rename-then-background-rm leaves behind when SIGKILL'd mid-reseed. An entry is
 # removed only when its encoded PID is dead AND no live process still references
 # it (cwd / open fd / mmap). This lives in the periodic δ sweep, not gc.sh's
-# per-acquire ε reclaim, because the live-reference /proc scan is too costly for
-# the hot path. See _reap_stale_trash below.
+# per-acquire ε reclaim — see _reap_stale_trash below for the reason, which is
+# NOT "the /proc scan is too costly for ε": task 5572 moved the lane guard's own
+# per-entry scan onto exactly that path, cost measured and accepted.
 #
-# Live-consumer lane guard (task 5378): on every run this sweep also scans each
-# pool-lane DIR under $MOUNT for a live process reference (cwd / open fd / mmap
-# at or under the lane) and passes any live lane's basename to gc.sh via
-# --extra-protect-glob, so gc.sh's Pass-1 always-reclaim reset skips a lane whose
-# consumer's cargo verify build is mid-flight while its ACQUIRE flock is already
-# free — the reclaim-side liveness gap of esc-5375-1. Reuses the reaper's batch
-# /proc scanner (_live_referenced_paths); lives in this periodic δ backstop, not
-# gc.sh's per-acquire ε hot path, for the same cost reason. Fail-open (an empty
-# or failed scan leaves reclaim unchanged). See _live_consumer_protect_csv below.
+# Live-consumer lane guard (task 5378 → MOVED INTO warm-lane-gc.sh by task 5572):
+# this sweep no longer computes a live-lane CSV and no longer passes
+# --extra-protect-glob. The guard now lives in the PRIMITIVE, checked per lane
+# (and per orphan) immediately before that entry's reset/remove.
+#
+# Two reasons, both load-bearing:
+#   1. Two entry points, one operation. This δ wrapper was only ONE caller of
+#      gc.sh; dark-factory's ε reclaim (git_ops.py _run_warm_lane_gc_reclaim)
+#      invokes `warm-lane-gc.sh reclaim --mount <base>` and has never passed
+#      --extra-protect-glob. A wrapper-side guard could therefore never cover the
+#      hot per-acquire path — which is precisely where esc-5375-1 bites. In the
+#      primitive, every caller inherits it with no dark-factory change.
+#   2. The up-front CSV was itself a TOCTOU. It was computed ONCE and then
+#      consumed across a 25-40 minute lane-by-lane traversal, so a lane that went
+#      live mid-pass was unprotected. Checking per lane, immediately before that
+#      lane's reset and under the flock gc.sh already holds, closes the window.
 # The complementary long-term fix — the verify CONSUMER holding ${LANE_DIR}.lock
 # across its whole run — is dark-factory wiring (cross-repo seam), filed separately.
 #
@@ -72,7 +80,9 @@
 # Exit codes:
 #   0  — Sweep attempted or skipped (fail-open).
 #   1  — Runtime error propagated from gc.sh.
-#   2  — Usage error: unknown flag or non-integer --critical-free-gib.
+#   2  — Usage/WIRING error: unknown flag, non-integer --critical-free-gib, or a
+#        missing sibling library (scripts/lib_live_refs.sh — an incomplete
+#        deployment, which no retry fixes). Matches warm-lane-gc.sh's taxonomy.
 #
 # Env knobs:
 #   REIFY_WARM_LANE_GC_SWEEP_MOUNT               — default --mount
@@ -83,6 +93,18 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Shared live-reference /proc scanner (live_referenced_paths / live_ref_present).
+# Single definition, two consumers: this sweep's .reseed-trash reaper and
+# warm-lane-gc.sh's per-lane reclaim gate (task 5572).
+# Exit 2 (usage/WIRING), not 1 (runtime): an incomplete deployment that no retry
+# fixes — mirrors warm-lane-gc.sh's guard so both consumers report it alike.
+if [ ! -f "$SCRIPT_DIR/lib_live_refs.sh" ]; then
+    echo "warm-lane-gc-sweep.sh: ERROR — scripts/lib_live_refs.sh not found next to warm-lane-gc-sweep.sh" >&2
+    exit 2
+fi
+# shellcheck source=scripts/lib_live_refs.sh
+source "$SCRIPT_DIR/lib_live_refs.sh"
 
 # ── log helpers (all write to stderr) ──────────────────────────────────────────
 _warn() { printf '[warm-lane-gc-sweep] WARN:  %s\n' "$*" >&2; }
@@ -114,7 +136,8 @@ Usage: $(basename "$0") [--mount DIR] [--gc-script PATH] [--df CMD] [--critical-
   Exit codes:
     0  — Sweep attempted or skipped (fail-open on missing mount).
     1  — Runtime error from gc.sh.
-    2  — Usage error: unknown flag or non-integer --critical-free-gib.
+    2  — Usage/wiring error: unknown flag, non-integer --critical-free-gib,
+         or a missing sibling scripts/lib_live_refs.sh.
 EOF
 }
 
@@ -128,8 +151,13 @@ EOF
 # pool-wide dead-PID sweep over the whole .reseed-trash/ dir.
 #
 # It lives in this periodic δ backstop (systemd timer + hand-run), NOT in
-# warm-lane-gc.sh's per-acquire ε reclaim hot path, because the live-reference
-# guard is an O(processes × fds) /proc scan too costly for the hot path.
+# warm-lane-gc.sh's per-acquire ε reclaim hot path. The reason is JANITORIAL
+# SCOPE, not cost: task 5572 put the lane guard's own per-entry /proc scan
+# directly on the ε path (~1.9s per entry, measured — see the COST REVERSAL note
+# in warm-lane-gc.sh's header), so "too costly for ε" is no longer a reason for
+# anything. Trash reaping is pool-wide disk hygiene with no admission-time
+# correctness requirement: an ε caller gains nothing from it, and folding it in
+# would add a whole extra batch /proc scan per admission for zero ε benefit.
 #
 # An entry is reaped ONLY when its encoded PID is dead AND no live process still
 # references the dir via cwd / open fd / mmap — defending against PID reuse and
@@ -142,67 +170,7 @@ EOF
 # The live-reference guard runs ONCE for the whole batch of dead-PID candidates
 # (a single /proc walk + a single /proc/*/maps grep matched against every
 # candidate), not once per entry, so a large strand costs O(/proc) rather than
-# O(entries × /proc). See _live_referenced_paths.
-
-# _live_referenced_paths RP... — given one or more resolved realpaths (trash
-# dirs for the reaper, OR pool-lane dirs for the live-consumer lane guard —
-# task 5378), print (one per line, deduplicated) the subset that ANY live
-# process references via its cwd symlink, an open fd symlink, or a mmap'd
-# region in /proc/<pid>/maps. Performs exactly ONE /proc symlink walk and ONE
-# /proc/*/maps grep for the WHOLE candidate set — O(/proc) once, NOT once per
-# entry: with N stranded entries the older per-entry scan was O(N × /proc)
-# (a single /proc walk already cost ~84s on a ~1300-process host, and the
-# ENOSPC strand that motivates this reaper can leave many entries at once).
-#
-# The verdict is read from captured OUTPUT, never a pipeline exit status:
-# find/grep over /proc return non-zero on the unavoidable permission-denied
-# entries of other users' processes (and SIGPIPE on an early awk exit), so
-# under `set -o pipefail` the exit status is an unreliable signal. A vanishing
-# /proc entry only produces suppressed stderr; every scan is `|| true`-guarded
-# so it never aborts under set -e.
-_live_referenced_paths() {
-    [ $# -gt 0 ] || return 0
-
-    # cwd + open-fd references: one find pass prints every process's cwd and
-    # open-fd symlink TARGETS (%l = the kernel-canonical target — no per-fd
-    # fork). awk loads the candidate realpaths as input records (the NR==FNR
-    # two-file trick — avoids `-v`'s backslash-escape processing on data), then
-    # for each target prints any candidate it equals or is a "$cand/" descendant
-    # of (string compare, so arbitrary path characters are safe), each candidate
-    # at most once, exiting early once every candidate is accounted for.
-    # /proc/<pid>/task is pruned to skip the per-thread symlink duplicates.
-    find /proc -maxdepth 3 -path '*/task' -prune -o -type l \
-            \( -name cwd -o -path '*/fd/*' \) -printf '%l\n' 2>/dev/null \
-        | awk '
-            NR==FNR { if ($0 != "") cand[++n] = $0; next }
-            {
-                for (i = 1; i <= n; i++)
-                    if (!(i in seen) && ($0 == cand[i] || index($0, cand[i] "/") == 1)) {
-                        print cand[i]; seen[i] = 1; nfound++
-                    }
-                if (n > 0 && nfound >= n) exit
-            }
-        ' <(printf '%s\n' "$@") - 2>/dev/null || true
-
-    # mmap'd regions: a single grep over every process's maps for a path mapped
-    # from INSIDE any candidate dir. Each pattern carries a trailing "/" so the
-    # fixed-string match is path-BOUNDARY-aware: ".../_lane-1/" matches a maps
-    # line ".../_lane-1/target/x" but NOT the longer sibling ".../_lane-10/..."
-    # whose basename merely has "_lane-1" as a name-prefix. A bare-substring
-    # match (the original) spuriously mapped an "_lane-10" build's maps line back
-    # to a free "_lane-1" whenever the longer path was not itself a live
-    # candidate — e.g. a lane torn down mid-build, whose "(deleted)" mapping
-    # lingers — perpetually shielding low-numbered lanes' divergent target/ from
-    # reclaim (esc-5378 review). This mirrors the cwd/fd pass's cand"/"
-    # descendant test above; a mmap'd file always lives UNDER the dir, so
-    # requiring "/" drops no real reference. The trailing "/" is then stripped so
-    # each emitted line equals the input candidate realpath EXACTLY — both
-    # callers key on it (the reaper's `referenced` set; the lane guard's
-    # rp_to_base lookup). (The reaper's trash inputs already carried a ".<pid>"
-    # delimiter, so this only tightens — never loosens — its matching.)
-    grep -hoFf <(printf '%s/\n' "$@") /proc/[0-9]*/maps 2>/dev/null \
-        | sed 's:/$::' || true
-}
+# O(entries × /proc). See live_referenced_paths in scripts/lib_live_refs.sh.
 
 # _reap_stale_trash MOUNT — reap stranded MOUNT/.reseed-trash/<lane>.<pid> dirs.
 _reap_stale_trash() {
@@ -245,7 +213,7 @@ _reap_stale_trash() {
     # all others are reaped.
     local -A referenced=()
     local referenced_raw hitrp
-    referenced_raw="$(_live_referenced_paths "${cand_rps[@]}")" || referenced_raw=""
+    referenced_raw="$(live_referenced_paths "${cand_rps[@]}")" || referenced_raw=""
     if [ -n "$referenced_raw" ]; then
         while IFS= read -r hitrp; do
             [ -n "$hitrp" ] && referenced["$hitrp"]=1
@@ -266,75 +234,6 @@ _reap_stale_trash() {
             _warn "failed to reap stale reseed-trash entry: $entry (rm -rf failed); leaving intact"
         fi
     done
-    return 0
-}
-
-# ── live-consumer lane guard (task 5378) ──────────────────────────────────────
-# _live_consumer_protect_csv MOUNT — print a comma-separated list of pool-lane
-# BASENAMES under MOUNT whose lane DIRECTORY is currently referenced by a live
-# process (cwd / open fd / mmap at or under the lane dir), i.e. a lane with an
-# active build. Empty output when none (or on any failure).
-#
-# Closes the reclaim-side liveness gap (esc-5375-1): the one-consumer flock
-# (inv.2) is held only across the ACQUIRE reseed, NOT across the consumer's long
-# cargo verify build, so during that build the flock is FREE and gc.sh's Pass-1
-# always-reclaim reset would wipe <lane>/target out from under the live build.
-# The sweep feeds these basenames to gc.sh via --extra-protect-glob so a live
-# lane is skipped ENTIRELY. Bias toward OVER-preserving: a genuinely FREE lane
-# has no referencing process, and a lingering reference is reclaimed on a later
-# sweep once it clears (exactly the trash reaper's second-sweep behavior);
-# under-preserving corrupts a live build.
-#
-# Reuses the reseed-trash reaper's batch scanner (_live_referenced_paths): the
-# lane dir realpaths are scanned in ONE /proc walk, and its descendant matching
-# already catches a build fd into <lane>/target/... AND a cwd at the lane root.
-# Lives in this periodic δ backstop, NOT gc.sh's per-acquire ε hot path, because
-# the O(processes × fds) /proc scan is too costly for the hot path.
-#
-# Fully fail-open under set -euo pipefail: enumeration/realpath failures are
-# skipped per-entry and the scan is `|| true`-guarded, so the worst case is an
-# empty CSV (no protection) — never an aborted sweep.
-_live_consumer_protect_csv() {
-    local mount="$1"
-    [ -d "$mount" ] || return 0
-
-    # Enumerate immediate lane dirs with the SAME */ glob gc.sh uses (skips
-    # dotfiles like .reseed-trash; the [ -d ] guard handles glob-nomatch).
-    local dir rp base
-    local -a rps=()
-    local -A rp_to_base=()
-    for dir in "$mount"/*/; do
-        dir="${dir%/}"
-        [ -d "$dir" ] || continue         # glob-nomatch guard (empty mount)
-        rp="$(readlink -f "$dir" 2>/dev/null)" || rp=""
-        [ -n "$rp" ] || continue          # unresolvable → cannot match refs; skip
-        base="${dir##*/}"
-        rps+=("$rp")
-        rp_to_base["$rp"]="$base"
-    done
-    [ "${#rps[@]}" -gt 0 ] || return 0
-
-    # Single batch /proc scan for the WHOLE lane set (one /proc walk, one maps
-    # grep — not one per lane), mirroring _reap_stale_trash.
-    local referenced_raw hitrp
-    referenced_raw="$(_live_referenced_paths "${rps[@]}")" || referenced_raw=""
-    [ -n "$referenced_raw" ] || return 0
-
-    # Map referenced realpaths back to basenames; emit a comma-separated list.
-    # _live_referenced_paths can emit a realpath twice (once from the cwd/fd
-    # pass, once from the maps grep), so dedup by basename.
-    local csv="" b
-    local -A emitted=()
-    while IFS= read -r hitrp; do
-        [ -n "$hitrp" ] || continue
-        b="${rp_to_base["$hitrp"]:-}"
-        [ -n "$b" ] || continue                 # referenced path not a lane dir → skip
-        [ -n "${emitted["$b"]:-}" ] && continue # already emitted this basename
-        emitted["$b"]=1
-        if [ -n "$csv" ]; then csv="${csv},${b}"; else csv="$b"; fi
-    done <<< "$referenced_raw"
-
-    [ -n "$csv" ] && printf '%s\n' "$csv"
     return 0
 }
 
@@ -421,21 +320,6 @@ if [ -n "$df_out" ]; then
     fi
 fi
 
-# ── live-consumer lane guard (task 5378): protect lanes with an active build ──
-# Scan pool-lane dirs for a live cwd/fd/mmap reference (a lane whose consumer's
-# verify build is mid-flight while its ACQUIRE flock is already free) and pass
-# their basenames to gc.sh via --extra-protect-glob so gc.sh's Pass-1
-# always-reclaim reset skips them ENTIRELY. --extra-protect-glob ADDS to (never
-# replaces) gc.sh's default protect set, so the sweep need not restate it.
-# Appended AFTER the df/--disk-pressure logic, so it applies in BOTH the plain
-# and the --disk-pressure reclaim invocations. Fail-open: an empty CSV appends
-# nothing, so a scan that finds nothing (or fails) leaves reclaim unchanged.
-protect_csv="$(_live_consumer_protect_csv "$MOUNT")" || protect_csv=""
-if [ -n "$protect_csv" ]; then
-    _info "live-consumer lane guard: protecting lanes with an active build: $protect_csv"
-    args+=(--extra-protect-glob "$protect_csv")
-fi
-
-# ── invoke gc.sh reclaim --mount <MOUNT> [--disk-pressure] [--extra-protect-glob CSV] ──
+# ── invoke gc.sh reclaim --mount <MOUNT> [--disk-pressure] ────────────────────
 _info "running: $GC_SCRIPT ${args[*]}"
 exec "$GC_SCRIPT" "${args[@]}"
