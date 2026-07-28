@@ -600,8 +600,10 @@ sandbox:
   backend: landlock
 
 # Sandbox companion (task γ6a): toolchain-cache redirect for the three
-# sandboxed roles (implementer, debugger, simple_task — roles.py
-# sandboxed=True).
+# sandboxed roles (implementer, debugger, simple_task — a hardcoded copy of
+# DF's roles.py sandboxed=True set; reify cannot observe a DF-side 4th
+# role addition, see the "SECOND, UNGUARDED COUPLING" note in
+# tests/infra/test_sandbox_cache_writability_seam.sh's header).
 #   WHY: compute_write_set (DF-owned, orchestrator/agents/write_set.py)
 #   grants worktree + <base>/.task-meta/<name> + main .git carve-outs +
 #   ~/.cache/uv + ~/.claude/fleet + /tmp + /dev, and NOTHING under
@@ -611,6 +613,8 @@ sandbox:
 #   opening ~/.cargo/registry/cache/index.crates.io-*/hex-literal-0.4.1.crate;
 #   `npm install` exit 1 — ~/.npm/_logs unwritable). Warm paths still
 #   succeed, so this bites exactly on dependency-adding / cold-cache tasks.
+#   Upstream fix (add ~/.cargo + ~/.npm carve-outs to compute_write_set
+#   directly, which would retire this whole redirect): reify task 5724.
 #   WHY THIS LEVER: role_env_overrides is merged LAST by DF's
 #   workflow.py:_build_agent_env for every role. verify_env (above) is the
 #   WRONG surface for this — verify subprocesses are not sandboxed.
@@ -619,8 +623,28 @@ sandbox:
 #   per-lane; cargo's own .package-cache flock serializes concurrent access
 #   exactly as it already does for the shared ~/.cargo today (no new
 #   contention).
-#   COST: first agent run after a /tmp wipe re-downloads the crates.io
-#   index + dep tree (one-time, then warm).
+#   KNOWN GAPS (tracked, not yet fixed — ticket tkt_0RRSYZX0Y446V2HSW0GHHNRYYH):
+#     - COST is worse than "one-time": /usr/lib/tmpfiles.d/tmp.conf on this
+#       host reads `D /tmp 1777 root root 30d`, confirmed to empty /tmp at
+#       EVERY boot, not just on rare wipes — so the first dependency-
+#       touching agent run after every reboot re-downloads the crates.io
+#       index + dep tree on a live task's critical path, and a second full
+#       copy of ~/.cargo (1.3G measured) / ~/.npm (6.0G measured) now
+#       accumulates permanently under /tmp alongside the originals.
+#     - The same tmpfiles rule also age-deletes /tmp CONTENTS while the
+#       orchestrator stays up, which can partially gut a populated cargo
+#       registry (source files removed under registry/src/<crate>/ while
+#       that crate's .cargo-ok marker survives) or npm's cacache store,
+#       producing missing-source build failures that don't look like a
+#       cache problem and surface only after long uptime.
+#     - Considered mirroring CARGO_HOME/npm_config_cache into verify_env
+#       too, so verify shares this /tmp cache instead of ~/.cargo/~/.npm,
+#       as an alternative fix for the double-copy problem; deferred —
+#       that would change the merge-gate build's cache path for EVERY
+#       task's verify run (high blast radius on the one gate that lands
+#       everything), whereas pre-seeding /tmp from the existing warm
+#       ~/.cargo/~/.npm (the ticket above) fixes the cold start without
+#       touching verify's cache path at all.
 #   Restart-tier: inert until the orchestrator restarts (companion task
 #   γ6b). Reify-side seam guard:
 #   tests/infra/test_sandbox_cache_writability_seam.sh.
