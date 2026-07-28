@@ -1016,6 +1016,13 @@ pub(crate) fn unify(
 /// - The catch-all is `param == arg` (plain equality) rather than `unify`'s
 ///   permissive `Ok(())` — a head mismatch (or two leaves) must agree
 ///   exactly to count as "unifiable" here.
+///
+/// This is the CANONICAL copy. `crates/reify-expr/src/lib.rs` carries a local
+/// mirror (reify-compiler is only a dev-dep of reify-expr, so this one cannot
+/// be imported there) which MUST be kept verbatim-synced with it, as the three
+/// `type_carries_*` helpers above already are. Drift reproduces the
+/// esc-4231-120/126 / esc-4093-152 divergence class — compile-time and
+/// eval-time overload selection disagreeing about the same call.
 fn heads_unifiable(param: &Type, arg: &Type) -> bool {
     match (param, arg) {
         // Type-param / dim-param leaves: wildcard slots, always compatible.
