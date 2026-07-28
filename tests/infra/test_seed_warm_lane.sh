@@ -2287,6 +2287,15 @@ assert "P3c: build/cxx-AAAA/output WAS relocated in this same run (guards non-va
 # to the bare --reset-in-place control arm — a held lock is ignored there (exit 0,
 # not 75), the property H6a/H6b (reset-in-place WITH --lane-lock) and E1/H3a
 # (reset-in-place, no held lock) leave unpinned.
+# H11 (task 5568, NEW) pins the --distinct-lock-refusal-rc opt-in capability on
+# the non-blocking (flock -n) refusal arm: with the flag a refusal exits 77
+# instead of 75, so dark-factory's _seed_rc_to_unavailable can tell lane-lock
+# contention apart from the DISK PRESSURE meaning it attaches to 75 (esc-5568-1).
+# The flag is OPT-IN precisely so the reify and dark-factory halves may land in
+# EITHER order: sub-case (b) is the compat pin holding the flagless default at
+# 75 forever, and it is the differential partner of (a) — same fixture, same
+# held lock, the flag the only difference — so the pair proves the flag is the
+# sole cause of the rc change rather than merely restating H1.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block Q: acquisition-time lane-lock exclusivity (--lane-lock) ---"
@@ -3011,6 +3020,156 @@ assert "H10: cp invoked with --reflink=always (reset-in-place proceeded, not ref
 
 kill "$Q_LOCK14_PID" 2>/dev/null || true
 wait "$Q_LOCK14_PID" 2>/dev/null || true
+
+# ── H11: --distinct-lock-refusal-rc — the lane-lock refusal gets its OWN exit
+# code, distinct from EX_TEMPFAIL 75 (task 5568). ───────────────────────────
+#
+# WHY: seed emits 75 for exactly ONE condition — a lane-lock refusal (this arm
+# and the flock -w timeout arm H12 covers). dark-factory's
+# _seed_rc_to_unavailable maps 75 -> DISK_PRESSURE, so every lock refusal is
+# rendered to operators as disk pressure; during esc-5556-1 that signal said
+# "disk pressure" for ~46h while the mount sat at 25% used / 1% inodes.
+# 77 (EX_NOPERM — "another consumer owns this lane") is the discriminant.
+#
+# WHY OPT-IN rather than an unconditional 75->77 flip: the dark-factory arm
+# lives in a SEPARATE repo and cannot ride this branch (esc-5568-1). Until it
+# lands, an unconditional 77 would fall through DF's `else` to FAULT — blocked
+# + L1 per task, strictly worse than today's mislabelled-but-recoverable
+# requeue. Opt-in dissolves the ordering constraint: either repo may land
+# first. The flag string must appear LITERALLY in seed's arg parser because
+# DF's capability probe text-greps the lane's own copy of the script for it
+# (the proven `_seed_script_supports_assume_lane_lock_held` mechanism).
+Q_H11_FLAG="--distinct-lock-refusal-rc"
+
+# H11a: lock HELD + the flag → 77, and the refusal is otherwise IDENTICAL to
+# H1 (fail-closed stdout, lane not clobbered, no clone attempted). The flag
+# selects a code; it must not weaken the guard the code reports.
+Q_LANE15="$(make_isolated_lane Q-lane15)"
+mkdir -p "$Q_LANE15/target"
+echo "sentinel content" > "$Q_LANE15/target/SENTINEL.txt"
+
+Q_LOCK15="${Q_LANE15}.lock"
+_TMPDIRS+=("$Q_LOCK15")
+Q_READY15="${Q_LOCK15}.ready-marker"
+_TMPDIRS+=("$Q_READY15")
+touch "$Q_LOCK15"
+# Same causal handshake as H1: the holder touches the ready marker only AFTER
+# acquiring flock -x, so the run below fires with the lock provably held.
+( flock -x 9 && touch "$Q_READY15" && sleep 300 ) 9>"$Q_LOCK15" &
+Q_LOCK15_PID=$!
+_BGPIDS+=("$Q_LOCK15_PID")
+_wait_for_reader_lock "$Q_READY15" 30
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE15" --fresh-checkout --lane-lock "$Q_H11_FLAG"
+
+assert "H11a: lock held + --distinct-lock-refusal-rc → exit 77 (lock contention), NOT 75 (disk pressure)" \
+    test "$RC" -eq 77
+assert "H11a: STDOUT is EMPTY (fail-closed, no path emitted — the flag does not weaken the guard)" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+assert "H11a: sentinel file in <lane>/target still present (lane NOT clobbered)" \
+    test -f "$Q_LANE15/target/SENTINEL.txt"
+assert "H11a: cp NEVER invoked (refused before clone)" \
+    bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
+kill "$Q_LOCK15_PID" 2>/dev/null || true
+wait "$Q_LOCK15_PID" 2>/dev/null || true
+
+# H11b: COMPAT PIN — the SAME fixture and the SAME held lock as H11a, with the
+# flag ABSENT → 75, unchanged. This assertion must stay green FOREVER: it is
+# the guarantee that an unpatched dark-factory keeps today's exact behaviour,
+# and therefore the guarantee that makes either landing order safe. Read as a
+# differential against H11a, it also proves the flag is the SOLE cause of the
+# rc change (nothing else in this invocation differs).
+Q_LANE16="$(make_isolated_lane Q-lane16)"
+mkdir -p "$Q_LANE16/target"
+echo "sentinel content" > "$Q_LANE16/target/SENTINEL.txt"
+
+Q_LOCK16="${Q_LANE16}.lock"
+_TMPDIRS+=("$Q_LOCK16")
+Q_READY16="${Q_LOCK16}.ready-marker"
+_TMPDIRS+=("$Q_READY16")
+touch "$Q_LOCK16"
+( flock -x 9 && touch "$Q_READY16" && sleep 300 ) 9>"$Q_LOCK16" &
+Q_LOCK16_PID=$!
+_BGPIDS+=("$Q_LOCK16_PID")
+_wait_for_reader_lock "$Q_READY16" 30
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE16" --fresh-checkout --lane-lock
+# NOTE: no --distinct-lock-refusal-rc above -- that omission IS the test.
+
+assert "H11b: COMPAT PIN — lock held, flag ABSENT → exit 75 unchanged (an unpatched dark-factory sees today's behaviour)" \
+    test "$RC" -eq 75
+assert "H11b: COMPAT PIN — sentinel survives (default refusal path otherwise unchanged)" \
+    test -f "$Q_LANE16/target/SENTINEL.txt"
+
+kill "$Q_LOCK16_PID" 2>/dev/null || true
+wait "$Q_LOCK16_PID" 2>/dev/null || true
+
+# H11c: the flag NEVER perturbs the success path — lock FREE + the flag → 0
+# and the ordinary resolved-path stdout, exactly as H2. A code that only names
+# a refusal must be invisible when there is no refusal.
+Q_LANE17="$(make_isolated_lane Q-lane17)"
+mkdir -p "$Q_LANE17/target"
+echo "sentinel content" > "$Q_LANE17/target/SENTINEL.txt"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE17" --fresh-checkout --lane-lock "$Q_H11_FLAG"
+
+assert "H11c: flag + lock FREE → exit 0 (the flag never perturbs the success path)" \
+    test "$RC" -eq 0
+assert "H11c: flag + lock FREE → STDOUT is exactly <lane_dir>/target" \
+    bash -c '[ "$1" = "'"$Q_LANE17/target"'" ]' _ "$OUT"
+assert "H11c: flag + lock FREE → clone from base actually ran" \
+    test -f "$Q_LANE17/target/debug/base_artifact.a"
+
+# H11d: the flag is ACCEPTED-BUT-INERT wherever seed does not acquire the lock
+# — here under --assume-lane-lock-held, with another process holding the lock.
+# NOT a usage error (exit 2) and NOT a refusal (75/77): exit 0.
+#
+# WHY THIS MATTERS: dark-factory decides --assume-lane-lock-held from its own
+# take_lane_lock, and seed's mode plus REIFY_WARM_LANE_LANE_LOCK_WAIT further
+# determine whether a refusal is even reachable. If the flag errored on those
+# combinations, DF would have to replicate seed's internal mode logic to know
+# when passing it is safe — and getting that wrong converts a working seed into
+# a hard fault, precisely the failure shape the capability probe exists to
+# avoid. Inert-on-irrelevant-paths lets DF pass the flag unconditionally once
+# the probe passes. (Contrast H8: --assume-lane-lock-held + --lane-lock IS a
+# usage error, because those two make CONTRADICTORY assertions about who holds
+# the lock; this flag only selects a code for an outcome that may not occur.)
+Q_LANE18="$(make_isolated_lane Q-lane18)"
+mkdir -p "$Q_LANE18/target"
+echo "sentinel content" > "$Q_LANE18/target/SENTINEL.txt"
+
+Q_LOCK18="${Q_LANE18}.lock"
+_TMPDIRS+=("$Q_LOCK18")
+Q_READY18="${Q_LOCK18}.ready-marker"
+_TMPDIRS+=("$Q_READY18")
+touch "$Q_LOCK18"
+# H7's shape: a BACKGROUNDED subshell holds the lock, so seed does not inherit
+# FD 9 — and --assume-lane-lock-held makes seed skip its own acquire anyway.
+( flock -x 9 && touch "$Q_READY18" && sleep 300 ) 9>"$Q_LOCK18" &
+Q_LOCK18_PID=$!
+_BGPIDS+=("$Q_LOCK18_PID")
+_wait_for_reader_lock "$Q_READY18" 30
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE18" --fresh-checkout --assume-lane-lock-held "$Q_H11_FLAG"
+
+assert "H11d: flag + --assume-lane-lock-held (lock held elsewhere) → exit 0 — accepted-but-inert, NOT a usage error (2) and NOT a refusal (75/77)" \
+    test "$RC" -eq 0
+assert "H11d: flag + --assume-lane-lock-held → STDOUT is exactly <lane_dir>/target" \
+    bash -c '[ "$1" = "'"$Q_LANE18/target"'" ]' _ "$OUT"
+assert "H11d: flag + --assume-lane-lock-held → stderr carries NO unknown-argument complaint" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "unknown|unrecognized"' _ "$ERR_OUT"
+
+kill "$Q_LOCK18_PID" 2>/dev/null || true
+wait "$Q_LOCK18_PID" 2>/dev/null || true
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block S — relocation sweep must not advance build-script freshness references
