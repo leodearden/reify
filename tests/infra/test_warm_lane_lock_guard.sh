@@ -410,8 +410,11 @@ assert "C2: that line is the @@REIFY_WARM_LANE_LOCK_BUSY@@ sentinel with lane= a
 
 # C3: a human reading the log gets an actionable message naming the lane.
 assert "C3: BUSY explains itself on stderr" test -n "$ERR_OUT"
-assert "C3: the stderr message names the lane" \
-    bash -c 'printf "%s\n" "$1" | grep -qF "_merge-verify"' _ "$ERR_OUT"
+# Matched against the BUSY-specific wording, not merely "stderr is non-empty":
+# the guard logs an [info] line BEFORE it probes, so a bare non-emptiness check
+# would pass even if every post-probe diagnostic were being discarded.
+assert "C3: the stderr message reports this lane as BUSY" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "_merge-verify'"'"' is BUSY"' _ "$ERR_OUT"
 
 # C4: per-lane granularity. A guard that probed the whole mount — or any lock it
 # found under it — would call _spec-0 busy here purely because a NEIGHBOUR is.
@@ -500,7 +503,12 @@ REIFY_WARM_LANE_LOCK_GUARD_FLOCK="$D_FLOCK_BROKEN" run_guard check --mount "$D_M
 D_ALL_OUT="$D_ALL_OUT$OUT"
 assert "D1: a failing flock degrades to IDLE (exit 0), never BUSY" test "$RC" -eq 0
 assert "D1: the degraded path writes nothing to stdout" test -z "$OUT"
-assert "D1: the degraded path warns on stderr" test -n "$ERR_OUT"
+# Matched against the FAIL-OPEN wording for the same reason as C3: the pre-probe
+# [info] line would satisfy a bare non-emptiness check even with every
+# post-probe diagnostic discarded, and a silently-degrading guard is one whose
+# operator never learns the measurement stopped working.
+assert "D1: the degraded path warns FAIL-OPEN on stderr" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "FAIL-OPEN"' _ "$ERR_OUT"
 
 # D2: flock missing entirely — same verdict, different branch (resolution rather
 # than invocation). The holder is still live, so this too is non-vacuous.

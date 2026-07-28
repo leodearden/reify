@@ -69,6 +69,52 @@
 # stdout contract: stdout carries the BUSY sentinel line and NOTHING else, on
 # every path. All diagnostics — including --help — go to stderr, so a caller
 # can parse stdout without filtering.
+#
+# Invariants:
+#   A1 — NON-MUTATING. Never creates, truncates, or otherwise changes the lock
+#        file or the mount. The lock is opened READ-ONLY on an EXISTING path; a
+#        missing lock file is IDLE and is NEVER brought into existence, and a
+#        missing mount dir is never created. No `>`-open, no `>>`-open, no
+#        `touch`, no `mkdir`, and deliberately NOT the `flock <file> <cmd>`
+#        convenience form — all of which would make this reader a writer of the
+#        very inode dark-factory serializes on.
+#   A2 — the `flock -n -s` probe is SHARED and non-blocking, and is released
+#        immediately. A shared request still detects a live consumer (their
+#        exclusive flock blocks it), but two concurrent oracles never contend
+#        with each other. The verdict is inherently a POINT-IN-TIME sample: the
+#        lane can be taken the instant after IDLE is reported, and a writer's own
+#        non-blocking attempt could be perturbed for the instant this fd is open.
+#        Accepted, exactly as scripts/warm-lane-audit.sh documents for the same
+#        probe — and harmless, because of A4.
+#   A3 — FAIL-OPEN. Any probe-infrastructure failure (flock missing or broken,
+#        lock unreadable, mount absent, unrecognised flock status) yields exit 0
+#        with a stderr warning and NO sentinel — never exit 3. A false BUSY would
+#        defer merge dispatch indefinitely and wedge the serial merge queue; a
+#        false IDLE merely restores today's behaviour. That asymmetry is the
+#        opposite of warm-lane-disk-guard.sh's fail-CLOSED calculus, where an
+#        unmeasurable disk must be assumed full to avoid ENOSPC.
+#   A4 — ADVISORY BACKPRESSURE ONLY. This guard never requeues, never escalates,
+#        and is NOT the correctness mechanism for lane exclusivity — dark-factory's
+#        own bounded-wait flock remains that. It exists so contention becomes a
+#        deferred dispatch instead of a failed one.
+#
+# Usage by the dark-factory merge worker (cross-repo seam — wiring tracked
+# separately; reify ships the oracle, dark-factory does the wiring):
+#
+#   busy=$(bash scripts/warm-lane-lock-guard.sh check --mount "$worktree_base" \
+#                                                     --lane _merge-verify)
+#   exit_code=$?
+#   if [ "$exit_code" -eq 0 ]; then
+#       # IDLE — dispatch the verify onto this lane.
+#   elif [ "$exit_code" -eq 3 ]; then
+#       # BUSY — DEFER this dispatch and retry later. "$busy" is the sentinel
+#       # line, carrying lane= and lock= for logging. Do NOT dispatch: doing so
+#       # enters DF's own 30s bounded wait on the same inode, whose timeout is
+#       # classified merge_error (terminal) rather than requeued.
+#   else
+#       # 2 — a wiring bug on our side. Log it and treat as 0: this guard is
+#       # advisory (A4), so a broken consult must never block the queue.
+#   fi
 
 set -euo pipefail
 
@@ -172,8 +218,12 @@ if [ -z "$SUBCOMMAND" ]; then
     exit 2
 fi
 
-if [ -z "$MOUNT" ]; then
+# MOUNT is required only when there is something left to DERIVE. An explicit
+# --lock-path names the inode outright, so demanding a mount alongside it would
+# force a caller that knows the exact lock path to invent one.
+if [ -z "$MOUNT" ] && [ -z "$LOCK_PATH" ]; then
     err "Warm-lane mount not specified. Set REIFY_WARM_LANE_MOUNT or pass --mount DIR."
+    hint "Alternatively pass --lock-path PATH to name the lock file directly."
     err "Run '$(basename "$0") --help' for usage."
     exit 2
 fi
@@ -255,18 +305,38 @@ _probe() {
     # has ever taken this lane's lock. IDLE, silently, and never created.
     [ -e "$LOCK" ] || return 0
 
-    if ! exec 7<"$LOCK" 2>/dev/null; then
+    # The read-only open is a SCOPED block redirect, deliberately NOT
+    # `exec 7<"$LOCK" 2>/dev/null`. A redirection attached to a command-less
+    # `exec` is PERMANENT for the shell, so that form would silently discard
+    # every diagnostic emitted after this point — the BUSY message and every
+    # fail-open warning alike, leaving an operator with no way to learn the
+    # measurement had stopped working. warm-lane-audit.sh's _probe_live can use
+    # the `exec` form safely only because it is always called inside a `$( )`
+    # subshell, which contains the permanence; this script probes in the main
+    # shell. The block form also closes fd 7 automatically on every path.
+    #
+    # `2>/dev/null` is ordered BEFORE `7<"$LOCK"` so it is already in effect if
+    # the open itself fails: redirections apply left to right, and bash reports
+    # a failed one on whatever stderr is current at that moment.
+    #
+    # `probed` distinguishes "the body ran" from "the redirect failed" — a
+    # failed redirect skips the body entirely, leaving rc at 0, which would
+    # otherwise be indistinguishable from a successfully acquired lock.
+    local probed=0
+    {
+        probed=1
+        "$FLOCK_BIN" -n -s -E "$FLOCK_CONFLICT_RC" 7 || rc=$?
+        if [ "$rc" -eq 0 ]; then
+            # Acquired, so nobody holds it exclusively. Release at once rather
+            # than relying on the fd close alone.
+            "$FLOCK_BIN" -u 7 || true
+        fi
+    } 2>/dev/null 7<"$LOCK" || true
+
+    if [ "$probed" -ne 1 ]; then
         _fail_open "cannot open the lock file for reading: $LOCK."
         return 0
     fi
-
-    "$FLOCK_BIN" -n -s -E "$FLOCK_CONFLICT_RC" 7 2>/dev/null || rc=$?
-    if [ "$rc" -eq 0 ]; then
-        # Acquired, so nobody holds it exclusively. Release at once — this fd
-        # must not linger across the rest of the run.
-        "$FLOCK_BIN" -u 7 2>/dev/null || true
-    fi
-    exec 7<&- 2>/dev/null || true
 
     case "$rc" in
         0)
