@@ -1427,3 +1427,101 @@ structure def SortedAndDeduped {
         "the existing name-only view must still return the same deduped name set"
     );
 }
+
+// ── Doc → fixture pairing at FORM granularity ────────────────────────────────
+//
+// `unmirrored_documented_forms` is the FORM-granularity counterpart to
+// `every_documented_geometry_op_name_is_exercised_by_the_fixture`: it pairs
+// `documented_geometry_op_forms` against `geometry_call_forms` so a documented
+// OVERLOAD with no compiling instance at that exact arity is reported, not
+// just an absent NAME.
+//
+// The tests below replay the printer_v01 regression this task exists to shut
+// a door on: `rotate(geo, axis, angle)` / `translate(geo, vector)` were once
+// documented in stdlib.md at an arity the compiler rejects (task 5347). The
+// name-only guard cannot see this — `rotate` and `translate` are both real
+// names, exercised by the fixture, just not at THAT arity. Each test feeds a
+// SYNTHETIC markdown snippet — never editing stdlib.md or the fixture — but
+// checks it against the REAL fixture source via `read_fixture()`.
+
+#[test]
+fn unmirrored_documented_forms_replays_the_printer_v01_regression() {
+    let markdown = r#"
+## Key Geometry Operations
+
+**Transform:** `translate(geo, vector)`, `rotate(geo, axis, angle)`, `scale(geo, factor)`
+"#;
+
+    assert_eq!(
+        unmirrored_documented_forms(markdown, &read_fixture(), "fixture"),
+        vec![
+            DocForm {
+                name: "rotate".to_string(),
+                arity: Arity::Exact(3),
+            },
+            DocForm {
+                name: "translate".to_string(),
+                arity: Arity::Exact(2),
+            },
+        ],
+        "this is the reviewer's exact repro of the printer_v01 regression (task 5347): \
+         rotate/3 and translate/2 must be reported unmirrored even though `rotate` and \
+         `translate` are both real, fixture-exercised names — scale/2 IS mirrored and must \
+         NOT be reported, proving this is not merely the name-only guard in disguise"
+    );
+}
+
+#[test]
+fn unmirrored_documented_forms_reports_nothing_for_the_corrected_row() {
+    let markdown = r#"
+## Key Geometry Operations
+
+**Transform:** `translate(geo, dx, dy, dz)`, `rotate(geo, ax, ay, az, angle)` or `rotate(geo, orientation)`, `scale(geo, factor)`
+"#;
+
+    assert_eq!(
+        unmirrored_documented_forms(markdown, &read_fixture(), "fixture"),
+        Vec::<DocForm>::new(),
+        "the control's control: with the compiler-true forms stdlib.md documents today, \
+         nothing must be reported — the guard is not merely \"reports everything\""
+    );
+}
+
+#[test]
+fn unmirrored_documented_forms_at_least_matches_greater_or_equal_but_exact_does_not() {
+    let markdown = r#"
+## Key Geometry Operations
+
+**Curves:** `nurbs(degree, n_points, coords…, weights…)`, `nurbs(a, b, c, d, e, f, g, h, i, j, k, l)`
+"#;
+
+    assert_eq!(
+        unmirrored_documented_forms(markdown, &read_fixture(), "fixture"),
+        vec![DocForm {
+            name: "nurbs".to_string(),
+            arity: Arity::Exact(12),
+        }],
+        "the fixture's nurbs call has 10 args: AtLeast(2) must match (10 >= 2, so the variadic \
+         form is NOT reported) but Exact(12) must not (10 != 12, so it IS reported) — pins that \
+         AtLeast compares `>=` and Exact compares `==`"
+    );
+}
+
+#[test]
+fn unmirrored_documented_forms_reports_a_name_with_no_fixture_call_at_all() {
+    let markdown = r#"
+## Key Geometry Operations
+
+**Bogus:** `nonexistent_op(a, b)`
+"#;
+
+    assert_eq!(
+        unmirrored_documented_forms(markdown, &read_fixture(), "fixture"),
+        vec![DocForm {
+            name: "nonexistent_op".to_string(),
+            arity: Arity::Exact(2),
+        }],
+        "a documented name absent from the fixture entirely must be reported — the form gate \
+         subsumes the name gate's case too"
+    );
+}
