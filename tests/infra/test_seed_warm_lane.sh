@@ -3505,6 +3505,42 @@ _r6b_positive_control() {
 assert "R6b: _assert_no_bare_tmp_lanes flags a bare-/tmp entry in a mixed log as an offender (message names both the label and the offending path) AND passes a clean nested-only log" \
     _r6b_positive_control "$R6B_MIXED_LOG" "$R6B_CLEAN_LOG" "R6b-synthetic"
 
+# ── R7: duplicate-definition guard (task 5612) — make_isolated_lane and the
+# shared-trash detector now live in tests/infra/test_helpers.sh, which this
+# file sources near the top. The hazard the promotion creates is that a future
+# edit reintroduces a LOCAL copy here: bash silently keeps the last definition,
+# so the local copy would shadow the library's and this suite would drift back
+# to its own private implementation with every assert still green.
+#
+# Pinned BEHAVIOURALLY rather than by grepping this file's source text: with
+# `shopt -s extdebug`, `declare -F <fn>` prints "<name> <lineno> <file>", so
+# this reads the ACTIVE definition's provenance straight out of the shell.
+# A source-grep would go stale the moment the helper is mentioned in a comment
+# or a heredoc; this cannot. The prior extdebug setting is restored so no later
+# assert's behaviour changes.
+#
+# Placed here with the other structural guards, BEFORE R2/R5 mutate detector
+# state (see the ordering note at the head of Block R). ──────────────────────
+_assert_defined_in_test_helpers() {
+    local fn="$1" src extdebug_was=off
+    if shopt -q extdebug; then extdebug_was=on; fi
+    shopt -s extdebug
+    src="$(declare -F "$fn")"
+    if [ "$extdebug_was" = off ]; then shopt -u extdebug; fi
+    src="${src#* }"   # drop "<name> "
+    src="${src#* }"   # drop "<lineno> ", leaving the defining file
+    case "$src" in
+        */tests/infra/test_helpers.sh) return 0 ;;
+    esac
+    printf '%s is defined in %s, not tests/infra/test_helpers.sh — a local duplicate shadows the promoted helper\n' \
+        "$fn" "${src:-<undefined>}"
+    return 1
+}
+for _r7_fn in make_isolated_lane _note_shared_trash_use _assert_no_shared_trash_use; do
+    assert "R7: the active $_r7_fn definition comes from tests/infra/test_helpers.sh (no local duplicate shadows the promoted helper)" \
+        _assert_defined_in_test_helpers "$_r7_fn"
+done
+
 # ── R2: positive control for R1 — proves the detector actually fires on a
 # real rename, so R1 cannot silently pass forever if seed's rename message is
 # ever reworded or moved. Redirects _SHARED_TRASH_DIR to an isolated lane's
