@@ -56,6 +56,12 @@
 #       removed. Closes the hole that deleting the sweep's wrapper CSV would
 #       otherwise open — that CSV enumerated every immediate subdir with a bare
 #       */ glob, so it incidentally protected live ORPHANS too
+#   R — mmap substring-boundary regression (esc-5378 review), MIGRATED from
+#       test_warm_lane_gc_sweep.sh's U14-U18 by task 5572: a live "(deleted)"
+#       mmap under a torn-down _lane-10 must NOT protect a free _lane-1 whose
+#       basename is merely a name-prefix of it. Lives here now because the
+#       boundary matcher is called by gc.sh directly; GREEN on arrival — its
+#       job is to keep the regression pinned at the right layer, not to go red
 #
 # The former Tier-3 blocks I/J/L (terminal-task reclaim + Pass-2 boundary,
 # task 5167) were deleted when task 5326 collapsed the Pass-1 gate to the
@@ -188,6 +194,27 @@ _wait_for_reader_lock() {
     local tick=0
     while [ "$tick" -lt "$max_ticks" ]; do
         [ -f "$ready_marker" ] && return 0
+        sleep 0.05
+        tick=$(( tick + 1 ))
+    done
+    return 1
+}
+
+# _wait_for_exec_map <pid> <want-exe-realpath> <deadline-seconds>
+# The MMAP analogue of _wait_for_reader_lock: `exec` REPLACES the shell so it
+# cannot touch a READY marker, so poll /proc/<pid>/exe until it resolves to the
+# exec'd binary — at which point the binary's mapping is provably established —
+# before reclaim scans (causal ordering, technique R, no wall-clock sleep).
+# Used by Block R. Migrated from tests/infra/test_warm_lane_gc_sweep.sh with the
+# substring-boundary regression it serves (task 5572), which now belongs at this
+# layer because the boundary logic lives in scripts/lib_live_refs.sh, called by
+# gc.sh directly.
+_wait_for_exec_map() {
+    local pid="$1" want="$2" deadline_s="${3:-30}"
+    local max_ticks=$(( deadline_s * 20 )) tick=0 exe
+    while [ "$tick" -lt "$max_ticks" ]; do
+        exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+        [ "$exe" = "$want" ] && return 0
         sleep 0.05
         tick=$(( tick + 1 ))
     done
@@ -1626,6 +1653,103 @@ assert "Q9: summary counts the live orphan as preserved (preserved=1)" \
 
 kill "$Q_HELPER_PID" 2>/dev/null || true
 wait "$Q_HELPER_PID" 2>/dev/null || true
+_BGPIDS=()  # clear so EXIT cleanup does not re-kill a possibly-reused PID
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block R — mmap substring-boundary regression, at the layer that now owns it
+# (esc-5378 review; MIGRATED here by task 5572)
+# ──────────────────────────────────────────────────────────────────────────────
+# The /proc scanner's mmap pass once matched a candidate lane realpath as a bare
+# fixed-string SUBSTRING, so a maps line ".../_lane-10/target/... (deleted)"
+# from an _lane-10 build spuriously matched the free candidate ".../_lane-1" —
+# perpetually shielding the low-numbered lane's divergent target/ from reclaim
+# and partially defeating the disk-space purpose of the whole mechanism. The fix
+# is the trailing-"/" boundary pattern in live_referenced_paths.
+#
+# This regression used to be pinned through warm-lane-gc-sweep.sh's up-front CSV
+# (its Blocks U14-U18). That CSV is being deleted, so the coverage MIGRATES here,
+# to the layer where the logic now lives: gc.sh calls the boundary matcher
+# directly, per lane. Expect GREEN on arrival — the boundary fix rides along in
+# the extracted lib. Its job is to keep the regression pinned, not to go red.
+#
+# Reproduced via a lane-teardown race: _lane-10's build binary is exec'd, then
+# _lane-10 is torn down so it is no longer an enumerated candidate (which also
+# defeats GNU grep's longest-match tie-break, which HIDES the bug while both
+# lanes are candidates); the live process's "(deleted)" mapping still names
+# ".../_lane-10/..." in /proc/<pid>/maps. Only a real MMAP exercises this pass —
+# a cwd/fd ref would use the already-boundary-correct cwd/fd pass — so the
+# reference is an ELF exec'd from UNDER _lane-10/target with cwd OUTSIDE the
+# mount, making the mmap the SOLE lane reference.
+echo ""
+echo "--- Block R: mmap substring-boundary regression against gc.sh (esc-5378, migrated by 5572) ---"
+
+R_ROOT="$(mktemp -d /tmp/test-gc-r-XXXXXX)"
+_TMPDIRS+=("$R_ROOT")
+
+R_REPO="$R_ROOT/repo"
+R_WORKTREES="$R_ROOT/worktrees"
+R_BASE="$R_ROOT/base"
+mkdir -p "$R_WORKTREES" "$R_BASE" "$R_ROOT/stage"
+
+make_repo "$R_REPO"
+
+mkdir -p "$R_BASE/target.gen.1"
+touch "$R_BASE/target.gen.1.lock"
+ln -sfn "$R_BASE/target.gen.1" "$R_BASE/target"
+
+# _lane-1 and _lane-10: both clean+landed pool lanes with divergent markers and
+# FREE flocks. _lane-1's basename is a NAME-PREFIX of _lane-10's.
+for _r_name in _lane-1 _lane-10; do
+    git -C "$R_REPO" worktree add -q "$R_WORKTREES/$_r_name"
+    mkdir -p "$R_WORKTREES/$_r_name/target"
+    touch "$R_WORKTREES/$_r_name/target/DIVERGENT_MARKER"
+done
+
+# A standalone ELF under _lane-10/target; exec'ing it maps it as
+# ".../_lane-10/target/live-bin" in the helper's /proc/<pid>/maps. cwd is the
+# stage dir OUTSIDE the mount, so NO cwd/fd reference touches any lane.
+R_BIN="$R_WORKTREES/_lane-10/target/live-bin"
+cp "$(command -v sleep)" "$R_BIN"
+chmod +x "$R_BIN"
+R_BIN_RP="$(readlink -f "$R_BIN")"
+( cd "$R_ROOT/stage" && exec "$R_BIN" 300 ) &
+R_HELPER_PID=$!
+_BGPIDS+=("$R_HELPER_PID")
+_wait_for_exec_map "$R_HELPER_PID" "$R_BIN_RP" 30 && R_MAPPED=1 || R_MAPPED=0
+
+assert "R1: fixture — helper exec'd the lane binary (live mmap established)" \
+    test "$R_MAPPED" -eq 1
+assert "R2: fixture — the _lane-10 build binary is mmap'd in the live helper (pre-teardown)" \
+    bash -c 'grep -qF "/_lane-10/target/live-bin" "/proc/$1/maps"' _ "$R_HELPER_PID"
+
+# Tear down _lane-10 so it is no longer an enumerated candidate (its "(deleted)"
+# mapping lingers in the live process's maps). Now _lane-1 is the ONLY candidate
+# whose realpath is a bare substring of that ".../_lane-10/..." maps line.
+rm -f "$R_BIN"
+rm -rf "$R_WORKTREES/_lane-10"
+
+R_SEED_LOG="$R_ROOT/seed_calls.log"
+R_SEED_STUB="$R_ROOT/seed_stub.sh"
+_seed_stub_body > "$R_SEED_STUB"
+chmod +x "$R_SEED_STUB"
+export SEED_LOG="$R_SEED_LOG"
+
+run_helper reclaim \
+    --worktrees-dir "$R_WORKTREES" \
+    --base-target "$R_BASE/target" \
+    --seed-script "$R_SEED_STUB" \
+    --main-ref main
+
+assert "R3: exit 0" test "$RC" -eq 0
+assert "R4: free _lane-1 (name-prefix of a live _lane-10 mmap) IS reset — marker removed" \
+    bash -c '[ ! -f "$1" ]' _ "$R_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+assert "R5: _lane-1 seed-script invoked (not spuriously protected by the name-prefix mmap)" \
+    bash -c 'test -f "$1" && grep -q "_lane-1" "$1"' _ "$R_SEED_LOG"
+assert "R6: stderr does NOT claim a process reference for _lane-1" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "preserving _lane-1: live consumer (process reference)"' _ "$ERR_OUT"
+
+kill "$R_HELPER_PID" 2>/dev/null || true
+wait "$R_HELPER_PID" 2>/dev/null || true
 _BGPIDS=()  # clear so EXIT cleanup does not re-kill a possibly-reused PID
 
 # ─────────────────────────────────────────────────────────────────────────────

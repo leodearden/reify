@@ -42,19 +42,25 @@
 #         candidates in ONE sweep, exactly the live-cwd-referenced one
 #         preserved while the rest are reaped (discrimination within a single
 #         scan, not all-or-nothing).
-#   U — live-consumer lane guard (task 5378): the sweep scans each pool-lane
-#         DIR realpath for a live cwd/fd/mmap reference (the reseed-trash
-#         scanner, generalized) and passes live lanes to the real gc.sh via
-#         --extra-protect-glob, so a lane with an active build is preserved
-#         despite a FREE flock — the exact esc-5375-1 gap; a free unreferenced
-#         lane is still reset (no blanket over-preserve), and once the reference
-#         clears a later sweep reclaims it (preserve is temporary, mirrors T3).
-#         Stub sub-cases assert the argv carries --extra-protect-glob <live-lane>
-#         when a lane is live and omits the flag entirely when none is (fail-open,
-#         no spurious protection). A substring-boundary sub-case (U14+, esc-5378
-#         review) proves a live MMAP under a torn-down _lane-10 does NOT protect
-#         a free _lane-1 whose basename is a name-prefix of it — the mmap-pass
-#         path-boundary regression.
+#   U — live-consumer lane guard (task 5378, relocated by task 5572): a lane
+#         with an active build is preserved despite a FREE flock — the exact
+#         esc-5375-1 gap — while a free unreferenced lane is still reset (no
+#         blanket over-preserve) and, once the reference clears, a later sweep
+#         reclaims it (preserve is temporary, mirrors T3).
+#         U1-U7 drive the REAL gc.sh end to end. They are the COMPOSITION proof
+#         and must NOT be deleted as redundant with test_warm_lane_gc.sh Block
+#         P: under task 5572 they stay green by a NEW mechanism — the
+#         primitive's own per-lane check — rather than the wrapper CSV.
+#         U8-U13 are the stub sub-cases over the argv the sweep hands gc.sh.
+#         They now assert the argv carries NO --extra-protect-glob AT ALL,
+#         whether or not a lane is live: the guard moved into gc.sh, so a
+#         wrapper-side snapshot would be both redundant and a reintroduced
+#         TOCTOU.
+#         A substring-boundary sub-case (U14+, esc-5378 review) proves a live
+#         MMAP under a torn-down _lane-10 does NOT protect a free _lane-1 whose
+#         basename is a name-prefix of it — the mmap-pass path-boundary
+#         regression. It is migrating to test_warm_lane_gc.sh Block R along with
+#         the CSV's deletion.
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -1056,6 +1062,14 @@ echo "--- Block U: live-consumer lane guard (task 5378) ---"
 
 # ── U1: end-to-end via REAL gc.sh — a live cwd reference at/under a lane dir ───
 # preserves it despite a FREE flock, while a free unreferenced lane is reset ────
+#
+# DO NOT DELETE as "redundant with test_warm_lane_gc.sh Block P" (task 5572).
+# U1-U7 drive the REAL gc.sh (GC_REAL) end-to-end and stay green by a NEW
+# mechanism: the primitive's own per-lane check, not the wrapper CSV that U8-U13
+# now assert is gone. That change of mechanism is exactly what makes them
+# valuable — they are the COMPOSITION proof that the sweep → gc.sh path still
+# preserves a live lane after the wrapper-side guard was removed. Block P proves
+# the primitive in isolation; this proves the two-script path end to end.
 U_ROOT="$(mktemp -d /tmp/test-gc-sweep-u-XXXXXX)"
 _TMPDIRS+=("$U_ROOT")
 
@@ -1124,9 +1138,20 @@ assert "U6: exit 0 (second sweep)" test "$RC" -eq 0
 assert "U7: _lane-1 divergent marker REMOVED once its live cwd reference is gone (preserve is temporary)" \
     bash -c '[ ! -f "$1" ]' _ "$U_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
 
-# ── U8: stub-gc — the sweep passes --extra-protect-glob carrying the live lane ─
-# Block-C/T gc-stub logs the argv the sweep hands gc.sh; a live cwd reference on
-# _lane-1 must surface as `--extra-protect-glob _lane-1` in that argv.
+# ── U8: stub-gc — the sweep hands gc.sh NO --extra-protect-glob at all ────────
+# INVERTED by task 5572. The live-consumer guard moved INTO warm-lane-gc.sh,
+# per lane, immediately before each lane's reset (tests/infra/test_warm_lane_gc.sh
+# Blocks P/Q), so the wrapper no longer computes a live-lane CSV: it would be
+# strictly redundant with the primitive's own gate AND it was the TOCTOU source
+# — one snapshot taken up front, then consumed across a 25-40 minute lane-by-lane
+# traversal, leaving any lane that went live mid-pass unprotected.
+#
+# This case now PINS that absence. Re-adding a wrapper-side snapshot would
+# reintroduce that TOCTOU, so "the sweep passes no --extra-protect-glob" is a
+# contract, not an incidental. The same Block-C/T gc-stub logs the argv the sweep
+# hands gc.sh, and the same live cwd reference on _lane-1 drives it — only the
+# expectation flips. (--extra-protect-glob itself is untouched in gc.sh: it
+# remains an explicit-pin escape hatch, covered by that suite's Block O.)
 U8_ROOT="$(mktemp -d /tmp/test-gc-sweep-u8-XXXXXX)"
 _TMPDIRS+=("$U8_ROOT")
 U8_MOUNT="$U8_ROOT/worktrees"
@@ -1149,10 +1174,11 @@ GC_LOG="$U8_GC_LOG" REIFY_WARM_LANE_GC_SWEEP_DF="$U8_DF_STUB" \
     run_sweep --mount "$U8_MOUNT" --gc-script "$U8_GC_STUB" --critical-free-gib 2
 
 assert "U8: exit 0" test "$RC" -eq 0
-assert "U9: sweep passed --extra-protect-glob to gc.sh (live lane discovered)" \
-    bash -c 'grep -q -- "--extra-protect-glob" "$1"' _ "$U8_GC_LOG"
-assert "U10: --extra-protect-glob carries the live lane basename _lane-1" \
-    bash -c 'grep -q -- "--extra-protect-glob _lane-1" "$1"' _ "$U8_GC_LOG"
+# U9 first: without it, U10 would pass vacuously against an empty argv log.
+assert "U9: gc-script still invoked (so U10 cannot pass vacuously on an empty log)" \
+    bash -c '[ -s "$1" ]' _ "$U8_GC_LOG"
+assert "U10: NO --extra-protect-glob in the argv despite a live lane (guard moved into the primitive, task 5572)" \
+    bash -c '! grep -q -- "--extra-protect-glob" "$1"' _ "$U8_GC_LOG"
 
 kill "$U8_HELPER_PID" 2>/dev/null || true
 wait "$U8_HELPER_PID" 2>/dev/null || true
