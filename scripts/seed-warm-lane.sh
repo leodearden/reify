@@ -677,7 +677,18 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     fi
     unset _llw_unlimited
     # FD 9 stays open (lock held) for the rest of the run -- spanning the
-    # mv+clone below with no check-then-act gap; bash releases it on exit.
+    # mv+clone below with no check-then-act gap.
+    #
+    # The lock is then dropped by an EXPLICIT `flock -u 9` before we exit (see
+    # the release block at the tail of this script), NOT by process exit.
+    # Process exit is not sufficient (task #5705): a flock lives on the OPEN
+    # FILE DESCRIPTION, not on the descriptor, and the detached background jobs
+    # below are spelled `{ rm -rf ...; } 9<&- &` -- the forked CHILD performs
+    # that close, after the fork. Between fork() and the child executing
+    # close(9) the child holds a dup of this very OFD, so the lock is still
+    # held even after our parent has exited. LOCK_UN on any descriptor
+    # referring to the OFD drops it for every process holding a dup, which is
+    # why an unlock (and not a close) is what actually closes the window.
 fi
 
 # ── mode-split: replace-existing (fresh-checkout) vs clobber-guard (reset-in-place) ──
@@ -783,10 +794,18 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         # seed — it is always a prior-crash orphan and is safe to reclaim now.
         # Background rm mirrors the main rm (large tree, must not block acquire).
         # 9<&-: close the (possibly held, --lane-lock) exclusive lane-lock FD
-        # before backgrounding so a detached child never inherits it -- the
-        # lock must release exactly when seed exits, not whenever this rm
-        # happens to finish (lib_slot_acquire.sh daemon-FD-inheritance guard).
-        # A no-op when FD 9 was never opened (--lane-lock not passed).
+        # so a detached child does not keep it open for its whole lifetime
+        # (lib_slot_acquire.sh daemon-FD-inheritance guard). A no-op when FD 9
+        # was never opened (--lane-lock not passed).
+        #
+        # 9<&- NARROWS the inheritance window but CANNOT close it (task #5705):
+        # the redirection is performed by the forked CHILD, after the fork, so
+        # between fork() and the child's close(9) the child holds a dup of the
+        # OFD carrying our exclusive flock -- and if we exit first, the lock is
+        # still held. What actually closes the window is the explicit
+        # `flock -u 9` in the release block at the tail of this script; LOCK_UN
+        # drops the lock for the whole OFD regardless of how many dup'd
+        # descriptors are still open elsewhere.
         while IFS= read -r -d '' _rp_orphan; do
             warn "Sweeping orphaned trash entry (prior-crash recovery): $_rp_orphan"
             { rm -rf "$_rp_orphan" || warn "orphan trash sweep rm failed (leaked): $_rp_orphan"; } 9<&- &
@@ -1119,12 +1138,17 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # On cp failure RESEED_TRASH is unset (no rename happened), so this block is skipped.
     # Background by default (production: large lane rm must not block acquire).
     # Foreground when REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 (test-determinism knob).
-    # 9<&-: close the (possibly held, --lane-lock) exclusive lane-lock FD
-    # before backgrounding so a detached child never inherits it -- the lock
-    # must release exactly when seed exits, not whenever this rm happens to
-    # finish (lib_slot_acquire.sh daemon-FD-inheritance guard). No-op when
-    # FD 9 was never opened (--lane-lock not passed); the SYNC (foreground)
-    # branch needs no change -- it completes before seed exits either way.
+    # 9<&-: close the (possibly held, --lane-lock) exclusive lane-lock FD so a
+    # detached child does not keep it open for its whole lifetime
+    # (lib_slot_acquire.sh daemon-FD-inheritance guard). No-op when FD 9 was
+    # never opened (--lane-lock not passed); the SYNC (foreground) branch needs
+    # no change -- it completes before seed exits either way.
+    #
+    # As at the orphan sweep above, 9<&- only NARROWS the window (task #5705):
+    # the child performs the close after the fork, so it transiently holds a
+    # dup of the OFD carrying our flock. The explicit `flock -u 9` in the
+    # release block below is what guarantees the lock is gone by the time we
+    # exit.
     if [ -n "$RESEED_TRASH" ] && [ -d "$RESEED_TRASH" ]; then
         info "Removing reseed trash: $(basename "$RESEED_TRASH") ..."
         if [ "${REIFY_WARM_LANE_RESEED_TRASH_SYNC:-}" = "1" ]; then
@@ -1141,6 +1165,31 @@ fi
 #   Per D10 always-re-seed-at-acquire: production acquires (task lanes AND
 #   merge-spec slots) ALWAYS use --fresh-checkout, so the invalidation above
 #   covers both lane classes without extra code.
+
+# ── Release the lane lock EXPLICITLY, before we exit (task #5705) ────────────
+# WHY an explicit LOCK_UN and not just process exit / `exec 9>&-`: a flock is
+# attached to the OPEN FILE DESCRIPTION, not to the descriptor. The detached
+# background jobs above (`{ rm -rf ...; } 9<&- &`, the orphan sweep and the
+# reseed-trash rm) perform their `9<&-` in the forked CHILD, after the fork --
+# so between fork() and that close the child holds a dup of the same OFD and
+# the exclusive lock is STILL HELD, even once this process has exited. A
+# consumer probing the instant seed exits then sees a held lock, and
+# acquire_lane's default is a non-blocking `flock -n` (exit 75 EX_TEMPFAIL), so
+# it is spuriously refused. `flock -u` on any descriptor referring to the OFD
+# drops the lock for every process holding a dup, which closes the window;
+# closing our own descriptor provably does not. Measured on a 32-core host
+# under 24 busy-spin workers, held-after-exit over 200 trials: `9<&-` alone
+# 16/200, `9<&-` + parent `exec 9>&-` 14/200, `9<&-` + parent `flock -u 9`
+# 0/200.
+#
+# THE GUARD IS LOAD-BEARING: under --assume-lane-lock-held (thin --reseed on
+# FD 9, gc reclaim) _should_acquire_lane_lock is empty, we never opened FD 9,
+# and FD 9 is INHERITED from the caller. An unguarded `flock -u 9` there would
+# release the CALLER's lock -- strictly worse than the bug being fixed.
+if [ -n "$_should_acquire_lane_lock" ]; then
+    flock -u 9 2>/dev/null || true
+    exec 9>&- 2>/dev/null || true
+fi
 
 ok "Warm lane seeded at $LANE_TARGET"
 echo "$LANE_TARGET"
