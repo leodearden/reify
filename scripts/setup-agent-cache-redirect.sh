@@ -328,6 +328,94 @@ EOF
     return 0
 }
 
+# ── install_boot_unit — the PERSIST step ──────────────────────────────────────
+# Installs a systemd --user oneshot that re-seeds the redirect after every boot.
+#
+# NOT REDUNDANT WITH THE `x` LINES ABOVE, though it is easy to mistake for it.
+# /usr/lib/tmpfiles.d/tmp.conf carries `D /tmp 1777 root root 30d`, and `D`'s
+# boot-time `--remove` empties /tmp wholesale.  `x` excludes a path from the
+# AGE-BASED `--clean` only — probed, see install_tmpfiles_exclusion.  So without
+# this unit the pre-seed dies at the first reboot, and the first
+# dependency-touching agent run after every boot pays a full cold start on a
+# live task's critical path.  It fails silently, which is the exact failure
+# class this whole script exists to close.
+#
+# ORDERING IS GUARANTEED, NOT INCIDENTAL: systemd --user managers start after
+# the system manager's basic.target, which is ordered after sysinit.target and
+# therefore after systemd-tmpfiles-setup.service.  So this oneshot provably
+# runs AFTER the `D /tmp` wipe rather than racing it.
+#
+# ExecStart uses --seed-only, so the boot path is entirely unprivileged: no
+# sudo is reachable (or needed) from a non-interactive --user boot context.
+#
+# `Before=orchestrator-reify.service` inline — matching sccache.service in
+# setup-dev.sh's install_build_services() — orders the re-seed ahead of the
+# orchestrator without needing a drop-in.  NOTHING Requires= it: a failed seed
+# degrades to today's cold-start behaviour rather than blocking orchestrator
+# startup, the same fail-open posture as the warm-lane units.
+install_boot_unit() {
+    local unit_dir unit_path self
+
+    # Bus probe, same shape as setup-dev.sh's install_build_services() caller:
+    # a CI box or container has no --user bus and must skip cleanly.
+    if ! systemctl --user show-environment >/dev/null 2>&1; then
+        _warn "no systemd --user bus — skipping the boot re-seed unit install"
+        return 0
+    fi
+
+    # The unit must name an ABSOLUTE path: systemd has no working directory to
+    # resolve a relative one against.
+    self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
+    unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+    unit_path="$unit_dir/reify-agent-caches.service"
+    mkdir -p "$unit_dir" || {
+        _warn "could not create $unit_dir — skipping the boot re-seed unit install"
+        return 0
+    }
+
+    cat > "$unit_path" <<EOF
+[Unit]
+Description=Re-seed the landlock agent toolchain-cache redirect under /tmp (reify task 5729)
+Documentation=file://$self
+# WHY THIS EXISTS, given /etc/tmpfiles.d/reify-agent-caches.conf already
+# excludes these paths: those \`x\` lines cover systemd-tmpfiles' AGE-CLEAN pass
+# only.  /usr/lib/tmpfiles.d/tmp.conf's \`D /tmp 1777 root root 30d\` empties
+# /tmp at every boot via \`--remove\`, which \`x\` does NOT exclude a path from
+# (probed with \`systemd-tmpfiles --create --remove --root=<fakeroot>\`: an
+# x-excluded dir was removed alongside the unexcluded control).  Without this
+# oneshot the pre-seed dies at the first reboot and the first
+# dependency-touching agent run pays a full cold start on a live task's
+# critical path.
+#
+# Ordering is guaranteed rather than raced: --user managers start after the
+# system manager's basic.target, itself ordered after sysinit.target and hence
+# after systemd-tmpfiles-setup.service — so this runs AFTER the wipe.
+Before=orchestrator-reify.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# --seed-only: no sudo, no systemctl.  The boot path is unprivileged by
+# construction, because a non-interactive --user context cannot sudo.
+ExecStart=$self --seed-only
+
+[Install]
+WantedBy=default.target
+EOF
+
+    systemctl --user daemon-reload || {
+        _warn "systemctl --user daemon-reload failed — boot re-seed unit not activated"
+        return 0
+    }
+    systemctl --user enable --now reify-agent-caches.service >/dev/null 2>&1 || {
+        _warn "could not enable reify-agent-caches.service — boot re-seed not active"
+        return 0
+    }
+    _ok "boot re-seed unit installed and enabled: $unit_path"
+    return 0
+}
+
 # ── main ──────────────────────────────────────────────────────────────────────
 seed_caches
 
@@ -337,5 +425,6 @@ if [ "$SEED_ONLY" = "1" ]; then
 fi
 
 install_tmpfiles_exclusion
+install_boot_unit
 
 exit 0
