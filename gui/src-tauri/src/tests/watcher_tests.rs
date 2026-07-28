@@ -650,10 +650,20 @@ fn wait_until_with_retry_returns_false_after_the_timeout_when_never_satisfied() 
         "should wait out the full timeout, took {:?}",
         start.elapsed()
     );
+    // `>= 1`, not `> 1`: a thread descheduled for the whole 200ms budget
+    // between the first `attempt()` and the deadline check legitimately
+    // issues exactly one attempt, so a "more than once" claim here is
+    // starvation-invertible (this was the reported flake). The exact
+    // "reissued more than once" claim -- deterministically 10 attempts --
+    // now lives on the virtual clock in
+    // `wait_until_with_retry_reissues_the_attempt_for_every_window_until_the_deadline_on_a_virtual_clock`
+    // below. `>= 1` is starvation-proof by construction: `attempt()` is
+    // called unconditionally before the loop ever computes `remaining` or
+    // checks the deadline. See #5709.
     assert!(
-        counter.get() > 1,
-        "attempt should have been reissued more than once while waiting \
-         for the condition, got {}",
+        counter.get() >= 1,
+        "attempt should be issued unconditionally at least once, even when \
+         the condition never holds, got {}",
         counter.get()
     );
 }
