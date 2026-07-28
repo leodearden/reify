@@ -993,3 +993,210 @@ fn real_stdlib_build_is_collision_free() {
         );
     }
 }
+
+// ─── task 5496: NS-P3 kind uniformity + the live-corpus carve-outs ───────────
+//
+// Every case below is a two-module `#no_prelude` synthetic set driven through
+// `build_stdlib_modules`, the same production entry point boundary #3 uses.
+//
+// The NEGATIVE cases (g)/(h)/(i) are the load-bearing half. Each mirrors a
+// declaration that is LIVE in the real stdlib as of 2026-07-28, so each is a
+// guard against a future implementer coarsening the scan and detonating the
+// real stdlib build:
+//
+//   (g) cross-module function OVERLOADS — `unwrap_or` (option_recovery.ri:37 vs
+//       result.ri:52), `or_else` (:42 vs :57), `fallback` (:56 vs :75). Three
+//       real pairs. Keying functions by name alone panics the real build.
+//   (h) cross-KIND name reuse — `structure def Planar` (kinematic.ri:163) vs
+//       `trait Planar {}` (geometry_traits.ri:56).
+//   (i) ASSOCIATED types are not module-level type aliases — `type MotionValue`
+//       is declared in `trait HasMotion` (kinematic.ri:110) and bound in
+//       `Prismatic` (:133), `Revolute` (:151) and `Coupling` (:198). A syntactic
+//       `^\s*(pub )?type <name>` scan sees four `MotionValue`s and panics on day
+//       one; reading `CompiledModule.type_aliases` (module-level only) does not.
+//
+// Deliberately NOT covered: INTRA-module duplicates. `displacement_at` x2
+// (modal_analysis_fns.ri:153,193), `solve_elastic_static` x3
+// (solver_elastic.ri:727,768,809) and `solve_load_cases` x2
+// (fea_multi_case.ri:653,700) are all same-module overloads, out of a
+// cross-module scan's reach by construction, and remain the business of the
+// per-module duplicate path at ctx.rs:157.
+
+/// Assert that building `sources` does NOT panic — the negative counterpart of
+/// [`assert_collision_panic`].
+///
+/// `catch_unwind` rather than a bare call so a failure reports the panic message
+/// (which distinguishes "the scan is too coarse" from "the synthetic source
+/// failed to compile") instead of just aborting the test binary's thread.
+#[track_caller]
+fn assert_no_collision_panic(sources: &[(&str, &str)], why: &str) {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        stdlib_loader::build_stdlib_modules(sources);
+    }));
+    if let Err(err) = result {
+        let msg = err
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| err.downcast_ref::<&'static str>().map(|s| (*s).to_string()))
+            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+        panic!("stdlib build should have accepted {why}; got:\n{msg}");
+    }
+}
+
+/// Build a two-module source set from two `#no_prelude` bodies.
+fn two_modules<'a>(a: &'a str, b: &'a str) -> [(&'a str, &'a str); 2] {
+    [("std.test.dup_a", a), ("std.test.dup_b", b)]
+}
+
+// ─── (a)-(f): every remaining kind must collide ──────────────────────────────
+
+#[test]
+fn duplicate_enum_name_across_modules_fails_the_stdlib_build() {
+    let sources = two_modules(
+        "#no_prelude\npub enum Grade { A, B }\n",
+        "#no_prelude\npub enum Grade { C, D }\n",
+    );
+    assert_collision_panic(
+        &sources,
+        "enum",
+        "Grade",
+        "std.test.dup_a",
+        "std.test.dup_b",
+    );
+}
+
+#[test]
+fn duplicate_trait_name_across_modules_fails_the_stdlib_build() {
+    let sources = two_modules(
+        "#no_prelude\ntrait Foo { }\n",
+        "#no_prelude\ntrait Foo { }\n",
+    );
+    assert_collision_panic(&sources, "trait", "Foo", "std.test.dup_a", "std.test.dup_b");
+}
+
+#[test]
+fn duplicate_unit_symbol_across_modules_fails_the_stdlib_build() {
+    let sources = two_modules(
+        "#no_prelude\npub unit zz : Length = 1.0\n",
+        "#no_prelude\npub unit zz : Length = 2.0\n",
+    );
+    assert_collision_panic(&sources, "unit", "zz", "std.test.dup_a", "std.test.dup_b");
+}
+
+#[test]
+fn duplicate_top_level_type_alias_across_modules_fails_the_stdlib_build() {
+    let sources = two_modules(
+        "#no_prelude\npub type Alias = Real\n",
+        "#no_prelude\npub type Alias = Int\n",
+    );
+    assert_collision_panic(
+        &sources,
+        "type alias",
+        "Alias",
+        "std.test.dup_a",
+        "std.test.dup_b",
+    );
+}
+
+#[test]
+fn duplicate_constraint_def_name_across_modules_fails_the_stdlib_build() {
+    let body = "#no_prelude\npub constraint def Bounded {\n    param v : Real\n    constraint v >= 0\n}\n";
+    let sources = two_modules(body, body);
+    assert_collision_panic(
+        &sources,
+        "constraint def",
+        "Bounded",
+        "std.test.dup_a",
+        "std.test.dup_b",
+    );
+}
+
+#[test]
+fn duplicate_purpose_name_across_modules_fails_the_stdlib_build() {
+    let body = "#no_prelude\npub purpose ready(subject : Structure) {\n    constraint forall p in subject.geometric_params: determined(p)\n}\n";
+    let sources = two_modules(body, body);
+    assert_collision_panic(
+        &sources,
+        "purpose",
+        "ready",
+        "std.test.dup_a",
+        "std.test.dup_b",
+    );
+}
+
+/// (f) Same function name AND identical signature in two modules is a genuine
+/// collision — one silently shadows the other today (lib.rs first-wins, with a
+/// comment deferring to "stdlib-level review"; this gate replaces that).
+///
+/// This case is also what forbids keying functions by `content_hash`: the two
+/// bodies below differ, so a body-derived key would hash them apart and miss
+/// the collision entirely — exactly the hole this task closes.
+#[test]
+fn duplicate_function_with_identical_signature_across_modules_fails_the_stdlib_build() {
+    let sources = two_modules(
+        "#no_prelude\npub fn twin(x : Real) -> Real {\n    x\n}\n",
+        "#no_prelude\npub fn twin(x : Real) -> Real {\n    x + 1.0\n}\n",
+    );
+    assert_collision_panic(&sources, "function", "twin", "std.test.dup_a", "std.test.dup_b");
+}
+
+// ─── (g)-(i): the three carve-outs the LIVE stdlib depends on ────────────────
+
+/// (g) Cross-module function OVERLOADS must be accepted. Mirrors `unwrap_or` /
+/// `or_else` / `fallback`, each declared in both `option_recovery.ri` and
+/// `result.ri` with different first-parameter types.
+///
+/// NS-P3 keys functions by name + SIGNATURE (param types in order, plus return
+/// type). A name-only key panics the real stdlib build on three separate pairs.
+#[test]
+fn cross_module_function_overloads_are_accepted() {
+    let sources = two_modules(
+        "#no_prelude\npub fn recover(x : Real, dflt : Real) -> Real {\n    x\n}\n",
+        "#no_prelude\npub fn recover(x : Int, dflt : Real) -> Real {\n    dflt\n}\n",
+    );
+    assert_no_collision_panic(
+        &sources,
+        "cross-module function overloads differing in parameter type \
+         (live: unwrap_or/or_else/fallback in option_recovery.ri vs result.ri)",
+    );
+}
+
+/// (h) Cross-KIND name reuse must be accepted — per-kind namespaces. Mirrors
+/// `structure def Planar` (kinematic.ri:163) and `trait Planar {}`
+/// (geometry_traits.ri:56). A kind-agnostic scan would force an out-of-scope
+/// rename of `Planar`.
+#[test]
+fn cross_kind_name_reuse_is_accepted() {
+    let sources = two_modules(
+        "#no_prelude\nstructure def Planar {\n    param v : Real\n}\n",
+        "#no_prelude\ntrait Planar { }\n",
+    );
+    assert_no_collision_panic(
+        &sources,
+        "the same name used for a structure in one module and a trait in another \
+         (live: kinematic.ri Planar vs geometry_traits.ri Planar)",
+    );
+}
+
+/// (i) ASSOCIATED types are members of their template, not module-level
+/// aliases, so the same associated-type name in two modules must be accepted.
+/// Mirrors `type MotionValue` in `trait HasMotion` (kinematic.ri:110) and its
+/// bindings in `Prismatic` / `Revolute` / `Coupling`.
+///
+/// This is the case that makes "scan the materialized surface, not the syntax"
+/// enforceable rather than advisory: a syntactic `^\s*(pub )?type <name>` scan
+/// reports four duplicate `MotionValue`s and panics the real stdlib build
+/// immediately, while `CompiledModule.type_aliases` holds only module-level
+/// aliases and correctly reports none.
+#[test]
+fn associated_types_are_not_module_level_type_aliases() {
+    let sources = two_modules(
+        "#no_prelude\ntrait HasMotion {\n    type MotionValue\n}\n",
+        "#no_prelude\ntrait AlsoHasMotion {\n    type MotionValue\n}\n",
+    );
+    assert_no_collision_panic(
+        &sources,
+        "the same ASSOCIATED type name declared inside two different traits \
+         (live: MotionValue in kinematic.ri HasMotion/Prismatic/Revolute/Coupling)",
+    );
+}
