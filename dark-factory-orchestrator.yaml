@@ -593,9 +593,11 @@ fused_memory:
   project_id: "reify"
   server_command: []
 
-# Sandbox (disabled — bwrap uid map broken on this kernel)
+# Sandbox (landlock: kernel-enforced whole-filesystem read-only except each
+# task's own writable scope; see PRD os-sandbox-worktree-containment, task γ6)
 sandbox:
-  enabled: false
+  enabled: true
+  backend: landlock
 
 # Escalation
 escalation:
