@@ -331,4 +331,41 @@ do
 done
 
 # ---------------------------------------------------------------------------
+# Cycle 6 — dotted directory segments still REJECT (anti-dotfile-rule pin, #5726)
+#
+# Cycle 5 widened _EXTS with entries that read like dotfile names (gitignore,
+# envrc, npmrc, python-version).  The tempting generalisation — "a final segment
+# starting with a dot is a FILE" — is REJECTED, and this block pins that.
+#
+# All five paths below are real, untracked DIRECTORIES in the main checkout
+# (.worktrees is the orchestrator's entire worktree pool).  A blanket dotfile
+# rule would flip every one of them to ACCEPT and admit an over-wide charter:
+# exactly the failure the guard exists to prevent.  The allowlist stays
+# enumerated for this reason.
+#
+# Being untracked, two of them do not exist in a freshly-seeded warm lane — so
+# these assertions deliberately do not depend on the filesystem, and C-P3
+# guarantees they cannot: the verdict is identical either way.
+#
+# Green on arrival (these REJECT both before and after the Cycle 5 expansion),
+# so per G6 the pin was shown to FIRE rather than assumed to: inserting
+# `case "$seg" in .*) return 0 ;; esac` at the top of _is_file_path() in a
+# scratch copy of the guard fails all 10 assertions below.  Mutant not committed.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle 6: dotted directory segments still REJECT (#5726) ---"
+
+for _dot_dir in \
+    ".worktrees" \
+    ".task" \
+    ".claude" \
+    ".cargo" \
+    ".taskmaster"
+do
+    run_classify "$_dot_dir"
+    assert "anti-dotfile pin: classify '$_dot_dir' exits 1 (REJECT)" test "$GUARD_RC" -eq 1
+    assert "anti-dotfile pin: classify '$_dot_dir' stdout contains REJECT" test "${GUARD_OUT#*REJECT}" != "$GUARD_OUT"
+done
+
+# ---------------------------------------------------------------------------
 test_summary
