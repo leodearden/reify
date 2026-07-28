@@ -79,19 +79,23 @@ pub structure IdlerPulley {
 /// to it; rotation reels one end in / pays the other out. Carries BOTH windings of
 /// the belt's ±z moment pair (axially adjacent on the one drum).
 ///
-/// The rope channel is modelled: a circular section of radius `groove_r` swept
+/// The rope seat is modelled: a circular section of radius `groove_r` swept
 /// along `helix(pitch_r, lead, groove_len)` and subtracted from the land cylinder
 /// at `land_r`, between two retaining flanges and over an axial shaft bore.
-/// `groove_mouth` is the RADIAL cut-back of the land below the rope crest — a
-/// depth, not the width of the slot it opens (see its own doc).
-/// `blank_volume` − `body_volume` is the stock the groove removes.
+/// `blank_volume` − `body_volume` is the stock the seat removes.
 ///
-/// The channel is CAPTIVE, not an open seat: the swept section is submerged in the
-/// land, so its mouth is a retaining slot narrower than the rope, and the rope is
-/// wound in thread-style at assembly rather than laid in radially. That suits a
-/// dual-anchor winch — both ends are fixed and it is never re-reeved in service —
-/// and it is what makes the wrap positively captive. The bounds are pinned in the
-/// constraints below, not restated here.
+/// The seat is a HALF-ROUND open seat: `land_r = pitch_r` puts the swept section's
+/// arc centre ON the land surface, so exactly half the section is cut away and the
+/// mouth it opens is the section's full width, `2*groove_r == rope_dia`. The rope
+/// is therefore laid in RADIALLY, not wound in thread-style. That is what this
+/// drive needs: `docs/projects/printer_v01.md` lists service as "Hours (re-wind
+/// capstans)", and the departure tangent migrates axially across the band every
+/// revolution, so the rope has to leave the seat radially at an arbitrary mid-band
+/// position. A half-round is also the ONLY depth that admits the rope at all — the
+/// mouth chord `2*sqrt(groove_r^2 - (land_r - pitch_r)^2)` is maximised exactly at
+/// `land_r == pitch_r`, so any other land radius closes the mouth below `rope_dia`.
+/// The wrap stays positive and zero-slip because both rope ends are ANCHORED to
+/// the drum, not because the channel traps them.
 ///
 /// Sizing (D/d = 8 start): drum Ø = d_ratio·rope_dia = 48mm; pitch circ ≈ 151mm;
 /// max per-belt feed = X+Y travel = 500+800 = 1.3m → ≈ 8.6 → 9 active turns;
@@ -107,12 +111,6 @@ pub structure Capstan {
     /// Helical pitch. CLEARANCE lead (> rope_dia) so adjacent wraps don't rub/wedge
     /// (wedging would drift the effective Ø → transmission-ratio error).
     param lead        : Length = 7mm
-    /// RADIAL depth by which the land sits below the rope crest (consumed by
-    /// `land_r`). This is a DEPTH, not the width of the slot it opens: the mouth
-    /// chord is 2*sqrt(2*groove_r*groove_mouth - groove_mouth^2), ≈2.6mm at the
-    /// defaults — about 8.7x this parameter. Size it as a lip depth, not a lip
-    /// width. Both its bounds are constraints below.
-    param groove_mouth : Length = 0.3mm
     /// Max per-belt rope feed = X-travel + Y-travel (documentation; drives turns).
     param feed        : Length = 1300mm
     /// Active wrap turns ≈ feed / (π·drum_Ø).
@@ -125,7 +123,12 @@ pub structure Capstan {
 
     let pitch_r    = drum_d / 2                   // rope centreline (the D/d circle)
     let groove_r   = rope_dia / 2                 // rope seat = swept-cutter section radius
-    let land_r     = pitch_r + groove_r - groove_mouth   // outer land/crest cylinder
+    // Outer land/crest cylinder. Cut back to the rope CENTRELINE, so the seat is a
+    // true half-round: its arc centre sits ON the land surface and its mouth is the
+    // seat's full width, 2*groove_r == rope_dia. This is the only depth that admits
+    // the rope radially — a shallower land closes the mouth over the rope, a deeper
+    // one closes it back under (the mouth chord peaks at land_r == pitch_r).
+    let land_r     = pitch_r
     let flange_r   = pitch_r + rope_dia * 1.5     // stands proud of the rope crest
     let flange_w   = 6mm
     let groove_len : Length = lead * (active_turns + dead_total)   // axial wrap-band extent
@@ -160,16 +163,13 @@ pub structure Capstan {
 
     constraint land_r > bore_r
     constraint flange_r > land_r
-    constraint lead > rope_dia        // clearance lead
+    // Clearance lead: at a half-round seat each wrap opens a 2*groove_r wide mouth
+    // in the land, so the lead must exceed the MOUTH width or adjacent seats merge
+    // and the land ridge between wraps vanishes (wedging would drift the effective
+    // Ø → transmission-ratio error). Numerically the same as `lead > rope_dia` at
+    // the defaults (7mm > 6mm, a 1mm ridge), but it names the geometry that gates it.
+    constraint lead > groove_r * 2.0
     constraint d_ratio > 0.0
-    // The channel must BREAK THROUGH the land (else it is a buried tunnel and the
-    // drum renders smooth) …
-    constraint groove_mouth > 0mm
-    // … but its mouth must stay narrower than the rope, so the wrap is CAPTIVE and
-    // cannot pop out of the channel when a lead goes slack — the whole point of a
-    // dual-anchor winch drum (positive, zero-slip) over a friction wrap. At this
-    // bound the mouth chord is 0.6*rope_dia.
-    constraint groove_mouth < groove_r * 0.2
 }
 
 // ── Fairlead shuttle ────────────────────────────────────────────────────────
