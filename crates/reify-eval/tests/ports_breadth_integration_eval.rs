@@ -19,8 +19,10 @@
 //!   d. `stdlib_thread_spec_thread_form_resolves_at_eval` — ThreadAssembly.spec
 //!      carries the stdlib-only `thread_form` param, proving the construction
 //!      resolves against stdlib rather than a local shadow.
-//!   e. `example_declares_no_stdlib_shadowing_defs` — structural drift guard:
-//!      the example re-declares no structure or enum that stdlib owns.
+//!   e. `example_declares_exactly_its_own_defs` — structural drift guard: the
+//!      example's compiled templates are exactly its own three, and it declares
+//!      no enum, trait, or function at all — every one of those it names is
+//!      stdlib's, resolved through the prelude.
 //!
 //! The example .ri file re-declares nothing: stdlib defs resolve through the
 //! prelude fallback at eval, so the mirrors it used to carry are gone
@@ -231,8 +233,8 @@ fn stdlib_thread_spec_thread_form_resolves_at_eval() {
     );
 }
 
-/// Structural drift guard for resolution-unification α: the example must
-/// re-declare NOTHING that stdlib already owns.
+/// Structural drift guard for resolution-unification α: the example declares
+/// exactly its own three templates, and no enum, trait, or function at all.
 ///
 /// Asserts on the *compiled module* rather than the .ri source text, so the
 /// guard pins compiler output (what actually shadows) and survives
@@ -241,94 +243,88 @@ fn stdlib_thread_spec_thread_form_resolves_at_eval() {
 /// `compile_with_prelude_context` docs) — so anything appearing here was
 /// declared by ports_breadth.ri itself.
 ///
-/// RED after the ThreadSpec strip: `Frame3` is still a local template and all
+/// Every declaration form a reintroduced mirror could take is pinned, not just
+/// the two forms the α strip happened to remove:
+///   - templates across ALL `EntityKind`s (`Structure` and `Occurrence`), since
+///     `occurrence def ThreadSpec` shadows exactly as well as `structure def
+///     ThreadSpec` — verified: an added `occurrence def` fails this test;
+///   - enum defs — the five stripped thread/fluid enums;
+///   - trait defs — the quietest failure mode, because a local
+///     `trait MechanicalPort` / `FluidPort` changes which port definition
+///     signals (b)/(c) above resolve against without changing any name they
+///     assert on;
+///   - functions, so the "declares nothing else" claim holds for every form.
+///
+/// RED after the ThreadSpec strip: `Frame3` was still a local template and all
 /// five enums (ThreadSystem, ThreadClass, ThreadTighteningDirection, FluidType,
-/// FittingStandard) are still local enum defs.
+/// FittingStandard) were still local enum defs.
 #[test]
-fn example_declares_no_stdlib_shadowing_defs() {
+fn example_declares_exactly_its_own_defs() {
     let compiled = compile_breadth();
 
-    // Structures genuinely owned by this example — everything else is a mirror
-    // of a stdlib type and must resolve through the prelude instead.
-    const LOCAL_STRUCTURES: [&str; 3] = ["ThreadAssembly", "AsymmetricRig", "HydroConformer"];
+    // Templates genuinely owned by this example. Every other name it uses
+    // belongs to stdlib and must resolve through the prelude instead.
+    const LOCAL_TEMPLATES: [&str; 3] = ["ThreadAssembly", "AsymmetricRig", "HydroConformer"];
 
-    // Names stdlib owns that this example historically mirrored, mapped to the
-    // stdlib file that owns them — so a failure names the real owner. Paths are
-    // relative to crates/reify-compiler/stdlib/. This table is deliberately NOT
-    // a fallback: a name absent from it is not claimed to be a stdlib mirror.
-    const STDLIB_OWNER: [(&str, &str); 7] = [
-        ("ThreadSpec", "ports_mechanical.ri"),
-        ("ThreadSystem", "ports_mechanical.ri"),
-        ("ThreadClass", "ports_mechanical.ri"),
-        ("ThreadTighteningDirection", "ports_mechanical.ri"),
-        ("Frame3", "ports.ri"),
-        ("FluidType", "ports_fluid.ri"),
-        ("FittingStandard", "ports_fluid.ri"),
-    ];
+    let prd = "docs/prds/v0_6/resolution-unification.md §8 α / boundary #18";
 
-    // Diagnose unexpected local defs. Only names actually in STDLIB_OWNER are
-    // called mirrors; anything else is a def stdlib does not own, where the fix
-    // is to widen this test rather than to delete the def.
-    let diagnose = |names: &[&str]| -> String {
-        names
-            .iter()
-            .map(
-                |n| match STDLIB_OWNER.iter().find(|(owned, _)| *owned == *n) {
-                    Some((_, file)) => format!(
-                        "`{}` — stale mirror of crates/reify-compiler/stdlib/{}; delete it and \
-                         let it resolve through the stdlib prelude",
-                        n, file
-                    ),
-                    None => format!(
-                        "`{}` — a def stdlib does not own; if this is genuinely the example's \
-                         own type, widen this test's expectations instead of deleting it",
-                        n
-                    ),
-                },
-            )
-            .collect::<Vec<_>>()
-            .join("; ")
-    };
-
-    // (a) The only Structure templates are the three genuinely-local ones. One
-    // assertion covers both directions: an extra name is a reintroduced mirror
-    // (or a new local def), a missing one is a lost signal carrier.
-    let mut structures: Vec<&str> = compiled
-        .templates
-        .iter()
-        .filter(|t| t.entity_kind == EntityKind::Structure)
-        .map(|t| t.name.as_str())
-        .collect();
-    structures.sort_unstable();
-
-    let mut expected = LOCAL_STRUCTURES.to_vec();
+    // (a) Templates, every EntityKind. One assertion covers both directions: an
+    // extra name is a reintroduced mirror (or a new local def), a missing one is
+    // a signal carrier the η tests above depend on.
+    let mut templates: Vec<&str> = compiled.templates.iter().map(|t| t.name.as_str()).collect();
+    templates.sort_unstable();
+    let mut expected = LOCAL_TEMPLATES.to_vec();
     expected.sort_unstable();
-    let extra: Vec<&str> = structures
-        .iter()
-        .copied()
-        .filter(|n| !expected.contains(n))
-        .collect();
     assert_eq!(
-        structures,
-        expected,
-        "examples/stdlib/ports_breadth.ri should declare exactly its own three structures. \
-         Unexpected: {}. A missing one instead means the example lost a signal carrier \
-         (resolution-unification.md §8 α / boundary #18).",
-        if extra.is_empty() {
-            "none".to_string()
-        } else {
-            diagnose(&extra)
-        }
+        templates, expected,
+        "examples/stdlib/ports_breadth.ri should declare exactly its own templates. \
+         An extra name that stdlib owns is a stale mirror — delete it and let the prelude \
+         resolve it; an extra name stdlib does not own means the example grew a local def, \
+         so widen LOCAL_TEMPLATES. A missing name means the example lost an η signal \
+         carrier. ({prd})"
     );
 
-    // (b) No user-declared enums at all — every enum it uses is stdlib's.
+    // (b) No enum defs at all: ThreadSystem / ThreadClass /
+    // ThreadTighteningDirection are stdlib ports_mechanical.ri's, FluidType /
+    // FittingStandard are ports_fluid.ri's. Unlike (a) there is no allowlist, so
+    // the remediation for a legitimately-local one differs — say so explicitly.
     let local_enums: Vec<&str> = compiled.enum_defs.iter().map(|e| e.name.as_str()).collect();
     assert!(
         local_enums.is_empty(),
-        "examples/stdlib/ports_breadth.ri declares enum(s) it should not: {}. \
-         stdlib enum variants resolve through the prelude at both compile and eval \
-         (resolution-unification.md §8 α / boundary #18).",
-        diagnose(&local_enums)
+        "examples/stdlib/ports_breadth.ri should declare no enums; got {local_enums:?}. \
+         Every enum it uses is stdlib's and resolves through the prelude at both compile \
+         and eval, so a local copy is a stale mirror — delete it. If the example ever \
+         legitimately needs an enum of its own, this assertion has no allowlist to widen: \
+         replace it with an expected-set assert_eq! shaped like (a) above. ({prd})"
+    );
+
+    // (c) No trait defs: the port traits (MechanicalPort, ThermalPort, FluidPort,
+    // HydraulicPort, LocatedPort) are stdlib's. Same no-allowlist remediation as (b).
+    let local_traits: Vec<&str> = compiled
+        .trait_defs
+        .iter()
+        .map(|t| t.name.as_str())
+        .collect();
+    assert!(
+        local_traits.is_empty(),
+        "examples/stdlib/ports_breadth.ri should declare no traits; got {local_traits:?}. \
+         The port traits are stdlib's; a local re-declaration keeps every name signals \
+         (b)/(c) assert on while silently changing which definition they resolve against — \
+         delete it. A legitimately-local trait needs this assertion replaced by an \
+         expected-set assert_eq! shaped like (a) above. ({prd})"
+    );
+
+    // (d) No functions: the only one the example calls is `vec3`, a compiler
+    // builtin (MATH_CONSTRUCTION_NAMES in reify-compiler/src/math_signatures.rs),
+    // not a stdlib `fn`. Same no-allowlist remediation as (b).
+    let local_fns: Vec<&str> = compiled.functions.iter().map(|f| f.name.as_str()).collect();
+    assert!(
+        local_fns.is_empty(),
+        "examples/stdlib/ports_breadth.ri should declare no functions; got {local_fns:?}. \
+         A local definition shadowing a name the example already resolves elsewhere (the \
+         builtin `vec3`, or any stdlib `fn`) would change the numerics the η signals assert \
+         on — delete it. A legitimately-local function needs this assertion replaced by an \
+         expected-set assert_eq! shaped like (a) above. ({prd})"
     );
 }
 
