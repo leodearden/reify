@@ -13762,6 +13762,75 @@ fn get_entity_tree_realization_trait_geometry_propagates() {
     );
 }
 
+// ---- #5558: trait_geometry follows the refinement chain ----
+
+/// #5558 step-1 RED: `trait_geometry` must fire for a structure that reaches
+/// `Physical` TRANSITIVELY, not just one that spells `: Physical` literally.
+///
+/// WHY this fails today: `template.trait_bounds` holds DECLARED trait names
+/// only — for `structure def Flange : Rigid` it is exactly `["Rigid"]`. The
+/// current test is a substring probe (`b.contains("Physical")`), which never
+/// sees that `trait Rigid : Physical`
+/// (`crates/reify-compiler/stdlib/structural_physical.ri:76`) refines it. So
+/// both `geometry` nodes report `trait_geometry == false`.
+///
+/// The `Rigid -> Physical` refinement edge lives in the PRELUDE, not in the
+/// user module: a user module's own `CompiledModule.trait_defs` holds only the
+/// traits it declares, and this source declares none. Driving the public
+/// `get_entity_tree()` (rather than `build_template_node` directly) is
+/// therefore what makes this test meaningful — it pins the module + prelude
+/// trait-def threading end-to-end, which a hand-built fixture could not.
+///
+/// A geometry binding emits BOTH a value cell and a realization node (#4954)
+/// and the flag is shared between them (#5195), so both are asserted; the
+/// non-trait `let helper` pins that nothing unrelated is swept in.
+#[test]
+fn get_entity_tree_trait_geometry_follows_refinement_chain() {
+    let source = r#"structure def Flange : Rigid {
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+
+    param geometry : Solid = box(10mm, 10mm, 10mm)
+    let helper = box(5mm, 5mm, 5mm)
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "flange").expect("load");
+
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "Flange")
+        .expect("Flange root must exist");
+
+    let realization = |name: &str| -> &crate::types::EntityTreeNode {
+        root.children
+            .iter()
+            .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("realization node for '{name}' must be present"))
+    };
+
+    let geometry_cell = root
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Flange.geometry" && n.kind != "realization")
+        .expect("value-cell node for 'geometry' must be present");
+    assert!(
+        geometry_cell.trait_geometry,
+        "value-cell `geometry` of a `: Rigid` structure must have \
+         trait_geometry == true — `Rigid : Physical` refines Physical, so the \
+         trait-mandated geometry member is reached through the refinement chain"
+    );
+    assert!(
+        realization("geometry").trait_geometry,
+        "the `geometry` realization of a `: Rigid` structure must have \
+         trait_geometry == true, matching its value-cell sibling (#4954/#5195)"
+    );
+    assert!(
+        !realization("helper").trait_geometry,
+        "a plain `let helper` realization must have trait_geometry == false — \
+         resolving the refinement chain must not widen which members qualify"
+    );
+}
+
 /// #5195 step-11 end-to-end: the task's stated observable, asserted against the
 /// COMMITTED example rather than a hand-modelled copy of it.
 ///
