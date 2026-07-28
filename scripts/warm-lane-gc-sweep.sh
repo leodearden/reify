@@ -18,8 +18,9 @@
 # rename-then-background-rm leaves behind when SIGKILL'd mid-reseed. An entry is
 # removed only when its encoded PID is dead AND no live process still references
 # it (cwd / open fd / mmap). This lives in the periodic δ sweep, not gc.sh's
-# per-acquire ε reclaim, because the live-reference /proc scan is too costly for
-# the hot path. See _reap_stale_trash below.
+# per-acquire ε reclaim — see _reap_stale_trash below for the reason, which is
+# NOT "the /proc scan is too costly for ε": task 5572 moved the lane guard's own
+# per-entry scan onto exactly that path, cost measured and accepted.
 #
 # Live-consumer lane guard (task 5378 → MOVED INTO warm-lane-gc.sh by task 5572):
 # this sweep no longer computes a live-lane CSV and no longer passes
@@ -79,7 +80,9 @@
 # Exit codes:
 #   0  — Sweep attempted or skipped (fail-open).
 #   1  — Runtime error propagated from gc.sh.
-#   2  — Usage error: unknown flag or non-integer --critical-free-gib.
+#   2  — Usage/WIRING error: unknown flag, non-integer --critical-free-gib, or a
+#        missing sibling library (scripts/lib_live_refs.sh — an incomplete
+#        deployment, which no retry fixes). Matches warm-lane-gc.sh's taxonomy.
 #
 # Env knobs:
 #   REIFY_WARM_LANE_GC_SWEEP_MOUNT               — default --mount
@@ -94,9 +97,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Shared live-reference /proc scanner (live_referenced_paths / live_ref_present).
 # Single definition, two consumers: this sweep's .reseed-trash reaper and
 # warm-lane-gc.sh's per-lane reclaim gate (task 5572).
+# Exit 2 (usage/WIRING), not 1 (runtime): an incomplete deployment that no retry
+# fixes — mirrors warm-lane-gc.sh's guard so both consumers report it alike.
 if [ ! -f "$SCRIPT_DIR/lib_live_refs.sh" ]; then
     echo "warm-lane-gc-sweep.sh: ERROR — scripts/lib_live_refs.sh not found next to warm-lane-gc-sweep.sh" >&2
-    exit 1
+    exit 2
 fi
 # shellcheck source=scripts/lib_live_refs.sh
 source "$SCRIPT_DIR/lib_live_refs.sh"
@@ -131,7 +136,8 @@ Usage: $(basename "$0") [--mount DIR] [--gc-script PATH] [--df CMD] [--critical-
   Exit codes:
     0  — Sweep attempted or skipped (fail-open on missing mount).
     1  — Runtime error from gc.sh.
-    2  — Usage error: unknown flag or non-integer --critical-free-gib.
+    2  — Usage/wiring error: unknown flag, non-integer --critical-free-gib,
+         or a missing sibling scripts/lib_live_refs.sh.
 EOF
 }
 
@@ -145,8 +151,13 @@ EOF
 # pool-wide dead-PID sweep over the whole .reseed-trash/ dir.
 #
 # It lives in this periodic δ backstop (systemd timer + hand-run), NOT in
-# warm-lane-gc.sh's per-acquire ε reclaim hot path, because the live-reference
-# guard is an O(processes × fds) /proc scan too costly for the hot path.
+# warm-lane-gc.sh's per-acquire ε reclaim hot path. The reason is JANITORIAL
+# SCOPE, not cost: task 5572 put the lane guard's own per-entry /proc scan
+# directly on the ε path (~1.9s per entry, measured — see the COST REVERSAL note
+# in warm-lane-gc.sh's header), so "too costly for ε" is no longer a reason for
+# anything. Trash reaping is pool-wide disk hygiene with no admission-time
+# correctness requirement: an ε caller gains nothing from it, and folding it in
+# would add a whole extra batch /proc scan per admission for zero ε benefit.
 #
 # An entry is reaped ONLY when its encoded PID is dead AND no live process still
 # references the dir via cwd / open fd / mmap — defending against PID reuse and

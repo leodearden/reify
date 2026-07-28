@@ -97,7 +97,11 @@
 # Exit codes:
 #   0  — Completed sweep (best-effort; per-candidate failures warn + continue).
 #   1  — Runtime error: could not resolve required argument (e.g. base-target symlink).
-#   2  — Usage error: unknown flag, missing subcommand, missing required option.
+#   2  — Usage/WIRING error: unknown flag, missing subcommand, missing required
+#        option, or a missing sibling library (scripts/lib_live_refs.sh). The
+#        library case is a wiring error, not a runtime one: nothing about the
+#        invocation could have avoided it and no retry will fix it — the
+#        deployment is incomplete. Same class as an unknown flag, hence 2.
 #
 # Env knobs (all overridable by flags):
 #   REIFY_WARM_LANE_GC_MOUNT            — default --mount (worktree_base)
@@ -140,8 +144,9 @@
 #     a live PROCESS REFERENCE at or under the entry (cwd / open fd / mmap;
 #     live_ref_present, task 5572). It is checked per entry immediately before
 #     the reset (Pass 1) or the remove (Pass 2), under the flock the loop
-#     already holds, and before _is_reclaimable in Pass 2 — see the
-#     live-reference gate note below.
+#     already holds, and AFTER _is_reclaimable in Pass 2 (cheapest decisive
+#     predicate first — see the live-reference gate note below). Its share of
+#     the preserved count is reported separately as preserved_live_ref=.
 #   - Always-reclaim (Pass 1 only, task 5326): a FREE pool lane whose
 #     live-consumer flock is free is reclaimed REGARDLESS of dirty tracked
 #     changes, ahead-of-main tip, or backing-task status. acquire_lane ALWAYS
@@ -170,10 +175,40 @@
 #     snapshot, which would leave a lane that goes live mid-traversal
 #     unprotected across a 25-40 minute pass. Over-preserving is safe and
 #     TEMPORARY: a lingering reference costs one extra sweep.
+#   - COST REVERSAL, stated explicitly (task 5572 review). Moving from ONE batch
+#     /proc scan to a PER-ENTRY scan is O(entries × /proc), and the sweep comment
+#     this replaced called a per-entry scan "too costly for the hot path". That
+#     claim is hereby SUPERSEDED, not silently contradicted — with measurements:
+#       * one live_ref_present call ......... ~1.9s  (find+awk over /proc ~1.5s
+#                                                     + grep over /proc/*/maps
+#                                                     ~0.38s), on 1159 live
+#                                                     processes / 11527 fd+cwd
+#                                                     symlinks
+#       * a 93-entry pool, Pass 1 + Pass 2 ... ~2-3 min of added wall clock
+#     measured 2026-07-28 on the live host. This lands on dark-factory's ε
+#     admission path (git_ops.py _run_warm_lane_gc_reclaim), which imposes NO
+#     timeout, against a reclaim pass that already runs 25-40 minutes.
+#     Accepted, because the alternatives are worse:
+#       * a batch scan is what created the TOCTOU this gate exists to close;
+#       * "only flock-FREE entries pay the walk" is TRUE but nearly vacuous — in
+#         a pool at rest almost every lane is flock-free, so budget for the full
+#         entries × 1.9s, not for a fraction of it;
+#       * awk's early exit only fires once EVERY candidate is found, so the
+#         common case (free entry, about to be reclaimed) always pays the full
+#         walk — and that is exactly the verdict that must be fresh.
+#     What IS bought back, cheaply: live_ref_present short-circuits after the
+#     cwd/fd pass (~1.5s instead of ~1.9s for a live entry), and Pass 2 runs the
+#     ~18ms _is_reclaimable git pair BEFORE the walk so only an orphan that would
+#     actually be removed pays it. An up-front batch classification used only to
+#     pre-mark live entries was CONSIDERED and rejected: it costs one extra full
+#     scan and only breaks even once ≥2 entries are live at pass start, which a
+#     pool at rest never is.
 #   - α reuse: resolve base symlink → concrete gen, hold flock -s during α call
 #     (D8 reader-refcount seam; same contract as the acquire path).
 #   - Safety-ranked order: reset lanes first (cheap), then remove orphans (destructive).
-#   - Stdout: machine-readable summary line only.
+#   - Stdout: machine-readable summary line only —
+#     `reclaim: reset=N removed=N preserved=N preserved_live_ref=N`. New fields
+#     are APPENDED so prefix-matching consumers keep working.
 #     Stderr: all diagnostics (info/ok/warn/err).
 
 set -euo pipefail
@@ -182,10 +217,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Shared live-reference /proc scanner (live_ref_present). Fail LOUDLY if it is
 # missing: a silently-absent liveness guard is precisely the failure mode task
-# 5572 exists to remove.
+# 5572 exists to remove. Exit 2 (usage/WIRING), not 1 (runtime) — an incomplete
+# deployment, in the same class as an unknown flag; see the exit-code table.
 if [ ! -f "$SCRIPT_DIR/lib_live_refs.sh" ]; then
     echo "warm-lane-gc.sh: ERROR — scripts/lib_live_refs.sh not found next to warm-lane-gc.sh" >&2
-    exit 1
+    exit 2
 fi
 # shellcheck source=scripts/lib_live_refs.sh
 source "$SCRIPT_DIR/lib_live_refs.sh"
@@ -428,6 +464,17 @@ _do_reclaim() {
     local reset_count=0
     local removed_count=0
     local preserved_count=0
+    # Sub-count of preserved_count attributable to the live-reference gate
+    # (BOTH passes). Reported separately because preserved_count lumps together
+    # protect-glob skips, flock holds, dirty/unlanded orphans and live
+    # references, and only the live-reference share can shield an entry
+    # INDEFINITELY: a single abandoned shell whose cwd sits in a lane keeps that
+    # lane out of reclaim on every subsequent pass, including under
+    # --disk-pressure where reclaim is the ENOSPC response. Surfacing the count
+    # makes a permanently-shielded pool visible in dark-factory's logs; the
+    # per-entry `preserving <name>: live consumer (process reference)` warn on
+    # stderr names WHICH entries, so an operator can find and clear the holder.
+    local preserved_live_ref_count=0
 
     info "warm-lane-gc.sh reclaim: worktrees_dir=$WORKTREES_DIR  base_target=$BASE_TARGET  main_ref=$MAIN_REF"
 
@@ -504,10 +551,13 @@ _do_reclaim() {
         # anything under it (cwd / open fd / mmap)?
         #
         # Placement is load-bearing on three axes:
-        #   - AFTER the flock acquire, so only flock-FREE lanes pay the
-        #     O(processes × fds) walk, and so a flock-held lane keeps its own
+        #   - AFTER the flock acquire, so a flock-held lane keeps its own
         #     distinct diagnostic — the two preserve reasons must stay
-        #     distinguishable in dark-factory's logs.
+        #     distinguishable in dark-factory's logs. This also spares
+        #     flock-held lanes the ~1.9s O(processes × fds) walk, but do NOT
+        #     read that as the cost being small: in a pool at rest nearly every
+        #     lane is flock-free, so the pass pays lanes × ~1.9s. See the COST
+        #     REVERSAL note in the header for the measured budget.
         #   - INSIDE the loop, immediately before the reset. Hoisting it above
         #     the loop would reintroduce the up-front-snapshot TOCTOU this gate
         #     removes: one verdict computed once, then consumed across a 25-40
@@ -523,6 +573,7 @@ _do_reclaim() {
             exec 8>&-
             warn "preserving $name: live consumer (process reference)"
             preserved_count=$((preserved_count + 1))
+            preserved_live_ref_count=$((preserved_live_ref_count + 1))
             continue
         fi
 
@@ -600,23 +651,35 @@ _do_reclaim() {
             continue
         fi
 
-        # Live-reference gate (task 5572) — the SAME check Pass 1 runs, on the
-        # destructive path. Ordered BEFORE _is_reclaimable so the cheap, decisive
-        # liveness verdict short-circuits its `git status` / `merge-base`
-        # subprocess pair for a live orphan, and so the emitted diagnostic names
-        # the real reason rather than an incidental dirty/ahead one. Kept AFTER
-        # the flock acquire for the same reasons as Pass 1 (see that comment).
-        if live_ref_present "$orphan"; then
+        # Reclaimability check (under the lock). Ordered BEFORE the live-reference
+        # gate, cheapest-decisive-predicate first: measured on this host,
+        # `git status --porcelain --untracked-files=no` is ~16ms and
+        # `merge-base --is-ancestor` ~2ms, against ~1.9s for one live_ref_present
+        # /proc walk — two orders of magnitude apart. A dirty or ahead-of-main
+        # orphan is the COMMON Pass-2 preserve case, and it is already preserved
+        # by this check, so paying the walk first would burn ~1.9s per orphan to
+        # reach the identical decision. (An earlier revision ordered liveness
+        # first for diagnostic attribution; the attribution is preserved anyway —
+        # a live orphan that is ALSO clean+landed still reaches the gate below and
+        # is still reported as a live-consumer preserve. The only thing given up
+        # is naming liveness on an orphan that git would have preserved regardless,
+        # which changes no outcome.)
+        if ! _is_reclaimable "$orphan"; then
             exec 8>&-
-            warn "preserving $name: live consumer (process reference)"
             preserved_count=$((preserved_count + 1))
             continue
         fi
 
-        # Reclaimability check (under the lock).
-        if ! _is_reclaimable "$orphan"; then
+        # Live-reference gate (task 5572) — the SAME check Pass 1 runs, on the
+        # destructive path, and the LAST gate before `git worktree remove
+        # --force`. Kept AFTER the flock acquire for the same reasons as Pass 1
+        # (see that comment), and immediately before the remove so no snapshot
+        # can go stale between verdict and action.
+        if live_ref_present "$orphan"; then
             exec 8>&-
+            warn "preserving $name: live consumer (process reference)"
             preserved_count=$((preserved_count + 1))
+            preserved_live_ref_count=$((preserved_live_ref_count + 1))
             continue
         fi
 
@@ -652,9 +715,12 @@ _do_reclaim() {
     done
 
     # ── Summary ───────────────────────────────────────────────────────────────
-    printf 'reclaim: reset=%d removed=%d preserved=%d\n' \
-        "$reset_count" "$removed_count" "$preserved_count"
-    ok "reclaim complete: reset=$reset_count removed=$removed_count preserved=$preserved_count"
+    # preserved_live_ref is APPENDED, never interposed: existing consumers match
+    # the reset=/removed=/preserved= prefix, so a trailing field extends the line
+    # without breaking them.
+    printf 'reclaim: reset=%d removed=%d preserved=%d preserved_live_ref=%d\n' \
+        "$reset_count" "$removed_count" "$preserved_count" "$preserved_live_ref_count"
+    ok "reclaim complete: reset=$reset_count removed=$removed_count preserved=$preserved_count preserved_live_ref=$preserved_live_ref_count"
 }
 
 # ── dispatch ───────────────────────────────────────────────────────────────────
