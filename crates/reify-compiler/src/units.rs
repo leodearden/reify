@@ -2322,6 +2322,15 @@ mod tests {
     #[test]
     fn geometry_query_names_are_disjoint_from_other_families() {
         for name in GEOMETRY_QUERY_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
@@ -2385,6 +2394,15 @@ mod tests {
     #[test]
     fn dynamics_query_names_are_disjoint_from_other_families() {
         for name in DYNAMICS_QUERY_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
@@ -2456,6 +2474,15 @@ mod tests {
     #[test]
     fn math_typed_fn_names_are_disjoint_from_other_families() {
         for name in MATH_CONSTRUCTION_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
@@ -2548,6 +2575,15 @@ mod tests {
         // AFFINE_ALGEBRA_NAMES / LIST_HELPER_NAMES are hoisted to module level
         // (shared with `math_transcendental_fn_names_are_disjoint_from_other_families`).
         for name in MATH_OPERATION_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
@@ -2656,6 +2692,15 @@ mod tests {
     #[test]
     fn math_transcendental_fn_names_are_disjoint_from_other_families() {
         for name in MATH_TRANSCENDENTAL_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
@@ -3252,6 +3297,13 @@ mod tests {
     #[test]
     fn tolerancing_marker_names_are_disjoint_from_other_families() {
         for &name in TOLERANCING_MARKER_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !is_orientation_typed_fn(name),
+                "{name} in ORIENTATION_TYPED_FN_NAMES"
+            );
             assert!(
                 !is_geometry_function(name),
                 "{name} in GEOMETRY_FUNCTION_NAMES"
@@ -3640,6 +3692,15 @@ mod tests {
     #[test]
     fn joint_typed_fn_names_are_disjoint_from_other_families() {
         for name in JOINT_TYPED_FN_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
@@ -3710,6 +3771,15 @@ mod tests {
     #[test]
     fn analysis_fn_names_are_disjoint_from_other_families() {
         for name in ANALYSIS_FN_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
@@ -4045,6 +4115,15 @@ mod tests {
     #[test]
     fn dynamics_constructor_names_are_disjoint_from_other_families() {
         for name in DYNAMICS_CONSTRUCTOR_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
@@ -4208,6 +4287,15 @@ mod tests {
     #[test]
     fn fea_envelope_names_are_disjoint_from_other_families() {
         for name in FEA_ENVELOPE_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in GEOMETRY_FUNCTION_NAMES"
@@ -4322,6 +4410,15 @@ mod tests {
         const LIST_HELPER_NAMES: &[&str] = &["single", "flat_map"];
 
         for name in FIELD_OP_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "FIELD_OP_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "FIELD_OP_NAMES entry {name:?} must NOT also be in \
@@ -4414,6 +4511,15 @@ mod tests {
     #[test]
     fn relation_fn_names_are_disjoint_from_other_families() {
         for name in RELATION_FN_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "RELATION_FN_NAMES entry {name:?} must NOT also be in \
@@ -5028,6 +5134,15 @@ mod tests {
     #[test]
     fn parse_fn_names_are_disjoint_from_other_families() {
         for name in PARSE_FN_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "PARSE_FN_NAMES entry {name:?} must NOT also be in \
@@ -5157,5 +5272,22 @@ mod tests {
             assert!(!FEA_ENVELOPE_NAMES.contains(name), "{name:?} in FEA_ENVELOPE_NAMES");
             assert!(!FIELD_OP_NAMES.contains(name), "{name:?} in FIELD_OP_NAMES");
         }
+
+        // The DATUM constructor family is typed by `datum_constructor_result_type`
+        // — a RESOLVER, not a name slice — so the generic loop above cannot cover
+        // it. `frame_at` is the one name where the two families could plausibly
+        // collide (it already resolves to `Type::Frame(3)` there), so pin its
+        // absence explicitly: claiming it here too would double-classify it.
+        assert!(
+            !ORIENTATION_TYPED_FN_NAMES.contains(&"frame_at"),
+            "'frame_at' must NOT be in ORIENTATION_TYPED_FN_NAMES — \
+             datum_constructor_result_type already types it Type::Frame(3)"
+        );
+        assert_eq!(
+            datum_constructor_result_type("frame_at", &[]),
+            Some(reify_core::Type::Frame(3)),
+            "guards the premise of the assert above: frame_at is genuinely \
+             claimed by the datum family"
+        );
     }
 }
