@@ -212,6 +212,23 @@ pub(crate) fn kinematic_query_result_type(name: &str) -> Option<reify_core::Type
 /// → `ANGLE`); `edges_at_height` args 1 and 2 (`h`/`tol: Length` → `LENGTH`).
 /// A [`reify_core::DiagnosticCode::ArgTypeMismatch`] error is emitted for any
 /// definite static dimension mismatch at call-site compile time.
+///
+/// Since task 5652 the slot table is keyed on `(name, arity)`, not `name`
+/// alone, so an overloaded builtin can expose different slots per call form
+/// without a fixed index silently denoting a different parameter in the other
+/// form. Members of THIS family are non-overloaded and so remain
+/// arity-agnostic — the guard-only-overloaded-names rule is documented on
+/// [`crate::builtin_signatures::builtin_arg_slots`].
+///
+/// Task 5652 also placed the first non-selector geometry keys in that table:
+/// `linear_pattern` / `linear_pattern_2d` (CSG producers in
+/// [`GEOMETRY_FUNCTION_NAMES`], NOT members of this slice) carry LENGTH
+/// `spacing` slots. They are exempted from the table's coverage invariant via
+/// [`crate::builtin_signatures::NON_SELECTOR_ARG_SLOT_KEYS`] rather than being
+/// added here — adding them to this slice would send them down the
+/// topology-selector arm of `expr.rs::infer_type`, which is consulted ahead of
+/// `is_geometry_function` and resolves its result type with an `expect` on
+/// `topology_selector_result_type` that has no entry for either name.
 pub const GEOMETRY_TOPOLOGY_SELECTOR_NAMES: &[&str] = &[
     // Task 2324 — eval dispatch fully implemented
     "closest_point",

@@ -3,10 +3,12 @@
 //!
 //! Hosts the checkable argument-slot table ([`builtin_arg_slots`]) and the
 //! call-site checker ([`check_builtin_arg_types`]) for the geometry
-//! topology-selector family.  The mechanism is generic (name-keyed), but only
-//! geometry-selector dimensioned-scalar slots are populated here; math args
-//! (polymorphic, no fixed dimension) and geometry-handle arg0 (ε=4358's
-//! territory, PRD §4 out-of-scope) are intentionally absent.
+//! topology-selector family.  The mechanism is generic (name-keyed and, since
+//! task 5652, arity-keyed), so a few non-selector keys are hosted here too
+//! rather than in a parallel checker — they are enumerated and justified in
+//! [`NON_SELECTOR_ARG_SLOT_KEYS`].  Math args (polymorphic, no fixed dimension)
+//! and geometry-handle arg0 (ε=4358's territory, PRD §4 out-of-scope) are
+//! intentionally absent.
 //!
 //! # Design: sibling of `math_signatures.rs`
 //!
@@ -26,12 +28,52 @@
 //! - `extremal_by_bbox` / `extremal_by_centroid` arg3 `tol` → LENGTH ("Length")
 //! - `generate` arg0 `n` → `Int` (task 3994; the lone non-geometry, non-`Scalar`
 //!   slot — uses the generic name-keyed mechanism via `ExpectedArg::Int`)
+//! - `linear_pattern` (arity 6) arg5 `spacing` → LENGTH ("Length") (task 5652)
+//! - `linear_pattern_2d` (arity 11) arg5 `spacing1` and arg10 `spacing2` →
+//!   LENGTH ("Length") (task 5652)
 //!
 //! UNCHECKED (would false-positive on valid call sites or is out-of-scope):
 //! - arg0 (geometry handle) — ε=4358's territory
 //! - `dir` Vec3 slot — accepts list literals `[0,0,1]` that coerce
 //! - Range slots (`edges_by_length` / `faces_by_area`)
 //! - Names without dimensioned-scalar args (`split`, `face`, `edge`, `solid_body`, …)
+//! - Pattern DIRECTION components (`linear_pattern` args1-3,
+//!   `linear_pattern_2d` args1-3 and 7-9) — a direction is a dimensionless unit
+//!   vector, so a bare component carries no silent-metres hazard (task 5214).
+//!   Unlike `spacing`, where a bare `10` was read as 10 SI metres — 1000× a
+//!   plausible 10 mm pitch.
+//! - Pattern COUNTS (`linear_pattern` arg4; `linear_pattern_2d` args4 and 9) —
+//!   a wrong count is an arity/semantic error, not a dimension error.
+//! - `mirror` (arity 7) / `circular_pattern` (arity 9) origin triples
+//!   `ox`/`oy`/`oz` — length-semantic and eligible, but deliberately DEFERRED by
+//!   task 5652 rather than shipped: LENGTH slots there convert at least six
+//!   existing valid-today call sites into hard compile errors, spanning
+//!   `reify-eval` tests and `examples/`, i.e. a separable breaking-surface
+//!   migration outside 5652's file scope.
+//!   TODO(#5662): add the ox/oy/oz LENGTH slots and migrate those call sites.
+//!
+//! # Arity awareness (task 5652)
+//!
+//! [`builtin_arg_slots`] is keyed on `(name, arity)`, not `name` alone, because a
+//! builtin's positional layout is stable only *within* one overload — for an
+//! overloaded name, index `i` denotes a different parameter in each form.  The
+//! rule is **guard only genuinely overloaded names**: non-overloaded arms stay
+//! arity-agnostic so a short call still has its present slots checked.  See
+//! [`builtin_arg_slots`] for the full rationale and the
+//! `relation_signatures::relation_operand_datum` precedent.
+//!
+//! Most keys here are topology selectors; the exceptions are enumerated and
+//! justified in [`NON_SELECTOR_ARG_SLOT_KEYS`], which the coverage invariant
+//! `tests::arg_slot_keys_are_registered_builtin_names` enforces.
+//!
+//! # Relationship to the eval-layer units gate (task 5214)
+//!
+//! This check COMPLEMENTS `required_length_value` — it never replaces it.  It
+//! upgrades the diagnostic to a compile-time `Error` with a call-site span
+//! where a definite static type is available, but decision-6 gradualism means a
+//! dynamically-typed spacing (typing as `Type::TypeParam` or `Type::Error`) is
+//! skipped here and still relies on the eval-layer gate.  Both layers are load-
+//! bearing; removing either leaves a hole.
 
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, SourceSpan, Type};
 use reify_ir::CompiledExpr;
