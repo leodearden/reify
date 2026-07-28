@@ -24,6 +24,7 @@
 #   F — tmpfiles age-clean exclusion (Fix B): content, idempotence, fail-open
 #   G — desync guard: the conf's paths ARE the seeder's destinations
 #   H — boot persistence: the --user oneshot, and --seed-only mode separation
+#   I — setup-dev.sh wiring (structural grep on uncommented lines only)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob; declared
 # `pool` in tests/infra/run-all-classification.manifest.
@@ -803,5 +804,72 @@ assert "H20: --seed-only wrote no tmpfiles conf" \
     test ! -e "$TMPFILES_DIR/reify-agent-caches.conf"
 assert "H21: --seed-only DID still seed (the mode is not a no-op)" \
     test -f "$H_SEED_CARGO_DEST/registry/cache/alpha-1.0.0.crate"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block I — setup-dev.sh wiring
+#
+# setup-dev.sh cannot be run in a test (it apts, installs rustup/micromamba,
+# creates /opt/reify-deps and does a full release build), so this block is a
+# structural grep — but a careful one.  It uses the two-step uncommented-line
+# filter from test_setup_dev_no_ldconfig.sh, because every rationale comment
+# this task adds to setup-dev.sh MENTIONS the script by name: a naive
+# `grep -q setup-agent-cache-redirect.sh` would stay green even if the actual
+# invocation were deleted.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block I: setup-dev.sh wiring ---"
+
+assert "I1: setup-dev.sh exists and is executable" \
+    bash -c 'test -f "$1" && test -x "$1"' _ "$SETUP_DEV"
+
+assert "I2: an UNCOMMENTED line in setup-dev.sh invokes setup-agent-cache-redirect.sh" \
+    bash -c "grep -Ev '^[[:space:]]*#' \"$SETUP_DEV\" | grep -qF 'setup-agent-cache-redirect.sh'"
+
+# The referenced path must actually resolve, so the wiring can never point at a
+# renamed or deleted file — a class of rot no mention-only grep can see.
+assert "I3: the referenced script exists and is executable" \
+    bash -c 'test -f "$1" && test -x "$1"' _ "$SCRIPT"
+
+# Unconditional, per the recorded design decision: the ticket's goal for Fix B
+# is that "a rebuilt host does not silently lose the exclusion", and an opt-in
+# env var is precisely the thing a rebuilt host silently forgets to set.  The
+# warm-lane opt-in exists because that step formats and mounts a 4096 GiB
+# loopback volume; this one creates two directories and a two-line conf.
+assert "I4: the invocation is NOT gated behind a REIFY_PROVISION_* opt-in" \
+    bash -c '
+        ln=$(grep -Ev "^[[:space:]]*#" "$1" | grep -n "setup-agent-cache-redirect.sh" | head -1 | cut -d: -f1)
+        [ -n "$ln" ] || exit 1
+        # Look back over the preceding uncommented lines for an unclosed
+        # REIFY_PROVISION_* gate: an `if ... REIFY_PROVISION_*` with no `fi`
+        # between it and the invocation would mean we sit inside that branch.
+        gate=$(grep -Ev "^[[:space:]]*#" "$1" | head -n "$ln" \
+               | grep -nE "^[[:space:]]*if .*REIFY_PROVISION_" | tail -1 | cut -d: -f1)
+        [ -n "$gate" ] || exit 0
+        closed=$(grep -Ev "^[[:space:]]*#" "$1" | sed -n "$((gate + 1)),$((ln - 1))p" \
+                 | grep -cE "^fi$")
+        [ "$closed" -ge 1 ]
+    ' _ "$SETUP_DEV"
+
+# setup-dev.sh runs under `set -euo pipefail`, so a BARE invocation whose exit
+# is non-zero aborts a contributor's entire environment setup mid-way — before
+# the cargo-nextest install, the npm ci and the smoke test.  This script is
+# fail-open internally, but the call site must be structurally non-fatal too,
+# and that is invisible to any assertion that only checks the script is
+# mentioned.  Matches the E3 idiom in test_warm_lane_boot_persistence.sh.
+assert "I5: the invocation is non-fatal (if/else+warn, no bare exit 1)" \
+    bash -c '
+        block=$(grep -A8 "setup-agent-cache-redirect.sh" "$1" | grep -Ev "^[[:space:]]*#")
+        echo "$block" | grep -q "else" || exit 1
+        echo "$block" | grep -q "warn" || exit 1
+        ! echo "$block" | grep -qE "^[[:space:]]*exit[[:space:]]+1[[:space:]]*$" || exit 1
+        exit 0
+    ' _ "$SETUP_DEV"
+
+# Regression guards: the sibling delegated steps this section is placed among
+# must survive the edit.
+assert "I6: setup-dev.sh still references build-manifold-deps.sh (regression guard)" \
+    bash -c "grep -Ev '^[[:space:]]*#' \"$SETUP_DEV\" | grep -qF 'build-manifold-deps.sh'"
+assert "I7: setup-dev.sh still references install-warm-lane-units.sh (regression guard)" \
+    bash -c "grep -Ev '^[[:space:]]*#' \"$SETUP_DEV\" | grep -qF 'install-warm-lane-units.sh'"
 
 test_summary
