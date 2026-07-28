@@ -5247,9 +5247,21 @@ mod tests {
     /// constructor family (task 5344): every `ORIENTATION_TYPED_FN_NAMES` entry
     /// must be absent from every sibling classification family so the
     /// `is_orientation_typed_fn` arm in `expr.rs`'s `NoUserFunctions` ladder is
-    /// the sole claimant, making the arm's position unobservable. Mirrors
-    /// `parse_fn_names_are_disjoint_from_other_families`. GREEN on arrival — a
-    /// lock that fails if a colliding name is later added to either slice.
+    /// the sole claimant. Mirrors `parse_fn_names_are_disjoint_from_other_families`,
+    /// and — since this is the newest family — checks against EVERY sibling slice
+    /// that exists today, not just the ones that preceded it. The reciprocal
+    /// direction is pinned by an `!ORIENTATION_TYPED_FN_NAMES.contains(name)`
+    /// assert added to each of those 13 sibling tests, so a collision is caught
+    /// whichever slice it is added to.
+    ///
+    /// GREEN on arrival — a regression lock that fails if a colliding name is
+    /// later added to either slice. The only pre-existing mentions of these
+    /// names elsewhere in this file are NEGATIVE assertions
+    /// (`assert!(!is_affine_map_constructor("transform3"))`), which encode the
+    /// rigid-vs-general-affine distinction and now agree with the new family.
+    ///
+    /// Because the names are pinned disjoint from every other family, the new
+    /// arm's position in the ladder is unobservable.
     #[test]
     fn orientation_typed_fn_names_are_disjoint_from_other_families() {
         for name in ORIENTATION_TYPED_FN_NAMES {
