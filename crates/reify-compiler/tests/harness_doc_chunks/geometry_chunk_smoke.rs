@@ -20,32 +20,49 @@
 //! mirrors one documented call form exactly, wrapped in the minimal
 //! compilable module shape (`examples/bracket.ri`'s
 //! `structure def X { let body = box(...) }` pattern).
+//!
+//! # What is NOT established
+//!
+//! The compile-acceptance assertions here (both `assert_compiles` and the
+//! ```` ```reify ````-fence scrape) establish PARSE + COMPILE ACCEPTANCE and
+//! nothing stronger. Specifically:
+//!
+//! - **Arity is not enforced** for the interference/clearance query names.
+//!   Mutation-verified against the live fences: rewriting them to
+//!   `min_clearance(s)`, `intersects(housing)` and `distance(housing)` leaves
+//!   this whole suite GREEN. A wrong-arity documented call form would not be
+//!   caught here.
+//! - **Argument dimension/type is not enforced** for those names either — none
+//!   of the five has a checkable slot in `builtin_signatures`'s arg-slot table,
+//!   so the `(Snapshot, Int, Int)` contract the chunk documents is a convention
+//!   the fences FOLLOW but nothing in this file checks.
+//! - **An unknown call name is not, by itself, an error.** A `structure def`
+//!   body silently accepts an unresolved function and types the call from its
+//!   FIRST argument's `result_type` (the same permissive fallback noted at the
+//!   `line_segment`/`arc`/`polygon` block below). What discriminating power the
+//!   fence guard has is INCIDENTAL and downstream: mutating `distance(` →
+//!   `distanceZZZ(` makes the call type as `Geometry`, so the fence's own
+//!   `constraint gap > 1mm` then fails `CmpOperandKind`. Mutating
+//!   `intersects(` → `intersectsZZZ(` produces NO error at all, because the
+//!   fence only feeds that result to `not`.
+//!   `bogus_query_name_feeding_a_comparison_is_an_error` is the negative
+//!   control that pins the part that does work, so it cannot silently rot away.
+//!
+//! The registry-membership assertions in
+//! `interference_oracle_names_documented_in_geometry_chunk` are what actually
+//! close the phantom-name direction; the fence compile is a parse/shape guard.
 
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
-/// Compile `geometry_expr` wrapped in a minimal `structure def Smoke { let g
-/// = <geometry_expr> }` module and assert there are zero Severity::Error
-/// diagnostics. On failure, the panic message names `label` and dumps every
-/// Error diagnostic so a failing signature is immediately identifiable.
-fn assert_compiles(label: &str, geometry_expr: &str) {
-    let source = format!("structure def Smoke {{ let g = {} }}", geometry_expr);
-    let compiled = compile_source_with_stdlib(&source);
-    let errors = errors_only(&compiled);
-    assert!(
-        errors.is_empty(),
-        "{label}: expected `{geometry_expr}` to compile with zero Error diagnostics, got: {:#?}",
-        errors
-    );
-}
-
 /// Compile `module_src` AS A WHOLE MODULE and assert zero Severity::Error
-/// diagnostics. Same body as `assert_compiles` (`compile_source_with_stdlib` +
-/// `errors_only` + zero-Error assertion, same panic shape) minus the
-/// `structure def Smoke { let g = … }` wrapper, which cannot express a
-/// multi-let `structure def` — the shape a clearance example needs, since both
-/// the query call and its operands must be separate let bindings. The source is
-/// echoed in the panic so a failing scraped fence is fixable without re-reading
-/// the chunk.
+/// diagnostics. The source is echoed in the panic so a failing scraped fence is
+/// fixable without re-reading the chunk.
+///
+/// This is the single zero-Error assertion site in the file; `assert_compiles`
+/// delegates here after wrapping a bare expression. A whole-module entry point
+/// is needed because the clearance examples are multi-let `structure def`s (both
+/// the query call and its operands must be separate let bindings), which the
+/// `structure def Smoke { let g = … }` wrapper cannot express.
 fn assert_module_compiles(label: &str, module_src: &str) {
     let compiled = compile_source_with_stdlib(module_src);
     let errors = errors_only(&compiled);
@@ -54,6 +71,18 @@ fn assert_module_compiles(label: &str, module_src: &str) {
         "{label}: expected this module to compile with zero Error diagnostics, got: {:#?}\n\
          --- module source ---\n{module_src}\n--- end module source ---",
         errors
+    );
+}
+
+/// Compile `geometry_expr` wrapped in a minimal `structure def Smoke { let g
+/// = <geometry_expr> }` module and assert there are zero Severity::Error
+/// diagnostics. On failure, the panic message names `label` and the expression
+/// under test, and dumps every Error diagnostic, so a failing signature is
+/// immediately identifiable.
+fn assert_compiles(label: &str, geometry_expr: &str) {
+    assert_module_compiles(
+        &format!("{label} (expression `{geometry_expr}`)"),
+        &format!("structure def Smoke {{ let g = {} }}", geometry_expr),
     );
 }
 
@@ -250,22 +279,70 @@ fn polygon_compiles() {
 //       registry that gives it its meaning, so a rename in `units.rs` fails HERE
 //       rather than leaving the chunk pointing at a phantom builtin.
 //
-// Per the house rule (`stdlib_chunk_geometry_ops_smoke.rs:38-39`) this is a
-// name-existence check against code registries, deliberately NOT a
-// wording/content pin: nothing below asserts on prose, headings, or ordering.
+// Per the house rule stated in `stdlib_chunk_geometry_ops_smoke.rs`'s module
+// doc ("a name-existence check against code registries, deliberately NOT a
+// wording/content pin on the chunk's prose") nothing below asserts on prose,
+// headings, or ordering — the one exception being the section HEADING itself,
+// which is load-bearing: it is how the coverage scan is scoped (see
+// `ORACLE_SECTION`).
 
 /// The chunk this file owns. Read (never written). If the chunk moves, this
 /// const must move with it — the failure mode is a loud `expect` on the read,
-/// not a silent skip. Mirrors `stdlib_chunk_geometry_ops_smoke.rs:81-84`.
+/// not a silent skip. Mirrors the `CHUNK_PATH` const in
+/// `stdlib_chunk_geometry_ops_smoke.rs`.
 const CHUNK_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../reify-mcp/src/tools/chunks/geometry.md"
 );
 
+/// Heading of the chunk section the coverage scan is scoped to.
+///
+/// Scoping matters: without it the scan is satisfied by ANY backticked mention
+/// of a name anywhere in the 200-line chunk, so deleting the whole oracle
+/// section would still pass on incidental hits elsewhere. The regression this
+/// guards (the in-GUI assistant not discovering the oracle at all) is about the
+/// SECTION existing, so the section is what gets scanned. Mirrors
+/// `stdlib_chunk_geometry_ops_smoke.rs`'s `CHUNK_SECTION`.
+const ORACLE_SECTION: &str = "## Interference & Clearance Queries";
+
 fn read_chunk() -> String {
     std::fs::read_to_string(CHUNK_PATH).unwrap_or_else(|e| {
         panic!("{CHUNK_PATH} must be readable ({e}) — update CHUNK_PATH if the chunk moved")
     })
+}
+
+/// The body of the `## `-level section headed by `heading`, from that heading
+/// to the next `## ` heading (exclusive). `### ` subsections stay inside.
+///
+/// PANICS if the heading is absent — that is the anti-vacuity guard, and it is
+/// the failure a reader of a renamed/removed section should see, rather than an
+/// empty slice that makes every downstream assertion pass trivially.
+fn section_body(markdown: &str, heading: &str) -> String {
+    let mut body: Vec<&str> = Vec::new();
+    let mut in_section = false;
+
+    for line in markdown.lines() {
+        if line.starts_with("## ") {
+            if in_section {
+                break;
+            }
+            in_section = line.trim_end() == heading;
+            continue;
+        }
+        if in_section {
+            body.push(line);
+        }
+    }
+
+    assert!(
+        in_section,
+        "{CHUNK_PATH} has no `{heading}` section — it was removed or renamed. That section is \
+         what the in-GUI assistant retrieves when a designer asks about interference or \
+         clearance; without it the assistant reads the oracle as a MISSING CAPABILITY and \
+         hand-rolls bbox arithmetic instead (task 5389). Restore the section, or update \
+         ORACLE_SECTION if it was deliberately retitled."
+    );
+    body.join("\n")
 }
 
 /// FORM A oracle names — dispatched through the kinematic-query post-process
@@ -282,22 +359,30 @@ const GEOMETRY_ORACLE_NAMES: &[&str] = &["intersects", "distance"];
 #[test]
 fn interference_oracle_names_documented_in_geometry_chunk() {
     let markdown = read_chunk();
+    // Scoped to the oracle section, NOT the whole file: a backticked `distance(`
+    // elsewhere in the chunk (or an incidental mention that survives the
+    // section's deletion) must not satisfy this. `section_body` panics if the
+    // section is gone, so gutting it is RED rather than vacuously green.
+    let section = section_body(&markdown, ORACLE_SECTION);
 
     // (a) COVERAGE. Each name must appear as a backticked CALL form (`name(`),
     // not merely as a bare word — geometry.md already contained the word
     // "distance" before task 5389, but only as the unrelated
     // `extrude(profile, distance)` parameter name, which taught a reader
     // nothing about the query. Requiring the open paren pins the doc to a
-    // usable call form.
+    // usable call form. (Placement WITHIN the section is not further
+    // constrained: a name mentioned only in the traps subsection would still
+    // satisfy this. Section presence is the property under test.)
     for name in KINEMATIC_ORACLE_NAMES.iter().chain(GEOMETRY_ORACLE_NAMES) {
         let call_form = format!("`{name}(");
         assert!(
-            markdown.contains(&call_form),
-            "{CHUNK_PATH} does not document the interference/clearance query `{name}` as a \
-             call form ({call_form}...). The chunk is what the in-GUI assistant retrieves, so \
-             an undocumented oracle reads to it as a MISSING CAPABILITY and it will hand-roll \
-             bbox arithmetic instead (task 5389). Re-add the call form, or delete this name \
-             from KINEMATIC_ORACLE_NAMES/GEOMETRY_ORACLE_NAMES if the builtin itself is gone."
+            section.contains(&call_form),
+            "{CHUNK_PATH}'s `{ORACLE_SECTION}` section does not document the \
+             interference/clearance query `{name}` as a call form ({call_form}...). The chunk \
+             is what the in-GUI assistant retrieves, so an undocumented oracle reads to it as a \
+             MISSING CAPABILITY and it will hand-roll bbox arithmetic instead (task 5389). \
+             Re-add the call form, or delete this name from \
+             KINEMATIC_ORACLE_NAMES/GEOMETRY_ORACLE_NAMES if the builtin itself is gone."
         );
     }
 
@@ -334,7 +419,8 @@ fn interference_oracle_names_documented_in_geometry_chunk() {
 /// with real call forms, and separating the two would need a fragile grammar.
 /// An opt-in tag sidesteps that — the doc author marks exactly what is meant to
 /// compile, and everything else stays free-form. ```` ```reify ```` is already
-/// the in-repo convention (`chunks/traits.md:58,70,76,87,93`).
+/// the in-repo convention (every fence in `chunks/traits.md` is tagged that
+/// way).
 ///
 /// Callers must anti-vacuity-check the result: a dropped tag or a renamed
 /// section would otherwise empty the scan and pass trivially.
@@ -370,12 +456,19 @@ fn reify_tagged_fences(markdown: &str) -> Vec<String> {
 
 /// Every ```` ```reify ````-tagged fence in geometry.md must actually compile.
 ///
-/// This is what upgrades the interference/clearance worked examples from
-/// unchecked prose into compile-verified artifacts, and it is the single
-/// strongest guard against this section going stale the way
-/// `examples/pattern_composition.ri`'s BaseElement comment did (task 5389 fixes
-/// both in the same change). A designer copying a fence out of the chunk gets
-/// something the compiler accepts, or this test is RED.
+/// This upgrades the interference/clearance worked examples from unchecked prose
+/// into artifacts that at least parse and lower: a designer copying a fence out
+/// of the chunk gets something the compiler accepts, or this test is RED.
+///
+/// SCOPE — read the module doc's "What is NOT established" before relying on
+/// this. It is a parse/compile-acceptance guard, NOT a signature pin: arity and
+/// argument dimension of the documented query forms are unchecked (mutating the
+/// fences to `min_clearance(s)` / `intersects(housing)` leaves this suite
+/// GREEN), and an unknown call name is only caught when its result feeds a
+/// downstream typed operation — see
+/// `bogus_query_name_feeding_a_comparison_is_an_error`. The phantom-name
+/// direction is closed by the registry assertions in
+/// `interference_oracle_names_documented_in_geometry_chunk`, not here.
 #[test]
 fn reify_tagged_fences_in_geometry_chunk_compile() {
     let markdown = read_chunk();
@@ -398,8 +491,8 @@ fn reify_tagged_fences_in_geometry_chunk_compile() {
         assert!(
             fences.iter().any(|fence| fence.contains(sentinel)),
             "anti-vacuity: no ```reify fence in {CHUNK_PATH} contains `{sentinel}` — the worked \
-             clearance examples are no longer compile-verified, so the documented call form can \
-             drift away from what the compiler accepts without failing any test"
+             clearance examples are no longer compile-verified, so a documented call form the \
+             compiler outright rejects would ship unnoticed"
         );
     }
 
@@ -409,4 +502,44 @@ fn reify_tagged_fences_in_geometry_chunk_compile() {
             fence,
         );
     }
+}
+
+/// NEGATIVE CONTROL for the fence guard — pins the part of it that discriminates.
+///
+/// The guard's power over call NAMES is real but narrow and entirely indirect,
+/// and this test exists so that narrow part cannot rot away silently. A
+/// `structure def` body accepts an unresolved function with no diagnostic at any
+/// severity, typing the call from its first argument's `result_type`. So a
+/// bogus `distanceZZZ(housing, bracket)` types as `Geometry`, and it is the
+/// DOWNSTREAM `constraint … > 1mm` that fails with `CmpOperandKind` — not name
+/// resolution.
+///
+/// The corollary is the hole documented in the module doc: the same typo on a
+/// name whose result only feeds `not` (`intersectsZZZ`) produces zero errors.
+/// Only the positive direction is asserted here; asserting the hole would go RED
+/// the day someone fixes it, which is the wrong incentive.
+#[test]
+fn bogus_query_name_feeding_a_comparison_is_an_error() {
+    // Same shape as the chunk's FORM B fence, inline so it is stable against
+    // ordinary doc edits (mirrors the inline-repro posture of
+    // `bogus_geometry_op_names_are_reported_as_unrecognised` in
+    // `stdlib_chunk_geometry_ops_smoke.rs`).
+    let source = r#"structure def BogusClearanceGate {
+    let housing = cylinder_centered(10mm, 40mm)
+    let bracket = translate(box(20mm, 20mm, 20mm), 30mm, 0mm, 0mm)
+
+    let gap = distanceZZZ(housing, bracket)
+
+    constraint gap > 1mm
+}"#;
+
+    let compiled = compile_source_with_stdlib(source);
+    let errors = errors_only(&compiled);
+    assert!(
+        !errors.is_empty(),
+        "a fence-shaped source whose clearance query is misspelled must not compile clean — if \
+         it does, `reify_tagged_fences_in_geometry_chunk_compile` has lost even its indirect \
+         discriminating power over query names and is a pure parse check. Verify what the fence \
+         guard still establishes and update the module doc's \"What is NOT established\" section."
+    );
 }
