@@ -132,11 +132,13 @@ pub(crate) fn orientation_typed_fn_result_type(name: &str, _args: &[CompiledExpr
 mod tests {
     use super::*;
 
-    /// Independent fixture — the 14 expected names in the family. Deliberately
+    /// Independent fixture — the 18 expected names in the family. Deliberately
     /// does NOT reference `ORIENTATION_TYPED_FN_NAMES` so a drift in that slice
     /// is caught against this independent list (mirrors
-    /// `joint_signatures::tests::EXPECTED_NAMES`).
-    const EXPECTED_NAMES: [&str; 14] = [
+    /// `joint_signatures::tests::EXPECTED_NAMES`). Re-derived from the eval
+    /// dispatchers `reify_stdlib::orientation::eval_orientation` (13 arms: 10
+    /// producers + 3 decomposers) and `reify_stdlib::geometry::eval_geometry`.
+    const EXPECTED_NAMES: [&str; 18] = [
         // Orientation producers (10) → Type::Orientation(3)
         "orient_identity",
         "orient_quaternion",
@@ -148,12 +150,19 @@ mod tests {
         "orient_inverse",
         "orient_compose",
         "orient_slerp",
-        // Transform producers (3) → Type::Transform(3)
+        // Frame producers (2) → Type::Frame(3)
+        "frame3",
+        "frame3_identity",
+        // Transform producers (6) → Type::Transform(3)
         "transform3",
         "transform3_identity",
         "transform_compose",
-        // Frame producer (1) → Type::Frame(3)
-        "frame3",
+        "transform_inverse",
+        "transform_exp",
+        // NOTE the `frame_` prefix — `frame_to_frame` returns Value::Transform
+        // (geometry.rs:512), NOT a Frame. Prefix-based classification would put
+        // it in the wrong group; see the decomposer test below.
+        "frame_to_frame",
     ];
 
     // ── Name-family contract (step-1 RED / step-2 GREEN) ─────────────────────
@@ -170,48 +179,90 @@ mod tests {
         }
     }
 
-    /// `is_orientation_typed_fn` rejects sibling-family names, the three
-    /// EXCLUDED `orient_*` decomposers (they return Value::Vector/List/Map, not
-    /// Orientation), the empty name, and unknown names.
+    /// The FOUR decomposers are deliberately EXCLUDED from the family. Each
+    /// shares an `orient_`/`transform_` prefix with a genuine producer but
+    /// returns a DIFFERENT value kind, so a `starts_with("orient_")` /
+    /// `starts_with("transform_")` prefix rule would newly MISTYPE all four.
+    /// That is precisely why [`ORIENTATION_TYPED_FN_NAMES`] must stay an
+    /// explicit list and never become a prefix predicate.
+    ///
+    /// Kinds re-derived from the evaluators:
+    /// - `orient_log` → `Value::Vector` (rotation vector / log map),
+    ///   `orientation.rs:203`;
+    /// - `orient_to_euler` → `Value::List` of Angles, `orientation.rs:264`;
+    /// - `orient_to_axis_angle` → `Value::Map{angle, axis}`, `orientation.rs:440`;
+    /// - `transform_log` → `Value::Map` (twist), `geometry.rs:677`.
+    ///
+    /// The two `Value::Map` cases have no clean `Type` variant and
+    /// `orient_log`'s quantity slot needs a dimension ruling, so per-name typing
+    /// for the decomposers is out of scope here (tracked as a follow-up).
     #[test]
-    fn is_orientation_typed_fn_rejects_other_family_and_unknown_names() {
-        // Sibling families — one representative each.
-        assert!(!is_orientation_typed_fn("vec"), "must reject math-linalg 'vec'");
-        assert!(!is_orientation_typed_fn("sqrt"), "must reject math 'sqrt'");
-        assert!(
-            !is_orientation_typed_fn("box"),
-            "must reject geometry-constructor 'box'"
-        );
-        assert!(
-            !is_orientation_typed_fn("volume"),
-            "must reject geometry-query 'volume'"
-        );
-        assert!(
-            !is_orientation_typed_fn("nominal"),
-            "must reject tolerancing-marker 'nominal'"
-        );
-        assert!(
-            !is_orientation_typed_fn("prismatic"),
-            "must reject joint-constructor 'prismatic'"
-        );
-        assert!(
-            !is_orientation_typed_fn("affine_scale"),
-            "must reject affine-map-constructor 'affine_scale'"
-        );
-        // The three DECOMPOSERS deliberately EXCLUDED from the family: a naive
-        // `starts_with("orient_")` prefix would wrongly claim these — they must
-        // NOT match (they return Vector / List / Map, not Orientation).
+    fn is_orientation_typed_fn_rejects_the_four_decomposers() {
         assert!(
             !is_orientation_typed_fn("orient_log"),
             "must reject decomposer 'orient_log' (returns Value::Vector)"
         );
         assert!(
             !is_orientation_typed_fn("orient_to_euler"),
-            "must reject decomposer 'orient_to_euler' (returns Value::List)"
+            "must reject decomposer 'orient_to_euler' (returns Value::List of Angles)"
         );
         assert!(
             !is_orientation_typed_fn("orient_to_axis_angle"),
-            "must reject decomposer 'orient_to_axis_angle' (returns Value::Map)"
+            "must reject decomposer 'orient_to_axis_angle' (returns Value::Map{{angle, axis}})"
+        );
+        assert!(
+            !is_orientation_typed_fn("transform_log"),
+            "must reject decomposer 'transform_log' (returns Value::Map twist)"
+        );
+    }
+
+    /// `frame_at` is NOT a member: it is already typed `Type::Frame(3)` by
+    /// `units.rs::datum_constructor_result_type`, which claims it as part of the
+    /// DATUM constructor family. Including it here would double-classify the
+    /// name across two resolvers, so the exclusion is load-bearing rather than
+    /// an oversight.
+    #[test]
+    fn is_orientation_typed_fn_rejects_frame_at() {
+        assert!(
+            !is_orientation_typed_fn("frame_at"),
+            "'frame_at' belongs to the datum family (datum_constructor_result_type \
+             already types it Frame(3)) — claiming it here would double-classify"
+        );
+    }
+
+    /// `is_orientation_typed_fn` rejects sibling-family names, the empty name,
+    /// and unknown names.
+    #[test]
+    fn is_orientation_typed_fn_rejects_other_family_and_unknown_names() {
+        // Sibling families — one representative each.
+        assert!(
+            !is_orientation_typed_fn("affine_identity"),
+            "must reject affine-map-constructor 'affine_identity' (general affine, not rigid)"
+        );
+        assert!(
+            !is_orientation_typed_fn("affine_from_transform"),
+            "must reject 'affine_from_transform' — it CONSUMES a Transform and \
+             produces an AffineMap, so it belongs to the affine family"
+        );
+        assert!(!is_orientation_typed_fn("vec"), "must reject math-linalg 'vec'");
+        assert!(
+            !is_orientation_typed_fn("prismatic"),
+            "must reject joint-constructor 'prismatic'"
+        );
+        assert!(
+            !is_orientation_typed_fn("parse_length"),
+            "must reject parse-family 'parse_length'"
+        );
+        assert!(
+            !is_orientation_typed_fn("nominal"),
+            "must reject tolerancing-marker 'nominal'"
+        );
+        // `project` deliberately mirrors its first argument's type, so the
+        // first-arg fallback is already CORRECT for it — claiming it here would
+        // be a regression, not a fix.
+        assert!(
+            !is_orientation_typed_fn("project"),
+            "must reject 'project' — its first-arg fallback is already correct"
         );
         // Empty / unknown.
         assert!(!is_orientation_typed_fn(""), "must reject empty name");
@@ -227,28 +278,24 @@ mod tests {
     #[test]
     fn is_orientation_typed_fn_is_case_sensitive() {
         assert!(
-            !is_orientation_typed_fn("Frame3"),
+            !is_orientation_typed_fn("Orient_Identity"),
             "capitalised form must not match"
+        );
+        assert!(
+            !is_orientation_typed_fn("ORIENT_IDENTITY"),
+            "upper-case form must not match"
         );
         assert!(
             !is_orientation_typed_fn("Transform3"),
             "capitalised form must not match"
         );
-        assert!(
-            !is_orientation_typed_fn("Orient_identity"),
-            "capitalised form must not match"
-        );
-        assert!(
-            !is_orientation_typed_fn("ORIENT_AXIS_ANGLE"),
-            "upper-case form must not match"
-        );
     }
 
-    /// `ORIENTATION_TYPED_FN_NAMES` is exactly the 14 expected names: correct
+    /// `ORIENTATION_TYPED_FN_NAMES` is exactly the 18 expected names: correct
     /// count, every expected name present, and no extra entry. Mirrors
     /// `joint_typed_fn_names_are_exactly_the_17`.
     #[test]
-    fn orientation_typed_fn_names_are_exactly_the_14() {
+    fn orientation_typed_fn_names_are_exactly_the_18() {
         assert_eq!(
             ORIENTATION_TYPED_FN_NAMES.len(),
             EXPECTED_NAMES.len(),
