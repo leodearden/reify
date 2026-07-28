@@ -1298,3 +1298,117 @@ Prose with `also_ignored(a, b)` inline is not a bolded row.
          form — reuses documented_geometry_op_names's existing narrowing"
     );
 }
+
+// ── Call form scan: (name, arity) ────────────────────────────────────────────
+//
+// `geometry_call_names` collapses every call to a name to a single entry, so
+// two arities of the same call name in the fixture are indistinguishable from
+// one. `geometry_call_forms` is the fixture-side counterpart to
+// `documented_geometry_op_forms`: the same AST walk, additionally recording
+// each `FunctionCall`'s argument count.
+//
+// Driven by inline `structure def` snippets — the same shape
+// `geometry_call_names`'s existing tests use — so the existing `let`-member
+// walker contract (panic, not skip, on any other declaration/member kind)
+// stays exercised.
+
+#[test]
+fn geometry_call_forms_records_distinct_arities_of_the_same_name() {
+    let source = r#"
+structure def TwoArities {
+    let solid = box(10mm, 10mm, 10mm)
+    let r5 = rotate(solid, 0, 0, 1, 90deg)
+    let r2 = rotate(solid, orient_identity())
+}
+"#;
+
+    assert_eq!(
+        geometry_call_forms(source, "two-arities snippet"),
+        vec![
+            ("box".to_string(), 3),
+            ("orient_identity".to_string(), 0),
+            ("rotate".to_string(), 2),
+            ("rotate".to_string(), 5),
+        ],
+        "two calls to the same name at different arities must both survive as distinct forms, \
+         not collapse to one"
+    );
+    assert_eq!(
+        geometry_call_names(source, "two-arities snippet"),
+        vec![
+            "box".to_string(),
+            "orient_identity".to_string(),
+            "rotate".to_string(),
+        ],
+        "the existing name-only view must still collapse the two rotate arities to one entry — \
+         pins the step-4 re-derivation as behaviour-preserving"
+    );
+}
+
+#[test]
+fn geometry_call_forms_records_nested_calls_without_inflating_the_outer_count() {
+    let source = r#"
+structure def NestedCall {
+    let solid = box(10mm, 10mm, 10mm)
+    let f = fillet(solid, edges(solid), 1mm)
+}
+"#;
+
+    assert_eq!(
+        geometry_call_forms(source, "nested-call snippet"),
+        vec![
+            ("box".to_string(), 3),
+            ("edges".to_string(), 1),
+            ("fillet".to_string(), 3),
+        ],
+        "a nested call inside an argument must record its OWN form (edges/1) and must not \
+         inflate the outer call's own arg count (fillet/3, not fillet/1 or fillet/5)"
+    );
+    assert_eq!(
+        geometry_call_names(source, "nested-call snippet"),
+        vec!["box".to_string(), "edges".to_string(), "fillet".to_string()],
+        "the existing name-only view must still return the same deduped name set"
+    );
+}
+
+#[test]
+fn geometry_call_forms_zero_arg_call() {
+    let source = r#"
+structure def ZeroArgCall {
+    let o = orient_identity()
+}
+"#;
+
+    assert_eq!(
+        geometry_call_forms(source, "zero-arg snippet"),
+        vec![("orient_identity".to_string(), 0)],
+        "a zero-arg call must record arity 0, not be dropped or miscounted"
+    );
+    assert_eq!(
+        geometry_call_names(source, "zero-arg snippet"),
+        vec!["orient_identity".to_string()],
+        "the existing name-only view must still return the same deduped name set"
+    );
+}
+
+#[test]
+fn geometry_call_forms_output_is_sorted_and_deduped() {
+    let source = r#"
+structure def SortedAndDeduped {
+    let z = scale(box(10mm, 10mm, 10mm), 2.0)
+    let a = scale(box(5mm, 5mm, 5mm), 2.0)
+}
+"#;
+
+    assert_eq!(
+        geometry_call_forms(source, "sorted-and-deduped snippet"),
+        vec![("box".to_string(), 3), ("scale".to_string(), 2)],
+        "two calls sharing the same (name, arity) — here box/3 and scale/2, each appearing \
+         twice — must collapse to one entry each in a deterministic sorted order"
+    );
+    assert_eq!(
+        geometry_call_names(source, "sorted-and-deduped snippet"),
+        vec!["box".to_string(), "scale".to_string()],
+        "the existing name-only view must still return the same deduped name set"
+    );
+}
