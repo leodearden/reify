@@ -230,7 +230,55 @@ _release_lane_lock() {
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Blocks A-E land in subsequent commits.
+# Block A — CLI contract
+#
+# Exit 2 is the WIRING-BUG code, deliberately distinct from both verdicts (0
+# IDLE / 3 BUSY): dark-factory must be able to tell "I asked the question wrong"
+# from "the lane is free". A guard that answered IDLE to a malformed invocation
+# would let a wiring mistake read as a green light forever.
 # ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block A: CLI contract ---"
+
+# A1: --help is a successful, self-documenting exit, and it keeps stdout clean —
+# stdout is reserved for the BUSY sentinel alone, so a caller that parses stdout
+# never has to filter help text out of it.
+run_guard --help
+assert "A1: --help exits 0" test "$RC" -eq 0
+assert "A1: --help prints the usage banner on stderr" \
+    bash -c 'printf "%s\n" "$1" | grep -q "Usage:"' _ "$ERR_OUT"
+assert "A1: --help writes nothing to stdout (stdout is sentinel-only)" \
+    test -z "$OUT"
+
+# A2: an unknown flag is a wiring bug, not a verdict.
+run_guard --bogus
+assert "A2: unknown flag exits 2" test "$RC" -eq 2
+assert "A2: unknown flag explains itself on stderr" test -n "$ERR_OUT"
+
+# A3: a bare invocation with no subcommand at all.
+run_guard
+assert "A3: missing subcommand exits 2" test "$RC" -eq 2
+assert "A3: missing subcommand explains itself on stderr" test -n "$ERR_OUT"
+
+# A4: an unknown subcommand — distinct from A2's unknown FLAG, because the arg
+# loop reaches it through the bare-word branch rather than the -* branch.
+run_guard frobnicate
+assert "A4: unknown subcommand exits 2" test "$RC" -eq 2
+assert "A4: unknown subcommand explains itself on stderr" test -n "$ERR_OUT"
+
+# A5: `check` with no mount anywhere. Invoked through run_guard_no_mount_env so
+# an ambient REIFY_WARM_LANE_MOUNT (the orchestrator exports one on real verify
+# runs) cannot mask the missing-mount validation and turn this into a vacuous
+# pass.
+run_guard_no_mount_env check
+assert "A5: check with neither --mount nor REIFY_WARM_LANE_MOUNT exits 2" \
+    test "$RC" -eq 2
+assert "A5: the missing-mount error names the knob on stderr" \
+    bash -c 'printf "%s\n" "$1" | grep -q "REIFY_WARM_LANE_MOUNT"' _ "$ERR_OUT"
+
+# A6: no exit-2 path writes to stdout. Same reason as A1 — a caller reading
+# stdout for the sentinel must never see usage-error text there.
+run_guard --bogus
+assert "A6: an exit-2 path writes nothing to stdout" test -z "$OUT"
 
 test_summary
