@@ -386,6 +386,19 @@ pub(crate) fn elaborate_child_instance<'t>(
 /// rather than by declaration also makes the result order-insensitive: a sub
 /// declared before the sibling it reads resolves identically.
 ///
+/// When the walk CANNOT be ordered — a dependency cycle among phase-1.5 nodes,
+/// which [`topological_sort`] (Kahn) reports by silently omitting the members —
+/// the dropped nodes are appended back in declaration order so evaluation still
+/// terminates and produces values. That fallback is unconditional, but it is not
+/// silent: a cycle involving a nested SUB is also diagnosed here, because it is
+/// the class phase 1.5 uniquely owns (phase 2's graph holds only the child's own
+/// lets, so a cycle routed through a sub boundary is invisible to it). A cycle
+/// confined to LET nodes is deliberately left to [`elaborate_child_lets_only`]
+/// at instance scope and to `engine_eval.rs` at template scope, which already
+/// report it — phase 1.5 stays quiet there rather than triple-reporting one
+/// defect. So no phase-1.5 cycle member is silently tolerated: it is either
+/// diagnosed here or diagnosed by the phase that owns it.
+///
 /// Phase 2 ([`elaborate_child_lets_only`]) is deliberately NOT restructured — it
 /// still owns the authoritative let commits, and the recursive path via
 /// `unfold_recursive_sub` reaches it unchanged.
@@ -464,11 +477,13 @@ fn elaborate_child_instance_nested<'t>(
     let node_ids: HashSet<NodeId> = nodes.keys().cloned().collect();
     let node_traces = phase15_node_traces(child_template, &nodes, &nestable);
     let sorted = topological_sort(&node_ids, &node_traces);
-    // `topological_sort` (Kahn) silently omits cycle members. Append them in
-    // declaration order so evaluation still terminates and produces values, and
-    // report the cycle so those values are never silently wrong: a cycle here
-    // leaves the whole chain `Undef`, and an unreported `Undef` is exactly the
-    // silent-default class this path exists to eliminate.
+    // `topological_sort` (Kahn) reports a cycle by silently omitting its
+    // members. Append them back in declaration order so evaluation still
+    // terminates and produces values, and make sure the cycle is reported by
+    // SOMEBODY: a cycle here leaves the chain `Undef`, and an unreported `Undef`
+    // is exactly the silent-default class this path exists to eliminate. Which
+    // phase does the reporting depends on the cycle's shape — see the ownership
+    // note on the gate below.
     let mut walk_order = sorted;
     if walk_order.len() < node_ids.len() {
         let placed: HashSet<&NodeId> = walk_order.iter().collect();
