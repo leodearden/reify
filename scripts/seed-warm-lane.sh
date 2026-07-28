@@ -105,15 +105,13 @@
 #   --reset-in-place: no bulk stamp (git clean -xfd -e target already moved changed mtimes).
 #
 # REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 — HERMETIC-FIXTURE / deliberate-accept
-#   seam, NOT a production knob. Downgrades inv.13's refusal to a warn so a
-#   fixture that intentionally exercises the no-base accept path can still seed.
-#   Exporting it in production RE-OPENS the stale-artifact false green inv.13
-#   exists to prevent. Exact `= "1"` match (the REIFY_WARM_LANE_RESEED_TRASH_SYNC
-#   idiom), so 0, yes and a stray empty export all fail safe into the abort.
-#   Polarity is deliberate and is the inverse of the esc-5214 mistake: the guard
-#   is default-ON and only an explicit export can downgrade it, so no forgetful
-#   caller can bypass it by omission; honouring it emits its own [warn] so a
-#   production log shows it.
+#   seam, NOT a production knob. Downgrades inv.13's refusal to a [warn] (the
+#   downgrade is itself logged) so a fixture that intentionally exercises the
+#   no-base accept path can still seed; exporting it in production re-opens
+#   the false green inv.13 exists to prevent. Exact `= "1"` match (the
+#   REIFY_WARM_LANE_RESEED_TRASH_SYNC idiom): 0, yes and a stray empty export
+#   all fail safe into the abort. Default-OFF; polarity rationale: §9.5 inv.13
+#   (G7 — not restated here).
 #
 # Build-script freshness references (task 5630 — full statement: §9.5 inv.12):
 #   No step here may leave a build-script replay file
@@ -501,33 +499,25 @@ _assert_delta_newer_than_build_outputs() {
 }
 
 # Seed-time post-condition (task 5632): under --fresh-checkout, when all three
-# delta-touch-base resolution tiers come back empty, the seed must REFUSE rather
-# than return a lane whose freshness claim it cannot substantiate.
+# delta-touch-base resolution tiers come back empty, the seed must REFUSE
+# rather than return a lane whose freshness claim it cannot substantiate.
+# Sibling of _assert_no_stale_delta_stamp and _assert_delta_newer_than_build_outputs
+# above, same defense-in-depth posture.
 #
-# The normative statement, the reasoning that makes refusal the only sound
-# option, and the operator remedy live in ONE place —
+# The normative statement — including WHY the refusal is conditioned on the
+# clone carrying recorded prior compilations, why it keys on base resolution
+# only (an explicit --touch list does NOT substantiate: see the usage block
+# above), and the operator remedy — lives in ONE place —
 # docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13 — deliberately NOT
 # restated here (G7 no-lockstep-duplication), exactly as
-# _assert_delta_newer_than_build_outputs points at inv.12.
+# _assert_delta_newer_than_build_outputs points at inv.12. Pinned by Block U:
+# U1/U1b the .fingerprint gate, U1c/U1d the -maxdepth 3 bound, U2/U2b what the
+# guard keys on, U3/U3b/U3c the opt-out knob's exact-"1" contract.
 #
-#   - The refusal is CONDITIONED on the clone actually carrying recorded prior
-#     compilations, because that is the only thing a stale source mtime can
-#     wrongly re-Freshen. Same "is there anything here that could be mis-gated?"
-#     test the inv.12 guard already uses for its two vacuous skips.
-#   - It keys on BASE RESOLUTION only. An explicit --touch list does NOT
-#     substantiate the claim either: --touch is documented above as an
-#     ADDITIONAL path to touch after the bulk stamp — an augmentation of the
-#     git-diff delta, not a declaration that the delta set is COMPLETE — and
-#     there is no flag with which a caller could assert completeness, so the
-#     seed cannot tell the two apart. Pinned two-sided by Block U's U2 (base
-#     resolves + empty delta ⇒ seed) and U2b (no base + non-empty --touch ⇒
-#     refuse). Reasoning: §9.5 inv.13.
+# Implementation notes (local to this site):
 #   - -maxdepth 3 mirrors the non-relocatable build-dir deletion sweep's walk
-#     below (depth 2 for <profile>/.fingerprint, depth 3 for a cross-compile
-#     <triple>/ prefix), so the guard's coverage cannot drift apart from the
-#     tree it protects. Both bounds are pinned by Block U (U1c detects the
-#     depth-3 cross-compile shape; U1d holds the upper edge at depth 4).
-#     -print -quit makes it an early-exit probe rather than a full walk.
+#     below (rationale: §9.5 inv.13). -print -quit makes this an early-exit
+#     probe rather than a full walk.
 #   - The probe's exit status is captured EXPLICITLY rather than left to
 #     set -e on a bare assignment: no-match and early--quit both exit 0, but a
 #     TRAVERSAL failure (unreadable subdirectory, or LANE_TARGET missing) exits
@@ -536,10 +526,8 @@ _assert_delta_newer_than_build_outputs() {
 #     the claim either, so it becomes an attributed fail-closed abort.
 #   - A violation errs + return 1. Under set -e that aborts the seed before
 #     `echo "$LANE_TARGET"`, leaving stdout empty → the caller falls back to a
-#     cold rebuild (slow but CORRECT). See the CALLER OBLIGATION in the stdout
-#     contract at the top of this file: an empty stdout obliges the caller to
-#     remove <lane_dir>/target, because this abort fires AFTER the clone and
-#     bulk stamp and so leaves exactly the state it just refused to certify.
+#     cold rebuild (slow but CORRECT); see the CALLER OBLIGATION in the stdout
+#     contract at the top of this file.
 _assert_delta_touch_base_substantiated() {
     local fingerprint_dir
     if ! fingerprint_dir="$(find "$LANE_TARGET" -maxdepth 3 -type d -name .fingerprint -print -quit)"; then
