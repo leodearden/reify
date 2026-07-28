@@ -736,5 +736,43 @@ git:
   # idempotent, consulted once at startup.
   warm_lane_prewarm: true
 
+# Unknown-config-key census allowlist (dark-factory 2989, filed as reify task 5733
+# follow-up from escalation agent-followup-2989). 2989 adds a raw-YAML-vs-
+# OrchestratorConfig-schema walk that files a born-at-L2 critical escalation
+# listing every unknown top-level/nested key, added after the 2026-07-22 warm-lane
+# exhaustion incident (reify task 5358) where a misplaced top-level
+# `spare_warm_lanes` silently no-opped under Pydantic extra='ignore' instead of
+# landing on GitConfig. Every entry below is a DELIBERATE reify-owned knob
+# consumed by reify's own scripts (not a typo, not dead config) — confirmed by
+# reading each field's in-line documentation elsewhere in this file:
+#   - cpu_governance.* (see the cpu_governance: block above): weights, agent_admit,
+#     DF_AGENT_CPU_GOVERN, and fleet_load_detector are read by
+#     scripts/cpu-governed-exec.sh, scripts/fleet-load-detector.sh, and
+#     scripts/agent-bin/cargo. Mixed-consumer namespace — the sibling
+#     cpu_governance.enabled IS a real dark-factory CpuGovernConfig field, so the
+#     namespace itself is not ignored, only these reify-only sub-keys.
+#   - fairness.scheduler_v2 (see the fairness: block above): reify-side toggle
+#     sitting next to fairness.skip_threshold, which IS a real dark-factory
+#     FairnessConfig field.
+#   - warm_lane_pool (see the warm_lane_pool: block above): the dict of
+#     reify-owned substrate/sizing knobs, cross-checked by
+#     tests/infra/test_warm_lane_pool_config.sh. Do NOT "fix" this by moving it
+#     under git: — the census's shadow hint suggesting git.warm_lane_pool is a
+#     coincidental name collision; GitConfig.warm_lane_pool is an unrelated bool
+#     (already set correctly at git.warm_lane_pool: true above) and feeding this
+#     dict to that bool field would hard-fail config validation.
+# Matching is fnmatch.fnmatchcase over the dotted path ('*' spans dots), so
+# 'cpu_governance.*' covers all four cpu_governance sub-keys in one glob — but a
+# glob does NOT match its own bare parent key, so 'warm_lane_pool' must be listed
+# exactly (a 'warm_lane_pool.*' entry would NOT match the bare 'warm_lane_pool'
+# key). This block is inert until 2989 merges (currently tolerated as another
+# unknown top-level key under extra='ignore'); once merged, config_key_census.*
+# is green-tier reloadable so no restart is required to pick it up.
+config_key_census:
+  ignore:
+    - 'cpu_governance.*'
+    - 'fairness.scheduler_v2'
+    - 'warm_lane_pool'
+
 # Project root (absolute path)
 project_root: "/home/leo/src/reify"
