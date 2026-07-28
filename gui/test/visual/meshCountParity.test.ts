@@ -225,6 +225,65 @@ describe("checkMeshCountParity — (g) malformed counts fail loudly", () => {
   });
 });
 
+describe("(h) total defensiveness — a bad ARGUMENT is a reading, not a crash", () => {
+  // Both functions document "never throws". A `= {}` parameter default fires
+  // only on `undefined`, so `null` — precisely what a caller holds after a
+  // failed read — would otherwise throw a TypeError out of the very functions
+  // whose job is to REPORT unusable readings, turning a diagnosable outage into
+  // an unhandled crash with no named tool.
+  const BAD_ARGS: Array<[string, unknown]> = [
+    ["undefined", undefined],
+    ["null", null],
+    ["a number", 42],
+    ["a string", "viewport_state"],
+  ];
+
+  for (const [label, bad] of BAD_ARGS) {
+    it(`checkMeshCountParity(${label}) reports failures instead of throwing`, () => {
+      expect(() => checkMeshCountParity(bad as never)).not.toThrow();
+      const { ok, failures } = checkMeshCountParity(bad as never);
+      expect(ok).toBe(false);
+      // Every field is unreadable, so every gate that can fire, fires.
+      expect(failures.some((f) => f.includes("full_scope"))).toBe(true);
+      expect(failures.some((f) => f.includes("viewport_state.meshCount"))).toBe(true);
+      expect(failures.some((f) => f.includes("mesh_stats"))).toBe(true);
+      expect(failures.some((f) => f.includes("engine_state"))).toBe(true);
+    });
+
+    it(`extractMeshCountInputs(${label}) names all four tools instead of throwing`, () => {
+      expect(() => extractMeshCountInputs(bad as never)).not.toThrow();
+      const { inputs, failures } = extractMeshCountInputs(bad as never);
+      for (const tool of ["viewport_state", "mesh_stats", "engine_state", "demand_dispatch"]) {
+        expect(failures.some((f) => f.includes(tool))).toBe(true);
+      }
+      // And nothing downstream could mistake the result for a real reading.
+      expect(inputs).toEqual({
+        viewportMeshCount: undefined,
+        meshStatsCount: undefined,
+        engineStateCount: undefined,
+        fullScope: undefined,
+      });
+    });
+  }
+
+  it("falls back to the default floor when minBodies is not a usable count", () => {
+    // `1 < null` is false, so passing the floor through unchecked would SILENTLY
+    // DISABLE the degeneracy gate — the exact failure that gate exists to catch,
+    // reintroduced through its own parameter.
+    for (const badFloor of [null, undefined, NaN, "2", -1, 1.5]) {
+      const { ok, failures } = checkMeshCountParity({
+        viewportMeshCount: 1,
+        meshStatsCount: 1,
+        engineStateCount: 1,
+        fullScope: false,
+        minBodies: badFloor as never,
+      });
+      expect(ok).toBe(false);
+      expect(failures.join("\n")).toContain(String(MESH_COUNT_PARITY_MIN_BODIES));
+    }
+  });
+});
+
 // ─── extractMeshCountInputs ──────────────────────────────────────────────────
 //
 // The layer where drift against the real Rust / frontend payload shapes would

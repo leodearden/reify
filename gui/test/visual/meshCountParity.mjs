@@ -68,7 +68,9 @@ function isUsableCount(v) {
  * @property {unknown} meshStatsCount     `mesh_stats.meshes.length`.
  * @property {unknown} engineStateCount   `engine_state.meshes.length`.
  * @property {unknown} fullScope          `demand_dispatch.full_scope` — must be `false`.
- * @property {number} [minBodies]         Non-vacuity floor; defaults to MESH_COUNT_PARITY_MIN_BODIES.
+ * @property {number} [minBodies]         Non-vacuity floor; anything that is not a
+ *                                        non-negative integer falls back to
+ *                                        MESH_COUNT_PARITY_MIN_BODIES.
  */
 
 /**
@@ -84,16 +86,26 @@ function isUsableCount(v) {
  * early-returns — so one failing live run reports the complete picture instead
  * of forcing a re-run per problem.
  *
+ * Never throws, for ANY argument — see the normalisation note below.
+ *
  * @param {MeshCountParityInputs} inputs
  * @returns {MeshCountParityResult}
  */
-export function checkMeshCountParity({
-  viewportMeshCount,
-  meshStatsCount,
-  engineStateCount,
-  fullScope,
-  minBodies = MESH_COUNT_PARITY_MIN_BODIES,
-}) {
+export function checkMeshCountParity(inputs) {
+  // Argument normalisation, NOT a stylistic destructuring default: a `= {}`
+  // parameter default fires only on `undefined`, so `checkMeshCountParity(null)`
+  // would throw a TypeError out of the one function whose entire job is to
+  // REPORT unusable readings. `null` is exactly what a caller holds after a
+  // failed read, so the throwing path is the one a live outage takes.
+  const src = /** @type {any} */ (
+    inputs !== null && typeof inputs === "object" ? inputs : {}
+  );
+  const { viewportMeshCount, meshStatsCount, engineStateCount, fullScope } = src;
+  // A non-numeric floor must fall back, never pass through: `1 < null` is false,
+  // so a mistyped `minBodies` would SILENTLY DISABLE the degeneracy gate — the
+  // failure mode that gate exists to catch, reintroduced by its own parameter.
+  const minBodies = isUsableCount(src.minBodies) ? src.minBodies : MESH_COUNT_PARITY_MIN_BODIES;
+
   /** @type {string[]} */
   const failures = [];
 
@@ -348,19 +360,22 @@ function meshesLength(payload, toolName, failures) {
  * docs/debug-mcp-contract.md spells out. This field is the authoritative count
  * here; `meshInfo` is a per-mesh detail list and is NOT used as the count.
  *
- * Never throws: every violation becomes a named failure, so a driver can report
- * extraction and parity problems through a single path.
+ * Never throws, for ANY argument: every violation becomes a named failure, so a
+ * driver can report extraction and parity problems through a single path. That
+ * includes the argument itself — `null` (what a caller holds after a failed
+ * read) is normalised to "no payloads", which surfaces as four named failures
+ * rather than a TypeError, since a `= {}` parameter default fires only on
+ * `undefined`.
  *
  * @param {{viewportState?: unknown, meshStats?: unknown, engineState?: unknown,
  *          demandDispatch?: unknown}} payloads
  * @returns {MeshCountExtraction}
  */
-export function extractMeshCountInputs({
-  viewportState,
-  meshStats,
-  engineState,
-  demandDispatch,
-} = {}) {
+export function extractMeshCountInputs(payloads) {
+  const { viewportState, meshStats, engineState, demandDispatch } = /** @type {any} */ (
+    payloads !== null && typeof payloads === "object" ? payloads : {}
+  );
+
   /** @type {string[]} */
   const failures = [];
 
