@@ -22,8 +22,8 @@
 // exists to cover the bare-primitive template shape, not because it could not be
 // patterned. Geometry lets ARE valid pattern targets (fixed by task 1715, plus
 // task 5009's nested-target hoisting); that fact is pinned by
-// `crates/reify-compiler/tests/compile_api_tests.rs::
-// geometry_let_is_a_valid_linear_pattern_target`.
+// `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs::
+// linear_pattern_let_bound_ops` and its circular_pattern/mirror siblings.
 
 structure def BaseElement {
     param element_size : Length = 10mm
