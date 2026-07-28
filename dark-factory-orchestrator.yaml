@@ -599,6 +599,38 @@ sandbox:
   enabled: true
   backend: landlock
 
+# Sandbox companion (task γ6a): toolchain-cache redirect for the three
+# sandboxed roles (implementer, debugger, simple_task — roles.py
+# sandboxed=True).
+#   WHY: compute_write_set (DF-owned, orchestrator/agents/write_set.py)
+#   grants worktree + <base>/.task-meta/<name> + main .git carve-outs +
+#   ~/.cache/uv + ~/.claude/fleet + /tmp + /dev, and NOTHING under
+#   ~/.cargo or ~/.npm; without this redirect a sandboxed agent that
+#   adds/bumps a dependency dies on an opaque EACCES mid-build (reproduced
+#   on this host: `cargo fetch` exit 101 — Permission denied (os error 13)
+#   opening ~/.cargo/registry/cache/index.crates.io-*/hex-literal-0.4.1.crate;
+#   `npm install` exit 1 — ~/.npm/_logs unwritable). Warm paths still
+#   succeed, so this bites exactly on dependency-adding / cold-cache tasks.
+#   WHY THIS LEVER: role_env_overrides is merged LAST by DF's
+#   workflow.py:_build_agent_env for every role. verify_env (above) is the
+#   WRONG surface for this — verify subprocesses are not sandboxed.
+#   WHY /tmp: it is the one host-global writable root in the write set, so
+#   the two dirs are shared across warm lanes and warm ONCE rather than
+#   per-lane; cargo's own .package-cache flock serializes concurrent access
+#   exactly as it already does for the shared ~/.cargo today (no new
+#   contention).
+#   COST: first agent run after a /tmp wipe re-downloads the crates.io
+#   index + dep tree (one-time, then warm).
+#   Restart-tier: inert until the orchestrator restarts (companion task
+#   γ6b). Reify-side seam guard:
+#   tests/infra/test_sandbox_cache_writability_seam.sh.
+role_env_overrides:
+  implementer: &sandbox_cache_env
+    CARGO_HOME: /tmp/reify-agent-cargo-home
+    npm_config_cache: /tmp/reify-agent-npm-cache
+  debugger: *sandbox_cache_env
+  simple_task: *sandbox_cache_env
+
 # Escalation
 escalation:
   queue_dir: "data/escalations"
