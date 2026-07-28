@@ -1,8 +1,9 @@
 // The tangent-roller worked example — geometric-relations tangent (task 5540).
 //
-// A `roller` sub placed `at auto` (a single 6-DOF Frame unknown) resting on a
-// grounded `base` plate and touching a grounded `idler` cylinder. Two tangency
-// relations drive the roller's pose:
+// A `roller` sub placed `at auto` (a single 6-DOF Frame unknown) lying on a
+// grounded `base` plate and bearing against a grounded `idler` guide post — a
+// vertical cylinder standing on the plate. Two tangency relations drive the
+// roller's pose:
 //
 //   * `tangent(roller.axis, base.top_plane, 5mm)` — the roller cylinder (radius
 //     5 mm) is made tangent to the base's top face. Cylinder/plane tangency has
@@ -12,12 +13,32 @@
 //     the rotational row the cylinder could tilt out of tangency at exactly zero
 //     residual — a silently wrong solve.
 //   * `tangent(roller.axis, idler.axis, 5mm, 7mm)` — the roller is made
-//     externally tangent to the idler cylinder (radius 7 mm). Cylinder/cylinder
+//     externally tangent to the idler post (radius 7 mm). Cylinder/cylinder
 //     tangency has codimension 1: the line-to-line distance between the two axes
 //     equals |r1 + r2| = 12 mm.
 //
-// ⇒ spent 3, residual 3 (slide along the idler axis direction, spin about the
-// roller's own axis, and the remaining in-plane freedom).
+// ⇒ spent 3, residual 3 (slide along the roller's own axis, spin about it, and
+// swing about the plate normal — a null direction of the cylinder/cylinder row
+// at the witness).
+//
+// THE LOCAL PLACEMENTS ARE LOAD-BEARING, not decoration. The relate-solve
+// rank-partitions at the IDENTITY witness (no `auto(seed=…)` evaluation), so the
+// example must be non-degenerate THERE or the measured codimensions collapse and
+// the fixture stops testing what it claims:
+//
+//   * `Roller.body` is rotated 90° about Y so its local axis runs along X. With a
+//     bare `cylinder(…)` the roller axis would be parallel to the plate normal at
+//     identity, putting the cylinder/plane rotational row `dot(û_axis, n̂_plane)`
+//     at a stationary point (value 1, gradient 0 in every rotation DOF). The row
+//     would measure rank 0 by central difference and the relation would report
+//     codimension 1 instead of 2.
+//   * `Idler.body` is translated 20 mm in Y so the two axes are not coincident at
+//     identity. Coincident axes put the cylinder/cylinder row's `|·|` exactly at
+//     its kink, where the central difference of the line-to-line distance reads 0
+//     — again rank 0, and the relation is misfiled as a redundant remainder.
+//
+// Simplifying either placement away makes the solve report a false conflict and
+// leave the roller unplaced.
 //
 // RADII TRAVEL AS TRAILING SCALAR OPERANDS. The surface-carried
 // `tangent(cyl: <HasAxis & HasRadius>, face: Plane)` form documented in
@@ -50,15 +71,19 @@ structure Base {
 }
 
 structure Idler {
-    // The idler roller: a fixed cylinder of radius 7 mm whose central axis is the
-    // tangency mate datum (Cylindrical → Axis, feature→datum bridge ε).
-    let body = cylinder(7mm, 40mm)
+    // The idler guide post: a fixed cylinder of radius 7 mm standing vertically,
+    // offset 20 mm in Y so its axis is not coincident with the roller's at the
+    // identity witness (see the header note). Its central axis is the tangency mate
+    // datum (Cylindrical → Axis, feature→datum bridge ε).
+    let body = translate(cylinder(7mm, 40mm), 0mm, 20mm, 0mm)
     let axis : Axis = body.axis
 }
 
 structure Roller {
-    // The driven roller: a cylinder of radius 5 mm, placed by the relate-solve.
-    let body = cylinder(5mm, 40mm)
+    // The driven roller: a cylinder of radius 5 mm lying on its side (rotated 90°
+    // about Y, so its local axis runs along X rather than Z — see the header note),
+    // placed by the relate-solve.
+    let body = rotate(cylinder(5mm, 40mm), 0.0, 1.0, 0.0, 90deg)
     let axis : Axis = body.axis
 }
 
