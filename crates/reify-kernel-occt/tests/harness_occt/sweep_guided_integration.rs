@@ -28,7 +28,7 @@
 
 use crate::common;
 use reify_kernel_occt::OcctKernel;
-use reify_ir::{GeometryHandleId, GeometryOp, GeometryQuery, Value};
+use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
 
 /// Build a closed circular wire profile at z=0 of the given radius.
 fn make_circle_profile(kernel: &mut OcctKernel, radius: f64) -> GeometryHandleId {
@@ -250,6 +250,51 @@ fn sweep_guided_face_profile_yields_solid_volume() {
         "guided sweep volume {guided_volume} must match plain sweep volume \
          {plain_volume} for the same face profile (relative error {parity_err})"
     );
+}
+
+/// A profile type `BRepFill_Section` genuinely cannot take — here a SOLID —
+/// must be rejected with a Reify-authored diagnostic that names the offending
+/// shape type, rather than leaking OCCT's opaque internal wording.
+#[test]
+fn sweep_guided_rejects_unsupported_profile_type() {
+    let mut kernel = OcctKernel::new();
+    let profile = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(0.01),
+            height: Value::Real(0.01),
+            depth: Value::Real(0.01),
+        })
+        .expect("Box should build")
+        .id;
+    let path = make_straight_path(&mut kernel, 0.1);
+    let guide = make_offset_guide(&mut kernel, 0.05, 0.03, 0.1);
+
+    let result = kernel.execute(&GeometryOp::SweepGuided {
+        profile,
+        path,
+        guide,
+    });
+
+    match result {
+        Err(GeometryError::OperationFailed(msg)) => {
+            let lower = msg.to_lowercase();
+            assert!(
+                lower.contains("solid"),
+                "error must name the offending shape type ('Solid'), got: {msg}"
+            );
+            assert!(
+                msg.contains("make_pipe_shell"),
+                "error must attribute the failing op, got: {msg}"
+            );
+            assert!(
+                !msg.contains("BRepFill_Section"),
+                "error must be a Reify diagnostic, not OCCT's opaque internal \
+                 wording, got: {msg}"
+            );
+        }
+        Ok(_) => panic!("expected OperationFailed for a SOLID profile, got Ok"),
+        Err(other) => panic!("expected OperationFailed, got {:?}", other),
+    }
 }
 
 #[test]
