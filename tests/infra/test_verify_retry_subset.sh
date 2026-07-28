@@ -39,6 +39,9 @@
 # files are pointed at via the REIFY_VERIFY_ATTEMPT_SIDECAR /
 # REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE* envs for full hermeticity.
 #
+# Pinned mechanically by S9 in tests/infra/test_verify_nextest_absent_suites.sh
+# (floor 16).
+#
 # Mirrors:
 #   - tests/infra/test_verify_test_threads.sh (task 5264) — the direct
 #     structural precedent (env→nextest fragment in emit_nextest_pass,
@@ -88,8 +91,7 @@ echo "(nextest available on this host: $NEXTEST_AVAILABLE)"
 # here uses the matching deadbeef sidecar (tree-OID eligibility=1). Matches
 # the bare-substring style of the sibling 'retry refused: no subset' asserts;
 # the four refusal reasons have distinct suffixes so there is no cross-
-# matching risk. Pinned mechanically by S9 in
-# test_verify_nextest_absent_suites.sh (floor 16).
+# matching risk.
 _err_has_no_nextest_refusal() {
     printf '%s\n' "$1" | grep -qF -- "retry refused: no nextest"
 }

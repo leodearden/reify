@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/infra/test_verify_nextest_absent_suites.sh — regression guard for
-# host-independence of EIGHT NAMED plan-oracle infra suites on a nextest-LESS
-# host (tasks 5599 + 5604):
+# host-independence of NINE NAMED plan-oracle infra suites on a nextest-LESS
+# host (tasks 5599 + 5604 + 5587):
 #
 #     tests/infra/test_verify_compile_gate.sh              (S1, task 5599)
 #     tests/infra/test_verify_semaphore_wiring.sh          (S2, task 5599)
@@ -13,7 +13,7 @@
 #     tests/infra/test_release_mode_in_test_command.sh     (S8, task 5604)
 #     tests/infra/test_verify_retry_subset.sh              (S9, task 5587)
 #
-# Those eight, and ONLY those eight. This file does NOT claim that
+# Those nine, and ONLY those nine. This file does NOT claim that
 # `tests/infra/run_all.sh` as a whole is green without cargo-nextest.
 #
 # PROBLEM. scripts/verify.sh gracefully falls back to emitting `cargo test`
@@ -63,6 +63,9 @@
 # verify.sh's `timeout --kill-after=60 30m` envelope around the whole run — so
 # this sits comfortably inside budget for the intra-run-serial bucket. Weighed
 # deliberately: the alternative is a prose audit verdict that rots silently.
+# The 9th member (retry_subset, task 5587) adds ~3s (measured 2.5s ambient on
+# this lane; hermetic --print-plan only, no cargo build), so the ~3 min working
+# figure above is unchanged.
 #
 # This suite turns the previously-manual acceptance ritual into a mechanical
 # check: it builds a nextest-absent environment ONCE and runs each covered
@@ -143,7 +146,7 @@ VERIFY="$REPO_ROOT/scripts/verify.sh"
 # shellcheck source=tests/infra/test_helpers.sh
 source "$SCRIPT_DIR/test_helpers.sh"
 
-echo "=== the eight covered plan-oracle infra suites are host-independent on a nextest-less host (tasks 5599 + 5604) ==="
+echo "=== the nine covered plan-oracle infra suites are host-independent on a nextest-less host (tasks 5599 + 5604 + 5587) ==="
 
 # ---------------------------------------------------------------------------
 # Harness construction (once, at suite start)
@@ -523,9 +526,11 @@ echo "--- S: covered suites reach test_summary with rc=0 / 0 FAIL / >= pass floo
 # the no---exclude check). Legitimately REMOVING a crate from that manifest
 # drops this suite's count by 3 and trips S7 with a "COVERAGE SHRANK" message
 # whose (a) branch does not apply — re-pin the floor here with the new split
-# rather than hunting for a nextest guard that does not exist. The other seven
+# rather than hunting for a nextest guard that does not exist. The other eight
 # floors are fixed counts: no assert in those suites sits inside a data-driven
-# loop, so a drop there really does mean an assert was guarded away or deleted.
+# loop, so a drop there really does mean an assert was guarded away or deleted
+# (retry_subset included — it has no data-driven assert loop either, unlike
+# occt_gated_scope's per-crate loops).
 #
 # Of the four task-5604 rows, three are 1:1 nextest-less/ambient — nothing
 # guarded away, every failure recovered by widening a grep. The fourth
