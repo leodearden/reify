@@ -5302,4 +5302,136 @@ mod tests {
              claimed by the datum family"
         );
     }
+
+    // ── Datum-neighbour audit (task 5344) ────────────────────────────────────
+    //
+    // The six axis-aligned construction datums `plane_xy`/`plane_xz`/`plane_yz`
+    // and `axis_x`/`axis_y`/`axis_z` share the orientation family's defect —
+    // they fall through `expr.rs`'s `NoUserFunctions` ladder to the first-arg
+    // fallback — but they belong to the DATUM vocabulary, so they are claimed by
+    // `datum_constructor_result_type` (whose own doc comment already name-checks
+    // them as "sibling datum constructors") rather than added to
+    // `ORIENTATION_TYPED_FN_NAMES`. One datum vocabulary, one resolver.
+    //
+    // ARITY IS ONE, NOT ZERO. `reify_stdlib::geometry::make_plane` and
+    // `make_axis` both hard-check `args.len() != 1`, so these six mistype
+    // SILENTLY through the first-arg fallback and never trip the zero-arg
+    // "cannot infer return type" warning that made the orientation family
+    // visible: `plane_xy(10mm)` adopted `Scalar<Length>` from its offset
+    // argument, and `axis_x(origin)` adopted the origin's own type. (Measured
+    // end-to-end, `axis_x(point3(0mm,0mm,0mm))` typed `Scalar<Length>` rather
+    // than `Point3<Length>`, because the fallback CHAINS: `point3` is itself
+    // unclaimed and adopts `0mm`'s type first.)
+    //
+    // The LSP completion table (`crates/reify-lsp/src/completion.rs`) declares
+    // `plane_xy() -> Frame` and `axis_x() -> Vector` — wrong in BOTH arity and
+    // return type. The evaluator's `make_plane`/`make_axis`, not that table, is
+    // the source of truth for this audit.
+
+    /// Build a typed placeholder argument for the arg-aware datum resolver.
+    /// Only `result_type` is read, so a `Value::Undef` literal suffices —
+    /// mirrors the `arg` fixture in `relation_signatures`' test module.
+    fn datum_arg(ty: reify_core::Type) -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(reify_ir::Value::Undef, ty)
+    }
+
+    /// A `Length` scalar — the offset argument `plane_xy(10mm)` passes, and the
+    /// exact type the first-arg fallback wrongly adopted as the call's own.
+    fn length_arg() -> reify_ir::CompiledExpr {
+        datum_arg(reify_core::Type::Scalar {
+            dimension: reify_core::DimensionVector::LENGTH,
+        })
+    }
+
+    /// A `Point3<Length>` — the origin argument `axis_x(point3(..))` passes, and
+    /// the exact type the first-arg fallback wrongly adopted as the call's own.
+    fn point3_length_arg() -> reify_ir::CompiledExpr {
+        datum_arg(reify_core::Type::point3(reify_core::Type::Scalar {
+            dimension: reify_core::DimensionVector::LENGTH,
+        }))
+    }
+
+    /// `plane_xy` / `plane_xz` / `plane_yz` each take ONE offset argument and
+    /// return a `Type::Plane` — not the `Scalar<Length>` of that offset.
+    #[test]
+    fn axis_aligned_plane_constructors_resolve_to_plane() {
+        for name in ["plane_xy", "plane_xz", "plane_yz"] {
+            assert_eq!(
+                datum_constructor_result_type(name, &[length_arg()]),
+                Some(reify_core::Type::Plane),
+                "{name}(offset) must resolve to Type::Plane, not the offset's \
+                 Scalar<Length> (the old first-arg fallback)"
+            );
+        }
+    }
+
+    /// `axis_x` / `axis_y` / `axis_z` each take ONE `Point3` origin and return a
+    /// `Type::Axis` — not the `Point3<Length>` of that origin.
+    #[test]
+    fn axis_aligned_axis_constructors_resolve_to_axis() {
+        for name in ["axis_x", "axis_y", "axis_z"] {
+            assert_eq!(
+                datum_constructor_result_type(name, &[point3_length_arg()]),
+                Some(reify_core::Type::Axis),
+                "{name}(origin) must resolve to Type::Axis, not the origin's \
+                 Point3<Length> (the old first-arg fallback)"
+            );
+        }
+    }
+
+    /// Regression lock: extending the resolver with the six axis-aligned
+    /// neighbours must not perturb the vocabulary it already claimed (η/4387),
+    /// and in particular must leave `offset`'s arity-2 gate exactly as-is — the
+    /// arity-3 form is γ's relation and must keep returning `None` here.
+    #[test]
+    fn datum_constructor_vocabulary_survives_the_neighbour_extension() {
+        for name in ["midplane", "plane_through"] {
+            assert_eq!(
+                datum_constructor_result_type(name, &[]),
+                Some(reify_core::Type::Plane),
+                "{name} must still resolve to Type::Plane"
+            );
+        }
+        assert_eq!(
+            datum_constructor_result_type("axis_through", &[]),
+            Some(reify_core::Type::Axis),
+            "axis_through must still resolve to Type::Axis"
+        );
+        assert_eq!(
+            datum_constructor_result_type("frame_at", &[]),
+            Some(reify_core::Type::Frame(3)),
+            "frame_at must still resolve to Type::Frame(3)"
+        );
+        // `offset` arity gate, both sides — the construction-datum form is
+        // arity 2; arity 3 is γ's `offset(Plane, Plane, Length) -> Relation`,
+        // claimed by the earlier relation arm and NOT by this resolver.
+        assert_eq!(
+            datum_constructor_result_type("offset", &[length_arg(), length_arg()]),
+            Some(reify_core::Type::Plane),
+            "arity-2 offset must still resolve to Type::Plane"
+        );
+        assert_eq!(
+            datum_constructor_result_type("offset", &[length_arg(), length_arg(), length_arg()]),
+            None,
+            "arity-3 offset must still fall through to γ's relation arm"
+        );
+    }
+
+    /// `project` is deliberately claimed by NEITHER new arm: it mirrors its
+    /// first argument by design (`reify_stdlib::geometry::eval_geometry` →
+    /// `project`), so the first-arg fallback is already CORRECT for it and an
+    /// arm here would be a regression rather than a fix.
+    #[test]
+    fn project_is_claimed_by_neither_the_datum_nor_the_orientation_family() {
+        assert_eq!(
+            datum_constructor_result_type("project", &[point3_length_arg()]),
+            None,
+            "project must fall through to the first-arg fallback, which \
+             deliberately mirrors arg 0"
+        );
+        assert!(
+            !ORIENTATION_TYPED_FN_NAMES.contains(&"project"),
+            "project must not be claimed by the orientation family either"
+        );
+    }
 }

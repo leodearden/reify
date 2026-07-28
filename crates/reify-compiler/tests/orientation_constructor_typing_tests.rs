@@ -20,7 +20,7 @@
 //! RED until the `is_orientation_typed_fn` arm is wired into the ladder.
 
 use reify_core::Type;
-use reify_test_support::compile_source;
+use reify_test_support::{compile_source, compile_source_with_stdlib, get_let_expr_in};
 
 /// Compile `source` and return the `result_type` of value cell `cell_name` in
 /// template `template_name`. Same traversal the affine sibling test does inline.
@@ -198,4 +198,94 @@ fn nested_transform3_over_orient_identity_types_as_transform_3() {
         !matches!(ty, Type::Scalar { .. }),
         "nested transform3 must not inherit the inner call's fallback Real type, got {ty:?}"
     );
+}
+
+// ── Datum-neighbour audit (the same defect, one resolver over) ────────────────
+//
+// `plane_xy`/`plane_xz`/`plane_yz` and `axis_x`/`axis_y`/`axis_z` share the
+// orientation family's first-arg-fallback defect but belong to the DATUM
+// vocabulary, so they are claimed by `units.rs::datum_constructor_result_type`
+// (alongside `midplane`/`plane_through`/`axis_through`/`frame_at`) rather than
+// by `ORIENTATION_TYPED_FN_NAMES` — the two families stay cleanly disjoint.
+//
+// These six take exactly ONE argument, not zero: `reify_stdlib::geometry`'s
+// `make_plane` (:1112) and `make_axis` (:1152) both hard-check `args.len() != 1`.
+// So unlike the three zero-arg orientation constructors they mistype SILENTLY —
+// they never trip the "cannot infer return type" warning, which is precisely why
+// the defect went unnoticed here. Do NOT take the LSP completion table
+// (`crates/reify-lsp/src/completion.rs`) as the source of truth: it declares
+// `plane_xy() -> Frame` and `axis_x() -> Vector`, wrong in BOTH arity and return
+// type. The evaluator is the source of truth.
+//
+// These use `compile_source_with_stdlib` so dimensioned literals (`10mm`)
+// resolve — the wrong types the fallback adopted (`Scalar<Length>` /
+// `Point3<Length>`) are only reproducible with real dimensioned arguments.
+
+/// Compile with the stdlib prelude and return `cell_name`'s `result_type`.
+fn find_stdlib_cell_type(source: &str, template_name: &str, cell_name: &str) -> Type {
+    let module = compile_source_with_stdlib(source);
+    get_let_expr_in(&module, template_name, cell_name)
+        .result_type
+        .clone()
+}
+
+/// `plane_xy(10mm)` types as `Type::Plane`, NOT the `Scalar<Length>` of its
+/// offset argument.
+#[test]
+fn axis_aligned_plane_constructors_type_as_plane() {
+    let source = r#"
+        structure PlaneHost {
+            let pxy = plane_xy(10mm)
+            let pxz = plane_xz(0mm)
+            let pyz = plane_yz(5mm)
+        }
+    "#;
+    for cell in ["pxy", "pxz", "pyz"] {
+        let ty = find_stdlib_cell_type(source, "PlaneHost", cell);
+        assert_eq!(
+            ty,
+            Type::Plane,
+            "cell '{cell}' must type as Plane, not the offset argument's type"
+        );
+        assert!(
+            !matches!(ty, Type::Scalar { .. }),
+            "cell '{cell}' must not adopt the offset argument's Scalar<Length> \
+             (the old first-arg fallback), got {ty:?}"
+        );
+    }
+}
+
+/// `axis_x(point3(0mm, 0mm, 0mm))` types as `Type::Axis`, NOT a type derived
+/// from its origin argument.
+///
+/// Measured pre-fix type: `Scalar<Length>`, not `Point3<Length>` — the fallback
+/// chains, because `point3` is itself unclaimed and adopts `0mm`'s
+/// `Scalar<Length>` first. (`point3`/`vec3` stay unclaimed here on purpose:
+/// `Type::Point`/`Type::Vector` carry an argument-DEPENDENT quantity slot, so
+/// they need a different resolver shape and are deferred to a follow-up.) The
+/// assertion below is therefore written against `Type::Axis` plus a negative on
+/// `Type::Point`, both of which hold regardless of which link in that chain the
+/// wrong type came from.
+#[test]
+fn axis_aligned_axis_constructors_type_as_axis() {
+    let source = r#"
+        structure AxisHost {
+            let ax = axis_x(point3(0mm, 0mm, 0mm))
+            let ay = axis_y(point3(0mm, 0mm, 0mm))
+            let az = axis_z(point3(0mm, 0mm, 0mm))
+        }
+    "#;
+    for cell in ["ax", "ay", "az"] {
+        let ty = find_stdlib_cell_type(source, "AxisHost", cell);
+        assert_eq!(
+            ty,
+            Type::Axis,
+            "cell '{cell}' must type as Axis, not the origin argument's type"
+        );
+        assert!(
+            !matches!(ty, Type::Point { .. } | Type::Scalar { .. }),
+            "cell '{cell}' must not inherit an argument type through the old \
+             first-arg fallback chain, got {ty:?}"
+        );
+    }
 }
