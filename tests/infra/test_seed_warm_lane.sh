@@ -2300,6 +2300,11 @@ assert "P3c: build/cxx-AAAA/output WAS relocated in this same run (guards non-va
 # arm (flock -w N), with its own compat pin: both refusal arms share ONE rc,
 # because both have the identical cause (a live consumer holds the lane lock)
 # and the identical remediation.
+# H13 (task 5568, NEW) pins the OPERATOR-facing half of the discriminant: a
+# stable LANE_LOCK_CONTENDED stderr token on both arms, emitted UNCONDITIONALLY
+# (not gated on the flag) so an unpatched fleet — where the rc is still the
+# ambiguous 75 — can still separate lock contention from disk pressure by grep.
+# H13e is its non-vacuity control: the token must be ABSENT on the success path.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block Q: acquisition-time lane-lock exclusivity (--lane-lock) ---"
@@ -3252,6 +3257,129 @@ assert "H12b: COMPAT PIN — sentinel survives (default queue-refusal path other
 
 kill "$Q_LOCK20_PID" 2>/dev/null || true
 wait "$Q_LOCK20_PID" 2>/dev/null || true
+
+# ── H13: the OPERATOR-facing half of the discriminant — a stable, machine-
+# greppable marker token on stderr, emitted by BOTH refusal arms
+# UNCONDITIONALLY (task 5568). ─────────────────────────────────────────────
+#
+# WHY THIS IS NOT REDUNDANT WITH H11/H12: the rc reaches dark-factory's
+# classifier and nothing else. During esc-5556-1 no human ever read the rc —
+# the operator-facing signal was the thing that lied, saying "disk pressure"
+# for ~46h while the mount sat at 25% used / 1% inodes. So the token must be
+# UNGATED on --distinct-lock-refusal-rc: a token that appeared only once the
+# dark-factory arm had landed would stay dark for exactly the window most
+# likely to need triage. Ungated, an unpatched fleet gets a deterministic
+# `grep LANE_LOCK_CONTENDED` separating lock contention from disk pressure
+# TODAY, at zero risk — adding a token to an existing stderr line changes no
+# exit code and no control flow.
+#
+# It also UNIFIES the two arms, which today carry divergent prose ("held by a
+# live consumer" vs "still held ... after waiting Ns") and share no token, so
+# there is no single grep that catches both.
+Q_H13_TOKEN="LANE_LOCK_CONTENDED"
+
+# _q_h13_hold_lock <lane-var-suffix> — mints an isolated lane with a sentinel,
+# starts a backgrounded flock -x holder, and blocks on the same causal ready-
+# marker handshake as H1/H11/H12. Sets Q_H13_LANE / Q_H13_HOLDER_PID.
+# Factored because H13 needs FOUR near-identical contended fixtures (two arms
+# x flag-absent/flag-present) and hand-copying the holder block four more
+# times is where a missed _wait_for_reader_lock turns into a flaky test.
+_q_h13_hold_lock() {
+    local tag="$1"
+    Q_H13_LANE="$(make_isolated_lane "Q-lane-h13-$tag")"
+    mkdir -p "$Q_H13_LANE/target"
+    echo "sentinel content" > "$Q_H13_LANE/target/SENTINEL.txt"
+    local lock="${Q_H13_LANE}.lock"
+    local ready="${lock}.ready-marker"
+    _TMPDIRS+=("$lock" "$ready")
+    touch "$lock"
+    ( flock -x 9 && touch "$ready" && sleep 300 ) 9>"$lock" &
+    Q_H13_HOLDER_PID=$!
+    _BGPIDS+=("$Q_H13_HOLDER_PID")
+    _wait_for_reader_lock "$ready" 30
+}
+_q_h13_release_lock() {
+    kill "$Q_H13_HOLDER_PID" 2>/dev/null || true
+    wait "$Q_H13_HOLDER_PID" 2>/dev/null || true
+}
+
+# H13a: flock -n refusal, flag ABSENT (rc 75) → the token is present. This is
+# the case that matters most: it is the UNPATCHED-FLEET configuration, where
+# the rc is still the ambiguous 75 and the token is the ONLY discriminant.
+_q_h13_hold_lock a
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$Q_BASE" "$Q_H13_LANE" --fresh-checkout --lane-lock
+Q_H13A_ERR="$ERR_OUT"
+
+assert "H13a: flock -n refusal, flag ABSENT → still exit 75 (the token does not disturb the rc)" \
+    test "$RC" -eq 75
+assert "H13a: flock -n refusal, flag ABSENT → stderr carries the $Q_H13_TOKEN marker (the ONLY discriminant on an unpatched fleet)" \
+    bash -c 'printf "%s\n" "$2" | grep -q "$1"' _ "$Q_H13_TOKEN" "$Q_H13A_ERR"
+_q_h13_release_lock
+
+# H13b: flock -w timeout refusal, flag ABSENT (rc 75) → the SAME token, so one
+# grep catches both arms despite their divergent prose.
+_q_h13_hold_lock b
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_LANE_LOCK_WAIT=1 \
+    run_helper_real "$Q_BASE" "$Q_H13_LANE" --fresh-checkout --lane-lock
+Q_H13B_ERR="$ERR_OUT"
+
+assert "H13b: queue-timeout refusal, flag ABSENT → still exit 75" \
+    test "$RC" -eq 75
+assert "H13b: queue-timeout refusal emits the SAME $Q_H13_TOKEN token (one grep catches BOTH arms)" \
+    bash -c 'printf "%s\n" "$2" | grep -q "$1"' _ "$Q_H13_TOKEN" "$Q_H13B_ERR"
+_q_h13_release_lock
+
+# H13c: both arms WITH the flag (rc 77) → the token is STILL present, i.e. it
+# is unconditional rather than an artifact of the new code path.
+_q_h13_hold_lock c1
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$Q_BASE" "$Q_H13_LANE" --fresh-checkout --lane-lock "$Q_H11_FLAG"
+Q_H13C1_ERR="$ERR_OUT"
+
+assert "H13c: flock -n refusal WITH the flag → exit 77" test "$RC" -eq 77
+assert "H13c: ... and the $Q_H13_TOKEN token is STILL present (unconditional, not gated on the flag)" \
+    bash -c 'printf "%s\n" "$2" | grep -q "$1"' _ "$Q_H13_TOKEN" "$Q_H13C1_ERR"
+_q_h13_release_lock
+
+_q_h13_hold_lock c2
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_LANE_LOCK_WAIT=1 \
+    run_helper_real "$Q_BASE" "$Q_H13_LANE" --fresh-checkout --lane-lock "$Q_H11_FLAG"
+Q_H13C2_ERR="$ERR_OUT"
+
+assert "H13c: queue-timeout refusal WITH the flag → exit 77" test "$RC" -eq 77
+assert "H13c: ... and the $Q_H13_TOKEN token is STILL present on the queue arm too" \
+    bash -c 'printf "%s\n" "$2" | grep -q "$1"' _ "$Q_H13_TOKEN" "$Q_H13C2_ERR"
+_q_h13_release_lock
+
+# H13d: the MARKER LINE itself says nothing about disk — pinning the exact
+# disambiguation esc-5556-1 lacked. Scoped to the marker line (grep for the
+# token, then check that line) rather than to all of stderr, so an unrelated
+# future diagnostic mentioning a disk cannot make this assertion fail.
+assert "H13d: the $Q_H13_TOKEN marker line contains no 'disk' (flock -n arm) — the mislabel esc-5556-1 turned on" \
+    bash -c '! printf "%s\n" "$2" | grep "$1" | grep -qi "disk"' _ "$Q_H13_TOKEN" "$Q_H13A_ERR"
+assert "H13d: the $Q_H13_TOKEN marker line contains no 'disk' (queue-timeout arm)" \
+    bash -c '! printf "%s\n" "$2" | grep "$1" | grep -qi "disk"' _ "$Q_H13_TOKEN" "$Q_H13B_ERR"
+
+# H13e: NON-VACUITY — the SUCCESS path must not emit the token. Without this,
+# every assertion above would still pass if the token were printed
+# unconditionally at startup, which would make `grep LANE_LOCK_CONTENDED` a
+# constant rather than a detector.
+Q_LANE21="$(make_isolated_lane Q-lane21)"
+mkdir -p "$Q_LANE21/target"
+echo "sentinel content" > "$Q_LANE21/target/SENTINEL.txt"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE21" --fresh-checkout --lane-lock "$Q_H11_FLAG"
+
+assert "H13e: lock FREE → exit 0 (control)" test "$RC" -eq 0
+assert "H13e: NON-VACUITY — the $Q_H13_TOKEN token is ABSENT on the success path (a detector, not a constant)" \
+    bash -c '! printf "%s\n" "$2" | grep -q "$1"' _ "$Q_H13_TOKEN" "$ERR_OUT"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block S — relocation sweep must not advance build-script freshness references
