@@ -375,6 +375,20 @@ run_helper_real() {
     cat > "$real_stub_dir/cp" << 'REAL_STUB_EOF'
 #!/usr/bin/env bash
 echo "cp $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
+# REIFY_TEST_FD9_SQUATTER=1 (task #5705, H4c): fork a long-lived child that
+# DELIBERATELY inherits every descriptor open in this stub -- including seed's
+# lane-lock FD 9 -- and never closes any of them. That is the one thing seed's
+# own `{ rm -rf ...; } 9<&- &` jobs only do TRANSIENTLY (their 9<&- runs in the
+# child, microseconds after the fork), so it turns the fork-window race into a
+# GUARANTEED live dup-holder at probe time: hermetic, no scheduling, no load.
+# The squatter's PID goes to REIFY_TEST_FD9_SQUATTER_PIDFILE so the caller can
+# prove it is alive and really holds the lock FD (readlink /proc/<pid>/fd/9),
+# then reap it. Forked BEFORE the copy so it exists on the cp-failure path too.
+# Callers that do not set this var are byte-for-byte unaffected.
+if [ "${REIFY_TEST_FD9_SQUATTER:-}" = "1" ]; then
+    sleep "${REIFY_TEST_FD9_SQUATTER_SECS:-30}" &
+    echo "$!" > "${REIFY_TEST_FD9_SQUATTER_PIDFILE:-/dev/null}"
+fi
 if [ "${REIFY_TEST_REFLINK_OK:-}" = "1" ]; then
     # Physically copy src→dest using plain cp -a (test environment is non-XFS)
     # Parse out: cp -a --reflink=always <src> <dest>
@@ -2418,6 +2432,68 @@ assert "H4: lane lock is re-acquirable immediately after seed exits (no FD-9 lea
 # Reuses the $ERR_OUT captured by the H4 run above — no second seed invocation.
 assert "H4b: seed emits the explicit lane-lock release marker on stderr (the LOCK_UN path actually ran)" \
     bash -c 'printf "%s\n" "$1" | grep -q "explicit flock -u before exit"' _ "$ERR_OUT"
+
+# ── H4c (task #5705 code review): the BEHAVIOURAL guard. H4/H4b/H4e between
+# them prove the release path RAN; none of them proves it had the intended
+# EFFECT. ─────────────────────────────────────────────────────────────────────
+#
+# THE COVERAGE HOLE THIS CLOSES, established by mutation: delete
+# `trap _release_lane_lock EXIT` from scripts/seed-warm-lane.sh and exactly two
+# asserts go red — H4b's marker grep and H4e's marker grep. BOTH of the
+# "lock is re-acquirable immediately after seed exits" asserts still PASS,
+# because the defect they target is a scheduling race that seed's own detached
+# child almost always loses. So the only permanent guards were structural
+# greps: they would still pass for a release that ran but did nothing — a
+# typo'd `flock -u 8`, or a `flock -u` reordered after a close of FD 9 (which
+# leaves the OFD locked while the marker still prints). The one behavioural
+# check of the real semantics lived in test_seed_lane_lock_release_soak.sh,
+# which is default-SKIPPING and therefore never runs in the gate.
+#
+# WHY H4's EXISTING KNOB CANNOT FILL IT: REIFY_TEST_SLEEP_RESEED_TRASH_RM=1
+# keeps a background rm alive past the probe, but that child is spawned as
+# `{ ...; } 9<&- &` — the redirection is applied by the child BEFORE it execs
+# the sleeping rm stub, so the sleeper holds NO FD 9 and squats on nothing.
+#
+# THE FIXTURE: REIFY_TEST_FD9_SQUATTER=1 makes run_helper_real's cp stub fork a
+# plain `sleep` that inherits FD 9 and never closes it. It outlives seed by
+# construction, so at probe time a live process provably holds a dup of the OFD
+# carrying seed's exclusive flock. The lock can then only read back FREE if
+# seed's LOCK_UN really dropped it for the WHOLE open file description rather
+# than merely for seed's own descriptor — which is the central claim of #5705,
+# and is exactly what closing a descriptor cannot do.
+#
+# NON-VACUITY is structural, not a second timing observation: the three
+# H4c-fixture asserts pin that the squatter exists, is still alive at probe
+# time, and that /proc/<pid>/fd/9 really resolves to THIS lane's lock file. If
+# the fixture ever stops reproducing that shape it fails loudly instead of
+# quietly degrading into "the lock was free because nothing held it".
+Q_LANE4C="$(make_isolated_lane Q-lane4c)"
+mkdir -p "$Q_LANE4C/target"
+echo "stale artifact" > "$Q_LANE4C/target/stale.a"
+Q_LOCK4C="${Q_LANE4C}.lock"
+_TMPDIRS+=("$Q_LOCK4C")
+Q_SQPID_FILE4C="$(mktemp /tmp/test-seed-warm-lane-fd9squatter-XXXXXX)"
+_TMPDIRS+=("$Q_SQPID_FILE4C")
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    REIFY_TEST_FD9_SQUATTER=1 REIFY_TEST_FD9_SQUATTER_PIDFILE="$Q_SQPID_FILE4C" \
+    run_helper_real "$Q_BASE" "$Q_LANE4C" --fresh-checkout --lane-lock
+
+Q_SQPID4C="$(cat "$Q_SQPID_FILE4C" 2>/dev/null || true)"
+
+assert "H4c: seed exits 0 (the squatter fixture does not disturb the reseed itself)" \
+    test "$RC" -eq 0
+assert "H4c-fixture: the cp stub recorded a squatter PID (the FD-9 dup-holder was really forked)" \
+    bash -c '[ -n "$1" ]' _ "$Q_SQPID4C"
+assert "H4c-fixture: that squatter is STILL ALIVE now that seed has exited (it outlives seed by construction)" \
+    kill -0 "$Q_SQPID4C"
+assert "H4c-fixture: ... and it really holds a dup of seed's lane-lock FD 9 (/proc/<pid>/fd/9 resolves to THIS lane's lock)" \
+    bash -c '[ "$(readlink "/proc/$1/fd/9" 2>/dev/null)" = "$(realpath "$2")" ]' _ "$Q_SQPID4C" "$Q_LOCK4C"
+assert "H4c: the lane lock is FREE anyway — LOCK_UN dropped it for the whole OFD, not just for seed's own descriptor" \
+    bash -c 'exec 8>"$1"; flock -n 8' _ "$Q_LOCK4C"
+
+kill "$Q_SQPID4C" 2>/dev/null || true
 
 # ── H4e (task #5705): the release must cover seed's FAILURE paths, not just its
 # success tail. A release written as a trailing statement is UNREACHABLE the
