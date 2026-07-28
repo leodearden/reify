@@ -153,29 +153,22 @@ Seed mode: CoW-clone a warm base target/ into a pool lane.
                       error, exit 2). Seed never unlocks an FD 9 it did not open, so
                       the caller's own lock is untouched (#5705).
   --distinct-lock-refusal-rc
-                      Exit 77 instead of 75 on a lane-lock refusal (either arm: the
-                      flock -n immediate refusal and the flock -w N queue timeout
-                      share ONE code -- same cause, same remediation). Task #5568.
-                      WHY: 75 is EX_TEMPFAIL, which dark-factory's
-                      _seed_rc_to_unavailable reads as DISK PRESSURE. That reading is
-                      wrong for every 75 this script emits -- seed has no
-                      disk-pressure path; 75 comes from warm-lane-disk-guard.sh, a
-                      different script on a different call path. 77 is EX_NOPERM:
-                      "another consumer owns this lane", whose remediation is the
-                      OPPOSITE (try a different FREE lane, never reclaim space).
-                      OPT-IN, so that reify and dark-factory may land in EITHER
-                      order: the dark-factory arm that gives 77 a meaning ships on
-                      its own commit in its own repo (esc-5568-1), and until it does
-                      an unconditional 77 would fall through DF's `else` to FAULT.
-                      Omit the flag and the exit code is unchanged at 75.
+                      Exit 77 (EX_NOPERM — "another consumer owns this lane")
+                      instead of 75 (EX_TEMPFAIL) on a lane-lock refusal — either
+                      arm: the flock -n immediate refusal and the flock -w N queue
+                      timeout share ONE code (same cause, same remediation).
+                      OPT-IN: omit the flag and the exit code is unchanged at 75.
+                      Task #5568; the rationale (why 75 is the wrong code, why the
+                      flag is opt-in rather than an unconditional flip, the
+                      dark-factory arm) lives in ONE place — see
+                      docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.11.
                       ACCEPTED-BUT-INERT wherever no refusal is reachable
                       (--assume-lane-lock-held, --record-base, WAIT=unlimited) --
                       never a usage error, so a caller may pass it unconditionally
                       without replicating this script's internal mode logic.
                       The flag string above is what dark-factory's capability probe
-                      text-greps the lane's own copy of this script for (the proven
-                      _seed_script_supports_assume_lane_lock_held mechanism), so it
-                      must stay a literal in the arg parser.
+                      text-greps the lane's own copy of this script for, so it must
+                      stay a literal in the arg parser.
                       INDEPENDENT of this flag, both refusal arms ALWAYS prefix
                       `LANE_LOCK_CONTENDED:` onto the first stderr line, so
                       `grep LANE_LOCK_CONTENDED` separates lock contention from disk
@@ -687,49 +680,28 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     # bad knob can never touch the target.
     # ══ LANE-LOCK REFUSAL EXIT CODE (task #5568) ═════════════════════════════
     #
-    # Defined ONCE, here, and used by BOTH refusal arms below (the flock -n
-    # immediate refusal and the flock -w queue timeout).
+    # WHY (75-as-disk-pressure conflation, esc-5556-1, why the flag is opt-in,
+    # the reserved-code survey, the dark-factory arm): docs/prds/
+    # warm-lane-pool-cow-seeding.md §9.5 inv.11 is the SINGLE normative home.
+    # Deliberately not restated here (G7 no-lockstep-duplication) -- the same
+    # pointer-not-copy discipline inv.12 already uses for this script.
     #
-    #   75 (EX_TEMPFAIL, the default): what this script has always emitted.
-    #     In dark-factory's `_seed_rc_to_unavailable` it means DISK PRESSURE.
-    #     That reading is WRONG for every 75 this script emits -- seed has no
-    #     disk-pressure path at all; 75 comes from warm-lane-disk-guard.sh, a
-    #     different script on a different call path.
-    #   77 (EX_NOPERM, under --distinct-lock-refusal-rc): "another consumer
-    #     owns this lane". The remediation is the OPPOSITE of the disk-pressure
-    #     one -- try a different FREE lane (or fix the caller/protocol bug),
-    #     never reclaim space.
-    #
-    # OPT-IN, not an unconditional flip: the dark-factory arm that gives 77 a
-    # meaning lives in a separate repo and lands on its own commit
-    # (esc-5568-1). Until it does, an unconditional 77 would fall through DF's
-    # `else` to FAULT -- blocked + L1 per task, strictly worse than today's
-    # mislabelled-but-recoverable requeue. Defaulting to 75 lets either repo
-    # land first. (Tests: Block Q H11a/H11b, H12a/H12b.)
-    #
-    # The rc is only HALF the discriminant, and it is the half only a MACHINE
-    # reads. The other half is the `LANE_LOCK_CONTENDED:` token both refusal
-    # arms below prefix onto their first `err` line, for the HUMAN reading
-    # logs. That token is emitted UNCONDITIONALLY -- deliberately NOT gated on
-    # --distinct-lock-refusal-rc -- because a token that appeared only once the
-    # dark-factory arm had landed would stay dark for exactly the window most
-    # likely to need triage. Ungated, `grep LANE_LOCK_CONTENDED` separates lock
-    # contention from disk pressure on an unpatched fleet TODAY: during the
-    # 2026-07-24..26 livelock (esc-5556-1) every operator-facing signal said
-    # "disk pressure" while the mount sat at 25% used / 1% inodes, and
-    # preventing exactly that is what the token is for. (Tests: Block Q H13.)
+    # MECHANICS (defined ONCE here, used by BOTH refusal arms below -- the
+    # flock -n immediate refusal and the flock -w queue timeout share ONE code):
+    #   75 (EX_TEMPFAIL) by DEFAULT -- unchanged from before #5568.
+    #   77 (EX_NOPERM)   under --distinct-lock-refusal-rc.
+    # (Tests: Block Q H11a/H11b, H12a/H12b.)
     LANE_LOCK_REFUSAL_RC=75
     if [ -n "$DISTINCT_LOCK_REFUSAL_RC" ]; then
         LANE_LOCK_REFUSAL_RC=77
     fi
-    # Deliberately NOT a usage error anywhere: the flag is accepted and simply
-    # inert wherever no refusal is reachable (--assume-lane-lock-held,
-    # --record-base, WAIT=unlimited). If it errored on those combinations, a
-    # caller would have to replicate this script's internal mode logic to know
-    # when passing it is safe, and getting that wrong turns a working seed into
-    # a hard fault -- the exact failure shape the capability probe avoids.
-    # (H11d pins the inert case; contrast --assume-lane-lock-held + --lane-lock,
-    # which IS a usage error because those two contradict each other.)
+    # The flag is ACCEPTED-BUT-INERT, never a usage error, wherever no refusal
+    # is reachable (--assume-lane-lock-held, --record-base, WAIT=unlimited), so
+    # a caller may pass it unconditionally. (H11d/H11e/H11f pin the inert
+    # paths; contrast --assume-lane-lock-held + --lane-lock, which IS a usage
+    # error because those two contradict each other.) The `LANE_LOCK_CONTENDED:`
+    # stderr prefix both arms emit is INDEPENDENT of this flag -- always on.
+    # (Tests: Block Q H13.)
     # ═════════════════════════════════════════════════════════════════════════
 
     LANE_LOCK_WAIT="${REIFY_WARM_LANE_LANE_LOCK_WAIT:-0}"
