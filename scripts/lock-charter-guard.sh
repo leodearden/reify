@@ -41,7 +41,11 @@
 #   vector and are NOT yet updated — dark-factory shared/src/shared/locking.py
 #   ::CODE_EXTENSIONS, fused-memory/src/fused_memory/middleware/lock_charter_guard.py
 #   ::CODE_EXTENSIONS, and fused-memory/tests/test_lock_charter_guard.py
-#   ::_CANONICAL_EXTENSIONS.  Tracked by #5737 (ticket tkt_0RRT3KW6B9KF72BHDY5Q038R7Y).
+#   ::_CANONICAL_EXTENSIONS.  Durable anchor: ticket tkt_0RRT3KW6B9KF72BHDY5Q038R7Y.
+#   No live task tracks this in either tracker (verified 2026-07-28): the ticket
+#   resolved to reify #5737, which was cancelled as a cross-repo misfile and
+#   refiled as "dark_factory:3117" — an id absent from dark-factory's tracker
+#   (ids 11-1152).  Cite the ticket, not #5737 or 3117; both are dead ends.
 #   Until that lands: (i) fused-memory's Tier-2 drift test
 #   test_extension_drift_guard_vs_reify_script compares this script's output
 #   against 36 entries and FAILS in the dark-factory .worktrees/<n>/ layout
