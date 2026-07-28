@@ -1710,10 +1710,19 @@ fn heads_unifiable(param: &Type, arg: &Type) -> bool {
 /// resolves exactly as it did before tier 3 gained a predecessor.
 ///
 /// A useful corollary: for a NON-generic candidate the tier-2 predicate is a
-/// superset of the tier-3 one, so `wildcard AND head == wildcard` and tier 2 is
-/// a provable no-op. Non-generic overload sets — `solve_elastic_static`,
-/// `solve_load_cases`, `displacement_at`, and the esc-4093-152 trait-object
-/// path — are bit-for-bit unaffected by it (INV-6).
+/// superset of the tier-3 one, so `wildcard AND head == wildcard` — tier 2 can
+/// never DROP a non-generic candidate. An overload set whose candidates are ALL
+/// non-generic therefore resolves bit-for-bit as it did before tier 2 existed
+/// (INV-6); `solve_elastic_static`, `solve_load_cases`, `displacement_at` and
+/// the esc-4093-152 trait-object path are all such sets.
+///
+/// That corollary is per-CANDIDATE, not per-set, and the distinction matters in
+/// a MIXED set: tier 2 may drop a head-mismatched GENERIC candidate and thereby
+/// promote a non-generic one that table order had kept behind it. That is the
+/// intended answer, not a side effect — it is what compile-side
+/// `resolve_function_overload` resolves to, its own `head_matches` tier
+/// narrowing the same set the same way. Pinned by
+/// `mixed_set_head_mismatched_generic_yields_to_non_generic_trait_object`.
 ///
 /// If the resolution rule ever grows (e.g. subtyping, coercion ranking,
 /// operator-overloading nuance), update only this function; both call sites
@@ -1784,20 +1793,33 @@ pub fn find_matching_compiled_function<'a>(
         })
     };
 
-    // `.filter(wildcard).find(head)` is LOAD-BEARING and must not be collapsed
-    // to a bare `.find(head)`. `heads_unifiable` is NOT a subset of `wildcard`
-    // (e.g. param `Applied{"Result",[Int,String]}` vs arg `Enum("Result")`
-    // head-matches but carries no type param and is not equal), so a standalone
-    // head pass could SELECT candidates the wildcard pass rejects — widening
-    // resolution rather than narrowing it. Composing it as a filter over the
-    // wildcard set makes this tier a pure narrowing, and is what makes it a
-    // provable no-op for non-generic candidates (INV-6). The `.or_else` is the
-    // fall-through: an empty head-match set resolves exactly as before.
-    fns.iter()
-        .filter(arity_match)
-        .filter(wildcard)
-        .find(head)
-        .or_else(|| fns.iter().filter(arity_match).find(wildcard))
+    // Screening `head` through `wildcard` is LOAD-BEARING: `head` must only ever
+    // be asked about candidates that ALREADY passed `wildcard`, never run
+    // standalone. `heads_unifiable` is NOT a subset of `wildcard` (e.g. param
+    // `Applied{"Result",[Int,String]}` vs arg `Enum("Result")` head-matches but
+    // carries no type param and is not equal), so a standalone head pass could
+    // SELECT candidates the wildcard pass rejects — widening resolution rather
+    // than narrowing it. Filtering through `wildcard` first is what makes this
+    // tier a pure narrowing, and what makes it a provable no-op for non-generic
+    // candidates (INV-6).
+    //
+    // ONE pass, not two chained ones: `first_wildcard` remembers tier 3's answer
+    // (the first wildcard-eligible candidate in table order) as the scan goes, so
+    // the fall-through is free. A `.find(head).or_else(|| ..find(wildcard))` pair
+    // re-walks the whole table and re-runs both predicates on the *common* case —
+    // any subject whose head matches nothing, which is exactly what the
+    // fall-through pin covers — and `fns` on the eval hot path is the merged
+    // prelude table (hundreds of entries).
+    let mut first_wildcard = None;
+    for f in fns.iter().filter(arity_match).filter(wildcard) {
+        if head(&f) {
+            return Some(f);
+        }
+        if first_wildcard.is_none() {
+            first_wildcard = Some(f);
+        }
+    }
+    first_wildcard
 }
 
 /// Evaluate a compiled function's body with pre-evaluated `Value` arguments.
