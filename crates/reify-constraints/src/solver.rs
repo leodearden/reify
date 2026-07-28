@@ -5253,4 +5253,392 @@ mod tests {
             "best_found_reason(false) must be BestFoundReason::ConvergedWithinBudget"
         );
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Constraint-derived bounds (task #5618) — `derive_param_intervals` /
+    // `resolve_bounds` unit tests.
+    //
+    // `AutoParam.bounds` is always `None` in production (all three construction
+    // sites in reify-eval hardcode it), so `effective_bounds` always degrades to
+    // `default_bounds_for` — `(-1e6, 1e6)` for a dimensionless Real. These two
+    // helpers recover a usable box from the inequality constraints instead.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Dimensionless (`Real`) auto param with `bounds: None` — the production
+    /// shape, where `effective_bounds` degrades to `(-1e6, 1e6)`.
+    fn real_auto_param(id: reify_core::ValueCellId) -> reify_ir::AutoParam {
+        use reify_core::Type;
+        reify_ir::AutoParam {
+            id,
+            param_type: Type::dimensionless_scalar(),
+            bounds: None,
+            free: true,
+        }
+    }
+
+    /// Dimensionless literal expression.
+    fn real_lit(v: f64) -> reify_ir::CompiledExpr {
+        use reify_core::{DimensionVector, Type};
+        reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Scalar {
+                si_value: v,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+            Type::dimensionless_scalar(),
+        )
+    }
+
+    /// Dimensionless `ValueRef` expression.
+    fn real_ref(id: &reify_core::ValueCellId) -> reify_ir::CompiledExpr {
+        use reify_core::Type;
+        reify_ir::CompiledExpr::value_ref(id.clone(), Type::dimensionless_scalar())
+    }
+
+    /// `<id> OP <v>` as a dimensionless comparison.
+    fn cmp_ref_lit(
+        op: reify_ir::BinOp,
+        id: &reify_core::ValueCellId,
+        v: f64,
+    ) -> reify_ir::CompiledExpr {
+        use reify_core::Type;
+        reify_ir::CompiledExpr::binop(op, real_ref(id), real_lit(v), Type::Bool)
+    }
+
+    /// `<a> - <b> OP <v>` — the slack shape emitted by `synthesise_floor_constraints`.
+    fn cmp_sub_lit(
+        op: reify_ir::BinOp,
+        a: reify_ir::CompiledExpr,
+        b: reify_ir::CompiledExpr,
+        v: f64,
+    ) -> reify_ir::CompiledExpr {
+        use reify_core::Type;
+        let slack = reify_ir::CompiledExpr::binop(
+            reify_ir::BinOp::Sub,
+            a,
+            b,
+            Type::dimensionless_scalar(),
+        );
+        reify_ir::CompiledExpr::binop(op, slack, real_lit(v), Type::Bool)
+    }
+
+    /// Wraps expressions into the `(ConstraintNodeId, CompiledExpr)` shape.
+    fn as_constraints(
+        exprs: Vec<reify_ir::CompiledExpr>,
+    ) -> Vec<(reify_core::ConstraintNodeId, reify_ir::CompiledExpr)> {
+        exprs
+            .into_iter()
+            .enumerate()
+            .map(|(i, e)| (reify_core::ConstraintNodeId::new("Derive", i as u32), e))
+            .collect()
+    }
+
+    /// Convenience: derive intervals for a single dimensionless auto param with
+    /// an empty `current_values` map and no user functions.
+    fn derive_one(
+        id: &reify_core::ValueCellId,
+        exprs: Vec<reify_ir::CompiledExpr>,
+    ) -> super::DerivedInterval {
+        let params = vec![real_auto_param(id.clone())];
+        let constraints = as_constraints(exprs);
+        let values = ValueMap::new();
+        super::derive_param_intervals(&params, &constraints, &values, &[])
+            .into_iter()
+            .next()
+            .expect("one interval per auto param")
+    }
+
+    /// (a) A plain `q >= 1.0` / `q <= 100.0` pair derives the raw constraint box,
+    /// both sides non-strict.
+    #[test]
+    fn derive_intervals_two_sided_non_strict() {
+        use reify_ir::BinOp;
+        let q = reify_core::ValueCellId::new("Derive", "q");
+        let iv = derive_one(
+            &q,
+            vec![
+                cmp_ref_lit(BinOp::Ge, &q, 1.0),
+                cmp_ref_lit(BinOp::Le, &q, 100.0),
+            ],
+        );
+        assert_eq!(
+            iv.lo,
+            Some((1.0, false)),
+            "`q >= 1.0` must derive a non-strict lower bound of 1.0"
+        );
+        assert_eq!(
+            iv.hi,
+            Some((100.0, false)),
+            "`q <= 100.0` must derive a non-strict upper bound of 100.0"
+        );
+    }
+
+    /// (a′) The reversed operand order (`1.0 <= q`, `100.0 >= q`) must derive the
+    /// same box — the near operand can be on either side.
+    #[test]
+    fn derive_intervals_reversed_operand_order() {
+        use reify_core::Type;
+        use reify_ir::{BinOp, CompiledExpr};
+        let q = reify_core::ValueCellId::new("Derive", "q");
+        let le = CompiledExpr::binop(BinOp::Le, real_lit(1.0), real_ref(&q), Type::Bool);
+        let ge = CompiledExpr::binop(BinOp::Ge, real_lit(100.0), real_ref(&q), Type::Bool);
+        let iv = derive_one(&q, vec![le, ge]);
+        assert_eq!(
+            iv.lo,
+            Some((1.0, false)),
+            "`1.0 <= q` must derive a non-strict lower bound of 1.0"
+        );
+        assert_eq!(
+            iv.hi,
+            Some((100.0, false)),
+            "`100.0 >= q` must derive a non-strict upper bound of 100.0"
+        );
+    }
+
+    /// (b) The `Sub` slack shapes emitted by `synthesise_floor_constraints`:
+    /// `q - 1.0 >= 0.02` → lo = 1.02;  `100.0 - q >= 2.0` → hi = 98.0.
+    /// Deriving these is what recovers the FLOORED box (the clamp target).
+    #[test]
+    fn derive_intervals_floor_slack_shapes() {
+        use reify_ir::BinOp;
+        let q = reify_core::ValueCellId::new("Derive", "q");
+
+        let lower = derive_one(
+            &q,
+            vec![cmp_sub_lit(BinOp::Ge, real_ref(&q), real_lit(1.0), 0.02)],
+        );
+        let lo = lower.lo.expect("`q - 1.0 >= 0.02` must derive a lower bound");
+        assert!(
+            (lo.0 - 1.02).abs() < 1e-12,
+            "`q - 1.0 >= 0.02` must derive lo = 1.02, got {}",
+            lo.0
+        );
+        assert!(!lo.1, "a `Ge`-sourced bound must be non-strict");
+        assert_eq!(lower.hi, None, "no upper bound in this constraint set");
+
+        let upper = derive_one(
+            &q,
+            vec![cmp_sub_lit(BinOp::Ge, real_lit(100.0), real_ref(&q), 2.0)],
+        );
+        let hi = upper
+            .hi
+            .expect("`100.0 - q >= 2.0` must derive an upper bound");
+        assert!(
+            (hi.0 - 98.0).abs() < 1e-12,
+            "`100.0 - q >= 2.0` must derive hi = 98.0, got {}",
+            hi.0
+        );
+        assert!(!hi.1, "a `Ge`-sourced bound must be non-strict");
+        assert_eq!(upper.lo, None, "no lower bound in this constraint set");
+    }
+
+    /// (c) A strict `q > 1.0` derives lo = 1.0 flagged strict; `resolve_bounds`
+    /// DROPS it under `include_strict = false` (a clamp target must never be a
+    /// value at which the strict comparison is violated) and KEEPS it under
+    /// `include_strict = true` (a seed has no such obligation).
+    #[test]
+    fn resolve_bounds_strict_excluded_from_clamp_kept_for_seed() {
+        use reify_ir::BinOp;
+        let q = reify_core::ValueCellId::new("Derive", "q");
+        let params = vec![real_auto_param(q.clone())];
+        let constraints = as_constraints(vec![cmp_ref_lit(BinOp::Gt, &q, 1.0)]);
+        let values = ValueMap::new();
+        let intervals = super::derive_param_intervals(&params, &constraints, &values, &[]);
+        assert_eq!(
+            intervals[0].lo,
+            Some((1.0, true)),
+            "`q > 1.0` must derive lo = 1.0 flagged STRICT"
+        );
+
+        let (default_lo, default_hi) = super::default_bounds_for(&params[0].param_type);
+
+        let clamp = super::resolve_bounds(&params, &intervals, false);
+        assert_eq!(
+            clamp[0],
+            (default_lo, default_hi),
+            "include_strict = false must DROP the Gt-sourced bound and keep the default low side"
+        );
+
+        let seed = super::resolve_bounds(&params, &intervals, true);
+        assert_eq!(
+            seed[0],
+            (1.0, default_hi),
+            "include_strict = true must KEEP the Gt-sourced bound as a seed bound"
+        );
+    }
+
+    /// (d) Tightest wins when two constraints bound the same side.
+    #[test]
+    fn derive_intervals_tightest_bound_wins() {
+        use reify_ir::BinOp;
+        let q = reify_core::ValueCellId::new("Derive", "q");
+        let iv = derive_one(
+            &q,
+            vec![
+                cmp_ref_lit(BinOp::Ge, &q, 1.0),
+                cmp_ref_lit(BinOp::Ge, &q, 7.5), // tighter low
+                cmp_ref_lit(BinOp::Le, &q, 100.0),
+                cmp_ref_lit(BinOp::Le, &q, 42.0), // tighter high
+            ],
+        );
+        assert_eq!(
+            iv.lo,
+            Some((7.5, false)),
+            "the tightest (largest) lower bound must win"
+        );
+        assert_eq!(
+            iv.hi,
+            Some((42.0, false)),
+            "the tightest (smallest) upper bound must win"
+        );
+    }
+
+    /// (e) SKIP rules — a far operand that references another auto param, a
+    /// multi-auto shape, an `Eq`/`Ne` op, and a non-finite/Undef far operand all
+    /// yield no bound. A bound that cannot be evaluated must never become a clamp.
+    #[test]
+    fn derive_intervals_skips_unusable_shapes() {
+        use reify_core::Type;
+        use reify_ir::{BinOp, CompiledExpr, Value};
+
+        let q = reify_core::ValueCellId::new("Derive", "q");
+        let p = reify_core::ValueCellId::new("Derive", "p");
+        let params = vec![real_auto_param(q.clone()), real_auto_param(p.clone())];
+        let values = ValueMap::new();
+
+        // `q >= p` — far operand names another auto param.
+        let q_ge_p = CompiledExpr::binop(BinOp::Ge, real_ref(&q), real_ref(&p), Type::Bool);
+        // `q + p >= 10.0` — multi-auto near operand, not a recognised shape.
+        let sum = CompiledExpr::binop(
+            BinOp::Add,
+            real_ref(&q),
+            real_ref(&p),
+            Type::dimensionless_scalar(),
+        );
+        let sum_ge = CompiledExpr::binop(BinOp::Ge, sum, real_lit(10.0), Type::Bool);
+        // `q == 3.0` — Eq is not an inequality.
+        let q_eq = cmp_ref_lit(BinOp::Eq, &q, 3.0);
+        // `q != 4.0` — Ne is not an inequality.
+        let q_ne = cmp_ref_lit(BinOp::Ne, &q, 4.0);
+        // `q >= undef` — far operand does not evaluate to a finite f64.
+        let undef = CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar());
+        let q_ge_undef = CompiledExpr::binop(BinOp::Ge, real_ref(&q), undef, Type::Bool);
+        // `q <= inf` — far operand is non-finite.
+        let q_le_inf = cmp_ref_lit(BinOp::Le, &q, f64::INFINITY);
+
+        let constraints =
+            as_constraints(vec![q_ge_p, sum_ge, q_eq, q_ne, q_ge_undef, q_le_inf]);
+        let intervals = super::derive_param_intervals(&params, &constraints, &values, &[]);
+
+        assert_eq!(
+            intervals[0],
+            super::DerivedInterval::default(),
+            "none of the skipped shapes may contribute a bound for q"
+        );
+        assert_eq!(
+            intervals[1],
+            super::DerivedInterval::default(),
+            "none of the skipped shapes may contribute a bound for p"
+        );
+    }
+
+    /// (f) `And` recursion collects from both branches, exactly like
+    /// `collect_slack_terms` / `collect_floor_terms`.
+    #[test]
+    fn derive_intervals_recurses_into_and() {
+        use reify_core::Type;
+        use reify_ir::{BinOp, CompiledExpr};
+        let q = reify_core::ValueCellId::new("Derive", "q");
+        let conj = CompiledExpr::binop(
+            BinOp::And,
+            cmp_ref_lit(BinOp::Ge, &q, 1.0),
+            cmp_ref_lit(BinOp::Le, &q, 100.0),
+            Type::Bool,
+        );
+        let iv = derive_one(&q, vec![conj]);
+        assert_eq!(
+            iv.lo,
+            Some((1.0, false)),
+            "And recursion must collect the lower bound from the left branch"
+        );
+        assert_eq!(
+            iv.hi,
+            Some((100.0, false)),
+            "And recursion must collect the upper bound from the right branch"
+        );
+    }
+
+    /// (g) `resolve_bounds` composition: a derived side replaces the default
+    /// side, an absent side keeps the default.
+    #[test]
+    fn resolve_bounds_composes_per_side_with_defaults() {
+        use reify_ir::BinOp;
+        let q = reify_core::ValueCellId::new("Derive", "q");
+        let params = vec![real_auto_param(q.clone())];
+        let (default_lo, default_hi) = super::default_bounds_for(&params[0].param_type);
+        let values = ValueMap::new();
+
+        // Lower only.
+        let lower_only = as_constraints(vec![cmp_ref_lit(BinOp::Ge, &q, 1.0)]);
+        let iv = super::derive_param_intervals(&params, &lower_only, &values, &[]);
+        assert_eq!(
+            super::resolve_bounds(&params, &iv, false)[0],
+            (1.0, default_hi),
+            "a derived low side replaces the default low; the absent high side keeps the default"
+        );
+
+        // Upper only.
+        let upper_only = as_constraints(vec![cmp_ref_lit(BinOp::Le, &q, 100.0)]);
+        let iv = super::derive_param_intervals(&params, &upper_only, &values, &[]);
+        assert_eq!(
+            super::resolve_bounds(&params, &iv, false)[0],
+            (default_lo, 100.0),
+            "a derived high side replaces the default high; the absent low side keeps the default"
+        );
+
+        // Neither.
+        let iv = super::derive_param_intervals(&params, &[], &values, &[]);
+        assert_eq!(
+            super::resolve_bounds(&params, &iv, false)[0],
+            (default_lo, default_hi),
+            "no derived side → the default box verbatim"
+        );
+    }
+
+    /// (g′) An empty / inverted composed box falls back to the default bounds
+    /// WHOLESALE. This is the guard that keeps a genuinely floor-empty problem
+    /// (e.g. `x > 10mm ∧ x < 10.3mm`, whose floored pair inverts to
+    /// lo 0.0102 > hi 0.0101) reporting `Infeasible` exactly as it does today,
+    /// rather than clamping into a degenerate box.
+    #[test]
+    fn resolve_bounds_empty_box_falls_back_wholesale() {
+        use reify_ir::BinOp;
+        let q = reify_core::ValueCellId::new("Derive", "q");
+        let params = vec![real_auto_param(q.clone())];
+        let (default_lo, default_hi) = super::default_bounds_for(&params[0].param_type);
+        let values = ValueMap::new();
+
+        // Inverted: q >= 50.0 AND q <= 10.0.
+        let inverted = as_constraints(vec![
+            cmp_ref_lit(BinOp::Ge, &q, 50.0),
+            cmp_ref_lit(BinOp::Le, &q, 10.0),
+        ]);
+        let iv = super::derive_param_intervals(&params, &inverted, &values, &[]);
+        assert_eq!(
+            super::resolve_bounds(&params, &iv, false)[0],
+            (default_lo, default_hi),
+            "an inverted composed box must fall back to the default bounds WHOLESALE"
+        );
+
+        // Degenerate (lo == hi): q >= 5.0 AND q <= 5.0.
+        let degenerate = as_constraints(vec![
+            cmp_ref_lit(BinOp::Ge, &q, 5.0),
+            cmp_ref_lit(BinOp::Le, &q, 5.0),
+        ]);
+        let iv = super::derive_param_intervals(&params, &degenerate, &values, &[]);
+        assert_eq!(
+            super::resolve_bounds(&params, &iv, false)[0],
+            (default_lo, default_hi),
+            "a zero-width composed box (!(lo < hi)) must fall back to the default bounds"
+        );
+    }
 }
