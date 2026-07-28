@@ -1557,32 +1557,25 @@ fn unmirrored_documented_forms_reports_a_name_with_no_fixture_call_at_all() {
     );
 }
 
-/// Every documented FORM in the real chunk must be exercised by the real
-/// fixture at that exact arity — the doc → fixture direction at FORM
-/// granularity (task 5583), closing the gap
-/// `every_documented_geometry_op_name_is_exercised_by_the_fixture` leaves
-/// open (see the module doc).
+/// Anti-vacuity guard every [`documented_geometry_op_forms`] caller owes its
+/// assertions — the overload-aware sibling of [`assert_scan_not_vacuous`].
 ///
-/// This is GREEN on arrival: all 33 documented forms already have a
-/// compiling fixture instance at their documented arity. Its discriminating
-/// power is pinned by the inline printer_v01-replay controls above
-/// (`unmirrored_documented_forms_replays_the_printer_v01_regression` and its
-/// control's control), not by an artificial gap planted here.
-#[test]
-fn every_documented_geometry_op_form_is_exercised_by_the_fixture() {
-    let markdown = std::fs::read_to_string(CHUNK_PATH).unwrap_or_else(|e| {
-        panic!("{CHUNK_PATH} must be readable ({e}) — update CHUNK_PATH if the chunk moved")
-    });
-    let documented = documented_geometry_op_forms(&markdown);
-
-    // Anti-vacuity, overload-aware: a heading rename or reformatted table
-    // would empty the scan and make the assertion below pass trivially. The
-    // multi-overload sentinels additionally prove the scan SPLITS overloads
-    // rather than collapsing them back to one entry per name — the exact way
-    // this gate could silently degrade into the name-only gate it
-    // complements.
+/// Two failure modes, not one. The COUNT floor catches the same vacuity that
+/// helper does (a heading rename, or rows that stop using `**`/backticks would
+/// empty the scan). The SENTINELS additionally catch a mode the name-level
+/// helper cannot have: a scan that still finds every name but silently
+/// collapses each name's overloads back to one entry, degrading this gate into
+/// the name-only gate it is supposed to complement. Both members of each
+/// multi-overload pair are therefore required.
+///
+/// The floor is deliberately well under the live count so ordinary chunk
+/// editing does not trip it, but well over half of it so a genuinely gutted
+/// scan cannot slip through: the section carries 50 forms across ~43 distinct
+/// names today (measured, task 5583 — it was 33 before task 5675 documented 15
+/// further ops).
+fn assert_form_scan_not_vacuous(documented: &[DocForm]) {
     assert!(
-        documented.len() >= 25,
+        documented.len() >= 40,
         "the '{CHUNK_SECTION}' form scan found only {} form(s) in {CHUNK_PATH} — the scan is \
          vacuous (heading renamed, or the signature rows no longer start with `**` and use \
          backticks) and gives NO protection",
@@ -1626,6 +1619,30 @@ fn every_documented_geometry_op_form_is_exercised_by_the_fixture() {
              instead of collapsing them back to the name-only scan this gate complements"
         );
     }
+}
+
+/// Every documented FORM in the real chunk must be exercised by the real
+/// fixture at that exact arity — the doc → fixture direction at FORM
+/// granularity (task 5583), closing the gap
+/// `every_documented_geometry_op_name_is_exercised_by_the_fixture` leaves
+/// open (see the module doc).
+///
+/// This is GREEN on arrival: all 50 documented forms already have a compiling
+/// fixture instance at their documented arity (measured — task 5675's
+/// name-level guard had already forced each of the 15 ops it documented into
+/// the fixture, and wrote each at the documented arity). Its discriminating
+/// power is therefore pinned by the inline printer_v01-replay controls above
+/// (`unmirrored_documented_forms_replays_the_printer_v01_regression` and its
+/// control's control), not by an artificial gap planted here. What it buys is
+/// forward protection: the NEXT op documented with an overload nobody mirrors
+/// goes RED at its source.
+#[test]
+fn every_documented_geometry_op_form_is_exercised_by_the_fixture() {
+    let markdown = std::fs::read_to_string(CHUNK_PATH).unwrap_or_else(|e| {
+        panic!("{CHUNK_PATH} must be readable ({e}) — update CHUNK_PATH if the chunk moved")
+    });
+    let documented = documented_geometry_op_forms(&markdown);
+    assert_form_scan_not_vacuous(&documented);
 
     let unmirrored = unmirrored_documented_forms(&markdown, &read_fixture(), "fixture");
     assert!(
