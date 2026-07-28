@@ -549,4 +549,90 @@ fi
 assert "D5: no fail-open path emitted the BUSY sentinel" \
     bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_WARM_LANE_LOCK_BUSY@@"' _ "$D_ALL_OUT"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block E — lock-path resolution (the silent-no-op guard)
+#
+# A guard that resolves the lock to the WRONG path reports IDLE forever. That is
+# the worst possible failure for a gate: it never errors, never warns, and
+# quietly answers "go ahead" to every question — indistinguishable from a
+# healthy pool. Fail-open (Block D) makes this failure mode cheap to reach, so
+# the derivation is pinned by string equality (E1) and by a decoy that would
+# catch the plausible misinterpretation (E2), not merely by a substring match.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block E: lock-path resolution contract ---"
+
+E_MOUNT="$(mktemp -d /tmp/test-warm-lane-lock-guard-e-XXXXXX)"
+_TMPDIRS+=("$E_MOUNT")
+mkdir -p "$E_MOUNT/_merge-verify"
+E_SIBLING_LOCK="$E_MOUNT/_merge-verify.lock"
+
+# _sentinel_lock_field <stdout> — the sentinel's lock= value, or empty.
+_sentinel_lock_field() {
+    printf '%s\n' "$1" \
+        | sed -n 's/^@@REIFY_WARM_LANE_LOCK_BUSY@@ lane=[^ ]* lock=\(.*\)$/\1/p'
+}
+
+# E1: the lock is a SIBLING of the lane dir — `<mount>/<lane>.lock`, matching
+# dark-factory's lane_lock_path() (lane_dir.with_name(name + '.lock')).
+# Asserted by EXACT string equality: a substring match would also pass for a
+# guard that had appended or nested something extra.
+_hold_lane_lock_at "$E_SIBLING_LOCK"
+run_guard check --mount "$E_MOUNT"
+assert "E1: a holder on <mount>/<lane>.lock is detected (exit 3)" test "$RC" -eq 3
+assert "E1: the sentinel's lock= is EXACTLY <mount>/<lane>.lock" \
+    test "$(_sentinel_lock_field "$OUT")" = "$E_SIBLING_LOCK"
+_release_lane_lock
+
+# E2: the DECOY. The plausible wrong reading of --mount is "the directory ABOVE
+# the worktrees dir", which would derive <mount>/worktrees/<lane>.lock. Hold a
+# lock exactly there, leave the real sibling lock present-but-unheld, and the
+# guard must still answer IDLE. A guard that re-derived a worktrees subdirectory
+# would answer 3.
+mkdir -p "$E_MOUNT/worktrees/_merge-verify"
+touch "$E_SIBLING_LOCK"
+_hold_lane_lock_at "$E_MOUNT/worktrees/_merge-verify.lock"
+run_guard check --mount "$E_MOUNT"
+assert "E2: a holder on the NESTED decoy path does not make the lane BUSY (exit 0)" \
+    test "$RC" -eq 0
+assert "E2: the decoy produces no sentinel" test -z "$OUT"
+_release_lane_lock
+
+# E3: --lock-path wins over the --mount/--lane derivation. Held at a path
+# outside the lane naming scheme entirely, so no derivation could reach it by
+# accident.
+E_EXPLICIT_LOCK="$E_MOUNT/an-arbitrary-name.lockfile"
+E_EXPLICIT_IDLE="$E_MOUNT/another-arbitrary-name.lockfile"
+touch "$E_EXPLICIT_IDLE"
+_hold_lane_lock_at "$E_EXPLICIT_LOCK"
+run_guard check --mount "$E_MOUNT" --lock-path "$E_EXPLICIT_LOCK"
+assert "E3: --lock-path overrides the derivation (exit 3)" test "$RC" -eq 3
+assert "E3: the sentinel reports the explicit lock= path" \
+    test "$(_sentinel_lock_field "$OUT")" = "$E_EXPLICIT_LOCK"
+
+# E4: an explicit --lock-path makes --mount unnecessary — there is nothing left
+# to derive. The assertion is "a verdict, never a usage error": exit 2 here
+# would mean a caller that knows the exact lock path still cannot ask about it.
+run_guard_no_mount_env check --lock-path "$E_EXPLICIT_LOCK"
+assert "E4: --lock-path with no mount anywhere is a verdict, never exit 2" \
+    test "$RC" -ne 2
+assert "E4: ...and that verdict is the correct one (exit 3, holder present)" \
+    test "$RC" -eq 3
+
+# E5: the env form is equivalent to the flag...
+REIFY_WARM_LANE_LOCK_GUARD_LOCK_PATH="$E_EXPLICIT_LOCK" run_guard check --mount "$E_MOUNT"
+assert "E5: REIFY_WARM_LANE_LOCK_GUARD_LOCK_PATH is equivalent to --lock-path" \
+    test "$RC" -eq 3
+assert "E5: the env form produces the same lock= field" \
+    test "$(_sentinel_lock_field "$OUT")" = "$E_EXPLICIT_LOCK"
+
+# ...and the flag WINS over it. The env points at the HELD lock and the flag at
+# an unheld one, so a guard that let env win would answer 3 instead of 0.
+REIFY_WARM_LANE_LOCK_GUARD_LOCK_PATH="$E_EXPLICIT_LOCK" \
+    run_guard check --mount "$E_MOUNT" --lock-path "$E_EXPLICIT_IDLE"
+assert "E5: an explicit --lock-path overrides REIFY_WARM_LANE_LOCK_GUARD_LOCK_PATH" \
+    test "$RC" -eq 0
+assert "E5: the overridden (idle) path produces no sentinel" test -z "$OUT"
+_release_lane_lock
+
 test_summary
