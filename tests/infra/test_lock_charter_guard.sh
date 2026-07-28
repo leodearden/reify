@@ -216,25 +216,44 @@ echo "--- Cycle 4: --list-extensions drift guard + coherence ---"
 CANONICAL_EXTS="c
 cc
 cjs
+conf
 cpp
 css
 cts
 cxx
+diff
+envrc
+example
+example-systemd-config
 gcode
+gitattributes
+gitignore
+gitkeep
+gitmodules
+golden
+grammar
 h
 hh
 hpp
 html
+icns
+ico
+jq
 js
 json
 jsonc
+jsonl
 jsx
 lock
+log
+manifest
 md
 mjs
 mts
+npmrc
 png
 py
+python-version
 ri
 rs
 scss
@@ -243,10 +262,13 @@ sh
 step
 stl
 svg
+template
+timer
 toml
 ts
 tsx
 txt
+typed
 yaml
 yml"
 
@@ -260,6 +282,53 @@ while IFS= read -r _ext; do
     run_classify "f.$_ext"
     assert "--list-extensions coherence: classify 'f.$_ext' exits 0" test "$GUARD_RC" -eq 0
 done <<< "$GUARD_OUT"
+
+# ---------------------------------------------------------------------------
+# Cycle 5 — newly-allowlisted extensions ACCEPT (#5726)
+#
+# 22 extensions that a git-ls-files sweep found on real tracked files across
+# reify + dark-factory, but which _EXTS misclassified as directories.  The
+# originating symptom: declaring tests/infra/run-all-classification.manifest in
+# a lock charter was REJECTed as a directory.
+#
+# The 12 reify-evidenced extensions below use REAL tracked paths (verified with
+# git ls-files --error-unmatch).  The other 10 are dark-factory-evidenced and
+# use literal path strings — valid inputs because C-P3 forbids any stat, the
+# same property Cycle 1 case E1 relies on.
+#
+# step-1: verify RED; step-2 GREEN by expanding _EXTS.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle 5: newly-allowlisted extensions ACCEPT (#5726) ---"
+
+for _ext_path in \
+    "deploy/systemd/orchestrator-reify.service.d/warm-lane.conf" \
+    ".envrc" \
+    ".gitignore" \
+    "crates/reify-doc/tests/snapshots/.gitkeep" \
+    "crates/reify-fdm/tests/fixtures/toolpath_bracket.golden" \
+    "gui/src/editor/reify.grammar" \
+    "gui/src-tauri/icons/icon.icns" \
+    "gui/src-tauri/icons/icon.ico" \
+    "scripts/reify-audit-snapshot-filter.jq" \
+    "tests/infra/run-all-classification.manifest" \
+    "tree-sitter-reify/.npmrc" \
+    "deploy/systemd/reify-warm-lane-gc.timer" \
+    "orchestrator/tests/fixtures/expected.diff" \
+    ".env.example" \
+    "deploy/orchestrator.example-systemd-config" \
+    ".gitattributes" \
+    ".gitmodules" \
+    "logs/agent-events.jsonl" \
+    "logs/orchestrator.log" \
+    ".python-version" \
+    "orchestrator/templates/task-brief.template" \
+    "fused_memory/py.typed"
+do
+    run_classify "$_ext_path"
+    assert "classify '$_ext_path' exits 0 (ACCEPT)" test "$GUARD_RC" -eq 0
+    assert "classify '$_ext_path' stdout contains ACCEPT" test "${GUARD_OUT#*ACCEPT}" != "$GUARD_OUT"
+done
 
 # ---------------------------------------------------------------------------
 test_summary
