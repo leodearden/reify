@@ -149,15 +149,55 @@ fn build_trial_values(base: &ValueMap, params: &[AutoParam], x: &[f64]) -> Value
     values
 }
 
+/// Relative inward nudge applied to a ONE-SIDED constraint-derived seed bound.
+///
+/// A one-sided derivation has no opposing bound to take a midpoint against (the
+/// other side is still the useless `default_bounds_for` end), so the seed is placed
+/// just inside the derived bound instead: `bound ± max(SEED_NUDGE_REL × |bound|,
+/// SEED_NUDGE_ABS)`.
+///
+/// `0.1` is 5× [`REL_MARGIN`], so a one-sided seed clears the synthesised
+/// robustness floor (`slack ≥ max(REL_MARGIN × |bound|, ABS_FLOOR_SI)`) with
+/// headroom rather than landing marginally outside it.
+const SEED_NUDGE_REL: f64 = 0.1;
+
+/// Absolute floor for the one-sided seed nudge, so the nudge stays strictly
+/// positive when the derived bound is ~0 (mirrors [`ABS_FLOOR_SI`]'s role for the
+/// robustness margin).
+const SEED_NUDGE_ABS: f64 = 1e-6;
+
 /// Extract initial parameter values from the problem.
 ///
-/// For each auto param, uses the current value if available, otherwise
-/// the midpoint of bounds, otherwise a small default (0.01 for lengths).
+/// Per auto param, the first applicable of:
+///
+/// 1. the current value, when present and numeric;
+/// 2. the midpoint of an explicit [`AutoParam::bounds`];
+/// 3. the **constraint-derived** box (task #5618) — midpoint when both sides were
+///    derived, otherwise nudged inward from the single derived bound by
+///    `max(SEED_NUDGE_REL × |bound|, SEED_NUDGE_ABS)`, clamped into the box;
+/// 4. the fixed `0.01` fallback.
+///
+/// Arm 3 exists because `AutoParam.bounds` is always `None` in production, so arm 2
+/// never fires there and an auto bracketed away from 0 (`q >= 1 ∧ q <= 100`) used to
+/// seed at `0.01` — outside the synthesised robustness floor's window, which made
+/// Nelder-Mead approach the feasible region from the wrong side and report a false
+/// `RobustnessFloorInfeasible`. Strict comparisons DO contribute here
+/// (`include_strict = true`): a start point may sit anywhere, unlike a clamp target.
 fn extract_initial_point(problem: &ResolutionProblem) -> Vec<f64> {
+    // Derived once per problem, from the ORIGINAL constraints (the synthesised
+    // robustness floor does not exist yet at seed time).
+    let intervals = derive_param_intervals(
+        &problem.auto_params,
+        &problem.constraints,
+        &problem.current_values,
+        &problem.functions,
+    );
+
     problem
         .auto_params
         .iter()
-        .map(|param| {
+        .enumerate()
+        .map(|(i, param)| {
             // Try current value first
             if let Some(val) = problem.current_values.get(&param.id)
                 && let Some(f) = val.as_f64()
@@ -167,6 +207,16 @@ fn extract_initial_point(problem: &ResolutionProblem) -> Vec<f64> {
             // Fall back to bounds midpoint
             if let Some((lo, hi)) = param.bounds {
                 return (lo + hi) / 2.0;
+            }
+            // Fall back to the constraint-derived box (task #5618).
+            if let Some((box_lo, box_hi)) = compose_interval(param, &intervals[i], true) {
+                let nudge = |v: f64| (SEED_NUDGE_REL * v.abs()).max(SEED_NUDGE_ABS);
+                match (intervals[i].lo, intervals[i].hi) {
+                    (Some(_), Some(_)) => return (box_lo + box_hi) / 2.0,
+                    (Some((lo, _)), None) => return (box_lo + nudge(lo)).clamp(box_lo, box_hi),
+                    (None, Some((hi, _))) => return (box_hi - nudge(hi)).clamp(box_lo, box_hi),
+                    (None, None) => {}
+                }
             }
             // Default based on dimension
             0.01
