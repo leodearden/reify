@@ -1,13 +1,17 @@
-//! Consolidated integration-test harness for the geometry subsystem.
+//! Consolidated integration-test harness for the geometry subsystem — the former
+//! standalone `tests/<file>.rs` binaries for the geometry_/symbolic_/trait_ subsystems.
+//! Task #5278 (leaf EVAL-1).
 //!
-//! Task #5278 (PRD docs/prds/merge-gate-compile-cost.md §3 W1 / §5 C1, leaf EVAL-1):
-//! folds the former standalone `tests/<file>.rs` binaries for the geometry_/symbolic_/trait_
-//! subsystems into this single compile unit to cut the merge-gate link count. Layout-only —
-//! no `#[test]` fn is added or removed. Each former file is included as a stem-named module so
-//! its `<file>::<test>` module path (and thus every `test(/^<file>::/)` filterset) resolves
-//! unchanged. Explicit `#[path]` is required: this harness root is an integration-test crate
-//! root, where a bare `mod <file>;` would resolve to the sibling `tests/<file>.rs`, not the
-//! `harness_geometry/` subdir.
+//! Layout contract C1 (naming, the mandatory `#[path]`, kLOC cap, baseline ratchet):
+//! see `tests/infra/test_harness_kloc_cap.sh` C1 header and
+//! `docs/prds/merge-gate-compile-cost.md` §3 W1 / §5 C1 — kept there, not restated here.
+//!
+//! Test ids change with the layout, though no `#[test]` fn is added or removed: the binary
+//! id is now `reify-eval::harness_geometry` (was `reify-eval::<file>`) and the nextest
+//! test name gained a module prefix, `<file>::<test>` (was bare `<test>`). So a hand-written
+//! `binary(…)`/`test(=…)` selector naming a former id must be updated; verify.sh's failed-only
+//! retry is unaffected — it derives `test(=…)` at run time from its own attempt-0 and refuses
+//! on tree drift (see `scripts/verify.sh` retry_failed_only).
 #[path = "harness_geometry/geometry_conditional_e2e.rs"]
 mod geometry_conditional_e2e;
 #[path = "harness_geometry/geometry_dispatch_registry_guard.rs"]

@@ -57,6 +57,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Arm the shared-trash litter guard (task 5612). Sited immediately after
+# `trap cleanup EXIT` because the helper registers its per-run root into
+# _TMPDIRS and so must follow this file's own `_TMPDIRS=()`.
+# Rationale, ordering contract, stem rules and honest scope: see the
+# CANONICAL WIRING CONTRACT comment in tests/infra/test_helpers.sh.
+init_isolated_lane_root test-warm-lane-ref-vis
+
 ERR_FILE="$(mktemp /tmp/test-warm-lane-ref-vis-err-XXXXXX)"
 _TMPDIRS+=("$ERR_FILE")
 
@@ -389,5 +396,18 @@ assert "C4: task/5555 branch still present (not deleted by check)" \
     git -C "$C_MAIN" rev-parse --verify refs/heads/task/5555
 assert "C4: task/9999 branch still absent (not created by check)" \
     bash -c '! git -C "$1" rev-parse --verify refs/heads/task/9999 >/dev/null 2>&1' _ "$C_MAIN"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
+# kept as two independently-reported signals: TRASH2 can realistically only ever
+# report "clean", which is indistinguishable from a checker that stopped working
+# — TRASH1 is the hermetic control proving the instrument still fires.
+# Full rationale and honest scope: the CANONICAL WIRING CONTRACT comment in
+# tests/infra/test_helpers.sh.
+# ─────────────────────────────────────────────────────────────────────────────
+assert "TRASH1: shared-trash litter detector is live (self-test fires on a synthetic bare-/tmp lane)" \
+    assert_shared_trash_litter_detector_live
+assert "TRASH2: no lane in this suite littered the machine-shared /tmp/.reseed-trash" \
+    assert_no_shared_trash_litter
 
 test_summary

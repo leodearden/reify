@@ -123,21 +123,45 @@ All scripts follow the repo's stdout-contract convention (resolved value on stdo
 
 ```
 warm-lane-audit.sh [--mount <worktrees_dir>] [--format table|json] [--status-cmd <cmd>]
-                    [--stale-age-min <N>]
+                    [--stale-age-min <N>] [--main-ref <ref>] [--safety <N>]
   For each resident worktree under <mount> (lanes _lane-*/_spec-* and orphan dirs), emit:
-    lane · role · ASSIGNED|FREE (flock -n -x <dir>.lock) · branch · backing-task-status
-      (terminal|non-terminal|unknown, via REIFY_LANE_LEAK_STATUS_CMD — 4749 seam) ·
-      recoverable (LANDED | PUSHED | ORPHAN) · divergent_gib (du or df-delta) · age_min (mtime)
-    classification: LIVE | RECLAIMABLE (free ∧ (terminal ∨ recoverable ∨ residue-only-dirty)) |
-                    LEAKED (free ∧ non-terminal ∧ unrecoverable-WIP ∧ stale, where
+    lane · role · live (LIVE|IDLE, non-blocking flock -n -s <dir>.lock probe) ·
+      assigned (ASSIGNED|RELEASED|QUARANTINED|UNKNOWN, read from the orchestrator record
+      at <state-dir>/<lane>.json — never inferred from the lock) · pin (raw backing
+      status of a reserved-but-idle lane's holder; `unknown` if unresolvable, `-` when
+      not pinned) · branch · backing-task-status (terminal|non-terminal|unknown, via
+      REIFY_LANE_LEAK_STATUS_CMD — 4749 seam) · recoverable (LANDED | PUSHED | ORPHAN) ·
+      dirty (clean|residue-only|wip) · divergent_gib (du or df-delta) · age_min (mtime)
+    classification: LIVE | PINNED (idle ∧ ASSIGNED) | QUARANTINED | RECLAIMABLE (idle ∧
+                    (terminal ∨ recoverable ∨ residue-only-dirty)) | LEAKED (idle ∧
+                    non-terminal ∧ unrecoverable-WIP ∧ stale, where
                       stale ⟺ age_min ≥ stale_age_min) | PRESERVED-OK
-  STDOUT: the table/json. Trailing one-line HEADROOM summary:
-    "resident=N assigned=A free=F reclaimable=R leaked=L divergent_gib=D free_gib=G budget_gib=B"
+      PINNED and QUARANTINED both rank above the ENTIRE free ladder below them, so such a
+      lane is never additionally reported LEAKED — and never counted in leaked= — even
+      when it satisfies the LEAKED predicate exactly. Rationale (why each outranks the free
+      ladder) is canonical in docs/notes/warm-lane-audit-runbook.md's Classification section
+      (not restated here, G7 no-lockstep-duplication).
+  STDOUT: the table/json. Trailing two-line HEADROOM + PINNED summary (post-#5363 shape):
+    "HEADROOM resident=N live=Li pinned=Pn quarantined=Qt free=F assigned=A state_unknown=Su
+       reclaimable=R leaked=Lk leak_unknown=Lu divergent_gib=D free_gib=G budget_gib=B"
+    "PINNED total=Pt pending=Pd infra-hold=Ih blocked=Bk terminal=Tm other=Ot unknown=Uk"
+  Occupancy (live/pinned/quarantined/free) is an ORDERED, mutually exclusive PARTITION --
+    live > pinned > quarantined > free -- so `resident = live + pinned + quarantined + free`
+    holds by construction; `assigned` and `state_unknown` are CROSS-CUTS over that partition,
+    not partition members, and are never summed into that identity. `free` is the partition
+    RESIDUE (neither live, nor reserved, nor withheld). History (the pre-#5363 `free =
+    resident - live` accounting and the 2026-07-22 misread it caused) and operational reading
+    guidance (how to interpret a PINNED-heavy pool, etc.) are canonical in
+    docs/notes/warm-lane-audit-runbook.md (not restated here, G7 no-lockstep-duplication).
   Exit 0 always (advisory/observability — NEVER fail-closed; it must not gate anything).
 knobs: --stale-age-min <N>  minutes (env: REIFY_WARM_LANE_AUDIT_STALE_AGE_MIN; default: 60 —
   promotes the §2 working-set mtime<60min example from an incidental figure to a declared knob)
+  REIFY_WARM_LANE_AUDIT_STATE_DIR <dir>  orchestrator lane-record dir holding <lane>.json
+  (no dedicated flag; default: <mount>/.lane-state, dark-factory's LANE_STATE_DIRNAME) — when
+  absent, every lane reports assigned=UNKNOWN and none is counted pinned, quarantined or
+  assigned
 ```
-*Invariant A1:* read-only — `warm-lane-audit.sh` never mutates a lane (no reset/rm/reclaim); it observes. *Invariant A2:* `flock -n -x` probe is non-blocking and released immediately (never holds a lane lock across the walk). *Invariant A3:* a status-lookup failure degrades that lane to `unknown` (never aborts the report, never reclassifies as reclaimable). *Invariant A4:* `stale` is always the relation `age_min ≥ stale_age_min` against the declared knob (default 60 min) — never an inline/undeclared literal (D8/G6 no-frozen-constant rule); B1's fixture ages its leaked lane past the knob so the assertion tests the relation, not a guessed age.
+*Invariant A1:* read-only — `warm-lane-audit.sh` never mutates a lane (no reset/rm/reclaim); it observes. *Invariant A2:* `flock -n -s` (shared) probe is non-blocking and released immediately (never holds a lane lock across the walk); a live consumer's exclusive flock still blocks a new shared request, which is why a shared probe is a sufficient liveness test. *Invariant A3:* a status-lookup failure degrades that lane to `unknown` (never aborts the report, never reclassifies as reclaimable/leaked); when it suppresses what would otherwise be a LEAKED verdict, the lane still reports PRESERVED-OK but is additionally counted in the HEADROOM `leak_unknown` field (a lane that would be LEAKED but for the unresolved status), so "no leaks" stays distinguishable from "leaks could not be evaluated" — `state_unknown` is the analogous count for a lane whose *assignment* record (not backing-task status) could not be resolved. *Invariant A4:* `stale` is always the relation `age_min ≥ stale_age_min` against the declared knob (default 60 min) — never an inline/undeclared literal (D8/G6 no-frozen-constant rule); B1's fixture ages its leaked lane past the knob so the assertion tests the relation, not a guessed age.
 
 ### 9.2 Sizing budget + online-grow — `scripts/provision-warm-lane-fs.sh --grow` (β) + budget formula
 

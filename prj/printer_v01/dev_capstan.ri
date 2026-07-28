@@ -25,9 +25,6 @@
 // tension) is reacted by its own shaft bearings — benign.
 //
 // MODELLING CAVEATS:
-//  - The HELICAL GROOVE itself is not modelled (no helical-sweep / thread feature;
-//    same gap class as the missing `torus` seat). The drum renders as a smooth core
-//    at root-Ø with `lead` annotated; the wrap band is the grooved axial region.
 //  - Override drop (task 4147): the 4 shuttle idlers are identical IdlerPulley
 //    DEFAULTS placed by pose only (`at` works), so 4147 never bites here. The
 //    ShuttlePlate size is hand-matched to the idler corner spacing for the same
@@ -80,9 +77,21 @@ pub structure IdlerPulley {
 // ── Capstan (dual-anchor winch drum) ────────────────────────────────────────
 /// Helically-grooved winch drum, axis = local +Z, centred. Both belt ends anchor
 /// to it; rotation reels one end in / pays the other out. Carries BOTH windings of
-/// the belt's ±z moment pair (axially adjacent on the one drum). Smooth core at
-/// root-Ø + two retaining flanges + axial shaft bore. Groove helix not modelled —
-/// `lead` is the (clearance) pitch.
+/// the belt's ±z moment pair (axially adjacent on the one drum).
+///
+/// The rope channel is modelled: a circular section of radius `groove_r` swept
+/// along `helix(pitch_r, lead, groove_len)` and subtracted from the land cylinder
+/// at `land_r`, between two retaining flanges and over an axial shaft bore.
+/// `groove_mouth` is the RADIAL cut-back of the land below the rope crest — a
+/// depth, not the width of the slot it opens (see its own doc).
+/// `blank_volume` − `body_volume` is the stock the groove removes.
+///
+/// The channel is CAPTIVE, not an open seat: the swept section is submerged in the
+/// land, so its mouth is a retaining slot narrower than the rope, and the rope is
+/// wound in thread-style at assembly rather than laid in radially. That suits a
+/// dual-anchor winch — both ends are fixed and it is never re-reeved in service —
+/// and it is what makes the wrap positively captive. The bounds are pinned in the
+/// constraints below, not restated here.
 ///
 /// Sizing (D/d = 8 start): drum Ø = d_ratio·rope_dia = 48mm; pitch circ ≈ 151mm;
 /// max per-belt feed = X+Y travel = 500+800 = 1.3m → ≈ 8.6 → 9 active turns;
@@ -98,6 +107,12 @@ pub structure Capstan {
     /// Helical pitch. CLEARANCE lead (> rope_dia) so adjacent wraps don't rub/wedge
     /// (wedging would drift the effective Ø → transmission-ratio error).
     param lead        : Length = 7mm
+    /// RADIAL depth by which the land sits below the rope crest (consumed by
+    /// `land_r`). This is a DEPTH, not the width of the slot it opens: the mouth
+    /// chord is 2*sqrt(2*groove_r*groove_mouth - groove_mouth^2), ≈2.6mm at the
+    /// defaults — about 8.7x this parameter. Size it as a lip depth, not a lip
+    /// width. Both its bounds are constraints below.
+    param groove_mouth : Length = 0.3mm
     /// Max per-belt rope feed = X-travel + Y-travel (documentation; drives turns).
     param feed        : Length = 1300mm
     /// Active wrap turns ≈ feed / (π·drum_Ø).
@@ -108,18 +123,27 @@ pub structure Capstan {
     param windings    : Int    = 2
     param bore_dia    : Length = 19mm     // motor shaft
 
-    let drum_r     = drum_d / 2
-    let flange_r   = drum_r + rope_dia * 1.5      // stands proud of the rope crest
+    let pitch_r    = drum_d / 2                   // rope centreline (the D/d circle)
+    let groove_r   = rope_dia / 2                 // rope seat = swept-cutter section radius
+    let land_r     = pitch_r + groove_r - groove_mouth   // outer land/crest cylinder
+    let flange_r   = pitch_r + rope_dia * 1.5     // stands proud of the rope crest
     let flange_w   = 6mm
     let groove_len : Length = lead * (active_turns + dead_total)   // axial wrap-band extent
     let bore_r     = bore_dia / 2
 
-    // One inlined tree: core + two flanges, bored through. (No intermediate geometry
-    // lets — they would auto-surface as stray meshes.)
-    let body = difference(
+    // The rope channel: a circular section of radius groove_r, posed normal to the
+    // helix start tangent (rotate -90° about +X takes the profile's +Z normal onto
+    // +Y) and stood off onto the helix start point at +pitch_r, swept along the
+    // helical spine and re-centred on the band.
+    aux let groove_profile = translate(rotate(circle(groove_r), 1.0, 0.0, 0.0, 0deg - 90deg), pitch_r, 0mm, 0mm)
+    aux let groove_path    = helix(pitch_r, lead, groove_len)
+    aux let groove_cutter  = translate(sweep(groove_profile, groove_path), 0mm, 0mm, 0mm - groove_len / 2)
+
+    // Stock: land + two flanges, bored through — the drum before the groove is cut.
+    aux let drum_blank = difference(
         union(
             union(
-                translate(cylinder(drum_r, groove_len), 0mm, 0mm, 0mm - groove_len / 2),
+                translate(cylinder(land_r, groove_len), 0mm, 0mm, 0mm - groove_len / 2),
                 translate(cylinder(flange_r, flange_w), 0mm, 0mm, groove_len / 2)
             ),
             translate(cylinder(flange_r, flange_w), 0mm, 0mm, 0mm - groove_len / 2 - flange_w)
@@ -127,10 +151,25 @@ pub structure Capstan {
         translate(cylinder(bore_r, groove_len + flange_w * 4), 0mm, 0mm, 0mm - groove_len / 2 - flange_w * 2)
     )
 
-    constraint drum_r > bore_r
-    constraint flange_r > drum_r
+    let body = difference(drum_blank, groove_cutter)
+
+    // Stock removed by cutting the groove (machining metric; also the acceptance
+    // signal that the channel is really modelled — a smooth drum removes nothing).
+    let blank_volume = volume(drum_blank)
+    let body_volume  = volume(body)
+
+    constraint land_r > bore_r
+    constraint flange_r > land_r
     constraint lead > rope_dia        // clearance lead
     constraint d_ratio > 0.0
+    // The channel must BREAK THROUGH the land (else it is a buried tunnel and the
+    // drum renders smooth) …
+    constraint groove_mouth > 0mm
+    // … but its mouth must stay narrower than the rope, so the wrap is CAPTIVE and
+    // cannot pop out of the channel when a lead goes slack — the whole point of a
+    // dual-anchor winch drum (positive, zero-slip) over a friction wrap. At this
+    // bound the mouth chord is 0.6*rope_dia.
+    constraint groove_mouth < groove_r * 0.2
 }
 
 // ── Fairlead shuttle ────────────────────────────────────────────────────────
@@ -153,7 +192,7 @@ pub structure ShuttlePlate {
 /// Front pair (+X) and back pair (−X) turn in OPPOSITE senses so the Y-couples
 /// cancel (balanced float).
 pub structure Fairlead {
-    /// Front/back half-spacing of the idler stack (≈ drum_r + clearance).
+    /// Front/back half-spacing of the idler stack (≈ pitch_r + clearance).
     param x_corner : Length = 30mm
     /// Up/down half-spacing of the lead turn points.
     param y_corner : Length = 50mm

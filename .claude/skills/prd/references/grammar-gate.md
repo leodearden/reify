@@ -26,15 +26,22 @@ Write fixtures to `/tmp/prd-gate-fixtures/<slug>-<n>.ri` or a directory the skil
 
 ### Step 2 — Parse each fixture
 
-From the repo root (or `tree-sitter-reify/` directory — both work because the build.rs locates the grammar):
+**Preconditions** (both must hold — if either doesn't, `tree-sitter parse` fails with "No language found" / exit 1 regardless of whether the fixture's syntax is valid):
+
+1. **CWD is `tree-sitter-reify/`** — the CLI reads `src/grammar.json` relative to CWD; no such file exists outside `tree-sitter-reify/`.
+2. **The generated grammar files exist**: `src/parser.c`, `src/grammar.json`, `src/node-types.json`. They're gitignored (see `tree-sitter-reify/.gitignore`) and therefore absent in a fresh warm-lane or task worktree even when CWD is already correct (`build.rs` regenerates them into `src/` on a cargo build — only the staleness stamp goes to `OUT_DIR`). If missing, regenerate once first, from anywhere: `bash "$(git rev-parse --show-toplevel)/scripts/tree-sitter-generate.sh"`.
+
+Then, from `tree-sitter-reify/`, parse the fixture:
 
 ```bash
-cd /home/leo/src/reify/tree-sitter-reify
+cd "$(git rev-parse --show-toplevel)/tree-sitter-reify"
 tree-sitter parse --quiet /tmp/prd-gate-fixtures/<slug>-<n>.ri
 ```
 
 - **Exit 0** → fixture parses. Gate passes for that fragment.
-- **Exit 1** → fixture fails. Gate fails for that fragment.
+- **Exit 1** → fixture fails. Gate fails for that fragment — but only once both preconditions above hold (correct CWD, generated grammar present).
+
+**Before escalating any failure to Step 3:** if *every* fixture in the batch fails identically with "No language found", that is not a grammar fiction — it's a sign one of the two preconditions above isn't met (wrong CWD, or the generated grammar files are missing). Re-check both, re-run, and only carry fixtures that fail for a genuine parse reason forward to Step 3's resolution paths. Filing a prerequisite grammar task off an environmental failure wastes the PRD's decomposition on phantom work.
 
 To inspect a failure, drop `--quiet` and look for `(ERROR ...)` nodes in the CST:
 

@@ -294,10 +294,11 @@ references. N3/N4 consume resolution-unification substrate (§5).
 
 | # | Scenario | Preconditions | Postconditions | Phase |
 |---|---|---|---|---|
-| 1 | `Mode` compile/eval parity | modal + buckling both loaded | compile-side and eval-side bind the same definition; parity test green (NS-P4) | N0 (α) |
+| 1 | `Mode` compile/eval parity | β's rename landed | compile-side and eval-side bind the same definition for `Mode` (→ modal) and `BucklingMode` (→ buckling) | N0 (β) |
+| 1a | NS-P4 parity property | any fixture corpus | *for every fixture*, the compile-side binding and the eval-side binding are the SAME definition — both read the one shared policy point (NS-P4). Seeded from #2's user-shadows-prelude fixture and synthetic two-peer prelude sets, **not** from an intra-stdlib collision (β makes those a build Error, so the stdlib has no live collision to witness) | N0 (α) |
 | 2 | User enum vs stdlib enum | user `enum SignalKind { Foo }` | `SignalKind.Foo` resolves (local wins); Warning (N0) → Error (post-κ) | N0 (α) / N3 (κ) |
 | 3 | Injected duplicate stdlib pub name | test-only stdlib set with two `Mode`s | stdlib build fails naming both modules (negative-assertion: the rejection observably fires) | N0 (β) |
-| 4 | `BucklingMode` rename | — | buckling accessors (`critical_load`, `mode_shape`) still resolve + evaluate; `BucklingMode` + modal `Mode` coexist in one fixture | N0 (β) |
+| 4 | `BucklingMode` rename | — | buckling accessors (`critical_load`, `mode_shape`) still resolve + evaluate; `BucklingMode` + modal `Mode` coexist in one fixture. Blast radius is **not** stdlib-internal: the live trampoline hardcodes the struct name at `reify-eval/src/compute_targets/buckling.rs:513,:822,:996` (all above the `#[cfg(test)]` at :1083) and must rename in lockstep | N0 (β) |
 | 5 | Same-module silent-divergence fixture | struct default referencing a same-module fn; fn body `Foo()` ctor; nested-ctor-in-let | correct value at eval (no poison), or a loud diagnostic — never silent divergence; `git grep build_structure_def_skeleton` empty | N1 (γ) |
 | 6 | Vestigial folds | — | `solve_buckling`/`modal_analysis`/`simulate_trajectory` resolve from parent modules; `*_fns` files gone; stdlib count 47→44 | N1 (δ) |
 | 7 | Stdlib strict self-compile | ζ headers landed | a stdlib module referencing an undeclared sibling fails the stdlib build (negative fixture); full stdlib compiles green | N2 (ζ) |
@@ -323,14 +324,35 @@ bump the THROUGHPUT-COUNTS sentinel in-diff.
 
 **N0 — one collision rule (independent, lands first)**
 
-- **α — Compile-side collision/direction unification** *(intermediate → β)*. Modules:
+- **β — Intra-stdlib collision = Error + `BucklingMode` rename** *(intermediate → α, δ, ζ;
+  lands first in N0)*. Modules: reify-compiler (stdlib_loader/stdlib_topo panic path),
+  stdlib .ri (solver_buckling*, goldens), **reify-eval (`compute_targets/buckling.rs` — the
+  live trampoline hardcodes `type_name: "Mode"`)**. Signals: #1, #3
+  (negative-assertion), #4. Deps: none.
+- **α — Compile-side collision/direction unification** *(intermediate → ε, ν)*. Modules:
   reify-compiler (entities_phase, functions_phase, enums_phase, type_resolution, expr,
   prelude_context). Extract the NS-P1/P3 policy to one shared point; fix the enum
   inversion; align template registries to local-shadows + first-wins-among-peers; add the
-  NS-P4 parity test (Mode fixture). Signals: #1, #2(Warning form).
-- **β — Intra-stdlib collision = Error + `BucklingMode` rename** *(leaf)*. Modules:
-  reify-compiler (stdlib_loader/stdlib_topo panic path), stdlib .ri (solver_buckling*,
-  goldens). Signals: #3 (negative-assertion), #4. Deps: α.
+  NS-P4 parity property test. Signals: #1a, #2(Warning form). **Deps: β.**
+
+> **Ordering amendment (2026-07-27, esc-5493-2).** α↔β were filed with the edge pointing
+> the wrong way. β was annotated `Deps: α`, but neither of β's capabilities
+> (`duplicate-pub-name-rejection-fires`, `buckling-rename-blast-radius-stdlib-internal`)
+> consumes α's policy point — the duplicate-pub-name scan is standalone, and both of β's
+> boundary signals (#3, #4) are deliverable against today's `main`. α, by contrast,
+> genuinely *requires* β: `stdlib_loader.rs` registers `solver_buckling.ri` (:113) before
+> `modal_analysis.ri` (:158), so flipping the template registries to first-wins rebinds
+> bare `Mode` from modal's `{frequency,…}` to buckling's `{eigenvalue,…}` and breaks
+> `modal_analysis_fns.ri`'s `result.modes[0].frequency` (`functions_phase.rs:64-69` →
+> `expr.rs:6483`) — **inside the stdlib**. The edge is inverted here.
+>
+> Two facts bound the risk. (1) `Mode` is the *only* intra-stdlib collision: a scan of all
+> stdlib modules finds exactly one duplicate `structure def` name and zero duplicate
+> `enum def` / `occurrence def` names, so β's single rename makes the corpus collision-free
+> and β's Error gate keeps it that way. (2) Consequently, boundary #1 (`Mode` parity) is
+> **delivered by β alone** — post-rename both sides bind the sole surviving definition — so
+> it moves to β, and α takes the non-vacuous #1a property form instead. Had #1 stayed on α
+> it would have passed with α's flip entirely absent. δ and ζ already assumed β-first.
 
 **N1 — phase order (independent of N0)**
 

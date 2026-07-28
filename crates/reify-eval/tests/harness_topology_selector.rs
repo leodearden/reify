@@ -2,35 +2,19 @@
 //!
 //! Task #5281 (PRD docs/prds/merge-gate-compile-cost.md §3 W1 / §5 C1, leaf EVAL-2):
 //! folds the former standalone `tests/<file>.rs` binaries for the topology_/selector_/
-//! selective_/structural_/shell_ subsystems into this single compile unit to cut the
+//! structural_/shell_ subsystems into this single compile unit to cut the
 //! merge-gate link count. Layout-only — no `#[test]` fn is added or removed. Each former
 //! file is included as a stem-named module so its `<file>::<test>` module path (and thus
 //! every `test(/^<file>::/)` filterset) resolves unchanged. Explicit `#[path]` is required:
 //! this harness root is an integration-test crate root, where a bare `mod <file>;` would
 //! resolve to the sibling `tests/<file>.rs`, not the `harness_topology_selector/` subdir.
 //!
-//! `differential` (tests/common/differential.rs) is declared ONCE here rather than once per
-//! includer: 6 of the `selective_demand_*` submodules below reference it, and each carrying
-//! its own file-backed copy would triplicate+ the compile unit's line count for no behavioral
-//! difference (differential.rs has 0 `#[test]` fns, so a single shared copy preserves the
-//! nextest test count). Submodules reach it via `use crate::differential;`.
-#[path = "common/differential.rs"]
-mod differential;
-
-#[path = "harness_topology_selector/selective_demand_alpha.rs"]
-mod selective_demand_alpha;
-#[path = "harness_topology_selector/selective_demand_beta.rs"]
-mod selective_demand_beta;
-#[path = "harness_topology_selector/selective_demand_cone_structural_edit.rs"]
-mod selective_demand_cone_structural_edit;
-#[path = "harness_topology_selector/selective_demand_epsilon.rs"]
-mod selective_demand_epsilon;
-#[path = "harness_topology_selector/selective_demand_gamma.rs"]
-mod selective_demand_gamma;
-#[path = "harness_topology_selector/selective_demand_measurement.rs"]
-mod selective_demand_measurement;
-#[path = "harness_topology_selector/selective_demand_redemand_staleness.rs"]
-mod selective_demand_redemand_staleness;
+//! The `selective_demand_*` subsystem now lives in the sibling `harness_selective_demand`
+//! (task #5620), and took the shared `#[path = "common/differential.rs"]` include with it —
+//! those six files were its only referents. Under the C2 kLOC cap that shared include is
+//! charged to every unit that compiles a copy of it, which had put this harness at 21470
+//! lines, over CAP_LINES = 20000; rule (a)'s remedy is a split, not a cap bump. This unit is
+//! now 16786 lines with no out-of-module-dir include at all.
 #[path = "harness_topology_selector/selector_boundary_gate.rs"]
 mod selector_boundary_gate;
 #[path = "harness_topology_selector/selector_coercion_golden.rs"]

@@ -15,11 +15,15 @@ reify-eval = { workspace = true, optional = true }
 reify-constraints = { workspace = true, optional = true }
 serde_json.workspace = true
 tracing.workspace = true
+# Normal (not dev) dependency: `temp_dirs::prefixed_tempdir` is a PUBLIC fn
+# returning `tempfile::TempDir`, which a dev-dependency cannot back. See the
+# paired design decision — `crates/reify-audit` carries reify-test-support as a
+# normal dependency, so this makes tempfile a normal transitive dep there.
+tempfile.workspace = true
 
 [dev-dependencies]
 reify-core.workspace = true
 reify-ir.workspace = true
-tempfile.workspace = true
 
 [features]
 eval-helpers = ["dep:reify-eval", "dep:reify-constraints"]

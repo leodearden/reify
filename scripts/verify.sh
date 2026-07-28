@@ -94,7 +94,9 @@
 #   Merge bypass, DISABLE break-glass, and admit-vs-requeue timeout semantics are
 #   identical to the CPU dimension (shared machinery in cpu_admit; v1 = staggering only).
 #   psi-gate action             — `verify.sh psi-gate` runs only the gate and exits;
-#                                  used as the first test-phase plan entry (test/all).
+#                                  used as the first *gating* test-phase plan entry
+#                                  (test/all) — a merge attempt-0 emits the tree-OID
+#                                  sidecar stamp just before it (see psi_gate()).
 #
 # Compile-phase admission gate (task 4618 — soft PSI backpressure for clippy/check):
 #   REIFY_COMPILE_GATE_THRESHOLD      — CPU avg10 % ceiling for compile admission.
@@ -213,16 +215,34 @@
 #                                  profile's own var wins when non-empty, else the
 #                                  base var is used (so --profile both can carry a
 #                                  different subset per profile).
+#                                  DF-side obligation, newly LIVE since task 5548
+#                                  made a red attempt-0 retry-eligible: a profile
+#                                  whose attempt-0 nextest pass NEVER EXECUTED
+#                                  (attempt-0 died in an earlier profile) must not
+#                                  be narrowed by the base var's fallback. DF must
+#                                  set a per-profile filter file for EVERY profile
+#                                  named in the sidecar's `profiles`, or fall back
+#                                  to a full verify. reify cannot tell "passed" from
+#                                  "never ran" — it never sees attempt-0's results —
+#                                  so this is a seam obligation, not a guard reify
+#                                  can add; the @@REIFY_RETRY_SCOPE=failed_only@@
+#                                  marker's per-profile applied counts expose the
+#                                  outcome either way.
 #   REIFY_VERIFY_RETRY_TREE_OID         — the tree DF intends to retry (a `git
 #                                  rev-parse HEAD:` TREE OID). Must equal the
 #                                  attempt-0 sidecar's tree_oid, else the subset is
 #                                  refused (tree-pin soundness, §5 INV-1).
 #   REIFY_VERIFY_ATTEMPT_SIDECAR        — attempt-0 sidecar path (default
-#                                  target/reify-verify-attempt.json). Stamped as the
-#                                  final plan line on a full DF_VERIFY_ROLE=merge
-#                                  attempt-0 (NOT on a failed_only retry); records
-#                                  {tree_oid, profiles, timestamp} of the tree that
-#                                  passed the whole gate. Survives a warm-lane reseed.
+#                                  target/reify-verify-attempt.json). Schema is
+#                                  PRD §4.1's {tree_oid, profiles, timestamp}
+#                                  verbatim, recording the tree target/ was built
+#                                  FROM — NOT proof any profile executed or passed
+#                                  (the eligibility guard reads tree_oid only).
+#                                  Stamped on a full DF_VERIFY_ROLE=merge attempt-0
+#                                  (never on a failed_only retry), at the HEAD of
+#                                  add_test_passes — see there for the single
+#                                  authoritative survives/does-not-survive matrix
+#                                  (task 5548). Survives a warm-lane reseed.
 #   REIFY_VERIFY_RETRY_MAX_SUBSET       — tunable subset-size ceiling (default 5000,
 #                                  a heuristic comfortably below the full-suite size,
 #                                  §11): a subset larger than this is refused as a
@@ -395,7 +415,9 @@ usage() {
 
 # psi_gate() — thin wrapper over cpu_admit requeue (scripts/cpu-admit.sh).
 # Called directly via `verify.sh psi-gate` (testable entry point) and wired
-# as the first test-phase plan entry by add_test_passes().
+# as the first *gating* test-phase plan entry by add_test_passes() — a merge
+# attempt-0 emits the tree-OID sidecar stamp (a side-effect-only file write,
+# not a gate) immediately before it, task 5548.
 #
 # Environment knobs (see header comment block for full doc):
 #   REIFY_PSI_GATE_THRESHOLD    — avg10 ceiling to allow dispatch (default 50)
@@ -709,9 +731,10 @@ fi
 # single construction site in emit_nextest_pass). Default (all retry envs
 # unset) → every fragment empty → plan byte-for-byte identical to today.
 #
-# Path of the attempt-0 sidecar (written on a full merge run, read here to
-# tree-pin the retry). Overridable for hermetic tests. Relative default is
-# resolved against REPO_ROOT (verify.sh cds there before build_plan/execute).
+# Path of the attempt-0 sidecar (written on every merge-role attempt-0, green
+# or red — task 5548 — read here to tree-pin the retry). Overridable for
+# hermetic tests. Relative default is resolved against REPO_ROOT (verify.sh
+# cds there before build_plan/execute).
 _ATTEMPT_SIDECAR_PATH="${REIFY_VERIFY_ATTEMPT_SIDECAR:-target/reify-verify-attempt.json}"
 # Precomputed once in add_test_passes (before the profile loop); initialized
 # here so emit_nextest_pass stays nounset-safe (set -u) on any call path.
@@ -719,7 +742,7 @@ _ATTEMPT_SIDECAR_PATH="${REIFY_VERIFY_ATTEMPT_SIDECAR:-target/reify-verify-attem
 # (failed_only) AND the on-disk attempt-0 sidecar tree_oid matches the tree DF
 # intends to retry — i.e. the warm target/ provably corresponds to it. The
 # scope=failed_only decision is re-read directly from REIFY_VERIFY_RETRY_SCOPE
-# where it is independently needed (the sidecar-stamp guard at the tail of
+# where it is independently needed (the sidecar-stamp guard at the HEAD of
 # add_test_passes), so no separate "retry active" flag is carried.
 _RETRY_SUBSET_ELIGIBLE=0
 # Per-suite APPLIED subset sizes for the δ honest marker (task 5290). Recorded
@@ -1097,15 +1120,49 @@ select_infra_tests
 #
 # tests/infra/test_harness_kloc_cap.sh (the C2 anti-re-accretion guard) has no
 # row in verify-pipeline-infra-tests.txt: its trigger isn't a single artifact
-# path, it's *adding* a new top-level standalone crates/<c>/tests/*.rs file in
-# one of the 5 consolidatable crates. This selector runs the guard ONLY under
-# --scope branch (hermetic static reads, no cargo — seconds), so an
-# introducer sees the violation on their own branch instead of first at the
-# merge gate 40+ min in (tasks 5213, 5053). --diff-filter=A (adds only): a NEW
-# standalone binary is exactly the re-accretion the guard catches; modifying
-# or renaming an already-grandfathered file is a no-op here and stays covered
-# by the wholesale merge gate (no correctness regression, only earlier
-# coverage for the common add case).
+# path, it's *growing* a harness — a new top-level standalone
+# crates/<c>/tests/*.rs file, OR an added/modified
+# crates/<c>/tests/harness_<subsystem>.rs root or harness_<subsystem>/**
+# nested file (recursive), in one of the 5 consolidatable crates. A nested
+# path OUTSIDE a harness_*/ module dir (tests/common/, fixtures/, …) is
+# deliberately excluded. This selector runs the guard ONLY under --scope
+# branch (hermetic static reads, no cargo — seconds), so an introducer sees
+# the violation on their own branch instead of first at the merge gate 40+
+# min in (tasks 5213, 5053).
+#
+# What rule (a) actually measures TODAY, precisely: harness_layout_violations()
+# in test_harness_kloc_cap.sh globs only the TOP-LEVEL "$tests_dir"/*.rs
+# (non-recursive) and runs `wc -l` on each harness_*.rs ROOT alone — it never
+# descends into a harness_<subsystem>/ dir and never sums nested-file lines
+# into the root's measured value. So a nested harness_*/** file does NOT
+# itself move today's landed rule-(a) number; only the root does. Task #5463
+# (in-progress, tracked, un-landed) is what will change rule (a) to sum the
+# root plus its whole harness_<subsystem>/ subtree recursively. The
+# harness_*/* arm below is kept ahead of that landing for two reasons: (i) it
+# is the forward-compatible trigger for #5463's future behaviour, so this
+# verify-pipeline artifact (which forces the full merge gate to edit) doesn't
+# need an immediate follow-up the day #5463 lands; (ii) even today it is a
+# cheap, redundant belt-and-braces net for a nested edit whose C1-required
+# root `#[path] mod` companion edit is somehow missing from the same branch
+# diff — the ordinary C1-compliant case is already caught by the harness_*.rs
+# root arm, since adding or growing a nested module requires a corresponding
+# root edit.
+#
+# Diff-status policy (git diff --diff-filter=AM), per path shape: (i) a
+# harness root (harness_*.rs) accepts BOTH A and M — the root's own line count
+# IS what rule (a) measures today, and a modified root is also the only
+# visible diff trace a rename-based consolidation absorb leaves (a `git mv
+# tests/foo.rs tests/harness_x/foo.rs` plus the C1-required `#[path =
+# "harness_x/foo.rs"] mod foo;` root edit — git's --diff-filter excludes R
+# entries, verified empirically); (ii) a nested harness-module file
+# (harness_*/**) ALSO accepts BOTH A and M, for the forward-looking /
+# belt-and-braces reasons above — NOT because it moves today's measure; (iii)
+# a top-level non-harness standalone accepts ONLY A — rule-(b) re-accretion is
+# an ADD by construction, so widening to M would fire on ordinary edits to an
+# already-grandfathered file for zero possible signal. Either way, the
+# residual latency-not-a-coverage-hole doctrine is unchanged: the merge gate
+# remains the wholesale authority, so anything this selector misses is still
+# caught there.
 #
 # Appends into the SAME SELECTED_INFRA_GLOBS the selective-infra block above
 # populates, so it inherits for free: (a) merge/background suppression — the
@@ -1125,10 +1182,10 @@ select_infra_tests
 select_harness_kloc_guard() {
     [ "$SCOPE" = "branch" ] || return 0
     [ -n "$_MERGE_BASE" ] || return 0
-    local _added _path _rest _crate _tail
-    _added="$(git -C "$REPO_ROOT" diff --name-only --diff-filter=A "$_MERGE_BASE" 2>/dev/null)" || return 0
-    [ -n "$_added" ] || return 0
-    while IFS= read -r _path; do
+    local _changed _status _path _rest _crate _tail
+    _changed="$(git -C "$REPO_ROOT" diff --name-status --diff-filter=AM "$_MERGE_BASE" 2>/dev/null)" || return 0
+    [ -n "$_changed" ] || return 0
+    while IFS=$'\t' read -r _status _path; do
         [ -n "$_path" ] || continue
         case "$_path" in
             crates/*/tests/*.rs) : ;;
@@ -1137,8 +1194,21 @@ select_harness_kloc_guard() {
         _rest="${_path#crates/}"
         _crate="${_rest%%/*}"
         _tail="${_path#crates/$_crate/tests/}"
+        # Ordered classification — harness_*/* MUST come first: a bash `case`
+        # glob's `*` matches `/`, so this one arm covers arbitrary nesting
+        # depth under a harness_<subsystem>/ module dir (same gotcha
+        # documented at tests/infra/harness-layout-lib.sh:86-89). harness_*.rs
+        # (a root has no slash, so neither prior arm can catch it) is checked
+        # after the generic */* reject. harness_*.rs and harness_*/* both
+        # accept A or M (see the block header for why the nested arm's A|M is
+        # a forward-looking/belt-and-braces trigger rather than a claim that
+        # it moves today's rule-(a) measure); a top-level standalone stays
+        # adds-only.
         case "$_tail" in
-            */*) continue ;;  # nested harness-module file — not top-level
+            harness_*/*)  : ;;                       # nested module file: A or M (see block header)
+            */*)          continue ;;                # nested, not a harness module dir
+            harness_*.rs) : ;;                       # harness root compile unit: A or M
+            *)  [ "$_status" = "A" ] || continue ;;  # top-level standalone: adds only
         esac
         case " reify-cli reify-syntax reify-kernel-occt reify-eval reify-compiler " in
             *" $_crate "*)
@@ -1150,7 +1220,7 @@ select_harness_kloc_guard() {
                 return 0
                 ;;
         esac
-    done <<< "$_added"
+    done <<< "$_changed"
 }
 select_harness_kloc_guard
 
@@ -1622,6 +1692,44 @@ emit_nextest_pass() {
 }
 
 add_test_passes() {
+    # retry_failed_only (task 5287): attempt-0 sidecar stamp. On a FULL merge
+    # gate (DF_VERIFY_ROLE=merge AND NOT a failed_only retry), record the tree
+    # target/ was BUILT FROM, so a later retry can tree-pin its narrowed
+    # subset against the warm _merge-verify target/. Emitted as the FIRST
+    # plan line of add_test_passes — after build_plan's lint/compile wave, the
+    # gui block, and the merge pre-build/run_all.sh poles, but BEFORE every
+    # test pole (psi-gate, compile-gate, every nextest pass) — so the pin
+    # survives a RED psi-gate/compile-gate/nextest pole too, not only a fully
+    # green attempt-0 (task 5548, PRD verify-retry-failed-only α2). It does NOT
+    # survive a red clippy/gui/run_all.sh pole: those precede add_test_passes,
+    # so the plan executor's first-failure exit means such a red attempt-0
+    # never reaches this line either — stamped once attempt-0 reaches the test
+    # phase, not on every possible red. The old tail position (after
+    # @@SEMAPHORE_RELEASE@@) was unreachable on any retry-eligible run: the
+    # plan executor exits on the first failing command, and a narrowed retry
+    # by definition follows a RED attempt-0. target/ is already built from
+    # THIS tree by this point — the check/clippy wave and the `cargo build
+    # --release -p reify-audit` pre-build precede add_test_passes, and a warm
+    # lane pre-seeds target/ — so `test -d target` is satisfiable and the
+    # built-from-this-tree claim holds even here. Schema is PRD §4.1's
+    # {tree_oid, profiles, timestamp} VERBATIM — DF's D2b pins its unit fixtures
+    # to these exact bytes, so no field may be renamed here without moving the
+    # PRD's §4.1/§244 schema rows in the SAME change. tree_oid (git rev-parse
+    # HEAD: = the TREE OID) and timestamp are computed at RUN time; `profiles`
+    # is the build-time-baked ${PROFILES[*]} — the profiles this attempt PLANNED
+    # to run, NOT proof any of them executed or passed (the eligibility guard
+    # reads tree_oid only), so a red attempt-0 can name a profile whose nextest
+    # pass never ran. The consumer-side obligation that follows from that
+    # (never narrow a profile that never ran) is DF's, documented at the
+    # …_FILTER_FILE_DEBUG/_RELEASE header entry. Guarded on `test -d target` and
+    # tolerant of git failure (|| echo unknown) and write failure (|| true),
+    # mirroring the target/.reify-bin-sha stamp (task 5133). Survives a warm-lane
+    # reseed (under target/, git clean -xfd -e target). A retry (scope=failed_only)
+    # deliberately does NOT re-stamp — DF re-runs a full attempt-0 for a new tree.
+    if [ "$DF_VERIFY_ROLE" = "merge" ] && [ "${REIFY_VERIFY_RETRY_SCOPE:-}" != "failed_only" ]; then
+        add "if test -d target; then printf '{\"tree_oid\":\"%s\",\"profiles\":\"%s\",\"timestamp\":\"%s\"}\\n' \"\$(git rev-parse HEAD: 2>/dev/null || echo unknown)\" \"${PROFILES[*]}\" \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" > \"${_ATTEMPT_SIDECAR_PATH}\" 2>/dev/null || true; fi"
+    fi
+
     # PSI gate: must pass before any cargo test work starts.
     # In execute mode: eval runs this as a subprocess that inherits DF_VERIFY_ROLE
     # and REIFY_PSI_GATE_*; exit 75 (EX_TEMPFAIL) propagates → orchestrator retries.
@@ -1775,24 +1883,6 @@ add_test_passes() {
     # The slot is also freed automatically on any verify.sh exit (FD 9 closes),
     # so the failure path needs no explicit release sentinel.
     add "@@SEMAPHORE_RELEASE@@"
-
-    # retry_failed_only (task 5287): attempt-0 sidecar stamp. On a FULL merge
-    # gate (DF_VERIFY_ROLE=merge AND NOT a failed_only retry), record the tree
-    # that just passed so a later retry can tree-pin its narrowed subset against
-    # the warm _merge-verify target/. Emitted as the FINAL plan line — after
-    # @@SEMAPHORE_RELEASE@@, and add_test_passes is build_plan's last
-    # contributor — so, the plan being sequential with the executor exiting on
-    # first failure, it writes ONLY once the whole attempt-0 gate (run_all + gui
-    # + every pass, all emitted earlier) has already passed. tree_oid (git
-    # rev-parse HEAD: = the TREE OID) and timestamp are computed at RUN time;
-    # ${PROFILES[*]} is baked at build time. Guarded on `test -d target` and
-    # tolerant of git failure (|| echo unknown) and write failure (|| true),
-    # mirroring the target/.reify-bin-sha stamp (task 5133). Survives a warm-lane
-    # reseed (under target/, git clean -xfd -e target). A retry (scope=failed_only)
-    # deliberately does NOT re-stamp — DF re-runs a full attempt-0 for a new tree.
-    if [ "$DF_VERIFY_ROLE" = "merge" ] && [ "${REIFY_VERIFY_RETRY_SCOPE:-}" != "failed_only" ]; then
-        add "if test -d target; then printf '{\"tree_oid\":\"%s\",\"profiles\":\"%s\",\"timestamp\":\"%s\"}\\n' \"\$(git rev-parse HEAD: 2>/dev/null || echo unknown)\" \"${PROFILES[*]}\" \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" > \"${_ATTEMPT_SIDECAR_PATH}\" 2>/dev/null || true; fi"
-    fi
 }
 
 build_plan() {
@@ -2317,10 +2407,11 @@ build_plan() {
     # nextest_release recorded by emit_nextest_pass as it applied each profile's
     # within-ceiling subset (0 when that profile fell back / is not in the plan);
     # gui recorded by the gui block from its validated REIFY_GUI_RETRY_SPECS;
-    # run_all a build-time word-count of REIFY_RUN_ALL_MEMBER_SUBSET here
-    # (verify.sh COUNTS only — run_all.sh still owns the actual member-skip;
-    # this is a best-effort upper bound, not a post-validation count — see the
-    # detailed caveat at the counting site below).
+    # run_all the POST-VALIDATION matched count sourced from run_all.sh's OWN
+    # count-only probe (task 5373): verify.sh forks run_all.sh in a hermetic
+    # count-only mode so run_all.sh — which owns the member-skip predicate — is
+    # the single source of truth (INV-5), and a stale/renamed basename it would
+    # drop no longer inflates the count. See the counting site below.
     # Fire IFF scope=failed_only AND ≥1 suite ACTUALLY narrowed — the honest-
     # events gate (INV-6): a within-ceiling nextest subset applied for ≥1
     # profile (_RETRY_NEXTEST_*_APPLIED>0 ⇒ eligible AND usable), OR a non-empty
@@ -2334,37 +2425,61 @@ build_plan() {
     # REIFY_VERIFY_RETRY_SCOPE=failed_only ⇒ no echo, so the ~30 existing
     # plan-shape tests stay green.
     if [ "${REIFY_VERIFY_RETRY_SCOPE:-}" = "failed_only" ]; then
-        # run_all subset size: a word-count of the DF-supplied member list
-        # (verify.sh COUNTS only — run_all.sh owns the member-skip). This is a
-        # BEST-EFFORT count, not a post-validation one: if a supplied member
-        # basename doesn't exist under run_all's INFRA_DIR (e.g. renamed or
-        # deleted between DF's attempt-0 failure-set discovery and this
-        # retry's dispatch), run_all.sh WARNs and silently ignores it
-        # ("member '...' not found in $INFRA_DIR (ignored)") while this
-        # word-count still includes it — inflating run_all=N and the marker
-        # relative to what actually ran. Accepted (code-review amend, task
-        # 5290): DF constructs the subset from {failed members} that already
-        # passed attempt-0 discovery (PRD verify-retry-failed-only.md §4.2),
-        # so a dropped member is a rare edge, not the common case; fully
-        # closing it needs run_all.sh to report its post-validation member
-        # count back to verify.sh, a cross-file protocol change touching
-        # tests/infra/run_all.sh, which this task does not hold a lock on
-        # (locks: scripts/verify.sh + tests/infra/test_verify_retry_failed_only.sh
-        # only — filed as a follow-up rather than done here). set -f around
-        # the split so a stray glob in a member name cannot pathname-expand
-        # (members are .sh basenames; belt-and-suspenders), then RESTORE the
-        # caller's prior noglob state rather than unconditionally clearing it
-        # — verify.sh does not run under -f today, but a bare `set +f` would
-        # silently clobber a noglob caller for any code after build_plan.
+        # run_all subset size: the POST-VALIDATION matched count, sourced from
+        # run_all.sh's OWN count-only probe rather than a raw word-count of the
+        # DF-supplied member list (task 5373, closing task 5290's accepted gap).
+        # Previously this was a BEST-EFFORT word-count: a supplied member
+        # basename absent under run_all's INFRA_DIR (renamed/deleted between
+        # DF's attempt-0 failure-set discovery and this retry's dispatch) is
+        # WARNed-and-dropped by run_all.sh ("member '...' not found in
+        # $INFRA_DIR (ignored)") while the word-count still counted it —
+        # inflating run_all=N vs. what actually ran (INV-6 honesty gap). Now
+        # verify.sh forks run_all.sh's hermetic count-only probe
+        # (REIFY_RUN_ALL_SUBSET_COUNT_ONLY=1), which applies run_all.sh's own
+        # member-skip predicate and reports the matched count WITHOUT running
+        # any member — so run_all.sh is the single source of truth (INV-5) and
+        # the gap is CLOSED. A defensive word-count fallback (below) still
+        # fires the marker on the impossible-in-tree case where run_all.sh is
+        # missing or predates the probe.
         local _mk_run_all=0
         if [ -n "${REIFY_RUN_ALL_MEMBER_SUBSET:-}" ]; then
-            local -a _mk_ra_toks
-            local _mk_had_f=0
-            case $- in *f*) _mk_had_f=1 ;; esac
-            set -f
-            _mk_ra_toks=(${REIFY_RUN_ALL_MEMBER_SUBSET})
-            [ "$_mk_had_f" -eq 1 ] || set +f
-            _mk_run_all=${#_mk_ra_toks[@]}
+            # Fork the count-only probe. It resolves cwd-relative because
+            # build_plan runs after the `cd "$REPO_ROOT"` near verify.sh's top,
+            # exactly like the run_all.sh plan line above (both guard on
+            # `test -f tests/infra/run_all.sh`). REIFY_RUN_ALL_MEMBER_SUBSET is
+            # forwarded explicitly (it is already in the environment, but
+            # forwarding is robust to a non-exported caller). The pipe is
+            # terminated with `|| true` to stay set -e/pipefail-safe, and the
+            # anchored grep pulls exactly the machine token.
+            local _mk_ra_tok=""
+            if [ -f tests/infra/run_all.sh ]; then
+                _mk_ra_tok="$(REIFY_RUN_ALL_SUBSET_COUNT_ONLY=1 \
+                    REIFY_RUN_ALL_MEMBER_SUBSET="${REIFY_RUN_ALL_MEMBER_SUBSET}" \
+                    bash tests/infra/run_all.sh 2>/dev/null \
+                    | grep -oE '@@REIFY_RUN_ALL_SUBSET_MATCHED=[0-9]+@@' | head -n1 || true)"
+            fi
+            if [ -n "$_mk_ra_tok" ]; then
+                # Strip the @@…=<n>@@ wrapper down to the bare integer.
+                _mk_ra_tok="${_mk_ra_tok#@@REIFY_RUN_ALL_SUBSET_MATCHED=}"
+                _mk_run_all="${_mk_ra_tok%@@}"
+            else
+                # Defensive fallback — impossible in-tree (run_all.sh present
+                # and 5373-aware always emits the token). Only reached if
+                # run_all.sh is missing or predates task 5373, so it prints no
+                # token: use the prior noglob-guarded word-count so the marker
+                # still FIRES (INV-6 fire-when-narrowed) rather than
+                # under-reporting to 0. set -f around the split so a stray glob
+                # in a member name cannot pathname-expand (members are .sh
+                # basenames; belt-and-suspenders), then RESTORE the caller's
+                # prior noglob state rather than unconditionally clearing it.
+                local -a _mk_ra_toks
+                local _mk_had_f=0
+                case $- in *f*) _mk_had_f=1 ;; esac
+                set -f
+                _mk_ra_toks=(${REIFY_RUN_ALL_MEMBER_SUBSET})
+                [ "$_mk_had_f" -eq 1 ] || set +f
+                _mk_run_all=${#_mk_ra_toks[@]}
+            fi
         fi
         if [ "$_RETRY_NEXTEST_DEBUG_APPLIED" -gt 0 ] \
             || [ "$_RETRY_NEXTEST_RELEASE_APPLIED" -gt 0 ] \

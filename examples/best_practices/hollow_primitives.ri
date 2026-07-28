@@ -1,0 +1,62 @@
+module hollow_primitives
+
+// hollow_primitives.ri — IDIOM: reach for `tube` and `cylinder_centered` rather
+// than hand-rolling hollow or origin-centred solids out of booleans.
+//
+// ANTI-PATTERN this replaces:
+//     let sleeve = difference(cylinder(outer_r, h), cylinder(inner_r, h))  // don't
+//     let boss   = translate(cylinder(r, h), 0mm, 0mm, -h / 2)             // don't
+//
+// Both work, but they spend a boolean (or a transform) on something the stdlib
+// already provides, and they hide the designer's intent behind an operation the
+// reader has to decode. `tube` and `cylinder_centered` say what is meant.
+//
+// Verified contracts — the non-obvious parts:
+//
+//   tube(outer_r, inner_r, height)  — arity 3, in that order.
+//     * BASE AT z = 0, not centred: it is composed from two base-at-origin
+//       OCCT cylinders via a boolean cut, so it spans z in [0, height].
+//       There is NO `tube_centered`; centre it with an explicit translate
+//       (shown below).
+//     * Requires inner_r STRICTLY LESS THAN outer_r. `inner >= outer` is a
+//       kernel Error ("tube inner radius must be strictly less than outer
+//       radius"), so pair the two radii with a constraint rather than trusting
+//       the defaults to stay ordered as the design is parameterised.
+//
+//   cylinder_centered(radius, height)  — arity 2.
+//     * Genuinely different from `cylinder`: it lowers to Cylinder followed by
+//       Translate(dz = -height/2), putting the centroid at z = 0. Plain
+//       `cylinder(r, h)` is base-at-origin, spanning z in [0, h].
+//
+//   box_centered(width, height, depth)  — arity 3.
+//     * An OP-IDENTICAL ALIAS for `box`. OCCT's make_box already anchors the
+//       corner at (-w/2, -h/2, -d/2), so `box` is centred too and the two
+//       lower to exactly the same primitive. Use `box_centered` when you want
+//       the anchor stated at the call site; do not go looking for a difference
+//       in behaviour, because there is none.
+
+structure def HollowPrimitives {
+    param outer_r : Length = 20mm
+    param inner_r : Length = 14mm
+    param height  : Length = 30mm
+
+    // THE IDIOM: one call, no boolean, intent legible at a glance.
+    let sleeve = tube(outer_r, inner_r, height)
+
+    // `tube` is base-at-z=0, so centring is an explicit, visible step.
+    let sleeve_centered = translate(sleeve, 0mm, 0mm, -height / 2)
+
+    // `cylinder_centered` needs no such step — the centring is the point of it.
+    let boss = cylinder_centered(inner_r, height)
+
+    // `box_centered` == `box`; the name documents the anchor, nothing more.
+    let flange = box_centered(4 * outer_r, 4 * outer_r, height / 10)
+
+    let body = union(sleeve_centered, flange)
+
+    // Pins tube's kernel precondition in the design, where it can be checked,
+    // instead of leaving it to be discovered as a build failure.
+    constraint inner_r < outer_r
+    constraint inner_r > 0mm
+    constraint height > 0mm
+}

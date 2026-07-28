@@ -407,6 +407,18 @@ cancelled to match; #5321 is *filed* to generalize exactly this
 closure-staleness pattern into a standing sweep, but has not been delivered —
 perform this closure step by hand (see Cross-references).
 
+**2026-07-26:** three further instances of the same gap were found and closed
+by hand under task **#5574**: **#5537** (gating escalation `esc-5537-1`,
+dismissed 2026-07-26T08:10:36Z), **#5549** (`esc-5549-1`, dismissed
+2026-07-26T08:10:20Z) and **#5559** (`esc-5559-1`, dismissed
+2026-07-26T08:13:25Z) — each was left `blocked` after its L2 gate was
+dismissed. These three confirm the generalized rule the pattern implies: a
+gate whose escalation reaches `status=dismissed` terminates `cancelled`
+because the escalation record is `dismissed` rather than `resolved` and there
+is no landed commit to cite as `done_provenance` — independently of whether
+the ask was ultimately executed (#5537's deletions WERE executed; #5549
+needed no edit; #5559 was a false premise).
+
 ## Cross-references
 
 | Task | Role |
@@ -415,7 +427,10 @@ perform this closure step by hand (see Cross-references).
 | **#5368** | Signature-1 victim (filed 2026-07-23, ~23h after the guard commit — see Audit Findings for the deploy-lag reasoning); corrected 2026-07-24 via **esc-5368-2**. Its *deliverable* is a **design PRD**, `docs/prds/verify-confirm-failed-self-discovery.md` — **not** an implementation. `scripts/verify.sh` contains zero occurrences of `confirm-failed` as of this sweep, so `verify.sh test --confirm-failed` still hits the `*)` arm and exits 64 with the usage dump. The PRD itself (§ at line 21) records that the offline lane "already carries a defensive guard, landed as task 5308 … this guard is precisely what stopped the original false-premise mis-scrape from recurring". |
 | **#5264** | Signature-1 victim; corrected. Human-gate: **#5315** (cancelled). Also a Signature-2 victim — corrected 2026-07-26 under **esc-5316-17** (see Audit Findings). |
 | **#5295** | Signature-2 victim; corrected. Human-gate: **#5309** (cancelled) — the precedent this recipe generalizes. |
-| **#5321** | Standing recon capability generalizing the human-gate closure-staleness check (§5's "close the loop" step) beyond `offline_lane_red`; builds on this note. **Not yet delivered** (`pending` as of this sweep) — do not assume an automated sweep covers §5's closure step. |
+| **#5321** | Standing recon capability generalizing the human-gate closure-staleness check (§5's "close the loop" step) beyond `offline_lane_red`; builds on this note. **In progress** as of this sweep (was `pending`) — do not assume it is delivered yet. Its live description scopes an auto-re-dispatch action ("when the sweep confirms a stranded task's blocking premise has resolved on main, automatically trigger a re-verify/re-dispatch of that task"), but whether that extends to writing the gate's terminal status is undecided — perform §5's "close the loop" step by hand until #5321 lands and its docs say otherwise. |
+| **#5537** | *Not an `offline_lane_red` victim — cited only as a §5 closure-staleness instance.* Human gate (falsified "design-invariants.md is NOT on main" Mem0 entries misdirecting /prd decompose G7); gating escalation `esc-5537-1` dismissed 2026-07-26 (Leo: delete outright). Closed `cancelled` 2026-07-26 under **#5574** (§5 closure step — see the 2026-07-26 note above). |
+| **#5549** | *Not an `offline_lane_red` victim — cited only as a §5 closure-staleness instance.* Human gate (DF task 3018 vs 2060 conflicting "durable fix" citations in a merge-worktree-leak Mem0 cluster); gating escalation `esc-5549-1` dismissed 2026-07-26 (Leo: option (a); no edit proved necessary). Closed `cancelled` 2026-07-26 under **#5574** (§5 closure step). |
+| **#5559** | *Not an `offline_lane_red` victim — cited only as a §5 closure-staleness instance.* Human gate (re-notify 7 stranded deterministic gates, no live L2 escalation found); gating escalation `esc-5559-1` dismissed 2026-07-26 as a verified-false premise (all 7 named gates demonstrably had live L2s). Closed `cancelled` 2026-07-26 under **#5574** (§5 closure step). |
 
 ## Re-run trigger
 

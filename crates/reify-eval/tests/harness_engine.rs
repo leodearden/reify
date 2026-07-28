@@ -14,6 +14,10 @@
 mod edit_param_cell_commit_migration;
 #[path = "harness_engine/diagnostics_cache_replay_migration.rs"]
 mod diagnostics_cache_replay_migration;
+#[path = "harness_engine/joint_drive_cluster_formation.rs"]
+mod joint_drive_cluster_formation;
+#[path = "harness_engine/reset_per_build_state_classification.rs"]
+mod reset_per_build_state_classification;
 // Task #5196's capstone acceptance e2e lands here for the same reason #5056's
 // did: a NEW top-level `tests/*.rs` in a consolidatable crate would be an
 // anti-re-accretion violation (scripts/check-harness-baseline-registration.sh,

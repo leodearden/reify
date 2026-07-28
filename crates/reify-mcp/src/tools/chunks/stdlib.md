@@ -25,11 +25,17 @@ The Reify standard library (`std.*`) provides domain-specific functionality.
 
 ## Key Geometry Operations
 
-**Booleans:** `union(a, b)`, `difference(a, b)`, `intersection(a, b)`, `split(solid, surface)`
-**Modify:** `fillet(solid, edges, radius)`, `chamfer(solid, edges, distance)`, `shell(solid, faces, thickness)`, `offset_surface(surface, distance)`
-**Sweep:** `extrude(profile, direction, distance)`, `revolve(profile, axis, angle)`, `sweep(profile, path)`, `loft(profiles)`
-**Transform:** `translate(geo, vector)`, `rotate(geo, axis, angle)`, `mirror(geo, plane)`, `scale(geo, factor)`
-**Pattern:** `linear_pattern(geo, direction, count, spacing)`, `circular_pattern(geo, axis, count)`
+<!-- SYNC: signatures verified by crates/reify-compiler/tests/stdlib_chunk_geometry_ops_smoke.rs -->
+
+Positions/lengths take a `Length` (e.g. `5mm`); angles take an `Angle` (e.g. `90deg`); direction/axis/normal components and counts are plain numbers.
+
+**Booleans:** `union(a, b)`, `difference(a, b)`, `intersection(a, b)`; variadic `union_all(a, b, …)`, `intersection_all(a, b, …)`
+**Modify:** `fillet(solid, radius)` or `fillet(solid, edges, radius)`, `chamfer(solid, distance)` or `chamfer(solid, edges, distance)`, `shell(solid, thickness, faces…)` (thickness first, then optional face indices to remove), `offset_solid(solid, distance)`, `thicken(solid, offset)`, `offset_curve(curve, distance)`
+**Sweep:** `extrude(profile, distance)`, `revolve(profile, ox, oy, oz, ax, ay, az, angle)`, `sweep(profile, path)`, `loft(profile1, profile2, …)`
+**Transform:** `translate(geo, dx, dy, dz)`, `rotate(geo, ax, ay, az, angle)` or `rotate(geo, orientation)`, `mirror(geo, plane)` or `mirror(geo, ox, oy, oz, nx, ny, nz)`, `scale(geo, factor)`
+**Pattern:** `linear_pattern(geo, dx, dy, dz, count, spacing)`, `circular_pattern(geo, axis, count, angle)` or `circular_pattern(geo, ox, oy, oz, ax, ay, az, count, angle)`
+**Split:** `split(solid, plane)` → `List<Geometry>` — a topology selector (returns the pieces on each side of the plane), not a CSG boolean
+**Curves:** `line_segment(x1, y1, z1, x2, y2, z2)`, `arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az)`, `helix(radius, pitch, height)`, `interp(x1, y1, z1, …)` (coordinate triples), `bezier(x1, y1, z1, …)` (coordinate triples), `nurbs(degree, n_points, coords…, weights…)`
 
 ## Constants
 

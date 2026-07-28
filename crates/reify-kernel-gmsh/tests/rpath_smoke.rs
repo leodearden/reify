@@ -32,7 +32,6 @@
 
 #![cfg(target_os = "linux")]
 
-use std::path::PathBuf;
 use std::process::Command;
 
 /// Pin the RPATH/RUNPATH directive emitted by `build.rs` (step pre-2).
@@ -106,36 +105,9 @@ fn compiled_test_binary_embeds_rpath_to_reify_deps_lib() {
 // ---------------------------------------------------------------------
 
 fn cc_path() -> Option<&'static str> {
-    ["cc", "gcc"].into_iter().find(|c| Command::new(c).arg("--version").output().is_ok())
-}
-
-fn synthetic_tempdir() -> PathBuf {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().subsec_nanos();
-    let base = std::env::temp_dir()
-        .join(format!("reify-tbb-pin-synthetic-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&base).expect("create synthetic tempdir");
-    base
-}
-
-/// RAII guard that removes the synthetic tempdir on drop — including on a
-/// panic-unwind from an earlier `assert!`/`run_cc`/`run_bare` failure — so
-/// per-pid tempdirs under `/tmp` don't leak and accumulate across repeated
-/// CI runs when the test fails partway through. `Deref`s to `Path` so call
-/// sites can use it exactly like the `PathBuf` it wraps.
-struct TempDirGuard(PathBuf);
-
-impl std::ops::Deref for TempDirGuard {
-    type Target = std::path::Path;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl Drop for TempDirGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
+    ["cc", "gcc"]
+        .into_iter()
+        .find(|c| Command::new(c).arg("--version").output().is_ok())
 }
 
 fn run_cc(cc: &str, args: &[&str]) {
@@ -179,7 +151,13 @@ fn direct_needed_binds_pinned_leaf_over_transitive_system() {
         return;
     };
 
-    let root = TempDirGuard(synthetic_tempdir());
+    // `guard` must outlive `root`, which borrows from it: the directory is
+    // removed when `guard` drops, including on a panic-unwind from any of the
+    // asserts below.  Unlike the hand-rolled `TempDirGuard` this replaces,
+    // `tempfile::TempDir` does not `Deref` to `Path`, so `root` is bound
+    // explicitly — that keeps every `root.join(..)` call site unchanged.
+    let guard = reify_test_support::prefixed_tempdir("reify-tbb-pin-synthetic-");
+    let root = guard.path();
     let pin_dir = root.join("pin");
     let sys_dir = root.join("sys");
     let mid_dir = root.join("midlib");
@@ -310,6 +288,6 @@ fn direct_needed_binds_pinned_leaf_over_transitive_system() {
          not hold on this host/loader"
     );
 
-    // `root`'s `TempDirGuard` removes the tempdir on drop here (and would
+    // `guard` removes the tempdir on drop here (and would
     // have on an earlier panic-unwind too).
 }

@@ -18,6 +18,9 @@ This file holds **invariants and pointers only**. Mechanism detail lives in the 
 - A task running under the orchestrator must **not** `systemctl restart orchestrator-reify.service` (SIGTERMs its own agent). Use `scripts/orchestrator-redeploy-restart.sh`: schedules a detached transient unit that re-checks cleanliness and does stop-then-start after the agent exits. Never `systemctl restart` even manually — the `TimeoutStopSec=90` stop window cancels restart's start half. Modes and `ORCH_*` knobs: script header.
 - Config-only changes land fast via the merge worker's trivial-pass, **but verify-pipeline files are never trivially config-only**. Consult the oracle: `bash scripts/verify-pipeline-guard.sh requires-full-gate <changed-files...>` — exit 0 means the full `--scope all` gate is required (manifest: `scripts/verify-pipeline-paths.txt`).
 
+### Formatting
+- Reify has **no rustfmt gate**: no `rustfmt.toml`/`.rustfmt.toml` exists, and no verify-pipeline file references `cargo fmt`/`rustfmt` — the workspace was never rustfmt-formatted (`cargo fmt --all --check` reports ~5913 hunks across 685 of 1755 tracked `.rs` files). Never run `cargo fmt --all`, `cargo fmt -p <crate>`, or any crate-wide/whole-file fmt for a targeted fix — it's an unbounded rewrite that, combined with a broad `git add`, becomes a silent cross-module scope breach. For a targeted fix, check only the touched files with `rustfmt --edition 2024 --check <touched files>` and rewrite a hunk only when it falls entirely inside your own new code. Canonical source: Mem0 procedural memory `0b746438-6ce8-435c-885c-b3ac82666764`.
+
 ### Native deps
 - A `manifold-csg-sys` pin bump requires re-running `scripts/build-manifold-deps.sh` (all four native kernels — OCCT, OpenVDB, gmsh, manifold — link prebuilt libs from `/opt/reify-deps`; a `links`-override in `.cargo/config.toml` skips the from-source build, scoped to `x86_64-unknown-linux-gnu` so wasm keeps FetchContent). `scripts/check-manifold-deps.sh` preflights this as the first Rust verify step.
 - `scripts/build-manifold-deps.sh` also materializes a tbb-only RUNPATH pin dir at `/opt/reify-deps/tbb-pin` (a `libtbb.so.12` symlink to the deps lib) alongside the four kernels, preflighted by `scripts/check-manifold-deps.sh`; each workspace binary (`reify`, `reify-gui`) prepends it FIRST in its own RUNPATH plus a forced direct `NEEDED libtbb.so.12` (mechanism A″), so bare `./reify` / `./reify-gui` launches resolve the deps oneTBB symbols without `LD_LIBRARY_PATH`.
@@ -62,6 +65,7 @@ Every `TODO`/`FIXME`/`HACK` comment, `todo!()`/`unimplemented!()` stub, and bloc
 | Warm-lane CoW pool lifecycle & invariants | `docs/prds/warm-lane-pool-cow-seeding.md` §9.3/§9.5; sizing, audit & admission: `docs/prds/warm-lane-pool-sizing-lifecycle.md` |
 | Warm-lane audit CLI, output fields & run cadence | `docs/notes/warm-lane-audit-runbook.md` (operational digest); `scripts/warm-lane-audit.sh` header |
 | Orphaned test-binary reaper (two layers + `REIFY_REAPER_*` knobs) | `docs/notes/orphaned-test-binary-reaper.md`; `scripts/lib_proc_reaper.sh` |
+| offline_lane_red task-record corruption: audit + remediation recipe | `docs/notes/offline-lane-red-corruption-remediation.md` |
 | Orchestrator safe-restart modes & knobs | `scripts/orchestrator-redeploy-restart.sh` header |
 | Debug-port provisioning contract | `scripts/setup-worktree-debug-port.sh` header |
 | PTODO grammar & violation taxonomy | `docs/prds/reify-audit-ptodo-detector.md` §8 |

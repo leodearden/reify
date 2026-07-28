@@ -132,6 +132,15 @@ assert "W3-all: compile-gate index < psi-gate index" \
 # Ordering: compile-gate < ACQUIRE marker (block-entry gate for unified build+test block).
 # No --no-run line exists in the plan (task 4862 revert: build+test in one slot-held block).
 # (PLAN_TEST_FULL includes comment lines so the ACQUIRE marker is visible)
+#
+# The test-line greps below match `cargo (test|nextest run)` — the same
+# alternation already used at W7 and throughout test_verify_role_prio.sh — so
+# they hold on a host WITHOUT cargo-nextest, where verify.sh gracefully emits
+# `cargo test` instead (plan header nextest=0). Both the ordering property and
+# the absence of --no-run are plan-shape facts, not nextest-specific ones; the
+# bare `cargo nextest run` form made the ordering assert FAIL and the --no-run
+# assert pass VACUOUSLY on such a host (task 5599). Guarded by
+# tests/infra/test_verify_nextest_absent_suites.sh.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- W4: test plan contains compile-gate ordered before ACQUIRE (block-entry gate, tasks 4853/4862) ---"
@@ -139,13 +148,13 @@ echo "--- W4: test plan contains compile-gate ordered before ACQUIRE (block-entr
 assert "W4: 'test --print-plan' DOES contain compile-gate (task 4853)" \
     bash -c 'printf "%s\n" "$1" | grep -q "verify\.sh compile-gate"' _ "$PLAN_TEST"
 
-assert "W4: NO 'cargo nextest run ... --no-run' line in test plan (task 4862 revert: build inside slot)" \
-    bash -c '! printf "%s\n" "$1" | grep -q "cargo nextest run.*--no-run"' _ "$PLAN_TEST_FULL"
+assert "W4: NO 'cargo (test|nextest run) ... --no-run' line in test plan (task 4862 revert: build inside slot)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run).*--no-run"' _ "$PLAN_TEST_FULL"
 
-assert "W4: compile-gate index < first 'cargo nextest run' (build+exec) line in test plan" \
+assert "W4: compile-gate index < first 'cargo (test|nextest run)' (build+exec) line in test plan" \
     bash -c '
         cg_ln=$(printf "%s\n" "$1" | grep -n "verify\.sh compile-gate" | head -1 | cut -d: -f1)
-        nextest_ln=$(printf "%s\n" "$1" | grep -n "cargo nextest run" | head -1 | cut -d: -f1)
+        nextest_ln=$(printf "%s\n" "$1" | grep -nE "cargo (test|nextest run)" | head -1 | cut -d: -f1)
         [ -n "$cg_ln" ] && [ -n "$nextest_ln" ] && [ "$cg_ln" -lt "$nextest_ln" ]
     ' _ "$PLAN_TEST_FULL"
 

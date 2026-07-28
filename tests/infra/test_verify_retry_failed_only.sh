@@ -78,10 +78,20 @@ ID2="reify_core::bar::test_beta"
 printf '%s\n%s\n' "$ID1" "$ID2" > "$FILTER"
 
 # Two gui spec paths and two run_all member basenames for the run_all/gui arms.
+# The run_all members must be REAL basenames present in tests/infra: since task
+# 5373, verify.sh sources the marker's run_all count from run_all.sh's
+# count-only probe, which counts ONLY members that actually exist. A bogus
+# basename (the old test_x.sh/test_y.sh) would validate to 0 and flip the
+# count(b)/B4 `run_all=2` locks below. RAMEMBER1 is THIS test's own basename
+# (guaranteed present, rename-proof — it is literally executing; the count-only
+# probe only COUNTS it, never runs it, so there is no recursion) and RAMEMBER2
+# is another present member. The one-valid-one-bogus honesty case (run_all=1)
+# is asserted separately near the tail (search "B4-honesty").
 GSPEC1="src/__tests__/a.test.ts"
 GSPEC2="src/__tests__/b.test.ts"
-RAMEMBER1="test_x.sh"
-RAMEMBER2="test_y.sh"
+SELF_BASENAME="$(basename "${BASH_SOURCE[0]}")"
+RAMEMBER1="$SELF_BASENAME"
+RAMEMBER2="test_verify_retry_subset.sh"
 
 # --- nextest availability probe (off the byte-identical default plan) --------
 PLAN_DEFAULT="$(bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
@@ -310,6 +320,35 @@ _B4_toks=($RAMEMBER1 $RAMEMBER2); _B4_N=${#_B4_toks[@]}
 assert "B4: marker run_all=$_B4_N equals the REIFY_RUN_ALL_MEMBER_SUBSET member count (β signal)" \
     bash -c 'printf "%s\n" "$1" | grep -F -- "$2" | grep -qF -- "run_all=$3"' \
     _ "$PLAN_CB" "$MARKER" "$_B4_N"
+
+# B4-honesty (task 5373, PRD §4.4 INV-6): the marker's run_all arm is now the
+# POST-VALIDATION matched count sourced from run_all.sh's count-only probe, NOT
+# a raw word-count of REIFY_RUN_ALL_MEMBER_SUBSET. A subset naming one PRESENT
+# member ($SELF_BASENAME) + one guaranteed-ABSENT basename must therefore report
+# run_all=1 — the absent name is dropped exactly as run_all.sh would drop it
+# (loud WARNING, never run) — NOT the over-reported run_all=2. Host-independent:
+# the run_all arm's marker fires regardless of nextest availability. This is the
+# honesty gap task 5373 closes.
+# RED at base: verify.sh still word-counts, so it emits run_all=2.
+echo ""
+echo "--- B4-honesty: one present + one absent run_all member ⇒ marker carries run_all=1 (not word-count 2) ---"
+
+PLAN_HONEST="$(REIFY_VERIFY_RETRY_SCOPE=failed_only \
+    REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER" \
+    REIFY_RUN_ALL_MEMBER_SUBSET="$SELF_BASENAME test_bogus_nonexistent_zzz.sh" \
+    bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
+
+assert "B4-honesty: one present + one absent run_all member ⇒ marker carries run_all=1 (post-validation count)" \
+    bash -c 'printf "%s\n" "$1" | grep -F -- "$2" | grep -qF -- "run_all=1"' \
+    _ "$PLAN_HONEST" "$MARKER"
+
+# Far-side guard: the over-reported word-count value (run_all=2) must NOT appear
+# on the marker line — pins the count to exactly the one present member.
+assert "B4-honesty: marker does NOT carry the over-reported run_all=2 (absent member dropped)" \
+    bash -c '! { printf "%s\n" "$1" | grep -F -- "$2" | grep -qF -- "run_all=2"; }' \
+    _ "$PLAN_HONEST" "$MARKER"
 
 # --- assertion sections are appended above this line by steps 1/3/5/7 ---
 test_summary

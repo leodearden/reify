@@ -17,24 +17,7 @@
 //! only prelude-callable via `compile_with_stdlib`.
 
 use reify_core::{DiagnosticCode, Severity, Type};
-use reify_test_support::compile_source_with_stdlib;
-
-// ── helper (mirrors option_recovery_resolution_tests.rs) ────────────────────
-
-fn cell_expr_stdlib<'a>(
-    module: &'a reify_compiler::CompiledModule,
-    member: &str,
-) -> &'a reify_ir::CompiledExpr {
-    let template = &module.templates[0];
-    template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == member)
-        .unwrap_or_else(|| panic!("value cell '{member}' not found"))
-        .default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("value cell '{member}' has no default_expr"))
-}
+use reify_test_support::{compile_source_with_stdlib, get_let_expr};
 
 // ── (h) std/result module still loads clean ──────────────────────────────────
 
@@ -100,7 +83,7 @@ structure S {
         errors
     );
 
-    let v_expr = cell_expr_stdlib(&module, "v");
+    let v_expr = get_let_expr(&module, "v");
     assert_eq!(
         v_expr.result_type,
         Type::length(),
@@ -135,7 +118,7 @@ structure S {
         errors
     );
 
-    let v_expr = cell_expr_stdlib(&module, "v");
+    let v_expr = get_let_expr(&module, "v");
     assert_eq!(
         v_expr.result_type,
         Type::length(),
@@ -170,7 +153,7 @@ structure S {
         errors
     );
 
-    let b_expr = cell_expr_stdlib(&module, "b");
+    let b_expr = get_let_expr(&module, "b");
     assert_eq!(
         b_expr.result_type,
         Type::Bool,
@@ -203,7 +186,7 @@ structure S {
         errors
     );
 
-    let b_expr = cell_expr_stdlib(&module, "b");
+    let b_expr = get_let_expr(&module, "b");
     assert_eq!(
         b_expr.result_type,
         Type::Bool,
@@ -247,7 +230,7 @@ structure S {
         errors
     );
 
-    let w_expr = cell_expr_stdlib(&module, "w");
+    let w_expr = get_let_expr(&module, "w");
     assert_eq!(
         w_expr.result_type,
         Type::Applied {
@@ -292,7 +275,7 @@ structure S {
         errors
     );
 
-    let m_expr = cell_expr_stdlib(&module, "m");
+    let m_expr = get_let_expr(&module, "m");
     assert_eq!(
         m_expr.result_type,
         Type::Applied {
@@ -333,7 +316,7 @@ structure S {
         errors
     );
 
-    let o_expr = cell_expr_stdlib(&module, "o");
+    let o_expr = get_let_expr(&module, "o");
     assert_eq!(
         o_expr.result_type,
         Type::Applied {
@@ -393,7 +376,7 @@ structure S {
         diag.message
     );
 
-    let v_expr = cell_expr_stdlib(&module, "v");
+    let v_expr = get_let_expr(&module, "v");
     assert_eq!(
         v_expr.result_type,
         Type::Error,
@@ -432,7 +415,7 @@ structure S {
         errors
     );
 
-    let v_expr = cell_expr_stdlib(&module, "v");
+    let v_expr = get_let_expr(&module, "v");
     assert_eq!(
         v_expr.result_type,
         Type::length(),

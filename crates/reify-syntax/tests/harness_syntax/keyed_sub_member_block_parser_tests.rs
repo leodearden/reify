@@ -11,8 +11,7 @@
 use reify_ast::{Declaration, ExprKind, MemberDecl, UnitExpr};
 use reify_core::ModulePath;
 
-mod common;
-use common::{find_cst_node, make_ts_parser};
+use crate::common::{find_cst_node, make_ts_parser};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

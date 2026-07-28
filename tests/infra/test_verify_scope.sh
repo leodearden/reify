@@ -36,6 +36,21 @@ _TMPDIRS=()
 cleanup() { for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done; }
 trap cleanup EXIT
 
+# Hermetic against the ambient REIFY_RELEASE_DELTA_SKIP knob (task #5280 zeta;
+# dark-factory-orchestrator.yaml exports it into the whole merge-gate verify.sh
+# process tree once armed). The knob is consulted ONLY under DF_VERIFY_ROLE=merge
+# (scripts/verify.sh's _RELEASE_DELTA_SKIP block) and, when 1 on a delta-clean
+# tree, swaps a captured release nextest pass for the frozen
+# 'RELEASE-PASS: skipped (delta-clean)' marker. This file re-asserts
+# DF_VERIFY_ROLE=merge inline for several --print-plan fixtures below (e.g.
+# B-KLOC-merge, MG-B5, MG-B6A/B6B), so neutralize the knob for the WHOLE file
+# exactly once here -- mirroring tests/infra/run_all.sh's pool-wide
+# `export REIFY_RELEASE_DELTA_SKIP=0` -- rather than per-capture, so a future
+# merge-role capture can't reintroduce the same masking gap (task 5460). A
+# test that legitimately exercises the knob would set it inline per-command,
+# which overrides this export.
+export REIFY_RELEASE_DELTA_SKIP=0
+
 echo "=== verify.sh scope picker tests ==="
 
 # make_fixture VARNAME — create an isolated git repo with the three scripts
@@ -147,8 +162,19 @@ plan_for staged crates/reify-doc/src/lib.rs
 assert "reify-doc: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
 assert "reify-doc: clippy present" plan_has 'cargo clippy --workspace'
-assert "reify-doc: nextest workspace pass present (no --exclude, OCCT folded in, task 4451)" plan_has 'cargo nextest run --workspace'
-assert "reify-doc: nextest workspace pass has NO --exclude (task 4451: OCCT in pool)" plan_lacks 'cargo nextest run --workspace.*--exclude'
+# RUNNER-AGNOSTIC PLAN-SHAPE ASSERTS (task 5604). From here on, every
+# plan_has/plan_lacks that names the test pass matches the ERE alternation
+# `cargo (test|nextest run)` rather than the literal `cargo nextest run`, so
+# these asserts check plan SHAPE rather than runner identity. Rationale and
+# verify.sh's two emission branches: see the "WHY THE FALLBACK IS
+# SHAPE-IDENTICAL" block in tests/infra/test_verify_nextest_absent_suites.sh,
+# which is the canonical copy and is what pins this suite (S5, floor 153).
+# Runner identity itself is pinned separately by the `nextest=N` plan header,
+# which tests/infra/test_verify_nextest_probe.sh owns.
+# The assert TITLES still say "nextest" — deliberately left alone, so they
+# keep matching the FAIL lines recorded in that guard's audit trail.
+assert "reify-doc: nextest workspace pass present (no --exclude, OCCT folded in, task 4451)" plan_has 'cargo (test|nextest run) --workspace'
+assert "reify-doc: nextest workspace pass has NO --exclude (task 4451: OCCT in pool)" plan_lacks 'cargo (test|nextest run) --workspace.*--exclude'
 assert "reify-doc: gated OCCT pass ABSENT" plan_lacks 'cargo-test-occt-gated\.sh'
 
 # ---------------------------------------------------------------------------
@@ -160,8 +186,8 @@ plan_for staged crates/reify-eval/src/cache.rs
 assert "reify-eval: scope decision RUN_OCCT_GATE=1" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_OUT"
 assert "reify-eval: no gated OCCT pass (task 4451: OCCT folded into nextest pool)" plan_lacks 'cargo-test-occt-gated\.sh'
-assert "reify-eval: nextest workspace pass present (OCCT folded in, task 4451)" plan_has 'cargo nextest run --workspace'
-assert "reify-eval: nextest workspace pass has NO --exclude (task 4451)" plan_lacks 'cargo nextest run --workspace.*--exclude'
+assert "reify-eval: nextest workspace pass present (OCCT folded in, task 4451)" plan_has 'cargo (test|nextest run) --workspace'
+assert "reify-eval: nextest workspace pass has NO --exclude (task 4451)" plan_lacks 'cargo (test|nextest run) --workspace.*--exclude'
 
 # ---------------------------------------------------------------------------
 # Scenario 5: gui/src-tauri (Rust crate, OCCT-clean) -> Rust+GUI, no gate
@@ -183,8 +209,8 @@ plan_for staged Cargo.lock
 assert "Cargo.lock: scope decision RUN_OCCT_GATE=1" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_OUT"
 assert "Cargo.lock: no gated OCCT pass (task 4451: OCCT folded into nextest pool)" plan_lacks 'cargo-test-occt-gated\.sh'
-assert "Cargo.lock: nextest workspace pass present with no --exclude (task 4451)" plan_has 'cargo nextest run --workspace'
-assert "Cargo.lock: nextest workspace pass has NO --exclude (OCCT folded in)" plan_lacks 'cargo nextest run --workspace.*--exclude'
+assert "Cargo.lock: nextest workspace pass present with no --exclude (task 4451)" plan_has 'cargo (test|nextest run) --workspace'
+assert "Cargo.lock: nextest workspace pass has NO --exclude (OCCT folded in)" plan_lacks 'cargo (test|nextest run) --workspace.*--exclude'
 
 # ---------------------------------------------------------------------------
 # Scenario 7: unrecognised path -> conservative rust+gui+gate
@@ -293,6 +319,67 @@ plan_for_branch() {
     for f in "$@"; do rm -f "$FIX_B/$f"; done
 }
 
+# FIX_MOD — shared fixture for the MODIFY-vector (B-KLOC-mod-*) and rename
+# (B-KLOC-rename) scenarios below. An `M` status requires each target file to
+# already exist at the merge-base, so (like B-KLOC-mod-*'s dedicated fixture
+# used to) it can't reuse plan_for_branch's shared FIX_B — seeding these
+# targets into FIX_B's `main` would leak them into every OTHER branch
+# scenario's diff (they all share FIX_B's base). Unlike a private
+# per-scenario fixture, ALL targets are seeded into ONE fixture's merge-base
+# commit, up front, a single time: a file committed at the merge-base but
+# left untouched on a given scenario's task-branch simply never appears in
+# that scenario's `git diff <merge-base>`, so sharing one fixture is
+# behaviourally identical to giving each scenario its own — at a quarter of
+# the setup cost (one mktemp + script-copy + assert_source_closure_copied +
+# git init instead of four). Left dirty; reclaimed by the existing EXIT trap
+# via _TMPDIRS (FIX_B5/FIX_C5/FIX_KLOC_MERGE dedicated-inline-fixture idiom).
+FIX_MOD=""
+make_branch_fixture FIX_MOD
+for _f in crates/reify-eval/tests/harness_probe/nested.rs \
+          crates/reify-eval/tests/harness_probe.rs \
+          crates/reify-eval/tests/zz_grandfathered.rs \
+          crates/reify-eval/tests/foo.rs \
+          crates/reify-eval/src/lib.rs; do
+    mkdir -p "$FIX_MOD/$(dirname "$_f")"
+    printf 'seed\n' > "$FIX_MOD/$_f"
+    git -C "$FIX_MOD" add "$_f"
+done
+git -C "$FIX_MOD" commit -q -m "seed B-KLOC-mod-*/B-KLOC-rename targets"
+
+# plan_for_branch_modify <file...> — checkout a fresh task-branch off
+# FIX_MOD's main, grow (append to) the given already-seeded file(s) so each
+# shows up as an `M`, not an `A`, in `git diff "$_MERGE_BASE"`, capture
+# verify.sh --print-plan output into PLAN_OUT, then restore main and delete
+# the branch (mirrors plan_for_branch's own teardown, above).
+plan_for_branch_modify() {
+    local f
+    git -C "$FIX_MOD" checkout -q -b task-branch
+    for f in "$@"; do printf 'grown\n' >> "$FIX_MOD/$f"; done
+    git -C "$FIX_MOD" commit -q -am "grow"          # M, not A, in `git diff <merge-base>`
+    PLAN_OUT="$(cd "$FIX_MOD" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+    git -C "$FIX_MOD" checkout -q main
+    git -C "$FIX_MOD" branch -q -D task-branch
+}
+
+# plan_for_branch_rename <src> <dst> <root> <mod-line> — the actual
+# rename-based consolidation absorb the A+M broadening exists for: checkout a
+# fresh task-branch off FIX_MOD's main, `git mv` <src> to <dst> (git's
+# default rename detection tags this R100 — verified empirically to be
+# excluded by --diff-filter=AM, so the mv itself leaves no A/M trace), then
+# append <mod-line> to <root> (the C1-required `#[path] mod` declaration) so
+# the root shows up as an `M`. Capture PLAN_OUT, restore main, delete branch.
+plan_for_branch_rename() {
+    local src="$1" dst="$2" root="$3" mod_line="$4"
+    git -C "$FIX_MOD" checkout -q -b task-branch
+    mkdir -p "$FIX_MOD/$(dirname "$dst")"
+    git -C "$FIX_MOD" mv "$src" "$dst"
+    printf '%s\n' "$mod_line" >> "$FIX_MOD/$root"
+    git -C "$FIX_MOD" commit -q -am "rename absorb"
+    PLAN_OUT="$(cd "$FIX_MOD" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+    git -C "$FIX_MOD" checkout -q main
+    git -C "$FIX_MOD" branch -q -D task-branch
+}
+
 # ---------------------------------------------------------------------------
 # Scenario B1: docs-only branch -> nothing heavy (empty plan)
 # ---------------------------------------------------------------------------
@@ -315,8 +402,8 @@ plan_for_branch crates/reify-doc/src/lib.rs
 assert "branch/reify-doc: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
 assert "branch/reify-doc: clippy present" plan_has 'cargo clippy --workspace'
-assert "branch/reify-doc: nextest workspace pass present (no --exclude, task 4451)" plan_has 'cargo nextest run --workspace'
-assert "branch/reify-doc: nextest workspace pass has NO --exclude (OCCT folded in, task 4451)" plan_lacks 'cargo nextest run --workspace.*--exclude'
+assert "branch/reify-doc: nextest workspace pass present (no --exclude, task 4451)" plan_has 'cargo (test|nextest run) --workspace'
+assert "branch/reify-doc: nextest workspace pass has NO --exclude (OCCT folded in, task 4451)" plan_lacks 'cargo (test|nextest run) --workspace.*--exclude'
 assert "branch/reify-doc: gated OCCT pass ABSENT" plan_lacks 'cargo-test-occt-gated\.sh'
 
 # ---------------------------------------------------------------------------
@@ -373,8 +460,8 @@ plan_for_branch crates/reify-eval/src/lib.rs
 assert "branch/reify-eval: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_OUT"
 assert "branch/reify-eval: no gated OCCT pass (task 4451: OCCT folded into nextest pool)" plan_lacks 'cargo-test-occt-gated\.sh'
-assert "branch/reify-eval: nextest workspace pass present (OCCT in pool, task 4451)" plan_has 'cargo nextest run --workspace'
-assert "branch/reify-eval: nextest workspace pass has NO --exclude (task 4451)" plan_lacks 'cargo nextest run --workspace.*--exclude'
+assert "branch/reify-eval: nextest workspace pass present (OCCT in pool, task 4451)" plan_has 'cargo (test|nextest run) --workspace'
+assert "branch/reify-eval: nextest workspace pass has NO --exclude (task 4451)" plan_lacks 'cargo (test|nextest run) --workspace.*--exclude'
 assert "branch/reify-eval: clippy present" plan_has 'cargo clippy --workspace'
 
 # ---------------------------------------------------------------------------
@@ -416,17 +503,33 @@ assert "C5/no-main: full scope forced (RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1)" \
 
 # ---------------------------------------------------------------------------
 # Scenario B-KLOC: new top-level standalone crate test file on a branch
-# triggers the harness-kLOC guard (task 5328).
+# triggers the harness-kLOC guard (task 5328). Task 5621 broadens the trigger
+# to ALSO accept a nested harness-module file
+# (crates/<c>/tests/harness_<subsystem>/**, recursive) as an accepted trigger
+# shape alongside the top-level-standalone and harness-root vectors — NOT
+# because today's landed rule (a) sums nested-file lines into its measure (it
+# doesn't: harness_layout_violations() globs only the top-level *.rs and
+# `wc -l`s just the harness_*.rs root itself), but because it is the
+# forward-compatible trigger for task #5463 (in-progress, un-landed — tracked
+# to change rule (a) to sum the root plus its whole harness_<subsystem>/
+# subtree), and — even before #5463 lands — a cheap, redundant
+# belt-and-braces net for a nested edit whose C1-required root `#[path] mod`
+# companion edit is missing from the same branch diff.
 #
 # tests/infra/test_harness_kloc_cap.sh (the C2 anti-re-accretion guard) has no
 # row in scripts/verify-pipeline-infra-tests.txt (its trigger is not a single
 # artifact path — it is *adding* a new top-level standalone
-# crates/<c>/tests/*.rs file in one of the 5 consolidatable crates). This
-# exercises select_harness_kloc_guard()'s own added-file scan (git diff
-# --diff-filter=A against the merge-base), wired into SELECTED_INFRA_GLOBS
-# alongside select_infra_tests(). Positive cases pin two of the 5
-# consolidatable crates; boundary cases guard against over-firing on a source
-# file, a nested harness-module file, and a non-consolidatable crate's test.
+# crates/<c>/tests/*.rs file, OR a nested crates/<c>/tests/harness_*/** file,
+# in one of the 5 consolidatable crates). This exercises
+# select_harness_kloc_guard()'s own changed-file scan (git diff --name-status
+# --diff-filter=AM against the merge-base; per-shape status policy documented
+# in the B-KLOC-mod-* block below), wired into SELECTED_INFRA_GLOBS alongside
+# select_infra_tests(). Positive cases pin two of the 5 consolidatable crates
+# via the top-level vector, plus a further two via the nested-harness-module
+# vector (one exercising recursion below the module dir). Boundary cases
+# guard against over-firing on a source file, a nested file OUTSIDE any
+# harness_*/ module dir, and a non-consolidatable crate's test (both the
+# top-level and the nested-harness-module shape).
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Scenario B-KLOC: new crates/reify-eval/tests/*.rs branch -> harness-kLOC guard selected (RED until step-2) ---"
@@ -447,9 +550,27 @@ assert "B-KLOC-src: plan LACKS test_harness_kloc_cap.sh (src file, not a top-lev
     plan_lacks 'tests/infra/test_harness_kloc_cap\.sh'
 
 echo ""
-echo "--- Scenario B-KLOC-nested: crates/reify-eval/tests/harness_probe/nested.rs branch (nested harness-module file) -> guard NOT selected (no-op boundary) ---"
+echo "--- Scenario B-KLOC-nested: crates/reify-eval/tests/harness_probe/nested.rs branch (nested harness-module file) -> guard selected (forward-looking/belt-and-braces trigger, RED until step-2) ---"
 plan_for_branch crates/reify-eval/tests/harness_probe/nested.rs
-assert "B-KLOC-nested: plan LACKS test_harness_kloc_cap.sh (nested, not top-level tests/*.rs)" \
+assert "B-KLOC-nested: plan contains test_harness_kloc_cap.sh (nested harness-module file is an accepted trigger shape, ahead of #5463's rule-(a) aggregate)" \
+    plan_has 'tests/infra/test_harness_kloc_cap\.sh'
+
+echo ""
+echo "--- Scenario B-KLOC-nested-deep: crates/reify-cli/tests/harness_cli/sub/deep.rs branch (recursion below the module dir) -> guard selected (2nd crate, RED until step-2) ---"
+plan_for_branch crates/reify-cli/tests/harness_cli/sub/deep.rs
+assert "B-KLOC-nested-deep: plan contains test_harness_kloc_cap.sh (recursive nested harness-module file)" \
+    plan_has 'tests/infra/test_harness_kloc_cap\.sh'
+
+echo ""
+echo "--- Scenario B-KLOC-nested-nonharness: crates/reify-eval/tests/common/helper.rs branch (nested, NOT under a harness_*/ module dir) -> guard NOT selected (no-op boundary) ---"
+plan_for_branch crates/reify-eval/tests/common/helper.rs
+assert "B-KLOC-nested-nonharness: plan LACKS test_harness_kloc_cap.sh (nested file outside any harness_*/ module dir is not an accepted trigger shape, today or under #5463's future aggregate)" \
+    plan_lacks 'tests/infra/test_harness_kloc_cap\.sh'
+
+echo ""
+echo "--- Scenario B-KLOC-nested-noncons: crates/reify-doc/tests/harness_probe/nested.rs branch (nested harness-module shape, crate NOT one of the 5 consolidatable) -> guard NOT selected (no-op boundary) ---"
+plan_for_branch crates/reify-doc/tests/harness_probe/nested.rs
+assert "B-KLOC-nested-noncons: plan LACKS test_harness_kloc_cap.sh (reify-doc is not consolidatable, even for the nested-harness-module vector)" \
     plan_lacks 'tests/infra/test_harness_kloc_cap\.sh'
 
 echo ""
@@ -457,6 +578,56 @@ echo "--- Scenario B-KLOC-noncons: crates/reify-doc/tests/probe.rs branch (crate
 plan_for_branch crates/reify-doc/tests/probe.rs
 assert "B-KLOC-noncons: plan LACKS test_harness_kloc_cap.sh (reify-doc is not consolidatable)" \
     plan_lacks 'tests/infra/test_harness_kloc_cap\.sh'
+
+# ---------------------------------------------------------------------------
+# Scenario B-KLOC-mod-*: MODIFY (not ADD) vector, task 5621. --diff-filter is
+# broadened to A+M for the harness root and nested harness-module files ONLY:
+# a modified harness root grows that harness's rule-(a) kLOC measure exactly
+# like an added one, and is also the only diff trace a rename-based
+# consolidation absorb leaves (--diff-filter excludes R entries — pinned
+# below by Scenario B-KLOC-rename). A modified NESTED harness-module file is
+# accepted for the same forward-looking/belt-and-braces reasons the ADD
+# vector is (see the B-KLOC family header above and the block header comment
+# in scripts/verify.sh) — not because it moves today's rule-(a) measure,
+# which today reads only the root. A modified top-level non-harness
+# standalone stays ADDS-ONLY — rule-(b) re-accretion is an ADD by
+# construction, so widening that shape to M would fire on ordinary edits to
+# an already-grandfathered file for zero possible signal.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario B-KLOC-mod-nested: crates/reify-eval/tests/harness_probe/nested.rs branch MODIFY -> guard selected (RED until step-4) ---"
+plan_for_branch_modify crates/reify-eval/tests/harness_probe/nested.rs
+assert "B-KLOC-mod-nested: plan contains test_harness_kloc_cap.sh (modified nested harness-module file is an accepted trigger shape, ahead of #5463's rule-(a) aggregate)" \
+    plan_has 'tests/infra/test_harness_kloc_cap\.sh'
+
+echo ""
+echo "--- Scenario B-KLOC-mod-root: crates/reify-eval/tests/harness_probe.rs branch MODIFY -> guard selected (RED until step-4) ---"
+plan_for_branch_modify crates/reify-eval/tests/harness_probe.rs
+assert "B-KLOC-mod-root: plan contains test_harness_kloc_cap.sh (modified harness root grows the measure; also the only visible trace of a rename-based absorb)" \
+    plan_has 'tests/infra/test_harness_kloc_cap\.sh'
+
+echo ""
+echo "--- Scenario B-KLOC-rename: crates/reify-eval/tests/foo.rs branch RENAME into harness_probe/ + root #[path] mod edit -> guard selected (pins the rename-absorb vector the A+M broadening exists for) ---"
+plan_for_branch_rename crates/reify-eval/tests/foo.rs crates/reify-eval/tests/harness_probe/foo.rs \
+    crates/reify-eval/tests/harness_probe.rs '#[path = "harness_probe/foo.rs"] mod foo;'
+assert "B-KLOC-rename: plan contains test_harness_kloc_cap.sh (rename-based consolidation absorb: git's default rename detection excludes the R100 mv, so the root's M carries the trigger)" \
+    plan_has 'tests/infra/test_harness_kloc_cap\.sh'
+
+echo ""
+echo "--- Scenario B-KLOC-mod-standalone: crates/reify-eval/tests/zz_grandfathered.rs branch MODIFY -> guard NOT selected (adds-only boundary) ---"
+plan_for_branch_modify crates/reify-eval/tests/zz_grandfathered.rs
+assert "B-KLOC-mod-standalone: plan LACKS test_harness_kloc_cap.sh (top-level non-harness standalone stays adds-only; modifying an already-grandfathered file is a no-op)" \
+    plan_lacks 'tests/infra/test_harness_kloc_cap\.sh'
+assert "B-KLOC-mod-standalone: plan non-empty (helper produced a real plan — an empty capture can't masquerade as this negative result)" \
+    plan_has 'cargo clippy --workspace'
+
+echo ""
+echo "--- Scenario B-KLOC-mod-src: crates/reify-eval/src/lib.rs branch MODIFY -> guard NOT selected (helper sanity) ---"
+plan_for_branch_modify crates/reify-eval/src/lib.rs
+assert "B-KLOC-mod-src: plan LACKS test_harness_kloc_cap.sh (modified non-test file never fires)" \
+    plan_lacks 'tests/infra/test_harness_kloc_cap\.sh'
+assert "B-KLOC-mod-src: plan non-empty (helper produced a real plan — a modified crates/reify-eval/src/lib.rs forces the Rust poles)" \
+    plan_has 'RUN_RUST=1'
 
 # ---------------------------------------------------------------------------
 # Scenario B-KLOC-merge: DF_VERIFY_ROLE=merge + a consolidatable-crate test add
@@ -739,14 +910,20 @@ assert "Intersect/C3: RUN_OCCT_GATE=0 from changed file (reify-doc is non-OCCT)"
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
 assert "Intersect/C3: no cargo-test-occt-gated.sh in plan (task 4451: OCCT folded into nextest pool)" \
     bash -c '! printf "%s\n" "$1" | grep -q "cargo-test-occt-gated\.sh"' _ "$PLAN_OUT"
+# Same runner-agnostic convention as the plan_has/plan_lacks asserts above
+# (task 5604): the `grep -qE` bodies below also match the
+# `cargo (test|nextest run)` alternation, because the tokens they check
+# (-p <crate>, --workspace, --release) are emitted identically by verify.sh's
+# nextest and cargo-test branches. These sites were already `grep -qE`, so
+# only the pattern changed — no BRE/ERE switch was needed.
 assert "Intersect/C3: nextest pass has -p reify-eval (OCCT crate in narrowed nextest pass, task 4451)" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "cargo nextest run .*-p reify-eval"' _ "$PLAN_OUT"
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) .*-p reify-eval"' _ "$PLAN_OUT"
 assert "Intersect/C3: nextest pass LACKS reify-kernel-occt (only affected ∩ OCCT, not full OCCT set)" \
-    bash -c '! printf "%s\n" "$1" | grep -qE "cargo nextest run .*-p reify-kernel-occt"' _ "$PLAN_OUT"
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) .*-p reify-kernel-occt"' _ "$PLAN_OUT"
 assert "Intersect/C3: nextest tail has -p reify-doc" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "cargo nextest run .*-p reify-doc"' _ "$PLAN_OUT"
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) .*-p reify-doc"' _ "$PLAN_OUT"
 assert "Intersect/C3: nextest tail LACKS --workspace (narrowed to affected set)" \
-    bash -c '! printf "%s\n" "$1" | grep -qE "cargo nextest run --workspace"' _ "$PLAN_OUT"
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace"' _ "$PLAN_OUT"
 
 # ---------------------------------------------------------------------------
 # Scenario C1-guard: scope=all + override -> --workspace preserved, override ignored
@@ -823,9 +1000,9 @@ plan_for staged crates/reify-doc/src/lib.rs
 assert "B9-default: NARROW_ACTIVE=0 (coupling invariant — clippy & nextest --workspace both derive from this single global)" \
     test "$(plan_narrow_active "$PLAN_OUT")" = "0"
 assert "B9-default: nextest workspace pass keeps --workspace (staged, no --narrow flag, task 4451)" \
-    plan_has 'cargo nextest run --workspace'
+    plan_has 'cargo (test|nextest run) --workspace'
 assert "B9-default: nextest workspace pass has NO --exclude (OCCT folded in, task 4451)" \
-    plan_lacks 'cargo nextest run --workspace.*--exclude'
+    plan_lacks 'cargo (test|nextest run) --workspace.*--exclude'
 assert "B9-default: clippy keeps --workspace (staged, no --narrow flag)" \
     plan_has 'cargo clippy --workspace'
 
@@ -933,6 +1110,9 @@ mkdir -p "$FIX_MG_B5/crates/reify-doc/src"
 printf 'x\n' > "$FIX_MG_B5/crates/reify-doc/src/lib.rs"
 git -C "$FIX_MG_B5" add crates
 git -C "$FIX_MG_B5" commit -q -m "task changes"
+# (the file-level REIFY_RELEASE_DELTA_SKIP=0 export near the top of this file
+# keeps this capture's release-pass-present assertion below hermetic against
+# the ambient knob)
 PLAN_MG_B5="$(cd "$FIX_MG_B5" && DF_VERIFY_ROLE=merge REIFY_AFFECTED_CRATES_OVERRIDE="reify-doc reify-ir" bash scripts/verify.sh all --profile both --scope all --include-infra --print-plan 2>/dev/null)" || true
 git -C "$FIX_MG_B5" checkout -q main
 git -C "$FIX_MG_B5" branch -q -D task-branch
@@ -941,9 +1121,9 @@ assert "MG-B5: scope=all in plan header" \
 assert "MG-B5: clippy keeps --workspace (scope=all ignores override, C1 contract)" \
     bash -c 'printf "%s\n" "$1" | grep -qE "cargo clippy --workspace"' _ "$PLAN_MG_B5"
 assert "MG-B5: nextest debug tail keeps --workspace (task 4451: OCCT folded in, no --exclude)" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "cargo nextest run --workspace"' _ "$PLAN_MG_B5"
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace"' _ "$PLAN_MG_B5"
 assert "MG-B5: nextest --workspace pass has NO --exclude (task 4451: OCCT in pool)" \
-    bash -c '! printf "%s\n" "$1" | grep -qE "cargo nextest run --workspace.*--exclude"' _ "$PLAN_MG_B5"
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace.*--exclude"' _ "$PLAN_MG_B5"
 assert "MG-B5: NO -p reify-doc (no branch-diff narrowing in merge gate)" \
     bash -c '! printf "%s\n" "$1" | grep -qE " -p reify-doc"' _ "$PLAN_MG_B5"
 assert "MG-B5: NO -p reify-ir (no branch-diff narrowing in merge gate)" \
@@ -951,7 +1131,7 @@ assert "MG-B5: NO -p reify-ir (no branch-diff narrowing in merge gate)" \
 assert "MG-B5: no cargo-test-occt-gated.sh in plan (task 4451: OCCT folded into nextest pool)" \
     bash -c '! printf "%s\n" "$1" | grep -qE "cargo-test-occt-gated\.sh"' _ "$PLAN_MG_B5"
 assert "MG-B5: release-sensitivity pass present with -p reify- (permitted axis: release scope)" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "cargo nextest run .*-p reify-.*--release"' _ "$PLAN_MG_B5"
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) .*-p reify-.*--release"' _ "$PLAN_MG_B5"
 
 # ---------------------------------------------------------------------------
 # Scenario MG-hook: pre-merge-commit hook drift guard (GREEN now)

@@ -727,9 +727,17 @@ export interface EntityTreeNode {
    * Whether this realization node is visible by default.
    * Mirrors Rust `EntityTreeNode.default_visible`.
    * - Absent or `true` → visible (all non-realization nodes and product realizations).
-   * - Explicit `false` → hidden by default (aux body or aux-subtree descendant).
+   * - Explicit `false` → hidden by default, for any of three reasons: the
+   *   realization is `aux`, it descends from an `aux sub` subtree, or it is a
+   *   consumed intermediate — some sibling realization in the same template
+   *   takes it as an operand, so it is construction geometry rather than the
+   *   finished part (#5195).
    * Only explicit `false` triggers hidden-by-default; undefined/absent preserves
    * all existing visibility behavior.
+   *
+   * Hidden-by-default is a starting state, not a restriction: the outline lists
+   * these nodes and toggling one reveals it, and the All-Geometry view shows
+   * everything regardless.
    */
   default_visible?: boolean;
   /** Child nodes (value cells, sub-components, ports, realizations). */
