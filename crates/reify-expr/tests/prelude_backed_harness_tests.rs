@@ -466,7 +466,10 @@ fn stdlib_placeholders_are_live_candidates_under_the_prelude_backed_table() {
 /// wildcard then takes the first in table order, and `std.option_recovery` loads
 /// before `std.result`. Pre-existing reify-expr resolution behaviour, out of
 /// scope for #5593 — see the OVERLOAD NOTE in
-/// crates/reify-expr/tests/result_combinator_eval_tests.rs.
+/// crates/reify-expr/tests/result_combinator_eval_tests.rs, and task #5685,
+/// which is fixing it. This test pins the CURRENT behaviour, so #5685 landing
+/// turns it RED by design: that is the notification, and the assertion message
+/// below says what to update.
 ///
 /// The mis-resolution is BENIGN for the guards (each overload pair returns the
 /// same positional argument, so the observable placeholder value is identical),
