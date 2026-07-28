@@ -1784,11 +1784,15 @@ pub fn find_matching_compiled_function<'a>(
     //     the `@optimized` ComputeNode dispatch never fires (esc-4093-152).
     let wildcard = |f: &&CompiledFunction| {
         let is_generic = !f.type_params.is_empty();
-        f.params.iter().zip(args.iter()).all(|((_, param_ty), arg)| {
-            (is_generic && (type_carries_type_param(param_ty) || type_carries_dim_param(param_ty)))
-                || type_carries_trait_object(param_ty)
-                || *param_ty == arg.result_type
-        })
+        f.params
+            .iter()
+            .zip(args.iter())
+            .all(|((_, param_ty), arg)| {
+                (is_generic
+                    && (type_carries_type_param(param_ty) || type_carries_dim_param(param_ty)))
+                    || type_carries_trait_object(param_ty)
+                    || *param_ty == arg.result_type
+            })
     };
 
     // Middle tier: among the wildcard-eligible candidates, prefer those whose
@@ -1805,14 +1809,17 @@ pub fn find_matching_compiled_function<'a>(
     // an arg that is itself a bare type param has no head to check against.
     let head = |f: &&CompiledFunction| {
         let is_generic = !f.type_params.is_empty();
-        f.params.iter().zip(args.iter()).all(|((_, param_ty), arg)| {
-            type_carries_trait_object(param_ty)
-                || (is_generic
-                    && (heads_unifiable(param_ty, &arg.result_type)
-                        || type_carries_dim_param(param_ty)))
-                || matches!(arg.result_type, Type::TypeParam(_))
-                || *param_ty == arg.result_type
-        })
+        f.params
+            .iter()
+            .zip(args.iter())
+            .all(|((_, param_ty), arg)| {
+                type_carries_trait_object(param_ty)
+                    || (is_generic
+                        && (heads_unifiable(param_ty, &arg.result_type)
+                            || type_carries_dim_param(param_ty)))
+                    || matches!(arg.result_type, Type::TypeParam(_))
+                    || *param_ty == arg.result_type
+            })
     };
 
     // Screening `head` through `wildcard` is LOAD-BEARING: `head` must only ever

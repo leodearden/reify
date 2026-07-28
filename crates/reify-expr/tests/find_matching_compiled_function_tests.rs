@@ -679,7 +679,10 @@ fn end_to_end_eval_runs_the_head_matched_overload_body() {
         eval_expr(
             &CompiledExpr::user_function_call(
                 "pick_recovered".to_string(),
-                vec![subject, CompiledExpr::literal(len_0mm.clone(), Type::length())],
+                vec![
+                    subject,
+                    CompiledExpr::literal(len_0mm.clone(), Type::length()),
+                ],
                 Type::Int,
             ),
             &ctx,

@@ -5741,15 +5741,31 @@ mod tests {
             (q(), Type::length(), "ScalarParam vs Scalar"),
             (q(), Type::Int, "ScalarParam vs non-Scalar (catch-all)"),
             // Single-inner-Type constructors, match + near-miss.
-            (Type::List(Box::new(t())), Type::List(Box::new(Type::Int)), "List recurse"),
+            (
+                Type::List(Box::new(t())),
+                Type::List(Box::new(Type::Int)),
+                "List recurse",
+            ),
             (
                 Type::List(Box::new(Type::Int)),
                 Type::List(Box::new(Type::String)),
                 "List inner mismatch",
             ),
-            (Type::List(Box::new(Type::Int)), Type::Set(Box::new(Type::Int)), "List vs Set head"),
-            (Type::Set(Box::new(t())), Type::Set(Box::new(Type::Int)), "Set recurse"),
-            (Type::Keyed(Box::new(t())), Type::Keyed(Box::new(Type::Int)), "Keyed recurse"),
+            (
+                Type::List(Box::new(Type::Int)),
+                Type::Set(Box::new(Type::Int)),
+                "List vs Set head",
+            ),
+            (
+                Type::Set(Box::new(t())),
+                Type::Set(Box::new(Type::Int)),
+                "Set recurse",
+            ),
+            (
+                Type::Keyed(Box::new(t())),
+                Type::Keyed(Box::new(Type::Int)),
+                "Keyed recurse",
+            ),
             (
                 Type::Option(Box::new(t())),
                 Type::Option(Box::new(Type::length())),
@@ -5765,7 +5781,11 @@ mod tests {
                 Type::Complex(Box::new(Type::dimensionless_scalar())),
                 "Complex recurse",
             ),
-            (Type::Range(Box::new(t())), Type::Range(Box::new(Type::Int)), "Range recurse"),
+            (
+                Type::Range(Box::new(t())),
+                Type::Range(Box::new(Type::Int)),
+                "Range recurse",
+            ),
             // Two-inner-Type constructors.
             (
                 Type::Map(Box::new(Type::String), Box::new(t())),
@@ -5777,15 +5797,27 @@ mod tests {
                 Type::Map(Box::new(Type::Int), Box::new(Type::Int)),
                 "Map key mismatch",
             ),
-            (field(t(), t()), field(Type::length(), Type::Int), "Field recurse"),
+            (
+                field(t(), t()),
+                field(Type::length(), Type::Int),
+                "Field recurse",
+            ),
             (
                 field(Type::Int, Type::Int),
                 field(Type::String, Type::Int),
                 "Field domain mismatch",
             ),
             // Function: arity guard + recursion on params and return type.
-            (func(vec![t()], t()), func(vec![Type::Int], Type::String), "Function recurse"),
-            (func(vec![t()], t()), func(vec![Type::Int, Type::Int], Type::Int), "Function arity"),
+            (
+                func(vec![t()], t()),
+                func(vec![Type::Int], Type::String),
+                "Function recurse",
+            ),
+            (
+                func(vec![t()], t()),
+                func(vec![Type::Int, Type::Int], Type::Int),
+                "Function arity",
+            ),
             (
                 func(vec![Type::Int], Type::Int),
                 func(vec![Type::String], Type::Int),
@@ -5793,53 +5825,125 @@ mod tests {
             ),
             // Quantity-bearing aggregates: shape guards + quantity recursion.
             (
-                Type::Point { n: 3, quantity: Box::new(t()) },
-                Type::Point { n: 3, quantity: Box::new(Type::length()) },
+                Type::Point {
+                    n: 3,
+                    quantity: Box::new(t()),
+                },
+                Type::Point {
+                    n: 3,
+                    quantity: Box::new(Type::length()),
+                },
                 "Point recurse",
             ),
             (
-                Type::Point { n: 3, quantity: Box::new(t()) },
-                Type::Point { n: 2, quantity: Box::new(Type::length()) },
+                Type::Point {
+                    n: 3,
+                    quantity: Box::new(t()),
+                },
+                Type::Point {
+                    n: 2,
+                    quantity: Box::new(Type::length()),
+                },
                 "Point n guard",
             ),
             (
-                Type::Vector { n: 3, quantity: Box::new(t()) },
-                Type::Vector { n: 3, quantity: Box::new(Type::length()) },
+                Type::Vector {
+                    n: 3,
+                    quantity: Box::new(t()),
+                },
+                Type::Vector {
+                    n: 3,
+                    quantity: Box::new(Type::length()),
+                },
                 "Vector recurse",
             ),
             (
-                Type::Vector { n: 3, quantity: Box::new(t()) },
-                Type::Vector { n: 2, quantity: Box::new(Type::length()) },
+                Type::Vector {
+                    n: 3,
+                    quantity: Box::new(t()),
+                },
+                Type::Vector {
+                    n: 2,
+                    quantity: Box::new(Type::length()),
+                },
                 "Vector n guard",
             ),
             (
-                Type::Tensor { rank: 2, n: 3, quantity: Box::new(t()) },
-                Type::Tensor { rank: 2, n: 3, quantity: Box::new(Type::length()) },
+                Type::Tensor {
+                    rank: 2,
+                    n: 3,
+                    quantity: Box::new(t()),
+                },
+                Type::Tensor {
+                    rank: 2,
+                    n: 3,
+                    quantity: Box::new(Type::length()),
+                },
                 "Tensor recurse",
             ),
             (
-                Type::Tensor { rank: 2, n: 3, quantity: Box::new(t()) },
-                Type::Tensor { rank: 3, n: 3, quantity: Box::new(Type::length()) },
+                Type::Tensor {
+                    rank: 2,
+                    n: 3,
+                    quantity: Box::new(t()),
+                },
+                Type::Tensor {
+                    rank: 3,
+                    n: 3,
+                    quantity: Box::new(Type::length()),
+                },
                 "Tensor rank guard",
             ),
             (
-                Type::Tensor { rank: 2, n: 3, quantity: Box::new(t()) },
-                Type::Tensor { rank: 2, n: 2, quantity: Box::new(Type::length()) },
+                Type::Tensor {
+                    rank: 2,
+                    n: 3,
+                    quantity: Box::new(t()),
+                },
+                Type::Tensor {
+                    rank: 2,
+                    n: 2,
+                    quantity: Box::new(Type::length()),
+                },
                 "Tensor n guard",
             ),
             (
-                Type::Matrix { m: 3, n: 3, quantity: Box::new(t()) },
-                Type::Matrix { m: 3, n: 3, quantity: Box::new(Type::length()) },
+                Type::Matrix {
+                    m: 3,
+                    n: 3,
+                    quantity: Box::new(t()),
+                },
+                Type::Matrix {
+                    m: 3,
+                    n: 3,
+                    quantity: Box::new(Type::length()),
+                },
                 "Matrix recurse",
             ),
             (
-                Type::Matrix { m: 3, n: 3, quantity: Box::new(t()) },
-                Type::Matrix { m: 2, n: 3, quantity: Box::new(Type::length()) },
+                Type::Matrix {
+                    m: 3,
+                    n: 3,
+                    quantity: Box::new(t()),
+                },
+                Type::Matrix {
+                    m: 2,
+                    n: 3,
+                    quantity: Box::new(Type::length()),
+                },
                 "Matrix m guard",
             ),
             (
-                Type::Matrix { m: 3, n: 3, quantity: Box::new(t()) },
-                Type::Matrix { m: 3, n: 2, quantity: Box::new(Type::length()) },
+                Type::Matrix {
+                    m: 3,
+                    n: 3,
+                    quantity: Box::new(t()),
+                },
+                Type::Matrix {
+                    m: 3,
+                    n: 2,
+                    quantity: Box::new(Type::length()),
+                },
                 "Matrix n guard",
             ),
             // Union: length guard + arm-by-arm recursion.
@@ -5866,10 +5970,17 @@ mod tests {
             ),
             (
                 result_of(vec![t(), t()]),
-                Type::Applied { name: "Either".to_string(), args: vec![Type::Int, Type::Int] },
+                Type::Applied {
+                    name: "Either".to_string(),
+                    args: vec![Type::Int, Type::Int],
+                },
                 "Applied name guard",
             ),
-            (result_of(vec![t(), t()]), result_of(vec![Type::Int]), "Applied arity guard"),
+            (
+                result_of(vec![t(), t()]),
+                result_of(vec![Type::Int]),
+                "Applied arity guard",
+            ),
             // Erased-subject rule — the arm the whole #5685 fix turns on.
             (
                 result_of(vec![t(), t()]),
@@ -5887,8 +5998,16 @@ mod tests {
                 "Option param vs Applied Result arg (the mis-resolution)",
             ),
             // Projection: member guard + base recursion.
-            (proj(t(), "Out"), proj(Type::Int, "Out"), "Projection recurse"),
-            (proj(t(), "Out"), proj(Type::Int, "In"), "Projection member guard"),
+            (
+                proj(t(), "Out"),
+                proj(Type::Int, "Out"),
+                "Projection recurse",
+            ),
+            (
+                proj(t(), "Out"),
+                proj(Type::Int, "In"),
+                "Projection member guard",
+            ),
             // Catch-all leaves.
             (Type::Int, Type::Int, "catch-all equal"),
             (Type::Int, Type::String, "catch-all unequal"),
