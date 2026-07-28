@@ -1032,7 +1032,37 @@ fn validate_rounded_corner_constraint(
             ),
             _ => CompiledExpr::literal(Value::Real(0.0), reify_core::Type::dimensionless_scalar()),
         };
-        let predicate = CompiledExpr::binop(BinOp::Gt, corner_r.clone(), zero, Type::Bool);
+        // two_r = corner_r * 2 — the SAME idiom `rounded_corner_dims` uses to
+        // build the `width - 2*corner_r` / `depth - 2*corner_r` body lengths
+        // below, so the bound is expressed over exactly the quantity the
+        // lowering subtracts and the two cannot drift apart.
+        let two_r = CompiledExpr::binop(
+            BinOp::Mul,
+            corner_r.clone(),
+            CompiledExpr::literal(Value::Real(2.0), reify_core::Type::dimensionless_scalar()),
+            corner_r.result_type.clone(),
+        );
+
+        // `And(Lt(2r, w), Lt(2r, d))` rather than `Lt(2r, min(w, d))`: `min` is
+        // a `std::min` math builtin whose evaluator returns `Undef` when the
+        // two Scalar operands' dimensions differ, which would silently downgrade
+        // the whole constraint to Indeterminate (a warning) exactly when width
+        // and depth are mis-dimensioned. The conjunction has no such failure
+        // mode, and it is strictly better for the solver: `And` sub-violations
+        // are SUMMED, so both bounds contribute gradient simultaneously, whereas
+        // the `min` form exposes only the currently-active one.
+        let fits = CompiledExpr::binop(
+            BinOp::And,
+            CompiledExpr::binop(BinOp::Lt, two_r.clone(), width.clone(), Type::Bool),
+            CompiledExpr::binop(BinOp::Lt, two_r, depth.clone(), Type::Bool),
+            Type::Bool,
+        );
+        let predicate = CompiledExpr::binop(
+            BinOp::And,
+            CompiledExpr::binop(BinOp::Gt, corner_r.clone(), zero, Type::Bool),
+            fits,
+            Type::Bool,
+        );
         constraint_sink.push(|_idx| "rounded_corner_valid".to_string(), predicate, span);
         return true;
     };
