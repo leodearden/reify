@@ -101,31 +101,45 @@ pub(crate) fn is_orientation_typed_fn(name: &str) -> bool {
 }
 
 /// Result type for an orientation/transform/frame constructor builtin — a fixed
-/// nominal type keyed on `name` alone. Mirrors [`joint_ctor_result_type`], but
-/// simpler: every name in this family is arg-agnostic (fixed nominal), so the
-/// `args` slice is unused (named `_args` to keep the signature parallel to the
-/// sibling resolvers).
+/// nominal type keyed on `name` alone.
 ///
-/// - The 10 Orientation producers → `Type::Orientation(3)`.
-/// - `transform3` / `transform3_identity` / `transform_compose` →
-///   `Type::Transform(3)`.
-/// - `frame3` → `Type::Frame(3)`.
+/// Adopts the name-only INFALLIBLE `-> Type` shape of
+/// [`crate::parse_signatures::parse_fn_result_type`] rather than the args-aware
+/// `-> Option<Type>` / `&[CompiledExpr]` shapes used by the arity-sensitive
+/// families, because every result type here is argument-INDEPENDENT: there is
+/// no argument whose type or count could change the answer.
+///
+/// Per-name mapping:
+/// - `orient_identity`, `orient_quaternion`, `orient_euler`, `orient_basis`,
+///   `orient_look_at`, `orient_axis_angle`, `orient_exp`, `orient_inverse`,
+///   `orient_compose`, `orient_slerp` → `Type::Orientation(3)`
+/// - `frame3`, `frame3_identity` → `Type::Frame(3)`
+/// - `transform3`, `transform3_identity`, `transform_compose`,
+///   `transform_inverse`, `transform_exp`, `frame_to_frame` →
+///   `Type::Transform(3)`
 ///
 /// ## Cell-type / value-kind agreement
 ///
 /// Unlike the joint family (which types a `Value::Map` cell as a
-/// `Type::StructureRef`), here the cell TYPE matches the eval VALUE KIND
-/// exactly: `Type::Orientation(3)` ⇄ `Value::Orientation`, `Type::Transform(3)`
-/// ⇄ `Value::Transform`, `Type::Frame(3)` ⇄ `Value::Frame`. So this arm is
-/// strictly safe under `value_type_kind_matches` — no `StructureRef` escape
-/// hatch is relied upon.
+/// `Type::StructureRef`), here the Type↔Value correspondence is EXACT:
+/// `Type::Orientation(3)` ⇄ `Value::Orientation`, `Type::Frame(3)` ⇄
+/// `Value::Frame`, `Type::Transform(3)` ⇄ `Value::Transform`.
+///
+/// This makes the change guard-SATISFYING rather than guard-breaking. Before
+/// this family existed, eval produced a `Value::Orientation` into a cell
+/// statically typed `Real` (via the first-arg fallback), so
+/// `reify_eval::value_type_kind_matches` had a static/runtime kind DISAGREEMENT
+/// at every such site. Assigning the correct static type makes that guard agree
+/// where it previously did not — no `StructureRef` escape hatch is relied upon.
 ///
 /// Only reached for names in [`ORIENTATION_TYPED_FN_NAMES`] (the caller gates on
 /// [`is_orientation_typed_fn`]); the `_` arm is therefore unreachable in
-/// practice and returns a harmless `Type::dimensionless_scalar()`.
+/// practice and returns a harmless `Type::dimensionless_scalar()`. The
+/// `every_orientation_fn_name_maps_to_a_non_scalar_result_type` test makes a
+/// silent fallthrough loud.
 pub(crate) fn orientation_typed_fn_result_type(name: &str) -> Type {
     match name {
-        // ── Orientation producers (10) → Orientation(3) ──────────────────────
+        // ── Section (1): Orientation producers (10) → Orientation(3) ─────────
         // Eval: reify_stdlib::orientation::eval_orientation → Value::Orientation.
         "orient_identity"
         | "orient_quaternion"
@@ -138,13 +152,21 @@ pub(crate) fn orientation_typed_fn_result_type(name: &str) -> Type {
         | "orient_compose"
         | "orient_slerp" => Type::Orientation(3),
 
-        // ── Transform producers (3) → Transform(3) ───────────────────────────
-        // Eval: reify_stdlib::geometry::eval_geometry → Value::Transform.
-        "transform3" | "transform3_identity" | "transform_compose" => Type::Transform(3),
-
-        // ── Frame producer (1) → Frame(3) ────────────────────────────────────
+        // ── Section (2): Frame producers (2) → Frame(3) ──────────────────────
         // Eval: reify_stdlib::geometry::eval_geometry → Value::Frame.
-        "frame3" => Type::Frame(3),
+        "frame3" | "frame3_identity" => Type::Frame(3),
+
+        // ── Section (3): Transform producers (6) → Transform(3) ──────────────
+        // Eval: reify_stdlib::geometry::eval_geometry → Value::Transform.
+        // `frame_to_frame` belongs HERE, not in section (2): despite the
+        // `frame_` prefix it returns the rigid motion BETWEEN two frames
+        // (geometry.rs:512), i.e. a Transform.
+        "transform3"
+        | "transform3_identity"
+        | "transform_compose"
+        | "transform_inverse"
+        | "transform_exp"
+        | "frame_to_frame" => Type::Transform(3),
 
         // Unreachable in practice — the caller gates on is_orientation_typed_fn.
         _ => Type::dimensionless_scalar(),
