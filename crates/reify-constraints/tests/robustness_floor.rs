@@ -11,6 +11,11 @@
 //! Step-3 tests (RED until step-4 impl lands):
 //!   - `floor_infeasible_emits_distinct_diagnostic`
 //!   - `non_money_infeasible_keeps_constraint_unsatisfiable`
+//!
+//! Task #5618 section (constraint-derived bounds) at the bottom of the file:
+//! a Money-objective auto bracketed away from 0 must not report a false
+//! `RobustnessFloorInfeasible`, and a genuinely floor-empty bracket must still
+//! report a real one.
 
 use reify_constraints::DimensionalSolver;
 use reify_core::{DiagnosticCode, DimensionVector, Type, ValueCellId};
@@ -131,8 +136,105 @@ fn length_auto_param(id: ValueCellId) -> AutoParam {
     }
 }
 
+/// `length_auto_param` with `free: true` — skips the uniqueness re-solve, so a test
+/// can pin floor/bounds behaviour without also pinning determinism.
+fn length_auto_param_free(id: ValueCellId) -> AutoParam {
+    AutoParam {
+        free: true,
+        ..length_auto_param(id)
+    }
+}
+
 fn constraint_id(entity: &str, index: u32) -> reify_core::ConstraintNodeId {
     reify_core::ConstraintNodeId::new(entity, index)
+}
+
+// ── helper: `x OP bound_si_m` for any comparison op (Length) ──
+//
+// Sibling of `gt_expr` / `lt_expr` above, for the non-strict `>=` / `<=` shapes
+// the task #5618 tests need.
+fn length_cmp(op: BinOp, x_id: &ValueCellId, bound_si_m: f64) -> CompiledExpr {
+    let length_dim = DimensionVector::LENGTH;
+    CompiledExpr::binop(
+        op,
+        CompiledExpr::value_ref(x_id.clone(), Type::Scalar { dimension: length_dim }),
+        CompiledExpr::literal(
+            Value::Scalar { si_value: bound_si_m, dimension: length_dim },
+            Type::Scalar { dimension: length_dim },
+        ),
+        Type::Bool,
+    )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Dimensionless (`Real`) siblings of the Length helpers above — task #5618.
+//
+// `money_expr_x_per_mm` and `length_auto_param` are Length-specific; the headline
+// #5618 defect was reproduced on a *dimensionless* auto, whose `default_bounds_for`
+// box is `(-1e6, 1e6)` rather than Length's `(1µm, 10m)`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn real_auto_param(id: ValueCellId, free: bool) -> AutoParam {
+    AutoParam {
+        id,
+        param_type: Type::Scalar { dimension: DimensionVector::DIMENSIONLESS },
+        bounds: None,
+        free,
+    }
+}
+
+// ── helper: `q OP bound` for any comparison op (dimensionless) ──
+fn real_cmp(op: BinOp, q_id: &ValueCellId, bound: f64) -> CompiledExpr {
+    let dimensionless = DimensionVector::DIMENSIONLESS;
+    CompiledExpr::binop(
+        op,
+        CompiledExpr::value_ref(q_id.clone(), Type::Scalar { dimension: dimensionless }),
+        CompiledExpr::literal(
+            Value::Scalar { si_value: bound, dimension: dimensionless },
+            Type::Scalar { dimension: dimensionless },
+        ),
+        Type::Bool,
+    )
+}
+
+// ── helper: Money-dimensioned `1 USD × q` for a dimensionless `q` ──
+//
+// Monotonically increasing in `q`, so under `Minimize` the constrained optimum is
+// the lower bound of the FLOORED feasible window.
+fn money_times_real(q_id: &ValueCellId) -> CompiledExpr {
+    let money_dim = DimensionVector::MONEY;
+    let dimensionless = DimensionVector::DIMENSIONLESS;
+    CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::literal(
+            Value::Scalar { si_value: 1.0, dimension: money_dim },
+            Type::Scalar { dimension: money_dim },
+        ),
+        CompiledExpr::value_ref(q_id.clone(), Type::Scalar { dimension: dimensionless }),
+        Type::Scalar { dimension: money_dim },
+    )
+}
+
+/// Builds the #5618 headline problem: one auto param bracketed away from 0 by an
+/// inequality pair, under a Money `Minimize` objective, with NO current value and
+/// NO explicit `AutoParam.bounds` (the production shape).
+fn bracketed_money_problem(
+    auto_params: Vec<AutoParam>,
+    constraints: Vec<CompiledExpr>,
+    objective: CompiledExpr,
+) -> ResolutionProblem {
+    ResolutionProblem {
+        dependent_cells: Vec::new(),
+        auto_params,
+        constraints: constraints
+            .into_iter()
+            .enumerate()
+            .map(|(i, e)| (constraint_id("Bracketed", i as u32), e))
+            .collect(),
+        current_values: ValueMap::new(),
+        objective: Some(ObjectiveSet::single(ObjectiveSense::Minimize, objective)),
+        functions: vec![].into(),
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -440,5 +542,159 @@ fn non_money_infeasible_keeps_constraint_unsatisfiable() {
             );
         }
         other => panic!("expected Infeasible, got {:?}", other),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// task #5618 — a Money-objective auto bracketed away from 0 must not report a
+// false RobustnessFloorInfeasible.
+//
+// Mechanism of the defect: `AutoParam.bounds` is always `None` in production, so
+// `effective_bounds` degraded to `default_bounds_for` = `(-1e6, 1e6)` for a
+// dimensionless Real.  `extract_initial_point` then fell all the way through to the
+// fixed `0.01`, which is OUTSIDE the window `synthesise_floor_constraints` carves
+// out of `q ∈ [1, 100]` (`q - 1 ≥ 0.02` ∧ `100 - q ≥ 2%·q_seed`), and `build_simplex`
+// stepped by `(1e6 − −1e6)·0.1 = 2e5` off the same useless box.  Nelder-Mead
+// reflected to ~−2e5 and contracted back toward 0.01 from the wrong side, never
+// entering the feasible region.
+//
+// Steps 5-6 fix the false Infeasible; the exact-argmin assertion is in step-7.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// HEADLINE: a dimensionless `auto(free)` bracketed by `q >= 1 ∧ q <= 100` under a
+/// Money `Minimize` objective must SOLVE, landing inside the floored window.
+///
+/// Before task #5618 this returned `Infeasible` / `RobustnessFloorInfeasible`
+/// ("the floored feasible region is empty") even though `[1, 100]` is 99 units wide.
+#[test]
+fn bracketed_money_auto_solves_inside_floored_window() {
+    let q_id = ValueCellId::new("Bracketed", "q");
+
+    let problem = bracketed_money_problem(
+        vec![real_auto_param(q_id.clone(), true)],
+        vec![
+            real_cmp(BinOp::Ge, &q_id, 1.0),
+            real_cmp(BinOp::Le, &q_id, 100.0),
+        ],
+        money_times_real(&q_id),
+    );
+
+    match DimensionalSolver.solve(&problem) {
+        SolveResult::Solved { values, .. } => {
+            let q = values.get(&q_id).unwrap().as_f64().unwrap();
+            // Floored window: lower slack `q − 1 ≥ 0.02·1 = 0.02` → q ≥ 1.02.
+            // The upper floor is looser than 98.0 for every reachable seed.
+            assert!(
+                (1.02..=98.0).contains(&q),
+                "expected q inside the floored window [1.02, 98.0], got q = {q}"
+            );
+        }
+        other => panic!(
+            "expected Solved for a Money objective over q ∈ [1, 100] — a 99-unit-wide \
+             box whose floored window [1.02, ~99] is plainly non-empty; got {:?}",
+            other
+        ),
+    }
+}
+
+/// Control: the `q >= 0.0` variant, which already solved before task #5618 (the
+/// fixed `0.01` seed happens to sit inside its floored window), must keep solving.
+#[test]
+fn bracketed_money_auto_from_zero_still_solves() {
+    let q_id = ValueCellId::new("Bracketed", "q");
+
+    let problem = bracketed_money_problem(
+        vec![real_auto_param(q_id.clone(), true)],
+        vec![
+            real_cmp(BinOp::Ge, &q_id, 0.0),
+            real_cmp(BinOp::Le, &q_id, 100.0),
+        ],
+        money_times_real(&q_id),
+    );
+
+    match DimensionalSolver.solve(&problem) {
+        SolveResult::Solved { values, .. } => {
+            let q = values.get(&q_id).unwrap().as_f64().unwrap();
+            // Floor margin degenerates to ABS_FLOOR_SI = 1e-9 when the bound is 0.
+            assert!(
+                q >= 1e-9,
+                "expected q at or above the degenerate floor (ABS_FLOOR_SI = 1e-9), got {q}"
+            );
+            assert!(q <= 100.0, "expected q inside the upper bound, got {q}");
+        }
+        other => panic!("expected Solved for the q >= 0.0 control, got {:?}", other),
+    }
+}
+
+/// No false negative: a bracket whose FLOORED window is genuinely empty must still
+/// report `Infeasible` with `RobustnessFloorInfeasible`.
+///
+/// `q ∈ [99, 100]` is only 1 unit wide, but the 2% margins are ~1.98 and ~1.99 —
+/// the floored bounds invert (lo ≈ 100.98 > hi ≈ 98.01), so `resolve_bounds`'
+/// empty-box guard discards the derived box wholesale and behaviour is unchanged.
+#[test]
+fn floor_empty_bracket_still_infeasible() {
+    let q_id = ValueCellId::new("Bracketed", "q");
+
+    let problem = bracketed_money_problem(
+        vec![real_auto_param(q_id.clone(), true)],
+        vec![
+            real_cmp(BinOp::Ge, &q_id, 99.0),
+            real_cmp(BinOp::Le, &q_id, 100.0),
+        ],
+        money_times_real(&q_id),
+    );
+
+    match DimensionalSolver.solve(&problem) {
+        SolveResult::Infeasible { diagnostics } => {
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == Some(DiagnosticCode::RobustnessFloorInfeasible)),
+                "expected RobustnessFloorInfeasible for a genuinely floor-empty bracket, \
+                 got: {:?}",
+                diagnostics
+            );
+        }
+        other => panic!(
+            "expected Infeasible for q ∈ [99, 100] (2% margins ~1.98 + ~1.99 do not fit \
+             in a 1-unit box); the fix must not manufacture a false Solved; got {:?}",
+            other
+        ),
+    }
+}
+
+/// The fix is not dimension-specific: the same shape on a Length auto
+/// (`x >= 50mm ∧ x <= 200mm`) must also solve inside its floored window.
+///
+/// Length's `default_bounds_for` box is `(1µm, 10m)`, so the pre-#5618 `0.01` seed
+/// was inside the DEFAULT box yet still outside this bracket's floored window
+/// (x ≥ 51mm) — a different numeric path to the same false Infeasible.
+#[test]
+fn bracketed_money_length_auto_solves_inside_floored_window() {
+    let x_id = ValueCellId::new("Bracketed", "x");
+
+    let problem = bracketed_money_problem(
+        vec![length_auto_param_free(x_id.clone())],
+        vec![
+            length_cmp(BinOp::Ge, &x_id, 0.050),
+            length_cmp(BinOp::Le, &x_id, 0.200),
+        ],
+        money_expr_x_per_mm(&x_id),
+    );
+
+    match DimensionalSolver.solve(&problem) {
+        SolveResult::Solved { values, .. } => {
+            let x = values.get(&x_id).unwrap().as_f64().unwrap();
+            // Lower slack `x − 50mm ≥ 0.02·50mm = 1mm` → x ≥ 51mm.
+            assert!(
+                (0.051..=0.1975).contains(&x),
+                "expected x inside the floored window [51mm, 197.5mm], got x = {x} m"
+            );
+        }
+        other => panic!(
+            "expected Solved for a Money objective over x ∈ [50mm, 200mm]; got {:?}",
+            other
+        ),
     }
 }
