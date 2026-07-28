@@ -42,13 +42,6 @@
 #   A4 — ADVISORY BACKPRESSURE ONLY. Never requeues, never escalates, and is
 #        NOT the correctness mechanism for lane exclusivity; dark-factory's own
 #        bounded-wait flock remains that.
-#
-# Env knobs beyond the flags in --help:
-#   REIFY_WARM_LANE_LOCK_GUARD_FLOCK  flock command override (default: flock).
-#                                     The measurement seam: the hermetic tests
-#                                     stub it here rather than on PATH, so the
-#                                     fail-open branches can be exercised
-#                                     against a real held lock.
 
 set -euo pipefail
 
@@ -108,6 +101,12 @@ EOF
 MOUNT="${REIFY_WARM_LANE_MOUNT:-}"
 LANE="${REIFY_WARM_LANE_LOCK_GUARD_LANE:-_merge-verify}"
 LOCK_PATH="${REIFY_WARM_LANE_LOCK_GUARD_LOCK_PATH:-}"
+# The measurement seam. Every flock invocation below routes through this, so the
+# hermetic tests can drive a broken or missing flock through the script's OWN
+# env knob rather than by shadowing PATH — the house convention (see the df stub
+# in tests/infra/test_warm_lane_disk_guard.sh). Stubbing here rather than on
+# PATH is what lets Block D exercise the fail-open branches against a REAL held
+# lock: the fixture's own holder keeps using the real flock.
 FLOCK_BIN="${REIFY_WARM_LANE_LOCK_GUARD_FLOCK:-flock}"
 
 # The would-block exit status asked of flock via -E. `flock -n` returns a bare 1
