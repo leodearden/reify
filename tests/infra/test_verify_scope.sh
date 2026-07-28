@@ -204,6 +204,38 @@ assert "PG-5/mixed diff: RUN_RUST=1 (monotone accumulator — the fixture arm ca
     plan_has 'RUN_RUST=1'
 
 # ---------------------------------------------------------------------------
+# Scenario PG-DRIFT: coupling drift guard (task 5536).
+#
+# CONTRACT: every tests/prd-gate/fixtures/<name>.ri path referenced from
+# crates/**/*.rs must still classify RUN_RUST=1 — a fixture that any compiled
+# test target reads must never be classified no-heavy, because a hook-gated
+# docs commit on `main` has no later gate to catch a bad edit to it.
+# Adding such a reference WITHOUT adding <name>.ri to verify.sh's
+# _RUST_COUPLED_RI_FIXTURES turns this scenario RED.
+#
+# The coupled set is DERIVED from the real repo rather than restated here, so
+# this guard cannot itself drift into a third copy of the list. It is
+# deliberately comment-inclusive (a doc-comment mention counts) — that needs
+# no code-vs-comment discrimination and always errs conservative. The
+# assertion is BEHAVIOURAL (stage the path, read --print-plan) rather than a
+# source-grep of verify.sh, so it survives any refactor of how the list is
+# stored. Today it derives 5 paths.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PG-DRIFT: every crates/**/*.rs-referenced prd-gate fixture still classifies RUN_RUST=1 ---"
+_PG_COUPLED="$(git -C "$REPO_ROOT" grep -h -o -E 'tests/prd-gate/fixtures/[A-Za-z0-9_.-]+\.ri' -- 'crates/*.rs' | sort -u || true)"
+# Non-empty FIRST: a broken grep, a moved fixtures dir or a changed pathspec
+# must fail loudly here instead of vacuously passing an empty loop.
+assert "PG-DRIFT: derived coupled-fixture set is NON-EMPTY (guard is not vacuous)" \
+    test -n "$_PG_COUPLED"
+while IFS= read -r _pg_path; do
+    [ -n "$_pg_path" ] || continue
+    plan_for staged "$_pg_path"
+    assert "PG-DRIFT: $_pg_path -> RUN_RUST=1 (read by a compiled test target; must be in verify.sh's _RUST_COUPLED_RI_FIXTURES)" \
+        plan_has 'RUN_RUST=1'
+done <<< "$_PG_COUPLED"
+
+# ---------------------------------------------------------------------------
 # Scenario 2: gui/src frontend TS -> GUI only, no cargo
 # ---------------------------------------------------------------------------
 echo ""
