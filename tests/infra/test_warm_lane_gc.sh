@@ -50,6 +50,12 @@
 #       that the preserve is temporary); P-toctou pins PLACEMENT — a lane that
 #       goes live MID-PASS is still preserved, so the check cannot be hoisted
 #       into an up-front snapshot without going RED
+#   Q — the SAME gate on Pass 2's destructive orphan path (task 5572): a live
+#       process reference preserves an orphan worktree from
+#       `git worktree remove --force`, while an unreferenced orphan is still
+#       removed. Closes the hole that deleting the sweep's wrapper CSV would
+#       otherwise open — that CSV enumerated every immediate subdir with a bare
+#       */ glob, so it incidentally protected live ORPHANS too
 #
 # The former Tier-3 blocks I/J/L (terminal-task reclaim + Pass-2 boundary,
 # task 5167) were deleted when task 5326 collapsed the Pass-1 gate to the
@@ -1534,6 +1540,92 @@ assert "P-toctou6: stderr names the process-reference preserve reason for _lane-
     bash -c 'printf "%s\n" "$1" | grep -qF "preserving _lane-2: live consumer (process reference)"' _ "$ERR_OUT"
 
 kill "$PT_HOLDER_PID" 2>/dev/null || true
+_BGPIDS=()  # clear so EXIT cleanup does not re-kill a possibly-reused PID
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block Q — Pass 2 destructive orphan removal ALSO honours a live process
+# reference (task 5572)
+# ──────────────────────────────────────────────────────────────────────────────
+# This is not a bonus case; it closes a coverage hole the wrapper-CSV deletion
+# would otherwise open. warm-lane-gc-sweep.sh's _live_consumer_protect_csv
+# enumerated EVERY immediate subdir under the mount with a bare */ glob — it did
+# NOT filter by lane-glob — and --extra-protect-glob skips a match ENTIRELY, in
+# Pass 2 as well as Pass 1. So the wrapper's CSV was, incidentally, also
+# protecting a live ORPHAN worktree from `git worktree remove --force`. Removing
+# the CSV without adding this gate would silently regress that protection on the
+# single most destructive path in the script — strictly worse than the bug being
+# fixed. Block Q makes the regression visible BEFORE the deletion lands.
+echo ""
+echo "--- Block Q: Pass-2 orphan removal honours a live process reference (task 5572) ---"
+
+Q_ROOT="$(mktemp -d /tmp/test-gc-q-XXXXXX)"
+_TMPDIRS+=("$Q_ROOT")
+
+Q_REPO="$Q_ROOT/repo"
+Q_WORKTREES="$Q_ROOT/worktrees"
+Q_BASE="$Q_ROOT/base"
+mkdir -p "$Q_WORKTREES" "$Q_BASE"
+
+make_repo "$Q_REPO"
+
+mkdir -p "$Q_BASE/target.gen.1"
+touch "$Q_BASE/target.gen.1.lock"
+ln -sfn "$Q_BASE/target.gen.1" "$Q_BASE/target"
+
+# Two ORPHAN worktrees: names matching neither --lane-glob nor --protect-glob,
+# both clean and landed (HEAD == main) so _is_reclaimable returns 0 and Pass 2
+# would remove them. Both locks are FREE — no flock holder anywhere in this
+# block, so the flock gate cannot account for any preservation. target/ is
+# untracked, and _is_reclaimable runs `git status --untracked-files=no`, so it
+# does not make either orphan dirty.
+for _q_name in task-live task-free; do
+    git -C "$Q_REPO" worktree add -q "$Q_WORKTREES/$_q_name"
+    mkdir -p "$Q_WORKTREES/$_q_name/target"
+done
+
+# Live helper with a cwd under task-live only. task-free is the discriminator:
+# without it, a guard that simply refused to remove any orphan would pass.
+Q_READY="$Q_ROOT/helper.ready"
+( cd "$Q_WORKTREES/task-live/target" && touch "$Q_READY" && exec sleep 300 ) &
+Q_HELPER_PID=$!
+_BGPIDS+=("$Q_HELPER_PID")
+_wait_for_reader_lock "$Q_READY" 30
+
+Q_SEED_LOG="$Q_ROOT/seed_calls.log"
+Q_SEED_STUB="$Q_ROOT/seed_stub.sh"
+_seed_stub_body > "$Q_SEED_STUB"
+chmod +x "$Q_SEED_STUB"
+export SEED_LOG="$Q_SEED_LOG"
+
+run_helper reclaim \
+    --worktrees-dir "$Q_WORKTREES" \
+    --base-target "$Q_BASE/target" \
+    --seed-script "$Q_SEED_STUB" \
+    --main-ref main
+
+assert "Q1: exit 0" test "$RC" -eq 0
+assert "Q2: live-referenced orphan task-live NOT removed (dir still present)" \
+    test -d "$Q_WORKTREES/task-live"
+assert "Q3: live-referenced orphan task-live still registered as a git worktree" \
+    bash -c 'git -C "$1" worktree list | grep -q "task-live"' _ "$Q_REPO"
+# The Pass-2 success path rm -f's the orphan's sibling lock file, so the lock's
+# SURVIVAL independently confirms removal never ran — not merely that a later
+# step recreated the directory.
+assert "Q4: task-live sibling lock file survives (Pass-2 removal never ran)" \
+    test -f "$Q_WORKTREES/task-live.lock"
+assert "Q5: unreferenced orphan task-free WAS removed (no blanket over-preserve)" \
+    bash -c '[ ! -d "$1" ]' _ "$Q_WORKTREES/task-free"
+assert "Q6: task-free absent from git worktree list" \
+    bash -c '! git -C "$1" worktree list | grep -q "task-free"' _ "$Q_REPO"
+assert "Q7: stderr names the process-reference preserve reason for task-live" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "preserving task-live: live consumer (process reference)"' _ "$ERR_OUT"
+assert "Q8: summary shows removed=1 (only task-free)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "removed=1"' _ "$OUT"
+assert "Q9: summary counts the live orphan as preserved (preserved=1)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "preserved=1"' _ "$OUT"
+
+kill "$Q_HELPER_PID" 2>/dev/null || true
+wait "$Q_HELPER_PID" 2>/dev/null || true
 _BGPIDS=()  # clear so EXIT cleanup does not re-kill a possibly-reused PID
 
 # ─────────────────────────────────────────────────────────────────────────────
