@@ -2419,6 +2419,58 @@ assert "H4: lane lock is re-acquirable immediately after seed exits (no FD-9 lea
 assert "H4b: seed emits the explicit lane-lock release marker on stderr (the LOCK_UN path actually ran)" \
     bash -c 'printf "%s\n" "$1" | grep -q "explicit flock -u before exit"' _ "$ERR_OUT"
 
+# ── H4e (task #5705): the release must cover seed's FAILURE paths, not just its
+# success tail. A release written as a trailing statement is UNREACHABLE the
+# moment seed aborts after acquiring the lock — and seed has plenty of such
+# aborts downstream of acquisition: the hard reflink error, the same-FS check,
+# and every `set -euo pipefail` abort in the mid-run find walks and the
+# _assert_delta_newer_than_build_outputs post-condition. All of those happen
+# AFTER the orphan sweep has already forked its detached `{ rm -rf ...; } 9<&- &`
+# child, so the identical fork-window race applies on every one of them.
+#
+# The fixture drives the reflink hard-error path — REIFY_TEST_REFLINK_OK is
+# deliberately left UNSET, so run_helper_real's cp stub prints
+# "cp: failed to clone: Operation not supported" and exits 1, and seed aborts
+# with exit 1 having already acquired the lane lock.
+#
+# A pre-seeded ORPHANED trash entry (<lane-basename>.<pid> under the lane's own
+# private dirname(LANE)/.reseed-trash) makes the orphan sweep fire, so a real
+# detached child is forked before the abort; REIFY_TEST_SLEEP_RESEED_TRASH_RM=1
+# keeps that child alive past the probe below. An H4e-fixture assert pins that
+# the sweep really ran, so the shape being tested cannot silently stop
+# reproducing if the sweep's entry naming ever changes.
+#
+# HONEST SCOPE, as with H4/H4b: the MARKER assert is the deterministic RED here
+# — it fails outright while the release is a tail statement. The lock-reacquire
+# assert is the end-to-end companion and can only ever fail probabilistically
+# (the detached child usually wins the race to its own close(9) during the
+# mv+rmdir+cp work that precedes the abort). Both are kept for the same reason
+# H4 and H4b both are.
+Q_LANE4E="$(make_isolated_lane Q-lane4e)"
+mkdir -p "$Q_LANE4E/target"
+echo "stale artifact" > "$Q_LANE4E/target/stale.a"
+Q_LOCK4E="${Q_LANE4E}.lock"
+_TMPDIRS+=("$Q_LOCK4E")
+
+Q_TRASH4E="$(dirname "$Q_LANE4E")/.reseed-trash"
+mkdir -p "$Q_TRASH4E/$(basename "$Q_LANE4E").999999"
+echo "orphan artifact" > "$Q_TRASH4E/$(basename "$Q_LANE4E").999999/orphan.a"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_SLEEP_RESEED_TRASH_RM=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE4E" --fresh-checkout --lane-lock
+
+assert "H4e: seed ABORTS with exit 1 on the hard reflink error (downstream of a successful lane-lock acquire)" \
+    test "$RC" -eq 1
+assert "H4e: ... and it really was the reflink hard-error path (stderr names the aborted clone)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "Reflink clone FAILED"' _ "$ERR_OUT"
+assert "H4e-fixture: the orphan sweep really forked a detached child before that abort (non-vacuity)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "Sweeping orphaned trash entry"' _ "$ERR_OUT"
+assert "H4e: seed emits the lane-lock release marker on the FAILURE path too (release is not tail-only)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "explicit flock -u before exit"' _ "$ERR_OUT"
+assert "H4e: lane lock is re-acquirable immediately after the ABORTED seed exits" \
+    bash -c 'exec 8>"$1"; flock -n 8' _ "$Q_LOCK4E"
+
 # ── H5: bounded-wait "queue" via REIFY_WARM_LANE_LANE_LOCK_WAIT ─────────────
 # A refused acquirer of the SINGLETON _merge-verify lane has no alternate
 # FREE lane to fall back to, so the WAIT knob lets --lane-lock QUEUE (bounded
