@@ -1456,6 +1456,41 @@ describe('Viewport FEA auto-enable determinism', () => {
   });
 });
 
+// Task 5669: the FEA toolbar channel dropdown must reflect whatever channel
+// pickDefaultScalarChannel auto-selects, even for shell FEA meshes whose
+// preferred channel ('vonMises_top') is not part of feaToolbarChannels' fixed
+// base list. Verifies Viewport widens availableChannels to include shell
+// sub-channels actually present in the mesh set, and that the rendered
+// <select>'s value matches the store's channel (no desync).
+describe('Viewport FEA channel dropdown sync (task 5669)', () => {
+  it('shell mesh with {vonMises_top, vonMises_bottom} → dropdown offers both and value matches store.state.channel', () => {
+    const store = createFeaModeStore();
+    const meshes: Record<string, MeshData> = {
+      shell: {
+        entity_path: 'shell',
+        vertices: new Float32Array([0, 0, 0]),
+        indices: new Uint32Array([0]),
+        normals: null,
+        scalar_channels: {
+          vonMises_top: new Float32Array([3]),
+          vonMises_bottom: new Float32Array([1]),
+        },
+      } as unknown as MeshData,
+    };
+
+    render(() => <Viewport meshes={meshes} viewportId="test-5669" feaModeStore={store as any} />);
+
+    // Auto-enable picked the shell's preferred channel.
+    expect(store.state.channel).toBe('vonMises_top');
+
+    const select = screen.getByTestId('fea-mode-channel-select') as HTMLSelectElement;
+    const options = Array.from(select.options).map((o) => o.value);
+    expect(options).toContain('vonMises_top');
+    expect(options).toContain('vonMises_bottom');
+    expect(select.value).toBe(store.state.channel);
+  });
+});
+
 // ── β: surfaceManager integration ─────────────────────────────────────────────
 //
 // Verifies that Viewport.tsx creates a surfaceManager and drives surfaceManager.sync
