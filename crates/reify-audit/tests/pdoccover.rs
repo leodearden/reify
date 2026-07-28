@@ -20,6 +20,7 @@
 
 mod common;
 
+use reify_audit::pdoccover::{BASELINE_PATH, UNITS_PATH};
 use reify_audit::{
     AuditContext, EvidenceRef, Finding, MockGitOps, MockJCodemunchOps, Pattern, Severity,
 };
@@ -28,7 +29,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Write `content` to relative `path` inside `root`, creating parent dirs.
-#[allow(dead_code)]
 fn write_file(root: &Path, path: &str, content: &str) {
     let full = root.join(path);
     if let Some(parent) = full.parent() {
@@ -38,7 +38,6 @@ fn write_file(root: &Path, path: &str, content: &str) {
 }
 
 /// Repo root, resolved from `CARGO_MANIFEST_DIR` (= `crates/reify-audit`).
-#[allow(dead_code)]
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -50,14 +49,12 @@ fn repo_root() -> PathBuf {
 ///
 /// Only the file *list* is mocked — `check()` reads real content from disk
 /// under `project_root`, exactly as `pdssentinel::check` does.
-#[allow(dead_code)]
 struct Harness {
     conn: Connection,
     git: MockGitOps,
     jc: MockJCodemunchOps,
 }
 
-#[allow(dead_code)]
 impl Harness {
     fn new(tracked: &[&str]) -> Self {
         let mut git = MockGitOps::new();
@@ -86,16 +83,12 @@ impl Harness {
 
 /// Fixture paths — the three real paths PDOCCOVER's omission lane reads,
 /// reproduced inside the tempdir so nothing here depends on the real tree.
-#[allow(dead_code)]
 const FIX_UNITS: &str = "crates/reify-compiler/src/units.rs";
-#[allow(dead_code)]
 const FIX_CHUNK: &str = "crates/reify-mcp/src/tools/chunks/geometry.md";
-#[allow(dead_code)]
 const FIX_BASELINE: &str = "crates/reify-audit/pdoccover-baseline.txt";
 
 /// The summary body after a `<category>: ` prefix, up to the first space —
 /// i.e. the offending name a finding is about.
-#[allow(dead_code)]
 fn finding_name(f: &Finding) -> &str {
     let after = f
         .summary
@@ -106,7 +99,6 @@ fn finding_name(f: &Finding) -> &str {
 }
 
 /// The `<category>` prefix of a finding summary.
-#[allow(dead_code)]
 fn finding_category(f: &Finding) -> &str {
     f.summary.split_once(':').map(|(c, _)| c).unwrap_or("")
 }
@@ -122,7 +114,6 @@ fn finding_category(f: &Finding) -> &str {
 /// - `beta_op`  — `// pdoccover:allow — <reason>` on its entry line;
 /// - `gamma_op` — listed in `pdoccover-baseline.txt`;
 /// - `delta_op` — bare, and therefore the ONLY offender.
-#[allow(dead_code)]
 const FOUR_WAY_UNITS: &str = "\
 //! Fixture registry for the PDOCCOVER omission lane.
 
@@ -135,7 +126,6 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
 ";
 
 /// The chunk that documents `alpha_op` — and nothing else.
-#[allow(dead_code)]
 const ALPHA_CHUNK: &str = "\
 # Geometry
 
@@ -267,14 +257,20 @@ fn omission_findings_are_deterministically_ordered() {
     let root = dir.path();
 
     // Declaration order is deliberately anti-sorted, and spans two registries
-    // so cross-registry ordering is exercised too.
+    // so cross-registry ordering is exercised too. `kilo_op` carries a
+    // reasonless marker and `eta_op` is documented-but-still-baselined, so the
+    // finding list spans THREE categories — without them the category half of
+    // the (category, name) sort key would be unexercised, and the assertion
+    // below would compare a constant vector to itself.
     write_file(
         root,
         FIX_UNITS,
         "\
 pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     \"zulu_op\",
+    \"kilo_op\", // pdoccover:allow
     \"mike_op\",
+    \"eta_op\",
 ];
 
 pub const DYNAMICS_QUERY_NAMES: &[&str] = &[
@@ -283,28 +279,49 @@ pub const DYNAMICS_QUERY_NAMES: &[&str] = &[
 ];
 ",
     );
+    write_file(root, FIX_CHUNK, "# Geometry\n\n- `eta_op(shape)` — documented.\n");
+    write_file(root, FIX_BASELINE, "eta_op\n");
 
-    let h = Harness::new(&[FIX_UNITS]);
+    let h = Harness::new(&[FIX_UNITS, FIX_CHUNK, FIX_BASELINE]);
     let ctx = h.ctx(root);
     let findings = reify_audit::pdoccover::check(&ctx);
 
-    let names: Vec<&str> = findings.iter().map(finding_name).collect();
+    // (category, name), fully: `allow-missing-reason` < `stale-baseline-entry`
+    // < `undocumented-name` lexicographically, and names sort within each.
+    let pairs: Vec<(&str, &str)> = findings
+        .iter()
+        .map(|f| (finding_category(f), finding_name(f)))
+        .collect();
     assert_eq!(
-        names,
-        vec!["alpha_op", "bravo_op", "mike_op", "zulu_op"],
-        "findings must be name-sorted within a category, across registries and \
-         irrespective of declaration order; got {findings:?}"
+        pairs,
+        vec![
+            ("allow-missing-reason", "kilo_op"),
+            ("stale-baseline-entry", "eta_op"),
+            ("undocumented-name", "alpha_op"),
+            ("undocumented-name", "bravo_op"),
+            ("undocumented-name", "mike_op"),
+            ("undocumented-name", "zulu_op"),
+        ],
+        "findings must sort by (category, name) — categories grouped in \
+         lexicographic order, names sorted within each group, across \
+         registries and irrespective of declaration order; got {findings:?}"
     );
 
-    // (category, name) is the full key: the category prefixes must be
-    // non-decreasing, so a future category never interleaves with this one.
+    // The category half of the key, asserted against a fixture that actually
+    // spans several categories rather than a single-category constant.
     let cats: Vec<&str> = findings.iter().map(finding_category).collect();
+    let distinct: std::collections::BTreeSet<&str> = cats.iter().copied().collect();
+    assert!(
+        distinct.len() >= 3,
+        "fixture sanity — the ordering assertion is only meaningful if the \
+         finding list spans several categories; got {distinct:?}"
+    );
     let mut sorted_cats = cats.clone();
     sorted_cats.sort_unstable();
     assert_eq!(
         cats, sorted_cats,
-        "category prefixes must be non-decreasing across the finding list; \
-         got {cats:?}"
+        "category prefixes must be non-decreasing across the finding list, so \
+         a future category never interleaves with an existing one; got {cats:?}"
     );
 
     // Re-running over the same tree must reproduce the list byte-for-byte.
@@ -329,16 +346,13 @@ pub const DYNAMICS_QUERY_NAMES: &[&str] = &[
 
 /// A second chunk path, so the fabrication fixtures do not collide with the
 /// omission fixtures' `geometry.md`.
-#[allow(dead_code)]
 const FIX_STDLIB_CHUNK: &str = "crates/reify-mcp/src/tools/chunks/stdlib.md";
 /// `.ri` stdlib source — the oracle arm that has no Rust literal to harvest.
-#[allow(dead_code)]
 const FIX_RI: &str = "crates/reify-compiler/stdlib/geometry.ri";
 
 /// The chunk under test. Line numbers are load-bearing for the assertions:
 /// 3 `extrude`, 4 `revolve`, 5 `offset_surface`, 6 `planned_op`,
 /// 7 `sketchy_op`.
-#[allow(dead_code)]
 const FABRICATION_CHUNK: &str = "\
 # Stdlib
 
@@ -976,7 +990,6 @@ fn chunk_call_mention_floor_guard_against_real_chunks() {
 ///
 /// Declared deliberately out of alphabetical order so a `check()` that happens
 /// to emit in declaration order cannot pass the same-order assertion by luck.
-#[allow(dead_code)]
 const MIXED_UNITS: &str = "\
 //! Fixture registry for the PDOCCOVER shared-derivation contract.
 
@@ -992,7 +1005,6 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
 ";
 
 /// Documents `alpha_op` and `eta_op` only.
-#[allow(dead_code)]
 const MIXED_CHUNK: &str = "\
 # Geometry
 
@@ -1158,7 +1170,6 @@ fn baseline_candidates_exclude_fabricated_names() {
 
 /// The five stable category prefixes. A summary carrying anything else means
 /// a category was added without updating the module header's contract table.
-#[allow(dead_code)]
 const KNOWN_CATEGORIES: &[&str] = &[
     "undocumented-name",
     "fabricated-name",
@@ -1226,19 +1237,47 @@ fn real_repo_smoke_findings_are_well_formed_and_deterministic() {
     // (iv) Completes without panicking on the real tree.
     let findings = reify_audit::pdoccover::check(&ctx);
 
-    // (i) The residual backlog is visible. The capability manifest records ~79
-    // names still missing even after #5389 lands, so this holds under any
-    // sibling merge ordering — but assert only "at least one", never a count.
+    // (i) The omission lane is not blind. The property this test actually
+    // wants is NON-VACUITY — that the lane built a census at all — not that
+    // the census still has a residual.
+    //
+    // Asserting `undocumented >= 1` unconditionally would couple this test to
+    // the ABSENCE of `pdoccover-baseline.txt`, which #5480 is chartered to
+    // seed. Once it does, every census name resolves to Exempt, the residual
+    // drops to zero and this test would flip RED on the intended improvement —
+    // a hidden dependency forcing #5480 to edit this file as part of its own
+    // landing. So: the census must be non-empty always, and the residual must
+    // be non-empty only while nothing has been baselined yet.
+    let units_src = std::fs::read_to_string(repo_root.join(UNITS_PATH))
+        .expect("the real units.rs must be readable");
+    let census: std::collections::BTreeSet<String> =
+        reify_audit::pdoccover::extract_registries(&units_src)
+            .iter()
+            .flat_map(|r| r.entries.iter())
+            .map(|e| e.name.clone())
+            .collect();
+    assert!(
+        !census.is_empty(),
+        "the omission lane extracted an EMPTY census from the real units.rs — \
+         it is scanning nothing, and would report clean no matter how far the \
+         chunks drifted. This is the silent-false-clean mode the floor guards \
+         exist to prevent."
+    );
+
     let undocumented = findings
         .iter()
         .filter(|f| f.summary.starts_with("undocumented-name:"))
         .count();
+    let baselined = repo_root.join(BASELINE_PATH).exists();
     assert!(
-        undocumented >= 1,
-        "expected at least one `undocumented-name:` finding on the real tree — \
-         the registry↔chunk gap is the residual PRD leaf γ exists to surface. \
-         Zero means the omission lane went blind (a units.rs or chunk-path \
-         change), NOT that the corpus was completed. Total findings: {}",
+        undocumented >= 1 || baselined,
+        "no `undocumented-name:` finding, and no baseline file at \
+         {BASELINE_PATH} to explain it. With {} names in the census and \
+         nothing suppressing them, zero residual means the omission lane went \
+         blind (a chunk-path change, or a documented-name matcher that now \
+         matches everything) — NOT that the corpus was completed. Total \
+         findings: {}",
+        census.len(),
         findings.len()
     );
 
@@ -1313,5 +1352,218 @@ fn real_repo_smoke_findings_are_well_formed_and_deterministic() {
         first, second,
         "two consecutive check() runs over an unchanged tree must produce a \
          byte-identical finding sequence"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// amendments: contracts the plan's fixtures left unexercised
+//
+// Every fixture above declares each name exactly once and writes every tracked
+// file it lists, so two load-bearing code paths had no test: the census merge
+// arm (a name declared in several registries) and load_inputs' fail-safe
+// branches. Both are live on the real tree — `single` and `flat_map` are each
+// declared twice in units.rs — and both encode a stated contract.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `delta_op` is declared in TWO registries — once bare, once with a
+/// well-formed allow marker. The census is keyed by NAME, so it must yield
+/// exactly ONE finding, not one per declaration site.
+///
+/// The contract: "reporting the same undocumented name twice would make the
+/// ratchet count depend on an internal `units.rs` factoring detail". Splitting
+/// or merging a registry must not move the number.
+#[test]
+fn a_name_declared_in_two_registries_yields_one_finding() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    write_file(
+        root,
+        FIX_UNITS,
+        "\
+pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
+    \"delta_op\",
+];
+
+pub const DYNAMICS_QUERY_NAMES: &[&str] = &[
+    \"delta_op\", // pdoccover:allow — declared in both families
+];
+",
+    );
+
+    let h = Harness::new(&[FIX_UNITS]);
+    let ctx = h.ctx(root);
+    let findings = reify_audit::pdoccover::check(&ctx);
+
+    // First-well-formed-reason-wins: the second declaration's marker exempts
+    // the name, so the merged entry is Exempt and nothing is reported.
+    assert!(
+        findings.is_empty(),
+        "a well-formed allow marker on ANY declaring line exempts the merged \
+         census name; got {:?}",
+        findings
+            .iter()
+            .map(|f| f.summary.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    // And it is not a baseline candidate either — one derivation, one verdict.
+    assert!(
+        reify_audit::pdoccover::baseline_candidates(&ctx).is_empty(),
+        "an exempted name must not be offered as a baseline candidate"
+    );
+}
+
+/// A reasonless marker on EITHER declaring line wins over a bare sibling
+/// declaration: `allow_missing_reason` is OR-folded across declarations, and
+/// the malformed marker is reported once.
+///
+/// Asserted in BOTH declaration orders. A merge that simply let the LAST
+/// declaration overwrite the first would satisfy one order and fail the other,
+/// so testing a single order would not distinguish an OR-fold from a
+/// last-wins overwrite.
+#[test]
+fn a_reasonless_marker_on_either_declaration_wins() {
+    for (label, src) in [
+        (
+            "marker second",
+            "\
+pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
+    \"delta_op\",
+];
+
+pub const DYNAMICS_QUERY_NAMES: &[&str] = &[
+    \"delta_op\", // pdoccover:allow
+];
+",
+        ),
+        (
+            "marker first",
+            "\
+pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
+    \"delta_op\", // pdoccover:allow
+];
+
+pub const DYNAMICS_QUERY_NAMES: &[&str] = &[
+    \"delta_op\",
+];
+",
+        ),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write_file(root, FIX_UNITS, src);
+
+        let h = Harness::new(&[FIX_UNITS]);
+        let ctx = h.ctx(root);
+        let findings = reify_audit::pdoccover::check(&ctx);
+
+        let summaries: Vec<&str> = findings.iter().map(|f| f.summary.as_str()).collect();
+        assert_eq!(
+            findings.len(),
+            1,
+            "[{label}] a name declared twice yields at most ONE finding; got \
+             {summaries:?}"
+        );
+        assert_eq!(
+            finding_category(&findings[0]),
+            "allow-missing-reason",
+            "[{label}] a reasonless marker on ANY declaring line is OR-folded \
+             into the merged census entry and wins over the bare declaration; \
+             got {summaries:?}"
+        );
+        assert_eq!(finding_name(&findings[0]), "delta_op");
+
+        // Provenance is FIRST-declaration-wins, so the reported line does not
+        // depend on which registry happens to carry the marker.
+        assert!(
+            findings[0].summary.contains(&format!("{UNITS_PATH}:2")),
+            "[{label}] the finding must cite the FIRST declaration \
+             ({UNITS_PATH}:2); got {summaries:?}"
+        );
+
+        // Deliberately not a baseline candidate: baselining a malformed marker
+        // would freeze it into the ratchet instead of prompting the fix.
+        assert!(
+            reify_audit::pdoccover::baseline_candidates(&ctx).is_empty(),
+            "[{label}] a reasonless marker is a defect to fix, not debt to freeze"
+        );
+    }
+}
+
+/// Only TRACKED files participate. An untracked chunk sitting on disk must not
+/// document anything.
+///
+/// The module header claims "a stray untracked `units.rs.orig` or a scratch
+/// chunk never perturbs the census" — this is what verifies it. Without the
+/// `ls_files()` filter, an agent's scratch markdown in the chunks directory
+/// would silently satisfy the ratchet.
+#[test]
+fn an_untracked_chunk_documents_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    write_file(root, FIX_UNITS, FOUR_WAY_UNITS);
+    // On disk, and it DOES mention every name — but it is not tracked.
+    write_file(
+        root,
+        "crates/reify-mcp/src/tools/chunks/scratch.md",
+        "# Scratch\n\n`alpha_op(x)` `beta_op(x)` `gamma_op(x)` `delta_op(x)`\n",
+    );
+
+    // FIX_CHUNK is deliberately absent from both disk and the tracked list.
+    let h = Harness::new(&[FIX_UNITS]);
+    let ctx = h.ctx(root);
+    let findings = reify_audit::pdoccover::check(&ctx);
+
+    let names: Vec<&str> = findings.iter().map(finding_name).collect();
+    assert_eq!(
+        names,
+        vec!["alpha_op", "delta_op", "gamma_op"],
+        "an untracked chunk must document nothing — only `beta_op`'s allow \
+         marker exempts it. Had the scratch file counted, all four names would \
+         be documented and the sole finding would be a `stale-allow-entry:` \
+         for `beta_op`. Got {findings:?}"
+    );
+}
+
+/// A file that is TRACKED but unreadable (listed in the index, absent from the
+/// work tree) is skipped fail-safe: no panic, no finding.
+///
+/// This is the detector's core safety property — "a missing census reports
+/// nothing, it does not report everything". The opposite behaviour (treating an
+/// unreadable units.rs as an empty chunk corpus, or vice versa) would turn a
+/// mid-rebase working tree into a wall of false findings.
+#[test]
+fn a_tracked_but_missing_file_is_skipped_fail_safe() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    // Nothing is written to disk at all; every path below is index-only.
+    let h = Harness::new(&[FIX_UNITS, FIX_CHUNK, FIX_BASELINE]);
+    let ctx = h.ctx(root);
+
+    let findings = reify_audit::pdoccover::check(&ctx);
+    assert!(
+        findings.is_empty(),
+        "an unreadable census source must yield NO findings rather than \
+         panicking or reporting everything; got {findings:?}"
+    );
+    assert!(
+        reify_audit::pdoccover::baseline_candidates(&ctx).is_empty(),
+        "the shared derivation must be fail-safe on the same terms as check()"
+    );
+
+    // The inverse half: a readable units.rs with an unreadable chunk corpus
+    // must report the census as undocumented, not silently exempt it.
+    write_file(root, FIX_UNITS, FOUR_WAY_UNITS);
+    let findings = reify_audit::pdoccover::check(&ctx);
+    let names: Vec<&str> = findings.iter().map(finding_name).collect();
+    assert_eq!(
+        names,
+        vec!["alpha_op", "delta_op", "gamma_op"],
+        "with the chunk corpus unreadable, every non-exempt name is \
+         undocumented — the lane fails LOUD on a readable census, and silent \
+         only when it has no census at all; got {findings:?}"
     );
 }
