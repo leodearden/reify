@@ -94,6 +94,41 @@ ceilings that task #5257 de-annotated are **not** survivors — after the
 condition-(3) tightening they carry no time-measurement signal and pass
 un-flagged without an escape.
 
+## Opt-in soak: seed lane-lock release (`REIFY_RUN_SEED_LANE_LOCK_SOAK`)
+
+`test_seed_lane_lock_release_soak.sh` is the repeat-N characterization
+instrument for `scripts/seed-warm-lane.sh`'s lane-lock release-at-exit
+property (task #5705).  It runs in two layers:
+
+- **Always** — a sub-second hermetic positive/negative control proving the
+  `flock -n` probe primitive reports HELD on a held lock and FREE on a free
+  one.  Sited *before* the opt-in gate, so it is never dead code.
+- **`REIFY_RUN_SEED_LANE_LOCK_SOAK=1`** — drives N real seed invocations under
+  `cpu_load_fixture.sh` contention, probing the lane lock the instant seed's own
+  parent exits, and prints one structured line:
+
+  ```
+  SEED_LANE_LOCK_SOAK held=<n> iters=<N> workers=<w>
+  ```
+
+  `REIFY_SEED_LANE_LOCK_SOAK_ITERS` sets N (default 50); workers are
+  `min(nproc, 24)`.
+
+The assertion is `held == 0` — a **count**, never an elapsed time, so it cannot
+become one of the absolute wall-clock upper bounds the guard above rejects.
+
+Measured on a 32-core host at 24 workers, `ITERS=200`: **`held=4`** before the
+fix, **`held=0`** after.  Against a minimal reproduction of seed's tail, 200
+trials each: `9<&-` alone 16/200, `9<&-` + parent `exec 9>&-` 14/200 (closing
+your own descriptor is *not* enough — the lock lives on the open file
+description a forked child still holds a dup of), `9<&-` + parent `flock -u 9`
+0/200.
+
+The permanent regression guards are hermetic and live in
+`test_seed_warm_lane.sh` (H4b/H4e/H7b); this soak is the instrument for
+re-measuring the rate if the property ever resurfaces, which is why it is
+default-skipping and classified `host-exclusive`.
+
 ## Files
 
 | File | Purpose |
