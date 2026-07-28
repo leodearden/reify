@@ -69,7 +69,21 @@ const REVOLVE_DEGENERATE_TOLERANCE: f64 = 1e-12;
 /// shortest emitted segment. Curvature-adaptive / caller-tunable sampling is a
 /// future refinement. 64 segments keeps the chord error well under typical mesh
 /// sizes while staying allocation-light.
-const PROFILE_CIRCLE_SEGMENTS: usize = 64;
+///
+/// Because the target mesh size is the *shortest* emitted chord, the sampler
+/// must keep chords near-uniform — see [`sample_ellipse_ring`], which spaces
+/// points by arc length rather than by uniform θ for exactly this reason.
+const PROFILE_CURVE_SEGMENTS: usize = 64;
+
+/// Sub-intervals per emitted segment used when building the cumulative
+/// arc-length table in [`sample_ellipse_ring`].
+///
+/// The table is integrated with the trapezoid rule, whose error is
+/// `O(h²)`; at 16 sub-intervals per emitted segment (1024 sub-intervals over
+/// the full ellipse) the arc-length positions are accurate to far better than
+/// the chord-uniformity the sampler is trying to achieve, at a one-off cost of
+/// ~1k `sin_cos` evaluations per curved profile.
+const PROFILE_ARC_OVERSAMPLE: usize = 16;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -387,19 +401,110 @@ pub fn swept_kind_to_sweep_params(
     }
 }
 
-/// Sample a closed CCW ellipse ring (a circle when `a == b`) of
-/// [`PROFILE_CIRCLE_SEGMENTS`] points: point `i` is `[a·cos θ, b·sin θ]` with
-/// `θ = τ·i / N`. The `i = 0` sample is exactly `[a, 0]` (`cos 0 == 1`,
-/// `sin 0 == 0`), and every circle sample lies on radius `a` up to f64 trig
-/// rounding (~1e-16). CCW because `θ` increases from 0 (upper half has
-/// `sin θ > 0`), matching the rectangle sampler's orientation convention.
+/// Sample a closed CCW ellipse ring (a circle when `|a| == |b|`) of
+/// [`PROFILE_CURVE_SEGMENTS`] points `[a·cos θ, b·sin θ]`, spaced by **equal
+/// arc length** rather than by equal `θ`.
+///
+/// # Why arc length and not uniform θ
+///
+/// Uniform-θ sampling of an ellipse produces very non-uniform chords. The
+/// longest chord (near `θ = π/2`) is ≈ `a·τ/N`; the shortest (near `θ = 0`) is
+/// `hypot(a·(1 − cos τ/N), b·sin τ/N)`, which is ≈ `b·τ/N` while the minor-axis
+/// term dominates and then saturates on the major-axis sagitta
+/// `a·(τ/N)²/2`. So the max/min chord ratio grows like the aspect ratio `a/b`
+/// up to a ceiling of ≈ `2N/τ` (≈ 20.4 at `N = 64`).
+///
+/// That interacts badly with the consumer:
+/// [`reify_solver_elastic::auto_mesh_size_from_boundary`] takes the SHORTEST
+/// chord in the whole ring as the target mesh size, so under uniform θ the
+/// element size is set by the tip region while the domain spans the major
+/// axis, and element count (≈ `area/h²`) is inflated by up to the square of
+/// that ratio. Measured on the `a = 0.05, b = 0.0005` fixture used by the
+/// chord-uniformity test: uniform θ gives min chord `2.457e-4`, max `4.901e-3`
+/// (ratio `19.95`) and an implied ~1300 elements; equal-arc-length spacing
+/// gives min `3.119e-3`, max `3.126e-3` (ratio `1.0024`, every chord ≈
+/// `perimeter/N = 3.126e-3`) and ~8. The derived mesh size then tracks the
+/// profile as a whole and the element count is aspect-ratio-independent.
+///
+/// # Method
+///
+/// `|dP/dθ| = √(a²sin²θ + b²cos²θ)` is integrated with the trapezoid rule over
+/// `N · PROFILE_ARC_OVERSAMPLE` sub-intervals to give a monotone cumulative
+/// arc-length table, which is then inverted (one linear-interpolated pass) at
+/// the `N` targets `i·total/N`. A circle takes the closed form directly:
+/// uniform θ already IS uniform arc length there, so the common case stays
+/// exact and allocation-light.
+///
+/// # Guarantees
+///
+/// * The `i = 0` sample is bit-exactly `[a, 0]` — target arc length 0 inverts
+///   to `θ = 0.0` exactly, and `cos 0.0 == 1.0` / `sin 0.0 == 0.0` are
+///   IEEE-exact.
+/// * Every circle sample lies on radius `|a|` up to f64 trig rounding (~1e-16),
+///   independently of the θ values chosen.
+/// * The ring is CCW for positive `a, b` because θ advances monotonically from
+///   0; a negative extent flips the winding and is corrected downstream by
+///   [`normalise_ccw`], as for every other sampler arm.
 fn sample_ellipse_ring(a: f64, b: f64) -> Vec<[f64; 2]> {
-    (0..PROFILE_CIRCLE_SEGMENTS)
-        .map(|i| {
-            let theta = std::f64::consts::TAU * (i as f64) / (PROFILE_CIRCLE_SEGMENTS as f64);
-            [a * theta.cos(), b * theta.sin()]
-        })
-        .collect()
+    let n = PROFILE_CURVE_SEGMENTS;
+    let point_at = |theta: f64| [a * theta.cos(), b * theta.sin()];
+    let uniform_theta = || {
+        (0..n)
+            .map(|i| point_at(std::f64::consts::TAU * (i as f64) / (n as f64)))
+            .collect::<Vec<[f64; 2]>>()
+    };
+
+    // A circle is already arc-uniform under uniform θ. Equality on |a| covers
+    // the sign-flipped (clockwise) circle too.
+    if a.abs() == b.abs() {
+        return uniform_theta();
+    }
+
+    // Cumulative arc length s(θ) on a fine uniform-θ grid, trapezoid rule.
+    let m = n * PROFILE_ARC_OVERSAMPLE;
+    let dtheta = std::f64::consts::TAU / (m as f64);
+    let speed = |theta: f64| {
+        let (sin_t, cos_t) = theta.sin_cos();
+        ((a * sin_t) * (a * sin_t) + (b * cos_t) * (b * cos_t)).sqrt()
+    };
+    let mut cumulative = Vec::with_capacity(m + 1);
+    cumulative.push(0.0_f64);
+    let mut total = 0.0_f64;
+    let mut prev = speed(0.0);
+    for k in 1..=m {
+        let cur = speed(dtheta * (k as f64));
+        total += 0.5 * (prev + cur) * dtheta;
+        cumulative.push(total);
+        prev = cur;
+    }
+    // Fully degenerate (a == b == 0) leaves nothing to equalise, and an
+    // overflowed perimeter (astronomically large but still "finite" extents)
+    // would make `total · i/n` produce NaN at i = 0. In both cases fall back to
+    // uniform θ and let the consumer's DegenerateBoundary rejection handle it —
+    // the sampler must not mask degeneracy. (A non-finite *extent* cannot reach
+    // here at all; `profile_sample_2d` rejects those.)
+    let arc_length_usable = total.is_finite() && total > 0.0;
+    if !arc_length_usable {
+        return uniform_theta();
+    }
+
+    // Invert s(θ) with a single monotone walk over the table.
+    let mut ring = Vec::with_capacity(n);
+    let mut k = 0_usize;
+    for i in 0..n {
+        let target = total * (i as f64) / (n as f64);
+        while k + 1 < cumulative.len() && cumulative[k + 1] < target {
+            k += 1;
+        }
+        let (s0, s1) = (cumulative[k], cumulative[k + 1]);
+        let frac = if s1 > s0 {
+            (target - s0) / (s1 - s0)
+        } else {
+            0.0
+        };
+        ring.push(point_at(dtheta * (k as f64 + frac)));
+    }
+    ring
 }
 
 /// Reverse `ring` in place iff its signed area is negative, so the returned
@@ -481,12 +586,12 @@ fn profile_sample_2d(op: &GeometryOp) -> Option<Vec<[f64; 2]>> {
             }
             Some(points.clone())
         }
-        // Circle: PROFILE_CIRCLE_SEGMENTS points, each exactly r·[cos θ, sin θ].
+        // Circle: PROFILE_CURVE_SEGMENTS points, each exactly r·[cos θ, sin θ].
         GeometryOp::CircleProfile { radius } => {
             let r = radius.as_f64().filter(|v| v.is_finite())?;
             Some(sample_ellipse_ring(r, r))
         }
-        // Ellipse: PROFILE_CIRCLE_SEGMENTS points at [a·cos θ, b·sin θ].
+        // Ellipse: PROFILE_CURVE_SEGMENTS points at [a·cos θ, b·sin θ].
         GeometryOp::EllipseProfile {
             semi_major,
             semi_minor,
@@ -1722,7 +1827,7 @@ mod tests {
     }
 
     // ── Task 5218 step-5: Circle/Ellipse cross-section producer ─────────────
-    // Curved profiles are pre-sampled into PROFILE_CIRCLE_SEGMENTS polyline
+    // Curved profiles are pre-sampled into PROFILE_CURVE_SEGMENTS polyline
     // points. Circle: every point lies exactly on radius r (only f64 trig
     // rounding, ~1e-16). Ellipse: the θ=0 sample is [a, 0]. Both rings are
     // non-degenerate (|shoelace signed area| > 0), measured with the mesher's
@@ -1740,8 +1845,8 @@ mod tests {
             .expect("a CircleProfile-backed extrude must produce a ProfileBoundary");
         assert_eq!(
             boundary.outer.len(),
-            PROFILE_CIRCLE_SEGMENTS,
-            "circle must be discretised into PROFILE_CIRCLE_SEGMENTS points"
+            PROFILE_CURVE_SEGMENTS,
+            "circle must be discretised into PROFILE_CURVE_SEGMENTS points"
         );
         // Every sampled point lies on the radius-r circle (points are exactly
         // r·[cos θ, sin θ]; only error is f64 trig rounding ~1e-16 ≪ 1e-9).
@@ -1782,8 +1887,8 @@ mod tests {
             .expect("an EllipseProfile-backed extrude must produce a ProfileBoundary");
         assert_eq!(
             boundary.outer.len(),
-            PROFILE_CIRCLE_SEGMENTS,
-            "ellipse must be discretised into PROFILE_CIRCLE_SEGMENTS points"
+            PROFILE_CURVE_SEGMENTS,
+            "ellipse must be discretised into PROFILE_CURVE_SEGMENTS points"
         );
         // The θ=0 sample (index 0) is [a·cos 0, b·sin 0] = [a, 0].
         let first = boundary.outer[0];
@@ -2000,6 +2105,84 @@ mod tests {
             area > 1e-14,
             "a negative semi-minor axis samples clockwise and must be normalised to \
              CCW, clearing validate_boundary's 1e-14 floor; got signed area {area}"
+        );
+    }
+
+    // ── Amendment: curved profiles are sampled by arc length ────────────────
+    // `auto_mesh_size_from_boundary` (mesher.rs) takes the SHORTEST chord in
+    // the ring as the target mesh size, so a sampler that emits wildly uneven
+    // chords makes element count scale with the profile's aspect ratio. These
+    // pin that `sample_ellipse_ring` spaces points by arc length, which keeps
+    // every chord ≈ perimeter/N regardless of aspect ratio.
+
+    /// Consecutive-chord lengths of a closed ring, including the wrap-around
+    /// segment — the same set of segments `auto_mesh_size_from_boundary`
+    /// minimises over.
+    fn closed_ring_chords(ring: &[[f64; 2]]) -> Vec<f64> {
+        (0..ring.len())
+            .map(|i| {
+                let p = ring[i];
+                let q = ring[(i + 1) % ring.len()];
+                ((q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2)).sqrt()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_high_aspect_ellipse_chords_are_near_uniform() {
+        // 100:1 ellipse. Measured on this fixture, uniform-θ sampling gives
+        // min chord 2.457e-4 / max 4.901e-3 — a max/min ratio of 19.95, which
+        // handed auto_mesh_size_from_boundary a mesh size set by the tip while
+        // the domain spans the major axis. (The ratio saturates near 2N/τ ≈
+        // 20.4 rather than tracking a/b all the way up, because past an aspect
+        // of ≈ 2N/τ the shortest chord is limited by the major-axis sagitta
+        // a·(τ/N)²/2 rather than by b·τ/N.) Arc-length spacing measures
+        // min 3.119e-3 / max 3.126e-3 — ratio 1.0024.
+        let (a, b) = (0.05, 0.0005);
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::EllipseProfile {
+            semi_major: Value::length(a),
+            semi_minor: Value::length(b),
+        });
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("an EllipseProfile-backed extrude must produce a ProfileBoundary");
+        let chords = closed_ring_chords(&boundary.outer);
+        let min = chords.iter().copied().fold(f64::INFINITY, f64::min);
+        let max = chords.iter().copied().fold(0.0_f64, f64::max);
+        assert!(
+            min > 0.0,
+            "no chord may be zero-length (that would zero the derived mesh size)"
+        );
+        // Bound sits an order of magnitude clear on both sides — measured
+        // 1.0024 here, 19.95 under uniform θ — so it fails loudly on a
+        // regression to uniform θ without being brittle about trapezoid /
+        // linear-interpolation residue.
+        let ratio = max / min;
+        assert!(
+            ratio < 2.0,
+            "a {aspect:.0}:1 ellipse must be sampled by arc length so chords stay \
+             near-uniform (uniform-θ sampling measures ≈19.95 on this fixture); \
+             got max/min = {ratio}",
+            aspect = a / b
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_circle_chords_are_uniform() {
+        // The circle path keeps the closed form (uniform θ IS uniform arc
+        // length when a == b); this pins that the arc-length rework did not
+        // perturb it.
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::CircleProfile {
+            radius: Value::length(0.03),
+        });
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("a CircleProfile-backed extrude must produce a ProfileBoundary");
+        let chords = closed_ring_chords(&boundary.outer);
+        let min = chords.iter().copied().fold(f64::INFINITY, f64::min);
+        let max = chords.iter().copied().fold(0.0_f64, f64::max);
+        assert!(
+            max - min < 1e-15,
+            "a circle's chords must all be equal up to f64 trig rounding; got \
+             min={min}, max={max}"
         );
     }
 
