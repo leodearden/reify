@@ -32,6 +32,57 @@
 //! crates/reify-eval/src. Same expression, same `ValueMap`, only the function
 //! slice differs; so a non-`Undef` result can ONLY have come from executing the
 //! `.ri` body.
+//!
+//! MEASURED: WHAT THE 17 GUARDS OBSERVE UNDER INTERCEPT REMOVAL
+//!
+//! The signal this task exists to create. Measured by locally disabling all
+//! three intercept gates (`if false && …` at reify-expr/src/lib.rs:735, 755,
+//! 774 — an edit that must NEVER be committed) and reading each guard's `left:`
+//! value. Both runs are on this branch; only the harness differs.
+//!
+//! BEFORE (guards on `module.functions`): 17 of 17 fail with `left: Undef`.
+//! Not one placeholder value. The `.ri` bodies were not in the table at all, so
+//! the guards could only ever have proven "the intercept fires" — never "the
+//! intercept beats the placeholder".
+//!
+//! AFTER (guards on `prelude_backed_functions`): 0 of 17 report `Undef`; 16
+//! report the stdlib placeholder's WRONG VALUE, and the 17th passes.
+//!
+//!   guard                                  placeholder observed   from
+//!   e2e_unwrap_or_some_5mm_with_stdlib     0mm                    `{ dflt }`
+//!   e2e_or_default_some_with_stdlib        0mm                    `{ dflt }`
+//!   e2e_or_else_none_subject_with_stdlib   Option(None)           `{ o }`
+//!   e2e_is_some_none_with_stdlib           Bool(true)             `{ true }`
+//!   e2e_is_none_none_with_stdlib           Bool(false)            `{ false }`
+//!   e2e_get_or_present_key_with_stdlib     0mm                    `{ dflt }`
+//!   e2e_get_or_undef_map_with_stdlib (`w`) 0mm                    `{ dflt }`
+//!   e2e_map_or_some_with_stdlib            0mm                    `{ dflt }`
+//!   e2e_result_unwrap_or_ok_with_stdlib    0mm                    `{ dflt }`
+//!   e2e_result_fallback_ok_with_stdlib     0mm                    `{ dflt }`
+//!   e2e_result_is_ok_err_with_stdlib       Bool(true)             `{ true }`
+//!   e2e_result_is_err_err_with_stdlib      Bool(false)            `{ false }`
+//!   e2e_result_or_else_err_with_stdlib     Err{error:"e"}         `{ r }`
+//!   e2e_map_err_err_with_stdlib            Err{error:3mm}         `{ r }`
+//!   e2e_ok_or_some_with_stdlib             String("e")            `{ err }`
+//!   e2e_ok_or_none_with_stdlib             String("e")            `{ err }`
+//!   e2e_get_or_absent_key_with_stdlib      0mm                    `{ dflt }`  <-- PASSES
+//!
+//! TWO GUARDS ARE COINCIDENCE-LIMITED even under this harness. Naming them is
+//! the point: this task's failure mode is precisely a harness that LOOKS like it
+//! proves more than it measures, so inheriting that silently would reproduce the
+//! bug in the fix.
+//!
+//!  1. `e2e_get_or_absent_key_with_stdlib` expects 0mm and `{ dflt }` also
+//!     yields 0mm, so intercept removal cannot make it fail — it is the one
+//!     guard that PASSES above. It is NOT value-discriminating under this
+//!     harness. `get_or` coverage survives via
+//!     `e2e_get_or_present_key_with_stdlib`, which expects 1mm against the
+//!     placeholder's 0mm.
+//!  2. `e2e_get_or_undef_map_with_stdlib`'s `v` assertion expects `Undef`, and
+//!     the any-arg-undef short-circuit at reify-expr/src/lib.rs:1610 returns
+//!     `Undef` BEFORE lookup, so the placeholder can never diverge there. Its
+//!     `w` liveness witness is the discriminating half — load-bearing, not
+//!     decorative — and is what fails above.
 
 use reify_core::DimensionVector;
 use reify_ir::{CompiledExpr, CompiledExprKind, Value, ValueMap};
