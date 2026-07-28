@@ -18,11 +18,15 @@
 #   RC      — exit code
 #
 # Blocks:
-#   S — scaffolding
-#   (additional blocks land in subsequent commits as the script grows: the
-#    CLI contract + empty-input degradation, the liveness guard, trigger
-#    classes A/B/C, the #5316 corruption suppressors, and --emit-requests +
-#    the read-only proof.)
+#   S — scaffolding + fixture-builder self-checks
+#   A — CLI contract + empty-input degradation
+#   B — the liveness guard
+#   C — trigger class A (gate_closure)
+#   D — trigger class B (merge_verify_red)
+#   E — trigger class C (unmet_dependency)
+#   F — the #5316 corruption suppressors
+#   G — --emit-requests + the read-only proof
+#   T — tag scoping
 #
 # The suite is free of `sleep` / wall-clock upper bounds by construction
 # (offset-timestamp fixtures instead), so
@@ -1386,18 +1390,6 @@ _all_requests_parse() {
             echo "unparseable request file: $f"; return 1; }
     done < <(find "$dir" -maxdepth 1 -type f 2>/dev/null)
 }
-# _sqlite_all_readonly — every sqlite handle the SUT opens is read-only. The
-# `-n "$_SQLITE_BIN"` emptiness guards are not invocations, so they are
-# excluded before the -readonly requirement is applied.
-_sqlite_all_readonly() {
-    local bad
-    bad="$(grep -n '"\$_SQLITE_BIN"' "$SCRIPT" | grep -v -- '-n "\$_SQLITE_BIN"' \
-           | grep -v -- '-readonly' || true)"
-    [ -z "$bad" ] || { echo "non-readonly sqlite invocation(s): $bad"; return 1; }
-    bad="$(grep -n 'sqlite3\.connect' "$SCRIPT" | grep -v 'mode=ro' || true)"
-    [ -z "$bad" ] || { echo "sqlite3.connect without mode=ro: $bad"; return 1; }
-}
-
 _mk_tasks_db
 G_DB="$DB"
 _mk_esc_dir
@@ -1536,14 +1528,53 @@ assert "G7: a --class-restricted sweep emits only that class's request" \
 assert "G7: and it is the class-A request" \
     test -f "$G_REQ_A/redispatch-9701-gate_closure.json"
 
-# --- G8: the read-only proof -------------------------------------------------
-assert "G8: the fixture tasks.db and escalation store are byte-identical after an emitting sweep" \
+# --- G8: the read-only proof, BEHAVIOURAL ONLY -------------------------------
+#
+# Deliberately not a source grep. Two earlier asserts here tested the SUT's
+# source TEXT and were removed for being unsound in both directions:
+#   - `grep -qiE '\b(UPDATE|INSERT +INTO|DELETE +FROM)\b' "$SCRIPT"` scans
+#     comment PROSE as well as code (the header already says `update_task` /
+#     `set_task_status`, and survives only because `_` is a word character), so
+#     a future comment reading "update the task record" would fail the suite
+#     for a wording edit — a false positive on a docs change.
+#   - a grep keyed on ONE spelling of the invocation (`"$_SQLITE_BIN"`) asserts
+#     that the matching lines carry -readonly, so it passes VACUOUSLY the moment
+#     a regression uses another spelling (unquoted, a renamed variable, a
+#     wrapper function) — it can silently pass on exactly the regression it
+#     exists to catch.
+# The three asserts below are behavioural and cannot be fooled by either.
+assert "G8a: the fixture tasks.db and escalation store are byte-identical after an emitting sweep" \
     test "$G_BEFORE" = "$G_AFTER"
-assert "G8: no -wal / -shm sidecar was created alongside the fixture DB" \
+assert "G8b: no -wal / -shm sidecar was created alongside the fixture DB" \
     _not test -e "$G_DB-wal"
-assert "G8: the SUT source contains no UPDATE / INSERT INTO / DELETE FROM SQL" \
-    _not grep -qiE '\b(UPDATE|INSERT +INTO|DELETE +FROM)\b' "$SCRIPT"
-assert "G8: every sqlite handle the SUT opens is read-only" _sqlite_all_readonly
+
+# G8c — the strongest form: make the store PHYSICALLY read-only (the DB file
+# mode 400 and its directory mode 500, so neither the file itself nor a
+# -wal/-journal sidecar beside it can be written) and require a COMPLETE report
+# out of it anyway. A sweep that opened any handle read-write fails here, where
+# a source grep cannot see it; and unlike a grep this cannot be satisfied by
+# renaming a variable.
+if [ "$(id -u)" != 0 ]; then
+    G_RO_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-groreq-XXXXXX")"
+    _TMPDIRS+=("$G_RO_REQ")
+    G_DB_DIR="$(dirname "$G_DB")"
+    chmod 400 "$G_DB"
+    chmod 500 "$G_DB_DIR"
+    G_RO_BEFORE="$(_snapshot_readonly "$G_DB" "$G_ESC")"
+    run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+        --emit-requests "$G_RO_REQ" --format json
+    G_RO_AFTER="$(_snapshot_readonly "$G_DB" "$G_ESC")"
+    chmod 700 "$G_DB_DIR"
+    chmod 600 "$G_DB"
+    assert "G8c: a physically read-only store (db 400, dir 500) still exits 0" _rc_is 0
+    assert "G8c: ... and still yields the complete three-hit report" \
+        _json_is 's["gate_closure"] == 1 and s["merge_verify_red"] == 1 and s["unmet_dependency"] == 1'
+    assert "G8c: ... and still emits all three requests" _request_count_is "$G_RO_REQ" 3
+    assert "G8c: ... leaving the store byte-identical (no handle was opened read-write)" \
+        test "$G_RO_BEFORE" = "$G_RO_AFTER"
+else
+    echo "  SKIP: G8c physically-read-only asserts (running as uid 0; mode bits do not apply)"
+fi
 
 # --- G9: flag<->env parity, and the default writes nothing -------------------
 G_REQ_ENV="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-greqenv-XXXXXX")"
@@ -1561,5 +1592,130 @@ assert "G9: with neither the flag nor its env knob set, the sweep writes nothing
     _request_count_is "$G_NONE" 0
 assert "G9: ... and the previously-emitted request set is left untouched" \
     test "$G_SNAP1" = "$(_request_snapshot "$G_REQ")"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block T — tag scoping
+#
+# `tasks` and `dependencies` are both PRIMARY KEY (tag, ...), so a task id is
+# unique only WITHIN a tag. Every query the sweep issues must therefore carry
+# `tag = <the swept tag>`; a regression that dropped that predicate from any one
+# of them would ship silently, because the live store has exactly one tag today
+# and every query returns the same answer with or without it.
+#
+# The failure it would cause is not cosmetic. With a second tag present, a
+# tag-blind ENUMERATION returns the same id twice; a tag-blind metadata read
+# (`... WHERE id=<id> LIMIT 1`) answers for whichever tag the (tag, id) index
+# reaches first; and the sweep would then emit `redispatch-<id>-<class>.json`
+# adjudicated from one tag's row while naming a task in another — telling the
+# consumer to CANCEL the wrong task.
+#
+# ROW-ORDER ROBUSTNESS: a scalar read of the shape `... WHERE id=<id> LIMIT 1`
+# cannot use the (tag, id) primary-key index (id is not its leading column), so
+# a tag-blind one degrades to a table scan and answers with whichever row has
+# the lower ROWID — i.e. whichever tag was INSERTED FIRST. Verified by
+# mutation: with the swept tag's row inserted first, dropping `tag='$TAG'` from
+# the metadata and flags queries changed no output at all. So the decoy is
+# planted in BOTH orders — 9801's decoy row is inserted before the swept row,
+# 9805's after — and both are asserted clean. Whichever way a tag-blind scan
+# resolves, one of the two is adjudicated from the wrong tag and fails.
+#
+# Each decoy row is shaped to trip every tag-scoped query at once: it carries a
+# satisfied dependency (the class-C LEFT JOIN), a Signature-1 corruption marker
+# (the flags query), and no `task_kind` at all (the class-A metadata reads).
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block T: tag scoping ---"
+
+_mk_tasks_db
+T_DB="$DB"
+_mk_esc_dir
+T_ESC="$ESC_DIR"
+_mk_repo
+T_REPO="$REPO_DIR"
+
+T_GATE='"task_kind":"deterministic","always_escalates":true,"gate_escalated_at":"2026-07-26T08:00:00Z"'
+# The decoy shape: NOT class A (no task_kind), corrupt per Signature 1, and
+# carrying a dependency — divergent from the swept tag's row in every dimension
+# the sweep reads.
+T_DECOY='{"failing_tests":["Usage:"]}'
+
+_add_task 9890 done '{}' "" "" alt
+
+# 9801 — DECOY FIRST, then the swept row.
+_add_task 9801 blocked "$T_DECOY" "" "" alt
+_add_dep  9801 9890 alt
+_add_task 9801 blocked "{$T_GATE}"
+# 9805 — SWEPT ROW FIRST, then the decoy.
+_add_task 9805 blocked "{$T_GATE}"
+_add_task 9805 blocked "$T_DECOY" "" "" alt
+_add_dep  9805 9890 alt
+# 9803 — present only under master. The control that keeps T7/T9 from passing
+# merely because the report came back empty.
+_add_task 9803 blocked "{$T_GATE}"
+# 9802 — exists ONLY under alt, and is a class-A hit THERE. It must never
+# appear in a master sweep, and must appear in an alt one.
+_add_task 9802 blocked "{$T_GATE}" "" "" alt
+
+T_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-treq-XXXXXX")"
+_TMPDIRS+=("$T_REQ")
+
+run_sweep --db "$T_DB" --escalations "$T_ESC" --repo "$T_REPO" \
+    --tag master --emit-requests "$T_REQ" --format json
+assert "T0: the two-tag fixture sweep exits 0" _rc_is 0
+
+# --- T1/T2: candidate ENUMERATION is tag-scoped ------------------------------
+assert "T1: a task present under two tags is enumerated exactly once, in both row orders" \
+    _json_is 'len([c for c in d["candidates"] if c["task_id"] in (9801, 9805)]) == 2'
+assert "T2: a task that exists only under another tag is never enumerated" \
+    _json_is '9802 not in t'
+assert "T2: the swept tag's own rows are all enumerated" \
+    _json_is 'sorted(t) == [9801, 9803, 9805]'
+
+# --- T3: the metadata reads are tag-scoped -----------------------------------
+# The decoy carries no task_kind, so a tag-blind read drops the row out of
+# class A entirely. Asserted for BOTH row orders (see the header note).
+assert "T3: both dual-tag rows are adjudicated from the MASTER metadata (class A, STALE, close)" \
+    _json_is 'all(t[i]["class"] == "gate_closure" and t[i]["verdict"] == "STALE" and t[i]["action"] == "close" for i in (9801, 9805))'
+
+# --- T4: the dependency LEFT JOIN is tag-scoped (re-pins E7 from the other side)
+# E7 pins that a dependency TARGET under another tag does not satisfy. This
+# pins the complementary direction: another tag's dependency ROWS are not read
+# for this task at all.
+assert "T4: the other tag's dependency rows are not attributed to these tasks" \
+    _json_is 'all("also:unmet_dependency" not in t[i]["evidence"] for i in (9801, 9805))'
+
+# --- T5: the Signature-1 flags query is tag-scoped ---------------------------
+assert "T5: the other tag's corruption marker does not flag these tasks" \
+    _json_is 'all(t[i]["flags"] == [] for i in (9801, 9805))'
+assert "T5: ... so neither hit is spuriously demoted to CORRUPT-HOLD" \
+    _json_is 's["gate_closure"] == 3 and s["corrupt_hold"] == 0'
+
+# --- T6: emission follows the swept tag --------------------------------------
+assert "T6: the emitted requests are the master rows' close requests" \
+    test -f "$T_REQ/redispatch-9801-gate_closure.json"
+assert "T6: exactly the three master hits emit, and nothing from the other tag" \
+    _request_count_is "$T_REQ" 3
+assert "T6: no request is emitted for the other tag's task" _no_request_for "$T_REQ" 9802
+
+# --- T7: --tag really does select the namespace ------------------------------
+run_sweep --db "$T_DB" --escalations "$T_ESC" --repo "$T_REPO" --tag alt --format json
+assert "T7: --tag alt sweeps the other namespace (its rows appear, master's do not)" \
+    _json_is '9802 in t and 9803 not in t'
+assert "T7: the dual-tag ids now adjudicate from the ALT rows — class C, flagged, held" \
+    _json_is 'all(t[i]["class"] == "unmet_dependency" and t[i]["verdict"] == "CORRUPT-HOLD" for i in (9801, 9805))'
+_T7_ALT_OUT="$OUT"
+
+# --- T8/T9: flag <-> env parity for the tag knob (mirrors A8a/A8b) -----------
+_SWEEP_ENV=(REIFY_LANE_TASK_TAG=alt)
+run_sweep --db "$T_DB" --escalations "$T_ESC" --repo "$T_REPO" --format json
+_SWEEP_ENV=()
+assert "T8: REIFY_LANE_TASK_TAG produces byte-identical stdout to --tag" \
+    test "$OUT" = "$_T7_ALT_OUT"
+
+_SWEEP_ENV=(REIFY_LANE_TASK_TAG=alt)
+run_sweep --db "$T_DB" --escalations "$T_ESC" --repo "$T_REPO" --tag master --format json
+_SWEEP_ENV=()
+assert "T9: an explicit --tag overrides REIFY_LANE_TASK_TAG" \
+    _json_is 'sorted(t) == [9801, 9803, 9805] and t[9801]["class"] == "gate_closure"'
 
 test_summary
