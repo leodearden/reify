@@ -46,6 +46,37 @@ knob:
 parallel one. Task ids are unique only within a tag (`tasks` is `PRIMARY KEY (tag, id)`), so every
 query the sweep issues is tag-scoped.
 
+One knob is **env-only, with no flag**: `REIFY_GATE_STALENESS_SQLITE_BIN` overrides the sqlite3-CLI
+probe, and an explicitly *empty* value forces the python3 engine. It exists because the probe
+resolves `/usr/bin/sqlite3` by absolute path, so stripping `PATH` cannot reach it — which makes it
+both the test seam for the fallback and the break-glass for an incompatible CLI.
+
+## Engines and cost
+
+The sweep issues **one query per run**, not one per candidate per oracle. Everything the
+classifiers need — the four `metadata` scalars, the Signature-1 marker count and the dependency
+roll-up — is selected alongside the candidate row, so a candidate costs zero further DB opens.
+Measured on a 50-candidate fixture: **301 sqlite3 processes before, 1 after** (the earlier shape
+re-opened the store and re-ran `WHERE tag=… AND id=… LIMIT 1` against the *same* metadata blob four
+times per row, plus a `json_each` query and a dependency join).
+
+Three properties of that query are load-bearing:
+
+- `json_extract` / `json_each` **raise** on malformed JSON, and in a whole-table query one raised
+  error kills every row rather than one. Metadata is read through a `json_valid` guard that
+  substitutes `{}`, so an unreadable blob yields empty fields — the same outcome the per-row
+  version got from a swallowed error.
+- a scalar `json_extract` of a JSON string returns the **decoded** text, which can contain a
+  newline (and in principle the US field separator). Every free-form column is flattened, so no
+  value can forge a field or row boundary in the US-separated stream.
+- every clause is tag-scoped, **including** the correlated dependency subquery (`d.tag = t.tag`).
+
+The sqlite3 CLI and the python3 stdlib engine run that **identical SQL string**, so they are
+genuinely interchangeable rather than one being a stub that enumerates rows nothing can then
+adjudicate. If neither is present — or if python3 alone is missing, which also disables the
+escalation oracle, the proposal parser and `--format json` — the sweep says so once, at startup,
+instead of silently reporting a whole run as `unknown`.
+
 ## Trigger classes
 
 | Class | Scope | Premise-resolved predicate | Action |

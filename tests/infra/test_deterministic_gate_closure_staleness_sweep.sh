@@ -1614,6 +1614,46 @@ assert "G9: with neither the flag nor its env knob set, the sweep writes nothing
 assert "G9: ... and the previously-emitted request set is left untouched" \
     test "$G_SNAP1" = "$(_request_snapshot "$G_REQ")"
 
+# --- G10: the two DB engines are interchangeable, not one-and-a-stub ---------
+#
+# The python3 task-DB fallback used to be INERT: it backed candidate
+# enumeration only, and every downstream reader short-circuited on an empty
+# sqlite3 binary. On a host with no sqlite3 the sweep therefore enumerated every
+# candidate and then reported all of them as "no trigger class matched", with no
+# diagnostic saying classification had been disabled wholesale — a fallback
+# advertising a resilience it did not deliver. Both engines now run the
+# IDENTICAL enumeration SQL, which is what makes them interchangeable; this
+# block is the only proof of that, so it compares the WHOLE observable surface
+# (stdout and the emitted request set) rather than a counter.
+#
+# The engine probe resolves /usr/bin/sqlite3 by ABSOLUTE path, so hiding
+# sqlite3 from PATH cannot reach it. REIFY_GATE_STALENESS_SQLITE_BIN is the
+# seam; an explicitly empty value forces the python3 engine.
+G_REQ_CLI="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-gcli-XXXXXX")"
+_TMPDIRS+=("$G_REQ_CLI")
+G_REQ_PY="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-gpy-XXXXXX")"
+_TMPDIRS+=("$G_REQ_PY")
+
+run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+    --emit-requests "$G_REQ_CLI" --format json
+G_OUT_CLI="$OUT"
+
+_SWEEP_ENV=(REIFY_GATE_STALENESS_SQLITE_BIN=)
+run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+    --emit-requests "$G_REQ_PY" --format json
+_SWEEP_ENV=()
+assert "G10: the python3 engine alone still exits 0" _rc_is 0
+assert "G10: ... and produces byte-identical stdout to the sqlite3 CLI" \
+    test "$OUT" = "$G_OUT_CLI"
+assert "G10: ... and an identical emitted request set" \
+    test "$(_request_snapshot "$G_REQ_CLI")" = "$(_request_snapshot "$G_REQ_PY")"
+# The regression this exists to catch head-on: with no sqlite3, every class
+# predicate used to fail closed and the whole report collapsed to no-class rows.
+assert "G10: ... with all three classes still adjudicated, not collapsed to no_class" \
+    _json_is 's["gate_closure"] == 1 and s["merge_verify_red"] == 1 and s["unmet_dependency"] == 1'
+assert "G10: ... and the corruption suppressor still firing on the python3 engine" \
+    _json_is 's["corrupt_hold"] == 1 and t[9707]["flags"] == ["corrupt_autofile"]'
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block T — tag scoping
 #

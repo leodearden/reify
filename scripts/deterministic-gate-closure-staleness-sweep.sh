@@ -90,6 +90,14 @@
 #                         N minutes is LIVE and is skipped by the liveness
 #                         guard (env: REIFY_GATE_STALENESS_HEARTBEAT_MIN;
 #                         default: 30).
+#   REIFY_GATE_STALENESS_SQLITE_BIN
+#                         Env-only (no flag). Overrides the sqlite3-CLI probe;
+#                         an explicitly EMPTY value forces the python3 engine.
+#                         Both engines run the IDENTICAL enumeration SQL, so
+#                         they are interchangeable rather than one being a
+#                         stub. Exists as a test seam (the probe resolves an
+#                         absolute path, so stripping PATH cannot reach it) and
+#                         as break-glass for an incompatible CLI.
 #   --emit-requests DIR   Drop one atomic, idempotent
 #                         redispatch-<task_id>-<class>.json per confirmed STALE
 #                         hit into DIR (env:
@@ -342,6 +350,25 @@ _emit_row() {
     printf '%s\n' "$1$_FS$2$_FS$3$_FS$4$_FS$5$_FS$6$_FS$7" >> "$ROWS_TSV"
 }
 
+# ── #5316 corruption signature 1: the marker set ──────────────────────────────
+# Defined HERE, above the enumeration query, because that query evaluates the
+# marker predicate inline (see below).
+#
+# Signature 1 — help-text-as-failing-tests: an auto-filed record whose
+# `metadata.failing_tests` holds harness OUTPUT rather than test names. This
+# marker set is the single source of truth; the docs note points at this
+# variable rather than restating it.
+_CORRUPT_AUTOFILE_MARKERS=('Usage:' 'Options:' 'verify.sh: ERROR')
+
+# The matching predicate, built once from the marker set. `instr()` and NOT
+# `LIKE`, because SQLite's LIKE is case-insensitive for ASCII by default and a
+# lowercase 'usage:' inside a real test name must not read as harness output.
+_CORRUPT_MARKER_SQL=""
+for _m in "${_CORRUPT_AUTOFILE_MARKERS[@]}"; do
+    _CORRUPT_MARKER_SQL="${_CORRUPT_MARKER_SQL:+$_CORRUPT_MARKER_SQL OR }instr(value,'${_m//\'/\'\'}')>0"
+done
+unset _m
+
 # ── read-only candidate enumeration ───────────────────────────────────────────
 # Dual-engine, both strictly read-only, mirroring scripts/lane-task-status.sh:
 # the sqlite3 CLI at an absolute path (so this never depends on which sqlite3
@@ -351,33 +378,108 @@ _emit_row() {
 # The sqlite3 CLI, resolved ONCE: prefer the stable system binary at an
 # absolute path so this never depends on which sqlite3 is first on PATH, then
 # fall back to a PATH lookup (the scripts/lane-task-status.sh convention).
-_SQLITE_BIN=""
-for _c in /usr/bin/sqlite3 sqlite3; do
-    if command -v "$_c" >/dev/null 2>&1; then _SQLITE_BIN="$_c"; break; fi
-done
+# REIFY_GATE_STALENESS_SQLITE_BIN overrides the probe entirely; because the
+# probe uses an ABSOLUTE path, stripping PATH cannot reach it, so this is the
+# only way to exercise (or break-glass onto) the python3 engine. An explicitly
+# EMPTY value is meaningful — it forces python3 — so "set" is distinguished
+# from "non-empty".
+if [ -n "${REIFY_GATE_STALENESS_SQLITE_BIN+set}" ]; then
+    _SQLITE_BIN="$REIFY_GATE_STALENESS_SQLITE_BIN"
+else
+    _SQLITE_BIN=""
+    for _c in /usr/bin/sqlite3 sqlite3; do
+        if command -v "$_c" >/dev/null 2>&1; then _SQLITE_BIN="$_c"; break; fi
+    done
+fi
+_PYTHON_BIN=""
+if command -v python3 >/dev/null 2>&1; then _PYTHON_BIN="python3"; fi
+
+# The two engines run the IDENTICAL SQL string (below) and are therefore
+# genuinely interchangeable — not a nominal fallback that enumerates rows and
+# then cannot adjudicate any of them. Announce the degraded shapes once, at
+# startup, rather than letting a whole sweep silently report `unknown`.
+if [ -z "$_SQLITE_BIN" ] && [ -z "$_PYTHON_BIN" ]; then
+    warn "Neither sqlite3 nor python3 is on PATH — the task DB cannot be read at all; reporting zero candidates."
+elif [ -z "$_PYTHON_BIN" ]; then
+    warn "python3 is not on PATH — the escalation oracle (class A), the proposal parser (class B) and --format json cannot run; rows will degrade to unknown."
+fi
+
+# ── the enumeration query ─────────────────────────────────────────────────────
+# ONE query per SWEEP, not one per candidate per oracle. Every scalar the
+# classifiers need — the four metadata fields, the Signature-1 marker count and
+# the dependency roll-up — is selected alongside the row, so a candidate costs
+# zero further DB opens. The previous shape re-opened the store and re-ran
+# `WHERE tag=... AND id=... LIMIT 1` against the SAME metadata blob four times
+# per row, plus a json_each query and a dependency join: ~6 sqlite processes
+# per candidate, which is not "timer-friendly on a large store" at a few
+# hundred stranded rows.
+#
+# Three things this query must not do, each of which cost a row its
+# adjudication in the per-row shape or would abort the whole sweep in this one:
+#   * `json_extract` and `json_each` RAISE on malformed JSON, and a raised error
+#     in a whole-table query kills every row, not one. The metadata is therefore
+#     read through a `json_valid` guard that substitutes '{}' — an unreadable
+#     metadata blob yields empty fields, exactly as the per-row version's
+#     swallowed error did.
+#   * a scalar `json_extract` of a JSON string returns the DECODED text, which
+#     can contain a newline (and, in principle, the US field separator). Every
+#     free-form column is therefore flattened, so no value can forge a field or
+#     a row boundary in the US-separated stream below.
+#   * every clause is tag-scoped, including the correlated dependency subquery
+#     (`d.tag = t.tag`): `tasks` is PRIMARY KEY (tag, id), so an unqualified
+#     lookup silently conflates tags the moment a second one exists.
+_TAG_SQL="${TAG//\'/\'\'}"
+# The json_valid-guarded metadata expression, and two small SQL builders that
+# keep the SELECT list readable.
+_MD_SQL="CASE WHEN json_valid(t.metadata) THEN t.metadata ELSE '{}' END"
+_flat_sql() { printf "replace(replace(%s,char(10),' '),char(31),' ')" "$1"; }
+_jx_sql()   { printf "coalesce(json_extract(%s,'%s'),'')" "$_MD_SQL" "$1"; }
+
+# Column order (US-separated, one line per candidate):
+#   id · status · heartbeat_at · claimant_run_id · task_kind · always_escalates
+#   · dry_run_proposals · done_provenance.commit · sig1_hits · dep_rollup
+# dep_rollup is `<depends_on>=<status>` pairs joined by ',', ordered by
+# depends_on; an EMPTY status means the depends_on resolves to no row under
+# this tag, which must never read as a satisfied dependency.
+_ENUM_SQL="SELECT
+    t.id,
+    coalesce(t.status,''),
+    coalesce(t.heartbeat_at,''),
+    coalesce(t.claimant_run_id,''),
+    $(_flat_sql "$(_jx_sql '$.task_kind')"),
+    $(_flat_sql "$(_jx_sql '$.always_escalates')"),
+    $(_flat_sql "$(_jx_sql '$.dry_run_proposals')"),
+    $(_flat_sql "$(_jx_sql '$.done_provenance.commit')"),
+    (SELECT count(*) FROM json_each($_MD_SQL,'\$.failing_tests')
+      WHERE $_CORRUPT_MARKER_SQL),
+    $(_flat_sql "coalesce((SELECT group_concat(pair,',') FROM (
+        SELECT d.depends_on || '=' || coalesce(dt.status,'') AS pair
+          FROM dependencies d
+          LEFT JOIN tasks dt ON dt.tag = d.tag AND dt.id = d.depends_on
+         WHERE d.tag = t.tag AND d.task_id = t.id
+         ORDER BY d.depends_on)),'')")
+  FROM tasks t
+ WHERE t.tag='$_TAG_SQL' AND t.status IN ('blocked','in-progress')
+ ORDER BY t.id;"
 
 _CANDIDATES=""
 if [ ! -s "$DB" ]; then
     warn "Task DB is missing or empty: $DB — reporting zero candidates."
 else
-    _query="SELECT id, status, coalesce(heartbeat_at,''), coalesce(claimant_run_id,'')
-            FROM tasks WHERE tag='$TAG' AND status IN ('blocked','in-progress') ORDER BY id;"
     if [ -n "$_SQLITE_BIN" ]; then
-        _CANDIDATES="$("$_SQLITE_BIN" -readonly -separator "$_FS" "$DB" "$_query" 2>/dev/null || true)"
+        _CANDIDATES="$("$_SQLITE_BIN" -readonly -separator "$_FS" "$DB" "$_ENUM_SQL" 2>/dev/null || true)"
     fi
-    if [ -z "$_CANDIDATES" ] && command -v python3 >/dev/null 2>&1; then
-        _CANDIDATES="$(_GS_DB="$DB" _GS_TAG="$TAG" python3 - <<'PY' 2>/dev/null || true
+    if [ -z "$_CANDIDATES" ] && [ -n "$_PYTHON_BIN" ]; then
+        # The SAME SQL, verbatim, through the other engine — that is what makes
+        # the two interchangeable rather than one being a stub.
+        _CANDIDATES="$(_GS_DB="$DB" _GS_SQL="$_ENUM_SQL" python3 - <<'PY' 2>/dev/null || true
 import os, sqlite3, sys
 try:
     con = sqlite3.connect(f"file:{os.environ['_GS_DB']}?mode=ro", uri=True, timeout=5.0)
-    rows = con.execute(
-        "SELECT id, status, coalesce(heartbeat_at,''), coalesce(claimant_run_id,'') "
-        "FROM tasks WHERE tag=? AND status IN ('blocked','in-progress') ORDER BY id",
-        (os.environ["_GS_TAG"],),
-    ).fetchall()
+    rows = con.execute(os.environ["_GS_SQL"]).fetchall()
     con.close()
     for r in rows:
-        sys.stdout.write("\x1f".join(str(c) for c in r) + "\n")
+        sys.stdout.write("\x1f".join("" if c is None else str(c) for c in r) + "\n")
 except Exception:
     pass
 PY
@@ -410,17 +512,6 @@ _is_live() {
         return 0
     fi
     [ $(( _NOW_EPOCH - hb_epoch )) -lt "$_LIVENESS_WINDOW_SEC" ]
-}
-
-# ── metadata accessor ─────────────────────────────────────────────────────────
-# _meta <task_id> <json_path> — read one scalar out of the row's metadata via
-# SQLite's json_extract, read-only. Empty output means absent/NULL/unreadable.
-_meta() {
-    local id="$1" path="$2"
-    [ -n "$_SQLITE_BIN" ] || return 0
-    "$_SQLITE_BIN" -readonly "$DB" \
-        "SELECT coalesce(json_extract(metadata,'$path'),'') FROM tasks WHERE tag='$TAG' AND id=$id LIMIT 1;" \
-        2>/dev/null || true
 }
 
 # ── class A: gate_closure ─────────────────────────────────────────────────────
@@ -530,20 +621,21 @@ _MAIN_REF_SHA="$(git -C "$REPO" rev-parse --verify --quiet "${MAIN_REF}^{commit}
 
 # _classify_merge_verify_red <task_id> — sets _MVR_MATCHED plus, when matched,
 # _MVR_VERDICT / _MVR_ACTION / _MVR_EVIDENCE.
-# _classify_gate_closure <task_id> <status> <adjudicate:0|1> — sets
-# _GC_MATCHED plus, when matched and adjudicating, _GC_VERDICT / _GC_ACTION /
-# _GC_EVIDENCE. `blocked`-only (invariant L4).
+# _classify_gate_closure <task_id> <status> <task_kind> <always_escalates>
+# <adjudicate:0|1> — sets _GC_MATCHED plus, when matched and adjudicating,
+# _GC_VERDICT / _GC_ACTION / _GC_EVIDENCE. `blocked`-only (invariant L4).
+# task_kind / always_escalates arrive from the enumeration row; this function
+# opens no DB handle of its own.
 _classify_gate_closure() {
-    local id="$1" status="$2" adjudicate="$3" always
+    local id="$1" status="$2" task_kind="$3" always="$4" adjudicate="$5"
     _GC_MATCHED=0
     _GC_VERDICT="unknown"
     _GC_ACTION="none"
     _GC_EVIDENCE=""
 
     [ "$status" = "blocked" ] || return 0
-    [ "$(_meta "$id" '$.task_kind')" = "deterministic" ] || return 0
-    # SQLite stores the JSON `true` as 1, so accept either spelling.
-    always="$(_meta "$id" '$.always_escalates')"
+    [ "$task_kind" = "deterministic" ] || return 0
+    # SQLite renders the JSON `true` as 1, so accept either spelling.
     case "$always" in
         1|true) _GC_MATCHED=1 ;;
         *)      return 0 ;;
@@ -568,11 +660,13 @@ _classify_gate_closure() {
     esac
 }
 
-# _classify_merge_verify_red <task_id> <adjudicate:0|1> — sets _MVR_MATCHED
-# plus, when matched and adjudicating, _MVR_VERDICT / _MVR_ACTION /
-# _MVR_EVIDENCE. Spans `blocked` AND `in-progress` (invariant L4).
+# _classify_merge_verify_red <task_id> <dry_run_proposals> <adjudicate:0|1> —
+# sets _MVR_MATCHED plus, when matched and adjudicating, _MVR_VERDICT /
+# _MVR_ACTION / _MVR_EVIDENCE. Spans `blocked` AND `in-progress` (invariant
+# L4). The proposals blob arrives from the enumeration row; this function opens
+# no DB handle of its own.
 _classify_merge_verify_red() {
-    local id="$1" adjudicate="$2" raw out b_reason b_class b_main_sha b_head_sha
+    local id="$1" raw="$2" adjudicate="$3" out b_reason b_class b_main_sha b_head_sha
     local resolved touched first_path resolving
     local -a lines=()
     _MVR_MATCHED=0
@@ -581,7 +675,6 @@ _classify_merge_verify_red() {
     _MVR_EVIDENCE=""
     _MVR_FILES=()
 
-    raw="$(_meta "$id" '$.dry_run_proposals')"
     [ -n "$raw" ] || return 0
     out="$(printf '%s' "$raw" | python3 "$_NEWEST_PROPOSAL_PY" 2>/dev/null || true)"
     [ -n "$out" ] || return 0
@@ -667,36 +760,37 @@ _classify_merge_verify_red() {
 # that spanned `in-progress` would emit a re-dispatch request for every
 # actively-running agent.
 #
-# One tag-scoped LEFT JOIN, not a lookup per dependency: `tasks` is
-# PRIMARY KEY (tag, id), so an unqualified `id =` would silently conflate tags
-# the moment a second tag exists. An EMPTY status column means the depends_on
-# resolves to no row under this tag — that degrades the row to `unknown`,
-# because an unresolvable dependency must never read as a satisfied one.
+# The dependency roll-up arrives from the enumeration query's correlated
+# subquery — one tag-scoped LEFT JOIN evaluated with the row, not a lookup per
+# dependency and not a second DB open per candidate. `tasks` is
+# PRIMARY KEY (tag, id), so that join is tag-scoped on BOTH sides (`d.tag =
+# t.tag`); an unqualified `id =` would silently conflate tags the moment a
+# second tag exists. An EMPTY status in a pair means the depends_on resolves to
+# no row under this tag — that degrades the row to `unknown`, because an
+# unresolvable dependency must never read as a satisfied one.
 #
-# _classify_unmet_dependency <task_id> <status> <adjudicate:0|1>
+# _classify_unmet_dependency <task_id> <status> <dep_rollup> <adjudicate:0|1>
+# dep_rollup is `<depends_on>=<status>` pairs joined by ','.
 _classify_unmet_dependency() {
-    local id="$1" status="$2" adjudicate="$3"
-    local rows dep_id dep_status pairs="" n=0 unresolved=0 unresolvable=0
+    local id="$1" status="$2" rollup="$3" adjudicate="$4"
+    local pair dep_id dep_status pairs="" n=0 unresolved=0 unresolvable=0
+    local -a rollup_pairs=()
     _UD_MATCHED=0
     _UD_VERDICT="unknown"
     _UD_ACTION="none"
     _UD_EVIDENCE=""
 
     [ "$status" = "blocked" ] || return 0
-    [ -n "$_SQLITE_BIN" ] || return 0
-
-    rows="$("$_SQLITE_BIN" -readonly -separator "$_FS" "$DB" \
-        "SELECT d.depends_on, coalesce(dt.status,'')
-           FROM dependencies d
-           LEFT JOIN tasks dt ON dt.tag = d.tag AND dt.id = d.depends_on
-          WHERE d.tag='$TAG' AND d.task_id=$id
-          ORDER BY d.depends_on;" 2>/dev/null || true)"
     # An EMPTY dependency set is NOT "all satisfied" — it is not class C at all.
-    [ -n "$rows" ] || return 0
+    [ -n "$rollup" ] || return 0
     _UD_MATCHED=1
     [ "$adjudicate" = 1 ] || return 0
 
-    while IFS="$_FS" read -r dep_id dep_status; do
+    # read -a, not an unquoted split: no pathname expansion can reach the pairs.
+    IFS=',' read -r -a rollup_pairs <<<"$rollup"
+    for pair in "${rollup_pairs[@]}"; do
+        dep_id="${pair%%=*}"
+        dep_status="${pair#*=}"
         [ -n "${dep_id:-}" ] || continue
         n=$((n + 1))
         pairs="${pairs:+$pairs, }${dep_id}=${dep_status:-<no row>}"
@@ -705,9 +799,7 @@ _classify_unmet_dependency() {
             "")             unresolvable=$((unresolvable + 1)) ;;
             *)              unresolved=$((unresolved + 1)) ;;
         esac
-    done <<EOF
-$rows
-EOF
+    done
 
     if [ "$unresolvable" -gt 0 ]; then
         warn "Task $id: $unresolvable dependency id(s) resolve to no row under tag='$TAG' — reporting unknown, not STALE (an unresolvable dependency must never read as a satisfied one)."
@@ -727,41 +819,25 @@ EOF
 # ── #5316 corruption signatures (invariant L5) ────────────────────────────────
 # Both signatures are catalogued in docs/notes/offline-lane-red-corruption-
 # remediation.md; they are lifted here from prose into executable checks and
-# wired as SUPPRESSORS rather than as a fourth trigger class.
+# wired as SUPPRESSORS rather than as a fourth trigger class. Signature 1's
+# marker set (_CORRUPT_AUTOFILE_MARKERS) is defined above the enumeration
+# query, which evaluates it inline.
 #
-# Signature 1 — help-text-as-failing-tests: an auto-filed record whose
-# `metadata.failing_tests` holds harness OUTPUT rather than test names. This
-# marker set is the single source of truth; the docs note points at this
-# variable rather than restating it.
-_CORRUPT_AUTOFILE_MARKERS=('Usage:' 'Options:' 'verify.sh: ERROR')
-
-# The matching predicate, built once from the marker set. `instr()` and NOT
-# `LIKE`, because SQLite's LIKE is case-insensitive for ASCII by default and a
-# lowercase 'usage:' inside a real test name must not read as harness output.
-_CORRUPT_MARKER_SQL=""
-for _m in "${_CORRUPT_AUTOFILE_MARKERS[@]}"; do
-    _CORRUPT_MARKER_SQL="${_CORRUPT_MARKER_SQL:+$_CORRUPT_MARKER_SQL OR }instr(value,'${_m//\'/\'\'}')>0"
-done
-unset _m
-
-# _compute_flags <task_id> — sets _FLAGS to a comma-separated list in a FIXED
-# order (corrupt_autofile, then the provenance flag), or `-` when clean.
+# _compute_flags <task_id> <sig1_hits> <provenance_commit> — sets _FLAGS to a
+# comma-separated list in a FIXED order (corrupt_autofile, then the provenance
+# flag), or `-` when clean. Both inputs arrive from the enumeration row; this
+# function opens no DB handle of its own.
 _compute_flags() {
-    local id="$1" hits prov
+    local id="$1" hits="$2" prov="$3"
     local -a flags=()
 
-    # Signature 1. Evaluated inside SQLite (one cheap query) rather than a
-    # python3 pass, so the sweep stays timer-friendly on a large store. A
-    # malformed / absent / non-array failing_tests makes json_each error; that
-    # is swallowed and read as "no marker found" — an unreadable field is not
-    # positive evidence of harness output.
-    if [ -n "$_SQLITE_BIN" ]; then
-        hits="$("$_SQLITE_BIN" -readonly "$DB" \
-            "SELECT count(*) FROM json_each((SELECT json_extract(metadata,'\$.failing_tests')
-                                               FROM tasks WHERE tag='$TAG' AND id=$id LIMIT 1))
-              WHERE $_CORRUPT_MARKER_SQL;" 2>/dev/null || true)"
-        [ "${hits:-0}" -gt 0 ] 2>/dev/null && flags+=("corrupt_autofile")
-    fi
+    # Signature 1. The marker match is evaluated inside SQLite, with the
+    # enumeration query, rather than in a python3 pass or a per-row query — one
+    # cheap correlated subquery keeps the sweep timer-friendly on a large store.
+    # A metadata blob that is not valid JSON reads as "no marker found" (the
+    # json_valid guard on the query substitutes '{}'): an unreadable field is
+    # not positive evidence of harness output.
+    [ "${hits:-0}" -gt 0 ] 2>/dev/null && flags+=("corrupt_autofile")
 
     # Signature 2 — misattributed provenance. REACHABILITY, never diff
     # inspection: #5316 records that `git show --stat` alone MIS-CLEARED #5264,
@@ -788,7 +864,6 @@ _compute_flags() {
     # second, because only the ancestry claim depends on --main-ref. An
     # unresolvable provenance SHA is unresolvable no matter what main is, so
     # a missing oracle must not silently clear it.
-    prov="$(_meta "$id" '$.done_provenance.commit')"
     if [ -n "$prov" ]; then
         if ! git -C "$REPO" rev-parse --verify --quiet "${prov}^{commit}" >/dev/null 2>&1; then
             # Conservative: a provenance SHA we cannot resolve is held, not
@@ -811,7 +886,9 @@ _compute_flags() {
 }
 
 # ── classify ──────────────────────────────────────────────────────────────────
-while IFS="$_FS" read -r task_id status heartbeat_at claimant_run_id; do
+while IFS="$_FS" read -r task_id status heartbeat_at claimant_run_id \
+                         md_task_kind md_always md_proposals md_prov \
+                         md_sig1_hits md_dep_rollup; do
     [ -n "${task_id:-}" ] || continue
 
     # L1: the liveness guard is the FIRST predicate, and it short-circuits —
@@ -851,14 +928,14 @@ while IFS="$_FS" read -r task_id status heartbeat_at claimant_run_id; do
     _primary=""
     _also=""
 
-    _classify_gate_closure "$task_id" "$status" 1
+    _classify_gate_closure "$task_id" "$status" "$md_task_kind" "$md_always" 1
     if [ "$_GC_MATCHED" = 1 ]; then
         _primary="gate_closure"
         row_verdict="$_GC_VERDICT"; row_action="$_GC_ACTION"; row_evidence="$_GC_EVIDENCE"
     fi
 
     if [ -z "$_primary" ]; then _adj=1; else _adj=0; fi
-    _classify_merge_verify_red "$task_id" "$_adj"
+    _classify_merge_verify_red "$task_id" "$md_proposals" "$_adj"
     if [ "$_MVR_MATCHED" = 1 ]; then
         if [ -z "$_primary" ]; then
             _primary="merge_verify_red"
@@ -869,7 +946,7 @@ while IFS="$_FS" read -r task_id status heartbeat_at claimant_run_id; do
     fi
 
     if [ -z "$_primary" ]; then _adj=1; else _adj=0; fi
-    _classify_unmet_dependency "$task_id" "$status" "$_adj"
+    _classify_unmet_dependency "$task_id" "$status" "$md_dep_rollup" "$_adj"
     if [ "$_UD_MATCHED" = 1 ]; then
         if [ -z "$_primary" ]; then
             _primary="unmet_dependency"
@@ -888,7 +965,7 @@ while IFS="$_FS" read -r task_id status heartbeat_at claimant_run_id; do
     # yet stranded. Only a row that would otherwise be a confirmed hit is
     # demoted — a corrupt record's block premise is untrustworthy, so
     # auto-re-dispatching it would act on a false premise.
-    _compute_flags "$task_id"
+    _compute_flags "$task_id" "$md_sig1_hits" "$md_prov"
     row_flags="$_FLAGS"
     if [ "$row_verdict" = "STALE" ] && [ "$row_flags" != "-" ]; then
         row_verdict="CORRUPT-HOLD"
