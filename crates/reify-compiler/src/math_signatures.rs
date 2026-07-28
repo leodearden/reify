@@ -27,7 +27,21 @@ use reify_ir::{CompiledExpr, CompiledExprKind, Value};
 /// Case-sensitive: Reify function names are snake_case. (The §3 operation /
 /// function names live in the sibling [`MATH_OPERATION_NAMES`] slice — task
 /// 4182 δ — NOT in this construction-only slice.)
-pub const MATH_CONSTRUCTION_NAMES: &[&str] = &["vec", "matrix", "diag", "identity", "vec3", "vec2"];
+///
+/// **`point3`/`point2` (task 5344).** The point twins live HERE, alongside
+/// `vec3`/`vec2`, rather than in the construction-datum vocabulary
+/// (`units::datum_constructor_result_type`). They are one eval line apart —
+/// `"point3" => construct_point_or_vector(args, 3, true)` sits directly above
+/// `"vec3" => construct_point_or_vector(args, 3, false)` in
+/// `reify-stdlib/src/geometry.rs` — same helper, same arity, one bool apart, and
+/// both carry the argument-DEPENDENT quantity slot that needs this args-aware
+/// resolver shape. Splitting the twins across two families would contradict
+/// one-vocabulary-one-resolver; `units.rs`'s
+/// `math_typed_fn_names_are_disjoint_from_other_families` pins that the datum
+/// resolver does not also claim them.
+pub const MATH_CONSTRUCTION_NAMES: &[&str] = &[
+    "vec", "matrix", "diag", "identity", "vec3", "vec2", "point3", "point2",
+];
 
 /// The complete set of math-linalg **operation / function** builtin names
 /// recognised by the compiler (task 4182 δ, the §3 operation family). Sibling
@@ -130,7 +144,13 @@ pub(crate) fn is_math_typed_fn(name: &str) -> bool {
 /// `Value::Tensor`, and `value_type_kind_matches(Value::Vector, Type::List)` is
 /// false, so a List fallback would raise a runtime `TypeKindMismatch`.
 ///
-/// Only reached for the four construction names (the caller gates on
+/// The fixed-`n` constructors (`vec3`/`vec2`, `point3`/`point2`) take `n` from
+/// the NAME and only the quantity slot from the args — the same
+/// argument-DEPENDENT quantity governed by the "Point / Vector quantity-slot
+/// convention" in `reify_core::ty`, which is why they need this args-aware
+/// shape rather than the name-only one.
+///
+/// Only reached for names in the three slices (the caller gates on
 /// [`is_math_typed_fn`]); the `_` arm is therefore unreachable in practice and
 /// returns a harmless `Type::dimensionless_scalar()`.
 pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
@@ -157,6 +177,33 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
         },
         // `vec2(x,y)` → Vector{n:2, quantity} — same pattern as vec3.
         "vec2" => Type::Vector {
+            n: 2,
+            quantity: Box::new(
+                first
+                    .map(|a| a.result_type.clone())
+                    .unwrap_or_else(Type::dimensionless_scalar),
+            ),
+        },
+        // `point3(x,y,z)` → Point{n:3, quantity} — the exact twin of the `vec3`
+        // arm above (mirrors eval construct_point_or_vector(args, 3, TRUE) in
+        // reify-stdlib/src/geometry.rs; `vec3` passes `false`). n is fixed from
+        // the name, the quantity slot comes from the first variadic component.
+        //
+        // This also makes the VALUE constructor agree with the same-named TYPE
+        // constructor: `Type::point3(q)` is an established `reify_core` helper
+        // for `Type::Point { n: 3, quantity: q }`, so `point3` already means
+        // this in type position (e.g. `closest_point`/`centroid` resolve to
+        // `Type::point3(Type::length())` in `units.rs`).
+        "point3" => Type::Point {
+            n: 3,
+            quantity: Box::new(
+                first
+                    .map(|a| a.result_type.clone())
+                    .unwrap_or_else(Type::dimensionless_scalar),
+            ),
+        },
+        // `point2(x,y)` → Point{n:2, quantity} — same pattern as point3.
+        "point2" => Type::Point {
             n: 2,
             quantity: Box::new(
                 first
@@ -569,10 +616,13 @@ fn reduce_field_codomain(codomain: &Type) -> Type {
 mod tests {
     use super::*;
 
-    /// The six construction-builtin names, frozen by the §3 contract (task 4622
-    /// adds vec3/vec2). Local fixture so a drift in `MATH_CONSTRUCTION_NAMES` is
-    /// caught against an independent list rather than against itself.
-    const EXPECTED_NAMES: [&str; 6] = ["vec", "matrix", "diag", "identity", "vec3", "vec2"];
+    /// The eight construction-builtin names, frozen by the §3 contract (task
+    /// 4622 adds vec3/vec2; task 5344 adds point3/point2). Local fixture so a
+    /// drift in `MATH_CONSTRUCTION_NAMES` is caught against an independent list
+    /// rather than against itself.
+    const EXPECTED_NAMES: [&str; 8] = [
+        "vec", "matrix", "diag", "identity", "vec3", "vec2", "point3", "point2",
+    ];
 
     // ── Name-family contract (step-9 RED / step-10 GREEN) ────────────────────
 
@@ -631,14 +681,18 @@ mod tests {
         // task 4622 additions — PascalCase must not match.
         assert!(!is_math_typed_fn("Vec3"));
         assert!(!is_math_typed_fn("Vec2"));
+        // task 5344 additions — PascalCase must not match.
+        assert!(!is_math_typed_fn("Point3"));
+        assert!(!is_math_typed_fn("Point2"));
     }
 
-    /// `MATH_CONSTRUCTION_NAMES` is exactly the six construction names (vec,
-    /// matrix, diag, identity, vec3, vec2) — membership both ways plus an exact
-    /// count (so neither a missing nor an extra name slips through).
-    /// Task 4622 extends the original four-name set by adding vec3/vec2.
+    /// `MATH_CONSTRUCTION_NAMES` is exactly the eight construction names (vec,
+    /// matrix, diag, identity, vec3, vec2, point3, point2) — membership both
+    /// ways plus an exact count (so neither a missing nor an extra name slips
+    /// through). Task 4622 extended the original four-name set by adding
+    /// vec3/vec2; task 5344 adds the point3/point2 twins.
     #[test]
-    fn math_construction_names_are_exactly_the_six() {
+    fn math_construction_names_are_exactly_the_eight() {
         assert_eq!(
             MATH_CONSTRUCTION_NAMES.len(),
             EXPECTED_NAMES.len(),
@@ -953,6 +1007,110 @@ mod tests {
             },
             "vec2(1m, 2m) must type as Vector{{n:2, quantity:Scalar<Length>}}"
         );
+    }
+
+    // ── point3/point2 result-type tests (task 5344, esc-5344-4 grant) ─────────
+
+    /// `point3` over 3 `Scalar<Length>` args → `Point{n:3, quantity:Scalar<Length>}`,
+    /// exactly symmetric with the `vec3` arm above (same eval helper
+    /// `construct_point_or_vector(args, 3, ·)`, one bool apart).
+    ///
+    /// This also makes the VALUE constructor agree with the same-named TYPE
+    /// constructor: `Type::point3(q)` is an established `reify_core` helper
+    /// meaning exactly `Type::Point { n: 3, quantity: q }`, so typing the call
+    /// `point3(0mm, 0mm, 0mm)` as `Point3<Length>` invents no new convention.
+    ///
+    /// RED until the `"point3"` arm is added to `math_fn_result_type`.
+    #[test]
+    fn point3_result_type_length_is_point_n3_length() {
+        let len_ty = Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        };
+        let args = vec![length_elem(0.0), length_elem(0.0), length_elem(0.0)];
+        assert_eq!(
+            math_fn_result_type("point3", &args),
+            Type::Point {
+                n: 3,
+                quantity: Box::new(len_ty)
+            },
+            "point3(0mm, 0mm, 0mm) must type as Point{{n:3, quantity:Scalar<Length>}}"
+        );
+    }
+
+    /// `point2` over 2 `Scalar<Length>` args → `Point{n:2, quantity:Scalar<Length>}`
+    /// — same pattern as `point3`, mirroring the `vec2`/`vec3` pair.
+    ///
+    /// RED until the `"point2"` arm is added to `math_fn_result_type`.
+    #[test]
+    fn point2_result_type_length_is_point_n2_length() {
+        let len_ty = Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        };
+        let args = vec![length_elem(1.0), length_elem(2.0)];
+        assert_eq!(
+            math_fn_result_type("point2", &args),
+            Type::Point {
+                n: 2,
+                quantity: Box::new(len_ty)
+            },
+            "point2(1m, 2m) must type as Point{{n:2, quantity:Scalar<Length>}}"
+        );
+    }
+
+    /// `point3` over dimensionless args → `Point{n:3, quantity:Real}`: `n` is
+    /// fixed from the NAME, the quantity slot tracks the first argument. Pins
+    /// that the quantity is argument-DERIVED (not hard-coded to Length), which
+    /// is the whole reason this family needs the args-aware resolver shape.
+    ///
+    /// RED until the `"point3"` arm is added to `math_fn_result_type`.
+    #[test]
+    fn point3_result_type_dimensionless_is_point_n3_real() {
+        let args = vec![real_elem(0.0), real_elem(0.0), real_elem(1.0)];
+        assert_eq!(
+            math_fn_result_type("point3", &args),
+            Type::Point {
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "point3(0, 0, 1) must type as Point{{n:3, quantity:Real}} — the quantity \
+             slot is derived from the first argument, not fixed to Length"
+        );
+    }
+
+    /// The point twins must NOT type as their `vec` counterparts, and must NOT
+    /// fall through to the first argument's `Scalar` type.
+    ///
+    /// The Scalar negative is the one that was load-bearing for task 5344: with
+    /// `point3(..)` typed `Scalar[m]`, `t * origin` in `examples/m10_geometric_types.ri`
+    /// hit `E_ArithOperandKind` ("operator `*` is undefined for operand kinds
+    /// `Transform3` and `Scalar[m]`") once step-8 made `transform3(..)` produce a
+    /// real `Type::Transform(3)`. `type_compat.rs`'s `(Transform(n), Point{n})`
+    /// Mul rule — which sits alongside its Vector and Transform twins — then
+    /// makes the expression well-typed again.
+    ///
+    /// RED until the point arms are added to `math_fn_result_type`.
+    #[test]
+    fn point_constructors_are_neither_vector_nor_scalar() {
+        let args3 = vec![length_elem(0.0), length_elem(0.0), length_elem(0.0)];
+        let args2 = vec![length_elem(0.0), length_elem(0.0)];
+        for (name, args) in [("point3", &args3), ("point2", &args2)] {
+            let ty = math_fn_result_type(name, args);
+            assert!(
+                matches!(ty, Type::Point { .. }),
+                "{name}(..) must resolve to a Type::Point, got {ty:?}"
+            );
+            assert!(
+                !matches!(ty, Type::Vector { .. }),
+                "{name}(..) must NOT type as a Vector — the point/vec twins differ \
+                 only by `construct_point_or_vector`'s bool, and conflating them \
+                 would break the Point-vs-Vector arms in type_compat.rs, got {ty:?}"
+            );
+            assert!(
+                !matches!(ty, Type::Scalar { .. }),
+                "{name}(..) must NOT adopt the first argument's Scalar type (the \
+                 old first-arg fallback), got {ty:?}"
+            );
+        }
     }
 
     /// (c) `matrix` over a depth-2 2×2 `ListLiteral` → `Tensor{rank:2, n:2, quantity:Real}`.

@@ -630,12 +630,16 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
 /// - `frame3` (and the rest of the orientation/transform/frame family) belongs
 ///   to `crate::orientation_signatures` — a separate, name-only resolver whose
 ///   slice is pinned disjoint from this vocabulary.
-/// - `point3` / `vec3` remain unclaimed by ANY resolver: `Type::Point` and
-///   `Type::Vector` carry an argument-DEPENDENT quantity slot (the "Point /
-///   Vector quantity-slot convention" in `reify_core::ty`), so typing them needs
-///   a resolver that derives the quantity from the arguments plus a ruling on
-///   mixed-dimension arguments — a different shape than this table, tracked as a
-///   follow-up.
+/// - `point3` / `point2` / `vec3` / `vec2` belong to
+///   `crate::math_signatures::MATH_CONSTRUCTION_NAMES` (vec3/vec2 since task
+///   4622, point3/point2 since task 5344). `Type::Point` and `Type::Vector`
+///   carry an argument-DEPENDENT quantity slot (the "Point / Vector
+///   quantity-slot convention" in `reify_core::ty`), so they need a resolver
+///   that derives the quantity from the arguments — a different shape than this
+///   arity-blind table. The four are twins in eval too (`construct_point_or_vector`
+///   serves all of them, one bool apart), so keeping them together is what
+///   one-vocabulary-one-resolver requires. `math_typed_fn_names_are_disjoint_from_other_families`
+///   pins that THIS resolver returns `None` for every one of them.
 ///
 /// Called from the `expr.rs` `NoUserFunctions` ladder before the first-arg
 /// fallback; resolving here replaces the wrong first-arg fallback type (e.g.
@@ -2495,17 +2499,45 @@ mod tests {
 
     /// Disjointness invariant for the math-linalg construction family (task
     /// 4179). Every `MATH_CONSTRUCTION_NAMES` entry (`vec` / `matrix` / `diag`
-    /// / `identity`) must be absent from all five geometry families AND the
-    /// dynamics-query family, so a name can satisfy at most one classification
-    /// predicate in `expr.rs::resolve_function_overload`'s `NoUserFunctions`
+    /// / `identity` / `vec3` / `vec2` / `point3` / `point2`) must be absent from
+    /// all five geometry families AND the dynamics-query family, so a name can
+    /// satisfy at most one classification predicate in
+    /// `expr.rs::resolve_function_overload`'s `NoUserFunctions`
     /// ladder. Forward sibling to `is_math_typed_fn_rejects_other_family_…`
     /// (the predicate-level reverse direction lives in `math_signatures.rs`);
     /// the converse asserts in the geometry / dynamics disjointness tests above
     /// pin the other direction. Because the names are pinned disjoint from
     /// every other family, the new arm's position in the ladder is unobservable.
+    ///
+    /// The loop also pins disjointness from [`datum_constructor_result_type`],
+    /// which is a RESOLVER rather than a name slice and so cannot be covered by
+    /// a `.contains` assert (same reason step-5's orientation lock spells out
+    /// `frame_at` by hand). This matters for the task-5344 `point3`/`point2`
+    /// additions: the datum vocabulary's own doc comment used to name-check
+    /// `point3` as a sibling it might one day claim, and claiming it in BOTH
+    /// places would silently make the ladder's arm order observable.
     #[test]
     fn math_typed_fn_names_are_disjoint_from_other_families() {
         for name in MATH_CONSTRUCTION_NAMES {
+            // Resolver-level (not slice-level) disjointness — see doc comment.
+            // Probed at arities 1..=3 so `offset`'s arity-2 gate and the
+            // three-argument `point3`/`vec3` shapes are all covered.
+            for arity in 1..=3 {
+                let probe_args = vec![
+                    reify_ir::CompiledExpr::literal(
+                        reify_ir::Value::Undef,
+                        reify_core::Type::dimensionless_scalar(),
+                    );
+                    arity
+                ];
+                assert!(
+                    datum_constructor_result_type(name, &probe_args).is_none(),
+                    "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be claimed by \
+                     datum_constructor_result_type (construction-datum vocabulary) — \
+                     probed at arity {arity}; double-classification would make the \
+                     expr.rs ladder's arm order observable"
+                );
+            }
             // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
             // (task 5344) — pins the OTHER direction so a collision is caught
             // whichever slice it is added to.

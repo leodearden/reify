@@ -3399,7 +3399,20 @@ fn compile_expr_guarded_with_expected_inner(
                         // The math-linalg family, routed via three sibling
                         // single-source-of-truth slices in `math_signatures`:
                         //   • CONSTRUCTION (task 4179, MATH_CONSTRUCTION_NAMES):
-                        //     vec / matrix / diag / identity.
+                        //     vec / matrix / diag / identity, plus the
+                        //     fixed-`n` aggregate constructors vec3 / vec2
+                        //     (task 4622) and point3 / point2 (task 5344).
+                        //     The four fixed-`n` names are eval twins — one
+                        //     `construct_point_or_vector(args, n, is_point)`
+                        //     helper serves all of them — so they share one
+                        //     resolver rather than being split across families.
+                        //     Typing `point3(..)` as a real `Type::Point` is
+                        //     also what makes `t * origin` well-typed once the
+                        //     orientation family (below) gives `transform3(..)`
+                        //     a real `Type::Transform(3)`: `type_compat`'s
+                        //     `(Transform(n), Point{n})` Mul rule was
+                        //     previously unreachable because `point3(..)` fell
+                        //     through to its first argument's `Scalar[m]`.
                         //   • OPERATION / FUNCTION (task 4182 δ,
                         //     MATH_OPERATION_NAMES): the §3 table — sqrt/abs/…,
                         //     dot/cross/normalize/magnitude/outer,

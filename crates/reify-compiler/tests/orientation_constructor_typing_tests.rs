@@ -331,13 +331,13 @@ fn axis_aligned_plane_constructors_type_as_plane() {
 /// from its origin argument.
 ///
 /// Measured pre-fix type: `Scalar<Length>`, not `Point3<Length>` — the fallback
-/// chains, because `point3` is itself unclaimed and adopts `0mm`'s
-/// `Scalar<Length>` first. (`point3`/`vec3` stay unclaimed here on purpose:
-/// `Type::Point`/`Type::Vector` carry an argument-DEPENDENT quantity slot, so
-/// they need a different resolver shape and are deferred to a follow-up.) The
-/// assertion below is therefore written against `Type::Axis` plus a negative on
-/// `Type::Point`, both of which hold regardless of which link in that chain the
-/// wrong type came from.
+/// chained, because `point3` was itself unclaimed and adopted `0mm`'s
+/// `Scalar<Length>` first. (`point3`/`vec3` are now claimed by
+/// `math_signatures::MATH_CONSTRUCTION_NAMES`, so the inner call types as a real
+/// `Point3<Length>`; that is the esc-5344-4 grant, and it does not change what
+/// `axis_x` itself must resolve to.) The assertion below is therefore written
+/// against `Type::Axis` plus a negative on `Type::Point`, both of which hold
+/// regardless of which link in that chain the wrong type came from.
 #[test]
 fn axis_aligned_axis_constructors_type_as_axis() {
     let source = r#"
