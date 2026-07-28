@@ -5129,8 +5129,8 @@ pub(crate) enum PendingBoundCheck {
     /// crates) or introduce a `CompilationCtx`-owned arena (see
     /// `compile_builder/ctx.rs`).  Both are out of scope for this observational
     /// task.  Timing bench:
-    ///   `crates/reify-compiler/tests/trait_arg_conformance_bench.rs`
-    ///   `cargo test -p reify-compiler --test trait_arg_conformance_bench -- --ignored --nocapture`
+    ///   `crates/reify-compiler/tests/harness_traits/trait_arg_conformance_bench.rs`
+    ///   `cargo test -p reify-compiler --test harness_traits -- trait_arg_conformance_bench:: --ignored --nocapture`
     TraitArgConformance {
         target_name: String,
         arg_name: String,
