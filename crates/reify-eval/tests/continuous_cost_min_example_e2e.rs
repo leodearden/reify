@@ -15,9 +15,9 @@
 //! - `constraint thickness > 2mm` — stress/clearance lower bound
 //! - `minimize unit_cost * (thickness / 1mm)` — Money objective → floor synthesised
 //!
-//! With α's robustness floor:
-//! - `thickness` resolves **strictly above** 2mm (off boundary; seed fallback ~10mm
-//!   satisfies `> 2mm` trivially — see α's eval test doc for why no upper-bound assert)
+//! With α's robustness floor and task #5618's constraint-derived bounds:
+//! - `thickness` resolves into `(2mm, 2.5mm)` — measured 2.040mm, the floored lower
+//!   bound `2mm + 2%`, i.e. the actual argmin of the cost-min under `> 2mm`
 //! - eval emits exactly one `RobustnessFloorApplied` (Info) naming `cost_robustness_tradeoff`
 //! - no `RobustnessFloorInfeasible` and no Error-severity diagnostics
 //!
@@ -41,13 +41,18 @@ const EXAMPLE_PATH: &str =
 /// Integration gate (β §8.2 headline): `CostMinBracket` resolves off the 2mm boundary
 /// and emits exactly one `RobustnessFloorApplied` Info naming `cost_robustness_tradeoff`.
 ///
-/// **Why no upper-bound assertion on thickness**: with default Length bounds `[1µm, 10m]`
-/// and seed ~10mm, Nelder-Mead drifts sub-boundary (penalty-free region below 2mm has lower
-/// objective), falls back to the initially-feasible seed (~10mm), and returns that as the
-/// solution. The value (~10mm) satisfies `> 2mm` but is NOT near 2mm+margin ≈ 2.04mm.
-/// Upper-bound / precise-convergence assertions belong in the solver-level test
-/// (`crates/reify-constraints/tests/robustness_floor.rs`) which injects explicit bounds
-/// `[1mm,1.5mm]`. The eval-layer primary purpose here is diagnostic-emission verification.
+/// **The upper-bound assertion (task #5618)**: this doc comment used to explain why one
+/// was impossible here. With default Length bounds `[1µm, 10m]` and seed ~10mm,
+/// Nelder-Mead drifted sub-boundary (the penalty-free region below 2mm has a lower
+/// objective), fell back to the initially-feasible seed, and returned ~10mm — which
+/// satisfies `> 2mm` but is nowhere near `2mm + margin ≈ 2.04mm`. Precise-convergence
+/// assertions therefore lived only in the solver-level test
+/// (`crates/reify-constraints/tests/robustness_floor.rs`), which injects explicit bounds.
+///
+/// #5618 derives the seed and clamp boxes from the constraints themselves, so the eval
+/// path converges without injected bounds: measured 2.040mm. The upper bound is asserted
+/// below. This test's primary purpose is still diagnostic-emission verification; the
+/// convergence assertion is now a free second signal rather than a gap.
 #[test]
 fn continuous_cost_min_example_resolves_off_boundary_and_emits_info() {
     let src = std::fs::read_to_string(EXAMPLE_PATH).unwrap_or_else(|e| {

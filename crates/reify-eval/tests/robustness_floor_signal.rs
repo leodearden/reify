@@ -13,6 +13,8 @@
 //!     After the floor, `thickness` parks near 1.02mm (≈ 1mm + 2% margin) — strictly
 //!     off the boundary — and eval emits one `RobustnessFloorApplied` (Info) diagnostic.
 //!     RED on the info-diagnostic assertion until step-6 wires detect_robustness_floor_applied.
+//!     Since task #5618 the 1.02mm convergence is reached on the eval path too (measured
+//!     1.020mm) and is asserted here, not just at the solver level.
 //!
 //! (b) `non_money_objective_emits_no_floor_diagnostic` (invariant ii at diagnostic level):
 //!     The `WeightedObjective` fixture (non-Money Length objective) resolves to the
@@ -50,15 +52,18 @@ fn weighted_fixture_source() -> &'static str {
 /// `crates/reify-constraints/tests/robustness_floor.rs::money_objective_floor_holds_value_off_boundary`,
 /// which uses explicit bounds `[1mm, 1.5mm]` to prevent the Nelder-Mead fall-back.
 ///
-/// **Why no `< 0.0015` assertion here**: with default Length bounds `[1µm, 10m]` and seed
-/// at 10mm, Nelder-Mead explores the infeasible sub-1mm region (lower obj value + small
-/// penalty), falls back to the initial feasible seed (10mm), and returns that as the
-/// solution.  The resulting value (10mm) satisfies `> 1mm` but not `< 1.5mm`.  The
-/// solver-level test uses explicit bounds to prevent this drift; the eval path has no
-/// mechanism to inject numeric auto-param bounds at the .ri layer (bounds are derived
-/// internally in `build_solver_problem`).  Since the eval-level test's primary purpose is
-/// diagnostic emission (not re-proving solver convergence), the `< 0.0015` assertion is
-/// intentionally omitted here and lives in the solver-level test instead.
+/// **The `< 0.0015` assertion (task #5618)**: this doc comment used to explain why it was
+/// "intentionally omitted".  With default Length bounds `[1µm, 10m]` and seed at 10mm,
+/// Nelder-Mead explored the infeasible sub-1mm region (lower obj value + small penalty),
+/// fell back to the initial feasible seed, and returned 10mm — which satisfies `> 1mm`
+/// but not `< 1.5mm`.  The solver-level test avoided the drift by injecting explicit
+/// bounds; the eval path has no mechanism to set numeric auto-param bounds from `.ri`
+/// (they are derived internally in `build_solver_problem`).
+///
+/// #5618 changed what "derived internally" means: the seed and clamp boxes now come from
+/// the inequality constraints, so this fixture converges to 1.020mm (= 1mm + 2%) with no
+/// injected bounds.  The assertion is made below.  The test's primary purpose is still
+/// diagnostic emission; the convergence assertion is a free second signal.
 #[test]
 fn money_floor_resolves_off_boundary_and_emits_info() {
     let compiled = compile_source_with_stdlib(floor_fixture_source());
