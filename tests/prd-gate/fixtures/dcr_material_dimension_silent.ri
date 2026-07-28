@@ -1,0 +1,23 @@
+module dcr_material_dimension_silent
+
+// D3 decompose-phase RED before-image for PRD `docs/prds/v0_6/dimension-checked-readers.md`
+// leaf β (boundary row B4).
+//
+// `Material.youngs_modulus` is declared `Pressure`
+// (crates/reify-compiler/stdlib/materials_mechanical.ri:82-87), yet a LENGTH is
+// accepted here in complete silence, and `prb_cantilever_beam`'s
+// `material_field_si` reader (crates/reify-stdlib/src/flexures/common.rs:126)
+// discards the dimension via `Value::Scalar { si_value, .. }` and reads 0.2 Pa.
+//
+// MEASURED at decompose (2026-07-28, main efba5a8036):
+//   spring_rate here          = 1.3802083333333336e-12 m^2*kg*s^-2*rad^-1
+//   spring_rate with 200GPa   = 1.3802083333333335    m^2*kg*s^-2*rad^-1
+//   ⇒ exactly 1e12x wrong, `reify eval` EXIT 0, zero Error diagnostics.
+//
+// This file must EVAL CLEAN (exit 0) today. When β lands it must exit 1 with a
+// coded `ArgDimensionMismatch` Error naming prb_cantilever_beam/youngs_modulus.
+
+structure def DcrMaterialDimensionSilent {
+    let m = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200mm)
+    let j = prb_cantilever_beam(20mm, 5mm, 0.5mm, m, point3(0mm, 0mm, 0mm), vec3(0.0, 1.0, 0.0))
+}

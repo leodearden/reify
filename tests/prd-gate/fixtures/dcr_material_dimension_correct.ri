@@ -1,0 +1,14 @@
+module dcr_material_dimension_correct
+
+// D3 decompose-phase POSITIVE twin for PRD `docs/prds/v0_6/dimension-checked-readers.md`
+// leaf β (boundary row B4). Identical to `dcr_material_dimension_silent.ri`
+// except that `youngs_modulus` carries its declared PRESSURE dimension.
+//
+// This file must EVAL CLEAN (exit 0) today AND after β lands — β must not
+// regress the correct spelling. MEASURED at decompose (2026-07-28,
+// main efba5a8036): spring_rate = 1.3802083333333335 m^2*kg*s^-2*rad^-1.
+
+structure def DcrMaterialDimensionCorrect {
+    let m = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+    let j = prb_cantilever_beam(20mm, 5mm, 0.5mm, m, point3(0mm, 0mm, 0mm), vec3(0.0, 1.0, 0.0))
+}
