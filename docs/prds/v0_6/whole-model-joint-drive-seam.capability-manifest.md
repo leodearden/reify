@@ -67,6 +67,29 @@ Substrate α builds on, all present on main and re-anchored 2026-07-28: `apply_c
 
 **DAG-direction.** β = 5189 `depends_on` 5334 — a real edge — and 5334 is landed (`db64320f66`, ancestor of main `bd10b6d0e1e2dd32b09065f2304bd029f04b6506`). δ is therefore **upstream** of every leaf that observes it; no `producer-downstream` binding appears in this section.
 
-## Correction γ (docs)
+## Correction γ (task 5190, docs)
 
-Updates `whole-model-objective-coupling.md` + `.capability-manifest.md` to bind M-WHOLE **BT4 → producer:task-β**. No code substrate; not a user-observable code leaf.
+Two-part companion reconciliation. No code substrate; **not** a user-observable code leaf.
+
+1. **Binds M-WHOLE BT4 → `producer:task-5189`.** `whole-model-objective-coupling.md` §6 (BT3/BT4 rows) + §8 (new cross-PRD row for this PRD) + §9 (ε bullet), and `whole-model-objective-coupling.capability-manifest.md` §ε (BT3/BT4 rows, the G6-branch-3 paragraph, header, Summary). BT4 was the only novel-capability row in that manifest justified by an **achievability argument alone**, with no `producer:task-…` binding — the gap §2 of this PRD flags. The numeric id is used deliberately: bare `producer:task-β` already means **M-WHOLE's own β (= 5014)** throughout that document, so re-using it for this PRD's β would be a homograph misattributing the binding to a task that does not deliver the joint drive.
+2. **Refreshes THIS manifest post-Amendment-A1.** Adds the "Leaf δ" section above (Gap C / design decision 7 / δ = 5334 / BT-8/-9/-10), which the 2026-07-13 authoring predates, and re-anchors this document's `grep:` evidence against main `bd10b6d0e1e2dd32b09065f2304bd029f04b6506` (see the header provenance for the drift list).
+
+**Boundary-test numbering — disambiguation.** This manifest binds **the PRD §7 table's** numbering, in which **BT-10 = "Constraint reads still never union"** (δ; `crates/reify-eval/src/resolve_order.rs:2067`). Task 5189 independently numbered two further **β-local** boundary tests that are **different tests** reusing the same labels:
+
+- a β-local **BT-10** — `cost_robustness_tradeoff` as a THIRD, unconverted scoring site (`crates/reify-constraints/tests/joint_drive_per_trial_recompute.rs:264`); and
+- a **BT-11** — instance-path alias rescoping (`crates/reify-eval/tests/joint_drive_expansion_boundary.rs`), recorded in PRD §12 Q4 prose but never entered into the §7 table.
+
+The §7 BT-10 and the β-local BT-10 are **not** the same test. Reconciling the §7 table (renumber the β-local tests, or namespace them) is a real decision with two defensible answers and reaches into two test files' comment banners — which would make it no longer docs-only. It is therefore **out of scope here** and tracked separately under follow-up ticket **`tkt_0RRT9Q9R4JJ6F106CNHHEW49K7`** (a task id is assigned asynchronously by the curator, so the ticket is cited rather than a task number). `docs/prds/v0_6/whole-model-joint-drive-seam.md` is deliberately **not** edited by task 5190.
+
+---
+
+## Summary
+
+| Leaf | Signal | Asserted-capability verdicts | Blocks batch? |
+|---|---|---|---|
+| α (5188) | intermediate — no standalone signal; roped into β | landed substrate + `build_dependent_cells`; G3 N/A | no |
+| δ (5334) | intermediate — cluster formation Gap C (Amendment A1); roped into β | 9 PASS | no |
+| β (5189) | e2e leaf **BT-5**: `reify eval examples/whole_model_joint_drive.ri` — child `auto` ≠ frozen freeze, merged cost **strictly <** frozen baseline | 9 PASS | no |
+| γ (5190) | docs correction — no code substrate, not a user-observable code leaf | N/A (bookkeeping) | no |
+
+**No FAIL bindings.** No `declared-only` · `test-only` · `producer-absent` · `producer-extent-short` · `producer-downstream` · `fixture-ERROR` · `bound≤floor` · `rejection-absent` value appears anywhere above, so the batch is not blocked. Every `producer:task-…` binding is upstream of the leaf that observes it (α = 5188 and δ = 5334 are both real `depends_on` edges of β = 5189; all three are landed and are ancestors of the refresh SHA).
