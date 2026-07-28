@@ -736,6 +736,38 @@ assert "C10e: a null status emits no re-dispatch request" \
 assert "C10f: neither shape is counted as a class-A hit" \
     _json_is 's["gate_closure"] == 3'
 
+# --- C11: an UNREADABLE escalations dir degrades exactly like a missing one --
+# C7 covers a NONEXISTENT dir. The dir that exists but cannot be enumerated
+# (mode 000, root-owned dir swept by another uid, a stale mount) is the more
+# dangerous shape, because it defeats the terminal allowlist WITHOUT ever
+# entering the loop: `[ -d ]` succeeds (stat needs +x on the PARENT, not on the
+# dir), the glob fails to expand for want of +r, `[ -e "$f" ] || continue`
+# swallows the unexpanded pattern, and found=0/pending=0 falls straight into
+# the `clear` branch. Task 9202 carries a live status=pending escalation, so
+# reporting it STALE / close is a fail-open on a task whose gate IS still live
+# — inverting L2 at the one point the allowlist cannot defend.
+if [ "$(id -u)" != 0 ]; then
+    C_REQ3="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-creq3-XXXXXX")"
+    _TMPDIRS+=("$C_REQ3")
+    chmod 000 "$C_ESC"
+    run_sweep --db "$C_DB" --escalations "$C_ESC" --repo "$C_REPO" \
+        --emit-requests "$C_REQ3" --format json
+    chmod 700 "$C_ESC"
+    assert "C11: an unreadable --escalations dir still exits 0" _rc_is 0
+    assert "C11: a task with a LIVE pending escalation degrades to unknown, never STALE" \
+        _json_is 't[9202]["verdict"] == "unknown"'
+    assert "C11: an unreadable oracle yields no class-A hit at all" \
+        _json_is 's["gate_closure"] == 0'
+    assert "C11: an unreadable oracle is counted in unknown" _json_is 's["unknown"] >= 1'
+    assert "C11: an unreadable oracle warns on stderr" _err_has '\[warn\].*9202'
+    assert "C11: an unreadable oracle emits no re-dispatch request" \
+        _no_request_for "$C_REQ3" 9202
+    assert "C11: ... and none for the genuinely-stale row either" \
+        _no_request_for "$C_REQ3" 9201
+else
+    echo "  SKIP: C11 unreadable-dir asserts (running as uid 0; mode bits do not apply)"
+fi
+
 # --- C9: --class filtering ---------------------------------------------------
 run_sweep --db "$C_DB" --escalations "$C_ESC" --repo "$C_REPO" \
     --class gate_closure --format json

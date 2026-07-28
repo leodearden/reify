@@ -96,6 +96,12 @@ a `[warn]` naming the task and the offending status. A pending-only match would 
 into "clear", manufacturing `STALE` / `close` / a CANCEL request for a task whose gate may still be
 live — inverting L2 toward the sweep's single most destructive action.
 
+The allowlist only defends rows the oracle actually **reaches**, so the escalations dir is checked
+for `-r`/`-x`, not just `-d`. A dir that exists but cannot be enumerated (mode 000, a root-owned
+dir swept under a different uid, a stale mount) passes `-d` — `stat` needs `+x` on the *parent*, not
+on the dir — but then silently yields an empty glob, which would read as "zero live escalations" and
+land in "clear" without the loop body ever running. Such a dir degrades exactly like a missing one.
+
 The trailing `SWEEP:` line (table) / `summary` object (json) carries `candidates`, `gate_closure`,
 `merge_verify_red`, `unmet_dependency`, `corrupt_hold`, `live_skipped`, `unknown`. `live_skipped`
 and `unknown` exist so **"no hits" stays distinguishable from "could not tell"** — the same reason

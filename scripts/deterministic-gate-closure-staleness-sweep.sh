@@ -105,7 +105,8 @@
 #        rows legitimately carry none). An UNPARSEABLE heartbeat degrades to
 #        LIVE, never to eligible — the fail-safe direction for a re-dispatch
 #        decision is always "do nothing".
-#   L2 — an unreadable escalation oracle (missing dir, unparseable file)
+#   L2 — an unreadable escalation oracle (missing dir, UNREADABLE/unsearchable
+#        dir, unparseable file, unrecognized status)
 #        degrades that row to `unknown`, never to `STALE`. A failed oracle
 #        lookup must never manufacture an actionable verdict — the same
 #        posture as warm-lane-audit.sh invariant A3.
@@ -422,7 +423,14 @@ _meta() {
 _esc_state() {
     local id="$1" f found=0 pending=0 st
     _ESC_STATE="unknown"
-    if [ ! -d "$ESCALATIONS" ]; then
+    # -d alone is NOT enough: stat succeeds on a mode-000 dir (it needs +x on
+    # the PARENT, not on the dir), but the glob below then fails to expand for
+    # want of +r, `[ -e ]` swallows the unexpanded pattern, and found=0 lands in
+    # `clear` — reporting STALE for a task whose gate is still live, without
+    # ever entering the loop where the terminal allowlist could defend. An
+    # unreadable/unsearchable dir must therefore degrade exactly like a missing
+    # one (root-owned dir swept by another uid, a stale mount, mode 000).
+    if [ ! -d "$ESCALATIONS" ] || [ ! -r "$ESCALATIONS" ] || [ ! -x "$ESCALATIONS" ]; then
         warn "Task $id: escalations dir is missing or unreadable: $ESCALATIONS — reporting unknown (a failed oracle must never manufacture a STALE verdict)."
         return 0
     fi
