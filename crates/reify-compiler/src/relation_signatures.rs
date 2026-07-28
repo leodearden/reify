@@ -966,7 +966,119 @@ mod tests {
             ),
             Some(3)
         );
-        assert_eq!(relation_delta_dof("tangent", &aa), Some(2));
+        // `tangent` is operand-conditional (task 5540): the (Axis, Axis)
+        // cylinder/cylinder combo pins only the centre distance ⇒ codim 1. It is
+        // NOT the blanket 2 the pre-5540 table published — see
+        // `relation_delta_dof_tangent_is_operand_conditional` for the full table.
+        assert_eq!(relation_delta_dof("tangent", &aa), Some(1));
+    }
+
+    // ── tangent: operand-conditional ΔDOF (task 5540) ─────────────────────────
+    //
+    // No single blanket count satisfies tangent: cylinder/plane is codim 2 (the
+    // axis must be perpendicular to the plane normal AND offset by the radius),
+    // while the other three combos pin only a centre distance ⇒ codim 1. The
+    // count therefore dispatches on the operand type PAIR.
+
+    /// The full amended ΔDOF table, in both operand orders where the combo is
+    /// asymmetric. Cylinder operands arrive as `Axis` (the kernel projects a
+    /// cylindrical face to its central axis) and sphere operands as `Point` (a
+    /// spherical face projects to its centre).
+    #[test]
+    fn relation_delta_dof_tangent_is_operand_conditional() {
+        let pt = || arg(Type::point3(Type::length()));
+        // cylinder/cylinder — centre distance only.
+        assert_eq!(
+            relation_delta_dof("tangent", &[arg(Type::Axis), arg(Type::Axis)]),
+            Some(1),
+            "tangent(Axis, Axis) is cylinder/cylinder: centre distance only ⇒ 1"
+        );
+        // cylinder/plane — perpendicularity + offset, in both orders.
+        assert_eq!(
+            relation_delta_dof("tangent", &[arg(Type::Axis), arg(Type::Plane)]),
+            Some(2),
+            "tangent(Axis, Plane) is cylinder/plane: axis⊥normal + offset ⇒ 2"
+        );
+        assert_eq!(
+            relation_delta_dof("tangent", &[arg(Type::Plane), arg(Type::Axis)]),
+            Some(2),
+            "tangent(Plane, Axis) is the same combo in the reversed order ⇒ 2"
+        );
+        // sphere/plane — signed centre-to-plane distance, in both orders.
+        assert_eq!(
+            relation_delta_dof("tangent", &[pt(), arg(Type::Plane)]),
+            Some(1),
+            "tangent(Point, Plane) is sphere/plane: centre-to-plane distance ⇒ 1"
+        );
+        assert_eq!(
+            relation_delta_dof("tangent", &[arg(Type::Plane), pt()]),
+            Some(1),
+            "tangent(Plane, Point) is the same combo in the reversed order ⇒ 1"
+        );
+        // sphere/sphere — centre separation.
+        assert_eq!(
+            relation_delta_dof("tangent", &[pt(), pt()]),
+            Some(1),
+            "tangent(Point, Point) is sphere/sphere: centre separation ⇒ 1"
+        );
+    }
+
+    /// An operand shape outside the four curated tangency combos now returns
+    /// `None` rather than the pre-5540 blanket `Some(2)`. Two planes have no
+    /// tangency, two directions carry no position, a `Frame` is not a tangency
+    /// operand, and a 1-arg call cannot name a pair at all.
+    #[test]
+    fn relation_delta_dof_tangent_uncurated_is_none() {
+        assert_eq!(
+            relation_delta_dof("tangent", &[arg(Type::Direction), arg(Type::Direction)]),
+            None
+        );
+        assert_eq!(
+            relation_delta_dof("tangent", &[arg(Type::Plane), arg(Type::Plane)]),
+            None,
+            "two planes have no tangency (parallel planes never touch)"
+        );
+        assert_eq!(
+            relation_delta_dof("tangent", &[arg(Type::Frame(3)), arg(Type::Frame(3))]),
+            None
+        );
+        assert_eq!(
+            relation_delta_dof("tangent", &[arg(Type::Geometry), arg(Type::Geometry)]),
+            None
+        );
+        // A call too short to name an operand PAIR has no classifiable combo.
+        assert_eq!(relation_delta_dof("tangent", &[arg(Type::Axis)]), None);
+        assert_eq!(relation_delta_dof("tangent", &[]), None);
+    }
+
+    /// Reviewer-coupling pin: making the COUNT operand-conditional must not make
+    /// the KIND SPLIT decidable. `joint_self_check::body_has_undecidable_kind_split`
+    /// fires exactly on `count.is_some() && kinds.is_none()`, so every supported
+    /// tangency combo must keep that shape — otherwise the joint self-check's
+    /// gradualism carve-out silently stops firing for tangent.
+    #[test]
+    fn relation_delta_dof_tangent_count_known_kinds_still_undecidable() {
+        let pt = || arg(Type::point3(Type::length()));
+        let combos: Vec<Vec<CompiledExpr>> = vec![
+            vec![arg(Type::Axis), arg(Type::Axis)],
+            vec![arg(Type::Axis), arg(Type::Plane)],
+            vec![arg(Type::Plane), arg(Type::Axis)],
+            vec![pt(), arg(Type::Plane)],
+            vec![arg(Type::Plane), pt()],
+            vec![pt(), pt()],
+        ];
+        for args in &combos {
+            assert!(
+                relation_delta_dof("tangent", args).is_some(),
+                "tangent must publish a COUNT for every supported combo"
+            );
+            assert_eq!(
+                relation_delta_dof_kinds("tangent", args),
+                None,
+                "tangent's rot/trans split stays nominally undecidable — \
+                 body_has_undecidable_kind_split gates on kinds.is_none()"
+            );
+        }
     }
 
     // ── ΔDOF kind split: relation_delta_dof_kinds (task 4396 β) ───────────────
