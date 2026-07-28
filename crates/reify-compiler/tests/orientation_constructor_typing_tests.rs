@@ -200,6 +200,78 @@ fn nested_transform3_over_orient_identity_types_as_transform_3() {
     );
 }
 
+/// The task's headline acceptance criterion, pinned inside the suite so it
+/// cannot silently regress independently of a manual `reify check` run.
+///
+/// Reproduces the `prj/printer_v01/printer.ri` usage shape — repeated
+/// `orient_identity()` bindings, `orient_axis_angle(axis, angle)`,
+/// `transform3(orient_identity(), vec3(..))`, `frame3(point3(..),
+/// orient_identity())`, and a nested `transform_compose(transform3(..),
+/// transform3(..))` — and asserts BOTH halves of the criterion:
+///
+/// (a) ZERO "cannot infer return type" diagnostics. Verified achievable by this
+///     task alone: `orient_identity()` is the only zero-arg call syntax present
+///     in printer.ri (25 sites), and that warning is emitted solely from the
+///     first-arg fallback's `unwrap_or_else` branch.
+/// (b) The nested cells carry the right type END-TO-END, proving the fix
+///     composes through nesting rather than only at leaf call sites.
+///
+/// Uses `compile_source_with_stdlib` so the dimensioned literals (`1m`, `90deg`,
+/// `0mm`) printer.ri actually passes resolve — the arguments are the real thing,
+/// not dimensionless stand-ins.
+#[test]
+fn printer_shaped_source_emits_zero_infer_warnings() {
+    let source = r#"
+        structure PrinterShaped {
+            let rot_to_y = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)
+            let a_upper = transform3(rot_to_y, vec3(0mm, 0mm, 10mm))
+            let a_lower = transform3(orient_identity(), vec3(0mm, 0mm, 20mm))
+            let b_upper = transform3(orient_identity(), vec3(0mm, 0mm, 30mm))
+            let b_lower = transform3(orient_identity(), vec3(0mm, 0mm, 40mm))
+            let stacked = transform_compose(
+                transform3(orient_identity(), vec3(0mm, 0mm, 50mm)),
+                transform3(orient_identity(), vec3(0mm, 0mm, 60mm))
+            )
+            let mount = frame3(point3(0mm, 0mm, 0mm), orient_identity())
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    // (a) the headline criterion.
+    let infer_warnings: Vec<&str> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("cannot infer return type"))
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        infer_warnings.is_empty(),
+        "printer-shaped source must emit ZERO 'cannot infer return type' \
+         warnings (was 25 across prj/printer_v01/printer.ri); got: {infer_warnings:#?}"
+    );
+
+    // (b) the types compose through nesting, not just at leaf call sites.
+    for cell in ["a_upper", "a_lower", "b_upper", "b_lower", "stacked"] {
+        assert_eq!(
+            find_stdlib_cell_type(source, "PrinterShaped", cell),
+            Type::Transform(3),
+            "cell '{cell}' must type as Transform(3) end-to-end"
+        );
+    }
+    assert_eq!(
+        find_stdlib_cell_type(source, "PrinterShaped", "rot_to_y"),
+        Type::Orientation(3),
+        "orient_axis_angle(axis, angle) must type as Orientation(3), not the \
+         axis argument's Vector type"
+    );
+    assert_eq!(
+        find_stdlib_cell_type(source, "PrinterShaped", "mount"),
+        Type::Frame(3),
+        "frame3(point3(..), orient_identity()) must type as Frame(3), not the \
+         point argument's type"
+    );
+}
+
 // ── Datum-neighbour audit (the same defect, one resolver over) ────────────────
 //
 // `plane_xy`/`plane_xz`/`plane_yz` and `axis_x`/`axis_y`/`axis_z` share the
