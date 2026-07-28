@@ -1457,6 +1457,29 @@ fn solve_core_with_sd_tolerance(
     // return, so a `Gt`-sourced bound must never become one.  The floor's slack
     // constraints are `Ge`, and the floored bound is strictly interior to the
     // original `>`/`>=` bound by construction, so the clamp still receives it.
+    //
+    // GATED on `floor_applied` (esc-5618-1); plan.json specified an UNCONDITIONAL
+    // clamp.  Rationale: the floored box is the solver's OWN synthesised construct
+    // with known margin semantics, so confining the optimiser to it is safe.  The
+    // RAW user constraint box is not — clamping to it unconditionally would promote
+    // every user inequality into a hard wall the optimiser can never cross, i.e.
+    // change what a constraint MEANS (something evaluated and reportable, not
+    // assumed) for every non-Money solve in the workspace.  Per floor invariant (ii)
+    // above, a floor-free solve stays bit-identical.
+    //
+    // MEASURED (unconditional form, `cargo test -p reify-constraints --lib`):
+    // 138 pass / 2 fail — `tests::undefined_objective_at_fallback_triggers_no_progress`
+    // and `tests::defined_objective_at_fallback_returns_solved`.  Both are non-Money
+    // drift-fallback fixtures that deliberately lure the optimiser OUT of the feasible
+    // region (constraint `x <= 0.020`, Undef-objective boundary `x <= 0.022`); a derived
+    // clamp box makes that drift unreachable BY CONSTRUCTION for a single linear
+    // one-auto bound, so option B cannot keep that coverage without a contrived
+    // nonlinear/multi-auto replacement fixture.  The second failure is
+    // `ConstraintNonUnique` via the flat-objective / compare-parameter-values mechanism
+    // documented on `verify_uniqueness` — so the unconditional form is blocked on the
+    // SAME out-of-scope uniqueness-contract decision already deferred by esc-5618-3.
+    // Revisit both together if that contract is ever changed to compare objective
+    // values; neither is actionable in isolation.
     let bounds = if floor_applied {
         resolve_bounds(
             &problem.auto_params,
