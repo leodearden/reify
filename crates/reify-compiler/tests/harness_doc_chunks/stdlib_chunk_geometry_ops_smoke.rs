@@ -11,7 +11,7 @@
 //!
 //! The fixture `tests/fixtures/stdlib_geometry_ops_smoke.ri` is an EXECUTABLE
 //! TRANSCRIPTION of that chunk's Key Geometry Operations + Curves sections,
-//! concretized over real primitives/profiles. Three complementary properties
+//! concretized over real primitives/profiles. Four complementary properties
 //! are asserted, and NO ONE OF THEM ALONE IS SUFFICIENT:
 //!
 //! 1. **Arity.** The fixture compiles with ZERO Error-severity diagnostics —
@@ -37,6 +37,11 @@
 //!    name-existence check against code registries, deliberately NOT a
 //!    wording/content pin on the chunk's prose (house rule: no doc-content
 //!    meta-tests).
+//! 4. **Doc → fixture pairing at FORM granularity.** Every documented
+//!    (name, arity) form — with `…` read as variadic — has a fixture call at
+//!    that arity, so a documented signature the compiler rejects is RED
+//!    either here (form unmirrored) or in the compile smoke (mirrored and
+//!    rejected); task #5583.
 //!
 //! # What is NOT established
 //!
@@ -49,12 +54,7 @@
 //!   `Angle`; direction/axis/normal components and counts are plain numbers"
 //!   line is therefore a convention this fixture FOLLOWS but nothing enforces.
 //! - **Argument order / semantics.** A permutation of two same-dimension
-//!   arguments satisfies all three properties above.
-//! - **Doc → fixture coverage at FORM granularity.** Property (3) pairs the two
-//!   files by NAME. Whether each documented *overload* (arity/value-form) has a
-//!   compiling instance in the fixture is not checked — adding a second arity
-//!   for an already-documented name without mirroring it fails no test. Keeping
-//!   the forms in step is a review-time responsibility.
+//!   arguments satisfies all four properties above.
 //!
 //! The parse→compile→filter-`Severity::Error` sequence mirrors
 //! `examples_smoke.rs::smoke_one`; the fixture-path-const + named-test shape

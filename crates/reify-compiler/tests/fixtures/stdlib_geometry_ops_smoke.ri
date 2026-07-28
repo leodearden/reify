@@ -4,7 +4,7 @@
 //
 // SYNC CONTRACT: every call form below mirrors a signature documented in that
 // chunk's "Key Geometry Operations" / "Curves" section. The companion test
-// crates/reify-compiler/tests/stdlib_chunk_geometry_ops_smoke.rs asserts THREE
+// crates/reify-compiler/tests/stdlib_chunk_geometry_ops_smoke.rs asserts FOUR
 // things, none of which alone is sufficient:
 //   1. this file compiles with ZERO Error-severity diagnostics — every
 //      documented form is accepted AT THE ARITY WRITTEN, FOR THE NAMES THE
@@ -12,9 +12,13 @@
 //   2. every call name below is a real entry in the compiler's own geometry-op /
 //      topology-selector registries — because an unknown call name in a
 //      `structure def` body is silently ignored (no diagnostic at ANY severity),
-//      so a documented-but-nonexistent op would pass (1) untouched; and
+//      so a documented-but-nonexistent op would pass (1) untouched;
 //   3. every name documented in the chunk is real AND appears below — the
-//      doc→fixture direction, at NAME granularity.
+//      doc→fixture direction, at NAME granularity; and
+//   4. every documented (name, arity) FORM — with `…` read as variadic — has a
+//      call below at that exact arity: the doc→fixture direction, at FORM
+//      granularity (a second overload of an already-documented name must be
+//      mirrored too, not just the name; task 5583).
 // NOT enforced, and therefore review-time responsibilities:
 //   - argument DIMENSION/TYPE. Only arity is checked for these ops (no Key
 //     Geometry Operation has a checkable slot in builtin_signatures.rs), so
@@ -22,8 +26,7 @@
 //     below — positions/lengths in `mm`, angles in `deg`, direction/axis/normal
 //     components and counts as plain numbers — mirrors the chunk's prose line
 //     but nothing verifies it;
-//   - argument ORDER, and doc→fixture pairing at FORM granularity (a second
-//     overload of an already-documented name can go unmirrored).
+//   - argument ORDER.
 // Keep the two files in lockstep: if you edit a signature in one, edit it in the
 // other. Renaming a call here to something with no compiler arm goes RED.
 //
