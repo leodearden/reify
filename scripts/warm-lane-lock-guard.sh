@@ -153,8 +153,54 @@ if [ -z "$LANE" ]; then
     exit 2
 fi
 
+# ── lock-path derivation ───────────────────────────────────────────────────────
+# The lock is a SIBLING of the lane dir — `<mount>/<lane>.lock`, NOT a file
+# inside `<mount>/<lane>/`. This byte-matches dark-factory's own
+# verify_cancel.py lane_lock_path(), which is
+# `lane_dir.with_name(lane_dir.name + '.lock')`; probing anything else would
+# report IDLE forever and silently defeat the guard.
+#
+# `--mount` is the WORKTREES DIR. That is the value dark-factory passes to every
+# warm-lane script (str(self.worktree_base)) — the same convention
+# scripts/warm-lane-gc.sh:120-136 documents for its own WORKTREES_DIR
+# assignment. On the real host: --mount=/home/leo/src/warm-lanes/worktrees, so
+# the _merge-verify lock is /home/leo/src/warm-lanes/worktrees/_merge-verify.lock.
+LOCK="${LOCK_PATH:-$MOUNT/$LANE.lock}"
+
 # ── check subcommand ───────────────────────────────────────────────────────────
-info "warm-lane-lock-guard.sh check: mount=$MOUNT  lane=$LANE"
+info "warm-lane-lock-guard.sh check: mount=$MOUNT  lane=$LANE  lock=$LOCK"
+
+# ── probe ──────────────────────────────────────────────────────────────────────
+# Opens an EXISTING lock file READ-ONLY and attempts a non-blocking SHARED
+# flock on that read-only fd: acquired => no exclusive holder => IDLE (released
+# immediately); blocked => a live consumer holds it exclusively => BUSY.
+#
+# Technique copied from scripts/warm-lane-audit.sh's _probe_live, and the three
+# avoidances are load-bearing:
+#   · a MISSING lock file is IDLE and is NEVER created — no `>`-open, no
+#     `>>`-open, no `touch`. Materializing the inode DF serializes on would make
+#     this reader a writer.
+#   · SHARED (-s), not exclusive: every real consumer holds an EXCLUSIVE flock
+#     while live, so a shared request still detects them — but two concurrent
+#     oracles never contend with each other.
+#   · not the `flock <file> <cmd>` convenience form, which opens for writing and
+#     creates the file.
+PROBE_RESULT='IDLE'
+if [ -e "$LOCK" ]; then
+    if exec 7<"$LOCK" 2>/dev/null; then
+        if flock -n -s 7 2>/dev/null; then
+            flock -u 7 2>/dev/null || true
+        else
+            PROBE_RESULT='BUSY'
+        fi
+        exec 7<&- 2>/dev/null || true
+    fi
+fi
+
+if [ "$PROBE_RESULT" = "BUSY" ]; then
+    err "Lane '$LANE' is BUSY: an exclusive holder occupies $LOCK."
+    exit 3
+fi
 
 ok "check: lane '$LANE' is IDLE (no exclusive holder observed)."
 exit 0
