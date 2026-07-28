@@ -1001,3 +1001,78 @@ fn extrude_accepts_rounded_rect_rejects_rounded_box() {
         compiled_box.diagnostics
     );
 }
+
+// ─── param-driven corner_r: runtime constraint synthesis (task #5665) ─────────
+
+/// Locate the single `structure def S` template in a compiled module.
+fn template_s(compiled: &reify_compiler::CompiledModule) -> &reify_compiler::TopologyTemplate {
+    compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected a template named S")
+}
+
+/// A param-driven `corner_r` must not be silently waved through.
+///
+/// `validate_rounded_corner_constraint`'s static check can only fire when
+/// width/depth/corner_r all fold to constants. When one of them is a param it
+/// used to `return true` and record NOTHING, so `rounded_rect(40mm, 30mm,
+/// corner_r)` with an oversized `corner_r` reached OCCT and failed there with
+/// an opaque kernel error. The lowering must instead synthesize a constraint
+/// on the enclosing template, which `Engine::check` evaluates (and the solver
+/// honours) at runtime.
+///
+/// RED before the emission branch lands: `template.constraints` is empty for
+/// the param-driven source.
+#[test]
+fn rounded_rect_param_driven_corner_r_emits_runtime_constraint() {
+    let source = r#"structure def S {
+    param corner_r: Length = 5mm
+    let body = rounded_rect(40mm, 30mm, corner_r)
+}"#;
+    // The param-driven path must still compile clean — the point of the
+    // runtime constraint is to CHECK the radius, not to false-flag it.
+    let compiled = compile_no_errors(source);
+    let template = template_s(&compiled);
+
+    assert_eq!(
+        template.constraints.len(),
+        1,
+        "a param-driven corner_r must synthesize exactly one runtime constraint, got: {:#?}",
+        template.constraints
+    );
+    let constraint = &template.constraints[0];
+    assert_eq!(
+        constraint.expr.result_type,
+        Type::Bool,
+        "a synthesized constraint predicate must be Bool-typed, got: {:?}",
+        constraint.expr.result_type
+    );
+    // The label is the only text the designer sees on a violation:
+    // SimpleConstraintChecker emits no span, and Engine::labeled_diagnostics
+    // substitutes the label for the constraint id in the message.
+    let label = constraint
+        .label
+        .as_deref()
+        .expect("a synthesized constraint must carry a label");
+    assert!(
+        !label.is_empty(),
+        "a synthesized constraint's label must be non-empty"
+    );
+
+    // Negative half: the all-literal VALID call is decided statically, so it
+    // must NOT gain a redundant runtime constraint. The static check at
+    // geometry.rs is strictly stronger there (it aborts the lowering outright),
+    // so emitting one would be pure noise in `reify check` and an extra term in
+    // the solver's objective.
+    let source_const = r#"structure def S {
+    let body = rounded_rect(40mm, 30mm, 5mm)
+}"#;
+    let compiled_const = compile_no_errors(source_const);
+    assert!(
+        template_s(&compiled_const).constraints.is_empty(),
+        "an all-constant rounded_rect call must not synthesize a runtime constraint, got: {:#?}",
+        template_s(&compiled_const).constraints
+    );
+}
