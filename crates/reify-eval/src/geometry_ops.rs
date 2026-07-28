@@ -4757,7 +4757,10 @@ fn profile_ellipse(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let [semi_major, semi_minor] = required_length_values(
+    // Named in semi_major-then-semi_minor order: the LENGTH gate reports every
+    // bad member, then the sign check short-circuits on the first, so two
+    // negative semi-axes yield exactly one Warning naming `semi_major`.
+    let [semi_major, semi_minor] = required_positive_profile_dimensions(
         ["semi_major", "semi_minor"],
         kind,
         args,
