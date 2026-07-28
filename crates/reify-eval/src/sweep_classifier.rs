@@ -332,10 +332,12 @@ pub fn swept_kind_to_sweep_params(
     use reify_solver_elastic::SweepParams;
     match kind {
         // Step-16: Extrude — forward axis verbatim, extract length as f64.
-        SweptKind::Extrude { axis, length, .. } => length.as_f64().map(|len| SweepParams::Extrude {
-            axis: *axis,
-            length: len,
-        }),
+        SweptKind::Extrude { axis, length, .. } => {
+            length.as_f64().map(|len| SweepParams::Extrude {
+                axis: *axis,
+                length: len,
+            })
+        }
         // Step-18: Revolve — forward fields; rename angle_rad → angle.
         // SweepParams::Revolve.angle must be > 0 (validate_sweep_inputs rejects
         // angle <= 0.0 with DegenerateMagnitude).  SweptKind::Revolve.angle_rad
@@ -1641,25 +1643,10 @@ mod tests {
     fn swept_kind_to_profile_boundary_rectangle_samples_four_ccw_corners() {
         let w = 0.04;
         let h = 0.02;
-        let profile_handle = GeometryHandleId(10);
-        let ops = vec![
-            GeometryOp::RectangleProfile {
-                width: Value::length(w),
-                height: Value::length(h),
-            },
-            GeometryOp::Extrude {
-                profile: profile_handle,
-                distance: Value::length(0.01),
-            },
-        ];
-        // handles[0] is the RectangleProfile's result handle == the Extrude's
-        // profile handle; handles[1] is the Extrude's own result handle.
-        let handles = vec![profile_handle, GeometryHandleId(11)];
-        let kind = SweptKind::Extrude {
-            axis: [0.0, 0.0, 1.0],
-            length: Value::length(0.01),
-            profile: profile_handle,
-        };
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::RectangleProfile {
+            width: Value::length(w),
+            height: Value::length(h),
+        });
         let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
             .expect("a RectangleProfile-backed extrude must produce a ProfileBoundary");
         assert_eq!(
@@ -1681,22 +1668,9 @@ mod tests {
     #[test]
     fn swept_kind_to_profile_boundary_polygon_returns_points_verbatim() {
         let points = vec![[0.0, 0.0], [0.03, 0.0], [0.03, 0.05], [0.0, 0.05]];
-        let profile_handle = GeometryHandleId(10);
-        let ops = vec![
-            GeometryOp::PolygonProfile {
-                points: points.clone(),
-            },
-            GeometryOp::Extrude {
-                profile: profile_handle,
-                distance: Value::length(0.01),
-            },
-        ];
-        let handles = vec![profile_handle, GeometryHandleId(11)];
-        let kind = SweptKind::Extrude {
-            axis: [0.0, 0.0, 1.0],
-            length: Value::length(0.01),
-            profile: profile_handle,
-        };
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::PolygonProfile {
+            points: points.clone(),
+        });
         let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
             .expect("a PolygonProfile-backed extrude must produce a ProfileBoundary");
         assert_eq!(
@@ -1716,21 +1690,15 @@ mod tests {
     fn swept_kind_to_profile_boundary_unresolvable_handle_returns_none() {
         // The SweptKind's profile handle (99) is absent from `handles`, so the
         // producer cannot resolve a source op → None.
-        let ops = vec![
-            GeometryOp::RectangleProfile {
-                width: Value::length(0.04),
-                height: Value::length(0.02),
-            },
-            GeometryOp::Extrude {
-                profile: GeometryHandleId(10),
-                distance: Value::length(0.01),
-            },
-        ];
-        let handles = vec![GeometryHandleId(10), GeometryHandleId(11)];
+        let (ops, handles, _) = extrude_fixture(GeometryOp::RectangleProfile {
+            width: Value::length(0.04),
+            height: Value::length(0.02),
+        });
+        // The one varied field: a profile handle absent from `handles`.
         let kind = SweptKind::Extrude {
             axis: [0.0, 0.0, 1.0],
-            length: Value::length(0.01),
-            profile: GeometryHandleId(99), // absent from `handles`
+            length: Value::length(FIXTURE_EXTRUDE_DISTANCE),
+            profile: GeometryHandleId(99),
         };
         assert!(
             swept_kind_to_profile_boundary(&kind, &ops, &handles).is_none(),
@@ -1742,24 +1710,11 @@ mod tests {
     fn swept_kind_to_profile_boundary_non_profile_op_returns_none() {
         // The profile handle resolves to a Box (a solid primitive, not a 2-D
         // profile op) → the sampler rejects it → None.
-        let profile_handle = GeometryHandleId(10);
-        let ops = vec![
-            GeometryOp::Box {
-                width: Value::length(0.04),
-                height: Value::length(0.02),
-                depth: Value::length(0.03),
-            },
-            GeometryOp::Extrude {
-                profile: profile_handle,
-                distance: Value::length(0.01),
-            },
-        ];
-        let handles = vec![profile_handle, GeometryHandleId(11)];
-        let kind = SweptKind::Extrude {
-            axis: [0.0, 0.0, 1.0],
-            length: Value::length(0.01),
-            profile: profile_handle,
-        };
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::Box {
+            width: Value::length(0.04),
+            height: Value::length(0.02),
+            depth: Value::length(0.03),
+        });
         assert!(
             swept_kind_to_profile_boundary(&kind, &ops, &handles).is_none(),
             "a profile handle resolving to a non-profile op must produce None"
@@ -1778,22 +1733,9 @@ mod tests {
     #[test]
     fn swept_kind_to_profile_boundary_circle_samples_on_radius() {
         let r = 0.03;
-        let profile_handle = GeometryHandleId(10);
-        let ops = vec![
-            GeometryOp::CircleProfile {
-                radius: Value::length(r),
-            },
-            GeometryOp::Extrude {
-                profile: profile_handle,
-                distance: Value::length(0.01),
-            },
-        ];
-        let handles = vec![profile_handle, GeometryHandleId(11)];
-        let kind = SweptKind::Extrude {
-            axis: [0.0, 0.0, 1.0],
-            length: Value::length(0.01),
-            profile: profile_handle,
-        };
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::CircleProfile {
+            radius: Value::length(r),
+        });
         let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
             .expect("a CircleProfile-backed extrude must produce a ProfileBoundary");
         assert_eq!(
@@ -1832,23 +1774,10 @@ mod tests {
     fn swept_kind_to_profile_boundary_ellipse_samples_theta_zero_at_semi_major() {
         let a = 0.05;
         let b = 0.02;
-        let profile_handle = GeometryHandleId(10);
-        let ops = vec![
-            GeometryOp::EllipseProfile {
-                semi_major: Value::length(a),
-                semi_minor: Value::length(b),
-            },
-            GeometryOp::Extrude {
-                profile: profile_handle,
-                distance: Value::length(0.01),
-            },
-        ];
-        let handles = vec![profile_handle, GeometryHandleId(11)];
-        let kind = SweptKind::Extrude {
-            axis: [0.0, 0.0, 1.0],
-            length: Value::length(0.01),
-            profile: profile_handle,
-        };
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::EllipseProfile {
+            semi_major: Value::length(a),
+            semi_minor: Value::length(b),
+        });
         let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
             .expect("an EllipseProfile-backed extrude must produce a ProfileBoundary");
         assert_eq!(
@@ -1991,22 +1920,9 @@ mod tests {
             reify_solver_elastic::ring_signed_area_2d(&cw_points) < 0.0,
             "fixture precondition: the input ring must be clockwise"
         );
-        let profile_handle = GeometryHandleId(10);
-        let ops = vec![
-            GeometryOp::PolygonProfile {
-                points: cw_points.clone(),
-            },
-            GeometryOp::Extrude {
-                profile: profile_handle,
-                distance: Value::length(0.01),
-            },
-        ];
-        let handles = vec![profile_handle, GeometryHandleId(11)];
-        let kind = SweptKind::Extrude {
-            axis: [0.0, 0.0, 1.0],
-            length: Value::length(0.01),
-            profile: profile_handle,
-        };
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::PolygonProfile {
+            points: cw_points.clone(),
+        });
         let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
             .expect("a PolygonProfile-backed extrude must produce a ProfileBoundary");
         assert!(
@@ -2033,22 +1949,9 @@ mod tests {
             reify_solver_elastic::ring_signed_area_2d(&ccw_points) > 0.0,
             "fixture precondition: the input ring must be counter-clockwise"
         );
-        let profile_handle = GeometryHandleId(10);
-        let ops = vec![
-            GeometryOp::PolygonProfile {
-                points: ccw_points.clone(),
-            },
-            GeometryOp::Extrude {
-                profile: profile_handle,
-                distance: Value::length(0.01),
-            },
-        ];
-        let handles = vec![profile_handle, GeometryHandleId(11)];
-        let kind = SweptKind::Extrude {
-            axis: [0.0, 0.0, 1.0],
-            length: Value::length(0.01),
-            profile: profile_handle,
-        };
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::PolygonProfile {
+            points: ccw_points.clone(),
+        });
         let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
             .expect("a PolygonProfile-backed extrude must produce a ProfileBoundary");
         assert_eq!(
@@ -2064,23 +1967,10 @@ mod tests {
         // is CCW only for positive extents — at width < 0 the same corner order
         // traverses clockwise. Normalisation must be total over the sampler
         // arms, not polygon-only.
-        let profile_handle = GeometryHandleId(10);
-        let ops = vec![
-            GeometryOp::RectangleProfile {
-                width: Value::length(-0.03),
-                height: Value::length(0.05),
-            },
-            GeometryOp::Extrude {
-                profile: profile_handle,
-                distance: Value::length(0.01),
-            },
-        ];
-        let handles = vec![profile_handle, GeometryHandleId(11)];
-        let kind = SweptKind::Extrude {
-            axis: [0.0, 0.0, 1.0],
-            length: Value::length(0.01),
-            profile: profile_handle,
-        };
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::RectangleProfile {
+            width: Value::length(-0.03),
+            height: Value::length(0.05),
+        });
         let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
             .expect("a RectangleProfile-backed extrude must produce a ProfileBoundary");
         let area = reify_solver_elastic::ring_signed_area_2d(&boundary.outer);
@@ -2186,31 +2076,22 @@ mod tests {
     fn build_swept_2d_mesh_unresolvable_profile_is_empty_boundary() {
         // Profile handle 99 is absent from `handles` → producer None →
         // Err(EmptyBoundary), deterministic in libgmsh and stub builds alike.
-        let ops = vec![
-            GeometryOp::RectangleProfile {
-                width: Value::length(0.04),
-                height: Value::length(0.02),
-            },
-            GeometryOp::Extrude {
-                profile: GeometryHandleId(10),
-                distance: Value::length(0.01),
-            },
-        ];
-        let handles = vec![GeometryHandleId(10), GeometryHandleId(11)];
+        let (ops, handles, _) = extrude_fixture(GeometryOp::RectangleProfile {
+            width: Value::length(0.04),
+            height: Value::length(0.02),
+        });
+        // The one varied field: a profile handle absent from `handles`.
         let kind = SweptKind::Extrude {
             axis: [0.0, 0.0, 1.0],
-            length: Value::length(0.01),
+            length: Value::length(FIXTURE_EXTRUDE_DISTANCE),
             profile: GeometryHandleId(99),
         };
-        let result = build_swept_2d_mesh(
-            &kind,
-            &ops,
-            &handles,
-            reify_solver_elastic::SweepElementTarget::HexPreferred,
-            &reify_solver_elastic::Mesh2dOptions::default(),
-        );
+        let result = build_fixture_mesh(&kind, &ops, &handles);
         assert!(
-            matches!(&result, Err(reify_solver_elastic::Mesh2dError::EmptyBoundary)),
+            matches!(
+                &result,
+                Err(reify_solver_elastic::Mesh2dError::EmptyBoundary)
+            ),
             "an unresolvable profile handle must short-circuit to Err(EmptyBoundary); got {result:?}"
         );
     }
@@ -2219,33 +2100,17 @@ mod tests {
     fn build_swept_2d_mesh_non_profile_op_is_empty_boundary() {
         // Profile handle resolves to a Box (non-profile op) → producer None →
         // Err(EmptyBoundary), before any Gmsh call.
-        let profile_handle = GeometryHandleId(10);
-        let ops = vec![
-            GeometryOp::Box {
-                width: Value::length(0.04),
-                height: Value::length(0.02),
-                depth: Value::length(0.03),
-            },
-            GeometryOp::Extrude {
-                profile: profile_handle,
-                distance: Value::length(0.01),
-            },
-        ];
-        let handles = vec![profile_handle, GeometryHandleId(11)];
-        let kind = SweptKind::Extrude {
-            axis: [0.0, 0.0, 1.0],
-            length: Value::length(0.01),
-            profile: profile_handle,
-        };
-        let result = build_swept_2d_mesh(
-            &kind,
-            &ops,
-            &handles,
-            reify_solver_elastic::SweepElementTarget::HexPreferred,
-            &reify_solver_elastic::Mesh2dOptions::default(),
-        );
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::Box {
+            width: Value::length(0.04),
+            height: Value::length(0.02),
+            depth: Value::length(0.03),
+        });
+        let result = build_fixture_mesh(&kind, &ops, &handles);
         assert!(
-            matches!(&result, Err(reify_solver_elastic::Mesh2dError::EmptyBoundary)),
+            matches!(
+                &result,
+                Err(reify_solver_elastic::Mesh2dError::EmptyBoundary)
+            ),
             "a non-profile source op must short-circuit to Err(EmptyBoundary); got {result:?}"
         );
     }
@@ -2258,30 +2123,11 @@ mod tests {
         // Err(GmshUnavailable) in a stub build — but NEVER
         // EmptyBoundary/DegenerateBoundary. Asserted gmsh-agnostically so it is
         // deterministic in both build configs.
-        let profile_handle = GeometryHandleId(10);
-        let ops = vec![
-            GeometryOp::RectangleProfile {
-                width: Value::length(0.04),
-                height: Value::length(0.02),
-            },
-            GeometryOp::Extrude {
-                profile: profile_handle,
-                distance: Value::length(0.01),
-            },
-        ];
-        let handles = vec![profile_handle, GeometryHandleId(11)];
-        let kind = SweptKind::Extrude {
-            axis: [0.0, 0.0, 1.0],
-            length: Value::length(0.01),
-            profile: profile_handle,
-        };
-        let result = build_swept_2d_mesh(
-            &kind,
-            &ops,
-            &handles,
-            reify_solver_elastic::SweepElementTarget::HexPreferred,
-            &reify_solver_elastic::Mesh2dOptions::default(),
-        );
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::RectangleProfile {
+            width: Value::length(0.04),
+            height: Value::length(0.02),
+        });
+        let result = build_fixture_mesh(&kind, &ops, &handles);
         assert!(
             !matches!(
                 &result,
