@@ -39,17 +39,21 @@
 #                     (env: REIFY_WARM_LANE_LOCK_GUARD_LOCK_PATH)
 #   -h, --help        Print this message and exit.
 #
-# Exit codes:
+# Exit codes:      [KEEP IN STEP with the same section inside _usage() below —
+#                   one wording, two renderings, differing only in the leading
+#                   comment prefix. This is the contract dark-factory branches
+#                   on; two drifting copies of it would be two contracts.]
 #   0   — IDLE: no exclusive holder observed. Stdout is EMPTY.
 #   3   — BUSY: an exclusive holder was POSITIVELY observed. Stdout carries
-#          exactly one line, `@@REIFY_WARM_LANE_LOCK_BUSY@@ lane=<n> lock=<p>` —
-#          a throttle-not-requeue signal (the same cross-repo code
-#          warm-lane-disk-guard.sh --soft and fleet-load-detector.sh use),
-#          telling dark-factory to DEFER this dispatch rather than enter its own
-#          30s bounded wait.
+#         exactly one line:
+#           @@REIFY_WARM_LANE_LOCK_BUSY@@ lane=<n> lock=<p>
+#         A throttle-not-requeue signal (the same cross-repo code
+#         warm-lane-disk-guard.sh --soft and fleet-load-detector.sh emit):
+#         dark-factory should DEFER this dispatch rather than enter its own
+#         30s bounded wait, whose timeout is classified merge_error.
 #   2   — Usage error: unknown flag, missing flag value, missing/unknown
-#          subcommand, or no mount when one is required. A wiring bug, not a
-#          verdict.
+#         subcommand, or no mount when one is required. A wiring bug, not a
+#         verdict — never read it as BUSY.
 #
 # stdout contract: stdout carries the BUSY sentinel line and NOTHING else, on
 # every path. All diagnostics — including --help — go to stderr, so a caller
@@ -92,9 +96,16 @@ Usage: $(basename "$0") check [--mount DIR] [--lane NAME] [--lock-path PATH]
 
   Exit codes:
     0   — IDLE: no exclusive holder observed. Stdout is EMPTY.
-    3   — BUSY: an exclusive holder was POSITIVELY observed; stdout carries
-          @@REIFY_WARM_LANE_LOCK_BUSY@@ lane=<n> lock=<p>. Defer the dispatch.
-    2   — Usage error (a wiring bug, not a verdict).
+    3   — BUSY: an exclusive holder was POSITIVELY observed. Stdout carries
+          exactly one line:
+            @@REIFY_WARM_LANE_LOCK_BUSY@@ lane=<n> lock=<p>
+          A throttle-not-requeue signal (the same cross-repo code
+          warm-lane-disk-guard.sh --soft and fleet-load-detector.sh emit):
+          dark-factory should DEFER this dispatch rather than enter its own
+          30s bounded wait, whose timeout is classified merge_error.
+    2   — Usage error: unknown flag, missing flag value, missing/unknown
+          subcommand, or no mount when one is required. A wiring bug, not a
+          verdict — never read it as BUSY.
 EOF
 }
 
@@ -199,6 +210,14 @@ fi
 
 if [ "$PROBE_RESULT" = "BUSY" ]; then
     err "Lane '$LANE' is BUSY: an exclusive holder occupies $LOCK."
+    hint "Dark-factory should DEFER this dispatch. Dispatching now would enter its own"
+    hint "30s bounded wait on this same inode, whose timeout is classified merge_error"
+    hint "(terminal) rather than requeued — the failure mode task 5608 exists to avoid."
+    # The ONE line this script ever writes to stdout. Emitted last, after the
+    # stderr prose, so a caller reading only stdout gets the verdict and nothing
+    # else; `lane=` and `lock=` are everything a defer decision needs (holder
+    # attribution is deliberately not carried — see the seam doc).
+    printf '@@REIFY_WARM_LANE_LOCK_BUSY@@ lane=%s lock=%s\n' "$LANE" "$LOCK"
     exit 3
 fi
 
