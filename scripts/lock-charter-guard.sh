@@ -47,8 +47,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # PRD-explicit: rs ri toml cpp c h hpp md json yaml yml lock py sh ts tsx js txt step stl
 # Corpus-evidenced: css mjs html jsonc gcode service
 # Common source siblings: cc cxx hh mts cts cjs jsx scss svg png
+# git-ls-files sweep 2026-07-28 (#5726) — 22 tracked-file extensions across reify +
+# dark-factory that this list misclassified as directories; supersedes the #4676
+# "OQ#2 resolved" completeness claim, which was a 22-extension undercount:
+#   conf diff envrc example example-systemd-config gitattributes gitignore gitkeep
+#   gitmodules golden grammar icns ico jq jsonl log manifest npmrc python-version
+#   template timer typed
 # ---------------------------------------------------------------------------
-_EXTS="c cc cjs cpp css cts cxx gcode h hh hpp html js json jsonc jsx lock md mjs mts png py ri rs scss service sh step stl svg toml ts tsx txt yaml yml"
+_EXTS="c cc cjs conf cpp css cts cxx diff envrc example example-systemd-config gcode gitattributes gitignore gitkeep gitmodules golden grammar h hh hpp html icns ico jq js json jsonc jsonl jsx lock log manifest md mjs mts npmrc png py python-version ri rs scss service sh step stl svg template timer toml ts tsx txt typed yaml yml"
 
 # ---------------------------------------------------------------------------
 # _is_file_path <path>
