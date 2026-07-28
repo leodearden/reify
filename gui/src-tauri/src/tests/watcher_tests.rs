@@ -598,6 +598,107 @@ fn wait_until_with_retry_returns_false_after_the_timeout_when_never_satisfied() 
 }
 
 #[test]
+fn wait_until_with_retry_reissues_the_attempt_for_every_window_until_the_deadline_on_a_virtual_clock()
+{
+    // Deterministic replacement for the flaky assertion above: on a virtual
+    // clock the attempt count is a pure function of the loop's arithmetic
+    // (200ms budget / 20ms windows = 10), not of host scheduling, so this
+    // makes the same ">1" claim without ever being at the mercy of the
+    // scheduler. See #5709.
+    let t0 = Instant::now();
+    let mut clock = VirtualClock::new(t0);
+    let counter = Rc::new(Cell::new(0u32));
+    let attempt_counter = counter.clone();
+
+    let found = wait_until_with_retry_on(
+        &mut clock,
+        move || attempt_counter.set(attempt_counter.get() + 1),
+        Duration::from_millis(20),
+        Duration::from_millis(200),
+        || false,
+    );
+
+    assert!(!found, "condition is never satisfied, should time out");
+    assert!(
+        counter.get() > 1,
+        "attempt should have been reissued more than once while waiting \
+         for the condition, got {}",
+        counter.get()
+    );
+    assert_eq!(
+        clock.now() - t0,
+        Duration::from_millis(200),
+        "the virtual clock should advance by exactly the timeout budget, \
+         neither short nor overshot, got {:?}",
+        clock.now() - t0
+    );
+}
+
+#[test]
+fn wait_until_with_retry_stops_reissuing_once_the_condition_holds_on_a_virtual_clock() {
+    // Deterministic replacement for
+    // `wait_until_with_retry_reissues_the_attempt_until_the_condition_holds`:
+    // the condition is re-checked at the head of each poll window, so the
+    // 3rd attempt short-circuits before any further sleep. See #5709.
+    let t0 = Instant::now();
+    let mut clock = VirtualClock::new(t0);
+    let counter = Rc::new(Cell::new(0u32));
+    let attempt_counter = counter.clone();
+    let condition_counter = counter.clone();
+
+    let found = wait_until_with_retry_on(
+        &mut clock,
+        move || attempt_counter.set(attempt_counter.get() + 1),
+        Duration::from_millis(20),
+        Duration::from_secs(2),
+        move || condition_counter.get() >= 3,
+    );
+
+    assert!(
+        found,
+        "condition should be satisfied once attempt has been reissued enough times"
+    );
+    assert_eq!(
+        counter.get(),
+        3,
+        "attempt should be reissued exactly until the condition first holds, got {} invocations",
+        counter.get()
+    );
+}
+
+#[test]
+fn wait_until_with_retry_does_not_sleep_when_the_condition_already_holds_on_a_virtual_clock() {
+    // Sharper, deterministic form of "returns without waiting": the clock
+    // does not advance at all, which transitively proves `wait_until`
+    // checks its condition before ever sleeping. See #5709.
+    let t0 = Instant::now();
+    let mut clock = VirtualClock::new(t0);
+    let counter = Rc::new(Cell::new(0u32));
+    let attempt_counter = counter.clone();
+
+    let found = wait_until_with_retry_on(
+        &mut clock,
+        move || attempt_counter.set(attempt_counter.get() + 1),
+        Duration::from_millis(150),
+        Duration::from_secs(10),
+        || true,
+    );
+
+    assert!(found, "already-satisfied condition should return true");
+    assert_eq!(
+        counter.get(),
+        1,
+        "already-satisfied condition should still attempt exactly once, got {}",
+        counter.get()
+    );
+    assert_eq!(
+        clock.now(),
+        t0,
+        "already-satisfied condition should not advance the clock at all, i.e. never sleep"
+    );
+}
+
+#[test]
 fn watcher_detects_ri_file_modification() {
     let dir = tempfile::tempdir().unwrap();
     let ri_file = dir.path().join("test.ri");
