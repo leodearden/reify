@@ -1,0 +1,77 @@
+// The tangent-roller worked example — geometric-relations tangent (task 5540).
+//
+// A `roller` sub placed `at auto` (a single 6-DOF Frame unknown) resting on a
+// grounded `base` plate and touching a grounded `idler` cylinder. Two tangency
+// relations drive the roller's pose:
+//
+//   * `tangent(roller.axis, base.top_plane, 5mm)` — the roller cylinder (radius
+//     5 mm) is made tangent to the base's top face. Cylinder/plane tangency has
+//     codimension 2: one rotational row (the roller axis must lie PERPENDICULAR
+//     to the plane normal, i.e. parallel to the plane) plus one translational row
+//     (the signed axis-origin-to-plane distance must equal the radius). Without
+//     the rotational row the cylinder could tilt out of tangency at exactly zero
+//     residual — a silently wrong solve.
+//   * `tangent(roller.axis, idler.axis, 5mm, 7mm)` — the roller is made
+//     externally tangent to the idler cylinder (radius 7 mm). Cylinder/cylinder
+//     tangency has codimension 1: the line-to-line distance between the two axes
+//     equals |r1 + r2| = 12 mm.
+//
+// ⇒ spent 3, residual 3 (slide along the idler axis direction, spin about the
+// roller's own axis, and the remaining in-plane freedom).
+//
+// RADII TRAVEL AS TRAILING SCALAR OPERANDS. The surface-carried
+// `tangent(cyl: <HasAxis & HasRadius>, face: Plane)` form documented in
+// docs/design/geometric-relations.md §7 is sibling task #5588 — the kernel's
+// analytic-surface projection currently DISCARDS the radius (a cylinder face
+// projects to a bare `Axis`), so the radius cannot reach the solver off the
+// geometry. This task ships the trailing-scalar form instead:
+// `tangent(a, b, r)` / `tangent(a, b, r1, r2)`, reusing the same metric-operand
+// plumbing `distance`/`offset`/`angle` already run.
+//
+// SIGNED RADII select internal tangency: the centre-distance target is
+// `|r1 + r2|`, so two positive radii give external tangency (r1 + r2) and a
+// negative radius gives internal tangency (|r1 − |r2||). On the plane combos a
+// negative radius selects the side of the plane the body sits on.
+//
+// Each sub projects its LOCAL datums single-shot (pose-independent), mirroring
+// examples/geometric_relations/bolt_plate.ri's `shank_axis`/`seat_plane`
+// feature→datum projection.
+//
+// This file is a build fixture for the tangent acceptance e2e, not a test: no
+// assertions live here.
+
+structure Base {
+    // The base plate slab.
+    let body = box(60mm, 60mm, 5mm)
+
+    // The plate's top face as a planar mate datum (Planar → Plane, ε).
+    let top = rectangle(60mm, 60mm)
+    let top_plane : Plane = top.plane
+}
+
+structure Idler {
+    // The idler roller: a fixed cylinder of radius 7 mm whose central axis is the
+    // tangency mate datum (Cylindrical → Axis, feature→datum bridge ε).
+    let body = cylinder(7mm, 40mm)
+    let axis : Axis = body.axis
+}
+
+structure Roller {
+    // The driven roller: a cylinder of radius 5 mm, placed by the relate-solve.
+    let body = cylinder(5mm, 40mm)
+    let axis : Axis = body.axis
+}
+
+structure RollerRig {
+    // The roller is placed by the relate-solve (a single 6-DOF `at auto` unknown).
+    sub roller : Roller at auto
+
+    // The base and idler are grounded anchors (non-auto subs, fixed at identity).
+    sub base : Base
+    sub idler : Idler
+
+    relate {
+        tangent(roller.axis, base.top_plane, 5mm)      // cylinder/plane — removes 2
+        tangent(roller.axis, idler.axis, 5mm, 7mm)     // cylinder/cylinder — removes 1
+    }
+}
