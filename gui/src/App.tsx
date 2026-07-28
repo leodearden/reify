@@ -853,6 +853,15 @@ const App: Component = () => {
         // keyed by viewportId) is tracked as #5670. Note bridge.ts's neighbouring
         // note says "task 4981 follow-up" meaning a successor TO 4981, which is
         // itself done — #5670 is that successor.
+        //
+        // Observable cost of the carve-out, for #5670 to close: fea_diagnostics is
+        // global to the model, but only pane 0 receives it. A display_panes directive
+        // that routes an FEA-relevant subject to a model pane makes that entity's
+        // ProblemElements/Unconstrained overlay silently vanish — pane 0's
+        // diagnosticOverlay.sync (Viewport.tsx) intersects the global diagnostics with
+        // its OWN meshes and finds none, and no pane ≥ 1 is handed the diagnostics at
+        // all. Same file in single-pane mode renders the overlay; there is no
+        // user-visible signal for the difference.
         get feaModeStore() { return pane === 0 ? paneFeaModeStore : undefined; },
         get feaDiagnostics() { return pane === 0 ? engineStore.state.feaDiagnostics : undefined; },
         get feaConvergence() { return pane === 0 ? engineStore.state.feaConvergence : undefined; },

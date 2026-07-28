@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@solidjs/testing-library';
 import { createRoot } from 'solid-js';
-import type { GuiState, MeshData, AppearanceDirective, DisplayStyleData } from '../types';
+import type { GuiState, MeshData, AppearanceDirective, DisplayStyleData, DisplayDirective } from '../types';
 import type { DiagnosticEntry } from '../panels';
 import {
   EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG,
@@ -7201,15 +7201,7 @@ describe('App N-pane render integration tests (task-4767 δ)', () => {
     expect(pane1.onHover).toBeDefined();
   });
 
-  it('#5668: FEA props reach pane 0 only; the store is App-scope and survives a mesh-only pulse', async () => {
-    // Capture the onMeshUpdate callback so we can pulse a mesh update that does
-    // NOT change the pane set (both panes stay populated → mapArray keys unchanged).
-    let meshUpdateCallback: ((mesh: MeshData) => void) | undefined;
-    vi.mocked(bridge.onMeshUpdate).mockImplementation(async (cb: any) => {
-      meshUpdateCallback = cb;
-      return () => {};
-    });
-
+  it('#5668: FEA props reach pane 0 only', async () => {
     // Non-empty fea_diagnostics + non-null fea_convergence so the forwarded values
     // are distinguishable from engineStore's empty/null defaults.
     const feaDiagnostics = [{ kind: 'ProblemElements' as const, ids: [3, 5] }];
@@ -7252,12 +7244,15 @@ describe('App N-pane render integration tests (task-4767 δ)', () => {
     expect(pane1.feaDiagnostics).toBeUndefined();
     expect(pane1.feaConvergence).toBeUndefined();
 
-    // ── Store identity is stable across a non-structural update ───────────────
-    // The store must be App-scope, not re-created inside the mapArray mapper.
-    const storeBefore = mainPane.feaModeStore;
-    meshUpdateCallback!(makeMesh('C#realization[0]'));
-    await flushMacrotasks();
-    expect(capturedMultiViewportProps.panes[0].feaModeStore).toBe(storeBefore);
+    // NOTE: "the store is App-scope, not built inside the mapArray mapper" is NOT
+    // assertable from `panes[0].feaModeStore` alone, however many reactive pulses
+    // you push through it. computePaneGroups always emits a pane-0 bucket, so key
+    // 0 never leaves the mapArray key list, so the mapper never re-runs and a
+    // mapper-local store would be exactly as stable. The only discriminator is a
+    // second reference to the store that does NOT come through the mapper —
+    // <FeaModeDebugRegistrar> is handed `paneFeaModeStore` directly, so the
+    // identity assertion in 'App feaMode debug-context registration (multi-pane)'
+    // below is what actually pins it.
   });
 
   it('step-9 case B: empty display_panes → DualViewport renders, MultiViewport absent (back-compat inv.2)', async () => {
@@ -7531,6 +7526,12 @@ describe('App feaMode debug-context registration (multi-pane)', () => {
     // Identity, not mere presence: a registration pointing at a different store
     // than the one driving the rendered toolbar is exactly the didNotReachStore
     // failure the debug bridge's store guard exists to catch.
+    //
+    // This is also the only assertion in the suite that pins the store as
+    // App-scope rather than mapper-local: the registrar receives
+    // `paneFeaModeStore` directly while pane 0 receives it through the `panes`
+    // mapArray, so a `createFeaModeStore()` moved inside the mapper makes these
+    // two references diverge.
     expect(registered).toBe(capturedMultiViewportProps.panes[0].feaModeStore);
   });
 
@@ -7544,6 +7545,53 @@ describe('App feaMode debug-context registration (multi-pane)', () => {
     // App-level registration here would be App clobbering the real
     // DualViewport's own store in production.
     expect((window as any).__REIFY_DEBUG__.feaMode).toBeUndefined();
+  });
+
+  it('branch flip: the slot is released on the way out and re-acquired on the way back', async () => {
+    // hasModelPanes() is live — onDisplayPanesUpdate can flip the layout
+    // mid-session — so the registrar's scoping claim has to survive a real
+    // transition, not just a fixed initial render. Capture the subscription so
+    // we can drive display_panes after mount.
+    let displayPanesCallback: ((panes: DisplayDirective[]) => void) | undefined;
+    vi.mocked((bridge as any).onDisplayPanesUpdate).mockImplementation(async (cb: any) => {
+      displayPanesCallback = cb;
+      return () => {};
+    });
+
+    const twoPanes: DisplayDirective[] = [
+      { subject: 'A#realization[0]', pane: 0 },
+      { subject: 'B#realization[0]', pane: 1 },
+    ];
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      ...emptyState,
+      meshes: [makeMesh('A#realization[0]'), makeMesh('B#realization[0]')],
+      display_panes: twoPanes,
+    });
+
+    await renderAndWaitForReady();
+    const appStore = (window as any).__REIFY_DEBUG__.feaMode;
+    expect(appStore).toBeDefined();
+    expect(appStore).toBe(capturedMultiViewportProps.panes[0].feaModeStore);
+
+    // ── Flip out: no directives → every mesh collapses onto pane 0 →
+    // hasModelPanes() false → <Show> disposes the true branch → the registrar's
+    // onCleanup runs.
+    displayPanesCallback!([]);
+    await flushMacrotasks();
+    expect(screen.queryByTestId('dual-viewport')).toBeTruthy();
+    expect(screen.queryByTestId('multi-viewport')).toBeNull();
+    // The slot must be released, not left pointing at App's now-orphaned store.
+    // DualViewport is mocked here so nothing re-claims it — a leftover value
+    // could only be App's own store, driving no rendered toolbar, which is
+    // precisely the didNotReachStore failure set_fea_channel's guard catches.
+    expect((window as any).__REIFY_DEBUG__.feaMode).toBeUndefined();
+
+    // ── Flip back: the branch is re-created, so a fresh registrar mounts and
+    // re-claims the slot with the same App-scope store.
+    displayPanesCallback!(twoPanes);
+    await flushMacrotasks();
+    expect(screen.queryByTestId('multi-viewport')).toBeTruthy();
+    expect((window as any).__REIFY_DEBUG__.feaMode).toBe(appStore);
   });
 });
 
