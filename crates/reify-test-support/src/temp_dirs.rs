@@ -5,6 +5,27 @@
 //! down with a trailing `fs::remove_dir_all(...)` leaks that directory whenever
 //! an assertion fails and the test unwinds — i.e. precisely on RED CI runs.
 //! This module supplies the RAII replacement.
+//!
+//! # The workspace-wide invariant
+//!
+//! [`collect_workspace_unguarded_temp_dirs`] sweeps every `.rs` file in the
+//! workspace — `src/`, `tests/`, and `build.rs` alike — for sites that defeat
+//! the guard, and this module's `workspace_has_no_unguarded_temp_dirs` test
+//! enforces it BY DEFAULT, workspace-wide. The invariant is narrowed only two
+//! ways:
+//!
+//! - a per-line `// temp-dir:allow — reason` escape at the offending site, or
+//! - a comment-justified entry in that test's `SWEEP_EXCEPTIONS` table, for a
+//!   file that is migrating but is not clean yet.
+//!
+//! A `SWEEP_EXCEPTIONS` entry must be DELETED the moment its file goes clean
+//! — the table is asserted against staleness in both directions (see
+//! `partition_enforced_and_stale`), so a stale entry fails loudly rather than
+//! rotting silently the way this module's earlier six-entry allowlist did.
+//!
+//! [`assert_no_unguarded_temp_dir_sites`] remains available as a targeted
+//! single-file guard for callers who want to pin one specific file rather
+//! than rely on the workspace sweep.
 
 use crate::ignore_hygiene::{is_doc_comment_line, walk_rs_files};
 use std::ffi::OsStr;
@@ -1070,6 +1091,29 @@ mod tests {
     // halves are asserted empty here — see that function's doc comment for why
     // the stale half exists.
 
+    /// The sweep's exception table: `(repo-relative path, justification)`
+    /// pairs. A bare path can never be added without a written reason — the
+    /// tuple's second element enforces that structurally.
+    ///
+    /// Every entry here must CURRENTLY violate — `workspace_has_no_unguarded_temp_dirs`
+    /// asserts that too (the `stale` half of `partition_enforced_and_stale`), so an
+    /// entry whose file gets migrated off hand-rolled temp dirs fails LOUDLY until its
+    /// entry is deleted, rather than silently rotting the way this module's earlier
+    /// six-entry allowlist did.
+    ///
+    /// Re-measured (not merely trusted) at this task's branch point off
+    /// `crates/reify-build-utils/src/lib.rs`'s current source: exactly one
+    /// workspace file violates outside `temp_dirs.rs` itself, whose own two
+    /// sites are exempted per-line rather than listed here (see pre-2).
+    const SWEEP_EXCEPTIONS: &[(&str, &str)] = &[(
+        "crates/reify-build-utils/src/lib.rs",
+        "its `fn tempdir()` test helper still hand-rolls a directory via the \
+         std-library temp-dir accessor instead of routing through the shared \
+         guard; #5639 migrates it. DELETE this entry in the same change that \
+         lands #5639 — the staleness half of \
+         workspace_has_no_unguarded_temp_dirs will fail until you do.",
+    )];
+
     /// The live ratchet. Every `.rs` file in the workspace — `src/`, `tests/`,
     /// and `build.rs` alike — must be free of temp-dir hygiene violations,
     /// except for the paths explicitly listed (with justification) in
@@ -1146,52 +1190,5 @@ mod tests {
              the hole it was written to narrowly carve out.",
             stale.join("\n  ")
         );
-    }
-
-    // ── ratchet: files migrated off hand-rolled temp dirs ────────────────────
-    //
-    // Each guard below is ratcheted on by #5640 together with the migration that
-    // makes it pass.  The list is deliberately EXPLICIT rather than a repo-wide
-    // sweep: `crates/reify-build-utils/src/lib.rs` still holds a bare call
-    // pending #5639's merge, and a sweep would make this crate red on an
-    // unrelated task's merge order.  Adding a file here is how you extend the
-    // ratchet — but migrate it in the same or the very next commit.
-    //
-    // The end state is a workspace sweep with an explicit, comment-justified
-    // exception list, reusing `ignore_hygiene::walk_test_rs_files` (which needs a
-    // path filter first — `server.rs` and `reify-build-utils/src/lib.rs` are
-    // `src/` files it currently excludes).  That change edits `ignore_hygiene.rs`,
-    // outside this task's locks, and is filed as follow-up work.
-
-    #[test]
-    fn import_resolve_tests_have_no_unguarded_temp_dirs() {
-        assert_no_unguarded_temp_dir_sites("crates/reify-compiler/tests/import_resolve_tests.rs");
-    }
-
-    #[test]
-    fn user_defined_unit_tests_have_no_unguarded_temp_dirs() {
-        assert_no_unguarded_temp_dir_sites(
-            "crates/reify-compiler/tests/user_defined_unit_tests.rs",
-        );
-    }
-
-    #[test]
-    fn m5_integration_has_no_unguarded_temp_dirs() {
-        assert_no_unguarded_temp_dir_sites("crates/reify-eval/tests/m5_integration.rs");
-    }
-
-    #[test]
-    fn cli_doc_has_no_unguarded_temp_dirs() {
-        assert_no_unguarded_temp_dir_sites("crates/reify-cli/tests/harness_cli/cli_doc.rs");
-    }
-
-    #[test]
-    fn lsp_server_has_no_unguarded_temp_dirs() {
-        assert_no_unguarded_temp_dir_sites("crates/reify-lsp/src/server.rs");
-    }
-
-    #[test]
-    fn rpath_smoke_has_no_unguarded_temp_dirs() {
-        assert_no_unguarded_temp_dir_sites("crates/reify-kernel-gmsh/tests/rpath_smoke.rs");
     }
 }
