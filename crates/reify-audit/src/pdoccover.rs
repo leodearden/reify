@@ -20,9 +20,10 @@
 //!
 //! ## Direction 1 — omission
 //!
-//! Census: the `*_NAMES` string-slice registries declared in
-//! `crates/reify-compiler/src/units.rs` (the PRD-pinned corpus). Each name is
-//! compliant iff exactly one of:
+//! Census: the `*_NAMES` string-slice registries declared in PRODUCTION scope
+//! in `crates/reify-compiler/src/units.rs` (the PRD-pinned corpus). Registries
+//! inside a `#[cfg(test)]` module are test fixtures and are excluded — see
+//! [`extract_registries`]. Each name is compliant iff exactly one of:
 //!
 //! 1. **documented** — word-boundary match in ≥1 `chunks/*.md`;
 //! 2. **allowed** — its registry entry line carries
@@ -340,6 +341,63 @@ fn is_attribute_line(code: &str) -> bool {
     t.starts_with("#[") || t.starts_with("#![")
 }
 
+/// `true` when `code` is a `#[cfg(test)]` attribute (whitespace-insensitive).
+///
+/// Also matches the `#[cfg_attr(test, …)]`-free common forms `#[cfg(test)]` and
+/// `#![cfg(test)]`. Deliberately narrow: a broader `cfg(…)` match would blank
+/// production registries behind an ordinary feature gate.
+fn is_cfg_test_attr(code: &str) -> bool {
+    let squashed: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+    squashed.starts_with("#[cfg(test)]") || squashed.starts_with("#![cfg(test)]")
+}
+
+/// Replace every string and character literal in `code` with spaces.
+///
+/// Used ONLY for brace counting: a `{` inside `"unknown unit: {}"` must not
+/// move the module-nesting depth that decides what is inside `#[cfg(test)]`
+/// scope. Char literals are recognised only in the exact `'x'` / `'\x'` shapes
+/// so a lifetime (`&'static str`) is never mistaken for an unterminated one —
+/// which would swallow every brace to the end of the line.
+fn blank_literals(code: &str) -> String {
+    let bytes = code.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                out.push(b' ');
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'"' {
+                    if bytes[i] == b'\\' {
+                        i += 1;
+                    }
+                    out.push(b' ');
+                    i += 1;
+                }
+                if i < bytes.len() {
+                    out.push(b' ');
+                    i += 1;
+                }
+            }
+            // `'x'` (3 bytes) or `'\x'` (4 bytes) only — anything else is a
+            // lifetime and is copied through untouched.
+            b'\'' if i + 2 < bytes.len() && bytes[i + 2] == b'\'' => {
+                out.extend_from_slice(b"   ");
+                i += 3;
+            }
+            b'\'' if i + 3 < bytes.len() && bytes[i + 1] == b'\\' && bytes[i + 3] == b'\'' => {
+                out.extend_from_slice(b"    ");
+                i += 4;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Extract every double-quoted token from `s`, honouring backslash escapes.
 fn quoted_tokens(s: &str) -> Vec<String> {
     let bytes = s.as_bytes();
@@ -429,30 +487,89 @@ fn registry_header(line: &str) -> Option<&str> {
 /// chunk edit. Bracket depth is counted on the same reduced view, so an
 /// attribute's `[`/`]` cannot desynchronise the body scan. Nested `&[…]`
 /// inside an entry value is handled by the depth counter itself.
+///
+/// ## `#[cfg(test)]` scope is excluded
+///
+/// A registry declared inside a `#[cfg(test)]` module is a TEST FIXTURE, not a
+/// builtin-name registry, and must never enter the census. The real `units.rs`
+/// declares two (`AFFINE_ALGEBRA_NAMES`, `LIST_HELPER_NAMES` — "local fixtures
+/// for name families that have no pub single-source slice"); today their
+/// contents happen to be real builtin names, so the resulting findings were not
+/// *wrong*, but the provenance string sent a reader to go document a
+/// `#[cfg(test)]` const. Worse, a future negative-test fixture holding a
+/// deliberately fake name would enter the census as an `undocumented-name:`
+/// that no chunk edit could ever legitimately satisfy — an entry in the ratchet
+/// with no correct resolution.
+///
+/// Scope is tracked by brace depth over the same forward pass, with string and
+/// char literals blanked ([`blank_literals`]) so a `{` inside a message
+/// template cannot shift it.
 // G-allow: consumed by check()/baseline_candidates() in-module, and by the registry-path brittle-parse floor guard in tests/pdoccover.rs — a separate crate, so pub is required.
 pub fn extract_registries(units_src: &str) -> Vec<Registry> {
     let lines: Vec<&str> = units_src.lines().collect();
 
-    // One forward pass reducing every line to its code part. Block-comment
-    // depth must carry across lines, so this cannot be done lazily per line.
+    // One forward pass reducing every line to its code part AND marking which
+    // lines sit inside a `#[cfg(test)]` item. Block-comment depth and brace
+    // depth both carry across lines, so neither can be done lazily per line.
     let mut block_depth = 0usize;
-    let code_lines: Vec<String> = lines
-        .iter()
-        .map(|raw| {
-            let no_block = strip_block_comments(raw, &mut block_depth);
-            let code = strip_line_comment(&no_block).to_string();
-            if is_attribute_line(&code) {
-                String::new()
-            } else {
-                code
-            }
-        })
-        .collect();
+    let mut brace_depth: i32 = 0;
+    // A `#[cfg(test)]` attribute has been seen and its item not yet identified.
+    let mut pending_cfg_test = false;
+    // Brace depth OUTSIDE the currently-open `#[cfg(test)]` block, if any.
+    let mut test_scope: Option<i32> = None;
+    let mut code_lines: Vec<String> = Vec::with_capacity(lines.len());
+    let mut in_test: Vec<bool> = Vec::with_capacity(lines.len());
+
+    for raw in &lines {
+        let no_block = strip_block_comments(raw, &mut block_depth);
+        let code = strip_line_comment(&no_block).to_string();
+        let is_attr = is_attribute_line(&code);
+
+        if is_attr && is_cfg_test_attr(&code) {
+            pending_cfg_test = true;
+        }
+
+        // Attributes contribute no braces; skipping them keeps a `cfg_attr`
+        // argument from perturbing the nesting depth.
+        let depth_before = brace_depth;
+        if !is_attr {
+            let counted = blank_literals(&code);
+            brace_depth += counted.matches('{').count() as i32;
+            brace_depth -= counted.matches('}').count() as i32;
+        }
+
+        let entering = test_scope.is_none() && pending_cfg_test && brace_depth > depth_before;
+        if entering {
+            test_scope = Some(depth_before);
+            pending_cfg_test = false;
+        } else if pending_cfg_test && !is_attr && !code.trim().is_empty() {
+            // The `#[cfg(test)]` item opened no block (a gated `use`, `const`
+            // or one-line `fn`) — it cannot be a module, so stop waiting for
+            // one rather than capturing the next unrelated `{`.
+            pending_cfg_test = false;
+        }
+
+        // The line carrying the closing brace still belongs to the block.
+        let inside = test_scope.is_some();
+        if test_scope.is_some_and(|outer| brace_depth <= outer) {
+            test_scope = None;
+        }
+
+        // Attribute lines are blanked only AFTER the cfg(test) reading above,
+        // so the body scan still never sees an attribute's brackets or its
+        // quoted arguments.
+        code_lines.push(if is_attr { String::new() } else { code });
+        in_test.push(inside);
+    }
 
     let mut out: Vec<Registry> = Vec::new();
     let mut i = 0;
 
     while i < lines.len() {
+        if in_test[i] {
+            i += 1;
+            continue;
+        }
         let Some(ident) = registry_header(&code_lines[i]) else {
             i += 1;
             continue;
@@ -1687,6 +1804,46 @@ pub const SOME_OTHER: &[&str] = &["not_a_registry"];
 
     /// Matching is case-sensitive — Reify builtin names are snake_case, and a
     /// prose `Union` is not the builtin.
+    /// A NON-boundary occurrence that precedes the real one must not stop the
+    /// search — the matcher retries from the next byte rather than giving up on
+    /// the first hit.
+    ///
+    /// This is the branch that prevents a real false `undocumented-name:`.
+    /// `union`, `union_all`, `intersection` and `intersection_all` are all real
+    /// registry entries, so a corpus that documents the longer name FIRST is a
+    /// live shape — and a single-`find` matcher would report the shorter name
+    /// undocumented even though the very next line documents it.
+    #[test]
+    fn documented_names_retries_past_a_non_boundary_occurrence() {
+        // Prose deliberately avoids a bare `union`, so the ONLY boundary-
+        // delimited occurrence is the one on the second line — reached only by
+        // retrying past the `union_all` hit on the first.
+        let chunk = "\
+- `union_all(list)` — n-ary boolean OR.
+- `union(a, b)` — combine two solids.
+";
+        let names = vec!["union".to_string()];
+        let got = documented_names(&names, &[("chunks/x.md".into(), chunk.into())]);
+        assert!(
+            got.contains("union"),
+            "`union` IS documented on the second line; a matcher that stops at \
+             the first (non-boundary) `union_all` hit would falsely report it \
+             undocumented. Got: {got:?}"
+        );
+
+        // The reverse order must behave identically, and a name that only ever
+        // occurs without boundaries is still undocumented.
+        let only_longer = "- `intersection_all(list)` — n-ary boolean AND.\n";
+        let got = documented_names(
+            &["intersection".to_string()],
+            &[("chunks/x.md".into(), only_longer.into())],
+        );
+        assert!(
+            got.is_empty(),
+            "`intersection_all` must not vouch for `intersection`; got {got:?}"
+        );
+    }
+
     #[test]
     fn documented_names_is_case_sensitive() {
         let srcs = sources(&[("chunks/geometry.md", "Union and Difference are booleans.")]);
@@ -1848,6 +2005,132 @@ pub const AFTER_NAMES: &[&str] = &["sphere"];
             vec!["interferes", "min_clearance"],
             "entries must still be extracted; got: {:?}",
             regs[0].entries
+        );
+    }
+
+    /// The header lookahead is BOUNDED, and this pins the boundary explicitly
+    /// so the limit is a documented behaviour rather than an accident.
+    ///
+    /// A registry whose opening `[` lands more than `HEADER_LOOKAHEAD` lines
+    /// below its header is silently dropped. That is acceptable only because it
+    /// is bounded and known: an unbounded forward scan would let a malformed
+    /// declaration swallow the rest of the file, which is the worse failure. If
+    /// a real registry ever adopts this shape, the registry-path floor guard in
+    /// `tests/pdoccover.rs` fails RED (the registry goes missing from the
+    /// PRD-named set) — widen the window there, do not relax the guard.
+    #[test]
+    fn extract_registries_header_lookahead_is_bounded() {
+        // Within the window: 3 interposed lines, bracket on the 4th.
+        let near = "pub const GEOMETRY_FUNCTION_NAMES: &[&str] =\n\
+             \x20   // one\n\
+             \x20   // two\n\
+             \x20   &[\"box\"];\n";
+        assert_eq!(
+            const_names(&extract_registries(near)),
+            vec!["GEOMETRY_FUNCTION_NAMES"],
+            "a bracket inside the lookahead window must still be found"
+        );
+
+        // Beyond the window: 5 interposed lines. Dropped, by design.
+        let far = "pub const GEOMETRY_FUNCTION_NAMES: &[&str] =\n\
+             \x20   // one\n\
+             \x20   // two\n\
+             \x20   // three\n\
+             \x20   // four\n\
+             \x20   // five\n\
+             \x20   &[\"box\"];\n";
+        assert!(
+            extract_registries(far).is_empty(),
+            "a bracket beyond HEADER_LOOKAHEAD is silently dropped — pinned \
+             here as a known, bounded limit rather than left to be discovered \
+             by a future silent-false-clean census"
+        );
+    }
+
+    /// A registry declared inside a `#[cfg(test)]` module is a TEST FIXTURE and
+    /// must NOT enter the census.
+    ///
+    /// The real `units.rs` declares two such consts ("local fixtures for name
+    /// families that have no pub single-source slice"). Reporting them told a
+    /// reader to go document a `#[cfg(test)]` const; worse, a negative-test
+    /// fixture holding a deliberately fake name — the natural thing to write —
+    /// would become an `undocumented-name:` that no chunk edit could ever
+    /// legitimately satisfy.
+    #[test]
+    fn extract_registries_skips_cfg_test_module() {
+        let src = "\
+pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\"box\", \"sphere\"];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BOGUS_NAMES: &[&str] = &[\"not_a_builtin\"];
+
+    #[test]
+    fn nested_braces_do_not_end_the_scope() {
+        if true {
+            let _ = format!(\"unbalanced brace in a literal: {{\");
+        }
+    }
+}
+";
+        let regs = extract_registries(src);
+        assert_eq!(
+            const_names(&regs),
+            vec!["GEOMETRY_FUNCTION_NAMES"],
+            "a `*_NAMES` const inside `#[cfg(test)] mod tests` is a fixture, not \
+             a builtin registry, and must not be discovered; got: {regs:?}"
+        );
+        let all: Vec<&str> = regs.iter().flat_map(|r| entry_names(r)).collect();
+        assert!(
+            !all.contains(&"not_a_builtin"),
+            "no test-fixture name may enter the census; got: {all:?}"
+        );
+    }
+
+    /// Scope tracking must END with the test module — a production registry
+    /// declared AFTER one is still discovered.
+    #[test]
+    fn extract_registries_resumes_after_cfg_test_module() {
+        let src = "\
+#[cfg(test)]
+mod tests {
+    const BOGUS_NAMES: &[&str] = &[\"not_a_builtin\"];
+}
+
+pub const DYNAMICS_QUERY_NAMES: &[&str] = &[\"momentum\"];
+";
+        let regs = extract_registries(src);
+        assert_eq!(
+            const_names(&regs),
+            vec!["DYNAMICS_QUERY_NAMES"],
+            "the census must resume once the `#[cfg(test)]` block closes — a \
+             scope tracker that never exits would blind the detector for the \
+             whole rest of the file; got: {regs:?}"
+        );
+    }
+
+    /// A `#[cfg(test)]` item that opens NO block (a gated `use`/`const`) must
+    /// not capture the next unrelated `{` as if it were a test module.
+    #[test]
+    fn extract_registries_cfg_test_non_module_item_opens_no_scope() {
+        let src = "\
+#[cfg(test)]
+use std::collections::BTreeSet;
+
+fn helper() {
+    let _ = 1;
+}
+
+pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\"box\"];
+";
+        let regs = extract_registries(src);
+        assert_eq!(
+            const_names(&regs),
+            vec!["GEOMETRY_FUNCTION_NAMES"],
+            "a cfg(test) `use` opens no module, so the following `fn` body must \
+             not be treated as test scope; got: {regs:?}"
         );
     }
 
