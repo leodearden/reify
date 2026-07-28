@@ -1504,6 +1504,162 @@ fn type_carries_dim_param(t: &Type) -> bool {
     }
 }
 
+/// Strict constructor-head compatibility check between a declared param type
+/// and an argument type.
+///
+/// Local mirror of `reify_compiler::type_compat::heads_unifiable`, kept
+/// VERBATIM with it. reify-expr's library deps are only reify-core + reify-ir
+/// (reify-compiler is a dev-dep), so the compiler helper cannot be imported
+/// here — the two MUST be kept in sync. If they drift, compile-time and
+/// eval-time overload selection disagree on which of two same-named generic
+/// overloads a call resolves to, which is the esc-4231-120/126 / esc-4093-152
+/// divergence class (there: a call resolving at compile time but evaluating to
+/// `Value::Undef`; here: the eval side silently binding a DIFFERENT overload
+/// than the compiler typechecked).
+///
+/// Unlike a permissive unifier, a constructor-head MISMATCH here is `false`,
+/// not a conservative "binds nothing" pass. That is what lets this function
+/// discriminate `Option<T>` from `Applied { name: "Result", .. }` — two generic
+/// params that both wildcard-match any subject — and so serve as the middle
+/// tie-break tier of [`find_matching_compiled_function`].
+///
+/// Two arms carry more weight than their size suggests:
+/// - a bare `TypeParam` (and a `ScalarParam` against a concrete `Scalar`) is a
+///   wildcard slot: the slot itself carries no constructor head to disagree on;
+/// - `Applied { name }` vs `Enum(name)` is a head MATCH, because variant
+///   construction (`Ok { .. }` / `Err { .. }`) type-erases its result to
+///   `Type::Enum(name)`, so a declared `Result<T, E>` param must still
+///   recognise an erased `Result` subject.
+///
+/// Unlike the three `type_carries_*` mirrors above, this one deliberately keeps
+/// the canonical copy's `_` catch-all rather than an exhaustive match: staying
+/// byte-comparable with the canonical copy is worth more here than compiler-
+/// forced review of new `Type` variants, since a new variant falling to
+/// `param == arg` is the conservative answer (it can only narrow, never widen).
+fn heads_unifiable(param: &Type, arg: &Type) -> bool {
+    match (param, arg) {
+        // Type-param / dim-param leaves: wildcard slots, always compatible.
+        (Type::TypeParam(_), _) => true,
+        (Type::ScalarParam(_), Type::Scalar { .. }) => true,
+
+        // Single-inner-Type constructors: same head → recurse on the child.
+        (Type::List(d), Type::List(a))
+        | (Type::Set(d), Type::Set(a))
+        | (Type::Keyed(d), Type::Keyed(a))
+        | (Type::Option(d), Type::Option(a))
+        | (Type::Complex(d), Type::Complex(a))
+        | (Type::Range(d), Type::Range(a)) => heads_unifiable(d, a),
+
+        // Two-inner-Type constructors.
+        (Type::Map(dk, dv), Type::Map(ak, av)) => {
+            heads_unifiable(dk, ak) && heads_unifiable(dv, av)
+        }
+        (
+            Type::Field {
+                domain: dd,
+                codomain: dc,
+            },
+            Type::Field {
+                domain: ad,
+                codomain: ac,
+            },
+        ) => heads_unifiable(dd, ad) && heads_unifiable(dc, ac),
+
+        // Function: equal arity → recurse on each param + the return type.
+        (
+            Type::Function {
+                params: dp,
+                return_type: dr,
+            },
+            Type::Function {
+                params: ap,
+                return_type: ar,
+            },
+        ) if dp.len() == ap.len() => {
+            dp.iter().zip(ap.iter()).all(|(d, a)| heads_unifiable(d, a)) && heads_unifiable(dr, ar)
+        }
+
+        // Quantity-bearing aggregates: same shape → recurse on the quantity slot.
+        (
+            Type::Point {
+                n: dn,
+                quantity: dq,
+            },
+            Type::Point {
+                n: an,
+                quantity: aq,
+            },
+        ) if dn == an => heads_unifiable(dq, aq),
+        (
+            Type::Vector {
+                n: dn,
+                quantity: dq,
+            },
+            Type::Vector {
+                n: an,
+                quantity: aq,
+            },
+        ) if dn == an => heads_unifiable(dq, aq),
+        (
+            Type::Tensor {
+                rank: drk,
+                n: dn,
+                quantity: dq,
+            },
+            Type::Tensor {
+                rank: ark,
+                n: an,
+                quantity: aq,
+            },
+        ) if drk == ark && dn == an => heads_unifiable(dq, aq),
+        (
+            Type::Matrix {
+                m: dm,
+                n: dn,
+                quantity: dq,
+            },
+            Type::Matrix {
+                m: am,
+                n: an,
+                quantity: aq,
+            },
+        ) if dm == am && dn == an => heads_unifiable(dq, aq),
+
+        // Union: equal length → recurse arm-by-arm.
+        (Type::Union(da), Type::Union(aa)) if da.len() == aa.len() => {
+            da.iter().zip(aa.iter()).all(|(d, a)| heads_unifiable(d, a))
+        }
+
+        // Applied: same name + same arity → recurse element-wise on args.
+        (Type::Applied { name: dn, args: da }, Type::Applied { name: an, args: aa })
+            if dn == an && da.len() == aa.len() =>
+        {
+            da.iter().zip(aa.iter()).all(|(d, a)| heads_unifiable(d, a))
+        }
+
+        // Erased-subject rule: a declared `Applied{name}` param head-matches
+        // an erased `Enum(name)` arg (same name) — see the doc comment above.
+        (Type::Applied { name: dn, .. }, Type::Enum(en)) if dn == en => true,
+
+        // Projection: same member → recurse on the bases.
+        (
+            Type::Projection {
+                base: db,
+                member: dm,
+            },
+            Type::Projection {
+                base: ab,
+                member: am,
+            },
+        ) if dm == am => heads_unifiable(db, ab),
+
+        // Catch-all: leaves and mismatched/differently-shaped constructors
+        // must agree by plain equality — unlike `unify`'s permissive
+        // `Ok(())` fallthrough, a head mismatch here is `false`.
+        _ => param == arg,
+    }
+}
+
 /// Find the compiled function matching `name`, arity, and per-parameter
 /// [`Type`] compatibility against the compiled arguments' result types.
 ///
@@ -1526,6 +1682,38 @@ fn type_carries_dim_param(t: &Type) -> bool {
 /// - **Exact-match-wins tie-break:** if any candidate matches ALL params by exact
 ///   equality, generic wildcard matches are discarded first, so a concrete
 ///   overload still beats a generic one (mirrors resolve_function_overload).
+///
+/// # Three tie-break tiers
+///
+/// Mirroring compile-side `resolve_function_overload`'s
+/// `exact_matches` → `head_matches` → `matches` ladder, each tier is a FILTER
+/// over the next-broader one and an empty tier falls through to it:
+///
+/// 1. **exact** — every param equal to its arg's `result_type`.
+/// 2. **head-narrowed** — among the wildcard-eligible candidates of tier 3,
+///    those whose params are also constructor-head-compatible with their args
+///    ([`heads_unifiable`]).
+/// 3. **wildcard** — type-param / dim-param / trait-object params act as
+///    wildcards, per the bullets above.
+///
+/// Tier 2 exists to disambiguate two same-named GENERIC overloads whose params
+/// both wildcard-match the same subject and which tier 3 therefore cannot tell
+/// apart — the stdlib `unwrap_or` / `or_else` / `fallback` pairs declared over
+/// both `Option<T>` and `Result<T, E>`. Without it, selection among those
+/// degenerates to first-match-wins on table order and eval silently binds a
+/// different overload than the compiler typechecked.
+///
+/// **Contract: tier 2 only ever NARROWS.** It is applied as a filter over
+/// tier 3's candidate set, never as a standalone pass, so it can never select a
+/// candidate tier 3 rejects. When no candidate survives it, resolution falls
+/// through to tier 3 unchanged — so a subject whose head matches nothing still
+/// resolves exactly as it did before tier 3 gained a predecessor.
+///
+/// A useful corollary: for a NON-generic candidate the tier-2 predicate is a
+/// superset of the tier-3 one, so `wildcard AND head == wildcard` and tier 2 is
+/// a provable no-op. Non-generic overload sets — `solve_elastic_static`,
+/// `solve_load_cases`, `displacement_at`, and the esc-4093-152 trait-object
+/// path — are bit-for-bit unaffected by it (INV-6).
 ///
 /// If the resolution rule ever grows (e.g. subtyping, coercion ranking,
 /// operator-overloading nuance), update only this function; both call sites
@@ -1563,14 +1751,53 @@ pub fn find_matching_compiled_function<'a>(
     //     `solve_elastic_static(loads: List<Load>, supports: List<Support>)`
     //     resolves at compile time but the eval-side resolver returns None →
     //     the `@optimized` ComputeNode dispatch never fires (esc-4093-152).
-    fns.iter().filter(arity_match).find(|f| {
+    let wildcard = |f: &&CompiledFunction| {
         let is_generic = !f.type_params.is_empty();
         f.params.iter().zip(args.iter()).all(|((_, param_ty), arg)| {
             (is_generic && (type_carries_type_param(param_ty) || type_carries_dim_param(param_ty)))
                 || type_carries_trait_object(param_ty)
                 || *param_ty == arg.result_type
         })
-    })
+    };
+
+    // Middle tier: among the wildcard-eligible candidates, prefer those whose
+    // params are also constructor-head-compatible with their args. This is what
+    // tells two same-named GENERIC overloads apart when both wildcard-match the
+    // same subject — the stdlib `unwrap_or`/`or_else`/`fallback` pairs declared
+    // over both `Option<T>` and `Result<T, E>`, where the wildcard pass alone
+    // degenerates to first-match-wins on table order.
+    //
+    // `type_carries_dim_param` stays a FULL wildcard here rather than being
+    // subjected to the head check: dimension-param resolution is orthogonal to
+    // enum-head disambiguation, the same carve-out the compile-side head tier
+    // makes. The `Type::TypeParam` arg disjunct likewise mirrors compile-side —
+    // an arg that is itself a bare type param has no head to check against.
+    let head = |f: &&CompiledFunction| {
+        let is_generic = !f.type_params.is_empty();
+        f.params.iter().zip(args.iter()).all(|((_, param_ty), arg)| {
+            type_carries_trait_object(param_ty)
+                || (is_generic
+                    && (heads_unifiable(param_ty, &arg.result_type)
+                        || type_carries_dim_param(param_ty)))
+                || matches!(arg.result_type, Type::TypeParam(_))
+                || *param_ty == arg.result_type
+        })
+    };
+
+    // `.filter(wildcard).find(head)` is LOAD-BEARING and must not be collapsed
+    // to a bare `.find(head)`. `heads_unifiable` is NOT a subset of `wildcard`
+    // (e.g. param `Applied{"Result",[Int,String]}` vs arg `Enum("Result")`
+    // head-matches but carries no type param and is not equal), so a standalone
+    // head pass could SELECT candidates the wildcard pass rejects — widening
+    // resolution rather than narrowing it. Composing it as a filter over the
+    // wildcard set makes this tier a pure narrowing, and is what makes it a
+    // provable no-op for non-generic candidates (INV-6). The `.or_else` is the
+    // fall-through: an empty head-match set resolves exactly as before.
+    fns.iter()
+        .filter(arity_match)
+        .filter(wildcard)
+        .find(head)
+        .or_else(|| fns.iter().filter(arity_match).find(wildcard))
 }
 
 /// Evaluate a compiled function's body with pre-evaluated `Value` arguments.
