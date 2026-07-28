@@ -930,10 +930,13 @@ std::unique_ptr<OcctShape> make_pipe(const OcctShape& profile, const OcctShape& 
 /// `spine` is the path the section follows; `guide` biases section
 /// orientation via SetMode(guide, /*KeepContact=*/Standard_False).
 ///
-/// `profile` must be a wire, a vertex, or a face — a face is reduced to its
-/// outer wire before `Add`, since BRepFill_Section accepts only a wire or a
-/// vertex (an EDGE is rejected). The result follows BRepOffsetAPI_MakePipe's
-/// convention: a face profile yields a SOLID, a wire profile a SHELL.
+/// `profile` must be a wire, a vertex, or a single-wire face — a face is
+/// reduced to its outer wire before `Add`, since BRepFill_Section accepts only
+/// a wire or a vertex (an EDGE is rejected). A face carrying inner (hole)
+/// wires is also rejected: it has no single-wire representation, and dropping
+/// the holes would silently produce the wrong part. The result follows
+/// BRepOffsetAPI_MakePipe's convention: a face profile yields a SOLID, a wire
+/// profile a SHELL.
 std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
                                            const OcctShape& spine,
                                            const OcctShape& guide);
@@ -945,8 +948,10 @@ std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
 /// as an auxiliary-orientation constraint.
 ///
 /// Each profile is normalized to a section wire before `Add` (a face is
-/// reduced to its outer wire), since BRepFill_Section accepts only a wire or
-/// a vertex. Unlike make_pipe_shell, the result is not solidified.
+/// reduced to its outer wire; a holed face is rejected), since
+/// BRepFill_Section accepts only a wire or a vertex. As in make_pipe_shell the
+/// result is solidified when every section was a face, and left as the raw
+/// SHELL for mixed or all-wire section sets.
 std::unique_ptr<OcctShape> loft_guided_profiles(const OcctShapeVec& profiles,
                                                 const OcctShapeVec& guides);
 

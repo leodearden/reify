@@ -174,12 +174,27 @@ namespace occt {
 
 namespace {
 
-/// Call `fn()` inside the standard 3-arm OCCT exception guard.
+/// A precondition violation detected by Reify's own validation, as opposed to
+/// a failure raised from inside OCCT.
+///
+/// `wrap_occt_call` gives these their own catch arm so they surface as
+/// "<op>: <message>" — the "OCCT <op>: unexpected: …" framing is reserved for
+/// genuine OCCT-originated or otherwise unforeseen exceptions, and labelling a
+/// well-understood contract violation that way misattributes it.
+struct ContractViolation : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
+/// Call `fn()` inside the standard 4-arm OCCT exception guard.
 ///
 /// Catch arms:
-///   - Standard_Failure  → "OCCT <name>: <GetMessageString()>"
-///   - std::exception    → "OCCT <name>: unexpected: <what()>"
-///   - catch-all         → "OCCT <name>: unknown C++ exception"
+///   - Standard_Failure   → "OCCT <name>: <GetMessageString()>"
+///   - ContractViolation  → "<name>: <what()>"   (Reify-authored diagnostic)
+///   - std::exception     → "OCCT <name>: unexpected: <what()>"
+///   - catch-all          → "OCCT <name>: unknown C++ exception"
+///
+/// The ContractViolation arm must precede the std::exception arm — it derives
+/// from std::runtime_error, so the broader arm would otherwise shadow it.
 ///
 /// Return type is deduced from `fn()` via `decltype`, so this helper works
 /// uniformly across all wrapper return types (double, Point3, BBox,
@@ -191,6 +206,8 @@ auto wrap_occt_call(const char* name, F&& fn) -> decltype(fn()) {
         return fn();
     } catch (Standard_Failure const& e) {
         throw std::runtime_error(std::string("OCCT ") + name + ": " + e.GetMessageString());
+    } catch (ContractViolation const& e) {
+        throw std::runtime_error(std::string(name) + ": " + e.what());
     } catch (std::exception const& e) {
         throw std::runtime_error(std::string("OCCT ") + name + ": unexpected: " + e.what());
     } catch (...) {
@@ -224,10 +241,34 @@ static const char* topabs_name(TopAbs_ShapeEnum type) {
 /// the profile kind the Reify compiler actually produces (`circle(r)` lowers to
 /// `CircleProfile` → `make_circle_face`), so they are reduced here to their
 /// outer wire rather than rejected.
+///
+/// A face with inner (hole) wires has no single-wire representation, so it is
+/// rejected rather than silently reduced: keeping only the outer wire would
+/// delete the holes, and — since a face profile is then solidified — yield a
+/// filled-in solid that looks plausible but is the wrong part. Every profile
+/// the compiler emits today (`CircleProfile` / `RectangleProfile` /
+/// `EllipseProfile` / `PolygonProfile`) is single-wire, but an extracted face
+/// (`extract_faces`, `BRepKind::Face`) is `Surface`-typed and can carry them.
 static TopoDS_Shape section_profile_to_wire(const TopoDS_Shape& profile) {
     switch (profile.ShapeType()) {
-        case TopAbs_FACE:
-            return ::BRepTools::OuterWire(TopoDS::Face(profile));
+        case TopAbs_FACE: {
+            const TopoDS_Face face = TopoDS::Face(profile);
+            int wire_count = 0;
+            for (TopExp_Explorer exp(face, TopAbs_WIRE); exp.More(); exp.Next()) {
+                ++wire_count;
+            }
+            if (wire_count > 1) {
+                // The message deliberately does not name BRepFill_Section:
+                // it is a user-facing diagnostic, and the OCCT internals are
+                // documented for maintainers in this helper's doc comment.
+                throw ContractViolation(
+                    "section profile face has " + std::to_string(wire_count - 1)
+                    + " inner wire(s); a swept section is a single wire, so a "
+                      "holed profile cannot be swept — its hole(s) would be "
+                      "silently discarded");
+            }
+            return ::BRepTools::OuterWire(face);
+        }
         case TopAbs_WIRE:
         case TopAbs_VERTEX:
             return profile;
@@ -236,7 +277,7 @@ static TopoDS_Shape section_profile_to_wire(const TopoDS_Shape& profile) {
             // than letting OCCT's opaque "bad shape type of section" surface.
             // wrap_occt_call prefixes the calling op's name, so it is
             // deliberately omitted here to avoid duplicating it.
-            throw std::runtime_error(
+            throw ContractViolation(
                 std::string("unsupported profile shape type '")
                 + topabs_name(profile.ShapeType())
                 + "'; section profile must be a Wire, a Vertex, or a Face "
@@ -3485,9 +3526,10 @@ std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
         // sweeps to a SOLID, a wire profile to a SHELL. That gives
         // sweep_guided parity with sweep for every profile the compiler can
         // produce (it admits only Surface profiles) and honours the declared
-        // signature `sweep_guided(profile: Surface, ...) -> Solid`. Gating on
-        // the input's face-ness leaves the wire path returning a shell, which
-        // the wire-profile tests and the Centroid repr dispatch rely on.
+        // signature `sweep_guided(profile: Surface, ...) -> Solid`.
+        // The gate is the input's face-ness because only a face carries the
+        // enclosed region the end caps close over; a bare wire section has no
+        // such region, and the wire-profile tests pin that raw shell result.
         if (profile_was_face && !maker.MakeSolid()) {
             throw std::runtime_error(
                 "make_pipe_shell: MakeSolid failed — face profile swept to an open shell");
@@ -3512,7 +3554,11 @@ std::unique_ptr<OcctShape> loft_guided_profiles(const OcctShapeVec& profiles,
         // section. An optional second guide provides auxiliary
         // orientation via SetMode(aux, /*KeepContact=*/false).
         BRepOffsetAPI_MakePipeShell maker(TopoDS::Wire(guides.shapes[0]));
+        bool all_sections_were_faces = true;
         for (const auto& profile : profiles.shapes) {
+            if (profile.ShapeType() != TopAbs_FACE) {
+                all_sections_were_faces = false;
+            }
             maker.Add(section_profile_to_wire(profile));
         }
         if (guides.shapes.size() >= 2) {
@@ -3522,12 +3568,20 @@ std::unique_ptr<OcctShape> loft_guided_profiles(const OcctShapeVec& profiles,
         if (!maker.IsDone()) {
             throw std::runtime_error("BRepOffsetAPI_MakePipeShell (loft_guided) failed");
         }
-        // Deliberately no MakeSolid() here. make_pipe_shell's face -> solid
-        // rule exists to match its single-profile sibling BRepOffsetAPI_MakePipe;
-        // a multi-section guided loft has no such counterpart, its sections may
-        // legitimately be open or mixed, and its existing tests pin the current
-        // shell result. Changing loft_guided's solidity is a design question,
-        // not part of this crash fix.
+        // Same face -> solid rule as make_pipe_shell, for the same reason: the
+        // declared signature is
+        // `loft_guided(profiles: List<Surface>, guides: List<Curve>) -> Solid`
+        // and the Rust layer registers the result under the default
+        // BRepKind::Solid repr, so an all-face section set — the only kind a
+        // DSL call can supply — must close into a real solid rather than be
+        // mislabelled as one. Mixed or all-wire section sets keep the raw
+        // shell: a wire section carries no enclosed region to cap, and the
+        // wire-profile tests pin that result.
+        if (all_sections_were_faces && !maker.MakeSolid()) {
+            throw std::runtime_error(
+                "loft_guided_profiles: MakeSolid failed — face sections lofted "
+                "to an open shell");
+        }
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
         return result;

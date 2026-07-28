@@ -13,8 +13,9 @@
 //! - The guide wire is intentionally non-parallel to the path spine so
 //!   that MakePipeShell's SetMode(aux, false) has visible effect.
 //!
-//! Coverage note: the two tests above build their profile from
-//! `GeometryOp::Arc`, i.e. a closed circular **wire**. No DSL program can
+//! Coverage note: `sweep_guided_produces_valid_shape` and
+//! `sweep_guided_orientation_differs_from_plain_sweep` build their profile
+//! from `GeometryOp::Arc`, i.e. a closed circular **wire**. No DSL program can
 //! reach that input — the compiler requires `sweep_guided`'s first argument
 //! to be a `Surface`, and `circle(r)` lowers to `CircleProfile` →
 //! `make_circle_face` → a `TopoDS_Face`. Since `BRepFill_Section` (used
@@ -86,6 +87,21 @@ fn make_offset_guide(
         .id
 }
 
+/// Query the bounding box of `id`, assert every component is finite, and
+/// return the (x_span, y_span, z_span) extents.
+///
+/// Thin wrapper over the shared [`common::bbox_of`] parser (task 5893), which
+/// replaced the file-local parsers this task's earlier revision had grown.
+/// Kept as a named helper only so the extent assertions below read as one call.
+fn bbox_spans(kernel: &OcctKernel, id: GeometryHandleId) -> (f64, f64, f64) {
+    let bbox = common::bbox_of(kernel.query(&GeometryQuery::BoundingBox(id)));
+    assert!(
+        bbox.all_finite(),
+        "bbox components must all be finite, got {bbox:?}"
+    );
+    bbox.spans()
+}
+
 /// Parse a JSON-encoded centroid string `{"x":…,"y":…,"z":…}` into (x, y, z).
 fn parse_centroid(s: &str) -> (f64, f64, f64) {
     let inner = s.trim_start_matches('{').trim_end_matches('}');
@@ -132,6 +148,13 @@ fn sweep_guided_produces_valid_shape() {
 /// A `CircleProfile` face — the only profile a DSL `sweep_guided()` call can
 /// produce — must be accepted. `BRepFill_Section` takes a wire or a vertex
 /// only, so the face has to be reduced to its outer wire before `Add`.
+///
+/// This is the *shape-level* half of the face-profile contract: the result is
+/// topologically closed and its extents match the swept disk. The magnitude
+/// half (analytic volume, parity with plain `Sweep`) lives in
+/// `sweep_guided_face_profile_yields_solid_volume` below; the two are
+/// complementary — a closed shape of the wrong size passes here and fails
+/// there, and vice versa.
 #[test]
 fn sweep_guided_accepts_circle_face_profile() {
     let mut kernel = OcctKernel::new();
@@ -153,26 +176,39 @@ fn sweep_guided_accepts_circle_face_profile() {
         Err(e) => panic!("SweepGuided with a CircleProfile (face) must succeed, got: {e}"),
     };
 
-    let bbox = kernel
-        .query(&GeometryQuery::BoundingBox(result.id))
-        .expect("BoundingBox query should succeed");
-    match bbox {
-        Value::String(s) => {
-            let trimmed = s.trim_start_matches('{').trim_end_matches('}');
-            for pair in trimmed.split(',') {
-                let mut parts = pair.splitn(2, ':');
-                let _key = parts.next().unwrap();
-                let val: f64 = parts
-                    .next()
-                    .unwrap()
-                    .trim()
-                    .parse()
-                    .expect("bbox component should be numeric");
-                assert!(val.is_finite(), "bbox component must be finite, got {val}");
-            }
-        }
-        other => panic!("expected bbox String, got {:?}", other),
+    // A face profile must yield a *closed* result — an un-capped shell has
+    // free edges at both ends and reports false here. This distinguishes the
+    // solidified face path from the raw-shell wire path without relying on a
+    // volume magnitude.
+    match kernel
+        .query(&GeometryQuery::IsClosed(result.id))
+        .expect("IsClosed query should succeed")
+    {
+        Value::Bool(closed) => assert!(
+            closed,
+            "a face profile must sweep to a closed (capped) result, got an open shell"
+        ),
+        other => panic!("expected IsClosed Bool, got {:?}", other),
     }
+
+    // Extents. The swept tube must be at least as wide as its own section
+    // (2r = 0.04) on both transverse axes, and must follow the 0.1 m spine in
+    // Z. The upper bounds are loose sanity rails, not pins: the guide swings
+    // the sections about the spine, so the X extent measures ~0.075 here
+    // rather than 0.04 — the point of these assertions is to catch a
+    // collapsed or exploded result, not to fix the guide's law.
+    let (x_span, y_span, z_span) = bbox_spans(&kernel, result.id);
+    for (axis, span) in [("x", x_span), ("y", y_span)] {
+        assert!(
+            (0.039..0.25).contains(&span),
+            "{axis}-span must be at least the section diameter (2r = 0.04) and \
+             not exploded, got {span}"
+        );
+    }
+    assert!(
+        (0.09..0.15).contains(&z_span),
+        "z-span should track the 0.1 m spine, got {z_span}"
+    );
 }
 
 /// A face profile must sweep to an *enclosed solid*, at parity with plain
@@ -252,35 +288,28 @@ fn sweep_guided_face_profile_yields_solid_volume() {
     );
 }
 
-/// A profile type `BRepFill_Section` genuinely cannot take — here a SOLID —
-/// must be rejected with a Reify-authored diagnostic that names the offending
-/// shape type, rather than leaking OCCT's opaque internal wording.
-#[test]
-fn sweep_guided_rejects_unsupported_profile_type() {
-    let mut kernel = OcctKernel::new();
-    let profile = kernel
-        .execute(&GeometryOp::Box {
-            width: Value::Real(0.01),
-            height: Value::Real(0.01),
-            depth: Value::Real(0.01),
-        })
-        .expect("Box should build")
-        .id;
-    let path = make_straight_path(&mut kernel, 0.1);
-    let guide = make_offset_guide(&mut kernel, 0.05, 0.03, 0.1);
+/// Run a `SweepGuided` that must be rejected, and assert the diagnostic is
+/// Reify-authored: it names `expected_type`, attributes `make_pipe_shell`, and
+/// leaks neither OCCT's opaque `BRepFill_Section` wording nor the "unexpected"
+/// framing `wrap_occt_call` reserves for genuinely unforeseen exceptions.
+fn assert_profile_rejected(
+    kernel: &mut OcctKernel,
+    profile: GeometryHandleId,
+    expected_type: &str,
+) -> String {
+    let path = make_straight_path(kernel, 0.1);
+    let guide = make_offset_guide(kernel, 0.05, 0.03, 0.1);
 
-    let result = kernel.execute(&GeometryOp::SweepGuided {
+    match kernel.execute(&GeometryOp::SweepGuided {
         profile,
         path,
         guide,
-    });
-
-    match result {
+    }) {
         Err(GeometryError::OperationFailed(msg)) => {
             let lower = msg.to_lowercase();
             assert!(
-                lower.contains("solid"),
-                "error must name the offending shape type ('Solid'), got: {msg}"
+                lower.contains(&expected_type.to_lowercase()),
+                "error must name the offending shape type ('{expected_type}'), got: {msg}"
             );
             assert!(
                 msg.contains("make_pipe_shell"),
@@ -291,10 +320,97 @@ fn sweep_guided_rejects_unsupported_profile_type() {
                 "error must be a Reify diagnostic, not OCCT's opaque internal \
                  wording, got: {msg}"
             );
+            assert!(
+                !lower.contains("unexpected"),
+                "a known contract violation must not be framed as an unexpected \
+                 OCCT exception, got: {msg}"
+            );
+            msg
         }
-        Ok(_) => panic!("expected OperationFailed for a SOLID profile, got Ok"),
+        Ok(_) => panic!("expected OperationFailed for a {expected_type} profile, got Ok"),
         Err(other) => panic!("expected OperationFailed, got {:?}", other),
     }
+}
+
+/// Every profile type `BRepFill_Section` genuinely cannot take must be
+/// rejected with a Reify-authored diagnostic naming the offending shape type.
+///
+/// Covers EDGE as well as SOLID: this fix narrowed a previously documented
+/// contract (the old comment claimed "profile may be an edge, wire, or face"),
+/// so the EDGE branch is exactly the one whose status changed and must be
+/// pinned.
+#[test]
+fn sweep_guided_rejects_unsupported_profile_type() {
+    // SOLID — the classic wrong-dimensionality profile.
+    let mut kernel = OcctKernel::new();
+    let solid = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(0.01),
+            height: Value::Real(0.01),
+            depth: Value::Real(0.01),
+        })
+        .expect("Box should build")
+        .id;
+    assert_profile_rejected(&mut kernel, solid, "Solid");
+
+    // EDGE — obtained by topology extraction from a circle profile face, the
+    // same route by which a selector can hand an edge handle to an op.
+    let mut kernel = OcctKernel::new();
+    let face = kernel
+        .execute(&GeometryOp::CircleProfile {
+            radius: Value::Real(0.02),
+        })
+        .expect("CircleProfile (20mm) should build")
+        .id;
+    let edges = kernel
+        .extract_edges(face)
+        .expect("extract_edges on a circle face should succeed");
+    let edge = *edges
+        .first()
+        .expect("a circle profile face has at least one edge");
+    assert_profile_rejected(&mut kernel, edge, "Edge");
+}
+
+/// A face carrying inner (hole) wires must be rejected, not silently reduced
+/// to its outer wire.
+///
+/// `BRepTools::OuterWire` would happily drop the holes, and — because a face
+/// profile is then solidified — an annular profile would sweep to a *filled*
+/// solid: plausible-looking, wrong geometry, with no diagnostic. The compiler's
+/// own profile ops are all single-wire, but an extracted face
+/// (`extract_faces`, `BRepKind::Face`) is `Surface`-typed and can carry them,
+/// so this input is reachable.
+#[test]
+fn sweep_guided_rejects_holed_face_profile() {
+    let mut kernel = OcctKernel::new();
+    // A tube's flat end caps are annuli — an outer wire plus one inner wire.
+    let tube = kernel
+        .execute(&GeometryOp::Tube {
+            outer_r: Value::Real(0.03),
+            inner_r: Value::Real(0.015),
+            height: Value::Real(0.05),
+        })
+        .expect("Tube should build")
+        .id;
+    let faces = kernel
+        .extract_faces(tube)
+        .expect("extract_faces on a tube should succeed");
+    let annulus = faces
+        .iter()
+        .copied()
+        .find(|f| {
+            matches!(
+                kernel.query(&GeometryQuery::FaceSurfaceKind(*f)),
+                Ok(Value::String(ref k)) if k == "Plane"
+            )
+        })
+        .expect("a tube has planar annular end faces");
+
+    let msg = assert_profile_rejected(&mut kernel, annulus, "inner wire");
+    assert!(
+        msg.contains("discard"),
+        "diagnostic should explain that the hole(s) would be discarded, got: {msg}"
+    );
 }
 
 #[test]

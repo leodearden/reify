@@ -3174,13 +3174,9 @@ impl OcctKernel {
                 ffi::ffi::make_prism_infinite(profile_shape, dx, dy, dz, *both)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
-            // No Rust-side profile validation here, unlike the LoftGuided /
-            // Pipe / ExtrudeInfinite neighbours: profile admissibility is a
-            // shape-type question and this layer holds only opaque OcctShape
-            // handles. make_pipe_shell owns the contract — it reduces a face
-            // profile to its outer wire (BRepFill_Section takes only a wire or
-            // a vertex), solidifies the result when the profile was a face,
-            // and rejects unsupported types with a descriptive error.
+            // No Rust-side profile validation, unlike the LoftGuided / Pipe /
+            // ExtrudeInfinite neighbours: `make_pipe_shell` in
+            // cpp/occt_wrapper.{h,cpp} owns the profile contract.
             GeometryOp::SweepGuided {
                 profile,
                 path,
