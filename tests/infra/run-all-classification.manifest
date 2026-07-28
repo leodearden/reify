@@ -72,6 +72,7 @@ test_warm_lane_pool.sh host-exclusive
 
 # --- pool (129, the hermetic majority incl. this drift-guard itself) -------
 test_affected_crates_lib.sh pool
+test_agent_cache_redirect.sh pool
 test_agent_cargo_shim.sh pool
 test_amendment_rounds_default_restored.sh pool
 test_audit_orphan_producers.sh pool
