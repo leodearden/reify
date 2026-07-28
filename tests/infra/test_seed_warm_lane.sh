@@ -2400,6 +2400,25 @@ assert "H4: seed exits 0 (async trash rm spawned)" test "$RC" -eq 0
 assert "H4: lane lock is re-acquirable immediately after seed exits (no FD-9 leak to background rm)" \
     bash -c 'exec 8>"$1"; flock -n 8' _ "$Q_LOCK4"
 
+# ── H4b (task #5705): the DETERMINISTIC, load-independent companion to H4.
+#
+# H4 above probes an OBSERVABLE TIMING PROPERTY: it asks whether the lock reads
+# back free the instant seed exits. That is the right property, but it can only
+# ever fail PROBABILISTICALLY — pre-#5705 it went RED in roughly 2-8% of runs
+# under host load and passed the rest of the time, because the window it catches
+# is the scheduling gap between a background job's fork() and that child's
+# close(9). H4b instead asserts the STRUCTURAL fact that makes the timing
+# property true (technique S, docs/prds/infra-test-wallclock-deflake.md §2):
+# seed must have executed its explicit `flock -u 9` release path, which it
+# announces on stderr. That marker is emitted or it is not — no load, no
+# scheduling, no flake. Keeping BOTH is deliberate: H4 is the end-to-end
+# observation, H4b is the regression guard that cannot silently degrade into a
+# coin flip.
+#
+# Reuses the $ERR_OUT captured by the H4 run above — no second seed invocation.
+assert "H4b: seed emits the explicit lane-lock release marker on stderr (the LOCK_UN path actually ran)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "explicit flock -u before exit"' _ "$ERR_OUT"
+
 # ── H5: bounded-wait "queue" via REIFY_WARM_LANE_LANE_LOCK_WAIT ─────────────
 # A refused acquirer of the SINGLETON _merge-verify lane has no alternate
 # FREE lane to fall back to, so the WAIT knob lets --lane-lock QUEUE (bounded
@@ -2661,6 +2680,66 @@ assert "H7: cp invoked with --reflink=always" \
 
 kill "$Q_LOCK12_PID" 2>/dev/null || true
 wait "$Q_LOCK12_PID" 2>/dev/null || true
+
+# ── H7b (task #5705): --assume-lane-lock-held must leave the CALLER's lock
+# ALONE. seed now drops its lane lock with an explicit `flock -u 9` before
+# exiting (the FD-9 fork-window fix); that release is guarded on
+# _should_acquire_lane_lock, i.e. it runs ONLY on the branch where seed opened
+# FD 9 itself. Without that guard an `--assume-lane-lock-held` run would unlock
+# a descriptor it INHERITED — releasing the caller's lock and re-opening the
+# very inv.2 clobber window --lane-lock exists to close. That is strictly worse
+# than the bug being fixed, so it gets its own pinned test.
+#
+# WHY H7 ABOVE DOES NOT COVER THIS: H7 holds the lock in a BACKGROUNDED
+# SUBSHELL (`( flock -x 9 ... ) 9>"$LOCK" &`), so its FD 9 belongs to that
+# subshell and seed never inherits it — an unguarded `flock -u 9` inside seed
+# would find FD 9 unopened and change nothing observable. The REAL shape of
+# thin --reseed / gc reclaim is the caller holding the lock on FD 9 in the very
+# process that execs seed, so H7b holds it HERE, in the test shell, and lets
+# run_helper_real's plain `bash "$SCRIPT"` child inherit it exactly as thin's
+# would.
+#
+# The probe MUST be a separate process: flock is per-open-file-description, so
+# a probe run inside this shell would see our own lock and succeed regardless.
+#
+# REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 (foreground trash rm) is load-bearing for
+# DETERMINISM here, and is not the property under test: with the default async
+# rm, seed forks `{ rm -rf ...; } 9<&- &`, and that detached child transiently
+# holds a dup of THIS SHELL's OFD 9 — so the final "probe now succeeds" control
+# below would race it exactly the way #5705's production bug races acquire_lane.
+# Forcing the rm foreground leaves zero detached children, so the control is a
+# clean two-way detector rather than a second copy of the race.
+Q_LANE12B="$(make_isolated_lane Q-lane12b)"
+mkdir -p "$Q_LANE12B/target"
+echo "sentinel content" > "$Q_LANE12B/target/SENTINEL.txt"
+
+Q_LOCK12B="${Q_LANE12B}.lock"
+_TMPDIRS+=("$Q_LOCK12B")
+touch "$Q_LOCK12B"
+
+# _h7b_probe_refused / _h7b_probe_acquired: the H4 probe form, wrapped so the
+# assert lines stay readable. Both spawn a SEPARATE process (see above).
+_h7b_probe_acquired() { bash -c 'exec 8>"$1"; flock -n 8' _ "$1"; }
+_h7b_probe_refused()  { ! _h7b_probe_acquired "$1"; }
+
+exec 9>"$Q_LOCK12B"
+assert "H7b-setup: the TEST SHELL itself holds the lane lock on FD 9 (thin --reseed's real shape, unlike H7's backgrounded subshell)" \
+    flock -n 9
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE12B" --fresh-checkout --assume-lane-lock-held
+
+assert "H7b: --assume-lane-lock-held with the caller's lock INHERITED on FD 9 → exit 0 (seed skipped its own acquire)" \
+    test "$RC" -eq 0
+assert "H7b: seed does NOT announce a lane-lock release it does not own (marker absent from stderr)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "explicit flock -u before exit"' _ "$ERR_OUT"
+assert "H7b: the CALLER'S LOCK SURVIVED seed — a separate-process probe still cannot acquire it" \
+    _h7b_probe_refused "$Q_LOCK12B"
+
+exec 9>&-
+assert "H7b: ... and that same probe SUCCEEDS once the test shell drops FD 9 (a detector, not a constant refusal)" \
+    _h7b_probe_acquired "$Q_LOCK12B"
 
 # ── H8: --assume-lane-lock-held + --lane-lock is a CONTRADICTION → usage error
 # (exit 2). --lane-lock says "acquire the lane lock yourself"; --assume-lane-lock-held
