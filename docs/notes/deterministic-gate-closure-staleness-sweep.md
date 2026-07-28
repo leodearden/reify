@@ -88,6 +88,14 @@ Notes that are easy to get wrong:
 | `CORRUPT-HOLD` | an otherwise-confirmed hit carrying a #5316 corruption flag | no — `action=human_gate` |
 | `unknown` | an oracle could not be read; never upgraded to `STALE` | no |
 
+Class A's escalation-status predicate is a **terminal allowlist**, not a pending-only match:
+`pending` → `GATED`, `resolved`/`dismissed` → clear, and **every other value** — a status outside
+the store's vocabulary (a schema addition on the escalation side), a JSON `null`, an empty or
+absent key, an unparseable file — is a failed oracle read that degrades the task to `unknown` with
+a `[warn]` naming the task and the offending status. A pending-only match would sink all of those
+into "clear", manufacturing `STALE` / `close` / a CANCEL request for a task whose gate may still be
+live — inverting L2 toward the sweep's single most destructive action.
+
 The trailing `SWEEP:` line (table) / `summary` object (json) carries `candidates`, `gate_closure`,
 `merge_verify_red`, `unmet_dependency`, `corrupt_hold`, `live_skipped`, `unknown`. `live_skipped`
 and `unknown` exist so **"no hits" stays distinguishable from "could not tell"** — the same reason

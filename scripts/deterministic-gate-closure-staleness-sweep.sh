@@ -434,11 +434,23 @@ try:
     sys.stdout.write(str(json.load(open(sys.argv[1])).get("status","")))
 except Exception:
     sys.stdout.write("\x00")' "$f" 2>/dev/null || printf '\000')"
+        # TERMINAL ALLOWLIST, not a pending-only match (L2). `pending` gates and
+        # `resolved`/`dismissed` clear; EVERY other value — unrecognized, JSON
+        # null (which reaches here as the literal "None"), empty, or the NUL
+        # parse sentinel — is a FAILED ORACLE READ and degrades to `unknown`.
+        # A pending-only match would sink all of those into `clear`, yielding
+        # STALE / close / an emitted request telling the consumer to CANCEL a
+        # task whose gate may still be live — failing open toward the sweep's
+        # single most destructive action.
         case "$st" in
-            "$(printf '\000')"|"")
+            "$(printf '\000')")
                 warn "Task $id: unparseable escalation file $(basename "$f") — reporting unknown, not STALE."
                 return 0 ;;
             pending) pending=$((pending + 1)) ;;
+            resolved|dismissed) : ;;
+            *)
+                warn "Task $id: escalation file $(basename "$f") carries an unrecognized status '$st' — reporting unknown, not STALE."
+                return 0 ;;
         esac
     done
     if [ "$pending" -gt 0 ]; then
