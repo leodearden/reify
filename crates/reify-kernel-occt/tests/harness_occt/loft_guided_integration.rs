@@ -92,6 +92,75 @@ fn loft_guided_smooth_surface_between_profiles() {
     );
 }
 
+/// `loft_guided_profiles` adds each section with a bare `maker.Add(profile)`,
+/// exactly as `make_pipe_shell` did before this fix, so it carries the same
+/// defect: `BRepFill_Section` stores only a wire or a vertex and throws
+/// "bad shape type of section" on a face. The tests above only ever feed Arc
+/// **wires** (see the module note), so the face path — the one the DSL's
+/// `circle(r)` produces — is uncovered here too.
+#[test]
+fn loft_guided_accepts_circle_face_profiles() {
+    let mut kernel = OcctKernel::new();
+    let p1 = kernel
+        .execute(&GeometryOp::CircleProfile {
+            radius: Value::Real(0.02),
+        })
+        .expect("CircleProfile (20mm) should build")
+        .id;
+    // CircleProfile always builds at z=0; lift the second section to z=0.1 so
+    // the loft has non-zero Z extent.
+    let p2_flat = kernel
+        .execute(&GeometryOp::CircleProfile {
+            radius: Value::Real(0.03),
+        })
+        .expect("CircleProfile (30mm) should build")
+        .id;
+    let p2 = kernel
+        .execute(&GeometryOp::Translate {
+            target: p2_flat,
+            dx: 0.0,
+            dy: 0.0,
+            dz: 0.1,
+        })
+        .expect("Translate should succeed")
+        .id;
+    let spine = make_spine(&mut kernel, 0.1);
+
+    let result = match kernel.execute(&GeometryOp::LoftGuided {
+        profiles: vec![p1, p2],
+        guides: vec![spine],
+    }) {
+        Ok(r) => r,
+        Err(e) => panic!("LoftGuided with CircleProfile (face) sections must succeed, got: {e}"),
+    };
+
+    let bbox = kernel
+        .query(&GeometryQuery::BoundingBox(result.id))
+        .expect("bbox query should succeed");
+    let bbox_str = match bbox {
+        Value::String(s) => s,
+        other => panic!("expected bbox String, got {:?}", other),
+    };
+    let trimmed = bbox_str.trim_start_matches('{').trim_end_matches('}');
+    for pair in trimmed.split(',') {
+        let mut parts = pair.splitn(2, ':');
+        let _key = parts.next().unwrap();
+        let val: f64 = parts
+            .next()
+            .unwrap()
+            .trim()
+            .parse()
+            .expect("bbox component should be numeric");
+        assert!(val.is_finite(), "bbox component must be finite, got {val}");
+    }
+    let (zmin, zmax) = parse_bbox_z(&bbox_str);
+    let span = zmax - zmin;
+    assert!(
+        span > 0.09,
+        "loft bbox z-span should cover both profile planes (≥0.09), got {span} from [{zmin}, {zmax}]"
+    );
+}
+
 #[test]
 fn loft_guided_requires_two_profiles_error() {
     let mut kernel = OcctKernel::new();
