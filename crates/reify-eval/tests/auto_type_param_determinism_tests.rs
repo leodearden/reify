@@ -802,7 +802,7 @@ fn compile_correctness_skips_still_fail_to_compile() {
 /// `skip_set_entries_exist_under_examples_dir` inlines the same
 /// `Path::exists` filter over its own two-tuple `SKIP_SET`. Hoisting a
 /// shared helper into `reify_test_support` is out of scope for this task
-/// (locked to this one file); tracked as a follow-up task.
+/// (locked to this one file); tracked as a follow-up task (#5667).
 fn missing_skip_set_paths<'a>(
     entries: &'a [(&'a str, SkipKind, &'a str)],
     examples_dir: &Path,
