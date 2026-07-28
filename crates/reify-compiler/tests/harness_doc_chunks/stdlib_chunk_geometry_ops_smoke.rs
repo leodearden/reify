@@ -242,7 +242,8 @@ fn is_recognised_geometry_call(name: &str) -> bool {
     GEOMETRY_FUNCTION_NAMES.contains(&name) || GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&name)
 }
 
-/// Push the callee name of every `FunctionCall` in `expr`'s subtree onto `out`.
+/// Push `(callee name, arg count)` for every `FunctionCall` in `expr`'s
+/// subtree onto `out`.
 ///
 /// The match is intentionally exhaustive with **no `_` wildcard**, so adding an
 /// `ExprKind` variant breaks this file at compile time rather than silently
@@ -254,7 +255,7 @@ fn is_recognised_geometry_call(name: &str) -> bool {
 /// Non-`FunctionCall` callee names (a trait method, an ad-hoc port selector)
 /// are deliberately NOT collected: they are dispatched through a different
 /// resolver and are not geometry ops.
-fn collect_call_names(expr: &Expr, out: &mut Vec<String>) {
+fn collect_call_forms(expr: &Expr, out: &mut Vec<(String, usize)>) {
     match &expr.kind {
         // Leaves — no subexpressions, no callee name.
         ExprKind::NumberLiteral { .. }
@@ -267,124 +268,125 @@ fn collect_call_names(expr: &Expr, out: &mut Vec<String>) {
 
         // The variant under test.
         ExprKind::FunctionCall { name, args, .. } => {
-            out.push(name.clone());
+            out.push((name.clone(), args.len()));
             for arg in args {
-                collect_call_names(arg, out);
+                collect_call_forms(arg, out);
             }
         }
 
         // Compound variants — recurse into every child subexpression.
         ExprKind::BinOp { left, right, .. } => {
-            collect_call_names(left, out);
-            collect_call_names(right, out);
+            collect_call_forms(left, out);
+            collect_call_forms(right, out);
         }
-        ExprKind::UnOp { operand, .. } => collect_call_names(operand, out),
-        ExprKind::MemberAccess { object, .. } => collect_call_names(object, out),
+        ExprKind::UnOp { operand, .. } => collect_call_forms(operand, out),
+        ExprKind::MemberAccess { object, .. } => collect_call_forms(object, out),
         ExprKind::Conditional {
             condition,
             then_branch,
             else_branch,
         } => {
-            collect_call_names(condition, out);
-            collect_call_names(then_branch, out);
-            collect_call_names(else_branch, out);
+            collect_call_forms(condition, out);
+            collect_call_forms(then_branch, out);
+            collect_call_forms(else_branch, out);
         }
         ExprKind::ListLiteral(items) | ExprKind::SetLiteral(items) => {
             for item in items {
-                collect_call_names(item, out);
+                collect_call_forms(item, out);
             }
         }
         ExprKind::MapLiteral(entries) => {
             for (key, value) in entries {
-                collect_call_names(key, out);
-                collect_call_names(value, out);
+                collect_call_forms(key, out);
+                collect_call_forms(value, out);
             }
         }
         ExprKind::IndexAccess { object, index } => {
-            collect_call_names(object, out);
-            collect_call_names(index, out);
+            collect_call_forms(object, out);
+            collect_call_forms(index, out);
         }
         ExprKind::Match { discriminant, arms } => {
-            collect_call_names(discriminant, out);
+            collect_call_forms(discriminant, out);
             for arm in arms {
-                collect_call_names(&arm.body, out);
+                collect_call_forms(&arm.body, out);
             }
         }
         ExprKind::Auto { params, .. } => {
             for (_, value) in params {
-                collect_call_names(value, out);
+                collect_call_forms(value, out);
             }
         }
-        ExprKind::Lambda { body, .. } => collect_call_names(body, out),
+        ExprKind::Lambda { body, .. } => collect_call_forms(body, out),
         ExprKind::Quantifier {
             collection,
             predicate,
             ..
         } => {
-            collect_call_names(collection, out);
-            collect_call_names(predicate, out);
+            collect_call_forms(collection, out);
+            collect_call_forms(predicate, out);
         }
         ExprKind::AdHocSelector { base, args, .. } => {
-            collect_call_names(base, out);
+            collect_call_forms(base, out);
             for arg in args {
-                collect_call_names(arg, out);
+                collect_call_forms(arg, out);
             }
         }
-        ExprKind::QualifiedAccess { qualifier, .. } => collect_call_names(qualifier, out),
+        ExprKind::QualifiedAccess { qualifier, .. } => collect_call_forms(qualifier, out),
         ExprKind::InstanceQualifiedAccess { object, qualified } => {
-            collect_call_names(object, out);
-            collect_call_names(qualified, out);
+            collect_call_forms(object, out);
+            collect_call_forms(qualified, out);
         }
         ExprKind::Range { lower, upper, .. } => {
             if let Some(lower) = lower {
-                collect_call_names(lower, out);
+                collect_call_forms(lower, out);
             }
             if let Some(upper) = upper {
-                collect_call_names(upper, out);
+                collect_call_forms(upper, out);
             }
         }
         ExprKind::TraitMethodCall { object, args, .. } => {
-            collect_call_names(object, out);
+            collect_call_forms(object, out);
             for arg in args {
-                collect_call_names(arg, out);
+                collect_call_forms(arg, out);
             }
         }
         ExprKind::TraitStaticCall { args, .. } => {
             for arg in args {
-                collect_call_names(arg, out);
+                collect_call_forms(arg, out);
             }
         }
         ExprKind::VariantConstruct { fields, .. } => {
             for (_, value) in fields {
-                collect_call_names(value, out);
+                collect_call_forms(value, out);
             }
         }
         ExprKind::InterpolatedString(parts) => {
             for part in parts {
                 match part {
                     StringPart::Literal(_) => {}
-                    StringPart::Hole(inner) => collect_call_names(inner, out),
+                    StringPart::Hole(inner) => collect_call_forms(inner, out),
                 }
             }
         }
     }
 }
 
-/// Every call name in `source`, deduped and sorted for deterministic output.
+/// Every `(call name, arg count)` form in `source`, deduped and sorted for
+/// deterministic output.
 ///
 /// `source` must be `structure def`s whose members are all `let` bindings —
-/// the shape of the fixture and of the inline snippets below. Anything else
+/// the shape of the fixture and of the inline snippets above. Anything else
 /// PANICS rather than being skipped, so growing the fixture a new declaration
 /// or member kind is a loud "extend the walker", never a silent coverage hole.
-fn geometry_call_names(source: &str, label: &str) -> Vec<String> {
+fn geometry_call_forms(source: &str, label: &str) -> Vec<(String, usize)> {
     let parsed = parse_or_panic(source, label);
 
-    let mut names = Vec::new();
+    let mut forms = Vec::new();
     for decl in &parsed.declarations {
         let Declaration::Structure(structure) = decl else {
             panic!(
                 "{label}: the name-existence guard only walks `structure def` declarations, \
-                 but this source has another declaration kind — extend `geometry_call_names` \
+                 but this source has another declaration kind — extend `geometry_call_forms` \
                  rather than leaving those call sites unchecked"
             );
         };
@@ -392,15 +394,28 @@ fn geometry_call_names(source: &str, label: &str) -> Vec<String> {
             let MemberDecl::Let(binding) = member else {
                 panic!(
                     "{label}: the name-existence guard only walks `let` members of `{}`, \
-                     but it has another member kind — extend `geometry_call_names` rather \
+                     but it has another member kind — extend `geometry_call_forms` rather \
                      than leaving those call sites unchecked",
                     structure.name
                 );
             };
-            collect_call_names(&binding.value, &mut names);
+            collect_call_forms(&binding.value, &mut forms);
         }
     }
 
+    forms.sort();
+    forms.dedup();
+    forms
+}
+
+/// Every call name in `source`, projected from [`geometry_call_forms`] so
+/// exactly one AST walker exists (overloads of the same name collapse to one
+/// entry here — see `geometry_call_forms` for the arity-preserving form).
+fn geometry_call_names(source: &str, label: &str) -> Vec<String> {
+    let mut names: Vec<String> = geometry_call_forms(source, label)
+        .into_iter()
+        .map(|(name, _count)| name)
+        .collect();
     names.sort();
     names.dedup();
     names
