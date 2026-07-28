@@ -94,6 +94,126 @@ fn compile_linear_pattern_produces_realization() {
     );
 }
 
+/// A GEOMETRY LET is a valid `linear_pattern` target.
+///
+/// Regression pin (task 5389) — GREEN on arrival by design. This behaviour
+/// already works; the test exists so the header comment corrected in
+/// `examples/pattern_composition.ri` cannot silently go stale in the OPPOSITE
+/// direction. That fixture used to claim "geometry lets are not valid pattern
+/// targets via the current compiler", which has been false since task 1715 (plus
+/// task 5009's nested-target hoisting), and it dangled a reference to a
+/// long-gone `plan.json`. This assertion is the durable guard behind the
+/// corrected claim.
+///
+/// Differs from the sibling `compile_linear_pattern_produces_realization` above
+/// in exactly the way that matters: the pattern target is a geometry let
+/// (`elem`), not that test's `param w: Length`.
+///
+/// Probe evidence behind the corrected comment (release binary, `reify eval`):
+/// `volume = 4e-6 m^3` = 4 x (10mm)^3 — four fused instances — with `bbox`
+/// spanning x = -5mm..65mm.
+///
+/// SPACING ARG: `20mm`, never a bare `20`. Since task 5652,
+/// `builtin_signatures::builtin_arg_slots` gives `linear_pattern` at arity 6 a
+/// LENGTH slot on arg5 `spacing`, so a bare int is a hard COMPILE-time
+/// `DiagnosticCode::ArgTypeMismatch` that would fail this test's own zero-Error
+/// assertion. Note the arity guard: the slot exists only at `arg_count == 6`, so
+/// a wrong-arity call yields no type diagnostic at all — see
+/// `compile_linear_pattern_2d_wrong_arity_produces_diagnostic` above, which
+/// asserts ArgTypeMismatch is ABSENT there.
+#[test]
+fn geometry_let_is_a_valid_linear_pattern_target() {
+    let source = r#"structure S {
+    let elem = box(10mm, 10mm, 10mm)
+    let row = linear_pattern(elem, 1, 0, 0, 4, 20mm)
+}"#;
+    let parsed = reify_syntax::parse(
+        source,
+        reify_core::ModulePath::single("test_geolet_linpat"),
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "a geometry-let `linear_pattern` target must compile with zero Error diagnostics, got: \
+         {:#?}",
+        errors
+    );
+
+    // Each geometry let compiles to its own realization (entity.rs compiles
+    // geometry lets independently), so `elem` is NOT inlined into `row`'s own
+    // operations list — hence the lookup by name rather than by index.
+    let template = &compiled.templates[0];
+    let row = template
+        .realizations
+        .iter()
+        .find(|r| r.name.as_deref() == Some("row"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a realization named `row`, got {:?}",
+                template
+                    .realizations
+                    .iter()
+                    .map(|r| r.name.as_deref())
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    let op = &row.operations[0];
+    let CompiledGeometryOp::Pattern { kind, target, args } = op else {
+        panic!("expected `row` to lower to a Pattern op, got {:?}", op);
+    };
+    assert_eq!(*kind, PatternKind::Linear, "expected Pattern(Linear)");
+
+    // THE PINNED FACT: the target resolves to the `elem` let BY NAME, and NOT to
+    // the positional `GeomRef::Step(0)` silent fallback that geometry.rs:1206
+    // documents as the unresolvable-target failure mode. A regression that
+    // stopped resolving geometry-let targets would land on that fallback and
+    // surface as the cryptic "unresolvable GeomRef::Step(0)" runtime crash
+    // instead of failing here at compile time.
+    assert_eq!(
+        *target,
+        GeomRef::Sub("elem".to_string()),
+        "the pattern target must resolve to the `elem` geometry let by name; got {:?}",
+        target
+    );
+    assert_ne!(
+        *target,
+        GeomRef::Step(0),
+        "the pattern target landed on the GeomRef::Step(0) silent fallback — the geometry let \
+         was NOT resolved, and this would surface at runtime as \"unresolvable GeomRef::Step(0)\""
+    );
+
+    // The named `target` arg slot carries the same let, typed as Geometry — so
+    // the resolution is visible on the expression side too, not only in the
+    // structural `target: GeomRef` above. (The arg's `kind` would name the
+    // `elem` ValueCellId directly, but `CompiledExprKind` is crate-private and
+    // widening it for a test is not worth a production-visibility change; the
+    // result type is the public observable that carries the same signal.)
+    assert_eq!(
+        args[0].0, "target",
+        "expected args[0] to be the named `target` slot, got {:?}",
+        args[0].0
+    );
+    assert_eq!(
+        args[0].1.result_type,
+        reify_core::Type::Geometry,
+        "expected the `target` arg to type as Geometry (i.e. `elem` was recognised as a geometry \
+         let), got {:?}",
+        args[0].1.result_type
+    );
+}
+
 #[test]
 fn compile_isosurface_produces_realization_for_operand_and_result() {
     // Task 5033 GAP #1(a) RED: "isosurface" is missing from
