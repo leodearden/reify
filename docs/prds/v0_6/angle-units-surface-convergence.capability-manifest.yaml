@@ -1,0 +1,709 @@
+prd: docs/prds/v0_6/angle-units-surface-convergence.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 5777
+  title: Dimension the bare-angle .ri corpus site + hand-built-IR Draft fixtures;
+    publish the migration ledger
+  capabilities:
+  - name: bare-angle-corpus-site-exists
+    binding: capability→producer (this leaf) — grep:examples/geometric_relations/feature_datum_axis.ri:24
+      bare 6.283185307179586 in revolve's angle slot; sole non-deliberate bare-angle
+      .ri site among 29 enumerated call sites (re-measured 2026-07-29)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 6\.283185307179586rad
+      paths:
+      - examples/geometric_relations/feature_datum_axis.ri
+      expect: present
+  - name: migration-is-behaviour-preserving
+    binding: 'signal premise — grep:crates/reify-ir/src/value.rs:1635 Value::as_f64
+      returns si_value for Value::Scalar, so Value::Real(x) -> Value::angle(x) reaches
+      the kernel as the same x; probe: reify eval on the bare-2pi revolve shape exits
+      0 today'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: byte-identity of the eval output pre/post is the assertion; no stable
+        standalone grep expresses it
+  - name: draft-fixture-extent-corrected
+    binding: 'producer-extent — 13 hand-built-IR Draft{angle: Value::Real} sites (PRD
+      said 8); reify-ir/src/geometry.rs:9651,11025,11043 · reify-kernel-occt/src/lib.rs:8666,8747,8756,8805,8848,9221
+      · reify-eval/src/engine_build/tests.rs:6379,7062,7478 (last written `r(0.1)`)
+      · reify-test-support/src/mocks.rs:3138. NONE is gate-breaking — all bypass the
+      eval chokepoint (manifest C8)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the ledger artifact is the deliverable; line anchors drift and must
+        be re-measured by the implementer
+  - name: file-is-rust-coupled
+    binding: unlisted premise — grep:crates/reify-compiler/tests/feature_datum_axis_example_tests.rs:28,58,69,90
+      and crates/reify-eval/tests/feature_datum_tests.rs:450,462 read the file by
+      path and assert zero errors. NOT a _RUST_COUPLED_RI_FIXTURES member (that list
+      is tests/prd-gate/fixtures-scoped, verify.sh:992-1014)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: feature_datum_axis
+      paths:
+      - crates/reify-compiler/tests/feature_datum_axis_example_tests.rs
+      expect: present
+- label: β
+  task_id: 5778
+  title: angle_spec() in arg_acceptance; retire the hint-less inline ANGLE spec
+  capabilities:
+  - name: angle-spec-absent-today
+    binding: capability→producer (this leaf) — grep:crates/reify-eval/src/arg_acceptance.rs:86
+      density_spec, :103 length_spec, :117 accept_arg; no angle_spec anywhere in the
+      repo
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn angle_spec
+      paths:
+      - crates/reify-eval/src/arg_acceptance.rs
+      expect: present
+  - name: angle-rejection-mechanism-fires
+    binding: 'rejection-check (G6 branch 4) — probe: reify eval faces_by_normal(b,0.0,0.0,1.0,0.01)
+      exits 1 with `error: faces_by_normal: tol argument expects Angle, got Real`.
+      OBSERVED to fire, 2026-07-29'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the observable delta is the ADDED migration hint on an already-firing
+        rejection; asserted by the leaf's own diagnostic test
+  - name: hint-absent-today
+    binding: producer-absent (what β adds) — grep:crates/reify-eval/src/geometry_ops.rs:8755
+      resolve_scalar_dim_arg, call site :8767-8771 passes migration_hint None; the
+      probe stderr carries no `pass a dimensioned angle` clause
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pass a dimensioned angle such as
+      paths:
+      - crates/reify-eval/src/arg_acceptance.rs
+      expect: present
+  - name: shared-diagnostic-code-upstream
+    binding: DAG-direction — producer:task 5743 (PRD 1 β) mints the shared bare/wrong-dimension
+      DiagnosticCode and states PRDs 3+5 reuse it; hard add_dependency edge wired
+    verdict: PASS
+- label: γ
+  task_id: 5779
+  title: Gate rotate / rotate_around / revolve / arc angle args at the eval chokepoint
+  capabilities:
+  - name: five-ungated-angle-reads
+    binding: capability→producer (this leaf) — grep:crates/reify-eval/src/geometry_ops.rs:2251,2312,2975,3327,3328
+      each f64_arg("angle"|"start_angle"|"end_angle") over the bare-accepting eval_named_arg_f64
+      (:202)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: angle_spec\(\)
+      paths:
+      - crates/reify-eval/src/geometry_ops.rs
+      expect: present
+  - name: silent-accept-pre-state
+    binding: 'rejection-check baseline — probe (2026-07-29): rotate / rotate_around
+      / revolve(bare 2pi) / arc(bare) each `reify eval` exit 0 with ZERO angle diagnostics'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the pre-state is the RED half; the leaf's own fixture test asserts the
+        post-state rejection
+  - name: b2b-revolve-full-survives
+    binding: 'DAG-direction + two-way seam — probe: revolve_full(rectangle(20mm,10mm),
+      -10mm,0mm,0mm, 0.0,1.0,0.0) exits 0 today; grep:crates/reify-compiler/src/geometry.rs:2064-2067,2080
+      wires the TAU literal into the "angle" arg; producer:task 5742 (PRD 1 α) retypes
+      it ANGLE — upstream, hard edge. D10 re-ratified at decompose'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Value::Real\(std::f64::consts::TAU\)
+      paths:
+      - crates/reify-compiler/src/geometry.rs
+      expect: absent
+- label: δ
+  task_id: 5780
+  title: Gate draft.angle (R7 raw-Value passthrough) — ONE read site
+  capabilities:
+  - name: draft-angle-is-ungated-raw-value
+    binding: 'capability→producer (this leaf) — grep:crates/reify-eval/src/geometry_ops.rs:1979
+      `let angle = eval_arg("angle")?;`; IR crates/reify-ir/src/geometry.rs:944 `angle:
+      Value`'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: angle_spec\(\)
+      paths:
+      - crates/reify-eval/src/geometry_ops.rs
+      expect: present
+  - name: one-read-site-not-two
+    binding: premise CORRECTION (PRD §11 Q4 refuted) — :1979 sits above the `match
+      faces_expr` split; :1991 and :2049 are mutually-exclusive arms consuming the
+      same binding
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a structural claim about one function's control flow; no stable pattern
+  - name: draft-not-eval-reachable
+    binding: 'producer-absent → SIGNAL WEAKENED per G6(b) — probe: every draft(...)
+      form exits 1 with `no valid plane handle available for Draft` BEFORE the angle
+      matters (bare AND dimensioned alike); zero .ri corpus draft call sites; reify
+      check exits 0. Pre-existing defect, geometry-modify-sweep-completion territory
+      (task 2010 is done while the defect is live)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the binding assertion is that δ's angle diagnostic REPLACES the plane
+        error; distinguishing two stderr strings is a test, not a grep
+- label: ε
+  task_id: 5781
+  title: Retire resolve_bare_angle; circular_pattern converges on rejection (reverses
+    task 1763)
+  capabilities:
+  - name: resolve-bare-angle-exists
+    binding: capability→producer (this leaf) — grep:crates/reify-eval/src/geometry_ops.rs:880
+      fn resolve_bare_angle, call sites :2585 (value-axis) and :2626 (scalar-axis)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: resolve_bare_angle
+      paths:
+      - crates/reify-eval/src/geometry_ops.rs
+      expect: absent
+  - name: codeless-warning-is-live
+    binding: 'rejection-check baseline + INV-SF-6 — probe: circular_pattern(b,0mm,0mm,0mm,0.0,0.0,1.0,4,360)
+      exits 0 with `warning: circular_pattern: bare numeric angle `360` interpreted
+      as 360°; use `360deg` or `6.283185rad` for explicit units`; grep:crates/reify-core/src/diagnostics.rs:3885
+      Diagnostic::warning sets code None'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: bare numeric angle
+      paths:
+      - crates/reify-eval/src/geometry_ops.rs
+      expect: absent
+  - name: breakage-set-corrected
+    binding: producer-extent (PRD said 3, actual 9) — inverting tests crates/reify-eval/tests/circular_pattern_angle.rs:47,86;
+      BYTE-COMPARED goldens crates/reify-eval/tests/golden/pattern_circular_base.txt:66,:18
+      and pattern_circular_value.txt:66,:18 (include_str! at compile_geometry_op_characterization.rs:1092,1139,
+      compared :229-249, driven by lit(90.0) at :1025,1072); 5 fns crates/reify-eval/src/geometry_ops/tests.rs:2990,3056,3102,3150,3194
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: bare numeric angle
+      paths:
+      - crates/reify-eval/tests/golden
+      expect: absent
+  - name: stale-doc-cite
+    binding: capability→producer (this leaf) — grep:docs/prds/v0_6/type-hygiene.md:106
+      cites resolve_bare_angle at :418-439; real site is :880
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: resolve_bare_angle
+      paths:
+      - docs/prds/v0_6/type-hygiene.md
+      expect: absent
+- label: ζ
+  task_id: 5782
+  title: ANGLE CheckableArg compile slots for the six angle producers (+ NON_SELECTOR_ARG_SLOT_KEYS
+    registration)
+  capabilities:
+  - name: angle-arm-already-exists
+    binding: capability→producer (this leaf) — grep:crates/reify-compiler/src/builtin_signatures.rs:165-175
+      the four directional selectors' tol at index 2 with ExpectedArg::Scalar{dimension
+      ANGLE, type_name "Angle"}; :145 builtin_arg_slots(name, arg_count); :325 check_builtin_arg_types.
+      No geometry PRODUCER has a slot
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"rotate_around"'
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+      expect: present
+  - name: non-selector-key-registration-mandatory
+    binding: UNLISTED PREMISE (manifest C4) — grep:builtin_signatures.rs:425-436 BUILTIN_NAME_FAMILIES
+      includes GEOMETRY_FUNCTION_NAMES; :420 MAX_PROBED_ARITY 14; :727 arg_slot_keys_are_registered_builtin_names
+      fails unless each of the six is in NON_SELECTOR_ARG_SLOT_KEYS (:474, today ["generate","linear_pattern","linear_pattern_2d"])
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"circular_pattern",'
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+      expect: present
+  - name: selector-route-panics
+    binding: anti-repair — grep:crates/reify-compiler/src/expr.rs:3253-3254 .expect("is_geometry_topology_selector
+      implies result type"); crates/reify-compiler/src/units.rs:343 topology_selector_result_type
+      has no entry for any of the six, so routing them into GEOMETRY_TOPOLOGY_SELECTOR_NAMES
+      panics (task 5652's recorded hazard)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"rotate"'
+      paths:
+      - crates/reify-compiler/src/units.rs
+      expect: present
+  - name: reconciled-template-upstream
+    binding: DAG-direction — producer:task 5750 (PRD 1 η) brings the compile-slot
+      message onto the hint-carrying C1 template with β's DiagnosticCode; 5750 also
+      co-edits :474/:727, so the hard edge is the file-lock serialization too
+    verdict: PASS
+- label: ν
+  task_id: 5783
+  title: Extend PRD 1's closure-guard allowlist/universe with the angle positions
+  capabilities:
+  - name: harness-upstream
+    binding: DAG-direction — producer:task 5752 (PRD 1 ι, "Closure-guard harness +
+      Contract C doc shrink"); additive allowlist entries only, never a harness rewrite
+    verdict: PASS
+  - name: probe-universe
+    binding: capability→producer — grep:crates/reify-compiler/src/units.rs:21-86 GEOMETRY_FUNCTION_NAMES
+      = 64 names (PRD's [drift] note confirmed; the research doc's 66 is wrong); all
+      seven angle producers present incl. revolve_full
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: GEOMETRY_FUNCTION_NAMES
+      paths:
+      - crates/reify-compiler/src/units.rs
+      expect: present
+  - name: draft-answers-with-plane-error
+    binding: anti-vacuity hazard (manifest C6) — a source-text probe of draft() returns
+      `no valid plane handle available for Draft`, NOT a gate diagnostic; ν must not
+      score that as "gated"
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a classification rule inside the harness allowlist, asserted by ν's
+        own seeded self-test
+  - name: gates-upstream
+    binding: DAG-direction — producers γ, δ, ε, ζ are all upstream via hard edges
+    verdict: PASS
+- label: κ
+  task_id: 5784
+  title: Scanner accepts U+00B7 as unit-multiply (grammar-producer leaf; INV-SF-7
+    obligation)
+  capabilities:
+  - name: middle-dot-is-novel-syntax
+    binding: 'grammar-fixture + rejection-check, TWO independent vectors — grammar-fixture:tests/prd-gate/fixtures/unit_middot_mul.ri
+      `tree-sitter parse --quiet` exit 1 with an ERROR node (isolated XDG_CACHE_HOME);
+      probe: reify check <5N·m> exit 1 `Parse error: syntax error: ·m`. grammar_confirmed
+      false, producer = this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '0xB7'
+      paths:
+      - tree-sitter-reify/src/scanner.c
+      expect: present
+  - name: contract-is-a-codepoint-not-utf8-bytes
+    binding: 'substrate CORRECTION (manifest C1) — grep:tree-sitter-reify/src/tree_sitter/parser.h:49
+      `int32_t lookahead;`, i.e. decoded codepoints. Controlled experiment: patching
+      scanner.c:250 to (c==''*''||c==0xB7) makes the fixture exit 0; patching it to
+      the PRD''s 0xC2/0xB7 byte pair leaves it exit 1 (dead branch). PRD §5 C2''s
+      "UTF-8 0xC2 0xB7" and §3.8''s "UTF-8-aware read" are VOID'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '0xC2'
+      paths:
+      - tree-sitter-reify/src/scanner.c
+      expect: absent
+  - name: change-is-scanner-local
+    binding: capability→producer — grep:tree-sitter-reify/grammar.js:53-56 (_unit_mul_op
+      external), :1511 (reference); src/scanner.c:244-258 (fires on '*' only), :101
+      is_unit_start [A-Za-z_(]. U+00B7 in neither file. src/parser.c is untracked/generated
+      and .grammar_hash.stamp matches grammar.js, so no regeneration commit is needed;
+      build.rs:268 compiles scanner.c into the reify binary
+    verdict: PASS
+  - name: middot-stays-scoped-to-unit-expr
+    binding: 'rejection-check (B7 must-stay-error) — probe: reify check <let x = 5
+      · 3> exit 1 `Parse error: syntax error: · 3`; grammar gate exit 1. Also verified
+      under the codepoint patch: 5N·3 / 5N· m / 5N · m all stay exit 1'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: is_unit_start
+      paths:
+      - tree-sitter-reify/src/scanner.c
+      expect: present
+  - name: inv-sf-7-ambiguity-regression-corpus
+    binding: G7 hit RESOLVED (manifest C11) — docs/legibility/design-invariants.md:171
+      parse-is-value-faithful; the PRD's §13 walk omits INV-SF-7 entirely. κ carries
+      adjacency-variation corpus rows so no token spacing can silently change a parsed
+      value
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: unit_mul|middle dot|00B7|·
+      paths:
+      - tree-sitter-reify/test/corpus/unit_expr.txt
+      expect: present
+- label: η
+  task_id: 5785
+  title: Torque as a first-class named dimension; retire the stdlib alias; fix the
+    stale NAMED_DIMENSIONS doc block
+  capabilities:
+  - name: torque-is-alias-only-today
+    binding: 'capability→producer (this leaf) — grep:crates/reify-compiler/stdlib/ports_mechanical.ri:29
+      `pub type Torque = Force * Length / Angle`, header rationale :9-11; probe: reify
+      check <param t : Torque = 5N*m/rad> exit 0, eval prints `5 m^2·kg·s^-2·rad^-1`'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub type Torque
+      paths:
+      - crates/reify-compiler/stdlib/ports_mechanical.ri
+      expect: absent
+  - name: torque-row-is-inert-alias-row
+    binding: capability→producer — grep:crates/reify-core/src/dimension.rs:275-276
+      ROTATIONAL_STIFFNESS is bit-identical (exps [(0,2),(1,1),(2,-2),(7,-1)]); row
+      :572; :358-372 canonical_name is a forward first-match, so appending AFTER :572
+      leaves canonical_name unchanged. No test pins NAMED_DIMENSIONS.len(); no VARIANT_COUNT
+      backstop. Alias-row precedents at :576-583 and :585-594
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: DimensionVector::TORQUE, "Torque"
+      paths:
+      - crates/reify-core/src/dimension.rs
+      expect: present
+  - name: unit-decls-need-a-named-dimension
+    binding: 'DAG-direction (why η gates θ) — grep:crates/reify-compiler/src/type_resolution.rs:454-459
+      compile_unit resolves via resolve_dimension_type and never consults the alias
+      registry, so `pub unit Nm : Torque` requires the NAMED_DIMENSIONS row first'
+    verdict: PASS
+  - name: stale-doc-block-gap-a
+    binding: PROGRAM GAP (a), assigned to PRD 3 by dimensioned-construction-strictness.md:220
+      — grep:crates/reify-core/src/dimension.rs:512 "The slice contains 34 entries"
+      vs 51 counted (52 after this leaf); same block :506 claims a "linear scan backward"
+      but type_resolution.rs:232-234 is a forward .iter().find(..)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: contains 34 entries
+      paths:
+      - crates/reify-core/src/dimension.rs
+      expect: absent
+  - name: co-existence-is-non-fatal
+    binding: unlisted premise — grep:reserved_name_lint.rs:61,65 emits W_RESERVED_TYPE_NAME
+      (Warning) for a TypeAlias shadowing a builtin; the stdlib gate (stdlib_loader.rs:499-514,
+      stdlib_loader_tests.rs:25-33) checks Severity::Error only. Builtin beats alias
+      at type_resolution.rs:642-646 (Velocity/RotationalStiffness precedents). η may
+      therefore split without breaking the build
+    verdict: PASS
+- label: θ
+  task_id: 5786
+  title: Nm torque unit symbol; case-distinctness from nm pinned
+  capabilities:
+  - name: nm-symbol-is-unclaimed
+    binding: 'rejection-check — probe: reify check <let t = 5Nm> exit 1 `error: unknown
+      unit: Nm` (a RESOLUTION error, not a parse error); grep: Nm absent from every
+      .ri, Rust table and generator (si_units.rs:184 N prefix set = Only(["k","M","G"]))'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub unit Nm
+      paths:
+      - crates/reify-compiler/stdlib/units.ri
+      expect: present
+  - name: grammar-confirmed-true
+    binding: grammar-fixture:tests/prd-gate/fixtures/unit_nm_torque_immediate.ri parses
+      with 0 ERROR nodes (exit 0, isolated tree-sitter cache) — Nm is an ordinary
+      immediate_identifier (grammar.js:1535). Only the unit-table entry is new
+    verdict: PASS
+  - name: case-sensitivity-is-pinned-not-built
+    binding: 'rejection-check — probe: 5nm exit 0 (0.000000005 m); 5NM exit 1 `unknown
+      unit: NM`. Exact HashMap key match, UnitRegistry::lookup crates/reify-compiler/src/units.rs:1533,
+      zero case folding'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: an existing property this leaf PINS with a test; the pin is the deliverable
+  - name: named-dimension-upstream
+    binding: DAG-direction — producer:η (this batch), hard edge
+    verdict: PASS
+- label: ι
+  task_id: 5787
+  title: Energy↔Torque teaching diagnostics; named dimensions in mismatch messages
+  capabilities:
+  - name: host-path-is-live-both-directions
+    binding: 'rejection-check — probe: reify check <param bad : Torque = 5N*m> exit
+      1 `error: parameter ''bad'' declared `Scalar[m^2·kg·s^-2·rad^-1]` but its initializer
+      evaluates to `Scalar[m^2·kg·s^-2]`; declared type and initializer dimension
+      must agree`; the Energy = 5N*m/rad fixture emits the mirrored message'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: torque in Reify carries an angle divisor
+      paths:
+      - crates/reify-compiler/src/entity.rs
+      expect: present
+  - name: emitter-and-existing-code
+    binding: capability→producer — grep:crates/reify-compiler/src/entity.rs:486-496
+      check_param_default_type; :493 already carries .with_code(DiagnosticCode::ParamDefaultTypeMismatch).
+      C1 inv. 3 CARVE-OUT (manifest C9) — inv. 3 governs the argument-rejection family;
+      an already-coded non-argument diagnostic keeps its code
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: DiagnosticCode::ParamDefaultTypeMismatch
+      paths:
+      - crates/reify-compiler/src/entity.rs
+      expect: present
+  - name: canonical-message-doc-goes-stale
+    binding: unlisted premise — grep:crates/reify-core/src/diagnostics.rs:406-415
+      mirrors the message form verbatim; ι's rewrite makes it stale and must update
+      it
+    verdict: PASS
+  - name: existing-torque-energy-guards-unmodified
+    binding: regression floor — grep:crates/reify-core/src/dimension.rs:1795-1855
+      RS != RD != TS != TD guards must pass unmodified
+    verdict: PASS
+- label: λ
+  task_id: 5788
+  title: 'ASCII-normalize the curated labels on S2/S3/S4; declare unit L : Volume'
+  capabilities:
+  - name: litre-rung-names-a-nonexistent-unit
+    binding: 'rejection-check, LIVE RED ON MAIN — grep:crates/reify-core/src/display_units.rs:458
+      label "L", si_scale 1e-3; probe: reify check <let v = 1L> exit 1 `error: unknown
+      unit: L`. Volume IS a named dimension (dimension.rs:526) so `pub unit L : Volume`
+      resolves'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub unit L
+      paths:
+      - crates/reify-compiler/stdlib/units.ri
+      expect: present
+  - name: curated-superscript-labels
+    binding: 'capability→producer — grep:crates/reify-core/src/display_units.rs:414,422,427,432,440,448,453,463,540,548,553;
+      dimension.rs:465,467; reify-ir/src/value.rs:3072,3074. FOOTPRINT CORRECTED:
+      44 \u{00B2}/\u{00B3} occurrences across the three files (display_units 20, value.rs
+      22, dimension.rs 2), not the PRD''s "~14"; display_units.rs:722 is a spurious
+      PRD entry'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'label: "mm\^2"'
+      paths:
+      - crates/reify-core/src/display_units.rs
+      expect: present
+  - name: target-alphabet-already-in-grammar
+    binding: 'grammar-fixture:tests/prd-gate/fixtures/unit_curated_labels_ascii.ri
+      parses (exit 0); probe: reify check <1mm^2 1mm^3 1kg/m^3 1g/cm^3 1USD 1deg>
+      exit 0. λ needs NO grammar work'
+    verdict: PASS
+  - name: no-blanket-substitution
+    binding: HAZARD (manifest C10) — crates/reify-ir/src/value.rs:11016,11031,11051
+      mix a curated LABEL with category-(d) ×10ⁿ SUPERSCRIPT_DIGITS exponent glyphs
+      on the same line (§10-excluded); a global \u{00B3}→^3 sweep corrupts the magnitude
+      formatter. Also a SEARCH ARTIFACT — labels are written "mm\u{00B2}", so a literal
+      ²/³ grep finds only comments
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a per-site judgement about which glyph is a label and which is a magnitude
+        exponent
+  - name: display-annotation-vocabulary-changes
+    binding: UNDECLARED BEHAVIOUR CHANGE (manifest C10) — grep:crates/reify-compiler/src/annotations/display.rs:84-89
+      matches unit_ladders() labels by EXACT string equality, so after λ `@display("mm²")`
+      starts erroring and `@display("mm^2")` starts working. 0 corpus uses (grep for
+      @display( in *.ri), so no corpus edit — but ξ must document it
+    verdict: PASS
+  - name: gui-typescript-fixtures-pin-superscripts
+    binding: silent-divergence exposure (manifest C10) — gui/src/__tests__/PropertyEditor.test.tsx:1332,1333,1335,1346,1365,1435,1505,1604,1638;
+      App.test.tsx:390,414,442; unitLadder.test.ts:48; gui/src-tauri/src/tests/types_tests.rs:3046.
+      Self-contained mocks, so they will NOT go red — the shipped dropdown would read
+      mm^3 while every GUI test asserts mm³
+    verdict: PASS
+  - name: units-ri-note-contradicts-d7
+    binding: unlisted premise — crates/reify-compiler/stdlib/units.ri:56-63 instructs
+      extending si_units.rs with a cubic-metre base instead; following it trips the
+      exact-count assert at crates/reify-compiler/tests/si_units_tests.rs:322-328.
+      λ replaces that note with a pointer to D7
+    verdict: PASS
+  - name: scale-tolerance-floor
+    binding: 'numeric floor — probe: 1g/cm^3 resolves to 999.9999999999999 kg·m^-3,
+      i.e. observed relative error ≈ 1.1e-16; Invariant R''s 1e-12 rel-tol is four
+      orders above the floor. bound > floor'
+    verdict: PASS
+- label: μ
+  task_id: 5789
+  title: Round-trip property test (Invariant R) — integration gate for cluster C
+  capabilities:
+  - name: red-on-main-for-two-independent-reasons
+    binding: 'rejection-check — probe: 1L → `unknown unit: L`; 7850kg·m^-3 → `Parse
+      error`. The test is genuinely RED before κ and λ'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: NAMED_DIMENSIONS
+      paths:
+      - crates/reify-compiler/tests/harness_units
+      expect: present
+  - name: four-surfaces-enumerable
+    binding: capability→producer — S1 crates/reify-core/src/dimension.rs:597-628;
+      S2 :458-474; S3 crates/reify-ir/src/value.rs:3068-3090 (PRIVATE fn — §11 Q2
+      is live); S4 crates/reify-core/src/display_units.rs:379 + 11 label sites
+    verdict: PASS
+  - name: resolvable-without-reify-eval
+    binding: §11 Q3 ANSWERED — grep:crates/reify-compiler/tests/common/mod.rs:185
+      stdlib_param_si_value(param_type, literal) -> (f64, DimensionVector), live uses
+      at compound_unit_resolution_tests.rs:38 and imperial_units_tests.rs:20; lower-level
+      reify_compiler::resolve_unit_expr (units.rs:1617) / UnitRegistry::lookup (:1533)
+    verdict: PASS
+  - name: harness-layout-ratchet
+    binding: 'BLOCKED CONSTRUCTION CORRECTED (manifest C3) — tests/infra/harness-layout-lib.sh:80-82
+      lists reify-compiler among the five consolidatable crates; a new standalone
+      tests/<base>.rs hard-fails scripts/check-harness-baseline-registration.sh:99-135
+      (reason=unregistered-standalone) via verify.sh:2014. Grandfathering is SUPERSEDED
+      (harness-layout-baseline.manifest:30-38). PATH BOUND: crates/reify-compiler/tests/harness_units/unit_label_round_trip.rs
+      behind a harness_units.rs root'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: harness_units
+      paths:
+      - crates/reify-compiler/tests/harness_units.rs
+      expect: present
+  - name: drift-guard-registrations-not-needed
+    binding: VERIFIED, not assumed — tests/infra/run-all-classification.manifest has
+      0 rows matching crates/ (run-all-classification-lib.sh:174-177 never walks crates/);
+      scripts/heavy-test-filter-lib.sh:48 REIFY_HEAVY_NEXTEST_FILTER does not name
+      reify-compiler; .config/nextest.toml overrides are a closed 5-item list; tests/infra/test_no_new_wallclock_upper_bounds.sh:107
+      scans "$dir"/*.sh only. The leaf must RUN both guard scripts in its diff rather
+      than assert this
+    verdict: PASS
+  - name: producers-upstream
+    binding: DAG-direction — producers κ and λ upstream via hard edges; θ/η reach
+      μ transitively through λ ← θ ← η
+    verdict: PASS
+- label: ξ
+  task_id: 5790
+  title: Doc-chunk update (units.md / geometry.md / stdlib.md), registry-verified
+  capabilities:
+  - name: chunks-are-stale
+    binding: capability→producer (this leaf) — grep:crates/reify-mcp/src/tools/chunks/units.md:36
+      "35 standard named dimensions" (real 51, 52 after η); :50 "Angle as Base Dimension"
+      asserts the torque/energy catch without telling the author how to spell either
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 35 standard named dimensions
+      paths:
+      - crates/reify-mcp/src/tools/chunks/units.md
+      expect: absent
+  - name: display-vocabulary-change-documented
+    binding: consumer obligation from λ (manifest C10) — the @display accepted rung
+      vocabulary changes from mm² to mm^2; ξ documents it
+    verdict: PASS
+  - name: signatures-compile-verbatim
+    binding: doc-chunk truth gate — every documented signature/literal must compile
+      as written in a smoke .ri
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the doc-chunk truth gate is the assertion; no standalone pattern
+- label: ο
+  task_id: 5792
+  title: Best-practices exemplar angles_and_torque.ri + INDEX row; de-stale unit_expressions.ri
+  capabilities:
+  - name: corpus-and-bidirectional-gate-exist
+    binding: capability→producer (this leaf) — examples/best_practices/ holds 7 files
+      incl. INDEX.md and bolt_circle.ri (INDEX.md:43 row); gate crates/reify-compiler/tests/examples_smoke.rs
+      + best_practices_index_matches_corpus_directory
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: angles_and_torque
+      paths:
+      - examples/best_practices/INDEX.md
+      expect: present
+  - name: program-gap-b
+    binding: 'PROGRAM GAP (b) — grep:examples/unit_expressions.ri:10 (comment "ENERGY;
+      Torque not a named alias") and :19 (param torque : Energy = 5kN*m) go stale
+      the moment η lands; the exemplar would actively teach the thing ι''s diagnostic
+      exists to correct'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Torque not a named alias
+      paths:
+      - examples/unit_expressions.ri
+      expect: absent
+  - name: unit-expressions-is-runtime-coupled
+    binding: unlisted premise — grep:crates/reify-eval/tests/unit_expressions_e2e.rs:20
+      loads examples/unit_expressions.ri by path; crates/reify-compiler/tests/materials_fea_tests.rs:274-280
+      cites its :17. Edits must keep both green
+    verdict: PASS
+- label: π
+  task_id: 5793
+  title: reify-design cheatsheet index line for angles + torque
+  capabilities:
+  - name: cheatsheet-anchors
+    binding: capability→producer (this leaf) — grep:.claude/skills/reify-design/SKILL.md:53
+      ("**Quantities:** number + unit…") and :135 ("**Always units** on physical quantities")
+      both currently frame bare quantities as discouraged, not rejected
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: angles_and_torque
+      paths:
+      - .claude/skills/reify-design/SKILL.md
+      expect: present
+  - name: index-line-not-inline-playbook
+    binding: overlay docs-truth rule 3 — a one-line index entry pointing at ο's file
+    verdict: PASS
+- label: ρ
+  task_id: 5794
+  title: Discoverability acceptance (integration gate for Phase 4)
+  capabilities:
+  - name: goal-level-findability
+    binding: overlay docs-truth rule 4 (B12) — an author who knows the goal ("rotate
+      this 45 degrees", "give this a torque rating") but not the feature name finds
+      the deg/rad rule and Nm from chunks/units.md + examples/best_practices/INDEX.md
+      without reading compiler source
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: executed as a scripted grep-and-read acceptance whose transcript is
+        the artifact; not expressible as a single repo pattern
+  - name: producers-upstream
+    binding: DAG-direction — ξ, ο, π all upstream via hard edges
+    verdict: PASS
+- label: σ
+  task_id: 5796
+  title: B+H integration gate — the §9 two-way boundary suite (rows B1-B4, B7-B10)
+  capabilities:
+  - name: g5-integration-gate
+    binding: 'G5 COMPLIANCE (manifest C14) — the PRD is B+H but §12 assigns only B5/B6
+      (μ), B11 (ν) and B12 (ρ) to a leaf; rows B1, B2, B2b, B3, B4, B7, B8, B9, B10
+      had no owner. Mirrors sibling PRD 1 task 5761. Headline row: B2b, the two-way
+      PRD1↔PRD3 seam test'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: revolve_full
+      paths:
+      - crates/reify-eval/tests
+      expect: present
+  - name: every-row-substrate-bound
+    binding: capability→producer — every row's substrate is bound in this manifest's
+      per-leaf tables; all producers (γ, δ, ε, ζ, ν, η, θ, ι, κ, λ, μ) are upstream
+      via hard edges
+    verdict: PASS
+  - name: harness-layout-ratchet
+    binding: manifest C3 applies to reify-eval too (harness-layout-lib.sh:80-82) —
+      a new standalone tests/<base>.rs in reify-eval / reify-compiler / reify-cli
+      / reify-syntax / reify-kernel-occt is a blocked construction; land under harness_<subsystem>/
+    verdict: PASS
+  - name: drift-guard
+    binding: same verification as μ — no run-all-classification / nextest / wallclock
+      row is needed for a crates/*/tests integration binary; RUN both guard scripts
+      in the diff to prove it
+    verdict: PASS
