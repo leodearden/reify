@@ -563,26 +563,87 @@ fn assert_no_cross_module_name_collisions(modules: &[CompiledModule]) {
 
     let mut collisions: Vec<NameCollision> = Vec::new();
 
-    // Structure / occurrence templates. Keyed by (kind, name) so the two kinds
-    // occupy separate namespaces — `structure def Planar` (kinematic.ri) and
-    // `trait Planar {}` (geometry_traits.ri) coexist on main today, and a
-    // kind-agnostic key would force an out-of-scope rename.
-    let mut templates: HashMap<(&str, &str), String> = HashMap::new();
-    for module in modules {
-        let module_name = dotted(&module.path);
-        for template in &module.templates {
-            let kind = template.entity_kind.as_label();
-            match templates.get(&(kind, template.name.as_str())) {
-                Some(first) => collisions.push(NameCollision {
-                    kind,
-                    name: template.name.clone(),
-                    first_module: first.clone(),
-                    second_module: module_name.clone(),
-                }),
-                None => {
-                    templates.insert((kind, template.name.as_str()), module_name.clone());
-                }
+    // One map for every kind. The key is (kind, dedup_key) so each kind gets its
+    // OWN namespace — `structure def Planar` (kinematic.ri:163) and
+    // `trait Planar {}` (geometry_traits.ri:56) coexist on main today, and a
+    // kind-agnostic key would force an out-of-scope rename. `dedup_key` is the
+    // declared name for every kind except functions (see below).
+    let mut seen: HashMap<(&'static str, String), String> = HashMap::new();
+
+    let mut record = |kind: &'static str, dedup_key: String, name: &str, module: &str| {
+        match seen.get(&(kind, dedup_key.clone())) {
+            Some(first) => collisions.push(NameCollision {
+                kind,
+                name: name.to_string(),
+                first_module: first.clone(),
+                second_module: module.to_string(),
+            }),
+            None => {
+                seen.insert((kind, dedup_key), module.to_string());
             }
+        }
+    };
+
+    for module in modules {
+        let m = dotted(&module.path);
+
+        // Templates carry their own kind label so `structure` and `occurrence`
+        // are distinguishable in the message; derived, never hard-coded.
+        for t in &module.templates {
+            record(t.entity_kind.as_label(), t.name.clone(), &t.name, &m);
+        }
+        for e in &module.enum_defs {
+            record("enum", e.name.clone(), &e.name, &m);
+        }
+        for t in &module.trait_defs {
+            record("trait", t.name.clone(), &t.name, &m);
+        }
+        for u in &module.units {
+            record("unit", u.name.clone(), &u.name, &m);
+        }
+        // Type aliases: `is_pub`-filtered, mirroring the filter the existing
+        // PreludeContext alias-collision path already applies, so the new Error
+        // and the pre-existing Warning agree on what counts as a collision.
+        //
+        // CRITICAL: read this vector, never the syntax. `type_aliases` holds
+        // MODULE-LEVEL aliases only. Associated types declared inside a
+        // trait/structure body (`type MotionValue` in `trait HasMotion`,
+        // kinematic.ri:110,133,151,198) are members of their template and are
+        // correctly absent here. A syntactic scan sees four `MotionValue`s and
+        // panics the real stdlib build immediately.
+        for a in module.type_aliases.iter().filter(|a| a.is_pub) {
+            record("type alias", a.name.clone(), &a.name, &m);
+        }
+        for c in &module.constraint_defs {
+            record("constraint def", c.name.clone(), &c.name, &m);
+        }
+        for p in &module.compiled_purposes {
+            record("purpose", p.name.clone(), &p.name, &m);
+        }
+        for f in &module.fields {
+            record("field", f.name.clone(), &f.name, &m);
+        }
+        // Functions key on (name, SIGNATURE) because cross-module overloads are
+        // legitimate and live: `unwrap_or`, `or_else` and `fallback` are each
+        // declared in both option_recovery.ri and result.ri with a different
+        // first-parameter type. A name-only key panics the real stdlib build on
+        // all three pairs.
+        //
+        // The signature is the param TYPES in order (names excluded — renaming a
+        // param must not manufacture a false overload) plus the return type.
+        // Deliberately NOT `content_hash`, which is also available on
+        // CompiledFunction: it hashes the BODY, so two functions with an
+        // identical signature and different bodies would key apart and the
+        // collision would be missed — precisely the silent-first-wins hole this
+        // gate exists to close.
+        for f in &module.functions {
+            let sig = format!(
+                "{}({:?}) -> {:?}",
+                f.name,
+                f.params.iter().map(|(_, ty)| ty).collect::<Vec<_>>(),
+                f.return_type
+            );
+            record("function", sig, &f.name, &m);
         }
     }
 
