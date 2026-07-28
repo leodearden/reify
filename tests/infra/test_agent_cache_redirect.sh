@@ -23,6 +23,7 @@
 #   E — fail-open on absent/unusable sources
 #   F — tmpfiles age-clean exclusion (Fix B): content, idempotence, fail-open
 #   G — desync guard: the conf's paths ARE the seeder's destinations
+#   H — boot persistence: the --user oneshot, and --seed-only mode separation
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob; declared
 # `pool` in tests/infra/run-all-classification.manifest.
@@ -689,5 +690,118 @@ assert "G3: conf paths == seeder destinations, exactly (no drift, no extras)" \
         seed_side="$(find "$2" -mindepth 1 -maxdepth 1 -type d | sort)"
         [ -n "$conf_side" ] && [ "$conf_side" = "$seed_side" ]
     ' _ "$G_CONF" "$CACHE_ROOT"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block H — boot persistence + mode separation
+#
+# WHY THE UNIT EXISTS, given Block F already wrote `x` lines: the two cover
+# DIFFERENT tmpfiles mechanisms.  /usr/lib/tmpfiles.d/tmp.conf's
+# `D /tmp 1777 root root 30d` empties /tmp at every boot via `--remove`, and
+# `x` provably does not exclude a path from that — only from the age-based
+# `--clean`.  Without this oneshot the pre-seed dies at the first reboot and
+# the first dependency-touching agent run pays a full cold start on a live
+# task's critical path, silently.
+#
+# Ordering is guaranteed rather than incidental: user units start after the
+# system manager's basic.target, which is ordered after sysinit.target and
+# therefore after systemd-tmpfiles-setup.service — so the re-seed provably runs
+# AFTER the wipe rather than racing it.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block H: boot persistence + mode separation ---"
+
+make_fake_home
+make_cache_root
+H_XDG="$(mktemp -d "$_TMPBASE/test-agent-cache-xdg-XXXXXX")"
+_TMPDIRS+=("$H_XDG")
+H_UNIT="$H_XDG/systemd/user/reify-agent-caches.service"
+
+_REDIRECT_ENV=("XDG_CONFIG_HOME=$H_XDG")
+reset_calls
+run_redirect
+
+assert "H1: full-mode run exits 0" test "$RC" -eq 0
+assert "H2: unit installed at \$XDG_CONFIG_HOME/systemd/user/reify-agent-caches.service" \
+    test -f "$H_UNIT"
+assert "H3: unit declares Type=oneshot" \
+    bash -c 'grep -q "^Type=oneshot$" "$1"' _ "$H_UNIT"
+assert "H4: unit declares RemainAfterExit=yes" \
+    bash -c 'grep -q "^RemainAfterExit=yes$" "$1"' _ "$H_UNIT"
+assert "H5: unit orders itself Before=orchestrator-reify.service" \
+    bash -c 'grep -q "^Before=orchestrator-reify.service$" "$1"' _ "$H_UNIT"
+assert "H6: unit declares WantedBy=default.target" \
+    bash -c 'grep -q "^WantedBy=default.target$" "$1"' _ "$H_UNIT"
+
+# Nothing may Requires= this unit: a failed seed must degrade to today's
+# cold-start behaviour, not block the orchestrator from starting.  Same
+# fail-open posture as the warm-lane units.
+assert "H7: unit does NOT hard-require anything (fail-open ordering only)" \
+    bash -c '! grep -q "^Requires=" "$1"' _ "$H_UNIT"
+
+# THE assertion of this block: ExecStart is the script's own ABSOLUTE path
+# followed by --seed-only.  --seed-only is what makes the boot path
+# unprivileged — a boot-time unit that tried to sudo from a non-interactive
+# --user context would hang or fail on every boot.
+assert "H8: ExecStart is this script's absolute path plus --seed-only" \
+    bash -c '[ "$(grep "^ExecStart=" "$1" | head -1)" = "ExecStart=$2 --seed-only" ]' \
+    _ "$H_UNIT" "$SCRIPT"
+
+assert "H9: systemctl --user daemon-reload was called" \
+    bash -c 'grep -q "systemctl --user daemon-reload" "$1"' _ "$CALLS_FILE"
+assert "H10: systemctl --user enable naming the unit was called" \
+    bash -c 'grep -qE "systemctl --user enable.*reify-agent-caches.service" "$1"' _ "$CALLS_FILE"
+assert "H11: daemon-reload precedes enable in call order" \
+    bash -c '
+        reload_ln=$(grep -n "daemon-reload" "$1" | head -1 | cut -d: -f1)
+        enable_ln=$(grep -n "enable.*reify-agent-caches.service" "$1" | head -1 | cut -d: -f1)
+        [ -n "$reload_ln" ] && [ -n "$enable_ln" ] && [ "$reload_ln" -lt "$enable_ln" ]
+    ' _ "$CALLS_FILE"
+
+# ── fail-open: no systemd --user bus (CI, a container) ────────────────────────
+make_fake_home
+make_cache_root
+H_XDG_NOBUS="$(mktemp -d "$_TMPBASE/test-agent-cache-xdg-nobus-XXXXXX")"
+_TMPDIRS+=("$H_XDG_NOBUS")
+
+_REDIRECT_ENV=("XDG_CONFIG_HOME=$H_XDG_NOBUS" "REIFY_TEST_NO_USER_BUS=1")
+reset_calls
+run_redirect
+_REDIRECT_ENV=()
+
+assert "H12: exits 0 with no systemd --user bus (fail-open)" test "$RC" -eq 0
+assert "H13: warns about the missing --user bus" \
+    bash -c 'printf "%s\n%s\n" "$1" "$2" | grep -qiE "WARN.*(bus|systemd|skip)"' \
+    _ "$OUT" "$ERR_OUT"
+assert "H14: NO daemon-reload attempted without a bus" \
+    bash -c '! grep -q "daemon-reload" "$1"' _ "$CALLS_FILE"
+assert "H15: NO enable attempted without a bus" \
+    bash -c '! grep -q "enable" "$1"' _ "$CALLS_FILE"
+
+# ── mode separation, asserted from the OTHER direction ────────────────────────
+# The boot unit depends on --seed-only being genuinely unprivileged: zero sudo,
+# zero systemctl, no unit write, no conf write — while still seeding.  Asserting
+# it here (rather than trusting the flag) is what makes H8's claim meaningful.
+make_fake_home
+make_cache_root
+H_XDG_SEED="$(mktemp -d "$_TMPBASE/test-agent-cache-xdg-seed-XXXXXX")"
+_TMPDIRS+=("$H_XDG_SEED")
+H_SEED_CARGO_DEST="$CACHE_ROOT/reify-agent-cargo-home"
+
+_REDIRECT_ENV=("XDG_CONFIG_HOME=$H_XDG_SEED")
+reset_calls
+run_redirect --seed-only
+_REDIRECT_ENV=()
+
+assert "H16: --seed-only exits 0" test "$RC" -eq 0
+assert "H17: --seed-only invoked ZERO sudo" \
+    bash -c '! grep -q "^sudo " "$1"' _ "$CALLS_FILE"
+assert "H18: --seed-only invoked ZERO systemctl" \
+    bash -c '! grep -q "^systemctl " "$1"' _ "$CALLS_FILE"
+assert "H19: --seed-only wrote no systemd unit" \
+    test ! -e "$H_XDG_SEED/systemd/user/reify-agent-caches.service"
+assert "H20: --seed-only wrote no tmpfiles conf" \
+    test ! -e "$TMPFILES_DIR/reify-agent-caches.conf"
+assert "H21: --seed-only DID still seed (the mode is not a no-op)" \
+    test -f "$H_SEED_CARGO_DEST/registry/cache/alpha-1.0.0.crate"
 
 test_summary
