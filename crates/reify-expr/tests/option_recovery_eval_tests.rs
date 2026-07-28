@@ -45,6 +45,14 @@ fn val_10mm() -> Value {
     }
 }
 
+/// 3mm — the `or_else` alternative value, used by the task-5584 `or_else` e2e guard.
+fn val_3mm() -> Value {
+    Value::Scalar {
+        si_value: 0.003,
+        dimension: DimensionVector::LENGTH,
+    }
+}
+
 fn expr_5mm() -> CompiledExpr {
     CompiledExpr::literal(val_5mm(), Type::length())
 }
@@ -459,6 +467,26 @@ fn or_else_undef_subject_returns_undef() {
         eval_simple(&call),
         Value::Undef,
         "or_else(undef, some(3mm)) must propagate Undef (INV-2)"
+    );
+}
+
+// ── task 5584 (PRD ζ / BT10): stdlib-compiled or_else guard ──────────────────
+
+#[test]
+fn e2e_or_else_none_subject_with_stdlib() {
+    let module = reify_test_support::compile_source_with_stdlib(
+        "structure S { param o : Option<Length> = none  let v = or_else(o, some(3mm)) }",
+    );
+    let expr = reify_test_support::get_let_expr(&module, "v");
+    let mut values = ValueMap::new();
+    values.insert(ValueCellId::new("S", "o"), Value::Option(None));
+    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    assert_eq!(
+        reify_expr::eval_expr(expr, &ctx),
+        Value::Option(Some(Box::new(val_3mm()))),
+        "e2e: or_else(o, some(3mm)) compiled via stdlib, with subject param o seeded to \
+         none, must evaluate to some(3mm) — if the intercept stops firing this falls \
+         through to eval_user_function_call and yields Undef"
     );
 }
 
