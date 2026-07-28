@@ -33,11 +33,18 @@
 # decision is made at build time, so --print-plan is a faithful oracle of
 # whether the `-E` subset applied. Command-shape assertions that depend on
 # nextest being installed are guarded on a NEXTEST_AVAILABLE probe of the plan
-# header's `nextest=` token (sibling idiom, test_verify_test_threads.sh);
-# host-independent invariants (byte-identical default; the loud stderr lines,
-# added by later steps) are asserted unconditionally. Temp sidecar / filter
-# files are pointed at via the REIFY_VERIFY_ATTEMPT_SIDECAR /
+# header's `nextest=` token (sibling idiom, test_verify_test_threads.sh).
+# Host-independent invariants — the byte-identical default and Test 2's
+# tree-drift loud line — are asserted unconditionally; Test 3/4's 'no subset'
+# / 'subset too large' loud lines only exist on the nextest path (NEXTEST-
+# guarded) — a nextest-less host short-circuits to the single 'retry refused:
+# no nextest' line instead (verify.sh, gated on _RETRY_SUBSET_ELIGIBLE),
+# asserted in the else arms. Temp sidecar / filter files are pointed at via
+# the REIFY_VERIFY_ATTEMPT_SIDECAR /
 # REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE* envs for full hermeticity.
+#
+# Pinned mechanically by S9 in tests/infra/test_verify_nextest_absent_suites.sh
+# (floor 16).
 #
 # Mirrors:
 #   - tests/infra/test_verify_test_threads.sh (task 5264) — the direct
@@ -79,6 +86,29 @@ case "$_HEADER" in
     *"nextest=1"*) NEXTEST_AVAILABLE=1 ;;
 esac
 echo "(nextest available on this host: $NEXTEST_AVAILABLE)"
+
+# Shared fallback-refusal helper for the 5 host-guarded 'retry refused' STDERR
+# asserts below (_assert_no_subset_loud's else arm + both Test 4 ceiling else
+# arms). Byte-identical across every case: probed empirically, all five emit
+# exactly `verify.sh: retry refused: no nextest — cargo-test fallback has no -E
+# filterset support (full verify)` and nothing else, because every fixture
+# here uses the matching deadbeef sidecar (tree-OID eligibility=1). Matches
+# the bare-substring style of the sibling 'retry refused: no subset' asserts;
+# the four refusal reasons have distinct suffixes so there is no cross-
+# matching risk.
+_err_has_no_nextest_refusal() {
+    printf '%s\n' "$1" | grep -qF -- "retry refused: no nextest"
+}
+
+# Compound variant for Test 4(b)'s else arm below — the "vacuity twin": on the
+# fallback host the plain negative ("no 'subset too large' line") passes for
+# the wrong reason, because the too-large path never ran at all. Anding in the
+# positive fallback-line conjunct makes the assert genuinely host-appropriate:
+# it goes red if verify.sh's own loud line were ever suppressed.
+_err_no_nextest_refusal_and_not_too_large() {
+    _err_has_no_nextest_refusal "$1" \
+        && ! printf '%s\n' "$1" | grep -qF -- "retry refused: subset too large"
+}
 
 # ---------------------------------------------------------------------------
 # Test 1: SUBSET APPLICATION + TREE-OID ELIGIBILITY GATE + DEFAULT-INVARIANT.
@@ -170,8 +200,11 @@ assert "absent sidecar under scope=failed_only: STDERR carries 'retry refused: t
 # sidecar (so the tree-OID gate is satisfied), a filter file that is absent /
 # empty / unset must ALSO refuse the subset loudly (distinct 'retry refused: no
 # subset' substring) and run FULL — never a silent whole-suite run masquerading
-# as a subset. Fragment-absence is NEXTEST-guarded (command shape); the loud
-# line is host-independent (unconditional).
+# as a subset. Both the fragment-absence check and the 'no subset' loud line
+# only apply on the nextest path (NEXTEST-guarded); on a nextest-less host
+# verify.sh short-circuits to the single 'retry refused: no nextest' line
+# instead (verify.sh, gated on _RETRY_SUBSET_ELIGIBLE), which the else arm of
+# _assert_no_subset_loud asserts.
 # RED after impl-tree-drift-loud: an absent/empty/unset filter already yields no
 # fragment, but no loud line.
 # ---------------------------------------------------------------------------
@@ -186,10 +219,13 @@ _assert_no_subset_loud() {
         assert "no-subset ($_label): debug nextest line has NO test(= fragment (full pass)" \
             bash -c '! printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -qF -- "test(="' \
             _ "$_plan"
+        assert "no-subset ($_label): STDERR carries 'retry refused: no subset'" \
+            bash -c 'printf "%s\n" "$1" | grep -qF -- "retry refused: no subset"' \
+            _ "$_err"
+    else
+        assert "no-subset ($_label), nextest unavailable: STDERR carries the fallback refusal 'retry refused: no nextest'" \
+            _err_has_no_nextest_refusal "$_err"
     fi
-    assert "no-subset ($_label): STDERR carries 'retry refused: no subset'" \
-        bash -c 'printf "%s\n" "$1" | grep -qF -- "retry refused: no subset"' \
-        _ "$_err"
 }
 
 _ERR="$_TMP/err.txt"
@@ -246,10 +282,13 @@ if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
     assert "ceiling (4 IDs > 3): debug nextest line has NO test(= fragment (full pass)" \
         bash -c '! printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -qF -- "test(="' \
         _ "$PLAN_BIG"
+    assert "ceiling (4 IDs > 3): STDERR carries 'retry refused: subset too large'" \
+        bash -c 'printf "%s\n" "$1" | grep -qF -- "retry refused: subset too large"' \
+        _ "$ERR_BIG"
+else
+    assert "ceiling (4 IDs > 3), nextest unavailable: STDERR carries the fallback refusal 'retry refused: no nextest'" \
+        _err_has_no_nextest_refusal "$ERR_BIG"
 fi
-assert "ceiling (4 IDs > 3): STDERR carries 'retry refused: subset too large'" \
-    bash -c 'printf "%s\n" "$1" | grep -qF -- "retry refused: subset too large"' \
-    _ "$ERR_BIG"
 
 # (b) 2 IDs with ceiling=3 ⇒ 2 <= 3 ⇒ subset applies, no 'too large' line.
 PLAN_SMALL="$(REIFY_VERIFY_RETRY_SCOPE=failed_only REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
@@ -266,10 +305,13 @@ if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
     assert "ceiling (2 IDs <= 3): debug nextest line carries the subset test(=$ID2)" \
         bash -c 'printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -qF -- "test(=$2)"' \
         _ "$PLAN_SMALL" "$ID2"
+    assert "ceiling (2 IDs <= 3): STDERR has NO 'retry refused: subset too large' line" \
+        bash -c '! printf "%s\n" "$1" | grep -qF -- "retry refused: subset too large"' \
+        _ "$ERR_SMALL"
+else
+    assert "ceiling (2 IDs <= 3), nextest unavailable: STDERR carries 'retry refused: no nextest' AND still has NO 'subset too large' line" \
+        _err_no_nextest_refusal_and_not_too_large "$ERR_SMALL"
 fi
-assert "ceiling (2 IDs <= 3): STDERR has NO 'retry refused: subset too large' line" \
-    bash -c '! printf "%s\n" "$1" | grep -qF -- "retry refused: subset too large"' \
-    _ "$ERR_SMALL"
 
 # ---------------------------------------------------------------------------
 # Test 5: PER-PROFILE filter precedence (_DEBUG / _RELEASE) with base fallback.
