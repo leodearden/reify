@@ -2296,6 +2296,10 @@ assert "P3c: build/cxx-AAAA/output WAS relocated in this same run (guards non-va
 # 75 forever, and it is the differential partner of (a) — same fixture, same
 # held lock, the flag the only difference — so the pair proves the flag is the
 # sole cause of the rc change rather than merely restating H1.
+# H12 (task 5568, NEW) extends that same contract to the BOUNDED-QUEUE timeout
+# arm (flock -w N), with its own compat pin: both refusal arms share ONE rc,
+# because both have the identical cause (a live consumer holds the lane lock)
+# and the identical remediation.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block Q: acquisition-time lane-lock exclusivity (--lane-lock) ---"
@@ -3170,6 +3174,84 @@ assert "H11d: flag + --assume-lane-lock-held → stderr carries NO unknown-argum
 
 kill "$Q_LOCK18_PID" 2>/dev/null || true
 wait "$Q_LOCK18_PID" 2>/dev/null || true
+
+# ── H12: the SAME rc contract on the BOUNDED-QUEUE timeout arm (task 5568).
+# H11 covers the flock -n immediate refusal; this covers flock -w N timing
+# out. Both arms have the IDENTICAL cause (a live consumer holds
+# ${LANE_DIR}.lock) and the IDENTICAL remediation, so they must share ONE rc
+# rather than being split into two codes the classifier would not act on
+# differently. (A timeout code already exists where it IS actionable:
+# dark-factory's own outer flock uses -E 124 for a wedged holder of the lock
+# DF itself takes — a different acquisition by a different process. A second
+# timeout code inside seed would shadow it confusingly.) ────────────────────
+
+# H12a: lock HELD + WAIT=1 + the flag → 77 after the bounded wait elapsed.
+# The SECONDS check is a plain LOWER bound (-ge, never -le/-lt): it proves the
+# run queued rather than refusing instantly like H11a, and it cannot flake,
+# because a slower host only ever makes an elapsed queued wait LONGER.
+# (tests/infra/test_no_new_wallclock_upper_bounds.sh flags -le/-lt time
+# comparisons for exactly this reason — same idiom and rationale as H5a.)
+Q_LANE19="$(make_isolated_lane Q-lane19)"
+mkdir -p "$Q_LANE19/target"
+echo "sentinel content" > "$Q_LANE19/target/SENTINEL.txt"
+
+Q_LOCK19="${Q_LANE19}.lock"
+_TMPDIRS+=("$Q_LOCK19")
+Q_READY19="${Q_LOCK19}.ready-marker"
+_TMPDIRS+=("$Q_READY19")
+touch "$Q_LOCK19"
+( flock -x 9 && touch "$Q_READY19" && sleep 300 ) 9>"$Q_LOCK19" &
+Q_LOCK19_PID=$!
+_BGPIDS+=("$Q_LOCK19_PID")
+_wait_for_reader_lock "$Q_READY19" 30
+
+reset_calls
+SECONDS=0
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_LANE_LOCK_WAIT=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE19" --fresh-checkout --lane-lock "$Q_H11_FLAG"
+Q_H12A_WAITED_S=$SECONDS
+
+assert "H12a: queue timeout + --distinct-lock-refusal-rc → exit 77 (same rc as the flock -n arm; one cause, one code)" \
+    test "$RC" -eq 77
+assert "H12a: bounded wait actually elapsed (queued, not an instant refuse like H11a)" \
+    test "$Q_H12A_WAITED_S" -ge 1
+assert "H12a: sentinel file in <lane>/target still present (lane NOT clobbered)" \
+    test -f "$Q_LANE19/target/SENTINEL.txt"
+assert "H12a: cp NEVER invoked (refused before clone)" \
+    bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
+kill "$Q_LOCK19_PID" 2>/dev/null || true
+wait "$Q_LOCK19_PID" 2>/dev/null || true
+
+# H12b: COMPAT PIN for the queue arm — same fixture, same WAIT=1, flag ABSENT
+# → 75 unchanged. H11b's guarantee, extended to the second refusal arm: both
+# arms must keep today's default so an unpatched dark-factory is unaffected.
+Q_LANE20="$(make_isolated_lane Q-lane20)"
+mkdir -p "$Q_LANE20/target"
+echo "sentinel content" > "$Q_LANE20/target/SENTINEL.txt"
+
+Q_LOCK20="${Q_LANE20}.lock"
+_TMPDIRS+=("$Q_LOCK20")
+Q_READY20="${Q_LOCK20}.ready-marker"
+_TMPDIRS+=("$Q_READY20")
+touch "$Q_LOCK20"
+( flock -x 9 && touch "$Q_READY20" && sleep 300 ) 9>"$Q_LOCK20" &
+Q_LOCK20_PID=$!
+_BGPIDS+=("$Q_LOCK20_PID")
+_wait_for_reader_lock "$Q_READY20" 30
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_LANE_LOCK_WAIT=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE20" --fresh-checkout --lane-lock
+# NOTE: no --distinct-lock-refusal-rc above -- that omission IS the test.
+
+assert "H12b: COMPAT PIN — queue timeout, flag ABSENT → exit 75 unchanged" \
+    test "$RC" -eq 75
+assert "H12b: COMPAT PIN — sentinel survives (default queue-refusal path otherwise unchanged)" \
+    test -f "$Q_LANE20/target/SENTINEL.txt"
+
+kill "$Q_LOCK20_PID" 2>/dev/null || true
+wait "$Q_LOCK20_PID" 2>/dev/null || true
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block S — relocation sweep must not advance build-script freshness references
