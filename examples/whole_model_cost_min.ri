@@ -1,0 +1,189 @@
+module whole_model_cost_min
+
+// Example: WHOLE-MODEL COST MINIMISATION — a parent's single cost objective
+// jointly drives TWO coupled children's auto dimensions in one merged solve,
+// instead of each child freezing bottom-up first and the parent merely
+// reading two already-frozen results.
+//
+// See `docs/prds/v0_6/whole-model-objective-coupling.md` §1.1/§6 (BT3, BT4),
+// its capability manifest `whole-model-objective-coupling.capability-manifest.md`
+// (ε block), and `docs/prds/v0_6/whole-model-joint-drive-seam.md` (tasks #5188
+// α, #5334 δ, #5189 β, #5017 ε — this file) for the design rationale.
+//
+// # The shape
+//
+//   CostAssembly
+//     sub plate  = Plate()                 — Costed, one free auto
+//     sub spacer = Spacer()                — Costed, one free auto (a DIFFERENT structure)
+//     minimize cost(self.descendants)      — INLINED aggregate (load-bearing), spans BOTH children
+//
+// Unlike the single-child `examples/whole_model_joint_drive.ri`, this fixture
+// couples TWO DISTINCT Costed children into ONE cluster — a genuinely
+// WHOLE-model gate (§6 BT1's shape), not a restatement of that single-child
+// boundary test.
+//
+// `Plate`/`Spacer` each implement the stdlib `Costed` trait
+// (crates/reify-compiler/stdlib/io.ri), which supplies the derived cell
+//
+//     let line_cost : Money = unit_cost * quantity_produced
+//
+// Neither may re-declare `line_cost` — that derived cell IS the coupling the
+// whole seam drives through.  `cost(self.descendants)` expands to
+// `[CostAssembly.plate.line_cost, CostAssembly.spacer.line_cost].sum`, so the
+// parent's objective reads TWO cells, each a function of its own child's auto.
+//
+// # Merged vs. frozen — the hand-derived arithmetic
+//
+// Each auto is bracketed by a NON-DEGENERATE box, and the two children are
+// given DIFFERENT unit_costs and DIFFERENT box widths so neither child's
+// contribution is a scaled copy of the other's:
+//
+//   Plate:  0.0 ≤ quantity_produced ≤ 100.0,  unit_cost = 0.50USD
+//   Spacer: 0.0 ≤ quantity_produced ≤  40.0,  unit_cost = 2.25USD
+//
+// `line_cost = unit_cost × quantity_produced` is strictly increasing in the
+// auto over both intervals.
+//
+//   FROZEN CASCADE (the same model with the parent's `minimize` removed):
+//     No cluster forms, so `Plate` and `Spacer` each resolve ALONE, bottom-up,
+//     with no user objective.  Each still has live inequality constraints, so
+//     the solver synthesises a per-child Chebyshev-centre objective
+//     (`build_centrality_objective`, crates/reify-constraints/src/solver.rs)
+//     and each auto freezes at its OWN box centre:
+//       Plate:  quantity_produced → 50.0        ((0.0 + 100.0) / 2)
+//               line_cost         → 25.00 USD    (0.50 × 50.0)
+//       Spacer: quantity_produced → 20.0         ((0.0 +  40.0) / 2)
+//               line_cost         → 45.00 USD    (2.25 × 20.0)
+//     Whole-assembly total: 25.00 + 45.00 = 70.00 USD.
+//
+//   MERGED (this file, with the `minimize`):
+//     `compute_clusters`' union-find merges {CostAssembly, Plate, Spacer} into
+//     ONE cluster (each child contributes an objective-read → auto-owner edge),
+//     dimension 2 — far below `WHOLE_MODEL_CLUSTER_DIM_CAP` (12).  Both autos
+//     are resolved INSIDE the parent's problem under the parent's Money
+//     objective.  No centrality objective is synthesised (the solver only
+//     synthesises one when the problem carries no user objective), so the
+//     freeze-at-the-centre outcome is gone for BOTH children and
+//     cost-minimisation governs instead:
+//       Plate:  quantity_produced → 0.01        line_cost → 0.005  USD  (0.50 × 0.01)
+//       Spacer: quantity_produced → 0.01        line_cost → 0.0225 USD  (2.25 × 0.01)
+//     Whole-assembly total: 0.005 + 0.0225 = 0.0275 USD.
+//
+// ## Why the merged figures are the SEED, not the exact argmin
+//
+// A linear Money objective's argmin sits exactly ON a constraint boundary, and
+// the solver's penalty method has a stationary point offset INSIDE the penalty
+// by `objective_gradient / (2 × PENALTY_WEIGHT)` ≈ 2.5e-7 — far above
+// `FEASIBILITY_THRESHOLD` (1e-12).  The converged point therefore reads as
+// infeasible and `solve_core` returns its `initially_feasible` fallback: the
+// seed `extract_initial_point` supplies (0.01 for an unbounded dimensionless
+// auto).  Same documented eval-layer behaviour as
+// `examples/whole_model_joint_drive.ri` and `examples/continuous_cost_min.ri`
+// — and why BOTH boxes' LOWER brackets must contain that seed: a lower bound
+// above 0.01 puts the seed outside the floored window and the solve reports
+// `RobustnessFloorInfeasible` instead.
+//
+// The user-observable signal is therefore the GOVERNANCE change — each
+// child's auto and the whole-assembly total both drop sharply — not the
+// precise converged number.  Without the joint drive, the parent's cost
+// objective cannot reach either child's auto at all and each is pinned at the
+// arbitrary centre of its own feasible box.
+//
+// All published assertions are COMPARATIVE (strict inequality + strict
+// difference), never an absolute converged value — the numbers above are the
+// derivation, not the pins.
+//
+// # Reading the result
+//
+// A solver-resolved auto is written back STRUCTURE-KEYED (`Plate.quantity_produced`,
+// `Spacer.quantity_produced`), which is how the solver keys its `auto_params`;
+// the instance-path spelling (`CostAssembly.plate.quantity_produced`, etc.) is
+// not written for it in either half.  Read each child's own cells —
+// `Plate.quantity_produced`/`Plate.line_cost` and
+// `Spacer.quantity_produced`/`Spacer.line_cost` — for the structure-keyed
+// story.
+//
+// Integration test:
+//   crates/reify-eval/tests/joint_drive_expansion_boundary.rs (`mwhole_bt4_*`,
+//   `mwhole_bt3_*`) asserts (i) each child's auto resolves STRICTLY BELOW its
+//   frozen-cascade freeze, (ii) the merged whole-assembly cost is STRICTLY
+//   LESS than the frozen-cascade baseline — with that baseline derived
+//   in-test by evaluating this same model minus the `minimize`, never from a
+//   recorded constant — and (iii) a cross-scope surface read of each child's
+//   `line_cost` surfaces the CO-SOLVED value, not a frozen or Undef one.
+//
+// # TRAP — the aggregate MUST stay inlined in the `minimize`
+//
+// Writing `let subtree_cost : Money = cost(self.descendants)` + `minimize
+// subtree_cost` forms NO cluster: δ's C1 rule expands objective TERMS only,
+// while the non-auto cell map stores each cell's RAW unexpanded `default_expr`,
+// so an unexpanded `cost(self.descendants)` surfaces no `line_cost` read at
+// all.  That boundary is pinned executably by
+// `objective_must_inline_the_aggregate_to_couple`
+// (crates/reify-eval/src/resolve_order.rs).  `examples/cost_subtree_aggregate.ri`
+// is exactly that non-coupling `let` shape — do not copy its form here.
+//
+// # Why auto(free), not strict auto
+//
+// A strict `auto` triggers the uniqueness re-solve, and a `ConstraintNonUnique`
+// error would mask the cost signal this example exists to publish.  Same
+// reasoning, and the same house precedent, as `examples/continuous_cost_min.ri`
+// and `examples/whole_model_joint_drive.ri` — uniqueness is not the concern
+// here, the joint drive is.
+//
+// # One non-collection instance path per structure
+//
+// `Plate` and `Spacer` are each reachable by EXACTLY ONE non-collection
+// instance path (`sub plate = Plate()`, `sub spacer = Spacer()`).  Two subs of
+// the SAME structure, or a `List<T>` collection sub, would be DROPPED by
+// `build_single_instance_alias_paths` (N runtime paths would share one
+// template `default_expr`), killing the instance-path alias BT3 depends on —
+// this is why the fixture uses two DISTINCT Costed structures rather than two
+// instances of one.
+//
+// # v1 boundary
+//
+// DEPTH-1 Costed descendants only (see `examples/cost_subtree_aggregate.ri`),
+// and one auto per child — well inside the whole-model cluster dimension cap.
+
+structure def Plate : Costed {
+    param supplier          : String = "Acme Sheet Metal"
+    param part_number       : String = "P-1180"
+    param unit_cost         : Money  = 0.50USD
+    param lead_time         : Time   = 48h
+
+    // The joint-drive target.  Bracketed by a NON-DEGENERATE box so the
+    // cost-minimising direction and the frozen Chebyshev centre (50.0) are far
+    // apart — that separation is what makes the coupling observable.  The
+    // lower bracket must contain the solver's fixed 0.01 seed for a
+    // dimensionless auto; see the header's "Why the merged figures are the
+    // SEED" note.
+    param quantity_produced : Real   = auto(free)
+    constraint quantity_produced >= 0.0
+    constraint quantity_produced <= 100.0
+}
+
+structure def Spacer : Costed {
+    param supplier          : String = "Misumi"
+    param part_number       : String = "S-2240"
+    param unit_cost         : Money  = 2.25USD
+    param lead_time         : Time   = 72h
+
+    // A NARROWER, differently-priced box than Plate's — so the two children's
+    // contributions are not a scaled copy of one another and each auto is
+    // independently distinguishable in the eval result. Lower bracket still
+    // contains the 0.01 seed.
+    param quantity_produced : Real   = auto(free)
+    constraint quantity_produced >= 0.0
+    constraint quantity_produced <= 40.0
+}
+
+structure CostAssembly {
+    sub plate  = Plate()
+    sub spacer = Spacer()
+
+    // INLINED — never behind a `let`.  Spans BOTH children, which is what
+    // makes this a WHOLE-model cluster rather than two independent
+    // single-child solves.
+    minimize cost(self.descendants)
+}
