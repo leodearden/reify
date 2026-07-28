@@ -13831,6 +13831,64 @@ fn get_entity_tree_trait_geometry_follows_refinement_chain() {
     );
 }
 
+/// #5558 step-2 RED: the OTHER direction of the substring bug — a user trait
+/// merely NAMED like `Physical` must not be mistaken for it.
+///
+/// `PhysicalMock` neither IS `Physical` nor refines it (it declares no
+/// refinements at all), so `Mock.geometry` is not a trait-mandated geometry
+/// member. The substring form matches it purely on the spelling of the name.
+///
+/// The negative direction matters for the wire contract, not just tidiness: a
+/// spurious `trait_geometry == true` promotes an unrelated member in the
+/// frontend's auto-view heuristic, so a loose match is a user-visible defect
+/// rather than a harmless over-approximation.
+///
+/// Both nodes the binding emits (#4954) are asserted, since the flag is
+/// computed once and shared by the value-cell and realization branches (#5195).
+///
+/// Fails today: `"PhysicalMock".contains("Physical")` is `true`, so both nodes
+/// report `trait_geometry == true`.
+#[test]
+fn get_entity_tree_trait_geometry_rejects_lookalike_trait_name() {
+    let source = r#"trait PhysicalMock {
+    param geometry : Solid
+}
+structure def Mock : PhysicalMock {
+    param geometry : Solid = box(10mm, 10mm, 10mm)
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "mock").expect("load");
+
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "Mock")
+        .expect("Mock root must exist");
+
+    let geometry_cell = root
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Mock.geometry" && n.kind != "realization")
+        .expect("value-cell node for 'geometry' must be present");
+    assert!(
+        !geometry_cell.trait_geometry,
+        "value-cell `geometry` of a `: PhysicalMock` structure must have \
+         trait_geometry == false — `PhysicalMock` neither equals `Physical` \
+         nor refines it; only the name looks alike"
+    );
+
+    let geometry_realization = root
+        .children
+        .iter()
+        .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some("geometry"))
+        .expect("realization node for 'geometry' must be present");
+    assert!(
+        !geometry_realization.trait_geometry,
+        "the `geometry` realization of a `: PhysicalMock` structure must have \
+         trait_geometry == false, matching its value-cell sibling"
+    );
+}
+
 /// #5195 step-11 end-to-end: the task's stated observable, asserted against the
 /// COMMITTED example rather than a hand-modelled copy of it.
 ///
