@@ -1137,6 +1137,10 @@ struct ConstraintCostFunction<'a> {
     base_values: &'a ValueMap,
     objective: Option<&'a ObjectiveSet>,
     functions: &'a [CompiledFunction],
+    /// Clamp box, one entry per `auto_params` entry, from [`resolve_bounds`]
+    /// (task #5618). Was `effective_bounds(param)` computed inline, which for a
+    /// dimensionless Real is the useless `(-1e6, 1e6)`.
+    bounds: &'a [(f64, f64)],
 }
 
 /// Evaluate an `ObjectiveSet` as a single f64 cost using the I2-preserving
@@ -1208,8 +1212,8 @@ impl CostFunction for ConstraintCostFunction<'_> {
         // Clamp parameters to effective bounds and accumulate bound penalty
         let mut bound_penalty = 0.0;
         let mut clamped = Vec::with_capacity(param.len());
-        for (&val, ap) in param.iter().zip(self.auto_params.iter()) {
-            let (lo, hi) = effective_bounds(ap);
+        for (i, &val) in param.iter().enumerate() {
+            let (lo, hi) = self.bounds[i];
             let cv = val.clamp(lo, hi);
             bound_penalty += (val - cv).powi(2);
             clamped.push(cv);
@@ -1239,15 +1243,21 @@ impl CostFunction for ConstraintCostFunction<'_> {
 ///
 /// Creates N+1 vertices: the initial point plus N perturbations
 /// (one per dimension), each offset by a fraction of the parameter range.
-fn build_simplex(initial: &[f64], params: &[AutoParam]) -> Vec<Vec<f64>> {
+///
+/// `bounds` is the caller's resolved box (one entry per dimension). Task #5618
+/// changed this from `effective_bounds(&params[i])`: for a dimensionless Real that
+/// box is `(-1e6, 1e6)`, so the step was `2e5` — Nelder-Mead's first reflection
+/// left the feasible region entirely. A constraint-derived box gives a
+/// box-proportional step instead.
+fn build_simplex(initial: &[f64], bounds: &[(f64, f64)]) -> Vec<Vec<f64>> {
     let n = initial.len();
     let mut simplex = Vec::with_capacity(n + 1);
     simplex.push(initial.to_vec());
 
     for i in 0..n {
         let mut vertex = initial.to_vec();
-        // Perturb dimension i by a fraction of the effective range
-        let (lo, hi) = effective_bounds(&params[i]);
+        // Perturb dimension i by a fraction of the resolved range
+        let (lo, hi) = bounds[i];
         let delta = (hi - lo) * 0.1;
         vertex[i] += delta;
         vertex[i] = vertex[i].clamp(lo, hi);
@@ -1414,6 +1424,36 @@ fn solve_core_with_sd_tolerance(
     };
     // ─────────────────────────────────────────────────────────────────────────
 
+    // Constraint-derived CLAMP box (task #5618).  Derived from
+    // `effective_constraints` — i.e. INCLUDING the synthesised robustness floor —
+    // so the box the optimiser is clamped into is the FLOORED window, not just the
+    // raw constraint box.  That distinction is load-bearing, not cosmetic: a
+    // penalty method minimising `q + PENALTY_WEIGHT·(floor − q)²` places its
+    // unconstrained minimiser ~5e-7 BELOW the floor and can never satisfy it to
+    // `FEASIBILITY_THRESHOLD = 1e-12`; only clamping to the floored bound snaps
+    // that undershoot onto the feasible optimum.  Deriving from the RAW box
+    // instead yields a feasible-but-badly-suboptimal answer (the seed, returned
+    // via the drift fallback).
+    //
+    // `include_strict = false`: a clamp target is a value the solver will actually
+    // return, so a `Gt`-sourced bound must never become one.  The floor's slack
+    // constraints are `Ge`, and the floored bound is strictly interior to the
+    // original `>`/`>=` bound by construction, so the clamp still receives it.
+    let bounds = if floor_applied {
+        resolve_bounds(
+            &problem.auto_params,
+            &derive_param_intervals(
+                &problem.auto_params,
+                &effective_constraints,
+                &trial_values,
+                &problem.functions,
+            ),
+            false,
+        )
+    } else {
+        problem.auto_params.iter().map(effective_bounds).collect()
+    };
+
     // `trial_values` is used in two places — (1) the feasibility check
     // immediately below, and (2) the fallback objective validation when the
     // optimizer drifts infeasible (see `eval_objective(&trial_values, …)`).
@@ -1485,10 +1525,11 @@ fn solve_core_with_sd_tolerance(
         base_values: &problem.current_values,
         objective: effective_objective,
         functions: &problem.functions,
+        bounds: &bounds,
     };
 
     // Build simplex from the provided initial point
-    let simplex = build_simplex(initial, &problem.auto_params);
+    let simplex = build_simplex(initial, &bounds);
 
     // Configure and run Nelder-Mead
     let solver: NelderMead<Vec<f64>, f64> = NelderMead::new(simplex)
@@ -1554,12 +1595,13 @@ fn solve_core_with_sd_tolerance(
         }
     };
 
-    // Clamp final solution to effective bounds
+    // Clamp final solution into the resolved box (task #5618: the floored
+    // constraint-derived box, not `effective_bounds`).
     let clamped: Vec<f64> = best_param
         .iter()
-        .zip(problem.auto_params.iter())
-        .map(|(val, ap)| {
-            let (lo, hi) = effective_bounds(ap);
+        .enumerate()
+        .map(|(i, val)| {
+            let (lo, hi) = bounds[i];
             val.clamp(lo, hi)
         })
         .collect();
@@ -4331,6 +4373,9 @@ mod tests {
             base_values: &base_values,
             objective: None,
             functions: &[],
+            // Task #5618: the clamp box is now supplied by the caller
+            // (`resolve_bounds`) rather than read from `AutoParam.bounds` inline.
+            bounds: &[(0.0, 0.010)],
         };
 
         // In bounds: x=0.005
@@ -4386,6 +4431,7 @@ mod tests {
             base_values: &base_values,
             objective: objective.as_ref(),
             functions: &[],
+            bounds: &[(0.0, 0.010)],
         };
 
         // x=0.005 is in bounds and satisfies x > 0, but objective is Undef
@@ -4476,62 +4522,21 @@ mod tests {
     #[test]
     fn simplex_has_n_plus_1_vertices() {
         use super::build_simplex;
-        use reify_core::{Type, ValueCellId};
-        use reify_ir::AutoParam;
+
+        // Task #5618: `build_simplex` takes the caller's resolved box
+        // (`resolve_bounds`) rather than `&[AutoParam]`, so these fixtures pass the
+        // per-dimension bounds directly.
 
         // 1-dimensional: simplex should have 2 vertices
-        let params_1d = vec![AutoParam {
-            id: ValueCellId::new("S", "x"),
-            param_type: Type::length(),
-            bounds: Some((0.0, 1.0)),
-            free: false,
-        }];
-        let initial_1d = vec![0.5];
-        let simplex = build_simplex(&initial_1d, &params_1d);
+        let simplex = build_simplex(&[0.5], &[(0.0, 1.0)]);
         assert_eq!(simplex.len(), 2, "1D simplex must have N+1=2 vertices");
 
         // 2-dimensional: simplex should have 3 vertices
-        let params_2d = vec![
-            AutoParam {
-                id: ValueCellId::new("S", "x"),
-                param_type: Type::length(),
-                bounds: Some((0.0, 1.0)),
-                free: false,
-            },
-            AutoParam {
-                id: ValueCellId::new("S", "y"),
-                param_type: Type::length(),
-                bounds: Some((0.0, 1.0)),
-                free: false,
-            },
-        ];
-        let initial_2d = vec![0.5, 0.5];
-        let simplex = build_simplex(&initial_2d, &params_2d);
+        let simplex = build_simplex(&[0.5, 0.5], &[(0.0, 1.0), (0.0, 1.0)]);
         assert_eq!(simplex.len(), 3, "2D simplex must have N+1=3 vertices");
 
         // 3-dimensional: simplex should have 4 vertices
-        let params_3d = vec![
-            AutoParam {
-                id: ValueCellId::new("S", "x"),
-                param_type: Type::length(),
-                bounds: Some((0.0, 1.0)),
-                free: false,
-            },
-            AutoParam {
-                id: ValueCellId::new("S", "y"),
-                param_type: Type::length(),
-                bounds: Some((0.0, 1.0)),
-                free: false,
-            },
-            AutoParam {
-                id: ValueCellId::new("S", "z"),
-                param_type: Type::length(),
-                bounds: Some((0.0, 1.0)),
-                free: false,
-            },
-        ];
-        let initial_3d = vec![0.5, 0.5, 0.5];
-        let simplex = build_simplex(&initial_3d, &params_3d);
+        let simplex = build_simplex(&[0.5, 0.5, 0.5], &[(0.0, 1.0), (0.0, 1.0), (0.0, 1.0)]);
         assert_eq!(simplex.len(), 4, "3D simplex must have N+1=4 vertices");
     }
 
