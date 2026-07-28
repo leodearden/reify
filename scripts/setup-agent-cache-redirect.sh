@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# scripts/setup-agent-cache-redirect.sh — Provision the /tmp toolchain-cache
+# redirect used by the landlock-sandboxed orchestrator agent roles (task 5729).
+#
+# ── WHY /tmp AT ALL ───────────────────────────────────────────────────────────
+# Task 5332 sandboxes three orchestrator agent roles (implementer, debugger,
+# simple_task) with landlock, and redirects their CARGO_HOME / npm_config_cache
+# into /tmp via a `role_env_overrides` block in dark-factory-orchestrator.yaml.
+# /tmp is not a free choice: dark-factory's compute_write_set() grants no
+# ~/.cargo / ~/.npm carve-out, so /tmp is the one host-global writable root a
+# static yaml value can name.  Closing that upstream gap is tracked as reify
+# task #5724 (blocked, pending cross-repo refile); until then the redirect is
+# load-bearing and this script makes it cheap and durable.
+#
+# Consequence without this script: the FIRST dependency-touching agent run
+# after every boot re-downloads the crates.io index and the whole dep tree on a
+# live task's critical path, and a second full copy of both caches accumulates
+# under /tmp alongside the never-shared ~/.cargo / ~/.npm originals.
+#
+# ── WHAT THIS SCRIPT DOES ─────────────────────────────────────────────────────
+#   1. SEED   — hardlink-pre-seeds the redirect destinations from the host's
+#               real caches (`cp -al`), so a sandboxed agent starts warm.
+#   2. EXCLUDE— writes /etc/tmpfiles.d/reify-agent-caches.conf `x` lines so
+#               systemd-tmpfiles' age-clean pass cannot gut the seeded trees
+#               while the orchestrator stays up.
+#   3. PERSIST— installs a systemd --user oneshot that re-seeds after the
+#               boot-time `D /tmp` wipe.
+#
+# Steps 2 and 3 cover two DIFFERENT tmpfiles mechanisms and neither substitutes
+# for the other — see install_tmpfiles_exclusion() and install_boot_unit().
+#
+# ── MEASURED PREMISE ──────────────────────────────────────────────────────────
+# `cp -al` is near-free ONLY while the source and destination share a
+# filesystem.  On this host /tmp, $HOME, ~/.cargo and ~/.npm are all on
+# /dev/nvme2n1p5 and /tmp is NOT a tmpfs, so the seed costs directory entries
+# and no data blocks.  That premise is ENFORCED, not assumed: seed_one()'s
+# cross-device guard skips rather than silently falling back to a real
+# multi-GB byte copy if /tmp is ever remounted elsewhere.
+#
+# Called by scripts/setup-dev.sh (unconditionally, non-fatal) and by
+# reify-agent-caches.service at boot (with --seed-only).
+# Standalone installer, hermetically testable — mirror of
+# scripts/install-warm-lane-units.sh; tests in
+# tests/infra/test_agent_cache_redirect.sh.
+#
+# Usage:
+#   scripts/setup-agent-cache-redirect.sh [--seed-only]
+#
+#   --seed-only   Seed the caches ONLY: no sudo, no systemctl, no tmpfiles conf
+#                 and no unit install.  This is the mode the boot unit runs, so
+#                 the boot path is entirely unprivileged.
+#
+# Environment:
+#   REIFY_AGENT_CACHE_ROOT  Parent of the redirect destinations (default: /tmp)
+#   REIFY_TMPFILES_DIR      tmpfiles.d dir to write (default: /etc/tmpfiles.d)
+#   CARGO_HOME              Seed source root  (default: $HOME/.cargo)
+#   npm_config_cache        Seed source root  (default: $HOME/.npm)
+#   XDG_CONFIG_HOME         User config dir   (default: $HOME/.config)
+#
+# Fail-open by contract: every provisioning step degrades to a warn + continue
+# when its substrate is absent (no source caches on a fresh contributor
+# machine, no sudo, no systemd --user bus, cross-device /tmp).
+# Exits 0 on success and on every such degraded path; exits 2 on a CLI misuse.
+
+set -euo pipefail
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+_info() { echo "[setup-agent-cache-redirect] INFO:  $*" >&2; }
+_ok()   { echo "[setup-agent-cache-redirect] OK:    $*" >&2; }
+_warn() { echo "[setup-agent-cache-redirect] WARN:  $*" >&2; }
+
+# ── CLI guard ─────────────────────────────────────────────────────────────────
+SEED_ONLY=0
+
+_usage() {
+    echo "Usage: $(basename "$0") [--seed-only]" >&2
+    echo "" >&2
+    echo "  Provision the /tmp toolchain-cache redirect for the landlock-" >&2
+    echo "  sandboxed agent roles (task 5729): hardlink pre-seed, tmpfiles" >&2
+    echo "  age-clean exclusion, and a boot-persistent re-seed oneshot." >&2
+    echo "" >&2
+    echo "  --seed-only   Seed only — no sudo, no systemctl (the boot path)." >&2
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)   _usage; exit 0 ;;
+        --seed-only) SEED_ONLY=1; shift ;;
+        *)
+            echo "$(basename "$0"): unexpected argument: $1" >&2
+            _usage
+            exit 2
+            ;;
+    esac
+done
+
+# ── path constants — the SINGLE source of truth ───────────────────────────────
+# Declared once and consumed by BOTH the seeder and the tmpfiles renderer.  A
+# second literal on the renderer side could drift out of step with the seeder,
+# silently un-protecting the live directory from age-cleaning with no visible
+# symptom until a long-uptime build failed with a missing-source error.  These
+# two basenames must match the paths task 5332's `role_env_overrides` block
+# points CARGO_HOME / npm_config_cache at.
+CACHE_ROOT="${REIFY_AGENT_CACHE_ROOT:-/tmp}"
+CARGO_DEST="$CACHE_ROOT/reify-agent-cargo-home"
+NPM_DEST="$CACHE_ROOT/reify-agent-npm-cache"
+
+TMPFILES_DIR="${REIFY_TMPFILES_DIR:-/etc/tmpfiles.d}"
+TMPFILES_CONF="$TMPFILES_DIR/reify-agent-caches.conf"
+
+# ── seed sources ──────────────────────────────────────────────────────────────
+# The deliberate narrowing (measured on this host): registry/cache is 181M and
+# registry/index 81M, but registry/src is 1.1G and _npx 443M.  registry/src is
+# purely DERIVED — cargo extracts it from the .crate tarballs already in
+# registry/cache — so seeding cache+index removes ALL network from the cold
+# start (the dominant cost) at a quarter of the bytes and ~4x fewer inodes.
+#
+# It also confines every hardlink-shared inode to a content-addressed,
+# write-new-then-rename store (cargo's .crate tarballs, npm's cacache), so a
+# sandboxed agent writing under /tmp can never write THROUGH a shared inode
+# into the host's ~/.cargo / ~/.npm.  Hardlinking the mutable extracted src
+# tree would put exactly that write-through risk on the tree PROBLEM B is
+# about; cargo re-extracts src locally as fresh, unshared files instead.
+CARGO_SRC_ROOT="${CARGO_HOME:-$HOME/.cargo}"
+NPM_SRC_ROOT="${npm_config_cache:-$HOME/.npm}"
+
+# ── seed_one <src> <dst> — hardlink-mirror one tree ───────────────────────────
+# `cp -al --update=none` both hardlinks and re-runs cleanly, topping up newly
+# added crates without erroring on the ones already there.  `--update=none`
+# rather than `-n`: coreutils now warns that `-n` is non-portable.
+seed_one() {
+    local src="$1" dst="$2"
+
+    mkdir -p "$dst"
+    cp -al --update=none "$src/." "$dst/"
+    return 0
+}
+
+# ── seed_caches — the SEED step ───────────────────────────────────────────────
+seed_caches() {
+    seed_one "$CARGO_SRC_ROOT/registry/cache" "$CARGO_DEST/registry/cache"
+    seed_one "$CARGO_SRC_ROOT/registry/index" "$CARGO_DEST/registry/index"
+    seed_one "$NPM_SRC_ROOT/_cacache"         "$NPM_DEST/_cacache"
+    _ok "seeded $CARGO_DEST and $NPM_DEST"
+    return 0
+}
+
+# ── main ──────────────────────────────────────────────────────────────────────
+seed_caches
+
+if [ "$SEED_ONLY" = "1" ]; then
+    _info "--seed-only: skipping tmpfiles exclusion and boot-unit install"
+    exit 0
+fi
+
+exit 0
