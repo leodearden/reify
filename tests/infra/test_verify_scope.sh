@@ -140,6 +140,70 @@ assert "docs/yaml-only: zero command leaves (preamble only)" \
     test "$(plan_cmdcount)" -eq 0
 
 # ---------------------------------------------------------------------------
+# Scenario PG-*: PRD-gate .ri fixture classification (task 5536).
+#
+# The /prd SOP lands a PRD's .md + .capability-manifest.yaml + its .ri probe
+# fixtures directly on `main` in ONE commit, gated by hooks/pre-commit ->
+# hooks/project-checks -> `verify.sh all --profile debug --scope staged
+# --include-infra`. Before 5536 a `tests/prd-gate/fixtures/*.ri` path matched
+# no case arm and fell to decide_scope's conservative `*)` catch-all, so a
+# docs-landing commit that included fixtures escalated to a full workspace
+# nextest run (measured RED baseline: RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1,
+# 16 command leaves) — which is why both 2026-07-25 PRD sessions split their
+# fixtures out into implementation tasks instead.
+#
+# PG-1/PG-1b are the user-observable signal (RED until step-2). PG-2..PG-5 are
+# CONTROLS: green before AND after, they pin the carve-out as narrow and
+# never-subtracting, so any later widening has to be a deliberate, reviewed
+# act rather than a silent side effect. PG-1b lives with the branch-scope
+# family below (plan_for_branch is not defined until then).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PG-1: docs + manifest + NEW prd-gate .ri fixture -> no heavy checks (RED until step-2) ---"
+plan_for staged docs/prds/v0_6/foo.md docs/prds/v0_6/foo.capability-manifest.yaml \
+    tests/prd-gate/fixtures/new_prd_fixture.ri
+assert "PG-1/docs+fixture: scope decision RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
+assert "PG-1/docs+fixture: zero command leaves (hook completes in seconds — no cargo nextest --workspace)" \
+    test "$(plan_cmdcount)" -eq 0
+
+echo ""
+echo "--- Scenario PG-2: Rust-consumed prd-gate fixture -> stays conservative (control, green before AND after) ---"
+# geometry_let_selector_consumer.ri is pushed into corpus_files() by
+# crates/reify-eval/tests/no_stale_undef_invariant_gate.rs:772 — it is a
+# runtime input to a compiled test target, so EDITING it must keep today's
+# conservative classification even though ADDING an unrelated fixture is inert.
+plan_for staged tests/prd-gate/fixtures/geometry_let_selector_consumer.ri
+assert "PG-2/coupled fixture: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (read by no_stale_undef_invariant_gate.rs)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_OUT"
+
+echo ""
+echo "--- Scenario PG-3: tests/prd-gate/*.json (non-.ri) -> stays conservative (control) ---"
+# The carve-out is tests/prd-gate/fixtures/*.ri, NOT tests/prd-gate/** —
+# probe-set JSONs keep the catch-all classification. Widening later must be a
+# deliberate act, which this control turns into an explicit test edit.
+plan_for staged tests/prd-gate/corpus-probe-set.json
+assert "PG-3/probe-set json: RUN_RUST=1 (carve-out is fixtures/*.ri, not tests/prd-gate/**)" \
+    plan_has 'RUN_RUST=1'
+
+echo ""
+echo "--- Scenario PG-4: examples/**/*.ri -> stays conservative (control) ---"
+# The carve-out is path-scoped, not extension-scoped: reify-eval's
+# corpus_files() walks examples/ wholesale, so an examples .ri IS a Rust
+# test input.
+plan_for staged examples/foo/bar.ri
+assert "PG-4/examples .ri: RUN_RUST=1 (examples/*.ri is in reify-eval's corpus sweep)" \
+    plan_has 'RUN_RUST=1'
+
+echo ""
+echo "--- Scenario PG-5: crate change + NEW prd-gate fixture together -> RUN_RUST=1 (control: the arm never subtracts) ---"
+# `rust` is a monotone OR accumulator (starts 0, only ever set to 1), so a
+# mixed diff can never be masked by the new no-heavy arm.
+plan_for staged crates/reify-doc/src/lib.rs tests/prd-gate/fixtures/new_prd_fixture.ri
+assert "PG-5/mixed diff: RUN_RUST=1 (monotone accumulator — the fixture arm cannot subtract)" \
+    plan_has 'RUN_RUST=1'
+
+# ---------------------------------------------------------------------------
 # Scenario 2: gui/src frontend TS -> GUI only, no cargo
 # ---------------------------------------------------------------------------
 echo ""
@@ -391,6 +455,20 @@ assert "branch/docs: scope decision RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0" \
 assert "branch/docs: scope=branch reported in plan header" \
     bash -c 'printf "%s\n" "$1" | grep -q "scope=branch"' _ "$PLAN_OUT"
 assert "branch/docs: zero command leaves (empty plan)" \
+    test "$(plan_cmdcount)" -eq 0
+
+# ---------------------------------------------------------------------------
+# Scenario PG-1b: branch-scope twin of PG-1 (task 5536). Lives here, not
+# beside its PG-* siblings above, because plan_for_branch/FIX_B are not
+# defined until this section — the block above runs before them.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PG-1b: docs + manifest + NEW prd-gate .ri fixture on a BRANCH -> no heavy checks (RED until step-2) ---"
+plan_for_branch docs/prds/v0_6/foo.md docs/prds/v0_6/foo.capability-manifest.yaml \
+    tests/prd-gate/fixtures/new_prd_fixture.ri
+assert "PG-1b/branch docs+fixture: scope decision RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
+assert "PG-1b/branch docs+fixture: zero command leaves (empty plan)" \
     test "$(plan_cmdcount)" -eq 0
 
 # ---------------------------------------------------------------------------
