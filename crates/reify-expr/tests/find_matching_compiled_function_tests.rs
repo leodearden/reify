@@ -128,6 +128,67 @@ fn stdlib_overload_table() -> Vec<CompiledFunction> {
     reify_compiler::merge_prelude_functions(&[], &prelude)
 }
 
+/// The `Option` half of a stdlib recovery-combinator pair:
+/// `fn <name><T>(o: Option<T>, dflt: T)` — the shape declared in
+/// `stdlib/option_recovery.ri`.
+fn option_overload(name: &str) -> CompiledFunction {
+    make_generic_fn(
+        name,
+        &["T"],
+        vec![
+            (
+                "o".to_string(),
+                Type::Option(Box::new(Type::TypeParam("T".to_string()))),
+            ),
+            ("dflt".to_string(), Type::TypeParam("T".to_string())),
+        ],
+        b"option_overload",
+    )
+}
+
+/// The `Result` half of a stdlib recovery-combinator pair:
+/// `fn <name><T, E>(r: Result<T, E>, dflt: T)` — the shape declared in
+/// `stdlib/result.ri`, which compiles to an `Applied { name: "Result", .. }`
+/// param.
+fn result_overload(name: &str) -> CompiledFunction {
+    make_generic_fn(
+        name,
+        &["T", "E"],
+        vec![
+            (
+                "r".to_string(),
+                Type::Applied {
+                    name: "Result".to_string(),
+                    args: vec![
+                        Type::TypeParam("T".to_string()),
+                        Type::TypeParam("E".to_string()),
+                    ],
+                },
+            ),
+            ("dflt".to_string(), Type::TypeParam("T".to_string())),
+        ],
+        b"result_overload",
+    )
+}
+
+/// Build the argument list for a stdlib recovery combinator.
+///
+/// `or_else` takes two same-shaped subjects (`(o: Option<T>, alt: Option<T>)` /
+/// `(r: Result<T,E>, alt: Result<T,E>)`); `unwrap_or` and `fallback` take a
+/// subject plus a plain default.
+fn recovery_args(name: &str, subject: Type) -> Vec<CompiledExpr> {
+    match name {
+        "or_else" => vec![
+            CompiledExpr::literal(Value::Undef, subject.clone()),
+            CompiledExpr::literal(Value::Undef, subject),
+        ],
+        _ => vec![
+            CompiledExpr::literal(Value::Undef, subject),
+            CompiledExpr::literal(Value::Undef, Type::length()),
+        ],
+    }
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Test: name mismatch → None
 // ────────────────────────────────────────────────────────────────────────────
@@ -357,4 +418,157 @@ fn wildcard_pass_trait_object_wildcard_is_ungated_on_genericity() {
         "a List<Load> trait-object param on a NON-generic candidate should \
          wildcard-match a concrete List<PointLoad> arg"
     );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Option-vs-Result overload disambiguation
+//
+// `unwrap_or`, `or_else` and `fallback` are each declared TWICE in the stdlib:
+// once over `Option<T>` (std.option_recovery) and once over `Result<T, E>`
+// (std.result). Both declarations are generic, so under the wildcard pass
+// pinned above BOTH are eligible for ANY subject — selection degenerates to
+// first-match-wins on table order, and std.option_recovery loads first.
+//
+// The compile side does not have this problem: `resolve_function_overload`
+// disambiguates on the subject's constructor head. These tests assert the
+// eval-side matcher reaches the same answer.
+//
+// They assert on the SELECTED CompiledFunction's first param type, never on an
+// evaluated Value: reify-expr intercepts all three names via
+// `option_recovery::is_combinator` before the matcher is consulted, and
+// dispatches on the runtime `Value::Enum` tag, so no evaluated value differs
+// either side of this fix. Overload selection is the only observable seam, and
+// it is the seam the divergence lives on.
+// ────────────────────────────────────────────────────────────────────────────
+
+/// An erased `Enum("Result")` subject — the form variant construction actually
+/// produces, since `Ok { .. }` / `Err { .. }` type-erase their result — must
+/// select the `Result` overload, not the `Option` one.
+#[test]
+fn erased_result_subject_selects_result_overload() {
+    let fns = vec![option_overload("unwrap_or"), result_overload("unwrap_or")];
+    let args = recovery_args("unwrap_or", Type::Enum("Result".to_string()));
+
+    let selected = find_matching_compiled_function(&fns, "unwrap_or", &args)
+        .expect("an erased Result subject should resolve to some overload");
+    assert!(
+        matches!(&selected.params[0].1, Type::Applied { name, .. } if name == "Result"),
+        "an erased Enum(\"Result\") subject must select the Result overload; \
+         got params[0] = {:?}",
+        selected.params[0].1
+    );
+}
+
+/// A fully-applied `Result<Length, String>` subject must select the `Result`
+/// overload too.
+///
+/// The wildcard pass swallows the non-erased form as readily as the erased one:
+/// it never inspects the arg's constructor head, so `Option<T>` matches an
+/// `Applied { name: "Result", .. }` arg just as happily.
+#[test]
+fn applied_result_subject_selects_result_overload() {
+    let fns = vec![option_overload("unwrap_or"), result_overload("unwrap_or")];
+    let subject = Type::Applied {
+        name: "Result".to_string(),
+        args: vec![Type::length(), Type::String],
+    };
+    let args = recovery_args("unwrap_or", subject);
+
+    let selected = find_matching_compiled_function(&fns, "unwrap_or", &args)
+        .expect("an applied Result subject should resolve to some overload");
+    assert!(
+        matches!(&selected.params[0].1, Type::Applied { name, .. } if name == "Result"),
+        "an Applied Result<Length, String> subject must select the Result overload; \
+         got params[0] = {:?}",
+        selected.params[0].1
+    );
+}
+
+/// The mirror-image direction: with the table order REVERSED (Result declared
+/// first), an `Option<Length>` subject must still select the `Option` overload.
+///
+/// This is what proves the fix is head-driven rather than a re-ordering: a
+/// change that merely preferred `Result` would pass the two tests above and
+/// fail this one.
+#[test]
+fn option_subject_selects_option_overload_despite_reversed_table_order() {
+    let fns = vec![result_overload("unwrap_or"), option_overload("unwrap_or")];
+    let args = recovery_args("unwrap_or", Type::Option(Box::new(Type::length())));
+
+    let selected = find_matching_compiled_function(&fns, "unwrap_or", &args)
+        .expect("an Option subject should resolve to some overload");
+    assert!(
+        matches!(&selected.params[0].1, Type::Option(_)),
+        "an Option<Length> subject must select the Option overload even when the \
+         Result overload is declared first; got params[0] = {:?}",
+        selected.params[0].1
+    );
+}
+
+/// Fall-through pin: a subject whose head matches NEITHER overload still
+/// resolves, to the first wildcard-eligible candidate in table order.
+///
+/// This locks the contract that head-based narrowing is a filter WITHIN the
+/// wildcard set with fall-through when that filter is empty — never a
+/// replacement for it. Without the fall-through, adding head narrowing would
+/// silently turn "resolved by wildcard" into `None` for every subject the head
+/// check cannot classify.
+#[test]
+fn subject_matching_no_head_falls_through_to_first_wildcard_candidate() {
+    let option_fn = option_overload("unwrap_or");
+    let fns = vec![option_fn.clone(), result_overload("unwrap_or")];
+    // Enum("Option") heads-matches neither Option<T> (a constructor, not an
+    // enum ref) nor Applied{"Result", ..} (different name).
+    let args = recovery_args("unwrap_or", Type::Enum("Option".to_string()));
+
+    let selected = find_matching_compiled_function(&fns, "unwrap_or", &args)
+        .expect("a head-unclassifiable subject must still fall through to the wildcard pass");
+    assert_eq!(
+        selected.content_hash, option_fn.content_hash,
+        "with an empty head-match set the matcher must fall through to the first \
+         wildcard-eligible candidate in table order"
+    );
+}
+
+/// Prelude-backed: against the REAL merged stdlib table, an erased
+/// `Enum("Result")` subject selects the `Result` overload for all three shared
+/// combinator names.
+///
+/// Higher fidelity than the synthetic fixtures above — this fails if the real
+/// `.ri` signatures ever drift out from under them.
+#[test]
+fn prelude_erased_result_subject_selects_result_overload() {
+    let table = stdlib_overload_table();
+    for name in ["unwrap_or", "or_else", "fallback"] {
+        let args = recovery_args(name, Type::Enum("Result".to_string()));
+        let selected = find_matching_compiled_function(&table, name, &args)
+            .unwrap_or_else(|| panic!("{name}: no overload resolved for an erased Result subject"));
+        assert!(
+            matches!(&selected.params[0].1, Type::Applied { name: n, .. } if n == "Result"),
+            "{name}: an erased Enum(\"Result\") subject must select the Result overload; \
+             got params[0] = {:?}",
+            selected.params[0].1
+        );
+    }
+}
+
+/// Prelude-backed regression guard: an `Option<Length>` subject must keep
+/// selecting the `Option` overload for all three shared names.
+///
+/// Passes today; its job is to catch a fix that disambiguates in the wrong
+/// direction.
+#[test]
+fn prelude_option_subject_selects_option_overload() {
+    let table = stdlib_overload_table();
+    for name in ["unwrap_or", "or_else", "fallback"] {
+        let args = recovery_args(name, Type::Option(Box::new(Type::length())));
+        let selected = find_matching_compiled_function(&table, name, &args)
+            .unwrap_or_else(|| panic!("{name}: no overload resolved for an Option subject"));
+        assert!(
+            matches!(&selected.params[0].1, Type::Option(_)),
+            "{name}: an Option<Length> subject must select the Option overload; \
+             got params[0] = {:?}",
+            selected.params[0].1
+        );
+    }
 }
