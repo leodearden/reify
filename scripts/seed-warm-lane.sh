@@ -28,8 +28,10 @@
 #     --fresh-checkout it is acquired BY DEFAULT: the #5223 guard was opt-in via
 #     --lane-lock and thus bypassable by an acquire-path caller that simply
 #     omitted the flag (exactly esc-5214, where a reseed clobbered a live
-#     consumer's in-flight build). Non-blocking by default: refuses with
-#     EX_TEMPFAIL (75) when a live consumer already holds it.
+#     consumer's in-flight build). Non-blocking by default: refuses when a live
+#     consumer already holds it -- with EX_TEMPFAIL (75) by default, or 77 under
+#     --distinct-lock-refusal-rc (task #5568). Either way the refusal is
+#     prefixed `LANE_LOCK_CONTENDED:` on stderr.
 #   --lane-lock: still accepted (now implied under --fresh-checkout; still the
 #     explicit opt-in for the --reset-in-place control arm, which does not lock
 #     by default).
@@ -110,7 +112,8 @@ _usage() {
     cat >&2 <<'EOF'
 Usage:
   seed-warm-lane.sh <base_target_dir> <lane_dir> (--fresh-checkout|--reset-in-place) \
-      [--base-commit <sha>] [--touch <path>]... [--lane-lock] [--assume-lane-lock-held]
+      [--base-commit <sha>] [--touch <path>]... [--lane-lock] [--assume-lane-lock-held] \
+      [--distinct-lock-refusal-rc]
   seed-warm-lane.sh --record-base <base_target_dir>
 
 Seed mode: CoW-clone a warm base target/ into a pool lane.
@@ -127,8 +130,9 @@ Seed mode: CoW-clone a warm base target/ into a pool lane.
                       is acquired BY DEFAULT (esc-5214/task 5354 fail-safe). Still the
                       explicit opt-in for the --reset-in-place control arm. Holds an
                       exclusive flock on the sibling ${LANE_DIR}.lock across the whole
-                      run, BEFORE any target mutation; refuses (EX_TEMPFAIL 75) if a
-                      live consumer already holds it (inv.2 one-consumer-per-lane).
+                      run, BEFORE any target mutation; refuses if a live consumer
+                      already holds it (inv.2 one-consumer-per-lane) -- with
+                      EX_TEMPFAIL 75 by default, 77 under --distinct-lock-refusal-rc.
                       REIFY_WARM_LANE_LANE_LOCK_WAIT (env, whenever the lock is
                       acquired): 0 (default) = non-blocking refuse (flock -n); N>0 =
                       queue up to N seconds before refusing (flock -w N); "unlimited"
@@ -148,6 +152,34 @@ Seed mode: CoW-clone a warm base target/ into a pool lane.
                       skip its own acquire. Mutually exclusive with --lane-lock (usage
                       error, exit 2). Seed never unlocks an FD 9 it did not open, so
                       the caller's own lock is untouched (#5705).
+  --distinct-lock-refusal-rc
+                      Exit 77 instead of 75 on a lane-lock refusal (either arm: the
+                      flock -n immediate refusal and the flock -w N queue timeout
+                      share ONE code -- same cause, same remediation). Task #5568.
+                      WHY: 75 is EX_TEMPFAIL, which dark-factory's
+                      _seed_rc_to_unavailable reads as DISK PRESSURE. That reading is
+                      wrong for every 75 this script emits -- seed has no
+                      disk-pressure path; 75 comes from warm-lane-disk-guard.sh, a
+                      different script on a different call path. 77 is EX_NOPERM:
+                      "another consumer owns this lane", whose remediation is the
+                      OPPOSITE (try a different FREE lane, never reclaim space).
+                      OPT-IN, so that reify and dark-factory may land in EITHER
+                      order: the dark-factory arm that gives 77 a meaning ships on
+                      its own commit in its own repo (esc-5568-1), and until it does
+                      an unconditional 77 would fall through DF's `else` to FAULT.
+                      Omit the flag and the exit code is unchanged at 75.
+                      ACCEPTED-BUT-INERT wherever no refusal is reachable
+                      (--assume-lane-lock-held, --record-base, WAIT=unlimited) --
+                      never a usage error, so a caller may pass it unconditionally
+                      without replicating this script's internal mode logic.
+                      The flag string above is what dark-factory's capability probe
+                      text-greps the lane's own copy of this script for (the proven
+                      _seed_script_supports_assume_lane_lock_held mechanism), so it
+                      must stay a literal in the arg parser.
+                      INDEPENDENT of this flag, both refusal arms ALWAYS prefix
+                      `LANE_LOCK_CONTENDED:` onto the first stderr line, so
+                      `grep LANE_LOCK_CONTENDED` separates lock contention from disk
+                      pressure even on a fleet still receiving 75.
 
 Record-base mode: stamp provenance beside the base target dir.
   --record-base dir   Write sidecar at $(dirname dir)/.warm-base-meta; print path on stdout.
