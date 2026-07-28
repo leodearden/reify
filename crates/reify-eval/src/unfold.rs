@@ -574,10 +574,14 @@ fn elaborate_child_instance_nested<'t>(
                     journal,
                     cache,
                     version_id,
-                    // Deref, not deref-coercion: the callee needs the `'t`
-                    // template reference itself, not one reborrowed for the
-                    // shorter lifetime of the `nodes` lookup above.
-                    *template,
+                    // `template` is `&&'t StructureTemplate` here (bound by
+                    // ref-pattern off the `nodes` lookup); auto-deref reborrows
+                    // it to the `&StructureTemplate` the callee takes. An
+                    // earlier explicit `*template` was tried on the theory that
+                    // the callee needed the `'t` reference itself, but it does
+                    // not — the reborrow typechecks, and the explicit deref was
+                    // a `clippy::explicit_auto_deref` failure under `-D warnings`.
+                    template,
                     &nested_entity,
                     &concrete_args,
                     meta_map,
