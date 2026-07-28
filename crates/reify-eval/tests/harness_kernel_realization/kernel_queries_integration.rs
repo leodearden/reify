@@ -535,9 +535,13 @@ fn multi_feature_part_sub_handle_queries_return_non_undef() {
 /// - If sub-handle list memory pressure is measurable on a multi-million-poly
 ///   fixture: file a lazy-list (Value::LazyList) follow-up.
 ///
-/// Run with `cargo test -p reify-eval --test harness_kernel_realization -- \
+/// Run with:
+///
+/// ```text
+/// cargo test -p reify-eval --test harness_kernel_realization -- \
 ///   kernel_queries_integration::profile_topology_selectors_and_sub_handle_memory \
-///   --include-ignored`.
+///   --include-ignored
+/// ```
 ///
 /// Outcome recorded: OCCT-unavailable or fixture-size impractical → no follow-up
 /// filed (both acceptable per §10 "if profiling warrants"). See task 3626 for
