@@ -673,42 +673,86 @@ fn chunk_mentions(markdown: &str, name: &str) -> bool {
     markdown.contains(&format!("{name}("))
 }
 
-/// Every `registry` name that no chunk documents.
+/// Everything wrong with registry → chunk documentation coverage, as
+/// human-actionable violation lines.
 ///
-/// A name counts as documented when the stdlib.md scan
-/// ([`documented_geometry_op_names`], reused verbatim so this guard inherits
-/// its exact semantics) finds it, or when one of the two exclusion slices
-/// carries it.
+/// THREE distinct classes, because a guard whose exclusions are unaudited is
+/// not a guard — appending a name to either slice would silence it while
+/// documenting nothing:
+///
+/// 1. A `registry` name that no chunk documents. The reason this guard exists.
+///    A name counts as documented when the stdlib.md scan
+///    ([`documented_geometry_op_names`], reused verbatim so this inherits its
+///    exact semantics) finds it, or when an exclusion slice carries it.
+/// 2. A `documented_elsewhere` entry that `geometry_md` does NOT mention — an
+///    exclusion claiming coverage that does not exist.
+/// 3. A `known_gap` entry that IS mentioned by either markdown — a gap that has
+///    since been closed, so the entry is stale and would otherwise exempt the
+///    name from class 1 forever, masking a later regression.
+///
+/// Each line names its own corrective action, so a failure tells a maintainer
+/// what to do rather than only what is wrong. Classes 2 and 3 are checked
+/// against the exclusion slices themselves, independent of `registry`
+/// membership, so a stale entry is caught even after its name leaves the
+/// registry.
 ///
 /// Pure and fully parameterized over its inputs — rather than reading the
 /// consts and the real chunks directly — so the controls below can drive it
 /// with synthetic data and pin its discriminating power.
-fn undocumented_geometry_ops(
+fn geometry_op_doc_coverage_violations(
     registry: &[&str],
     stdlib_md: &str,
-    _geometry_md: &str,
+    geometry_md: &str,
     documented_elsewhere: &[&str],
     known_gap: &[&str],
 ) -> Vec<String> {
     let documented = documented_geometry_op_names(stdlib_md);
+    let mut out = Vec::new();
 
-    let mut out: Vec<String> = registry
-        .iter()
-        .copied()
-        .filter(|name| {
-            !documented.iter().any(|d| d.as_str() == *name)
-                && !documented_elsewhere.contains(name)
-                && !known_gap.contains(name)
-        })
-        .map(str::to_string)
-        .collect();
+    // Class 1 — implemented, but written down nowhere.
+    for name in registry.iter().copied() {
+        let covered = documented.iter().any(|d| d.as_str() == name)
+            || documented_elsewhere.contains(&name)
+            || known_gap.contains(&name);
+        if !covered {
+            out.push(format!(
+                "{name}: implemented but documented in NO chunk — FIX: add a row to \
+                 stdlib.md's '{CHUNK_SECTION}' table and mirror the call into \
+                 tests/fixtures/stdlib_geometry_ops_smoke.ri"
+            ));
+        }
+    }
+
+    // Class 2 — an exclusion claiming coverage that does not exist.
+    for name in documented_elsewhere.iter().copied() {
+        if !chunk_mentions(geometry_md, name) {
+            out.push(format!(
+                "{name}: excluded as 'documented in geometry.md', but geometry.md never \
+                 mentions it — FIX: correct the exclusion list (document it there, or drop \
+                 the entry so this guard covers the name normally)"
+            ));
+        }
+    }
+
+    // Class 3 — a known gap that has since been closed.
+    for name in known_gap.iter().copied() {
+        if chunk_mentions(stdlib_md, name) || chunk_mentions(geometry_md, name) {
+            out.push(format!(
+                "{name}: carried as a known documentation gap, but it IS now documented — \
+                 FIX: delete the stale known-gap entry so this guard covers the name \
+                 normally"
+            ));
+        }
+    }
 
     out.sort();
     out.dedup();
     out
 }
 
-/// Every geometry op the compiler implements must be documented in some chunk.
+/// Every geometry op the compiler implements must be documented in some chunk,
+/// and both exclusion lists must be telling the truth about why a name is
+/// exempt.
 ///
 /// The chunks are the AUTHORITATIVE language reference served verbatim to the
 /// in-GUI assistant, so an implemented-but-undocumented op is invisible to
@@ -740,7 +784,7 @@ fn every_implemented_geometry_op_is_documented_in_a_chunk() {
          exclusions rest on nothing"
     );
 
-    let undocumented = undocumented_geometry_ops(
+    let violations = geometry_op_doc_coverage_violations(
         GEOMETRY_FUNCTION_NAMES,
         &stdlib_md,
         &geometry_md,
@@ -749,12 +793,11 @@ fn every_implemented_geometry_op_is_documented_in_a_chunk() {
     );
 
     assert!(
-        undocumented.is_empty(),
-        "the compiler implements geometry op(s) that NO chunk documents, so designers and \
-         the in-GUI assistant cannot discover them — document each in stdlib.md's \
-         '{CHUNK_SECTION}' table (and mirror it into \
-         tests/fixtures/stdlib_geometry_ops_smoke.ri). Undocumented name(s): {}",
-        undocumented.join(", ")
+        violations.is_empty(),
+        "registry → doc coverage is broken. The chunks are served verbatim to the in-GUI \
+         assistant, so an op documented nowhere is one no designer can discover, and an \
+         untrue exclusion hides exactly that. Each line below names its own fix:\n{}",
+        violations.join("\n")
     );
 }
 
@@ -785,7 +828,7 @@ const SYNTHETIC_GEOMETRY_MD: &str = "`mentioned_ctor(x, y, z)` builds a thing.";
 /// exclusion covers. Proves it is neither blind nor "reports everything".
 #[test]
 fn undocumented_registry_names_are_reported_and_documented_ones_are_not() {
-    let reported = undocumented_geometry_ops(
+    let reported = geometry_op_doc_coverage_violations(
         &["documented_op", "mentioned_ctor", "undocumented_op"],
         SYNTHETIC_STDLIB_MD,
         SYNTHETIC_GEOMETRY_MD,
@@ -815,7 +858,7 @@ fn undocumented_registry_names_are_reported_and_documented_ones_are_not() {
 /// nothing, recreating the very gap this guard exists to close.
 #[test]
 fn an_exclusion_claiming_coverage_that_does_not_exist_is_reported() {
-    let reported = undocumented_geometry_ops(
+    let reported = geometry_op_doc_coverage_violations(
         &["ghost_ctor"],
         SYNTHETIC_STDLIB_MD,
         SYNTHETIC_GEOMETRY_MD,
@@ -839,7 +882,7 @@ fn an_exclusion_claiming_coverage_that_does_not_exist_is_reported() {
 /// again) would go unnoticed.
 #[test]
 fn a_known_gap_entry_that_has_since_been_documented_is_reported() {
-    let via_stdlib = undocumented_geometry_ops(
+    let via_stdlib = geometry_op_doc_coverage_violations(
         &["documented_op"],
         SYNTHETIC_STDLIB_MD,
         SYNTHETIC_GEOMETRY_MD,
@@ -852,7 +895,7 @@ fn a_known_gap_entry_that_has_since_been_documented_is_reported() {
          stale entry must be reported so it gets deleted. Got: {via_stdlib:?}"
     );
 
-    let via_geometry = undocumented_geometry_ops(
+    let via_geometry = geometry_op_doc_coverage_violations(
         &["mentioned_ctor"],
         SYNTHETIC_STDLIB_MD,
         SYNTHETIC_GEOMETRY_MD,
