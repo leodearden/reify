@@ -3597,7 +3597,7 @@ fn compile_expr_guarded_with_expected_inner(
                         // prefix. The family is pinned disjoint from all sibling
                         // families by the units.rs disjointness test, so this
                         // arm's position in the ladder is unobservable.
-                        orientation_typed_fn_result_type(name, &compiled_args)
+                        orientation_typed_fn_result_type(name)
                     } else {
                         compiled_args
                             .first()

@@ -19,7 +19,6 @@
 //! subsequent TDD steps.
 
 use reify_core::Type;
-use reify_ir::CompiledExpr;
 
 /// The complete set of orientation/transform/frame constructor builtin names
 /// recognised by the compiler. Single source of truth — imported into the
@@ -124,7 +123,7 @@ pub(crate) fn is_orientation_typed_fn(name: &str) -> bool {
 /// Only reached for names in [`ORIENTATION_TYPED_FN_NAMES`] (the caller gates on
 /// [`is_orientation_typed_fn`]); the `_` arm is therefore unreachable in
 /// practice and returns a harmless `Type::dimensionless_scalar()`.
-pub(crate) fn orientation_typed_fn_result_type(name: &str, _args: &[CompiledExpr]) -> Type {
+pub(crate) fn orientation_typed_fn_result_type(name: &str) -> Type {
     match name {
         // ── Orientation producers (10) → Orientation(3) ──────────────────────
         // Eval: reify_stdlib::orientation::eval_orientation → Value::Orientation.
@@ -345,92 +344,135 @@ mod tests {
 
     // ── Result-type resolution (step-3 RED / step-4 GREEN) ───────────────────
 
-    /// The 10 Orientation producers.
-    const ORIENTATION_PRODUCERS: [&str; 10] = [
-        "orient_identity",
-        "orient_quaternion",
-        "orient_euler",
-        "orient_basis",
-        "orient_look_at",
-        "orient_axis_angle",
-        "orient_exp",
-        "orient_inverse",
-        "orient_compose",
-        "orient_slerp",
-    ];
-
-    /// Every Orientation producer resolves to `Type::Orientation(3)`, the three
-    /// Transform producers to `Type::Transform(3)`, and `frame3` to
-    /// `Type::Frame(3)`. Called with `&[]` (name-only dispatch).
-    ///
-    /// RED until step-4: the stub resolver returns `dimensionless_scalar`.
+    /// One explicit assert per name, all 18, pinning the three target types.
+    /// Written out longhand rather than looped so a wrong mapping names the
+    /// exact function in the failure output.
     #[test]
     fn orientation_typed_fn_result_type_maps_each_name_to_its_nominal_type() {
-        for name in ORIENTATION_PRODUCERS {
+        // Orientation producers (10) → Type::Orientation(3).
+        for name in [
+            "orient_identity",
+            "orient_quaternion",
+            "orient_euler",
+            "orient_basis",
+            "orient_look_at",
+            "orient_axis_angle",
+            "orient_exp",
+            "orient_inverse",
+            "orient_compose",
+            "orient_slerp",
+        ] {
             assert_eq!(
-                orientation_typed_fn_result_type(name, &[]),
+                orientation_typed_fn_result_type(name),
                 Type::Orientation(3),
                 "{name} must map to Type::Orientation(3)"
             );
         }
-        for name in &["transform3", "transform3_identity", "transform_compose"] {
+        // Frame producers (2) → Type::Frame(3).
+        for name in ["frame3", "frame3_identity"] {
             assert_eq!(
-                orientation_typed_fn_result_type(name, &[]),
+                orientation_typed_fn_result_type(name),
+                Type::Frame(3),
+                "{name} must map to Type::Frame(3)"
+            );
+        }
+        // Transform producers (6) → Type::Transform(3).
+        for name in [
+            "transform3",
+            "transform3_identity",
+            "transform_compose",
+            "transform_inverse",
+            "transform_exp",
+            "frame_to_frame",
+        ] {
+            assert_eq!(
+                orientation_typed_fn_result_type(name),
                 Type::Transform(3),
                 "{name} must map to Type::Transform(3)"
             );
         }
+    }
+
+    /// ACCEPTANCE PIN (the task's named test): `orient_axis_angle(axis, angle)`
+    /// must resolve to `Type::Orientation(3)` and DECISIVELY NOT a Vector.
+    ///
+    /// Its first argument is the rotation AXIS, a `Vector{3}` — so the old
+    /// first-arg fallback silently produced `Vector{3}` for every
+    /// `orient_axis_angle` call site (9 of them in prj/printer_v01/printer.ri).
+    /// That is the exact mistyping this family fixes.
+    #[test]
+    fn orient_axis_angle_result_type_is_orientation_not_vector() {
         assert_eq!(
-            orientation_typed_fn_result_type("frame3", &[]),
-            Type::Frame(3),
-            "frame3 must map to Type::Frame(3)"
+            orientation_typed_fn_result_type("orient_axis_angle"),
+            Type::Orientation(3),
+            "orient_axis_angle(axis, angle) must resolve to Orientation(3)"
+        );
+        assert!(
+            !matches!(
+                orientation_typed_fn_result_type("orient_axis_angle"),
+                Type::Vector { .. }
+            ),
+            "orient_axis_angle must NOT adopt the first-arg (axis) Vector type"
         );
     }
 
-    /// ACCEPTANCE PIN: `orient_axis_angle(vec3, angle)` must resolve to
-    /// `Type::Orientation(3)` and DECISIVELY NOT the first-arg Vector type. The
-    /// dummy first arg is deliberately TYPED as a `Vector{3}` so this proves the
-    /// resolver ignores the first-arg type (the old first-arg fallback would
-    /// have produced `Vector{3}` here — the exact bug this task fixes).
+    /// Guards the `frame_` prefix trap: `frame_to_frame` computes the rigid
+    /// motion mapping one frame onto another, so it returns `Value::Transform`
+    /// (`geometry.rs:512`) and must type as `Type::Transform(3)` — NOT
+    /// `Type::Frame(3)`, which a prefix-based grouping would wrongly assign.
     #[test]
-    fn orient_axis_angle_result_is_orientation_not_first_arg_vector() {
-        use reify_ir::Value;
-
-        let vec3_arg = CompiledExpr::literal(
-            Value::Real(1.0),
-            Type::vec3(Type::dimensionless_scalar()),
-        );
-        let args = &[vec3_arg];
-
+    fn frame_to_frame_result_type_is_transform_not_frame() {
         assert_eq!(
-            orientation_typed_fn_result_type("orient_axis_angle", args),
-            Type::Orientation(3),
-            "orient_axis_angle(vec3, angle) must resolve to Orientation(3)"
+            orientation_typed_fn_result_type("frame_to_frame"),
+            Type::Transform(3),
+            "frame_to_frame returns Value::Transform despite its frame_ prefix"
         );
         assert_ne!(
-            orientation_typed_fn_result_type("orient_axis_angle", args),
-            Type::vec3(Type::dimensionless_scalar()),
-            "orient_axis_angle must NOT adopt the first-arg Vector type"
+            orientation_typed_fn_result_type("frame_to_frame"),
+            Type::Frame(3),
+            "frame_to_frame must NOT be grouped with the Frame producers"
         );
     }
 
-    /// Args-agnostic invariant: every producer returns the same result type for
-    /// an empty arg slice and a non-empty one (the resolver is name-only).
+    /// The three ZERO-ARG members are the only names in the family that could
+    /// trip the "cannot infer return type of zero-arg function" warning, because
+    /// that warning is emitted solely from the first-arg fallback's
+    /// `unwrap_or_else` branch (reached only when `compiled_args.first()` is
+    /// `None`). Resolving them by name alone is what silences it.
     #[test]
-    fn orientation_typed_fn_result_type_is_args_agnostic() {
-        use reify_ir::Value;
-
-        let dummy = CompiledExpr::literal(
-            Value::Real(1.0),
-            Type::vec3(Type::dimensionless_scalar()),
+    fn zero_arg_constructors_resolve_without_the_first_arg_fallback() {
+        assert_eq!(
+            orientation_typed_fn_result_type("orient_identity"),
+            Type::Orientation(3)
         );
-        let args = &[dummy];
+        assert_eq!(
+            orientation_typed_fn_result_type("frame3_identity"),
+            Type::Frame(3)
+        );
+        assert_eq!(
+            orientation_typed_fn_result_type("transform3_identity"),
+            Type::Transform(3)
+        );
+    }
 
-        for name in EXPECTED_NAMES {
-            assert_eq!(
-                orientation_typed_fn_result_type(name, args),
-                orientation_typed_fn_result_type(name, &[]),
-                "{name} result must be the same regardless of args"
+    /// Anti-fallthrough lock: no name in the family may resolve to a scalar.
+    /// The resolver's `_` arm returns `Type::dimensionless_scalar()` and is
+    /// meant to be unreachable (the caller gates on `is_orientation_typed_fn`),
+    /// so a name that silently reaches it would be indistinguishable from the
+    /// old buggy fallback. This test makes that failure loud.
+    #[test]
+    fn every_orientation_fn_name_maps_to_a_non_scalar_result_type() {
+        for name in ORIENTATION_TYPED_FN_NAMES {
+            let ty = orientation_typed_fn_result_type(name);
+            assert!(
+                !matches!(ty, Type::Scalar { .. }),
+                "{name} fell through to the unreachable `_` scalar arm — every \
+                 family member must have an explicit match arm"
+            );
+            assert_ne!(
+                ty,
+                Type::dimensionless_scalar(),
+                "{name} resolved to dimensionless_scalar (the `_` arm)"
             );
         }
     }
