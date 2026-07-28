@@ -692,3 +692,214 @@ fn multi_case_buckling_result_struct_has_cases_field() {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── task 5496 (stdlib-namespace β): BucklingMode rename, boundary #1 + #4 ───
+
+/// Load the fixture that pins modal `Mode` and buckling `BucklingMode`
+/// coexisting in one user file. Path is resolved from `CARGO_MANIFEST_DIR`
+/// (idiom: `crates/reify-eval/tests/no_stale_undef_invariant_gate.rs`) so the
+/// committed fixture is the single source of truth for both this test and the
+/// PRD §7 boundary it stands for — no inline copy to drift out of sync.
+fn coexist_fixture_source() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/prd-gate/fixtures/stdlib_ns_buckling_mode_coexist.ri");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read fixture {}: {}", path.display(), e))
+}
+
+/// Look up a structure template by name in an arbitrary stdlib module. The
+/// file-level [`find_structure`] is deliberately scoped to
+/// `std/solver/buckling`; this sibling exists only so the coexistence test can
+/// reach modal's `Mode` in `std/modal/analysis` and prove the two structures
+/// are genuinely distinct templates in distinct modules.
+fn find_structure_in(module_path: &str, name: &str) -> &'static TopologyTemplate {
+    let module = stdlib_loader::load_stdlib()
+        .iter()
+        .find(|m| m.path.to_string() == module_path)
+        .unwrap_or_else(|| panic!("stdlib should contain the {} module", module_path));
+    module
+        .templates
+        .iter()
+        .find(|t| t.name == name && t.entity_kind == EntityKind::Structure)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `structure def {}` in {}, got templates: {:?}",
+                name,
+                module_path,
+                module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+            )
+        })
+}
+
+/// PRD §7 boundary #1, compile side. After the rename the buckling eigenpair is
+/// `BucklingMode` and modal's eigenpair keeps the bare name `Mode`; the two are
+/// distinct templates in distinct modules with disjoint member sets, and
+/// `BucklingResult.modes` refers to the RENAMED element type.
+///
+/// The member-set assertion is what makes this a coexistence test rather than a
+/// spelling test: pre-rename both names resolved to a single winner, so
+/// exactly one of the two member sets was unreachable (see
+/// tests/prd-gate/fixtures/stdlib_ns_mode_member.ri).
+#[test]
+fn buckling_mode_renamed_and_modal_mode_coexist_at_compile() {
+    let buckling_mode = find_structure("BucklingMode");
+    let names: Vec<&str> = param_cells(buckling_mode)
+        .iter()
+        .map(|vc| vc.id.member.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["eigenvalue", "mode_shape"],
+        "BucklingMode should declare exactly (eigenvalue, mode_shape)"
+    );
+
+    let expected: &[(&str, Type)] = &[
+        ("eigenvalue", Type::dimensionless_scalar()),
+        (
+            "mode_shape",
+            Type::Field {
+                domain: Box::new(Type::point3(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                })),
+                codomain: Box::new(Type::vec3(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                })),
+            },
+        ),
+    ];
+    for (member, expected_ty) in expected {
+        let cell = param_cells(buckling_mode)
+            .into_iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| panic!("BucklingMode missing param '{}'", member));
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "BucklingMode.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+    }
+
+    // `BucklingResult.modes` must follow the rename, not dangle on the old name.
+    let result = find_structure("BucklingResult");
+    let modes = param_cells(result)
+        .into_iter()
+        .find(|vc| vc.id.member == "modes")
+        .expect("BucklingResult should declare a `modes` param");
+    assert_eq!(
+        modes.cell_type,
+        Type::List(Box::new(Type::StructureRef("BucklingMode".to_string()))),
+        "BucklingResult.modes should be List<BucklingMode> after the rename, got {:?}",
+        modes.cell_type
+    );
+
+    // Coexistence: modal's eigenpair keeps the bare `Mode` name, with its own
+    // disjoint member set, in its own module.
+    let modal_mode = find_structure_in("std/modal/analysis", "Mode");
+    let modal_names: Vec<&str> = param_cells(modal_mode)
+        .iter()
+        .map(|vc| vc.id.member.as_str())
+        .collect();
+    assert!(
+        modal_names.contains(&"frequency"),
+        "std/modal/analysis `Mode` should still declare `frequency`; got {:?}",
+        modal_names
+    );
+    assert!(
+        !modal_names.contains(&"eigenvalue"),
+        "modal `Mode` and buckling `BucklingMode` must stay disjoint; modal Mode \
+         unexpectedly declares `eigenvalue`: {:?}",
+        modal_names
+    );
+    assert!(
+        !names.contains(&"frequency"),
+        "buckling `BucklingMode` must not absorb modal Mode's members: {:?}",
+        names
+    );
+}
+
+/// PRD §7 boundary #1 + #4, end to end. The committed coexistence fixture must
+/// compile against the real stdlib with zero Error diagnostics AND evaluate to
+/// the concrete values the fixture was written to produce.
+///
+/// Both halves matter. Compile-clean alone would pass vacuously if member
+/// resolution silently produced `Undef` (exactly what the pre-rename collision
+/// did: compile-side template lookup was last-wins while the eval-side
+/// instantiation registry was first-wins, so `Mode(frequency: …).frequency`
+/// type-checked yet evaluated to Undef). Asserting the VALUES is what pins that
+/// both phases now agree on which struct each name denotes.
+///
+/// `reify_test_support::eval_source` is not usable here: it compiles WITHOUT the
+/// stdlib. This mirrors its body with the stdlib-aware compile instead.
+#[test]
+fn coexist_fixture_checks_clean_and_evaluates() {
+    let source = coexist_fixture_source();
+
+    let check = reify_test_support::check_source_with_stdlib(&source);
+    let errors: Vec<_> = check
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "coexistence fixture should check clean against the real stdlib, got: {:?}",
+        errors
+    );
+
+    let compiled = reify_test_support::compile_source_with_stdlib(&source);
+    let mut engine = reify_test_support::make_engine();
+    let result = engine.eval(&compiled);
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        eval_errors.is_empty(),
+        "coexistence fixture should evaluate cleanly, got: {:?}",
+        eval_errors
+    );
+
+    let cell = |member: &str| -> Value {
+        reify_test_support::cell_value(&result, "StdlibNsModeCoexist", member)
+    };
+
+    // Boundary #1: modal Mode's `frequency` is reachable AND carries the value
+    // the fixture supplied — the assertion the pre-rename first-wins/last-wins
+    // split made impossible (it evaluated to Undef).
+    assert_eq!(
+        cell("f"),
+        Value::Scalar {
+            si_value: 10.0,
+            dimension: DimensionVector::FREQUENCY,
+        },
+        "modal Mode.frequency should evaluate to 10 Hz"
+    );
+
+    // Boundary #1: buckling BucklingMode's `eigenvalue` is reachable from user
+    // code, which it was not before the rename.
+    assert_eq!(
+        cell("e"),
+        Value::Real(2.5),
+        "BucklingMode.eigenvalue should evaluate to 2.5"
+    );
+
+    // Boundary #4: the stdlib-internal accessor still reaches through
+    // `modes[0]` after the element-type rename — 2.5 × 100 N == 250 N.
+    assert_eq!(
+        cell("pcr"),
+        Value::Scalar {
+            si_value: 250.0,
+            dimension: DimensionVector::FORCE,
+        },
+        "critical_load(r, 100 N) should evaluate to 250 N"
+    );
+
+    // Boundary #4: `mode_shape` must RESOLVE; its value is Undef by the
+    // tet-result convention, so presence of the cell is the whole assertion.
+    assert_eq!(
+        cell("ms"),
+        Value::Undef,
+        "mode_shape(r, 0) should resolve to Undef per the tet-result convention"
+    );
+}

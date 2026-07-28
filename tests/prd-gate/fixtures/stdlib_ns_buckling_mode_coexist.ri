@@ -1,0 +1,37 @@
+// Fixture (task 5496, stdlib-namespace β; PRD docs/prds/v0_6/stdlib-namespace.md
+// §7 boundary #1 + #4): pins that modal analysis's `Mode` and buckling's
+// renamed `BucklingMode` COEXIST in one user file — both nameable, both
+// member-reachable, both evaluable — which is the whole point of the rename.
+//
+// Boundary #1 (user-visible naming): `Mode` now unambiguously denotes
+// std.modal.analysis's eigenpair, so `Mode(frequency: …).frequency` resolves.
+// Before the rename this file was impossible to write: the two same-named
+// structs collided, compile-side template resolution took LAST-wins (modal)
+// while the eval-side instantiation registry took FIRST-wins (buckling), so
+// `Mode`'s members were silently divergent between the two phases — the defect
+// pinned by tests/prd-gate/fixtures/stdlib_ns_mode_member.ri.
+//
+// Boundary #4 (stdlib-internal blast radius): the two `BucklingResult`
+// accessors that reach through `modes[n]` — `critical_load`
+// (solver_buckling_fns.ri) and `mode_shape` — must still resolve and evaluate
+// against the renamed element type.
+//
+// Values are deliberately concrete so the eval-side assertions in
+// crates/reify-compiler/tests/buckling_stdlib_compile.rs are non-vacuous:
+// `critical_load` is `modes[0].eigenvalue * reference_load`, so
+// 2.5 × 100 N == 250 N. `mode_shape` returns Undef per the tet-result
+// convention (solver_buckling_fns.ri), so only its RESOLUTION is asserted,
+// never a value. `BucklingResult.pre_stress` is omitted: it has no default and
+// Undef is accepted, the same partial-construction shape the sibling
+// stdlib_ns_mode_member.ri probes rely on.
+
+structure def StdlibNsModeCoexist {
+    sub modal_m = Mode(frequency: 10.0 * 1Hz)
+    sub buck_m  = BucklingMode(eigenvalue: 2.5)
+    sub r       = BucklingResult(modes: [BucklingMode(eigenvalue: 2.5)],
+                                 converged: true, iterations: 3)
+    let f   = modal_m.frequency
+    let e   = buck_m.eigenvalue
+    let pcr = critical_load(r, 100.0 * 1N)
+    let ms  = mode_shape(r, 0)
+}
