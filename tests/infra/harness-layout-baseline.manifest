@@ -55,9 +55,6 @@ crates/reify-compiler/tests/ambient_default_material_integration_gate.rs
 crates/reify-compiler/tests/analysis_stress_fn_compile.rs
 crates/reify-compiler/tests/and_or_operand_guard_tests.rs
 crates/reify-compiler/tests/anisotropic_bar_example_tests.rs
-crates/reify-compiler/tests/annotation_compile_tests.rs
-crates/reify-compiler/tests/annotation_materialization_args_tests.rs
-crates/reify-compiler/tests/annotation_schema_registry_parity.rs
 crates/reify-compiler/tests/aspect_massive_tests.rs
 crates/reify-compiler/tests/assoc_type_projection_reduction_tests.rs
 crates/reify-compiler/tests/boolean_arg_cross_sub_diagnostic_tests.rs
@@ -82,9 +79,6 @@ crates/reify-compiler/tests/constraint_def_compile_tests.rs
 crates/reify-compiler/tests/constraint_inst_tests.rs
 crates/reify-compiler/tests/constructor_hash_tests.rs
 crates/reify-compiler/tests/coupling_motionvalue_integration_gate.rs
-crates/reify-compiler/tests/cross_module_alias_propagation_tests.rs
-crates/reify-compiler/tests/cross_sub_geometry_diagnostic_tests.rs
-crates/reify-compiler/tests/cross_sub_geometry_lowering_tests.rs
 crates/reify-compiler/tests/curvature_arg_aware_typing.rs
 crates/reify-compiler/tests/datum_constructor_tests.rs
 crates/reify-compiler/tests/datum_projection_tests.rs
@@ -95,15 +89,9 @@ crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs
 crates/reify-compiler/tests/display_annotation_tests.rs
 crates/reify-compiler/tests/display_style_appearance_tests.rs
 crates/reify-compiler/tests/doc_propagation_tests.rs
-crates/reify-compiler/tests/ds_sentinel_l0_poison_tests.rs
-crates/reify-compiler/tests/ds_sentinel_l1_poison_tests.rs
-crates/reify-compiler/tests/ds_sentinel_l5_boundary_tests.rs
 crates/reify-compiler/tests/dynamics_stdlib_compile.rs
 crates/reify-compiler/tests/entity_overload_tests.rs
 crates/reify-compiler/tests/examples_smoke.rs
-crates/reify-compiler/tests/expected_type_arg_pushdown_tests.rs
-crates/reify-compiler/tests/expected_type_pushdown_integration.rs
-crates/reify-compiler/tests/expected_type_pushdown_let_tests.rs
 crates/reify-compiler/tests/expr_error_sentinel_tests.rs
 crates/reify-compiler/tests/fea_supertrait_conformance_tests.rs
 crates/reify-compiler/tests/feature_datum_axis_example_tests.rs
@@ -151,9 +139,6 @@ crates/reify-compiler/tests/multi_load_bracket_example_tests.rs
 crates/reify-compiler/tests/multi_load_case_stdlib_tests.rs
 crates/reify-compiler/tests/nominal_marker_typing_tests.rs
 crates/reify-compiler/tests/numeric_and_range_literals_example.rs
-crates/reify-compiler/tests/objective_conflict.rs
-crates/reify-compiler/tests/objective_dimension_coherence.rs
-crates/reify-compiler/tests/objective_set_lowering.rs
 crates/reify-compiler/tests/occurrence_compile_tests.rs
 crates/reify-compiler/tests/optimized_annotation_tests.rs
 crates/reify-compiler/tests/option_compile_tests.rs
@@ -182,11 +167,6 @@ crates/reify-compiler/tests/relate_block_check_tests.rs
 crates/reify-compiler/tests/relate_threading_tests.rs
 crates/reify-compiler/tests/relation_check_tests.rs
 crates/reify-compiler/tests/reserved_name_lint_tests.rs
-crates/reify-compiler/tests/result_combinator_overload_tests.rs
-crates/reify-compiler/tests/result_combinator_resolution_tests.rs
-crates/reify-compiler/tests/result_fallback_resolution_tests.rs
-crates/reify-compiler/tests/result_match_binder_tests.rs
-crates/reify-compiler/tests/result_prelude_enum_tests.rs
 crates/reify-compiler/tests/robustness_examples_tests.rs
 crates/reify-compiler/tests/rounded_primitives_tests.rs
 crates/reify-compiler/tests/same_module_structure_ctor_compile.rs

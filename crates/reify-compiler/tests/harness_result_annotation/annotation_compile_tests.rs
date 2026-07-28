@@ -329,7 +329,7 @@ fn annotation_on_occurrence_propagates() {
 
 #[test]
 fn shell_non_literal_expr_arg_lowers_to_expr_variant_and_still_warns() {
-    let module = compile_source(include_str!("fixtures/annotation_expr_arg.ri"));
+    let module = compile_source(include_str!("../fixtures/annotation_expr_arg.ri"));
     assert!(
         errors_only(&module).is_empty(),
         "unexpected errors: {:?}",
