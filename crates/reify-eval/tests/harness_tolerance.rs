@@ -15,16 +15,16 @@
 //! `harness_tolerance/` subdir.
 //!
 //! `include_str!` is resolved relative to the *including source file*, so the extra
-//! subdirectory level this consolidation introduces means 9 call sites across 5 modules
-//! were deepened by one `../`: `fixtures/…` → `../fixtures/…` in `undef_boundary_suite`
-//! (3), `undef_cause_capture` (2), `undef_cause_op_contract` (1) and `undef_tracer` (2),
-//! and `../../../examples/…` → `../../../../examples/…` in `tolerance_member_access_e2e`
-//! (1). `crates/reify-eval/tests/fixtures/` itself did not move. A wrong `../` depth is
-//! a compile error rather than a silent skip, but these modules were RUN as well as
-//! compiled so the fixture *content* is confirmed to still reach the assertions. The
-//! `tolerance_member_access_e2e` site is the one place where the extra `../` had a
-//! knock-on effect: it pushed that line from 98 to 101 columns, past rustfmt's
-//! 100-column `max_width`, so the `const` was wrapped onto two lines.
+//! subdirectory level this consolidation introduces means every call site in the modules
+//! below was deepened by one `../`: `fixtures/…` → `../fixtures/…` in
+//! `undef_boundary_suite`, `undef_cause_capture`, `undef_cause_op_contract` and
+//! `undef_tracer`, and `../../../examples/…` → `../../../../examples/…` in
+//! `tolerance_member_access_e2e`. `crates/reify-eval/tests/fixtures/` itself did not
+//! move. A wrong `../` depth is a compile error rather than a silent skip, but these
+//! modules were RUN as well as compiled so the fixture *content* is confirmed to still
+//! reach the assertions. The `tolerance_member_access_e2e` site is the one place where
+//! the extra `../` had a knock-on effect: it pushed that line past rustfmt's `max_width`,
+//! so the `const` was wrapped onto two lines.
 //!
 //! Whole-unit size (this root plus every `harness_tolerance/*.rs` module below) is
 //! measured and capped by `tests/infra/test_harness_kloc_cap.sh` rule (a).

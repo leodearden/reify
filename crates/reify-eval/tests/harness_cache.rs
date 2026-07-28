@@ -14,8 +14,8 @@
 //!
 //! # Shared `differential` module — the tests/common dedup
 //!
-//! `differential` (tests/common/differential.rs, 2,128 lines) is declared ONCE here
-//! rather than once per includer. Four submodules below reference it —
+//! `differential` (tests/common/differential.rs) is declared ONCE here rather than once
+//! per includer. Four submodules below reference it —
 //! `unified_dag_boundary_cases`, `unified_dag_differential_corpus`,
 //! `unified_dag_edit_path`, `unified_dag_warm_path` — and each previously carried its own
 //! `#[path = "common/differential.rs"] mod differential;`, so the same source was
@@ -25,21 +25,22 @@
 //! Submodules reach it via `use crate::differential::{…}`. No extra `#![allow]` is needed
 //! at this root — differential.rs carries its own `#![allow(dead_code)]`.
 //!
-//! Residual, stated rather than silently dropped: `tests/common/` is 2,510 lines total
-//! (mod.rs 46 + alloc_counter.rs 57 + as_printed.rs 279 + differential.rs 2,128), so this
-//! collapse covers ~85% of it by volume. The remaining `mod common;` includers are
+//! Residual, stated rather than silently dropped: `differential.rs` is by far the largest
+//! member of `tests/common/`, so collapsing it takes most of the duplicated-compilation
+//! payload that was available here. The remaining `mod common;` includers are
 //! deliberately left standalone, each for a reason that consolidating would violate:
 //!   - `realization_cache_alloc` and `realization_cache_alloc_rotating_options_hash` each
 //!     declare their own `#[global_allocator] static GLOBAL`. Rust permits exactly one
 //!     global allocator per compile unit, so folding both here is a hard rustc error, and
-//!     folding either would instrument every allocation in this 17-module harness. Both
-//!     files' headers state the process isolation as deliberate design.
+//!     folding either would instrument every allocation in this harness. Both files'
+//!     headers state the process isolation as deliberate design.
 //!   - `fdm_bracket_e2e` and `fdm_progressive_refinement_e2e` (`common::as_printed`
 //!     users) belong to `harness_fea_solver_e2e`, which already sits close to the PRD §7
 //!     20,000-line cap — folding them would risk breaching the band.
-//!   - `edit_source` (3,764 lines) and `guard_eval` (4,190 lines) are out-of-subsystem,
-//!     and their only use of `common` is the 46-line `ten_bool_guarded_groups` helper;
-//!     folding ~8 kLOC of foreign tests to dedup 46 lines is not a trade worth making.
+//!   - `edit_source` and `guard_eval` are ~8 kLOC of out-of-subsystem tests, and their
+//!     only use of `common` is the single small `ten_bool_guarded_groups` helper; pulling
+//!     two foreign harnesses in here just to dedup that helper is not a trade worth
+//!     making.
 //!
 //! # Path fixups
 //!
