@@ -1391,6 +1391,180 @@ _wl_run "$_WL_DIR/assert-no-use.sh"
 if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "clean=0/[] dirty=1 names_dir=yes h1=yes h2=yes" ]; then ok=true; else ok=false; fi
 check "WL-i7: _assert_no_shared_trash_use passes silently on an empty hits file and fails naming both _SHARED_TRASH_DIR and every recorded hit (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
 
+# ==============================================================================
+# Warm-lane shared-trash LITTER guard + liveness control (task 5612)
+#
+# WHY a second, filesystem-based guard when the ERR_OUT recorder above already
+# exists: the recorder only fires when a run_helper wrapper has captured seed's
+# stderr into $ERR_OUT. Most warm-lane suites have no such wrapper (several never
+# invoke the real seed at all, driving stub scripts instead), so
+# _assert_no_shared_trash_use would read a permanently-empty hits file and pass
+# VACUOUSLY forever in them — a dead instrument. A snapshot-diff of the actual
+# trash directory observes the leak regardless of how seed was invoked or whether
+# its stderr was captured, so the guard has teeth everywhere.
+#
+# ATTRIBUTION IS BY THE SUITE'S OWN mktemp STEM, and that is a deliberate
+# trade-off, not an oversight: /tmp/.reseed-trash is machine-shared, so a bare
+# snapshot-diff would fail this suite for another worktree's concurrent litter.
+# Stem matching is race-free and matches the forensic method that attributed the
+# pre-fix entries by mktemp prefix, at the cost of not catching a hypothetical
+# bare-/tmp lane named outside its own suite's naming convention. New entries
+# that do NOT match the stem are therefore informational, never a failure.
+#
+# The liveness control exists because a guard that can only ever pass is worth
+# nothing: it proves the checker FIRES, hermetically, without writing to the
+# machine-shared path it defends.
+# ==============================================================================
+
+echo ""
+echo "--- Warm-lane isolation: shared-trash litter guard ---"
+
+for _wl_fn in _assert_no_shared_trash_litter assert_no_shared_trash_litter assert_shared_trash_litter_detector_live; do
+    if bash -c "source '$HELPER_FILE' && declare -f $_wl_fn >/dev/null" 2>/dev/null; then ok=true; else ok=false; fi
+    check "WL-j1: $_wl_fn is defined after sourcing test_helpers.sh" "$ok"
+done
+
+# The two new globals must be as inert at source time as the rest of the block.
+cat > "$_WL_DIR/litter-inert.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+printf 'SNAP=[%s] PREFIX=[%s]\n' "${_SHARED_TRASH_SNAPSHOT-UNSET}" "${_LANE_LITTER_PREFIX-UNSET}"
+PROBE
+_wl_run "$_WL_DIR/litter-inert.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "SNAP=[] PREFIX=[]" ]; then ok=true; else ok=false; fi
+check "WL-j2: sourcing alone leaves _SHARED_TRASH_SNAPSHOT/_LANE_LITTER_PREFIX set-but-empty (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+# (a)-(e): the parameterized checker, exercised on synthetic trash dirs.
+cat > "$_WL_DIR/litter-checker.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+
+TRASH="$TMPDIR/trash"
+SNAP="$TMPDIR/snap"
+STEM="test-mystem"
+mkdir -p "$TRASH"
+
+# (c) A stem-matching entry present BEFORE the snapshot is not ours.
+mkdir -p "$TRASH/$STEM-lane-aaaaaa.111"
+ls -A "$TRASH" | sort > "$SNAP"
+_out_pre="$(_assert_no_shared_trash_litter "$TRASH" "$SNAP" "$STEM" 2>&1)"; _rc_pre=$?
+
+# (d) Nothing new since the snapshot → clean.
+_out_clean="$(_assert_no_shared_trash_litter "$TRASH" "$SNAP" "$STEM" 2>&1)"; _rc_clean=$?
+
+# (b) A NEW entry that does not match the stem is another worktree's litter on a
+# machine-shared path: reported informationally, never a failure.
+mkdir -p "$TRASH/some-other-suite-lane-bbbbbb.222"
+_out_other="$(_assert_no_shared_trash_litter "$TRASH" "$SNAP" "$STEM" 2>&1)"; _rc_other=$?
+_other_named=no; case "$_out_other" in *some-other-suite-lane-bbbbbb.222*) _other_named=yes ;; esac
+
+# (a)+(e) A NEW stem-matching entry fails, and the message names BOTH the stem
+# and the offending entry — so a dropped expansion or a swapped stem/entry
+# argument order is caught, not just a wrong exit status.
+mkdir -p "$TRASH/$STEM-lane-cccccc.333"
+_out_hit="$(_assert_no_shared_trash_litter "$TRASH" "$SNAP" "$STEM" 2>&1)"; _rc_hit=$?
+_hit_stem=no;  case "$_out_hit" in *"$STEM"*)                 _hit_stem=yes  ;; esac
+_hit_entry=no; case "$_out_hit" in *"$STEM-lane-cccccc.333"*) _hit_entry=yes ;; esac
+# The pre-existing entry must NOT be reported: it was in the snapshot.
+_hit_pre=no;   case "$_out_hit" in *"$STEM-lane-aaaaaa.111"*) _hit_pre=yes   ;; esac
+
+# (d) An absent trash dir is the normal case, not an error.
+_out_absent="$(_assert_no_shared_trash_litter "$TMPDIR/no-such-trash" "$SNAP" "$STEM" 2>&1)"; _rc_absent=$?
+
+printf 'pre=%s clean=%s other=%s/%s hit=%s/%s/%s/%s absent=%s\n' \
+    "$_rc_pre" "$_rc_clean" "$_rc_other" "$_other_named" \
+    "$_rc_hit" "$_hit_stem" "$_hit_entry" "$_hit_pre" "$_rc_absent"
+PROBE
+_wl_run "$_WL_DIR/litter-checker.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "pre=0 clean=0 other=0/yes hit=1/yes/yes/no absent=0" ]; then ok=true; else ok=false; fi
+check "WL-j3: _assert_no_shared_trash_litter fails only on a NEW stem-matching entry, naming stem and offender; pre-existing and other-suite entries stay informational; absent dir is clean (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+# (f) The globals wrapper must FAIL LOUDLY when init was never called. A
+# vacuous pass here would let an unwired suite report a false all-clear forever.
+cat > "$_WL_DIR/litter-wrapper-uninit.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+assert_no_shared_trash_litter
+PROBE
+_wl_run "$_WL_DIR/litter-wrapper-uninit.sh"
+if [ "$_WL_RC" -ne 0 ]; then ok=true; else ok=false; fi
+check "WL-j4: assert_no_shared_trash_litter FAILS on uninitialized state — never a vacuous pass (rc=$_WL_RC)" "$ok"
+
+if [[ "$_WL_ERR" == *init_isolated_lane_root* ]]; then ok=true; else ok=false; fi
+check "WL-j5: ... naming init_isolated_lane_root so the fix is obvious (got: $(_wl_flat "$_WL_ERR"))" "$ok"
+
+# The wired path: init records the stem, writes the snapshot in the documented
+# `ls -A | sort` format, and the wrapper then behaves like the parameterized form.
+cat > "$_WL_DIR/litter-wrapper-init.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_TMPDIRS=()
+_SHARED_TRASH_DIR="$TMPDIR/fake-trash"
+mkdir -p "$_SHARED_TRASH_DIR/pre-existing-entry"
+init_isolated_lane_root teststem || { echo "init-failed"; exit 9; }
+
+[ -n "${_SHARED_TRASH_SNAPSHOT:-}" ]        || { echo "snapshot-path-empty"; exit 1; }
+[ -f "$_SHARED_TRASH_SNAPSHOT" ]            || { echo "snapshot-not-created"; exit 1; }
+[ "${_LANE_LITTER_PREFIX:-}" = "teststem" ] || { echo "stem-not-recorded"; exit 1; }
+[ "$(dirname "$_SHARED_TRASH_SNAPSHOT")" = "$_LANE_ROOT" ] || { echo "snapshot-not-under-lane-root"; exit 1; }
+diff <(ls -A "$_SHARED_TRASH_DIR" | sort) "$_SHARED_TRASH_SNAPSHOT" >/dev/null \
+    || { echo "snapshot-is-not-a-sorted-ls-A-listing"; exit 1; }
+
+_out_clean="$(assert_no_shared_trash_litter 2>&1)"; _rc_clean=$?
+mkdir -p "$_SHARED_TRASH_DIR/teststem-lane-dddddd.444"
+_out_dirty="$(assert_no_shared_trash_litter 2>&1)"; _rc_dirty=$?
+_named=no; case "$_out_dirty" in *teststem-lane-dddddd.444*) _named=yes ;; esac
+
+printf 'clean=%s/[%s] dirty=%s named=%s\n' "$_rc_clean" "$_out_clean" "$_rc_dirty" "$_named"
+PROBE
+_wl_run "$_WL_DIR/litter-wrapper-init.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "clean=0/[] dirty=1 named=yes" ]; then ok=true; else ok=false; fi
+check "WL-j6: init_isolated_lane_root records the stem and a sorted 'ls -A' snapshot under \$_LANE_ROOT, and the wrapper then passes clean / fails naming the offender (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+# (g)+(h) The liveness control: must return 0, and must be hermetic. Pointing
+# _SHARED_TRASH_DIR at an empty PRIVATE dir makes the hermeticity check
+# race-free, and comparing the directory mtime as well as the entry set also
+# catches a control that created a synthetic entry there and then removed it —
+# which an entry-set comparison alone would miss.
+cat > "$_WL_DIR/litter-live.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_SHARED_TRASH_DIR="$TMPDIR/watched-trash"
+mkdir -p "$_SHARED_TRASH_DIR"
+_mt_before="$(stat -c %y "$_SHARED_TRASH_DIR")"
+_ls_before="$(ls -A "$_SHARED_TRASH_DIR" | sort)"
+
+_out="$(assert_shared_trash_litter_detector_live 2>&1)"; _rc=$?
+
+_mt_after="$(stat -c %y "$_SHARED_TRASH_DIR")"
+_ls_after="$(ls -A "$_SHARED_TRASH_DIR" | sort)"
+_untouched=no
+if [ "$_mt_before" = "$_mt_after" ] && [ "$_ls_before" = "$_ls_after" ]; then _untouched=yes; fi
+printf 'rc=%s untouched=%s out=[%s]\n' "$_rc" "$_untouched" "$_out"
+PROBE
+_wl_run "$_WL_DIR/litter-live.sh"
+if [ "$_WL_RC" -eq 0 ] && [[ "$_WL_OUT" == "rc=0 untouched=yes"* ]]; then ok=true; else ok=false; fi
+check "WL-j7: assert_shared_trash_litter_detector_live returns 0 and never reads or writes \$_SHARED_TRASH_DIR — it mktemps its own scratch dir (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+# ... and the same control against the REAL default path must leave
+# /tmp/.reseed-trash byte-for-byte as it found it.
+ls -A /tmp/.reseed-trash 2>/dev/null | sort > "$_WL_DIR/real-trash-before"
+cat > "$_WL_DIR/litter-live-real.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+# _SHARED_TRASH_DIR deliberately left at its default: the REAL shared path.
+assert_shared_trash_litter_detector_live
+PROBE
+_wl_run "$_WL_DIR/litter-live-real.sh"
+ls -A /tmp/.reseed-trash 2>/dev/null | sort > "$_WL_DIR/real-trash-after"
+_wl_new_real="$(comm -13 "$_WL_DIR/real-trash-before" "$_WL_DIR/real-trash-after" | tr '\n' ' ')"
+
+if [ "$_WL_RC" -eq 0 ]; then ok=true; else ok=false; fi
+check "WL-j8: the liveness control returns 0 against the real default _SHARED_TRASH_DIR (rc=$_WL_RC out: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+if [ -z "${_wl_new_real// /}" ]; then ok=true; else ok=false; fi
+check "WL-j9: ... and adds NO entry to the machine-shared /tmp/.reseed-trash it defends (new: [$_wl_new_real])" "$ok"
+
 # -- Summary -------------------------------------------------------------------
 echo ""
 echo "Results: $T_PASS passed, $T_FAIL failed"
