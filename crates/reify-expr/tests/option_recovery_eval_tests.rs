@@ -362,7 +362,8 @@ fn e2e_or_default_some_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = reify_expr::EvalContext::new(&values, &functions);
     assert_eq!(
         reify_expr::eval_expr(expr, &ctx),
         val_5mm(),
@@ -395,7 +396,8 @@ fn e2e_unwrap_or_some_5mm_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = reify_expr::EvalContext::new(&values, &functions);
     let result = reify_expr::eval_expr(expr, &ctx);
     assert_eq!(
         result,
@@ -499,7 +501,8 @@ fn e2e_or_else_none_subject_with_stdlib() {
     let expr = reify_test_support::get_let_expr(&module, "v");
     let mut values = ValueMap::new();
     values.insert(ValueCellId::new("S", "o"), Value::Option(None));
-    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = reify_expr::EvalContext::new(&values, &functions);
     assert_eq!(
         reify_expr::eval_expr(expr, &ctx),
         Value::Option(Some(Box::new(val_3mm()))),
@@ -642,7 +645,8 @@ fn e2e_is_some_none_with_stdlib() {
         reify_test_support::compile_source_with_stdlib("structure S { let v = is_some(none) }");
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = reify_expr::EvalContext::new(&values, &functions);
     assert_eq!(
         reify_expr::eval_expr(expr, &ctx),
         Value::Bool(false),
@@ -670,7 +674,8 @@ fn e2e_is_none_none_with_stdlib() {
         reify_test_support::compile_source_with_stdlib("structure S { let v = is_none(none) }");
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = reify_expr::EvalContext::new(&values, &functions);
     assert_eq!(
         reify_expr::eval_expr(expr, &ctx),
         Value::Bool(true),
@@ -795,7 +800,8 @@ fn e2e_get_or_absent_key_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = reify_expr::EvalContext::new(&values, &functions);
     let result = reify_expr::eval_expr(expr, &ctx);
     assert_eq!(
         result,
@@ -827,7 +833,8 @@ fn e2e_get_or_present_key_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = reify_expr::EvalContext::new(&values, &functions);
     let result = reify_expr::eval_expr(expr, &ctx);
     assert_eq!(
         result,
@@ -879,7 +886,8 @@ fn e2e_get_or_undef_map_with_stdlib() {
         r#"structure S { let v = get_or(undef, "k", 0mm)  let w = get_or(map{"k" => 1mm}, "k", 0mm) }"#,
     );
     let values = ValueMap::new();
-    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = reify_expr::EvalContext::new(&values, &functions);
 
     // Liveness witness first: a non-Undef expectation on the same compiled
     // module, so the Undef assertion below cannot pass on a dead harness.
@@ -1084,7 +1092,8 @@ fn e2e_map_or_some_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = reify_expr::EvalContext::new(&values, &functions);
     assert_eq!(
         reify_expr::eval_expr(expr, &ctx),
         val_10mm(),
