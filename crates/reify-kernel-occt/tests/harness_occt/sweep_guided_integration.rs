@@ -175,6 +175,83 @@ fn sweep_guided_accepts_circle_face_profile() {
     }
 }
 
+/// A face profile must sweep to an *enclosed solid*, at parity with plain
+/// `sweep()` — the declared stdlib signature is
+/// `sweep_guided(profile: Surface, path: Curve, guide: Curve) -> Solid`.
+///
+/// Tolerance basis: this is a straight 0.1 m spine, so the exact answer is
+/// analytic — V = π·r²·L = 1.2566370614e-4 m³ for r = 0.02. A standalone OCCT
+/// probe measured the guided sweep at 1.25663673e-4 (rel. err. 2.6e-7) and
+/// `MakePipe(face)` at 1.25663706e-4 (rel. err. 4.4e-9). The 1e-3 relative
+/// tolerance below therefore carries ~4 orders of margin over the observed
+/// discretisation error; it is derived from the geometry, not tuned to fit.
+#[test]
+fn sweep_guided_face_profile_yields_solid_volume() {
+    let mut kernel = OcctKernel::new();
+    let profile = kernel
+        .execute(&GeometryOp::CircleProfile {
+            radius: Value::Real(0.02),
+        })
+        .expect("CircleProfile (20mm) should build")
+        .id;
+    let path = make_straight_path(&mut kernel, 0.1);
+    let guide = make_offset_guide(&mut kernel, 0.05, 0.03, 0.1);
+
+    let guided = kernel
+        .execute(&GeometryOp::SweepGuided {
+            profile,
+            path,
+            guide,
+        })
+        .expect("SweepGuided with a face profile should succeed");
+    let guided_volume = match kernel
+        .query(&GeometryQuery::Volume(guided.id))
+        .expect("Volume query should succeed")
+    {
+        Value::Real(v) => v,
+        other => panic!("expected Volume Real, got {:?}", other),
+    };
+
+    // (a) against the analytic volume of the swept disk.
+    let analytic = std::f64::consts::PI * 0.02 * 0.02 * 0.1;
+    let rel_err = (guided_volume - analytic).abs() / analytic;
+    assert!(
+        rel_err < 1e-3,
+        "guided sweep of a face profile must enclose the analytic volume \
+         {analytic}, got {guided_volume} (relative error {rel_err}); an open \
+         shell measures ~8.4e-5 here"
+    );
+
+    // (b) parity with plain Sweep, which OCCT already solidifies for a face
+    // profile. Fresh inputs — MakePipeShell consumes the ones above.
+    let profile_plain = kernel
+        .execute(&GeometryOp::CircleProfile {
+            radius: Value::Real(0.02),
+        })
+        .expect("CircleProfile (20mm) should build")
+        .id;
+    let path_plain = make_straight_path(&mut kernel, 0.1);
+    let plain = kernel
+        .execute(&GeometryOp::Sweep {
+            profile: profile_plain,
+            path: path_plain,
+        })
+        .expect("plain Sweep should succeed");
+    let plain_volume = match kernel
+        .query(&GeometryQuery::Volume(plain.id))
+        .expect("Volume query should succeed")
+    {
+        Value::Real(v) => v,
+        other => panic!("expected Volume Real, got {:?}", other),
+    };
+    let parity_err = (guided_volume - plain_volume).abs() / plain_volume;
+    assert!(
+        parity_err < 1e-3,
+        "guided sweep volume {guided_volume} must match plain sweep volume \
+         {plain_volume} for the same face profile (relative error {parity_err})"
+    );
+}
+
 #[test]
 fn sweep_guided_orientation_differs_from_plain_sweep() {
     let mut kernel = OcctKernel::new();
