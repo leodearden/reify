@@ -29,7 +29,7 @@
 
 use crate::ignore_hygiene::{is_doc_comment_line, walk_rs_files};
 use std::ffi::OsStr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Re-exported so call sites can NAME the guard type (in a helper's return
 /// signature, say) through `reify_test_support` without their own crate
@@ -341,6 +341,30 @@ pub fn collect_workspace_unguarded_temp_dirs(workspace_root: &Path) -> Vec<Strin
                 .collect::<Vec<_>>()
         })
         .collect()
+}
+
+/// Companion to [`collect_workspace_unguarded_temp_dirs`]: counts how many
+/// of `rs_files` (as produced by [`walk_rs_files`]) can be successfully read
+/// as UTF-8 text, as opposed to silently skipped by a per-file I/O error —
+/// non-UTF-8 source, permission denied, or a file deleted mid-walk (see
+/// [`collect_workspace_unguarded_temp_dirs`]'s doc comment for why skipping
+/// is the deliberate policy for that last case).
+///
+/// # Why this exists alongside the walker-health guard
+///
+/// `workspace_has_no_unguarded_temp_dirs`'s walker-health guard counts files
+/// the WALKER returned — before any read is ever attempted — so it cannot
+/// see a SYSTEMATIC read failure (a permissions change under `crates/`, a
+/// source file that somehow isn't valid UTF-8) that would silently empty
+/// the sweep's real coverage while leaving the walked count untouched. That
+/// is precisely the vacuous-pass failure mode the health guard exists to
+/// catch, just one layer deeper than the walk itself: comparing this
+/// function's result against `rs_files.len()` closes the gap.
+pub fn count_readable_rs_files(rs_files: &[PathBuf]) -> usize {
+    rs_files
+        .iter()
+        .filter(|path| std::fs::read_to_string(path).is_ok())
+        .count()
 }
 
 /// Partition a raw sweep result (as produced by
@@ -994,6 +1018,41 @@ mod tests {
         );
     }
 
+    // ── count_readable_rs_files ──────────────────────────────────────────────
+
+    /// A mix of one valid-UTF-8 file and one file containing invalid UTF-8
+    /// bytes → count is 1, not 2. Pins that the function actually attempts a
+    /// read rather than trusting the file list handed to it — the whole
+    /// point, since the walker-health guard it complements counts files
+    /// BEFORE any read is attempted and so cannot see this kind of silent
+    /// drop on its own.
+    #[test]
+    fn crf_counts_only_files_that_read_successfully_as_utf8() {
+        let guard = prefixed_tempdir("reify-test-support-crf-");
+        let root = guard.path();
+
+        let good = root.join("good.rs");
+        std::fs::write(&good, b"fn main() {}\n").expect("write good fixture");
+
+        let bad = root.join("bad.rs");
+        // 0x80 is a bare continuation byte: it can never start a valid UTF-8
+        // sequence, so `read_to_string` must fail with InvalidData.
+        std::fs::write(&bad, [0x66, 0x6e, 0x20, 0x80, 0x28, 0x29]).expect("write bad fixture");
+
+        let files = vec![good, bad];
+        assert_eq!(
+            count_readable_rs_files(&files),
+            1,
+            "expected only the valid-UTF-8 file to count as readable"
+        );
+    }
+
+    /// Empty input → 0, pinning the no-files contract.
+    #[test]
+    fn crf_empty_input_returns_zero() {
+        assert_eq!(count_readable_rs_files(&[]), 0);
+    }
+
     // ── partition_enforced_and_stale ─────────────────────────────────────────
     //
     // Tests exercise the pure classification over synthetic (violations,
@@ -1239,6 +1298,29 @@ mod tests {
             "sentinel file {sentinel:?} not found in walker output — the \
              walker may be broken, or may have regressed to excluding src/ \
              files again"
+        );
+
+        //   3. Read-health guard — closes a blind spot the two checks above
+        //      cannot see: they count files the WALKER returned, before any
+        //      read is attempted, so a SYSTEMATIC read failure (a
+        //      permissions change under `crates/`, say) would silently
+        //      empty the sweep's real coverage below while leaving the
+        //      walked count untouched — the same vacuous-pass failure mode,
+        //      one layer deeper than the walk itself. A small delta (not
+        //      zero) tolerates a file legitimately deleted mid-walk by a
+        //      concurrent build, the same tradeoff
+        //      `collect_workspace_unguarded_temp_dirs` accepts for its own
+        //      per-file I/O errors.
+        let readable = count_readable_rs_files(&all_rs_files);
+        let unread = all_rs_files.len().saturating_sub(readable);
+        assert!(
+            unread <= 5,
+            "the walker found {} .rs file(s) but only {readable} could be \
+             read — {unread} file(s) silently failed (non-UTF-8 source, \
+             permission denied, or similar); the sweep may be blind to real \
+             violations in those files. Investigate before trusting a clean \
+             result.",
+            all_rs_files.len(),
         );
 
         // `collect_workspace_unguarded_temp_dirs` walks again internally.
