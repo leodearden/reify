@@ -12,7 +12,8 @@
 # Assertions encode the scope contract:
 #   docs/md/yaml only      -> nothing heavy (RUN_RUST=0 RUN_GUI=0)
 #   prd-gate .ri fixture   -> nothing heavy, UNLESS the basename is in
-#                             verify.sh's _RUST_COUPLED_RI_FIXTURES (task 5536)
+#                             verify.sh's _RUST_COUPLED_RI_FIXTURES (task 5536);
+#                             for a rename, the R entry's SOURCE basename counts too
 #   gui/src (frontend TS)  -> GUI only, no cargo (RUN_RUST=0 RUN_GUI=1)
 #   non-OCCT crate         -> Rust+GUI, NO gated pass (RUN_OCCT_GATE=0)
 #   OCCT-touching crate    -> gated + ungated (RUN_OCCT_GATE=1)
@@ -206,26 +207,98 @@ assert "PG-5/mixed diff: RUN_RUST=1 (monotone accumulator — the fixture arm ca
     plan_has 'RUN_RUST=1'
 
 # ---------------------------------------------------------------------------
+# Scenario PG-RENAME/PG-RENAME-b: the RENAME vector (task 5536 amendment).
+#
+# `git diff --name-only` prints only a rename's DESTINATION (measured here:
+# `git mv a.ri b.ri` yields just `b.ri`, while --name-status shows
+# `R100 a.ri b.ri`). So a bare destination-basename exclusion test would let
+# `git mv <coupled>.ri <new>.ri` classify no-heavy — breaking the #[test] that
+# opens the OLD literal path, on the one route (a hook-gated docs commit on
+# `main`) that has no later gate. decide_scope recovers the source side of R
+# entries under the carve-out directory; PG-RENAME pins that, PG-RENAME-b pins
+# that the recovery does not over-escalate an ordinary uncoupled-fixture
+# rename.
+#
+# Needs its own fixture: a rename requires the source to exist at HEAD, and
+# plan_for's shared FIX is never committed to (every other staged scenario
+# diffs an unborn HEAD, so seeding a commit there would leak this file into
+# their diffs).
+# ---------------------------------------------------------------------------
+FIX_PGR=""
+make_fixture FIX_PGR
+mkdir -p "$FIX_PGR/tests/prd-gate/fixtures"
+printf 'seed\n' > "$FIX_PGR/tests/prd-gate/fixtures/geometry_let_selector_consumer.ri"
+printf 'seed\n' > "$FIX_PGR/tests/prd-gate/fixtures/uncoupled_probe.ri"
+git -C "$FIX_PGR" add tests/prd-gate/fixtures/geometry_let_selector_consumer.ri \
+                      tests/prd-gate/fixtures/uncoupled_probe.ri
+git -C "$FIX_PGR" commit -q -m "seed PG-RENAME sources"
+
+# plan_for_staged_rename <src> <dst> — stage a rename in FIX_PGR, capture the
+# plan for --scope staged, then restore the index and worktree.
+plan_for_staged_rename() {
+    git -C "$FIX_PGR" mv "$1" "$2"
+    capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && exec bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan' \
+        _ "$FIX_PGR" || true
+    git -C "$FIX_PGR" reset -q --hard HEAD
+}
+
+echo ""
+echo "--- Scenario PG-RENAME: git mv of a Rust-consumed fixture -> RUN_RUST=1 (source side recovered from the R entry) ---"
+plan_for_staged_rename tests/prd-gate/fixtures/geometry_let_selector_consumer.ri \
+                       tests/prd-gate/fixtures/renamed_probe_v2.ri
+assert "PG-RENAME: renaming a coupled fixture still classifies RUN_RUST=1 (destination basename alone would say no-heavy)" \
+    plan_has 'RUN_RUST=1'
+
+echo ""
+echo "--- Scenario PG-RENAME-b: git mv of an UNCOUPLED fixture -> still no heavy checks (control: recovery does not over-escalate) ---"
+plan_for_staged_rename tests/prd-gate/fixtures/uncoupled_probe.ri \
+                       tests/prd-gate/fixtures/uncoupled_probe_v2.ri
+assert "PG-RENAME-b: renaming an uncoupled fixture stays RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
+
+# ---------------------------------------------------------------------------
 # Scenario PG-DRIFT: coupling drift guard (task 5536).
 #
-# CONTRACT: every tests/prd-gate/fixtures/<name>.ri path referenced from
-# crates/**/*.rs must still classify RUN_RUST=1 — a fixture that any compiled
-# test target reads must never be classified no-heavy, because a hook-gated
-# docs commit on `main` has no later gate to catch a bad edit to it.
-# Adding such a reference WITHOUT adding <name>.ri to verify.sh's
-# _RUST_COUPLED_RI_FIXTURES turns this scenario RED.
+# CONTRACT (two halves, both derived from the real repo — never a restated
+# list, so this guard cannot become a third copy of _RUST_COUPLED_RI_FIXTURES):
 #
-# The coupled set is DERIVED from the real repo rather than restated here, so
-# this guard cannot itself drift into a third copy of the list. It is
-# deliberately comment-inclusive (a doc-comment mention counts) — that needs
-# no code-vs-comment discrimination and always errs conservative. The
-# assertion is BEHAVIOURAL (stage the path, read --print-plan) rather than a
-# source-grep of verify.sh, so it survives any refactor of how the list is
-# stored. Today it derives 5 paths.
+#  (a) PER-FIXTURE. Every tests/prd-gate/fixtures/<name>.ri path named by ANY
+#      tracked *.rs must still classify RUN_RUST=1 — a fixture a compiled test
+#      target reads must never be no-heavy, because a hook-gated docs commit on
+#      `main` has no later gate to catch a bad edit to it. Adding such a
+#      reference WITHOUT adding <name>.ri to verify.sh's
+#      _RUST_COUPLED_RI_FIXTURES turns this RED. The pathspec is ALL *.rs, not
+#      just crates/*.rs: gui/src-tauri is a compiled Rust target too (it hits
+#      no fixture today — the derived set is identical either way — so the
+#      widening costs nothing and closes the gap between the stated contract
+#      and what is actually searched).
+#
+#  (b) DIRECTORY-LEVEL. verify.sh's arm rests on "nothing globs this
+#      directory", which is what makes ADDING a fixture provably inert. A
+#      corpus walker (`read_dir("…/tests/prd-gate/fixtures")`,
+#      `fixtures_dir.join(name)`, `glob("…/fixtures/*.ri")`, a format!-built
+#      path) names the DIRECTORY, never a `<name>.ri` leaf, so half (a) would
+#      stay green while every newly added fixture silently became an ungated
+#      Rust input. So: no tracked *.rs may name the directory with a
+#      string-literal/format/glob terminator (`"`, `{`, `*`) where the leaf
+#      should be. Prose that merely mentions the path (`/// see
+#      tests/prd-gate/fixtures/foo.ri`) is untouched. Residual, stated
+#      honestly: a path assembled from a non-literal constant is out of reach
+#      of any grep. If this half fires, the fix is NOT to extend
+#      _RUST_COUPLED_RI_FIXTURES — the carve-out's premise is void and the arm
+#      itself has to be re-examined.
+#
+# Both halves are checked non-vacuously (a) and are BEHAVIOURAL where they can
+# be — (a) stages the path and reads --print-plan rather than grepping
+# verify.sh, so it survives any refactor of how the list is stored. (a) is
+# deliberately comment-inclusive (a doc-comment mention counts): no
+# code-vs-comment discrimination needed, and it always errs conservative.
+# Today (a) derives 5 paths and (b) is empty.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario PG-DRIFT: every crates/**/*.rs-referenced prd-gate fixture still classifies RUN_RUST=1 ---"
-_PG_COUPLED="$(git -C "$REPO_ROOT" grep -h -o -E 'tests/prd-gate/fixtures/[A-Za-z0-9_.-]+\.ri' -- 'crates/*.rs' | sort -u || true)"
+echo "--- Scenario PG-DRIFT: every *.rs-referenced prd-gate fixture still classifies RUN_RUST=1 ---"
+_PG_COUPLED="$(git -C "$REPO_ROOT" grep -h -o -E 'tests/prd-gate/fixtures/[A-Za-z0-9_.-]+\.ri' -- '*.rs' | sort -u || true)"
 # Non-empty FIRST: a broken grep, a moved fixtures dir or a changed pathspec
 # must fail loudly here instead of vacuously passing an empty loop.
 assert "PG-DRIFT: derived coupled-fixture set is NON-EMPTY (guard is not vacuous)" \
@@ -236,6 +309,32 @@ while IFS= read -r _pg_path; do
     assert "PG-DRIFT: $_pg_path -> RUN_RUST=1 (read by a compiled test target; must be in verify.sh's _RUST_COUPLED_RI_FIXTURES)" \
         plan_has 'RUN_RUST=1'
 done <<< "$_PG_COUPLED"
+
+echo ""
+echo "--- Scenario PG-DRIFT-DIR: no tracked *.rs walks the fixtures DIRECTORY (the carve-out's load-bearing premise) ---"
+# A directory-level use materializes the directory path and then appends the
+# leaf separately, so the character where a `<name>.ri` leaf should be is a
+# string terminator (`"`), a format placeholder (`{`) or a glob (`*`).
+_PG_DIR_PAT='tests/prd-gate/fixtures/?["{*]'
+_PG_DIRREF="$(git -C "$REPO_ROOT" grep -n -E "$_PG_DIR_PAT" -- '*.rs' || true)"
+assert "PG-DRIFT-DIR: no *.rs names the fixtures directory itself (would void 'adding a fixture is inert' — re-examine verify.sh's arm, do NOT just extend _RUST_COUPLED_RI_FIXTURES). Found: ${_PG_DIRREF:-none}" \
+    test -z "$_PG_DIRREF"
+# Non-vacuity for a MUST-BE-EMPTY assertion: an empty result is also exactly
+# what a typo'd pattern or pathspec produces. Self-test the pattern against
+# synthetic lines — the four directory-level idioms must match, and the two
+# benign forms (a well-formed leaf reference, a prose mention) must not.
+assert "PG-DRIFT-DIR: pattern self-test — all 4 directory-walk idioms match (guard is not vacuous)" \
+    test "$(printf '%s\n' \
+        'let d = Path::new("tests/prd-gate/fixtures");' \
+        'let p = base.join("../../tests/prd-gate/fixtures/");' \
+        'let p = format!("{}/tests/prd-gate/fixtures/{}", root, name);' \
+        'for e in glob("tests/prd-gate/fixtures/*.ri") {}' \
+        | grep -c -E "$_PG_DIR_PAT" || true)" -eq 4
+assert "PG-DRIFT-DIR: pattern self-test — a <name>.ri leaf and a prose mention do NOT match (no nuisance RED)" \
+    test "$(printf '%s\n' \
+        'let p = root.join("../../tests/prd-gate/fixtures/geometry_let_selector_consumer.ri");' \
+        '/// see tests/prd-gate/fixtures/stdlib_ns_mode_member.ri).' \
+        | grep -c -E "$_PG_DIR_PAT" || true)" -eq 0
 
 # ---------------------------------------------------------------------------
 # Scenario 2: gui/src frontend TS -> GUI only, no cargo

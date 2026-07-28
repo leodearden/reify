@@ -990,21 +990,24 @@ is_occt_crate() {
 }
 
 # _RUST_COUPLED_RI_FIXTURES (task 5536) — the tests/prd-gate/fixtures/*.ri
-# basenames that are RUNTIME INPUTS to a compiled Rust test target, and so are
-# EXCLUDED from decide_scope's no-heavy-checks carve-out for that directory:
-#   compiler_type_hygiene_trait_args_silent_accept.ri
-#       crates/reify-compiler/tests/harness_traits/trait_type_arg_rejection_tests.rs:30
-#   geometry_let_selector_consumer.ri
-#       crates/reify-eval/tests/no_stale_undef_invariant_gate.rs:772 (pushed into corpus_files())
-#   geometry_let_selector_consumer_edit.ri
-#       crates/reify-eval/tests/no_stale_undef_edit_path_gate.rs:38
-#   stdlib_ns_buckling_mode_coexist.ri   crates/reify-compiler/tests/buckling_stdlib_compile.rs:709
-#   stdlib_ns_mode_member.ri             crates/reify-compiler/tests/buckling_stdlib_compile.rs:746
-# Keep in sync — tests/infra/test_verify_scope.sh's PG-DRIFT scenario is the
-# SOURCE OF TRUTH for membership: it derives the referenced set from the real
-# repo (`git grep -o 'tests/prd-gate/fixtures/*.ri' -- 'crates/*.rs'`) and
-# asserts each still classifies RUN_RUST=1, so adding a new Rust reference
-# without listing it here goes RED. Space sentinels give whole-token matching
+# basenames NAMED BY a compiled Rust test target, and so EXCLUDED from
+# decide_scope's no-heavy-checks carve-out for that directory:
+#   proven runtime reads (a #[test] builds the path and opens the file):
+#     geometry_let_selector_consumer.ri (pushed into no_stale_undef_invariant_
+#     gate.rs's corpus_files()), geometry_let_selector_consumer_edit.ri,
+#     stdlib_ns_buckling_mode_coexist.ri
+#   conservative, doc-comment mentions only today (listing a name is cheap, and
+#   a doc mention is usually the first trace of a read about to exist):
+#     compiler_type_hygiene_trait_args_silent_accept.ri, stdlib_ns_mode_member.ri
+# Deliberately NO file:line citations: nothing validates them and they rot on
+# the first edit to those tests. Membership's SOURCE OF TRUTH is behavioural —
+# tests/infra/test_verify_scope.sh's PG-DRIFT scenario derives the referenced
+# set from the real repo (`git grep -o 'tests/prd-gate/fixtures/*.ri' over ALL
+# tracked *.rs`) and asserts each still classifies RUN_RUST=1, so adding a new
+# Rust reference without listing it here goes RED; a companion assertion there
+# also fails if any *.rs names the fixtures DIRECTORY rather than a single
+# <name>.ri leaf, which would void this arm's premise outright (see below).
+# Space sentinels give whole-token matching
 # (mirrors select_infra_tests/select_harness_kloc_guard) — required here
 # because one name is a strict prefix of another
 # (geometry_let_selector_consumer.ri vs …_consumer_edit.ri).
@@ -1044,6 +1047,42 @@ decide_scope() {
     else
         _files="$(git -C "$REPO_ROOT" diff --cached --name-only --diff-filter=ACMRD | grep -v '^\.task/' || true)"
     fi
+    # Rename SOURCES under the prd-gate carve-out directory (task 5536).
+    # --name-only prints only a rename's DESTINATION (measured: `git mv a.ri
+    # b.ri` yields just `b.ri`, while --name-status shows `R100 a.ri b.ri`), so
+    # `git mv <coupled>.ri <new>.ri` would present a basename that is NOT in
+    # _RUST_COUPLED_RI_FIXTURES and classify no-heavy — while the #[test] that
+    # opens the OLD literal path is now broken, on the one route (a hook-gated
+    # docs commit on `main`) with no later gate. Recover the source side of R
+    # entries so the exclusion list sees it. Explicit -M makes this independent
+    # of ambient diff.renames config: with rename detection OFF there are no R
+    # entries and the primary list already carries the source as a `D`, so the
+    # union is the same set either way. Failure here (after the primary diff
+    # succeeded) is not expected — fail WIDE rather than silently lose the
+    # source side (contract C5). An empty result is the normal case, not a
+    # failure.
+    local _rsrc="" _classify=""
+    if [ "$SCOPE" = "branch" ]; then
+        if ! _rsrc="$(git -C "$REPO_ROOT" diff --name-status --diff-filter=R -M "$_MERGE_BASE" | cut -f2)"; then
+            echo "verify.sh: WARNING — --scope branch rename-source diff failed — failing WIDE to --scope all (contract C5)" >&2
+            RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1
+            return
+        fi
+    else
+        if ! _rsrc="$(git -C "$REPO_ROOT" diff --cached --name-status --diff-filter=R -M | cut -f2)"; then
+            echo "verify.sh: WARNING — --scope staged rename-source diff failed — failing WIDE to --scope all (contract C5)" >&2
+            RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1
+            return
+        fi
+    fi
+    _rsrc="$(grep -E '^tests/prd-gate/fixtures/.*\.ri$' <<< "$_rsrc" || true)"
+    # Classify over files + recovered rename sources, but leave CHANGED_FILES_RAW
+    # (below) built from _files alone, so Phase-2 narrowing / infra-test
+    # selection see the byte-identical list they saw before this arm existed.
+    _classify="$_files"
+    if [ -n "$_rsrc" ]; then
+        _classify="$(printf '%s\n%s' "$_files" "$_rsrc")"
+    fi
     while IFS= read -r f; do
         [ -z "$f" ] && continue
         case "$f" in
@@ -1082,7 +1121,16 @@ decide_scope() {
                 #     five in _RUST_COUPLED_RI_FIXTURES can, hence the exclusion
                 #     below (a blanket rule would let such an edit reach `main`
                 #     through the hook-gated docs path with no heavy checks and
-                #     no later gate — a red-main class outage).
+                #     no later gate — a red-main class outage). That
+                #     no-directory-glob premise is not left to this comment:
+                #     PG-DRIFT fails if any *.rs names the directory itself
+                #     rather than a `<name>.ri` leaf.
+                #   • RENAMES reach this arm by BOTH names: --name-only shows
+                #     only a rename's destination, so the source side is
+                #     recovered up-front (see the rename-source block above) —
+                #     `git mv <coupled>.ri <new>.ri` therefore still classifies
+                #     conservatively instead of slipping through under a fresh
+                #     basename.
                 #   • The other consumers are the scripts/prd-capability-check.py
                 #     / prd-decompose-verify.mjs probes, which are not cargo poles.
                 #   • RESIDUAL: this affects only --scope staged/branch.
@@ -1107,7 +1155,7 @@ decide_scope() {
                 rust=1; gui=1; gate=1
                 ;;
         esac
-    done <<< "$_files"
+    done <<< "$_classify"
 
     # Capture for Phase-2 narrowing (after .task/ filter). scope=all returns early
     # above, leaving CHANGED_FILES_RAW="" (never narrowing-eligible).
