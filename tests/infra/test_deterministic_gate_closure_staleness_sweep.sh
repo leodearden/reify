@@ -383,7 +383,7 @@ EMPTY_REPO="$REPO_DIR"
 
 # The canonical all-zero summary, asserted as one exact string so a counter
 # rename or reordering is caught rather than silently tolerated.
-ZERO_SWEEP="SWEEP: candidates=0 gate_closure=0 merge_verify_red=0 unmet_dependency=0 corrupt_hold=0 live_skipped=0 unknown=0"
+ZERO_SWEEP="SWEEP: candidates=0 gate_closure=0 merge_verify_red=0 unmet_dependency=0 corrupt_hold=0 live_skipped=0 no_class=0 unknown=0"
 
 # Every value-taking flag, in one place: the A1 usage-completeness check and
 # the A3 missing-value sweep both iterate this list, so a future flag cannot
@@ -458,7 +458,7 @@ assert "A5b: a 0-byte DB stub warns on stderr" _err_has '\[warn\]'
 # --- A6: empty fixture, table format ----------------------------------------
 run_sweep --db "$EMPTY_DB" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO" --format table
 assert "A6: empty fixture exits 0" _rc_is 0
-assert "A6: trailing SWEEP: line carries all seven counters at zero" _sweep_line_is "$ZERO_SWEEP"
+assert "A6: trailing SWEEP: line carries all eight counters at zero" _sweep_line_is "$ZERO_SWEEP"
 
 # --- A7: empty fixture, json format -----------------------------------------
 run_sweep --db "$EMPTY_DB" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO" --format json
@@ -466,7 +466,7 @@ assert "A7: --format json exits 0" _rc_is 0
 assert "A7: stdout is a single valid JSON object" _out_json_check 'isinstance(d, dict)'
 assert "A7: candidates == []" _out_json_check 'd["candidates"] == []'
 assert "A7: summary keys exactly match the A6 counter set" _out_json_check \
-    'sorted(d["summary"]) == ["candidates","corrupt_hold","gate_closure","live_skipped","merge_verify_red","unknown","unmet_dependency"]'
+    'sorted(d["summary"]) == ["candidates","corrupt_hold","gate_closure","live_skipped","merge_verify_red","no_class","unknown","unmet_dependency"]'
 assert "A7: every summary counter is 0" _out_json_check 'all(v == 0 for v in d["summary"].values())'
 
 # --- A8: flag <-> env parity for the task-DB knob ---------------------------
@@ -603,7 +603,14 @@ run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
 assert "B7: an unparseable heartbeat degrades to LIVE, never to eligible" \
     _json_is 't[9106]["verdict"] == "LIVE"'
 assert "B7: an unparseable heartbeat is counted in live_skipped, not unknown" \
-    _json_is 's["live_skipped"] == 3 and s["unknown"] == 3'
+    _json_is 's["live_skipped"] == 3 and s["unknown"] == 0'
+# The three eligible rows here (9102/9103/9105) carry no class-matching
+# metadata at all, so they land in no_class — NOT in unknown, which is reserved
+# for a class that matched and whose oracle then failed. Pinned as an exact
+# count so a regression that folded the two back together is caught here as
+# well as at G3.
+assert "B7: the eligible-but-class-less rows are counted in no_class, not unknown" \
+    _json_is 's["no_class"] == 3'
 assert "B7: an unparseable heartbeat warns on stderr" \
     _err_has '\[warn\].*9106'
 
@@ -1417,7 +1424,12 @@ _add_task 9704 in-progress "{\"dry_run_proposals\":[$G_PROP_B]}" \
 _add_task 9705 blocked "{$G_GATE}"; _add_esc 9705 1 pending
 _add_task 9706 blocked '{}'; _add_dep 9706 9791
 _add_task 9707 blocked "{$G_GATE,\"failing_tests\":[\"Usage:\"]}"
-_add_task 9708 blocked '{}'
+# 9708 is a genuine `unknown`: class C MATCHES (it has a dependency row) and
+# its oracle then fails, because 9999 resolves to no row under this tag.
+_add_task 9708 blocked '{}'; _add_dep 9708 9999
+# 9709 is NO-CLASS: no class matched it at all. It is a DISTINCT verdict from
+# 9708's — a complete adjudication with a negative result, not a failed one.
+_add_task 9709 blocked '{}'
 
 G_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-greq-XXXXXX")"
 _TMPDIRS+=("$G_REQ")
@@ -1464,13 +1476,22 @@ assert "G2: emitted_by names this script" \
 # Pinned against the fixture's own verdicts first, so none of the five
 # no-request asserts below can pass vacuously against a mis-built row.
 assert "G3: the fixture really does produce one row of each non-emitting verdict" \
-    _json_is '[t[i]["verdict"] for i in (9704, 9705, 9706, 9707, 9708)] == ["LIVE", "GATED", "UNRESOLVED", "CORRUPT-HOLD", "unknown"]'
+    _json_is '[t[i]["verdict"] for i in (9704, 9705, 9706, 9707, 9708, 9709)] == ["LIVE", "GATED", "UNRESOLVED", "CORRUPT-HOLD", "unknown", "NO-CLASS"]'
+# unknown vs NO-CLASS are counted SEPARATELY. `unknown` exists so that "no
+# hits" stays distinguishable from "could not tell"; on the live store the
+# great majority of blocked / in-progress rows match no class, so folding them
+# into `unknown` would swamp exactly the signal the counter carries. 9708 (a
+# matched class with a failed oracle) and 9709 (no class at all) are otherwise
+# identical blocked rows, so this pins the split and nothing else.
+assert "G3: a class-less row increments no_class and NOT unknown" \
+    _json_is 's["unknown"] == 1 and s["no_class"] == 1'
 assert "G3: a LIVE row emits no request (re-pins B2 at the emission boundary)" \
     _no_request_for "$G_REQ" 9704
 assert "G3: a GATED row emits no request (re-pins C2)" _no_request_for "$G_REQ" 9705
 assert "G3: an UNRESOLVED row emits no request" _no_request_for "$G_REQ" 9706
 assert "G3: a CORRUPT-HOLD row emits no request (re-pins F6)" _no_request_for "$G_REQ" 9707
 assert "G3: an unknown row emits no request" _no_request_for "$G_REQ" 9708
+assert "G3: a NO-CLASS row emits no request" _no_request_for "$G_REQ" 9709
 
 # --- G4/G5: idempotence and atomicity ---------------------------------------
 G_SNAP1="$(_request_snapshot "$G_REQ")"

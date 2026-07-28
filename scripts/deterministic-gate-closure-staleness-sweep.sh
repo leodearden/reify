@@ -45,10 +45,18 @@
 #                  entirely, no class predicate ran.
 #   CORRUPT-HOLD — an otherwise-confirmed hit carrying a #5316 corruption
 #                  flag; suppressed for a human gate (action=human_gate).
-#   unknown      — an oracle could not be read; never upgraded to STALE.
+#   NO-CLASS     — no trigger class matched the row at all. This is a
+#                  COMPLETE adjudication with a negative result, not a failure,
+#                  and it is deliberately NOT `unknown`: on the live store most
+#                  blocked / in-progress rows match no class, so folding them
+#                  into `unknown` would swamp the one signal that counter
+#                  exists to carry.
+#   unknown      — a class matched but its ORACLE could not be read (a missing
+#                  escalations dir, an unresolvable SHA, a dependency id that
+#                  resolves to no row); never upgraded to STALE.
 # A trailing SWEEP: line (table) / summary object (json) carries the counters
 # candidates, gate_closure, merge_verify_red, unmet_dependency, corrupt_hold,
-# live_skipped, unknown.
+# live_skipped, no_class, unknown.
 #
 # Options (env defaults shown):
 #   --db PATH             Taskmaster SQLite store (env: REIFY_LANE_TASK_DB;
@@ -109,7 +117,11 @@
 #        dir, unparseable file, unrecognized status)
 #        degrades that row to `unknown`, never to `STALE`. A failed oracle
 #        lookup must never manufacture an actionable verdict — the same
-#        posture as warm-lane-audit.sh invariant A3.
+#        posture as warm-lane-audit.sh invariant A3. `unknown` means EXACTLY
+#        that — a matched class whose oracle failed. A row that simply matches
+#        no class is NO-CLASS, a complete adjudication with a negative result;
+#        conflating the two would bury a handful of genuine oracle failures
+#        under the majority of the store, which matches no class at all.
 #   L3 — every candidate contributes to EXACTLY ONE class counter and appears
 #        exactly once in the report. Classes are tried in the fixed precedence
 #        order gate_closure > merge_verify_red > unmet_dependency; the first
@@ -302,6 +314,7 @@ N_MERGE_VERIFY_RED=0
 N_UNMET_DEPENDENCY=0
 N_CORRUPT_HOLD=0
 N_LIVE_SKIPPED=0
+N_NO_CLASS=0
 N_UNKNOWN=0
 
 # ── field separator ───────────────────────────────────────────────────────────
@@ -815,7 +828,11 @@ while IFS="$_FS" read -r task_id status heartbeat_at claimant_run_id; do
     fi
 
     row_class="-"
-    row_verdict="unknown"
+    # NO-CLASS, not `unknown`: nothing failed here. `unknown` is reserved for a
+    # class that MATCHED and whose oracle then could not be read, so that the
+    # counter keeps carrying "could not tell" rather than being swamped by the
+    # majority of the store, which matches no class at all.
+    row_verdict="NO-CLASS"
     row_action="none"
     row_evidence="no trigger class matched this candidate"
     row_flags="-"
@@ -896,6 +913,7 @@ while IFS="$_FS" read -r task_id status heartbeat_at claimant_run_id; do
                 unmet_dependency) N_UNMET_DEPENDENCY=$((N_UNMET_DEPENDENCY + 1)) ;;
             esac ;;
         CORRUPT-HOLD) N_CORRUPT_HOLD=$((N_CORRUPT_HOLD + 1)) ;;
+        NO-CLASS) N_NO_CLASS=$((N_NO_CLASS + 1)) ;;
         unknown) N_UNKNOWN=$((N_UNKNOWN + 1)) ;;
     esac
     _emit_row "$task_id" "$status" "$row_class" "$row_verdict" "$row_action" "$row_evidence" "$row_flags"
@@ -904,9 +922,9 @@ $_CANDIDATES
 EOF
 
 # ── emit: table (default) or json ─────────────────────────────────────────────
-_SUMMARY_JSON="$(printf '{"candidates":%d,"gate_closure":%d,"merge_verify_red":%d,"unmet_dependency":%d,"corrupt_hold":%d,"live_skipped":%d,"unknown":%d}' \
+_SUMMARY_JSON="$(printf '{"candidates":%d,"gate_closure":%d,"merge_verify_red":%d,"unmet_dependency":%d,"corrupt_hold":%d,"live_skipped":%d,"no_class":%d,"unknown":%d}' \
     "$N_CANDIDATES" "$N_GATE_CLOSURE" "$N_MERGE_VERIFY_RED" "$N_UNMET_DEPENDENCY" \
-    "$N_CORRUPT_HOLD" "$N_LIVE_SKIPPED" "$N_UNKNOWN")"
+    "$N_CORRUPT_HOLD" "$N_LIVE_SKIPPED" "$N_NO_CLASS" "$N_UNKNOWN")"
 
 if [ "$FORMAT" = "json" ]; then
     _GS_ROWS="$ROWS_TSV" _GS_SUMMARY="$_SUMMARY_JSON" python3 - <<'PY'
@@ -938,9 +956,9 @@ else
         printf '%-8s %-12s %-18s %-13s %-11s %-52s %s\n' \
             "$c_id" "$c_status" "$c_class" "$c_verdict" "$c_action" "$c_evidence" "$c_flags"
     done < "$ROWS_TSV"
-    printf 'SWEEP: candidates=%d gate_closure=%d merge_verify_red=%d unmet_dependency=%d corrupt_hold=%d live_skipped=%d unknown=%d\n' \
+    printf 'SWEEP: candidates=%d gate_closure=%d merge_verify_red=%d unmet_dependency=%d corrupt_hold=%d live_skipped=%d no_class=%d unknown=%d\n' \
         "$N_CANDIDATES" "$N_GATE_CLOSURE" "$N_MERGE_VERIFY_RED" "$N_UNMET_DEPENDENCY" \
-        "$N_CORRUPT_HOLD" "$N_LIVE_SKIPPED" "$N_UNKNOWN"
+        "$N_CORRUPT_HOLD" "$N_LIVE_SKIPPED" "$N_NO_CLASS" "$N_UNKNOWN"
 fi
 
 # ── --emit-requests (invariant L6) ────────────────────────────────────────────

@@ -86,7 +86,8 @@ Notes that are easy to get wrong:
 | `GATED` | class A only: a live `status=pending` escalation still gates it | no |
 | `LIVE` | the liveness guard fired; no class predicate ran at all | no |
 | `CORRUPT-HOLD` | an otherwise-confirmed hit carrying a #5316 corruption flag | no — `action=human_gate` |
-| `unknown` | an oracle could not be read; never upgraded to `STALE` | no |
+| `NO-CLASS` | no trigger class matched the row at all | no |
+| `unknown` | a class matched but its **oracle** could not be read; never upgraded to `STALE` | no |
 
 Class A's escalation-status predicate is a **terminal allowlist**, not a pending-only match:
 `pending` → `GATED`, `resolved`/`dismissed` → clear, and **every other value** — a status outside
@@ -102,10 +103,17 @@ dir swept under a different uid, a stale mount) passes `-d` — `stat` needs `+x
 on the dir — but then silently yields an empty glob, which would read as "zero live escalations" and
 land in "clear" without the loop body ever running. Such a dir degrades exactly like a missing one.
 
+`NO-CLASS` and `unknown` are **different answers and are counted separately.** `NO-CLASS` is a
+*complete* adjudication with a negative result — nothing failed, the row simply matches no trigger
+class. `unknown` means a class **matched** and its oracle then could not be read (a missing
+escalations dir, an unresolvable SHA, a `depends_on` that resolves to no row under the tag). On the
+live store the great majority of `blocked` / `in-progress` rows match no class at all, so folding
+them into `unknown` would swamp precisely the signal that counter exists to carry.
+
 The trailing `SWEEP:` line (table) / `summary` object (json) carries `candidates`, `gate_closure`,
-`merge_verify_red`, `unmet_dependency`, `corrupt_hold`, `live_skipped`, `unknown`. `live_skipped`
-and `unknown` exist so **"no hits" stays distinguishable from "could not tell"** — the same reason
-`warm-lane-audit.sh` reports `leak_unknown`.
+`merge_verify_red`, `unmet_dependency`, `corrupt_hold`, `live_skipped`, `no_class`, `unknown`.
+`live_skipped` and `unknown` exist so **"no hits" stays distinguishable from "could not tell"** —
+the same reason `warm-lane-audit.sh` reports `leak_unknown`.
 
 ## Corruption suppressors
 
@@ -141,7 +149,8 @@ Keyed to the script's header `# Invariants:` block, which is authoritative:
 - **L1** — the liveness guard is the first predicate for every candidate and short-circuits: a
   fresh heartbeat is never a hit and never yields a request, and an **unparseable** heartbeat
   degrades to `LIVE`, never to eligible.
-- **L2** — an unreadable escalation oracle degrades to `unknown`, never to `STALE`.
+- **L2** — an unreadable escalation oracle degrades to `unknown`, never to `STALE`; a row that
+  simply matches no class is `NO-CLASS`, which is a different thing and a different counter.
 - **L3** — every candidate contributes to exactly one class counter and appears exactly once;
   `--class all` never double-counts a multi-class row.
 - **L4** — classes A and C are `blocked`-only; only class B spans `in-progress`.
