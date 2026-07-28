@@ -576,3 +576,70 @@ structure def Parent {
          \"k\"; got: {errors:?}",
     );
 }
+
+/// (t6) A nested PURE-let cycle must be reported once per scope — phase 1.5
+/// must not pile a third diagnostic onto a defect that already has two owners.
+///
+/// `Mid`'s `a`/`b` cycle involves no sub at all, so it is already reported
+/// twice: once at TEMPLATE scope by `engine_eval.rs`, once at INSTANCE scope by
+/// `elaborate_child_lets_only`. Phase 1.5's node set includes every `let` with a
+/// `default_expr`, so this cycle is dropped by BOTH topological sorts — and i5's
+/// unconditional emission therefore adds a THIRD error, a SECOND one naming
+/// `Parent.m`.
+///
+/// This pins "one owner per scope", not "suppress reporting": the instance-scope
+/// count must be exactly 1 (a genuine duplicate-detector, not an `any()`
+/// existence check), AND the template-scope diagnostic must still be present.
+#[test]
+fn nested_pure_let_cycle_is_reported_once_per_scope() {
+    const SOURCE: &str = r#"
+structure def Mid {
+    let a = b * 2.0
+    let b = a * 2.0
+}
+
+structure def Parent {
+    sub m = Mid()
+    let echo = self.m.a
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let errors: Vec<&Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    // Instance scope: exactly one owner. `elaborate_child_lets_only` already
+    // covers a let-only cycle at instance scope, and phase 1.5 sees the very
+    // same nodes, so an ungated phase-1.5 diagnostic double-reports it.
+    let instance_scoped: Vec<&&Diagnostic> = errors
+        .iter()
+        .filter(|d| {
+            let m = &d.message;
+            (m.contains("circular") || m.contains("cyclic")) && m.contains("Parent.m")
+        })
+        .collect();
+    assert_eq!(
+        instance_scoped.len(),
+        1,
+        "a pure-let cycle must be reported exactly once at instance scope \
+         \"Parent.m\"; got {} such errors: {instance_scoped:?}",
+        instance_scoped.len(),
+    );
+
+    // Template scope must still fire, unchanged — this test pins one owner per
+    // scope, never the removal of reporting.
+    assert!(
+        errors.iter().any(|d| {
+            let m = &d.message;
+            (m.contains("circular") || m.contains("cyclic"))
+                && m.contains("template Mid")
+                && !m.contains("Parent.m")
+        }),
+        "the template-scope cycle diagnostic for Mid must survive unchanged; got: {errors:?}",
+    );
+}
