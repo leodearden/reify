@@ -9539,7 +9539,7 @@ fn make_buckling_result_value(n_modes: usize) -> reify_ir::Value {
             .collect();
             Value::StructureInstance(Box::new(StructureInstanceData {
                 type_id: StructureTypeId(u32::MAX),
-                type_name: "Mode".to_string(),
+                type_name: "BucklingMode".to_string(),
                 version: 1,
                 fields: mode_fields,
             }))
@@ -9778,7 +9778,7 @@ fn make_buckling_result_custom(
             .collect();
             Value::StructureInstance(Box::new(StructureInstanceData {
                 type_id: StructureTypeId(u32::MAX),
-                type_name: "Mode".to_string(),
+                type_name: "BucklingMode".to_string(),
                 version: 1,
                 fields: mode_fields,
             }))

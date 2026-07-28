@@ -118,7 +118,8 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
         ),
         // `std.solver.buckling.fns` MUST follow BOTH `std.solver.buckling` AND
         // `std.fea.multi_case`:
-        //   - `std.solver.buckling` provides `BucklingResult`/`Mode`/`BucklingOptions`/
+        //   - `std.solver.buckling` provides `BucklingResult`/`BucklingMode`/
+        //     `BucklingOptions`/
         //     `MultiCaseBucklingResult` (function bodies field-access these; requires
         //     them in the prelude registry when `phase_functions` runs — esc-3851-32).
         //   - `std.fea.multi_case` provides `LoadCase` (task η adds

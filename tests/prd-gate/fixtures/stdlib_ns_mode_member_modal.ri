@@ -1,7 +1,15 @@
-// Fixture (stdlib-namespace decompose-phase premise, control): the compile-side
-// LAST-wins binding means the bare `Mode` IS std.modal.analysis's Mode, so its
-// own `frequency` member resolves clean. Paired with stdlib_ns_mode_member.ri
-// (eigenvalue unreachable) this pins the direction of the collision bug.
+// Fixture (stdlib-namespace decompose-phase premise, control): the bare `Mode`
+// IS std.modal.analysis's Mode, so its own `frequency` member resolves clean.
+// Paired with stdlib_ns_mode_member.ri (eigenvalue unreachable) this pins the
+// direction of the collision bug.
+//
+// Pre-rename that binding was an accident of policy — compile-side template
+// resolution is LAST-wins and modal is registered after buckling in
+// stdlib_loader.rs — and it did not even hold at eval time, where the
+// FIRST-wins instantiation registry materialized buckling's Mode instead.
+// Post-rename (task 5496) it is a fact about the corpus: buckling's eigenpair
+// is `BucklingMode`, so `Mode` has exactly one declaration stdlib-wide and both
+// phases necessarily agree.
 
 structure def ModeMemberModalControl {
     sub m = Mode()

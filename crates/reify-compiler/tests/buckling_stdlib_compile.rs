@@ -1,5 +1,6 @@
 //! Tests for `crates/reify-compiler/stdlib/solver_buckling.ri` —
-//! `std.solver.buckling` module: `BucklingOptions`, `Mode`, `BucklingResult`,
+//! `std.solver.buckling` module: `BucklingOptions`, `BucklingMode`,
+//! `BucklingResult`,
 //! and `MultiCaseBucklingResult` structure definitions for the v0.5
 //! linear-buckling eigensolver kernel surface.
 //!
@@ -49,7 +50,7 @@ fn load_stdlib_module() -> &'static CompiledModule {
 
 /// Look up a structure template by name within the `std/solver/buckling` module.
 ///
-/// `BucklingOptions`, `Mode`, `BucklingResult`, and `MultiCaseBucklingResult`
+/// `BucklingOptions`, `BucklingMode`, `BucklingResult`, and `MultiCaseBucklingResult`
 /// are top-level structures, so we go through `module.templates` and filter on
 /// `EntityKind::Structure` to keep the assertion stable against future
 /// non-structure additions to the module.
@@ -398,9 +399,9 @@ fn buckling_options_constrains_positivity_invariants() {
     }
 }
 
-// ─── step-9: Mode param shape ────────────────────────────────────────────────
+// ─── step-9: BucklingMode param shape ────────────────────────────────────────
 
-/// `Mode` is a single buckling eigenpair. It must declare exactly the two
+/// `BucklingMode` is a single buckling eigenpair. It must declare exactly the two
 /// PRD §4 params with the canonical types:
 ///
 ///   - `eigenvalue : Real`                                       (load multiplier)
@@ -413,17 +414,17 @@ fn buckling_options_constrains_positivity_invariants() {
 /// `ElasticResult.frame` already using their proper Field types. See plan.json
 /// design-decision-1 for the full rationale.
 ///
-/// Mode is a solver-populated output container — no defaults are meaningful.
+/// BucklingMode is a solver-populated output container — no defaults are meaningful.
 #[test]
-fn mode_struct_has_eigenvalue_and_mode_shape_params() {
-    let template = find_structure("Mode");
+fn buckling_mode_struct_has_eigenvalue_and_mode_shape_params() {
+    let template = find_structure("BucklingMode");
     let params = param_cells(template);
     let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
 
     assert_eq!(
         params.len(),
         2,
-        "Mode should have exactly 2 param cells (eigenvalue, mode_shape), got: {:?}",
+        "BucklingMode should have exactly 2 param cells (eigenvalue, mode_shape), got: {:?}",
         names
     );
 
@@ -447,17 +448,20 @@ fn mode_struct_has_eigenvalue_and_mode_shape_params() {
             .iter()
             .find(|vc| vc.id.member == *member)
             .unwrap_or_else(|| {
-                panic!("Mode missing required param '{}'; got: {:?}", member, names)
+                panic!(
+                    "BucklingMode missing required param '{}'; got: {:?}",
+                    member, names
+                )
             });
         assert_eq!(
             cell.cell_type, *expected_ty,
-            "Mode.{} should be {:?}, got {:?}",
+            "BucklingMode.{} should be {:?}, got {:?}",
             member, expected_ty, cell.cell_type
         );
     }
 }
 
-/// `Mode` is a solver-populated output container — every field is determined
+/// `BucklingMode` is a solver-populated output container — every field is determined
 /// by the buckling solve, so caller-supplied defaults are meaningless and no
 /// per-field scalar invariant is expressible (`eigenvalue` is any real, the
 /// FEA-normalization convention on `mode_shape` is collection-shaped, not
@@ -466,14 +470,14 @@ fn mode_struct_has_eigenvalue_and_mode_shape_params() {
 /// the discipline applied to `MultiCaseBucklingResult` further down (no
 /// defaults, no constraints).
 #[test]
-fn mode_struct_has_no_constraints_or_defaults() {
-    let template = find_structure("Mode");
+fn buckling_mode_struct_has_no_constraints_or_defaults() {
+    let template = find_structure("BucklingMode");
 
-    // No defaults: every Mode instance must be solver-populated.
+    // No defaults: every BucklingMode instance must be solver-populated.
     for cell in param_cells(template) {
         assert!(
             cell.default_expr.is_none(),
-            "Mode.{} should have no default_expr (solver-only-produced), \
+            "BucklingMode.{} should have no default_expr (solver-only-produced), \
              but got: {:?}",
             cell.id.member,
             cell.default_expr
@@ -484,7 +488,7 @@ fn mode_struct_has_no_constraints_or_defaults() {
     // invariant is a collection invariant and is producer-enforced.
     assert!(
         template.constraints.is_empty(),
-        "Mode should declare no constraints (solver-only-produced output \
+        "BucklingMode should declare no constraints (solver-only-produced output \
          container, no scalar predicate is expressible per-field); got: {:?}",
         template
             .constraints
@@ -499,7 +503,7 @@ fn mode_struct_has_no_constraints_or_defaults() {
 /// `BucklingResult` is the single-load-case buckling-solver output container.
 /// It must declare exactly the four PRD §4 params with the canonical types:
 ///
-///   - `modes      : List<Mode>`        (computed eigenpairs)
+///   - `modes      : List<BucklingMode>`   (computed eigenpairs)
 ///   - `converged  : Bool`              (all n_modes met the tolerance)
 ///   - `iterations : Int`               (total Lanczos iteration count)
 ///   - `pre_stress : ElasticResult`     (linear-static solve feeding K_g)
@@ -525,7 +529,7 @@ fn buckling_result_struct_has_correct_param_shape() {
     let expected: &[(&str, Type)] = &[
         (
             "modes",
-            Type::List(Box::new(Type::StructureRef("Mode".to_string()))),
+            Type::List(Box::new(Type::StructureRef("BucklingMode".to_string()))),
         ),
         ("converged", Type::Bool),
         ("iterations", Type::Int),

@@ -138,11 +138,16 @@ structure def RayleighDamping : DampingDescriptor {
 // meaningful, no scalar constraints (every field is solver-determined
 // from the geometry / boundary conditions / damping).
 //
-// `Mode` coexists with `std.solver.buckling`'s `Mode` (same simple name,
-// different modules). Per-module template storage and the first-wins
-// shadow rule make this safe; if dual-import ambiguity ever surfaces at
-// user call sites, the fallback rename is a one-line `.ri` change. See
-// plan design-decision-6.
+// `Mode` is now the stdlib's SOLE structure of that name: buckling's
+// eigenpair was renamed to `BucklingMode` by task 5496 (stdlib-namespace β).
+// The former "first-wins shadow rule makes this safe" claim here was false —
+// the two phases disagreed about the winner. Compile-side template resolution
+// took LAST-wins (this module, registered after buckling in `stdlib_loader.rs`)
+// while the eval-side instantiation registry took FIRST-wins (buckling), so
+// `Mode(frequency: …).frequency` type-checked and then evaluated to Undef.
+// The stdlib is now collision-free by construction: the NS-P2 duplicate-pub-name
+// scan in `stdlib_loader::build_stdlib_modules` fails the stdlib BUILD, naming
+// both modules, if any future module re-introduces a cross-module name clash.
 //
 // Field semantics (PRD §4.1):
 //   frequency          — natural frequency ω/(2π) in Hz. Encoded as
@@ -167,7 +172,8 @@ structure def RayleighDamping : DampingDescriptor {
 //                        dimension name; `Real` is a primitive scalar.)
 //                        Tightening to a future `Scalar<InvRootMass>` (or
 //                        equivalent) is left to the kinematic-completion
-//                        sweep. (Contrast with buckling's `Mode.mode_shape
+//                        sweep. (Contrast with buckling's
+//                        `BucklingMode.mode_shape
 //                        : Field<Point3<Length>, Vector3<Length>>` where
 //                        the Length parameterization is a typing
 //                        convention, not a dimensional claim; see
