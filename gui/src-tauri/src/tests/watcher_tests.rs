@@ -7,6 +7,47 @@ use std::time::{Duration, Instant};
 
 use crate::watcher::{ChangeKind, Debouncer, FileEvent, FileWatcher};
 
+/// Clock seam for the `wait_*` helpers below, so their retry/poll contract
+/// can be pinned deterministically instead of against the host scheduler.
+/// Mirrors `Debouncer`'s existing convention in `watcher.rs` (all methods
+/// take an explicit `now: Instant` rather than reading the clock
+/// themselves) -- see #5709.
+trait WaitClock {
+    fn now(&self) -> Instant;
+    fn sleep(&mut self, d: Duration);
+}
+
+/// Real clock: reads [`Instant::now`] and actually blocks the thread.
+struct WallClock;
+impl WaitClock for WallClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+    fn sleep(&mut self, d: Duration) {
+        std::thread::sleep(d)
+    }
+}
+
+/// Virtual clock: `sleep` advances `now` by exactly `d` and never blocks,
+/// so a whole retry budget elapses in microseconds and the attempt count
+/// is a function of the loop's arithmetic, not of host scheduling.
+struct VirtualClock {
+    now: Instant,
+}
+impl VirtualClock {
+    fn new(now: Instant) -> Self {
+        Self { now }
+    }
+}
+impl WaitClock for VirtualClock {
+    fn now(&self) -> Instant {
+        self.now
+    }
+    fn sleep(&mut self, d: Duration) {
+        self.now += d;
+    }
+}
+
 /// Poll `condition` every 20ms until it holds or `timeout` elapses.
 /// Returns immediately, before any sleep, if `condition` already holds.
 ///
@@ -15,18 +56,27 @@ use crate::watcher::{ChangeKind, Debouncer, FileEvent, FileWatcher};
 /// a full interval -- without this, a caller chaining many short windows
 /// (e.g. `wait_until_with_retry`'s per-attempt windows) would accumulate
 /// up to ~20ms of drift per window.
-fn wait_until(timeout: Duration, condition: impl Fn() -> bool) -> bool {
-    let deadline = Instant::now() + timeout;
+fn wait_until_on(
+    clock: &mut dyn WaitClock,
+    timeout: Duration,
+    condition: impl Fn() -> bool,
+) -> bool {
+    let deadline = clock.now() + timeout;
     loop {
         if condition() {
             return true;
         }
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let remaining = deadline.saturating_duration_since(clock.now());
         if remaining.is_zero() {
             return false;
         }
-        std::thread::sleep(Duration::from_millis(20).min(remaining));
+        clock.sleep(Duration::from_millis(20).min(remaining));
     }
+}
+
+/// See [`wait_until_on`] -- this wrapper runs against the real wall clock.
+fn wait_until(timeout: Duration, condition: impl Fn() -> bool) -> bool {
+    wait_until_on(&mut WallClock, timeout, condition)
 }
 
 /// Poll `sink` until `predicate` holds or `timeout` elapses.
@@ -44,7 +94,7 @@ fn wait_for<T>(
     wait_until(timeout, || predicate(&sink.lock().unwrap()))
 }
 
-/// Like [`wait_until`], but also invokes `attempt` before each poll window,
+/// Like [`wait_until_on`], but also invokes `attempt` before each poll window,
 /// up to `retry_every` apart, until `condition` holds or the OVERALL
 /// `timeout` budget elapses (`retry_every` bounds a single attempt's poll
 /// window, not the whole call).
@@ -67,23 +117,34 @@ fn wait_for<T>(
 /// a message blaming the watcher for never delivering anything, rather
 /// than the retry cadence being too fast -- so pick `retry_every` with
 /// this in mind rather than by feel.
-fn wait_until_with_retry(
+fn wait_until_with_retry_on(
+    clock: &mut dyn WaitClock,
     mut attempt: impl FnMut(),
     retry_every: Duration,
     timeout: Duration,
     condition: impl Fn() -> bool,
 ) -> bool {
-    let deadline = Instant::now() + timeout;
+    let deadline = clock.now() + timeout;
     loop {
         attempt();
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if wait_until(remaining.min(retry_every), &condition) {
+        let remaining = deadline.saturating_duration_since(clock.now());
+        if wait_until_on(clock, remaining.min(retry_every), &condition) {
             return true;
         }
-        if Instant::now() >= deadline {
+        if clock.now() >= deadline {
             return false;
         }
     }
+}
+
+/// See [`wait_until_with_retry_on`] -- this wrapper runs against the real wall clock.
+fn wait_until_with_retry(
+    attempt: impl FnMut(),
+    retry_every: Duration,
+    timeout: Duration,
+    condition: impl Fn() -> bool,
+) -> bool {
+    wait_until_with_retry_on(&mut WallClock, attempt, retry_every, timeout, condition)
 }
 
 /// Try to create a FileWatcher, returning None if OS resources (e.g. inotify
@@ -599,7 +660,7 @@ fn wait_until_with_retry_returns_false_after_the_timeout_when_never_satisfied() 
 
 #[test]
 fn wait_until_with_retry_reissues_the_attempt_for_every_window_until_the_deadline_on_a_virtual_clock()
-{
+ {
     // Deterministic replacement for the flaky assertion above: on a virtual
     // clock the attempt count is a pure function of the loop's arithmetic
     // (200ms budget / 20ms windows = 10), not of host scheduling, so this
