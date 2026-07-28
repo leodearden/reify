@@ -73,6 +73,21 @@ _TMPDIRS+=("$ERR_FILE")
 # first "$DB" into a local first.
 # ──────────────────────────────────────────────────────────────────────────────
 
+# _sq <args...> — the sqlite3 CLI with LD_LIBRARY_PATH cleared.
+#
+# EVERY sqlite3 invocation in this file must go through this wrapper. verify.sh's
+# apply_env() exports LD_LIBRARY_PATH=/opt/reify-deps/lib globally (for OCCT), and
+# that directory also ships a conda libsqlite3 NEWER (3.53.1) than the one
+# /usr/bin/sqlite3 was linked against (3.45.1). Under the full verify environment
+# the loader hands the CLI the newer lib and it aborts with "SQLite header and
+# source version mismatch", so the first fixture build here died and took the whole
+# suite down under `set -e` — while passing in any dev shell whose PATH resolves
+# sqlite3 to a build that tolerates the swap. That dual condition (hostile
+# LD_LIBRARY_PATH *and* PATH->/usr/bin/sqlite3) is why it only ever reproduced
+# under the merge gate. Same hazard and same fix as the fixture builders in
+# tests/infra/test_reify_audit_ptodo.sh (esc-4581-87).
+_sq() { LD_LIBRARY_PATH="" sqlite3 "$@"; }
+
 # _mk_tasks_db — build a fresh temp Taskmaster store; sets global DB.
 # The DDL is the production schema copied VERBATIM (verified against
 # .taskmaster/tasks/tasks.db's `.schema` on 2026-07-26): both tables are
@@ -83,7 +98,7 @@ _mk_tasks_db() {
     d="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-db-XXXXXX")"
     _TMPDIRS+=("$d")
     DB="$d/tasks.db"
-    sqlite3 "$DB" "
+    _sq "$DB" "
 CREATE TABLE IF NOT EXISTS \"tasks\" (
     tag           TEXT NOT NULL DEFAULT 'master',
     id            INTEGER NOT NULL,
@@ -117,7 +132,7 @@ _add_task() {
     if [ -n "$hb" ]; then hb_sql="$(_sq_quote "$hb")"; else hb_sql="NULL"; fi
     if [ -n "$claimant" ]; then claimant_sql="$(_sq_quote "$claimant")"; else claimant_sql="NULL"; fi
     if [ -n "$metadata" ]; then meta_sql="$(_sq_quote "$metadata")"; else meta_sql="NULL"; fi
-    sqlite3 "$DB" "INSERT INTO tasks (tag,id,title,status,metadata,updated_at,heartbeat_at,claimant_run_id)
+    _sq "$DB" "INSERT INTO tasks (tag,id,title,status,metadata,updated_at,heartbeat_at,claimant_run_id)
         VALUES ($(_sq_quote "$tag"),$id,'fixture task $id',$(_sq_quote "$status"),$meta_sql,
                 $(_sq_quote "$(_now_iso -3600)"),$hb_sql,$claimant_sql);"
 }
@@ -125,7 +140,7 @@ _add_task() {
 # _add_dep <task_id> <depends_on> [tag]
 _add_dep() {
     local task_id="$1" depends_on="$2" tag="${3:-master}"
-    sqlite3 "$DB" "INSERT INTO dependencies (tag,task_id,depends_on)
+    _sq "$DB" "INSERT INTO dependencies (tag,task_id,depends_on)
         VALUES ($(_sq_quote "$tag"),$task_id,$depends_on);"
 }
 
@@ -298,7 +313,7 @@ assert "S0: SUT is present and executable" test -x "$SCRIPT"
 # S1 — _mk_tasks_db produces a non-empty, queryable store with both tables.
 _mk_tasks_db
 assert "S1a: fixture tasks.db is non-empty" test -s "$DB"
-_s1_tables="$(sqlite3 "$DB" "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;" | tr '\n' ',')"
+_s1_tables="$(_sq "$DB" "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;" | tr '\n' ',')"
 assert "S1b: fixture DB has both production tables (got: $_s1_tables)" \
     test "$_s1_tables" = "dependencies,tasks,"
 
@@ -308,16 +323,16 @@ _add_task 9001 blocked '{"task_kind":"deterministic","always_escalates":true}'
 _add_task 9002 in-progress '{}' "$(_now_iso -60)" "run-7c8e838c39e7/9002-c514828d/pid=3551081"
 _add_dep 9001 9002
 assert "S2a: blocked fixture row round-trips with a NULL heartbeat" \
-    test "$(sqlite3 "$DB" "SELECT status||'|'||coalesce(heartbeat_at,'NULL') FROM tasks WHERE tag='master' AND id=9001;")" \
+    test "$(_sq "$DB" "SELECT status||'|'||coalesce(heartbeat_at,'NULL') FROM tasks WHERE tag='master' AND id=9001;")" \
        = "blocked|NULL"
 assert "S2b: in-progress fixture row carries the live claimant shape" \
-    test "$(sqlite3 "$DB" "SELECT claimant_run_id FROM tasks WHERE tag='master' AND id=9002;")" \
+    test "$(_sq "$DB" "SELECT claimant_run_id FROM tasks WHERE tag='master' AND id=9002;")" \
        = "run-7c8e838c39e7/9002-c514828d/pid=3551081"
 assert "S2c: metadata round-trips as queryable JSON" \
-    test "$(sqlite3 "$DB" "SELECT json_extract(metadata,'\$.task_kind') FROM tasks WHERE tag='master' AND id=9001;")" \
+    test "$(_sq "$DB" "SELECT json_extract(metadata,'\$.task_kind') FROM tasks WHERE tag='master' AND id=9001;")" \
        = "deterministic"
 assert "S2d: dependency row round-trips tag-scoped" \
-    test "$(sqlite3 "$DB" "SELECT depends_on FROM dependencies WHERE tag='master' AND task_id=9001;")" = "9002"
+    test "$(_sq "$DB" "SELECT depends_on FROM dependencies WHERE tag='master' AND task_id=9001;")" = "9002"
 
 # S3 — _mk_esc_dir / _add_esc produce valid JSON with the live field names.
 _mk_esc_dir
@@ -1635,8 +1650,25 @@ _TMPDIRS+=("$G_REQ_CLI")
 G_REQ_PY="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-gpy-XXXXXX")"
 _TMPDIRS+=("$G_REQ_PY")
 
+# The CLI arm has to actually run the CLI. The SUT's probe is `command -v`, which
+# proves a binary EXISTS, not that it RUNS — so under verify.sh's OCCT
+# LD_LIBRARY_PATH the chosen /usr/bin/sqlite3 aborts on the libsqlite3 version
+# mismatch (esc-4581-87) and the SUT quietly falls through to python3. This block
+# would then compare python3 against python3: green, and proving nothing, in
+# exactly the environment the merge gate runs it in. Clearing LD_LIBRARY_PATH for
+# this arm restores a working CLI, and the precondition below fails loudly rather
+# than degrading silently if it is ever broken again.
+_G_CLI_BIN=""
+for _c in /usr/bin/sqlite3 sqlite3; do
+    if command -v "$_c" >/dev/null 2>&1; then _G_CLI_BIN="$_c"; break; fi
+done
+assert "G10: the CLI arm's sqlite3 actually runs (else this block is vacuous)" \
+    env LD_LIBRARY_PATH= "$_G_CLI_BIN" "$G_DB" "SELECT 1;"
+
+_SWEEP_ENV=(LD_LIBRARY_PATH= REIFY_GATE_STALENESS_SQLITE_BIN="$_G_CLI_BIN")
 run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
     --emit-requests "$G_REQ_CLI" --format json
+_SWEEP_ENV=()
 G_OUT_CLI="$OUT"
 
 _SWEEP_ENV=(REIFY_GATE_STALENESS_SQLITE_BIN=)
@@ -1717,7 +1749,7 @@ R_SNAP_B="$(sha256sum <"$R_REQ/redispatch-9902-merge_verify_red.json" | awk '{pr
 # --- R1: a remediated hit's request is retracted -----------------------------
 # 9901 is closed out of band (exactly what a consumer acting on the request
 # does), so it is no longer enumerated at all.
-sqlite3 "$R_DB" "UPDATE tasks SET status='done' WHERE tag='master' AND id=9901;"
+_sq "$R_DB" "UPDATE tasks SET status='done' WHERE tag='master' AND id=9901;"
 run_sweep --db "$R_DB" --escalations "$R_ESC" --repo "$R_REPO" \
     --emit-requests "$R_REQ" --format json
 assert "R1: the second sweep still exits 0" _rc_is 0
@@ -1732,7 +1764,7 @@ assert "R1: exactly the two surviving requests remain" _request_count_is "$R_REQ
 # --- R2/R3: a class change never leaves two contradictory instructions -------
 # 9903 keeps its satisfied dependency but gains the class-A gate shape, so
 # gate_closure now wins on precedence and its class-C request is superseded.
-sqlite3 "$R_DB" "UPDATE tasks SET metadata='{$R_GATE}' WHERE tag='master' AND id=9903;"
+_sq "$R_DB" "UPDATE tasks SET metadata='{$R_GATE}' WHERE tag='master' AND id=9903;"
 run_sweep --db "$R_DB" --escalations "$R_ESC" --repo "$R_REPO" \
     --emit-requests "$R_REQ" --format json
 assert "R2: the reclassified task's OLD class request is retracted" \
@@ -1747,7 +1779,7 @@ assert "R3: and that one carries the new class's action" \
 # --- R4: a --class-restricted run retracts only its own class ----------------
 # 9902 stops being a hit, but a gate_closure-only sweep did not adjudicate
 # class B at all, so it has no standing to retract that request.
-sqlite3 "$R_DB" "UPDATE tasks SET status='done' WHERE tag='master' AND id=9902;"
+_sq "$R_DB" "UPDATE tasks SET status='done' WHERE tag='master' AND id=9902;"
 run_sweep --db "$R_DB" --escalations "$R_ESC" --repo "$R_REPO" \
     --class gate_closure --emit-requests "$R_REQ" --format json
 assert "R4: a --class-restricted sweep exits 0" _rc_is 0
