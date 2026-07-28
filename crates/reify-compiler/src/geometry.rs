@@ -900,6 +900,83 @@ fn const_length_m(expr: &CompiledExpr) -> Option<f64> {
     }
 }
 
+/// Sink through which the geometry lowering emits **compiler-synthesized**
+/// `CompiledConstraint`s onto the enclosing entity's `TopologyTemplate`.
+///
+/// Some geometry-constructor preconditions (e.g. `rounded_box`/`rounded_rect`'s
+/// `2*corner_r < min(width, depth)`) are only statically decidable when every
+/// argument folds to a constant. When an argument is param-driven the check
+/// cannot be made at compile time, but it CAN be handed to the runtime checker
+/// and the solver as an ordinary constraint on the template — which is what
+/// this sink is for.
+///
+/// Mirrors the established compiler-synthesized-constraint idiom at
+/// `connect.rs`'s `connect_compat_*` and `traits.rs`'s guarded-group
+/// `emit_implies`: an id from `ConstraintNodeId::new(<scope name>, <index>)`,
+/// a `Some(label)`, and `domain`/`optimized_target`/`arg_bindings` left at
+/// their defaults, with the index bumped after each push. Sharing that shape
+/// means the synthesized constraint is indistinguishable from every other one
+/// downstream (collection, checking, solving, labelling).
+///
+/// Modelled on `entity.rs`'s `GeometryRealizationSink` "mutable output sinks"
+/// convention: the borrows are bundled into one struct rather than spread
+/// across parameters, so the recursive lowering threads one argument.
+pub(crate) struct GeometryConstraintSink<'a> {
+    /// Scope name for `ConstraintNodeId::new` — the enclosing entity's name.
+    entity_name: &'a str,
+    constraints: &'a mut Vec<CompiledConstraint>,
+    next_index: &'a mut u32,
+}
+
+impl<'a> GeometryConstraintSink<'a> {
+    pub(crate) fn new(
+        entity_name: &'a str,
+        constraints: &'a mut Vec<CompiledConstraint>,
+        next_index: &'a mut u32,
+    ) -> Self {
+        Self {
+            entity_name,
+            constraints,
+            next_index,
+        }
+    }
+
+    /// Reborrow for a shorter lifetime. The `&mut` fields are not `Copy`, so a
+    /// recursive call that takes `&mut GeometryConstraintSink<'_>` cannot move
+    /// `self`; this hands out a fresh sink borrowing from `*self` instead.
+    pub(crate) fn reborrow(&mut self) -> GeometryConstraintSink<'_> {
+        GeometryConstraintSink {
+            entity_name: self.entity_name,
+            constraints: self.constraints,
+            next_index: self.next_index,
+        }
+    }
+
+    /// Push one synthesized constraint. `label_for` receives the index the
+    /// constraint is being filed under (the same counter that feeds
+    /// `ConstraintNodeId::new`), so a caller can build a label that is unique
+    /// within the entity and stable for a given source without duplicating the
+    /// index bookkeeping.
+    pub(crate) fn push(
+        &mut self,
+        label_for: impl FnOnce(u32) -> String,
+        expr: CompiledExpr,
+        span: reify_core::SourceSpan,
+    ) {
+        let idx = *self.next_index;
+        self.constraints.push(CompiledConstraint {
+            id: ConstraintNodeId::new(self.entity_name, idx),
+            label: Some(label_for(idx)),
+            expr,
+            span,
+            domain: None,
+            optimized_target: None,
+            arg_bindings: Vec::new(),
+        });
+        *self.next_index += 1;
+    }
+}
+
 /// Best-effort compile-time constraint check shared by `rounded_box` and
 /// `rounded_rect`: `corner_r > 0` and `2*corner_r < min(width, depth)`. Only
 /// fires when width/depth/corner_r all fold to constant literals
@@ -1102,6 +1179,7 @@ pub(crate) fn compile_geometry_call(
     step_offset: usize,
     geometry_lets: &HashMap<&str, &reify_ast::Expr>,
     visiting: &mut HashSet<String>,
+    constraint_sink: &mut GeometryConstraintSink<'_>,
 ) -> Option<Vec<CompiledGeometryOp>> {
     // Bound compiler expression-recursion depth (task #5337) — the SAME depth
     // cap and on-demand stack growth used by compile_expr_guarded_with_expected,
@@ -1123,6 +1201,7 @@ pub(crate) fn compile_geometry_call(
                 step_offset,
                 geometry_lets,
                 visiting,
+                constraint_sink,
             )
         },
     )
@@ -1144,6 +1223,7 @@ fn compile_geometry_call_inner(
     step_offset: usize,
     geometry_lets: &HashMap<&str, &reify_ast::Expr>,
     visiting: &mut HashSet<String>,
+    constraint_sink: &mut GeometryConstraintSink<'_>,
 ) -> Option<Vec<CompiledGeometryOp>> {
     // Resolve let-bound geometry variable references: when the expression is an
     // Ident that names a geometry let, recursively compile the initializer.
@@ -1167,6 +1247,7 @@ fn compile_geometry_call_inner(
                 step_offset,
                 geometry_lets,
                 visiting,
+                &mut constraint_sink.reborrow(),
             );
             visiting.remove(name.as_str());
             return result;
@@ -1196,6 +1277,7 @@ fn compile_geometry_call_inner(
             step_offset,
             geometry_lets,
             visiting,
+            constraint_sink,
         );
     }
 
@@ -1279,6 +1361,7 @@ fn compile_geometry_call_inner(
             step_offset,
             geometry_lets,
             visiting,
+            constraint_sink,
         );
     }
 
@@ -1302,6 +1385,7 @@ fn compile_geometry_call_inner(
                 step_offset,
                 geometry_lets,
                 visiting,
+                constraint_sink,
             );
         }
         _ => {}
@@ -1393,6 +1477,7 @@ fn compile_geometry_call_inner(
                     current_offset,
                     geometry_lets,
                     visiting,
+                    &mut constraint_sink.reborrow(),
                 );
                 if let Some(ops) = inner_ops {
                     let result_step = current_offset + ops.len() - 1;
@@ -2774,6 +2859,51 @@ pub(crate) fn unsupported_geometry_fn_message(name: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Test-only shim preserving [`compile_geometry_call`]'s pre-constraint-sink
+    /// 8-argument signature: allocates a throwaway constraint sink and discards
+    /// whatever the lowering synthesizes into it.
+    ///
+    /// Deliberately `#[cfg(test)]` rather than a production wrapper. A
+    /// production-visible "no constraints" overload would be a silent footgun:
+    /// a future caller that reached for it would drop every synthesized
+    /// constraint with no signal. Confining the discard to the test build keeps
+    /// exactly one way to call the lowering in production code, and it always
+    /// carries a real sink.
+    ///
+    /// The unit tests in this module all assert on the returned
+    /// `Vec<CompiledGeometryOp>`; constraint emission is covered at the
+    /// integration level (`tests/rounded_primitives_tests.rs`, which compiles
+    /// whole sources and inspects `template.constraints`).
+    #[allow(clippy::too_many_arguments)]
+    fn compile_geometry_call_no_constraints(
+        expr: &reify_ast::Expr,
+        scope: &CompilationScope,
+        enum_defs: &[reify_ir::EnumDef],
+        functions: &[CompiledFunction],
+        diagnostics: &mut Vec<Diagnostic>,
+        step_offset: usize,
+        geometry_lets: &HashMap<&str, &reify_ast::Expr>,
+        visiting: &mut HashSet<String>,
+    ) -> Option<Vec<CompiledGeometryOp>> {
+        let mut discarded_constraints: Vec<CompiledConstraint> = Vec::new();
+        let mut discarded_index: u32 = 0;
+        compile_geometry_call(
+            expr,
+            scope,
+            enum_defs,
+            functions,
+            diagnostics,
+            step_offset,
+            geometry_lets,
+            visiting,
+            &mut GeometryConstraintSink::new(
+                "__test__",
+                &mut discarded_constraints,
+                &mut discarded_index,
+            ),
+        )
+    }
+
     /// Builder-routed composite-lowering names: these have explicit arms in
     /// `compile_geometry_call` that lower to multi-op sequences (Thicken/Pipe +
     /// Boolean), but intentionally have NO bare-variant descriptor row in
@@ -2808,7 +2938,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        compile_geometry_call(
+        compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -3718,7 +3848,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -3778,7 +3908,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -3868,7 +3998,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -3962,7 +4092,7 @@ mod tests {
         // (proves the cap only fires past MAX, not on ordinary input).
         {
             let mut diagnostics: Vec<Diagnostic> = vec![];
-            let result = compile_geometry_call(
+            let result = compile_geometry_call_no_constraints(
                 &box_expr,
                 &scope,
                 &enum_defs,
@@ -3991,7 +4121,7 @@ mod tests {
             .map(|_| RecursionDepthGuard::enter())
             .collect();
         let mut diagnostics: Vec<Diagnostic> = vec![];
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &box_expr,
             &scope,
             &enum_defs,
@@ -4018,7 +4148,7 @@ mod tests {
         // not permanently poisoned by a leaked count.
         drop(guards);
         let mut diagnostics: Vec<Diagnostic> = vec![];
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &box_expr,
             &scope,
             &enum_defs,
@@ -4101,7 +4231,7 @@ mod tests {
 
                 let scope = CompilationScope::new("test");
                 let mut diags: Vec<Diagnostic> = vec![];
-                let result = compile_geometry_call(
+                let result = compile_geometry_call_no_constraints(
                     &nested,
                     &scope,
                     &[],
@@ -4751,7 +4881,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &cond_expr,
             &scope,
             &enum_defs,
@@ -4927,7 +5057,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &match_expr,
             &scope,
             &enum_defs,
@@ -5635,7 +5765,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &cond_expr,
             &scope,
             &enum_defs,
@@ -5687,7 +5817,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -5734,7 +5864,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -5771,7 +5901,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -5818,7 +5948,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -5856,7 +5986,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -5903,7 +6033,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -5941,7 +6071,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -5981,7 +6111,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -6019,7 +6149,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -6067,7 +6197,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -6101,7 +6231,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -6139,7 +6269,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -6186,7 +6316,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -6225,7 +6355,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -6280,7 +6410,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -6331,7 +6461,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -6378,7 +6508,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -6421,7 +6551,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,

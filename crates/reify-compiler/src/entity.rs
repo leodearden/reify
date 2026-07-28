@@ -3857,6 +3857,11 @@ pub(crate) fn compile_entity(
                     0,
                     &geometry_lets,
                     &mut HashSet::new(),
+                    &mut GeometryConstraintSink::new(
+                        entity_name,
+                        &mut constraints,
+                        &mut constraint_index,
+                    ),
                 ) {
                     realizations.push(RealizationDecl {
                         id: RealizationNodeId::new(entity_name, realization_index),
@@ -3883,6 +3888,11 @@ pub(crate) fn compile_entity(
                         0,
                         &geometry_lets,
                         &mut HashSet::new(),
+                        &mut GeometryConstraintSink::new(
+                            entity_name,
+                            &mut constraints,
+                            &mut constraint_index,
+                        ),
                     )
                 {
                     realizations.push(RealizationDecl {
@@ -3914,6 +3924,8 @@ pub(crate) fn compile_entity(
                     realizations: &mut realizations,
                     realization_index: &mut realization_index,
                     diagnostics,
+                    constraints: &mut constraints,
+                    next_constraint_index: &mut constraint_index,
                 };
                 emit_guarded_geometry_realizations(&g.members, &deps, &mut sink);
                 emit_guarded_geometry_realizations(&g.else_members, &deps, &mut sink);
@@ -5303,6 +5315,13 @@ struct GeometryRealizationSink<'a> {
     realizations: &'a mut Vec<RealizationDecl>,
     realization_index: &'a mut u32,
     diagnostics: &'a mut Vec<Diagnostic>,
+    /// Compiler-synthesized constraints emitted by the geometry lowering
+    /// (see `GeometryConstraintSink`), plus the shared per-entity constraint
+    /// counter that names them. Carried here rather than as extra parameters
+    /// for the same reason as the other fields: one bundle of mutable outputs
+    /// with a lifetime independent of the read-only `GeometryRealizationDeps`.
+    constraints: &'a mut Vec<CompiledConstraint>,
+    next_constraint_index: &'a mut u32,
 }
 
 /// Recursively emit `RealizationDecl`s for Solid-typed geometry params inside
@@ -5335,6 +5354,11 @@ fn emit_guarded_geometry_realizations(
                         0,
                         deps.geometry_lets,
                         &mut HashSet::new(),
+                        &mut GeometryConstraintSink::new(
+                            deps.entity_name,
+                            sink.constraints,
+                            sink.next_constraint_index,
+                        ),
                     )
                 {
                     sink.realizations.push(RealizationDecl {
