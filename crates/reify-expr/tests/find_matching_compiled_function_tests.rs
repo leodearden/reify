@@ -229,3 +229,132 @@ fn first_match_wins() {
         "expected the first matching function to be returned"
     );
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Characterization: the wildcard pass (pass 2)
+//
+// The four tests below pin the CURRENT behaviour of the wildcard pass. They
+// pass against the matcher as it stands and are the regression net proving
+// that any later tie-break tier only ever NARROWS this pass — never widens it,
+// never re-admits a candidate this pass rejects.
+//
+// If one of these ever starts failing, the wildcard pass itself changed shape;
+// the correct response is to understand why, not to relax the assertion.
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Axis 1 — type-param wildcard. A GENERIC candidate whose param merely
+/// *carries* a type param (`Option<T>`, not a bare `T`) is selected for a
+/// concrete `Option<Length>` arg, even though the two types are not equal.
+#[test]
+fn wildcard_pass_generic_type_param_param_matches_concrete_arg() {
+    let f = make_generic_fn(
+        "f",
+        &["T"],
+        vec![(
+            "o".to_string(),
+            Type::Option(Box::new(Type::TypeParam("T".to_string()))),
+        )],
+        b"generic_option_t",
+    );
+    let fns = vec![f.clone()];
+    let args = [CompiledExpr::literal(
+        Value::Undef,
+        Type::Option(Box::new(Type::length())),
+    )];
+
+    let result = find_matching_compiled_function(&fns, "f", &args);
+    assert_eq!(
+        result.map(|f| f.content_hash),
+        Some(f.content_hash),
+        "a generic Option<T> param should wildcard-match a concrete Option<Length> arg"
+    );
+}
+
+/// Axis 2 — dimension-param wildcard. A GENERIC candidate whose param is a
+/// bare `ScalarParam` is selected for a concrete `Length` arg
+/// (`type_carries_dim_param`), the dimension-generic sibling of axis 1.
+#[test]
+fn wildcard_pass_generic_dim_param_param_matches_concrete_arg() {
+    let f = make_generic_fn(
+        "f",
+        &["Q"],
+        vec![("q".to_string(), Type::ScalarParam("Q".to_string()))],
+        b"generic_scalar_q",
+    );
+    let fns = vec![f.clone()];
+    let args = [CompiledExpr::literal(Value::Undef, Type::length())];
+
+    let result = find_matching_compiled_function(&fns, "f", &args);
+    assert_eq!(
+        result.map(|f| f.content_hash),
+        Some(f.content_hash),
+        "a generic ScalarParam param should wildcard-match a concrete Length arg"
+    );
+}
+
+/// Axis 3 — the type-param wildcard is GATED ON GENERICITY. The identical
+/// `Option<T>` param from axis 1, on a candidate with an EMPTY `type_params`
+/// list, is NOT selected for the same `Option<Length>` arg.
+///
+/// This is the load-bearing half of the axis-1 pin: it proves the wildcard
+/// comes from the candidate being generic, not from `Option<T>` being special.
+#[test]
+fn wildcard_pass_type_param_wildcard_is_gated_on_genericity() {
+    // Same param type as axis 1, but `type_params` is empty.
+    let f = make_generic_fn(
+        "f",
+        &[],
+        vec![(
+            "o".to_string(),
+            Type::Option(Box::new(Type::TypeParam("T".to_string()))),
+        )],
+        b"nongeneric_option_t",
+    );
+    let fns = vec![f];
+    let args = [CompiledExpr::literal(
+        Value::Undef,
+        Type::Option(Box::new(Type::length())),
+    )];
+
+    assert!(
+        find_matching_compiled_function(&fns, "f", &args).is_none(),
+        "an Option<T> param on a NON-generic candidate must not wildcard-match \
+         a concrete Option<Length> arg"
+    );
+}
+
+/// Axis 4 — the trait-object wildcard is NOT gated on genericity. A NON-generic
+/// candidate whose param is `List<Load>` IS selected for a concrete
+/// `List<StructureRef("PointLoad")>` arg.
+///
+/// This mirrors compile-side `resolve_function_overload`, which applies the
+/// trait-object wildcard to every candidate regardless of genericity. It is the
+/// axis that carries the FEA
+/// `solve_elastic_static(loads: List<Load>, supports: List<Support>)`
+/// signature (esc-4093-152), so it is the one most at risk from a narrowing
+/// change to this pass.
+#[test]
+fn wildcard_pass_trait_object_wildcard_is_ungated_on_genericity() {
+    let f = make_generic_fn(
+        "f",
+        &[],
+        vec![(
+            "loads".to_string(),
+            Type::List(Box::new(Type::TraitObject("Load".to_string()))),
+        )],
+        b"nongeneric_list_trait",
+    );
+    let fns = vec![f.clone()];
+    let args = [CompiledExpr::literal(
+        Value::Undef,
+        Type::List(Box::new(Type::StructureRef("PointLoad".to_string()))),
+    )];
+
+    let result = find_matching_compiled_function(&fns, "f", &args);
+    assert_eq!(
+        result.map(|f| f.content_hash),
+        Some(f.content_hash),
+        "a List<Load> trait-object param on a NON-generic candidate should \
+         wildcard-match a concrete List<PointLoad> arg"
+    );
+}
