@@ -30978,3 +30978,70 @@
         );
         assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
     }
+
+    // A NaN dimension is a strictly WORSE instance of the same defect class as
+    // a negative one, and it slips BOTH gates that would otherwise catch it:
+    // `NAN <= 0.0` is false, so the non-positive check above lets it through,
+    // and `NAN.abs() < 1e-14` is also false, so `validate_boundary`
+    // (mesher.rs:353) lets it through too — a NaN reaches the mesher with no
+    // diagnostic anywhere, whereas a negative dimension at least produces
+    // valid-but-inverted geometry. The wording is deliberately distinct from
+    // the non-positive message so the two causes stay tellable apart, and the
+    // arm must be ordered FIRST so -inf is reported as non-finite rather than
+    // mislabelled non-positive.
+    //
+    // Polygon is deliberately not covered here: `eval_all_args_to_f64`
+    // (geometry_ops.rs:418) already rejects non-finite coordinates.
+
+    #[test]
+    fn compile_geometry_op_rectangle_profile_nan_width_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Rectangle,
+            vec![
+                ("width".into(), literal_f64(f64::NAN)),
+                ("height".into(), literal_f64(0.05)),
+            ],
+        );
+        assert!(
+            result.is_err(),
+            "a NaN rectangle width must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["rectangle", "width", "non-finite"]);
+    }
+
+    #[test]
+    fn compile_geometry_op_circle_profile_infinite_radius_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Circle,
+            vec![("radius".into(), literal_f64(f64::INFINITY))],
+        );
+        assert!(
+            result.is_err(),
+            "an infinite circle radius must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["circle", "radius", "non-finite"]);
+    }
+
+    /// NEGATIVE infinity is non-finite AND `<= 0.0`. The non-finite arm is
+    /// ordered first, so it must be reported as non-finite — the accurate
+    /// description — and NOT as merely non-positive.
+    #[test]
+    fn compile_geometry_op_ellipse_profile_neg_infinite_semi_minor_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Ellipse,
+            ellipse_args(literal_f64(0.02), literal_f64(f64::NEG_INFINITY)),
+        );
+        assert!(
+            result.is_err(),
+            "a -inf semi_minor must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["ellipse", "semi_minor", "non-finite"]);
+        assert!(
+            !diagnostics[0].message.contains("not positive"),
+            "-inf must be reported as non-finite, not mislabelled non-positive, got: {:?}",
+            diagnostics[0].message
+        );
+    }
