@@ -126,13 +126,93 @@ NPM_SRC_ROOT="${npm_config_cache:-$HOME/.npm}"
 
 # ── seed_one <src> <dst> — hardlink-mirror one tree ───────────────────────────
 # `cp -al --update=none` both hardlinks and re-runs cleanly, topping up newly
-# added crates without erroring on the ones already there.  `--update=none`
-# rather than `-n`: coreutils now warns that `-n` is non-portable.
+# added entries without erroring on the ones already there.
+#
+# `--update=none` is load-bearing, and NOT merely for the trivially-idempotent
+# case: probed on coreutils 9.4, a bare `cp -al` re-linking an entry that is
+# still the same hardlink is a silent no-op, but one whose destination holds a
+# DIFFERENT inode under the same name dies with "cannot create hard link: File
+# exists" and fails the whole run.  That divergent state is the redirect's
+# normal steady state — a sandboxed agent runs with CARGO_HOME=$CARGO_DEST and
+# downloads crates straight into it.  `--update=none` skips those names, which
+# is also the semantics we want: the DESTINATION wins, because re-linking would
+# replace a file the agent owns with the host's copy, unlinking through a path
+# the agent may still hold open.  (`-n` behaves the same but coreutils now
+# warns it is non-portable.)
+#
+# THREE GUARDS, each independent and each FAIL-OPEN (warn + `return 0`).  They
+# never abort the caller: this script runs unconditionally from setup-dev.sh
+# and from a boot oneshot, and a cache pre-seed is an optimisation — no failure
+# here justifies breaking a contributor's environment setup or a boot.  Each
+# warn is worded distinctly so a caller (and the test suite) can tell which
+# path was taken.
 seed_one() {
     local src="$1" dst="$2"
+    local src_real dst_real dst_parent dst_parent_real src_dev dst_dev
 
-    mkdir -p "$dst"
-    cp -al --update=none "$src/." "$dst/"
+    # GUARD 1 — missing/unreadable source.  A fresh contributor machine has no
+    # ~/.npm at all.  Skip THIS pair only; the caller still seeds the others.
+    # Checked BEFORE the mkdir so no empty destination tree is left behind — an
+    # empty dir looks seeded to a later reader and to `test -d`.
+    if [ ! -d "$src" ] || [ ! -r "$src" ]; then
+        _warn "seed source missing or unreadable, skipping: $src"
+        return 0
+    fi
+
+    src_real="$(realpath -m "$src" 2>/dev/null)" || src_real="$src"
+    dst_real="$(realpath -m "$dst" 2>/dev/null)" || dst_real="$dst"
+
+    # GUARD 2 — degenerate target.  Two shapes, both reached in practice:
+    #   (a) dst == src: a landlock-sandboxed agent already runs with
+    #       CARGO_HOME pointed at the redirect, so a setup-dev.sh invocation
+    #       from inside the sandbox asks us to copy a tree onto itself.
+    #   (b) dst nested inside src: `cp -al` would recurse into its own output,
+    #       a self-feeding copy that never converges.
+    # Skip WITHOUT touching the destination — a guard that "protected" the tree
+    # by emptying it would be worse than the bug.
+    if [ "$dst_real" = "$src_real" ]; then
+        _warn "degenerate seed target (destination is the source itself), skipping: $dst"
+        return 0
+    fi
+    case "$dst_real/" in
+        "$src_real"/*)
+            _warn "degenerate seed target (destination is nested inside the source), skipping: $dst"
+            return 0
+            ;;
+    esac
+
+    # GUARD 3 — cross-device.  `cp -al` cannot hardlink across filesystems, and
+    # GNU cp does NOT fall back to a byte copy — it fails.  Skipping with a
+    # clear warn beats both that bare error and the alternative some future
+    # edit might reach for (a real `cp -a`), which would silently duplicate 6+
+    # GB into what might be a tmpfs.  This is what turns the measured
+    # same-device premise (/tmp and $HOME both on /dev/nvme2n1p5 today) into an
+    # ENFORCED precondition rather than a standing assumption, so a future host
+    # that mounts /tmp as tmpfs degrades loudly instead of filling RAM.
+    #
+    # The device is read from the nearest EXISTING ancestor of the destination,
+    # since the destination itself is usually not created yet at this point.
+    dst_parent="$dst"
+    while [ ! -e "$dst_parent" ] && [ "$dst_parent" != "/" ]; do
+        dst_parent_real="$(dirname "$dst_parent")"
+        [ "$dst_parent_real" = "$dst_parent" ] && break
+        dst_parent="$dst_parent_real"
+    done
+    src_dev="$(stat -c %d "$src" 2>/dev/null)" || src_dev=""
+    dst_dev="$(stat -c %d "$dst_parent" 2>/dev/null)" || dst_dev=""
+    if [ -z "$src_dev" ] || [ -z "$dst_dev" ] || [ "$src_dev" != "$dst_dev" ]; then
+        _warn "seed source and destination are on different filesystems (hardlinks impossible), skipping: $src -> $dst"
+        return 0
+    fi
+
+    mkdir -p "$dst" || {
+        _warn "could not create seed destination, skipping: $dst"
+        return 0
+    }
+    cp -al --update=none "$src/." "$dst/" || {
+        _warn "hardlink seed failed (see above), continuing: $src -> $dst"
+        return 0
+    }
     return 0
 }
 
@@ -141,7 +221,7 @@ seed_caches() {
     seed_one "$CARGO_SRC_ROOT/registry/cache" "$CARGO_DEST/registry/cache"
     seed_one "$CARGO_SRC_ROOT/registry/index" "$CARGO_DEST/registry/index"
     seed_one "$NPM_SRC_ROOT/_cacache"         "$NPM_DEST/_cacache"
-    _ok "seeded $CARGO_DEST and $NPM_DEST"
+    _ok "seed pass complete ($CARGO_DEST, $NPM_DEST)"
     return 0
 }
 

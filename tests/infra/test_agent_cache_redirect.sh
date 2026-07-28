@@ -438,4 +438,49 @@ assert "E10: npm cache IS still seeded despite the missing cargo cache" \
 assert "E11: no partial cargo destination tree when the cargo source is absent" \
     test ! -e "$E3_CARGO_DEST/registry/cache"
 
+# ── E12-E15: cross-device source — the guard that keeps the design honest ─────
+# `cp -al` cannot hardlink across filesystems and GNU cp does NOT fall back to a
+# byte copy, so the whole "near-free seed" premise holds only while /tmp and
+# $HOME share a device (they do today: both /dev/nvme2n1p5).  This turns that
+# measured premise into an ENFORCED precondition, so a future host that mounts
+# /tmp as tmpfs degrades loudly instead of silently filling RAM with a 6+ GB
+# real copy.  Without these four the guard has no coverage at all in the
+# positive direction — it could be silently inverted and every other assertion
+# here would stay green.
+#
+# SKIPPED, not failed, when no second writable filesystem exists: this suite is
+# `pool`-classified and must stay hermetic on any host.  /dev/shm is a tmpfs on
+# a distinct device wherever it is present at all.
+_XDEV_BASE="/dev/shm"
+if [ -d "$_XDEV_BASE" ] && [ -w "$_XDEV_BASE" ] \
+   && [ "$(stat -c %d "$_XDEV_BASE" 2>/dev/null)" != "$(stat -c %d "$_TMPBASE" 2>/dev/null)" ]; then
+    # Source on the OTHER device; destination stays on $_TMPBASE.
+    FAKE_HOME="$(mktemp -d "$_XDEV_BASE/test-agent-cache-xdev-home-XXXXXX")"
+    _TMPDIRS+=("$FAKE_HOME")
+    mkdir -p "$FAKE_HOME/.cargo/registry/cache" "$FAKE_HOME/.cargo/registry/index" \
+             "$FAKE_HOME/.npm/_cacache"
+    printf 'xdev-crate\n' > "$FAKE_HOME/.cargo/registry/cache/xdev-1.0.0.crate"
+    printf 'xdev-index\n' > "$FAKE_HOME/.cargo/registry/index/xdev.json"
+    printf 'xdev-blob\n'  > "$FAKE_HOME/.npm/_cacache/blob"
+    make_cache_root
+    E4_CARGO_DEST="$CACHE_ROOT/reify-agent-cargo-home"
+    E4_NPM_DEST="$CACHE_ROOT/reify-agent-npm-cache"
+
+    reset_calls
+    run_redirect --seed-only
+
+    assert "E12: exits 0 when source and destination are on different filesystems" \
+        test "$RC" -eq 0
+    assert "E13: warns that the cross-device seed was skipped" \
+        bash -c 'printf "%s\n%s\n" "$1" "$2" | grep -qiE "WARN.*(different filesystem|cross-device|cross device)"' \
+        _ "$OUT" "$ERR_OUT"
+    # The whole point: NO silent fallback to a real byte copy.
+    assert "E14: no cargo bytes were copied across the device boundary" \
+        test ! -e "$E4_CARGO_DEST/registry/cache/xdev-1.0.0.crate"
+    assert "E15: no npm bytes were copied across the device boundary" \
+        test ! -e "$E4_NPM_DEST/_cacache/blob"
+else
+    echo "  SKIP: E12-E15 cross-device guard (no second writable filesystem at $_XDEV_BASE)"
+fi
+
 test_summary
