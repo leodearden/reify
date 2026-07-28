@@ -1076,3 +1076,61 @@ fn rounded_rect_param_driven_corner_r_emits_runtime_constraint() {
         template_s(&compiled_const).constraints
     );
 }
+
+/// Several param-driven rounded-corner calls in one entity must each get their
+/// OWN constraint, with a label that names its constructor and distinguishes
+/// it from its siblings.
+///
+/// The label is the only channel that reaches the designer — the emitted
+/// diagnostic carries no span — so a shared or constructor-agnostic label
+/// leaves "which of these three calls is wrong?" unanswerable.
+///
+/// RED before the label lands: all three are the same fixed placeholder.
+#[test]
+fn multiple_param_driven_rounded_calls_get_distinct_self_identifying_labels() {
+    let source = r#"structure def S {
+    param corner_r: Length = 5mm
+    let plate = rounded_rect(40mm, 30mm, corner_r)
+    let block = rounded_box(40mm, 30mm, 20mm, corner_r)
+    let shim = rounded_rect(60mm, 50mm, corner_r)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = template_s(&compiled);
+
+    assert_eq!(
+        template.constraints.len(),
+        3,
+        "each param-driven rounded-corner call needs its own constraint, got: {:#?}",
+        template.constraints
+    );
+
+    let labels: Vec<&str> = template
+        .constraints
+        .iter()
+        .map(|c| {
+            c.label
+                .as_deref()
+                .expect("a synthesized constraint must carry a label")
+        })
+        .collect();
+
+    let unique: std::collections::HashSet<&str> = labels.iter().copied().collect();
+    assert_eq!(
+        unique.len(),
+        3,
+        "labels must be pairwise distinct so a violation identifies WHICH call, got: {labels:?}"
+    );
+
+    // Each label names the constructor it came from: two rounded_rect, one
+    // rounded_box.
+    assert_eq!(
+        labels.iter().filter(|l| l.contains("rounded_rect")).count(),
+        2,
+        "both rounded_rect calls must name their constructor, got: {labels:?}"
+    );
+    assert_eq!(
+        labels.iter().filter(|l| l.contains("rounded_box")).count(),
+        1,
+        "the rounded_box call must name its constructor, got: {labels:?}"
+    );
+}

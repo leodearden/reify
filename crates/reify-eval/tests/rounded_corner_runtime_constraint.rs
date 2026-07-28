@@ -85,3 +85,60 @@ fn valid_param_corner_r_is_satisfied() {
         "2*0.005 = 0.01 < 0.03 and 0.005 > 0 — must be Satisfied"
     );
 }
+
+/// A violation must say WHICH constructor was at fault and name the argument.
+///
+/// The label is the only designer-visible text: `SimpleConstraintChecker`
+/// emits no span, and `Engine::labeled_diagnostics` substitutes the label for
+/// the raw `ConstraintNodeId` in the message. So the constructor name has to
+/// live in the label or it reaches nobody.
+///
+/// RED before the label lands: it is a fixed placeholder naming neither
+/// `rounded_box` nor `corner_r`.
+#[test]
+fn rounded_box_violation_message_names_the_constructor_and_arg() {
+    let source = r#"structure def S {
+    param corner_r: Length = 25mm
+    let body = rounded_box(40mm, 30mm, 20mm, corner_r)
+}"#;
+    let result = check_source(source);
+
+    let entry = result
+        .constraint_results
+        .iter()
+        .find(|e| e.satisfaction == Satisfaction::Violated)
+        .unwrap_or_else(|| {
+            panic!(
+                "2*0.025 = 0.05 is not < min(0.04, 0.03) — expected a Violated \
+                 constraint, got: {:?}",
+                result.constraint_results
+            )
+        });
+
+    let label = entry
+        .label
+        .as_deref()
+        .expect("a synthesized constraint must carry a label");
+    assert!(
+        label.contains("rounded_box"),
+        "the label must name the constructor at fault, got: {label:?}"
+    );
+    assert!(
+        label.contains("corner_r"),
+        "the label must name the offending argument, got: {label:?}"
+    );
+
+    // And the label must actually reach the designer-facing message.
+    let messages: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .map(|d| d.message.as_str())
+        .filter(|m| m.contains(label))
+        .collect();
+    assert!(
+        !messages.is_empty(),
+        "the label must be substituted into the violation message; \
+         diagnostics were: {:#?}",
+        result.diagnostics
+    );
+}
