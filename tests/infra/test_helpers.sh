@@ -132,6 +132,14 @@ init_isolated_lane_root() {
     fi
     _LANE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/${stem}-lane-root-XXXXXX")" || return 1
     _TMPDIRS+=("$_LANE_ROOT")
+    # Detector state (see the shared-trash detector section below). Nested
+    # directly under $_LANE_ROOT — a SIBLING of each lane's own private parent,
+    # never inside one — so the caller's existing `rm -rf "$_LANE_ROOT"`
+    # reclaims it with no new _TMPDIRS entry and no extra top-level temp entry,
+    # and a "the lane's parent contains the lane and nothing else" structural
+    # check stays valid.
+    _TRASH_HITS_FILE="$_LANE_ROOT/.shared-trash-hits"
+    : > "$_TRASH_HITS_FILE" || return 1
     return 0
 }
 
@@ -158,4 +166,64 @@ make_isolated_lane() {
     fi
     parent="$(mktemp -d "$_LANE_ROOT/${prefix}-XXXXXX")" || return 1
     mktemp -d "$parent/lane-XXXXXX"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared-trash runtime detector
+#
+# _note_shared_trash_use is the RECORDER: a warm-lane suite calls it from inside
+# its run_helper wrapper after every seed invocation, with the invocation's
+# captured stderr in $ERR_OUT. scripts/seed-warm-lane.sh logs its
+# rename-into-trash to stderr, so an $ERR_OUT mentioning $_SHARED_TRASH_DIR is
+# exact evidence that THIS invocation renamed into that path.
+# _assert_no_shared_trash_use is the matching CHECKER, asserted once per suite.
+#
+# THREE INVARIANTS BELOW ARE LOAD-BEARING:
+#
+# 1. The trailing `return 0` is MANDATORY. The recorder is called as a bare
+#    unguarded statement inside run_helper/run_helper_real, so under
+#    `set -euo pipefail` any nonzero return here would abort the ENTIRE suite
+#    instead of just failing one assert.
+#
+# 2. State lives in an append-only FILE ($_TRASH_HITS_FILE), not a bash array.
+#    Some run_helper call sites invoke the helper inside a backgrounded
+#    ( ... ) & subshell, and a bash array append made there is discarded when
+#    the subshell exits — silently blinding the detector on exactly the
+#    --fresh-checkout-against-non-empty-target runs most likely to reach seed's
+#    rename-into-trash path. A `>>` append performed inside a subshell IS
+#    visible to the parent shell, so file-backed state fixes this without
+#    changing the call convention at any fixture site. A single-line `printf`
+#    append to an O_APPEND file is atomic well below PIPE_BUF (4096), so a
+#    background job appending while the main shell asserts cannot corrupt a
+#    record.
+#
+# 3. The variable is QUOTED inside the case pattern (*"$_SHARED_TRASH_DIR"*) so
+#    any glob metacharacter in the path is matched literally rather than
+#    interpreted as a wildcard — an unquoted pattern would fire on paths seed
+#    never touched.
+#
+# _SHARED_TRASH_DIR stays a plain overridable variable (not a readonly) so a
+# suite's positive control can redirect it at an isolated lane's own private
+# trash dir and prove the detector fires without littering the real shared path.
+# When restoring after such an override, restore FROM A SAVED COPY rather than
+# re-typing the literal default: a re-typed literal would silently revert a
+# future change to the default above instead of tracking it.
+#
+# ${ERR_OUT:-} rather than bare $ERR_OUT: this library is sourced by 153 files,
+# most of which have no run_helper wrapper and never set ERR_OUT at all, and
+# reading an unset variable under `set -u` would abort them.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_note_shared_trash_use() {
+    case "${ERR_OUT:-}" in
+        *"$_SHARED_TRASH_DIR"*) printf '%s\n' "$*" >> "$_TRASH_HITS_FILE" ;;
+    esac
+    return 0
+}
+
+_assert_no_shared_trash_use() {
+    [ ! -s "$_TRASH_HITS_FILE" ] && return 0
+    printf 'seed invocation wrote into machine-shared %s:\n' "$_SHARED_TRASH_DIR"
+    cat "$_TRASH_HITS_FILE"
+    return 1
 }
