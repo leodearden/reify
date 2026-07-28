@@ -28,9 +28,13 @@
 # consolidates them (mirroring the mandatory same-diff
 # run-all-classification.manifest row rule; esc-4914-162). The baseline shrinks
 # leaf-by-leaf and the guard stays green at every intermediate step; shrinking
-# toward empty == consolidation progress. From B1 landing, adding a NEW
-# standalone test binary to one of these 5 crates requires a CONSCIOUS row
-# addition here — that deliberate edit IS the anti-re-accretion mechanism.
+# toward empty == consolidation progress. Grandfathering a NEW row here for a
+# new standalone test binary in one of these 5 crates is SUPERSEDED (Leo
+# 2026-07-22, esc-5056-11: "actually start using the ratchet") — this baseline
+# is a shrinking ratchet, not an allow-list to grow. The sanctioned remedy is
+# consolidating the new test into a harness_<subsystem>/ compile unit, per C1;
+# see scripts/check-harness-baseline-registration.sh's _hint() for the exact
+# remediation wording (single source of truth — do not restate it here).
 #
 # REGENERATE (from repo root; verify the count is unchanged before committing):
 #   git ls-files -- 'crates/reify-cli/tests/*.rs' 'crates/reify-syntax/tests/*.rs' \
@@ -123,7 +127,6 @@ crates/reify-compiler/tests/generate_combinator_tests.rs
 crates/reify-compiler/tests/generic_enum_pattern_binder_tests.rs
 crates/reify-compiler/tests/geometry_arg_count_span_tests.rs
 crates/reify-compiler/tests/geometry_centered_primitives_tests.rs
-crates/reify-compiler/tests/geometry_chunk_smoke.rs
 crates/reify-compiler/tests/geometry_let_value_cell_lowering.rs
 crates/reify-compiler/tests/geometry_profile_precondition_tests.rs
 crates/reify-compiler/tests/geometry_traits_inference_tests.rs

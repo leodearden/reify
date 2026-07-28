@@ -12,12 +12,17 @@ use reify_test_support::{MockConstraintChecker, MockGeometryKernel, parse_and_co
 
 /// Source shared by both tests: a plate structure with a cylindrical hole
 /// patterned around the Z-axis.  The angle argument differs between tests.
+///
+/// The axis ORIGIN is dimensioned (`0mm`) — it is length-semantic and gated as
+/// a Length since task 5350. The axis DIRECTION `0, 0, 1` stays bare (a
+/// dimensionless unit vector), and a bare `angle_expr` stays bare on purpose:
+/// these tests exercise the degrees coercion, which this file is about.
 fn plate_source(angle_expr: &str) -> String {
     format!(
         r#"
         structure def Plate {{
             let hole = cylinder(5mm, 10mm)
-            let holes = circular_pattern(hole, 0, 0, 0, 0, 0, 1, 6, {angle_expr})
+            let holes = circular_pattern(hole, 0mm, 0mm, 0mm, 0, 0, 1, 6, {angle_expr})
         }}
         "#
     )

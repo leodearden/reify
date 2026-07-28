@@ -4,85 +4,27 @@
 // DimensionalTolerance computed lets) through the full
 // parse → compile_with_stdlib → eval pipeline.
 //
-// NOTE: compile_with_stdlib provides stdlib definitions as a compilation
-// context (type resolution, conformance checking), but the output
-// CompiledModule contains only user-defined templates.  The eval engine
-// resolves sub-component templates exclusively from module.templates.
-// Therefore the enum types AND the GD&T structure definitions used by
-// Flange's sub-components must be re-declared locally so they are present
-// in the output module and available at eval time.
+// All types are consumed from the stdlib prelude WITHOUT inline redeclaration.
+// crates/reify-compiler/stdlib/tolerancing.ri owns every one of them:
+//   - enums:      MaterialCondition, SurfaceParameter, SurfaceDirection
+//   - structures: Position, Flatness, SurfaceFinish, DimensionalTolerance
+// Sub-component templates resolve against the prelude at eval time (Regime B,
+// docs/prds/v0_6/resolution-unification.md §1), so the local mirrors this file
+// used to carry are neither needed nor harmless: they shadowed the stdlib
+// types' trait bounds and became standalone module roots of their own.
 //
-// The local declarations mirror the stdlib tolerancing.ri definitions exactly,
-// including the task #3116 tightening of `feature : Geometry` and
-// `datum_refs : DatumRef` (away from the old `Real = 0.0` placeholder).
-// Type-compatibility with stdlib-compiled code is preserved.  The duplicate
-// enum declarations are harmless: the compiler merges prelude + local enum
-// definitions during resolution; the local structure declarations shadow the
-// stdlib ones in the user module's template list without causing errors.
-//
-// TODO: This re-declaration is a WORKAROUND for a product coupling gap.  Every // ptodo:allow compiler workaround, no specific task
-// consumer of stdlib structures must copy-paste stdlib definitions into their
-// .ri file when they need eval-time sub resolution.  A proper fix requires
-// either:
-//   (a) compile_with_stdlib includes used stdlib templates in the output
-//       CompiledModule (so the eval engine can find them without re-declaration), or
-//   (b) the eval engine consults a stdlib template registry when resolving subs.
-// Track as a follow-up issue so this pattern is not mistaken for a permanent
-// convention.
+// Auto-discovered by crates/reify-compiler/tests/examples_smoke.rs; the cells
+// below are locked by crates/reify-eval/tests/m8_3_stdlib_integration.rs.
 //
 // Flange structure contains:
 //   sub pos      — Position (location tolerance, MMC modifier)
+//                  from `: LocationTolerance`: zone_shape = ZoneShape.Cylindrical
+//                  from `: GeometricTolerance`: nominal_zone = 0.1mm
 //   sub flat     — Flatness (form tolerance)
+//                  from `: GeometricTolerance`: nominal_zone = 0.05mm
 //   sub finish   — SurfaceFinish (Ra parameter, 1.6 μm value)
 //   sub dim_tol  — DimensionalTolerance (nominal=50mm, ±0.1mm)
 //                  computed lets: upper_limit, lower_limit, tolerance_band
-
-// ── Local enum re-declarations (parser disambiguation + eval availability) ──
-
-enum MaterialCondition { MMC, LMC, RFS }
-enum SurfaceParameter { Ra, Rz, Rq, Rt, Rp, Rv, Rsk, Rku }
-enum SurfaceDirection { Parallel, Perpendicular, Crossed, Multidirectional, Circular, Radial }
-
-// ── Local structure definitions (eval-time availability) ─────────────────────
-// These must appear before Flange so compiled_templates contains them when
-// the sub declarations in Flange are resolved.
-//
-// feature and datum_refs: real geometry handles — tightened from Real by task #3116.
-// Mirrors the stdlib tolerancing.ri definitions (Type::Geometry / DatumRef alias).
-
-// GD&T position tolerance (location)
-structure def Position {
-    param tolerance_value : Length = 0mm
-    param feature        : Geometry = box(1mm, 1mm, 1mm)
-    param material_condition : MaterialCondition = MaterialCondition.RFS
-    param datum_refs     : DatumRef = box(1mm, 1mm, 1mm)
-}
-
-// GD&T flatness tolerance (form)
-structure def Flatness {
-    param tolerance_value : Length = 0mm
-    param feature        : Geometry = box(1mm, 1mm, 1mm)
-    param material_condition : MaterialCondition = MaterialCondition.RFS
-}
-
-// Surface texture specification per ISO 1302
-structure def SurfaceFinish {
-    param parameter : SurfaceParameter
-    param value : Length
-    param direction : SurfaceDirection
-    param process : String
-}
-
-// Dimensional tolerance with computed limits and band
-structure def DimensionalTolerance {
-    param nominal : Length
-    param upper_deviation : Length
-    param lower_deviation : Length
-    let upper_limit = nominal + upper_deviation
-    let lower_limit = nominal + lower_deviation
-    let tolerance_band = upper_deviation - lower_deviation
-    constraint upper_deviation >= lower_deviation
-}
 
 // ── Flange structure ──────────────────────────────────────────────────────────
 

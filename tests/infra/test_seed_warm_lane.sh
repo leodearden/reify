@@ -56,46 +56,18 @@ echo "=== scripts/seed-warm-lane.sh hermetic tests (task 4660) ==="
 _TMPDIRS=()
 _BGPIDS=()
 
-# _SHARED_TRASH_DIR / _note_shared_trash_use: runtime detector for task 5590's
-# invariant — no seed invocation may write into the machine-shared
-# /tmp/.reseed-trash. scripts/seed-warm-lane.sh:663 computes RESEED_TRASH_DIR
-# as dirname(LANE_DIR)/.reseed-trash and logs the rename to stderr via `info`
-# (scripts/seed-warm-lane.sh:86), so ERR_OUT mentioning _SHARED_TRASH_DIR is
-# exact evidence this invocation renamed into it. _SHARED_TRASH_DIR is
-# overridable so Block R's R2 positive control can redirect it to an isolated
-# lane's own private trash dir and prove the detector fires without littering
-# the real shared path. The variable is quoted inside the case pattern
-# (*"$_SHARED_TRASH_DIR"*) so any glob metacharacter in the path is matched
-# literally, not interpreted as a wildcard. The trailing `return 0` is
-# mandatory: this is called as a bare unguarded statement inside
-# run_helper/run_helper_real, so under `set -euo pipefail` any nonzero return
-# here would abort the entire suite instead of just failing one assert.
+# _SHARED_TRASH_DIR / _note_shared_trash_use / _assert_no_shared_trash_use:
+# the shared-trash runtime detector for task 5590's invariant — no seed
+# invocation may write into the machine-shared /tmp/.reseed-trash. PROMOTED
+# into tests/infra/test_helpers.sh (task 5612), which this file sources above;
+# the full rationale — why the trailing `return 0` is mandatory, why the state
+# is an append-only file rather than a bash array, why the case pattern quotes
+# the variable, and why _SHARED_TRASH_DIR must stay overridable for R2's
+# positive control — lives with the code there. Block R's R7 pins that the
+# ACTIVE definitions still come from the library, so a reintroduced local copy
+# cannot silently shadow them.
 #
-# State lives in an append-only FILE (_TRASH_HITS_FILE, defined below near
-# _LANE_ROOT), not a bash array: two run_helper_real call sites — H5d
-# (Q_LANE8) and H9 (Q_LANE11) — invoke the helper inside a
-# backgrounded ( ... ) & subshell, and a bash array append made there is
-# discarded when the subshell exits, silently blinding the detector to
-# exactly the two --fresh-checkout-against-non-empty-target runs most likely
-# to reach seed's rename-into-trash path. A `>>` append performed inside a
-# subshell IS visible to the parent shell, so file-backed state fixes this
-# without changing the call convention at any fixture site — this mirrors the
-# subshell hazard already documented above for _TMPDIRS at _LANE_ROOT. A
-# single-line `printf` append to an O_APPEND file is atomic well below
-# PIPE_BUF (4096), so the H5d/H9 background job appending while the main
-# shell asserts cannot corrupt a record. The function definition can stay
-# here even though _TRASH_HITS_FILE is not assigned until later: bash
-# resolves the variable at CALL time, and the first call happens far later,
-# in Block A.
-_SHARED_TRASH_DIR="/tmp/.reseed-trash"
-_note_shared_trash_use() {
-    case "$ERR_OUT" in
-        *"$_SHARED_TRASH_DIR"*) printf '%s\n' "$*" >> "$_TRASH_HITS_FILE" ;;
-    esac
-    return 0
-}
-
-# _note_real_lane: structural companion to the R1 behavioural detector above —
+# _note_real_lane: structural companion to the R1 behavioural detector —
 # logs EVERY run_helper_real lane arg ($2) to _REAL_LANES_FILE (defined below
 # near _LANE_ROOT), regardless of whether THIS run actually triggered a
 # rename-to-trash (defence-in-depth for lanes that don't reach that path
@@ -185,60 +157,48 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Mint $_LANE_ROOT — the single per-run grandparent for every lane fixture this
+# file creates via make_isolated_lane — plus $_TRASH_HITS_FILE and the
+# shared-trash snapshot. Both the root and the helpers were promoted into
+# tests/infra/test_helpers.sh (task 5612); the rationale for the per-run root,
+# and for why make_isolated_lane must not register anything itself (its body
+# runs in a command-substitution subshell, where an array append is discarded),
+# lives with the code there.
+#
+# Sited HERE, immediately after `trap cleanup EXIT`: init_isolated_lane_root
+# appends its root to _TMPDIRS, so it must run after this file's `_TMPDIRS=()`
+# — a call placed before it would register into an array that assignment then
+# wipes, leaking the root. The helper refuses to run if _TMPDIRS is undeclared,
+# so that ordering mistake is an error rather than a silent leak.
+#
+# The stem is what makes any litter this suite does produce attributable to it:
+# seed names a trash entry "<lane-basename>.<pid>", and every lane minted under
+# this root carries the stem.
+init_isolated_lane_root test-seed
+
 STUB_DIR="$(mktemp -d /tmp/test-seed-warm-lane-stub-XXXXXX)"
 _TMPDIRS+=("$STUB_DIR")
 
-# _LANE_ROOT: a single per-run grandparent for every lane fixture created by
-# this file, via make_isolated_lane() below. WHY: scripts/seed-warm-lane.sh:663
-# computes RESEED_TRASH_DIR as dirname(LANE_DIR)/.reseed-trash, and renames a
-# non-empty <lane>/target there before re-seeding. A lane created bare under
-# /tmp (dirname == /tmp) makes that path the machine-shared /tmp/.reseed-trash
-# — shared across every concurrent agent/test run on the host. Nesting each
-# lane under its own private parent directory makes dirname(LANE_DIR) unique
-# per lane, so the computed trash dir is run-private (task 5384 introduced this
-# pattern for I_LANE_REAL/I14_LANE/I15_LANE; task 5590 factors it out and
-# applies it to the rest of the file's lanes).
-#
-# Subshell trap: call sites read `X_LANE="$(make_isolated_lane prefix)"`, so
-# the function body below runs in a command-substitution SUBSHELL — any
-# `_TMPDIRS+=(...)` performed inside make_isolated_lane itself would be
-# silently discarded once the subshell exits, leaking every private parent
-# into /tmp. So cleanup is anchored on this ONE root, registered here in the
-# main shell, which the existing `cleanup()` EXIT trap `rm -rf`s — reclaiming
-# every lane, its sibling ${lane}.lock/.ready-marker/.done-marker files, and
-# its private .reseed-trash, all in one shot.
-_LANE_ROOT="$(mktemp -d /tmp/test-seed-lane-root-XXXXXX)"
-_TMPDIRS+=("$_LANE_ROOT")
-
-# _TRASH_HITS_FILE / _REAL_LANES_FILE / _HELPER_LANES_FILE: append-only
-# detector state for _note_shared_trash_use / _note_real_lane /
-# _note_helper_lane above. Nested directly under $_LANE_ROOT (a sibling of
-# each lane's own private parent, never inside one), so the existing
-# cleanup() EXIT trap's `rm -rf "$_LANE_ROOT"` reclaims them with no new
-# _TMPDIRS entry and no extra top-level /tmp entry, and R0c's "parent
-# contains the lane and nothing else" check (which inspects a lane's own
-# private parent, not _LANE_ROOT itself) is unaffected. _HELPER_LANES_FILE is
-# kept SEPARATE from _REAL_LANES_FILE (task 5609) rather than merged into it:
-# R3's offender message names the call convention ("run_helper_real lane dir
-# was bare /tmp"), and R4 asserts specific run_helper_real lanes are present
-# in _REAL_LANES_FILE as an H5d/H9 subshell-visibility coverage signal —
-# merging the two streams would make R3's message wrong for half its inputs
-# and let a run_helper lane silently satisfy R4's coverage check.
-_TRASH_HITS_FILE="$_LANE_ROOT/.shared-trash-hits"
+# _REAL_LANES_FILE / _HELPER_LANES_FILE: append-only detector state for
+# _note_real_lane / _note_helper_lane above. These stay LOCAL — unlike
+# $_TRASH_HITS_FILE (promoted, and minted by init_isolated_lane_root), they are
+# fed by this file's own run_helper/run_helper_real wrappers, machinery no
+# sibling suite has. Nested directly under $_LANE_ROOT (a sibling of each lane's
+# own private parent, never inside one), so the existing cleanup() EXIT trap's
+# `rm -rf "$_LANE_ROOT"` reclaims them with no new _TMPDIRS entry and no extra
+# top-level /tmp entry, and R0c's "parent contains the lane and nothing else"
+# check (which inspects a lane's own private parent, not _LANE_ROOT itself) is
+# unaffected. _HELPER_LANES_FILE is kept SEPARATE from _REAL_LANES_FILE (task
+# 5609) rather than merged into it: R3's offender message names the call
+# convention ("run_helper_real lane dir was bare /tmp"), and R4 asserts specific
+# run_helper_real lanes are present in _REAL_LANES_FILE as an H5d/H9
+# subshell-visibility coverage signal — merging the two streams would make R3's
+# message wrong for half its inputs and let a run_helper lane silently satisfy
+# R4's coverage check.
 _REAL_LANES_FILE="$_LANE_ROOT/.real-lanes"
 _HELPER_LANES_FILE="$_LANE_ROOT/.helper-lanes"
-: > "$_TRASH_HITS_FILE"
 : > "$_REAL_LANES_FILE"
 : > "$_HELPER_LANES_FILE"
-
-# make_isolated_lane <prefix> — mktemps a private parent under $_LANE_ROOT and
-# a lane dir nested inside it, then echoes the lane path on stdout. See the
-# comment above _LANE_ROOT for why the lane must never be bare /tmp.
-make_isolated_lane() {
-    local prefix="$1" parent
-    parent="$(mktemp -d "$_LANE_ROOT/${prefix}-XXXXXX")"
-    mktemp -d "$parent/lane-XXXXXX"
-}
 
 # _REAL_STUB_ROOT: a single per-run parent for every per-invocation PATH stub
 # dir run_helper_real mints (task #5633). WHY a per-run root registered here,
@@ -415,6 +375,20 @@ run_helper_real() {
     cat > "$real_stub_dir/cp" << 'REAL_STUB_EOF'
 #!/usr/bin/env bash
 echo "cp $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
+# REIFY_TEST_FD9_SQUATTER=1 (task #5705, H4c): fork a long-lived child that
+# DELIBERATELY inherits every descriptor open in this stub -- including seed's
+# lane-lock FD 9 -- and never closes any of them. That is the one thing seed's
+# own `{ rm -rf ...; } 9<&- &` jobs only do TRANSIENTLY (their 9<&- runs in the
+# child, microseconds after the fork), so it turns the fork-window race into a
+# GUARANTEED live dup-holder at probe time: hermetic, no scheduling, no load.
+# The squatter's PID goes to REIFY_TEST_FD9_SQUATTER_PIDFILE so the caller can
+# prove it is alive and really holds the lock FD (readlink /proc/<pid>/fd/9),
+# then reap it. Forked BEFORE the copy so it exists on the cp-failure path too.
+# Callers that do not set this var are byte-for-byte unaffected.
+if [ "${REIFY_TEST_FD9_SQUATTER:-}" = "1" ]; then
+    sleep "${REIFY_TEST_FD9_SQUATTER_SECS:-30}" &
+    echo "$!" > "${REIFY_TEST_FD9_SQUATTER_PIDFILE:-/dev/null}"
+fi
 if [ "${REIFY_TEST_REFLINK_OK:-}" = "1" ]; then
     # Physically copy src→dest using plain cp -a (test environment is non-XFS)
     # Parse out: cp -a --reflink=always <src> <dest>
@@ -2440,6 +2414,139 @@ assert "H4: seed exits 0 (async trash rm spawned)" test "$RC" -eq 0
 assert "H4: lane lock is re-acquirable immediately after seed exits (no FD-9 leak to background rm)" \
     bash -c 'exec 8>"$1"; flock -n 8' _ "$Q_LOCK4"
 
+# ── H4b (task #5705): the DETERMINISTIC, load-independent companion to H4.
+#
+# H4 above probes an OBSERVABLE TIMING PROPERTY: it asks whether the lock reads
+# back free the instant seed exits. That is the right property, but it can only
+# ever fail PROBABILISTICALLY — pre-#5705 it went RED in roughly 2-8% of runs
+# under host load and passed the rest of the time, because the window it catches
+# is the scheduling gap between a background job's fork() and that child's
+# close(9). H4b instead asserts the STRUCTURAL fact that makes the timing
+# property true (technique S, docs/prds/infra-test-wallclock-deflake.md §2):
+# seed must have executed its explicit `flock -u 9` release path, which it
+# announces on stderr. That marker is emitted or it is not — no load, no
+# scheduling, no flake. Keeping BOTH is deliberate: H4 is the end-to-end
+# observation, H4b is the regression guard that cannot silently degrade into a
+# coin flip.
+#
+# Reuses the $ERR_OUT captured by the H4 run above — no second seed invocation.
+assert "H4b: seed emits the explicit lane-lock release marker on stderr (the LOCK_UN path actually ran)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "explicit flock -u before exit"' _ "$ERR_OUT"
+
+# ── H4c (task #5705 code review): the BEHAVIOURAL guard. H4/H4b/H4e between
+# them prove the release path RAN; none of them proves it had the intended
+# EFFECT. ─────────────────────────────────────────────────────────────────────
+#
+# THE COVERAGE HOLE THIS CLOSES, established by mutation: delete
+# `trap _release_lane_lock EXIT` from scripts/seed-warm-lane.sh and exactly two
+# asserts go red — H4b's marker grep and H4e's marker grep. BOTH of the
+# "lock is re-acquirable immediately after seed exits" asserts still PASS,
+# because the defect they target is a scheduling race that seed's own detached
+# child almost always loses. So the only permanent guards were structural
+# greps: they would still pass for a release that ran but did nothing — a
+# typo'd `flock -u 8`, or a `flock -u` reordered after a close of FD 9 (which
+# leaves the OFD locked while the marker still prints). The one behavioural
+# check of the real semantics lived in test_seed_lane_lock_release_soak.sh,
+# which is default-SKIPPING and therefore never runs in the gate.
+#
+# WHY H4's EXISTING KNOB CANNOT FILL IT: REIFY_TEST_SLEEP_RESEED_TRASH_RM=1
+# keeps a background rm alive past the probe, but that child is spawned as
+# `{ ...; } 9<&- &` — the redirection is applied by the child BEFORE it execs
+# the sleeping rm stub, so the sleeper holds NO FD 9 and squats on nothing.
+#
+# THE FIXTURE: REIFY_TEST_FD9_SQUATTER=1 makes run_helper_real's cp stub fork a
+# plain `sleep` that inherits FD 9 and never closes it. It outlives seed by
+# construction, so at probe time a live process provably holds a dup of the OFD
+# carrying seed's exclusive flock. The lock can then only read back FREE if
+# seed's LOCK_UN really dropped it for the WHOLE open file description rather
+# than merely for seed's own descriptor — which is the central claim of #5705,
+# and is exactly what closing a descriptor cannot do.
+#
+# NON-VACUITY is structural, not a second timing observation: the three
+# H4c-fixture asserts pin that the squatter exists, is still alive at probe
+# time, and that /proc/<pid>/fd/9 really resolves to THIS lane's lock file. If
+# the fixture ever stops reproducing that shape it fails loudly instead of
+# quietly degrading into "the lock was free because nothing held it".
+Q_LANE4C="$(make_isolated_lane Q-lane4c)"
+mkdir -p "$Q_LANE4C/target"
+echo "stale artifact" > "$Q_LANE4C/target/stale.a"
+Q_LOCK4C="${Q_LANE4C}.lock"
+_TMPDIRS+=("$Q_LOCK4C")
+Q_SQPID_FILE4C="$(mktemp /tmp/test-seed-warm-lane-fd9squatter-XXXXXX)"
+_TMPDIRS+=("$Q_SQPID_FILE4C")
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    REIFY_TEST_FD9_SQUATTER=1 REIFY_TEST_FD9_SQUATTER_PIDFILE="$Q_SQPID_FILE4C" \
+    run_helper_real "$Q_BASE" "$Q_LANE4C" --fresh-checkout --lane-lock
+
+Q_SQPID4C="$(cat "$Q_SQPID_FILE4C" 2>/dev/null || true)"
+
+assert "H4c: seed exits 0 (the squatter fixture does not disturb the reseed itself)" \
+    test "$RC" -eq 0
+assert "H4c-fixture: the cp stub recorded a squatter PID (the FD-9 dup-holder was really forked)" \
+    bash -c '[ -n "$1" ]' _ "$Q_SQPID4C"
+assert "H4c-fixture: that squatter is STILL ALIVE now that seed has exited (it outlives seed by construction)" \
+    kill -0 "$Q_SQPID4C"
+assert "H4c-fixture: ... and it really holds a dup of seed's lane-lock FD 9 (/proc/<pid>/fd/9 resolves to THIS lane's lock)" \
+    bash -c '[ "$(readlink "/proc/$1/fd/9" 2>/dev/null)" = "$(realpath "$2")" ]' _ "$Q_SQPID4C" "$Q_LOCK4C"
+assert "H4c: the lane lock is FREE anyway — LOCK_UN dropped it for the whole OFD, not just for seed's own descriptor" \
+    bash -c 'exec 8>"$1"; flock -n 8' _ "$Q_LOCK4C"
+
+kill "$Q_SQPID4C" 2>/dev/null || true
+
+# ── H4e (task #5705): the release must cover seed's FAILURE paths, not just its
+# success tail. A release written as a trailing statement is UNREACHABLE the
+# moment seed aborts after acquiring the lock — and seed has plenty of such
+# aborts downstream of acquisition: the hard reflink error, the same-FS check,
+# and every `set -euo pipefail` abort in the mid-run find walks and the
+# _assert_delta_newer_than_build_outputs post-condition. All of those happen
+# AFTER the orphan sweep has already forked its detached `{ rm -rf ...; } 9<&- &`
+# child, so the identical fork-window race applies on every one of them.
+#
+# The fixture drives the reflink hard-error path — REIFY_TEST_REFLINK_OK is
+# deliberately left UNSET, so run_helper_real's cp stub prints
+# "cp: failed to clone: Operation not supported" and exits 1, and seed aborts
+# with exit 1 having already acquired the lane lock.
+#
+# A pre-seeded ORPHANED trash entry (<lane-basename>.<pid> under the lane's own
+# private dirname(LANE)/.reseed-trash) makes the orphan sweep fire, so a real
+# detached child is forked before the abort; REIFY_TEST_SLEEP_RESEED_TRASH_RM=1
+# keeps that child alive past the probe below. An H4e-fixture assert pins that
+# the sweep really ran, so the shape being tested cannot silently stop
+# reproducing if the sweep's entry naming ever changes.
+#
+# HONEST SCOPE, as with H4/H4b: the MARKER assert is the deterministic RED here
+# — it fails outright while the release is a tail statement. The lock-reacquire
+# assert is the end-to-end companion and can only ever fail probabilistically
+# (the detached child usually wins the race to its own close(9) during the
+# mv+rmdir+cp work that precedes the abort). Both are kept for the same reason
+# H4 and H4b both are.
+Q_LANE4E="$(make_isolated_lane Q-lane4e)"
+mkdir -p "$Q_LANE4E/target"
+echo "stale artifact" > "$Q_LANE4E/target/stale.a"
+Q_LOCK4E="${Q_LANE4E}.lock"
+_TMPDIRS+=("$Q_LOCK4E")
+
+Q_TRASH4E="$(dirname "$Q_LANE4E")/.reseed-trash"
+mkdir -p "$Q_TRASH4E/$(basename "$Q_LANE4E").999999"
+echo "orphan artifact" > "$Q_TRASH4E/$(basename "$Q_LANE4E").999999/orphan.a"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_SLEEP_RESEED_TRASH_RM=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE4E" --fresh-checkout --lane-lock
+
+assert "H4e: seed ABORTS with exit 1 on the hard reflink error (downstream of a successful lane-lock acquire)" \
+    test "$RC" -eq 1
+assert "H4e: ... and it really was the reflink hard-error path (stderr names the aborted clone)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "Reflink clone FAILED"' _ "$ERR_OUT"
+assert "H4e-fixture: the orphan sweep really forked a detached child before that abort (non-vacuity)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "Sweeping orphaned trash entry"' _ "$ERR_OUT"
+assert "H4e: seed emits the lane-lock release marker on the FAILURE path too (release is not tail-only)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "explicit flock -u before exit"' _ "$ERR_OUT"
+assert "H4e: lane lock is re-acquirable immediately after the ABORTED seed exits" \
+    bash -c 'exec 8>"$1"; flock -n 8' _ "$Q_LOCK4E"
+
 # ── H5: bounded-wait "queue" via REIFY_WARM_LANE_LANE_LOCK_WAIT ─────────────
 # A refused acquirer of the SINGLETON _merge-verify lane has no alternate
 # FREE lane to fall back to, so the WAIT knob lets --lane-lock QUEUE (bounded
@@ -2701,6 +2808,66 @@ assert "H7: cp invoked with --reflink=always" \
 
 kill "$Q_LOCK12_PID" 2>/dev/null || true
 wait "$Q_LOCK12_PID" 2>/dev/null || true
+
+# ── H7b (task #5705): --assume-lane-lock-held must leave the CALLER's lock
+# ALONE. seed now drops its lane lock with an explicit `flock -u 9` before
+# exiting (the FD-9 fork-window fix); that release is guarded on
+# _should_acquire_lane_lock, i.e. it runs ONLY on the branch where seed opened
+# FD 9 itself. Without that guard an `--assume-lane-lock-held` run would unlock
+# a descriptor it INHERITED — releasing the caller's lock and re-opening the
+# very inv.2 clobber window --lane-lock exists to close. That is strictly worse
+# than the bug being fixed, so it gets its own pinned test.
+#
+# WHY H7 ABOVE DOES NOT COVER THIS: H7 holds the lock in a BACKGROUNDED
+# SUBSHELL (`( flock -x 9 ... ) 9>"$LOCK" &`), so its FD 9 belongs to that
+# subshell and seed never inherits it — an unguarded `flock -u 9` inside seed
+# would find FD 9 unopened and change nothing observable. The REAL shape of
+# thin --reseed / gc reclaim is the caller holding the lock on FD 9 in the very
+# process that execs seed, so H7b holds it HERE, in the test shell, and lets
+# run_helper_real's plain `bash "$SCRIPT"` child inherit it exactly as thin's
+# would.
+#
+# The probe MUST be a separate process: flock is per-open-file-description, so
+# a probe run inside this shell would see our own lock and succeed regardless.
+#
+# REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 (foreground trash rm) is load-bearing for
+# DETERMINISM here, and is not the property under test: with the default async
+# rm, seed forks `{ rm -rf ...; } 9<&- &`, and that detached child transiently
+# holds a dup of THIS SHELL's OFD 9 — so the final "probe now succeeds" control
+# below would race it exactly the way #5705's production bug races acquire_lane.
+# Forcing the rm foreground leaves zero detached children, so the control is a
+# clean two-way detector rather than a second copy of the race.
+Q_LANE12B="$(make_isolated_lane Q-lane12b)"
+mkdir -p "$Q_LANE12B/target"
+echo "sentinel content" > "$Q_LANE12B/target/SENTINEL.txt"
+
+Q_LOCK12B="${Q_LANE12B}.lock"
+_TMPDIRS+=("$Q_LOCK12B")
+touch "$Q_LOCK12B"
+
+# _h7b_probe_refused / _h7b_probe_acquired: the H4 probe form, wrapped so the
+# assert lines stay readable. Both spawn a SEPARATE process (see above).
+_h7b_probe_acquired() { bash -c 'exec 8>"$1"; flock -n 8' _ "$1"; }
+_h7b_probe_refused()  { ! _h7b_probe_acquired "$1"; }
+
+exec 9>"$Q_LOCK12B"
+assert "H7b-setup: the TEST SHELL itself holds the lane lock on FD 9 (thin --reseed's real shape, unlike H7's backgrounded subshell)" \
+    flock -n 9
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE12B" --fresh-checkout --assume-lane-lock-held
+
+assert "H7b: --assume-lane-lock-held with the caller's lock INHERITED on FD 9 → exit 0 (seed skipped its own acquire)" \
+    test "$RC" -eq 0
+assert "H7b: seed does NOT announce a lane-lock release it does not own (marker absent from stderr)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "explicit flock -u before exit"' _ "$ERR_OUT"
+assert "H7b: the CALLER'S LOCK SURVIVED seed — a separate-process probe still cannot acquire it" \
+    _h7b_probe_refused "$Q_LOCK12B"
+
+exec 9>&-
+assert "H7b: ... and that same probe SUCCEEDS once the test shell drops FD 9 (a detector, not a constant refusal)" \
+    _h7b_probe_acquired "$Q_LOCK12B"
 
 # ── H8: --assume-lane-lock-held + --lane-lock is a CONTRADICTION → usage error
 # (exit 2). --lane-lock says "acquire the lane lock yourself"; --assume-lane-lock-held
@@ -3389,13 +3556,9 @@ assert "R0f: returned path is nested under the per-run lane root (_LANE_ROOT), w
 # called from inside run_helper/run_helper_real after every invocation
 # throughout the file, so this observes every prior Block's fixtures too.
 # State is file-backed (see _TRASH_HITS_FILE above) so appends made from
-# inside a backgrounded subshell (H5d/H9) are not silently discarded. ───────
-_assert_no_shared_trash_use() {
-    [ ! -s "$_TRASH_HITS_FILE" ] && return 0
-    printf 'seed invocation wrote into machine-shared %s:\n' "$_SHARED_TRASH_DIR"
-    cat "$_TRASH_HITS_FILE"
-    return 1
-}
+# inside a backgrounded subshell (H5d/H9) are not silently discarded. The
+# checker itself is _assert_no_shared_trash_use, promoted into
+# tests/infra/test_helpers.sh (task 5612) and pinned to that home by R7. ────
 assert "R1: no seed invocation in this suite wrote into the machine-shared $_SHARED_TRASH_DIR" \
     _assert_no_shared_trash_use
 
@@ -3505,6 +3668,42 @@ _r6b_positive_control() {
 assert "R6b: _assert_no_bare_tmp_lanes flags a bare-/tmp entry in a mixed log as an offender (message names both the label and the offending path) AND passes a clean nested-only log" \
     _r6b_positive_control "$R6B_MIXED_LOG" "$R6B_CLEAN_LOG" "R6b-synthetic"
 
+# ── R7: duplicate-definition guard (task 5612) — make_isolated_lane and the
+# shared-trash detector now live in tests/infra/test_helpers.sh, which this
+# file sources near the top. The hazard the promotion creates is that a future
+# edit reintroduces a LOCAL copy here: bash silently keeps the last definition,
+# so the local copy would shadow the library's and this suite would drift back
+# to its own private implementation with every assert still green.
+#
+# Pinned BEHAVIOURALLY rather than by grepping this file's source text: with
+# `shopt -s extdebug`, `declare -F <fn>` prints "<name> <lineno> <file>", so
+# this reads the ACTIVE definition's provenance straight out of the shell.
+# A source-grep would go stale the moment the helper is mentioned in a comment
+# or a heredoc; this cannot. The prior extdebug setting is restored so no later
+# assert's behaviour changes.
+#
+# Placed here with the other structural guards, BEFORE R2/R5 mutate detector
+# state (see the ordering note at the head of Block R). ──────────────────────
+_assert_defined_in_test_helpers() {
+    local fn="$1" src extdebug_was=off
+    if shopt -q extdebug; then extdebug_was=on; fi
+    shopt -s extdebug
+    src="$(declare -F "$fn")"
+    if [ "$extdebug_was" = off ]; then shopt -u extdebug; fi
+    src="${src#* }"   # drop "<name> "
+    src="${src#* }"   # drop "<lineno> ", leaving the defining file
+    case "$src" in
+        */tests/infra/test_helpers.sh) return 0 ;;
+    esac
+    printf '%s is defined in %s, not tests/infra/test_helpers.sh — a local duplicate shadows the promoted helper\n' \
+        "$fn" "${src:-<undefined>}"
+    return 1
+}
+for _r7_fn in make_isolated_lane _note_shared_trash_use _assert_no_shared_trash_use; do
+    assert "R7: the active $_r7_fn definition comes from tests/infra/test_helpers.sh (no local duplicate shadows the promoted helper)" \
+        _assert_defined_in_test_helpers "$_r7_fn"
+done
+
 # ── R2: positive control for R1 — proves the detector actually fires on a
 # real rename, so R1 cannot silently pass forever if seed's rename message is
 # ever reworded or moved. Redirects _SHARED_TRASH_DIR to an isolated lane's
@@ -3569,6 +3768,87 @@ assert "R5: a shared-trash-use append made inside a backgrounded subshell is vis
     test "$(wc -l < "$_TRASH_HITS_FILE")" -eq 1
 
 # Clear the probe's state so nothing leaks past test_summary.
+: > "$_TRASH_HITS_FILE"
+
+# ── R8: real-seed end-to-end proof for the LITTER guard (task 5612) — the
+# filesystem-based companion to R2's ERR_OUT-based positive control.
+#
+# R2 proves the RECORDER fires on seed's stderr. It says nothing about whether
+# _assert_no_shared_trash_litter — the guard the six sibling suites actually
+# rely on, since none of them has a run_helper wrapper that sets $ERR_OUT —
+# observes what seed WRITES. A synthetic entry (as the hermetic liveness control
+# uses) proves the checker's logic but not that its matcher agrees with reality.
+# R8 closes that gap: it drives the REAL seed and asserts the guard fires on the
+# entry seed itself produced, whose basename is "<lane-basename>.<pid>".
+#
+# THE LANE IS MINTED BY make_isolated_lane AND CHECKED AGAINST THIS SUITE'S OWN
+# $_LANE_LITTER_PREFIX — not a bespoke hand-named fixture. That is the whole
+# point: it closes the attribution loop end-to-end, proving the name the library
+# actually gives its lanes is the name the guard actually matches. A hand-minted
+# lane would prove only that the matcher works on a name the fixture chose, and
+# would still pass if make_isolated_lane were changed to a stemless
+# "lane-XXXXXX" — the exact regression that would silently demote every lane in
+# every wired suite to "unattributed" and leave the guard unable to fail.
+# The whole fixture stays inside $_LANE_ROOT, so the real /tmp/.reseed-trash is
+# never touched.
+#
+# REIFY_TEST_PIN_RESEED_TRASH=1 pins the trash on disk: seed's trash rm is a
+# DETACHED GRANDCHILD (see Block T), so without the pin this assert would race
+# it and flake. Same technique I14 already uses to inspect the trash location.
+# ─────────────────────────────────────────────────────────────────────────────
+R8_STEM="$_LANE_LITTER_PREFIX"
+R8_BASE_PARENT="$(make_isolated_lane R8-base)"
+R8_BASE="$R8_BASE_PARENT/target"
+mkdir -p "$R8_BASE/debug"
+echo "base artifact" > "$R8_BASE/debug/base_artifact.a"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$R8_BASE_PARENT/.warm-base-meta"
+
+R8_LANE="$(make_isolated_lane R8)"
+R8_PARENT="$(dirname "$R8_LANE")"
+R8_LANE_BASE="$(basename "$R8_LANE")"
+# Non-empty target/ so seed reaches the rename-into-trash path at all.
+mkdir -p "$R8_LANE/target"
+echo "stale" > "$R8_LANE/target/stale.a"
+
+# Redirect the shared-path variable at the trash dir seed will independently
+# compute as dirname(LANE_DIR)/.reseed-trash. Save the prior value and restore
+# FROM THE SAVED COPY below, never a re-typed literal — see R2's note above for
+# why re-typing would silently revert a future change to the canonical default.
+_SHARED_TRASH_DIR_SAVED_R8="$_SHARED_TRASH_DIR"
+_SHARED_TRASH_DIR="$R8_PARENT/.reseed-trash"
+: > "$_TRASH_HITS_FILE"
+
+# Snapshot BEFORE the run, exactly as init_isolated_lane_root does for a suite.
+R8_SNAP="$_LANE_ROOT/.r8-snapshot"
+_list_trash_entries "$_SHARED_TRASH_DIR" > "$R8_SNAP"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_TEST_PIN_RESEED_TRASH=1 \
+    run_helper_real "$R8_BASE" "$R8_LANE" --fresh-checkout
+
+R8_ENTRIES="$(_list_trash_entries "$_SHARED_TRASH_DIR" | tr '\n' ' ')"
+R8_RC=0
+R8_OUT="$(_assert_no_shared_trash_litter "$_SHARED_TRASH_DIR" "$R8_SNAP" "$R8_STEM" 2>&1)" || R8_RC=$?
+
+assert "R8a: real-seed litter fixture: the seed run exits 0" \
+    test "$RC" -eq 0
+assert "R8a2: ATTRIBUTION LOOP — the lane make_isolated_lane minted carries this suite's own stem ($R8_STEM), so the guard is checking the name the library really produces" \
+    bash -c 'case "$2" in "$1"*) exit 0 ;; esac; exit 1' _ "$R8_STEM" "$R8_LANE_BASE"
+assert "R8b: NON-VACUITY — seed really did rename into dirname(LANE)/.reseed-trash, producing a <lane-basename>.<pid> entry (without this, R8c would be asserting against an empty dir)" \
+    bash -c 'case "$1" in *"$2".*) exit 0 ;; esac; exit 1' _ "$R8_ENTRIES" "$R8_LANE_BASE"
+assert "R8c: the litter guard FAILS against the entry a REAL seed run produced, and names it (proves the stem matcher agrees with seed's actual <lane>.<pid> naming, not just a hand-built string)" \
+    bash -c '[ "$1" -ne 0 ] || exit 1; case "$2" in *"$3"*) exit 0 ;; esac; exit 1' \
+        _ "$R8_RC" "$R8_OUT" "$R8_LANE_BASE"
+
+# ... and PASSES once the entry is gone, so it is a detector and not a constant
+# failure. Removed from the run-private trash dir only.
+rm -rf "${_SHARED_TRASH_DIR:?}"
+assert "R8d: ... and PASSES once that entry is gone (a detector, not a constant failure)" \
+    _assert_no_shared_trash_litter "$_SHARED_TRASH_DIR" "$R8_SNAP" "$R8_STEM"
+
+# Restore the real shared-path target and clear this control's hits, matching
+# R2's discipline, so nothing leaks past test_summary.
+_SHARED_TRASH_DIR="$_SHARED_TRASH_DIR_SAVED_R8"
 : > "$_TRASH_HITS_FILE"
 
 test_summary

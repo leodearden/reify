@@ -667,10 +667,13 @@ pub struct Engine {
     /// cell's `kernel_handle` is still valid: the `GeometryKernel` trait has no
     /// `is_valid` API and snapshots carry no kernel reference (plan.json design
     /// decision), so a dedicated `realization_ref → handle` map is the precise,
-    /// cheap (HashMap) identity to compare against. Cleared and rebuilt at the
-    /// start of every `build()` / `build_snapshot()` and populated by
-    /// `post_process_geometry_handle_cells`; empty before the first build.
-    /// Consulted by `engine_eval::revalidate_geometry_handle` on read (S16).
+    /// cheap (HashMap) identity to compare against. Cleared on the BUILD
+    /// surfaces only (`build()` / `build_snapshot()`) by `reset_per_build_state`
+    /// (#5069) and repopulated by `post_process_geometry_handle_cells`;
+    /// PRESERVED across the tessellate surfaces — the load-bearing
+    /// build↔tessellate asymmetry, so a build→tessellate→check sequence still
+    /// reads this build's handles. Empty before the first build. Consulted by
+    /// `engine_eval::revalidate_geometry_handle` on read (S16).
     realization_handles: HashMap<reify_core::RealizationNodeId, reify_ir::GeometryHandleId>,
     /// β (task 4508): memoization store for realized geometry content.
     ///
@@ -684,17 +687,20 @@ pub struct Engine {
     realization_projection_store: crate::realization_content::RealizationProjectionStore,
     /// GHR-δ §5 instrumentation: count of geometry-handle revalidation
     /// SLOW-PATH firings (stale-handle re-resolution OR absent-realization →
-    /// `Undef`) since the last reset. Reset to 0 at the start of each `build()`
-    /// / `build_snapshot()`; incremented by the `&self` read entry point
-    /// `read_value_revalidated` (S16) on every non-`Fresh` outcome.
+    /// `Undef`) since the last reset. Reset to 0 on EVERY build/tessellate
+    /// surface by `reset_per_build_state` (#5069 — widened from build-only);
+    /// incremented by the `&self` read entry point `read_value_revalidated`
+    /// (S16) on every non-`Fresh` outcome.
     ///
     /// `AtomicUsize` (not a plain `usize` like the sibling `last_*` counters)
     /// because the read entry point borrows `&self`: interior mutability lets it
     /// bump the counter without `&mut self`, and `AtomicUsize: Sync` preserves
     /// `Engine: Sync` (the kernel/checker trait objects are `Send + Sync`). Read
-    /// via `geometry_revalidation_slow_path_count` and reset via
-    /// `reset_geometry_revalidation_slow_path_count` (engine_admin.rs; reader
-    /// test-gated, mirroring the `last_*` reset+reader pair).
+    /// via `geometry_revalidation_slow_path_count`; the reset is inlined into
+    /// `reset_per_build_state` (#5069). The standalone
+    /// `reset_geometry_revalidation_slow_path_count` (engine_admin.rs) is
+    /// retained but uncalled, reader test-gated (mirroring the `last_*`
+    /// reset+reader pair).
     ///
     /// NOTE (GHR-δ): the only thing that bumps this counter today is the
     /// integration suite — `read_value_revalidated` has no production caller yet
@@ -832,9 +838,11 @@ pub struct Engine {
     /// Populated by `Engine::execute_realization_ops` for primitive ops
     /// (Box / Cylinder / Sphere) via `seed_primitive_attributes_for_handle`
     /// (task 6, #2574); auto-population for sweep / local-feature / boolean
-    /// ops lands in PRD tasks 5 / 7 / 8. Cleared and repopulated on each
+    /// ops lands in PRD tasks 5 / 7 / 8. Cleared UNCONDITIONALLY on each
     /// `build()` / `build_snapshot()` / `tessellate_realizations()` /
-    /// `tessellate_snapshot()` call (per-build, not per-realization). Task 2
+    /// `tessellate_snapshot()` call by `reset_per_build_state` (#5069 — the
+    /// per-build reset is now surface-independent, no longer gated on a
+    /// registered kernel; per-build, not per-realization). Task 2
     /// (#2570) wires selector lookup against this table; tasks 9-10 retire
     /// `feature_tag_table` once the attribute path covers all selector
     /// vocabulary.
@@ -846,9 +854,11 @@ pub struct Engine {
     /// Populated by `Engine::execute_realization_ops` after a successful
     /// realization completes — the realization's last `step_handles` entry is
     /// the key, and the value is whatever `classify_swept_body(...)` returns
-    /// for the parallel `(ops, handles)` slice. Cleared and repopulated on
+    /// for the parallel `(ops, handles)` slice. Cleared UNCONDITIONALLY on
     /// every `build()` / `build_snapshot()` / `tessellate_realizations()` /
-    /// `tessellate_snapshot()` call (per-build, not per-realization). Exposed
+    /// `tessellate_snapshot()` call by `reset_per_build_state` (#5069 — no
+    /// longer gated on a registered kernel; per-build, not per-realization).
+    /// Exposed
     /// via `Engine::swept_kind_table()` for GUI / mesh-morphing consumers
     /// that want to look up a Phase A `SweptKind` for a realized body.
     ///
@@ -1063,10 +1073,10 @@ pub struct Engine {
     /// `kernel.measure_mesh_deviation(placed_id, &mesh)` is inserted under the
     /// occurrence's `entity_path`.
     ///
-    /// Cleared at the start of each `tessellate_realizations()` /
-    /// `tessellate_snapshot()` call, mirroring the
-    /// `feature_tag_table` / `topology_attribute_table` / `swept_kind_table`
-    /// reset-at-entry pattern.
+    /// Cleared on the TESSELLATE surfaces only (`tessellate_realizations()` /
+    /// `tessellate_snapshot()`) by `reset_per_build_state` (#5069); PRESERVED
+    /// across the build surfaces — the load-bearing build↔tessellate asymmetry,
+    /// the converse of `realization_handles`.
     ///
     /// A missing key means the occurrence was never realized / tessellated, or
     /// its mesh was empty, or the kernel returned `None` (non-OCCT) — this is

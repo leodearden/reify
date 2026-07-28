@@ -55,10 +55,19 @@ test_tree_sitter_pipeline.sh intra-run-serial
 test_verify_nextest_absent_suites.sh intra-run-serial
 test_verify_semaphore_e2e.sh intra-run-serial
 
-# --- host-exclusive (4) ------------------------------------------------------
+# --- host-exclusive (5) ------------------------------------------------------
 test_cpu_governed_exec_hostexcl.sh host-exclusive
 test_cpu_load_governance.sh host-exclusive
 test_cpu_load_governance_deflake.sh host-exclusive
+# test_seed_lane_lock_release_soak.sh (task #5705) is default-SKIPPING: its
+# always-run layer is a sub-second hermetic probe control, and the real repeat-N
+# soak arms only under REIFY_RUN_SEED_LANE_LOCK_SOAK=1. It is classified
+# host-exclusive anyway, conservative-first per the header — when armed it runs
+# min(nproc,24) cpu_load_fixture.sh busy-spin workers, which is exactly the
+# "real CPU burn" this bucket exists for, and would give every concurrent pool
+# member a false-RED. Mirrors test_warm_lane_pool.sh, the closest analogue
+# (also arm-with-a-knob, also capable of real resource burn).
+test_seed_lane_lock_release_soak.sh host-exclusive
 test_warm_lane_pool.sh host-exclusive
 
 # --- pool (129, the hermetic majority incl. this drift-guard itself) -------
@@ -104,6 +113,7 @@ test_lock_charter_lifecycle.sh pool
 test_main_gate_worktree_config.sh pool
 test_merge_role_lint_first_seam.sh pool
 test_merge_verify_cold_outer_timeout.sh pool
+test_mesh_count_parity_smoke_runner.sh pool
 test_nan_safe_ordering_guard_wired.sh pool
 test_nextest_absent_lib.sh pool
 test_nextest_slow_priority.sh pool
@@ -152,6 +162,7 @@ test_run_all_pool_lock_host_global.sh pool
 test_run_all_tiering.sh pool
 test_run_gui_scripts.sh pool
 test_run_offline_deep.sh pool
+test_sandbox_cache_writability_seam.sh pool
 test_scope_boundary.sh pool
 test_seed_warm_base_initial.sh pool
 test_seed_warm_lane.sh pool

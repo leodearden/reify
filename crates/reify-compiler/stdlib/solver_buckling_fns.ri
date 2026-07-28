@@ -7,14 +7,14 @@
 //   In the Reify compiler, `phase_functions` runs before `phase_entities`
 //   within a single module.  The helpers below access struct fields on a
 //   `BucklingResult` parameter (`result.modes[0].eigenvalue`), which requires
-//   `BucklingResult.modes : List<Mode>` and `Mode.eigenvalue : Real` to be
-//   resolved.  When these functions live in `std.solver.buckling` (alongside
+//   `BucklingResult.modes : List<BucklingMode>` and `BucklingMode.eigenvalue :
+//   Real` to be resolved.  When these functions live in `std.solver.buckling` (alongside
 //   the struct definitions) that resolution fails — `modes` resolves to
 //   `Real` (the phase-functions default) and indexing fails.
 //
 //   Solution: declare the struct types in `std.solver.buckling` (loaded first),
 //   then declare the functions here in `std.solver.buckling.fns` (loaded second).
-//   By the time `phase_functions` processes this file, `BucklingResult`, `Mode`,
+//   By the time `phase_functions` processes this file, `BucklingResult`, `BucklingMode`,
 //   and `BucklingOptions` are all in the prelude template registry and field
 //   access resolves correctly.  This mirrors the `std.flexures.types` /
 //   `std.flexures` split (stdlib_loader.rs:118-130).

@@ -33,9 +33,10 @@
 #precision(0.1mm)
 
 // ── Local tolerance type declarations ─────────────────────────────────────────
-
-// MaterialCondition enum (re-declared locally; mirrors gdt_conformance_violated.ri:40).
-enum MaterialCondition { MMC, LMC, RFS }
+//
+// The two callout types below have no stdlib counterpart. MaterialCondition
+// does, and is consumed from the stdlib prelude
+// (crates/reify-compiler/stdlib/tolerancing.ri) with no local re-declaration.
 
 // WeaveScalarTol: tolerance type for GdtPassWeave constraint[0] (scalar path).
 // `: GeometricTolerance` bound ensures the η satisfies_trait_bound check passes.

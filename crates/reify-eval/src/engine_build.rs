@@ -41,6 +41,24 @@ use crate::topology_attribute_propagation::{
 };
 use crate::{BuildResult, Engine, EvaluationState, MeshSurface, TessellateResult};
 
+/// The four build/tessellate entry-point "surfaces" whose per-build engine
+/// state is reset unconditionally by [`Engine::reset_per_build_state`]
+/// (task ι, #5069). The variant selects the surface-dependent reset arms:
+/// `realization_handles` clears only on the two build surfaces;
+/// `achieved_repr_tol` clears only on the two tessellate surfaces (the
+/// load-bearing build↔tessellate asymmetry — see `reset_per_build_state`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BuildSurface {
+    /// [`Engine::build`] / `build_with_geometry_output`.
+    Build,
+    /// [`Engine::build_snapshot`].
+    BuildSnapshot,
+    /// [`Engine::tessellate_realizations`].
+    TessellateRealizations,
+    /// [`Engine::tessellate_snapshot`].
+    TessellateSnapshot,
+}
+
 /// Map a kernel registry name to the [`KernelId`] used to tag the handles that
 /// kernel produces (task 4048).
 ///
@@ -3019,10 +3037,161 @@ impl Engine {
     /// .sum()` because the gated `last_dispatch_count()` accessor is unreachable
     /// from a production (non-`test-instrumentation`) build. Zeroing both here
     /// makes it structurally impossible for the two resets to drift out of lockstep.
+    ///
+    /// As of #5069 the two tally resets are inlined directly into
+    /// [`Self::reset_per_build_state`] (the single per-build choke-point), so
+    /// this standalone helper has no remaining call sites. It is retained —
+    /// `#[allow(dead_code)]` — for the doc-linked lockstep-invariant contract
+    /// referenced by [`Self::bump_dispatch`] and [`Self::reset_per_build_state`].
+    #[allow(dead_code)]
     #[inline]
     fn reset_dispatch_tallies(&mut self) {
         self.last_dispatch_count = 0;
         self.last_dispatch_count_by_realization.clear();
+    }
+
+    /// Reset all per-build engine state UNCONDITIONALLY at the entry to a
+    /// build/tessellate `surface` (task ι, #5069 — INV-BUILD-1). This is the
+    /// SINGLE choke-point that supersedes every hand-copied gated/ungated reset
+    /// block plus the scattered `realization_handles.clear()` +
+    /// `reset_geometry_revalidation_slow_path_count()` pairs, and folds in
+    /// [`Self::reset_dispatch_tallies`].
+    ///
+    /// # Enforcement: exhaustive destructure (no `..`)
+    ///
+    /// The body opens with an EXHAUSTIVE `let Engine { .. } = self` destructure
+    /// carrying NO `..` rest pattern, so a newly-added `Engine` field cannot
+    /// compile until an author classifies it here (reset-every-surface,
+    /// reset-on-build, reset-on-tessellate, or must-survive). This is the
+    /// type-level mechanism that flips INV-BUILD-1 to `enforced(type)`; it
+    /// mirrors the exhaustive-literal drift-guard in
+    /// `crates/reify-compute-contract/src/elastic_result.rs` (:617/641/674).
+    /// It is exactly what forced the classification of `realization_projection_store`
+    /// (β/#4508), a memoization field added after the design list was written,
+    /// and then again of `mesh_contract_mode` (#5105 δ), which landed on main
+    /// mid-task and could not compile until classified below.
+    ///
+    /// # Classification
+    ///
+    /// - **reset-EVERY-surface**: `topology_attribute_table`, `swept_kind_table`
+    ///   (per-build attribute tables), the two dispatch tallies
+    ///   (`last_dispatch_count` + `last_dispatch_count_by_realization`, in
+    ///   lockstep), and `geometry_revalidation_slow_path` (`AtomicUsize`).
+    /// - **reset-on-BUILD-surfaces** (`Build` / `BuildSnapshot`):
+    ///   `realization_handles` — the GHR-δ validity oracle, documented "cleared
+    ///   at the START of every build()".
+    /// - **reset-on-TESSELLATE-surfaces** (`TessellateRealizations` /
+    ///   `TessellateSnapshot`): `achieved_repr_tol`.
+    /// - **MUST-SURVIVE** (bound `field: _`): every remaining field —
+    ///   engine-scoped caches/stores (`realization_cache` task 2874,
+    ///   `realization_projection_store`, `warm_pool`, `morph_*`, persistent
+    ///   cache), registries/kernels/solvers, all eval-state, snapshot/version
+    ///   counters, journal, config (including the INV-GEO-1
+    ///   `mesh_contract_mode` posture, set once from the environment —
+    ///   sweeping it would silently restore `Enforce` and destroy the
+    ///   `REIFY_MESH_CONTRACT=warn` break-glass after the first build), and
+    ///   hooks. Clearing any of these here would be a regression.
+    ///
+    /// The build↔tessellate ASYMMETRY is load-bearing: the CLI
+    /// combined-constraint arm (`reify-cli/src/main.rs`) runs `build()` →
+    /// `tessellate_realizations()` → `check()`, and a full-union reset (making
+    /// tessellate clear `realization_handles`, or build clear `achieved_repr_tol`
+    /// after a preceding tessellate) would silently degrade every
+    /// `Conforms`/DFM/`RepresentationWithin` verdict on a both-kinds module.
+    fn reset_per_build_state(&mut self, surface: BuildSurface) {
+        // EXHAUSTIVE — no `..`. Every `Engine` field is listed and classified.
+        let Engine {
+            // ── reset-EVERY-surface ──────────────────────────────────────
+            topology_attribute_table,
+            swept_kind_table,
+            last_dispatch_count,
+            last_dispatch_count_by_realization,
+            geometry_revalidation_slow_path,
+            // ── reset-on-BUILD-surfaces ──────────────────────────────────
+            realization_handles,
+            // ── reset-on-TESSELLATE-surfaces ─────────────────────────────
+            achieved_repr_tol,
+            // ── MUST-SURVIVE (regression if swept) ───────────────────────
+            constraint_checker: _, // language-level checker (engine-scoped)
+            geometry_kernels: _,   // registered kernels
+            default_kernel_name: _, // default-kernel selection
+            solver: _,             // fallback constraint solver
+            cache: _,              // node cache (engine-scoped config)
+            prelude: _,            // 'static compiled prelude
+            prelude_functions: _,  // pre-flattened prelude fns
+            structure_registry: _, // SIR structure meta (eval state)
+            param_overrides: _,    // set_param_and_invalidate overrides
+            eval_state: _,         // consolidated eval state
+            build_scheduler: _,    // build-scheduler selection (config)
+            mesh_contract_mode: _, // INV-GEO-1 mesh-contract posture (config, set once from env)
+            demand: _,             // demand registry
+            observed_demand: _,    // passive observed-demand side-channel
+            last_demand_prune_measurement: _, // GUI prune-measurement DTO
+            next_snapshot_id: _,   // monotonic snapshot id counter
+            next_version_id: _,    // monotonic version id counter
+            last_eval_set: _,      // last eval/edit eval set
+            last_guard_phase_group_evals: _, // edit instrumentation
+            last_role_flip_probes: _,        // edit instrumentation
+            last_diff_value_cells: _,        // edit_source diff snapshot
+            last_param_override_type_kind_rejections: _, // eval instrumentation
+            last_param_override_dimension_rejections: _, // eval instrumentation
+            last_sub_component_unknown_structure_errors: _, // eval instrumentation
+            realization_projection_store: _, // β/#4508 memoization store (as realization_cache)
+            journal: _,            // event journal
+            functions: _,          // last-eval user fns
+            compiled_purposes: _,  // last-eval compiled purposes
+            active_purposes: _,    // active-purpose injected-constraint map
+            active_purpose_bindings: _, // active-purpose (param,entity) bindings
+            active_tolerance_scope: _,  // active tolerance scope
+            active_objective_map: _,    // active purpose objectives
+            active_purpose_let_cells: _, // active-purpose injected let cells
+            meta_map: _,           // last-eval template meta
+            objectives: _,         // last-eval template objectives
+            centrality_synthesized_scopes: _, // η centrality provenance
+            compiled_fields: _,    // last-eval/edit compiled fields
+            max_unfold_depth: _,   // recursion guard (config)
+            max_unfold_nodes: _,   // recursion guard (config)
+            optimization_registry: _, // @optimized constraint impls
+            compute_registry: _,   // @optimized compute trampolines
+            solvers: _,            // named solver registry
+            warm_pool: _,          // warm-start state pool (cross-edit)
+            realization_cache: _,  // task 2874 engine-scoped realization cache
+            solver_progress_sink: _, // per-iteration progress hook
+            active_solve_cancel: _,  // in-flight solve cancellation hook
+            morph_producer: _,     // mesh-morph producer hook
+            morph_source: _,       // per-realization morph source side-table
+            capture_undef_causes: _, // undef-cause capture toggle (config)
+            capture_repr_tol: _,   // repr-tol capture toggle (config)
+            last_undef_causes: _,  // last-eval undef causes
+            persistent_cache_dir: _,   // on-disk persistent cache root (config)
+            persistent_hit_count: _,   // persistent-cache hit counter
+            persistent_miss_count: _,  // persistent-cache miss counter
+            // cfg-gated test-instrumentation fields — same predicate as the
+            // struct definition so the destructure stays exhaustive in every
+            // build configuration without an `..`.
+            #[cfg(any(test, feature = "test-instrumentation"))]
+            test_registry_override: _, // test-only capability-registry override
+            #[cfg(any(test, feature = "test-instrumentation"))]
+            panic_on_eval_cells: _,    // test-only force-panic cell set
+        } = self;
+
+        // reset-EVERY-surface (folds in reset_dispatch_tallies +
+        // reset_geometry_revalidation_slow_path_count).
+        *topology_attribute_table = TopologyAttributeTable::default();
+        *swept_kind_table = SweptKindTable::default();
+        *last_dispatch_count = 0;
+        last_dispatch_count_by_realization.clear();
+        geometry_revalidation_slow_path.store(0, std::sync::atomic::Ordering::Relaxed);
+
+        // surface-dependent arms — the load-bearing build↔tessellate asymmetry.
+        match surface {
+            BuildSurface::Build | BuildSurface::BuildSnapshot => {
+                realization_handles.clear();
+            }
+            BuildSurface::TessellateRealizations | BuildSurface::TessellateSnapshot => {
+                achieved_repr_tol.clear();
+            }
+        }
     }
 
     /// Bump BOTH dispatch-attribution counters in lockstep at the single
@@ -3084,18 +3253,15 @@ impl Engine {
         module: &CompiledModule,
         format: ExportFormat,
     ) -> Option<BuildResult> {
-        // Task ε (3436) step-12: reset the dispatch-count instrumentation
-        // counter at the entry to every build/tessellate surface so a second
-        // build of the same module reports its own per-build dispatch tally
-        // (and reports 0 when fully served from the RealizationCache).
-        // Zeroes BOTH the aggregate and the per-realization tally in lockstep.
-        self.reset_dispatch_tallies();
-        // GHR-δ §5: clear the realization→handle validity map and reset the
-        // revalidation slow-path counter at the start of every build surface;
-        // the per-template `post_process_geometry_handle_cells` below
-        // repopulates the map with this build's resolved handles.
-        self.realization_handles.clear();
-        self.reset_geometry_revalidation_slow_path_count();
+        // Reset all per-build engine state at the entry to this build surface
+        // through the single exhaustive-destructure choke-point (#5069,
+        // INV-BUILD-1): zeroes both dispatch tallies in lockstep, clears the
+        // GHR-δ realization→handle validity map (repopulated below by the
+        // per-template `post_process_geometry_handle_cells`), resets the
+        // revalidation slow-path counter, and clears the per-build attribute
+        // tables (`topology_attribute_table` / `swept_kind_table` — formerly
+        // reset gated inside the geometry block below).
+        self.reset_per_build_state(BuildSurface::BuildSnapshot);
         // γ (task 4739): demand-prune Pending producer. On the warm/selective
         // path (full_scope OFF) flip every pruned-Final cached node to Pending
         // so a hidden body's value is never served as a silently-stale Final
@@ -3194,8 +3360,10 @@ impl Engine {
                 .map(|t| vec![None; t.realizations.len()])
                 .collect();
 
-            self.topology_attribute_table = TopologyAttributeTable::default();
-            self.swept_kind_table = SweptKindTable::default();
+            // The per-build attribute tables (`topology_attribute_table` /
+            // `swept_kind_table`) are now cleared unconditionally at the top of
+            // this surface by `reset_per_build_state` (#5069); the formerly
+            // kernel-gated reset that sat here is removed.
             // Task 3441: cross-template `GeomRef::Sub` threading.  As each
             // template's realizations complete, snapshot its `named_steps`
             // under the template name so a subsequent template that has
@@ -3744,16 +3912,21 @@ impl Engine {
             Vec::new()
         };
 
-        // Task ε (3436) step-12: reset the dispatch-count instrumentation
-        // counter at the entry to every build/tessellate surface so a second
-        // build of the same module reports its own per-build dispatch tally
-        // (and reports 0 when fully served from the RealizationCache). Mirrors
-        // the reset at the top of `build_snapshot` / `tessellate_realizations`
-        // / `tessellate_snapshot` — must run BEFORE `check()` because no
-        // dispatcher call should be counted against the build that hasn't
-        // entered the per-realization op loop yet.
-        // Zeroes BOTH the aggregate and the per-realization tally in lockstep.
-        self.reset_dispatch_tallies();
+        // Reset all per-build engine state through the single exhaustive-
+        // destructure choke-point (#5069, INV-BUILD-1), placed here — AFTER the
+        // relate-solve sub-build (which mutates transient state and must precede
+        // the resets) and BEFORE `check()`. It zeroes both dispatch tallies in
+        // lockstep, clears the GHR-δ realization→handle validity map (documented
+        // "cleared at the START of every build()"; repopulated below by the
+        // per-template `post_process_geometry_handle_cells`), resets the
+        // revalidation slow-path counter, and clears the per-build attribute
+        // tables. Keeping the handles clear BEFORE `check()` preserves the
+        // load-bearing contract that build's own GD&T/DFM pass reads THIS
+        // build's (freshly-cleared) map — the asymmetry the CLI combined-
+        // constraint arm depends on. No dispatcher call is counted against the
+        // build until the per-realization op loop, so the dispatch reset here
+        // is byte-identical to the prior pre-`check()` placement.
+        self.reset_per_build_state(BuildSurface::Build);
         // Task 4355 β: capture declaration-order execution order for the
         // assert_dag_complete gate.  Realizations are visited in the same
         // order as the build loop below (templates × realizations in
@@ -3767,12 +3940,6 @@ impl Engine {
             .iter()
             .flat_map(|t| t.realizations.iter().map(|r| r.id.clone()))
             .collect();
-        // GHR-δ §5: clear the realization→handle validity map and reset the
-        // revalidation slow-path counter at the start of the build; the
-        // per-template `post_process_geometry_handle_cells` below repopulates
-        // the map with this build's resolved handles.
-        self.realization_handles.clear();
-        self.reset_geometry_revalidation_slow_path_count();
         // PLACEMENT: AFTER check() — task 3103 consolidated the lifecycle so
         // eval() preserves active_purpose_bindings across the call, making the
         // pre-check workaround obsolete. All four surfaces (build /
@@ -3952,8 +4119,10 @@ impl Engine {
                 .map(|t| vec![None; t.realizations.len()])
                 .collect();
 
-            self.topology_attribute_table = TopologyAttributeTable::default();
-            self.swept_kind_table = SweptKindTable::default();
+            // The per-build attribute tables (`topology_attribute_table` /
+            // `swept_kind_table`) are now cleared unconditionally at the top of
+            // this surface by `reset_per_build_state` (#5069); the formerly
+            // kernel-gated reset that sat here is removed.
             // Task 3441: cross-template `GeomRef::Sub` threading.  As each
             // template's realizations complete, snapshot its `named_steps`
             // under the template name so a subsequent template that has
@@ -5583,13 +5752,13 @@ impl Engine {
     /// tessellation precision), whereas `build` applies it at the
     /// realization-cache key.
     pub fn tessellate_realizations(&mut self, module: &CompiledModule) -> TessellateResult {
-        // Task ε (3436) step-12: reset the dispatch-count instrumentation
-        // counter at the entry to every build/tessellate surface so a second
-        // call against the same module reports its own per-build dispatch
-        // tally (and reports 0 when fully served from the RealizationCache).
-        // Mirrors `build` / `build_snapshot` / `tessellate_snapshot`.
-        // Zeroes BOTH the aggregate and the per-realization tally in lockstep.
-        self.reset_dispatch_tallies();
+        // Per-build state reset is deferred to the post-`check()` position below
+        // (`reset_per_build_state(TessellateRealizations)`) so the attribute-table
+        // reset stays AFTER `check()`→`eval()`, preserving the shell-extract
+        // mid-surface fold ordering. No `realization_handles` arm fires on a
+        // tessellate surface, and `check()`→`eval()` issues no per-realization
+        // geometry dispatch, so deferring the dispatch-tally reset past `check()`
+        // is byte-identical.
         // PLACEMENT: AFTER check() — task 3103 consolidated the lifecycle so
         // eval() preserves active_purpose_bindings across the call, making the
         // pre-check workaround obsolete. All four surfaces (build /
@@ -5631,12 +5800,16 @@ impl Engine {
         // `BuildResult.values` — a reader of either map sees the same
         // kernel-resolved Bool answers (when a kernel is configured).
         let mut values = check_result.values;
-        self.topology_attribute_table = TopologyAttributeTable::default();
-        self.swept_kind_table = SweptKindTable::default();
-        // Determinacy β (task 4198): clear the achieved-tol map at the start
-        // of each tessellate_realizations call so stale entries from a prior
-        // call do not leak into the new result.
-        self.achieved_repr_tol.clear();
+        // Reset all per-build engine state through the single exhaustive-
+        // destructure choke-point (#5069, INV-BUILD-1), placed AFTER `check()`
+        // so the `topology_attribute_table` reset preserves the shell-extract
+        // mid-surface fold ordering. Clears the per-build attribute tables and
+        // the `achieved_repr_tol` map (Determinacy β / task 4198 — stale entries
+        // from a prior call must not leak into the new result), zeroes both
+        // dispatch tallies in lockstep, and resets the revalidation slow-path
+        // counter. `realization_handles` is intentionally PRESERVED on a
+        // tessellate surface — the load-bearing build↔tessellate asymmetry.
+        self.reset_per_build_state(BuildSurface::TessellateRealizations);
         // β (task 4738) step-2: demand-scoped plan for the tessellate_realizations
         // path. `demand_scoped_unified_pass()` replaces the inline
         // `run_unified_pass` call; the returned `demand_seed_tess` threads into
@@ -11274,13 +11447,17 @@ impl Engine {
     /// values, call `tessellate_snapshot()` to get updated meshes without a
     /// cold restart.
     pub fn tessellate_snapshot(&mut self, module: &CompiledModule) -> Option<TessellateResult> {
-        // Task ε (3436) step-12: reset the dispatch-count instrumentation
-        // counter at the entry to every build/tessellate surface so a second
-        // call against the same module reports its own per-build dispatch
-        // tally (and reports 0 when fully served from the RealizationCache).
-        // Mirrors `build` / `build_snapshot` / `tessellate_realizations`.
-        // Zeroes BOTH the aggregate and the per-realization tally in lockstep.
-        self.reset_dispatch_tallies();
+        // Reset all per-build engine state through the single exhaustive-
+        // destructure choke-point (#5069, INV-BUILD-1). Placed at the TOP:
+        // `tessellate_snapshot` uses `check_constraints_against_templates` (no
+        // `eval()`, no shell-extract fold), so resetting the attribute tables
+        // before the `eval_state.as_ref()?` early-return is benign — the tables
+        // are empty pre-eval. Zeroes both dispatch tallies in lockstep, resets
+        // the revalidation slow-path counter, and clears the per-build attribute
+        // tables + `achieved_repr_tol` (Determinacy β / task 4198).
+        // `realization_handles` is intentionally PRESERVED on a tessellate
+        // surface — the load-bearing build↔tessellate asymmetry.
+        self.reset_per_build_state(BuildSurface::TessellateSnapshot);
         // γ (task 4739): demand-prune Pending producer — THE primary warm
         // pruning surface. On the warm/selective path (full_scope OFF) flip
         // every pruned-Final cached node to Pending so a hidden body's value is
@@ -11369,11 +11546,8 @@ impl Engine {
         // routing — same pattern as the `tessellate_realizations` mirror.
         let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
             registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
-        self.topology_attribute_table = TopologyAttributeTable::default();
-        self.swept_kind_table = SweptKindTable::default();
-        // Determinacy β (task 4198): clear the achieved-tol map at the start
-        // of each tessellate_snapshot call (mirrors tessellate_realizations).
-        self.achieved_repr_tol.clear();
+        // (Per-build attribute tables + `achieved_repr_tol` were reset at the
+        // TOP of this surface by `reset_per_build_state(TessellateSnapshot)`.)
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernels,
             &registry_borrowed,
@@ -12310,3 +12484,194 @@ mod post_process_cross_sub_value_cells_tests;
 
 #[cfg(test)]
 mod diagnose_topology_correspondence_drops_tests;
+
+// ── reset_per_build_state per-surface classification unit tests (task ι, #5069) ─
+//
+// White-box pin (direct private-field access from this submodule of the crate
+// root) for `Engine::reset_per_build_state(BuildSurface)`. Seeds every reset
+// CLASS and representative must-survive fields, then asserts the per-surface
+// classification for each `BuildSurface` variant:
+//   - reset-EVERY-surface   → cleared on all 4 surfaces.
+//   - reset-on-BUILD        → `realization_handles` cleared ONLY on Build*/
+//     preserved on Tessellate* (the load-bearing asymmetry, leaf d).
+//   - reset-on-TESSELLATE    → `achieved_repr_tol` cleared ONLY on Tessellate*/
+//     preserved on Build*.
+//   - MUST-SURVIVE          → untouched on all 4 (regression if swept).
+//
+// RED until step-3: `BuildSurface` and `reset_per_build_state` do not exist.
+#[cfg(test)]
+mod reset_per_build_state_tests {
+    use super::*;
+    use reify_constraints::SimpleConstraintChecker;
+    use std::sync::atomic::Ordering;
+
+    /// A fresh kernel-less `Engine` with one seeded entry in every per-build
+    /// reset class plus representative must-survive fields.
+    fn seeded_engine() -> Engine {
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let rid = RealizationNodeId::new("Seed", 0);
+
+        // ── reset-EVERY-surface ───────────────────────────────────────────
+        engine.last_dispatch_count = 7;
+        engine
+            .last_dispatch_count_by_realization
+            .insert(rid.clone(), 3);
+        engine
+            .geometry_revalidation_slow_path
+            .store(5, Ordering::Relaxed);
+        engine.topology_attribute_table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: GeometryHandleId(1),
+            },
+            TopologyAttribute {
+                feature_id: FeatureId::Realization(rid.clone()),
+                role: Role::Side,
+                local_index: 0,
+                user_label: None,
+                mod_history: Vec::new(),
+            },
+        );
+        engine.swept_kind_table.record(
+            GeometryHandleId(2),
+            SweptKind::Revolve {
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                angle_rad: 1.0,
+            },
+        );
+
+        // ── reset-on-BUILD-surface ────────────────────────────────────────
+        engine.realization_handles.insert(rid.clone(), GeometryHandleId(9));
+
+        // ── reset-on-TESSELLATE-surface ───────────────────────────────────
+        engine
+            .achieved_repr_tol
+            .insert("Seed#realization[0]".to_string(), 1.5);
+
+        // ── MUST-SURVIVE (regression if swept) ────────────────────────────
+        engine.realization_cache.insert(
+            &rid.entity,
+            ReprKind::BRep,
+            1e-6,
+            NO_OPTIONS,
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: GeometryHandleId(1),
+            },
+        );
+        engine.next_snapshot_id = 42;
+        engine.persistent_hit_count = 9;
+        engine.capture_repr_tol = true;
+        // Seeded to the NON-default `Warn` deliberately (#5069 step-6): both
+        // `MeshContractMode::default()` and `from_env()` yield `Enforce`, so a
+        // mis-classification into a reset arm would read back as the same value
+        // the fixture started with — an INVISIBLE no-op that neither this pin
+        // nor the byte-identical corpus differential could catch. `Warn` (the
+        // `REIFY_MESH_CONTRACT=warn` break-glass posture) is destroyed by a
+        // sweep, so it makes the classification observable.
+        engine.mesh_contract_mode = reify_ir::geometry::MeshContractMode::Warn;
+
+        engine
+    }
+
+    /// The reset-EVERY-surface class must be empty/zero after any surface.
+    fn assert_every_surface_cleared(engine: &Engine, surface: BuildSurface) {
+        assert_eq!(
+            engine.last_dispatch_count, 0,
+            "last_dispatch_count is reset-EVERY-surface ({surface:?})"
+        );
+        assert!(
+            engine.last_dispatch_count_by_realization.is_empty(),
+            "last_dispatch_count_by_realization is reset-EVERY-surface ({surface:?})"
+        );
+        assert_eq!(
+            engine.geometry_revalidation_slow_path.load(Ordering::Relaxed),
+            0,
+            "geometry_revalidation_slow_path is reset-EVERY-surface ({surface:?})"
+        );
+        assert!(
+            engine.topology_attribute_table.is_empty(),
+            "topology_attribute_table is reset-EVERY-surface ({surface:?})"
+        );
+        assert!(
+            engine.swept_kind_table.is_empty(),
+            "swept_kind_table is reset-EVERY-surface ({surface:?})"
+        );
+    }
+
+    /// Representative must-survive fields are untouched on every surface.
+    fn assert_must_survive(engine: &Engine, surface: BuildSurface) {
+        assert_eq!(
+            engine.realization_cache.len(),
+            1,
+            "realization_cache (task 2874) MUST survive ({surface:?})"
+        );
+        assert_eq!(
+            engine.next_snapshot_id, 42,
+            "next_snapshot_id MUST survive ({surface:?})"
+        );
+        assert_eq!(
+            engine.persistent_hit_count, 9,
+            "persistent_hit_count MUST survive ({surface:?})"
+        );
+        assert!(
+            engine.capture_repr_tol,
+            "capture_repr_tol MUST survive ({surface:?})"
+        );
+        assert_eq!(
+            engine.mesh_contract_mode,
+            reify_ir::geometry::MeshContractMode::Warn,
+            "mesh_contract_mode is construction-time config (#5105 δ) → MUST survive \
+             ({surface:?}); sweeping it would reset the REIFY_MESH_CONTRACT=warn \
+             break-glass to Enforce after the first build"
+        );
+    }
+
+    /// Build surfaces clear `realization_handles` and PRESERVE `achieved_repr_tol`.
+    #[test]
+    fn build_surfaces_clear_handles_preserve_repr_tol() {
+        for surface in [BuildSurface::Build, BuildSurface::BuildSnapshot] {
+            let mut engine = seeded_engine();
+            engine.reset_per_build_state(surface);
+
+            assert_every_surface_cleared(&engine, surface);
+            assert!(
+                engine.realization_handles.is_empty(),
+                "realization_handles is reset-on-BUILD → cleared on {surface:?}"
+            );
+            assert_eq!(
+                engine.achieved_repr_tol.len(),
+                1,
+                "achieved_repr_tol is reset-on-TESSELLATE → PRESERVED on build surface {surface:?}"
+            );
+            assert_must_survive(&engine, surface);
+        }
+    }
+
+    /// Tessellate surfaces clear `achieved_repr_tol` and PRESERVE
+    /// `realization_handles` — the load-bearing asymmetry (leaf d).
+    #[test]
+    fn tessellate_surfaces_clear_repr_tol_preserve_handles() {
+        for surface in [
+            BuildSurface::TessellateRealizations,
+            BuildSurface::TessellateSnapshot,
+        ] {
+            let mut engine = seeded_engine();
+            engine.reset_per_build_state(surface);
+
+            assert_every_surface_cleared(&engine, surface);
+            assert!(
+                engine.achieved_repr_tol.is_empty(),
+                "achieved_repr_tol is reset-on-TESSELLATE → cleared on {surface:?}"
+            );
+            assert_eq!(
+                engine.realization_handles.len(),
+                1,
+                "realization_handles is reset-on-BUILD → PRESERVED on tessellate surface \
+                 {surface:?} (load-bearing build↔tessellate asymmetry, leaf d)"
+            );
+            assert_must_survive(&engine, surface);
+        }
+    }
+}

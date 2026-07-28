@@ -63,7 +63,7 @@
 //! use `StructureTypeId(u32::MAX)` as a synthetic sentinel (same convention as
 //! `elastic_static.rs`).
 //!
-//! # Mode.mode_shape
+//! # BucklingMode.mode_shape
 //!
 //! The mode_shape field is a `Value::Map { "displaced_positions": Value::List<Real> }`
 //! of length 3·n_nodes (flat xyz = undeformed base + kernel eigenvector per node).
@@ -109,7 +109,7 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// ```
 ///
 /// Returns a `BucklingResult`-shaped `Value::StructureInstance` with:
-/// - `modes`: `Value::List` of `Mode` StructureInstances
+/// - `modes`: `Value::List` of `BucklingMode` StructureInstances
 ///   (`eigenvalue: Real(λ)`, `mode_shape: Undef`)
 /// - `converged`: `Value::Bool`
 /// - `iterations`: `Value::Int(0)` — intentionally unpopulated for task ε.
@@ -465,8 +465,8 @@ pub fn solve_buckling_trampoline(
     // mode_shape: Value::Map { "displaced_positions": flat xyz list } (task ι/3458).
     // Displaced positions = undeformed base node positions + mode-shape eigenvector.
     //
-    // For P1: kernel.Mode.mode_shape has length 3·n_p1; active_nodes == nodes (P1 corners).
-    // For P2: kernel.Mode.mode_shape has length 3·n_p2; active_nodes == nodes_p2 (all P2 nodes).
+    // For P1: kernel.BucklingMode.mode_shape has length 3·n_p1; active_nodes == nodes (P1 corners).
+    // For P2: kernel.BucklingMode.mode_shape has length 3·n_p2; active_nodes == nodes_p2 (all P2 nodes).
     // In both cases the debug_assert checks mode_shape.len() == 3·active_nodes.len().
     let modes_list: Vec<Value> = kernel_result
         .modes
@@ -510,7 +510,7 @@ pub fn solve_buckling_trampoline(
             .collect();
             Value::StructureInstance(Box::new(StructureInstanceData {
                 type_id: StructureTypeId(u32::MAX),
-                type_name: "Mode".to_string(),
+                type_name: "BucklingMode".to_string(),
                 version: 1,
                 fields: mode_fields,
             }))
@@ -819,7 +819,7 @@ pub(crate) fn buckling_result_from_value(
 
     for mode in modes_val {
         let mode_data = match mode {
-            Value::StructureInstance(d) if d.type_name == "Mode" => d,
+            Value::StructureInstance(d) if d.type_name == "BucklingMode" => d,
             _ => return None,
         };
         let eigenvalue = match mode_data.fields.get("eigenvalue") {
@@ -993,7 +993,7 @@ pub(crate) fn value_from_buckling_result(
 
             Value::StructureInstance(Box::new(StructureInstanceData {
                 type_id: StructureTypeId(u32::MAX),
-                type_name: "Mode".to_string(),
+                type_name: "BucklingMode".to_string(),
                 version: 1,
                 fields: mode_fields,
             }))
@@ -1187,7 +1187,7 @@ mod tests {
         .collect();
         let mode0 = Value::StructureInstance(Box::new(StructureInstanceData {
             type_id: StructureTypeId(u32::MAX),
-            type_name: "Mode".to_string(),
+            type_name: "BucklingMode".to_string(),
             version: 1,
             fields: mode_fields0,
         }));
@@ -1211,7 +1211,7 @@ mod tests {
         .collect();
         let mode1 = Value::StructureInstance(Box::new(StructureInstanceData {
             type_id: StructureTypeId(u32::MAX),
-            type_name: "Mode".to_string(),
+            type_name: "BucklingMode".to_string(),
             version: 1,
             fields: mode_fields1,
         }));
@@ -1373,7 +1373,7 @@ mod tests {
         .collect();
         let mode = Value::StructureInstance(Box::new(StructureInstanceData {
             type_id: StructureTypeId(u32::MAX),
-            type_name: "Mode".to_string(),
+            type_name: "BucklingMode".to_string(),
             version: 1,
             fields: mode_fields,
         }));

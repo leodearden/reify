@@ -1,10 +1,21 @@
-// Fixture (stdlib-namespace decompose-phase premise, PRD §0/§1 probe): the
-// compile-side prelude collision policy for structure templates is LAST-wins
-// (entities_phase HashMap collect), so a bare `Mode` binds std.modal.analysis's
-// Mode (frequency/shape/participation_mass/damping_ratio) and the buckling
-// Mode's `eigenvalue` member is UNREACHABLE from user code. `reify check` must
-// emit `structure 'Mode' has no member 'eigenvalue'` — the pre-state defect
-// that stdlib-namespace β's BucklingMode rename + α's NS-P4 parity fix.
+// Fixture (stdlib-namespace decompose-phase premise, PRD §0/§1 probe): `reify
+// check` must emit `structure 'Mode' has no member 'eigenvalue'`.
+//
+// The OBSERVABLE is unchanged by task 5496's rename; the REASON it holds is
+// not. Pre-rename this was the silent-collision defect: two stdlib modules both
+// declared `structure def Mode`, and the two phases disagreed about the winner
+// — compile-side template resolution took LAST-wins (std.modal.analysis) while
+// the eval-side instantiation registry took FIRST-wins (std.solver.buckling).
+// So buckling's `eigenvalue` was unreachable from user code even though a
+// `Mode()` instance materialized at eval time carrying exactly that field.
+//
+// Post-rename the same diagnostic is simply correct, not a symptom: `Mode`
+// unambiguously denotes std.modal.analysis's eigenpair
+// (frequency/shape/participation_mass/damping_ratio), which genuinely has no
+// `eigenvalue`. Buckling's eigenpair is now `BucklingMode`, and
+// tests/prd-gate/fixtures/stdlib_ns_buckling_mode_coexist.ri pins that both are
+// reachable from one file. The stdlib is kept collision-free by NS-P2's
+// stdlib-build-time Error (crates/reify-compiler/src/stdlib_loader.rs).
 
 structure def ModeMemberProbe {
     sub m = Mode()

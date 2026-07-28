@@ -46,6 +46,19 @@ static STDLIB_CONTEXT_CACHE: OnceLock<PreludeContext<'static>> = OnceLock::new()
 /// `stdlib_topo::tests`) acts as a permanent guard that the sort remains the
 /// identity when no imports are present; it will need updating if imports are
 /// intentionally introduced.
+///
+/// **What ordering can NO LONGER do (NS-P2, task 5496):** registration order is
+/// semantically inert for the name kinds covered by the duplicate-pub-name scan
+/// in [`build_stdlib_modules`].  Before that gate, two stdlib modules could
+/// declare the same name and the winner was decided silently and
+/// inconsistently — compile-side template resolution took last-wins while the
+/// eval-side instantiation registry took first-wins, so `Mode` denoted
+/// different structures in different phases.  Reordering this list could
+/// therefore change program meaning.  It can't now: any cross-module duplicate
+/// fails the stdlib build outright, so the only thing position still controls
+/// is what is *resolvable* during the sequential prelude build (the footgun
+/// above), not what a resolvable name *means*.  That inertness is the §5
+/// precondition the ζ task consumes.
 pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
     let si_units_source = si_units::build_si_units_source();
     vec![
@@ -118,7 +131,8 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
         ),
         // `std.solver.buckling.fns` MUST follow BOTH `std.solver.buckling` AND
         // `std.fea.multi_case`:
-        //   - `std.solver.buckling` provides `BucklingResult`/`Mode`/`BucklingOptions`/
+        //   - `std.solver.buckling` provides `BucklingResult`/`BucklingMode`/
+        //     `BucklingOptions`/
         //     `MultiCaseBucklingResult` (function bodies field-access these; requires
         //     them in the prelude registry when `phase_functions` runs — esc-3851-32).
         //   - `std.fea.multi_case` provides `LoadCase` (task η adds
@@ -456,36 +470,209 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
     STDLIB_CACHE.get_or_init(|| {
         let owned = stdlib_sources();
         let sources: Vec<(&str, &str)> = owned.iter().map(|(n, s)| (*n, s.as_str())).collect();
+        build_stdlib_modules(&sources)
+    })
+}
 
-        let modules = crate::stdlib_topo::compile_modules_topo(&sources)
-            .unwrap_or_else(|cycle| panic!("stdlib import cycle: {}", cycle.message));
+/// Compile a stdlib source set: topo-sort, compile, then enforce the two
+/// stdlib-build invariants (no Error diagnostics, no cross-module pub-name
+/// collisions).  Panics rather than returning `Err` on any violation — a broken
+/// stdlib is always a programming error, never a recoverable condition.
+///
+/// This is exactly the body [`load_stdlib`] runs; it is `pub` so tests can drive
+/// a synthetic source set through the SAME path production uses.  That matters
+/// for the NS-P2 gate below: the real stdlib is `include_str!`-embedded, so
+/// there is no way to inject a duplicate stdlib module from a `.ri` fixture, and
+/// the observable the PRD asks for is "the stdlib BUILD fails" — not "a helper
+/// function returns findings".
+pub fn build_stdlib_modules(sources: &[(&str, &str)]) -> Vec<CompiledModule> {
+    let modules = crate::stdlib_topo::compile_modules_topo(sources)
+        .unwrap_or_else(|cycle| panic!("stdlib import cycle: {}", cycle.message));
 
-        // Fail fast: Error-severity diagnostics in embedded stdlib are always
-        // programming errors. Without this check, a broken module gets permanently
-        // cached in OnceLock, producing confusing downstream errors.
-        // `assert!` (not `debug_assert!`) is intentional: a broken stdlib module
-        // cached in OnceLock is at least as dangerous in release builds as in debug
-        // builds, and `debug_assert!` would compile out in exactly the builds where
-        // the bug is hardest to diagnose.
-        for module in &modules {
-            let has_errors = module
+    // Fail fast: Error-severity diagnostics in embedded stdlib are always
+    // programming errors. Without this check, a broken module gets permanently
+    // cached in OnceLock, producing confusing downstream errors.
+    // `assert!` (not `debug_assert!`) is intentional: a broken stdlib module
+    // cached in OnceLock is at least as dangerous in release builds as in debug
+    // builds, and `debug_assert!` would compile out in exactly the builds where
+    // the bug is hardest to diagnose.
+    for module in &modules {
+        let has_errors = module
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error);
+        assert!(
+            !has_errors,
+            "stdlib module '{}' has Error-severity diagnostics: {:?}",
+            module.path,
+            module
                 .diagnostics
                 .iter()
-                .any(|d| d.severity == Severity::Error);
-            assert!(
-                !has_errors,
-                "stdlib module '{}' has Error-severity diagnostics: {:?}",
-                module.path,
-                module
-                    .diagnostics
-                    .iter()
-                    .filter(|d| d.severity == Severity::Error)
-                    .collect::<Vec<_>>()
-            );
-        }
+                .filter(|d| d.severity == Severity::Error)
+                .collect::<Vec<_>>()
+        );
+    }
 
-        modules
-    })
+    assert_no_cross_module_name_collisions(&modules);
+
+    modules
+}
+
+/// One cross-module name collision: the same key declared by two stdlib modules.
+struct NameCollision {
+    kind: &'static str,
+    name: String,
+    first_module: String,
+    second_module: String,
+}
+
+/// Render a module path in the DOTTED form used as the key in
+/// [`stdlib_sources`] — that list is where a collision actually gets fixed, so
+/// the panic message should spell modules the way they are spelled there.
+/// `Display for ModulePath` is slash-separated (`std/solver/buckling`).
+fn dotted(path: &reify_core::ModulePath) -> String {
+    path.to_string().replace('/', ".")
+}
+
+/// NS-P2 (task 5496, PRD docs/prds/v0_6/stdlib-namespace.md §7): no two stdlib
+/// modules may declare the same pub name of the same kind.
+///
+/// Why this is an Error at stdlib BUILD time rather than a per-compile Warning:
+/// before this gate, a cross-module duplicate was resolved silently and — worse
+/// — *inconsistently*. Buckling and modal analysis both declared
+/// `structure def Mode`; compile-side template resolution took last-wins (modal)
+/// while the eval-side instantiation registry took first-wins (buckling), so
+/// `Mode(frequency: …).frequency` type-checked clean and then evaluated to
+/// Undef. Nothing in the pipeline reported it. The pre-existing per-kind prelude
+/// warnings (units in `units_phase.rs`, pub aliases in `lib.rs`) are deliberately
+/// left alone: they also fire for user-module compiles, where shadowing the
+/// stdlib is legitimate. This gate is additional, and stdlib-only.
+///
+/// The scan reads the surface as MATERIALIZED in [`CompiledModule`], not the
+/// syntax, and is deliberately not filtered on a syntactic `pub` marker:
+/// buckling's `Mode` was declared without `pub` yet was prelude-visible, so a
+/// pub-filtered syntactic scan would have missed the very collision this gate
+/// exists to catch.
+///
+/// Scope is CROSS-module by construction (a map from key to first-declaring
+/// module, walked in load order). Same-module duplicates — e.g. the three
+/// `solve_elastic_static` overloads in `solver_elastic.ri` — are out of reach
+/// here and remain the business of the per-module duplicate path in `ctx.rs`.
+fn assert_no_cross_module_name_collisions(modules: &[CompiledModule]) {
+    use std::collections::HashMap;
+
+    let mut collisions: Vec<NameCollision> = Vec::new();
+
+    // One map for every kind. The key is (kind, dedup_key) so each kind gets its
+    // OWN namespace — `structure def Planar` (kinematic.ri:163) and
+    // `trait Planar {}` (geometry_traits.ri:56) coexist on main today, and a
+    // kind-agnostic key would force an out-of-scope rename. `dedup_key` is the
+    // declared name for every kind except functions (see below).
+    let mut seen: HashMap<(&'static str, String), String> = HashMap::new();
+
+    let mut record = |kind: &'static str, dedup_key: String, name: &str, module: &str| {
+        match seen.get(&(kind, dedup_key.clone())) {
+            Some(first) => collisions.push(NameCollision {
+                kind,
+                name: name.to_string(),
+                first_module: first.clone(),
+                second_module: module.to_string(),
+            }),
+            None => {
+                seen.insert((kind, dedup_key), module.to_string());
+            }
+        }
+    };
+
+    for module in modules {
+        let m = dotted(&module.path);
+
+        // Templates carry their own kind label so `structure` and `occurrence`
+        // are distinguishable in the message; derived, never hard-coded.
+        for t in &module.templates {
+            record(t.entity_kind.as_label(), t.name.clone(), &t.name, &m);
+        }
+        for e in &module.enum_defs {
+            record("enum", e.name.clone(), &e.name, &m);
+        }
+        for t in &module.trait_defs {
+            record("trait", t.name.clone(), &t.name, &m);
+        }
+        for u in &module.units {
+            record("unit", u.name.clone(), &u.name, &m);
+        }
+        // Type aliases: `is_pub`-filtered, mirroring the filter the existing
+        // PreludeContext alias-collision path already applies, so the new Error
+        // and the pre-existing Warning agree on what counts as a collision.
+        //
+        // CRITICAL: read this vector, never the syntax. `type_aliases` holds
+        // MODULE-LEVEL aliases only. Associated types declared inside a
+        // trait/structure body (`type MotionValue` in `trait HasMotion`,
+        // kinematic.ri:110,133,151,198) are members of their template and are
+        // correctly absent here. A syntactic scan sees four `MotionValue`s and
+        // panics the real stdlib build immediately.
+        for a in module.type_aliases.iter().filter(|a| a.is_pub) {
+            record("type alias", a.name.clone(), &a.name, &m);
+        }
+        for c in &module.constraint_defs {
+            record("constraint def", c.name.clone(), &c.name, &m);
+        }
+        for p in &module.compiled_purposes {
+            record("purpose", p.name.clone(), &p.name, &m);
+        }
+        for f in &module.fields {
+            record("field", f.name.clone(), &f.name, &m);
+        }
+        // Functions key on (name, SIGNATURE) because cross-module overloads are
+        // legitimate and live: `unwrap_or`, `or_else` and `fallback` are each
+        // declared in both option_recovery.ri and result.ri with a different
+        // first-parameter type. A name-only key panics the real stdlib build on
+        // all three pairs.
+        //
+        // The signature is the param TYPES in order (names excluded — renaming a
+        // param must not manufacture a false overload) plus the return type.
+        // Deliberately NOT `content_hash`, which is also available on
+        // CompiledFunction: it hashes the BODY, so two functions with an
+        // identical signature and different bodies would key apart and the
+        // collision would be missed — precisely the silent-first-wins hole this
+        // gate exists to close.
+        for f in &module.functions {
+            let sig = format!(
+                "{}({:?}) -> {:?}",
+                f.name,
+                f.params.iter().map(|(_, ty)| ty).collect::<Vec<_>>(),
+                f.return_type
+            );
+            record("function", sig, &f.name, &m);
+        }
+    }
+
+    if collisions.is_empty() {
+        return;
+    }
+
+    // Aggregate: report EVERY collision in one panic. A first-offender-only
+    // panic makes a multi-collision stdlib change a fix-and-rerun grind, the
+    // same reason the `#no_prelude` invariant was refactored to collect-all.
+    collisions.sort_by(|a, b| {
+        (a.kind, &a.name, &a.first_module, &a.second_module).cmp(&(
+            b.kind,
+            &b.name,
+            &b.first_module,
+            &b.second_module,
+        ))
+    });
+    let mut msg = String::from(
+        "intra-stdlib pub-name collision (NS-P2) — stdlib registration order must be \
+         semantically inert:",
+    );
+    for c in &collisions {
+        msg.push_str(&format!(
+            "\n  {} '{}' declared in both '{}' and '{}'",
+            c.kind, c.name, c.first_module, c.second_module
+        ));
+    }
+    panic!("{msg}");
 }
 
 /// Returns a reference to the cached stdlib [`PreludeContext`].

@@ -1980,6 +1980,27 @@ impl Engine {
         self.last_dispatch_count
     }
 
+    /// Returns the number of geometry-backed realizations currently tracked in
+    /// `realization_handles` — the GHR-δ validity oracle populated by `build()`
+    /// / `build_snapshot()` (via `post_process_geometry_handle_cells`) and,
+    /// per the load-bearing build↔tessellate asymmetry that
+    /// `reset_per_build_state` preserves (task ι, #5069), left INTACT across
+    /// `tessellate_realizations()` / `tessellate_snapshot()`.
+    ///
+    /// Lets an out-of-crate integration test observe build-surface population
+    /// (`> 0` after a geometry-bearing `build`) versus tessellate-surface
+    /// preservation (unchanged after a following `tessellate_realizations`)
+    /// hermetically, without an OCCT kernel. Mirrors the gated
+    /// `last_dispatch_count()` reader convention.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method via the self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn realization_handles_len(&self) -> usize {
+        self.realization_handles.len()
+    }
+
     /// **Test-instrumentation only — not a stable public surface.**
     ///
     /// Force the build-time [`crate::BuildScheduler`] selection, bypassing
@@ -2016,14 +2037,18 @@ impl Engine {
 
     /// GHR-δ §5: reset the geometry-handle revalidation slow-path counter to 0.
     ///
-    /// Called at the start of every `build()` / `build_snapshot()` (alongside
-    /// clearing `realization_handles`), so the count reported afterwards
-    /// reflects only the revalidation reads since the most recent build —
-    /// mirroring the reset-at-operation-start discipline of the `last_*`
-    /// counters. Takes `&self` because the counter is an `AtomicUsize`
-    /// (interior mutability); the reader below observes it. Always available
-    /// (NOT test-gated) since the reset site in `engine_build.rs` is production
-    /// code.
+    /// The counter is reset at the start of every build/tessellate surface so
+    /// the count reported afterwards reflects only the revalidation reads since
+    /// the most recent build — mirroring the reset-at-operation-start discipline
+    /// of the `last_*` counters. Takes `&self` because the counter is an
+    /// `AtomicUsize` (interior mutability); the reader below observes it.
+    ///
+    /// As of #5069 this reset is inlined directly into
+    /// `Engine::reset_per_build_state` (engine_build.rs — production code), the
+    /// single per-build choke-point, so this standalone helper has no remaining
+    /// call sites. It is retained — `#[allow(dead_code)]` — for its GHR-δ §5
+    /// reset-discipline documentation and symmetry with the paired reader below.
+    #[allow(dead_code)]
     pub(crate) fn reset_geometry_revalidation_slow_path_count(&self) {
         self.geometry_revalidation_slow_path
             .store(0, std::sync::atomic::Ordering::Relaxed);

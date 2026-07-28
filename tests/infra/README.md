@@ -94,6 +94,47 @@ ceilings that task #5257 de-annotated are **not** survivors — after the
 condition-(3) tightening they carry no time-measurement signal and pass
 un-flagged without an escape.
 
+## Opt-in soak: seed lane-lock release (`REIFY_RUN_SEED_LANE_LOCK_SOAK`)
+
+`test_seed_lane_lock_release_soak.sh` is the repeat-N characterization
+instrument for `scripts/seed-warm-lane.sh`'s lane-lock release-at-exit
+property (task #5705).  It runs in two layers:
+
+- **Always** — a sub-second hermetic positive/negative control proving the
+  `flock -n` probe primitive reports HELD on a held lock and FREE on a free
+  one.  Sited *before* the opt-in gate, so it is never dead code.
+- **`REIFY_RUN_SEED_LANE_LOCK_SOAK=1`** — drives N real seed invocations under
+  `cpu_load_fixture.sh` contention (waiting for the load workers to be up and
+  demonstrably burning CPU first, so the ramp is never measured as idle),
+  probing the lane lock the instant seed's own parent exits, and prints one
+  structured line:
+
+  ```
+  SEED_LANE_LOCK_SOAK held=<n> iters=<N> workers=<w>
+  ```
+
+  `REIFY_SEED_LANE_LOCK_SOAK_ITERS` sets N (default 50); workers are
+  `min(nproc, 24)`.  Measured on a 32-core host: ~0.39s per iteration once the
+  load is established, so the default is ~18s and `ITERS=200` ~78s.
+
+The assertion is `held == 0` — a **count**, never an elapsed time, so it cannot
+become one of the absolute wall-clock upper bounds the guard above rejects.
+
+The mechanism, the argument for `flock -u` over `exec 9>&-`, and the measured
+rates are **deliberately not repeated here**: they live in exactly one place,
+the `LANE-LOCK RELEASE CONTRACT` block at the flock acquire in
+`scripts/seed-warm-lane.sh`.  Re-measuring is the whole point of this harness,
+and a copy in this file would be one more site to update in lockstep.
+
+The permanent regression guards are hermetic and live in
+`test_seed_warm_lane.sh` — `H4b`/`H4e` (structural release marker) and `H7b`
+(an inherited FD 9 is never unlocked), plus **`H4c`**, which forks a live
+holder of a dup of seed's lane-lock FD and asserts the lock reads back free
+anyway; that last one is the only guard that fails if the release runs but has
+no effect.  This soak is the instrument for re-measuring the rate if the
+property ever resurfaces, which is why it is default-skipping and classified
+`host-exclusive`.
+
 ## Files
 
 | File | Purpose |

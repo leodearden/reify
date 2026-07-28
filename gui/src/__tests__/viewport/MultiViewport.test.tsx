@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@solidjs/testing-library';
-import type { MeshData } from '../../types';
+import type { FeaDiagnosticInfo, MeshData } from '../../types';
 import { createViewportStore } from '../../stores/viewportStore';
 import type { ViewportState } from '../../stores/viewportStore';
+import { createFeaModeStore } from '../../stores/feaModeStore';
 import type { PaneConfig } from '../../viewport/MultiViewport';
 
 // ── Mock Viewport ────────────────────────────────────────────────────────────
@@ -225,6 +226,44 @@ describe('MultiViewport', () => {
     expect(captured.tensegritySurfaces).toBe(tensegritySurfaces);
     expect(captured.fitToViewRef).toBe(fitToViewRef);
     expect(captured.flyToEntityRef).toBe(flyToEntityRef);
+  });
+
+  it('(fea-passthrough) FEA props reach the pane that carries them; panes that omit them get undefined', async () => {
+    const { MultiViewport } = await importMultiViewport();
+    const viewportStore = makeViewportStore();
+
+    // Held in local consts so reference equality below is unambiguous.
+    const feaModeStore = createFeaModeStore();
+    const feaDiagnostics: FeaDiagnosticInfo[] = [{ kind: 'ProblemElements', ids: [7, 9] }];
+    const feaConvergence = { converged: true, reason: null };
+
+    const panes = [
+      makePaneConfig('design-main', ['design/A'], {
+        feaModeStore,
+        feaDiagnostics,
+        feaConvergence,
+      }),
+      // Bare config — omits all three FEA keys entirely.
+      makePaneConfig('pane-1'),
+    ];
+
+    render(() => <MultiViewport panes={panes} viewportStore={viewportStore} />);
+
+    const mainPane = capturedViewportPropsByid['design-main'];
+    expect(mainPane, 'design-main Viewport should have been captured').toBeDefined();
+
+    // Exact references — MultiViewport forwards, it does not copy or wrap.
+    expect(mainPane.feaModeStore).toBe(feaModeStore);
+    expect(mainPane.feaDiagnostics).toBe(feaDiagnostics);
+    expect(mainPane.feaConvergence).toBe(feaConvergence);
+
+    // A pane whose config omits the FEA keys must receive undefined — MultiViewport
+    // enforces no pane policy and must not synthesize a default store/diagnostics.
+    const otherPane = capturedViewportPropsByid['pane-1'];
+    expect(otherPane, 'pane-1 Viewport should have been captured').toBeDefined();
+    expect(otherPane.feaModeStore).toBeUndefined();
+    expect(otherPane.feaDiagnostics).toBeUndefined();
+    expect(otherPane.feaConvergence).toBeUndefined();
   });
 
   it('(size-fr) column tracks are weighted by per-pane sizeWeight from the store', async () => {

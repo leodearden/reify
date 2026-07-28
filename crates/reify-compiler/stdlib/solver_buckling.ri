@@ -5,7 +5,7 @@
 // Provides the named-type surface for the v0.5 linear-buckling eigensolver:
 //   - `BucklingOptions`         — solver-input knobs (n_modes, mode, sigma, tol,
 //                                  max_iters, auto_dense)
-//   - `Mode`                    — single eigenvalue/eigenvector pair
+//   - `BucklingMode`            — single eigenvalue/eigenvector pair
 //   - `BucklingResult`          — single-case solver-output container
 //   - `MultiCaseBucklingResult` — multi-load-case parallel sibling of MultiCaseResult
 //
@@ -31,7 +31,7 @@
 //      `W_BucklingOptionUnsupported` Warning when any of them is set to a non-default
 //      value; the solve proceeds with kernel defaults. Reify `constraint` clauses
 //      cannot express string-set membership, so no allowlist check is declared here.
-//   3. `Mode.mode_shape` uses the precise `Field<Point3<Length>, Vector3<Length>>`
+//   3. `BucklingMode.mode_shape` uses the precise `Field<Point3<Length>, Vector3<Length>>`
 //      type rather than a `Real` placeholder. Task 3117 landed; the
 //      `type_resolution.rs:1313` resolver arm accepts `Field<D, C>` in `param`
 //      positions, as confirmed by `ElasticResult.displacement` /
@@ -132,9 +132,9 @@ structure def BucklingOptions {
     //                           allowlist/shift validation.
 }
 
-// ── Mode ─────────────────────────────────────────────────────────────────────
+// ── BucklingMode ─────────────────────────────────────────────────────────────
 
-// `Mode` is one eigenpair returned by the buckling eigensolver: a scalar
+// `BucklingMode` is one eigenpair returned by the buckling eigensolver: a scalar
 // load-multiplier eigenvalue paired with a displacement-field eigenvector.
 // Populated exclusively by the solver — no caller-supplied defaults are
 // meaningful, no constraints (every field is solver-determined). Mirrors
@@ -171,7 +171,7 @@ structure def BucklingOptions {
 //                across the solver result containers.
 //
 // PRD reference: docs/prds/v0_5/buckling-eigensolver.md §4.
-structure def Mode {
+structure def BucklingMode {
     param eigenvalue : Real
     param mode_shape : Field<Point3<Length>, Vector3<Length>>
 }
@@ -204,7 +204,7 @@ structure def Mode {
 //
 // PRD reference: docs/prds/v0_5/buckling-eigensolver.md §4.
 structure def BucklingResult {
-    param modes : List<Mode>
+    param modes : List<BucklingMode>
     param converged : Bool
     param iterations : Int
     param pre_stress : ElasticResult
@@ -223,7 +223,8 @@ structure def BucklingResult {
     //   converged   : Bool          — Bool, trivially constrained.
     //   pre_stress  : ElasticResult — output container; no scalar invariant
     //                                  expressible per-field.
-    //   modes       : List<Mode>    — collection invariants (non-empty when
+    //   modes       : List<BucklingMode>
+    //                               — collection invariants (non-empty when
     //                                  `converged == true`, sorted ascending
     //                                  by |eigenvalue|) are producer-enforced
     //                                  by the trampoline; Reify constraint

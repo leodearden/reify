@@ -23,7 +23,10 @@
 #   - Dependency-free: uses only POSIX sh builtins + timeout(1).
 #   - Safe under set -euo pipefail.
 #   - Workers are backgrounded and waited on with `wait`; EXIT trap reaps any
-#     survivors via `kill 0` (process-group kill, harmless if already exited).
+#     survivors via a per-PID `kill` over the recorded worker PIDs (harmless
+#     if already exited). No process-group kill: callers may background this
+#     fixture from their own process group, and a group-wide kill would
+#     signal the caller too.
 #   - --emit-cgroup writes BEFORE workers are forked so the scope is visible
 #     as soon as the fixture starts; the harness reads the file after a short
 #     settle to ensure scope placement is complete.
@@ -99,8 +102,11 @@ fi
 
 # ---------------------------------------------------------------------------
 # EXIT trap: reap surviving workers.
-# Uses kill -- -$$  (process-group kill) if the main process is the group
-# leader, else tries a per-PID kill on recorded _WORKER_PIDS.
+# Per-PID kill over recorded _WORKER_PIDS only (best-effort; ignores errors
+# if a worker already exited), followed by `wait`. Deliberately NOT a
+# process-group kill (no `kill 0` / `kill -- -$$`): callers may background
+# this fixture from their own process group (e.g. `fixture.sh ... &`), and a
+# group-wide kill would signal the calling shell too.
 # ---------------------------------------------------------------------------
 _WORKER_PIDS=""
 
