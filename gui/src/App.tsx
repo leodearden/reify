@@ -850,7 +850,9 @@ const App: Component = () => {
         // the toolbar by a document-wide querySelectorAll on
         // [data-testid="fea-mode-channel-select"], hard-failing with selectAmbiguous on
         // more than one match. Per-pane FEA (a toolbar and a ctx.feaMode registration
-        // keyed by viewportId) is tracked as #4981.
+        // keyed by viewportId) is tracked as #5670. Note bridge.ts's neighbouring
+        // note says "task 4981 follow-up" meaning a successor TO 4981, which is
+        // itself done — #5670 is that successor.
         get feaModeStore() { return pane === 0 ? paneFeaModeStore : undefined; },
         get feaDiagnostics() { return pane === 0 ? engineStore.state.feaDiagnostics : undefined; },
         get feaConvergence() { return pane === 0 ? engineStore.state.feaConvergence : undefined; },
