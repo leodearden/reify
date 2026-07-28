@@ -50,7 +50,7 @@ query the sweep issues is tag-scoped.
 
 | Class | Scope | Premise-resolved predicate | Action |
 |---|---|---|---|
-| `gate_closure` | `blocked` only | `metadata.task_kind = deterministic` ∧ `metadata.always_escalates` truthy ∧ **no live `esc-<id>-*.json` with `status=pending`** | `close` |
+| `gate_closure` | `blocked` only | `metadata.task_kind = deterministic` ∧ `metadata.always_escalates` truthy ∧ **every live `esc-<id>-*.json` is terminal (`resolved`/`dismissed`), or there are none** — see the terminal allowlist under Verdict vocabulary | `close` |
 | `merge_verify_red` | `blocked` **and** `in-progress` | newest `metadata.dry_run_proposals` entry is a post-merge-verify red ∧ its `main_sha` is an ancestor of `--main-ref` ∧ main has advanced past it ∧ ≥1 `files_referenced` path was touched in `main_sha..main-ref` | `reverify` |
 | `unmet_dependency` | `blocked` only | ≥1 `dependencies` row ∧ **every** `depends_on` resolves, under the same tag, to a terminal status (`done` / `cancelled`) | `redispatch` |
 
