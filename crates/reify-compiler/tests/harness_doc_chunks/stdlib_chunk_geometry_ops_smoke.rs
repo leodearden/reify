@@ -1556,3 +1556,91 @@ fn unmirrored_documented_forms_reports_a_name_with_no_fixture_call_at_all() {
          subsumes the name gate's case too"
     );
 }
+
+/// Every documented FORM in the real chunk must be exercised by the real
+/// fixture at that exact arity — the doc → fixture direction at FORM
+/// granularity (task 5583), closing the gap
+/// `every_documented_geometry_op_name_is_exercised_by_the_fixture` leaves
+/// open (see the module doc).
+///
+/// This is GREEN on arrival: all 33 documented forms already have a
+/// compiling fixture instance at their documented arity. Its discriminating
+/// power is pinned by the inline printer_v01-replay controls above
+/// (`unmirrored_documented_forms_replays_the_printer_v01_regression` and its
+/// control's control), not by an artificial gap planted here.
+#[test]
+fn every_documented_geometry_op_form_is_exercised_by_the_fixture() {
+    let markdown = std::fs::read_to_string(CHUNK_PATH).unwrap_or_else(|e| {
+        panic!("{CHUNK_PATH} must be readable ({e}) — update CHUNK_PATH if the chunk moved")
+    });
+    let documented = documented_geometry_op_forms(&markdown);
+
+    // Anti-vacuity, overload-aware: a heading rename or reformatted table
+    // would empty the scan and make the assertion below pass trivially. The
+    // multi-overload sentinels additionally prove the scan SPLITS overloads
+    // rather than collapsing them back to one entry per name — the exact way
+    // this gate could silently degrade into the name-only gate it
+    // complements.
+    assert!(
+        documented.len() >= 25,
+        "the '{CHUNK_SECTION}' form scan found only {} form(s) in {CHUNK_PATH} — the scan is \
+         vacuous (heading renamed, or the signature rows no longer start with `**` and use \
+         backticks) and gives NO protection",
+        documented.len()
+    );
+    for sentinel in [
+        DocForm {
+            name: "rotate".to_string(),
+            arity: Arity::Exact(5),
+        },
+        DocForm {
+            name: "rotate".to_string(),
+            arity: Arity::Exact(2),
+        },
+        DocForm {
+            name: "mirror".to_string(),
+            arity: Arity::Exact(2),
+        },
+        DocForm {
+            name: "mirror".to_string(),
+            arity: Arity::Exact(7),
+        },
+        DocForm {
+            name: "circular_pattern".to_string(),
+            arity: Arity::Exact(4),
+        },
+        DocForm {
+            name: "circular_pattern".to_string(),
+            arity: Arity::Exact(9),
+        },
+        DocForm {
+            name: "union_all".to_string(),
+            arity: Arity::AtLeast(2),
+        },
+    ] {
+        assert!(
+            documented.contains(&sentinel),
+            "anti-vacuity: {sentinel:?} is documented in '{CHUNK_SECTION}' but the form scan \
+             did not find it — both members of each multi-overload pair (rotate, mirror, \
+             circular_pattern) are required sentinels, proving the scan splits overloads \
+             instead of collapsing them back to the name-only scan this gate complements"
+        );
+    }
+
+    let unmirrored = unmirrored_documented_forms(&markdown, &read_fixture(), "fixture");
+    assert!(
+        unmirrored.is_empty(),
+        "stdlib.md documents geometry-op FORM(s) with no compiling instance at that exact \
+         arity in tests/fixtures/stdlib_geometry_ops_smoke.ri — a documented overload can go \
+         unmirrored even when its NAME is exercised, just at a different arity (task 5583). \
+         Remediation: add a call at that arity to \
+         crates/reify-compiler/tests/fixtures/stdlib_geometry_ops_smoke.ri, or correct the \
+         signature in crates/reify-mcp/src/tools/chunks/stdlib.md if the compiler does not \
+         accept it. Unmirrored form(s): {}",
+        unmirrored
+            .iter()
+            .map(|f| format!("{}/{:?}", f.name, f.arity))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+}
