@@ -21,6 +21,8 @@
 #   C — idempotence + top-up across repeat runs
 #   D — degenerate self-copy guard (script running under its own redirect)
 #   E — fail-open on absent/unusable sources
+#   F — tmpfiles age-clean exclusion (Fix B): content, idempotence, fail-open
+#   G — desync guard: the conf's paths ARE the seeder's destinations
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob; declared
 # `pool` in tests/infra/run-all-classification.manifest.
@@ -66,6 +68,81 @@ ERR_FILE="$(mktemp "$_TMPBASE/test-agent-cache-err-XXXXXX")"
 _TMPDIRS+=("$ERR_FILE")
 
 reset_calls() { : > "$CALLS_FILE"; }
+
+# ── sudo stub ─────────────────────────────────────────────────────────────────
+# Records argv to CALLS_FILE and then EXECS its remaining arguments, so the
+# privileged write actually lands in the temp $REIFY_TMPFILES_DIR and Blocks F
+# and G can assert on real file content rather than on an argv string.  With
+# `fail=1` it records and exits 1 instead, standing in for a host where sudo is
+# absent or refuses.
+#
+# `sudo -n true`-style probes are also recorded, so the script can preflight.
+make_sudo_stub() {
+    local fail="${1:-0}"
+    cat > "$STUB_DIR/sudo" << STUB_EOF
+#!/usr/bin/env bash
+echo "sudo \$*" >> "\${REIFY_TEST_CALLS_FILE:-/dev/null}"
+if [ "$fail" = "1" ]; then
+    echo "sudo: refusing (test stub)" >&2
+    exit 1
+fi
+# Strip sudo's own leading options so the remainder is a runnable command.
+while [ \$# -gt 0 ]; do
+    case "\$1" in
+        -n|-A|-k|-E|-H|-S) shift ;;
+        -u) shift 2 ;;
+        --) shift; break ;;
+        *) break ;;
+    esac
+done
+[ \$# -eq 0 ] && exit 0
+exec "\$@"
+STUB_EOF
+    chmod +x "$STUB_DIR/sudo"
+}
+make_sudo_stub
+
+# ── systemctl stub ────────────────────────────────────────────────────────────
+# Installed from the FIRST full-mode run onwards, not merely for Block H: a
+# full-mode run reaching the REAL systemctl would daemon-reload and enable a
+# unit on the developer's live --user bus.  Lifted in shape from
+# test_warm_lane_boot_persistence.sh.
+make_systemctl_stub() {
+    cat > "$STUB_DIR/systemctl" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "systemctl $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
+# simulate a missing --user bus when REIFY_TEST_NO_USER_BUS=1
+if [ "${REIFY_TEST_NO_USER_BUS:-0}" = "1" ]; then
+    for _arg in "$@"; do
+        [ "$_arg" = "show-environment" ] && exit 1
+    done
+fi
+exit 0
+STUB_EOF
+    chmod +x "$STUB_DIR/systemctl"
+}
+make_systemctl_stub
+
+# ── systemd-tmpfiles stub ─────────────────────────────────────────────────────
+# The script best-effort applies the new conf so the exclusion takes effect
+# without waiting for a reboot.  Stubbed so a test run can never ask the real
+# binary to act on a temp conf naming temp paths.
+make_tmpfiles_stub() {
+    cat > "$STUB_DIR/systemd-tmpfiles" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "systemd-tmpfiles $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
+exit 0
+STUB_EOF
+    chmod +x "$STUB_DIR/systemd-tmpfiles"
+}
+make_tmpfiles_stub
+
+# conf_paths <conf> — the paths the conf actually declares, one per line.
+# Used by BOTH Block F and Block G so the two can never disagree about how the
+# generated file is parsed.
+conf_paths() {
+    awk '!/^[[:space:]]*#/ && NF { print $2 }' "$1"
+}
 
 # ── fake $HOME with synthetic cargo + npm cache trees ─────────────────────────
 # Sets the FAKE_HOME global (rather than echoing it) because the _TMPDIRS
@@ -482,5 +559,122 @@ if [ -d "$_XDEV_BASE" ] && [ -w "$_XDEV_BASE" ] \
 else
     echo "  SKIP: E12-E15 cross-device guard (no second writable filesystem at $_XDEV_BASE)"
 fi
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block F — tmpfiles age-clean exclusion (Fix B)
+#
+# FULL mode (no --seed-only), with REIFY_TMPFILES_DIR at a temp dir and the
+# sudo stub exec'ing its remainder so the write really lands there.
+#
+# The exposure this closes: systemd-tmpfiles-clean.timer runs `--clean`, which
+# age-deletes INDIVIDUAL FILES inside /tmp while the orchestrator stays up.
+# That per-file deletion is not atomic w.r.t. cargo's own state — it can remove
+# files under $CARGO_HOME/registry/src/<crate>/ while leaving .cargo-ok in
+# place, after which cargo skips re-extraction and the build fails with a
+# missing-source error that looks nothing like a cache problem.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block F: tmpfiles age-clean exclusion ---"
+
+make_fake_home
+make_cache_root
+F_CONF="$TMPFILES_DIR/reify-agent-caches.conf"
+F_CARGO_DEST="$CACHE_ROOT/reify-agent-cargo-home"
+F_NPM_DEST="$CACHE_ROOT/reify-agent-npm-cache"
+
+reset_calls
+run_redirect
+
+assert "F1: full-mode run exits 0" test "$RC" -eq 0
+assert "F2: reify-agent-caches.conf is created in \$REIFY_TMPFILES_DIR" \
+    test -f "$F_CONF"
+
+# EXACTLY two — a count assertion, not a `grep -q` per row.  A renderer that
+# appends instead of rewriting passes both row assertions while doubling the
+# file on every setup-dev.sh run.
+assert "F3: conf has EXACTLY two non-comment lines" \
+    bash -c '[ "$(awk "!/^[[:space:]]*#/ && NF" "$1" | wc -l)" -eq 2 ]' _ "$F_CONF"
+
+assert "F4: conf excludes the cargo destination" \
+    bash -c 'awk "!/^[[:space:]]*#/ && NF { print \$2 }" "$1" | grep -Fxq -- "$2"' \
+    _ "$F_CONF" "$F_CARGO_DEST"
+assert "F5: conf excludes the npm destination" \
+    bash -c 'awk "!/^[[:space:]]*#/ && NF { print \$2 }" "$1" | grep -Fxq -- "$2"' \
+    _ "$F_CONF" "$F_NPM_DEST"
+
+# The verb matters and is easy to get wrong.  Only lowercase `x` excludes a
+# directory AND ITS CONTENTS from age-cleaning; `X` excludes the directory
+# itself but leaves its contents cleanable — which is precisely the partial-
+# gutting failure this block exists to prevent — and `d`/`D` would create or
+# empty the tree rather than protect it.
+assert "F6: every non-comment line uses the 'x' verb (not X, not d/D)" \
+    bash -c '[ "$(awk "!/^[[:space:]]*#/ && NF { print \$1 }" "$1" | sort -u | tr -d "\n")" = "x" ]' \
+    _ "$F_CONF"
+
+# Idempotence, and specifically: compare-before-write.  Re-running setup-dev.sh
+# must not re-sudo when the conf is already correct.
+F_CONF_SNAPSHOT="$(mktemp "$_TMPBASE/test-agent-cache-conf-snap-XXXXXX")"
+_TMPDIRS+=("$F_CONF_SNAPSHOT")
+cp "$F_CONF" "$F_CONF_SNAPSHOT" 2>/dev/null || true
+
+reset_calls
+run_redirect
+
+assert "F7: second full-mode run exits 0 (idempotent)" test "$RC" -eq 0
+assert "F8: conf is byte-unchanged by the second run" \
+    cmp -s "$F_CONF_SNAPSHOT" "$F_CONF"
+assert "F9: second run invoked NO sudo (compares before writing)" \
+    bash -c '! grep -q "^sudo " "$1"' _ "$CALLS_FILE"
+assert "F10: conf still has exactly two non-comment lines after re-run" \
+    bash -c '[ "$(awk "!/^[[:space:]]*#/ && NF" "$1" | wc -l)" -eq 2 ]' _ "$F_CONF"
+
+# Fail-open: a host where sudo is absent or refuses must not fail setup-dev.sh.
+make_sudo_stub 1
+make_fake_home
+make_cache_root
+
+reset_calls
+run_redirect
+make_sudo_stub 0
+
+assert "F11: exits 0 when sudo refuses (fail-open)" test "$RC" -eq 0
+assert "F12: warns when the tmpfiles conf could not be written" \
+    bash -c 'printf "%s\n%s\n" "$1" "$2" | grep -qiE "WARN.*(tmpfiles|exclusion|conf)"' \
+    _ "$OUT" "$ERR_OUT"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block G — desync guard
+#
+# The regression that matters most over time: renaming a cache dir on the
+# seeding side while leaving the conf's literal stale would silently
+# un-protect the LIVE directory from age-cleaning, with no visible symptom
+# until a long-uptime build failed.  Both sides are derived from OBSERVED
+# behaviour here — the conf is parsed, and the destinations are the dirs the
+# seeder actually created — so no hardcoded literal on either side can hide a
+# drift between them.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block G: conf paths ARE the seeder's destinations ---"
+
+make_fake_home
+make_cache_root
+G_CONF="$TMPFILES_DIR/reify-agent-caches.conf"
+
+reset_calls
+run_redirect
+
+assert "G1: full-mode run exits 0" test "$RC" -eq 0
+
+# Observed seeder destinations: the dirs that exist under the cache root after
+# a run, NOT a literal.  If the seeder's naming changes, this side moves with it.
+assert "G2: the seeder created exactly two destination dirs under the cache root" \
+    bash -c '[ "$(find "$1" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 2 ]' _ "$CACHE_ROOT"
+
+assert "G3: conf paths == seeder destinations, exactly (no drift, no extras)" \
+    bash -c '
+        conf_side="$(awk "!/^[[:space:]]*#/ && NF { print \$2 }" "$1" | sort)"
+        seed_side="$(find "$2" -mindepth 1 -maxdepth 1 -type d | sort)"
+        [ -n "$conf_side" ] && [ "$conf_side" = "$seed_side" ]
+    ' _ "$G_CONF" "$CACHE_ROOT"
 
 test_summary
