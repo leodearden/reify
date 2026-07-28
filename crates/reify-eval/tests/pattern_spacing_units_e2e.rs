@@ -29,26 +29,46 @@ use reify_test_support::{
 /// runs. The non-asserting `compile_source` keeps this file testing what it
 /// exists to test: task 5214's EVAL-layer gate.
 ///
-/// The assertion below is what makes that switch a TIGHTENING rather than a
-/// loosening — it pins that the compile-layer Error really is emitted, so this
-/// file cannot silently stop noticing if that gate regresses.  Each caller's
-/// eval-layer assertions still run, because `check_builtin_arg_types` is
-/// anti-cascade: lowering is untouched, so the op is still emitted and must
-/// still be DROPPED at eval.
+/// The assertions below are what make that switch a TIGHTENING rather than a
+/// loosening. They keep BOTH halves of what `parse_and_compile` used to give:
+///
+/// 1. The expected compile-layer `ArgTypeMismatch` really is emitted, so this
+///    file cannot silently stop noticing if task 5652's gate regresses.
+/// 2. It is the ONLY Error-severity compile diagnostic. Without this, ANY
+///    unrelated compile Error would go unnoticed — and if e.g. `box(…)` or
+///    `linear_pattern_2d(…)` stopped lowering, each caller's "no pattern op
+///    reached the kernel" assertion would then hold VACUOUSLY (op absent
+///    because compilation broke, not because task 5214's eval gate dropped it),
+///    which is precisely the wrong-reason pass this file exists to prevent.
+///
+/// Each caller's eval-layer assertions still run, because
+/// `check_builtin_arg_types` is anti-cascade: lowering is untouched, so the op
+/// is still emitted and must still be DROPPED at eval.
 fn compile_bare_spacing(source: &str) -> reify_compiler::CompiledModule {
     let compiled = compile_source(source);
-    let mismatches = compiled
+    let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| {
-            d.code == Some(DiagnosticCode::ArgTypeMismatch) && d.severity == Severity::Error
-        })
-        .count();
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(
-        mismatches > 0,
+        !errors.is_empty(),
         "a bare pattern spacing must ALSO be rejected at compile time (task 5652 \
-         ArgTypeMismatch), not only at eval; got no ArgTypeMismatch in: {:?}",
+         ArgTypeMismatch), not only at eval; got no Error diagnostics in: {:?}",
         compiled.diagnostics
+    );
+    assert!(
+        errors
+            .iter()
+            .all(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch)),
+        "ArgTypeMismatch must be the ONLY compile Error in this fixture, else the \
+         callers' \"no pattern op reached the kernel\" assertions could pass \
+         because compilation broke rather than because the eval gate dropped the \
+         op; unexpected errors: {:?}",
+        errors
+            .iter()
+            .filter(|d| d.code != Some(DiagnosticCode::ArgTypeMismatch))
+            .collect::<Vec<_>>()
     );
     compiled
 }
