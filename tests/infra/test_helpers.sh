@@ -164,6 +164,15 @@ init_isolated_lane_root() {
 # cleanup is anchored on the ONE root, which the caller's EXIT trap `rm -rf`s —
 # reclaiming every lane, its sibling ${lane}.lock/.ready-marker/.done-marker
 # files, and its private .reseed-trash, all in one shot.
+#
+# THE LANE BASENAME CARRIES THE SUITE STEM ($_LANE_LITTER_PREFIX), not a bare
+# "lane-XXXXXX". seed names each trash entry "<lane-basename>.<pid>", and the
+# litter guard below attributes litter by a prefix test on that basename — so a
+# stemless lane name would make every lane this library mints UNATTRIBUTABLE,
+# i.e. reported as an informational note and never a failure. That would leave
+# the guard structurally incapable of failing for exactly the lanes the facility
+# exists to cover. The `${_LANE_LITTER_PREFIX:-$prefix}` fallback keeps the name
+# non-empty if a caller somehow reaches here with the stem unset.
 make_isolated_lane() {
     local prefix="${1:-}" parent
     if [ -z "${_LANE_ROOT:-}" ]; then
@@ -175,7 +184,7 @@ make_isolated_lane() {
         return 1
     fi
     parent="$(mktemp -d "$_LANE_ROOT/${prefix}-XXXXXX")" || return 1
-    mktemp -d "$parent/lane-XXXXXX"
+    mktemp -d "$parent/${_LANE_LITTER_PREFIX:-$prefix}-lane-XXXXXX"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -222,9 +231,23 @@ make_isolated_lane() {
 # ${ERR_OUT:-} rather than bare $ERR_OUT: this library is sourced by 153 files,
 # most of which have no run_helper wrapper and never set ERR_OUT at all, and
 # reading an unset variable under `set -u` would abort them.
+#
+# BOTH entry points guard on an uninitialized $_TRASH_HITS_FILE, matching every
+# other entry point in this section. Without the guard the recorder's append
+# would have an EMPTY redirect target, and under the `set -euo pipefail` every
+# warm-lane suite uses the shell exits mid-run with a cryptic
+# "test_helpers.sh: line N: : No such file or directory" — test_summary never
+# runs and no PASS/FAIL totals are printed. The recorder reports the missing
+# init on stderr and still returns 0 (invariant 1 above is absolute); the
+# checker returns 1, because a checker that passes on state it never observed is
+# the dead instrument this whole facility exists to prevent.
 # ─────────────────────────────────────────────────────────────────────────────
 
 _note_shared_trash_use() {
+    if [ -z "${_TRASH_HITS_FILE:-}" ]; then
+        echo "ERROR: _note_shared_trash_use: no hits file — call init_isolated_lane_root <stem> first" >&2
+        return 0
+    fi
     case "${ERR_OUT:-}" in
         *"$_SHARED_TRASH_DIR"*) printf '%s\n' "$*" >> "$_TRASH_HITS_FILE" ;;
     esac
@@ -232,6 +255,12 @@ _note_shared_trash_use() {
 }
 
 _assert_no_shared_trash_use() {
+    if [ -z "${_TRASH_HITS_FILE:-}" ]; then
+        echo "ERROR: _assert_no_shared_trash_use: no hits file recorded." >&2
+        echo "       Call init_isolated_lane_root <stem> once, after 'trap cleanup EXIT'," >&2
+        echo "       otherwise this checker would pass vacuously and observe nothing." >&2
+        return 1
+    fi
     [ ! -s "$_TRASH_HITS_FILE" ] && return 0
     printf 'seed invocation wrote into machine-shared %s:\n' "$_SHARED_TRASH_DIR"
     cat "$_TRASH_HITS_FILE"
@@ -253,12 +282,23 @@ _assert_no_shared_trash_use() {
 # ATTRIBUTION IS BY THE SUITE'S OWN mktemp STEM — a deliberate trade-off.
 # $_SHARED_TRASH_DIR is machine-shared, so a bare snapshot-diff would fail this
 # suite for a concurrent worktree's litter. seed names each trash entry
-# "<lane-basename>.<pid>", and every lane this library mints is named from the
-# suite's stem, so a prefix test on the entry basename attributes litter
-# race-free — the same method that attributed the pre-fix entries forensically.
-# The cost: a hypothetical bare-/tmp lane named OUTSIDE its own suite's naming
-# convention is not caught. New entries that do not match the stem are therefore
-# emitted as an informational line and never fail the suite.
+# "<lane-basename>.<pid>", and make_isolated_lane above names every lane it
+# mints "${_LANE_LITTER_PREFIX}-lane-XXXXXX", so a prefix test on the entry
+# basename attributes litter race-free — the same method that attributed the
+# pre-fix entries forensically. That coupling is load-bearing in both
+# directions: renaming a minted lane without its stem would silently demote
+# every one of that suite's lanes to "unattributed" and the guard could then
+# never fail.
+#
+# THE HONEST LIMIT: attribution covers lanes minted by make_isolated_lane. A
+# suite that hand-mints a lane under a name outside its own stem — e.g.
+# test_target_per_lane_independence.sh's `$_BEH_ROOT/lane_a`, whose trash entry
+# would be "lane_a.<pid>" — is NOT attributable, and a bare-/tmp regression
+# there would be reported as an informational note rather than a failure. New
+# entries that do not match the stem never fail the suite, precisely so a
+# concurrent worktree's litter cannot flake it; the cost is that unattributable
+# litter is only ever surfaced, not caught. Route new lanes through
+# make_isolated_lane to stay inside the guard's reach.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # _list_trash_entries <dir> — <dir>'s entry set, one basename per line, sorted.
@@ -371,3 +411,49 @@ assert_shared_trash_litter_detector_live() {
     rm -rf "$dir" "$snap"
     return "$rc"
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CANONICAL WIRING CONTRACT for the shared-trash litter guard (task 5612).
+#
+# This comment is the SINGLE source of the rationale. The seven warm-lane suites
+# that arm the guard (test_seed_warm_lane.sh plus test_warm_lane_pool.sh,
+# test_warm_lane_ref_visibility.sh, test_thin_warm_lane.sh,
+# test_warm_lane_gc.sh, test_refresh_warm_base.sh,
+# test_target_per_lane_independence.sh) carry a one-line pointer HERE rather
+# than a copy — a copy would rot independently in seven places the first time
+# any of this changed, which is the same duplication hazard the promotion of
+# make_isolated_lane itself was meant to end.
+#
+# TO ARM A SUITE, two edits:
+#   1. `init_isolated_lane_root <stem>` immediately AFTER `trap cleanup EXIT`.
+#      It appends its per-run root to _TMPDIRS, so it MUST run after that
+#      file's own `_TMPDIRS=()` — a call placed before would register into an
+#      array the assignment then wipes, leaking the root and every lane under
+#      it. The helper refuses to run when _TMPDIRS is undeclared, so that
+#      ordering mistake is a loud error, not a silent leak. The root is a plain
+#      _TMPDIRS entry, so an existing cleanup() reclaims it unmodified.
+#      <stem> must be that suite's own dominant mktemp stem and shared with no
+#      other suite: it is what makes litter attributable to THIS suite instead
+#      of flaking on a concurrent worktree's.
+#   2. Both asserts, on a path the suite ALWAYS reaches. A suite with an
+#      early-exit skip path (a substrate gate that calls test_summary and exits)
+#      must arm them BEFORE that gate, or they are dead on precisely the runs
+#      that take it. Re-assert the litter check after any later block that runs
+#      the real seed, so those lanes are covered too.
+#
+# WHY BOTH ASSERTS, ALWAYS. assert_no_shared_trash_litter alone can realistically
+# only ever report "clean" — indistinguishable from a checker that stopped
+# working. assert_shared_trash_litter_detector_live is the hermetic control that
+# proves the instrument still fires, without writing to the path it defends.
+# Neither substitutes for the other, so they stay two independently-reported
+# signals rather than one combined assert.
+#
+# HONEST SCOPE: a FUTURE-regression guard, not a remediation. Task 5607 measured
+# ZERO offenders across all six sibling suites, twice — with and without a
+# reflink substrate, with a positive control proving the probe was live — and
+# forensic attribution of the pre-fix litter found none of these suites' stems
+# in it. Nothing here is expected to fire today; it exists so a future
+# bare-/tmp lane fails a test instead of quietly accumulating. Attribution
+# covers lanes minted by make_isolated_lane; see the litter-guard section header
+# above for the limit on hand-named lanes.
+# ─────────────────────────────────────────────────────────────────────────────

@@ -77,22 +77,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Arm the shared-trash litter guard in Block TRASH at the end of this file
-# (task 5612). init_isolated_lane_root appends its per-run root to _TMPDIRS and
-# snapshots the machine-shared /tmp/.reseed-trash as it stands RIGHT NOW, so the
-# end-of-run guard can tell entries this run produced from ones already there.
-#
-# Sited HERE, immediately after `trap cleanup EXIT`: the helper registers into
-# _TMPDIRS, so it must run AFTER this file's `_TMPDIRS=()` — a call placed
-# before it would register into an array that assignment then wipes, leaking the
-# root. The helper refuses to run when _TMPDIRS is undeclared, so that ordering
-# mistake is a loud error rather than a silent leak. The root is a plain
-# _TMPDIRS entry, so this suite's existing cleanup() reclaims it unmodified;
-# no cleanup body needs editing.
-#
-# The stem is what makes litter attributable to THIS suite: seed names each
-# trash entry "<lane-basename>.<pid>", and a stem shared with no other suite
-# keeps the guard from flaking on a concurrent worktree's litter.
+# Arm the shared-trash litter guard (task 5612). Sited immediately after
+# `trap cleanup EXIT` because the helper registers its per-run root into
+# _TMPDIRS and so must follow this file's own `_TMPDIRS=()`.
+# Rationale, ordering contract, stem rules and honest scope: see the
+# CANONICAL WIRING CONTRACT comment in tests/infra/test_helpers.sh.
 init_isolated_lane_root test-warm-pool
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1624,6 +1613,26 @@ assert "GC2: retired gen IS reaped after reader releases lock (dir removed)" \
 #   REIFY_WARM_LANE_MOUNT=/path/to/xfs-mount   — use an existing XFS volume
 #   REIFY_RUN_WARM_LANE_GATE=1                 — self-provision an ephemeral loop
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
+# kept as two independently-reported signals: TRASH2 can realistically only ever
+# report "clean", which is indistinguishable from a checker that stopped working
+# — TRASH1 is the hermetic control proving the instrument still fires.
+# Full rationale and honest scope: the CANONICAL WIRING CONTRACT comment in
+# tests/infra/test_helpers.sh.
+#
+# Sited HERE, immediately BEFORE the top-level substrate gate below: _skip()
+# calls test_summary and exits 0, so anything after the gate is DEAD in the
+# default CI environment (no REIFY_WARM_LANE_MOUNT, /tmp ext4) — which is every
+# ordinary run of this suite. TRASH1 is hermetic and substrate-independent, so
+# it belongs on the always-runs path unconditionally. TRASH3 at the end of the
+# file re-checks TRASH2 after the substrate-gated real seed runs.
+# ─────────────────────────────────────────────────────────────────────────────
+assert "TRASH1: shared-trash litter detector is live (self-test fires on a synthetic bare-/tmp lane)" \
+    assert_shared_trash_litter_detector_live
+assert "TRASH2: no lane in this suite littered the machine-shared /tmp/.reseed-trash" \
+    assert_no_shared_trash_litter
+
 if ! detect_substrate 2>/dev/null; then
     _skip "no XFS reflink substrate; set REIFY_WARM_LANE_MOUNT or REIFY_RUN_WARM_LANE_GATE=1"
 fi
@@ -2023,33 +2032,12 @@ echo "B13 wall-ms: control=${_B13_CTRL_WALL_MS}ms treatment=${_B13_TREAT_WALL_MS
 assert "B13: treatment fresh-unit count > control (re-seed warmer than reset-in-place)" \
     bash -c '[ "$1" -gt "$2" ]' _ "$_B13_TREAT_FRESH" "$_B13_CTRL_FRESH"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Block TRASH: shared-trash litter guard (task 5612)
-#
-# scripts/seed-warm-lane.sh computes RESEED_TRASH_DIR as
-# dirname(LANE_DIR)/.reseed-trash and renames a non-empty <lane>/target there,
-# so a lane created bare under /tmp makes that the machine-shared
-# /tmp/.reseed-trash. This block fails the suite if any lane it minted left an
-# entry there, attributed by this suite's own mktemp stem.
-#
-# HONEST SCOPE: a FUTURE-regression guard, not a remediation. Task 5607 measured
-# ZERO offenders across all six warm-lane suites, twice — with and without a
-# reflink substrate, and with a positive control proving the probe was live —
-# and forensic attribution of the pre-fix litter found none of these suites'
-# stems in it. Nothing here is expected to fire today; it exists so a future
-# bare-/tmp lane fails a test instead of quietly accumulating.
-#
-# TRASH1 is not optional. Attribution is by stem against a machine-shared path,
-# so TRASH2 can realistically only ever report "clean" for this suite — which is
-# indistinguishable from a checker that stopped working. TRASH1 proves the
-# instrument fires, hermetically, without writing to the path it defends.
-#
-# Not reached by the `_skip` early-exit path above, which calls test_summary and
-# exits before here. Acceptable: that path runs no seed at all.
-# ─────────────────────────────────────────────────────────────────────────────
-assert "TRASH1: shared-trash litter detector is live (self-test fires on a synthetic bare-/tmp lane)" \
-    assert_shared_trash_litter_detector_live
-assert "TRASH2: no lane in this suite littered the machine-shared /tmp/.reseed-trash" \
+# TRASH3 re-checks TRASH2 after the substrate-gated blocks — the only part of
+# this suite that drives the REAL seed, and therefore the only part that could
+# actually litter. TRASH1/TRASH2 run before the top-level substrate gate so they
+# cover every invocation including the `_skip` early exit (the default CI path);
+# this one covers the lanes those blocks seeded, which they ran too early to see.
+assert "TRASH3: ... and still none after the substrate-gated real seed runs" \
     assert_no_shared_trash_litter
 
 test_summary

@@ -3574,25 +3574,30 @@ assert "R5: a shared-trash-use append made inside a backgrounded subshell is vis
 # R8 closes that gap: it drives the REAL seed and asserts the guard fires on the
 # entry seed itself produced, whose basename is "<lane-basename>.<pid>".
 #
-# The lane is placed DIRECTLY under a private parent and named with the suite
-# stem, rather than minted by make_isolated_lane (which names its lanes
-# "lane-XXXXXX" and so would not match the stem). That faithfully simulates the
-# future offender this guard exists to catch, while the whole fixture stays
-# inside $_LANE_ROOT so the real /tmp/.reseed-trash is never touched.
+# THE LANE IS MINTED BY make_isolated_lane AND CHECKED AGAINST THIS SUITE'S OWN
+# $_LANE_LITTER_PREFIX — not a bespoke hand-named fixture. That is the whole
+# point: it closes the attribution loop end-to-end, proving the name the library
+# actually gives its lanes is the name the guard actually matches. A hand-minted
+# lane would prove only that the matcher works on a name the fixture chose, and
+# would still pass if make_isolated_lane were changed to a stemless
+# "lane-XXXXXX" — the exact regression that would silently demote every lane in
+# every wired suite to "unattributed" and leave the guard unable to fail.
+# The whole fixture stays inside $_LANE_ROOT, so the real /tmp/.reseed-trash is
+# never touched.
 #
 # REIFY_TEST_PIN_RESEED_TRASH=1 pins the trash on disk: seed's trash rm is a
 # DETACHED GRANDCHILD (see Block T), so without the pin this assert would race
 # it and flake. Same technique I14 already uses to inspect the trash location.
 # ─────────────────────────────────────────────────────────────────────────────
-R8_STEM="test-seed-r8"
+R8_STEM="$_LANE_LITTER_PREFIX"
 R8_BASE_PARENT="$(make_isolated_lane R8-base)"
 R8_BASE="$R8_BASE_PARENT/target"
 mkdir -p "$R8_BASE/debug"
 echo "base artifact" > "$R8_BASE/debug/base_artifact.a"
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$R8_BASE_PARENT/.warm-base-meta"
 
-R8_PARENT="$(mktemp -d "$_LANE_ROOT/R8-parent-XXXXXX")"
-R8_LANE="$(mktemp -d "$R8_PARENT/${R8_STEM}-lane-XXXXXX")"
+R8_LANE="$(make_isolated_lane R8)"
+R8_PARENT="$(dirname "$R8_LANE")"
 R8_LANE_BASE="$(basename "$R8_LANE")"
 # Non-empty target/ so seed reaches the rename-into-trash path at all.
 mkdir -p "$R8_LANE/target"
@@ -3620,6 +3625,8 @@ R8_OUT="$(_assert_no_shared_trash_litter "$_SHARED_TRASH_DIR" "$R8_SNAP" "$R8_ST
 
 assert "R8a: real-seed litter fixture: the seed run exits 0" \
     test "$RC" -eq 0
+assert "R8a2: ATTRIBUTION LOOP — the lane make_isolated_lane minted carries this suite's own stem ($R8_STEM), so the guard is checking the name the library really produces" \
+    bash -c 'case "$2" in "$1"*) exit 0 ;; esac; exit 1' _ "$R8_STEM" "$R8_LANE_BASE"
 assert "R8b: NON-VACUITY — seed really did rename into dirname(LANE)/.reseed-trash, producing a <lane-basename>.<pid> entry (without this, R8c would be asserting against an empty dir)" \
     bash -c 'case "$1" in *"$2".*) exit 0 ;; esac; exit 1' _ "$R8_ENTRIES" "$R8_LANE_BASE"
 assert "R8c: the litter guard FAILS against the entry a REAL seed run produced, and names it (proves the stem matcher agrees with seed's actual <lane>.<pid> naming, not just a hand-built string)" \

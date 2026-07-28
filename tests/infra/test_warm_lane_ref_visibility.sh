@@ -57,22 +57,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Arm the shared-trash litter guard in Block TRASH at the end of this file
-# (task 5612). init_isolated_lane_root appends its per-run root to _TMPDIRS and
-# snapshots the machine-shared /tmp/.reseed-trash as it stands RIGHT NOW, so the
-# end-of-run guard can tell entries this run produced from ones already there.
-#
-# Sited HERE, immediately after `trap cleanup EXIT`: the helper registers into
-# _TMPDIRS, so it must run AFTER this file's `_TMPDIRS=()` — a call placed
-# before it would register into an array that assignment then wipes, leaking the
-# root. The helper refuses to run when _TMPDIRS is undeclared, so that ordering
-# mistake is a loud error rather than a silent leak. The root is a plain
-# _TMPDIRS entry, so this suite's existing cleanup() reclaims it unmodified;
-# no cleanup body needs editing.
-#
-# The stem is what makes litter attributable to THIS suite: seed names each
-# trash entry "<lane-basename>.<pid>", and a stem shared with no other suite
-# keeps the guard from flaking on a concurrent worktree's litter.
+# Arm the shared-trash litter guard (task 5612). Sited immediately after
+# `trap cleanup EXIT` because the helper registers its per-run root into
+# _TMPDIRS and so must follow this file's own `_TMPDIRS=()`.
+# Rationale, ordering contract, stem rules and honest scope: see the
+# CANONICAL WIRING CONTRACT comment in tests/infra/test_helpers.sh.
 init_isolated_lane_root test-warm-lane-ref-vis
 
 ERR_FILE="$(mktemp /tmp/test-warm-lane-ref-vis-err-XXXXXX)"
@@ -409,25 +398,12 @@ assert "C4: task/9999 branch still absent (not created by check)" \
     bash -c '! git -C "$1" rev-parse --verify refs/heads/task/9999 >/dev/null 2>&1' _ "$C_MAIN"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Block TRASH: shared-trash litter guard (task 5612)
-#
-# scripts/seed-warm-lane.sh computes RESEED_TRASH_DIR as
-# dirname(LANE_DIR)/.reseed-trash and renames a non-empty <lane>/target there,
-# so a lane created bare under /tmp makes that the machine-shared
-# /tmp/.reseed-trash. This block fails the suite if any lane it minted left an
-# entry there, attributed by this suite's own mktemp stem.
-#
-# HONEST SCOPE: a FUTURE-regression guard, not a remediation. Task 5607 measured
-# ZERO offenders across all six warm-lane suites, twice — with and without a
-# reflink substrate, and with a positive control proving the probe was live —
-# and forensic attribution of the pre-fix litter found none of these suites'
-# stems in it. Nothing here is expected to fire today; it exists so a future
-# bare-/tmp lane fails a test instead of quietly accumulating.
-#
-# TRASH1 is not optional. Attribution is by stem against a machine-shared path,
-# so TRASH2 can realistically only ever report "clean" for this suite — which is
-# indistinguishable from a checker that stopped working. TRASH1 proves the
-# instrument fires, hermetically, without writing to the path it defends.
+# Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
+# kept as two independently-reported signals: TRASH2 can realistically only ever
+# report "clean", which is indistinguishable from a checker that stopped working
+# — TRASH1 is the hermetic control proving the instrument still fires.
+# Full rationale and honest scope: the CANONICAL WIRING CONTRACT comment in
+# tests/infra/test_helpers.sh.
 # ─────────────────────────────────────────────────────────────────────────────
 assert "TRASH1: shared-trash litter detector is live (self-test fires on a synthetic bare-/tmp lane)" \
     assert_shared_trash_litter_detector_live

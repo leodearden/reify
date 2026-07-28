@@ -81,24 +81,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Arm the shared-trash litter guard in Block TRASH at the end of this file
-# (task 5612). init_isolated_lane_root appends its per-run root to _TMPDIRS and
-# snapshots the machine-shared /tmp/.reseed-trash as it stands RIGHT NOW, so the
-# end-of-run guard can tell entries this run produced from ones already there.
-#
-# Sited HERE, immediately after `trap cleanup EXIT`: the helper registers into
-# _TMPDIRS, so it must run AFTER this file's `_TMPDIRS=()` — a call placed
-# before it would register into an array that assignment then wipes, leaking the
-# root. The helper refuses to run when _TMPDIRS is undeclared, so that ordering
-# mistake is a loud error rather than a silent leak. The root is a plain
-# _TMPDIRS entry, so this suite's existing cleanup() reclaims it unmodified;
-# no cleanup body needs editing.
-#
-# The stem is what makes litter attributable to THIS suite: seed names each
-# trash entry "<lane-basename>.<pid>", and a stem shared with no other suite
-# keeps the guard from flaking on a concurrent worktree's litter. Here it is the
-# common PREFIX of this suite's own two mktemp stems — target-lane-indep-scratch
-# and target-lane-indep-beh — so both are covered by one wiring.
+# Arm the shared-trash litter guard (task 5612). Sited immediately after
+# `trap cleanup EXIT` because the helper registers its per-run root into
+# _TMPDIRS and so must follow this file's own `_TMPDIRS=()`.
+# Rationale, ordering contract, stem rules and honest scope: see the
+# CANONICAL WIRING CONTRACT comment in tests/infra/test_helpers.sh.
+# The stem is the common PREFIX of this suite's own two mktemp stems
+# (target-lane-indep-scratch, target-lane-indep-beh), so one wiring covers both.
 init_isolated_lane_root target-lane-indep
 
 # detect_reflink_substrate() -- mirrors tests/infra/test_warm_lane_pool.sh's
@@ -304,6 +293,26 @@ echo "--- REGISTRATION: this guard is wired into the verify-pipeline artifact ma
 assert "verify-pipeline-infra-tests.txt maps scripts/seed-warm-lane.sh -> this test" \
     grep -qE '^scripts/seed-warm-lane\.sh[[:space:]]+tests/infra/test_target_per_lane_independence\.sh[[:space:]]*$' "$VP_MAP"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
+# kept as two independently-reported signals: TRASH2 can realistically only ever
+# report "clean", which is indistinguishable from a checker that stopped working
+# — TRASH1 is the hermetic control proving the instrument still fires.
+# Full rationale and honest scope: the CANONICAL WIRING CONTRACT comment in
+# tests/infra/test_helpers.sh.
+#
+# Sited HERE, alongside REGISTRATION and BEFORE the substrate gate below, for
+# the same reason REGISTRATION is: _skip() calls test_summary and exits, so
+# anything placed after the gate is DEAD on every non-reflink host — which is
+# the default here. TRASH1 is hermetic and substrate-independent, so it belongs
+# on the always-runs path unconditionally. TRASH3 at the end of the file
+# re-checks TRASH2 after the substrate-gated real seed runs.
+# ─────────────────────────────────────────────────────────────────────────────
+assert "TRASH1: shared-trash litter detector is live (self-test fires on a synthetic bare-/tmp lane)" \
+    assert_shared_trash_litter_detector_live
+assert "TRASH2: no lane in this suite littered the machine-shared /tmp/.reseed-trash" \
+    assert_no_shared_trash_litter
+
 # _sentinel_propagates <src_lane_target> <other_dir> -- writes a uniquely
 # named sentinel file into <src_lane_target>, then checks whether a file of
 # the same basename is visible under <other_dir>. Returns 0 (propagates --
@@ -411,37 +420,12 @@ ln -s "$(realpath "$_LANE_A_TARGET")" "$_SHARED_DIR/target"
 assert "a symlink-shared target DOES observe the sentinel (non-vacuity control)" \
     _sentinel_propagates "$_LANE_A_TARGET" "$_SHARED_DIR/target"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Shared-trash litter guard (task 5612)
-#
-# scripts/seed-warm-lane.sh computes RESEED_TRASH_DIR as
-# dirname(LANE_DIR)/.reseed-trash and renames a non-empty <lane>/target there,
-# so a lane created bare under /tmp makes that the machine-shared
-# /tmp/.reseed-trash. These asserts fail the suite if any lane it minted left an
-# entry there, attributed by this suite's own mktemp stem (target-lane-indep*).
-#
-# HONEST SCOPE: a FUTURE-regression guard, not a remediation. Task 5607 measured
-# ZERO offenders across all six warm-lane suites, twice — with and without a
-# reflink substrate, and with a positive control proving the probe was live —
-# and forensic attribution of the pre-fix litter found none of these suites'
-# stems in it. Nothing here is expected to fire today; it exists so a future
-# bare-/tmp lane fails a test instead of quietly accumulating. The two bare
-# `mktemp -d` PATH-stub dirs above are named tmp.XXXXXXXXXX and so are not
-# attributable to this suite — they are stub dirs, never lanes, so they cannot
-# reach seed's rename-into-trash path.
-#
-# The liveness self-test is not optional. Attribution is by stem against a
-# machine-shared path, so the litter assert can realistically only ever report
-# "clean" for this suite — which is indistinguishable from a checker that
-# stopped working. The self-test proves the instrument fires, hermetically,
-# without writing to the path it defends.
-#
-# Not reached by the `_skip` early-exit path above, which calls test_summary and
-# exits before here. Acceptable: that path runs no seed at all.
-# ─────────────────────────────────────────────────────────────────────────────
-assert "the shared-trash litter detector is live (self-test fires on a synthetic bare-/tmp lane)" \
-    assert_shared_trash_litter_detector_live
-assert "no lane in this suite littered the machine-shared /tmp/.reseed-trash" \
+# TRASH3 re-checks TRASH2 after the BEHAVIORAL block — the only part of this
+# suite that drives the REAL seed, and therefore the only part that could
+# actually litter. TRASH1/TRASH2 above run before the substrate gate so they
+# cover every invocation including the `_skip` early exit; this one covers the
+# lanes seeded above, which those two ran too early to see.
+assert "TRASH3: ... and still none after the BEHAVIORAL block's real seed runs" \
     assert_no_shared_trash_litter
 
 test_summary

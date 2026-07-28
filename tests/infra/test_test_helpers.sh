@@ -1164,6 +1164,35 @@ _wl_run "$_WL_DIR/make-lane.sh"
 if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "OK" ]; then ok=true; else ok=false; fi
 check "WL-e: make_isolated_lane yields a lane under a private parent — never bare /tmp, parent holds only the lane, no sibling .reseed-trash (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
 
+# (e2) THE ATTRIBUTION COUPLING, pinned end-to-end rather than by inspection:
+# seed names each trash entry "<lane-basename>.<pid>", and the litter guard
+# attributes by a prefix test on that basename. So the lane basename MUST carry
+# the suite stem — a bare "lane-XXXXXX" would make every library-minted lane
+# unattributable, i.e. only ever an informational note, leaving the guard
+# structurally incapable of failing for exactly the lanes it exists to cover.
+# The probe therefore does not merely assert the name: it synthesizes the entry
+# seed WOULD write for this lane and requires the real checker to fail on it.
+cat > "$_WL_DIR/lane-name-attributable.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_TMPDIRS=()
+init_isolated_lane_root teststem || { echo "init-failed"; exit 9; }
+L="$(make_isolated_lane pfx)" || { echo "make-failed"; exit 8; }
+_base="$(basename "$L")"
+case "$_base" in teststem*) ;; *) echo "lane-basename-lacks-stem:$_base"; exit 1 ;; esac
+# Simulate seed: RESEED_TRASH="$(dirname LANE)/.reseed-trash/$(basename LANE).$$"
+TRASH="$_LANE_ROOT/attr-trash"; SNAP="$_LANE_ROOT/attr-snap"
+mkdir -p "$TRASH"; _list_trash_entries "$TRASH" > "$SNAP"
+mkdir -p "$TRASH/$_base.4242"
+_out="$(_assert_no_shared_trash_litter "$TRASH" "$SNAP" "$_LANE_LITTER_PREFIX" 2>&1)" && { echo "guard-passed-its-own-lane-litter"; exit 1; }
+case "$_out" in *"$_base.4242"*) ;; *) echo "guard-did-not-name-entry:$_out"; exit 1 ;; esac
+case "$_out" in *unattributable*|*"not attributable"*) echo "guard-classed-own-lane-as-unattributed:$_out"; exit 1 ;; esac
+echo OK
+PROBE
+_wl_run "$_WL_DIR/lane-name-attributable.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "OK" ]; then ok=true; else ok=false; fi
+check "WL-e2: a make_isolated_lane lane is ATTRIBUTABLE — its basename carries the stem, so the litter guard FAILS (not 'notes') on the <lane>.<pid> entry seed would write for it (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
 # (f) Distinct parents per call — a shared parent would put two lanes' trash
 # dirs on one path and defeat the isolation.
 cat > "$_WL_DIR/two-lanes.sh" <<'PROBE'
@@ -1391,6 +1420,34 @@ _wl_run "$_WL_DIR/assert-no-use.sh"
 if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "clean=0/[] dirty=1 names_dir=yes h1=yes h2=yes" ]; then ok=true; else ok=false; fi
 check "WL-i7: _assert_no_shared_trash_use passes silently on an empty hits file and fails naming both _SHARED_TRASH_DIR and every recorded hit (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
 
+# (i) UNINITIALIZED STATE. This library is sourced by 153 files, so both entry
+# points are reachable with $_TRASH_HITS_FILE still at its empty default. The
+# recorder's append would then have an EMPTY redirect target: under the
+# `set -euo pipefail` every warm-lane suite uses, the shell exits mid-run with a
+# cryptic ": No such file or directory" and test_summary never prints totals.
+# The recorder must therefore diagnose and still return 0 (its trailing return 0
+# is absolute); the CHECKER must instead fail loudly, since passing on state it
+# never observed is the dead instrument this facility exists to prevent.
+cat > "$_WL_DIR/no-init-detector.sh" <<'PROBE'
+set -euo pipefail
+source "$1"
+# Deliberately NO init_isolated_lane_root, and an ERR_OUT that WOULD match.
+ERR_OUT="renaming into $_SHARED_TRASH_DIR/x.1"
+_note_shared_trash_use no-init-probe
+_rc_note=$?
+_out_chk="$(_assert_no_shared_trash_use 2>&1)" && _rc_chk=0 || _rc_chk=$?
+_chk_names_init=no; case "$_out_chk" in *init_isolated_lane_root*) _chk_names_init=yes ;; esac
+# Reaching here at all proves `set -e` did not abort the script at the recorder.
+printf 'survived=yes rc_note=%s rc_chk=%s chk_names_init=%s\n' \
+    "$_rc_note" "$_rc_chk" "$_chk_names_init"
+PROBE
+_wl_run "$_WL_DIR/no-init-detector.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "survived=yes rc_note=0 rc_chk=1 chk_names_init=yes" ]; then ok=true; else ok=false; fi
+check "WL-i8: with init never called, _note_shared_trash_use returns 0 without aborting the suite under set -e, and _assert_no_shared_trash_use fails loudly naming init_isolated_lane_root rather than passing vacuously (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+if [[ "$_WL_ERR" == *_note_shared_trash_use* ]]; then ok=true; else ok=false; fi
+check "WL-i9: ... and the recorder says so on stderr, so a missing init is visible rather than silently unrecorded (got: $(_wl_flat "$_WL_ERR"))" "$ok"
+
 # ==============================================================================
 # Warm-lane shared-trash LITTER guard + liveness control (task 5612)
 #
@@ -1547,7 +1604,17 @@ if [ "$_WL_RC" -eq 0 ] && [[ "$_WL_OUT" == "rc=0 untouched=yes"* ]]; then ok=tru
 check "WL-j7: assert_shared_trash_litter_detector_live returns 0 and never reads or writes \$_SHARED_TRASH_DIR — it mktemps its own scratch dir (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
 
 # ... and the same control against the REAL default path must leave
-# /tmp/.reseed-trash byte-for-byte as it found it.
+# /tmp/.reseed-trash as it found it.
+#
+# ATTRIBUTED, NOT A BARE SNAPSHOT-DIFF. /tmp/.reseed-trash is machine-shared, so
+# any concurrent worktree writing there inside this probe's window would fail a
+# bare diff for a reason with nothing to do with the code under test — the very
+# flake the production guard's stem attribution exists to avoid, so this check
+# uses the same method. The control's own stem is the literal "selftest-stem"
+# hardcoded in assert_shared_trash_litter_detector_live, and the only entry it
+# could ever create is "<stem>-lane-XXXX.<pid>"; anything else new is another
+# process's and is reported informationally instead of failing.
+_WL_SELFTEST_STEM="selftest-stem"
 ls -A /tmp/.reseed-trash 2>/dev/null | sort > "$_WL_DIR/real-trash-before"
 cat > "$_WL_DIR/litter-live-real.sh" <<'PROBE'
 set -uo pipefail
@@ -1557,13 +1624,24 @@ assert_shared_trash_litter_detector_live
 PROBE
 _wl_run "$_WL_DIR/litter-live-real.sh"
 ls -A /tmp/.reseed-trash 2>/dev/null | sort > "$_WL_DIR/real-trash-after"
-_wl_new_real="$(comm -13 "$_WL_DIR/real-trash-before" "$_WL_DIR/real-trash-after" | tr '\n' ' ')"
+_wl_new_real=""
+_wl_new_other=""
+while IFS= read -r _wl_e; do
+    [ -n "$_wl_e" ] || continue
+    case "$_wl_e" in
+        "$_WL_SELFTEST_STEM"*) _wl_new_real="$_wl_new_real$_wl_e " ;;
+        *)                     _wl_new_other="$_wl_new_other$_wl_e " ;;
+    esac
+done < <(comm -13 "$_WL_DIR/real-trash-before" "$_WL_DIR/real-trash-after")
+if [ -n "${_wl_new_other// /}" ]; then
+    echo "note: /tmp/.reseed-trash gained entries not attributable to $_WL_SELFTEST_STEM (other worktrees; not a failure): $_wl_new_other"
+fi
 
 if [ "$_WL_RC" -eq 0 ]; then ok=true; else ok=false; fi
 check "WL-j8: the liveness control returns 0 against the real default _SHARED_TRASH_DIR (rc=$_WL_RC out: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
 
 if [ -z "${_wl_new_real// /}" ]; then ok=true; else ok=false; fi
-check "WL-j9: ... and adds NO entry to the machine-shared /tmp/.reseed-trash it defends (new: [$_wl_new_real])" "$ok"
+check "WL-j9: ... and adds no entry of its OWN stem ($_WL_SELFTEST_STEM) to the machine-shared /tmp/.reseed-trash it defends (new: [$_wl_new_real])" "$ok"
 
 # -- Summary -------------------------------------------------------------------
 echo ""
