@@ -2593,6 +2593,22 @@ pub enum DiagnosticCode {
     /// value↔value, geom↔constraint, realization↔realization (GeomRef::Sub) and
     /// any other cross-kind cycle over the edges α's trace map encodes.
     ///
+    /// Origin: `crates/reify-eval/src/engine_eval.rs::build_dependent_cells`
+    /// stage (f) (task 5189 β; the JOINT-DRIVE SCC-admissibility guardrail, PRD
+    /// `docs/prds/v0_6/whole-model-joint-drive-seam.md` §6.4).
+    ///
+    /// Canonical message form: `"circular value-cell dependency across the
+    /// coupled solve scopes: [<entity.member>, …] -- …"`, sorted for
+    /// determinism. Ids are rendered FULLY QUALIFIED because that detector is
+    /// cross-template, so the bare member name the other sites use would be
+    /// ambiguous.
+    ///
+    /// Emitted as a `Severity::Error` when the induced non-auto sub-DAG of the
+    /// coupled dependent-cell set fails to sort completely. That length check IS
+    /// the admissibility test: the node set excludes auto params by construction
+    /// and the only admissible back-edge (the solver feedback edge) runs THROUGH
+    /// an auto, so any Kahn drop is by construction an inadmissible data cycle.
+    ///
     /// The PRD-prose mnemonic for this code is `E_EVAL_CYCLE`.
     EvalCycle,
     /// **Two disjoint emission sites** — shared code, disjoint code paths (no

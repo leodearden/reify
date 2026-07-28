@@ -862,7 +862,7 @@ fn union_via_transitive_auto_owners(
 /// One deliberate narrowing versus the oracle: a collection sub decrements the
 /// budget ONCE (for its index-stripped base path) rather than once per runtime
 /// index, so this side is strictly cheaper and can only ever truncate later.
-fn build_instance_path_structure_map(
+pub(crate) fn build_instance_path_structure_map(
     templates: &[TopologyTemplate],
     max_depth: usize,
     max_nodes: usize,
@@ -949,7 +949,10 @@ fn build_instance_path_structure_map(
 /// living inside `templates[parent].value_cells` and surfaced by
 /// `extract_value_deps` MID-WALK.  Normalisation therefore runs at every hop of
 /// [`union_via_transitive_auto_owners`], not only on its seeds.
-fn normalize_cell_id(id: &ValueCellId, path_map: &HashMap<String, String>) -> Option<ValueCellId> {
+pub(crate) fn normalize_cell_id(
+    id: &ValueCellId,
+    path_map: &HashMap<String, String>,
+) -> Option<ValueCellId> {
     let stripped = strip_collection_indices(&id.entity);
     path_map
         .get(stripped.as_ref())
@@ -959,7 +962,7 @@ fn normalize_cell_id(id: &ValueCellId, path_map: &HashMap<String, String>) -> Op
 /// Remove every `[...]` collection-index segment from an instance path
 /// (`Rig.bolts[3].head` → `Rig.bolts.head`), borrowing unchanged when there is
 /// no index to strip (the common case).
-fn strip_collection_indices(entity: &str) -> std::borrow::Cow<'_, str> {
+pub(crate) fn strip_collection_indices(entity: &str) -> std::borrow::Cow<'_, str> {
     if !entity.contains('[') {
         return std::borrow::Cow::Borrowed(entity);
     }
