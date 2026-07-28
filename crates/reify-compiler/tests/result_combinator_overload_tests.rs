@@ -10,24 +10,7 @@
 //! constructor head rather than exact-equality.
 
 use reify_core::{DiagnosticCode, Severity, Type};
-use reify_test_support::compile_source_with_stdlib;
-
-// ── helper (mirrors option_recovery_resolution_tests.rs) ────────────────────
-
-fn cell_expr_stdlib<'a>(
-    module: &'a reify_compiler::CompiledModule,
-    member: &str,
-) -> &'a reify_ir::CompiledExpr {
-    let template = &module.templates[0];
-    template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == member)
-        .unwrap_or_else(|| panic!("value cell '{member}' not found"))
-        .default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("value cell '{member}' has no default_expr"))
-}
+use reify_test_support::{compile_source_with_stdlib, get_let_expr};
 
 // ── (a) Signal 2: Option vs Result overload disambiguation ──────────────────
 
@@ -67,7 +50,7 @@ structure S {
         errors
     );
 
-    let a_expr = cell_expr_stdlib(&module, "a");
+    let a_expr = get_let_expr(&module, "a");
     assert_eq!(
         a_expr.result_type,
         Type::Bool,
@@ -76,7 +59,7 @@ structure S {
         a_expr.result_type
     );
 
-    let b_expr = cell_expr_stdlib(&module, "b");
+    let b_expr = get_let_expr(&module, "b");
     assert_eq!(
         b_expr.result_type,
         Type::length(),
