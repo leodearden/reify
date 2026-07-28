@@ -26,6 +26,7 @@ import {
 import type { DiagnosticEntry } from './panels';
 import type { ReferenceResult } from './editor/references';
 import { WarmPoolDebugPanel } from './debug/WarmPoolDebugPanel';
+import { registerDebugPanel } from './debug/types';
 import { Splitter } from './components/Splitter';
 import { KeyboardHelp } from './components/KeyboardHelp';
 import { CommandPalette } from './components/CommandPalette';
@@ -411,6 +412,25 @@ const CHAT_MIN_HEIGHT = 160;
 const SPLITTER_THICKNESS = 4;
 
 let toastIdCounter = 0;
+
+/**
+ * Registration-only (renders nothing): scopes `__REIFY_DEBUG__.feaMode` to the
+ * MultiViewport branch's lifetime.
+ *
+ * `registerDebugPanel` wraps onMount/onCleanup unconditionally, so calling it
+ * from App's body would fire in BOTH branches. In single-pane mode Solid runs
+ * the child's onMount (DualViewport, which registers its own component-local
+ * store) before the parent's, so App's registration would land last and leave
+ * ctx.feaMode pointing at a store no rendered toolbar drives — every
+ * set_fea_channel would then return didNotReachStore. Rendered inside the
+ * <Show> true-branch instead, this exists exactly when <MultiViewport> does and
+ * releases the slot on cleanup; registerDebugPanel's identity guard makes a
+ * branch flip order-independent in both directions.
+ */
+function FeaModeDebugRegistrar(props: { store: FeaModeStore }) {
+  registerDebugPanel('feaMode', props.store);
+  return null;
+}
 
 const App: Component = () => {
   const editorStore = createEditorStore();
@@ -2121,7 +2141,10 @@ const App: Component = () => {
                   />
                 }
               >
-                <MultiViewport panes={panes()} viewportStore={viewportStore} />
+                <>
+                  <FeaModeDebugRegistrar store={paneFeaModeStore} />
+                  <MultiViewport panes={panes()} viewportStore={viewportStore} />
+                </>
               </Show>
             </div>
             <Splitter orientation="vertical" onResize={handleRightResize} data-testid="splitter-right" />
