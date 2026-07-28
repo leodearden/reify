@@ -1,0 +1,577 @@
+prd: docs/prds/v0_6/dimensioned-construction-strictness.md
+schema_version: 1
+tasks:
+- label: ζ₀
+  task_id: 5753
+  title: 'dimensioned-construction ζ₀: reinstate D5 and record the 4318 reversal in
+    real-dimensionless-unification.md'
+  capabilities:
+  - name: d5-text-and-fold-anchors-live
+    binding: 'signal premise — re-read at decompose HEAD 638d97d8ab: real-dimensionless-unification.md:51
+      carries D5 verbatim ("Struct-param default type-check = hard error … Reuse FnParamDefaultTypeMismatch"),
+      :17 the rule, :82 the "Drop ε; fold its literal case into 4318" decompose note,
+      :134 the boundary row. git diff dc83d4fd60..HEAD touches no crates/ file, so
+      every PRD §2.4 anchor holds unchanged.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: dimensioned-construction-strictness
+      paths:
+      - docs/prds/v0_6/real-dimensionless-unification.md
+      expect: present
+  - name: reversal-is-genuinely-unrecorded
+    binding: signal premise (the gap ζ₀ closes) — grep over real-dimensionless-unification.md
+      finds NO mention of task 4318, of the shipped numeric-literal tolerance, or
+      of any D5 status change; the transition described in PRD §0.3 row 2 is recorded
+      nowhere in the repo.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the deliverable is prose that makes a superseded decision legible in
+        one hop; wording is not mechanically expressible beyond the 4318 citation
+        check above.
+- label: α
+  task_id: 5756
+  title: 'dimensioned-construction α: blast-radius measurement + per-site migration
+    ledger (predicate flipped locally, never landed)'
+  capabilities:
+  - name: corpus-gate-is-the-measurement-instrument
+    binding: grep:crates/reify-compiler/tests/examples_smoke.rs:198 no_example_emits_ctor_field_conformance_diagnostics
+      — severity-blind, ≥40-file floor at :215-220, accumulates every violation into
+      one panic at :230-236 (read verbatim at HEAD). This is both α's instrument and
+      β's proof.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn no_example_emits_ctor_field_conformance_diagnostics
+      paths:
+      - crates/reify-compiler/tests/examples_smoke.rs
+      expect: present
+  - name: predicate-flip-is-one-arm
+    binding: grep:crates/reify-compiler/src/conformance/mod.rs:1691-1697 — read verbatim
+      at HEAD; matches PRD §4.1's quoted diff exactly. `is_dimensionless` occurs exactly
+      ONCE in the whole file, at :1694.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: general_leaf_param_family_is_validated
+      paths:
+      - crates/reify-compiler/src/conformance/mod.rs
+      expect: present
+  - name: reusable-sweep-exists-with-parse-only-exclusions
+    binding: grep:crates/reify-cli/tests/harness_cli/corpus_no_bare_scalar.rs — already
+      walks examples/**, crates/**/*.ri, crates/**/*.rs inline fixtures and gui/**,
+      already strips comments and already excludes reify-syntax/reify-ast tests as
+      parse-only. PRD §6.2 measured that this exclusion list matches the parse-only
+      bucket exactly. α reuses it rather than re-deriving a sweep (a naive sweep over-counts
+      gate 1 by ~8 and under-counts gates 3/4 by the 16 registry-absent dimensioned
+      type aliases).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: α is an intermediate whose deliverable is a committed ledger under docs/notes/;
+        its filename is the implementer's, so no stable pattern exists ex ante.
+  - name: two-sweep-traps-the-PRD-does-not-name
+    binding: 'ADVERSARY findings, both binding on α (and δ₁). (1) `unit` DECLARATIONS
+      are textually IDENTICAL to §6.2''s category-A pattern but semantically REQUIRED
+      to be bare conversion factors — `pub unit cm : Length = 0.01`, crates/reify-compiler/stdlib/units.ri:15-19/:24
+      etc. (~20 stdlib lines, plus examples/m9_combined.ri:46 and examples/integration_full_v01.ri:33).
+      They are not value cells so the compiler never diagnoses them; a regex-driven
+      sweep flags them and a migration agent "fixing" one silently breaks the unit
+      system (same failure shape as §4.3''s panic-message trap). α''s ledger needs
+      an explicit EXCLUDED-BY-DESIGN bucket. (2) `corpus_no_bare_scalar.rs:145-160`
+      — the sweep the PRD tells α and δ₁ to reuse — is BLIND to 167 `.ri` files, several
+      trees of which are compiled by NO gate at all: docs/prds/**/fixtures/ (51),
+      tests/prd-gate/fixtures/ (75, of which 60 are orphaned), designs/litter_tray/
+      (7), prj/printer_v01/printer.ri (1), .orchestrator-scratch/ds-sentinel-fixtures/
+      (5), gui/test/fixtures/ (12, GUI e2e only), tree-sitter-reify/test/fixtures/
+      (27, parse-only). α must record the sweep''s reach so a later reader does not
+      take "corpus clean" for "every .ri clean". An independent type-name-driven sweep
+      over all 605 main-tree `.ri` files reproduced §6.2 (=2) and §6.3 (=17/16/5)
+      EXACTLY with zero additional true positives, so α''s job on those two items
+      is genuinely re-CONFIRMATION.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: methodology requirements on a measurement leaf; verifiable only in the
+        ledger α commits.
+- label: β
+  task_id: 5758
+  title: 'dimensioned-construction β: migrate the 17 bare ctor arg-sites to dimensioned
+    construction (behaviour-preserving)'
+  capabilities:
+  - name: fix-form-compiles-in-example-scope
+    binding: 'probe:beta-fix-form (α harness, PASS) — `Limit(velocity_limit: 300mm/s,
+      acceleration_limit: 5000mm/s^2)` at `Scalar<Velocity>`/`Scalar<Acceleration>`
+      ctor fields: `reify check` exit 0, zero diagnostics. The registry-less compositional
+      alternative is documented at stdlib/units.ri:141-148 with its guard at expr.rs:1455-1462.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'velocity_limit: 300\.0'
+      paths:
+      - examples/trajectory/tots_optimal_ptp.ri
+      - examples/trajectory/printer_print_envelope.ri
+      expect: absent
+  - name: migration-set-anchors-live-at-head
+    binding: 'signal premise — each of the 17 bare arg-sites re-read at HEAD: tots_optimal_ptp.ri:67/78/79,
+      printer_print_envelope.ri:153/154/155 (the :146-147 anchor in task 5627''s record
+      is the COMMENT, not the args), struct_ctor_field_conformance_tests.rs:1420 (×2
+      args), input_shape_eval_e2e.rs:248/255/256, gui/test/fixtures/large_assembly.ri:18/19/27/28/36/37.
+      examples/bearing_auto_seal.ri has ZERO ctor sites — its only issue is a gate-3
+      default, δ₁''s.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'density: 7850\.0'
+      paths:
+      - gui/test/fixtures/large_assembly.ri
+      expect: absent
+  - name: correct-twin-exists-so-beta-invents-no-spelling
+    binding: 'grep:examples/large_assembly.ri:51-53 — the same assembly written correctly
+      (`density: 7850kg/m^3`, `youngs_modulus: 200GPa`). The gui/ copy is a degraded
+      twin loaded live by gui/src-tauri/src/debug_server.rs:1236 and gui/test/visual/assertions.ts:47.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 200GPa
+      paths:
+      - examples/large_assembly.ri
+      expect: present
+  - name: one-migration-target-has-NO-compile-gate
+    binding: ADVERSARY finding, binding on β. `gui/test/fixtures/large_assembly.ri`
+      — 6 of β's 17 arg-sites — is loaded ONLY by the GUI e2e path (gui/src-tauri/src/debug_server.rs:1236,
+      gui/test/visual/assertions.ts:47) and by NO cargo test. corpus_no_bare_scalar.rs
+      walks gui/test/**/*.ri but that is a bare-scalar lint, not a compile. So PRD
+      §4.3's "workspace green at every commit" CANNOT detect a mistake in that file.
+      β must verify that edit by hand (`reify check` / `reify eval` on it explicitly)
+      and compare evaluated SI magnitudes before and after — INV-SF-7 `parse-is-value-faithful`,
+      since quantity-literal juxtaposition is adjacency-sensitive (#5392) and "it
+      still compiles" is not evidence the number is unchanged.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the gap is the ABSENCE of a gate; the compensating check is a manual
+        before/after SI comparison inside β's own work.
+- label: γ
+  task_id: 5627
+  title: 'dimensioned-construction γ (task 5627): promote the dimensioned-Scalar ctor-slot
+    family under strict DimensionVector equality'
+  capabilities:
+  - name: rejection-mechanism-observed-firing
+    binding: 'rejection-check / probe:gamma-rejection-mechanism (α harness, PASS)
+      — negative-assertion mandate satisfied at the SAME walker entry γ widens: `Flagged(flag:
+      "oops")` at `param flag : Bool` emits `warning: argument ''flag'' has type ''String''
+      but param ''flag'' requires type ''Bool''` on `reify check`, exit 0. γ builds
+      no new emission path; emit_arg_type_mismatch (conformance/mod.rs:1084-1099)
+      and reject_if_incompatible (:1194) are already live for the four families task
+      5465 promoted.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: is_dimensionless
+      paths:
+      - crates/reify-compiler/src/conformance/mod.rs
+      expect: absent
+  - name: before-image-is-a-genuine-silent-accept
+    binding: 'probe:gamma-before-image (α harness, PASS) — `Steel(youngs_modulus:
+      200mm, density: "heavy")` against locally-declared `param youngs_modulus : Pressure`
+      / `param density : Density`: `All constraints satisfied.`, exit 0, ZERO diagnostics.
+      Cross-dimension and non-scalar both swallowed, exactly as PRD §2.3 states.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the before-image is a per-fixture observation; the after-state is covered
+        by the is_dimensionless-absent check above plus γ''s own I1-I8 value floors.
+  - name: arg-side-inference-is-precise-I1
+    binding: 'probe:gamma-arg-inference (α harness, PASS) — the single highest-risk
+      invariant (PRD §6.6). `span / 2.0` at a `Length` fn param, `100mm * 1mm` at
+      an `Area` param, `5.0 * STANDARD_GRAVITY()` at an `Acceleration` param, and
+      a dimensioned param reference ALL pass gate 6, which already applies strict
+      `param_ty == arg_ty` (type_compat.rs:1201/1221/1289): exit 0, zero diagnostics.
+      The precise-inference capability γ depends on is therefore live on main today,
+      not something γ must build.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: I1 is a value-floor test inside γ''s own diff (three arg shapes in one
+        clean fixture); asserting it ex ante by pattern would pin test names.
+  - name: scalarparam-fence-pattern-exists
+    binding: grep:crates/reify-compiler/src/conformance/mod.rs is_numeric_placeholder_leaf
+      (`Type::Int | Type::Scalar{..} | Type::ScalarParam(_)`), already used by the
+      shipped Point/Matrix/Tensor arms. D4-5 prescribes reusing it rather than widening
+      arg_type_is_unverifiable, which would silence `String ← Scalar<Q>` at every
+      arm at once.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: is_numeric_placeholder_leaf
+      paths:
+      - crates/reify-compiler/src/conformance/mod.rs
+      expect: present
+  - name: corpus-gate-panic-prose-encodes-the-OLD-ruling
+    binding: 'grep:crates/reify-compiler/tests/examples_smoke.rs:230-236 — read verbatim
+      at HEAD: "Every one is … a false positive from the conformance walker, not a
+      broken example. Fix the walker … the general_leaf_param_family_is_validated
+      allowlist …; do NOT add a SKIP_SET entry." After γ a firing diagnostic is a
+      TRUE positive; an implementer following that message would REVERT the promotion.
+      γ must rewrite it (PRD §4.3 trap).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: a false positive from the conformance walker
+      paths:
+      - crates/reify-compiler/tests/examples_smoke.rs
+      expect: absent
+  - name: severity-safe-pre-delta-BY-MEASUREMENT-not-construction
+    binding: 'PREMISE REPAIRED by the Adversary. grep:crates/reify-compiler/src/conformance/mod.rs:32
+      CTOR_FIELD_CONFORMANCE_SEVERITY = Severity::Warning (unchanged at HEAD) + probe:gamma-rejection-mechanism
+      (ctor entry PRINTS, exits 0). BUT PRD §3.1''s argument is HALF WRONG: guard
+      (i) (`if !type_carries_trait_object(param_ty) { continue; }`, entities_phase.rs:1493)
+      is confirmed verbatim, while guard (ii) is FALSIFIED as a backstop — resolve_function_overload
+      filters at type_compat.rs:1194-1200 with `type_carries_trait_object(param_ty)
+      || … || param_ty == arg_ty`, i.e. the SAME predicate as guard (i) is the FIRST
+      DISJUNCT, so the two guards are MUTUALLY EXCLUSIVE, not conjunctive. The Error
+      entry IS mechanically reachable, demonstrated with the already-vetted String
+      family: `fn takes(m : Map<String, MaterialSpec>) -> Int; takes(map{ 1 => Steel()
+      })` → `error: argument ''m'' … requires type ''String''`, EXIT 1. Independent
+      corpus count of reachable sites TODAY: ZERO (only 6 repo-wide fn decls take
+      a Map param, none trait-carrying; all 21 trait-typed .ri fn params are bare
+      Trait or List<Trait>, single-position). HONEST PREMISE: γ adds no Error because
+      no reachable site exists TODAY — MEASURED, not structural. This makes α''s §6.5
+      item-4 count load-bearing and re-checkable; non-zero ⇒ migrate in β before γ.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'const CTOR_FIELD_CONFORMANCE_SEVERITY: Severity = Severity::Warning'
+      paths:
+      - crates/reify-compiler/src/conformance/mod.rs
+      expect: present
+  - name: auto-and-undef-are-not-conformance-judged
+    binding: 'UNLISTED PREMISE surfaced by the Adversary, load-bearing for the corpus
+      gate. `auto`, `auto(free)` and `undef` produce NO conformance judgement at EITHER
+      walker entry — verified today: `param s1 : String = auto` is silent, `P(r: undef,
+      s: undef, l: undef)` is silent. Without this, γ''s gate-2 half (the param-default
+      entry, which rides the SAME predicate) would newly fire on the 96 measured auto/auto(free)/undef
+      default sites and turn no_example_emits_ctor_field_conformance_diagnostics RED.
+      The PRD never states it and §6.5 item 1 admits gate 2 was never measured. γ
+      carries a value floor pinning auto/auto(free)/undef at a dimensioned slot as
+      SILENT.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a value floor inside γ''s own diff; no stable ex-ante pattern.
+  - name: scalarparam-fence-also-silences-a-shipped-diagnostic
+    binding: 'UNLISTED COUPLING surfaced by the Adversary. D4-5''s fence lands on
+      the SHARED general-leaf arm, so it also flips an ALREADY-SHIPPED diagnostic
+      from warn to silent. Verified today: `fn fwd<Q: Dimension>(x: Scalar<Q>) { Sink(r:
+      x, s: x) }` emits `warning: argument ''r'' has type ''Scalar<Q>'' but param
+      ''r'' requires type ''Real''` — that belongs to task 5465''s already-promoted
+      DIMENSIONLESS family. γ must declare the change as intended and pin the dimensionless
+      family''s post-state, or it is a silent regression. The `String ← Scalar<Q>`
+      half fires correctly today, so I5''s "the fence is not a blanket" assertion
+      stays satisfiable. Corpus count of dimension-generic sites that would forward
+      a Scalar<Q> into a CONCRETE dimensioned ctor field or param default: ZERO (7
+      dim-generic fns, 4 dim-bounded structures, none forwarding).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: an intended behaviour change to a shipped diagnostic; the pin lives
+        in γ''s own value floors.
+- label: δ₁
+  task_id: 5646
+  title: 'dimensioned-construction δ₁ (task 5646, part 1): delete the literal param/let
+    default tolerance — D5 reinstated in code'
+  capabilities:
+  - name: rejection-mechanism-observed-firing-params
+    binding: 'rejection-check / probe:delta1-mechanism-param (α harness, PASS) — `param
+      x : Length = ratio * 2.0` → `error: parameter ''x'' declared `Scalar[m]` but
+      its initializer evaluates to `Real`; declared type and initializer dimension
+      must agree`, exit 1. entity.rs already owns the compound-expression case at
+      :486-499 with Diagnostic::error; δ₁ only removes the literal early-return that
+      shadows it.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'param durometer : Length'
+      paths:
+      - examples/bearing_auto_seal.ri
+      expect: absent
+  - name: rejection-mechanism-observed-firing-lets
+    binding: 'rejection-check / probe:delta1-mechanism-let (α harness, PASS) — `let
+      t : Length = ratio * 2.0` → `error: let binding ''t'' declared `Scalar[m]` but
+      its initializer evaluates to `Real`; declared type and initializer type must
+      agree`, exit 1. Gate 4 (the `let` twin) was created by task 4318 and never contemplated
+      by D5.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: is_numeric_literal_expr
+      paths:
+      - crates/reify-compiler/src/entity.rs
+      expect: absent
+  - name: before-image-silent-both-gates
+    binding: 'probe:delta1-before-param + probe:delta1-before-let (α harness, both
+      PASS) — `param t : Length = 1.0` and `let t : Length = 1.0` each produce `All
+      constraints satisfied.`, exit 0, zero diagnostics today.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: before-image observation; the after-state is the is_numeric_literal_expr-absent
+        check above (subject to Open question 2 — if α finds another consumer, δ₁
+        leaves the helper with a comment naming the survivor and this check is downgraded
+        in the same diff).
+  - name: no-over-rejection-floor-B8
+    binding: 'probe:delta1-no-over-rejection (α harness, PASS) — `param t : Length
+      = 5mm` AND `param r : Real = 1.0` in one file → exit 0, zero diagnostics. This
+      is also ζ₁''s chunk-truth acceptance: the spelling parameters.md already documents
+      compiles as written.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a non-regression floor inside δ₁''s own diff; no stable ex-ante pattern.
+  - name: four-deliberate-pins-to-invert-exist
+    binding: grep:crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:172
+      and :203; grep:crates/reify-compiler/tests/harness_langcore/let_annotation_type_mismatch_tests.rs:173
+      and :578 — all four present at HEAD. They are the "test asserting the negation
+      of the PRD decision, added deliberately" tell of a silent reversal; inverting
+      them WITH a doc comment naming task 4318 and pointing at PRD §0.3 is the load-bearing
+      act, not cleanup.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: do_not_error|does_not_error
+      paths:
+      - crates/reify-compiler/tests/param_default_type_mismatch_tests.rs
+      - crates/reify-compiler/tests/harness_langcore/let_annotation_type_mismatch_tests.rs
+      expect: absent
+- label: δ₂
+  task_id: 5762
+  title: 'dimensioned-construction δ₂ (task 5646, part 2): remove the cross-dimension
+    half of constraint-def Rule 4 numeric leniency'
+  capabilities:
+  - name: rejection-mechanism-observed-firing
+    binding: 'rejection-check / probe:delta2-mechanism (α harness, PASS) — Rule 5
+      already emits the target code path: a cross-CATEGORY arg (`Bool` at a `Length`
+      constraint param) gives `error: type mismatch: argument ''w'' for constraint
+      ''MinWall'' has type Bool but parameter expects Scalar[m]`, exit 1. δ₂ moves
+      the cross-DIMENSION case out of Rule 4 into that same live path; it mints nothing.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: cross-dimension scalar-for-scalar
+      paths:
+      - crates/reify-compiler/src/type_compat.rs
+      expect: absent
+  - name: PREMISE-REPAIRED-before-image-only-silent-when-unmasked
+    binding: 'FALSIFIED-AND-REPAIRED at decompose time. probe:delta2-before-unmasked
+      (PASS): `constraint def Positive { param w : Length; w > 0 }` invoked `Positive(w:
+      m)` with `m : Mass` is COMPLETELY SILENT — `OK Positive#0[0]`, exit 0. probe:delta2-masking
+      (PASS): the SAME cross-dimension arg with a DIMENSIONED literal in the predicate
+      (`w > 0mm`) ALREADY exits 1 today under a DIFFERENT code from a DIFFERENT pass
+      — `error: dimension mismatch in comparison: Scalar[kg] vs Scalar[m]` (task 4490''s
+      comparison-operand guard, type_compat.rs:1335-1366, DiagnosticCode::DimensionMismatch).
+      CONSEQUENCE, carried into δ₂''s task text: a naive exit-code RED test written
+      against the masked shape is GREEN before the change. δ₂ MUST assert DiagnosticCode::ConstraintArgTypeMismatch
+      IDENTITY (D4-8) and use the unmasked fixture as its RED. ADVERSARY WIDENING:
+      the masking is broader than the dimensioned-literal case — task 4490''s guard
+      fires on the substituted predicate for EVERY numeric arg kind (`Positive(v:
+      <Int>)` → "incompatible types in comparison: Int vs Scalar[m]"; `Positive(v:
+      <Real>)` → "dimension mismatch in comparison: Real vs Scalar[m]"), so PRD §2.1
+      row 5''s "Today: LEGAL" is true of the BINDING check but false end-to-end for
+      any comparison-style predicate. A SECOND, cleaner silent shape exists and is
+      preferred as the primary RED: a predicate that does not dimension-compare the
+      param at all — `constraint def Determined { param v: Length   is_determined(v)
+      }` invoked `Determined(v: <Mass>)` → no diagnostic, exit 0. δ₂ must also state
+      whether the new binding-site diagnostic REPLACES or DOUBLES the existing DimensionMismatch
+      for the comparison case (one mistake, two codes — the same wart D4-4 fixes for
+      param defaults). SEPARABILITY (Open question 1) is confirmed answerable WITHOUT
+      touching ScalarParam handling: a `(Type::Scalar{..}, Type::Scalar{..}) => false`
+      pre-arm removes the cross-dimension half while leaving Int-widening and both
+      ScalarParam pairings intact — and the corpus contains ZERO dimension-generic
+      constraint defs (all generic ones are `<T>` / `<T : Rigid>` / `<M : ManufacturingProcess>`,
+      caught by Rule 2).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: constraint_arg_type_conforms_mass_for_length_is_true
+      paths:
+      - crates/reify-compiler/src/type_compat.rs
+      expect: absent
+  - name: deliberate-Int-leniency-pin-must-be-restated-not-deleted
+    binding: 'grep:crates/reify-compiler/tests/constraint_def_compile_tests.rs:1447-1470
+      int_literal_for_length_param_no_constraint_arg_type_mismatch — its doc comment
+      states the leniency as INTENT ("Int-for-Length is deliberately tolerated at
+      the binding site (Rule 4) … with dimensional strictness deferred to task 4490''s
+      comparison-operand guard"). PRD §0.3''s lesson: δ₂ must RESTATE the ruling there,
+      not silently delete the assertion. Rule 4''s is_numeric closure also admits
+      Type::ScalarParam(_) — removing the cross-dimension half must not break dimension-generic
+      constraint defs.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: int_literal_for_length_param_no_constraint_arg_type_mismatch
+      paths:
+      - crates/reify-compiler/tests/constraint_def_compile_tests.rs
+      expect: present
+- label: ε
+  task_id: 5763
+  title: 'dimensioned-construction ε: pin the recovered constraint verdict; file the
+    three residual defects by name'
+  capabilities:
+  - name: PREMISE-FALSIFIED-prd-fixture-produces-no-verdict-at-all
+    binding: 'FALSIFIED at decompose time, then DEEPENED by the Adversary — TWO independent
+      mechanisms, not one. (i) Structure-def constraints are evaluated against the
+      TEMPLATE''s OWN DEFAULTS, once, never per constructed instance — the ctor arg
+      is IGNORED, not merely missing: `Thing { param w : Length = 1mm  constraint
+      w > 0mm }` with `let t = Thing(w: -5mm)` → OK/exit 0 (arg ignored), while default
+      `-5mm` + ctor `5mm` → VIOLATED/exit 1 (the DEFAULT decides); `sub t : Thing
+      { w = -5mm }` → OK/exit 0 too. Mechanism: crates/reify-eval/src/engine_constraints.rs:868
+      `check_constraints_against_templates` — `for template in &module.templates`,
+      against the module-level `values` map. (ii) PRELUDE/STDLIB template constraints
+      are NEVER evaluated — that loop never iterates `self.prelude`. So `StepForce.magnitude
+      > 0N` yields NO verdict in ANY command at ANY magnitude: probe on examples/modal/transient_step_response.ri
+      with `-10N` → `All constraints satisfied.`, exit 0, ZERO constraint lines. Also:
+      `reify eval` runs NO constraints at all. ⇒ ε must declare its OWN LOCAL structure
+      def mirroring StepForce''s shape, bind the value through a param DEFAULT, and
+      drive the signal with `reify check`. PRD §7.4 row B9 is affected identically.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a decompose-time falsification record; the repaired assertion is the
+        recovery-target capability below.
+  - name: PREMISE-FALSIFIED-cause-is-dimension-independent-filed-as-task-5765
+    binding: 'FALSIFIED at decompose time. probe:epsilon-dimension-independence (PASS):
+      the identical Indeterminate (`undefined inputs: Pusher.eff`) fires for a DIMENSIONLESS
+      ctor-supplied param (`param eff : Real`, `constraint eff > 0.0`, `Pusher(eff:
+      -0.5)`). Isolated by probe:epsilon-nonregression-floor (PASS): the SAME structure
+      valued from its own param DEFAULT reaches a definite VIOLATED + exit 1. ⇒ NOT
+      a units defect and not owned by this PRD. Filed as task 5765 (both facets, with
+      the engine_constraints.rs:868 anchor) rather than left silent (INV-SF-4). ε
+      CITES 5765 and is NOT blocked on it. Note also that crates/reify-compiler/tests/modal_options_validation_tests.rs:1465-1505
+      `step_force_constrains_magnitude_positive`, which PRD §10.3 cites as evidence
+      the constraint "looks enforced", is purely STRUCTURAL and never evaluates it
+      — which strengthens the INV-SF-4 argument but is not an evaluation pin.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the deliverable is a filed task id cited in ε''s test doc comment; ids
+        are not known ex ante.
+  - name: recovery-target-and-mechanism-both-observed
+    binding: 'probe:epsilon-recovery-target (PASS) — `param magnitude : Force = -10.0`
+      (bare literal at a dimensioned default) → `INDETERMINATE`, `warning: … operator
+      undefined for these operand kinds: Real`, exit 0. That is PRD §10.3''s causal
+      chain verbatim (eval_cmp Real-vs-dimensioned → Undef → Indeterminate → non-violating
+      → exit 0), and the gate admitting the bare literal is entity.rs:479-485 — δ₁''s,
+      NOT γ''s. probe:epsilon-mechanism (PASS) — the well-typed twin `= -10N` gives
+      a definite `VIOLATED` + exit 1, so the recovery ε pins genuinely exists. ε''s
+      prereq therefore moves γ → δ₁.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the deliverable is a paired constraint-outcome pin (definite Satisfied
+        AND definite Violated) in an existing reify-eval test target; no stable ex-ante
+        pattern.
+  - name: residual-defect-analysis-is-sound
+    binding: 'grep:crates/reify-constraints/src/lib.rs:183-215 (Undef → Indeterminate,
+      Diagnostic::warning at :211) and classify_undef :78-111 (computes has_undef
+      and puts the distinction in the message). The two probe messages — "operator
+      undefined for these operand kinds: Real" vs "undefined inputs: Pusher.magnitude"
+      — confirm the distinction is computed and then discarded at severity-selection
+      time, exactly as PRD §10.3 states. ε files this + the eval_eq/eval_cmp `==`-vs-`>`
+      asymmetry (reify-expr/src/lib.rs:5048-5052 vs :5070-5110) by name.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn classify_undef
+      paths:
+      - crates/reify-constraints/src/lib.rs
+      expect: present
+- label: ζ₁
+  task_id: 5767
+  title: 'dimensioned-construction ζ₁: state the construction-boundary rule in the
+    units/parameters/structures chunks (registry-verified)'
+  capabilities:
+  - name: chunk-targets-exist
+    binding: 'grep — crates/reify-mcp/src/tools/chunks/units.md, parameters.md and
+      structures.md all present at HEAD. parameters.md/structures.md USE the correct
+      spelling (`param width : Length = 50mm`) but nowhere state that the bare spelling
+      is an error; units.md has no occurrence of "bare" at all, so an author can only
+      learn the rule by hitting the diagnostic.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: bare
+      paths:
+      - crates/reify-mcp/src/tools/chunks/units.md
+      expect: present
+  - name: documented-form-compiles-as-written
+    binding: 'probe:delta1-no-over-rejection (α harness, PASS) — the exact spelling
+      the chunks document (`param t : Length = 5mm`, alongside `param r : Real = 1.0`)
+      compiles at exit 0 with zero diagnostics, both before and after δ₁.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the acceptance is "each documented signature compiles as written in
+        a smoke .ri" — a per-signature check the leaf performs, not a fixed pattern.
+- label: ζ₂
+  task_id: 5768
+  title: 'dimensioned-construction ζ₂: best-practices exemplar for dimensioned construction
+    + INDEX row'
+  capabilities:
+  - name: corpus-is-compile-gated-by-directory-walk
+    binding: 'grep:crates/reify-compiler/tests/examples_smoke.rs walks examples/ recursively;
+      examples/best_practices/INDEX.md states it verbatim ("Everything in this directory
+      is compile-gated … Do not add a SKIP_SET entry to exempt one"). Drift-guard:
+      ζ₂ adds NO new test binary and NO tests/infra/test_*.sh, so no run-all-classification.manifest
+      row and no nextest partition entry is due.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: dimensioned_construction
+      paths:
+      - examples/best_practices/INDEX.md
+      expect: present
+  - name: bidirectional-index-invariant-test-exists
+    binding: grep:crates/reify-compiler/tests/examples_smoke.rs:548 best_practices_index_matches_corpus_directory
+      — pins file↔row correspondence in both directions and accumulates every violation
+      into one panic. ζ₂'s INDEX row is gate-enforced, not honour-system.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn best_practices_index_matches_corpus_directory
+      paths:
+      - crates/reify-compiler/tests/examples_smoke.rs
+      expect: present
+- label: ζ₃
+  task_id: 5769
+  title: 'dimensioned-construction ζ₃: reify-design cheatsheet index line pointing
+    at the exemplar'
+  capabilities:
+  - name: cheatsheet-index-target-exists-and-is-tracked
+    binding: git ls-files hit on .claude/skills/reify-design/SKILL.md; the corpus
+      index convention already lives at :22, :61-63, :158 and :172-175 ("One line
+      per idiom. Worked, compile-gated exemplars live in examples/best_practices/").
+      ζ₃ adds one index line — explicitly NOT an inline playbook.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: dimensioned_construction
+      paths:
+      - .claude/skills/reify-design/SKILL.md
+      expect: present
+- label: ζ₄
+  task_id: 5770
+  title: 'dimensioned-construction ζ₄: discoverability acceptance — goal-phrased queries
+    reach the rule and the exemplar'
+  capabilities:
+  - name: read-paths-under-test-are-real
+    binding: 'the two surfaces a design session actually reads are live: the reify-mcp
+      chunk tool (crates/reify-mcp/src/tools/chunks/*.md, ζ₁''s output) and examples/best_practices/INDEX.md,
+      whose own "Before probing the language, grep this file" contract makes intent-term
+      findability the acceptance criterion rather than a nicety.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: intent-level findability against three goal-phrased queries is a judgement
+        acceptance by construction; mechanising it would pin wording.
