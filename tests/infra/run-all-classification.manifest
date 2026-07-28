@@ -127,6 +127,7 @@ test_nextest_slow_priority.sh pool
 test_no_dead_taskmaster_artifacts.sh pool
 test_no_new_wallclock_rust_deadlines.sh pool
 test_no_new_wallclock_upper_bounds.sh pool
+test_no_prebuilt_reify_bin_spawn.sh pool
 test_npm_ci_hardening.sh pool
 test_occt_deps_preflight.sh pool
 test_occt_flock_gate_bounds.sh pool
