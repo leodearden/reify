@@ -208,6 +208,26 @@ pub fn compile_source_with_stdlib(source: &str) -> reify_compiler::CompiledModul
 /// competitor: the stdlib `.ri` bodies are registered and genuinely compete with
 /// the reify-expr intercepts.
 ///
+/// # Why the append is UNFILTERED
+///
+/// This mirrors [`reify_eval::merge_functions`] (`reify-eval/src/lib.rs:1425-1432`,
+/// `pub(crate)` so it cannot be called directly) — the table PRODUCTION
+/// evaluation actually uses — and deliberately NOT
+/// [`reify_compiler::merge_prelude_functions`] (`reify-compiler/src/lib.rs:332`).
+///
+/// The two differ on collisions. `merge_prelude_functions` FILTERS out any
+/// prelude entry whose `(name, arity, param_types)` triple matches a user fn,
+/// because it builds the COMPILE-TIME overload-resolution table where a
+/// duplicate triple is an ambiguous-overload error. reify-eval omits that filter
+/// (its own doc, `lib.rs:1412-1419`) because dispatch is a first-match-wins
+/// linear scan, so a shadowed prelude entry is permanently unreachable anyway.
+///
+/// The two are therefore dispatch-EQUIVALENT; this is a fidelity choice, not a
+/// behaviour fix. But a harness whose entire purpose is "evaluate the way
+/// production does" should not quietly diverge from production in how it builds
+/// its table, so the runtime shape is what gets copied. User functions stay
+/// FIRST so they still shadow prelude functions, exactly as at runtime.
+///
 /// # Example
 ///
 /// ```ignore
@@ -220,14 +240,19 @@ pub fn compile_source_with_stdlib(source: &str) -> reify_compiler::CompiledModul
 pub fn prelude_backed_functions(
     module: &reify_compiler::CompiledModule,
 ) -> Vec<reify_ir::CompiledFunction> {
-    // Mirrors `reify_eval::Engine::with_prelude_and_kernels`
-    // (reify-eval/src/engine_admin.rs:255-258), which flattens the same
-    // `load_stdlib()` modules into its `prelude_functions` field.
-    let prelude: Vec<reify_ir::CompiledFunction> = reify_compiler::stdlib_loader::load_stdlib()
+    // Flatten the prelude exactly as `reify_eval::Engine::with_prelude_and_kernels`
+    // does (reify-eval/src/engine_admin.rs:255-258) when populating its
+    // `prelude_functions` field.
+    let prelude = reify_compiler::stdlib_loader::load_stdlib()
         .iter()
-        .flat_map(|m| m.functions.iter().cloned())
-        .collect();
-    reify_compiler::merge_prelude_functions(&module.functions, &prelude)
+        .flat_map(|m| m.functions.iter().cloned());
+
+    // ...then merge with the same two lines as `reify_eval::merge_functions`
+    // (reify-eval/src/lib.rs:1429-1431): user fns first, prelude appended
+    // unconditionally.
+    let mut merged = module.functions.clone();
+    merged.extend(prelude);
+    merged
 }
 
 /// Convert parse-layer [`reify_ast::ParseError`]s into `Severity::Error`
