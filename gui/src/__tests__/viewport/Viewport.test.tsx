@@ -1475,7 +1475,7 @@ describe('Viewport FEA channel dropdown sync (task 5669)', () => {
           vonMises_top: new Float32Array([3]),
           vonMises_bottom: new Float32Array([1]),
         },
-      } as unknown as MeshData,
+      },
     };
 
     render(() => <Viewport meshes={meshes} viewportId="test-5669" feaModeStore={store as any} />);
@@ -1487,6 +1487,101 @@ describe('Viewport FEA channel dropdown sync (task 5669)', () => {
     const options = Array.from(select.options).map((o) => o.value);
     expect(options).toContain('vonMises_top');
     expect(options).toContain('vonMises_bottom');
+    expect(select.value).toBe(store.state.channel);
+  });
+
+  it('solid mesh {vonMises, displacement_magnitude} → dropdown options equal the base list (no over-widening)', () => {
+    const store = createFeaModeStore();
+    const meshes: Record<string, MeshData> = {
+      solid: {
+        entity_path: 'solid',
+        vertices: new Float32Array([0, 0, 0]),
+        indices: new Uint32Array([0]),
+        normals: null,
+        scalar_channels: {
+          vonMises: new Float32Array([1]),
+          displacement_magnitude: new Float32Array([2]),
+        },
+      },
+    };
+
+    render(() => <Viewport meshes={meshes} viewportId="test-5669-base" feaModeStore={store as any} />);
+
+    expect(store.state.channel).toBe('vonMises');
+
+    const select = screen.getByTestId('fea-mode-channel-select') as HTMLSelectElement;
+    const options = Array.from(select.options).map((o) => o.value);
+    // Ordinary (non-shell) FEA data must not trigger any widening — regression
+    // guard for the base-list path so an over-broad memo change is caught.
+    expect(options).toEqual(['vonMises', 'displacement_magnitude']);
+  });
+
+  it('mesh with a non-empty errorIndicator channel → no duplicate option (dedup vs. feaToolbarChannels\' own errorIndicator handling)', () => {
+    const store = createFeaModeStore();
+    const meshes: Record<string, MeshData> = {
+      solid: {
+        entity_path: 'solid',
+        vertices: new Float32Array([0, 0, 0]),
+        indices: new Uint32Array([0]),
+        normals: null,
+        scalar_channels: {
+          vonMises: new Float32Array([1]),
+          errorIndicator: new Float32Array([0.5]),
+        },
+      },
+    };
+
+    render(() => <Viewport meshes={meshes} viewportId="test-5669-dedup" feaModeStore={store as any} />);
+
+    const select = screen.getByTestId('fea-mode-channel-select') as HTMLSelectElement;
+    const options = Array.from(select.options).map((o) => o.value);
+    // feaToolbarChannels() already appends 'errorIndicator' to its base list when
+    // present; the widening scan must not re-add it as an "extra" alongside.
+    expect(options).toEqual(['vonMises', 'displacement_magnitude', 'errorIndicator']);
+    expect(options.filter((o) => o === 'errorIndicator')).toHaveLength(1);
+  });
+
+  it('mesh set swapped from shell to solid-only → select.value still matches store.state.channel (one-shot auto-enable residual desync)', () => {
+    const store = createFeaModeStore();
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({
+      shell: {
+        entity_path: 'shell',
+        vertices: new Float32Array([0, 0, 0]),
+        indices: new Uint32Array([0]),
+        normals: null,
+        scalar_channels: {
+          vonMises_top: new Float32Array([3]),
+          vonMises_bottom: new Float32Array([1]),
+        },
+      },
+    });
+
+    render(() => <Viewport meshes={meshes()} viewportId="test-5669-swap" feaModeStore={store as any} />);
+
+    // Auto-enable fires once, picking the shell's preferred channel.
+    expect(store.state.channel).toBe('vonMises_top');
+
+    // Replace the mesh set with a solid-only rebuild whose channels don't
+    // include 'vonMises_top' at all. Auto-enable is one-shot (autoEnabledOnce),
+    // so store.state.channel does NOT change — the dropdown must still offer
+    // a matching option instead of silently falling back to the base list.
+    setMeshes({
+      solid: {
+        entity_path: 'solid',
+        vertices: new Float32Array([0, 0, 0]),
+        indices: new Uint32Array([0]),
+        normals: null,
+        scalar_channels: {
+          vonMises: new Float32Array([4]),
+        },
+      },
+    });
+
+    expect(store.state.channel).toBe('vonMises_top');
+
+    const select = screen.getByTestId('fea-mode-channel-select') as HTMLSelectElement;
+    const options = Array.from(select.options).map((o) => o.value);
+    expect(options).toContain('vonMises_top');
     expect(select.value).toBe(store.state.channel);
   });
 });
