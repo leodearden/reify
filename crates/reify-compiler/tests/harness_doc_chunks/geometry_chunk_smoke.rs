@@ -38,6 +38,25 @@ fn assert_compiles(label: &str, geometry_expr: &str) {
     );
 }
 
+/// Compile `module_src` AS A WHOLE MODULE and assert zero Severity::Error
+/// diagnostics. Same body as `assert_compiles` (`compile_source_with_stdlib` +
+/// `errors_only` + zero-Error assertion, same panic shape) minus the
+/// `structure def Smoke { let g = … }` wrapper, which cannot express a
+/// multi-let `structure def` — the shape a clearance example needs, since both
+/// the query call and its operands must be separate let bindings. The source is
+/// echoed in the panic so a failing scraped fence is fixable without re-reading
+/// the chunk.
+fn assert_module_compiles(label: &str, module_src: &str) {
+    let compiled = compile_source_with_stdlib(module_src);
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "{label}: expected this module to compile with zero Error diagnostics, got: {:#?}\n\
+         --- module source ---\n{module_src}\n--- end module source ---",
+        errors
+    );
+}
+
 // --- Solid primitives (geometry.md "Solid Primitives" block) ---
 
 #[test]
@@ -302,6 +321,92 @@ fn interference_oracle_names_documented_in_geometry_chunk() {
              reify_compiler::GEOMETRY_QUERY_NAMES ({:?}) — the chunk now documents a phantom \
              builtin. Rename the doc's call form to match the registry.",
             reify_compiler::GEOMETRY_QUERY_NAMES
+        );
+    }
+}
+
+/// Every ```` ```reify ````-tagged fence in the chunk, in document order, with
+/// the fence delimiters stripped.
+///
+/// Only EXPLICITLY TAGGED fences are collected. The module doc above explains
+/// why geometry.md cannot be scraped wholesale: it intermixes non-compilable
+/// schematic notation (type params, trait lists, `-> Solid` return annotations)
+/// with real call forms, and separating the two would need a fragile grammar.
+/// An opt-in tag sidesteps that — the doc author marks exactly what is meant to
+/// compile, and everything else stays free-form. ```` ```reify ```` is already
+/// the in-repo convention (`chunks/traits.md:58,70,76,87,93`).
+///
+/// Callers must anti-vacuity-check the result: a dropped tag or a renamed
+/// section would otherwise empty the scan and pass trivially.
+fn reify_tagged_fences(markdown: &str) -> Vec<String> {
+    let mut fences: Vec<String> = Vec::new();
+    let mut body: Vec<&str> = Vec::new();
+    let mut open = false;
+
+    for line in markdown.lines() {
+        if !open {
+            // Exact tag match: `reify-something` is a different language and
+            // must not be swept in.
+            if line.trim_end() == "```reify" {
+                open = true;
+                body.clear();
+            }
+            continue;
+        }
+        if line.trim_end() == "```" {
+            fences.push(body.join("\n"));
+            open = false;
+            continue;
+        }
+        body.push(line);
+    }
+
+    assert!(
+        !open,
+        "{CHUNK_PATH} has an unterminated ```reify fence — the scrape cannot be trusted"
+    );
+    fences
+}
+
+/// Every ```` ```reify ````-tagged fence in geometry.md must actually compile.
+///
+/// This is what upgrades the interference/clearance worked examples from
+/// unchecked prose into compile-verified artifacts, and it is the single
+/// strongest guard against this section going stale the way
+/// `examples/pattern_composition.ri`'s BaseElement comment did (task 5389 fixes
+/// both in the same change). A designer copying a fence out of the chunk gets
+/// something the compiler accepts, or this test is RED.
+#[test]
+fn reify_tagged_fences_in_geometry_chunk_compile() {
+    let markdown = read_chunk();
+    let fences = reify_tagged_fences(&markdown);
+
+    // Anti-vacuity. Without these three, dropping the ```reify tags (or
+    // rewriting the fences as plain prose) would leave the scan empty and the
+    // loop below would iterate zero times — GREEN, protecting nothing. The
+    // sentinels additionally prove the scan reaches BOTH documented forms, not
+    // just whichever fence happens to come first.
+    assert!(
+        fences.len() >= 2,
+        "the ```reify fence scan found only {} fence(s) in {CHUNK_PATH} — expected at least 2 \
+         (one FORM B raw-geometry example, one FORM A mechanism-snapshot example). The scan is \
+         vacuous (fence tags dropped, or the examples rewritten as untagged prose) and gives NO \
+         protection.",
+        fences.len()
+    );
+    for sentinel in ["min_clearance(", "intersects("] {
+        assert!(
+            fences.iter().any(|fence| fence.contains(sentinel)),
+            "anti-vacuity: no ```reify fence in {CHUNK_PATH} contains `{sentinel}` — the worked \
+             clearance examples are no longer compile-verified, so the documented call form can \
+             drift away from what the compiler accepts without failing any test"
+        );
+    }
+
+    for (index, fence) in fences.iter().enumerate() {
+        assert_module_compiles(
+            &format!("{CHUNK_PATH} ```reify fence #{}", index + 1),
+            fence,
         );
     }
 }
