@@ -8,14 +8,12 @@
 // The index `i` is a 0-based `Int`; `i * 2 * pi / bolt_count` promotes to a
 // dimensionless `Real` angle, and `radius * cos/sin` yields a `Length`.
 //
-// VALUE-KIND LIMITATION — a `generate` lambda may only produce point3/scalar
-// values, which is exactly what this file does (and is why the gap below went
-// uncaught for so long). A GEOMETRY constructor inside a generate lambda — say
-// `generate(4, |i| cylinder(2mm, 10mm))` — does not error: it currently yields
-// `[undef, undef, ...]` under a green `reify check` with zero diagnostics, so the
-// list silently has the right length and the wrong contents. Tracked by #5385.
-// To place geometry at generated positions, use the pattern builtins
-// (`linear_pattern`, `circular_pattern`, `arbitrary_pattern`) instead.
+// VALUE-KIND LIMITATION — geometry constructed inside a `generate` lambda
+// currently yields `undef` elements under a green `check`, so until #5385 lands
+// its fix, place geometry with the pattern builtins (`linear_pattern`,
+// `circular_pattern`, `arbitrary_pattern`) instead. This file's lambda computes
+// point3 values only, which is why it is unaffected. Canonical source, and the
+// one to trust over this note: `docs/prds/v0_6/eradicate-silent-undef.md`.
 
 structure BoltCircle {
     let bolt_count = 4
