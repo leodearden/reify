@@ -1030,3 +1030,189 @@ fn a_name_that_is_only_a_suffix_of_a_documented_one_is_not_counted_as_mentioned(
          `rounded_box(` — the exclusion must not ride on a suffix match. Got: {reported:?}"
     );
 }
+
+// ── Doc form scan: (name, arity) ─────────────────────────────────────────────
+//
+// `documented_geometry_op_names` (above) collapses every overload of a name
+// into one entry, so a second arity for an already-documented name can go
+// unmirrored into the fixture without failing anything — see the module doc's
+// "Doc → fixture coverage at FORM granularity" gap (task 5583).
+// `documented_geometry_op_forms` is the same span scan widened to also record
+// each span's argument count as an `Arity`, so overloads are tracked as
+// distinct forms rather than collapsed to a name.
+//
+// The tests below pin the extraction rule directly (inline markdown, no
+// fixture/chunk involved) before anything consumes it. The ellipsis rule is
+// the one genuine hazard: an arg equal to `…` or ENDING IN `…` (e.g.
+// `weights…`) contributes 0 to the minimum and marks the form variadic —
+// `documented_geometry_op_forms_suffixed_ellipsis_is_at_least` is the case
+// that decides whether this task is GREENable at all (see the module doc).
+
+#[test]
+fn documented_geometry_op_forms_extracts_exact_arity() {
+    let markdown = r#"
+## Key Geometry Operations
+
+**Transform:** `rotate(geo, ax, ay, az, angle)`
+"#;
+
+    assert_eq!(
+        documented_geometry_op_forms(markdown),
+        vec![DocForm {
+            name: "rotate".to_string(),
+            arity: Arity::Exact(5),
+        }],
+        "a fixed-arity span must extract as Exact(arg count)"
+    );
+}
+
+#[test]
+fn documented_geometry_op_forms_keeps_overloads_on_one_row_distinct() {
+    let markdown = r#"
+## Key Geometry Operations
+
+**Transform:** `mirror(geo, plane)`, `mirror(geo, ox, oy, oz, nx, ny, nz)`
+"#;
+
+    assert_eq!(
+        documented_geometry_op_forms(markdown),
+        vec![
+            DocForm {
+                name: "mirror".to_string(),
+                arity: Arity::Exact(2),
+            },
+            DocForm {
+                name: "mirror".to_string(),
+                arity: Arity::Exact(7),
+            },
+        ],
+        "two overloads of one name on one row must NOT collapse into a single form"
+    );
+}
+
+#[test]
+fn documented_geometry_op_forms_bare_ellipsis_is_at_least() {
+    let markdown = r#"
+## Key Geometry Operations
+
+**Booleans:** `union_all(a, b, …)`
+"#;
+
+    assert_eq!(
+        documented_geometry_op_forms(markdown),
+        vec![DocForm {
+            name: "union_all".to_string(),
+            arity: Arity::AtLeast(2),
+        }],
+        "a bare `…` arg must contribute 0 to the minimum and mark the form variadic"
+    );
+}
+
+#[test]
+fn documented_geometry_op_forms_suffixed_ellipsis_is_at_least() {
+    let markdown = r#"
+## Key Geometry Operations
+
+**Modify:** `shell(solid, thickness, faces…)`
+**Curves:** `nurbs(degree, n_points, coords…, weights…)`
+"#;
+
+    assert_eq!(
+        documented_geometry_op_forms(markdown),
+        vec![
+            DocForm {
+                name: "nurbs".to_string(),
+                arity: Arity::AtLeast(2),
+            },
+            DocForm {
+                name: "shell".to_string(),
+                arity: Arity::AtLeast(2),
+            },
+        ],
+        "an arg ENDING IN `…` (not just an arg equal to it) must also contribute 0 to the \
+         minimum — this is the case that decides whether the fixture's nurbs/10 call can ever \
+         match its documented form"
+    );
+}
+
+#[test]
+fn documented_geometry_op_forms_spans_without_parens_contribute_nothing() {
+    let markdown = r#"
+## Key Geometry Operations
+
+**NoParens:** `List<Geometry>`, `Length`
+"#;
+
+    assert_eq!(
+        documented_geometry_op_forms(markdown),
+        Vec::<DocForm>::new(),
+        "a backtick span with no `(` (a type name, not a call) must contribute no form"
+    );
+}
+
+#[test]
+fn documented_geometry_op_forms_zero_arg_span_is_exact_zero() {
+    let markdown = r#"
+## Key Geometry Operations
+
+**Zero:** `foo()`
+"#;
+
+    assert_eq!(
+        documented_geometry_op_forms(markdown),
+        vec![DocForm {
+            name: "foo".to_string(),
+            arity: Arity::Exact(0),
+        }],
+        "an empty arg list must extract as Exact(0), not Exact(1) from a phantom blank arg"
+    );
+}
+
+#[test]
+fn documented_geometry_op_forms_skips_unbalanced_parens_without_panicking() {
+    let markdown = r#"
+## Key Geometry Operations
+
+**Bad:** `broken(a, b`
+**Good:** `fine(a, b)`
+"#;
+
+    assert_eq!(
+        documented_geometry_op_forms(markdown),
+        vec![DocForm {
+            name: "fine".to_string(),
+            arity: Arity::Exact(2),
+        }],
+        "a span with `(` but no matching `)` must be skipped, not panic, and must not stop \
+         later valid spans from being scanned"
+    );
+}
+
+#[test]
+fn documented_geometry_op_forms_respects_section_and_bold_prefix_narrowing() {
+    let markdown = r#"
+## Other Section
+
+**Ignored:** `should_not_appear(a, b)`
+
+## Key Geometry Operations
+
+Prose with `also_ignored(a, b)` inline is not a bolded row.
+
+**Real:** `included(a, b)`
+
+## Constants
+
+**Ignored2:** `also_not_appear(a, b)`
+"#;
+
+    assert_eq!(
+        documented_geometry_op_forms(markdown),
+        vec![DocForm {
+            name: "included".to_string(),
+            arity: Arity::Exact(2),
+        }],
+        "only `**`-prefixed lines inside the Key Geometry Operations section may contribute a \
+         form — reuses documented_geometry_op_names's existing narrowing"
+    );
+}
