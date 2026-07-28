@@ -449,6 +449,11 @@ fn compute_total_violation(
 /// reify-constraints dependency, which would break dependency inversion.  If you change
 /// the decomposition rules here, apply the same change to `has_inequality_slack` and
 /// vice versa (both functions carry the cross-reference comment).
+///
+/// **Op-rule pact (three members, in-crate)**: `collect_floor_terms` and
+/// `derive_from_expr` (task #5618) reuse this exact Ge/Gt/Le/Lt/And decomposition.
+/// Any op-rule change here must be reflected in BOTH of them; all three carry the
+/// cross-reference comment.
 fn collect_slack_terms(expr: &CompiledExpr, slacks: &mut Vec<CompiledExpr>) {
     if let CompiledExprKind::BinOp { op, left, right } = &expr.kind {
         match op {
@@ -555,8 +560,9 @@ fn objective_is_money(obj: &ObjectiveSet) -> bool {
 /// - All other ops: skip
 ///
 /// **Parallel to `collect_slack_terms`**: any op-rule change there must also be
-/// reflected here. The cross-reference comment in `collect_slack_terms` records
-/// the pact; keep both in sync.
+/// reflected here — and, since task #5618, in `derive_from_expr` as well. The
+/// cross-reference comment in `collect_slack_terms` records the three-member pact;
+/// keep all three in sync.
 fn collect_floor_terms(
     expr: &CompiledExpr,
     out: &mut Vec<(CompiledExpr, CompiledExpr, Type)>,
@@ -662,6 +668,298 @@ fn synthesise_floor_constraints(
         effective_constraints.push((anchor_id.clone(), floor_constraint));
     }
     true
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Constraint-derived parameter bounds (task #5618)
+//
+// `AutoParam.bounds` is **always `None`** in production — all three construction
+// sites hardcode it (`reify-eval/src/engine_eval.rs:1436`, `engine_edit.rs:1470`,
+// `:3635`) and no `.ri` surface sets it.  So `effective_bounds` always degrades to
+// `default_bounds_for`, which for a dimensionless Real is `(-1e6, 1e6)`: useless as
+// a seed source, as a Nelder-Mead step scale, and as a clamp target.  A Money
+// objective over an auto bracketed away from 0 (`q >= 1 ∧ q <= 100`) therefore
+// seeded at the fixed `0.01`, outside the synthesised robustness floor's window,
+// and reported a false `RobustnessFloorInfeasible`.
+//
+// These helpers recover a usable box from the inequality constraints themselves.
+// Two consumers, with different obligations:
+//
+//   - the SEED box, derived from `problem.constraints` with `include_strict = true`
+//     (a start point may sit anywhere, so every inequality contributes);
+//   - the CLAMP box, derived from `effective_constraints` — i.e. INCLUDING the
+//     synthesised floor — with `include_strict = false`.  A clamp target is a value
+//     the solver will actually return, so a `Gt`-sourced bound must never become
+//     one: clamping `x > 5mm` to exactly 5mm violates the strict comparison and
+//     would trade a false Infeasible for a different false Infeasible.  This costs
+//     nothing in the case above: `synthesise_floor_constraints` emits its slack
+//     constraints as `Ge`, and the floored bound is strictly interior to the
+//     original `>`/`>=` bound by construction, so the clamp still gets it.
+//
+// The clamp is load-bearing, not just the seed.  Minimising `q + PENALTY_WEIGHT ·
+// (1.02 − q)²` places the penalty method's unconstrained minimiser ~5e-7 BELOW the
+// floor: a penalty method converges to a boundary it is pulled onto from the
+// outside and can never satisfy it to `FEASIBILITY_THRESHOLD = 1e-12`.  Only the
+// clamp snaps that undershoot onto the feasible optimum.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A bounding interval derived for one auto param from the inequality constraints.
+///
+/// Each side carries `(value, strict)`, where `strict` is `true` when the tightest
+/// contributing comparison was strict (`Gt`/`Lt`).  `None` means no usable
+/// constraint bounded that side.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct DerivedInterval {
+    lo: Option<(f64, bool)>,
+    hi: Option<(f64, bool)>,
+}
+
+impl DerivedInterval {
+    /// Record a candidate lower bound, keeping the tightest (largest) value.
+    ///
+    /// On an exact tie a non-strict candidate displaces a strict one: a non-strict
+    /// bound survives `include_strict = false` and is usable as a clamp target,
+    /// whereas a strict one is dropped there.
+    fn push_lo(&mut self, value: f64, strict: bool) {
+        let tighter = match self.lo {
+            None => true,
+            Some((cur, cur_strict)) => value > cur || (value == cur && cur_strict && !strict),
+        };
+        if tighter {
+            self.lo = Some((value, strict));
+        }
+    }
+
+    /// Record a candidate upper bound, keeping the tightest (smallest) value.
+    /// Same non-strict tie preference as [`DerivedInterval::push_lo`].
+    fn push_hi(&mut self, value: f64, strict: bool) {
+        let tighter = match self.hi {
+            None => true,
+            Some((cur, cur_strict)) => value < cur || (value == cur && cur_strict && !strict),
+        };
+        if tighter {
+            self.hi = Some((value, strict));
+        }
+    }
+}
+
+/// Evaluate a constraint operand that must be CONSTANT with respect to the auto
+/// params, returning its finite SI value.
+///
+/// Returns `None` when the operand references any auto param (its value would then
+/// vary with the solve, so it is not a bound at all) or when it does not evaluate
+/// to a finite `f64`.
+///
+/// **Reuse note**: this is `robustness_margin_for`'s far-operand evaluation idiom,
+/// but with the opposite failure policy — that function falls back to
+/// `ABS_FLOOR_SI` when the bound is `Undef`, because a margin that cannot be
+/// scaled can still take its absolute floor.  A bound that cannot be evaluated
+/// must never become a clamp, so here the whole constraint is skipped.
+///
+/// The auto-param test uses `CompiledExpr::collect_value_refs()`
+/// (`reify-ir/src/expr.rs`), which is exactly the query needed.  It is load-bearing
+/// for the CLAMP box: that box is derived against `trial_values`, in which the auto
+/// params ARE bound, so an expression naming one would evaluate to a perfectly
+/// finite number that is nonetheless not a constant.
+fn constant_operand_value(
+    expr: &CompiledExpr,
+    auto_index: &HashMap<ValueCellId, usize>,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+) -> Option<f64> {
+    if expr
+        .collect_value_refs()
+        .iter()
+        .any(|id| auto_index.contains_key(id))
+    {
+        return None;
+    }
+    reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions))
+        .as_f64()
+        .filter(|v| v.is_finite())
+}
+
+/// Derive one [`DerivedInterval`] per auto param (in `auto_params` order) from the
+/// inequality constraints.
+///
+/// Pure function of its inputs — no RNG, clock or mutation of `problem`.
+fn derive_param_intervals(
+    auto_params: &[AutoParam],
+    constraints: &[(ConstraintNodeId, CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+) -> Vec<DerivedInterval> {
+    let mut out = vec![DerivedInterval::default(); auto_params.len()];
+    if auto_params.is_empty() {
+        return out;
+    }
+    let auto_index: HashMap<ValueCellId, usize> = auto_params
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.id.clone(), i))
+        .collect();
+    for (_, expr) in constraints {
+        derive_from_expr(expr, &auto_index, values, functions, &mut out);
+    }
+    out
+}
+
+/// Recursive worker for [`derive_param_intervals`].
+///
+/// **Third member of the `collect_slack_terms` op-rule pact**: same
+/// `Ge`/`Gt` → left-bounded-below, `Le`/`Lt` → left-bounded-above, `And` → recurse,
+/// everything else (including `Eq`, `Ne`, `Or`) → skip.  Any op-rule change in
+/// `collect_slack_terms` or `collect_floor_terms` must be reflected here.
+fn derive_from_expr(
+    expr: &CompiledExpr,
+    auto_index: &HashMap<ValueCellId, usize>,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    out: &mut [DerivedInterval],
+) {
+    let CompiledExprKind::BinOp { op, left, right } = &expr.kind else {
+        return;
+    };
+    match op {
+        BinOp::Ge | BinOp::Gt => {
+            // left ≥ right → `left` bounded BELOW by right, `right` bounded ABOVE by left.
+            let strict = matches!(op, BinOp::Gt);
+            derive_from_side(left, right, true, strict, auto_index, values, functions, out);
+            derive_from_side(right, left, false, strict, auto_index, values, functions, out);
+        }
+        BinOp::Le | BinOp::Lt => {
+            // left ≤ right → `left` bounded ABOVE by right, `right` bounded BELOW by left.
+            let strict = matches!(op, BinOp::Lt);
+            derive_from_side(left, right, false, strict, auto_index, values, functions, out);
+            derive_from_side(right, left, true, strict, auto_index, values, functions, out);
+        }
+        BinOp::And => {
+            derive_from_expr(left, auto_index, values, functions, out);
+            derive_from_expr(right, auto_index, values, functions, out);
+        }
+        // Eq, Ne, Or and every arithmetic op: no one-sided bound on a single auto.
+        _ => {}
+    }
+}
+
+/// Match `near` against the linear-in-one-auto shapes and, when `far` is constant,
+/// record the implied bound.
+///
+/// `lower == true` means the inequality bounds `near` from BELOW (`near ≥ far`).
+/// Four shapes are recognised — the last two are REQUIRED, because
+/// `synthesise_floor_constraints` emits exactly that slack form:
+///
+/// - `p OP far`                → bound = `far`,        direction unchanged
+/// - `p − k OP far`            → bound = `far + k`,    direction unchanged
+/// - `k − p OP far`            → bound = `k − far`,    direction FLIPPED
+///
+/// (the "`far OP p`" shape is covered by the caller invoking this function once per
+/// operand side).  Anything else is skipped.
+#[allow(clippy::too_many_arguments)]
+fn derive_from_side(
+    near: &CompiledExpr,
+    far: &CompiledExpr,
+    lower: bool,
+    strict: bool,
+    auto_index: &HashMap<ValueCellId, usize>,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    out: &mut [DerivedInterval],
+) {
+    let Some(far_value) = constant_operand_value(far, auto_index, values, functions) else {
+        return;
+    };
+    match &near.kind {
+        CompiledExprKind::ValueRef(id) => {
+            if let Some(&i) = auto_index.get(id) {
+                record_bound(&mut out[i], far_value, lower, strict);
+            }
+        }
+        CompiledExprKind::BinOp {
+            op: BinOp::Sub,
+            left,
+            right,
+        } => {
+            // `p − k OP far` → `p OP far + k`
+            if let CompiledExprKind::ValueRef(id) = &left.kind
+                && let Some(&i) = auto_index.get(id)
+                && let Some(k) = constant_operand_value(right, auto_index, values, functions)
+            {
+                record_bound(&mut out[i], far_value + k, lower, strict);
+                return;
+            }
+            // `k − p OP far` → `p OP′ k − far`  (multiplying by −1 flips the direction)
+            if let CompiledExprKind::ValueRef(id) = &right.kind
+                && let Some(&i) = auto_index.get(id)
+                && let Some(k) = constant_operand_value(left, auto_index, values, functions)
+            {
+                record_bound(&mut out[i], k - far_value, !lower, strict);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Route one derived bound to the correct side of `iv`, dropping non-finite values.
+fn record_bound(iv: &mut DerivedInterval, value: f64, lower: bool, strict: bool) {
+    if !value.is_finite() {
+        return;
+    }
+    if lower {
+        iv.push_lo(value, strict);
+    } else {
+        iv.push_hi(value, strict);
+    }
+}
+
+/// Intersect one derived interval with the param's pre-existing effective bounds.
+///
+/// Returns `None` when the composed box is empty (`!(lo < hi)`) or non-finite; the
+/// caller then falls back to the pre-existing box WHOLESALE.  That guard is what
+/// keeps a genuinely floor-empty problem reporting `Infeasible` exactly as it does
+/// today: for `x > 10mm ∧ x < 10.3mm` the floored pair inverts (lo ≈ 0.0102 >
+/// hi ≈ 0.0101), so no derived box is used at all.
+///
+/// The base is [`effective_bounds`], not `default_bounds_for`, so an EXPLICIT
+/// `AutoParam.bounds` is intersected rather than widened.  The two coincide on
+/// every production path (`bounds` is always `None` there), so this only ever
+/// tightens behaviour relative to the plain default box.
+fn compose_interval(
+    param: &AutoParam,
+    interval: &DerivedInterval,
+    include_strict: bool,
+) -> Option<(f64, f64)> {
+    let (base_lo, base_hi) = effective_bounds(param);
+    let usable = |side: Option<(f64, bool)>| {
+        side.filter(|&(_, strict)| include_strict || !strict)
+            .map(|(v, _)| v)
+    };
+    let lo = usable(interval.lo).map_or(base_lo, |v| v.max(base_lo));
+    let hi = usable(interval.hi).map_or(base_hi, |v| v.min(base_hi));
+    (lo.is_finite() && hi.is_finite() && lo < hi).then_some((lo, hi))
+}
+
+/// Resolve a usable optimiser box per auto param, composing each derived interval
+/// with the param's [`effective_bounds`] and falling back to those bounds
+/// wholesale when the composition is degenerate.
+///
+/// `include_strict = false` for the CLAMP box, `true` for SEED boxes — see the
+/// section comment above for why the distinction is load-bearing.
+fn resolve_bounds(
+    auto_params: &[AutoParam],
+    intervals: &[DerivedInterval],
+    include_strict: bool,
+) -> Vec<(f64, f64)> {
+    auto_params
+        .iter()
+        .enumerate()
+        .map(|(i, param)| {
+            intervals
+                .get(i)
+                .and_then(|iv| compose_interval(param, iv, include_strict))
+                .unwrap_or_else(|| effective_bounds(param))
+        })
+        .collect()
 }
 
 /// Build a default Chebyshev-centre (max-min slack) objective for a continuous scope
