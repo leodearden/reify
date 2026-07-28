@@ -11,7 +11,8 @@
 //! the CANONICAL MECHANISM NOTE referenced next for what they guard).
 //!
 //! The `e2e_*_with_stdlib` tests instead compile the real stdlib and evaluate
-//! under `EvalContext::new(&values, &module.functions)` — task 5410, PRD
+//! under a prelude-backed function table built by
+//! `reify_test_support::prelude_backed_functions` — tasks 5410 and 5593, PRD
 //! docs/prds/v0_6/placeholder-type-eradication-ratchet.md §8 task ζ / BT10.
 //! What they do and do not guard is explained ONCE, in the CANONICAL MECHANISM
 //! NOTE above `e2e_or_default_some_with_stdlib` below; the sibling files
@@ -295,43 +296,60 @@ fn fallback_undef_subject_returns_undef() {
 // item 10, §8 task ζ, BT10.
 //
 // Every `e2e_*_with_stdlib` test compiles the REAL stdlib via
-// `compile_source_with_stdlib` and evaluates against `module.functions`, so the
-// compiler-emitted `UserFunctionCall` runs on the same path a real program
-// takes.
+// `compile_source_with_stdlib`, so the compiler-emitted `UserFunctionCall` runs
+// on the same path a real program takes, and evaluates against
+// `reify_test_support::prelude_backed_functions(&module)` — task 5593.
 //
-// WHAT THEY GUARD, MEASURED — *not* what the `.ri` placeholder body returns.
-// `module.functions` is USER-SOURCE-ONLY: reify-compiler routes prelude/stdlib
-// `.ri` functions through `merge_prelude_functions` into `resolution_functions`
-// for compile-time overload dispatch, but stores only user-source functions in
-// `CompiledModule`. So in THIS harness the stdlib bodies are never registered;
-// with the intercept removed each call falls through to reify-expr's
-// `eval_user_function_call`, finds no matching entry, and returns
-// `Value::Undef`.
+// WHY THE TABLE IS BUILT BY A HELPER. `module.functions` is USER-SOURCE-ONLY:
+// only the module's own AST fns reach `ctx.functions`
+// (compile_builder/functions_phase.rs:79-92); prelude/stdlib `.ri` fns are
+// routed to a DIFFERENT field, `ctx.resolution_functions`
+// (functions_phase.rs:101-105), which exists for compile-time overload dispatch
+// and is dropped at ctx.rs:201 when the `CompiledModule` is built. Evaluating
+// against `module.functions` therefore uses a table in which no stdlib body is
+// registered at all. `prelude_backed_functions` restores it by reproducing the
+// PRODUCTION runtime dispatch table (`reify_eval::merge_functions`,
+// reify-eval/src/lib.rs:1425-1432).
 //
-// MEASURED (task 5410 step-11; the three gates in reify-expr's
-// `UserFunctionCall` arm — `option_recovery::is_combinator`, `map_or`/3 and
-// `map_err`/2 — locally set to `if false && …`): every `e2e_*_with_stdlib` test
-// across the three files fails with `left: Undef`.  Never a placeholder value.
+// WHAT THEY GUARD, MEASURED. The stdlib `.ri` bodies ARE registered here and DO
+// compete: each generic placeholder is the candidate
+// `find_matching_compiled_function` selects, via its generic-wildcard pass
+// (reify-expr/src/lib.rs:1546-1574). So intercept removal now yields the
+// placeholder's WRONG VALUE, which is the PRD's silent-wrong-value drift mode —
+// not merely `Undef`.
 //
-// SCOPE, stated honestly: these guard "THE INTERCEPT FIRES", the drift mode
-// this harness can observe. They do NOT reproduce the PRD's silent-WRONG-VALUE
-// mode (intercept gone → placeholder body silently returns `dflt` / `true` /
-// the subject), which needs a prelude-backed function table. Deferred to #5593
-// (originally filed as ticket tkt_0RRQDAY187DZW2V1Q5N5P9679F): a prelude-backed
-// eval harness via reify-eval's `merge_functions`, or a new public
-// reify-compiler prelude accessor.
+// MEASURED (task 5593; the three gates in reify-expr's `UserFunctionCall` arm —
+// `option_recovery::is_combinator`, `map_or`/3 and `map_err`/2 — locally set to
+// `if false && …`): 0 of the 17 `e2e_*_with_stdlib` guards across the three
+// files report `Undef`; 16 report the placeholder value (`0mm` from `{ dflt }`,
+// `true` from `{ true }`, `false` from `{ false }`, the subject from `{ o }` /
+// `{ r }`, `String("e")` from `{ err }`) and one passes. The full per-guard
+// table is in crates/reify-expr/tests/prelude_backed_harness_tests.rs, which
+// also CI-enforces both halves of the claim: that `.ri` bodies execute under
+// this table, and that every intercepted (name, arity) pair has a live prelude
+// candidate.
 //
-// Consequently the `.ri` placeholder values quoted in the per-test "FIXTURE
-// RATIONALE" notes are TRUE ABOUT THE `.ri` SOURCE — they are the PRD linkage
-// and the reason each fixture was chosen — but this harness does not observe
-// them.
+// This supersedes task 5410's measurement — "every `e2e_*_with_stdlib` test
+// fails with `left: Undef`, never a placeholder value". That was true, and only
+// true, of 5410's user-source-only harness.
+//
+// TWO GUARDS ARE COINCIDENCE-LIMITED even here, named because this file's whole
+// hazard is a harness that looks like it proves more than it measures:
+//   - `e2e_get_or_absent_key_with_stdlib` expects 0mm and `{ dflt }` also yields
+//     0mm, so intercept removal cannot make it fail — it is the one guard that
+//     PASSES above. `get_or` coverage survives via
+//     `e2e_get_or_present_key_with_stdlib` (expects 1mm vs the placeholder's 0mm).
+//   - `e2e_get_or_undef_map_with_stdlib`'s `v` assertion expects `Undef`, and
+//     the any-arg-undef short-circuit at reify-expr/src/lib.rs:1610 returns
+//     `Undef` BEFORE lookup, so the placeholder cannot diverge there. Its `w`
+//     liveness witness is the discriminating half.
 //
 // SEEDED SUBJECT, one exception — every guard above evaluates under an EMPTY
 // `ValueMap`; `e2e_or_else_none_subject_with_stdlib` (task 5584) seeds
 // `ValueCellId::new("S", "o") -> Value::Option(None)` instead (see that test's
-// own doc comment for why a seeded subject is required). Seeding does not
-// change the fallthrough mechanism described above: the function table is
-// still user-source-only, so intercept removal still yields `Undef`.
+// own doc comment for why a seeded subject is required). Seeding is orthogonal
+// to the table: with the prelude-backed table it yields `Option(None)` from
+// `or_else`'s `{ o }` placeholder under intercept removal.
 //
 // These are deliberate REGRESSION LOCKS, not RED-first tests: the intercept is
 // already live, so they are GREEN the moment they are written.

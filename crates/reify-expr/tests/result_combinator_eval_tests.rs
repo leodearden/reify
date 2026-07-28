@@ -17,8 +17,8 @@
 //! is covered separately by the step-5/6 tests appended to this file later.
 //!
 //! The `e2e_*_with_stdlib` section at the end of this file instead compiles the
-//! real stdlib and evaluates under
-//! `EvalContext::new(&values, &module.functions)` — task 5410, PRD
+//! real stdlib and evaluates under a prelude-backed function table built by
+//! `reify_test_support::prelude_backed_functions` — tasks 5410 and 5593, PRD
 //! docs/prds/v0_6/placeholder-type-eradication-ratchet.md §8 task ζ / BT10.
 //! What those tests do and do not guard is explained ONCE, in the CANONICAL
 //! MECHANISM NOTE above `e2e_or_default_some_with_stdlib` in
@@ -588,15 +588,28 @@ fn map_err_undef_subject_returns_undef() {
 //
 // MECHANISM: see the CANONICAL MECHANISM NOTE above
 // `e2e_or_default_some_with_stdlib` in `option_recovery_eval_tests.rs` — the
-// single copy for all three combinator eval-test files. In short: these
-// guard that THE INTERCEPT FIRES, measured; they never observe the `.ri`
-// placeholder bodies, because `module.functions` is user-source-only and the
-// intercept-removed fallthrough to `eval_user_function_call` yields
-// `Value::Undef`. Reproducing the PRD's silent-WRONG-VALUE mode needs a
-// prelude-backed function table, deferred to #5593.
+// single copy for all three combinator eval-test files. In short: these guard
+// that THE INTERCEPT BEATS THE PLACEHOLDER, measured. They evaluate under
+// `reify_test_support::prelude_backed_functions(&module)` (task 5593), so the
+// stdlib `.ri` bodies are registered and genuinely compete.
 //
-// MEASURED (task 5410 step-11, three intercept gates disabled): all seven
-// guards below fail with `left: Undef`.  Never a placeholder value.
+// MEASURED (task 5593, three intercept gates disabled): all seven guards below
+// fail with the `.ri` placeholder's value, never `Undef` — `0mm` from
+// `{ dflt }` (unwrap_or, and see the overload note below), `true`/`false` from
+// `{ true }`/`{ false }` (is_ok, is_err), the `Err` subject from `{ r }`
+// (or_else, map_err), and a naked `String("e")` from `{ err }` (both ok_or
+// guards). Per-guard table: prelude_backed_harness_tests.rs.
+//
+// OVERLOAD NOTE, measured and benign: these fixtures' `arg[0].result_type` is
+// `Enum("Result")`, which can never exact-equal
+// `Applied{name:"Result", args:[T,E]}`, so pass 1 of
+// `find_matching_compiled_function` misses BOTH candidates and pass 2's
+// wildcard takes the first in table order — the `Option<T>` overload, since
+// `std.option_recovery` loads before `std.result`. Observable value is
+// unaffected because each overload pair returns the same positional argument
+// (`{ dflt }` / `{ r }` vs `{ dflt }` / `{ o }`). Pre-existing reify-expr
+// resolution behaviour, out of scope here; recorded so it is not relied on
+// silently.
 //
 // Deliberate REGRESSION LOCKS, not RED-first tests — the same framing
 // `result_fallback_eval_tests.rs` already documents for itself.
