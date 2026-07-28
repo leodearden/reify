@@ -1,0 +1,640 @@
+prd: docs/prds/v0_6/units-length-gate-completion.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 5742
+  title: Dimension the compiler's synthesized geometry literals (cylinder_centered/rounded_rect/rounded_box/revolve_full)
+  capabilities:
+  - name: synthesized-dimensionless-literals-exist
+    binding: capability→producer (this leaf) — grep:crates/reify-compiler/src/geometry.rs:1503,2362,2439,2525
+      CompiledExpr::literal(Value::Real(..), Type::dimensionless_scalar()); revolve_full
+      TAU at :2065. All re-verified 2026-07-28
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: CompiledExpr::literal\(Value::Real\(0\.0\), reify_core::Type::dimensionless_scalar\(\)\)
+      paths:
+      - crates/reify-compiler/src/geometry.rs
+      expect: absent
+  - name: all-four-builtins-live-and-evaluate
+    binding: 'signal premise — D3 probes: cylinder_centered(5mm,20mm), rounded_rect(20mm,10mm,2mm),
+      rounded_box(20mm,10mm,5mm,1mm), revolve_full(..) each `reify eval` exit 0 (2026-07-28).
+      Adversary-probed rounded_box specifically, since the PRD added it after the
+      research'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the four controls are regression evidence, asserted by α's own compile-IR
+        characterization pin driven from real source text; no stable standalone pattern
+  - name: dag-direction-prerequisite
+    binding: DAG-direction — α is upstream of 5743 (β) and 5623; hard add_dependency
+      edges wired both ways round the batch
+    verdict: PASS
+- label: β
+  task_id: 5743
+  title: R7 raw-Value LENGTH chokepoint for primitives + profiles, and the shared
+    DiagnosticCode retrofit
+  capabilities:
+  - name: accept-arg-core-wired
+    binding: capability→producer (upstream, already on main) — grep:crates/reify-eval/src/arg_acceptance.rs:117
+      accept_arg, :28 ArgSpec, :40 Acceptance, :52 ArgRejection, :103 length_spec;
+      pub(crate) via lib.rs:93
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn accept_arg
+      paths:
+      - crates/reify-eval/src/arg_acceptance.rs
+      expect: present
+  - name: rejection-mechanism-observed-to-fire
+    binding: 'rejection-check (G6 branch 4) — authored `mirror(b, 10, 0, 0, 1, 0,
+      0)` and ran `reify eval`: exit 1, stderr `mirror: ox argument expects Length,
+      got Int; pass a dimensioned length such as `5mm`` + `failed to compile geometry
+      operation: missing or non-Length argument ''ox'' for mirror`. The rejection
+      MECHANISM this PRD extends is live and observed firing'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the pre-state probe is motivation; the post-state assertion is β's own
+        RED test on box(20,20,10). Both are behavioural, not pattern-discriminable
+  - name: r7-slot-population
+    binding: capability→producer (upstream, on main) — grep:crates/reify-ir/src/geometry.rs:575-1082,
+      46 Value-typed GeometryOp fields = 41 length-semantic (38 un-gated + spacing/spacing1/spacing2
+      already gated) + 3 dimensionless normals + 2 angle
+    verdict: PASS
+  - name: diagnostic-code-registry-extendable
+    binding: capability→producer (this leaf) — grep:crates/reify-core/src/diagnostics.rs:497
+      DimensionMismatch exists with Add/Sub-specific semantics (its own doc at :604
+      distinguishes them); β mints ONE new shared code beside it rather than reusing
+      it. PRD Open Question 1 decided here
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: DimensionMismatch
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+      expect: present
+  - name: undef-diagnostic-target-exists
+    binding: capability→producer (upstream, on main) — grep:crates/reify-eval/src/geometry_ops.rs:344-347
+      "argument '{}' for {} is unresolved (Undef)"; probed live via λ's fixture (exit
+      1). D10/INV-SF-1 routing target
+    verdict: PASS
+  - name: error-severity-obligation
+    binding: rejection-mechanism nuance (Adversary) — today's accept_arg rejection
+      is emitted as a WARNING paired with an Error from the op-compile failure; C1(iv)
+      requires the eval-layer rejection itself to be Error severity. Obligation recorded
+      in the task text
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: severity is a Diagnostic constructor choice, asserted by β's own exit-code
+        test rather than by a stable grep
+- label: γ
+  task_id: 5744
+  title: R7 LENGTH chokepoint for modify + sweep slots
+  capabilities:
+  - name: beta-chokepoint-helper-upstream
+    binding: capability→producer — producer:task-5743 upstream (hard add_dependency
+      wired); extent covers the additive raw-Value helper AND the shared DiagnosticCode
+      γ reuses
+    verdict: PASS
+  - name: prestate-unattributable-kernel-error
+    binding: 'signal premise (D3 probe) — `fillet(box(10mm,10mm,10mm), 1)` → reify
+      check exit 0 + ''All constraints satisfied.''; reify eval exit 1 with ONLY `OCCT
+      make_fillet_with_history: unexpected: BRepFilletAPI_MakeFillet failed` — no
+      op, no field, no span'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the post-state is a diagnostic-text assertion in γ's own RED test; the
+        pre-state string is a kernel message that θ also changes
+  - name: no-angle-no-arc-premise
+    binding: scope guard — γ gates no ANGLE position (draft.angle is PRD 3's by seam-table
+      decree) and builds no signal on arc sweep magnitudes (PRD D13)
+    verdict: PASS
+- label: δ
+  task_id: 5745
+  title: R3 — gate the decoded value-form routes
+  capabilities:
+  - name: point3-components-ungated
+    binding: capability→producer (this leaf) — grep:crates/reify-eval/src/geometry_ops.rs:766
+      point3_components performs NO dimension check; its own doc says a dimensionless
+      Vector and a LENGTH Point both pass through
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn point3_components
+      paths:
+      - crates/reify-eval/src/geometry_ops.rs
+      expect: present
+  - name: value-form-hole-is-real
+    binding: signal premise (D3 probe) — `mirror(b, plane_yz(10))` → reify eval exit
+      0 AND reify check exit 0, while the scalar form of the SAME builtin exits 1.
+      The bypass is confirmed behaviourally, not inferred
+    verdict: PASS
+  - name: origin-vs-direction-caller-split
+    binding: scope guard (Adversary) — point3_components ORIGIN callers get the gate
+      (:821 decode_plane, :861 decode_axis, :1127/:1149 NurbsSurface control points);
+      DIRECTION callers must stay dimensionless (:824 plane normal, :863 axis direction,
+      :2167 offset_curve 3rd arg). Recorded in the task so δ cannot over-gate
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: per-argument dimension intent is not pattern-discriminable; asserted
+        by δ's own per-caller triage and the closure guard's allowlist justifications
+  - name: sample-point3-is-prd5-not-delta
+    binding: scope guard — grep:crates/reify-expr/src/lib.rs:293 `sample` is a reify-expr
+      builtin, NOT routed through point3_components. examples/imported_field/openvdb_stress.ri:36-38
+      bare point3 coords are PRD 5's second-universe territory, not a δ migration
+    verdict: PASS
+- label: ε
+  task_id: 5746
+  title: R11 — make_plane/make_axis require a LENGTH offset; flip the locking test
+  capabilities:
+  - name: producers-and-locking-test-exist
+    binding: capability→producer (this leaf) — grep:crates/reify-stdlib/src/geometry.rs:1112
+      make_plane, :1152 make_axis, :1125-1134 make_zero, :2928 plane_xy_real_zero_produces_dimensionless_origin
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: plane_xy_real_zero_produces_dimensionless_origin
+      paths:
+      - crates/reify-stdlib/src/geometry.rs
+      expect: absent
+  - name: make-zero-dimension-mirroring-proven
+    binding: signal premise (D3 probe) — `plane_xy(0mm)` already prints `plane(point(0
+      m, 0 m, 0 m), vec(0, 0, 1))` (LENGTH origin triple) while `plane_xy(0.0)` prints
+      `plane(point(0, 0, 0), ...)`. The post-gate behaviour is proven BEFORE the gate
+      lands, so ε's signal cannot be a guess
+    verdict: PASS
+  - name: dag-direction-consumer-first
+    binding: 'DAG-direction — δ (5745) upstream: the consumer-side gate lands first,
+      then the producer-side requirement (PRD D4 gates both ends)'
+    verdict: PASS
+- label: ζ
+  task_id: 5747
+  title: R8 + R12 transform routes
+  capabilities:
+  - name: r8-dimensionless-admission-exists
+    binding: capability→producer (this leaf) — grep:crates/reify-eval/src/geometry_ops.rs:10318-10322,
+      `*dimension == LENGTH || *dimension == DIMENSIONLESS` re-read verbatim 2026-07-28
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: DimensionVector::DIMENSIONLESS
+      paths:
+      - crates/reify-eval/src/geometry_ops.rs
+      expect: present
+  - name: r12-consistency-only-contract
+    binding: capability→producer (this leaf) — grep:crates/reify-stdlib/src/geometry.rs:19-26
+      decompose_xyz3 (any shared dimension passes), :446 affine_translate, :460 affine_map;
+      the LINEAR part is already correctly dimensionless-checked at :468-470 and must
+      stay
+    verdict: PASS
+  - name: r12-silent-mass-discard-is-real
+    binding: signal premise (D3 probe) — `affine_translate(5kg, 0kg, 0kg)` → reify
+      eval exit 0, prints `translation=[5, 0, 0]`. A genuine 0→1 exit-code change
+    verdict: PASS
+  - name: r8-change-is-the-message-not-the-exit-code
+    binding: signal premise CORRECTED (Adversary D3 probe) — `apply_transform(b, transform3(..,
+      vec3(5,0,0)))` ALREADY exits 1 today with the generic `'transform' arg is not
+      a valid Transform<3>`. ζ's R8 signal is the DIAGNOSTIC; no RED test may assert
+      an exit-code flip on this fixture
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a diagnostic-text change on a fixture that already exits 1; asserted
+        by ζ's own message assertion
+- label: η
+  task_id: 5750
+  title: LENGTH CheckableArg compile slots for statically-visible length positions
+  capabilities:
+  - name: checkable-arg-machinery-wired
+    binding: capability→producer (upstream, on main) — grep:crates/reify-compiler/src/builtin_signatures.rs:80-88
+      CheckableArg, :92-110 ExpectedArg ENUM (Scalar{dimension,type_name} | Int{type_name}),
+      :145-297 builtin_arg_slots keyed (name, arity), consumer check_builtin_arg_types
+      :325
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'dimension: DimensionVector::LENGTH'
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+      expect: present
+  - name: seven-existing-length-slots-as-pattern
+    binding: capability→producer (upstream) — grep:builtin_signatures.rs:186,194 (edges_at_height
+      h+tol), :211 (extremal_by_* tol), :254 (linear_pattern spacing @arity 6), :280,288
+      (linear_pattern_2d spacing1+spacing2 @arity 11). SEVEN, not the research's two
+    verdict: PASS
+  - name: non-selector-key-registry-and-invariant
+    binding: capability→producer (upstream) — grep:builtin_signatures.rs:474 NON_SELECTOR_ARG_SLOT_KEYS,
+      :727 arg_slot_keys_are_registered_builtin_names, :420 MAX_PROBED_ARITY = 14
+    verdict: PASS
+  - name: compile-slot-rejection-observed-at-check
+    binding: 'rejection-check (G6 branch 4) — `linear_pattern(b,1,0,0,3,20)` → `reify
+      check` exit 1 with `linear_pattern: spacing argument expects Length, got Int`.
+      The compile layer is the ONLY layer with teeth at check today, so η''s check-visible
+      signal needs no PRD 2 dependency (D8)'
+    verdict: PASS
+  - name: two-inverting-assertions-located
+    binding: capability→producer (this leaf) — grep:crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:1729
+      translate_non_geometry_target_uses_fallback and :1783 extrude_non_geometry_target_uses_fallback;
+      flipped deliberately per contract C6
+    verdict: PASS
+  - name: row-9b-premise-corrected
+    binding: 'signal premise CORRECTED (Adversary D3 probe) — compile_api_tests.rs:216-235
+      is the deliberate arity-error negative fixture compile_linear_pattern_2d_wrong_arity_produces_diagnostic
+      (annotated by task 5652), and the arity guard rejects it: `reify check`/`reify
+      eval` exit 1 with `linear_pattern_2d() expects 11 arguments, got 6`. NOT a silently-accepted
+      overload. Resolution: no arity-6 LENGTH slot; fixture stays bare; subtract from
+      the migration list'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: compile_linear_pattern_2d_wrong_arity_produces_diagnostic
+      paths:
+      - crates/reify-compiler/tests/compile_api_tests.rs
+      expect: present
+- label: θ
+  task_id: 5751
+  title: Kernel tripwire at both kernel numeric-extraction boundaries
+  capabilities:
+  - name: both-kernel-boundaries-exist
+    binding: capability→producer (this leaf) — grep:crates/reify-kernel-occt/src/lib.rs:193
+      and crates/reify-kernel-fidget/src/kernel.rs:349, `fn extract_f64` in both
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: debug_assert
+      paths:
+      - crates/reify-kernel-occt/src/lib.rs
+      - crates/reify-kernel-fidget/src/kernel.rs
+      expect: present
+  - name: prestate-kernel-error-names-nothing
+    binding: 'signal premise (D3 probe) — `OCCT make_fillet_with_history: unexpected:
+      BRepFilletAPI_MakeFillet failed`, no op kind, no field, no span'
+    verdict: PASS
+  - name: tripwire-not-gate-no-numeric-bound
+    binding: 'numeric floor N/A — PRD D5: this is a detector, not a gate; no accuracy
+      bound is asserted, and the 546/242/40 legitimate Value::Real kernel-test inputs
+      stay green by construction'
+    verdict: PASS
+- label: ι
+  task_id: 5752
+  title: Closure-guard harness + Contract C doc shrink
+  capabilities:
+  - name: probe-seam-makes-the-guard-buildable
+    binding: capability→producer (upstream, on main) — grep:crates/reify-eval/src/geometry_op_characterization_probe.rs:39
+      `pub fn compile_geometry_op_probe`, cfg(any(test, feature = "test-instrumentation")),
+      a 1:1 delegate to compile_geometry_op
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: compile_geometry_op_probe
+      paths:
+      - crates/reify-eval/src/geometry_op_characterization_probe.rs
+      expect: present
+  - name: test-instrumentation-feature-already-wired
+    binding: capability→producer (upstream, on main) — grep:crates/reify-eval/Cargo.toml:67
+      `test-instrumentation = []` and :80-81 the self-dev-dep `reify-eval = { path
+      = ".", features = ["test-instrumentation"] }`. No Cargo work needed by this
+      leaf
+    verdict: PASS
+  - name: universe-independent-of-assertion-target
+    binding: 'capability→producer (upstream) — grep:crates/reify-compiler/src/units.rs:21-86
+      GEOMETRY_FUNCTION_NAMES; counted programmatically 2026-07-28: 64 names (the
+      research''s 66 was a line count). The guard''s `>= 60` floor sits below the
+      measured 64. Encodes the arg_slot_keys_are_registered_builtin_names vacuity
+      lesson: the probe universe must not be the assertion target'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: GEOMETRY_FUNCTION_NAMES
+      paths:
+      - crates/reify-eval/tests
+      expect: present
+  - name: driver-precedent-ir-build-only
+    binding: capability→producer (upstream) — grep:crates/reify-eval/tests/compile_geometry_op_characterization.rs:200
+      `run(op, step_handles)`; builds CompiledGeometryOp from CompiledExpr::literal
+      with empty ValueMap/named_steps, no parser, no kernel
+    verdict: PASS
+  - name: anti-vacuity-template
+    binding: capability→producer (upstream) — grep:crates/reify-eval/tests/version_id_discipline_gate.rs:272,303,337,357,378,408,444
+      (7 seeded self-tests) + :492 (real-tree scan). ι mirrors this shape
+    verdict: PASS
+  - name: assertion-target-observable
+    binding: 'rejection-check — `mirror(b,10,0,0,1,0,0)` → `failed to compile geometry
+      operation: missing or non-Length argument ''ox'' for mirror`. The Contract C
+      rejection the guard asserts over is observable today on at least one position'
+    verdict: PASS
+  - name: dag-direction-gates-are-upstream
+    binding: DAG-direction — producer:task-5744,5745,5746,5747,5750,5623,5658,5661
+      ALL upstream via hard add_dependency edges. No producer-downstream inversion
+    verdict: PASS
+  - name: drift-guard-registrations-same-diff
+    binding: contract C7 (overlay drift-guard rule) — .config/nextest.toml and tests/infra/run-all-classification.manifest
+      both exist and are the registration points; ι's own diff carries them. NOT a
+      downstream sibling, NOT prose-ordered. esc-4914-162 is the failure this prevents
+    verdict: PASS
+    delivered_check:
+      kind: script
+      script: scripts/verify-pipeline-guard.sh
+      args:
+      - requires-full-gate
+      - .config/nextest.toml
+      timeout_secs: 60
+  - name: contract-c-note-ownership-unambiguous
+    binding: capability→producer — hard add_dependency 5752→5658 wired, so ι lands
+      after 5658 and owns the final Contract C text per PRD §8 ("whichever lands later
+      owns the final text"). 5658 sharpens; ι replaces with a pointer
+    verdict: PASS
+  - name: residuals-owned-and-loud
+    binding: 'INV-SF-5 / PRD D14 — every allowlist residual cites a live non-terminal
+      #NNNN per the PTODO grammar; blanket ''awaiting a future units PRD'' escapes
+      banned. Enforced on the gate by reify-audit --pattern PTODO'
+    verdict: PASS
+- label: κ
+  task_id: 5754
+  title: VARIANT_COUNT registry backstops for the 8 kind families that lack one
+  capabilities:
+  - name: single-existing-variant-count
+    binding: 'capability→producer (upstream) — grep:crates/reify-compiler/src/types.rs:1448
+      `pub const VARIANT_COUNT: usize = Self::ALL.len();`. Workspace-wide grep confirms
+      exactly ONE (ModifyKind), correcting the research''s ''five of six'''
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: VARIANT_COUNT
+      paths:
+      - crates/reify-compiler/src/types.rs
+      expect: present
+  - name: eight-families-lack-it
+    binding: capability→producer (this leaf) — grep:crates/reify-compiler/src/types.rs:1335
+      PrimitiveKind, :1378 BooleanOp, :1469 TransformKind, :1499 PatternKind, :1521
+      SweepKind, :1559 CurveKind, :1588 ProfileKind, :1616 SurfaceKind
+    verdict: PASS
+  - name: two-enforcement-precedents
+    binding: 'capability→producer (upstream, Adversary finding) — compile-time `const
+      _: () = assert!(CASES.len() == ModifyKind::VARIANT_COUNT, ..)` at crates/reify-compiler/src/geometry_modify.rs:1006
+      AND runtime `assert_eq!(ALL_MODIFY.len(), ModifyKind::VARIANT_COUNT, ..)` at
+      crates/reify-eval/src/geometry_ops/tests.rs:20435. The PRD named only the second;
+      κ mirrors both'
+    verdict: PASS
+  - name: non-vacuity-required
+    binding: rejection-mechanism — κ's signal requires a SEEDED demonstration that
+      the backstop fires for at least one family, not merely that the constant exists
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a seeded-mutation demonstration is intrinsically not present in the
+        landed tree; asserted by κ's own self-test
+- label: λ
+  task_id: 5755
+  title: PatternKind diagnostic labels + LENGTH check on isosurface.iso
+  capabilities:
+  - name: label-sites-and-pinning-test
+    binding: capability→producer (this leaf) — grep:crates/reify-compiler/src/types.rs:1510
+      `Linear => "linear"`, :1513 `Linear2D => "linear_2d"`, pinned by the table test
+      at :1876/:1879. The linear_2d twin was not in the research
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: PatternKind::Linear => f\.write_str\("linear"\)
+      paths:
+      - crates/reify-compiler/src/types.rs
+      expect: absent
+  - name: label-is-user-visible-reachable-route
+    binding: 'signal premise RESOLVED (Adversary D3 probe) — the bare-literal route
+      is SHADOWED by η''s compile slot. The reachable route is the Undef path: `param
+      s : Length` (no default) + `linear_pattern(b,1,0,0,3,s)` → `reify eval` exit
+      1, stderr `argument ''spacing'' for linear is unresolved (Undef)`. Pinned as
+      λ''s RED fixture. Cross-check: PatternKind::Mirror already surfaces correctly
+      as `.. for mirror`'
+    verdict: PASS
+  - name: isosurface-defect-site-vs-deliberate-default
+    binding: capability→producer (this leaf) — grep:crates/reify-eval/src/geometry_ops.rs:1374
+      un-checked `v.as_f64()` is the defect; :1368 `None => 0.0` is the DOCUMENTED
+      deliberate absent-arg default (doc at :1358-1363) and stays (PRD D12, an honest
+      correction of the research's framing)
+    verdict: PASS
+  - name: dag-direction-shared-files
+    binding: DAG-direction — κ (5754) upstream on crates/reify-compiler/src/types.rs;
+      β (5743) upstream on crates/reify-eval/src/geometry_ops.rs. Both hard edges
+    verdict: PASS
+- label: μ
+  task_id: 5757
+  title: GUI parameter editor — reject bare numbers in dimensioned cells; reconcile
+    UNIT_TABLE
+  capabilities:
+  - name: parse-value-string-wired-on-production-path
+    binding: wired-on-main (anti-orphan) — grep:gui/src-tauri/src/engine.rs:5932 fn
+      parse_value_string, called from EngineSession::set_parameter at :2051-2057.
+      Production path, not test-only
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: parse_value_string
+      paths:
+      - gui/src-tauri/src/engine.rs
+      expect: present
+  - name: both-unit-table-lookup-sites
+    binding: 'capability→producer (this leaf) — grep:gui/src-tauri/src/engine.rs:5918-5924
+      UNIT_TABLE (5 entries: deg/rad/mm/cm/m) and the second independent lookup at
+      :4870 (the bind(joint, <quantity>) path)'
+    verdict: PASS
+  - name: delegation-target-exists
+    binding: capability→producer (upstream, on main) — grep:crates/reify-core/src/units.rs:24
+      `pub fn unit_symbol_to_si` with 13 symbols; the GUI lacks in, kg, g, s, K, A,
+      mol, cd
+    verdict: PASS
+  - name: longest-suffix-invariant-to-preserve
+    binding: capability→producer — grep:gui/src-tauri/src/engine.rs:5948 debug_assert!
+      that UNIT_TABLE is sorted by descending suffix length; whatever replaces it
+      must preserve longest-suffix-first or `m` shadows `mm`
+    verdict: PASS
+  - name: test-surface-is-rust-not-vitest
+    binding: signal premise CORRECTED (Adversary) — the PRD said 'GUI vitest/tauri
+      test path', but parse_value_string is RUST in gui/src-tauri. grep:gui/src-tauri/src/tests/engine_tests.rs:17,1737
+      — the parse_value_string_* family is the real harness. No vitest work is filed
+    verdict: PASS
+- label: ν
+  task_id: 5759
+  title: Doc-chunk update (units.md + geometry.md), registry-verified
+  capabilities:
+  - name: chunks-exist
+    binding: capability→producer (this leaf) — crates/reify-mcp/src/tools/chunks/units.md
+      (52 lines) and geometry.md (127 lines), both present on main 2026-07-28
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Length
+      paths:
+      - crates/reify-mcp/src/tools/chunks/units.md
+      expect: present
+  - name: registries-to-verify-against
+    binding: 'capability→producer (upstream) — crates/reify-compiler/src/{geometry,geometry_curve,geometry_transform,geometry_modify,geometry_boolean}.rs
+      plus the crates/reify-compiler/src/units.rs name registries. This is the defect
+      class behind #5347/#5364/#5389'
+    verdict: PASS
+  - name: dag-direction-documents-landed-behaviour
+    binding: DAG-direction — γ (5744) and η (5750) upstream, so the chunk documents
+      behaviour that has landed rather than behaviour it hopes for
+    verdict: PASS
+- label: ξ
+  task_id: 5760
+  title: Exemplar corpus + cheatsheet index + discoverability acceptance
+  capabilities:
+  - name: corpus-and-compile-gate
+    binding: capability→producer (upstream, on main) — examples/best_practices/INDEX.md
+      and crates/reify-compiler/tests/examples_smoke.rs (auto-compile + bidirectional
+      index invariant)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: INDEX
+      paths:
+      - examples/best_practices/INDEX.md
+      expect: present
+  - name: cheatsheet-index-target
+    binding: capability→producer (upstream, on main) — .claude/skills/reify-design/SKILL.md;
+      a ONE-LINE index entry, not an inline playbook
+    verdict: PASS
+  - name: stale-claim-to-correct-is-real
+    binding: signal premise (verified 2026-07-28) — examples/best_practices/symmetry_mirror.ri:30-35
+      asserts 'that error does NOT appear under `reify check` … A green check is not
+      evidence that a geometry call's argument dimensions are right'. TRUE today (probed),
+      FALSE for statically-visible positions after η
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: A green check is not evidence
+      paths:
+      - examples/best_practices/symmetry_mirror.ri
+      expect: absent
+  - name: coordination-hazard-recorded
+    binding: scope guard — task 5662 also edits a comment block in symmetry_mirror.ri;
+      both task records carry the cross-reference so they do not collide
+    verdict: PASS
+- label: ο
+  task_id: 5761
+  title: B+H integration gate — the full §6 two-way boundary-test suite (20 rows)
+  capabilities:
+  - name: every-asserted-capability-is-upstream
+    binding: DAG-direction (the load-bearing check for an integration gate) — producer:task-5743,5744,5745,5746,5747,5750,5751,5752,5754,5755,5757,5759,5760,5623,5658,5661,5662.
+      ALL 17 are hard add_dependency edges and ALL are upstream. No row's capability
+      is owned by a task that depends on ο
+    verdict: PASS
+  - name: rejection-rows-backed-by-captured-prestate
+    binding: rejection-check — rows 1,3,4,5,7,8,18,19 each have a captured pre-state
+      probe in the .md manifest plus a named producing leaf upstream; rows 11,12 are
+      the guard's seeded anti-vacuity self-tests; rows 13,15,16 are seeded/injected
+      demonstrations
+    verdict: PASS
+  - name: row-20-corpus-greenness
+    binding: capability→producer — producer:task-5760 upstream, wired at decompose
+      BEYOND the PRD's stated dep list so row 20 cannot assert corpus greenness before
+      ξ's new exemplar exists. Corpus re-census 2026-07-28 found no .ri migration
+      owed by THIS PRD's gates
+    verdict: PASS
+  - name: no-row-depends-on-prd-2
+    binding: scope guard (PRD D8) — every row is phrased against `reify eval`; rows
+      9/9b additionally use `reify check`, which already works via the compile slots
+      (probed). PRD 2 decomposed 2026-07-28 at 209dc5bf24; deliberately NO cross-PRD
+      edge
+    verdict: PASS
+  - name: drift-guard-registrations-same-diff
+    binding: contract C7 (overlay drift-guard rule) — ο's own diff carries any nextest
+      partition entry, run-all-classification.manifest row and wallclock-bounds registration
+      its new gate-resident tests require. Not a downstream sibling, not prose-ordered
+    verdict: PASS
+    delivered_check:
+      kind: script
+      script: scripts/verify-pipeline-guard.sh
+      args:
+      - requires-full-gate
+      - tests/infra/run-all-classification.manifest
+      timeout_secs: 60
+- label: '5623'
+  task_id: 5623
+  title: ADOPTED — R1 eval_named_arg_f64 length sweep
+  capabilities:
+  - name: helper-and-chokepoint-exist
+    binding: capability→producer (upstream, on main) — grep:crates/reify-eval/src/geometry_ops.rs:202
+      eval_named_arg_f64 (the bare-accepting helper) and :325 required_length_arg
+      (the Contract C chokepoint it routes into)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn required_length_arg
+      paths:
+      - crates/reify-eval/src/geometry_ops.rs
+      expect: present
+  - name: alpha-is-a-hard-upstream
+    binding: DAG-direction — producer:task-5742 upstream (edge wired at decompose).
+      Without it, gating transform_translate dx/dy breaks cylinder_centered, whose
+      synthesized zeros are dimensionless
+    verdict: PASS
+- label: '5658'
+  task_id: 5658
+  title: ADOPTED — R2 variadic curve coordinates (eval_all_args_to_f64)
+  capabilities:
+  - name: variadic-helper-exists
+    binding: capability→producer (upstream, on main) — grep:crates/reify-eval/src/geometry_ops.rs:418
+      eval_all_args_to_f64, four call sites (interp/bezier/nurbs + profile_polygon)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn eval_all_args_to_f64
+      paths:
+      - crates/reify-eval/src/geometry_ops.rs
+      expect: present
+  - name: contract-c-note-sharpen-not-drop
+    binding: capability→producer — 5658's own 2026-07-28 amendment (esc-5658-3) is
+      ratified by the PRD; task 5752 (ι) carries a hard add_dependency onto 5658 and
+      owns the final pointer text
+    verdict: PASS
+- label: '5661'
+  task_id: 5661
+  title: ADOPTED — R2 profile_polygon 2D vertex coordinates
+  capabilities:
+  - name: fourth-call-site-exists
+    binding: capability→producer (upstream, on main) — profile_polygon is the fourth
+      eval_all_args_to_f64 consumer, collecting coords.chunks_exact(2) into GeometryOp::PolygonProfile
+    verdict: PASS
+  - name: standalone-not-combined
+    binding: 'scope decision — the ''COMBINE into 5658'' alternative is DECLINED at
+      decompose: the file-lock DAG 5623→5658→5661 serializes them on geometry_ops.rs
+      anyway, so a merge buys no parallelism. Recorded in the task'
+    verdict: PASS
+- label: '5662'
+  task_id: 5662
+  title: ADOPTED + RESCOPED — compile-layer LENGTH origin slots for mirror/circular_pattern
+  capabilities:
+  - name: compile-slot-machinery-upstream
+    binding: DAG-direction — producer:task-5750 (η) upstream (edge wired at decompose);
+      η adds the slot family, the key registration and the C1 message reconciliation
+      5662 lands on top of
+    verdict: PASS
+  - name: stated-premise-was-false-corrected
+    binding: 'signal premise CORRECTED (D3 probe) — 5662 justified leaving the value
+      form slot-free on ''5214''s eval gate covers it''. Probe: `mirror(b, plane_yz(10))`
+      → reify eval exit 0, reify check exit 0. The value-form hole belongs to task
+      5745 (δ). The arity guards are retained on their own (correct) merits'
+    verdict: PASS
+  - name: call-site-count-remeasured
+    binding: numeric claim CORRECTED — '>= 6 breaking call sites' re-measured at 209dc5bf24
+      as FOUR live sites (let_scope_tests.rs:722,:863; compile_api_tests.rs:141; mirror_circular_value_forms_e2e.rs:451).
+      Three of the seven listed are now comments, including symmetry_mirror.ri:27
+      whose real call at :68 is already 0mm
+    verdict: PASS
+  - name: must-stay-live-ptodo-citation
+    binding: INV-SF-5 / PTODO — grep:crates/reify-compiler/src/builtin_signatures.rs:48
+      carries `TODO(#5662)`. Cancelling 5662 would orphan a live citation and fail
+      reify-audit --pattern PTODO. Rescoped, never cancelled
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: TODO\(#5662\)
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+      expect: absent
