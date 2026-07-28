@@ -532,6 +532,15 @@ fn debouncer_paths_are_coalesced_and_drained_independently() {
     assert_eq!(deb.next_wait(t0 + Duration::from_millis(160)), None);
 }
 
+// Assertions over these helpers must be MONOTONE UNDER DESCHEDULING.
+// A saturated host can deschedule this thread for an entire timeout
+// budget, so: lower bounds on `start.elapsed()` and `>=`-style
+// "at least once" counts are safe (they only grow under load), while
+// upper bounds on elapsed and "more than N attempts" claims invert
+// and become flakes. Sharp count/promptness claims belong on the
+// `VirtualClock` tests below, which have no wall-clock dependency
+// at all. See #5709.
+
 #[test]
 fn wait_for_returns_true_promptly_when_condition_already_satisfied() {
     let sink: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(vec![42]));
