@@ -2430,6 +2430,7 @@ mod tests {
             "orbit_camera",
             "pan_camera",
             "zoom_camera",
+            "set_fea_channel", // #5670: viewportId disambiguates WHICH pane's FEA toolbar to drive
         ];
         for tool_name in tools {
             let entry = defs
