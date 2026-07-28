@@ -757,6 +757,84 @@ mod tests {
         assert_no_unguarded_temp_dir_sites(&file.display().to_string());
     }
 
+    // ── collect_workspace_unguarded_temp_dirs ────────────────────────────────
+    //
+    // Mirrors ignore_hygiene's `cwsp_*` tests: a synthetic workspace exercised
+    // end to end through the walk-read-scan-format collector. Needles reuse
+    // the `guarded_call`/`guard_fn` helpers above, so this file never contains
+    // an adjacent literal match and cannot self-trigger the very sweep it is
+    // testing here.
+
+    /// Fixture shape: (a) `crates/alpha/src/lib.rs` — a `src/` file with a
+    /// hand-rolled construction site, unreachable by the old tests-only
+    /// walker and thus the whole point of the workspace-wide sweep; (b)
+    /// `crates/beta/tests/thing.rs` — a `tests/` file with an unbound-guard
+    /// one-liner, pinning that BOTH violation kinds survive the workspace
+    /// layer; (c) `crates/gamma/src/ok.rs` — a `src/` file whose only site
+    /// carries the per-line `// temp-dir:allow` escape, pinning that the
+    /// escape propagates through the collector (the exact mechanism pre-2
+    /// relies on to exempt this module's own two sites); (d)
+    /// `crates/delta/src/clean.rs` — clean, contributes nothing; (e)
+    /// `target/skip.rs` — a violation under a pruned directory, must not
+    /// surface.
+    #[test]
+    fn cwutd_synthetic_workspace_reports_src_and_tests_violations_only() {
+        use tempfile::TempDir;
+
+        let tmp: TempDir = tempfile::tempdir().expect("create tempdir");
+        let root = tmp.path();
+
+        let call = guarded_call();
+        let guard_fn = guard_fn();
+
+        let alpha = root.join("crates/alpha/src/lib.rs");
+        let alpha_src = format!("fn f() {{\n    let d = std::{call}.join(\"x\");\n}}\n");
+
+        let beta = root.join("crates/beta/tests/thing.rs");
+        let beta_src =
+            format!("fn g() {{\n    let d = {guard_fn}(\"x-\").path().to_path_buf();\n}}\n");
+
+        let gamma = root.join("crates/gamma/src/ok.rs");
+        let gamma_src =
+            format!("fn h() {{\n    let d = {call}; // temp-dir:allow — test fixture\n}}\n");
+
+        let delta = root.join("crates/delta/src/clean.rs");
+        let delta_src = "fn clean() {}\n".to_string();
+
+        let pruned = root.join("target/skip.rs");
+        let pruned_src = format!("fn p() {{\n    let d = std::{call};\n}}\n");
+
+        for (path, content) in [
+            (&alpha, alpha_src.as_str()),
+            (&beta, beta_src.as_str()),
+            (&gamma, gamma_src.as_str()),
+            (&delta, delta_src.as_str()),
+            (&pruned, pruned_src.as_str()),
+        ] {
+            std::fs::create_dir_all(path.parent().unwrap()).expect("create parent dirs");
+            std::fs::write(path, content.as_bytes()).expect("write file");
+        }
+
+        let violations = collect_workspace_unguarded_temp_dirs(root);
+
+        assert_eq!(
+            violations.len(),
+            2,
+            "expected exactly 2 violations — alpha (src/) and beta (tests/) — with gamma \
+             escaped, delta clean, and target/ pruned: {violations:?}"
+        );
+        let combined = violations.join("\n");
+        assert!(
+            combined.contains("crates/alpha/src/lib.rs"),
+            "expected a violation naming the alpha src/ file — the whole point of the \
+             workspace-wide sweep, unreachable by the old tests-only walker: {violations:?}"
+        );
+        assert!(
+            combined.contains("crates/beta/tests/thing.rs"),
+            "expected a violation naming the beta tests/ file: {violations:?}"
+        );
+    }
+
     // ── ratchet: files migrated off hand-rolled temp dirs ────────────────────
     //
     // Each guard below is ratcheted on by #5640 together with the migration that
