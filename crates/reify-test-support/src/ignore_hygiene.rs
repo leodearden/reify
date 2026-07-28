@@ -222,8 +222,10 @@ pub fn check_ignore_reasons(source: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Recursively walk `workspace_root` collecting every `.rs` file whose path
-/// contains a directory component named `tests`. Skips the following directories:
+/// Recursively walk `workspace_root` collecting every `.rs` file for which
+/// `include` returns `true`, given the file's path RELATIVE to
+/// `workspace_root`. Skips the following directories unconditionally, before
+/// `include` is ever consulted:
 ///
 /// - `target` — Cargo build artifacts
 /// - Dot-dirs (any name starting with `.`) — VCS internals (`.git`), worktrees
@@ -234,13 +236,17 @@ pub fn check_ignore_reasons(source: &str) -> Result<(), String> {
 /// - `vendor` — Cargo vendored dependency trees; vendored crate source is not
 ///   project-owned test code and scanning it wastes time
 ///
+/// The path passed to `include` is relative — that is what every caller
+/// reasons about, and it keeps predicates independently testable without a
+/// `workspace_root` in scope (see [`has_tests_component`]).
+///
 /// Uses `std::fs::read_dir` with an explicit stack (no recursion, no external
 /// `walkdir` dep) — matching the existing convention in `reify-kernel-occt/build.rs`.
 ///
 /// # Panics
 ///
 /// Does not panic — I/O errors on individual directories are silently skipped.
-pub fn walk_test_rs_files(workspace_root: &Path) -> Vec<PathBuf> {
+pub fn walk_rs_files(workspace_root: &Path, include: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
     let mut result = Vec::new();
     let mut stack = vec![workspace_root.to_path_buf()];
 
@@ -265,9 +271,15 @@ pub fn walk_test_rs_files(workspace_root: &Path) -> Vec<PathBuf> {
                 }
                 stack.push(path);
             } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-                // Only include files that have "tests" as a directory component
-                // in the path relative to workspace_root.
-                if has_tests_component(&path, workspace_root) {
+                // A path that (unexpectedly) isn't under workspace_root is
+                // excluded rather than handed to `include` as an absolute
+                // path — `include` predicates only ever reason about
+                // workspace-relative paths.
+                let included = match path.strip_prefix(workspace_root) {
+                    Ok(rel) => include(rel),
+                    Err(_) => false,
+                };
+                if included {
                     result.push(path);
                 }
             }
@@ -275,6 +287,16 @@ pub fn walk_test_rs_files(workspace_root: &Path) -> Vec<PathBuf> {
     }
 
     result
+}
+
+/// Recursively walk `workspace_root` collecting every `.rs` file whose path
+/// contains a directory component named `tests`.
+///
+/// A thin delegation over [`walk_rs_files`] passing [`has_tests_component`] as
+/// the predicate — see that function's docs for the directory-exclusion list
+/// (`target`, dot-dirs, `node_modules`, `vendor`) and the walk strategy.
+pub fn walk_test_rs_files(workspace_root: &Path) -> Vec<PathBuf> {
+    walk_rs_files(workspace_root, has_tests_component)
 }
 
 /// Walk `workspace_root` for test `.rs` files and collect every stale
@@ -310,13 +332,9 @@ pub fn collect_workspace_stale_pointers(workspace_root: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Returns true when `path` (relative to `workspace_root`) contains at least
-/// one directory component whose name is exactly `"tests"`.
-fn has_tests_component(path: &Path, workspace_root: &Path) -> bool {
-    let rel = match path.strip_prefix(workspace_root) {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
+/// Returns true when `rel` (a path already relative to the workspace root)
+/// contains at least one directory component whose name is exactly `"tests"`.
+fn has_tests_component(rel: &Path) -> bool {
     // Iterate directory components only (skip the final filename component).
     rel.parent()
         .unwrap_or(Path::new(""))
