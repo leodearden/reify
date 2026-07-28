@@ -37,30 +37,23 @@
 //! - `dir` Vec3 slot — accepts list literals `[0,0,1]` that coerce
 //! - Range slots (`edges_by_length` / `faces_by_area`)
 //! - Names without dimensioned-scalar args (`split`, `face`, `edge`, `solid_body`, …)
-//! - Pattern DIRECTION components (`linear_pattern` args1-3,
-//!   `linear_pattern_2d` args1-3 and 7-9) — a direction is a dimensionless unit
-//!   vector, so a bare component carries no silent-metres hazard (task 5214).
-//!   Unlike `spacing`, where a bare `10` was read as 10 SI metres — 1000× a
-//!   plausible 10 mm pitch.
-//! - Pattern COUNTS (`linear_pattern` arg4; `linear_pattern_2d` args4 and 9) —
-//!   a wrong count is an arity/semantic error, not a dimension error.
+//! - Pattern DIRECTION components and COUNTS (`linear_pattern` args1-4;
+//!   `linear_pattern_2d` args1-4 and 6-9) — why each is exempt is on the
+//!   `linear_pattern` arm of [`builtin_arg_slots`].
 //! - `mirror` (arity 7) / `circular_pattern` (arity 9) origin triples
 //!   `ox`/`oy`/`oz` — length-semantic and eligible, but deliberately DEFERRED by
-//!   task 5652 rather than shipped: LENGTH slots there convert at least six
-//!   existing valid-today call sites into hard compile errors, spanning
-//!   `reify-eval` tests and `examples/`, i.e. a separable breaking-surface
-//!   migration outside 5652's file scope.
+//!   task 5652: LENGTH slots there turn at least six existing valid-today call
+//!   sites into hard compile errors, spanning `reify-eval` tests and
+//!   `examples/` — a separable breaking-surface migration outside 5652's scope.
 //!   TODO(#5662): add the ox/oy/oz LENGTH slots and migrate those call sites.
 //!
 //! # Arity awareness (task 5652)
 //!
-//! [`builtin_arg_slots`] is keyed on `(name, arity)`, not `name` alone, because a
-//! builtin's positional layout is stable only *within* one overload — for an
-//! overloaded name, index `i` denotes a different parameter in each form.  The
-//! rule is **guard only genuinely overloaded names**: non-overloaded arms stay
-//! arity-agnostic so a short call still has its present slots checked.  See
-//! [`builtin_arg_slots`] for the full rationale and the
-//! `relation_signatures::relation_operand_datum` precedent.
+//! [`builtin_arg_slots`] is keyed on `(name, arity)`, not `name` alone, and
+//! guards only genuinely overloaded names.  The rule, its rationale and the
+//! `relation_signatures::relation_operand_datum` precedent are documented there;
+//! the concrete false positive it prevents is on that function's
+//! `linear_pattern_2d` arm.
 //!
 //! Most keys here are topology selectors; the exceptions are enumerated and
 //! justified in `tests::NON_SELECTOR_ARG_SLOT_KEYS`, which the coverage invariant
@@ -132,15 +125,14 @@ pub(crate) enum ExpectedArg {
 ///
 /// # Arity awareness (task 5652)
 ///
-/// `arg_count` is the number of arguments at the call site.  The table is
-/// keyed on `(name, arity)` rather than `name` alone because a builtin's
-/// positional layout is only stable *within* one overload: for an overloaded
-/// name, index `i` denotes a different parameter in each form, so a
-/// fixed-index slot would be semantically lying and would eventually fire on
-/// valid code.  The precedent is
+/// `arg_count` is the number of arguments at the call site.  The table is keyed
+/// on `(name, arity)` rather than `name` alone because a builtin's positional
+/// layout is stable only *within* one overload: for an overloaded name, index
+/// `i` denotes a different parameter in each form.  Precedent:
 /// [`crate::relation_signatures::relation_operand_datum`], which discriminates
-/// `"offset" if args.len() == 3` / `"angle" if args.len() == 3` for exactly
-/// this reason.
+/// `"offset" if args.len() == 3` / `"angle" if args.len() == 3` for the same
+/// reason.  The concrete false positive this prevents is documented on the
+/// `linear_pattern_2d` arm below.
 ///
 /// **Rule: guard only genuinely overloaded names.**  Non-overloaded arms stay
 /// unguarded (arity-agnostic) so a short or long call still has its present
@@ -631,24 +623,14 @@ mod tests {
         }
     }
 
-    /// Task 5652 (step-1 RED). The arg-slot table is keyed on `(name, arity)`,
-    /// not on `name` alone — `builtin_arg_slots` takes a second `arg_count`
-    /// parameter so genuinely overloaded builtins can expose different slots
-    /// per call arity (the precedent is
-    /// `relation_signatures::relation_operand_datum(name, args)`, which
-    /// discriminates `"offset" if args.len() == 3`).
+    /// Task 5652 (step-1 RED). Pins the guard-only-overloaded-names half of
+    /// [`builtin_arg_slots`]'s contract (rule and rationale documented there):
+    /// the `arg_count` parameter is *available* to every arm but *used* only by
+    /// genuinely overloaded names, so adding the dimension changed no existing
+    /// behaviour — and (b) never conjures slots for an unrecognized name.
     ///
-    /// This test pins the OTHER half of that contract: the arity parameter is
-    /// *available* to every arm but *used* only by genuinely overloaded names.
-    /// Every existing non-overloaded selector arm must stay arity-AGNOSTIC, so
-    /// that adding the dimension changes no current behaviour. In particular,
-    /// gating e.g. `edges_at_height` on `arg_count == 3` would silently hollow
-    /// out `edges_at_height_short_args_no_panic` (which passes only 2 args and
-    /// expects 0 diagnostics): that test would then pass for a new and weaker
-    /// reason — no slots at all, rather than a correct `h` + an absent `tol`.
-    ///
-    /// RED for a compile reason: `builtin_arg_slots` currently takes one
-    /// parameter, so the crate's test build fails. That failure IS the pinned
+    /// RED for a compile reason when written: `builtin_arg_slots` took one
+    /// parameter, so the crate's test build failed. That failure IS the pinned
     /// deliverable — the signature change itself.
     #[test]
     fn arg_slots_are_arity_aware() {
@@ -728,16 +710,13 @@ mod tests {
     ///
     /// # Why this replaces `arg_slot_keys_are_subset_of_topology_selector_names`
     ///
-    /// The predecessor asserted a strict subset of
-    /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`, but only ever *probed* names drawn
-    /// from that same slice plus a hardcoded typo list.  A non-selector key was
-    /// therefore never probed and the assertion was vacuous for it: `generate`
-    /// has been a non-selector key since task 3994 and went unchecked for the
-    /// whole time the invariant claimed to cover the table's domain.  The fix is
-    /// to CLOSE that hole (probe a genuinely wider name set, and name the
-    /// exemptions explicitly) rather than to widen the selector slice —
-    /// see the module docs on why the pattern names must NOT join
-    /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`.
+    /// The predecessor asserted the same subset but only ever *probed* names
+    /// drawn from that same slice plus a hardcoded typo list, so a non-selector
+    /// key was never probed and the assertion was vacuous for it — `generate` has
+    /// been one since task 3994.  The fix is to CLOSE that hole (probe a
+    /// genuinely wider name set, name the exemptions explicitly) rather than to
+    /// widen the selector slice; why widening would be actively wrong is on
+    /// [`NON_SELECTOR_ARG_SLOT_KEYS`].
     ///
     /// The probe set is EVERY units.rs builtin-name family
     /// ([`BUILTIN_NAME_FAMILIES`]) + `non_family_keys` + the typo/non-geometry
@@ -828,12 +807,11 @@ mod tests {
             );
         }
 
-        // (b) The pattern keys are deliberately NOT topology selectors. Pinning
-        // this is the point of the exemption list: adding them to
-        // GEOMETRY_TOPOLOGY_SELECTOR_NAMES would satisfy the subset assertion
-        // above while actively breaking dispatch (is_geometry_topology_selector
-        // is consulted ahead of is_geometry_function, and is_selector_expr uses
-        // selector membership to EXCLUDE names from CSG geometry-let routing).
+        // (b) The pattern keys are deliberately NOT topology selectors, and ARE
+        // registered CSG producers. Pinning this is the point of the exemption
+        // list: adding them to GEOMETRY_TOPOLOGY_SELECTOR_NAMES would satisfy the
+        // subset assertion above while actively breaking dispatch — see
+        // NON_SELECTOR_ARG_SLOT_KEYS for the mechanism.
         for &name in &["linear_pattern", "linear_pattern_2d"] {
             assert!(
                 !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&name),
@@ -1265,10 +1243,9 @@ mod tests {
     // ── linear_pattern spacing LENGTH slot (task 5652) ────────────────────────
 
     /// Build a 6-arg `linear_pattern(target, dx, dy, dz, count, spacing)` arg
-    /// list with the given `spacing` type. Args 1-3 are the DIMENSIONLESS
-    /// direction vector components and arg 4 the `Int` count — both
-    /// deliberately unchecked (task 5214 established the direction is a unit
-    /// vector, so there is no silent-metres hazard there).
+    /// list with the given `spacing` type. Args 1-4 (direction + count) are
+    /// deliberately unchecked slots — see the `linear_pattern` arm of
+    /// [`builtin_arg_slots`].
     fn linear_pattern_args(spacing: Type) -> Vec<CompiledExpr> {
         vec![
             arg_expr(Type::Geometry),               // 0 target
@@ -1282,11 +1259,9 @@ mod tests {
 
     /// linear_pattern @ arity 6 → arg5 spacing (LENGTH); every OTHER arity → empty.
     ///
-    /// The `arg_count == 6` guard is a forward-compat guard, not decoration:
-    /// task 5351 lands a 4-arg `(target, direction, count, spacing)` value form
-    /// in which `spacing` moves to index 3, so an arity-agnostic `spacing@5`
-    /// slot would silently point at nothing there. Pinning the empty result at
-    /// arity 4 NOW is what makes that overload safe to add later.
+    /// Pinning the empty result at arity 4 NOW is what makes task 5351's
+    /// direction-value overload safe to add later — why, on the `linear_pattern`
+    /// arm of [`builtin_arg_slots`].
     #[test]
     fn linear_pattern_spacing_slot_is_arity_6_only() {
         assert_eq!(
@@ -1398,12 +1373,9 @@ mod tests {
         }
     }
 
-    /// GRADUALISM: an unresolved `TypeParam` spacing → 0 diagnostics.
-    ///
-    /// This is the explicit proof that the compile-layer slot COMPLEMENTS and
-    /// never REPLACES task 5214's eval-layer gate (`required_length_value`): a
-    /// dynamically-typed spacing types as `TypeParam`/`Error` here and is
-    /// skipped by PRD-decision-6 gradualism, so eval remains the backstop.
+    /// GRADUALISM: an unresolved `TypeParam` / poison `Error` spacing → 0
+    /// diagnostics. The executable proof of the two-layer relationship stated in
+    /// this module's "Relationship to the eval-layer units gate" section.
     #[test]
     fn linear_pattern_unresolved_spacing_passes_silently() {
         for ty in [Type::TypeParam("T".to_string()), Type::Error] {
@@ -1470,17 +1442,11 @@ mod tests {
     /// linear_pattern_2d @ arity 11 → spacing1@5 + spacing2@10 (both LENGTH);
     /// every other arity → empty.
     ///
-    /// Arity 7 is the CONCRETE defect the arity dimension prevents, not a
-    /// hypothetical. In task 5351's future 7-arg direction-value form
-    /// `(target, dir1, count1, spacing1, dir2, count2, spacing2)`, index 5 is
-    /// `count2` — an `Int`. An arity-agnostic `spacing1@5 LENGTH` slot would
-    /// therefore emit a FALSE `ArgTypeMismatch` on perfectly valid code.
-    ///
-    /// This is exactly what distinguishes `linear_pattern_2d` from
-    /// `linear_pattern`: the latter's 4-arg form has no index 5 at all, so it
-    /// is protected by the downstream `compiled_args.get(index)` bounds check
-    /// — i.e. by luck. `linear_pattern_2d`'s 7-arg form DOES have an index 5,
-    /// holding a different parameter, so only the arity guard protects it.
+    /// Arity 7 gets its own assertion because it is the CONCRETE false positive
+    /// the arity dimension prevents, not a hypothetical — the reason, and how it
+    /// differs from `linear_pattern`'s 4-arg form, is on the `linear_pattern_2d`
+    /// arm of [`builtin_arg_slots`] and restated in the assertion message below,
+    /// where a failure is actually read.
     #[test]
     fn linear_pattern_2d_spacing_slots_are_arity_11_only() {
         assert_eq!(
