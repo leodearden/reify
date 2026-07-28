@@ -57,32 +57,42 @@
 //!   e2e_get_or_present_key_with_stdlib     0mm                    `{ dflt }`
 //!   e2e_get_or_undef_map_with_stdlib (`w`) 0mm                    `{ dflt }`
 //!   e2e_map_or_some_with_stdlib            0mm                    `{ dflt }`
-//!   e2e_result_unwrap_or_ok_with_stdlib    0mm                    `{ dflt }`
-//!   e2e_result_fallback_ok_with_stdlib     0mm                    `{ dflt }`
+//!   e2e_result_unwrap_or_ok_with_stdlib †  0mm                    `{ dflt }`
+//!   e2e_result_fallback_ok_with_stdlib  †  0mm                    `{ dflt }`
 //!   e2e_result_is_ok_err_with_stdlib       Bool(true)             `{ true }`
 //!   e2e_result_is_err_err_with_stdlib      Bool(false)            `{ false }`
-//!   e2e_result_or_else_err_with_stdlib     Err{error:"e"}         `{ r }`
+//!   e2e_result_or_else_err_with_stdlib  †  Err{error:"e"}         `{ o }`
 //!   e2e_map_err_err_with_stdlib            Err{error:3mm}         `{ r }`
 //!   e2e_ok_or_some_with_stdlib             String("e")            `{ err }`
 //!   e2e_ok_or_none_with_stdlib             String("e")            `{ err }`
 //!   e2e_get_or_absent_key_with_stdlib      0mm                    `{ dflt }`  <-- PASSES
 //!
-//! TWO GUARDS ARE COINCIDENCE-LIMITED even under this harness. Naming them is
-//! the point: this task's failure mode is precisely a harness that LOOKS like it
-//! proves more than it measures, so inheriting that silently would reproduce the
-//! bug in the fix.
+//! † THE MATCHED CANDIDATE IS option_recovery.ri's OPTION OVERLOAD, NOT
+//! result.ri's. `unwrap_or`, `or_else` and `fallback` are each declared in BOTH
+//! stdlib files, and these three fixtures' `arg[0].result_type` is
+//! `Enum("Result")` — which never exact-equals result.ri's
+//! `Applied{name:"Result", args:[T,E]}`, so pass 1 of
+//! `find_matching_compiled_function` misses both candidates and pass 2's
+//! wildcard takes the first in table order. `std.option_recovery` loads before
+//! `std.result`, so the Option overload wins. MEASURED: matched
+//! `params[0] == Option(TypeParam("T"))` for all three; result.ri's own
+//! `unwrap_or`/`or_else`/`fallback` placeholders are never the selected
+//! candidate anywhere in this suite. The `from` column above is therefore the
+//! Option overload's body, and the observable value only coincides with
+//! result.ri's because each overload pair returns the same positional argument.
+//! Full statement: the OVERLOAD NOTE in
+//! crates/reify-expr/tests/result_combinator_eval_tests.rs. This is pre-existing
+//! reify-expr resolution behaviour, out of scope for #5593, and is pinned below
+//! by `census_pins_which_overload_the_matcher_selects` so a future resolver
+//! change flips a test RED instead of silently rewriting what this table means.
 //!
-//!  1. `e2e_get_or_absent_key_with_stdlib` expects 0mm and `{ dflt }` also
-//!     yields 0mm, so intercept removal cannot make it fail — it is the one
-//!     guard that PASSES above. It is NOT value-discriminating under this
-//!     harness. `get_or` coverage survives via
-//!     `e2e_get_or_present_key_with_stdlib`, which expects 1mm against the
-//!     placeholder's 0mm.
-//!  2. `e2e_get_or_undef_map_with_stdlib`'s `v` assertion expects `Undef`, and
-//!     the any-arg-undef short-circuit at reify-expr/src/lib.rs:1610 returns
-//!     `Undef` BEFORE lookup, so the placeholder can never diverge there. Its
-//!     `w` liveness witness is the discriminating half — load-bearing, not
-//!     decorative — and is what fails above.
+//! TWO OF THE 17 GUARDS ARE COINCIDENCE-LIMITED even under this harness —
+//! `e2e_get_or_absent_key_with_stdlib` (the one that PASSES above) and the `v`
+//! half of `e2e_get_or_undef_map_with_stdlib`. Why each is limited, and what
+//! preserves `get_or` coverage regardless, is stated ONCE in the CANONICAL
+//! MECHANISM NOTE above `e2e_or_default_some_with_stdlib` in
+//! crates/reify-expr/tests/option_recovery_eval_tests.rs; this file defers to it
+//! rather than restating it.
 
 use reify_core::DimensionVector;
 use reify_ir::{CompiledExpr, CompiledExprKind, Value, ValueMap};
@@ -150,75 +160,139 @@ fn prelude_backed_table_executes_stdlib_ri_bodies() {
 
 // ── competitor census ────────────────────────────────────────────────────────
 
+/// One census row: an intercepted `(name, arity)` pair, the `e2e_*_with_stdlib`
+/// guard that exercises it, that guard's fixture source, and the MEASURED
+/// overload family the matcher actually selects for it.
+struct CensusRow {
+    /// `name/arity` of the intercepted pair, used as the failure label.
+    pair: &'static str,
+    /// The `e2e_*_with_stdlib` guard this row mirrors. Kept in sync with the
+    /// guard's real fixture by `census_fixture_sources_match_the_guards`.
+    guard: &'static str,
+    /// Copied verbatim from `guard`'s body so the census measures the SAME call
+    /// site the guard evaluates.
+    source: &'static str,
+    /// MEASURED `overload_family` of the matched candidate's `params[0]`.
+    ///
+    /// Pinned per row rather than derived, because for three pairs it does NOT
+    /// equal the call site's own subject family — see `OVERLOAD_MISRESOLVED`.
+    matched_family: &'static str,
+}
+
 /// The fixture source of each guarded `e2e_*_with_stdlib` test, reused verbatim
-/// so the census measures the SAME call sites the guards evaluate.
+/// so the census measures the SAME call sites the guards evaluate. That reuse is
+/// a hand-maintained copy, so `census_fixture_sources_match_the_guards` below
+/// enforces it against the guard files rather than trusting this comment.
 ///
-/// `(pair label, guard test name, fixture source)`. One entry per intercepted
-/// `(name, arity)` pair — `is_combinator`'s ten
+/// One entry per intercepted `(name, arity)` pair — `is_combinator`'s ten
 /// (crates/reify-expr/src/option_recovery.rs:119-133) plus `map_or`/3 and
 /// `map_err`/2, which have their own gates at reify-expr/src/lib.rs:755 and 774.
-const CENSUS: &[(&str, &str, &str)] = &[
-    (
-        "unwrap_or/2",
-        "e2e_unwrap_or_some_5mm_with_stdlib",
-        "structure S { let v = unwrap_or(some(5mm), 0mm) }",
-    ),
-    (
-        "or_default/2",
-        "e2e_or_default_some_with_stdlib",
-        "structure S { let v = or_default(some(5mm), 0mm) }",
-    ),
-    (
-        "or_else/2",
-        "e2e_or_else_none_subject_with_stdlib",
-        "structure S { param o : Option<Length> = none  let v = or_else(o, some(3mm)) }",
-    ),
-    (
-        "is_some/1",
-        "e2e_is_some_none_with_stdlib",
-        "structure S { let v = is_some(none) }",
-    ),
-    (
-        "is_none/1",
-        "e2e_is_none_none_with_stdlib",
-        "structure S { let v = is_none(none) }",
-    ),
-    (
-        "get_or/3",
-        "e2e_get_or_absent_key_with_stdlib",
-        r#"structure S { let v = get_or(map{"k" => 1mm}, "absent", 0mm) }"#,
-    ),
-    (
-        "fallback/2",
-        "e2e_result_fallback_ok_with_stdlib",
-        "structure S { let v = fallback(Ok { value: 5mm }, 0mm) }",
-    ),
-    (
-        "is_ok/1",
-        "e2e_result_is_ok_err_with_stdlib",
-        r#"structure S { let v = is_ok(Err { error: "e" }) }"#,
-    ),
-    (
-        "is_err/1",
-        "e2e_result_is_err_err_with_stdlib",
-        r#"structure S { let v = is_err(Err { error: "e" }) }"#,
-    ),
-    (
-        "ok_or/2",
-        "e2e_ok_or_some_with_stdlib",
-        r#"structure S { let v = ok_or(some(5mm), "e") }"#,
-    ),
-    (
-        "map_or/3",
-        "e2e_map_or_some_with_stdlib",
-        "structure S { let v = map_or(some(5mm), 0mm, |x: Length| x * 2) }",
-    ),
-    (
-        "map_err/2",
-        "e2e_map_err_err_with_stdlib",
-        "structure S { let v = map_err(Err { error: 3mm }, |e: Length| e * 2) }",
-    ),
+const CENSUS: &[CensusRow] = &[
+    CensusRow {
+        pair: "unwrap_or/2",
+        guard: "e2e_unwrap_or_some_5mm_with_stdlib",
+        source: "structure S { let v = unwrap_or(some(5mm), 0mm) }",
+        matched_family: "Option",
+    },
+    CensusRow {
+        pair: "or_default/2",
+        guard: "e2e_or_default_some_with_stdlib",
+        source: "structure S { let v = or_default(some(5mm), 0mm) }",
+        matched_family: "Option",
+    },
+    CensusRow {
+        pair: "or_else/2",
+        guard: "e2e_or_else_none_subject_with_stdlib",
+        source: "structure S { param o : Option<Length> = none  let v = or_else(o, some(3mm)) }",
+        matched_family: "Option",
+    },
+    CensusRow {
+        pair: "is_some/1",
+        guard: "e2e_is_some_none_with_stdlib",
+        source: "structure S { let v = is_some(none) }",
+        matched_family: "Option",
+    },
+    CensusRow {
+        pair: "is_none/1",
+        guard: "e2e_is_none_none_with_stdlib",
+        source: "structure S { let v = is_none(none) }",
+        matched_family: "Option",
+    },
+    CensusRow {
+        pair: "get_or/3",
+        guard: "e2e_get_or_absent_key_with_stdlib",
+        source: r#"structure S { let v = get_or(map{"k" => 1mm}, "absent", 0mm) }"#,
+        matched_family: "Map",
+    },
+    CensusRow {
+        pair: "fallback/2",
+        guard: "e2e_result_fallback_ok_with_stdlib",
+        source: "structure S { let v = fallback(Ok { value: 5mm }, 0mm) }",
+        // MEASURED mis-resolution: the subject is `Enum("Result")` but the
+        // selected candidate is option_recovery.ri's `fallback<T>(Option<T>, T)`.
+        matched_family: "Option",
+    },
+    CensusRow {
+        pair: "is_ok/1",
+        guard: "e2e_result_is_ok_err_with_stdlib",
+        source: r#"structure S { let v = is_ok(Err { error: "e" }) }"#,
+        matched_family: "Result",
+    },
+    CensusRow {
+        pair: "is_err/1",
+        guard: "e2e_result_is_err_err_with_stdlib",
+        source: r#"structure S { let v = is_err(Err { error: "e" }) }"#,
+        matched_family: "Result",
+    },
+    CensusRow {
+        pair: "ok_or/2",
+        guard: "e2e_ok_or_some_with_stdlib",
+        source: r#"structure S { let v = ok_or(some(5mm), "e") }"#,
+        matched_family: "Option",
+    },
+    CensusRow {
+        pair: "map_or/3",
+        guard: "e2e_map_or_some_with_stdlib",
+        source: "structure S { let v = map_or(some(5mm), 0mm, |x: Length| x * 2) }",
+        matched_family: "Option",
+    },
+    CensusRow {
+        pair: "map_err/2",
+        guard: "e2e_map_err_err_with_stdlib",
+        source: "structure S { let v = map_err(Err { error: 3mm }, |e: Length| e * 2) }",
+        matched_family: "Result",
+    },
 ];
+
+/// The census pairs whose selected candidate does NOT belong to the same
+/// overload family as the call site's own subject — MEASURED, exhaustive.
+///
+/// Only `fallback/2` qualifies in the census, because it is the one row here
+/// whose fixture has a `Result` subject AND a same-name/arity Option overload
+/// ahead of it in table order. The two other guards in that position —
+/// `e2e_result_unwrap_or_ok_with_stdlib` and `e2e_result_or_else_err_with_stdlib`
+/// — are represented in the census by their OPTION-subject siblings, so the
+/// census cannot observe them; the module-doc table's `†` rows record them.
+const OVERLOAD_MISRESOLVED: &[&str] = &["fallback/2"];
+
+/// Collapse a `Type` to the OVERLOAD FAMILY that decides which stdlib module's
+/// candidate ought to win: `Option`, `Result`, `Map`, …
+///
+/// `Enum("Result")` — how an `Ok{..}`/`Err{..}` literal's `result_type` is
+/// spelled at a call site — and `Applied{name:"Result", ..}` — how result.ri's
+/// signatures spell it — are the SAME family here. That they are not `==` is
+/// exactly why pass 1 of `find_matching_compiled_function` can never resolve a
+/// Result subject, which is what makes the `fallback/2` mis-resolution possible.
+fn overload_family(t: &reify_core::Type) -> String {
+    use reify_core::Type;
+    match t {
+        Type::Option(_) => "Option".to_string(),
+        Type::Map(_, _) => "Map".to_string(),
+        Type::Enum(name) => name.clone(),
+        Type::Applied { name, .. } => name.clone(),
+        other => format!("{other:?}"),
+    }
+}
 
 /// Destructure a compiled cell expr into the `(function_name, args)` a call site
 /// hands to `find_matching_compiled_function`.
@@ -273,7 +347,13 @@ fn stdlib_placeholders_are_live_candidates_under_the_prelude_backed_table() {
     let mut failures: Vec<String> = Vec::new();
     let mut matched_count = 0usize;
 
-    for (pair, guard, source) in CENSUS {
+    for CensusRow {
+        pair,
+        guard,
+        source,
+        ..
+    } in CENSUS
+    {
         let module = reify_test_support::compile_source_with_stdlib(source);
         let expr = reify_test_support::get_let_expr(&module, "v");
         let (name, args) = as_call(expr);
@@ -364,5 +444,190 @@ fn stdlib_placeholders_are_live_candidates_under_the_prelude_backed_table() {
         CENSUS.len(),
         "every intercepted (name, arity) pair must have a live prelude candidate; \
          this pins the census against silently shrinking to a subset"
+    );
+}
+
+/// WHICH overload the matcher selects, pinned per census row.
+///
+/// The census above proves only that SOME generic prelude candidate matches. For
+/// `unwrap_or`, `or_else` and `fallback` — each declared in BOTH
+/// stdlib/option_recovery.ri and stdlib/result.ri — "some candidate" is not
+/// enough: the census would stay green while silently measuring a different
+/// stdlib module's placeholder than the one its own doc names. That is precisely
+/// the prove-more-than-you-measure failure #5593 exists to eliminate, so the
+/// selected overload is pinned rather than left implicit.
+///
+/// MEASURED, and the reason `matched_family` is a per-row constant rather than
+/// something derived from the fixture: `fallback/2`'s subject is `Enum("Result")`
+/// yet the selected candidate is option_recovery.ri's
+/// `fallback<T>(Option<T>, T)`. Pass 1 of `find_matching_compiled_function`
+/// requires exact `Type` equality and `Enum("Result")` never equals
+/// `Applied{name:"Result", args:[T,E]}`, so BOTH candidates miss it; pass 2's
+/// wildcard then takes the first in table order, and `std.option_recovery` loads
+/// before `std.result`. Pre-existing reify-expr resolution behaviour, out of
+/// scope for #5593 — see the OVERLOAD NOTE in
+/// crates/reify-expr/tests/result_combinator_eval_tests.rs.
+///
+/// The mis-resolution is BENIGN for the guards (each overload pair returns the
+/// same positional argument, so the observable placeholder value is identical),
+/// which is exactly why it needs a test: nothing else would go RED if the
+/// resolution flipped. This test fails in BOTH directions — if the matcher
+/// starts preferring result.ri, `matched_family` mismatches; if the
+/// mis-resolution is fixed, `OVERLOAD_MISRESOLVED` no longer matches.
+#[test]
+fn census_pins_which_overload_the_matcher_selects() {
+    let mut failures: Vec<String> = Vec::new();
+    let mut observed_misresolved: Vec<&str> = Vec::new();
+
+    for row in CENSUS {
+        let module = reify_test_support::compile_source_with_stdlib(row.source);
+        let expr = reify_test_support::get_let_expr(&module, "v");
+        let (name, args) = as_call(expr);
+        let prelude_backed = reify_test_support::prelude_backed_functions(&module);
+
+        let Some(matched) =
+            reify_expr::find_matching_compiled_function(&prelude_backed, name, args)
+        else {
+            // Already reported in full by the census test above; nothing to pin.
+            failures.push(format!(
+                "{} ({}): no match at all — see the competitor census failure",
+                row.pair, row.guard
+            ));
+            continue;
+        };
+
+        let Some((_, param0)) = matched.params.first() else {
+            failures.push(format!(
+                "{} ({}): matched {} has zero params — every intercepted \
+                 combinator takes a subject",
+                row.pair, row.guard, matched.name
+            ));
+            continue;
+        };
+        let matched_family = overload_family(param0);
+        if matched_family != row.matched_family {
+            failures.push(format!(
+                "{} ({}): matched candidate's params[0] family is {matched_family:?}, \
+                 but the census pins {:?}. The resolver's overload choice moved — \
+                 update the pin AND the `from` column of the module-doc table, \
+                 which names the stdlib file whose body this row measures.",
+                row.pair, row.guard, row.matched_family
+            ));
+        }
+
+        // Does the selected overload actually belong to the subject's family?
+        let subject_family = args
+            .first()
+            .map(|a| overload_family(&a.result_type))
+            .unwrap_or_else(|| "<no args>".to_string());
+        if subject_family != matched_family {
+            observed_misresolved.push(row.pair);
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "overload pinning found {} problem(s):\n  - {}",
+        failures.len(),
+        failures.join("\n  - ")
+    );
+    assert_eq!(
+        observed_misresolved, OVERLOAD_MISRESOLVED,
+        "the set of census pairs whose selected overload does NOT match their \
+         subject's family changed. This is the pre-existing reify-expr \
+         Option-before-Result resolution behaviour; if it was deliberately fixed, \
+         update OVERLOAD_MISRESOLVED and the `†` footnote in this file's module \
+         doc, and re-measure the guards' placeholder values"
+    );
+}
+
+// ── census / guard sync-drift check ──────────────────────────────────────────
+
+/// The guard test files the census copies its fixture sources from.
+const GUARD_FILES: &[(&str, &str)] = &[
+    (
+        "option_recovery_eval_tests.rs",
+        include_str!("option_recovery_eval_tests.rs"),
+    ),
+    (
+        "result_combinator_eval_tests.rs",
+        include_str!("result_combinator_eval_tests.rs"),
+    ),
+    (
+        "result_fallback_eval_tests.rs",
+        include_str!("result_fallback_eval_tests.rs"),
+    ),
+];
+
+/// Sync-drift check: every `CENSUS.source` is still the literal fixture source of
+/// the `CENSUS.guard` it claims to mirror.
+///
+/// `CENSUS` hard-codes a COPY of each guard's fixture. Nothing about a copy is
+/// self-enforcing, so without this check editing a guard's fixture — a plausible
+/// follow-up, since the coincidence-limited guards invite strengthening — would
+/// leave the census silently measuring the retired call site while its doc still
+/// claimed the sources are "reused verbatim". Same shape as this repo's existing
+/// `sync_drift_check_all_combinators_recognized` /
+/// `sync_drift_check_result_combinators_recognized`.
+///
+/// Deliberately a SOURCE-TEXT check rather than a shared constant: hoisting the
+/// fixtures into a shared `const` would satisfy the coupling but would also move
+/// each guard's fixture out of the guard, where a reader needs to see it. This
+/// keeps the fixture inline in the guard and makes the copy loud when it drifts.
+///
+/// Guard files are pulled in with `include_str!`, so a renamed or deleted file is
+/// a COMPILE error rather than a silently-skipped check.
+#[test]
+fn census_fixture_sources_match_the_guards() {
+    let mut failures: Vec<String> = Vec::new();
+
+    for row in CENSUS {
+        let needle = format!("fn {}(", row.guard);
+        let hits: Vec<&(&str, &str)> = GUARD_FILES
+            .iter()
+            .filter(|(_, src)| src.contains(&needle))
+            .collect();
+
+        let [(file, src)] = hits.as_slice() else {
+            failures.push(format!(
+                "{} : guard `{}` was found in {} of the {} guard files (expected \
+                 exactly 1) — it was renamed, deleted or duplicated, so the census \
+                 row no longer mirrors anything",
+                row.pair,
+                row.guard,
+                hits.len(),
+                GUARD_FILES.len()
+            ));
+            continue;
+        };
+
+        // Window = the guard's own body: from its `fn` item to the next `#[test]`
+        // (or EOF), so a fixture belonging to a NEIGHBOURING test cannot satisfy
+        // this row.
+        let start = src.find(&needle).expect("contains() just succeeded");
+        let end = src[start..]
+            .find("\n#[test]")
+            .map(|off| start + off)
+            .unwrap_or(src.len());
+        let body = &src[start..end];
+
+        if !body.contains(row.source) {
+            failures.push(format!(
+                "{} : CENSUS source has drifted from `{}` in {file}.\n      \
+                 census holds: {}\n      \
+                 but that literal no longer appears in the guard's body — the \
+                 census is measuring a call site the guard no longer evaluates. \
+                 Re-copy the fixture, then RE-MEASURE `matched_family` for this \
+                 row and the module-doc placeholder table.",
+                row.pair, row.guard, row.source
+            ));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "census/guard fixture drift — {} row(s):\n  - {}",
+        failures.len(),
+        failures.join("\n  - ")
     );
 }
