@@ -92,6 +92,21 @@ fn continuous_cost_min_example_resolves_off_boundary_and_emits_info() {
         "thickness should be strictly above the 2mm boundary (0.002 m); got {:.6} m",
         thickness_si
     );
+    // UPPER BOUND (task #5618): the assertion this test's own doc comment used to
+    // disclaim.  Before #5618 the auto param's box was `default_bounds_for` = [1µm, 10m]
+    // — no relation to `thickness > 2mm` — so the seed was ~10mm, Nelder-Mead drifted
+    // sub-boundary, and the drift fallback returned that seed.  ~10mm satisfies `> 2mm`
+    // trivially, which is why only the lower bound could be pinned.  With the seed and
+    // clamp boxes now derived from the constraints, thickness converges to the floored
+    // lower bound 2mm + 2% = 2.04mm — the actual argmin of a cost-min under `> 2mm`.
+    // 2.5mm is deliberately loose: this pins "converged to the floored bound, not the
+    // seed", not the third decimal.
+    assert!(
+        thickness_si < 0.0025,
+        "thickness should converge to the floored lower bound ≈ 2.04mm, not the \
+         ~10mm seed fallback; got {:.6} m",
+        thickness_si
+    );
 
     // ── EXACTLY ONE RobustnessFloorApplied Info ────────────────────────────────
     let floor_applied: Vec<_> = result

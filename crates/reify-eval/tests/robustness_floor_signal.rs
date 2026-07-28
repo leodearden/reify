@@ -94,6 +94,20 @@ fn money_floor_resolves_off_boundary_and_emits_info() {
         "thickness should be strictly above the 1mm boundary = 0.001 m; got {:.6} m",
         thickness_si
     );
+    // UPPER BOUND (task #5618): the `< 0.0015` assertion this test's own doc comment
+    // used to declare "intentionally omitted".  The reason it was omitted — the auto
+    // param's box came from `default_bounds_for` = [1µm, 10m], unrelated to
+    // `thickness > 1mm`, so the seed was 10mm and the drift fallback returned it — is
+    // exactly the defect #5618 fixed.  The seed and clamp boxes are now derived from
+    // the constraints, so thickness converges to the floored bound 1mm + 2% = 1.02mm.
+    // The eval layer still has no way to inject `AutoParam.bounds` from `.ri`; it no
+    // longer needs one.
+    assert!(
+        thickness_si < 0.0015,
+        "thickness should converge to the floored lower bound ≈ 1.02mm, not the \
+         ~10mm seed fallback; got {:.6} m",
+        thickness_si
+    );
 
     // PRIMARY assertion: eval must emit exactly one RobustnessFloorApplied (Info) diagnostic.
     let floor_applied: Vec<_> = result
