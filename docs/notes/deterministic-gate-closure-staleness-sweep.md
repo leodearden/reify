@@ -207,6 +207,20 @@ One file per confirmed hit, `redispatch-<task_id>-<class>.json`, holding `schema
 - **Idempotent** — the body carries no wall-clock field, deliberately, so re-emission is
   byte-identical and a consumer can diff the directory instead of re-processing it. Read the file
   mtime if recency is needed.
+- **A snapshot, not an append-only log** — each run **retracts** every
+  `redispatch-<digits>-<class>.json` that is no longer a confirmed hit, *before* it emits. Without
+  that, a remediated task's request would advertise an actionable request forever, and a row whose
+  primary class changed between runs would leave `redispatch-<id>-gate_closure.json`
+  (`action=close`) sitting beside `redispatch-<id>-unmet_dependency.json` (`action=redispatch`) —
+  two contradictory instructions the consumer cannot order, precisely because the bodies carry no
+  wall-clock field. Retraction is deliberately narrow:
+  - only files this sweep could itself have emitted are touched, so a consumer's own bookkeeping in
+    the same directory is left alone;
+  - a `--class`-restricted run retracts **only that class** — it never deletes the requests of a
+    class it did not adjudicate;
+  - a run whose **DB read failed retracts nothing**. An unreadable DB reports zero candidates too,
+    and absence of a hit is evidence only when the query actually ran; wiping on that would be the
+    sweep destroying its own output on a transient fault.
 - **Never gating** — an uncreatable or unwritable directory warns on stderr; the report on stdout
   is still complete and the exit code is still 0. The directory is created on demand only when its
   parent already exists, so a typo'd `--emit-requests` surfaces as a warning rather than silently

@@ -26,6 +26,7 @@
 #   E — trigger class C (unmet_dependency)
 #   F — the #5316 corruption suppressors
 #   G — --emit-requests + the read-only proof
+#   R — request retraction (the only block that mutates its fixture between runs)
 #   T — tag scoping
 #
 # The suite is free of `sleep` / wall-clock upper bounds by construction
@@ -1653,6 +1654,139 @@ assert "G10: ... with all three classes still adjudicated, not collapsed to no_c
     _json_is 's["gate_closure"] == 1 and s["merge_verify_red"] == 1 and s["unmet_dependency"] == 1'
 assert "G10: ... and the corruption suppressor still firing on the python3 engine" \
     _json_is 's["corrupt_hold"] == 1 and t[9707]["flags"] == ["corrupt_autofile"]'
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block R — request retraction: the directory is a SNAPSHOT, not a log
+#
+# Emission alone only ADDS. Two consequences a consumer polling the directory
+# cannot untangle:
+#   (a) once a hit is remediated the task drops out of the candidate set, but
+#       its request file survives forever — so a consumer following the
+#       documented "diff the directory" contract keeps seeing an actionable
+#       request for an already-closed task;
+#   (b) if a row's PRIMARY class changes between runs (its gating escalation
+#       reappears, so gate_closure stops winning and unmet_dependency takes
+#       over) the directory ends up holding redispatch-<id>-gate_closure.json
+#       (action=close) AND redispatch-<id>-unmet_dependency.json
+#       (action=redispatch) at the same time — two contradictory instructions
+#       with no ordering hint, since the bodies deliberately carry NO
+#       wall-clock field (G4's idempotence property).
+#
+# Each run therefore retracts what is no longer a hit before it emits. This is
+# the one block whose fixture DB is MUTATED between runs — that is the point:
+# every other block asserts one sweep over a frozen store, and neither defect
+# above is observable in a single run.
+#
+# The three scoping rules matter as much as the retraction: R4 pins that a
+# --class-restricted run cannot delete another class's requests, R5 that a
+# DEGRADED READ retracts nothing (an unreadable DB reports zero candidates
+# too, and wiping on that would be the sweep destroying its own output on a
+# transient fault), and R7 that a consumer's own files are never touched.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block R: request retraction ---"
+
+_mk_tasks_db
+R_DB="$DB"
+_mk_esc_dir
+R_ESC="$ESC_DIR"
+_mk_repo
+R_REPO="$REPO_DIR"
+R_C1="$(_commit_touching docs/r-premise.md)"
+R_TIP="$(_commit_touching docs/r-resolver.md)"
+
+R_GATE='"task_kind":"deterministic","always_escalates":true,"gate_escalated_at":"2026-07-26T08:00:00Z"'
+R_PROP_B="$(_d_prop 'Post-merge verification failed: cargo test --workspace returned 101' \
+    "$R_C1" '["docs/r-resolver.md"]' 2026-07-24T10:00:00Z)"
+
+_add_task 9990 done '{}'
+# One confirmed hit per class.
+_add_task 9901 blocked "{$R_GATE}"
+_add_task 9902 blocked "{\"dry_run_proposals\":[$R_PROP_B]}"
+_add_task 9903 blocked '{}'; _add_dep 9903 9990
+
+R_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-rreq-XXXXXX")"
+_TMPDIRS+=("$R_REQ")
+
+run_sweep --db "$R_DB" --escalations "$R_ESC" --repo "$R_REPO" \
+    --emit-requests "$R_REQ" --format json
+assert "R0: the retraction fixture sweep exits 0" _rc_is 0
+assert "R0: one request per class is emitted" _request_count_is "$R_REQ" 3
+R_SNAP_B="$(sha256sum <"$R_REQ/redispatch-9902-merge_verify_red.json" | awk '{print $1}')"
+
+# --- R1: a remediated hit's request is retracted -----------------------------
+# 9901 is closed out of band (exactly what a consumer acting on the request
+# does), so it is no longer enumerated at all.
+sqlite3 "$R_DB" "UPDATE tasks SET status='done' WHERE tag='master' AND id=9901;"
+run_sweep --db "$R_DB" --escalations "$R_ESC" --repo "$R_REPO" \
+    --emit-requests "$R_REQ" --format json
+assert "R1: the second sweep still exits 0" _rc_is 0
+assert "R1: the remediated task's request is retracted" _no_request_for "$R_REQ" 9901
+assert "R1: the retraction is announced on stderr" _err_has 'Retracted superseded request.*9901'
+assert "R1: the still-live hits are untouched" \
+    test -f "$R_REQ/redispatch-9902-merge_verify_red.json" -a -f "$R_REQ/redispatch-9903-unmet_dependency.json"
+assert "R1: a surviving request is still byte-identical (retraction is not rewrite)" \
+    test "$R_SNAP_B" = "$(sha256sum <"$R_REQ/redispatch-9902-merge_verify_red.json" | awk '{print $1}')"
+assert "R1: exactly the two surviving requests remain" _request_count_is "$R_REQ" 2
+
+# --- R2/R3: a class change never leaves two contradictory instructions -------
+# 9903 keeps its satisfied dependency but gains the class-A gate shape, so
+# gate_closure now wins on precedence and its class-C request is superseded.
+sqlite3 "$R_DB" "UPDATE tasks SET metadata='{$R_GATE}' WHERE tag='master' AND id=9903;"
+run_sweep --db "$R_DB" --escalations "$R_ESC" --repo "$R_REPO" \
+    --emit-requests "$R_REQ" --format json
+assert "R2: the reclassified task's OLD class request is retracted" \
+    _no_request_for "$R_REQ" 9903-unmet_dependency
+assert "R2: ... and its new class request is emitted" \
+    test -f "$R_REQ/redispatch-9903-gate_closure.json"
+assert "R3: the task maps to EXACTLY ONE request — no contradictory pair" \
+    test "$(find "$R_REQ" -maxdepth 1 -name 'redispatch-9903-*.json' | wc -l)" = "1"
+assert "R3: and that one carries the new class's action" \
+    _json_check "$R_REQ/redispatch-9903-gate_closure.json" 'd["action"] == "close"'
+
+# --- R4: a --class-restricted run retracts only its own class ----------------
+# 9902 stops being a hit, but a gate_closure-only sweep did not adjudicate
+# class B at all, so it has no standing to retract that request.
+sqlite3 "$R_DB" "UPDATE tasks SET status='done' WHERE tag='master' AND id=9902;"
+run_sweep --db "$R_DB" --escalations "$R_ESC" --repo "$R_REPO" \
+    --class gate_closure --emit-requests "$R_REQ" --format json
+assert "R4: a --class-restricted sweep exits 0" _rc_is 0
+assert "R4: it does NOT retract a request of a class it never adjudicated" \
+    test -f "$R_REQ/redispatch-9902-merge_verify_red.json"
+assert "R4: and it keeps its own class's live request" \
+    test -f "$R_REQ/redispatch-9903-gate_closure.json"
+
+# --- R5: a degraded DB read retracts nothing ---------------------------------
+run_sweep --db "$R_REPO/definitely-not-here.db" --escalations "$R_ESC" --repo "$R_REPO" \
+    --emit-requests "$R_REQ" --format json
+assert "R5: an unreadable --db still exits 0" _rc_is 0
+assert "R5: an unreadable --db retracts NOTHING (zero candidates is not evidence)" \
+    _request_count_is "$R_REQ" 2
+assert "R5: ... and says so on stderr" _err_has '\[warn\].*no superseded request was retracted'
+
+# --- R6: a full sweep then does retract the now-stale class-B request --------
+run_sweep --db "$R_DB" --escalations "$R_ESC" --repo "$R_REPO" \
+    --emit-requests "$R_REQ" --format json
+assert "R6: a full sweep retracts the class-B request R4 was not entitled to" \
+    _no_request_for "$R_REQ" 9902
+assert "R6: only the one live hit remains" _request_count_is "$R_REQ" 1
+
+# --- R7: a consumer's own files in the directory are never touched -----------
+# Retraction is scoped to redispatch-<digits>-<known class>.json, so neither a
+# consumer's bookkeeping nor a foreign redispatch-shaped name is removed.
+: > "$R_REQ/consumer-bookkeeping.txt"
+: > "$R_REQ/redispatch-notanid-gate_closure.json"
+: > "$R_REQ/redispatch-9999-some_other_class.json"
+run_sweep --db "$R_DB" --escalations "$R_ESC" --repo "$R_REPO" \
+    --emit-requests "$R_REQ" --format json
+assert "R7: a consumer's own non-request file survives" \
+    test -f "$R_REQ/consumer-bookkeeping.txt"
+assert "R7: a redispatch-shaped file with a non-numeric id survives" \
+    test -f "$R_REQ/redispatch-notanid-gate_closure.json"
+assert "R7: a redispatch-shaped file naming an unknown class survives" \
+    test -f "$R_REQ/redispatch-9999-some_other_class.json"
+assert "R7: and the live hit is still emitted alongside them" \
+    test -f "$R_REQ/redispatch-9903-gate_closure.json"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block T — tag scoping

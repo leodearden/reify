@@ -176,6 +176,17 @@
 #   re-process; read the file mtime if recency is needed. Emission never
 #   gates the sweep — an uncreatable or unwritable directory warns, and the
 #   report on stdout is still complete and the exit code still 0.
+#
+#   THE DIRECTORY IS A SNAPSHOT OF THE CURRENT HITS, not an append-only log.
+#   Before emitting, each run RETRACTS every redispatch-<digits>-<class>.json
+#   that is no longer a confirmed hit, so a remediated task stops advertising
+#   an actionable request and a row whose primary class changed can never
+#   leave two contradictory instructions behind. Retraction is deliberately
+#   narrow: it touches only files this sweep could itself have emitted (a
+#   consumer's own bookkeeping in the same directory is left alone), a
+#   --class-restricted run retracts only that class, and a run whose DB read
+#   FAILED retracts nothing at all — absence of a hit is evidence only when
+#   the query actually ran.
 
 set -euo pipefail
 
@@ -462,17 +473,28 @@ _ENUM_SQL="SELECT
  WHERE t.tag='$_TAG_SQL' AND t.status IN ('blocked','in-progress')
  ORDER BY t.id;"
 
+# _DB_READABLE distinguishes "the query ran and returned nothing" from "the
+# query never ran". Both produce the same report — zero candidates — but NOT
+# the same licence: request retraction below acts on the ABSENCE of a hit, so
+# it must never run on a degraded read. The engines' EXIT STATUS is the oracle
+# (verified: sqlite3 exits non-zero on a failed query), so this costs no extra
+# process.
 _CANDIDATES=""
+_DB_READABLE=0
 if [ ! -s "$DB" ]; then
     warn "Task DB is missing or empty: $DB — reporting zero candidates."
 else
     if [ -n "$_SQLITE_BIN" ]; then
-        _CANDIDATES="$("$_SQLITE_BIN" -readonly -separator "$_FS" "$DB" "$_ENUM_SQL" 2>/dev/null || true)"
+        if _CANDIDATES="$("$_SQLITE_BIN" -readonly -separator "$_FS" "$DB" "$_ENUM_SQL" 2>/dev/null)"; then
+            _DB_READABLE=1
+        else
+            _CANDIDATES=""
+        fi
     fi
-    if [ -z "$_CANDIDATES" ] && [ -n "$_PYTHON_BIN" ]; then
+    if [ "$_DB_READABLE" = 0 ] && [ -n "$_PYTHON_BIN" ]; then
         # The SAME SQL, verbatim, through the other engine — that is what makes
         # the two interchangeable rather than one being a stub.
-        _CANDIDATES="$(_GS_DB="$DB" _GS_SQL="$_ENUM_SQL" python3 - <<'PY' 2>/dev/null || true
+        if _CANDIDATES="$(_GS_DB="$DB" _GS_SQL="$_ENUM_SQL" python3 - <<'PY' 2>/dev/null
 import os, sqlite3, sys
 try:
     con = sqlite3.connect(f"file:{os.environ['_GS_DB']}?mode=ro", uri=True, timeout=5.0)
@@ -481,9 +503,15 @@ try:
     for r in rows:
         sys.stdout.write("\x1f".join("" if c is None else str(c) for c in r) + "\n")
 except Exception:
-    pass
+    # Exit non-zero rather than swallowing: the caller has to tell a FAILED
+    # read from an empty one before it retracts anything.
+    sys.exit(1)
 PY
-)"
+)"; then
+            _DB_READABLE=1
+        else
+            _CANDIDATES=""
+        fi
     fi
     if [ -z "$_CANDIDATES" ]; then
         # Genuinely-empty and unreadable are indistinguishable from here, but
@@ -1105,6 +1133,63 @@ if [ -n "$REQUESTS_DIR" ]; then
         _emit_ok=0
     fi
     if [ "$_emit_ok" = 1 ]; then
+        # ── retract superseded requests, so the dir is a SNAPSHOT ────────────
+        # Emission alone only ever ADDS. That leaves two defects a consumer
+        # polling the directory cannot untangle: a remediated hit's file
+        # survives forever, so the directory keeps advertising an actionable
+        # request for an already-closed task; and if a row's PRIMARY class
+        # changes between runs (its gating escalation reappears, so
+        # gate_closure stops winning and unmet_dependency takes over) the
+        # directory ends up holding redispatch-<id>-gate_closure.json
+        # (action=close) AND redispatch-<id>-unmet_dependency.json
+        # (action=redispatch) at once — two contradictory instructions with no
+        # ordering hint, since the bodies deliberately carry no wall-clock
+        # field. Retracting first makes the directory the CURRENT hit set,
+        # which is what the documented "diff the directory" contract needs, and
+        # closes both defects with one mechanism.
+        #
+        # Three scoping rules keep the retraction conservative:
+        #   * only files this sweep could itself have EMITTED are touched —
+        #     redispatch-<digits>-<known class>.json. A consumer's own
+        #     bookkeeping in the same directory is never removed.
+        #   * a --class-restricted run adjudicated ONE class, so it retracts
+        #     only that class. Otherwise `--class gate_closure` would silently
+        #     delete the merge_verify_red requests of the previous full sweep.
+        #   * a DEGRADED READ retracts nothing. Absence of a hit is evidence
+        #     only when the query actually ran; an unreadable DB reports zero
+        #     candidates too, and wiping the directory on that would be the
+        #     sweep destroying its own output on a transient fault.
+        if [ "$_DB_READABLE" = 1 ]; then
+            declare -A _KEEP=()
+            while IFS="$_FS" read -r k_id k_status k_class k_verdict k_action k_evidence k_flags; do
+                [ "${k_verdict:-}" = "STALE" ] || continue
+                _KEEP["${k_id}-${k_class}"]=1
+            done < "$ROWS_TSV"
+            for _rq in "$REQUESTS_DIR"/redispatch-*.json; do
+                [ -e "$_rq" ] || continue
+                _rq_key="$(basename "$_rq")"
+                _rq_key="${_rq_key#redispatch-}"
+                _rq_key="${_rq_key%.json}"
+                _rq_id="${_rq_key%%-*}"
+                _rq_class="${_rq_key#*-}"
+                case "$_rq_id" in ''|*[!0-9]*) continue ;; esac
+                case "$_rq_class" in
+                    gate_closure|merge_verify_red|unmet_dependency) ;;
+                    *) continue ;;
+                esac
+                [ "$CLASS" = "all" ] || [ "$_rq_class" = "$CLASS" ] || continue
+                [ -z "${_KEEP[$_rq_key]+set}" ] || continue
+                if rm -f "$_rq" 2>/dev/null; then
+                    info "Retracted superseded request redispatch-${_rq_key}.json — task $_rq_id is no longer a confirmed $_rq_class hit."
+                else
+                    warn "Could not retract superseded request redispatch-${_rq_key}.json in $REQUESTS_DIR."
+                fi
+            done
+            unset _KEEP _rq _rq_key _rq_id _rq_class
+        else
+            warn "The task DB could not be read, so no superseded request was retracted from $REQUESTS_DIR — absence of a hit is not evidence when the query never ran."
+        fi
+
         # STALE only — every other verdict is skipped, CORRUPT-HOLD included
         # (invariant L5). ROWS_TSV already holds exactly the rows the report
         # printed, so --class filtering carries through for free and a
