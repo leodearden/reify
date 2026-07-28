@@ -201,15 +201,13 @@ fn compute_eval_set_is_the_kahn_core() {
 // rather than caused. The response is to escalate `design_concern` naming the
 // divergent cell, never to weaken the assertion.
 //
-// The shared differential harness is wired via the in-repo `#[path]` idiom;
-// `common/differential.rs` deliberately is NOT re-exported through
-// `common/mod.rs`.
+// The shared differential harness is `#[path]`-included once at the
+// `harness_engine.rs` unit root (`common/differential.rs` deliberately is NOT
+// re-exported through `common/mod.rs`), so this submodule reaches it through the
+// crate root — the same way the `selective_demand_*` submodules do.
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[path = "common/differential.rs"]
-mod differential;
-
-use differential::{
+use crate::differential::{
     GOLDEN_CORPUS, SEED_CORPUS, assert_edit_matches_cold, assert_equivalent_or_allowed, build_case,
     build_case_keep_engine,
 };
