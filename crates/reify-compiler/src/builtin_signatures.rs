@@ -1343,6 +1343,61 @@ mod tests {
         }
     }
 
+    /// MISMATCH: a DIMENSIONED but WRONG-dimension spacing (`10deg`) → exactly 1
+    /// ArgTypeMismatch naming the expected `Length` AND the offending unit.
+    ///
+    /// Distinct from the bare-`Int` case above at the code level, not just the
+    /// source level: a bare count lands in `check_builtin_arg_types`'s catch-all
+    /// `other =>` arm, whereas a wrong-dimension scalar goes through the
+    /// `Type::Scalar { dimension } != expected_dim` arm. Without this case that
+    /// arm is unexercised for both pattern slots — and it is the likelier user
+    /// slip once the check lands, since the user who knows units are required can
+    /// still reach for the wrong one.
+    ///
+    /// Pins the `{actual}` rendering, like `moment_of_inertia`'s `"got Real"`
+    /// case: an ANGLE scalar renders as `Scalar[rad]` (its SI base-unit symbol)
+    /// via `Type::Display`, NOT as the friendly slot type name `"Angle"` — only
+    /// the *expected* side of the message uses those.
+    #[test]
+    fn linear_pattern_wrong_dimension_spacing_names_length_and_actual_unit() {
+        for (name, args) in [
+            (
+                "linear_pattern",
+                linear_pattern_args(Type::Scalar {
+                    dimension: DimensionVector::ANGLE,
+                }),
+            ),
+            (
+                "linear_pattern_2d",
+                linear_pattern_2d_args(
+                    Type::Scalar {
+                        dimension: DimensionVector::ANGLE,
+                    },
+                    Type::length(),
+                ),
+            ),
+        ] {
+            let mut diags = Vec::new();
+            check_builtin_arg_types(name, &args, dummy_span(), &mut diags);
+            assert_eq!(
+                diags.len(),
+                1,
+                "{name}: expected 1 diagnostic, got: {:?}",
+                diags
+            );
+            assert_eq!(diags[0].severity, Severity::Error);
+            assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
+            for needle in ["expects Length", "got Scalar[rad]"] {
+                assert!(
+                    diags[0].message.contains(needle),
+                    "{name}: message must contain {needle:?} so the user can see WHICH \
+                     unit was wrong, not merely that one was: {}",
+                    diags[0].message
+                );
+            }
+        }
+    }
+
     /// GRADUALISM: an unresolved `TypeParam` spacing → 0 diagnostics.
     ///
     /// This is the explicit proof that the compile-layer slot COMPLEMENTS and
@@ -1505,6 +1560,11 @@ mod tests {
         assert!(
             diags[0].message.contains("spacing2"),
             "must name spacing2: {}",
+            diags[0].message
+        );
+        assert!(
+            !diags[0].message.contains("spacing1"),
+            "must NOT name spacing1: {}",
             diags[0].message
         );
 

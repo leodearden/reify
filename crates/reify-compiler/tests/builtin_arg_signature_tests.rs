@@ -217,7 +217,9 @@ fn arg_type_mismatch_errors(
     compiled
         .diagnostics
         .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch) && d.severity == Severity::Error)
+        .filter(|d| {
+            d.code == Some(DiagnosticCode::ArgTypeMismatch) && d.severity == Severity::Error
+        })
         .collect()
 }
 
@@ -262,6 +264,37 @@ fn linear_pattern_dimensioned_spacing_gives_no_arg_type_mismatch() {
         "linear_pattern with a dimensioned 10mm spacing must emit no \
          ArgTypeMismatch, got: {:#?}",
         errors
+    );
+}
+
+/// SIGNAL — a DIMENSIONED but WRONG-dimension `10deg` spacing is also rejected,
+/// naming the expected `Length` and the offending unit.
+///
+/// Not a duplicate of the bare-`10` case: that one is a kind mismatch (`Int`
+/// where a dimensioned scalar is required), this one a dimension mismatch
+/// between two dimensioned scalars, and the two travel different arms of
+/// `check_builtin_arg_types`. It is also the likelier slip in practice — the
+/// user who has learned that spacing needs a unit can still reach for the wrong
+/// one, and gets a differently-worded message for it.
+///
+/// Pins the observed message end-to-end, including that the ACTUAL side renders
+/// as `Scalar[rad]` (`Type::Display`'s SI base-unit form) rather than the
+/// friendly `"Angle"` used on the expected side of other slots' messages.
+#[test]
+fn linear_pattern_wrong_dimension_spacing_gives_one_arg_type_mismatch() {
+    let compiled = compile_struct_body("    let p = linear_pattern(b, 1, 0, 0, 5, 10deg)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 ArgTypeMismatch for a `10deg` spacing.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].message, "linear_pattern: spacing argument expects Length, got Scalar[rad]",
+        "a wrong-unit spacing must name the builtin, the arg, the expected type \
+         and the offending unit"
     );
 }
 
