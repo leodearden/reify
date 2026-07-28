@@ -7,7 +7,8 @@
 //!
 //! Each combinator gets its own section.  RED tests are labelled with the
 //! placeholder behaviour that makes them fail today.  End-to-end cases using
-//! `compile_source_with_stdlib` appear in steps 1 and 9.
+//! `compile_source_with_stdlib` are the `e2e_*_with_stdlib` tests below (see
+//! the CANONICAL MECHANISM NOTE referenced next for what they guard).
 //!
 //! The `e2e_*_with_stdlib` tests instead compile the real stdlib and evaluate
 //! under `EvalContext::new(&values, &module.functions)` — task 5410, PRD
@@ -314,6 +315,14 @@ fn fallback_undef_subject_returns_undef() {
 // RATIONALE" notes are TRUE ABOUT THE `.ri` SOURCE — they are the PRD linkage
 // and the reason each fixture was chosen — but this harness does not observe
 // them.
+//
+// SEEDED SUBJECT, one exception — every guard above evaluates under an EMPTY
+// `ValueMap`; `e2e_or_else_none_subject_with_stdlib` (task 5584) seeds
+// `ValueCellId::new("S", "o") -> Value::Option(None)` instead, because Option
+// `or_else` only discriminates from its placeholder on a `none` SUBJECT, and a
+// bare inline `none` cannot infer `T` in a two-argument generic call. Seeding
+// does not change the fallthrough mechanism described above: the function
+// table is still user-source-only, so intercept removal still yields `Undef`.
 //
 // These are deliberate REGRESSION LOCKS, not RED-first tests: the intercept is
 // already live, so they are GREEN the moment they are written.
