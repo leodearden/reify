@@ -105,6 +105,8 @@ test_summary() {
 _SHARED_TRASH_DIR="/tmp/.reseed-trash"
 _LANE_ROOT=""
 _TRASH_HITS_FILE=""
+_SHARED_TRASH_SNAPSHOT=""
+_LANE_LITTER_PREFIX=""
 
 # init_isolated_lane_root <stem> — MAIN-SHELL ONLY. Mints the single per-run
 # grandparent for every lane this suite creates, and registers it in the
@@ -140,6 +142,14 @@ init_isolated_lane_root() {
     # check stays valid.
     _TRASH_HITS_FILE="$_LANE_ROOT/.shared-trash-hits"
     : > "$_TRASH_HITS_FILE" || return 1
+    # Litter-guard state (see the litter guard section below): remember the
+    # caller's stem, and snapshot the shared trash dir's entry set as it stands
+    # RIGHT NOW, so the end-of-suite guard can tell entries this run produced
+    # from ones that were already there. An absent trash dir snapshots as empty
+    # — that is the normal case, not an error.
+    _LANE_LITTER_PREFIX="$stem"
+    _SHARED_TRASH_SNAPSHOT="$_LANE_ROOT/.shared-trash-snapshot"
+    _list_trash_entries "$_SHARED_TRASH_DIR" > "$_SHARED_TRASH_SNAPSHOT" || return 1
     return 0
 }
 
@@ -226,4 +236,138 @@ _assert_no_shared_trash_use() {
     printf 'seed invocation wrote into machine-shared %s:\n' "$_SHARED_TRASH_DIR"
     cat "$_TRASH_HITS_FILE"
     return 1
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared-trash LITTER guard
+#
+# The ERR_OUT recorder above only fires when a suite's run_helper wrapper
+# captured seed's stderr into $ERR_OUT. Most suites have no such wrapper — some
+# never invoke the real seed at all, driving stub scripts instead — so
+# _assert_no_shared_trash_use would read a permanently-empty hits file and pass
+# VACUOUSLY in them forever. This guard instead observes the FILESYSTEM: it
+# diffs $_SHARED_TRASH_DIR's entry set against a snapshot taken at
+# init_isolated_lane_root time, so it sees a leak regardless of how seed was
+# invoked or whether its stderr was captured.
+#
+# ATTRIBUTION IS BY THE SUITE'S OWN mktemp STEM — a deliberate trade-off.
+# $_SHARED_TRASH_DIR is machine-shared, so a bare snapshot-diff would fail this
+# suite for a concurrent worktree's litter. seed names each trash entry
+# "<lane-basename>.<pid>", and every lane this library mints is named from the
+# suite's stem, so a prefix test on the entry basename attributes litter
+# race-free — the same method that attributed the pre-fix entries forensically.
+# The cost: a hypothetical bare-/tmp lane named OUTSIDE its own suite's naming
+# convention is not caught. New entries that do not match the stem are therefore
+# emitted as an informational line and never fail the suite.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# _list_trash_entries <dir> — <dir>'s entry set, one basename per line, sorted.
+# An absent or unreadable dir emits nothing and is NOT an error: most runs never
+# create the trash dir at all. Used by BOTH the snapshot and the comparison, so
+# the two formats can never drift apart.
+_list_trash_entries() {
+    local dir="$1"
+    [ -d "$dir" ] || return 0
+    ls -A "$dir" 2>/dev/null | sort
+    return 0
+}
+
+# _assert_no_shared_trash_litter <trash-dir> <snapshot-file> <stem>
+#
+# Parameterized so the globals wrapper below, a suite's own positive control,
+# and the hermetic liveness control all share ONE implementation — there is no
+# second copy that could rot out of step with this one.
+_assert_no_shared_trash_litter() {
+    local trash_dir="$1" snapshot="$2" stem="$3"
+    local entry
+    local offenders=() unattributed=()
+
+    if [ -z "$stem" ]; then
+        printf 'ERROR: _assert_no_shared_trash_litter: empty <stem> would match every entry\n' >&2
+        return 1
+    fi
+
+    while IFS= read -r entry; do
+        [ -n "$entry" ] || continue
+        # New since the snapshot?  (grep -Fx: literal, whole-line.)
+        if [ -f "$snapshot" ] && grep -Fxq -- "$entry" "$snapshot"; then
+            continue
+        fi
+        # seed names its trash entries "<lane-basename>.<pid>", so the stem test
+        # is a PREFIX test on the basename — the entry is not a bare name and
+        # does carry a dotted suffix.
+        case "$entry" in
+            "$stem"*) offenders+=("$entry") ;;
+            *)        unattributed+=("$entry") ;;
+        esac
+    done < <(_list_trash_entries "$trash_dir")
+
+    # Informational only, never a failure: another worktree writing to a
+    # machine-shared path must not flake this suite.
+    if [ "${#unattributed[@]}" -ne 0 ]; then
+        printf 'note: %s gained entries not attributable to stem %s (other worktrees; not a failure): %s\n' \
+            "$trash_dir" "$stem" "${unattributed[*]}"
+    fi
+
+    [ "${#offenders[@]}" -eq 0 ] && return 0
+    printf 'a lane with stem %s littered the machine-shared %s: %s\n' \
+        "$stem" "$trash_dir" "${offenders[*]}"
+    return 1
+}
+
+# assert_no_shared_trash_litter — the globals form a suite asserts at the end of
+# its run. FAILS LOUDLY on uninitialized state rather than passing vacuously: a
+# suite that forgot to call init_isolated_lane_root would otherwise report a
+# false all-clear forever, which is exactly the dead instrument this guard
+# exists to prevent.
+assert_no_shared_trash_litter() {
+    if [ -z "${_SHARED_TRASH_SNAPSHOT:-}" ] || [ -z "${_LANE_LITTER_PREFIX:-}" ]; then
+        echo "ERROR: assert_no_shared_trash_litter: no snapshot/stem recorded." >&2
+        echo "       Call init_isolated_lane_root <stem> once, after 'trap cleanup EXIT'," >&2
+        echo "       otherwise this guard would pass vacuously and observe nothing." >&2
+        return 1
+    fi
+    _assert_no_shared_trash_litter \
+        "$_SHARED_TRASH_DIR" "$_SHARED_TRASH_SNAPSHOT" "$_LANE_LITTER_PREFIX"
+}
+
+# assert_shared_trash_litter_detector_live — per-suite liveness control. Proves
+# the checker actually FIRES on a synthetic offender and then passes once it is
+# gone, so the guard above cannot silently become a dead instrument.
+#
+# Fully hermetic: it mktemps its own scratch trash dir and NEVER reads or writes
+# $_SHARED_TRASH_DIR. A control that proved itself by littering the very path it
+# defends would be self-defeating.
+assert_shared_trash_litter_detector_live() {
+    local dir snap stem entry out rc=0
+    stem="selftest-stem"
+    dir="$(mktemp -d "${TMPDIR:-/tmp}/litter-selftest-XXXXXX")" || return 1
+    snap="$dir.snapshot"
+    entry="$stem-lane-XXXX.4242"
+
+    _list_trash_entries "$dir" > "$snap" || { rm -rf "$dir" "$snap"; return 1; }
+
+    # Must FAIL, and must name the synthetic offender.
+    mkdir -p "$dir/$entry" || { rm -rf "$dir" "$snap"; return 1; }
+    if out="$(_assert_no_shared_trash_litter "$dir" "$snap" "$stem" 2>&1)"; then
+        echo "ERROR: litter detector is DEAD — it passed a trash dir holding $entry" >&2
+        rc=1
+    else
+        case "$out" in
+            *"$entry"*) ;;
+            *)  echo "ERROR: litter detector fired but its message did not name $entry: $out" >&2
+                rc=1 ;;
+        esac
+    fi
+
+    # ... and must PASS once the offender is gone, so it is a detector and not a
+    # constant failure.
+    rm -rf "${dir:?}/$entry"
+    if ! _assert_no_shared_trash_litter "$dir" "$snap" "$stem" >/dev/null 2>&1; then
+        echo "ERROR: litter detector failed a clean trash dir (false positive)" >&2
+        rc=1
+    fi
+
+    rm -rf "$dir" "$snap"
+    return "$rc"
 }
