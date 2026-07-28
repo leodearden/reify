@@ -1026,6 +1026,202 @@ echo "--- Pipeline divergence documented in test_helpers.sh ---"
 if grep -q 'tests/infra/test_tree_sitter_pipeline.sh' "$HELPER_FILE" 2>/dev/null; then ok=true; else ok=false; fi
 check "test_helpers.sh documents pipeline divergence" "$ok"
 
+# ==============================================================================
+# Warm-lane test isolation helpers (tasks 5590/5612)
+#
+# init_isolated_lane_root <stem> + make_isolated_lane <prefix> are promoted out
+# of tests/infra/test_seed_warm_lane.sh Block R into the shared library so the
+# seven warm-lane suites share ONE implementation.
+#
+# WHY the facility exists at all: scripts/seed-warm-lane.sh computes
+# RESEED_TRASH_DIR as dirname(LANE_DIR)/.reseed-trash and renames a non-empty
+# <lane>/target there before re-seeding. A lane created bare under /tmp makes
+# that path the machine-shared /tmp/.reseed-trash, shared with every other
+# agent/test run on the host. Nesting each lane under its own private parent
+# makes dirname(LANE_DIR) unique per lane, so the computed trash dir is
+# run-private.
+#
+# WHY the init/make SPLIT: call sites read `X_LANE="$(make_isolated_lane p)"`,
+# so make_isolated_lane's body runs in a command-substitution SUBSHELL where any
+# `_TMPDIRS+=(...)` is silently discarded when the subshell exits — leaking every
+# private parent. So registration happens ONCE, in the main shell, in
+# init_isolated_lane_root; make_isolated_lane must append to nothing.
+#
+# WHY these probes never touch the real /tmp: _wl_run redirects TMPDIR into this
+# file's own $_robust_tmpdir. Several probes deliberately mint lane roots and
+# lanes, and a facility whose own unit tests littered the machine-shared path it
+# defends would be self-defeating.
+# ==============================================================================
+
+echo ""
+echo "--- Warm-lane isolation: init_isolated_lane_root / make_isolated_lane contract ---"
+
+_WL_DIR="$(mktemp -d "$_robust_tmpdir/wl-XXXXXX")"
+
+# _wl_run <probe-script> [args...] — run a probe against $HELPER_FILE in a fresh
+# bash process with a private per-probe TMPDIR. The probe receives the library
+# path as $1. Sets _WL_RC / _WL_OUT / _WL_ERR / _WL_TMP (the private TMPDIR, so
+# a caller can assert on exactly what the probe created there).
+_wl_run() {
+    local _script="$1"
+    shift
+    _WL_TMP="$(mktemp -d "$_WL_DIR/tmpdir-XXXXXX")"
+    local _errf="$_WL_TMP.err"
+    _WL_RC=0
+    _WL_OUT="$(TMPDIR="$_WL_TMP" bash "$_script" "$HELPER_FILE" "$@" 2>"$_errf")" || _WL_RC=$?
+    _WL_ERR="$(cat "$_errf")"
+    rm -f "$_errf"
+}
+
+# _wl_flat <text> — squash newlines so a multi-line diagnostic stays on one
+# check() line and does not corrupt the suite's PASS/FAIL line format.
+_wl_flat() { printf '%s' "${1//$'\n'/ ; }"; }
+
+# (a) Both functions are defined after sourcing.
+for _wl_fn in init_isolated_lane_root make_isolated_lane; do
+    if bash -c "source '$HELPER_FILE' && declare -f $_wl_fn >/dev/null" 2>/dev/null; then ok=true; else ok=false; fi
+    check "WL-a: $_wl_fn is defined after sourcing test_helpers.sh" "$ok"
+done
+
+# (b) Sourcing alone is INERT. 153 files in the tree source this library; none
+# may pay a mktemp or leak a temp entry for a facility only 7 of them use.
+cat > "$_WL_DIR/inert.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+# ${var-UNSET} (no colon) distinguishes set-but-empty from genuinely unset —
+# the defaults must be SET (so `set -u` consumers can read them) and EMPTY.
+printf 'LANE_ROOT=[%s] HITS=[%s]\n' "${_LANE_ROOT-UNSET}" "${_TRASH_HITS_FILE-UNSET}"
+PROBE
+_wl_run "$_WL_DIR/inert.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "LANE_ROOT=[] HITS=[]" ]; then ok=true; else ok=false; fi
+check "WL-b1: sourcing alone leaves _LANE_ROOT/_TRASH_HITS_FILE set-but-empty (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+_wl_n="$(ls -A "$_WL_TMP" | wc -l)"
+if [ "$_wl_n" -eq 0 ]; then ok=true; else ok=false; fi
+check "WL-b2: sourcing alone creates no entry under \$TMPDIR — no source-time mktemp (got $_wl_n)" "$ok"
+
+# (c) init_isolated_lane_root fails LOUDLY when _TMPDIRS is not yet declared.
+# A call placed before the suite's own `_TMPDIRS=()` would otherwise register
+# into an array that assignment then wipes, leaking the root for the whole run.
+cat > "$_WL_DIR/init-no-tmpdirs.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+init_isolated_lane_root teststem
+PROBE
+_wl_run "$_WL_DIR/init-no-tmpdirs.sh"
+if [ "$_WL_RC" -ne 0 ]; then ok=true; else ok=false; fi
+check "WL-c1: init_isolated_lane_root fails when _TMPDIRS is not already declared (rc=$_WL_RC)" "$ok"
+
+if [[ "$_WL_ERR" == *_TMPDIRS* ]]; then ok=true; else ok=false; fi
+check "WL-c2: ... naming _TMPDIRS in a stderr diagnostic (got: $(_wl_flat "$_WL_ERR"))" "$ok"
+
+_wl_n="$(ls -A "$_WL_TMP" | wc -l)"
+if [ "$_wl_n" -eq 0 ]; then ok=true; else ok=false; fi
+check "WL-c3: ... and mints no unregistered root that nothing would ever reclaim (got $_wl_n)" "$ok"
+
+# (d) Happy path: the root exists, is registered, is stem-named, lives in TMPDIR.
+cat > "$_WL_DIR/init-ok.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_TMPDIRS=()
+init_isolated_lane_root teststem || { echo "init-failed"; exit 9; }
+[ -d "$_LANE_ROOT" ] || { echo "root-not-a-dir"; exit 8; }
+_found=no
+for _d in "${_TMPDIRS[@]}"; do
+    if [ "$_d" = "$_LANE_ROOT" ]; then _found=yes; fi
+done
+printf 'found=%s count=%s base=%s parent=%s\n' \
+    "$_found" "${#_TMPDIRS[@]}" "$(basename "$_LANE_ROOT")" "$(dirname "$_LANE_ROOT")"
+PROBE
+_wl_run "$_WL_DIR/init-ok.sh"
+if [ "$_WL_RC" -eq 0 ] && [[ "$_WL_OUT" == "found=yes count=1 "* ]]; then ok=true; else ok=false; fi
+check "WL-d1: init_isolated_lane_root registers an existing _LANE_ROOT into _TMPDIRS (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+if [[ "$_WL_OUT" == *"base=teststem-lane-root-"* ]]; then ok=true; else ok=false; fi
+check "WL-d2: the root is named from the caller's stem, so litter stays attributable (got: $(_wl_flat "$_WL_OUT"))" "$ok"
+
+if [[ "$_WL_OUT" == *"parent=$_WL_TMP"* ]]; then ok=true; else ok=false; fi
+check "WL-d3: the root is minted under \$TMPDIR, not a hardcoded /tmp (got: $(_wl_flat "$_WL_OUT"))" "$ok"
+
+# (e) make_isolated_lane's structural contract, the whole reason it exists.
+cat > "$_WL_DIR/make-lane.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_TMPDIRS=()
+init_isolated_lane_root teststem || { echo "init-failed"; exit 9; }
+L="$(make_isolated_lane pfx)" || { echo "make-failed"; exit 8; }
+P="$(dirname "$L")"
+[ -d "$L" ]                || { echo "lane-not-a-dir"; exit 1; }
+[ "$P" != "/tmp" ]         || { echo "parent-is-bare-tmp"; exit 1; }
+[ "$P" != "${TMPDIR%/}" ]  || { echo "parent-is-bare-tmpdir"; exit 1; }
+case "$L" in "$_LANE_ROOT"/*) ;; *) echo "lane-not-under-lane-root"; exit 1 ;; esac
+_n="$(ls -A "$P" | wc -l)"
+[ "$_n" -eq 1 ]            || { echo "parent-holds-$_n-entries"; exit 1; }
+[ ! -e "$P/.reseed-trash" ] || { echo "reseed-trash-already-exists"; exit 1; }
+echo OK
+PROBE
+_wl_run "$_WL_DIR/make-lane.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "OK" ]; then ok=true; else ok=false; fi
+check "WL-e: make_isolated_lane yields a lane under a private parent — never bare /tmp, parent holds only the lane, no sibling .reseed-trash (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+# (f) Distinct parents per call — a shared parent would put two lanes' trash
+# dirs on one path and defeat the isolation.
+cat > "$_WL_DIR/two-lanes.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_TMPDIRS=()
+init_isolated_lane_root teststem || { echo "init-failed"; exit 9; }
+A="$(make_isolated_lane pfx)" || { echo "make-failed"; exit 8; }
+B="$(make_isolated_lane pfx)" || { echo "make-failed"; exit 8; }
+_sp=no; [ "$(dirname "$A")" = "$(dirname "$B")" ] && _sp=yes
+_sl=no; [ "$A" = "$B" ] && _sl=yes
+printf 'same_parent=%s same_lane=%s\n' "$_sp" "$_sl"
+PROBE
+_wl_run "$_WL_DIR/two-lanes.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "same_parent=no same_lane=no" ]; then ok=true; else ok=false; fi
+check "WL-f: two make_isolated_lane calls with the same prefix get distinct private parents (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+# (g) THE subshell-safety property — the reason for the init/make split.
+cat > "$_WL_DIR/subshell-safe.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_TMPDIRS=()
+init_isolated_lane_root teststem || { echo "init-failed"; exit 9; }
+_before="${#_TMPDIRS[@]}"
+# Command substitution: make_isolated_lane's body runs in a SUBSHELL, so any
+# array append it attempted would be silently discarded right here.
+L="$(make_isolated_lane pfx)" || { echo "make-failed"; exit 8; }
+_after="${#_TMPDIRS[@]}"
+[ -d "$L" ] || { echo "lane-not-a-dir"; exit 1; }
+# The caller's cleanup() reclaims only what _TMPDIRS holds. Prove the single
+# registered root is sufficient to reclaim a lane minted after registration.
+rm -rf "$_LANE_ROOT"
+_gone=no; [ -e "$L" ] || _gone=yes
+printf 'before=%s after=%s lane_gone=%s\n' "$_before" "$_after" "$_gone"
+PROBE
+_wl_run "$_WL_DIR/subshell-safe.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "before=1 after=1 lane_gone=yes" ]; then ok=true; else ok=false; fi
+check "WL-g: make_isolated_lane appends to no array (subshell-safe) yet its lane is still reclaimed via \$_LANE_ROOT (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+# (h) make_isolated_lane without init must fail cleanly, not mktemp into a
+# bare/empty path (which would resolve to "/lane-XXXXXX" or CWD).
+cat > "$_WL_DIR/make-no-init.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_TMPDIRS=()
+make_isolated_lane pfx
+PROBE
+_wl_run "$_WL_DIR/make-no-init.sh"
+if [ "$_WL_RC" -ne 0 ]; then ok=true; else ok=false; fi
+check "WL-h1: make_isolated_lane fails when init_isolated_lane_root was never called (rc=$_WL_RC)" "$ok"
+
+if [[ "$_WL_ERR" == *init_isolated_lane_root* ]]; then ok=true; else ok=false; fi
+check "WL-h2: ... naming init_isolated_lane_root in a stderr diagnostic (got: $(_wl_flat "$_WL_ERR"))" "$ok"
+
+_wl_n="$(ls -A "$_WL_TMP" | wc -l)"
+if [ "$_wl_n" -eq 0 ]; then ok=true; else ok=false; fi
+check "WL-h3: ... and mktemps nothing into a bare/empty path (got $_wl_n entries under \$TMPDIR)" "$ok"
+
 # -- Summary -------------------------------------------------------------------
 echo ""
 echo "Results: $T_PASS passed, $T_FAIL failed"
