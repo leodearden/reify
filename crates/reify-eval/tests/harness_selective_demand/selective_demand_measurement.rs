@@ -352,8 +352,8 @@ fn scenario_b_measurement_is_populated_and_shows_pruning() {
 
 /// Emit the full distribution table for both scenarios.
 ///
-/// Visible under `cargo test -p reify-eval --test selective_demand_measurement
-///     emit_distribution_table -- --nocapture`.
+/// Visible under `cargo test -p reify-eval --test harness_selective_demand -- \
+///     selective_demand_measurement::emit_distribution_table --nocapture`.
 ///
 /// The numbers from this output are tabulated in
 /// `docs/design/selective-demand-measurement.md`.
