@@ -44,6 +44,11 @@ const INTERSECTS_SMOKE_PATH: &str = concat!(
     "/../../examples/kernel_queries/intersects_smoke.ri"
 );
 
+const CLEARANCE_ORACLE_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/best_practices/clearance_oracle.ri"
+);
+
 /// Pins the user-observable signal for KGQ-γ: `intersects(Geometry, Geometry)`
 /// on two 10 mm boxes must evaluate to `Value::Bool(true)` when the boxes have
 /// positive-volume overlap, and `Value::Bool(false)` when they are well apart.
@@ -116,4 +121,90 @@ fn intersects_smoke_evals_expected_booleans() {
          falls through resolve_geometry_handle_arg per §4 invariant #1), \
          got: {undef_actual:?}"
     );
+}
+
+/// Pins the eval-surface answers documented in `examples/best_practices/
+/// clearance_oracle.ri`'s own header comment (task 5674, filed as an
+/// out-of-scope follow-up by task #5389): the canonical FORM B (no-ceremony)
+/// interference-oracle idiom was compile-gated only
+/// (`examples_smoke.rs::all_examples_parse_and_compile_with_stdlib`), with no
+/// test pinning the values `reify eval` / the GUI actually resolve.
+///
+/// Geometry: `housing = cylinder_centered(bore_r=10mm, length=40mm)` centred
+/// at the origin, radius 10mm; `bracket = translate(box(20mm,20mm,20mm),
+/// 30mm,0mm,0mm)` spans 20..40mm in X. The header states the kernel resolves
+/// `fouls = intersects(housing, bracket) -> false` and
+/// `gap = distance(housing, bracket) -> 0.01 m` — independently confirmed by
+/// direct probe on the release binary at HEAD a0520c83
+/// (`distance` ≈ 0.009999999999999998 m).
+///
+/// Skips cleanly (via early return) when OCCT is not available, matching the
+/// sibling oracle pins (`kernel_queries_distance_smoke.rs`,
+/// `cli_vc_clearance.rs`, `kinematic_examples_e2e.rs`).
+#[test]
+fn clearance_oracle_evals_expected_fouls_and_gap() {
+    // Read the fixture unconditionally so a missing file is caught even on
+    // OCCT-less runners — fixture presence is a CI contract independent of OCCT.
+    let source = std::fs::read_to_string(CLEARANCE_ORACLE_PATH)
+        .expect("examples/best_practices/clearance_oracle.ri should exist (task 5389)");
+
+    // Validate fixture compilation unconditionally — a grammar/compile regression
+    // should fail on every runner, matching the coverage
+    // examples_smoke.rs::all_examples_parse_and_compile_with_stdlib already gives
+    // every example under examples/.
+    let compiled = parse_and_compile_with_stdlib(&source);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "examples/best_practices/clearance_oracle.ri should compile with no \
+         error-severity diagnostics, got:\n{:#?}",
+        errors_only(&compiled)
+    );
+
+    // Skip the OCCT-dependent kernel build/value assertions if OCCT is not built.
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping real-OCCT assertions: OCCT not available");
+        return;
+    }
+
+    // Build with real OCCT kernel (SingleKernelHolder + OcctKernelHandle::spawn).
+    let checker = SimpleConstraintChecker;
+    let mut planner = reify_geometry::SingleKernelHolder::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let fouls_cell = ValueCellId::new("ClearanceOracle", "fouls");
+    let fouls_actual = result.values.get(&fouls_cell);
+    assert_eq!(
+        fouls_actual,
+        Some(&Value::Bool(false)),
+        "ClearanceOracle.fouls should be Value::Bool(false) per the file's own \
+         header comment, got: {fouls_actual:?}"
+    );
+
+    let gap_cell = ValueCellId::new("ClearanceOracle", "gap");
+    let gap_actual = result.values.get(&gap_cell);
+
+    // Allow a small floating-point epsilon on the si_value while requiring the
+    // LENGTH dimension. Modelled on the Scalar epsilon-match in
+    // kernel_queries_distance_smoke.rs::distance_box_point_evals_to_15mm.
+    match gap_actual {
+        Some(Value::Scalar {
+            si_value,
+            dimension,
+        }) if *dimension == reify_core::DimensionVector::LENGTH => {
+            let expected = 0.01_f64; // 10 mm in SI metres, per the header comment
+            let epsilon = 1e-9;
+            assert!(
+                (si_value - expected).abs() < epsilon,
+                "ClearanceOracle.gap si_value should be 0.01 (10 mm), \
+                 got {si_value:.15} (delta {delta:.3e})",
+                delta = (si_value - expected).abs()
+            );
+        }
+        other => panic!(
+            "ClearanceOracle.gap should be Value::Scalar{{LENGTH, ≈0.01}}, got: {:?}",
+            other
+        ),
+    }
 }
