@@ -133,6 +133,12 @@
 #   - inv.preserve shared predicate (_is_reclaimable): skip on dirty tracked changes
 #     (git status --porcelain), unlanded ahead-of-main (merge-base --is-ancestor),
 #     or live consumer (flock -n -x <dir>.lock fails).
+#     A fourth preserve reason sits OUTSIDE that predicate, in BOTH pass loops:
+#     a live PROCESS REFERENCE at or under the entry (cwd / open fd / mmap;
+#     live_ref_present, task 5572). It is checked per entry immediately before
+#     the reset (Pass 1) or the remove (Pass 2), under the flock the loop
+#     already holds, and before _is_reclaimable in Pass 2 — see the
+#     live-reference gate note below.
 #   - Always-reclaim (Pass 1 only, task 5326): a FREE pool lane whose
 #     live-consumer flock is free is reclaimed REGARDLESS of dirty tracked
 #     changes, ahead-of-main tip, or backing-task status. acquire_lane ALWAYS
@@ -586,6 +592,19 @@ _do_reclaim() {
         if ! flock -n 8; then
             exec 8>&-
             warn "preserving $name: live consumer (flock held)"
+            preserved_count=$((preserved_count + 1))
+            continue
+        fi
+
+        # Live-reference gate (task 5572) — the SAME check Pass 1 runs, on the
+        # destructive path. Ordered BEFORE _is_reclaimable so the cheap, decisive
+        # liveness verdict short-circuits its `git status` / `merge-base`
+        # subprocess pair for a live orphan, and so the emitted diagnostic names
+        # the real reason rather than an incidental dirty/ahead one. Kept AFTER
+        # the flock acquire for the same reasons as Pass 1 (see that comment).
+        if live_ref_present "$orphan"; then
+            exec 8>&-
+            warn "preserving $name: live consumer (process reference)"
             preserved_count=$((preserved_count + 1))
             continue
         fi
