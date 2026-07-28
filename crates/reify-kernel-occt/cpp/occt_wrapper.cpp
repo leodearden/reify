@@ -3500,7 +3500,7 @@ std::unique_ptr<OcctShape> loft_guided_profiles(const OcctShapeVec& profiles,
         // orientation via SetMode(aux, /*KeepContact=*/false).
         BRepOffsetAPI_MakePipeShell maker(TopoDS::Wire(guides.shapes[0]));
         for (const auto& profile : profiles.shapes) {
-            maker.Add(profile);
+            maker.Add(section_profile_to_wire(profile));
         }
         if (guides.shapes.size() >= 2) {
             maker.SetMode(TopoDS::Wire(guides.shapes[1]), Standard_False);
@@ -3509,6 +3509,12 @@ std::unique_ptr<OcctShape> loft_guided_profiles(const OcctShapeVec& profiles,
         if (!maker.IsDone()) {
             throw std::runtime_error("BRepOffsetAPI_MakePipeShell (loft_guided) failed");
         }
+        // Deliberately no MakeSolid() here. make_pipe_shell's face -> solid
+        // rule exists to match its single-profile sibling BRepOffsetAPI_MakePipe;
+        // a multi-section guided loft has no such counterpart, its sections may
+        // legitimately be open or mixed, and its existing tests pin the current
+        // shell result. Changing loft_guided's solidity is a design question,
+        // not part of this crash fix.
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
         return result;

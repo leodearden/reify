@@ -943,6 +943,10 @@ std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
 /// profile is added as a section via `.Add(...)`. If a second guide is
 /// present, it is applied via `SetMode(aux, /*KeepContact=*/false)`
 /// as an auxiliary-orientation constraint.
+///
+/// Each profile is normalized to a section wire before `Add` (a face is
+/// reduced to its outer wire), since BRepFill_Section accepts only a wire or
+/// a vertex. Unlike make_pipe_shell, the result is not solidified.
 std::unique_ptr<OcctShape> loft_guided_profiles(const OcctShapeVec& profiles,
                                                 const OcctShapeVec& guides);
 
