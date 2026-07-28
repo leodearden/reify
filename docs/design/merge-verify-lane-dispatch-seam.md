@@ -92,7 +92,9 @@ see `scripts/warm-lane-gc.sh:120-136`). Getting this wrong yields a guard that
 reports IDLE forever, so it is pinned by exact string equality plus a decoy test
 (`tests/infra/test_warm_lane_lock_guard.sh`, block E).
 
-**Invariants** (also carried in the script header):
+**Invariants.** This is their single normative statement — the script header
+carries a one-line-each summary and points here for the reasoning, so this is
+the copy to amend when one of them changes.
 
 - **A1 — non-mutating.** Never creates, truncates, or changes the lock file or
   the mount. Read-only open on an existing path; a missing lock file is IDLE and
@@ -118,6 +120,23 @@ detail: `flock -n` returns a bare `1` on contention, indistinguishable from
 via `-E 124` — mirroring DF's own `flock -x -w 30 -E 124` — and treats every
 other non-zero as a degradation.
 
+**Known divergence from `warm-lane-audit.sh`.** Two scripts now probe the same
+`<mount>/<lane>.lock` inode with the same read-only shared-`flock` technique —
+audit's `_probe_live` and this guard's `_probe` — and they disagree on exactly
+one question. Audit uses a bare `flock -n -s` and reads *every* non-zero as LIVE,
+conflating a broken or missing `flock` with contention: it fails **closed**. The
+guard asks for `-E 124` and fails **open** on anything that is not that exact
+status. Both are right for their own consumer — audit's output is advisory prose
+a human reads, where over-reporting LIVE merely looks conservative; the guard's
+exit 3 gates dispatch, where a false BUSY would wedge the serial merge queue.
+
+The consequence worth knowing: on a host with a degraded `flock`, audit will
+report a lane LIVE while the guard reports it IDLE, and no shared code path keeps
+them honest. Unifying them behind a tri-state helper (`IDLE` / `BUSY` /
+`UNMEASURABLE`, each caller applying its own fail direction to the third) is the
+right end state; it needs to touch `scripts/warm-lane-audit.sh`, which is outside
+task 5608's lock set, so it is filed as follow-up rather than done here.
+
 There is deliberately **no** `--wait N` mode and **no** holder-PID attribution.
 Waiting policy is the contended half of the seam and belongs to DF, which
 already owns three waits on this inode; a fourth would recreate the very
@@ -130,6 +149,11 @@ This is the half that actually ends the failure mode. Either fix works; (b)
 alone stops the escalation, (a) additionally avoids burning the wait.
 
 **(a) Consult the guard before dispatching onto `_merge-verify`, and defer on 3.**
+
+This snippet is the seam's single rendering — the script header points here
+rather than carrying a second copy. (It carried one until review: the *same*
+errexit bug was present in both copies, which is the argument against hand-syncing
+them.)
 
 ```sh
 # `exit_code=0; ... || exit_code=$?` — NOT a bare assignment followed by

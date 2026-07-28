@@ -3,29 +3,21 @@
 # Hermetic tests for scripts/warm-lane-lock-guard.sh.
 #
 # WHY THIS SUITE EXISTS (task 5608; escalation esc-5363-5).
-#   `<worktree_base>/_merge-verify.lock` is ONE inode with THREE dark-factory
-#   acquirers on THREE different waits:
-#     · GitOps.merge_verify_lease            — waits 300s, then HOLDS the lock
-#       for the whole verify (1-2h). On timeout it raises
-#       MergeVerifyLeaseContended, which DF classifies as a REQUEUE — retryable,
-#       no escalation.
-#     · GitOps.reset_persistent_merge_worktree — waits only 30s
-#       (_SEED_WARM_LANE_LOCK_WAIT_SECS, a hardcoded DF module constant) and on
-#       timeout raises a PLAIN RuntimeError, which DF classifies as
-#       category='merge_error' — TERMINAL, escalated, never requeued.
-#     · _seed_warm_lane                       — `flock -x -w 30 -E 124`.
-#   The defect is that ASYMMETRY on one inode: a long-held lease starves a
-#   30s waiter into a spurious terminal merge_error.
+#   The failure mechanism, the cross-repo contract, and the scope bound are
+#   stated once, in docs/design/merge-verify-lane-dispatch-seam.md (§1, §3, §5).
+#   Read that first; it is what to amend if the contract changes.
 #
-#   Reify cannot land the behavioural fix (every decision point is DF-side).
-#   Per CLAUDE.md's cross-repo invariant — "reify ships the primitive,
-#   dark-factory wires the invocation" — reify ships the PRIMITIVE: a
-#   read-only, non-mutating, non-blocking availability oracle for a warm-lane
-#   lock, with a distinguished exit code DF can consult BEFORE dispatching into
-#   its own 30s bounded wait. This suite pins that oracle's observable
-#   behaviour, and nothing beyond it: no assertion here claims an end-to-end
-#   merge-queue outcome, because that half is not in this task's scope.
-#   Contract: docs/design/merge-verify-lane-dispatch-seam.md.
+#   What a reader of THIS file needs: the script under test is an availability
+#   oracle dark-factory consults BEFORE dispatching a verify onto a warm lane,
+#   because a lock timeout on that lane's inode is classified `merge_error` —
+#   terminal, escalated. So the properties pinned below are the ones a consumer
+#   depends on: the exit code, the sentinel grammar, the lock-path derivation,
+#   the fail-open degradation, and non-mutation of pool state.
+#
+#   What is deliberately NOT pinned: any end-to-end merge-queue outcome. That
+#   half is dark-factory's and is not reachable from a reify worktree (seam
+#   doc §5) — such a test would be permanently red for reasons no reify
+#   implementer could fix, and indistinguishable from a genuine defect.
 #
 # run_guard captures STDOUT, STDERR, and RC separately:
 #   OUT     — captured stdout from the script

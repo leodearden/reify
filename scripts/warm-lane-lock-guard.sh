@@ -2,126 +2,53 @@
 # scripts/warm-lane-lock-guard.sh — Read-only availability oracle for a
 # warm-lane lock. The LOCK-axis sibling of scripts/warm-lane-disk-guard.sh's
 # DISK axis: same `check` shape, same exit-3 throttle vocabulary, a different
-# measurement — and, deliberately, the opposite fail direction (see Exit codes).
+# measurement — and, deliberately, the opposite fail direction (A3 below).
 #
-# WHY (task 5608; escalation esc-5363-5). `<worktree_base>/<lane>.lock` is ONE
-# inode with THREE dark-factory acquirers on THREE different waits:
-#   · merge_verify_lease              — waits 300s, then HOLDS the lock for the
-#                                       whole verify (1-2h). Its timeout is
-#                                       classified RETRYABLE (requeue).
-#   · reset_persistent_merge_worktree — waits only 30s
-#                                       (_SEED_WARM_LANE_LOCK_WAIT_SECS, a
-#                                       hardcoded DF module constant) and its
-#                                       timeout is classified 'merge_error' —
-#                                       TERMINAL, escalated, never requeued.
-#   · _seed_warm_lane                 — `flock -x -w 30 -E 124`.
-# A long-held lease therefore starves a 30s waiter into a spurious terminal
-# merge_error. That ASYMMETRY on one inode is the defect; the behavioural fix
-# is dark-factory's. This script is reify's half: an oracle DF can consult
-# BEFORE dispatching into its own bounded wait, so contention becomes a
-# deferred dispatch instead of a failed one.
-# Seam contract: docs/design/merge-verify-lane-dispatch-seam.md.
+# CLI, options, and the exit-code table: run `--help`. That table is the
+# contract dark-factory branches on, and _usage() is its ONE rendering — a
+# second copy here would be a second contract the moment either drifted.
 #
-# Usage:
-#   scripts/warm-lane-lock-guard.sh check [--mount DIR] [--lane NAME] [--lock-path PATH]
+# WHY, the full mechanism, the invariant rationale, and the dark-factory
+# consumer recipe all live in ONE place:
 #
-# Subcommands:
-#   check   Probe one warm-lane lock and report IDLE (0) or BUSY (3).
+#     docs/design/merge-verify-lane-dispatch-seam.md
 #
-# Options (env defaults shown):
-#   --mount DIR       Warm-lane mount point — the worktrees dir dark-factory
-#                     passes to every warm-lane script
-#                     (env: REIFY_WARM_LANE_MOUNT)
-#   --lane NAME       Lane whose lock to probe
-#                     (env: REIFY_WARM_LANE_LOCK_GUARD_LANE; default: _merge-verify)
-#   --lock-path PATH  Probe this lock file directly, bypassing the
-#                     <mount>/<lane>.lock derivation
-#                     (env: REIFY_WARM_LANE_LOCK_GUARD_LOCK_PATH)
-#   -h, --help        Print this message and exit.
-#
-# Env knobs:
-#   REIFY_WARM_LANE_MOUNT                    warm-lane mount point (shared with
-#                                            the other warm-lane scripts)
-#   REIFY_WARM_LANE_LOCK_GUARD_LANE          lane to probe (default: _merge-verify)
-#   REIFY_WARM_LANE_LOCK_GUARD_LOCK_PATH     explicit lock path override
-#   REIFY_WARM_LANE_LOCK_GUARD_FLOCK         flock command override (default: flock).
-#                                            The measurement seam: the hermetic
-#                                            tests stub it here rather than on
-#                                            PATH, so the fail-open branches can
-#                                            be exercised against a real held lock.
-#
-# Exit codes:      [KEEP IN STEP with the same section inside _usage() below —
-#                   one wording, two renderings, differing only in the leading
-#                   comment prefix. This is the contract dark-factory branches
-#                   on; two drifting copies of it would be two contracts.]
-#   0   — IDLE: no exclusive holder observed. Stdout is EMPTY.
-#   3   — BUSY: an exclusive holder was POSITIVELY observed. Stdout carries
-#         exactly one line:
-#           @@REIFY_WARM_LANE_LOCK_BUSY@@ lane=<n> lock=<p>
-#         A throttle-not-requeue signal (the same cross-repo code
-#         warm-lane-disk-guard.sh --soft and fleet-load-detector.sh emit):
-#         dark-factory should DEFER this dispatch rather than enter its own
-#         30s bounded wait, whose timeout is classified merge_error.
-#   2   — Usage error: unknown flag, missing flag value, missing/unknown
-#         subcommand, or no mount when one is required. A wiring bug, not a
-#         verdict — never read it as BUSY.
+# In brief (task 5608; escalation esc-5363-5): `<worktree_base>/<lane>.lock` is
+# ONE inode with THREE dark-factory acquirers on THREE different waits, and a
+# timeout on the 300s one is requeued while a timeout on the 30s one is
+# classified `merge_error` — terminal, escalated. A long-held lease therefore
+# starves a short waiter into a spurious merge failure. That asymmetry is the
+# defect; the behavioural fix is dark-factory's (seam doc §1, §4). This script
+# is reify's half: an oracle DF can consult BEFORE dispatching into its own
+# bounded wait, so contention becomes a deferred dispatch instead of a failed
+# one.
 #
 # stdout contract: stdout carries the BUSY sentinel line and NOTHING else, on
 # every path. All diagnostics — including --help — go to stderr, so a caller
 # can parse stdout without filtering.
 #
-# Invariants:
-#   A1 — NON-MUTATING. Never creates, truncates, or otherwise changes the lock
-#        file or the mount. The lock is opened READ-ONLY on an EXISTING path; a
-#        missing lock file is IDLE and is NEVER brought into existence, and a
-#        missing mount dir is never created. No `>`-open, no `>>`-open, no
-#        `touch`, no `mkdir`, and deliberately NOT the `flock <file> <cmd>`
-#        convenience form — all of which would make this reader a writer of the
-#        very inode dark-factory serializes on.
-#   A2 — the `flock -n -s` probe is SHARED and non-blocking, and is released
-#        immediately. A shared request still detects a live consumer (their
-#        exclusive flock blocks it), but two concurrent oracles never contend
-#        with each other. The verdict is inherently a POINT-IN-TIME sample: the
-#        lane can be taken the instant after IDLE is reported, and a writer's own
-#        non-blocking attempt could be perturbed for the instant this fd is open.
-#        Accepted, exactly as scripts/warm-lane-audit.sh documents for the same
-#        probe — and harmless, because of A4.
-#   A3 — FAIL-OPEN. Any probe-infrastructure failure (flock missing or broken,
-#        lock unreadable, mount absent, unrecognised flock status) yields exit 0
-#        with a stderr warning and NO sentinel — never exit 3. A false BUSY would
-#        defer merge dispatch indefinitely and wedge the serial merge queue; a
-#        false IDLE merely restores today's behaviour. That asymmetry is the
-#        opposite of warm-lane-disk-guard.sh's fail-CLOSED calculus, where an
-#        unmeasurable disk must be assumed full to avoid ENOSPC.
-#   A4 — ADVISORY BACKPRESSURE ONLY. This guard never requeues, never escalates,
-#        and is NOT the correctness mechanism for lane exclusivity — dark-factory's
-#        own bounded-wait flock remains that. It exists so contention becomes a
-#        deferred dispatch instead of a failed one.
+# Invariants (one line each; the normative statement and the reasoning behind
+# each are in seam doc §3, which is what to amend if one of these changes):
+#   A1 — NON-MUTATING. Read-only open on an EXISTING path. Never creates,
+#        truncates, or changes the lock file or the mount: no `>`-open, no
+#        `>>`-open, no `touch`, no `mkdir`, and deliberately NOT the
+#        `flock <file> <cmd>` convenience form.
+#   A2 — SHARED, non-blocking, released at once. Detects an exclusive holder;
+#        never contends with another oracle. A point-in-time sample by nature.
+#   A3 — FAIL-OPEN. Any probe-infrastructure failure yields exit 0 with a
+#        stderr warning and NO sentinel, never exit 3. (Opposite of
+#        disk-guard's fail-CLOSED calculus — see A3 in the seam doc for why the
+#        asymmetry runs the other way here.)
+#   A4 — ADVISORY BACKPRESSURE ONLY. Never requeues, never escalates, and is
+#        NOT the correctness mechanism for lane exclusivity; dark-factory's own
+#        bounded-wait flock remains that.
 #
-# Usage by the dark-factory merge worker (cross-repo seam — wiring tracked
-# separately; reify ships the oracle, dark-factory does the wiring):
-#
-#   # `exit_code=0; ... || exit_code=$?` — NOT a bare assignment followed by
-#   # `exit_code=$?`. An assignment whose value comes from a command
-#   # substitution IS a simple command for errexit purposes, so under `set -e`
-#   # the caller's shell would abort AT THE ASSIGNMENT on exit 3 and never reach
-#   # the branch this recipe exists to demonstrate. Placing it in an `||` list
-#   # exempts it from errexit — the same `rc=0; cmd || rc=$?` idiom this script
-#   # uses internally.
-#   exit_code=0
-#   busy=$(bash scripts/warm-lane-lock-guard.sh check --mount "$worktree_base" \
-#                                                     --lane _merge-verify) || exit_code=$?
-#   if [ "$exit_code" -eq 0 ]; then
-#       # IDLE — dispatch the verify onto this lane.
-#   elif [ "$exit_code" -eq 3 ]; then
-#       # BUSY — DEFER this dispatch and retry later. "$busy" is the sentinel
-#       # line, carrying lane= and lock= for logging. Do NOT dispatch: doing so
-#       # enters DF's own 30s bounded wait on the same inode, whose timeout is
-#       # classified merge_error (terminal) rather than requeued.
-#   else
-#       # 2 — a wiring bug on our side. Log it and treat as 0: this guard is
-#       # advisory (A4), so a broken consult must never block the queue.
-#   fi
+# Env knobs beyond the flags in --help:
+#   REIFY_WARM_LANE_LOCK_GUARD_FLOCK  flock command override (default: flock).
+#                                     The measurement seam: the hermetic tests
+#                                     stub it here rather than on PATH, so the
+#                                     fail-open branches can be exercised
+#                                     against a real held lock.
 
 set -euo pipefail
 
@@ -154,9 +81,13 @@ Usage: $(basename "$0") check [--mount DIR] [--lane NAME] [--lock-path PATH]
     --lane NAME       Lane whose lock to probe
                       (default: \$REIFY_WARM_LANE_LOCK_GUARD_LANE or _merge-verify)
     --lock-path PATH  Probe this lock file directly, bypassing the
-                      <mount>/<lane>.lock derivation
+                      <mount>/<lane>.lock derivation. Makes --mount
+                      unnecessary, and is unaffected by a stale one.
                       (default: \$REIFY_WARM_LANE_LOCK_GUARD_LOCK_PATH)
     -h, --help        Print this message and exit.
+
+  Test seam (env only):
+    REIFY_WARM_LANE_LOCK_GUARD_FLOCK   flock command override (default: flock)
 
   Exit codes:
     0   — IDLE: no exclusive holder observed. Stdout is EMPTY.
@@ -281,7 +212,21 @@ fi
 #   · not the `flock <file> <cmd>` convenience form, which opens for writing and
 #     creates the file.
 #
-# FAIL-OPEN (see Exit codes): BUSY is reachable from exactly ONE place below — a
+# DELIBERATE DIVERGENCE FROM _probe_live, on the one question the two disagree
+# about. Audit uses a bare `flock -n -s` and reads EVERY non-zero as LIVE — it
+# conflates a broken or missing flock with contention, i.e. it fails CLOSED.
+# This guard asks for `-E 124` and fails OPEN on anything that is not that exact
+# status. Neither is a bug: audit's output is advisory prose a human reads, and
+# over-reporting LIVE there merely looks conservative, whereas this script's
+# exit 3 gates dispatch, and a false BUSY would wedge the serial merge queue.
+# The consequence to know is that on a host with a degraded flock the two WILL
+# disagree about one inode — audit says LIVE, this guard says IDLE. Two probes
+# of one inode with no shared code path is a real seam; unifying them behind a
+# tri-state helper (IDLE / BUSY / UNMEASURABLE, each caller applying its own
+# fail direction) is filed as follow-up work, since warm-lane-audit.sh is
+# outside task 5608's scope. Seam doc §3 carries the same note.
+#
+# FAIL-OPEN (see `--help`): BUSY is reachable from exactly ONE place below — a
 # completed flock that reported would-block. Every other outcome warns and
 # leaves the verdict IDLE.
 _fail_open() {
