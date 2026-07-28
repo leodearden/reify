@@ -157,75 +157,103 @@ _wait_for_reader_lock() {
     return 1
 }
 
-# _hold_lane_lock <mount> <lane>
-# Takes an EXCLUSIVE flock on <mount>/<lane>.lock in the background — the state
+# _flock_holder_body <flock-mode> <ready-marker> <release-marker>
+# Body of a RELEASE-marker flock holder. Backgrounded by the helpers below as
+# `( _flock_holder_body ... ) 9>lock &` — fd 9 is supplied by the CALLER's
+# redirect, so the flock is taken by that backgrounded subshell directly, and it
+# is a DIRECT child of this script, so a later `wait $!` on it works.
+#
+# NOT `sleep N` + `kill`, which is the obvious shape and is WRONG here: the
+# `sleep` child inherits fd 9, so killing only the parent subshell can leave fd
+# 9 — and therefore the flock — held after the "release", flaking the NEXT
+# block's IDLE assertion into a spurious BUSY. This suite releases and re-takes
+# locks repeatedly (B→C→D→E), so it needs the causal form:
+# `touch RELEASE; wait $pid` guarantees the flock is dropped before the caller's
+# next statement. Technique borrowed from
+# tests/infra/test_warm_lane_sizing_lifecycle.sh:129-157.
+#
+# The tick ceiling is an anti-hang safeguard, not an assertion — nothing here
+# asserts on elapsed time (docs/prds/infra-test-wallclock-deflake.md DD5).
+_flock_holder_body() {
+    local mode="$1" ready="$2" release="$3"
+    flock "$mode" 9
+    touch "$ready"
+    local tick=0
+    while [ "$tick" -lt 6000 ]; do
+        [ -f "$release" ] && return 0
+        sleep 0.05
+        tick=$(( tick + 1 ))
+    done
+}
+
+# _hold_lane_lock_at <lock-path> [flock-mode]
+# Takes a flock (default EXCLUSIVE) on an explicitly-named lock file — the state
 # a live dark-factory consumer (merge_verify_lease / reset_persistent_merge_
-# worktree / _seed_warm_lane) puts the lane in — and blocks until the READY
-# marker proves the lock is held.
+# worktree / _seed_warm_lane) puts a lane in — and blocks until the READY marker
+# proves the lock is held. Path-addressed so Block E can hold a lock OUTSIDE the
+# `<mount>/<lane>.lock` naming scheme (the --lock-path override, and the decoy).
 #
 # Publishes the background pid in the GLOBAL `LANE_LOCK_PID` rather than on
-# stdout deliberately: a `pid=$(_hold_lane_lock ...)` command substitution would
-# run this body in a SUBSHELL, discarding the `_BGPIDS` registration below and
-# orphaning the 300s sleeper past the suite's cleanup trap. Callers that need a
-# per-lane handle copy LANE_LOCK_PID immediately.
+# stdout deliberately: a `pid=$(_hold_lane_lock_at ...)` command substitution
+# would run this body in a SUBSHELL, discarding the `_BGPIDS` registration below
+# and orphaning the holder past the suite's cleanup trap.
+#
+# ONE HOLDER AT A TIME is this suite's standing invariant: _release_lane_lock
+# clears _BGPIDS wholesale, so a second concurrent holder would be dropped from
+# the cleanup set. Every block below holds one lock, asserts, and releases.
+#
+# The exclusive holder opens fd 9 for WRITING (`9>`); the shared one opens it
+# READ-only (`9<`), mirroring the production probe's own read-only open, so the
+# shared fixture models a real reader rather than an artificial write-opened
+# shared lock. Ready/release markers are suffixed per mode so an exclusive and a
+# shared holder can never collide on one lock file's markers.
 LANE_LOCK_PID=""
-_hold_lane_lock() {
-    local mount="$1" lane="$2"
-    local lock="$mount/$lane.lock"
-    local ready="$lock.ready-marker"
+LANE_LOCK_RELEASE=""
+_hold_lane_lock_at() {
+    local lock="$1" mode="${2:--x}"
+    local tag="exclusive"
+    [ "$mode" = "-s" ] && tag="shared"
+    local ready="$lock.$tag-ready-marker"
+    local release="$lock.$tag-release-marker"
+    rm -f "$ready" "$release"
     touch "$lock"
-    ( flock -x 9 && touch "$ready" && sleep 300 ) 9>"$lock" &
+    if [ "$mode" = "-s" ]; then
+        ( _flock_holder_body "$mode" "$ready" "$release" ) 9<"$lock" &
+    else
+        ( _flock_holder_body "$mode" "$ready" "$release" ) 9>"$lock" &
+    fi
     LANE_LOCK_PID=$!
+    LANE_LOCK_RELEASE="$release"
     _BGPIDS+=("$LANE_LOCK_PID")
     _wait_for_reader_lock "$ready" 30
 }
 
-# _hold_lane_lock_at <lock-path>
-# _hold_lane_lock's path-addressed sibling, for the Block E cases that hold a
-# lock OUTSIDE the `<mount>/<lane>.lock` naming scheme (the --lock-path
-# override, and the nested-path decoy). Identical technique; the only
-# difference is that the caller names the inode directly.
-_hold_lane_lock_at() {
-    local lock="$1"
-    local ready="$lock.ready-marker"
-    touch "$lock"
-    ( flock -x 9 && touch "$ready" && sleep 300 ) 9>"$lock" &
-    LANE_LOCK_PID=$!
-    _BGPIDS+=("$LANE_LOCK_PID")
-    _wait_for_reader_lock "$ready" 30
+# _hold_lane_lock <mount> <lane> — the lane-addressed exclusive form.
+_hold_lane_lock() {
+    local mount="$1" lane="$2"
+    _hold_lane_lock_at "$mount/$lane.lock" -x
 }
 
 # _hold_lane_lock_shared <mount> <lane>
 # The SHARED counterpart: models a concurrent READER (e.g. another audit run),
-# which the guard must read as IDLE, not BUSY (invariant A2).
-#
-# Two deliberate differences from _hold_lane_lock, both load-bearing:
-#   · `flock -s 9`, not `-x` — the entire point of the helper.
-#   · the fd is opened READ-only (`9<"$lock"`, after the `touch`), mirroring the
-#     production probe's own read-only open, so the fixture models a real shared
-#     reader rather than an artificial write-opened shared lock.
-# The ready marker uses a DISTINCT suffix so a shared and an exclusive holder
-# can never collide on one lock file's marker.
+# which the guard must read as IDLE, not BUSY — `flock -s`, not `-x`, is the
+# entire point of the helper.
 _hold_lane_lock_shared() {
     local mount="$1" lane="$2"
-    local lock="$mount/$lane.lock"
-    local ready="$lock.shared-ready-marker"
-    touch "$lock"
-    ( flock -s 9 && touch "$ready" && sleep 300 ) 9<"$lock" &
-    LANE_LOCK_PID=$!
-    _BGPIDS+=("$LANE_LOCK_PID")
-    _wait_for_reader_lock "$ready" 30
+    _hold_lane_lock_at "$mount/$lane.lock" -s
 }
 
 # _release_lane_lock
-# Kills the most recent holder and clears _BGPIDS, so the EXIT trap cannot
-# double-kill a pid the kernel may already have recycled.
+# Drops the current holder CAUSALLY: touch its release marker, then `wait` for
+# the subshell to exit, which closes fd 9 and releases the flock before the
+# caller's next statement. Clearing _BGPIDS afterwards prevents the EXIT trap
+# from signalling a pid the kernel may already have recycled.
 _release_lane_lock() {
-    if [ -n "$LANE_LOCK_PID" ]; then
-        kill "$LANE_LOCK_PID" 2>/dev/null || true
-        wait "$LANE_LOCK_PID" 2>/dev/null || true
-    fi
+    [ -n "$LANE_LOCK_PID" ] || return 0
+    touch "$LANE_LOCK_RELEASE"
+    wait "$LANE_LOCK_PID" 2>/dev/null || true
     LANE_LOCK_PID=""
+    LANE_LOCK_RELEASE=""
     _BGPIDS=()
 }
 
@@ -280,5 +308,67 @@ assert "A5: the missing-mount error names the knob on stderr" \
 # stdout for the sentinel must never see usage-error text there.
 run_guard --bogus
 assert "A6: an exit-2 path writes nothing to stdout" test -z "$OUT"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block B — IDLE path and the NON-CREATING invariant
+#
+# The probe is a pure reader of pool state. A guard that materialized the very
+# lock file it was asked about would be creating the resource dark-factory
+# serializes on — so B2/B5 pin non-creation and non-mutation as hard as B1/B3/B4
+# pin the verdicts. Both would be satisfied by a `>`-open or the
+# `flock <file> <cmd>` convenience form failing loudly, which is the point.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block B: IDLE path and the non-creating invariant ---"
+
+B_MOUNT="$(mktemp -d /tmp/test-warm-lane-lock-guard-b-XXXXXX)"
+_TMPDIRS+=("$B_MOUNT")
+mkdir -p "$B_MOUNT/_merge-verify"
+B_LOCK="$B_MOUNT/_merge-verify.lock"
+
+# B1: no lock file at all — the state a lane sits in until DF first seeds it.
+run_guard check --mount "$B_MOUNT"
+assert "B1: an absent lock file reads IDLE (exit 0)" test "$RC" -eq 0
+assert "B1: IDLE writes nothing to stdout" test -z "$OUT"
+
+# B2: ...and the probe did not bring it into existence.
+assert "B2: the probe did NOT create the absent lock file" test ! -e "$B_LOCK"
+
+# B3: present but unheld — the steady state of a free lane.
+touch "$B_LOCK"
+run_guard check --mount "$B_MOUNT"
+assert "B3: a present-but-unheld lock reads IDLE (exit 0)" test "$RC" -eq 0
+assert "B3: a present-but-unheld lock writes nothing to stdout" test -z "$OUT"
+
+# B5a: probing an unheld lock leaves the inode byte-identical. Size AND inode
+# together: a truncating open would change the size, and a create-and-replace
+# would change the inode while leaving the size at 0.
+B_STAT_BEFORE="$(stat -c '%s %i' "$B_LOCK")"
+run_guard check --mount "$B_MOUNT"
+B_STAT_AFTER="$(stat -c '%s %i' "$B_LOCK")"
+assert "B5a: probing an unheld lock leaves its size and inode unchanged" \
+    test "$B_STAT_BEFORE" = "$B_STAT_AFTER"
+
+# B4: a concurrent SHARED reader (e.g. another audit run) must NOT read BUSY.
+# The probe itself takes a shared lock, so only a genuine exclusive holder can
+# block it — that is what makes concurrent oracles non-contending.
+_hold_lane_lock_shared "$B_MOUNT" _merge-verify
+run_guard check --mount "$B_MOUNT"
+assert "B4: a concurrent SHARED reader still reads IDLE (exit 0)" test "$RC" -eq 0
+assert "B4: a concurrent SHARED reader writes nothing to stdout" test -z "$OUT"
+
+# B5b: ...and probing under a shared holder is equally non-mutating.
+B_STAT_SHARED="$(stat -c '%s %i' "$B_LOCK")"
+assert "B5b: probing a shared-held lock leaves its size and inode unchanged" \
+    test "$B_STAT_BEFORE" = "$B_STAT_SHARED"
+_release_lane_lock
+
+# B6: the load-bearing RED for this block. With a genuine EXCLUSIVE holder the
+# guard must not report IDLE — asserted as "not 0" here rather than "is 3",
+# because the exact code and its sentinel are Block C's contract.
+_hold_lane_lock "$B_MOUNT" _merge-verify
+run_guard check --mount "$B_MOUNT"
+assert "B6: an EXCLUSIVE holder must NOT read IDLE (exit != 0)" test "$RC" -ne 0
+_release_lane_lock
 
 test_summary
