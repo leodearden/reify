@@ -1607,3 +1607,109 @@ fn mwhole_bt4_merged_whole_assembly_cost_is_strictly_below_the_frozen_baseline()
         frozen_total - merged_total,
     );
 }
+
+/// BT3 core — the cross-scope SURFACE-SPELLING read (`self.plate.line_cost`,
+/// as a design author would write inside `CostAssembly`) surfaces the
+/// CO-SOLVED value — not a frozen one, and not `Undef`.
+///
+/// A `.ri` read `self.plate.line_cost` written inside `CostAssembly` compiles
+/// to the INSTANCE-PATH id `ValueCellId::new("CostAssembly.plate",
+/// "line_cost")` — the compiler mints `format!("{}.{}", scope.entity_name,
+/// sub_name)` (`crates/reify-compiler/src/expr.rs:843`).
+///
+/// PRD: docs/prds/v0_6/whole-model-objective-coupling.md §1.1/§6 (BT3) — "a
+/// scope that reads another scope's solved `auto` cell surfaces the
+/// co-solved value under `reify eval`" (the F-inherit ζ #4826 deferral this
+/// PRD homes).
+///
+/// # Achievability — DIRECT, not assumed
+///
+/// Identical mechanism and identical fixture precondition as the
+/// green-on-main `bt5_...`(iii), which asserts exactly this for
+/// `RivetedPanel.rivets.line_cost`; step-2's fixture satisfies the
+/// `build_single_instance_alias_paths` precondition (two DISTINCT
+/// structures, one non-collection instance path each).
+///
+/// (a)+(d) together are BT3's substance: a scope reading another scope's
+/// solved cell surfaces the co-solved value — not a frozen one, and not
+/// `Undef`. (b)/(c) are derived-identity sanity checks: both sides read from
+/// the SAME eval, so they pin bit-identity of a freshly-folded product, not a
+/// convergence claim.
+///
+/// RED until the example declares the surface reads (next impl step): with
+/// no `.ri`-level reference to `self.plate.line_cost`/`self.spacer.line_cost`
+/// anywhere in `CostAssembly`, the frozen-cascade half (no `minimize`, hence
+/// no `cost(self.descendants)` expansion either) never mints the id at all,
+/// so [`scalar_si`] panics reporting it absent rather than resolving (d)'s
+/// comparison.
+#[test]
+fn mwhole_bt3_cross_scope_surface_read_surfaces_the_co_solved_value() {
+    let merged_src =
+        std::fs::read_to_string(WHOLE_MODEL_COST_MIN_EXAMPLE_PATH).unwrap_or_else(|e| {
+            panic!(
+                "Could not read {WHOLE_MODEL_COST_MIN_EXAMPLE_PATH}: {e} — run the next impl \
+                 step to create the example file",
+            )
+        });
+    let frozen_src = strip_inlined_minimize(&merged_src);
+
+    let merged = eval_ri_with_real_solver(&merged_src, "merged (inlined `minimize` present)");
+    let frozen = eval_ri_with_real_solver(&frozen_src, "frozen cascade (`minimize` removed)");
+
+    for (instance_path, structure) in [
+        ("CostAssembly.plate", "Plate"),
+        ("CostAssembly.spacer", "Spacer"),
+    ] {
+        let alias_id = ValueCellId::new(instance_path, "line_cost");
+
+        // (a) resolves to a Scalar in the merged eval -- not Undef.
+        let merged_aliased = scalar_si(&merged, &alias_id, "merged");
+
+        // (b) equals its structure-keyed source in the SAME eval -- proving
+        // the alias is freshly refolded, not stale.
+        let merged_structure_keyed = scalar_si(
+            &merged,
+            &ValueCellId::new(structure, "line_cost"),
+            "merged",
+        );
+        assert_eq!(
+            merged_aliased, merged_structure_keyed,
+            "BT3 [{structure}] (b): the instance-path cell `{instance_path}.line_cost` \
+             must hold the same freshly-folded value as its structure-keyed source \
+             `{structure}.line_cost` in the merged eval",
+        );
+
+        // (c) equals unit_cost * quantity_produced read from the SAME eval --
+        // the Costed closed form, so the value is derived, not pinned.
+        let merged_unit_cost = scalar_si(
+            &merged,
+            &ValueCellId::new(structure, "unit_cost"),
+            "merged",
+        );
+        let merged_q = scalar_si(
+            &merged,
+            &ValueCellId::new(structure, "quantity_produced"),
+            "merged",
+        );
+        assert_eq!(
+            merged_aliased,
+            merged_unit_cost * merged_q,
+            "BT3 [{structure}] (c): the instance-path cell must be the Costed \
+             closed form unit_cost * quantity_produced ({merged_unit_cost} * \
+             {merged_q}), refolded against the solved auto — not left at \
+             whatever it held before the solve",
+        );
+
+        // (d) STRICTLY DIFFERS from the same cell in the frozen-cascade eval
+        // -- proving it is the CO-SOLVED value, not the bottom-up freeze.
+        let frozen_aliased = scalar_si(&frozen, &alias_id, "frozen-cascade");
+        assert_ne!(
+            merged_aliased, frozen_aliased,
+            "BT3 [{structure}] (d): the cross-scope surface read \
+             `{instance_path}.line_cost` must STRICTLY DIFFER between the \
+             merged and frozen-cascade evals — an equal value would mean the \
+             surface read carries the bottom-up freeze, not the co-solved \
+             value. Got merged={merged_aliased} vs frozen={frozen_aliased}",
+        );
+    }
+}
