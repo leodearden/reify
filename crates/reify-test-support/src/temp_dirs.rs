@@ -1061,6 +1061,93 @@ mod tests {
         );
     }
 
+    // ── workspace_has_no_unguarded_temp_dirs (the live ratchet) ──────────────
+    //
+    // Replaces the six hand-picked `*_have_no_unguarded_temp_dirs` guards below
+    // with a whole-workspace sweep, narrowed only by the comment-justified
+    // `SWEEP_EXCEPTIONS` table. `partition_enforced_and_stale` above classifies
+    // the sweep's raw output against that table in both directions, and BOTH
+    // halves are asserted empty here — see that function's doc comment for why
+    // the stale half exists.
+
+    /// The live ratchet. Every `.rs` file in the workspace — `src/`, `tests/`,
+    /// and `build.rs` alike — must be free of temp-dir hygiene violations,
+    /// except for the paths explicitly listed (with justification) in
+    /// `SWEEP_EXCEPTIONS` below. An exception that no longer matches any
+    /// violation has rotted stale and must be deleted — see
+    /// `partition_enforced_and_stale`'s doc comment for why that direction is
+    /// asserted too.
+    #[test]
+    fn workspace_has_no_unguarded_temp_dirs() {
+        // Same resolution as `assert_no_unguarded_temp_dir_sites`: this crate's
+        // CARGO_MANIFEST_DIR is always `<repo>/crates/reify-test-support`, so
+        // two `.parent()` walks reach the repo root.
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates/reify-test-support has a parent (crates/)")
+            .parent()
+            .expect("crates/ has a parent (the repo root)");
+
+        // Walker-health guard FIRST, mirroring the two-part check in
+        // `tests/ignore_reason_hygiene.rs`: a walk that silently breaks (a
+        // renamed directory component, say) must fail loudly and
+        // specifically, not report the workspace clean because it scanned
+        // nothing.
+        //   1. Minimum count (>500) — measured 1758 `.rs` files at the time
+        //      this ratchet was written; 500 is far below the real count
+        //      (stable against ordinary file churn) yet an order of magnitude
+        //      above what a partial-subtree breakage would return.
+        //   2. Sentinel path — a `src/` file, so a regression in the walker's
+        //      `src/`-inclusion (the entire reason this sweep replaces the
+        //      six hand-picked guards below) is caught with a specific
+        //      diagnostic rather than folded into the count check.
+        let all_rs_files = walk_rs_files(repo_root, |_| true);
+        assert!(
+            all_rs_files.len() > 500,
+            "walker found only {} .rs file(s) — expected >500; the walker may \
+             be broken, or repo_root resolved to the wrong directory",
+            all_rs_files.len()
+        );
+        let sentinel = repo_root.join("crates/reify-build-utils/src/lib.rs");
+        assert!(
+            all_rs_files.contains(&sentinel),
+            "sentinel file {sentinel:?} not found in walker output — the \
+             walker may be broken, or may have regressed to excluding src/ \
+             files again"
+        );
+
+        // `collect_workspace_unguarded_temp_dirs` walks again internally.
+        // Intentional test-only overhead, the same tradeoff
+        // `tests/ignore_reason_hygiene.rs` accepts: the walk is cheap next to
+        // the file I/O that follows, and keeping the health guard and the
+        // sweep as independent calls is cleaner than threading a shared
+        // pre-computation through both.
+        let violations = collect_workspace_unguarded_temp_dirs(repo_root);
+        let (enforced, stale) = partition_enforced_and_stale(&violations, SWEEP_EXCEPTIONS);
+
+        assert!(
+            enforced.is_empty(),
+            "Found {} un-excepted temp-dir hygiene violation(s):\n  {}\n\n\
+             Fix each by binding a named guard local:\n\
+             \x20   let guard = reify_test_support::prefixed_tempdir(\"<prefix>-\");\n\
+             \x20   let dir = guard.path().to_path_buf();\n\n\
+             ...or, if the site is legitimately hand-rolled, annotate the \
+             line `// {} — reason` and it will be skipped.",
+            enforced.len(),
+            enforced.join("\n  "),
+            ALLOW_ESCAPE,
+        );
+        assert!(
+            stale.is_empty(),
+            "Found stale SWEEP_EXCEPTIONS entry/entries that no longer match \
+             any violation:\n  {}\n\n\
+             The file was migrated off hand-rolled temp dirs — DELETE its \
+             entry from SWEEP_EXCEPTIONS. A stale exception silently re-opens \
+             the hole it was written to narrowly carve out.",
+            stale.join("\n  ")
+        );
+    }
+
     // ── ratchet: files migrated off hand-rolled temp dirs ────────────────────
     //
     // Each guard below is ratcheted on by #5640 together with the migration that
