@@ -800,3 +800,182 @@ fn lexicographic_epsilon_band_anchor_is_folded_like_the_stage_it_constrains() {
         a + b
     );
 }
+
+// ---------------------------------------------------------------------------
+// Cross-component joint drive — decomposition must follow `dependent_cells`
+// ---------------------------------------------------------------------------
+//
+// β made `dependent_cells` reach the domain solver, but `SolverRegistry::
+// solve_inner` still decomposes as if the objective read only the autos it
+// mentions SYNTACTICALLY. The canonical β shape is a BARE read of a derived
+// cell, so `obj_refs` holds no auto ids at all: `decompose_into_components`'
+// objective-union step unions nothing, and two autos coupled ONLY through a
+// dependent cell land in SEPARATE components. Two consequences, both here:
+//
+//   * the objective is attached by the hardcoded `0` fallthrough (registry.rs
+//     :202-211) to a NONDETERMINISTIC component, so the other component's
+//     autos are solved feasibility-only against stale seeds; and
+//   * each sub-problem is handed `dependent_cells` WHOLESALE, so the component
+//     owning only `a` folds `total = A_COEFF*a + B_COEFF*b` with `b` unbound —
+//     the fold writes `Undef` and the objective read yields
+//     `NoProgress { reason: "objective expression evaluated to undefined at
+//     solution point" }`.
+
+/// A joint-drive problem whose autos are coupled ONLY through a dependent cell.
+///
+/// * autos `a`, `b`, each bounded on `[LO, HI]`;
+/// * TWO constraints that each touch exactly ONE auto, so
+///   `decompose_into_components` splits them into two components on the
+///   constraint graph alone. Deliberately NO constraint mentions both autos —
+///   the split is the entire point of the fixture;
+/// * `dependent_cells = [(total, A_COEFF*a + B_COEFF*b)]` — the only coupling;
+/// * the objective is a BARE read of `total` (the canonical β shape), so
+///   `obj_refs` contains no auto ids;
+/// * `current_values` seeds ONLY `total`, at [`STALE_TOTAL`] — deliberately NOT
+///   `a`/`b`, so a cross-component fold hits an unbound ref and yields `Undef`
+///   rather than a coincidentally-plausible stale number.
+fn cross_component_joint_drive_problem() -> (ResolutionProblem, ValueCellId, ValueCellId) {
+    let a_id = ValueCellId::new("Part", "a");
+    let b_id = ValueCellId::new("Part", "b");
+    let total_id = ValueCellId::new("Part", "total");
+
+    let mut current_values = ValueMap::new();
+    current_values.insert(total_id.clone(), scalar(STALE_TOTAL));
+
+    let total_expr = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::binop(BinOp::Mul, lit(A_COEFF), vref(&a_id), dimensionless()),
+        CompiledExpr::binop(BinOp::Mul, lit(B_COEFF), vref(&b_id), dimensionless()),
+        dimensionless(),
+    );
+
+    let auto = |id: &ValueCellId| AutoParam {
+        id: id.clone(),
+        param_type: dimensionless(),
+        bounds: Some((LO, HI)),
+        free: true,
+    };
+
+    let problem = ResolutionProblem {
+        auto_params: vec![auto(&a_id), auto(&b_id)],
+        constraints: vec![
+            (
+                ConstraintNodeId::new("Part", 0),
+                CompiledExpr::binop(BinOp::Ge, vref(&a_id), lit(LO), Type::Bool),
+            ),
+            (
+                ConstraintNodeId::new("Part", 1),
+                CompiledExpr::binop(BinOp::Ge, vref(&b_id), lit(LO), Type::Bool),
+            ),
+        ],
+        current_values,
+        objective: Some(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            vref(&total_id),
+        )),
+        functions: Arc::from(Vec::new()),
+        dependent_cells: vec![(total_id, total_expr)],
+    };
+
+    (problem, a_id, b_id)
+}
+
+/// Decomposition must follow `dependent_cells`: two autos coupled only through
+/// a derived cell the objective reads must be solved JOINTLY, at the true
+/// folded argmin.
+///
+/// RED before the fix: the registry splits `a` and `b` into two components,
+/// hands each the WHOLE `dependent_cells` list, and attaches the objective to
+/// an arbitrary one. The component that owns only one auto folds `total` with
+/// the other auto unbound → `Undef` → `NoProgress`. (Where the fold happens to
+/// stay evaluable, the milder manifestation is a constant stale objective — no
+/// gradient, so a silently suboptimal feasibility-only answer.)
+///
+/// No assertion here touches component ORDER or WHICH component receives the
+/// objective: `decompose_into_components` iterates a `HashMap` (decompose.rs
+/// :179), so that is nondeterministic. The bad outcome is deterministic
+/// regardless of which component wins, because NEITHER owns both autos.
+#[test]
+fn cross_component_dependent_cell_resolves_to_the_joint_argmin() {
+    let (problem, a_id, b_id) = cross_component_joint_drive_problem();
+    let total_id = ValueCellId::new("Part", "total");
+
+    let solved_pair = |result: SolveResult, who: &str| -> (f64, f64) {
+        let SolveResult::Solved { values, .. } = result else {
+            panic!(
+                "({who}) `(a, b) = ({LO}, {LO})` is feasible, so the solve must \
+                 succeed; got: {result:?}\n\n\
+                 A `NoProgress {{ reason: \"objective expression evaluated to \
+                 undefined at solution point\" }}` is THE cross-component fold \
+                 defect: the component solving `a` does not own `b`, but it was \
+                 handed the whole `dependent_cells` list, so folding \
+                 `total = {A_COEFF}*a + {B_COEFF}*b` read an unbound `b`, \
+                 evaluated to `Undef`, and the objective's read of `total` \
+                 inherited it."
+            );
+        };
+        let a = values
+            .get(&a_id)
+            .and_then(|v| v.as_f64())
+            .expect("auto `a` solved");
+        let b = values
+            .get(&b_id)
+            .and_then(|v| v.as_f64())
+            .expect("auto `b` solved");
+        (a, b)
+    };
+
+    // Precondition: the fold demonstrably works one layer down, on the
+    // UNDECOMPOSED problem. This also MEASURES the achievable tolerance rather
+    // than assuming it, so a failure here is attributable to the per-trial fold
+    // itself and not to the registry.
+    let (direct_a, direct_b) = solved_pair(DimensionalSolver.solve(&problem), "direct");
+    assert!(
+        (direct_a - LO).abs() < 1e-3 && (direct_b - LO).abs() < 1e-3,
+        "precondition — the bare `DimensionalSolver` on the UNDECOMPOSED \
+         problem must fold `total` and descend to the lower corner \
+         (a={LO}, b={LO}); got (a={direct_a:.6}, b={direct_b:.6}). If THIS \
+         fails, the per-trial fold itself regressed, not the registry."
+    );
+
+    // The production dispatch path must reach the same JOINT argmin.
+    let (a, b) = solved_pair(
+        reify_constraints::SolverRegistry::production().solve(&problem),
+        "registry",
+    );
+    assert!(
+        (a - LO).abs() < 1e-3 && (b - LO).abs() < 1e-3,
+        "the production path must reach the JOINT folded argmin \
+         (a={LO}, b={LO}) — as the direct solve did \
+         (a={direct_a:.6}, b={direct_b:.6}); got (a={a:.6}, b={b:.6}). \
+         An auto sitting anywhere else in [{LO}, {HI}] means its component was \
+         solved FEASIBILITY-ONLY: `obj_refs` holds no auto ids (the objective \
+         is a bare read of `total`), so `decompose_into_components` unioned \
+         nothing, `a` and `b` landed in separate components, and \
+         `objective_component`'s lookup fell through to the hardcoded `0` \
+         (registry.rs:202-211) — attaching the objective to an arbitrary \
+         component of a nondeterministic `HashMap` iteration and leaving the \
+         other component's auto pinned near its stale start."
+    );
+
+    // Fixture integrity: the stale seed must still be sitting in
+    // `current_values`, so the test cannot pass merely because the fixture
+    // forgot to seed it.
+    assert_eq!(
+        problem.current_values.get(&total_id).and_then(|v| v.as_f64()),
+        Some(STALE_TOTAL),
+        "fixture integrity: `total` must be seeded stale in current_values"
+    );
+    assert_eq!(
+        problem.current_values.get(&a_id).and_then(|v| v.as_f64()),
+        None,
+        "fixture integrity: `a` must NOT be seeded — an unbound auto is what \
+         makes a cross-component fold yield `Undef` instead of a plausible \
+         stale number"
+    );
+    assert_eq!(
+        problem.current_values.get(&b_id).and_then(|v| v.as_f64()),
+        None,
+        "fixture integrity: `b` must NOT be seeded — see the `a` assertion"
+    );
+}
