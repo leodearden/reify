@@ -36,6 +36,19 @@
 #   re-implements this predicate against the PRD §4.1 spec using the shared
 #   --list-extensions test vector (PRD §11 Q1) rather than taking a runtime
 #   dependency on this script.
+#
+#   STATUS 2026-07-28 (#5726): the γ copies still pin the pre-#5726 36-entry
+#   vector and are NOT yet updated — dark-factory shared/src/shared/locking.py
+#   ::CODE_EXTENSIONS, fused-memory/src/fused_memory/middleware/lock_charter_guard.py
+#   ::CODE_EXTENSIONS, and fused-memory/tests/test_lock_charter_guard.py
+#   ::_CANONICAL_EXTENSIONS.  Tracked by #5737 (ticket tkt_0RRT3KW6B9KF72BHDY5Q038R7Y).
+#   Until that lands: (i) fused-memory's Tier-2 drift test
+#   test_extension_drift_guard_vs_reify_script compares this script's output
+#   against 36 entries and FAILS in the dark-factory .worktrees/<n>/ layout
+#   (where Path(__file__).parents[5] resolves to <src>/ and finds this script);
+#   (ii) submit_task / scheduler still REJECT the extensions added below, so
+#   declaring e.g. tests/infra/run-all-classification.manifest in a lock charter
+#   still fails at the γ enforcement point.
 
 set -euo pipefail
 
@@ -43,13 +56,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ---------------------------------------------------------------------------
 # Canonical extension allowlist (OQ#2 resolved — PRD §11 Q2).
-# Single source of truth: used by _is_file_path(), classify, and --list-extensions.
+# Single source of truth for the α (reify) enforcement point: used by
+# _is_file_path(), classify, and --list-extensions.  It is NOT globally
+# authoritative while the γ copies lag — see the "Cross-repo seam: γ" status
+# note in the header above.
 # PRD-explicit: rs ri toml cpp c h hpp md json yaml yml lock py sh ts tsx js txt step stl
 # Corpus-evidenced: css mjs html jsonc gcode service
 # Common source siblings: cc cxx hh mts cts cjs jsx scss svg png
 # git-ls-files sweep 2026-07-28 (#5726) — 22 tracked-file extensions across reify +
-# dark-factory that this list misclassified as directories; supersedes the #4676
-# "OQ#2 resolved" completeness claim, which was a 22-extension undercount:
+# dark-factory that this list misclassified as directories; supersedes #4676's
+# "OQ#2 resolved" completeness claim FOR THIS LIST, which was a 22-extension
+# undercount:
 #   conf diff envrc example example-systemd-config gitattributes gitignore gitkeep
 #   gitmodules golden grammar icns ico jq jsonl log manifest npmrc python-version
 #   template timer typed
