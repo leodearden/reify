@@ -198,6 +198,30 @@ auto wrap_occt_call(const char* name, F&& fn) -> decltype(fn()) {
     }
 }
 
+/// Reduce a swept-section profile to the shape `BRepFill_Section` accepts.
+///
+/// `BRepOffsetAPI_MakePipeShell::Add` funnels every section through
+/// `BRepFill_Section`, which stores only a `TopoDS_Wire` or a `TopoDS_Vertex`.
+/// Anything else — including a `TopAbs_FACE` and a bare `TopAbs_EDGE` — raises
+/// `Standard_Failure "BRepFill_Section: bad shape type of section"`. Faces are
+/// the profile kind the Reify compiler actually produces (`circle(r)` lowers to
+/// `CircleProfile` → `make_circle_face`), so they are reduced here to their
+/// outer wire rather than rejected.
+static TopoDS_Shape section_profile_to_wire(const TopoDS_Shape& profile) {
+    switch (profile.ShapeType()) {
+        case TopAbs_FACE:
+            return ::BRepTools::OuterWire(TopoDS::Face(profile));
+        case TopAbs_WIRE:
+        case TopAbs_VERTEX:
+            return profile;
+        default:
+            // Passthrough for now — the unsupported-type rejection lands with
+            // its own test in this task's later step. Forwarding unchanged
+            // preserves OCCT's existing error for these types.
+            return profile;
+    }
+}
+
 } // anonymous namespace
 
 // --- Foundation constants ---
@@ -3434,7 +3458,7 @@ std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
         // Spine and guide must both be wires; profile may be an edge,
         // wire, or face.
         BRepOffsetAPI_MakePipeShell maker(TopoDS::Wire(spine.shape));
-        maker.Add(profile.shape);
+        maker.Add(section_profile_to_wire(profile.shape));
         // SetMode(auxWire, KeepContact) — KeepContact=false keeps the
         // section's centre free while using the guide to bias orientation.
         maker.SetMode(TopoDS::Wire(guide.shape), Standard_False);
