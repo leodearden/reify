@@ -3034,6 +3034,46 @@ mod tests {
         );
     }
 
+    /// Task #5618 step-7: the reflection box is supplied BY THE CALLER, so the
+    /// uniqueness re-solve anchors inside the constraint-derived box.
+    ///
+    /// `verify_uniqueness` reflects to `lo + 0.9·(hi − lo)` of the param's box.  On a
+    /// dimensionless auto with `bounds: None` that box is `effective_bounds` =
+    /// `(-1e6, 1e6)`, so the anchor is ~8×10⁵ — nowhere near a `q ∈ [1, 100]`
+    /// bracket, and the re-solve has no chance of reconverging on the same answer.
+    /// Passing the derived seed box `[1, 100]` puts the anchor at 90.1 instead.
+    #[test]
+    fn build_perturbation_anchors_uses_caller_supplied_box() {
+        use std::collections::HashMap;
+
+        use super::build_perturbation_anchors;
+
+        let q = reify_core::ValueCellId::new("Derive", "q");
+        let params = vec![real_auto_param(q.clone())];
+        let mut solved_values = HashMap::new();
+        solved_values.insert(
+            q,
+            reify_ir::Value::Scalar {
+                si_value: 1.02,
+                dimension: reify_core::DimensionVector::DIMENSIONLESS,
+            },
+        );
+
+        // The CALLER's box, not `effective_bounds(&params[0])` = (-1e6, 1e6).
+        let bounds = vec![(1.0, 100.0)];
+        let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values, &bounds);
+
+        assert!(missing.is_empty(), "expected no missing params; got {missing:?}");
+        assert_eq!(perturbed.len(), 1);
+        // 1.02 < mid 50.5 → lower half → reflect high: 1.0 + 0.9*99.0 = 90.1.
+        assert!(
+            (perturbed[0] - 90.1).abs() < 1e-9,
+            "expected the anchor at 90.1 (inside the supplied box [1, 100]); a value near \
+             8e5 means the reflection is still reading the dimensionless default box. got {}",
+            perturbed[0]
+        );
+    }
+
     #[test]
     fn build_trial_values_empty_params() {
         use super::build_trial_values;
@@ -4691,6 +4731,62 @@ mod tests {
             points.iter().any(|p| p[0] == mid_x && p[1] == hi_y),
             "expected a y-high/x-mid corner anchor [{mid_x}, {hi_y}]; got {points:?}"
         );
+    }
+
+    /// Task #5618 step-7: the per-axis corner anchors must sample the
+    /// CONSTRAINT-DERIVED box, not `default_bounds_for`.
+    ///
+    /// `two_param_multistart_problem` above sets explicit `bounds: Some(..)` with an
+    /// EMPTY constraint list, so the derived path is inert there by construction and
+    /// the four tests above are unaffected. This fixture is the production shape:
+    /// `bounds: None` (so `effective_bounds` degrades to the dimensionless
+    /// `(-1e6, 1e6)`) plus an inequality pair per axis. Without the derived seed box
+    /// starts #1..5 are the all-`0` midpoint and corners at ±10⁶ — every one of them
+    /// outside `[1, 100] × [2, 200]`, so best-of-K degenerates to best-of-one and the
+    /// whole ranked result rests on start #0 alone.
+    #[test]
+    fn multistart_points_corners_sample_the_constraint_derived_box() {
+        use reify_ir::BinOp;
+
+        use super::multistart_points;
+
+        let q0 = reify_core::ValueCellId::new("Derive", "q0");
+        let q1 = reify_core::ValueCellId::new("Derive", "q1");
+        let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
+            auto_params: vec![real_auto_param(q0.clone()), real_auto_param(q1.clone())],
+            constraints: as_constraints(vec![
+                cmp_ref_lit(BinOp::Ge, &q0, 1.0),
+                cmp_ref_lit(BinOp::Le, &q0, 100.0),
+                cmp_ref_lit(BinOp::Ge, &q1, 2.0),
+                cmp_ref_lit(BinOp::Le, &q1, 200.0),
+            ]),
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![].into(),
+        };
+
+        let points = multistart_points(&problem);
+        assert_eq!(points.len(), 6, "K = 2*(dim+1) is unchanged by task #5618");
+
+        // Derived seed boxes: [1, 100] and [2, 200]; midpoints 50.5 and 101.0.
+        let (mid_0, mid_1) = (50.5, 101.0);
+        for (label, expect) in [
+            ("all-midpoint", [mid_0, mid_1]),
+            ("q0-low", [1.0, mid_1]),
+            ("q0-high", [100.0, mid_1]),
+            ("q1-low", [mid_0, 2.0]),
+            ("q1-high", [mid_0, 200.0]),
+        ] {
+            assert!(
+                points
+                    .iter()
+                    .any(|p| (p[0] - expect[0]).abs() < 1e-9 && (p[1] - expect[1]).abs() < 1e-9),
+                "expected the {label} anchor {expect:?} from the CONSTRAINT-DERIVED box; \
+                 corners at ±1e6 mean multistart is still reading `default_bounds_for`. \
+                 got {points:?}"
+            );
+        }
     }
 
     // ---- end multistart_points unit tests ----

@@ -16,6 +16,12 @@
 //! a Money-objective auto bracketed away from 0 must not report a false
 //! `RobustnessFloorInfeasible`, and a genuinely floor-empty bracket must still
 //! report a real one.
+//!
+//! Task #5618 step-7 sub-section (RED until step-8 impl lands) pins solution
+//! QUALITY and the two remaining seed consumers:
+//!   - `bracketed_money_auto_resolves_at_floored_argmin`
+//!   - `bracketed_money_strict_auto_survives_uniqueness_resolve`
+//!   - `bracketed_money_multistart_cluster_ranks_a_feasible_candidate`
 
 use reify_constraints::DimensionalSolver;
 use reify_core::{DiagnosticCode, DimensionVector, Type, ValueCellId};
@@ -211,6 +217,39 @@ fn money_times_real(q_id: &ValueCellId) -> CompiledExpr {
             Type::Scalar { dimension: money_dim },
         ),
         CompiledExpr::value_ref(q_id.clone(), Type::Scalar { dimension: dimensionless }),
+        Type::Scalar { dimension: money_dim },
+    )
+}
+
+// ── helper: Money-dimensioned `1 USD × (q0 + q1)` over two dimensionless autos ──
+//
+// Monotonically increasing in BOTH params, so under `Minimize` the constrained
+// optimum is each param's own floored lower bound. Used by the multistart case
+// (`solve_ranked` is only multistart-eligible at dim >= 2 with an objective).
+fn money_times_real_sum(q_ids: &[ValueCellId]) -> CompiledExpr {
+    let money_dim = DimensionVector::MONEY;
+    let dimensionless = DimensionVector::DIMENSIONLESS;
+    let sum = q_ids
+        .iter()
+        .map(|id| {
+            CompiledExpr::value_ref(id.clone(), Type::Scalar { dimension: dimensionless })
+        })
+        .reduce(|acc, next| {
+            CompiledExpr::binop(
+                BinOp::Add,
+                acc,
+                next,
+                Type::Scalar { dimension: dimensionless },
+            )
+        })
+        .expect("money_times_real_sum needs at least one param");
+    CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::literal(
+            Value::Scalar { si_value: 1.0, dimension: money_dim },
+            Type::Scalar { dimension: money_dim },
+        ),
+        sum,
         Type::Scalar { dimension: money_dim },
     )
 }
@@ -694,6 +733,157 @@ fn bracketed_money_length_auto_solves_inside_floored_window() {
         }
         other => panic!(
             "expected Solved for a Money objective over x ∈ [50mm, 200mm]; got {:?}",
+            other
+        ),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// task #5618 step-7 — solution QUALITY, and the two remaining seed consumers
+// (`build_perturbation_anchors` and `multistart_points`), which step-6 left on
+// the useless `effective_bounds` default box.
+//
+// Steps 5-6 removed the false `Infeasible`.  These three pin that the answer is
+// also GOOD: the exact argmin rather than the seed, a strict auto that survives
+// the uniqueness re-solve rather than trading a false `RobustnessFloorInfeasible`
+// for a false `ConstraintNonUnique`, and a dim>=2 cluster that reaches
+// `solve_ranked`'s ranked arm rather than its `scored.is_empty()` fallback.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// ARGMIN SHARPNESS: the Money objective `1 USD × q` is strictly increasing in `q`,
+/// so over `q ∈ [1, 100]` the constrained optimum is the FLOORED lower bound,
+/// `q = 1.02` — not the derived seed.
+///
+/// This is the assertion that distinguishes the full fix from a seed-only fix.
+/// The architect's runtime probe measured exactly two outcomes by injecting
+/// candidate boxes into `AutoParam.bounds`: the raw constraint box `(1, 100)` gives
+/// `Solved` at **q = 50.5** (its own midpoint seed, returned via the drift
+/// fallback — 50× off the argmin), while the floored box `(1.02, 98)` gives
+/// `Solved` at **q = 1.02**, the exact argmin.  A test that only asserted
+/// `1.02 ≤ q ≤ 98` (as `bracketed_money_auto_solves_inside_floored_window` does)
+/// accepts both; this one accepts only the second.
+#[test]
+fn bracketed_money_auto_resolves_at_floored_argmin() {
+    let q_id = ValueCellId::new("Bracketed", "q");
+
+    let problem = bracketed_money_problem(
+        vec![real_auto_param(q_id.clone(), true)],
+        vec![
+            real_cmp(BinOp::Ge, &q_id, 1.0),
+            real_cmp(BinOp::Le, &q_id, 100.0),
+        ],
+        money_times_real(&q_id),
+    );
+
+    match DimensionalSolver.solve(&problem) {
+        SolveResult::Solved { values, .. } => {
+            let q = values.get(&q_id).unwrap().as_f64().unwrap();
+            assert!(
+                (q - 1.02).abs() < 1e-3,
+                "expected q at the floored argmin 1.02 (the constrained minimum of an \
+                 increasing Money objective), got q = {q}; a value near the seed (e.g. \
+                 50.5) means the derived box reached the SEED but not the CLAMP"
+            );
+        }
+        other => panic!("expected Solved at the floored argmin, got {:?}", other),
+    }
+}
+
+/// STRICT-AUTO UNIQUENESS: the headline problem with `free: false` must still
+/// `Solved`, not degrade into `ConstraintNonUnique`.
+///
+/// A strict auto triggers `verify_uniqueness`, which re-solves from
+/// `build_perturbation_anchors`' reflected anchor.  That anchor is
+/// `lo + 0.9·(hi − lo)` of the param's box — on the un-derived dimensionless
+/// default box `(-1e6, 1e6)` that is ~8×10⁵, nowhere near `[1, 100]`, so the
+/// re-solve cannot reconverge and the disagreement is reported as
+/// `ConstraintNonUnique`: one false error traded for another, leaving the
+/// task's headline model still broken for every non-`free` auto.
+#[test]
+fn bracketed_money_strict_auto_survives_uniqueness_resolve() {
+    let q_id = ValueCellId::new("Bracketed", "q");
+
+    let problem = bracketed_money_problem(
+        vec![real_auto_param(q_id.clone(), false)],
+        vec![
+            real_cmp(BinOp::Ge, &q_id, 1.0),
+            real_cmp(BinOp::Le, &q_id, 100.0),
+        ],
+        money_times_real(&q_id),
+    );
+
+    match DimensionalSolver.solve(&problem) {
+        SolveResult::Solved { values, .. } => {
+            let q = values.get(&q_id).unwrap().as_f64().unwrap();
+            assert!(
+                (1.02..=98.0).contains(&q),
+                "expected the strict auto inside the floored window [1.02, 98.0], got {q}"
+            );
+        }
+        SolveResult::Infeasible { diagnostics } => {
+            assert!(
+                !diagnostics
+                    .iter()
+                    .any(|d| d.code == Some(DiagnosticCode::ConstraintNonUnique)),
+                "the uniqueness re-solve must perturb from inside the DERIVED box, not \
+                 from ~0.9·(2e6) off the dimensionless default box; got: {:?}",
+                diagnostics
+            );
+            panic!("expected Solved for a strict bracketed auto, got Infeasible");
+        }
+        other => panic!("expected Solved for a strict bracketed auto, got {:?}", other),
+    }
+}
+
+/// MULTISTART: a two-auto cluster, each param bracketed away from 0 by its own
+/// `>=`/`<=` pair under one shared Money objective, is `multistart_eligible`
+/// (dim >= 2 + objective + no `cost_robustness_lambda`) and so goes through
+/// `solve_ranked`'s best-of-K loop instead of the single-start path.
+///
+/// `multistart_points` builds K = 2·(dim+1) = 6 starts: start #0 is
+/// `extract_initial_point` (already derived, step-4), but starts #1..5 are the
+/// all-midpoint point and the per-axis low/high corners, taken from the param's
+/// box.  On the un-derived dimensionless default box those corners are ±10⁶ — none
+/// of them can converge — so the loop's `scored` list would be carried entirely by
+/// start #0, and any regression there drops straight through to the
+/// `scored.is_empty()` Infeasible fallback.
+#[test]
+fn bracketed_money_multistart_cluster_ranks_a_feasible_candidate() {
+    let q0_id = ValueCellId::new("Bracketed", "q0");
+    let q1_id = ValueCellId::new("Bracketed", "q1");
+
+    let problem = bracketed_money_problem(
+        vec![
+            real_auto_param(q0_id.clone(), true),
+            real_auto_param(q1_id.clone(), true),
+        ],
+        vec![
+            real_cmp(BinOp::Ge, &q0_id, 1.0),
+            real_cmp(BinOp::Le, &q0_id, 100.0),
+            real_cmp(BinOp::Ge, &q1_id, 2.0),
+            real_cmp(BinOp::Le, &q1_id, 200.0),
+        ],
+        money_times_real_sum(&[q0_id.clone(), q1_id.clone()]),
+    );
+
+    match DimensionalSolver.solve_ranked(&problem) {
+        reify_ir::RankedSolveResult::Ranked { candidates, .. } => {
+            let best = candidates.first().expect("I2: candidates is non-empty");
+            let q0 = best.values.get(&q0_id).unwrap().as_f64().unwrap();
+            let q1 = best.values.get(&q1_id).unwrap().as_f64().unwrap();
+            // Floored windows: q0 ≥ 1.02 (2% of 1), q1 ≥ 2.04 (2% of 2).
+            assert!(
+                (1.02..=98.0).contains(&q0),
+                "expected q0 inside its floored window [1.02, 98.0], got {q0}"
+            );
+            assert!(
+                (2.04..=196.0).contains(&q1),
+                "expected q1 inside its floored window [2.04, 196.0], got {q1}"
+            );
+        }
+        other => panic!(
+            "expected a Ranked result for a 2-auto bracketed Money cluster — every start \
+             must be able to reach the feasible box; got {:?}",
             other
         ),
     }
