@@ -229,7 +229,8 @@ fn e2e_result_fallback_ok_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = EvalContext::new(&values, &functions);
     assert_eq!(
         eval_expr(expr, &ctx),
         val_5mm(),
