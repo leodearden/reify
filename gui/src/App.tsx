@@ -40,8 +40,7 @@ import { createViewStateStore, type ViewStateStore } from './stores/viewStateSto
 import { createLayoutStore } from './stores/layoutStore';
 import { createViewportStore, type CameraState, type ViewportState, type ViewportStore } from './stores/viewportStore';
 import { createDefPreviewStore } from './stores/defPreviewStore';
-import { type FeaModeStore } from './stores/feaModeStore';
-import { createFeaModeStoreRegistry } from './stores/feaModeStoreRegistry';
+import { createFeaModeStoreRegistry, type FeaModeStoreRegistry } from './stores/feaModeStoreRegistry';
 import { createMechanismStore } from './stores/mechanismStore';
 import { createBucklingStore, subscribeModeShapeFrames } from './stores/bucklingStore';
 import { createDefPreviewActivation } from './hooks/useDefPreviewActivation';
@@ -415,21 +414,27 @@ const SPLITTER_THICKNESS = 4;
 let toastIdCounter = 0;
 
 /**
- * Registration-only (renders nothing): scopes `__REIFY_DEBUG__.feaMode` to the
- * MultiViewport branch's lifetime.
+ * Registration-only (renders nothing): publishes App's FeaModeStore registry
+ * onto `__REIFY_DEBUG__` for the debug bridge's set_fea_channel (#5670).
  *
- * `registerDebugPanel` wraps onMount/onCleanup unconditionally, so calling it
- * from App's body would fire in BOTH branches. In single-pane mode Solid runs
- * the child's onMount (DualViewport, which registers its own component-local
- * store) before the parent's, so App's registration would land last and leave
- * ctx.feaMode pointing at a store no rendered toolbar drives — every
- * set_fea_channel would then return didNotReachStore. Rendered inside the
- * <Show> true-branch instead, this exists exactly when <MultiViewport> does and
- * releases the slot on cleanup; registerDebugPanel's identity guard makes a
- * branch flip order-independent in both directions.
+ * Rendered UNCONDITIONALLY — outside the <Show> — because there is now exactly
+ * one registry and exactly one writer. The old branch-scoping rationale (that an
+ * unconditional registration would, in single-pane mode, land after
+ * DualViewport's own registration — Solid runs child onMount before parent
+ * onMount — and leave the slot pointing at a store no rendered toolbar drives)
+ * no longer applies: DualViewport neither creates nor registers a store, it is
+ * handed the registry's 'design-main' entry, so nothing can clobber anything and
+ * the registration is correct in both branches.
+ *
+ * Two slots, mirroring the `viewports` / `viewport` precedent:
+ *  - `feaModes` — the registry's LIVE backing record, so entries the `panes`
+ *    mapper adds later are visible through the same reference.
+ *  - `feaMode`  — the legacy scalar mirror of the 'design-main' entry; the
+ *    `get` here also guarantees that entry exists in BOTH branches.
  */
-function FeaModeDebugRegistrar(props: { store: FeaModeStore }) {
-  registerDebugPanel('feaMode', props.store);
+function FeaModeDebugRegistrar(props: { registry: FeaModeStoreRegistry }) {
+  registerDebugPanel('feaModes', props.registry.stores);
+  registerDebugPanel('feaMode', props.registry.get('design-main'));
   return null;
 }
 
@@ -2130,6 +2135,8 @@ const App: Component = () => {
             </div>
             <Splitter orientation="vertical" onResize={handleLeftResize} data-testid="splitter-left" />
             <div data-testid="viewport-panel" class={styles.viewportPanel}>
+              {/* Branch-independent: one registry serves both branches (#5670). */}
+              <FeaModeDebugRegistrar registry={feaModeStores} />
               <Show
                 when={hasModelPanes()}
                 fallback={
@@ -2153,13 +2160,11 @@ const App: Component = () => {
                     displayAppearance={appearanceData().overrides}
                     feaDiagnostics={engineStore.state.feaDiagnostics}
                     feaConvergence={engineStore.state.feaConvergence}
+                    feaModeStore={feaModeStores.get('design-main')}
                   />
                 }
               >
-                <>
-                  <FeaModeDebugRegistrar store={feaModeStores.get('design-main')} />
-                  <MultiViewport panes={panes()} viewportStore={viewportStore} />
-                </>
+                <MultiViewport panes={panes()} viewportStore={viewportStore} />
               </Show>
             </div>
             <Splitter orientation="vertical" onResize={handleRightResize} data-testid="splitter-right" />

@@ -115,13 +115,23 @@ export interface ReifyDebugContext {
   /** ConstraintPanel registration: expandedNodes accessor reports the set of expanded constraint node ids. */
   constraintPanel?: { expandedNodes: Accessor<Set<string>> };
   /**
-   * FeaModeStore registration: DualViewport registers the store instance it
-   * creates (createFeaModeStore()) here via registerDebugPanel('feaMode', ...)
-   * on mount, and it is removed on unmount. Lets debug-bridge handlers (e.g.
-   * set_fea_channel) verify propagation against real store state rather than
-   * re-reading the DOM value they just wrote.
+   * LEGACY single slot, mirroring `feaModes['design-main']` — kept for
+   * backward compat with direct-stub-injection tests exactly as `viewport` is
+   * kept beside `viewports`. The debug bridge's set_fea_channel falls back to
+   * it when the driven `<select>` carries no data-viewport-id (or the keyed map
+   * has no entry for it).
    */
   feaMode?: FeaModeStore;
+  /**
+   * FeaModeStore registration, keyed by viewportId (#5670). App owns one
+   * `createFeaModeStoreRegistry()` serving BOTH render branches and registers
+   * its LIVE backing record here, so entries added later by the `panes` mapper
+   * are visible through the same reference with no re-registration. Lets
+   * debug-bridge handlers (e.g. set_fea_channel) verify propagation against the
+   * real per-pane store state rather than re-reading the DOM value they just
+   * wrote — and, with N panes mounted, against the RIGHT pane's store.
+   */
+  feaModes?: Record<string, FeaModeStore>;
 }
 
 declare global {
