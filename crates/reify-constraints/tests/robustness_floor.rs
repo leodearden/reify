@@ -22,6 +22,11 @@
 //!   - `bracketed_money_auto_resolves_at_floored_argmin`
 //!   - `bracketed_money_strict_auto_survives_uniqueness_resolve`
 //!   - `bracketed_money_multistart_cluster_ranks_a_feasible_candidate`
+//!
+//! Task #5618 step-9 sub-section (RED until step-10 impl lands) pins DIAGNOSTIC
+//! HONESTY for the shapes steps 2-8 cannot rescue:
+//!   - `margin_only_infeasibility_names_the_margin_not_an_empty_region`
+//!   - `genuinely_unsatisfiable_constraints_keep_the_region_empty_wording`
 
 use reify_constraints::DimensionalSolver;
 use reify_core::{DiagnosticCode, DimensionVector, Type, ValueCellId};
@@ -887,4 +892,152 @@ fn bracketed_money_multistart_cluster_ranks_a_feasible_candidate() {
             other
         ),
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// task #5618 step-9 — DIAGNOSTIC HONESTY (RED until step-10).
+//
+// Steps 2-8 stop the solver from *manufacturing* a floor-infeasible answer for a
+// bracketed Money auto.  They cannot rescue every shape: a bracket genuinely too
+// tight for the 2% margin is still `Infeasible`, and rightly so.  What must change
+// is what the solver SAYS about it.
+//
+// Today the `floor_applied` arm asserts, unconditionally, that "the floored
+// feasible region is empty".  For the tight-bracket shape that sentence actively
+// misleads — the user's OWN constraint box is non-empty and the returned point sits
+// inside it; only the synthesised robustness margin does not fit.  The original
+// report's sharpest complaint was exactly this.
+//
+// The two cases must stay DISTINGUISHABLE: "your constraints do not admit a
+// solution" and "your constraints do, but my margin does not" are different user
+// actions.  The `DiagnosticCode` stays `RobustnessFloorInfeasible` in both — the
+// eval-layer `RobustnessFloorApplied` suppression path keys off the code, and a new
+// code would ripple into `reify-core/src/diagnostics.rs` for no user-visible gain.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Extract the single `RobustnessFloorInfeasible` message from an `Infeasible` solve,
+/// panicking with the full diagnostic list on any other shape.
+fn floor_infeasible_message(problem: &ResolutionProblem) -> String {
+    match DimensionalSolver.solve(problem) {
+        SolveResult::Infeasible { diagnostics } => diagnostics
+            .iter()
+            .find(|d| d.code == Some(DiagnosticCode::RobustnessFloorInfeasible))
+            .unwrap_or_else(|| {
+                panic!("expected a RobustnessFloorInfeasible diagnostic, got: {diagnostics:?}")
+            })
+            .message
+            .clone(),
+        other => panic!("expected Infeasible, got {other:?}"),
+    }
+}
+
+/// MARGIN-ONLY infeasibility must NOT claim the feasible region is empty.
+///
+/// `q ∈ [99, 100]` is a 1-unit-wide, perfectly satisfiable box.  Only the synthesised
+/// margins (2% of 99 = 1.98 below, 2% of 100 = 2.0 above) invert it: q ≥ 100.98 ∧
+/// q ≤ 98.  The returned point still satisfies the user's ORIGINAL constraints, so
+/// the diagnostic must say so and name the robustness margin — not the constraints —
+/// as what could not be met.
+///
+/// WHY THIS FIXTURE and not the `x > 10mm ∧ x < 10.3mm` Length bracket that already
+/// sits in this file (`floor_infeasible_emits_distinct_diagnostic`), which reads like
+/// the more obvious choice: measured, that shape does NOT satisfy its own original
+/// constraints at the returned point.  Its objective `5 USD × (x / 1mm)` has gradient
+/// 5000 per metre against `PENALTY_WEIGHT = 1e6`, so the penalty minimiser sits
+/// ~1.25e-3 m BELOW the floored lower bound — i.e. outside the user's box — and
+/// step-10's residual check correctly refuses to claim otherwise.  Here the objective
+/// `1 USD × q` has gradient 1, the shift is ~2.5e-7, and the returned point stays
+/// inside [99, 100].
+///
+/// That gap is real but is NOT this task's headline: making the honest branch reachable
+/// for a steep objective means changing WHICH point a floor-infeasible solve reports,
+/// which is solver semantics.  Filed as a follow-up (see the step-10 note at the emit
+/// site in `solver.rs`).  Do not "simplify" this test onto the Length fixture.
+#[test]
+fn margin_only_infeasibility_names_the_margin_not_an_empty_region() {
+    let q_id = ValueCellId::new("Bracketed", "q");
+
+    let problem = bracketed_money_problem(
+        vec![real_auto_param(q_id.clone(), true)],
+        vec![
+            real_cmp(BinOp::Ge, &q_id, 99.0),
+            real_cmp(BinOp::Le, &q_id, 100.0),
+        ],
+        money_times_real(&q_id),
+    );
+
+    let message = floor_infeasible_message(&problem);
+
+    assert!(
+        !message.contains("feasible region is empty"),
+        "the user's box [99, 100] is 1 unit wide and the returned point is inside \
+         it — the diagnostic must not claim the region is empty; got: {message}"
+    );
+    assert!(
+        message.contains("original constraints"),
+        "the diagnostic must say the ORIGINAL constraints are satisfied at the returned \
+         point; got: {message}"
+    );
+    assert!(
+        message.contains("robustness margin"),
+        "the diagnostic must name the synthesised robustness margin as what cannot be \
+         met; got: {message}"
+    );
+    assert!(
+        message.contains("2%"),
+        "the diagnostic must report the REL_MARGIN (2%) the user has to relax; \
+         got: {message}"
+    );
+    assert!(
+        message.contains("cost_robustness_tradeoff"),
+        "the diagnostic must keep the cost_robustness_tradeoff override hint (PRD \
+         §2.4/§9); got: {message}"
+    );
+}
+
+/// CONTROL: constraints that are themselves unsatisfiable keep the region-empty
+/// wording, so the two situations stay distinguishable.
+///
+/// `x >= 50mm ∧ x <= 10mm` admits no point at all, with or without the margin.
+/// A Money objective still activates the floor (so this lands in the same
+/// `floor_applied` arm as the test above), but here "the region is empty" is the
+/// literal truth and must survive.
+#[test]
+fn genuinely_unsatisfiable_constraints_keep_the_region_empty_wording() {
+    let x_id = ValueCellId::new("ReallyEmpty", "x");
+
+    let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
+        auto_params: vec![length_auto_param(x_id.clone())],
+        constraints: vec![
+            (
+                constraint_id("ReallyEmpty", 0),
+                length_cmp(BinOp::Ge, &x_id, 0.050),
+            ),
+            (
+                constraint_id("ReallyEmpty", 1),
+                length_cmp(BinOp::Le, &x_id, 0.010),
+            ),
+        ],
+        current_values: ValueMap::new(),
+        objective: Some(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            money_expr_x_per_mm(&x_id),
+        )),
+        functions: vec![].into(),
+    };
+
+    let message = floor_infeasible_message(&problem);
+
+    assert!(
+        message.contains("the floored feasible region is empty"),
+        "x >= 50mm ∧ x <= 10mm is unsatisfiable on its own terms — the region-empty \
+         wording must survive so it stays distinguishable from a margin-only failure; \
+         got: {message}"
+    );
+    assert!(
+        !message.contains("original constraints ARE"),
+        "must not claim the original constraints are satisfied when they are not; \
+         got: {message}"
+    );
 }
