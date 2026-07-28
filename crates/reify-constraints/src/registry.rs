@@ -272,6 +272,25 @@ impl SolverRegistry {
                 None
             };
 
+            // Per-component `dependent_cells` (task #5720). Retain, IN STORED
+            // ORDER, only the cells whose transitively-read autos are a SUBSET
+            // of this component's own autos.  `iter().filter()` over the
+            // original slice, never a rebuild from a set or a `HashMap`
+            // iteration: the result must be a SUBSEQUENCE of the stored order,
+            // which is the topological guarantee `build_dependent_cells`
+            // produces once upstream and `fold_dependent_cells` consumes
+            // (PRD §6.3 — single authority on order).
+            let sub_dependent_cells: Vec<(ValueCellId, CompiledExpr)> = problem
+                .dependent_cells
+                .iter()
+                .filter(|(id, _)| {
+                    dependent_auto_reads
+                        .get(id)
+                        .is_some_and(|autos| autos.is_subset(&component.auto_params))
+                })
+                .cloned()
+                .collect();
+
             // β (task #5189): build from `..problem.clone()` and override only the
             // fields that genuinely differ per component.  The functional update
             // syntax is load-bearing, NOT cosmetic: `dependent_cells` must reach
@@ -281,20 +300,54 @@ impl SolverRegistry {
             // wires in `configured_eval_engine`).  Listing fields explicitly here
             // is how that field got zeroed in the first place; spreading means the
             // NEXT field added to `ResolutionProblem` cannot be silently dropped.
+            // That warning still holds for every field this literal does not name.
             //
-            // `dependent_cells` is passed wholesale rather than filtered to this
-            // component's autos: the fold is idempotent for cells whose inputs did
-            // not move (re-evaluating `line_cost` from unchanged inputs reproduces
-            // the same value), and `sub_values` already carries every cell in
-            // `problem.current_values`, so every dependent expression stays
-            // evaluable.  No auto-collision is possible — reify-eval's
-            // `build_dependent_cells` excludes autos globally, and
-            // `sub_auto_params` is a subset of `problem.auto_params`.
+            // # Why `dependent_cells` is FILTERED per component (task #5720)
+            //
+            // It used to be passed wholesale, on the rationale that `sub_values`
+            // carries every cell in `problem.current_values` so every dependent
+            // expression stays evaluable.  That is FALSE for an auto owned by
+            // ANOTHER component: such an auto is in neither `sub_auto_params` nor
+            // (necessarily) `current_values`, so the fold evaluates its `ValueRef`
+            // to `Undef`, writes `Undef` into the cell, and an objective reading
+            // that cell reports `NoProgress { reason: "objective expression
+            // evaluated to undefined at solution point" }`.
+            //
+            // The load-bearing invariants of the filter:
+            //
+            // - A component only ever folds cells whose every transitively-read
+            //   auto it OWNS.  That is what makes the cross-component `Undef`
+            //   STRUCTURALLY IMPOSSIBLE rather than merely unlikely, and it also
+            //   bounds the per-trial fold cost by the component's own cells
+            //   instead of the whole model's list.
+            // - The `obj_refs` expansion above is what makes the filter SAFE for
+            //   the objective-bearing component: it guarantees every auto the
+            //   objective transitively drives lands in ONE component, so every
+            //   cell the objective reads survives the subset test there.
+            //   `build_scoring_values` and the lexicographic ε-band anchor below
+            //   therefore still score a COMPLETE map.  Landing the filter without
+            //   the expansion would drop objective-relevant cells from an
+            //   arbitrarily-chosen component — a differently wrong answer.
+            // - Filtering is internal to `solve_inner`'s sub-problems and never
+            //   escapes the registry.  reify-eval's post-solve
+            //   `materialize_dependent_cells` (engine_eval.rs:1990, called at
+            //   :5222/:6652) still consumes the engine-level FULL list, so
+            //   cross-component cells are still written back.
+            // - When all autos are in one component every cell's read set is
+            //   trivially a subset, so the filter is the IDENTITY and every
+            //   pre-existing single-component solve stays byte-identical
+            //   (PRD §6.2 / I1).
+            // - A cell absent from `dependent_auto_reads` is dropped.  That
+            //   cannot happen for a well-formed problem — the map is built from
+            //   this very list — and dropping is the safe direction: a cell whose
+            //   auto reads are unknown is exactly one we cannot prove is
+            //   foldable here.
             let sub_problem = ResolutionProblem {
                 auto_params: sub_auto_params,
                 constraints: component.constraints.clone(),
                 current_values: sub_values,
                 objective: sub_objective,
+                dependent_cells: sub_dependent_cells,
                 ..problem.clone()
             };
 
