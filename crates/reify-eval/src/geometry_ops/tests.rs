@@ -30873,3 +30873,108 @@
         }
         assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
     }
+
+    /// Helper: flat coordinate args for `polygon(x1,y1, x2,y2, ...)`.
+    ///
+    /// `polygon` is variadic, so its args are positional cells named `c0`,
+    /// `c1`, … and `profile_polygon` re-pairs them via `chunks_exact(2)`. This
+    /// mirrors `coord_args` in
+    /// `tests/compile_geometry_op_characterization.rs:172`.
+    fn coord_args(coords: &[f64]) -> Vec<(String, reify_ir::CompiledExpr)> {
+        coords
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| (format!("c{i}"), literal_f64(v)))
+            .collect()
+    }
+
+    /// Three COLLINEAR points are arity-valid — the compiler-side guard at
+    /// `reify-compiler/src/geometry.rs:1617` only rejects an odd coordinate
+    /// count or fewer than 3 points — but enclose no area. Today such a ring
+    /// survives all the way to a late `Mesh2dError::DegenerateBoundary`; it
+    /// must be caught at build time instead.
+    #[test]
+    fn compile_geometry_op_polygon_profile_collinear_points_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Polygon,
+            coord_args(&[0.0, 0.0, 0.01, 0.0, 0.02, 0.0]),
+        );
+        assert!(
+            result.is_err(),
+            "a zero-area (collinear) polygon must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["polygon", "degenerate", "area of 0"]);
+    }
+
+    #[test]
+    fn compile_geometry_op_polygon_profile_identical_points_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Polygon,
+            coord_args(&[0.01, 0.02, 0.01, 0.02, 0.01, 0.02]),
+        );
+        assert!(
+            result.is_err(),
+            "a polygon of three identical points must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["polygon", "degenerate", "area of 0"]);
+    }
+
+    /// Fewer than 3 points is not a ring at all. Unreachable from `.ri` source
+    /// (the compiler guard rejects it first), but `profile_polygon` is also
+    /// reachable from directly-constructed IR, and the shoelace sum of a 2-point
+    /// ring is exactly 0.0 — so this falls out of the same check rather than
+    /// needing a separate arity guard.
+    #[test]
+    fn compile_geometry_op_polygon_profile_two_points_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Polygon,
+            coord_args(&[0.0, 0.0, 0.01, 0.01]),
+        );
+        assert!(
+            result.is_err(),
+            "a 2-point polygon must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["polygon", "degenerate"]);
+    }
+
+    /// POSITIVE control — a genuine triangle must still compile, with its
+    /// points untouched. These are the same coordinates the golden
+    /// characterization test uses, so this also guards against over-rejection
+    /// moving that snapshot.
+    #[test]
+    fn compile_geometry_op_polygon_profile_genuine_triangle_returns_ok() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Polygon,
+            coord_args(&[0.0, 0.0, 0.01, 0.0, 0.005, 0.01]),
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::PolygonProfile { points }) => {
+                assert_eq!(points, vec![[0.0, 0.0], [0.01, 0.0], [0.005, 0.01]]);
+            }
+            other => panic!(
+                "a non-degenerate triangle must still compile, got: {:?}",
+                other
+            ),
+        }
+        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
+    }
+
+    /// POSITIVE control — a CLOCKWISE ring has a NEGATIVE signed area and must
+    /// still compile. The check is on `abs()`, not on sign: winding order is
+    /// not this gate's business.
+    #[test]
+    fn compile_geometry_op_polygon_profile_clockwise_triangle_returns_ok() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Polygon,
+            coord_args(&[0.0, 0.0, 0.005, 0.01, 0.01, 0.0]),
+        );
+        assert!(
+            result.is_ok(),
+            "a clockwise (negative signed area) ring must still compile, got: {:?}",
+            result
+        );
+        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
+    }
