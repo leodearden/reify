@@ -160,6 +160,7 @@ test_run_all_pool_lock_host_global.sh pool
 test_run_all_tiering.sh pool
 test_run_gui_scripts.sh pool
 test_run_offline_deep.sh pool
+test_sandbox_cache_writability_seam.sh pool
 test_scope_boundary.sh pool
 test_seed_warm_base_initial.sh pool
 test_seed_warm_lane.sh pool
