@@ -391,6 +391,51 @@ mod tests {
         assert_eq!(found.as_deref(), Some(tmp));
     }
 
+    /// Printed by the child below only after it asserts, so the parent can
+    /// tell a real pass from libtest's filter matching zero tests.
+    const CHILD_ASSERTED: &str = "reify-build-utils: child asserted";
+
+    /// Covers what the seam-level test above deliberately bypasses: `find_dir`
+    /// reads the env var it is named, and `find` routes each override to the
+    /// matching `LibLoc` slot. No-op unless re-exec'd by the parent below,
+    /// which supplies both vars at spawn.
+    #[test]
+    fn find_gmsh_honours_env_overrides_child() {
+        let (Ok(include_dir), Ok(lib_dir)) =
+            (env::var("GMSH_INCLUDE_DIR"), env::var("GMSH_LIB_DIR"))
+        else {
+            return;
+        };
+
+        let found = find(NativeDep::Gmsh).expect("both overrides set, so both dirs resolve");
+        assert_eq!(found.include_dir, PathBuf::from(include_dir));
+        assert_eq!(found.lib_dir, PathBuf::from(lib_dir));
+        println!("{CHILD_ASSERTED}");
+    }
+
+    /// Re-execs this test binary with the overrides set in the child's spawn
+    /// environment; `env::set_var` in-process would race libtest's threads.
+    #[test]
+    fn find_gmsh_honours_env_overrides() {
+        let include_guard = tempdir();
+        let lib_guard = tempdir();
+
+        let exe = env::current_exe().expect("path to this test binary");
+        let out = std::process::Command::new(exe)
+            .args(["--exact", "tests::find_gmsh_honours_env_overrides_child", "--nocapture"])
+            .env("GMSH_INCLUDE_DIR", include_guard.path())
+            .env("GMSH_LIB_DIR", lib_guard.path())
+            .output()
+            .expect("re-exec this test binary");
+
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "child test failed ({}):\n{stdout}", out.status);
+        assert!(
+            stdout.contains(CHILD_ASSERTED),
+            "child never reached its assertions (filter matched no test?):\n{stdout}"
+        );
+    }
+
     /// The guard returned by `tempdir()` must remove its directory when it
     /// falls out of scope — the leak this crate shipped for ~4.7k dirs.
     #[test]
