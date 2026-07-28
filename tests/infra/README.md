@@ -104,30 +104,36 @@ property (task #5705).  It runs in two layers:
   `flock -n` probe primitive reports HELD on a held lock and FREE on a free
   one.  Sited *before* the opt-in gate, so it is never dead code.
 - **`REIFY_RUN_SEED_LANE_LOCK_SOAK=1`** — drives N real seed invocations under
-  `cpu_load_fixture.sh` contention, probing the lane lock the instant seed's own
-  parent exits, and prints one structured line:
+  `cpu_load_fixture.sh` contention (waiting for the load workers to be up and
+  demonstrably burning CPU first, so the ramp is never measured as idle),
+  probing the lane lock the instant seed's own parent exits, and prints one
+  structured line:
 
   ```
   SEED_LANE_LOCK_SOAK held=<n> iters=<N> workers=<w>
   ```
 
   `REIFY_SEED_LANE_LOCK_SOAK_ITERS` sets N (default 50); workers are
-  `min(nproc, 24)`.
+  `min(nproc, 24)`.  Measured on a 32-core host: ~0.39s per iteration once the
+  load is established, so the default is ~18s and `ITERS=200` ~78s.
 
 The assertion is `held == 0` — a **count**, never an elapsed time, so it cannot
 become one of the absolute wall-clock upper bounds the guard above rejects.
 
-Measured on a 32-core host at 24 workers, `ITERS=200`: **`held=4`** before the
-fix, **`held=0`** after.  Against a minimal reproduction of seed's tail, 200
-trials each: `9<&-` alone 16/200, `9<&-` + parent `exec 9>&-` 14/200 (closing
-your own descriptor is *not* enough — the lock lives on the open file
-description a forked child still holds a dup of), `9<&-` + parent `flock -u 9`
-0/200.
+The mechanism, the argument for `flock -u` over `exec 9>&-`, and the measured
+rates are **deliberately not repeated here**: they live in exactly one place,
+the `LANE-LOCK RELEASE CONTRACT` block at the flock acquire in
+`scripts/seed-warm-lane.sh`.  Re-measuring is the whole point of this harness,
+and a copy in this file would be one more site to update in lockstep.
 
 The permanent regression guards are hermetic and live in
-`test_seed_warm_lane.sh` (H4b/H4e/H7b); this soak is the instrument for
-re-measuring the rate if the property ever resurfaces, which is why it is
-default-skipping and classified `host-exclusive`.
+`test_seed_warm_lane.sh` — `H4b`/`H4e` (structural release marker) and `H7b`
+(an inherited FD 9 is never unlocked), plus **`H4c`**, which forks a live
+holder of a dup of seed's lane-lock FD and asserts the lock reads back free
+anyway; that last one is the only guard that fails if the release runs but has
+no effect.  This soak is the instrument for re-measuring the rate if the
+property ever resurfaces, which is why it is default-skipping and classified
+`host-exclusive`.
 
 ## Files
 
