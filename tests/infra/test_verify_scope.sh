@@ -11,6 +11,8 @@
 #
 # Assertions encode the scope contract:
 #   docs/md/yaml only      -> nothing heavy (RUN_RUST=0 RUN_GUI=0)
+#   prd-gate .ri fixture   -> nothing heavy, UNLESS the basename is in
+#                             verify.sh's _RUST_COUPLED_RI_FIXTURES (task 5536)
 #   gui/src (frontend TS)  -> GUI only, no cargo (RUN_RUST=0 RUN_GUI=1)
 #   non-OCCT crate         -> Rust+GUI, NO gated pass (RUN_OCCT_GATE=0)
 #   OCCT-touching crate    -> gated + ungated (RUN_OCCT_GATE=1)
