@@ -19,3 +19,5 @@
 
 #[path = "harness_doc_chunks/geometry_chunk_smoke.rs"]
 mod geometry_chunk_smoke;
+#[path = "harness_doc_chunks/stdlib_chunk_geometry_ops_smoke.rs"]
+mod stdlib_chunk_geometry_ops_smoke;
