@@ -30734,3 +30734,142 @@
         }
         assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
     }
+
+    /// Helper: an ellipse arg list with the given semi-axes.
+    fn ellipse_args(
+        semi_major: reify_ir::CompiledExpr,
+        semi_minor: reify_ir::CompiledExpr,
+    ) -> Vec<(String, reify_ir::CompiledExpr)> {
+        vec![
+            ("semi_major".into(), semi_major),
+            ("semi_minor".into(), semi_minor),
+        ]
+    }
+
+    #[test]
+    fn compile_geometry_op_ellipse_profile_negative_semi_major_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Ellipse,
+            ellipse_args(literal_f64(-0.02), literal_f64(0.01)),
+        );
+        assert!(
+            result.is_err(),
+            "a negative semi_major must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["ellipse", "semi_major=-0.02"]);
+    }
+
+    #[test]
+    fn compile_geometry_op_ellipse_profile_zero_semi_major_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Ellipse,
+            ellipse_args(literal_f64(0.0), literal_f64(0.01)),
+        );
+        assert!(
+            result.is_err(),
+            "a zero semi_major must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["ellipse", "semi_major=0"]);
+    }
+
+    #[test]
+    fn compile_geometry_op_ellipse_profile_negative_semi_minor_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Ellipse,
+            ellipse_args(literal_f64(0.02), literal_f64(-0.01)),
+        );
+        assert!(
+            result.is_err(),
+            "a negative semi_minor must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["ellipse", "semi_minor=-0.01"]);
+    }
+
+    #[test]
+    fn compile_geometry_op_ellipse_profile_zero_semi_minor_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Ellipse,
+            ellipse_args(literal_f64(0.02), literal_f64(0.0)),
+        );
+        assert!(
+            result.is_err(),
+            "a zero semi_minor must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["ellipse", "semi_minor=0"]);
+    }
+
+    /// Both semi-axes bad → still exactly ONE Warning, naming `semi_major`.
+    ///
+    /// This is the anti-cascade contract (geometry_ops.rs:160) and it is what
+    /// forces the semi-axes to be read via sequential `let` statements in
+    /// `semi_major`-then-`semi_minor` order rather than as struct-literal
+    /// fields: the first failure must short-circuit.
+    #[test]
+    fn compile_geometry_op_ellipse_profile_both_semi_axes_negative_warns_once() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Ellipse,
+            ellipse_args(literal_f64(-0.02), literal_f64(-0.01)),
+        );
+        assert!(result.is_err(), "got: {:?}", result);
+        assert_exactly_one_warning(&diagnostics, &["ellipse", "semi_major=-0.02"]);
+        assert!(
+            !diagnostics[0].message.contains("semi_minor"),
+            "the second bad semi-axis must not also be reported (no cascade), got: {:?}",
+            diagnostics[0].message
+        );
+    }
+
+    /// CONSTRAINT test — see `..._rectangle_profile_undef_width_still_returns_ok`.
+    #[test]
+    fn compile_geometry_op_ellipse_profile_undef_semi_major_still_returns_ok() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Ellipse,
+            ellipse_args(unresolved_ref("semi_major"), literal_f64(0.01)),
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::EllipseProfile {
+                semi_major,
+                semi_minor,
+            }) => {
+                assert_eq!(
+                    semi_major,
+                    reify_ir::Value::Undef,
+                    "an unresolved semi_major must reach the IR as Undef, untouched"
+                );
+                assert_eq!(semi_minor, reify_ir::Value::Real(0.01));
+            }
+            other => panic!(
+                "an unresolved semi_major must degrade quietly to Ok(EllipseProfile), got: {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "an unresolved dimension must be quiet — no diagnostic, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// POSITIVE control — a well-formed ellipse is untouched.
+    #[test]
+    fn compile_geometry_op_ellipse_profile_positive_semi_axes_unchanged() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Ellipse,
+            ellipse_args(literal_f64(0.02), literal_f64(0.01)),
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::EllipseProfile {
+                semi_major,
+                semi_minor,
+            }) => {
+                assert_eq!(semi_major, reify_ir::Value::Real(0.02));
+                assert_eq!(semi_minor, reify_ir::Value::Real(0.01));
+            }
+            other => panic!("expected Ok(EllipseProfile), got: {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
+    }
