@@ -21,15 +21,22 @@
 # per-acquire ε reclaim, because the live-reference /proc scan is too costly for
 # the hot path. See _reap_stale_trash below.
 #
-# Live-consumer lane guard (task 5378): on every run this sweep also scans each
-# pool-lane DIR under $MOUNT for a live process reference (cwd / open fd / mmap
-# at or under the lane) and passes any live lane's basename to gc.sh via
-# --extra-protect-glob, so gc.sh's Pass-1 always-reclaim reset skips a lane whose
-# consumer's cargo verify build is mid-flight while its ACQUIRE flock is already
-# free — the reclaim-side liveness gap of esc-5375-1. Reuses the reaper's batch
-# /proc scanner (live_referenced_paths); lives in this periodic δ backstop, not
-# gc.sh's per-acquire ε hot path, for the same cost reason. Fail-open (an empty
-# or failed scan leaves reclaim unchanged). See _live_consumer_protect_csv below.
+# Live-consumer lane guard (task 5378 → MOVED INTO warm-lane-gc.sh by task 5572):
+# this sweep no longer computes a live-lane CSV and no longer passes
+# --extra-protect-glob. The guard now lives in the PRIMITIVE, checked per lane
+# (and per orphan) immediately before that entry's reset/remove.
+#
+# Two reasons, both load-bearing:
+#   1. Two entry points, one operation. This δ wrapper was only ONE caller of
+#      gc.sh; dark-factory's ε reclaim (git_ops.py _run_warm_lane_gc_reclaim)
+#      invokes `warm-lane-gc.sh reclaim --mount <base>` and has never passed
+#      --extra-protect-glob. A wrapper-side guard could therefore never cover the
+#      hot per-acquire path — which is precisely where esc-5375-1 bites. In the
+#      primitive, every caller inherits it with no dark-factory change.
+#   2. The up-front CSV was itself a TOCTOU. It was computed ONCE and then
+#      consumed across a 25-40 minute lane-by-lane traversal, so a lane that went
+#      live mid-pass was unprotected. Checking per lane, immediately before that
+#      lane's reset and under the flock gc.sh already holds, closes the window.
 # The complementary long-term fix — the verify CONSUMER holding ${LANE_DIR}.lock
 # across its whole run — is dark-factory wiring (cross-repo seam), filed separately.
 #
@@ -219,75 +226,6 @@ _reap_stale_trash() {
     return 0
 }
 
-# ── live-consumer lane guard (task 5378) ──────────────────────────────────────
-# _live_consumer_protect_csv MOUNT — print a comma-separated list of pool-lane
-# BASENAMES under MOUNT whose lane DIRECTORY is currently referenced by a live
-# process (cwd / open fd / mmap at or under the lane dir), i.e. a lane with an
-# active build. Empty output when none (or on any failure).
-#
-# Closes the reclaim-side liveness gap (esc-5375-1): the one-consumer flock
-# (inv.2) is held only across the ACQUIRE reseed, NOT across the consumer's long
-# cargo verify build, so during that build the flock is FREE and gc.sh's Pass-1
-# always-reclaim reset would wipe <lane>/target out from under the live build.
-# The sweep feeds these basenames to gc.sh via --extra-protect-glob so a live
-# lane is skipped ENTIRELY. Bias toward OVER-preserving: a genuinely FREE lane
-# has no referencing process, and a lingering reference is reclaimed on a later
-# sweep once it clears (exactly the trash reaper's second-sweep behavior);
-# under-preserving corrupts a live build.
-#
-# Reuses the reseed-trash reaper's batch scanner (live_referenced_paths): the
-# lane dir realpaths are scanned in ONE /proc walk, and its descendant matching
-# already catches a build fd into <lane>/target/... AND a cwd at the lane root.
-# Lives in this periodic δ backstop, NOT gc.sh's per-acquire ε hot path, because
-# the O(processes × fds) /proc scan is too costly for the hot path.
-#
-# Fully fail-open under set -euo pipefail: enumeration/realpath failures are
-# skipped per-entry and the scan is `|| true`-guarded, so the worst case is an
-# empty CSV (no protection) — never an aborted sweep.
-_live_consumer_protect_csv() {
-    local mount="$1"
-    [ -d "$mount" ] || return 0
-
-    # Enumerate immediate lane dirs with the SAME */ glob gc.sh uses (skips
-    # dotfiles like .reseed-trash; the [ -d ] guard handles glob-nomatch).
-    local dir rp base
-    local -a rps=()
-    local -A rp_to_base=()
-    for dir in "$mount"/*/; do
-        dir="${dir%/}"
-        [ -d "$dir" ] || continue         # glob-nomatch guard (empty mount)
-        rp="$(readlink -f "$dir" 2>/dev/null)" || rp=""
-        [ -n "$rp" ] || continue          # unresolvable → cannot match refs; skip
-        base="${dir##*/}"
-        rps+=("$rp")
-        rp_to_base["$rp"]="$base"
-    done
-    [ "${#rps[@]}" -gt 0 ] || return 0
-
-    # Single batch /proc scan for the WHOLE lane set (one /proc walk, one maps
-    # grep — not one per lane), mirroring _reap_stale_trash.
-    local referenced_raw hitrp
-    referenced_raw="$(live_referenced_paths "${rps[@]}")" || referenced_raw=""
-    [ -n "$referenced_raw" ] || return 0
-
-    # Map referenced realpaths back to basenames; emit a comma-separated list.
-    # live_referenced_paths can emit a realpath twice (once from the cwd/fd
-    # pass, once from the maps grep), so dedup by basename.
-    local csv="" b
-    local -A emitted=()
-    while IFS= read -r hitrp; do
-        [ -n "$hitrp" ] || continue
-        b="${rp_to_base["$hitrp"]:-}"
-        [ -n "$b" ] || continue                 # referenced path not a lane dir → skip
-        [ -n "${emitted["$b"]:-}" ] && continue # already emitted this basename
-        emitted["$b"]=1
-        if [ -n "$csv" ]; then csv="${csv},${b}"; else csv="$b"; fi
-    done <<< "$referenced_raw"
-
-    [ -n "$csv" ] && printf '%s\n' "$csv"
-    return 0
-}
-
 # ── defaults ───────────────────────────────────────────────────────────────────
 MOUNT="${REIFY_WARM_LANE_GC_SWEEP_MOUNT:-/home/leo/src/warm-lanes/worktrees}"
 GC_SCRIPT="${REIFY_WARM_LANE_GC_SWEEP_GC_SCRIPT:-$SCRIPT_DIR/warm-lane-gc.sh}"
@@ -371,21 +309,6 @@ if [ -n "$df_out" ]; then
     fi
 fi
 
-# ── live-consumer lane guard (task 5378): protect lanes with an active build ──
-# Scan pool-lane dirs for a live cwd/fd/mmap reference (a lane whose consumer's
-# verify build is mid-flight while its ACQUIRE flock is already free) and pass
-# their basenames to gc.sh via --extra-protect-glob so gc.sh's Pass-1
-# always-reclaim reset skips them ENTIRELY. --extra-protect-glob ADDS to (never
-# replaces) gc.sh's default protect set, so the sweep need not restate it.
-# Appended AFTER the df/--disk-pressure logic, so it applies in BOTH the plain
-# and the --disk-pressure reclaim invocations. Fail-open: an empty CSV appends
-# nothing, so a scan that finds nothing (or fails) leaves reclaim unchanged.
-protect_csv="$(_live_consumer_protect_csv "$MOUNT")" || protect_csv=""
-if [ -n "$protect_csv" ]; then
-    _info "live-consumer lane guard: protecting lanes with an active build: $protect_csv"
-    args+=(--extra-protect-glob "$protect_csv")
-fi
-
-# ── invoke gc.sh reclaim --mount <MOUNT> [--disk-pressure] [--extra-protect-glob CSV] ──
+# ── invoke gc.sh reclaim --mount <MOUNT> [--disk-pressure] ────────────────────
 _info "running: $GC_SCRIPT ${args[*]}"
 exec "$GC_SCRIPT" "${args[@]}"

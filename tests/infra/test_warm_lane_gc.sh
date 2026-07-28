@@ -1574,7 +1574,8 @@ _BGPIDS=()  # clear so EXIT cleanup does not re-kill a possibly-reused PID
 # reference (task 5572)
 # ──────────────────────────────────────────────────────────────────────────────
 # This is not a bonus case; it closes a coverage hole the wrapper-CSV deletion
-# would otherwise open. warm-lane-gc-sweep.sh's _live_consumer_protect_csv
+# would otherwise open. warm-lane-gc-sweep.sh's _live_consumer_protect_csv (now
+# deleted by task 5572 — named here as history, not as a live symbol)
 # enumerated EVERY immediate subdir under the mount with a bare */ glob — it did
 # NOT filter by lane-glob — and --extra-protect-glob skips a match ENTIRELY, in
 # Pass 2 as well as Pass 1. So the wrapper's CSV was, incidentally, also

@@ -75,8 +75,11 @@
 #                          lockstep-duplication hit). Matched entries are
 #                          skipped entirely (Pass 1 reset AND Pass 2 remove) and
 #                          counted as preserved, exactly like --protect-glob.
-#                          warm-lane-gc-sweep.sh uses it to protect lanes it
-#                          discovers hold a live build (task 5378). Default:
+#                          An EXPLICIT-PIN escape hatch: the caller names the
+#                          entries. It is NOT the liveness guard — a live
+#                          process reference is detected by the script itself,
+#                          per entry, in both passes (task 5572), so no caller
+#                          needs to compute or pass one. Default:
 #                          REIFY_WARM_LANE_GC_EXTRA_PROTECT_GLOB (any non-empty
 #                          value = on). Off by default.
 #   --seed-script PATH     Path to the α seed primitive (default: sibling seed-warm-lane.sh).
@@ -350,9 +353,10 @@ fi
 # Extra additive protect glob (task 5378): --extra-protect-glob /
 # REIFY_WARM_LANE_GC_EXTRA_PROTECT_GLOB ADDS to (never replaces) the effective
 # protect set — comma-joined onto whatever PROTECT_GLOB resolved to above
-# (its default OR an explicit --protect-glob). This lets a caller (e.g.
-# warm-lane-gc-sweep.sh's live-consumer lane guard) protect specific entries
-# WITHOUT restating the default list (avoiding a G7 lockstep-duplication hit).
+# (its default OR an explicit --protect-glob). This lets a caller EXPLICITLY PIN
+# entries it names itself, WITHOUT restating the default list (avoiding a G7
+# lockstep-duplication hit). It is not the liveness guard: a live process
+# reference is detected per entry by this script, in both passes (task 5572).
 # It flows through the SAME _matches_glob path in the enumeration loop, so a
 # matched entry is skipped ENTIRELY in Pass 1 (reset) and Pass 2 (remove) and
 # counted as preserved. PROTECT_GLOB is always non-empty here (defaulted just
