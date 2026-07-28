@@ -198,6 +198,23 @@ auto wrap_occt_call(const char* name, F&& fn) -> decltype(fn()) {
     }
 }
 
+/// Canonical display name for a `TopAbs_ShapeEnum` ("Solid", "Face", …, or
+/// "Shape" for the abstract fallback). Single source for both the
+/// `shape_type_name` FFI entry point and error messages built in this file.
+static const char* topabs_name(TopAbs_ShapeEnum type) {
+    switch (type) {
+        case TopAbs_COMPOUND:  return "Compound";
+        case TopAbs_COMPSOLID: return "CompSolid";
+        case TopAbs_SOLID:     return "Solid";
+        case TopAbs_SHELL:     return "Shell";
+        case TopAbs_FACE:      return "Face";
+        case TopAbs_WIRE:      return "Wire";
+        case TopAbs_EDGE:      return "Edge";
+        case TopAbs_VERTEX:    return "Vertex";
+        default:               return "Shape";
+    }
+}
+
 /// Reduce a swept-section profile to the shape `BRepFill_Section` accepts.
 ///
 /// `BRepOffsetAPI_MakePipeShell::Add` funnels every section through
@@ -215,10 +232,15 @@ static TopoDS_Shape section_profile_to_wire(const TopoDS_Shape& profile) {
         case TopAbs_VERTEX:
             return profile;
         default:
-            // Passthrough for now — the unsupported-type rejection lands with
-            // its own test in this task's later step. Forwarding unchanged
-            // preserves OCCT's existing error for these types.
-            return profile;
+            // Reject with a diagnostic that names the offending type, rather
+            // than letting OCCT's opaque "bad shape type of section" surface.
+            // wrap_occt_call prefixes the calling op's name, so it is
+            // deliberately omitted here to avoid duplicating it.
+            throw std::runtime_error(
+                std::string("unsupported profile shape type '")
+                + topabs_name(profile.ShapeType())
+                + "'; section profile must be a Wire, a Vertex, or a Face "
+                  "(reduced to its outer wire)");
     }
 }
 
@@ -615,17 +637,8 @@ std::unique_ptr<OcctShape> fuse_all(const OcctShapeVec& shapes) {
 // the sole input shape unchanged, which may be any kind (task 5213 amendment).
 rust::String shape_type_name(const OcctShape& shape) {
     return wrap_occt_call("shape_type_name", [&]() -> rust::String {
-        switch (shape.shape.ShapeType()) {
-            case TopAbs_COMPOUND:  return rust::String("Compound");
-            case TopAbs_COMPSOLID: return rust::String("CompSolid");
-            case TopAbs_SOLID:     return rust::String("Solid");
-            case TopAbs_SHELL:     return rust::String("Shell");
-            case TopAbs_FACE:      return rust::String("Face");
-            case TopAbs_WIRE:      return rust::String("Wire");
-            case TopAbs_EDGE:      return rust::String("Edge");
-            case TopAbs_VERTEX:    return rust::String("Vertex");
-            default:               return rust::String("Shape");
-        }
+        // Delegates to topabs_name so the enum -> name table exists once.
+        return rust::String(topabs_name(shape.shape.ShapeType()));
     });
 }
 
