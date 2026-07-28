@@ -39,6 +39,7 @@ import { createViewStateStore, type ViewStateStore } from './stores/viewStateSto
 import { createLayoutStore } from './stores/layoutStore';
 import { createViewportStore, type CameraState, type ViewportState, type ViewportStore } from './stores/viewportStore';
 import { createDefPreviewStore } from './stores/defPreviewStore';
+import { createFeaModeStore, type FeaModeStore } from './stores/feaModeStore';
 import { createMechanismStore } from './stores/mechanismStore';
 import { createBucklingStore, subscribeModeShapeFrames } from './stores/bucklingStore';
 import { createDefPreviewActivation } from './hooks/useDefPreviewActivation';
@@ -458,6 +459,14 @@ const App: Component = () => {
   const defPreviewStore = createDefPreviewStore();
   const mechanismStore = createMechanismStore({ getMechanismDescriptors: bridgeGetMechanismDescriptors });
   const bucklingStore = createBucklingStore();
+  // FEA-mode store for the MultiViewport (multi-pane) branch only, threaded to
+  // pane 0 via the `panes` mapArray below. The DualViewport (single-pane) branch
+  // keeps its own component-local store (DualViewport.tsx) so its landed contract
+  // — including the `__REIFY_DEBUG__.feaMode` registration — is untouched. The two
+  // branches are mutually exclusive at runtime, so two stores never coexist as
+  // rendered state; the cost is that flipping a file between single- and
+  // multi-pane layouts resets FEA-mode state.
+  const paneFeaModeStore = createFeaModeStore();
 
   // Track the currently-open file path so the debounced save effect can key off it.
   const [currentFilePath, setCurrentFilePath] = createSignal<string | null>(null);
@@ -814,10 +823,17 @@ const App: Component = () => {
         // design-main only: tensegrity overlay + fit/fly registration callbacks.
         get tensegrityWires() { return pane === 0 ? engineStore.state.tensegrityWires : undefined; },
         get tensegritySurfaces() { return pane === 0 ? engineStore.state.tensegritySurfaces : undefined; },
-        // feaDiagnostics is NOT threaded to MultiViewport panes.  Wiring it requires
-        // adding feaDiagnostics to PanePassthroughProps in MultiViewport.tsx, which is
-        // outside this task's scope.  The overlay is visible on DualViewport (single-pane
-        // mode) only.  Multi-pane overlay support is a follow-up to this task.
+        // design-main only: FEA toolbar + contour/warp colorization + diagnostic overlay.
+        // Restricted to pane 0 because <Viewport> renders its own <FeaModeToolbar>
+        // overlay whenever feaModeStore is present: handing the same store to N panes
+        // would render N toolbars all driving one state, and the debug bridge resolves
+        // the toolbar by a document-wide querySelectorAll on
+        // [data-testid="fea-mode-channel-select"], hard-failing with selectAmbiguous on
+        // more than one match. Per-pane FEA (a toolbar and a ctx.feaMode registration
+        // keyed by viewportId) is tracked as #4981.
+        get feaModeStore() { return pane === 0 ? paneFeaModeStore : undefined; },
+        get feaDiagnostics() { return pane === 0 ? engineStore.state.feaDiagnostics : undefined; },
+        get feaConvergence() { return pane === 0 ? engineStore.state.feaConvergence : undefined; },
         fitToViewRef: pane === 0 ? (fn: () => void) => { fitToViewFn = fn; } : undefined,
         flyToEntityRef: pane === 0 ? (fn: (path: string) => void) => { flyToEntityFn = fn; } : undefined,
         get displayAppearance() { return appearanceData().overrides; },
