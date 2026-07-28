@@ -800,26 +800,22 @@ fn get_or_undef_map_returns_undef() {
 /// End-to-end: `get_or(map{"k" => 1mm}, "absent", 0mm)` compiled with the
 /// stdlib must evaluate to 0mm (absent key recovers to default).
 ///
-/// COINCIDENCE-LIMITED under the prelude-backed harness — the single canonical
-/// statement, superseding both the original "coincidentally correct" note and
-/// #5410's retraction of it. Each was right about a different harness:
-///   - the original note said the expected 0mm coincides with
-///     `option_recovery.ri`'s `{ dflt }` placeholder, so intercept removal
-///     could not make the test fail. TRUE of a table where that body is
-///     registered — i.e. this one.
-///   - #5410 called that premise WRONG. TRUE of #5410's user-source-only
-///     harness, where the body was absent and the test failed with `Undef`.
-///
 /// MEASURED under intercept removal (task 5593): this test PASSES — the only
-/// one of the 17 guards that does. `{ dflt }` yields exactly the expected 0mm,
-/// so it carries NO value-discriminating signal here.
+/// one of the 17 guards that does. COINCIDENCE-LIMITED; see the mechanism note
+/// above `e2e_or_default_some_with_stdlib` for why, and for what preserves
+/// `get_or` coverage regardless.
 ///
-/// `get_or` coverage is preserved by `e2e_get_or_present_key_with_stdlib`,
-/// which expects 1mm against the same placeholder's 0mm and does fail. This
-/// guard is kept because it still pins that the compiler-emitted
+/// HISTORY, unique to this guard and kept here so the correction is not
+/// re-litigated a fourth time. The original note called the expected 0mm
+/// "coincidentally correct" because it agrees with `option_recovery.ri`'s
+/// `{ dflt }`; #5410 called that premise WRONG. Both were right, about
+/// different harnesses — #5410's was user-source-only, so the body was absent
+/// and this test failed with `Undef`; under the prelude-backed harness the body
+/// is registered and the original note holds again.
+///
+/// The guard is kept because it still pins that the compiler-emitted
 /// `UserFunctionCall` name+arity reaches the intercept at all (PRD ζ / BT10);
 /// it is simply not the guard that proves the intercept BEATS the placeholder.
-/// See the mechanism note above `e2e_or_default_some_with_stdlib`.
 #[test]
 fn e2e_get_or_absent_key_with_stdlib() {
     let module = reify_test_support::compile_source_with_stdlib(
@@ -845,10 +841,9 @@ fn e2e_get_or_absent_key_with_stdlib() {
 /// THIS IS THE DISCRIMINATING `get_or` GUARD. MEASURED under intercept removal
 /// (task 5593): fails with `left: 0mm` — `option_recovery.ri`'s `{ dflt }`
 /// placeholder — against the expected 1mm. Its sibling
-/// `e2e_get_or_absent_key_with_stdlib` expects 0mm, which the placeholder also
-/// yields, so that one PASSES and proves nothing about the placeholder; see its
-/// doc comment for the full history. Between the two, `get_or` coverage of the
-/// silent-wrong-value mode rests entirely here.
+/// `e2e_get_or_absent_key_with_stdlib` is coincidence-limited and PASSES, so
+/// `get_or` coverage of the silent-wrong-value mode rests entirely here. See
+/// the mechanism note above `e2e_or_default_some_with_stdlib`.
 ///
 /// Beyond drift, this case also pins the map-lookup RESULT (1mm), which the
 /// absent-key case cannot. See the mechanism note above
@@ -893,16 +888,12 @@ fn e2e_get_or_present_key_with_stdlib() {
 /// removal.
 ///
 /// THE `v` ASSERTION CANNOT DISCRIMINATE, even under the prelude-backed table,
-/// and `w` is therefore load-bearing rather than decorative. `v`'s subject is
-/// `undef`, and the any-arg-undef short-circuit at reify-expr/src/lib.rs:1610
-/// returns `Value::Undef` BEFORE `find_matching_compiled_function` is ever
-/// consulted. The placeholder body is never reached, so `v` observes `Undef`
-/// whether or not the intercept fired — which is also the correct INV-2 answer.
-/// `w` is the only half of this test that can go RED.
+/// which is what makes `w` load-bearing rather than decorative: `w` is the only
+/// half of this test that can go RED. See the mechanism note above
+/// `e2e_or_default_some_with_stdlib` for the short-circuit that limits `v`.
 ///
 /// The absent-KEY path's own drift coverage lives in
-/// `e2e_get_or_absent_key_with_stdlib` (above) — but note that guard is
-/// coincidence-limited and PASSES under intercept removal; see its doc.
+/// `e2e_get_or_absent_key_with_stdlib` (above).
 ///
 /// The propagation property is worth pinning at a compiled call site even
 /// though `get_or_undef_map_returns_undef` covers it under

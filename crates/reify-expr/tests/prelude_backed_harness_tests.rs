@@ -601,14 +601,20 @@ fn census_fixture_sources_match_the_guards() {
             continue;
         };
 
-        // Window = the guard's own body: from its `fn` item to the next `#[test]`
-        // (or EOF), so a fixture belonging to a NEIGHBOURING test cannot satisfy
-        // this row.
+        // Window = the guard's own body and nothing else, so a fixture belonging
+        // to a NEIGHBOURING test (or to that test's doc comment) cannot satisfy
+        // this row. Bounded by whichever comes first: the fn item's closing brace
+        // at column 0, or the next `#[test]`.
         let start = src.find(&needle).expect("contains() just succeeded");
-        let end = src[start..]
-            .find("\n#[test]")
-            .map(|off| start + off)
-            .unwrap_or(src.len());
+        let tail = &src[start..];
+        let end = [
+            tail.find("\n}\n").map(|off| start + off + 3),
+            tail.find("\n#[test]").map(|off| start + off),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(src.len());
         let body = &src[start..end];
 
         if !body.contains(row.source) {
