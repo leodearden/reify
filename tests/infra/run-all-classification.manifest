@@ -81,6 +81,7 @@ test_copy_list_preflight.sh pool
 test_cpu_admit.sh pool
 test_cpu_governance_config.sh pool
 test_cpu_governed_exec.sh pool
+test_deterministic_gate_closure_staleness_sweep.sh pool
 test_engine_hash_closure.sh pool
 test_ensure_gui_sidecar_placeholder.sh pool
 test_ensure_warm_base.sh pool
