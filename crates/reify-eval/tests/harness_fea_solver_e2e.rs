@@ -71,8 +71,6 @@ mod multi_load_case_typed_envelope;
 mod objective_inherit_ambiguous;
 #[path = "harness_fea_solver_e2e/objective_inheritance.rs"]
 mod objective_inheritance;
-#[path = "harness_fea_solver_e2e/objective_inheritance_e2e.rs"]
-mod objective_inheritance_e2e;
 #[path = "harness_fea_solver_e2e/objective_provenance.rs"]
 mod objective_provenance;
 #[path = "harness_fea_solver_e2e/objective_set_signal.rs"]
