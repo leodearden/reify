@@ -1477,9 +1477,8 @@ fn solve_core_with_sd_tolerance(
     // nonlinear/multi-auto replacement fixture.  The second failure is
     // `ConstraintNonUnique` via the flat-objective / compare-parameter-values mechanism
     // documented on `verify_uniqueness` — so the unconditional form is blocked on the
-    // SAME out-of-scope uniqueness-contract decision already deferred by esc-5618-3.
-    // Revisit both together if that contract is ever changed to compare objective
-    // values; neither is actionable in isolation.
+    // SAME uniqueness-contract decision, now owned by task #5711.  Revisit both
+    // together; neither is actionable in isolation.
     let bounds = if floor_applied {
         resolve_bounds(
             &problem.auto_params,
@@ -2088,25 +2087,43 @@ fn build_perturbation_anchors(
 ///
 /// [`build_perturbation_anchors`]' box is caller-supplied as of task #5618, and
 /// [`multistart_points`] does hand it the constraint-derived box. This caller
-/// deliberately does NOT, pending esc-5618-3.
+/// deliberately does NOT. Deferred to task **#5711**, which owns the decision.
 ///
-/// MEASURED: swapping this one expression for the derived seed box flips **six**
-/// previously-`Solved` fixtures to `Infeasible`/`ConstraintNonUnique` (5 in
-/// `tests/solver_integration.rs` — every `warm_start_*` fallback case and
-/// `multi_param_warm_start_with_objective` — plus
-/// `tests::defined_objective_at_fallback_returns_solved`). The mechanism is not a
-/// bug in the derivation: today's anchor `lo + 0.9·(hi − lo)` on the *unconstrained*
-/// box lands OUTSIDE the feasible region, the re-solve fails, and the `_ =>` arm
-/// below conservatively returns `true`. A feasible anchor makes the re-solve
-/// succeed — and it lands on a different, equally-optimal point, because these
-/// fixtures' objectives are genuinely flat over their feasible regions (probed:
-/// box `(0.001, 0.02)`, anchor `0.0029`, re-solve lands at `0.0029`, incumbent
-/// `0.015`; the objective is the constant `1e8` across all of it).
+/// MEASURED (task #5618, HEAD 6f5cadd7cc): swapping this one expression for the
+/// derived seed box flips **six** previously-`Solved` fixtures to
+/// `Infeasible`/`ConstraintNonUnique` (5 in `tests/solver_integration.rs` — every
+/// `warm_start_*` fallback case and `multi_param_warm_start_with_objective` — plus
+/// `tests::defined_objective_at_fallback_returns_solved`). The trigger is not a bug
+/// in the derivation: today's anchor `lo + 0.9·(hi − lo)` on the *unconstrained* box
+/// lands OUTSIDE the feasible region, the re-solve fails, and the `_ =>` arm below
+/// conservatively returns `true`. So this check is near-inert for precisely the
+/// inequality-bracketed models it was written for — a latent false-negative, and the
+/// reason #5711 exists.
 ///
-/// So a feasible anchor turns this check from near-inert into active, and the
-/// resulting `ConstraintNonUnique` reports are arguably CORRECT. Whether the
-/// uniqueness contract should compare objective values rather than parameter
-/// values is a solver-semantics decision outside task #5618's scope.
+/// The six flips are NOT one mechanism, and "the new reports are simply correct" is
+/// NOT established — only ONE fixture was probed:
+/// - `defined_objective_at_fallback_returns_solved` IS flat (objective is the
+///   constant `1e8` across the whole feasible region; box `(0.001, 0.02)`, anchor
+///   `0.0029`, re-solve lands at `0.0029`, incumbent `0.015`). Reporting
+///   non-uniqueness there is arguably honest.
+/// - `warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible` is NOT:
+///   objective `minimize(x)` under `x > 5mm AND x < 6mm`. Its incumbent (5.5mm) is
+///   the DRIFT-FALLBACK initial point, not the argmin, so a feasible anchor lets the
+///   re-solve find a *better* point — and comparing PARAMETER values reads that as
+///   non-uniqueness when it is really evidence the incumbent is SUBOPTIMAL.
+///
+/// Conflating "the solver gave up and returned the seed" with "the problem is
+/// underdetermined" would be a false report, so re-derive the mechanism per fixture
+/// before changing this. Do NOT assume `free: false` is incidental in the
+/// `warm_start_*` fixtures: `solver_integration.rs` sets `free: true` with an
+/// explicit "not testing uniqueness" comment at 8+ sites where uniqueness is
+/// deliberately not the point, and has dedicated uniqueness tests where `free: false`
+/// is load-bearing — so `free: false` there reads as considered, not defaulted.
+///
+/// #5711 also owns the unconditional-clamp question from the `floor_applied` gate in
+/// [`solve_core_with_sd_tolerance`]: that form fails
+/// `tests::defined_objective_at_fallback_returns_solved` by this SAME mechanism, so
+/// the two are one decision. Do not revisit either alone.
 fn verify_uniqueness(
     problem: &ResolutionProblem,
     solved_values: &HashMap<ValueCellId, Value>,
