@@ -17574,3 +17574,86 @@ fn rigid_mass_props_stay_determined_after_warm_edit() {
     );
 }
 
+// ── Task 5074 step-1: from_engine must delegate to the canonical A1
+// production-compute-fns bundler (PRD docs/prds/compute-fea-hardening.md
+// task A3), not hand-roll register_compute_fns + register_shell_extract_compute_fns.
+//
+// TEST A is a runtime no-regression pin only (both pre-existing bundle halves
+// still dispatch); it does not attempt to distinguish "delegates to
+// register_production_compute_fns" from "still hand-rolled; only mesh-morph
+// missing", since both implementations satisfy it identically. Proving actual
+// delegation is PRD task A5's static drift guard (tracked as task 5076), not
+// this test's job.
+#[test]
+fn engine_session_registers_fea_and_shell_extract_dispatch() {
+    let session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    let engine = session.engine();
+
+    // Runs in both feature configurations; TEST B (gui_feature_tests, below)
+    // does not repeat these pins.
+    assert!(
+        engine.compute_dispatch("solver::elastic_static").is_some(),
+        "EngineSession must register the FEA trampoline dispatch target \
+         (solver::elastic_static) — PRD compute-fea-hardening task A3 / INV-FEA-1"
+    );
+    assert!(
+        engine.compute_dispatch("shell-extract::extract").is_some(),
+        "EngineSession must register the shell-extract trampoline dispatch \
+         target (shell-extract::extract) — PRD compute-fea-hardening task A3 \
+         / INV-FEA-1"
+    );
+}
+
+/// TEST B — the task's stated acceptance floor: after the `gui` feature puts
+/// `reify-mesh-morph` on the dependency graph, `from_engine` must pass
+/// `MorphRegistration::Enabled(reify_mesh_morph::register_morph_producer)` so
+/// `Engine::morph_producer()` is `Some` post-construction. This is the
+/// esc-2962-66-class gap task A3 closes: the GUI never registered the
+/// mesh-morph producer.
+///
+/// Gated because `reify-mesh-morph` is only on the graph under `--features
+/// gui` (see the `gui` feature list in `gui/src-tauri/Cargo.toml`).
+/// Compile-verified in CI by the gui-feature compile-check block in
+/// `scripts/verify.sh` but never executed there — OCCT/tauri linking makes
+/// gui-feature test execution a local-only step, so this specific assertion
+/// (the only one exercising the new mesh-morph registration) has no
+/// CI-executed regression coverage today: a future change that flipped the
+/// `#[cfg(feature = "gui")]` arm in `from_engine` to `Unavailable` would
+/// compile clean and pass every CI pass silently. Closing that gap is task
+/// 5076 (PRD task A5's static drift guard + gui-feature test execution),
+/// out of this task's scope. Precedent for this gated-module shape:
+/// `kernel_status_tests` and `event_bus_tests` in this same directory.
+///
+/// Asserts only `morph_producer().is_some()`: TEST A above
+/// (`engine_session_registers_fea_and_shell_extract_dispatch`, ungated)
+/// already pins the two pre-existing dispatch targets (`solver::elastic_static`,
+/// `shell-extract::extract`) and runs in both feature configurations, so
+/// re-asserting them here would just duplicate TEST A under `--features gui`.
+#[cfg(feature = "gui")]
+mod gui_feature_tests {
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_test_support::MockGeometryKernel;
+
+    use crate::engine::EngineSession;
+
+    #[test]
+    fn from_engine_registers_mesh_morph_producer() {
+        let session = EngineSession::new(
+            Box::new(SimpleConstraintChecker),
+            Some(Box::new(MockGeometryKernel::new())),
+        );
+        let engine = session.engine();
+
+        assert!(
+            engine.morph_producer().is_some(),
+            "the `gui` feature puts reify-mesh-morph on the graph, so \
+             from_engine must pass \
+             MorphRegistration::Enabled(reify_mesh_morph::register_morph_producer) \
+             — this is the esc-2962-66-class gap A3 closes"
+        );
+    }
+}
+
