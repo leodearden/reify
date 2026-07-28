@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Self-launching one-command runner for the task-5367 cross-layer mesh-count
-# parity smoke (e2e visual-regression gate; follow-up from task 5348).
+# parity smoke (follow-up from task 5348).
+#
+# NOT a visual-regression gate, despite the directory it shares: the driver
+# captures no screenshot and diffs no baseline (that is gui/test/visual/run.ts).
+# Its only assertion is the three-way numeric parity check.
 #
 # Usage:
 #   bash gui/test/visual/run_mesh_count_parity_e2e_smoke.sh

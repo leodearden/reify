@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 /**
- * e2e visual-regression smoke for task 5367: cross-layer mesh-count parity.
+ * e2e cross-layer parity smoke for task 5367: three-way mesh-count parity.
+ *
+ * NOT a visual-regression gate, despite living beside the ones in this
+ * directory: it captures no screenshot and diffs no baseline (that is
+ * gui/test/visual/run.ts). Its ONLY assertion is the numeric one below, taken
+ * across three layers that a headless test cannot reach at once.
  *
  * Follow-up from task 5348, which routed `engine_state` and `mesh_stats` through
  * `build_gui_state_full_scene` so both report the whole realized scene rather
@@ -50,7 +55,10 @@
  * gui/src/__tests__/viewport/meshManager.test.ts. `large_assembly.ri` is
  * aux-free today (7 plain sub-components) and MUST STAY aux-free for this smoke;
  * adding an aux component to it would break parity legitimately and this gate
- * would report it as a 5348-class regression.
+ * would report it as a 5348-class regression. That same composition is pinned
+ * numerically below as FIXTURE_REALIZED_BODIES — the floor this run demands, so
+ * a partial load cannot pass as a consistent-but-truncated scene. Swapping the
+ * fixture means revisiting both.
  *
  * Exit 0 on all-pass, non-zero on any failure.
  */
@@ -68,6 +76,24 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const FIXTURE = path.join(REPO_ROOT, 'gui', 'test', 'fixtures', 'large_assembly.ri');
+
+/**
+ * The fixture's KNOWN realized body count, used as this run's non-vacuity floor.
+ *
+ * `large_assembly.ri` instantiates exactly 7 Physical sub-components (3 BoxPart
+ * + 2 TubePin + 2 BasePlate), each realizing one body — the composition the
+ * FIXTURE PRECONDITION above already pins.
+ *
+ * Why not the module default (MESH_COUNT_PARITY_MIN_BODIES = 2)? That generic
+ * floor only catches a TOTAL load failure. A PARTIAL load — 2 to 6 of the 7
+ * bodies realized, say because tessellation was still catching up — clears it,
+ * and if all three layers agree on the same truncated scene the run reports
+ * PASS: the "the model almost certainly failed to load" case the floor exists
+ * to reject, sneaking through because it failed to load only most of the way.
+ * Pinning the floor to the fixture's own body count closes that window. It stays
+ * a FLOOR, not an equality, so a fixture that legitimately grows still passes.
+ */
+const FIXTURE_REALIZED_BODIES = 7;
 
 // ─── Port resolution (mirrors endpoint.ts / lib_portable.sh logic) ─────────────
 
@@ -285,7 +311,7 @@ async function main() {
     );
   }
 
-  const parity = checkMeshCountParity(inputs);
+  const parity = checkMeshCountParity({ ...inputs, minBodies: FIXTURE_REALIZED_BODIES });
 
   if (!parity.ok) {
     // Triage aid: a bare number mismatch says nothing about WHICH bodies went
@@ -309,16 +335,14 @@ async function main() {
       `engine_state.meshes.length === ${inputs.viewportMeshCount}`,
   );
 
-  // ── Visual-regression record ────────────────────────────────────────────────
-  // Best-effort: the parity verdict is already decided above, and `screenshot`
-  // returns an image content block, which normalizeRpcEnvelope reports as null.
-  log('Capturing screenshot for the visual-regression record…');
-  try {
-    await rpc('screenshot', { viewportId: 'design-main' });
-    console.log('  OK: screenshot captured');
-  } catch (err) {
-    console.log(`  (screenshot unavailable, not fatal: ${err})`);
-  }
+  // NO screenshot step, deliberately. One used to sit here labelled "capturing
+  // the visual-regression record", and it recorded nothing: `screenshot` answers
+  // with an image content block, normalizeRpcEnvelope maps that to null, and the
+  // result was discarded — no PNG written, no baseline compared (that is
+  // gui/test/visual/run.ts's job, with its own SCREENSHOTS_DIR and differ). A
+  // step that only LOOKS like it captures evidence is worse than none: it lends
+  // this smoke a visual-regression framing its single numeric assertion does not
+  // earn. Re-adding one means persisting and diffing it, or not at all.
 
   console.log('\n=== SMOKE PASS: smoke_mesh_count_parity_e2e — three-way parity PASSED ===');
   process.exit(0);
