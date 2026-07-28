@@ -399,7 +399,7 @@ mod tests {
 
         assert_eq!(
             path.parent(),
-            Some(std::env::temp_dir().as_path()),
+            Some(std::env::temp_dir().as_path()), // temp-dir:allow — attribution test must compare against the REAL temp dir
             "the directory must be a DIRECT child of the temp dir so the \
              `find /tmp -maxdepth 1` triage glob reaches it; got {path:?}"
         );
@@ -520,7 +520,7 @@ mod tests {
         assert_eq!(
             find_unguarded_temp_dir_sites(&src).len(),
             1,
-            "the bare `env::temp_dir()` form must be flagged too"
+            "the bare `env::temp_dir()` form must be flagged too" // temp-dir:allow — prose mention inside an assertion message
         );
     }
 
