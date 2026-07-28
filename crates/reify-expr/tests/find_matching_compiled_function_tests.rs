@@ -105,6 +105,29 @@ fn make_generic_fn(
     }
 }
 
+/// Build the REAL merged prelude function table, exactly as the compiler
+/// assembles it for a `.ri` file with no user functions.
+///
+/// `CompiledModule.functions` is user-source-only, so the stdlib bodies are
+/// only reachable by flattening `load_stdlib()` and running it through
+/// `merge_prelude_functions` — which dedups by the
+/// `(name, arity, param_types)` triple rather than by name alone, and is
+/// therefore what preserves the same-named `Option` / `Result` overload pairs
+/// (`unwrap_or`, `or_else`, `fallback`) *and* their declaration order.
+///
+/// Tests built on this are higher-fidelity than synthetic fixtures: they fail
+/// if the real `.ri` signatures drift out from under the fixtures.
+///
+/// `reify-compiler` is already a `[dev-dependencies]` entry of `reify-expr`,
+/// and both symbols are `pub` — no manifest change is needed for this.
+fn stdlib_overload_table() -> Vec<CompiledFunction> {
+    let prelude: Vec<CompiledFunction> = reify_compiler::stdlib_loader::load_stdlib()
+        .iter()
+        .flat_map(|m| m.functions.iter().cloned())
+        .collect();
+    reify_compiler::merge_prelude_functions(&[], &prelude)
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Test: name mismatch → None
 // ────────────────────────────────────────────────────────────────────────────
