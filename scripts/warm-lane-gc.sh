@@ -140,11 +140,27 @@
 #     reused; committed work lives on refs/heads/task/NNNN and reset touches
 #     only target/, never the source tree or branch (sizing-lifecycle T1).
 #     Preserving a flock-free lane's target/ thus yields zero warm-cache value
-#     and only accretes disk. The live-consumer flock (inv.2) is the SOLE Pass-1
-#     preserve gate. This subsumes the former Tier-3 terminal-task reclaim
+#     and only accretes disk. Pass 1 has exactly TWO preserve gates, checked in
+#     this order: (1) the live-consumer flock (inv.2), and (2) a live PROCESS
+#     REFERENCE at or under the lane dir (cwd / open fd / mmap — task 5572).
+#     This subsumes the former Tier-3 terminal-task reclaim
 #     (task 5167): the rebase-orphan ahead-of-main lane it targeted is now
 #     reclaimed by the general rule. Pass 2 keeps the clean+landed
 #     _is_reclaimable rule.
+#   - Live-reference gate (task 5572, both passes): the inv.2 flock is held only
+#     across the ACQUIRE reseed, NOT across the consumer's long cargo verify
+#     build, so during that build the flock is FREE and always-reclaim would wipe
+#     <lane>/target out from under a live build (esc-5375-1). The check lives
+#     HERE, in the primitive, rather than in a wrapper, because there are TWO
+#     entry points and only one of them ever passed --extra-protect-glob:
+#     warm-lane-gc-sweep.sh (the δ systemd backstop) did; dark-factory's ε path
+#     (git_ops.py _run_warm_lane_gc_reclaim) invokes `warm-lane-gc.sh reclaim
+#     --mount <base>` and never has. Every caller now inherits the guard with no
+#     dark-factory change. It runs PER LANE, immediately before that lane's
+#     reset and under the flock this loop already holds — not as an up-front
+#     snapshot, which would leave a lane that goes live mid-traversal
+#     unprotected across a 25-40 minute pass. Over-preserving is safe and
+#     TEMPORARY: a lingering reference costs one extra sweep.
 #   - α reuse: resolve base symlink → concrete gen, hold flock -s during α call
 #     (D8 reader-refcount seam; same contract as the acquire path).
 #   - Safety-ranked order: reset lanes first (cheap), then remove orphans (destructive).
@@ -154,6 +170,16 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Shared live-reference /proc scanner (live_ref_present). Fail LOUDLY if it is
+# missing: a silently-absent liveness guard is precisely the failure mode task
+# 5572 exists to remove.
+if [ ! -f "$SCRIPT_DIR/lib_live_refs.sh" ]; then
+    echo "warm-lane-gc.sh: ERROR — scripts/lib_live_refs.sh not found next to warm-lane-gc.sh" >&2
+    exit 1
+fi
+# shellcheck source=scripts/lib_live_refs.sh
+source "$SCRIPT_DIR/lib_live_refs.sh"
 
 # ── log helpers (all write to stderr) ─────────────────────────────────────────
 info()  { printf '\033[1;34m[info]\033[0m  %s\n' "$*" >&2; }
@@ -460,18 +486,49 @@ _do_reclaim() {
             continue
         fi
 
+        # Live-reference gate (task 5572). The flock above proves no consumer is
+        # mid-ACQUIRE; it does NOT prove no consumer is mid-BUILD, because the
+        # inv.2 flock is released once the acquire reseed completes while the
+        # verify build runs on for minutes (esc-5375-1). So before resetting,
+        # ask /proc directly: does any live process reference this lane dir or
+        # anything under it (cwd / open fd / mmap)?
+        #
+        # Placement is load-bearing on three axes:
+        #   - AFTER the flock acquire, so only flock-FREE lanes pay the
+        #     O(processes × fds) walk, and so a flock-held lane keeps its own
+        #     distinct diagnostic — the two preserve reasons must stay
+        #     distinguishable in dark-factory's logs.
+        #   - INSIDE the loop, immediately before the reset. Hoisting it above
+        #     the loop would reintroduce the up-front-snapshot TOCTOU this gate
+        #     removes: one verdict computed once, then consumed across a 25-40
+        #     minute lane-by-lane traversal, leaving any lane that goes live
+        #     mid-pass unprotected.
+        #   - Before BOTH reset branches below (--disk-pressure rm and the α
+        #     reseed), so neither path can bypass it.
+        #
+        # Bias toward OVER-preserving: a genuinely FREE lane has no referencing
+        # process, and a lingering reference is reclaimed on the next pass once
+        # it clears. Under-preserving corrupts a live build.
+        if live_ref_present "$lane"; then
+            exec 8>&-
+            warn "preserving $name: live consumer (process reference)"
+            preserved_count=$((preserved_count + 1))
+            continue
+        fi
+
         # Always-reclaim (task 5326): once the live-consumer flock is held
-        # (acquired above ⇒ no live consumer), a FREE pool lane is reclaimed
-        # UNCONDITIONALLY — dirty tracked changes, an ahead-of-main tip, and
-        # backing-task status are NOT consulted. acquire_lane ALWAYS re-seeds a
+        # (acquired above ⇒ no live consumer) and no live process references the
+        # lane, a FREE pool lane is reclaimed UNCONDITIONALLY — dirty tracked
+        # changes, an ahead-of-main tip, and backing-task status are NOT
+        # consulted. acquire_lane ALWAYS re-seeds a
         # lane from base (cow-seeding §9.5), so a FREE lane's divergent target/
         # is never reused; committed work lives on the durable
         # refs/heads/task/NNNN branch ref, and reset touches only target/, never
         # the source tree or branch (sizing-lifecycle Invariant T1). Preserving
         # a flock-free lane's target/ therefore yields zero warm-cache value and
-        # only accretes disk. The live-consumer flock (inv.2) is the SOLE Pass-1
-        # preserve gate; Pass 2 (destructive orphan removal) keeps the
-        # conservative clean+landed _is_reclaimable rule.
+        # only accretes disk. The flock (inv.2) and the live process reference
+        # above are the two Pass-1 preserve gates; Pass 2 (destructive orphan
+        # removal) keeps the conservative clean+landed _is_reclaimable rule.
         if [ -n "$DISK_PRESSURE" ]; then
             # Disk-pressure fast-path (task 5167): delete target/ outright
             # instead of invoking the α reflink-reseed clone — no transient
