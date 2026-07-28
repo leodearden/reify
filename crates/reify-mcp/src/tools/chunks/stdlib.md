@@ -25,7 +25,7 @@ The Reify standard library (`std.*`) provides domain-specific functionality.
 
 ## Key Geometry Operations
 
-<!-- SYNC: signatures verified by crates/reify-compiler/tests/stdlib_chunk_geometry_ops_smoke.rs -->
+<!-- SYNC: signatures verified by crates/reify-compiler/tests/harness_doc_chunks/stdlib_chunk_geometry_ops_smoke.rs -->
 
 Positions/lengths take a `Length` (e.g. `5mm`); angles take an `Angle` (e.g. `90deg`); direction/axis/normal components and counts are plain numbers.
 

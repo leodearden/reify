@@ -127,7 +127,6 @@ crates/reify-compiler/tests/generate_combinator_tests.rs
 crates/reify-compiler/tests/generic_enum_pattern_binder_tests.rs
 crates/reify-compiler/tests/geometry_arg_count_span_tests.rs
 crates/reify-compiler/tests/geometry_centered_primitives_tests.rs
-crates/reify-compiler/tests/geometry_chunk_smoke.rs
 crates/reify-compiler/tests/geometry_let_value_cell_lowering.rs
 crates/reify-compiler/tests/geometry_profile_precondition_tests.rs
 crates/reify-compiler/tests/geometry_traits_inference_tests.rs
@@ -235,7 +234,6 @@ crates/reify-compiler/tests/stackup_stdlib_tests.rs
 crates/reify-compiler/tests/standard_gravity_tests.rs
 crates/reify-compiler/tests/standard_joint_library_tests.rs
 crates/reify-compiler/tests/standard_stock_tests.rs
-crates/reify-compiler/tests/stdlib_chunk_geometry_ops_smoke.rs
 crates/reify-compiler/tests/stdlib_determinacy_purposes.rs
 crates/reify-compiler/tests/stdlib_loader_tests.rs
 crates/reify-compiler/tests/string_interp_lowering_tests.rs
