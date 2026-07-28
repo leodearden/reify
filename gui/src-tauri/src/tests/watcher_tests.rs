@@ -584,37 +584,6 @@ fn wait_for_returns_false_after_timeout_when_never_satisfied() {
 }
 
 #[test]
-fn wait_until_with_retry_reissues_the_attempt_until_the_condition_holds() {
-    // `attempt` only flips the shared counter; `condition` reads the SAME
-    // counter and is satisfied once it reaches 3. If `wait_until_with_retry`
-    // only invoked `attempt` once (like a plain poll), the condition would
-    // never hold and this would time out. Reissuing it is exactly the
-    // property the de-flake depends on: a stimulus (e.g. a write) lost to a
-    // not-yet-live watcher must be re-issued, not just waited on.
-    let counter = Rc::new(Cell::new(0u32));
-    let attempt_counter = counter.clone();
-    let condition_counter = counter.clone();
-
-    let found = wait_until_with_retry(
-        move || attempt_counter.set(attempt_counter.get() + 1),
-        Duration::from_millis(20),
-        Duration::from_secs(2),
-        move || condition_counter.get() >= 3,
-    );
-
-    assert!(
-        found,
-        "condition should be satisfied once attempt has been reissued enough times"
-    );
-    assert!(
-        counter.get() >= 3,
-        "attempt should have been reissued (not just invoked once) before \
-         the condition held, got {} invocations",
-        counter.get()
-    );
-}
-
-#[test]
 fn wait_until_with_retry_returns_true_without_waiting_when_already_satisfied() {
     let start = Instant::now();
     let found = wait_until_with_retry(
@@ -624,8 +593,17 @@ fn wait_until_with_retry_returns_true_without_waiting_when_already_satisfied() {
         || true,
     );
     assert!(found, "already-satisfied condition should return true");
+    // Widened from 200ms to 5s (the midpoint between the correct outcome,
+    // ~0ms, and the incorrect outcome, waiting out the call's full 10s
+    // timeout): an upper bound on elapsed is starvation-invertible by the
+    // same mechanism as a "more than once" count -- it inverts when the
+    // thread is descheduled. The sharp, deterministic form of this claim
+    // (the clock does not advance at all) lives on the virtual clock in
+    // `wait_until_with_retry_does_not_sleep_when_the_condition_already_holds_on_a_virtual_clock`;
+    // this real-clock test is retained only as smoke coverage that
+    // `WallClock` is actually wired up. See #5709.
     assert!(
-        start.elapsed() < Duration::from_millis(200),
+        start.elapsed() < Duration::from_secs(5),
         "should return promptly when already satisfied, took {:?}",
         start.elapsed()
     );
@@ -707,10 +685,20 @@ fn wait_until_with_retry_reissues_the_attempt_for_every_window_until_the_deadlin
 
 #[test]
 fn wait_until_with_retry_stops_reissuing_once_the_condition_holds_on_a_virtual_clock() {
-    // Deterministic replacement for
-    // `wait_until_with_retry_reissues_the_attempt_until_the_condition_holds`:
-    // the condition is re-checked at the head of each poll window, so the
-    // 3rd attempt short-circuits before any further sleep. See #5709.
+    // Deterministic replacement for the former (now-deleted) wall-clock test
+    // `wait_until_with_retry_reissues_the_attempt_until_the_condition_holds`.
+    // Preserved rationale: `attempt` only flips the shared counter;
+    // `condition` reads the SAME counter and is satisfied once it reaches 3.
+    // If `wait_until_with_retry` only invoked `attempt` once (like a plain
+    // poll), the condition would never hold and this would time out.
+    // Reissuing it is exactly the property the de-flake depends on: a
+    // stimulus (e.g. a write) lost to a not-yet-live watcher must be
+    // re-issued, not just waited on.
+    //
+    // On the virtual clock, the condition is re-checked at the head of each
+    // poll window, so the 3rd attempt short-circuits before any further
+    // sleep -- the count is deterministically exactly 3 rather than merely
+    // "eventually >= 3" within a wall-clock budget. See #5709.
     let t0 = Instant::now();
     let mut clock = VirtualClock::new(t0);
     let counter = Rc::new(Cell::new(0u32));
