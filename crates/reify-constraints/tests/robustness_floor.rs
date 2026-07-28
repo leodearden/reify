@@ -951,8 +951,8 @@ fn floor_infeasible_message(problem: &ResolutionProblem) -> String {
 ///
 /// That gap is real but is NOT this task's headline: making the honest branch reachable
 /// for a steep objective means changing WHICH point a floor-infeasible solve reports,
-/// which is solver semantics.  Filed as a follow-up (see the step-10 note at the emit
-/// site in `solver.rs`).  Do not "simplify" this test onto the Length fixture.
+/// which is solver semantics.  Filed as task #5714 (see also the step-10 note at the
+/// emit site in `solver.rs`).  Do not "simplify" this test onto the Length fixture.
 #[test]
 fn margin_only_infeasibility_names_the_margin_not_an_empty_region() {
     let q_id = ValueCellId::new("Bracketed", "q");

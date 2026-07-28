@@ -1757,7 +1757,9 @@ fn solve_core_with_sd_tolerance(
                     // this check correctly declines and the region-empty wording
                     // stands even though the region is not empty.  Making it reachable
                     // means changing WHICH point a floor-infeasible solve reports —
-                    // solver semantics, and its own task.  See the
+                    // solver semantics, and its own task: #5714, which carries this
+                    // measurement and the reason the cheap box-emptiness shortcut is
+                    // unsound.  See the
                     // `margin_only_infeasibility_names_the_margin_not_an_empty_region`
                     // doc comment in `tests/robustness_floor.rs` for the measurement.
                     let original_max_residual = max_constraint_residual(
