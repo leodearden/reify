@@ -6,7 +6,7 @@
 //! an assertion fails and the test unwinds — i.e. precisely on RED CI runs.
 //! This module supplies the RAII replacement.
 
-use crate::ignore_hygiene::is_doc_comment_line;
+use crate::ignore_hygiene::{is_doc_comment_line, walk_rs_files};
 use std::ffi::OsStr;
 use std::path::Path;
 
@@ -282,6 +282,44 @@ pub fn assert_no_unguarded_temp_dir_sites(repo_relative_path: &str) {
     if let Err(message) = check_temp_dir_hygiene(&source, &absolute.display().to_string()) {
         panic!("{message}");
     }
+}
+
+/// Walk the entire workspace collecting every temp-dir hygiene violation
+/// found in ANY `.rs` file — `src/`, `tests/`, and `build.rs` alike, since a
+/// leaking temp dir in a build script is just as real as one in a test. This
+/// is what closes the gap [`assert_no_unguarded_temp_dir_sites`]'s six
+/// hand-picked call sites left open: those never saw a `src/` file.
+///
+/// The structural twin of
+/// [`crate::ignore_hygiene::collect_workspace_stale_pointers`]: walk with
+/// [`walk_rs_files`] under an accept-everything predicate, read, scan with
+/// [`find_unguarded_temp_dir_sites`], and format each hit as
+/// `"<relative/path>: <violation>"`. I/O errors on individual files are
+/// silently skipped — a file deleted mid-walk by a concurrent build must not
+/// become a spurious violation.
+///
+/// This is a PURE COLLECTOR: it has no knowledge of any exception list. The
+/// denylist is policy, not mechanism, and lives beside its justification in
+/// the ratchet test that calls this function — keeping the collector
+/// reusable by any future caller. [`assert_no_unguarded_temp_dir_sites`]
+/// remains the right tool for a targeted single-file guard; this function
+/// does not replace it.
+pub fn collect_workspace_unguarded_temp_dirs(workspace_root: &Path) -> Vec<String> {
+    walk_rs_files(workspace_root, |_| true)
+        .iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok().map(|s| (path, s)))
+        .flat_map(|(path, source)| {
+            let rel = path
+                .strip_prefix(workspace_root)
+                .unwrap_or(path)
+                .display()
+                .to_string();
+            find_unguarded_temp_dir_sites(&source)
+                .into_iter()
+                .map(move |v| format!("{rel}: {v}"))
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 #[cfg(test)]
