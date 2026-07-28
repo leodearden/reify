@@ -431,21 +431,39 @@ fn normalise_ccw(mut ring: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
 /// inherits the postcondition without having to restate it.
 ///
 /// Returns `Some(outer_ring)` for the recognised single-ring profile ops
-/// ([`GeometryOp::RectangleProfile`], [`GeometryOp::PolygonProfile`], and —
-/// added in a later step — [`GeometryOp::CircleProfile`] /
-/// [`GeometryOp::EllipseProfile`]) and `None` for any other op, so
-/// [`swept_kind_to_profile_boundary`] can reject a profile handle that resolves
-/// to a non-profile op (e.g. a solid primitive). The rings are single-ring:
-/// multiply-connected cross-sections (holes parallel to the sweep axis) are
-/// Phase B (PRD task #14).
+/// ([`GeometryOp::RectangleProfile`], [`GeometryOp::PolygonProfile`],
+/// [`GeometryOp::CircleProfile`], [`GeometryOp::EllipseProfile`]) and `None` for
+/// any other op, so [`swept_kind_to_profile_boundary`] can reject a profile
+/// handle that resolves to a non-profile op (e.g. a solid primitive). The rings
+/// are single-ring: multiply-connected cross-sections (holes parallel to the
+/// sweep axis) are Phase B (PRD task #14).
+///
+/// # Non-finite extents are rejected
+///
+/// Every sampled coordinate is checked with `f64::is_finite`, and a NaN or
+/// infinite extent yields `None` (which
+/// [`swept_kind_to_profile_boundary`] surfaces as an unresolvable profile and
+/// [`build_swept_2d_mesh`] collapses to
+/// [`reify_solver_elastic::Mesh2dError::EmptyBoundary`]).
+///
+/// This guard is load-bearing, not belt-and-braces: `profile_rectangle`,
+/// `profile_circle` and `profile_ellipse` (`geometry_ops.rs`) apply no
+/// finiteness check, and [`reify_ir::Value::as_f64`] happily returns
+/// `Some(NaN)` for a NaN `Real`/`Scalar`. A NaN extent would otherwise produce
+/// an all-NaN ring that neither [`normalise_ccw`] (`NaN < 0.0` is false) nor
+/// the consumer's `validate_boundary` (`NaN.abs() < 1e-14` is false) rejects —
+/// so the NaN coordinates would reach Gmsh. Only `PolygonProfile` is already
+/// covered upstream (`eval_all_args_to_f64`); its arm is checked here anyway so
+/// the postcondition is a property of this function rather than of each
+/// caller.
 fn profile_sample_2d(op: &GeometryOp) -> Option<Vec<[f64; 2]>> {
     match op {
         // Axis-aligned rectangle centred at the origin. The op's contract
         // (geometry.rs) places corners at (±width/2, ±height/2, 0); emit them
         // as the 4 CCW corners starting bottom-left.
         GeometryOp::RectangleProfile { width, height } => {
-            let w = width.as_f64()?;
-            let h = height.as_f64()?;
+            let w = width.as_f64().filter(|v| v.is_finite())?;
+            let h = height.as_f64().filter(|v| v.is_finite())?;
             Some(vec![
                 [-w / 2.0, -h / 2.0],
                 [w / 2.0, -h / 2.0],
@@ -455,10 +473,15 @@ fn profile_sample_2d(op: &GeometryOp) -> Option<Vec<[f64; 2]>> {
         }
         // Closed planar polygon: the caller-supplied vertices ARE the outer
         // ring, in order.
-        GeometryOp::PolygonProfile { points } => Some(points.clone()),
+        GeometryOp::PolygonProfile { points } => {
+            if !points.iter().all(|p| p[0].is_finite() && p[1].is_finite()) {
+                return None;
+            }
+            Some(points.clone())
+        }
         // Circle: PROFILE_CIRCLE_SEGMENTS points, each exactly r·[cos θ, sin θ].
         GeometryOp::CircleProfile { radius } => {
-            let r = radius.as_f64()?;
+            let r = radius.as_f64().filter(|v| v.is_finite())?;
             Some(sample_ellipse_ring(r, r))
         }
         // Ellipse: PROFILE_CIRCLE_SEGMENTS points at [a·cos θ, b·sin θ].
@@ -466,8 +489,8 @@ fn profile_sample_2d(op: &GeometryOp) -> Option<Vec<[f64; 2]>> {
             semi_major,
             semi_minor,
         } => {
-            let a = semi_major.as_f64()?;
-            let b = semi_minor.as_f64()?;
+            let a = semi_major.as_f64().filter(|v| v.is_finite())?;
+            let b = semi_minor.as_f64().filter(|v| v.is_finite())?;
             Some(sample_ellipse_ring(a, b))
         }
         _ => None,
@@ -504,9 +527,29 @@ fn profile_sample_2d(op: &GeometryOp) -> Option<Vec<[f64; 2]>> {
 ///
 /// # Returns
 ///
-/// `None` when the profile handle cannot be resolved in `handles` (a
-/// cross-realization handle or a malformed ops/handles pair), or when the
-/// resolved source op is not a recognised profile op.
+/// `None` when the profile handle has no positional match in `handles` (a
+/// malformed ops/handles pair, or a handle from outside this realization's
+/// slice that happens to collide with no local id), or when the resolved
+/// source op is not a recognised profile op — including one whose extents are
+/// non-finite (see [`profile_sample_2d`]).
+///
+/// # Caveat: bare-integer handle resolution (#4349)
+///
+/// The lookup is a positional scan for an equal [`GeometryHandleId`], the same
+/// resolution [`swept_kind_to_sweep_params`] already performs for a
+/// `SweepLinear` path. A `GeometryHandleId` is only unique *within its own
+/// kernel's handle space* (see the `named_step_reprs` discussion in
+/// `engine_build.rs`), so a profile bound from another realization — e.g. a
+/// `GeomRef::Sub(name)` profile resolved through `named_steps` — is NOT
+/// guaranteed to miss: it can same-integer-collide with an unrelated local
+/// step and silently yield the WRONG cross-section rather than `None`.
+///
+/// This is latent rather than live: the production swept edge is currently
+/// gated (`force_tet = true`). Before that gate opens, the caller should pass
+/// the realization's `named_steps` / `named_step_reprs` and resolve a
+/// non-local profile BY NAME — the discipline `available_for_op` already uses
+/// in `engine_build.rs` — instead of trusting this bare-integer scan. Tracked
+/// as part of the swept-edge activation work in #4746.
 pub fn swept_kind_to_profile_boundary(
     kind: &SweptKind,
     ops: &[GeometryOp],
@@ -565,6 +608,62 @@ pub fn build_swept_2d_mesh(
 mod tests {
     use super::*;
     use reify_ir::Value;
+
+    // ── Shared single-profile extrude fixture ──────────────────────────────
+    // Most producer tests vary exactly ONE thing — the profile op — around an
+    // otherwise-identical two-op realization slice: the profile op at
+    // handles[0], an Extrude of it at handles[1], and a matching
+    // SweptKind::Extrude. `extrude_fixture` owns that boilerplate so each test
+    // reads as "this profile op ⇒ this boundary" instead of restating the
+    // handle layout. Tests whose subject is a DIFFERENT axis (an unresolvable
+    // profile handle) keep the fixture's ops/handles and build their own
+    // SweptKind, so the one field they exercise is the only thing spelled out.
+
+    /// Handle of the profile op — `ops[0]` / `handles[0]`.
+    const FIXTURE_PROFILE_HANDLE: GeometryHandleId = GeometryHandleId(10);
+    /// Handle of the Extrude op itself — `ops[1]` / `handles[1]`.
+    const FIXTURE_EXTRUDE_HANDLE: GeometryHandleId = GeometryHandleId(11);
+    /// Extrusion distance shared by every fixture. Immaterial to the
+    /// cross-section, which is the profile op's own 2-D geometry.
+    const FIXTURE_EXTRUDE_DISTANCE: f64 = 0.01;
+
+    /// Build the standard single-profile extrude slice around `profile_op`:
+    /// the parallel `ops` / `handles` vectors and the `SweptKind::Extrude`
+    /// whose `profile` resolves to `profile_op`.
+    fn extrude_fixture(
+        profile_op: GeometryOp,
+    ) -> (Vec<GeometryOp>, Vec<GeometryHandleId>, SweptKind) {
+        let ops = vec![
+            profile_op,
+            GeometryOp::Extrude {
+                profile: FIXTURE_PROFILE_HANDLE,
+                distance: Value::length(FIXTURE_EXTRUDE_DISTANCE),
+            },
+        ];
+        let handles = vec![FIXTURE_PROFILE_HANDLE, FIXTURE_EXTRUDE_HANDLE];
+        let kind = SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: Value::length(FIXTURE_EXTRUDE_DISTANCE),
+            profile: FIXTURE_PROFILE_HANDLE,
+        };
+        (ops, handles, kind)
+    }
+
+    /// [`build_swept_2d_mesh`] with the two knobs every test shares
+    /// (`HexPreferred` + default options), so call sites vary only the fixture.
+    fn build_fixture_mesh(
+        kind: &SweptKind,
+        ops: &[GeometryOp],
+        handles: &[GeometryHandleId],
+    ) -> Result<reify_solver_elastic::Mesh2dReport, reify_solver_elastic::Mesh2dError> {
+        build_swept_2d_mesh(
+            kind,
+            ops,
+            handles,
+            reify_solver_elastic::SweepElementTarget::HexPreferred,
+            &reify_solver_elastic::Mesh2dOptions::default(),
+        )
+    }
 
     // ── Step-1: classifier API surface ─────────────────────────────────────
 
@@ -2096,6 +2195,102 @@ mod tests {
             ),
             "a valid rectangle extrude must validate and forward to mesh_swept_profile_2d \
              (Ok in libgmsh, Err(GmshUnavailable) in stub) — never EmptyBoundary/DegenerateBoundary; got {result:?}"
+        );
+    }
+
+    // ── Amendment: non-finite profile extents are rejected ──────────────────
+    // `profile_rectangle` / `profile_circle` / `profile_ellipse`
+    // (geometry_ops.rs) apply no finiteness check and `Value::as_f64` returns
+    // Some(NaN) for a NaN Scalar, so a NaN extent CAN reach the sampler. It
+    // must not reach Gmsh: an all-NaN ring is invisible to `normalise_ccw`
+    // (NaN < 0.0 is false) AND to the consumer's degeneracy guard
+    // (NaN.abs() < 1e-14 is false), so it would otherwise validate and be
+    // meshed. The sampler is therefore the party that rejects it.
+
+    #[test]
+    fn swept_kind_to_profile_boundary_nan_rectangle_width_returns_none() {
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::RectangleProfile {
+            width: Value::length(f64::NAN),
+            height: Value::length(0.02),
+        });
+        assert!(
+            swept_kind_to_profile_boundary(&kind, &ops, &handles).is_none(),
+            "a NaN rectangle width must be rejected by the sampler, not forwarded as an all-NaN ring"
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_infinite_rectangle_height_returns_none() {
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::RectangleProfile {
+            width: Value::length(0.04),
+            height: Value::length(f64::INFINITY),
+        });
+        assert!(
+            swept_kind_to_profile_boundary(&kind, &ops, &handles).is_none(),
+            "an infinite rectangle height must be rejected by the sampler"
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_nan_circle_radius_returns_none() {
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::CircleProfile {
+            radius: Value::length(f64::NAN),
+        });
+        assert!(
+            swept_kind_to_profile_boundary(&kind, &ops, &handles).is_none(),
+            "a NaN circle radius must be rejected by the sampler"
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_nan_ellipse_semi_minor_returns_none() {
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::EllipseProfile {
+            semi_major: Value::length(0.05),
+            semi_minor: Value::length(f64::NAN),
+        });
+        assert!(
+            swept_kind_to_profile_boundary(&kind, &ops, &handles).is_none(),
+            "a NaN ellipse semi-minor axis must be rejected by the sampler"
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_non_finite_polygon_point_returns_none() {
+        // PolygonProfile points are pre-checked upstream by
+        // `eval_all_args_to_f64`, but the sampler re-checks so the
+        // "no non-finite coordinate leaves this function" postcondition holds
+        // for every arm rather than depending on each caller.
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::PolygonProfile {
+            points: vec![
+                [0.0, 0.0],
+                [0.03, 0.0],
+                [0.03, f64::NEG_INFINITY],
+                [0.0, 0.05],
+            ],
+        });
+        assert!(
+            swept_kind_to_profile_boundary(&kind, &ops, &handles).is_none(),
+            "a non-finite polygon vertex coordinate must be rejected by the sampler"
+        );
+    }
+
+    #[test]
+    fn build_swept_2d_mesh_nan_rectangle_width_is_empty_boundary() {
+        // End-to-end shape of the rejection: the sampler's None collapses to
+        // Err(EmptyBoundary) — matching the existing "unresolvable profile"
+        // rejection — and short-circuits before any Gmsh call, so this is
+        // deterministic in libgmsh and stub builds alike.
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::RectangleProfile {
+            width: Value::length(f64::NAN),
+            height: Value::length(0.02),
+        });
+        let result = build_fixture_mesh(&kind, &ops, &handles);
+        assert!(
+            matches!(
+                &result,
+                Err(reify_solver_elastic::Mesh2dError::EmptyBoundary)
+            ),
+            "a NaN profile extent must short-circuit to Err(EmptyBoundary) before Gmsh; got {result:?}"
         );
     }
 }
