@@ -641,6 +641,8 @@ _add_task 9205 blocked "$C_GATE_META"                         # dismissed+pendin
 _add_task 9206 blocked "$C_NO_ALWAYS_META"                    # not class A
 _add_task 9207 in-progress "$C_GATE_META" "$(_now_iso -10800)" ""   # blocked-only => not class A
 _add_task 9208 blocked "$C_GATE_META"                         # malformed esc   => unknown
+_add_task 9209 blocked "$C_GATE_META"                         # unrecognized st => unknown
+_add_task 9210 blocked "$C_GATE_META"                         # null status     => unknown
 
 _add_esc 9202 1 pending
 _add_esc 9203 1 dismissed
@@ -648,6 +650,14 @@ _add_esc 9204 1 resolved
 _add_esc 9205 1 dismissed
 _add_esc 9205 2 pending
 printf 'this is not json\n' > "$C_ESC/esc-9208-1.json"
+# A well-formed record carrying a status OUTSIDE the store's `pending /
+# resolved / dismissed` vocabulary (models.py:100). A schema addition on the
+# escalation side produces exactly this shape.
+printf '{"id":"esc-9209-1","task_id":"9209","status":"in_triage"}\n' > "$C_ESC/esc-9209-1.json"
+# A well-formed record whose status is JSON null — the live store holds one
+# such file today (data/escalations/b3-state.json), which escapes the sweep's
+# glob only by name, not by shape.
+printf '{"id":"esc-9210-1","task_id":"9210","status":null}\n' > "$C_ESC/esc-9210-1.json"
 # A .json.lock sidecar (the live store holds these next to the real files):
 # the glob must match *.json only, never *.json.lock, or 9201 would read as
 # gated by a lock file.
@@ -696,10 +706,35 @@ assert "C7: a missing oracle is counted in unknown" _json_is 's["unknown"] >= 1'
 assert "C7: a missing oracle warns on stderr" _err_has '\[warn\]'
 assert "C7: a missing oracle emits no re-dispatch request" _no_request_for "$C_REQ" 9201
 
-run_sweep --db "$C_DB" --escalations "$C_ESC" --repo "$C_REPO" --format json
+C_REQ2="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-creq2-XXXXXX")"
+_TMPDIRS+=("$C_REQ2")
+run_sweep --db "$C_DB" --escalations "$C_ESC" --repo "$C_REPO" \
+    --emit-requests "$C_REQ2" --format json
 assert "C8: a malformed escalation file degrades to unknown, not STALE" \
     _json_is 't[9208]["verdict"] == "unknown"'
 assert "C8: a malformed escalation file warns on stderr" _err_has '\[warn\].*9208'
+
+# --- C10: the status predicate is a TERMINAL allowlist, not a pending one ----
+# `pending` gates and `resolved`/`dismissed` clear; EVERY other value —
+# unrecognized, null, empty — is a failed oracle read and must degrade to
+# `unknown`. A pending-allowlist would sink all of these into `clear`, which
+# yields STALE / close / an emitted request telling the consumer to CANCEL the
+# task — failing open toward the sweep's single most destructive action, and
+# inverting invariant L2 ("a failed oracle lookup must never manufacture an
+# actionable verdict"). Both shapes below are realistic: a schema addition on
+# the escalation side, and a mid-write/partially-populated record.
+assert "C10a: an unrecognized escalation status degrades to unknown, not STALE" \
+    _json_is 't[9209]["verdict"] == "unknown"'
+assert "C10b: an unrecognized status warns, naming the task and the status" \
+    _err_has '\[warn\].*9209.*in_triage'
+assert "C10c: an unrecognized status emits no re-dispatch request" \
+    _no_request_for "$C_REQ2" 9209
+assert "C10d: a null escalation status degrades to unknown, not STALE" \
+    _json_is 't[9210]["verdict"] == "unknown"'
+assert "C10e: a null status emits no re-dispatch request" \
+    _no_request_for "$C_REQ2" 9210
+assert "C10f: neither shape is counted as a class-A hit" \
+    _json_is 's["gate_closure"] == 3'
 
 # --- C9: --class filtering ---------------------------------------------------
 run_sweep --db "$C_DB" --escalations "$C_ESC" --repo "$C_REPO" \
