@@ -11,6 +11,7 @@
 #     tests/infra/test_verify_failfast_order.sh            (S6, task 5604)
 #     tests/infra/test_occt_gated_scope.sh                 (S7, task 5604)
 #     tests/infra/test_release_mode_in_test_command.sh     (S8, task 5604)
+#     tests/infra/test_verify_retry_subset.sh              (S9, task 5587)
 #
 # Those eight, and ONLY those eight. This file does NOT claim that
 # `tests/infra/run_all.sh` as a whole is green without cargo-nextest.
@@ -504,6 +505,16 @@ echo "--- S: covered suites reach test_summary with rc=0 / 0 FAIL / >= pass floo
 #   release_mode       9 nextest-less /   9 ambient (already clean — the
 #                                                    alternation was already
 #                                                    used throughout)
+#   retry_subset      16 nextest-less /  48 ambient (32-assert delta is the
+#                                                    suite's PRE-EXISTING
+#                                                    NEXTEST_AVAILABLE-guarded
+#                                                    plan-shape blocks — Tests
+#                                                    1, 4, 5, 6b, 7 — genuinely
+#                                                    nextest-only command-shape
+#                                                    asserts, NOT coverage this
+#                                                    task guards away. Fixed
+#                                                    count: no data-driven loop
+#                                                    in this suite)
 #
 # DATA-DRIVEN FLOORS. Not every floor is a fixed constant, and a drop below one
 # is not automatically a defect. occt_gated_scope's 48 = 33 fixed asserts + 15
@@ -581,5 +592,8 @@ assert "S7: test_occt_gated_scope.sh reaches test_summary with rc=0 / 0 FAIL / >
 
 assert "S8: test_release_mode_in_test_command.sh reaches test_summary with rc=0 / 0 FAIL / >= 9 passed on a nextest-less host" \
     _suite_is_clean_without_nextest test_release_mode_in_test_command.sh 9
+
+assert "S9: test_verify_retry_subset.sh reaches test_summary with rc=0 / 0 FAIL / >= 16 passed on a nextest-less host" \
+    _suite_is_clean_without_nextest test_verify_retry_subset.sh 16
 
 test_summary
