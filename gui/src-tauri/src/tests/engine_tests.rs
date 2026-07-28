@@ -13966,6 +13966,12 @@ fn examples_m5_geometry_flange_hides_consumed_intermediates() {
             .find(|n| n.entity_path == path && n.kind != "realization")
             .unwrap_or_else(|| panic!("value-cell node '{path}' must be present"))
     };
+    let realization = |name: &str| -> &crate::types::EntityTreeNode {
+        root.children
+            .iter()
+            .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("realization node for '{name}' must be present"))
+    };
     for member in ["body", "hole", "holes", "geometry"] {
         assert_eq!(
             value_cell(member).type_name.as_deref(),
@@ -13992,31 +13998,61 @@ fn examples_m5_geometry_flange_hides_consumed_intermediates() {
          rule 2 cannot hide the finished part's outline row"
     );
 
-    // ── `: Rigid` does NOT set trait_geometry (KNOWN LIMITATION pin) ──
+    // ── `: Rigid` DOES set trait_geometry (#5558 — flipped pin) ──
     //
-    // `parent_has_physical` matches DECLARED trait names only, so the
-    // refinement `Rigid : Physical` is invisible to it and every committed
-    // example — including this one — evaluates the flag to false. Pinned at the
-    // CURRENT value deliberately: the follow-up that resolves the refinement
-    // chain via `reify_eval::conforms_to_trait` must land as a visible flip of
-    // this assertion rather than silently. See `build_template_node`'s
-    // `parent_has_physical` comment.
+    // This block previously pinned the inverse ("no BoltFlange node may report
+    // trait_geometry") as a KNOWN LIMITATION of the declared-name-only
+    // substring heuristic, and required the follow-up resolving the refinement
+    // chain to land as a VISIBLE flip rather than silently. #5558 is that
+    // follow-up, and this is that flip.
     //
-    // The observable does not depend on the flag: `geometry` is un-consumed, so
-    // `default_visible == true` shows it either way (asserted above).
+    // Resolved contract: the flag follows the refinement chain
+    // `BoltFlange : Rigid : Physical` (stdlib/structural_physical.ri:76),
+    // resolved by `reify_eval::conforms_to_trait` against the merged module +
+    // prelude trait defs. See `build_template_node`'s `parent_has_physical`.
+    //
+    // Asserted node-by-node rather than as a blanket count: a blanket
+    // `any(|n| n.trait_geometry)` would also be satisfied by the flag being
+    // wrongly set on `body`/`hole`/`holes`, so naming exactly which nodes flip
+    // is what pins the true scope of the change.
+    //
+    // The consumed-intermediate observable above is independent of this flag:
+    // `geometry` is un-consumed, so `default_visible == true` either way.
     assert!(
-        !root
-            .children
-            .iter()
-            .any(|n| n.trait_geometry),
-        "no BoltFlange node may report trait_geometry while the heuristic is \
-         declared-name-only and the example declares `: Rigid`; got {:?}",
-        root.children
-            .iter()
-            .filter(|n| n.trait_geometry)
-            .map(|n| &n.entity_path)
-            .collect::<Vec<_>>()
+        value_cell("geometry").trait_geometry,
+        "value cell `BoltFlange.geometry` must report trait_geometry — \
+         `BoltFlange : Rigid : Physical` reaches Physical transitively"
     );
+    assert!(
+        realization("geometry").trait_geometry,
+        "the `geometry` realization must report trait_geometry, matching its \
+         value-cell sibling (#4954/#5195)"
+    );
+    // Construction-step realizations are not the trait-mandated member.
+    for name in ["body", "hole", "holes"] {
+        assert!(
+            !realization(name).trait_geometry,
+            "construction-step realization '{name}' must NOT report \
+             trait_geometry — only the `geometry` member is trait-mandated"
+        );
+    }
+    // …nor are the plain scalar params, nor the intermediates' value cells.
+    for member in [
+        "body",
+        "hole",
+        "holes",
+        "outer_radius",
+        "height",
+        "hole_count",
+        "bolt_circle_radius",
+        "hole_radius",
+    ] {
+        assert!(
+            !value_cell(member).trait_geometry,
+            "value cell '{member}' must NOT report trait_geometry — exactly \
+             the `geometry` nodes flip, nothing else"
+        );
+    }
 }
 
 /// #5195 amendment (reviewer: robustness): a CONTAINER-typed geometry binding
