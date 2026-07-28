@@ -718,7 +718,7 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     # holds ${LANE_DIR}.lock on FD 9 itself and therefore omits --lane-lock.
     exec 9>"$LANE_LOCK"
     if [ "$_llw_unlimited" -eq 1 ]; then
-        flock 9   # block until acquired -- never refuses, no exit-75 case
+        flock 9   # block until acquired -- never refuses, no refusal-rc case
     elif [ "$LANE_LOCK_WAIT" = "0" ]; then
         if ! flock -n 9; then
             exec 9>&-
@@ -731,7 +731,7 @@ if [ -n "$_should_acquire_lane_lock" ]; then
             exec 9>&-
             err "Lane lock still held by a live consumer after waiting ${LANE_LOCK_WAIT}s (flock -w timed out): $LANE_LOCK"
             err "Refusing to reseed an ASSIGNED lane (inv.2: one consumer per lane at a time)."
-            exit 75
+            exit "$LANE_LOCK_REFUSAL_RC"
         fi
     fi
     unset _llw_unlimited
@@ -758,7 +758,10 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     # of this very OFD and the exclusive lock is STILL HELD, even once this
     # process has exited. A consumer probing the instant seed exits then sees a
     # held lock, and acquire_lane's default is a non-blocking `flock -n`
-    # (exit 75 EX_TEMPFAIL), so it is spuriously refused. `flock -u` on any
+    # (refusing with $LANE_LOCK_REFUSAL_RC -- 75 EX_TEMPFAIL by default, 77
+    # under --distinct-lock-refusal-rc), so it is spuriously refused. Note the
+    # refusal is spurious EITHER WAY: #5568's rc only makes a real refusal
+    # legible, it does not make this window benign. `flock -u` on any
     # descriptor referring to the OFD drops the lock for every process holding
     # a dup, which closes the window; closing our own descriptor provably does
     # not. Measured on a 32-core host under 24 busy-spin workers,
@@ -808,7 +811,7 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     # impossible rather than conditionally avoided: on the inheritance path the
     # trap does not exist at all. (H7b pins it.)
     #
-    # Ordering note: the exit-75 refusal paths above do their own `exec 9>&-`
+    # Ordering note: the $LANE_LOCK_REFUSAL_RC refusal paths above do their own `exec 9>&-`
     # and error out BEFORE this line, so they never reach the trap and there is
     # no double-close. The script has no other trap to compose with.
     # ═════════════════════════════════════════════════════════════════════════
