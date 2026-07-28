@@ -1026,7 +1026,7 @@ fn validate_rounded_corner_constraint(
             reify_core::Type::Scalar { dimension } => CompiledExpr::literal(
                 Value::Scalar {
                     si_value: 0.0,
-                    dimension: dimension.clone(),
+                    dimension: *dimension,
                 },
                 corner_r.result_type.clone(),
             ),
@@ -1063,7 +1063,18 @@ fn validate_rounded_corner_constraint(
             fits,
             Type::Bool,
         );
-        constraint_sink.push(|_idx| "rounded_corner_valid".to_string(), predicate, span);
+        // The label names the constructor AND carries the sink's index, which
+        // is the same counter that feeds `ConstraintNodeId::new` — so labels are
+        // unique within the entity and stable for a given source. Both halves
+        // matter because the label is the only designer-visible text on a
+        // violation (see this function's doc and `Engine::labeled_diagnostics`):
+        // without the name it says nothing about which constructor failed,
+        // without the index it cannot distinguish two calls in one entity.
+        constraint_sink.push(
+            |idx| format!("{name}_corner_r_valid_{idx}"),
+            predicate,
+            span,
+        );
         return true;
     };
 
