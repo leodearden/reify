@@ -873,6 +873,124 @@ mod tests {
         );
     }
 
+    // ── partition_enforced_and_stale ─────────────────────────────────────────
+    //
+    // Pure classification over synthetic (violations, exceptions) inputs — no
+    // live repo state — so the stale-entry branch (whose trigger condition,
+    // #5639 landing, does not exist in the repo today) is directly testable.
+
+    /// (1) A violation for path A, exempted by an exception naming A →
+    /// both halves empty: the exception is exercised and current.
+    #[test]
+    fn pes_exact_match_leaves_both_halves_empty() {
+        let violations =
+            vec!["crates/a/src/lib.rs: line 3: hand-rolled construction: \"...\"".to_string()];
+        let exceptions: &[(&str, &str)] = &[("crates/a/src/lib.rs", "justification")];
+
+        let (enforced, stale) = partition_enforced_and_stale(&violations, exceptions);
+
+        assert!(
+            enforced.is_empty(),
+            "expected no enforced violations: {enforced:?}"
+        );
+        assert!(stale.is_empty(), "expected no stale exceptions: {stale:?}");
+    }
+
+    /// (2) A violation for A only, but the exception table ALSO lists B →
+    /// B is STALE. This is the exact case that fires when #5639 lands and
+    /// migrates `reify-build-utils`: its entry must be deleted, and this
+    /// assertion is what forces that deletion.
+    #[test]
+    fn pes_exception_with_no_matching_violation_is_stale() {
+        let violations =
+            vec!["crates/a/src/lib.rs: line 3: hand-rolled construction: \"...\"".to_string()];
+        let exceptions: &[(&str, &str)] = &[
+            ("crates/a/src/lib.rs", "justification a"),
+            ("crates/b/src/lib.rs", "justification b"),
+        ];
+
+        let (enforced, stale) = partition_enforced_and_stale(&violations, exceptions);
+
+        assert!(
+            enforced.is_empty(),
+            "expected no enforced violations: {enforced:?}"
+        );
+        assert_eq!(
+            stale,
+            vec!["crates/b/src/lib.rs".to_string()],
+            "expected b's exception to be reported stale: {stale:?}"
+        );
+    }
+
+    /// (3) Violations for A and C, exception list covers only A → C is
+    /// ENFORCED (an un-excepted violation — the sweep must fail on it).
+    #[test]
+    fn pes_unexempted_violation_is_enforced() {
+        let violations = vec![
+            "crates/a/src/lib.rs: line 3: hand-rolled construction: \"...\"".to_string(),
+            "crates/c/src/lib.rs: line 7: unbound guard: \"...\"".to_string(),
+        ];
+        let exceptions: &[(&str, &str)] = &[("crates/a/src/lib.rs", "justification a")];
+
+        let (enforced, stale) = partition_enforced_and_stale(&violations, exceptions);
+
+        assert_eq!(
+            enforced,
+            vec!["crates/c/src/lib.rs: line 7: unbound guard: \"...\"".to_string()],
+            "expected c's violation to be enforced: {enforced:?}"
+        );
+        assert!(stale.is_empty(), "expected no stale exceptions: {stale:?}");
+    }
+
+    /// (4) No violations at all, but the exception table is non-empty →
+    /// EVERY exception is stale.
+    #[test]
+    fn pes_empty_violations_makes_every_exception_stale() {
+        let violations: Vec<String> = Vec::new();
+        let exceptions: &[(&str, &str)] = &[
+            ("crates/a/src/lib.rs", "justification a"),
+            ("crates/b/src/lib.rs", "justification b"),
+        ];
+
+        let (enforced, stale) = partition_enforced_and_stale(&violations, exceptions);
+
+        assert!(
+            enforced.is_empty(),
+            "expected no enforced violations: {enforced:?}"
+        );
+        assert_eq!(
+            stale.len(),
+            2,
+            "expected both exceptions to be stale against zero violations: {stale:?}"
+        );
+    }
+
+    /// (5) Anchoring: an exception path that is merely a SUBSTRING of a
+    /// violation's path (not a true `"{path}: "` prefix) must NOT suppress
+    /// that violation, and the exception itself must be reported stale — a
+    /// substring collision must never silently exempt the wrong file.
+    #[test]
+    fn pes_exception_matching_is_anchored_on_the_path_prefix_not_a_substring() {
+        let violations =
+            vec!["crates/b/notfoo.rs: line 1: hand-rolled construction: \"...\"".to_string()];
+        // "foo.rs" is a substring of "notfoo.rs" but not a `"{path}: "` prefix
+        // of the violation string above.
+        let exceptions: &[(&str, &str)] = &[("foo.rs", "should not match notfoo.rs")];
+
+        let (enforced, stale) = partition_enforced_and_stale(&violations, exceptions);
+
+        assert_eq!(
+            enforced,
+            vec!["crates/b/notfoo.rs: line 1: hand-rolled construction: \"...\"".to_string()],
+            "a substring match must not suppress the real violation: {enforced:?}"
+        );
+        assert_eq!(
+            stale,
+            vec!["foo.rs".to_string()],
+            "the non-matching exception must be reported stale: {stale:?}"
+        );
+    }
+
     // ── ratchet: files migrated off hand-rolled temp dirs ────────────────────
     //
     // Each guard below is ratcheted on by #5640 together with the migration that
