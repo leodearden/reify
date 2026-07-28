@@ -1,6 +1,6 @@
 //! Tests for `fn_param` default-value expressions (task 3449).
 //!
-//! User-observable signal: `cargo test -p reify-syntax --test fn_param_default_tests`
+//! User-observable signal: `cargo test -p reify-syntax --test harness_syntax -- fn_param_default_tests::`
 //! passes.
 //!
 //! Two test tiers:
