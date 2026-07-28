@@ -30445,11 +30445,15 @@
     //
     // `profile_rectangle` / `profile_circle` / `profile_ellipse` used to
     // forward every evaluated dimension into the IR unjudged, so a negative or
-    // zero width/radius/semi-axis only surfaced much later as an opaque OCCT
-    // `OperationFailed("... must be finite and positive")` that named no
-    // argument. These tests drive `compile_geometry_op` end-to-end and pin the
-    // early, argument-level rejection, modelled on
-    // `compile_geometry_op_scale_negative_factor_returns_none` (:2265).
+    // zero width/radius/semi-axis was first judged inside `kernel.execute()`,
+    // arriving as a `GeometryError::OperationFailed` — a kernel EXECUTION
+    // failure, raised only after the op had been compiled and dispatched. (Its
+    // message does name the profile and the argument — `"rectangle_profile
+    // width must be a finite positive value"`, reify-kernel-occt/src/lib.rs
+    // :3446 — so what these tests buy is the timing and the channel, not better
+    // wording.) They drive `compile_geometry_op` end-to-end and pin the
+    // build-time, argument-level rejection that now precedes dispatch, modelled
+    // on `compile_geometry_op_scale_negative_factor_returns_none` (:2265).
 
     /// Helper: run `compile_geometry_op` on a bare `Profile` op and return its
     /// result alongside the diagnostics it pushed. Profiles are leaf ops — no
@@ -30629,6 +30633,52 @@
         assert!(
             diagnostics.is_empty(),
             "an unresolved dimension must be quiet — no diagnostic, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// CONSTRAINT test, second half — `as_f64() == None` covers TWO cases, and
+    /// the sibling test above only pins one of them.
+    ///
+    /// `required_positive_profile_dimension`'s `None` arm is documented as
+    /// "not yet resolved (or NOT A NUMBER AT ALL)", and a `Bool` (or `String`,
+    /// or `Point`) width takes that same arm: it is forwarded to the IR
+    /// verbatim, with no diagnostic from this gate. That pass-through is
+    /// deliberate and pre-existing — a `Bool` width is a TYPE error, not a
+    /// dimension error, and it is not this helper's job to diagnose it (the
+    /// kernel's `extract_f64` rejects it downstream). Pinning it here means a
+    /// future tightening of the `None` arm to reject non-numerics cannot land
+    /// without confronting this test, instead of silently taking `Undef`
+    /// quiet-degradation down with it — the two halves of the contract now
+    /// fail independently.
+    #[test]
+    fn compile_geometry_op_rectangle_profile_bool_width_still_returns_ok() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Rectangle,
+            vec![
+                ("width".into(), literal_bool(true)),
+                ("height".into(), literal_f64(0.05)),
+            ],
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::RectangleProfile { width, height }) => {
+                assert_eq!(
+                    width,
+                    reify_ir::Value::Bool(true),
+                    "a non-numeric width must reach the IR verbatim — this gate judges \
+                     dimensions, not types"
+                );
+                assert_eq!(height, reify_ir::Value::Real(0.05));
+            }
+            other => panic!(
+                "a non-numeric width must take the same quiet `None` arm as Undef, got: {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "a non-numeric dimension must be quiet HERE (it is a type error, diagnosed \
+             elsewhere) — got: {:?}",
             diagnostics
         );
     }
@@ -30977,6 +31027,173 @@
             result
         );
         assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
+    }
+
+    // ── DEGENERATE_RING_AREA_TOLERANCE is load-bearing, so pin it ───────────
+    //
+    // Every degenerate case above has a signed area of EXACTLY 0.0 (collinear,
+    // identical, 2-point), and the smallest accepted ring above has area 5e-5.
+    // That leaves the whole open interval (0, 1e-4) passing the suite unchanged
+    // — so an accidental widening of the constant to, say, 1e-6, which would
+    // start silently rejecting legitimately small profiles, would ship green.
+    //
+    // Two DIFFERENT guards close that, and it is worth being precise about
+    // which does what, because the obvious reading is wrong. The two boundary
+    // tests below derive their rings FROM the constant (0.5× and 2×), so they
+    // MOVE WITH IT: they do NOT catch a retune on their own. What they pin is
+    // that the gate honours whatever value the constant holds, with the right
+    // sense and scale — verified by mutation: widening the comparison to
+    // `< TOLERANCE * 4.0` fails the 2× test, and halving the shoelace result
+    // fails the 0.5× test. The ABSOLUTE magnitude is pinned separately, by
+    // `degenerate_ring_area_tolerance_matches_mesher_gate`, which compares
+    // against the mesher's own literal — also verified by mutation: setting the
+    // constant to 1e-6 fails exactly that test and no other.
+
+    /// Helper: coordinate args for a right triangle with the requested shoelace
+    /// signed area, in SI m².
+    ///
+    /// The ring `[(0,0), (b,0), (0,h)]` has shoelace sum `b*h`, hence signed
+    /// area `0.5*b*h`. Fixing `h` and solving `b = 2*area/h` lets a caller ask
+    /// for an area expressed as a multiple of `DEGENERATE_RING_AREA_TOLERANCE`,
+    /// so these tests keep straddling the threshold if it is ever retuned —
+    /// which hardcoded coordinates would not.
+    fn triangle_args_with_area(area: f64) -> Vec<(String, reify_ir::CompiledExpr)> {
+        // 0.1 µm — a plausible-if-tiny modelling length, and far from f64
+        // subnormal territory, so `2.0 * area / h` stays exact to within an ulp.
+        let h = 1e-7_f64;
+        let b = 2.0 * area / h;
+        coord_args(&[0.0, 0.0, b, 0.0, 0.0, h])
+    }
+
+    /// A ring with |signed area| BELOW the tolerance is degenerate and rejected.
+    /// Half the tolerance, not one ulp below it: the point is to pin the
+    /// constant's magnitude, and a 2× margin keeps the test itself immune to
+    /// float noise in the shoelace sum.
+    #[test]
+    fn compile_geometry_op_polygon_profile_area_just_below_tolerance_returns_err() {
+        let target = DEGENERATE_RING_AREA_TOLERANCE * 0.5;
+        let (result, diagnostics) =
+            compile_profile_op(reify_compiler::ProfileKind::Polygon, triangle_args_with_area(target));
+        assert!(
+            result.is_err(),
+            "a ring of area {:e} (half of DEGENERATE_RING_AREA_TOLERANCE = {:e}) must be \
+             rejected as degenerate, got: {:?}",
+            target,
+            DEGENERATE_RING_AREA_TOLERANCE,
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["polygon", "degenerate"]);
+    }
+
+    /// The mirror image: |signed area| ABOVE the tolerance must compile
+    /// untouched. This is the half that guards the OVER-rejection direction —
+    /// a gate that discards legitimate small geometry — which every other
+    /// polygon test here leaves unconstrained, since the next-smallest accepted
+    /// ring in the suite has an area nine orders of magnitude larger.
+    #[test]
+    fn compile_geometry_op_polygon_profile_area_just_above_tolerance_returns_ok() {
+        let target = DEGENERATE_RING_AREA_TOLERANCE * 2.0;
+        let (result, diagnostics) =
+            compile_profile_op(reify_compiler::ProfileKind::Polygon, triangle_args_with_area(target));
+        assert!(
+            result.is_ok(),
+            "a ring of area {:e} (twice DEGENERATE_RING_AREA_TOLERANCE = {:e}) is small but \
+             valid and must still compile, got: {:?}",
+            target,
+            DEGENERATE_RING_AREA_TOLERANCE,
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "an accepted ring must be silent, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// Resolve this crate's manifest dir, preferring the RUNTIME
+    /// `CARGO_MANIFEST_DIR` over the compile-time `env!()` bake.
+    ///
+    /// The bake goes stale when a seeded warm-lane `target/` is reused from a
+    /// since-deleted worktree — `CARGO_MANIFEST_DIR` is not part of cargo's
+    /// fingerprint, so a content-identical rebuild is never triggered. Same
+    /// hazard and same fix as `resolve_manifest_dir` in
+    /// `crates/reify-ast/tests/dag_invariant.rs` (esc-4906-57).
+    fn eval_crate_manifest_dir() -> String {
+        std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string())
+    }
+
+    /// STRUCTURAL PARITY GUARD — the local tolerance must equal the mesher's.
+    ///
+    /// `DEGENERATE_RING_AREA_TOLERANCE` is documented as a strict pre-image of
+    /// the threshold `validate_boundary` (`reify-solver-elastic/src/mesher.rs`)
+    /// applies to a sampled ring, and that relationship only holds while the two
+    /// values are equal. It cannot be enforced by the compiler today: over there
+    /// the threshold is an inline literal inside a private fn, so there is
+    /// nothing to import (see the note on `ring_signed_area_2d` in
+    /// geometry_ops.rs — reify-eval DOES depend on reify-solver-elastic, so the
+    /// obstacle is visibility, not layering).
+    ///
+    /// So the parity is asserted from the outside: read the mesher's source and
+    /// compare the literals. That makes drift over there fail HERE, loudly,
+    /// instead of quietly dissolving the pre-image claim. The proper fix is to
+    /// promote both the fn and the threshold to `pub` and delete the local copy;
+    /// that edits a crate this task holds no lock on, and is filed as follow-up.
+    #[test]
+    fn degenerate_ring_area_tolerance_matches_mesher_gate() {
+        let mesher_path = std::path::Path::new(&eval_crate_manifest_dir())
+            .join("../reify-solver-elastic/src/mesher.rs");
+        let src = std::fs::read_to_string(&mesher_path).unwrap_or_else(|e| {
+            panic!(
+                "failed to read {} for the tolerance parity check: {}",
+                mesher_path.display(),
+                e
+            )
+        });
+
+        // `validate_boundary` gates both the outer ring and each hole with
+        // `ring_signed_area_2d(..).abs() < <literal>`. Collect every such
+        // literal; each must equal our copy.
+        const NEEDLE: &str = ".abs() < ";
+        let thresholds: Vec<&str> = src
+            .lines()
+            .filter(|line| line.contains("ring_signed_area_2d("))
+            .filter_map(|line| line.split_once(NEEDLE))
+            .map(|(_, tail)| {
+                tail.trim_start()
+                    .split(|c: char| c.is_whitespace() || c == '{')
+                    .next()
+                    .unwrap_or("")
+            })
+            .collect();
+
+        assert!(
+            thresholds.len() >= 2,
+            "expected at least 2 `ring_signed_area_2d(..).abs() < <lit>` gates in {} (outer ring \
+             + holes), found {:?}. If `validate_boundary` was refactored — e.g. the threshold \
+             lifted to a named const, or the comparison reformatted across lines — this guard can \
+             no longer see it: re-point it, or better, make the const `pub` and import it here so \
+             the parity becomes structural.",
+            mesher_path.display(),
+            thresholds
+        );
+
+        for raw in &thresholds {
+            let parsed: f64 = raw.parse().unwrap_or_else(|e| {
+                panic!(
+                    "could not parse the mesher's degenerate-ring threshold {:?} as f64: {}",
+                    raw, e
+                )
+            });
+            assert_eq!(
+                parsed, DEGENERATE_RING_AREA_TOLERANCE,
+                "the mesher's degenerate-ring threshold ({:e}) no longer equals \
+                 DEGENERATE_RING_AREA_TOLERANCE ({:e}) in geometry_ops.rs. The build-time polygon \
+                 gate is only a strict PRE-IMAGE of `validate_boundary` while these are equal — \
+                 if they diverge, a ring this crate accepts can be rejected downstream (or vice \
+                 versa) with no diagnostic explaining why. Update both, together.",
+                parsed, DEGENERATE_RING_AREA_TOLERANCE
+            );
+        }
     }
 
     // A NaN dimension is a strictly WORSE instance of the same defect class as
