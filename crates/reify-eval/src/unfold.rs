@@ -465,8 +465,10 @@ fn elaborate_child_instance_nested<'t>(
     let node_traces = phase15_node_traces(child_template, &nodes, &nestable);
     let sorted = topological_sort(&node_ids, &node_traces);
     // `topological_sort` (Kahn) silently omits cycle members. Append them in
-    // declaration order so evaluation still terminates and produces values;
-    // step i5 additionally diagnoses them, so they are never silently wrong.
+    // declaration order so evaluation still terminates and produces values, and
+    // report the cycle so those values are never silently wrong: a cycle here
+    // leaves the whole chain `Undef`, and an unreported `Undef` is exactly the
+    // silent-default class this path exists to eliminate.
     let mut walk_order = sorted;
     if walk_order.len() < node_ids.len() {
         let placed: HashSet<&NodeId> = walk_order.iter().collect();
@@ -475,6 +477,32 @@ fn elaborate_child_instance_nested<'t>(
             .filter(|nid| !placed.contains(nid))
             .cloned()
             .collect();
+
+        // Render each participant so it names a cell a reader can go find.
+        // A LET node renders as its member, matching the let-only detector's
+        // prose. A SUB node CANNOT: `PHASE15_SUB_NODE_MEMBER` is the EMPTY
+        // string, so rendering it that way would print a dangling dot naming
+        // nothing. Render it from `sub.name` — the same string
+        // `phase15_sub_node_key` puts in the entity suffix, taken from the node
+        // directly rather than by stripping the `{child_template}.` prefix back
+        // off the key.
+        let mut participants: Vec<String> = dropped
+            .iter()
+            .filter_map(|nid| match nodes.get(nid) {
+                Some(Phase15Node::Let { key, .. }) => Some(key.member.clone()),
+                Some(Phase15Node::Sub { sub, .. }) => Some(format!("sub {}", sub.name)),
+                None => None,
+            })
+            .collect();
+        participants.sort();
+        diagnostics.push(Diagnostic::error(format!(
+            "circular dependency among nested-sub arguments and let bindings in \
+             template {} (entity {}): [{}]",
+            child_template.name,
+            scoped_entity,
+            participants.join(", "),
+        )));
+
         walk_order.extend(dropped);
     }
 
