@@ -871,10 +871,9 @@ describe("extractMeshCountInputs — composes with checkMeshCountParity", () => 
     p.meshStats = { error: "engine poisoned" } as never;
     p.engineState.meshes = p.engineState.meshes.slice(0, 1);
 
-    const { inputs, failures } = extractMeshCountInputs(p) as {
-      inputs: Record<string, unknown>;
-      failures: Failure[];
-    };
+    // `inputs` keeps its inferred type here — it is handed straight back to
+    // checkMeshCountParity below, which is the composition under test.
+    const { inputs, failures } = extractMeshCountInputs(p);
 
     // The outage is fully diagnosed WITHOUT consulting the parity checker, and
     // is labelled as one — the gate a caller branches on.
