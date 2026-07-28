@@ -79,6 +79,142 @@ fn collect_value_refs(expr: &CompiledExpr, out: &mut HashSet<ValueCellId>) {
     });
 }
 
+/// For each dependent cell, the set of auto-param ids it reads TRANSITIVELY —
+/// following `ValueRef`s through OTHER dependent cells, not just its own
+/// expression.
+///
+/// # Why this exists (task #5720)
+///
+/// [`decompose_into_components`] unions the auto params an objective references
+/// SYNTACTICALLY. The canonical joint-drive shape (task #5189 β) is an objective
+/// that reads a bare DERIVED cell and no auto at all, so that union step sees an
+/// empty set and two autos coupled only through the derived cell land in
+/// SEPARATE components. `SolverRegistry::solve_inner` feeds this map back into
+/// its `obj_refs` before decomposing, so decomposition follows `dependent_cells`
+/// and the coupled autos are solved jointly. It also uses the map as the
+/// per-component fold filter: a component folds a cell only when it OWNS every
+/// auto that cell transitively reads, which is what makes a cross-component
+/// `Undef` fold structurally impossible.
+///
+/// # Why a reachability DFS, not a single forward pass
+///
+/// `dependent_cells` arrives topologically sorted (reify-eval's
+/// `build_dependent_cells`), so a single forward pass would be cheaper. Its
+/// failure mode is catastrophic and SILENT: were any cell to read a later
+/// entry, the pass would under-approximate that cell's auto set, the registry's
+/// subset filter would wrongly KEEP the cell in a component missing one of its
+/// autos, and the `Undef` fold would come straight back. A reachability DFS is
+/// order-independent, still linear, and cannot regress that way.
+///
+/// This computes REACHABILITY ONLY and never reorders `dependent_cells`, so PRD
+/// §6.3's single-authority-on-order invariant is untouched: the stored order
+/// remains the one authority, produced once upstream and consumed unchanged.
+///
+/// # INVARIANTS
+///
+/// - Cycle-safe: a cell reachable from itself terminates with the PARTIAL set
+///   accumulated so far rather than recursing forever. reify-eval's
+///   `build_dependent_cells` already drops cycles, but the visited set costs
+///   nothing and removes the dependency on that upstream guarantee.
+/// - Iterative (explicit stack), so a deep dependent-cell chain cannot blow the
+///   native stack.
+/// - A ref that is neither an auto nor another dependent cell is ignored: it is
+///   a plain value that carries no auto dependence.
+/// - A duplicate cell id resolves to its FIRST occurrence, matching the fold
+///   order in `fold_dependent_cells` (stored order, first write wins the
+///   subsequent reads).
+pub(crate) fn dependent_cell_auto_reads(
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
+    auto_params: &[AutoParam],
+) -> HashMap<ValueCellId, HashSet<ValueCellId>> {
+    let n = dependent_cells.len();
+    if n == 0 {
+        return HashMap::new();
+    }
+
+    let auto_ids: HashSet<&ValueCellId> = auto_params.iter().map(|ap| &ap.id).collect();
+
+    let mut cell_index: HashMap<&ValueCellId, usize> = HashMap::with_capacity(n);
+    for (i, (id, _)) in dependent_cells.iter().enumerate() {
+        cell_index.entry(id).or_insert(i);
+    }
+
+    // Split each cell's direct refs into (a) autos it reads outright and (b)
+    // other dependent cells whose own auto sets it inherits.
+    let mut direct_autos: Vec<HashSet<ValueCellId>> = Vec::with_capacity(n);
+    let mut child_cells: Vec<Vec<usize>> = Vec::with_capacity(n);
+    for (_id, expr) in dependent_cells {
+        let mut refs = HashSet::new();
+        collect_value_refs(expr, &mut refs);
+
+        let mut autos = HashSet::new();
+        let mut children = Vec::new();
+        for r in refs {
+            if auto_ids.contains(&r) {
+                autos.insert(r);
+            } else if let Some(&ci) = cell_index.get(&r) {
+                children.push(ci);
+            }
+            // else: a plain value with no auto dependence → ignored.
+        }
+        direct_autos.push(autos);
+        child_cells.push(children);
+    }
+
+    // Iterative post-order DFS with memoization. `state`: 0 = unvisited,
+    // 1 = on the current stack (in progress), 2 = resolved.
+    let mut memo: Vec<Option<HashSet<ValueCellId>>> = vec![None; n];
+    let mut state: Vec<u8> = vec![0; n];
+    let mut stack: Vec<usize> = Vec::new();
+
+    for start in 0..n {
+        if state[start] == 2 {
+            continue;
+        }
+        stack.push(start);
+        while let Some(&top) = stack.last() {
+            match state[top] {
+                0 => {
+                    state[top] = 1;
+                    for &child in &child_cells[top] {
+                        // Skip children already resolved (2) or already on this
+                        // stack (1) — the latter is the cycle guard.
+                        if state[child] == 0 {
+                            stack.push(child);
+                        }
+                    }
+                }
+                1 => {
+                    // Every child has either resolved or is an in-progress
+                    // ancestor (a cycle). Union the resolved ones; a cycle
+                    // contributes its partial set via the ancestor's own frame.
+                    let mut set = direct_autos[top].clone();
+                    for &child in &child_cells[top] {
+                        if let Some(child_set) = &memo[child] {
+                            set.extend(child_set.iter().cloned());
+                        }
+                    }
+                    memo[top] = Some(set);
+                    state[top] = 2;
+                    stack.pop();
+                }
+                // Already resolved — this frame is a duplicate push.
+                _ => {
+                    stack.pop();
+                }
+            }
+        }
+    }
+
+    let mut out: HashMap<ValueCellId, HashSet<ValueCellId>> = HashMap::with_capacity(n);
+    for (i, (id, _)) in dependent_cells.iter().enumerate() {
+        let set = memo[i].clone().unwrap_or_default();
+        // First occurrence wins, matching `cell_index`.
+        out.entry(id.clone()).or_insert(set);
+    }
+    out
+}
+
 /// Decompose a constraint problem into independent connected components.
 ///
 /// Each component groups constraints that share auto parameters (directly
@@ -270,5 +406,112 @@ mod tests {
 
         uf.union(1, 3);
         assert_eq!(uf.find(0), uf.find(3));
+    }
+
+    // --- dependent_cell_auto_reads (task #5720) ---
+
+    fn auto(name: &str) -> AutoParam {
+        AutoParam {
+            id: ValueCellId::new("P", name),
+            param_type: Type::length(),
+            bounds: Some((0.0, 1.0)),
+            free: true,
+        }
+    }
+
+    fn vref(name: &str) -> CompiledExpr {
+        CompiledExpr::value_ref(ValueCellId::new("P", name), Type::length())
+    }
+
+    #[test]
+    fn dependent_cell_auto_reads_direct_auto() {
+        let cells = vec![(ValueCellId::new("P", "total"), vref("a"))];
+        let map = dependent_cell_auto_reads(&cells, &[auto("a")]);
+        assert_eq!(
+            map.get(&ValueCellId::new("P", "total")),
+            Some(&HashSet::from([ValueCellId::new("P", "a")]))
+        );
+    }
+
+    #[test]
+    fn dependent_cell_auto_reads_two_hop_chain_is_transitive() {
+        // total = subtotal + a; subtotal = b. `total` must report BOTH autos.
+        let cells = vec![
+            (ValueCellId::new("P", "subtotal"), vref("b")),
+            (
+                ValueCellId::new("P", "total"),
+                CompiledExpr::binop(BinOp::Add, vref("subtotal"), vref("a"), Type::length()),
+            ),
+        ];
+        let map = dependent_cell_auto_reads(&cells, &[auto("a"), auto("b")]);
+        assert_eq!(
+            map.get(&ValueCellId::new("P", "total")),
+            Some(&HashSet::from([
+                ValueCellId::new("P", "a"),
+                ValueCellId::new("P", "b"),
+            ])),
+            "`total` reads `b` only through `subtotal`; a non-transitive walk \
+             would miss it and the registry's subset filter would then keep \
+             `total` in a component that does not own `b`"
+        );
+    }
+
+    #[test]
+    fn dependent_cell_auto_reads_is_order_independent() {
+        // Same graph as above but with the chain stored BACKWARDS (a cell
+        // reading a LATER entry). A single forward pass would under-approximate;
+        // the reachability DFS must not.
+        let cells = vec![
+            (
+                ValueCellId::new("P", "total"),
+                CompiledExpr::binop(BinOp::Add, vref("subtotal"), vref("a"), Type::length()),
+            ),
+            (ValueCellId::new("P", "subtotal"), vref("b")),
+        ];
+        let map = dependent_cell_auto_reads(&cells, &[auto("a"), auto("b")]);
+        assert_eq!(
+            map.get(&ValueCellId::new("P", "total")),
+            Some(&HashSet::from([
+                ValueCellId::new("P", "a"),
+                ValueCellId::new("P", "b"),
+            ]))
+        );
+    }
+
+    #[test]
+    fn dependent_cell_auto_reads_ignores_non_auto_non_dependent_refs() {
+        let cells = vec![(ValueCellId::new("P", "total"), vref("plain"))];
+        let map = dependent_cell_auto_reads(&cells, &[auto("a")]);
+        assert_eq!(
+            map.get(&ValueCellId::new("P", "total")),
+            Some(&HashSet::new()),
+            "a ref that is neither an auto nor another dependent cell carries \
+             no auto dependence"
+        );
+    }
+
+    #[test]
+    fn dependent_cell_auto_reads_terminates_on_a_cycle() {
+        // x = y + a; y = x + b. Self-reachable, so a naive recursion would hang.
+        let cells = vec![
+            (
+                ValueCellId::new("P", "x"),
+                CompiledExpr::binop(BinOp::Add, vref("y"), vref("a"), Type::length()),
+            ),
+            (
+                ValueCellId::new("P", "y"),
+                CompiledExpr::binop(BinOp::Add, vref("x"), vref("b"), Type::length()),
+            ),
+        ];
+        let map = dependent_cell_auto_reads(&cells, &[auto("a"), auto("b")]);
+        // Terminating at all IS the assertion; each cell must still report at
+        // least its own directly-read auto.
+        assert!(map.get(&ValueCellId::new("P", "x")).unwrap().contains(&ValueCellId::new("P", "a")));
+        assert!(map.get(&ValueCellId::new("P", "y")).unwrap().contains(&ValueCellId::new("P", "b")));
+    }
+
+    #[test]
+    fn dependent_cell_auto_reads_empty_input_is_empty() {
+        assert!(dependent_cell_auto_reads(&[], &[auto("a")]).is_empty());
     }
 }

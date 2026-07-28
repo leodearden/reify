@@ -161,6 +161,14 @@ impl SolverRegistry {
             );
         }
 
+        // For each dependent cell, the autos it reads TRANSITIVELY (task #5720).
+        // Computed ONCE per solve — never inside the component loop below, which
+        // also consumes it as the per-component fold filter.
+        let dependent_auto_reads = crate::decompose::dependent_cell_auto_reads(
+            &problem.dependent_cells,
+            &problem.auto_params,
+        );
+
         // Collect value-refs from ALL objective terms for objective-aware decomposition.
         // Single-term ObjectiveSet reduces to the prior single-expr ref set bit-identically.
         let obj_refs: Option<std::collections::HashSet<ValueCellId>> =
@@ -169,11 +177,35 @@ impl SolverRegistry {
                 for term in &obj.terms {
                     crate::decompose::collect_value_refs_pub(&term.expr, &mut refs);
                 }
+                // Expand through `dependent_cells` (task #5720): a ref to a
+                // derived cell also means every auto that cell transitively
+                // drives.  `dependent_cell_auto_reads` is already transitive, so
+                // one pass over the syntactic refs closes the set.
+                let reached: Vec<ValueCellId> = refs
+                    .iter()
+                    .filter_map(|id| dependent_auto_reads.get(id))
+                    .flat_map(|autos| autos.iter().cloned())
+                    .collect();
+                refs.extend(reached);
                 refs
             });
 
-        // Decompose into connected components, merging any components
-        // whose auto params are co-referenced by the objective expression(s)
+        // Decompose into connected components. Decomposition FOLLOWS
+        // `dependent_cells`: because `obj_refs` above was expanded through them,
+        // an objective that reads a derived cell unions every auto that cell
+        // transitively drives into ONE component, and `objective_component`'s
+        // first-match lookup below therefore resolves for real.
+        //
+        // Why the expansion is load-bearing (task #5720): the canonical
+        // joint-drive shape (task #5189 β) is an objective that reads a bare
+        // derived cell and NO auto directly, so the unexpanded `obj_refs` held
+        // no auto ids at all. `decompose_into_components`' objective-union step
+        // filters to auto indices, got an empty set, and unioned nothing — two
+        // autos coupled only through that cell landed in separate components,
+        // and the lookup below fell through to the hardcoded `0`, handing the
+        // objective to an arbitrary component of a nondeterministic `HashMap`
+        // iteration while the other component's autos were solved
+        // feasibility-only against stale seeds.
         let components =
             decompose_into_components(&problem.auto_params, &problem.constraints, obj_refs.as_ref());
 
