@@ -3,7 +3,9 @@
 # Hermetic tests for scripts/warm-lane-gc-sweep.sh (task 4863).
 #
 # Blocks:
-#   A — CLI guard: --help exits 0 and prints usage; unknown flag exits 2
+#   A — CLI guard: --help exits 0 and prints usage; unknown flag exits 2; a
+#         MISSING sibling scripts/lib_live_refs.sh fails LOUD with exit 2
+#         (wiring error) before argv is parsed (task 5572 review)
 #   B — fail-open: non-existent --mount dir → exit 0, warn on stderr, gc-script NOT invoked
 #   C — happy path: existing --mount dir → exit 0, gc-script invoked as
 #         reclaim --mount <dir>
@@ -217,6 +219,25 @@ assert "A2: --help prints usage on stderr" \
 # A3: unknown flag exits 2
 run_sweep --unknown-flag-xyz
 assert "A3: unknown flag exits 2" test "$RC" -eq 2
+
+# A4: a MISSING sibling scripts/lib_live_refs.sh is a fail-LOUD wiring error
+# (task 5572 review). Mirrors test_warm_lane_gc.sh's A9 — both consumers of the
+# shared scanner must report an incomplete deployment the same way, or an
+# operator reading one script's exit code learns the wrong taxonomy for the
+# other. The sweep is copied ALONE into a temp dir and invoked with --help,
+# which normally exits 0: the guard fires before argv parsing, so exit 2 pins
+# both the code and the ordering.
+A4_DIR="$(mktemp -d /tmp/test-gc-sweep-a4-XXXXXX)"
+_TMPDIRS+=("$A4_DIR")
+cp "$SCRIPT" "$A4_DIR/warm-lane-gc-sweep.sh"
+assert "A4: fixture — the copy really has no sibling lib_live_refs.sh" \
+    bash -c '[ ! -e "$1/lib_live_refs.sh" ]' _ "$A4_DIR"
+A4_RC=0
+A4_ERR="$(bash "$A4_DIR/warm-lane-gc-sweep.sh" --help 2>&1 >/dev/null)" || A4_RC=$?
+assert "A4: missing sibling lib_live_refs.sh exits 2 (wiring error, not runtime 1)" \
+    test "$A4_RC" -eq 2
+assert "A4: stderr names the missing library (fail LOUD, not silent)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "lib_live_refs.sh not found"' _ "$A4_ERR"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block B — fail-open: non-existent --mount dir

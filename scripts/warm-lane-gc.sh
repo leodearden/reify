@@ -276,10 +276,13 @@ Usage: $(basename "$0") reclaim --mount WORKTREE_BASE [OPTIONS]
   Exit codes:
     0  — Completed sweep (per-candidate failures warn + continue).
     1  — Runtime error (e.g. base-target symlink unresolvable).
-    2  — Usage error.
+    2  — Usage/wiring error (incl. a missing sibling scripts/lib_live_refs.sh).
 
   Output:
-    stdout: machine-readable summary: reclaim: reset=N removed=M preserved=K
+    stdout: machine-readable summary:
+            reclaim: reset=N removed=M preserved=K preserved_live_ref=L
+            (L is the share of K held back by a live process reference — the
+             only preserve reason that can shield an entry indefinitely)
     stderr: all diagnostics.
 EOF
 }

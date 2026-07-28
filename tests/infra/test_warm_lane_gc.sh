@@ -15,7 +15,9 @@
 # Blocks:
 #   A — CLI guard: --help, unknown flag, bare invocation, unknown subcommand,
 #       reclaim missing --worktrees-dir or --base-target; --status-cmd is now
-#       an unknown flag (A8) — the Tier-3 machinery was removed (task 5326)
+#       an unknown flag (A8) — the Tier-3 machinery was removed (task 5326);
+#       a MISSING sibling scripts/lib_live_refs.sh fails LOUD with exit 2
+#       (wiring error) before argv is parsed (A9, task 5572 review)
 #   B — reset a divergent FREE lane (seed-script invoked with resolved gen path)
 #   C — remove an orphaned-landed clean worktree
 #   D — always-reclaim (task 5326): a DIRTY POOL LANE is now RECLAIMED (reset),
@@ -29,7 +31,11 @@
 #       ahead orphan + live-consumer lane + protect-glob preserved + summary line
 #   K — disk-pressure fast-path: rm -rf target/ instead of an alpha reseed clone
 #       (--disk-pressure / REIFY_WARM_LANE_GC_DISK_PRESSURE); lanes reclaim via
-#       always-reclaim, no --status-cmd needed (task 5167, 5326)
+#       always-reclaim, no --status-cmd needed (task 5167, 5326). K5 pins that
+#       the live-reference gate covers THIS branch too — Block P only ever
+#       drives the α branch, so gc.sh's "before BOTH reset branches" claim was
+#       structurally true but unasserted on the destructive one (task 5572
+#       review)
 #   M — ephemeral verify/sweep worktrees (_mainsweep-*/_mainprobe-*) protected
 #       by the DEFAULT protect-glob, DF-faithful (--mount only, no
 #       --protect-glob) (task 5221)
@@ -47,7 +53,10 @@
 #       caller inherits the guard, including dark-factory's ε reclaim, which
 #       never passes that flag. P-basic covers the ε-path gap (live at pass
 #       start, plus a free unreferenced control lane and a second-run proof
-#       that the preserve is temporary); P-toctou pins PLACEMENT — a lane that
+#       that the preserve is temporary); P-fd pins the OPEN-FD leg of the
+#       scanner on its own — cwd outside the mount, so only the fd can explain
+#       the preserve (the production shape: a compiler holding an output fd
+#       under <lane>/target); P-toctou pins PLACEMENT — a lane that
 #       goes live MID-PASS is still preserved, so the check cannot be hoisted
 #       into an up-front snapshot without going RED
 #   Q — the SAME gate on Pass 2's destructive orphan path (task 5572): a live
@@ -274,6 +283,26 @@ run_helper reclaim \
     --base-target "$A7_BASE/target" \
     --status-cmd /bin/true
 assert "A8: --status-cmd rejected as unknown flag (exit 2)" test "$RC" -eq 2
+
+# A9: a MISSING sibling scripts/lib_live_refs.sh is a fail-LOUD wiring error
+# (task 5572 review). The whole point of task 5572 is that the liveness guard
+# must never be silently absent, so the guard that enforces its presence cannot
+# itself be untested. gc.sh is copied ALONE into a temp dir — no sibling lib —
+# and invoked with --help, which normally exits 0: the guard fires before argv
+# is even parsed, so a 2 here also pins that ordering. Exit 2, not 1: an
+# incomplete deployment is a wiring error, matching gc.sh's own exit-code table
+# and its "exit 2 is reserved for usage/wiring errors" comment.
+A9_DIR="$(mktemp -d /tmp/test-gc-a9-XXXXXX)"
+_TMPDIRS+=("$A9_DIR")
+cp "$SCRIPT" "$A9_DIR/warm-lane-gc.sh"
+assert "A9: fixture — the copy really has no sibling lib_live_refs.sh" \
+    bash -c '[ ! -e "$1/lib_live_refs.sh" ]' _ "$A9_DIR"
+A9_RC=0
+A9_ERR="$(bash "$A9_DIR/warm-lane-gc.sh" --help 2>&1 >/dev/null)" || A9_RC=$?
+assert "A9: missing sibling lib_live_refs.sh exits 2 (wiring error, not runtime 1)" \
+    test "$A9_RC" -eq 2
+assert "A9: stderr names the missing library (fail LOUD, not silent)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "lib_live_refs.sh not found"' _ "$A9_ERR"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block B — reset a divergent FREE lane
@@ -1017,6 +1046,66 @@ assert "K4: summary counts the failed reset as preserved, not reset" \
 assert "K4: stderr captures the rm failure detail (not swallowed)" \
     bash -c 'printf "%s\n" "$1" | grep -qi "simulated failure"' _ "$ERR_OUT"
 
+# ── K5: --disk-pressure ALSO honours the live-reference gate (task 5572) ───────
+# gc.sh's Pass-1 comment claims the gate sits "before BOTH reset branches ... so
+# neither path can bypass it". Block P only ever drives the α branch, so that
+# claim was structurally true but never asserted — and the branch it left
+# unasserted is the destructive one: --disk-pressure `rm -rf <lane>/target`
+# obliterates a live build's output outright, with no seed-script in the way to
+# make the mistake visible. This is also the emergency path (ENOSPC response),
+# i.e. exactly when an operator is least able to notice a corrupted build
+# (task 5572 review).
+K5_REPO="$K_ROOT/k5-repo"
+K5_WORKTREES="$K_ROOT/k5-worktrees"
+K5_BASE="$K_ROOT/k5-base"
+mkdir -p "$K5_WORKTREES" "$K5_BASE"
+make_repo "$K5_REPO"
+mkdir -p "$K5_BASE/target.gen.1"
+touch "$K5_BASE/target.gen.1.lock"
+ln -sfn "$K5_BASE/target.gen.1" "$K5_BASE/target"
+
+# _lane-1 live (cwd holder), _lane-2 free — same discrimination shape as P-basic,
+# but under --disk-pressure and with a FREE flock on both.
+for _k5_name in _lane-1 _lane-2; do
+    git -C "$K5_REPO" worktree add -q "$K5_WORKTREES/$_k5_name"
+    mkdir -p "$K5_WORKTREES/$_k5_name/target"
+    touch "$K5_WORKTREES/$_k5_name/target/DIVERGENT_MARKER"
+done
+
+K5_READY="$K_ROOT/k5-holder.ready"
+( cd "$K5_WORKTREES/_lane-1/target" && touch "$K5_READY" && exec sleep 300 ) &
+K5_HELPER_PID=$!
+_BGPIDS+=("$K5_HELPER_PID")
+_wait_for_reader_lock "$K5_READY" 30
+
+K5_SEED_LOG="$K_ROOT/k5-seed-calls.log"
+K5_SEED_STUB="$K_ROOT/k5-seed-stub.sh"
+_seed_stub_body > "$K5_SEED_STUB"
+chmod +x "$K5_SEED_STUB"
+export SEED_LOG="$K5_SEED_LOG"
+
+run_helper reclaim \
+    --worktrees-dir "$K5_WORKTREES" \
+    --base-target "$K5_BASE/target" \
+    --seed-script "$K5_SEED_STUB" \
+    --disk-pressure
+
+assert "K5: exit 0" test "$RC" -eq 0
+assert "K5: live-referenced _lane-1 target/ SURVIVES --disk-pressure rm -rf (gate covers the destructive branch)" \
+    test -d "$K5_WORKTREES/_lane-1/target"
+assert "K5: live-referenced _lane-1 divergent marker intact (nothing was deleted)" \
+    test -f "$K5_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+assert "K5: free _lane-2 target/ DELETED outright (disk-pressure still works; not a blanket freeze)" \
+    bash -c '[ ! -d "$1" ]' _ "$K5_WORKTREES/_lane-2/target"
+assert "K5: stderr names the process-reference preserve reason for _lane-1" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "preserving _lane-1: live consumer (process reference)"' _ "$ERR_OUT"
+assert "K5: summary attributes the preserve to the live-reference gate (reset=1, preserved_live_ref=1)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "reset=1 removed=0 preserved=1 preserved_live_ref=1"' _ "$OUT"
+
+kill "$K5_HELPER_PID" 2>/dev/null || true
+wait "$K5_HELPER_PID" 2>/dev/null || true
+_BGPIDS=()  # clear so EXIT cleanup does not re-kill a possibly-reused PID
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block M — ephemeral verify/sweep worktrees protected by default
 # _mainsweep-*/_mainprobe-* are dark-factory's ephemeral background-verify and
@@ -1466,6 +1555,87 @@ run_helper reclaim \
 assert "P10: exit 0 (second reclaim)" test "$RC" -eq 0
 assert "P11: _lane-1 reset once its live cwd reference is gone (preserve is temporary)" \
     bash -c '[ ! -f "$1" ]' _ "$P_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+
+# ── P-fd: a BARE OPEN FD, with the cwd OUTSIDE the mount ──────────────────────
+# The scanner advertises THREE reference kinds — cwd, open fd, mmap — and until
+# this sub-case existed only two were driven anywhere: P-basic/Q use a cwd
+# holder and R uses an mmap (negatively). The `-path '*/fd/*'` leg was therefore
+# unpinned at every layer, and it is the leg most likely to matter in
+# production: a rustc/linker holding an output fd under <lane>/target while its
+# own cwd sits elsewhere. A regression that dropped it would leave every other
+# assertion in this file green (task 5572 review).
+#
+# The holder's cwd is deliberately $PF_ROOT — the fixture root, OUTSIDE
+# $PF_WORKTREES — so the cwd leg CANNOT account for the preserve, and `sleep`'s
+# own mappings live in /usr, so the mmap leg cannot either. The open fd is the
+# sole reference. `exec 9>` (not a redirect on `exec sleep`) is what makes the
+# descriptor survive the exec into the tracked PID.
+PF_ROOT="$(mktemp -d /tmp/test-gc-pfd-XXXXXX)"
+_TMPDIRS+=("$PF_ROOT")
+
+PF_REPO="$PF_ROOT/repo"
+PF_WORKTREES="$PF_ROOT/worktrees"
+PF_BASE="$PF_ROOT/base"
+mkdir -p "$PF_WORKTREES" "$PF_BASE"
+
+make_repo "$PF_REPO"
+
+mkdir -p "$PF_BASE/target.gen.1"
+touch "$PF_BASE/target.gen.1.lock"
+ln -sfn "$PF_BASE/target.gen.1" "$PF_BASE/target"
+
+for _pf_name in _lane-1 _lane-2; do
+    git -C "$PF_REPO" worktree add -q "$PF_WORKTREES/$_pf_name"
+    mkdir -p "$PF_WORKTREES/$_pf_name/target"
+    touch "$PF_WORKTREES/$_pf_name/target/DIVERGENT_MARKER"
+done
+
+PF_READY="$PF_ROOT/fd-holder.ready"
+( cd "$PF_ROOT" && exec 9>"$PF_WORKTREES/_lane-1/target/held.tmp" \
+    && touch "$PF_READY" && exec sleep 300 ) &
+PF_HELPER_PID=$!
+_BGPIDS+=("$PF_HELPER_PID")
+_wait_for_reader_lock "$PF_READY" 30
+
+PF_SEED_LOG="$PF_ROOT/seed_calls.log"
+PF_SEED_STUB="$PF_ROOT/seed_stub.sh"
+_seed_stub_body > "$PF_SEED_STUB"
+chmod +x "$PF_SEED_STUB"
+export SEED_LOG="$PF_SEED_LOG"
+
+# Non-vacuity, captured BEFORE the run: if the holder's cwd were (or were under)
+# the lane, this sub-case would silently degenerate into a second copy of
+# P-basic and prove nothing about the fd leg.
+PF_HELPER_CWD="$(readlink "/proc/$PF_HELPER_PID/cwd" 2>/dev/null || true)"
+PF_HELPER_FD9="$(readlink "/proc/$PF_HELPER_PID/fd/9" 2>/dev/null || true)"
+
+run_helper reclaim \
+    --worktrees-dir "$PF_WORKTREES" \
+    --base-target "$PF_BASE/target" \
+    --seed-script "$PF_SEED_STUB" \
+    --main-ref main
+
+assert "P-fd1: fixture — holder cwd is OUTSIDE the worktrees dir (cwd leg cannot explain the preserve)" \
+    bash -c 'case "$1" in "$2"/*) exit 1 ;; *) exit 0 ;; esac' _ "$PF_HELPER_CWD" "$(readlink -f "$PF_WORKTREES")"
+assert "P-fd2: fixture — fd 9 survived the exec and points under _lane-1/target" \
+    bash -c 'case "$1" in "$2"/target/*) exit 0 ;; *) exit 1 ;; esac' _ "$PF_HELPER_FD9" "$(readlink -f "$PF_WORKTREES/_lane-1")"
+assert "P-fd3: exit 0" test "$RC" -eq 0
+assert "P-fd4: fd-referenced _lane-1 divergent marker INTACT (open-fd leg alone preserves)" \
+    test -f "$PF_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+assert "P-fd5: _lane-1 seed-script NOT invoked (preserved, not reset)" \
+    bash -c '[ ! -f "$1" ] || ! grep -q "_lane-1" "$1"' _ "$PF_SEED_LOG"
+assert "P-fd6: free unreferenced _lane-2 divergent marker REMOVED (discrimination, not blanket)" \
+    bash -c '[ ! -f "$1" ]' _ "$PF_WORKTREES/_lane-2/target/DIVERGENT_MARKER"
+assert "P-fd7: stderr names the process-reference preserve reason for _lane-1" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "preserving _lane-1: live consumer (process reference)"' _ "$ERR_OUT"
+# The live-reference share of preserved= is reported separately so an
+# indefinitely-shielded pool is visible in DF's logs (task 5572 review).
+assert "P-fd8: summary attributes the preserve to the live-reference gate (preserved_live_ref=1)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "preserved=1 preserved_live_ref=1"' _ "$OUT"
+
+kill "$PF_HELPER_PID" 2>/dev/null || true
+wait "$PF_HELPER_PID" 2>/dev/null || true
+_BGPIDS=()  # clear so EXIT cleanup does not re-kill a possibly-reused PID
 
 # ── P-toctou: the up-front-snapshot TOCTOU (defect 5) ─────────────────────────
 # PLACEMENT test, not merely a liveness test. NOTHING is live when the pass
