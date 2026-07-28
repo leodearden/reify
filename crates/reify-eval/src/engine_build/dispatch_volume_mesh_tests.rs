@@ -255,6 +255,15 @@
     // realization is Swept; in a stub build Gmsh is unavailable and the swept
     // path deterministically falls back to Tet — the strict-Swept assertion is
     // gated on that so the test is deterministic in both build configs.
+    //
+    // The gate is the SPECIFIC Err(GmshUnavailable) variant, not `is_err()` /
+    // `!is_ok()`. Gating on success would conflate "Gmsh is absent from this
+    // build" with "Gmsh ran and failed": a genuine Err(GmshFailed(_)) in a
+    // libgmsh build would silently take the lenient stub branch, skipping the
+    // strict Ok(Swept(_)) assertion this test exists to make, and a real 2-D
+    // meshing regression would pass unnoticed. Branching on the variant sends
+    // every other error — GmshFailed included — into the strict branch, where
+    // it fails loudly.
 
     #[test]
     fn dispatch_swept_kind_with_real_producer_reaches_mesher_and_realizes_swept() {
@@ -280,9 +289,10 @@
 
         // Recorded inside the gmsh_2d closure: whether the producer validated a
         // boundary (anything but EmptyBoundary/DegenerateBoundary) and whether
-        // Gmsh was actually available (Ok) in this build.
+        // this build simply has no Gmsh linked (the one outcome that licenses
+        // the lenient Tet-fallback assertion below).
         let reached_mesher = Cell::new(false);
-        let gmsh_available = Cell::new(false);
+        let gmsh_unavailable = Cell::new(false);
 
         let result = dispatch_volume_mesh(
             Some(&kind),
@@ -302,7 +312,7 @@
                     &r,
                     Err(Mesh2dError::EmptyBoundary) | Err(Mesh2dError::DegenerateBoundary)
                 ));
-                gmsh_available.set(r.is_ok());
+                gmsh_unavailable.set(matches!(&r, Err(Mesh2dError::GmshUnavailable)));
                 r
             },
             |_params, _mesh| Ok(make_swept_mesh(2)),
@@ -314,7 +324,17 @@
             "the real producer must build a valid boundary and forward to \
              mesh_swept_profile_2d — never fall back via EmptyBoundary/DegenerateBoundary"
         );
-        if gmsh_available.get() {
+        if gmsh_unavailable.get() {
+            assert!(
+                matches!(result, Ok(VolumeMeshOutcome::Tet(_))),
+                "with gmsh unavailable (stub build), the swept path falls back to Tet \
+                 (not via EmptyBoundary); got {result:?}"
+            );
+        } else {
+            // Gmsh IS linked in this build, so the 2-D mesh must actually have
+            // been produced. A GmshFailed(_) lands here too and fails loudly,
+            // which is the point: it is a real meshing regression, not a
+            // build-config difference to be tolerated.
             match result {
                 Ok(VolumeMeshOutcome::Swept(mesh3d)) => {
                     assert_eq!(
@@ -322,14 +342,11 @@
                         "swept realization must carry the sweep_step mock's layers"
                     );
                 }
-                other => panic!("with gmsh available, expected Ok(Swept(_)); got {other:?}"),
+                other => panic!(
+                    "gmsh_2d returned something other than Err(GmshUnavailable), so Gmsh is \
+                     linked in this build and the swept path must realize Ok(Swept(_)); got {other:?}"
+                ),
             }
-        } else {
-            assert!(
-                matches!(result, Ok(VolumeMeshOutcome::Tet(_))),
-                "with gmsh unavailable (stub build), the swept path falls back to Tet \
-                 (not via EmptyBoundary); got {result:?}"
-            );
         }
     }
 
