@@ -139,11 +139,20 @@ STUB_EOF
 }
 make_tmpfiles_stub
 
-# conf_paths <conf> — the paths the conf actually declares, one per line.
-# Used by BOTH Block F and Block G so the two can never disagree about how the
-# generated file is parsed.
+# ── generated-conf accessors ──────────────────────────────────────────────────
+# One definition of "what a non-comment line is", shared by every assertion in
+# Blocks F and G that looks inside the generated conf.  These are called from
+# the MAIN shell at argument-expansion time (`assert ... "$(conf_paths "$C")"`)
+# rather than from inside an `assert ... bash -c '...'` body, because a shell
+# function is not visible to a `bash -c` subshell.
 conf_paths() {
     awk '!/^[[:space:]]*#/ && NF { print $2 }' "$1"
+}
+conf_verbs() {
+    awk '!/^[[:space:]]*#/ && NF { print $1 }' "$1" | sort -u
+}
+conf_body_line_count() {
+    awk '!/^[[:space:]]*#/ && NF { n++ } END { print n + 0 }' "$1"
 }
 
 # ── fake $HOME with synthetic cargo + npm cache trees ─────────────────────────
