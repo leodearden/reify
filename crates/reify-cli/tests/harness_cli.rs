@@ -159,6 +159,8 @@ mod cli_surface_finish_cost;
 mod cli_test;
 #[path = "harness_cli/cli_tensegrity_e2e.rs"]
 mod cli_tensegrity_e2e;
+#[path = "harness_cli/cli_tensegrity_t0a_golden.rs"]
+mod cli_tensegrity_t0a_golden;
 #[path = "harness_cli/cli_tolerancing_eval.rs"]
 mod cli_tolerancing_eval;
 #[path = "harness_cli/cli_trait_assoc_fn_overload.rs"]
