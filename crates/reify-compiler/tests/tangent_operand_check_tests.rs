@@ -69,7 +69,9 @@ fn unit_errors(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic> {
     module
         .diagnostics
         .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch) && d.severity == Severity::Error)
+        .filter(|d| {
+            d.code == Some(DiagnosticCode::ArgTypeMismatch) && d.severity == Severity::Error
+        })
         .collect()
 }
 
@@ -145,7 +147,12 @@ fn unsupported_combo_message_lists_the_supported_combos() {
     let errs = combo_errors(&module);
     assert!(!errs.is_empty(), "precondition: the combo must be rejected");
     let msg = &errs[0].message;
-    for expected in ["cylinder/cylinder", "cylinder/plane", "sphere/plane", "sphere/sphere"] {
+    for expected in [
+        "cylinder/cylinder",
+        "cylinder/plane",
+        "sphere/plane",
+        "sphere/sphere",
+    ] {
         assert!(
             msg.contains(expected),
             "the message must list the supported combo {expected:?} so the diagnostic \

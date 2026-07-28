@@ -257,6 +257,45 @@ impl TangentCombo {
         }
     }
 
+    /// How many operands a `tangent` call in this combo takes: two datums plus
+    /// one radius per CURVED surface. A plane has no radius, so the plane combos
+    /// take 3 and the curved/curved combos take 4.
+    fn arity(self) -> usize {
+        match self {
+            TangentCombo::CylPlane | TangentCombo::SpherePlane => 3,
+            TangentCombo::CylCyl | TangentCombo::SphereSphere => 4,
+        }
+    }
+
+    /// The combo's reader-facing signature, listed by the unsupported-combo
+    /// diagnostic so it teaches the vocabulary rather than only rejecting.
+    fn describe(self) -> &'static str {
+        match self {
+            TangentCombo::CylCyl => "cylinder/cylinder tangent(Axis, Axis, r1, r2)",
+            TangentCombo::CylPlane => "cylinder/plane tangent(Axis, Plane, r)",
+            TangentCombo::SpherePlane => "sphere/plane tangent(Point, Plane, r)",
+            TangentCombo::SphereSphere => "sphere/sphere tangent(Point, Point, r1, r2)",
+        }
+    }
+}
+
+/// Every supported tangency combo, in the order the diagnostic lists them.
+const TANGENT_COMBOS: [TangentCombo; 4] = [
+    TangentCombo::CylCyl,
+    TangentCombo::CylPlane,
+    TangentCombo::SpherePlane,
+    TangentCombo::SphereSphere,
+];
+
+/// The four supported tangency signatures, comma-separated — appended to the
+/// unsupported-combo diagnostic so it names the vocabulary the author can reach
+/// for, rather than only saying no.
+fn tangent_supported_combos() -> String {
+    TANGENT_COMBOS
+        .iter()
+        .map(|c| c.describe())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Classify a `tangent` call's first two operand types into one of the four
@@ -488,8 +527,16 @@ fn relation_metric_slot(name: &str) -> Option<(usize, DimensionVector, &'static 
 /// form; their arity-2 DERIVE forms are geometry queries and return `None` here
 /// (so the relation checker is a no-op for them). `coincident`/`on`/`tangent`
 /// are intentionally `None`: `coincident` is kind-generic (any same-kind datum
-/// pair), `on` mixes operand kinds (Point + host), and `tangent` is surface-
-/// conditional — none has a single fixed operand datum to police in γ.
+/// pair), `on` mixes operand kinds (Point + host), and `tangent`'s legality is a
+/// property of the operand PAIR — none has a single fixed operand datum to
+/// police in γ.
+///
+/// `tangent` is nonetheless NOT unpoliced: [`check_tangent_operands`] polices it
+/// pair-wise (task 5540), classifying both slots at once through
+/// [`tangent_combo`] and emitting `TangentOperandsUnsupported`. That pair-
+/// conditional table cannot be expressed as a single [`ExpectedDatum`] policed
+/// across both slots — `(Axis, Plane)` is legal and `(Plane, Plane)` is not, so
+/// no per-slot expectation classifies them correctly.
 fn relation_operand_datum(name: &str, args: &[CompiledExpr]) -> Option<ExpectedDatum> {
     match name {
         // Orientation primitives (arity-2): operands are directions.
@@ -562,6 +609,14 @@ pub(crate) fn check_relation_arg_types(
         }
     }
 
+    // (a′) TANGENT PAIR layer — `tangent`'s legality is a property of the operand
+    // PAIR, so it is policed here rather than through `relation_operand_datum`
+    // (which maps a name to ONE expected datum policed across both slots and
+    // cannot express `(Axis, Plane)` legal / `(Plane, Plane)` not).
+    if name == "tangent" {
+        check_tangent_operands(compiled_args, call_span, diagnostics);
+    }
+
     // (b) KIND/PROJECTION + (c) CURATION layers — operand slots 0 and 1.
     if let Some(expected) = relation_operand_datum(name, compiled_args) {
         for idx in 0..2 {
@@ -597,6 +652,120 @@ pub(crate) fn check_relation_arg_types(
             }
         }
     }
+}
+
+/// Police a `tangent` call: classify the operand PAIR into one of the four
+/// curated combos, then check that the call carries exactly the radii that combo
+/// requires and that each radius slot is a `Length`.
+///
+/// This is the compile-time gate that removes tangent's silent no-solve. An
+/// operand shape the residual layer does not handle contributes ZERO Jacobian
+/// rows, which `partition_driving_set` files as redundant with a 0 rank
+/// contribution and post-solve verification reads as residual `0.0` — the
+/// tangency is wholly ignored yet reported satisfied. The residual layer cannot
+/// distinguish "unhandled" from "satisfied", so the rejection has to live here;
+/// with this arm its unsupported branch is unreachable from `.ri`.
+///
+/// Gradualism (PRD decision-6): a `Type::Error` (poison) or `Type::TypeParam`
+/// (unresolved) operand passes silently, matching the other policing layers.
+fn check_tangent_operands(
+    compiled_args: &[CompiledExpr],
+    call_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let (Some(a), Some(b)) = (compiled_args.first(), compiled_args.get(1)) else {
+        // A call too short to name an operand pair has no classifiable combo.
+        // Arity errors for a 0/1-arg call are reported by the arity checker; but
+        // a `tangent(a)` that reached here would otherwise be silently accepted,
+        // so name the shortfall explicitly.
+        emit_tangent_unsupported(
+            compiled_args.first().map(|e| &e.result_type),
+            compiled_args.get(1).map(|e| &e.result_type),
+            call_span,
+            diagnostics,
+        );
+        return;
+    };
+    let (ta, tb) = (&a.result_type, &b.result_type);
+
+    // Gradualism: an already-poisoned or unresolved operand is skipped silently
+    // (anti-cascade — the resolver has already diagnosed it).
+    if matches!(ta, Type::Error | Type::TypeParam(_))
+        || matches!(tb, Type::Error | Type::TypeParam(_))
+    {
+        return;
+    }
+
+    let Some(combo) = tangent_combo(ta, tb) else {
+        emit_tangent_unsupported(Some(ta), Some(tb), call_span, diagnostics);
+        return;
+    };
+
+    // Arity: two datums + one radius per CURVED surface. A wrong count cannot be
+    // repaired by inference — a single radius on a cylinder/cylinder call cannot
+    // say which surface it belongs to — so it is an error, not a warning.
+    let expected_arity = combo.arity();
+    if compiled_args.len() != expected_arity {
+        let radii = expected_arity - 2;
+        let msg = format!(
+            "tangent: {} takes {expected_arity} arguments ({radii} radius \
+             {}, one per curved surface), got {}",
+            combo.describe(),
+            if radii == 1 { "operand" } else { "operands" },
+            compiled_args.len()
+        );
+        let label = format!(
+            "expected {expected_arity} arguments, got {}",
+            compiled_args.len()
+        );
+        diagnostics.push(
+            Diagnostic::error(msg)
+                .with_code(DiagnosticCode::TangentOperandsUnsupported)
+                .with_label(DiagnosticLabel::new(call_span, label)),
+        );
+        return;
+    }
+
+    // UNIT layer for the radius slots. Reported as `ArgTypeMismatch` (the code
+    // every other metric slot uses) rather than the combo code, so a wrong
+    // dimension and an unsupported geometry pairing stay distinguishable. Each
+    // trailing slot is checked — a checker that looked only at slot 2 would let
+    // `tangent(a, b, 5mm, 30deg)` through.
+    for radius in compiled_args.iter().skip(2) {
+        match &radius.result_type {
+            // Gradualism: poison / unresolved pass silently.
+            Type::Error | Type::TypeParam(_) => {}
+            Type::Scalar { dimension } if *dimension == DimensionVector::LENGTH => {}
+            other => emit_unit_mismatch("tangent", "Length", other, call_span, diagnostics),
+        }
+    }
+}
+
+/// Emit the `TangentOperandsUnsupported` diagnostic for an operand pair with no
+/// well-defined tangency, NAMING BOTH operand kinds (through
+/// [`format_relation_arg_ty`], so the vocabulary matches the rest of the relation
+/// family) and LISTING the four supported combos.
+fn emit_tangent_unsupported(
+    a: Option<&Type>,
+    b: Option<&Type>,
+    call_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let render = |t: Option<&Type>| {
+        t.map(format_relation_arg_ty)
+            .unwrap_or_else(|| "<missing>".to_string())
+    };
+    let (na, nb) = (render(a), render(b));
+    let msg = format!(
+        "tangent: no tangency between `{na}` and `{nb}`; supported: {}",
+        tangent_supported_combos()
+    );
+    let label = format!("no tangency between `{na}` and `{nb}`");
+    diagnostics.push(
+        Diagnostic::error(msg)
+            .with_code(DiagnosticCode::TangentOperandsUnsupported)
+            .with_label(DiagnosticLabel::new(call_span, label)),
+    );
 }
 
 /// Emit a B10 unit-layer `ArgTypeMismatch` for a metric slot whose dimension is
