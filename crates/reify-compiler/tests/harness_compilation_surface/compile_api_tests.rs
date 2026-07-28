@@ -96,33 +96,24 @@ fn compile_linear_pattern_produces_realization() {
 
 /// A geometry-let `linear_pattern` target types its `target` arg as `Geometry`.
 ///
-/// Task 5389, GREEN on arrival by design. Scoped deliberately narrowly: the
-/// STRUCTURAL half of "a geometry let is a valid pattern target" — that the
-/// target lowers to `Pattern(Linear, GeomRef::Sub("<let>"))` rather than the
-/// positional `GeomRef::Step(0)` fallback — is already pinned by
+/// Task 5389, and deliberately narrow. The structural half — that the target
+/// lowers to `Pattern(Linear, GeomRef::Sub("<let>"))` and not the positional
+/// `GeomRef::Step(0)` fallback — is already pinned, with its `circular_pattern`
+/// / `mirror` siblings, by
 /// `tests/harness_langcore/let_scope_tests.rs::linear_pattern_let_bound_ops`
-/// (added by task 1715 itself), alongside its `circular_pattern` / `mirror`
-/// siblings. That file is the canonical home for pattern-target coverage and
-/// this test does not restate it; `examples/pattern_composition.ri`'s corrected
-/// header comment cites it directly.
+/// (task 1715's own test). That file is the canonical home for pattern-target
+/// coverage and `examples/pattern_composition.ri`'s corrected header cites it
+/// directly; nothing here restates it.
 ///
-/// What is left, and why it lives HERE rather than next to those siblings: this
-/// is the EXPRESSION-side observable of the same resolution, read off the public
-/// `CompiledGeometryOp::Pattern { args }` surface that this file exists to test.
-/// `let_scope_tests.rs` goes through the `ExpectedOp`/`Tgt` harness, which
-/// abstracts arg types away entirely. (The arg's `kind` would name the `elem`
-/// ValueCellId outright, but `CompiledExprKind` is crate-private and widening
-/// production visibility for a test is not worth it; `result_type` is the public
-/// observable carrying the same signal.)
+/// Left over, and the reason this lives in the public-API file instead: the
+/// EXPRESSION-side observable of the same resolution, read off the public
+/// `CompiledGeometryOp::Pattern { args }` surface. `let_scope_tests.rs` goes
+/// through the `ExpectedOp`/`Tgt` harness, which abstracts arg types away.
+/// (`result_type` rather than the arg's `kind` because `CompiledExprKind` is
+/// crate-private and is not worth widening for a test.)
 ///
-/// SPACING ARG: `20mm`, never a bare `20`. Since task 5652,
-/// `builtin_signatures::builtin_arg_slots` gives `linear_pattern` at arity 6 a
-/// LENGTH slot on arg5 `spacing`, so a bare int is a hard COMPILE-time
-/// `DiagnosticCode::ArgTypeMismatch` that would fail this test's own zero-Error
-/// assertion. Note the arity guard: the slot exists only at `arg_count == 6`, so
-/// a wrong-arity call yields no type diagnostic at all — see
-/// `compile_linear_pattern_2d_wrong_arity_produces_diagnostic` above, which
-/// asserts ArgTypeMismatch is ABSENT there.
+/// `20mm`, not a bare `20` — same task-5652 LENGTH-slot reason as the fixtures
+/// above; a bare int is a compile-time `ArgTypeMismatch`.
 #[test]
 fn geometry_let_pattern_target_arg_types_as_geometry() {
     let source = r#"structure S {
@@ -152,23 +143,20 @@ fn geometry_let_pattern_target_arg_types_as_geometry() {
         errors
     );
 
-    let template = compiled
+    // Each geometry let compiles to its own realization, so `elem` is NOT inlined
+    // into `row`'s operations list — hence the lookup by name, not by index.
+    let realizations = &compiled
         .templates
         .first()
-        .expect("`structure S` must compile to at least one template");
-
-    // Each geometry let compiles to its own realization (entity.rs compiles
-    // geometry lets independently), so `elem` is NOT inlined into `row`'s own
-    // operations list — hence the lookup by name rather than by index.
-    let row = template
-        .realizations
+        .expect("`structure S` must compile to at least one template")
+        .realizations;
+    let row = realizations
         .iter()
         .find(|r| r.name.as_deref() == Some("row"))
         .unwrap_or_else(|| {
             panic!(
                 "expected a realization named `row`, got {:?}",
-                template
-                    .realizations
+                realizations
                     .iter()
                     .map(|r| r.name.as_deref())
                     .collect::<Vec<_>>()
@@ -182,27 +170,20 @@ fn geometry_let_pattern_target_arg_types_as_geometry() {
     let CompiledGeometryOp::Pattern { args, .. } = op else {
         panic!("expected `row` to lower to a Pattern op, got {:?}", op);
     };
-
     let (arg_name, arg_expr) = args
         .first()
         .expect("expected the Pattern op to carry at least the named `target` arg");
-    assert_eq!(
-        arg_name, "target",
-        "expected args[0] to be the named `target` slot, got {:?}",
-        arg_name
-    );
 
     // THE PINNED FACT: `elem` was recognised as a geometry let, so the `target`
     // arg types as Geometry. A regression that stopped resolving geometry-let
-    // targets would fail here at compile time instead of surfacing at runtime as
-    // the cryptic "unresolvable GeomRef::Step(0)" crash that
-    // `geometry.rs`'s pattern-target resolver documents as its fallback.
+    // targets would fail here rather than surfacing at runtime as the cryptic
+    // "unresolvable GeomRef::Step(0)" crash `geometry.rs`'s pattern-target
+    // resolver documents as its fallback.
     assert_eq!(
-        arg_expr.result_type,
-        reify_core::Type::Geometry,
-        "expected the `target` arg to type as Geometry (i.e. `elem` was recognised as a geometry \
-         let), got {:?}",
-        arg_expr.result_type
+        (arg_name.as_str(), &arg_expr.result_type),
+        ("target", &reify_core::Type::Geometry),
+        "expected args[0] to be the named `target` slot typed as Geometry (i.e. `elem` was \
+         recognised as a geometry let)"
     );
 }
 
