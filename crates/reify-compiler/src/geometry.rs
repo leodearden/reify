@@ -977,14 +977,30 @@ impl<'a> GeometryConstraintSink<'a> {
     }
 }
 
-/// Best-effort compile-time constraint check shared by `rounded_box` and
-/// `rounded_rect`: `corner_r > 0` and `2*corner_r < min(width, depth)`. Only
-/// fires when width/depth/corner_r all fold to constant literals
-/// (`const_length_m`); param-driven args cannot be checked statically and are
-/// silently skipped rather than false-flagged. Pushes a designer-readable
-/// `Diagnostic::error` naming the concrete offending SI values (metres) on
-/// violation. Returns `false` iff a diagnostic was pushed — callers should
-/// abort the arm (`return None`) in that case.
+/// Enforce `rounded_box`/`rounded_rect`'s shared corner-radius precondition —
+/// `corner_r > 0` and `2*corner_r < min(width, depth)` — by whichever of two
+/// paths the arguments allow.
+///
+/// **All three args fold to constants** (`const_length_m`): the check is made
+/// here and now. A violation pushes a designer-readable `Diagnostic::error`
+/// naming the concrete offending SI values (metres) and returns `false`, on
+/// which the caller aborts the arm (`return None`) so the bad geometry is
+/// never lowered at all.
+///
+/// **At least one arg is param-driven**: nothing is decidable at compile time,
+/// so instead of waving the call through (which left an oversized param radius
+/// to fail deep inside OCCT with an opaque kernel error), the same predicate is
+/// synthesized onto the enclosing template through `constraint_sink` and
+/// returns `true`. `Engine::check` evaluates it before `execute_realization_ops`
+/// runs, so the named violation precedes the kernel failure; and when
+/// `corner_r` reads an `auto` cell the solver picks it up too, so a
+/// solver-driven radius is genuinely constrained rather than merely reported.
+///
+/// The two paths are deliberately exclusive. On the all-constant path the
+/// static check is strictly stronger — a `Violated` verdict does not abort the
+/// build, it only flips the CLI exit code — so also emitting a runtime
+/// constraint there would add nothing but noise to `reify check` output and an
+/// extra term in the solver's objective.
 fn validate_rounded_corner_constraint(
     name: &str,
     width: &CompiledExpr,
@@ -992,13 +1008,32 @@ fn validate_rounded_corner_constraint(
     corner_r: &CompiledExpr,
     span: reify_core::SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
+    constraint_sink: &mut GeometryConstraintSink<'_>,
 ) -> bool {
     let (Some(w), Some(d), Some(r)) = (
         const_length_m(width),
         const_length_m(depth),
         const_length_m(corner_r),
     ) else {
-        // At least one arg is param-driven (non-constant) — cannot check statically.
+        // At least one arg is param-driven (non-constant) — hand the predicate
+        // to the runtime checker and the solver instead of dropping it.
+        //
+        // The zero is built dimension-matched to `corner_r` so the comparison
+        // is dimensionally sound; a non-Scalar result type (which the type
+        // checker should already have rejected upstream) falls back to a plain
+        // dimensionless zero rather than fabricating a dimension.
+        let zero = match &corner_r.result_type {
+            reify_core::Type::Scalar { dimension } => CompiledExpr::literal(
+                Value::Scalar {
+                    si_value: 0.0,
+                    dimension: dimension.clone(),
+                },
+                corner_r.result_type.clone(),
+            ),
+            _ => CompiledExpr::literal(Value::Real(0.0), reify_core::Type::dimensionless_scalar()),
+        };
+        let predicate = CompiledExpr::binop(BinOp::Gt, corner_r.clone(), zero, Type::Bool);
+        constraint_sink.push(|_idx| "rounded_corner_valid".to_string(), predicate, span);
         return true;
     };
 
@@ -2543,6 +2578,7 @@ fn compile_geometry_call_inner(
                 &corner_r,
                 expr.span,
                 diagnostics,
+                constraint_sink,
             ) {
                 return None;
             }
@@ -2640,6 +2676,7 @@ fn compile_geometry_call_inner(
                 &corner_r,
                 expr.span,
                 diagnostics,
+                constraint_sink,
             ) {
                 return None;
             }
