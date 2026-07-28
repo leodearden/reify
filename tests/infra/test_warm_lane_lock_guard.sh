@@ -371,4 +371,79 @@ run_guard check --mount "$B_MOUNT"
 assert "B6: an EXCLUSIVE holder must NOT read IDLE (exit != 0)" test "$RC" -ne 0
 _release_lane_lock
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block C — the BUSY sentinel and per-lane granularity
+#
+# This is the machine-readable half of the cross-repo seam. Exit 3 is the pinned
+# throttle-not-requeue code (docs/prds/warm-lane-pool-sizing-lifecycle.md
+# §212-219; the same code warm-lane-disk-guard.sh --soft and
+# fleet-load-detector.sh emit), and stdout carries exactly one sentinel line so
+# dark-factory can read the verdict without parsing prose.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block C: BUSY sentinel and per-lane granularity ---"
+
+C_MOUNT="$(mktemp -d /tmp/test-warm-lane-lock-guard-c-XXXXXX)"
+_TMPDIRS+=("$C_MOUNT")
+mkdir -p "$C_MOUNT/_merge-verify" "$C_MOUNT/_spec-0"
+
+# ── Phase 1: an exclusive holder on _merge-verify ─────────────────────────────
+_hold_lane_lock "$C_MOUNT" _merge-verify
+run_guard check --mount "$C_MOUNT"
+
+# C1: exactly 3, and specifically NOT the neighbouring codes. 3 means "defer this
+# dispatch"; 75 (EX_TEMPFAIL) would tell DF to REQUEUE the command, and 2 means
+# "you wired me wrong" — asserting the two negatives keeps 3 a deliberate
+# cross-repo value rather than an incidental non-zero.
+assert "C1: an exclusive holder exits exactly 3" test "$RC" -eq 3
+assert "C1: BUSY is not 75 (EX_TEMPFAIL requeue), a different instruction" test "$RC" -ne 75
+assert "C1: BUSY is not 2 (usage error), a different meaning" test "$RC" -ne 2
+
+# C2: stdout is exactly one line, and that line is the sentinel. The line-count
+# assertion is what keeps a diagnostic from leaking onto stdout alongside it.
+assert "C2: BUSY writes a non-empty stdout" test -n "$OUT"
+assert "C2: BUSY stdout is exactly one line" \
+    test "$(printf '%s\n' "$OUT" | wc -l)" -eq 1
+assert "C2: that line is the @@REIFY_WARM_LANE_LOCK_BUSY@@ sentinel with lane= and lock=" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^@@REIFY_WARM_LANE_LOCK_BUSY@@ lane=_merge-verify lock=.*/_merge-verify\.lock$"' \
+    _ "$OUT"
+
+# C3: a human reading the log gets an actionable message naming the lane.
+assert "C3: BUSY explains itself on stderr" test -n "$ERR_OUT"
+assert "C3: the stderr message names the lane" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "_merge-verify"' _ "$ERR_OUT"
+
+# C4: per-lane granularity. A guard that probed the whole mount — or any lock it
+# found under it — would call _spec-0 busy here purely because a NEIGHBOUR is.
+run_guard check --mount "$C_MOUNT" --lane _spec-0
+assert "C4: a busy neighbour does not make _spec-0 busy (exit 0)" test "$RC" -eq 0
+assert "C4: the unaffected lane writes nothing to stdout" test -z "$OUT"
+_release_lane_lock
+
+# ── Phase 2: move the holder to _spec-0 ────────────────────────────────────────
+_hold_lane_lock "$C_MOUNT" _spec-0
+
+# C5: --lane is honoured POSITIVELY, not just negatively — C4 alone would also
+# pass for a guard that always answered IDLE to a --lane it did not understand.
+run_guard check --mount "$C_MOUNT" --lane _spec-0
+assert "C5: --lane _spec-0 with a holder on _spec-0 exits 3" test "$RC" -eq 3
+assert "C5: the sentinel reports lane=_spec-0" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^@@REIFY_WARM_LANE_LOCK_BUSY@@ lane=_spec-0 lock=.*/_spec-0\.lock$"' \
+    _ "$OUT"
+
+# C6: the env form is equivalent to the flag...
+REIFY_WARM_LANE_LOCK_GUARD_LANE=_spec-0 run_guard check --mount "$C_MOUNT"
+assert "C6: REIFY_WARM_LANE_LOCK_GUARD_LANE=_spec-0 is equivalent to --lane _spec-0" \
+    test "$RC" -eq 3
+assert "C6: the env form produces the same lane= field" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_spec-0"' _ "$OUT"
+
+# ...and the flag WINS over it (standard house ordering: env supplies the
+# default, the flag overwrites it). _merge-verify is unheld in this phase, so a
+# guard that let the env value win would answer 3 instead of 0.
+REIFY_WARM_LANE_LOCK_GUARD_LANE=_spec-0 run_guard check --mount "$C_MOUNT" --lane _merge-verify
+assert "C6: an explicit --lane overrides REIFY_WARM_LANE_LOCK_GUARD_LANE" test "$RC" -eq 0
+assert "C6: the overridden (idle) lane writes nothing to stdout" test -z "$OUT"
+_release_lane_lock
+
 test_summary
