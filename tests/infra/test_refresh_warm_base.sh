@@ -741,4 +741,31 @@ assert "H3: retired gen.1 dir GONE (reaped by GC)" test ! -d "$H3_GEN1"
 assert "H3: retired gen.1 .buildroot GONE (reaped with its gen — no orphan)" \
     test ! -f "${H3_GEN1}.buildroot"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block TRASH: shared-trash litter guard (task 5612)
+#
+# scripts/seed-warm-lane.sh computes RESEED_TRASH_DIR as
+# dirname(LANE_DIR)/.reseed-trash and renames a non-empty <lane>/target there,
+# so a lane created bare under /tmp makes that the machine-shared
+# /tmp/.reseed-trash. This block fails the suite if any lane it minted left an
+# entry there, attributed by this suite's own mktemp stem.
+#
+# HONEST SCOPE: a FUTURE-regression guard, not a remediation. This suite drives
+# STUB seed scripts via --seed-script and never invokes the real seed, so it has
+# no way to litter today; task 5607 measured ZERO offenders across all six
+# warm-lane suites, twice, and forensic attribution of the pre-fix litter found
+# none of these suites' stems in it. The guard exists so a future fixture that
+# DOES reach the real seed with a bare-/tmp lane fails a test instead of quietly
+# accumulating.
+#
+# TRASH1 is not optional. Attribution is by stem against a machine-shared path,
+# so TRASH2 can realistically only ever report "clean" for this suite — which is
+# indistinguishable from a checker that stopped working. TRASH1 proves the
+# instrument fires, hermetically, without writing to the path it defends.
+# ─────────────────────────────────────────────────────────────────────────────
+assert "TRASH1: shared-trash litter detector is live (self-test fires on a synthetic bare-/tmp lane)" \
+    assert_shared_trash_litter_detector_live
+assert "TRASH2: no lane in this suite littered the machine-shared /tmp/.reseed-trash" \
+    assert_no_shared_trash_litter
+
 test_summary
