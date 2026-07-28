@@ -7,6 +7,15 @@
 //   (50, 0, 0), (0, 50, 0), (-50, 0, 0), (0, -50, 0)  [mm]
 // The index `i` is a 0-based `Int`; `i * 2 * pi / bolt_count` promotes to a
 // dimensionless `Real` angle, and `radius * cos/sin` yields a `Length`.
+//
+// VALUE-KIND LIMITATION — a `generate` lambda may only produce point3/scalar
+// values, which is exactly what this file does (and is why the gap below went
+// uncaught for so long). A GEOMETRY constructor inside a generate lambda — say
+// `generate(4, |i| cylinder(2mm, 10mm))` — does not error: it currently yields
+// `[undef, undef, ...]` under a green `reify check` with zero diagnostics, so the
+// list silently has the right length and the wrong contents. Tracked by #5385.
+// To place geometry at generated positions, use the pattern builtins
+// (`linear_pattern`, `circular_pattern`, `arbitrary_pattern`) instead.
 
 structure BoltCircle {
     let bolt_count = 4
