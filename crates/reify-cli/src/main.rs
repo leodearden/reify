@@ -4361,30 +4361,20 @@ mod persistent_cache_cli_wiring_tests {
 // net for `register_compute_trampolines` ────────────────────────────────────
 
 /// Characterization test for `register_compute_trampolines` (task 5073 / PRD
-/// `compute-fea-hardening.md` task A2).
-///
-/// This is a *refactor safety net*, not a red-bar test: this task migrates
-/// `register_compute_trampolines` to delegate to the canonical
-/// `Engine::register_production_compute_fns` bundler (task 5072 / PRD A1),
-/// which runs the identical three registrars in the identical order as the
-/// pre-migration hand-rolled body — so this test is GREEN both before and
-/// after that migration. Its job is to pin CLI *delegation*: that calling
-/// `register_compute_trampolines` actually runs all three bundle legs and
-/// enables the morph producer. Like A1's own tests (`compute_targets/mod.rs`),
-/// it probes one representative target per leg rather than every target
-/// `register_compute_fns` registers — completeness of that full target set is
-/// A1's suite's job, not this CLI-local wrapper's, so this test will not catch
-/// a partial regression inside `register_compute_fns` itself (e.g. an
-/// unrelated target silently dropped).
+/// `compute-fea-hardening.md` task A2): pins that the CLI wrapper delegates
+/// to the full production compute-trampoline bundle with the morph producer
+/// enabled. Refactor safety net — GREEN both before and after this task's
+/// migration step, since that migration is behavior-preserving.
 #[cfg(test)]
 mod compute_trampoline_registration_tests {
     use super::*;
 
-    /// `register_compute_trampolines` must delegate to all three production
-    /// trampoline legs: the FEA/buckling/modal compute fns
-    /// (`register_compute_fns`, probed via one representative target), the
-    /// shell-extract compute fn (`register_shell_extract_compute_fns`), and
-    /// the mesh-morph producer (`reify_mesh_morph::register_morph_producer`).
+    /// `register_compute_trampolines` must run the production bundle (smoke-
+    /// checked via the `register_compute_fns` leg's `solver::elastic_static`
+    /// target) and must pass `MorphRegistration::Enabled` — the only
+    /// CLI-specific decision — so `morph_producer()` ends up installed. Full
+    /// leg-by-leg bundle coverage is `Engine::register_production_compute_fns`'s
+    /// own suite's job (`compute_targets/mod.rs`).
     #[test]
     fn cli_trampolines_install_full_production_bundle() {
         let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
@@ -4392,18 +4382,13 @@ mod compute_trampoline_registration_tests {
 
         assert!(
             engine.compute_dispatch("solver::elastic_static").is_some(),
-            "register_compute_trampolines must register the FEA/buckling/modal \
-             compute fns (register_compute_fns leg)"
-        );
-        assert!(
-            engine.compute_dispatch("shell-extract::extract").is_some(),
-            "register_compute_trampolines must register the shell-extract \
-             compute fn (register_shell_extract_compute_fns leg)"
+            "register_compute_trampolines must run the production bundle \
+             (register_compute_fns leg)"
         );
         assert!(
             engine.morph_producer().is_some(),
-            "register_compute_trampolines must install the mesh-morph producer \
-             (reify_mesh_morph::register_morph_producer leg)"
+            "register_compute_trampolines must pass MorphRegistration::Enabled, \
+             installing the mesh-morph producer"
         );
     }
 }
