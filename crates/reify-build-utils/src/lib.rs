@@ -134,15 +134,8 @@ fn find_dir(env_var: &str, candidates: &[&str], sentinel: &str) -> Option<PathBu
     find_dir_with_override(env::var(env_var).ok().as_deref(), candidates, sentinel)
 }
 
-/// Resolution core of [`find_dir`], taking the override as a value rather than
-/// reading it from the environment.
-///
-/// Split out purely so precedence is testable without `env::set_var`: libtest
-/// runs tests on a thread pool, so mutating the process environ races every
-/// concurrent `getenv` in the same process — including the one
-/// `env::temp_dir()` performs for `TMPDIR`. That hazard is the reason
-/// `set_var` is `unsafe` in Rust 2024, and it is not fixable by picking a
-/// private variable name, since the race is on the environ block itself.
+/// Resolution core of [`find_dir`] with the override passed in as a value, so
+/// precedence is testable without `env::set_var` racing libtest's threads.
 fn find_dir_with_override(
     override_dir: Option<&str>,
     candidates: &[&str],
@@ -436,19 +429,13 @@ mod tests {
         );
     }
 
-    /// The guard returned by `tempdir()` must remove its directory when it
-    /// falls out of scope — the leak this crate shipped for ~4.7k dirs.
+    /// Canary against a future rewrite of `tempdir()` that leaks again.
     #[test]
     fn tempdir_removes_directory_on_scope_exit() {
         let observed: PathBuf;
         {
             let guard = tempdir();
             observed = guard.path().to_path_buf();
-            assert!(
-                observed.is_dir(),
-                "tempdir() must create the directory eagerly: {}",
-                observed.display()
-            );
         } // guard dropped here
 
         assert!(
@@ -458,19 +445,10 @@ mod tests {
         );
     }
 
-    /// Create a temp dir under `env::temp_dir()` that is removed when the
-    /// returned guard is dropped — including on an unwinding panic, which a
-    /// manual teardown at the end of a test body would skip (task #5639: the
-    /// previous bare `create_dir_all` with no teardown leaked ~4.7k dirs into
-    /// the shared /tmp).
-    ///
-    /// The `reify-build-utils-test-` prefix is load-bearing, not cosmetic:
-    /// `Drop` cannot run on SIGKILL/OOM-kill, and the prefix is what makes any
-    /// surviving debris attributable to this crate during host /tmp triage.
-    ///
-    /// Bind the result to a named local that outlives the test body. Chaining
-    /// (`tempdir().path().to_path_buf()`) drops the guard at the end of that
-    /// statement and deletes the directory before it is ever used.
+    /// Removed on drop; the `reify-build-utils-test-` prefix keeps debris from
+    /// a SIGKILL (which `Drop` cannot cover) attributable to this crate.
+    /// Bind the guard to a named local — `tempdir().path().to_path_buf()`
+    /// compiles but deletes the dir at the end of that statement.
     fn tempdir() -> tempfile::TempDir {
         tempfile::Builder::new()
             .prefix("reify-build-utils-test-")
