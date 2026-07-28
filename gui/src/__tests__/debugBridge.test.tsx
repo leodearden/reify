@@ -4290,9 +4290,14 @@ describe('debug bridge set_fea_channel', () => {
     });
 
     expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.storeUnavailable });
-    // design-main's store is still registered and still untouched: the handler
-    // must not have resolved through it.
-    expect(pane1.state.channel).toBe('vonMises');
+    // The handler drives the element before it verifies (same ordering (h),
+    // (i) and (k) pin), so pane-1's own store DID receive the change — what
+    // failed is the verification, because the debug context cannot reach that
+    // store. design-main is the load-bearing assertion: it is still registered
+    // and still untouched, proving the handler did NOT resolve through it.
+    // Silently reporting {ok:true} off another pane's store is the wrong-pane
+    // hole keying exists to close.
+    expect(pane1.state.channel).toBe('errorIndicator');
     expect(window.__REIFY_DEBUG__!.feaModes!['design-main'].state.channel).toBe('vonMises');
   });
 });
