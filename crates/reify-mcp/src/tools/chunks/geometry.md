@@ -154,6 +154,23 @@ need poses or multiple bodies.
 minimum surface gap). Canonical idiom file, with the full arg-shape contract spelled out:
 `examples/best_practices/clearance_oracle.ri`.
 
+```reify
+structure def ClearanceGate {
+    // Let-bind every operand FIRST — this is the arg-shape contract, not style.
+    let housing = cylinder_centered(10mm, 40mm)
+    let bracket = translate(box(20mm, 20mm, 20mm), 30mm, 0mm, 0mm)
+
+    // Two questions the kernel can answer exactly.
+    let fouls = intersects(housing, bracket)
+    let gap = distance(housing, bracket)
+
+    // Pair the boolean with the scalar: `gap` alone would pass on a fully
+    // nested part, which reports a positive distance (trap 5).
+    constraint not fouls
+    constraint gap > 1mm
+}
+```
+
 **FORM A — posed, multi-body, or swept.** Build a mechanism, then query a snapshot:
 `mechanism()` → `body(m, "<let name>", fixed())` → `body_id_of(m, "<let name>")` → `snapshot(m, [])`,
 then
@@ -163,6 +180,29 @@ then
 - `interferes(s) -> List<Map>` — 1-arg; every interfering pair. Each Map has exactly the keys `"a"`
   and `"b"` holding `Int` body ids, enumerated upper-triangular (`i < j`: no self-pairs, no
   duplicate orderings).
+
+```reify
+structure def PosedClearance {
+    // Bake placement into local lets — a sub's `at` pose is NOT carried into a
+    // snapshot (trap 4), and `body` looks its string up by bare let name.
+    let part_a = cylinder_centered(10mm, 40mm)
+    let part_b = translate(box(20mm, 20mm, 20mm), 30mm, 0mm, 0mm)
+
+    let m0 = mechanism()
+    let m1 = body(m0, "part_a", fixed())
+    let m2 = body(m1, "part_b", fixed())
+
+    let id_a = body_id_of(m2, "part_a")
+    let id_b = body_id_of(m2, "part_b")
+    let s = snapshot(m2, [])
+
+    // MUST be let-bound. Writing `constraint min_clearance(s, id_a, id_b) > 2mm`
+    // inline bypasses kinematic dispatch (a post-process over value cells only)
+    // and yields INDETERMINATE "operator undefined for these operand kinds: Map".
+    let clr = min_clearance(s, id_a, id_b)
+    constraint clr > 2mm
+}
+```
 
 Worked references: `examples/tolerancing/vc_bolt_pattern_clearance.ri` (the one example where a
 clearance query flips a `reify build` verdict end-to-end) and `examples/kinematic/dock_pickup.ri`.
