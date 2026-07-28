@@ -596,8 +596,7 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
 /// ([`AFFINE_MAP_CONSTRUCTOR_NAMES`], [`TOLERANCING_MARKER_NAMES`]).
 ///
 /// These are pure kernel-free value-algebra constructors evaluated in
-/// `reify_stdlib::geometry::eval_geometry`, mirroring the sibling datum
-/// constructors `plane_xy`/`axis_x`/`frame3`/`point3`:
+/// `reify_stdlib::geometry::eval_geometry`:
 ///
 /// ```text
 /// fn midplane(a: Plane, b: Plane)                  -> Plane
@@ -605,13 +604,38 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
 /// fn plane_through(a: Point, b: Point, c: Point)   -> Plane
 /// fn offset(p: Plane, δ: Length)                   -> Plane   (ARITY-2 overload)
 /// fn frame_at(o: Point, x: Direction, z: Direction)-> Frame(3)
+/// fn plane_xy(δ: Length)                           -> Plane   (also plane_xz/plane_yz)
+/// fn axis_x(o: Point3)                             -> Axis    (also axis_y/axis_z)
 /// ```
 ///
 /// Each name resolves to its datum codomain:
-/// - `midplane` / `plane_through` → `Type::Plane`
-/// - `axis_through`               → `Type::Axis`
-/// - `frame_at`                   → `Type::Frame(3)`
-/// - `offset`                     → `Type::Plane` ONLY at arity 2 (see below)
+/// - `midplane` / `plane_through`          → `Type::Plane`
+/// - `plane_xy` / `plane_xz` / `plane_yz`  → `Type::Plane`
+/// - `axis_through`                        → `Type::Axis`
+/// - `axis_x` / `axis_y` / `axis_z`        → `Type::Axis`
+/// - `frame_at`                            → `Type::Frame(3)`
+/// - `offset`                              → `Type::Plane` ONLY at arity 2 (see below)
+///
+/// **Neighbour audit (task 5344).** The six axis-aligned constructors
+/// `plane_xy`/`plane_xz`/`plane_yz` and `axis_x`/`axis_y`/`axis_z` — which this
+/// comment previously merely name-checked as "sibling datum constructors" — are
+/// now claimed HERE. They had the same first-arg-fallback defect as the
+/// orientation family: `plane_xy(10mm)` typed as its offset's `Scalar<Length>`
+/// and `axis_x(o)` as its origin's type. Unlike the zero-arg orientation
+/// constructors they mistyped SILENTLY, because each takes exactly ONE argument
+/// (`reify_stdlib::geometry`'s `make_plane`/`make_axis` hard-check
+/// `args.len() != 1`), so the fallback never reached its zero-arg warning.
+///
+/// Two names that comment also listed are deliberately NOT claimed here:
+/// - `frame3` (and the rest of the orientation/transform/frame family) belongs
+///   to `crate::orientation_signatures` — a separate, name-only resolver whose
+///   slice is pinned disjoint from this vocabulary.
+/// - `point3` / `vec3` remain unclaimed by ANY resolver: `Type::Point` and
+///   `Type::Vector` carry an argument-DEPENDENT quantity slot (the "Point /
+///   Vector quantity-slot convention" in `reify_core::ty`), so typing them needs
+///   a resolver that derives the quantity from the arguments plus a ruling on
+///   mixed-dimension arguments — a different shape than this table, tracked as a
+///   follow-up.
 ///
 /// Called from the `expr.rs` `NoUserFunctions` ladder before the first-arg
 /// fallback; resolving here replaces the wrong first-arg fallback type (e.g.
@@ -639,6 +663,8 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
 /// args). This mirrors the sibling affine-map constructor family, which is
 /// likewise arity-blind at the type level. Pinned by
 /// `datum_constructor_tests::wrong_arity_constructor_still_types_as_codomain`.
+/// The six axis-aligned neighbours inherit that contract unchanged: a
+/// wrong-arity `plane_xy()` still types `Plane` and errors at eval.
 ///
 /// Case-sensitive: Reify function names are snake_case.
 pub(crate) fn datum_constructor_result_type(
@@ -649,6 +675,12 @@ pub(crate) fn datum_constructor_result_type(
         "midplane" | "plane_through" => Some(reify_core::Type::Plane),
         "axis_through" => Some(reify_core::Type::Axis),
         "frame_at" => Some(reify_core::Type::Frame(3)),
+        // Axis-aligned construction datums (task 5344 neighbour audit). Same
+        // datum vocabulary, same codomains — `make_plane`/`make_axis` in
+        // `reify_stdlib::geometry` are the eval side. Arity-blind by design like
+        // their siblings above; the one-argument shape is enforced at eval.
+        "plane_xy" | "plane_xz" | "plane_yz" => Some(reify_core::Type::Plane),
+        "axis_x" | "axis_y" | "axis_z" => Some(reify_core::Type::Axis),
         // Arity overload: the construction-datum `offset` is the arity-2 form
         // only; arity-3 `offset(Plane, Plane, Length)` is γ's relation, claimed
         // by the earlier relation arm.
