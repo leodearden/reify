@@ -884,3 +884,112 @@ structure def S {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── task 5496 (stdlib-namespace β): NS-P2 intra-stdlib collision gate ───────
+//
+// PRD docs/prds/v0_6/stdlib-namespace.md §7 boundary #3. The observable the PRD
+// asks for is "the stdlib BUILD fails", not "a helper returns findings", so
+// these tests drive a synthetic source set through
+// `stdlib_loader::build_stdlib_modules` — the exact function
+// `load_stdlib()` delegates to. The stdlib is `include_str!`-embedded, so no
+// user-level `.ri` fixture can inject a duplicate stdlib module; a synthetic
+// source set through the production entry point is the only way to observe the
+// gate fire.
+
+/// Drive `build_stdlib_modules` on `sources` and return the panic message.
+///
+/// Panics (failing the test) if the build did NOT panic, or if the payload is
+/// neither `String` nor `&'static str`. Downcast idiom mirrors
+/// `multiple_non_bootstrap_modules_with_no_prelude_pragma_all_named_in_panic`
+/// above.
+fn stdlib_build_panic_message(sources: &[(&str, &str)]) -> String {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        stdlib_loader::build_stdlib_modules(sources);
+    }));
+    let err = result.expect_err("build_stdlib_modules should have panicked, but returned Ok");
+    if let Some(s) = err.downcast_ref::<String>() {
+        s.clone()
+    } else if let Some(s) = err.downcast_ref::<&'static str>() {
+        (*s).to_string()
+    } else {
+        panic!("panic payload was neither String nor &'static str");
+    }
+}
+
+/// Assert that building `sources` panics with the NS-P2 collision message, and
+/// that the message names the kind, the colliding name, and BOTH modules.
+///
+/// Message-CONTENT matching is the point. A bare "it panicked" assertion would
+/// pass vacuously on any stdlib build failure — a cycle, an Error diagnostic, an
+/// unwrap deep inside the compiler — and would therefore keep passing if the
+/// collision scan were deleted outright.
+#[track_caller]
+fn assert_collision_panic(
+    sources: &[(&str, &str)],
+    kind: &str,
+    name: &str,
+    module_a: &str,
+    module_b: &str,
+) {
+    let msg = stdlib_build_panic_message(sources);
+    for needle in [NS_P2_PANIC_ANCHOR, kind, name, module_a, module_b] {
+        assert!(
+            msg.contains(needle),
+            "NS-P2 collision panic should name {needle:?}; got:\n{msg}"
+        );
+    }
+}
+
+/// Stable anchor substring identifying the NS-P2 code path. Kept as a constant
+/// so every collision test agrees on it and a reworded message is a one-line fix.
+const NS_P2_PANIC_ANCHOR: &str = "intra-stdlib pub-name collision";
+
+/// Boundary #3: two stdlib modules declaring the same `structure def` name must
+/// fail the stdlib BUILD, with a message naming both modules.
+///
+/// The synthetic set reproduces exactly the collision the real corpus carried
+/// until this task's rename: `structure def Mode` in two modules, with
+/// DIFFERENT member sets, which is what made the pre-state dangerous (the two
+/// resolution phases silently disagreed about the winner).
+///
+/// Both modules carry `#no_prelude` so they compile against builtins only. That
+/// matters for the same reason it matters in the bootstrap-invariant tests
+/// above: without it the sources would draw Error diagnostics and the build's
+/// pre-existing Error-diagnostic assert would fire FIRST, so the test would
+/// observe the wrong panic and pass for the wrong reason.
+#[test]
+fn stdlib_build_with_injected_duplicate_structure_name_panics_naming_both_modules() {
+    const DUP_A: &str = "#no_prelude\nstructure def Mode {\n    param eigenvalue : Real\n}\n";
+    const DUP_B: &str = "#no_prelude\nstructure def Mode {\n    param frequency : Real\n}\n";
+    let sources: &[(&str, &str)] = &[("std.test.dup_a", DUP_A), ("std.test.dup_b", DUP_B)];
+
+    assert_collision_panic(
+        sources,
+        "structure",
+        "Mode",
+        "std.test.dup_a",
+        "std.test.dup_b",
+    );
+}
+
+/// The positive counterpart: the REAL stdlib must still build. This is what
+/// proves the gate is wired into the production path rather than only reachable
+/// from a synthetic test set — if the scan were too coarse (kind-agnostic, or
+/// keying functions by name alone), this test goes red on the live 47-file
+/// corpus while the injected-duplicate test above stays green.
+#[test]
+fn real_stdlib_build_is_collision_free() {
+    let modules = stdlib_loader::load_stdlib();
+    assert!(
+        !modules.is_empty(),
+        "load_stdlib() must return modules; the NS-P2 gate must not fire on the real corpus"
+    );
+
+    let paths: Vec<String> = modules.iter().map(|m| m.path.to_string()).collect();
+    for expected in ["std/solver/buckling", "std/modal/analysis"] {
+        assert!(
+            paths.iter().any(|p| p == expected),
+            "real stdlib should still contain {expected}; got: {paths:?}"
+        );
+    }
+}
