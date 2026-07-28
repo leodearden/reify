@@ -7,7 +7,8 @@
 //!
 //! Each combinator gets its own section.  RED tests are labelled with the
 //! placeholder behaviour that makes them fail today.  End-to-end cases using
-//! `compile_source_with_stdlib` appear in steps 1 and 9.
+//! `compile_source_with_stdlib` are the `e2e_*_with_stdlib` tests below (see
+//! the CANONICAL MECHANISM NOTE referenced next for what they guard).
 //!
 //! The `e2e_*_with_stdlib` tests instead compile the real stdlib and evaluate
 //! under `EvalContext::new(&values, &module.functions)` — task 5410, PRD
@@ -45,6 +46,14 @@ fn val_10mm() -> Value {
     }
 }
 
+/// 3mm — the `or_else` alternative value.
+fn val_3mm() -> Value {
+    Value::Scalar {
+        si_value: 0.003,
+        dimension: DimensionVector::LENGTH,
+    }
+}
+
 fn expr_5mm() -> CompiledExpr {
     CompiledExpr::literal(val_5mm(), Type::length())
 }
@@ -53,8 +62,18 @@ fn expr_0mm() -> CompiledExpr {
     CompiledExpr::literal(val_0mm(), Type::length())
 }
 
+/// 3mm as a literal `CompiledExpr` — the `or_else` alternative literal.
+fn expr_3mm() -> CompiledExpr {
+    CompiledExpr::literal(val_3mm(), Type::length())
+}
+
 fn expr_some_5mm() -> CompiledExpr {
     CompiledExpr::option_some(expr_5mm(), Type::Option(Box::new(Type::length())))
+}
+
+/// some(3mm) as a `CompiledExpr` — the `or_else` alternative argument.
+fn expr_some_3mm() -> CompiledExpr {
+    CompiledExpr::option_some(expr_3mm(), Type::Option(Box::new(Type::length())))
 }
 
 fn expr_none_length() -> CompiledExpr {
@@ -307,6 +326,13 @@ fn fallback_undef_subject_returns_undef() {
 // and the reason each fixture was chosen — but this harness does not observe
 // them.
 //
+// SEEDED SUBJECT, one exception — every guard above evaluates under an EMPTY
+// `ValueMap`; `e2e_or_else_none_subject_with_stdlib` (task 5584) seeds
+// `ValueCellId::new("S", "o") -> Value::Option(None)` instead (see that test's
+// own doc comment for why a seeded subject is required). Seeding does not
+// change the fallthrough mechanism described above: the function table is
+// still user-source-only, so intercept removal still yields `Undef`.
+//
 // These are deliberate REGRESSION LOCKS, not RED-first tests: the intercept is
 // already live, so they are GREEN the moment they are written.
 
@@ -392,22 +418,14 @@ fn e2e_unwrap_or_some_5mm_with_stdlib() {
 /// RED today: or_else not intercepted → Undef.
 #[test]
 fn or_else_none_returns_alt() {
-    let three_mm = Value::Scalar {
-        si_value: 0.003,
-        dimension: DimensionVector::LENGTH,
-    };
-    let expr_some_3mm = CompiledExpr::option_some(
-        CompiledExpr::literal(three_mm.clone(), Type::length()),
-        Type::Option(Box::new(Type::length())),
-    );
     let call = CompiledExpr::user_function_call(
         "or_else".to_string(),
-        vec![expr_none_length(), expr_some_3mm],
+        vec![expr_none_length(), expr_some_3mm()],
         Type::Option(Box::new(Type::length())),
     );
     assert_eq!(
         eval_simple(&call),
-        Value::Option(Some(Box::new(three_mm))),
+        Value::Option(Some(Box::new(val_3mm()))),
         "or_else(none, some(3mm)) must return the alternative some(3mm)"
     );
 }
@@ -419,16 +437,9 @@ fn or_else_none_returns_alt() {
 /// RED today: or_else not intercepted → Undef.
 #[test]
 fn or_else_some_returns_subject() {
-    let expr_some_3mm = CompiledExpr::option_some(
-        CompiledExpr::literal(
-            Value::Scalar { si_value: 0.003, dimension: DimensionVector::LENGTH },
-            Type::length(),
-        ),
-        Type::Option(Box::new(Type::length())),
-    );
     let call = CompiledExpr::user_function_call(
         "or_else".to_string(),
-        vec![expr_some_5mm(), expr_some_3mm],
+        vec![expr_some_5mm(), expr_some_3mm()],
         Type::Option(Box::new(Type::length())),
     );
     assert_eq!(
@@ -443,22 +454,58 @@ fn or_else_some_returns_subject() {
 /// GREEN today (coincidentally): any-arg-undef shortcircuit fires.
 #[test]
 fn or_else_undef_subject_returns_undef() {
-    let expr_some_3mm = CompiledExpr::option_some(
-        CompiledExpr::literal(
-            Value::Scalar { si_value: 0.003, dimension: DimensionVector::LENGTH },
-            Type::length(),
-        ),
-        Type::Option(Box::new(Type::length())),
-    );
     let call = CompiledExpr::user_function_call(
         "or_else".to_string(),
-        vec![expr_undef_option_length(), expr_some_3mm],
+        vec![expr_undef_option_length(), expr_some_3mm()],
         Type::Option(Box::new(Type::length())),
     );
     assert_eq!(
         eval_simple(&call),
         Value::Undef,
         "or_else(undef, some(3mm)) must propagate Undef (INV-2)"
+    );
+}
+
+// ── task 5584 (PRD ζ / BT10): stdlib-compiled or_else guard ──────────────────
+
+/// End-to-end: `or_else(o, some(3mm))` compiled with the real stdlib, with the
+/// subject param `o` seeded to `Value::Option(None)`, must evaluate to
+/// `some(3mm)` — the intercept's `alt` branch.
+///
+/// MEASURED under intercept removal: fails with `left: Undef` (mechanism note
+/// above `e2e_or_default_some_with_stdlib`).
+///
+/// FIXTURE RATIONALE — `option_recovery.ri:42` ships the typecheck-only
+/// `pub fn or_else<T>(o: Option<T>, alt: Option<T>) -> Option<T> { o }`, which
+/// returns the SUBJECT, so under #5593's prelude-backed harness the `none`
+/// subject is what makes this discriminate (it would yield `Option(None)`),
+/// whereas a `some` subject coincides with the placeholder exactly.
+///
+/// WHY THE SUBJECT IS A SEEDED PARAM, not an inline `none`: the inline form
+/// `or_else(none, some(3mm))` does NOT compile — "conflicting type arguments
+/// for type parameter 'T' ... Real vs Scalar[m]" — because a bare `none`
+/// infers `T = Real`. The `param o : Option<Length>` annotation pins `T`. Same
+/// asymmetry recorded at `e2e_is_some_none_with_stdlib` below.
+///
+/// WHY THE SEEDED ValueMap: `param o` compiles to
+/// `ValueRef(ValueCellId{"S","o"})`, which evaluates as
+/// `ctx.values.get_or_undef(id)` (lib.rs:222) — an empty ValueMap would yield
+/// `Undef` and the assertion would be vacuous.
+#[test]
+fn e2e_or_else_none_subject_with_stdlib() {
+    let module = reify_test_support::compile_source_with_stdlib(
+        "structure S { param o : Option<Length> = none  let v = or_else(o, some(3mm)) }",
+    );
+    let expr = reify_test_support::get_let_expr(&module, "v");
+    let mut values = ValueMap::new();
+    values.insert(ValueCellId::new("S", "o"), Value::Option(None));
+    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    assert_eq!(
+        reify_expr::eval_expr(expr, &ctx),
+        Value::Option(Some(Box::new(val_3mm()))),
+        "e2e: or_else(o, some(3mm)) compiled via stdlib, with subject param o seeded to \
+         none, must evaluate to some(3mm) — if the intercept stops firing this falls \
+         through to eval_user_function_call and yields Undef"
     );
 }
 
