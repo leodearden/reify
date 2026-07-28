@@ -27,7 +27,7 @@
 # --extra-protect-glob, so gc.sh's Pass-1 always-reclaim reset skips a lane whose
 # consumer's cargo verify build is mid-flight while its ACQUIRE flock is already
 # free — the reclaim-side liveness gap of esc-5375-1. Reuses the reaper's batch
-# /proc scanner (_live_referenced_paths); lives in this periodic δ backstop, not
+# /proc scanner (live_referenced_paths); lives in this periodic δ backstop, not
 # gc.sh's per-acquire ε hot path, for the same cost reason. Fail-open (an empty
 # or failed scan leaves reclaim unchanged). See _live_consumer_protect_csv below.
 # The complementary long-term fix — the verify CONSUMER holding ${LANE_DIR}.lock
@@ -83,6 +83,16 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Shared live-reference /proc scanner (live_referenced_paths / live_ref_present).
+# Single definition, two consumers: this sweep's .reseed-trash reaper and
+# warm-lane-gc.sh's per-lane reclaim gate (task 5572).
+if [ ! -f "$SCRIPT_DIR/lib_live_refs.sh" ]; then
+    echo "warm-lane-gc-sweep.sh: ERROR — scripts/lib_live_refs.sh not found next to warm-lane-gc-sweep.sh" >&2
+    exit 1
+fi
+# shellcheck source=scripts/lib_live_refs.sh
+source "$SCRIPT_DIR/lib_live_refs.sh"
 
 # ── log helpers (all write to stderr) ──────────────────────────────────────────
 _warn() { printf '[warm-lane-gc-sweep] WARN:  %s\n' "$*" >&2; }
@@ -142,67 +152,7 @@ EOF
 # The live-reference guard runs ONCE for the whole batch of dead-PID candidates
 # (a single /proc walk + a single /proc/*/maps grep matched against every
 # candidate), not once per entry, so a large strand costs O(/proc) rather than
-# O(entries × /proc). See _live_referenced_paths.
-
-# _live_referenced_paths RP... — given one or more resolved realpaths (trash
-# dirs for the reaper, OR pool-lane dirs for the live-consumer lane guard —
-# task 5378), print (one per line, deduplicated) the subset that ANY live
-# process references via its cwd symlink, an open fd symlink, or a mmap'd
-# region in /proc/<pid>/maps. Performs exactly ONE /proc symlink walk and ONE
-# /proc/*/maps grep for the WHOLE candidate set — O(/proc) once, NOT once per
-# entry: with N stranded entries the older per-entry scan was O(N × /proc)
-# (a single /proc walk already cost ~84s on a ~1300-process host, and the
-# ENOSPC strand that motivates this reaper can leave many entries at once).
-#
-# The verdict is read from captured OUTPUT, never a pipeline exit status:
-# find/grep over /proc return non-zero on the unavoidable permission-denied
-# entries of other users' processes (and SIGPIPE on an early awk exit), so
-# under `set -o pipefail` the exit status is an unreliable signal. A vanishing
-# /proc entry only produces suppressed stderr; every scan is `|| true`-guarded
-# so it never aborts under set -e.
-_live_referenced_paths() {
-    [ $# -gt 0 ] || return 0
-
-    # cwd + open-fd references: one find pass prints every process's cwd and
-    # open-fd symlink TARGETS (%l = the kernel-canonical target — no per-fd
-    # fork). awk loads the candidate realpaths as input records (the NR==FNR
-    # two-file trick — avoids `-v`'s backslash-escape processing on data), then
-    # for each target prints any candidate it equals or is a "$cand/" descendant
-    # of (string compare, so arbitrary path characters are safe), each candidate
-    # at most once, exiting early once every candidate is accounted for.
-    # /proc/<pid>/task is pruned to skip the per-thread symlink duplicates.
-    find /proc -maxdepth 3 -path '*/task' -prune -o -type l \
-            \( -name cwd -o -path '*/fd/*' \) -printf '%l\n' 2>/dev/null \
-        | awk '
-            NR==FNR { if ($0 != "") cand[++n] = $0; next }
-            {
-                for (i = 1; i <= n; i++)
-                    if (!(i in seen) && ($0 == cand[i] || index($0, cand[i] "/") == 1)) {
-                        print cand[i]; seen[i] = 1; nfound++
-                    }
-                if (n > 0 && nfound >= n) exit
-            }
-        ' <(printf '%s\n' "$@") - 2>/dev/null || true
-
-    # mmap'd regions: a single grep over every process's maps for a path mapped
-    # from INSIDE any candidate dir. Each pattern carries a trailing "/" so the
-    # fixed-string match is path-BOUNDARY-aware: ".../_lane-1/" matches a maps
-    # line ".../_lane-1/target/x" but NOT the longer sibling ".../_lane-10/..."
-    # whose basename merely has "_lane-1" as a name-prefix. A bare-substring
-    # match (the original) spuriously mapped an "_lane-10" build's maps line back
-    # to a free "_lane-1" whenever the longer path was not itself a live
-    # candidate — e.g. a lane torn down mid-build, whose "(deleted)" mapping
-    # lingers — perpetually shielding low-numbered lanes' divergent target/ from
-    # reclaim (esc-5378 review). This mirrors the cwd/fd pass's cand"/"
-    # descendant test above; a mmap'd file always lives UNDER the dir, so
-    # requiring "/" drops no real reference. The trailing "/" is then stripped so
-    # each emitted line equals the input candidate realpath EXACTLY — both
-    # callers key on it (the reaper's `referenced` set; the lane guard's
-    # rp_to_base lookup). (The reaper's trash inputs already carried a ".<pid>"
-    # delimiter, so this only tightens — never loosens — its matching.)
-    grep -hoFf <(printf '%s/\n' "$@") /proc/[0-9]*/maps 2>/dev/null \
-        | sed 's:/$::' || true
-}
+# O(entries × /proc). See live_referenced_paths in scripts/lib_live_refs.sh.
 
 # _reap_stale_trash MOUNT — reap stranded MOUNT/.reseed-trash/<lane>.<pid> dirs.
 _reap_stale_trash() {
@@ -245,7 +195,7 @@ _reap_stale_trash() {
     # all others are reaped.
     local -A referenced=()
     local referenced_raw hitrp
-    referenced_raw="$(_live_referenced_paths "${cand_rps[@]}")" || referenced_raw=""
+    referenced_raw="$(live_referenced_paths "${cand_rps[@]}")" || referenced_raw=""
     if [ -n "$referenced_raw" ]; then
         while IFS= read -r hitrp; do
             [ -n "$hitrp" ] && referenced["$hitrp"]=1
@@ -285,7 +235,7 @@ _reap_stale_trash() {
 # sweep once it clears (exactly the trash reaper's second-sweep behavior);
 # under-preserving corrupts a live build.
 #
-# Reuses the reseed-trash reaper's batch scanner (_live_referenced_paths): the
+# Reuses the reseed-trash reaper's batch scanner (live_referenced_paths): the
 # lane dir realpaths are scanned in ONE /proc walk, and its descendant matching
 # already catches a build fd into <lane>/target/... AND a cwd at the lane root.
 # Lives in this periodic δ backstop, NOT gc.sh's per-acquire ε hot path, because
@@ -317,11 +267,11 @@ _live_consumer_protect_csv() {
     # Single batch /proc scan for the WHOLE lane set (one /proc walk, one maps
     # grep — not one per lane), mirroring _reap_stale_trash.
     local referenced_raw hitrp
-    referenced_raw="$(_live_referenced_paths "${rps[@]}")" || referenced_raw=""
+    referenced_raw="$(live_referenced_paths "${rps[@]}")" || referenced_raw=""
     [ -n "$referenced_raw" ] || return 0
 
     # Map referenced realpaths back to basenames; emit a comma-separated list.
-    # _live_referenced_paths can emit a realpath twice (once from the cwd/fd
+    # live_referenced_paths can emit a realpath twice (once from the cwd/fd
     # pass, once from the maps grep), so dedup by basename.
     local csv="" b
     local -A emitted=()
