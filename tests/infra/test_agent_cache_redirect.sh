@@ -153,24 +153,39 @@ conf_paths() {
 # tree for the whole run.  Same reason test_helpers.sh's make_isolated_lane
 # keeps its registration out of the subshell.
 #
-# `registry/src` and `_npx` are populated ON PURPOSE: they are the two trees
-# the seeder must NOT copy (registry/src is derived from the .crate tarballs in
-# registry/cache; _npx is churn, not a build input), so their presence at the
-# source is what gives the "absent at the destination" assertions their teeth.
+# `registry/src`, `_npx` and `_cacache/tmp` are populated ON PURPOSE: they are
+# the trees the seeder must NOT copy (registry/src is derived from the .crate
+# tarballs in registry/cache; the other two are churn, not build inputs), so
+# their presence at the source is what gives the "absent at the destination"
+# assertions their teeth.
+#
+# The tree layout mirrors the two SEED MODES the script distinguishes, and the
+# distinction is a containment property, not an optimisation:
+#   link (immutable)      registry/cache/*.crate, _cacache/content-v2/**
+#   copy (mutated in place) registry/index/**/.cache/**, _cacache/index-v5/**
+# Both copy-mode trees are reproduced here in their real on-disk shape (cargo's
+# sparse-index .cache/<a>/<b>/<crate> files, which cargo rewrites in place; a
+# cacache index-v5 bucket, which cacache mutates by APPENDING an entry line) so
+# the inode assertions below are asserting about the paths that actually carry
+# the hazard rather than about stand-ins.
 FAKE_HOME=""
 make_fake_home() {
     FAKE_HOME="$(mktemp -d "$_TMPBASE/test-agent-cache-home-XXXXXX")"
     _TMPDIRS+=("$FAKE_HOME")
     mkdir -p "$FAKE_HOME/.cargo/registry/cache" \
-             "$FAKE_HOME/.cargo/registry/index" \
+             "$FAKE_HOME/.cargo/registry/index/index.crates.io-1949cf8c/.cache/al/ph" \
              "$FAKE_HOME/.cargo/registry/src/github.com-1ecc/alpha-1.0.0" \
              "$FAKE_HOME/.npm/_cacache/content-v2/sha512/ab" \
+             "$FAKE_HOME/.npm/_cacache/index-v5/5c/05" \
+             "$FAKE_HOME/.npm/_cacache/tmp" \
              "$FAKE_HOME/.npm/_npx"
     printf 'crate-tarball-alpha\n' > "$FAKE_HOME/.cargo/registry/cache/alpha-1.0.0.crate"
     printf 'crate-tarball-beta\n'  > "$FAKE_HOME/.cargo/registry/cache/beta-2.0.0.crate"
-    printf 'index-entry-alpha\n'   > "$FAKE_HOME/.cargo/registry/index/alpha.json"
+    printf 'index-entry-alpha\n'   > "$FAKE_HOME/.cargo/registry/index/index.crates.io-1949cf8c/.cache/al/ph/alpha"
     printf 'extracted-lib-rs\n'    > "$FAKE_HOME/.cargo/registry/src/github.com-1ecc/alpha-1.0.0/lib.rs"
     printf 'cacache-blob\n'        > "$FAKE_HOME/.npm/_cacache/content-v2/sha512/ab/blob"
+    printf '\ndeadbeef\t{"key":"alpha"}\n' > "$FAKE_HOME/.npm/_cacache/index-v5/5c/05/bucket"
+    printf 'cacache-scratch\n'     > "$FAKE_HOME/.npm/_cacache/tmp/scratch"
     printf 'npx-scratch\n'         > "$FAKE_HOME/.npm/_npx/scratch"
 }
 
@@ -190,7 +205,14 @@ make_cache_root() {
 # which would silently point the seeder at the host's real ~/.cargo and make
 # every assertion below meaningless.  A block that needs one of them sets it
 # explicitly via the _REDIRECT_ENV array (entries are plain KEY=VALUE strings,
-# passed straight through to `env`).
+# passed straight through to `env`, and appear AFTER these defaults so they
+# override them).
+#
+# REIFY_MAIN_CHECKOUT is pinned at a NONEXISTENT path for the same reason: it
+# defaults to /home/leo/src/reify, so once this task lands, the unit installed
+# by an unpinned run would resolve to the real main checkout and this suite's
+# behaviour would silently change on the landing commit.  Block H sets it
+# explicitly for both the stable-path and the fallback case.
 _REDIRECT_ENV=()
 RC=0
 OUT=""
@@ -203,6 +225,7 @@ run_redirect() {
             HOME="$FAKE_HOME" \
             REIFY_AGENT_CACHE_ROOT="$CACHE_ROOT" \
             REIFY_TMPFILES_DIR="$TMPFILES_DIR" \
+            REIFY_MAIN_CHECKOUT="$STUB_DIR/no-such-main-checkout" \
             REIFY_TEST_CALLS_FILE="$CALLS_FILE" \
             PATH="$STUB_DIR:$PATH" \
             "${_REDIRECT_ENV[@]+${_REDIRECT_ENV[@]}}" \
@@ -219,6 +242,17 @@ same_inode() {
     a="$(stat -c %i "$1" 2>/dev/null)" || return 1
     b="$(stat -c %i "$2" 2>/dev/null)" || return 1
     [ -n "$a" ] && [ "$a" = "$b" ]
+}
+
+# distinct_inode <a> <b> — the mirror probe, for the copy-mode trees.  NOT
+# spelled `! same_inode`: BOTH files must exist and differ, so a regression that
+# skipped the tree entirely (no destination file at all) FAILS here rather than
+# satisfying a negation vacuously.
+distinct_inode() {
+    local a b
+    a="$(stat -c %i "$1" 2>/dev/null)" || return 1
+    b="$(stat -c %i "$2" 2>/dev/null)" || return 1
+    [ -n "$a" ] && [ -n "$b" ] && [ "$a" != "$b" ]
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -277,10 +311,12 @@ assert "B5: alpha-1.0.0.crate present at destination" \
     test -f "$B_CARGO_DEST/registry/cache/alpha-1.0.0.crate"
 assert "B6: beta-2.0.0.crate present at destination" \
     test -f "$B_CARGO_DEST/registry/cache/beta-2.0.0.crate"
-assert "B7: index/alpha.json present at destination" \
-    test -f "$B_CARGO_DEST/registry/index/alpha.json"
-assert "B8: nested _cacache blob present at destination" \
+assert "B7: sparse-index .cache entry present at destination" \
+    test -f "$B_CARGO_DEST/registry/index/index.crates.io-1949cf8c/.cache/al/ph/alpha"
+assert "B8: nested _cacache content-v2 blob present at destination" \
     test -f "$B_NPM_DEST/_cacache/content-v2/sha512/ab/blob"
+assert "B8b: _cacache index-v5 bucket present at destination" \
+    test -f "$B_NPM_DEST/_cacache/index-v5/5c/05/bucket"
 
 assert "B9: seeded .crate is byte-identical to its source" \
     cmp -s "$FAKE_HOME/.cargo/registry/cache/alpha-1.0.0.crate" \
@@ -297,21 +333,64 @@ assert "B11: registry/src is NOT seeded (derived from registry/cache)" \
     test ! -e "$B_CARGO_DEST/registry/src"
 assert "B12: _npx is NOT seeded (churn, not a build input)" \
     test ! -e "$B_NPM_DEST/_npx"
+assert "B12b: _cacache/tmp is NOT seeded (cacache scratch, not a build input)" \
+    test ! -e "$B_NPM_DEST/_cacache/tmp"
 
-# ── the load-bearing assertions ───────────────────────────────────────────────
-# Inode identity is what distinguishes the near-free `cp -al` hardlink copy from
-# a real 6+ GB byte copy.  Without B13-B15 a plain `cp -a` implementation is
-# indistinguishable from the intended one on every other assertion in this
-# block, while silently doubling the host's cache footprint on every boot.
-assert "B13: seeded .crate SHARES AN INODE with its source (hardlink, not copy)" \
+# ── the load-bearing assertions: inode identity, in BOTH directions ───────────
+# Inode identity is what distinguishes the near-free `cp -al` hardlink from a
+# real byte copy — and the correct answer differs per tree, so asserting only
+# one direction would license the wrong mechanism on half the seed.
+#
+# B13/B15 (link mode, MUST share): without them a plain `cp -a` implementation
+# is indistinguishable from the intended one on every other assertion here,
+# while silently doubling the host's cache footprint on every boot.
+#
+# B14/B16 (copy mode, MUST NOT share) are the sandbox-containment assertions.
+# A shared inode on a tree that is mutated IN PLACE — cargo rewrites its
+# sparse-index .cache files on every index revalidation; cacache APPENDS to its
+# index-v5 buckets — means a landlock-sandboxed agent writing under /tmp writes
+# THROUGH to the host's ~/.cargo / ~/.npm, outside the write set the sandbox
+# exists to enforce.  A `cp -al` regression on these two trees passes every
+# other assertion in this block and is invisible until it has already escaped
+# the sandbox.
+assert "B13: seeded .crate SHARES AN INODE with its source (link mode)" \
     same_inode "$FAKE_HOME/.cargo/registry/cache/alpha-1.0.0.crate" \
                "$B_CARGO_DEST/registry/cache/alpha-1.0.0.crate"
-assert "B14: seeded index entry SHARES AN INODE with its source" \
-    same_inode "$FAKE_HOME/.cargo/registry/index/alpha.json" \
-               "$B_CARGO_DEST/registry/index/alpha.json"
-assert "B15: seeded _cacache blob SHARES AN INODE with its source" \
+assert "B14: sparse-index .cache entry does NOT share an inode (copy mode: cargo rewrites it in place)" \
+    distinct_inode "$FAKE_HOME/.cargo/registry/index/index.crates.io-1949cf8c/.cache/al/ph/alpha" \
+                   "$B_CARGO_DEST/registry/index/index.crates.io-1949cf8c/.cache/al/ph/alpha"
+assert "B15: seeded _cacache content blob SHARES AN INODE with its source (link mode)" \
     same_inode "$FAKE_HOME/.npm/_cacache/content-v2/sha512/ab/blob" \
                "$B_NPM_DEST/_cacache/content-v2/sha512/ab/blob"
+assert "B16: _cacache index-v5 bucket does NOT share an inode (copy mode: cacache appends to it)" \
+    distinct_inode "$FAKE_HOME/.npm/_cacache/index-v5/5c/05/bucket" \
+                   "$B_NPM_DEST/_cacache/index-v5/5c/05/bucket"
+
+# Copy mode must still be a faithful copy — a "not shared" that was reached by
+# not copying at all would satisfy B14/B16 vacuously.
+assert "B17: the copied index entry is byte-identical to its source" \
+    cmp -s "$FAKE_HOME/.cargo/registry/index/index.crates.io-1949cf8c/.cache/al/ph/alpha" \
+           "$B_CARGO_DEST/registry/index/index.crates.io-1949cf8c/.cache/al/ph/alpha"
+assert "B18: the copied index-v5 bucket is byte-identical to its source" \
+    cmp -s "$FAKE_HOME/.npm/_cacache/index-v5/5c/05/bucket" \
+           "$B_NPM_DEST/_cacache/index-v5/5c/05/bucket"
+
+# The end-to-end containment property, asserted by observation rather than by
+# reasoning about inodes: mutate the seeded copy the way the real tool would
+# (cacache appends an entry line to a bucket) and confirm the host's cache is
+# untouched.  This is the assertion that would have caught the original
+# `cp -al` seed of index-v5, stated in the terms the sandbox actually cares
+# about.
+printf 'cafebabe\t{"key":"beta"}\n' >> "$B_NPM_DEST/_cacache/index-v5/5c/05/bucket"
+assert "B19: appending to the seeded bucket does NOT write through to the host cache" \
+    bash -c '! grep -q "cafebabe" "$1"' _ "$FAKE_HOME/.npm/_cacache/index-v5/5c/05/bucket"
+
+# The OK line must carry a COUNT, and the count must be nonzero.  Paired with
+# E4b/E4c below: every guard in seed_one is fail-open, so "exit 0" alone says
+# nothing about whether anything was actually seeded.
+assert "B20: a real seed reports OK with a nonzero seeded count" \
+    bash -c 'printf "%s\n%s\n" "$1" "$2" | grep -qE "OK:.*seed pass complete: [1-9]"' \
+    _ "$OUT" "$ERR_OUT"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block C — idempotence + top-up
@@ -419,8 +498,11 @@ run_redirect --seed-only
 _REDIRECT_ENV=()
 
 assert "D1: degenerate source==destination run still exits 0" test "$RC" -eq 0
-assert "D2: degenerate run warns and names the skip" \
-    bash -c 'printf "%s\n%s\n" "$1" "$2" | grep -qiE "WARN.*(degenerate|same|itself|skip)"' \
+# Matched on GUARD 2(a)'s own wording.  A `skip` alternative would match any
+# warn at all (every one of them ends in "skipping"), so this would stay green
+# with the equality branch deleted and an unrelated guard firing instead.
+assert "D2: warns specifically that the destination IS the source" \
+    bash -c 'printf "%s\n%s\n" "$1" "$2" | grep -qiE "WARN.*destination is the source itself"' \
     _ "$OUT" "$ERR_OUT"
 assert "D3: pre-existing destination contents survive the degenerate run" \
     test -f "$D_CARGO_DEST/registry/cache/alpha-1.0.0.crate"
@@ -444,8 +526,12 @@ reset_calls
 run_redirect --seed-only
 
 assert "D5: nested destination run exits 0" test "$RC" -eq 0
-assert "D6: nested destination run warns and names the skip" \
-    bash -c 'printf "%s\n%s\n" "$1" "$2" | grep -qiE "WARN.*(nested|inside|degenerate|itself|skip)"' \
+# This is the ONLY assertion in the suite that observes GUARD 2(b), so it has
+# to name that branch's own wording: with `degenerate|itself|skip` in the
+# alternation it matched the equality branch — or any other warn — and would
+# have passed with the nesting branch deleted outright.
+assert "D6: warns specifically that the destination is NESTED INSIDE the source" \
+    bash -c 'printf "%s\n%s\n" "$1" "$2" | grep -qiE "WARN.*destination is nested inside the source"' \
     _ "$OUT" "$ERR_OUT"
 assert "D7: no runaway self-copy — dest holds no second-level cache tree" \
     test ! -e "$D_NEST_ROOT/reify-agent-cargo-home/registry/cache/reify-agent-cargo-home"
@@ -472,8 +558,12 @@ run_redirect --seed-only
 
 assert "E1: exits 0 with NO source caches at all (fresh contributor machine)" \
     test "$RC" -eq 0
-assert "E2: warns about the missing sources" \
-    bash -c 'printf "%s\n%s\n" "$1" "$2" | grep -qiE "WARN.*(missing|not found|absent|no such|skip)"' \
+# Matched on the wording GUARD 1 actually emits, not on a generic "skip":
+# every warn in the script ends in "skipping", so a `skip` alternative would
+# match ANY warn and this assertion would pass even if the missing-source
+# branch were deleted and some unrelated guard fired instead.
+assert "E2: warns specifically about the missing/unreadable seed source" \
+    bash -c 'printf "%s\n%s\n" "$1" "$2" | grep -qiE "WARN.*seed source missing or unreadable"' \
     _ "$OUT" "$ERR_OUT"
 # No partial tree: a `mkdir -p` performed before checking the source would leave
 # an empty destination that looks seeded to a later reader (and to `test -d`).
@@ -481,6 +571,19 @@ assert "E3: leaves no partial cargo destination tree behind" \
     test ! -e "$E_CARGO_DEST/registry/cache"
 assert "E4: leaves no partial npm destination tree behind" \
     test ! -e "$E_NPM_DEST/_cacache"
+
+# ── E4b/E4c: no SILENT GREEN when nothing was seeded ──────────────────────────
+# Every guard in seed_one is fail-open, so an all-skipped run still exits 0.
+# Reporting "OK: seed pass complete" there is the failure this script exists to
+# close, one level up: on a host where /tmp was remounted onto another device,
+# `systemctl --user status reify-agent-caches.service` would show a clean
+# oneshot whose last line reads OK while every agent run cold-starts forever.
+assert "E4b: an all-skipped run WARNS that nothing was seeded" \
+    bash -c 'printf "%s\n%s\n" "$1" "$2" | grep -qiE "WARN.*NOTHING was seeded"' \
+    _ "$OUT" "$ERR_OUT"
+assert "E4c: an all-skipped run does NOT report a successful seed pass" \
+    bash -c '! printf "%s\n%s\n" "$1" "$2" | grep -qE "OK:.*seed pass complete"' \
+    _ "$OUT" "$ERR_OUT"
 
 # E(ii): only the CARGO source exists — the npm seed must not suppress it.
 make_fake_home
@@ -729,7 +832,19 @@ H_XDG="$(mktemp -d "$_TMPBASE/test-agent-cache-xdg-XXXXXX")"
 _TMPDIRS+=("$H_XDG")
 H_UNIT="$H_XDG/systemd/user/reify-agent-caches.service"
 
-_REDIRECT_ENV=("XDG_CONFIG_HOME=$H_XDG")
+# A stand-in for the stable main checkout, holding its own copy of the script
+# at the canonical scripts/ path.  The distinction it makes observable: this
+# path is NOT the one the suite invokes ($SCRIPT, a warm-lane worktree path),
+# so H8/H8b can tell "pinned to the stable checkout" apart from "pinned to
+# whatever ran setup-dev.sh".
+H_MAIN="$(mktemp -d "$_TMPBASE/test-agent-cache-main-XXXXXX")"
+_TMPDIRS+=("$H_MAIN")
+mkdir -p "$H_MAIN/scripts"
+cp "$SCRIPT" "$H_MAIN/scripts/setup-agent-cache-redirect.sh"
+chmod +x "$H_MAIN/scripts/setup-agent-cache-redirect.sh"
+H_STABLE="$H_MAIN/scripts/setup-agent-cache-redirect.sh"
+
+_REDIRECT_ENV=("XDG_CONFIG_HOME=$H_XDG" "REIFY_MAIN_CHECKOUT=$H_MAIN")
 reset_calls
 run_redirect
 
@@ -751,13 +866,27 @@ assert "H6: unit declares WantedBy=default.target" \
 assert "H7: unit does NOT hard-require anything (fail-open ordering only)" \
     bash -c '! grep -q "^Requires=" "$1"' _ "$H_UNIT"
 
-# THE assertion of this block: ExecStart is the script's own ABSOLUTE path
-# followed by --seed-only.  --seed-only is what makes the boot path
-# unprivileged — a boot-time unit that tried to sudo from a non-interactive
-# --user context would hang or fail on every boot.
-assert "H8: ExecStart is this script's absolute path plus --seed-only" \
+# THE assertion of this block: ExecStart is the STABLE MAIN-CHECKOUT absolute
+# path plus --seed-only.
+#
+# --seed-only is what makes the boot path unprivileged — a boot-time unit that
+# tried to sudo from a non-interactive --user context would hang or fail on
+# every boot.
+#
+# The stable path is the other half, and H8b is what gives it teeth.
+# setup-dev.sh is routinely run from a warm-lane worktree, so a
+# ${BASH_SOURCE[0]}-derived ExecStart bakes in a path that disappears the next
+# time that lane is reclaimed — after which the oneshot fails 203/EXEC at every
+# boot and, because nothing Requires= it, nothing ever says so.  Host
+# convention, matching the inline comments on deploy/systemd/
+# reify-warm-lane.service and reify-warm-lane-gc.service.
+assert "H8: ExecStart is the STABLE main-checkout path plus --seed-only" \
     bash -c '[ "$(grep "^ExecStart=" "$1" | head -1)" = "ExecStart=$2 --seed-only" ]' \
-    _ "$H_UNIT" "$SCRIPT"
+    _ "$H_UNIT" "$H_STABLE"
+assert "H8b: ExecStart is NOT the invoking (warm-lane worktree) copy" \
+    bash -c '! grep -qF -- "ExecStart=$2 " "$1"' _ "$H_UNIT" "$SCRIPT"
+assert "H8c: Documentation= also points at the stable path, not the invoking copy" \
+    bash -c 'grep -qF -- "Documentation=file://$2" "$1"' _ "$H_UNIT" "$H_STABLE"
 
 assert "H9: systemctl --user daemon-reload was called" \
     bash -c 'grep -q "systemctl --user daemon-reload" "$1"' _ "$CALLS_FILE"
@@ -769,6 +898,31 @@ assert "H11: daemon-reload precedes enable in call order" \
         enable_ln=$(grep -n "enable.*reify-agent-caches.service" "$1" | head -1 | cut -d: -f1)
         [ -n "$reload_ln" ] && [ -n "$enable_ln" ] && [ "$reload_ln" -lt "$enable_ln" ]
     ' _ "$CALLS_FILE"
+
+# ── H11b-H11d: fallback when this is NOT the main checkout ────────────────────
+# A contributor clone (or this host before the script has landed on main) has
+# no executable at the configured stable path.  Pinning the unit there anyway
+# would install a unit that fails 203/EXEC at every boot, so the script falls
+# back to the invoking copy — and must SAY so, because that unit now carries
+# exactly the fragile-path property H8b rejects for the main-checkout host.
+make_fake_home
+make_cache_root
+H_XDG_FB="$(mktemp -d "$_TMPBASE/test-agent-cache-xdg-fb-XXXXXX")"
+_TMPDIRS+=("$H_XDG_FB")
+
+_REDIRECT_ENV=("XDG_CONFIG_HOME=$H_XDG_FB" "REIFY_MAIN_CHECKOUT=$STUB_DIR/no-such-checkout")
+reset_calls
+run_redirect
+_REDIRECT_ENV=()
+
+assert "H11b: still installs a unit when the stable path has no executable" \
+    test -f "$H_XDG_FB/systemd/user/reify-agent-caches.service"
+assert "H11c: falls back to the invoking copy's absolute path" \
+    bash -c '[ "$(grep "^ExecStart=" "$1" | head -1)" = "ExecStart=$2 --seed-only" ]' \
+    _ "$H_XDG_FB/systemd/user/reify-agent-caches.service" "$SCRIPT"
+assert "H11d: warns that it pinned the unit at the invoking copy" \
+    bash -c 'printf "%s\n%s\n" "$1" "$2" | grep -qiE "WARN.*stable main-checkout path"' \
+    _ "$OUT" "$ERR_OUT"
 
 # ── fail-open: no systemd --user bus (CI, a container) ────────────────────────
 make_fake_home
@@ -782,8 +936,10 @@ run_redirect
 _REDIRECT_ENV=()
 
 assert "H12: exits 0 with no systemd --user bus (fail-open)" test "$RC" -eq 0
-assert "H13: warns about the missing --user bus" \
-    bash -c 'printf "%s\n%s\n" "$1" "$2" | grep -qiE "WARN.*(bus|systemd|skip)"' \
+# The bus-probe branch's own wording — `skip` alone would match the seed-side
+# warns this fixture also emits and would pass with the probe removed.
+assert "H13: warns specifically about the missing systemd --user bus" \
+    bash -c 'printf "%s\n%s\n" "$1" "$2" | grep -qiE "WARN.*no systemd --user bus"' \
     _ "$OUT" "$ERR_OUT"
 assert "H14: NO daemon-reload attempted without a bus" \
     bash -c '! grep -q "daemon-reload" "$1"' _ "$CALLS_FILE"

@@ -18,8 +18,12 @@
 # under /tmp alongside the never-shared ~/.cargo / ~/.npm originals.
 #
 # ── WHAT THIS SCRIPT DOES ─────────────────────────────────────────────────────
-#   1. SEED   — hardlink-pre-seeds the redirect destinations from the host's
-#               real caches (`cp -al`), so a sandboxed agent starts warm.
+#   1. SEED   — pre-seeds the redirect destinations from the host's real
+#               caches so a sandboxed agent starts warm: `cp -al` (hardlink)
+#               for the immutable stores, `cp -a` (real copy) for the two
+#               index trees cargo/cacache rewrite in place, since a shared
+#               inode there would let a sandboxed write reach back into
+#               ~/.cargo / ~/.npm.  See the seed-sources note below.
 #   2. EXCLUDE— writes /etc/tmpfiles.d/reify-agent-caches.conf `x` lines so
 #               systemd-tmpfiles' age-clean pass cannot gut the seeded trees
 #               while the orchestrator stays up.
@@ -53,6 +57,9 @@
 # Environment:
 #   REIFY_AGENT_CACHE_ROOT  Parent of the redirect destinations (default: /tmp)
 #   REIFY_TMPFILES_DIR      tmpfiles.d dir to write (default: /etc/tmpfiles.d)
+#   REIFY_MAIN_CHECKOUT     Stable checkout the installed unit's ExecStart is
+#                           pinned to (default: /home/leo/src/reify) — see
+#                           install_boot_unit()
 #   CARGO_HOME              Seed source root  (default: $HOME/.cargo)
 #   npm_config_cache        Seed source root  (default: $HOME/.npm)
 #   XDG_CONFIG_HOME         User config dir   (default: $HOME/.config)
@@ -109,23 +116,55 @@ TMPFILES_DIR="${REIFY_TMPFILES_DIR:-/etc/tmpfiles.d}"
 TMPFILES_CONF="$TMPFILES_DIR/reify-agent-caches.conf"
 
 # ── seed sources ──────────────────────────────────────────────────────────────
-# The deliberate narrowing (measured on this host): registry/cache is 181M and
-# registry/index 81M, but registry/src is 1.1G and _npx 443M.  registry/src is
-# purely DERIVED — cargo extracts it from the .crate tarballs already in
-# registry/cache — so seeding cache+index removes ALL network from the cold
-# start (the dominant cost) at a quarter of the bytes and ~4x fewer inodes.
+# Two independent decisions here — WHICH trees, and BY WHICH MECHANISM.
 #
-# It also confines every hardlink-shared inode to a content-addressed,
-# write-new-then-rename store (cargo's .crate tarballs, npm's cacache), so a
-# sandboxed agent writing under /tmp can never write THROUGH a shared inode
-# into the host's ~/.cargo / ~/.npm.  Hardlinking the mutable extracted src
-# tree would put exactly that write-through risk on the tree PROBLEM B is
-# about; cargo re-extracts src locally as fresh, unshared files instead.
+# (1) WHICH.  Measured on this host: registry/cache is 181M and registry/index
+#     81M, but registry/src is 1.1G and _npx 443M.  registry/src is purely
+#     DERIVED — cargo extracts it from the .crate tarballs already in
+#     registry/cache — so seeding cache+index removes ALL network from the cold
+#     start (the dominant cost) at a fraction of the bytes and inodes.  _npx and
+#     _cacache/tmp are churn, not build inputs.  Neither is seeded.
+#
+# (2) HARDLINK vs REAL COPY.  A hardlink is safe ONLY for a tree that is never
+#     mutated IN PLACE: a shared inode means a write under /tmp also lands in
+#     the host's ~/.cargo / ~/.npm — outside the write set the landlock sandbox
+#     exists to enforce.  Verified on this host, only two of the four trees
+#     qualify, so the seeder runs in two modes:
+#
+#       registry/cache       link — immutable .crate tarballs; cargo replaces
+#                                   them wholesale, never edits one.
+#       _cacache/content-v2  link — hash-addressed blobs; cacache writes a temp
+#                                   file and renames it into place.
+#       registry/index       COPY — carries cargo's sparse-index
+#                                   .cache/<a>/<b>/<crate> files, which cargo
+#                                   REWRITES IN PLACE whenever it revalidates
+#                                   an index entry.
+#       _cacache/index-v5    COPY — cacache's bucket files, which it mutates by
+#                                   APPENDING an entry line (plain in the
+#                                   on-disk format: "\n<hash>\t<json>" per
+#                                   entry, one bucket appended to per insert).
+#
+#     Both stores validate and re-fetch on a corrupt entry, so a write-through
+#     would degrade rather than destroy — but it would silently bypass the
+#     sandbox's write containment, which is not a trade this script gets to
+#     make on the sandbox's behalf.
+#
+#     The two COPY trees are ~944M together and are only re-copied after a /tmp
+#     wipe (`--update=none` makes a warm re-run a near no-op).  Dropping them
+#     instead of copying them would cost far more than it looks: without
+#     index-v5 every cacache lookup misses and npm re-downloads the whole tree
+#     the seeded content-v2 already holds, and without registry/index cargo
+#     re-fetches the very sparse index the seed exists to avoid.
 CARGO_SRC_ROOT="${CARGO_HOME:-$HOME/.cargo}"
 NPM_SRC_ROOT="${npm_config_cache:-$HOME/.npm}"
 
-# ── seed_one <src> <dst> — hardlink-mirror one tree ───────────────────────────
-# `cp -al --update=none` both hardlinks and re-runs cleanly, topping up newly
+# ── seed_one <src> <dst> [link|copy] — mirror one tree ────────────────────────
+# MODE (default `link`) picks between `cp -al` (hardlink, near-free, only valid
+# for a tree nothing mutates in place) and `cp -a` (real byte copy, for the two
+# index trees cargo/cacache rewrite in place — see the seed-sources note above).
+# Everything else about the two modes is identical, guards included.
+#
+# `--update=none` applies to both and both re-run cleanly, topping up newly
 # added entries without erroring on the ones already there.
 #
 # `--update=none` is load-bearing, and NOT merely for the trivially-idempotent
@@ -140,15 +179,30 @@ NPM_SRC_ROOT="${npm_config_cache:-$HOME/.npm}"
 # the agent may still hold open.  (`-n` behaves the same but coreutils now
 # warns it is non-portable.)
 #
-# THREE GUARDS, each independent and each FAIL-OPEN (warn + `return 0`).  They
-# never abort the caller: this script runs unconditionally from setup-dev.sh
-# and from a boot oneshot, and a cache pre-seed is an optimisation — no failure
-# here justifies breaking a contributor's environment setup or a boot.  Each
-# warn is worded distinctly so a caller (and the test suite) can tell which
-# path was taken.
+# THREE GUARDS, each independent and each FAIL-OPEN: they warn and `return 3`,
+# never a nonzero that propagates.  They must not abort the caller — this
+# script runs unconditionally from setup-dev.sh and from a boot oneshot, and a
+# cache pre-seed is an optimisation; no failure here justifies breaking a
+# contributor's environment setup or a boot.  Each warn is worded distinctly so
+# a caller (and the test suite) can tell which path was taken.
+#
+# RETURN CONTRACT: 0 = this pair was actually seeded, 3 = skipped by a guard.
+# seed_caches() counts the two so an all-skipped run cannot report OK — a green
+# `systemctl --user status` on a run that seeded nothing is the same silent
+# failure class this script exists to close.
 seed_one() {
-    local src="$1" dst="$2"
+    local src="$1" dst="$2" mode="${3:-link}"
     local src_real dst_real dst_parent dst_parent_real src_dev dst_dev
+    local cp_mode_flag
+
+    case "$mode" in
+        link) cp_mode_flag="-al" ;;
+        copy) cp_mode_flag="-a"  ;;
+        *)
+            _warn "unknown seed mode '$mode' (expected link|copy), skipping: $src"
+            return 3
+            ;;
+    esac
 
     # GUARD 1 — missing/unreadable source.  A fresh contributor machine has no
     # ~/.npm at all.  Skip THIS pair only; the caller still seeds the others.
@@ -156,7 +210,7 @@ seed_one() {
     # empty dir looks seeded to a later reader and to `test -d`.
     if [ ! -d "$src" ] || [ ! -r "$src" ]; then
         _warn "seed source missing or unreadable, skipping: $src"
-        return 0
+        return 3
     fi
 
     src_real="$(realpath -m "$src" 2>/dev/null)" || src_real="$src"
@@ -172,20 +226,21 @@ seed_one() {
     # by emptying it would be worse than the bug.
     if [ "$dst_real" = "$src_real" ]; then
         _warn "degenerate seed target (destination is the source itself), skipping: $dst"
-        return 0
+        return 3
     fi
     case "$dst_real/" in
         "$src_real"/*)
             _warn "degenerate seed target (destination is nested inside the source), skipping: $dst"
-            return 0
+            return 3
             ;;
     esac
 
     # GUARD 3 — cross-device.  `cp -al` cannot hardlink across filesystems, and
     # GNU cp does NOT fall back to a byte copy — it fails.  Skipping with a
-    # clear warn beats both that bare error and the alternative some future
-    # edit might reach for (a real `cp -a`), which would silently duplicate 6+
-    # GB into what might be a tmpfs.  This is what turns the measured
+    # clear warn beats both that bare error and a silent multi-GB duplication
+    # into what might be a tmpfs.  Applied in `copy` mode too, deliberately: a
+    # byte copy across the boundary would SUCCEED there, quietly writing ~944M
+    # of index trees into a RAM-backed /tmp.  This is what turns the measured
     # same-device premise (/tmp and $HOME both on /dev/nvme2n1p5 today) into an
     # ENFORCED precondition rather than a standing assumption, so a future host
     # that mounts /tmp as tmpfs degrades loudly instead of filling RAM.
@@ -202,26 +257,50 @@ seed_one() {
     dst_dev="$(stat -c %d "$dst_parent" 2>/dev/null)" || dst_dev=""
     if [ -z "$src_dev" ] || [ -z "$dst_dev" ] || [ "$src_dev" != "$dst_dev" ]; then
         _warn "seed source and destination are on different filesystems (hardlinks impossible), skipping: $src -> $dst"
-        return 0
+        return 3
     fi
 
     mkdir -p "$dst" || {
         _warn "could not create seed destination, skipping: $dst"
-        return 0
+        return 3
     }
-    cp -al --update=none "$src/." "$dst/" || {
-        _warn "hardlink seed failed (see above), continuing: $src -> $dst"
-        return 0
+    cp "$cp_mode_flag" --update=none "$src/." "$dst/" || {
+        _warn "$mode seed failed (see above), continuing: $src -> $dst"
+        return 3
     }
     return 0
 }
 
 # ── seed_caches — the SEED step ───────────────────────────────────────────────
+# Counts real seeds vs guard skips.  Every guard in seed_one is fail-open, so
+# without this count a run in which ALL FOUR pairs were skipped — no source
+# caches, a degenerate target, or a /tmp remounted onto another device — would
+# still end with a cheerful "OK: seed pass complete", and
+# `systemctl --user status reify-agent-caches.service` would show a clean
+# oneshot while every agent run paid a full cold start forever.
+_SEEDED=0
+_SKIPPED=0
+seed_counted() {
+    if seed_one "$@"; then
+        _SEEDED=$((_SEEDED + 1))
+    else
+        _SKIPPED=$((_SKIPPED + 1))
+    fi
+}
+
 seed_caches() {
-    seed_one "$CARGO_SRC_ROOT/registry/cache" "$CARGO_DEST/registry/cache"
-    seed_one "$CARGO_SRC_ROOT/registry/index" "$CARGO_DEST/registry/index"
-    seed_one "$NPM_SRC_ROOT/_cacache"         "$NPM_DEST/_cacache"
-    _ok "seed pass complete ($CARGO_DEST, $NPM_DEST)"
+    # link = immutable stores (safe to share inodes with the host caches);
+    # copy = trees cargo/cacache rewrite in place.  See the seed-sources note.
+    seed_counted "$CARGO_SRC_ROOT/registry/cache"      "$CARGO_DEST/registry/cache"      link
+    seed_counted "$CARGO_SRC_ROOT/registry/index"      "$CARGO_DEST/registry/index"      copy
+    seed_counted "$NPM_SRC_ROOT/_cacache/content-v2"   "$NPM_DEST/_cacache/content-v2"   link
+    seed_counted "$NPM_SRC_ROOT/_cacache/index-v5"     "$NPM_DEST/_cacache/index-v5"     copy
+
+    if [ "$_SEEDED" -eq 0 ]; then
+        _warn "seed pass complete but NOTHING was seeded (all $_SKIPPED source pairs skipped) — agents will cold-start"
+    else
+        _ok "seed pass complete: $_SEEDED of $((_SEEDED + _SKIPPED)) source pairs seeded ($CARGO_DEST, $NPM_DEST)"
+    fi
     return 0
 }
 
@@ -356,13 +435,24 @@ EOF
 # ExecStart uses --seed-only, so the boot path is entirely unprivileged: no
 # sudo is reachable (or needed) from a non-interactive --user boot context.
 #
+# ExecStart is pinned to the STABLE MAIN-CHECKOUT path, not to whatever
+# checkout invoked us — host convention, matching the inline comments on
+# deploy/systemd/reify-warm-lane.service and reify-warm-lane-gc.service.  This
+# is not cosmetic: setup-dev.sh is routinely run from a warm-lane worktree
+# (/home/leo/src/warm-lanes/worktrees/_lane-N), and a ${BASH_SOURCE[0]}-derived
+# ExecStart would pin the unit at a path that vanishes the moment that lane is
+# reclaimed and re-seeded.  From then on every boot fails with status=203/EXEC
+# and the redirect is never re-seeded — and because nothing Requires= this
+# unit, that failure is completely silent.  $self is kept only as the fallback
+# for a checkout that is not the configured main one (a contributor clone).
+#
 # `Before=orchestrator-reify.service` inline — matching sccache.service in
 # setup-dev.sh's install_build_services() — orders the re-seed ahead of the
 # orchestrator without needing a drop-in.  NOTHING Requires= it: a failed seed
 # degrades to today's cold-start behaviour rather than blocking orchestrator
 # startup, the same fail-open posture as the warm-lane units.
 install_boot_unit() {
-    local unit_dir unit_path self
+    local unit_dir unit_path self stable unit_exec
 
     # Bus probe, same shape as setup-dev.sh's install_build_services() caller:
     # a CI box or container has no --user bus and must skip cleanly.
@@ -375,6 +465,17 @@ install_boot_unit() {
     # resolve a relative one against.
     self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
+    # Prefer the stable main checkout over the invoking one; fall back to $self
+    # (and say so) when this is not that checkout, so a contributor clone still
+    # gets a working unit rather than one pointed at a path they do not have.
+    stable="${REIFY_MAIN_CHECKOUT:-/home/leo/src/reify}/scripts/setup-agent-cache-redirect.sh"
+    if [ -x "$stable" ]; then
+        unit_exec="$stable"
+    else
+        unit_exec="$self"
+        _warn "no executable at the stable main-checkout path ($stable) — pinning the boot unit at the invoking copy instead: $self"
+    fi
+
     unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
     unit_path="$unit_dir/reify-agent-caches.service"
     mkdir -p "$unit_dir" || {
@@ -385,7 +486,7 @@ install_boot_unit() {
     cat > "$unit_path" <<EOF
 [Unit]
 Description=Re-seed the landlock agent toolchain-cache redirect under /tmp (reify task 5729)
-Documentation=file://$self
+Documentation=file://$unit_exec
 # WHY THIS EXISTS, given /etc/tmpfiles.d/reify-agent-caches.conf already
 # excludes these paths: those \`x\` lines cover systemd-tmpfiles' AGE-CLEAN pass
 # only.  /usr/lib/tmpfiles.d/tmp.conf's \`D /tmp 1777 root root 30d\` empties
@@ -406,7 +507,11 @@ Type=oneshot
 RemainAfterExit=yes
 # --seed-only: no sudo, no systemctl.  The boot path is unprivileged by
 # construction, because a non-interactive --user context cannot sudo.
-ExecStart=$self --seed-only
+#
+# The path is the STABLE main checkout, not the checkout that ran setup-dev.sh:
+# a warm-lane worktree path would disappear the next time that lane is
+# reclaimed, leaving a 203/EXEC failure at every boot that nothing surfaces.
+ExecStart=$unit_exec --seed-only
 
 [Install]
 WantedBy=default.target
