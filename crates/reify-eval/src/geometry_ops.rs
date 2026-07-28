@@ -4687,12 +4687,20 @@ fn profile_circle(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    // One gated slot — see `prim_sphere`.
-    Ok(reify_ir::GeometryOp::CircleProfile {
-        radius: required_length_value(
-            "radius", kind, args, values, functions, meta_map, diagnostics,
-        )?,
-    })
+    // One gated slot, so the group form is called at `N == 1` — nothing to
+    // short-circuit past, exactly as in `prim_sphere`. It is the GROUP form
+    // rather than `required_length_value` because the positive-dimension
+    // judgement lives there.
+    let [radius] = required_positive_profile_dimensions(
+        ["radius"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    Ok(reify_ir::GeometryOp::CircleProfile { radius })
 }
 
 fn profile_polygon(
