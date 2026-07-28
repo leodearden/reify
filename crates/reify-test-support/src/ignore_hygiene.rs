@@ -966,4 +966,71 @@ mod tests {
             );
         }
     }
+
+    // ── walk_rs_files ─────────────────────────────────────────────────────────
+
+    /// Build a synthetic workspace tree and verify that `walk_rs_files` with an
+    /// accept-everything predicate (a) returns `src/` files — the whole point of
+    /// generalising past `walk_test_rs_files`'s tests-only filter, since
+    /// `reify-lsp/src/server.rs` and `reify-build-utils/src/lib.rs` are `src/`
+    /// files the old walker could never see — and (b) still prunes `target`,
+    /// dot-dirs, `node_modules`, and `vendor`, so the `include` parameter widens
+    /// only the file-level filter, not the directory-level pruning.
+    #[test]
+    fn walk_rs_files_permissive_predicate_includes_src_files_and_still_prunes_dirs() {
+        use tempfile::TempDir;
+
+        let tmp: TempDir = tempfile::tempdir().expect("create tempdir");
+        let root = tmp.path();
+
+        // Files that MUST be returned under an accept-everything predicate,
+        // including the `src/` file that `walk_test_rs_files` could never see.
+        let included = [
+            "crates/foo/src/lib.rs",
+            "crates/foo/tests/bar.rs",
+            "crates/foo/src/tests/inner.rs",
+        ];
+        // Files that must stay excluded regardless of the predicate, because
+        // directory pruning happens before the predicate is ever consulted.
+        let excluded = [
+            "target/tests/skip.rs",
+            ".git/tests/skip.rs",
+            "node_modules/tests/skip.rs",
+            "vendor/tests/skip.rs",
+        ];
+
+        for rel in included.iter().chain(excluded.iter()) {
+            let full = root.join(rel);
+            std::fs::create_dir_all(full.parent().unwrap()).expect("create parent dirs");
+            std::fs::write(&full, b"// synthetic\n").expect("write file");
+        }
+
+        let found = walk_rs_files(root, |_| true);
+
+        let found_rel: std::collections::HashSet<String> = found
+            .iter()
+            .map(|p| {
+                p.strip_prefix(root)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .replace('\\', "/")
+            })
+            .collect();
+
+        for rel in &included {
+            assert!(
+                found_rel.contains(*rel),
+                "expected {rel:?} to be returned by walk_rs_files under an accept-everything \
+                 predicate, got: {found_rel:?}"
+            );
+        }
+        for rel in &excluded {
+            assert!(
+                !found_rel.contains(*rel),
+                "expected {rel:?} to stay pruned even under an accept-everything predicate \
+                 (directory pruning does not depend on the file-level filter), got: {found_rel:?}"
+            );
+        }
+    }
 }
