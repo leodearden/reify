@@ -124,6 +124,17 @@ fn wait_until_with_retry_on(
     timeout: Duration,
     condition: impl Fn() -> bool,
 ) -> bool {
+    // A zero-length window never advances a `VirtualClock` (`sleep` adds
+    // `d` to `now`, and `0` is a no-op), so a caller passing `retry_every
+    // == Duration::ZERO` with a false condition would spin forever on the
+    // virtual clock instead of failing -- a silent hang rather than a
+    // panic. `WallClock` doesn't have this failure mode (real time
+    // advances regardless), so nothing in this file hits it today; this
+    // guards the shared seam for future callers. See #5709.
+    debug_assert!(
+        !retry_every.is_zero(),
+        "retry_every must be non-zero: a zero window never advances a VirtualClock"
+    );
     let deadline = clock.now() + timeout;
     loop {
         attempt();
@@ -592,31 +603,18 @@ fn wait_for_returns_false_after_timeout_when_never_satisfied() {
     );
 }
 
-#[test]
-fn wait_until_with_retry_returns_true_without_waiting_when_already_satisfied() {
-    let start = Instant::now();
-    let found = wait_until_with_retry(
-        || {},
-        Duration::from_millis(150),
-        Duration::from_secs(10),
-        || true,
-    );
-    assert!(found, "already-satisfied condition should return true");
-    // Widened from 200ms to 5s (the midpoint between the correct outcome,
-    // ~0ms, and the incorrect outcome, waiting out the call's full 10s
-    // timeout): an upper bound on elapsed is starvation-invertible by the
-    // same mechanism as a "more than once" count -- it inverts when the
-    // thread is descheduled. The sharp, deterministic form of this claim
-    // (the clock does not advance at all) lives on the virtual clock in
-    // `wait_until_with_retry_does_not_sleep_when_the_condition_already_holds_on_a_virtual_clock`;
-    // this real-clock test is retained only as smoke coverage that
-    // `WallClock` is actually wired up. See #5709.
-    assert!(
-        start.elapsed() < Duration::from_secs(5),
-        "should return promptly when already satisfied, took {:?}",
-        start.elapsed()
-    );
-}
+// `wait_until_with_retry_returns_true_without_waiting_when_already_satisfied`
+// (a real-clock "found + elapsed < 200ms" test) was removed here: its
+// upper-bound-on-elapsed claim was starvation-invertible like the count
+// assertion above, and once widened to a non-discriminating 5s bound its
+// two remaining claims were each already covered elsewhere -- `found` is
+// proven deterministically by
+// `wait_until_with_retry_does_not_sleep_when_the_condition_already_holds_on_a_virtual_clock`
+// below (which also proves the sharp "never sleeps" form no wall-clock
+// bound can), and that the real wrapper is actually wired to `WallClock`
+// is proven by `..._returns_false_after_the_timeout_when_never_satisfied`
+// just below (`elapsed >= 200ms` only holds if `WallClock::sleep` really
+// blocks). See #5709.
 
 #[test]
 fn wait_until_with_retry_returns_false_after_the_timeout_when_never_satisfied() {
@@ -677,10 +675,11 @@ fn wait_until_with_retry_reissues_the_attempt_for_every_window_until_the_deadlin
     );
 
     assert!(!found, "condition is never satisfied, should time out");
-    assert!(
-        counter.get() > 1,
-        "attempt should have been reissued more than once while waiting \
-         for the condition, got {}",
+    assert_eq!(
+        counter.get(),
+        10,
+        "attempt should have been reissued for every window until the \
+         deadline (200ms budget / 20ms windows = 10 attempts), got {}",
         counter.get()
     );
     assert_eq!(
@@ -759,6 +758,53 @@ fn wait_until_with_retry_does_not_sleep_when_the_condition_already_holds_on_a_vi
         "already-satisfied condition should still attempt exactly once, got {}",
         counter.get()
     );
+    assert_eq!(
+        clock.now(),
+        t0,
+        "already-satisfied condition should not advance the clock at all, i.e. never sleep"
+    );
+}
+
+#[test]
+fn wait_until_on_clamps_the_final_sleep_to_remaining_on_a_virtual_clock() {
+    // The doc comment above `wait_until_on` claims the 20ms poll interval
+    // is clamped to whatever time remains before `deadline`, so the final
+    // sleep of a call never overshoots `timeout` by a full interval. A
+    // budget that's an exact multiple of the poll interval -- like the
+    // 200ms/20ms cases above -- can't distinguish clamped from unclamped
+    // behaviour, since both land on exactly 200ms. A non-multiple budget
+    // can: unclamped, the third 20ms window would overshoot 50ms to 60ms;
+    // clamped, that window is cut short and it lands on exactly 50ms. See
+    // #5709.
+    let t0 = Instant::now();
+    let mut clock = VirtualClock::new(t0);
+
+    let found = wait_until_on(&mut clock, Duration::from_millis(50), || false);
+
+    assert!(!found, "condition is never satisfied, should time out");
+    assert_eq!(
+        clock.now() - t0,
+        Duration::from_millis(50),
+        "the final poll window should be clamped to the remaining budget \
+         rather than the full 20ms interval, got {:?}",
+        clock.now() - t0
+    );
+}
+
+#[test]
+fn wait_until_on_does_not_advance_the_clock_when_the_condition_already_holds() {
+    // Companion to the clamping test above, pinned at the same layer:
+    // proves `wait_until_on` itself checks `condition` before ever
+    // sleeping, directly rather than through the `wait_until_with_retry_on`
+    // wrapper (`..._does_not_sleep_when_the_condition_already_holds_on_a_virtual_clock`
+    // above only proves it one layer up, through the retry loop). See
+    // #5709.
+    let t0 = Instant::now();
+    let mut clock = VirtualClock::new(t0);
+
+    let found = wait_until_on(&mut clock, Duration::from_secs(10), || true);
+
+    assert!(found, "already-satisfied condition should return true");
     assert_eq!(
         clock.now(),
         t0,
