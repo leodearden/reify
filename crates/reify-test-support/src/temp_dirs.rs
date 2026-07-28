@@ -343,6 +343,78 @@ pub fn collect_workspace_unguarded_temp_dirs(workspace_root: &Path) -> Vec<Strin
         .collect()
 }
 
+/// Partition a raw sweep result (as produced by
+/// [`collect_workspace_unguarded_temp_dirs`]) against an exception table
+/// of `(repo_relative_path, justification)` pairs, returning `(enforced,
+/// stale)`:
+///
+/// - `enforced` — violations not covered by any exception. Non-empty
+///   means the sweep must fail: bind a named guard local, or annotate
+///   the line `// temp-dir:allow — reason`.
+/// - `stale` — exception paths (the first tuple element) that no longer
+///   match ANY violation. Non-empty ALSO means the sweep must fail, but
+///   with the opposite remedy: the file was migrated off hand-rolled
+///   temp dirs, so its entry must be DELETED from the exception table.
+///
+/// # Why the stale half exists
+///
+/// The six-entry allowlist this task retires decayed into a no-op
+/// ratchet because nothing forced it to grow. A denylist decays the
+/// mirror-image way: entries outlive the condition that justified them
+/// and silently re-open the hole the exception was meant to narrowly
+/// carve out. Asserting `stale` empty is what makes the exception list
+/// self-cleaning — when a listed file is migrated, this half goes RED
+/// and mechanically forces the entry's deletion in the same change.
+///
+/// # Matching is anchored, not substring-based
+///
+/// An exception matches a violation only via the `"{path}: "` prefix the
+/// collector emits — never a bare substring search — so an exception for
+/// `foo.rs` can never accidentally suppress a violation in `notfoo.rs`.
+/// Path separators are normalised (`\` → `/`) before comparing, so the
+/// match is robust regardless of how either side constructed its path.
+///
+/// `pub` (not test-only): its only current caller is this module's
+/// `workspace_has_no_unguarded_temp_dirs`, but that does not make it dead
+/// code — `reify-test-support` is a library crate whose entire purpose is
+/// to be depended on by other crates' tests, so any crate wanting the same
+/// ratchet-with-self-cleaning-exceptions shape can reuse this classification
+/// rather than reimplementing it.
+pub fn partition_enforced_and_stale(
+    violations: &[String],
+    exceptions: &[(&str, &str)],
+) -> (Vec<String>, Vec<String>) {
+    let normalize = |s: &str| s.replace('\\', "/");
+    let prefix_for = |path: &str| format!("{}: ", normalize(path));
+
+    let exception_prefixes: Vec<String> =
+        exceptions.iter().map(|(path, _)| prefix_for(path)).collect();
+
+    let enforced: Vec<String> = violations
+        .iter()
+        .filter(|v| {
+            let normalized = normalize(v);
+            !exception_prefixes
+                .iter()
+                .any(|prefix| normalized.starts_with(prefix.as_str()))
+        })
+        .cloned()
+        .collect();
+
+    let stale: Vec<String> = exceptions
+        .iter()
+        .zip(exception_prefixes.iter())
+        .filter(|(_, prefix)| {
+            !violations
+                .iter()
+                .any(|v| normalize(v).starts_with(prefix.as_str()))
+        })
+        .map(|((path, _), _)| (*path).to_string())
+        .collect();
+
+    (enforced, stale)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -896,79 +968,12 @@ mod tests {
 
     // ── partition_enforced_and_stale ─────────────────────────────────────────
     //
-    // Pure classification over synthetic (violations, exceptions) inputs — no
-    // live repo state — so the stale-entry branch (whose trigger condition,
-    // #5639 landing, does not exist in the repo today) is directly testable.
-    //
-    // Lives here (test-only) rather than in the outer module because its only
-    // caller is the live ratchet test `workspace_has_no_unguarded_temp_dirs`,
-    // itself a `#[test]` — defining it outside `mod tests` would make it dead
-    // code under a plain (non-test) build.
-
-    /// Partition a raw sweep result (as produced by
-    /// [`collect_workspace_unguarded_temp_dirs`]) against an exception table
-    /// of `(repo_relative_path, justification)` pairs, returning `(enforced,
-    /// stale)`:
-    ///
-    /// - `enforced` — violations not covered by any exception. Non-empty
-    ///   means the sweep must fail: bind a named guard local, or annotate
-    ///   the line `// temp-dir:allow — reason`.
-    /// - `stale` — exception paths (the first tuple element) that no longer
-    ///   match ANY violation. Non-empty ALSO means the sweep must fail, but
-    ///   with the opposite remedy: the file was migrated off hand-rolled
-    ///   temp dirs, so its entry must be DELETED from the exception table.
-    ///
-    /// # Why the stale half exists
-    ///
-    /// The six-entry allowlist this task retires decayed into a no-op
-    /// ratchet because nothing forced it to grow. A denylist decays the
-    /// mirror-image way: entries outlive the condition that justified them
-    /// and silently re-open the hole the exception was meant to narrowly
-    /// carve out. Asserting `stale` empty is what makes the exception list
-    /// self-cleaning — when a listed file is migrated, this half goes RED
-    /// and mechanically forces the entry's deletion in the same change.
-    ///
-    /// # Matching is anchored, not substring-based
-    ///
-    /// An exception matches a violation only via the `"{path}: "` prefix the
-    /// collector emits — never a bare substring search — so an exception for
-    /// `foo.rs` can never accidentally suppress a violation in `notfoo.rs`.
-    /// Path separators are normalised (`\` → `/`) before comparing, so the
-    /// match is robust regardless of how either side constructed its path.
-    fn partition_enforced_and_stale(
-        violations: &[String],
-        exceptions: &[(&str, &str)],
-    ) -> (Vec<String>, Vec<String>) {
-        let normalize = |s: &str| s.replace('\\', "/");
-        let prefix_for = |path: &str| format!("{}: ", normalize(path));
-
-        let exception_prefixes: Vec<String> =
-            exceptions.iter().map(|(path, _)| prefix_for(path)).collect();
-
-        let enforced: Vec<String> = violations
-            .iter()
-            .filter(|v| {
-                let normalized = normalize(v);
-                !exception_prefixes
-                    .iter()
-                    .any(|prefix| normalized.starts_with(prefix.as_str()))
-            })
-            .cloned()
-            .collect();
-
-        let stale: Vec<String> = exceptions
-            .iter()
-            .zip(exception_prefixes.iter())
-            .filter(|(_, prefix)| {
-                !violations
-                    .iter()
-                    .any(|v| normalize(v).starts_with(prefix.as_str()))
-            })
-            .map(|((path, _), _)| (*path).to_string())
-            .collect();
-
-        (enforced, stale)
-    }
+    // Tests exercise the pure classification over synthetic (violations,
+    // exceptions) inputs — no live repo state — so the stale-entry branch
+    // (whose trigger condition, #5639 landing, does not exist in the repo
+    // today) is directly testable. The function itself lives in the outer
+    // module, directly beneath `collect_workspace_unguarded_temp_dirs` — see
+    // its doc comment there for the full contract.
 
     /// (1) A violation for path A, exempted by an exception naming A →
     /// both halves empty: the exception is exercised and current.
