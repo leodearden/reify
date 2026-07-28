@@ -141,7 +141,21 @@ pub(crate) fn relation_fn_result_type(name: &str, args: &[CompiledExpr]) -> Opti
 ///   `perpendicular` pins 1.
 /// - Named compounds publish their summed-body nominal codim: `concentric` = a
 ///   coincident axis (4); `flush` = a coincident plane (3); `offset` = parallel
-///   (2) + on (1) = 3; `tangent` = 2.
+///   (2) + on (1) = 3.
+/// - `tangent` is OPERAND-CONDITIONAL (task 5540): its codimension is a property
+///   of the operand type PAIR, dispatched through [`tangent_combo`]:
+///
+///   | combo             | operand types              | ΔDOF |
+///   |-------------------|----------------------------|------|
+///   | cylinder/cylinder | `(Axis, Axis)`             | 1    |
+///   | cylinder/plane    | `(Axis, Plane)`/`(Plane, Axis)` | 2 |
+///   | sphere/plane      | `(Point, Plane)`/`(Plane, Point)` | 1 |
+///   | sphere/sphere     | `(Point, Point)`           | 1    |
+///
+///   No blanket value satisfies all four: cylinder/plane pins the axis
+///   perpendicular to the plane normal AND offsets it by the radius (2), while
+///   the other three pin only a centre distance (1). The pre-5540 blanket `2`
+///   was right for cylinder/plane alone.
 pub(crate) fn relation_delta_dof(name: &str, args: &[CompiledExpr]) -> Option<u32> {
     let arg_ty = |i: usize| args.get(i).map(|a: &CompiledExpr| &a.result_type);
     match name {
@@ -181,12 +195,82 @@ pub(crate) fn relation_delta_dof(name: &str, args: &[CompiledExpr]) -> Option<u3
         // removes no DOF. Mirrors the `relation_fn_result_type` /
         // `relation_operand_datum` arity gates so all four offset arms agree.
         "offset" => (args.len() == 3).then_some(3),
-        "tangent" => Some(2),
+        // `tangent` dispatches on the operand type PAIR (task 5540). Reads only
+        // slots 0 and 1 and ignores arity, so the arity-2 unit fixtures stay
+        // meaningful; the trailing radius slots are policed separately in
+        // `check_relation_arg_types`.
+        "tangent" => Some(tangent_combo(arg_ty(0)?, arg_ty(1)?)?.delta_dof()),
         // fasten = coincident over Frame: locks all 6 DOF (η, task 4387).
         "fasten" => match arg_ty(0)? {
             Type::Frame(_) => Some(6),
             _ => None,
         },
+        _ => None,
+    }
+}
+
+/// The four curated tangency combinations, classified from the operand type PAIR
+/// (geometric-relations tangent, task 5540).
+///
+/// A tangency is a property of the two SURFACES, and each surface reaches the
+/// relation as its projected datum: a cylindrical face projects to its central
+/// `Axis`, a spherical face to its centre `Point`, a planar face to its `Plane`.
+/// So the operand pair — not the name — determines both the codimension and the
+/// residual form.
+///
+/// Radii do NOT travel with the operands: the kernel's analytic-surface
+/// projection discards them, so this task carries them as trailing `Scalar`
+/// operands (`tangent(a, b, r)` / `tangent(a, b, r1, r2)`). The surface-carried
+/// `<HasAxis & HasRadius>` form is sibling task #5588.
+///
+/// `reify-constraints` carries the twin of this classifier over `Value` (it
+/// drives the residual dispatch). The two cannot be shared: reify-constraints is
+/// a kernel-free numeric crate that does not depend on reify-compiler, and
+/// [`relation_delta_dof`] is `pub(crate)`. The anti-drift guard is stronger than
+/// table equality — the tangent e2e asserts each combo's MEASURED residual rank
+/// equals the ΔDOF published here, which also catches a residual that is present
+/// but rank-deficient.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TangentCombo {
+    /// `(Axis, Axis)` — two cylinders; the centre distance is pinned.
+    CylCyl,
+    /// `(Axis, Plane)` / `(Plane, Axis)` — a cylinder on a plane.
+    CylPlane,
+    /// `(Point, Plane)` / `(Plane, Point)` — a sphere on a plane.
+    SpherePlane,
+    /// `(Point, Point)` — two spheres; the centre separation is pinned.
+    SphereSphere,
+}
+
+impl TangentCombo {
+    /// The codimension this combo removes — the single home of the count table
+    /// that [`relation_delta_dof`] publishes.
+    ///
+    /// `CylPlane` is 2 and the rest are 1: a cylinder tangent to a plane must be
+    /// PARALLEL to it (1 rotational row) as well as offset by its radius (1
+    /// translational row). Without the rotational row the cylinder could tilt out
+    /// of tangency at exactly zero residual.
+    pub(crate) fn delta_dof(self) -> u32 {
+        match self {
+            TangentCombo::CylPlane => 2,
+            TangentCombo::CylCyl | TangentCombo::SpherePlane | TangentCombo::SphereSphere => 1,
+        }
+    }
+
+}
+
+/// Classify a `tangent` call's first two operand types into one of the four
+/// curated combos, or `None` for a pair with no well-defined tangency (two
+/// planes never touch; a `Direction` carries no position; a `Frame` is not a
+/// surface datum).
+pub(crate) fn tangent_combo(a: &Type, b: &Type) -> Option<TangentCombo> {
+    match (a, b) {
+        (Type::Axis, Type::Axis) => Some(TangentCombo::CylCyl),
+        (Type::Axis, Type::Plane) | (Type::Plane, Type::Axis) => Some(TangentCombo::CylPlane),
+        (Type::Point { .. }, Type::Plane) | (Type::Plane, Type::Point { .. }) => {
+            Some(TangentCombo::SpherePlane)
+        }
+        (Type::Point { .. }, Type::Point { .. }) => Some(TangentCombo::SphereSphere),
         _ => None,
     }
 }
