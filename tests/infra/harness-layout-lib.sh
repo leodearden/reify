@@ -41,8 +41,9 @@
 #                                          full-line fixed-string match.
 #   harness_layout_unit_lines <root-harness-rs>
 #                                          print "<total> <root_lines>
-#                                          <module_lines> <module_files>" for
-#                                          the COMPILE UNIT rooted at
+#                                          <module_lines> <module_files>
+#                                          <external_lines> <external_files>"
+#                                          for the COMPILE UNIT rooted at
 #                                          <root-harness-rs>: <root_lines> is
 #                                          the root file's own `wc -l` (0 if
 #                                          absent); <module_lines>/<module_files>
@@ -50,21 +51,14 @@
 #                                          its own harness_<subsystem>/ module
 #                                          directory (0/0 if that dir does not
 #                                          exist — the single-file-harness
-#                                          case); <total> = <root_lines> +
-#                                          <module_lines>. KNOWN, BOUNDED
-#                                          LIMITATION: files pulled in from
-#                                          OUTSIDE the module dir (a shared
-#                                          tests/common/ helper via
-#                                          `#[path = "common/x.rs"]` or a bare
-#                                          `mod common;`) are deliberately NOT
-#                                          attributed to the unit — measured,
-#                                          e.g. attributing
-#                                          crates/reify-eval/tests/harness_topology_selector.rs's
-#                                          `#[path = "common/differential.rs"]`
-#                                          include (2128 lines) would put it at
-#                                          21470 lines, 7.4% over CAP_LINES —
-#                                          a cap/split call for the PRD owner,
-#                                          not a measurement fix.
+#                                          case); <external_lines>/<external_files>
+#                                          sum `wc -l`/count over the files the
+#                                          unit includes from OUTSIDE that
+#                                          module directory (the shared
+#                                          tests/common/ helpers); <total> =
+#                                          <root_lines> + <module_lines> +
+#                                          <external_lines>. See the function's
+#                                          own header for the resolution rules.
 #
 # Environment:
 #   REIFY_HARNESS_LAYOUT_BASELINE  Override the baseline manifest path. Defaults
@@ -174,9 +168,135 @@ harness_layout_baseline_contains() {
         | grep -xF -- "$path" >/dev/null
 }
 
+# _harness_layout_norm_path <path> — set the global `_HL_NORM_OUT` to <path>
+# with `.`, `..` and repeated `/` segments collapsed lexically (NO disk access,
+# NO symlink resolution — symlinked module files are out of contract, same
+# posture as the plain `find -type f` walk below).
+#
+# Needed because the "is this include inside the module dir?" test below is a
+# path-prefix test: a `#[path = "../shared/x.rs"]` written from inside
+# `harness_<subsystem>/` produces `…/harness_<subsystem>/../shared/x.rs`, which
+# a naive prefix test would misread as INSIDE the module dir and silently drop
+# from the measure — precisely the undercount this attribution exists to close.
+#
+# RETURNS VIA A GLOBAL, NOT stdout, deliberately: it is called one-to-two times
+# per module declaration, and `$(…)` would fork a subshell for each of those —
+# pure overhead for a function that is already pure bash and touches no disk.
+# Measured over the 14 live harness units, dropping that fork took ~12% off the
+# transitive walk; batching the awk fork (see `_harness_layout_mod_decls`) took
+# the rest (task #5620 review). Callers read `$_HL_NORM_OUT` immediately after
+# the call.
+_harness_layout_norm_path() {
+    local p="$1" leading="" out="" seg
+    case "$p" in /*) leading="/"; p="${p#/}" ;; esac
+    while [ -n "$p" ]; do
+        seg="${p%%/*}"
+        if [ "$seg" = "$p" ]; then p=""; else p="${p#*/}"; fi
+        case "$seg" in
+            ''|'.') ;;                       # empty (`//`) or `.`: no-op
+            '..')
+                case "$out" in
+                    ''|'..'|*/'..')
+                        # Nothing poppable. Keep the `..` only on a RELATIVE
+                        # path; an absolute path's root has no parent.
+                        [ -n "$leading" ] || out="${out:+$out/}.."
+                        ;;
+                    */*) out="${out%/*}" ;;
+                    *)   out="" ;;
+                esac
+                ;;
+            *) out="${out:+$out/}$seg" ;;
+        esac
+    done
+    _HL_NORM_OUT="$leading$out"
+}
+
+# _harness_layout_mod_decls <file>... — print `<file>|<kind>|<lineno>|<value>`
+# for every OUT-OF-LINE module declaration in each <file>:
+#   <file>|path|<lineno>|<P>       for `#[path = "<P>"] mod <ident>;`
+#   <file>|bare|<lineno>|<ident>   for a `mod <ident>;` carrying no `#[path]`
+#
+# <lineno> is always the line of the `mod` ITEM (not of a preceding attribute),
+# which is the line a developer must edit to fix a violation. <file> is echoed
+# back verbatim as passed, so a caller can resolve each decl against its own
+# file without a second pass.
+#
+# TAKES MANY FILES IN ONE CALL, and the walk below feeds it a whole BFS wave at
+# a time, because an awk fork per file was the dominant cost of the transitive
+# measure: over the 32 module files of the largest live harness unit, one fork
+# per file costs 0.372s against 0.012s batched (task #5620 review). Non-existent
+# arguments are dropped; an empty argument list returns without invoking awk (it
+# would otherwise read stdin and hang).
+#
+# Fields are `|`-separated, so a source path containing a literal `|` is out of
+# contract — the same posture as the symlink exclusion below, and no path in
+# this tree is affected. A caller must read the VALUE field last (`read -r f k
+# ln val`), which gives it the rest of the line, so a `#[path]` value containing
+# `|` still survives intact.
+#
+# THE SINGLE OUT-OF-LINE-`mod` PARSER for both harness-layout guards (G7). The
+# C1 `#[path]`-mandate detector in test_harness_kloc_cap.sh consumes it through
+# a `bare`-only filter (`_bare_mod_decls`), and the kLOC measure below consumes
+# both kinds — so the attribute-binding rule that decides whether a `mod` is
+# `#[path]`-covered exists in exactly ONE place. It has to: that rule is what
+# makes the C1 mandate and the C2 quantity the mandate exists to bound agree,
+# and a fix applied to one of two copies (block comments, `#[cfg_attr]`,
+# `#[cfg(…)] mod x;`) would desynchronise them silently.
+#
+# Attribute binding: intervening blank lines and `//` comments preserve a
+# pending `#[path]`; any other line clears it, INCLUDING a one-line
+# `#[path = "…"] mod <ident>;` (which consumes its own attribute, so a bare
+# `mod` on the next line is correctly reported as bare, not path-covered).
+# Only the `mod <ident>;` FORM is considered — an inline `mod x { … }` block
+# declares no out-of-line file and so pulls in no separate source file.
+_harness_layout_mod_decls() {
+    local _f
+    local -a _files=()
+    for _f in "$@"; do
+        [ -f "$_f" ] && _files+=("$_f")
+    done
+    [ "${#_files[@]}" -gt 0 ] || return 0
+    awk '
+        # A pending `#[path]` never crosses a file boundary. Keyed on FILENAME
+        # rather than on FNR==1 so that an EMPTY file in the batch (which fires
+        # no rule at all) cannot let a pending attribute from the file before it
+        # bind the first `mod` of the file after it.
+        FILENAME != curfile { curfile = FILENAME; pathline = 0 }
+        /^[[:space:]]*$/    { next }   # blank: a pending attribute still binds
+        /^[[:space:]]*\/\// { next }   # comment: a pending attribute still binds
+        /^[[:space:]]*#\[path[[:space:]]*=/ {
+            p = $0
+            sub(/^[^"]*"/, "", p)
+            sub(/".*$/, "", p)
+            if ($0 ~ /\][[:space:]]*(pub[[:space:]]+)?mod[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*;/) {
+                # attribute and `mod` on one line: it consumes its own attribute
+                printf "%s|path|%d|%s\n", FILENAME, FNR, p
+                pathline = 0
+            } else {
+                pathval = p
+                pathline = 1
+            }
+            next
+        }
+        /^[[:space:]]*(pub[[:space:]]+)?mod[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*;/ {
+            if (pathline) {
+                printf "%s|path|%d|%s\n", FILENAME, FNR, pathval
+            } else {
+                ident = $0
+                sub(/^[[:space:]]*(pub[[:space:]]+)?mod[[:space:]]+/, "", ident)
+                sub(/[[:space:]]*;.*$/, "", ident)
+                printf "%s|bare|%d|%s\n", FILENAME, FNR, ident
+            }
+            pathline = 0
+            next
+        }
+        { pathline = 0 }
+    ' "${_files[@]}"
+}
+
 # harness_layout_unit_lines <root-harness-rs> — print "<total> <root_lines>
-# <module_lines> <module_files>" (space-separated) for the compile unit
-# rooted at <root-harness-rs>.
+# <module_lines> <module_files> <external_lines> <external_files>"
+# (space-separated) for the compile unit rooted at <root-harness-rs>.
 #
 # <root_lines>  = `wc -l` of the root file itself (0 if the root is absent).
 # module dir    = ${root%.rs}, i.e. the harness_<subsystem>/ directory next
@@ -186,7 +306,40 @@ harness_layout_baseline_contains() {
 #                 does not exist — the single-file-harness case — or when it
 #                 has no *.rs entries; see the recursive-walk / .rs-only
 #                 rationale below).
-# <total>       = <root_lines> + <module_lines>.
+# <external_lines>/<external_files> = sum of `wc -l` / count over the files
+#                 the unit includes from OUTSIDE the module dir (see the
+#                 EXTERNAL ATTRIBUTION block below).
+# <total>       = <root_lines> + <module_lines> + <external_lines>.
+#
+# EXTERNAL ATTRIBUTION. A harness root may pull in a file that does NOT live
+# under its own module dir — in this tree, the shared `tests/common/` helpers,
+# via `#[path = "common/x.rs"]` or the retained-sibling bare `mod common;`.
+# Those lines ARE part of the compile unit and are attributed to it: rustc
+# compiles a SEPARATE COPY of such a helper into every including binary, so
+# charging the same file to two units is not double-counting — it is two real
+# compilations, and per-unit compile cost is exactly what rule (a)'s cap
+# governs. (Leaving them unattributed would also leave the C2 anti-re-accretion
+# ratchet guarding a quantity it does not define, and be directionally
+# exploitable: move code into `tests/common/`, `#[path]`-include it, cap evaded.)
+#
+# The measure is the TRANSITIVE `mod`-graph closure reachable from the root —
+# transitive because `tests/common/mod.rs` itself declares `pub mod
+# alloc_counter;` / `pub mod as_printed;`, so a one-hop walk would miss them.
+# Targets are resolved the way rustc resolves them:
+#
+#   `#[path = "P"] mod X;`  in file F  ->  dirname(F)/P
+#   bare `mod X;` where F is the crate ROOT or F's basename is `mod.rs`
+#                                      ->  dirname(F)/X.rs, else dirname(F)/X/mod.rs
+#   bare `mod X;` in any other module file F
+#                                      ->  ${F%.rs}/X.rs,   else ${F%.rs}/X/mod.rs
+#
+# A visited set keyed by the lexically-normalized resolved path counts each
+# file AT MOST ONCE, so a helper reached by two declarations is charged once.
+# A resolved target UNDER the module dir is TRAVERSED (its own escaping
+# includes still count) but is NOT added to external_lines/external_files —
+# the `find` walk below already counted it. An unresolvable target contributes
+# nothing: it would not compile, and Section 6 of test_harness_kloc_cap.sh is
+# what flags that class of declaration.
 #
 # Per-file `wc -l` is summed rather than `cat`-ing every file through a
 # single `wc -l` because per-file counting is what also yields
@@ -219,6 +372,7 @@ harness_layout_baseline_contains() {
 harness_layout_unit_lines() {
     local root="$1"
     local root_lines=0 module_lines=0 module_files=0 n f
+    local external_lines=0 external_files=0
     local moddir="${root%.rs}"
 
     if [ -f "$root" ]; then
@@ -239,6 +393,85 @@ harness_layout_unit_lines() {
         done < <(find "$moddir" -type f -name '*.rs' -print0)
     fi
 
-    printf '%s %s %s %s\n' \
-        "$((root_lines + module_lines))" "$root_lines" "$module_lines" "$module_files"
+    # Transitive `mod`-graph walk for the EXTERNAL attribution (see the header
+    # block above). BFS a WAVE at a time — every file discovered at depth N is
+    # parsed by ONE `_harness_layout_mod_decls` call — because an awk fork per
+    # file dominated this walk's cost (see that function's header). Each decl
+    # carries its own source file back, so batching costs no fidelity: a decl is
+    # still resolved relative to the file that declared it, not to the wave.
+    local -A _visited=()
+    local -a _wave=() _next=()
+    local _cur _dir _base _kind _ln _val _cand _target
+    local _moddir_prefix
+    _harness_layout_norm_path "$moddir"; _moddir_prefix="$_HL_NORM_OUT/"
+
+    if [ -f "$root" ]; then
+        _harness_layout_norm_path "$root"
+        _visited["$_HL_NORM_OUT"]=1
+        _wave=("$root")
+    fi
+
+    while [ "${#_wave[@]}" -gt 0 ]; do
+        _next=()
+        # Process substitution (not a pipe) feeding a loop that DRAINS to
+        # completion — never an early-closing consumer, which under the
+        # callers' `set -o pipefail` would reproduce the esc-5172-1 SIGPIPE-141
+        # hazard (harness_layout_baseline_contains above hits the same class).
+        # `_ln` (the decl's line number) is unused by the measure — it exists
+        # for the C1 mandate detector, which reports it to the developer.
+        # Reading the VALUE last is required, not stylistic: `read` gives the
+        # trailing field the rest of the line, so a `#[path]` value containing
+        # a literal `|` lands whole in `_val` instead of being split across it.
+        while IFS='|' read -r _cur _kind _ln _val; do
+            [ -n "$_kind" ] || continue
+            case "$_cur" in
+                */*) _dir="${_cur%/*}" ;;
+                *)   _dir="." ;;
+            esac
+            _target=""
+            case "$_kind" in
+                path)
+                    _harness_layout_norm_path "$_dir/$_val"
+                    _cand="$_HL_NORM_OUT"
+                    [ -f "$_cand" ] && _target="$_cand"
+                    ;;
+                bare)
+                    # rustc: a bare `mod X;` in the crate ROOT or in a `mod.rs`
+                    # resolves against that file's OWN directory; in any other
+                    # module file it resolves against the file's stem directory.
+                    if [ "$_cur" = "$root" ] || [ "${_cur##*/}" = "mod.rs" ]; then
+                        _base="$_dir"
+                    else
+                        _base="${_cur%.rs}"
+                    fi
+                    for _cand in "$_base/$_val.rs" "$_base/$_val/mod.rs"; do
+                        _harness_layout_norm_path "$_cand"
+                        _cand="$_HL_NORM_OUT"
+                        if [ -f "$_cand" ]; then _target="$_cand"; break; fi
+                    done
+                    ;;
+            esac
+            # Unresolvable target: contributes 0, and never aborts a `set -e`
+            # caller (it would not compile; Section 6 flags that class).
+            [ -n "$_target" ] || continue
+            [ -z "${_visited[$_target]:-}" ] || continue
+            _visited["$_target"]=1
+            _next+=("$_target")
+            # Under the module dir => already counted by the find walk above.
+            # Still queued, so its OWN escaping includes are attributed.
+            case "$_target" in
+                "$_moddir_prefix"*) continue ;;
+            esac
+            n="$(wc -l < "$_target")"
+            n="${n//[[:space:]]/}"   # portable: strip any wc padding
+            external_lines=$((external_lines + n))
+            external_files=$((external_files + 1))
+        done < <(_harness_layout_mod_decls "${_wave[@]}")
+        _wave=("${_next[@]}")
+    done
+
+    printf '%s %s %s %s %s %s\n' \
+        "$((root_lines + module_lines + external_lines))" \
+        "$root_lines" "$module_lines" "$module_files" \
+        "$external_lines" "$external_files"
 }
