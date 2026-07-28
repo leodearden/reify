@@ -9,7 +9,7 @@ use reify_core::*;
 use reify_ir::*;
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
-mod common;
+use crate::common;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
