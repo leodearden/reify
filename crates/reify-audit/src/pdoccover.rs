@@ -64,9 +64,12 @@
 //! `primitive(...)`, `Trait::fn(args)`), and non-function call-shaped syntax
 //! (`auto(free)`, `@region(...)`). Narrowing this needs a mention-side
 //! heuristic — skipping declaration keywords, and prose vs. example-source
-//! context — which is deliberately NOT in this task; see the follow-up filed
-//! against the fabrication lane's precision. Until then the omission lane is
-//! the trustworthy half, which is one more reason the CLI arm is opt-in.
+//! context — which is deliberately NOT in this task: it is **#5647**, filed
+//! with all 12 findings enumerated against their cited chunk lines. Two cheap
+//! filters named there (skip a name preceded by a `.ri` declaration keyword;
+//! skip [`RI_DECL_KEYWORDS`] members themselves) would remove 6 of the 11
+//! without any context modelling. Until #5647 lands, the omission lane is the
+//! trustworthy half, which is one more reason the CLI arm is opt-in.
 //!
 //! ## Finding categories
 //!
@@ -917,6 +920,13 @@ fn in_oracle_scope(path: &str) -> bool {
 /// stays visible so the caller can report the malformed marker rather than
 /// silently honour it (PRD design decision 7).
 ///
+/// **Precision is deliberately deferred.** This extractor admits every
+/// `ident(` on a non-suppressed line, including declaration sites in example
+/// `.ri` source and grammar metavariables — measured 1/12 precision on the real
+/// corpus (module header, "Known imprecision"). Narrowing it is **#5647**, not
+/// this function's contract today. Do not add a filter here without updating
+/// that task and the floor guard's anchor set.
+///
 /// Line numbers are 1-based over `str::lines()`, which strips a trailing `\r`,
 /// so CRLF chunks behave identically to LF ones.
 // G-allow: consumed by check() in-module, and by the chunk-path brittle-parse floor guard in tests/pdoccover.rs — a separate crate, so pub is required.
@@ -1025,6 +1035,9 @@ fn census_names(registries: &[Registry]) -> Vec<CensusName> {
 /// census names against it, and the fabrication lane extracts call-shaped
 /// mentions from the same strings.
 struct Inputs {
+    /// Sorted tracked-path list, retained so the fabrication lane's oracle read
+    /// does not have to re-run `ls_files()`.
+    tracked: Vec<String>,
     /// `*_NAMES` registries from `units.rs`; empty when it is untracked or
     /// unreadable (fail-safe: a missing census reports nothing, it does not
     /// report everything).
@@ -1034,9 +1047,6 @@ struct Inputs {
     /// Names listed in the ratchet baseline; empty when the file is absent,
     /// untracked, unreadable or empty.
     baseline: BTreeSet<String>,
-    /// Pre-read `(path, content)` for every tracked oracle-scope source, from
-    /// which the fabrication lane builds its existence index.
-    oracle_sources: Vec<(String, String)>,
 }
 
 /// Names listed in a `pdoccover-baseline.txt`.
@@ -1067,11 +1077,16 @@ fn is_chunk_path(path: &str) -> bool {
     path.starts_with(CHUNKS_PREFIX) && path.ends_with(".md")
 }
 
-/// Gather the working-tree inputs.
+/// Gather the inputs BOTH lanes need — deliberately not the oracle sources.
 ///
 /// Path membership comes from `ctx.git.ls_files()` — content from `std::fs`,
 /// mirroring `pdssentinel::check`. Only tracked files participate, so a stray
 /// untracked `units.rs.orig` or a scratch chunk never perturbs the census.
+///
+/// The fabrication lane's ~8MB oracle read is split out into
+/// [`load_oracle_sources`] so [`baseline_candidates`] — whose only consumer is
+/// #5480's regenerator, and which touches nothing but `registries`,
+/// `chunk_sources` and `baseline` — does not pay for it on every run.
 fn load_inputs(ctx: &AuditContext<'_>) -> Inputs {
     let mut tracked: Vec<String> = ctx.git.ls_files();
     tracked.sort();
@@ -1098,18 +1113,30 @@ fn load_inputs(ctx: &AuditContext<'_>) -> Inputs {
         BTreeSet::new()
     };
 
-    let oracle_sources: Vec<(String, String)> = tracked
-        .iter()
-        .filter(|p| in_oracle_scope(p))
-        .filter_map(|p| read_relative(ctx, p).map(|c| (p.clone(), c)))
-        .collect();
-
     Inputs {
+        tracked,
         registries,
         chunk_sources,
         baseline,
-        oracle_sources,
     }
+}
+
+/// Read the fabrication lane's existence-oracle corpus.
+///
+/// Split out from [`load_inputs`] because it is by far the most expensive read
+/// PDOCCOVER does — every tracked `.rs` under `crates/reify-compiler/src/` and
+/// `crates/reify-stdlib/src/` plus the bundled `.ri` stdlib, ~8MB on the real
+/// tree — and the omission lane never touches it.
+///
+/// Reuses `inputs.tracked` rather than re-running `ls_files()`, so the split
+/// costs no extra git call.
+fn load_oracle_sources(ctx: &AuditContext<'_>, inputs: &Inputs) -> Vec<(String, String)> {
+    inputs
+        .tracked
+        .iter()
+        .filter(|p| in_oracle_scope(p))
+        .filter_map(|p| read_relative(ctx, p).map(|c| (p.clone(), c)))
+        .collect()
 }
 
 // -----------------------------------------------------------------------
@@ -1304,8 +1331,8 @@ fn omission_findings(inputs: &Inputs) -> Vec<Keyed> {
 /// first mention keeps the reported line stable as later mentions come and go.
 /// Dedup is per-file rather than global because each chunk that repeats a
 /// fabricated name needs its own edit.
-fn fabrication_findings(inputs: &Inputs) -> Vec<Keyed> {
-    let known = known_name_index(&inputs.oracle_sources);
+fn fabrication_findings(ctx: &AuditContext<'_>, inputs: &Inputs) -> Vec<Keyed> {
+    let known = known_name_index(&load_oracle_sources(ctx, inputs));
 
     let mut out = Vec::new();
     for (path, content) in &inputs.chunk_sources {
@@ -1369,7 +1396,7 @@ fn fabrication_findings(inputs: &Inputs) -> Vec<Keyed> {
 pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
     let inputs = load_inputs(ctx);
     let mut keyed = omission_findings(&inputs);
-    keyed.extend(fabrication_findings(&inputs));
+    keyed.extend(fabrication_findings(ctx, &inputs));
     keyed.sort_by(|a, b| {
         a.category
             .cmp(b.category)
@@ -1397,6 +1424,10 @@ pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
 /// already-baselined names (debt already accounted for), reasonless markers (a
 /// defect to fix, not debt to freeze) and fabrications (a chunk defect with no
 /// registry entry to key on).
+///
+/// Reads only what the omission lane needs — [`load_inputs`], not
+/// [`load_oracle_sources`] — so a regenerator run does not pay for the
+/// fabrication lane's ~8MB compiler/stdlib scan it would never consult.
 ///
 /// **Scope** — this task ships NO `--emit-baseline` flag, NO
 /// `pdoccover-baseline-gen` binary and NO baseline file. All three are #5480's
