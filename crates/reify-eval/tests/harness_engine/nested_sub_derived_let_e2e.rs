@@ -514,3 +514,65 @@ structure def Parent {
         "nested_arg_sibling_reference_is_order_insensitive",
     );
 }
+
+/// (t5) A phase-1.5 dependency cycle routed THROUGH a nested sub must be
+/// diagnosed, not left as silent `Undef`.
+///
+/// `Mid.relay` reads `self.k.off` while `sub k`'s constructor arg reads
+/// `relay` — a cycle between a LET node and a SUB node in phase 1.5's
+/// dependency graph. `topological_sort` (Kahn) silently omits cycle members,
+/// and the walk then appends them back in declaration order so evaluation
+/// terminates. That keeps values flowing but says nothing, so the whole chain
+/// lands `Undef` with zero diagnostics.
+///
+/// The existing let-only detector in `elaborate_child_lets_only` cannot cover
+/// this: its graph holds only `Mid`'s own `let` nodes, and this cycle routes
+/// through a SUB node (`relay` reads `Mid.k.off`, which is not a let of `Mid`).
+/// So phase 1.5 is the only place that can see it.
+#[test]
+fn nested_sub_arg_let_cycle_is_diagnosed_not_silent_undef() {
+    const SOURCE: &str = r#"
+structure def Kid {
+    param v : Length = 1mm
+    let off = v * 2.0
+}
+
+structure def Mid {
+    sub k = Kid(v: relay)
+    let relay = self.k.off
+}
+
+structure def Parent {
+    sub m = Mid()
+    let echo = self.m.relay
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let errors: Vec<&Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    // Substring matching, not full-message equality, so the exact prose stays
+    // free to change: the contract is that the cycle is NAMED, at instance
+    // scope, with both participants identified.
+    assert!(
+        errors.iter().any(|d| {
+            let m = &d.message;
+            (m.contains("circular") || m.contains("cyclic"))
+                && m.contains("Parent.m")
+                && m.contains("relay")
+                // `sub k`, not a bare `k`: PHASE15_SUB_NODE_MEMBER is the EMPTY
+                // string, so rendering a sub node the way the let-only detector
+                // renders a let would print a dangling dot naming no cell.
+                && m.contains("sub k")
+        }),
+        "expected an error diagnostic identifying a circular dependency at instance scope \
+         \"Parent.m\" and naming both cycle participants — the let \"relay\" and the sub \
+         \"k\"; got: {errors:?}",
+    );
+}
