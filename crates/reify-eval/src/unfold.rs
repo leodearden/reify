@@ -478,31 +478,56 @@ fn elaborate_child_instance_nested<'t>(
             .cloned()
             .collect();
 
-        // Render each participant so it names a cell a reader can go find.
-        // A LET node renders as its member, matching the let-only detector's
-        // prose. A SUB node CANNOT: `PHASE15_SUB_NODE_MEMBER` is the EMPTY
-        // string, so rendering it that way would print a dangling dot naming
-        // nothing. Render it from `sub.name` — the same string
-        // `phase15_sub_node_key` puts in the entity suffix, taken from the node
-        // directly rather than by stripping the `{child_template}.` prefix back
-        // off the key.
-        let mut participants: Vec<String> = dropped
+        // ONE OWNER PER CYCLE CLASS — do not remove this gate.
+        //
+        // A cycle confined entirely to LET nodes belongs to phase 2: it is
+        // already reported at instance scope by `elaborate_child_lets_only` and
+        // at template scope by `engine_eval.rs`. Phase 1.5's node set includes
+        // every let with a `default_expr`, so such a cycle is dropped by BOTH
+        // topological sorts and reporting it here would be a third diagnostic
+        // for one defect — spam that degrades the signal this path exists to
+        // sharpen.
+        //
+        // A cycle touching a SUB node is the class phase 1.5 uniquely owns:
+        // phase 2's graph holds only the child's own lets, so a cycle routed
+        // through a sub boundary is structurally invisible to it (in the repro,
+        // `relay` reads `Mid.k.off`, which is not a let of `Mid`). Nobody else
+        // can see it, so if this gate stops firing that class goes back to
+        // silent `Undef`.
+        let touches_sub = dropped
             .iter()
-            .filter_map(|nid| match nodes.get(nid) {
-                Some(Phase15Node::Let { key, .. }) => Some(key.member.clone()),
-                Some(Phase15Node::Sub { sub, .. }) => Some(format!("sub {}", sub.name)),
-                None => None,
-            })
-            .collect();
-        participants.sort();
-        diagnostics.push(Diagnostic::error(format!(
-            "circular dependency among nested-sub arguments and let bindings in \
-             template {} (entity {}): [{}]",
-            child_template.name,
-            scoped_entity,
-            participants.join(", "),
-        )));
+            .any(|nid| matches!(nodes.get(nid), Some(Phase15Node::Sub { .. })));
 
+        if touches_sub {
+            // Render each participant so it names a cell a reader can go find.
+            // A LET node renders as its member, matching the let-only detector's
+            // prose. A SUB node CANNOT: `PHASE15_SUB_NODE_MEMBER` is the EMPTY
+            // string, so rendering it that way would print a dangling dot naming
+            // nothing. Render it from `sub.name` — the same string
+            // `phase15_sub_node_key` puts in the entity suffix, taken from the
+            // node directly rather than by stripping the `{child_template}.`
+            // prefix back off the key.
+            let mut participants: Vec<String> = dropped
+                .iter()
+                .filter_map(|nid| match nodes.get(nid) {
+                    Some(Phase15Node::Let { key, .. }) => Some(key.member.clone()),
+                    Some(Phase15Node::Sub { sub, .. }) => Some(format!("sub {}", sub.name)),
+                    None => None,
+                })
+                .collect();
+            participants.sort();
+            diagnostics.push(Diagnostic::error(format!(
+                "circular dependency among nested-sub arguments and let bindings in \
+                 template {} (entity {}): [{}]",
+                child_template.name,
+                scoped_entity,
+                participants.join(", "),
+            )));
+        }
+
+        // The fallback stays UNCONDITIONAL — only the diagnostic is gated. A
+        // pure let cycle must still terminate and produce values exactly as it
+        // did before this step.
         walk_order.extend(dropped);
     }
 
