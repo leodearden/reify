@@ -204,7 +204,8 @@ fn fallback_option_subject_regression_guard() {
 /// stdlib must evaluate to 5mm — the unboxed inner `Ok` payload.
 ///
 /// MEASURED under intercept removal (equivalently: with just `"fallback"`
-/// dropped from `option_recovery::is_combinator`): fails with `left: Undef`
+/// dropped from `option_recovery::is_combinator`): fails with `left: 0mm`,
+/// the `{ dflt }` placeholder
 /// (see the section banner above).
 ///
 /// What this adds over the `eval_simple` tests above: those prove the shared
@@ -215,7 +216,7 @@ fn fallback_option_subject_regression_guard() {
 ///
 /// FIXTURE RATIONALE — `result.ri` ships the typecheck-only
 /// `pub fn fallback<T, E>(r: Result<T, E>, dflt: T) -> T { dflt }`, so under
-/// #5593's prelude-backed harness the `Ok` subject is what makes this
+/// the prelude-backed harness the `Ok` subject is what makes this
 /// discriminate: an `Err` subject recovers to `0mm`, exactly what the
 /// placeholder returns.
 #[test]

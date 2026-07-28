@@ -357,13 +357,12 @@ fn fallback_undef_subject_returns_undef() {
 /// End-to-end: `or_default(some(5mm), 0mm)` compiled with the real stdlib must
 /// evaluate to 5mm — the unboxed inner value.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef` (see the
-/// mechanism note above for why the fallthrough, not the placeholder, is what
-/// this harness observes).
+/// MEASURED under intercept removal: fails with `left: 0mm` — `or_default`'s
+/// `.ri` placeholder body `{ dflt }` (see the mechanism note above).
 ///
 /// FIXTURE RATIONALE — `option_recovery.ri` ships the typecheck-only
 /// `pub fn or_default<T>(o: Option<T>, dflt: T) -> T { dflt }`, so under
-/// #5593's prelude-backed harness the `some` subject is what makes this
+/// the prelude-backed harness the `some` subject is what makes this
 /// discriminate: a `none` subject makes `0mm` the correct answer, agreeing with
 /// the placeholder's `dflt`.
 ///
@@ -400,12 +399,12 @@ fn e2e_or_default_some_with_stdlib() {
 /// body `{ dflt }` returns 0mm.  After step-2 impl the UserFunctionCall
 /// intercept fires before the body and returns 5mm."
 ///
-/// TASK 5410 CORRECTION — that mechanism is not what this harness observes.
-/// `module.functions` is user-source-only, so the `.ri` placeholder body is
-/// never registered here. MEASURED under intercept removal: this test fails
-/// with `left: Undef`, from the `eval_user_function_call` fallthrough — not
-/// with `0mm` from the placeholder. It is a real drift guard either way; only
-/// the stated reason changes. See the section banner above
+/// That historical note is again accurate, and is now MEASURED (task 5593):
+/// under the prelude-backed harness the `.ri` body IS registered, so with the
+/// intercept removed this test fails with `left: 0mm` from `{ dflt }` — the
+/// silent-wrong-value mode — rather than with `Undef` from the
+/// `eval_user_function_call` lookup miss, which is what #5410's
+/// user-source-only harness observed. See the section banner above
 /// `e2e_or_default_some_with_stdlib`.
 #[test]
 fn e2e_unwrap_or_some_5mm_with_stdlib() {
@@ -492,12 +491,12 @@ fn or_else_undef_subject_returns_undef() {
 /// subject param `o` seeded to `Value::Option(None)`, must evaluate to
 /// `some(3mm)` — the intercept's `alt` branch.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef` (mechanism note
-/// above `e2e_or_default_some_with_stdlib`).
+/// MEASURED under intercept removal: fails with `left: Option(None)` — `or_else`'s `.ri` placeholder `{ o }` returns the `none` subject
+/// (mechanism note above `e2e_or_default_some_with_stdlib`).
 ///
 /// FIXTURE RATIONALE — `option_recovery.ri:42` ships the typecheck-only
 /// `pub fn or_else<T>(o: Option<T>, alt: Option<T>) -> Option<T> { o }`, which
-/// returns the SUBJECT, so under #5593's prelude-backed harness the `none`
+/// returns the SUBJECT, so under the prelude-backed harness the `none`
 /// subject is what makes this discriminate (it would yield `Option(None)`),
 /// whereas a `some` subject coincides with the placeholder exactly.
 ///
@@ -645,12 +644,12 @@ fn is_none_undef_returns_undef() {
 /// End-to-end: `is_some(none)` compiled with the real stdlib must evaluate to
 /// `false`.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef` (mechanism note
-/// above `e2e_or_default_some_with_stdlib`).
+/// MEASURED under intercept removal: fails with `left: Bool(true)` — `is_some`'s `.ri` placeholder `{ true }`
+/// (mechanism note above `e2e_or_default_some_with_stdlib`).
 ///
 /// FIXTURE RATIONALE — `option_recovery.ri` ships the typecheck-only
-/// `pub fn is_some<T>(o: Option<T>) -> Bool { true }`, so under #5593's
-/// prelude-backed harness the `none` subject is what makes this discriminate:
+/// `pub fn is_some<T>(o: Option<T>) -> Bool { true }`, so under the prelude-backed
+/// harness the `none` subject is what makes this discriminate:
 /// a `some` subject coincides with the placeholder's hardcoded `true`.
 ///
 /// Note a bare `none` DOES type-infer here — `is_some` has a single type
@@ -677,13 +676,13 @@ fn e2e_is_some_none_with_stdlib() {
 /// End-to-end: `is_none(none)` compiled with the real stdlib must evaluate to
 /// `true`.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef` (mechanism note
-/// above `e2e_or_default_some_with_stdlib`).
+/// MEASURED under intercept removal: fails with `left: Bool(false)` — `is_none`'s `.ri` placeholder `{ false }`
+/// (mechanism note above `e2e_or_default_some_with_stdlib`).
 ///
 /// FIXTURE RATIONALE — `option_recovery.ri` ships the typecheck-only
 /// `pub fn is_none<T>(o: Option<T>) -> Bool { false }`. Shares the `none`
-/// subject with `e2e_is_some_none_with_stdlib` above, because under #5593's
-/// prelude-backed harness one subject discriminates BOTH predicates: the two
+/// subject with `e2e_is_some_none_with_stdlib` above, because under the prelude-backed
+/// harness one subject discriminates BOTH predicates: the two
 /// placeholder constants are the exact inverses of the correct answers for a
 /// `none`, whereas a `some` subject would coincide with both.
 #[test]
@@ -901,8 +900,8 @@ fn e2e_get_or_present_key_with_stdlib() {
 /// `w` is the only half of this test that can go RED.
 ///
 /// The absent-KEY path's own drift coverage lives in
-/// `e2e_get_or_absent_key_with_stdlib` (above), which also fails with
-/// `left: Undef` under intercept removal.
+/// `e2e_get_or_absent_key_with_stdlib` (above) — but note that guard is
+/// coincidence-limited and PASSES under intercept removal; see its doc.
 ///
 /// The propagation property is worth pinning at a compiled call site even
 /// though `get_or_undef_map_returns_undef` covers it under
@@ -1099,7 +1098,8 @@ fn map_or_non_option_subject_degrades_to_undef() {
 /// End-to-end: `map_or(some(5mm), 0mm, |x: Length| x * 2)` compiled with the
 /// real stdlib must evaluate to 10mm — the lambda APPLIED to the inner value.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef`. This one covers
+/// MEASURED under intercept removal: fails with `left: 0mm` — `map_or`'s `.ri`
+/// placeholder body `{ dflt }`, with `f` never applied. This one covers
 /// the SECOND gate — the bare `map_or`/3 branch in reify-expr's
 /// `UserFunctionCall` arm, which is NOT in `option_recovery::is_combinator`
 /// (mechanism note above `e2e_or_default_some_with_stdlib`).
@@ -1111,7 +1111,7 @@ fn map_or_non_option_subject_degrades_to_undef() {
 ///
 /// FIXTURE RATIONALE — `option_recovery.ri` ships the typecheck-only
 /// `pub fn map_or<T, U>(o: Option<T>, dflt: U, f: (T) -> U) -> U { dflt }`
-/// (returns `dflt`, `f` never applied), so under #5593's prelude-backed harness
+/// (returns `dflt`, `f` never applied), so under the prelude-backed harness
 /// the `some` subject is what makes this discriminate: a `none` subject makes
 /// `dflt` the correct answer, agreeing with the placeholder.
 ///

@@ -617,12 +617,12 @@ fn map_err_undef_subject_returns_undef() {
 /// End-to-end: `unwrap_or(Ok { value: 5mm }, 0mm)` compiled with the real
 /// stdlib must evaluate to 5mm — the unboxed inner `Ok` payload.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef` (see the section
-/// banner above).
+/// MEASURED under intercept removal: fails with `left: 0mm` — `unwrap_or`'s `.ri` placeholder `{ dflt }`
+/// (see the section banner above).
 ///
 /// FIXTURE RATIONALE — `result.ri` ships the typecheck-only
 /// `pub fn unwrap_or<T, E>(r: Result<T, E>, dflt: T) -> T { dflt }`, so under
-/// #5593's prelude-backed harness the `Ok` subject is what makes this
+/// the prelude-backed harness the `Ok` subject is what makes this
 /// discriminate: an `Err` subject makes `0mm` the correct answer, agreeing with
 /// the placeholder's `dflt`.
 #[test]
@@ -646,12 +646,12 @@ fn e2e_result_unwrap_or_ok_with_stdlib() {
 /// End-to-end: `or_else(Err { error: "e" }, Ok { value: 7mm })` compiled with
 /// the real stdlib must evaluate to the ALTERNATIVE, `Ok{value:7mm}`.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef` (see the section
-/// banner above).
+/// MEASURED under intercept removal: fails with `left: Err { error: "e" }` — `or_else`'s `.ri` placeholder `{ r }` returns the subject
+/// (see the section banner above).
 ///
 /// FIXTURE RATIONALE — `result.ri` ships the typecheck-only
 /// `pub fn or_else<T, E>(r: Result<T, E>, alt: Result<T, E>) -> Result<T, E> { r }`
-/// (returns the SUBJECT), so under #5593's prelude-backed harness the `Err`
+/// (returns the SUBJECT), so under the prelude-backed harness the `Err`
 /// subject is MANDATORY. The Ok-subject form
 /// `or_else(Ok{value:5mm}, Ok{value:7mm})` compiles and returns `Ok{value:5mm}`,
 /// but the placeholder returns that same subject, so the two would agree. Only
@@ -681,12 +681,12 @@ fn e2e_result_or_else_err_with_stdlib() {
 /// End-to-end: `is_ok(Err { error: "e" })` compiled with the real stdlib must
 /// evaluate to `false`.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef` (see the section
-/// banner above).
+/// MEASURED under intercept removal: fails with `left: Bool(true)` — `is_ok`'s `.ri` placeholder `{ true }`
+/// (see the section banner above).
 ///
 /// FIXTURE RATIONALE — `result.ri` ships the typecheck-only
-/// `pub fn is_ok<T, E>(r: Result<T, E>) -> Bool { true }`, so under #5593's
-/// prelude-backed harness the `Err` subject is what makes this discriminate: an
+/// `pub fn is_ok<T, E>(r: Result<T, E>) -> Bool { true }`, so under the prelude-backed
+/// harness the `Err` subject is what makes this discriminate: an
 /// `Ok` subject coincides with the placeholder's hardcoded `true`.
 #[test]
 fn e2e_result_is_ok_err_with_stdlib() {
@@ -709,13 +709,13 @@ fn e2e_result_is_ok_err_with_stdlib() {
 /// End-to-end: `is_err(Err { error: "e" })` compiled with the real stdlib must
 /// evaluate to `true`.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef` (see the section
-/// banner above).
+/// MEASURED under intercept removal: fails with `left: Bool(false)` — `is_err`'s `.ri` placeholder `{ false }`
+/// (see the section banner above).
 ///
 /// FIXTURE RATIONALE — `result.ri` ships the typecheck-only
 /// `pub fn is_err<T, E>(r: Result<T, E>) -> Bool { false }`. Shares the
 /// `Err { error: "e" }` fixture with `e2e_result_is_ok_err_with_stdlib` above,
-/// because under #5593's prelude-backed harness one subject discriminates BOTH
+/// because under the prelude-backed harness one subject discriminates BOTH
 /// predicates: the two placeholder constants are the exact inverses of the
 /// correct answers for an `Err`, whereas an `Ok` subject would coincide with
 /// both.
@@ -740,11 +740,11 @@ fn e2e_result_is_err_err_with_stdlib() {
 /// End-to-end: `ok_or(some(5mm), "e")` compiled with the real stdlib must
 /// evaluate to `Ok{value:5mm}` — the Option→Result bridge's some-path.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef` (see the section
-/// banner above). `result.ri` ships the typecheck-only
+/// MEASURED under intercept removal: fails with `left: String("e")` — `ok_or`'s `.ri` placeholder `{ err }` returns the naked error, not an `Err`
+/// (see the section banner above). `result.ri` ships the typecheck-only
 /// `pub fn ok_or<T, E>(o: Option<T>, err: E) -> Result<T, E> { err }`, which
 /// returns the bare `Value::String("e")` and never constructs a `Result` enum
-/// at all — that is what #5593's prelude-backed harness would observe here.
+/// at all — that is what this harness observes.
 ///
 /// Beyond guarding the intercept, the some-path pins the Ok-WRAPPING direction
 /// of the bridge: the intercept must not merely unbox `o`, it must re-wrap the
@@ -770,10 +770,12 @@ fn e2e_ok_or_some_with_stdlib() {
 /// End-to-end: `ok_or(none, "e")` compiled with the real stdlib must evaluate
 /// to `Err{error:"e"}` — the Option→Result bridge's none-path.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef` — same mechanism
+/// MEASURED under intercept removal: fails with `left: String("e")` — `ok_or`'s
+/// `.ri` placeholder body `{ err }` returns the naked error, not an `Err`.
+/// Same mechanism
 /// as `e2e_ok_or_some_with_stdlib` above (see the section banner).
 ///
-/// FIXTURE RATIONALE — under #5593's prelude-backed harness the none-path is
+/// FIXTURE RATIONALE — under the prelude-backed harness the none-path is
 /// NOT redundant even though its error payload is "the same string" the
 /// placeholder returns, because the two differ in SHAPE —
 /// `Enum{Result::Err{error:String("e")}}` from the intercept vs a naked
@@ -808,12 +810,14 @@ fn e2e_ok_or_none_with_stdlib() {
 /// arm rather than in `option_recovery::is_combinator` (that gate stays pure,
 /// INV-1, and cannot apply a lambda).
 ///
-/// MEASURED under intercept removal: fails with `left: Undef`. This one covers
+/// MEASURED under intercept removal: fails with `left: Err { error: 3mm }` —
+/// `map_err`'s `.ri` placeholder body `{ r }` returns the subject unchanged,
+/// with `f` never applied. This one covers
 /// the THIRD gate — the bare `map_err`/2 branch (see the section banner above).
 /// `result.ri` ships the typecheck-only
 /// `pub fn map_err<T, E, F>(r: Result<T, E>, f: (E) -> F) -> Result<T, F> { r }`,
 /// which returns the undoubled `Err{error:3mm}` with `f` never applied — that
-/// is what #5593's prelude-backed harness would observe here.
+/// is what this harness observes.
 ///
 /// Unique value of this guard, and it holds IN THIS HARNESS: it is the only
 /// Result-side test in task 5410 that proves the compiled LAMBDA argument
