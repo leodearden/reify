@@ -11,7 +11,7 @@
 
 use reify_expr::find_matching_compiled_function;
 use reify_core::{ContentHash, Type};
-use reify_ir::{CompiledExpr, CompiledFnBody, CompiledFunction, Value};
+use reify_ir::{CompiledExpr, CompiledFnBody, CompiledFunction, TypeParam, Value};
 
 /// Build a minimal `CompiledFunction` with the given name and a single
 /// parameter of the given type. The body is a constant `Int(0)` literal —
@@ -54,6 +54,54 @@ fn make_fn_nullary(name: &str) -> CompiledFunction {
         annotations: vec![],
         optimized_target: None,
         type_params: vec![],
+    }
+}
+
+/// Build a `CompiledFunction` with an explicit type-param list and an
+/// arbitrary number of parameters.
+///
+/// Both [`make_fn`] and [`make_fn_nullary`] hard-code `type_params: vec![]` and
+/// (for `make_fn`) a single param, so the *wildcard* pass of
+/// `find_matching_compiled_function` — which is gated on
+/// `!type_params.is_empty()` for type-param- and dim-param-carrying params — is
+/// unreachable through them. This builder is what makes that pass, and the
+/// multi-candidate overload sets that exercise its tie-breaks, testable.
+///
+/// `tag` seeds `content_hash` so a specific candidate is identifiable in
+/// assertions when several same-name overloads are in the table — the same
+/// identification trick `first_match_wins` already uses.
+///
+/// The `TypeParam { name, bounds: vec![], default: None }` literal shape
+/// follows the inline test `find_matching_resolves_generic_field_param_call`
+/// in `crates/reify-expr/src/lib.rs`.
+fn make_generic_fn(
+    name: &str,
+    type_param_names: &[&str],
+    params: Vec<(String, Type)>,
+    tag: &[u8],
+) -> CompiledFunction {
+    CompiledFunction {
+        name: name.to_string(),
+        doc: None,
+        is_pub: false,
+        param_defaults: CompiledFunction::no_defaults_for(&params),
+        params,
+        return_type: Type::Int,
+        body: CompiledFnBody {
+            let_bindings: vec![],
+            result_expr: CompiledExpr::literal(Value::Int(0), Type::Int),
+        },
+        content_hash: ContentHash::of(tag),
+        annotations: vec![],
+        optimized_target: None,
+        type_params: type_param_names
+            .iter()
+            .map(|n| TypeParam {
+                name: n.to_string(),
+                bounds: vec![],
+                default: None,
+            })
+            .collect(),
     }
 }
 
