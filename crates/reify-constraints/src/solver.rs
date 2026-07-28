@@ -1295,11 +1295,26 @@ fn effective_bounds(param: &AutoParam) -> (f64, f64) {
 ///     incumbent as one of the K starts guarantees best-of-K is a superset of
 ///     today's single start, so `candidate[0]` can never be worse than
 ///     `solve()`'s result (dominance).
-///   - start #1: the all-midpoint point — every axis at its [`effective_bounds`]
+///   - start #1: the all-midpoint point — every axis at its [`resolve_bounds`]
 ///     midpoint.
 ///   - starts #2..K-1: per axis `i` (in `auto_params` order), one vector with
-///     axis `i` at its low `effective_bounds` and one with axis `i` at its
+///     axis `i` at its low [`resolve_bounds`] bound and one with axis `i` at its
 ///     high bound, every other axis held at its own midpoint.
+///
+/// Task #5618 changed starts #1..K-1 from [`effective_bounds`] to the
+/// CONSTRAINT-DERIVED box. `AutoParam.bounds` is always `None` in production, so
+/// `effective_bounds` degraded to `default_bounds_for` — for a dimensionless Real
+/// that is `(-1e6, 1e6)`, and every corner anchor landed ~10⁶ away from a bracket
+/// like `q ∈ [1, 100]`. Only start #0 (which [`extract_initial_point`] already
+/// derives) could reach the feasible region, so best-of-K silently degenerated to
+/// best-of-one. `include_strict = true`: these are SEED points, and a start point
+/// may sit anywhere — unlike a clamp target (see [`resolve_bounds`]).
+///
+/// The derived box comes from `problem.constraints`, i.e. WITHOUT the synthesised
+/// robustness floor, which does not exist yet at seed time — `solve_core` re-derives
+/// its own clamp box from `effective_constraints` once the floor is added.
+///
+/// K is unchanged at `2 * (dim + 1)`, as are start #0 and the dominance contract.
 ///
 /// Pure function of `problem` — no RNG, clock, or seed (§3.2 determinism
 /// contract; BT5). Two calls on the same `problem` return identical vectors.
@@ -1310,22 +1325,25 @@ fn multistart_points(problem: &ResolutionProblem) -> Vec<Vec<f64>> {
     // Start #0: the historical single-start seed (dominance anchor).
     points.push(extract_initial_point(problem));
 
+    // Constraint-derived seed box, one entry per auto param (task #5618).
+    let bounds = resolve_bounds(
+        &problem.auto_params,
+        &derive_param_intervals(
+            &problem.auto_params,
+            &problem.constraints,
+            &problem.current_values,
+            &problem.functions,
+        ),
+        /* include_strict = */ true,
+    );
+
     // Per-axis midpoint — shared by the all-midpoint point and as the
     // "other axes" value for every corner anchor below.
-    let midpoint: Vec<f64> = problem
-        .auto_params
-        .iter()
-        .map(|p| {
-            let (lo, hi) = effective_bounds(p);
-            (lo + hi) / 2.0
-        })
-        .collect();
+    let midpoint: Vec<f64> = bounds.iter().map(|&(lo, hi)| (lo + hi) / 2.0).collect();
     points.push(midpoint.clone());
 
     // Per-axis low/high corner anchors, every other axis held at midpoint.
-    for (i, param) in problem.auto_params.iter().enumerate() {
-        let (lo, hi) = effective_bounds(param);
-
+    for (i, &(lo, hi)) in bounds.iter().enumerate() {
         let mut low = midpoint.clone();
         low[i] = lo;
         points.push(low);
@@ -1989,21 +2007,30 @@ fn solutions_agree(
 /// Build the perturbed initial point for uniqueness verification.
 ///
 /// For each auto parameter, computes the perturbed starting value by reflecting
-/// to the opposite end of its effective bounds range from the current solution.
+/// to the opposite end of its `bounds[i]` range from the current solution.
 /// If a solved value is missing or non-numeric (`as_f64()` returns `None`), the
 /// midpoint is used as a fallback and the parameter ID is added to the returned
 /// missing list.
+///
+/// `bounds` is the CALLER's resolved box, one entry per auto param, and must be at
+/// least `auto_params.len()` long. Task #5618 changed this from
+/// `effective_bounds(param)`: reflection lands at `lo + 0.9·(hi − lo)`, so on the
+/// dimensionless default box `(-1e6, 1e6)` a strict auto bracketed to `q ∈ [1, 100]`
+/// re-solved from ~±8×10⁵ and could not reconverge — reporting
+/// `ConstraintNonUnique` for a problem that has exactly one solution.
 ///
 /// Returns `(perturbed_anchors, missing_param_ids)`.
 fn build_perturbation_anchors(
     auto_params: &[reify_ir::AutoParam],
     solved_values: &HashMap<ValueCellId, Value>,
+    bounds: &[(f64, f64)],
 ) -> (Vec<f64>, Vec<String>) {
     let mut missing: Vec<String> = Vec::new();
     let perturbed: Vec<f64> = auto_params
         .iter()
-        .map(|param| {
-            let (lo, hi) = effective_bounds(param);
+        .enumerate()
+        .map(|(i, param)| {
+            let (lo, hi) = bounds[i];
             let mid = (lo + hi) / 2.0;
             let solution_val = solved_values
                 .get(&param.id)
@@ -2033,13 +2060,40 @@ fn build_perturbation_anchors(
 ///
 /// Returns `true` if the solution is unique, `false` if a different
 /// solution was found (indicating the problem is underdetermined).
+///
+/// # Why this still passes `effective_bounds`, not the #5618 derived seed box
+///
+/// [`build_perturbation_anchors`]' box is caller-supplied as of task #5618, and
+/// [`multistart_points`] does hand it the constraint-derived box. This caller
+/// deliberately does NOT, pending esc-5618-3.
+///
+/// MEASURED: swapping this one expression for the derived seed box flips **six**
+/// previously-`Solved` fixtures to `Infeasible`/`ConstraintNonUnique` (5 in
+/// `tests/solver_integration.rs` — every `warm_start_*` fallback case and
+/// `multi_param_warm_start_with_objective` — plus
+/// `tests::defined_objective_at_fallback_returns_solved`). The mechanism is not a
+/// bug in the derivation: today's anchor `lo + 0.9·(hi − lo)` on the *unconstrained*
+/// box lands OUTSIDE the feasible region, the re-solve fails, and the `_ =>` arm
+/// below conservatively returns `true`. A feasible anchor makes the re-solve
+/// succeed — and it lands on a different, equally-optimal point, because these
+/// fixtures' objectives are genuinely flat over their feasible regions (probed:
+/// box `(0.001, 0.02)`, anchor `0.0029`, re-solve lands at `0.0029`, incumbent
+/// `0.015`; the objective is the constant `1e8` across all of it).
+///
+/// So a feasible anchor turns this check from near-inert into active, and the
+/// resulting `ConstraintNonUnique` reports are arguably CORRECT. Whether the
+/// uniqueness contract should compare objective values rather than parameter
+/// values is a solver-semantics decision outside task #5618's scope.
 fn verify_uniqueness(
     problem: &ResolutionProblem,
     solved_values: &HashMap<ValueCellId, Value>,
 ) -> bool {
     // Build perturbed initial point: reflect each param to the opposite
-    // end of its bounds range from the solution.
-    let (perturbed, missing) = build_perturbation_anchors(&problem.auto_params, solved_values);
+    // end of its bounds range from the solution.  See the header note above
+    // for why this box is NOT the #5618 constraint-derived seed box.
+    let bounds: Vec<(f64, f64)> = problem.auto_params.iter().map(effective_bounds).collect();
+    let (perturbed, missing) =
+        build_perturbation_anchors(&problem.auto_params, solved_values, &bounds);
     if !missing.is_empty() {
         tracing::warn!(
             "verify_uniqueness: {} solved value(s) missing or non-numeric {:?}; \
@@ -2436,6 +2490,17 @@ mod tests {
             free: false,
         }];
         (id, params)
+    }
+
+    /// The pre-#5618 reflection box: each param's own [`super::effective_bounds`].
+    ///
+    /// Task #5618 made [`super::build_perturbation_anchors`]' box caller-supplied so
+    /// `verify_uniqueness` can reflect inside the CONSTRAINT-DERIVED region. The
+    /// `build_perturbation_anchors_*` fixtures below set explicit
+    /// `bounds: Some((0.0, 1.0))`, so this reproduces byte-for-byte the box they were
+    /// written against and their expected anchors are unchanged.
+    fn effective_bounds_box(params: &[reify_ir::AutoParam]) -> Vec<(f64, f64)> {
+        params.iter().map(super::effective_bounds).collect()
     }
 
     /// Returns a `Value::Scalar` with the given `si_value` and `DimensionVector::LENGTH`.
@@ -2881,7 +2946,8 @@ mod tests {
         let mut solved_values = HashMap::new();
         solved_values.insert(id, scalar(0.25));
 
-        let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values);
+        let (perturbed, missing) =
+            build_perturbation_anchors(&params, &solved_values, &effective_bounds_box(&params));
 
         assert!(
             missing.is_empty(),
@@ -2911,7 +2977,8 @@ mod tests {
         // Empty map: param is absent → None branch fires, mid is used as fallback
         let solved_values: HashMap<reify_core::ValueCellId, reify_ir::Value> = HashMap::new();
 
-        let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values);
+        let (perturbed, missing) =
+            build_perturbation_anchors(&params, &solved_values, &effective_bounds_box(&params));
 
         assert_eq!(missing, vec!["Part.x"], "expected Part.x in missing list");
         assert_eq!(perturbed.len(), 1);
@@ -2935,7 +3002,8 @@ mod tests {
         // Value::Undef: as_f64() returns None → same None-branch as missing
         solved_values.insert(id, reify_ir::Value::Undef);
 
-        let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values);
+        let (perturbed, missing) =
+            build_perturbation_anchors(&params, &solved_values, &effective_bounds_box(&params));
 
         assert_eq!(
             missing,
@@ -2978,7 +3046,8 @@ mod tests {
         // Both params absent → both hit the None branch
         let solved_values: HashMap<reify_core::ValueCellId, reify_ir::Value> = HashMap::new();
 
-        let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values);
+        let (perturbed, missing) =
+            build_perturbation_anchors(&params, &solved_values, &effective_bounds_box(&params));
 
         assert_eq!(
             missing.len(),
@@ -3019,7 +3088,8 @@ mod tests {
         // 0.75 >= mid 0.5 → upper half → lo + 0.1*(hi-lo) = 0.1 (perturbation to lower side)
         solved_values.insert(id, scalar(0.75));
 
-        let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values);
+        let (perturbed, missing) =
+            build_perturbation_anchors(&params, &solved_values, &effective_bounds_box(&params));
 
         assert!(
             missing.is_empty(),
