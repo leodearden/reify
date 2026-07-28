@@ -1547,3 +1547,63 @@ fn mwhole_bt4_parent_objective_jointly_drives_both_child_autos_below_the_frozen_
         );
     }
 }
+
+/// BT4(ii) — the merged WHOLE-ASSEMBLY cost (summed across BOTH children) is
+/// STRICTLY LESS than the frozen-cascade baseline. This is the assertion that
+/// makes the example a WHOLE-model gate rather than a per-child one:
+/// `mwhole_bt4_parent_objective_jointly_drives_both_child_autos_below_the_
+/// frozen_cascade` above could pass even in a fixture where the two children
+/// were coupled to two SEPARATE single-child clusters; this assertion is
+/// void unless the parent's SPANNING objective reaches BOTH children in one
+/// merged solve and the SUM improves.
+///
+/// Reads the STRUCTURE-KEYED `line_cost` cells — the same cells the sibling
+/// test reads the accompanying auto from — and sums them for BOTH halves.
+/// Reading the SAME cells on both sides keeps the comparison apples-to-apples,
+/// per `bt5_...`'s (ii) note.
+///
+/// # Achievability — DERIVED, not guessed
+///
+/// `line_cost = unit_cost * quantity_produced` is strictly increasing in each
+/// auto. The sibling BT4(i) test establishes each child's merged auto sits
+/// strictly below its own frozen-cascade freeze, so each child's merged
+/// `line_cost` is strictly below its frozen `line_cost`; the sum of two
+/// strictly-smaller non-negative numbers is strictly smaller than the sum of
+/// their frozen counterparts.
+///
+/// RED until the example's boxes/unit_costs produce a live, positive gap in
+/// the SUMMED total (not merely per-child).
+#[test]
+fn mwhole_bt4_merged_whole_assembly_cost_is_strictly_below_the_frozen_baseline() {
+    let merged_src =
+        std::fs::read_to_string(WHOLE_MODEL_COST_MIN_EXAMPLE_PATH).unwrap_or_else(|e| {
+            panic!(
+                "Could not read {WHOLE_MODEL_COST_MIN_EXAMPLE_PATH}: {e} — run the next impl \
+                 step to create the example file",
+            )
+        });
+    let frozen_src = strip_inlined_minimize(&merged_src);
+
+    let merged = eval_ri_with_real_solver(&merged_src, "merged (inlined `minimize` present)");
+    let frozen = eval_ri_with_real_solver(&frozen_src, "frozen cascade (`minimize` removed)");
+
+    let whole_assembly_cost = |result: &EvalResult, what: &str| -> f64 {
+        let plate = scalar_si(result, &ValueCellId::new("Plate", "line_cost"), what);
+        let spacer = scalar_si(result, &ValueCellId::new("Spacer", "line_cost"), what);
+        plate + spacer
+    };
+
+    let merged_total = whole_assembly_cost(&merged, "merged");
+    let frozen_total = whole_assembly_cost(&frozen, "frozen-cascade");
+
+    assert!(
+        merged_total < frozen_total,
+        "BT4(ii): the merged WHOLE-ASSEMBLY cost (Plate.line_cost + \
+         Spacer.line_cost) must be STRICTLY LESS than the bottom-up \
+         frozen-cascade baseline — that gap IS the user-observable \
+         whole-model joint-drive signal, and it must span BOTH children, not \
+         just one. Got merged={merged_total} vs frozen={frozen_total} \
+         (saving {}).",
+        frozen_total - merged_total,
+    );
+}
