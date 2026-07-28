@@ -7495,6 +7495,58 @@ describe('display-appearance dropped-directive warn/dedup (task-4773 δ amend)',
   });
 });
 
+// ─── App feaMode debug-context registration (#5668) ──────────────────────────
+// `__REIFY_DEBUG__.feaMode` is a single top-level slot, and the debug bridge's
+// set_fea_channel resolves the toolbar through it. App owns a FeaModeStore for
+// the MultiViewport branch only, so its registration must be scoped to that
+// branch: registering unconditionally would, in single-pane mode, land after
+// DualViewport's own registration (Solid runs child onMount before parent
+// onMount) and leave the slot pointing at a store no rendered toolbar drives.
+
+describe('App feaMode debug-context registration (multi-pane)', () => {
+  beforeEach(() => {
+    // Minimal stub — registerDebugPanel only checks for the global's presence.
+    (window as any).__REIFY_DEBUG__ = { stores: {} as any, testMode: () => false };
+  });
+
+  afterEach(() => {
+    delete (window as any).__REIFY_DEBUG__;
+  });
+
+  it('multi-pane: registers the SAME store instance that pane 0 renders with', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      ...emptyState,
+      meshes: [makeMesh('A#realization[0]'), makeMesh('B#realization[0]')],
+      display_panes: [
+        { subject: 'A#realization[0]', pane: 0 },
+        { subject: 'B#realization[0]', pane: 1 },
+      ],
+    });
+
+    await renderAndWaitForReady();
+
+    const registered = (window as any).__REIFY_DEBUG__.feaMode;
+    expect(registered).toBeDefined();
+    expect(typeof registered.setChannel).toBe('function');
+    // Identity, not mere presence: a registration pointing at a different store
+    // than the one driving the rendered toolbar is exactly the didNotReachStore
+    // failure the debug bridge's store guard exists to catch.
+    expect(registered).toBe(capturedMultiViewportProps.panes[0].feaModeStore);
+  });
+
+  it('single-pane: App does not touch the slot (DualViewport owns it)', async () => {
+    // Default mock has display_panes: [] → DualViewport fallback branch.
+    await renderAndWaitForReady();
+
+    expect(screen.queryByTestId('dual-viewport')).toBeTruthy();
+    expect(capturedMultiViewportProps.panes).toBeUndefined();
+    // DualViewport is mocked in this suite, so nothing else registers — an
+    // App-level registration here would be App clobbering the real
+    // DualViewport's own store in production.
+    expect((window as any).__REIFY_DEBUG__.feaMode).toBeUndefined();
+  });
+});
+
 // ─── FEA diagnostics end-to-end wiring (#2966) ───────────────────────────────
 // RED (step-15) — fails because App does not yet render FeaDiagnosticsPanel
 // nor pass feaDiagnostics to the Viewport/DualViewport prop.
