@@ -233,6 +233,32 @@ const SEED_NUDGE_ABS: f64 = 1e-6;
 /// An empty `dependent_cells` returns without touching `values` OR running any
 /// of the guard work — that zero-cost skip is what keeps every non-clustered
 /// solve byte-identical to its pre-joint-drive behaviour (PRD §6.2).
+///
+/// # Hot-path cost model (task #5720)
+///
+/// This runs on every Nelder-Mead iteration of every multistart, so the cost
+/// model is worth stating precisely — a plausible misreading of it leads
+/// straight into a borrow-checker dead end.
+///
+/// - The list arriving here is PRE-FILTERED per component by
+///   `SolverRegistry::solve_inner`: a component is handed only the cells whose
+///   every transitively-read auto it OWNS. The per-iteration cost is therefore
+///   bounded by that component's own cells, not by the whole model's
+///   `dependent_cells`. Shrinking the list is the only real lever available,
+///   and that filter is it.
+/// - The per-cell `reify_expr::EvalContext::new(values, functions)` is NOT the
+///   cost. It is a struct of two borrowed references, a zeroed recursion
+///   counter and five `None` fields (reify-expr/src/lib.rs:96-109) — no
+///   allocation, no hashing. The actual per-iteration costs are the expression
+///   evaluation and one persistent-`ValueMap` insert per cell, both linear in
+///   the (now filtered) list length.
+/// - The context CANNOT be hoisted out of the loop. It borrows `values`
+///   IMMUTABLY for its whole lifetime, while the loop body needs
+///   `values.insert(...)` — a mutable borrow of the same map. A hoist is a
+///   borrow-checker impossibility, not a missed optimisation. It is also
+///   semantically wrong: rebuilding against the RUNNING map each iteration is
+///   exactly what makes an earlier dependent cell visible to a later one, which
+///   is what makes the stored topological order load-bearing.
 fn fold_dependent_cells(
     values: &mut ValueMap,
     dependent_cells: &[(ValueCellId, CompiledExpr)],
