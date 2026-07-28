@@ -132,9 +132,14 @@ alone stops the escalation, (a) additionally avoids burning the wait.
 **(a) Consult the guard before dispatching onto `_merge-verify`, and defer on 3.**
 
 ```sh
+# `exit_code=0; ... || exit_code=$?` — NOT a bare assignment followed by
+# `exit_code=$?`. An assignment whose value comes from a command substitution is
+# a simple command for errexit purposes, so under `set -e` the caller would abort
+# AT THE ASSIGNMENT on exit 3 — never reaching the one branch this snippet exists
+# to demonstrate. The `||` list exempts it.
+exit_code=0
 busy=$(bash scripts/warm-lane-lock-guard.sh check --mount "$worktree_base" \
-                                                  --lane _merge-verify)
-exit_code=$?
+                                                  --lane _merge-verify) || exit_code=$?
 if [ "$exit_code" -eq 0 ]; then
     : # IDLE — dispatch the verify onto this lane.
 elif [ "$exit_code" -eq 3 ]; then

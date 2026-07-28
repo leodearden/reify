@@ -335,19 +335,33 @@ assert "B1: IDLE writes nothing to stdout" test -z "$OUT"
 assert "B2: the probe did NOT create the absent lock file" test ! -e "$B_LOCK"
 
 # B3: present but unheld — the steady state of a free lane.
-touch "$B_LOCK"
+#
+# Seeded with CONTENT, not `touch`ed empty, and that is load-bearing rather than
+# decorative: B5a's stated property is "a truncating open would change the size",
+# but truncating a ZERO-BYTE file is a no-op, so against an empty fixture a
+# `>`-open (or the `flock <file> <cmd>` convenience form the guard's header
+# explicitly avoids) would leave both %s and %i identical and B5a would pass on
+# the very regression it names. A non-empty canary makes the size half of the
+# assertion real. The guard's IDLE verdict is indifferent to the file's contents.
+B_CANARY='lock-guard-non-mutation-canary'
+printf '%s\n' "$B_CANARY" > "$B_LOCK"
+
+# Captured BEFORE the first probe, for the same reason. Sampling it AFTER a
+# `run_guard` would let a truncating probe zero the file and then compare 0 to 0.
+B_STAT_BEFORE="$(stat -c '%s %i' "$B_LOCK")"
+
 run_guard check --mount "$B_MOUNT"
 assert "B3: a present-but-unheld lock reads IDLE (exit 0)" test "$RC" -eq 0
 assert "B3: a present-but-unheld lock writes nothing to stdout" test -z "$OUT"
 
 # B5a: probing an unheld lock leaves the inode byte-identical. Size AND inode
-# together: a truncating open would change the size, and a create-and-replace
-# would change the inode while leaving the size at 0.
-B_STAT_BEFORE="$(stat -c '%s %i' "$B_LOCK")"
-run_guard check --mount "$B_MOUNT"
+# together: a truncating open would change the size (now detectable — see the
+# canary above), and a create-and-replace would change the inode.
 B_STAT_AFTER="$(stat -c '%s %i' "$B_LOCK")"
 assert "B5a: probing an unheld lock leaves its size and inode unchanged" \
     test "$B_STAT_BEFORE" = "$B_STAT_AFTER"
+assert "B5a: ...and the lock file's bytes survive the probe verbatim" \
+    test "$(cat "$B_LOCK")" = "$B_CANARY"
 
 # B4: a concurrent SHARED reader (e.g. another audit run) must NOT read BUSY.
 # The probe itself takes a shared lock, so only a genuine exclusive holder can
@@ -357,10 +371,15 @@ run_guard check --mount "$B_MOUNT"
 assert "B4: a concurrent SHARED reader still reads IDLE (exit 0)" test "$RC" -eq 0
 assert "B4: a concurrent SHARED reader writes nothing to stdout" test -z "$OUT"
 
-# B5b: ...and probing under a shared holder is equally non-mutating.
+# B5b: ...and probing under a shared holder is equally non-mutating. Compared
+# against the same pre-probe baseline, so the canary's size is still the thing
+# being checked. (The shared fixture opens fd 9 READ-only, so the holder itself
+# cannot have truncated it either.)
 B_STAT_SHARED="$(stat -c '%s %i' "$B_LOCK")"
 assert "B5b: probing a shared-held lock leaves its size and inode unchanged" \
     test "$B_STAT_BEFORE" = "$B_STAT_SHARED"
+assert "B5b: ...and its bytes are still the canary" \
+    test "$(cat "$B_LOCK")" = "$B_CANARY"
 _release_lane_lock
 
 # B6: the load-bearing RED for this block. With a genuine EXCLUSIVE holder the
@@ -415,6 +434,26 @@ assert "C3: BUSY explains itself on stderr" test -n "$ERR_OUT"
 # would pass even if every post-probe diagnostic were being discarded.
 assert "C3: the stderr message reports this lane as BUSY" \
     bash -c 'printf "%s\n" "$1" | grep -qF "_merge-verify'"'"' is BUSY"' _ "$ERR_OUT"
+
+# C7: the MOUNT env form. Block A only pins it negatively (A5: absent => exit 2),
+# and REIFY_WARM_LANE_MOUNT is the form dark-factory actually exports on real
+# verify runs — so "the flag works" is not enough evidence that the wiring DF
+# will use works. Asserted positively here, against the live holder.
+REIFY_WARM_LANE_MOUNT="$C_MOUNT" run_guard check
+assert "C7: REIFY_WARM_LANE_MOUNT is honoured as the mount (exit 3)" test "$RC" -eq 3
+assert "C7: the env-mount form derives the same lock= path" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "$2"' _ "$OUT" "lock=$C_MOUNT/_merge-verify.lock"
+
+# ...and --mount WINS over it, matching the --lane (C6) and --lock-path (E5)
+# ordering. The env points at a mount whose _merge-verify lock does not exist at
+# all, so a guard that let env win would answer 0 instead of 3.
+C_WRONG_MOUNT="$(mktemp -d /tmp/test-warm-lane-lock-guard-c-wrong-XXXXXX)"
+_TMPDIRS+=("$C_WRONG_MOUNT")
+mkdir -p "$C_WRONG_MOUNT/_merge-verify"
+REIFY_WARM_LANE_MOUNT="$C_WRONG_MOUNT" run_guard check --mount "$C_MOUNT"
+assert "C7: an explicit --mount overrides REIFY_WARM_LANE_MOUNT" test "$RC" -eq 3
+assert "C7: the overriding flag's mount is the one that reached the derivation" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "$2"' _ "$OUT" "lock=$C_MOUNT/_merge-verify.lock"
 
 # C4: per-lane granularity. A guard that probed the whole mount — or any lock it
 # found under it — would call _spec-0 busy here purely because a NEIGHBOUR is.
@@ -565,7 +604,9 @@ assert "D5: no fail-open path emitted the BUSY sentinel" \
 # quietly answers "go ahead" to every question — indistinguishable from a
 # healthy pool. Fail-open (Block D) makes this failure mode cheap to reach, so
 # the derivation is pinned by string equality (E1) and by a decoy that would
-# catch the plausible misinterpretation (E2), not merely by a substring match.
+# catch the plausible misinterpretation (E2), not merely by a substring match —
+# and E6 pins the second door into the same failure: a fail-open branch firing on
+# an input the explicit --lock-path made irrelevant.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block E: lock-path resolution contract ---"
@@ -641,6 +682,36 @@ REIFY_WARM_LANE_LOCK_GUARD_LOCK_PATH="$E_EXPLICIT_LOCK" \
 assert "E5: an explicit --lock-path overrides REIFY_WARM_LANE_LOCK_GUARD_LOCK_PATH" \
     test "$RC" -eq 0
 assert "E5: the overridden (idle) path produces no sentinel" test -z "$OUT"
+_release_lane_lock
+
+# E6: an explicit --lock-path is immune to a STALE OR ABSENT mount.
+#
+# E3 covers --lock-path with a VALID mount and E4 covers it with NO mount; the
+# combination — a --lock-path caller carrying a mount value that does not exist —
+# was the untested gap, and it is the one dark-factory will actually be in:
+# REIFY_WARM_LANE_MOUNT is exported ambiently on every real verify run, so a
+# consumer that names its lock explicitly still inherits whatever mount the
+# environment happens to hold. If the mount-existence fail-open ran regardless of
+# --lock-path, this readable, genuinely-held lock would degrade to a silent IDLE:
+# a false green light on a BUSY lane, from a guard that never warns it stopped
+# measuring. Both spellings of the bad mount are exercised, because the flag and
+# the ambient env reach MOUNT by different routes.
+E_STALE_MOUNT="$E_MOUNT/not-a-real-mount"
+_hold_lane_lock_at "$E_EXPLICIT_LOCK"
+
+run_guard check --mount "$E_STALE_MOUNT" --lock-path "$E_EXPLICIT_LOCK"
+assert "E6: a nonexistent --mount does not degrade an explicit --lock-path probe (exit 3)" \
+    test "$RC" -eq 3
+assert "E6: ...and the sentinel still names the explicit lock" \
+    test "$(_sentinel_lock_field "$OUT")" = "$E_EXPLICIT_LOCK"
+
+REIFY_WARM_LANE_MOUNT="$E_STALE_MOUNT" run_guard check --lock-path "$E_EXPLICIT_LOCK"
+assert "E6: an ambient stale REIFY_WARM_LANE_MOUNT does not degrade it either (exit 3)" \
+    test "$RC" -eq 3
+assert "E6: ...and that sentinel names the explicit lock too" \
+    test "$(_sentinel_lock_field "$OUT")" = "$E_EXPLICIT_LOCK"
+
+assert "E6: the bogus mount was still never created" test ! -e "$E_STALE_MOUNT"
 _release_lane_lock
 
 test_summary

@@ -101,9 +101,16 @@
 # Usage by the dark-factory merge worker (cross-repo seam — wiring tracked
 # separately; reify ships the oracle, dark-factory does the wiring):
 #
+#   # `exit_code=0; ... || exit_code=$?` — NOT a bare assignment followed by
+#   # `exit_code=$?`. An assignment whose value comes from a command
+#   # substitution IS a simple command for errexit purposes, so under `set -e`
+#   # the caller's shell would abort AT THE ASSIGNMENT on exit 3 and never reach
+#   # the branch this recipe exists to demonstrate. Placing it in an `||` list
+#   # exempts it from errexit — the same `rc=0; cmd || rc=$?` idiom this script
+#   # uses internally.
+#   exit_code=0
 #   busy=$(bash scripts/warm-lane-lock-guard.sh check --mount "$worktree_base" \
-#                                                     --lane _merge-verify)
-#   exit_code=$?
+#                                                     --lane _merge-verify) || exit_code=$?
 #   if [ "$exit_code" -eq 0 ]; then
 #       # IDLE — dispatch the verify onto this lane.
 #   elif [ "$exit_code" -eq 3 ]; then
@@ -249,7 +256,14 @@ fi
 LOCK="${LOCK_PATH:-$MOUNT/$LANE.lock}"
 
 # ── check subcommand ───────────────────────────────────────────────────────────
-info "warm-lane-lock-guard.sh check: mount=$MOUNT  lane=$LANE  lock=$LOCK"
+# The pre-probe line reports only the inputs that were actually consulted: under
+# an explicit --lock-path neither MOUNT nor LANE reaches the derivation, and
+# echoing an inherited-but-unused mount= would misdescribe what was measured.
+if [ -n "$LOCK_PATH" ]; then
+    info "warm-lane-lock-guard.sh check: lock=$LOCK  (explicit --lock-path; mount/lane not consulted)"
+else
+    info "warm-lane-lock-guard.sh check: mount=$MOUNT  lane=$LANE  lock=$LOCK"
+fi
 
 # ── probe ──────────────────────────────────────────────────────────────────────
 # Opens an EXISTING lock file READ-ONLY and attempts a non-blocking SHARED
@@ -295,8 +309,17 @@ _probe() {
 
     # Mount absent: skip the probe entirely rather than deriving a path under a
     # directory that is not there. Nothing is created — not the mount, not the
-    # lock. (Skipped when an explicit --lock-path made MOUNT irrelevant.)
-    if [ -n "$MOUNT" ] && [ ! -d "$MOUNT" ]; then
+    # lock.
+    #
+    # The `-z "$LOCK_PATH"` guard is load-bearing, not defensive noise. An
+    # explicit --lock-path names the inode outright, so MOUNT is not consulted by
+    # the derivation at all — and dark-factory exports REIFY_WARM_LANE_MOUNT
+    # AMBIENTLY on real verify runs. Without this clause a --lock-path caller
+    # inheriting a stale or absent ambient mount would fail-open to IDLE while
+    # holding a perfectly readable lock path: a silent false IDLE on a genuinely
+    # BUSY lane, which is the same silent-no-op failure Block E exists to
+    # prevent, reached through a different door. Pinned by test E6.
+    if [ -z "$LOCK_PATH" ] && [ -n "$MOUNT" ] && [ ! -d "$MOUNT" ]; then
         _fail_open "mount directory does not exist: $MOUNT."
         return 0
     fi
