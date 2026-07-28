@@ -472,6 +472,29 @@ fn or_else_undef_subject_returns_undef() {
 
 // ── task 5584 (PRD ζ / BT10): stdlib-compiled or_else guard ──────────────────
 
+/// End-to-end: `or_else(o, some(3mm))` compiled with the real stdlib, with the
+/// subject param `o` seeded to `Value::Option(None)`, must evaluate to
+/// `some(3mm)` — the intercept's `alt` branch.
+///
+/// MEASURED under intercept removal: fails with `left: Undef` (mechanism note
+/// above `e2e_or_default_some_with_stdlib`).
+///
+/// FIXTURE RATIONALE — `option_recovery.ri:42` ships the typecheck-only
+/// `pub fn or_else<T>(o: Option<T>, alt: Option<T>) -> Option<T> { o }`, which
+/// returns the SUBJECT, so under #5593's prelude-backed harness the `none`
+/// subject is what makes this discriminate (it would yield `Option(None)`),
+/// whereas a `some` subject coincides with the placeholder exactly.
+///
+/// WHY THE SUBJECT IS A SEEDED PARAM, not an inline `none`: the inline form
+/// `or_else(none, some(3mm))` does NOT compile — "conflicting type arguments
+/// for type parameter 'T' ... Real vs Scalar[m]" — because a bare `none`
+/// infers `T = Real`. The `param o : Option<Length>` annotation pins `T`. Same
+/// asymmetry recorded at `e2e_is_some_none_with_stdlib` above.
+///
+/// WHY THE SEEDED ValueMap: `param o` compiles to
+/// `ValueRef(ValueCellId{"S","o"})`, which evaluates as
+/// `ctx.values.get_or_undef(id)` (lib.rs:222) — an empty ValueMap would yield
+/// `Undef` and the assertion would be vacuous.
 #[test]
 fn e2e_or_else_none_subject_with_stdlib() {
     let module = reify_test_support::compile_source_with_stdlib(
