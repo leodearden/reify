@@ -935,10 +935,13 @@ mod tests {
     /// surface.
     #[test]
     fn cwutd_synthetic_workspace_reports_src_and_tests_violations_only() {
-        use tempfile::TempDir;
-
-        let tmp: TempDir = tempfile::tempdir().expect("create tempdir");
-        let root = tmp.path();
+        // Uses this module's own prefixed_tempdir (like the anuts_* fixtures
+        // above) rather than raw tempfile::tempdir(), so any debris surviving
+        // a SIGKILL of this test is attributable to it — an anonymous
+        // `.tmpXXXXXX` name would leave an operator strictly worse off, per
+        // prefixed_tempdir's own doc comment.
+        let guard = prefixed_tempdir("reify-test-support-cwutd-");
+        let root = guard.path();
 
         let call = guarded_call();
         let guard_fn = guard_fn();
