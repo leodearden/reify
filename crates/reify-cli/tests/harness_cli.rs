@@ -149,6 +149,8 @@ mod cli_stackup_eval;
 mod cli_string_interp_eval;
 #[path = "harness_cli/cli_structural_query_bom.rs"]
 mod cli_structural_query_bom;
+#[path = "harness_cli/cli_structure_instance_golden.rs"]
+mod cli_structure_instance_golden;
 #[path = "harness_cli/cli_sub_placement_assembly.rs"]
 mod cli_sub_placement_assembly;
 #[path = "harness_cli/cli_surface_finish_cost.rs"]
