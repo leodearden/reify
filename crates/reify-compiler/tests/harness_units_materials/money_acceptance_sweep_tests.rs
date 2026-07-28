@@ -1,9 +1,7 @@
 //! Compile-pipeline acceptance tests for the Money dimension: stdlib-prelude
 //! `USD` resolution and inline `pub unit USD : Money` declaration.
 
-mod common;
-
-use common::{UNIT_EPSILON, stdlib_param_si_value};
+use crate::common::{UNIT_EPSILON, stdlib_param_si_value};
 use reify_core::{DimensionVector, Rational, Type};
 use reify_test_support::{compile_source, errors_only};
 

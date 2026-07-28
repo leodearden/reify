@@ -49,9 +49,6 @@
 #   reify-compiler 290 = 867 total.
 crates/reify-compiler/tests/add_sub_operand_guard_tests.rs
 crates/reify-compiler/tests/ad_hoc_selector_compile_tests.rs
-crates/reify-compiler/tests/affine_algebra_typing_tests.rs
-crates/reify-compiler/tests/affine_composition_order_tests.rs
-crates/reify-compiler/tests/affine_constructor_typing_tests.rs
 crates/reify-compiler/tests/alias_dfs_diagnostic_tests.rs
 crates/reify-compiler/tests/ambient_default_injection_tests.rs
 crates/reify-compiler/tests/ambient_default_material_integration_gate.rs
@@ -84,9 +81,6 @@ crates/reify-compiler/tests/constitutive_stdlib_compile.rs
 crates/reify-compiler/tests/constraint_def_compile_tests.rs
 crates/reify-compiler/tests/constraint_inst_tests.rs
 crates/reify-compiler/tests/constructor_hash_tests.rs
-crates/reify-compiler/tests/cost_aggregation_tests.rs
-crates/reify-compiler/tests/cost_robustness_tradeoff_lowering.rs
-crates/reify-compiler/tests/cost_subtree_aggregate_compile_tests.rs
 crates/reify-compiler/tests/coupling_motionvalue_integration_gate.rs
 crates/reify-compiler/tests/cross_module_alias_propagation_tests.rs
 crates/reify-compiler/tests/cross_sub_geometry_diagnostic_tests.rs
@@ -151,15 +145,6 @@ crates/reify-compiler/tests/lambda_compile_tests.rs
 crates/reify-compiler/tests/list_helper_selector_coercion_tests.rs
 crates/reify-compiler/tests/m11_annotations_solver_hint_tests.rs
 crates/reify-compiler/tests/m9_error_cases.rs
-crates/reify-compiler/tests/materials_chemical_tests.rs
-crates/reify-compiler/tests/materials_electrical_optionality_tests.rs
-crates/reify-compiler/tests/materials_electrical_tests.rs
-crates/reify-compiler/tests/materials_fea_tests.rs
-crates/reify-compiler/tests/materials_mechanical_tests.rs
-crates/reify-compiler/tests/materials_optical_tests.rs
-crates/reify-compiler/tests/materials_param_surface_tests.rs
-crates/reify-compiler/tests/materials_thermal_optical_optionality_tests.rs
-crates/reify-compiler/tests/materials_thermal_tests.rs
 crates/reify-compiler/tests/material_struct_tests.rs
 crates/reify-compiler/tests/math_construction_signatures_tests.rs
 crates/reify-compiler/tests/math_signatures.rs
@@ -170,10 +155,6 @@ crates/reify-compiler/tests/modal_mechanism_compile.rs
 crates/reify-compiler/tests/modal_options_validation_tests.rs
 crates/reify-compiler/tests/modify_kind_public_api.rs
 crates/reify-compiler/tests/module_dag_tests.rs
-crates/reify-compiler/tests/money_acceptance_sweep_tests.rs
-crates/reify-compiler/tests/money_arithmetic_tests.rs
-crates/reify-compiler/tests/money_force_diagnostic_tests.rs
-crates/reify-compiler/tests/money_units_tests.rs
 crates/reify-compiler/tests/mul_div_operand_guard_tests.rs
 crates/reify-compiler/tests/mul_div_static_runtime_parity.rs
 crates/reify-compiler/tests/multi_load_bracket_example_tests.rs
@@ -256,8 +237,6 @@ crates/reify-compiler/tests/tolerancing_tests.rs
 crates/reify-compiler/tests/tots_optimal_ptp_example_tests.rs
 crates/reify-compiler/tests/trajectory_stdlib_compile.rs
 crates/reify-compiler/tests/undef_literal_compile_tests.rs
-crates/reify-compiler/tests/unit_declaration_tests.rs
-crates/reify-compiler/tests/unit_registry_tests.rs
 crates/reify-compiler/tests/unresolved_diagnostic_code_audit_tests.rs
 crates/reify-compiler/tests/user_defined_unit_tests.rs
 crates/reify-compiler/tests/value_mod_compile_tests.rs

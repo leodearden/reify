@@ -7,9 +7,7 @@
 //! All four tests fail before step-2 adds `pub unit USD : Money` to units.ri,
 //! then pass without any additional Rust code changes.
 
-mod common;
-
-use common::{
+use crate::common::{
     assert_eq_rel, assert_simple_unit, compile_with_stdlib_helper, stdlib_param_si_value,
     units_module,
 };

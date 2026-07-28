@@ -9,8 +9,7 @@
 //! task's testStrategy. Every test function name contains `cost_aggregation`
 //! so that filter picks them up.
 
-#[allow(dead_code)]
-mod common;
+use crate::common;
 
 use reify_compiler::{DefaultKind, RequirementKind, stdlib_loader};
 use reify_core::{DimensionVector, ModulePath, Severity, Type};
