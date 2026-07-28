@@ -2990,6 +2990,55 @@ fn join_rows_rel(rows: &[Vec<Value>], reference: f64) -> String {
         .join(", ")
 }
 
+/// Render `exponent` as Unicode superscript digits, with `⁻` (U+207B) for a
+/// negative value — the exponent half of PRD display-unit-preference §5c's
+/// `4.2×10⁻³` form.
+///
+/// The glyphs come from two different Unicode blocks: `¹` `²` `³` are Latin-1
+/// Supplement code points (U+00B9/U+00B2/U+00B3) while `⁰` and `⁴`-`⁹` live in
+/// Superscripts and Subscripts (U+2070, U+2074-U+2079). A contiguous-range
+/// mapping would silently mangle three of the ten, so they are tabulated.
+fn superscript_exponent(exponent: i32) -> String {
+    const SUPERSCRIPT_DIGITS: [char; 10] = [
+        '\u{2070}', '\u{00B9}', '\u{00B2}', '\u{00B3}', '\u{2074}', '\u{2075}', '\u{2076}',
+        '\u{2077}', '\u{2078}', '\u{2079}',
+    ];
+    let mut out = String::new();
+    if exponent < 0 {
+        out.push('\u{207B}');
+    }
+    // Format the magnitude via `unsigned_abs` so `i32::MIN` cannot overflow.
+    for byte in exponent.unsigned_abs().to_string().bytes() {
+        out.push(SUPERSCRIPT_DIGITS[(byte - b'0') as usize]);
+    }
+    out
+}
+
+/// Render a `(mantissa, exponent)` split as PRD display-unit-preference §5c's
+/// engineering notation, e.g. `4.2×10⁻³`.
+///
+/// The mantissa goes through [`format_display_number`] like every other
+/// display magnitude, so an auto-scaled cell keeps the same
+/// sig-fig/trailing-zero convention as a plain one.
+///
+/// ASCII `4.2e-3` was considered and declined: §5c's worked example shows the
+/// `×10ⁿ` form, and this crate already emits Unicode in display strings
+/// (`mm²`, `mm³`, `kg/m³`, `kg·m^-3`).
+///
+/// An `exponent` of zero short-circuits to the bare mantissa. That is
+/// unreachable from
+/// [`DimensionLadder::auto_scaled`](reify_core::DimensionLadder::auto_scaled)
+/// — an exponent-0 magnitude is by definition in band at the anchor rung, so
+/// a rung would have been selected instead — but is guarded so the helper is
+/// total.
+fn format_engineering(mantissa: f64, exponent: i32) -> String {
+    let magnitude = format_display_number(mantissa);
+    if exponent == 0 {
+        return magnitude;
+    }
+    format!("{magnitude}\u{00D7}10{}", superscript_exponent(exponent))
+}
+
 /// Map a DimensionVector to a human-readable SI unit label.
 ///
 /// Used by [`Value::format_hover`] for user-facing display, which renders
@@ -3070,10 +3119,9 @@ impl DisplayPreference {
 /// once on first use.
 ///
 /// Both [`resolve_display`] and [`dimension_unit_label`] consult this via
-/// [`registry_display_default`] rather than calling `unit_ladders()`
-/// directly, so the registry's ~30 `String`s are allocated once per
-/// process (not once per format call) and both callers can return
-/// borrowed `&'static str` labels.
+/// [`registry_ladder`] rather than calling `unit_ladders()` directly, so the
+/// registry's ~30 `String`s are allocated once per process (not once per
+/// format call) and both callers can return borrowed `&'static str` labels.
 static LADDERS: OnceLock<Vec<reify_core::DimensionLadder>> = OnceLock::new();
 
 /// Look up `dim`'s curated default display rung in the cached unit-ladder
@@ -3086,11 +3134,25 @@ static LADDERS: OnceLock<Vec<reify_core::DimensionLadder>> = OnceLock::new();
 /// `Velocity`) — callers fall through to their own uncurated handling in
 /// that case.
 fn registry_display_default(dim: &DimensionVector) -> Option<(f64, &'static str)> {
-    let name = dim.canonical_name()?;
-    let ladders = LADDERS.get_or_init(reify_core::unit_ladders);
-    let ladder = ladders.iter().find(|l| l.dimension == name)?;
+    let ladder = registry_ladder(dim)?;
     let default_rung = ladder.units.iter().find(|u| u.is_default)?;
     Some((default_rung.si_scale, default_rung.label.as_str()))
+}
+
+/// Look up `dim`'s whole ladder in the cached unit-ladder registry, keyed by
+/// [`DimensionVector::canonical_name`].
+///
+/// The single lookup path every registry consumer shares — [`resolve_display`]
+/// (which resolves the whole of §6.1 rungs 3/4 from the ladder it gets back,
+/// auto-scaled *and* static) and [`registry_display_default`] (which narrows to
+/// the `is_default` rung for [`dimension_unit_label`]) — so no two can disagree
+/// about which ladder a dimension resolves to. Returns `None` when `dim` has no
+/// `canonical_name()` or is not in the registry — see
+/// [`registry_display_default`] for the caller contract.
+fn registry_ladder(dim: &DimensionVector) -> Option<&'static reify_core::DimensionLadder> {
+    let name = dim.canonical_name()?;
+    let ladders = LADDERS.get_or_init(reify_core::unit_ladders);
+    ladders.iter().find(|l| l.dimension == name)
 }
 
 /// Shared display formatter (PRD display-unit-preference §6.2): resolve an
@@ -3103,19 +3165,35 @@ fn registry_display_default(dim: &DimensionVector) -> Option<(f64, &'static str)
 /// were absent (guards against a garbage `DisplayPreference` producing an
 /// `inf`/`NaN` display magnitude): this falls through to the `None`
 /// handling below instead. When `None` (or the preference was degenerate),
-/// falls through §6.1 rungs 3-5: the dimension's curated registry default
-/// (rungs 3/4, via [`registry_display_default`]), then
-/// `is_dimensionless()` (empty label), then the composed base-SI
-/// [`Display`](std::fmt::Display) fallback (rung 5).
+/// falls through §6.1 rungs 3-5: the dimension's curated registry ladder
+/// (rungs 3/4, via [`registry_ladder`]), then `is_dimensionless()` (empty
+/// label), then the composed base-SI [`Display`](std::fmt::Display) fallback
+/// (rung 5).
 ///
 /// The magnitude is always formatted via [`format_display_number`], so
 /// this stays numerically consistent with [`Value::format_display_pair`].
+///
+/// **§5d — an explicit pin suppresses auto-scaling.** The `Some(pref)` early
+/// return below *is* that rule: a pin that has won §6.1's precedence renders
+/// at its own rung regardless of magnitude, and never reaches the auto-scaling
+/// arm at all. No separate flag, guard or bypass implements §5d — it is
+/// structural.
+///
+/// **§5e — rung 3 is where auto-scaling engages.** With no pin (or a
+/// degenerate one), the dimension's ladder decides via
+/// [`DimensionLadder::auto_scaled`](reify_core::DimensionLadder::auto_scaled):
+/// a default-ON dimension (Length, Area, Volume) hops to whichever rung keeps
+/// the mantissa in band, falling back to §5c engineering notation when none
+/// does; a default-OFF or structurally excluded one stays on its static
+/// default rung, which is byte-identical to the pre-§5 output.
 // G-allow: shared display formatter (PRD display-unit-preference §6.2); the four surfaces route onto it in L4 task #5235 (pending) — no non-test caller until then
 pub fn resolve_display(
     si_value: f64,
     dimension: &DimensionVector,
     preference: Option<&DisplayPreference>,
 ) -> (String, String) {
+    // §5d: an explicit pin is authoritative and stable regardless of
+    // magnitude, so it returns before auto-scaling is ever consulted.
     if let Some(pref) = preference
         && pref.si_scale.is_finite()
         && pref.si_scale != 0.0
@@ -3125,8 +3203,42 @@ pub fn resolve_display(
             pref.label.clone(),
         );
     }
-    if let Some((si_scale, label)) = registry_display_default(dimension) {
-        return (format_display_number(si_value / si_scale), label.to_string());
+    // §5e rung 3: unpinned, so the dimension's auto-scale posture decides.
+    if let Some(ladder) = registry_ladder(dimension) {
+        match ladder.auto_scaled(si_value) {
+            reify_core::AutoScaleChoice::Rung(rung) => {
+                return (
+                    format_display_number(si_value / rung.si_scale),
+                    rung.label.clone(),
+                );
+            }
+            // §5c: no rung fits, so render the magnitude against the static
+            // default rung in engineering notation.
+            reify_core::AutoScaleChoice::Engineering {
+                rung,
+                mantissa,
+                exponent,
+            } => {
+                return (format_engineering(mantissa, exponent), rung.label.clone());
+            }
+            // Posture gate said no (or the magnitude is unusable), so rungs
+            // 3/4 render at the ladder's static default rung exactly as they
+            // did before §5. Resolved from the `ladder` already in hand rather
+            // than via `registry_display_default`, which would re-run
+            // `canonical_name()` and a second scan of the registry for the
+            // ladder this arm is already holding — and this is the common path
+            // for every default-OFF and structurally-excluded dimension (Mass,
+            // Pressure, Density, Angle, Force, Energy, Power). A ladder with no
+            // `is_default` rung falls through to rung 5 below, as before.
+            reify_core::AutoScaleChoice::Static => {
+                if let Some(rung) = ladder.units.iter().find(|u| u.is_default) {
+                    return (
+                        format_display_number(si_value / rung.si_scale),
+                        rung.label.clone(),
+                    );
+                }
+            }
+        }
     }
     if dimension.is_dimensionless() {
         return (format_display_number(si_value), String::new());
@@ -10726,6 +10838,25 @@ mod tests {
         );
     }
 
+    /// Rung-3 output for the dimensions whose curated default rung is a
+    /// *scaled* one.
+    ///
+    /// The Area and Volume expectations moved with task #5236: PRD §5e makes
+    /// rung 3 the point where a default-ON dimension auto-scales, so Area
+    /// `0.0045` is now `45 cm²` (was `4500 mm²`) and Volume `0.007` is now
+    /// `7 L` (was `7000000 mm³` — and `7 L` is the PRD's own G1 figure,
+    /// reached here with no `@display` pin at all). These lines encoded
+    /// pre-§5 rung-3 behaviour that §5 changes on purpose, so they are
+    /// updated rather than preserved.
+    ///
+    /// The other two rows are unchanged and say why the change is narrow:
+    /// Length `0.08` already reads `80 mm` in band, so it hops zero rungs;
+    /// Angle carries `auto_scale: None` (§5b excludes discrete deg/rad), so
+    /// the policy never engages for it.
+    ///
+    /// No user-visible surface moves yet either way — `resolve_display` still
+    /// has no production caller until L4 (#5235) routes the four surfaces
+    /// onto it.
     #[test]
     fn resolve_display_none_scaled_default_rung_dims_scale_magnitude_and_label() {
         assert_eq!(
@@ -10734,15 +10865,358 @@ mod tests {
         );
         assert_eq!(
             resolve_display(0.0045, &DimensionVector::AREA, None),
-            ("4500".to_string(), "mm\u{00B2}".to_string())
+            ("45".to_string(), "cm\u{00B2}".to_string())
         );
         assert_eq!(
             resolve_display(0.007, &DimensionVector::VOLUME, None),
-            ("7000000".to_string(), "mm\u{00B3}".to_string())
+            ("7".to_string(), "L".to_string())
         );
         assert_eq!(
             resolve_display(std::f64::consts::PI, &DimensionVector::ANGLE, None),
             ("180".to_string(), "deg".to_string())
+        );
+    }
+
+    /// §5e rung 3, default-ON: an unpinned Length hops to whichever rung keeps
+    /// the mantissa in `[1, 1000)`, and — per §5b's stability argument — hops
+    /// as few rungs off the familiar default as possible.
+    #[test]
+    fn resolve_display_none_default_on_dims_hop_to_the_in_band_rung() {
+        assert_eq!(
+            resolve_display(5.0, &DimensionVector::LENGTH, None),
+            ("500".to_string(), "cm".to_string()),
+            "5 m is 5000 mm (out of band), so it hops one rung to 500 cm"
+        );
+        assert_eq!(
+            resolve_display(50.0, &DimensionVector::LENGTH, None),
+            ("50".to_string(), "m".to_string()),
+            "50 m needs two hops: 50000 mm and 5000 cm are both out of band"
+        );
+        assert_eq!(
+            resolve_display(0.5, &DimensionVector::LENGTH, None),
+            ("500".to_string(), "mm".to_string()),
+            "0.5 m is in band at BOTH mm (500) and cm (50); the minimal hop wins"
+        );
+
+        // §5a's decimal-sibling eligibility, observed end-to-end: an unpinned
+        // metric Length can never flip unit *system* into inches, at any
+        // magnitude.
+        for exponent in -6..=6 {
+            for mantissa in [1.0, 2.5, 4.2, 7.5] {
+                let si_value = mantissa * 10f64.powi(exponent);
+                for signed in [si_value, -si_value] {
+                    let (_, label) = resolve_display(signed, &DimensionVector::LENGTH, None);
+                    assert_ne!(
+                        label, "in",
+                        "auto-scaling flipped an unpinned metric Length to inches at {signed}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// §5b/§5e, the no-op half: a default-OFF dimension (Mass, Pressure,
+    /// Density — `enabled: false`) and a structurally excluded one (Angle,
+    /// Force, Energy, Power — `auto_scale: None`) render their static default
+    /// rung's raw magnitude, full stop, however far out of band it sits. §5e
+    /// also states engineering notation does not apply to them either, so no
+    /// output here may contain `×10`.
+    ///
+    /// This is the behavioural anchor for the `enabled` posture pinned in
+    /// `reify_core::display_units`: it observes the *consequence* of the
+    /// default-ON/OFF split rather than echoing the flag.
+    #[test]
+    fn resolve_display_none_default_off_and_excluded_dims_never_auto_scale() {
+        let cases: &[(DimensionVector, f64, &str, &str)] = &[
+            // Default-OFF (§5b): each magnitude is far outside [1, 1000), and
+            // each ladder has a rung that would take it in band — g for Mass,
+            // kPa for Pressure, g/cm³ for Density — which the posture forbids.
+            (DimensionVector::MASS, 2.5e-6, "0.0000025", "kg"),
+            (DimensionVector::PRESSURE, 1.01325e5, "101325", "Pa"),
+            (
+                DimensionVector::MASS_DENSITY,
+                7850.0,
+                "7850",
+                "kg/m\u{00B3}",
+            ),
+            // Structurally excluded (`auto_scale: None`).
+            (DimensionVector::ANGLE, std::f64::consts::PI, "180", "deg"),
+            (DimensionVector::FORCE, 250_000.0, "250000", "N"),
+            (DimensionVector::ENERGY, 1.5e-5, "0.000015", "J"),
+            (DimensionVector::POWER, 750_000.0, "750000", "W"),
+        ];
+
+        for (dimension, si_value, magnitude, label) in cases {
+            let actual = resolve_display(*si_value, dimension, None);
+            assert_eq!(
+                actual,
+                (magnitude.to_string(), label.to_string()),
+                "{dimension:?} @ {si_value} must render its static default rung unchanged"
+            );
+            assert!(
+                !actual.0.contains('\u{00D7}'),
+                "{dimension:?} @ {si_value} reached engineering notation, which §5e forbids \
+                 for default-OFF and excluded dimensions: {actual:?}"
+            );
+        }
+    }
+
+    /// §5d: an explicit unit pin is authoritative and stable regardless of
+    /// magnitude — auto-scaling only acts on a cell with no pin. This is a
+    /// regression lock on `resolve_display`'s existing `Some(pref)` early
+    /// return rather than new behaviour: that early return **is** the
+    /// pin-suppression rule, so §5d needs no separate flag or guard.
+    ///
+    /// The Volume cases are §5d's own worked tie-in to G1: `capacity` is
+    /// pinned to `"L"`, and even if an edit drove it to `0.0007 m³` or
+    /// `0.7 m³` the cell stays in liters rather than hopping to mL or m³.
+    #[test]
+    fn resolve_display_some_preference_suppresses_auto_scaling() {
+        let liters = DisplayPreference::new("L", 1e-3);
+        assert_eq!(
+            resolve_display(0.0007, &DimensionVector::VOLUME, Some(&liters)),
+            ("0.7".to_string(), "L".to_string()),
+            "a pinned rung stays pinned below the band — no hop to mL"
+        );
+        assert_eq!(
+            resolve_display(0.7, &DimensionVector::VOLUME, Some(&liters)),
+            ("700".to_string(), "L".to_string())
+        );
+
+        // A pin can also hold a Length at a rung auto-scaling would have moved
+        // off, in both directions — including one far enough out of band that
+        // an unpinned cell would reach §5c's engineering notation.
+        let mm = DisplayPreference::new("mm", 1e-3);
+        assert_eq!(
+            resolve_display(5.0, &DimensionVector::LENGTH, Some(&mm)),
+            ("5000".to_string(), "mm".to_string()),
+            "unpinned this would read 500 cm; the pin holds it at mm"
+        );
+        let tiny = resolve_display(1e-9, &DimensionVector::LENGTH, Some(&mm));
+        assert_eq!(tiny, ("0.000001".to_string(), "mm".to_string()));
+        assert!(
+            !tiny.0.contains('\u{00D7}'),
+            "a pinned rung must never render in engineering notation: {tiny:?}"
+        );
+    }
+
+    /// §5c: when auto-scaling is on but no rung keeps the mantissa in band,
+    /// the magnitude renders in engineering notation at the ladder's static
+    /// default rung — the `4.2×10⁻³`-style form the PRD's own example shows.
+    ///
+    /// Area `0.5 m²` is the registry's genuine coverage gap: its eligible
+    /// rungs span SI `[1e-6, 0.1) ∪ [1, 1000)`, so nothing lands in band
+    /// there (5e5 mm², 5e3 cm², 0.5 m²).
+    #[test]
+    fn resolve_display_none_renders_engineering_notation_when_no_rung_fits() {
+        assert_eq!(
+            resolve_display(0.5, &DimensionVector::AREA, None),
+            (
+                "500\u{00D7}10\u{00B3}".to_string(),
+                "mm\u{00B2}".to_string()
+            ),
+            "no Area rung lands in band at 0.5 m²"
+        );
+
+        // Negative and multi-digit exponents, pinning ⁻ (U+207B), the
+        // Latin-1 ¹²³ code points and the two-digit exponent path.
+        assert_eq!(
+            resolve_display(1e-9, &DimensionVector::LENGTH, None),
+            ("1\u{00D7}10\u{207B}\u{2076}".to_string(), "mm".to_string())
+        );
+        assert_eq!(
+            resolve_display(5000.0, &DimensionVector::VOLUME, None),
+            (
+                "5\u{00D7}10\u{00B9}\u{00B2}".to_string(),
+                "mm\u{00B3}".to_string()
+            )
+        );
+
+        // The mantissa goes through `format_display_number` like every other
+        // display magnitude, so its sig-fig/trailing-zero convention holds and
+        // no float noise leaks: 4.2e-9 m divides to a mantissa of
+        // 4.200000000000001, which must render "4.2" — the exact shape of
+        // §5c's own `4.2×10⁻³` example.
+        assert_eq!(
+            resolve_display(4.2e-9, &DimensionVector::LENGTH, None),
+            (
+                "4.2\u{00D7}10\u{207B}\u{2076}".to_string(),
+                "mm".to_string()
+            )
+        );
+        assert_eq!(
+            resolve_display(0.5678, &DimensionVector::AREA, None),
+            (
+                "567.8\u{00D7}10\u{00B3}".to_string(),
+                "mm\u{00B2}".to_string()
+            )
+        );
+    }
+
+    /// Zero and non-finite magnitudes render at the static default rung and
+    /// never reach engineering notation — a cell reading `0×10⁰ mm` instead of
+    /// `0 mm` would be strictly worse than the pre-§5 output.
+    #[test]
+    fn resolve_display_none_zero_and_non_finite_never_reach_engineering_notation() {
+        assert_eq!(
+            resolve_display(0.0, &DimensionVector::LENGTH, None),
+            ("0".to_string(), "mm".to_string())
+        );
+        for si_value in [0.0, -0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let (magnitude, label) = resolve_display(si_value, &DimensionVector::LENGTH, None);
+            assert_eq!(
+                label, "mm",
+                "{si_value} must stay on the static default rung"
+            );
+            assert!(
+                !magnitude.contains('\u{00D7}'),
+                "{si_value} reached engineering notation: {magnitude:?}"
+            );
+        }
+    }
+
+    /// §5e end-to-end over the *whole* registry — the no-silent-gap guard.
+    ///
+    /// Every ladder is driven through `resolve_display` at rung 3, so a newly
+    /// added dimension is picked up automatically rather than needing a
+    /// hand-maintained list. The dimension→`DimensionVector` mapping comes off
+    /// `reify_core::NAMED_DIMENSIONS`, the same way
+    /// `every_ladder_dimension_round_trips_through_canonical_name` does in
+    /// reify-core.
+    ///
+    /// §5e admits exactly three outcomes and this pins all three:
+    ///   * **default-ON, finite non-zero** — the magnitude either parses back
+    ///     to an in-band value (a rung hop landed) or is engineering notation
+    ///     with an in-band mantissa and a multiple-of-three exponent. There is
+    ///     no third case: a bare out-of-band plain magnitude would mean the
+    ///     policy silently gave up;
+    ///   * **default-OFF or excluded** — the label is always the ladder's
+    ///     curated `derived_unit_name` (L1's invariant: that equals the
+    ///     `is_default` rung's label) and the string never contains `×10`;
+    ///   * **zero or non-finite, any dimension** — the static default rung's
+    ///     label, and no `×10`.
+    #[test]
+    fn resolve_display_none_honours_section5e_across_the_whole_registry() {
+        /// Split an engineering-notation magnitude into its mantissa and
+        /// exponent halves, or `None` if it is a plain magnitude.
+        fn split_engineering(magnitude: &str) -> Option<(f64, i32)> {
+            let (mantissa, exponent) = magnitude.split_once('\u{00D7}')?;
+            let exponent = exponent
+                .strip_prefix("10")
+                .expect("engineering notation must read <mantissa>×10<exponent>");
+            let digits: String = exponent
+                .chars()
+                .map(|c| match c {
+                    '\u{207B}' => '-',
+                    '\u{2070}' => '0',
+                    '\u{00B9}' => '1',
+                    '\u{00B2}' => '2',
+                    '\u{00B3}' => '3',
+                    '\u{2074}'..='\u{2079}' => char::from(b'4' + (c as u32 - 0x2074) as u8),
+                    other => panic!("unexpected glyph {other:?} in exponent {exponent:?}"),
+                })
+                .collect();
+            Some((
+                mantissa.parse().expect("mantissa must parse"),
+                digits.parse().expect("exponent must parse"),
+            ))
+        }
+
+        let mut sweep: Vec<f64> = Vec::new();
+        for exponent in -12..=12 {
+            for mantissa in [1.0, 2.5, 4.2, 7.5] {
+                sweep.push(mantissa * 10f64.powi(exponent));
+                sweep.push(-mantissa * 10f64.powi(exponent));
+            }
+        }
+        let degenerate = [0.0, -0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY];
+
+        for ladder in reify_core::unit_ladders() {
+            let dim = *reify_core::NAMED_DIMENSIONS
+                .iter()
+                .find(|(_, name)| *name == ladder.dimension)
+                .map(|(dim, _)| dim)
+                .unwrap_or_else(|| panic!("no NAMED_DIMENSIONS entry for {:?}", ladder.dimension));
+            let name = &ladder.dimension;
+            let default_on = ladder.auto_scale.as_ref().is_some_and(|a| a.enabled);
+
+            // Zero and non-finite never auto-scale, whatever the posture.
+            for si_value in degenerate {
+                let (magnitude, label) = resolve_display(si_value, &dim, None);
+                assert_eq!(
+                    label, ladder.derived_unit_name,
+                    "{name} @ {si_value} left the static default rung"
+                );
+                assert!(
+                    !magnitude.contains('\u{00D7}'),
+                    "{name} @ {si_value} reached engineering notation: {magnitude:?}"
+                );
+            }
+
+            for &si_value in &sweep {
+                let (magnitude, label) = resolve_display(si_value, &dim, None);
+
+                if !default_on {
+                    assert_eq!(
+                        label, ladder.derived_unit_name,
+                        "{name} @ {si_value} hopped a rung despite its §5b posture"
+                    );
+                    assert!(
+                        !magnitude.contains('\u{00D7}'),
+                        "{name} @ {si_value} reached engineering notation, which §5e \
+                         forbids for default-OFF and excluded dimensions: {magnitude:?}"
+                    );
+                    continue;
+                }
+
+                match split_engineering(&magnitude) {
+                    Some((mantissa, exponent)) => {
+                        assert_eq!(
+                            exponent % 3,
+                            0,
+                            "{name} @ {si_value}: exponent {exponent} is not a multiple of three"
+                        );
+                        assert!(
+                            mantissa.abs() >= 1.0 && mantissa.abs() < 1000.0,
+                            "{name} @ {si_value}: mantissa {mantissa} outside [1, 1000)"
+                        );
+                    }
+                    None => {
+                        let rendered: f64 = magnitude
+                            .parse()
+                            .unwrap_or_else(|e| panic!("{name} @ {si_value}: {magnitude:?} {e}"));
+                        assert!(
+                            rendered.abs() >= 1.0 && rendered.abs() < 1000.0,
+                            "{name} @ {si_value}: rendered {magnitude:?} is out of band and is \
+                             not engineering notation — §5e admits no third outcome"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The exponent glyph mapper, direct. Covers every digit `0-9` at least
+    /// once plus the `⁻` (U+207B) sign prefix, because the glyphs come from
+    /// two different Unicode blocks — `¹²³` are Latin-1 Supplement code
+    /// points while `⁰⁴⁵⁶⁷⁸⁹` live in Superscripts and Subscripts — so a
+    /// naive contiguous-range mapping would silently mangle three of them.
+    #[test]
+    fn superscript_exponent_maps_every_digit_and_the_sign() {
+        assert_eq!(superscript_exponent(0), "\u{2070}");
+        assert_eq!(superscript_exponent(3), "\u{00B3}");
+        assert_eq!(superscript_exponent(-3), "\u{207B}\u{00B3}");
+        assert_eq!(superscript_exponent(12), "\u{00B9}\u{00B2}");
+        assert_eq!(superscript_exponent(-6), "\u{207B}\u{2076}");
+        assert_eq!(superscript_exponent(123), "\u{00B9}\u{00B2}\u{00B3}");
+        assert_eq!(
+            superscript_exponent(-123),
+            "\u{207B}\u{00B9}\u{00B2}\u{00B3}"
+        );
+        // 4, 5, 7, 8, 9 — the remaining glyphs, all from the second block.
+        assert_eq!(
+            superscript_exponent(45_789),
+            "\u{2074}\u{2075}\u{2077}\u{2078}\u{2079}"
         );
     }
 
@@ -10815,6 +11289,21 @@ mod tests {
             assert_eq!(
                 resolve_display(2.0, &DimensionVector::VELOCITY, Some(&broken)),
                 resolve_display(2.0, &DimensionVector::VELOCITY, None),
+            );
+
+            // A default-ON dimension (task #5236): "treated as absent" must
+            // land on the full §5e rung-3 result — the AUTO-SCALED rung —
+            // not on the static default rung. Pressure above cannot
+            // distinguish these (it is default-OFF, so both are "Pa"); Volume
+            // can, because unpinned it hops mm³ → L.
+            assert_eq!(
+                resolve_display(0.007, &DimensionVector::VOLUME, Some(&broken)),
+                resolve_display(0.007, &DimensionVector::VOLUME, None),
+            );
+            assert_eq!(
+                resolve_display(0.007, &DimensionVector::VOLUME, Some(&broken)),
+                ("7".to_string(), "L".to_string()),
+                "a degenerate pin falls through to auto-scaled rung 3, not the static mm³ rung"
             );
         }
     }
