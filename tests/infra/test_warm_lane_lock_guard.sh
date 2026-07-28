@@ -446,4 +446,107 @@ assert "C6: an explicit --lane overrides REIFY_WARM_LANE_LOCK_GUARD_LANE" test "
 assert "C6: the overridden (idle) lane writes nothing to stdout" test -z "$OUT"
 _release_lane_lock
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block D — FAIL-OPEN degradation
+#
+# Exit 3 must be reachable ONLY from a POSITIVELY observed exclusive hold. Every
+# uncertainty — a broken flock, a missing flock, an unreadable lock file, an
+# absent mount — degrades to exit 0 with the sentinel ABSENT.
+#
+# This inverts warm-lane-disk-guard.sh's fail-CLOSED policy, deliberately. There,
+# an unmeasurable disk must be assumed full or the pool hits ENOSPC. Here the
+# asymmetry runs the other way: a false BUSY would defer merge dispatch
+# indefinitely and wedge the serial merge queue, while a false IDLE merely
+# restores today's behaviour — DF's own bounded-wait flock is still the real
+# serialization, and this guard is pure pre-dispatch backpressure.
+#
+# The flock dependency is driven through the script's OWN env seam
+# (REIFY_WARM_LANE_LOCK_GUARD_FLOCK), never via PATH — the house convention, as
+# tests/infra/test_warm_lane_disk_guard.sh does for df. The fixtures' own
+# holders keep using the REAL flock, so D1/D2 measure the guard's degradation
+# against a genuinely-held lock rather than against a broken fixture.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block D: fail-open degradation ---"
+
+D_MOUNT="$(mktemp -d /tmp/test-warm-lane-lock-guard-d-XXXXXX)"
+_TMPDIRS+=("$D_MOUNT")
+mkdir -p "$D_MOUNT/_merge-verify"
+
+D_STUB_DIR="$(mktemp -d /tmp/test-warm-lane-lock-guard-stub-XXXXXX)"
+_TMPDIRS+=("$D_STUB_DIR")
+
+# A flock that is present and executable but ALWAYS fails, with an exit status
+# that is NOT the would-block code. This is the case a naive implementation gets
+# wrong: `flock -n` returning non-zero looks exactly like contention unless the
+# two are separated deliberately.
+D_FLOCK_BROKEN="$D_STUB_DIR/flock_broken"
+cat > "$D_FLOCK_BROKEN" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "flock: simulated tool failure" >&2
+exit 1
+STUB_EOF
+chmod +x "$D_FLOCK_BROKEN"
+
+# Accumulates every fail-open path's stdout, so D5 can assert in one place that
+# NONE of them leaked a sentinel — the property that keeps dark-factory from
+# parsing a defer decision out of a failed measurement.
+D_ALL_OUT=""
+
+# D1: a broken flock with a REAL exclusive holder present. Fail-closed would
+# answer 3 here and wedge the queue on a tooling fault.
+_hold_lane_lock "$D_MOUNT" _merge-verify
+REIFY_WARM_LANE_LOCK_GUARD_FLOCK="$D_FLOCK_BROKEN" run_guard check --mount "$D_MOUNT"
+D_ALL_OUT="$D_ALL_OUT$OUT"
+assert "D1: a failing flock degrades to IDLE (exit 0), never BUSY" test "$RC" -eq 0
+assert "D1: the degraded path writes nothing to stdout" test -z "$OUT"
+assert "D1: the degraded path warns on stderr" test -n "$ERR_OUT"
+
+# D2: flock missing entirely — same verdict, different branch (resolution rather
+# than invocation). The holder is still live, so this too is non-vacuous.
+REIFY_WARM_LANE_LOCK_GUARD_FLOCK=/nonexistent/flock run_guard check --mount "$D_MOUNT"
+D_ALL_OUT="$D_ALL_OUT$OUT"
+assert "D2: a missing flock binary degrades to IDLE (exit 0)" test "$RC" -eq 0
+assert "D2: the missing-binary path writes nothing to stdout" test -z "$OUT"
+assert "D2: the missing-binary path warns on stderr" test -n "$ERR_OUT"
+
+# D6: with the real flock and the SAME live holder, exit 3 still fires. Without
+# this, D1/D2 could be satisfied by a guard that had simply stopped detecting
+# contention at all.
+run_guard check --mount "$D_MOUNT"
+assert "D6: the fail-open branches did not swallow the positive case (exit 3)" \
+    test "$RC" -eq 3
+_release_lane_lock
+
+# D3: a mount directory that does not exist. Exit 0, and — as in B2 — the guard
+# must not bring the path into existence on its way past.
+D_ABSENT="$D_MOUNT/not-a-real-mount"
+run_guard check --mount "$D_ABSENT"
+D_ALL_OUT="$D_ALL_OUT$OUT"
+assert "D3: a nonexistent mount degrades to IDLE (exit 0)" test "$RC" -eq 0
+assert "D3: the nonexistent-mount path writes nothing to stdout" test -z "$OUT"
+assert "D3: the nonexistent mount dir was NOT created" test ! -e "$D_ABSENT"
+assert "D3: no lock file was created under it either" \
+    test ! -e "$D_ABSENT/_merge-verify.lock"
+
+# D4: an unreadable lock file, so the read-only open itself fails. Restored to
+# 644 before any assertion runs, so an abort cannot leave cleanup's rm -rf stuck.
+if [ "$(id -u)" -ne 0 ]; then
+    D_UNREADABLE="$D_MOUNT/_merge-verify.lock"
+    touch "$D_UNREADABLE"
+    chmod 000 "$D_UNREADABLE"
+    run_guard check --mount "$D_MOUNT"
+    chmod 644 "$D_UNREADABLE"
+    D_ALL_OUT="$D_ALL_OUT$OUT"
+    assert "D4: an unreadable lock file degrades to IDLE (exit 0)" test "$RC" -eq 0
+    assert "D4: the unreadable-lock path writes nothing to stdout" test -z "$OUT"
+else
+    echo "  SKIP: D4 (running as root — mode 000 does not make a file unreadable)"
+fi
+
+# D5: the one-place check that no fail-open path anywhere in D1-D4 emitted the
+# sentinel.
+assert "D5: no fail-open path emitted the BUSY sentinel" \
+    bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_WARM_LANE_LOCK_BUSY@@"' _ "$D_ALL_OUT"
+
 test_summary
