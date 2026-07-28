@@ -173,7 +173,23 @@ fn stdlib_chunk_geometry_ops_compile_with_stdlib_no_errors() {
 /// would enlarge reify-compiler's public API for names that are not under
 /// review here. Because the allowlist is exact-match, a typo'd scaffold call
 /// (`point33`) is still reported.
-const SCAFFOLD_CTORS: &[&str] = &["point3", "plane_xy", "axis_z", "orient_identity"];
+///
+/// `transform3_identity` / `affine_scale` build the rigid-transform and
+/// affine-map arguments that `apply_transform` / `affine_apply` consume. They
+/// are value constructors, not geometry ops, so they are not documented in the
+/// operations table and have no place in the fixture's name-existence check.
+/// This pair was chosen over `transform3` + `orient_axis_angle` + `vec3`
+/// precisely because it adds two names to this exact-match allowlist instead of
+/// four — every entry here is a name the fixture guard stops checking, so the
+/// smallest sufficient extension is the right one.
+const SCAFFOLD_CTORS: &[&str] = &[
+    "point3",
+    "plane_xy",
+    "axis_z",
+    "orient_identity",
+    "transform3_identity",
+    "affine_scale",
+];
 
 /// Is `name` a call the compiler recognises for the purposes of this guard?
 ///

@@ -42,6 +42,7 @@ structure def StdlibGeometryOpsSmoke {
     let prof2 = circle(8mm)
     let path  = line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 40mm)
     let curve = line_segment(0mm, 0mm, 0mm, 20mm, 0mm, 0mm)
+    let guide = line_segment(5mm, 0mm, 0mm, 5mm, 0mm, 40mm)
 
     // ── Booleans: union/difference/intersection(a, b) [2]; *_all variadic ───
     let u  = union(a, b)
@@ -60,12 +61,23 @@ structure def StdlibGeometryOpsSmoke {
     let ofs  = offset_solid(solid, 1mm)            // offset_solid(solid, distance)
     let thk  = thicken(solid, 1mm)                 // thicken(solid, offset)
     let ofc  = offset_curve(curve, 1mm)            // offset_curve(curve, distance)
+    let fila = fillet_all(solid, 1mm)              // fillet_all(solid, radius)
+    let chas = chamfer_asymmetric(solid, edges(solid), 1mm, 2mm)  // chamfer_asymmetric(solid, edges, d1, d2) [edges mandatory]
+    let sho  = shell_open(solid, 1mm, faces(solid))              // shell_open(solid, thickness, faces)
+    let dr3  = draft(solid, 5deg, plane_xy(0mm))                 // draft(solid, angle, plane)        [3, all faces]
+    let dr4  = draft(solid, faces(solid), 5deg, plane_xy(0mm))   // draft(solid, faces, angle, plane) [4, curated]
 
     // ── Sweep ────────────────────────────────────────────────────────────────
     let ex = extrude(prof, 5mm)                                  // extrude(profile, distance)
     let rv = revolve(prof, 0mm, 0mm, 0mm, 0, 1, 0, 360deg)      // revolve(profile, ox,oy,oz, ax,ay,az, angle)
     let sw = sweep(prof2, path)                                  // sweep(profile, path)
     let lf = loft(prof, prof2)                                   // loft(profile1, profile2, …)
+    let exs = extrude_symmetric(prof, 10mm)                      // extrude_symmetric(profile, total_distance) [total extent]
+    let exi = extrude_infinite(prof, 0, 0, 1, "positive")        // extrude_infinite(profile, dx,dy,dz, direction) [unbounded]
+    let rvf = revolve_full(prof, 0mm, 0mm, 0mm, 0, 1, 0)        // revolve_full(profile, ox,oy,oz, ax,ay,az) [no angle]
+    let swg = sweep_guided(prof2, path, guide)                   // sweep_guided(profile, path, guide)
+    let pip = pipe(path, 2mm)                                    // pipe(path, radius) [path FIRST, no profile arg]
+    let lfg = loft_guided(prof, prof2, guide)                    // loft_guided(profile1, profile2, …, guide) [guide TRAILING]
 
     // ── Transform ─────────────────────────────────────────────────────────────
     let tr  = translate(solid, 1mm, 2mm, 3mm)      // translate(geo, dx, dy, dz)
@@ -74,9 +86,14 @@ structure def StdlibGeometryOpsSmoke {
     let mi2 = mirror(solid, plane_xy(0mm))         // mirror(geo, plane)              [2, value]
     let mi7 = mirror(solid, 0mm, 0mm, 0mm, 1, 0, 0)  // mirror(geo, ox,oy,oz, nx,ny,nz) [7, scalar]
     let sc  = scale(solid, 2.0)                    // scale(geo, factor)
+    let rar = rotate_around(solid, 0mm, 0mm, 0mm, 0, 0, 1, 90deg)  // rotate_around(geo, px,py,pz, ax,ay,az, angle)
+    let apt = apply_transform(solid, transform3_identity())         // apply_transform(geo, transform)  [rigid]
+    let afa = affine_apply(solid, affine_scale(1.0, 1.0, 1.5))      // affine_apply(geo, map)           [general affine]
 
     // ── Pattern ───────────────────────────────────────────────────────────────
     let lp  = linear_pattern(solid, 1, 0, 0, 3, 5mm)                   // linear_pattern(geo, dx,dy,dz, count, spacing)
+    let lp2 = linear_pattern_2d(solid, 1, 0, 0, 3, 20mm, 0, 1, 0, 3, 20mm)  // linear_pattern_2d(geo, dir1, count1, spacing1, dir2, count2, spacing2)
+    let apr = arbitrary_pattern(solid, 10mm, 0mm, 0mm, 0mm, 20mm, 0mm)      // arbitrary_pattern(geo, dx1,dy1,dz1, …) [offset triples]
     let cp4 = circular_pattern(solid, axis_z(point3(0mm, 0mm, 0mm)), 6, 360deg)   // (geo, axis, count, angle) [4, value]
     let cp9 = circular_pattern(solid, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360deg)          // (geo, ox,oy,oz, ax,ay,az, count, angle) [9]
     let spl = split(solid, plane_xy(0mm))          // split(solid, plane) → List<Geometry> (topology selector)
