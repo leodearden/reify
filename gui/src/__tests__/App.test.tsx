@@ -7201,7 +7201,7 @@ describe('App N-pane render integration tests (task-4767 δ)', () => {
     expect(pane1.onHover).toBeDefined();
   });
 
-  it('#5668: FEA props reach pane 0 only', async () => {
+  it('#5670: the FEA trio reaches EVERY pane, each with its own keyed store', async () => {
     // Non-empty fea_diagnostics + non-null fea_convergence so the forwarded values
     // are distinguishable from engineStore's empty/null defaults.
     const feaDiagnostics = [{ kind: 'ProblemElements' as const, ids: [3, 5] }];
@@ -7232,27 +7232,47 @@ describe('App N-pane render integration tests (task-4767 δ)', () => {
     expect(mainPane.feaModeStore.state.enabled).toBe(false);
     expect(mainPane.feaDiagnostics).toHaveLength(feaDiagnostics.length);
     expect(mainPane.feaConvergence).toEqual(feaConvergence);
+    const panes0Store = mainPane.feaModeStore;
 
-    // ── Pane 1 (model pane) gets none of it ───────────────────────────────────
-    // Pane-0-only carve-out: <Viewport> renders its own <FeaModeToolbar> whenever
-    // feaModeStore is present, so a second FEA-capable pane would spawn a second
-    // toolbar (and trip the debug bridge's selectAmbiguous guard). Pinned here so
-    // a future "just share it with every pane" edit fails loudly.
+    // ── Pane 1 (model pane) gets the trio too ─────────────────────────────────
+    // The old pane-0-only carve-out existed because <Viewport> renders its own
+    // <FeaModeToolbar> whenever feaModeStore is present, and N toolbars all
+    // driving ONE store tripped the bridge's selectAmbiguous guard. #5670
+    // dissolves that: each pane gets its OWN store, and each toolbar is stamped
+    // with data-viewport-id so the bridge can address it individually.
     const pane1 = capturedMultiViewportProps.panes[1];
     expect(pane1.viewportId).toBe('pane-1');
-    expect(pane1.feaModeStore).toBeUndefined();
-    expect(pane1.feaDiagnostics).toBeUndefined();
-    expect(pane1.feaConvergence).toBeUndefined();
+    expect(pane1.feaModeStore).toBeDefined();
+    expect(typeof pane1.feaModeStore.setEnabled).toBe('function');
+    expect(pane1.feaModeStore.state.enabled).toBe(false);
 
-    // NOTE: "the store is App-scope, not built inside the mapArray mapper" is NOT
-    // assertable from `panes[0].feaModeStore` alone, however many reactive pulses
-    // you push through it. computePaneGroups always emits a pane-0 bucket, so key
-    // 0 never leaves the mapArray key list, so the mapper never re-runs and a
-    // mapper-local store would be exactly as stable. The only discriminator is a
-    // second reference to the store that does NOT come through the mapper —
-    // <FeaModeDebugRegistrar> is handed `paneFeaModeStore` directly, so the
-    // identity assertion in 'App feaMode debug-context registration (multi-pane)'
-    // below is what actually pins it.
+    // fea_diagnostics/fea_convergence are GLOBAL to the model, not per-pane.
+    // Withholding them from pane ≥ 1 was the concrete defect #5670 closes: a
+    // display_panes directive routing an FEA-relevant subject to a model pane
+    // made that entity's overlay silently vanish, because pane 0's
+    // diagnosticOverlay.sync intersects the global diagnostics with pane 0's
+    // OWN meshes and finds none, while no other pane was handed them at all.
+    expect(pane1.feaDiagnostics).toEqual(mainPane.feaDiagnostics);
+    expect(pane1.feaDiagnostics).toHaveLength(feaDiagnostics.length);
+    expect(pane1.feaConvergence).toEqual(feaConvergence);
+
+    // ── Keyed, not shared ─────────────────────────────────────────────────────
+    // The failure mode a naive "just delete the carve-out" fix produces is one
+    // shared instance handed to everyone: every pane would then render a toolbar
+    // driving the SAME state, so switching pane 1's channel would silently
+    // switch pane 0's too. The registry is keyed by viewportId precisely to
+    // prevent that.
+    expect(panes0Store).not.toBe(pane1.feaModeStore);
+
+    // NOTE: "the registry is App-scope, not built inside the mapArray mapper" is
+    // NOT assertable from `panes[0].feaModeStore` alone, however many reactive
+    // pulses you push through it. computePaneGroups always emits a pane-0
+    // bucket, so key 0 never leaves the mapArray key list, the mapper never
+    // re-runs, and a mapper-local registry would be exactly as stable. The
+    // discriminator is a reference that does NOT come through the mapper:
+    // <FeaModeDebugRegistrar> is handed the registry directly, so the
+    // `ctx.feaModes` identity assertions in 'App feaMode debug-context
+    // registration' below are what actually pin it.
   });
 
   it('step-9 case B: empty display_panes → DualViewport renders, MultiViewport absent (back-compat inv.2)', async () => {
