@@ -41,6 +41,15 @@
 #       is preserved alongside a default-protected lane (_mainsweep-x) while a
 #       plain lane (_lane-1) is still reset; env-var sub-case drives the same
 #       additive protection (task 5378)
+#   P — the PRIMITIVE's own per-lane live-consumer check (task 5572): a lane
+#       referenced by a live process (cwd/fd/mmap at or under it) is preserved
+#       in Pass 1 with NO --extra-protect-glob and a FREE flock — so every
+#       caller inherits the guard, including dark-factory's ε reclaim, which
+#       never passes that flag. P-basic covers the ε-path gap (live at pass
+#       start, plus a free unreferenced control lane and a second-run proof
+#       that the preserve is temporary); P-toctou pins PLACEMENT — a lane that
+#       goes live MID-PASS is still preserved, so the check cannot be hoisted
+#       into an up-front snapshot without going RED
 #
 # The former Tier-3 blocks I/J/L (terminal-task reclaim + Pass-2 boundary,
 # task 5167) were deleted when task 5326 collapsed the Pass-1 gate to the
@@ -1318,6 +1327,214 @@ assert "O-env4: plain lane _lane-1 still reset (marker removed)" \
 # Summary: preserved=2 (env-driven _lane-9 + default _mainsweep-x).
 assert "O-env5: summary preserved=2 (env _lane-9 + default _mainsweep-x)" \
     bash -c 'printf "%s\n" "$1" | grep -qE "preserved=2"' _ "$OUT"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block P — the PRIMITIVE preserves a live-consumer lane, with NO
+# --extra-protect-glob (task 5572)
+# ──────────────────────────────────────────────────────────────────────────────
+# ROOT CAUSE: two entry points reach one operation. warm-lane-gc-sweep.sh (the δ
+# systemd backstop) computed a live-lane CSV and handed it to gc.sh via
+# --extra-protect-glob; dark-factory's ε path (git_ops.py
+# _run_warm_lane_gc_reclaim) invokes `warm-lane-gc.sh reclaim --mount <base>`
+# with NO --extra-protect-glob, ever. A guard living in the WRAPPER therefore
+# covered only one of the two callers, and ε — the hot, per-acquire path — was
+# the uncovered one (the esc-5375-1 gap, reopened).
+#
+# FIX: the liveness check moves INTO this primitive, per-lane, immediately
+# before the reset and under the lane flock this loop already holds. Both cases
+# below therefore invoke reclaim DELIBERATELY WITHOUT --extra-protect-glob and
+# with NO flock holder (every <lane>.lock is FREE), so neither the wrapper CSV
+# nor the flock gate can account for any preservation observed.
+echo ""
+echo "--- Block P: per-lane live-consumer check inside the primitive (task 5572) ---"
+
+# ── P-basic: the dark-factory ε-path gap ──────────────────────────────────────
+# _lane-1 has a live helper whose cwd is _lane-1/target (the exact build-cwd/fd
+# shape); _lane-2 is free and unreferenced. The guard must preserve the former
+# and still reset the latter — discrimination, not blanket over-preserve.
+P_ROOT="$(mktemp -d /tmp/test-gc-p-XXXXXX)"
+_TMPDIRS+=("$P_ROOT")
+
+P_REPO="$P_ROOT/repo"
+P_WORKTREES="$P_ROOT/worktrees"
+P_BASE="$P_ROOT/base"
+mkdir -p "$P_WORKTREES" "$P_BASE"
+
+make_repo "$P_REPO"
+
+mkdir -p "$P_BASE/target.gen.1"
+touch "$P_BASE/target.gen.1.lock"
+ln -sfn "$P_BASE/target.gen.1" "$P_BASE/target"
+
+# Two clean+landed (HEAD==main) reclaimable pool lanes, each with a divergent
+# marker and a FREE flock (no holder started anywhere in this block).
+for _p_name in _lane-1 _lane-2; do
+    git -C "$P_REPO" worktree add -q "$P_WORKTREES/$_p_name"
+    mkdir -p "$P_WORKTREES/$_p_name/target"
+    touch "$P_WORKTREES/$_p_name/target/DIVERGENT_MARKER"
+done
+
+# Live helper whose CWD is _lane-1/target — a DESCENDANT of the lane dir. It
+# touches READY only AFTER cd'ing in, so _wait_for_reader_lock proves the cwd is
+# established before reclaim runs (causal ordering, technique R — no wall-clock
+# sleep). exec sleep so the tracked PID is the one holding the cwd.
+P_READY="$P_ROOT/helper.ready"
+( cd "$P_WORKTREES/_lane-1/target" && touch "$P_READY" && exec sleep 300 ) &
+P_HELPER_PID=$!
+_BGPIDS+=("$P_HELPER_PID")
+_wait_for_reader_lock "$P_READY" 30
+
+P_SEED_LOG="$P_ROOT/seed_calls.log"
+P_SEED_STUB="$P_ROOT/seed_stub.sh"
+_seed_stub_body > "$P_SEED_STUB"
+chmod +x "$P_SEED_STUB"
+export SEED_LOG="$P_SEED_LOG"
+
+run_helper reclaim \
+    --worktrees-dir "$P_WORKTREES" \
+    --base-target "$P_BASE/target" \
+    --seed-script "$P_SEED_STUB" \
+    --main-ref main
+
+assert "P1: exit 0" test "$RC" -eq 0
+assert "P2: live-referenced _lane-1 divergent marker INTACT (no --extra-protect-glob, FREE flock)" \
+    test -f "$P_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+assert "P3: _lane-1 seed-script NOT invoked (preserved, not reset)" \
+    bash -c '[ ! -f "$1" ] || ! grep -q "_lane-1" "$1"' _ "$P_SEED_LOG"
+assert "P4: free unreferenced _lane-2 divergent marker REMOVED (no blanket over-preserve)" \
+    bash -c '[ ! -f "$1" ]' _ "$P_WORKTREES/_lane-2/target/DIVERGENT_MARKER"
+assert "P5: _lane-2 seed-script invoked (reclaimed via α)" \
+    bash -c 'test -f "$1" && grep -q "_lane-2" "$1"' _ "$P_SEED_LOG"
+# The two preserve reasons must stay DISTINGUISHABLE in dark-factory's logs: a
+# process-reference preserve must not be reported as a flock preserve (and vice
+# versa), or an operator reading ε logs cannot tell which gate fired.
+assert "P6: stderr names the process-reference preserve reason for _lane-1" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "preserving _lane-1: live consumer (process reference)"' _ "$ERR_OUT"
+assert "P7: stderr does NOT misattribute _lane-1 to the flock gate" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "preserving _lane-1: live consumer (flock held)"' _ "$ERR_OUT"
+assert "P8: summary counts the live lane as preserved (preserved=1)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "preserved=1"' _ "$OUT"
+assert "P9: summary counts the free lane as reset (reset=1)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "reset=1"' _ "$OUT"
+
+# Preserve is TEMPORARY — the over-preserve bias is bounded. Once the reference
+# clears, the NEXT reclaim resets the lane (mirrors the sweep suite's U6/U7 and
+# the trash reaper's second-sweep behaviour).
+kill "$P_HELPER_PID" 2>/dev/null || true
+wait "$P_HELPER_PID" 2>/dev/null || true
+_BGPIDS=()  # clear so EXIT cleanup does not re-kill a possibly-reused PID
+
+run_helper reclaim \
+    --worktrees-dir "$P_WORKTREES" \
+    --base-target "$P_BASE/target" \
+    --seed-script "$P_SEED_STUB" \
+    --main-ref main
+
+assert "P10: exit 0 (second reclaim)" test "$RC" -eq 0
+assert "P11: _lane-1 reset once its live cwd reference is gone (preserve is temporary)" \
+    bash -c '[ ! -f "$1" ]' _ "$P_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+
+# ── P-toctou: the up-front-snapshot TOCTOU (defect 5) ─────────────────────────
+# PLACEMENT test, not merely a liveness test. NOTHING is live when the pass
+# starts; _lane-2 goes live MID-PASS. So this case stays RED against ANY
+# implementation that computes liveness once up front (the wrapper CSV shape it
+# replaces) — it only goes GREEN when the check runs per-lane, immediately
+# before that lane's own reset.
+#
+# Mechanism: gc.sh invokes --seed-script SYNCHRONOUSLY inside the Pass-1 loop,
+# and bash `*/` glob expansion is LC_COLLATE-sorted, so _lane-1 is always
+# visited before _lane-2. _lane-1's seed stub therefore spawns the _lane-2 cwd
+# holder and blocks until it is established.
+PT_ROOT="$(mktemp -d /tmp/test-gc-pt-XXXXXX)"
+_TMPDIRS+=("$PT_ROOT")
+
+PT_REPO="$PT_ROOT/repo"
+PT_WORKTREES="$PT_ROOT/worktrees"
+PT_BASE="$PT_ROOT/base"
+mkdir -p "$PT_WORKTREES" "$PT_BASE"
+
+make_repo "$PT_REPO"
+
+mkdir -p "$PT_BASE/target.gen.1"
+touch "$PT_BASE/target.gen.1.lock"
+ln -sfn "$PT_BASE/target.gen.1" "$PT_BASE/target"
+
+for _pt_name in _lane-1 _lane-2; do
+    git -C "$PT_REPO" worktree add -q "$PT_WORKTREES/$_pt_name"
+    mkdir -p "$PT_WORKTREES/$_pt_name/target"
+    touch "$PT_WORKTREES/$_pt_name/target/DIVERGENT_MARKER"
+done
+
+PT_SEED_LOG="$PT_ROOT/seed_calls.log"
+PT_SEED_STUB="$PT_ROOT/seed_stub.sh"
+PT_READY2="$PT_ROOT/lane2-holder.ready"
+PT_PIDFILE="$PT_ROOT/lane2-holder.pid"
+
+# The trigger stub: behaves like _seed_stub_body for every lane, and
+# ADDITIONALLY, when invoked for _lane-1, makes _lane-2 live before returning.
+#   - stdio MUST go to /dev/null: gc.sh runs the seed under
+#     `( ... ) 2>&1 | while IFS= read -r line; ...`, and an inherited pipe write
+#     end would keep that `while read` open for the holder's whole 300s life,
+#     hanging the pass.
+#   - the PID is written to a file because the holder reparents to init when the
+#     stub exits, so the TEST cannot learn it any other way.
+#   - the poll for READY2 is causal ordering (technique R), not a wall-clock
+#     sleep: the stub returns only once the cwd provably exists.
+cat > "$PT_SEED_STUB" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
+if [ "${LANE_DIR##*/}" = "_lane-1" ]; then
+    ( cd "$TOCTOU_LANE2/target" && touch "$TOCTOU_READY2" && exec sleep 300 ) \
+        </dev/null >/dev/null 2>&1 &
+    echo "$!" > "$TOCTOU_PIDFILE"
+    _tick=0
+    while [ "$_tick" -lt 600 ]; do
+        [ -f "$TOCTOU_READY2" ] && break
+        sleep 0.05
+        _tick=$(( _tick + 1 ))
+    done
+fi
+exit 0
+STUB_EOF
+chmod +x "$PT_SEED_STUB"
+
+export SEED_LOG="$PT_SEED_LOG"
+export TOCTOU_LANE2="$PT_WORKTREES/_lane-2"
+export TOCTOU_READY2="$PT_READY2"
+export TOCTOU_PIDFILE="$PT_PIDFILE"
+
+run_helper reclaim \
+    --worktrees-dir "$PT_WORKTREES" \
+    --base-target "$PT_BASE/target" \
+    --seed-script "$PT_SEED_STUB" \
+    --main-ref main
+
+# Adopt the reparented holder so the suite's cleanup() reaps it.
+if [ -s "$PT_PIDFILE" ]; then
+    PT_HOLDER_PID="$(cat "$PT_PIDFILE")"
+    _BGPIDS+=("$PT_HOLDER_PID")
+else
+    PT_HOLDER_PID=""
+fi
+
+unset TOCTOU_LANE2 TOCTOU_READY2 TOCTOU_PIDFILE
+
+assert "P-toctou1: fixture — the _lane-1 seed stub established the mid-pass _lane-2 cwd holder" \
+    bash -c 'test -f "$1" && test -s "$2"' _ "$PT_READY2" "$PT_PIDFILE"
+assert "P-toctou2: exit 0" test "$RC" -eq 0
+assert "P-toctou3: trigger lane _lane-1 WAS reset (behaves normally)" \
+    bash -c '[ ! -f "$1" ]' _ "$PT_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+assert "P-toctou4: _lane-2 divergent marker INTACT — went live MID-PASS and was still preserved" \
+    test -f "$PT_WORKTREES/_lane-2/target/DIVERGENT_MARKER"
+assert "P-toctou5: _lane-2 seed-script NOT invoked (preserved, not reset)" \
+    bash -c '[ ! -f "$1" ] || ! grep -q "_lane-2" "$1"' _ "$PT_SEED_LOG"
+assert "P-toctou6: stderr names the process-reference preserve reason for _lane-2" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "preserving _lane-2: live consumer (process reference)"' _ "$ERR_OUT"
+
+kill "$PT_HOLDER_PID" 2>/dev/null || true
+_BGPIDS=()  # clear so EXIT cleanup does not re-kill a possibly-reused PID
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
