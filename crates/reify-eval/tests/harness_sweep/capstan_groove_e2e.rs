@@ -20,8 +20,10 @@
 //! (re-wind capstans)" and its departure tangent migrates axially across the
 //! band every revolution, so the rope has to leave the seat radially at an
 //! arbitrary mid-band position. #5580 retired the pre-existing `groove_mouth`
-//! captive-channel knob for exactly that reason, and this test pins the
-//! retirement so a partial re-introduction is caught.
+//! captive-channel knob for exactly that reason. Re-introducing a radial
+//! cut-back of any depth necessarily moves `land_r` off `pitch_r`, which
+//! collapses that chord below `rope_dia` — so the mouth assertion catches it on
+//! mechanical grounds, whatever the parameter that produced it is called.
 //!
 //! **2. The seat removes the right stock
 //! (`capstan_groove_volume_delta_matches_pi_r2_l`).** The volume the helical
@@ -233,17 +235,14 @@ fn helix_arc_len(rho: f64, turns: f64, rise: f64) -> f64 {
 /// laid into radially, not a captive channel with a mouth narrower than the
 /// rope it is supposed to carry.
 ///
-/// Three claims, all computed from the design file's own cells:
+/// Two claims, all computed from the design file's own cells:
 ///   1. the seat breaks through the land (`land_r < pitch_r + groove_r`) —
 ///      otherwise it is a buried tunnel and the drum renders smooth;
 ///   2. the mouth chord `2·sqrt(groove_r² − (land_r − pitch_r)²)` is at least
 ///      `rope_dia`. The general chord form is used deliberately rather than
 ///      asserting `land_r == pitch_r`: it catches a re-introduced depth offset
 ///      in EITHER direction, and it states the mechanical requirement rather
-///      than one particular way of meeting it;
-///   3. the `groove_mouth` knob #5580 retired is really gone, so a partial
-///      implementation that leaves both the old depth parameter and the new
-///      half-round derivation in place is caught rather than silently ignored.
+///      than one particular way of meeting it.
 #[test]
 fn capstan_seat_admits_the_rope_radially() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
@@ -290,17 +289,6 @@ fn capstan_seat_admits_the_rope_radially() {
         pitch_r * 1e3,
         groove_r * 1e3,
         land_r * 1e3
-    );
-
-    // ---- (3) The captive-channel knob is retired ----
-    let retired = ValueCellId::new(CAPSTAN_ENTITY, "groove_mouth");
-    assert!(
-        result.values.get(&retired).is_none(),
-        "`{CAPSTAN_ENTITY}.groove_mouth` was retired by #5580 (the half-round seat \
-         derives its mouth from land_r == pitch_r, so a separate cut-back depth is \
-         both redundant and the thing that made the channel captive), but it is \
-         still declared in {DEV_CAPSTAN}: {:?}",
-        result.values.get(&retired)
     );
 }
 
