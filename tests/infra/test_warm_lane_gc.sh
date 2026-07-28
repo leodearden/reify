@@ -78,6 +78,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Arm the shared-trash litter guard (task 5612). Sited immediately after
+# `trap cleanup EXIT` because the helper registers its per-run root into
+# _TMPDIRS and so must follow this file's own `_TMPDIRS=()`.
+# Rationale, ordering contract, stem rules and honest scope: see the
+# CANONICAL WIRING CONTRACT comment in tests/infra/test_helpers.sh.
+init_isolated_lane_root test-gc
+
 ERR_FILE="$(mktemp /tmp/test-warm-lane-gc-err-XXXXXX)"
 _TMPDIRS+=("$ERR_FILE")
 
@@ -1311,5 +1318,18 @@ assert "O-env4: plain lane _lane-1 still reset (marker removed)" \
 # Summary: preserved=2 (env-driven _lane-9 + default _mainsweep-x).
 assert "O-env5: summary preserved=2 (env _lane-9 + default _mainsweep-x)" \
     bash -c 'printf "%s\n" "$1" | grep -qE "preserved=2"' _ "$OUT"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
+# kept as two independently-reported signals: TRASH2 can realistically only ever
+# report "clean", which is indistinguishable from a checker that stopped working
+# — TRASH1 is the hermetic control proving the instrument still fires.
+# Full rationale and honest scope: the CANONICAL WIRING CONTRACT comment in
+# tests/infra/test_helpers.sh.
+# ─────────────────────────────────────────────────────────────────────────────
+assert "TRASH1: shared-trash litter detector is live (self-test fires on a synthetic bare-/tmp lane)" \
+    assert_shared_trash_litter_detector_live
+assert "TRASH2: no lane in this suite littered the machine-shared /tmp/.reseed-trash" \
+    assert_no_shared_trash_litter
 
 test_summary

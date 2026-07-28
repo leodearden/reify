@@ -48,6 +48,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Arm the shared-trash litter guard (task 5612). Sited immediately after
+# `trap cleanup EXIT` because the helper registers its per-run root into
+# _TMPDIRS and so must follow this file's own `_TMPDIRS=()`.
+# Rationale, ordering contract, stem rules and honest scope: see the
+# CANONICAL WIRING CONTRACT comment in tests/infra/test_helpers.sh.
+init_isolated_lane_root test-thin-warm-lane
+
 # _wait_for_reader_lock <ready-marker> <deadline-seconds>
 # Causal ordering (technique R, docs/prds/infra-test-wallclock-deflake.md,
 # task #4847): polls for the READY marker file in 0.05s ticks instead of a
@@ -416,5 +423,18 @@ assert "D3: --reseed with a failing seed-script still exits 0 (best-effort)" \
     test "$RC" -eq 0
 assert "D3: target/ is still gone despite the reseed failure" \
     bash -c '[ ! -e "$1" ]' _ "$D_LANE_C/target"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
+# kept as two independently-reported signals: TRASH2 can realistically only ever
+# report "clean", which is indistinguishable from a checker that stopped working
+# — TRASH1 is the hermetic control proving the instrument still fires.
+# Full rationale and honest scope: the CANONICAL WIRING CONTRACT comment in
+# tests/infra/test_helpers.sh.
+# ─────────────────────────────────────────────────────────────────────────────
+assert "TRASH1: shared-trash litter detector is live (self-test fires on a synthetic bare-/tmp lane)" \
+    assert_shared_trash_litter_detector_live
+assert "TRASH2: no lane in this suite littered the machine-shared /tmp/.reseed-trash" \
+    assert_no_shared_trash_litter
 
 test_summary
