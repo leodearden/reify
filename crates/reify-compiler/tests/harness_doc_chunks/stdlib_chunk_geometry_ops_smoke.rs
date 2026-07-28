@@ -1444,6 +1444,37 @@ structure def SortedAndDeduped {
 // SYNTHETIC markdown snippet — never editing stdlib.md or the fixture — but
 // checks it against the REAL fixture source via `read_fixture()`.
 
+/// Every documented form in `markdown` with no matching call in
+/// `fixture_source` — the doc → fixture direction at FORM granularity.
+///
+/// A `DocForm` is considered mirrored by any fixture `(name, count)` call
+/// where `count == n` for `Arity::Exact(n)`, or `count >= n` for
+/// `Arity::AtLeast(n)`. Pure over two `&str`s — no file I/O — so callers
+/// (including the inline printer_v01-replay controls below) can drive it with
+/// synthetic markdown checked against the real fixture. Sorted and deduped,
+/// so a caller's failure message names the exact unmirrored form(s).
+fn unmirrored_documented_forms(markdown: &str, fixture_source: &str, label: &str) -> Vec<DocForm> {
+    let documented = documented_geometry_op_forms(markdown);
+    let fixture_forms = geometry_call_forms(fixture_source, label);
+
+    let mut unmirrored: Vec<DocForm> = documented
+        .into_iter()
+        .filter(|form| {
+            !fixture_forms.iter().any(|(name, count)| {
+                *name == form.name
+                    && match form.arity {
+                        Arity::Exact(n) => *count == n,
+                        Arity::AtLeast(n) => *count >= n,
+                    }
+            })
+        })
+        .collect();
+
+    unmirrored.sort();
+    unmirrored.dedup();
+    unmirrored
+}
+
 #[test]
 fn unmirrored_documented_forms_replays_the_printer_v01_regression() {
     let markdown = r#"
