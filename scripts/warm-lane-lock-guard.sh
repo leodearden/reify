@@ -39,6 +39,17 @@
 #                     (env: REIFY_WARM_LANE_LOCK_GUARD_LOCK_PATH)
 #   -h, --help        Print this message and exit.
 #
+# Env knobs:
+#   REIFY_WARM_LANE_MOUNT                    warm-lane mount point (shared with
+#                                            the other warm-lane scripts)
+#   REIFY_WARM_LANE_LOCK_GUARD_LANE          lane to probe (default: _merge-verify)
+#   REIFY_WARM_LANE_LOCK_GUARD_LOCK_PATH     explicit lock path override
+#   REIFY_WARM_LANE_LOCK_GUARD_FLOCK         flock command override (default: flock).
+#                                            The measurement seam: the hermetic
+#                                            tests stub it here rather than on
+#                                            PATH, so the fail-open branches can
+#                                            be exercised against a real held lock.
+#
 # Exit codes:      [KEEP IN STEP with the same section inside _usage() below —
 #                   one wording, two renderings, differing only in the leading
 #                   comment prefix. This is the contract dark-factory branches
@@ -113,6 +124,15 @@ EOF
 MOUNT="${REIFY_WARM_LANE_MOUNT:-}"
 LANE="${REIFY_WARM_LANE_LOCK_GUARD_LANE:-_merge-verify}"
 LOCK_PATH="${REIFY_WARM_LANE_LOCK_GUARD_LOCK_PATH:-}"
+FLOCK_BIN="${REIFY_WARM_LANE_LOCK_GUARD_FLOCK:-flock}"
+
+# The would-block exit status asked of flock via -E. `flock -n` returns a bare 1
+# on contention, which is indistinguishable from "flock itself failed" — and
+# reading a tool fault as contention is exactly the false BUSY this guard must
+# never emit. A distinct code separates the two. 124 mirrors dark-factory's own
+# `flock -x -w 30 -E 124` in _seed_warm_lane, so the two repos speak one dialect
+# about this lock.
+FLOCK_CONFLICT_RC=124
 
 # ── arg parsing ────────────────────────────────────────────────────────────────
 SUBCOMMAND=""
@@ -184,7 +204,7 @@ info "warm-lane-lock-guard.sh check: mount=$MOUNT  lane=$LANE  lock=$LOCK"
 # ── probe ──────────────────────────────────────────────────────────────────────
 # Opens an EXISTING lock file READ-ONLY and attempts a non-blocking SHARED
 # flock on that read-only fd: acquired => no exclusive holder => IDLE (released
-# immediately); blocked => a live consumer holds it exclusively => BUSY.
+# immediately); would-block => a live consumer holds it exclusively => BUSY.
 #
 # Technique copied from scripts/warm-lane-audit.sh's _probe_live, and the three
 # avoidances are load-bearing:
@@ -196,17 +216,75 @@ info "warm-lane-lock-guard.sh check: mount=$MOUNT  lane=$LANE  lock=$LOCK"
 #     oracles never contend with each other.
 #   · not the `flock <file> <cmd>` convenience form, which opens for writing and
 #     creates the file.
+#
+# FAIL-OPEN (see Exit codes): BUSY is reachable from exactly ONE place below — a
+# completed flock that reported would-block. Every other outcome warns and
+# leaves the verdict IDLE.
+_fail_open() {
+    err "Lock probe could not be completed: $*"
+    hint "FAIL-OPEN: reporting IDLE (exit 0), sentinel withheld. A false BUSY would defer"
+    hint "merge dispatch indefinitely and wedge the serial merge queue; a false IDLE only"
+    hint "restores today's behaviour, since dark-factory's own bounded-wait flock remains"
+    hint "the real serialization and this guard is advisory backpressure, never a lock."
+}
+
+# _probe — sets PROBE_RESULT. Always returns 0: every failure it can encounter
+# is a fail-open degradation, so a non-zero return here would abort the script
+# under `set -e` instead of degrading. Probe statuses are captured with the
+# `rc=0; cmd || rc=$?` idiom rather than by disabling errexit.
 PROBE_RESULT='IDLE'
-if [ -e "$LOCK" ]; then
-    if exec 7<"$LOCK" 2>/dev/null; then
-        if flock -n -s 7 2>/dev/null; then
-            flock -u 7 2>/dev/null || true
-        else
-            PROBE_RESULT='BUSY'
-        fi
-        exec 7<&- 2>/dev/null || true
+_probe() {
+    local rc=0
+
+    # Tool missing or not executable — a wiring/environment fault, not evidence
+    # about the lane.
+    if ! command -v "$FLOCK_BIN" >/dev/null 2>&1; then
+        _fail_open "flock is missing or not executable (REIFY_WARM_LANE_LOCK_GUARD_FLOCK='$FLOCK_BIN')."
+        return 0
     fi
-fi
+
+    # Mount absent: skip the probe entirely rather than deriving a path under a
+    # directory that is not there. Nothing is created — not the mount, not the
+    # lock. (Skipped when an explicit --lock-path made MOUNT irrelevant.)
+    if [ -n "$MOUNT" ] && [ ! -d "$MOUNT" ]; then
+        _fail_open "mount directory does not exist: $MOUNT."
+        return 0
+    fi
+
+    # An ABSENT lock file is not a degradation: it positively means no consumer
+    # has ever taken this lane's lock. IDLE, silently, and never created.
+    [ -e "$LOCK" ] || return 0
+
+    if ! exec 7<"$LOCK" 2>/dev/null; then
+        _fail_open "cannot open the lock file for reading: $LOCK."
+        return 0
+    fi
+
+    "$FLOCK_BIN" -n -s -E "$FLOCK_CONFLICT_RC" 7 2>/dev/null || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        # Acquired, so nobody holds it exclusively. Release at once — this fd
+        # must not linger across the rest of the run.
+        "$FLOCK_BIN" -u 7 2>/dev/null || true
+    fi
+    exec 7<&- 2>/dev/null || true
+
+    case "$rc" in
+        0)
+            ;;
+        "$FLOCK_CONFLICT_RC")
+            # The ONLY path to BUSY: flock ran to completion and reported that
+            # the shared request would block, which only an exclusive holder can
+            # cause.
+            PROBE_RESULT='BUSY'
+            ;;
+        *)
+            _fail_open "flock exited $rc, which is neither acquired (0) nor would-block ($FLOCK_CONFLICT_RC)."
+            ;;
+    esac
+    return 0
+}
+
+_probe
 
 if [ "$PROBE_RESULT" = "BUSY" ]; then
     err "Lane '$LANE' is BUSY: an exclusive holder occupies $LOCK."
