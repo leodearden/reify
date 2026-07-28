@@ -1186,9 +1186,28 @@ fi
 # FD 9, gc reclaim) _should_acquire_lane_lock is empty, we never opened FD 9,
 # and FD 9 is INHERITED from the caller. An unguarded `flock -u 9` there would
 # release the CALLER's lock -- strictly worse than the bug being fixed.
+#
+# The marker below is the STRUCTURAL, load-independent proof that this path
+# ran (technique S, docs/prds/infra-test-wallclock-deflake.md §2) --
+# tests/infra/test_seed_warm_lane.sh's H4b greps the literal phrase
+# "explicit flock -u before exit", so keep it verbatim. It goes to STDERR via
+# info(): STDOUT is seed's machine-readable contract with acquire_lane
+# (exactly "<lane_dir>/target", pinned by H7, and asserted EMPTY on the
+# fail-closed path by H3), so nothing may ever be added to it. Emitting the
+# marker inside the guard is also what lets H7b assert an
+# --assume-lane-lock-held run stays SILENT here.
 if [ -n "$_should_acquire_lane_lock" ]; then
     flock -u 9 2>/dev/null || true
-    exec 9>&- 2>/dev/null || true
+    # `exec 9>&-` is deliberately NOT written as `exec 9>&- 2>/dev/null || true`.
+    # An `exec` carrying redirections and NO command applies those redirections
+    # PERMANENTLY to the current shell -- so a `2>/dev/null` there does not
+    # merely silence this close, it sends EVERY subsequent stderr line to
+    # /dev/null, swallowing the marker below and `ok` with it. (H4b caught
+    # exactly that while this fix was being written.) The bare close needs no
+    # guard: this branch is the one where we opened FD 9 ourselves, and closing
+    # an open descriptor cannot fail.
+    exec 9>&-
+    info "Lane lock released (explicit flock -u before exit): $LANE_LOCK"
 fi
 
 ok "Warm lane seeded at $LANE_TARGET"
