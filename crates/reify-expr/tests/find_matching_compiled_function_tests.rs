@@ -9,9 +9,9 @@
 //! isolation, independent of the end-to-end eval paths covered by
 //! `lambda_eval_tests.rs` and `compute_dispatch_registry.rs`.
 
-use reify_expr::find_matching_compiled_function;
-use reify_core::{ContentHash, Type};
-use reify_ir::{CompiledExpr, CompiledFnBody, CompiledFunction, TypeParam, Value};
+use reify_expr::{EvalContext, eval_expr, find_matching_compiled_function};
+use reify_core::{ContentHash, DimensionVector, Type};
+use reify_ir::{CompiledExpr, CompiledFnBody, CompiledFunction, TypeParam, Value, ValueMap};
 
 /// Build a minimal `CompiledFunction` with the given name and a single
 /// parameter of the given type. The body is a constant `Int(0)` literal —
@@ -571,4 +571,145 @@ fn prelude_option_subject_selects_option_overload() {
             selected.params[0].1
         );
     }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Mixed generic / non-generic overload sets
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Head narrowing can drop a GENERIC candidate and thereby promote a
+/// NON-generic one that table order had kept behind it.
+///
+/// The per-candidate no-op corollary — head narrowing never DROPS a non-generic
+/// candidate, because for `type_params.is_empty()` the head predicate is a
+/// superset of the wildcard one — is what keeps entirely-non-generic overload
+/// sets (`solve_elastic_static`, `solve_load_cases`, `displacement_at`)
+/// bit-for-bit unchanged. It says nothing about a MIXED set, which is what this
+/// test pins: a generic `f<T>(x: Option<T>)` declared FIRST loses to a
+/// non-generic `f(x: List<Load>)` for a `List<PointLoad>` arg, because only the
+/// latter head-matches. Both candidates are wildcard-eligible, so before head
+/// narrowing existed first-match-wins handed this to the generic one.
+///
+/// The promotion is the intended answer, not a tolerated side effect: it is
+/// what compile-side `resolve_function_overload` resolves to. Recorded as a
+/// test so the behaviour is pinned rather than rediscovered from a future
+/// escalation — it sits directly adjacent to the esc-4093-152 trait-object
+/// path.
+#[test]
+fn mixed_set_head_mismatched_generic_yields_to_non_generic_trait_object() {
+    let generic_first = make_generic_fn(
+        "f",
+        &["T"],
+        vec![(
+            "x".to_string(),
+            Type::Option(Box::new(Type::TypeParam("T".to_string()))),
+        )],
+        b"mixed_generic_option",
+    );
+    let non_generic_second = make_generic_fn(
+        "f",
+        &[],
+        vec![(
+            "x".to_string(),
+            Type::List(Box::new(Type::TraitObject("Load".to_string()))),
+        )],
+        b"mixed_nongeneric_trait",
+    );
+    let fns = vec![generic_first, non_generic_second.clone()];
+    let args = [CompiledExpr::literal(
+        Value::Undef,
+        Type::List(Box::new(Type::StructureRef("PointLoad".to_string()))),
+    )];
+
+    let selected = find_matching_compiled_function(&fns, "f", &args)
+        .expect("both candidates are wildcard-eligible, so this must resolve");
+    assert_eq!(
+        selected.content_hash, non_generic_second.content_hash,
+        "a List<PointLoad> arg must select the non-generic List<Load> candidate \
+         even though a wildcard-eligible generic Option<T> candidate is declared \
+         first — only the former head-matches"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// End-to-end: the selected overload's BODY is what evaluates
+// ────────────────────────────────────────────────────────────────────────────
+
+/// The stdlib names this tier is motivated by (`unwrap_or` / `or_else` /
+/// `fallback`) are all intercepted by `option_recovery::is_combinator` before
+/// `eval_user_function_call` consults the matcher, so for THOSE names no
+/// evaluated value differs either side of the fix — which is why every test
+/// above asserts on the selected `CompiledFunction` instead.
+///
+/// That leaves the tier's user-visible effect uncovered: a *user-defined*
+/// generic overload pair on a non-intercepted name reaches the matcher, and the
+/// candidate it picks is the body that runs. This test closes that gap by
+/// giving the two overloads DISTINCT constant bodies and asserting on the
+/// evaluated `Value` — so a regression that selected the wrong overload for
+/// real user code fails here, not merely in a fixture-level assertion.
+///
+/// Both args must be non-`Undef`: `eval_user_function_call` short-circuits to
+/// `Undef` if any evaluated arg is undef, which would mask the selection.
+#[test]
+fn end_to_end_eval_runs_the_head_matched_overload_body() {
+    let len_5mm = Value::Scalar {
+        si_value: 0.005,
+        dimension: DimensionVector::LENGTH,
+    };
+    let len_0mm = Value::Scalar {
+        si_value: 0.0,
+        dimension: DimensionVector::LENGTH,
+    };
+
+    // `pick_recovered` is deliberately NOT one of the intercepted combinator
+    // names, so the call reaches `find_matching_compiled_function`.
+    let mut option_fn = option_overload("pick_recovered");
+    option_fn.body.result_expr = CompiledExpr::literal(Value::Int(1), Type::Int);
+    let mut result_fn = result_overload("pick_recovered");
+    result_fn.body.result_expr = CompiledExpr::literal(Value::Int(2), Type::Int);
+
+    // Option overload FIRST, mirroring stdlib load order (std.option_recovery
+    // precedes std.result) — the order that made the erased-Result subject
+    // resolve to the Option overload.
+    let functions = vec![option_fn, result_fn];
+    let values = ValueMap::new();
+    let ctx = EvalContext::new(&values, &functions);
+
+    let eval_with = |subject: CompiledExpr| {
+        eval_expr(
+            &CompiledExpr::user_function_call(
+                "pick_recovered".to_string(),
+                vec![subject, CompiledExpr::literal(len_0mm.clone(), Type::length())],
+                Type::Int,
+            ),
+            &ctx,
+        )
+    };
+
+    // Erased `Enum("Result")` subject — the form `Ok { .. }` actually produces.
+    let ok_subject = CompiledExpr::literal(
+        Value::Enum {
+            type_name: "Result".to_string(),
+            variant: "Ok".to_string(),
+            payload: vec![("value".to_string(), len_5mm.clone())],
+        },
+        Type::Enum("Result".to_string()),
+    );
+    assert_eq!(
+        eval_with(ok_subject),
+        Value::Int(2),
+        "an erased Result subject must run the Result overload's body; Int(1) \
+         means the Option overload was bound and evaluated instead"
+    );
+
+    // Mirror direction: an Option subject must still run the Option body.
+    let some_subject = CompiledExpr::literal(
+        Value::Option(Some(Box::new(len_5mm))),
+        Type::Option(Box::new(Type::length())),
+    );
+    assert_eq!(
+        eval_with(some_subject),
+        Value::Int(1),
+        "an Option<Length> subject must run the Option overload's body"
+    );
 }
