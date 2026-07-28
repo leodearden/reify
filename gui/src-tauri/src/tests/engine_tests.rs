@@ -13705,12 +13705,14 @@ fn get_entity_tree_consumed_realizations_default_visible_false() {
 /// Fails today because the realization loop hard-codes `trait_geometry: false`
 /// for every realization.
 ///
-/// `: Physical` is spelled literally so the existing `trait_bounds` substring
-/// heuristic fires — `trait_bounds` holds DECLARED names only, so a `: Rigid`
-/// structure (which refines Physical) does NOT match. That gap is pre-existing
-/// on the value-cell side and deliberately out of scope here; the feature's
-/// observable does not depend on it (see the consumed-downstream test above,
-/// which uses `: Rigid` and passes regardless).
+/// `: Physical` is spelled literally, so this covers the DIRECT bound. The
+/// transitive case (`: Rigid`, which refines Physical) is covered by
+/// `get_entity_tree_trait_geometry_follows_refinement_chain` below — the two
+/// read as a pair, one per side of `conforms_to_trait`'s
+/// equality-or-refinement contract (#5558). This test's body is deliberately
+/// unmodified by that change: a direct bound matches at pop time before the
+/// refinement walk, so it passing unchanged is the regression signal that
+/// #5558 was additive rather than a rewrite of the direct-bound case.
 ///
 /// `helper` is consumed by nothing, so it also stays `default_visible == true`
 /// — this test is independent of the consumed-downstream rule.
