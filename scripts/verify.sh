@@ -989,6 +989,27 @@ is_occt_crate() {
     grep -qxF "$1" <<<"$_OCCT_DECLARED"
 }
 
+# _RUST_COUPLED_RI_FIXTURES (task 5536) — the tests/prd-gate/fixtures/*.ri
+# basenames that are RUNTIME INPUTS to a compiled Rust test target, and so are
+# EXCLUDED from decide_scope's no-heavy-checks carve-out for that directory:
+#   compiler_type_hygiene_trait_args_silent_accept.ri
+#       crates/reify-compiler/tests/harness_traits/trait_type_arg_rejection_tests.rs:30
+#   geometry_let_selector_consumer.ri
+#       crates/reify-eval/tests/no_stale_undef_invariant_gate.rs:772 (pushed into corpus_files())
+#   geometry_let_selector_consumer_edit.ri
+#       crates/reify-eval/tests/no_stale_undef_edit_path_gate.rs:38
+#   stdlib_ns_buckling_mode_coexist.ri   crates/reify-compiler/tests/buckling_stdlib_compile.rs:709
+#   stdlib_ns_mode_member.ri             crates/reify-compiler/tests/buckling_stdlib_compile.rs:746
+# Keep in sync — tests/infra/test_verify_scope.sh's PG-DRIFT scenario is the
+# SOURCE OF TRUTH for membership: it derives the referenced set from the real
+# repo (`git grep -o 'tests/prd-gate/fixtures/*.ri' -- 'crates/*.rs'`) and
+# asserts each still classifies RUN_RUST=1, so adding a new Rust reference
+# without listing it here goes RED. Space sentinels give whole-token matching
+# (mirrors select_infra_tests/select_harness_kloc_guard) — required here
+# because one name is a strict prefix of another
+# (geometry_let_selector_consumer.ri vs …_consumer_edit.ri).
+_RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri "
+
 decide_scope() {
     if [ "$SCOPE" = "all" ]; then
         RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1
@@ -1046,6 +1067,37 @@ decide_scope() {
             gui/*)
                 # Any other GUI path (frontend src, sidecar, configs) — GUI only.
                 gui=1
+                ;;
+            tests/prd-gate/fixtures/*.ri)
+                # PRD-gate probe fixtures (task 5536): no heavy checks, so the
+                # /prd SOP's one-commit docs landing on `main` (PRD .md +
+                # .capability-manifest.yaml + its .ri fixtures, gated by
+                # hooks/pre-commit -> `--scope staged`) stays a seconds-long
+                # hook instead of escalating to a full workspace nextest run.
+                #   • Nothing globs this directory: reify-eval's
+                #     no_stale_undef_invariant_gate.rs corpus_files() walks only
+                #     its own tests/fixtures + examples/, then pushes ONE
+                #     explicit prd-gate path — so ADDING a fixture provably
+                #     cannot change any Rust target's inputs. EDITING one of the
+                #     five in _RUST_COUPLED_RI_FIXTURES can, hence the exclusion
+                #     below (a blanket rule would let such an edit reach `main`
+                #     through the hook-gated docs path with no heavy checks and
+                #     no later gate — a red-main class outage).
+                #   • The other consumers are the scripts/prd-capability-check.py
+                #     / prd-decompose-verify.mjs probes, which are not cargo poles.
+                #   • RESIDUAL: this affects only --scope staged/branch.
+                #     DF_VERIFY_ROLE=merge still forces --scope all (contract C2),
+                #     so the merge gate remains the wholesale authority — the same
+                #     accepted latency-not-coverage trade-off documented at the
+                #     task 5125 block below.
+                #   • GOTCHA: a bash `case` glob's `*` matches `/`, so a future
+                #     nested path under fixtures/ also lands in this arm; the
+                #     ${f##*/} basename test still applies and the direction of
+                #     error stays conservative.
+                case "$_RUST_COUPLED_RI_FIXTURES" in
+                    *" ${f##*/} "*) rust=1; gui=1; gate=1 ;;  # runtime input to a compiled test target — keep today's conservative classification
+                    *) : ;;                                   # pure probe-data fixture — no heavy checks
+                esac
                 ;;
             docs/*|*.md|*.yaml|*.yml)
                 : # no heavy checks
