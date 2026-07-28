@@ -128,14 +128,51 @@ fn build_solved_values(params: &[AutoParam], x: &[f64]) -> HashMap<ValueCellId, 
         .collect()
 }
 
-/// Build a ValueMap from a base map with trial auto-param values inserted.
+/// Build a ValueMap from a base map with trial auto-param values inserted,
+/// then recompute the cluster's dependent cells AT that trial point.
 ///
 /// Clones the base map (O(1) via PersistentMap structural sharing) and
 /// inserts each auto param as a Value::Scalar with the correct dimension.
 /// Maps params directly to avoid the intermediate HashMap allocation that
 /// `build_solved_values` would create — this is the hot path called on
 /// every Nelder-Mead iteration.
-fn build_trial_values(base: &ValueMap, params: &[AutoParam], x: &[f64]) -> ValueMap {
+///
+/// # Why the fold exists (task #5189 β, PRD §6.2)
+///
+/// In a whole-model joint drive the objective typically does not read the auto
+/// directly — it reads a DERIVED cell that is a function of the auto (the
+/// stdlib `Costed` trait's `line_cost = unit_cost * quantity_produced` is the
+/// canonical case). Those derived cells are non-auto values living in `base`,
+/// so without this fold every trial point re-reads their STALE base value: the
+/// objective is constant in the auto and Nelder-Mead has no gradient to follow.
+///
+/// `dependent_cells` is consumed IN STORED ORDER, and the `EvalContext` is
+/// rebuilt against the RUNNING map each iteration so an earlier dependent cell
+/// is visible to a later one. That order is a topologically-sorted guarantee
+/// produced once by `build_dependent_cells` (reify-eval) and CONSUMED here —
+/// never re-derived, so the two can never disagree.
+///
+/// # INVARIANTS
+///
+/// - An empty `dependent_cells` skips the fold entirely, leaving the returned
+///   map byte-identical to the pre-β behaviour (PRD §6.2). Every non-clustered
+///   solve therefore takes exactly the path it took before.
+/// - The fold must NEVER overwrite an auto param's trial scalar. Membership
+///   (reify-eval's `build_dependent_cells`) already excludes autos by
+///   construction — stage (a) keeps only non-auto cells — so this is a
+///   backstop against upstream DRIFT, not the primary mechanism. It is
+///   enforced rather than assumed because a clobbered auto is silent: the
+///   solver would go on to report a solved value for a point it never actually
+///   evaluated. A collision is a membership BUG, so debug builds trip a
+///   `debug_assert!` naming the offending cell; release builds skip the entry
+///   and keep the trial point intact.
+fn build_trial_values(
+    base: &ValueMap,
+    params: &[AutoParam],
+    x: &[f64],
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
+    functions: &[CompiledFunction],
+) -> ValueMap {
     let mut values = base.clone();
     for (param, &val) in params.iter().zip(x.iter()) {
         values.insert(
@@ -146,7 +183,118 @@ fn build_trial_values(base: &ValueMap, params: &[AutoParam], x: &[f64]) -> Value
             },
         );
     }
+
+    // Auto-collision guard: a linear scan over `params` beats a HashSet at the
+    // expected 1–3 autos, and this is the per-Nelder-Mead-iteration hot path.
+    fold_dependent_cells(&mut values, dependent_cells, functions, |id| {
+        params.iter().any(|p| &p.id == id)
+    });
     values
+}
+
+/// Fold `dependent_cells` into `values` IN STORED ORDER — the single fold
+/// authority shared by the per-trial cost surface ([`build_trial_values`]) and
+/// the post-solve objective scoring ([`build_scoring_values`]).
+///
+/// Having one implementation rather than two copies is the drift guard: it
+/// extends the PRD §6.3 "single authority" principle from the ORDER itself to
+/// its consumers, so the cost surface Nelder-Mead minimises, the score the
+/// ranker reports, and reify-eval's post-solve write-back cannot disagree about
+/// what a dependent cell is worth at a given point.
+///
+/// The `EvalContext` is rebuilt against the RUNNING map on each iteration, so
+/// an earlier dependent cell is visible to a later one — which is exactly what
+/// makes the stored topological order load-bearing rather than incidental.
+///
+/// `is_solver_owned` identifies ids the SOLVER owns at this point (trial autos
+/// for the cost path, solved autos for the scoring path). Such an id must never
+/// be overwritten by the fold: reify-eval's `build_dependent_cells` excludes
+/// autos by construction, so a collision means upstream membership drifted.
+/// Debug builds trip a `debug_assert!` naming the cell; release builds skip the
+/// entry and keep the solver's own value.
+///
+/// An empty `dependent_cells` returns without touching `values` OR running any
+/// of the guard work — that zero-cost skip is what keeps every non-clustered
+/// solve byte-identical to its pre-joint-drive behaviour (PRD §6.2).
+fn fold_dependent_cells(
+    values: &mut ValueMap,
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
+    functions: &[CompiledFunction],
+    is_solver_owned: impl Fn(&ValueCellId) -> bool,
+) {
+    if dependent_cells.is_empty() {
+        return;
+    }
+    for (id, expr) in dependent_cells {
+        if is_solver_owned(id) {
+            debug_assert!(
+                false,
+                "fold_dependent_cells: dependent cell {id:?} collides with an \
+                 auto param — reify-eval's `build_dependent_cells` excludes \
+                 autos by construction, so this means upstream membership \
+                 drifted. Skipping the entry to keep the solver's value."
+            );
+            continue;
+        }
+        let v = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions));
+        values.insert(id.clone(), v);
+    }
+}
+
+/// Materialise the ValueMap an objective SCORE is read from: the problem's base
+/// values, overlaid with the solver's `solved` autos, then folded through
+/// `dependent_cells`.
+///
+/// Every post-solve scoring site used to build this map inline and WITHOUT the
+/// fold, which meant they scored a dependent-cell-driven objective at its stale
+/// base value. With the per-trial fold in place that made the optimiser and the
+/// scorer measure different objectives. There were FOUR such sites, and each
+/// failed differently — which is why they are now routed through ONE function
+/// rather than fixed one at a time:
+///
+/// - the multistart scoring loop and `rank_single`: the reported
+///   `objective_score` disagreed with the optimum actually achieved, and a
+///   ranking over identical stale scores degenerated to a tie broken by start
+///   index (PRD §12 Q2);
+/// - `solve_cost_robustness_tradeoff`'s two anchor evaluations: `cost_expr`
+///   returned the identical stale number at BOTH anchors, so `cost_max −
+///   cost_min` collapsed to 0 and [`normalised_blend_term`]'s
+///   [`TRADEOFF_NORMALISATION_RANGE_EPS`] guard dropped the cost axis from the
+///   blend entirely, for every λ, with no diagnostic;
+/// - `solve_lexicographic`'s ε-band anchor in `registry.rs` (esc-5189-7): the
+///   band's `obj*` LITERAL was frozen from a stale map while the band's own
+///   `cost_expr` is evaluated FOLDED by the next stage, so the two sides of one
+///   constraint were measured on different value maps — surfacing as a bogus
+///   `ConstraintUnsatisfiable` on a trivially feasible model when the stale
+///   value sat on the restrictive side, and as a silently-dropped rank ordering
+///   when it sat on the permissive side.
+///
+/// INVARIANT: no site in this CRATE may materialise a scoring map by hand from
+/// `current_values.clone()` overlaid with the solved autos. `SolveResult::Solved`
+/// carries only the AUTOS (`build_solved_values`), so a hand-rolled overlay
+/// always leaves dependent cells stale — the failure is silent every time, and
+/// the fourth occurrence is the argument for enforcing the rule rather than
+/// restating it. A `grep` for `current_values.clone()` outside this function and
+/// [`build_trial_values`] should return nothing.
+///
+/// The invariant is deliberately crate-scoped rather than module-scoped: the
+/// fourth site lived in `registry.rs`, which a module-scoped rule did not
+/// reach. `pub(crate)` exists so that rule is enforceable — a sibling module
+/// needing a scoring map calls this rather than rolling its own.
+pub(crate) fn build_scoring_values(
+    base: &ValueMap,
+    solved: &HashMap<ValueCellId, Value>,
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
+    functions: &[CompiledFunction],
+) -> ValueMap {
+    let mut full = base.clone();
+    for (id, v) in solved {
+        full.insert(id.clone(), v.clone());
+    }
+    fold_dependent_cells(&mut full, dependent_cells, functions, |id| {
+        solved.contains_key(id)
+    });
+    full
 }
 
 /// Extract initial parameter values from the problem.
@@ -789,6 +937,10 @@ struct ConstraintCostFunction<'a> {
     base_values: &'a ValueMap,
     objective: Option<&'a ObjectiveSet>,
     functions: &'a [CompiledFunction],
+    /// Cluster cells that must be recomputed at every trial point — see
+    /// [`build_trial_values`]. Empty for every non-clustered solve, which is
+    /// what keeps the legacy cost surface bit-identical.
+    dependent_cells: &'a [(ValueCellId, CompiledExpr)],
 }
 
 /// Evaluate an `ObjectiveSet` as a single f64 cost using the I2-preserving
@@ -867,7 +1019,13 @@ impl CostFunction for ConstraintCostFunction<'_> {
             clamped.push(cv);
         }
 
-        let values = build_trial_values(self.base_values, self.auto_params, &clamped);
+        let values = build_trial_values(
+            self.base_values,
+            self.auto_params,
+            &clamped,
+            self.dependent_cells,
+            self.functions,
+        );
         let violation = compute_total_violation(self.constraints, &values, self.functions);
 
         let cost = match self.objective {
@@ -1046,7 +1204,13 @@ fn solve_core_with_sd_tolerance(
     // fallback objective validation when the optimizer drifts infeasible.
     // Building it here before the floor block eliminates the redundant second
     // call that was previously inside the floor synthesis branch.
-    let trial_values = build_trial_values(&problem.current_values, &problem.auto_params, initial);
+    let trial_values = build_trial_values(
+        &problem.current_values,
+        &problem.auto_params,
+        initial,
+        &problem.dependent_cells,
+        &problem.functions,
+    );
 
     let mut effective_constraints: Vec<(ConstraintNodeId, CompiledExpr)> =
         problem.constraints.clone();
@@ -1137,6 +1301,7 @@ fn solve_core_with_sd_tolerance(
         base_values: &problem.current_values,
         objective: effective_objective,
         functions: &problem.functions,
+        dependent_cells: &problem.dependent_cells,
     };
 
     // Build simplex from the provided initial point
@@ -1218,7 +1383,13 @@ fn solve_core_with_sd_tolerance(
 
     // Check feasibility by re-evaluating constraint violations
     // (best_cost may include the objective term, so we check violations separately)
-    let final_values = build_trial_values(&problem.current_values, &problem.auto_params, &clamped);
+    let final_values = build_trial_values(
+        &problem.current_values,
+        &problem.auto_params,
+        &clamped,
+        &problem.dependent_cells,
+        &problem.functions,
+    );
     let final_max_residual =
         max_constraint_residual(&effective_constraints, &final_values, &problem.functions);
     if final_max_residual > FEASIBILITY_THRESHOLD {
@@ -1487,14 +1658,30 @@ fn solve_cost_robustness_tradeoff(
     };
 
     // ── Evaluate both axes at both anchors ──────────────────────────────────
-    let mut values_at_cost = problem.current_values.clone();
-    for (id, v) in &x_cost {
-        values_at_cost.insert(id.clone(), v.clone());
-    }
-    let mut values_at_rob = problem.current_values.clone();
-    for (id, v) in &x_rob {
-        values_at_rob.insert(id.clone(), v.clone());
-    }
+    //
+    // Both maps go through [`build_scoring_values`], NOT a hand-rolled
+    // `current_values.clone()` + solved-autos overlay. `SolveResult::Solved`
+    // carries only the AUTOS (`build_solved_values`), so an unfolded overlay
+    // leaves every dependent cell at its stale base value. When the money
+    // expression is a READ of a dependent cell — the joint-drive shape — that
+    // makes `cost_expr` evaluate to the identical stale number at BOTH anchors,
+    // so `cost_max - cost_min` collapses to 0 and `normalised_blend_term`'s
+    // [`TRADEOFF_NORMALISATION_RANGE_EPS`] guard silently drops the cost axis
+    // from the blend for EVERY λ. The anchor SOLVES already fold (they inherit
+    // `dependent_cells` via `..problem.clone()`), so only this scoring step was
+    // stale — the anchors moved, but the axes were measured at the wrong place.
+    let values_at_cost = build_scoring_values(
+        &problem.current_values,
+        &x_cost,
+        &problem.dependent_cells,
+        &problem.functions,
+    );
+    let values_at_rob = build_scoring_values(
+        &problem.current_values,
+        &x_rob,
+        &problem.dependent_cells,
+        &problem.functions,
+    );
 
     let ctx_cost = reify_expr::EvalContext::new(&values_at_cost, &problem.functions);
     let ctx_rob = reify_expr::EvalContext::new(&values_at_rob, &problem.functions);
@@ -1782,10 +1969,12 @@ fn rank_single(
             // per I3/I4: a feasibility-only solve reports FeasibilityOnly + None even
             // when the solver internally optimized a synthetic centrality objective.
             let objective_score = problem.objective.as_ref().and_then(|obj| {
-                let mut full = problem.current_values.clone();
-                for (id, v) in &values {
-                    full.insert(id.clone(), v.clone());
-                }
+                let full = build_scoring_values(
+                    &problem.current_values,
+                    &values,
+                    &problem.dependent_cells,
+                    &problem.functions,
+                );
                 eval_objective_set(obj, &full, &problem.functions)
             });
             // Key optimality off objective_score (not problem.objective.is_some())
@@ -1919,10 +2108,12 @@ impl ConstraintSolver for DimensionalSolver {
             let (result, meta) = solve_core(problem, start);
             if let SolveResult::Solved { values, .. } = result {
                 let objective_score = problem.objective.as_ref().and_then(|obj| {
-                    let mut full = problem.current_values.clone();
-                    for (id, v) in &values {
-                        full.insert(id.clone(), v.clone());
-                    }
+                    let full = build_scoring_values(
+                        &problem.current_values,
+                        &values,
+                        &problem.dependent_cells,
+                        &problem.functions,
+                    );
                     eval_objective_set(obj, &full, &problem.functions)
                 });
                 if let Some(score) = objective_score {
@@ -2162,7 +2353,7 @@ mod tests {
             free: false,
         }];
 
-        let trial = build_trial_values(&base, &params, &[0.005]);
+        let trial = build_trial_values(&base, &params, &[0.005], &[], &[]);
 
         // Auto param should be inserted with correct dimension
         let thickness = trial.get(&thickness_id).expect("thickness should exist");
@@ -2226,7 +2417,7 @@ mod tests {
             },
         ];
 
-        let trial = build_trial_values(&base, &params, &[0.005, 1.2]);
+        let trial = build_trial_values(&base, &params, &[0.005, 1.2], &[], &[]);
 
         // First auto param: length with correct dimension
         let thickness = trial.get(&thickness_id).expect("thickness should exist");
@@ -2663,7 +2854,7 @@ mod tests {
         );
 
         // Empty params slice — should return base unchanged
-        let trial = build_trial_values(&base, &[], &[]);
+        let trial = build_trial_values(&base, &[], &[], &[], &[]);
 
         // Base value preserved
         let width = trial.get(&width_id).expect("width should be preserved");
@@ -3983,6 +4174,7 @@ mod tests {
             base_values: &base_values,
             objective: None,
             functions: &[],
+            dependent_cells: &[],
         };
 
         // In bounds: x=0.005
@@ -4038,6 +4230,7 @@ mod tests {
             base_values: &base_values,
             objective: objective.as_ref(),
             functions: &[],
+            dependent_cells: &[],
         };
 
         // x=0.005 is in bounds and satisfies x > 0, but objective is Undef
@@ -5252,5 +5445,497 @@ mod tests {
             BestFoundReason::ConvergedWithinBudget,
             "best_found_reason(false) must be BestFoundReason::ConvergedWithinBudget"
         );
+    }
+
+    // ---- per-trial dependent-cell recompute (task #5189 β, PRD §6.2 / §7) ----
+
+    /// The minimal whole-model joint-drive shape, hand-built.
+    ///
+    /// Mirrors `examples/whole_model_joint_drive.ri`: a `Costed` child whose
+    /// derived cell `line_cost = unit_cost * quantity_produced` is a DEPENDENT
+    /// cell — a non-auto value that is a function of the cluster's auto — and a
+    /// parent objective that reads `line_cost`, NEVER the auto directly.
+    ///
+    /// That indirection is the whole point of the seam: a solver that does not
+    /// recompute dependent cells per trial evaluates the objective against
+    /// `line_cost`'s STALE base value, so the objective is CONSTANT in the auto
+    /// and Nelder-Mead has no gradient to follow.
+    ///
+    /// Returns `(auto_params, constraints, base_values, dependent_cells, objective)`.
+    /// `base_values` deliberately seeds `line_cost` with a stale number that
+    /// matches NO trial point, so any test reading the stale value gets an
+    /// unmistakable wrong answer rather than a coincidentally-right one.
+    #[allow(clippy::type_complexity)]
+    fn joint_drive_dependent_cell_fixture() -> (
+        Vec<reify_ir::AutoParam>,
+        Vec<(reify_core::ConstraintNodeId, reify_ir::CompiledExpr)>,
+        ValueMap,
+        Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)>,
+        reify_ir::ObjectiveSet,
+    ) {
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, ObjectiveSense, ObjectiveSet, Value};
+
+        let money = Type::Scalar {
+            dimension: DimensionVector::MONEY,
+        };
+        let q_id = ValueCellId::new("Rivet", "quantity_produced");
+        let unit_cost_id = ValueCellId::new("Rivet", "unit_cost");
+        let line_cost_id = ValueCellId::new("Rivet", "line_cost");
+
+        let mut base = ValueMap::new();
+        base.insert(
+            unit_cost_id.clone(),
+            Value::Scalar {
+                si_value: 0.5,
+                dimension: DimensionVector::MONEY,
+            },
+        );
+        // STALE: matches no trial point used by any test below.
+        base.insert(
+            line_cost_id.clone(),
+            Value::Scalar {
+                si_value: 999.0,
+                dimension: DimensionVector::MONEY,
+            },
+        );
+
+        let auto_params = vec![AutoParam {
+            id: q_id.clone(),
+            param_type: Type::dimensionless_scalar(),
+            bounds: Some((1.0, 100.0)),
+            free: true,
+        }];
+
+        // Trivially satisfied at every trial point used below (q >= 1.0), so
+        // the cost function's violation term stays 0 and the objective term is
+        // the only thing that can vary.
+        let one = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+            Type::dimensionless_scalar(),
+        );
+        let constraints = vec![(
+            ConstraintNodeId::new("Rivet", 0),
+            CompiledExpr::binop(
+                BinOp::Ge,
+                CompiledExpr::value_ref(q_id.clone(), Type::dimensionless_scalar()),
+                one,
+                Type::Bool,
+            ),
+        )];
+
+        // line_cost = unit_cost * quantity_produced — the stdlib `Costed` Let.
+        let dependent_cells = vec![(
+            line_cost_id.clone(),
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::value_ref(unit_cost_id, money.clone()),
+                CompiledExpr::value_ref(q_id, Type::dimensionless_scalar()),
+                money.clone(),
+            ),
+        )];
+
+        let objective = ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            CompiledExpr::value_ref(line_cost_id, money),
+        );
+
+        (auto_params, constraints, base, dependent_cells, objective)
+    }
+
+    /// BT-1 (PRD §7) — per-trial recompute makes the objective NON-CONSTANT.
+    ///
+    /// The objective reads only `line_cost`, which is not an auto. Without the
+    /// per-trial fold, `line_cost` keeps its stale base value at every trial
+    /// point, so the objective is a constant function of the auto and the
+    /// solver cannot minimise it. Both halves are pinned: the helper itself and
+    /// the hot Nelder-Mead path through `ConstraintCostFunction::cost`.
+    #[test]
+    fn dependent_cells_make_the_objective_vary_with_the_auto() {
+        use super::{
+            ConstraintCostFunction, UNDEF_OBJECTIVE_PENALTY, build_trial_values, eval_objective_set,
+        };
+        use argmin::core::CostFunction;
+
+        let (auto_params, constraints, base, dependent_cells, objective) =
+            joint_drive_dependent_cell_fixture();
+
+        // ---- half 1: the helper folds, so the objective moves ----
+        let lo = build_trial_values(&base, &auto_params, &[2.0], &dependent_cells, &[]);
+        let hi = build_trial_values(&base, &auto_params, &[8.0], &dependent_cells, &[]);
+
+        let obj_lo = eval_objective_set(&objective, &lo, &[])
+            .expect("objective must be numeric at q=2 once line_cost is folded");
+        let obj_hi = eval_objective_set(&objective, &hi, &[])
+            .expect("objective must be numeric at q=8 once line_cost is folded");
+
+        // 0.5 USD * q — the closed form of the stdlib `Costed` line_cost Let.
+        assert!(
+            (obj_lo - 1.0).abs() < 1e-12,
+            "objective at q=2 must be unit_cost*q = 0.5*2 = 1.0; got {obj_lo}. \
+             999.0 here means `line_cost` was read STALE from the base map \
+             instead of being recomputed for the trial point."
+        );
+        assert!(
+            (obj_hi - 4.0).abs() < 1e-12,
+            "objective at q=8 must be unit_cost*q = 0.5*8 = 4.0; got {obj_hi}"
+        );
+        assert!(
+            obj_lo < obj_hi,
+            "the objective must be STRICTLY increasing in the auto \
+             (0.5*2 < 0.5*8); got {obj_lo} vs {obj_hi} — a constant objective \
+             is exactly the pre-fold failure this test exists to catch"
+        );
+        for v in [obj_lo, obj_hi] {
+            assert!(
+                v < UNDEF_OBJECTIVE_PENALTY,
+                "objective must be a real number, not the Undef sentinel; got {v}"
+            );
+        }
+
+        // ---- half 2: the hot Nelder-Mead path folds too ----
+        // Pinning only the helper would leave `cost()` free to keep calling an
+        // unfolded variant, which is precisely the divergence β must prevent.
+        let cost_fn = ConstraintCostFunction {
+            auto_params: &auto_params,
+            constraints: &constraints,
+            base_values: &base,
+            objective: Some(&objective),
+            functions: &[],
+            dependent_cells: &dependent_cells,
+        };
+        let cost_lo = cost_fn.cost(&vec![2.0]).expect("cost at q=2");
+        let cost_hi = cost_fn.cost(&vec![8.0]).expect("cost at q=8");
+
+        assert!(
+            cost_lo < cost_hi,
+            "ConstraintCostFunction::cost must be strictly increasing in the \
+             auto for this fixture (both trial points are feasible and in \
+             bounds, so the objective term is the only varying term); \
+             got {cost_lo} vs {cost_hi}"
+        );
+        assert!(
+            (cost_hi - cost_lo - 3.0).abs() < 1e-9,
+            "the cost gap must be exactly the objective gap (4.0 - 1.0 = 3.0) \
+             since violation and bound penalties are both zero here; \
+             got {}",
+            cost_hi - cost_lo
+        );
+        assert!(
+            cost_lo < UNDEF_OBJECTIVE_PENALTY,
+            "cost must not be the Undef sentinel; got {cost_lo}"
+        );
+    }
+
+    /// Assert two `ValueMap`s hold exactly the same keys bound to exactly the
+    /// same values — the teeth behind BT-2's "byte-identical" claim (a
+    /// per-key spot check would not catch an EXTRA key the fold inserted).
+    #[track_caller]
+    fn assert_same_value_map(actual: &ValueMap, expected: &ValueMap, ctx: &str) {
+        assert_eq!(
+            actual.len(),
+            expected.len(),
+            "{ctx}: key COUNT differs — actual {:?} vs expected {:?}",
+            actual.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+            expected.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+        );
+        for (id, want) in expected.iter() {
+            let got = actual
+                .get(id)
+                .unwrap_or_else(|| panic!("{ctx}: expected key {id:?} is missing"));
+            assert_eq!(got, want, "{ctx}: value at {id:?} differs");
+        }
+    }
+
+    /// BT-2 (PRD §6.2 second INVARIANT) — an empty `dependent_cells` leaves
+    /// `build_trial_values` byte-identical to its pre-β 3-arg behaviour.
+    ///
+    /// This is the regression fence for every non-clustered solve, which is
+    /// almost all of them: they must take exactly the path they took before.
+    /// The three legacy `build_trial_values_*` tests above already witness the
+    /// empty case per-key; this one adds whole-map equality, so an extra key
+    /// leaking in from a future fold cannot slip through.
+    #[test]
+    fn empty_dependent_cells_leaves_build_trial_values_byte_identical() {
+        use super::build_trial_values;
+        use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, Value};
+
+        let thickness_id = ValueCellId::new("Bracket", "thickness");
+        let angle_id = ValueCellId::new("Bracket", "angle");
+        let width_id = ValueCellId::new("Bracket", "width");
+
+        let mut base = ValueMap::new();
+        base.insert(
+            width_id.clone(),
+            Value::Scalar {
+                si_value: 0.080,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let params = vec![
+            AutoParam {
+                id: thickness_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: false,
+            },
+            AutoParam {
+                id: angle_id.clone(),
+                param_type: Type::angle(),
+                bounds: Some((0.0, std::f64::consts::PI)),
+                free: false,
+            },
+        ];
+
+        // Hand-built expectation: base ++ the trial autos, nothing else.
+        let mut expected = base.clone();
+        expected.insert(
+            thickness_id,
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        expected.insert(
+            angle_id,
+            Value::Scalar {
+                si_value: 1.2,
+                dimension: DimensionVector::ANGLE,
+            },
+        );
+
+        assert_same_value_map(
+            &build_trial_values(&base, &params, &[0.005, 1.2], &[], &[]),
+            &expected,
+            "multi-param, empty dependent_cells",
+        );
+
+        // Empty params AND empty dependent_cells: the base map, untouched.
+        assert_same_value_map(
+            &build_trial_values(&base, &[], &[], &[], &[]),
+            &base,
+            "empty params, empty dependent_cells",
+        );
+    }
+
+    /// BT-2 (PRD §7) — an empty `dependent_cells` preserves the LEGACY cost
+    /// surface through `ConstraintCostFunction::cost`, not just the helper.
+    ///
+    /// Uses the same joint-drive fixture as BT-1, so the two tests read as a
+    /// matched pair and the difference is unmistakable: WITH the fold the
+    /// objective moves (1.0 → 4.0); WITHOUT dependent cells it is pinned at
+    /// `line_cost`'s stale base value at every trial point. That constant is
+    /// precisely the pre-β behaviour every non-clustered solve must keep.
+    #[test]
+    fn empty_dependent_cells_preserves_the_legacy_cost_surface() {
+        use super::ConstraintCostFunction;
+        use argmin::core::CostFunction;
+
+        let (auto_params, constraints, base, _dependent_cells, objective) =
+            joint_drive_dependent_cell_fixture();
+
+        let cost_fn = ConstraintCostFunction {
+            auto_params: &auto_params,
+            constraints: &constraints,
+            base_values: &base,
+            objective: Some(&objective),
+            functions: &[],
+            dependent_cells: &[],
+        };
+
+        let cost_lo = cost_fn.cost(&vec![2.0]).expect("cost at q=2");
+        let cost_hi = cost_fn.cost(&vec![8.0]).expect("cost at q=8");
+
+        assert!(
+            (cost_lo - 999.0).abs() < 1e-9,
+            "with NO dependent cells the objective must read `line_cost`'s \
+             stale base value (999.0) verbatim — the pre-β surface; got {cost_lo}"
+        );
+        assert!(
+            (cost_lo - cost_hi).abs() < 1e-12,
+            "with NO dependent cells the cost must be CONSTANT in the auto \
+             (that constancy IS the legacy behaviour, and is exactly what the \
+              fold exists to remove when dependent cells ARE present); \
+             got {cost_lo} vs {cost_hi}"
+        );
+    }
+
+    /// BT-2 never-overwrite-auto INVARIANT (PRD §6.2 first INVARIANT).
+    ///
+    /// Hands the fold a hostile/malformed `dependent_cells` list whose entry id
+    /// COLLIDES with an auto param — a list reify-eval's `build_dependent_cells`
+    /// would never emit, since stage (a) drops autos by construction. The trial
+    /// auto scalar must survive: silently clobbering it would corrupt the point
+    /// Nelder-Mead thinks it is evaluating, and the corruption would be
+    /// invisible (the solver would report a solved auto it never actually
+    /// tested).
+    ///
+    /// This guards against upstream membership DRIFT, not against today's
+    /// contract — which is exactly why it must be enforced rather than assumed.
+    ///
+    /// The guard is profile-split, and this one test pins BOTH halves rather
+    /// than taking either on trust — the `should_panic` attribute is itself
+    /// `cfg_attr`-gated on `debug_assertions`, so the same body asserts a
+    /// different contract per profile:
+    ///
+    /// * debug (`cargo test`) — the `debug_assert!` fires, and the expected
+    ///   panic substring pins that the alarm NAMES the offending cell. A
+    ///   membership regression in reify-eval must not reach production quietly.
+    /// * release — there is no alarm, so the entry is skipped, the body runs to
+    ///   completion, and its assertions pin that the trial scalar survived.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "collides with an auto param")
+    )]
+    fn fold_must_never_overwrite_an_auto_param() {
+        use super::build_trial_values;
+        use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, Value};
+
+        let q_id = ValueCellId::new("Rivet", "quantity_produced");
+        let unit_cost_id = ValueCellId::new("Rivet", "unit_cost");
+
+        let mut base = ValueMap::new();
+        base.insert(
+            unit_cost_id.clone(),
+            Value::Scalar {
+                si_value: 0.5,
+                dimension: DimensionVector::MONEY,
+            },
+        );
+
+        let auto_params = vec![AutoParam {
+            id: q_id.clone(),
+            param_type: Type::dimensionless_scalar(),
+            bounds: Some((1.0, 100.0)),
+            free: true,
+        }];
+
+        // HOSTILE: a dependent cell keyed on the AUTO's own id. Evaluating it
+        // would yield 0.5 * 0.5 = 0.25, which is neither trial point — so a
+        // clobber is unmistakable.
+        let money = Type::Scalar {
+            dimension: DimensionVector::MONEY,
+        };
+        let hostile = vec![(
+            q_id.clone(),
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::value_ref(unit_cost_id.clone(), money.clone()),
+                CompiledExpr::value_ref(unit_cost_id, money),
+                Type::dimensionless_scalar(),
+            ),
+        )];
+
+        for trial in [2.0_f64, 8.0_f64] {
+            let values = build_trial_values(&base, &auto_params, &[trial], &hostile, &[]);
+            match values.get(&q_id) {
+                Some(&Value::Scalar { si_value, .. }) => assert!(
+                    (si_value - trial).abs() < 1e-12,
+                    "the fold must NEVER overwrite an auto param's trial \
+                     scalar: expected {trial}, got {si_value}. A dependent-cell \
+                     id colliding with an auto id means upstream membership \
+                     drifted; the trial point must still win."
+                ),
+                other => panic!("expected a Scalar at the auto id, got {other:?}"),
+            }
+        }
+    }
+
+    /// BT-7(b) (PRD §5 decision 5) — the solver-side half of the `@optimized`
+    /// exclusion: a cell that reify-eval's membership rule left OUT of
+    /// `dependent_cells` must keep its base value across every trial point.
+    ///
+    /// An `@optimized` cell's value comes from the compute-dispatch registry.
+    /// `build_trial_values` folds through plain `reify_expr::eval_expr`, which
+    /// carries no registry, so re-folding such a cell would clobber the
+    /// dispatched result with the inline-fallback/Undef. The membership rule
+    /// (asserted end-to-end by reify-eval's
+    /// `dependent_cells_excludes_optimized_userfunctioncall_cell`) keeps it out
+    /// of the list; THIS test pins the consequence at the fold: absent means
+    /// frozen, with no bypass path back in.
+    #[test]
+    fn fold_leaves_cells_absent_from_dependent_cells_untouched() {
+        use super::build_trial_values;
+        use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, Value};
+
+        let q_id = ValueCellId::new("Rivet", "quantity_produced");
+        let unit_cost_id = ValueCellId::new("Rivet", "unit_cost");
+        let line_cost_id = ValueCellId::new("Rivet", "line_cost");
+        // Stands in for an @optimized cell: excluded from `dependent_cells`,
+        // its value having come from the compute-dispatch registry.
+        let dispatched_id = ValueCellId::new("Rivet", "opt_cost");
+
+        let money = Type::Scalar {
+            dimension: DimensionVector::MONEY,
+        };
+
+        let mut base = ValueMap::new();
+        base.insert(
+            unit_cost_id.clone(),
+            Value::Scalar {
+                si_value: 0.5,
+                dimension: DimensionVector::MONEY,
+            },
+        );
+        base.insert(
+            dispatched_id.clone(),
+            Value::Scalar {
+                si_value: 42.0,
+                dimension: DimensionVector::MONEY,
+            },
+        );
+
+        let auto_params = vec![AutoParam {
+            id: q_id.clone(),
+            param_type: Type::dimensionless_scalar(),
+            bounds: Some((1.0, 100.0)),
+            free: true,
+        }];
+
+        // Only the plain coupled cell is present — mirroring what membership
+        // emits once the @optimized cell has been dropped.
+        let dependent_cells = vec![(
+            line_cost_id.clone(),
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::value_ref(unit_cost_id, money.clone()),
+                CompiledExpr::value_ref(q_id, Type::dimensionless_scalar()),
+                money,
+            ),
+        )];
+
+        for trial in [2.0_f64, 8.0_f64] {
+            let values = build_trial_values(&base, &auto_params, &[trial], &dependent_cells, &[]);
+
+            match values.get(&dispatched_id) {
+                Some(&Value::Scalar { si_value, .. }) => assert!(
+                    (si_value - 42.0).abs() < 1e-12,
+                    "a cell absent from `dependent_cells` must keep its base \
+                     (compute-dispatched) value at trial q={trial}: expected \
+                     42.0, got {si_value}"
+                ),
+                other => panic!("expected the dispatched Scalar, got {other:?}"),
+            }
+
+            // Sanity: the cell that IS listed did move, so the test is not
+            // passing merely because the fold never ran.
+            match values.get(&line_cost_id) {
+                Some(&Value::Scalar { si_value, .. }) => assert!(
+                    (si_value - 0.5 * trial).abs() < 1e-12,
+                    "the LISTED cell must be recomputed at q={trial}: expected \
+                     {}, got {si_value}",
+                    0.5 * trial
+                ),
+                other => panic!("expected a Scalar at line_cost, got {other:?}"),
+            }
+        }
     }
 }

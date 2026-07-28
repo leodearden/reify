@@ -1549,11 +1549,73 @@ pub(crate) fn is_optimized_userfn_cell(expr: &CompiledExpr, functions: &[Compile
 /// REMAIN in the closure/reachability computation (so their transitive
 /// auto-reachability still propagates to genuine downstream coupled cells); only
 /// the FINAL surviving node set drops them.
+///
+/// ## SCC-admissibility guardrail (task #5189 step-8, PRD §6.4)
+///
+/// Stage (f) rejects any INADMISSIBLE data cycle by comparing
+/// `topological_sort`'s output length against the stage-(e) node set — the same
+/// Kahn-drop test `detect_let_cycle` (`:472`) and `build_combined_param_let_graph`
+/// (`:559`) already apply to their own graphs — and pushing a
+/// [`DiagnosticCode::EvalCycle`] error naming the dropped cells. A length check
+/// IS the admissibility test, not an approximation of one:
+///
+/// THE NODE SET EXCLUDES AUTO PARAMS BY CONSTRUCTION (stage (a) only retains
+/// non-auto cells carrying a plain `default_expr`), and the sole ADMISSIBLE
+/// back-edge — the solver feedback edge — runs THROUGH an auto. It therefore can
+/// never appear in this graph; the induced sub-DAG is acyclic for every
+/// admissible SCC; and any Kahn drop is, by construction, an INADMISSIBLE data
+/// cycle. That equivalence is exactly §6.4's INVARIANT ("admitted iff its only
+/// back-edge is a solver feedback edge"), which is why no fresh SCC analysis is
+/// needed here.
+///
+/// The guardrail is load-bearing precisely because this builder is CROSS-TEMPLATE
+/// (it walks `all_templates`): an `A.x ↔ B.y` value cycle is out of reach of all
+/// three per-template emitters (`detect_let_cycle`,
+/// `build_combined_param_let_graph`, `unfold.rs`'s let-cycle pass), and
+/// `topological_sort` is Kahn's — it returns a `Vec`, cannot error, and silently
+/// omits cycle members. Without the check such a cycle is swallowed with zero
+/// user-visible signal.
+///
+/// * `diagnostics` — sink for that error. Both call sites already carry one.
+///
+/// ## The two-namespace bridge (task #5189 step-10)
+///
+/// Cell ids arrive in TWO namespaces and this builder must speak both:
+///
+/// * TEMPLATE-KEYED (`Rivet.line_cost`) — what the compiler mints for a
+///   `value_cells` decl, hence what stage (a)'s `cell_map` and `auto_ids` hold.
+/// * INSTANCE-PATH (`RivetedPanel.rivets.line_cost`) — what
+///   `apply_cost_aggregation` mints for an expanded `cost(self.descendants)`
+///   term, and what the compiler mints for a `self.<sub>.<member>` read. These
+///   ids have NO `ValueCellDecl` at all; only sub-elaboration writes them, into
+///   the runtime `values` map.
+///
+/// Both directions of the bridge are needed, and δ (task #5334) already shipped
+/// the primitive for each:
+///
+/// * LOOKUP — every hop (seeds, closure, reverse-edge map, and the sort traces)
+///   runs its ids through [`crate::resolve_order::normalize_cell_id`], so an
+///   instance-path read finds its declaring template's `default_expr`. Without
+///   it the stage-(b) seed `RivetedPanel.rivets.line_cost` misses `cell_map`
+///   entirely, the closure terminates at the seed, and `dependent_cells` is
+///   empty for exactly the merged-cluster shape this seam exists to drive.
+/// * EMISSION — normalising the lookup alone is not enough: the objective's
+///   `ValueRef` still names the INSTANCE-PATH id, so the fold must WRITE that
+///   id too. Stage (g) therefore emits, for each surviving template-keyed cell,
+///   an instance-path ALIAS entry carrying the SAME `default_expr` (whose inner
+///   reads are template-keyed and so resolve against the solver's namespace),
+///   ordered immediately AFTER its template source.
+///
+/// v1 BOUNDARY on the alias: emitted only for a structure with EXACTLY ONE
+/// non-collection instance path (see [`build_single_instance_alias_paths`]).
 fn build_dependent_cells(
     seed_exprs: &[&CompiledExpr],
     all_templates: &[TopologyTemplate],
     auto_ids: &HashSet<ValueCellId>,
     functions: &[CompiledFunction],
+    max_unfold_depth: usize,
+    max_unfold_nodes: usize,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<(ValueCellId, CompiledExpr)> {
     // (a) Cross-template map: every non-auto cell that carries a plain
     //     default_expr, keyed by id. Autos have no default_expr and are skipped;
@@ -1570,13 +1632,33 @@ fn build_dependent_cells(
         }
     }
 
+    // (a′) δ's INSTANCE-PATH → STRUCTURE-NAME map (task #5334), built ONCE and
+    //      consumed at every hop below. Same budgets δ's own call site uses, so
+    //      the two sides of the seam truncate identically. See the fn
+    //      doc-comment's "two-namespace bridge" section for why this is needed
+    //      at all, and `normalize_cell_id`'s doc for the two-sided root cause.
+    let path_map = crate::resolve_order::build_instance_path_structure_map(
+        all_templates,
+        max_unfold_depth,
+        max_unfold_nodes,
+    );
+    // Identity for an already-template-keyed id (`normalize_cell_id` returns
+    // `None` when `entity` is not a known instance path).
+    let normalize = |id: ValueCellId| -> ValueCellId {
+        crate::resolve_order::normalize_cell_id(&id, &path_map).unwrap_or(id)
+    };
+
     // (b) Seed the closure with the DIRECT reads of every expanded objective
     //     term / constraint expr, then (c) take the transitive closure by
-    //     following each in-map cell's default_expr reads.
+    //     following each in-map cell's default_expr reads. Both hops NORMALISE:
+    //     a seed read is instance-path-keyed whenever the objective went through
+    //     `apply_cost_aggregation`, and instance-path ids also surface MID-WALK
+    //     (a parent's own `default_expr` reading `self.<sub>.<member>`).
     let mut closure: HashSet<ValueCellId> = HashSet::new();
     let mut frontier: Vec<ValueCellId> = Vec::new();
     for expr in seed_exprs {
         for id in crate::deps::extract_value_deps(expr) {
+            let id = normalize(id);
             if closure.insert(id.clone()) {
                 frontier.push(id);
             }
@@ -1585,6 +1667,7 @@ fn build_dependent_cells(
     while let Some(id) = frontier.pop() {
         if let Some(expr) = cell_map.get(&id) {
             for dep in crate::deps::extract_value_deps(expr) {
+                let dep = normalize(dep);
                 if closure.insert(dep.clone()) {
                     frontier.push(dep);
                 }
@@ -1594,12 +1677,14 @@ fn build_dependent_cells(
 
     // (d) Auto-reachability over the closure: reverse-propagate "transitively
     //     reads an auto" from `auto_ids` up through reader edges.
-    //     `reverse[d]` = cells whose default_expr reads `d`.
+    //     `reverse[d]` = cells whose default_expr reads `d`. Reader ids come
+    //     from `closure` (already normalised); dep ids are normalised here, so
+    //     the reverse edges land in the same namespace as `auto_ids`.
     let mut reverse: HashMap<ValueCellId, Vec<ValueCellId>> = HashMap::new();
     for id in &closure {
         if let Some(expr) = cell_map.get(id) {
             for dep in crate::deps::extract_value_deps(expr) {
-                reverse.entry(dep).or_default().push(id.clone());
+                reverse.entry(normalize(dep)).or_default().push(id.clone());
             }
         }
     }
@@ -1623,8 +1708,12 @@ fn build_dependent_cells(
     // (e) Restrict to surviving cells (non-auto, in-map, transitively reads an
     //     auto) and topologically sort the induced sub-DAG via the same
     //     primitive `detect_let_cycle` uses (in-set edges only; deps precede
-    //     readers). Cells dropped by a cycle are simply absent — cycle
-    //     diagnostics remain `detect_let_cycle`'s single-template job.
+    //     readers). Any cell Kahn's algorithm drops here is an INADMISSIBLE data
+    //     cycle (see the SCC-admissibility argument in the fn doc-comment: an
+    //     admissible back-edge runs through an auto, and autos are absent from
+    //     this node set by construction), so stage (f) reports it rather than
+    //     letting it vanish — this builder is cross-template, so no per-template
+    //     emitter can see such a cycle.
     let mut nodes: HashSet<NodeId> = HashSet::new();
     let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
     for id in &closure {
@@ -1643,17 +1732,235 @@ fn build_dependent_cells(
                 continue;
             }
             let node = NodeId::Value(id.clone());
-            traces.insert(node.clone(), extract_dependency_trace(expr));
+            // Trace reads are NORMALISED for the same reason the closure hops
+            // are: `topological_sort` counts in-set edges only, and `nodes` is
+            // template-keyed. A parent cell reading `self.<sub>.<member>` would
+            // otherwise contribute an unmatchable instance-path edge and could
+            // sort BEFORE the child cell it reads.
+            let mut trace = extract_dependency_trace(expr);
+            for read in &mut trace.reads {
+                if let Some(normalized) = crate::resolve_order::normalize_cell_id(read, &path_map) {
+                    *read = normalized;
+                }
+            }
+            traces.insert(node.clone(), trace);
             nodes.insert(node);
         }
     }
 
-    // (f) Pair each surviving id with a clone of its default_expr, in topo order.
-    topological_sort(&nodes, &traces)
+    // (f) Topologically sort, then pair each surviving id with a clone of its
+    //     default_expr, in topo order.
+    //
+    //     SCC-ADMISSIBILITY GUARDRAIL (task #5189, PRD §6.4): Kahn's algorithm
+    //     silently omits cycle members, so a short output means an INADMISSIBLE
+    //     data cycle (the admissible solver feedback edge runs through an auto,
+    //     and autos cannot be in `nodes`). Report it with the EXISTING
+    //     `DiagnosticCode::EvalCycle` — §6.4 requires "every other cycle still
+    //     errors with the existing diagnostic", not a new code. Ids are rendered
+    //     FULLY QUALIFIED (`entity.member`, via `ValueCellId`'s Display), not by
+    //     the bare member name `detect_let_cycle` uses: this detector is
+    //     cross-template, so a bare member is ambiguous.
+    let sorted = topological_sort(&nodes, &traces);
+    if sorted.len() < nodes.len() {
+        let sorted_set: HashSet<&NodeId> = sorted.iter().collect();
+        let mut cyclic: Vec<String> = nodes
+            .iter()
+            .filter(|nid| !sorted_set.contains(nid))
+            .filter_map(|nid| match nid {
+                NodeId::Value(vcid) => Some(vcid.to_string()),
+                _ => None,
+            })
+            .collect();
+        // Sorted for determinism, mirroring `detect_let_cycle`'s
+        // `cyclic_members.sort()`.
+        cyclic.sort();
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "circular value-cell dependency across the coupled solve scopes: \
+                 [{}] -- these cells depend on each other WITHOUT passing through \
+                 a solver auto, so no evaluation order exists for them. Break the \
+                 cycle by making one of them read a solver-resolved auto instead \
+                 of its cyclic peer.",
+                cyclic.join(", "),
+            ))
+            .with_code(DiagnosticCode::EvalCycle),
+        );
+    }
+
+    // (g) Pair each surviving id with a clone of its default_expr, in topo
+    //     order, and emit the INSTANCE-PATH ALIAS entries alongside.
+    //
+    //     Dropped cycle members are DELIBERATELY excluded (this walks `sorted`,
+    //     not `nodes`): the diagnostic above is the user-visible signal, and
+    //     neither β's per-trial fold nor α's post-solve write-back may ever see
+    //     a cycle member.
+    //
+    //     ALIAS RATIONALE (task #5189 step-10, corrected in step-14/15): the
+    //     objective term reads the INSTANCE-PATH id
+    //     (`RivetedPanel.rivets.line_cost`) while the only declaration — and
+    //     hence the only foldable `default_expr` — is TEMPLATE-keyed
+    //     (`Rivet.line_cost`). Normalising the LOOKUP alone therefore yields a
+    //     `dependent_cells` list that writes an id nothing reads, leaving the
+    //     objective Undef. Emitting an alias entry closes the loop.
+    //
+    //     The alias expr is RESCOPED, not a verbatim clone. Cloning verbatim
+    //     keeps the inner reads template-keyed, which is harmless only while
+    //     every sub is a bare `Rivet()`; the moment a sub carries an argument
+    //     override (`sub rivets = Rivet(unit_cost: 0.90USD)` — a shape the DSL
+    //     supports, cf. `examples/auto_binding_sites.ri`) the alias folds the
+    //     TEMPLATE DEFAULT, so the solver minimises the wrong objective at every
+    //     trial point and `materialize_dependent_cells` then clobbers the
+    //     correctly-elaborated per-instance value with it. Same
+    //     template→instance-path bridge, same `map_value_refs` remedy, as
+    //     `Engine::post_process_cross_sub_value_cells` (engine_build.rs).
+    //
+    //     TWO GUARDS, and BOTH are load-bearing:
+    //       * `vid.entity == id.entity` — only the alias'd template's OWN
+    //         members move; a cross-template read is already correctly keyed.
+    //       * `!auto_ids.contains(&vid)` — the SOLVER keeps autos TEMPLATE-keyed
+    //         (that is the namespace `build_trial_values` inserts trial scalars
+    //         into), so an auto read must STAY template-keyed. Getting this
+    //         backwards makes the alias fold against an id that holds nothing
+    //         and silently reintroduces the step-10 Undef-objective failure.
+    //
+    //     NOT MIRRORED from the precedent: `post_process_cross_sub_value_cells`
+    //     declines to overwrite an already-folded (non-`Undef`) scoped cell.
+    //     That guard is deliberately absent here, and its absence is not an
+    //     oversight — this builder runs at solver-problem BUILD time and emits a
+    //     list consumed once PER TRIAL POINT. The trial point moves every
+    //     Nelder-Mead iteration, so a pre-solve elaborated value must never win:
+    //     pinning the cell to it would make the objective constant in the auto,
+    //     which is exactly the coupling failure BT-1 exists to reject. (It is
+    //     also unavailable — `build_dependent_cells` takes no `ValueMap`.)
+    //
+    //     The alias is pushed AFTER its source so a downstream cell reading
+    //     either spelling sees a fresh value first.
+    let alias_paths =
+        build_single_instance_alias_paths(all_templates, max_unfold_depth, max_unfold_nodes);
+    let mut out: Vec<(ValueCellId, CompiledExpr)> = Vec::with_capacity(sorted.len());
+    for node in sorted {
+        let NodeId::Value(id) = node else {
+            continue;
+        };
+        let Some(expr) = cell_map.get(&id) else {
+            continue;
+        };
+        let aliased = alias_paths
+            .get(id.entity.as_str())
+            .map(|path| ValueCellId::new(path.as_str(), id.member.as_str()))
+            // An instance-path SUB-OVERRIDE auto (a decl with `kind: Auto` and
+            // no `default_expr`) can occupy the alias id. Never shadow an auto —
+            // the same INVARIANT β's `build_trial_values` enforces defensively.
+            .filter(|alias| !auto_ids.contains(alias))
+            .map(|alias| {
+                let instance_path = alias.entity.clone();
+                let source_entity = id.entity.clone();
+                let rescoped = (*expr).clone().map_value_refs(&mut |vid| {
+                    if vid.entity == source_entity && !auto_ids.contains(&vid) {
+                        ValueCellId::new(instance_path.as_str(), vid.member)
+                    } else {
+                        vid
+                    }
+                });
+                (alias, rescoped)
+            });
+        out.push((id, (*expr).clone()));
+        if let Some(entry) = aliased {
+            out.push(entry);
+        }
+    }
+    out
+}
+
+/// Structure name → its SINGLE non-collection instance path, for the
+/// instance-path alias entries stage (g) of [`build_dependent_cells`] emits
+/// (task #5189 step-10, PRD `docs/prds/v0_6/whole-model-joint-drive-seam.md`
+/// §12).
+///
+/// Shape and budgeting mirror δ's [`crate::resolve_order::build_instance_path_structure_map`]
+/// (one shared `max_nodes` budget across all roots, `max_depth` pruned at entry);
+/// this is the ALIAS direction of the same walk, so it is deliberately NARROWER
+/// on both axes:
+///
+/// * COLLECTION subs are skipped outright — `N` runtime instance paths collapse
+///   onto ONE template `default_expr` whose inner reads are template-keyed, so
+///   every element would fold to the identical value, silently clobbering
+///   genuinely per-element values. Same boundary, same reason, as
+///   `Engine::post_process_cross_sub_value_cells`'s `if sub.is_collection`
+///   (engine_build.rs).
+/// * A structure reachable by ≥2 distinct instance paths (two plain subs of the
+///   same type, or a recursive containment the depth budget unrolls) is dropped
+///   for the identical reason: one expr, many paths, one value.
+///
+/// Dropping is SAFE in the conservative direction — no alias means the
+/// pre-#5189 behaviour for that cell (its template-keyed entry still folds).
+/// This is the fixture's documented depth-1 / single-instance v1 boundary.
+fn build_single_instance_alias_paths(
+    all_templates: &[TopologyTemplate],
+    max_depth: usize,
+    max_nodes: usize,
+) -> HashMap<String, String> {
+    fn walk(
+        template: &TopologyTemplate,
+        templates: &[TopologyTemplate],
+        prefix: &str,
+        depth: usize,
+        max_depth: usize,
+        node_budget: &mut usize,
+        out: &mut HashMap<String, Vec<String>>,
+    ) {
+        if depth >= max_depth {
+            return;
+        }
+        for sub in &template.sub_components {
+            if sub.is_collection {
+                continue;
+            }
+            if *node_budget == 0 {
+                return;
+            }
+            *node_budget -= 1;
+            let node_path = format!("{}.{}", prefix, sub.name);
+            out.entry(sub.structure_name.clone())
+                .or_default()
+                .push(node_path.clone());
+            let Some(child) = templates.iter().find(|t| t.name == sub.structure_name) else {
+                continue;
+            };
+            walk(
+                child,
+                templates,
+                &node_path,
+                depth + 1,
+                max_depth,
+                node_budget,
+                out,
+            );
+        }
+    }
+
+    let mut collected: HashMap<String, Vec<String>> = HashMap::new();
+    let mut node_budget = max_nodes;
+    for template in all_templates {
+        walk(
+            template,
+            all_templates,
+            &template.name,
+            0,
+            max_depth,
+            &mut node_budget,
+            &mut collected,
+        );
+    }
+    collected
         .into_iter()
-        .filter_map(|node| match node {
-            NodeId::Value(id) => cell_map.get(&id).map(|expr| (id.clone(), (*expr).clone())),
-            _ => None,
+        .filter_map(|(structure, mut paths)| {
+            paths.sort();
+            paths.dedup();
+            match paths.len() {
+                1 => Some((structure, paths.remove(0))),
+                _ => None,
+            }
         })
         .collect()
 }
@@ -1846,7 +2153,15 @@ fn build_solver_problem(
         }
         let dep_auto_ids: HashSet<ValueCellId> =
             regular_auto_cells.iter().map(|c| c.id.clone()).collect();
-        build_dependent_cells(&seed_exprs, all_templates, &dep_auto_ids, &functions)
+        build_dependent_cells(
+            &seed_exprs,
+            all_templates,
+            &dep_auto_ids,
+            &functions,
+            max_unfold_depth,
+            max_unfold_nodes,
+            diagnostics,
+        )
     };
 
     // Pre-populate current_values with pinned connector values so any remaining
@@ -2183,7 +2498,15 @@ fn build_merged_solver_problem(
         }
         let dep_auto_ids: HashSet<ValueCellId> =
             auto_cells.iter().map(|c| c.id.clone()).collect();
-        build_dependent_cells(&seed_exprs, templates, &dep_auto_ids, &functions)
+        build_dependent_cells(
+            &seed_exprs,
+            templates,
+            &dep_auto_ids,
+            &functions,
+            max_unfold_depth,
+            max_unfold_nodes,
+            diagnostics,
+        )
     };
 
     ResolutionProblem {
@@ -10727,6 +11050,426 @@ mod reeval_cone_cell_provenance_and_determinacy_tests {
             Some(&(Value::Real(2.5), DeterminacyState::Determined)),
             "a cone-reeval'd cell whose value is non-Undef must record \
              Determined (DeriveFromValue rule)"
+        );
+    }
+}
+
+/// [JOINT-DRIVE β] (task #5189 step-7) — the SCC-ADMISSIBILITY guardrail on
+/// `build_dependent_cells` (PRD `docs/prds/v0_6/whole-model-joint-drive-seam.md`
+/// §6.4).
+///
+/// ## Why a length check IS the admissibility test
+///
+/// `build_dependent_cells`'s stage-(e) node set EXCLUDES auto params BY
+/// CONSTRUCTION (stage (a) only keeps non-auto cells carrying a plain
+/// `default_expr`). The one ADMISSIBLE back-edge in a joint-drive SCC — the
+/// solver feedback edge — runs THROUGH an auto, so it can never appear in this
+/// induced graph. Therefore the induced sub-DAG is acyclic for every admissible
+/// SCC, and any node Kahn's algorithm drops is, by construction, an
+/// INADMISSIBLE data cycle. That equivalence is exactly §6.4's INVARIANT
+/// ("admitted iff its only back-edge is a solver feedback edge").
+///
+/// ## Why this cycle is invisible to every existing emitter
+///
+/// `build_dependent_cells` is CROSS-TEMPLATE by construction (it walks
+/// `all_templates`), so an `A.x ↔ B.y` value cycle is out of reach of all three
+/// per-template cycle detectors (`detect_let_cycle`,
+/// `build_combined_param_let_graph`, `unfold.rs`'s let-cycle pass) — and
+/// `topological_sort` (Kahn's) returns a `Vec`, cannot error, and silently omits
+/// cycle members. Without the guardrail the cycle is swallowed with ZERO
+/// user-visible signal.
+#[cfg(test)]
+mod dependent_cells_admissibility_tests {
+    use std::collections::HashSet;
+
+    use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, Severity, Type, ValueCellId};
+    use reify_ir::{BinOp, CompiledExpr, CompiledFunction};
+    use reify_test_support::{TopologyTemplateBuilder, binop, literal, mm, value_ref};
+
+    use super::build_dependent_cells;
+
+    /// Expansion budgets for the instance-path bridge. Matching δ's own
+    /// `build_instance_path_structure_map` fixtures (`resolve_order.rs`), these
+    /// are far above anything these hand-built two-template graphs need — the
+    /// budgets are not what is under test here.
+    const TEST_MAX_UNFOLD_DEPTH: usize = 64;
+    const TEST_MAX_UNFOLD_NODES: usize = 10_000;
+
+    /// Money-dimensioned scalar, mirroring the stdlib `Costed` `line_cost` shape
+    /// (same helper δ's cluster-formation fixtures use).
+    fn money_ty() -> Type {
+        Type::Scalar {
+            dimension: DimensionVector::MONEY,
+        }
+    }
+
+    /// The ids in `dependent_cells`, in stored (topological) order.
+    fn ids(cells: &[(ValueCellId, CompiledExpr)]) -> Vec<ValueCellId> {
+        cells.iter().map(|(id, _)| id.clone()).collect()
+    }
+
+    /// The `Severity::Error` diagnostics carrying `DiagnosticCode::EvalCycle`.
+    fn cycle_errors(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> {
+        diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error && d.code == Some(DiagnosticCode::EvalCycle))
+            .collect()
+    }
+
+    /// (a)+(b) A CROSS-TEMPLATE value cycle inside the stage-(e) node set must
+    /// raise a `DiagnosticCode::EvalCycle` ERROR naming the cyclic cells by their
+    /// FULLY-QUALIFIED ids, and the returned list must hold only the acyclic
+    /// remainder — the dropped cells are never resurrected into β's per-trial
+    /// fold or α's post-solve write-back.
+    ///
+    /// Fixture (both cycle members survive stages (b)–(d), so they genuinely
+    /// enter the node set):
+    ///
+    /// ```text
+    /// Alpha.q    : auto (the cluster auto)
+    /// Alpha.x    = Beta.y + Alpha.q      ─┐ transitively reads the auto AND
+    /// Beta.y     = Alpha.x + 1           ─┘ feeds the seed ⇒ both in node set
+    /// Alpha.z    = Alpha.q * 2             the ACYCLIC remainder
+    /// seed       = Alpha.x + Alpha.z
+    /// ```
+    ///
+    /// RED today: `build_dependent_cells` takes no `&mut Vec<Diagnostic>` at all
+    /// and never compares `topological_sort`'s output length against its node
+    /// set — unlike EVERY other caller of that primitive in this file.
+    #[test]
+    fn cross_template_value_cycle_errors_and_is_dropped_from_dependent_cells() {
+        let alpha_q = ValueCellId::new("Alpha", "q");
+        let alpha_x = ValueCellId::new("Alpha", "x");
+        let alpha_z = ValueCellId::new("Alpha", "z");
+        let beta_y = ValueCellId::new("Beta", "y");
+
+        // Alpha owns the auto `q`, the cycle head `x`, and the acyclic `z`.
+        let alpha = TopologyTemplateBuilder::new("Alpha")
+            .auto_param_free("Alpha", "q", Type::dimensionless_scalar())
+            .let_binding(
+                "Alpha",
+                "x",
+                money_ty(),
+                binop(
+                    BinOp::Add,
+                    value_ref("Beta", "y"),
+                    value_ref("Alpha", "q"),
+                ),
+            )
+            .let_binding(
+                "Alpha",
+                "z",
+                money_ty(),
+                binop(BinOp::Mul, value_ref("Alpha", "q"), literal(mm(2.0))),
+            )
+            .build();
+
+        // Beta closes the cycle back onto Alpha.x — a CROSS-TEMPLATE back-edge
+        // that does NOT run through an auto, hence inadmissible.
+        let beta = TopologyTemplateBuilder::new("Beta")
+            .let_binding(
+                "Beta",
+                "y",
+                money_ty(),
+                binop(BinOp::Add, value_ref("Alpha", "x"), literal(mm(1.0))),
+            )
+            .build();
+
+        let templates = vec![alpha, beta];
+        let seed = binop(
+            BinOp::Add,
+            value_ref("Alpha", "x"),
+            value_ref("Alpha", "z"),
+        );
+        let seed_exprs: Vec<&CompiledExpr> = vec![&seed];
+        let auto_ids: HashSet<ValueCellId> = [alpha_q.clone()].into_iter().collect();
+        let no_fns: [CompiledFunction; 0] = [];
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let cells = build_dependent_cells(
+            &seed_exprs,
+            &templates,
+            &auto_ids,
+            &no_fns,
+            TEST_MAX_UNFOLD_DEPTH,
+            TEST_MAX_UNFOLD_NODES,
+            &mut diagnostics,
+        );
+        let got = ids(&cells);
+
+        // (a) ERROR diagnostic, coded EvalCycle, naming BOTH cyclic cells by
+        //     their fully-qualified `ValueCellId` (bare member names would be
+        //     ambiguous for a cross-template cycle: `Alpha.x` vs `Beta.x`).
+        let errors = cycle_errors(&diagnostics);
+        assert_eq!(
+            errors.len(),
+            1,
+            "the cross-template value cycle must raise EXACTLY ONE \
+             Severity::Error diagnostic coded DiagnosticCode::EvalCycle; \
+             got {diagnostics:?}",
+        );
+        let msg = &errors[0].message;
+        assert!(
+            msg.contains("Alpha.x"),
+            "the cycle diagnostic must name the cyclic cell by its \
+             FULLY-QUALIFIED id `Alpha.x` (this detector is cross-template, so \
+             the bare member name `detect_let_cycle` uses is ambiguous here); \
+             got {msg:?}",
+        );
+        assert!(
+            msg.contains("Beta.y"),
+            "the cycle diagnostic must name the cyclic cell by its \
+             FULLY-QUALIFIED id `Beta.y`; got {msg:?}",
+        );
+
+        // (b) Only the acyclic remainder survives — the dropped cycle members
+        //     must never reach the fold.
+        assert!(
+            !got.contains(&alpha_x),
+            "the cycle member `Alpha.x` must be ABSENT from dependent_cells \
+             (dropped by Kahn's algorithm, never resurrected); got {got:?}",
+        );
+        assert!(
+            !got.contains(&beta_y),
+            "the cycle member `Beta.y` must be ABSENT from dependent_cells; \
+             got {got:?}",
+        );
+        assert_eq!(
+            got,
+            vec![alpha_z],
+            "dependent_cells must be EXACTLY the acyclic remainder \
+             [`Alpha.z`]; got {got:?}",
+        );
+    }
+
+    /// NEGATIVE CONTROL — the LEGAL joint-drive shape (child auto → `line_cost`
+    /// → parent aggregate → objective, whose sole back-edge runs THROUGH the
+    /// solver) must produce ZERO diagnostics and a COMPLETE topological order.
+    ///
+    /// This is the assertion that pins §6.4's "admissible iff its only back-edge
+    /// is a solver feedback edge": the guardrail must not fire on the very shape
+    /// the whole seam exists to admit.
+    ///
+    /// ```text
+    /// Child.q         : auto            Parent.total = Child.line_cost
+    /// Child.line_cost = unit_cost * q   seed         = Parent.total
+    /// ```
+    #[test]
+    fn legal_joint_drive_shape_yields_no_diagnostic_and_a_complete_order() {
+        let line_cost = ValueCellId::new("Child", "line_cost");
+        let total = ValueCellId::new("Parent", "total");
+
+        let parent = TopologyTemplateBuilder::new("Parent")
+            .let_binding(
+                "Parent",
+                "total",
+                money_ty(),
+                value_ref("Child", "line_cost"),
+            )
+            .build();
+
+        let child = TopologyTemplateBuilder::new("Child")
+            .trait_bound("Costed")
+            .auto_param_free("Child", "q", Type::dimensionless_scalar())
+            .param("Child", "unit_cost", money_ty(), Some(literal(mm(5.0))))
+            .let_binding(
+                "Child",
+                "line_cost",
+                money_ty(),
+                binop(
+                    BinOp::Mul,
+                    value_ref("Child", "unit_cost"),
+                    value_ref("Child", "q"),
+                ),
+            )
+            .build();
+
+        let templates = vec![parent, child];
+        let seed = value_ref("Parent", "total");
+        let seed_exprs: Vec<&CompiledExpr> = vec![&seed];
+        let auto_ids: HashSet<ValueCellId> = [ValueCellId::new("Child", "q")].into_iter().collect();
+        let no_fns: [CompiledFunction; 0] = [];
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let cells = build_dependent_cells(
+            &seed_exprs,
+            &templates,
+            &auto_ids,
+            &no_fns,
+            TEST_MAX_UNFOLD_DEPTH,
+            TEST_MAX_UNFOLD_NODES,
+            &mut diagnostics,
+        );
+        let got = ids(&cells);
+
+        assert!(
+            diagnostics.is_empty(),
+            "the LEGAL joint-drive shape must raise NO diagnostics — its only \
+             back-edge is the solver feedback edge through the auto `Child.q`, \
+             which by construction cannot appear in this graph; got \
+             {diagnostics:?}",
+        );
+        assert_eq!(
+            got,
+            vec![line_cost, total],
+            "the admissible sub-DAG must sort COMPLETELY, `Child.line_cost` \
+             before `Parent.total` (which reads it); got {got:?}",
+        );
+    }
+
+    /// BT-11(a) (task #5189 step-14) — the INSTANCE-PATH ALIAS entry stage (g)
+    /// emits must be RESCOPED, not a verbatim clone of the template-keyed
+    /// `default_expr`.
+    ///
+    /// The DSL supports per-sub parameter overrides (`sub rivets =
+    /// Rivet(unit_cost: 0.90USD)`, cf. `examples/auto_binding_sites.ri`,
+    /// `examples/bom_lifecycle.ri`). A verbatim alias clone keeps the inner
+    /// reads TEMPLATE-keyed, so `RivetedPanel.rivets.line_cost` folds to
+    /// `Rivet.unit_cost × q` — the TEMPLATE DEFAULT — and the override is
+    /// silently ignored, at every trial point and again in the post-solve
+    /// write-back.
+    ///
+    /// The established idiom for this same template→instance-path bridge,
+    /// `Engine::post_process_cross_sub_value_cells` (engine_build.rs), already
+    /// rescopes the child's `default_expr` via `map_value_refs` for exactly this
+    /// reason. The alias must do the same.
+    ///
+    /// TWO GUARDS, and the test pins BOTH — getting either backwards is silent:
+    ///
+    /// * a NON-AUTO read of the alias'd template's own member MOVES to the
+    ///   instance path (`Rivet.unit_cost` → `RivetedPanel.rivets.unit_cost`), so
+    ///   the per-sub override is honoured;
+    /// * an AUTO read STAYS template-keyed (`Rivet.q`), because that is the
+    ///   namespace the solver inserts trial scalars into (`build_trial_values`
+    ///   keys off `problem.auto_params`). Moving it would make the alias fold
+    ///   against an id holding nothing and send the objective `Undef`.
+    ///
+    /// Asserted on the expr's READ SET (`extract_value_deps`), i.e. on shape,
+    /// never on a rendered string.
+    #[test]
+    fn instance_path_alias_expr_is_rescoped_but_keeps_auto_reads_template_keyed() {
+        let rivet_q = ValueCellId::new("Rivet", "quantity_produced");
+        let rivet_unit_cost = ValueCellId::new("Rivet", "unit_cost");
+        let rivet_line_cost = ValueCellId::new("Rivet", "line_cost");
+        let scoped_unit_cost = ValueCellId::new("RivetedPanel.rivets", "unit_cost");
+        let scoped_line_cost = ValueCellId::new("RivetedPanel.rivets", "line_cost");
+
+        // The parent declares the sub WITH a parameter override — the case the
+        // shipped `examples/whole_model_joint_drive.ri` (a bare `Rivet()`) does
+        // not exercise, which is how this survived to review.
+        let parent = TopologyTemplateBuilder::new("RivetedPanel")
+            .sub_component(
+                "rivets",
+                "Rivet",
+                vec![("unit_cost".to_string(), literal(mm(0.90)))],
+            )
+            .let_binding(
+                "RivetedPanel",
+                "total_cost",
+                money_ty(),
+                value_ref("RivetedPanel.rivets", "line_cost"),
+            )
+            .build();
+
+        let child = TopologyTemplateBuilder::new("Rivet")
+            .trait_bound("Costed")
+            .auto_param_free("Rivet", "quantity_produced", Type::dimensionless_scalar())
+            .param("Rivet", "unit_cost", money_ty(), Some(literal(mm(0.50))))
+            .let_binding(
+                "Rivet",
+                "line_cost",
+                money_ty(),
+                binop(
+                    BinOp::Mul,
+                    value_ref("Rivet", "unit_cost"),
+                    value_ref("Rivet", "quantity_produced"),
+                ),
+            )
+            .build();
+
+        let templates = vec![parent, child];
+        // The objective reads the INSTANCE PATH, exactly as `apply_cost_aggregation`
+        // expands `cost(self.descendants)`.
+        let seed = value_ref("RivetedPanel.rivets", "line_cost");
+        let seed_exprs: Vec<&CompiledExpr> = vec![&seed];
+        let auto_ids: HashSet<ValueCellId> = [rivet_q.clone()].into_iter().collect();
+        let no_fns: [CompiledFunction; 0] = [];
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let cells = build_dependent_cells(
+            &seed_exprs,
+            &templates,
+            &auto_ids,
+            &no_fns,
+            TEST_MAX_UNFOLD_DEPTH,
+            TEST_MAX_UNFOLD_NODES,
+            &mut diagnostics,
+        );
+
+        // Fixture integrity: the alias must actually be emitted, or every
+        // assertion below would pass vacuously.
+        let (_, alias_expr) = cells
+            .iter()
+            .find(|(id, _)| id == &scoped_line_cost)
+            .unwrap_or_else(|| {
+                panic!(
+                    "fixture integrity: stage (g) must emit the instance-path \
+                     alias `RivetedPanel.rivets.line_cost` (single non-collection \
+                     instance path); got {:?}",
+                    ids(&cells),
+                )
+            });
+        let alias_reads: HashSet<ValueCellId> =
+            crate::deps::extract_value_deps(alias_expr).into_iter().collect();
+
+        // GUARD 1 — the non-auto read MOVED to the instance path, so the per-sub
+        // override is the value that folds.
+        assert!(
+            alias_reads.contains(&scoped_unit_cost),
+            "the alias expr must read the INSTANCE-PATH \
+             `RivetedPanel.rivets.unit_cost`, so a per-sub override \
+             (`sub rivets = Rivet(unit_cost: 0.90USD)`) is honoured; got reads \
+             {alias_reads:?}",
+        );
+        assert!(
+            !alias_reads.contains(&rivet_unit_cost),
+            "the alias expr must NOT still read the TEMPLATE-keyed \
+             `Rivet.unit_cost` — that is the template DEFAULT, and folding it \
+             silently overwrites the correctly-elaborated per-instance value at \
+             every trial point and again in the write-back; got reads \
+             {alias_reads:?}",
+        );
+
+        // GUARD 2 — the AUTO read STAYED template-keyed. The solver owns that
+        // namespace; moving it would fold against an empty id ⇒ Undef objective.
+        assert!(
+            alias_reads.contains(&rivet_q),
+            "the alias expr must keep the AUTO read TEMPLATE-keyed \
+             (`Rivet.quantity_produced`) — that is the namespace \
+             `build_trial_values` inserts trial scalars into. Rescoping it would \
+             make the alias fold against an id that holds nothing and send the \
+             objective Undef; got reads {alias_reads:?}",
+        );
+
+        // The TEMPLATE-keyed source entry is untouched: it is the template
+        // default's own cell and must keep folding in its own namespace.
+        let (_, source_expr) = cells
+            .iter()
+            .find(|(id, _)| id == &rivet_line_cost)
+            .expect("the template-keyed source entry must still be emitted");
+        let source_reads: HashSet<ValueCellId> =
+            crate::deps::extract_value_deps(source_expr).into_iter().collect();
+        assert!(
+            source_reads.contains(&rivet_unit_cost) && source_reads.contains(&rivet_q),
+            "the TEMPLATE-keyed `Rivet.line_cost` entry must be unchanged \
+             (reads `Rivet.unit_cost` and `Rivet.quantity_produced`); got \
+             {source_reads:?}",
+        );
+
+        assert!(
+            diagnostics.is_empty(),
+            "this shape is admissible — no cycle, one instance path; got \
+             {diagnostics:?}",
         );
     }
 }
