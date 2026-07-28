@@ -9,7 +9,7 @@ use tracing::warn;
 use reify_compiler::{CompiledModule, EntityKind, ValueCellKind, find_template};
 use reify_eval::cache::NodeId;
 use reify_eval::tolerance_combine::{
-    OutputTarget, conforms_to_output, extract_output_export_spec,
+    OutputTarget, conforms_to_output, conforms_to_trait, extract_output_export_spec,
     unenforced_representation_bound_diagnostic,
 };
 use reify_eval::{CancellationHandle, CheckResult, Engine};
@@ -4430,10 +4430,31 @@ impl EngineSession {
             }
         }
 
+        // Built ONCE here rather than per node: `build_template_node` recurses
+        // per sub-component, so merging inside it would re-clone every stdlib
+        // trait def at every node — O(nodes x traits) on a path the GUI hits on
+        // each refresh. Hoisted, the per-node cost is just the hash-map build
+        // inside `conforms_to_trait`.
+        //
+        // The prelude is what carries `Rigid : Physical` (#5558); `Engine::new`
+        // seeds it from `stdlib_loader::load_stdlib()`, so every session already
+        // has it. Same access `build_gui_state` uses; both this and
+        // `self.core.compiled()` are `&`-borrows of `&self`, so no borrow conflict.
+        let trait_defs = merged_trait_defs(compiled, self.core.engine().prelude());
+
         compiled
             .templates
             .iter()
-            .map(|t| build_template_node(t, &t.name, compiled, Some(self.core.engine()), false))
+            .map(|t| {
+                build_template_node(
+                    t,
+                    &t.name,
+                    compiled,
+                    &trait_defs,
+                    Some(self.core.engine()),
+                    false,
+                )
+            })
             .collect()
     }
 
@@ -5376,6 +5397,30 @@ fn surface_geometry_derived_cells(
     }
 }
 
+/// The trait defs a conformance check must be resolved against: the module's
+/// OWN declared traits, extended with every prelude module's.
+///
+/// The prelude half is not optional. A user module's `CompiledModule.trait_defs`
+/// holds only the traits that module declares — `structure def X : Rigid`
+/// compiles to a module with an EMPTY `trait_defs`, because `Rigid` and its
+/// `Rigid : Physical` refinement edge live in the stdlib prelude
+/// (`stdlib/structural_physical.ri:76`). Resolving any refinement chain that
+/// reaches a stdlib trait therefore requires the merge.
+///
+/// Mirrors `engine_build.rs::build_outputs_with_result`. Shared by
+/// `collect_display_routing`'s `conforms_to_output` gate and
+/// `get_entity_tree`'s `conforms_to_trait` gate so the two cannot drift.
+fn merged_trait_defs(
+    module: &CompiledModule,
+    prelude: &[CompiledModule],
+) -> Vec<reify_compiler::CompiledTrait> {
+    let mut merged = module.trait_defs.clone();
+    for pm in prelude {
+        merged.extend(pm.trait_defs.iter().cloned());
+    }
+    merged
+}
+
 // ── PRD-3 γ: DisplayOutput occurrence walk → display_panes ────────────────────
 
 /// Walk every Output occurrence sub in the compiled module and return one
@@ -5407,11 +5452,7 @@ fn collect_display_routing(
     prelude: &[CompiledModule],
     values: &ValueMap,
 ) -> (Vec<DisplayDirective>, Vec<AppearanceDirective>) {
-    // Merge module + prelude trait_defs (mirrors engine_build.rs::build_outputs_with_result).
-    let mut merged_trait_defs = module.trait_defs.clone();
-    for pm in prelude {
-        merged_trait_defs.extend(pm.trait_defs.iter().cloned());
-    }
+    let merged_trait_defs = merged_trait_defs(module, prelude);
 
     let mut directives = Vec::new();
     let mut appearances = Vec::new();
@@ -6744,6 +6785,12 @@ pub(crate) fn build_template_node(
     template: &reify_compiler::TopologyTemplate,
     entity_path: &str,
     compiled: &reify_compiler::CompiledModule,
+    // MUST be the MERGED module + prelude trait defs (see `merged_trait_defs`).
+    // A user module's own `trait_defs` never contains a stdlib trait, and
+    // `Rigid`'s `: Physical` refinement edge lives in the prelude, so passing
+    // the bare module set silently degrades the check below to direct-bound
+    // matching. `&[]` is safe only where the templates declare no trait bounds.
+    trait_defs: &[reify_compiler::CompiledTrait],
     engine: Option<&Engine>,
     aux_ancestor: bool,
 ) -> EntityTreeNode {
@@ -6756,17 +6803,23 @@ pub(crate) fn build_template_node(
     // `trait_geometry` (#5195). Hoisted out of the value-cell loop, where it
     // used to be recomputed per cell.
     //
-    // KNOWN LIMITATION (pre-existing, shared by both call sites, out of scope
-    // for #5195): `trait_bounds` holds DECLARED trait names only, so this fires
-    // for `structure def X : Physical` but NOT for `: Rigid` — even though
-    // `Rigid : Physical` refines it (stdlib/structural_physical.ri:76). A
-    // correct check would resolve the refinement chain
-    // (`reify_eval::conforms_to_trait`) and needs the merged module + prelude
-    // trait_defs threaded in here; that is a separable follow-up. The
-    // consumed-intermediate observable does NOT depend on this flag: the
+    // CONTRACT (#5558): equality-or-transitive-refinement against `"Physical"`,
+    // the trait that actually declares `geometry : Solid`
+    // (stdlib/structural_physical.ri). So this fires for a direct
+    // `structure def X : Physical` AND — resolved through `trait_defs` — for
+    // `: Rigid` / `: ThermallyConductive` / `: ElectricallyConductive`, which
+    // refine it; and it does NOT fire for a lookalike name such as
+    // `PhysicalMock`, which the previous `contains("Physical")` substring probe
+    // matched purely on spelling. `conforms_to_trait`'s `visited` set makes the
+    // walk cycle-safe against a malformed `trait A : B` / `trait B : A` lattice,
+    // and its pop-time `name == target` check fires before the visited guard, so
+    // a direct `: Physical` bound still matches even against an empty
+    // `trait_defs`.
+    //
+    // The consumed-intermediate observable does NOT depend on this flag: the
     // terminal `geometry` realization is consumed by nothing, so it stays
     // `default_visible == true` and renders either way.
-    let parent_has_physical = template.trait_bounds.iter().any(|b| b.contains("Physical"));
+    let parent_has_physical = conforms_to_trait(&template.trait_bounds, trait_defs, "Physical");
 
     // Value cells: param, let, auto
     for cell in &template.value_cells {
@@ -6866,9 +6919,9 @@ pub(crate) fn build_template_node(
             type_name: None,
             display_name,
             has_mesh: true,
-            // Mirrors the value-cell heuristic above so the two sibling nodes a
-            // geometry binding emits (#4954) agree — see `parent_has_physical`
-            // for the shared `: Rigid` limitation (#5195).
+            // Mirrors the value-cell branch above so the two sibling nodes a
+            // geometry binding emits (#4954) agree — they read the one shared
+            // `parent_has_physical` binding, whose contract is documented there.
             trait_geometry: real.name.as_deref() == Some("geometry") && parent_has_physical,
             children: vec![],
             freshness,
@@ -6910,7 +6963,7 @@ pub(crate) fn build_template_node(
             } else {
                 // Thread aux_ancestor: if this sub is aux OR an ancestor was aux,
                 // all descendants inherit default_visible = false.
-                build_template_node(child_template, &sub_path, compiled, engine, aux_ancestor || sub.is_aux).children
+                build_template_node(child_template, &sub_path, compiled, trait_defs, engine, aux_ancestor || sub.is_aux).children
             }
         } else {
             vec![]
