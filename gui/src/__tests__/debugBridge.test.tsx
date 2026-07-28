@@ -3959,25 +3959,44 @@ describe('debug bridge set_fea_channel', () => {
    * Returns a FRESH `FeaModeStore`, independent from the `stores` object
    * passed to `initDebugBridge()` in each test below — the `set_fea_channel`
    * handler still never reads/writes the DebugStores `stores` object
-   * directly. It DOES now read `ctx.feaMode`, so this helper registers the
-   * store onto `window.__REIFY_DEBUG__.feaMode`, exactly as DualViewport
-   * registers its own component-local FeaModeStore via `registerDebugPanel`.
-   * Do NOT skip this registration — the store-based propagation check
-   * (does `ctx.feaMode.state.channel` actually match after dispatch?) is
-   * meaningless unless the harness threads the SAME store the toolbar
-   * updates onto the debug context, mirroring the real DualViewport wiring.
+   * directly. It DOES read the debug context's FEA slots, so this helper
+   * registers the store there, exactly as App registers its keyed registry via
+   * `registerDebugPanel`. Do NOT skip this registration — the store-based
+   * propagation check (does the store's channel actually match after dispatch?)
+   * is meaningless unless the harness threads the SAME store the toolbar
+   * updates onto the debug context, mirroring the real App wiring.
+   *
+   * `viewportId` (#5670) selects which wiring is mirrored:
+   *  - omitted → no `data-viewport-id` on the toolbar, store registered on the
+   *    LEGACY scalar `ctx.feaMode` slot. Cases (a)-(k) below use this form, so
+   *    they exercise the same fallback path a pre-#5670 caller would.
+   *  - given → the toolbar stamps `data-viewport-id`, and the store lands in
+   *    the keyed `ctx.feaModes` map under that id, as App's registry does.
    */
-  function renderToolbarWithErrorIndicator() {
+  function renderToolbarWithErrorIndicator(viewportId?: string) {
     const store = createFeaModeStore();
     store.setEnabled(true);
     render(() => (
       <FeaModeToolbar
         store={store}
         availableChannels={['vonMises', 'displacement_magnitude', 'errorIndicator']}
+        viewportId={viewportId}
       />
     ));
-    window.__REIFY_DEBUG__!.feaMode = store;
+    const ctx = window.__REIFY_DEBUG__!;
+    if (viewportId === undefined) {
+      ctx.feaMode = store;
+    } else {
+      (ctx.feaModes ??= {})[viewportId] = store;
+    }
     return store;
+  }
+
+  /** The channel select belonging to one pane's toolbar. */
+  function selectFor(viewportId: string) {
+    return document.querySelector(
+      `[data-testid="fea-mode-channel-select"][data-viewport-id="${viewportId}"]`,
+    ) as HTMLSelectElement;
   }
 
   it('(a) {channel:"errorIndicator"} sets select.value, fires store.setChannel via change, and returns {ok:true}', async () => {
@@ -4175,17 +4194,17 @@ describe('debug bridge set_fea_channel', () => {
     expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.storeUnavailable });
   });
 
-  it('(j) two fea-mode-channel-select elements (simulating two FEA-capable panes) returns an ambiguous error and changes neither select', async () => {
-    // Today only one pane ever mounts this <select> (see the querySelectorAll
-    // uniqueness-check comment on set_fea_channel in bridge.ts), but nothing
-    // enforces that invariant at the DOM level. This proves the handler fails
-    // loudly instead of silently targeting "whichever select happens to be
-    // first in DOM order" once a second FEA-capable pane exists (task 4906
-    // amendment).
+  it('(j)/(o) two fea-mode-channel-select elements and NO viewportId still returns an ambiguous error and changes neither select', async () => {
+    // Since #5670 every pane owns a keyed FeaModeStore, so two mounted
+    // toolbars is the ordinary N-pane case rather than a hypothetical. An
+    // unscoped request is still genuinely ambiguous: the handler must fail
+    // loudly rather than silently target "whichever select happens to be first
+    // in DOM order" (task 4906 amendment). Resolution is by DOM count, so an
+    // id-less pair takes this identical branch.
     const stores = makeStores();
     await initDebugBridge(stores);
-    const storeA = renderToolbarWithErrorIndicator();
-    const storeB = renderToolbarWithErrorIndicator();
+    const storeA = renderToolbarWithErrorIndicator('design-main');
+    const storeB = renderToolbarWithErrorIndicator('pane-1');
     const selects = document.querySelectorAll('[data-testid="fea-mode-channel-select"]');
     expect(selects).toHaveLength(2);
 
@@ -4195,5 +4214,85 @@ describe('debug bridge set_fea_channel', () => {
     selects.forEach((el) => expect((el as HTMLSelectElement).value).toBe('vonMises'));
     expect(storeA.state.channel).toBe('vonMises');
     expect(storeB.state.channel).toBe('vonMises');
+  });
+
+  it('(l) viewportId targets exactly that pane’s toolbar and store, with no cross-pane bleed', async () => {
+    // The point of keying (#5670): with two panes mounted, a scoped request
+    // drives one toolbar and one store. Asserting the OTHER pane is untouched —
+    // both its DOM value and its store — is what proves the handler resolved
+    // the store from the element it actually drove rather than from some
+    // global slot that happens to hold a different pane's store.
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const designMain = renderToolbarWithErrorIndicator('design-main');
+    const pane1 = renderToolbarWithErrorIndicator('pane-1');
+
+    const result = await dispatchCmd(4111, 'set_fea_channel', {
+      channel: 'errorIndicator',
+      viewportId: 'pane-1',
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(selectFor('pane-1').value).toBe('errorIndicator');
+    expect(pane1.state.channel).toBe('errorIndicator');
+    expect(selectFor('design-main').value).toBe('vonMises');
+    expect(designMain.state.channel).toBe('vonMises');
+  });
+
+  it('(m) an unknown viewportId returns selectNotFoundForViewport even though other toolbars are mounted', async () => {
+    // Distinct from selectNotFound (no toolbar anywhere): here the DOM is full
+    // of selects, just none for the requested pane. Collapsing the two would
+    // let a typo'd id read as "FEA UI is not up yet".
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const designMain = renderToolbarWithErrorIndicator('design-main');
+    const pane1 = renderToolbarWithErrorIndicator('pane-1');
+
+    const result = await dispatchCmd(4112, 'set_fea_channel', {
+      channel: 'errorIndicator',
+      viewportId: 'nope',
+    });
+
+    expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.selectNotFoundForViewport('nope') });
+    expect(designMain.state.channel).toBe('vonMises');
+    expect(pane1.state.channel).toBe('vonMises');
+  });
+
+  it('(n) a non-string viewportId returns a schema-violation error, matching pickViewport', async () => {
+    // Same guard, same wording as the movement/screenshot commands' viewportId
+    // ladder — a wrongly-typed id is a caller bug distinct from an unknown one.
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    renderToolbarWithErrorIndicator('design-main');
+
+    const result = await dispatchCmd(4113, 'set_fea_channel', {
+      channel: 'errorIndicator',
+      viewportId: 5,
+    });
+
+    expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.viewportIdNotString });
+  });
+
+  it('(p) a keyed toolbar whose ctx.feaModes entry was never registered returns storeUnavailable', async () => {
+    // The keyed lookup must fail loudly rather than silently falling back to
+    // some other pane's store — which is precisely the "silently read the wrong
+    // pane's store" hole keying exists to close. Mirrors (k), one level down:
+    // there the legacy scalar slot is missing, here the keyed entry is.
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    renderToolbarWithErrorIndicator('design-main');
+    const pane1 = renderToolbarWithErrorIndicator('pane-1');
+    delete window.__REIFY_DEBUG__!.feaModes!['pane-1'];
+
+    const result = await dispatchCmd(4114, 'set_fea_channel', {
+      channel: 'errorIndicator',
+      viewportId: 'pane-1',
+    });
+
+    expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.storeUnavailable });
+    // design-main's store is still registered and still untouched: the handler
+    // must not have resolved through it.
+    expect(pane1.state.channel).toBe('vonMises');
+    expect(window.__REIFY_DEBUG__!.feaModes!['design-main'].state.channel).toBe('vonMises');
   });
 });
