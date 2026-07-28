@@ -1222,6 +1222,175 @@ _wl_n="$(ls -A "$_WL_TMP" | wc -l)"
 if [ "$_wl_n" -eq 0 ]; then ok=true; else ok=false; fi
 check "WL-h3: ... and mktemps nothing into a bare/empty path (got $_wl_n entries under \$TMPDIR)" "$ok"
 
+# ==============================================================================
+# Warm-lane shared-trash runtime detector (tasks 5590/5612)
+#
+# _note_shared_trash_use is the RECORDER: warm-lane suites call it as a bare
+# unguarded statement from inside their run_helper wrappers after every seed
+# invocation. It inspects the captured seed stderr ($ERR_OUT) and records a hit
+# whenever the invocation named $_SHARED_TRASH_DIR — exact evidence that this
+# invocation renamed into the machine-shared path.
+# _assert_no_shared_trash_use is the matching CHECKER.
+#
+# Three invariants below are load-bearing, not stylistic:
+#   * the trailing `return 0` — the recorder runs as a bare unguarded statement
+#     under `set -euo pipefail`, so any nonzero return would abort a whole suite
+#     rather than fail one assert;
+#   * state is an append-only FILE, not a bash array — two real call sites
+#     invoke the helper inside a backgrounded ( ... ) & subshell, where an array
+#     append is discarded on subshell exit, silently blinding the detector on
+#     exactly the runs most likely to reach seed's rename-into-trash path;
+#   * the case pattern quotes the variable (*"$_SHARED_TRASH_DIR"*) so a glob
+#     metacharacter in the path is matched literally, not as a wildcard.
+# ==============================================================================
+
+echo ""
+echo "--- Warm-lane isolation: shared-trash runtime detector ---"
+
+# (b) Both detector entry points are defined after sourcing.
+for _wl_fn in _note_shared_trash_use _assert_no_shared_trash_use; do
+    if bash -c "source '$HELPER_FILE' && declare -f $_wl_fn >/dev/null" 2>/dev/null; then ok=true; else ok=false; fi
+    check "WL-i1: $_wl_fn is defined after sourcing test_helpers.sh" "$ok"
+done
+
+# (a) The default is the real machine-shared path, and it is a plain variable a
+# caller can redirect (the positive controls in the warm-lane suites depend on
+# redirecting it to a run-private trash dir).
+_wl_sd="$(bash -c "source '$HELPER_FILE' && printf '%s' \"\${_SHARED_TRASH_DIR-UNSET}\"" 2>/dev/null || echo ERROR)"
+if [ "$_wl_sd" = "/tmp/.reseed-trash" ]; then ok=true; else ok=false; fi
+check "WL-i2: _SHARED_TRASH_DIR defaults to the literal /tmp/.reseed-trash (got: $_wl_sd)" "$ok"
+
+# (c) init_isolated_lane_root mints the hits file under $_LANE_ROOT, empty.
+# Placement matters: it must be a SIBLING of each lane's private parent, never
+# inside one, or the "parent holds only the lane" structural check breaks.
+cat > "$_WL_DIR/hits-file.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_TMPDIRS=()
+init_isolated_lane_root teststem || { echo "init-failed"; exit 9; }
+[ -n "$_TRASH_HITS_FILE" ]  || { echo "hits-file-path-empty"; exit 1; }
+[ -f "$_TRASH_HITS_FILE" ]  || { echo "hits-file-not-created"; exit 1; }
+[ ! -s "$_TRASH_HITS_FILE" ] || { echo "hits-file-not-empty"; exit 1; }
+[ "$(dirname "$_TRASH_HITS_FILE")" = "$_LANE_ROOT" ] || { echo "hits-file-not-under-lane-root"; exit 1; }
+L="$(make_isolated_lane pfx)" || { echo "make-failed"; exit 8; }
+P="$(dirname "$L")"
+case "$_TRASH_HITS_FILE" in "$P"/*) echo "hits-file-inside-a-lane-parent"; exit 1 ;; esac
+_n="$(ls -A "$P" | wc -l)"
+[ "$_n" -eq 1 ] || { echo "lane-parent-holds-$_n-entries"; exit 1; }
+echo OK
+PROBE
+_wl_run "$_WL_DIR/hits-file.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "OK" ]; then ok=true; else ok=false; fi
+check "WL-i3: init_isolated_lane_root mints an empty _TRASH_HITS_FILE directly under \$_LANE_ROOT, beside (never inside) a lane's private parent (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+# (d)+(e) Recorder semantics: one line on a match, nothing on a miss, rc 0 in
+# BOTH cases — and rc 0 even under `set -u` with ERR_OUT entirely unset, which
+# is why the body must read ${ERR_OUT:-} rather than bare $ERR_OUT now that the
+# library is sourced by 153 files with no such wrapper.
+cat > "$_WL_DIR/note-hits.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_TMPDIRS=()
+init_isolated_lane_root teststem || { echo "init-failed"; exit 9; }
+
+ERR_OUT="info: Renaming non-empty /x/target -> $_SHARED_TRASH_DIR/lane.999 before re-seed"
+_note_shared_trash_use match-probe
+_rc_match=$?
+_n_match="$(wc -l < "$_TRASH_HITS_FILE")"
+_body_match="$(cat "$_TRASH_HITS_FILE")"
+
+: > "$_TRASH_HITS_FILE"
+ERR_OUT="info: reflink copy completed, nothing renamed"
+_note_shared_trash_use nomatch-probe
+_rc_nomatch=$?
+_n_nomatch="$(wc -l < "$_TRASH_HITS_FILE")"
+
+: > "$_TRASH_HITS_FILE"
+unset ERR_OUT
+_note_shared_trash_use unset-probe
+_rc_unset=$?
+_n_unset="$(wc -l < "$_TRASH_HITS_FILE")"
+
+printf 'match=%s/%s/[%s] nomatch=%s/%s unset=%s/%s\n' \
+    "$_rc_match" "$_n_match" "$_body_match" \
+    "$_rc_nomatch" "$_n_nomatch" "$_rc_unset" "$_n_unset"
+PROBE
+_wl_run "$_WL_DIR/note-hits.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "match=0/1/[match-probe] nomatch=0/0 unset=0/0" ]; then ok=true; else ok=false; fi
+check "WL-i4: _note_shared_trash_use records exactly one labelled line on a match, nothing on a miss, and returns 0 in every case including ERR_OUT unset under set -u (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+# (f) Glob metacharacters in the path are matched literally.
+cat > "$_WL_DIR/note-glob.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_TMPDIRS=()
+init_isolated_lane_root teststem || { echo "init-failed"; exit 9; }
+
+# Unquoted inside the case pattern, '/tmp/a*b[x]/.reseed-trash' would ALSO
+# match an ERR_OUT naming '/tmp/aZZZbx/.reseed-trash' — a false positive that
+# would fail a suite for a path seed never touched.
+_SHARED_TRASH_DIR='/tmp/a*b[x]/.reseed-trash'
+
+ERR_OUT="renamed into /tmp/a*b[x]/.reseed-trash now"
+_note_shared_trash_use literal-hit
+_n_literal="$(wc -l < "$_TRASH_HITS_FILE")"
+
+: > "$_TRASH_HITS_FILE"
+ERR_OUT="renamed into /tmp/aZZZbx/.reseed-trash now"
+_note_shared_trash_use glob-expanded-miss
+_n_glob="$(wc -l < "$_TRASH_HITS_FILE")"
+
+printf 'literal=%s glob=%s\n' "$_n_literal" "$_n_glob"
+PROBE
+_wl_run "$_WL_DIR/note-glob.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "literal=1 glob=0" ]; then ok=true; else ok=false; fi
+check "WL-i5: a _SHARED_TRASH_DIR holding glob metacharacters is matched literally, not as a wildcard (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+# (g) THE reason the state is file-backed: an append made inside a backgrounded
+# subshell must be visible to the parent shell. A bash array append would be
+# discarded here, silently blinding the detector.
+cat > "$_WL_DIR/note-subshell.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_TMPDIRS=()
+init_isolated_lane_root teststem || { echo "init-failed"; exit 9; }
+(
+    ERR_OUT="Renaming non-empty /x/target -> $_SHARED_TRASH_DIR before re-seed"
+    _note_shared_trash_use subshell-probe
+) &
+_pid=$!
+wait "$_pid" 2>/dev/null || true
+printf 'lines=%s body=[%s]\n' "$(wc -l < "$_TRASH_HITS_FILE")" "$(cat "$_TRASH_HITS_FILE")"
+PROBE
+_wl_run "$_WL_DIR/note-subshell.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "lines=1 body=[subshell-probe]" ]; then ok=true; else ok=false; fi
+check "WL-i6: a recorder append made inside a backgrounded ( ... ) & subshell is visible to the parent shell (file-backed state, rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+# (h) Checker semantics, message content included: a refactor that dropped the
+# hit dump or the path from the message would still exit 1 but lose every scrap
+# of forensic value.
+cat > "$_WL_DIR/assert-no-use.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_TMPDIRS=()
+init_isolated_lane_root teststem || { echo "init-failed"; exit 9; }
+
+_out_clean="$(_assert_no_shared_trash_use 2>&1)"; _rc_clean=$?
+
+printf 'stale-hit-one\nstale-hit-two\n' >> "$_TRASH_HITS_FILE"
+_out_dirty="$(_assert_no_shared_trash_use 2>&1)"; _rc_dirty=$?
+
+_names_dir=no; case "$_out_dirty" in *"$_SHARED_TRASH_DIR"*) _names_dir=yes ;; esac
+_names_h1=no;  case "$_out_dirty" in *stale-hit-one*)         _names_h1=yes  ;; esac
+_names_h2=no;  case "$_out_dirty" in *stale-hit-two*)         _names_h2=yes  ;; esac
+
+printf 'clean=%s/[%s] dirty=%s names_dir=%s h1=%s h2=%s\n' \
+    "$_rc_clean" "$_out_clean" "$_rc_dirty" "$_names_dir" "$_names_h1" "$_names_h2"
+PROBE
+_wl_run "$_WL_DIR/assert-no-use.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "clean=0/[] dirty=1 names_dir=yes h1=yes h2=yes" ]; then ok=true; else ok=false; fi
+check "WL-i7: _assert_no_shared_trash_use passes silently on an empty hits file and fails naming both _SHARED_TRASH_DIR and every recorded hit (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
 # -- Summary -------------------------------------------------------------------
 echo ""
 echo "Results: $T_PASS passed, $T_FAIL failed"
