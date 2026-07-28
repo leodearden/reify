@@ -344,27 +344,41 @@ pub fn collect_workspace_unguarded_temp_dirs(workspace_root: &Path) -> Vec<Strin
 }
 
 /// Partition a raw sweep result (as produced by
-/// [`collect_workspace_unguarded_temp_dirs`]) against an exception table
-/// of `(repo_relative_path, justification)` pairs, returning `(enforced,
-/// stale)`:
+/// [`collect_workspace_unguarded_temp_dirs`]) against an exception table of
+/// `(repo_relative_path, expected_count, justification)` triples, returning
+/// `(enforced, stale)`:
 ///
-/// - `enforced` — violations not covered by any exception. Non-empty
-///   means the sweep must fail: bind a named guard local, or annotate
-///   the line `// temp-dir:allow — reason`.
+/// - `enforced` — violations not covered by any exception. Non-empty means
+///   the sweep must fail: bind a named guard local, or annotate the line
+///   `// temp-dir:allow — reason`.
 /// - `stale` — exception paths (the first tuple element) that no longer
-///   match ANY violation. Non-empty ALSO means the sweep must fail, but
-///   with the opposite remedy: the file was migrated off hand-rolled
-///   temp dirs, so its entry must be DELETED from the exception table.
+///   match ANY violation. Non-empty ALSO means the sweep must fail, but with
+///   the opposite remedy: the file was migrated off hand-rolled temp dirs,
+///   so its entry must be DELETED from the exception table.
 ///
 /// # Why the stale half exists
 ///
-/// The six-entry allowlist this task retires decayed into a no-op
-/// ratchet because nothing forced it to grow. A denylist decays the
-/// mirror-image way: entries outlive the condition that justified them
-/// and silently re-open the hole the exception was meant to narrowly
-/// carve out. Asserting `stale` empty is what makes the exception list
-/// self-cleaning — when a listed file is migrated, this half goes RED
-/// and mechanically forces the entry's deletion in the same change.
+/// The six-entry allowlist this task retires decayed into a no-op ratchet
+/// because nothing forced it to grow. A denylist decays the mirror-image
+/// way: entries outlive the condition that justified them and silently
+/// re-open the hole the exception was meant to narrowly carve out. Asserting
+/// `stale` empty is what makes the exception list self-cleaning — when a
+/// listed file is migrated, this half goes RED and mechanically forces the
+/// entry's deletion in the same change.
+///
+/// # The count must match exactly, or nothing is exempted
+///
+/// A path-prefix match alone would exempt EVERY violation in the named
+/// file, present and future — so a second hand-rolled site added later to
+/// an already-excepted file would be silently swallowed instead of
+/// surfacing as a regression. `expected_count` closes that hole: an
+/// exception only exempts its file's violations when the actual count of
+/// matches equals `expected_count` exactly. A mismatched-but-nonzero count
+/// exempts nothing at all — every one of that file's violations falls
+/// through to `enforced`, exactly as if the file had never been excepted —
+/// so a new site is caught as loudly as a new site anywhere else. A count of
+/// zero is unchanged: the existing `stale` signal, since the file has been
+/// fully migrated off hand-rolled temp dirs.
 ///
 /// # Matching is anchored, not substring-based
 ///
@@ -382,34 +396,45 @@ pub fn collect_workspace_unguarded_temp_dirs(workspace_root: &Path) -> Vec<Strin
 /// rather than reimplementing it.
 pub fn partition_enforced_and_stale(
     violations: &[String],
-    exceptions: &[(&str, &str)],
+    exceptions: &[(&str, usize, &str)],
 ) -> (Vec<String>, Vec<String>) {
     let normalize = |s: &str| s.replace('\\', "/");
     let prefix_for = |path: &str| format!("{}: ", normalize(path));
 
-    let exception_prefixes: Vec<String> =
-        exceptions.iter().map(|(path, _)| prefix_for(path)).collect();
+    let mut exempted = vec![false; violations.len()];
+    let mut stale: Vec<String> = Vec::new();
+
+    for &(path, expected_count, _justification) in exceptions {
+        let prefix = prefix_for(path);
+        let match_indices: Vec<usize> = violations
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| normalize(v).starts_with(prefix.as_str()))
+            .map(|(i, _)| i)
+            .collect();
+
+        if match_indices.is_empty() {
+            // No violation left in this file at all — the exception has
+            // gone stale and must be deleted.
+            stale.push(path.to_string());
+        } else if match_indices.len() == expected_count {
+            // The count matches exactly — exempt precisely these matches.
+            for i in match_indices {
+                exempted[i] = true;
+            }
+        }
+        // else: nonzero but != expected_count. Deliberately exempt NOTHING
+        // here — every matched violation falls through to `enforced` below,
+        // the same as a violation in a file with no exception at all. This
+        // is what stops a whole-file prefix match from silently widening to
+        // cover a brand-new site that was never accounted for.
+    }
 
     let enforced: Vec<String> = violations
         .iter()
-        .filter(|v| {
-            let normalized = normalize(v);
-            !exception_prefixes
-                .iter()
-                .any(|prefix| normalized.starts_with(prefix.as_str()))
-        })
-        .cloned()
-        .collect();
-
-    let stale: Vec<String> = exceptions
-        .iter()
-        .zip(exception_prefixes.iter())
-        .filter(|(_, prefix)| {
-            !violations
-                .iter()
-                .any(|v| normalize(v).starts_with(prefix.as_str()))
-        })
-        .map(|((path, _), _)| (*path).to_string())
+        .enumerate()
+        .filter(|(i, _)| !exempted[*i])
+        .map(|(_, v)| v.clone())
         .collect();
 
     (enforced, stale)
@@ -975,13 +1000,14 @@ mod tests {
     // module, directly beneath `collect_workspace_unguarded_temp_dirs` — see
     // its doc comment there for the full contract.
 
-    /// (1) A violation for path A, exempted by an exception naming A →
-    /// both halves empty: the exception is exercised and current.
+    /// (1) A violation for path A, exempted by an exception naming A with
+    /// the matching expected count (1) → both halves empty: the exception
+    /// is exercised and current.
     #[test]
     fn pes_exact_match_leaves_both_halves_empty() {
         let violations =
             vec!["crates/a/src/lib.rs: line 3: hand-rolled construction: \"...\"".to_string()];
-        let exceptions: &[(&str, &str)] = &[("crates/a/src/lib.rs", "justification")];
+        let exceptions: &[(&str, usize, &str)] = &[("crates/a/src/lib.rs", 1, "justification")];
 
         let (enforced, stale) = partition_enforced_and_stale(&violations, exceptions);
 
@@ -1000,9 +1026,9 @@ mod tests {
     fn pes_exception_with_no_matching_violation_is_stale() {
         let violations =
             vec!["crates/a/src/lib.rs: line 3: hand-rolled construction: \"...\"".to_string()];
-        let exceptions: &[(&str, &str)] = &[
-            ("crates/a/src/lib.rs", "justification a"),
-            ("crates/b/src/lib.rs", "justification b"),
+        let exceptions: &[(&str, usize, &str)] = &[
+            ("crates/a/src/lib.rs", 1, "justification a"),
+            ("crates/b/src/lib.rs", 1, "justification b"),
         ];
 
         let (enforced, stale) = partition_enforced_and_stale(&violations, exceptions);
@@ -1026,7 +1052,7 @@ mod tests {
             "crates/a/src/lib.rs: line 3: hand-rolled construction: \"...\"".to_string(),
             "crates/c/src/lib.rs: line 7: unbound guard: \"...\"".to_string(),
         ];
-        let exceptions: &[(&str, &str)] = &[("crates/a/src/lib.rs", "justification a")];
+        let exceptions: &[(&str, usize, &str)] = &[("crates/a/src/lib.rs", 1, "justification a")];
 
         let (enforced, stale) = partition_enforced_and_stale(&violations, exceptions);
 
@@ -1043,9 +1069,9 @@ mod tests {
     #[test]
     fn pes_empty_violations_makes_every_exception_stale() {
         let violations: Vec<String> = Vec::new();
-        let exceptions: &[(&str, &str)] = &[
-            ("crates/a/src/lib.rs", "justification a"),
-            ("crates/b/src/lib.rs", "justification b"),
+        let exceptions: &[(&str, usize, &str)] = &[
+            ("crates/a/src/lib.rs", 1, "justification a"),
+            ("crates/b/src/lib.rs", 1, "justification b"),
         ];
 
         let (enforced, stale) = partition_enforced_and_stale(&violations, exceptions);
@@ -1071,7 +1097,7 @@ mod tests {
             vec!["crates/b/notfoo.rs: line 1: hand-rolled construction: \"...\"".to_string()];
         // "foo.rs" is a substring of "notfoo.rs" but not a `"{path}: "` prefix
         // of the violation string above.
-        let exceptions: &[(&str, &str)] = &[("foo.rs", "should not match notfoo.rs")];
+        let exceptions: &[(&str, usize, &str)] = &[("foo.rs", 1, "should not match notfoo.rs")];
 
         let (enforced, stale) = partition_enforced_and_stale(&violations, exceptions);
 
@@ -1087,6 +1113,36 @@ mod tests {
         );
     }
 
+    /// (6) An exception pinned at `expected_count == 1` but the file now has
+    /// TWO matching violations (a second hand-rolled site was added after
+    /// the exception was written) → NEITHER is exempted, both surface via
+    /// `enforced` exactly like a violation in a never-excepted file would,
+    /// and the exception is NOT reported stale (the file still has
+    /// violations — `stale` is reserved for a zero-match count). This is
+    /// the exact regression a bare path-prefix match would silently swallow.
+    #[test]
+    fn pes_exception_with_wrong_violation_count_exempts_nothing() {
+        let violations = vec![
+            "crates/a/src/lib.rs: line 3: hand-rolled construction: \"...\"".to_string(),
+            "crates/a/src/lib.rs: line 9: hand-rolled construction: \"...\"".to_string(),
+        ];
+        // Written when the file had exactly one site.
+        let exceptions: &[(&str, usize, &str)] = &[("crates/a/src/lib.rs", 1, "justification")];
+
+        let (enforced, stale) = partition_enforced_and_stale(&violations, exceptions);
+
+        assert_eq!(
+            enforced, violations,
+            "a violation count that no longer matches expected_count must \
+             exempt nothing at all — both sites must surface: {enforced:?}"
+        );
+        assert!(
+            stale.is_empty(),
+            "the file still has violations, so its exception is not STALE \
+             (that signal is reserved for a zero-match count): {stale:?}"
+        );
+    }
+
     // ── workspace_has_no_unguarded_temp_dirs (the live ratchet) ──────────────
     //
     // Replaces the six hand-picked `*_have_no_unguarded_temp_dirs` guards below
@@ -1096,27 +1152,44 @@ mod tests {
     // halves are asserted empty here — see that function's doc comment for why
     // the stale half exists.
 
-    /// The sweep's exception table: `(repo-relative path, justification)`
-    /// pairs. A bare path can never be added without a written reason — the
-    /// tuple's second element enforces that structurally.
+    /// The sweep's exception table: `(repo-relative path, expected violation
+    /// count, justification)` triples. A bare path can never be added
+    /// without a written reason — the tuple's third element enforces that
+    /// structurally.
     ///
-    /// Every entry here must CURRENTLY violate — `workspace_has_no_unguarded_temp_dirs`
-    /// asserts that too (the `stale` half of `partition_enforced_and_stale`), so an
-    /// entry whose file gets migrated off hand-rolled temp dirs fails LOUDLY until its
-    /// entry is deleted, rather than silently rotting the way this module's earlier
-    /// six-entry allowlist did.
+    /// The count pins exactly how many violations in that file the
+    /// exception may cover. `partition_enforced_and_stale` only exempts a
+    /// file when its ACTUAL violation count equals this number — so if a
+    /// SECOND hand-rolled site is added to an already-excepted file, the
+    /// count stops matching and NEITHER site is exempted; both surface as
+    /// ordinary enforced violations instead of being silently swallowed by
+    /// a whole-file prefix match. This closes a hole a plain
+    /// `(path, justification)` pair would leave open.
+    ///
+    /// Every entry here must CURRENTLY violate, with its count exactly
+    /// right — `workspace_has_no_unguarded_temp_dirs` asserts that too (the
+    /// `stale` half of `partition_enforced_and_stale`), so an entry whose
+    /// file gets migrated off hand-rolled temp dirs fails LOUDLY until its
+    /// entry is deleted, rather than silently rotting the way this module's
+    /// earlier six-entry allowlist did.
     ///
     /// Re-measured (not merely trusted) at this task's branch point off
     /// `crates/reify-build-utils/src/lib.rs`'s current source: exactly one
-    /// workspace file violates outside `temp_dirs.rs` itself, whose own two
-    /// sites are exempted per-line rather than listed here (see pre-2).
-    const SWEEP_EXCEPTIONS: &[(&str, &str)] = &[(
+    /// workspace file violates outside `temp_dirs.rs` itself, with exactly
+    /// one site. `temp_dirs.rs`'s own two sites are exempted per-line
+    /// rather than listed here (see pre-2).
+    const SWEEP_EXCEPTIONS: &[(&str, usize, &str)] = &[(
         "crates/reify-build-utils/src/lib.rs",
+        1,
         "its `fn tempdir()` test helper still hand-rolls a directory via the \
          std-library temp-dir accessor instead of routing through the shared \
          guard; #5639 migrates it. DELETE this entry in the same change that \
          lands #5639 — the staleness half of \
-         workspace_has_no_unguarded_temp_dirs will fail until you do.",
+         workspace_has_no_unguarded_temp_dirs will fail until you do. If a \
+         SECOND hand-rolled site appears in this file before then, the \
+         pinned count (1) stops matching and the new site surfaces as an \
+         enforced violation rather than being silently exempted alongside \
+         the first.",
     )];
 
     /// The live ratchet. Every `.rs` file in the workspace — `src/`, `tests/`,
