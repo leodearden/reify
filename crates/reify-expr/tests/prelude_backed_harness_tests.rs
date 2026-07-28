@@ -69,9 +69,8 @@ fn val_5mm() -> Value {
 /// `e2e_*_with_stdlib` guards back to `Undef`-only signal.
 #[test]
 fn prelude_backed_table_executes_stdlib_ri_bodies() {
-    let module = reify_test_support::compile_source_with_stdlib(
-        "structure S { let v = through(5mm) }",
-    );
+    let module =
+        reify_test_support::compile_source_with_stdlib("structure S { let v = through(5mm) }");
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
 

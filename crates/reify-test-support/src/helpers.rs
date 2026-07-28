@@ -182,6 +182,54 @@ pub fn compile_source_with_stdlib(source: &str) -> reify_compiler::CompiledModul
     reify_compiler::compile_with_stdlib(&parsed)
 }
 
+/// Build the function table an `EvalContext` needs in order to evaluate a module
+/// compiled by [`compile_source_with_stdlib`] the way PRODUCTION does.
+///
+/// # Why this exists
+///
+/// [`compile_source_with_stdlib`] returns a [`reify_compiler::CompiledModule`]
+/// whose `.functions` is **user-source-only**. The compile pipeline pushes only
+/// the module's own AST fns into `ctx.functions`
+/// (`compile_builder/functions_phase.rs:79-92`); prelude fns arrive through a
+/// *different* parameter and are flat-mapped into `ctx.resolution_functions`
+/// only (`functions_phase.rs:101-105`, re-run at `traits_phase.rs:194-200`), and
+/// `ctx.rs:201` (`functions: self.functions`) then drops that prelude table when
+/// the `CompiledModule` is built.
+///
+/// So `EvalContext::new(&values, &module.functions)` evaluates against a table
+/// in which **no stdlib `.ri` body is registered at all**. Every stdlib call
+/// misses [`reify_expr::find_matching_compiled_function`] and falls to the
+/// lookup-miss arm (`reify-expr/src/lib.rs:1625`), which returns `Value::Undef`.
+/// A test written against that table can never observe a stdlib placeholder
+/// body, so it cannot distinguish "the intercept fired" from "the intercept is
+/// missing and the call simply evaluated to nothing".
+///
+/// Passing the slice this function returns instead restores the missing
+/// competitor: the stdlib `.ri` bodies are registered and genuinely compete with
+/// the reify-expr intercepts.
+///
+/// # Example
+///
+/// ```ignore
+/// let module = compile_source_with_stdlib("structure S { let v = through(5mm) }");
+/// let expr = get_let_expr(&module, "v");
+/// let values = ValueMap::new();
+/// let functions = prelude_backed_functions(&module);
+/// let ctx = EvalContext::new(&values, &functions);
+/// ```
+pub fn prelude_backed_functions(
+    module: &reify_compiler::CompiledModule,
+) -> Vec<reify_ir::CompiledFunction> {
+    // Mirrors `reify_eval::Engine::with_prelude_and_kernels`
+    // (reify-eval/src/engine_admin.rs:255-258), which flattens the same
+    // `load_stdlib()` modules into its `prelude_functions` field.
+    let prelude: Vec<reify_ir::CompiledFunction> = reify_compiler::stdlib_loader::load_stdlib()
+        .iter()
+        .flat_map(|m| m.functions.iter().cloned())
+        .collect();
+    reify_compiler::merge_prelude_functions(&module.functions, &prelude)
+}
+
 /// Convert parse-layer [`reify_ast::ParseError`]s into `Severity::Error`
 /// [`Diagnostic`]s so they can be surfaced through a `CompiledModule`'s
 /// `diagnostics` list. Each parse error's span is attached as a label.
