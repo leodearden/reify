@@ -94,6 +94,7 @@ structure def StdlibGeometryOpsSmoke {
     let lp  = linear_pattern(solid, 1, 0, 0, 3, 5mm)                   // linear_pattern(geo, dx,dy,dz, count, spacing)
     let lp2 = linear_pattern_2d(solid, 1, 0, 0, 3, 20mm, 0, 1, 0, 3, 20mm)  // linear_pattern_2d(geo, dir1, count1, spacing1, dir2, count2, spacing2)
     let apr = arbitrary_pattern(solid, 10mm, 0mm, 0mm, 0mm, 20mm, 0mm)      // arbitrary_pattern(geo, dx1,dy1,dz1, …) [offset triples]
+    let apl = arbitrary_pattern(solid, [transform3_identity()])             // arbitrary_pattern(geo, transforms)     [2, List<Transform<3>>]
     let cp4 = circular_pattern(solid, axis_z(point3(0mm, 0mm, 0mm)), 6, 360deg)   // (geo, axis, count, angle) [4, value]
     let cp9 = circular_pattern(solid, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360deg)          // (geo, ox,oy,oz, ax,ay,az, count, angle) [9]
     let spl = split(solid, plane_xy(0mm))          // split(solid, plane) → List<Geometry> (topology selector)

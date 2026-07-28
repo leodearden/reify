@@ -92,6 +92,11 @@ const GEOMETRY_CHUNK_PATH: &str = concat!(
     "/../reify-mcp/src/tools/chunks/geometry.md"
 );
 
+/// The whole chunk corpus served by `reify_language_reference`. The known-gap
+/// exclusion below claims a name is documented in NO chunk, so that claim has to
+/// be checked against every chunk, not just the two named above.
+const CHUNKS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../reify-mcp/src/tools/chunks");
+
 /// Heading of the chunk section whose documented names are checked.
 const CHUNK_SECTION: &str = "## Key Geometry Operations";
 
@@ -100,6 +105,41 @@ fn read_chunk(path: &str) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|e| {
         panic!("{path} must be readable ({e}) — update the chunk path const if the chunk moved")
     })
+}
+
+/// Every `*.md` under [`CHUNKS_DIR`], concatenated in a stable (sorted) order.
+///
+/// Same loud-panic-never-skip posture as [`read_chunk`]: an unreadable directory
+/// or entry aborts rather than silently shrinking the corpus, because a shrunken
+/// corpus would make the "documented in NO chunk" claim pass vacuously.
+fn read_all_chunks() -> String {
+    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(CHUNKS_DIR)
+        .unwrap_or_else(|e| {
+            panic!("{CHUNKS_DIR} must be readable ({e}) — update CHUNKS_DIR if the chunks moved")
+        })
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|e| panic!("reading an entry of {CHUNKS_DIR} failed ({e})"))
+                .path()
+        })
+        .filter(|p| p.extension().is_some_and(|ext| ext == "md"))
+        .collect();
+    paths.sort();
+
+    // Anti-vacuity: the corpus is 17 chunks today. An empty or near-empty read
+    // would silently turn the known-gap audit into a no-op.
+    assert!(
+        paths.len() >= 10,
+        "anti-vacuity: {CHUNKS_DIR} yielded only {} markdown chunk(s) — the corpus the \
+         known-gap audit reads has moved or been gutted, and the audit gives NO protection",
+        paths.len()
+    );
+
+    paths
+        .iter()
+        .map(|p| read_chunk(&p.to_string_lossy()))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn read_fixture() -> String {
@@ -503,6 +543,21 @@ fn documented_geometry_op_names(markdown: &str) -> Vec<String> {
     names
 }
 
+/// Anti-vacuity guard every [`documented_geometry_op_names`] caller owes its
+/// assertions: a heading rename, or rows that stop using `**`/backticks, would
+/// empty the scan and make the checks built on it pass (or fire) for reasons
+/// that have nothing to do with the property under test. The section carries
+/// ~43 distinct names today.
+fn assert_scan_not_vacuous(documented: &[String]) {
+    assert!(
+        documented.len() >= 20,
+        "the '{CHUNK_SECTION}' scan found only {} name(s) in {CHUNK_PATH} — the scan is \
+         vacuous (heading renamed, or the signature rows no longer start with `**` and \
+         use backticks) and gives NO protection",
+        documented.len()
+    );
+}
+
 /// The chunk itself must not document an op the compiler does not have.
 ///
 /// This is the direction the fixture-side guard cannot see: the phantom
@@ -511,22 +566,14 @@ fn documented_geometry_op_names(markdown: &str) -> Vec<String> {
 /// ITS SOURCE, before it is ever mirrored into the fixture.
 #[test]
 fn documented_geometry_op_names_all_exist_in_the_compiler() {
-    let markdown = std::fs::read_to_string(CHUNK_PATH).unwrap_or_else(|e| {
-        panic!("{CHUNK_PATH} must be readable ({e}) — update CHUNK_PATH if the chunk moved")
-    });
+    let markdown = read_chunk(CHUNK_PATH);
     let documented = documented_geometry_op_names(&markdown);
 
     // Anti-vacuity: a heading rename or a reformatted table would empty the
-    // scan and make every assertion below pass trivially. The section carries
-    // ~29 distinct names today; the sentinels prove the scan reaches the
-    // Sweep / Pattern / Curves rows, not just the first one.
-    assert!(
-        documented.len() >= 20,
-        "the '{CHUNK_SECTION}' scan found only {} name(s) in {CHUNK_PATH} — the scan is \
-         vacuous (heading renamed, or the signature rows no longer start with `**` and \
-         use backticks) and gives NO protection",
-        documented.len()
-    );
+    // scan and make every assertion below pass trivially. The sentinels
+    // additionally prove the scan reaches the Sweep / Pattern / Curves rows,
+    // not just the first one.
+    assert_scan_not_vacuous(&documented);
     for sentinel in ["extrude", "circular_pattern", "nurbs"] {
         assert!(
             documented.iter().any(|n| n == sentinel),
@@ -561,15 +608,9 @@ fn documented_geometry_op_names_all_exist_in_the_compiler() {
 /// responsibility; see the module doc.)
 #[test]
 fn every_documented_geometry_op_name_is_exercised_by_the_fixture() {
-    let markdown = std::fs::read_to_string(CHUNK_PATH).unwrap_or_else(|e| {
-        panic!("{CHUNK_PATH} must be readable ({e}) — update CHUNK_PATH if the chunk moved")
-    });
+    let markdown = read_chunk(CHUNK_PATH);
     let documented = documented_geometry_op_names(&markdown);
-    assert!(
-        documented.len() >= 20,
-        "anti-vacuity: the '{CHUNK_SECTION}' scan found only {} name(s) in {CHUNK_PATH}",
-        documented.len()
-    );
+    assert_scan_not_vacuous(&documented);
 
     let exercised = geometry_call_names(&read_fixture(), "fixture");
     let missing: Vec<&String> = documented
@@ -633,14 +674,15 @@ const CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK: &[&str] = &[
 
 /// Registry entries that are implemented but documented in NO chunk at all.
 ///
-/// Verified against every file in `crates/reify-mcp/src/tools/chunks/`: none of
-/// these seven is mentioned in any of them. This is a REAL residual
-/// documentation gap, carried here explicitly rather than folded into
-/// [`CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK`] — filing them as "documented
-/// elsewhere" would launder a gap into a false coverage claim, which is exactly
-/// the failure mode this guard exists to catch, one level down. They are out of
-/// scope here (they are constructors, not operations) and are covered by a
-/// separate follow-up.
+/// None of these seven is mentioned in any file under [`CHUNKS_DIR`] — a claim
+/// the guard enforces against the WHOLE corpus (via [`read_all_chunks`]), not
+/// just stdlib.md and geometry.md, so documenting one in any chunk reports it.
+/// This is a REAL residual documentation gap, carried here explicitly rather
+/// than folded into [`CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK`] — filing them
+/// as "documented elsewhere" would launder a gap into a false coverage claim,
+/// which is exactly the failure mode this guard exists to catch, one level down.
+/// They are out of scope here (they are constructors, not operations) and are
+/// covered by a separate follow-up, task #5700.
 ///
 /// This list is expected to SHRINK and must never grow. Documenting one of
 /// these means deleting its entry; the guard reports any entry that has in fact
@@ -658,19 +700,28 @@ const CONSTRUCTORS_DOCUMENTED_NOWHERE: &[&str] = &[
 
 /// Is `name` MENTIONED in this markdown — the identifier followed by `(`?
 ///
-/// Deliberately loose. It exists only to justify an exclusion (does the chunk
-/// talk about this name at all?), never to pin a form or a wording, so it does
-/// not care about the surrounding prose, the section, or the arity written.
+/// Deliberately loose about CONTEXT: it exists only to justify an exclusion
+/// (does the chunk talk about this name at all?), never to pin a form or a
+/// wording, so it does not care about the surrounding prose, the section, or the
+/// arity written.
 ///
-/// The looseness is a substring match, so `box` is also satisfied by
-/// `rounded_box(`. For the "documented elsewhere" direction that bias is
-/// toward NOT failing, which is the safe direction for an exclusion
-/// justification. For the known-gap direction it biases the other way — toward
-/// reporting an entry as closed — which merely asks a human to look, and is
-/// checked against the real chunks by
-/// `the_exclusion_lists_are_accurate_over_the_real_chunks`.
+/// It is NOT loose about the identifier itself. The match is anchored on a
+/// non-identifier boundary, so `box` is satisfied only by a standalone `box(` —
+/// never by `rounded_box(`. Both names are live entries of
+/// [`CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK`], so an unanchored substring
+/// match would let the `box` exclusion ride on the `rounded_box` row: deleting
+/// geometry.md's `box(` row would keep the exclusion green while the doc gap it
+/// claims to cover was real. Laundering a gap into a false coverage claim is the
+/// exact failure this guard exists to catch, so the strict direction is the safe
+/// one here.
 fn chunk_mentions(markdown: &str, name: &str) -> bool {
-    markdown.contains(&format!("{name}("))
+    let needle = format!("{name}(");
+    markdown.match_indices(&needle).any(|(at, _)| {
+        markdown[..at]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_')
+    })
 }
 
 /// Everything wrong with registry → chunk documentation coverage, as
@@ -686,9 +737,12 @@ fn chunk_mentions(markdown: &str, name: &str) -> bool {
 ///    exact semantics) finds it, or when an exclusion slice carries it.
 /// 2. A `documented_elsewhere` entry that `geometry_md` does NOT mention — an
 ///    exclusion claiming coverage that does not exist.
-/// 3. A `known_gap` entry that IS mentioned by either markdown — a gap that has
-///    since been closed, so the entry is stale and would otherwise exempt the
-///    name from class 1 forever, masking a later regression.
+/// 3. A `known_gap` entry that `all_chunks_md` mentions — a gap that has since
+///    been closed, so the entry is stale and would otherwise exempt the name
+///    from class 1 forever, masking a later regression. This class reads the
+///    WHOLE chunk corpus, not just the two chunks above, because the known-gap
+///    claim is "documented in NO chunk": checking two of seventeen would let a
+///    name documented in, say, `types.md` stay permanently exempt.
 ///
 /// Each line names its own corrective action, so a failure tells a maintainer
 /// what to do rather than only what is wrong. Classes 2 and 3 are checked
@@ -703,6 +757,7 @@ fn geometry_op_doc_coverage_violations(
     registry: &[&str],
     stdlib_md: &str,
     geometry_md: &str,
+    all_chunks_md: &str,
     documented_elsewhere: &[&str],
     known_gap: &[&str],
 ) -> Vec<String> {
@@ -734,13 +789,13 @@ fn geometry_op_doc_coverage_violations(
         }
     }
 
-    // Class 3 — a known gap that has since been closed.
+    // Class 3 — a known gap that has since been closed, anywhere in the corpus.
     for name in known_gap.iter().copied() {
-        if chunk_mentions(stdlib_md, name) || chunk_mentions(geometry_md, name) {
+        if chunk_mentions(all_chunks_md, name) {
             out.push(format!(
-                "{name}: carried as a known documentation gap, but it IS now documented — \
-                 FIX: delete the stale known-gap entry so this guard covers the name \
-                 normally"
+                "{name}: carried as a known documentation gap, but some chunk DOES now \
+                 mention it — FIX: delete the stale known-gap entry so this guard covers \
+                 the name normally"
             ));
         }
     }
@@ -761,23 +816,20 @@ fn geometry_op_doc_coverage_violations(
 fn every_implemented_geometry_op_is_documented_in_a_chunk() {
     let stdlib_md = read_chunk(CHUNK_PATH);
     let geometry_md = read_chunk(GEOMETRY_CHUNK_PATH);
+    let all_chunks_md = read_all_chunks();
 
-    // Anti-vacuity, both inputs. An empty registry would make this guard pass
+    // Anti-vacuity, every input. An empty registry would make this guard pass
     // trivially, and an emptied scan (heading renamed, rows no longer `**`/
     // backticked) would make it report all 64 names — pin both so neither
-    // failure mode is mistaken for a real signal.
+    // failure mode is mistaken for a real signal. (`read_all_chunks` pins its
+    // own corpus size.)
     assert!(
         GEOMETRY_FUNCTION_NAMES.len() >= 50,
         "anti-vacuity: GEOMETRY_FUNCTION_NAMES holds only {} name(s) — the registry this \
          guard walks has been gutted or moved, and the guard gives NO protection",
         GEOMETRY_FUNCTION_NAMES.len()
     );
-    let documented = documented_geometry_op_names(&stdlib_md);
-    assert!(
-        documented.len() >= 20,
-        "anti-vacuity: the '{CHUNK_SECTION}' scan found only {} name(s) in {CHUNK_PATH}",
-        documented.len()
-    );
+    assert_scan_not_vacuous(&documented_geometry_op_names(&stdlib_md));
     assert!(
         !geometry_md.trim().is_empty(),
         "anti-vacuity: {GEOMETRY_CHUNK_PATH} is empty, so the 'documented elsewhere' \
@@ -788,6 +840,7 @@ fn every_implemented_geometry_op_is_documented_in_a_chunk() {
         GEOMETRY_FUNCTION_NAMES,
         &stdlib_md,
         &geometry_md,
+        &all_chunks_md,
         CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK,
         CONSTRUCTORS_DOCUMENTED_NOWHERE,
     );
@@ -823,6 +876,16 @@ const SYNTHETIC_STDLIB_MD: &str = "\
 /// Stand-in for geometry.md. Mentions `mentioned_ctor` and nothing else.
 const SYNTHETIC_GEOMETRY_MD: &str = "`mentioned_ctor(x, y, z)` builds a thing.";
 
+/// Stand-in for a THIRD chunk — one the class-1 and class-2 checks never read.
+/// Mentions `elsewhere_ctor` and nothing else.
+const SYNTHETIC_OTHER_CHUNK_MD: &str = "See also `elsewhere_ctor(v)` for the implicit form.";
+
+/// Stand-in for the whole chunk corpus, mirroring `read_all_chunks`'s
+/// concatenation: everything the three synthetic chunks say, and nothing else.
+fn synthetic_all_chunks() -> String {
+    format!("{SYNTHETIC_STDLIB_MD}\n{SYNTHETIC_GEOMETRY_MD}\n{SYNTHETIC_OTHER_CHUNK_MD}")
+}
+
 /// NEGATIVE CONTROL — the guard reports a genuinely undocumented registry name,
 /// and stays silent for one that stdlib.md documents and one that a justified
 /// exclusion covers. Proves it is neither blind nor "reports everything".
@@ -832,6 +895,7 @@ fn undocumented_registry_names_are_reported_and_documented_ones_are_not() {
         &["documented_op", "mentioned_ctor", "undocumented_op"],
         SYNTHETIC_STDLIB_MD,
         SYNTHETIC_GEOMETRY_MD,
+        &synthetic_all_chunks(),
         &["mentioned_ctor"],
         &[],
     );
@@ -862,6 +926,7 @@ fn an_exclusion_claiming_coverage_that_does_not_exist_is_reported() {
         &["ghost_ctor"],
         SYNTHETIC_STDLIB_MD,
         SYNTHETIC_GEOMETRY_MD,
+        &synthetic_all_chunks(),
         &["ghost_ctor"],
         &[],
     );
@@ -880,12 +945,18 @@ fn an_exclusion_claiming_coverage_that_does_not_exist_is_reported() {
 /// A stale entry in [`CONSTRUCTORS_DOCUMENTED_NOWHERE`] would permanently
 /// exempt a name from the guard, so a later regression (the row being deleted
 /// again) would go unnoticed.
+///
+/// The third case is the one that pins the corpus WIDTH: `elsewhere_ctor` lives
+/// only in the synthetic third chunk, which neither the stdlib.md scan nor the
+/// geometry.md mention-check ever reads. It fires only because class 3 walks the
+/// whole corpus, so narrowing that read back to two chunks goes RED here.
 #[test]
 fn a_known_gap_entry_that_has_since_been_documented_is_reported() {
     let via_stdlib = geometry_op_doc_coverage_violations(
         &["documented_op"],
         SYNTHETIC_STDLIB_MD,
         SYNTHETIC_GEOMETRY_MD,
+        &synthetic_all_chunks(),
         &[],
         &["documented_op"],
     );
@@ -899,6 +970,7 @@ fn a_known_gap_entry_that_has_since_been_documented_is_reported() {
         &["mentioned_ctor"],
         SYNTHETIC_STDLIB_MD,
         SYNTHETIC_GEOMETRY_MD,
+        &synthetic_all_chunks(),
         &[],
         &["mentioned_ctor"],
     );
@@ -907,41 +979,54 @@ fn a_known_gap_entry_that_has_since_been_documented_is_reported() {
         "`mentioned_ctor` is carried as a known gap but geometry.md now mentions it — the \
          stale entry must be reported so it gets deleted. Got: {via_geometry:?}"
     );
+
+    let via_other_chunk = geometry_op_doc_coverage_violations(
+        &["elsewhere_ctor"],
+        SYNTHETIC_STDLIB_MD,
+        SYNTHETIC_GEOMETRY_MD,
+        &synthetic_all_chunks(),
+        &[],
+        &["elsewhere_ctor"],
+    );
+    assert!(
+        via_other_chunk.iter().any(|v| v.contains("elsewhere_ctor")),
+        "`elsewhere_ctor` is carried as documented in NO chunk, but a chunk OTHER than \
+         stdlib.md/geometry.md mentions it — the known-gap audit must read the whole \
+         corpus, or a name documented in any other chunk stays exempt forever. \
+         Got: {via_other_chunk:?}"
+    );
 }
 
-/// Both exclusion lists must be accurate over the REAL chunks.
+/// ANTI-ROT — the mention check is anchored on an identifier boundary, so a name
+/// that is a SUFFIX of a documented one is not counted as documented.
 ///
-/// This is the same property the two controls above pin synthetically, asserted
-/// against the files that actually ship — so the lists cannot drift out of
-/// truth even if the helper is later refactored.
+/// [`CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK`] carries both `box` and
+/// `rounded_box` today. Under an unanchored substring match the `box` exclusion
+/// would ride on `rounded_box(` — a false coverage claim surviving on a
+/// coincidence of spelling, which is the exact laundering class 2 exists to
+/// catch.
 #[test]
-fn the_exclusion_lists_are_accurate_over_the_real_chunks() {
-    let stdlib_md = read_chunk(CHUNK_PATH);
-    let geometry_md = read_chunk(GEOMETRY_CHUNK_PATH);
-
-    let unbacked: Vec<&str> = CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK
-        .iter()
-        .copied()
-        .filter(|name| !chunk_mentions(&geometry_md, name))
-        .collect();
+fn a_name_that_is_only_a_suffix_of_a_documented_one_is_not_counted_as_mentioned() {
     assert!(
-        unbacked.is_empty(),
-        "CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK excludes name(s) from the registry → doc \
-         guard on the grounds that {GEOMETRY_CHUNK_PATH} documents them, but it does not \
-         mention them at all — either document them there or drop the exclusion: {}",
-        unbacked.join(", ")
+        !chunk_mentions("`rounded_box(w, h, d, r)` builds a thing.", "box"),
+        "`box` must NOT count as mentioned by a chunk that only documents `rounded_box(`"
+    );
+    assert!(
+        chunk_mentions("`rounded_box(w, h, d, r)` and `box(w, h, d)`.", "box"),
+        "`box` MUST count as mentioned once the chunk documents it standalone"
     );
 
-    let closed: Vec<&str> = CONSTRUCTORS_DOCUMENTED_NOWHERE
-        .iter()
-        .copied()
-        .filter(|name| chunk_mentions(&stdlib_md, name) || chunk_mentions(&geometry_md, name))
-        .collect();
+    let reported = geometry_op_doc_coverage_violations(
+        &["box"],
+        SYNTHETIC_STDLIB_MD,
+        "`rounded_box(w, h, d, r)` builds a thing.",
+        &synthetic_all_chunks(),
+        &["box"],
+        &[],
+    );
     assert!(
-        closed.is_empty(),
-        "CONSTRUCTORS_DOCUMENTED_NOWHERE carries name(s) that ARE now documented — the list \
-         must shrink as the gap closes, so delete these entries and let the guard cover \
-         them normally: {}",
-        closed.join(", ")
+        reported.iter().any(|v| v.contains("box")),
+        "`box` is excluded as documented in geometry.md, but geometry.md only documents \
+         `rounded_box(` — the exclusion must not ride on a suffix match. Got: {reported:?}"
     );
 }
