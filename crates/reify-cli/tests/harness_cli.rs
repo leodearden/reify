@@ -155,6 +155,8 @@ mod cli_sub_placement_assembly;
 mod cli_surface_finish_cost;
 #[path = "harness_cli/cli_test.rs"]
 mod cli_test;
+#[path = "harness_cli/cli_tensegrity_e2e.rs"]
+mod cli_tensegrity_e2e;
 #[path = "harness_cli/cli_tolerancing_eval.rs"]
 mod cli_tolerancing_eval;
 #[path = "harness_cli/cli_trait_assoc_fn_overload.rs"]
