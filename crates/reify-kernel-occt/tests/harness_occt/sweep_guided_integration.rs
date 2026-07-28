@@ -12,6 +12,17 @@
 //!   resulting pipe-shell is a closed tube with positive volume.
 //! - The guide wire is intentionally non-parallel to the path spine so
 //!   that MakePipeShell's SetMode(aux, false) has visible effect.
+//!
+//! Coverage note: the two tests above build their profile from
+//! `GeometryOp::Arc`, i.e. a closed circular **wire**. No DSL program can
+//! reach that input — the compiler requires `sweep_guided`'s first argument
+//! to be a `Surface`, and `circle(r)` lowers to `CircleProfile` →
+//! `make_circle_face` → a `TopoDS_Face`. Since `BRepFill_Section` (used
+//! internally by `BRepOffsetAPI_MakePipeShell`) accepts only a wire or a
+//! vertex, a wire profile is the one shape that happened to work, so the
+//! wire-only tests were green while every DSL call failed. The
+//! `*_face_profile*` tests below close that hole by driving the op with the
+//! face the DSL actually produces.
 
 #![cfg(has_occt)]
 
@@ -116,6 +127,52 @@ fn sweep_guided_produces_valid_shape() {
         bbox.all_finite(),
         "bbox components must all be finite, got {bbox:?}"
     );
+}
+
+/// A `CircleProfile` face — the only profile a DSL `sweep_guided()` call can
+/// produce — must be accepted. `BRepFill_Section` takes a wire or a vertex
+/// only, so the face has to be reduced to its outer wire before `Add`.
+#[test]
+fn sweep_guided_accepts_circle_face_profile() {
+    let mut kernel = OcctKernel::new();
+    let profile = kernel
+        .execute(&GeometryOp::CircleProfile {
+            radius: Value::Real(0.02),
+        })
+        .expect("CircleProfile (20mm) should build")
+        .id;
+    let path = make_straight_path(&mut kernel, 0.1);
+    let guide = make_offset_guide(&mut kernel, 0.05, 0.03, 0.1);
+
+    let result = match kernel.execute(&GeometryOp::SweepGuided {
+        profile,
+        path,
+        guide,
+    }) {
+        Ok(r) => r,
+        Err(e) => panic!("SweepGuided with a CircleProfile (face) must succeed, got: {e}"),
+    };
+
+    let bbox = kernel
+        .query(&GeometryQuery::BoundingBox(result.id))
+        .expect("BoundingBox query should succeed");
+    match bbox {
+        Value::String(s) => {
+            let trimmed = s.trim_start_matches('{').trim_end_matches('}');
+            for pair in trimmed.split(',') {
+                let mut parts = pair.splitn(2, ':');
+                let _key = parts.next().unwrap();
+                let val: f64 = parts
+                    .next()
+                    .unwrap()
+                    .trim()
+                    .parse()
+                    .expect("bbox component should be numeric");
+                assert!(val.is_finite(), "bbox component must be finite, got {val}");
+            }
+        }
+        other => panic!("expected bbox String, got {:?}", other),
+    }
 }
 
 #[test]
