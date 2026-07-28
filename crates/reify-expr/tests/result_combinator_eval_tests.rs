@@ -619,7 +619,8 @@ fn e2e_result_unwrap_or_ok_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = EvalContext::new(&values, &functions);
     assert_eq!(
         eval_expr(expr, &ctx),
         val_5mm(),
@@ -649,7 +650,8 @@ fn e2e_result_or_else_err_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = EvalContext::new(&values, &functions);
     let val_7mm = Value::Scalar {
         si_value: 0.007,
         dimension: DimensionVector::LENGTH,
@@ -680,7 +682,8 @@ fn e2e_result_is_ok_err_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = EvalContext::new(&values, &functions);
     assert_eq!(
         eval_expr(expr, &ctx),
         Value::Bool(false),
@@ -710,7 +713,8 @@ fn e2e_result_is_err_err_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = EvalContext::new(&values, &functions);
     assert_eq!(
         eval_expr(expr, &ctx),
         Value::Bool(true),
@@ -739,7 +743,8 @@ fn e2e_ok_or_some_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = EvalContext::new(&values, &functions);
     assert_eq!(
         eval_expr(expr, &ctx),
         val_ok(val_5mm()),
@@ -770,7 +775,8 @@ fn e2e_ok_or_none_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = EvalContext::new(&values, &functions);
     assert_eq!(
         eval_expr(expr, &ctx),
         val_err("e"),
@@ -817,7 +823,8 @@ fn e2e_map_err_err_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = EvalContext::new(&values, &functions);
     let val_6mm = Value::Scalar {
         si_value: 0.006,
         dimension: DimensionVector::LENGTH,
