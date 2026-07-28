@@ -118,6 +118,32 @@ export function Viewport(props: ViewportProps) {
     return s ? computeScalarRange(props.meshes, s.state.channel) : null;
   });
 
+  // FEA toolbar channel dropdown options (task 5669).
+  //
+  // feaToolbarChannels() returns a fixed base list (+ errorIndicator when
+  // present) that deliberately excludes shell sub-channels
+  // (vonMises_top/_mid/_bottom) — see its own docstring. But
+  // pickDefaultScalarChannel legitimately auto-selects 'vonMises_top' for a
+  // shell mesh (PREFERRED_FEA_CHANNELS), so feaModeStore.state.channel can be
+  // a value absent from feaToolbarChannels' list, desyncing the rendered
+  // <select> from the store. Widen the option list here with any other
+  // non-empty scalar channel actually present across the active mesh set
+  // (mirroring pickDefaultScalarChannel's nonEmpty scan) so the dropdown
+  // always has a matching <option> for the store's current channel.
+  const feaChannelOptions = createMemo(() => {
+    const base = feaToolbarChannels(props.meshes);
+    const extra = new Set<string>();
+    for (const mesh of Object.values(props.meshes)) {
+      if (!mesh.scalar_channels) continue;
+      for (const [name, data] of Object.entries(mesh.scalar_channels)) {
+        if (data && data.length > 0 && !base.includes(name)) {
+          extra.add(name);
+        }
+      }
+    }
+    return extra.size > 0 ? [...base, ...[...extra].sort()] : base;
+  });
+
   onMount(() => {
     const rect = containerRef.getBoundingClientRect();
     const width = rect.width || 800;
@@ -566,7 +592,7 @@ export function Viewport(props: ViewportProps) {
         <FeaModeToolbar
           store={props.feaModeStore!}
           viewportId={props.viewportId}
-          availableChannels={feaToolbarChannels(props.meshes)}
+          availableChannels={feaChannelOptions()}
           onLockCurrent={() => {
             const r = activeScalarRange();
             if (r) props.feaModeStore!.lockCurrent(r.min, r.max);
