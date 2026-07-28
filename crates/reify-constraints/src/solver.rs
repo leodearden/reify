@@ -5939,4 +5939,246 @@ mod tests {
             "a zero-width composed box (!(lo < hi)) must fall back to the default bounds"
         );
     }
+
+    // ---- extract_initial_point derived seeding (task #5618, step-3/step-4) ----
+
+    /// Length auto param with `bounds: None` — the production shape.
+    fn length_auto(id: reify_core::ValueCellId) -> reify_ir::AutoParam {
+        use reify_core::Type;
+        reify_ir::AutoParam {
+            id,
+            param_type: Type::length(),
+            bounds: None,
+            free: true,
+        }
+    }
+
+    /// `<id> OP <v>` as a Length comparison (`v` in SI metres).
+    fn length_cmp(
+        op: reify_ir::BinOp,
+        id: &reify_core::ValueCellId,
+        v: f64,
+    ) -> reify_ir::CompiledExpr {
+        use reify_core::{DimensionVector, Type};
+        reify_ir::CompiledExpr::binop(
+            op,
+            reify_ir::CompiledExpr::value_ref(id.clone(), Type::length()),
+            reify_ir::CompiledExpr::literal(
+                reify_ir::Value::Scalar {
+                    si_value: v,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Type::length(),
+            ),
+            Type::Bool,
+        )
+    }
+
+    /// Objective-free `ResolutionProblem` for `extract_initial_point` seeding tests.
+    fn seed_problem(
+        auto_params: Vec<reify_ir::AutoParam>,
+        exprs: Vec<reify_ir::CompiledExpr>,
+        current_values: ValueMap,
+    ) -> ResolutionProblem {
+        ResolutionProblem {
+            dependent_cells: Vec::new(),
+            auto_params,
+            constraints: as_constraints(exprs),
+            current_values,
+            objective: None,
+            functions: vec![].into(),
+        }
+    }
+
+    /// (a) Two derived sides → the seed is the derived box's MIDPOINT, not the
+    /// fixed `0.01` fallback. This is the defect's proximate cause: `q >= 1 ∧
+    /// q <= 100` seeded at 0.01, outside the synthesised floor's `[1.02, …]`
+    /// window, so Nelder-Mead approached the region from the wrong side.
+    #[test]
+    fn extract_initial_point_seeds_derived_midpoint() {
+        use reify_ir::BinOp;
+        let q = reify_core::ValueCellId::new("Seed", "q");
+        let problem = seed_problem(
+            vec![real_auto_param(q.clone())],
+            vec![
+                cmp_ref_lit(BinOp::Ge, &q, 1.0),
+                cmp_ref_lit(BinOp::Le, &q, 100.0),
+            ],
+            ValueMap::new(),
+        );
+        let seed = super::extract_initial_point(&problem);
+        assert!(
+            (seed[0] - 50.5).abs() < 1e-12,
+            "expected the midpoint of the derived box [1, 100] = 50.5, got {} \
+             (0.01 means the derived box was ignored)",
+            seed[0]
+        );
+    }
+
+    /// (b) Exactly one derived side → nudge INWARD from that bound by
+    /// `max(SEED_NUDGE_REL·|v|, SEED_NUDGE_ABS)`, never the midpoint of the
+    /// half-open box. For `thickness > 1mm` the derived box is
+    /// `[0.001, default_hi = 10.0]`, whose midpoint would be an absurd 5 m.
+    #[test]
+    fn extract_initial_point_one_sided_seed_nudges_inward() {
+        use reify_ir::BinOp;
+        let t = reify_core::ValueCellId::new("Seed", "thickness");
+        let problem = seed_problem(
+            vec![length_auto(t.clone())],
+            vec![length_cmp(BinOp::Gt, &t, 0.001)],
+            ValueMap::new(),
+        );
+        let seed = super::extract_initial_point(&problem);
+        let expected = 0.001 + (super::SEED_NUDGE_REL * 0.001).max(super::SEED_NUDGE_ABS);
+        assert!(
+            (seed[0] - expected).abs() < 1e-15,
+            "expected a one-sided seed nudged just inside the 1mm bound ({expected} m), got {} m",
+            seed[0]
+        );
+        assert!(
+            seed[0] < 0.002,
+            "the one-sided seed must NOT be the midpoint of [0.001, 10.0] (= 5 m); got {} m",
+            seed[0]
+        );
+    }
+
+    /// (c) An existing `current_values` entry still wins over any derived box —
+    /// the precedence head of the chain is unchanged.
+    #[test]
+    fn extract_initial_point_current_value_still_wins() {
+        use reify_core::DimensionVector;
+        use reify_ir::{BinOp, Value};
+        let q = reify_core::ValueCellId::new("Seed", "q");
+        let mut current = ValueMap::new();
+        current.insert(
+            q.clone(),
+            Value::Scalar {
+                si_value: 7.25,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+        );
+        let problem = seed_problem(
+            vec![real_auto_param(q.clone())],
+            vec![
+                cmp_ref_lit(BinOp::Ge, &q, 1.0),
+                cmp_ref_lit(BinOp::Le, &q, 100.0),
+            ],
+            current,
+        );
+        let seed = super::extract_initial_point(&problem);
+        assert_eq!(
+            seed[0], 7.25,
+            "an existing current value must still win over the derived box"
+        );
+    }
+
+    /// (d) An explicit `AutoParam.bounds` midpoint still wins over the derived
+    /// box — the derived arm is inserted BELOW it in the fall-through chain.
+    #[test]
+    fn extract_initial_point_explicit_bounds_still_win() {
+        use reify_ir::BinOp;
+        let q = reify_core::ValueCellId::new("Seed", "q");
+        let mut param = real_auto_param(q.clone());
+        param.bounds = Some((10.0, 20.0));
+        let problem = seed_problem(
+            vec![param],
+            vec![
+                cmp_ref_lit(BinOp::Ge, &q, 1.0),
+                cmp_ref_lit(BinOp::Le, &q, 100.0),
+            ],
+            ValueMap::new(),
+        );
+        let seed = super::extract_initial_point(&problem);
+        assert_eq!(
+            seed[0], 15.0,
+            "an explicit bounds midpoint must still win over the derived box"
+        );
+    }
+
+    /// (e) No usable constraint → the fixed `0.01` fallback, verbatim as today.
+    /// Covers an empty constraint list, an `Eq`-only list, and a multi-auto shape
+    /// that no rule recognises.
+    #[test]
+    fn extract_initial_point_no_usable_constraint_keeps_fixed_default() {
+        use reify_core::Type;
+        use reify_ir::{BinOp, CompiledExpr};
+
+        let q = reify_core::ValueCellId::new("Seed", "q");
+        let p = reify_core::ValueCellId::new("Seed", "p");
+
+        // Empty constraint list.
+        let empty = seed_problem(vec![real_auto_param(q.clone())], vec![], ValueMap::new());
+        assert_eq!(
+            super::extract_initial_point(&empty)[0],
+            0.01,
+            "an unconstrained auto must still seed at exactly 0.01"
+        );
+
+        // Eq only — not an inequality, contributes no bound.
+        let eq_only = seed_problem(
+            vec![real_auto_param(q.clone())],
+            vec![cmp_ref_lit(BinOp::Eq, &q, 3.0)],
+            ValueMap::new(),
+        );
+        assert_eq!(
+            super::extract_initial_point(&eq_only)[0],
+            0.01,
+            "an Eq-only constraint set must still seed at exactly 0.01"
+        );
+
+        // Multi-auto shape (`q + p >= 10`) — no recognised linear-in-one-auto form.
+        let sum = CompiledExpr::binop(
+            BinOp::Add,
+            real_ref(&q),
+            real_ref(&p),
+            Type::dimensionless_scalar(),
+        );
+        let multi = seed_problem(
+            vec![real_auto_param(q.clone()), real_auto_param(p.clone())],
+            vec![CompiledExpr::binop(BinOp::Ge, sum, real_lit(10.0), Type::Bool)],
+            ValueMap::new(),
+        );
+        let seed = super::extract_initial_point(&multi);
+        assert_eq!(
+            seed,
+            vec![0.01, 0.01],
+            "a multi-auto shape must contribute no bound; both autos seed at 0.01"
+        );
+    }
+
+    /// (f) The one-sided nudge is clamped inside the composed box, so it can never
+    /// cross the opposing default bound.
+    #[test]
+    fn extract_initial_point_one_sided_nudge_clamped_into_box() {
+        use reify_ir::BinOp;
+
+        // High side: `x >= 9.5 m` with default Length hi = 10.0 m.
+        // nudge = 0.1 × 9.5 = 0.95 → 10.45 m, past the box top.
+        let x = reify_core::ValueCellId::new("Seed", "x");
+        let high = seed_problem(
+            vec![length_auto(x.clone())],
+            vec![length_cmp(BinOp::Ge, &x, 9.5)],
+            ValueMap::new(),
+        );
+        let (box_lo, box_hi) = (9.5_f64, 10.0_f64);
+        let seed = super::extract_initial_point(&high)[0];
+        assert!(
+            (box_lo..=box_hi).contains(&seed),
+            "the nudged seed must be clamped inside [{box_lo}, {box_hi}], got {seed}"
+        );
+
+        // Low side: `q <= -950000` with default dimensionless lo = -1e6.
+        // nudge = 0.1 × 950000 = 95000 → -1045000, past the box bottom.
+        let q = reify_core::ValueCellId::new("Seed", "q");
+        let low = seed_problem(
+            vec![real_auto_param(q.clone())],
+            vec![cmp_ref_lit(BinOp::Le, &q, -950_000.0)],
+            ValueMap::new(),
+        );
+        let seed = super::extract_initial_point(&low)[0];
+        assert!(
+            (-1e6..=-950_000.0).contains(&seed),
+            "the nudged seed must be clamped inside [-1e6, -950000], got {seed}"
+        );
+    }
 }
