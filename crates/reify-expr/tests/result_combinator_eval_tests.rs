@@ -638,8 +638,9 @@ fn e2e_result_unwrap_or_ok_with_stdlib() {
         eval_expr(expr, &ctx),
         val_5mm(),
         "e2e: unwrap_or(Ok{{value:5mm}}, 0mm) compiled via stdlib must evaluate to 5mm — \
-         if the intercept stops firing this falls through to eval_user_function_call \
-         and yields Undef"
+         if the intercept stops firing, the stdlib `{{ dflt }}` placeholder wins and this \
+         yields 0mm (matched candidate is option_recovery.ri's Option overload; see the \
+         OVERLOAD NOTE in the section banner above)"
     );
 }
 
@@ -673,8 +674,10 @@ fn e2e_result_or_else_err_with_stdlib() {
         eval_expr(expr, &ctx),
         val_ok(val_7mm),
         "e2e: or_else(Err{{error:\"e\"}}, Ok{{value:7mm}}) compiled via stdlib must evaluate to \
-         the alternative Ok{{value:7mm}} — if the intercept stops firing this falls through \
-         to eval_user_function_call and yields Undef"
+         the alternative Ok{{value:7mm}} — if the intercept stops firing, the stdlib \
+         subject-returning placeholder wins and this yields the Err{{error:\"e\"}} subject \
+         (matched candidate is option_recovery.ri's `{{ o }}` Option overload; see the \
+         OVERLOAD NOTE in the section banner above)"
     );
 }
 
@@ -701,8 +704,8 @@ fn e2e_result_is_ok_err_with_stdlib() {
         eval_expr(expr, &ctx),
         Value::Bool(false),
         "e2e: is_ok(Err{{error:\"e\"}}) compiled via stdlib must evaluate to false — \
-         if the intercept stops firing this falls through to eval_user_function_call \
-         and yields Undef"
+         if the intercept stops firing, result.ri's `{{ true }}` placeholder wins and \
+         this yields true"
     );
 }
 
@@ -732,8 +735,8 @@ fn e2e_result_is_err_err_with_stdlib() {
         eval_expr(expr, &ctx),
         Value::Bool(true),
         "e2e: is_err(Err{{error:\"e\"}}) compiled via stdlib must evaluate to true — \
-         if the intercept stops firing this falls through to eval_user_function_call \
-         and yields Undef"
+         if the intercept stops firing, result.ri's `{{ false }}` placeholder wins and \
+         this yields false"
     );
 }
 
@@ -762,8 +765,8 @@ fn e2e_ok_or_some_with_stdlib() {
         eval_expr(expr, &ctx),
         val_ok(val_5mm()),
         "e2e: ok_or(some(5mm), \"e\") compiled via stdlib must evaluate to Ok{{value:5mm}} — \
-         if the intercept stops firing this falls through to eval_user_function_call \
-         and yields Undef"
+         if the intercept stops firing, option_recovery.ri's `{{ err }}` placeholder wins \
+         and this yields the naked String(\"e\"), unwrapped by no Result at all"
     );
 }
 
@@ -796,8 +799,8 @@ fn e2e_ok_or_none_with_stdlib() {
         eval_expr(expr, &ctx),
         val_err("e"),
         "e2e: ok_or(none, \"e\") compiled via stdlib must evaluate to Err{{error:\"e\"}} — \
-         if the intercept stops firing this falls through to eval_user_function_call \
-         and yields Undef"
+         if the intercept stops firing, option_recovery.ri's `{{ err }}` placeholder wins \
+         and this yields the naked String(\"e\") rather than an Err wrapping it"
     );
 }
 
@@ -854,7 +857,7 @@ fn e2e_map_err_err_with_stdlib() {
             payload: vec![("error".to_string(), val_6mm)],
         },
         "e2e: map_err(Err{{error:3mm}}, |e| e * 2) compiled via stdlib must evaluate to \
-         Err{{error:6mm}} — if the map_err/2 gate stops firing this falls through to \
-         eval_user_function_call and yields Undef"
+         Err{{error:6mm}} — if the map_err/2 gate stops firing, result.ri's `{{ r }}` \
+         placeholder wins and this yields the UNMAPPED subject Err{{error:3mm}}"
     );
 }

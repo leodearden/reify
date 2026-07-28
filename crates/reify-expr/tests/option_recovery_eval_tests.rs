@@ -385,8 +385,8 @@ fn e2e_or_default_some_with_stdlib() {
         reify_expr::eval_expr(expr, &ctx),
         val_5mm(),
         "e2e: or_default(some(5mm), 0mm) compiled via stdlib must evaluate to 5mm — \
-         if the intercept stops firing this falls through to eval_user_function_call \
-         and yields Undef"
+         if the intercept stops firing, option_recovery.ri's `{{ dflt }}` placeholder \
+         wins and this yields 0mm"
     );
 }
 
@@ -524,8 +524,9 @@ fn e2e_or_else_none_subject_with_stdlib() {
         reify_expr::eval_expr(expr, &ctx),
         Value::Option(Some(Box::new(val_3mm()))),
         "e2e: or_else(o, some(3mm)) compiled via stdlib, with subject param o seeded to \
-         none, must evaluate to some(3mm) — if the intercept stops firing this falls \
-         through to eval_user_function_call and yields Undef"
+         none, must evaluate to some(3mm) — if the intercept stops firing, \
+         option_recovery.ri's `{{ o }}` placeholder wins and this yields the seeded \
+         subject, Option(None)"
     );
 }
 
@@ -668,8 +669,8 @@ fn e2e_is_some_none_with_stdlib() {
         reify_expr::eval_expr(expr, &ctx),
         Value::Bool(false),
         "e2e: is_some(none) compiled via stdlib must evaluate to false — \
-         if the intercept stops firing this falls through to eval_user_function_call \
-         and yields Undef"
+         if the intercept stops firing, option_recovery.ri's `{{ true }}` placeholder \
+         wins and this yields true"
     );
 }
 
@@ -697,8 +698,8 @@ fn e2e_is_none_none_with_stdlib() {
         reify_expr::eval_expr(expr, &ctx),
         Value::Bool(true),
         "e2e: is_none(none) compiled via stdlib must evaluate to true — \
-         if the intercept stops firing this falls through to eval_user_function_call \
-         and yields Undef"
+         if the intercept stops firing, option_recovery.ri's `{{ false }}` placeholder \
+         wins and this yields false"
     );
 }
 
@@ -1132,8 +1133,8 @@ fn e2e_map_or_some_with_stdlib() {
         reify_expr::eval_expr(expr, &ctx),
         val_10mm(),
         "e2e: map_or(some(5mm), 0mm, |x| x * 2) compiled via stdlib must evaluate to 10mm — \
-         if the map_or/3 gate stops firing this falls through to eval_user_function_call \
-         and yields Undef"
+         if the map_or/3 gate stops firing, option_recovery.ri's `{{ dflt }}` placeholder \
+         wins and this yields 0mm"
     );
 }
 
