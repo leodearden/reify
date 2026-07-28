@@ -629,18 +629,31 @@ assert "F10: conf still has exactly two non-comment lines after re-run" \
     bash -c '[ "$(awk "!/^[[:space:]]*#/ && NF" "$1" | wc -l)" -eq 2 ]' _ "$F_CONF"
 
 # Fail-open: a host where sudo is absent or refuses must not fail setup-dev.sh.
+#
+# The tmpfiles dir is made NON-WRITABLE for this fixture, and that is the whole
+# point rather than incidental setup.  The real /etc/tmpfiles.d is not writable
+# by the invoking user, so sudo is the production path; against the writable
+# temp dir the other F cases use, the script legitimately writes directly and
+# never consults sudo at all — so a failing sudo stub alone would assert
+# nothing.  This fixture forces the sudo branch and then fails it.
 make_sudo_stub 1
 make_fake_home
 make_cache_root
+chmod 500 "$TMPFILES_DIR"
 
 reset_calls
 run_redirect
+chmod 700 "$TMPFILES_DIR"
 make_sudo_stub 0
 
 assert "F11: exits 0 when sudo refuses (fail-open)" test "$RC" -eq 0
 assert "F12: warns when the tmpfiles conf could not be written" \
     bash -c 'printf "%s\n%s\n" "$1" "$2" | grep -qiE "WARN.*(tmpfiles|exclusion|conf)"' \
     _ "$OUT" "$ERR_OUT"
+assert "F13: the sudo branch WAS actually taken (fixture is not vacuous)" \
+    bash -c 'grep -q "^sudo " "$1"' _ "$CALLS_FILE"
+assert "F14: no conf was left behind by the failed write" \
+    test ! -e "$TMPFILES_DIR/reify-agent-caches.conf"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block G — desync guard
