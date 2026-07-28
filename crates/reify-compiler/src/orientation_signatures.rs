@@ -25,28 +25,47 @@ use reify_ir::CompiledExpr;
 /// recognised by the compiler. Single source of truth — imported into the
 /// `units.rs` test module to pin disjointness from all sibling families.
 ///
-/// **14 names** grouped by target nominal type:
+/// **18 names** grouped by target nominal type:
 /// - **Orientation producers** (10) → `Type::Orientation(3)`: `orient_identity`,
 ///   `orient_quaternion`, `orient_euler`, `orient_basis`, `orient_look_at`,
 ///   `orient_axis_angle`, `orient_exp`, `orient_inverse`, `orient_compose`,
 ///   `orient_slerp`. Eval dispatch: `reify_stdlib::orientation::eval_orientation`.
-/// - **Transform producers** (3) → `Type::Transform(3)`: `transform3`,
-///   `transform3_identity`, `transform_compose`. Eval dispatch:
-///   `reify_stdlib::geometry::eval_geometry`.
-/// - **Frame producer** (1) → `Type::Frame(3)`: `frame3`. Eval dispatch:
+/// - **Frame producers** (2) → `Type::Frame(3)`: `frame3`, `frame3_identity`.
+///   Eval dispatch: `reify_stdlib::geometry::eval_geometry`.
+/// - **Transform producers** (6) → `Type::Transform(3)`: `transform3`,
+///   `transform3_identity`, `transform_compose`, `transform_inverse`,
+///   `transform_exp`, `frame_to_frame`. Eval dispatch:
 ///   `reify_stdlib::geometry::eval_geometry`.
 ///
-/// **The `orient_*` family is NOT uniform** — this MUST be an explicit list, not
-/// a `starts_with("orient_")` prefix. Three `orient_*` DECOMPOSERS are
-/// deliberately EXCLUDED because they return other value kinds, not an
-/// orientation:
+/// # The family is NOT uniform — never replace this list with a prefix rule
+///
+/// This MUST stay an explicit list. A `starts_with("orient_")` /
+/// `starts_with("transform_")` prefix rule would newly MISTYPE all FOUR
+/// DECOMPOSERS, which share a prefix with a genuine producer but return a
+/// different value kind and are deliberately EXCLUDED:
 /// - `orient_log` → `Value::Vector` (the rotation vector / log map),
 /// - `orient_to_euler` → `Value::List` of Angles,
-/// - `orient_to_axis_angle` → `Value::Map` `{angle, axis}`.
+/// - `orient_to_axis_angle` → `Value::Map` `{angle, axis}`,
+/// - `transform_log` → `Value::Map` (twist).
 ///
-/// A prefix or blanket "all `orient_*` → Orientation" rule would newly MISTYPE
-/// these three (and the Map case has no clean `Type` variant). Per-name typing
-/// for the decomposers is out of scope here (a follow-up).
+/// The two `Value::Map` cases have no clean `Type` variant and `orient_log`'s
+/// quantity slot needs a dimension ruling, so per-name typing for the
+/// decomposers is out of scope here (a follow-up).
+///
+/// `frame_at` is likewise EXCLUDED: `units.rs::datum_constructor_result_type`
+/// already types it `Type::Frame(3)` as part of the DATUM family, so claiming
+/// it here would double-classify the name across two resolvers.
+///
+/// # Two traps encoded in this list
+///
+/// 1. **`frame_to_frame` is a Transform, not a Frame.** Despite the `frame_`
+///    prefix it returns `Value::Transform` (`geometry.rs:512`) — it computes the
+///    rigid motion mapping one frame onto another.
+/// 2. **The digit is meaningful.** The digit-carrying `transform3` /
+///    `transform3_identity` CONSTRUCTORS are distinct from the digitless
+///    `transform_compose` / `transform_inverse` / `transform_exp` OPERATIONS;
+///    both groups land on `Type::Transform(3)`, but the spelling split is real
+///    and must not be "tidied".
 ///
 /// Case-sensitive: Reify function names are snake_case.
 pub const ORIENTATION_TYPED_FN_NAMES: &[&str] = &[
@@ -61,12 +80,17 @@ pub const ORIENTATION_TYPED_FN_NAMES: &[&str] = &[
     "orient_inverse",
     "orient_compose",
     "orient_slerp",
-    // Transform producers (3): → Type::Transform(3)
+    // Frame producers (2): → Type::Frame(3)
+    "frame3",
+    "frame3_identity",
+    // Transform producers (6): → Type::Transform(3)
     "transform3",
     "transform3_identity",
     "transform_compose",
-    // Frame producer (1): → Type::Frame(3)
-    "frame3",
+    "transform_inverse",
+    "transform_exp",
+    // Trap: `frame_` prefix, but returns Value::Transform (geometry.rs:512).
+    "frame_to_frame",
 ];
 
 /// Is `name` an orientation/transform/frame constructor builtin the compiler
