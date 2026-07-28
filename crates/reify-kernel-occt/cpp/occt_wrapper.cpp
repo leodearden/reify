@@ -3455,8 +3455,10 @@ std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
                                            const OcctShape& spine,
                                            const OcctShape& guide) {
     return wrap_occt_call("make_pipe_shell", [&]() {
-        // Spine and guide must both be wires; profile may be an edge,
-        // wire, or face.
+        // Spine and guide must both be wires. The profile must be a wire, a
+        // vertex, or a face (reduced to its outer wire below) — an EDGE is
+        // NOT accepted, since BRepFill_Section holds only a wire or a vertex.
+        const bool profile_was_face = (profile.shape.ShapeType() == TopAbs_FACE);
         BRepOffsetAPI_MakePipeShell maker(TopoDS::Wire(spine.shape));
         maker.Add(section_profile_to_wire(profile.shape));
         // SetMode(auxWire, KeepContact) — KeepContact=false keeps the
@@ -3465,6 +3467,17 @@ std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
         maker.Build();
         if (!maker.IsDone()) {
             throw std::runtime_error("BRepOffsetAPI_MakePipeShell failed");
+        }
+        // Mirror BRepOffsetAPI_MakePipe's own convention: a face profile
+        // sweeps to a SOLID, a wire profile to a SHELL. That gives
+        // sweep_guided parity with sweep for every profile the compiler can
+        // produce (it admits only Surface profiles) and honours the declared
+        // signature `sweep_guided(profile: Surface, ...) -> Solid`. Gating on
+        // the input's face-ness leaves the wire path returning a shell, which
+        // the wire-profile tests and the Centroid repr dispatch rely on.
+        if (profile_was_face && !maker.MakeSolid()) {
+            throw std::runtime_error(
+                "make_pipe_shell: MakeSolid failed — face profile swept to an open shell");
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();

@@ -929,6 +929,11 @@ std::unique_ptr<OcctShape> make_pipe(const OcctShape& profile, const OcctShape& 
 /// constraining orientation (BRepOffsetAPI_MakePipeShell + SetMode).
 /// `spine` is the path the section follows; `guide` biases section
 /// orientation via SetMode(guide, /*KeepContact=*/Standard_False).
+///
+/// `profile` must be a wire, a vertex, or a face — a face is reduced to its
+/// outer wire before `Add`, since BRepFill_Section accepts only a wire or a
+/// vertex (an EDGE is rejected). The result follows BRepOffsetAPI_MakePipe's
+/// convention: a face profile yields a SOLID, a wire profile a SHELL.
 std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
                                            const OcctShape& spine,
                                            const OcctShape& guide);
