@@ -33,10 +33,14 @@
 # decision is made at build time, so --print-plan is a faithful oracle of
 # whether the `-E` subset applied. Command-shape assertions that depend on
 # nextest being installed are guarded on a NEXTEST_AVAILABLE probe of the plan
-# header's `nextest=` token (sibling idiom, test_verify_test_threads.sh);
-# host-independent invariants (byte-identical default; the loud stderr lines,
-# added by later steps) are asserted unconditionally. Temp sidecar / filter
-# files are pointed at via the REIFY_VERIFY_ATTEMPT_SIDECAR /
+# header's `nextest=` token (sibling idiom, test_verify_test_threads.sh).
+# Host-independent invariants — the byte-identical default and Test 2's
+# tree-drift loud line — are asserted unconditionally; Test 3/4's 'no subset'
+# / 'subset too large' loud lines only exist on the nextest path (NEXTEST-
+# guarded) — a nextest-less host short-circuits to the single 'retry refused:
+# no nextest' line instead (verify.sh, gated on _RETRY_SUBSET_ELIGIBLE),
+# asserted in the else arms. Temp sidecar / filter files are pointed at via
+# the REIFY_VERIFY_ATTEMPT_SIDECAR /
 # REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE* envs for full hermeticity.
 #
 # Pinned mechanically by S9 in tests/infra/test_verify_nextest_absent_suites.sh
@@ -196,8 +200,11 @@ assert "absent sidecar under scope=failed_only: STDERR carries 'retry refused: t
 # sidecar (so the tree-OID gate is satisfied), a filter file that is absent /
 # empty / unset must ALSO refuse the subset loudly (distinct 'retry refused: no
 # subset' substring) and run FULL — never a silent whole-suite run masquerading
-# as a subset. Fragment-absence is NEXTEST-guarded (command shape); the loud
-# line is host-independent (unconditional).
+# as a subset. Both the fragment-absence check and the 'no subset' loud line
+# only apply on the nextest path (NEXTEST-guarded); on a nextest-less host
+# verify.sh short-circuits to the single 'retry refused: no nextest' line
+# instead (verify.sh, gated on _RETRY_SUBSET_ELIGIBLE), which the else arm of
+# _assert_no_subset_loud asserts.
 # RED after impl-tree-drift-loud: an absent/empty/unset filter already yields no
 # fragment, but no loud line.
 # ---------------------------------------------------------------------------
