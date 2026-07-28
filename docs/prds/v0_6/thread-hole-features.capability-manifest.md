@@ -79,9 +79,11 @@ stamped by commit_planning).
 - `sweep-along-helix` — **PASS** (producer:task-5342, upstream dep) — same binding as
   α's `helix-wire-sweepable`; δ's DSL-level composition is #5342's literal acceptance
   fixture shape.
-- `groove-volume-formula` — **PASS** (floor stated) — ΔV ≈ π·r²·L_helix,
+- `groove-volume-formula` — **PASS** (floor stated) — ΔV ≈ 0.5·π·r²·L_helix,
   L_helix = sqrt((2πRn)² + h²) (±15% band; #5342's own acceptance math ≈1.359 m for
-  24/7/63 is the basis).
+  24/7/63 is the basis). Reference value re-spec'd π·r²·L_helix → 0.5·π·r²·L_helix by
+  **#5580** (the rope seat is a half-round, so only the outer half of the swept tube is
+  ever stock); band width and L_helix formula unchanged.
 - `target-file-caveat` — **PASS** (wired) — `prj/printer_v01/dev_capstan.ri:27-30`
   MODELLING CAVEATS header names the exact gap + #5342/#5343.
 
@@ -143,7 +145,9 @@ The D3 workflow (Enumerator → Prover ‖ Adversary → Synthesize, 32 agents) 
   coverage (row 1b — adversary: `internal: true` was never exercised); δ's volume-delta
   band restated against dev_capstan's ACTUAL parameters with the submersion caveat
   (adversary: the 24/7/63 numbers were #5342's, and swept-volume ≈ removed-volume only
-  when the groove is submerged); η's discoverability signal reworded to the real tool
+  when the groove is submerged) *(superseded by #5580 — the submersion caveat is
+  retired; the seat is a half-round and the reference is 0.5·π·r²·L_helix)*; η's
+  discoverability signal reworded to the real tool
   surface (available_topics listing + chunk fetch; no intent-search exists) and the
   sweep/sweep_guided docs must state real arg-type constraints (adversary falsified
   "any 3 geometry args pass").

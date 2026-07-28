@@ -170,8 +170,10 @@ tasks:
       - crates/reify-kernel-occt/cpp/occt_wrapper.cpp
       expect: present
   - name: groove-volume-formula
-    binding: 'numeric floor — ΔV ≈ π·r²·L_helix ±15%; basis = #5342 acceptance math
-      (L_helix ≈ 1.359 m for 24/7/63)'
+    binding: 'numeric floor — ΔV ≈ 0.5·π·r²·L_helix ±15%; basis = #5342 acceptance
+      math (L_helix ≈ 1.359 m for 24/7/63); reference value re-spec''d π·r²·L_helix
+      → 0.5·π·r²·L_helix by #5580 (half-round rope seat — only the outer half of the
+      swept tube is ever stock), band width and L_helix formula unchanged'
     verdict: PASS
     delivered_check:
       kind: manual
