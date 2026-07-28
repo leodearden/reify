@@ -337,7 +337,15 @@ _read_basecommit_stamp() {
     local base_target_dir="$1"
     local stamp="${base_target_dir}.basecommit"
     if [ -f "$stamp" ]; then
-        cat "$stamp"
+        local content
+        content="$(cat "$stamp")"
+        # Trim trailing whitespace: a stamp write interrupted mid-`printf`
+        # (refresh-warm-base.sh Step 4b) or padded with a stray trailing
+        # newline/space must not smuggle a whitespace-only value past the
+        # caller's [ -n ] check as a falsely-resolved base (task 5632
+        # amendment). The caller's presence-vs-empty attribution for this
+        # stamp is built at the resolve site below, not here.
+        printf '%s' "${content%"${content##*[![:space:]]}"}"
     else
         echo ""
     fi
@@ -546,7 +554,7 @@ _assert_delta_touch_base_substantiated() {
         warn "REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 honoured: accepting a lane with NO delta-touch base despite the recorded prior compilations at $fingerprint_dir — this lane's cloned artifacts may be treated as Fresh against un-delta-touched sources (§9.5 inv.13)"
         return 0
     fi
-    err "Unsubstantiated delta-touch base: no base resolved (--base-commit absent, ${BASE_TARGET_DIR}.basecommit absent, .warm-base-meta BASE_COMMIT absent), so NOTHING is delta-touched (§9.5 inv.13)"
+    err "Unsubstantiated delta-touch base: no base resolved (${_BASE_COMMIT_ATTRIBUTION}), so NOTHING is delta-touched (§9.5 inv.13)"
     err "The clone records prior compilations at $fingerprint_dir, and every tracked source keeps the 2020-01-01 bulk stamp — so no changed source can out-date any cloned artifact and cargo would report them Fresh"
     err "Pass --base-commit <sha>, or re-run scripts/refresh-warm-base.sh so the authoritative .basecommit stamp exists"
     err "_assert_delta_touch_base_substantiated: seed aborted (cold rebuild forced)"
@@ -941,6 +949,14 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     #   3. .warm-base-meta BASE_COMMIT (legacy fallback; drift-prone)
     # An empty result means no base is known → no delta-touch (Block D unchanged).
     EFFECTIVE_BASE_COMMIT=""
+    # Per-tier attribution for tiers 2/3, threaded into the no-base warn/err
+    # messages below so an operator is told "present but empty" rather than a
+    # false "absent" when a stamp/sidecar file exists but its value read back
+    # blank (e.g. a write truncated mid-printf) — the file is right there, and
+    # the fix is to inspect it, not to `ls` for something already present
+    # (task 5632 amendment).
+    _BASE_COMMIT_TIER2_STATUS="absent"
+    _BASE_COMMIT_TIER3_STATUS="absent"
     if [ -n "$BASE_COMMIT" ]; then
         EFFECTIVE_BASE_COMMIT="$BASE_COMMIT"
         # Tier 1 (CLI --base-commit): source is self-evident; logged below.
@@ -950,6 +966,7 @@ if [ -n "$FRESH_CHECKOUT" ]; then
             # Tier 2: authoritative per-gen stamp (refresh-written, TOCTOU-free).
             info "delta-touch base from authoritative .basecommit: $EFFECTIVE_BASE_COMMIT"
         else
+            [ -f "${BASE_TARGET_DIR}.basecommit" ] && _BASE_COMMIT_TIER2_STATUS="present but empty"
             EFFECTIVE_BASE_COMMIT="$(_sidecar_read "$SIDECAR" "BASE_COMMIT")"
             if [ -n "$EFFECTIVE_BASE_COMMIT" ]; then
                 # Tier 3: legacy fallback.  Stamp absent means either a pre-fix base
@@ -957,9 +974,17 @@ if [ -n "$FRESH_CHECKOUT" ]; then
                 # unresolved symlink instead of the concrete .gen.N path (D8 seam
                 # contract violation).  Either way, this is diagnosable from logs.
                 warn "delta-touch base from legacy .warm-base-meta BASE_COMMIT (authoritative stamp absent — caller may have passed an unresolved symlink): $EFFECTIVE_BASE_COMMIT"
+            else
+                [ -f "$SIDECAR" ] && grep -q "^BASE_COMMIT=" "$SIDECAR" 2>/dev/null && _BASE_COMMIT_TIER3_STATUS="present but empty"
             fi
         fi
     fi
+    # Single attribution string shared by the warn below and by
+    # _assert_delta_touch_base_substantiated's err (§9.5 inv.13): naming
+    # "present but empty" instead of "absent" for a tier whose file exists
+    # sends an operator to inspect the file's CONTENT, not to hunt for a file
+    # that was there all along.
+    _BASE_COMMIT_ATTRIBUTION="--base-commit absent, ${BASE_TARGET_DIR}.basecommit ${_BASE_COMMIT_TIER2_STATUS}, .warm-base-meta BASE_COMMIT ${_BASE_COMMIT_TIER3_STATUS}"
 
     if [ -n "$EFFECTIVE_BASE_COMMIT" ]; then
         info "Touching git diff --name-only $EFFECTIVE_BASE_COMMIT paths to now ..."
@@ -974,7 +999,7 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         # the condition and what it implies; do not diagnose why it happened,
         # then refuse via _assert_delta_touch_base_substantiated immediately
         # below (task 5632 — full statement: §9.5 inv.13).
-        warn "No delta-touch base resolved (--base-commit absent, ${BASE_TARGET_DIR}.basecommit absent, .warm-base-meta BASE_COMMIT absent) — no tracked source is touched to now, so every tracked source keeps the 2020-01-01 bulk stamp and cannot out-date any cloned build artifact; cargo will treat stale build-script outputs as Fresh. Pass --base-commit <sha>, or re-run scripts/refresh-warm-base.sh so the authoritative .basecommit stamp exists."
+        warn "No delta-touch base resolved (${_BASE_COMMIT_ATTRIBUTION}) — no tracked source is touched to now, so every tracked source keeps the 2020-01-01 bulk stamp and cannot out-date any cloned build artifact; cargo will treat stale build-script outputs as Fresh. Pass --base-commit <sha>, or re-run scripts/refresh-warm-base.sh so the authoritative .basecommit stamp exists."
         # Called HERE — before the non-relocatable build-dir invalidation, the
         # links-metadata/OUT_DIR relocation sweep and the env!() relink below —
         # so a doomed seed pays none of those walks. This is the mirror-image of
