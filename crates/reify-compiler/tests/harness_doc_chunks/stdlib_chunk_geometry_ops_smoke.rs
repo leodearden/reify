@@ -495,21 +495,54 @@ fn fixture_geometry_call_names_all_exist_in_the_compiler() {
 
 // ── Chunk → compiler / chunk → fixture ───────────────────────────────────────
 
-/// The function names documented in the chunk's [`CHUNK_SECTION`] section.
+/// A documented form's declared argument count: either an exact arity, or a
+/// variadic form carrying the given MINIMUM arity.
 ///
-/// Scan shape (deliberately narrow, so this stays a NAME check and never
-/// becomes a wording pin): inside that section — from its heading to the next
-/// `## ` heading — every line that starts with `**` is a bolded signature row;
-/// within such a row only the backtick-delimited spans are inspected, and from
-/// each span the identifier immediately preceding a `(` is taken. Spans without
-/// a `(` (`List<Geometry>`, `Length`) contribute nothing, as does any prose or
-/// HTML comment outside a `**`-prefixed line.
+/// An argument equal to `…` (U+2026) or ENDING IN `…` (e.g. `weights…`) marks
+/// the form variadic and contributes 0 to the minimum — see
+/// `documented_geometry_op_forms`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Arity {
+    Exact(usize),
+    AtLeast(usize),
+}
+
+/// One documented (name, arity) overload. A single row commonly documents
+/// several of these for the same name (e.g. `mirror(geo, plane)` and
+/// `mirror(geo, ox, oy, oz, nx, ny, nz)`) — they are deliberately NOT
+/// collapsed, which is the whole point of the FORM-granularity upgrade over
+/// `documented_geometry_op_names`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct DocForm {
+    name: String,
+    arity: Arity,
+}
+
+/// Every geometry-op / curve-constructor (name, arity) FORM documented in the
+/// chunk's [`CHUNK_SECTION`] section.
 ///
-/// Deduped and sorted. Callers must anti-vacuity-check the result: a heading
+/// Scan shape (deliberately narrow, so this stays a NAME+ARITY check and
+/// never becomes a wording pin) — identical section/line/span selection to
+/// the name-only scan this supersedes: inside that section — from its
+/// heading to the next `## ` heading — every line that starts with `**` is a
+/// bolded signature row; within such a row only the backtick-delimited spans
+/// are inspected. From each span:
+///   - no `(`, or no `)`, or `)` before `(` → the span contributes no form
+///     (spans like `List<Geometry>`, `Length` have no `(` at all; a broken
+///     span with an unbalanced `(` is skipped rather than panicking);
+///   - the identifier immediately preceding the `(` is the name (as before);
+///   - the text between the first `(` and the last `)`, split on `,` and
+///     trimmed per piece, is the argument list: empty → `Exact(0)`; otherwise
+///     an argument equal to `…` or ENDING IN `…` contributes 0 to the count
+///     and marks the form variadic → `AtLeast(remaining count)`; with no such
+///     argument → `Exact(args.len())`.
+///
+/// Deduped and sorted (by name, then arity), so a caller's `assert_eq!` names
+/// the exact form. Callers must anti-vacuity-check the result: a heading
 /// rename or a row that stops using `**`/backticks would otherwise silently
 /// empty the scan.
-fn documented_geometry_op_names(markdown: &str) -> Vec<String> {
-    let mut names = Vec::new();
+fn documented_geometry_op_forms(markdown: &str) -> Vec<DocForm> {
+    let mut forms = Vec::new();
     let mut in_section = false;
 
     for line in markdown.lines() {
@@ -527,6 +560,12 @@ fn documented_geometry_op_names(markdown: &str) -> Vec<String> {
             let Some(open) = span.find('(') else {
                 continue;
             };
+            let Some(close) = span.rfind(')') else {
+                continue;
+            };
+            if close < open {
+                continue;
+            }
             let name = span[..open]
                 .rsplit(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
                 .next()
@@ -534,10 +573,53 @@ fn documented_geometry_op_names(markdown: &str) -> Vec<String> {
             if name.is_empty() {
                 continue;
             }
-            names.push(name.to_string());
+
+            let inner = span[open + 1..close].trim();
+            let arity = if inner.is_empty() {
+                Arity::Exact(0)
+            } else {
+                let mut variadic = false;
+                let mut count = 0usize;
+                for arg in inner.split(',') {
+                    let arg = arg.trim();
+                    if arg == "…" || arg.ends_with('…') {
+                        variadic = true;
+                    } else {
+                        count += 1;
+                    }
+                }
+                if variadic {
+                    Arity::AtLeast(count)
+                } else {
+                    Arity::Exact(count)
+                }
+            };
+
+            forms.push(DocForm {
+                name: name.to_string(),
+                arity,
+            });
         }
     }
 
+    forms.sort();
+    forms.dedup();
+    forms
+}
+
+/// The function names documented in the chunk's [`CHUNK_SECTION`] section, a
+/// projection over [`documented_geometry_op_forms`] so exactly one markdown
+/// scan exists (overloads of the same name collapse to one entry here — see
+/// `documented_geometry_op_forms` for the arity-preserving form).
+///
+/// Deduped and sorted. Callers must anti-vacuity-check the result: a heading
+/// rename or a row that stops using `**`/backticks would otherwise silently
+/// empty the scan.
+fn documented_geometry_op_names(markdown: &str) -> Vec<String> {
+    let mut names: Vec<String> = documented_geometry_op_forms(markdown)
+        .into_iter()
+        .map(|form| form.name)
+        .collect();
     names.sort();
     names.dedup();
     names
