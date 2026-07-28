@@ -188,7 +188,11 @@ fn example_lambda_sweep_boundary_blend_centre() {
     // ── all three λ resolve strictly INSIDE the open box (1mm, 25mm) ───────────
     // Layer-appropriate and genuinely load-bearing: the example compiles, solves,
     // and every λ lands on a finite value satisfying both user constraints.
-    for (label, t) in [("λ=1.0", t_pure_cost), ("λ=0.5", t_blend), ("λ=0.0", t_robust)] {
+    for (label, t) in [
+        ("λ=1.0", t_pure_cost),
+        ("λ=0.5", t_blend),
+        ("λ=0.0", t_robust),
+    ] {
         assert!(
             t.is_finite() && t > 0.001 && t < 0.025,
             "{label} thickness should be finite and strictly inside (1mm, 25mm), got {:.6e} m",
@@ -229,8 +233,7 @@ fn example_lambda_sweep_boundary_blend_centre() {
     // Pinned as equality rather than deleted so this stays a tripwire: when #5715
     // gives the λ dial a real `.ri`-layer signal, this assertion FAILS and whoever
     // lands it restores an ordering check that actually means something.
-    let spread = t_pure_cost.max(t_blend).max(t_robust)
-        - t_pure_cost.min(t_blend).min(t_robust);
+    let spread = t_pure_cost.max(t_blend).max(t_robust) - t_pure_cost.min(t_blend).min(t_robust);
     assert!(
         spread < 1e-9,
         "#5715 pins all three λ as coincident at the .ri layer (both anchors land on \
