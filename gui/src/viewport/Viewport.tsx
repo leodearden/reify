@@ -130,9 +130,22 @@ export function Viewport(props: ViewportProps) {
   // non-empty scalar channel actually present across the active mesh set
   // (mirroring pickDefaultScalarChannel's nonEmpty scan) so the dropdown
   // always has a matching <option> for the store's current channel.
+  //
+  // The store's *current* channel is also seeded into the extras set before
+  // the mesh scan, not just whatever the live mesh set happens to carry:
+  // auto-enable is one-shot (autoEnabledOnce, below), so a later mesh-set
+  // replacement (e.g. a shell result swapped for a solid-only rebuild) can
+  // leave store.state.channel pointing at a channel absent from the *new*
+  // mesh set entirely. Without this seed the option list would collapse back
+  // to the base list on that second delivery and reopen the exact dropdown
+  // desync this memo exists to prevent — just one mesh update later.
   const feaChannelOptions = createMemo(() => {
     const base = feaToolbarChannels(props.meshes);
     const extra = new Set<string>();
+    const currentChannel = props.feaModeStore?.state.channel;
+    if (currentChannel && !base.includes(currentChannel)) {
+      extra.add(currentChannel);
+    }
     for (const mesh of Object.values(props.meshes)) {
       if (!mesh.scalar_channels) continue;
       for (const [name, data] of Object.entries(mesh.scalar_channels)) {
