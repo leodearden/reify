@@ -212,3 +212,96 @@ fn polygon_compiles() {
     // `polygon(x1, y1, x2, y2, ...)` (>= 6 args, even count; geometry.rs:1570).
     assert_compiles("polygon", "polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm)");
 }
+
+// --- Interference & clearance oracle: chunk <-> compiler-registry guard ---
+//
+// Task 5389. The five static interference/clearance query names were entirely
+// absent from every `reify_language_reference` chunk, so the in-GUI assistant
+// (which retrieves only those chunks) concluded "there is no interference
+// oracle" and hand-rolled bbox arithmetic instead. The knowledge existed in the
+// examples corpus (`examples/best_practices/clearance_oracle.ri`,
+// `examples/tolerancing/vc_bolt_pattern_clearance.ri`) but was unreachable from
+// the chunks.
+//
+// This guard is BIDIRECTIONAL, and neither half is sufficient alone:
+//
+//   (a) COVERAGE — geometry.md still documents all five names as call forms.
+//       Catches a doc regression that silently reopens the discoverability hole.
+//   (b) REGISTRY TRUTH — each documented name is a live member of the compiler
+//       registry that gives it its meaning, so a rename in `units.rs` fails HERE
+//       rather than leaving the chunk pointing at a phantom builtin.
+//
+// Per the house rule (`stdlib_chunk_geometry_ops_smoke.rs:38-39`) this is a
+// name-existence check against code registries, deliberately NOT a
+// wording/content pin: nothing below asserts on prose, headings, or ordering.
+
+/// The chunk this file owns. Read (never written). If the chunk moves, this
+/// const must move with it — the failure mode is a loud `expect` on the read,
+/// not a silent skip. Mirrors `stdlib_chunk_geometry_ops_smoke.rs:81-84`.
+const CHUNK_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../reify-mcp/src/tools/chunks/geometry.md"
+);
+
+fn read_chunk() -> String {
+    std::fs::read_to_string(CHUNK_PATH).unwrap_or_else(|e| {
+        panic!("{CHUNK_PATH} must be readable ({e}) — update CHUNK_PATH if the chunk moved")
+    })
+}
+
+/// FORM A oracle names — dispatched through the kinematic-query post-process
+/// and taking `(Snapshot, ...)` arguments. `is_geometry_kinematic_query` is a
+/// bare `.contains()` over `GEOMETRY_KINEMATIC_QUERY_NAMES`, so membership in
+/// that slice IS the compiler's recognition semantics.
+const KINEMATIC_ORACLE_NAMES: &[&str] = &["interferes", "interferes_with", "min_clearance"];
+
+/// FORM B oracle names — plain geometry queries over let-bound geometry
+/// operands. `is_geometry_query` is likewise a bare `.contains()` over
+/// `GEOMETRY_QUERY_NAMES`.
+const GEOMETRY_ORACLE_NAMES: &[&str] = &["intersects", "distance"];
+
+#[test]
+fn interference_oracle_names_documented_in_geometry_chunk() {
+    let markdown = read_chunk();
+
+    // (a) COVERAGE. Each name must appear as a backticked CALL form (`name(`),
+    // not merely as a bare word — geometry.md already contained the word
+    // "distance" before task 5389, but only as the unrelated
+    // `extrude(profile, distance)` parameter name, which taught a reader
+    // nothing about the query. Requiring the open paren pins the doc to a
+    // usable call form.
+    for name in KINEMATIC_ORACLE_NAMES.iter().chain(GEOMETRY_ORACLE_NAMES) {
+        let call_form = format!("`{name}(");
+        assert!(
+            markdown.contains(&call_form),
+            "{CHUNK_PATH} does not document the interference/clearance query `{name}` as a \
+             call form ({call_form}...). The chunk is what the in-GUI assistant retrieves, so \
+             an undocumented oracle reads to it as a MISSING CAPABILITY and it will hand-roll \
+             bbox arithmetic instead (task 5389). Re-add the call form, or delete this name \
+             from KINEMATIC_ORACLE_NAMES/GEOMETRY_ORACLE_NAMES if the builtin itself is gone."
+        );
+    }
+
+    // (b) REGISTRY TRUTH, kinematic trio.
+    for name in KINEMATIC_ORACLE_NAMES {
+        assert!(
+            reify_compiler::GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+            "`{name}` is documented in {CHUNK_PATH} as a kinematic interference/clearance \
+             query but is NOT in reify_compiler::GEOMETRY_KINEMATIC_QUERY_NAMES ({:?}) — the \
+             chunk is served verbatim to the assistant, so it now documents a phantom \
+             builtin. Rename the doc's call form to match the registry.",
+            reify_compiler::GEOMETRY_KINEMATIC_QUERY_NAMES
+        );
+    }
+
+    // (b) REGISTRY TRUTH, plain-geometry pair.
+    for name in GEOMETRY_ORACLE_NAMES {
+        assert!(
+            reify_compiler::GEOMETRY_QUERY_NAMES.contains(name),
+            "`{name}` is documented in {CHUNK_PATH} as a geometry query but is NOT in \
+             reify_compiler::GEOMETRY_QUERY_NAMES ({:?}) — the chunk now documents a phantom \
+             builtin. Rename the doc's call form to match the registry.",
+            reify_compiler::GEOMETRY_QUERY_NAMES
+        );
+    }
+}
