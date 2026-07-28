@@ -48,6 +48,24 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Arm the shared-trash litter guard in Block TRASH at the end of this file
+# (task 5612). init_isolated_lane_root appends its per-run root to _TMPDIRS and
+# snapshots the machine-shared /tmp/.reseed-trash as it stands RIGHT NOW, so the
+# end-of-run guard can tell entries this run produced from ones already there.
+#
+# Sited HERE, immediately after `trap cleanup EXIT`: the helper registers into
+# _TMPDIRS, so it must run AFTER this file's `_TMPDIRS=()` — a call placed
+# before it would register into an array that assignment then wipes, leaking the
+# root. The helper refuses to run when _TMPDIRS is undeclared, so that ordering
+# mistake is a loud error rather than a silent leak. The root is a plain
+# _TMPDIRS entry, so this suite's existing cleanup() reclaims it unmodified;
+# no cleanup body needs editing.
+#
+# The stem is what makes litter attributable to THIS suite: seed names each
+# trash entry "<lane-basename>.<pid>", and a stem shared with no other suite
+# keeps the guard from flaking on a concurrent worktree's litter.
+init_isolated_lane_root test-thin-warm-lane
+
 # _wait_for_reader_lock <ready-marker> <deadline-seconds>
 # Causal ordering (technique R, docs/prds/infra-test-wallclock-deflake.md,
 # task #4847): polls for the READY marker file in 0.05s ticks instead of a
