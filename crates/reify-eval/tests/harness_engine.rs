@@ -16,3 +16,5 @@ mod edit_param_cell_commit_migration;
 mod diagnostics_cache_replay_migration;
 #[path = "harness_engine/joint_drive_cluster_formation.rs"]
 mod joint_drive_cluster_formation;
+#[path = "harness_engine/reset_per_build_state_classification.rs"]
+mod reset_per_build_state_classification;
