@@ -21,8 +21,11 @@
 use std::collections::HashMap;
 
 use reify_compiler::CompiledModule;
-use reify_core::{ContentHash, DimensionVector, ModulePath, Type, ValueCellId};
-use reify_eval::Engine;
+use reify_constraints::DimensionalSolver;
+use reify_core::{
+    ContentHash, DiagnosticCode, DimensionVector, ModulePath, Severity, Type, ValueCellId,
+};
+use reify_eval::{Engine, EvalResult};
 use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, ObjectiveSense,
@@ -30,7 +33,8 @@ use reify_ir::{
 };
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintChecker, SpyConstraintSolver, TopologyTemplateBuilder,
-    binop, gt, literal, mm, parse_and_compile_with_stdlib, value_ref, value_ref_typed,
+    binop, collect_errors, compile_source_with_stdlib, gt, literal, mm,
+    parse_and_compile_with_stdlib, value_ref, value_ref_typed,
 };
 
 // ---------------------------------------------------------------------------
@@ -838,4 +842,607 @@ fn bt4_dependent_cells_is_cross_scope_topo_order_and_writeback_authority() {
              (B is processed after A) instead of the cross-scope-ordered value.",
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// [JOINT-DRIVE β] (task #5189 step-9) — BT-5, the user-observable LEAF, and
+// BT-6, "an illegal cycle still errors" (rejection OBSERVED, not assumed).
+//
+// PRD: docs/prds/v0_6/whole-model-joint-drive-seam.md §7 (BT-5, BT-6).
+// ---------------------------------------------------------------------------
+
+/// The SHIPPED joint-drive example, read from disk rather than copied into a
+/// fixture string — so this test degrades loudly if the published example drifts
+/// away from the behaviour its own header comment advertises.
+///
+/// Idiom: `crates/reify-eval/tests/continuous_cost_min_example_e2e.rs`.
+const JOINT_DRIVE_EXAMPLE_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/whole_model_joint_drive.ri"
+);
+
+/// Compile + eval `src` through the REAL solver.
+///
+/// `Engine::new(..).with_solver(Box::new(DimensionalSolver))` is load-bearing:
+/// the plain test engine wires NO solver, so every auto would stay `Undef` and
+/// both halves of BT-5 would compare `Undef` to `Undef`.
+fn eval_ri_with_real_solver(src: &str, what: &str) -> EvalResult {
+    let compiled = compile_source_with_stdlib(src);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "the {what} source must compile without errors; got {errors:#?}",
+    );
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(DimensionalSolver));
+    let result = engine.eval(&compiled);
+
+    // Zero Severity::Error. Deliberately NOT pinned: Info/Warning. A
+    // `RobustnessFloorApplied` Info is EXPECTED on the Money-objective path, and
+    // a `W_SCOPE_COUPLING` warning may accompany the merged cluster.
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        eval_errors.is_empty(),
+        "the {what} eval must emit no Severity::Error diagnostics; got \
+         {eval_errors:#?}",
+    );
+
+    result
+}
+
+/// The SI magnitude of a resolved `Scalar` cell, or a panic naming what was
+/// actually there (an unresolved auto surfaces as `Undef`, which is exactly the
+/// failure BT-5 must report legibly rather than as a silent `0.0`).
+fn scalar_si(result: &EvalResult, id: &ValueCellId, what: &str) -> f64 {
+    match result.values.get(id) {
+        Some(Value::Scalar { si_value, .. }) => *si_value,
+        other => panic!("expected a resolved Scalar for {id:?} in the {what} eval; got {other:?}"),
+    }
+}
+
+/// `Some(si)` iff `id` resolved to a `Scalar` — used to pick BT-5's cost cell
+/// without asserting on which one materialises.
+fn scalar_si_opt(result: &EvalResult, id: &ValueCellId) -> Option<f64> {
+    match result.values.get(id) {
+        Some(Value::Scalar { si_value, .. }) => Some(*si_value),
+        _ => None,
+    }
+}
+
+/// Derive the FROZEN-CASCADE variant from the shipped source by removing the
+/// parent's inlined `minimize` line.
+///
+/// DERIVED, never transcribed: the baseline must be the *same model* minus the
+/// objective, so it cannot drift from the example the merged half evaluates. A
+/// recorded constant would silently rot the moment the solver's seeding, bounds
+/// defaults, or synthesised centrality objective changed — converting a live
+/// comparative signal into a stale pin.
+///
+/// With no `minimize`, δ forms no cluster, so `Rivet` resolves ALONE bottom-up:
+/// that IS the frozen cascade, by definition rather than by reconstruction. The
+/// child still carries live inequality constraints, so `build_centrality_objective`
+/// synthesises a Chebyshev-centre objective and the freeze lands at the BOX
+/// CENTRE.
+///
+/// Only the real statement is stripped: every `minimize` mention in the header
+/// comment is behind a `//`, so `trim_start().starts_with("minimize ")` cannot
+/// match it. The exactly-one assertion below is the guard on that claim.
+fn strip_inlined_minimize(src: &str) -> String {
+    let kept: Vec<&str> = src
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("minimize "))
+        .collect();
+    assert_eq!(
+        kept.len(),
+        src.lines().count() - 1,
+        "exactly ONE `minimize` statement must be stripped to derive the \
+         frozen-cascade baseline — if the shipped example gained or lost one, \
+         BT-5's baseline is no longer 'the same model minus the objective' and \
+         the comparison is void",
+    );
+    kept.join("\n")
+}
+
+/// BT-5 — THE LEAF. The parent's cost objective reaches the CHILD's auto in one
+/// merged solve, and the whole assembly lands strictly cheaper than the bottom-up
+/// freeze-as-you-go cascade would have pinned it.
+///
+/// Both assertions are COMPARATIVE (strict inequality), never an absolute
+/// converged value or a tuned tolerance — the house norm for `.ri`-layer tests
+/// (precise-argmax assertions belong at the `reify-constraints` layer with
+/// explicitly bounded autos; cf. `continuous_cost_min_example_e2e.rs`'s
+/// "why no upper-bound assertion" note).
+///
+/// # Achievability — DERIVED, not guessed
+///
+/// * FROZEN: `Rivet` resolves alone with NO user objective but live inequality
+///   constraints, so the synthesised Chebyshev-centre objective pins it at the
+///   BOX CENTRE — half the box width above the box's lower bound.
+/// * MERGED: the child is resolved INSIDE the parent's problem, governed by the
+///   parent's Money objective `cost(self.descendants)` = `line_cost` =
+///   `unit_cost * quantity_produced`. No centrality objective is synthesised
+///   (`solver.rs` only synthesises one when `problem.objective.is_none()`), so
+///   the freeze-at-the-centre outcome is GONE and the cost-minimising direction
+///   governs instead.
+/// * `line_cost` is strictly increasing in `quantity_produced`, so a strictly
+///   lower resolved auto implies a strictly lower cost.
+///
+/// # What this test does NOT claim — the eval-layer convergence boundary
+///
+/// It does NOT assert the merged auto lands ON the cost argmin. A LINEAR Money
+/// objective's argmin sits exactly on a constraint boundary, where the penalty
+/// method's stationary point is offset INSIDE the penalty by
+/// `objective_gradient / (2 * PENALTY_WEIGHT)` ≈ 2.5e-7 — vastly larger than
+/// `FEASIBILITY_THRESHOLD` (1e-12) — so the converged point reads as infeasible
+/// and `solve_core` returns its `initially_feasible` fallback: the seed
+/// `extract_initial_point` supplies. That is the SAME documented eval-layer
+/// behaviour `examples/continuous_cost_min.ri`'s header records ("returns the
+/// initially-feasible SEED ... rather than a unique convergent point", PRD §9 Q2
+/// "no fix required"), and it is exactly why the house norm puts precise-argmin
+/// assertions at the `reify-constraints` layer with explicitly bounded autos and
+/// keeps `.ri`-layer tests on ordering / off-boundary claims.
+///
+/// # Why it is still a live signal, not a vacuous one
+///
+/// Each link of the chain fails this test if it regresses:
+/// * δ's cluster stops forming ⇒ the child resolves alone ⇒ merged == frozen ⇒
+///   (i) fails on the strict inequality.
+/// * α's `dependent_cells` arrives empty, or β's per-trial fold / write-back
+///   stops running ⇒ the objective's instance-path `ValueRef` is never written
+///   ⇒ `eval_objective_set` is `None` ⇒ `NoProgress` ⇒ the zero-`Error`
+///   precondition in [`eval_ri_with_real_solver`] fails.
+/// * the instance-path ALIAS entry regresses ⇒ (iii) fails.
+///
+/// RED until the whole chain works end to end: δ forms the cluster → α populates
+/// `dependent_cells` → β folds them per trial → α writes them back.
+#[test]
+fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
+    let merged_src = std::fs::read_to_string(JOINT_DRIVE_EXAMPLE_PATH)
+        .unwrap_or_else(|e| panic!("could not read {JOINT_DRIVE_EXAMPLE_PATH}: {e}"));
+    let frozen_src = strip_inlined_minimize(&merged_src);
+
+    let merged = eval_ri_with_real_solver(&merged_src, "merged (inlined `minimize` present)");
+    let frozen = eval_ri_with_real_solver(&frozen_src, "frozen cascade (`minimize` removed)");
+
+    // ---- (i) the child auto resolves STRICTLY DIFFERENT from its freeze. ----
+
+    // STRUCTURE-KEYED, not instance-path. The solver's auto_params, and hence
+    // its solved write-back, are keyed by the DECLARING TEMPLATE
+    // (`ValueCellId::new(&structure.name, &param.name)`); the instance-path
+    // spelling `RivetedPanel.rivets.quantity_produced` is never written for a
+    // solver-resolved auto in EITHER half (a separate, pre-existing
+    // sub-elaboration gap — see the example header's "reading the result" note).
+    let auto_id = ValueCellId::new("Rivet", "quantity_produced");
+    let merged_q = scalar_si(&merged, &auto_id, "merged");
+    let frozen_q = scalar_si(&frozen, &auto_id, "frozen-cascade");
+
+    // Asserted with a DIRECTION, which is strictly stronger than `!=` and still
+    // purely comparative: cost-min drives the auto DOWN toward the box's lower
+    // bound, while the frozen cascade parks it at the box centre above.
+    assert!(
+        merged_q < frozen_q,
+        "BT-5(i): the merged solve must drive the child's auto STRICTLY BELOW \
+         the value the bottom-up frozen cascade pins it at (cost-min argmin at \
+         the box's lower bound vs. the synthesised Chebyshev centre). Got \
+         merged={merged_q} vs frozen={frozen_q} (difference {}). Equal values \
+         mean the parent's objective never reached the child's auto at all.",
+        frozen_q - merged_q,
+    );
+
+    // ---- (ii) merged whole-assembly cost STRICTLY LESS than the baseline. ----
+
+    // Prefer the parent's `let total_cost` aggregate; fall back to the child's
+    // derived `Costed.line_cost`. With ONE depth-1 Costed descendant the two are
+    // the same number (`cost(self.descendants)` == `[rivets.line_cost].sum`), so
+    // either is a faithful whole-assembly cost — but BOTH sides must be read
+    // from the SAME cell or the comparison is not apples-to-apples.
+    let total_cost = ValueCellId::new("RivetedPanel", "total_cost");
+    let line_cost = ValueCellId::new("Rivet", "line_cost");
+    let (cost_id, which) = if scalar_si_opt(&merged, &total_cost).is_some()
+        && scalar_si_opt(&frozen, &total_cost).is_some()
+    {
+        (total_cost, "the parent's `let total_cost` aggregate")
+    } else {
+        (
+            line_cost,
+            "the child's derived `Costed.line_cost` (the parent aggregate did \
+             not materialise as a Scalar post-solve)",
+        )
+    };
+
+    let merged_cost = scalar_si(&merged, &cost_id, "merged");
+    let frozen_cost = scalar_si(&frozen, &cost_id, "frozen-cascade");
+    assert!(
+        merged_cost < frozen_cost,
+        "BT-5(ii): the merged whole-assembly cost (read from {which}) must be \
+         STRICTLY LESS than the bottom-up frozen-cascade baseline — that gap IS \
+         the user-observable joint-drive signal. Got merged={merged_cost} vs \
+         frozen={frozen_cost} (saving {}).",
+        frozen_cost - merged_cost,
+    );
+
+    // ---- (iii) the objective's OWN spelling of the cost cell is live. ----
+    //
+    // The expanded objective term reads the INSTANCE-PATH id
+    // `RivetedPanel.rivets.line_cost` (`apply_cost_aggregation` composes it from
+    // `enumerate_descendants`' prefixes), while the only declaration — and hence
+    // the only foldable `default_expr` — is the STRUCTURE-KEYED `Rivet.line_cost`.
+    // `build_dependent_cells` bridges the two namespaces by emitting an alias
+    // entry; without it the objective reads an id nothing writes, evaluates to
+    // `Undef`, and the merged solve reports `NoProgress`.
+    //
+    // Derived, not pinned: assert the alias AGREES with its structure-keyed
+    // source, and that both agree with `unit_cost * quantity_produced` read from
+    // the same eval — the `Costed` closed form. A stale (unfolded) cell fails
+    // this even when (i) and (ii) would pass.
+    let aliased_cost = scalar_si(
+        &merged,
+        &ValueCellId::new("RivetedPanel.rivets", "line_cost"),
+        "merged",
+    );
+    let merged_line_cost = scalar_si(&merged, &ValueCellId::new("Rivet", "line_cost"), "merged");
+    assert_eq!(
+        aliased_cost, merged_line_cost,
+        "BT-5(iii): the INSTANCE-PATH cost cell the expanded objective actually \
+         reads must hold the same freshly-folded value as its STRUCTURE-KEYED \
+         source — that alias entry is what makes the objective non-`Undef` \
+         inside the merged solve",
+    );
+    let merged_unit_cost = scalar_si(&merged, &ValueCellId::new("Rivet", "unit_cost"), "merged");
+    assert_eq!(
+        merged_line_cost,
+        merged_unit_cost * merged_q,
+        "BT-5(iii): the derived `Costed.line_cost` must be REFOLDED against the \
+         solved auto (`unit_cost * quantity_produced` = {merged_unit_cost} * \
+         {merged_q}), not left at whatever it held before the solve",
+    );
+}
+
+/// BT-6(a) — an INTRA-TEMPLATE let cycle in a model that ALSO carries an auto
+/// and a `minimize` still errors. β's per-trial SCC-unroll must not have
+/// silently admitted a cycle that has nothing to do with the solver feedback
+/// edge.
+///
+/// `detect_let_cycle` reports it as an un-coded `Severity::Error` reading
+/// "circular let-binding dependency in template {name}: [members]" (assertion
+/// shape: `crates/reify-eval/tests/unified_dag_cycle_contract.rs`). The auto and
+/// the `minimize` are the load-bearing part of the fixture — a bare cyclic
+/// module never reaches the solver-problem builders at all, so it would not test
+/// β's territory.
+#[test]
+fn bt6a_intra_template_let_cycle_with_an_auto_and_an_objective_still_errors() {
+    let source = "\
+structure CyclicLetWithAuto {
+    param t : Length = auto(free)
+    constraint t > 2mm
+
+    let a = b + 1.0
+    let b = a + 1.0
+
+    minimize t / 1mm
+}
+";
+
+    let compiled = compile_source_with_stdlib(source);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "a mutual let cycle is an EVAL-time property — the compiler accepts it; \
+         got compile errors {errors:#?}",
+    );
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(DimensionalSolver));
+    let result = engine.eval(&compiled);
+
+    assert!(
+        result.diagnostics.iter().any(|d| d.severity == Severity::Error
+            && d.message.contains("circular let-binding dependency")),
+        "the intra-template `a → b → a` let cycle must STILL surface its \
+         existing error through `engine.eval()` even though the model carries an \
+         auto and a `minimize` — β's per-trial SCC-unroll admits only the solver \
+         feedback edge, never a data cycle; got {:#?}",
+        result.diagnostics,
+    );
+}
+
+/// A `MergedSolve` cluster `{A, B}` carrying an INADMISSIBLE cross-scope value
+/// cycle: `A.total = A.line_cost + B.total` and `B.total = B.line_cost + A.total`.
+///
+/// Modelled on `two_cycle_cross_scope_coupled_module` above; the ONE difference
+/// is that `B.total` closes the cross-scope read back onto `A.total`, so the
+/// two aggregate cells depend on each other WITHOUT passing through a solver
+/// auto. Every other edge is identical, which is what makes the pair a clean A/B
+/// against BT-4's admissible fixture.
+///
+/// All four Let cells transitively read a cluster auto and feed the spanning
+/// objective, so all four enter `build_dependent_cells`' stage-(e) node set; the
+/// two `line_cost` cells are acyclic and must survive, the two `total` cells are
+/// the cycle and must be dropped AND reported.
+///
+/// Invisible to every pre-existing emitter: `detect_let_cycle` and
+/// `build_combined_param_let_graph` are per-template, and within A alone
+/// `line_cost → total` is a plain chain (likewise within B). Only the
+/// cross-template builder can see the cycle.
+fn cross_scope_value_cycle_cluster_module() -> CompiledModule {
+    let a = TopologyTemplateBuilder::new("A")
+        .auto_param("A", "k", Type::length())
+        .param(
+            "A",
+            "unit",
+            Type::dimensionless_scalar(),
+            Some(literal(Value::Real(2.0))),
+        )
+        .let_binding(
+            "A",
+            "line_cost",
+            Type::length(),
+            binop(
+                BinOp::Mul,
+                value_ref_typed("A", "unit", Type::dimensionless_scalar()),
+                value_ref("A", "k"),
+            ),
+        )
+        // CROSS-SCOPE read of B.total — one half of the inadmissible cycle.
+        .let_binding(
+            "A",
+            "total",
+            Type::length(),
+            binop(
+                BinOp::Add,
+                value_ref("A", "line_cost"),
+                value_ref("B", "total"),
+            ),
+        )
+        // 2-cycle edge: guarantees the {A, B} MergedSolve cluster.
+        .constraint("A", 0, None, gt(value_ref("B", "m"), literal(mm(0.0))))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            binop(
+                BinOp::Add,
+                value_ref("A", "total"),
+                value_ref("B", "total"),
+            ),
+        ))
+        .build();
+
+    let b = TopologyTemplateBuilder::new("B")
+        .auto_param("B", "m", Type::length())
+        .param(
+            "B",
+            "unit",
+            Type::dimensionless_scalar(),
+            Some(literal(Value::Real(2.0))),
+        )
+        .let_binding(
+            "B",
+            "line_cost",
+            Type::length(),
+            binop(
+                BinOp::Mul,
+                value_ref_typed("B", "unit", Type::dimensionless_scalar()),
+                value_ref("B", "m"),
+            ),
+        )
+        // CROSS-SCOPE read back onto A.total — CLOSES the cycle. This is the
+        // ONLY divergence from BT-4's admissible `two_cycle_cross_scope_coupled_module`.
+        .let_binding(
+            "B",
+            "total",
+            Type::length(),
+            binop(
+                BinOp::Add,
+                value_ref("B", "line_cost"),
+                value_ref("A", "total"),
+            ),
+        )
+        .constraint("B", 0, None, gt(value_ref("A", "k"), literal(mm(0.0))))
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(a)
+        .template(b)
+        .build()
+}
+
+/// BT-6(b) — the OBSERVABLE TWIN of step-7's unit-level assertion: a cross-scope
+/// value cycle inside a would-be cluster surfaces the guardrail's
+/// `DiagnosticCode::EvalCycle` error all the way out through `Engine::eval`'s
+/// `EvalResult.diagnostics` — i.e. it reaches the user through `reify eval`, not
+/// just the private `build_dependent_cells` helper.
+///
+/// A `SpyConstraintSolver` (this file's established idiom) keeps the run
+/// deterministic; the solver choice is immaterial to what is being asserted,
+/// because the guardrail fires while the solver PROBLEM is being built, strictly
+/// upstream of any solve.
+///
+/// RED before step-8: `topological_sort` is Kahn's — it returns a `Vec`, cannot
+/// error, and silently omits cycle members — and this cross-template cycle is
+/// out of reach of all three per-template emitters, so it is swallowed with ZERO
+/// user-visible signal.
+#[test]
+fn bt6b_cross_scope_value_cycle_surfaces_eval_cycle_through_engine_eval() {
+    let module = cross_scope_value_cycle_cluster_module();
+
+    let mut solved = HashMap::new();
+    solved.insert(ValueCellId::new("A", "k"), mm(3.0));
+    solved.insert(ValueCellId::new("B", "m"), mm(7.0));
+
+    let spy = SpyConstraintSolver::new_solved(solved);
+    let captured = spy.captured_problem();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    let result = engine.eval(&module);
+
+    // ---- the ERROR reaches EvalResult.diagnostics, coded EvalCycle. ----
+
+    let cycle_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.code == Some(DiagnosticCode::EvalCycle))
+        .collect();
+    assert_eq!(
+        cycle_errors.len(),
+        1,
+        "the inadmissible cross-scope value cycle must surface EXACTLY ONE \
+         Severity::Error coded DiagnosticCode::EvalCycle through \
+         `Engine::eval` — the guardrail has to reach the user, not just the \
+         private builder; got {:#?}",
+        result.diagnostics,
+    );
+
+    // FULLY-QUALIFIED ids: this detector is cross-template, so the bare member
+    // name `detect_let_cycle` uses would be ambiguous (`A.total` vs `B.total`).
+    let msg = &cycle_errors[0].message;
+    for want in ["A.total", "B.total"] {
+        assert!(
+            msg.contains(want),
+            "the cycle diagnostic must name the cyclic cell by its \
+             FULLY-QUALIFIED id `{want}`; got {msg:?}",
+        );
+    }
+
+    // ---- the dropped cycle members never reach the fold. ----
+
+    let problem = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the two-cycle {A,B} SCC must dispatch ONE merged solve");
+    let ids: Vec<ValueCellId> = problem
+        .dependent_cells
+        .iter()
+        .map(|(id, _)| id.clone())
+        .collect();
+
+    for dropped in [ValueCellId::new("A", "total"), ValueCellId::new("B", "total")] {
+        assert!(
+            !ids.contains(&dropped),
+            "the cycle member {dropped:?} must be ABSENT from dependent_cells — \
+             β's per-trial fold and α's post-solve write-back must never see a \
+             cycle member; got {ids:?}",
+        );
+    }
+    for kept in [
+        ValueCellId::new("A", "line_cost"),
+        ValueCellId::new("B", "line_cost"),
+    ] {
+        assert!(
+            ids.contains(&kept),
+            "the ACYCLIC remainder {kept:?} must survive the guardrail — it \
+             rejects the cycle, it does not discard the whole coupled set; got \
+             {ids:?}",
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// [JOINT-DRIVE β] (task #5189 step-14) — BT-11, per-sub PARAMETER OVERRIDES.
+//
+// PRD: docs/prds/v0_6/whole-model-joint-drive-seam.md §12.
+// ---------------------------------------------------------------------------
+
+/// The joint-drive model with a per-sub PARAMETER OVERRIDE on the child.
+///
+/// Deliberately an INLINE source rather than an edit to the shipped
+/// `examples/whole_model_joint_drive.ri`: changing that file would perturb
+/// BT-5's hand-derived arithmetic and re-trigger the three example
+/// auto-enrolling gates (`examples_smoke`, the determinism walk, the
+/// no-bare-`Scalar` corpus check) for no benefit.
+///
+/// `unit_cost: 0.90USD` against a template default of `0.50USD` — an 80% gap, so
+/// an override-honouring fold and a template-default fold are unmistakably
+/// different numbers at any non-zero solved quantity.
+const OVERRIDE_SRC: &str = r#"
+module joint_drive_sub_override
+
+structure def Rivet : Costed {
+    param supplier          : String = "Acme Fastener"
+    param part_number       : String = "R-4210"
+    param unit_cost         : Money  = 0.50USD
+    param lead_time         : Time   = 24h
+
+    param quantity_produced : Real   = auto(free)
+    constraint quantity_produced >= 0.0
+    constraint quantity_produced <= 100.0
+}
+
+structure RivetedPanel {
+    sub rivets = Rivet(unit_cost: 0.90USD)
+
+    minimize cost(self.descendants)
+
+    let total_cost : Money = cost(self.descendants)
+}
+"#;
+
+/// BT-11(b) — the per-sub override must reach the folded instance-path cost
+/// cell that the expanded objective actually reads.
+///
+/// The DSL supports per-sub parameter overrides (`examples/auto_binding_sites.ri`,
+/// `examples/bom_lifecycle.ri`), but stage (g) of `build_dependent_cells` emits
+/// the instance-path ALIAS entry as a VERBATIM clone of the template-keyed
+/// `default_expr`. Its inner reads therefore stay template-keyed, so
+/// `RivetedPanel.rivets.line_cost` folds to `Rivet.unit_cost × q` — the TEMPLATE
+/// DEFAULT — with two silent consequences: the per-trial fold makes the solver
+/// minimise the wrong objective, and `materialize_dependent_cells` writes that
+/// same wrong number back as `Determined`, clobbering the correctly-elaborated
+/// per-instance value.
+///
+/// Asserted as a RELATIONSHIP (`line_cost == unit_cost_override × solved_q`),
+/// never a hand-computed absolute: the auto is solver-determined, so a literal
+/// would re-break on any solver retuning while the invariant would not.
+#[test]
+fn bt11_per_sub_parameter_override_reaches_the_folded_instance_path_cost() {
+    let result = eval_ri_with_real_solver(OVERRIDE_SRC, "per-sub override");
+
+    let scoped_unit_cost = ValueCellId::new("RivetedPanel.rivets", "unit_cost");
+    let template_unit_cost = ValueCellId::new("Rivet", "unit_cost");
+
+    let override_cost = scalar_si(&result, &scoped_unit_cost, "per-sub override");
+    let default_cost = scalar_si(&result, &template_unit_cost, "per-sub override");
+
+    // Fixture integrity — if elaboration collapsed the two spellings onto one
+    // value there would be nothing to distinguish, and every assertion below
+    // would pass vacuously.
+    assert_ne!(
+        override_cost, default_cost,
+        "fixture integrity: the instance-path `RivetedPanel.rivets.unit_cost` \
+         must carry the OVERRIDE (0.90USD) while the template-keyed \
+         `Rivet.unit_cost` keeps its default (0.50USD); both read {override_cost}",
+    );
+
+    let solved_q = scalar_si(
+        &result,
+        &ValueCellId::new("Rivet", "quantity_produced"),
+        "per-sub override",
+    );
+    // A zero auto would make the two candidate products equal and the
+    // discriminating assertion vacuous.
+    assert!(
+        solved_q != 0.0,
+        "fixture integrity: the solved auto must be non-zero for the \
+         override-vs-default products to differ; got {solved_q}",
+    );
+
+    let aliased = scalar_si(&result, &ValueCellId::new("RivetedPanel.rivets", "line_cost"), "per-sub override");
+
+    assert_eq!(
+        aliased,
+        override_cost * solved_q,
+        "BT-11: the instance-path cost cell the expanded objective reads must \
+         fold against the PER-SUB OVERRIDE ({override_cost} × {solved_q}), not \
+         the template default ({default_cost} × {solved_q} = {}). A \
+         template-default value here means stage (g) emitted the alias as a \
+         verbatim clone of the template-keyed `default_expr`, so the override \
+         was silently ignored at every trial point AND clobbered in the \
+         post-solve write-back.",
+        default_cost * solved_q,
+    );
 }
