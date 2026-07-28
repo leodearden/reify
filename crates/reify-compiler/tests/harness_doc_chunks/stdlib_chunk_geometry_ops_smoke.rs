@@ -83,8 +83,24 @@ const CHUNK_PATH: &str = concat!(
     "/../reify-mcp/src/tools/chunks/stdlib.md"
 );
 
+/// The primitive/profile constructor chunk. Read (never written) to justify the
+/// "documented elsewhere" exclusions of the registry → doc guard below. Same
+/// contract as [`CHUNK_PATH`]: if the chunk moves, this const must move with it,
+/// and the failure mode is a loud `expect` on the read, not a silent skip.
+const GEOMETRY_CHUNK_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../reify-mcp/src/tools/chunks/geometry.md"
+);
+
 /// Heading of the chunk section whose documented names are checked.
 const CHUNK_SECTION: &str = "## Key Geometry Operations";
+
+/// Read a chunk, panicking loudly (never skipping) if it has moved.
+fn read_chunk(path: &str) -> String {
+    std::fs::read_to_string(path).unwrap_or_else(|e| {
+        panic!("{path} must be readable ({e}) — update the chunk path const if the chunk moved")
+    })
+}
 
 fn read_fixture() -> String {
     std::fs::read_to_string(FIXTURE_PATH)
@@ -555,5 +571,156 @@ fn every_documented_geometry_op_name_is_exercised_by_the_fixture() {
             .map(|n| n.as_str())
             .collect::<Vec<_>>()
             .join(", ")
+    );
+}
+
+// ── Registry → chunk (the reverse direction) ─────────────────────────────────
+//
+// Every guard above answers "is what the CHUNK says real?". None answers the
+// reverse: "is what the COMPILER implements written down anywhere?". That is
+// the direction an op drifts through invisibly — a name is added to
+// `GEOMETRY_FUNCTION_NAMES`, gets a working arm, and is simply never
+// documented, so designers and the in-GUI assistant never learn it exists.
+// Task 5347 closed doc → registry; the guard below closes registry → doc, so
+// the next undocumented op is RED AT ITS SOURCE rather than found by hand years
+// later. Like its siblings this is a NAME-EXISTENCE check against code
+// registries, deliberately NOT a wording/content pin on either chunk's prose.
+
+/// Registry entries that are primitive/profile CONSTRUCTORS, documented in
+/// `chunks/geometry.md` rather than in stdlib.md's "Key Geometry Operations"
+/// table.
+///
+/// These build the geometry that the operations table transforms, and
+/// geometry.md is where a designer looks for them — so their absence from
+/// stdlib.md is a placement decision, not a coverage gap.
+///
+/// This is a claim about where the docs live, and the guard checks it: an entry
+/// listed here that is NOT actually mentioned in geometry.md is itself
+/// reported, so the list cannot become a dumping ground for silencing failures.
+const CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK: &[&str] = &[
+    "box",
+    "cylinder",
+    "sphere",
+    "tube",
+    "torus",
+    "box_centered",
+    "cylinder_centered",
+    "cone",
+    "wedge",
+    "rectangle",
+    "circle",
+    "polygon",
+    "ellipse",
+    "rounded_box",
+    "rounded_rect",
+];
+
+/// Registry entries that are implemented but documented in NO chunk at all.
+///
+/// Verified against every file in `crates/reify-mcp/src/tools/chunks/`: none of
+/// these seven is mentioned in any of them. This is a REAL residual
+/// documentation gap, carried here explicitly rather than folded into
+/// [`CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK`] — filing them as "documented
+/// elsewhere" would launder a gap into a false coverage claim, which is exactly
+/// the failure mode this guard exists to catch, one level down. They are out of
+/// scope here (they are constructors, not operations) and are covered by a
+/// separate follow-up.
+///
+/// This list is expected to SHRINK and must never grow. Documenting one of
+/// these means deleting its entry; the guard reports any entry that has in fact
+/// been documented, so a closed gap cannot linger here and mask a later
+/// regression.
+const CONSTRUCTORS_DOCUMENTED_NOWHERE: &[&str] = &[
+    "zone_slab",
+    "zone_cylinder",
+    "zone_annulus",
+    "zone_profile",
+    "half_space",
+    "nurbs_surface",
+    "isosurface",
+];
+
+/// Every `registry` name that no chunk documents.
+///
+/// A name counts as documented when the stdlib.md scan
+/// ([`documented_geometry_op_names`], reused verbatim so this guard inherits
+/// its exact semantics) finds it, or when one of the two exclusion slices
+/// carries it.
+///
+/// Pure and fully parameterized over its inputs — rather than reading the
+/// consts and the real chunks directly — so the controls below can drive it
+/// with synthetic data and pin its discriminating power.
+fn undocumented_geometry_ops(
+    registry: &[&str],
+    stdlib_md: &str,
+    _geometry_md: &str,
+    documented_elsewhere: &[&str],
+    known_gap: &[&str],
+) -> Vec<String> {
+    let documented = documented_geometry_op_names(stdlib_md);
+
+    let mut out: Vec<String> = registry
+        .iter()
+        .copied()
+        .filter(|name| {
+            !documented.iter().any(|d| d.as_str() == *name)
+                && !documented_elsewhere.contains(name)
+                && !known_gap.contains(name)
+        })
+        .map(str::to_string)
+        .collect();
+
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Every geometry op the compiler implements must be documented in some chunk.
+///
+/// The chunks are the AUTHORITATIVE language reference served verbatim to the
+/// in-GUI assistant, so an implemented-but-undocumented op is invisible to
+/// every designer using it.
+#[test]
+fn every_implemented_geometry_op_is_documented_in_a_chunk() {
+    let stdlib_md = read_chunk(CHUNK_PATH);
+    let geometry_md = read_chunk(GEOMETRY_CHUNK_PATH);
+
+    // Anti-vacuity, both inputs. An empty registry would make this guard pass
+    // trivially, and an emptied scan (heading renamed, rows no longer `**`/
+    // backticked) would make it report all 64 names — pin both so neither
+    // failure mode is mistaken for a real signal.
+    assert!(
+        GEOMETRY_FUNCTION_NAMES.len() >= 50,
+        "anti-vacuity: GEOMETRY_FUNCTION_NAMES holds only {} name(s) — the registry this \
+         guard walks has been gutted or moved, and the guard gives NO protection",
+        GEOMETRY_FUNCTION_NAMES.len()
+    );
+    let documented = documented_geometry_op_names(&stdlib_md);
+    assert!(
+        documented.len() >= 20,
+        "anti-vacuity: the '{CHUNK_SECTION}' scan found only {} name(s) in {CHUNK_PATH}",
+        documented.len()
+    );
+    assert!(
+        !geometry_md.trim().is_empty(),
+        "anti-vacuity: {GEOMETRY_CHUNK_PATH} is empty, so the 'documented elsewhere' \
+         exclusions rest on nothing"
+    );
+
+    let undocumented = undocumented_geometry_ops(
+        GEOMETRY_FUNCTION_NAMES,
+        &stdlib_md,
+        &geometry_md,
+        CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK,
+        CONSTRUCTORS_DOCUMENTED_NOWHERE,
+    );
+
+    assert!(
+        undocumented.is_empty(),
+        "the compiler implements geometry op(s) that NO chunk documents, so designers and \
+         the in-GUI assistant cannot discover them — document each in stdlib.md's \
+         '{CHUNK_SECTION}' table (and mirror it into \
+         tests/fixtures/stdlib_geometry_ops_smoke.ri). Undocumented name(s): {}",
+        undocumented.join(", ")
     );
 }
