@@ -11,8 +11,7 @@
 //      Binary dimensional-operation expressions are admitted ONLY on type-alias
 //      RHS, not in `param x : <type>` position (units.ri esc-4026-121:80-91) —
 //      hence the alias indirection `pub type VolumetricFlowRate = Volume / Time`,
-//      exactly mirroring `pub type Velocity = Length / Time` in units.ri and
-//      `pub type Torque = Force * Length / Angle` in ports_mechanical.ri.
+//      exactly mirroring `pub type Velocity = Length / Time` in units.ri.
 //      The alias is `pub` to mirror units.ri's `pub type Velocity` convention.
 //   2. `medium` is Type::String (open medium set). Fluid media (water, air,
 //      hydraulic oil, etc.) are best represented as free-form identifiers rather
