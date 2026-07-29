@@ -1759,3 +1759,96 @@ fn mwhole_bt3_cross_scope_surface_read_surfaces_the_co_solved_value() {
         );
     }
 }
+
+/// BT3 surface cells + the whole-assembly aggregate are live post-solve — a
+/// STRONGER claim than `mwhole_bt3_cross_scope_surface_read_surfaces_the_co_
+/// solved_value` above: that the PARENT's own declared consumer `let`s
+/// (`plate_cost_observed`, `spacer_cost_observed`, `total_cost`) — not just
+/// the instance-path alias the OBJECTIVE itself mints — resolve to live,
+/// co-solved values.
+///
+/// # RISK — a genuine open question, not a guaranteed GREEN
+///
+/// The parent's let cone is re-evaluated by `evaluate_let_bindings` for
+/// every cluster member (`engine_eval.rs:6625-6643`), which runs BEFORE
+/// `materialize_dependent_cells` (`:6645-6659`) writes the solved
+/// cross-scope alias back. The parent's lets read INSTANCE-PATH ids that the
+/// per-member pass does not itself write, so they could fold against a
+/// stale (or absent) value. `no_stale_undef_invariant_gate` independently
+/// forces this to be resolved either way, since it auto-enrols this shipped
+/// example and REDs on a cell that is Undef while its deps are resolved.
+///
+/// If this cannot be GREENed by fixture-side means alone, the documented
+/// fallback (see the next impl step) is to drop the three parent `let`s and
+/// rely on the sibling test above's instance-path assertions instead, and
+/// file the parent-let surfacing as a follow-up task.
+#[test]
+fn mwhole_bt3_declared_surface_cells_and_whole_assembly_aggregate_are_live() {
+    let merged_src =
+        std::fs::read_to_string(WHOLE_MODEL_COST_MIN_EXAMPLE_PATH).unwrap_or_else(|e| {
+            panic!(
+                "Could not read {WHOLE_MODEL_COST_MIN_EXAMPLE_PATH}: {e} — run the next impl \
+                 step to create the example file",
+            )
+        });
+    let frozen_src = strip_inlined_minimize(&merged_src);
+
+    let merged = eval_ri_with_real_solver(&merged_src, "merged (inlined `minimize` present)");
+    let frozen = eval_ri_with_real_solver(&frozen_src, "frozen cascade (`minimize` removed)");
+
+    // (a)+(b): the parent's own declared consumer `let`s must be live
+    // (Scalar, not Undef) in the merged eval and equal their child's
+    // structure-keyed `line_cost` — a derived identity read from the SAME
+    // eval, so `assert_eq!` is exact bit-identity, not a convergence check.
+    let plate_observed = scalar_si(
+        &merged,
+        &ValueCellId::new("CostAssembly", "plate_cost_observed"),
+        "merged",
+    );
+    let plate_line_cost = scalar_si(&merged, &ValueCellId::new("Plate", "line_cost"), "merged");
+    assert_eq!(
+        plate_observed, plate_line_cost,
+        "CostAssembly.plate_cost_observed must equal Plate.line_cost in the \
+         same merged eval",
+    );
+
+    let spacer_observed = scalar_si(
+        &merged,
+        &ValueCellId::new("CostAssembly", "spacer_cost_observed"),
+        "merged",
+    );
+    let spacer_line_cost = scalar_si(&merged, &ValueCellId::new("Spacer", "line_cost"), "merged");
+    assert_eq!(
+        spacer_observed, spacer_line_cost,
+        "CostAssembly.spacer_cost_observed must equal Spacer.line_cost in \
+         the same merged eval",
+    );
+
+    // (c): the parent's whole-assembly aggregate is the sum of its own two
+    // surface reads, in the SAME eval.
+    let merged_total = scalar_si(
+        &merged,
+        &ValueCellId::new("CostAssembly", "total_cost"),
+        "merged",
+    );
+    assert_eq!(
+        merged_total,
+        plate_observed + spacer_observed,
+        "CostAssembly.total_cost must equal plate_cost_observed + \
+         spacer_cost_observed in the same merged eval",
+    );
+
+    // (d): BT4 restated on the parent's OWN whole-assembly cell — merged
+    // strictly below frozen.
+    let frozen_total = scalar_si(
+        &frozen,
+        &ValueCellId::new("CostAssembly", "total_cost"),
+        "frozen-cascade",
+    );
+    assert!(
+        merged_total < frozen_total,
+        "CostAssembly.total_cost must be STRICTLY LESS in the merged eval \
+         than in the frozen-cascade eval. Got merged={merged_total} vs \
+         frozen={frozen_total}",
+    );
+}
