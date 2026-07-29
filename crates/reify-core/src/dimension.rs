@@ -538,14 +538,24 @@ pub const FORCE: DimensionVector = {
 /// This table drives both:
 /// - [`DimensionVector::canonical_name`] — dimension → name direction (linear scan forward).
 /// - `resolve_dimension_type` in `crates/reify-compiler/src/type_resolution.rs` — name → dimension
-///   direction (linear scan backward).
+///   direction (linear scan forward).
+///
+/// Both directions are FIRST-MATCH, which is why ENTRY ORDER IS LOAD-BEARING: an
+/// alias row (`TranslationalStiffness`, `Curvature`, `Momentum`, `Torque`) is placed
+/// AFTER the canonical row it shares a vector with, so `canonical_name()` keeps
+/// returning the canonical name while the alias name still resolves in the
+/// name→dim direction. Inserting one BEFORE its canonical row would silently
+/// change every reverse-lookup consumer's output.
 ///
 /// **`DIMENSIONLESS` is intentionally excluded.** `canonical_name` returns `None` for
 /// `DIMENSIONLESS` via the search-miss path (the existing contract), while `resolve_dimension_type`
 /// special-cases `"Dimensionless" => DimensionVector::DIMENSIONLESS` as a separate fallback arm.
 ///
-/// The slice contains 34 entries, one per named singleton, in the same order as the
-/// original `canonical_name` match arms (LENGTH .. FORCE_DENSITY).
+/// The slice contains 52 entries. The first 35 are one per named singleton in the
+/// same order as the original `canonical_name` match arms (LENGTH .. FORCE_DENSITY);
+/// the rest were appended by later tasks, including the four alias rows noted above.
+/// Nothing enforces this count — deliberately, since all consumers derive from the
+/// slice rather than from a length — so keep it in sync when adding a row.
 pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     (DimensionVector::LENGTH, "Length"),
     (DimensionVector::MASS, "Mass"),
