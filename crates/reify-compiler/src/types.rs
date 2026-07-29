@@ -1358,6 +1358,36 @@ pub enum PrimitiveKind {
     HalfSpace,
 }
 
+impl PrimitiveKind {
+    /// Every variant of this enum, as a fixed-size const array.
+    ///
+    /// This is the **single source of truth** for the set of `PrimitiveKind` variants.
+    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
+    /// from this list.
+    ///
+    /// **Maintenance contract**: to add a new variant, extend this array and bump its
+    /// explicit size annotation from `[Self; N]` to `[Self; N+1]`.  Rust rejects any
+    /// length mismatch at compile time, so the size annotation is itself an additional
+    /// tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates and the consumer
+    /// lock named on it fires at `cargo check`, forcing the matching registry row.
+    const ALL: [Self; 8] = [
+        Self::Box,
+        Self::Cylinder,
+        Self::Sphere,
+        Self::Tube,
+        Self::Cone,
+        Self::Wedge,
+        Self::Torus,
+        Self::HalfSpace,
+    ];
+
+    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
+    ///
+    /// Consumer: `reify_eval::geometry_ops`'s `compile_geometry_op_registry_completeness`
+    /// locks `ALL_PRIMITIVE.len() == PrimitiveKind::VARIANT_COUNT` at compile time.
+    pub const VARIANT_COUNT: usize = Self::ALL.len();
+}
+
 impl std::fmt::Display for PrimitiveKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1379,6 +1409,29 @@ pub enum BooleanOp {
     Union,
     Difference,
     Intersection,
+}
+
+impl BooleanOp {
+    /// Every variant of this enum, as a fixed-size const array.
+    ///
+    /// This is the **single source of truth** for the set of `BooleanOp` variants.
+    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
+    /// from this list.
+    ///
+    /// **Maintenance contract**: to add a new variant, extend this array and bump its
+    /// explicit size annotation from `[Self; N]` to `[Self; N+1]`.  Rust rejects any
+    /// length mismatch at compile time, so the size annotation is itself an additional
+    /// tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates and the consumer
+    /// lock named on it fires at `cargo check`, forcing the matching registry row.
+    const ALL: [Self; 3] = [Self::Union, Self::Difference, Self::Intersection];
+
+    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
+    ///
+    /// Consumer: `reify-eval/tests/compile_geometry_op_characterization.rs` locks
+    /// `ALL_BOOLEAN.len() == BooleanOp::VARIANT_COUNT` at compile time.  Booleans have
+    /// no `*_COMPILERS` fn-table (they dispatch by inline match), so that characterization
+    /// table is the whole registry surface for this family.
+    pub const VARIANT_COUNT: usize = Self::ALL.len();
 }
 
 impl std::fmt::Display for BooleanOp {
@@ -1480,6 +1533,35 @@ pub enum TransformKind {
     ScaleNonUniform,
 }
 
+impl TransformKind {
+    /// Every variant of this enum, as a fixed-size const array.
+    ///
+    /// This is the **single source of truth** for the set of `TransformKind` variants.
+    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
+    /// from this list.
+    ///
+    /// **Maintenance contract**: to add a new variant, extend this array and bump its
+    /// explicit size annotation from `[Self; N]` to `[Self; N+1]`.  Rust rejects any
+    /// length mismatch at compile time, so the size annotation is itself an additional
+    /// tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates and the consumer
+    /// lock named on it fires at `cargo check`, forcing the matching registry row.
+    const ALL: [Self; 7] = [
+        Self::Translate,
+        Self::Rotate,
+        Self::Scale,
+        Self::RotateAround,
+        Self::ApplyTransform,
+        Self::AffineApply,
+        Self::ScaleNonUniform,
+    ];
+
+    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
+    ///
+    /// Consumer: `reify_eval::geometry_ops`'s `compile_geometry_op_registry_completeness`
+    /// locks `ALL_TRANSFORM.len() == TransformKind::VARIANT_COUNT` at compile time.
+    pub const VARIANT_COUNT: usize = Self::ALL.len();
+}
+
 impl std::fmt::Display for TransformKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1502,6 +1584,33 @@ pub enum PatternKind {
     Mirror,
     Linear2D,
     Arbitrary,
+}
+
+impl PatternKind {
+    /// Every variant of this enum, as a fixed-size const array.
+    ///
+    /// This is the **single source of truth** for the set of `PatternKind` variants.
+    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
+    /// from this list.
+    ///
+    /// **Maintenance contract**: to add a new variant, extend this array and bump its
+    /// explicit size annotation from `[Self; N]` to `[Self; N+1]`.  Rust rejects any
+    /// length mismatch at compile time, so the size annotation is itself an additional
+    /// tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates and the consumer
+    /// lock named on it fires at `cargo check`, forcing the matching registry row.
+    const ALL: [Self; 5] = [
+        Self::Linear,
+        Self::Circular,
+        Self::Mirror,
+        Self::Linear2D,
+        Self::Arbitrary,
+    ];
+
+    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
+    ///
+    /// Consumer: `reify_eval::geometry_ops`'s `compile_geometry_op_registry_completeness`
+    /// locks `ALL_PATTERN.len() == PatternKind::VARIANT_COUNT` at compile time.
+    pub const VARIANT_COUNT: usize = Self::ALL.len();
 }
 
 impl std::fmt::Display for PatternKind {
@@ -1538,6 +1647,39 @@ pub enum SweepKind {
     Pipe,
 }
 
+impl SweepKind {
+    /// Every variant of this enum, as a fixed-size const array.
+    ///
+    /// This is the **single source of truth** for the set of `SweepKind` variants.
+    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
+    /// from this list.
+    ///
+    /// **Maintenance contract**: to add a new variant, extend this array and bump its
+    /// explicit size annotation from `[Self; N]` to `[Self; N+1]`.  Rust rejects any
+    /// length mismatch at compile time, so the size annotation is itself an additional
+    /// tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates and the consumer
+    /// lock named on it fires at `cargo check`, forcing the matching registry row.
+    const ALL: [Self; 9] = [
+        Self::Loft,
+        Self::Extrude,
+        Self::Revolve,
+        Self::Sweep,
+        Self::ExtrudeSymmetric,
+        Self::ExtrudeInfinite,
+        Self::SweepGuided,
+        Self::LoftGuided,
+        Self::Pipe,
+    ];
+
+    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
+    ///
+    /// Consumer: `reify_eval::geometry_ops`'s `compile_geometry_op_registry_completeness`
+    /// locks `ALL_SWEEP.len() == SweepKind::VARIANT_COUNT` at compile time.  That lock
+    /// caught a real hole on its first application: `ALL_SWEEP` omitted `ExtrudeInfinite`
+    /// while `SWEEP_COMPILERS` registered it, so the loop below it never checked that row.
+    pub const VARIANT_COUNT: usize = Self::ALL.len();
+}
+
 impl std::fmt::Display for SweepKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1563,6 +1705,34 @@ pub enum CurveKind {
     InterpCurve,
     BezierCurve,
     NurbsCurve,
+}
+
+impl CurveKind {
+    /// Every variant of this enum, as a fixed-size const array.
+    ///
+    /// This is the **single source of truth** for the set of `CurveKind` variants.
+    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
+    /// from this list.
+    ///
+    /// **Maintenance contract**: to add a new variant, extend this array and bump its
+    /// explicit size annotation from `[Self; N]` to `[Self; N+1]`.  Rust rejects any
+    /// length mismatch at compile time, so the size annotation is itself an additional
+    /// tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates and the consumer
+    /// lock named on it fires at `cargo check`, forcing the matching registry row.
+    const ALL: [Self; 6] = [
+        Self::LineSegment,
+        Self::Arc,
+        Self::Helix,
+        Self::InterpCurve,
+        Self::BezierCurve,
+        Self::NurbsCurve,
+    ];
+
+    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
+    ///
+    /// Consumer: `reify_eval::geometry_ops`'s `compile_geometry_op_registry_completeness`
+    /// locks `ALL_CURVE.len() == CurveKind::VARIANT_COUNT` at compile time.
+    pub const VARIANT_COUNT: usize = Self::ALL.len();
 }
 
 impl std::fmt::Display for CurveKind {
@@ -1596,6 +1766,27 @@ pub enum ProfileKind {
     Ellipse,
 }
 
+impl ProfileKind {
+    /// Every variant of this enum, as a fixed-size const array.
+    ///
+    /// This is the **single source of truth** for the set of `ProfileKind` variants.
+    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
+    /// from this list.
+    ///
+    /// **Maintenance contract**: to add a new variant, extend this array and bump its
+    /// explicit size annotation from `[Self; N]` to `[Self; N+1]`.  Rust rejects any
+    /// length mismatch at compile time, so the size annotation is itself an additional
+    /// tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates and the consumer
+    /// lock named on it fires at `cargo check`, forcing the matching registry row.
+    const ALL: [Self; 4] = [Self::Rectangle, Self::Circle, Self::Polygon, Self::Ellipse];
+
+    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
+    ///
+    /// Consumer: `reify_eval::geometry_ops`'s `compile_geometry_op_registry_completeness`
+    /// locks `ALL_PROFILE.len() == ProfileKind::VARIANT_COUNT` at compile time.
+    pub const VARIANT_COUNT: usize = Self::ALL.len();
+}
+
 impl std::fmt::Display for ProfileKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1616,6 +1807,29 @@ impl std::fmt::Display for ProfileKind {
 pub enum SurfaceKind {
     /// NURBS surface: `nurbs_surface(control_points, weights, u_knots, v_knots, u_degree, v_degree)`.
     Nurbs,
+}
+
+impl SurfaceKind {
+    /// Every variant of this enum, as a fixed-size const array.
+    ///
+    /// This is the **single source of truth** for the set of `SurfaceKind` variants.
+    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
+    /// from this list.
+    ///
+    /// **Maintenance contract**: to add a new variant, extend this array and bump its
+    /// explicit size annotation from `[Self; N]` to `[Self; N+1]`.  Rust rejects any
+    /// length mismatch at compile time, so the size annotation is itself an additional
+    /// tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates and the consumer
+    /// lock named on it fires at `cargo check`, forcing the matching registry row.
+    const ALL: [Self; 1] = [Self::Nurbs];
+
+    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
+    ///
+    /// Consumer: `reify-eval/tests/compile_geometry_op_characterization.rs` locks
+    /// `ALL_SURFACE.len() == SurfaceKind::VARIANT_COUNT` at compile time.  Surfaces have
+    /// no `*_COMPILERS` fn-table (they dispatch by inline match), so that characterization
+    /// table is the whole registry surface for this family.
+    pub const VARIANT_COUNT: usize = Self::ALL.len();
 }
 
 impl std::fmt::Display for SurfaceKind {
