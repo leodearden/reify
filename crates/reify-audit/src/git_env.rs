@@ -19,19 +19,23 @@
 //! **Resolved non-central case:** `reify-test-support`'s
 //! `scripts/audit-orphan-producers.sh` spawn
 //! (`crates/reify-test-support/src/orphan_audit.rs`) sanitizes the same
-//! [`REPO_REDIRECT_VARS`] set via inlined `.env_remove()` calls on the
-//! `Command`, rather than calling [`sanitize`] directly: the dependency edge
-//! runs `reify-audit` -> `reify-test-support`, so `reify-test-support` cannot
-//! depend on `reify-audit` without inverting it. That inlined list is a
-//! deliberate duplicate, not an independent judgment call — keep it in sync
-//! with [`REPO_REDIRECT_VARS`] above if this list ever changes. Without it,
-//! the script's first action, `REPO_ROOT="$(git rev-parse
-//! --show-toplevel)"`, would have been vulnerable to exactly the failure mode
-//! documented below: an ambient `GIT_DIR`/`GIT_WORK_TREE` beats BOTH cwd and
-//! `-C` (measured: `GIT_DIR=/tmp/gwt_a/.git GIT_WORK_TREE=/tmp/gwt_a git -C
-//! /tmp/gwt_b rev-parse --show-toplevel` prints `/tmp/gwt_a`; dropping the
-//! two vars prints `/tmp/gwt_b`), and under this project's warm-lane topology
-//! tests routinely execute inside `worktrees/_lane-NN` while an ambient hook
+//! [`REPO_REDIRECT_VARS`] set via its own local `REPO_REDIRECT_VARS` const
+//! and `sanitize` fn, rather than calling [`sanitize`] here directly: the
+//! dependency edge runs `reify-audit` -> `reify-test-support`, so
+//! `reify-test-support` cannot depend on `reify-audit` without inverting it.
+//! That local copy is a deliberate duplicate, not an independent judgment
+//! call — and unlike a comment-only "keep in sync" note, the duplication is
+//! now pinned by test:
+//! `repo_redirect_vars_matches_reify_test_support_orphan_audit_copy` below
+//! asserts the two lists stay equal, so a divergence fails `cargo test`
+//! rather than drifting silently. Without the sanitization, the script's
+//! first action, `REPO_ROOT="$(git rev-parse --show-toplevel)"`, would have
+//! been vulnerable to exactly the failure mode documented below: an ambient
+//! `GIT_DIR`/`GIT_WORK_TREE` beats BOTH cwd and `-C` (measured:
+//! `GIT_DIR=/tmp/gwt_a/.git GIT_WORK_TREE=/tmp/gwt_a git -C /tmp/gwt_b
+//! rev-parse --show-toplevel` prints `/tmp/gwt_a`; dropping the two vars
+//! prints `/tmp/gwt_b`), and under this project's warm-lane topology tests
+//! routinely execute inside `worktrees/_lane-NN` while an ambient hook
 //! environment may name a different checkout. The blast radius would have
 //! been an orphan audit silently enumerating the wrong tree rather than
 //! erroring.
@@ -260,6 +264,27 @@ mod tests {
                  repo-redirect set by construction"
             );
         }
+    }
+
+    /// `reify-test-support` cannot depend on this crate (the dependency edge
+    /// runs `reify-audit` -> `reify-test-support`), so
+    /// `crates/reify-test-support/src/orphan_audit.rs` keeps its own copy of
+    /// [`REPO_REDIRECT_VARS`] to sanitize its `audit-orphan-producers.sh`
+    /// script spawn (see this module's "Resolved non-central case" doc
+    /// above) rather than calling [`sanitize`] here. This test is what keeps
+    /// that copy honest: it fails `cargo test` the moment the two lists
+    /// diverge, instead of resting on the doc comment in either file.
+    #[test]
+    fn repo_redirect_vars_matches_reify_test_support_orphan_audit_copy() {
+        assert_eq!(
+            REPO_REDIRECT_VARS,
+            reify_test_support::orphan_audit::REPO_REDIRECT_VARS,
+            "crates/reify-test-support/src/orphan_audit.rs's REPO_REDIRECT_VARS \
+             copy has drifted from this crate's copy — update both lists \
+             together (reify-test-support cannot depend on reify-audit to \
+             reuse this const directly, so the two copies must be edited in \
+             lockstep)"
+        );
     }
 
     /// Close the loop on REAL git behaviour rather than on `Command` metadata.
