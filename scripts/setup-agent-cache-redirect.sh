@@ -48,11 +48,23 @@
 # tests/infra/test_agent_cache_redirect.sh.
 #
 # Usage:
-#   scripts/setup-agent-cache-redirect.sh [--seed-only]
+#   scripts/setup-agent-cache-redirect.sh [--seed-only | --print-paths]
 #
 #   --seed-only   Seed the caches ONLY: no sudo, no systemctl, no tmpfiles conf
 #                 and no unit install.  This is the mode the boot unit runs, so
 #                 the boot path is entirely unprivileged.
+#
+#   --print-paths Print the resolved destinations as KEY=VALUE lines
+#                 (CARGO_DEST, NPM_DEST, TMPFILES_CONF) and exit, touching
+#                 nothing.  Exists so the PRODUCTION defaults are observable
+#                 without running the seeder against the real /tmp: every other
+#                 mode is only ever exercised in tests with
+#                 REIFY_AGENT_CACHE_ROOT pointed at a temp dir, which means the
+#                 `/tmp` default and both basenames would otherwise be pinned by
+#                 nothing.  test_agent_cache_redirect.sh Block G uses it to
+#                 cross-check those defaults against the CARGO_HOME /
+#                 npm_config_cache values in dark-factory-orchestrator.yaml's
+#                 role_env_overrides — the coupling that makes them load-bearing.
 #
 # Environment:
 #   REIFY_AGENT_CACHE_ROOT  Parent of the redirect destinations (default: /tmp)
@@ -78,21 +90,24 @@ _warn() { echo "[setup-agent-cache-redirect] WARN:  $*" >&2; }
 
 # ── CLI guard ─────────────────────────────────────────────────────────────────
 SEED_ONLY=0
+PRINT_PATHS=0
 
 _usage() {
-    echo "Usage: $(basename "$0") [--seed-only]" >&2
+    echo "Usage: $(basename "$0") [--seed-only | --print-paths]" >&2
     echo "" >&2
     echo "  Provision the /tmp toolchain-cache redirect for the landlock-" >&2
     echo "  sandboxed agent roles (task 5729): hardlink pre-seed, tmpfiles" >&2
     echo "  age-clean exclusion, and a boot-persistent re-seed oneshot." >&2
     echo "" >&2
     echo "  --seed-only   Seed only — no sudo, no systemctl (the boot path)." >&2
+    echo "  --print-paths Print the resolved destinations and exit; no writes." >&2
 }
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        -h|--help)   _usage; exit 0 ;;
-        --seed-only) SEED_ONLY=1; shift ;;
+        -h|--help)     _usage; exit 0 ;;
+        --seed-only)   SEED_ONLY=1; shift ;;
+        --print-paths) PRINT_PATHS=1; shift ;;
         *)
             echo "$(basename "$0"): unexpected argument: $1" >&2
             _usage
@@ -107,13 +122,28 @@ done
 # silently un-protecting the live directory from age-cleaning with no visible
 # symptom until a long-uptime build failed with a missing-source error.  These
 # two basenames must match the paths task 5332's `role_env_overrides` block
-# points CARGO_HOME / npm_config_cache at.
+# points CARGO_HOME / npm_config_cache at — a coupling ACROSS files, and so the
+# one this script cannot enforce by construction.  Renaming either side leaves
+# the seeder cheerfully reporting "4 of 4 source pairs seeded" while depositing
+# ~1G at a path no sandboxed agent ever reads.  Pinned from the outside:
+# test_agent_cache_redirect.sh Block G compares `--print-paths` output against
+# the values parsed out of dark-factory-orchestrator.yaml.
 CACHE_ROOT="${REIFY_AGENT_CACHE_ROOT:-/tmp}"
 CARGO_DEST="$CACHE_ROOT/reify-agent-cargo-home"
 NPM_DEST="$CACHE_ROOT/reify-agent-npm-cache"
 
 TMPFILES_DIR="${REIFY_TMPFILES_DIR:-/etc/tmpfiles.d}"
 TMPFILES_CONF="$TMPFILES_DIR/reify-agent-caches.conf"
+
+# Emitted on STDOUT (the three _info/_ok/_warn helpers all write to stderr), so
+# a caller can consume this without filtering diagnostics.  Placed here, before
+# any seeding, so the mode provably touches nothing.
+if [ "$PRINT_PATHS" = "1" ]; then
+    echo "CARGO_DEST=$CARGO_DEST"
+    echo "NPM_DEST=$NPM_DEST"
+    echo "TMPFILES_CONF=$TMPFILES_CONF"
+    exit 0
+fi
 
 # ── seed sources ──────────────────────────────────────────────────────────────
 # Two independent decisions here — WHICH trees, and BY WHICH MECHANISM.
@@ -149,7 +179,29 @@ TMPFILES_CONF="$TMPFILES_DIR/reify-agent-caches.conf"
 #     sandbox's write containment, which is not a trade this script gets to
 #     make on the sandbox's behalf.
 #
-#     The two COPY trees are ~944M together and are only re-copied after a /tmp
+#     ACCEPTED RESIDUE on the two link-mode trees: a hardlink shares the whole
+#     INODE, not just its contents, so mode/owner/mtime are shared too.  A
+#     sandboxed agent that chmods or touches a seeded .crate tarball or
+#     content-v2 blob changes it in the host's ~/.cargo / ~/.npm as well —
+#     outside the landlock write set, by the same mechanism an in-place content
+#     write would use.  That channel is pinned by observation, not by this
+#     paragraph: test_agent_cache_redirect.sh B21/B22 chmod+touch a seeded
+#     link-mode file and assert the write-through, so the boundary is a
+#     characterised fact and a future move to copy-mode would turn those
+#     assertions red rather than passing silently.
+#
+#     Why it is accepted rather than closed by copying: (a) the blast radius is
+#     a permission bit or a timestamp on a content-addressed entry that both
+#     stores locate by HASH and re-fetch on validation failure — a re-download,
+#     never corruption of a different crate/package; (b) neither tool chmods or
+#     touches an existing cache entry on a normal path (both replace by rename),
+#     so nothing but a deliberately misbehaving agent reaches it; and (c) the
+#     alternative is copying content-v2, which is 4.8G of real bytes on THIS
+#     host, re-paid at every boot (see install_boot_unit's cost note).  The
+#     in-place-mutation hazard the copy-mode split exists for is a routine tool
+#     behaviour; this one is not.
+#
+#     The two COPY trees are ~950M together and are only re-copied after a /tmp
 #     wipe (`--update=none` makes a warm re-run a near no-op).  Dropping them
 #     instead of copying them would cost far more than it looks: without
 #     index-v5 every cacache lookup misses and npm re-downloads the whole tree
@@ -244,6 +296,19 @@ seed_one() {
     # same-device premise (/tmp and $HOME both on /dev/nvme2n1p5 today) into an
     # ENFORCED precondition rather than a standing assumption, so a future host
     # that mounts /tmp as tmpfs degrades loudly instead of filling RAM.
+    #
+    # NOT the only source of EXDEV, and deliberately not treated as such.
+    # Observed live on this host (2026-07-29): running this script from inside a
+    # landlock-sandboxed agent role fails every link-mode pair with "Invalid
+    # cross-device link" while src and dst report the SAME st_dev, because
+    # landlock answers a link across two of its hierarchies with EXDEV rather
+    # than EACCES when LANDLOCK_ACCESS_FS_REFER is not granted.  No stat-based
+    # check can see that, so the guard is a cheap filter for the common case,
+    # not a complete one — the `cp` failure path below is what actually carries
+    # the contract, and it is fail-open for exactly this reason.  (That case is
+    # benign in production: the boot oneshot and a contributor's setup-dev.sh
+    # both run unsandboxed; only an agent re-running setup-dev.sh hits it, and
+    # it degrades to the copy-mode pairs plus a warn.)
     #
     # The device is read from the nearest EXISTING ancestor of the destination,
     # since the destination itself is usually not created yet at this point.
@@ -401,17 +466,12 @@ EOF
     fi
     rm -f "$tmp_conf"
 
-    # Best-effort apply so the exclusion takes effect now rather than at the
-    # next boot.  Non-fatal: the conf on disk is what actually matters.
-    if command -v systemd-tmpfiles >/dev/null 2>&1; then
-        if [ -w "$TMPFILES_DIR" ] || [ "$(id -u)" = "0" ]; then
-            systemd-tmpfiles --create "$TMPFILES_CONF" >/dev/null 2>&1 \
-                || _warn "systemd-tmpfiles --create did not apply cleanly (non-fatal)"
-        else
-            sudo systemd-tmpfiles --create "$TMPFILES_CONF" >/dev/null 2>&1 \
-                || _warn "systemd-tmpfiles --create did not apply cleanly (non-fatal)"
-        fi
-    fi
+    # NO `systemd-tmpfiles --create` apply step, deliberately.  `x` is
+    # IGNORE_PATH: it creates nothing, and it is re-read from /etc/tmpfiles.d on
+    # every `--clean` invocation of systemd-tmpfiles-clean.timer.  Writing the
+    # conf IS the activation — an apply pass would be a no-op that also cost a
+    # second sudo prompt right after the install above, which the
+    # compare-before-write check exists to avoid.  Pinned by F16.
     return 0
 }
 
@@ -451,6 +511,29 @@ EOF
 # orchestrator without needing a drop-in.  NOTHING Requires= it: a failed seed
 # degrades to today's cold-start behaviour rather than blocking orchestrator
 # startup, the same fail-open posture as the warm-lane units.
+#
+# COST OF THAT ORDERING, so the trade is legible rather than implied: the seed
+# sits ON the orchestrator's startup critical path, and the boot `D /tmp` wipe
+# means it is always the cold case.  MEASURED on this host, 2026-07-29
+# (/dev/nvme2n1p5, page cache warm — a true post-boot run reads colder and will
+# be slower, so these are lower bounds):
+#     copy  ~/.cargo/registry/index    81M / 2208 inodes   2.8 s
+#     copy  ~/.npm/_cacache/index-v5  870M / 5159 inodes  18.9 s
+#     link  (measured 2.8 s per 5159 inodes) → registry/cache 1227 inodes ~0.7 s
+#           and _cacache/content-v2 8023 inodes ~4.3 s
+#   ≈ 27 s of components; an end-to-end `--seed-only` run measured 37 s wall.
+# So the orchestrator starts roughly half a minute later, ONCE per boot.  The
+# thing bought is that no agent pays a crates.io index + full dep-tree
+# re-download on a live task's critical path, which is minutes, and lands on a
+# task the scheduler has already committed to.
+#
+# The alternative — drop `Before=` and let the seed race the orchestrator — was
+# considered and rejected.  It is close to safe (cargo's .package-cache flock
+# serializes access and `--update=none` makes a half-seeded tree safe to top
+# up), but `cp -a` is not atomic per file, so an agent racing it can read a
+# truncated index entry or .crate and take the re-fetch path anyway: the same
+# cost, now nondeterministic and on the critical path rather than off it.
+# Half a minute of deterministic boot latency is the cheaper side of that trade.
 install_boot_unit() {
     local unit_dir unit_path self stable unit_exec
 

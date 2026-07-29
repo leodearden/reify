@@ -17,12 +17,14 @@
 #
 # Blocks:
 #   A — CLI contract (exists, executable, --help, unknown-flag exit 2)
-#   B — hardlink pre-seed (Fix A): seeded set, byte-identity, INODE identity
+#   B — hardlink pre-seed (Fix A): seeded set, byte-identity, INODE identity,
+#       and the accepted metadata write-through residue on the link-mode trees
 #   C — idempotence + top-up across repeat runs
 #   D — degenerate self-copy guard (script running under its own redirect)
 #   E — fail-open on absent/unusable sources
 #   F — tmpfiles age-clean exclusion (Fix B): content, idempotence, fail-open
-#   G — desync guard: the conf's paths ARE the seeder's destinations
+#   G — desync guard: the conf's paths ARE the seeder's destinations, and the
+#       PRODUCTION defaults ARE dark-factory-orchestrator.yaml's role_env_overrides
 #   H — boot persistence: the --user oneshot, and --seed-only mode separation
 #   I — setup-dev.sh wiring (structural grep on uncommented lines only)
 #
@@ -401,6 +403,35 @@ assert "B20: a real seed reports OK with a nonzero seeded count" \
     bash -c 'printf "%s\n%s\n" "$1" "$2" | grep -qE "OK:.*seed pass complete: [1-9]"' \
     _ "$OUT" "$ERR_OUT"
 
+# ── B21/B22: the ACCEPTED RESIDUE on the link-mode trees, pinned ──────────────
+# B19 asserts containment for a COPY-mode tree, and states it in terms of file
+# CONTENT.  A hardlink shares the whole INODE though, so the link-mode trees
+# leak a second channel that no assertion above can see: mode, owner and mtime.
+# A sandboxed agent that chmods or touches a seeded .crate or content-v2 blob
+# changes it in the host's ~/.cargo / ~/.npm too — outside the landlock write
+# set, exactly like an in-place content write would.
+#
+# These two assert that the leak HAPPENS.  That is deliberate and is the point:
+# it is a knowingly accepted trade (see the ACCEPTED RESIDUE paragraph in the
+# script's seed-sources note — the alternative is copying 4.8G of content-v2 at
+# every boot), and an accepted boundary that lives only in prose is one nobody
+# can tell has moved.  Written this way the residue is a characterised fact, and
+# a future switch of either tree to copy mode turns these RED — which is the
+# correct outcome: it is a real behaviour change, and it should be noticed and
+# re-costed rather than absorbed silently.
+#
+# Asserted on the seeded destination's SOURCE, i.e. the direction that matters:
+# the write is issued under the redirect root and observed in the host cache.
+chmod 0600 "$B_CARGO_DEST/registry/cache/alpha-1.0.0.crate"
+assert "B21: chmod on a link-mode seeded .crate DOES reach the host cache (accepted inode-sharing residue)" \
+    bash -c '[ "$(stat -c %a "$1")" = "600" ]' \
+    _ "$FAKE_HOME/.cargo/registry/cache/alpha-1.0.0.crate"
+
+touch -d '2001-02-03 04:05:06' "$B_NPM_DEST/_cacache/content-v2/sha512/ab/blob"
+assert "B22: touch on a link-mode seeded blob DOES reach the host cache (same residue, mtime channel)" \
+    bash -c '[ "$(stat -c %Y "$1")" = "$(date -d "2001-02-03 04:05:06" +%s)" ]' \
+    _ "$FAKE_HOME/.npm/_cacache/content-v2/sha512/ab/blob"
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block C — idempotence + top-up
 #
@@ -707,14 +738,14 @@ assert "F2: reify-agent-caches.conf is created in \$REIFY_TMPFILES_DIR" \
 # appends instead of rewriting passes both row assertions while doubling the
 # file on every setup-dev.sh run.
 assert "F3: conf has EXACTLY two non-comment lines" \
-    bash -c '[ "$(awk "!/^[[:space:]]*#/ && NF" "$1" | wc -l)" -eq 2 ]' _ "$F_CONF"
+    test "$(conf_body_line_count "$F_CONF")" -eq 2
 
 assert "F4: conf excludes the cargo destination" \
-    bash -c 'awk "!/^[[:space:]]*#/ && NF { print \$2 }" "$1" | grep -Fxq -- "$2"' \
-    _ "$F_CONF" "$F_CARGO_DEST"
+    bash -c 'printf "%s\n" "$1" | grep -Fxq -- "$2"' \
+    _ "$(conf_paths "$F_CONF")" "$F_CARGO_DEST"
 assert "F5: conf excludes the npm destination" \
-    bash -c 'awk "!/^[[:space:]]*#/ && NF { print \$2 }" "$1" | grep -Fxq -- "$2"' \
-    _ "$F_CONF" "$F_NPM_DEST"
+    bash -c 'printf "%s\n" "$1" | grep -Fxq -- "$2"' \
+    _ "$(conf_paths "$F_CONF")" "$F_NPM_DEST"
 
 # The verb matters and is easy to get wrong.  Only lowercase `x` excludes a
 # directory AND ITS CONTENTS from age-cleaning; `X` excludes the directory
@@ -722,8 +753,7 @@ assert "F5: conf excludes the npm destination" \
 # gutting failure this block exists to prevent — and `d`/`D` would create or
 # empty the tree rather than protect it.
 assert "F6: every non-comment line uses the 'x' verb (not X, not d/D)" \
-    bash -c '[ "$(awk "!/^[[:space:]]*#/ && NF { print \$1 }" "$1" | sort -u | tr -d "\n")" = "x" ]' \
-    _ "$F_CONF"
+    test "$(conf_verbs "$F_CONF")" = "x"
 
 # F15 — the conf's COMMENT header is generated too, and F3-F6 deliberately
 # ignore comment lines, so nothing above can see the renderer misbehave while
@@ -736,6 +766,22 @@ assert "F6: every non-comment line uses the 'x' verb (not X, not d/D)" \
 assert "F15: the run emitted no 'command not found' (heredoc prose is not executed)" \
     bash -c '! printf "%s\n%s\n" "$1" "$2" | grep -qiE "command not found|Xorg"' \
     _ "$OUT" "$ERR_OUT"
+
+# F16 — no apply step.  `x` is IGNORE_PATH: it creates nothing, and the timer's
+# `--clean` pass re-reads /etc/tmpfiles.d on every invocation, so writing the
+# conf IS the activation.  An earlier revision ran `systemd-tmpfiles --create`
+# here "so the exclusion takes effect now": a no-op that ALSO fired a second
+# sudo immediately after the install on the production path (/etc/tmpfiles.d is
+# not user-writable), defeating the compare-before-write check F9 pins.
+#
+# Asserted against the run that ACTUALLY WROTE the conf — i.e. here, in the
+# first-run group, not after the idempotent second run.  install_tmpfiles_
+# exclusion() returns early when the conf is already current, so the same
+# assertion placed after F7-F10 would pass on a script that still ran the apply
+# step: it would never have reached it.  The stub records argv without acting,
+# so this asserts on the CALL, not on its effect.
+assert "F16: the run invoked NO systemd-tmpfiles (writing the conf is the activation)" \
+    bash -c '! grep -q "^systemd-tmpfiles " "$1"' _ "$CALLS_FILE"
 
 # Idempotence, and specifically: compare-before-write.  Re-running setup-dev.sh
 # must not re-sudo when the conf is already correct.
@@ -752,7 +798,7 @@ assert "F8: conf is byte-unchanged by the second run" \
 assert "F9: second run invoked NO sudo (compares before writing)" \
     bash -c '! grep -q "^sudo " "$1"' _ "$CALLS_FILE"
 assert "F10: conf still has exactly two non-comment lines after re-run" \
-    bash -c '[ "$(awk "!/^[[:space:]]*#/ && NF" "$1" | wc -l)" -eq 2 ]' _ "$F_CONF"
+    test "$(conf_body_line_count "$F_CONF")" -eq 2
 
 # Fail-open: a host where sudo is absent or refuses must not fail setup-dev.sh.
 #
@@ -810,11 +856,120 @@ assert "G2: the seeder created exactly two destination dirs under the cache root
     bash -c '[ "$(find "$1" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 2 ]' _ "$CACHE_ROOT"
 
 assert "G3: conf paths == seeder destinations, exactly (no drift, no extras)" \
-    bash -c '
-        conf_side="$(awk "!/^[[:space:]]*#/ && NF { print \$2 }" "$1" | sort)"
-        seed_side="$(find "$2" -mindepth 1 -maxdepth 1 -type d | sort)"
-        [ -n "$conf_side" ] && [ "$conf_side" = "$seed_side" ]
-    ' _ "$G_CONF" "$CACHE_ROOT"
+    bash -c '[ -n "$1" ] && [ "$1" = "$2" ]' \
+    _ "$(conf_paths "$G_CONF" | sort)" \
+      "$(find "$CACHE_ROOT" -mindepth 1 -maxdepth 1 -type d | sort)"
+
+# ── G4-G9: the CROSS-FILE half of the desync guard ────────────────────────────
+# G1-G3 close the INTRA-script desync only, and they close it by construction:
+# both sides are derived from the same CACHE_ROOT the harness injects, so they
+# cannot disagree even if the constant itself is wrong.  The constant that is
+# actually load-bearing is the PRODUCTION default — `/tmp` plus the two
+# basenames — because it must equal what dark-factory-orchestrator.yaml's
+# role_env_overrides points a sandboxed agent's CARGO_HOME / npm_config_cache
+# at.  Every other assertion in this suite runs with REIFY_AGENT_CACHE_ROOT
+# pointed at a temp dir, so before these, renaming either side left all of them
+# green while the seeder deposited ~1G at a path no agent would ever read: the
+# seeder reporting "4 of 4 source pairs seeded" IS the silent failure.
+#
+# `--print-paths` exists for this: it resolves the same constants and exits
+# without touching anything, so the production defaults can be observed without
+# a test run writing into the real /tmp redirect.
+#
+# The yaml side is parsed with PyYAML rather than grepped — a grep for
+# `/tmp/reify-agent-cargo-home` would match the long rationale comment above the
+# block and stay green after the value itself changed.  The sibling suite
+# tests/infra/test_sandbox_cache_writability_seam.sh has an equivalent parser,
+# but it is inline in that file rather than a shared helper, and that file is
+# outside this task's locked modules; extracting it into test_helpers.sh is the
+# right cleanup and is left as a follow-up rather than done from here.
+G_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
+# Hardcoded copy of DF's roles.py sandboxed=True set, matching the sibling
+# suite's SANDBOXED_ROLES — not reify-observable, so a DF-side role addition
+# needs a manual update in both places.
+G_SANDBOXED_ROLES="implementer debugger simple_task"
+
+# REIFY_AGENT_CACHE_ROOT is UNSET here, unlike in run_redirect: observing the
+# `/tmp` default is the entire point of these assertions.
+G_PRINT="$(env -u CARGO_HOME -u npm_config_cache -u REIFY_AGENT_CACHE_ROOT \
+               -u REIFY_TMPFILES_DIR -u XDG_CONFIG_HOME \
+               PATH="$STUB_DIR:$PATH" bash "$SCRIPT" --print-paths 2>/dev/null)" || true
+G_CARGO_DEFAULT="$(printf '%s\n' "$G_PRINT" | sed -n 's/^CARGO_DEST=//p')"
+G_NPM_DEFAULT="$(printf '%s\n' "$G_PRINT" | sed -n 's/^NPM_DEST=//p')"
+
+assert "G4: --print-paths reports a CARGO_DEST default" test -n "$G_CARGO_DEFAULT"
+assert "G5: --print-paths reports an NPM_DEST default" test -n "$G_NPM_DEFAULT"
+# Non-vacuity: the two must differ, or a single wrong constant would satisfy
+# both role comparisons below at once.
+assert "G6: the two defaults are distinct paths" \
+    bash -c '[ "$1" != "$2" ]' _ "$G_CARGO_DEFAULT" "$G_NPM_DEFAULT"
+
+if ! python3 -c 'import yaml' 2>/dev/null; then
+    echo "SKIP: python3 'yaml' (PyYAML) not available — skipping the yaml cross-check (G7-G9)"
+elif [ ! -f "$G_YAML" ]; then
+    echo "SKIP: $G_YAML not found — skipping the yaml cross-check (G7-G9)"
+else
+    _G_PARSE_PY="$(mktemp "$_TMPBASE/test-agent-cache-yaml-XXXXXX.py")"
+    _TMPDIRS+=("$_G_PARSE_PY")
+    cat > "$_G_PARSE_PY" << 'PYEOF'
+"""Read dark-factory-orchestrator.yaml's landlock cache-redirect contract.
+
+Usage:
+    <yaml> sandbox_enabled            -- exit 0 iff sandbox.enabled is true
+    <yaml> role_key <role> <key>      -- print role_env_overrides[role][key],
+                                         exit 1 if absent/empty
+"""
+import sys
+
+import yaml
+
+with open(sys.argv[1]) as fh:
+    doc = yaml.safe_load(fh) or {}
+check = sys.argv[2]
+
+if check == "sandbox_enabled":
+    sandbox = doc.get("sandbox")
+    sys.exit(0 if isinstance(sandbox, dict) and sandbox.get("enabled") is True else 1)
+
+if check == "role_key":
+    role, key = sys.argv[3], sys.argv[4]
+    overrides = doc.get("role_env_overrides")
+    if not isinstance(overrides, dict):
+        sys.exit(1)
+    entry = overrides.get(role)
+    if not isinstance(entry, dict):
+        sys.exit(1)
+    value = entry.get(key)
+    if not isinstance(value, str) or not value:
+        sys.exit(1)
+    print(value)
+    sys.exit(0)
+
+print(f"unknown check: {check}", file=sys.stderr)
+sys.exit(2)
+PYEOF
+
+    # Gated on sandbox.enabled, mirroring the sibling suite: with the sandbox
+    # off there is no redirect for the defaults to agree WITH, so asserting
+    # would make this suite red for a decision taken elsewhere.  With it on,
+    # the coupling is live and these are hard assertions.
+    if python3 "$_G_PARSE_PY" "$G_YAML" sandbox_enabled; then
+        echo "sandbox.enabled == true; cross-checking the seeder's defaults against role_env_overrides ($G_SANDBOXED_ROLES)"
+        for _g_role in $G_SANDBOXED_ROLES; do
+            _g_yaml_cargo="$(python3 "$_G_PARSE_PY" "$G_YAML" role_key "$_g_role" CARGO_HOME)" || _g_yaml_cargo=""
+            _g_yaml_npm="$(python3 "$_G_PARSE_PY" "$G_YAML" role_key "$_g_role" npm_config_cache)" || _g_yaml_npm=""
+
+            assert "G7[$_g_role]: role_env_overrides.$_g_role defines both CARGO_HOME and npm_config_cache" \
+                bash -c '[ -n "$1" ] && [ -n "$2" ]' _ "$_g_yaml_cargo" "$_g_yaml_npm"
+            assert "G8[$_g_role]: the seeder's default CARGO_DEST == role_env_overrides.$_g_role.CARGO_HOME" \
+                bash -c '[ "$1" = "$2" ]' _ "$G_CARGO_DEFAULT" "$_g_yaml_cargo"
+            assert "G9[$_g_role]: the seeder's default NPM_DEST == role_env_overrides.$_g_role.npm_config_cache" \
+                bash -c '[ "$1" = "$2" ]' _ "$G_NPM_DEFAULT" "$_g_yaml_npm"
+        done
+    else
+        echo "SKIP: sandbox.enabled is not true — the redirect is not live, skipping G7-G9"
+    fi
+fi
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block H — boot persistence + mode separation
