@@ -21,7 +21,7 @@ use reify_compiler::geometry_traits_inference::{
     InferredTraits, try_infer_traits_for_function_call,
 };
 use reify_compiler::{
-    BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind, ProfileKind, TransformKind,
+    BooleanOp, CompiledGeometryOp, GeomRef, ModifyKind, PrimitiveKind, ProfileKind, TransformKind,
 };
 use reify_core::{Severity, Type};
 use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, Value};
@@ -88,6 +88,157 @@ fn assert_signed_mul(expr: &CompiledExpr, label: &str) -> f64 {
 // ═══════════════════════════════════════════════════════════════════════════════
 // Step-1: rounded_box — RED tests
 // ═══════════════════════════════════════════════════════════════════════════════
+
+/// Assert `expr` is `Mul(<magnitude>, Literal(Real(factor)))` where the PRODUCT
+/// is LENGTH-dimensioned but the right-hand MULTIPLIER is a bare dimensionless
+/// `Real`. Returns the factor.
+///
+/// This is the negative-space counterpart to `assert_signed_mul`: that helper
+/// pins the outer node as non-dimensionless, this one additionally pins the
+/// inner factor as dimensionless-and-bare.
+fn assert_length_scaled_by_dimensionless(expr: &CompiledExpr, label: &str) -> f64 {
+    assert_eq!(
+        expr.result_type,
+        Type::length(),
+        "{label}: the PRODUCT must be LENGTH — it already clones the magnitude's \
+         result_type today; got {:?}",
+        expr.result_type
+    );
+    match &expr.kind {
+        CompiledExprKind::BinOp {
+            op: BinOp::Mul,
+            right,
+            ..
+        } => {
+            assert_eq!(
+                right.result_type,
+                Type::dimensionless_scalar(),
+                "{label}: the scale factor must stay dimensionless — a LENGTH-typed \
+                 multiplier makes this Scalar{{AREA}} at eval, which the task-beta \
+                 length gate rejects; got {:?}",
+                right.result_type
+            );
+            match &right.kind {
+                CompiledExprKind::Literal(Value::Real(factor)) => *factor,
+                other => panic!(
+                    "{label}: the scale factor must stay a bare Literal(Real(..)) — \
+                     a dimensioned Scalar multiplier makes this Scalar{{AREA}} at eval, \
+                     which the task-beta length gate rejects; got: {other:?}"
+                ),
+            }
+        }
+        other => panic!("{label} must be a Mul(<magnitude>, <dimensionless factor>), got: {other:?}"),
+    }
+}
+
+/// NEGATIVE-SPACE PIN — the `-0.5`/`+0.5` scale factors must STAY dimensionless
+/// while their enclosing `Mul` stays LENGTH.
+///
+/// This guards a documented drift in the units-length PRD (§8 α, §4 M1 and the
+/// §2 anchor table), which instructs a future reader to retype geometry.rs's
+/// `:2362` and `:2439` `-0.5` literals to LENGTH. That instruction is wrong
+/// twice over, and this test makes it un-implementable rather than merely
+/// un-done (see esc-5742-1):
+///
+///  1. MIS-ATTRIBUTION — `:2362` is not in `rounded_box` at all. It is
+///     `minus_offset = w * (-0.5)` inside the `zone_profile` arm, feeding a
+///     `Modify{Thicken}` "offset" slot. `rounded_box` has exactly ONE dz.
+///  2. WRONG CLASS — both are dimensionless MULTIPLIERS, not slot-bound zeros.
+///     The enclosing binop ALREADY carries the magnitude's LENGTH result_type,
+///     and at eval `Scalar{LENGTH} × Real` takes the Scalar×Real arm and
+///     preserves LENGTH. Retyping the factor would switch eval onto the
+///     Scalar×Scalar arm and yield `Scalar{AREA}` — which the length gate this
+///     task exists to satisfy would then REJECT, inverting α's purpose.
+///
+/// Unlike the dx/dy, dz and angle pins, this one is expected GREEN on arrival:
+/// it locks in behaviour the retype must NOT disturb.
+#[test]
+fn rounded_box_dz_is_length_scaled_by_a_dimensionless_factor() {
+    let source = r#"structure def S {
+    let body = rounded_box(20mm, 10mm, 5mm, 1mm)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template not found");
+    let ops = &template.realizations[0].operations;
+
+    let mut checked = 0usize;
+    for op in ops {
+        if let CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            args,
+            ..
+        } = op
+        {
+            let (_, dz_expr) = args
+                .iter()
+                .find(|(k, _)| k == "dz")
+                .expect("rounded_box corner Translate must carry a dz");
+            let factor =
+                assert_length_scaled_by_dimensionless(dz_expr, "rounded_box corner dz");
+            assert!(
+                factor < 0.0,
+                "rounded_box corner dz factor must stay negative (centre the cylinder), \
+                 got {factor}"
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(
+        checked, 4,
+        "rounded_box must lower to 4 corner Translates; got {checked} — \
+         if this changed, the pin above is no longer covering what it claims to"
+    );
+}
+
+/// The `zone_profile` half of the same negative-space pin — `:2355`/`:2362`,
+/// the lines the PRD text actually names while attributing them to
+/// `rounded_box`. Both `±0.5` offsets must stay dimensionless multipliers of a
+/// LENGTH width, feeding the two `Modify{Thicken}` "offset" slots.
+#[test]
+fn zone_profile_offsets_are_length_scaled_by_dimensionless_factors() {
+    let source = r#"structure def S {
+    let z = zone_profile(box(10mm, 10mm, 10mm), 1mm)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template not found");
+    let ops = &template.realizations[0].operations;
+
+    let factors: Vec<f64> = ops
+        .iter()
+        .filter_map(|op| match op {
+            CompiledGeometryOp::Modify {
+                kind: ModifyKind::Thicken,
+                args,
+                ..
+            } => args.iter().find(|(k, _)| k == "offset"),
+            _ => None,
+        })
+        .map(|(_, offset_expr)| {
+            assert_length_scaled_by_dimensionless(offset_expr, "zone_profile thicken offset")
+        })
+        .collect();
+
+    assert_eq!(
+        factors.len(),
+        2,
+        "zone_profile must lower to two Modify{{Thicken}} ops carrying an `offset`; \
+         got {} — if this changed, the pin above is no longer covering what it claims to",
+        factors.len()
+    );
+    assert!(
+        factors.iter().any(|f| *f > 0.0) && factors.iter().any(|f| *f < 0.0),
+        "zone_profile's two thicken offsets must be a +/- pair (outer and inner \
+         shell walls), got {factors:?}"
+    );
+}
 
 /// `rounded_box(40mm,30mm,20mm,5mm)` must lower to the boolean-compose op
 /// sequence: [Box A, Box B, (Cylinder,Translate)×4, Boolean(Union)×5] — 15 ops
