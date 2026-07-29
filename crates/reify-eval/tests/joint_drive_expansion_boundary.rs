@@ -1625,8 +1625,8 @@ fn mwhole_bt4_merged_whole_assembly_cost_is_strictly_below_the_frozen_baseline()
 /// # Achievability — DIRECT, not assumed
 ///
 /// Identical mechanism and identical fixture precondition as the
-/// green-on-main `bt5_...`(iii), which asserts exactly this for
-/// `RivetedPanel.rivets.line_cost`; step-2's fixture satisfies the
+/// green-on-main `bt5_...`(iii), which asserts the MERGED-side alias for
+/// `RivetedPanel.rivets.line_cost`; the fixture satisfies the
 /// `build_single_instance_alias_paths` precondition (two DISTINCT
 /// structures, one non-collection instance path each).
 ///
@@ -1636,12 +1636,23 @@ fn mwhole_bt4_merged_whole_assembly_cost_is_strictly_below_the_frozen_baseline()
 /// the SAME eval, so they pin bit-identity of a freshly-folded product, not a
 /// convergence claim.
 ///
-/// RED until the example declares the surface reads (next impl step): with
-/// no `.ri`-level reference to `self.plate.line_cost`/`self.spacer.line_cost`
-/// anywhere in `CostAssembly`, the frozen-cascade half (no `minimize`, hence
-/// no `cost(self.descendants)` expansion either) never mints the id at all,
-/// so [`scalar_si`] panics reporting it absent rather than resolving (d)'s
-/// comparison.
+/// # Where the cross-scope read lives — the objective, not a `let`
+///
+/// `CostAssembly`'s `.ri`-level read of its children's `line_cost` is the
+/// INLINED `minimize cost(self.descendants)`, which expands to
+/// `[CostAssembly.plate.line_cost, CostAssembly.spacer.line_cost].sum` — that
+/// expansion IS the cross-scope surface read BT3 names, and it is what mints
+/// the instance-path ids this test reads.
+///
+/// Do NOT "strengthen" this fixture by adding a parent-level consumer binding
+/// such as `let plate_cost_observed : Money = self.plate.line_cost`. Confirmed
+/// by direct `EvalResult` inspection (esc-5017-7): such a binding is
+/// permanently `Undef` in BOTH halves, because `build_dependent_cells` seeds
+/// its walk FROM objective/constraint terms and sweeps only their own UPSTREAM
+/// dependencies — a purely downstream consumer let is never swept in, and
+/// `evaluate_let_bindings` has already run before `materialize_dependent_cells`
+/// writes the solved values. Making that shape work is an engine change owned
+/// by β/α, tracked separately; it is not a fixture-authoring gap.
 #[test]
 fn mwhole_bt3_cross_scope_surface_read_surfaces_the_co_solved_value() {
     let merged_src =
@@ -1700,16 +1711,51 @@ fn mwhole_bt3_cross_scope_surface_read_surfaces_the_co_solved_value() {
              whatever it held before the solve",
         );
 
-        // (d) STRICTLY DIFFERS from the same cell in the frozen-cascade eval
-        // -- proving it is the CO-SOLVED value, not the bottom-up freeze.
-        let frozen_aliased = scalar_si(&frozen, &alias_id, "frozen-cascade");
-        assert_ne!(
-            merged_aliased, frozen_aliased,
+        // (d) is STRICTLY BELOW the value the frozen cascade freezes this
+        // child's cost at -- proving the surface read carries the CO-SOLVED
+        // value, not the bottom-up freeze.
+        //
+        // The frozen side is read STRUCTURE-KEYED (`{structure}.line_cost`),
+        // NOT through `alias_id`, and that asymmetry is load-bearing rather
+        // than a convenience. The instance-path cell `{instance_path}.line_cost`
+        // exists ONLY as a `build_dependent_cells` alias entry, and that entry
+        // is seeded from the objective/constraint terms of a merged cluster
+        // (`build_dependent_cells(seed_exprs: &[&CompiledExpr], ..)`,
+        // engine_eval.rs:1611). `strip_inlined_minimize` removes the sole
+        // `minimize`, so the frozen half forms no cluster, mints no alias, and
+        // `CostAssembly.plate.line_cost` is Undef there BY CONSTRUCTION -- for
+        // any fixture whose parent owns no `auto` of its own, which BT3/BT4's
+        // pure-cost-aggregator parent must not (a parent auto would make
+        // `build_solver_problem` take a different path entirely). Reading
+        // `alias_id` on the frozen side is therefore not a stricter assertion,
+        // it is an unsatisfiable one. The green-on-main precedent this test
+        // cites, `bt5_..`(iii), reads the alias in the MERGED eval only, for
+        // exactly this reason.
+        //
+        // `{structure}.line_cost` IS the frozen cascade's own spelling of this
+        // child's cost (25.00 USD / 45.00 USD -- the box-centre freeze the
+        // header derives), so comparing against it discharges BT3's "not a
+        // frozen [value]" clause against the real frozen number rather than
+        // against an absent cell. "Not Undef" is discharged by (a), which
+        // panics via `scalar_si` on anything but a Scalar.
+        //
+        // STRICT INEQUALITY, not `assert_ne!`: the house comparative norm, and
+        // it pins the cost-minimising DIRECTION -- a merged value that merely
+        // differed (e.g. drifted upward) would satisfy `!=` while contradicting
+        // the whole point of the objective.
+        let frozen_structure_keyed = scalar_si(
+            &frozen,
+            &ValueCellId::new(structure, "line_cost"),
+            "frozen-cascade",
+        );
+        assert!(
+            merged_aliased < frozen_structure_keyed,
             "BT3 [{structure}] (d): the cross-scope surface read \
-             `{instance_path}.line_cost` must STRICTLY DIFFER between the \
-             merged and frozen-cascade evals — an equal value would mean the \
+             `{instance_path}.line_cost` must surface the CO-SOLVED value — \
+             STRICTLY BELOW the `{structure}.line_cost` the frozen cascade \
+             freezes this child at. An equal-or-greater value would mean the \
              surface read carries the bottom-up freeze, not the co-solved \
-             value. Got merged={merged_aliased} vs frozen={frozen_aliased}",
+             value. Got merged={merged_aliased} vs frozen={frozen_structure_keyed}",
         );
     }
 }
