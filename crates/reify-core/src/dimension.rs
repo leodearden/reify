@@ -1530,6 +1530,95 @@ mod tests {
         );
     }
 
+    /// `Torque` is a first-class `NAMED_DIMENSIONS` entry registered in
+    /// alias position, strictly AFTER the `RotationalStiffness` row.
+    ///
+    /// Per PRD `docs/prds/v0_6/angle-units-surface-convergence.md` §6 D4, task η:
+    /// this is a NAME ADDITION at alias position, deliberately NOT a
+    /// re-dimensioning. The four assertions below pin, in order: the exponent
+    /// slots themselves (Force·Length/Angle, independent of any other
+    /// constant); the shared-vector claim; the load-bearing row ORDER; and the
+    /// non-breaking guarantee that `canonical_name()` still answers
+    /// `"RotationalStiffness"` (PRD §9 row B10).
+    ///
+    /// Assertions (b) and (d) are CONTINGENT, not definitional. `TORQUE` and
+    /// `ROTATIONAL_STIFFNESS` are numerically equal under Reify's *current*
+    /// model, not by construction. PRD §10 / §11 Q1 leaves PRD 5 an open
+    /// question about re-dimensioning `ROTATIONAL_STIFFNESS` to
+    /// `Force·Length/Angle²` (since τ = k·θ). If that ever lands, (b) and (d)
+    /// are exactly the assertions that must fail LOUDLY — they are the human
+    /// decision point, not incidental collateral. Assertion (a) is the one
+    /// that stays true regardless, which is why it is spelled slot-by-slot
+    /// rather than delegating to `ROTATIONAL_STIFFNESS`.
+    #[test]
+    fn torque_named_dimension_registered_as_alias_after_rotational_stiffness() {
+        // (a) Exponent slots, pinned literally: kg·m²·s⁻²·rad⁻¹.
+        let t = DimensionVector::TORQUE;
+        assert_eq!(
+            t.0[0],
+            Rational::new(2, 1),
+            "TORQUE slot 0 (Length) should be 2"
+        );
+        assert_eq!(t.0[1], Rational::ONE, "TORQUE slot 1 (Mass) should be 1");
+        assert_eq!(
+            t.0[2],
+            Rational::new(-2, 1),
+            "TORQUE slot 2 (Time) should be -2"
+        );
+        assert_eq!(
+            t.0[7],
+            Rational::new(-1, 1),
+            "TORQUE slot 7 (Angle) should be -1"
+        );
+        for (i, slot) in t.0.iter().enumerate() {
+            if !matches!(i, 0 | 1 | 2 | 7) {
+                assert_eq!(*slot, Rational::ZERO, "TORQUE slot {i} should be ZERO");
+            }
+        }
+
+        // (b) D4 shared-vector claim — exact, both being the same from_exps list.
+        assert_eq!(
+            DimensionVector::TORQUE,
+            DimensionVector::ROTATIONAL_STIFFNESS,
+            "TORQUE and ROTATIONAL_STIFFNESS share one vector under PRD §6 D4; \
+             if PRD 5 re-dimensions ROTATIONAL_STIFFNESS to Force·Length/Angle², \
+             this failure is the intended decision point"
+        );
+
+        // (c) Exactly one "Torque" row, placed AFTER "RotationalStiffness".
+        let torque_rows: Vec<usize> = super::NAMED_DIMENSIONS
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, name))| *name == "Torque")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            torque_rows.len(),
+            1,
+            "NAMED_DIMENSIONS should contain exactly one \"Torque\" row, found {torque_rows:?}"
+        );
+        let rot_stiffness_idx = super::NAMED_DIMENSIONS
+            .iter()
+            .position(|(_, name)| *name == "RotationalStiffness")
+            .expect("NAMED_DIMENSIONS should contain a \"RotationalStiffness\" row");
+        assert!(
+            torque_rows[0] > rot_stiffness_idx,
+            "the \"Torque\" row (index {}) must come strictly AFTER the \
+             \"RotationalStiffness\" row (index {rot_stiffness_idx}); canonical_name is a \
+             forward first-match scan, so placing it earlier would silently flip every \
+             reverse-lookup consumer's output",
+            torque_rows[0]
+        );
+
+        // (d) Non-breaking guarantee — dim→name output must NOT flip to "Torque".
+        assert_eq!(
+            DimensionVector::TORQUE.canonical_name(),
+            Some("RotationalStiffness"),
+            "canonical_name() for the shared vector must stay \"RotationalStiffness\" \
+             (PRD §9 row B10); a flip to \"Torque\" means the row was mis-ordered"
+        );
+    }
+
     #[test]
     fn acceleration_canonical_name_is_acceleration() {
         let a = DimensionVector::ACCELERATION;
