@@ -310,6 +310,7 @@
 //! let _ = Mesh2dError::EmptyBoundary;
 //! let _ = Mesh2dError::DegenerateBoundary;
 //! let _ = Mesh2dError::GmshUnavailable;
+//! let _ = Mesh2dError::ProfileUnresolvable("profile handle did not resolve".to_string());
 //! // Pin the four function items by their full signatures.
 //! let _: fn(&[[f64; 2]; 4]) -> f64 = compute_quad_skew;
 //! let _: fn(&[f32], &[u32], f64) -> bool = recombine_quality_ok;

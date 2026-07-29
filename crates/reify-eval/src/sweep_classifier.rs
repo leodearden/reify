@@ -537,21 +537,21 @@ fn normalise_ccw(mut ring: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
 /// downstream, by [`swept_kind_to_profile_boundary`], so an arm added later
 /// inherits the postcondition without having to restate it.
 ///
-/// Returns `Some(outer_ring)` for the recognised single-ring profile ops
+/// Returns `Ok(outer_ring)` for the recognised single-ring profile ops
 /// ([`GeometryOp::RectangleProfile`], [`GeometryOp::PolygonProfile`],
-/// [`GeometryOp::CircleProfile`], [`GeometryOp::EllipseProfile`]) and `None` for
-/// any other op, so [`swept_kind_to_profile_boundary`] can reject a profile
-/// handle that resolves to a non-profile op (e.g. a solid primitive). The rings
-/// are single-ring: multiply-connected cross-sections (holes parallel to the
-/// sweep axis) are Phase B (PRD task #14).
+/// [`GeometryOp::CircleProfile`], [`GeometryOp::EllipseProfile`]) and
+/// [`ProfileResolveError::NotAProfileOp`] for any other op, so
+/// [`swept_kind_to_profile_boundary`] can reject a profile handle that resolves
+/// to a non-profile op (e.g. a solid primitive). The rings are single-ring:
+/// multiply-connected cross-sections (holes parallel to the sweep axis) are
+/// Phase B (PRD task #14).
 ///
 /// # Non-finite extents are rejected
 ///
 /// Every sampled coordinate is checked with `f64::is_finite`, and a NaN or
-/// infinite extent yields `None` (which
-/// [`swept_kind_to_profile_boundary`] surfaces as an unresolvable profile and
-/// [`build_swept_2d_mesh`] collapses to
-/// [`reify_solver_elastic::Mesh2dError::EmptyBoundary`]).
+/// infinite extent yields [`ProfileResolveError::NonFiniteExtent`] — reported
+/// separately from [`ProfileResolveError::NotAProfileOp`] so a downstream
+/// diagnostic names the actual cause.
 ///
 /// This guard is load-bearing, not belt-and-braces: `profile_rectangle`,
 /// `profile_circle` and `profile_ellipse` (`geometry_ops.rs`) apply no
@@ -563,15 +563,24 @@ fn normalise_ccw(mut ring: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
 /// covered upstream (`eval_all_args_to_f64`); its arm is checked here anyway so
 /// the postcondition is a property of this function rather than of each
 /// caller.
-fn profile_sample_2d(op: &GeometryOp) -> Option<Vec<[f64; 2]>> {
+fn profile_sample_2d(op: &GeometryOp) -> Result<Vec<[f64; 2]>, ProfileResolveError> {
+    // Extract one extent, mapping both "the Value is not numeric" and "the
+    // Value is a non-finite number" onto NonFiniteExtent — at this point the op
+    // IS a recognised profile op, so the only remaining failure mode is a
+    // usable-extent one.
+    let extent = |v: &reify_ir::Value| {
+        v.as_f64()
+            .filter(|x| x.is_finite())
+            .ok_or(ProfileResolveError::NonFiniteExtent)
+    };
     match op {
         // Axis-aligned rectangle centred at the origin. The op's contract
         // (geometry.rs) places corners at (±width/2, ±height/2, 0); emit them
         // as the 4 CCW corners starting bottom-left.
         GeometryOp::RectangleProfile { width, height } => {
-            let w = width.as_f64().filter(|v| v.is_finite())?;
-            let h = height.as_f64().filter(|v| v.is_finite())?;
-            Some(vec![
+            let w = extent(width)?;
+            let h = extent(height)?;
+            Ok(vec![
                 [-w / 2.0, -h / 2.0],
                 [w / 2.0, -h / 2.0],
                 [w / 2.0, h / 2.0],
@@ -582,25 +591,25 @@ fn profile_sample_2d(op: &GeometryOp) -> Option<Vec<[f64; 2]>> {
         // ring, in order.
         GeometryOp::PolygonProfile { points } => {
             if !points.iter().all(|p| p[0].is_finite() && p[1].is_finite()) {
-                return None;
+                return Err(ProfileResolveError::NonFiniteExtent);
             }
-            Some(points.clone())
+            Ok(points.clone())
         }
         // Circle: PROFILE_CURVE_SEGMENTS points, each exactly r·[cos θ, sin θ].
         GeometryOp::CircleProfile { radius } => {
-            let r = radius.as_f64().filter(|v| v.is_finite())?;
-            Some(sample_ellipse_ring(r, r))
+            let r = extent(radius)?;
+            Ok(sample_ellipse_ring(r, r))
         }
         // Ellipse: PROFILE_CURVE_SEGMENTS points at [a·cos θ, b·sin θ].
         GeometryOp::EllipseProfile {
             semi_major,
             semi_minor,
         } => {
-            let a = semi_major.as_f64().filter(|v| v.is_finite())?;
-            let b = semi_minor.as_f64().filter(|v| v.is_finite())?;
-            Some(sample_ellipse_ring(a, b))
+            let a = extent(semi_major)?;
+            let b = extent(semi_minor)?;
+            Ok(sample_ellipse_ring(a, b))
         }
-        _ => None,
+        _ => Err(ProfileResolveError::NotAProfileOp),
     }
 }
 

@@ -99,7 +99,10 @@ pub struct ProfileBoundary {
     pub holes: Vec<Vec<[f64; 2]>>,
 }
 
-/// Errors from [`mesh_swept_profile_2d`].
+/// Errors on the 2-D cross-section meshing path: the four returned by
+/// [`mesh_swept_profile_2d`] itself, plus [`Mesh2dError::ProfileUnresolvable`]
+/// for an upstream producer that could not build a [`ProfileBoundary`] to hand
+/// it in the first place.
 #[derive(Debug)]
 pub enum Mesh2dError {
     /// Outer ring is empty — caller passed nothing to mesh.
@@ -115,6 +118,19 @@ pub enum Mesh2dError {
     /// detected at compile time). Callers can choose to fall back to a
     /// different mesher or surface this as a configuration error.
     GmshUnavailable,
+    /// No [`ProfileBoundary`] could be produced for this body at all, so
+    /// nothing was ever handed to [`mesh_swept_profile_2d`]. The payload names
+    /// the producer-side reason.
+    ///
+    /// Distinct from [`Mesh2dError::EmptyBoundary`] on purpose: that one means
+    /// a boundary WAS produced and its outer ring turned out to be empty, and
+    /// conflating the two makes a downstream diagnostic
+    /// (`"swept hex/wedge path failed: …"`) misreport an upstream resolution
+    /// failure as a degenerate cross-section. Producers live above this crate
+    /// (e.g. `reify_eval::sweep_classifier::build_swept_2d_mesh`), so the
+    /// reason is carried as text rather than as a typed enum this layer would
+    /// have to know about.
+    ProfileUnresolvable(String),
 }
 
 /// User-tunable knobs for one [`mesh_swept_profile_2d`] call.
