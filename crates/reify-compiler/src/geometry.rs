@@ -1499,8 +1499,10 @@ fn compile_geometry_call_inner(
                 CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::dimensionless_scalar()),
                 height.result_type.clone(),
             );
-            let zero =
-                CompiledExpr::literal(Value::Real(0.0), reify_core::Type::dimensionless_scalar());
+            // dx = dy = 0, but LENGTH-dimensioned: these are bound into
+            // LENGTH slots, and the eval-layer arg gate matches on the runtime
+            // Value's DimensionVector, so a bare Real(0.0) would be rejected.
+            let zero = CompiledExpr::literal(Value::length(0.0), reify_core::Type::length());
 
             // Cylinder lands at step_offset (sub_ops was empty entering this arm).
             let cylinder_step = step_offset;
