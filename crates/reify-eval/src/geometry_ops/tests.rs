@@ -20415,6 +20415,11 @@
             PrimitiveKind::Torus,
             PrimitiveKind::HalfSpace,
         ];
+        const _: () = assert!(
+            ALL_PRIMITIVE.len() == PrimitiveKind::VARIANT_COUNT,
+            "ALL_PRIMITIVE / PrimitiveKind::VARIANT_COUNT mismatch — a variant was added \
+             without registering it; extend ALL_PRIMITIVE and PrimitiveKind::ALL together"
+        );
         for k in ALL_PRIMITIVE {
             let _ = kind_idx_primitive(k);
             assert!(lookup_primitive(k).is_some(), "no Primitive entry: {:?}", k);
@@ -20432,6 +20437,11 @@
             ModifyKind::OffsetSolid,
             ModifyKind::OffsetCurve,
         ];
+        const _: () = assert!(
+            ALL_MODIFY.len() == ModifyKind::VARIANT_COUNT,
+            "ALL_MODIFY / ModifyKind::VARIANT_COUNT mismatch — a variant was added \
+             without registering it; extend ALL_MODIFY and ModifyKind::ALL together"
+        );
         assert_eq!(ALL_MODIFY.len(), ModifyKind::VARIANT_COUNT, "ALL_MODIFY / VARIANT_COUNT mismatch");
         for k in ALL_MODIFY {
             let _ = kind_idx_modify(k);
@@ -20448,6 +20458,11 @@
             TransformKind::AffineApply,
             TransformKind::ScaleNonUniform,
         ];
+        const _: () = assert!(
+            ALL_TRANSFORM.len() == TransformKind::VARIANT_COUNT,
+            "ALL_TRANSFORM / TransformKind::VARIANT_COUNT mismatch — a variant was added \
+             without registering it; extend ALL_TRANSFORM and TransformKind::ALL together"
+        );
         for k in ALL_TRANSFORM {
             let _ = kind_idx_transform(k);
             assert!(lookup_transform(k).is_some(), "no Transform entry: {:?}", k);
@@ -20461,6 +20476,11 @@
             PatternKind::Linear2D,
             PatternKind::Arbitrary,
         ];
+        const _: () = assert!(
+            ALL_PATTERN.len() == PatternKind::VARIANT_COUNT,
+            "ALL_PATTERN / PatternKind::VARIANT_COUNT mismatch — a variant was added \
+             without registering it; extend ALL_PATTERN and PatternKind::ALL together"
+        );
         for k in ALL_PATTERN {
             let _ = kind_idx_pattern(k);
             assert!(lookup_pattern(k).is_some(), "no Pattern entry: {:?}", k);
@@ -20477,6 +20497,11 @@
             SweepKind::LoftGuided,
             SweepKind::Pipe,
         ];
+        const _: () = assert!(
+            ALL_SWEEP.len() == SweepKind::VARIANT_COUNT,
+            "ALL_SWEEP / SweepKind::VARIANT_COUNT mismatch — a variant was added \
+             without registering it; extend ALL_SWEEP and SweepKind::ALL together"
+        );
         for k in ALL_SWEEP {
             let _ = kind_idx_sweep(k);
             assert!(lookup_sweep(k).is_some(), "no Sweep entry: {:?}", k);
@@ -20491,6 +20516,11 @@
             CurveKind::BezierCurve,
             CurveKind::NurbsCurve,
         ];
+        const _: () = assert!(
+            ALL_CURVE.len() == CurveKind::VARIANT_COUNT,
+            "ALL_CURVE / CurveKind::VARIANT_COUNT mismatch — a variant was added \
+             without registering it; extend ALL_CURVE and CurveKind::ALL together"
+        );
         for k in ALL_CURVE {
             let _ = kind_idx_curve(k);
             assert!(lookup_curve(k).is_some(), "no Curve entry: {:?}", k);
@@ -20503,6 +20533,11 @@
             ProfileKind::Polygon,
             ProfileKind::Ellipse,
         ];
+        const _: () = assert!(
+            ALL_PROFILE.len() == ProfileKind::VARIANT_COUNT,
+            "ALL_PROFILE / ProfileKind::VARIANT_COUNT mismatch — a variant was added \
+             without registering it; extend ALL_PROFILE and ProfileKind::ALL together"
+        );
         for k in ALL_PROFILE {
             let _ = kind_idx_profile(k);
             assert!(lookup_profile(k).is_some(), "no Profile entry: {:?}", k);
