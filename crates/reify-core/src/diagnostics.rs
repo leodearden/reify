@@ -582,6 +582,31 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_SELECTOR_KIND_MISMATCH`
     /// (see `docs/prds/topology-selector-value-type.md` §11.2).
     SelectorKindMismatch,
+    /// Origin: `crates/reify-compiler/src/expr.rs`, the
+    /// `OverloadResolution::NoMatch` arm (task 5476).
+    /// Emitted as `Severity::Error` when user functions with the called name exist
+    /// but none of their signatures accepts the argument types at the call site.
+    ///
+    /// Canonical message form:
+    /// `"no matching overload for {name}({arg_types}), candidates: {candidate_sigs}"`
+    /// Label at the call span: `"no matching overload"`.
+    ///
+    /// The diagnostic is pushed through `make_poison_literal`, so the call's result
+    /// type becomes a poison sentinel — the anti-cascade contract from
+    /// tasks 448/1912/1921 that stops one bad call from spraying follow-on errors.
+    ///
+    /// **Non-clobber rule.** This code tags only the GENERAL no-match case. When
+    /// `coerce::is_selector_kind_mismatch_nomatch` holds — i.e. the no-match is
+    /// specifically a wrong-kind `Selector`→`Selector` param mismatch — the
+    /// diagnostic keeps [`DiagnosticCode::SelectorKindMismatch`] instead, so the
+    /// composition path (BT1, `units.rs`) and the param-binding path (BT6) report
+    /// the same code (task 4581 / esc-4120-17). Message and label are identical in
+    /// both branches; only the code differs.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_NO_MATCHING_OVERLOAD`
+    /// (severity convention: `E_*` → `Error`); see
+    /// `docs/prds/v0_6/placeholder-type-eradication-ratchet.md` §3.3 / INV-SF-6.
+    NoMatchingOverload,
     /// Origin: `crates/reify-compiler/src/builtin_signatures.rs` (task 4493,
     /// type-hygiene ζ).
     /// Emitted as `Severity::Error` when a call site passes a statically-known
