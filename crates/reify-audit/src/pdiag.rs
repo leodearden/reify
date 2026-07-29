@@ -830,4 +830,116 @@ mod tests {
         lines.push("// pdiag:allow — 16 non-comment lines below, out of reach".to_string());
         assert_eq!(sites(&lines.join("\n")), vec![(1, false)]);
     }
+
+    // -- scope predicate ----------------------------------------------------
+    //
+    // The predicate takes the repo-root-relative form `GitOps::ls_files()`
+    // returns. Paths below are REAL tracked paths (checked against
+    // `git ls-files`) unless the case comment calls them out as a SHAPE — a
+    // form not in the tree today, pinned so a future refactor cannot widen or
+    // narrow the sweep unnoticed.
+
+    #[test]
+    fn crate_src_and_gui_src_tauri_rust_files_are_swept() {
+        // The two production trees INV-SF-6 governs. `annotations/schema.rs`
+        // pins that nesting below `src/` is fine, and `lib.rs` that a crate
+        // root is nothing special.
+        for path in [
+            "crates/reify-eval/src/geometry_ops.rs",
+            "crates/reify-compiler/src/annotations/schema.rs",
+            "crates/reify-stdlib/src/dfm.rs",
+            "crates/reify-core/src/lib.rs",
+            "gui/src-tauri/src/engine.rs",
+        ] {
+            assert!(is_swept_path(path), "{path} must be swept");
+        }
+    }
+
+    #[test]
+    fn non_rust_extensions_are_not_swept() {
+        // `Diagnostic::error(` is a Rust token; a `.c`/`.sh`/`.md` hit is
+        // prose or a different language. `tree-sitter-reify/src/parser.c` also
+        // pins that a `src/` segment alone does not put a file in scope. The
+        // `.rs.orig` case is a SHAPE — an editor/merge artefact, checking that
+        // the extension test anchors at the END of the path rather than
+        // matching `.rs` anywhere in it.
+        for path in [
+            "scripts/foo.sh",
+            "docs/x.md",
+            "tree-sitter-reify/src/parser.c",
+            "crates/reify-eval/src/geometry_ops.rs.orig",
+        ] {
+            assert!(!is_swept_path(path), "{path} must not be swept");
+        }
+    }
+
+    #[test]
+    fn the_detectors_own_crate_is_excluded_to_prevent_self_match() {
+        // SELF-MATCH is not hypothetical: `pdssentinel.rs` alone carries 10
+        // literal `Diagnostic::error` tokens in its doc comments, and this
+        // module's own header carries more. Mirrors ptodo's ALLOWLIST_PREFIXES
+        // (ptodo.rs:602-617), which closes the identical hazard.
+        for path in [
+            "crates/reify-audit/src/pdiag.rs",
+            "crates/reify-audit/src/pdssentinel.rs",
+            "crates/reify-audit/tests/cli.rs",
+        ] {
+            assert!(!is_swept_path(path), "{path} must not be swept");
+        }
+    }
+
+    #[test]
+    fn the_test_support_crate_is_excluded() {
+        // 28 constructor sites, 100% test scaffolding: `reify-test-support`
+        // exists to fabricate diagnostics for assertions, and emits none.
+        assert!(!is_swept_path("crates/reify-test-support/src/helpers.rs"));
+    }
+
+    #[test]
+    fn paths_with_a_tests_segment_are_not_swept() {
+        // INV-SF-6 governs EMITTED diagnostics. Leaving test trees in scope
+        // manufactures a recurring false RED for every future test author.
+        // `.../engine_build/tests/mod.rs` is the SHAPE, not a tracked path —
+        // no `tests/` directory exists under any `crates/*/src/` today, and
+        // pinning it keeps a future refactor from silently widening the sweep.
+        for path in [
+            "crates/reify-eval/tests/harness_engine.rs",
+            "gui/src-tauri/src/tests/engine_tests.rs",
+            "crates/reify-eval/src/engine_build/tests/mod.rs",
+        ] {
+            assert!(!is_swept_path(path), "{path} must not be swept");
+        }
+    }
+
+    #[test]
+    fn tests_rs_and_underscore_tests_rs_file_stems_are_not_swept() {
+        // The in-`src` inline-test convention: a sibling `tests.rs` module or
+        // a `*_tests.rs` file. Both are `#[cfg(test)]`-gated at their `mod`
+        // declaration, so `scan_file`'s block skip never sees the attribute
+        // from inside the file — the path predicate is the only guard.
+        for path in [
+            "crates/reify-eval/src/engine_build/tests.rs",
+            "crates/reify-eval/src/geometry_ops/tests.rs",
+            "crates/reify-eval/src/engine_build/diagnose_topology_correspondence_drops_tests.rs",
+        ] {
+            assert!(!is_swept_path(path), "{path} must not be swept");
+        }
+    }
+
+    #[test]
+    fn rust_outside_crate_src_and_gui_src_tauri_is_not_swept() {
+        // Build scripts (10 tracked `build.rs` files) run at compile time and
+        // emit no runtime diagnostic. The bare `build.rs` and the workspace
+        // root `xtask/src/main.rs` are SHAPES — neither is tracked today —
+        // pinned so a future top-level Rust tree cannot drift into scope
+        // unnoticed.
+        for path in [
+            "crates/reify-eval/build.rs",
+            "crates/reify-cli/build.rs",
+            "build.rs",
+            "xtask/src/main.rs",
+        ] {
+            assert!(!is_swept_path(path), "{path} must not be swept");
+        }
+    }
 }
