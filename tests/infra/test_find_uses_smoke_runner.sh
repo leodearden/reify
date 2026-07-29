@@ -147,7 +147,7 @@ _smoke_arm_run() {
 echo ""
 echo "--- ARM A: launcher-death causes early non-zero exit (not a timeout hang) ---"
 
-_a_bin=$(_new_bindir)
+_new_bindir; _a_bin="$_BINDIR"
 _write_stub "$_a_bin/stub_launcher.sh" 'exit 1'
 # Stub node: should not be reached; exits 1 if called.
 _write_stub "$_a_bin/node" \
@@ -184,7 +184,7 @@ assert "runner emits the readiness-phase launcher-death marker (not just its sta
 echo ""
 echo "--- ARM B: negative control — live launcher, green driver, NO death marker ---"
 
-_b_bin=$(_new_bindir)
+_new_bindir; _b_bin="$_BINDIR"
 _write_stub "$_b_bin/stub_launcher.sh" 'exec sleep 20'
 # Health poll succeeds immediately.
 _write_stub "$_b_bin/curl" 'exit 0'
