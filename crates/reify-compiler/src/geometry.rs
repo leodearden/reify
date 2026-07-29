@@ -1010,9 +1010,9 @@ fn rounded_corner_dims(
 /// `zone_annulus`/`zone_profile` multi-op compose + `step_offset +
 /// sub_ops.len()` index-tracking idiom. The final `Union` (the last element
 /// of the returned `Vec`) is the realization root. `dz` is cloned across all
-/// 4 corners by the caller: a dimensioned `-(height/2)` for `rounded_box`'s
-/// solid cylinders, a dimensionless `Literal(Real(0.0))` for
-/// `rounded_rect`'s planar circles.
+/// 4 corners by the caller, and is LENGTH-dimensioned from both: a
+/// `-(height/2)` product for `rounded_box`'s solid cylinders, a
+/// `Literal(Scalar{LENGTH, 0.0})` for `rounded_rect`'s planar circles.
 #[allow(clippy::too_many_arguments)]
 fn emit_rounded_union_compose(
     mut sub_ops: Vec<CompiledGeometryOp>,
@@ -2523,8 +2523,10 @@ fn compile_geometry_call_inner(
             }
 
             let dims = rounded_corner_dims(&width, &depth, &corner_r);
-            // dz (all 4 corner circles) = 0 — planar, no z-offset.
-            let dz = CompiledExpr::literal(Value::Real(0.0), reify_core::Type::dimensionless_scalar());
+            // dz (all 4 corner circles) = 0 — planar, no z-offset. LENGTH-dimensioned
+            // even though it is zero: it is bound into a LENGTH slot, and the
+            // eval-layer arg gate matches on the runtime Value's DimensionVector.
+            let dz = CompiledExpr::literal(Value::length(0.0), reify_core::Type::length());
 
             // Rect A: rectangle(width, depth-2r)
             let body_a = CompiledGeometryOp::Profile {
