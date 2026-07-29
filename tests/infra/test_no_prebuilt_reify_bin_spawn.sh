@@ -30,13 +30,16 @@
 # deliberately does NOT grep comments, doc-strings, or markdown for wording:
 # that prose-pin anti-pattern was introduced and then removed by task #4463
 # (commit 2e1b474da5) precisely because it pins documentation rather than
-# behaviour and goes stale on every rewording.
+# behaviour and goes stale on every rewording. A line that matches the idiom
+# but provably is not binary resolution opts out with a trailing
+# `// reify-bin-spawn:allow — <reason>` (see "Escape hatch" below).
 #
 # Checks:
 #   1: `git ls-files` enumeration is non-empty (guard is not vacuously green)
 #   2: (a) no filesystem-path resolution of a `reify` binary outside reify-cli
 #   3: (b) no `cargo` subprocess spawn used to obtain/run the reify binary
-#   4: positive control — the patterns DO match a synthetic violating file
+#   4: positive control — the patterns DO match a synthetic violating file, and
+#      the `reify-bin-spawn:allow` marker suppresses a marked line
 #   5: `crates/reify-cli/` really is exempt (the sanctioned home has spawns)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -66,16 +69,41 @@ PAT_PATH_JOIN='\.join\("reify"\)|\.join\("debug"\)\.join\("reify"\)'
 #     `env!("CARGO")` spelling (the cargo-provided path) and a literal
 #     `Command::new("cargo")`.
 PAT_CARGO_SPAWN='Command::new\(env!\("CARGO"\)\)|Command::new\("cargo"\)'
+#
+# ── Escape hatch ─────────────────────────────────────────────────────────────
+#
+# Pattern (a) matches the `.join("reify")` IDIOM; it cannot prove the joined path
+# is the reify *binary*. The same spelling legitimately builds an XDG config or
+# cache directory — `crates/reify-cli/src/cache.rs` does exactly that today, and
+# is exempt only by accident of living under EXEMPT_PREFIX. The first XDG dir
+# resolution added in reify-config, reify-lsp or gui/src-tauri would otherwise
+# trip this hard gate for code that never spawns a binary.
+#
+# Narrowing the regex (requiring a target/profile-shaped receiver, or a
+# downstream `Command::new`) would trade that false positive for false negatives,
+# and a guard that has silently stopped firing is the exact failure mode this
+# file exists to prevent. So the pattern stays broad and an individual line may
+# opt out explicitly, mirroring the house PTODO convention (`// ptodo:allow —
+# reason`, CLAUDE.md):
+#
+#     let cfg = xdg.join("reify"); // reify-bin-spawn:allow — XDG config dir
+#
+# The marker must sit on the matched line itself. The reason after it is
+# conventional, not grep-enforced: review is what checks the justification.
+PAT_ALLOW='//[[:space:]]*reify-bin-spawn:allow'
 
-# _tracked_rs_outside_cli — emit every tracked .rs path NOT under the exempt
-# prefix, one per line. Pure enumeration; no matching.
+# _tracked_rs_outside_cli [root] — emit every tracked .rs path NOT under the
+# exempt prefix, one per line, from the repo at [root] (default REPO_ROOT).
+# Pure enumeration; no matching.
 _tracked_rs_outside_cli() {
-    git -C "$REPO_ROOT" ls-files '*.rs' | grep -v "^$EXEMPT_PREFIX" || true
+    local root="${1:-$REPO_ROOT}"
+    git -C "$root" ls-files '*.rs' | grep -v "^$EXEMPT_PREFIX" || true
 }
 
 # _scan <regex> [root] — print `path:line:text` for every match of <regex> in
 # the tracked .rs files outside reify-cli, rooted at [root] (default REPO_ROOT).
-# Exits 0 regardless of whether anything matched; callers inspect the output.
+# Lines carrying the PAT_ALLOW marker are suppressed. Exits 0 regardless of
+# whether anything matched; callers inspect the output.
 _scan() {
     local regex="$1"
     local root="${2:-$REPO_ROOT}"
@@ -83,8 +111,10 @@ _scan() {
     while IFS= read -r f; do
         [ -n "$f" ] || continue
         [ -f "$root/$f" ] || continue
-        grep -HnE "$regex" "$root/$f" 2>/dev/null | sed "s|^$root/||" || true
-    done < <(_tracked_rs_outside_cli)
+        grep -HnE "$regex" "$root/$f" 2>/dev/null \
+            | grep -vE "$PAT_ALLOW" \
+            | sed "s|^$root/||" || true
+    done < <(_tracked_rs_outside_cli "$root")
 }
 
 # _report_and_fail <label> <hits> — print the violating path:line list plus the
@@ -96,6 +126,9 @@ _report_and_fail() {
     echo ""
     echo "REMEDY: relocate the test into crates/reify-cli/tests/harness_cli/ and use"
     echo "        env!(\"CARGO_BIN_EXE_reify\"), so cargo guarantees a freshly built binary."
+    echo ""
+    echo "NOT the reify binary (e.g. an XDG config/cache dir named \"reify\")? Opt the"
+    echo "line out explicitly: append \`// reify-bin-spawn:allow — <reason>\` to it."
     return 1
 }
 
@@ -149,9 +182,15 @@ assert "no tracked .rs outside ${EXEMPT_PREFIX} shells out to cargo to run the r
 # Check 4: positive control — the patterns DO fire on a synthetic violation
 #
 # Without this, a typo in either regex would make checks 2-3 vacuously green
-# forever. The fixture is a real git repo so the same `git ls-files` +
-# `_scan` code path runs against it, exercising the regexes rather than a
-# hand-rolled restatement of them.
+# forever. The fixture is a real git repo scanned through `_scan` ITSELF (with
+# its `root` argument pointed at the fixture), so this control exercises the
+# whole path checks 2-3 depend on — the `git ls-files` enumeration, the
+# EXEMPT_PREFIX exclusion, the file-existence filter, the while-read loop, the
+# PAT_ALLOW suppression and the regexes — rather than a hand-rolled restatement
+# of them. A restatement would leave the plumbing with no positive control at
+# all: if enumeration or filtering broke, `_scan` would return empty, checks 2-3
+# would report PASS on a real violation, and a private fixture scanner would
+# stay green throughout.
 # ==============================================================================
 echo ""
 echo "--- Check 4: positive control (synthetic violating file is detected) ---"
@@ -165,6 +204,7 @@ fn spawns_a_prebuilt_binary() {
     let fallback = target_dir.join("debug").join("reify");
     let _ = std::process::Command::new(env!("CARGO")).arg("run");
     let _ = std::process::Command::new("cargo").arg("run");
+    let cfg = xdg_dir.join("reify"); // reify-bin-spawn:allow — XDG config dir, not the binary
 }
 EOF
 git -C "$PC_REPO" init -q
@@ -174,32 +214,30 @@ git -C "$PC_REPO" \
     -c user.email="test@test.com" \
     commit -qm "positive control" 2>/dev/null
 
-_pc_scan() {
-    local regex="$1"
-    local f
-    while IFS= read -r f; do
-        [ -n "$f" ] || continue
-        grep -HnE "$regex" "$PC_REPO/$f" 2>/dev/null | sed "s|^$PC_REPO/||" || true
-    done < <(git -C "$PC_REPO" ls-files '*.rs' | grep -v "^$EXEMPT_PREFIX" || true)
-}
-
 _pc_path_join_fires() {
-    _pc_scan "$PAT_PATH_JOIN" | grep -q 'violating\.rs:3'
+    _scan "$PAT_PATH_JOIN" "$PC_REPO" | grep -q 'violating\.rs:3'
 }
 _pc_debug_join_fires() {
-    _pc_scan "$PAT_PATH_JOIN" | grep -q 'violating\.rs:4'
+    _scan "$PAT_PATH_JOIN" "$PC_REPO" | grep -q 'violating\.rs:4'
 }
 _pc_cargo_env_fires() {
-    _pc_scan "$PAT_CARGO_SPAWN" | grep -q 'violating\.rs:5'
+    _scan "$PAT_CARGO_SPAWN" "$PC_REPO" | grep -q 'violating\.rs:5'
 }
 _pc_cargo_literal_fires() {
-    _pc_scan "$PAT_CARGO_SPAWN" | grep -q 'violating\.rs:6'
+    _scan "$PAT_CARGO_SPAWN" "$PC_REPO" | grep -q 'violating\.rs:6'
+}
+# Negative leg of the same control: the escape hatch must actually suppress the
+# marked line (7), or the documented opt-out is a dead letter.
+_pc_allow_marker_suppresses() {
+    ! _scan "$PAT_PATH_JOIN" "$PC_REPO" | grep -q 'violating\.rs:7'
 }
 
 assert "positive control: .join(\"reify\") is detected" _pc_path_join_fires
 assert "positive control: .join(\"debug\").join(\"reify\") is detected" _pc_debug_join_fires
 assert "positive control: Command::new(env!(\"CARGO\")) is detected" _pc_cargo_env_fires
 assert "positive control: Command::new(\"cargo\") is detected" _pc_cargo_literal_fires
+assert "positive control: a \`reify-bin-spawn:allow\` line is NOT reported" \
+    _pc_allow_marker_suppresses
 
 # ==============================================================================
 # Check 5: the exemption is real, not vacuous — crates/reify-cli/ genuinely
