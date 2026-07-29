@@ -390,14 +390,21 @@ pub(crate) fn elaborate_child_instance<'t>(
 /// which [`topological_sort`] (Kahn) reports by silently omitting the members —
 /// the dropped nodes are appended back in declaration order so evaluation still
 /// terminates and produces values. That fallback is unconditional, but it is not
-/// silent: a cycle involving a nested SUB is also diagnosed here, because it is
-/// the class phase 1.5 uniquely owns (phase 2's graph holds only the child's own
-/// lets, so a cycle routed through a sub boundary is invisible to it). A cycle
-/// confined to LET nodes is deliberately left to [`elaborate_child_lets_only`]
-/// at instance scope and to `engine_eval.rs` at template scope, which already
-/// report it — phase 1.5 stays quiet there rather than triple-reporting one
-/// defect. So no phase-1.5 cycle member is silently tolerated: it is either
-/// diagnosed here or diagnosed by the phase that owns it.
+/// silent: a cycle whose MEMBERS include a nested SUB is also diagnosed here,
+/// because it is the class phase 1.5 uniquely owns (phase 2's graph holds only
+/// the child's own lets, so a cycle routed through a sub boundary is invisible
+/// to it). A cycle confined to LET nodes is deliberately left to
+/// [`elaborate_child_lets_only`] at instance scope and to `engine_eval.rs` at
+/// template scope, which already report it — phase 1.5 stays quiet there rather
+/// than triple-reporting one defect. So no phase-1.5 cycle member is silently
+/// tolerated: it is either diagnosed here or diagnosed by the phase that owns
+/// it.
+///
+/// Membership is computed by [`phase15_cycle_members`] rather than read off the
+/// nodes Kahn omitted, because the omitted set also holds everything
+/// transitively downstream of the cycle. Both the ownership gate above and the
+/// participant list in the diagnostic use the computed members, so a bystander
+/// neither triggers a duplicate report nor gets named as a participant.
 ///
 /// Phase 2 ([`elaborate_child_lets_only`]) is deliberately NOT restructured — it
 /// still owns the authoritative let commits, and the recursive path via
@@ -493,6 +500,16 @@ fn elaborate_child_instance_nested<'t>(
             .cloned()
             .collect();
 
+        // `dropped` is NOT the cycle — it is the cycle PLUS everything
+        // transitively downstream of it, because Kahn omits a node whose
+        // dependency it could never place. Both the gate and the prose below
+        // ask "which nodes are on the cycle?", so both must key on computed
+        // membership; keying on `dropped` fires the gate for a merely
+        // downstream sub and names bystanders. See [`phase15_cycle_members`],
+        // which carries the measured example — do not collapse this back into
+        // `dropped`.
+        let cycle_members = phase15_cycle_members(&dropped, &node_traces);
+
         // ONE OWNER PER CYCLE CLASS — do not remove this gate.
         //
         // A cycle confined entirely to LET nodes belongs to phase 2: it is
@@ -501,15 +518,18 @@ fn elaborate_child_instance_nested<'t>(
         // every let with a `default_expr`, so such a cycle is dropped by BOTH
         // topological sorts and reporting it here would be a third diagnostic
         // for one defect — spam that degrades the signal this path exists to
-        // sharpen.
+        // sharpen. That holds however far the fallout spreads: a sub merely
+        // DOWNSTREAM of a pure-let cycle leaves this phase silent. Its arg is
+        // still `Undef`, but that `Undef` is not unexplained — its root cause
+        // is named at both scopes by the phase that owns it.
         //
-        // A cycle touching a SUB node is the class phase 1.5 uniquely owns:
-        // phase 2's graph holds only the child's own lets, so a cycle routed
-        // through a sub boundary is structurally invisible to it (in the repro,
-        // `relay` reads `Mid.k.off`, which is not a let of `Mid`). Nobody else
-        // can see it, so if this gate stops firing that class goes back to
-        // silent `Undef`.
-        let touches_sub = dropped
+        // A cycle whose MEMBERS include a SUB node is the class phase 1.5
+        // uniquely owns: phase 2's graph holds only the child's own lets, so a
+        // cycle routed through a sub boundary is structurally invisible to it
+        // (in the repro, `relay` reads `Mid.k.off`, which is not a let of
+        // `Mid`). Nobody else can see it, so if this gate stops firing that
+        // class goes back to silent `Undef`.
+        let touches_sub = cycle_members
             .iter()
             .any(|nid| matches!(nodes.get(nid), Some(Phase15Node::Sub { .. })));
 
@@ -522,7 +542,7 @@ fn elaborate_child_instance_nested<'t>(
             // `phase15_sub_node_key` puts in the entity suffix, taken from the
             // node directly rather than by stripping the `{child_template}.`
             // prefix back off the key.
-            let mut participants: Vec<String> = dropped
+            let mut participants: Vec<String> = cycle_members
                 .iter()
                 .filter_map(|nid| match nodes.get(nid) {
                     Some(Phase15Node::Let { key, .. }) => Some(key.member.clone()),
@@ -860,6 +880,70 @@ fn phase15_node_traces<'t>(
         );
     }
     traces
+}
+
+/// The subset of `dropped` that actually lies on a dependency cycle.
+///
+/// [`topological_sort`] (Kahn) reports a cycle by OMISSION, but the set it omits
+/// is a strict SUPERSET of the cycle: a node whose dependency sits on a cycle
+/// never reaches in-degree 0 either, so everything TRANSITIVELY DOWNSTREAM of
+/// the cycle is omitted with it, recursively. Measured on
+///
+/// ```text
+/// structure def Mid {
+///     let a = b * 2.0
+///     let b = a * 2.0
+///     sub k = Kid(w: a)
+///     let tail = self.k.off * 3.0
+/// }
+/// ```
+///
+/// the omitted set is `[a, b, sub k, tail]` while the only cycle is `{a, b}` —
+/// `sub k` and `tail` are bystanders. Reusing the omitted set as if it were the
+/// cycle is therefore wrong twice over: it makes the caller's `touches_sub` gate
+/// fire on a merely-downstream sub (double-reporting a pure-let cycle that
+/// [`elaborate_child_lets_only`] already owns), and it names non-participants in
+/// the diagnostic prose. Hence membership is COMPUTED here, not assumed.
+///
+/// `nid` is on a cycle iff `nid` is reachable from itself along dependency edges
+/// that stay inside `dropped`; a self-edge (`n` reads `n`) satisfies that for
+/// free. Edges are read from the SAME `traces` map [`topological_sort`] consumed
+/// — reusing it, rather than rebuilding or re-normalising the graph, is what
+/// guarantees this answers a question about the graph Kahn actually saw.
+///
+/// `dropped` arrives in declaration order and is filtered in place, so the
+/// caller's participant prose stays order-stable.
+fn phase15_cycle_members(
+    dropped: &[NodeId],
+    traces: &HashMap<NodeId, DependencyTrace>,
+) -> Vec<NodeId> {
+    let inside: HashSet<NodeId> = dropped.iter().cloned().collect();
+    dropped
+        .iter()
+        .filter(|start| {
+            let mut seen: HashSet<NodeId> = HashSet::new();
+            let mut stack: Vec<NodeId> = vec![(*start).clone()];
+            while let Some(node) = stack.pop() {
+                let Some(trace) = traces.get(&node) else {
+                    continue;
+                };
+                for read in &trace.reads {
+                    let next = NodeId::Value(read.clone());
+                    if !inside.contains(&next) {
+                        continue;
+                    }
+                    if next == **start {
+                        return true;
+                    }
+                    if seen.insert(next.clone()) {
+                        stack.push(next);
+                    }
+                }
+            }
+            false
+        })
+        .cloned()
+        .collect()
 }
 
 /// Why [`is_plain_nestable_sub`] rejected `sub` — the shape half of the skip
