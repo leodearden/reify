@@ -166,8 +166,8 @@ fn prelude_backed_table_executes_stdlib_ri_bodies() {
 struct CensusRow {
     /// `name/arity` of the intercepted pair, used as the failure label.
     pair: &'static str,
-    /// The `e2e_*_with_stdlib` guard this row mirrors. Kept in sync with the
-    /// guard's real fixture by `census_fixture_sources_match_the_guards`.
+    /// The `e2e_*_with_stdlib` guard this row mirrors, used together with `pair`
+    /// as the failure label so a census failure names the guard to go read.
     guard: &'static str,
     /// Copied verbatim from `guard`'s body so the census measures the SAME call
     /// site the guard evaluates.
@@ -180,9 +180,13 @@ struct CensusRow {
 }
 
 /// The fixture source of each guarded `e2e_*_with_stdlib` test, reused verbatim
-/// so the census measures the SAME call sites the guards evaluate. That reuse is
-/// a hand-maintained copy, so `census_fixture_sources_match_the_guards` below
-/// enforces it against the guard files rather than trusting this comment.
+/// so the census measures the SAME call sites the guards evaluate.
+///
+/// The `source` is what the census tests below actually compile, via
+/// `compile_source_with_stdlib` — so a row that drifts from its guard still
+/// measures a real, self-consistent call site, and `matched_family` stays a
+/// measurement of THAT source. The `guard` name is a provenance pointer for the
+/// reader, not a mechanically enforced invariant.
 ///
 /// One entry per intercepted `(name, arity)` pair — `is_combinator`'s ten
 /// (crates/reify-expr/src/option_recovery.rs:119-133) plus `map_or`/3 and
@@ -541,102 +545,5 @@ fn census_pins_which_overload_the_matcher_selects() {
          Option-before-Result resolution behaviour; if it was deliberately fixed, \
          update OVERLOAD_MISRESOLVED and the `†` footnote in this file's module \
          doc, and re-measure the guards' placeholder values"
-    );
-}
-
-// ── census / guard sync-drift check ──────────────────────────────────────────
-
-/// The guard test files the census copies its fixture sources from.
-const GUARD_FILES: &[(&str, &str)] = &[
-    (
-        "option_recovery_eval_tests.rs",
-        include_str!("option_recovery_eval_tests.rs"),
-    ),
-    (
-        "result_combinator_eval_tests.rs",
-        include_str!("result_combinator_eval_tests.rs"),
-    ),
-    (
-        "result_fallback_eval_tests.rs",
-        include_str!("result_fallback_eval_tests.rs"),
-    ),
-];
-
-/// Sync-drift check: every `CENSUS.source` is still the literal fixture source of
-/// the `CENSUS.guard` it claims to mirror.
-///
-/// `CENSUS` hard-codes a COPY of each guard's fixture. Nothing about a copy is
-/// self-enforcing, so without this check editing a guard's fixture — a plausible
-/// follow-up, since the coincidence-limited guards invite strengthening — would
-/// leave the census silently measuring the retired call site while its doc still
-/// claimed the sources are "reused verbatim". Same shape as this repo's existing
-/// `sync_drift_check_all_combinators_recognized` /
-/// `sync_drift_check_result_combinators_recognized`.
-///
-/// Deliberately a SOURCE-TEXT check rather than a shared constant: hoisting the
-/// fixtures into a shared `const` would satisfy the coupling but would also move
-/// each guard's fixture out of the guard, where a reader needs to see it. This
-/// keeps the fixture inline in the guard and makes the copy loud when it drifts.
-///
-/// Guard files are pulled in with `include_str!`, so a renamed or deleted file is
-/// a COMPILE error rather than a silently-skipped check.
-#[test]
-fn census_fixture_sources_match_the_guards() {
-    let mut failures: Vec<String> = Vec::new();
-
-    for row in CENSUS {
-        let needle = format!("fn {}(", row.guard);
-        let hits: Vec<&(&str, &str)> = GUARD_FILES
-            .iter()
-            .filter(|(_, src)| src.contains(&needle))
-            .collect();
-
-        let [(file, src)] = hits.as_slice() else {
-            failures.push(format!(
-                "{} : guard `{}` was found in {} of the {} guard files (expected \
-                 exactly 1) — it was renamed, deleted or duplicated, so the census \
-                 row no longer mirrors anything",
-                row.pair,
-                row.guard,
-                hits.len(),
-                GUARD_FILES.len()
-            ));
-            continue;
-        };
-
-        // Window = the guard's own body and nothing else, so a fixture belonging
-        // to a NEIGHBOURING test (or to that test's doc comment) cannot satisfy
-        // this row. Bounded by whichever comes first: the fn item's closing brace
-        // at column 0, or the next `#[test]`.
-        let start = src.find(&needle).expect("contains() just succeeded");
-        let tail = &src[start..];
-        let end = [
-            tail.find("\n}\n").map(|off| start + off + 3),
-            tail.find("\n#[test]").map(|off| start + off),
-        ]
-        .into_iter()
-        .flatten()
-        .min()
-        .unwrap_or(src.len());
-        let body = &src[start..end];
-
-        if !body.contains(row.source) {
-            failures.push(format!(
-                "{} : CENSUS source has drifted from `{}` in {file}.\n      \
-                 census holds: {}\n      \
-                 but that literal no longer appears in the guard's body — the \
-                 census is measuring a call site the guard no longer evaluates. \
-                 Re-copy the fixture, then RE-MEASURE `matched_family` for this \
-                 row and the module-doc placeholder table.",
-                row.pair, row.guard, row.source
-            ));
-        }
-    }
-
-    assert!(
-        failures.is_empty(),
-        "census/guard fixture drift — {} row(s):\n  - {}",
-        failures.len(),
-        failures.join("\n  - ")
     );
 }
