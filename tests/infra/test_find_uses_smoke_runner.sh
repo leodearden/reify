@@ -275,11 +275,35 @@ _arm_c() {
     # Driver: kill the launcher, confirm it is really gone, then report SUCCESS.
     # Exiting 0 is the whole point — the runner must fail on the launcher's
     # death, not on the driver's exit code.
+    #
+    # The first loop is load-bearing, and its absence was MEASURED to make this
+    # arm flaky at ~10% (6 spurious passes in 60 arm-runs, across every runner).
+    # Because the health poll is STUBBED green, readiness can be satisfied on
+    # the very first iteration — before the backgrounded launcher has run its
+    # own first line. A bare `pid=$(cat "$_PIDFILE")` then read a missing file,
+    # leaving pid empty; `kill -9 ""` and `kill -0 ""` both fail, so the stub
+    # took the `exit 0` success path on iteration 1 WITHOUT EVER KILLING the
+    # launcher. The runner then correctly saw a live launcher and exited 0, and
+    # both ARM C contract assertions failed for a reason that had nothing to do
+    # with the code under test.
+    #
+    # Waiting for a non-empty pidfile closes that race, and routing every
+    # give-up path through STUB_ERROR closes the second half of the hole: an
+    # empty pid no longer shares an exit code with a genuine kill, so the
+    # premise guard below can actually see it.
     _write_stub "$bin/node" \
-        'pid=$(cat "$_PIDFILE")' \
+        'pid=""' \
+        'for _ in $(seq 1 200); do' \
+        '    if [ -s "$_PIDFILE" ]; then pid=$(cat "$_PIDFILE"); [ -n "$pid" ] && break; fi' \
+        '    sleep 0.05' \
+        'done' \
+        'if [ -z "$pid" ]; then' \
+        '    echo "STUB_ERROR: launcher never published a pid to $_PIDFILE" >&2' \
+        '    exit 1' \
+        'fi' \
         'kill -9 "$pid" 2>/dev/null || true' \
-        'for _ in $(seq 1 100); do kill -0 "$pid" 2>/dev/null || exit 0; sleep 0.05; done' \
-        'echo "STUB_ERROR: launcher $pid still alive after 5s" >&2' \
+        'for _ in $(seq 1 200); do kill -0 "$pid" 2>/dev/null || exit 0; sleep 0.05; done' \
+        'echo "STUB_ERROR: launcher $pid still alive after 10s" >&2' \
         'exit 1'
 
     _smoke_arm_run "$bin" "$runner" "$_PORT" 30000 _PIDFILE="$pidfile"

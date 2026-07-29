@@ -84,7 +84,7 @@ auditable.
 
 **Current blessed survivors** (as of task #5257):
 - `test_occt_flock_gate.sh` Tests 14 & 22: exit-75 + stderr pattern (`_ELAPSED*` operand)
-- `test_find_uses_smoke_runner.sh` liveness guard: rc!=0 + launcher-death message (`_t4_elapsed` operand)
+- `test_find_uses_smoke_runner.sh` ARM A liveness guard: rc!=0 + the `E2E_SMOKE_LAUNCHER_DEATH phase=readiness` marker (`_t4_elapsed` operand). Since task #5596 this assert runs once per e2e smoke runner (six in total), all sharing that one operand name and annotation.
 - `test_lane_x_flock.sh` flock-timing guard (`_ELAPSED18_MS` operand)
 
 These four retain their `wallclock:allow` escapes: each carries a real
