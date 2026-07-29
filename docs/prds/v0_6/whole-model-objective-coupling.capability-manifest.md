@@ -24,8 +24,24 @@ sampling; the FEA/modal field-population hot zone does not apply).
 capability in this manifest originally justified by an *achievability argument alone*, with no
 `producer:task-…` binding — is now bound to `producer:task-5189` (the joint-drive-seam PRD's β
 leaf, landed `3e54addf4a`). BT3's evidence is likewise split between the merged write-back
-(M-WHOLE's own β = 5014) and the *movement* of the co-solved child `auto` (5189). Re-verified
-against main `bd10b6d0e1e2dd32b09065f2304bd029f04b6506`. Note that the numeric form
+(M-WHOLE's own β = 5014) and the *movement* of the co-solved child `auto` (5189).
+
+**Extent of that re-verification — read this before trusting a `grep:` anchor below.** What task
+5190 re-verified against main `bd10b6d0e1e2dd32b09065f2304bd029f04b6506` is *only* the BT3/BT4
+producer bindings and the landed-commit ancestry claims stated in this paragraph (5189 =
+`3e54addf4a`, 5188 + 5334 = `db64320f66`, `5017 depends_on 5189`) — each confirmed at that SHA.
+It is **not** a whole-document provenance claim. This manifest's *other* `grep:<file>:<line>`
+citations date from the 2026-07-05 decompose and several are demonstrably **stale at that very
+SHA** — spot-checked there, `engine_eval.rs:1284` lands on a connector-instance comment (not
+`build_solver_problem`), `constraint.rs:288` lands mid-doc-comment (not the `ResolutionProblem`
+carrier), `registry.rs:484` lands on `candidates,` (not `eval_rank_cost`), and `constraint.rs:445`
+/ `registry.rs:311` likewise miss. Re-anchoring them was outside task 5190's file scope and is
+tracked under **#5776**. Until that lands, treat a non-BT3/BT4 line number here as a stale hint
+and re-derive it by symbol name. (The sibling
+`whole-model-joint-drive-seam.capability-manifest.md` *was* fully re-anchored and enumerates its
+drift list in its own header.)
+
+Note that the numeric form
 `producer:task-5189` is used deliberately: the bare Greek `producer:task-β` already means
 **M-WHOLE's own β (= 5014)** everywhere else in this document, so re-using it for the seam
 PRD's β would be a homograph that misattributes the binding to a task which demonstrably does
