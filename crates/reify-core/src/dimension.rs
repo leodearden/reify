@@ -293,6 +293,41 @@ impl DimensionVector {
     pub const TRANSLATIONAL_DAMPING: DimensionVector =
         DimensionVector::from_exps(&[(1, 1), (2, -1)]);
 
+    // ─── Angle-units surface convergence (task η / PRD v0_6) ────────────────────
+
+    /// Torque: N·m/rad = kg·m²·s⁻²·rad⁻¹ — Force·Length/Angle.
+    ///
+    /// Distinct from `ENERGY` (J = N·m) precisely by the Angle⁻¹ slot; see
+    /// `torque_dim_differs_from_energy_dim_via_angle_slot` below.
+    ///
+    /// Numerically identical to [`ROTATIONAL_STIFFNESS`](Self::ROTATIONAL_STIFFNESS).
+    /// Both names exist because `docs/prds/v0_6/angle-units-surface-convergence.md`
+    /// §6 D4 registers `Torque` in ALIAS POSITION — a NAME ADDITION so `.ri`
+    /// authors can write `param t : Torque` with no stdlib import, deliberately
+    /// NOT a re-dimensioning. The `NAMED_DIMENSIONS` row is therefore placed
+    /// AFTER the `RotationalStiffness` row, keeping `canonical_name()`'s answer
+    /// for this vector unchanged at `"RotationalStiffness"` (PRD §9 row B10)
+    /// while the name→dim direction still resolves `Torque` via
+    /// `resolve_dimension_type`.
+    ///
+    /// Spelled out slot-by-slot rather than as `= DimensionVector::ROTATIONAL_STIFFNESS`
+    /// ON PURPOSE — the equality is CONTINGENT, not definitional. (Contrast
+    /// [`TRANSLATIONAL_STIFFNESS`](Self::TRANSLATIONAL_STIFFNESS), which IS
+    /// defined as `= STIFFNESS` because there the identity is definitional: both
+    /// are N/m.)
+    ///
+    /// FORWARD-COUPLING BREADCRUMB: PRD §10 / §11 Q1 leaves PRD 5 an open
+    /// question about re-dimensioning `ROTATIONAL_STIFFNESS` to
+    /// `Force·Length/Angle²` (since τ = k·θ forces k = τ/θ). If that ever lands,
+    /// this row STOPS being an alias: `canonical_name()` for this vector flips
+    /// from `"RotationalStiffness"` to `"Torque"`, and every reverse-lookup
+    /// consumer's output changes with it. That must be done DELIBERATELY, not
+    /// incidentally — which is why the independent slot spelling here makes
+    /// `torque_named_dimension_registered_as_alias_after_rotational_stiffness`
+    /// fail loudly at exactly that decision point.
+    pub const TORQUE: DimensionVector =
+        DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -2), (7, -1)]);
+
     const fn basis(index: usize) -> DimensionVector {
         let mut v = [Rational::ZERO; 10];
         v[index] = Rational::ONE;
@@ -570,6 +605,18 @@ pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     // alias precedent (task 3603 / GHR-α).
     (DimensionVector::TRANSLATIONAL_STIFFNESS, "TranslationalStiffness"),
     (DimensionVector::ROTATIONAL_STIFFNESS, "RotationalStiffness"),
+    // Task η / angle-units surface convergence (PRD v0_6 §6 D4): `Torque` is
+    // dimensionally identical to `RotationalStiffness` (both N·m/rad =
+    // kg·m²·s⁻²·rad⁻¹). Placed AFTER "RotationalStiffness" so the first-match
+    // linear scan in `canonical_name` continues to return "RotationalStiffness"
+    // for the shared dim (PRD §9 row B10 — the non-breaking guarantee). The
+    // name→dim direction (resolve_dimension_type / resolve_type_name) finds
+    // this entry when source syntax says `Torque`, which is what lets `.ri`
+    // authors write `param t : Torque` with no stdlib import and is why the
+    // `pub type Torque` alias in ports_mechanical.ri could be retired. Mirrors
+    // the Curvature/AbsorptionCoeff, TranslationalStiffness/Stiffness and
+    // Impulse/Momentum alias precedents.
+    (DimensionVector::TORQUE, "Torque"),
     (DimensionVector::ROTATIONAL_DAMPING, "RotationalDamping"),
     (DimensionVector::TRANSLATIONAL_DAMPING, "TranslationalDamping"),
     (DimensionVector::ABSORPTION_COEFF, "AbsorptionCoeff"),
