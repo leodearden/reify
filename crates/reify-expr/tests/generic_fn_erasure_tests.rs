@@ -12,23 +12,7 @@
 
 use reify_core::DimensionVector;
 use reify_ir::{Value, ValueMap};
-use reify_test_support::compile_source;
-
-/// Locate the `default_expr` of a named value cell in the first template.
-fn cell_expr<'a>(
-    module: &'a reify_compiler::CompiledModule,
-    member: &str,
-) -> &'a reify_ir::CompiledExpr {
-    let template = &module.templates[0];
-    template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == member)
-        .unwrap_or_else(|| panic!("value cell '{member}' not found"))
-        .default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("value cell '{member}' has no default_expr"))
-}
+use reify_test_support::{compile_source, get_let_expr};
 
 /// INV-2: a generic call `id(5mm)` evaluates identically to its monomorphic
 /// equivalent `id_length(5mm)` — the eval trace is type-erased (D1).
@@ -49,13 +33,13 @@ fn generic_call_eval_identical_to_monomorphic() {
     let values = ValueMap::new();
     let ctx = reify_expr::EvalContext::new(&values, &module.functions);
 
-    let g_val = reify_expr::eval_expr(cell_expr(&module, "g"), &ctx);
+    let g_val = reify_expr::eval_expr(get_let_expr(&module, "g"), &ctx);
     assert_eq!(
         g_val, expected,
         "id(5mm) [generic] should evaluate to 5mm scalar, got {g_val:?}"
     );
 
-    let m_val = reify_expr::eval_expr(cell_expr(&module, "m"), &ctx);
+    let m_val = reify_expr::eval_expr(get_let_expr(&module, "m"), &ctx);
     assert_eq!(
         m_val, expected,
         "id_length(5mm) [monomorphic] should evaluate to 5mm scalar, got {m_val:?}"
@@ -76,12 +60,12 @@ fn generic_call_is_type_arg_agnostic() {
     let values = ValueMap::new();
     let ctx = reify_expr::EvalContext::new(&values, &module.functions);
 
-    let i_val = reify_expr::eval_expr(cell_expr(&module, "i"), &ctx);
+    let i_val = reify_expr::eval_expr(get_let_expr(&module, "i"), &ctx);
     assert_eq!(i_val, Value::Int(3), "id(3) should eval to Int(3), got {i_val:?}");
 
-    let r_val = reify_expr::eval_expr(cell_expr(&module, "r"), &ctx);
+    let r_val = reify_expr::eval_expr(get_let_expr(&module, "r"), &ctx);
     assert_eq!(r_val, Value::Real(2.5), "id(2.5) should eval to Real(2.5), got {r_val:?}");
 
-    let b_val = reify_expr::eval_expr(cell_expr(&module, "b"), &ctx);
+    let b_val = reify_expr::eval_expr(get_let_expr(&module, "b"), &ctx);
     assert_eq!(b_val, Value::Bool(true), "id(true) should eval to Bool(true), got {b_val:?}");
 }
