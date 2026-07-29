@@ -20404,7 +20404,7 @@
             TransformKind,
         };
 
-        // Primitive (7 variants)
+        // Primitive (8 variants)
         const ALL_PRIMITIVE: [PrimitiveKind; 8] = [
             PrimitiveKind::Box,
             PrimitiveKind::Cylinder,
@@ -20486,13 +20486,14 @@
             assert!(lookup_pattern(k).is_some(), "no Pattern entry: {:?}", k);
         }
 
-        // Sweep (8 variants)
-        const ALL_SWEEP: [SweepKind; 8] = [
+        // Sweep (9 variants)
+        const ALL_SWEEP: [SweepKind; 9] = [
             SweepKind::Loft,
             SweepKind::Extrude,
             SweepKind::Revolve,
             SweepKind::Sweep,
             SweepKind::ExtrudeSymmetric,
+            SweepKind::ExtrudeInfinite,
             SweepKind::SweepGuided,
             SweepKind::LoftGuided,
             SweepKind::Pipe,
