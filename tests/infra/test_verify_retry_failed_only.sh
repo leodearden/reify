@@ -58,6 +58,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# For nextest_available_in_plan (the plan-header availability probe below).
+# Sourcing the lib installs no trap and builds no environment — only
+# nextest_absent_init does that, and this suite deliberately never calls it.
+[ -f "$SCRIPT_DIR/nextest_absent_lib.sh" ] || {
+    echo "ERROR: nextest_absent_lib.sh not found at $SCRIPT_DIR/nextest_absent_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/nextest_absent_lib.sh"
+
 VERIFY="$REPO_ROOT/scripts/verify.sh"
 
 echo "=== verify.sh failed-only retry INTEGRATION-GATE (task 5290, PRD verify-retry-failed-only δ, B1–B6) ==="
@@ -94,12 +101,28 @@ RAMEMBER1="$SELF_BASENAME"
 RAMEMBER2="test_verify_retry_subset.sh"
 
 # --- nextest availability probe (off the byte-identical default plan) --------
+#
+# ONE capture serves both readers. PLAN_DEFAULT stays — the byte-identical-
+# default assert below reads it too — and the availability answer is read back
+# OUT of it via nextest_available_in_plan (tests/infra/nextest_absent_lib.sh,
+# task 5644, the shared detector seven suites had each open-coded) rather than
+# by running --print-plan a second time.
+#
+# That second run would not have been free, which is why the in_plan form exists
+# and the ambient one is wrong here: verify.sh cannot emit the `nextest=` header
+# without genuinely probing, and the worst case — cargo-nextest present but every
+# probe failing — forks cargo up to 4x plus two sleeps before hard-failing
+# (nextest_absent_lib.sh:546-563). Reading the captured plan is what is free.
+#
+# The `|| true` on the capture still guards a RED-phase empty plan under
+# pipefail, and the lib strengthens it: _nextest_absent_header_of is itself
+# `|| true`-guarded (nextest_absent_lib.sh:712) and reports unavailable on an
+# empty plan rather than aborting.
 PLAN_DEFAULT="$(bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
-_HEADER="$(printf '%s\n' "$PLAN_DEFAULT" | grep '^# verify.sh plan' || true)"
 NEXTEST_AVAILABLE=0
-case "$_HEADER" in
-    *"nextest=1"*) NEXTEST_AVAILABLE=1 ;;
-esac
+if nextest_available_in_plan "$PLAN_DEFAULT"; then
+    NEXTEST_AVAILABLE=1
+fi
 echo "(nextest available on this host: $NEXTEST_AVAILABLE)"
 
 # The single marker token δ owns (PRD §4.4). Assembled so the greps below pin
