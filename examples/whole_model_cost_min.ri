@@ -169,11 +169,13 @@ module whole_model_cost_min
 //
 // # Why auto(free), not strict auto
 //
-// A strict `auto` triggers the uniqueness re-solve, and a `ConstraintNonUnique`
-// error would mask the cost signal this example exists to publish.  Same
-// reasoning, and the same house precedent, as `examples/continuous_cost_min.ri`
-// and `examples/whole_model_joint_drive.ri` — uniqueness is not the concern
-// here, the joint drive is.
+// `docs/prds/v0_6/whole-model-objective-coupling.md` §11 open question 3
+// left this tactical choice to "decide during ε" — this file is that
+// decision.  A strict `auto` triggers the uniqueness re-solve, and a
+// `ConstraintNonUnique` error would mask the cost signal this example exists
+// to publish.  Same reasoning, and the same house precedent, as
+// `examples/continuous_cost_min.ri` and `examples/whole_model_joint_drive.ri`
+// — uniqueness is not the concern here, the joint drive is.
 //
 // # One non-collection instance path per structure
 //
