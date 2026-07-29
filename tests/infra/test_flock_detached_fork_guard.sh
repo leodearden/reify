@@ -178,8 +178,22 @@ _flock_fork_offenders() {
                     pre = ""; post = ""; cmdpos = 0
                 }
 
-                # ---- OPEN(N): the script opens FD N itself ----
-                if (match(t, /exec[[:space:]]+[0-9]+[<>]/)) {
+                # ---- OPEN(N): the script opens FD N ITSELF ----
+                # `exec <ws> N` followed by `>`, `>>` or `<` whose next
+                # character is NOT `&`.  That excludes the close `exec N>&-`
+                # and the dup `exec N>&M`, neither of which creates the open
+                # file description whose lock this shell would be carrying.
+                #
+                # This one rule is what makes FALSE-POSITIVE TRAP #2 —
+                # inherited FDs — STRUCTURAL rather than allow-listed: with no
+                # OPEN(N) there is no ACQUIRE(N) candidate, so the guard cannot
+                # advise a `flock -u N` on a descriptor it never saw this file
+                # open, which on an inherited FD would release the CALLER lock.
+                #
+                # A close must also NOT count as a CLEARING signal: the real
+                # historical offender closed FD 9 on its refusal branches
+                # UPSTREAM of the fork, so crediting that would have passed it.
+                if (match(t, /exec[[:space:]]+[0-9]+(>>?|<)[^&]/)) {
                     seg = substr(t, RSTART, RLENGTH)
                     match(seg, /[0-9]+/)
                     n = substr(seg, RSTART, RLENGTH)
