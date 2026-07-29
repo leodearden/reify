@@ -2004,18 +2004,35 @@ struct MockServer {
     handle: Option<thread::JoinHandle<()>>,
 }
 
-/// Spawn a one-shot mock MCP server. `task_responder` is given the
-/// `tools/call` arguments and returns the JSON-RPC `result` value to send
-/// back (or `None` to return an error envelope). Returns a [`MockServer`]
-/// handle; the caller calls [`MockServer::stop`] (or lets it drop) to tear
-/// down. The accept loop also uses a short `set_nonblocking` poll so it
-/// wakes periodically to check the stop flag even without a wakeup
-/// connection — that way a stop request can't hang the test runner.
+/// Spawn a one-shot mock MCP server on an OS-assigned ephemeral port.
+/// `task_responder` is given the `tools/call` arguments and returns the
+/// JSON-RPC `result` value to send back (or `None` to return an error
+/// envelope). Returns a [`MockServer`] handle; the caller calls
+/// [`MockServer::stop`] (or lets it drop) to tear down.
+///
+/// Thin wrapper over [`spawn_mock_mcp_on`], which takes an already-bound
+/// listener so a caller can place the responder at a *chosen* address.
 fn spawn_mock_mcp<F>(task_responder: F) -> MockServer
 where
     F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    spawn_mock_mcp_on(listener, task_responder)
+}
+
+/// Spawn a one-shot mock MCP server on an ALREADY-BOUND `listener`, deriving
+/// the advertised `addr`/`url` from `listener.local_addr()`. Lets a caller
+/// stand a real MCP responder at a specific address (e.g. to play the
+/// adversary in a port-recycling regression lock) rather than at whatever
+/// ephemeral port the OS hands out.
+///
+/// The accept loop uses a short `set_nonblocking` poll so it wakes
+/// periodically to check the stop flag even without a wakeup connection —
+/// that way a stop request can't hang the test runner.
+fn spawn_mock_mcp_on<F>(listener: TcpListener, task_responder: F) -> MockServer
+where
+    F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
+{
     let addr = listener.local_addr().expect("local_addr");
     let url = format!("http://127.0.0.1:{}/mcp/", addr.port());
     let stop = Arc::new(AtomicBool::new(false));
