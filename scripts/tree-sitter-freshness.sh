@@ -63,7 +63,30 @@
 #                   is missing or disagrees with the current fingerprint, naming
 #                   the offending fingerprint dir and the first differing input.
 #                   For a human/agent checkpoint.
+#   ensure          check, plus REPAIR.  On a stale verdict, bump the mtime of the
+#                   watched inputs — grammar.js, src/scanner.c, src/tree_sitter/*.h —
+#                   so cargo is guaranteed to re-run the build script (and thus
+#                   recompile) on the next invocation.  This is what verify.sh runs,
+#                   after tree-sitter-generate.sh and before every cargo leaf.
 #   --help, -h      This message.
+#
+# WHY `touch`, AND WHY A LEDGER
+# -----------------------------
+# `touch` mutates mtime only, never content, so `git status` stays clean in the
+# shared merge lane.  Deleting target/*/build/tree-sitter-reify-*/out/ was
+# rejected: cargo keys its rebuild decision on its own fingerprint files, not on
+# the archive's existence, so removing the .a yields a missing-symbol link error
+# rather than a rebuild.
+#
+# `check` must scan EVERY fingerprint dir, because nothing in the shell can tell
+# which one cargo will link.  But a checkout accumulates dead fingerprint dirs
+# (7 in this lane, 9 in the main checkout) that are never rebuilt and are
+# therefore stale forever.  Without a ledger, `ensure` would see a non-empty
+# stale set on every single verify run and pay a full ~5 MB parser.c recompile
+# each time.  target/.tree-sitter-freshness.ledger records the fingerprint the
+# last force was applied for, bounding the cost to exactly one extra build-script
+# run per source change, and zero when the sources are unchanged.  It is written
+# only AFTER the touch, so a build that then fails still has newer mtimes.
 #
 # FAIL POLICY
 # -----------
@@ -73,6 +96,12 @@
 # precedent: a host with neither sha256sum nor shasum (nothing can be attested,
 # so a hard failure would be a permanent spurious RED), and a target tree with
 # nothing built yet (nothing built means nothing can be stale).
+#
+# `ensure` never fails the build for staleness it can REPAIR — failing the merge
+# gate on a repairable condition would just convert a false GREEN into a spurious
+# RED that every subsequent run reproduces.  It does exit 1 when a `touch`
+# actually fails (read-only tree): detected-but-unrepairable must be loud, never
+# silently green.
 #
 # TEST-ONLY ENVIRONMENT OVERRIDES
 # -------------------------------
@@ -100,6 +129,11 @@ TARGET_DIR="${REIFY_TS_FRESHNESS_TARGET_DIR:-$REPO_ROOT/target}"
 # The manifest build.rs writes next to each libtree_sitter_reify.a it produces.
 STAMP_NAME="tree_sitter_inputs.stamp"
 
+# Records the fingerprint the last force was applied for.  Lives under target/ so
+# it is gitignored and travels with the per-lane build tree (CoW-cloned from the
+# warm base alongside the archives it describes).
+LEDGER_NAME=".tree-sitter-freshness.ledger"
+
 # Distinct return code meaning "no hasher on this host" — callers map it to a
 # labelled SKIP rather than to a failure or to a repair attempt.
 TS_RC_UNAVAILABLE=3
@@ -117,6 +151,10 @@ Modes:
   check                Assert every built libtree_sitter_reify.a was compiled
                        from the sources currently on disk. Exit 1 on any
                        mismatch or missing attestation.
+  ensure               check, plus REPAIR: on a stale verdict, bump the mtime of
+                       the watched inputs so cargo re-runs the build script (and
+                       thus recompiles) next invocation. Exit 1 only if the
+                       repair itself fails.
   --help, -h           Show this message.
 EOF
 }
@@ -312,13 +350,62 @@ ts_scan() {
     fi
 }
 
-ts_report_stale() {
+# ts_stale_lines — the indented per-archive detail, on stdout. Callers redirect.
+ts_stale_lines() {
     local line
-    echo "tree-sitter-freshness: STALE — these archives were NOT built from the sources now on disk:" >&2
     while IFS= read -r line; do
         [ -n "$line" ] || continue
-        echo "    $line" >&2
+        echo "    $line"
     done <<< "$TS_STALE_REPORT"
+}
+
+# ts_watched_inputs
+#
+# The subset of the compilation inputs that build.rs declares via
+# cargo:rerun-if-changed — i.e. exactly what `ensure` is permitted to touch.
+# Derived FROM ts_inputs() (rather than restated) so it cannot drift, plus
+# grammar.js, which is an input to generation rather than to compilation.
+#
+# src/parser.c is excluded on purpose: build.rs WRITES it, so watching it would
+# cause double execution, and touching an unwatched file repairs nothing.
+ts_watched_inputs() {
+    printf 'grammar.js\n'
+    local rel
+    while IFS= read -r rel; do
+        if [ "$rel" != "src/parser.c" ]; then
+            printf '%s\n' "$rel"
+        fi
+    done < <(ts_inputs)
+}
+
+# ts_write_ledger <ledger-path> — record CURRENT_FP. Never fatal.
+ts_write_ledger() {
+    local ledger="$1"
+    mkdir -p "$(dirname "$ledger")" 2>/dev/null || true
+    if ! printf '%s\n' "$CURRENT_FP" > "$ledger" 2>/dev/null; then
+        echo "warning: could not write the freshness ledger at $ledger" >&2
+    fi
+}
+
+# ts_force_touch — bump the watched inputs' mtimes. Returns 1 if any touch failed.
+ts_force_touch() {
+    local rel abs failed=0
+    while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        abs="$TS_DIR/$rel"
+        if [ ! -f "$abs" ]; then
+            echo "ERROR: cannot force a rebuild — watched input is missing: $abs" >&2
+            failed=1
+            continue
+        fi
+        if touch "$abs" 2>/dev/null; then
+            echo "    touched $rel"
+        else
+            echo "ERROR: cannot force a rebuild — 'touch' failed on $abs (read-only tree?)" >&2
+            failed=1
+        fi
+    done < <(ts_watched_inputs)
+    return "$failed"
 }
 
 ts_mode_check() {
@@ -338,7 +425,10 @@ ts_mode_check() {
             return 0
             ;;
         stale)
-            ts_report_stale
+            {
+                echo "tree-sitter-freshness: STALE — these archives were NOT built from the sources now on disk:"
+                ts_stale_lines
+            } >&2
             return 1
             ;;
         *)
@@ -346,6 +436,66 @@ ts_mode_check() {
             return 1
             ;;
     esac
+}
+
+ts_mode_ensure() {
+    echo "tree-sitter-freshness: ensure — attesting libtree_sitter_reify.a against $TS_DIR"
+    ts_scan
+
+    local ledger="$TARGET_DIR/$LEDGER_NAME"
+
+    case "$TS_SCAN_STATUS" in
+        skip)
+            # Nothing can be attested here, so nothing can be repaired either.
+            # Forcing anyway would recompile parser.c on every run, forever.
+            echo "tree-sitter-freshness: SKIP — $TS_SCAN_SKIP_REASON"
+            return 0
+            ;;
+        none)
+            echo "tree-sitter-freshness: no built archive under $TARGET_DIR; nothing to force"
+            ts_write_ledger "$ledger"
+            return 0
+            ;;
+        fresh)
+            echo "tree-sitter-freshness: FRESH — every built archive matches the sources on disk"
+            ts_write_ledger "$ledger"
+            return 0
+            ;;
+        stale) ;;
+        *)
+            echo "ERROR: internal — unexpected scan status '$TS_SCAN_STATUS'" >&2
+            return 1
+            ;;
+    esac
+
+    # Stale. Was a force already applied for exactly these bytes? If so the
+    # remaining stale dirs are dead ones cargo will never rebuild, and re-forcing
+    # would just buy a full parser.c recompile on every verify run.
+    if [ -f "$ledger" ] && [ "$(cat "$ledger")" = "$CURRENT_FP" ]; then
+        echo "tree-sitter-freshness: stale archives remain, but the force was already applied for these exact inputs:"
+        ts_stale_lines
+        echo "tree-sitter-freshness: leaving mtimes alone (ledger: $ledger)."
+        echo "    Dead fingerprint dirs are never rebuilt, so they stay stale forever; without"
+        echo "    this guard every verify run would pay a full parser.c recompile."
+        return 0
+    fi
+
+    echo "tree-sitter-freshness: forcing rebuild — a built archive does not match the sources on disk:"
+    ts_stale_lines
+    echo "tree-sitter-freshness: bumping the mtime (content untouched) of every input build.rs watches,"
+    echo "    so cargo must re-run the build script — and recompile — on the next invocation:"
+
+    local force_rc=0
+    ts_force_touch || force_rc=$?
+    if [ "$force_rc" -ne 0 ]; then
+        echo "tree-sitter-freshness: DETECTED BUT UNREPAIRABLE — the stale archive stands." >&2
+        echo "    A gate that silently continued here would report GREEN against a parser it" >&2
+        echo "    never compiled. Fix the tree, then re-run." >&2
+        return 1
+    fi
+
+    ts_write_ledger "$ledger"
+    return 0
 }
 
 main() {
@@ -364,6 +514,9 @@ main() {
             ;;
         check)
             ts_mode_check
+            ;;
+        ensure)
+            ts_mode_ensure
             ;;
         --help | -h)
             usage
