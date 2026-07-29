@@ -771,7 +771,137 @@ the aggregate counts should cite §6.3 directly, not this ledger.
 
 ## §4 Item 1 — Gate 2 hit count (step-4)
 
-*(filled by step-4)*
+Gate 2 = `conformance/mod.rs:517-532`'s `check_param_default_conformance`
+(`param` defaults only — the `let` twin is gate 4, `entity.rs:563-569`,
+untouched by this predicate). Never separately measured before this task.
+
+### 4.1 Candidate count
+
+Every §2 category-A/C site whose keyword is `param` (not `let`) is a gate-2
+candidate: **51 (Category C, Rust fixtures) + 2 (Category A, `.ri`) = 53**,
+minus **1 parse-only** (`mv-2-priv-param.ri:4`, never reaches
+`reify-compiler` at all) = **52 sites where the compiler, if it compiles
+that file under the flip, newly emits a gate-2 `Warning`/`ArgTypeMismatch`.**
+Split: `examples/**` 1 (`bearing_auto_seal.ri`) · stdlib `.ri` 0 ·
+Rust fixture strings 51 · other `.ri` 0 (§2's Category A/C tables list every
+site; not reproduced again here).
+
+Of these 52, **step-1's actual flipped run empirically confirms exactly 1**
+— `bearing_auto_seal.ri:46`, diagnostic `argument 'durometer' has type
+'Real' but param 'durometer' requires type 'Scalar[m]'`, reconciled in
+§1.2 as the union's non-ctor-call member. The other 51 sit in Rust test
+binaries this session did not compile under the flip (step-1 ran 4 named
+suites, not the whole workspace), so their gate-2 firing is **mechanical,
+not empirically re-confirmed this session** — the walker doesn't
+distinguish "is anyone testing this," it fires whenever
+`general_leaf_param_family_is_validated` returns `true` for that field's
+type and the arg's inferred type differs, which is true of a bare `Real`
+literal against every one of these 51 declared-dimensioned params by
+construction.
+
+### 4.2 BREAKS vs DELIBERATE-NEGATIVE-TEST-TO-INVERT — gate 2 specifically
+
+**Structural finding: gate 2's blast radius on the *existing test suite* is
+far narrower than gates 3/4's, because gate 2 emits `Severity::Warning`
+only, and every helper this task found gating a §2 "c1" (gates-3/4
+would-break) classification filters to `Severity::Error` before asserting**
+— `parse_and_compile`/`eval_source` (`collect_errors`, Error-only, read in
+§2.2.4's investigation), `errors_only`, and every inline
+`.filter(|d| d.severity == Severity::Error)` this task read. A new
+gate-2 Warning is invisible to all of them. Consequence: **of the 15 §2
+"c1" sites (gates 3/4 would-break), zero additionally break because of gate
+2** — their failure mode under δ₁ is orthogonal to γ's flip. This is the
+test-suite-level analogue of §3.1/§11's "γ is severity-safe pre-δ" claim,
+extended from "cannot break compilation" to "cannot break an
+`errors_only`-shaped assertion."
+
+The **only** test this session found (empirically, via step-1's real run)
+that breaks because of gate 2 specifically:
+
+| Test | File | Assertion | Result under flip |
+|---|---|---|---|
+| `no_example_emits_ctor_field_conformance_diagnostics` | `examples_smoke.rs` | corpus-wide scan for **any** ctor-conformance diagnostic (Warning included) | RED, 7 diagnostics (§1.2) |
+| `excluded_family_dimensioned_scalar_given_dimensionless_real_is_silent` | `struct_ctor_field_conformance_tests.rs:1414-1461` | "must emit **ZERO** ctor-conformance diagnostics" | RED (§1.3) — **DELIBERATE NEGATIVE TEST TO INVERT**, the canonical example already named in §1.3 |
+
+No other test read in §2 (including the 4 `param_default_type_mismatch_tests.rs`
+c2 pins) is gate-2-sensitive: those 4 assert on
+`DiagnosticCode::ParamDefaultTypeMismatch` specifically, a **different
+code** from gate 2's `ArgTypeMismatch`, produced by a **different**
+mechanism (`entity.rs`, gates 3/4) — a new gate-2 Warning wouldn't match
+their filter. They remain gate-3/4 pins (§2.2.4), not gate-2 pins.
+
+**BREAKS = 1** (`bearing_auto_seal.ri`, already migrated in spirit by β
+per the PRD's note that its fix is the *annotation*, gate 3, not a gate-2
+migration — β does not need to do anything for gate 2 at this site beyond
+what it already does for gate 3). **DELIBERATE-NEGATIVE-TEST-TO-INVERT = 1**
+(the struct_ctor pinning test). Every other gate-2 candidate site is
+silent-break-free at the *test* level (no currently-passing assertion
+notices), even though the compiler now emits a diagnostic there.
+
+### 4.3 `auto`/`auto(free)`/`undef` silence — addendum C6, measured empirically
+
+Probe file (`/tmp/5756-scratch/probes/auto_undef_probe.ri`, scratch-only,
+never committed):
+
+```
+module auto_undef_probe
+
+structure Q { param s1 : String = auto
+              param free_len : Length = auto(free) }
+structure R { param own_default : Length = undef }
+structure P { param r : Length = undef
+              param s : String = undef
+              param l : Length = undef }
+structure Main { sub q = Q()
+                 sub r = R()
+                 sub p = P(r: undef, s: undef, l: undef) }
+```
+
+Run against `target/debug/reify check` — **UNFLIPPED** (baseline, before
+any edit this step):
+
+```
+warning: W_UNDERDETERMINED: auto parameter 'Q.s1' in scope 'Q' is not touched
+by any constraint (touching constraints: none); its value is underdetermined (free)
+All constraints satisfied.
+```
+
+Then the local flip was applied to `conformance/mod.rs`, `reify-cli`
+rebuilt (`RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 cargo build -p
+reify-cli --bin reify`, 8m45s cold), and the **identical** probe re-run
+**FLIPPED**:
+
+```
+warning: W_UNDERDETERMINED: auto parameter 'Q.s1' in scope 'Q' is not touched
+by any constraint (touching constraints: none); its value is underdetermined (free)
+All constraints satisfied.
+```
+
+**Byte-identical output.** `Q.s1 = auto`, `Q.free_len = auto(free)`,
+`R.own_default = undef` (an unoverridden `undef` **default**, exercising
+gate 2 directly), and `P(r: undef, s: undef, l: undef)` (an explicit
+`undef` **ctor arg**, exercising gate 1) all stay completely silent under
+BOTH predicate states. **Answer: NO — `auto`/`auto(free)`/`undef` are
+judged at neither walker entry, confirmed empirically, not assumed.** The
+96 `auto`/`auto(free)`/`undef` default sites §6.2 counted are safe from
+γ's flip. The flip was then reverted
+(`git checkout -- crates/reify-compiler/src/conformance/mod.rs`) and
+`git diff --exit-code -- crates/ examples/ gui/ stdlib` re-confirmed clean
+before this section was written; `target/debug/reify` was left built from
+the flipped source at probe time (target/ is gitignored, not part of the
+no-source-change invariant) and should be rebuilt before any further use
+that depends on baseline behavior.
+
+**Anti-cascade guard, recorded as a distinct silence source
+(`conformance/mod.rs:519-521`):** the `Type::Error` early-return in gate
+2's `_ =>` arm exists so a param whose type **already failed to resolve**
+(an unrelated upstream error) doesn't ALSO get a cascading ctor-conformance
+diagnostic layered on top. This guard is orthogonal to
+`general_leaf_param_family_is_validated` — it fires on `Type::Error`
+(a resolution failure), never on a validly-resolved dimensioned `Scalar`.
+A later reader auditing "why is site X silent" must check which of the two
+independent silences applies; conflating them would misattribute a
+resolution-failure silence to the family predicate.
 
 ## §5 Item 2 — Gate 5 (constraint-def Rule 4) sub-counts (step-5)
 
