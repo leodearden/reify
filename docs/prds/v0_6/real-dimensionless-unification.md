@@ -48,12 +48,7 @@ No novel **grammar** is introduced — `Real`, `Dimensionless`, `Scalar<Q>`, `Ve
 2. **Bare `Scalar` removed entirely as a hard error** — not deprecated. (Leo: "ambiguous as a type, must not mean Length"; no external users yet, so breaking is correct now.) Corpus migrated to `Scalar<Length>`/`Length` *before* the error lands (behavior-preserving, since bare `Scalar == Length` today), so the workspace is green throughout.
 3. **`Real` accepted in dimension position** as a synonym for `Dimensionless` (rather than forbidding `Real` in `<Q>` slots). Keeps both spellings valid everywhere; style guide prefers `Dimensionless` for physical ratios, `Real` for plain numbers — connotation only, same type.
 4. **`Display`: dimensionless → `"Real"`** (dimensioned `Scalar` still prints its canonical name e.g. `Length`). Diagnostics become self-consistent (what's printed is writable back with the same meaning).
-5. **Struct-param default type-check = hard error**, mirroring fn-param strictness (`fn_param_default_compatible` exact-equality). Reuse `FnParamDefaultTypeMismatch`.
-
-   > **D5 status (updated 2026-07-28): REINSTATED under a different code, after a silent reversal in between.** This gate (the Goal section's `param t : Length = 1.0` bullet; boundary row: the Boundary-test sketch table's `Struct-param default mismatch` row) has now held **three** positions, and the second transition was, until this note, recorded nowhere:
-   > 1. **As authored here (this decision, D5)** — `param t : Length = 1.0` is a **hard error**.
-   > 2. **Task 4318 shipped the opposite** — a silent numeric-literal tolerance, now live at `crates/reify-compiler/src/entity.rs:479-485`, plus an unplanned `let`-annotation twin at `:563-569` that D5 never contemplated. **Origin of the silent reversal:** the Decompose-time reconciliation list, item 2 (task 4318) — *"→ Drop ε; fold its literal case into 4318"* — leaf ε carried D5's rule, was dropped at decompose time, and its literal case was folded into 4318, which then shipped the negation without any document recording the flip.
-   > 3. **`docs/prds/v0_6/dimensioned-construction-strictness.md` §0 re-reverses**: D5 is **REINSTATED** at this gate — under the diagnostic code that actually shipped, `ParamDefaultTypeMismatch`, not the `E_FN_PARAM_DEFAULT_TYPE_MISMATCH` name used above (a recorded **deviation**, not drift) — and the same rule is separately **WIDENED** (reinstatement and widening are distinct authority claims — that PRD's §0.2 table keeps them apart deliberately) to four sibling gates: struct-ctor field slots, param defaults via the conformance pass, `let`-annotation literals, and constraint-def args, none of which D5 ever ruled on. **That PRD's §0 is the current ruling on this gate; start there.**
+5. **Struct-param default type-check = hard error**, mirroring fn-param strictness (`fn_param_default_compatible` exact-equality). Reuse `FnParamDefaultTypeMismatch`. — **D5 STATUS: reversed in flight, then REINSTATED. Current ruling on this gate: `docs/prds/v0_6/dimensioned-construction-strictness.md` §0. Full three-position history: §"D5 status" at the end of this file.**
 6. **Value::Real is NOT deleted** — it is the canonical value-layer dimensionless representation.
 
 ## Pre-conditions for activating
@@ -140,3 +135,42 @@ Labels are PRD-local; task IDs assigned at decompose. (β/ε re-scoped per the r
 | Diagnostic prints `Real` | a genuine dimension mismatch involving a dimensionless operand | message text contains `"Real"`, never `"Scalar"` for the dimensionless side |
 | Leak guard (invariant V) | run arithmetic op suite | no result is `Value::Scalar{dimension.is_dimensionless()}` |
 | Variant-gone guard (invariant T) | compile workspace | `Type::Real` is not a constructible variant (compile-time) |
+
+## D5 status (appended 2026-07-28) — reinstated under a different code, after a silent reversal
+
+> **Why this note is at the end of the file, not inline at D5.** Several landed documents cite
+> this file by line number — `:17`, `:51`, `:64`, `:82`, `:97`, `:134`, plus an explicit
+> "unchanged / none" anchor-drift row in `dimensioned-construction-strictness.md`. Inserting
+> this note inline at D5 would push four of those anchors onto a neighbouring blank line,
+> heading or table row: a **silent mis-resolution**, not a dangling reference — which is the
+> exact failure class this note exists to correct. Appending leaves every existing anchor
+> valid, so D5 itself (`:51`) carries only a one-line pointer.
+
+Decision **D5** (§Resolved design decisions item 5, `:51`) has now held **three** positions at
+the `param t : Length = 1.0` gate. The second transition was, until this note, recorded nowhere.
+
+1. **As authored** — D5 (`:51`), rule stated in §Goal (`:17`), boundary row in §Boundary-test
+   sketch (`:134`): `param t : Length = 1.0` is a **hard error**.
+
+2. **Task 4318 shipped the opposite — recorded nowhere until now.** A numeric-literal tolerance
+   is live at `crates/reify-compiler/src/entity.rs:479-485`, and 4318 additionally minted a
+   `let`-annotation twin at `crates/reify-compiler/src/entity.rs:563-569` that D5 never
+   contemplated. **Origin of the silent reversal:** §Decompose-time reconciliation item 2
+   (`:82`) — *"→ Drop ε; fold its literal case into 4318"*. Leaf ε (`:97`) carried D5's rule; ε
+   was dropped at decompose time and its literal case folded into task 4318, which then shipped
+   the negation. A dropped PRD leaf folded into a task is the known silent-reversal site.
+
+3. **`docs/prds/v0_6/dimensioned-construction-strictness.md` §0 re-reverses. That PRD's §0 is
+   the current ruling on this gate — start there.** It makes two **distinct** claims, which its
+   §0.2 table deliberately keeps apart and which must not be conflated (conflating them would
+   misattribute authority to a decision that never carried it — the exact error class that PRD
+   exists to correct):
+   - **REINSTATEMENT** — D5's rule is restored at the one gate D5 actually ruled on.
+   - **WIDENING** — the same rule is separately extended to four sibling gates D5 never ruled
+     on: struct-ctor field slots, param defaults via the conformance pass, `let`-annotation
+     literals, and constraint-def args. That is **new** authority, not D5's.
+
+**Recorded deviation from D5's letter — a deviation, not drift.** D5 and its `:17`/`:134`
+restatements name `E_FN_PARAM_DEFAULT_TYPE_MISMATCH`. The code that actually shipped for this
+surface is `ParamDefaultTypeMismatch`, minted by task 4318. D5's **rule** is reinstated under
+the **shipped** code; the spelling difference is deliberate and recorded here.
