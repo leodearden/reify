@@ -32,6 +32,12 @@ source "$SCRIPT_DIR/plan_capture_lib.sh"
 
 TS_DIR="$REPO_ROOT/tree-sitter-reify"
 
+# The out-of-build freshness guard (task #5629 / esc-5392-1).  A build script that
+# cargo has DECLINED to re-run cannot repair itself, so the staleness check and the
+# rebuild force must both live outside build.rs, in a plan leaf verify.sh runs
+# before any cargo leaf.
+FRESHNESS_SCRIPT="$REPO_ROOT/scripts/tree-sitter-freshness.sh"
+
 # --- Counters ---
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -550,6 +556,126 @@ test_timeout_guard_passes_on_exit_0() {
     if [ "$rc" -ne 0 ]; then
         echo ""
         echo "  ASSERTION FAILED: expected run_guarded_cargo_check to return 0 (SUCCESS) on exit 0, got $rc"
+        return 1
+    fi
+}
+
+test_freshness_script_exists_and_executable() {
+    # Task #5629 / esc-5392-1.  scripts/tree-sitter-freshness.sh is the guard that
+    # proves the compiled libtree_sitter_reify.a was built from the bytes currently
+    # on disk.  It must be a directly-runnable, strict-mode bash script because
+    # verify.sh emits it as a plan leaf (`./scripts/tree-sitter-freshness.sh ensure`).
+    assert_file_exists "$FRESHNESS_SCRIPT" || return 1
+
+    if [[ ! -x "$FRESHNESS_SCRIPT" ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: scripts/tree-sitter-freshness.sh is not executable"
+        echo "  verify.sh emits it as a bare command leaf, so it must carry mode 0755."
+        return 1
+    fi
+
+    assert_cmd_success "tree-sitter-freshness.sh parses under bash -n" \
+        bash -n "$FRESHNESS_SCRIPT" || return 1
+
+    local first_line
+    first_line=$(head -n 1 "$FRESHNESS_SCRIPT")
+    if [[ "$first_line" != "#!/usr/bin/env bash" ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: line 1 is not '#!/usr/bin/env bash'"
+        echo "  Got: $first_line"
+        return 1
+    fi
+
+    if ! grep -qF 'set -euo pipefail' "$FRESHNESS_SCRIPT"; then
+        echo ""
+        echo "  ASSERTION FAILED: tree-sitter-freshness.sh does not 'set -euo pipefail'"
+        echo "  A freshness guard that swallows an error would fail OPEN — exactly the"
+        echo "  false-GREEN shape this task exists to close."
+        return 1
+    fi
+}
+
+test_freshness_script_lists_all_compiled_inputs() {
+    # `--list-inputs` is the single source of truth for the C-compilation input set
+    # (everything build.rs hands to cc::Build, plus the headers they include).
+    #
+    # The expectation is DERIVED from `git ls-files` rather than restated inline, so
+    # that adding a fourth header — or a second .c to c_config — without wiring it
+    # into the freshness input set fails loudly HERE instead of silently
+    # under-covering.  That silent under-coverage is precisely how this defect class
+    # (src/scanner.c watched by nothing) came to exist in the first place.
+    assert_file_exists "$FRESHNESS_SCRIPT" || return 1
+
+    # Run from a directory that is NOT the repo root: the script must resolve its
+    # own paths from ${BASH_SOURCE[0]}, never from $PWD.  verify.sh invokes plan
+    # leaves from the repo root, but the infra tests and a human debugging a merge
+    # lane do not.
+    local out rc=0
+    out=$(cd /tmp && bash "$FRESHNESS_SCRIPT" --list-inputs 2>&1) || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: '--list-inputs' exited $rc (expected 0) when run from /tmp"
+        echo "  --- captured output ---"
+        echo "$out"
+        echo "  --- end output ---"
+        return 1
+    fi
+
+    local headers expected
+    headers=$(cd "$REPO_ROOT" && git ls-files 'tree-sitter-reify/src/tree_sitter/*.h' \
+        | sed 's|^tree-sitter-reify/||' | LC_ALL=C sort)
+    if [ -z "$headers" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: git ls-files found no tracked tree-sitter-reify/src/tree_sitter/*.h"
+        echo "  The expectation is derived from git; an empty derivation would make this"
+        echo "  test vacuous, so it is a hard failure rather than a skip."
+        return 1
+    fi
+    # src/parser.c is generated+gitignored (hence not from git ls-files) but IS
+    # compiled by c_config, so it belongs in the fingerprint even though it is
+    # deliberately NOT in the rerun-if-changed watch set.
+    expected=$(printf 'src/parser.c\nsrc/scanner.c\n%s\n' "$headers")
+
+    if [ "$out" != "$expected" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: '--list-inputs' does not match the compiled input set"
+        echo "  --- expected ---"
+        echo "$expected"
+        echo "  --- actual ---"
+        echo "$out"
+        echo "  --- end ---"
+        return 1
+    fi
+
+    # Sorted, so the manifest ordering is reproducible byte-for-byte between the
+    # shell script and build.rs (step-7 asserts those two agree exactly).
+    local sorted
+    sorted=$(printf '%s\n' "$out" | LC_ALL=C sort)
+    if [ "$out" != "$sorted" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: '--list-inputs' output is not in LC_ALL=C sorted order"
+        echo "  --- actual ---"
+        echo "$out"
+        echo "  --- end ---"
+        return 1
+    fi
+
+    # No blank lines (a blank line would hash as a missing file downstream).
+    if printf '%s\n' "$out" | grep -q '^[[:space:]]*$'; then
+        echo ""
+        echo "  ASSERTION FAILED: '--list-inputs' emitted a blank/whitespace-only line"
+        return 1
+    fi
+
+    # No duplicates (a duplicated path would double-count in the fingerprint and
+    # make the build.rs and shell manifests disagree).
+    local total uniq
+    total=$(printf '%s\n' "$out" | wc -l)
+    uniq=$(printf '%s\n' "$out" | LC_ALL=C sort -u | wc -l)
+    if [ "$total" -ne "$uniq" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: '--list-inputs' emitted duplicate paths ($total lines, $uniq unique)"
+        echo "$out"
         return 1
     fi
 }
