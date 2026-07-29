@@ -296,6 +296,20 @@ THREE SUB-CLASSES:
    Also: shell_voxel_size read as Value::Real but encoded Option<Scalar{LENGTH}> — user override
    silently discarded (shell_extract_compute.rs:550). Declared-only fields with zero readers:
    yield_stress/shear_modulus/CTE/thermal_conductivity (declared-only = fiction per memory).
+   [CORRECTION 2026-07-29 (#5814) — that four-item list is wrong on three of its items;
+   re-measured against main 916cffb7bd. Genuinely declared-only, zero PRODUCTION readers
+   repo-wide: shear_modulus (materials_mechanical.ri:100) and thermal_expansion
+   (materials_thermal.ri:41); both owned by #5801. (a) CTE is not an identifier that exists
+   anywhere in the repo — `grep -rniw cte` over crates/ returns zero hits; the real field is
+   thermal_expansion : ThermalExpansion. (b) yield_stress is NOT declared-only: it has 7
+   production readers, all `material_field_si(material, "yield_stress")` — beam.rs:89,
+   hinge.rs:98 and :252, compound.rs:102 and :281, notch.rs:135, prismatic.rs:110 in
+   reify-stdlib/src/flexures/, each above its own file's #[cfg(test)] boundary (261/347/401/
+   267/312). The zero-reader claim holds only when scoped to compute_targets/**. (c)
+   thermal_conductivity has a live DSL reader — structural_physical.ri:150
+   `constraint thermal_conductivity > 0W/(m*K)` — so its zero-reader claim holds only for
+   Rust/host readers. Register: docs/reify-stdlib-reference.md, "Declared-only material
+   properties" after §6.3.]
 
 THE TRAP: ~25 stdlib params already declared Pressure/Density/Force/etc — declarations look
 like guarantees (BOTH sweep agents initially misread them as gates) but enforce nothing at
@@ -307,7 +321,11 @@ compound suffixes (7850kg/m^3, 200GPa, 9.81m/s^2) parse and are corpus-common (2
 kg/m^3). Gotchas: 5N*m = ENERGY not Torque (need /rad); display middle-dot · not parseable
 back (only ASCII *); NAMED_DIMENSIONS doc says 34, actually 51 names/49 vectors (stale);
 stdlib-reference documents Material fields as Real ("pending #3111") but live code already
-dimensioned (stale doc).
+dimensioned (stale doc). [CORRECTION 2026-07-29 (#5814) — this was true as measured on
+2026-07-28 and is now FIXED, not merely stale: §6.1/§6.2 of docs/reify-stdlib-reference.md
+were rewritten to match materials_mechanical.ri verbatim (including the `: Visual` base and
+the appearance param the doc had omitted entirely), and that file now carries zero #3111
+references. Do not act on this finding as an open gap.]
 
 CONSEQUENCE FOR PRD PORTFOLIO: the 4-PRD split needs a 5th program (or a reshaped PRD 4):
 "dimensioned-value integrity" = (a) ctor-slot conformance promotion (coordinate/fold into
