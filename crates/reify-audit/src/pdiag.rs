@@ -187,6 +187,22 @@ mod tests {
         Vec::new()
     }
 
+    /// Join `lines` into a file body. Window-offset arithmetic stays legible
+    /// when each source line is its own array element.
+    fn file(lines: &[&str]) -> String {
+        lines.join("\n")
+    }
+
+    /// A constructor followed by `n - 1` filler chain lines and then a
+    /// `.with_code(` — i.e. the code lands exactly `n` lines below the anchor.
+    fn with_code_at_offset(n: usize) -> Vec<(usize, bool)> {
+        let mut lines = vec!["    let d = Diagnostic::error(msg)".to_string()];
+        lines.extend((1..n).map(|_| "        .with_label(l)".to_string()));
+        lines.push("        .with_code(c);".to_string());
+        let body = lines.join("\n");
+        sites(&body)
+    }
+
     // -- single-line core -------------------------------------------------
 
     #[test]
@@ -243,5 +259,142 @@ mod tests {
         // the anchor match tolerates whitespace before the open paren.
         let src = "    Diagnostic::error (msg)";
         assert_eq!(sites(src), vec![(1, false)]);
+    }
+
+    // -- bounded forward window -------------------------------------------
+
+    #[test]
+    fn multi_line_format_without_code_is_one_uncoded_site() {
+        // The DOMINANT real shape (crates/reify-eval/src/geometry_ops.rs:183):
+        // only ~16% of the corpus fits on one line, so a single-line-only
+        // scanner would under-count by ~84%.
+        let src = file(&[
+            "            diagnostics.push(Diagnostic::warning(format!(",
+            "                \"unit {} rejected: {}\",",
+            "                name, why",
+            "            )));",
+        ]);
+        assert_eq!(sites(&src), vec![(1, false)]);
+    }
+
+    #[test]
+    fn with_code_three_lines_below_is_coded() {
+        // Real shape: crates/reify-eval/src/geometry_ops.rs:122.
+        let src = file(&[
+            "        let d = Diagnostic::error(format!(",
+            "            \"bad {}\",",
+            "        ))",
+            "        .with_code(DiagnosticCode::BadThing);",
+        ]);
+        assert_eq!(sites(&src), vec![(1, true)]);
+    }
+
+    #[test]
+    fn worst_observed_offset_of_thirteen_lines_is_coded() {
+        // crates/reify-compiler/src/expr.rs:5895 -> :5908 is the widest
+        // constructor -> `.with_code(` gap in the whole corpus. It MUST be
+        // coded, or the detector manufactures a false RED on landed code.
+        assert_eq!(with_code_at_offset(13), vec![(1, true)]);
+    }
+
+    #[test]
+    fn window_edge_is_pinned_in_both_directions() {
+        // PDIAG_CODE_WINDOW = 15: the measured worst case is 13, so 15 covers
+        // 100% of the corpus with two lines of headroom. Pinning BOTH sides
+        // makes a future widening a deliberate, evidence-anchored edit rather
+        // than an accident.
+        assert_eq!(with_code_at_offset(15), vec![(1, true)], "offset 15 is the last in-window line");
+        assert_eq!(with_code_at_offset(16), vec![(1, false)], "offset 16 is past the window");
+    }
+
+    #[test]
+    fn if_else_severity_dispatch_shape_is_coded() {
+        // crates/reify-eval/src/compute_targets/fea_diagnostics.rs:48-53. This
+        // is the shape a paren-depth chain scan gets WRONG: both constructor
+        // parens close before the chain resumes, so depth-matching declares a
+        // coded site code-less. The line window handles it.
+        let src = file(&[
+            "    let mut diag = if failure.is_error() {",
+            "        Diagnostic::error(m)",
+            "    } else {",
+            "        Diagnostic::warning(m)",
+            "    }",
+            "    .with_code(code);",
+        ]);
+        assert_eq!(sites(&src), vec![(2, true), (4, true)]);
+    }
+
+    #[test]
+    fn with_label_in_the_window_does_not_code_the_site() {
+        // crates/reify-compiler/src/arg_check.rs:24 — a labelled but code-less
+        // diagnostic is exactly what the ratchet exists to count.
+        let src = file(&[
+            "    diagnostics.push(",
+            "        Diagnostic::error(msg)",
+            "            .with_label(DiagnosticLabel::new(span, msg)),",
+            "    );",
+        ]);
+        assert_eq!(sites(&src), vec![(2, false)]);
+    }
+
+    // -- comment exclusion -------------------------------------------------
+
+    #[test]
+    fn line_comment_forms_yield_no_sites() {
+        // ~86 doc/line-comment occurrences repo-wide would otherwise inflate
+        // the counts (crates/reify-eval/src/engine_build.rs:3563 is exactly a
+        // constructor quoted inside a `//` comment).
+        let src = file(&[
+            "// Diagnostic::error(m) — quoted in a line comment",
+            "    /// Diagnostic::warning(m) — quoted in a doc comment",
+            "//! Diagnostic::error(m) — quoted in an inner doc comment",
+        ]);
+        assert_eq!(sites(&src), none());
+    }
+
+    #[test]
+    fn block_comment_region_yields_no_sites_and_ends_at_its_close() {
+        let src = file(&[
+            "/**",
+            " * Diagnostic::error(m) — quoted in a block comment.",
+            " * Diagnostic::warning(m) — likewise.",
+            " */",
+            "let real = Diagnostic::error(m);",
+        ]);
+        assert_eq!(sites(&src), vec![(5, false)]);
+    }
+
+    #[test]
+    fn block_comment_opened_and_closed_inline_does_not_swallow_the_rest() {
+        // The region tracker must return to "live" at `*/`, or every anchor
+        // after an inline `/* note */` on a code line would be lost.
+        let src = "    let x = 1; /* note */ diagnostics.push(Diagnostic::error(m));";
+        assert_eq!(sites(src), vec![(1, false)]);
+    }
+
+    #[test]
+    fn commented_out_with_code_does_not_code_the_site() {
+        // The CHOSEN rule, asserted explicitly: comment lines are invisible to
+        // the `.with_code(` probe as well as to anchoring. A code that has been
+        // commented out is not attached, so the site still counts.
+        let src = file(&[
+            "    let d = Diagnostic::error(msg)",
+            "        // .with_code(DiagnosticCode::WasHere) — removed, needs reinstating",
+            "        .with_label(l);",
+        ]);
+        assert_eq!(sites(&src), vec![(1, false)]);
+    }
+
+    #[test]
+    fn comment_lines_do_not_consume_the_window_budget() {
+        // The window spans the next PDIAG_CODE_WINDOW NON-COMMENT lines, so an
+        // interleaved doc-comment block cannot push a real `.with_code(` out of
+        // reach. Errs permissive, never toward a false RED.
+        let mut lines = vec!["    let d = Diagnostic::error(msg)".to_string()];
+        lines.extend((0..10).map(|i| format!("        // filler note {i}")));
+        lines.extend((0..14).map(|_| "        .with_label(l)".to_string()));
+        lines.push("        .with_code(c);".to_string());
+        // Physical offset 25, but only the 15th non-comment line — in window.
+        assert_eq!(sites(&lines.join("\n")), vec![(1, true)]);
     }
 }
