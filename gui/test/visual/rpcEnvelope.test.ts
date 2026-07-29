@@ -23,7 +23,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { isInBandError, parseTextPayload } from "./rpcEnvelope.mjs";
+import { isInBandError, normalizeRpcEnvelope, parseTextPayload } from "./rpcEnvelope.mjs";
 
 describe("isInBandError — the §2a tool-outage discriminator", () => {
   // Moved verbatim from meshCountParity.test.ts, which pinned this while it was
@@ -97,6 +97,144 @@ describe("parseTextPayload — the shared try-JSON / fall-back-to-raw idiom", ()
     // return only via a caught JSON.parse, so hoisting the parse out cannot
     // introduce a new in-band-error verdict.
     expect(isInBandError(parseTextPayload("Error: engine thread died"))).toBe(false);
+  });
+});
+
+describe("normalizeRpcEnvelope — the two failure dialects folded into one shape", () => {
+  // Ported verbatim from meshCountParity.test.ts, which pinned this while the
+  // decoder lived there, then extended with the branches those cases left open.
+  // The live driver's rpc() used to inline this branch table, which made the ONE
+  // piece of genuinely new transport logic in a smoke — folding the Rust `isError`
+  // envelope into the frontend's in-band `{error}` shape so a single isInBandError
+  // check covers both dialects — the only part with no CI cover.
+  const textEnvelope = (value: unknown) => ({
+    result: { content: [{ type: "text", text: JSON.stringify(value) }] },
+  });
+
+  it("returns the parsed payload for a healthy JSON text block", () => {
+    const { transportError, payload } = normalizeRpcEnvelope(
+      textEnvelope({ full_scope: false, eval_set: ["a"] }),
+    );
+    expect(transportError).toBeUndefined();
+    expect(payload).toEqual({ full_scope: false, eval_set: ["a"] });
+  });
+
+  // ─── Branch 1: §2c transport error ────────────────────────────────────────
+  it("reports a top-level (transport) error separately from a payload", () => {
+    // The driver throws on this branch; it must never be mistaken for a tool
+    // payload, in-band error or otherwise.
+    const { transportError, payload } = normalizeRpcEnvelope({
+      error: { code: -32601, message: "Method not found" },
+    });
+    expect(typeof transportError).toBe("string");
+    expect(transportError).toContain("Method not found");
+    expect(payload).toBeUndefined();
+  });
+
+  it("renders the transport error verbatim, and emits NO payload key at all", () => {
+    // The message is pinned byte-for-byte because makeDebugRpc throws it and the
+    // five drivers' waitForServer swallows it in a bare `catch {}` — a wording
+    // change would be invisible until a live run. The absent `payload` KEY (not
+    // merely an undefined value) is what stops a dead server from reading as a
+    // tool answer: `"payload" in result` is false, so no `?? null` default can
+    // resurrect it.
+    const result = normalizeRpcEnvelope({
+      error: { code: -32601, message: "method not found: x" },
+    });
+    expect(result).toEqual({
+      transportError: 'RPC error: {"code":-32601,"message":"method not found: x"}',
+    });
+    expect("payload" in result).toBe(false);
+  });
+
+  // ─── Branch 2: §2b isError fold ───────────────────────────────────────────
+  it("folds the Rust isError envelope into the in-band {error} shape", () => {
+    // debug_server.rs answers a Rust-dispatched handler failure with isError:true
+    // plus a plain-text `Error: <msg>` block. Normalising it here is what lets a
+    // driver's ONE isInBandError check cover engine_state, mesh_stats and
+    // demand_dispatch as well as the frontend-mediated tools.
+    const result = normalizeRpcEnvelope({
+      result: {
+        content: [{ type: "text", text: "Error: engine thread died" }],
+        isError: true,
+      },
+    });
+    expect(result.transportError).toBeUndefined();
+    expect(result).toEqual({ payload: { error: "Error: engine thread died" } });
+    expect(isInBandError(result.payload)).toBe(true);
+  });
+
+  it("still yields an in-band error when isError carries no text block", () => {
+    // Degrading to `null` here would send the outage downstream as a shape
+    // problem — the misdiagnosis this module exists to prevent. This is also the
+    // ONE place the shared decoder differs from the inlined driver helpers it
+    // replaces, which returned null; see the plan's design decision. Unreachable
+    // against debug_server.rs (its Err arm always attaches a text block), so the
+    // synthesised message is the pin rather than a live-run observation.
+    const { payload } = normalizeRpcEnvelope({ result: { content: [], isError: true } });
+    expect(isInBandError(payload)).toBe(true);
+    expect(payload).toEqual({ error: "tool reported isError with no text content block" });
+  });
+
+  it("finds the text block even when it is not first in content", () => {
+    // `.find(type === "text")`, NOT content[0] — an envelope may lead with an
+    // image block. parseRpcResponse (./rpc.ts) reads this positionally instead
+    // and so answers differently; that divergence is pinned in ./rpc.test.ts.
+    const { payload } = normalizeRpcEnvelope({
+      result: {
+        content: [
+          { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
+          { type: "text", text: "Error: engine thread died" },
+        ],
+        isError: true,
+      },
+    });
+    expect(payload).toEqual({ error: "Error: engine thread died" });
+  });
+
+  // ─── Branch 3: nothing to interpret ───────────────────────────────────────
+  it("yields null when there is no text block to interpret", () => {
+    // Empty/absent content, or a non-text block such as the image one that the
+    // screenshot tools answer with: "nothing to interpret", not a failure. No
+    // caller in this module reads image data, so the block is not decoded.
+    // `null` (not undefined) is load-bearing: waitForServer polls on
+    // `if (r !== null) return;`.
+    for (const result of [
+      { content: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] },
+      { content: [] },
+      {},
+    ]) {
+      const { transportError, payload } = normalizeRpcEnvelope({ result });
+      expect(transportError).toBeUndefined();
+      expect(payload).toBeNull();
+    }
+  });
+
+  it("yields null when the envelope carries no result at all", () => {
+    expect(normalizeRpcEnvelope({})).toEqual({ payload: null });
+  });
+
+  // ─── Branches 4 & 5: the text payload ─────────────────────────────────────
+  it("leaves a frontend in-band error untouched for isInBandError to catch", () => {
+    // viewport_state (via query_frontend) already speaks this dialect natively;
+    // normalisation must be a no-op for it rather than double-wrapping.
+    const { payload } = normalizeRpcEnvelope(textEnvelope({ error: "viewport not ready" }));
+    expect(isInBandError(payload)).toBe(true);
+    expect(payload).toEqual({ error: "viewport not ready" });
+  });
+
+  it("hands back the raw text when the block is not JSON", () => {
+    const { payload } = normalizeRpcEnvelope({
+      result: { content: [{ type: "text", text: "pong" }] },
+    });
+    expect(payload).toBe("pong");
+  });
+
+  it("never throws on a malformed or absent envelope", () => {
+    for (const envelope of [undefined, null, {}, { result: null }, { result: {} }, 42, "str", []]) {
+      expect(() => normalizeRpcEnvelope(envelope as never)).not.toThrow();
+      expect(normalizeRpcEnvelope(envelope as never).payload ?? null).toBeNull();
+    }
   });
 });
 
