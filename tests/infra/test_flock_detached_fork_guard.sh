@@ -202,7 +202,15 @@ _flock_fork_offenders() {
             {
                 t = $0
                 sub(/^[[:space:]]+/, "", t)
-                if (t == "" || t ~ /^#/) next
+
+                # Is THIS physical line a continuation of the previous one?
+                # Captured before prev_cont is overwritten below.  A comment
+                # line never continues: bash consumes a `#` comment to the end
+                # of the line and a trailing backslash in it carries no
+                # meaning.
+                is_cont = prev_cont
+                if (t == "" || t ~ /^#/) { prev_cont = 0; next }
+                prev_cont = ($0 ~ /\\$/)
 
                 # Subshell depth BEFORE and AFTER this line.  OPEN and ACQUIRE
                 # qualify on depth-at-START == 0 (a descriptor opened inside a
@@ -246,7 +254,7 @@ _flock_fork_offenders() {
                 # A close must also NOT count as a CLEARING signal: the real
                 # historical offender closed FD 9 on its refusal branches
                 # UPSTREAM of the fork, so crediting that would have passed it.
-                if (depth_start == 0 &&
+                if (!is_cont && depth_start == 0 &&
                     match(t, /exec[[:space:]]+[0-9]+(>>?|<)[^&]/)) {
                     seg = substr(t, RSTART, RLENGTH)
                     match(seg, /[0-9]+/)
@@ -256,7 +264,14 @@ _flock_fork_offenders() {
 
                 # ---- ACQUIRE(N): flock, in command position, on a bare
                 # ---- tail-anchored operand N, outside any subshell open.
-                if (depth_start == 0 && cmdpos && !has_subshell_open(pre)) {
+                # A continuation line is disqualified here (it is an ARGUMENT to
+                # whatever command opened the logical line, not a statement in
+                # its own right) but NOT under UNLOCK or DETACH below: a
+                # continuation can neither clear a lock this shell holds nor be
+                # the fork itself, so excluding it there would only lose
+                # coverage.
+                if (!is_cont && depth_start == 0 && cmdpos &&
+                    !has_subshell_open(pre)) {
                     for (k = 1; k <= nord; k++) {
                         n = ord[k]
                         if ((n in acqln) || FNR <= openln[n]) continue
