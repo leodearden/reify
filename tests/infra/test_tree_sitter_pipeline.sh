@@ -174,6 +174,42 @@ run_guarded_cargo_check() {
     fi
 }
 
+# --- Freshness-guard Fixture Helpers ---
+# Deliberately NOT named test_* — run_tests discovers by matching 'test_' against
+# the whole `declare -F` line, so any helper carrying that substring would be run
+# as a test case.
+
+# mk_ts_fixture <target_dir> <fingerprint_dir_name> <stamp_content|__none__>
+#
+# Builds a fake cargo build tree — <target_dir>/debug/build/<name>/out/ holding a
+# dummy libtree_sitter_reify.a and, unless __none__, the sibling
+# tree_sitter_inputs.stamp build.rs would have written next to it. Entirely
+# hermetic: the real target/ is never read or written.
+mk_ts_fixture() {
+    local target="$1" name="$2" stamp="$3"
+    local out="$target/debug/build/$name/out"
+    mkdir -p "$out"
+    printf 'not a real archive\n' > "$out/libtree_sitter_reify.a"
+    if [ "$stamp" != "__none__" ]; then
+        printf '%s\n' "$stamp" > "$out/tree_sitter_inputs.stamp"
+    fi
+}
+
+# run_ts_freshness <mode> <target_dir> [ts_dir]
+# Sets TS_FRESHNESS_OUT (combined stdout+stderr) and TS_FRESHNESS_RC.
+run_ts_freshness() {
+    local mode="$1" target="$2" ts="${3:-}"
+    TS_FRESHNESS_RC=0
+    if [ -n "$ts" ]; then
+        TS_FRESHNESS_OUT=$(REIFY_TS_FRESHNESS_TARGET_DIR="$target" \
+            REIFY_TS_FRESHNESS_TS_DIR="$ts" \
+            bash "$FRESHNESS_SCRIPT" "$mode" 2>&1) || TS_FRESHNESS_RC=$?
+    else
+        TS_FRESHNESS_OUT=$(REIFY_TS_FRESHNESS_TARGET_DIR="$target" \
+            bash "$FRESHNESS_SCRIPT" "$mode" 2>&1) || TS_FRESHNESS_RC=$?
+    fi
+}
+
 # --- Runner ---
 run_tests() {
     local tests
@@ -676,6 +712,155 @@ test_freshness_script_lists_all_compiled_inputs() {
         echo ""
         echo "  ASSERTION FAILED: '--list-inputs' emitted duplicate paths ($total lines, $uniq unique)"
         echo "$out"
+        return 1
+    fi
+}
+
+test_freshness_check_verdicts() {
+    # Fully hermetic: fake cargo build trees under mktemp -d, driven via
+    # REIFY_TS_FRESHNESS_TARGET_DIR. The real target/ is never touched, so this
+    # test is safe to run concurrently inside a warm lane.
+    assert_file_exists "$FRESHNESS_SCRIPT" || return 1
+
+    local tmp
+    tmp=$(mktemp -d)
+    CLEANUP_ACTIONS+=("rm -rf '$tmp'")
+
+    # ---- (1) --print-fingerprint shape (read-only against the real tree) ----
+    local fp rc=0
+    fp=$(bash "$FRESHNESS_SCRIPT" --print-fingerprint 2>&1) || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: '--print-fingerprint' exited $rc (expected 0)"
+        echo "$fp"
+        return 1
+    fi
+
+    local inputs
+    inputs=$(bash "$FRESHNESS_SCRIPT" --list-inputs)
+
+    # The relpath column must equal --list-inputs EXACTLY — same paths, same
+    # order, same count. Anything else means the fingerprint does not cover the
+    # declared input set.
+    local fp_paths
+    fp_paths=$(printf '%s\n' "$fp" | awk '{print $2}')
+    if [ "$fp_paths" != "$inputs" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: fingerprint path column != --list-inputs"
+        echo "  --- --list-inputs ---"; echo "$inputs"
+        echo "  --- fingerprint paths ---"; echo "$fp_paths"
+        return 1
+    fi
+
+    # Every line must be '<64-hex-sha256><2 spaces><relpath>' — the exact shape
+    # sha256sum/shasum emit, so build.rs can reproduce it byte-for-byte.
+    # Matched with a bash-native regex, not `grep -q` in a pipe: `grep -q` exits
+    # early and SIGPIPEs its writer, which under `set -o pipefail` yields 141 and
+    # silently inverts the verdict.
+    local line bad=""
+    while IFS= read -r line; do
+        [[ "$line" =~ ^[0-9a-f]{64}\ \ [^[:space:]]+$ ]] || bad="$line"
+    done <<< "$fp"
+    if [ -n "$bad" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: fingerprint line is not '<64-hex>  <relpath>': <<<$bad>>>"
+        return 1
+    fi
+
+    # ---- (2) stamp byte-identical to the fingerprint -> FRESH, exit 0 ----
+    mk_ts_fixture "$tmp/t_fresh" "tree-sitter-reify-deadbeef01" "$fp"
+    run_ts_freshness check "$tmp/t_fresh"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: check on a matching stamp exited $TS_FRESHNESS_RC (expected 0)"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    # ---- (3) altered stamp -> STALE, exit 1, NAMES the fingerprint dir ----
+    # Deterministic single-hex-digit flip (never a no-op).
+    local altered
+    if [ "${fp:0:1}" = "0" ]; then altered="1${fp:1}"; else altered="0${fp:1}"; fi
+    mk_ts_fixture "$tmp/t_altered" "tree-sitter-reify-deadbeef01" "$altered"
+    run_ts_freshness check "$tmp/t_altered"
+    if [ "$TS_FRESHNESS_RC" -ne 1 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: check on an ALTERED stamp exited $TS_FRESHNESS_RC (expected 1)"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if [[ "$TS_FRESHNESS_OUT" != *"tree-sitter-reify-deadbeef01"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: stale verdict does not name the offending fingerprint dir"
+        echo "  A verdict that does not say WHICH archive is stale is not actionable."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    # ---- (4) stamp ABSENT next to an existing .a -> STALE, exit 1 ----
+    # An unattested archive is UNPROVEN, never assumed fresh — the same
+    # missing-sidecar-means-stale policy as scripts/reify-bin-freshness.sh.
+    mk_ts_fixture "$tmp/t_nostamp" "tree-sitter-reify-deadbeef01" "__none__"
+    run_ts_freshness check "$tmp/t_nostamp"
+    if [ "$TS_FRESHNESS_RC" -ne 1 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: check with NO stamp beside the archive exited $TS_FRESHNESS_RC (expected 1)"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    # ---- (5) stamp == 'UNAVAILABLE' -> SKIP, exit 0 ----
+    # A host with neither sha256sum nor shasum cannot attest anything. Failing
+    # there would be a permanent spurious RED; force-looping there would recompile
+    # parser.c on every single run. Both are worse than a labelled skip.
+    mk_ts_fixture "$tmp/t_unavail" "tree-sitter-reify-deadbeef01" "UNAVAILABLE"
+    run_ts_freshness check "$tmp/t_unavail"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: check on an UNAVAILABLE stamp exited $TS_FRESHNESS_RC (expected 0)"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if [[ "$TS_FRESHNESS_OUT" != *"SKIP"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: UNAVAILABLE degradation is not labelled SKIP in the output"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    # ---- (6) target dir with NO archive at all -> exit 0 ----
+    # Nothing built means nothing can be stale.
+    mkdir -p "$tmp/t_empty"
+    run_ts_freshness check "$tmp/t_empty"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: check on an EMPTY target dir exited $TS_FRESHNESS_RC (expected 0)"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    # ---- (7) two fingerprint dirs, one fresh one stale -> exit 1, only the stale named ----
+    # A real checkout carries many fingerprint dirs (7 in this lane, 9 in the main
+    # checkout). check must scan them all and report precisely.
+    mk_ts_fixture "$tmp/t_mixed" "tree-sitter-reify-aaaaaaaaaaaaaaaa" "$fp"
+    mk_ts_fixture "$tmp/t_mixed" "tree-sitter-reify-bbbbbbbbbbbbbbbb" "$altered"
+    run_ts_freshness check "$tmp/t_mixed"
+    if [ "$TS_FRESHNESS_RC" -ne 1 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: check with one stale of two dirs exited $TS_FRESHNESS_RC (expected 1)"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if [[ "$TS_FRESHNESS_OUT" != *"tree-sitter-reify-bbbbbbbbbbbbbbbb"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: the stale fingerprint dir (bbbb...) is not named"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if [[ "$TS_FRESHNESS_OUT" == *"tree-sitter-reify-aaaaaaaaaaaaaaaa"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: the FRESH fingerprint dir (aaaa...) is named as stale"
+        echo "$TS_FRESHNESS_OUT"
         return 1
     fi
 }
