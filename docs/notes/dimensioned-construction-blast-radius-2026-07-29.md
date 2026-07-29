@@ -905,7 +905,186 @@ resolution-failure silence to the family predicate.
 
 ## §5 Item 2 — Gate 5 (constraint-def Rule 4) sub-counts (step-5)
 
-*(filled by step-5)*
+Gate 5 = Rule 4 of `constraint_arg_type_conforms` (`crates/reify-compiler/src/type_compat.rs:1482-1488`), the numeric-leniency
+carve-out inside the **constraint-instantiation** (`constraint <ConstraintDefName>(arg: expr, …)`) argument check, called from
+`expand_constraint_inst` (`entity.rs:5835`, plus the forall per-element expansion path `forall_elaborate.rs:532`). Never
+separately measured before this task. **Original measurement, not re-confirmation** — reported per the plan as two
+independent numbers, never merged.
+
+### 5.0 Mechanism boundary — this is a SEPARATE predicate from step-1's flip; step-1's transcript does not cover it
+
+`constraint_arg_type_conforms` (`type_compat.rs`) and `general_leaf_param_family_is_validated`
+(`conformance/mod.rs`, the predicate α flips in step-1) are **different functions in different files**, gating
+**different member kinds** — struct-ctor/param-default conformance (gates 1-4, walked by `walk_param_against_arg`) vs.
+constraint-**instantiation** argument conformance (gate 5, walked by nothing — a flat per-arg check, no recursion). Flipping
+the step-1 predicate touches zero lines of Rule 4 and vice versa; step-1's transcript (§1) contains **no gate-5 evidence
+at all** and cannot be reused here (unlike item 1/gate 2, which did reuse it). This section required its own independent
+empirical sweep, run and reverted separately from step-1's flip (never overlapping in the working tree at the same time).
+
+### 5.1 Method — instrumented empirical sweep, not grep alone
+
+Unlike §§2-4's grep-over-name-set method, gate 5's corpus cannot be graded by text search alone: `constraint_arg_type_conforms`
+is reached only for **named constraint-definition instantiations** (`constraint Foo(x: …)`), which are syntactically
+indistinguishable by grep from same-shaped **constraint-expression members whose body happens to be a struct-ctor call**
+(`constraint Widget(label: 42) == Widget(label: 42)` — `Widget` is a `structure def`, not a `constraint def`; found and
+excluded live, §5.1.3) and from several **compiler-intrinsic constraint kinds** (`RepresentationWithin`, `AllParamsDetermined`,
+`AllGeometryDetermined`, `Coincident`, …) that are never registered as a `constraint def` anywhere in the tree (confirmed by
+repo-wide `git grep -n "constraint def RepresentationWithin"` → zero hits) and are handled by dedicated runtime interception
+(`crates/reify-eval/src/engine_constraints.rs:301-398`, "RepresentationWithin interception") — bypassing `expand_constraint_inst`'s
+per-param loop entirely. A grep-only sweep cannot tell these apart from a real instantiation without independently
+re-deriving type resolution. So this section uses the same class of method step-1 used for the main predicate: a temporary,
+local, reverted instrumentation of the rule itself, whose output is authoritative because it fires only when the real
+compiler pipeline reaches Rule 4 — never a false positive.
+
+**5.1.1 Instrumentation (temporary, never committed).**
+
+```diff
+--- a/crates/reify-compiler/src/type_compat.rs
++++ b/crates/reify-compiler/src/type_compat.rs
+@@ -1485,6 +1485,7 @@
+     let is_numeric = |t: &Type| matches!(t, Type::Int | Type::Scalar { .. } | Type::ScalarParam(_));
+     if is_numeric(param_ty) && is_numeric(arg_ty) {
++        eprintln!("RULE4_HIT param={:?} arg={:?}", param_ty, arg_ty); // task-5756 probe, reverted before commit
+         return true;
+     }
+```
+
+**5.1.2 Runs.** Every non-parse-only crate whose test corpus contains the string `constraint def ` or a named
+`constraint <Name>(` call was identified by repo-wide `git grep` (49 `.ri`+`.rs` files spanning `reify-compiler`,
+`reify-eval`, `reify-doc-build`; zero hits in `gui/**`, `docs/prds/**`, `tests/prd-gate/**`, or `tree-sitter-reify/**` —
+confirmed by the same un-scoped `git grep -n "constraint def "` used in §0's premise check, which already covers the
+whole repo, not just the `corpus_no_bare_scalar.rs` trees). Each run redirected full output to a file and used
+`--nocapture` (`eprintln!` is otherwise swallowed for passing tests) with `--test-threads=1` (a `--test-threads=8` first
+pass produced 2 lines with garbled/interleaved text — libtest's documented `--nocapture` caveat, concurrent threads
+writing directly to the shared fd with no serialization across tests; the serial re-run reproduced the same 7 raw hits
+byte-clean with an unambiguous preceding `test <name> ...` line for every one):
+
+| Run | Command | Result |
+|---|---|---|
+| `reify-compiler`, full suite | `cargo test -p reify-compiler --tests -- --nocapture --test-threads=1` | 4624 passed, 0 failed, 2m49s |
+| `reify-eval`, constraint-relevant targets (17 test binaries named for every file this session found referencing `constraint def`/`constraint <Name>(` in this crate) | `cargo test -p reify-eval --test constraint_def_eval --test integration_corner_cases --test integration_full_v01 --test m11_full_integration --test m8_m11_regression_checkpoint --test m9_combined --test m9_constraint_def --test m9_integration --test optimized_registry_tests --test test_runner --test unified_dag_geometry_executors --test tolerance_member_access_e2e --test representation_within_assertion --test determinacy_intrinsics --test determinacy_integration_gate --test dfm_fits_build_volume_e2e --test harness_fea_solver_e2e -- --nocapture --test-threads=1` | 825-line log, 0 failed, 3m41s |
+| `reify-eval`, `tests/common/differential.rs`-including targets (shared fixture module, not itself a target) + `reify-doc-build` | `cargo test -p reify-eval --test harness_selective_demand --test unified_dag_boundary_cases --test unified_dag_differential_corpus --test unified_dag_edit_path -p reify-doc-build --test build_doc_model_tests -- --nocapture --test-threads=1` | 14 passed, 0 failed, 14s |
+| `reify-eval`, `broad_corpus_sweep` (evaluates the same `examples/**` corpus `examples_smoke` already compiles) | started full `--tests`, killed after 21/24 shards (>30 min — geometry/FEA-kernel-backed, no new information: 0 hits through shard 21, and Rule 4 is a compile-time-only check already exercised on the identical files by `examples_smoke` above) | 0 hits observed before stop; not exhaustively completed — see caveat below |
+
+**Caveat on the killed run:** the `reify-eval` full-suite run was stopped after shard 21/24 of `broad_corpus_sweep`
+(no failures, no RULE4_HIT observed) because it re-evaluates the identical `examples/**` files `examples_smoke`
+(`reify-compiler`, above) already **compiles** — and Rule 4 is a pure compile-time type check, insensitive to what the
+eval engine does afterward. `examples_smoke` produced zero gate-5 hits over the full 250-file exercised set (§5.1.2's
+first row), so the killed run's partial 0/21 is corroborating, not load-bearing. **This one corner (the un-exercised
+3/24 shards plus whichever `reify-eval` fixtures outside the 21 targeted files above were never run) is the one gap this
+section's sweep does not claim to close exhaustively** — recorded per the plan's own "no silent caps" discipline rather
+than folded into the clean counts below.
+
+**5.1.3 Grep false positives found and excluded while scoping the runs** (recorded so a later reader does not
+re-discover them): (a) `struct_ctor_field_conformance_tests.rs:715,751` — `constraint Widget(label: 42) == Widget(label: 42)`
+is a **constraint-expression member** (a boolean `==` expression whose two operands are struct-ctor calls), not a
+constraint-definition instantiation; `Widget` is `structure def Widget { param label : String }`, not a `constraint def` —
+this is gate-1 territory (already in §3's ctor-conformance table), textually identical to a gate-5 call only by
+coincidence of the shared `constraint <Capitalized>(` shape. (b) `crates/reify-eval/src/graph.rs`'s `constraint Some(id_0)`
+is Rust pattern-matching syntax (`Option::Some`), not Reify source at all — a bare substring match artifact. (c)
+`crates/reify-syntax/tests/harness_syntax/constraint_inst_tests.rs:57` (`constraint Bounded(lo: 1, hi: t, x: t)`) is a
+parse-only syntax fixture (`reify-syntax` crate, `tests/harness_syntax/` — the same parse-only exclusion established in
+§0.4/§3.2) — it never reaches `reify-compiler`. (d) `crates/reify-compiler/tests/constraint_inst_tests.rs:303`
+(`constraint OneParam(a: x, b: 5)`, in `unknown_argument_name`) has `b` matching **no declared param** of `OneParam`
+(which only declares `param a`) — `entity.rs:5828`'s `let Some(param) = def.params.iter().find(...) else { continue; }`
+skips unmatched arg names before `constraint_arg_type_conforms` is ever called, so this is excluded by a **different**
+mechanism (unknown-arg skip), not by Rule 4.
+
+### 5.2 Severity structural finding, load-bearing for how these counts are read
+
+Gate 5's rejection (Rule 5, the `false` fallthrough) emits `Diagnostic::error(...)` (`entity.rs:5838`) — confirmed
+`Severity::Error` at the constructor (`crates/reify-core/src/diagnostics.rs:3888-3896`), **not** `Severity::Warning`
+like gates 1-4's `CTOR_FIELD_CONFORMANCE_SEVERITY`. Consequence, the mirror image of §4.2's gates-3/4 finding: because
+gate 5 is Error-severity, **any** `errors_only`/`error_diags`-filtered assertion or panicking `compile_source`/`eval_source`
+helper is *already* sensitive to a new gate-5 diagnostic — there is no Warning-shaped blind spot for δ₂ to hide behind.
+Both corpus sites found below (§5.4) sit inside exactly such error-sensitive tests; **this sweep found zero "silently
+tolerant" (c0-shaped) gate-5 corpus sites** — a structural contrast with gates 3/4's §2.2, where the c0 bucket (28 sites)
+was the majority.
+
+### 5.3 Sub-count (a): CROSS-DIMENSION scalar-for-scalar — **0 corpus/integration sites, 2 primitive-level pins**
+
+A `Scalar{Q}` arg reaching a `Scalar{R}` constraint-def param with Q ≠ R (including Q = dimensionless), tolerated only by
+Rule 4 — confirmed by direct read of `type_compatible`/`implicitly_converts_to` (`type_compat.rs:52-281`): the only
+Scalar-relevant branches are `from == to` (identity — same dimension) and Int→dimensionless-scalar widening (arg `Int`,
+param dimensionless); neither covers a differently-dimensioned or dimensionless **Scalar** arg against a dimensioned param,
+so that case falls through past Rule 3 to Rule 4 with no other path to acceptance.
+
+**Zero occurrences across the entire instrumented sweep (§5.1.2) come from `.ri`/Rust-fixture corpus content.** The
+**only** two firings of this shape are pure Rust unit tests of the primitive function itself — no `.ri`-shaped source,
+no `compile_source` call, direct `Type` value construction:
+
+| File:line | Test | Types | Disposition |
+|---|---|---|---|
+| `crates/reify-compiler/src/type_compat.rs:5041` | `constraint_arg_type_conforms_mass_for_length_is_true` | param=`Scalar{Length}`, arg=`Scalar{Mass}` | **PRIMITIVE PIN — TO INVERT** (asserts `conforms(...)` is `true`; δ₂ removing this half flips the expectation) |
+| `crates/reify-compiler/src/type_compat.rs:5050` | `constraint_arg_type_conforms_dimensionless_for_length_is_true` | param=`Scalar{Length}`, arg=`Scalar{dimensionless}` | **PRIMITIVE PIN — TO INVERT** |
+
+Bucket split: `examples/**` 0 · stdlib `.ri` 0 · Rust fixture strings 0 · other `.ri` 0 · **primitive unit-test pins on
+the rule itself 2** (a class the standard four-bucket taxonomy doesn't have a slot for, called out explicitly rather than
+force-fit — these two tests exist to specify Rule 4's own contract, not to exercise a compiled `.ri` corpus site).
+BREAKS = 0 (no corpus site depends on this half incidentally); DELIBERATE-NEGATIVE-TEST/PIN-TO-INVERT = 2.
+
+### 5.4 Sub-count (b): INT-FOR-LENGTH — **2 corpus/integration sites (4 firings), 1 primitive-level pin**
+
+A `Type::Int` arg reaching a dimensioned `Scalar` constraint-def param — confirmed distinct from Rule 3's Int-for-**dimensionless**
+widening (which requires the param itself to be dimensionless; a dimensioned param never qualifies), so this is
+Rule-4-only exactly as the plan states.
+
+| File:line | Test | Site (source) | Firings | Bucket | Disposition |
+|---|---|---|---|---|---|
+| `crates/reify-compiler/src/type_compat.rs:5031` | `constraint_arg_type_conforms_int_for_length_is_true` | direct `Type` values, no source | 1 | primitive pin | **PRIMITIVE PIN — TO INVERT** |
+| `crates/reify-compiler/tests/constraint_def_compile_tests.rs:1454` | `int_literal_for_length_param_no_constraint_arg_type_mismatch` (fn at :1447) | `constraint def MinWall { param w: Length … }` / `constraint MinWall(w: 3)` | 1 | Rust fixture string | **DELIBERATE-NEGATIVE-TEST-TO-INVERT** — the test's own name and body (`assert_eq!(code_count, 0, "… numeric leniency — dimensional strictness is task 4490's job …")`) exist specifically to pin this tolerance |
+| `crates/reify-compiler/tests/forall_statement_lower_tests.rs:1646` | `forall_constraint_inst_body_emits_per_element_inst_predicates` (fn at :1639, def at :1641-1644) | `constraint def MinThreshold { param value : Length … }` / `forall v in [1, 2, 3]: constraint MinThreshold(value: v)` | **3** (one per forall element — `v` = `1`, `2`, `3`, each a separate `Type::Int` arg) | Rust fixture string | **BREAKS** — the test's own `assert!(errors_only(&module).is_empty(), …)` (its first assertion, before the label-mechanics checks it actually exists to pin) would newly fail under δ₂; its *purpose* is forall per-element constraint-label mechanics, not gate-5 tolerance, so the fix is migrating the fixture's literals to unit-bearing ones (e.g. `[1mm, 2mm, 3mm]`), not inverting an assertion the way the row above does |
+
+Bucket split: `examples/**` 0 · stdlib `.ri` 0 · Rust fixture strings 2 sites / 4 firings · other `.ri` 0 ·
+primitive unit-test pin 1. BREAKS = 1 site (3 firings, `forall_statement_lower_tests.rs`); DELIBERATE-NEGATIVE-TEST/PIN-TO-INVERT
+= 2 (the `constraint_def_compile_tests.rs` site + the primitive pin).
+
+**5.4.1 Total reconciliation.** 2 (cross-dimension primitive pins) + 1 (int-for-length primitive pin) + 1 (int-for-length
+`constraint_def_compile_tests.rs` firing) + 3 (int-for-length `forall_statement_lower_tests.rs` firings) = **7 raw
+`RULE4_HIT` firings, matching the instrumented sweep's total exactly** — zero unaccounted residual.
+
+### 5.5 Structural note (i) — `Type::ScalarParam` admission is a δ₂ prerequisite, not resolved here
+
+`is_numeric` (`type_compat.rs:1485`) admits `Type::ScalarParam(_)` alongside `Int`/`Scalar{..}`. Verified by direct read
+that neither `type_compatible` nor `implicitly_converts_to` (`type_compat.rs:52-281`, the full text of Rule 3's
+transitive callees) branches on `Type::ScalarParam` anywhere — so a `Scalar<Q>` (dimension-generic) arg reaching a
+**concretely-dimensioned** constraint-def param structurally falls through Rules 1-3 and is accepted **only** by Rule 4,
+exactly the same shape of gap item 3/step-6 investigates for gate 1. **Zero corpus sites exercise this today** — the
+three known dimension-generic sites (`stdlib/fields.ri:156/160/164/193/197`, `examples/generics/dim_param.ri`,
+`tree-sitter-reify/test/fixtures/guf-2-bounded.ri`) were checked directly for `constraint` instantiation content:
+`dim_param.ri`'s only `constraint` members are bare boolean predicates (`constraint len > 29.99mm`, four total, none a
+named instantiation); `fields.ri`/`guf-2-bounded.ri` have none. So this is a **latent** property of Rule 4, not a
+measured break — flagged, per the plan, as a prerequisite δ₂ must carry its own fence for (if δ₂ removes Rule 4 wholesale
+without a ScalarParam-aware replacement, a *future* dimension-generic constraint arg would newly and incorrectly reject),
+not something this task resolves.
+
+### 5.6 Structural note (ii) — Rule 2 precedes Rule 4; Rule-2-excluded sites must never be counted against Rule 4
+
+Confirmed by direct re-read of the sequential early-return structure (`type_compat.rs:1464-1491`): Rule 2
+(`type_carries_type_param(param_ty) || type_carries_trait_object(param_ty)`, `:1474`) is a single `if { return true }`
+textually and structurally **before** Rule 4's `if` block (`:1482-1488`) in the same straight-line function — a
+generic/trait-typed **param** (e.g. `constraint def Aligned<T> { param t: T, param w: Length … }`, confirmed compiling
+cleanly with zero "unknown type" errors at `constraint_def_compile_tests.rs:990-1010`, `generic_constraint_def_with_type_param_type_compiles_cleanly`)
+never reaches Rule 4 regardless of its arg's type. This governs attribution, not a count change here: no site in §5.3/§5.4
+was excluded by Rule 2 (none of the found sites have a generic/trait-typed **param** — `Aligned<T>`'s own param `t: T` is
+never instantiated with an arg in that test, so it contributes zero firings either way), but a later reader (δ₂) auditing
+"why is site X silent under Rule 4" must check Rule 2 first — misattributing a Rule-2 generic-param skip to Rule 4's
+numeric leniency would overstate δ₂'s blast radius.
+
+### 5.7 Revert proof
+
+```
+$ git diff --stat -- crates/
+ crates/reify-compiler/src/type_compat.rs | 1 +
+ 1 file changed, 1 insertion(+)
+$ git checkout -- crates/reify-compiler/src/type_compat.rs
+$ git diff --exit-code -- crates/ examples/ gui/ stdlib
+$ echo $?
+0
+```
+
+No diagnostic/behaviour change survives this section; `type_compat.rs:1482-1488` reads identically to HEAD both before
+and after this measurement.
 
 ## §6 Item 3 — `Type::ScalarParam` false positives, D4-5 (step-6)
 
