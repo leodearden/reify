@@ -277,9 +277,9 @@ belt degenerate-input errors) is instructed to carry a `DiagnosticCode`.
   prereqs (wired); perturbed-pulley build-FAIL regression is μ's own
   boundary assertion over ι's constraint — every asserted capability is in
   μ's dependency closure (G6 branch 3 clean).
-- `tendon-solid-route` → resolved: #5343 landed, so μ uses `pipe()` directly
-  for the tendon solid (PRD §12 Q5 resolved; the `sweep` posed-profile
-  fallback is no longer needed).
+- `tendon-solid-route` → resolved: #5343 landed; μ uses `pipe()` directly
+  for the tendon solid (PRD §12 Q5 resolved; see λ's `pipe-fallback` (F2)
+  entry above for the substrate fact).
 
 ## ν — doc-chunk updates (project gate leaf 1)
 
