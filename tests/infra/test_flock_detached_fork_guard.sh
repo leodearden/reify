@@ -164,10 +164,63 @@ _flock_fork_offenders() {
                 return (s ~ /[^&>|]&[[:space:]]*$/)
             }
 
+            # Subshell-depth delta for one line, counted ONLY over STANDALONE
+            # paren tokens:
+            #   `(` at start-of-line or after whitespace AND followed by
+            #       whitespace or end-of-line            -> +1
+            #   `)` at start-of-line or after whitespace AND followed by
+            #       whitespace, end-of-line, `&`, `>`, `|` or `;`  -> -1
+            #
+            # Everything else is deliberately invisible: `$( ... )` (the `(` is
+            # preceded by `$`), arithmetic `$(( ... ))`, function headers
+            # `f() {` (`(` preceded by a word char, `)` by `(`), and case
+            # patterns such as `*)` or `""|*[!0-9]*)` (the `)` is not preceded
+            # by whitespace).  A syntactic scan cannot see quoting or heredoc
+            # bodies, so this is an approximation -- but a conservative one,
+            # and the whole-corpus scan below measures its verdict on the real
+            # tree rather than assuming it.
+            function paren_delta(s,   d, i, c, prev, nxt, len) {
+                d = 0
+                len = length(s)
+                for (i = 1; i <= len; i++) {
+                    c = substr(s, i, 1)
+                    if (c != "(" && c != ")") continue
+                    prev = (i > 1) ? substr(s, i - 1, 1) : ""
+                    nxt = (i < len) ? substr(s, i + 1, 1) : ""
+                    if (prev != "" && prev != " " && prev != "\t") continue
+                    if (c == "(") {
+                        if (nxt == "" || nxt == " " || nxt == "\t") d++
+                    } else {
+                        if (nxt == "" || nxt == " " || nxt == "\t" ||
+                            nxt == "&" || nxt == ">" || nxt == "|" ||
+                            nxt == ";") d--
+                    }
+                }
+                return d
+            }
+
             {
                 t = $0
                 sub(/^[[:space:]]+/, "", t)
                 if (t == "" || t ~ /^#/) next
+
+                # Subshell depth BEFORE and AFTER this line.  OPEN and ACQUIRE
+                # qualify on depth-at-START == 0 (a descriptor opened inside a
+                # subshell is not the forking shell holding it), while DETACH
+                # qualifies on depth-at-END == 0 (so `) &` and
+                # `( ... ) 9>"$L" &`, whose net delta returns to 0, still count
+                # as forks performed BY the lock-holding shell).
+                #
+                # Clamped at 0 on the way down: a single miscounted `)` -- from
+                # a heredoc body or a quoted string this scan cannot see --
+                # must not strand the file at a permanently non-zero depth,
+                # which would silently disable the guard for it.  A dead
+                # instrument that still reports "clean" is the worst failure
+                # mode available here.
+                depth_start = depth
+                depth += paren_delta(t)
+                if (depth < 0) depth = 0
+                depth_end = depth
 
                 fpos = index(t, "flock")
                 if (fpos > 0) {
@@ -193,7 +246,8 @@ _flock_fork_offenders() {
                 # A close must also NOT count as a CLEARING signal: the real
                 # historical offender closed FD 9 on its refusal branches
                 # UPSTREAM of the fork, so crediting that would have passed it.
-                if (match(t, /exec[[:space:]]+[0-9]+(>>?|<)[^&]/)) {
+                if (depth_start == 0 &&
+                    match(t, /exec[[:space:]]+[0-9]+(>>?|<)[^&]/)) {
                     seg = substr(t, RSTART, RLENGTH)
                     match(seg, /[0-9]+/)
                     n = substr(seg, RSTART, RLENGTH)
@@ -202,7 +256,7 @@ _flock_fork_offenders() {
 
                 # ---- ACQUIRE(N): flock, in command position, on a bare
                 # ---- tail-anchored operand N, outside any subshell open.
-                if (cmdpos && !has_subshell_open(pre)) {
+                if (depth_start == 0 && cmdpos && !has_subshell_open(pre)) {
                     for (k = 1; k <= nord; k++) {
                         n = ord[k]
                         if ((n in acqln) || FNR <= openln[n]) continue
@@ -224,7 +278,7 @@ _flock_fork_offenders() {
                 }
 
                 # ---- DETACH: a fork downstream of the acquire ----
-                if (is_detach(t)) {
+                if (depth_end == 0 && is_detach(t)) {
                     for (k = 1; k <= nord; k++) {
                         n = ord[k]
                         if (!(n in acqln) || (n in detln)) continue
