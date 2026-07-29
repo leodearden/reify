@@ -104,8 +104,7 @@ trait ConstitutiveLaw { }
 //                    linear-elastic regime.
 //   poisson_ratio  — Poisson's ratio ν.  Dimensionless ratio of transverse
 //                    to axial strain under uniaxial load.  Constrained to
-//                    the half-open interval [0, 0.5) by the constraints
-//                    landing in a follow-up step; ν = 0.5 represents
+//                    the half-open interval [0, 0.5); ν = 0.5 represents
 //                    incompressibility and breaks the linear-elastic bulk
 //                    modulus formula K = E / (3(1 − 2ν)) (singularity).
 //   density        — mass density ρ.  SI unit: kg·m⁻³.  Used by inertial
