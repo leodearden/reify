@@ -1,15 +1,129 @@
 //! Compiler signatures for the PRB flexure **constructor** builtins — the
 //! placeholder-ratchet α family (task #5476).
 //!
-//! RED SKELETON (step-7): this file currently holds ONLY the test module. The
-//! `FLEXURE_CTOR_FN_NAMES` slice, the `is_flexure_typed_fn` predicate and the
-//! `flexure_ctor_result_type` resolver land in step-8, together with the
-//! `mod flexure_signatures;` declaration in `lib.rs` that first brings this file
-//! into the compilation. Until then these tests are not compiled; the RED that
-//! actually fires is the `use crate::flexure_signatures::FLEXURE_CTOR_FN_NAMES;`
-//! added to the `units.rs` test module in the same step.
+//! Holds the compiler-side source of truth for the PRB flexure-constructor name
+//! family ([`FLEXURE_CTOR_FN_NAMES`]), the name-only classification predicate
+//! ([`is_flexure_typed_fn`]), and the name→nominal-type resolver
+//! ([`flexure_ctor_result_type`]).
+//!
+//! All 13 ctors map to the single nominal marker `StructureRef("FlexureJoint")`
+//! (declared `structure def FlexureJoint : DrivingJoint { }` in
+//! `stdlib/flexures.ri`). That nominal result is what lets
+//! `flexure_compliance(joint: FlexureJoint)` match a real ctor result while
+//! REJECTING every bare literal through the compiler's exact-equality overload
+//! filter (`type_compat.rs::resolve_function_overload`).
 //!
 //! PRD: docs/prds/v0_6/placeholder-type-eradication-ratchet.md §3.2 / §7.1.
+//!
+//! ## What this replaces
+//!
+//! Without a signature arm, a `prb_*` call falls through the `NoUserFunctions`
+//! ladder to the FIRST-ARG FALLBACK, which types the call as its first
+//! geometric argument's type — e.g. `prb_notch_circular(1mm, …)` types as
+//! `Scalar[LENGTH]` from `notch_radius`. That is precisely the placeholder PRD
+//! §2 names as the root cause: it made a bare `5mm` statically
+//! indistinguishable from a real flexure joint.
+//!
+//! ## StructureRef cell-typing safety (esc-3845-91)
+//!
+//! The PRB ctors evaluate to a concrete `Value::Map` at runtime, exactly like
+//! the joint builtins, and α does NOT change that — PRD §7.1 keeps the
+//! joints→typed-StructureInstance migration rejected. Assigning
+//! `Type::StructureRef` to the cell is nonetheless safe, by the same argument
+//! `joint_signatures` records:
+//! - `assert_value_cell_types_representable` (the debug-only invariant that runs
+//!   in normal eval) explicitly PERMITS `Type::StructureRef`.
+//! - `value_type_kind_matches` is invoked ONLY on the param-override/admin-edit
+//!   paths, NOT on the `Engine::eval` cold-start for let-cells.
+//! - Decisive: these let-cells ALREADY carry a first-arg-fallback type
+//!   (`Scalar[LENGTH]`) while eval stores a `Value::Map` — a mismatch that
+//!   exists today and that flexure eval tests pass with — so `Scalar[LENGTH]` →
+//!   `StructureRef` is strictly more correct, not a new class of divergence.
+//!
+//! ## Name-list duplication (deliberate)
+//!
+//! [`FLEXURE_CTOR_FN_NAMES`] duplicates
+//! `reify-stdlib/src/flexures/diagnostics.rs::is_flexure_ctor`. `reify-compiler`
+//! depends only on reify-core + reify-ir — NOT on reify-stdlib — so sharing the
+//! list would require a cross-crate dependency in the wrong direction or a
+//! widening of this crate's public API. `JOINT_TYPED_FN_NAMES` sets the
+//! precedent by restating the runtime joint names the same way. Drift is caught
+//! by PAIRED independent-fixture tests: one here, one in reify-stdlib. Either
+//! list drifting fails its own test.
+//!
+//! Wired into `expr.rs`'s `NoUserFunctions` ladder after the `is_joint_typed_fn`
+//! arm. The family is pinned disjoint from all sibling families by the `units.rs`
+//! disjointness test, which is what makes that arm position unobservable.
+
+use reify_core::Type;
+use reify_ir::CompiledExpr;
+
+/// The complete set of PRB flexure-constructor builtin names recognised by the
+/// compiler. Single source of truth compiler-side — imported into the `units.rs`
+/// test module to pin disjointness from all sibling families.
+///
+/// **13 names**, grouped by the per-family modules under
+/// `reify-stdlib/src/flexures/`. Every one maps to the same nominal type,
+/// `StructureRef("FlexureJoint")`.
+///
+/// NOTE: `prb_validity_range` is deliberately EXCLUDED despite the `prb_`
+/// prefix — it is a `FlexureCompliance` FIELD (emitted by all five family
+/// modules; declared at flexures.ri:160), not a constructor. This is also why
+/// the family is 13 and not the 14 stated in PRD §3.2. `__flexure_compliance_get`
+/// is likewise excluded: it CONSUMES a joint and returns a `FlexureCompliance`.
+/// Both exclusions are pinned by `is_flexure_typed_fn_rejects_non_family_names`.
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub(crate) const FLEXURE_CTOR_FN_NAMES: &[&str] = &[
+    // Beam flexures (2) — beam.rs
+    "prb_cantilever_beam",
+    "prb_fixed_fixed_beam",
+    // Notch hinges (3) — notch.rs
+    "prb_notch_circular",
+    "prb_notch_elliptical",
+    "prb_notch_right_circular",
+    // Hinge / pivot flexures (3) — hinge.rs
+    "prb_living_hinge",
+    "prb_cross_spring_pivot",
+    "prb_let_joint",
+    // Prismatic flexures (2) — prismatic.rs
+    "prb_prismatic_blade",
+    "prb_two_axis_pivot",
+    // Compound flexures (3) — compound.rs
+    "prb_parallelogram_flexure",
+    "prb_double_parallelogram_flexure",
+    "prb_cartwheel_flexure",
+];
+
+/// Is `name` a PRB flexure-constructor builtin the compiler types via
+/// [`flexure_ctor_result_type`]? Name-only classification — a `.contains` over
+/// the single-source-of-truth slice [`FLEXURE_CTOR_FN_NAMES`].
+///
+/// Matches on the EXACT name, never on the `prb_` prefix: `prb_validity_range`
+/// shares that prefix but is a record field, not a ctor.
+pub(crate) fn is_flexure_typed_fn(name: &str) -> bool {
+    FLEXURE_CTOR_FN_NAMES.contains(&name)
+}
+
+/// Result type for a PRB flexure-constructor builtin — always the nominal
+/// marker `Type::StructureRef("FlexureJoint")`.
+///
+/// **Both name- and argument-agnostic.** Unlike [`crate::joint_ctor_result_type`],
+/// whose Coupling arm is args-AWARE (`Type::applied("Coupling",[parent])`, task
+/// #4605 ε), this family has no per-name and no per-argument branching: all 13
+/// ctors produce the one marker type. A reader coming from the joint family
+/// should NOT expect a Coupling-style branch here — there is deliberately
+/// nothing to dispatch on.
+///
+/// `name` and `args` are therefore both unused. They are kept in the signature
+/// for uniformity with the sibling family's `(name, args)` shape, so the ladder
+/// arm in `expr.rs` reads identically to the joint arm directly above it.
+///
+/// Runtime values stay `Value::Map` (esc-3845-91); the cell TYPE is the nominal
+/// tag. See the module doc for the full safety argument.
+pub(crate) fn flexure_ctor_result_type(_name: &str, _args: &[CompiledExpr]) -> Type {
+    Type::StructureRef("FlexureJoint".to_string())
+}
 
 #[cfg(test)]
 mod tests {
