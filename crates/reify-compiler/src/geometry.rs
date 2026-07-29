@@ -1496,6 +1496,10 @@ fn compile_geometry_call_inner(
             let dz = CompiledExpr::binop(
                 BinOp::Mul,
                 height.clone(),
+                // Dimensionless scale factor — the enclosing binop already carries
+                // `height.result_type` (LENGTH). Retyping this to LENGTH would make the
+                // product Scalar{AREA} at eval and the length gate would reject it. Pinned by
+                // rounded_box_dz_is_length_scaled_by_a_dimensionless_factor.
                 CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::dimensionless_scalar()),
                 height.result_type.clone(),
             );
@@ -2065,8 +2069,10 @@ fn compile_geometry_call_inner(
             // Inject literal 2π (radians) for the angle — ANGLE-dimensioned so the
             // eval-layer angle gate accepts it. `Value::angle` takes radians; the SI
             // angle base unit IS the radian, so si_value == TAU exactly.
-            let tau_expr =
-                CompiledExpr::literal(Value::angle(std::f64::consts::TAU), reify_core::Type::angle());
+            let tau_expr = CompiledExpr::literal(
+                Value::angle(std::f64::consts::TAU),
+                reify_core::Type::angle(),
+            );
             let profile = geom_ref(0);
             let op = CompiledGeometryOp::Sweep {
                 kind: SweepKind::Revolve,
@@ -2358,9 +2364,15 @@ fn compile_geometry_call_inner(
                 w.result_type.clone(),
             );
             // minus_offset = -w/2 = w * (-0.5)
+            // NOTE: this is the `:2362` the units-length PRD attributes to `rounded_box`
+            // — it is in `zone_profile`. See the dimensionless-factor note below.
             let minus_offset = CompiledExpr::binop(
                 BinOp::Mul,
                 w.clone(),
+                // Dimensionless scale factor — the enclosing binop already carries
+                // `w.result_type` (LENGTH). Retyping this to LENGTH would make the
+                // product Scalar{AREA} at eval and the length gate would reject it. Pinned by
+                // zone_profile_offsets_are_length_scaled_by_dimensionless_factors.
                 CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::dimensionless_scalar()),
                 w.result_type.clone(),
             );
@@ -2438,6 +2450,10 @@ fn compile_geometry_call_inner(
             let dz = CompiledExpr::binop(
                 BinOp::Mul,
                 height.clone(),
+                // Dimensionless scale factor — the enclosing binop already carries
+                // `height.result_type` (LENGTH). Retyping this to LENGTH would make the
+                // product Scalar{AREA} at eval and the length gate would reject it. Pinned by
+                // rounded_box_dz_is_length_scaled_by_a_dimensionless_factor.
                 CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::dimensionless_scalar()),
                 height.result_type.clone(),
             );

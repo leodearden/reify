@@ -127,7 +127,9 @@ fn assert_length_scaled_by_dimensionless(expr: &CompiledExpr, label: &str) -> f6
                 ),
             }
         }
-        other => panic!("{label} must be a Mul(<magnitude>, <dimensionless factor>), got: {other:?}"),
+        other => {
+            panic!("{label} must be a Mul(<magnitude>, <dimensionless factor>), got: {other:?}")
+        }
     }
 }
 
@@ -177,8 +179,7 @@ fn rounded_box_dz_is_length_scaled_by_a_dimensionless_factor() {
                 .iter()
                 .find(|(k, _)| k == "dz")
                 .expect("rounded_box corner Translate must carry a dz");
-            let factor =
-                assert_length_scaled_by_dimensionless(dz_expr, "rounded_box corner dz");
+            let factor = assert_length_scaled_by_dimensionless(dz_expr, "rounded_box corner dz");
             assert!(
                 factor < 0.0,
                 "rounded_box corner dz factor must stay negative (centre the cylinder), \
