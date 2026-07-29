@@ -46,6 +46,7 @@ pub mod puntested;
 pub mod player;
 pub mod ptodo;
 pub mod pdssentinel;
+pub mod pdiag;
 pub mod pdoccover;
 pub mod fused_memory_client;
 pub mod jcodemunch_client;
@@ -182,6 +183,29 @@ pub enum Pattern {
     ///
     /// Reference: `docs/prds/dimensionless-scalar-sentinel-stampout.md` §8/§10.
     PDsSentinel,
+    /// PDIAG — codes-mandatory ratchet (`INV-SF-6 diagnostics-carry-codes`):
+    /// a `Diagnostic::error(...)` / `Diagnostic::warning(...)` construction
+    /// site in scoped Rust source with no `.with_code(...)` attached within a
+    /// bounded forward line window, and not marked with a `// pdiag:allow —
+    /// reason` escape. Per-file counts ratchet against the committed
+    /// `crates/reify-audit/pdiag-baseline.txt` manifest.
+    ///
+    /// **High** severity for a count that exceeds its baseline row (or a file
+    /// with sites and no row) — unlike PTODO/PDSSENTINEL this pattern DOES
+    /// move the process exit code, which is the hard gate PRD §8 boundary
+    /// row 8 requires. Under-count and orphan-row advisories are Medium and
+    /// exit-neutral, so an opportunistic fix never turns a diff RED. Joins
+    /// the no-`--pattern` default sweep via `is_none_or` (mirroring
+    /// `run_ptodo`). Structural: reads the working tree via `ls_files()` +
+    /// `std::fs`, never contacts jcodemunch or the task DB.
+    ///
+    /// Scope: `crates/<name>/src/**.rs` + `gui/src-tauri/src/**.rs`, minus the
+    /// detector's own crate, `reify-test-support`, `tests/`-segment paths and
+    /// `#[cfg(test)]` bodies.
+    ///
+    /// Reference: `docs/prds/v0_6/eradicate-silent-undef.md` §3 Leg C / §7;
+    /// remediation: `docs/notes/diagnostic-severity-policy.md` §3.
+    PDiag,
     /// PDOCCOVER — bidirectional registry↔chunk name drift between the
     /// compiler's builtin-name registries and the MCP language-reference
     /// chunks (`crates/reify-mcp/src/tools/chunks/*.md`). ONE detector, two
