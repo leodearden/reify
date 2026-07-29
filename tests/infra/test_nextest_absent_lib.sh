@@ -549,6 +549,76 @@ for _nx_suite in "${_NX_PROBE_SUITES[@]}"; do
 done
 unset _nx_suite
 
+# (vac) NEGATIVE CONTROL — the guard is now GREEN on every covered suite, which
+# is precisely when it stops being able to show that it still detects anything.
+# All those greens are equally consistent with a working detector and with one
+# whose grep quietly stopped matching (a renamed helper, an escaping change in
+# _NX_OPEN_CODED_RE, a `grep -F` slipped in where -E was meant). Same failure
+# mode this file already names for the realness checker at :430-432 — "A
+# realness checker that cannot fail is exactly the vacuity it exists to
+# prevent", asserted there by _t7b — so it gets the same treatment here.
+#
+# Hand the detector a synthetic EIGHTH copy of the idiom and require it to
+# report that copy.
+#
+# The fixture is a `mktemp -d` UNDER $NX_WORKDIR, so the lib's own
+# EXIT/INT/TERM/HUP trap reclaims it: the reason Test 4's child probe lives
+# there too (:127-129) is that a second trap of our own would CLOBBER the
+# lib's rather than compose with it, which is the whole subject of Test 10.
+_NX_T8_VAC_DIR="$(mktemp -d "$NX_WORKDIR/t8_vacuity.XXXXXX")"
+_NX_T8_DIRTY="$_NX_T8_VAC_DIR/test_verify_synthetic_eighth_copy.sh"
+
+# Written as the seven suites migrated by task 5644 actually looked, so the
+# control exercises the shape that really accretes rather than a toy string.
+# Never executed — the detector only ever READS it.
+cat > "$_NX_T8_DIRTY" <<'DIRTY_SUITE'
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "$SCRIPT_DIR/test_helpers.sh"
+
+_HEADER="$(bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan 2>/dev/null \
+    | grep '^# verify.sh plan')" || true
+NEXTEST_AVAILABLE=0
+case "$_HEADER" in
+    *"nextest=1"*) NEXTEST_AVAILABLE=1 ;;
+esac
+DIRTY_SUITE
+
+_t8_detector_reports_a_dirty_suite() {
+    local out rc=0 name
+    name="$(basename "$_NX_T8_DIRTY")"
+    out="$(_nx_probe_suite_is_clean "$_NX_T8_DIRTY" 2>&1)" || rc=$?
+    printf '%s\n' "$out"
+    [ "$rc" -ne 0 ] || {
+        echo "the detector PASSED a file that open-codes the probe AND never"
+        echo "sources the lib. It is no longer detecting anything, so every"
+        echo "green above is vacuous."
+        return 1
+    }
+    # A non-zero rc on its own is NOT enough. An undefined or renamed predicate
+    # also exits non-zero — 127, "command not found" — which would let this
+    # control go green while observing nothing at all. So require the same
+    # evidence the per-suite arms print: the offending FILE, and the offending
+    # LINE.
+    case "$out" in
+        *"$name"*) ;;
+        *) echo "detector reported rc=$rc but its diagnostic never names $name"
+           return 1 ;;
+    esac
+    case "$out" in
+        *'nextest=1'*) ;;
+        *) echo "detector reported rc=$rc but its diagnostic never quotes the"
+           echo "offending line — so it did not actually match the idiom."
+           return 1 ;;
+    esac
+    return 0
+}
+
+assert "8: the detector REPORTS a synthetic eighth copy of the idiom (negative control)" \
+    _t8_detector_reports_a_dirty_suite
+
 # -- Test 9: the plan header is located by CONTENT, not by position ------------
 #
 # nextest_absent_plan_header{,_ambient} used to extract the header with
