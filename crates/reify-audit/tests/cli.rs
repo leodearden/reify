@@ -567,11 +567,9 @@ mod cli {
         let dir = tmp.path();
         let runs_db = write_empty_runs_db(dir);
 
-        // Find a closed port to guarantee connection refused.
-        let throwaway = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = throwaway.local_addr().expect("addr").port();
-        drop(throwaway);
-        let unreachable_url = format!("http://127.0.0.1:{port}/mcp");
+        // An endpoint that refuses connections by construction — see
+        // `common::net` for why port 0 has no TOCTOU window.
+        let unreachable_url = common::net::unreachable_mcp_url();
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
@@ -2513,12 +2511,9 @@ mod http_loader {
         let dir = tmp.path();
         let runs_db = write_empty_runs_db(dir);
 
-        // Find a port that's almost certainly closed: bind, get its port,
-        // then drop the listener so subsequent connects refuse.
-        let throwaway = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = throwaway.local_addr().expect("addr").port();
-        drop(throwaway);
-        let url = format!("http://127.0.0.1:{port}/mcp/");
+        // An endpoint that refuses connections by construction — see
+        // `common::net` for why port 0 has no TOCTOU window.
+        let url = common::net::unreachable_mcp_url();
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
