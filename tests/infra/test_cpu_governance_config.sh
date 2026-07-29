@@ -27,6 +27,11 @@
 #       only — no cross-repo import). Only the STALE direction is guarded:
 #       the COMPLETE direction (a new unlisted key) is self-announcing via
 #       2989's born-at-L2 census escalation.
+#       A separate vacuity check (census_ignore_is_nonempty_list) guards the
+#       block itself: it FAILS loudly if config_key_census is absent, empty,
+#       or malformed, so the staleness check above — which stays silently
+#       green on zero entries — cannot degrade into a no-op if the block is
+#       ever deleted.
 #
 # (A), (A2), and (C) are SKIPPED if python3 + PyYAML are unavailable (mirrors
 #     the tomllib SKIP idiom in test_cargo_incremental_lane_decision.sh:25).
@@ -77,6 +82,11 @@ Checks (no <script_path>):
                                    still fnmatch.fnmatchcase-matches >=1 live
                                    dotted path (STALE direction only; see (C)
                                    in the file header)
+  census_ignore_is_nonempty_list — config_key_census.ignore is present and a
+                                    non-empty list of strings (the vacuity
+                                    check: catches an absent/emptied block,
+                                    which the staleness check above stays
+                                    silent on by design)
 Checks (with <script_path> — value-drift cross-check):
   w_task_yaml_vs_lib_cgroup       — YAML weights.task == lib_cgroup.sh :-fallback
   w_merge_yaml_vs_lib_cgroup      — YAML weights.merge == lib_cgroup.sh :-fallback
@@ -118,6 +128,26 @@ if check == "census_ignore_entries_resolve":
         print("Each entry excuses a reify-owned key from dark-factory task 2989's "
               "unknown-config-key census. If the knob was deliberately renamed or "
               "removed, drop its ignore entry in the same commit (see e61fae8017).",
+              file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
+if check == "census_ignore_is_nonempty_list":
+    census = d.get("config_key_census")
+    if not isinstance(census, dict):
+        print("config_key_census block is absent or not a mapping. If the census "
+              "allowlist was deliberately retired, remove the (C) group from this "
+              "test in the same commit rather than leaving a guard that passes "
+              "vacuously.", file=sys.stderr)
+        sys.exit(1)
+    entries = census.get("ignore")
+    if not isinstance(entries, list) or not entries:
+        print(f"config_key_census.ignore must be a non-empty list, got {entries!r}",
+              file=sys.stderr)
+        sys.exit(1)
+    bad = [e for e in entries if not isinstance(e, str)]
+    if bad:
+        print(f"config_key_census.ignore entries must be strings; got {bad!r}",
               file=sys.stderr)
         sys.exit(1)
     sys.exit(0)
