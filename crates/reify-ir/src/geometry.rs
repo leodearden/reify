@@ -833,29 +833,24 @@ pub enum GeometryOp {
     },
     /// Create a pipe along `path` with circular cross-section of `radius`.
     ///
-    /// Composed at the kernel layer as `make_pipe(make_circle_face(radius, 0.0),
-    /// path)`. The circle cross-section is a private kernel-internal detail.
+    /// Composed at the kernel layer by posing the circular cross-section on
+    /// the path's **start frame** — centred at the path wire's start point,
+    /// with the section plane's normal aligned to the path's start tangent —
+    /// then sweeping that face along `path`. The circular cross-section and
+    /// the way it is constructed remain private kernel-internal details.
     ///
-    /// # Orientation constraint
+    /// # Orientation
     ///
-    /// The circular cross-section is a face in the **XY plane at z=0**
-    /// (i.e. its normal is +Z). `BRepOffsetAPI_MakePipe` expects the
-    /// profile's plane to align with the path's start-tangent; only paths
-    /// whose start-tangent is approximately **+Z** (within 1e-6) are
-    /// accepted.
+    /// **Any** finite start-tangent orientation is accepted: there is no
+    /// preferred axis and no antiparallel singularity.
     ///
-    /// Paths whose start-tangent is not aligned with +Z are rejected at
-    /// `execute` with `GeometryError::OperationFailed`. Callers needing
-    /// arbitrary path orientations should use `Sweep { profile, path }`
-    /// directly, supplying an explicit profile wire already aligned to
-    /// the desired frame.
+    /// A path whose start tangent has a non-finite component is rejected at
+    /// `execute` with `GeometryError::OperationFailed`. That signals a
+    /// malformed path wire, *not* an unsupported orientation.
     ///
-    /// The `kernel_pipe_non_z_start_tangent_returns_error` test locks in
-    /// this contract over +X, +Y, and arc-in-XY-plane paths.
-    ///
-    /// **Future work:** General start-tangent reorientation (automatically
-    /// aligning the profile face to the path's local frame) is deferred;
-    /// see option (a) from the task-2095 review.
+    /// `Sweep { profile, path }` remains the right operation for a
+    /// **non-circular** cross-section, where the caller supplies the profile
+    /// wire and is responsible for posing it.
     Pipe {
         path: GeometryHandleId,
         radius: Value,

@@ -233,40 +233,27 @@ fn validate_uv_finite(u: f64, v: f64) -> Result<(), QueryError> {
 }
 
 #[cfg(has_occt)]
-/// Tolerance for the pipe start-tangent +Z check.
+/// Validate that a pipe start-tangent is all-finite (defense-in-depth for `gp_Dir`).
 ///
-/// The guard is symmetric: `|t.z - 1| < PIPE_START_TANGENT_Z_EPSILON`.
-/// For a true unit vector the per-axis residual satisfies x²+y² < 2ε,
-/// so |x|,|y| < √(2ε).
-const PIPE_START_TANGENT_Z_EPSILON: f64 = 1e-6;
-
-#[cfg(has_occt)]
-/// Validate that a pipe start-tangent is approximately +Z and all-finite.
-///
-/// Returns `OperationFailed` if any component is non-finite (NaN or ±Infinity) or if
-/// `t.z` is outside `[1 - PIPE_START_TANGENT_Z_EPSILON, 1 + PIPE_START_TANGENT_Z_EPSILON]`
-/// (tangent not close enough to the unit +Z vector).
+/// Returns `OperationFailed` if any component is non-finite (NaN or ±Infinity).
 ///
 /// # Rationale
 ///
-/// The circular profile face is built in the XY plane (normal = +Z).
-/// `BRepOffsetAPI_MakePipe` requires the profile plane to align with the path's
-/// start-tangent. For non-+Z paths the swept solid is degenerate (zero volume);
-/// this helper detects that upfront and returns an explicit error rather than
-/// silently producing unusable geometry. General orientation support is deferred
-/// future work (option (a) from task-2095 review).
+/// The tangent is fed into OCCT's `gp_Dir` (via the oriented-circle profile
+/// construction) to align the circular profile with the path's start frame, and
+/// `gp_Dir` requires a finite, non-degenerate vector. `BRepAdaptor_CompCurve::D1`
+/// already yields a normalized tangent, so a non-finite component here signals a
+/// malformed wire or an FFI contract violation; this Rust-side guard rejects it
+/// explicitly rather than passing NaN/∞ across the FFI boundary.
+///
+/// Any finite orientation is accepted: `gp_Ax2(point, dir)` builds a valid
+/// orthonormal frame for ANY unit normal (including −Z), so pipes are no longer
+/// restricted to a +Z start-tangent.
 fn validate_pipe_start_tangent(t: ffi::ffi::Point3) -> Result<(), GeometryError> {
     if !t.x.is_finite() || !t.y.is_finite() || !t.z.is_finite() {
         return Err(GeometryError::OperationFailed(format!(
             "pipe start-tangent has non-finite component (got ({:.3}, {:.3}, {:.3}))",
             t.x, t.y, t.z
-        )));
-    }
-    if t.z < 1.0 - PIPE_START_TANGENT_Z_EPSILON || t.z > 1.0 + PIPE_START_TANGENT_Z_EPSILON {
-        return Err(GeometryError::OperationFailed(format!(
-            "pipe currently only supports paths whose start-tangent is +Z \
-             (tolerance {:e}) (got tangent ({:.3}, {:.3}, {:.3}))",
-            PIPE_START_TANGENT_Z_EPSILON, t.x, t.y, t.z
         )));
     }
     Ok(())
@@ -3124,13 +3111,22 @@ impl OcctKernel {
             GeometryOp::Pipe { path, radius } => {
                 let r = extract_f64(radius)?;
                 validate_positive_finite(r, "pipe radius")?;
-                // Reject paths whose start-tangent is not approximately +Z; see validate_pipe_start_tangent.
                 let path_shape = self.get_shape(*path)?;
+                // Orient the circular profile onto the path's start frame: build
+                // the circle at the wire's start point with its plane normal
+                // aligned to the start-tangent, then sweep. This supports paths
+                // with ANY finite start-tangent (not just +Z).
                 let t = ffi::ffi::wire_start_tangent(path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                // Copy the tangent components before the by-value validate guard
+                // consumes `t` (Point3 is not Copy).
+                let (tx, ty, tz) = (t.x, t.y, t.z);
                 validate_pipe_start_tangent(t)?;
-                let circle_shape = ffi::ffi::make_circle_face(r, 0.0)
+                let p = ffi::ffi::wire_start_point(path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                let circle_shape =
+                    ffi::ffi::make_oriented_circle_face(r, p.x, p.y, p.z, tx, ty, tz)
+                        .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 ffi::ffi::make_pipe(&circle_shape, path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
@@ -10229,87 +10225,110 @@ mod tests {
     }
 
     #[test]
-    fn kernel_pipe_non_z_start_tangent_returns_error() {
-        // This test locks in the explicit-error contract for non-+Z paths
-        // defined in the orientation-constraint section of GeometryOp::Pipe.
-        // Prior to task-2095, these cases silently returned a degenerate
-        // (zero-volume) solid; they now return
-        // GeometryError::OperationFailed with "start-tangent" in the message.
+    fn kernel_pipe_arbitrary_orientation_volume_matches_pi_r2_l() {
+        // General path-orientation acceptance: a straight LineSegment in ANY
+        // direction, piped with radius r, must yield a RIGHT circular cylinder
+        // whose analytic BRep volume equals π·r²·L exactly (rel_err < 1e-6),
+        // mirroring the +Z case kernel_pipe_straight_path_volume_matches_pi_r2_l.
         //
-        // The four cases cover:
-        //   - +X line segment (start-tangent = +X)
-        //   - +Y line segment (start-tangent = +Y)
-        //   - Arc in the XY plane, start_angle=0 (start-tangent = +Y)
-        //   - -Z line segment (start-tangent = -Z)
-        //
-        // The -Z case guards against future refactors that might accidentally
-        // compare t.z.abs() instead of t.z — such a change would still reject
-        // +X and +Y but would incorrectly accept -Z.
-        //
-        // See `kernel_pipe_straight_path_volume_matches_pi_r2_l` for the
-        // accepted +Z case.
+        // Covers +X, +Y, -Z, a (1,1,1) diagonal, and a NON-origin +X segment.
+        // Before the oriented-profile rewire the profile is an XY circle at the
+        // origin, so every in-plane (non-perpendicular) case sweeps a
+        // degenerate/offset solid and fails this assertion (RED).
         if !crate::OCCT_AVAILABLE {
             eprintln!("skipping: OCCT not available");
             return;
         }
-
-        let cases: &[(&str, GeometryOp)] = &[
-            (
-                "+X line segment",
-                GeometryOp::LineSegment {
-                    x1: 0.0,
-                    y1: 0.0,
-                    z1: 0.0,
-                    x2: 0.020,
-                    y2: 0.0,
-                    z2: 0.0,
-                },
-            ),
-            (
-                "+Y line segment",
-                GeometryOp::LineSegment {
-                    x1: 0.0,
-                    y1: 0.0,
-                    z1: 0.0,
-                    x2: 0.0,
-                    y2: 0.020,
-                    z2: 0.0,
-                },
-            ),
-            (
-                "arc in XY plane",
-                GeometryOp::Arc {
-                    center: [0.0, 0.0, 0.0],
-                    radius: 0.010,
-                    start_angle: 0.0,
-                    end_angle: std::f64::consts::FRAC_PI_2,
-                    axis: [0.0, 0.0, 1.0],
-                },
-            ),
-            (
-                "-Z line segment",
-                GeometryOp::LineSegment {
-                    x1: 0.0,
-                    y1: 0.0,
-                    z1: 0.0,
-                    x2: 0.0,
-                    y2: 0.0,
-                    z2: -0.020,
-                },
-            ),
+        let r = 0.002_f64;
+        // (label, [x1, y1, z1, x2, y2, z2])
+        let cases: &[(&str, [f64; 6])] = &[
+            ("+X", [0.0, 0.0, 0.0, 0.020, 0.0, 0.0]),
+            ("+Y", [0.0, 0.0, 0.0, 0.0, 0.020, 0.0]),
+            ("-Z", [0.0, 0.0, 0.0, 0.0, 0.0, -0.020]),
+            ("diagonal (1,1,1)", [0.0, 0.0, 0.0, 0.010, 0.010, 0.010]),
+            ("non-origin +X", [0.005, 0.0, 0.0, 0.025, 0.0, 0.0]),
         ];
-
-        for (label, path_op) in cases {
+        for (label, c) in cases {
+            let [x1, y1, z1, x2, y2, z2] = *c;
+            let length = ((x2 - x1).powi(2) + (y2 - y1).powi(2) + (z2 - z1).powi(2)).sqrt();
             let mut kernel = OcctKernel::new();
             let wire_handle = kernel
-                .execute(path_op)
-                .unwrap_or_else(|e| panic!("{label}: path execute should succeed, got {e:?}"));
-            let result = kernel.execute(&GeometryOp::Pipe {
-                path: wire_handle.id,
-                radius: Value::Real(0.002),
-            });
-            assert_operation_fails_with(result, "start-tangent");
+                .execute(&GeometryOp::LineSegment {
+                    x1,
+                    y1,
+                    z1,
+                    x2,
+                    y2,
+                    z2,
+                })
+                .unwrap_or_else(|e| {
+                    panic!("{label}: LineSegment execute should succeed, got {e:?}")
+                });
+            let pipe_handle = kernel
+                .execute(&GeometryOp::Pipe {
+                    path: wire_handle.id,
+                    radius: Value::Real(r),
+                })
+                .unwrap_or_else(|e| panic!("{label}: Pipe execute should succeed, got {e:?}"));
+            let vol = kernel
+                .query(&GeometryQuery::Volume(pipe_handle.id))
+                .unwrap_or_else(|e| panic!("{label}: Volume query should succeed, got {e:?}"));
+            let v = vol.as_f64().expect("Volume should be numeric");
+            assert!(v > 0.0, "{label}: pipe volume must be positive, got {v}");
+            let expected = std::f64::consts::PI * r.powi(2) * length;
+            let rel_err = (v - expected).abs() / expected;
+            assert!(
+                rel_err < 1e-6,
+                "{label}: pipe volume should be ≈ {expected:.3e} m³, got {v:.3e} (rel_err={rel_err:.4e})"
+            );
         }
+    }
+
+    #[test]
+    fn kernel_pipe_xy_arc_quarter_torus_volume() {
+        // A quarter-circle spine in the XY plane (bend radius R=0.010, start at
+        // (0.010,0,0), start-tangent +Y) piped with tube radius r=0.002 sweeps
+        // an exact torus segment: a planar circular spine has constant binormal
+        // (no Frenet twist), so by Pappus's theorem V = π·r²·R·θ exactly
+        // (R>r ⇒ no self-intersection) ≈ 1.9739e-7 m³.
+        //
+        // This case also guards the wire_start_point plumbing: the arc does NOT
+        // start at the origin, so a start-point-ignoring profile would sweep
+        // from the wrong location. RED until the oriented-profile rewire lands.
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let r = 0.002_f64;
+        let bend_r = 0.010_f64;
+        let theta = std::f64::consts::FRAC_PI_2;
+        let mut kernel = OcctKernel::new();
+        let wire_handle = kernel
+            .execute(&GeometryOp::Arc {
+                center: [0.0, 0.0, 0.0],
+                radius: bend_r,
+                start_angle: 0.0,
+                end_angle: theta,
+                axis: [0.0, 0.0, 1.0],
+            })
+            .expect("Arc execute should succeed");
+        let pipe_handle = kernel
+            .execute(&GeometryOp::Pipe {
+                path: wire_handle.id,
+                radius: Value::Real(r),
+            })
+            .expect("Pipe execute should succeed for XY arc");
+        let vol = kernel
+            .query(&GeometryQuery::Volume(pipe_handle.id))
+            .expect("Volume query should succeed");
+        let v = vol.as_f64().expect("Volume should be numeric");
+        assert!(v > 0.0, "arc pipe volume must be positive, got {v}");
+        let expected = std::f64::consts::PI * r.powi(2) * bend_r * theta;
+        let rel_err = (v - expected).abs() / expected;
+        assert!(
+            rel_err < 0.01,
+            "quarter-torus pipe volume should be ≈ {expected:.4e} m³ (π·r²·R·θ), got {v:.4e} (rel_err={rel_err:.4e})"
+        );
     }
 
     // --- validate_pipe_start_tangent helper unit tests ---
@@ -10355,31 +10374,54 @@ mod tests {
     }
 
     #[test]
-    fn validate_pipe_start_tangent_rejects_negative_z() {
-        // Exercises the pure helper with a -Z unit tangent directly.
-        // Guards against a future refactor that compares t.z.abs() instead of
-        // t.z — such a change would still reject +X and +Y but would
-        // incorrectly accept -Z. Asserts both the "start-tangent" substring
-        // (correct branch) and negative-z evidence in the reported coordinates
-        // so that a wrong-branch rejection would surface immediately.
-        let t = ffi::ffi::Point3 {
-            x: 0.0,
-            y: 0.0,
-            z: -1.0,
-        };
-        match super::validate_pipe_start_tangent(t) {
-            Err(GeometryError::OperationFailed(msg)) => {
-                assert!(
-                    msg.contains("start-tangent"),
-                    "expected error containing 'start-tangent' for -Z tangent, got: {msg}"
-                );
-                assert!(
-                    msg.contains("-1"),
-                    "expected error to include negative-Z coordinate evidence ('-1'), got: {msg}"
-                );
-            }
-            Ok(()) => panic!("expected Err for -Z tangent (z=-1.0), got Ok"),
-            Err(other) => panic!("expected OperationFailed for -Z tangent, got {:?}", other),
+    fn validate_pipe_start_tangent_accepts_finite_non_z_tangents() {
+        // Once the +Z-only restriction is lifted, the narrowed guard accepts
+        // ANY finite tangent (the vector still feeds gp_Dir, so only the
+        // finite/NaN check remains). Exercises +X, +Y, -Z, and a normalized
+        // diagonal — all finite unit vectors — asserting each returns Ok(()).
+        // Fails against the pre-task +Z guard, which rejects every non-+Z case.
+        let inv_sqrt3 = 1.0 / 3.0_f64.sqrt();
+        let cases = [
+            (
+                "+X",
+                ffi::ffi::Point3 {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ),
+            (
+                "+Y",
+                ffi::ffi::Point3 {
+                    x: 0.0,
+                    y: 1.0,
+                    z: 0.0,
+                },
+            ),
+            (
+                "-Z",
+                ffi::ffi::Point3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: -1.0,
+                },
+            ),
+            (
+                "normalized diagonal",
+                ffi::ffi::Point3 {
+                    x: inv_sqrt3,
+                    y: inv_sqrt3,
+                    z: inv_sqrt3,
+                },
+            ),
+        ];
+        for (label, t) in cases {
+            let coords = (t.x, t.y, t.z);
+            let result = super::validate_pipe_start_tangent(t);
+            assert!(
+                result.is_ok(),
+                "expected Ok(()) for finite {label} tangent {coords:?}, got {result:?}"
+            );
         }
     }
 
@@ -10417,26 +10459,6 @@ mod tests {
                     other
                 ),
             }
-        }
-    }
-
-    #[test]
-    fn validate_pipe_start_tangent_rejects_oversize_z() {
-        // Guards the upper-bound: a finite t.z far above 1.0 (e.g. 1e100) is not
-        // a unit vector. The two-sided comparator rejects t.z outside
-        // [1 - PIPE_START_TANGENT_Z_EPSILON, 1 + PIPE_START_TANGENT_Z_EPSILON].
-        let t = ffi::ffi::Point3 {
-            x: 0.0,
-            y: 0.0,
-            z: 1e100,
-        };
-        match super::validate_pipe_start_tangent(t) {
-            Err(GeometryError::OperationFailed(_)) => {}
-            Ok(()) => panic!("expected Err for oversize-z tangent (z=1e100), got Ok"),
-            Err(other) => panic!(
-                "expected OperationFailed for oversize-z tangent, got {:?}",
-                other
-            ),
         }
     }
 
@@ -10570,6 +10592,207 @@ mod tests {
             "composite +Z wire: start-tangent z should be ≈ 1.0, got {}",
             t.z
         );
+    }
+
+    // --- wire_start_point / make_oriented_circle_face FFI tests ---
+    //
+    // Direct FFI coverage for the two primitives added to pose the pipe profile
+    // on the path's start frame. Otherwise both are reached only transitively
+    // through the `GeometryOp::Pipe` arm, which is blind to two failures: a
+    // start/end swap produces a plausible solid on a symmetric spine, and the
+    // radius guard inside `make_oriented_circle_face` is unreachable from that
+    // arm entirely (it runs `validate_positive_finite` Rust-side first).
+
+    /// The line runs (0.005,0,0) → (0.025,0,0): asymmetric about the origin, so
+    /// the start and end are 0.020 apart and a swap cannot hide inside the
+    /// tolerance. Pinning the start specifically matters because the profile is
+    /// *centred* at this point — an end-point result would sweep a solid of the
+    /// right shape from the wrong place.
+    #[test]
+    fn ffi_wire_start_point_returns_start_not_end_of_line() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let wire = ffi::ffi::make_line_wire(0.005, 0.0, 0.0, 0.025, 0.0, 0.0)
+            .expect("make_line_wire should succeed");
+        let p = ffi::ffi::wire_start_point(&wire)
+            .expect("wire_start_point should succeed for +X line");
+        assert!(
+            (p.x - 0.005).abs() < 1e-6,
+            "start-point x should be ≈ 0.005 (the START, not the END 0.025), got {}",
+            p.x
+        );
+        assert!(p.y.abs() < 1e-6, "start-point y should be ≈ 0, got {}", p.y);
+        assert!(p.z.abs() < 1e-6, "start-point z should be ≈ 0, got {}", p.z);
+    }
+
+    /// Composite-wire counterpart to `ffi_wire_start_tangent_composite_wire_*`,
+    /// exercising `BRepAdaptor_CompCurve` on a **multi-edge** wire: a future
+    /// refactor to a single-edge `BRepAdaptor_Curve` would break this while the
+    /// single-edge test above still passed.
+    ///
+    /// The polyline is deliberately **non-collinear** — (0.005,0,0) →
+    /// (0.015,0,0) → (0.015,0.010,0) — which is what lets this test pin the
+    /// agreement between the two queries rather than just one of them. The
+    /// profile frame combines *both*: centred at `wire_start_point`, normal
+    /// along `wire_start_tangent`. If they disambiguated the wire's ends
+    /// differently the frame would be silently wrong, and here that is visible:
+    /// at the start the point is (0.005,0,0) with tangent +X, at the far end
+    /// (0.015,0.010,0) with tangent +Y. Both are asserted together.
+    #[test]
+    fn ffi_wire_start_point_composite_wire_agrees_with_start_tangent() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        #[rustfmt::skip]
+        let coords: &[f64] = &[
+            0.005, 0.0,   0.0,
+            0.015, 0.0,   0.0,
+            0.015, 0.010, 0.0,
+        ];
+        let wire = ffi::ffi::make_polyline_wire(coords, 3)
+            .expect("make_polyline_wire should succeed for 3-point L-shaped polyline");
+
+        let p = ffi::ffi::wire_start_point(&wire)
+            .expect("wire_start_point should succeed for composite wire");
+        assert!(
+            (p.x - 0.005).abs() < 1e-6,
+            "composite wire: start-point x should be ≈ 0.005, got {}",
+            p.x
+        );
+        assert!(
+            p.y.abs() < 1e-6,
+            "composite wire: start-point y should be ≈ 0 (the far end has y = 0.010), got {}",
+            p.y
+        );
+        assert!(
+            p.z.abs() < 1e-6,
+            "composite wire: start-point z should be ≈ 0, got {}",
+            p.z
+        );
+
+        let t = ffi::ffi::wire_start_tangent(&wire)
+            .expect("wire_start_tangent should succeed for composite wire");
+        assert!(
+            (t.x - 1.0).abs() < 1e-6,
+            "composite wire: start-tangent x should be ≈ 1.0 — the FIRST edge runs +X, so a \
+             value of ≈ 0 here means the tangent came from a different end than the point did; \
+             got {}",
+            t.x
+        );
+        assert!(
+            t.y.abs() < 1e-6,
+            "composite wire: start-tangent y should be ≈ 0 (the far end's tangent is +Y), got {}",
+            t.y
+        );
+        assert!(
+            t.z.abs() < 1e-6,
+            "composite wire: start-tangent z should be ≈ 0, got {}",
+            t.z
+        );
+    }
+
+    /// `gp_Ax2(P, N)` builds a valid orthonormal frame for ANY unit normal, so
+    /// no direction is privileged and there is no antiparallel singularity —
+    /// which is the whole reason the profile is posed at construction rather
+    /// than by a post-hoc rotation carrying +Z onto the tangent. `-Z` is in the
+    /// table because it is exactly where such a rotation degenerates.
+    ///
+    /// The centre is off-origin in all three coordinates, so a dropped
+    /// translation cannot pass. Area is exact — a planar face bounded by an
+    /// exact `Geom_Circle`, integrated by `BRepGProp::SurfaceProperties` — so it
+    /// is checked at the same 1e-6 the neighbouring FFI tests use.
+    #[test]
+    fn ffi_make_oriented_circle_face_poses_centre_and_normal() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let radius = 0.004_f64;
+        let (cx, cy, cz) = (0.005, -0.003, 0.011);
+        let cases: &[(&str, f64, f64, f64)] = &[
+            ("+Z", 0.0, 0.0, 1.0),
+            ("+X", 1.0, 0.0, 0.0),
+            ("-Z", 0.0, 0.0, -1.0),
+        ];
+
+        for &(label, nx, ny, nz) in cases {
+            let face = ffi::ffi::make_oriented_circle_face(radius, cx, cy, cz, nx, ny, nz)
+                .unwrap_or_else(|e| {
+                    panic!("make_oriented_circle_face should succeed for normal {label}: {e}")
+                });
+
+            let c = ffi::ffi::query_face_centroid(&face)
+                .unwrap_or_else(|e| panic!("query_face_centroid should succeed for {label}: {e}"));
+            assert!(
+                (c.x - cx).abs() < 1e-6,
+                "normal {label}: face centroid x should be ≈ {cx}, got {}",
+                c.x
+            );
+            assert!(
+                (c.y - cy).abs() < 1e-6,
+                "normal {label}: face centroid y should be ≈ {cy}, got {}",
+                c.y
+            );
+            assert!(
+                (c.z - cz).abs() < 1e-6,
+                "normal {label}: face centroid z should be ≈ {cz}, got {}",
+                c.z
+            );
+
+            let n = ffi::ffi::query_face_normal(&face)
+                .unwrap_or_else(|e| panic!("query_face_normal should succeed for {label}: {e}"));
+            assert!(
+                (n.x - nx).abs() < 1e-6,
+                "normal {label}: face normal x should be ≈ {nx}, got {}",
+                n.x
+            );
+            assert!(
+                (n.y - ny).abs() < 1e-6,
+                "normal {label}: face normal y should be ≈ {ny}, got {}",
+                n.y
+            );
+            assert!(
+                (n.z - nz).abs() < 1e-6,
+                "normal {label}: face normal z should be ≈ {nz}, got {}",
+                n.z
+            );
+
+            let area = ffi::ffi::query_area(&face)
+                .unwrap_or_else(|e| panic!("query_area should succeed for {label}: {e}"));
+            let expected_area = std::f64::consts::PI * radius * radius;
+            let rel_err = (area - expected_area).abs() / expected_area;
+            assert!(
+                rel_err < 1e-6,
+                "normal {label}: face area should be ≈ pi*r^2 = {expected_area}, got {area} \
+                 (rel_err {rel_err:.3e})",
+            );
+        }
+    }
+
+    /// The `Pipe` arm runs `validate_positive_finite(r, "pipe radius")` before it
+    /// ever calls this primitive, so the C++ radius guard is unreachable from its
+    /// only production caller. This test is the guard's sole coverage: it is
+    /// pinned here or it is dead code.
+    #[test]
+    fn ffi_make_oriented_circle_face_rejects_non_positive_or_nan_radius() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        for (label, radius) in [
+            ("zero", 0.0_f64),
+            ("negative", -1.0_f64),
+            ("NaN", f64::NAN),
+        ] {
+            let result = ffi::ffi::make_oriented_circle_face(radius, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+            assert!(
+                result.is_err(),
+                "make_oriented_circle_face should reject {label} radius ({radius}), got Ok"
+            );
+        }
     }
 
     // --- make_line_wire degeneracy threshold tests (task-383 S2) ---

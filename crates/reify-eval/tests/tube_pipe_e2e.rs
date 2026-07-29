@@ -446,6 +446,127 @@ fn pipe_volume_through_full_pipeline_matches_formula() {
     );
 }
 
+/// Full-pipeline e2e for a HORIZONTAL pipe(): same harness as
+/// `pipe_volume_through_full_pipeline_matches_formula`, but the spine runs along
+/// +X (start-tangent +X, not +Z), exercising general path-orientation support.
+/// Volume π*r²*L verified to rel_err < 1e-6 via a parallel direct OcctKernel
+/// query. RED until the oriented-profile rewire lands: a non-+Z spine currently
+/// sweeps a degenerate solid through the XY-at-origin profile.
+#[test]
+fn pipe_horizontal_volume_through_full_pipeline() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let source = r#"structure S {
+    let r = pipe(line_segment(0mm, 0mm, 0mm, 20mm, 0mm, 0mm), 2mm)
+}"#;
+
+    // ---- Pipeline part ----
+    let parsed = reify_syntax::parse(source, ModulePath::single("test_pipe_horizontal_e2e"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    // Confirm the realization contains [Curve(LineSegment), Sweep{kind: Pipe}]
+    assert_eq!(compiled.templates.len(), 1, "expected 1 template");
+    let realization = &compiled.templates[0].realizations[0];
+    assert_eq!(
+        realization.operations.len(),
+        2,
+        "expected 2 ops (line_segment + pipe), got {}",
+        realization.operations.len()
+    );
+    assert!(
+        matches!(
+            &realization.operations[1],
+            CompiledGeometryOp::Sweep {
+                kind: SweepKind::Pipe,
+                ..
+            }
+        ),
+        "expected Sweep(Pipe) at op 1, got {:?}",
+        &realization.operations[1]
+    );
+
+    // Build with real OCCT kernel
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut planner = reify_geometry::SingleKernelHolder::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+
+    let tess_result = engine.tessellate_realizations(&compiled);
+    let geom_errors: Vec<_> = tess_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        geom_errors.is_empty(),
+        "unexpected geometry errors: {:?}",
+        geom_errors
+    );
+    assert_eq!(
+        tess_result.meshes.len(),
+        1,
+        "expected 1 mesh (single realization), got {}",
+        tess_result.meshes.len()
+    );
+    let mesh = &tess_result.meshes[0].mesh;
+    assert!(
+        !mesh.vertices.is_empty(),
+        "horizontal pipe mesh should have vertices"
+    );
+    assert!(
+        !mesh.indices.is_empty(),
+        "horizontal pipe mesh should have triangles"
+    );
+
+    // ---- Volume verification part (direct OcctKernel query) ----
+    let mut kernel = reify_kernel_occt::OcctKernel::new();
+    let wire_h = kernel
+        .execute(&GeometryOp::LineSegment {
+            x1: 0.0,
+            y1: 0.0,
+            z1: 0.0,
+            x2: 0.020,
+            y2: 0.0,
+            z2: 0.0,
+        })
+        .expect("LineSegment execute should succeed");
+    let pipe_h = kernel
+        .execute(&GeometryOp::Pipe {
+            path: wire_h.id,
+            radius: Value::Real(0.002),
+        })
+        .expect("Pipe execute should succeed");
+    let vol = kernel
+        .query(&GeometryQuery::Volume(pipe_h.id))
+        .expect("Volume query should succeed");
+    let v = vol.as_f64().expect("volume should be numeric");
+    // radius = 2mm = 0.002 m, length = 20mm = 0.020 m (horizontal +X spine)
+    let expected = std::f64::consts::PI * 0.002_f64.powi(2) * 0.020;
+    let rel_err = (v - expected).abs() / expected;
+    assert!(
+        rel_err < 1e-6,
+        "horizontal pipe volume should be ≈{:.3e} m³, got {:.3e} (rel_err={:.4e})",
+        expected,
+        v,
+        rel_err
+    );
+}
+
 /// Full-pipeline e2e: inner > outer radius should surface as an Error-severity
 /// diagnostic mentioning "inner" and "outer" via the kernel→eval diagnostic
 /// channel.
