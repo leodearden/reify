@@ -477,49 +477,6 @@ else
     warn "no systemd --user bus — skipping build-accelerator service install"
 fi
 
-# ---------- agent toolchain-cache redirect (landlock sandbox) ----------
-#
-# Task 5332 sandboxes three orchestrator agent roles (implementer, debugger,
-# simple_task) with landlock and redirects their CARGO_HOME / npm_config_cache
-# to /tmp/reify-agent-cargo-home and /tmp/reify-agent-npm-cache via a
-# `role_env_overrides` block in dark-factory-orchestrator.yaml.  /tmp is forced,
-# not chosen: dark-factory's compute_write_set() grants no ~/.cargo / ~/.npm
-# carve-out, so /tmp is the one host-global writable root a static yaml value
-# can name.  That upstream gap is reify task #5724 (blocked, pending cross-repo
-# refile).
-#
-# Left unprovisioned, those redirect dirs start EMPTY, which costs twice: the
-# first dependency-touching agent run after every boot re-downloads the
-# crates.io index and the whole dep tree on a live task's critical path, and a
-# second full copy of both caches then accumulates under /tmp alongside the
-# never-shared ~/.cargo / ~/.npm originals.
-#
-# setup-agent-cache-redirect.sh closes that with three steps, of which the last
-# two cover DIFFERENT systemd-tmpfiles mechanisms and neither substitutes for
-# the other: a hardlink pre-seed; `x` lines in /etc/tmpfiles.d that exclude the
-# dirs from the AGE-CLEAN pass (systemd-tmpfiles-clean.timer, which otherwise
-# deletes individual files out of a live cache while the orchestrator stays up);
-# and a --user oneshot that re-seeds after the boot-time `D /tmp` REMOVE pass,
-# which `x` does not cover.
-#
-# Invoked unconditionally rather than behind an opt-in: the point of the
-# exclusion is that a rebuilt host does not silently lose it, and an env var is
-# exactly what a rebuilt host forgets to set.  Every failure path inside the
-# script is a warn-and-continue (no source caches on a fresh contributor
-# machine, no sudo, no --user bus, cross-device /tmp), and the call site is
-# non-fatal too.
-#
-# Placed AFTER the build-accelerator block so the preceding rustup / sccache /
-# nextest / tree-sitter installs have populated ~/.cargo before it is used as a
-# seed source.
-
-info "Provisioning the agent toolchain-cache redirect (/tmp pre-seed + tmpfiles exclusion)..."
-if "$(dirname "${BASH_SOURCE[0]}")/setup-agent-cache-redirect.sh"; then
-    ok "agent toolchain-cache redirect provisioned"
-else
-    warn "agent cache redirect provisioning failed (see above) — non-fatal, continuing setup"
-fi
-
 # ---------- cargo-nextest ----------
 #
 # scripts/verify.sh runs the non-OCCT workspace test tail through nextest (one
@@ -573,6 +530,58 @@ fi
 info "Running verification build (cargo check)..."
 cargo check --workspace 2>&1
 ok "cargo check passed"
+
+# ---------- agent toolchain-cache redirect (landlock sandbox) ----------
+#
+# Task 5332 sandboxes three orchestrator agent roles (implementer, debugger,
+# simple_task) with landlock and redirects their CARGO_HOME / npm_config_cache
+# to /tmp/reify-agent-cargo-home and /tmp/reify-agent-npm-cache via a
+# `role_env_overrides` block in dark-factory-orchestrator.yaml.  /tmp is forced,
+# not chosen: dark-factory's compute_write_set() grants no ~/.cargo / ~/.npm
+# carve-out, so /tmp is the one host-global writable root a static yaml value
+# can name.  That upstream gap is reify task #5724 (blocked, pending cross-repo
+# refile).
+#
+# Left unprovisioned, those redirect dirs start EMPTY, which costs twice: the
+# first dependency-touching agent run after every boot re-downloads the
+# crates.io index and the whole dep tree on a live task's critical path, and a
+# second full copy of both caches then accumulates under /tmp alongside the
+# never-shared ~/.cargo / ~/.npm originals.
+#
+# setup-agent-cache-redirect.sh closes that with three steps, of which the last
+# two cover DIFFERENT systemd-tmpfiles mechanisms and neither substitutes for
+# the other: a hardlink pre-seed; `x` lines in /etc/tmpfiles.d that exclude the
+# dirs from the AGE-CLEAN pass (systemd-tmpfiles-clean.timer, which otherwise
+# deletes individual files out of a live cache while the orchestrator stays up);
+# and a --user oneshot that re-seeds after the boot-time `D /tmp` REMOVE pass,
+# which `x` does not cover.
+#
+# Invoked unconditionally rather than behind an opt-in: the point of the
+# exclusion is that a rebuilt host does not silently lose it, and an env var is
+# exactly what a rebuilt host forgets to set.  Every failure path inside the
+# script is a warn-and-continue (no source caches on a fresh contributor
+# machine, no sudo, no --user bus, cross-device /tmp), and the call site is
+# non-fatal too.
+#
+# PLACEMENT IS LOAD-BEARING: this script SEEDS FROM ~/.cargo and ~/.npm, so it
+# must run after the steps that populate them, not merely after the ones that
+# mention cargo.  On a fresh contributor machine or a rebuilt host `~/.npm` does
+# not exist at all until the `npm ci` above creates it, and ~/.cargo holds only
+# the toolchain until `cargo check --workspace` has fetched the dep tree.  Run
+# any earlier and the one invocation whose whole job is to make the redirect
+# warm seeds almost nothing and warns "NOTHING was seeded" — invisibly on this
+# host, where both caches are already warm, and only on a host rebuild.  The two
+# steps it depends on are therefore directly above it: `GUI dependencies (npm
+# ci)` (populates ~/.npm/_cacache) and `Verification` (cargo check --workspace,
+# which populates ~/.cargo/registry).  It sits BEFORE the smoke test rather than
+# at the very end so a smoke-test failure's `exit 1` cannot skip it.
+
+info "Provisioning the agent toolchain-cache redirect (/tmp pre-seed + tmpfiles exclusion)..."
+if "$(dirname "${BASH_SOURCE[0]}")/setup-agent-cache-redirect.sh"; then
+    ok "agent toolchain-cache redirect provisioned"
+else
+    warn "agent cache redirect provisioning failed (see above) — non-fatal, continuing setup"
+fi
 
 # ---------- Smoke test ----------
 #
