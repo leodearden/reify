@@ -103,6 +103,72 @@ _write_fixture() {
 }
 
 # ---------------------------------------------------------------------------
+# _flock_fork_offenders <file>...
+#
+# THE DETECTOR.  One awk pass per file; fixtures and the real corpus share this
+# single implementation so a control can never drift away from the live scan.
+#
+# Prints one line per hit to stdout:
+#   OFFENDER <file> fd=<N> open=<lineno> acq=<lineno> detach=<lineno>
+# Returns 1 if any hit was emitted across all inputs, 0 if none.
+#
+# Line classes are as documented in the header.  Comment lines (trimmed content
+# starting with `#`) are never any class.
+# ---------------------------------------------------------------------------
+_flock_fork_offenders() {
+    local _f _rc=0 _out
+    for _f in "$@"; do
+        [ -f "$_f" ] || continue
+        _out="$(awk -v FNAME="$_f" '
+            {
+                t = $0
+                sub(/^[[:space:]]+/, "", t)
+                if (t == "" || t ~ /^#/) next
+
+                # ---- OPEN(N): the script opens FD N itself ----
+                if (match(t, /exec[[:space:]]+[0-9]+[<>]/)) {
+                    seg = substr(t, RSTART, RLENGTH)
+                    match(seg, /[0-9]+/)
+                    n = substr(seg, RSTART, RLENGTH)
+                    if (!(n in openln)) { openln[n] = FNR; ord[++nord] = n }
+                }
+
+                # ---- ACQUIRE(N): a flock invocation carrying N ----
+                if (t ~ /flock/) {
+                    for (k = 1; k <= nord; k++) {
+                        n = ord[k]
+                        if ((n in acqln) || FNR <= openln[n]) continue
+                        if (t ~ ("[^0-9]" n "([^0-9]|$)")) acqln[n] = FNR
+                    }
+                }
+
+                # ---- DETACH: a fork downstream of the acquire ----
+                if (t ~ /&/) {
+                    for (k = 1; k <= nord; k++) {
+                        n = ord[k]
+                        if (!(n in acqln) || (n in detln)) continue
+                        if (FNR > acqln[n]) detln[n] = FNR
+                    }
+                }
+            }
+            END {
+                for (k = 1; k <= nord; k++) {
+                    n = ord[k]
+                    if (!(n in detln)) continue
+                    printf "OFFENDER %s fd=%s open=%s acq=%s detach=%s\n", \
+                        FNAME, n, openln[n], acqln[n], detln[n]
+                }
+            }
+        ' "$_f")" || return 2
+        if [ -n "$_out" ]; then
+            printf '%s\n' "$_out"
+            _rc=1
+        fi
+    done
+    return "$_rc"
+}
+
+# ---------------------------------------------------------------------------
 # Fixture tokens — SELF-MATCH SAFETY (see header).
 #
 # Every token that could make a line flaggable is assembled here from adjacent
