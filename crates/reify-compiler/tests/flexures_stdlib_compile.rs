@@ -22,6 +22,7 @@
 use reify_compiler::*;
 use reify_core::*;
 use reify_ir::*;
+use reify_test_support::compile_source_with_stdlib;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -1002,4 +1003,106 @@ fn std_flexures_declares_flexure_joint_marker() {
          driving joint; got trait_bounds: {:?}",
         template.trait_bounds
     );
+}
+
+// ─── prb_* ctor call-site typing (task 5476, placeholder-ratchet α) ──────────
+
+/// Compile `source` against the production stdlib and return the `cell_type` of
+/// the named `let` cell inside the named structure.
+///
+/// Uses `compile_source_with_stdlib` (reify-test-support, already a dev-dep of
+/// this crate) so the call site is typed by the exact production ladder.
+fn user_let_cell_type(source: &str, structure: &str, member: &str) -> Type {
+    let module = compile_source_with_stdlib(source);
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == structure && t.entity_kind == EntityKind::Structure)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `structure def {structure}` in the compiled user module; \
+                 got: {:?}",
+                module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+            )
+        });
+    template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == member)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `let {member}` in `structure def {structure}`; got cells: {:?}",
+                template
+                    .value_cells
+                    .iter()
+                    .map(|vc| &vc.id.member)
+                    .collect::<Vec<_>>()
+            )
+        })
+        .cell_type
+        .clone()
+}
+
+/// A `prb_*` ctor call site must type as the nominal `StructureRef("FlexureJoint")`,
+/// NOT as whatever its first argument happens to be.
+///
+/// RED until step-10 wires the `is_flexure_typed_fn` arm into the builtin-typing
+/// ladder. The failure mechanism is precisely the one PRD §2 names as the root
+/// cause of the placeholder: with no signature arm, the call falls through the
+/// `NoUserFunctions` ladder to the FIRST-ARG FALLBACK and inherits its first
+/// argument's type — `Scalar[LENGTH]`, from `notch_radius = 1mm` /
+/// `length = 20mm`. That is exactly why a bare `5mm` used to overload-match
+/// `flexure_compliance` and yield a sentinel record instead of a type error.
+///
+/// Two ctors from two DIFFERENT family modules are covered
+/// (`prb_notch_circular` — notch.rs; `prb_parallelogram_flexure` — compound.rs)
+/// so the arm is shown to fire family-wide rather than for one hard-coded name.
+///
+/// NOTE on a plan premise that did not hold: step-9 called for a ctor "whose
+/// first arg is NOT a Length", to prove the arm dispatches by name rather than
+/// coincidentally agreeing with the fallback. Scanning all five family modules
+/// shows NO such ctor exists — every one of the 13 takes a Length first
+/// (`length` or `notch_radius`; verified against the signature doc comments in
+/// beam.rs / notch.rs / hinge.rs:168,182,275 / prismatic.rs:146,220 /
+/// compound.rs). The name-vs-fallback discrimination is therefore pinned at the
+/// UNIT level instead, by
+/// `flexure_signatures::tests::flexure_ctor_result_type_is_args_agnostic`, which
+/// passes a dimensionless `Real` argument and asserts the result is still
+/// `FlexureJoint`. Here the equivalent signal is the explicit
+/// `!= Scalar[LENGTH]` assertion below.
+#[test]
+fn prb_ctor_call_cell_type_is_flexure_joint() {
+    let source = r#"
+module prb_cell_type_probe
+
+structure def PrbCellType {
+    let steel = Steel_AISI_1045()
+    let j_notch = prb_notch_circular(1mm, 0.2mm, 5mm, steel, point3(0mm, 0mm, 0mm), vec3(0, 1, 0))
+    let j_compound = prb_parallelogram_flexure(20mm, 5mm, 0.5mm, 10mm, steel, point3(0mm, 0mm, 0mm), vec3(0, 1, 0))
+}
+"#;
+
+    let expected = Type::StructureRef("FlexureJoint".to_string());
+    // The first-arg-fallback type each call would inherit without the arm.
+    let fallback = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    for member in ["j_notch", "j_compound"] {
+        let actual = user_let_cell_type(source, "PrbCellType", member);
+
+        assert_ne!(
+            actual, fallback,
+            "`{member}` must NOT be typed {fallback:?} — that is the first-arg \
+             fallback (expr.rs) inheriting the ctor's leading Length argument, \
+             which is the placeholder PRD §2 eradicates. Wire the \
+             `is_flexure_typed_fn` arm into the builtin-typing ladder BEFORE that \
+             fallback."
+        );
+        assert_eq!(
+            actual, expected,
+            "`{member}` (a prb_* ctor call) must type as \
+             StructureRef(\"FlexureJoint\"); got {actual:?}"
+        );
+    }
 }
