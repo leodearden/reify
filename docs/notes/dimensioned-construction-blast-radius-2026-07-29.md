@@ -433,7 +433,7 @@ bare literal. Full list in `/tmp/5756-scratch/step2-let-dimensioned-any.txt`.
 
 **PRD figure: 63 across 22 files (25 c1 + 10 c2 + 28 c0, 11 of the 28
 parse-only). My re-measurement: 55 in-scope hits across 17 files (15 c1 + 10
-c2 + 26 c0 + 2 not conclusively classified within this session's budget).**
+c2 + 28 c0 + 2 not conclusively classified within this session's budget).**
 Recorded as a DELTA, not silently reconciled — see 2.2.4.
 
 **2.2.1 Method.** A line-level scan of every file in tree C
@@ -528,7 +528,7 @@ sound even where the aggregate total drifts from 63.
 | `reify-eval/tests/purpose_activation.rs:2774` | `z : Length = 5.0` | same |
 | `reify-eval/tests/purpose_activation.rs:2825` | `z : Length = -5.0` | same |
 
-*c0 — no break (26 confirmed/high-confidence by direct read):*
+*c0 — no break (28 confirmed/high-confidence by direct read):*
 
 | File:line(s) | Reason |
 |---|---|
@@ -541,12 +541,24 @@ sound even where the aggregate total drifts from 63.
 | `purpose_compile_tests.rs:1567` (1) | doc comment: "the compile test only checks the structural shape (not eval)" — presumed, not directly re-read past the doc comment |
 | `harness_traits/trait_assoc_type_conformance_tests.rs:31` (1) | `required_assoc_type_unbound_emits_diagnostic_end_to_end` — filters for a specific code (`TraitAssocTypeNotBound`), non-exhaustive, and the fixture is *already* expected to error |
 | `gui/src-tauri/src/tests/engine_tests.rs` (8, across 7 lines) | `EngineSession::load_from_source`/`update_source` — every read test inspects entity-tree/definition/cache structure, never `.diagnostics`; GUI session load is designed to tolerate diagnostics (live editing) — presumed on structural grounds, not a read of `load_from_source`'s own body |
+| `reify-eval/tests/eval_param_overrides.rs:1639` (1) | `param p: Money = 0`, via non-panicking `compile_source(...)`; the test's assertion ("exactly one Warning mentioning S.p") reads `result_b.diagnostics` from `engine.eval(&module_b)` — the **eval**-phase warning about a param-override dimension mismatch, not `module_b`'s compile-phase diagnostics — so a new compile-time `ParamDefaultTypeMismatch` under δ₁ lands in a different collection than what this assertion inspects. (This is the PRD's own cited "stale rationale" fixture, §6.2; δ₁ retires its doc comment regardless of whether the test itself breaks.) |
+| `reify-syntax/src/ts_parser.rs:6488` (1) | same structurally-parse-only reasoning as the other 4 `ts_parser.rs` hits — the one-line fixture `"structure S {\n  param x: Length = 1\n}"` whose trailing `\n}` (a literal backslash-n, not a real newline) is the edge case finding 2.2.2 fixed the terminator regex for |
 
 **Not conclusively classified (2):** `trait_assoc_type_conformance_tests.rs`
 has 5 total hits; 2 (the override/inherited-default sub-cases, both c1) and
 1 (the unbound-Typo sub-case, c0) were read directly, but the file has 2
 more occurrences this session did not re-read before writing this section.
 Flagged rather than guessed.
+
+**2.2.5b `param` vs `let` split (needed by step-4's gate-2 attribution).**
+Of the 55 in-scope hits, **51 are `param` declarations and 4 are `let`**
+(exactly the 4 `let_annotation_type_mismatch_tests.rs` c2 sites — every
+other hit, across all of c1/c0/c2, is a `param`). This matters because gate
+2 (`conformance/mod.rs`'s `check_param_default_conformance`) is
+**`param`-only** per §2.1's gate table — the `let` twin lives at gate 4
+(`entity.rs:563-569`) only, a different mechanism α's flip never touches.
+Verified by re-scanning with a capture group on the `param|let` keyword
+rather than inferring it from table membership.
 
 **2.2.5 The delta, stated plainly.** 55 measured (17 files) vs. the PRD's 63
 (22 files) — short by 8 hits / 5 files. The c2 bucket matches exactly (10/10,
