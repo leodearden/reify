@@ -480,11 +480,16 @@ assert "7c: nextest_available_ambient agrees with the ambient verify.sh plan hea
 # NEXTEST_AVAILABLE unbound (a `set -u` abort) or pinned to 0 — silently dropping
 # every assert the guards protect. That is the vacuous green documented at
 # nextest_absent_lib.sh:700-707. So each suite must ALSO be shown to source the
-# lib, i.e. to have replaced the idiom rather than removed it.
+# lib, i.e. to have replaced the idiom rather than removed it. Both conjuncts
+# are checked by the single predicate _nx_probe_suite_is_clean below, which
+# names the failing one in its diagnostic — one implementation, so the covered
+# suites and the negative control cannot drift apart.
 #
 # WHY A LITERAL LIST AND NOT tests/infra/*.sh. The idiom's own string legitimately
-# appears inside nextest_absent_lib.sh (:491, :497, :543, :567) and inside this
-# file (:457, :520) — a glob would flag the lib that IS the fix. The list is the
+# appears inside nextest_absent_lib.sh (:497, :543, :567 — the three shared
+# predicates themselves) and inside this file (:457, :473, :511, :610, :697) —
+# a glob would flag the lib that IS the fix, and would flag the synthetic
+# fixture at :610 that exists to prove the detector still fires. The list is the
 # suites that carry a NEXTEST_AVAILABLE host probe; adding one to it is the
 # deliberate act of putting a new suite under the guard.
 echo ""
@@ -509,30 +514,44 @@ _NX_PROBE_SUITES=(
 _NX_OPEN_CODED_RE='\*"nextest=1"\*'
 _NX_LIB_SOURCE_LINE='source "$SCRIPT_DIR/nextest_absent_lib.sh"'
 
-# (neg) No open-coded case arm. On failure name the file AND the matching line,
-# so the diagnostic points at the cause rather than just the verdict — the
-# convention the lib's own predicates follow (nextest_absent_lib.sh:630-631).
-_t8_no_open_coded() {
-    local suite="$SCRIPT_DIR/$1" hits
+# _nx_probe_suite_is_clean <path-to-suite> — THE detector. Returns 0 when that
+# file uses the shared probe, non-zero with a diagnostic naming the failing
+# conjunct when it does not. Both directions live here, so the covered suites
+# and the negative control below exercise one implementation rather than two
+# that can drift apart.
+#
+# A FILE-SCOPE predicate taking the path as an explicit "$1", for the two
+# reasons the lib gives for _nextest_absent_h1.._h5 (nextest_absent_lib.sh:
+# 473-483): bash installs a nested function globally once its enclosing function
+# runs, so nesting buys no privacy and only invites a collision; and reading a
+# path out of an enclosing `local` relies on dynamic scoping, which aborts a
+# `set -u` caller with an unbound-variable CRASH rather than a test failure the
+# moment the predicate is called from anywhere else. A path rather than a bare
+# suite name is what lets the negative control point it at a fixture that does
+# not live in tests/infra.
+#
+# On failure it names the file AND prints the matching line, so the diagnostic
+# points at the cause rather than just the verdict — the convention the lib's
+# own predicates follow (nextest_absent_lib.sh:630-631).
+_nx_probe_suite_is_clean() {
+    local suite="$1" name hits
+    name="$(basename "$suite")"
     [ -f "$suite" ] || { echo "covered suite not found at $suite"; return 1; }
+
+    # (neg) No open-coded case arm.
     hits="$(grep -nE "$_NX_OPEN_CODED_RE" "$suite" || true)"
     [ -z "$hits" ] || {
-        echo "$1 open-codes the nextest availability probe:"
+        echo "$name open-codes the nextest availability probe ($suite):"
         printf '%s\n' "$hits"
         echo "-> replace it with nextest_available_in_plan \"\$PLAN\" (when a plan is"
         echo "   already captured) or nextest_available_ambient \"\$VERIFY\" (when it"
         echo "   is not), from tests/infra/nextest_absent_lib.sh."
         return 1
     }
-    return 0
-}
 
-# (pos) The probe was REPLACED, not removed — the suite sources the lib.
-_t8_sources_lib() {
-    local suite="$SCRIPT_DIR/$1"
-    [ -f "$suite" ] || { echo "covered suite not found at $suite"; return 1; }
+    # (pos) The probe was REPLACED, not removed — the suite sources the lib.
     grep -qF "$_NX_LIB_SOURCE_LINE" "$suite" || {
-        echo "$1 does not source nextest_absent_lib.sh."
+        echo "$name does not source nextest_absent_lib.sh ($suite)."
         echo "-> a suite that merely DELETED its probe would satisfy the negative"
         echo "   check while leaving NEXTEST_AVAILABLE unbound or pinned to 0,"
         echo "   silently dropping every assert its guards protect."
@@ -542,10 +561,8 @@ _t8_sources_lib() {
 }
 
 for _nx_suite in "${_NX_PROBE_SUITES[@]}"; do
-    assert "8: $_nx_suite does not open-code the *\"nextest=1\"* availability probe" \
-        _t8_no_open_coded "$_nx_suite"
-    assert "8: $_nx_suite sources nextest_absent_lib.sh (probe replaced, not removed)" \
-        _t8_sources_lib "$_nx_suite"
+    assert "8: $_nx_suite uses the shared detector (no open-coded *\"nextest=1\"* arm, sources the lib)" \
+        _nx_probe_suite_is_clean "$SCRIPT_DIR/$_nx_suite"
 done
 unset _nx_suite
 
@@ -560,6 +577,14 @@ unset _nx_suite
 #
 # Hand the detector a synthetic EIGHTH copy of the idiom and require it to
 # report that copy.
+#
+# SCOPE, recorded rather than left to be assumed: the fixture violates BOTH
+# conjuncts, but _nx_probe_suite_is_clean returns on the first, so this control
+# exercises the open-coded arm only. That is the arm that actually accretes —
+# the sources-lib arm is the anti-deletion backstop, a single `grep -qF` whose
+# failure path is proven by construction on all eight covered suites. A control
+# for it would need a second fixture that sources nothing but open-codes
+# nothing either.
 #
 # The fixture is a `mktemp -d` UNDER $NX_WORKDIR, so the lib's own
 # EXIT/INT/TERM/HUP trap reclaims it: the reason Test 4's child probe lives
