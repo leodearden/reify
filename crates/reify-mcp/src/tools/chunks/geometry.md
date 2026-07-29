@@ -143,7 +143,7 @@ those must NOT be dimensioned. Only the control-point coordinates in the middle 
 
 ## Interference & Clearance Queries
 
-<!-- SYNC: names verified by crates/reify-compiler/tests/geometry_chunk_smoke.rs -->
+<!-- SYNC: names verified by crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs -->
 
 Reify **does** have a static interference/clearance oracle. Never hand-roll a bounding-box overlap
 test or hand-compute a gap from parameters — ask the kernel. Two forms; prefer FORM B unless you
