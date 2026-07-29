@@ -218,6 +218,8 @@ _out_lacks() { case "$OFFENDERS_OUT" in *"$1"*) return 1 ;; *) return 0 ;; esac;
 
 _out_empty() { [ -z "$OFFENDERS_OUT" ]; }
 
+_lt() { [ "$1" -lt "$2" ]; }
+
 _out_line_count_is() {
     local _n=0
     if [ -n "$OFFENDERS_OUT" ]; then
@@ -304,5 +306,53 @@ assert "mixed scan: reports exactly one offender" _out_line_count_is 1
 assert "mixed scan: names the offender" _out_has "$TMPWORK/pos_offender.sh"
 assert "mixed scan: does NOT name the released file" \
     _out_lacks "$TMPWORK/neg_released.sh"
+
+# ---------------------------------------------------------------------------
+# Cycle 3 — REAL-SHAPE NON-VACUITY: mutation control against historical
+# instance #2 (scripts/seed-warm-lane.sh, fixed by #5705).
+#
+# A synthetic fixture alone is weak: it is written to match whatever the
+# matcher currently does, so matcher drift and fixture drift move together.
+# Deleting the ONE release statement from the real ~1400-line script
+# reproduces the pre-#5705 shape at full scale — complete with the prose, the
+# refusal-branch closes, the `case` blocks and the continuation lines that
+# actually break naive matchers.
+#
+# The pair is a DISCRIMINATOR, not a constant verdict: the mutant must FLAG and
+# the shipped script must scan CLEAN.
+# ---------------------------------------------------------------------------
+echo "--- Cycle 3: mutation control on the REAL scripts/seed-warm-lane.sh ---"
+
+_SEED_SRC="$REPO_ROOT/scripts/seed-warm-lane.sh"
+_SEED_MUT="$TMPWORK/seed_mut.sh"
+
+assert "mutation control: the real seed script exists" test -f "$_SEED_SRC"
+
+# Delete the release STATEMENT (command position), not the prose that mentions
+# it.  Deliberately narrow so a reword fails the line-count check below rather
+# than silently degenerating into "scan the real file twice".
+awk '{
+        t = $0
+        sub(/^[[:space:]]+/, "", t)
+        if (t ~ /^flock[[:space:]]+-u[[:space:]]+9([[:space:]]|$)/) next
+        print
+     }' "$_SEED_SRC" >"$_SEED_MUT"
+
+_SEED_LINES_ORIG="$(wc -l <"$_SEED_SRC")"
+_SEED_LINES_MUT="$(wc -l <"$_SEED_MUT")"
+
+assert "mutation control: the mutation actually removed a line" \
+    _lt "$_SEED_LINES_MUT" "$_SEED_LINES_ORIG"
+
+_run_offenders "$_SEED_MUT"
+
+assert "mutation control: pre-#5705 shape of the REAL script is FLAGGED (rc 1)" \
+    _rc_is 1
+assert "mutation control: the flagged FD is 9" _out_has "fd=9"
+
+_run_offenders "$_SEED_SRC"
+
+assert "mutation control: the SHIPPED real script is CLEAN (rc 0)" _rc_is 0
+assert "mutation control: the SHIPPED real script prints nothing" _out_empty
 
 test_summary
