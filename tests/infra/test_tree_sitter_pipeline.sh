@@ -1480,5 +1480,55 @@ test_verify_plan_includes_freshness_after_generation() {
     fi
 }
 
+test_freshness_guard_is_routed_by_infra_test_map() {
+    # A guard nothing selects is dead on arrival. verify.sh's select_infra_tests()
+    # (scripts/verify.sh:~1188) matches the changed-file list against the LEFT
+    # column of scripts/verify-pipeline-infra-tests.txt by EXACT path and appends
+    # the right column to SELECTED_INFRA_GLOBS. Without a row per artifact, a
+    # task-scope verify of a build.rs or scanner.c edit selects zero infra tests
+    # and never runs this file.
+    local map="$REPO_ROOT/scripts/verify-pipeline-infra-tests.txt"
+    assert_file_exists "$map" || return 1
+
+    local want="tests/infra/test_tree_sitter_pipeline.sh"
+    local artifact rc=0
+    for artifact in "tree-sitter-reify/build.rs" \
+                    "tree-sitter-reify/src/scanner.c" \
+                    "scripts/tree-sitter-generate.sh" \
+                    "scripts/tree-sitter-freshness.sh"; do
+        # A row that points at a path which no longer exists is a silently
+        # disabled route: select_infra_tests compares against real changed
+        # files, so a rename orphans the row with no other signal.
+        if [ ! -f "$REPO_ROOT/$artifact" ]; then
+            echo ""
+            echo "  ASSERTION FAILED: routed artifact does not exist on disk: $artifact"
+            rc=1
+            continue
+        fi
+        # Parse with select_infra_tests' OWN shape — the same comment/blank
+        # filter and the same `read -r artifact glob` two-field split — so this
+        # cannot pass on a row verify.sh would not actually parse (e.g. one
+        # commented out, or with the fields transposed).
+        local _line _a _g found=0
+        while IFS= read -r _line; do
+            read -r _a _g <<< "$_line"
+            [ -n "$_a" ] || continue
+            [ -n "$_g" ] || continue
+            if [ "$_a" = "$artifact" ] && [ "$_g" = "$want" ]; then
+                found=1
+                break
+            fi
+        done < <(grep -v '^\s*#' "$map" | grep -v '^\s*$')
+        if [ "$found" -ne 1 ]; then
+            echo ""
+            echo "  ASSERTION FAILED: no parseable row '$artifact -> $want' in"
+            echo "  scripts/verify-pipeline-infra-tests.txt — a scoped edit to"
+            echo "  $artifact would run no tree-sitter guard at all."
+            rc=1
+        fi
+    done
+    return "$rc"
+}
+
 # --- Main ---
 run_tests
