@@ -565,6 +565,19 @@ _add_task 9104 in-progress '{}' "$(_now_iso -82800)" "$B_CLAIMANT"
 _add_task 9105 in-progress '{}' "$(_now_iso -90000)" "$B_CLAIMANT"
 # 9106 — an unparseable heartbeat must fail SAFE (LIVE), never eligible.
 _add_task 9106 in-progress '{}' "not-a-timestamp" "$B_CLAIMANT"
+# 9107 — a CLAIMED in-progress row that has not yet written (or has lost) its
+# heartbeat: claimant populated, heartbeat_at NULL. It carries $B_PROPOSAL so
+# it WOULD fire class B, mirroring 9101 — the guard is what suppresses it,
+# rather than the fixture being inert. Re-dispatching a claimed, actively-
+# running agent is the single most destructive thing this sweep can do, so the
+# fail-safe direction is the same one L1 already takes for an UNPARSEABLE
+# heartbeat: degrade to LIVE.
+_add_task 9107 in-progress "$B_PROPOSAL" "" "$B_CLAIMANT"
+# 9108 — the SCOPING guard for that rule. A `blocked` row with a claimant and
+# no heartbeat must stay ELIGIBLE: classes A and C are blocked-only per L4, so
+# extending the claimant rule to `blocked` would blind them wholesale, and the
+# live store's blocked rows legitimately carry no heartbeat.
+_add_task 9108 blocked '{}' "" "$B_CLAIMANT"
 
 run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
     --stale-heartbeat-min "$B_WINDOW_MIN" --format json
@@ -577,7 +590,23 @@ assert "B1: a 60s-old heartbeat with a live claimant is LIVE" \
 assert "B1: a LIVE row is not classified (class=-, action=none)" \
     _json_is 't[9101]["class"] == "-" and t[9101]["action"] == "none"'
 assert "B1: a LIVE row is counted in live_skipped, not in any class counter" \
-    _json_is 's["live_skipped"] == 3 and s["merge_verify_red"] == 0 and s["unmet_dependency"] == 0'
+    _json_is 's["live_skipped"] == 4 and s["merge_verify_red"] == 0 and s["unmet_dependency"] == 0'
+
+# --- B1c/B1d: a CLAIMED in-progress row with no heartbeat is LIVE ------------
+# `merge_verify_red == 0` above is the sharpest signal for these: 9107 carries
+# $B_PROPOSAL, so without the claimant rule it is eligible, class B fires, and
+# that counter reads 1.
+assert "B1c: an in-progress row with a claimant and NO heartbeat is LIVE" \
+    _json_is 't[9107]["verdict"] == "LIVE"'
+assert "B1c: ... and is therefore not classified (class=-, action=none)" \
+    _json_is 't[9107]["class"] == "-" and t[9107]["action"] == "none"'
+# The evidence must name the claimant as the liveness signal. It must NOT claim
+# a heartbeat fell inside the window: the row has no heartbeat at all, so the
+# generic LIVE evidence string would render a misleading bare `heartbeat_at=`.
+assert "B1d: claimant-based LIVE evidence names the claimant" \
+    _json_is "'$B_CLAIMANT' in t[9107]['evidence']"
+assert "B1d: ... and does not claim a heartbeat matched the window" \
+    _json_is '"within the" not in t[9107]["evidence"]'
 
 # --- B2: a LIVE row never yields a request file ------------------------------
 B_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-req-XXXXXX")"
@@ -585,6 +614,8 @@ _TMPDIRS+=("$B_REQ")
 run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
     --stale-heartbeat-min "$B_WINDOW_MIN" --emit-requests "$B_REQ"
 assert "B2: a LIVE row emits no re-dispatch request" _no_request_for "$B_REQ" 9101
+assert "B2: a claimant-based LIVE row emits no re-dispatch request either" \
+    _no_request_for "$B_REQ" 9107
 
 run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
     --stale-heartbeat-min "$B_WINDOW_MIN" --format json
@@ -594,6 +625,11 @@ assert "B3: a stale heartbeat with NO claimant (the 5196 shape) is eligible" \
     _json_is 't[9102]["verdict"] != "LIVE"'
 assert "B4: a blocked row with heartbeat_at NULL is eligible" \
     _json_is 't[9103]["verdict"] != "LIVE"'
+# The scoping half of B4: the claimant rule is `in-progress`-only, so adding a
+# claimant to a heartbeat-less BLOCKED row must not make it LIVE. Were it to,
+# classes A and C — blocked-only per L4 — would be blinded wholesale.
+assert "B4: ... and stays eligible even when it carries a claimant" \
+    _json_is 't[9108]["verdict"] != "LIVE"'
 
 # --- B5: the boundary, from both sides, with no sleep ------------------------
 assert "B5a: inside the window (23h < 24h) => LIVE" _json_is 't[9104]["verdict"] == "LIVE"'
@@ -619,14 +655,14 @@ run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
 assert "B7: an unparseable heartbeat degrades to LIVE, never to eligible" \
     _json_is 't[9106]["verdict"] == "LIVE"'
 assert "B7: an unparseable heartbeat is counted in live_skipped, not unknown" \
-    _json_is 's["live_skipped"] == 3 and s["unknown"] == 0'
-# The three eligible rows here (9102/9103/9105) carry no class-matching
+    _json_is 's["live_skipped"] == 4 and s["unknown"] == 0'
+# The four eligible rows here (9102/9103/9105/9108) carry no class-matching
 # metadata at all, so they land in no_class — NOT in unknown, which is reserved
 # for a class that matched and whose oracle then failed. Pinned as an exact
 # count so a regression that folded the two back together is caught here as
 # well as at G3.
 assert "B7: the eligible-but-class-less rows are counted in no_class, not unknown" \
-    _json_is 's["no_class"] == 3'
+    _json_is 's["no_class"] == 4'
 assert "B7: an unparseable heartbeat warns on stderr" \
     _err_has '\[warn\].*9106'
 
