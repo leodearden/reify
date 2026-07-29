@@ -708,4 +708,90 @@ assert "continuation: an FD-9 operand on a continued line is not an acquire" \
 assert "real tree: tests/infra/test_seed_warm_lane.sh is CLEAN" \
     _scans_clean "$REPO_ROOT/tests/infra/test_seed_warm_lane.sh"
 
+# ---------------------------------------------------------------------------
+# Cycle 8 — THE REPO-WIDE SCAN: the guard's actual job.
+#
+# Everything above tunes the detector.  This is the assertion that ships: no
+# tracked shell script anywhere in the repo holds a lock it opened itself
+# across a detached fork without releasing it.
+#
+# The scan is worthless unless it can be shown to be LIVE, so three controls
+# ride alongside the all-clear:
+#   · the enumeration must yield a plausible corpus (>= 200 files) — a broken
+#     or empty `git ls-files` would otherwise report a vacuous all-clear;
+#   · known members from BOTH trees must be present, including the
+#     extension-less `hooks/*` shells that an `*.sh`-only glob would miss;
+#   · the SAME corpus, plus the cycle-3 seed mutant, must flag exactly once —
+#     so "0 offenders" is a MEASUREMENT taken by a working instrument, not the
+#     silence of a broken one.
+#
+# SELF-MATCH SAFETY is pinned here too: this file is itself in the corpus, so
+# its fixture bodies must be assembled from shell variables into $TMPWORK (see
+# the header) rather than emitted as literal source lines.
+# ---------------------------------------------------------------------------
+echo "--- Cycle 8: the whole tracked shell corpus scans clean ---"
+
+# Materialized once into a global so the size, membership and scan assertions
+# all measure the SAME enumeration.  assert runs its command in THIS shell, so
+# the mutation survives.
+_FF_CORPUS=()
+
+_corpus_load() {
+    _FF_CORPUS=()
+    mapfile -t _FF_CORPUS < <(_flock_fork_tracked_shell_files)
+    [ "${#_FF_CORPUS[@]}" -gt 0 ]
+}
+
+_corpus_size_at_least() {
+    printf 'corpus size: %s\n' "${#_FF_CORPUS[@]}"
+    [ "${#_FF_CORPUS[@]}" -ge "$1" ]
+}
+
+_corpus_has() {
+    local _want="$REPO_ROOT/$1" _f
+    [ "${#_FF_CORPUS[@]}" -gt 0 ] || { echo "corpus is EMPTY"; return 1; }
+    for _f in "${_FF_CORPUS[@]}"; do
+        [ "$_f" = "$_want" ] && return 0
+    done
+    printf 'corpus does not contain %s\n' "$_want"
+    return 1
+}
+
+_corpus_scans_clean() {
+    [ "${#_FF_CORPUS[@]}" -gt 0 ] || { echo "corpus is EMPTY"; return 1; }
+    _scans_clean "${_FF_CORPUS[@]}"
+}
+
+# The anti-vacuity control: the real corpus with ONE known offender mixed in
+# must flag exactly once, and name it.
+_corpus_plus_mutant_flags_once() {
+    [ "${#_FF_CORPUS[@]}" -gt 0 ] || { echo "corpus is EMPTY"; return 1; }
+    _run_offenders "${_FF_CORPUS[@]}" "$_SEED_MUT"
+    printf '%s\n' "$OFFENDERS_OUT"
+    [ "$OFFENDERS_RC" -eq 1 ] || return 1
+    _out_line_count_is 1 || return 1
+    _out_has "$_SEED_MUT"
+}
+
+assert "corpus: the tracked shell enumeration is non-empty" _corpus_load
+assert "corpus: at least 200 tracked shell files (no vacuous all-clear)" \
+    _corpus_size_at_least 200
+assert "corpus: includes scripts/seed-warm-lane.sh" \
+    _corpus_has "scripts/seed-warm-lane.sh"
+assert "corpus: includes tests/infra/run_all.sh" \
+    _corpus_has "tests/infra/run_all.sh"
+assert "corpus: includes the extension-less hooks/pre-commit" \
+    _corpus_has "hooks/pre-commit"
+
+assert "REPO-WIDE: every tracked shell script scans CLEAN — zero offenders" \
+    _corpus_scans_clean
+
+assert "SELF-MATCH SAFETY: this guard's own file is in the corpus" \
+    _corpus_has "tests/infra/test_flock_detached_fork_guard.sh"
+assert "SELF-MATCH SAFETY: this guard's own file scans CLEAN" \
+    _scans_clean "$REPO_ROOT/tests/infra/test_flock_detached_fork_guard.sh"
+
+assert "LIVE control: the real corpus PLUS the seed mutant flags exactly once" \
+    _corpus_plus_mutant_flags_once
+
 test_summary
