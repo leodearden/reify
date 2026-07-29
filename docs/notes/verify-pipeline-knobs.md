@@ -98,6 +98,29 @@ The three controls above govern the **verify pipeline** (compile + test phases i
 
 Dark-factory ζ activates the agent-launch path by reading `dark-factory-orchestrator.yaml cpu_governance:` — the `DF_AGENT_CPU_GOVERN: 1` value signals that reify's primitives are wired. Reify ships α/β/γ; ζ does the wiring (cross-repo seam).
 
+## Loader path — `REIFY_AMBIENT_LD_LIBRARY_PATH` and `add_tool()` (task 5730)
+
+`verify.sh apply_env()` prepends the OCCT dirs (`/snap/freecad/current/usr/lib`, `/opt/reify-deps/lib`) to `LD_LIBRARY_PATH`. **`/opt/reify-deps/lib` is not an OCCT lib dir — it is a whole conda prefix.** Alongside the ~153 `libTK*` it carries `libcrypto.so.3`, `libcurl.so.4`, `libexpat.so.1`, `libz.so.1`, `libcairo.so.2`, `libdrm.so.2`, `libEGL.so.1`, `libsqlite3.so.0` and hundreds of other system sonames — **477 measured 2026-07-28** by intersecting its `.so`-bearing filenames with `/usr/lib/x86_64-linux-gnu`. Treat that as a *dated measurement of unversioned host state*, not an invariant: the prefix drifts on every environment refresh, and an earlier count of 427 for the same host differed only by counting method (sonames vs. all `.so*` filename variants), so a bare number here would read as a regression it isn't.
+
+`LD_LIBRARY_PATH` is searched **before `DT_RUNPATH` and before `ld.so.cache`**, so a process-wide export hands every one of those libraries to every subprocess of the gate. `sqlite3` is simply the one that self-checks its header/source hash and aborts loudly (`SQLite header and source version mismatch`); the rest fail silently or subtly. Two bites — esc-4581-87 and task 5321, both infra tests reached through the `run_all.sh` / selective-infra plan lines — were the observable tail.
+
+**The scope contract:**
+
+- `apply_env()` captures the loader path as it stood on entry, *before* either prepend, into an exported **`REIFY_AMBIENT_LD_LIBRARY_PATH`**. That is the single source of truth for restoring a clean path. It appears in the `--print-plan` environment block.
+- The OCCT export itself is unchanged and stays scoped to **Rust/cargo plan lines**. It is belt-and-braces there anyway: `.cargo/config.toml`'s `runner = ".cargo/run-with-occt.sh"` re-derives the identical path before `exec`, and `reify_build_utils::emit_rpath_for_bins`/`emit_rpath_for_tests` bake `DT_RUNPATH` into every bin and test binary.
+- **Non-cargo "tool" plan lines are emitted with `add_tool()`**, not `add()`. `add_tool()` prefixes the line with `export LD_LIBRARY_PATH="$REIFY_AMBIENT_LD_LIBRARY_PATH"; ` — single-quoted at emission, so the plan carries the *variable name* and the restore happens at execution time, keeping `--print-plan` a hermetic, host-independent oracle. Safe because `reaper_run_in_pgroup` runs each plan line in its own background subshell (`set -m; eval "$cmd" &`), so the export cannot leak forward.
+
+**Adding a new plan line? The rule is one question: does it reach cargo?** If yes → `add()` (losing the OCCT search dir on a Rust line is a hard link/load failure across the whole gate). If no — shell script, npm, node, git → `add_tool()`. `tests/infra/test_verify_ld_library_path_scope.sh` enforces both directions from the plan oracle and fails on a new tool line added with plain `add()`.
+
+**Two deliberate exceptions, documented at their call sites so they aren't "fixed":**
+
+1. The **gui-feature compile-check** line is *mixed* — it runs `./scripts/ensure-gui-sidecar-placeholder.sh` **and** `cargo check -p reify-gui` on one line. It stays on `add()`: the boundary rule is conservative, and any line that reaches cargo keeps the export.
+2. The **backgrounded node lane** is the one plan line the executor `eval`s in its *main* shell, so a head-of-line export would persist into every subsequent line. It carries the scrub inside its own `{ … ; } &` braces instead of using `add_tool()`.
+
+**Placement constraint on the `run_all.sh` line.** The scrub must stay a leading `export …;` **statement at the head of the line, ahead of the `if`** — never a fourth `KEY=VALUE` token after `then`. `tests/infra/test_run_all_ambient_isolation.sh` derives the live injected-var set from exactly that `then`-anchored window and cross-checks set equality against `tests/infra/run-all-ambient-vars.manifest`; a token inside the window trips the ledger drift guard and drags in a per-var hostile-ambient sub-case.
+
+The six `LD_LIBRARY_PATH="" sqlite3` workarounds in `tests/infra/test_reify_audit_ptodo.sh` are **retained as defence-in-depth**, not superseded: the plan-line scrub cannot reach a bare `bash tests/infra/test_reify_audit_ptodo.sh` run from a shell that already carries a hostile ambient loader path.
+
 ## Merge-worker trivial-pass drift guard (background)
 
 The merge worker's **trivial-pass** fast-path (scope=config, diff touches only non-Rust/non-TS files) lands config-only changes (e.g. `dark-factory-orchestrator.yaml` tweaks) without a full `--scope all` verify.
