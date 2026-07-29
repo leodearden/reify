@@ -888,6 +888,110 @@ mod cli {
         );
     }
 
+    /// Attempt to occupy the EXACT `host:port` that `url` names.
+    ///
+    /// Returns the parsed address plus `Some(listener)` iff the kernel
+    /// actually handed back that same port — a bind request for port 0 is a
+    /// request for an *ephemeral* port, so it comes back bound somewhere
+    /// else and is correctly reported as "no hijack".
+    ///
+    /// This is how the #5830 port-recycling race is made deterministic: the
+    /// test itself plays the adversary at the address under test instead of
+    /// soaking and hoping to catch a real recycler in the act.
+    fn try_hijack_url(url: &str) -> (SocketAddr, Option<TcpListener>) {
+        let host_port = url
+            .trim_start_matches("http://")
+            .split('/')
+            .next()
+            .expect("url has a host:port segment");
+        let addr: SocketAddr = host_port
+            .parse()
+            .unwrap_or_else(|e| panic!("'{host_port}' must parse as a SocketAddr: {e}"));
+        let hijack = TcpListener::bind(addr)
+            .ok()
+            .filter(|l| l.local_addr().ok().map(|a| a.port()) == Some(addr.port()));
+        (addr, hijack)
+    }
+
+    /// Regression lock (#5830): the URL minted for "jcodemunch is
+    /// unreachable" tests must be unreachable BY CONSTRUCTION, not merely
+    /// unowned at the instant it is minted.
+    ///
+    /// The adversary here is the real one: `spawn_mock_mcp_on` is the same
+    /// in-suite responder whose ephemeral-port recycling closed the failure
+    /// chain in the observed flake. It answers `initialize` with a
+    /// well-formed JSON-RPC result, so `RealJCodemunchOps::new` returns
+    /// `Ok`, the fail-soft `Err(e)` breadcrumb arm never runs, and
+    /// `default_sweep_survives_unreachable_jcodemunch`'s breadcrumb
+    /// assertion blows up. Same fixture and argv as that test; the only
+    /// difference is the deliberate hijack.
+    #[test]
+    fn unreachable_jcodemunch_url_cannot_be_hijacked_by_a_racing_mcp_responder() {
+        let url = closed_port_url();
+        let (_addr, hijack) = try_hijack_url(&url);
+        // Stand a REAL MCP responder at the address the URL names, if the
+        // hijack landed. `|_args| None` suffices: the breadcrumb hinges on
+        // `initialize` succeeding, which the mock always answers happily.
+        let mock = hijack.map(|listener| spawn_mock_mcp_on(listener, |_args| None));
+        let hijacked = mock.is_some();
+
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+        let tasks = vec![task_fixture("3242", "done", Some("merged"), Some("deadbeef"))];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--jcodemunch-url", &url,
+                "--tasks-file", tasks_file.to_str().unwrap(),
+                "--runs-db", runs_db.to_str().unwrap(),
+                "--project-root", dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit default sweep against a hijacked jcodemunch url");
+
+        // Tear the mock down BEFORE asserting so a failing assertion cannot
+        // leak the accept thread into the rest of the run.
+        if let Some(mock) = mock {
+            mock.stop();
+        }
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("jcodemunch"),
+            "the unreachable-jcodemunch breadcrumb must survive a racing MCP \
+             responder on {url} (hijack landed: {hijacked}); stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("unreachable"),
+            "the breadcrumb must still describe the endpoint as unreachable \
+             despite a racing MCP responder on {url} (hijack landed: \
+             {hijacked}); stderr:\n{stderr}"
+        );
+    }
+
+    /// Regression lock (#5830), socket layer: a client must still be refused
+    /// at the exact address the unreachable-jcodemunch URL names, even while
+    /// a racing binder holds that address.
+    ///
+    /// Phrased against the outcome ("still refused") rather than against
+    /// "the bind failed", so it holds for any fix that removes the
+    /// time-of-check/time-of-use window rather than over-fitting to one.
+    #[test]
+    fn unreachable_jcodemunch_url_refuses_connections_even_under_a_racing_binder() {
+        let url = closed_port_url();
+        // `_hijack` is deliberately bound (not `_`) so any listener that DID
+        // land stays alive across the connect below — that is the adversary.
+        let (addr, _hijack) = try_hijack_url(&url);
+        assert!(
+            TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_err(),
+            "a client must be refused at {addr} even while a racing binder \
+             holds the address named by {url}"
+        );
+    }
+
     /// `--pattern P1 --no-jcodemunch` keeps P1 inert (Noop) and exits 0.
     ///
     /// Verifies the offline escape hatch: even after step-6 activates real
