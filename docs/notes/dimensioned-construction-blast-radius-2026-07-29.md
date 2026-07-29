@@ -1088,7 +1088,196 @@ and after this measurement.
 
 ## §6 Item 3 — `Type::ScalarParam` false positives, D4-5 (step-6)
 
-*(filled by step-6)*
+**Provenance note for §§6-11:** main was rebased under this task between step-5 and step-6
+(`2bf2e858` → `842bc79b`, 23 files — `docs/debug-mcp-contract.md`, `design-invariants.md`,
+the sibling `units-gating-gap-research` note, `dimension-checked-readers.md`,
+`reify-stdlib-reference.md`, `gui/test/visual/**`, `scripts/setup-*`, `tests/infra/**`). **Zero
+overlap** with any file this ledger's counts depend on (`conformance/mod.rs`, `type_compat.rs`,
+`dimension.rs`, `examples/**`, `stdlib/**`, `gui/test/fixtures/**`, `tree-sitter-reify/**`) —
+confirmed by direct diff of the changed-file list against §0's reuse-target trees, so §§0-5's
+figures need no re-verification. §§6-11 are measured fresh at the post-rebase HEAD
+**`e6479597d7`** (2026-07-30) — every anchor this section cites was re-read directly from disk
+in this session, not carried over from before the rebase.
+
+D4-5's own text (PRD §5): *"`Type::ScalarParam` args are accepted through
+`is_numeric_placeholder_leaf`, NOT by widening `arg_type_is_unverifiable`."* This is a design
+decision **γ must implement** — a description of required future behavior, not a claim about
+what HEAD does today. This section measures both halves the plan's addendum C5 requires kept
+separate, plus the mechanism connecting them (original measurement — not previously written
+down by anyone).
+
+### 6.0 Mechanism, traced through the actual code
+
+Two structurally independent silences are at stake; only one requires the flip to observe.
+
+- `arg_type_is_unverifiable` (`conformance/mod.rs:1134-1139`, the skip-list `reject_if_incompatible`
+  at `:1194-1201` consults before calling `type_compatible`) **deliberately excludes**
+  `Type::ScalarParam` — its own doc comment (`:1122-1133`) says adding it "would silence
+  genuine family-level mismatches such as `String ← Scalar<Q>` at every arm at once."
+- `type_compatible` (`type_compat.rs:220-281`) → `implicitly_converts_to` (`:52-179`) has **no
+  `Type::ScalarParam` arm anywhere** (confirmed by direct read of the full function body).
+  `is_scalar_like_leaf` (`:37-50`), the allowlist gating Rules 2a/2b/2c, also excludes
+  `Type::ScalarParam` (only `Bool|Int|String|Scalar{..}|Enum|TypeParam|StructureRef|TraitObject|Geometry`).
+  So for `from = ScalarParam("Q")`, `to = Scalar{any dimension}`: identity fails (different
+  variant), no Rule matches, both directions fall to the final `_ => false`. **`type_compatible(Scalar{anything}, ScalarParam(_))`
+  is `false`, unconditionally — nothing downstream distinguishes dimensioned from
+  dimensionless once the general-leaf arm is entered.**
+
+Consequence: whether a `ScalarParam` arg misfires against a concrete `Scalar` param depends
+**entirely** on whether `general_leaf_param_family_is_validated(param_type)` is `true` for
+that param. **Today** that holds for `Bool|Int|String` and dimensionless `Scalar` only → the
+dimensionless/`String` half already misfires (§6.3, live, no flip needed). **Post-flip** it
+holds for every `Scalar` → the dimensioned half would newly misfire too (§6.2, demonstrated
+with the same local, reverted flip step-1/step-5 used). D4-5's `is_numeric_placeholder_leaf`
+fence (`:1141-1155`) is real but wired into exactly the `Point`/`Matrix`/`Tensor` shape-based
+arms (task 5465) today — **never** into the general concrete-leaf arm gates 1/2/6 share. γ
+must add that wiring; it does not exist at HEAD.
+
+### 6.1 The dimensioned half — census of every dimension-generic definition site: 0 forwarding sites
+
+Every dimension-generic `fn`/structure/alias in tracked source, found by
+`git grep -nE 'fn\s+\w+\s*<[^>]*:\s*Dimension'` and
+`git grep -nE '(structure def|pub type|type)\s+\w+\s*<[^>]*:\s*Dimension'` (`.ri` only —
+the same queries against `*.rs` return zero hits; dimension-bounded generics are never spelled
+inside a Rust fixture string in this corpus):
+
+| Site | Kind | Forwards `Scalar<Q>` into a CONCRETE dimensioned ctor field/param default? |
+|---|---|---|
+| `stdlib/fields.ri:156` `clamp_field<D,Q:Dimension>(f: Field<D,Scalar<Q>>, lo, hi: Scalar<Q>)` | fn | **NO** — body `fn_field(\|p\| clamp(sample(f,p), lo, hi))`; all generic eval-builtins, no ctor call |
+| `stdlib/fields.ri:160` `remap_field<D,Q:Dimension>(...)` | fn | **NO** — body `fn_field(\|p\| remap(sample(f,p), from_lo, from_hi, to_lo, to_hi))`, same shape |
+| `stdlib/fields.ri:164` `threshold<D,Q:Dimension>(f: Field<D,Scalar<Q>>, value: Scalar<Q>) -> Field<D,Bool>` | fn | **NO** — body `fn_field(\|p\| sample(f,p) > value)`, a comparison |
+| `stdlib/fields.ri:193` `pointwise_max<D,Q:Dimension>(...)` | fn | **NO** — body `fn_field(\|p\| max(sample(f,p), sample(g,p)))` |
+| `stdlib/fields.ri:197` `pointwise_min<D,Q:Dimension>(...)` | fn | **NO** — same shape as `pointwise_max` |
+| `examples/generics/dim_param.ri:15` `scale_q<Q:Dimension>(x: Scalar<Q>, k: Real) -> Scalar<Q> { x * k }` | fn | **NO** — returns `Scalar<Q>` from arithmetic, no ctor call; both call sites (`scale_q(10mm,3.0)`, `scale_q(5MPa,2.0)`) bind `Q` to a concrete dimension AT the call, so any value reaching a ctor downstream is already an ordinary `Scalar{Length\|Pressure}`, never a live `ScalarParam` |
+| `tree-sitter-reify/test/fixtures/guf-2-bounded.ri:1` `clamp_field<D,Q:Dimension>(...)` | fn | **NO** — byte-identical body to `fields.ri:156`; also parse-only (§0.4/§3.2 exclusion, never reaches `reify-compiler`) |
+| `tests/fixtures/parametric_alias_def_site_ok.ri:19` `structure def Box2<T: Dimension> { param x : Real }` | structure | **N/A — `T` is never used.** The only field is hardcoded `Real`; `T`'s bound exists solely to test the def-site alias-guard (task 4796). No `Scalar<T>` value is ever constructed. |
+| `tests/fixtures/parametric_alias_def_site_reject.ri:17` `structure def Holder<T: Dimension> { param x : Real }` | structure | **N/A**, same reason as `Box2`; additionally this whole fixture is a deliberately-invalid negative test (filename `_reject`) that never compiles |
+| `stdlib/trajectory.ri:103` `Vec3<Q:Dimension>`, `stdlib/units.ri:106` `Rate<Q:Dimension>`, plus `Vel`/`Wrap`/`LeakName`/`BadBound` in the two `parametric_alias_def_site_*.ri` fixtures | type aliases | **N/A — not this item.** Aliases have no body to forward a value from. `Vec3` is item-5/§8 territory (Vector family); `Rate` is already recorded in §0.2 as a *bare-literal-default* blind spot (a future `param v : Rate<Length> = 5` site — item 7a/gates 2-4 territory, not arg-forwarding) |
+
+**Count: 0 of 7 dimension-generic `fn` sites forward a `Scalar<Q>` into a concrete dimensioned
+ctor field or param default — matching the independent decompose-time count exactly.** Every
+`fields.ri` combinator only ever hands its generic scalar to another generic builtin (`clamp`,
+`remap`, `sample`, comparison, `max`/`min`) or returns it directly; neither dimension-bounded
+structure (`Box2`, `Holder`) actually types a field with its own bound type param.
+
+### 6.2 The dimensioned half — empirically confirmed reachable-if-exercised
+
+Because §6.1 finds zero corpus exposure, "the fence is one line away from live code" needs its
+own proof independent of any corpus site. Probe
+(`/tmp/5756-scratch/probes/scalarparam_dimensioned_probe.ri`, scratch-only, never committed) —
+a shape §6.1 confirms no existing site takes:
+
+```
+module scalarparam_dimensioned_probe
+
+structure ConcreteSink {
+    param p : Length
+}
+
+fn fwd_dim<Q: Dimension>(x: Scalar<Q>) { ConcreteSink(p: x) }
+```
+
+```
+$ target/debug/reify check scalarparam_dimensioned_probe.ri     # BASELINE (unflipped, HEAD e6479597d7)
+All constraints satisfied.
+$ echo $?
+0
+```
+
+Local flip applied (identical diff to step-1's repro block, `Type::Scalar { .. } => true` at
+`conformance/mod.rs:1691-1697`), `RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 cargo build -p
+reify-cli --bin reify` (1m, warm sccache — the pre-flip object was already cached from
+step-1/step-5's own cycles), re-run:
+
+```
+$ target/debug/reify check scalarparam_dimensioned_probe.ri     # FLIPPED
+warning: argument 'p' has type 'Scalar<Q>' but param 'p' requires type 'Scalar[m]'
+All constraints satisfied.
+$ echo $?
+0
+```
+
+**Confirmed live: the flip alone turns this into a FALSE-POSITIVE Warning.** `x`'s true nature
+(a not-yet-resolved dimension-generic value, correct at every valid instantiation of `Q`) is
+indistinguishable, at this arm, from a genuinely wrong-dimension `Real`. This is exactly the
+shape D4-5 requires γ to fence off before promoting the predicate for real. Flip reverted
+immediately after (`git checkout -- crates/reify-compiler/src/conformance/mod.rs`), confirmed
+clean (§6.4), `reify` rebuilt from the clean tree and re-confirmed silent on this same probe
+before §6.3 was run (baseline restored — the exact trap step-4 flagged, deliberately avoided
+here).
+
+**Severity note:** both runs are gate 1 (`ConcreteSink(p: x)` is a structure-constructor call,
+`check_trait_arg_conformance`, `CTOR_FIELD_CONFORMANCE_SEVERITY` = Warning) — this item never
+touches gate 6 (fn-call entry, Error), which is §7's subject.
+
+### 6.3 The dimensionless/`String` half — live misfire TODAY, no flip required, verbatim per the plan's mandate
+
+Probe (`/tmp/5756-scratch/probes/scalarparam_dimensionless_misfire.ri`, scratch-only, never
+committed) — the plan's own literal example, reproduced exactly:
+
+```
+module scalarparam_dimensionless_misfire
+
+structure Sink {
+    param r : Real
+    param s : String
+}
+
+fn fwd<Q: Dimension>(x: Scalar<Q>) { Sink(r: x, s: x) }
+```
+
+(`Sink` is declared locally in this probe module — stdlib separately declares an unrelated
+marker `trait Sink {}` at `io.ri:61`; the two never collide, the same file-local-shadowing
+precedent §3.2 already documents for `Material`/`Inner`.)
+
+```
+$ target/debug/reify check scalarparam_dimensionless_misfire.ri     # BASELINE — HEAD e6479597d7, unflipped
+warning: argument 'r' has type 'Scalar<Q>' but param 'r' requires type 'Real'
+warning: argument 's' has type 'Scalar<Q>' but param 's' requires type 'String'
+All constraints satisfied.
+$ echo $?
+0
+```
+
+**Confirmed verbatim, exactly as the plan predicted** (`'Scalar<Q>' … requires type 'Real'` /
+`'Scalar<Q>' … requires type 'String'`). Re-run under the flip (§6.2) for completeness —
+byte-identical output (`r`/`s` are already-vetted-family params; the flip only affects
+DIMENSIONED `Scalar` params, and `Real` is dimensionless, so this pair is flip-insensitive —
+consistent with I5's contract holding both pre- and post-γ).
+
+**This confirms I5's own contract ("the fence is not a blanket") is already exercised, today,
+by this exact live misfire** — no PRD work is needed to observe it. Owner: whoever implements
+D4-5's fence (γ) — it must silence `Scalar{Q1} ← ScalarParam` (dimensioned-vs-dimensioned)
+WITHOUT silencing `Real ← ScalarParam` or `String ← ScalarParam` (genuine family mismatches),
+which is exactly why D4-5 mandates `is_numeric_placeholder_leaf` (a scalar-vs-non-scalar test)
+over widening `arg_type_is_unverifiable` (which would blanket-silence by argument type alone).
+
+### 6.4 Disposition, corpus impact, and revert proof
+
+**BREAKS = 0. DELIBERATE-NEGATIVE-TEST-TO-INVERT = 0.** No corpus site (`examples/**`, stdlib
+`.ri`, Rust fixture strings, other `.ri`) exercises the dimensioned-generic-forwarding shape
+today (§6.1); both probes (§6.2, §6.3) are scratch-only, never committed. This reconciles
+exactly with step-1's transcript by absence: its 7 raw diagnostics (§1.2/§1.3) are already
+fully accounted for as known BARE/category-A sites, zero of them `ScalarParam`-shaped —
+corroborating §6.1's census over the `examples/**`+2-suites slice step-1 actually exercised.
+
+**This is a γ-scoped implementation prerequisite, not a corpus migration item** — there is no
+site for β to migrate. Recorded for γ: before promoting the predicate for real, wire
+`is_numeric_placeholder_leaf` into the general concrete-leaf arm's skip path (or an equivalent
+fence), or gates 1/2/6 will newly false-positive on any FUTURE dimension-generic fn that
+forwards its scalar into a concrete field — a regression `examples_smoke`'s corpus gate would
+not catch today (zero sites exist to trip it) but would catch immediately once one exists, per
+§6.2's live demonstration.
+
+```
+$ git diff --exit-code -- crates/ examples/ gui/ stdlib
+$ echo $?
+0
+```
+
+Both probe-driven build cycles in this section are fully accounted for; `target/debug/reify`
+was rebuilt clean immediately after §6.2's revert and re-confirmed silent before §6.3 ran, so
+§6.3's "no flip required" claim rests on a verified-baseline binary, not a stale flipped one.
 
 ## §7 Item 4 — Fn-call-entry reachability, §3.1 (step-7)
 
