@@ -10,7 +10,9 @@ Substrate originally confirmed (2026-07-13) on main `93226f0634` (base files unc
 The 2026-07-13 manifest above **predates Amendment A1** (`cba46b8794`, 2026-07-22, esc-5189-2),
 so as authored it carried **no** coverage of Gap C, design decision 7, δ = task **5334**, or
 boundary tests **BT-8 / BT-9 / BT-10** — the entire cluster-formation half of the seam. This
-refresh (a) adds the missing "Leaf δ" section below, and (b) re-anchors every `grep:<file>:<line>`
+refresh (a) adds the missing δ = 5334 section below — δ is an **intermediate**, not a leaf: it
+carries no standalone user-observable signal and is roped into β, exactly as α is — and
+(b) re-anchors every `grep:<file>:<line>`
 citation that had drifted since 2026-07-13. Both provenance points are kept rather than
 overwritten, so the refresh reads as an amendment: the 2026-07-13 line records what the
 first-party three-Explore-agent verification actually asserted, and this line records what a
@@ -47,7 +49,7 @@ engine_eval.rs:7878/:7966 → **:1731**.
 
 Substrate α builds on, all present on main and re-anchored 2026-07-28: `apply_cost_aggregation` (`structural_query.rs:633`), `ResolutionProblem` (`constraint.rs:364`), `build_solver_problem` (`engine_eval.rs:2024`) / `build_merged_solver_problem` (`engine_eval.rs:2254`), `topological_sort` (`dirty.rs:153`), `extract_value_deps` (`deps.rs:2634`), `evaluate_let_bindings` post-solve site (`engine_eval.rs:9593`). No novel substrate — G3 N/A for α; its output is consumed by β = task 5189 (named downstream consumer). α is **landed**; its own novel artefact is `build_dependent_cells` (`engine_eval.rs:1611`), which populates `ResolutionProblem.dependent_cells`.
 
-## Leaf δ (task 5334) — Gap C: cluster formation for derived-cost coupling (Amendment A1)
+## Intermediate δ = task 5334 — Gap C: cluster formation for derived-cost coupling (Amendment A1)
 
 **Signal:** intermediate — no standalone user-observable signal. δ makes `compute_clusters` actually yield the one `MergedSolve` cluster that β's BT-5 leaf **presupposes**: without Gap C's seed no cluster forms at all, and BT-5 is structurally unreachable (PRD §7). Its output is consumed by β = task 5189 (named downstream consumer), so it is not an orphan.
 
@@ -79,7 +81,7 @@ Two-part companion reconciliation. No code substrate; **not** a user-observable 
 - a β-local **BT-10** — `cost_robustness_tradeoff` as a THIRD, unconverted scoring site (`crates/reify-constraints/tests/joint_drive_per_trial_recompute.rs:264`); and
 - a **BT-11** — instance-path alias rescoping (`crates/reify-eval/tests/joint_drive_expansion_boundary.rs`), recorded in PRD §12 Q4 prose but never entered into the §7 table.
 
-The §7 BT-10 and the β-local BT-10 are **not** the same test. Reconciling the §7 table (renumber the β-local tests, or namespace them) is a real decision with two defensible answers and reaches into two test files' comment banners — which would make it no longer docs-only. It is therefore **out of scope here** and tracked separately under follow-up ticket **`tkt_0RRT9Q9R4JJ6F106CNHHEW49K7`** (a task id is assigned asynchronously by the curator, so the ticket is cited rather than a task number). `docs/prds/v0_6/whole-model-joint-drive-seam.md` is deliberately **not** edited by task 5190.
+The §7 BT-10 and the β-local BT-10 are **not** the same test. Reconciling the §7 table (renumber the β-local tests, or namespace them) is a real decision with two defensible answers and reaches into two test files' comment banners — which would make it no longer docs-only. It is therefore **out of scope here** and tracked separately under follow-up task **#5764** (filed from ticket `tkt_0RRT9Q9R4JJ6F106CNHHEW49K7`, which the curator has since resolved to that id). `docs/prds/v0_6/whole-model-joint-drive-seam.md` is deliberately **not** edited by task 5190.
 
 ---
 
@@ -89,7 +91,7 @@ The §7 BT-10 and the β-local BT-10 are **not** the same test. Reconciling the 
 |---|---|---|---|
 | α (5188) | intermediate — no standalone signal; roped into β | landed substrate + `build_dependent_cells`; G3 N/A | no |
 | δ (5334) | intermediate — cluster formation Gap C (Amendment A1); roped into β | 9 PASS | no |
-| β (5189) | e2e leaf **BT-5**: `reify eval examples/whole_model_joint_drive.ri` — child `auto` ≠ frozen freeze, merged cost **strictly <** frozen baseline | 9 PASS | no |
+| β (5189) | e2e leaf **BT-5**: `reify eval examples/whole_model_joint_drive.ri` — child `auto` ≠ frozen freeze, merged cost **strictly <** frozen baseline | 11 PASS | no |
 | γ (5190) | docs correction — no code substrate, not a user-observable code leaf | N/A (bookkeeping) | no |
 
 **No FAIL bindings.** No `declared-only` · `test-only` · `producer-absent` · `producer-extent-short` · `producer-downstream` · `fixture-ERROR` · `bound≤floor` · `rejection-absent` value appears anywhere above, so the batch is not blocked. Every `producer:task-…` binding is upstream of the leaf that observes it (α = 5188 and δ = 5334 are both real `depends_on` edges of β = 5189; all three are landed and are ancestors of the refresh SHA).
