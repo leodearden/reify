@@ -110,7 +110,9 @@
 //! §7 "PDIAG baseline", §8 row 8. Remediation recipe for a RED diff:
 //! `docs/notes/diagnostic-severity-policy.md` §3.
 
-use crate::{AuditContext, Finding};
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 
 /// One `Diagnostic::error(...)` / `Diagnostic::warning(...)` construction site.
 ///
@@ -510,6 +512,226 @@ fn is_swept_path(path: &str) -> bool {
     }
     let stem = file.strip_suffix(".rs").unwrap_or(file);
     stem != "tests" && !stem.ends_with("_tests")
+}
+
+/// The remediation doc every High finding cites.
+///
+/// Held in ONE place because three consumers must agree on it: this rendering,
+/// the doc itself, and `tests/infra/test_reify_audit_pdiag.sh`'s grep. A
+/// literal repeated across all three would rot the moment the doc moves.
+// Live root until `check` wires it — see the note on `scan_file`.
+#[allow(dead_code)]
+const SEVERITY_POLICY_DOC: &str = "docs/notes/diagnostic-severity-policy.md";
+
+/// The baseline manifest, repo-root-relative.
+// Live root until `check` wires it — see the note on `scan_file`.
+#[allow(dead_code)]
+const BASELINE_PATH: &str = "crates/reify-audit/pdiag-baseline.txt";
+
+/// The SINGLE canonical regenerator every Medium advisory names — hand-editing
+/// the manifest is how a ratchet quietly stops ratcheting.
+// Live root until `check` wires it — see the note on `scan_file`.
+#[allow(dead_code)]
+const BASELINE_GEN_BIN: &str = "cargo run -p reify-audit --bin pdiag-baseline-gen";
+
+/// Parse the baseline manifest into `path -> allowed code-less count`.
+///
+/// Grammar: one `<repo-relative-path> <count>` row per line, strictly ascending
+/// by path, with `#`-comment and blank lines ignored — deliberately the same
+/// two-field comment-stripped shape as
+/// `tests/infra/run-all-classification.manifest`, so the format is already
+/// familiar in-repo.
+///
+/// Every rejection below closes a way the ratchet could quietly stop
+/// ratcheting, so all of them are hard errors rather than skipped rows:
+///
+/// - **count `0` or non-numeric.** A clean file has NO row; a `0` row would be
+///   a second spelling of the same state and would make an orphan-row
+///   advisory unrepresentable.
+/// - **a path outside [`is_swept_path`].** The live scan can never produce it,
+///   so it would sit in the manifest forever as a permanent advisory. Failing
+///   at parse time is how a scope narrowing gets noticed instead of
+///   accumulating.
+/// - **a duplicate path.** Silent last-wins would let a bad merge double a
+///   file's allowance.
+/// - **rows out of order.** Sorted order is what keeps a regenerated
+///   baseline's diff down to the lines that actually changed.
+///
+/// The error string names the offending line number — this is read by whoever
+/// just broke the build, not by a parser.
+// Live root until `check` wires it — see the note on `scan_file`.
+#[allow(dead_code)]
+fn parse_baseline(content: &str) -> Result<BTreeMap<String, u32>, String> {
+    let mut out: BTreeMap<String, u32> = BTreeMap::new();
+    let mut previous: Option<&str> = None;
+
+    for (index, raw) in content.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let number = index + 1;
+
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let [path, count] = fields[..] else {
+            return Err(format!(
+                "{BASELINE_PATH}:{number}: expected `<path> <count>`, found {} field(s): {line:?}",
+                fields.len()
+            ));
+        };
+
+        let count: u32 = count
+            .parse()
+            .map_err(|_| format!("{BASELINE_PATH}:{number}: count {count:?} is not a number"))?;
+        if count == 0 {
+            return Err(format!(
+                "{BASELINE_PATH}:{number}: count 0 is not a row — delete the line for {path}"
+            ));
+        }
+        if !is_swept_path(path) {
+            return Err(format!(
+                "{BASELINE_PATH}:{number}: {path} is outside the PDIAG sweep, so no live scan can \
+                 ever clear it — delete the row and regenerate with `{BASELINE_GEN_BIN}`"
+            ));
+        }
+        if previous.is_some_and(|last| path <= last) {
+            return Err(format!(
+                "{BASELINE_PATH}:{number}: {path} is out of ascending order (after {}) — \
+                 regenerate with `{BASELINE_GEN_BIN}`",
+                previous.unwrap_or_default()
+            ));
+        }
+        if out.insert(path.to_string(), count).is_some() {
+            return Err(format!("{BASELINE_PATH}:{number}: duplicate row for {path}"));
+        }
+        previous = Some(path);
+    }
+    Ok(out)
+}
+
+/// One per-file outcome of comparing the live scan against the baseline.
+///
+/// Split four ways rather than into a single "differs" verdict because the two
+/// halves have opposite severities: the ratchet direction gates the merge,
+/// while the slack direction is a housekeeping advisory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+// Live root until `check` wires it — see the note on `scan_file`.
+#[allow(dead_code)]
+enum RatchetVerdict {
+    /// More code-less sites than the baseline allows. The ratchet violation.
+    Exceeded { path: String, live: u32, baseline: u32 },
+    /// A file with code-less sites and no baseline row at all — new code,
+    /// which is exactly what enforcement is for (PRD §6 decision 3 leaves the
+    /// existing backlog to opportunistic migration).
+    NewFile { path: String, live: u32 },
+    /// Fewer sites than the baseline allows: someone fixed some. Advisory.
+    Stale { path: String, live: u32, baseline: u32 },
+    /// A baseline row whose file now has no code-less sites — fully fixed,
+    /// renamed or deleted. Advisory.
+    OrphanRow { path: String, baseline: u32 },
+}
+
+// Live root until `check` wires it — see the note on `scan_file`.
+#[allow(dead_code)]
+impl RatchetVerdict {
+    /// The file this verdict is about.
+    fn path(&self) -> &str {
+        match self {
+            Self::Exceeded { path, .. }
+            | Self::NewFile { path, .. }
+            | Self::Stale { path, .. }
+            | Self::OrphanRow { path, .. } => path,
+        }
+    }
+
+    /// High == hard gate. The CLI's exit code IS the count of High findings
+    /// (`high_severity_exit_code`, `src/bin/reify-audit.rs`), so High is the
+    /// only lever that can turn a diff RED — which is why the two slack
+    /// verdicts are deliberately Medium. A High under-count would make every
+    /// opportunistic fix and every file deletion merge-blocking.
+    fn severity(&self) -> Severity {
+        match self {
+            Self::Exceeded { .. } | Self::NewFile { .. } => Severity::High,
+            Self::Stale { .. } | Self::OrphanRow { .. } => Severity::Medium,
+        }
+    }
+
+    /// Render to a [`Finding`]. High summaries carry BOTH remediations (attach
+    /// a code, or take the reviewed opt-out) and Medium summaries the exact
+    /// regeneration command, so no finding is a dead end.
+    fn into_finding(self) -> Finding {
+        let severity = self.severity();
+        let summary = match &self {
+            Self::Exceeded { path, live, baseline } => format!(
+                "pdiag-ratchet: {path} has {live} code-less Diagnostic::error/warning site(s), \
+                 baseline allows {baseline} — attach a DiagnosticCode (see {SEVERITY_POLICY_DOC}) \
+                 or add a trailing `// {PDIAG_ALLOW} — reason`"
+            ),
+            Self::NewFile { path, live } => format!(
+                "pdiag-ratchet: {path} is new to the baseline and has {live} code-less \
+                 Diagnostic::error/warning site(s) — attach a DiagnosticCode (see \
+                 {SEVERITY_POLICY_DOC}) or add a trailing `// {PDIAG_ALLOW} — reason`"
+            ),
+            Self::Stale { path, live, baseline } => format!(
+                "pdiag-baseline-stale: {path} is down to {live} code-less site(s) from a baseline \
+                 of {baseline} — exit-neutral; tighten the ratchet with `{BASELINE_GEN_BIN}`"
+            ),
+            Self::OrphanRow { path, baseline } => format!(
+                "pdiag-baseline-stale: {path} has no code-less sites left but still holds a \
+                 baseline row allowing {baseline} — exit-neutral; drop the row with \
+                 `{BASELINE_GEN_BIN}`"
+            ),
+        };
+        let path = match self {
+            Self::Exceeded { path, .. }
+            | Self::NewFile { path, .. }
+            | Self::Stale { path, .. }
+            | Self::OrphanRow { path, .. } => path,
+        };
+        Finding {
+            pattern: Pattern::PDiag,
+            severity,
+            // Structural detectors key `task_id` by path (ptodo.rs:1447) —
+            // there is no task to attribute a source-shape finding to.
+            task_id: path.clone(),
+            summary,
+            evidence: vec![EvidenceRef::File { path }],
+        }
+    }
+}
+
+/// Compare the live per-file code-less counts against the baseline.
+///
+/// `live` carries ONLY files with at least one code-less site, so a file
+/// absent from both maps is the (overwhelmingly common) clean steady state and
+/// produces nothing. Verdicts come out in path order across all four kinds,
+/// which is what makes the CLI's output and the infra gate's assertions stable
+/// run to run.
+// Live root until `check` wires it — see the note on `scan_file`.
+#[allow(dead_code)]
+fn ratchet(
+    live: &BTreeMap<String, u32>,
+    baseline: &BTreeMap<String, u32>,
+) -> Vec<RatchetVerdict> {
+    let paths: BTreeSet<&String> = live.keys().chain(baseline.keys()).collect();
+    paths
+        .into_iter()
+        .filter_map(|path| {
+            let path = path.clone();
+            match (live.get(&path).copied(), baseline.get(&path).copied()) {
+                (Some(live), Some(baseline)) if live > baseline => {
+                    Some(RatchetVerdict::Exceeded { path, live, baseline })
+                }
+                (Some(live), Some(baseline)) if live < baseline => {
+                    Some(RatchetVerdict::Stale { path, live, baseline })
+                }
+                (Some(_), Some(_)) => None,
+                (Some(live), None) => Some(RatchetVerdict::NewFile { path, live }),
+                (None, Some(baseline)) => Some(RatchetVerdict::OrphanRow { path, baseline }),
+                (None, None) => None,
+            }
+        })
+        .collect()
 }
 
 /// PDIAG entry point — see the module header for the heuristic and scope.
