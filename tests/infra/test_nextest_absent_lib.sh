@@ -467,6 +467,88 @@ assert "7a: nextest_absent_assert_real emits exactly $NX_REAL_EXPECTED PASSes / 
 assert "7b: nextest_absent_assert_real registers a FAIL (not an abort, not a silent pass) on a broken env" _t7b
 assert "7c: nextest_available_ambient agrees with the ambient verify.sh plan header" _t7c
 
+# -- Test 8: consolidation guard — no suite re-open-codes the availability probe
+#
+# WHAT THIS PINS. Task 5602 consolidated the "capture a verify.sh --print-plan,
+# grep '^# verify.sh plan', case on *"nextest=1"*" idiom into this lib, and task
+# 5644 migrated the seven suites that had each re-derived it. Nothing so far
+# stops an EIGHTH copy accreting — the idiom is four lines and looks local, which
+# is exactly how it reached seven copies. This is that stop.
+#
+# BOTH DIRECTIONS, per suite. A purely negative "has no open-coded case arm"
+# check is satisfied by DELETING the probe outright, which would leave
+# NEXTEST_AVAILABLE unbound (a `set -u` abort) or pinned to 0 — silently dropping
+# every assert the guards protect. That is the vacuous green documented at
+# nextest_absent_lib.sh:700-707. So each suite must ALSO be shown to source the
+# lib, i.e. to have replaced the idiom rather than removed it.
+#
+# WHY A LITERAL LIST AND NOT tests/infra/*.sh. The idiom's own string legitimately
+# appears inside nextest_absent_lib.sh (:491, :497, :543, :567) and inside this
+# file (:457, :520) — a glob would flag the lib that IS the fix. The list is the
+# suites that carry a NEXTEST_AVAILABLE host probe; adding one to it is the
+# deliberate act of putting a new suite under the guard.
+echo ""
+echo "--- Test 8: no tests/infra suite re-open-codes the nextest availability probe ---"
+
+# The suites carrying a NEXTEST_AVAILABLE host probe: the seven migrated by task
+# 5644 plus test_verify_retry_subset.sh, migrated by 5602 as the template.
+_NX_PROBE_SUITES=(
+    test_run_offline_deep.sh
+    test_verify_gate_exclude_heavy.sh
+    test_verify_offline_partition.sh
+    test_verify_retry_failed_only.sh
+    test_verify_role_prio.sh
+    test_verify_semaphore_e2e.sh
+    test_verify_test_threads.sh
+    test_verify_retry_subset.sh
+)
+
+# The open-coded arm, as a regex over the file text: `*"nextest=1"*)`. Matching
+# the QUOTED glob arm rather than the bare string `nextest=1` is what keeps this
+# from firing on a comment or an echo that merely mentions the header.
+_NX_OPEN_CODED_RE='\*"nextest=1"\*'
+_NX_LIB_SOURCE_LINE='source "$SCRIPT_DIR/nextest_absent_lib.sh"'
+
+# (neg) No open-coded case arm. On failure name the file AND the matching line,
+# so the diagnostic points at the cause rather than just the verdict — the
+# convention the lib's own predicates follow (nextest_absent_lib.sh:630-631).
+_t8_no_open_coded() {
+    local suite="$SCRIPT_DIR/$1" hits
+    [ -f "$suite" ] || { echo "covered suite not found at $suite"; return 1; }
+    hits="$(grep -nE "$_NX_OPEN_CODED_RE" "$suite" || true)"
+    [ -z "$hits" ] || {
+        echo "$1 open-codes the nextest availability probe:"
+        printf '%s\n' "$hits"
+        echo "-> replace it with nextest_available_in_plan \"\$PLAN\" (when a plan is"
+        echo "   already captured) or nextest_available_ambient \"\$VERIFY\" (when it"
+        echo "   is not), from tests/infra/nextest_absent_lib.sh."
+        return 1
+    }
+    return 0
+}
+
+# (pos) The probe was REPLACED, not removed — the suite sources the lib.
+_t8_sources_lib() {
+    local suite="$SCRIPT_DIR/$1"
+    [ -f "$suite" ] || { echo "covered suite not found at $suite"; return 1; }
+    grep -qF "$_NX_LIB_SOURCE_LINE" "$suite" || {
+        echo "$1 does not source nextest_absent_lib.sh."
+        echo "-> a suite that merely DELETED its probe would satisfy the negative"
+        echo "   check while leaving NEXTEST_AVAILABLE unbound or pinned to 0,"
+        echo "   silently dropping every assert its guards protect."
+        return 1
+    }
+    return 0
+}
+
+for _nx_suite in "${_NX_PROBE_SUITES[@]}"; do
+    assert "8: $_nx_suite does not open-code the *\"nextest=1\"* availability probe" \
+        _t8_no_open_coded "$_nx_suite"
+    assert "8: $_nx_suite sources nextest_absent_lib.sh (probe replaced, not removed)" \
+        _t8_sources_lib "$_nx_suite"
+done
+unset _nx_suite
+
 # -- Test 9: the plan header is located by CONTENT, not by position ------------
 #
 # nextest_absent_plan_header{,_ambient} used to extract the header with
