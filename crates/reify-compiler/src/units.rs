@@ -1738,6 +1738,14 @@ mod tests {
     // disjointness from every sibling family (regression-lock: catches any
     // future colliding name added to EITHER slice).
     use crate::orientation_signatures::ORIENTATION_TYPED_FN_NAMES;
+    // PRB flexure-constructor family (placeholder-ratchet α, task #5476) —
+    // single source of truth in `crate::flexure_signatures`, imported here to
+    // pin disjointness from every sibling family. Per the PARSE_FN_NAMES
+    // amendment above, this is now the NEWEST family, so its disjointness test
+    // below checks against ALL existing sibling slices (including
+    // PARSE_FN_NAMES and ORIENTATION_TYPED_FN_NAMES) and the pre-existing
+    // sibling tests are left unedited.
+    use crate::flexure_signatures::FLEXURE_CTOR_FN_NAMES;
 
     // Local fixtures for name families that have no pub single-source slice —
     // they are hardcoded match arms in `affine_map_algebra_result_type` and
@@ -5568,5 +5576,139 @@ mod tests {
             !ORIENTATION_TYPED_FN_NAMES.contains(&"project"),
             "project must not be claimed by the orientation family either"
         );
+    }
+
+    /// The PRB flexure-constructor family (placeholder-ratchet α, task #5476)
+    /// is disjoint from every sibling builtin name family.
+    ///
+    /// This is the NEWEST family, so — per the `PARSE_FN_NAMES` amendment
+    /// recorded on the imports above — it checks against ALL existing sibling
+    /// slices in this one test, including `PARSE_FN_NAMES` and
+    /// `ORIENTATION_TYPED_FN_NAMES` (task 5344, which landed on `main` while
+    /// this slice was in flight), and the pre-existing sibling disjointness
+    /// tests are deliberately left unedited.
+    ///
+    /// Why it matters even though the `prb_` prefix makes a real collision
+    /// implausible today: disjointness is exactly what makes the new arm's
+    /// POSITION in the `NoUserFunctions` ladder unobservable. The ladder's own
+    /// ordering doc-comment permits free placement only for families pinned
+    /// disjoint here — a future name added to either side that collided would
+    /// silently be shadowed by whichever arm sits earlier. This test is that
+    /// regression lock.
+    #[test]
+    fn flexure_ctor_fn_names_are_disjoint_from_other_families() {
+        for name in FLEXURE_CTOR_FN_NAMES {
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_FUNCTION_NAMES (geometry-constructor family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_NAMES (geometry-query family)"
+            );
+            assert!(
+                !DYNAMICS_QUERY_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
+            );
+            assert!(
+                !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
+            );
+            assert!(
+                !AFFINE_MAP_CONSTRUCTOR_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be in \
+                 AFFINE_MAP_CONSTRUCTOR_NAMES (affine constructor family)"
+            );
+            assert!(
+                !TOLERANCING_MARKER_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be in \
+                 TOLERANCING_MARKER_NAMES (tolerancing-marker family)"
+            );
+            assert!(
+                !FEA_ENVELOPE_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be in \
+                 FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
+            );
+            assert!(
+                !FIELD_OP_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be in \
+                 FIELD_OP_NAMES (field-op family, task 4219)"
+            );
+            assert!(
+                !MATH_CONSTRUCTION_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
+            );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
+            );
+            assert!(
+                !MATH_TRANSCENDENTAL_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_TRANSCENDENTAL_NAMES (trig/transcendental family, task 4352)"
+            );
+            assert!(
+                !JOINT_TYPED_FN_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be in \
+                 JOINT_TYPED_FN_NAMES (joint-constructor family, task 4311) — \
+                 both families return a nominal StructureRef, so a collision \
+                 would be resolved silently by ladder order"
+            );
+            assert!(
+                !ANALYSIS_FN_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be in \
+                 ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
+            );
+            assert!(
+                !RELATION_FN_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be in \
+                 RELATION_FN_NAMES (geometric-relation family, task 4383)"
+            );
+            assert!(
+                !PARSE_FN_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be in \
+                 PARSE_FN_NAMES (string→quantity parse family, task #4535)"
+            );
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
+            assert!(
+                !AFFINE_ALGEBRA_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be an \
+                 affine-algebra name (`affine_compose`/`affine_inverse`/\
+                 `determinant` — earlier arm in the NoUserFunctions ladder \
+                 would shadow it)"
+            );
+            assert!(
+                !LIST_HELPER_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be a \
+                 list-helper (`single`/`flat_map` — earlier arm in the \
+                 NoUserFunctions ladder would shadow it)"
+            );
+        }
     }
 }

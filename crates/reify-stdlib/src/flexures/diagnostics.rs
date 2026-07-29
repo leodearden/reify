@@ -697,4 +697,85 @@ mod tests {
             "a real joint arg does not trigger FlexureNonJointArg"
         );
     }
+
+    // ── PRB ctor name family — runtime half of the cross-crate drift guard ───
+    //
+    // Task #5476 (placeholder-ratchet α) added a COMPILER-side twin of this
+    // list: `crates/reify-compiler/src/flexure_signatures.rs::FLEXURE_CTOR_FN_NAMES`,
+    // which types every one of these ctors as `StructureRef("FlexureJoint")`.
+    //
+    // The two lists are deliberately duplicated rather than shared: `reify-compiler`
+    // depends only on reify-core + reify-ir, NOT on reify-stdlib, so a shared
+    // constant would need either a cross-crate dependency in the wrong direction
+    // or a widening of reify-compiler's public API. The house precedent for this
+    // is `JOINT_TYPED_FN_NAMES`, which restates the runtime joint names the same
+    // way.
+    //
+    // The safety property that makes duplication acceptable is that BOTH sides
+    // carry an INDEPENDENT fixture test — this one and
+    // `flexure_ctor_fn_names_match_independent_fixture` over there. Either list
+    // drifting fails its own test, so the pair cannot silently diverge.
+
+    /// Independent fixture — the 13 PRB flexure constructor names, hard-coded
+    /// rather than derived from `is_flexure_ctor`, so a drift in that function
+    /// is caught against this list.
+    ///
+    /// Compiler-side twin:
+    /// `crates/reify-compiler/src/flexure_signatures.rs::FLEXURE_CTOR_FN_NAMES`.
+    /// Keep the two in lockstep; each is guarded by its own fixture test.
+    const EXPECTED_PRB_CTOR_NAMES: [&str; 13] = [
+        // beam.rs (2)
+        "prb_cantilever_beam",
+        "prb_fixed_fixed_beam",
+        // notch.rs (3)
+        "prb_notch_circular",
+        "prb_notch_elliptical",
+        "prb_notch_right_circular",
+        // hinge.rs (3)
+        "prb_living_hinge",
+        "prb_cross_spring_pivot",
+        "prb_let_joint",
+        // prismatic.rs (2)
+        "prb_prismatic_blade",
+        "prb_two_axis_pivot",
+        // compound.rs (3)
+        "prb_parallelogram_flexure",
+        "prb_double_parallelogram_flexure",
+        "prb_cartwheel_flexure",
+    ];
+
+    /// `is_flexure_ctor` accepts exactly the 13 names in the fixture and
+    /// rejects the two near-misses that must never be treated as ctors.
+    ///
+    /// - **`prb_validity_range`** shares the `prb_` prefix but is a
+    ///   `FlexureCompliance` FIELD emitted by all five family modules — not a
+    ///   ctor. (It is also the reason the PRD §3.2 "14 prb_* ctors" count is
+    ///   off by one; there are 13.)
+    /// - **`__flexure_compliance_get`** is the accessor intrinsic, intercepted
+    ///   by a dedicated arm in `flexure_diagnose` placed BEFORE this
+    ///   short-circuit, per the doc comment on `is_flexure_ctor`.
+    #[test]
+    fn is_flexure_ctor_matches_independent_fixture() {
+        for name in EXPECTED_PRB_CTOR_NAMES {
+            assert!(
+                super::is_flexure_ctor(name),
+                "is_flexure_ctor({name:?}) must be true — it is one of the 13 PRB \
+                 ctors; if this fails the compiler-side twin \
+                 (reify-compiler/src/flexure_signatures.rs::FLEXURE_CTOR_FN_NAMES) \
+                 has drifted out of lockstep with this list"
+            );
+        }
+        assert!(
+            !super::is_flexure_ctor("prb_validity_range"),
+            "must reject 'prb_validity_range' — a FlexureCompliance FIELD, not a \
+             ctor; matching it would mean this guard is matching the `prb_` PREFIX \
+             rather than exact names"
+        );
+        assert!(
+            !super::is_flexure_ctor("__flexure_compliance_get"),
+            "must reject '__flexure_compliance_get' — the accessor intrinsic is \
+             intercepted by its own earlier arm in flexure_diagnose and must never \
+             reach this ctor guard"
+        );
+    }
 }
