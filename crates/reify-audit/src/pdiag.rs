@@ -501,4 +501,159 @@ mod tests {
         // Physical offset 25, but only the 15th non-comment line — in window.
         assert_eq!(sites(&lines.join("\n")), vec![(1, true)]);
     }
+
+    // -- #[cfg(test)] block exclusion --------------------------------------
+
+    #[test]
+    fn cfg_test_module_body_is_skipped_but_the_rest_of_the_file_is_not() {
+        // The skip is BRACE-SCOPED, not "rest of file": 151 in-src
+        // `#[cfg(test)]` sites exist repo-wide, and INV-SF-6 governs EMITTED
+        // diagnostics — test scaffolding emits nothing.
+        let src = file(&[
+            "fn emit() {",
+            "    diagnostics.push(Diagnostic::error(m));",
+            "}",
+            "",
+            "#[cfg(test)]",
+            "mod tests {",
+            "    fn fixture() {",
+            "        let d = Diagnostic::error(m);",
+            "    }",
+            "}",
+            "",
+            "fn emit_more() {",
+            "    diagnostics.push(Diagnostic::warning(m));",
+            "}",
+        ]);
+        assert_eq!(sites(&src), vec![(2, false), (13, false)]);
+    }
+
+    #[test]
+    fn cfg_any_test_module_body_is_skipped() {
+        let src = file(&[
+            "#[cfg(any(test, feature = \"test-support\"))]",
+            "mod support {",
+            "    fn fixture() { let d = Diagnostic::error(m); }",
+            "}",
+            "let live = Diagnostic::error(m);",
+        ]);
+        assert_eq!(sites(&src), vec![(5, false)]);
+    }
+
+    #[test]
+    fn nested_braces_inside_a_test_module_do_not_end_the_skip_early() {
+        let src = file(&[
+            "#[cfg(test)]",
+            "mod tests {",
+            "    fn t() {",
+            "        match x {",
+            "            A => { let d = Diagnostic::error(m); }",
+            "        }",
+            "    }",
+            "    fn u() {",
+            "        let d = Diagnostic::warning(m);",
+            "    }",
+            "}",
+            "let live = Diagnostic::error(m);",
+        ]);
+        assert_eq!(sites(&src), vec![(12, false)]);
+    }
+
+    #[test]
+    fn cfg_test_on_a_plain_fn_is_skipped_too() {
+        // The CHOSEN rule, asserted explicitly: the skip arms on the attribute
+        // and closes with the brace block that attribute introduces, so it
+        // covers `fn` and `impl` items as well as `mod`. A `#[cfg(test)] fn`
+        // is absent from a production build and therefore emits nothing.
+        let src = file(&[
+            "#[cfg(test)]",
+            "fn helper() {",
+            "    let d = Diagnostic::error(m);",
+            "}",
+            "let live = Diagnostic::warning(m);",
+        ]);
+        assert_eq!(sites(&src), vec![(5, false)]);
+    }
+
+    #[test]
+    fn cfg_test_item_with_no_block_does_not_arm_a_runaway_skip() {
+        // `#[cfg(test)] use ...;` opens no block. If the pending skip survived
+        // it, the NEXT unrelated brace in the file would start a bogus skip and
+        // silently swallow production sites.
+        let src = file(&[
+            "#[cfg(test)]",
+            "use crate::fixtures::Thing;",
+            "",
+            "fn emit() {",
+            "    diagnostics.push(Diagnostic::error(m));",
+            "}",
+        ]);
+        assert_eq!(sites(&src), vec![(5, false)]);
+    }
+
+    #[test]
+    fn unbalanced_test_module_terminates_at_eof_without_panicking() {
+        // A truncated file must terminate rather than spin or index past the
+        // end. Suppressing to EOF is the permissive direction.
+        let src = file(&[
+            "#[cfg(test)]",
+            "mod tests {",
+            "    fn t() {",
+            "        let d = Diagnostic::error(m);",
+        ]);
+        assert_eq!(sites(&src), none());
+
+        // A stray closing brace must not underflow the depth counter.
+        let src2 = file(&["}", "}", "let live = Diagnostic::error(m);"]);
+        assert_eq!(sites(&src2), vec![(3, false)]);
+    }
+
+    // -- pdiag:allow escape -------------------------------------------------
+
+    #[test]
+    fn escape_on_the_anchor_line_suppresses_the_site() {
+        let src = "    let d = Diagnostic::error(\"x\"); // pdiag:allow — legacy message-prefix convention";
+        assert_eq!(sites(src), none());
+    }
+
+    #[test]
+    fn escape_on_a_continuation_line_in_the_window_suppresses_the_site() {
+        // The 84%-of-corpus multi-line shape: the constructor line is a poor
+        // place to hang a trailing comment, so the escape must be reachable
+        // from anywhere in the site's own window.
+        let src = file(&[
+            "    diagnostics.push(Diagnostic::warning(format!(",
+            "        \"E_DFM_THIN_WALL: {} < {}\",",
+            "        actual, min",
+            "    ))); // pdiag:allow — the E_DFM_ message prefix carries the code",
+        ]);
+        assert_eq!(sites(&src), none());
+    }
+
+    #[test]
+    fn escape_needs_no_reason_prose() {
+        // Only the `pdiag:allow` substring is load-bearing; the trailing reason
+        // is for humans, exactly as `ptodo.rs::line_escaped` treats
+        // `ptodo:allow`.
+        let src = "    let d = Diagnostic::error(m); // pdiag:allow";
+        assert_eq!(sites(src), none());
+    }
+
+    #[test]
+    fn escape_is_forward_scoped_and_does_not_leak() {
+        // An escape ABOVE a constructor does not suppress it — a reviewed
+        // opt-out must not silently cover unrelated code above where it sits.
+        let src = file(&[
+            "// pdiag:allow — this sentence documents the escape, it does not apply it",
+            "",
+            "let d = Diagnostic::error(m);",
+        ]);
+        assert_eq!(sites(&src), vec![(3, false)]);
+
+        // Nor does it reach further than the code probe does from below.
+        let mut lines = vec!["let d = Diagnostic::error(m);".to_string()];
+        lines.extend((0..15).map(|_| "let x = 1;".to_string()));
+        lines.push("// pdiag:allow — 16 non-comment lines below, out of reach".to_string());
+        assert_eq!(sites(&lines.join("\n")), vec![(1, false)]);
+    }
 }
