@@ -569,21 +569,37 @@ _esc_state() {
     for f in "$ESCALATIONS"/esc-"$id"-*.json; do
         [ -e "$f" ] || continue
         found=$((found + 1))
+        # The parse sentinel is a LITERAL TOKEN, deliberately not a NUL: bash
+        # strips a NUL byte from `$(...)` and warns while doing it, and that
+        # warning lands on this script's OWN stderr — the same channel `warn()`
+        # writes to — so a consumer cannot tell the tool's diagnostics from the
+        # shell's. `__PARSE_ERROR__` survives command substitution intact, so
+        # the comparison below is a real one rather than the ""-matches-""
+        # degenerate case a stripped NUL collapses both sides into.
         st="$(python3 -c 'import json,sys
 try:
     sys.stdout.write(str(json.load(open(sys.argv[1])).get("status","")))
 except Exception:
-    sys.stdout.write("\x00")' "$f" 2>/dev/null || printf '\000')"
+    sys.stdout.write("__PARSE_ERROR__")' "$f" 2>/dev/null || printf '__PARSE_ERROR__')"
         # TERMINAL ALLOWLIST, not a pending-only match (L2). `pending` gates and
         # `resolved`/`dismissed` clear; EVERY other value — unrecognized, JSON
-        # null (which reaches here as the literal "None"), empty, or the NUL
-        # parse sentinel — is a FAILED ORACLE READ and degrades to `unknown`.
-        # A pending-only match would sink all of those into `clear`, yielding
-        # STALE / close / an emitted request telling the consumer to CANCEL a
-        # task whose gate may still be live — failing open toward the sweep's
-        # single most destructive action.
+        # null (which reaches here as the literal "None"), empty/absent, or the
+        # `__PARSE_ERROR__` sentinel — is a FAILED ORACLE READ and degrades to
+        # `unknown`. A pending-only match would sink all of those into `clear`,
+        # yielding STALE / close / an emitted request telling the consumer to
+        # CANCEL a task whose gate may still be live — failing open toward the
+        # sweep's single most destructive action.
+        #
+        # A record that is valid JSON but carries no `status` key at all yields
+        # the empty string and so reaches the `*)` arm, NOT the parse-error arm
+        # (under the old NUL sentinel it reached the latter, because bash had
+        # collapsed both sides to ""). The VERDICT is `unknown` on either path —
+        # only the diagnostic prose differs. The allowlist is not weakened by
+        # the token change either: an escalation whose status were literally
+        # `__PARSE_ERROR__` still degrades to `unknown`, never to `STALE`, so
+        # the collision is harmless by construction.
         case "$st" in
-            "$(printf '\000')")
+            __PARSE_ERROR__)
                 warn "Task $id: unparseable escalation file $(basename "$f") — reporting unknown, not STALE."
                 return 0 ;;
             pending) pending=$((pending + 1)) ;;
