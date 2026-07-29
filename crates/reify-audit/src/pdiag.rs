@@ -746,6 +746,9 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{MockGitOps, MockJCodemunchOps};
+    use rusqlite::Connection;
+    use std::collections::HashMap;
 
     /// Terse view of a scan: one `(line, coded)` pair per site, in scan order.
     fn sites(content: &str) -> Vec<(usize, bool)> {
@@ -1479,5 +1482,268 @@ mod tests {
         let verdicts = ratchet(&counts(&[(b, 9), (a, 1)]), &counts(&[(b, 2), (c, 4)]));
         let paths: Vec<&str> = verdicts.iter().map(RatchetVerdict::path).collect();
         assert_eq!(paths, vec![a, b, c]);
+    }
+
+    // -- detector entry point -----------------------------------------------
+
+    /// A `check(...)` fixture: a tempdir `project_root`, real files on disk,
+    /// and a `MockGitOps` whose `ls_files()` returns exactly what was tracked.
+    ///
+    /// Deliberately exercises the real `std::fs` read path rather than mocking
+    /// it — the enumeration seam is `ls_files()`, but content comes from the
+    /// working tree (the ptodo.rs:1418 posture), so the missing-file and
+    /// non-UTF-8 fail-safe branches are only reachable through real IO.
+    struct Fixture {
+        root: tempfile::TempDir,
+        tracked: Vec<String>,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            Self { root: tempfile::tempdir().expect("tempdir"), tracked: Vec::new() }
+        }
+
+        /// Write `content` at `path` and track it.
+        fn write(&mut self, path: &str, content: &str) -> &mut Self {
+            self.write_bytes(path, content.as_bytes())
+        }
+
+        /// Write raw `bytes` at `path` and track it — the non-UTF-8 lane.
+        fn write_bytes(&mut self, path: &str, bytes: &[u8]) -> &mut Self {
+            let full = self.root.path().join(path);
+            std::fs::create_dir_all(full.parent().expect("parent")).expect("mkdir");
+            std::fs::write(&full, bytes).expect("write");
+            self.tracked.push(path.to_string());
+            self
+        }
+
+        /// Track a path WITHOUT creating it — the ls_files/working-tree skew a
+        /// mid-rebase or just-deleted file produces.
+        fn track_only(&mut self, path: &str) -> &mut Self {
+            self.tracked.push(path.to_string());
+            self
+        }
+
+        /// Write the baseline manifest at its canonical in-tree location. Not
+        /// tracked: the manifest is data, never a swept source file.
+        fn baseline(&mut self, content: &str) -> &mut Self {
+            let full = self.root.path().join(BASELINE_PATH);
+            std::fs::create_dir_all(full.parent().expect("parent")).expect("mkdir");
+            std::fs::write(&full, content).expect("write baseline");
+            self
+        }
+
+        fn run(&self) -> Vec<Finding> {
+            let conn = Connection::open_in_memory().expect("in-memory db");
+            let jc = MockJCodemunchOps::new();
+            let mut git = MockGitOps::new();
+            git.set_ls_files(self.tracked.clone());
+            let ctx = AuditContext {
+                project_root: self.root.path().to_path_buf(),
+                conn: &conn,
+                git: &git,
+                jcodemunch: &jc,
+                task_metadata: HashMap::new(),
+                target_task_id: None,
+                window: None,
+                now: None,
+                producer_branch: None,
+            };
+            check(&ctx)
+        }
+
+        /// `(task_id, severity)` per finding, in emission order.
+        fn keys(&self) -> Vec<(String, Severity)> {
+            self.run().into_iter().map(|f| (f.task_id, f.severity)).collect()
+        }
+    }
+
+    /// `n` code-less constructor sites, one per line — the dominant real shape
+    /// (`crates/reify-eval/src/geometry_ops.rs:313`).
+    fn codeless_src(n: usize) -> String {
+        (0..n)
+            .map(|i| format!("    diagnostics.push(Diagnostic::error(format!(\"e{i}\")));"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn live_count_equal_to_the_baseline_row_is_clean() {
+        // The steady state the ratchet exists to hold: the backlog is exactly
+        // as large as the manifest says, so nothing is reported at all.
+        let mut fx = Fixture::new();
+        fx.write(GEOM, &codeless_src(2)).baseline(&format!("{GEOM} 2\n"));
+        assert_eq!(fx.run(), Vec::new());
+    }
+
+    #[test]
+    fn live_count_over_the_baseline_row_is_one_high_finding() {
+        // Someone added a code-less site to a file that already had one. This
+        // is the ratchet violation the merge gate exists to catch.
+        let mut fx = Fixture::new();
+        fx.write(GEOM, &codeless_src(2)).baseline(&format!("{GEOM} 1\n"));
+        let findings = fx.run();
+        assert_eq!(findings.len(), 1, "expected exactly one finding, got {findings:?}");
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::PDiag);
+        assert_eq!(f.severity, Severity::High);
+        assert_eq!(f.task_id, GEOM);
+        assert_eq!(f.evidence, vec![EvidenceRef::File { path: GEOM.to_string() }]);
+    }
+
+    #[test]
+    fn a_swept_file_with_no_baseline_row_is_high() {
+        // A brand-new file carrying code-less diagnostics — precisely the
+        // "enforcement is for new sites" case of PRD §6 decision 3.
+        let mut fx = Fixture::new();
+        fx.write(GEOM, &codeless_src(2)).baseline("");
+        assert_eq!(fx.keys(), vec![(GEOM.to_string(), Severity::High)]);
+    }
+
+    #[test]
+    fn coded_sites_never_reach_the_ratchet() {
+        // A file whose every constructor carries a code has no live row at
+        // all, so an absent baseline row is the correct steady state — not a
+        // NewFile violation.
+        let mut fx = Fixture::new();
+        fx.write(GEOM, "    Diagnostic::error(msg).with_code(DiagnosticCode::X);")
+            .baseline("");
+        assert_eq!(fx.run(), Vec::new());
+    }
+
+    #[test]
+    fn out_of_scope_tracked_files_are_never_swept() {
+        // `is_swept_path` is enforced by `check`, not just unit-tested in
+        // isolation: the detector's own crate (10 literal `Diagnostic::error`
+        // tokens in pdssentinel.rs doc comments alone), test-support, and any
+        // `tests/`-segment path must contribute nothing even with an empty
+        // baseline that would otherwise flag every one of them.
+        let mut fx = Fixture::new();
+        let src = codeless_src(3);
+        fx.write("crates/reify-audit/src/pdiag.rs", &src)
+            .write("crates/reify-test-support/src/helpers.rs", &src)
+            .write("crates/reify-eval/tests/harness_engine.rs", &src)
+            .write("crates/reify-eval/src/engine_build/tests.rs", &src)
+            .write("scripts/not-rust.sh", &src)
+            .baseline("");
+        assert_eq!(fx.run(), Vec::new());
+    }
+
+    #[test]
+    fn cfg_test_bodies_do_not_reach_the_ratchet() {
+        // INV-SF-6 governs EMITTED diagnostics. Counting inline test
+        // scaffolding would manufacture a recurring false RED for every future
+        // test author, so the in-src `#[cfg(test)]` exclusion must survive the
+        // trip through `check`, not just `scan_file`.
+        let mut fx = Fixture::new();
+        fx.write(
+            GEOM,
+            &file(&[
+                "#[cfg(test)]",
+                "mod tests {",
+                "    fn t() {",
+                "        Diagnostic::error(\"boom\");",
+                "    }",
+                "}",
+            ]),
+        )
+        .baseline("");
+        assert_eq!(fx.run(), Vec::new());
+    }
+
+    #[test]
+    fn a_tracked_path_absent_from_disk_is_skipped() {
+        // ls_files() and the working tree can disagree (a deletion staged but
+        // not yet reflected, a mid-rebase tree). Fail-safe: skip, never panic
+        // and never invent a count. Mirrors ptodo.rs:1418.
+        let mut fx = Fixture::new();
+        fx.track_only(GEOM).baseline("");
+        assert_eq!(fx.run(), Vec::new());
+    }
+
+    #[test]
+    fn a_non_utf8_tracked_file_is_skipped() {
+        // `read_to_string` fails on invalid UTF-8; the detector must degrade
+        // to "no sites here" rather than unwrapping.
+        let mut fx = Fixture::new();
+        fx.write_bytes(GEOM, &[0x66, 0x6f, 0xff, 0xfe, 0x6f]).baseline("");
+        assert_eq!(fx.run(), Vec::new());
+    }
+
+    #[test]
+    fn an_absent_baseline_fails_loud_rather_than_vacuously_passing() {
+        // The mirror-image bug — missing manifest => nothing to compare =>
+        // silent pass — is exactly what
+        // scripts/check-infra-classification-manifest.sh:41-57 refuses to
+        // allow. An absent baseline is an EMPTY baseline, so every code-less
+        // file is a NewFile violation and the gate goes RED.
+        let mut fx = Fixture::new();
+        fx.write(GEOM, &codeless_src(2));
+        assert!(
+            !fx.root.path().join(BASELINE_PATH).exists(),
+            "fixture must leave the baseline absent"
+        );
+        assert_eq!(fx.keys(), vec![(GEOM.to_string(), Severity::High)]);
+    }
+
+    #[test]
+    fn a_malformed_baseline_is_a_single_high_finding_naming_the_error() {
+        // A corrupt manifest must never be readable as "allows everything".
+        // One High finding, so the exit code moves, and it names both the
+        // manifest and the parse error so the fix is obvious.
+        let mut fx = Fixture::new();
+        fx.write(GEOM, &codeless_src(2)).baseline("this row has three fields\n");
+        let findings = fx.run();
+        assert_eq!(findings.len(), 1, "expected exactly one finding, got {findings:?}");
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::PDiag);
+        assert_eq!(f.severity, Severity::High);
+        assert_eq!(f.evidence, vec![EvidenceRef::File { path: BASELINE_PATH.to_string() }]);
+        for needle in [BASELINE_PATH, BASELINE_GEN_BIN] {
+            assert!(f.summary.contains(needle), "{needle} missing from {:?}", f.summary);
+        }
+        // The parse error itself must survive into the summary — a bare "the
+        // baseline is malformed" would leave the reader to bisect the file.
+        let err = parse_baseline("this row has three fields\n").unwrap_err();
+        assert!(
+            f.summary.contains(&err),
+            "parse error {err:?} missing from {:?}",
+            f.summary
+        );
+    }
+
+    #[test]
+    fn findings_are_emitted_in_path_order() {
+        // Stable output across runs is what lets the infra gate and a human
+        // reviewer diff two runs at all. ls_files() order is deliberately
+        // scrambled relative to path order here.
+        let mut fx = Fixture::new();
+        let a = "crates/reify-compiler/src/expr.rs";
+        let b = "crates/reify-eval/src/geometry_ops.rs";
+        let c = "crates/reify-stdlib/src/dfm.rs";
+        fx.write(c, &codeless_src(1))
+            .write(a, &codeless_src(1))
+            .write(b, &codeless_src(1))
+            .baseline("");
+        let paths: Vec<String> = fx.run().into_iter().map(|f| f.task_id).collect();
+        assert_eq!(paths, vec![a, b, c]);
+    }
+
+    #[test]
+    fn an_under_count_and_an_orphan_row_stay_exit_neutral() {
+        // Both slack directions reach `check` as Medium advisories. If either
+        // were High, deleting a file or fixing one site would block a merge.
+        let mut fx = Fixture::new();
+        let fixed = "crates/reify-compiler/src/expr.rs";
+        let gone = "crates/reify-stdlib/src/dfm.rs";
+        fx.write(fixed, &codeless_src(1))
+            .baseline(&format!("{fixed} 3\n{gone} 4\n"));
+        assert_eq!(
+            fx.keys(),
+            vec![
+                (fixed.to_string(), Severity::Medium),
+                (gone.to_string(), Severity::Medium),
+            ]
+        );
     }
 }
