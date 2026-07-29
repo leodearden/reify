@@ -1,0 +1,8 @@
+module flexure_compliance_prb_joint
+// PRD §7.3 BT2 (task #5476). Must stay exit 0 across the retarget.
+structure def FlexureCompliancePrbJoint {
+    let steel = Steel_AISI_1045()
+    let j = prb_notch_circular(1mm, 0.2mm, 5mm, steel, point3(0mm, 0mm, 0mm), vec3(0, 1, 0))
+    let c = flexure_compliance(j)
+    let k = c.effective_stiffness
+}
