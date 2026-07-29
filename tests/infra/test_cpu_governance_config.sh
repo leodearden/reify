@@ -20,9 +20,16 @@
 #         REIFY_CPU_ADMIT_AGENT_THRESHOLD — scripts/agent-bin/cargo
 #       NOT grep-checked: DF_AGENT_CPU_GOVERN (dark-factory consumed; no reify
 #       script reads it).
+#   (C) CENSUS IGNORE-LIST STALENESS — every config_key_census.ignore entry
+#       must still fnmatch.fnmatchcase-match >=1 live dotted path in
+#       dark-factory-orchestrator.yaml (mirrors dark-factory task 2989's
+#       ConfigKeyCensusConfig.ignore matching semantics via stdlib fnmatch
+#       only — no cross-repo import). Only the STALE direction is guarded:
+#       the COMPLETE direction (a new unlisted key) is self-announcing via
+#       2989's born-at-L2 census escalation.
 #
-# (A) and (A2) are SKIPPED if python3 + PyYAML are unavailable (mirrors the
-#     tomllib SKIP idiom in test_cargo_incremental_lane_decision.sh:25).
+# (A), (A2), and (C) are SKIPPED if python3 + PyYAML are unavailable (mirrors
+#     the tomllib SKIP idiom in test_cargo_incremental_lane_decision.sh:25).
 # (B) always runs — plain bash grep, no python needed.
 
 set -euo pipefail
@@ -66,13 +73,17 @@ Checks (no <script_path>):
   agent_admit_threshold_50 — cpu_governance.agent_admit.threshold == 50
   agent_admit_enabled      — cpu_governance.agent_admit.enabled is truthy
   df_agent_cpu_govern_present — 'DF_AGENT_CPU_GOVERN' key present in block
+  census_ignore_entries_resolve — every config_key_census.ignore entry
+                                   still fnmatch.fnmatchcase-matches >=1 live
+                                   dotted path (STALE direction only; see (C)
+                                   in the file header)
 Checks (with <script_path> — value-drift cross-check):
   w_task_yaml_vs_lib_cgroup       — YAML weights.task == lib_cgroup.sh :-fallback
   w_merge_yaml_vs_lib_cgroup      — YAML weights.merge == lib_cgroup.sh :-fallback
   threshold_yaml_vs_agent_cargo   — YAML agent_admit.threshold == agent-bin/cargo :-fallback
 Exit 0 on pass, 1 on fail.
 """
-import sys, yaml, re
+import sys, yaml, re, fnmatch
 
 orch_yaml_path = sys.argv[1]
 check = sys.argv[2]
@@ -82,6 +93,33 @@ with open(orch_yaml_path) as f:
 
 if check == "parse_ok":
     # If we got here, the file parsed
+    sys.exit(0)
+
+def _flatten(node, prefix=""):
+    """Every dotted path in the config, INCLUDING intermediates."""
+    out = set()
+    if isinstance(node, dict):
+        for k, v in node.items():
+            p = f"{prefix}{k}"
+            out.add(p)
+            out |= _flatten(v, p + ".")
+    return out
+
+if check == "census_ignore_entries_resolve":
+    census = d.get("config_key_census") or {}
+    entries = census.get("ignore") or []
+    paths = _flatten(d)
+    stale = [e for e in entries
+             if not any(fnmatch.fnmatchcase(p, e) for p in paths)]
+    if stale:
+        print("STALE config_key_census.ignore entries (match no live key in "
+              "dark-factory-orchestrator.yaml): " + ", ".join(repr(e) for e in stale),
+              file=sys.stderr)
+        print("Each entry excuses a reify-owned key from dark-factory task 2989's "
+              "unknown-config-key census. If the knob was deliberately renamed or "
+              "removed, drop its ignore entry in the same commit (see e61fae8017).",
+              file=sys.stderr)
+        sys.exit(1)
     sys.exit(0)
 
 cg = d.get("cpu_governance")
