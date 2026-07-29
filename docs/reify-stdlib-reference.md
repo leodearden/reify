@@ -1135,10 +1135,10 @@ the trait-scoped one needs its own owner — is #5801's call, not this reference
 it is recorded here so the distinction is not silently lost.
 
 This supersedes correction 2 of `docs/prds/v0_6/dimension-checked-readers.md` §2.4
-and the matching §10 out-of-scope entry, both of which list `thermal_conductivity`
-among the properties with "zero production readers repo-wide". Those PRD lines
-still carry the superseded claim: amending them falls outside this task's module
-scope and is filed as a follow-up.
+and the matching §10 out-of-scope entry, both of which listed `thermal_conductivity`
+among the properties with "zero production readers repo-wide". That PRD's §2.4
+correction 2, its ο signal and its §10 entry were amended to match in the same
+change as this register, so no superseded claim is left standing there.
 
 ### 6.4 `std.materials.electrical`
 
