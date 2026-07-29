@@ -180,6 +180,43 @@ structure def FlexureCompliance {
     constraint yield_margin <= 1
 }
 
+// ── FlexureJoint marker ───────────────────────────────────────────────────
+
+// FlexureJoint — the nominal STATIC-LAYER marker for a joint produced by a
+// PRB-emitting `prb_*` ctor. Placeholder-ratchet α, task #5476; PRD
+// docs/prds/v0_6/placeholder-type-eradication-ratchet.md §3.1 / §3.2.
+//
+// Empty by design — it carries no fields, and that emptiness is load-bearing:
+// the RUNTIME representation of a flexure joint is an untouched `Value::Map`
+// (the `prb_*` ctors in `reify-stdlib/src/flexures/` are unchanged by α). PRD
+// §7.1 keeps the joints→typed-StructureInstance migration REJECTED, exactly as
+// KCC-ζ (task 3845, esc-3845-91) left it. Giving this marker fields would start
+// that declined migration; it is a type-layer tag only. Precedent for the empty
+// form: `structure def Spherical : DrivingJoint { }` (kinematic.ri:171).
+//
+// `: DrivingJoint` so the #4310 compile-time bound checks on `bind` / `sweep` /
+// `dim` treat a flexure joint uniformly with every other driving joint — to the
+// mechanism layer "it is just a Revolute". Without the bound, retyping the
+// `prb_*` ctors would make previously-accepted `bind(prb_notch_circular(…), …)`
+// call sites fail the bound check.
+//
+// Non-matchability comes free from the compiler's EXACT-EQUALITY overload
+// filter (`type_compat.rs::resolve_function_overload`): once
+// `flexure_compliance` declares `joint: FlexureJoint` (step-12), a bare `5mm`
+// is `Scalar[LENGTH]`, does not equal `StructureRef("FlexureJoint")`, and is
+// rejected as a hard compile Error. No new `Type` variant and no new grammar
+// are required (PRD §3.1) — this is a plain `structure def`.
+//
+// `pub`-visible by necessity, not by preference: it names the parameter type in
+// `flexure_compliance`'s public signature, so user code must be able to spell
+// it. That makes a bare `FlexureJoint()` fabrication statically legal — a
+// deliberate residual hole. It stays DYNAMICALLY loud via the eval-time
+// `W_FLEXURE_NON_JOINT_ARG` classifier (task 4547 Disposition 5), which is
+// RETAINED as defense-in-depth precisely for this case (PRD §3.6): a fabricated
+// marker carries no `__flexure_compliance` cache entry, so the classifier still
+// fires. Statically-silent AND dynamically-silent is what INV-SF-5 bans.
+structure def FlexureJoint : DrivingJoint { }
+
 // ── flexure_compliance accessor ───────────────────────────────────────────
 
 // flexure_compliance(joint) — the PRD §4.2 FREE-function accessor that
