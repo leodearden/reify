@@ -20394,6 +20394,40 @@
         }
     }
 
+    /// Shared runtime predicate behind the registry-completeness backstop:
+    /// `Ok(())` when a family's registry width matches its `VARIANT_COUNT`,
+    /// otherwise an `Err` naming the family and both numbers.
+    ///
+    /// This is DELIBERATELY redundant with the compile-time
+    /// `const _: () = assert!(ALL_X.len() == XKind::VARIANT_COUNT, …)` locks
+    /// beside each table.  Those are the primary shape — they fire at
+    /// `cargo check`, before any test runs.  This helper is the *seedable*
+    /// layer: a const assert cannot be seeded in-tree (no trybuild in this
+    /// workspace, and `pub(crate)` blocks rustdoc `compile_fail` doctests —
+    /// see `reify-eval/src/cell_eval_ctx.rs:120-121`), so routing the runtime
+    /// side through one shared fn is what lets
+    /// `seeded_unregistered_sweep_variant_fails_registry_completeness` prove
+    /// the backstop actually rejects drift.
+    ///
+    /// Do NOT delete either layer as duplicate coverage: drop the const asserts
+    /// and drift stops failing the build; drop this helper and the guard
+    /// becomes unfalsifiable.  The ModifyKind precedent already carries both
+    /// shapes (`geometry_modify.rs:1005` and this fn's callers).
+    fn registry_completeness(
+        family: &str,
+        registry_len: usize,
+        variant_count: usize,
+    ) -> Result<(), String> {
+        if registry_len == variant_count {
+            Ok(())
+        } else {
+            Err(format!(
+                "{family}: registry has {registry_len} entries but {family}::VARIANT_COUNT is \
+                 {variant_count} — a variant was added without registering it"
+            ))
+        }
+    }
+
     /// L5 step-1: every kind in every family must have a registered compiler
     /// in the fn-table. RED until the 7 lookup fns + static tables are added
     /// in step-2.
@@ -20420,6 +20454,8 @@
             "ALL_PRIMITIVE / PrimitiveKind::VARIANT_COUNT mismatch — a variant was added \
              without registering it; extend ALL_PRIMITIVE and PrimitiveKind::ALL together"
         );
+        registry_completeness("PrimitiveKind", ALL_PRIMITIVE.len(), PrimitiveKind::VARIANT_COUNT)
+            .expect("Primitive registry completeness");
         for k in ALL_PRIMITIVE {
             let _ = kind_idx_primitive(k);
             assert!(lookup_primitive(k).is_some(), "no Primitive entry: {:?}", k);
@@ -20442,7 +20478,8 @@
             "ALL_MODIFY / ModifyKind::VARIANT_COUNT mismatch — a variant was added \
              without registering it; extend ALL_MODIFY and ModifyKind::ALL together"
         );
-        assert_eq!(ALL_MODIFY.len(), ModifyKind::VARIANT_COUNT, "ALL_MODIFY / VARIANT_COUNT mismatch");
+        registry_completeness("ModifyKind", ALL_MODIFY.len(), ModifyKind::VARIANT_COUNT)
+            .expect("Modify registry completeness");
         for k in ALL_MODIFY {
             let _ = kind_idx_modify(k);
             assert!(lookup_modify(k).is_some(), "no Modify entry: {:?}", k);
@@ -20463,6 +20500,8 @@
             "ALL_TRANSFORM / TransformKind::VARIANT_COUNT mismatch — a variant was added \
              without registering it; extend ALL_TRANSFORM and TransformKind::ALL together"
         );
+        registry_completeness("TransformKind", ALL_TRANSFORM.len(), TransformKind::VARIANT_COUNT)
+            .expect("Transform registry completeness");
         for k in ALL_TRANSFORM {
             let _ = kind_idx_transform(k);
             assert!(lookup_transform(k).is_some(), "no Transform entry: {:?}", k);
@@ -20481,6 +20520,8 @@
             "ALL_PATTERN / PatternKind::VARIANT_COUNT mismatch — a variant was added \
              without registering it; extend ALL_PATTERN and PatternKind::ALL together"
         );
+        registry_completeness("PatternKind", ALL_PATTERN.len(), PatternKind::VARIANT_COUNT)
+            .expect("Pattern registry completeness");
         for k in ALL_PATTERN {
             let _ = kind_idx_pattern(k);
             assert!(lookup_pattern(k).is_some(), "no Pattern entry: {:?}", k);
@@ -20503,6 +20544,8 @@
             "ALL_SWEEP / SweepKind::VARIANT_COUNT mismatch — a variant was added \
              without registering it; extend ALL_SWEEP and SweepKind::ALL together"
         );
+        registry_completeness("SweepKind", ALL_SWEEP.len(), SweepKind::VARIANT_COUNT)
+            .expect("Sweep registry completeness");
         for k in ALL_SWEEP {
             let _ = kind_idx_sweep(k);
             assert!(lookup_sweep(k).is_some(), "no Sweep entry: {:?}", k);
@@ -20522,6 +20565,8 @@
             "ALL_CURVE / CurveKind::VARIANT_COUNT mismatch — a variant was added \
              without registering it; extend ALL_CURVE and CurveKind::ALL together"
         );
+        registry_completeness("CurveKind", ALL_CURVE.len(), CurveKind::VARIANT_COUNT)
+            .expect("Curve registry completeness");
         for k in ALL_CURVE {
             let _ = kind_idx_curve(k);
             assert!(lookup_curve(k).is_some(), "no Curve entry: {:?}", k);
@@ -20539,6 +20584,8 @@
             "ALL_PROFILE / ProfileKind::VARIANT_COUNT mismatch — a variant was added \
              without registering it; extend ALL_PROFILE and ProfileKind::ALL together"
         );
+        registry_completeness("ProfileKind", ALL_PROFILE.len(), ProfileKind::VARIANT_COUNT)
+            .expect("Profile registry completeness");
         for k in ALL_PROFILE {
             let _ = kind_idx_profile(k);
             assert!(lookup_profile(k).is_some(), "no Profile entry: {:?}", k);
