@@ -247,8 +247,9 @@ belt degenerate-input errors) is instructed to carry a `DiagnosticCode`.
   defect, report extending #5385 — never work around.
 - `wire-join-upstream` → PASS, producer:κ upstream (hard edge) — F1
   pre-registered escape.
-- `pipe-fallback` (F2) → PASS. #5343 (pipe non-+Z) is SOFT: `sweep` with a
-  posed profile is the documented fallback (μ text carries it); no edge.
+- `pipe-fallback` (F2) → PASS. #5343 (pipe non-+Z) has LANDED: `pipe()`
+  accepts any finite start-tangent, so the posed-profile `sweep` fallback
+  previously documented in μ's text is no longer needed.
 - `degenerate-inputs-rejection` (G6 branch 4) → producer-self: overlapping
   pitch circles / tangent nonexistence ⇒ error naming pulley indices, never
   Undef geometry (λ's own boundary test; INV-SF-1).
@@ -276,8 +277,9 @@ belt degenerate-input errors) is instructed to carry a `DiagnosticCode`.
   prereqs (wired); perturbed-pulley build-FAIL regression is μ's own
   boundary assertion over ι's constraint — every asserted capability is in
   μ's dependency closure (G6 branch 3 clean).
-- `tendon-solid-route` → tactical fallback documented: `sweep` posed-profile
-  vs #5343 `pipe` — decide at dispatch by checking #5343 (PRD §12 Q5).
+- `tendon-solid-route` → resolved: #5343 landed, so μ uses `pipe()` directly
+  for the tendon solid (PRD §12 Q5 resolved; the `sweep` posed-profile
+  fallback is no longer needed).
 
 ## ν — doc-chunk updates (project gate leaf 1)
 
