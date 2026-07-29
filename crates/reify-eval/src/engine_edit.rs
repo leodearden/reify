@@ -941,36 +941,32 @@ impl Engine {
         );
         let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &self.demand, &state.trace_map);
 
-        // θ2 (task 4531): order the value re-evaluation through the SAME unified
-        // driver as cold/build/concurrent (`run_unified_pass_seeded`), seeded from
-        // the dirty∩demand `eval_set` — making "warm output == cold output"
-        // structural on the edit surface. Bounded cost: the seeded planner
-        // restricts its node set to `eval_set` (O(eval_set), not O(graph)) so the
-        // P0 latency gate holds.
+        // θ2 (task 4531) + ν (task 5045): the value re-evaluation below walks the
+        // SAME unified driver order as cold/build/concurrent — making "warm output
+        // == cold output" structural on the edit surface — and `eval_set` IS that
+        // order. `dirty::compute_eval_set` sorts through `dirty::topological_sort`,
+        // which delegates to `engine_fixpoint::run_unified_pass_seeded` (the ONE
+        // scheduling core, INV-EVAL-5), so no second scheduling pass is run here.
         //
-        // ν (task 5045): `compute_eval_set` now RETURNS this same driver order —
-        // `dirty::topological_sort` delegates to `run_unified_pass_seeded` rather
-        // than running its own level-batched pass — so the call below is an
-        // IDEMPOTENT re-sort of an already-core-ordered vector, not a reordering.
-        // The block is RETAINED deliberately, for its second half: the
-        // `for node_id in &eval_set { if !scheduled … }` residue-append is a
-        // defensive guarantee that every demanded cell evaluates even when the
-        // schedule is short (a cyclic/untraced cone member — not expected here, and
-        // note the delegated sort now also drops REALIZATION-edge cycle members,
-        // which the retired reads-only level sort scheduled blindly). Dropping the
-        // redundant second Kahn pass while keeping that append is a behavior-neutral
-        // simplification, filed as a follow-up rather than done inline.
-        let driver_schedule: Vec<NodeId> = {
-            let seed: std::collections::HashSet<NodeId> = eval_set.iter().cloned().collect();
-            let mut sched = crate::engine_fixpoint::run_unified_pass_seeded(&state.trace_map, &seed);
-            let scheduled: std::collections::HashSet<NodeId> = sched.iter().cloned().collect();
-            for node_id in &eval_set {
-                if !scheduled.contains(node_id) {
-                    sched.push(node_id.clone());
-                }
-            }
-            sched
-        };
+        // Re-seeding the core over `eval_set` (what this site did between #4531 and
+        // #5045) is provably a no-op, which is why it was collapsed rather than
+        // kept as a defensive residue-append:
+        //   • `eval_set` is that core's own output over `dirty ∩ demand`;
+        //   • the only members the core drops are cyclic ones (a node reaching
+        //     in-degree 0 is always scheduled — including a node with no trace
+        //     entry, or one whose producers all sit OUTSIDE the seed);
+        //   • nothing surviving can depend on a dropped node, or it would itself
+        //     never have reached in-degree 0.
+        // So the in-degrees over `eval_set` — and hence the emitted order — are
+        // identical on a re-run, and the `if !scheduled { push }` residue-append had
+        // nothing left to append: cyclic cone members are already absent from
+        // `eval_set` itself, so they are not recoverable at this site either way.
+        // (Note the delegated sort also drops REALIZATION-edge cycle members, which
+        // the retired reads-only level sort scheduled blindly — that drop now
+        // happens inside `compute_eval_set`, upstream of here.)
+        //
+        // Bounded cost (P0 latency gate): one seeded pass, O(|eval_set| + edges
+        // within it), NOT O(graph) — and now exactly one, not two.
 
         // Seed has_changed_parent from dependents of the changed param
         let mut has_changed_parent: std::collections::HashSet<NodeId> =
@@ -1046,8 +1042,8 @@ impl Engine {
             self.cache.mark_pending(node_id);
         }
 
-        // Evaluate only Value nodes in the eval set, walked in the unified driver's
-        // schedule order (θ2 task 4531) rather than `compute_eval_set`'s order.
+        // Evaluate only Value nodes in the eval set, walked in `compute_eval_set`'s
+        // order — which IS the unified driver's schedule order (θ2 #4531, ν #5045).
         // Track nodes to skip due to early cutoff of upstream nodes.
         let mut skipped: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
         let mut actual_eval_set: Vec<NodeId> = Vec::with_capacity(eval_set.len());
@@ -1058,7 +1054,7 @@ impl Engine {
         // cell Undef → non-Undef.
         let mut minted_in_walk: HashSet<ValueCellId> = HashSet::new();
 
-        for node_id in &driver_schedule {
+        for node_id in &eval_set {
             if skipped.contains(node_id) {
                 continue;
             }
@@ -1627,25 +1623,14 @@ impl Engine {
                 let wave2_eval =
                     crate::dirty::compute_eval_set(&wave2_dirty, &self.demand, &es.trace_map);
 
-                // Driver order: seed = the dirty∩demand `wave2_eval`, ordered via
-                // `run_unified_pass_seeded` (O(seed), restricted to the cone — the
-                // P0 latency gate holds). Any seed node absent from the schedule
-                // (defensive: cyclic/untraced cone member) is appended in
-                // `wave2_eval` order so every demanded cell still re-propagates.
-                let wave2_schedule: Vec<NodeId> = {
-                    let seed: std::collections::HashSet<NodeId> =
-                        wave2_eval.iter().cloned().collect();
-                    let mut sched =
-                        crate::engine_fixpoint::run_unified_pass_seeded(&es.trace_map, &seed);
-                    let scheduled: std::collections::HashSet<NodeId> =
-                        sched.iter().cloned().collect();
-                    for node_id in &wave2_eval {
-                        if !scheduled.contains(node_id) {
-                            sched.push(node_id.clone());
-                        }
-                    }
-                    sched
-                };
+                // Driver order: `wave2_eval` already IS it. Since ν (#5045)
+                // `compute_eval_set` sorts through `dirty::topological_sort`, which
+                // delegates to `run_unified_pass_seeded` (O(seed), restricted to the
+                // cone — the P0 latency gate holds), so re-seeding the core over
+                // `wave2_eval` here would reproduce the identical vector and the
+                // `if !scheduled { push }` residue-append would have nothing to
+                // append (cyclic cone members are already absent from `wave2_eval`).
+                // Same argument as `edit_param`'s main eval walk above.
 
                 // Field-level borrow split: `graph` (shared) is read while the
                 // disjoint `new_snapshot.values` field is mutated in the loop body
@@ -1674,7 +1659,7 @@ impl Engine {
                     }
                 }
 
-                for node_id in &wave2_schedule {
+                for node_id in &wave2_eval {
                     let NodeId::Value(vcid) = node_id else {
                         continue;
                     };
@@ -2974,28 +2959,21 @@ impl Engine {
         // (7) Compute eval_set (topo-sorted) from dirty ∩ demand.
         let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &new_demand, &new_trace_map);
 
-        // θ2 (task 4713): order the value re-evaluation through the SAME unified
-        // driver as cold/build/concurrent (`run_unified_pass_seeded`), seeded from
-        // the dirty∩demand `eval_set`. Mirrors edit_param's driver schedule
-        // (engine_edit.rs:808-828 from task 4531 steps pre-1..9). Bounded cost:
-        // the seeded planner restricts its node set to `eval_set` (O(eval_set),
-        // not O(graph)) so the P0 latency gate holds. Uses `new_trace_map` (not
-        // the pre-edit eval_state.trace_map) so the driver operates over CURRENT
-        // edges after the dependency-structure rebuild at step (3) above. Any
-        // eval_set node absent from the driver schedule is appended in eval_set
-        // order so every demanded cell still evaluates.
-        let driver_schedule: Vec<NodeId> = {
-            let seed: HashSet<NodeId> = eval_set.iter().cloned().collect();
-            let mut sched =
-                crate::engine_fixpoint::run_unified_pass_seeded(&new_trace_map, &seed);
-            let scheduled: HashSet<NodeId> = sched.iter().cloned().collect();
-            for node_id in &eval_set {
-                if !scheduled.contains(node_id) {
-                    sched.push(node_id.clone());
-                }
-            }
-            sched
-        };
+        // θ2 (task 4713) + ν (task 5045): the value re-evaluation below walks the
+        // SAME unified driver order as cold/build/concurrent, and `eval_set` IS that
+        // order — `compute_eval_set` sorts through `dirty::topological_sort`, which
+        // delegates to `engine_fixpoint::run_unified_pass_seeded` (the ONE
+        // scheduling core, INV-EVAL-5). Note the sort above already used
+        // `new_trace_map` (not the pre-edit `eval_state.trace_map`), so the order is
+        // over CURRENT edges after the dependency-structure rebuild at step (3).
+        //
+        // Re-seeding the core over `eval_set` (what this site did between #4713 and
+        // #5045) is provably a no-op — see the same argument at `edit_param`'s eval
+        // walk: `eval_set` is the core's own output, the only members it drops are
+        // cyclic, and nothing surviving can depend on a dropped node, so a re-run
+        // reproduces the identical order and the `if !scheduled { push }`
+        // residue-append had nothing left to append. Bounded cost (P0 latency gate):
+        // one seeded pass, O(|eval_set| + edges within it), NOT O(graph).
 
         // (8) Seed values by preserving unchanged-content_hash entries from
         //     the old snapshot, with `param_overrides` winning for Param cells
@@ -3268,11 +3246,12 @@ impl Engine {
         let mut skipped: HashSet<NodeId> = HashSet::new();
         let mut actual_eval_set: Vec<NodeId> = Vec::with_capacity(eval_set.len());
 
-        // Walk the unified driver's Kahn schedule (θ2 task 4713) rather than the
-        // level-order `eval_set`. Both orderings are valid toposorts, so final
-        // values are identical; the driver order makes "warm output == cold output"
-        // structural on the edit_source surface (mirrors edit_param:895-900).
-        for node_id in &driver_schedule {
+        // Walk the unified driver's Kahn schedule (θ2 #4713) — since ν (#5045) that
+        // IS `eval_set`'s own order, because `compute_eval_set` delegates to the one
+        // core rather than running a separate level-batched pass. This is what makes
+        // "warm output == cold output" structural on the edit_source surface
+        // (mirrors edit_param's eval walk).
+        for node_id in &eval_set {
             if skipped.contains(node_id) {
                 continue;
             }
