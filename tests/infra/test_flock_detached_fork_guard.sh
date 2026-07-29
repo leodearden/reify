@@ -319,6 +319,60 @@ _flock_fork_offenders() {
 }
 
 # ---------------------------------------------------------------------------
+# _flock_fork_tracked_shell_files
+#
+# The corpus the guard is responsible for: every tracked shell script in the
+# repo, emitted one absolute path per line.
+#
+#   · `*.sh` catches the two script trees; `hooks/*` catches the
+#     extension-less git hooks, which an `*.sh`-only glob would silently miss
+#     (all five carry a shell shebang).
+#   · `git -C "$REPO_ROOT"` so this works unchanged from a task worktree, and
+#     the emitted paths are $REPO_ROOT-anchored rather than cwd-relative.
+#   · `-z` + `read -d ''` so a path containing whitespace or a newline cannot
+#     silently split into two bogus entries — which would look like a bigger
+#     corpus while scanning neither real file.
+#
+# The caller asserts a floor on the count: a broken enumeration must fail
+# LOUDLY rather than report a vacuous all-clear over an empty list.
+# ---------------------------------------------------------------------------
+_flock_fork_tracked_shell_files() {
+    local _rel
+    while IFS= read -r -d '' _rel; do
+        [ -n "$_rel" ] || continue
+        printf '%s\n' "$REPO_ROOT/$_rel"
+    done < <(git -C "$REPO_ROOT" ls-files -z -- '*.sh' 'hooks/*')
+}
+
+# ---------------------------------------------------------------------------
+# _flock_fork_remedy — what to DO about a hit.
+#
+# Printed alongside the offender lines when the repo-wide scan fails, so the
+# report is actionable rather than a bare verdict.  Per G7 this carries a
+# one-line POINTER to the single source of truth and restates neither the
+# argument nor the measured rates.
+# ---------------------------------------------------------------------------
+_flock_fork_remedy() {
+    cat <<'REMEDY'
+
+Each OFFENDER line above names the file, the FD, and the open / acquire /
+detach line numbers.  The script takes a lock on a descriptor it opened
+itself and then forks a DETACHED child, which inherits that descriptor: the
+lock outlives the parent, and the next consumer blocks on a holder that has
+already exited.
+
+REMEDY: release the lock explicitly with `flock -u <fd>` from an EXIT trap
+installed INSIDE the branch that OPENED the FD.  Installing the trap outside
+that branch is not equivalent -- on a path where the FD was inherited it
+would release the CALLER's lock.
+
+WHY an explicit release rather than closing the descriptor, and the measured
+held-after-exit rates: see the LANE-LOCK RELEASE CONTRACT block at the flock
+acquire in scripts/seed-warm-lane.sh, which is the single source of truth.
+REMEDY
+}
+
+# ---------------------------------------------------------------------------
 # Fixture tokens — SELF-MATCH SAFETY (see header).
 #
 # Every token that could make a line flaggable is assembled here from adjacent
@@ -759,7 +813,7 @@ _corpus_has() {
 
 _corpus_scans_clean() {
     [ "${#_FF_CORPUS[@]}" -gt 0 ] || { echo "corpus is EMPTY"; return 1; }
-    _scans_clean "${_FF_CORPUS[@]}"
+    _scans_clean "${_FF_CORPUS[@]}" || { _flock_fork_remedy; return 1; }
 }
 
 # The anti-vacuity control: the real corpus with ONE known offender mixed in
