@@ -322,6 +322,9 @@ _FX_ACQ_OR='flo''ck -xn 9 || exit 1'
 _FX_ACQ_INHERIT='flo''ck -n 9 || true'
 _FX_ACQ_SHARED='    flo''ck -s 9'
 _FX_SQUAT_ONELINE='( flo''ck -x 9 && touch "$READY" && sleep 300 ) 9>"$LOCK" '"$_FX_AMP"
+_FX_CONT_HEAD='assert "the test shell itself holds the lane lock on FD 9" \'
+_FX_CONT_TAIL='    flo''ck -n 9'
+_FX_DETACH_SUBSHELL='( sleep 300 ) '"$_FX_AMP"
 _FX_DETACH='{ rm -rf "$TRASH"; } 9<&- '"$_FX_AMP"
 _FX_FG_CHILD='"$@" 9<&-'
 _FX_UNLOCK='    flo''ck -u 9 2>/dev/null || true'
@@ -657,5 +660,37 @@ assert "real tree: tests/infra/test_warm_lane_gc.sh is CLEAN" \
     _scans_clean "$REPO_ROOT/tests/infra/test_warm_lane_gc.sh"
 assert "real tree: tests/infra/test_warm_lane_audit.sh is CLEAN" \
     _scans_clean "$REPO_ROOT/tests/infra/test_warm_lane_audit.sh"
+
+# ---------------------------------------------------------------------------
+# Cycle 7 — BACKSLASH CONTINUATIONS are arguments, not statements.
+#
+# A physical line that continues the previous one is part of somebody else's
+# command.  `assert "..." \` / `flock -n 9` never executes a flock the shell
+# then carries across a fork — the FD-9 operand is an ARGUMENT to `assert`.
+# Reading it as an acquire mistakes the subject of a claim for the claim.
+# ---------------------------------------------------------------------------
+echo "--- Cycle 7: backslash-continuation lines are not acquire sites ---"
+
+_write_fixture neg_continuation.sh \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'LOCK=/tmp/fixture.lock' \
+    "$_FX_OPEN" \
+    "$_FX_CONT_HEAD" \
+    "$_FX_CONT_TAIL" \
+    "$_FX_CLOSE_BARE" \
+    "$_FX_DETACH_SUBSHELL" \
+    'echo "done"'
+
+assert "continuation: an FD-9 operand on a continued line is not an acquire" \
+    _scans_clean "$TMPWORK/neg_continuation.sh"
+
+# Real-tree control — and the sharpest one available, because this is the very
+# suite that pins the #5705 fix.  Its H7b setup opens FD 9 at top level (:2870)
+# and then asserts over it across a continuation (:2871-2872), has detached
+# forks downstream at :2929, :2954, :3009, :3068 and :4046, and carries no
+# code-level release.
+assert "real tree: tests/infra/test_seed_warm_lane.sh is CLEAN" \
+    _scans_clean "$REPO_ROOT/tests/infra/test_seed_warm_lane.sh"
 
 test_summary
