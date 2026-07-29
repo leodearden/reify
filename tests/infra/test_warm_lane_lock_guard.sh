@@ -1,0 +1,709 @@
+#!/usr/bin/env bash
+# tests/infra/test_warm_lane_lock_guard.sh
+# Hermetic tests for scripts/warm-lane-lock-guard.sh.
+#
+# WHY THIS SUITE EXISTS (task 5608; escalation esc-5363-5).
+#   The failure mechanism, the cross-repo contract, and the scope bound are
+#   stated once, in docs/design/merge-verify-lane-dispatch-seam.md (§1, §3, §5).
+#   Read that first; it is what to amend if the contract changes.
+#
+#   What a reader of THIS file needs: the script under test is an availability
+#   oracle dark-factory consults BEFORE dispatching a verify onto a warm lane,
+#   because a lock timeout on that lane's inode is classified `merge_error` —
+#   terminal, escalated. So the properties pinned below are the ones a consumer
+#   depends on: the exit code, the sentinel grammar, the lock-path derivation,
+#   the fail-open degradation, and non-mutation of pool state.
+#
+#   What is deliberately NOT pinned: any end-to-end merge-queue outcome. That
+#   half is dark-factory's and is not reachable from a reify worktree (seam
+#   doc §5) — such a test would be permanently red for reasons no reify
+#   implementer could fix, and indistinguishable from a genuine defect.
+#
+# run_guard captures STDOUT, STDERR, and RC separately:
+#   OUT     — captured stdout from the script
+#   ERR_OUT — captured stderr from the script
+#   RC      — exit code
+#
+# Blocks:
+#   A — CLI contract: --help, unknown flag, missing/unknown subcommand,
+#       missing mount; every exit-2 path is actionable on stderr.
+#   B — IDLE path and the NON-CREATING invariant: absent / unheld / shared-held
+#       lock all read IDLE with empty stdout, and the probe never creates,
+#       truncates, or re-inodes the lock file.
+#   C — BUSY sentinel and per-lane granularity: exit 3, exactly one
+#       `@@REIFY_WARM_LANE_LOCK_BUSY@@ lane=<n> lock=<p>` stdout line, and
+#       --lane / REIFY_WARM_LANE_LOCK_GUARD_LANE selecting one lock, not the
+#       whole mount.
+#   D — FAIL-OPEN degradation: exit 3 is reachable ONLY from a positively
+#       observed exclusive hold; a missing/failing flock, an unreadable lock,
+#       and an absent mount all degrade to exit 0 with the sentinel ABSENT.
+#   E — lock-path resolution contract (the silent-no-op guard): the lock is a
+#       SIBLING of the lane dir (`<mount>/<lane>.lock`, byte-matching DF's
+#       lane_lock_path()), with a decoy proving the nested misinterpretation
+#       is NOT what is probed; plus the --lock-path explicit override.
+#
+# Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+SCRIPT="$REPO_ROOT/scripts/warm-lane-lock-guard.sh"
+
+[ -f "$SCRIPT_DIR/test_helpers.sh" ] || {
+    echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"
+    exit 1
+}
+# shellcheck source=tests/infra/test_helpers.sh
+source "$SCRIPT_DIR/test_helpers.sh"
+
+echo "=== scripts/warm-lane-lock-guard.sh hermetic tests (task 5608) ==="
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Ambient-env hygiene
+# ──────────────────────────────────────────────────────────────────────────────
+# Every knob this guard reads is scrubbed from the suite's OWN environment
+# before the first invocation. An ambient REIFY_WARM_LANE_MOUNT (the
+# orchestrator exports one on real verify runs) would silently satisfy the
+# "mount required" validation and turn Block A's missing-mount assertion into a
+# vacuous pass; an ambient --lane/--lock-path knob would redirect every probe.
+# Caller-side prefixes (`REIFY_..._LANE=x run_guard ...`) are unaffected: they
+# are set at call time, after this scrub.
+unset REIFY_WARM_LANE_MOUNT || true
+unset REIFY_WARM_LANE_LOCK_GUARD_LANE || true
+unset REIFY_WARM_LANE_LOCK_GUARD_LOCK_PATH || true
+unset REIFY_WARM_LANE_LOCK_GUARD_FLOCK || true
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Shared temp state + cleanup
+# ──────────────────────────────────────────────────────────────────────────────
+_TMPDIRS=()
+_BGPIDS=()
+cleanup() {
+    for pid in "${_BGPIDS[@]+${_BGPIDS[@]}}"; do
+        kill "$pid" 2>/dev/null || true
+    done
+    for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done
+}
+trap cleanup EXIT
+
+ERR_FILE="$(mktemp /tmp/test-warm-lane-lock-guard-err-XXXXXX)"
+_TMPDIRS+=("$ERR_FILE")
+
+# ── run_guard ─────────────────────────────────────────────────────────────────
+# Invokes warm-lane-lock-guard.sh, capturing OUT (stdout), ERR_OUT (stderr) and
+# RC (exit code) as globals — the same three-way split
+# tests/infra/test_warm_lane_disk_guard.sh:88-101 uses, and the reason stdout
+# assertions here can be exact: a diagnostic leaking onto stdout would show up
+# in OUT rather than being swallowed into a merged stream.
+# Callers may prefix inline env vars (e.g. REIFY_WARM_LANE_LOCK_GUARD_LANE=...)
+# to drive the env-form contracts; those are inherited by the subshell.
+run_guard() {
+    local rc=0
+    > "$ERR_FILE"
+    OUT="$(bash "$SCRIPT" "$@" 2>"$ERR_FILE")" || rc=$?
+    ERR_OUT="$(cat "$ERR_FILE")"
+    RC=$rc
+}
+
+# ── run_guard_no_mount_env ────────────────────────────────────────────────────
+# run_guard with REIFY_WARM_LANE_MOUNT removed from the child's environment
+# outright (`env -u`), not merely unset in this shell. Belt-and-braces for the
+# "no mount anywhere" assertion: it holds even if some future ambient injection
+# re-exports the var after the scrub above.
+run_guard_no_mount_env() {
+    local rc=0
+    > "$ERR_FILE"
+    OUT="$(env -u REIFY_WARM_LANE_MOUNT bash "$SCRIPT" "$@" 2>"$ERR_FILE")" || rc=$?
+    ERR_OUT="$(cat "$ERR_FILE")"
+    RC=$rc
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Lock-holder fixtures (technique R — causal READY-marker handshake)
+#
+# Copied from tests/infra/test_warm_lane_audit.sh:121-191. Required by
+# docs/prds/infra-test-wallclock-deflake.md (task 4847): a fixed `sleep` races
+# the background subshell's flock acquisition under load, which is exactly the
+# flake class those tasks de-flaked. Nothing in this suite may assert on
+# elapsed time — tests/infra/test_no_new_wallclock_upper_bounds.sh statically
+# REDs that — so every assertion below is on an exit code, on stream content,
+# or on file state.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# _wait_for_reader_lock <ready-marker> <deadline-seconds>
+# Polls for the READY marker in 0.05s ticks, returning 0 as soon as it appears
+# or non-zero once the anti-hang deadline elapses. The marker is touched by a
+# backgrounded holder AFTER it acquires its flock, so returning 0 causally
+# guarantees the flock is held at the caller's next statement.
+_wait_for_reader_lock() {
+    local ready_marker="$1"
+    local deadline_s="$2"
+    local max_ticks=$(( deadline_s * 20 ))
+    local tick=0
+    while [ "$tick" -lt "$max_ticks" ]; do
+        [ -f "$ready_marker" ] && return 0
+        sleep 0.05
+        tick=$(( tick + 1 ))
+    done
+    return 1
+}
+
+# _flock_holder_body <flock-mode> <ready-marker> <release-marker>
+# Body of a RELEASE-marker flock holder. Backgrounded by the helpers below as
+# `( _flock_holder_body ... ) 9>lock &` — fd 9 is supplied by the CALLER's
+# redirect, so the flock is taken by that backgrounded subshell directly, and it
+# is a DIRECT child of this script, so a later `wait $!` on it works.
+#
+# NOT `sleep N` + `kill`, which is the obvious shape and is WRONG here: the
+# `sleep` child inherits fd 9, so killing only the parent subshell can leave fd
+# 9 — and therefore the flock — held after the "release", flaking the NEXT
+# block's IDLE assertion into a spurious BUSY. This suite releases and re-takes
+# locks repeatedly (B→C→D→E), so it needs the causal form:
+# `touch RELEASE; wait $pid` guarantees the flock is dropped before the caller's
+# next statement. Technique borrowed from
+# tests/infra/test_warm_lane_sizing_lifecycle.sh:129-157.
+#
+# The tick ceiling is an anti-hang safeguard, not an assertion — nothing here
+# asserts on elapsed time (docs/prds/infra-test-wallclock-deflake.md DD5).
+_flock_holder_body() {
+    local mode="$1" ready="$2" release="$3"
+    flock "$mode" 9
+    touch "$ready"
+    local tick=0
+    while [ "$tick" -lt 6000 ]; do
+        [ -f "$release" ] && return 0
+        sleep 0.05
+        tick=$(( tick + 1 ))
+    done
+}
+
+# _hold_lane_lock_at <lock-path> [flock-mode]
+# Takes a flock (default EXCLUSIVE) on an explicitly-named lock file — the state
+# a live dark-factory consumer (merge_verify_lease / reset_persistent_merge_
+# worktree / _seed_warm_lane) puts a lane in — and blocks until the READY marker
+# proves the lock is held. Path-addressed so Block E can hold a lock OUTSIDE the
+# `<mount>/<lane>.lock` naming scheme (the --lock-path override, and the decoy).
+#
+# Publishes the background pid in the GLOBAL `LANE_LOCK_PID` rather than on
+# stdout deliberately: a `pid=$(_hold_lane_lock_at ...)` command substitution
+# would run this body in a SUBSHELL, discarding the `_BGPIDS` registration below
+# and orphaning the holder past the suite's cleanup trap.
+#
+# ONE HOLDER AT A TIME is this suite's standing invariant: _release_lane_lock
+# clears _BGPIDS wholesale, so a second concurrent holder would be dropped from
+# the cleanup set. Every block below holds one lock, asserts, and releases.
+#
+# The exclusive holder opens fd 9 for WRITING (`9>`); the shared one opens it
+# READ-only (`9<`), mirroring the production probe's own read-only open, so the
+# shared fixture models a real reader rather than an artificial write-opened
+# shared lock. Ready/release markers are suffixed per mode so an exclusive and a
+# shared holder can never collide on one lock file's markers.
+LANE_LOCK_PID=""
+LANE_LOCK_RELEASE=""
+_hold_lane_lock_at() {
+    local lock="$1" mode="${2:--x}"
+    local tag="exclusive"
+    [ "$mode" = "-s" ] && tag="shared"
+    local ready="$lock.$tag-ready-marker"
+    local release="$lock.$tag-release-marker"
+    rm -f "$ready" "$release"
+    touch "$lock"
+    if [ "$mode" = "-s" ]; then
+        ( _flock_holder_body "$mode" "$ready" "$release" ) 9<"$lock" &
+    else
+        ( _flock_holder_body "$mode" "$ready" "$release" ) 9>"$lock" &
+    fi
+    LANE_LOCK_PID=$!
+    LANE_LOCK_RELEASE="$release"
+    _BGPIDS+=("$LANE_LOCK_PID")
+    _wait_for_reader_lock "$ready" 30
+}
+
+# _hold_lane_lock <mount> <lane> — the lane-addressed exclusive form.
+_hold_lane_lock() {
+    local mount="$1" lane="$2"
+    _hold_lane_lock_at "$mount/$lane.lock" -x
+}
+
+# _hold_lane_lock_shared <mount> <lane>
+# The SHARED counterpart: models a concurrent READER (e.g. another audit run),
+# which the guard must read as IDLE, not BUSY — `flock -s`, not `-x`, is the
+# entire point of the helper.
+_hold_lane_lock_shared() {
+    local mount="$1" lane="$2"
+    _hold_lane_lock_at "$mount/$lane.lock" -s
+}
+
+# _release_lane_lock
+# Drops the current holder CAUSALLY: touch its release marker, then `wait` for
+# the subshell to exit, which closes fd 9 and releases the flock before the
+# caller's next statement. Clearing _BGPIDS afterwards prevents the EXIT trap
+# from signalling a pid the kernel may already have recycled.
+_release_lane_lock() {
+    [ -n "$LANE_LOCK_PID" ] || return 0
+    touch "$LANE_LOCK_RELEASE"
+    wait "$LANE_LOCK_PID" 2>/dev/null || true
+    LANE_LOCK_PID=""
+    LANE_LOCK_RELEASE=""
+    _BGPIDS=()
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block A — CLI contract
+#
+# Exit 2 is the WIRING-BUG code, deliberately distinct from both verdicts (0
+# IDLE / 3 BUSY): dark-factory must be able to tell "I asked the question wrong"
+# from "the lane is free". A guard that answered IDLE to a malformed invocation
+# would let a wiring mistake read as a green light forever.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block A: CLI contract ---"
+
+# A1: --help is a successful, self-documenting exit, and it keeps stdout clean —
+# stdout is reserved for the BUSY sentinel alone, so a caller that parses stdout
+# never has to filter help text out of it.
+run_guard --help
+assert "A1: --help exits 0" test "$RC" -eq 0
+assert "A1: --help prints the usage banner on stderr" \
+    bash -c 'printf "%s\n" "$1" | grep -q "Usage:"' _ "$ERR_OUT"
+assert "A1: --help writes nothing to stdout (stdout is sentinel-only)" \
+    test -z "$OUT"
+
+# A2: an unknown flag is a wiring bug, not a verdict.
+run_guard --bogus
+assert "A2: unknown flag exits 2" test "$RC" -eq 2
+assert "A2: unknown flag explains itself on stderr" test -n "$ERR_OUT"
+
+# A3: a bare invocation with no subcommand at all.
+run_guard
+assert "A3: missing subcommand exits 2" test "$RC" -eq 2
+assert "A3: missing subcommand explains itself on stderr" test -n "$ERR_OUT"
+
+# A4: an unknown subcommand — distinct from A2's unknown FLAG, because the arg
+# loop reaches it through the bare-word branch rather than the -* branch.
+run_guard frobnicate
+assert "A4: unknown subcommand exits 2" test "$RC" -eq 2
+assert "A4: unknown subcommand explains itself on stderr" test -n "$ERR_OUT"
+
+# A5: `check` with no mount anywhere. Invoked through run_guard_no_mount_env so
+# an ambient REIFY_WARM_LANE_MOUNT (the orchestrator exports one on real verify
+# runs) cannot mask the missing-mount validation and turn this into a vacuous
+# pass.
+run_guard_no_mount_env check
+assert "A5: check with neither --mount nor REIFY_WARM_LANE_MOUNT exits 2" \
+    test "$RC" -eq 2
+assert "A5: the missing-mount error names the knob on stderr" \
+    bash -c 'printf "%s\n" "$1" | grep -q "REIFY_WARM_LANE_MOUNT"' _ "$ERR_OUT"
+
+# A6: no exit-2 path writes to stdout. Same reason as A1 — a caller reading
+# stdout for the sentinel must never see usage-error text there.
+run_guard --bogus
+assert "A6: an exit-2 path writes nothing to stdout" test -z "$OUT"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block B — IDLE path and the NON-CREATING invariant
+#
+# The probe is a pure reader of pool state. A guard that materialized the very
+# lock file it was asked about would be creating the resource dark-factory
+# serializes on — so B2/B5 pin non-creation and non-mutation as hard as B1/B3/B4
+# pin the verdicts. Both would be satisfied by a `>`-open or the
+# `flock <file> <cmd>` convenience form failing loudly, which is the point.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block B: IDLE path and the non-creating invariant ---"
+
+B_MOUNT="$(mktemp -d /tmp/test-warm-lane-lock-guard-b-XXXXXX)"
+_TMPDIRS+=("$B_MOUNT")
+mkdir -p "$B_MOUNT/_merge-verify"
+B_LOCK="$B_MOUNT/_merge-verify.lock"
+
+# B1: no lock file at all — the state a lane sits in until DF first seeds it.
+run_guard check --mount "$B_MOUNT"
+assert "B1: an absent lock file reads IDLE (exit 0)" test "$RC" -eq 0
+assert "B1: IDLE writes nothing to stdout" test -z "$OUT"
+
+# B2: ...and the probe did not bring it into existence.
+assert "B2: the probe did NOT create the absent lock file" test ! -e "$B_LOCK"
+
+# B3: present but unheld — the steady state of a free lane.
+#
+# Seeded with CONTENT, not `touch`ed empty, and that is load-bearing rather than
+# decorative: B5a's stated property is "a truncating open would change the size",
+# but truncating a ZERO-BYTE file is a no-op, so against an empty fixture a
+# `>`-open (or the `flock <file> <cmd>` convenience form the guard's header
+# explicitly avoids) would leave both %s and %i identical and B5a would pass on
+# the very regression it names. A non-empty canary makes the size half of the
+# assertion real. The guard's IDLE verdict is indifferent to the file's contents.
+B_CANARY='lock-guard-non-mutation-canary'
+printf '%s\n' "$B_CANARY" > "$B_LOCK"
+
+# Captured BEFORE the first probe, for the same reason. Sampling it AFTER a
+# `run_guard` would let a truncating probe zero the file and then compare 0 to 0.
+B_STAT_BEFORE="$(stat -c '%s %i' "$B_LOCK")"
+
+run_guard check --mount "$B_MOUNT"
+assert "B3: a present-but-unheld lock reads IDLE (exit 0)" test "$RC" -eq 0
+assert "B3: a present-but-unheld lock writes nothing to stdout" test -z "$OUT"
+
+# B5a: probing an unheld lock leaves the inode byte-identical. Size AND inode
+# together: a truncating open would change the size (now detectable — see the
+# canary above), and a create-and-replace would change the inode.
+B_STAT_AFTER="$(stat -c '%s %i' "$B_LOCK")"
+assert "B5a: probing an unheld lock leaves its size and inode unchanged" \
+    test "$B_STAT_BEFORE" = "$B_STAT_AFTER"
+assert "B5a: ...and the lock file's bytes survive the probe verbatim" \
+    test "$(cat "$B_LOCK")" = "$B_CANARY"
+
+# B4: a concurrent SHARED reader (e.g. another audit run) must NOT read BUSY.
+# The probe itself takes a shared lock, so only a genuine exclusive holder can
+# block it — that is what makes concurrent oracles non-contending.
+_hold_lane_lock_shared "$B_MOUNT" _merge-verify
+run_guard check --mount "$B_MOUNT"
+assert "B4: a concurrent SHARED reader still reads IDLE (exit 0)" test "$RC" -eq 0
+assert "B4: a concurrent SHARED reader writes nothing to stdout" test -z "$OUT"
+
+# B5b: ...and probing under a shared holder is equally non-mutating. Compared
+# against the same pre-probe baseline, so the canary's size is still the thing
+# being checked. (The shared fixture opens fd 9 READ-only, so the holder itself
+# cannot have truncated it either.)
+B_STAT_SHARED="$(stat -c '%s %i' "$B_LOCK")"
+assert "B5b: probing a shared-held lock leaves its size and inode unchanged" \
+    test "$B_STAT_BEFORE" = "$B_STAT_SHARED"
+assert "B5b: ...and its bytes are still the canary" \
+    test "$(cat "$B_LOCK")" = "$B_CANARY"
+_release_lane_lock
+
+# B6: the load-bearing RED for this block. With a genuine EXCLUSIVE holder the
+# guard must not report IDLE — asserted as "not 0" here rather than "is 3",
+# because the exact code and its sentinel are Block C's contract.
+_hold_lane_lock "$B_MOUNT" _merge-verify
+run_guard check --mount "$B_MOUNT"
+assert "B6: an EXCLUSIVE holder must NOT read IDLE (exit != 0)" test "$RC" -ne 0
+_release_lane_lock
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block C — the BUSY sentinel and per-lane granularity
+#
+# This is the machine-readable half of the cross-repo seam. Exit 3 is the pinned
+# throttle-not-requeue code (docs/prds/warm-lane-pool-sizing-lifecycle.md
+# §212-219; the same code warm-lane-disk-guard.sh --soft and
+# fleet-load-detector.sh emit), and stdout carries exactly one sentinel line so
+# dark-factory can read the verdict without parsing prose.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block C: BUSY sentinel and per-lane granularity ---"
+
+C_MOUNT="$(mktemp -d /tmp/test-warm-lane-lock-guard-c-XXXXXX)"
+_TMPDIRS+=("$C_MOUNT")
+mkdir -p "$C_MOUNT/_merge-verify" "$C_MOUNT/_spec-0"
+
+# ── Phase 1: an exclusive holder on _merge-verify ─────────────────────────────
+_hold_lane_lock "$C_MOUNT" _merge-verify
+run_guard check --mount "$C_MOUNT"
+
+# C1: exactly 3, and specifically NOT the neighbouring codes. 3 means "defer this
+# dispatch"; 75 (EX_TEMPFAIL) would tell DF to REQUEUE the command, and 2 means
+# "you wired me wrong" — asserting the two negatives keeps 3 a deliberate
+# cross-repo value rather than an incidental non-zero.
+assert "C1: an exclusive holder exits exactly 3" test "$RC" -eq 3
+assert "C1: BUSY is not 75 (EX_TEMPFAIL requeue), a different instruction" test "$RC" -ne 75
+assert "C1: BUSY is not 2 (usage error), a different meaning" test "$RC" -ne 2
+
+# C2: stdout is exactly one line, and that line is the sentinel. The line-count
+# assertion is what keeps a diagnostic from leaking onto stdout alongside it.
+assert "C2: BUSY writes a non-empty stdout" test -n "$OUT"
+assert "C2: BUSY stdout is exactly one line" \
+    test "$(printf '%s\n' "$OUT" | wc -l)" -eq 1
+assert "C2: that line is the @@REIFY_WARM_LANE_LOCK_BUSY@@ sentinel with lane= and lock=" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^@@REIFY_WARM_LANE_LOCK_BUSY@@ lane=_merge-verify lock=.*/_merge-verify\.lock$"' \
+    _ "$OUT"
+
+# C3: a human reading the log gets an actionable message naming the lane.
+assert "C3: BUSY explains itself on stderr" test -n "$ERR_OUT"
+# Matched against the BUSY-specific wording, not merely "stderr is non-empty":
+# the guard logs an [info] line BEFORE it probes, so a bare non-emptiness check
+# would pass even if every post-probe diagnostic were being discarded.
+assert "C3: the stderr message reports this lane as BUSY" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "_merge-verify'"'"' is BUSY"' _ "$ERR_OUT"
+
+# C7: the MOUNT env form. Block A only pins it negatively (A5: absent => exit 2),
+# and REIFY_WARM_LANE_MOUNT is the form dark-factory actually exports on real
+# verify runs — so "the flag works" is not enough evidence that the wiring DF
+# will use works. Asserted positively here, against the live holder.
+REIFY_WARM_LANE_MOUNT="$C_MOUNT" run_guard check
+assert "C7: REIFY_WARM_LANE_MOUNT is honoured as the mount (exit 3)" test "$RC" -eq 3
+assert "C7: the env-mount form derives the same lock= path" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "$2"' _ "$OUT" "lock=$C_MOUNT/_merge-verify.lock"
+
+# ...and --mount WINS over it, matching the --lane (C6) and --lock-path (E5)
+# ordering. The env points at a mount whose _merge-verify lock does not exist at
+# all, so a guard that let env win would answer 0 instead of 3.
+C_WRONG_MOUNT="$(mktemp -d /tmp/test-warm-lane-lock-guard-c-wrong-XXXXXX)"
+_TMPDIRS+=("$C_WRONG_MOUNT")
+mkdir -p "$C_WRONG_MOUNT/_merge-verify"
+REIFY_WARM_LANE_MOUNT="$C_WRONG_MOUNT" run_guard check --mount "$C_MOUNT"
+assert "C7: an explicit --mount overrides REIFY_WARM_LANE_MOUNT" test "$RC" -eq 3
+assert "C7: the overriding flag's mount is the one that reached the derivation" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "$2"' _ "$OUT" "lock=$C_MOUNT/_merge-verify.lock"
+
+# C4: per-lane granularity. A guard that probed the whole mount — or any lock it
+# found under it — would call _spec-0 busy here purely because a NEIGHBOUR is.
+run_guard check --mount "$C_MOUNT" --lane _spec-0
+assert "C4: a busy neighbour does not make _spec-0 busy (exit 0)" test "$RC" -eq 0
+assert "C4: the unaffected lane writes nothing to stdout" test -z "$OUT"
+_release_lane_lock
+
+# ── Phase 2: move the holder to _spec-0 ────────────────────────────────────────
+_hold_lane_lock "$C_MOUNT" _spec-0
+
+# C5: --lane is honoured POSITIVELY, not just negatively — C4 alone would also
+# pass for a guard that always answered IDLE to a --lane it did not understand.
+run_guard check --mount "$C_MOUNT" --lane _spec-0
+assert "C5: --lane _spec-0 with a holder on _spec-0 exits 3" test "$RC" -eq 3
+assert "C5: the sentinel reports lane=_spec-0" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^@@REIFY_WARM_LANE_LOCK_BUSY@@ lane=_spec-0 lock=.*/_spec-0\.lock$"' \
+    _ "$OUT"
+
+# C6: the env form is equivalent to the flag...
+REIFY_WARM_LANE_LOCK_GUARD_LANE=_spec-0 run_guard check --mount "$C_MOUNT"
+assert "C6: REIFY_WARM_LANE_LOCK_GUARD_LANE=_spec-0 is equivalent to --lane _spec-0" \
+    test "$RC" -eq 3
+assert "C6: the env form produces the same lane= field" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_spec-0"' _ "$OUT"
+
+# ...and the flag WINS over it (standard house ordering: env supplies the
+# default, the flag overwrites it). _merge-verify is unheld in this phase, so a
+# guard that let the env value win would answer 3 instead of 0.
+REIFY_WARM_LANE_LOCK_GUARD_LANE=_spec-0 run_guard check --mount "$C_MOUNT" --lane _merge-verify
+assert "C6: an explicit --lane overrides REIFY_WARM_LANE_LOCK_GUARD_LANE" test "$RC" -eq 0
+assert "C6: the overridden (idle) lane writes nothing to stdout" test -z "$OUT"
+_release_lane_lock
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block D — FAIL-OPEN degradation
+#
+# Exit 3 must be reachable ONLY from a POSITIVELY observed exclusive hold. Every
+# uncertainty — a broken flock, a missing flock, an unreadable lock file, an
+# absent mount — degrades to exit 0 with the sentinel ABSENT.
+#
+# This inverts warm-lane-disk-guard.sh's fail-CLOSED policy, deliberately. There,
+# an unmeasurable disk must be assumed full or the pool hits ENOSPC. Here the
+# asymmetry runs the other way: a false BUSY would defer merge dispatch
+# indefinitely and wedge the serial merge queue, while a false IDLE merely
+# restores today's behaviour — DF's own bounded-wait flock is still the real
+# serialization, and this guard is pure pre-dispatch backpressure.
+#
+# The flock dependency is driven through the script's OWN env seam
+# (REIFY_WARM_LANE_LOCK_GUARD_FLOCK), never via PATH — the house convention, as
+# tests/infra/test_warm_lane_disk_guard.sh does for df. The fixtures' own
+# holders keep using the REAL flock, so D1/D2 measure the guard's degradation
+# against a genuinely-held lock rather than against a broken fixture.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block D: fail-open degradation ---"
+
+D_MOUNT="$(mktemp -d /tmp/test-warm-lane-lock-guard-d-XXXXXX)"
+_TMPDIRS+=("$D_MOUNT")
+mkdir -p "$D_MOUNT/_merge-verify"
+
+D_STUB_DIR="$(mktemp -d /tmp/test-warm-lane-lock-guard-stub-XXXXXX)"
+_TMPDIRS+=("$D_STUB_DIR")
+
+# A flock that is present and executable but ALWAYS fails, with an exit status
+# that is NOT the would-block code. This is the case a naive implementation gets
+# wrong: `flock -n` returning non-zero looks exactly like contention unless the
+# two are separated deliberately.
+D_FLOCK_BROKEN="$D_STUB_DIR/flock_broken"
+cat > "$D_FLOCK_BROKEN" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "flock: simulated tool failure" >&2
+exit 1
+STUB_EOF
+chmod +x "$D_FLOCK_BROKEN"
+
+# Accumulates every fail-open path's stdout, so D5 can assert in one place that
+# NONE of them leaked a sentinel — the property that keeps dark-factory from
+# parsing a defer decision out of a failed measurement.
+D_ALL_OUT=""
+
+# D1: a broken flock with a REAL exclusive holder present. Fail-closed would
+# answer 3 here and wedge the queue on a tooling fault.
+_hold_lane_lock "$D_MOUNT" _merge-verify
+REIFY_WARM_LANE_LOCK_GUARD_FLOCK="$D_FLOCK_BROKEN" run_guard check --mount "$D_MOUNT"
+D_ALL_OUT="$D_ALL_OUT$OUT"
+assert "D1: a failing flock degrades to IDLE (exit 0), never BUSY" test "$RC" -eq 0
+assert "D1: the degraded path writes nothing to stdout" test -z "$OUT"
+# Matched against the FAIL-OPEN wording for the same reason as C3: the pre-probe
+# [info] line would satisfy a bare non-emptiness check even with every
+# post-probe diagnostic discarded, and a silently-degrading guard is one whose
+# operator never learns the measurement stopped working.
+assert "D1: the degraded path warns FAIL-OPEN on stderr" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "FAIL-OPEN"' _ "$ERR_OUT"
+
+# D2: flock missing entirely — same verdict, different branch (resolution rather
+# than invocation). The holder is still live, so this too is non-vacuous.
+REIFY_WARM_LANE_LOCK_GUARD_FLOCK=/nonexistent/flock run_guard check --mount "$D_MOUNT"
+D_ALL_OUT="$D_ALL_OUT$OUT"
+assert "D2: a missing flock binary degrades to IDLE (exit 0)" test "$RC" -eq 0
+assert "D2: the missing-binary path writes nothing to stdout" test -z "$OUT"
+assert "D2: the missing-binary path warns on stderr" test -n "$ERR_OUT"
+
+# D6: with the real flock and the SAME live holder, exit 3 still fires. Without
+# this, D1/D2 could be satisfied by a guard that had simply stopped detecting
+# contention at all.
+run_guard check --mount "$D_MOUNT"
+assert "D6: the fail-open branches did not swallow the positive case (exit 3)" \
+    test "$RC" -eq 3
+_release_lane_lock
+
+# D3: a mount directory that does not exist. Exit 0, and — as in B2 — the guard
+# must not bring the path into existence on its way past.
+D_ABSENT="$D_MOUNT/not-a-real-mount"
+run_guard check --mount "$D_ABSENT"
+D_ALL_OUT="$D_ALL_OUT$OUT"
+assert "D3: a nonexistent mount degrades to IDLE (exit 0)" test "$RC" -eq 0
+assert "D3: the nonexistent-mount path writes nothing to stdout" test -z "$OUT"
+assert "D3: the nonexistent mount dir was NOT created" test ! -e "$D_ABSENT"
+assert "D3: no lock file was created under it either" \
+    test ! -e "$D_ABSENT/_merge-verify.lock"
+
+# D4: an unreadable lock file, so the read-only open itself fails. Restored to
+# 644 before any assertion runs, so an abort cannot leave cleanup's rm -rf stuck.
+if [ "$(id -u)" -ne 0 ]; then
+    D_UNREADABLE="$D_MOUNT/_merge-verify.lock"
+    touch "$D_UNREADABLE"
+    chmod 000 "$D_UNREADABLE"
+    run_guard check --mount "$D_MOUNT"
+    chmod 644 "$D_UNREADABLE"
+    D_ALL_OUT="$D_ALL_OUT$OUT"
+    assert "D4: an unreadable lock file degrades to IDLE (exit 0)" test "$RC" -eq 0
+    assert "D4: the unreadable-lock path writes nothing to stdout" test -z "$OUT"
+else
+    echo "  SKIP: D4 (running as root — mode 000 does not make a file unreadable)"
+fi
+
+# D5: the one-place check that no fail-open path anywhere in D1-D4 emitted the
+# sentinel.
+assert "D5: no fail-open path emitted the BUSY sentinel" \
+    bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_WARM_LANE_LOCK_BUSY@@"' _ "$D_ALL_OUT"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block E — lock-path resolution (the silent-no-op guard)
+#
+# A guard that resolves the lock to the WRONG path reports IDLE forever. That is
+# the worst possible failure for a gate: it never errors, never warns, and
+# quietly answers "go ahead" to every question — indistinguishable from a
+# healthy pool. Fail-open (Block D) makes this failure mode cheap to reach, so
+# the derivation is pinned by string equality (E1) and by a decoy that would
+# catch the plausible misinterpretation (E2), not merely by a substring match —
+# and E6 pins the second door into the same failure: a fail-open branch firing on
+# an input the explicit --lock-path made irrelevant.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block E: lock-path resolution contract ---"
+
+E_MOUNT="$(mktemp -d /tmp/test-warm-lane-lock-guard-e-XXXXXX)"
+_TMPDIRS+=("$E_MOUNT")
+mkdir -p "$E_MOUNT/_merge-verify"
+E_SIBLING_LOCK="$E_MOUNT/_merge-verify.lock"
+
+# _sentinel_lock_field <stdout> — the sentinel's lock= value, or empty.
+_sentinel_lock_field() {
+    printf '%s\n' "$1" \
+        | sed -n 's/^@@REIFY_WARM_LANE_LOCK_BUSY@@ lane=[^ ]* lock=\(.*\)$/\1/p'
+}
+
+# E1: the lock is a SIBLING of the lane dir — `<mount>/<lane>.lock`, matching
+# dark-factory's lane_lock_path() (lane_dir.with_name(name + '.lock')).
+# Asserted by EXACT string equality: a substring match would also pass for a
+# guard that had appended or nested something extra.
+_hold_lane_lock_at "$E_SIBLING_LOCK"
+run_guard check --mount "$E_MOUNT"
+assert "E1: a holder on <mount>/<lane>.lock is detected (exit 3)" test "$RC" -eq 3
+assert "E1: the sentinel's lock= is EXACTLY <mount>/<lane>.lock" \
+    test "$(_sentinel_lock_field "$OUT")" = "$E_SIBLING_LOCK"
+_release_lane_lock
+
+# E2: the DECOY. The plausible wrong reading of --mount is "the directory ABOVE
+# the worktrees dir", which would derive <mount>/worktrees/<lane>.lock. Hold a
+# lock exactly there, leave the real sibling lock present-but-unheld, and the
+# guard must still answer IDLE. A guard that re-derived a worktrees subdirectory
+# would answer 3.
+mkdir -p "$E_MOUNT/worktrees/_merge-verify"
+touch "$E_SIBLING_LOCK"
+_hold_lane_lock_at "$E_MOUNT/worktrees/_merge-verify.lock"
+run_guard check --mount "$E_MOUNT"
+assert "E2: a holder on the NESTED decoy path does not make the lane BUSY (exit 0)" \
+    test "$RC" -eq 0
+assert "E2: the decoy produces no sentinel" test -z "$OUT"
+_release_lane_lock
+
+# E3: --lock-path wins over the --mount/--lane derivation. Held at a path
+# outside the lane naming scheme entirely, so no derivation could reach it by
+# accident.
+E_EXPLICIT_LOCK="$E_MOUNT/an-arbitrary-name.lockfile"
+E_EXPLICIT_IDLE="$E_MOUNT/another-arbitrary-name.lockfile"
+touch "$E_EXPLICIT_IDLE"
+_hold_lane_lock_at "$E_EXPLICIT_LOCK"
+run_guard check --mount "$E_MOUNT" --lock-path "$E_EXPLICIT_LOCK"
+assert "E3: --lock-path overrides the derivation (exit 3)" test "$RC" -eq 3
+assert "E3: the sentinel reports the explicit lock= path" \
+    test "$(_sentinel_lock_field "$OUT")" = "$E_EXPLICIT_LOCK"
+
+# E4: an explicit --lock-path makes --mount unnecessary — there is nothing left
+# to derive. The assertion is "a verdict, never a usage error": exit 2 here
+# would mean a caller that knows the exact lock path still cannot ask about it.
+run_guard_no_mount_env check --lock-path "$E_EXPLICIT_LOCK"
+assert "E4: --lock-path with no mount anywhere is a verdict, never exit 2" \
+    test "$RC" -ne 2
+assert "E4: ...and that verdict is the correct one (exit 3, holder present)" \
+    test "$RC" -eq 3
+
+# E5: the env form is equivalent to the flag...
+REIFY_WARM_LANE_LOCK_GUARD_LOCK_PATH="$E_EXPLICIT_LOCK" run_guard check --mount "$E_MOUNT"
+assert "E5: REIFY_WARM_LANE_LOCK_GUARD_LOCK_PATH is equivalent to --lock-path" \
+    test "$RC" -eq 3
+assert "E5: the env form produces the same lock= field" \
+    test "$(_sentinel_lock_field "$OUT")" = "$E_EXPLICIT_LOCK"
+
+# ...and the flag WINS over it. The env points at the HELD lock and the flag at
+# an unheld one, so a guard that let env win would answer 3 instead of 0.
+REIFY_WARM_LANE_LOCK_GUARD_LOCK_PATH="$E_EXPLICIT_LOCK" \
+    run_guard check --mount "$E_MOUNT" --lock-path "$E_EXPLICIT_IDLE"
+assert "E5: an explicit --lock-path overrides REIFY_WARM_LANE_LOCK_GUARD_LOCK_PATH" \
+    test "$RC" -eq 0
+assert "E5: the overridden (idle) path produces no sentinel" test -z "$OUT"
+_release_lane_lock
+
+# E6: an explicit --lock-path is immune to a STALE OR ABSENT mount.
+#
+# E3 covers --lock-path with a VALID mount and E4 covers it with NO mount; the
+# combination — a --lock-path caller carrying a mount value that does not exist —
+# was the untested gap, and it is the one dark-factory will actually be in:
+# REIFY_WARM_LANE_MOUNT is exported ambiently on every real verify run, so a
+# consumer that names its lock explicitly still inherits whatever mount the
+# environment happens to hold. If the mount-existence fail-open ran regardless of
+# --lock-path, this readable, genuinely-held lock would degrade to a silent IDLE:
+# a false green light on a BUSY lane, from a guard that never warns it stopped
+# measuring. Both spellings of the bad mount are exercised, because the flag and
+# the ambient env reach MOUNT by different routes.
+E_STALE_MOUNT="$E_MOUNT/not-a-real-mount"
+_hold_lane_lock_at "$E_EXPLICIT_LOCK"
+
+run_guard check --mount "$E_STALE_MOUNT" --lock-path "$E_EXPLICIT_LOCK"
+assert "E6: a nonexistent --mount does not degrade an explicit --lock-path probe (exit 3)" \
+    test "$RC" -eq 3
+assert "E6: ...and the sentinel still names the explicit lock" \
+    test "$(_sentinel_lock_field "$OUT")" = "$E_EXPLICIT_LOCK"
+
+REIFY_WARM_LANE_MOUNT="$E_STALE_MOUNT" run_guard check --lock-path "$E_EXPLICIT_LOCK"
+assert "E6: an ambient stale REIFY_WARM_LANE_MOUNT does not degrade it either (exit 3)" \
+    test "$RC" -eq 3
+assert "E6: ...and that sentinel names the explicit lock too" \
+    test "$(_sentinel_lock_field "$OUT")" = "$E_EXPLICIT_LOCK"
+
+assert "E6: the bogus mount was still never created" test ! -e "$E_STALE_MOUNT"
+_release_lane_lock
+
+test_summary
