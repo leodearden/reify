@@ -66,22 +66,35 @@ assert "runner exists" \
 # arm's health poll succeed by accident.
 # ---------------------------------------------------------------------------
 _TMPDIRS=()
+# The trailing `return 0` is load-bearing, not decoration. With an EMPTY
+# _TMPDIRS the loop below runs once over the `:-` placeholder empty string,
+# `[ -n "" ]` is false, and the short-circuited `&&` leaves the function's
+# status at 1 — which, as an EXIT-trap body under `set -e`, becomes the SUITE's
+# exit status. That yields the worst possible failure mode: "Results: N passed,
+# 0 failed" printed while run_all.sh records the file as FAILED.
 cleanup() {
     local d
     for d in "${_TMPDIRS[@]:-}"; do
         [ -n "$d" ] && rm -rf "$d"
     done
+    return 0
 }
 trap cleanup EXIT INT TERM
 
 # _new_bindir — mktemps a fresh <tmpdir>/bin, registers the tmpdir for cleanup,
-# and echoes the bin path.
+# and sets _BINDIR to the bin path.
+#
+# It sets a GLOBAL rather than echoing, deliberately: a `x=$(_new_bindir)` call
+# site would run this body in a command-substitution SUBSHELL, so the
+# `_TMPDIRS+=(...)` registration would be discarded the moment that subshell
+# exited — silently leaking every arm's tmpdir and leaving the array empty
+# (measured: array_len=0). Setting a global keeps registration in the main shell.
 _new_bindir() {
     local d
     d=$(mktemp -d)
     _TMPDIRS+=("$d")
     mkdir -p "$d/bin"
-    echo "$d/bin"
+    _BINDIR="$d/bin"
 }
 
 # _write_stub <path> <body...> — writes an executable bash stub.
