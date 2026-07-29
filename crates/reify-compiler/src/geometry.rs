@@ -2062,11 +2062,11 @@ fn compile_geometry_call_inner(
             let ax = it.next().unwrap();
             let ay = it.next().unwrap();
             let az = it.next().unwrap();
-            // Inject literal 2π for the angle
-            let tau_expr = CompiledExpr::literal(
-                Value::Real(std::f64::consts::TAU),
-                reify_core::Type::dimensionless_scalar(),
-            );
+            // Inject literal 2π (radians) for the angle — ANGLE-dimensioned so the
+            // eval-layer angle gate accepts it. `Value::angle` takes radians; the SI
+            // angle base unit IS the radian, so si_value == TAU exactly.
+            let tau_expr =
+                CompiledExpr::literal(Value::angle(std::f64::consts::TAU), reify_core::Type::angle());
             let profile = geom_ref(0);
             let op = CompiledGeometryOp::Sweep {
                 kind: SweepKind::Revolve,
