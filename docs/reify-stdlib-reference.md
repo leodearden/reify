@@ -978,7 +978,8 @@ trait HydraulicPort : FluidPort + MechanicalPort {
 ```
 // Base trait — every material-conforming structure satisfies this contract.
 // Note: density : Density is SHIPPED, not aspirational — the dimensional-type
-// tightening has landed and this block matches materials_mechanical.ri verbatim.
+// tightening has landed. Every param declaration below — name, type, default and
+// trait base — matches materials_mechanical.ri; comments here are editorial.
 trait MaterialSpec {
     param density : Density
     param name : String
@@ -1007,8 +1008,12 @@ trait TemperatureDependent {
 // Dimensioned-type note: the Pressure/Energy param types shown below (youngs_modulus,
 // yield_strength, ultimate_tensile_strength, compressive_strength, shear_modulus,
 // fatigue_limit, fatigue_strength_at, charpy_impact, izod_impact) are SHIPPED, not
-// aspirational — the dimensional tightening has landed, and every declaration in this
-// fence matches materials_mechanical.ri verbatim. The thermal/electrical/optical/fracture
+// aspirational — the dimensional tightening has landed. Every param declaration in this
+// fence — name, type, default and trait base — matches materials_mechanical.ri. Inline
+// comments are editorial and are NOT pinned to the .ri text: some are condensed from a
+// block comment above the trait there (e.g. fracture_toughness, damping_ratio,
+// loss_factor), so a "verbatim" audit should compare declarations, not comments.
+// The thermal/electrical/optical/fracture
 // dimensioned types shown in §6.3–§6.5 have been realized by tasks #3112/#3113/#3115
 // (ThermalExpansion, ElectricResistivity, DielectricStrength, AbsorptionCoeff,
 // FractureToughness). Do not downgrade the Pressure/Energy types shown here.
@@ -1095,25 +1100,45 @@ registered here rather than left for a reader to infer. See
 the rule, cited here by slug and deliberately not restated.
 
 "Reader" below means a **production** reader: a Rust/host consumer, or a live DSL
-`constraint`/expression. Declarations, `.ri` block comments, and test fixtures are
-not readers — the sweeps discount `crates/reify-compiler/tests/**`,
-`crates/reify-eval/tests/**`, `reify-test-support/src/fixtures.rs` (which declares
-these params inside fixture DSL rather than reading them), and the `#[cfg(test)]`
-bodies of `reify-core/src/dimension.rs`.
+`constraint`/expression that uses the value. The sweep rule is stated generically
+rather than as a path list, so it does not drift as files move — **a hit is not a
+reader if it is** a declaration (including a re-declaration with a default), a
+comment, an identifier appearing only in a name (a test fn name, a diagnostic
+string), anything under `examples/**`, or anything inside a `tests/` tree or a
+`#[cfg(test)]` body — including test fixtures such as
+`reify-test-support/src/fixtures.rs`, which declares these params in fixture DSL
+rather than reading them. Re-running the sweep therefore yields many hits for both
+properties below; none of them is a reader.
 
 | Property | Declared at | Production readers | Owner |
 |---|---|---|---|
 | `shear_modulus` | `materials_mechanical.ri:100` | none repo-wide | #5801 |
 | `thermal_expansion` | `materials_thermal.ri:41` | none repo-wide | #5801 |
 
-**`thermal_conductivity` is deliberately absent from that table — it is not
-declared-only.** `structural_physical.ri:150` carries
-`constraint thermal_conductivity > 0W/(m*K)` inside `trait ThermallyConductive :
-Physical`, which is a live DSL reader. Its zero-reader claim holds only when scoped
-to **Rust/host** readers. This supersedes correction 2 of
-`docs/prds/v0_6/dimension-checked-readers.md` §2.4, which lists
-`thermal_conductivity` among the fields with "zero production readers repo-wide";
-that entry is wrong and the property must not be registered as unowned.
+**`thermal_conductivity` is deliberately absent from that table.** The name is
+declared at two independent sites, and they differ:
+
+- `ThermallyConductive.thermal_conductivity` (`structural_physical.ri:148`) is
+  **not** declared-only — `structural_physical.ri:150` carries
+  `constraint thermal_conductivity > 0W/(m*K)`, a live DSL reader. For this site
+  the zero-reader claim holds only when scoped to **Rust/host** readers.
+- `ThermallyCharacterized.thermal_conductivity` (`materials_thermal.ri:39`) is a
+  *separate* param that merely shares the name, and it has no reader of its own:
+  no constraint in `materials_thermal.ri`, and its only non-test Rust hit is
+  inside a `#[cfg(test)]` body.
+
+The second site is nonetheless **not** registered above. The ratified ruling in
+**#5801** names both declaration sites and treats `thermal_conductivity` as one
+property that it explicitly does not own, so adding a row against #5801 would
+assign it an ownership it declines. Splitting the two sites — and deciding whether
+the trait-scoped one needs its own owner — is #5801's call, not this reference's;
+it is recorded here so the distinction is not silently lost.
+
+This supersedes correction 2 of `docs/prds/v0_6/dimension-checked-readers.md` §2.4
+and the matching §10 out-of-scope entry, both of which list `thermal_conductivity`
+among the properties with "zero production readers repo-wide". Those PRD lines
+still carry the superseded claim: amending them falls outside this task's module
+scope and is filed as a follow-up.
 
 ### 6.4 `std.materials.electrical`
 
