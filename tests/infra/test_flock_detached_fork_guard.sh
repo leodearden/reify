@@ -142,6 +142,18 @@ _flock_fork_offenders() {
                     }
                 }
 
+                # ---- UNLOCK(N): the sanctioned explicit release ----
+                # FILE-LEVEL and not order-sensitive: the remedy is a release
+                # registered as an EXIT trap, so its textual position relative
+                # to the fork carries no meaning.  Recorded independently of
+                # ord[] because the release may precede the open.
+                if (t ~ /flock/ && match(t, /-u[[:space:]]+[0-9]+/)) {
+                    seg = substr(t, RSTART, RLENGTH)
+                    match(seg, /[0-9]+/)
+                    u = substr(seg, RSTART, RLENGTH)
+                    unl[u] = FNR
+                }
+
                 # ---- DETACH: a fork downstream of the acquire ----
                 if (t ~ /&/) {
                     for (k = 1; k <= nord; k++) {
@@ -154,7 +166,7 @@ _flock_fork_offenders() {
             END {
                 for (k = 1; k <= nord; k++) {
                     n = ord[k]
-                    if (!(n in detln)) continue
+                    if (!(n in detln) || (n in unl)) continue
                     printf "OFFENDER %s fd=%s open=%s acq=%s detach=%s\n", \
                         FNAME, n, openln[n], acqln[n], detln[n]
                 }
