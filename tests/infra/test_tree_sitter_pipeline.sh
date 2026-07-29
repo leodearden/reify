@@ -195,6 +195,25 @@ mk_ts_fixture() {
     fi
 }
 
+# ts_mtime <path> — modification time in epoch seconds (GNU stat, BSD fallback).
+ts_mtime() {
+    stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"
+}
+
+# ts_watched_files <ts_dir>
+#
+# The EXACT set `ensure` is allowed to touch: grammar.js + src/scanner.c +
+# src/tree_sitter/*.h — i.e. what build.rs declares via rerun-if-changed.
+# src/parser.c is deliberately excluded: build.rs writes it, so watching it
+# would cause double execution, and touching it would repair nothing.
+ts_watched_files() {
+    local ts="$1" h
+    printf '%s\n' "$ts/grammar.js" "$ts/src/scanner.c"
+    for h in "$ts"/src/tree_sitter/*.h; do
+        [ -f "$h" ] && printf '%s\n' "$h"
+    done
+}
+
 # run_ts_freshness <mode> <target_dir> [ts_dir]
 # Sets TS_FRESHNESS_OUT (combined stdout+stderr) and TS_FRESHNESS_RC.
 run_ts_freshness() {
@@ -861,6 +880,213 @@ test_freshness_check_verdicts() {
         echo ""
         echo "  ASSERTION FAILED: the FRESH fingerprint dir (aaaa...) is named as stale"
         echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+}
+
+test_freshness_ensure_forces_and_is_idempotent() {
+    # Hermetic: a COPY of the tree-sitter sources under mktemp -d, driven via both
+    # REIFY_TS_FRESHNESS_TS_DIR and REIFY_TS_FRESHNESS_TARGET_DIR. The real
+    # worktree's mtimes are never touched, so this cannot perturb a concurrent
+    # cargo build in the lane.
+    assert_file_exists "$FRESHNESS_SCRIPT" || return 1
+
+    if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+        echo "  SKIP: no sha256sum/shasum on PATH — the guard degrades to UNAVAILABLE here"
+        return 0
+    fi
+
+    local tmp
+    tmp=$(mktemp -d)
+    CLEANUP_ACTIONS+=("rm -rf '$tmp'")
+
+    local ts="$tmp/ts"
+    mkdir -p "$ts/src/tree_sitter"
+    cp "$TS_DIR/grammar.js"    "$ts/grammar.js"
+    cp "$TS_DIR/src/parser.c"  "$ts/src/parser.c"
+    cp "$TS_DIR/src/scanner.c" "$ts/src/scanner.c"
+    cp "$TS_DIR"/src/tree_sitter/*.h "$ts/src/tree_sitter/"
+
+    # Model the warm-lane bulk stamp: seed-warm-lane.sh sets every non-target/,
+    # non-.git file to 2020-01-01T00:00:00 (measured by task #5630), which is what
+    # makes mtime useless as a freshness signal in a lane.
+    local OLD='2020-01-01T00:00:00'
+    local f
+    stamp_old() {
+        local d="$1" x
+        while IFS= read -r x; do touch -d "$OLD" "$x"; done < <(ts_watched_files "$d")
+        touch -d "$OLD" "$d/src/parser.c"
+    }
+    stamp_old "$ts"
+
+    local baseline
+    baseline=$(while IFS= read -r f; do ts_mtime "$f"; done < <(ts_watched_files "$ts"))
+
+    # Helpers over the watched set. Defined inline so they close over $ts.
+    mtimes_now() {
+        while IFS= read -r f; do ts_mtime "$f"; done < <(ts_watched_files "$ts")
+    }
+    all_recent() {
+        local now m
+        now=$(date +%s)
+        while IFS= read -r m; do
+            [ $(( now - m )) -le 300 ] || return 1
+        done <<< "$(mtimes_now)"
+    }
+
+    local hash_grammar_before hash_scanner_before
+    hash_grammar_before=$(sha256sum "$ts/grammar.js" | awk '{print $1}')
+    hash_scanner_before=$(sha256sum "$ts/src/scanner.c" | awk '{print $1}')
+
+    local fp
+    fp=$(REIFY_TS_FRESHNESS_TS_DIR="$ts" bash "$FRESHNESS_SCRIPT" --print-fingerprint)
+
+    local altered
+    if [ "${fp:0:1}" = "0" ]; then altered="1${fp:1}"; else altered="0${fp:1}"; fi
+
+    # ---- (1) STALE fixture -> exit 0, watched inputs touched, loud "forcing" line ----
+    mk_ts_fixture "$tmp/target" "tree-sitter-reify-deadbeef01" "$altered"
+    run_ts_freshness ensure "$tmp/target" "$ts"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure on a STALE fixture exited $TS_FRESHNESS_RC (expected 0)"
+        echo "  ensure REPAIRS; failing the gate on a repairable condition would just turn"
+        echo "  a false GREEN into a spurious RED that every later run reproduces."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if ! all_recent; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure did not bump the watched inputs' mtimes"
+        echo "  Bumping a watched input's mtime is the ONLY lever available: a build script"
+        echo "  cargo has declined to run cannot repair itself."
+        echo "  --- mtimes ---"; mtimes_now
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if [[ "$TS_FRESHNESS_OUT" != *"forcing rebuild"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure did not print a greppable 'forcing rebuild' line"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    # ---- (2) ensure must NEVER rewrite content ----
+    # This is what keeps `git status` clean in the shared merge lane; a content
+    # rewrite would trip the cleanliness guards mid-gate.
+    local hash_grammar_after hash_scanner_after
+    hash_grammar_after=$(sha256sum "$ts/grammar.js" | awk '{print $1}')
+    hash_scanner_after=$(sha256sum "$ts/src/scanner.c" | awk '{print $1}')
+    if [ "$hash_grammar_before" != "$hash_grammar_after" ] || \
+       [ "$hash_scanner_before" != "$hash_scanner_after" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure changed file CONTENT (mtime-only touch expected)"
+        echo "  grammar.js: $hash_grammar_before -> $hash_grammar_after"
+        echo "  scanner.c : $hash_scanner_before -> $hash_scanner_after"
+        return 1
+    fi
+
+    # ---- (3) ledger records the fingerprint the force was applied for ----
+    local ledger="$tmp/target/.tree-sitter-freshness.ledger"
+    assert_file_exists "$ledger" || return 1
+    if [ "$(cat "$ledger")" != "$fp" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: ledger content != --print-fingerprint output"
+        echo "  --- ledger ---"; cat "$ledger"
+        echo "  --- fingerprint ---"; echo "$fp"
+        return 1
+    fi
+
+    # ---- (4) idempotence: a permanently-dead fingerprint dir must not force-loop ----
+    # The fixture stays STALE (dead fingerprint dirs are never rebuilt, so they are
+    # stale forever — 7 such dirs exist in this lane). Without the ledger, ensure
+    # would touch grammar.js on EVERY verify run, forcing a full ~5 MB parser.c
+    # recompile each time.
+    stamp_old "$ts"
+    run_ts_freshness ensure "$tmp/target" "$ts"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: second ensure exited $TS_FRESHNESS_RC (expected 0)"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if [ "$(mtimes_now)" != "$baseline" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure re-forced for a fingerprint already in the ledger"
+        echo "  This is the force-loop the ledger exists to prevent."
+        echo "  --- expected (2020 stamp) ---"; echo "$baseline"
+        echo "  --- actual ---"; mtimes_now
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if [[ "$TS_FRESHNESS_OUT" != *"already"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: second ensure did not report the force as already applied"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    # ---- (5) a CONTENT change invalidates the ledger -> force again ----
+    printf '\n/* task 5629 ledger-invalidation probe */\n' >> "$ts/src/scanner.c"
+    stamp_old "$ts"
+    run_ts_freshness ensure "$tmp/target" "$ts"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure after a content change exited $TS_FRESHNESS_RC (expected 0)"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if ! all_recent; then
+        echo ""
+        echo "  ASSERTION FAILED: a scanner.c content change did not invalidate the ledger"
+        echo "  A stale ledger that outlives its inputs would suppress the force forever —"
+        echo "  strictly worse than having no ledger at all."
+        echo "  --- mtimes ---"; mtimes_now
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    # ---- (6) FRESH fixture -> no bump, no 'forcing' line ----
+    local fp2
+    fp2=$(REIFY_TS_FRESHNESS_TS_DIR="$ts" bash "$FRESHNESS_SCRIPT" --print-fingerprint)
+    mk_ts_fixture "$tmp/target_fresh" "tree-sitter-reify-deadbeef01" "$fp2"
+    stamp_old "$ts"
+    run_ts_freshness ensure "$tmp/target_fresh" "$ts"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure on a FRESH fixture exited $TS_FRESHNESS_RC (expected 0)"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if [ "$(mtimes_now)" != "$baseline" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure forced despite every archive being FRESH"
+        echo "  --- expected (2020 stamp) ---"; echo "$baseline"
+        echo "  --- actual ---"; mtimes_now
+        return 1
+    fi
+    if [[ "$TS_FRESHNESS_OUT" == *"forcing rebuild"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure printed 'forcing rebuild' for a FRESH tree"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    # ---- (7) nothing built at all -> exit 0, no bump ----
+    mkdir -p "$tmp/target_empty"
+    stamp_old "$ts"
+    run_ts_freshness ensure "$tmp/target_empty" "$ts"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure on an EMPTY target dir exited $TS_FRESHNESS_RC (expected 0)"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if [ "$(mtimes_now)" != "$baseline" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure forced with nothing built (nothing built = nothing stale)"
+        echo "  --- expected (2020 stamp) ---"; echo "$baseline"
+        echo "  --- actual ---"; mtimes_now
         return 1
     fi
 }
