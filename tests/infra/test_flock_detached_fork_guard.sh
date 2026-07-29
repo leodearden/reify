@@ -102,4 +102,71 @@ _write_fixture() {
     printf '%s\n' "$@" >"$path"
 }
 
+# ---------------------------------------------------------------------------
+# Fixture tokens — SELF-MATCH SAFETY (see header).
+#
+# Every token that could make a line flaggable is assembled here from adjacent
+# single-quoted fragments ('' splitting), so this source file contains no
+# literal open / acquire / detach construct.  Fixture bodies built from these
+# are written only into $TMPWORK by _write_fixture, never emitted as tracked
+# source lines.
+# ---------------------------------------------------------------------------
+_FX_AMP='&'
+_FX_OPEN='ex''ec 9>"$LOCK"'
+_FX_ACQ_IF='if ! flo''ck -n 9; then'
+_FX_DETACH='{ rm -rf "$TRASH"; } 9<&- '"$_FX_AMP"
+
+# ---------------------------------------------------------------------------
+# Harness — run the detector once, capture rc + stdout into globals, then
+# assert over those globals (assert runs "$@" in THIS shell, so the globals
+# survive).
+# ---------------------------------------------------------------------------
+OFFENDERS_RC=0
+OFFENDERS_OUT=""
+
+_run_offenders() {
+    OFFENDERS_OUT=""
+    OFFENDERS_RC=0
+    OFFENDERS_OUT="$(_flock_fork_offenders "$@")" || OFFENDERS_RC=$?
+}
+
+_rc_is() { [ "$OFFENDERS_RC" = "$1" ]; }
+
+_out_has() { case "$OFFENDERS_OUT" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
+
+# ---------------------------------------------------------------------------
+# Cycle 1 — POSITIVE CONTROL.
+#
+# The real tree has zero offenders, so nothing in it keeps the matcher honest.
+# This synthetic offender is the "a detector, not a constant failure" half:
+# a locally-opened FD 9, a flock acquire on it, a detached fork downstream, and
+# no unlock anywhere.  Its report must be ACTIONABLE (path + fd + line numbers),
+# not a bare boolean.
+# ---------------------------------------------------------------------------
+echo "--- Cycle 1: positive control — a synthetic offender must be FLAGGED ---"
+
+_write_fixture pos_offender.sh \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'LOCK=/tmp/fixture.lock' \
+    'TRASH=/tmp/fixture.trash' \
+    "$_FX_OPEN" \
+    "$_FX_ACQ_IF" \
+    '    exit 75' \
+    'fi' \
+    'echo "holding the lane lock"' \
+    "$_FX_DETACH" \
+    'echo "done"'
+
+_run_offenders "$TMPWORK/pos_offender.sh"
+
+assert "positive control: synthetic offender is flagged (rc 1)" _rc_is 1
+assert "positive control: report names the fixture path" \
+    _out_has "$TMPWORK/pos_offender.sh"
+assert "positive control: report names fd=9" _out_has "fd=9"
+assert "positive control: report names the OPEN line (open=5)" _out_has "open=5"
+assert "positive control: report names the ACQUIRE line (acq=6)" _out_has "acq=6"
+assert "positive control: report names the DETACH line (detach=10)" \
+    _out_has "detach=10"
+
 test_summary
