@@ -281,9 +281,18 @@ timer unit is wired by this task**; a follow-up may implement one.
 - **Tee into the GC sweep log for trend history.** Today `reify-warm-lane-gc.service` has no
   dedicated log file — its output goes to the systemd journal (`journalctl -u
   reify-warm-lane-gc.service`). Emitting the audit's HEADROOM line alongside the GC sweep's own
-  `reclaim: reset=N removed=M preserved=K` summary (either into the same journal unit or a shared
-  log file) is the suggested mechanism for building headroom trend history over time; unimplemented
-  as of this task.
+  `reclaim: reset=N removed=M preserved=K preserved_live_ref=L` summary (either into the same
+  journal unit or a shared log file) is the suggested mechanism for building headroom trend history
+  over time; unimplemented as of this task.
+
+  `preserved_live_ref=L` (task 5572) is **the share of K** held back by a live process reference — a
+  process with its cwd, an open fd, or an mmap at or under the lane dir. It is a breakdown of
+  `preserved`, **not** an additional bucket: L ≤ K, and K + L double-counts. Worth watching, because
+  it is the only preserve reason that can shield an entry indefinitely — the dirty and unlanded
+  reasons clear when the work lands, so a persistently non-zero L is the signal to go look for a
+  stuck process holding a lane. New fields are APPENDED to this line, never interposed, so consumers
+  matching the `reset=`/`removed=`/`preserved=` prefix keep working (`scripts/warm-lane-gc.sh`
+  stdout contract).
 
 ## Pointers
 
