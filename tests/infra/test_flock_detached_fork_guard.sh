@@ -146,6 +146,24 @@ _flock_fork_offenders() {
                 return (p ~ /(^|[[:space:]])\(([[:space:]]|$)/)
             }
 
+            # DETACH: the FINAL EFFECTIVE TOKEN of the line — after stripping a
+            # trailing `# ...` comment tail — is a bare `&`.  Matched as "a
+            # character that is not `&`, `>` or `|`, followed by `&`, followed
+            # only by optional trailing whitespace".
+            #
+            # This is FALSE-POSITIVE TRAP #1 made structural: a FOREGROUND child
+            # is SAFE — the parent holds the lock for exactly as long as the
+            # child runs and reaps it before exiting — so flagging that shape
+            # would push scripts toward releasing a lock they are still
+            # legitimately using.  Admits `) &`, `} 9<&- &`, `cmd &` and
+            # `( ... ) 9>"$L" &`; rejects `&&`, `>&2`, `2>&1`, and a
+            # non-terminal `9<&-` such as the foreground `"$@" 9<&-` in
+            # scripts/lib_test_semaphore.sh.
+            function is_detach(s) {
+                sub(/[[:space:]]+#.*$/, "", s)
+                return (s ~ /[^&>|]&[[:space:]]*$/)
+            }
+
             {
                 t = $0
                 sub(/^[[:space:]]+/, "", t)
@@ -192,7 +210,7 @@ _flock_fork_offenders() {
                 }
 
                 # ---- DETACH: a fork downstream of the acquire ----
-                if (t ~ /&/) {
+                if (is_detach(t)) {
                     for (k = 1; k <= nord; k++) {
                         n = ord[k]
                         if (!(n in acqln) || (n in detln)) continue
