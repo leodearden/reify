@@ -28,8 +28,23 @@ leaf, landed `3e54addf4a`). BT3's evidence is likewise split between the merged 
 
 **Extent of that re-verification — read this before trusting a `grep:` anchor below.** What task
 5190 re-verified against main `bd10b6d0e1e2dd32b09065f2304bd029f04b6506` is *only* the BT3/BT4
-producer bindings and the landed-commit ancestry claims stated in this paragraph (5189 =
-`3e54addf4a`, 5188 + 5334 = `db64320f66`, `5017 depends_on 5189`) — each confirmed at that SHA.
+producer bindings and the landed-commit ancestry claims stated in this paragraph — **one merge
+commit per task, never two tasks sharing a hash**: 5189 = `3e54addf4a`, 5188 = `a2864ad5bd`,
+5334 = `db64320f66` (all three ancestors of `bd10b6d0e1`), plus the `5017 depends_on 5189`
+Taskmaster edge. Rather than a blanket "confirmed at that SHA": the per-task merge SHAs were
+re-confirmed with `git log -1 --format=%s <sha>` and the ancestry with
+`git merge-base --is-ancestor <sha> bd10b6d0e1` (exit 0 for each), both re-run during task
+5190's review round. **Correction, recorded rather than silently applied:** the original
+2026-07-28 wording of this paragraph read "5188 + 5334 = `db64320f66`", collapsing two merges
+four days apart onto one hash — `db64320f66` is *"Merge task/5334 into main"* (2026-07-26) and
+its stat carries only δ's Gap-C artefacts (`resolve_order.rs`, `engine_eval.rs`,
+`harness_engine/joint_drive_cluster_formation.rs`), none of α's; 5188 landed at `a2864ad5bd`
+(*"Merge task/5188 into main"*, 2026-07-22), whose stat carries α's (`constraint.rs` +24 for
+the `ResolutionProblem` carrier, `engine_eval.rs` +456, `joint_drive_expansion_boundary.rs`
++841). The seam PRD body corroborates independently (`whole-model-joint-drive-seam.md:23`,
+`:177` — "on main `a2864ad5`"). The binding was corrected by re-running
+`git log -1 --format=%s` on each SHA, **not** by re-reading the prior text. The paragraph's
+conclusion is unaffected: all three merges remain ancestors of `bd10b6d0e1`.
 It is **not** a whole-document provenance claim. This manifest's *other* `grep:<file>:<line>`
 citations date from the 2026-07-05 decompose and several are demonstrably **stale at that very
 SHA** — spot-checked there, `engine_eval.rs:1284` lands on a connector-instance comment (not
@@ -149,8 +164,8 @@ that **depends on** ε. No misattribution.
 task **5017**, whose `dependencies` are `[5014, 5015, 5016, 5125, 5189]` — a real Taskmaster
 edge, verified this session. So `5017 depends_on 5189` ⇒ **5189 is upstream of ε**, and binding
 BT3/BT4 to `producer:task-5189` is *not* a `producer-downstream` FAIL. 5189 is landed
-(`3e54addf4a`), as are its own upstreams 5188 and 5334 (`db64320f66`); all three are ancestors
-of main `bd10b6d0e1e2dd32b09065f2304bd029f04b6506`.
+(`3e54addf4a`), as are its own upstreams 5188 (`a2864ad5bd`) and 5334 (`db64320f66`); all three
+are ancestors of main `bd10b6d0e1e2dd32b09065f2304bd029f04b6506`.
 
 ---
 
