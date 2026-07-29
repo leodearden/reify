@@ -670,6 +670,7 @@ _add_task 9207 in-progress "$C_GATE_META" "$(_now_iso -10800)" ""   # blocked-on
 _add_task 9208 blocked "$C_GATE_META"                         # malformed esc   => unknown
 _add_task 9209 blocked "$C_GATE_META"                         # unrecognized st => unknown
 _add_task 9210 blocked "$C_GATE_META"                         # null status     => unknown
+_add_task 9211 blocked "$C_GATE_META"                         # absent status   => unknown
 
 _add_esc 9202 1 pending
 _add_esc 9203 1 dismissed
@@ -685,6 +686,16 @@ printf '{"id":"esc-9209-1","task_id":"9209","status":"in_triage"}\n' > "$C_ESC/e
 # such file today (data/escalations/b3-state.json), which escapes the sweep's
 # glob only by name, not by shape.
 printf '{"id":"esc-9210-1","task_id":"9210","status":null}\n' > "$C_ESC/esc-9210-1.json"
+# A well-formed record with NO `status` key AT ALL — the mid-write shape, and
+# the one case whose ROUTE through _esc_state changes when the parse sentinel
+# stops being a NUL. `.get("status","")` yields the empty string, which today
+# collides with the NUL sentinel (bash strips the NUL from BOTH the capture and
+# the `case` pattern, so the arm degenerates to ""-matches-"") and so lands on
+# the parse-error arm; once the sentinel is a literal token it will land on the
+# `*)` unrecognized-status arm instead. The VERDICT is `unknown` either way —
+# that equivalence is what C10g/C10h pin, so the sentinel change is provably
+# behaviour-preserving rather than merely asserted to be.
+printf '{"id":"esc-9211-1","task_id":"9211"}\n' > "$C_ESC/esc-9211-1.json"
 # A .json.lock sidecar (the live store holds these next to the real files):
 # the glob must match *.json only, never *.json.lock, or 9201 would read as
 # gated by a lock file.
@@ -740,6 +751,14 @@ run_sweep --db "$C_DB" --escalations "$C_ESC" --repo "$C_REPO" \
 assert "C8: a malformed escalation file degrades to unknown, not STALE" \
     _json_is 't[9208]["verdict"] == "unknown"'
 assert "C8: a malformed escalation file warns on stderr" _err_has '\[warn\].*9208'
+# Deliberately adjacent to the assert above so it reads the SAME run's ERR_OUT.
+# The parse sentinel must survive command substitution: bash strips a NUL from
+# `$(...)` and warns while doing it, and that warning lands on the SUT's OWN
+# stderr — the very channel `warn()` writes to and every `_err_has` assert here
+# reads. Diagnostics a consumer cannot distinguish from the tool's own output
+# are a defect in the tool, not noise.
+assert "C8: the parse sentinel leaks no bash NUL warning onto the SUT's own stderr" \
+    _not _err_has 'ignored null byte'
 
 # --- C10: the status predicate is a TERMINAL allowlist, not a pending one ----
 # `pending` gates and `resolved`/`dismissed` clear; EVERY other value —
@@ -760,7 +779,11 @@ assert "C10d: a null escalation status degrades to unknown, not STALE" \
     _json_is 't[9210]["verdict"] == "unknown"'
 assert "C10e: a null status emits no re-dispatch request" \
     _no_request_for "$C_REQ2" 9210
-assert "C10f: neither shape is counted as a class-A hit" \
+assert "C10g: an ABSENT status key degrades to unknown, not STALE" \
+    _json_is 't[9211]["verdict"] == "unknown"'
+assert "C10h: an absent status key emits no re-dispatch request" \
+    _no_request_for "$C_REQ2" 9211
+assert "C10f: none of these shapes is counted as a class-A hit" \
     _json_is 's["gate_closure"] == 3'
 
 # --- C11: an UNREADABLE escalations dir degrades exactly like a missing one --
