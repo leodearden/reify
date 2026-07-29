@@ -643,12 +643,29 @@ fn rounded_rect_lowers_to_boolean_compose() {
                     "corner {corner}: dy sign must be {sy}, got {dy_sign}"
                 );
 
+                // dz stays numerically 0 (planar, z=0) but is LENGTH-dimensioned:
+                // the value is a z-offset bound into a LENGTH slot. Both halves are
+                // asserted — eval dispatches on the runtime `Value` and never reads
+                // `result_type`, so a result_type-only pin would pass over exactly
+                // the bare-Real shape the eval-layer length gate rejects.
+                assert_eq!(
+                    dz_expr.result_type,
+                    Type::length(),
+                    "corner {corner}: dz must be typed Type::length() — planar z=0 is \
+                     still a LENGTH-dimensioned slot; got {:?}",
+                    dz_expr.result_type
+                );
+
                 assert!(
                     matches!(
-                        dz_expr.kind,
-                        CompiledExprKind::Literal(Value::Real(v)) if v == 0.0
+                        &dz_expr.kind,
+                        CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
+                            if *si_value == 0.0
+                                && *dimension == reify_core::DimensionVector::LENGTH
                     ),
-                    "corner {corner}: dz must be exactly Literal(Real(0.0)) (planar, z=0), got: {:?}",
+                    "corner {corner}: dz must be Literal(Scalar{{LENGTH, 0.0}}) (planar, z=0), \
+                     not Literal(Real(0.0)) — a bare Real is what the eval-layer length gate \
+                     rejects; got: {:?}",
                     dz_expr.kind
                 );
             }
