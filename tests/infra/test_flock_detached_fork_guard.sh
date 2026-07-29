@@ -179,8 +179,10 @@ _flock_fork_offenders() {
 # ---------------------------------------------------------------------------
 _FX_AMP='&'
 _FX_OPEN='ex''ec 9>"$LOCK"'
+_FX_CLOSE='ex''ec 9>&- || true'
 _FX_ACQ_IF='if ! flo''ck -n 9; then'
 _FX_DETACH='{ rm -rf "$TRASH"; } 9<&- '"$_FX_AMP"
+_FX_UNLOCK='    flo''ck -u 9 2>/dev/null || true'
 
 # ---------------------------------------------------------------------------
 # Harness — run the detector once, capture rc + stdout into globals, then
@@ -199,6 +201,18 @@ _run_offenders() {
 _rc_is() { [ "$OFFENDERS_RC" = "$1" ]; }
 
 _out_has() { case "$OFFENDERS_OUT" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
+
+_out_lacks() { case "$OFFENDERS_OUT" in *"$1"*) return 1 ;; *) return 0 ;; esac; }
+
+_out_empty() { [ -z "$OFFENDERS_OUT" ]; }
+
+_out_line_count_is() {
+    local _n=0
+    if [ -n "$OFFENDERS_OUT" ]; then
+        _n="$(printf '%s\n' "$OFFENDERS_OUT" | wc -l)"
+    fi
+    [ "$_n" -eq "$1" ]
+}
 
 # ---------------------------------------------------------------------------
 # Cycle 1 — POSITIVE CONTROL.
@@ -234,5 +248,49 @@ assert "positive control: report names the OPEN line (open=5)" _out_has "open=5"
 assert "positive control: report names the ACQUIRE line (acq=6)" _out_has "acq=6"
 assert "positive control: report names the DETACH line (detach=10)" \
     _out_has "detach=10"
+
+# ---------------------------------------------------------------------------
+# Cycle 2 — NEGATIVE CONTROL: criterion (c), the sanctioned RELEASED shape.
+#
+# Same offender, plus the remedy: a release function carrying `flock -u 9`,
+# registered as an EXIT trap.  The unlock sits UPSTREAM of the open here on
+# purpose — the rule is FILE-LEVEL, because a trap's textual position relative
+# to the fork carries no meaning (in scripts/seed-warm-lane.sh the release is
+# defined well before the forks it protects, yet runs after them, at exit).
+# ---------------------------------------------------------------------------
+echo "--- Cycle 2: negative control — the released shape must scan CLEAN ---"
+
+_write_fixture neg_released.sh \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'LOCK=/tmp/fixture.lock' \
+    'TRASH=/tmp/fixture.trash' \
+    '_release_lock() {' \
+    "$_FX_UNLOCK" \
+    "    $_FX_CLOSE" \
+    '}' \
+    "$_FX_OPEN" \
+    "$_FX_ACQ_IF" \
+    '    exit 75' \
+    'fi' \
+    'trap _release_lock EXIT' \
+    'echo "holding the lane lock"' \
+    "$_FX_DETACH" \
+    'echo "done"'
+
+_run_offenders "$TMPWORK/neg_released.sh"
+
+assert "negative control: released shape is CLEAN (rc 0)" _rc_is 0
+assert "negative control: released shape prints nothing" _out_empty
+
+# A clean file must not mask a dirty one, and a dirty file must not smear onto
+# a clean one — scan both together and demand exactly one named offender.
+_run_offenders "$TMPWORK/pos_offender.sh" "$TMPWORK/neg_released.sh"
+
+assert "mixed scan: still flags (rc 1)" _rc_is 1
+assert "mixed scan: reports exactly one offender" _out_line_count_is 1
+assert "mixed scan: names the offender" _out_has "$TMPWORK/pos_offender.sh"
+assert "mixed scan: does NOT name the released file" \
+    _out_lacks "$TMPWORK/neg_released.sh"
 
 test_summary
