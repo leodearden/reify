@@ -1085,6 +1085,36 @@ trait Refractory : ThermallyCharacterized {
 }
 ```
 
+#### Declared-only material properties (no production readers)
+
+Some material params above are *declared* with a dimensioned type but are never
+*read*. A dimensioned type is evidence of intent, not of consumption, so the gap is
+registered here rather than left for a reader to infer. See
+`INV-SF-3 declared-intent-consumed-or-diagnosed` in
+`docs/legibility/design-invariants.md` — that file is the single normative copy of
+the rule, cited here by slug and deliberately not restated.
+
+"Reader" below means a **production** reader: a Rust/host consumer, or a live DSL
+`constraint`/expression. Declarations, `.ri` block comments, and test fixtures are
+not readers — the sweeps discount `crates/reify-compiler/tests/**`,
+`crates/reify-eval/tests/**`, `reify-test-support/src/fixtures.rs` (which declares
+these params inside fixture DSL rather than reading them), and the `#[cfg(test)]`
+bodies of `reify-core/src/dimension.rs`.
+
+| Property | Declared at | Production readers | Owner |
+|---|---|---|---|
+| `shear_modulus` | `materials_mechanical.ri:100` | none repo-wide | #5801 |
+| `thermal_expansion` | `materials_thermal.ri:41` | none repo-wide | #5801 |
+
+**`thermal_conductivity` is deliberately absent from that table — it is not
+declared-only.** `structural_physical.ri:150` carries
+`constraint thermal_conductivity > 0W/(m*K)` inside `trait ThermallyConductive :
+Physical`, which is a live DSL reader. Its zero-reader claim holds only when scoped
+to **Rust/host** readers. This supersedes correction 2 of
+`docs/prds/v0_6/dimension-checked-readers.md` §2.4, which lists
+`thermal_conductivity` among the fields with "zero production readers repo-wide";
+that entry is wrong and the property must not be registered as unowned.
+
 ### 6.4 `std.materials.electrical`
 
 ```
