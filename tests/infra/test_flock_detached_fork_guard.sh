@@ -251,6 +251,7 @@ _FX_CLOSE_BARE='ex''ec 9>&-'
 _FX_OPEN_APPEND='ex''ec 9>>"$LOCK"'
 _FX_ACQ_IF='if ! flo''ck -n 9; then'
 _FX_ACQ_OR='flo''ck -xn 9 || exit 1'
+_FX_ACQ_INHERIT='flo''ck -n 9 || true'
 _FX_DETACH='{ rm -rf "$TRASH"; } 9<&- '"$_FX_AMP"
 _FX_FG_CHILD='"$@" 9<&-'
 _FX_UNLOCK='    flo''ck -u 9 2>/dev/null || true'
@@ -477,5 +478,64 @@ assert "real tree: scripts/cargo-test-occt-gated.sh is CLEAN" \
     _scans_clean "$REPO_ROOT/scripts/cargo-test-occt-gated.sh"
 assert "real tree: scripts/lib_lane_x_flock.sh is CLEAN" \
     _scans_clean "$REPO_ROOT/scripts/lib_lane_x_flock.sh"
+
+# ---------------------------------------------------------------------------
+# Cycle 5 — FALSE-POSITIVE TRAP #2: INHERITED-FD paths are SAFE.
+#
+# This trap is the sharpest one, because the "fix" the guard would imply is
+# WORSE than the bug it commemorates: an unguarded `flock -u 9` on a path where
+# FD 9 was inherited from the CALLER releases the CALLER's lock, silently
+# dropping the one-consumer exclusivity the caller is relying on.
+#
+# The exemption is therefore STRUCTURAL, not allow-listed: criterion (a)
+# requires the file to OPEN the descriptor itself, so a file that merely
+# inherits FD 9 never enters the candidate set at all and the guard is
+# incapable of advising a release it has no right to advise.  (Whence
+# scripts/seed-warm-lane.sh installs its release trap INSIDE the branch that
+# opened the FD, for the same make-it-impossible reason; its contract block
+# spells the hazard out.)
+#
+# A CLOSE is not an open, either: `exec 9>&-` merely drops this process's
+# descriptor.  Treating it as an open would flag the inheritors — and would
+# also have PASSED the real historical offender, whose refusal branches close
+# FD 9 upstream of the fork.
+# ---------------------------------------------------------------------------
+echo "--- Cycle 5: inherited-FD paths must never be flagged ---"
+
+# No local open anywhere: FD 9 arrives from the caller.
+_write_fixture neg_inherited.sh \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'TRASH=/tmp/fixture.trash' \
+    '# FD 9 is inherited from the caller; this script never opens it.' \
+    "$_FX_ACQ_INHERIT" \
+    "$_FX_DETACH" \
+    'echo "done"'
+
+assert "inherited FD: a file that never opens FD 9 is CLEAN" \
+    _scans_clean "$TMPWORK/neg_inherited.sh"
+
+# The only `exec 9` line is a CLOSE — which is not an open.
+_write_fixture neg_close_only.sh \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'TRASH=/tmp/fixture.trash' \
+    "$_FX_CLOSE_BARE" \
+    "$_FX_ACQ_INHERIT" \
+    "$_FX_DETACH" \
+    'echo "done"'
+
+assert "inherited FD: a lone CLOSE of FD 9 is not an open, so CLEAN" \
+    _scans_clean "$TMPWORK/neg_close_only.sh"
+
+# Real-tree controls — the inherited-FD consumers the task names, plus
+# tests/infra/run_all.sh, whose only `exec 9` occurrence is a close inside a
+# pool-worker subshell while it forks workers with `) &`.
+assert "real tree: scripts/warm-lane-gc.sh is CLEAN" \
+    _scans_clean "$REPO_ROOT/scripts/warm-lane-gc.sh"
+assert "real tree: scripts/thin-warm-lane.sh is CLEAN" \
+    _scans_clean "$REPO_ROOT/scripts/thin-warm-lane.sh"
+assert "real tree: tests/infra/run_all.sh is CLEAN" \
+    _scans_clean "$REPO_ROOT/tests/infra/run_all.sh"
 
 test_summary
