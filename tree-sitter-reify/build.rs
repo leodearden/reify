@@ -197,6 +197,100 @@ fn shell_stamp_is_current(
     true
 }
 
+/// The exact set of files whose bytes end up inside `libtree_sitter_reify.a`:
+/// the two translation units handed to `cc::Build`, plus the headers they include.
+///
+/// Paths are package-root-relative and sorted by byte order, matching
+/// `scripts/tree-sitter-freshness.sh --list-inputs` exactly. The two sides must
+/// agree byte-for-byte or every freshness check is meaningless, so this is the
+/// SINGLE enumeration used by both the watch-directive loop and the stamp writer
+/// below — they cannot drift.
+///
+/// Headers come from a sorted `read_dir` rather than a hardcoded
+/// alloc.h/array.h/parser.h list: a hardcoded list is exactly how this defect
+/// class recurs (someone adds a header, nothing watches it). See `#5629`.
+fn compilation_inputs() -> Vec<String> {
+    let mut headers: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir("src/tree_sitter") {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.ends_with(".h") {
+                headers.push(format!("src/tree_sitter/{}", name));
+            }
+        }
+    }
+    headers.sort();
+
+    let mut inputs = vec!["src/parser.c".to_string(), "src/scanner.c".to_string()];
+    inputs.extend(headers);
+    inputs
+}
+
+/// SHA-256 of a file, via the `sha256sum` binary.
+///
+/// Reuses the same subprocess mechanism as `shell_stamp_is_current`, so this
+/// introduces no new build-dependency and its behaviour on a host without
+/// `sha256sum` is already characterised. Returns `None` when the binary is
+/// missing or the call fails.
+fn sha256_of(path: &str) -> Option<String> {
+    let output = std::process::Command::new("sha256sum")
+        .arg(path)
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    // sha256sum output format: "<hash>  <filename>\n"
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    stdout.split_whitespace().next().map(|s| s.to_string())
+}
+
+/// Attest what was just compiled.
+///
+/// Writes a per-file SHA-256 manifest — `<hash>  <relpath>` lines, sorted by
+/// relpath — to `$OUT_DIR/tree_sitter_inputs.stamp`, i.e. right beside the
+/// `libtree_sitter_reify.a` this build script just produced. Called only after
+/// `cc::Build::compile` returns, and `compile` panics on failure, so a stamp
+/// sitting next to an archive ATTESTS that archive was built from these bytes.
+///
+/// Content identity is the point: `cargo:rerun-if-changed` is an mtime
+/// comparison, and warm-lane seeding bulk-stamps sources to 2020-01-01 while the
+/// CoW-cloned build outputs carry seed-time (task `#5630`), so "newer than" says
+/// nothing useful there. Only these hashes distinguish "built from these bytes"
+/// from "merely newer".
+///
+/// On a host without `sha256sum`, writes the literal `UNAVAILABLE` rather than
+/// omitting the stamp: an ABSENT stamp means "unproven", which would make
+/// `scripts/tree-sitter-freshness.sh ensure` force a rebuild on every single run.
+/// `UNAVAILABLE` instead maps to a clean skip. A write failure warns but never
+/// fails the build.
+fn write_inputs_stamp(out_dir: &str) {
+    let stamp_path = std::path::Path::new(out_dir).join("tree_sitter_inputs.stamp");
+
+    let mut manifest = String::new();
+    let mut hashed_all = true;
+    for rel in compilation_inputs() {
+        match sha256_of(&rel) {
+            Some(hash) => manifest.push_str(&format!("{}  {}\n", hash, rel)),
+            None => {
+                hashed_all = false;
+                break;
+            }
+        }
+    }
+
+    let content = if hashed_all {
+        manifest
+    } else {
+        "UNAVAILABLE\n".to_string()
+    };
+
+    if let Err(e) = std::fs::write(&stamp_path, content) {
+        eprintln!("warning: failed to write {}: {}", stamp_path.display(), e);
+    }
+}
+
 /// Verify that all expected output files exist after generation.
 /// Panics with a clear message naming whichever file is missing.
 fn verify_outputs(src_dir: &std::path::Path) {
@@ -220,10 +314,27 @@ fn main() {
     let parser_path = src_dir.join("parser.c");
     let grammar_path = std::path::Path::new("grammar.js");
 
-    // Re-run if the grammar source changes.
-    // Note: we do NOT watch src/parser.c — it's a generated output managed by
-    // this build script. Watching it would cause double execution.
+    // Declare every input cargo must watch. Two halves, for two different reasons
+    // (`#5629`, esc-5392-1):
+    //
+    //   src/parser.c is deliberately NOT watched. This build script WRITES it, so
+    //   watching it would make every run dirty its own watch set — double execution.
+    //
+    //   src/scanner.c and src/tree_sitter/*.h ARE watched. This build script never
+    //   writes them, so the double-execution objection does not apply — and before
+    //   this change they were watched by NOTHING. `cargo:rerun-if-changed=grammar.js`
+    //   was the only directive emitted, and the `cc` crate emits none of its own.
+    //   The consequence was a false GREEN: an edit confined to src/scanner.c gave
+    //   cargo no reason to re-run this script, so cc::Build::compile was never
+    //   re-invoked, the previously-built libtree_sitter_reify.a stayed linked, and
+    //   the external-scanner change was simply never under test.
     println!("cargo:rerun-if-changed=grammar.js");
+    for rel in compilation_inputs() {
+        if rel == "src/parser.c" {
+            continue;
+        }
+        println!("cargo:rerun-if-changed={}", rel);
+    }
 
     // Auto-generate from grammar.js when missing or stale.
     let output_paths: Vec<std::path::PathBuf> =
@@ -267,4 +378,8 @@ fn main() {
     c_config.file(&parser_path);
     c_config.file("src/scanner.c");
     c_config.compile("tree_sitter_reify");
+
+    // compile() panics on failure, so reaching here means libtree_sitter_reify.a
+    // was written. Record WHAT it was built from, beside the archive itself.
+    write_inputs_stamp(&out_dir);
 }
