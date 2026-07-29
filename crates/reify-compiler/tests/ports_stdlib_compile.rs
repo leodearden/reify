@@ -3160,3 +3160,96 @@ fn example_ports_mechanical_ri_compiles_clean() {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── task η: Torque builtin named dimension retires the stdlib alias ─────────
+
+/// CONSUMER PROOF for task η (PRD `docs/prds/v0_6/angle-units-surface-convergence.md`
+/// §6 D4): the `pub type Torque = Force * Length / Angle` alias in
+/// ports_mechanical.ri existed SOLELY because `Torque` was absent from
+/// `NAMED_DIMENSIONS` — the module's own header said exactly that, and cited
+/// the language rule that binary dimensional-op expressions are admitted only
+/// on a type-alias RHS, never in `param x : <type>` position. Now that
+/// `DimensionVector::TORQUE` is a registered named dimension, that premise is
+/// gone, so retiring the alias is what DEMONSTRATES the builtin works.
+///
+/// Three assertions:
+///  (a) no `Torque` entry remains in `module.type_aliases` — the retirement proof;
+///  (b) `RotaryPort.max_torque` still resolves to `Scalar<TORQUE>` — the builtin
+///      shadows the now-absent alias, resolution being builtin-before-alias
+///      (`resolve_type_with_aliases` tries `resolve_type_with_params` first);
+///  (c) a bare user source with NO import compiles clean and carries `TORQUE` —
+///      the user-observable payoff: `.ri` authors can write `param t : Torque`
+///      without importing `std.ports.mechanical` at all.
+///
+/// Asserted against `DimensionVector::TORQUE` rather than a locally rebuilt
+/// `FORCE.mul(&LENGTH).div(&ANGLE)` (as the older `MechanicalPort` assertions
+/// above still do) so this test names the constant it is proving.
+///
+/// Modelled on `rotational_stiffness_alias_removed_builtin_dimension_shadows`
+/// in flexures_stdlib_compile.rs, which pins the identical two-part invariant
+/// for task 4547's structurally identical deletion.
+#[test]
+fn torque_alias_removed_builtin_named_dimension_shadows() {
+    let module = load_module("std/ports/mechanical");
+
+    // (a) The alias itself is gone.
+    assert!(
+        !module.type_aliases.iter().any(|a| a.name == "Torque"),
+        "the `pub type Torque = Force * Length / Angle` alias must be DELETED \
+         (task η registered the built-in DimensionVector::TORQUE, which already \
+         shadows it); got type_aliases: {:?}",
+        module
+            .type_aliases
+            .iter()
+            .map(|a| &a.name)
+            .collect::<Vec<_>>()
+    );
+
+    // (b) The deletion is safe: RotaryPort's required `max_torque : Torque`
+    // still resolves, now via NAMED_DIMENSIONS instead of the alias.
+    let max_torque = param_type("std/ports/mechanical", "RotaryPort", "max_torque");
+    assert_eq!(
+        max_torque,
+        Type::Scalar {
+            dimension: DimensionVector::TORQUE,
+        },
+        "RotaryPort.max_torque must resolve to the built-in TORQUE dimension \
+         even with the alias deleted; got: {:?}",
+        max_torque
+    );
+
+    // (c) The user-observable signal: no import needed.
+    let source = r#"
+structure def S { param t : Torque = 5N*m/rad }
+"#;
+    let compiled = compile_source_with_stdlib(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "`param t : Torque` must compile with NO import now that Torque is a \
+         built-in named dimension; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("compiled module should contain the S template");
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "t")
+        .expect("S should have a value cell named 't'");
+    assert_eq!(
+        cell.cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::TORQUE,
+        },
+        "the unimported `param t : Torque` cell must carry TORQUE; got: {:?}",
+        cell.cell_type
+    );
+}
