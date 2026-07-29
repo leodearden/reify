@@ -111,6 +111,25 @@ module whole_model_cost_min
 // `Spacer.quantity_produced`/`Spacer.line_cost` — for the structure-keyed
 // story.
 //
+// # BT3 — the cross-scope surface reads
+//
+// `plate_cost_observed`/`spacer_cost_observed` on `CostAssembly` below are
+// the `.ri`-level spelling of "a scope reads another scope's solved cell"
+// that BT3 exists to observe.  Each is a function of its child's CO-SOLVED
+// `auto` (`line_cost = unit_cost * quantity_produced`), freshly refolded in
+// THIS merged solve — not the bottom-up frozen value, and not `Undef`.
+//
+// The raw auto's own instance path (e.g. `CostAssembly.plate.quantity_produced`)
+// is deliberately NOT read anywhere in this file, and never will resolve:
+// `build_dependent_cells` never emits an instance-path alias that would
+// shadow an auto (`!auto_ids.contains(alias)`,
+// `crates/reify-eval/src/engine_eval.rs:1854`), and sub-elaboration skips
+// autos outright (`unfold.rs:392-395` filters on `ValueCellKind::Param`;
+// an `Auto` cell carries no `default_expr` to elaborate).  So that spelling
+// is `Undef` by construction — read the auto only via its STRUCTURE-KEYED
+// cell (`Plate.quantity_produced`/`Spacer.quantity_produced`), per "Reading
+// the result" above.
+//
 // Integration test:
 //   crates/reify-eval/tests/joint_drive_expansion_boundary.rs (`mwhole_bt4_*`,
 //   `mwhole_bt3_*`) asserts (i) each child's auto resolves STRICTLY BELOW its
@@ -194,4 +213,11 @@ structure CostAssembly {
     // makes this a WHOLE-model cluster rather than two independent
     // single-child solves.
     minimize cost(self.descendants)
+
+    // BT3 — cross-scope SURFACE-SPELLING reads, alongside the inlined
+    // `minimize`, never as a replacement for it.  See the header's "BT3 —
+    // the cross-scope surface reads" section for what these carry and why
+    // the auto's own instance path is deliberately absent here.
+    let plate_cost_observed  : Money = self.plate.line_cost
+    let spacer_cost_observed : Money = self.spacer.line_cost
 }
