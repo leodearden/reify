@@ -28,8 +28,10 @@
 #     --fresh-checkout it is acquired BY DEFAULT: the #5223 guard was opt-in via
 #     --lane-lock and thus bypassable by an acquire-path caller that simply
 #     omitted the flag (exactly esc-5214, where a reseed clobbered a live
-#     consumer's in-flight build). Non-blocking by default: refuses with
-#     EX_TEMPFAIL (75) when a live consumer already holds it.
+#     consumer's in-flight build). Non-blocking by default: refuses when a live
+#     consumer already holds it -- with EX_TEMPFAIL (75) by default, or 77 under
+#     --distinct-lock-refusal-rc (task #5568). Either way the refusal is
+#     prefixed `LANE_LOCK_CONTENDED:` on stderr.
 #   --lane-lock: still accepted (now implied under --fresh-checkout; still the
 #     explicit opt-in for the --reset-in-place control arm, which does not lock
 #     by default).
@@ -110,7 +112,8 @@ _usage() {
     cat >&2 <<'EOF'
 Usage:
   seed-warm-lane.sh <base_target_dir> <lane_dir> (--fresh-checkout|--reset-in-place) \
-      [--base-commit <sha>] [--touch <path>]... [--lane-lock] [--assume-lane-lock-held]
+      [--base-commit <sha>] [--touch <path>]... [--lane-lock] [--assume-lane-lock-held] \
+      [--distinct-lock-refusal-rc]
   seed-warm-lane.sh --record-base <base_target_dir>
 
 Seed mode: CoW-clone a warm base target/ into a pool lane.
@@ -127,8 +130,9 @@ Seed mode: CoW-clone a warm base target/ into a pool lane.
                       is acquired BY DEFAULT (esc-5214/task 5354 fail-safe). Still the
                       explicit opt-in for the --reset-in-place control arm. Holds an
                       exclusive flock on the sibling ${LANE_DIR}.lock across the whole
-                      run, BEFORE any target mutation; refuses (EX_TEMPFAIL 75) if a
-                      live consumer already holds it (inv.2 one-consumer-per-lane).
+                      run, BEFORE any target mutation; refuses if a live consumer
+                      already holds it (inv.2 one-consumer-per-lane) -- with
+                      EX_TEMPFAIL 75 by default, 77 under --distinct-lock-refusal-rc.
                       REIFY_WARM_LANE_LANE_LOCK_WAIT (env, whenever the lock is
                       acquired): 0 (default) = non-blocking refuse (flock -n); N>0 =
                       queue up to N seconds before refusing (flock -w N); "unlimited"
@@ -148,6 +152,27 @@ Seed mode: CoW-clone a warm base target/ into a pool lane.
                       skip its own acquire. Mutually exclusive with --lane-lock (usage
                       error, exit 2). Seed never unlocks an FD 9 it did not open, so
                       the caller's own lock is untouched (#5705).
+  --distinct-lock-refusal-rc
+                      Exit 77 (EX_NOPERM — "another consumer owns this lane")
+                      instead of 75 (EX_TEMPFAIL) on a lane-lock refusal — either
+                      arm: the flock -n immediate refusal and the flock -w N queue
+                      timeout share ONE code (same cause, same remediation).
+                      OPT-IN: omit the flag and the exit code is unchanged at 75.
+                      Task #5568; the rationale (why 75 is the wrong code, why the
+                      flag is opt-in rather than an unconditional flip, the
+                      dark-factory arm) lives in ONE place — see
+                      docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.11.
+                      ACCEPTED-BUT-INERT wherever no refusal is reachable
+                      (--assume-lane-lock-held, --record-base, WAIT=unlimited) --
+                      never a usage error, so a caller may pass it unconditionally
+                      without replicating this script's internal mode logic.
+                      The flag string above is what dark-factory's capability probe
+                      text-greps the lane's own copy of this script for, so it must
+                      stay a literal in the arg parser.
+                      INDEPENDENT of this flag, both refusal arms ALWAYS prefix
+                      `LANE_LOCK_CONTENDED:` onto the first stderr line, so
+                      `grep LANE_LOCK_CONTENDED` separates lock contention from disk
+                      pressure even on a fleet still receiving 75.
 
 Record-base mode: stamp provenance beside the base target dir.
   --record-base dir   Write sidecar at $(dirname dir)/.warm-base-meta; print path on stdout.
@@ -182,6 +207,7 @@ TOUCH_PATHS=()
 RECORD_BASE_DIR=""
 LANE_LOCK_OPT=""
 ASSUME_LANE_LOCK_HELD=""
+DISTINCT_LOCK_REFUSAL_RC=""
 _POSITIONALS=()
 
 while [ $# -gt 0 ]; do
@@ -204,6 +230,15 @@ while [ $# -gt 0 ]; do
             ;;
         --assume-lane-lock-held)
             ASSUME_LANE_LOCK_HELD=1
+            shift
+            ;;
+        # NOTE: this flag string must stay a LITERAL here. dark-factory's
+        # capability probe text-greps the LANE's own copy of this script for
+        # it (the proven _seed_script_supports_assume_lane_lock_held
+        # mechanism), so a value synthesised from a variable would be
+        # invisible to the probe and the flag would never be passed.
+        --distinct-lock-refusal-rc)
+            DISTINCT_LOCK_REFUSAL_RC=1
             shift
             ;;
         --base-commit)
@@ -643,6 +678,32 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     # REIFY_LANE_X_FLOCK_WAIT gate (non-negative integer or "unlimited",
     # else exit 64/usage) and runs BEFORE the lock FD is even opened, so a
     # bad knob can never touch the target.
+    # ══ LANE-LOCK REFUSAL EXIT CODE (task #5568) ═════════════════════════════
+    #
+    # WHY (75-as-disk-pressure conflation, esc-5556-1, why the flag is opt-in,
+    # the reserved-code survey, the dark-factory arm): docs/prds/
+    # warm-lane-pool-cow-seeding.md §9.5 inv.11 is the SINGLE normative home.
+    # Deliberately not restated here (G7 no-lockstep-duplication) -- the same
+    # pointer-not-copy discipline inv.12 already uses for this script.
+    #
+    # MECHANICS (defined ONCE here, used by BOTH refusal arms below -- the
+    # flock -n immediate refusal and the flock -w queue timeout share ONE code):
+    #   75 (EX_TEMPFAIL) by DEFAULT -- unchanged from before #5568.
+    #   77 (EX_NOPERM)   under --distinct-lock-refusal-rc.
+    # (Tests: Block Q H11a/H11b, H12a/H12b.)
+    LANE_LOCK_REFUSAL_RC=75
+    if [ -n "$DISTINCT_LOCK_REFUSAL_RC" ]; then
+        LANE_LOCK_REFUSAL_RC=77
+    fi
+    # The flag is ACCEPTED-BUT-INERT, never a usage error, wherever no refusal
+    # is reachable (--assume-lane-lock-held, --record-base, WAIT=unlimited), so
+    # a caller may pass it unconditionally. (H11d/H11e/H11f pin the inert
+    # paths; contrast --assume-lane-lock-held + --lane-lock, which IS a usage
+    # error because those two contradict each other.) The `LANE_LOCK_CONTENDED:`
+    # stderr prefix both arms emit is INDEPENDENT of this flag -- always on.
+    # (Tests: Block Q H13.)
+    # ═════════════════════════════════════════════════════════════════════════
+
     LANE_LOCK_WAIT="${REIFY_WARM_LANE_LANE_LOCK_WAIT:-0}"
     _llw_unlimited=0
     case "$LANE_LOCK_WAIT" in
@@ -669,20 +730,20 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     # holds ${LANE_DIR}.lock on FD 9 itself and therefore omits --lane-lock.
     exec 9>"$LANE_LOCK"
     if [ "$_llw_unlimited" -eq 1 ]; then
-        flock 9   # block until acquired -- never refuses, no exit-75 case
+        flock 9   # block until acquired -- never refuses, no refusal-rc case
     elif [ "$LANE_LOCK_WAIT" = "0" ]; then
         if ! flock -n 9; then
             exec 9>&-
-            err "Lane lock held by a live consumer (flock -n failed): $LANE_LOCK"
+            err "LANE_LOCK_CONTENDED: Lane lock held by a live consumer (flock -n failed): $LANE_LOCK"
             err "Refusing to reseed an ASSIGNED lane (inv.2: one consumer per lane at a time)."
-            exit 75
+            exit "$LANE_LOCK_REFUSAL_RC"
         fi
     else
         if ! flock -w "$LANE_LOCK_WAIT" 9; then
             exec 9>&-
-            err "Lane lock still held by a live consumer after waiting ${LANE_LOCK_WAIT}s (flock -w timed out): $LANE_LOCK"
+            err "LANE_LOCK_CONTENDED: Lane lock still held by a live consumer after waiting ${LANE_LOCK_WAIT}s (flock -w timed out): $LANE_LOCK"
             err "Refusing to reseed an ASSIGNED lane (inv.2: one consumer per lane at a time)."
-            exit 75
+            exit "$LANE_LOCK_REFUSAL_RC"
         fi
     fi
     unset _llw_unlimited
@@ -709,7 +770,10 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     # of this very OFD and the exclusive lock is STILL HELD, even once this
     # process has exited. A consumer probing the instant seed exits then sees a
     # held lock, and acquire_lane's default is a non-blocking `flock -n`
-    # (exit 75 EX_TEMPFAIL), so it is spuriously refused. `flock -u` on any
+    # (refusing with $LANE_LOCK_REFUSAL_RC -- 75 EX_TEMPFAIL by default, 77
+    # under --distinct-lock-refusal-rc), so it is spuriously refused. Note the
+    # refusal is spurious EITHER WAY: #5568's rc only makes a real refusal
+    # legible, it does not make this window benign. `flock -u` on any
     # descriptor referring to the OFD drops the lock for every process holding
     # a dup, which closes the window; closing our own descriptor provably does
     # not. Measured on a 32-core host under 24 busy-spin workers,
@@ -759,7 +823,7 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     # impossible rather than conditionally avoided: on the inheritance path the
     # trap does not exist at all. (H7b pins it.)
     #
-    # Ordering note: the exit-75 refusal paths above do their own `exec 9>&-`
+    # Ordering note: the $LANE_LOCK_REFUSAL_RC refusal paths above do their own `exec 9>&-`
     # and error out BEFORE this line, so they never reach the trap and there is
     # no double-close. The script has no other trap to compose with.
     # ═════════════════════════════════════════════════════════════════════════
