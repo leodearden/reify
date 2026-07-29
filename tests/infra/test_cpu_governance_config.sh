@@ -192,6 +192,35 @@ PYEOF
 
     assert "REIFY_CPU_ADMIT_AGENT_THRESHOLD: YAML agent_admit.threshold matches agent-bin/cargo :-fallback" \
         python3 "$_PARSE_PY" "$ORCH_YAML" threshold_yaml_vs_agent_cargo "$AGENT_CARGO"
+
+    # ---------------------------------------------------------------------------
+    # (C) CENSUS IGNORE-LIST STALENESS — every config_key_census.ignore entry
+    # must still match >=1 live dotted path in dark-factory-orchestrator.yaml,
+    # so a knob rename/removal (e.g. e61fae8017's fairness.scheduler_v2) cannot
+    # leave a dead excuse behind silently. Only the STALE direction is guarded
+    # here; the COMPLETE direction (a new unlisted key) is self-announcing via
+    # dark-factory task 2989's born-at-L2 census escalation.
+    # ---------------------------------------------------------------------------
+    echo "--- (C) census ignore-list staleness ---"
+
+    assert "every config_key_census.ignore entry still matches a live key in dark-factory-orchestrator.yaml" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" census_ignore_entries_resolve
+
+    # Negative fixture: the real YAML with one bogus, never-matching entry
+    # appended to config_key_census.ignore. Built by loading+mutating the dict
+    # and yaml.safe_dump-ing it back out (not text munging), so the nested-list
+    # edit round-trips cleanly regardless of surrounding formatting.
+    _CENSUS_STALE_FIXTURE="$(mktemp /tmp/cpu_gov_census_stale_XXXXXX.yaml)"
+    trap 'rm -f "$_PARSE_PY" "${_CENSUS_STALE_FIXTURE:-}"' EXIT
+    python3 -c 'import sys,yaml; d=yaml.safe_load(open(sys.argv[1])); d["config_key_census"]["ignore"].append("cpu_governance.__stale_fixture_knob__"); yaml.safe_dump(d, open(sys.argv[2],"w"))' \
+        "$ORCH_YAML" "$_CENSUS_STALE_FIXTURE"
+
+    assert "census check FAILS on a fixture with a stale ignore entry" \
+        bash -c "! python3 '$_PARSE_PY' '$_CENSUS_STALE_FIXTURE' census_ignore_entries_resolve"
+
+    assert "census failure names the stale entry" \
+        bash -c "python3 '$_PARSE_PY' '$_CENSUS_STALE_FIXTURE' census_ignore_entries_resolve 2>&1 | grep -q 'cpu_governance.__stale_fixture_knob__'"
+
 fi
 
 # ---------------------------------------------------------------------------
