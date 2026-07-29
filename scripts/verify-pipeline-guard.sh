@@ -55,8 +55,15 @@
 # Usage by the dark-factory merge worker (cross-repo seam — wiring tracked
 # separately; reify ships the oracle, dark-factory does the wiring):
 #
-#   result=$(bash scripts/verify-pipeline-guard.sh requires-full-gate "${changed_files[@]}")
-#   exit_code=$?
+#   `exit_code=0; ... || exit_code=$?` — NOT a bare assignment followed by
+#   `exit_code=$?`. An assignment whose value comes from a command
+#   substitution is a simple command for errexit purposes, so under `set -e`
+#   the caller would abort AT THE ASSIGNMENT on exit 1 — never reaching the
+#   fast-path branch this snippet exists to demonstrate. The `||` list
+#   exempts it.
+#
+#   exit_code=0
+#   result=$(bash scripts/verify-pipeline-guard.sh requires-full-gate "${changed_files[@]}") || exit_code=$?
 #   if [ "$exit_code" -eq 0 ]; then
 #       # Route to full --scope all gate (or run drift guards at minimum)
 #   elif [ "$exit_code" -eq 1 ]; then
