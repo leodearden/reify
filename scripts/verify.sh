@@ -1485,6 +1485,37 @@ fi
 PLAN=()
 add() { PLAN+=("$1"); }
 
+# add_tool — emit a NON-CARGO plan line with the OCCT loader path scrubbed back
+# to the ambient apply_env() captured (task 5730; esc-4581-87 / task 5321).
+#
+# WHICH ONE DO I USE? If the line reaches cargo at all, use `add` — cargo needs
+# the OCCT search dir, and losing it is a hard link/load failure across the
+# whole gate. Everything else (shell scripts, npm, git, node) uses `add_tool`:
+# /opt/reify-deps/lib is a whole conda prefix that shadows hundreds of system
+# sonames and outranks DT_RUNPATH, so a tool inheriting it gets conda libraries
+# substituted underneath it (see the SCOPE CONTRACT comment in apply_env()).
+# The rule is deliberately conservative at the boundary: a MIXED shell+cargo
+# line (the gui-sidecar compile-check below) stays on `add`.
+#
+# _LD_SCRUB is SINGLE-quoted so the variable NAME, not its value, lands in the
+# plan: the restore then happens at EXECUTION time and --print-plan stays a
+# hermetic, host-independent oracle with no absolute host path baked into plan
+# text that tests and dark-factory compare.
+#
+# A leading `export ...;` STATEMENT is shape-agnostic — it composes ahead of
+# `if`, `{`, `(` and `for` alike, so no plan line needs restructuring — and it
+# cannot leak forward, because reaper_run_in_pgroup runs each plan line in its
+# own background subshell (`set -m; eval "$cmd" &`). The ONE exception is the
+# backgrounded node lane, which is eval'd in the executor's main shell; it puts
+# the export inside its own `{ ... ; } &` braces instead and so does not use
+# add_tool. Placement also matters at the head of the line specifically: see
+# the run_all.sh emission site for the ledger-guard constraint.
+#
+# Enforced by tests/infra/test_verify_ld_library_path_scope.sh — a new tool
+# plan line added with plain `add` fails that guard.
+_LD_SCRUB='export LD_LIBRARY_PATH="$REIFY_AMBIENT_LD_LIBRARY_PATH"; '
+add_tool() { PLAN+=("${_LD_SCRUB}$1"); }
+
 # Release-sensitive crate flags: ALL release-sensitive crates in one nextest -p set.
 # Task 4451: the gated/ungated split is gone; the nextest occt group (max-threads=24,
 # env-driven) bounds intra-run concurrency for OCCT-touching release-sensitive crates (reify-eval).
@@ -2278,7 +2309,7 @@ build_plan() {
     # and always at the merge/scope=all tier, while keeping docs-only /
     # gui-src-only plans (RUN_RUST=0) at zero command leaves.
     if [ "$RUN_RUST" -eq 1 ]; then
-        add "./scripts/check-infra-classification-manifest.sh"
+        add_tool "./scripts/check-infra-classification-manifest.sh"
     fi
 
     # harness-layout baseline-registration drift gate (task 5300): fail fast —
@@ -2294,7 +2325,7 @@ build_plan() {
     # psi-gate / run_all.sh. RUN_RUST=1 keeps docs-only / gui-src-only plans at
     # zero command leaves.
     if [ "$RUN_RUST" -eq 1 ]; then
-        add "./scripts/check-harness-baseline-registration.sh --from-git"
+        add_tool "./scripts/check-harness-baseline-registration.sh --from-git"
     fi
 
     # manifold prebuilt guard: fail fast (with a clear "run the deps script"
@@ -2302,12 +2333,12 @@ build_plan() {
     # [target.*.manifold] override links are missing or version-drifted —
     # before any multi-minute compile turns that into a cryptic linker error.
     if [ "$RUN_RUST" -eq 1 ]; then
-        add "./scripts/check-manifold-deps.sh"
+        add_tool "./scripts/check-manifold-deps.sh"
     fi
 
     # tree-sitter parser regeneration is a Rust-build prerequisite.
     if [ "$RUN_RUST" -eq 1 ]; then
-        add "./scripts/tree-sitter-generate.sh"
+        add_tool "./scripts/tree-sitter-generate.sh"
     fi
 
     # Compile-phase PSI admission gate (task 4618): soft backpressure backstop
@@ -2473,8 +2504,17 @@ build_plan() {
     # (test_npm_ci_hardening.sh Test 3) asserts that no plan line contains
     # "npm ci.*|| true", and the trap is on the same line as the npm ci call;
     # the `if`-guard achieves the same set -e safety without that token.
+    #
+    # LOADER SCRUB — the ONE add_tool() exception (task 5730). The node lane is
+    # a tool line and needs the scrub, but this plan line is the only one the
+    # executor eval's in its MAIN shell (everything else goes through
+    # reaper_run_in_pgroup's `set -m; eval "$cmd" &` subshell). A leading
+    # `export ...;` here would therefore persist into every SUBSEQUENT plan
+    # line, including the cargo ones — silently stripping the OCCT search dir
+    # from the rest of the gate. It goes INSIDE the `{ ... ; } &` braces, which
+    # are themselves a background subshell, so it scopes to the npm work alone.
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ] && [ -n "$_node_lane" ]; then
-        add "{ ${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!; trap 'if kill \"\$_VERIFY_NODE_BG_PID\" 2>/dev/null; then :; fi; _verify_cleanup' EXIT"
+        add "{ ${_LD_SCRUB}${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!; trap 'if kill \"\$_VERIFY_NODE_BG_PID\" 2>/dev/null; then :; fi; _verify_cleanup' EXIT"
     fi
 
     # lint: clippy over all targets, warnings-as-errors.
@@ -2514,9 +2554,9 @@ build_plan() {
 
     # Plain path: node lane as sequential lines (no foreground rust gate, e.g. action=test).
     if [ -n "$_node_lane" ] && { [ "$DO_LINT" -eq 0 ] || [ "$RUN_RUST" -eq 0 ]; }; then
-        add "$_gui_cmd"
-        add "$_sidecar_cmd"
-        add "$_ts_cmd"
+        add_tool "$_gui_cmd"
+        add_tool "$_sidecar_cmd"
+        add_tool "$_ts_cmd"
     fi
 
     # Cheap static infra checks (opt-in). Test-side and lint-side, mirroring the
@@ -2526,13 +2566,13 @@ build_plan() {
     # FAIL-FAST: emitted BEFORE add_test_passes (task #4448).
     if [ "$INCLUDE_INFRA" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
         if [ "$DO_TEST" -eq 1 ]; then
-            add "if test -f tests/sync_comments_test.sh; then timeout --kill-after=60 10m bash tests/sync_comments_test.sh; else echo 'WARNING: sync_comments_test.sh not found, skipping'; fi"
+            add_tool "if test -f tests/sync_comments_test.sh; then timeout --kill-after=60 10m bash tests/sync_comments_test.sh; else echo 'WARNING: sync_comments_test.sh not found, skipping'; fi"
         fi
         if [ "$DO_LINT" -eq 1 ]; then
-            add "if test -f scripts/test_pm_standardization.sh; then timeout --kill-after=60 10m bash scripts/test_pm_standardization.sh; else echo 'WARNING: test_pm_standardization.sh not found, skipping'; fi"
-            add "if test -f scripts/check_event_inventory.sh; then timeout --kill-after=60 5m bash scripts/check_event_inventory.sh; else echo 'WARNING: check_event_inventory.sh not found, skipping'; fi"
-            add "if test -f scripts/check-nan-safe-ordering.sh; then timeout --kill-after=60 5m bash scripts/check-nan-safe-ordering.sh; else echo 'WARNING: check-nan-safe-ordering.sh not found, skipping'; fi"
-            add "if test -f scripts/check-compute-trampoline-registration.sh; then timeout --kill-after=60 5m bash scripts/check-compute-trampoline-registration.sh; else echo 'WARNING: check-compute-trampoline-registration.sh not found, skipping'; fi"
+            add_tool "if test -f scripts/test_pm_standardization.sh; then timeout --kill-after=60 10m bash scripts/test_pm_standardization.sh; else echo 'WARNING: test_pm_standardization.sh not found, skipping'; fi"
+            add_tool "if test -f scripts/check_event_inventory.sh; then timeout --kill-after=60 5m bash scripts/check_event_inventory.sh; else echo 'WARNING: check_event_inventory.sh not found, skipping'; fi"
+            add_tool "if test -f scripts/check-nan-safe-ordering.sh; then timeout --kill-after=60 5m bash scripts/check-nan-safe-ordering.sh; else echo 'WARNING: check-nan-safe-ordering.sh not found, skipping'; fi"
+            add_tool "if test -f scripts/check-compute-trampoline-registration.sh; then timeout --kill-after=60 5m bash scripts/check-compute-trampoline-registration.sh; else echo 'WARNING: check-compute-trampoline-registration.sh not found, skipping'; fi"
         fi
     fi
 
@@ -2732,7 +2772,18 @@ build_plan() {
         # made: atomicity holds because each marker is a single write() call;
         # regression-guarded by tests/infra/test_run_all.sh Tests 7 and 8a
         # (source of truth for marker text/locations — not restated here).
-        add "if test -f tests/infra/run_all.sh; then REIFY_AUDIT_NO_COLD_BUILD=1 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 REIFY_RUN_ALL_CONTENT_SKIP=1 timeout --kill-after=60 30m bash tests/infra/run_all.sh 2>&1; fi"
+        #
+        # LOADER SCRUB PLACEMENT (task 5730) — add_tool()'s scrub must stay a
+        # leading statement at the HEAD of this line, ahead of the `if`, and
+        # must NEVER be rewritten into a `KEY=VALUE` prefix token beside the
+        # three REIFY_* tokens after `then`. tests/infra/test_run_all_ambient_isolation.sh
+        # derives the live injected-var set from exactly that `then`-anchored
+        # window and cross-checks SET EQUALITY against
+        # tests/infra/run-all-ambient-vars.manifest; a fourth token there would
+        # trip the ledger drift guard and drag in a per-var hostile-ambient
+        # sub-case. Both known bites of the leak (esc-4581-87, task 5321) were
+        # infra tests reached through this line.
+        add_tool "if test -f tests/infra/run_all.sh; then REIFY_AUDIT_NO_COLD_BUILD=1 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 REIFY_RUN_ALL_CONTENT_SKIP=1 timeout --kill-after=60 30m bash tests/infra/run_all.sh 2>&1; fi"
     fi
 
     # Selective infra injection (task 4523): task-level path runs the infra
@@ -2762,7 +2813,7 @@ build_plan() {
         local _glob
         set -f  # disable pathname expansion: keep glob tokens as literals
         for _glob in $SELECTED_INFRA_GLOBS; do
-            add "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; timeout --kill-after=60 10m bash \"\$_vt\" || exit \$?; done )"
+            add_tool "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; timeout --kill-after=60 10m bash \"\$_vt\" || exit \$?; done )"
         done
         set +f
     fi
@@ -2897,7 +2948,7 @@ if [ "$PRINT_PLAN" -eq 1 ]; then
     # survives a reordering.  A `#` comment line, so plan_count_noncomment_lines
     # (`^[^#]`) — the oracle behind the THROUGHPUT-COUNTS sentinel — cannot see it.
     echo "# narrowing — NARROW_ACTIVE=$NARROW_ACTIVE affected=${AFFECTED:-} closure=${AFFECTED_CLOSURE:-}"
-    echo "# --- environment (process-level; inherited by every command below) ---"
+    echo "# --- environment (process-level; inherited by every command below EXCEPT where a command overrides it inline — see the LD_LIBRARY_PATH scrub on non-cargo lines) ---"
     for _e in "${ENV_LINES[@]}"; do echo "# $_e"; done
     echo "# --- commands (executed in order; '&&' semantics — stop on first failure) ---"
     if [ "${#PLAN[@]}" -eq 0 ]; then
