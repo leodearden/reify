@@ -33,7 +33,15 @@
  * (`./meshCountParity.test.ts`, the CI signal) and the live driver
  * (`./smoke_mesh_count_parity_e2e.mjs`), which a runner invokes with bare
  * `node`, not `tsx`.
+ *
+ * THE TRANSPORT SEAM IS NOT HERE. Decoding a debug-MCP response — the §2a
+ * in-band-error discriminator, the §2b `isError` fold, the `tools/call` request
+ * shape — lives in `./rpcEnvelope.mjs`, shared with the five sibling smoke
+ * drivers (task 5731). This module imports `isInBandError` from there and stops
+ * at what its name promises: the parity decision and the extraction that feeds it.
  */
+
+import { isInBandError } from "./rpcEnvelope.mjs";
 
 /**
  * Non-vacuity floor: the minimum `viewport_state.meshCount` a parity run must
@@ -302,123 +310,6 @@ export function checkMeshCountParity(inputs) {
 }
 
 // ─── Payload extraction ──────────────────────────────────────────────────────
-
-/**
- * Detect the in-band error shape returned by reify-debug handlers.
- *
- * Debug handlers report failure as `Ok(json!({"error": "<msg>", ...}))` — no MCP
- * `isError` flag is set, so the error rides inside the content block and is
- * indistinguishable from a success value to a naive caller. The `rpc()` helper in
- * a `.mjs` smoke driver only throws on TRANSPORT errors and hands back the parsed
- * text block (see {@link normalizeRpcEnvelope}, which shapes it but deliberately
- * does not judge it), so without this check a tool-level failure would surface as
- * `undefined` counts and get misreported as a shape problem instead of the outage
- * it is.
- *
- * Discriminator: a non-null object whose `error` field is a string. Mirrors
- * `inBandError` in ./rpc.ts and the §2a contract in docs/debug-mcp-contract.md,
- * which is authoritative.
- *
- * NOTE — the OTHER failure dialect: Rust-dispatched tools (`engine_state`,
- * `mesh_stats`, `demand_dispatch`) surface a handler error as an MCP envelope
- * with `isError: true` carrying a plain-text `Error: <msg>` block
- * (debug_server.rs), NOT this JSON shape. The driver's `rpc()` normalises that
- * envelope into `{error: "<text>"}` on the way out precisely so this one
- * detector covers both dialects.
- *
- * Exported so a driver can distinguish "the tool failed" from "the tool
- * answered" BEFORE it starts interpreting fields — see the selectivity
- * precondition in ./smoke_mesh_count_parity_e2e.mjs, where reading a failed
- * `demand_dispatch` as `full_scope !== false` would blame the frontend for a
- * tool outage.
- *
- * @param {unknown} v
- * @returns {boolean}
- */
-export function isInBandError(v) {
-  return v !== null && typeof v === "object" && typeof (/** @type {any} */ (v).error) === "string";
-}
-
-/**
- * @typedef {object} NormalizedRpcEnvelope
- * @property {string} [transportError] Set exactly when the JSON-RPC envelope itself
- *           carried a top-level `error` — the caller should THROW, not interpret.
- * @property {unknown} [payload] The tool's answer, normalised so that BOTH failure
- *           dialects satisfy {@link isInBandError}. `null` means "no text block to
- *           interpret" (e.g. an image content block from `screenshot`).
- */
-
-/**
- * Normalise an MCP `tools/call` response envelope into one interpretable payload.
- *
- * This is the transport seam of the live driver
- * (`./smoke_mesh_count_parity_e2e.mjs`), lifted out of it so the one genuinely
- * subtle branch — the `isError` fold below — is covered by the vitest suite
- * rather than living only in a file that CI can never run.
- *
- * Branch table, in order:
- *   1. top-level `error`      → `{transportError}`; the caller throws. NOT a payload:
- *                               a dead/unreachable server must not read as a tool answer.
- *   2. `result.isError === true` → `{payload: {error: "<text block>"}}` — THE FOLD.
- *                               Rust-dispatched handlers (`engine_state`, `mesh_stats`,
- *                               `demand_dispatch`) report failure this way, with a plain-text
- *                               `Error: <msg>` block (debug_server.rs), while frontend-mediated
- *                               tools use the in-band JSON dialect. Folding the former into the
- *                               latter is what lets ONE `isInBandError` check cover both; without
- *                               it an engine-thread-died failure arrives as the bare string
- *                               "Error: …" and gets misreported downstream as
- *                               `mesh_stats payload is not an object` — a tool OUTAGE dressed up
- *                               as a shape problem.
- *   3. no text block          → `{payload: null}` (image content, empty/absent content).
- *   4. text block, JSON       → `{payload: <parsed>}`. A frontend in-band `{error: "<msg>"}`
- *                               passes through UNCHANGED — it already speaks the target dialect.
- *   5. text block, non-JSON   → `{payload: <raw text>}`.
- *
- * DELIBERATELY NOT `parseRpcResponse` (./rpc.ts), which the typed TS harness uses:
- * that one collapses every failure into `{ok: false, error}`, discarding whether the
- * tool answered at all, and it is TS — unimportable from a bare-`node` `.mjs` driver.
- * This normaliser preserves the in-band shape precisely so `isInBandError` can
- * discriminate outage-from-answer downstream. The overlap is the branch table, and
- * the two are pinned by their own suites (./rpc.test.ts, ./meshCountParity.test.ts).
- *
- * Never throws, whatever the shape of `envelope`.
- *
- * @param {unknown} envelope
- * @returns {NormalizedRpcEnvelope}
- */
-export function normalizeRpcEnvelope(envelope) {
-  const env = /** @type {any} */ (
-    envelope !== null && typeof envelope === "object" ? envelope : {}
-  );
-
-  if (env.error) {
-    return { transportError: `RPC error: ${JSON.stringify(env.error)}` };
-  }
-
-  const content = env.result?.content;
-  const textBlock = Array.isArray(content)
-    ? content.find((c) => c !== null && typeof c === "object" && c.type === "text")
-    : undefined;
-
-  if (env.result?.isError === true) {
-    return {
-      payload: {
-        error:
-          typeof textBlock?.text === "string"
-            ? textBlock.text
-            : "tool reported isError with no text content block",
-      },
-    };
-  }
-
-  if (!textBlock || typeof textBlock.text !== "string") return { payload: null };
-
-  try {
-    return { payload: JSON.parse(textBlock.text) };
-  } catch {
-    return { payload: textBlock.text };
-  }
-}
 
 /**
  * Validate one tool payload down to a usable object, appending a named failure

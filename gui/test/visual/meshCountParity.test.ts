@@ -27,8 +27,6 @@ import {
   checkMeshCountParity,
   extractMeshCountInputs,
   formatFailures,
-  isInBandError,
-  normalizeRpcEnvelope,
   MESH_COUNT_PARITY_MIN_BODIES,
 } from "./meshCountParity.mjs";
 
@@ -657,127 +655,6 @@ describe("extractMeshCountInputs — (d) full_scope: true extracts faithfully", 
     const parity = checkMeshCountParity(inputs) as { ok: boolean; failures: Failure[] };
     expect(parity.ok).toBe(false);
     expect(parity.failures.map((f) => f.gate)).toEqual(["vacuity"]);
-  });
-});
-
-describe("isInBandError — the tool-outage discriminator the live driver reuses", () => {
-  // Exported for the smoke's selectivity precondition: a FAILED demand_dispatch
-  // must be diagnosed as a tool outage, not read as `full_scope !== false` and
-  // blamed on the frontend never calling sync_demand.
-  it("accepts the frontend in-band shape", () => {
-    expect(isInBandError({ error: "no active session" })).toBe(true);
-  });
-
-  it("accepts the Rust isError dialect once rpc() has normalised it", () => {
-    // debug_server.rs answers a Rust-dispatched handler failure with
-    // {content: [{type:'text', text:'Error: <msg>'}], isError: true}; the
-    // driver's rpc() folds that into {error: '<text>'} so this one detector
-    // covers both dialects. If it did not, the outage would arrive as a bare
-    // string and be misreported as a payload-shape problem.
-    expect(isInBandError({ error: "Error: engine thread died" })).toBe(true);
-  });
-
-  it("rejects a healthy payload, and non-objects", () => {
-    expect(isInBandError({ full_scope: false, eval_set: [] })).toBe(false);
-    expect(isInBandError(null)).toBe(false);
-    expect(isInBandError(undefined)).toBe(false);
-    expect(isInBandError("Error: engine thread died")).toBe(false);
-    expect(isInBandError([{ error: "nested" }])).toBe(false);
-  });
-
-  it("rejects a non-string error field (§2a's discriminator is a STRING error)", () => {
-    // Misfiring here would mask real data — a handler is free to use `error`
-    // for something else. Matches the extractor's behaviour on the same shape.
-    expect(isInBandError({ error: null, full_scope: false })).toBe(false);
-    expect(isInBandError({ error: 500, full_scope: false })).toBe(false);
-  });
-});
-
-describe("normalizeRpcEnvelope — the two failure dialects folded into one shape", () => {
-  // The live driver's rpc() used to inline this branch, which made the ONE piece
-  // of genuinely new transport logic in the smoke — folding the Rust `isError`
-  // envelope into the frontend's in-band `{error}` shape so a single
-  // isInBandError check covers both dialects — the only part with no CI cover.
-  const textEnvelope = (value: unknown) => ({
-    result: { content: [{ type: "text", text: JSON.stringify(value) }] },
-  });
-
-  it("returns the parsed payload for a healthy JSON text block", () => {
-    const { transportError, payload } = normalizeRpcEnvelope(
-      textEnvelope({ full_scope: false, eval_set: ["a"] }),
-    );
-    expect(transportError).toBeUndefined();
-    expect(payload).toEqual({ full_scope: false, eval_set: ["a"] });
-  });
-
-  it("reports a top-level (transport) error separately from a payload", () => {
-    // The driver throws on this branch; it must never be mistaken for a tool
-    // payload, in-band error or otherwise.
-    const { transportError, payload } = normalizeRpcEnvelope({
-      error: { code: -32601, message: "Method not found" },
-    });
-    expect(typeof transportError).toBe("string");
-    expect(transportError).toContain("Method not found");
-    expect(payload).toBeUndefined();
-  });
-
-  it("folds the Rust isError envelope into the in-band {error} shape", () => {
-    // debug_server.rs answers a Rust-dispatched handler failure with
-    // isError:true plus a plain-text `Error: <msg>` block. Normalising it here
-    // is what lets the driver's ONE isInBandError check cover engine_state,
-    // mesh_stats and demand_dispatch as well as the frontend-mediated tools.
-    const { transportError, payload } = normalizeRpcEnvelope({
-      result: {
-        content: [{ type: "text", text: "Error: engine thread died" }],
-        isError: true,
-      },
-    });
-    expect(transportError).toBeUndefined();
-    expect(isInBandError(payload)).toBe(true);
-    expect((payload as { error: string }).error).toContain("engine thread died");
-  });
-
-  it("still yields an in-band error when isError carries no text block", () => {
-    // Degrading to `null` here would send the outage downstream as a shape
-    // problem — the misdiagnosis this module exists to prevent.
-    const { payload } = normalizeRpcEnvelope({ result: { content: [], isError: true } });
-    expect(isInBandError(payload)).toBe(true);
-  });
-
-  it("yields null when there is no text block to interpret", () => {
-    // Empty/absent content, or a non-text block such as the image one that the
-    // screenshot tools answer with: "nothing to interpret", not a failure. No
-    // caller in this module reads image data, so the block is not decoded.
-    for (const result of [
-      { content: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] },
-      { content: [] },
-      {},
-    ]) {
-      const { transportError, payload } = normalizeRpcEnvelope({ result });
-      expect(transportError).toBeUndefined();
-      expect(payload).toBeNull();
-    }
-  });
-
-  it("hands back the raw text when the block is not JSON", () => {
-    const { payload } = normalizeRpcEnvelope({
-      result: { content: [{ type: "text", text: "pong" }] },
-    });
-    expect(payload).toBe("pong");
-  });
-
-  it("never throws on a malformed or absent envelope", () => {
-    for (const envelope of [undefined, null, {}, { result: null }, { result: {} }, 42]) {
-      expect(() => normalizeRpcEnvelope(envelope as never)).not.toThrow();
-    }
-  });
-
-  it("leaves a frontend in-band error untouched for isInBandError to catch", () => {
-    // viewport_state (via query_frontend) already speaks this dialect natively;
-    // normalisation must be a no-op for it rather than double-wrapping.
-    const { payload } = normalizeRpcEnvelope(textEnvelope({ error: "no active session" }));
-    expect(isInBandError(payload)).toBe(true);
-    expect((payload as { error: string }).error).toBe("no active session");
   });
 });
 
