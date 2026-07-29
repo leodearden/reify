@@ -565,6 +565,19 @@ _add_task 9104 in-progress '{}' "$(_now_iso -82800)" "$B_CLAIMANT"
 _add_task 9105 in-progress '{}' "$(_now_iso -90000)" "$B_CLAIMANT"
 # 9106 — an unparseable heartbeat must fail SAFE (LIVE), never eligible.
 _add_task 9106 in-progress '{}' "not-a-timestamp" "$B_CLAIMANT"
+# 9107 — a CLAIMED in-progress row that has not yet written (or has lost) its
+# heartbeat: claimant populated, heartbeat_at NULL. It carries $B_PROPOSAL so
+# it WOULD fire class B, mirroring 9101 — the guard is what suppresses it,
+# rather than the fixture being inert. Re-dispatching a claimed, actively-
+# running agent is the single most destructive thing this sweep can do, so the
+# fail-safe direction is the same one L1 already takes for an UNPARSEABLE
+# heartbeat: degrade to LIVE.
+_add_task 9107 in-progress "$B_PROPOSAL" "" "$B_CLAIMANT"
+# 9108 — the SCOPING guard for that rule. A `blocked` row with a claimant and
+# no heartbeat must stay ELIGIBLE: classes A and C are blocked-only per L4, so
+# extending the claimant rule to `blocked` would blind them wholesale, and the
+# live store's blocked rows legitimately carry no heartbeat.
+_add_task 9108 blocked '{}' "" "$B_CLAIMANT"
 
 run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
     --stale-heartbeat-min "$B_WINDOW_MIN" --format json
@@ -577,7 +590,23 @@ assert "B1: a 60s-old heartbeat with a live claimant is LIVE" \
 assert "B1: a LIVE row is not classified (class=-, action=none)" \
     _json_is 't[9101]["class"] == "-" and t[9101]["action"] == "none"'
 assert "B1: a LIVE row is counted in live_skipped, not in any class counter" \
-    _json_is 's["live_skipped"] == 3 and s["merge_verify_red"] == 0 and s["unmet_dependency"] == 0'
+    _json_is 's["live_skipped"] == 4 and s["merge_verify_red"] == 0 and s["unmet_dependency"] == 0'
+
+# --- B1c/B1d: a CLAIMED in-progress row with no heartbeat is LIVE ------------
+# `merge_verify_red == 0` above is the sharpest signal for these: 9107 carries
+# $B_PROPOSAL, so without the claimant rule it is eligible, class B fires, and
+# that counter reads 1.
+assert "B1c: an in-progress row with a claimant and NO heartbeat is LIVE" \
+    _json_is 't[9107]["verdict"] == "LIVE"'
+assert "B1c: ... and is therefore not classified (class=-, action=none)" \
+    _json_is 't[9107]["class"] == "-" and t[9107]["action"] == "none"'
+# The evidence must name the claimant as the liveness signal. It must NOT claim
+# a heartbeat fell inside the window: the row has no heartbeat at all, so the
+# generic LIVE evidence string would render a misleading bare `heartbeat_at=`.
+assert "B1d: claimant-based LIVE evidence names the claimant" \
+    _json_is "'$B_CLAIMANT' in t[9107]['evidence']"
+assert "B1d: ... and does not claim a heartbeat matched the window" \
+    _json_is '"within the" not in t[9107]["evidence"]'
 
 # --- B2: a LIVE row never yields a request file ------------------------------
 B_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-req-XXXXXX")"
@@ -585,6 +614,8 @@ _TMPDIRS+=("$B_REQ")
 run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
     --stale-heartbeat-min "$B_WINDOW_MIN" --emit-requests "$B_REQ"
 assert "B2: a LIVE row emits no re-dispatch request" _no_request_for "$B_REQ" 9101
+assert "B2: a claimant-based LIVE row emits no re-dispatch request either" \
+    _no_request_for "$B_REQ" 9107
 
 run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
     --stale-heartbeat-min "$B_WINDOW_MIN" --format json
@@ -594,6 +625,11 @@ assert "B3: a stale heartbeat with NO claimant (the 5196 shape) is eligible" \
     _json_is 't[9102]["verdict"] != "LIVE"'
 assert "B4: a blocked row with heartbeat_at NULL is eligible" \
     _json_is 't[9103]["verdict"] != "LIVE"'
+# The scoping half of B4: the claimant rule is `in-progress`-only, so adding a
+# claimant to a heartbeat-less BLOCKED row must not make it LIVE. Were it to,
+# classes A and C — blocked-only per L4 — would be blinded wholesale.
+assert "B4: ... and stays eligible even when it carries a claimant" \
+    _json_is 't[9108]["verdict"] != "LIVE"'
 
 # --- B5: the boundary, from both sides, with no sleep ------------------------
 assert "B5a: inside the window (23h < 24h) => LIVE" _json_is 't[9104]["verdict"] == "LIVE"'
@@ -619,14 +655,14 @@ run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
 assert "B7: an unparseable heartbeat degrades to LIVE, never to eligible" \
     _json_is 't[9106]["verdict"] == "LIVE"'
 assert "B7: an unparseable heartbeat is counted in live_skipped, not unknown" \
-    _json_is 's["live_skipped"] == 3 and s["unknown"] == 0'
-# The three eligible rows here (9102/9103/9105) carry no class-matching
+    _json_is 's["live_skipped"] == 4 and s["unknown"] == 0'
+# The four eligible rows here (9102/9103/9105/9108) carry no class-matching
 # metadata at all, so they land in no_class — NOT in unknown, which is reserved
 # for a class that matched and whose oracle then failed. Pinned as an exact
 # count so a regression that folded the two back together is caught here as
 # well as at G3.
 assert "B7: the eligible-but-class-less rows are counted in no_class, not unknown" \
-    _json_is 's["no_class"] == 3'
+    _json_is 's["no_class"] == 4'
 assert "B7: an unparseable heartbeat warns on stderr" \
     _err_has '\[warn\].*9106'
 
@@ -670,6 +706,7 @@ _add_task 9207 in-progress "$C_GATE_META" "$(_now_iso -10800)" ""   # blocked-on
 _add_task 9208 blocked "$C_GATE_META"                         # malformed esc   => unknown
 _add_task 9209 blocked "$C_GATE_META"                         # unrecognized st => unknown
 _add_task 9210 blocked "$C_GATE_META"                         # null status     => unknown
+_add_task 9211 blocked "$C_GATE_META"                         # absent status   => unknown
 
 _add_esc 9202 1 pending
 _add_esc 9203 1 dismissed
@@ -685,6 +722,16 @@ printf '{"id":"esc-9209-1","task_id":"9209","status":"in_triage"}\n' > "$C_ESC/e
 # such file today (data/escalations/b3-state.json), which escapes the sweep's
 # glob only by name, not by shape.
 printf '{"id":"esc-9210-1","task_id":"9210","status":null}\n' > "$C_ESC/esc-9210-1.json"
+# A well-formed record with NO `status` key AT ALL — the mid-write shape, and
+# the one case whose ROUTE through _esc_state changes when the parse sentinel
+# stops being a NUL. `.get("status","")` yields the empty string, which today
+# collides with the NUL sentinel (bash strips the NUL from BOTH the capture and
+# the `case` pattern, so the arm degenerates to ""-matches-"") and so lands on
+# the parse-error arm; once the sentinel is a literal token it will land on the
+# `*)` unrecognized-status arm instead. The VERDICT is `unknown` either way —
+# that equivalence is what C10g/C10h pin, so the sentinel change is provably
+# behaviour-preserving rather than merely asserted to be.
+printf '{"id":"esc-9211-1","task_id":"9211"}\n' > "$C_ESC/esc-9211-1.json"
 # A .json.lock sidecar (the live store holds these next to the real files):
 # the glob must match *.json only, never *.json.lock, or 9201 would read as
 # gated by a lock file.
@@ -740,6 +787,14 @@ run_sweep --db "$C_DB" --escalations "$C_ESC" --repo "$C_REPO" \
 assert "C8: a malformed escalation file degrades to unknown, not STALE" \
     _json_is 't[9208]["verdict"] == "unknown"'
 assert "C8: a malformed escalation file warns on stderr" _err_has '\[warn\].*9208'
+# Deliberately adjacent to the assert above so it reads the SAME run's ERR_OUT.
+# The parse sentinel must survive command substitution: bash strips a NUL from
+# `$(...)` and warns while doing it, and that warning lands on the SUT's OWN
+# stderr — the very channel `warn()` writes to and every `_err_has` assert here
+# reads. Diagnostics a consumer cannot distinguish from the tool's own output
+# are a defect in the tool, not noise.
+assert "C8: the parse sentinel leaks no bash NUL warning onto the SUT's own stderr" \
+    _not _err_has 'ignored null byte'
 
 # --- C10: the status predicate is a TERMINAL allowlist, not a pending one ----
 # `pending` gates and `resolved`/`dismissed` clear; EVERY other value —
@@ -760,7 +815,11 @@ assert "C10d: a null escalation status degrades to unknown, not STALE" \
     _json_is 't[9210]["verdict"] == "unknown"'
 assert "C10e: a null status emits no re-dispatch request" \
     _no_request_for "$C_REQ2" 9210
-assert "C10f: neither shape is counted as a class-A hit" \
+assert "C10g: an ABSENT status key degrades to unknown, not STALE" \
+    _json_is 't[9211]["verdict"] == "unknown"'
+assert "C10h: an absent status key emits no re-dispatch request" \
+    _no_request_for "$C_REQ2" 9211
+assert "C10f: none of these shapes is counted as a class-A hit" \
     _json_is 's["gate_closure"] == 3'
 
 # --- C11: an UNREADABLE escalations dir degrades exactly like a missing one --
@@ -1622,13 +1681,70 @@ _SWEEP_ENV=()
 assert "G9: REIFY_GATE_STALENESS_REQUESTS_DIR emits the same request set as the flag" \
     test "$G_SNAP1" = "$(_request_snapshot "$G_REQ_ENV")"
 
+# The default-writes-nothing proof. Asserting `_request_count_is <dir> 0` after
+# a flagless run is VACUOUS on its own: the SUT was never told that dir exists,
+# so the assert passes whether or not the default emits — it would pass against
+# an empty script. Two things fix that:
+#   1. a CONTROL run that emits into the very same dir first, so the dir is
+#      demonstrably reachable, writable, and one this fixture DOES emit into —
+#      making the 0 an observed difference attributable to the knob alone, since
+#      the knob is the only thing that changes between the two runs;
+#   2. a sandbox run for the hole no assert against a KNOWN dir can ever catch —
+#      a default target the SUT resolves for itself, relative to cwd or $HOME.
+#
+# _tree_is_empty <dir> — nothing at all was created anywhere beneath <dir>.
+# Deliberately broader than _request_count_is (which is maxdepth 1, -type f):
+# a reintroduced default may well mkdir -p a subdirectory first.
+_tree_is_empty() {
+    local dir="$1" got
+    got="$(find "$dir" -mindepth 1 2>/dev/null | wc -l)"
+    [ "$got" = 0 ] || {
+        echo "expected an empty tree under $dir, found $got entr(y|ies):"
+        find "$dir" -mindepth 1 2>/dev/null
+        return 1
+    }
+}
+
 G_NONE="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-gnone-XXXXXX")"
 _TMPDIRS+=("$G_NONE")
+
+# (a) CONTROL: this fixture demonstrably emits into G_NONE when pointed at it.
+_SWEEP_ENV=(REIFY_GATE_STALENESS_REQUESTS_DIR="$G_NONE")
+run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" --format json
+_SWEEP_ENV=()
+assert "G9: CONTROL — pointed at it, the sweep emits all three requests into G_NONE" \
+    _request_count_is "$G_NONE" 3
+
+# (b) Cleared, so the flagless run below starts from a known-zero dir.
+rm -f "$G_NONE"/*
+assert "G9: CONTROL — G_NONE is back to empty before the flagless run" \
+    _request_count_is "$G_NONE" 0
+
+# (c) FLAGLESS: same fixture, same dir, knob removed — the ONLY difference.
 run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" --format json
 assert "G9: with neither the flag nor its env knob set, the sweep writes nothing" \
     _request_count_is "$G_NONE" 0
 assert "G9: ... and the previously-emitted request set is left untouched" \
     test "$G_SNAP1" = "$(_request_snapshot "$G_REQ")"
+
+# (d) No SELF-CHOSEN default target either. cwd AND $HOME both point into a
+# fresh sandbox and the env knob is explicitly unset, so a default resolved
+# against either one lands inside the sandbox and is caught. TMPDIR is
+# deliberately NOT redirected here: the SUT legitimately mktemps its rows TSV
+# and its proposal-parser helper there, and those are not request emission.
+G_SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-gsandbox-XXXXXX")"
+_TMPDIRS+=("$G_SANDBOX")
+_SWEEP_ENV=(-u REIFY_GATE_STALENESS_REQUESTS_DIR HOME="$G_SANDBOX")
+_G_OLDPWD="$PWD"
+cd "$G_SANDBOX"
+run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" --format json
+cd "$_G_OLDPWD"
+_SWEEP_ENV=()
+assert "G9: a flagless sweep still exits 0 with cwd and HOME inside a sandbox" _rc_is 0
+assert "G9: ... and still produces its complete report (so the run was real)" \
+    _json_is 's["gate_closure"] == 1 and s["merge_verify_red"] == 1 and s["unmet_dependency"] == 1'
+assert "G9: ... and created NOTHING under cwd/\$HOME — there is no default emit target" \
+    _tree_is_empty "$G_SANDBOX"
 
 # --- G10: the two DB engines are interchangeable, not one-and-a-stub ---------
 #

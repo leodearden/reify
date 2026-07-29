@@ -117,10 +117,16 @@
 #   L1 — the liveness guard is the FIRST predicate applied to every candidate
 #        and it short-circuits: a row with a fresh heartbeat is never a hit,
 #        no class predicate evaluates for it, and it never yields a
-#        re-dispatch request. A NULL/empty heartbeat is NOT live (`blocked`
-#        rows legitimately carry none). An UNPARSEABLE heartbeat degrades to
-#        LIVE, never to eligible — the fail-safe direction for a re-dispatch
-#        decision is always "do nothing".
+#        re-dispatch request. An UNPARSEABLE heartbeat degrades to LIVE,
+#        never to eligible — the fail-safe direction for a re-dispatch
+#        decision is always "do nothing". With NO heartbeat at all the
+#        `claimant_run_id` is consulted, scoped to `in-progress`: such a row
+#        WITH a claimant is a claimed runner that has not yet written (or has
+#        lost) its heartbeat, and is LIVE; without one it is eligible. A
+#        `blocked` row with no heartbeat stays eligible regardless of its
+#        claimant — blocked rows legitimately carry no heartbeat, and classes
+#        A and C are `blocked`-only per L4, so scoping the claimant rule to
+#        `in-progress` is what keeps those two classes visible at all.
 #   L2 — an unreadable escalation oracle (missing dir, UNREADABLE/unsearchable
 #        dir, unparseable file, unrecognized status)
 #        degrades that row to `unknown`, never to `STALE`. A failed oracle
@@ -528,13 +534,34 @@ fi
 _LIVENESS_WINDOW_SEC=$((STALE_HEARTBEAT_MIN * 60))
 _NOW_EPOCH="$(date -u +%s)"
 
-# _is_live <task_id> <heartbeat_at> — exit 0 when the row is LIVE.
+# _is_live <task_id> <heartbeat_at> <status> <claimant_run_id> — exit 0 when
+# the row is LIVE. Sets _LIVE_BY to the signal that decided it (`heartbeat` or
+# `claimant`) so the caller can render honest evidence.
 _is_live() {
-    local id="$1" hb="$2" hb_epoch
-    # A NULL/empty heartbeat is NOT live: `blocked` rows legitimately carry
-    # none, and treating that as live would blind the sweep to class A and C
-    # entirely.
-    [ -n "$hb" ] || return 1
+    local id="$1" hb="$2" status="$3" claimant="$4" hb_epoch
+    _LIVE_BY="heartbeat"
+    if [ -z "$hb" ]; then
+        # No heartbeat at all. Fall back to the claimant, scoped to
+        # `in-progress`: such a row with a populated claimant_run_id is a
+        # claimed runner that has not yet written (or has lost) its heartbeat,
+        # and re-dispatching an actively-running agent is the single most
+        # destructive thing this sweep can do — so it degrades to LIVE, the
+        # same fail-safe direction taken below for an unparseable heartbeat.
+        #
+        # The `in-progress` scoping is load-bearing, not incidental. `blocked`
+        # rows legitimately carry no heartbeat while still holding a claimant
+        # (see the enumeration note above), and classes A and C are
+        # `blocked`-ONLY per L4 — so extending this rule to `blocked` would
+        # blind the sweep to those two classes wholesale, which is exactly the
+        # failure the NULL-heartbeat rule was written to avoid in the first
+        # place.
+        if [ "$status" = "in-progress" ] && [ -n "$claimant" ]; then
+            _LIVE_BY="claimant"
+            warn "Task $id: in-progress with claimant '$claimant' but no heartbeat_at — treating as LIVE (fail-safe: a claimed runner that has not yet written a heartbeat must never be re-dispatched)."
+            return 0
+        fi
+        return 1
+    fi
     if ! hb_epoch="$(date -u -d "$hb" +%s 2>/dev/null)"; then
         warn "Task $id: unparseable heartbeat_at '$hb' — treating as LIVE (fail-safe: an unreadable liveness signal must never license a re-dispatch)."
         return 0
@@ -569,21 +596,37 @@ _esc_state() {
     for f in "$ESCALATIONS"/esc-"$id"-*.json; do
         [ -e "$f" ] || continue
         found=$((found + 1))
+        # The parse sentinel is a LITERAL TOKEN, deliberately not a NUL: bash
+        # strips a NUL byte from `$(...)` and warns while doing it, and that
+        # warning lands on this script's OWN stderr — the same channel `warn()`
+        # writes to — so a consumer cannot tell the tool's diagnostics from the
+        # shell's. `__PARSE_ERROR__` survives command substitution intact, so
+        # the comparison below is a real one rather than the ""-matches-""
+        # degenerate case a stripped NUL collapses both sides into.
         st="$(python3 -c 'import json,sys
 try:
     sys.stdout.write(str(json.load(open(sys.argv[1])).get("status","")))
 except Exception:
-    sys.stdout.write("\x00")' "$f" 2>/dev/null || printf '\000')"
+    sys.stdout.write("__PARSE_ERROR__")' "$f" 2>/dev/null || printf '__PARSE_ERROR__')"
         # TERMINAL ALLOWLIST, not a pending-only match (L2). `pending` gates and
         # `resolved`/`dismissed` clear; EVERY other value — unrecognized, JSON
-        # null (which reaches here as the literal "None"), empty, or the NUL
-        # parse sentinel — is a FAILED ORACLE READ and degrades to `unknown`.
-        # A pending-only match would sink all of those into `clear`, yielding
-        # STALE / close / an emitted request telling the consumer to CANCEL a
-        # task whose gate may still be live — failing open toward the sweep's
-        # single most destructive action.
+        # null (which reaches here as the literal "None"), empty/absent, or the
+        # `__PARSE_ERROR__` sentinel — is a FAILED ORACLE READ and degrades to
+        # `unknown`. A pending-only match would sink all of those into `clear`,
+        # yielding STALE / close / an emitted request telling the consumer to
+        # CANCEL a task whose gate may still be live — failing open toward the
+        # sweep's single most destructive action.
+        #
+        # A record that is valid JSON but carries no `status` key at all yields
+        # the empty string and so reaches the `*)` arm, NOT the parse-error arm
+        # (under the old NUL sentinel it reached the latter, because bash had
+        # collapsed both sides to ""). The VERDICT is `unknown` on either path —
+        # only the diagnostic prose differs. The allowlist is not weakened by
+        # the token change either: an escalation whose status were literally
+        # `__PARSE_ERROR__` still degrades to `unknown`, never to `STALE`, so
+        # the collision is harmless by construction.
         case "$st" in
-            "$(printf '\000')")
+            __PARSE_ERROR__)
                 warn "Task $id: unparseable escalation file $(basename "$f") — reporting unknown, not STALE."
                 return 0 ;;
             pending) pending=$((pending + 1)) ;;
@@ -647,8 +690,6 @@ PY
 # row to `unknown` — the adjudication is scoped to --repo and nothing else.
 _MAIN_REF_SHA="$(git -C "$REPO" rev-parse --verify --quiet "${MAIN_REF}^{commit}" 2>/dev/null || true)"
 
-# _classify_merge_verify_red <task_id> — sets _MVR_MATCHED plus, when matched,
-# _MVR_VERDICT / _MVR_ACTION / _MVR_EVIDENCE.
 # _classify_gate_closure <task_id> <status> <task_kind> <always_escalates>
 # <adjudicate:0|1> — sets _GC_MATCHED plus, when matched and adjudicating,
 # _GC_VERDICT / _GC_ACTION / _GC_EVIDENCE. `blocked`-only (invariant L4).
@@ -922,13 +963,20 @@ while IFS="$_FS" read -r task_id status heartbeat_at claimant_run_id \
     # L1: the liveness guard is the FIRST predicate, and it short-circuits —
     # no class predicate evaluates, no flags are computed, and no request is
     # ever emitted for a LIVE row.
-    if _is_live "$task_id" "$heartbeat_at"; then
+    if _is_live "$task_id" "$heartbeat_at" "$status" "$claimant_run_id"; then
         [ "$CLASS" = "all" ] || continue
         N_CANDIDATES=$((N_CANDIDATES + 1))
         N_LIVE_SKIPPED=$((N_LIVE_SKIPPED + 1))
-        _emit_row "$task_id" "$status" "-" "LIVE" "none" \
-            "heartbeat_at=${heartbeat_at} within the ${STALE_HEARTBEAT_MIN}m liveness window; claimant=${claimant_run_id:--}" \
-            "-"
+        # The evidence must name the signal that ACTUALLY decided liveness. A
+        # claimant-based LIVE row has no heartbeat at all, so the heartbeat
+        # phrasing would render a bare `heartbeat_at=` and assert a window
+        # match that never happened.
+        if [ "$_LIVE_BY" = "claimant" ]; then
+            _live_evidence="claimant=${claimant_run_id} holds the row; no heartbeat_at written yet (in-progress)"
+        else
+            _live_evidence="heartbeat_at=${heartbeat_at} within the ${STALE_HEARTBEAT_MIN}m liveness window; claimant=${claimant_run_id:--}"
+        fi
+        _emit_row "$task_id" "$status" "-" "LIVE" "none" "$_live_evidence" "-"
         continue
     fi
 

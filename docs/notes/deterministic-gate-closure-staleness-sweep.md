@@ -179,7 +179,15 @@ Keyed to the script's header `# Invariants:` block, which is authoritative:
 
 - **L1** — the liveness guard is the first predicate for every candidate and short-circuits: a
   fresh heartbeat is never a hit and never yields a request, and an **unparseable** heartbeat
-  degrades to `LIVE`, never to eligible.
+  degrades to `LIVE`, never to eligible. The guard does not key on the heartbeat alone — with
+  **no** heartbeat at all it consults `claimant_run_id`, scoped to `in-progress`: such a row that
+  holds a claimant is a claimed runner which has not yet written (or has lost) its heartbeat, and
+  is `LIVE`. A `blocked` row with no heartbeat stays eligible whatever its claimant, because
+  `blocked` rows legitimately carry no heartbeat and the classes that are `blocked`-only per
+  **L4** would otherwise become invisible wholesale. When the claimant rule landed the
+  claimant-without-heartbeat shape was measured at **zero** occurrences on the live store, so it
+  is fail-safe hardening against a shape the sweep must survive, not a change to observed
+  behaviour.
 - **L2** — an unreadable escalation oracle degrades to `unknown`, never to `STALE`; a row that
   simply matches no class is `NO-CLASS`, which is a different thing and a different counter.
 - **L3** — every candidate contributes to exactly one class counter and appears exactly once;
