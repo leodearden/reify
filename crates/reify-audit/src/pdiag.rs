@@ -268,12 +268,6 @@ fn anchor_positions(line: &str) -> Vec<usize> {
 ///   line in its forward window, carries the token ([`escape_in_window`]).
 ///
 /// Pure `&str` operations throughout: no `syn`, no `regex`.
-// The scanner is exercised by this module's unit tests but is not yet reachable
-// from `check`, which still returns an empty `Vec`. Seeding it as a live root
-// keeps the plain `cargo clippy --all-targets -- -D warnings` lib target green
-// (and transitively covers `Site`, `ANCHOR_IDENTS`, `CODE_PROBE`,
-// `comment_mask` and `anchor_positions`). Dropped when `check` is implemented.
-#[allow(dead_code)]
 fn scan_file(content: &str) -> Vec<Site> {
     let lines: Vec<&str> = content.lines().collect();
     let mask = comment_mask(&lines);
@@ -480,11 +474,6 @@ const SCOPE_EXCLUDE_PREFIXES: &[&str] = &[
 ///    its `#[cfg(test)]` on the `mod tests;` declaration in the PARENT file,
 ///    so `scan_file`'s block skip can never see the attribute from inside the
 ///    file it governs.
-// Live root until `check` is implemented (step-12), for the same reason
-// `scan_file` carries one: it keeps a plain `cargo clippy --all-targets
-// -- -D warnings` lib target green, and transitively covers
-// `SCOPE_EXCLUDE_PREFIXES`. Dropped when `check` calls it.
-#[allow(dead_code)]
 fn is_swept_path(path: &str) -> bool {
     if !path.ends_with(".rs") {
         return false;
@@ -519,19 +508,13 @@ fn is_swept_path(path: &str) -> bool {
 /// Held in ONE place because three consumers must agree on it: this rendering,
 /// the doc itself, and `tests/infra/test_reify_audit_pdiag.sh`'s grep. A
 /// literal repeated across all three would rot the moment the doc moves.
-// Live root until `check` wires it — see the note on `scan_file`.
-#[allow(dead_code)]
 const SEVERITY_POLICY_DOC: &str = "docs/notes/diagnostic-severity-policy.md";
 
 /// The baseline manifest, repo-root-relative.
-// Live root until `check` wires it — see the note on `scan_file`.
-#[allow(dead_code)]
 const BASELINE_PATH: &str = "crates/reify-audit/pdiag-baseline.txt";
 
 /// The SINGLE canonical regenerator every Medium advisory names — hand-editing
 /// the manifest is how a ratchet quietly stops ratcheting.
-// Live root until `check` wires it — see the note on `scan_file`.
-#[allow(dead_code)]
 const BASELINE_GEN_BIN: &str = "cargo run -p reify-audit --bin pdiag-baseline-gen";
 
 /// Parse the baseline manifest into `path -> allowed code-less count`.
@@ -559,8 +542,6 @@ const BASELINE_GEN_BIN: &str = "cargo run -p reify-audit --bin pdiag-baseline-ge
 ///
 /// The error string names the offending line number — this is read by whoever
 /// just broke the build, not by a parser.
-// Live root until `check` wires it — see the note on `scan_file`.
-#[allow(dead_code)]
 fn parse_baseline(content: &str) -> Result<BTreeMap<String, u32>, String> {
     let mut out: BTreeMap<String, u32> = BTreeMap::new();
     let mut previous: Option<&str> = None;
@@ -615,8 +596,6 @@ fn parse_baseline(content: &str) -> Result<BTreeMap<String, u32>, String> {
 /// halves have opposite severities: the ratchet direction gates the merge,
 /// while the slack direction is a housekeeping advisory.
 #[derive(Debug, Clone, PartialEq, Eq)]
-// Live root until `check` wires it — see the note on `scan_file`.
-#[allow(dead_code)]
 enum RatchetVerdict {
     /// More code-less sites than the baseline allows. The ratchet violation.
     Exceeded { path: String, live: u32, baseline: u32 },
@@ -631,8 +610,6 @@ enum RatchetVerdict {
     OrphanRow { path: String, baseline: u32 },
 }
 
-// Live root until `check` wires it — see the note on `scan_file`.
-#[allow(dead_code)]
 impl RatchetVerdict {
     /// The file this verdict is about.
     fn path(&self) -> &str {
@@ -661,6 +638,7 @@ impl RatchetVerdict {
     /// regeneration command, so no finding is a dead end.
     fn into_finding(self) -> Finding {
         let severity = self.severity();
+        let path = self.path().to_string();
         let summary = match &self {
             Self::Exceeded { path, live, baseline } => format!(
                 "pdiag-ratchet: {path} has {live} code-less Diagnostic::error/warning site(s), \
@@ -682,12 +660,6 @@ impl RatchetVerdict {
                  `{BASELINE_GEN_BIN}`"
             ),
         };
-        let path = match self {
-            Self::Exceeded { path, .. }
-            | Self::NewFile { path, .. }
-            | Self::Stale { path, .. }
-            | Self::OrphanRow { path, .. } => path,
-        };
         Finding {
             pattern: Pattern::PDiag,
             severity,
@@ -707,8 +679,6 @@ impl RatchetVerdict {
 /// produces nothing. Verdicts come out in path order across all four kinds,
 /// which is what makes the CLI's output and the infra gate's assertions stable
 /// run to run.
-// Live root until `check` wires it — see the note on `scan_file`.
-#[allow(dead_code)]
 fn ratchet(
     live: &BTreeMap<String, u32>,
     baseline: &BTreeMap<String, u32>,
@@ -734,13 +704,80 @@ fn ratchet(
         .collect()
 }
 
+/// The finding a manifest that will not parse produces.
+///
+/// High, and returned INSTEAD of the ratchet's verdicts: a baseline the
+/// detector cannot read is not a baseline that "allows everything". Silently
+/// falling back to a permissive comparison is precisely the vacuous-pass
+/// failure mode `scripts/check-infra-classification-manifest.sh` was written
+/// to forbid, so the corrupt manifest is itself the finding.
+fn malformed_baseline_finding(err: &str) -> Finding {
+    Finding {
+        pattern: Pattern::PDiag,
+        severity: Severity::High,
+        // Path-keyed like every other PDIAG finding (ptodo.rs:1447).
+        task_id: BASELINE_PATH.to_string(),
+        summary: format!(
+            "pdiag-baseline-unreadable: {BASELINE_PATH} does not parse — {err}. The ratchet \
+             cannot run against a manifest it cannot read, so this is a hard gate rather \
+             than a silent pass; regenerate with `{BASELINE_GEN_BIN}`"
+        ),
+        evidence: vec![EvidenceRef::File { path: BASELINE_PATH.to_string() }],
+    }
+}
+
 /// PDIAG entry point — see the module header for the heuristic and scope.
 ///
-/// Stub: the scope predicate, baseline parser and ratchet land in task 5405
-/// steps 7-12.
+/// Purely structural: enumerates through the `ls_files()` git seam, reads
+/// content straight from the working tree, and never touches jcodemunch or the
+/// task DB (the posture `pdssentinel.rs` documents). That is what keeps the
+/// detector's verdict a function of the tree alone.
+///
+/// Both IO fail-safes point the same way — *permissive on input, loud on
+/// comparison*:
+///
+/// - An unreadable **source** file (absent from the working tree, non-UTF-8)
+///   is skipped, contributing no count. `ls_files()` and the tree can legitimately
+///   disagree mid-rebase, and inventing a count there would be a false RED
+///   (`ptodo.rs:1418` takes the same line).
+/// - An unreadable **baseline** is an EMPTY baseline, so every code-less file
+///   surfaces as a `NewFile` High. The inverse convention — treat a missing
+///   manifest as "nothing to check" — is the vacuous pass this gate exists to
+///   prevent.
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
-    let _ = ctx;
-    Vec::new()
+    // Live per-file code-less counts. Files with zero are OMITTED rather than
+    // stored as 0: `ratchet` reads presence in `live` as "has a backlog", and
+    // a stored zero would masquerade as one.
+    let mut live: BTreeMap<String, u32> = BTreeMap::new();
+    for path in ctx.git.ls_files() {
+        if !is_swept_path(&path) {
+            continue;
+        }
+        let content = match std::fs::read_to_string(ctx.project_root.join(&path)) {
+            Ok(content) => content,
+            Err(_) => continue,
+        };
+        let codeless = scan_file(&content).iter().filter(|site| !site.coded).count();
+        if codeless > 0 {
+            live.insert(path, codeless as u32);
+        }
+    }
+
+    // Resolved under `ctx.project_root`, never `CARGO_MANIFEST_DIR`, so the
+    // CLI-level fixture trees can point the whole detector at a tempdir —
+    // exactly how ptodo resolves its task DB.
+    let baseline = match std::fs::read_to_string(ctx.project_root.join(BASELINE_PATH)) {
+        Ok(content) => match parse_baseline(&content) {
+            Ok(baseline) => baseline,
+            Err(err) => return vec![malformed_baseline_finding(&err)],
+        },
+        Err(_) => BTreeMap::new(),
+    };
+
+    ratchet(&live, &baseline)
+        .into_iter()
+        .map(RatchetVerdict::into_finding)
+        .collect()
 }
 
 #[cfg(test)]
