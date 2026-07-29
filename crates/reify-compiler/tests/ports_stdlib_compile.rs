@@ -1,8 +1,10 @@
 //! Tests for `crates/reify-compiler/stdlib/ports.ri` and
 //! `crates/reify-compiler/stdlib/ports_mechanical.ri` —
 //! `std.ports` module: Directionality enum, Port base trait.
-//! `std.ports.mechanical` module: Torque type alias, MechanicalPort, Bore,
-//! Shaft, RotaryPort, ThreadedPort, StructurePort traits.
+//! `std.ports.mechanical` module: MechanicalPort, Bore, Shaft, RotaryPort,
+//! ThreadedPort, StructurePort traits. (The `Torque` type alias this module
+//! once declared was retired by task η — Torque is a built-in named dimension;
+//! see `torque_alias_removed_builtin_named_dimension_shadows` below.)
 //!
 //! Reconstructs the lost std.ports stdlib surface per PRD
 //! docs/prds/v0_6/stdlib-reconstruction.md task α.

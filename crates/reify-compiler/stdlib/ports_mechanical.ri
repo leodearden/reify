@@ -6,27 +6,26 @@
 // Reference: docs/prds/v0_6/stdlib-reconstruction.md task α, §11.3.
 //
 // Deviations from §11 spec (forced by current language scope):
-//   1. `Torque` type alias required. Torque is absent from NAMED_DIMENSIONS
-//      (reify-core/src/dimension.rs:443-494). Torque ≡ Force·Length/Angle
-//      (distinct from Energy via the Angle⁻¹ slot; see dimension.rs:1259 and
-//      reify-eval/tests/money_acceptance_sweep_eval.rs:114). Binary dimensional-
-//      operation expressions are admitted ONLY on type-alias RHS, not in
-//      `param x : <type>` position (units.ri esc-4026-121:80-91) — hence the
-//      alias indirection, mirroring `pub type Velocity = Length / Time`.
-//      The alias is `pub` to mirror units.ri's `pub type Velocity` convention.
-//   2. Traits are NOT `pub`, matching the io.ri/process.ri convention.
-//   3. No `#no_prelude` pragma. std.ports.mechanical refines LocatedPort from
+//   1. Traits are NOT `pub`, matching the io.ri/process.ri convention.
+//   2. No `#no_prelude` pragma. std.ports.mechanical refines LocatedPort from
 //      std.ports (inter-stdlib dependency; MechanicalPort : LocatedPort : Port),
 //      so the growing-prelude sequence in stdlib_loader.rs must include
 //      std.ports before this module. Adding `#no_prelude` would break both the
 //      refinement resolution and the stdlib_loader_tests bidirectional invariant
 //      test.
 
-// ── Torque type alias ─────────────────────────────────────────────────────────
+// ── Torque ────────────────────────────────────────────────────────────────────
 
-// Torque = Force · Length / Angle (N·m/rad).
-// Distinct from Energy (J = N·m) because of the Angle⁻¹ slot.
-pub type Torque = Force * Length / Angle
+// Torque = Force · Length / Angle (N·m/rad), distinct from Energy (J = N·m)
+// because of the Angle⁻¹ slot.
+//
+// No module-level alias is needed. Task η of
+// docs/prds/v0_6/angle-units-surface-convergence.md landed `Torque` as a
+// built-in NAMED_DIMENSIONS entry (reify-core dimension.rs,
+// `DimensionVector::TORQUE`). A NAMED_DIMENSIONS lookup takes priority over a
+// module type-alias, so `max_torque : Torque` below resolves to the built-in
+// dimension directly — and `.ri` authors can now write `param t : Torque`
+// without importing this module at all.
 
 // ── Thread system enums ───────────────────────────────────────────────────────
 
@@ -90,7 +89,7 @@ structure def ThreadSpec {
 // Two optional ratings, both `Option<…> = none` (absent unless the conformer
 // supplies them), per PRD decision 5:
 //   max_load   : Option<Force>  — maximum static/working load the port carries.
-//   max_torque : Option<Torque> — maximum continuous torque (see Torque alias).
+//   max_torque : Option<Torque> — maximum continuous torque (built-in Torque).
 // RotaryPort re-declares `max_torque` as a *required* Torque; an optional default
 // and a required member of the same name never collide (trait_requirements.rs
 // only conflicts required-vs-required), so the module loads clean.
@@ -124,7 +123,8 @@ trait MotivePort : MechanicalPort {}
 
 // Rotary shaft port — delivers torque about an axis with a speed limit.
 //   max_speed  : AngularVelocity — maximum continuous rotational speed (rad/s).
-//   max_torque : Torque          — maximum continuous torque (Force·Length/Angle).
+//   max_torque : Torque          — maximum continuous torque (the built-in
+//                Torque dimension, Force·Length/Angle).
 //   axis       : Vector3<Length> — rotation axis (Vector3<Length> per the
 //                constitutive.ri axis convention; the geometry Axis value type is
 //                unconstructible at stdlib scope).
