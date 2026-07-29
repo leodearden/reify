@@ -28,7 +28,7 @@ use reify_core::ModulePath;
 /// The α target surface: the committed PRD fixture whose only parse blocker was
 /// the indexer clause.
 const SURFACE_FIXTURE: &str =
-    include_str!("../../../docs/prds/v0_6/fixtures/indexed_sub_instantiation_surface.ri");
+    include_str!("../../../../docs/prds/v0_6/fixtures/indexed_sub_instantiation_surface.ri");
 
 /// Canonical indexed-sub source shared by the lowering assertions.
 const INDEXED_SUB_SOURCE: &str = "structure S { sub idlers[i in 0..4] = Pulley(od: 30mm + i * 2mm) at transform3(orient_identity(), vec3(0mm, 0mm, 0mm)) }";

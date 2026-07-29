@@ -8,7 +8,7 @@
 /// test files, and both assert it parses cleanly:
 ///   - tree-sitter-reify/tests/indexed_sub_grammar_tests.rs
 ///     (grammar/CST signal — the CI-enforced one)
-///   - crates/reify-syntax/tests/indexed_sub_instantiation_parser_tests.rs
+///   - crates/reify-syntax/tests/harness_syntax/indexed_sub_instantiation_parser_tests.rs
 ///     (hand-parser/AST-lowering signal)
 /// Edit the declarations below only in step with those two tests; a change that
 /// stops this file parsing will fail both.
