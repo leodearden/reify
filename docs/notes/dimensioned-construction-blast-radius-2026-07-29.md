@@ -624,7 +624,138 @@ touched them either — confirmed no diagnostic was emitted against any
 
 ## §3 Item 7b — §6.3 re-confirmation: gate 1, β/γ's blast radius (step-3)
 
-*(filled by step-3)*
+Unlike §6.2/category-C, §6.3 already gives a full per-site table — this
+section's job is genuine re-**confirmation** (direct verbatim re-read of
+every cited site at HEAD), not re-derivation, plus the cross-check against
+step-1's transcript the plan requires.
+
+### 3.1 The 17 BARE sites — all 17 CONFIRMED present verbatim at HEAD
+
+```bash
+sed -n '67p;78p;79p' examples/trajectory/tots_optimal_ptp.ri
+sed -n '153p;154p;155p' examples/trajectory/printer_print_envelope.ri
+sed -n '1420p' crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs
+sed -n '248p;255p;256p' crates/reify-eval/tests/input_shape_eval_e2e.rs
+sed -n '18p;19p;27p;28p;36p;37p' gui/test/fixtures/large_assembly.ri
+```
+
+| File:line | Field | Text at HEAD |
+|---|---|---|
+| `examples/trajectory/tots_optimal_ptp.ri:67` | `JointLimit.max_force` | `let jl = JointLimit(joint: 0.0, max_force: 1000.0)` |
+| `examples/trajectory/tots_optimal_ptp.ri:78` | `TOTSShaper.velocity_limit` | `velocity_limit: 300.0,` |
+| `examples/trajectory/tots_optimal_ptp.ri:79` | `TOTSShaper.acceleration_limit` | `acceleration_limit: 5000.0,` |
+| `examples/trajectory/printer_print_envelope.ri:153` | `JointLimit.max_force` | `actuator_limits: [JointLimit(joint: 0.0, max_force: 1000.0)],` |
+| `examples/trajectory/printer_print_envelope.ri:154` | `TOTSShaper.velocity_limit` | `velocity_limit: 300.0,` |
+| `examples/trajectory/printer_print_envelope.ri:155` | `TOTSShaper.acceleration_limit` | `acceleration_limit: 5000.0,` |
+| `struct_ctor_field_conformance_tests.rs:1420` (×2 args) | pinning probe's own fixture | `let l = Limit(velocity_limit: 300.0, acceleration_limit: 5000.0)` |
+| `input_shape_eval_e2e.rs:248` | `JointLimit.max_force` | `let jl = JointLimit(joint: 0.0, max_force: 100.0)` |
+| `input_shape_eval_e2e.rs:255` | `TOTSShaper.velocity_limit` | `velocity_limit: 300.0,` |
+| `input_shape_eval_e2e.rs:256` | `TOTSShaper.acceleration_limit` | `acceleration_limit: 5000.0,` |
+| `gui/test/fixtures/large_assembly.ri:18,27,36` | `Material.density` | `density: 7850.0,` (×2) / `density: 2700.0,` |
+| `gui/test/fixtures/large_assembly.ri:19,28,37` | `Material.youngs_modulus` | `youngs_modulus: 200000000000.0` (×2) / `youngs_modulus: 69000000000.0` |
+
+Note one PRD-text imprecision caught by the direct re-read:
+`input_shape_eval_e2e.rs:248`'s `max_force` value is **100.0**, not 1000.0
+(the `tots_optimal_ptp.ri`/`printer_print_envelope.ri` value) — the PRD's
+prose table doesn't actually claim otherwise (it only shows
+`tots_optimal_ptp.ri`'s value inline), but a careless reader could
+mis-transcribe the fixture from memory; recorded here so no later leaf does.
+
+Per-bucket split reproduced: `examples/**` 6 (tots×3 + printer×3) ·
+stdlib `.ri` 0 · Rust fixtures 5 (struct_ctor×2 + input_shape×3) ·
+other `.ri` 6 (large_assembly×6) — **CONFIRMED, matches §6.3 exactly.**
+
+**Correct twin, re-verified:** `examples/large_assembly.ri:51-53` reads
+`density: 7850kg/m^3,` / `youngs_modulus: 200GPa` — the same assembly,
+correctly spelled, confirmed present. β copies this spelling into the GUI
+fixture rather than inventing one.
+
+### 3.2 The ~8 excluded false positives — all CONFIRMED present verbatim, file-local-shadowing check reproduced
+
+| File:line | Text at HEAD | Exclusion reason |
+|---|---|---|
+| `reify-syntax/tests/harness_syntax/auto_binding_sites_lowering_tests.rs:245` | `let source = "structure S { sub b = Bearing(bore: 1.0) }";` | parser-only unit test — `Bearing` is never declared anywhere in this string; the walker cannot run against an undeclared structure |
+| `…auto_binding_sites_lowering_tests.rs:360` | `let source = "structure S { let x : Length = Bearing(bore: 1.0) }";` | same — `Bearing` undeclared in this parse-only fixture string |
+| `…function_call_named_args_tests.rs:128` | `let expr = first_let_value(r#"structure S { let x = Host(m: Steel(density: 1000.0)) }"#);` | same — `Steel` undeclared in this parse-only fixture string |
+| `reify-cli/tests/fixtures/stdlib_sim_ready_material_ok.ri:11` | `param mat : Material = Material(density: 7850.0)` | the fixture declares its **own** dimensionless `Material` structure (shadowing stdlib's dimensioned one) — `density` here is a dimensionless `Real` field, out of the vetted family already |
+| `purpose_compile_tests.rs:1814` | `param mat : Material = Material(density: 7850.0)` | same shadowing pattern |
+| `purpose_activation.rs:1547` | `param mat : Material = Material(density: 7850.0)` | same shadowing pattern |
+| `termination_check_tests.rs:78` | `sub inner = Inner(x: 5)` | file-local `Inner` structure with a dimensionless `x` field, same-name shadow |
+| `termination_check_tests.rs:346` | `sub inner = Inner(x: 5)` | same |
+
+**All 8 confirmed present verbatim at HEAD; the file-local-shadowing check
+(§6.3's mandatory methodology) is reproduced** — each of the 5
+non-parser-only exclusions was verified to declare its *own* structure of
+the same name with a dimensionless field, not the stdlib/corpus structure
+the name suggests. Without this check a naive sweep over-counts by exactly
+this bucket, as §6.3 warns.
+
+### 3.3 Cross-check against the step-1 flipped-predicate transcript
+
+Per the step's mandate ("every BARE site that is compiled by a gate must
+appear [in the transcript], and any transcript hit NOT in this table is a
+NEW site"):
+
+- **6 of 17** (`tots_optimal_ptp.ri` ×3, `printer_print_envelope.ri` ×3) are
+  exercised by `examples_smoke` and appear in its transcript — reconciled
+  exactly in §1.2 (7 raw diagnostics = these 6 + the 1 §6.2 category-A site;
+  zero unexplained residual).
+- **1 of 17** (the ×2-arg `struct_ctor_field_conformance_tests.rs:1420`
+  site) is exercised by that suite's own flipped run and appears in its
+  transcript, reconciled in §1.3.
+- **3 of 17** (`input_shape_eval_e2e.rs:248,255,256`) are exercised by that
+  suite under the flip and confirmed **still bare** by direct read (3.1
+  above), but do **not** appear as a transcript *failure* because that
+  suite only inspects `Severity::Error` and the flip's diagnostics are
+  `Severity::Warning` (§1.4's general rule) — their bareness is confirmed
+  by source inspection, not by a failing assertion.
+- **6 of 17** (`gui/test/fixtures/large_assembly.ri`) are **not exercised by
+  any of the four suites step-1 ran** — no suite in this task's flipped run
+  loads a `gui/test/fixtures/*.ri` file. Their classification as BARE rests
+  on direct source inspection (3.1) plus the walker's documented logic
+  (§0 anchor table #2/#4), not on empirical transcript evidence. This is
+  the same reach-vs-gate gap step-11 addresses generally: these 6 sites are
+  swept by `corpus_no_bare_scalar.rs`'s tree walk but sit behind **no cargo
+  test at all** (only `debug_server.rs` and the GUI e2e harness load this
+  file) — flagged here as a preview since it bears directly on how β should
+  verify its own fix (a cargo test cannot confirm it; the GUI harness or a
+  manual `reify check` must).
+
+**No transcript hit fell outside this 17-site table** — zero new BARE sites
+found at HEAD.
+
+### 3.4 CROSS-DIMENSION = 0, NON-SCALAR = 0 — corroborated, not exhaustively re-proven
+
+The step-1 transcripts across all four suites surfaced **only** the
+already-known BARE/category-A diagnostics (§1.2, §1.3) — no cross-dimension
+or non-scalar mismatch fired anywhere in the four suites run under the
+flip. This corroborates CROSS-DIMENSION = 0 / NON-SCALAR = 0 **for the
+corpus slice those four suites actually exercise** (250 `examples/**` files
++ the two targeted Rust test binaries), consistent with §6.3. It is **not**
+a re-proof over the full 595-`.ri`-plus-1707-`.rs` sweep §6.3 originally
+ran — reproducing that exhaustively would mean running literally every test
+in the workspace under the flip, which this task's scope (four named
+suites, per the plan) does not call for.
+
+### 3.5 Aggregate structural counts — inherited, not independently re-derived
+
+**932 structure blocks → 444 distinct structures with ≥1 dimensioned-Scalar
+field → 1,157 (structure, field) pairs; 2,770 ctor call sites, of which 474
+named args land on a dimensioned-Scalar field; OK = 454.** These figures
+require a type-aware analysis (resolving every ctor call's callee to a
+structure definition, and that structure's field types, across **both**
+`.ri` and inline `.rs` fixture sources) equivalent to re-implementing the
+conformance walker itself — outside what a grep-based re-confirmation can
+cheaply and reliably reproduce. A coarse sanity check (`grep`-counting bare
+`structure`/`structure def` blocks in tracked `.ri` files only, i.e.
+excluding the much larger `.rs` inline-fixture population category C had to
+sweep separately) found **739** — not comparable to the PRD's 932 since
+that figure spans both `.ri` and `.rs`, but not wildly divergent in order of
+magnitude either. **Ruling: this section does not re-derive 932/444/1,157/
+2,770/474/454 and does not assert them as independently confirmed** — the
+decision-relevant artifact for β/γ/δ is the concrete 17-site list (3.1) and
+the 8-exclusion list (3.2), both fully re-verified above; a consumer citing
+the aggregate counts should cite §6.3 directly, not this ledger.
 
 ## §4 Item 1 — Gate 2 hit count (step-4)
 
