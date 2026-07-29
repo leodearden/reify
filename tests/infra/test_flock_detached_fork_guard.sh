@@ -120,10 +120,45 @@ _flock_fork_offenders() {
     for _f in "$@"; do
         [ -f "$_f" ] || continue
         _out="$(awk -v FNAME="$_f" '
+            # Tail anchor for a bare FD operand: the operand must END the
+            # command, so a `9` embedded in prose (followed by a backtick, a
+            # word, ...) is never read as an FD.
+            BEGIN { ANCH = "([[:space:]]*(;|&&|[|][|]|2>)|[[:space:]]*$)" }
+
+            # COMMAND POSITION: everything before the flock token is empty, a
+            # command separator, or a shell keyword that introduces a command.
+            # This is what keeps a `flock -u N` inside usage/help prose or a
+            # quoted pattern from counting.
+            function is_cmd_pos(p,   lw) {
+                sub(/[[:space:]]+$/, "", p)
+                if (p == "") return 1
+                if (p ~ /[;&|({!]$/) return 1
+                lw = p
+                sub(/^.*[[:space:]]/, "", lw)
+                return (lw == "if" || lw == "then" || lw == "elif" ||
+                        lw == "else" || lw == "do" || lw == "while" ||
+                        lw == "until")
+            }
+
+            # A standalone `(` before the flock token means the acquire happens
+            # in a SUBSHELL — the forking shell never holds that lock.
+            function has_subshell_open(p) {
+                return (p ~ /(^|[[:space:]])\(([[:space:]]|$)/)
+            }
+
             {
                 t = $0
                 sub(/^[[:space:]]+/, "", t)
                 if (t == "" || t ~ /^#/) next
+
+                fpos = index(t, "flock")
+                if (fpos > 0) {
+                    pre = substr(t, 1, fpos - 1)
+                    post = substr(t, fpos)
+                    cmdpos = is_cmd_pos(pre)
+                } else {
+                    pre = ""; post = ""; cmdpos = 0
+                }
 
                 # ---- OPEN(N): the script opens FD N itself ----
                 if (match(t, /exec[[:space:]]+[0-9]+[<>]/)) {
@@ -133,12 +168,13 @@ _flock_fork_offenders() {
                     if (!(n in openln)) { openln[n] = FNR; ord[++nord] = n }
                 }
 
-                # ---- ACQUIRE(N): a flock invocation carrying N ----
-                if (t ~ /flock/) {
+                # ---- ACQUIRE(N): flock, in command position, on a bare
+                # ---- tail-anchored operand N, outside any subshell open.
+                if (cmdpos && !has_subshell_open(pre)) {
                     for (k = 1; k <= nord; k++) {
                         n = ord[k]
                         if ((n in acqln) || FNR <= openln[n]) continue
-                        if (t ~ ("[^0-9]" n "([^0-9]|$)")) acqln[n] = FNR
+                        if (post ~ ("[[:space:]]" n ANCH)) acqln[n] = FNR
                     }
                 }
 
@@ -147,11 +183,12 @@ _flock_fork_offenders() {
                 # registered as an EXIT trap, so its textual position relative
                 # to the fork carries no meaning.  Recorded independently of
                 # ord[] because the release may precede the open.
-                if (t ~ /flock/ && match(t, /-u[[:space:]]+[0-9]+/)) {
-                    seg = substr(t, RSTART, RLENGTH)
-                    match(seg, /[0-9]+/)
-                    u = substr(seg, RSTART, RLENGTH)
-                    unl[u] = FNR
+                if (cmdpos && match(post, /-u[[:space:]]+[0-9]+/)) {
+                    useg = substr(post, RSTART, RLENGTH)
+                    urest = substr(post, RSTART + RLENGTH)
+                    match(useg, /[0-9]+/)
+                    un = substr(useg, RSTART, RLENGTH)
+                    if (urest ~ ("^" ANCH)) unl[un] = FNR
                 }
 
                 # ---- DETACH: a fork downstream of the acquire ----
