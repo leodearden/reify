@@ -98,3 +98,76 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     let _ = ctx;
     Vec::new()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Terse view of a scan: one `(line, coded)` pair per site, in scan order.
+    fn sites(content: &str) -> Vec<(usize, bool)> {
+        scan_file(content).into_iter().map(|s| (s.line, s.coded)).collect()
+    }
+
+    /// `Vec<(usize, bool)>`-typed empty expectation (inference needs the hint).
+    fn none() -> Vec<(usize, bool)> {
+        Vec::new()
+    }
+
+    // -- single-line core -------------------------------------------------
+
+    #[test]
+    fn single_line_codeless_push_is_one_uncoded_site() {
+        // Real shape: crates/reify-eval/src/geometry_ops.rs:313.
+        let src = "        diagnostics.push(Diagnostic::warning(rej.message(&x, name)));";
+        assert_eq!(sites(src), vec![(1, false)]);
+    }
+
+    #[test]
+    fn same_line_with_code_is_coded() {
+        // Real shape: crates/reify-eval/src/dispatcher.rs:376.
+        let src = "    Diagnostic::error(message).with_code(DiagnosticCode::PinnedKernelMissing)";
+        assert_eq!(sites(src), vec![(1, true)]);
+    }
+
+    #[test]
+    fn with_code_probe_is_the_bare_token_not_the_enum_path() {
+        // `crates/reify-eval/src/compute_targets/fea_diagnostics.rs:53` passes a
+        // severity-dispatched *variable*, so probing `.with_code(DiagnosticCode::`
+        // would miss it and manufacture a false RED — the worst failure mode for
+        // a merge gate. The probe is deliberately the bare `.with_code(` token.
+        let src = "    Diagnostic::error(msg).with_code(code)";
+        assert_eq!(sites(src), vec![(1, true)]);
+    }
+
+    #[test]
+    fn info_constructor_is_not_an_anchor() {
+        // INV-SF-6 scopes codes-mandatory to Warning/Error; `Info` is the debug
+        // tier (crates/reify-core/src/diagnostics.rs:3327) and is not
+        // code-mandatory, so it yields no site at all.
+        let src = "    let d = Diagnostic::info(msg);";
+        assert_eq!(sites(src), none());
+    }
+
+    #[test]
+    fn two_constructors_on_one_line_are_two_sites() {
+        let src = "    let d = if bad { Diagnostic::error(m) } else { Diagnostic::warning(m) };";
+        assert_eq!(sites(src), vec![(1, false), (1, false)]);
+    }
+
+    #[test]
+    fn error_ref_receiver_is_not_an_anchor() {
+        // `ErrorRef::with_code` (crates/reify-ir/src/value.rs:4387) is a
+        // different receiver; anchoring on the `Diagnostic::` ctor token makes
+        // the 37 `ErrorRef::new` sites harmless.
+        let src = "    ErrorRef::new(span, msg).with_code(DiagnosticCode::Foo)";
+        assert_eq!(sites(src), none());
+    }
+
+    #[test]
+    fn whitespace_between_ident_and_paren_still_anchors() {
+        // rustfmt is not a gate in this repo (see CLAUDE.md § Formatting), so
+        // the anchor match tolerates whitespace before the open paren.
+        let src = "    Diagnostic::error (msg)";
+        assert_eq!(sites(src), vec![(1, false)]);
+    }
+}
