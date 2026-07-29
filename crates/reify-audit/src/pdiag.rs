@@ -442,6 +442,76 @@ fn brace_delta(line: &str) -> (usize, usize) {
     (opens, closes)
 }
 
+/// Path prefixes exempt from the sweep, mirroring `ptodo.rs`'s
+/// `ALLOWLIST_PREFIXES` (ptodo.rs:602-617), which closes the identical hazard
+/// for the TODO detector.
+const SCOPE_EXCLUDE_PREFIXES: &[&str] = &[
+    // SELF-MATCH. The detector's own crate carries anchor tokens as DATA: this
+    // module's header quotes `Diagnostic::error(` repeatedly, `pdssentinel.rs`
+    // alone carries 10 more in its doc comments, and the `tests/fixtures/`
+    // trees exist to be scanned. Sweeping it would ratchet the tool against
+    // its own documentation — every clarifying comment a future maintainer
+    // adds would turn the merge gate RED.
+    "crates/reify-audit/",
+    // Pure test scaffolding: 28 constructor sites that exist to fabricate a
+    // `Diagnostic` for an assertion. INV-SF-6 governs EMITTED diagnostics, and
+    // this crate emits none — it is out of scope by construction, not by
+    // exemption.
+    "crates/reify-test-support/",
+];
+
+/// `true` when `path` — repo-root-relative, the form [`crate::GitOps::ls_files`]
+/// returns — is production Rust the codes-mandatory ratchet sweeps.
+///
+/// Four independent gates, all plain `str` work (no `walkdir`, no `glob` — see
+/// the module header on why this crate stays dependency-free):
+///
+/// 1. `.rs` extension, anchored at the end of the path.
+/// 2. Under `crates/<name>/src/` or `gui/src-tauri/src/` — the two trees that
+///    emit diagnostics at runtime. A `src/` segment ALONE is not enough
+///    (`tree-sitter-reify/src/parser.c`), and `build.rs` is excluded because a
+///    build script emits nothing a user ever sees.
+/// 3. Not under a [`SCOPE_EXCLUDE_PREFIXES`] entry.
+/// 4. Not a test locus: no `tests` path segment, and the file stem is neither
+///    `tests` nor `*_tests`. The stem rule is load-bearing rather than
+///    belt-and-braces — `crates/reify-eval/src/engine_build/tests.rs` carries
+///    its `#[cfg(test)]` on the `mod tests;` declaration in the PARENT file,
+///    so `scan_file`'s block skip can never see the attribute from inside the
+///    file it governs.
+// Live root until `check` is implemented (step-12), for the same reason
+// `scan_file` carries one: it keeps a plain `cargo clippy --all-targets
+// -- -D warnings` lib target green, and transitively covers
+// `SCOPE_EXCLUDE_PREFIXES`. Dropped when `check` calls it.
+#[allow(dead_code)]
+fn is_swept_path(path: &str) -> bool {
+    if !path.ends_with(".rs") {
+        return false;
+    }
+    if SCOPE_EXCLUDE_PREFIXES.iter().any(|p| path.starts_with(p)) {
+        return false;
+    }
+
+    let mut segments = path.split('/');
+    let in_gui = path.starts_with("gui/src-tauri/src/");
+    // `crates/<name>/src/…`: exactly the third segment must be `src`, so
+    // `crates/reify-eval/build.rs` and `crates/reify-eval/tests/…` are out.
+    let in_crate_src = segments.next() == Some("crates")
+        && segments.next().is_some()
+        && segments.next() == Some("src")
+        && segments.next().is_some();
+    if !in_gui && !in_crate_src {
+        return false;
+    }
+
+    let mut parts = path.rsplit('/');
+    let file = parts.next().unwrap_or(path);
+    if parts.any(|segment| segment == "tests") {
+        return false;
+    }
+    let stem = file.strip_suffix(".rs").unwrap_or(file);
+    stem != "tests" && !stem.ends_with("_tests")
+}
+
 /// PDIAG entry point — see the module header for the heuristic and scope.
 ///
 /// Stub: the scope predicate, baseline parser and ratchet land in task 5405
