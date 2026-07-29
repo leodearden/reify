@@ -1450,7 +1450,109 @@ $ echo $?
 
 ## §8 Item 5 — Vector3/Point3/Matrix/Tensor/Field quantity-slot residual, §6.4 (step-8)
 
-*(filled by step-8)*
+**Scope boundary, stated precisely before any count (conflating the two halves below would
+overstate what γ closes).** The walker recurses lockstep through `Option`/`List`/`Set`/`Map`
+(`conformance/mod.rs:669-701`), so a dimensioned `Scalar` **wrapped** in one of those IS judged
+by the general-leaf arm and IS covered by γ — e.g. `stdlib/kinematic.ri:130-132`
+(`Option<TranslationalStiffness>` etc., already the PRD's own worked example). By contrast,
+`Vector3`/`Point3`/`Matrix`/`Tensor`/`Field` (task 5465's four shape-based arms —
+Vector/Point share one arm keyed on their common `n`+`quantity` shape, the PRD's "four
+promoted families" count) accept a scalar-family arg via `is_numeric_placeholder_leaf`
+(`conformance/mod.rs:1141-1155`) in their OWN dedicated arms and therefore stay
+**dimension-blind in the quantity slot** — γ's predicate promotion never reaches them; **this
+PRD does not change that.** This section counts the residual so 5627 candidate-2 /
+`reify-core/src/ty.rs`'s quantity-slot follow-up can be sized — the number is **deliberately
+out of scope for this PRD (§12)** and is not a migration list.
+
+### 8.1 Worked contrast, re-verified (the PRD's own anchor pair)
+
+| Site | Type | Covered by γ? |
+|---|---|---|
+| `stdlib/kinematic.ri:130-132` `Prismatic.spring_rate/damping/neutral` | `Option<TranslationalStiffness>` / `Option<TranslationalDamping>` / `Option<Length>` | **YES** — `Option` wrapper, walker recurses to the `Scalar` leaf |
+| `stdlib/dynamics.ri:79` `MassProperties.inertia` | `Matrix<3, 3, MomentOfInertia>` | **NO** — `Matrix`'s own shape-based arm, `is_numeric_placeholder_leaf`-gated, dimension-blind |
+
+Both re-confirmed verbatim at HEAD `e6479597d7` (also re-verified independently at decompose
+time, per this task's premise-verification analysis).
+
+### 8.2 Census method and results
+
+`git grep -noE ':\s*(Vector3|Point3|Matrix|Tensor|Field|Vec3)\s*<[A-Za-z0-9_, ]*'` (the `Vec3`
+alias included, per §0.2's `Vec3<Q> = Vector3<Q>` finding), repo-wide, then per-hit
+classification: (i) strip comment-only lines (doc prose mentioning a type is not a
+declaration); (ii) exclude a **dimensionless or generic** quantity slot (`Dimensionless`,
+`Real`, or a bare type-param letter `T`/`Q`/`D`/`A`/`B`/`C`/… — dimension-blindness has no
+observable consequence there, since there is no dimension to get wrong); count only a
+**concrete named dimension** in the quantity slot.
+
+**stdlib `.ri` — 34 sites, 9 files** (all `param`, except `joints.ri`'s 5, which are typed
+params of a `joint <name>(...)` template definition, a distinct DSL construct from
+`structure def`/`fn` but the same type-position question):
+
+| File | Sites | Fields |
+|---|---|---|
+| `constitutive.ri:54-57` | 4 | `origin`, `x_axis`, `y_axis`, `z_axis` : `Point3<Length>`/`Vector3<Length>`×3 |
+| `dynamics.ri:78-79` | 2 | `MassProperties.com : Point3<Length>`, `.inertia : Matrix<3,3,MomentOfInertia>` (§8.1) |
+| `fdm.ri:112` | 1 | `build_direction : Vec3<Length>` |
+| `joints.ri:59,128,141` | 5 | `revolute`'s `p`, `spherical`'s `c`+`d`, `ball`'s `c`+`d` : `Point3<Length>` |
+| `kinematic.ri:129,147,157,164,165` | 5 | `Prismatic`/`Revolute`/`Cylindrical`'s `axis`, `Planar`'s `axis_x`+`axis_y` : `Vec3<Length>` |
+| `ports.ri:54-57` | 4 | `Frame3`'s `origin`/`x_axis`/`y_axis`/`z_axis` : `Vec3<Length>` |
+| `ports_mechanical.ri:139,152` | 2 | two port `axis : Vector3<Length>` fields |
+| `solver_buckling.ri:176` | 1 | `mode_shape : Field<Point3<Length>, Vector3<Length>>` |
+| `solver_elastic.ri:500,501,519,531,541,542,631,632,633,769` | 10 | `displacement`/`stress`/`divergence`/`gradient`/`curl`/`frame`/`top`/`mid`/`bottom`/`material`, all `Field<Point3<Length>, …>` (domain always dimensioned; codomain varies) |
+
+**`examples/**` — 8 sites, 4 files:** `joint_dof_self_check.ri:26` (1, `joint revolute`'s `p`) ·
+`parametric_vec3_cross_module.ri:20` (1, `traction : Vec3<Pressure>`) ·
+`stdlib/ports_breadth.ri:78-81` (4, `Vector3<Length>`) ·
+`type_hygiene/type_hygiene_surface.ri:26,66` (2, `moi : Tensor<2,3,MomentOfInertia>`).
+(`dimensionless_unification.ri:50-51`'s `Vector3<Real>`/`Vector3<Dimensionless>` pair excluded
+— dimensionless, no residual.)
+
+**Other `.ri` — 4 sites, 3 files** (`tests/prd-gate/fixtures/`, outside `corpus_no_bare_scalar.rs`'s
+reach, §11(A)): `compiler_type_hygiene_integration_gate.ri:34,40` (2) ·
+`compiler_type_hygiene_mul_scale_guard_defeat.ri:14` (1) ·
+`compiler_type_hygiene_mul_vec_silent_int.ri:12` (1) — all `Vector3<Length>`.
+(The two `tree-sitter-reify/test/fixtures/guf-*.ri` hits, `Field<D,Scalar<Q>>`/`Field<A,B>`,
+are generic, not concrete — excluded, and parse-only regardless per §0.4/§3.2.)
+
+**Rust fixture strings — 72 code-position sites across 21 files** (repo-wide `git grep` over
+`*.rs`, restricted to `tests/` paths — non-test `.rs` **implementation** files, e.g.
+`type_compat.rs`'s own `Tensor<1,N,Q>` Rust-generic signatures or `units.rs`'s internal
+helpers, are a different question entirely — Rust-level type machinery, not `.ri` source — and
+are excluded; comment/doc-prose mentions, 64 of the 136 raw distinct-line hits, are excluded
+the same way §2.2's sweep excludes them). Top files by hit count:
+`harness_langcore/parametric_vector_point_resolution_tests.rs` (10),
+`struct_ctor_field_conformance_tests.rs` (9), `comparison_operand_guard_tests.rs` (7),
+`datum_constructor_tests.rs` (5), `harness_langcore/type_hygiene_integration_gate.rs` (5),
+`joint_dof_self_check_tests.rs` (4); 15 further files with 1-3 each (full file list and
+per-line hits: `/tmp/5756-scratch/step8-rs-concrete-testsonly.txt`, scratch, uncommitted). **Per
+the plan's own framing ("the number exists solely to size the follow-up") this bucket is
+counted, not individually re-classified BREAKS-vs-pinned site-by-site** — unlike items 1/2/3,
+because this residual is explicitly out of scope for γ/δ and no β migration follows from it.
+Flagged per the ledger's no-silent-caps discipline: this is the one count in the ledger not
+carried to single-site granularity, and the reason is the PRD's own scope ruling, not sweep
+laziness.
+
+### 8.3 Total and disposition
+
+**118 concrete-dimensioned quantity-slot sites** (34 stdlib + 8 examples + 4 other-`.ri` + 72
+Rust-fixture) will **remain dimension-blind after γ lands** — none is touched by this PRD, none
+is a β migration item, and none is a δ leaf. This number is strictly **larger** than any other
+item's corpus figure in this ledger (§3's 17 BARE sites, §2's 2+55 category-A/C sites) —
+expected, since `Vector3`/`Point3` in particular are the idiomatic spelling for any geometric
+quantity (origins, axes, directions) across the whole mechanical/kinematic/FEA stdlib surface,
+not a narrow corner case. **Disposition: EXCLUDED-BY-DESIGN (quantity-slot territory, §12) for
+every one of the 118** — recorded here solely so 5627 candidate-2's follow-up task has a sized
+starting point (9 stdlib files, 4 example/fixture files, 21 Rust test files), not because any
+of them needs migration under β/γ/δ₁/δ₂.
+
+```
+$ git diff --exit-code -- crates/ examples/ gui/ stdlib
+$ echo $?
+0
+```
+
+No source was read via a build for this step — every figure above is a static `git grep` +
+direct-read classification; there is nothing to revert.
 
 ## §9 Item 6 — Load-struct intersection flag for PRD 5, §10.2 (step-9)
 
