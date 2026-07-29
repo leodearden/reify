@@ -10594,6 +10594,207 @@ mod tests {
         );
     }
 
+    // --- wire_start_point / make_oriented_circle_face FFI tests ---
+    //
+    // Direct FFI coverage for the two primitives added to pose the pipe profile
+    // on the path's start frame. Otherwise both are reached only transitively
+    // through the `GeometryOp::Pipe` arm, which is blind to two failures: a
+    // start/end swap produces a plausible solid on a symmetric spine, and the
+    // radius guard inside `make_oriented_circle_face` is unreachable from that
+    // arm entirely (it runs `validate_positive_finite` Rust-side first).
+
+    /// The line runs (0.005,0,0) → (0.025,0,0): asymmetric about the origin, so
+    /// the start and end are 0.020 apart and a swap cannot hide inside the
+    /// tolerance. Pinning the start specifically matters because the profile is
+    /// *centred* at this point — an end-point result would sweep a solid of the
+    /// right shape from the wrong place.
+    #[test]
+    fn ffi_wire_start_point_returns_start_not_end_of_line() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let wire = ffi::ffi::make_line_wire(0.005, 0.0, 0.0, 0.025, 0.0, 0.0)
+            .expect("make_line_wire should succeed");
+        let p = ffi::ffi::wire_start_point(&wire)
+            .expect("wire_start_point should succeed for +X line");
+        assert!(
+            (p.x - 0.005).abs() < 1e-6,
+            "start-point x should be ≈ 0.005 (the START, not the END 0.025), got {}",
+            p.x
+        );
+        assert!(p.y.abs() < 1e-6, "start-point y should be ≈ 0, got {}", p.y);
+        assert!(p.z.abs() < 1e-6, "start-point z should be ≈ 0, got {}", p.z);
+    }
+
+    /// Composite-wire counterpart to `ffi_wire_start_tangent_composite_wire_*`,
+    /// exercising `BRepAdaptor_CompCurve` on a **multi-edge** wire: a future
+    /// refactor to a single-edge `BRepAdaptor_Curve` would break this while the
+    /// single-edge test above still passed.
+    ///
+    /// The polyline is deliberately **non-collinear** — (0.005,0,0) →
+    /// (0.015,0,0) → (0.015,0.010,0) — which is what lets this test pin the
+    /// agreement between the two queries rather than just one of them. The
+    /// profile frame combines *both*: centred at `wire_start_point`, normal
+    /// along `wire_start_tangent`. If they disambiguated the wire's ends
+    /// differently the frame would be silently wrong, and here that is visible:
+    /// at the start the point is (0.005,0,0) with tangent +X, at the far end
+    /// (0.015,0.010,0) with tangent +Y. Both are asserted together.
+    #[test]
+    fn ffi_wire_start_point_composite_wire_agrees_with_start_tangent() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        #[rustfmt::skip]
+        let coords: &[f64] = &[
+            0.005, 0.0,   0.0,
+            0.015, 0.0,   0.0,
+            0.015, 0.010, 0.0,
+        ];
+        let wire = ffi::ffi::make_polyline_wire(coords, 3)
+            .expect("make_polyline_wire should succeed for 3-point L-shaped polyline");
+
+        let p = ffi::ffi::wire_start_point(&wire)
+            .expect("wire_start_point should succeed for composite wire");
+        assert!(
+            (p.x - 0.005).abs() < 1e-6,
+            "composite wire: start-point x should be ≈ 0.005, got {}",
+            p.x
+        );
+        assert!(
+            p.y.abs() < 1e-6,
+            "composite wire: start-point y should be ≈ 0 (the far end has y = 0.010), got {}",
+            p.y
+        );
+        assert!(
+            p.z.abs() < 1e-6,
+            "composite wire: start-point z should be ≈ 0, got {}",
+            p.z
+        );
+
+        let t = ffi::ffi::wire_start_tangent(&wire)
+            .expect("wire_start_tangent should succeed for composite wire");
+        assert!(
+            (t.x - 1.0).abs() < 1e-6,
+            "composite wire: start-tangent x should be ≈ 1.0 — the FIRST edge runs +X, so a \
+             value of ≈ 0 here means the tangent came from a different end than the point did; \
+             got {}",
+            t.x
+        );
+        assert!(
+            t.y.abs() < 1e-6,
+            "composite wire: start-tangent y should be ≈ 0 (the far end's tangent is +Y), got {}",
+            t.y
+        );
+        assert!(
+            t.z.abs() < 1e-6,
+            "composite wire: start-tangent z should be ≈ 0, got {}",
+            t.z
+        );
+    }
+
+    /// `gp_Ax2(P, N)` builds a valid orthonormal frame for ANY unit normal, so
+    /// no direction is privileged and there is no antiparallel singularity —
+    /// which is the whole reason the profile is posed at construction rather
+    /// than by a post-hoc rotation carrying +Z onto the tangent. `-Z` is in the
+    /// table because it is exactly where such a rotation degenerates.
+    ///
+    /// The centre is off-origin in all three coordinates, so a dropped
+    /// translation cannot pass. Area is exact — a planar face bounded by an
+    /// exact `Geom_Circle`, integrated by `BRepGProp::SurfaceProperties` — so it
+    /// is checked at the same 1e-6 the neighbouring FFI tests use.
+    #[test]
+    fn ffi_make_oriented_circle_face_poses_centre_and_normal() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let radius = 0.004_f64;
+        let (cx, cy, cz) = (0.005, -0.003, 0.011);
+        let cases: &[(&str, f64, f64, f64)] = &[
+            ("+Z", 0.0, 0.0, 1.0),
+            ("+X", 1.0, 0.0, 0.0),
+            ("-Z", 0.0, 0.0, -1.0),
+        ];
+
+        for &(label, nx, ny, nz) in cases {
+            let face = ffi::ffi::make_oriented_circle_face(radius, cx, cy, cz, nx, ny, nz)
+                .unwrap_or_else(|e| {
+                    panic!("make_oriented_circle_face should succeed for normal {label}: {e}")
+                });
+
+            let c = ffi::ffi::query_face_centroid(&face)
+                .unwrap_or_else(|e| panic!("query_face_centroid should succeed for {label}: {e}"));
+            assert!(
+                (c.x - cx).abs() < 1e-6,
+                "normal {label}: face centroid x should be ≈ {cx}, got {}",
+                c.x
+            );
+            assert!(
+                (c.y - cy).abs() < 1e-6,
+                "normal {label}: face centroid y should be ≈ {cy}, got {}",
+                c.y
+            );
+            assert!(
+                (c.z - cz).abs() < 1e-6,
+                "normal {label}: face centroid z should be ≈ {cz}, got {}",
+                c.z
+            );
+
+            let n = ffi::ffi::query_face_normal(&face)
+                .unwrap_or_else(|e| panic!("query_face_normal should succeed for {label}: {e}"));
+            assert!(
+                (n.x - nx).abs() < 1e-6,
+                "normal {label}: face normal x should be ≈ {nx}, got {}",
+                n.x
+            );
+            assert!(
+                (n.y - ny).abs() < 1e-6,
+                "normal {label}: face normal y should be ≈ {ny}, got {}",
+                n.y
+            );
+            assert!(
+                (n.z - nz).abs() < 1e-6,
+                "normal {label}: face normal z should be ≈ {nz}, got {}",
+                n.z
+            );
+
+            let area = ffi::ffi::query_area(&face)
+                .unwrap_or_else(|e| panic!("query_area should succeed for {label}: {e}"));
+            let expected_area = std::f64::consts::PI * radius * radius;
+            let rel_err = (area - expected_area).abs() / expected_area;
+            assert!(
+                rel_err < 1e-6,
+                "normal {label}: face area should be ≈ pi*r^2 = {expected_area}, got {area} \
+                 (rel_err {rel_err:.3e})",
+            );
+        }
+    }
+
+    /// The `Pipe` arm runs `validate_positive_finite(r, "pipe radius")` before it
+    /// ever calls this primitive, so the C++ radius guard is unreachable from its
+    /// only production caller. This test is the guard's sole coverage: it is
+    /// pinned here or it is dead code.
+    #[test]
+    fn ffi_make_oriented_circle_face_rejects_non_positive_or_nan_radius() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        for (label, radius) in [
+            ("zero", 0.0_f64),
+            ("negative", -1.0_f64),
+            ("NaN", f64::NAN),
+        ] {
+            let result = ffi::ffi::make_oriented_circle_face(radius, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+            assert!(
+                result.is_err(),
+                "make_oriented_circle_face should reject {label} radius ({radius}), got Ok"
+            );
+        }
+    }
+
     // --- make_line_wire degeneracy threshold tests (task-383 S2) ---
 
     #[test]
