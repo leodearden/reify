@@ -3279,6 +3279,14 @@ fn compile_expr_guarded_with_expected_inner(
                     // mismatch, tag with SelectorKindMismatch so both the composition
                     // path (BT1, units.rs) and the param-binding path (BT6) carry the
                     // same DiagnosticCode. Message and label are unchanged.
+                    //
+                    // task 5476 (PRD placeholder-type-eradication-ratchet §3.3 /
+                    // INV-SF-6): the GENERAL no-match — everything the 4581 predicate
+                    // does not claim — carries NoMatchingOverload
+                    // (E_NO_MATCHING_OVERLOAD). The selector branch above keeps
+                    // priority; this only fills in the previously-untagged else.
+                    // Message and label stay byte-identical in both branches, so only
+                    // the code distinguishes them.
                     let base_diag = Diagnostic::error(format!(
                         "no matching overload for {}({}), candidates: {}",
                         name,
@@ -3296,7 +3304,7 @@ fn compile_expr_guarded_with_expected_inner(
                     ) {
                         base_diag.with_code(DiagnosticCode::SelectorKindMismatch)
                     } else {
-                        base_diag
+                        base_diag.with_code(DiagnosticCode::NoMatchingOverload)
                     };
                     make_poison_literal(diagnostics, diag)
                 }
