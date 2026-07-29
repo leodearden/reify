@@ -1006,12 +1006,21 @@ trait TemperatureDependent {
 ```
 // Dimensioned-type note: the Pressure/Energy param types shown below (youngs_modulus,
 // yield_strength, ultimate_tensile_strength, compressive_strength, shear_modulus,
-// fatigue_limit, fatigue_strength_at, charpy_impact, izod_impact) are the target of the
-// deferred #3111-family dimensional tightening and are currently Real placeholders in the
-// shipped stdlib. The thermal/electrical/optical/fracture dimensioned types shown in §6.3–§6.5
-// have been realized by tasks #3112/#3113/#3115 (ThermalExpansion, ElectricResistivity,
-// DielectricStrength, AbsorptionCoeff, FractureToughness). Do not downgrade the Pressure/Energy
-// types shown here — they remain the documented aspiration pending #3111.
+// fatigue_limit, fatigue_strength_at, charpy_impact, izod_impact) are SHIPPED, not
+// aspirational — the dimensional tightening has landed, and every declaration in this
+// fence matches materials_mechanical.ri verbatim. The thermal/electrical/optical/fracture
+// dimensioned types shown in §6.3–§6.5 have been realized by tasks #3112/#3113/#3115
+// (ThermalExpansion, ElectricResistivity, DielectricStrength, AbsorptionCoeff,
+// FractureToughness). Do not downgrade the Pressure/Energy types shown here.
+//
+// The params still typed Real in this section — poissons_ratio, hardness_value,
+// elongation_at_break, reduction_of_area, damping_ratio, loss_factor — are GENUINELY
+// dimensionless (ratios, fractions, and scale-dependent instrument readings) and are
+// correct as written. Do not "fix" them to a dimensioned type; each carries its
+// rationale inline below.
+//
+// Being declared with a dimensioned type does not imply anything reads it: see
+// "Declared-only material properties" immediately after §6.3 for the register.
 
 // Elastic, Strong, Hard, Ductile are free-standing (no MaterialSpec base) — deliberate
 // design drift #3487. Conformers carry density/name via a separate `material : MaterialSpec`
