@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
-# Infrastructure guard for gui/test/visual/run_find_uses_smoke.sh (task 4456).
+# Shared-lifecycle contract for gui/test/visual/lib_e2e_smoke.sh (tasks 4456, 5596).
 #
-# Pins the readiness-race fix (reviewer finding: flaky_test_readiness_race)
-# *behaviorally*: it runs the real runner with a launcher stub that dies
-# immediately and asserts the liveness guard aborts early (non-zero, fast)
+# Originally the infrastructure guard for gui/test/visual/run_find_uses_smoke.sh
+# alone, pinning the readiness-race fix (reviewer finding: flaky_test_readiness_race)
+# *behaviorally*: it ran the real runner with a launcher stub that dies
+# immediately and asserted the liveness guard aborts early (non-zero, fast)
 # rather than blocking until the full readiness deadline.
+#
+# Task 5596 extracted that lifecycle — port resolution, env hygiene, the reap
+# trap, the optional pre-build, the backgrounded launcher, the readiness+liveness
+# poll loop and the SIGTERM teardown — into gui/test/visual/lib_e2e_smoke.sh,
+# shared by all SIX e2e smoke runners.  This file grew with it: it now runs the
+# full experiment against EVERY runner, so it is the contract for the shared
+# implementation rather than a single-runner guard.
 #
 # NOTE: deliberately NO source-text/grep assertions. Greppping the runner for
 # literal fragments (`kill -0`, `REIFY_SMOKE_WAIT_MS`, the `&` launcher line)
@@ -13,7 +21,12 @@
 # would keep such contracts green — passing on the very failure they claim to
 # pin. The behavioral contract below is the only one that proves behavior.
 #
-# ── TWO-ARM EXPERIMENT (task 5596) ───────────────────────────────────────────
+# That NOTE is also why coverage of the six runners is proved by RUNNING each of
+# them through the real scenarios rather than by grepping each for a
+# `source .*lib_e2e_smoke.sh` line: a source-text check would match the header
+# comment of a runner whose delegation had been reverted.
+#
+# ── THREE-ARM EXPERIMENT (task 5596) ─────────────────────────────────────────
 # The launcher-death predicate used to be
 #     grep -qiE "launcher|exited|early|died|liveness|kill"
 # which was MEASURED vacuous, not merely suspected: run against the real runner
@@ -27,22 +40,21 @@
 # The predicate is now the canonical machine marker emitted only on a death path:
 #     E2E_SMOKE_LAUNCHER_DEATH phase=<readiness|post-driver> rc=<n> pid=<n>
 #
-# A narrower regex would only ASSERT discrimination; the pair of arms below
-# DEMONSTRATES it:
+# A narrower regex would only ASSERT discrimination; the arms below DEMONSTRATE it.
 #   ARM A (positive, death at readiness) — launcher exits 1 immediately:
 #       rc != 0, aborts far inside the budget, marker PRESENT.
 #   ARM B (negative control, launcher lives) — health + driver stubbed green:
 #       rc == 0, startup banner PRESENT (so the arm really ran the normal path),
 #       marker ABSENT.
-# Arm B is what makes Arm A's assertion non-vacuous: the same output token that
-# Arm A demands is proven absent on a run that produces the banner.
-#
 #   ARM C (post-driver post-mortem) — the launcher survives readiness, then dies
 #       DURING the driver run while the driver still exits 0:
 #       rc != 0, `phase=post-driver` marker PRESENT, banner PRESENT.
-# Arm C pins the correctness gap that a pure readiness-loop liveness check
-# leaves open: liveness was only ever checked BEFORE the driver ran, so a
-# launcher that crashed mid-run behind a green driver produced a false PASS.
+#
+# Arm B is what makes Arm A's assertion non-vacuous: the same output token that
+# Arm A demands is proven absent on a run that produces the banner.  Arm C pins
+# the correctness gap a readiness-only liveness check leaves open: liveness was
+# only ever checked BEFORE the driver ran, so a launcher that crashed mid-run
+# behind a green driver produced a false PASS.
 #
 # Auto-discovered by tests/infra/run_all.sh (matches test_*.sh pattern).
 
@@ -54,16 +66,22 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
-RUNNER="$REPO_ROOT/gui/test/visual/run_find_uses_smoke.sh"
-
 # The canonical death marker.  Assembled from a variable so every arm below
 # tests the SAME token and the positive/negative pair can never drift apart.
 DEATH_MARKER="E2E_SMOKE_LAUNCHER_DEATH"
 
-echo "=== test_find_uses_smoke_runner: readiness-race-fix contract ==="
+# All six runners that delegate to the shared lifecycle.  Every one is put
+# through every arm — that behavioral sweep IS the proof of delegation.
+RUNNERS=(
+    run_find_uses_smoke.sh
+    run_appearance_e2e_smoke.sh
+    run_diagnostics_e2e_smoke.sh
+    run_multi_pane_e2e_smoke.sh
+    run_surface_finish_viewport_e2e_smoke.sh
+    run_mesh_count_parity_e2e_smoke.sh
+)
 
-assert "runner exists" \
-    test -f "$RUNNER"
+echo "=== test_find_uses_smoke_runner: shared e2e smoke lifecycle contract ==="
 
 # ---------------------------------------------------------------------------
 # Shared arm scaffold.
@@ -87,6 +105,15 @@ cleanup() {
     return 0
 }
 trap cleanup EXIT INT TERM
+
+# _alloc_port — hands out a distinct port per (runner, arm) pair from a fixed
+# base, monotonically, so distinctness is structural rather than something a
+# future edit has to remember to maintain. Sets _PORT.
+_NEXT_PORT=59900
+_alloc_port() {
+    _PORT="$_NEXT_PORT"
+    _NEXT_PORT=$(( _NEXT_PORT + 1 ))
+}
 
 # _new_bindir — mktemps a fresh <tmpdir>/bin, registers the tmpdir for cleanup,
 # and sets _BINDIR to the bin path.
@@ -151,35 +178,37 @@ _smoke_arm_run() {
 # A 6-minute budget with an immediately-exiting launcher: the runner must abort
 # on the liveness check FAR sooner, and say so with the death marker.
 # ===========================================================================
-echo ""
-echo "--- ARM A: launcher-death causes early non-zero exit (not a timeout hang) ---"
+_arm_a() {
+    local label="$1" runner="$2" bin
+    _alloc_port
+    _new_bindir; bin="$_BINDIR"
 
-_new_bindir; _a_bin="$_BINDIR"
-_write_stub "$_a_bin/stub_launcher.sh" 'exit 1'
-# Stub node: should not be reached; exits 1 if called.
-_write_stub "$_a_bin/node" \
-    'echo "STUB_ERROR: node driver should not be reached when launcher dies" >&2' \
-    'exit 1'
+    _write_stub "$bin/stub_launcher.sh" 'exit 1'
+    # Stub node: should not be reached; exits 1 if called.
+    _write_stub "$bin/node" \
+        'echo "STUB_ERROR: node driver should not be reached when launcher dies" >&2' \
+        'exit 1'
 
-_smoke_arm_run "$_a_bin" "$RUNNER" 59999 600000
-_t4_rc="$_ARM_RC"
-_t4_out="$_ARM_OUT"
-_t4_elapsed="$_ARM_ELAPSED"
+    _smoke_arm_run "$bin" "$runner" "$_PORT" 600000
+    _t4_rc="$_ARM_RC"
+    _t4_out="$_ARM_OUT"
+    _t4_elapsed="$_ARM_ELAPSED"
 
-assert "runner exits non-zero when launcher dies immediately" \
-    bash -c '[ "$1" -ne 0 ]' _ "$_t4_rc"
+    assert "$label ARM A: exits non-zero when launcher dies immediately" \
+        bash -c '[ "$1" -ne 0 ]' _ "$_t4_rc"
 
-assert "runner aborts within 15s (liveness guard, not 600s deadline)" \
-    bash -c '[ "$1" -lt 15 ]' _ "$_t4_elapsed" # wallclock:allow — liveness: discriminated by rc!=0 + the launcher-death marker, not by elapsed magnitude
+    assert "$label ARM A: aborts within 15s (liveness guard, not the 600s deadline)" \
+        bash -c '[ "$1" -lt 15 ]' _ "$_t4_elapsed" # wallclock:allow — liveness: discriminated by rc!=0 + the launcher-death marker, not by elapsed magnitude
 
-# Match the death path's OWN machine marker, not a broad alternation. The runner
-# unconditionally announces `launcher PID=<pid>` before the readiness loop is
-# even entered, so a pattern with a bare `launcher` branch matches on EVERY run —
-# including one where the liveness guard was deleted outright (measured; see the
-# header). Only a death path prints this token; ARM B proves it stays absent on
-# the happy path.
-assert "runner emits the readiness-phase launcher-death marker (not just its startup banner)" \
-    bash -c 'printf "%s\n" "$2" | grep -qF "$1 phase=readiness rc="' _ "$DEATH_MARKER" "$_t4_out"
+    # Match the death path's OWN machine marker, not a broad alternation. The
+    # runner unconditionally announces `launcher PID=<pid>` before the readiness
+    # loop is even entered, so a pattern with a bare `launcher` branch matches on
+    # EVERY run — including one where the liveness guard was deleted outright
+    # (measured; see the header). Only a death path prints this token; ARM B
+    # proves it stays absent on the happy path.
+    assert "$label ARM A: emits the readiness-phase launcher-death marker (not just its startup banner)" \
+        bash -c 'printf "%s\n" "$2" | grep -qF "$1 phase=readiness rc="' _ "$DEATH_MARKER" "$_t4_out"
+}
 
 # ===========================================================================
 # ARM B — negative control: launcher LIVES, health + driver stubbed green.
@@ -188,28 +217,29 @@ assert "runner emits the readiness-phase launcher-death marker (not just its sta
 # itself and its SIGTERM teardown reaps it directly rather than orphaning a
 # detached child that would keep the output pipe open.
 # ===========================================================================
-echo ""
-echo "--- ARM B: negative control — live launcher, green driver, NO death marker ---"
+_arm_b() {
+    local label="$1" runner="$2" bin
+    _alloc_port
+    _new_bindir; bin="$_BINDIR"
 
-_new_bindir; _b_bin="$_BINDIR"
-_write_stub "$_b_bin/stub_launcher.sh" 'exec sleep 20'
-# Health poll succeeds immediately.
-_write_stub "$_b_bin/curl" 'exit 0'
-# Driver succeeds.
-_write_stub "$_b_bin/node" 'exit 0'
+    _write_stub "$bin/stub_launcher.sh" 'exec sleep 20'
+    # Health poll succeeds immediately.
+    _write_stub "$bin/curl" 'exit 0'
+    # Driver succeeds.
+    _write_stub "$bin/node" 'exit 0'
 
-_smoke_arm_run "$_b_bin" "$RUNNER" 59998 30000
-_b_rc="$_ARM_RC"
-_b_out="$_ARM_OUT"
+    _smoke_arm_run "$bin" "$runner" "$_PORT" 30000
+    local rc="$_ARM_RC" out="$_ARM_OUT"
 
-assert "control: runner exits 0 on the happy path (live launcher, green driver)" \
-    bash -c '[ "$1" -eq 0 ]' _ "$_b_rc"
+    assert "$label ARM B (control): exits 0 on the happy path (live launcher, green driver)" \
+        bash -c '[ "$1" -eq 0 ]' _ "$rc"
 
-assert "control: happy path DOES print the startup banner (arm really ran the normal path)" \
-    bash -c 'printf "%s\n" "$1" | grep -qF "launcher PID="' _ "$_b_out"
+    assert "$label ARM B (control): happy path DOES print the startup banner (really ran the normal path)" \
+        bash -c 'printf "%s\n" "$1" | grep -qF "launcher PID="' _ "$out"
 
-assert "control: happy path emits NO launcher-death marker (so ARM A's predicate is not vacuous)" \
-    bash -c '! printf "%s\n" "$2" | grep -qF "$1"' _ "$DEATH_MARKER" "$_b_out"
+    assert "$label ARM B (control): happy path emits NO launcher-death marker (ARM A's predicate is not vacuous)" \
+        bash -c '! printf "%s\n" "$2" | grep -qF "$1"' _ "$DEATH_MARKER" "$out"
+}
 
 # ===========================================================================
 # ARM C — post-driver post-mortem: the launcher survives readiness and then
@@ -226,48 +256,75 @@ assert "control: happy path emits NO launcher-death marker (so ARM A's predicate
 # itself. There is no window in which the dead launcher lingers as a
 # kill -0-visible zombie, so the post-mortem has no race to lose.
 # ===========================================================================
-echo ""
-echo "--- ARM C: post-driver post-mortem — a green driver must not mask a dead launcher ---"
+_arm_c() {
+    local label="$1" runner="$2" bin
+    _alloc_port
+    _new_bindir; bin="$_BINDIR"
+    local pidfile="$bin/launcher.pid"
 
-_new_bindir; _c_bin="$_BINDIR"
-_c_pidfile="$_c_bin/launcher.pid"
+    # Launcher: publish the PID the runner holds, then stay alive well past
+    # readiness. `$$` survives `exec`, so the sleep IS this pid — which is also
+    # the runner's `$!`, so both sides agree on one identity with no pid
+    # translation.
+    _write_stub "$bin/stub_launcher.sh" \
+        'echo "$$" > "$_PIDFILE"' \
+        'exec sleep 30'
+    # Health poll succeeds immediately, so readiness passes with a LIVE launcher
+    # — this arm reaches the driver, unlike ARM A.
+    _write_stub "$bin/curl" 'exit 0'
+    # Driver: kill the launcher, confirm it is really gone, then report SUCCESS.
+    # Exiting 0 is the whole point — the runner must fail on the launcher's
+    # death, not on the driver's exit code.
+    _write_stub "$bin/node" \
+        'pid=$(cat "$_PIDFILE")' \
+        'kill -9 "$pid" 2>/dev/null || true' \
+        'for _ in $(seq 1 100); do kill -0 "$pid" 2>/dev/null || exit 0; sleep 0.05; done' \
+        'echo "STUB_ERROR: launcher $pid still alive after 5s" >&2' \
+        'exit 1'
 
-# Launcher: publish the PID the runner holds, then stay alive well past
-# readiness. `$$` survives `exec`, so the sleep IS this pid — which is also the
-# runner's `$!`, so both sides agree on one identity with no pid translation.
-_write_stub "$_c_bin/stub_launcher.sh" \
-    'echo "$$" > "$_PIDFILE"' \
-    'exec sleep 30'
-# Health poll succeeds immediately, so readiness passes with a LIVE launcher —
-# this arm reaches the driver, unlike ARM A.
-_write_stub "$_c_bin/curl" 'exit 0'
-# Driver: kill the launcher, confirm it is really gone, then report SUCCESS.
-# Exiting 0 is the whole point — the runner must fail on the launcher's death,
-# not on the driver's exit code.
-_write_stub "$_c_bin/node" \
-    'pid=$(cat "$_PIDFILE")' \
-    'kill -9 "$pid" 2>/dev/null || true' \
-    'for _ in $(seq 1 100); do kill -0 "$pid" 2>/dev/null || exit 0; sleep 0.05; done' \
-    'echo "STUB_ERROR: launcher $pid still alive after 5s" >&2' \
-    'exit 1'
+    _smoke_arm_run "$bin" "$runner" "$_PORT" 30000 _PIDFILE="$pidfile"
+    local rc="$_ARM_RC" out="$_ARM_OUT"
 
-_smoke_arm_run "$_c_bin" "$RUNNER" 59997 30000 _PIDFILE="$_c_pidfile"
-_c_rc="$_ARM_RC"
-_c_out="$_ARM_OUT"
+    # Guard the arm's own premise: if the driver stub had bailed out via its
+    # error path it would exit 1, and the rc!=0 assertion below would pass for
+    # entirely the wrong reason. Absence of STUB_ERROR proves the driver really
+    # returned 0.
+    assert "$label ARM C: driver stub really reported SUCCESS (rc!=0 below cannot come from the driver)" \
+        bash -c '! printf "%s\n" "$1" | grep -qF "STUB_ERROR"' _ "$out"
 
-# Guard the arm's own premise: if the driver stub had bailed out via its error
-# path it would exit 1, and the rc!=0 assertion below would pass for entirely
-# the wrong reason. Absence of STUB_ERROR proves the driver really returned 0.
-assert "post-driver: driver stub really reported SUCCESS (rc!=0 below cannot come from the driver)" \
-    bash -c '! printf "%s\n" "$1" | grep -qF "STUB_ERROR"' _ "$_c_out"
+    assert "$label ARM C: happy-path banner IS present (arm reached the driver, unlike ARM A)" \
+        bash -c 'printf "%s\n" "$1" | grep -qF "launcher PID="' _ "$out"
 
-assert "post-driver: happy-path banner IS present (arm reached the driver, unlike ARM A)" \
-    bash -c 'printf "%s\n" "$1" | grep -qF "launcher PID="' _ "$_c_out"
+    assert "$label ARM C: exits non-zero — a green driver does not mask a dead launcher" \
+        bash -c '[ "$1" -ne 0 ]' _ "$rc"
 
-assert "post-driver: runner exits non-zero — a green driver does not mask a dead launcher" \
-    bash -c '[ "$1" -ne 0 ]' _ "$_c_rc"
+    assert "$label ARM C: emits the post-driver-phase launcher-death marker" \
+        bash -c 'printf "%s\n" "$2" | grep -qF "$1 phase=post-driver rc="' _ "$DEATH_MARKER" "$out"
+}
 
-assert "post-driver: runner emits the post-driver-phase launcher-death marker" \
-    bash -c 'printf "%s\n" "$2" | grep -qF "$1 phase=post-driver rc="' _ "$DEATH_MARKER" "$_c_out"
+# ===========================================================================
+# Sweep every runner through every arm.
+#
+# Assertion descriptions are prefixed with the runner basename so a failure
+# names the offending runner directly.
+# ===========================================================================
+for _runner_base in "${RUNNERS[@]}"; do
+    _runner_path="$REPO_ROOT/gui/test/visual/$_runner_base"
+
+    echo ""
+    echo "--- $_runner_base ---"
+
+    assert "$_runner_base: runner exists" \
+        test -f "$_runner_path"
+
+    if [ ! -f "$_runner_path" ]; then
+        # Nothing to drive; the assert above already recorded the failure.
+        continue
+    fi
+
+    _arm_a "$_runner_base" "$_runner_path"
+    _arm_b "$_runner_base" "$_runner_path"
+    _arm_c "$_runner_base" "$_runner_path"
+done
 
 test_summary
