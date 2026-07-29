@@ -29,6 +29,9 @@ import {
   normalizeRpcEnvelope,
   parseTextPayload,
 } from "./rpcEnvelope.mjs";
+// Namespace import on purpose: the single-home guard below asserts on what this
+// module does NOT export, which a named import cannot express.
+import * as meshCountParity from "./meshCountParity.mjs";
 
 describe("isInBandError — the §2a tool-outage discriminator", () => {
   // Moved verbatim from meshCountParity.test.ts, which pinned this while it was
@@ -348,6 +351,37 @@ describe("makeDebugRpc — the transport the six smoke drivers duplicate", () =>
     await expect(
       makeDebugRpc(DEBUG_URL, { fetchImpl: refused })("health"),
     ).rejects.toThrow("fetch failed");
+  });
+});
+
+describe("one home — meshCountParity.mjs no longer carries an envelope decoder", () => {
+  // THE anti-regression guard this task exists to install. Without it nothing
+  // stops a future agent re-adding a fourth copy of the decode, which is exactly
+  // how seven copies accumulated: each new driver reasonably copy-pasted the last
+  // one. These are runtime module-surface assertions, not documentation checks.
+  it("does not re-export the decoders that moved to rpcEnvelope.mjs", () => {
+    // Deliberately NOT re-exported for back-compat: two valid import paths for
+    // one symbol would quietly recreate the ambiguity the move removes.
+    expect(meshCountParity.normalizeRpcEnvelope).toBeUndefined();
+    expect(meshCountParity.isInBandError).toBeUndefined();
+  });
+
+  it("still exports its own surface — the parity decision and its extraction", () => {
+    expect(typeof meshCountParity.checkMeshCountParity).toBe("function");
+    expect(typeof meshCountParity.extractMeshCountInputs).toBe("function");
+    expect(typeof meshCountParity.formatFailures).toBe("function");
+    expect(typeof meshCountParity.MESH_COUNT_PARITY_MIN_BODIES).toBe("number");
+  });
+
+  it("still routes its own outage diagnosis through the SHARED discriminator", () => {
+    // The internal usablePayload → isInBandError path must survive the move.
+    // If the import broke, this read would degrade from `outage` to `shape` —
+    // reporting a tool that FAILED as a tool that answered oddly, which is the
+    // precise misdiagnosis meshCountParity.mjs's gate taxonomy exists to prevent.
+    const { failures } = meshCountParity.extractMeshCountInputs({
+      meshStats: { error: "boom" },
+    });
+    expect(failures).toContainEqual({ gate: "outage", tool: "mesh_stats", observed: "boom" });
   });
 });
 
