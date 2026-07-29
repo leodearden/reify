@@ -6866,6 +6866,46 @@ mod tests {
             serde_json::to_string(&DiagnosticCode::RepresentationBoundUnenforcedOnExport).unwrap();
         assert_eq!(s, "\"RepresentationBoundUnenforcedOnExport\"");
     }
+
+    // --- NoMatchingOverload tests (task 5476 — E_NO_MATCHING_OVERLOAD) ---
+    // Pairs with the `OverloadResolution::NoMatch` poison-literal arm in
+    // `crates/reify-compiler/src/expr.rs`. PRD
+    // `docs/prds/v0_6/placeholder-type-eradication-ratchet.md` §3.3 / INV-SF-6.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::NoMatchingOverload` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` at `Severity::Error` — pinning the
+    /// documented-only `E_*` → Error convention, which is otherwise unenforced.
+    /// Also asserts the variant is distinct from `SelectorKindMismatch`, the code
+    /// the NoMatch arm must never clobber (task 4581 / esc-4120-17 BT1↔BT6 code
+    /// uniformity). Shape mirrors
+    /// `diagnostic_code_mechanism_nondriving_joint_with_code_round_trips`; a future
+    /// enum reorganisation that drops `NoMatchingOverload` is caught here.
+    #[test]
+    fn diagnostic_code_no_matching_overload_with_code_round_trips() {
+        use super::Severity;
+        assert_ne!(
+            DiagnosticCode::NoMatchingOverload,
+            DiagnosticCode::SelectorKindMismatch,
+            "NoMatchingOverload must be a distinct variant from SelectorKindMismatch — \
+             the NoMatch arm keeps SelectorKindMismatch on the selector-kind branch"
+        );
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::NoMatchingOverload);
+        assert_eq!(d.code, Some(DiagnosticCode::NoMatchingOverload));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::NoMatchingOverload`
+    /// serializes as `"NoMatchingOverload"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_no_matching_overload_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::NoMatchingOverload).unwrap();
+        assert_eq!(s, "\"NoMatchingOverload\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
