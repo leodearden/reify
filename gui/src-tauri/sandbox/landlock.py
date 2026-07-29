@@ -1,5 +1,11 @@
 # VENDORED_FROM: dark-factory@86e54a8498fda03060c2418b4583d6d1ad4ee97d orchestrator/src/orchestrator/agents/landlock.py
-# Refresh: cp /home/leo/src/dark-factory/orchestrator/src/orchestrator/agents/landlock.py gui/src-tauri/sandbox/landlock.py && update SHA above
+# Refresh: TARGETED PATCH ONLY — see DIVERGENCE below; a blind cp regresses the GUI sidecar.
+#   Port the upstream hunk by hand, keep the divergence, then bump the SHA above.
+# DIVERGENCE from upstream: build_landlock_command's docstring below still documents
+#   ``~/.claude`` as writable. That is correct for reify and deliberate — the vendored
+#   landlock_exec.py keeps the blanket grant dark-factory dropped (see the DIVERGENCE
+#   note in that file's header for why). Apart from this header and that one docstring
+#   bullet, this file is byte-identical to upstream.
 """Landlock LSM filesystem sandbox for agent invocations.
 
 Alternative to bwrap that does not use user namespaces, so it sidesteps the

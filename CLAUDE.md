@@ -56,7 +56,7 @@ Every `TODO`/`FIXME`/`HACK` comment, `todo!()`/`unimplemented!()` stub, and bloc
 
 ## Vendored sandbox helpers
 
-`gui/src-tauri/sandbox/{landlock,landlock_exec}.py` are vendored verbatim from dark-factory (commit in each file's `VENDORED_FROM` header; refresh = `cp` from `/home/leo/src/dark-factory/orchestrator/src/orchestrator/agents/` + bump the header). Landlock bounds **writes only** — reads and network are unbounded, and `/tmp` is writable wholesale (accepted v1 limitation). bwrap is deliberately not used: Bun 1.3.13 + kernel 6.17 segfaults in bwrap's uid-map self-init. `tauri.conf.json bundle.resources` ships the helpers into packaged builds; dev resolves them via `resource_dir()`.
+`gui/src-tauri/sandbox/{landlock,landlock_exec}.py` are vendored from dark-factory (commit in each file's `VENDORED_FROM` header) but are **not** verbatim: both keep reify's blanket `~/.claude` grant, which upstream dropped in favour of a per-task `CLAUDE_CONFIG_DIR` that reify's GUI sidecar never sets. **Refresh = targeted patch, never `cp`** — port the upstream hunk by hand, keep the divergence, bump the header SHA; a blind `cp` silently leaves the sidecar's claude-CLI OAuth/session state read-only. `tests/infra/test_landlock_exec_refer.sh` is the behavioural guard that catches it. Landlock bounds **writes only** — reads and network are unbounded, and `/tmp` is writable wholesale (accepted v1 limitation). bwrap is deliberately not used: Bun 1.3.13 + kernel 6.17 segfaults in bwrap's uid-map self-init. `tauri.conf.json bundle.resources` ships the helpers into packaged builds; dev resolves them via `resource_dir()`.
 
 ## Pointers
 
