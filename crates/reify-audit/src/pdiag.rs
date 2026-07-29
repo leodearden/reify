@@ -1012,4 +1012,250 @@ mod tests {
             assert!(!is_swept_path(path), "{path} must not be swept");
         }
     }
+
+    // -- baseline manifest parsing ------------------------------------------
+
+    /// Build a count map from `(path, count)` pairs.
+    fn counts(rows: &[(&str, u32)]) -> BTreeMap<String, u32> {
+        rows.iter().map(|(p, n)| ((*p).to_string(), *n)).collect()
+    }
+
+    #[test]
+    fn an_empty_baseline_parses_to_an_empty_map() {
+        // The §6.4 zero-residual end state, and the state the very first
+        // generated baseline would have if the backlog were already clean.
+        assert_eq!(parse_baseline("").unwrap(), BTreeMap::new());
+        assert_eq!(parse_baseline("\n").unwrap(), BTreeMap::new());
+    }
+
+    #[test]
+    fn well_formed_rows_parse_in_path_order() {
+        let content = "crates/reify-compiler/src/expr.rs 68\ncrates/reify-eval/src/geometry_ops.rs 137\n";
+        assert_eq!(
+            parse_baseline(content).unwrap(),
+            counts(&[
+                ("crates/reify-compiler/src/expr.rs", 68),
+                ("crates/reify-eval/src/geometry_ops.rs", 137),
+            ])
+        );
+    }
+
+    #[test]
+    fn comment_and_blank_lines_are_ignored() {
+        // Same stripping style as tests/infra/run-all-classification.manifest,
+        // so a reader who knows one manifest already knows this one.
+        let content = "# pdiag baseline — regenerate, never hand-edit\n\
+                       \n   \n\
+                          # indented comment\n\
+                       crates/reify-eval/src/geometry_ops.rs 137\n";
+        assert_eq!(
+            parse_baseline(content).unwrap(),
+            counts(&[("crates/reify-eval/src/geometry_ops.rs", 137)])
+        );
+    }
+
+    #[test]
+    fn a_row_without_exactly_two_fields_is_rejected() {
+        for bad in [
+            "crates/reify-eval/src/geometry_ops.rs\n",
+            "crates/reify-eval/src/geometry_ops.rs 137 extra\n",
+        ] {
+            assert!(parse_baseline(bad).is_err(), "must reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_non_numeric_or_zero_count_is_rejected() {
+        // Zero is not "a clean file" — a clean file simply has NO row. Letting
+        // a `0` row through would give two spellings of the same state and
+        // make an orphan-row advisory unrepresentable.
+        for bad in [
+            "crates/reify-eval/src/geometry_ops.rs many\n",
+            "crates/reify-eval/src/geometry_ops.rs -1\n",
+            "crates/reify-eval/src/geometry_ops.rs 0\n",
+        ] {
+            assert!(parse_baseline(bad).is_err(), "must reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_path_outside_the_sweep_is_rejected() {
+        // A row the live scan can never produce would sit in the baseline
+        // forever as a permanent orphan-row advisory. Rejecting it at parse
+        // time is how a scope narrowing gets noticed instead of accumulating.
+        for bad in [
+            "crates/reify-audit/src/pdiag.rs 3\n",
+            "crates/reify-eval/tests/harness_engine.rs 3\n",
+            "docs/notes/diagnostic-severity-policy.md 3\n",
+        ] {
+            assert!(parse_baseline(bad).is_err(), "must reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_duplicate_path_is_rejected() {
+        // Silently last-wins would let a bad merge double a file's allowance.
+        let content = "crates/reify-eval/src/geometry_ops.rs 137\n\
+                       crates/reify-eval/src/geometry_ops.rs 200\n";
+        assert!(parse_baseline(content).is_err());
+    }
+
+    #[test]
+    fn rows_out_of_ascending_order_are_rejected() {
+        // Sorted order is what makes a regenerated baseline diff readably —
+        // an unsorted file turns a one-line count change into a whole-file
+        // rewrite the next time the generator runs.
+        let content = "crates/reify-eval/src/geometry_ops.rs 137\n\
+                       crates/reify-compiler/src/expr.rs 68\n";
+        assert!(parse_baseline(content).is_err());
+    }
+
+    // -- ratchet comparison -------------------------------------------------
+
+    const GEOM: &str = "crates/reify-eval/src/geometry_ops.rs";
+
+    #[test]
+    fn identical_live_and_baseline_yield_no_verdicts() {
+        let both = counts(&[(GEOM, 137)]);
+        assert_eq!(ratchet(&both, &both), Vec::new());
+    }
+
+    #[test]
+    fn live_above_baseline_is_an_exceeded_verdict() {
+        let verdicts = ratchet(&counts(&[(GEOM, 4)]), &counts(&[(GEOM, 3)]));
+        assert_eq!(
+            verdicts,
+            vec![RatchetVerdict::Exceeded {
+                path: GEOM.to_string(),
+                live: 4,
+                baseline: 3,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_file_with_sites_and_no_baseline_row_is_a_new_file_verdict() {
+        // The common shape for NEW code: enforcement is for new sites, and a
+        // brand-new file with a code-less diagnostic is exactly that.
+        let verdicts = ratchet(&counts(&[(GEOM, 2)]), &BTreeMap::new());
+        assert_eq!(
+            verdicts,
+            vec![RatchetVerdict::NewFile {
+                path: GEOM.to_string(),
+                live: 2,
+            }]
+        );
+    }
+
+    #[test]
+    fn live_below_baseline_is_a_stale_advisory() {
+        let verdicts = ratchet(&counts(&[(GEOM, 2)]), &counts(&[(GEOM, 3)]));
+        assert_eq!(
+            verdicts,
+            vec![RatchetVerdict::Stale {
+                path: GEOM.to_string(),
+                live: 2,
+                baseline: 3,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_baseline_row_with_no_live_sites_is_an_orphan_row_advisory() {
+        // The file was fully fixed, renamed or deleted.
+        let verdicts = ratchet(&BTreeMap::new(), &counts(&[(GEOM, 3)]));
+        assert_eq!(
+            verdicts,
+            vec![RatchetVerdict::OrphanRow {
+                path: GEOM.to_string(),
+                baseline: 3,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_clean_file_with_no_baseline_row_yields_nothing() {
+        // The steady state for the overwhelming majority of the tree: a live
+        // map only ever carries files with at least one code-less site.
+        assert_eq!(ratchet(&BTreeMap::new(), &BTreeMap::new()), Vec::new());
+    }
+
+    #[test]
+    fn only_exceeded_and_new_file_are_high() {
+        // The exit code IS the High count (`high_severity_exit_code`,
+        // src/bin/reify-audit.rs:154), so High is the ONLY hard-gate lever.
+        // Under-count and orphan rows stay Medium and exit-neutral —
+        // otherwise every opportunistic fix and every file deletion would turn
+        // a diff RED, which is the exact thrash class esc-5252-1/5260/5266/5288
+        // came from.
+        let path = GEOM.to_string();
+        for high in [
+            RatchetVerdict::Exceeded { path: path.clone(), live: 4, baseline: 3 },
+            RatchetVerdict::NewFile { path: path.clone(), live: 2 },
+        ] {
+            assert_eq!(high.severity(), Severity::High, "{high:?} must gate");
+        }
+        for medium in [
+            RatchetVerdict::Stale { path: path.clone(), live: 2, baseline: 3 },
+            RatchetVerdict::OrphanRow { path: path.clone(), baseline: 3 },
+        ] {
+            assert_eq!(medium.severity(), Severity::Medium, "{medium:?} must not gate");
+        }
+    }
+
+    #[test]
+    fn high_findings_cite_the_policy_doc_and_the_escape() {
+        // A merge gate that only says "no" is a tax. Every RED summary must
+        // carry both remediations: attach a code (the doc explains which), or
+        // escape the site with a reviewed opt-out.
+        for high in [
+            RatchetVerdict::Exceeded { path: GEOM.to_string(), live: 4, baseline: 3 },
+            RatchetVerdict::NewFile { path: GEOM.to_string(), live: 2 },
+        ] {
+            let finding = high.into_finding();
+            assert_eq!(finding.severity, Severity::High);
+            assert_eq!(finding.pattern, Pattern::PDiag);
+            assert_eq!(finding.task_id, GEOM);
+            assert_eq!(finding.evidence, vec![EvidenceRef::File { path: GEOM.to_string() }]);
+            for needle in [GEOM, SEVERITY_POLICY_DOC, PDIAG_ALLOW] {
+                assert!(
+                    finding.summary.contains(needle),
+                    "{needle} missing from {:?}",
+                    finding.summary
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn medium_findings_name_the_regeneration_command() {
+        // The advisory is only actionable if it says how to clear itself.
+        for medium in [
+            RatchetVerdict::Stale { path: GEOM.to_string(), live: 2, baseline: 3 },
+            RatchetVerdict::OrphanRow { path: GEOM.to_string(), baseline: 3 },
+        ] {
+            let finding = medium.into_finding();
+            assert_eq!(finding.severity, Severity::Medium);
+            assert_eq!(finding.task_id, GEOM);
+            for needle in [GEOM, BASELINE_GEN_BIN] {
+                assert!(
+                    finding.summary.contains(needle),
+                    "{needle} missing from {:?}",
+                    finding.summary
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn verdicts_are_emitted_in_path_order_across_kinds() {
+        // Deterministic output is what makes the infra gate's assertions and a
+        // human's diff review stable run to run.
+        let a = "crates/reify-compiler/src/expr.rs";
+        let b = "crates/reify-eval/src/geometry_ops.rs";
+        let c = "crates/reify-stdlib/src/dfm.rs";
+        let verdicts = ratchet(&counts(&[(b, 9), (a, 1)]), &counts(&[(b, 2), (c, 4)]));
+        let paths: Vec<&str> = verdicts.iter().map(RatchetVerdict::path).collect();
+        assert_eq!(paths, vec![a, b, c]);
+    }
 }
