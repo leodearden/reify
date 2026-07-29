@@ -37,16 +37,19 @@
 #   --list-extensions test vector (PRD §11 Q1) rather than taking a runtime
 #   dependency on this script.
 #
-#   STATUS 2026-07-28 (#5726): the γ copies still pin the pre-#5726 36-entry
+#   STATUS 2026-07-29 (#5726): the γ copies still pin the pre-#5726 36-entry
 #   vector and are NOT yet updated — dark-factory shared/src/shared/locking.py
 #   ::CODE_EXTENSIONS, fused-memory/src/fused_memory/middleware/lock_charter_guard.py
 #   ::CODE_EXTENSIONS, and fused-memory/tests/test_lock_charter_guard.py
-#   ::_CANONICAL_EXTENSIONS.  Durable anchor: ticket tkt_0RRT3KW6B9KF72BHDY5Q038R7Y.
-#   No live task tracks this in either tracker (verified 2026-07-28): the ticket
-#   resolved to reify #5737, which was cancelled as a cross-repo misfile and
-#   refiled as "dark_factory:3117" — an id absent from dark-factory's tracker
-#   (ids 11-1152).  Cite the ticket, not #5737 or 3117; both are dead ends.
-#   Until that lands: (i) fused-memory's Tier-2 drift test
+#   ::_CANONICAL_EXTENSIONS (plus shared/tests/test_locking.py::_CANONICAL_EXTENSIONS).
+#   TRACKED BY dark_factory:3117 — "Mirror the widened lock-charter extension
+#   allowlist (36 -> 58) into the three dark-factory copies", status pending,
+#   priority high, external_deps ["reify:5726"] (re-verified live 2026-07-29 via
+#   get_task(id=3117, project_root=/home/leo/src/dark-factory); an earlier sweep
+#   that reported this id absent queried the wrong tracker).  Its predecessor
+#   reify #5737 was cancelled as a cross-repo misfile and drained INTO 3117 —
+#   cite 3117, never #5737.  (Origin ticket: tkt_0RRT3KW6B9KF72BHDY5Q038R7Y.)
+#   Until 3117 lands: (i) fused-memory's Tier-2 drift test
 #   test_extension_drift_guard_vs_reify_script compares this script's output
 #   against 36 entries and FAILS in the dark-factory .worktrees/<n>/ layout
 #   (where Path(__file__).parents[5] resolves to <src>/ and finds this script);
