@@ -20545,6 +20545,87 @@
         }
     }
 
+    /// Anti-vacuity seed for PRD §6 boundary row 15 (units-length κ).
+    ///
+    /// The compile-time `const _: () = assert!(…)` locks in
+    /// `compile_geometry_op_registry_completeness` are the primary shape, but
+    /// they CANNOT be seeded in-tree: this workspace has no trybuild, and
+    /// `pub(crate)` items block rustdoc `compile_fail` doctests (stated verbatim
+    /// at `reify-eval/src/cell_eval_ctx.rs:120-121`).  A seeded drift there
+    /// would simply fail to compile the crate, taking the seed down with it.
+    ///
+    /// So this seed drives the RUNTIME shape — and that is exactly why
+    /// [`registry_completeness`] is factored out as a shared helper rather than
+    /// written as a bare `assert_eq!` at each site: the seed then exercises the
+    /// SAME predicate the real backstop runs, not a look-alike re-implementation
+    /// that could pass while the real one rotted.  This mirrors closure-guard
+    /// ι's boundary-row-11 discipline ("shrink the guarded set by one entry and
+    /// require the guard to fail").
+    ///
+    /// SweepKind is the family PRD §6 row 15 names, and the family whose real
+    /// drift this backstop caught on its first application — `ALL_SWEEP` had
+    /// silently omitted `ExtrudeInfinite` while `SWEEP_COMPILERS` registered it.
+    #[test]
+    fn seeded_unregistered_sweep_variant_fails_registry_completeness() {
+        use reify_compiler::SweepKind;
+
+        const ALL_SWEEP: [SweepKind; 9] = [
+            SweepKind::Loft,
+            SweepKind::Extrude,
+            SweepKind::Revolve,
+            SweepKind::Sweep,
+            SweepKind::ExtrudeSymmetric,
+            SweepKind::ExtrudeInfinite,
+            SweepKind::SweepGuided,
+            SweepKind::LoftGuided,
+            SweepKind::Pipe,
+        ];
+        const _: () = assert!(
+            ALL_SWEEP.len() == SweepKind::VARIANT_COUNT,
+            "ALL_SWEEP / SweepKind::VARIANT_COUNT mismatch — a variant was added \
+             without registering it; extend ALL_SWEEP and SweepKind::ALL together"
+        );
+
+        // Measure the registry width through the production `lookup_sweep` fn
+        // rather than hand-copying a literal, so the positive control is
+        // anchored to what SWEEP_COMPILERS actually holds today.
+        let registered = ALL_SWEEP
+            .into_iter()
+            .filter(|k| lookup_sweep(*k).is_some())
+            .count();
+
+        // (a) POSITIVE CONTROL — the shipped pair must agree.
+        assert!(
+            registry_completeness("SweepKind", registered, SweepKind::VARIANT_COUNT).is_ok(),
+            "positive control failed: registry has {registered} entries but \
+             SweepKind::VARIANT_COUNT is {}",
+            SweepKind::VARIANT_COUNT
+        );
+
+        // (b) SEED ONE — stands in for "a variant was added to SweepKind and to
+        // SweepKind::ALL but never registered in SWEEP_COMPILERS": the registry
+        // is one row short.  Must be REJECTED.
+        let err = registry_completeness("SweepKind", registered - 1, SweepKind::VARIANT_COUNT)
+            .expect_err(
+                "seeded drift (registry one row short) was NOT rejected — the backstop is vacuous",
+            );
+        assert!(
+            err.contains("SweepKind"),
+            "diagnostic must name the family, got: {err}"
+        );
+
+        // (c) SEED TWO — the opposite drift direction: VARIANT_COUNT one higher
+        // than the registry.  Must also be REJECTED.
+        let err = registry_completeness("SweepKind", registered, SweepKind::VARIANT_COUNT + 1)
+            .expect_err(
+                "seeded drift (VARIANT_COUNT one higher) was NOT rejected — the backstop is vacuous",
+            );
+        assert!(
+            err.contains("SweepKind"),
+            "diagnostic must name the family, got: {err}"
+        );
+    }
+
     /// L5 step-3: the non-test region of geometry_ops.rs must contain ZERO
     /// nested per-kind behavioral match arms — all dispatch must go through the
     /// fn-tables. RED until step-4 deletes the 7 nested per-kind matches from
