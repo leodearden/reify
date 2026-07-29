@@ -38,6 +38,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# For nextest_available_in_plan (the plan-header availability probe below).
+# Sourcing the lib installs no trap and builds no environment — only
+# nextest_absent_init does that, and this suite deliberately never calls it.
+[ -f "$SCRIPT_DIR/nextest_absent_lib.sh" ] || {
+    echo "ERROR: nextest_absent_lib.sh not found at $SCRIPT_DIR/nextest_absent_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/nextest_absent_lib.sh"
+
 VERIFY="$REPO_ROOT/scripts/verify.sh"
 RUN_OFFLINE_DEEP="$REPO_ROOT/scripts/run-offline-deep.sh"
 
@@ -80,13 +87,20 @@ echo "--- Test 2: --test-threads=N threads into the plan; default plan unchanged
 PLAN_TT4="$(bash "$VERIFY" test --scope all --print-plan --test-threads=4 2>/dev/null)" || true
 PLAN_DEFAULT="$(bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
 
-# nextest availability probe — `|| true` so an empty plan (RED) yields
-# NEXTEST_AVAILABLE=0 rather than aborting under pipefail.
-_HEADER="$(printf '%s\n' "$PLAN_DEFAULT" | grep '^# verify.sh plan' || true)"
+# nextest availability probe — read back OUT of the PLAN_DEFAULT capture above
+# via the shared detector in tests/infra/nextest_absent_lib.sh (task 5644), not
+# by running --print-plan a third time. PLAN_DEFAULT stays: the default-invariant
+# asserts below read it too.
+#
+# The empty-plan (RED) guard the local `|| true` used to provide is preserved and
+# strengthened rather than lost — nextest_available_in_plan routes through
+# _nextest_absent_header_of, which is itself `|| true`-guarded
+# (nextest_absent_lib.sh:712) and returns non-zero (=> NEXTEST_AVAILABLE=0) on an
+# empty plan instead of aborting under pipefail.
 NEXTEST_AVAILABLE=0
-case "$_HEADER" in
-    *"nextest=1"*) NEXTEST_AVAILABLE=1 ;;
-esac
+if nextest_available_in_plan "$PLAN_DEFAULT"; then
+    NEXTEST_AVAILABLE=1
+fi
 echo "(nextest available on this host: $NEXTEST_AVAILABLE)"
 
 if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
