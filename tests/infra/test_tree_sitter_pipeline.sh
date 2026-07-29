@@ -214,6 +214,57 @@ ts_watched_files() {
     done
 }
 
+# ts_freshest_run_dir
+#
+# Print the most recently modified cargo build-script RUN directory for
+# tree-sitter-reify — the one holding `output` (cargo's verbatim capture of
+# build-script stdout) and the sibling `out/` with libtree_sitter_reify.a.
+# Prints nothing when none exists.
+ts_freshest_run_dir() {
+    local d m best="" best_m=0
+    local had_nullglob=0
+    shopt -q nullglob && had_nullglob=1
+    shopt -s nullglob
+    for d in "$REPO_ROOT"/target/*/build/tree-sitter-reify-*/output \
+             "$REPO_ROOT"/target/*/*/build/tree-sitter-reify-*/output; do
+        m=$(ts_mtime "$d")
+        if [ "$m" -gt "$best_m" ]; then
+            best_m="$m"
+            best="$(dirname "$d")"
+        fi
+    done
+    [ "$had_nullglob" -eq 1 ] || shopt -u nullglob
+    printf '%s' "$best"
+}
+
+# ts_mirror_run_dir <dest_target_dir>
+#
+# Mirror the freshest built fingerprint dir's archive (and its stamp, if any)
+# into a temp target tree, preserving the dir NAME so a failure message still
+# names the real one. Prints the name; returns 1 if there is nothing to mirror.
+#
+# WHY MIRROR: a real checkout accumulates leftover fingerprint dirs (7 in this
+# lane) that cargo will never rebuild again and which therefore carry no
+# attestation. They are correctly reported by a plain `check` — the ledger in
+# `ensure` is what stops them costing a recompile per run — but in an end-to-end
+# test they would drown the one signal under test. Nothing is weakened: the
+# stamp mirrored here is the one build.rs genuinely wrote next to the archive
+# cargo genuinely just built.
+ts_mirror_run_dir() {
+    local dest="$1" run_dir name out
+    run_dir=$(ts_freshest_run_dir)
+    [ -n "$run_dir" ] || return 1
+    name="$(basename "$run_dir")"
+    out="$dest/debug/build/$name/out"
+    rm -rf "$dest"
+    mkdir -p "$out"
+    cp "$run_dir/out/libtree_sitter_reify.a" "$out/" 2>/dev/null || return 1
+    if [ -f "$run_dir/out/tree_sitter_inputs.stamp" ]; then
+        cp "$run_dir/out/tree_sitter_inputs.stamp" "$out/"
+    fi
+    printf '%s' "$name"
+}
+
 # run_ts_freshness <mode> <target_dir> [ts_dir]
 # Sets TS_FRESHNESS_OUT (combined stdout+stderr) and TS_FRESHNESS_RC.
 run_ts_freshness() {
@@ -1087,6 +1138,200 @@ test_freshness_ensure_forces_and_is_idempotent() {
         echo "  ASSERTION FAILED: ensure forced with nothing built (nothing built = nothing stale)"
         echo "  --- expected (2020 stamp) ---"; echo "$baseline"
         echo "  --- actual ---"; mtimes_now
+        return 1
+    fi
+}
+
+test_build_rs_watches_all_compiled_inputs() {
+    # Asserts on cargo's VERBATIM capture of build-script stdout
+    # (target/*/build/tree-sitter-reify-*/output), NOT on build.rs source text.
+    # A source grep would pass on a directive that is written but never emitted;
+    # this is the real runtime contract.
+    #
+    # Measured on this lane before the fix: that file carried exactly ONE
+    # rerun-if-changed line, `grammar.js`. src/scanner.c and all three headers
+    # were watched by nothing, so an edit confined to them gave cargo no reason
+    # to re-run the build script — the archive was never recompiled and the
+    # change was never under test, while the gate reported GREEN.
+    touch "$TS_DIR/grammar.js"
+
+    local cargo_out
+    cargo_out=$(mktemp)
+    CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
+    local guard_rc=0
+    run_guarded_cargo_check "$cargo_out" timeout 300 cargo check -p tree-sitter-reify \
+        --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
+    if [ "$guard_rc" -eq 2 ]; then return 0; fi
+    if [ "$guard_rc" -ne 0 ]; then return 1; fi
+
+    local run_dir
+    run_dir=$(ts_freshest_run_dir)
+    if [ -z "$run_dir" ]; then
+        echo "  SKIP: no target/*/build/tree-sitter-reify-*/output found"
+        return 0
+    fi
+
+    local directives
+    directives=$(cat "$run_dir/output")
+
+    # Unchanged behaviour: the generation input stays watched.
+    if [[ "$directives" != *"cargo:rerun-if-changed=grammar.js"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: no 'cargo:rerun-if-changed=grammar.js' in $run_dir/output"
+        return 1
+    fi
+
+    # The defect this task closes.
+    if [[ "$directives" != *"cargo:rerun-if-changed=src/scanner.c"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: no 'cargo:rerun-if-changed=src/scanner.c' in $run_dir/output"
+        echo "  build.rs compiles src/scanner.c (c_config.file(\"src/scanner.c\")) and the cc"
+        echo "  crate emits no rerun-if-changed directives of its own, so without this line"
+        echo "  a scanner.c-only edit is never recompiled and never under test."
+        return 1
+    fi
+
+    # Every TRACKED header, derived from git rather than hardcoded so a new
+    # header cannot silently escape the watch set.
+    local h rel
+    while IFS= read -r h; do
+        [ -n "$h" ] || continue
+        rel="${h#tree-sitter-reify/}"
+        if [[ "$directives" != *"cargo:rerun-if-changed=$rel"* ]]; then
+            echo ""
+            echo "  ASSERTION FAILED: no 'cargo:rerun-if-changed=$rel' in $run_dir/output"
+            echo "  The header set must be enumerated by glob on both sides, not hardcoded."
+            return 1
+        fi
+    done < <(cd "$REPO_ROOT" && git ls-files 'tree-sitter-reify/src/tree_sitter/*.h')
+
+    # NEGATIVE: src/parser.c must stay UNWATCHED. build.rs WRITES it, so watching
+    # it would make every build-script run dirty its own watch set — the double
+    # execution documented in build.rs. Pinned so a future "fix" cannot
+    # reintroduce it while chasing the scanner.c gap.
+    if [[ "$directives" == *"cargo:rerun-if-changed=src/parser.c"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: src/parser.c is watched — build.rs writes it, so this"
+        echo "  causes double execution of the build script on every build."
+        return 1
+    fi
+
+    # ATTESTATION: the stamp must sit beside the archive it describes, and must be
+    # byte-identical to what the shell computes. If these two manifests can drift,
+    # every `check` verdict is meaningless.
+    local archive="$run_dir/out/libtree_sitter_reify.a"
+    local stamp="$run_dir/out/tree_sitter_inputs.stamp"
+    assert_file_exists "$archive" || return 1
+    assert_file_exists "$stamp" || return 1
+
+    local fp
+    fp=$(bash "$FRESHNESS_SCRIPT" --print-fingerprint)
+    if [ "$(cat "$stamp")" != "$fp" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: build.rs's stamp != scripts/tree-sitter-freshness.sh --print-fingerprint"
+        echo "  --- stamp ($stamp) ---"; cat "$stamp"
+        echo "  --- shell fingerprint ---"; echo "$fp"
+        return 1
+    fi
+}
+
+test_freshness_detects_and_repairs_stale_archive() {
+    # End-to-end: reproduce "verified against a stale compiled parser" deterministically,
+    # then prove the force actually cures it.
+    #
+    # Only the GITIGNORED src/parser.c is ever content-mutated. Tracked files receive
+    # at most an mtime-level `touch` from `ensure`, so a concurrent `git status` in the
+    # lane (cleanliness guards, lane audit) can never observe a dirty tree — a far worse
+    # failure than the bug under test.
+    #
+    # Because parser.c is IN the fingerprint but deliberately NOT watched, mutating it
+    # reproduces exactly the reported shape: fresh sources on disk, stale archive linked.
+    local parser="$TS_DIR/src/parser.c"
+    local backup="$TS_DIR/src/parser.c.5629.bak"
+
+    assert_file_exists "$parser" || return 1
+    cp "$parser" "$backup"
+    # Plain cp on restore (NOT -p): the restored mtime must be now, matching the
+    # test_auto_generation_rebuilds_parser precedent. The trailing ensure leaves the
+    # lane's target/ consistent with the tree whichever way this test exits.
+    CLEANUP_ACTIONS+=("cp '$backup' '$parser'; rm -f '$backup'; touch '$parser'; bash '$FRESHNESS_SCRIPT' ensure >/dev/null 2>&1 || true")
+
+    local tmp cargo_out
+    tmp=$(mktemp -d);      CLEANUP_ACTIONS+=("rm -rf '$tmp'")
+    cargo_out=$(mktemp);   CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
+
+    # ---- baseline: a built, attested archive ----
+    local guard_rc=0
+    run_guarded_cargo_check "$cargo_out" timeout 300 cargo check -p tree-sitter-reify \
+        --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
+    if [ "$guard_rc" -eq 2 ]; then return 0; fi
+    if [ "$guard_rc" -ne 0 ]; then return 1; fi
+
+    local dir_name
+    dir_name=$(ts_mirror_run_dir "$tmp/t1") || {
+        echo "  SKIP: no built tree-sitter-reify archive to mirror"
+        return 0
+    }
+    run_ts_freshness check "$tmp/t1"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: check on a freshly built archive exited $TS_FRESHNESS_RC (expected 0)"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    # ---- mutate the gitignored generated source; cargo will NOT recompile ----
+    printf '\n/* task 5629 probe */\n' >> "$parser"
+    guard_rc=0
+    run_guarded_cargo_check "$cargo_out" timeout 300 cargo check -p tree-sitter-reify \
+        --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
+    if [ "$guard_rc" -eq 2 ]; then return 0; fi
+    if [ "$guard_rc" -ne 0 ]; then return 1; fi
+
+    dir_name=$(ts_mirror_run_dir "$tmp/t2") || return 1
+    run_ts_freshness check "$tmp/t2"
+    if [ "$TS_FRESHNESS_RC" -ne 1 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: check did not detect the stale archive (exit $TS_FRESHNESS_RC, expected 1)"
+        echo "  cargo reported success against an archive it never recompiled — the false GREEN."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if [[ "$TS_FRESHNESS_OUT" != *"$dir_name"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: stale verdict does not name the fingerprint dir '$dir_name'"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    # ---- ensure must force a real recompile ----
+    run_ts_freshness ensure "$tmp/t2"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure exited $TS_FRESHNESS_RC (expected 0)"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if [[ "$TS_FRESHNESS_OUT" != *"forcing rebuild"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure did not report forcing a rebuild"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    guard_rc=0
+    run_guarded_cargo_check "$cargo_out" timeout 300 cargo check -p tree-sitter-reify \
+        --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
+    if [ "$guard_rc" -eq 2 ]; then return 0; fi
+    if [ "$guard_rc" -ne 0 ]; then return 1; fi
+
+    ts_mirror_run_dir "$tmp/t3" >/dev/null || return 1
+    run_ts_freshness check "$tmp/t3"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: check still STALE after ensure + cargo check (exit $TS_FRESHNESS_RC)"
+        echo "  The force did not actually cause a recompile — which is the whole point."
+        echo "$TS_FRESHNESS_OUT"
         return 1
     fi
 }
