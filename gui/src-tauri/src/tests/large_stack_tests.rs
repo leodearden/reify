@@ -63,13 +63,20 @@ fn run_on_large_stack_returns_value_and_runs_on_distinct_thread() {
         (s, std::thread::current().id())
     });
 
-    assert_eq!(sum, 10, "closure return value must be propagated to the caller");
+    assert_eq!(
+        sum, 10,
+        "closure return value must be propagated to the caller"
+    );
     assert_ne!(
         inner_id, caller_id,
         "closure must execute on a distinct (large-stack) thread, not the caller"
     );
     // `data` is still usable here — the borrow ended when the helper returned.
-    assert_eq!(data.len(), 4, "borrowed local must remain owned by the caller");
+    assert_eq!(
+        data.len(),
+        4,
+        "borrowed local must remain owned by the caller"
+    );
 }
 
 /// (b) A panic inside the closure propagates OUT of `run_on_large_stack`
@@ -127,8 +134,13 @@ fn spawn_on_large_stack_runs_closure_and_handle_joins() {
     .expect("spawn_on_large_stack should create the thread");
 
     // The closure ran and delivered its side effect.
-    let received = rx.recv().expect("closure must send its value before exiting");
-    assert_eq!(received, 42, "fire-and-forget closure must execute its side effect");
+    let received = rx
+        .recv()
+        .expect("closure must send its value before exiting");
+    assert_eq!(
+        received, 42,
+        "fire-and-forget closure must execute its side effect"
+    );
 
     // The returned handle joins without panicking.
     handle.join().expect("large-stack thread must join cleanly");
@@ -150,7 +162,9 @@ fn spawn_on_large_stack_survives_deep_recursion_over_default_stack() {
     })
     .expect("spawn_on_large_stack should create the thread");
 
-    let result = rx.recv().expect("deep-recursion closure must send its result");
+    let result = rx
+        .recv()
+        .expect("deep-recursion closure must send its result");
     handle.join().expect("large-stack thread must join cleanly");
 
     assert_eq!(

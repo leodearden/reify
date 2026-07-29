@@ -263,14 +263,13 @@ fn create_watcher(
                         // ~2 MiB stack). Route it onto the large-stack thread
                         // like the Tauri-command entry points. The scoped helper
                         // borrows the locals/`State` deref directly — no clone.
-                        let reload_result =
-                            reify_gui::large_stack::run_on_large_stack(|| {
-                                reify_gui::commands::reload_for_watch_impl(
-                                    &state.engine,
-                                    &path_str,
-                                    &content,
-                                )
-                            });
+                        let reload_result = reify_gui::large_stack::run_on_large_stack(|| {
+                            reify_gui::commands::reload_for_watch_impl(
+                                &state.engine,
+                                &path_str,
+                                &content,
+                            )
+                        });
                         if let Ok(gui_state) = reload_result {
                             let delta = compute_delta(&state.last_state, &gui_state);
                             emit_delta(&handle, &delta);

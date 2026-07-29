@@ -1819,10 +1819,9 @@ fn open_file_engine_impl_runs_correctly_through_large_stack() {
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     ));
-    let wrapped = crate::large_stack::run_on_large_stack(|| {
-        open_file_engine_impl(&engine_wrapped, path)
-    })
-    .expect("open_file_engine_impl through run_on_large_stack should succeed");
+    let wrapped =
+        crate::large_stack::run_on_large_stack(|| open_file_engine_impl(&engine_wrapped, path))
+            .expect("open_file_engine_impl through run_on_large_stack should succeed");
 
     // Concrete expected shape (independent of the direct half).
     assert!(
