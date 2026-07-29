@@ -1281,7 +1281,172 @@ was rebuilt clean immediately after §6.2's revert and re-confirmed silent befor
 
 ## §7 Item 4 — Fn-call-entry reachability, §3.1 (step-7)
 
-*(filled by step-7)*
+Reported, per the plan's own instruction, as a **measurement at HEAD**, not a structural
+guarantee — the PRD's zero-reachability argument is half wrong (addendum C1, re-confirmed in
+§0's anchor table rows 6-8), so this section re-derives the consequence from the corrected
+guard structure rather than repeating the PRD's reasoning.
+
+### 7.0 Guard structure — cross-reference, not re-derivation
+
+Already fully re-verified in §0's anchor table (rows 6-8): guard (i)
+`type_carries_trait_object(param_ty)` (`entities_phase.rs:1493`) precedes the only production
+`check_fn_arg_conformance` call (`:1503`); guard (ii)'s candidate backstop —
+`resolve_function_overload`'s filter (`type_compat.rs:1194-1201`) — leads with the **same**
+predicate (`:1196`, first disjunct), so the two guards are mutually exclusive, not conjunctive,
+and a param satisfying guard (i) is mechanically reachable. `OverloadResolution::Resolved` is
+gated at `entities_phase.rs:1486-1488` (the PRD's `:1508-1511` is stale drift). This section
+measures the consequence: does any corpus/fixture site place a bare dimensioned `Scalar` leaf
+where guard (i) lets a call through?
+
+### 7.1 Mechanical reachability, demonstrated live (the plan's own worked example)
+
+Probe (`/tmp/5756-scratch/probes/fncall_entry_reachability.ri`, scratch-only, never committed),
+reproducing the plan's example with a real stdlib trait (`MaterialSpec`, `materials_mechanical.ri:67`)
+so the value side of the map genuinely conforms and the diagnostic below is the ONLY one:
+
+```
+module fncall_entry_reachability
+
+structure def Steel : MaterialSpec {
+    param density : Density = 7850kg/m^3
+    param name : String = "steel"
+}
+
+fn takes(m : Map<String, MaterialSpec>) -> Int { 1 }
+
+structure def Top {
+    let result = takes(map{ 1 => Steel() })
+}
+```
+
+```
+$ target/debug/reify check fncall_entry_reachability.ri     # HEAD e6479597d7, unflipped — no flip needed for this demo
+error: argument 'm' has type 'Int' but param 'm' requires type 'String'
+$ echo $?
+1
+```
+
+**Confirmed verbatim, exactly as the plan predicted, EXIT 1.** `Map<String, MaterialSpec>`
+satisfies guard (i) (`type_carries_trait_object` recurses into `Map`'s value position,
+`:423` `Type::Map(key, val) => type_carries_trait_object(key) \|\| type_carries_trait_object(val)`,
+hits `TraitObject("MaterialSpec")`), so `check_fn_arg_conformance` runs; the walker recurses
+lockstep into the Map's **key** position (`conformance/mod.rs:679-684`) and finds `1` (`Int`)
+against the declared `String` — an already-vetted-family mismatch, `general_leaf_param_family_is_validated(String)`
+being unconditionally `true` today, needing no flip. `ctx.arg_name` stays `'m'` for the whole
+recursive walk (never reassigned per wrapper position), which is why the message names the
+whole param rather than a per-entry position.
+
+**Severity confirms the contract table (§0/§7.2 of the PRD):** `check_fn_arg_conformance`
+(`conformance/mod.rs:359-382`) builds its own `WalkCtx` with `severity: Severity::Error`
+hard-coded (`:380`, doc comment: *"Fn-call trait-conformance is OUT OF SCOPE for the 5302 ctor
+knob and must stay a hard error"*) and calls the **same** `walk_param_against_arg` gates 1/2
+use (`:381`) — a leaf firing here is Error/exit-1, unlike gates 1-4's Warning/exit-0.
+
+### 7.2 Repo-wide census: 0 fn params both trait-carrying and recursing to a bare dimensioned-`Scalar` leaf
+
+**Method.** Two independent sweeps, because the target shape (a `fn` param that is BOTH
+`type_carries_trait_object` AND recurses lockstep to a bare `Type::Scalar` leaf — e.g.
+`Map<Scalar<Q>, SomeTrait>`) needs the wrapper syntax AND a trait name in the same param.
+
+**(a) `.ri` files — every `fn` decl with a `Map`/`List`/`Set`/`Option` wrapper param:**
+
+```bash
+git grep -nE '^\s*(pub\s+)?fn\s+\w+' -- '*.ri' | grep -E 'Map\s*<|List\s*<|Set\s*<|Option\s*<'
+```
+
+19 raw hits, all inspected directly: every one wraps a `TypeParam` (`T`/`K`/`V`, e.g.
+`option_recovery.ri`'s `unwrap_or<T>(o: Option<T>, ...)`, `get_or<K,V>(m: Map<K,V>, ...)`) or a
+concrete non-trait leaf (`List<JointValue>` — `JointValue` is the `= Real` alias from §0.2, not
+a trait; `List<Length>`, `List<Pose3>`, `List<Profile>`… — none is a declared trait). **Zero**
+wrap a trait name.
+
+**(b) `.ri` files — every `fn` decl with a BARE (unwrapped) trait-named param**, cross-checked
+against the full repo-wide declared-trait-name list (`git grep -hoE '^\s*(pub\s+)?trait\s+[A-Za-z_]\w*'
+-- '*.ri'`, 100 names; `T` excluded from the alternation below — it is itself a declared
+one-letter trait name somewhere in a fixture and collides with every generic `<T>`, a false-positive
+mechanism confirmed by inspection, not a real trait-typed param):
+
+| Param shape | Sites | Wrapper? |
+|---|---|---|
+| `feature: Geometry` (`stdlib/tolerancing.ri:334`); `g: Geometry` (×3, `reify-eval/tests/fixtures/{fea_bc_box,morph_box,volume_mesh_box}.ri`) | 4 | bare |
+| `p: Profile` (`stdlib/trajectory.ri:382,386,391,873`); `profile: Profile` (`:873`, second param); `p: Profile` (`trajectory_fns.ri:50`) | 6 | bare |
+| `shaper: Shaper` (`stdlib/trajectory.ri:873`) | 1 | bare |
+
+All bare, single-position — the walker recurses to the `TraitObject` leaf directly with no
+Scalar co-located in the same type, matching the plan's predicted "bare `Trait` or `List<Trait>`
+→ single-position → lockstep bottoms out on the TraitObject" bucket exactly (the `List<Trait>`
+half of that prediction turned up zero live instances; only the bare half is populated).
+
+**(c) `.rs` fixture strings — repo-wide, wrapper + trait name in the same param:**
+
+```bash
+TRAITS=$(git grep -hoE '^\s*(pub\s+)?trait\s+[A-Za-z_]\w*' -- '*.ri' | grep -oE '\w+$' | sort -u | grep -vx T | paste -sd'|')
+git grep -nE 'fn\s+\w+\s*(<[^>]*>)?\s*\([^)]*(Map|List|Set|Option)\s*<[^)]*\b('"$TRAITS"')\b[^)]*\)' -- '*.rs'
+```
+
+Two distinct shapes found:
+
+- **`fn couple_opt(joint : Option<DrivingJoint>) -> Real`** — `crates/reify-compiler/tests/harness_traits/fn_arg_trait_conformance_tests.rs:137,417,460`
+  (one fixture pattern, reused across 3 test functions). `DrivingJoint` is a real trait
+  (`kinematic.ri:88`). Confirmed by direct read: `Option`'s single inner position IS the trait
+  leaf — no co-located Scalar. This is the SAME reachability mechanism §7.1 demonstrates (a
+  test in this exact file, `option_wrapped_trait_param_bad_arg_emits_conformance_error`,
+  already pins gate-6-through-`Option` firing) but contributes 0 to this item because there is
+  no dimensioned leaf in the type.
+- **`fn takes_faces(g: List<Geometry>) -> Int`** — `param_binding_selector_coercion_tests.rs:27` —
+  **false lead, excluded on inspection.** This file (task 4118 γ, selector coercion) is about
+  the BUILT-IN `Type::Geometry` primitive (the same type `type_compatible`'s
+  `(Type::List(inner), Type::Selector(_)) if matches!(inner.as_ref(), Type::Geometry)` rule at
+  `type_compat.rs:255-259` names), not the stdlib `trait Geometry {}` — confirmed by the file's
+  own doc comment ("`Selector(k)` argument fed to a `List<Geometry>` function parameter") and
+  its `faces_by_normal(...)` call site. `type_carries_trait_object` has no arm for
+  `Type::Geometry` (only `TraitObject`/`Option`/`List`/`Set`/`Map`/`Applied`/`Projection`
+  recurse; everything else, including `Geometry`, falls to `_ => false`) — so this param fails
+  guard (i) regardless, corroborating rather than contradicting the census.
+
+Also checked: `fn wrap<T: Rigid>(items: List<T>) -> List<T>` (`fn_generic_trait_bound_tests.rs:312`)
+is a **trait-BOUNDED generic type param**, structurally different from a trait-object leaf —
+its declared type is `List(TypeParam("T"))`, and `type_carries_trait_object` does not match
+`TypeParam` at all, so this also fails guard (i) regardless of `T`'s bound.
+
+**(d) The `Map<Trait, leaf>` decls in `harness_traits/trait_typed_param_tests.rs`** — the plan's
+own named check. All 5 occurrences (`:771,802,958,1493,1547`) read directly:
+`structure def Host { param ms/m : Map<String, MaterialSpec> }` (×3),
+`Map<String, M>` (×1), `Map<MaterialSpec, String>` (×1) — **every one is a STRUCTURE ctor
+param** (`structure def Host { param ... }`), gate 1, `CTOR_FIELD_CONFORMANCE_SEVERITY` =
+Warning — **confirmed excluded from the fn-call-entry (gate 6) census**, exactly as the plan
+states.
+
+**Measured count: 0.** No `fn` parameter in the tracked corpus (`.ri` files or `.rs` fixture
+strings) both carries a trait object and recurses lockstep to a bare dimensioned `Type::Scalar`
+leaf.
+
+### 7.3 Consequence statement — the escalation clause is NOT triggered, and why that matters
+
+Measured **0** at HEAD `e6479597d7`. Per the plan's mandate: *"If NON-ZERO, those sites are
+Error-severity pre-γ … and MUST be migrated in β BEFORE γ lands … additionally file it to the
+escalation channel."* Since the count is 0, **no β-ordering change and no escalation are
+filed.** This is a re-confirmation of the PRD's corroborating claim ("0 bare-at-dimensioned
+user-fn call sites in the entire `.ri` corpus"), now independently re-derived from a repo-wide
+structural sweep (§7.2) rather than inferred from the silence of four suites (§1.4's
+`reify-eval` finding already established that suite-level GREEN is not evidence of anything —
+this section does not repeat that mistake for gate 6). **Stated per the plan's own framing
+(design decision, §0): this is a measurement at this HEAD, not a structural guarantee** — §7.1
+proves the mechanism is live and reachable in general (the `couple_opt`/`takes` demos both
+fire); §7.2's 0 is a fact about today's corpus contents, not about the guard's structure, and
+must be re-run if this ledger is ever cited against a later HEAD.
+
+### 7.4 Revert proof
+
+No `crates/`, `examples/`, `gui/`, or `stdlib` file was modified for this step — every probe in
+§7 is scratch-only (`/tmp/5756-scratch/probes/`) and every transcript above ran against the
+already-baseline (unflipped) binary left in place at the end of §6.4.
+
+```
+$ git diff --exit-code -- crates/ examples/ gui/ stdlib
+$ echo $?
+0
+```
 
 ## §8 Item 5 — Vector3/Point3/Matrix/Tensor/Field quantity-slot residual, §6.4 (step-8)
 
