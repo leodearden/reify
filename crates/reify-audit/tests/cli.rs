@@ -106,18 +106,19 @@ fn parse_findings_from_stderr(stderr: &str) -> Vec<serde_json::Value> {
     })
 }
 
-/// Bind an OS-assigned port, record it, then drop the listener so the port
-/// is closed before the binary connects. Returns a URL pointing at the freed
-/// port suitable for "connection refused" tests.
+/// A URL suitable for "connection refused" tests: it names TCP port 0, which
+/// no listener can ever occupy (a `bind()` for port 0 is a request for an
+/// *ephemeral* port, so the asker is handed a different one) and which the
+/// kernel refuses to `connect()` to immediately. The endpoint is therefore
+/// unreachable by construction, with no time-of-check/time-of-use window.
 ///
-/// TOCTOU: another process could reclaim the freed port before the binary
-/// connects. In practice ephemeral ports are not immediately reused and this
-/// idiom is widely accepted for this purpose.
+/// This used to bind an ephemeral port, record it, and drop the listener —
+/// yielding a port that was merely unowned at the instant it was minted. The
+/// in-suite mock MCP server recycled such a port, answered `initialize`, and
+/// suppressed the fail-soft breadcrumb these tests assert on; that was the
+/// #5830 flake. See `common::net` for the full rationale.
 fn closed_port_url() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    let port = listener.local_addr().expect("local_addr").port();
-    drop(listener);
-    format!("http://127.0.0.1:{port}/mcp")
+    common::net::unreachable_mcp_url()
 }
 
 /// Recursively copy the directory tree at `src` into `dst` (creating `dst`).
