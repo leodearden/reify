@@ -15,6 +15,26 @@
 # pin. The behavioral contract below is the only one that proves behavior.
 # (Rationale carried over verbatim from tests/infra/test_find_uses_smoke_runner.sh.)
 #
+# ── SCOPE AFTER THE 5596 CONSOLIDATION ───────────────────────────────────────
+# The lifecycle this file drives no longer lives in the runner: task 5596
+# extracted it into gui/test/visual/lib_e2e_smoke.sh, shared by all six e2e
+# smoke runners.  Two things follow.
+#
+# 1. The assertions below are deliberately left UNCHANGED.  The shared library
+#    retains the exact `launcher exited early (rc=` substring this file matches
+#    with `grep -qF`, so this guard passing byte-for-byte unmodified is the
+#    no-regression evidence for the extraction — evidence that editing it to
+#    match a new string could not have produced.  Do not "modernize" these
+#    assertions to the newer E2E_SMOKE_LAUNCHER_DEATH marker; that would throw
+#    away the only unmodified-witness this consolidation has.
+#
+# 2. This file stays the 5367-SPECIFIC guard rather than growing into a
+#    lockstep duplicate of its sibling.  The runner-generic contract for the
+#    shared lifecycle — all six runners, the negative-control arm proving the
+#    death predicate is not vacuous, and the post-driver post-mortem — lives in
+#    tests/infra/test_find_uses_smoke_runner.sh.  New lifecycle-wide contracts
+#    belong there, not here.
+#
 # Auto-discovered by tests/infra/run_all.sh (matches test_*.sh pattern), and
 # separately required to appear in tests/infra/run-all-classification.manifest.
 
