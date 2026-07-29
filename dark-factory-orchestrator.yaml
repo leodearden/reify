@@ -515,11 +515,16 @@ timeouts:
 unblock_auto:
   timeout_seconds: 1800
 
-# Scheduler v2 — eager parks, cross-tier preemption, owner-state GC sweep.
-# Burn-in cycle complete in dark-factory; flipping on here to exercise the
-# new anti-starvation path against reify's larger task tree.
-fairness:
-  scheduler_v2: true
+# Scheduler v2 (eager parks, cross-tier preemption, owner-state GC sweep) is
+# UNCONDITIONAL in dark-factory since 2026-05-30 — there is no flag to set.
+# The former `fairness.scheduler_v2` knob was real and load-bearing for 17 days
+# (2026-05-13 -> 05-30), then retired: DF 29b85d256b dropped the gate,
+# 44ee41c83a removed the field, b8f3f0800a stripped it from defaults, and
+# test_scheduler.py::test_scheduler_v2_field_removed now pins its absence.
+# Reify gets v2 behaviour regardless. Removed 2026-07-29 (Leo) — it had been
+# inert for ~2 months and read as a live knob. The only real fairness tunable
+# left is `fairness.skip_threshold` (per-tier; unset here, so package defaults
+# apply).
 
 # Starvation watchdog — raise the wall-clock TIME threshold from the 1800s (30min)
 # package default to 24h (Leo, 2026-07-03). Rationale: _skip_count increments ~1/tick
@@ -770,7 +775,6 @@ config_key_census:
     - 'cpu_governance.agent_admit'
     - 'cpu_governance.DF_AGENT_CPU_GOVERN'
     - 'cpu_governance.fleet_load_detector'
-    - 'fairness.scheduler_v2'
     - 'warm_lane_pool'
 
 # Project root (absolute path)
