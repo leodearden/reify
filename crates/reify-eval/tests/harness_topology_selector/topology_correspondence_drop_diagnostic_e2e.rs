@@ -1,7 +1,7 @@
 //! End-to-end tests for the topology-correspondence-drop diagnostic wiring —
 //! task 4545 (W_TOPOLOGY_CORRESPONDENCE_DROPPED).
 //!
-//! Verifies that `Engine::build` surfaces a `Severity::Warning` with
+//! Verifies that `Engine::build` surfaces a `Severity::Info` with
 //! `DiagnosticCode::TopologyCorrespondenceDropped` when the kernel's
 //! `execute_with_history` returns a history record carrying a non-zero
 //! drop counter.
@@ -182,10 +182,71 @@ fn extrude_with_sweep_drop_module() -> reify_compiler::CompiledModule {
         .build()
 }
 
+/// Build a synthesised `CompiledModule` with FIVE geometry steps and TWO
+/// Union ops in the SAME realization:
+///   Step 0: Box primitive
+///   Step 1: Box primitive
+///   Step 2: Union of Step(0) and Step(1)   (Union op #1)
+///   Step 3: Box primitive
+///   Step 4: Union of Step(2) and Step(3)   (Union op #2)
+///
+/// Both Union ops trigger the mock kernel's `AttributeHistory::Boolean`
+/// injection with the SAME configured `boolean_history`, so a realization
+/// built from this module lets a test verify that per-op silent-drop
+/// counters accumulate into ONE summed diagnostic per realization (task
+/// #5196 L4) rather than one diagnostic per op.
+fn two_boolean_unions_module() -> reify_compiler::CompiledModule {
+    let box_op_a = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(10.0)),
+            ("height".into(), mm_literal(10.0)),
+            ("depth".into(), mm_literal(10.0)),
+        ],
+    };
+    let box_op_b = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(5.0)),
+            ("height".into(), mm_literal(5.0)),
+            ("depth".into(), mm_literal(5.0)),
+        ],
+    };
+    let union_op_1 = CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(0),
+        right: GeomRef::Step(1),
+    };
+    let box_op_c = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(3.0)),
+            ("height".into(), mm_literal(3.0)),
+            ("depth".into(), mm_literal(3.0)),
+        ],
+    };
+    let union_op_2 = CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(2),
+        right: GeomRef::Step(3),
+    };
+
+    let template = TopologyTemplateBuilder::new("TestTwoBooleanDrops")
+        .realization(
+            "TestTwoBooleanDrops",
+            0,
+            vec![box_op_a, box_op_b, union_op_1, box_op_c, union_op_2],
+        )
+        .build();
+    CompiledModuleBuilder::new(ModulePath::single("test_topo_drop_two_bools"))
+        .template(template)
+        .build()
+}
+
 // ─── tests ───────────────────────────────────────────────────────────────────
 
 /// A boolean union op with `silent_drop_count=7` must surface as a
-/// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
+/// `Severity::Info` with `DiagnosticCode::TopologyCorrespondenceDropped`
 /// in `build_result.diagnostics`, and the message must contain "7".
 #[test]
 fn boolean_union_drop_produces_warning_diagnostic() {
@@ -210,7 +271,7 @@ fn boolean_union_drop_produces_warning_diagnostic() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Warning
+            d.severity == Severity::Info
                 && d.code == Some(DiagnosticCode::TopologyCorrespondenceDropped)
         })
         .collect();
@@ -267,7 +328,7 @@ fn local_feature_drop_module(kind: ModifyKind) -> reify_compiler::CompiledModule
 }
 
 /// A sweep (extrude) op with `silent_drop_count=3` must surface as a
-/// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
+/// `Severity::Info` with `DiagnosticCode::TopologyCorrespondenceDropped`
 /// in `build_result.diagnostics`.
 ///
 /// Corroborates that the sweep arm of `diagnose_topology_correspondence_drops`
@@ -294,7 +355,7 @@ fn extrude_drop_produces_warning_diagnostic() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Warning
+            d.severity == Severity::Info
                 && d.code == Some(DiagnosticCode::TopologyCorrespondenceDropped)
         })
         .collect();
@@ -319,7 +380,7 @@ fn extrude_drop_produces_warning_diagnostic() {
 /// `Engine::build` on a `local_feature_drop_module(kind)` fixture, and
 /// asserts:
 ///
-/// 1. At least one `Severity::Warning` with
+/// 1. At least one `Severity::Info` with
 ///    `DiagnosticCode::TopologyCorrespondenceDropped` is emitted.
 /// 2. At least one such warning's message contains
 ///    `"silent_drop_count={drop_count} "` (trailing-space delimiter) to
@@ -347,7 +408,7 @@ fn check_local_feature_drop_warning(kind: ModifyKind, drop_count: u32) {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Warning
+            d.severity == Severity::Info
                 && d.code == Some(DiagnosticCode::TopologyCorrespondenceDropped)
         })
         .collect();
@@ -370,7 +431,7 @@ fn check_local_feature_drop_warning(kind: ModifyKind, drop_count: u32) {
 }
 
 /// A fillet op with a non-zero `silent_drop_count` must surface a
-/// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
+/// `Severity::Info` with `DiagnosticCode::TopologyCorrespondenceDropped`
 /// whose message contains the delimited token `"silent_drop_count={count} "`.
 #[test]
 fn local_feature_fillet_drop_produces_warning_diagnostic() {
@@ -378,7 +439,7 @@ fn local_feature_fillet_drop_produces_warning_diagnostic() {
 }
 
 /// A chamfer op with a non-zero `silent_drop_count` must surface a
-/// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
+/// `Severity::Info` with `DiagnosticCode::TopologyCorrespondenceDropped`
 /// whose message contains the delimited token `"silent_drop_count={count} "`.
 #[test]
 fn local_feature_chamfer_drop_produces_warning_diagnostic() {
@@ -386,7 +447,7 @@ fn local_feature_chamfer_drop_produces_warning_diagnostic() {
 }
 
 /// A fillet op with `silent_drop_count == 0` (the default) must NOT produce
-/// any `DiagnosticCode::TopologyCorrespondenceDropped` warning.
+/// any `DiagnosticCode::TopologyCorrespondenceDropped` info diagnostic.
 ///
 /// Exercises the `if count > 0` suppression guard in
 /// `diagnose_topology_correspondence_drops` (engine_build.rs) at the e2e level.
@@ -415,7 +476,7 @@ fn clean_local_feature_produces_no_drop_warning() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Warning
+            d.severity == Severity::Info
                 && d.code == Some(DiagnosticCode::TopologyCorrespondenceDropped)
         })
         .collect();
@@ -425,5 +486,61 @@ fn clean_local_feature_produces_no_drop_warning() {
         "expected zero TopologyCorrespondenceDropped warnings for clean fillet (drop_count=0); \
          got: {:#?}",
         drop_warnings
+    );
+}
+
+/// Task #5196 L4 (summarization): when a single realization contains
+/// MULTIPLE ops that each carry a non-zero `silent_drop_count` (two Union
+/// ops here, both `boolean silent_drop_count`), the engine must emit
+/// exactly ONE aggregated `Severity::Info` diagnostic per (op_kind,
+/// counter) — carrying the SUMMED count across both ops — instead of one
+/// diagnostic per op.
+///
+/// Pre-L4, `diagnose_topology_correspondence_drops` is called once per op
+/// (engine_build.rs ~8020), so this realization currently emits TWO
+/// separate diagnostics (one per union, each with the per-op count of 3).
+/// RED until step-6 lands the accumulate-then-flush
+/// `TopologyCorrespondenceDropTally`.
+#[test]
+fn two_boolean_drops_in_same_realization_aggregate_to_one_diagnostic() {
+    const DROP_COUNT_PER_OP: u32 = 3;
+
+    let module = two_boolean_unions_module();
+    let kernel = DropInjectingKernel::new(
+        BooleanOpHistoryRecords {
+            silent_drop_count: DROP_COUNT_PER_OP,
+            ..Default::default()
+        },
+        SweepOpHistoryRecords::default(),
+    );
+    let mut engine = reify_eval::Engine::new(
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(kernel)),
+    );
+    let result = engine.build(&module, ExportFormat::Step);
+
+    let drop_diags: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Info
+                && d.code == Some(DiagnosticCode::TopologyCorrespondenceDropped)
+        })
+        .collect();
+
+    assert_eq!(
+        drop_diags.len(),
+        1,
+        "expected exactly ONE aggregated diagnostic for two same-kind drops \
+         in one realization, not one per op; diagnostics: {:#?}",
+        result.diagnostics
+    );
+
+    let summed = DROP_COUNT_PER_OP * 2;
+    let token = format!("silent_drop_count={summed} ");
+    assert!(
+        drop_diags[0].message.contains(&token),
+        "expected the SUMMED count '{token}' in the aggregated diagnostic; got: {:?}",
+        drop_diags[0].message
     );
 }

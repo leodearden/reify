@@ -839,6 +839,13 @@ std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height);
 /// Create a flat circular face (disk) at a given Z height (for extrude profiles).
 std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height);
 
+/// Create a flat circular face (disk) centred at (cx,cy,cz) with its plane
+/// normal aligned to (nx,ny,nz) — the oriented profile used to sweep a pipe onto
+/// a path's start frame. gp_Ax2(P, N) builds a valid frame for any unit normal.
+std::unique_ptr<OcctShape> make_oriented_circle_face(double radius, double cx, double cy,
+                                                     double cz, double nx, double ny,
+                                                     double nz);
+
 /// Create an open lateral cylindrical face (no caps) centred on the Z axis with
 /// base at the origin.  U ∈ [0, 2π] (full revolution), V ∈ [0, height].
 /// Both radius and height must be finite and positive.
@@ -975,6 +982,10 @@ std::unique_ptr<OcctShape> make_triangle_face(
 /// parameter of the wire's composite curve). Throws std::runtime_error if the
 /// shape is not a wire or the start-tangent has zero magnitude.
 Point3 wire_start_tangent(const OcctShape& wire);
+
+/// Return the start point of a wire (the 3D point at the first parameter of the
+/// wire's composite curve). Throws std::runtime_error if the shape is not a wire.
+Point3 wire_start_point(const OcctShape& wire);
 
 // --- Queries ---
 

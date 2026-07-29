@@ -409,6 +409,23 @@ after the existing row so no `canonical_name()` output changes. **It deliberatel
 re-dimension rotational stiffness** (arguably `Force·Length/Angle²`, since `τ = k·θ`) — that is a
 flexures/joints/dynamics semantic change owned by PRD 5's territory, recorded in §8 and §10.
 
+> **D4 ADDENDUM — the deferred half is now RULED (Leo, 2026-07-29; PRD 5 task #5799).**
+> `ROTATIONAL_STIFFNESS` **does** become `Force·Length/Angle²` (`(7,-2)`), and
+> `ROTATIONAL_DAMPING` likewise. D4's own alias framing above remains correct **for η as
+> written** — `TORQUE` is still added at `(7,-1)`, which is unaffected — but two of its
+> consequences expire once #5799 lands: (i) the two names stop sharing a vector, so the
+> "placed after the existing row" ordering rationale stops being load-bearing and `TORQUE`
+> becomes the sole holder of `(0,2)(1,1)(2,-2)(7,-1)`; (ii) `canonical_name()` for that vector
+> flips from `"RotationalStiffness"` to `"Torque"`, so η's pinning test must be updated by
+> #5799, not defended. Sequencing: **η lands first**; #5799 depends on it.
+> *Why the ruling went that way:* a `NAMED_DIMENSIONS` alias row cannot separate two
+> quantities for a dimension-checked reader — `accept_arg` keys on
+> `*dimension == spec.dimension` (`reify-eval/src/arg_acceptance.rs:123`) and
+> `ArgSpec.type_name` is display-only — so PRD 5's `rotational_stiffness_spec()` would
+> otherwise have accepted a torque, permanently. Probe-measured at `d57cb55bc9`: with
+> `rad⁻¹`, `k·θ` evaluates to `m^2·kg·s^-2` (Energy) and `½kθ²` to `m^2·kg·rad·s^-2` (matches
+> nothing in the table); at `rad⁻²` they yield Torque and Energy respectively.
+
 **D5 — Accept `·`; normalize superscripts.** Rationale is C2's "accept what we cannot enumerate".
 *Rejected alternative:* make S1 emit `*` and change no grammar. It round-trips (probe-verified)
 and is a one-line diff — but it makes Reify's own output less SI-conventional than the datasheets
@@ -525,6 +542,11 @@ Facing both sides of each seam. These are μ's and ρ's observable signals.
   rotational stiffness *dimensionally equal to torque*, and `k·Δθ` lands on the Energy vector.
   The const's own doc comment (`dimension.rs:275-277`) reflects the confusion. Fixing it changes
   flexures/joints/dynamics semantics — **PRD 5 territory**; hand-off in §11 Q1.
+  **Still out of scope for this PRD, but no longer an open question: RULED YES by Leo
+  2026-07-29 and owned by PRD 5 task #5799** (`(7,-2)` for both consts). See the D4 addendum
+  for what that expires in η. A sibling defect found in the same session —
+  `MOMENT_OF_INERTIA` is `kg·m²` so `½Iω²` yields `m^2·kg·rad^2·s^-2` rather than Energy — was
+  ruled a **separate** decision and filed as **#5825**; it is out of scope for both PRDs here.
 - **`×10ⁿ` engineering-notation magnitude formatting** (`reify-ir/src/value.rs:3002-3040`,
   `SUPERSCRIPT_DIGITS`). It formats the *number*, not the unit; `1.27×10³ kg/m^3` is not a
   literal form in any grammar and Invariant R does not cover it. Named so it is not silently
@@ -539,9 +561,14 @@ Facing both sides of each seam. These are μ's and ρ's observable signals.
 
 ## §11 — Open questions (tactical)
 
-1. **`ROTATIONAL_STIFFNESS` dimensional correctness.** §10 records the finding. *Suggested
-   resolution:* file it as a PRD 5 input at decompose (a `search_tasks` dup-check first — it may
-   already exist under a flexures slug), not as a leaf here. Decide during decompose.
+1. ~~**`ROTATIONAL_STIFFNESS` dimensional correctness.**~~ **RESOLVED — Leo, 2026-07-29.** Filed
+   as a PRD 5 decision leaf (task **#5799**, ρ) at decompose exactly as suggested, escalated as
+   `esc-5799-1`, and ruled in an interactive session: **YES, re-dimension** —
+   `ROTATIONAL_STIFFNESS → [(0,2),(1,1),(2,-2),(7,-2)]`,
+   `ROTATIONAL_DAMPING → [(0,2),(1,1),(2,-1),(7,-2)]`. #5799 now carries the ruling, the
+   migration list, and a hard dependency on η (#5785). Rationale and its consequences for D4
+   are in the D4 addendum above; the `MOMENT_OF_INERTIA` sibling defect is **#5825**. Nothing
+   further is owed by this PRD.
 2. **`dimension_unit_label` visibility.** It is private (`reify-ir/src/value.rs:3068`), so μ
    cannot call it cross-crate. *Suggested resolution:* make it `pub` (it is a pure label
    function, no invariant) so one property test covers all four surfaces. *Alternative:* keep it

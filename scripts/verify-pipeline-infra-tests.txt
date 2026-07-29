@@ -58,8 +58,19 @@ scripts/warm-lane-gc-sweep.sh        tests/infra/test_warm_lane_gc_sweep.sh
 # new ARTIFACTS.
 scripts/lib_live_refs.sh             tests/infra/test_warm_lane_gc.sh
 scripts/lib_live_refs.sh             tests/infra/test_warm_lane_gc_sweep.sh
+# Task 5672: scripts/lib_lane_x_flock.sh is a shared lock-acquire lib sourced
+# TRANSITIVELY by tests/infra/run_all.sh under --scope host-infra; without
+# this row a task-scope diff touching only the lib selects zero infra tests,
+# so tests/infra/test_lane_x_flock.sh (the test that covers it) never runs.
+scripts/lib_lane_x_flock.sh          tests/infra/test_lane_x_flock.sh
 scripts/install-warm-lane-units.sh   tests/infra/test_warm_lane_boot_persistence.sh
 scripts/warm-lane-audit.sh           tests/infra/test_warm_lane_audit.sh
+# Task 5608: the LOCK-axis availability oracle (sibling of the DISK-axis
+# warm-lane-disk-guard.sh above). Its whole value is a correct BUSY/IDLE
+# verdict, and the characteristic regression -- a mis-derived lock path -- is
+# SILENT (it reports IDLE forever), so a task-scope edit to the guard needs its
+# own fail-fast infra pole rather than only the whole-suite run.
+scripts/warm-lane-lock-guard.sh      tests/infra/test_warm_lane_lock_guard.sh
 # Task 5176 (ζ): the sizing-lifecycle end-to-end integration gate composes
 # these four primitives (B8 release-thin-bounds-resident-divergent, the β
 # budget ADVISORY relation, B6/B6b soft-vs-hard floor ordering) -- a 2nd row

@@ -216,6 +216,28 @@ inside a tool result.
 | Rust Err(String) | `{ content:[…], isError:true }` | ✓ |
 | Unknown JSON-RPC method | `{ error: { code, message } }` | n/a (protocol layer) |
 
+### JS-side decoders
+
+`gui/test/visual/rpcEnvelope.mjs` is the single home of the JS-side decode of all
+three shapes above — read it, not this table, for the exact branch order:
+
+- **§2a** in-band `{error: string}` → `isInBandError`
+- **§2b** `isError: true` → folded into the §2a shape by `normalizeRpcEnvelope`
+- **§2c** JSON-RPC method error → surfaced as `transportError`, which the
+  `makeDebugRpc` transport throws (so a driver's server-poll loop keeps retrying
+  rather than mistaking an outage for an answer)
+
+It is CI-covered by `gui/test/visual/rpcEnvelope.test.ts`. The six `smoke_*.mjs`
+drivers all obtain their `rpc()` from `makeDebugRpc`; none decodes an envelope
+itself.
+
+`parseRpcResponse` (`gui/test/visual/rpc.ts`) is the typed harness's separate
+rendering. It shares the §2a discriminator and the text-payload parse with the
+module above, but deliberately keeps its own branch table — it collapses every
+failure into `{ok: false, error}` where `normalizeRpcEnvelope` preserves the
+in-band shape. That divergence is intentional and pinned case-by-case by
+`gui/test/visual/rpc.test.ts`; consult those tests before collapsing the two.
+
 ---
 
 ## §3 Coordinate convention

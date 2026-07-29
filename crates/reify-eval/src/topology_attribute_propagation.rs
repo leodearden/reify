@@ -1356,7 +1356,7 @@ fn role_sort_key(role: &Role) -> (u32, &'static str) {
     }
 }
 
-/// Emit `TopologyAttributeLocalIndexReassigned` Warnings for groups of
+/// Emit `TopologyAttributeLocalIndexReassigned` Info diagnostics for groups of
 /// topology-attribute entries whose centroids are geometrically tied within
 /// `tol_m`, signalling that the kernel's enumeration order — and therefore
 /// the `local_index` assignment — would arbitrarily shuffle under a future
@@ -1393,9 +1393,9 @@ fn role_sort_key(role: &Role) -> (u32, &'static str) {
 /// # Output
 ///
 /// At most one diagnostic per `(feature_id, role)` group, carrying
-/// `DiagnosticCode::TopologyAttributeLocalIndexReassigned`, severity Warning,
-/// and naming the smallest pair of tied `local_index` values for
-/// reproducible message wording.
+/// `DiagnosticCode::TopologyAttributeLocalIndexReassigned`, severity Info
+/// (task #5196; was Warning under task #2654), and naming the smallest pair
+/// of tied `local_index` values for reproducible message wording.
 ///
 /// # Filter rules
 ///
@@ -1406,6 +1406,11 @@ fn role_sort_key(role: &Role) -> (u32, &'static str) {
 ///   here would double-warn the user about the same fragility.
 /// - Singleton groups (one entry per `(feature_id, role)`) have no pairwise
 ///   comparison and are skipped.
+/// - Peer pairs that already share the same `local_index` are skipped
+///   (task #5196 L1 guard): their identity key `(feature_id, role,
+///   local_index)` already collides, so there is no enumeration-order
+///   shuffle risk to warn about. Only near-coincident pairs with
+///   DISTINCT `local_index` values are reported.
 ///
 /// # Tolerance semantics
 ///
@@ -1419,8 +1424,9 @@ fn role_sort_key(role: &Role) -> (u32, &'static str) {
 /// # Single-source rule
 ///
 /// This helper does NOT regress the realization to Failed under any condition:
-/// it only appends Warnings. Auxiliary metadata MUST NOT regress to Failed —
-/// the realization is primary, attribute fragility detection is supplementary.
+/// it only appends Info diagnostics. Auxiliary metadata MUST NOT regress to
+/// Failed — the realization is primary, attribute fragility detection is
+/// supplementary.
 pub fn detect_local_index_reassignment_diagnostics(
     handles_with_attrs: &[(GeometryHandleId, &TopologyAttribute)],
     centroids: &HashMap<GeometryHandleId, [f64; 3]>,
@@ -1474,6 +1480,18 @@ pub fn detect_local_index_reassignment_diagnostics(
                 continue;
             };
             for &(h_j, idx_j) in sorted.iter().skip(i + 1) {
+                // Task #5196 (L1 guard): peers that already share the same
+                // local_index have identity keys — (feature_id, role,
+                // local_index) — that already collide, so there is no
+                // enumeration-order shuffle risk to warn about. union_all
+                // legitimately mass-produces equal indices (they're
+                // per-primitive-relative), so without this guard every
+                // coincident union floods the diagnostic list with
+                // "indices N and N" ties. Only genuinely near-coincident
+                // DISTINCT-index pairs are reported below.
+                if idx_i == idx_j {
+                    continue;
+                }
                 let Some(c_j) = centroids.get(&h_j) else {
                     continue;
                 };
@@ -1484,7 +1502,7 @@ pub fn detect_local_index_reassignment_diagnostics(
                 if dist_sq <= tol_sq {
                     let (feature_id, role) = key;
                     diagnostics.push(
-                        Diagnostic::warning(format!(
+                        Diagnostic::info(format!(
                             "topology-attribute selector for (feature '{}', role '{}') has \
                              geometrically tied local_index assignments at indices {} and {}; \
                              selector resolution may shuffle after edits",
@@ -3522,7 +3540,7 @@ mod tests {
             );
             assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
             let diag = &diagnostics[0];
-            assert_eq!(diag.severity, Severity::Warning);
+            assert_eq!(diag.severity, Severity::Info);
             assert_eq!(
                 diag.code,
                 Some(reify_core::DiagnosticCode::TopologyAttributeLocalIndexReassigned)
@@ -3556,6 +3574,72 @@ mod tests {
             assert_eq!(
                 label.message,
                 "realization producing geometrically tied attributes"
+            );
+        }
+
+        #[test]
+        fn detect_local_index_reassignment_skips_equal_index_peers() {
+            // L1 guard (task #5196): peers that already share the same
+            // local_index have identity keys — (feature_id, role, local_index)
+            // — that already collide, so there is no enumeration-order
+            // shuffle risk to warn about (union_all legitimately produces
+            // equal indices across per-primitive-relative numbering; PRD
+            // persistent-naming-v2.md line 81 scopes the construction-order
+            // tiebreak to "genuine geometric ties", not group-unique
+            // indices). Equal-index peers must be excluded from the pairwise
+            // tie scan even when their centroids coincide exactly.
+            let attr0 = make_attr("F#realization[0]", Role::Side, 0);
+            let attr1 = make_attr("F#realization[0]", Role::Side, 0);
+            let h0 = GeometryHandleId(1);
+            let h1 = GeometryHandleId(2);
+            let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+            centroids.insert(h0, [1.0, 2.0, 3.0]);
+            centroids.insert(h1, [1.0, 2.0, 3.0]);
+            let mut diagnostics = Vec::new();
+            detect_local_index_reassignment_diagnostics(
+                &[(h0, &attr0), (h1, &attr1)],
+                &centroids,
+                LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
+                synthetic_span(),
+                &mut diagnostics,
+            );
+            assert!(
+                diagnostics.is_empty(),
+                "expected no diagnostic for equal-index peers (identity keys already \
+                 collide, no shuffle risk), got: {diagnostics:?}"
+            );
+        }
+
+        #[test]
+        fn detect_local_index_reassignment_still_fires_for_distinct_index_tied_centroids() {
+            // Control paired with `..._skips_equal_index_peers` above: the L1
+            // guard must exclude ONLY equal-index peers, not every
+            // near-coincident pair. A genuine distinct-index tie (0 vs 1)
+            // with identical centroids must still fire — same shape as
+            // `..._emits_diagnostic_when_two_entries_have_tied_centroids`
+            // above (and the hand-built fixture in
+            // `tests/topology_attribute_e2e.rs`), kept as an explicit
+            // adjacent control for the new guard.
+            let attr0 = make_attr("F#realization[0]", Role::Side, 0);
+            let attr1 = make_attr("F#realization[0]", Role::Side, 1);
+            let h0 = GeometryHandleId(1);
+            let h1 = GeometryHandleId(2);
+            let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+            centroids.insert(h0, [1.0, 2.0, 3.0]);
+            centroids.insert(h1, [1.0, 2.0, 3.0]);
+            let mut diagnostics = Vec::new();
+            detect_local_index_reassignment_diagnostics(
+                &[(h0, &attr0), (h1, &attr1)],
+                &centroids,
+                LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
+                synthetic_span(),
+                &mut diagnostics,
+            );
+            assert_eq!(
+                diagnostics.len(),
+                1,
+                "expected exactly one diagnostic for distinct-index tied centroids, \
+                 got: {diagnostics:?}"
             );
         }
 

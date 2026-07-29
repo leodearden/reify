@@ -9750,3 +9750,343 @@ structure Assembly {
             "expected QueryFailed for missing zmax"
         );
     }
+
+    // ── value_contains_selector / values_contain_selector unit tests (task #5196 L2 gate, step-7) ──
+    //
+    // RED: neither helper exists yet — this module does not compile until
+    // step-8 adds `value_contains_selector(&Value) -> bool` and
+    // `values_contain_selector(&ValueMap) -> bool` to `engine_build.rs`.
+    //
+    // These back the L2 gate (step-8): the per-realization local-index-
+    // reassignment tie-scan (`detect_local_index_reassignment_diagnostics`) is
+    // about *selector-resolution* stability, so it is vacuous work on a build
+    // whose module binds no selector at all (e.g. the litter-tray
+    // multi-boolean model, which binds none). `value_contains_selector`
+    // recurses through the container `Value` variants — `List`/`Set`/`Map`/
+    // `Option`/`Field` — mirroring `invariants::value_is_or_contains_undef`'s
+    // shape (plus a `Field` arm, since a selector can be carried inside a
+    // `Field`'s `lambda`, e.g. a `Restricted` region), widened at step-12 with
+    // `Lambda { captures }` and `StructureInstance { fields }` arms.
+    //
+    // STATUS after step-12: these two helpers are no longer the gate's primary
+    // signal. The runtime `ValueMap` probe alone is fail-CLOSED — it cannot see
+    // a selector ctor passed inline as a call argument, nor a selector cell a
+    // realization has hydrated to `Value::List<Geometry>`. The load-bearing
+    // term is the module-STATIC `module_binds_selector` walk, pinned by the
+    // step-11 group below; the probe is a secondary belt-and-braces term. The
+    // gate's engine-level two-sided control lives in
+    // `tests/harness_engine/topology_diagnostic_denoise_e2e.rs`.
+
+    /// A top-level `Value::Selector` and one nested one level inside a
+    /// `Value::List` must both be detected; a plain non-selector scalar must
+    /// not be.
+    #[test]
+    fn value_contains_selector_detects_top_level_and_nested_selector() {
+        use reify_core::RealizationNodeId;
+        use reify_core::ty::SelectorKind;
+        use reify_ir::Value;
+        use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
+
+        let target = GeometryHandleRef {
+            realization_ref: RealizationNodeId::new("TestPart", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: Some(GeometryHandleId(1)),
+        };
+        let sv = SelectorValue::leaf(SelectorKind::Face, target, LeafQuery::All)
+            .expect("SelectorValue::leaf must succeed for matching kind/query");
+
+        // Top-level selector.
+        assert!(
+            value_contains_selector(&Value::Selector(sv.clone())),
+            "a top-level Value::Selector must be detected"
+        );
+
+        // Selector nested one level inside a Value::List.
+        let nested = Value::List(vec![Value::Int(1), Value::Selector(sv)]);
+        assert!(
+            value_contains_selector(&nested),
+            "a Value::Selector nested inside a Value::List must be detected"
+        );
+
+        // Plain scalar, no selector anywhere → false.
+        assert!(
+            !value_contains_selector(&Value::Int(42)),
+            "a non-selector, non-container Value must not be detected as a selector"
+        );
+    }
+
+    /// A `ValueMap` holding only non-selector values (a scalar, a string, and
+    /// a selector-free nested list) must report `false` — the zero-selector /
+    /// litter-tray case the L2 gate skips.
+    ///
+    /// Deliberately carries NO `Value::Lambda` and no `Value::StructureInstance`,
+    /// so step-12's two widened arms cannot flip this negative case (checked at
+    /// step-15).
+    #[test]
+    fn values_contain_selector_false_for_map_of_non_selector_values() {
+        use reify_core::ValueCellId;
+        use reify_ir::Value;
+
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("Design", "w"), Value::Real(1.0));
+        values.insert(
+            ValueCellId::new("Design", "label"),
+            Value::String("box".to_string()),
+        );
+        values.insert(
+            ValueCellId::new("Design", "items"),
+            Value::List(vec![Value::Int(1), Value::Int(2)]),
+        );
+
+        assert!(
+            !values_contain_selector(&values),
+            "a ValueMap of only non-selector values must not trigger the selector gate"
+        );
+    }
+
+    // ── L2 gate correctness: module-STATIC selector walk (task #5196 step-11) ──
+    //
+    // RED on two axes: `module_binds_selector` does not exist yet (step-12 adds
+    // it, so group (a) does not compile), and `value_contains_selector`'s
+    // `_ => false` catch-all still swallows `Value::Lambda { captures }` and
+    // `Value::StructureInstance(..).fields` (so group (b) fails).
+    //
+    // WHY the runtime `ValueMap` probe alone cannot carry the gate. The
+    // compiler's only ANF hoist (`phase_hoist_nested_selector_ctors`) lifts
+    // selector ctors ONLY out of `StructureInstanceCtor` field values —
+    // `hoist_in_expr`'s catch-all is literally `_ => {}`
+    // (crates/reify-compiler/src/hoist_nested_selectors.rs). So in the dominant
+    // curated-modify idiom `fillet(b, edges(b), 2mm)` the selector ctor sits in
+    // ordinary `FunctionCall` ARGUMENT position, never earns its own value cell,
+    // and NO `Value::Selector` reaches `values`. The step-8 gate then evaluates
+    // FALSE and `DiagnosticCode::TopologyAttributeLocalIndexReassigned` becomes
+    // unreachable for exactly the models whose selector resolution is at risk —
+    // the check is fail-CLOSED on its most important input, not fail-open.
+    //
+    // Every fixture below is REAL DSL source compiled through
+    // `parse_and_compile_with_stdlib`, which asserts zero Error-severity
+    // diagnostics — so a silently mis-typed fixture panics rather than
+    // masquerading as a passing test.
+
+    /// (a) The load-bearing new signal: a selector ctor in ordinary
+    /// `FunctionCall` ARGUMENT position — the curated 3-arg
+    /// `fillet(target, edges, radius)` / `chamfer(target, edges, distance)`
+    /// form (crates/reify-compiler/src/geometry_modify.rs) — must be seen by
+    /// the module-static walk.
+    ///
+    /// This is the assertion that pins the review finding: today's
+    /// `values_contain_selector` misses this shape entirely, because the
+    /// field-only ANF hoist never lifts an argument-position selector into a
+    /// value cell. Note the arity: the 2-arg `fillet(target, radius)` form
+    /// takes NO selector at all, so it is not a selector-bearing call.
+    #[test]
+    fn module_binds_selector_true_for_selector_ctor_in_call_argument_position() {
+        use reify_test_support::parse_and_compile_with_stdlib;
+
+        let filleted = parse_and_compile_with_stdlib(
+            r#"structure def CuratedFillet {
+    let b = box(20mm, 20mm, 20mm)
+    let f = fillet(b, edges(b), 2mm)
+}"#,
+        );
+        assert!(
+            module_binds_selector(&filleted),
+            "the 3-arg curated `fillet(b, edges(b), 2mm)` binds a selector ctor in \
+             ordinary FunctionCall ARGUMENT position — the idiom the compiler's \
+             field-only ANF hoist never lifts into a value cell, and hence the one \
+             a runtime-ValueMap-only gate is fail-CLOSED on"
+        );
+
+        let chamfered = parse_and_compile_with_stdlib(
+            r#"structure def CuratedChamfer {
+    let b = box(20mm, 20mm, 20mm)
+    let c = chamfer(b, edges(b), 1mm)
+}"#,
+        );
+        assert!(
+            module_binds_selector(&chamfered),
+            "the equivalent 3-arg `chamfer(b, edges(b), 1mm)` spelling must be \
+             detected for the same reason as `fillet`"
+        );
+    }
+
+    /// (a) The let-bound bare form — a selector ctor that DOES earn its own
+    /// value cell — must also be seen. This is the one shape the runtime
+    /// `ValueMap` probe can (sometimes) catch; the static walk must not
+    /// regress it.
+    #[test]
+    fn module_binds_selector_true_for_let_bound_bare_selector_ctor() {
+        use reify_test_support::parse_and_compile_with_stdlib;
+
+        let module = parse_and_compile_with_stdlib(
+            r#"structure def BareSelectorLet {
+    let u = union(box(10mm, 10mm, 10mm), box(5mm, 5mm, 5mm))
+    let fs = faces(u)
+}"#,
+        );
+        assert!(
+            module_binds_selector(&module),
+            "a let-bound bare `faces(u)` selector ctor must be detected by the \
+             module-static walk"
+        );
+    }
+
+    /// (a) A selector ctor declared inside a GUARDED GROUP member must be
+    /// seen.
+    ///
+    /// Guarded-group members live in `TopologyTemplate.guarded_groups[*].members`
+    /// / `.else_members` (crates/reify-compiler/src/types.rs), a collection
+    /// entirely SEPARATE from `value_cells` — a walk that visits only
+    /// `value_cells` reintroduces the exact fail-closed hole this step exists to
+    /// close, one layer up. (Independently, `mint_symbolic_topology_selectors_into_values`
+    /// also walks only `value_cells`, so a guarded-group selector let is never
+    /// minted into the `ValueMap` either: BOTH gate terms were blind to this
+    /// shape before this step.)
+    #[test]
+    fn module_binds_selector_true_for_selector_ctor_in_guarded_group_member() {
+        use reify_test_support::parse_and_compile_with_stdlib;
+
+        let module = parse_and_compile_with_stdlib(
+            r#"structure def GuardedSelector {
+    param mode : Int = 1
+    let u = union(box(10mm, 10mm, 10mm), box(5mm, 5mm, 5mm))
+    where mode == 1 {
+        let fs = faces(u)
+    }
+}"#,
+        );
+        assert!(
+            module_binds_selector(&module),
+            "a selector ctor bound inside a `where` guarded-group member must be \
+             detected — guarded_groups[*].members is a separate collection from \
+             value_cells, so a value_cells-only walk misses it entirely"
+        );
+    }
+
+    /// (a) The negative control: the selector-free multi-boolean litter-tray
+    /// fixture (capstone case A's source) must report FALSE, so the gate
+    /// genuinely closes on the model that motivated task #5196.
+    ///
+    /// Without this, a `module_binds_selector` stubbed to a constant `true`
+    /// would satisfy every other assertion in group (a).
+    #[test]
+    fn module_binds_selector_false_for_selector_free_multi_boolean_model() {
+        use reify_test_support::parse_and_compile_with_stdlib;
+
+        let module = parse_and_compile_with_stdlib(
+            r#"structure def LitterTrayDeck {
+    let a = union(box(20mm, 20mm, 20mm), box(20mm, 20mm, 20mm))
+    let b = union(a, box(20mm, 20mm, 20mm))
+    let c = union(b, box(20mm, 20mm, 20mm))
+}"#,
+        );
+        assert!(
+            !module_binds_selector(&module),
+            "the selector-free chained-union litter-tray model binds no selector \
+             ctor anywhere, so the module-static gate must close on it"
+        );
+    }
+
+    /// (b) Widened runtime arms: a selector nested inside
+    /// `Value::Lambda { captures }` (itself a `ValueMap`) or inside
+    /// `Value::StructureInstance(..).fields` must be detected.
+    ///
+    /// Both are realistic composite carriers swallowed today by
+    /// `value_contains_selector`'s `_ => false` catch-all — and both were
+    /// mischaracterised by the step-8 doc as mere "single-composite
+    /// scalar-wrapper variants".
+    #[test]
+    fn value_contains_selector_detects_selector_in_lambda_captures_and_structure_fields() {
+        use reify_core::ty::SelectorKind;
+        use reify_core::{RealizationNodeId, Type, ValueCellId};
+        use reify_ir::Value;
+        use reify_ir::value::{
+            GeometryHandleRef, LeafQuery, SelectorValue, StructureInstanceData,
+        };
+
+        let target = GeometryHandleRef {
+            realization_ref: RealizationNodeId::new("TestPart", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: Some(GeometryHandleId(1)),
+        };
+        let sv = SelectorValue::leaf(SelectorKind::Face, target, LeafQuery::All)
+            .expect("SelectorValue::leaf must succeed for matching kind/query");
+
+        // Lambda captures — an entire nested ValueMap.
+        let mut captures = ValueMap::new();
+        captures.insert(
+            ValueCellId::new("Design", "sel"),
+            Value::Selector(sv.clone()),
+        );
+        let lambda = Value::Lambda {
+            params: vec![("x".to_string(), ValueCellId::new("Design", "x"))],
+            body: Box::new(reify_ir::CompiledExpr::literal(
+                Value::Real(0.0),
+                Type::dimensionless_scalar(),
+            )),
+            captures,
+        };
+        assert!(
+            value_contains_selector(&lambda),
+            "a Value::Selector inside a Value::Lambda's `captures` ValueMap must be \
+             detected (today's `_ => false` catch-all swallows it)"
+        );
+
+        // StructureInstance fields.
+        let fields = [("region".to_string(), Value::Selector(sv))]
+            .into_iter()
+            .collect();
+        let instance = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: reify_ir::StructureTypeId(0),
+            type_name: "Holder".to_string(),
+            version: 1,
+            fields,
+        }));
+        assert!(
+            value_contains_selector(&instance),
+            "a Value::Selector inside a Value::StructureInstance's `fields` map must \
+             be detected (today's `_ => false` catch-all swallows it)"
+        );
+    }
+
+    /// (c) Runtime positive control: compile REAL DSL source, run the REAL
+    /// evaluator against a mock kernel, and assert the predicate against the
+    /// `ValueMap` the evaluator actually produces — rather than against a
+    /// hand-built map.
+    ///
+    /// A bare, UNCONSUMED `let fs = faces(u)` is expected to hold a
+    /// `Value::Selector` (minted via `build_leaf_selector`; precedent:
+    /// `crates/reify-eval/tests/no_stale_undef_edit_path_gate.rs`), so the
+    /// selector is deliberately left unconsumed here. A selector cell that IS
+    /// consumed by a realization resolves one step further to
+    /// `Value::List<Geometry>` rather than staying a `Selector`
+    /// (`hydrate_value_cell_in_loop` branch (b)) — which is itself further
+    /// evidence that the runtime `ValueMap` probe cannot carry the gate alone.
+    #[test]
+    fn values_contain_selector_true_for_evaluated_unconsumed_selector_let() {
+        use reify_test_support::{
+            MockConstraintChecker, MockGeometryKernel, parse_and_compile_with_stdlib,
+        };
+
+        let module = parse_and_compile_with_stdlib(
+            r#"structure def EvaluatedSelectorLet {
+    let u = union(box(10mm, 10mm, 10mm), box(5mm, 5mm, 5mm))
+    let fs = faces(u)
+}"#,
+        );
+
+        let mut engine = crate::Engine::new(
+            Box::new(MockConstraintChecker::new()),
+            Some(Box::new(MockGeometryKernel::new())),
+        );
+        let result = engine.eval(&module);
+
+        assert!(
+            values_contain_selector(&result.values),
+            "the REAL evaluator must land a Value::Selector in `values` for an \
+             unconsumed `let fs = faces(u)`, proving the gate's open branch is \
+             reachable through the evaluator and not only through hand-built \
+             ValueMaps; got values:\n{:#?}",
+            result.values
+        );
+    }

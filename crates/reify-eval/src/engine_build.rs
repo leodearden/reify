@@ -367,6 +367,14 @@ struct RealizationOpsInput<'a> {
     // inject either posture deterministically — env mutation is unsafe in
     // edition 2024, exactly as for `long_chain_threshold` above.
     mesh_contract_mode: reify_ir::geometry::MeshContractMode,
+    // Task #5196 step-12: the module-STATIC term of the L2 selector gate —
+    // `module_binds_selector(module)`, computed ONCE per build above the
+    // template loop and threaded per-iteration (same shape as
+    // `long_chain_threshold` / `mesh_contract_mode` above). The gate on the
+    // per-realization tie-scan below ORs this with the runtime
+    // `values_contain_selector(values)` probe. Hoisting it here also removes
+    // the per-realization recompute of what is a module-global answer.
+    module_binds_selector: bool,
 }
 
 impl<'a> RealizationOpsInput<'a> {
@@ -435,6 +443,13 @@ impl<'a> RealizationOpsInput<'a> {
             // override with `Engine::mesh_contract_mode`, which honours the
             // `REIFY_MESH_CONTRACT` break-glass.
             mesh_contract_mode: reify_ir::geometry::MeshContractMode::Enforce,
+            // Fail-OPEN default (task #5196 step-12): a call site that omits
+            // `.with_module_binds_selector(...)` always runs the tie-scan, so
+            // the tessellate/query paths and the `run`/`run_demand` test
+            // wrapper stay behaviourally identical to before the gate existed.
+            // Only the two build paths (`build_snapshot`,
+            // `build_with_geometry_output`) opt in with a real answer.
+            module_binds_selector: true,
         }
     }
 
@@ -502,6 +517,15 @@ impl<'a> RealizationOpsInput<'a> {
     /// [`Self::new`]).
     fn with_mesh_contract_mode(mut self, v: reify_ir::geometry::MeshContractMode) -> Self {
         self.mesh_contract_mode = v;
+        self
+    }
+
+    /// Override the module-static term of the L2 selector gate (default
+    /// `true`, fail-open — see the comment above this field's initializer in
+    /// [`Self::new`]). Build paths pass [`module_binds_selector`], computed
+    /// once per build.
+    fn with_module_binds_selector(mut self, v: bool) -> Self {
+        self.module_binds_selector = v;
         self
     }
 }
@@ -1290,12 +1314,22 @@ fn populate_attribute_history(
     }
 }
 
-/// Emit one `Severity::Warning` per non-zero topology-correspondence-loss
-/// counter found in `attribute_history`.
+/// Per-realization accumulator for topology-correspondence-loss counters
+/// (task #5196 L4 summarization).
 ///
-/// Called by `Engine::execute_realization_ops` immediately after
-/// `populate_attribute_history` — both live at the same call site where
-/// `attribute_history` and `diagnostics` are already in scope.
+/// Each op's `AttributeHistory` is folded into the tally via
+/// [`accumulate`](Self::accumulate) instead of emitting a `Diagnostic`
+/// immediately; [`flush`](Self::flush) then emits ONE `Diagnostic::info`
+/// per non-zero `(op_kind, counter)` entry, carrying the SUMMED count
+/// across every op accumulated since the tally was created (or last
+/// flushed) and a realization-scoped context — no per-op suffix.
+///
+/// Motivation: the GUI's `groupDiagnostics` only dedups byte-identical
+/// messages. The prior per-op emission (one diagnostic per op, each
+/// context-suffixed `"{realization_id} op {op_idx}"`) never collapsed, so a
+/// realization with N boolean ops produced N near-identical Info lines.
+/// Accumulating across the whole realization and flushing once yields at
+/// most one line per `(op_kind, counter)` per realization.
 ///
 /// Covers all five unconsumed counters across the three op families:
 /// - `Boolean`: `silent_drop_count`
@@ -1306,86 +1340,110 @@ fn populate_attribute_history(
 /// `Loft` and `None` are explicit no-ops: `LoftOpHistoryRecords` has no
 /// counters by design, and `None` means no history was returned.
 ///
-/// Each warning carries [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`]
-/// and a message of the form:
+/// Each flushed diagnostic carries
+/// [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`] and a
+/// message of the form:
 /// `"topology correspondence dropped: {op_kind} {counter_name}={count} context={context}"`.
 ///
 /// The geometry is valid; only persistent-naming correspondence tracking is
-/// degraded. Severity is `Warning` (never `Error`) per the task-2574 convention
-/// that auxiliary-metadata degradation must not regress the realization to Failed.
-fn diagnose_topology_correspondence_drops(
-    attribute_history: &AttributeHistory,
-    context: &str,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    use reify_core::DiagnosticCode;
-    // Single canonical emit path: guarantees every warning uses the same
-    // message format ("topology correspondence dropped: {op_kind}
-    // {counter}={count} context={context}") and the same code, with no risk
-    // of the five call sites drifting from each other.
-    let mut emit = |op_kind: &str, counter: &str, count: u32| {
-        if count > 0 {
+/// degraded. Severity is `Info` (never `Error`; downgraded from `Warning` to
+/// `Info` by task #5196 — a healthy multi-boolean model was flooding
+/// Warning-severity diagnostics with routine bookkeeping noise) per the
+/// task-2574 convention that auxiliary-metadata degradation must not regress
+/// the realization to Failed.
+///
+/// `BTreeMap` (not `HashMap`) keeps `flush`'s emission order deterministic.
+#[derive(Default)]
+struct TopologyCorrespondenceDropTally {
+    counts: BTreeMap<(&'static str, &'static str), u32>,
+}
+
+impl TopologyCorrespondenceDropTally {
+    /// Fold `attribute_history`'s non-zero topology-correspondence-loss
+    /// counters into the tally, keyed by `(op_kind, counter_name)`.
+    ///
+    /// Exhaustive over the same three op families / five counters the
+    /// pre-L4 single-shot emitter covered (see the struct doc); the match
+    /// itself is unchanged from that emitter, only the action per non-zero
+    /// counter changes (accumulate instead of push a `Diagnostic`).
+    fn accumulate(&mut self, attribute_history: &AttributeHistory) {
+        let counts = &mut self.counts;
+        let mut add = |op_kind: &'static str, counter: &'static str, count: u32| {
+            if count > 0 {
+                *counts.entry((op_kind, counter)).or_insert(0) += count;
+            }
+        };
+        match attribute_history {
+            AttributeHistory::Boolean(h) => {
+                add("boolean", "silent_drop_count", h.silent_drop_count);
+            }
+            // Each sweep variant gets its own arm so op_kind is determined
+            // exhaustively without a nested re-match or a `_ => "sweep"`
+            // wildcard that would silently mislabel any future
+            // AttributeHistory variant sharing this arm.
+            AttributeHistory::Extrude(h) => {
+                add("extrude", "silent_drop_count", h.silent_drop_count);
+                add(
+                    "extrude",
+                    "unsynthesized_profile_edge_count",
+                    h.unsynthesized_profile_edge_count,
+                );
+                add(
+                    "extrude",
+                    "duplicate_parent_subshape_index_count",
+                    h.duplicate_parent_subshape_index_count,
+                );
+            }
+            AttributeHistory::Revolve(h) => {
+                add("revolve", "silent_drop_count", h.silent_drop_count);
+                add(
+                    "revolve",
+                    "unsynthesized_profile_edge_count",
+                    h.unsynthesized_profile_edge_count,
+                );
+                add(
+                    "revolve",
+                    "duplicate_parent_subshape_index_count",
+                    h.duplicate_parent_subshape_index_count,
+                );
+            }
+            AttributeHistory::Sweep(h) => {
+                add("sweep", "silent_drop_count", h.silent_drop_count);
+                add(
+                    "sweep",
+                    "unsynthesized_profile_edge_count",
+                    h.unsynthesized_profile_edge_count,
+                );
+                add(
+                    "sweep",
+                    "duplicate_parent_subshape_index_count",
+                    h.duplicate_parent_subshape_index_count,
+                );
+            }
+            AttributeHistory::LocalFeature(h) => {
+                add("local_feature", "silent_drop_count", h.silent_drop_count);
+            }
+            AttributeHistory::Loft(_) | AttributeHistory::None => {
+                // No counters in LoftOpHistoryRecords; None means no history returned.
+            }
+        }
+    }
+
+    /// Emit one `Diagnostic::info` per non-zero tally entry — carrying the
+    /// SUMMED count and `context` verbatim (typically `"{realization_id}"`,
+    /// realization-scoped, no per-op suffix) — then clear the tally so a
+    /// stray extra `flush` with no intervening `accumulate` emits nothing.
+    fn flush(&mut self, context: &str, diagnostics: &mut Vec<Diagnostic>) {
+        use reify_core::DiagnosticCode;
+        for (&(op_kind, counter), &count) in self.counts.iter() {
             diagnostics.push(
-                Diagnostic::warning(format!(
+                Diagnostic::info(format!(
                     "topology correspondence dropped: {op_kind} {counter}={count} context={context}"
                 ))
                 .with_code(DiagnosticCode::TopologyCorrespondenceDropped),
             );
         }
-    };
-    match attribute_history {
-        AttributeHistory::Boolean(h) => {
-            emit("boolean", "silent_drop_count", h.silent_drop_count);
-        }
-        // Each sweep variant gets its own arm so op_kind is determined
-        // exhaustively without a nested re-match or a `_ => "sweep"` wildcard
-        // that would silently mislabel any future AttributeHistory variant
-        // sharing this arm.
-        AttributeHistory::Extrude(h) => {
-            emit("extrude", "silent_drop_count", h.silent_drop_count);
-            emit(
-                "extrude",
-                "unsynthesized_profile_edge_count",
-                h.unsynthesized_profile_edge_count,
-            );
-            emit(
-                "extrude",
-                "duplicate_parent_subshape_index_count",
-                h.duplicate_parent_subshape_index_count,
-            );
-        }
-        AttributeHistory::Revolve(h) => {
-            emit("revolve", "silent_drop_count", h.silent_drop_count);
-            emit(
-                "revolve",
-                "unsynthesized_profile_edge_count",
-                h.unsynthesized_profile_edge_count,
-            );
-            emit(
-                "revolve",
-                "duplicate_parent_subshape_index_count",
-                h.duplicate_parent_subshape_index_count,
-            );
-        }
-        AttributeHistory::Sweep(h) => {
-            emit("sweep", "silent_drop_count", h.silent_drop_count);
-            emit(
-                "sweep",
-                "unsynthesized_profile_edge_count",
-                h.unsynthesized_profile_edge_count,
-            );
-            emit(
-                "sweep",
-                "duplicate_parent_subshape_index_count",
-                h.duplicate_parent_subshape_index_count,
-            );
-        }
-        AttributeHistory::LocalFeature(h) => {
-            emit("local_feature", "silent_drop_count", h.silent_drop_count);
-        }
-        AttributeHistory::Loft(_) | AttributeHistory::None => {
-            // No counters in LoftOpHistoryRecords; None means no history returned.
-        }
+        self.counts.clear();
     }
 }
 
@@ -3388,6 +3446,11 @@ impl Engine {
             // borrows taken by `RealizationOpsInput::new` below, then thread
             // it per-iteration.
             let mesh_contract_mode = self.mesh_contract_mode;
+            // Task #5196 step-12: the module-STATIC term of the L2 selector
+            // gate. Module-GLOBAL, so it is resolved ONCE here — above the
+            // template loop — and threaded per-iteration, exactly like the two
+            // locals above.
+            let module_binds_selector_flag = module_binds_selector(module);
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -3499,7 +3562,12 @@ impl Engine {
                         .with_long_chain_threshold(long_chain_threshold)
                         // Task #5105 δ (INV-GEO-1): mesh-contract posture for the
                         // tessellate→ingest handoff, resolved once at entry (see above).
-                        .with_mesh_contract_mode(mesh_contract_mode),
+                        .with_mesh_contract_mode(mesh_contract_mode)
+                        // Task #5196 step-12: the module-static term of the
+                        // L2 selector gate, resolved once above the template
+                        // loop. Only the build paths opt in; tessellate/query
+                        // keep the fail-open `true` default.
+                        .with_module_binds_selector(module_binds_selector_flag),
                         RealizationOutputs::new(
                             &mut step_handles,
                             &mut named_steps,
@@ -4169,6 +4237,11 @@ impl Engine {
             // borrows taken by `RealizationOpsInput::new` below, then thread
             // it per-iteration.
             let mesh_contract_mode = self.mesh_contract_mode;
+            // Task #5196 step-12: the module-STATIC term of the L2 selector
+            // gate. Module-GLOBAL, so it is resolved ONCE here — above the
+            // template loop — and threaded per-iteration, exactly like the two
+            // locals above.
+            let module_binds_selector_flag = module_binds_selector(module);
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -4398,7 +4471,12 @@ impl Engine {
                         .with_long_chain_threshold(long_chain_threshold)
                         // Task #5105 δ (INV-GEO-1): mesh-contract posture for the
                         // tessellate→ingest handoff, resolved once at entry (see above).
-                        .with_mesh_contract_mode(mesh_contract_mode),
+                        .with_mesh_contract_mode(mesh_contract_mode)
+                        // Task #5196 step-12: the module-static term of the
+                        // L2 selector gate, resolved once above the template
+                        // loop. Only the build paths opt in; tessellate/query
+                        // keep the fail-open `true` default.
+                        .with_module_binds_selector(module_binds_selector_flag),
                         RealizationOutputs::new(
                             &mut step_handles,
                             &mut named_steps,
@@ -7049,6 +7127,7 @@ impl Engine {
             morph_io,
             long_chain_threshold,
             mesh_contract_mode,
+            module_binds_selector: module_binds_selector_flag,
         } = input;
         if Self::probe_realization_cache(
             realization_cache,
@@ -7219,6 +7298,13 @@ impl Engine {
         // plan is captured by clone into this Option. Used after the loop to
         // emit the at-most-one LongChainRealization diagnostic.
         let mut longest_chain_plan: Option<DispatchPlan> = None;
+        // task #5196 L4: per-realization accumulator for
+        // topology-correspondence-loss counters. Mirrors `longest_chain_plan`
+        // immediately above — accumulated per-op inside the loop, flushed
+        // once after it (see the `topology_drop_tally.flush` call below) —
+        // so a realization with N ops sharing a counter emits ONE summed
+        // diagnostic instead of N near-identical per-op lines.
+        let mut topology_drop_tally = TopologyCorrespondenceDropTally::default();
         for (op_idx, op) in operations.iter().enumerate() {
             let geom_op = compile_geometry_op(
                 op,
@@ -8295,18 +8381,18 @@ impl Engine {
                                 "topology-attribute attribute history population failed for {realization_id} op {op_idx}: {e}"
                             )));
                             }
-                            // task 4545: surface topology-correspondence-loss counters
-                            // from the kernel history record as structured Warnings.
-                            // Called immediately after `populate_attribute_history`
-                            // (independent of its Result) so the warning is emitted
-                            // even when population also warns. Severity::Warning only
-                            // — geometry is valid, only persistent-naming tracking
-                            // is degraded (task-2574 auxiliary-metadata convention).
-                            diagnose_topology_correspondence_drops(
-                                &attribute_history,
-                                &format!("{realization_id} op {op_idx}"),
-                                diagnostics,
-                            );
+                            // task 4545: accumulate topology-correspondence-loss
+                            // counters from the kernel history record. Called
+                            // immediately after `populate_attribute_history`
+                            // (independent of its Result) so the counters are
+                            // folded in even when population also warns. Flushed
+                            // ONCE per realization (task #5196 L4 summarization,
+                            // see `topology_drop_tally.flush` after the op loop)
+                            // rather than emitted per-op, at Severity::Info
+                            // (task #5196; was Severity::Warning) — geometry is
+                            // valid, only persistent-naming tracking is degraded
+                            // (task-2574 auxiliary-metadata convention).
+                            topology_drop_tally.accumulate(&attribute_history);
                             // v0.2 persistent-naming-v2 (task 2875): kernel-attribute-hook
                             // propagation for non-BRep kernels.  Runs immediately after
                             // `populate_attribute_history` (BRep-first ordering per design
@@ -8467,6 +8553,17 @@ impl Engine {
         {
             diagnostics.push(diag);
         }
+        // task #5196 L4: flush the per-realization silent-drop tally
+        // accumulated during the op loop above into at most one
+        // `Diagnostic::info` per `(op_kind, counter)`, summed across every
+        // op in this realization. Mirrors the long-chain diagnostic
+        // immediately above — flushed unconditionally here, BEFORE the
+        // `rolled_back` determination, so a realization that accumulated
+        // drops on its early (successful) ops still surfaces them even if a
+        // later op in the same realization fails (matching the pre-L4
+        // per-op emission, which was likewise unconditional on eventual
+        // rollback).
+        topology_drop_tally.flush(&format!("{realization_id}"), diagnostics);
         // Discard intermediate handles from partially-failed realizations
         let rolled_back =
             had_failure || step_handles.len().saturating_sub(handle_start) < operations.len();
@@ -8529,6 +8626,33 @@ impl Engine {
             {
                 swept_kind_table.record(last_id, kind);
             }
+            // task #5196 L2 gate: the tie-scan below is about *selector-
+            // resolution* stability, so it is vacuous work when this module
+            // binds no selector at all (e.g. the litter-tray multi-boolean
+            // model, which binds none).
+            //
+            // TWO terms, OR'd, short-circuiting on the first. The LOAD-BEARING
+            // one is `module_binds_selector_flag` — the module-STATIC walk of
+            // every `CompiledExpr` reachable from any template, computed once
+            // per build and threaded in (it is a module-global answer, so
+            // recomputing it per realization would be pure waste). The runtime
+            // `values_contain_selector(values)` probe is a secondary
+            // belt-and-braces term.
+            //
+            // The runtime probe alone would be fail-CLOSED, not fail-open: the
+            // `ValueMap` carries no anonymous sub-expression entries, so a
+            // selector ctor consumed inline as a call argument
+            // (`fillet(b, edges(b), 2mm)` — the dominant idiom) leaves no
+            // trace in it; and a declared selector cell that a realization
+            // consumes is hydrated to `Value::List<Geometry>` rather than
+            // staying a `Value::Selector`. See the section header above
+            // `expr_contains_selector_ctor` for the full analysis and the
+            // residual gap.
+            //
+            // Off the build path (tessellate/query, the `run`/`run_demand`
+            // test wrapper) the flag keeps its fail-open `true` default, so
+            // those paths run the scan exactly as they did before the gate.
+            if module_binds_selector_flag || values_contain_selector(values) {
             // v0.2 persistent-naming-v2 (PRD task 4 / #2654): construction-time
             // fragility detection for local_index reassignment. The
             // topology_attribute_table is fully populated for this realization
@@ -8617,6 +8741,7 @@ impl Engine {
                     diagnostics,
                 );
             }
+            } // task #5196 L2 gate: values_contain_selector(values)
             // ── Task 4743 (α): VolumeMesh realization call edge ───────────────
             //
             // Demand is computed module-statically in `compute_demanded_reprs`
@@ -11797,6 +11922,326 @@ fn collect_centroids_with_failure_summary(
     (centroids, diags)
 }
 
+// ── L2 selector-presence gate (task #5196 step-8, corrected at step-12) ──────
+//
+// The gate on the per-realization local-index-reassignment tie-scan in
+// [`Engine::execute_realization_ops`]. That scan warns about
+// *selector-resolution* stability, so it is vacuous work on a build that
+// binds no selector at all (e.g. the litter-tray multi-boolean model).
+//
+// The gate has TWO terms, OR'd:
+//
+//   1. [`module_binds_selector`] — the LOAD-BEARING signal. A module-static
+//      walk of every `CompiledExpr` reachable from any template, looking for
+//      a selector-ctor `FunctionCall`. Computed ONCE per build and threaded
+//      in via `RealizationOpsInput::module_binds_selector`.
+//
+//   2. [`values_contain_selector`] — a secondary belt-and-braces term over
+//      the runtime `ValueMap`.
+//
+// Term 2 CANNOT carry the gate alone, and step-8's doc claiming otherwise was
+// wrong in the worst possible direction — it was fail-CLOSED on the dominant
+// selector idiom, not fail-open. Two independent reasons:
+//
+//   (a) The `ValueMap` has no entries for anonymous sub-expressions. The
+//       compiler's only ANF hoist (`phase_hoist_nested_selector_ctors`) lifts
+//       selector ctors ONLY out of `StructureInstanceCtor` field values —
+//       `hoist_in_expr`'s catch-all is literally `_ => {}`
+//       (crates/reify-compiler/src/hoist_nested_selectors.rs). So in the
+//       curated-modify idiom `fillet(b, edges(b), 2mm)` the ctor sits in
+//       ordinary `FunctionCall` ARGUMENT position, never earns a cell, and no
+//       `Value::Selector` is ever written anywhere.
+//   (b) Even a DECLARED selector let can be invisible: once a realization
+//       consumes it, `hydrate_value_cell_in_loop` branch (b) resolves the
+//       cell to `Value::List<Geometry>` rather than leaving a
+//       `Value::Selector` behind.
+//
+// Under term 2 alone, `DiagnosticCode::TopologyAttributeLocalIndexReassigned`
+// was therefore unreachable for exactly the models whose selector resolution
+// is at risk of shuffling.
+//
+// RESIDUAL GAP, stated honestly: term 1 walks `CompiledExpr` trees reachable
+// from `module.templates` only. A selector ctor that exists *exclusively*
+// inside a module-level `CompiledFunction` body, a `CompiledField` source
+// expr, or a `CompiledPurpose` is not seen by term 1 (see
+// [`module_binds_selector`] for why walking `module.functions` is actively
+// harmful). Term 2 still covers the sub-case where such a ctor's *result*
+// lands in a value cell. What survives both terms is a selector ctor that is
+// (i) declared only outside any template AND (ii) consumed inline so its
+// result never reaches `values`. That is a bounded gap on an advisory
+// `Severity::Info` diagnostic, not a silent correctness loss.
+
+/// True iff `expr`'s tree contains a selector-ctor `FunctionCall` at ANY
+/// position.
+///
+/// Leaf test is the compiler's OWN predicate,
+/// [`reify_compiler::topology_selector_result_type`] — the same one
+/// `is_hoistable_selector_ctor` uses — so this gate and the ANF hoist cannot
+/// drift apart on what counts as a selector ctor. The difference is
+/// positional: the hoist tests only `StructureInstanceCtor` field values,
+/// this tests EVERY expression position. That positional restriction is
+/// precisely the bug being fixed.
+///
+/// Traversal reuses [`reify_ir::CompiledExpr::walk`], the canonical
+/// pre-order walk, per its own doc contract ("All callers that need to visit
+/// expression nodes should use this method rather than implementing their own
+/// match on `CompiledExprKind`"). That contract is what makes this
+/// future-proof: `walk` is exhaustive over every `CompiledExprKind` variant
+/// with no `_ =>` catch-all, so a newly-added variant is a compile error
+/// *there* rather than a silent fail-closed hole here.
+///
+/// Two positions `walk` deliberately does not reach are covered explicitly
+/// below, since for this predicate they are real carriers:
+/// `StructureInstanceCtor::lets` (skipped by `walk` because it references
+/// template-local cells) and a `Value::Lambda` body embedded in a `Literal`
+/// (skipped because `walk` treats `Literal` as a leaf).
+fn expr_contains_selector_ctor(expr: &reify_ir::CompiledExpr) -> bool {
+    fn is_selector_ctor(expr: &reify_ir::CompiledExpr) -> bool {
+        match &expr.kind {
+            reify_ir::CompiledExprKind::FunctionCall { function, .. } => matches!(
+                reify_compiler::topology_selector_result_type(&function.name),
+                Some(reify_core::Type::Selector(_))
+            ),
+            _ => false,
+        }
+    }
+
+    let mut found = false;
+    expr.walk(&mut |node| {
+        if found {
+            return;
+        }
+        if is_selector_ctor(node) {
+            found = true;
+            return;
+        }
+        match &node.kind {
+            // `walk` skips `lets` (it references template-local cells), so
+            // descend them here.
+            reify_ir::CompiledExprKind::StructureInstanceCtor { lets, .. } => {
+                if lets.iter().any(|(_, e)| expr_contains_selector_ctor(e)) {
+                    found = true;
+                }
+            }
+            // `walk` treats `Literal` as a leaf, but `Value::Lambda` embeds a
+            // whole `CompiledExpr` body inside one. (Guard rather than a
+            // nested `if` per `clippy::collapsible_match`; a failed guard
+            // falls through to the no-op `_` arm, same as the `if` did.)
+            reify_ir::CompiledExprKind::Literal(reify_ir::Value::Lambda { body, .. })
+                if expr_contains_selector_ctor(body) =>
+            {
+                found = true;
+            }
+            _ => {}
+        }
+    });
+    found
+}
+
+/// The `args` slice of a compiled geometry op, or empty for the one arm that
+/// has none.
+///
+/// Exhaustive by construction (no `_ =>` catch-all) so a newly-added
+/// `CompiledGeometryOp` arm is a compile error rather than a silently
+/// unwalked expression carrier.
+fn geometry_op_arg_exprs(
+    op: &reify_compiler::CompiledGeometryOp,
+) -> &[(String, reify_ir::CompiledExpr)] {
+    use reify_compiler::CompiledGeometryOp as Op;
+    match op {
+        Op::Primitive { args, .. }
+        | Op::Modify { args, .. }
+        | Op::Transform { args, .. }
+        | Op::Pattern { args, .. }
+        | Op::Curve { args, .. }
+        | Op::Profile { args, .. }
+        | Op::Surface { args, .. }
+        | Op::Sweep { args, .. }
+        | Op::Isosurface { args, .. } => args,
+        // The sole arm carrying no `CompiledExpr`: pure `GeomRef` operands.
+        Op::Boolean { .. } => &[],
+    }
+}
+
+/// True iff any `CompiledExpr` reachable from any of `module`'s templates
+/// contains a selector-ctor `FunctionCall` (see
+/// [`expr_contains_selector_ctor`]).
+///
+/// Module-GLOBAL by design, not per-realization: a `fillet` in realization R2
+/// may consume geometry realized in R1, so a per-realization op-walk would
+/// reintroduce a fail-closed gap at the realization boundary. Short-circuits
+/// on the first hit.
+///
+/// # Coverage
+///
+/// Every `TopologyTemplate` field whose type transitively holds a
+/// `CompiledExpr` is walked. Enumerated from the struct rather than inherited
+/// from a plan document, because two prior revisions of this task were wrong
+/// about which collections carry the relevant expressions:
+///
+/// - `value_cells[*].default_expr`
+/// - `constraints[*]` — `.expr` and `.arg_bindings[*]`
+/// - `realizations[*].operations[*]` — see [`geometry_op_arg_exprs`]
+/// - `sub_components[*]` — `.args`, `.guard_state` (`GuardState::Compiled`),
+///   `.pose`, `.auto_pose.params`, `.keyed_member_overrides[*]`
+/// - `relations[*]` — a bare `Vec<CompiledExpr>`
+/// - `ports[*]` — `.members[*].default_expr`, `.constraints[*]`, `.frame_expr`
+/// - `guarded_groups[*]` — `.guard_expr`, `.members`, `.constraints`,
+///   `.else_members`, `.else_constraints`
+/// - `objective` — `.terms[*].expr`
+/// - `match_arm_groups[*].arms[*].guard_expr`
+/// - `forall_templates[*].body` — `Constraint{body_expr}` / `Connect{params}`
+/// - `assoc_fns[*].function` — `.param_defaults[*]`, `.body.let_bindings[*]`,
+///   `.body.result_expr`
+///
+/// `guarded_groups` is stored FLAT: nesting is a `parent_guard` back-pointer
+/// to the enclosing group's `guard_value_cell`, not containment, so a flat
+/// iteration visits every group at every depth exactly once. It is also a
+/// collection wholly separate from `value_cells` — walking only `value_cells`
+/// would miss `where <cond> { let fs = faces(u) }` entirely and re-create the
+/// exact fail-closed hole this function exists to close, one layer up.
+///
+/// # Deliberate exclusions
+///
+/// - `module.functions` — `compile_with_stdlib` compiles the ENTIRE stdlib
+///   into every module's `functions`. Walking it would make this predicate
+///   universally true and turn the gate back into a no-op, which is strictly
+///   worse than the bounded gap documented at the top of this section.
+/// - `module.fields` / `module.compiled_purposes` — same stdlib-contamination
+///   risk class, and neither is a template-reachable expression carrier.
+/// - `template.annotations` — carries `reify_ast::Expr`, an UNCOMPILED AST
+///   expression evaluated at materialization; not a `CompiledExpr` channel.
+/// - `template.connections`, `.assoc_types`, `.type_params` — no
+///   `CompiledExpr` anywhere in their types.
+/// - `module.trait_defs`, `module.constraint_defs` — hold raw
+///   `reify_ast::Expr` / AST decls, deliberately un-lowered.
+fn module_binds_selector(module: &reify_compiler::CompiledModule) -> bool {
+    fn cell_binds(cell: &reify_compiler::ValueCellDecl) -> bool {
+        cell.default_expr
+            .as_ref()
+            .is_some_and(expr_contains_selector_ctor)
+    }
+    fn constraint_binds(c: &reify_compiler::CompiledConstraint) -> bool {
+        expr_contains_selector_ctor(&c.expr)
+            || c.arg_bindings
+                .iter()
+                .any(|(_, e)| expr_contains_selector_ctor(e))
+    }
+    fn fn_binds(f: &reify_compiler::CompiledFunction) -> bool {
+        f.param_defaults
+            .iter()
+            .flatten()
+            .any(expr_contains_selector_ctor)
+            || f.body
+                .let_bindings
+                .iter()
+                .any(|(_, e)| expr_contains_selector_ctor(e))
+            || expr_contains_selector_ctor(&f.body.result_expr)
+    }
+
+    module.templates.iter().any(|template| {
+        template.value_cells.iter().any(cell_binds)
+            || template.constraints.iter().any(constraint_binds)
+            || template.realizations.iter().any(|r| {
+                r.operations.iter().any(|op| {
+                    geometry_op_arg_exprs(op)
+                        .iter()
+                        .any(|(_, e)| expr_contains_selector_ctor(e))
+                })
+            })
+            || template.sub_components.iter().any(|sub| {
+                sub.args.iter().any(|(_, e)| expr_contains_selector_ctor(e))
+                    || sub
+                        .guard_state
+                        .compiled()
+                        .is_some_and(expr_contains_selector_ctor)
+                    || sub.pose.as_ref().is_some_and(expr_contains_selector_ctor)
+                    || sub.auto_pose.as_ref().is_some_and(|ap| {
+                        ap.params.iter().any(|(_, e)| expr_contains_selector_ctor(e))
+                    })
+                    || sub
+                        .keyed_member_overrides
+                        .iter()
+                        .any(|(_, args)| args.iter().any(|(_, e)| expr_contains_selector_ctor(e)))
+            })
+            || template.relations.iter().any(expr_contains_selector_ctor)
+            || template.ports.iter().any(|p| {
+                p.members.iter().any(cell_binds)
+                    || p.constraints.iter().any(constraint_binds)
+                    || p.frame_expr
+                        .as_ref()
+                        .is_some_and(expr_contains_selector_ctor)
+            })
+            || template.guarded_groups.iter().any(|g| {
+                expr_contains_selector_ctor(&g.guard_expr)
+                    || g.members.iter().any(cell_binds)
+                    || g.constraints.iter().any(constraint_binds)
+                    || g.else_members.iter().any(cell_binds)
+                    || g.else_constraints.iter().any(constraint_binds)
+            })
+            || template.objective.as_ref().is_some_and(|o| {
+                o.terms
+                    .iter()
+                    .any(|t| expr_contains_selector_ctor(&t.expr))
+            })
+            || template
+                .match_arm_groups
+                .iter()
+                .any(|g| g.arms.iter().any(|a| expr_contains_selector_ctor(&a.guard_expr)))
+            || template.forall_templates.iter().any(|ft| {
+                use reify_compiler::CompiledForallBody as Body;
+                match &ft.body {
+                    Body::Constraint { body_expr, .. } => expr_contains_selector_ctor(body_expr),
+                    Body::Connect { params, .. } => {
+                        params.iter().any(|(_, e)| expr_contains_selector_ctor(e))
+                    }
+                }
+            })
+            || template.assoc_fns.iter().any(|af| fn_binds(&af.function))
+    })
+}
+
+/// True iff `value` is a [`reify_ir::Value::Selector`], or contains one
+/// nested inside a composite variant.
+///
+/// The SECONDARY term of the L2 gate — see the section header above for why
+/// it cannot be the primary one. Recurses through every composite `Value`
+/// variant a selector is known to reach: `List`, `Set`, `Map` (both keys and
+/// values), `Option`, `Field`'s `lambda` (a `Restricted` field's lambda holds
+/// `Value::List[inner_field, region]`, where `region` can itself be a
+/// selector), `Lambda`'s `captures` (itself a whole nested `ValueMap`), and
+/// `StructureInstance`'s `fields`.
+///
+/// The remaining `_ => false` catch-all covers `Value`'s large scalar tail
+/// (`Int`, `Real`, `String`, `Tensor`, `Point`, `Frame`, …), where a selector
+/// cannot occur. The earlier claim that the uncovered set was merely
+/// "single-composite scalar-wrapper variants" was false — `Lambda.captures`
+/// and `StructureInstance.fields` are both genuine composite carriers and are
+/// now walked explicitly.
+fn value_contains_selector(value: &reify_ir::Value) -> bool {
+    match value {
+        reify_ir::Value::Selector(_) => true,
+        reify_ir::Value::List(items) => items.iter().any(value_contains_selector),
+        reify_ir::Value::Set(items) => items.iter().any(value_contains_selector),
+        reify_ir::Value::Map(entries) => entries
+            .iter()
+            .any(|(k, v)| value_contains_selector(k) || value_contains_selector(v)),
+        reify_ir::Value::Option(inner) => inner.as_deref().is_some_and(value_contains_selector),
+        reify_ir::Value::Field { lambda, .. } => value_contains_selector(lambda),
+        reify_ir::Value::Lambda { captures, .. } => values_contain_selector(captures),
+        reify_ir::Value::StructureInstance(data) => {
+            data.fields.iter().any(|(_, v)| value_contains_selector(v))
+        }
+        _ => false,
+    }
+}
+
+/// True iff any value bound in `values` is or contains a
+/// [`reify_ir::Value::Selector`] (see [`value_contains_selector`]).
+fn values_contain_selector(values: &ValueMap) -> bool {
+    values.iter().any(|(_, v)| value_contains_selector(v))
+}
+
 // ── dispatch_volume_mesh ──────────────────────────────────────────────────────
 
 /// Outcome of [`dispatch_volume_mesh`]: either a tetrahedral volume mesh (tet
@@ -12479,7 +12924,8 @@ mod post_process_cross_sub_value_cells_tests;
 //
 // RED: `diagnose_topology_correspondence_drops` does not exist yet.
 // These tests drive the pure helper over hand-built AttributeHistory values
-// to verify the expected Warning diagnostics (one per non-zero counter).
+// to verify the expected Info diagnostics (one per non-zero counter; Info as
+// of task #5196, was Warning).
 // No OCCT kernel is required — all counters are plain u32 fields.
 
 #[cfg(test)]

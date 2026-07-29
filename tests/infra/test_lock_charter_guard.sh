@@ -216,25 +216,44 @@ echo "--- Cycle 4: --list-extensions drift guard + coherence ---"
 CANONICAL_EXTS="c
 cc
 cjs
+conf
 cpp
 css
 cts
 cxx
+diff
+envrc
+example
+example-systemd-config
 gcode
+gitattributes
+gitignore
+gitkeep
+gitmodules
+golden
+grammar
 h
 hh
 hpp
 html
+icns
+ico
+jq
 js
 json
 jsonc
+jsonl
 jsx
 lock
+log
+manifest
 md
 mjs
 mts
+npmrc
 png
 py
+python-version
 ri
 rs
 scss
@@ -243,10 +262,13 @@ sh
 step
 stl
 svg
+template
+timer
 toml
 ts
 tsx
 txt
+typed
 yaml
 yml"
 
@@ -260,6 +282,90 @@ while IFS= read -r _ext; do
     run_classify "f.$_ext"
     assert "--list-extensions coherence: classify 'f.$_ext' exits 0" test "$GUARD_RC" -eq 0
 done <<< "$GUARD_OUT"
+
+# ---------------------------------------------------------------------------
+# Cycle 5 — newly-allowlisted extensions ACCEPT (#5726)
+#
+# 22 extensions that a git-ls-files sweep found on real tracked files across
+# reify + dark-factory, but which _EXTS misclassified as directories.  The
+# originating symptom: declaring tests/infra/run-all-classification.manifest in
+# a lock charter was REJECTed as a directory.
+#
+# The 12 reify-evidenced extensions below use REAL tracked paths (verified with
+# git ls-files --error-unmatch).  The other 10 are dark-factory-evidenced and
+# use literal path strings — valid inputs because C-P3 forbids any stat, the
+# same property Cycle 1 case E1 relies on.
+#
+# step-1: verify RED; step-2 GREEN by expanding _EXTS.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle 5: newly-allowlisted extensions ACCEPT (#5726) ---"
+
+for _ext_path in \
+    "deploy/systemd/orchestrator-reify.service.d/warm-lane.conf" \
+    ".envrc" \
+    ".gitignore" \
+    "crates/reify-doc/tests/snapshots/.gitkeep" \
+    "crates/reify-fdm/tests/fixtures/toolpath_bracket.golden" \
+    "gui/src/editor/reify.grammar" \
+    "gui/src-tauri/icons/icon.icns" \
+    "gui/src-tauri/icons/icon.ico" \
+    "scripts/reify-audit-snapshot-filter.jq" \
+    "tests/infra/run-all-classification.manifest" \
+    "tree-sitter-reify/.npmrc" \
+    "deploy/systemd/reify-warm-lane-gc.timer" \
+    "orchestrator/tests/fixtures/expected.diff" \
+    ".env.example" \
+    "deploy/orchestrator.example-systemd-config" \
+    ".gitattributes" \
+    ".gitmodules" \
+    "logs/agent-events.jsonl" \
+    "logs/orchestrator.log" \
+    ".python-version" \
+    "orchestrator/templates/task-brief.template" \
+    "fused_memory/py.typed"
+do
+    run_classify "$_ext_path"
+    assert "classify '$_ext_path' exits 0 (ACCEPT)" test "$GUARD_RC" -eq 0
+    assert "classify '$_ext_path' stdout contains ACCEPT" test "${GUARD_OUT#*ACCEPT}" != "$GUARD_OUT"
+done
+
+# ---------------------------------------------------------------------------
+# Cycle 6 — dotted directory segments still REJECT (anti-dotfile-rule pin, #5726)
+#
+# Cycle 5 widened _EXTS with entries that read like dotfile names (gitignore,
+# envrc, npmrc, python-version).  The tempting generalisation — "a final segment
+# starting with a dot is a FILE" — is REJECTED, and this block pins that.
+#
+# All five paths below are real, untracked DIRECTORIES in the main checkout
+# (.worktrees is the orchestrator's entire worktree pool).  A blanket dotfile
+# rule would flip every one of them to ACCEPT and admit an over-wide charter:
+# exactly the failure the guard exists to prevent.  The allowlist stays
+# enumerated for this reason.
+#
+# Being untracked, two of them do not exist in a freshly-seeded warm lane — so
+# these assertions deliberately do not depend on the filesystem, and C-P3
+# guarantees they cannot: the verdict is identical either way.
+#
+# Green on arrival (these REJECT both before and after the Cycle 5 expansion),
+# so per G6 the pin was shown to FIRE rather than assumed to: inserting
+# `case "$seg" in .*) return 0 ;; esac` at the top of _is_file_path() in a
+# scratch copy of the guard fails all 10 assertions below.  Mutant not committed.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle 6: dotted directory segments still REJECT (#5726) ---"
+
+for _dot_dir in \
+    ".worktrees" \
+    ".task" \
+    ".claude" \
+    ".cargo" \
+    ".taskmaster"
+do
+    run_classify "$_dot_dir"
+    assert "anti-dotfile pin: classify '$_dot_dir' exits 1 (REJECT)" test "$GUARD_RC" -eq 1
+    assert "anti-dotfile pin: classify '$_dot_dir' stdout contains REJECT" test "${GUARD_OUT#*REJECT}" != "$GUARD_OUT"
+done
 
 # ---------------------------------------------------------------------------
 test_summary

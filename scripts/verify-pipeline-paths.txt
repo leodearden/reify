@@ -51,6 +51,15 @@ scripts/gen-nextest-config.sh
 #   next Rust task (the #4618/#4624→#4288 class; see CLAUDE.md).
 scripts/lib_slot_acquire.sh
 #
+# scripts/lib_lane_x_flock.sh: sibling lock-acquire lib sourced TRANSITIVELY
+#   by tests/infra/run_all.sh (--scope host-infra), same non-derivable
+#   property as scripts/lib_slot_acquire.sh above. Not derivable from
+#   verify.sh's direct 'source "$SCRIPT_DIR/..."' lines, so
+#   verify-pipeline-guard.sh's auto-derivation misses it. An edit to this lib
+#   alone would otherwise take the merge-worker config fast-path and ambush
+#   the next task that needs the lock (task 5672).
+scripts/lib_lane_x_flock.sh
+#
 # scripts/lib_clock_stop.sh: shared @@REIFY_CLOCK_*@@ emitter sourced TRANSITIVELY
 #   (verify.sh → lib_test_semaphore.sh → lib_slot_acquire.sh → lib_clock_stop.sh,
 #   AND verify.sh → cpu-admit.sh → lib_clock_stop.sh).  Not derivable from

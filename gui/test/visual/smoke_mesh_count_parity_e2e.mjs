@@ -69,9 +69,8 @@ import {
   checkMeshCountParity,
   extractMeshCountInputs,
   formatFailures,
-  isInBandError,
-  normalizeRpcEnvelope,
 } from './meshCountParity.mjs';
+import { isInBandError, makeDebugRpc } from './rpcEnvelope.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -121,31 +120,17 @@ function fail(msg) {
   process.exit(1);
 }
 
-async function rpc(method, args = {}) {
-  const res = await fetch(DEBUG_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'tools/call',
-      params: { name: method, arguments: args },
-    }),
-  });
-  // TWO FAILURE DIALECTS, one normalised shape — and the fold that unifies them
-  // lives in meshCountParity.mjs (CI-covered by meshCountParity.test.ts) rather
-  // than inline here, because this file can never run in CI. Frontend-mediated
-  // tools (viewport_state, via query_frontend) report failure in-band as JSON
-  // `{error: "<msg>"}`; Rust-dispatched tools — all THREE this smoke leans on
-  // hardest (engine_state, mesh_stats, demand_dispatch) — instead answer with
-  // `isError: true` plus a plain-text `Error: <msg>` block (debug_server.rs).
-  // Normalising the latter into the former routes both through the one
-  // `isInBandError` check below. A top-level envelope error is a TRANSPORT
-  // failure and still throws, so waitForServer's catch keeps polling.
-  const { transportError, payload } = normalizeRpcEnvelope(await res.json());
-  if (transportError !== undefined) throw new Error(transportError);
-  return payload;
-}
+// TWO FAILURE DIALECTS, one normalised shape — and both the fold that unifies
+// them and the tools/call request shape live in rpcEnvelope.mjs (CI-covered by
+// rpcEnvelope.test.ts) rather than inline here, because this file can never run
+// in CI. Frontend-mediated tools (viewport_state, via query_frontend) report
+// failure in-band as JSON `{error: "<msg>"}`; Rust-dispatched tools — all THREE
+// this smoke leans on hardest (engine_state, mesh_stats, demand_dispatch) —
+// instead answer with `isError: true` plus a plain-text `Error: <msg>` block
+// (debug_server.rs). Normalising the latter into the former routes both through
+// the one `isInBandError` check below. A top-level envelope error is a TRANSPORT
+// failure and still throws, so waitForServer's catch keeps polling.
+const rpc = makeDebugRpc(DEBUG_URL);
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));

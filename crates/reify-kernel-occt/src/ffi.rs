@@ -720,6 +720,15 @@ pub mod ffi {
         // --- Wire helpers / Loft ---
         fn make_circle_wire(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_circle_face(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
+        fn make_oriented_circle_face(
+            radius: f64,
+            cx: f64,
+            cy: f64,
+            cz: f64,
+            nx: f64,
+            ny: f64,
+            nz: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
         fn make_cylindrical_face(radius: f64, height: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_rectangle_face(
             width: f64,
@@ -850,6 +859,7 @@ pub mod ffi {
 
         // --- Wire queries ---
         fn wire_start_tangent(wire: &OcctShape) -> Result<Point3>;
+        fn wire_start_point(wire: &OcctShape) -> Result<Point3>;
 
         // --- Queries ---
         fn query_volume(shape: &OcctShape) -> Result<f64>;

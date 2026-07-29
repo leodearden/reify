@@ -2853,6 +2853,42 @@ std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height) {
     });
 }
 
+std::unique_ptr<OcctShape> make_oriented_circle_face(double radius, double cx, double cy,
+                                                     double cz, double nx, double ny,
+                                                     double nz) {
+    return wrap_occt_call("make_oriented_circle_face", [&]() {
+        if (!(std::isfinite(radius) && radius > 0.0)) {
+            throw std::runtime_error(
+                "make_oriented_circle_face: radius must be finite and positive");
+        }
+        // Build the profile directly on the caller's start frame: a circle
+        // centred at (cx,cy,cz) whose plane normal is (nx,ny,nz). gp_Ax2(P, N)
+        // constructs a valid orthonormal frame for ANY unit normal (including
+        // -Z), so there is no antiparallel singularity — positioning the circle
+        // here achieves both the translate-to-start-point and the
+        // rotate-normal-onto-tangent that MakePipe requires of the profile.
+        gp_Ax2 axes(gp_Pnt(cx, cy, cz), gp_Dir(nx, ny, nz));
+        Handle(Geom_Circle) circle = new Geom_Circle(axes, radius);
+        BRepBuilderAPI_MakeEdge edgeBuilder(circle);
+        if (!edgeBuilder.IsDone()) {
+            throw std::runtime_error("make_oriented_circle_face: MakeEdge failed");
+        }
+        TopoDS_Edge edge = edgeBuilder.Edge();
+        BRepBuilderAPI_MakeWire wireBuilder(edge);
+        if (!wireBuilder.IsDone()) {
+            throw std::runtime_error("make_oriented_circle_face: MakeWire failed");
+        }
+        TopoDS_Wire wire = wireBuilder.Wire();
+        BRepBuilderAPI_MakeFace faceBuilder(wire, Standard_True);
+        if (!faceBuilder.IsDone()) {
+            throw std::runtime_error("make_oriented_circle_face: MakeFace failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = faceBuilder.Face();
+        return result;
+    });
+}
+
 std::unique_ptr<OcctShape> make_cylindrical_face(double radius, double height) {
     return wrap_occt_call("make_cylindrical_face", [&]() {
         if (!(std::isfinite(radius) && radius > 0.0)) {
@@ -3606,6 +3642,21 @@ Point3 wire_start_tangent(const OcctShape& wire_shape) {
             throw std::runtime_error("wire_start_tangent: degenerate curve (zero tangent)");
         }
         return Point3{ v.X() / m, v.Y() / m, v.Z() / m };
+    });
+}
+
+Point3 wire_start_point(const OcctShape& wire_shape) {
+    return wrap_occt_call("wire_start_point", [&]() {
+        TopoDS_Wire w = TopoDS::Wire(wire_shape.shape);
+        if (w.IsNull()) {
+            throw std::runtime_error("wire_start_point: shape is not a wire");
+        }
+        BRepAdaptor_CompCurve adaptor(w);
+        double u = adaptor.FirstParameter();
+        gp_Pnt p;
+        gp_Vec v;
+        adaptor.D1(u, p, v);
+        return Point3{ p.X(), p.Y(), p.Z() };
     });
 }
 

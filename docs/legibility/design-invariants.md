@@ -8,10 +8,13 @@ the single normative copy — do not restate invariant text elsewhere; cite
 slugs. Stable slug ids are load-bearing (G7 waivers reference them).
 Numeric aliases INV-SF-* are prose convenience only.
 
-This first population is the **silent-failure family** (INV-SF-1..6),
+This first population is the **silent-failure family** (INV-SF-1..7),
 from the 2026-07-24 silent-undef/placeholder eradication investigation
 (dogfood session a0d342d4 → investigation session, probe evidence in the
-task census: #5360, #5345, #5385, #5386, #5197, #5390). Kleene 3-valued
+task census: #5360, #5345, #5385, #5386, #5197, #5390, #5392). INV-SF-7
+was appended 2026-07-25 from the same investigation's functional-
+enumeration probe; its evidence (#5392, and #5492 as suspected drift of
+the same seam) is recorded in its own section. Kleene 3-valued
 logic and undef-as-value are deliberate design; these invariants target
 **silence**, not undef. Conservative degradation (Indeterminate, skip,
 refuse) stays correct — but must always leave an observable trace. Other

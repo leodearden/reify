@@ -134,8 +134,15 @@ dimensioned. The precedent that the target type works end-to-end is `modal_analy
    `notch.rs:135`, `prismatic.rs:110`), all above their files' `#[cfg(test)]` boundary. The
    note's "zero consumers" claim is true only when scoped to `compute_targets/**`.
    Genuinely declared-only (zero production readers repo-wide): **`shear_modulus`**
-   (`materials_mechanical.ri:100`), **`thermal_conductivity`** (`materials_thermal.ri:39`,
-   `structural_physical.ri:148`), **`thermal_expansion`** (`materials_thermal.ri:41`).
+   (`materials_mechanical.ri:100`) and **`thermal_expansion`** (`materials_thermal.ri:41`).
+   **`thermal_conductivity` is not one of them** (corrected by ο): the name is declared at two
+   independent sites that differ. `ThermallyConductive.thermal_conductivity`
+   (`structural_physical.ri:148`) has a **live DSL reader** — `structural_physical.ri:150`
+   carries `constraint thermal_conductivity > 0W/(m*K)` — so for that site the zero-reader
+   claim holds only when scoped to **Rust/host** readers.
+   `ThermallyCharacterized.thermal_conductivity` (`materials_thermal.ri:39`) is a separate
+   param that merely shares the name and has no reader of its own. The declared-only register
+   in `docs/reify-stdlib-reference.md` §6.3 is the canonical record of both sites.
 3. **The four fields are not on `Material`.** `Material` (`materials_mechanical.ri:82`) carries
    only `name` / `density : Density` / `youngs_modulus : Pressure` / `appearance`. The rest live
    on the `ElasticMaterial` / `Elastic` / `ThermallyCharacterized` / `ThermallyConductive`
@@ -546,10 +553,11 @@ waiver. No G7 waivers are required.
   function name.
 - **ο — stale-doc correction + declared-only register.** *Signal:*
   `docs/reify-stdlib-reference.md:979-1047`'s ~12 `Real`/"pending #3111" mismatches are
-  corrected against the live `Density`/`Pressure`/`Energy` declarations; `shear_modulus`,
-  `thermal_conductivity` and `thermal_expansion` are registered as **declared-only with zero
-  production readers** and a named tracking task is filed for each (or one shared); the
-  research note's `cte` and `yield_stress` premises are corrected in place.
+  corrected against the live `Density`/`Pressure`/`Energy` declarations; `shear_modulus` and
+  `thermal_expansion` are registered as **declared-only with zero production readers** under a
+  named tracking task (**#5801**); `thermal_conductivity` is **not** registered — it is recorded
+  with its corrected split status instead (§2.4 correction 2); the research note's `cte` and
+  `yield_stress` premises are corrected in place.
 - **π — integration gate.** Prereq β, γ3, δ, ε, ζ, η, θ, ι, λ. *Signal:* the full §8
   boundary-test table runs green as a gate-resident suite, with B1/B2 asserting **application**
   of the load rather than the presence of a warning.
@@ -574,9 +582,12 @@ waiver. No G7 waivers are required.
   follow-up (decision 6).
 - **`AnalysisResult`'s six `Real` params** — a declared dimension-agnostic structural contract
   (`analysis.ri:23-28`), not a silent placeholder.
-- **Consumers for the declared-only `shear_modulus` / `thermal_conductivity` /
-  `thermal_expansion`** — registered and tracked (ο), not built here; there is no thermal or
-  orthotropic-shear solver to consume them.
+- **Consumers for the declared-only `shear_modulus` / `thermal_expansion`** — registered and
+  tracked (ο), not built here; there is no thermal or orthotropic-shear solver to consume them.
+- **A Rust/host consumer for `thermal_conductivity`** — not built here for the same reason (no
+  thermal solver), but it is *not* declared-only and so is deliberately absent from the ο
+  register: `ThermallyConductive.thermal_conductivity` already has a live DSL reader at
+  `structural_physical.ri:150` (§2.4 correction 2).
 - **The `trait Analysis.yield_strength` vs `trait Strong.yield_strength` name collision** —
   flagged for the naming-convergence program.
 

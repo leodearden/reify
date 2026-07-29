@@ -28,5 +28,14 @@ mod diagnostics_cache_replay_migration;
 mod joint_drive_cluster_formation;
 #[path = "harness_engine/reset_per_build_state_classification.rs"]
 mod reset_per_build_state_classification;
+// Task #5196's capstone acceptance e2e lands here for the same reason #5056's
+// did: a NEW top-level `tests/*.rs` in a consolidatable crate would be an
+// anti-re-accretion violation (scripts/check-harness-baseline-registration.sh,
+// task #5300) unless grandfathered into the shrinking baseline ratchet, and
+// growing that ratchet works against the C1 consolidation direction.
+#[path = "harness_engine/topology_diagnostic_denoise_e2e.rs"]
+mod topology_diagnostic_denoise_e2e;
+// Task #5045's flat-sort/Kahn-core delegation differential test lands here for
+// the same anti-re-accretion reason as #5196's above.
 #[path = "harness_engine/flat_sort_kahn_core_delegation.rs"]
 mod flat_sort_kahn_core_delegation;
