@@ -13025,6 +13025,7 @@ mod reset_per_build_state_tests {
                 axis_origin: [0.0, 0.0, 0.0],
                 axis_dir: [0.0, 0.0, 1.0],
                 angle_rad: 1.0,
+                profile: GeometryHandleId(0),
             },
         );
 
