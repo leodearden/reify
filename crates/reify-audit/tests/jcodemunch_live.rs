@@ -353,21 +353,57 @@ fn live_audit_produces_p1_and_pdead_findings() {
 #[cfg(test)]
 mod serve_preflight {
     use super::*;
-    use std::net::TcpListener;
+    use std::net::{SocketAddr, TcpListener};
 
-    /// A freed port (bind → record → drop listener) must be reported as
-    /// unreachable.  This mirrors cli.rs's `closed_port_url` idiom and
-    /// exercises the TCP-connect gate the `#[ignore]` capstone uses to
-    /// skip cleanly when jcodemunch-serve is not running.
-    #[test]
-    fn closed_port_is_not_reachable() {
+    /// URL the preflight gate is probed against.
+    ///
+    /// Binds an OS-assigned port, records it, then drops the listener so the
+    /// port is freed before the probe runs.
+    fn preflight_probe_url() -> String {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
         let port = listener.local_addr().expect("local_addr").port();
         drop(listener); // port is now freed
-        let url = format!("http://127.0.0.1:{port}/mcp");
+        format!("http://127.0.0.1:{port}/mcp")
+    }
+
+    /// The endpoint the preflight gate probes must be unreachable BY
+    /// CONSTRUCTION — not merely unowned at the instant its URL was minted.
+    ///
+    /// A freed port is only unowned: anything that binds an ephemeral port in
+    /// the meantime can be handed that exact port, at which point the gate
+    /// reports "serve is up" and the `#[ignore]` capstone stops skipping
+    /// cleanly. This test collapses that race into a deterministic single
+    /// shot by binding the exact `host:port` the URL names and holding it
+    /// across the probe.
+    ///
+    /// This is not redundant with cli.rs's regression locks: those go through
+    /// ureq/HTTP inside the child binary, whereas `jcodemunch_serve_reachable`
+    /// is a bare `TcpStream::connect_timeout`, so a mere listener — no HTTP
+    /// responder needed — is enough to defeat it.
+    #[test]
+    fn unreachable_sentinel_is_not_reachable_under_a_racing_binder() {
+        let url = preflight_probe_url();
+        let host_port = url
+            .trim_start_matches("http://")
+            .split('/')
+            .next()
+            .expect("url has a host:port segment");
+        let addr: SocketAddr = host_port
+            .parse()
+            .unwrap_or_else(|e| panic!("'{host_port}' must parse as a SocketAddr: {e}"));
+
+        // Play the adversary: occupy the exact address the URL names, and
+        // hold it across the assertion below. A bind request for port 0 is a
+        // request for an *ephemeral* port, so it comes back bound elsewhere
+        // and is correctly reported as "no hijack".
+        let _hijack = TcpListener::bind(addr)
+            .ok()
+            .filter(|l| l.local_addr().ok().map(|a| a.port()) == Some(addr.port()));
+
         assert!(
             !jcodemunch_serve_reachable(&url),
-            "freed port {port} must not be reported as reachable"
+            "{url} must not be reported as reachable even while a racing \
+             binder holds {addr}"
         );
     }
 }
