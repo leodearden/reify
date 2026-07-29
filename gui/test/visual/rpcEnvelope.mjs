@@ -180,3 +180,56 @@ export function normalizeRpcEnvelope(envelope) {
 
   return { payload: parseTextPayload(textBlock.text) };
 }
+
+/**
+ * Build the `rpc(method, args)` helper every live smoke driver calls.
+ *
+ * This is the ONE home for the debug-MCP `tools/call` request shape. All six
+ * drivers had a byte-identical copy of it; one definition here means a change to
+ * the wire format has a single edit site, and — because the drivers themselves
+ * can never run in CI — it is the only form in which that request shape can be
+ * covered by a test at all (`./rpcEnvelope.test.ts`).
+ *
+ * TWO FAILURE DIALECTS, one normalised shape — see {@link normalizeRpcEnvelope}
+ * for the fold. Frontend-mediated tools (`viewport_state` and friends, via
+ * `query_frontend`) report failure in-band as JSON `{error: "<msg>"}`;
+ * Rust-dispatched tools (`engine_state`, `mesh_stats`, `demand_dispatch`) instead
+ * answer with `isError: true` plus a plain-text `Error: <msg>` block
+ * (debug_server.rs). Both reach the caller as `{error: "<msg>"}`, so one
+ * {@link isInBandError} check covers every tool.
+ *
+ * THE THROW/RESOLVE SPLIT is the contract, and it is load-bearing: a §2c
+ * TRANSPORT error THROWS, while a tool error RESOLVES to `{error}`. That is what
+ * lets a driver's `waitForServer` poll inside a bare `catch {}` — a throw means
+ * "server not up yet, keep waiting", whereas a resolved `{error}` means the
+ * server answered and the TOOL failed, which no amount of waiting will fix.
+ *
+ * `id: 1` is inherited verbatim from the drivers: each issues its requests
+ * strictly sequentially and never matches a response back to its id, so a
+ * constant is safe. A concurrent caller would need real ids.
+ *
+ * @param {string} debugUrl  The `/mcp` endpoint, e.g. `http://127.0.0.1:3939/mcp`.
+ * @param {{fetchImpl?: typeof fetch}} [options]  `fetchImpl` defaults to the
+ *        global `fetch` (Node 18+, which the drivers already assume). It exists
+ *        so the suite can exercise this function without a live server.
+ * @returns {(method: string, args?: Record<string, unknown>) => Promise<unknown>}
+ */
+export function makeDebugRpc(debugUrl, options = {}) {
+  const fetchImpl = options.fetchImpl ?? fetch;
+
+  return async function rpc(method, args = {}) {
+    const res = await fetchImpl(debugUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: method, arguments: args },
+      }),
+    });
+    const { transportError, payload } = normalizeRpcEnvelope(await res.json());
+    if (transportError !== undefined) throw new Error(transportError);
+    return payload;
+  };
+}
