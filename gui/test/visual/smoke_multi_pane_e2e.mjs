@@ -38,6 +38,7 @@
 
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { makeDebugRpc } from './rpcEnvelope.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -69,29 +70,17 @@ function fail(msg) {
   process.exit(1);
 }
 
-async function rpc(method, args = {}) {
-  const res = await fetch(DEBUG_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'tools/call',
-      params: { name: method, arguments: args },
-    }),
-  });
-  const envelope = await res.json();
-  if (envelope.error) throw new Error(`RPC error: ${JSON.stringify(envelope.error)}`);
-  const content = envelope?.result?.content;
-  if (!content || content.length === 0) return null;
-  const textBlock = content.find(c => c.type === 'text');
-  if (!textBlock) return null;
-  try {
-    return JSON.parse(textBlock.text);
-  } catch {
-    return textBlock.text;
-  }
-}
+// The tools/call request shape and the envelope decode live in rpcEnvelope.mjs
+// (CI-covered by rpcEnvelope.test.ts) rather than inline here, because this file
+// can never run in CI. `rpc()` now reports BOTH failure dialects as the ONE
+// in-band shape `{error: "<msg>"}`: frontend-mediated tools (viewport_state,
+// orbit_camera, ... via query_frontend) already answer in-band that way, and
+// Rust-dispatched `isError: true` + plain-text `Error: <msg>` blocks are folded
+// into it. That fold is what lets the five `'error' in X` guards below stay
+// guards: given a bare string they threw a TypeError and this driver died at
+// exit 2 instead of reporting a clean exit-1 failure. A top-level envelope error
+// is a TRANSPORT failure and still throws, so waitForServer keeps polling.
+const rpc = makeDebugRpc(DEBUG_URL);
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
@@ -205,7 +194,7 @@ async function main() {
     meshInfo: pane1State?.meshInfo?.map(m => m.entityPath),
   }));
 
-  if (!pane1State || 'error' in pane1State) {
+  if (!pane1State || typeof pane1State !== 'object' || 'error' in pane1State) {
     fail(`viewport_state('pane-1') failed: ${JSON.stringify(pane1State)}`);
   }
 
@@ -235,7 +224,7 @@ async function main() {
     meshInfo: mainState?.meshInfo?.map(m => m.entityPath),
   }));
 
-  if (!mainState || 'error' in mainState) {
+  if (!mainState || typeof mainState !== 'object' || 'error' in mainState) {
     fail(`viewport_state('design-main') failed: ${JSON.stringify(mainState)}`);
   }
 
@@ -262,7 +251,7 @@ async function main() {
 
   // Capture design-main camera before orbit
   const mainBefore = await rpc('viewport_state', { viewportId: 'design-main' });
-  if (!mainBefore || 'error' in mainBefore) {
+  if (!mainBefore || typeof mainBefore !== 'object' || 'error' in mainBefore) {
     fail(`viewport_state('design-main') pre-orbit failed: ${JSON.stringify(mainBefore)}`);
   }
   const mainCamBefore = mainBefore.camera;
@@ -279,7 +268,7 @@ async function main() {
     camera: orbitResult?.camera,
   }));
 
-  if (!orbitResult || 'error' in orbitResult) {
+  if (!orbitResult || typeof orbitResult !== 'object' || 'error' in orbitResult) {
     fail(`orbit_camera('pane-1') failed: ${JSON.stringify(orbitResult)}`);
   }
 
@@ -293,7 +282,7 @@ async function main() {
 
   // design-main camera must be UNCHANGED (independent cameras)
   const mainAfter = await rpc('viewport_state', { viewportId: 'design-main' });
-  if (!mainAfter || 'error' in mainAfter) {
+  if (!mainAfter || typeof mainAfter !== 'object' || 'error' in mainAfter) {
     fail(`viewport_state('design-main') post-orbit failed: ${JSON.stringify(mainAfter)}`);
   }
   const mainCamAfter = mainAfter.camera;

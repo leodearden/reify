@@ -34,6 +34,7 @@
 
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { makeDebugRpc } from './rpcEnvelope.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -73,29 +74,16 @@ function fail(msg) {
   process.exit(1);
 }
 
-async function rpc(method, args = {}) {
-  const res = await fetch(DEBUG_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'tools/call',
-      params: { name: method, arguments: args },
-    }),
-  });
-  const envelope = await res.json();
-  if (envelope.error) throw new Error(`RPC error: ${JSON.stringify(envelope.error)}`);
-  const content = envelope?.result?.content;
-  if (!content || content.length === 0) return null;
-  const textBlock = content.find(c => c.type === 'text');
-  if (!textBlock) return null;
-  try {
-    return JSON.parse(textBlock.text);
-  } catch {
-    return textBlock.text;
-  }
-}
+// The tools/call request shape and the envelope decode live in rpcEnvelope.mjs
+// (CI-covered by rpcEnvelope.test.ts) rather than inline here, because this file
+// can never run in CI. `rpc()` now reports BOTH failure dialects as the ONE
+// in-band shape `{error: "<msg>"}`: frontend-mediated tools (open_file,
+// editor_content, ... via query_frontend) already answer in-band that way, and
+// Rust-dispatched `isError: true` + plain-text `Error: <msg>` blocks are folded
+// into it. This driver's consumers are property reads that are safe under both
+// shapes, so only the printed diagnostic text changes. A top-level envelope error
+// is a TRANSPORT failure and still throws, so waitForServer keeps polling.
+const rpc = makeDebugRpc(DEBUG_URL);
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
