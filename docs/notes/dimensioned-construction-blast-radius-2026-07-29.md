@@ -250,7 +250,147 @@ git ls-files -- 'examples/*.ri' 'crates/*.ri' 'crates/*.rs' \
 
 ## §1 Flipped-predicate run + transcript (step-1)
 
-*(filled by step-1)*
+The local flip from the repro block was applied, all four suites named by
+the plan were run and their full (skim-wrapper-bypassed) output captured,
+then the flip was reverted and `git diff --exit-code -- crates/` re-confirmed
+clean before this section was written. Build environment: `RUSTC_WRAPPER=sccache
+CARGO_INCREMENTAL=0` (per CLAUDE.md), warm seeded `target/`.
+
+### 1.1 Summary
+
+| Suite | Crate | Result under flip | Detail |
+|---|---|---|---|
+| `examples_smoke::no_example_emits_ctor_field_conformance_diagnostics` | `reify-compiler` | **RED** (exit 101) | 7 diagnostics / 250 exercised `examples/**` files |
+| `struct_ctor_field_conformance_tests` (whole file, incl. `param_default_*`) | `reify-compiler` | **RED** (exit 101) | 39 passed, 1 failed — exactly one test, a deliberate negative fixture |
+| `input_shape_eval_e2e` | `reify-eval` | GREEN (exit 0) | 3/3 passed — **uninformative**, see 1.4 |
+| `auto_type_param_determinism_tests` | `reify-eval` | GREEN (exit 0) | 11/11 passed — **uninformative**, see 1.4 |
+
+### 1.2 `examples_smoke` transcript (verbatim, compile noise elided)
+
+Command: `RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 cargo test -p reify-compiler --test examples_smoke no_example_emits_ctor_field_conformance_diagnostics -- --nocapture --test-threads=1`
+
+```
+running 1 test
+test no_example_emits_ctor_field_conformance_diagnostics ...
+thread 'no_example_emits_ctor_field_conformance_diagnostics' (1643844) panicked at crates/reify-compiler/tests/examples_smoke.rs:228:9:
+ctor-conformance corpus gate: 7 diagnostic(s) across 250 exercised example files.
+Every one is a struct-ctor field-conformance diagnostic fired against a shipped example — i.e. a false positive from the conformance walker, not a broken example.
+Fix the walker in crates/reify-compiler/src/conformance/mod.rs — either the family's dedicated shape-based arm in `walk_param_against_arg_type` (Vector / Point / Field / Matrix / Tensor) or the `general_leaf_param_family_is_validated` allowlist that gates the general concrete-leaf arm; do NOT add a SKIP_SET entry.
+
+  bearing_auto_seal.ri [ArgTypeMismatch] argument 'durometer' has type 'Real' but param 'durometer' requires type 'Scalar[m]'
+  trajectory/printer_print_envelope.ri [ArgTypeMismatch] argument 'velocity_limit' has type 'Real' but param 'velocity_limit' requires type 'Scalar[m·s^-1]'
+  trajectory/printer_print_envelope.ri [ArgTypeMismatch] argument 'acceleration_limit' has type 'Real' but param 'acceleration_limit' requires type 'Scalar[m·s^-2]'
+  trajectory/printer_print_envelope.ri [ArgTypeMismatch] argument 'max_force' has type 'Real' but param 'max_force' requires type 'Scalar[m·kg·s^-2]'
+  trajectory/tots_optimal_ptp.ri [ArgTypeMismatch] argument 'max_force' has type 'Real' but param 'max_force' requires type 'Scalar[m·kg·s^-2]'
+  trajectory/tots_optimal_ptp.ri [ArgTypeMismatch] argument 'velocity_limit' has type 'Real' but param 'velocity_limit' requires type 'Scalar[m·s^-1]'
+  trajectory/tots_optimal_ptp.ri [ArgTypeMismatch] argument 'acceleration_limit' has type 'Real' but param 'acceleration_limit' requires type 'Scalar[m·s^-2]'
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 4.75s
+```
+
+`exercised = 250` = 258 tracked `examples/**/*.ri` files minus 8 `SKIP_SET`
+entries (`examples_smoke.rs:26-122`) — reconciles exactly.
+
+**Reconciliation against the already-known §6.2/§6.3 tables (cross-check
+required by step-3):** these 7 hits are the **union** of two already-documented
+buckets, with zero new sites:
+- **6 are §6.3 BARE ctor-call sites**, already in the known 17-site table:
+  `printer_print_envelope.ri` ×3 (`velocity_limit`, `acceleration_limit`,
+  `max_force`) + `tots_optimal_ptp.ri` ×3 (same three fields) — gate 1.
+- **1 is the §6.2 category-A param-default site**: `bearing_auto_seal.ri`'s
+  `durometer` — gate 2, fired against the structure's own default value
+  (`param durometer : Length = 70.0`), not a call site (no `NitrileSeal(durometer: …)`
+  call exists anywhere in the corpus — confirmed by grep). The diagnostic
+  wording (`argument 'durometer' has type 'Real' but param 'durometer'
+  requires type 'Scalar[m]'`) is identical in shape to a ctor-call violation
+  because both gates share the same `walk_param_against_arg` machinery
+  (§0 anchor table #2, #4) — only the call site (default-expression vs.
+  named ctor arg) distinguishes them.
+
+6 + 1 = 7. **No transcript hit falls outside the known table — the
+cross-check is clean.**
+
+### 1.3 `struct_ctor_field_conformance_tests` transcript (verbatim, passing tests elided)
+
+Command: `RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 cargo test -p reify-compiler --test struct_ctor_field_conformance_tests -- --test-threads=4`
+
+```
+running 40 tests
+test excluded_family_dimensioned_scalar_given_dimensionless_real_is_silent ... FAILED
+
+failures:
+
+---- excluded_family_dimensioned_scalar_given_dimensionless_real_is_silent stdout ----
+
+thread 'excluded_family_dimensioned_scalar_given_dimensionless_real_is_silent' (1680670) panicked at crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs:1455:5:
+dimensioned Scalar params given dimensionless Real args must emit ZERO ctor-conformance diagnostics — a bare numeric literal at a dimensioned slot is idiomatic across the corpus. Got: [
+    Diagnostic {
+        severity: Warning,
+        message: "argument 'velocity_limit' has type 'Real' but param 'velocity_limit' requires type 'Scalar[m·s^-1]'",
+        ...
+        code: Some(ArgTypeMismatch),
+    },
+    Diagnostic {
+        severity: Warning,
+        message: "argument 'acceleration_limit' has type 'Real' but param 'acceleration_limit' requires type 'Scalar[m·s^-2]'",
+        ...
+        code: Some(ArgTypeMismatch),
+    },
+]
+
+failures:
+    excluded_family_dimensioned_scalar_given_dimensionless_real_is_silent
+
+test result: FAILED. 39 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.70s
+```
+
+**Classification: DELIBERATE NEGATIVE TEST — TO INVERT.** The test's own name
+(`..._is_silent`) and assertion message ("must emit ZERO ctor-conformance
+diagnostics — a bare numeric literal at a dimensioned slot is idiomatic
+across the corpus") assert exactly the pre-flip behaviour this whole PRD
+exists to reverse; `γ` inverts this test's expectation (or removes it) as
+part of promoting the predicate. This is the canonical example of the
+"DELIBERATE-NEGATIVE-TEST-TO-INVERT" disposition used throughout §§2-9.
+Full diagnostic bodies (elided above with `...`) are byte-identical to the
+`printer_print_envelope.ri` pair already quoted in §1.2 — same underlying
+fixture data, exercised via a second harness path.
+
+### 1.4 Why the two `reify-eval` suites stayed GREEN (structural finding, not a data point)
+
+Both `input_shape_eval_e2e.rs` and `auto_type_param_determinism_tests.rs`
+passed 100% under the flip (3/3 and 11/11). This is **not evidence their
+fixtures are clean** — `input_shape_eval_e2e.rs:248,255,256` are three of
+the already-known 17 BARE sites (`JointLimit(joint: 0.0, max_force: 100.0)`,
+`TOTSShaper(..., velocity_limit: 300.0, acceleration_limit: 5000.0, ...)`)
+and still fire Warning-severity diagnostics under the flip. Grepping both
+files for `diagnostics` confirms neither suite ever inspects
+`compiled.diagnostics` for emptiness — `input_shape_eval_e2e.rs`'s own doc
+comment says it "panics with diagnostics on any **compile error**" only,
+i.e. it only reacts to `Severity::Error`. Since `CTOR_FIELD_CONFORMANCE_SEVERITY`
+is `Warning` (§0 anchor table #3, untouched by α), compilation still
+succeeds and these suites' actual assertions (evaluated numeric results,
+determinism/candidate-selection behaviour) are unaffected. **General rule
+confirmed by this session's four-suite sample: a suite only goes RED under
+the flip if it explicitly asserts on ctor-conformance diagnostic content
+(`examples_smoke`'s corpus-wide scan, or a dedicated `struct_ctor_field_conformance_tests`
+assertion) — compile-success-only suites are silent regardless of how many
+BARE sites they touch.** This matters for reading §§2-9: RED/GREEN test
+status is not a substitute for the direct-inspection site classification
+those sections perform.
+
+### 1.5 Revert proof
+
+```
+$ git diff --exit-code -- crates/
+$ echo $?
+0
+```
+
+No diagnostic/behaviour change survives this section; the predicate at
+`conformance/mod.rs:1694` reads `Type::Scalar { dimension } => dimension.is_dimensionless(),`
+identically to HEAD both before and after this measurement.
 
 ## §2 Item 7a — §6.2 re-confirmation: gates 3+4, δ₁'s blast radius (step-2)
 
