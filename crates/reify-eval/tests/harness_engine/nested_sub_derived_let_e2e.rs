@@ -643,3 +643,161 @@ structure def Parent {
         "the template-scope cycle diagnostic for Mid must survive unchanged; got: {errors:?}",
     );
 }
+
+/// (t8a) The phase-1.5 cycle GATE must key on actual cycle membership, not on
+/// "was omitted by Kahn".
+///
+/// `topological_sort` emits a node only once its in-degree reaches 0. A node
+/// whose dependency sits in a cycle never sees that dependency placed, so it is
+/// never emitted either — recursively. The omitted set is therefore a strict
+/// SUPERSET of the cycle: it also holds everything TRANSITIVELY DOWNSTREAM.
+///
+/// Here the only real cycle is the pure-let `a <-> b`. `sub k` merely reads `a`,
+/// and `tail` merely reads `self.k.off` — one hop further, to pin that the
+/// over-approximation is transitive rather than one-deep. Gating on the omitted
+/// set makes `touches_sub` fire anyway, so the "one owner per cycle class"
+/// invariant that t6 pins is broken by a downstream sub: this fixture emits TWO
+/// instance-scope errors naming `Parent.m` (phase 1.5's plus
+/// `elaborate_child_lets_only`'s) where t6's sub-free variant emits one.
+#[test]
+fn nested_pure_let_cycle_with_downstream_sub_is_reported_once_per_scope() {
+    const SOURCE: &str = r#"
+structure def Kid {
+    param w : Length = 1mm
+    let off = w * 2.0
+}
+
+structure def Mid {
+    let a = b * 2.0
+    let b = a * 2.0
+    sub k = Kid(w: a)
+    let tail = self.k.off * 3.0
+}
+
+structure def Parent {
+    sub m = Mid()
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let errors: Vec<&Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    // Same assertion shape as t6, so the two read as a pair: a pure-let cycle
+    // has exactly one instance-scope owner, whether or not something downstream
+    // of it happens to be a sub.
+    let instance_scoped: Vec<&&Diagnostic> = errors
+        .iter()
+        .filter(|d| {
+            let m = &d.message;
+            (m.contains("circular") || m.contains("cyclic")) && m.contains("Parent.m")
+        })
+        .collect();
+    assert_eq!(
+        instance_scoped.len(),
+        1,
+        "a pure-let cycle with a merely-downstream sub must still be reported exactly \
+         once at instance scope \"Parent.m\"; got {} such errors: {instance_scoped:?}",
+        instance_scoped.len(),
+    );
+
+    // Precision, not just count: the survivor must name the real participants
+    // only. `sub k` and `tail` are downstream of the cycle, not on it.
+    let message = &instance_scoped[0].message;
+    assert!(
+        !message.contains("sub k"),
+        "the instance-scope cycle diagnostic must not name \"sub k\", which is merely \
+         downstream of the a<->b cycle; got: {message}",
+    );
+    assert!(
+        !message.contains("tail"),
+        "the instance-scope cycle diagnostic must not name \"tail\", which is merely \
+         downstream of the a<->b cycle; got: {message}",
+    );
+
+    // Template scope must still fire. Deliberately an existence check, not a
+    // count: this fixture draws TWO template-scope errors from two distinct
+    // pre-existing emitters in `engine_eval.rs`, neither touched by this task.
+    assert!(
+        errors.iter().any(|d| {
+            let m = &d.message;
+            (m.contains("circular") || m.contains("cyclic"))
+                && m.contains("template Mid")
+                && !m.contains("Parent.m")
+        }),
+        "the template-scope cycle diagnostic for Mid must survive unchanged; got: {errors:?}",
+    );
+}
+
+/// (t8b) The phase-1.5 cycle diagnostic's PARTICIPANT LIST must name only nodes
+/// actually on the cycle.
+///
+/// The counterpart to t8a: here the cycle `relay <-> sub k` is genuine and does
+/// contain a sub, so phase 1.5 still owns it and the diagnostic must still fire
+/// — proving the fix TRIMS the participant list rather than merely suppressing
+/// the diagnostic. `tail` reads `relay` and so is dropped by Kahn too, but it is
+/// downstream, not a participant. A diagnostic whose whole job is to NAME the
+/// unresolvable cells must not name innocents.
+#[test]
+fn nested_sub_cycle_diagnostic_names_only_real_participants() {
+    const SOURCE: &str = r#"
+structure def Kid {
+    param v : Length = 1mm
+    let off = v * 2.0
+}
+
+structure def Mid {
+    sub k = Kid(v: relay)
+    let relay = self.k.off
+    let tail = relay * 3.0
+}
+
+structure def Parent {
+    sub m = Mid()
+    let echo = self.m.relay
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let errors: Vec<&Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    let instance_scoped: Vec<&&Diagnostic> = errors
+        .iter()
+        .filter(|d| {
+            let m = &d.message;
+            (m.contains("circular") || m.contains("cyclic")) && m.contains("Parent.m")
+        })
+        .collect();
+    assert!(
+        !instance_scoped.is_empty(),
+        "a genuine cycle through a nested sub must still be diagnosed at instance scope \
+         \"Parent.m\" — trimming the participant list must not silence it; got: {errors:?}",
+    );
+
+    assert!(
+        instance_scoped
+            .iter()
+            .any(|d| d.message.contains("relay") && d.message.contains("sub k")),
+        "the instance-scope cycle diagnostic must still name both real participants — the \
+         let \"relay\" and the sub \"k\"; got: {instance_scoped:?}",
+    );
+    for d in &instance_scoped {
+        assert!(
+            !d.message.contains("tail"),
+            "the instance-scope cycle diagnostic must not name \"tail\", which reads \
+             \"relay\" but lies on no cycle; got: {}",
+            d.message,
+        );
+    }
+}
