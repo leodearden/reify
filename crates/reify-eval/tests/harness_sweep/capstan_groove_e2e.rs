@@ -50,6 +50,7 @@
 //!          never counts it, so that outer half-lens has to be added back at
 //!          each end. Over BOTH ends that is exactly ONE full-disc lens,
 //!          ≈ +1.5 %.
+//!
 //!      Net ≈ −3.9 %: that is what band (1) has to swallow, and the entire
 //!      reason it cannot be an equality.
 //!
