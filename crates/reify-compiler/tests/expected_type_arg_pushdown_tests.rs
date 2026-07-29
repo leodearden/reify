@@ -16,23 +16,7 @@
 //! with no stdlib) — the established arg-position test pattern.
 
 use reify_core::{DiagnosticCode, Severity, Type};
-use reify_test_support::compile_source;
-
-/// Locate the `default_expr` of a named value cell in the first template.
-fn cell_expr<'a>(
-    module: &'a reify_compiler::CompiledModule,
-    member: &str,
-) -> &'a reify_ir::CompiledExpr {
-    let template = &module.templates[0];
-    template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == member)
-        .unwrap_or_else(|| panic!("value cell '{member}' not found"))
-        .default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("value cell '{member}' has no default_expr"))
-}
+use reify_test_support::{compile_source, get_let_expr};
 
 // ── step-3 tests: §7#5 positive push-down (List / Set / Map parity) ──────────
 
@@ -83,7 +67,7 @@ fn pushdown_list_arg_resolves_empty_literal_to_param_element_type() {
     );
 
     // Resolved result type is Int.
-    let n_expr = cell_expr(&module, "n");
+    let n_expr = get_let_expr(&module, "n");
     assert_eq!(
         n_expr.result_type,
         Type::Int,
@@ -139,7 +123,7 @@ fn pushdown_set_arg_resolves_empty_literal_to_param_element_type() {
         "§7#5 Set: expected no empty-set-inference warning for f(set {{}}), got: {warnings:?}"
     );
 
-    let n_expr = cell_expr(&module, "n");
+    let n_expr = get_let_expr(&module, "n");
     assert_eq!(
         n_expr.result_type,
         Type::Int,
@@ -195,7 +179,7 @@ fn pushdown_map_arg_resolves_empty_literal_to_param_key_value_types() {
         "§7#5 Map: expected no empty-map-inference warning for g(map {{}}), got: {warnings:?}"
     );
 
-    let n_expr = cell_expr(&module, "n");
+    let n_expr = get_let_expr(&module, "n");
     assert_eq!(
         n_expr.result_type,
         Type::Int,
@@ -237,7 +221,7 @@ fn pushdown_non_regression_nonempty_list_arg_unchanged() {
         "non-regression: firstlen([1mm]) should compile cleanly, got errors: {errors:?}"
     );
 
-    let n_expr = cell_expr(&module, "n");
+    let n_expr = get_let_expr(&module, "n");
     assert_eq!(
         n_expr.result_type,
         Type::Int,
@@ -339,7 +323,7 @@ fn pushdown_bound_by_other_arg_suppresses_type_undetermined() {
     );
 
     // The call resolves to Int.
-    let n_expr = cell_expr(&module, "n");
+    let n_expr = get_let_expr(&module, "n");
     assert_eq!(
         n_expr.result_type,
         Type::Int,
