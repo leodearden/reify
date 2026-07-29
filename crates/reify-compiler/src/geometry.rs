@@ -1499,7 +1499,8 @@ fn compile_geometry_call_inner(
                 // Dimensionless scale factor — the enclosing binop already carries
                 // `height.result_type` (LENGTH). Retyping this to LENGTH would make the
                 // product Scalar{AREA} at eval and the length gate would reject it. Pinned by
-                // rounded_box_dz_is_length_scaled_by_a_dimensionless_factor.
+                // cylinder_centered_lowers_to_cylinder_plus_translate, whose dz arm requires
+                // the Mul's right operand to be a bare `Literal(Real(..))`.
                 CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::dimensionless_scalar()),
                 height.result_type.clone(),
             );
