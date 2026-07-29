@@ -977,8 +977,8 @@ trait HydraulicPort : FluidPort + MechanicalPort {
 
 ```
 // Base trait — every material-conforming structure satisfies this contract.
-// Note: density shown as Density (aspirational dimensioned type); shipped MaterialSpec
-// uses density : Real pending dimensional-type tightening (#3111-family).
+// Note: density : Density is SHIPPED, not aspirational — the dimensional-type
+// tightening has landed and this block matches materials_mechanical.ri verbatim.
 trait MaterialSpec {
     param density : Density
     param name : String
@@ -987,10 +987,13 @@ trait MaterialSpec {
 // Canonical first-class material value type (shipped in materials_mechanical.ri,
 // task #1876 / #2411). Use MaterialSpec above for trait-typed params; use this struct
 // when you want a concrete material value (e.g. Material(name: "steel", ...)).
-structure def Material {
+// The `: Visual` base and the additive `appearance` param (neutral-grey default)
+// arrived with task β #4761; existing no-appearance constructors remain valid.
+structure def Material : Visual {
     param name : String
-    param density : Real
-    param youngs_modulus : Real
+    param density : Density
+    param youngs_modulus : Pressure
+    param appearance : Appearance = Appearance()
 }
 
 trait TemperatureDependent {
