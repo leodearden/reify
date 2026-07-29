@@ -280,6 +280,46 @@ run_ts_freshness() {
     fi
 }
 
+# ts_offset_of <haystack> <needle>
+#
+# Byte offset of <needle>'s first occurrence in <haystack>, or -1 when absent.
+# Fork-free (parameter expansion only) for the same reason plan_capture_lib.sh
+# is: a pipe-to-grep/awk offset computation is an EINTR surface that can flip an
+# ordering assertion to a spurious FAIL under concurrent load (esc-4574-42).
+# <needle> is quoted inside the expansion, so it is matched literally.
+ts_offset_of() {
+    local hay="$1" needle="$2" pre
+    if [[ "$hay" != *"$needle"* ]]; then
+        printf '%s' -1
+        return 0
+    fi
+    pre="${hay%%"$needle"*}"
+    printf '%s' "${#pre}"
+}
+
+# mk_verify_fixture
+#
+# A throwaway git repo holding a copy of scripts/ and .config/, enough for
+# `verify.sh ... --print-plan` to classify scope from a staged file list without
+# touching the real worktree's index. Prints the directory; registers cleanup.
+#
+# Copies the WHOLE scripts/ dir (1.8 MB) rather than enumerating verify.sh's
+# source closure the way test_verify_scope.sh's make_fixture does: that file
+# needs the explicit list because it also asserts on it, whereas here a missing
+# lib would only ever produce a confusing failure. Wholesale copy cannot drift.
+mk_verify_fixture() {
+    local dir
+    dir="$(mktemp -d)"
+    CLEANUP_ACTIONS+=("rm -rf '$dir'")
+    cp -r "$REPO_ROOT/scripts" "$dir/scripts" || return 1
+    [ -d "$REPO_ROOT/.config" ] && cp -r "$REPO_ROOT/.config" "$dir/.config"
+    mkdir -p "$dir/docs"
+    git -C "$dir" init -q || return 1
+    git -C "$dir" config user.email "test@test.com"
+    git -C "$dir" config user.name "Test"
+    printf '%s' "$dir"
+}
+
 # --- Runner ---
 run_tests() {
     local tests
@@ -1332,6 +1372,110 @@ test_freshness_detects_and_repairs_stale_archive() {
         echo "  ASSERTION FAILED: check still STALE after ensure + cargo check (exit $TS_FRESHNESS_RC)"
         echo "  The force did not actually cause a recompile — which is the whole point."
         echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+}
+
+test_verify_plan_includes_freshness_after_generation() {
+    # The guard is only worth anything if the gate RUNS it, and runs it in the
+    # right place. Two orderings are load-bearing and both are asserted here:
+    #   generate BEFORE freshness — src/parser.c must be current on disk before
+    #     it is fingerprinted, or the check compares against a stale input set;
+    #   freshness BEFORE the first cargo leaf — a force applied after the
+    #     compile repairs nothing (cargo has already linked the stale archive).
+    # Asserted on the emitted plan, not on verify.sh source text.
+    local verify="$REPO_ROOT/scripts/verify.sh"
+    assert_file_exists "$verify" || return 1
+
+    local action plan cmds off_gen off_fresh off_cargo
+    for action in "all --profile debug --scope all --include-infra" \
+                  "test --profile both --scope all --include-infra" \
+                  "lint --scope all --include-infra" \
+                  "typecheck --scope all"; do
+        # Retrying, completeness-guarded capture — same rationale/pattern as
+        # test_orchestrator_includes_generation. $action word-splits into flags
+        # inside the inner bash -c (its unquoted $2), so no outer SC2086 exposure.
+        capture_print_plan plan "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+            bash -c 'exec bash "$1" $2 --print-plan 2>/dev/null' _ "$verify" "$action" || true
+        if ! plan_capture_complete "$plan"; then
+            echo ""
+            echo "  ASSERTION FAILED: verify.sh '$action' --print-plan capture truncated after retries"
+            return 1
+        fi
+
+        # Reason over the COMMANDS BLOCK only. The environment preamble carries
+        # `# . $HOME/.cargo/env`, so an offset computed over the whole capture
+        # could pick up a comment line rather than a real cargo leaf.
+        cmds="${plan#*# --- commands}"
+
+        if [[ "$cmds" != *"tree-sitter-freshness.sh"* ]]; then
+            echo ""
+            echo "  ASSERTION FAILED: verify.sh '$action' plan has no tree-sitter-freshness leaf"
+            return 1
+        fi
+        # `ensure` (self-healing), not bare and not `check` (hard-fail): the merge
+        # gate must repair a repairable condition rather than refuse to run.
+        if [[ "$cmds" != *"./scripts/tree-sitter-freshness.sh ensure"* ]]; then
+            echo ""
+            echo "  ASSERTION FAILED: verify.sh '$action' freshness leaf is not invoked in 'ensure' mode"
+            return 1
+        fi
+
+        off_gen=$(ts_offset_of "$cmds" "tree-sitter-generate")
+        off_fresh=$(ts_offset_of "$cmds" "tree-sitter-freshness")
+        off_cargo=$(ts_offset_of "$cmds" "cargo ")
+        if [ "$off_gen" -lt 0 ]; then
+            echo ""
+            echo "  ASSERTION FAILED: verify.sh '$action' plan has no tree-sitter-generate leaf"
+            return 1
+        fi
+        if [ "$off_gen" -ge "$off_fresh" ]; then
+            echo ""
+            echo "  ASSERTION FAILED: verify.sh '$action' runs freshness BEFORE generate"
+            echo "  (generate offset $off_gen, freshness offset $off_fresh) —"
+            echo "  parser.c would be fingerprinted before it is regenerated."
+            return 1
+        fi
+        if [ "$off_cargo" -lt 0 ]; then
+            echo ""
+            echo "  ASSERTION FAILED: verify.sh '$action' plan has no cargo leaf to order against"
+            return 1
+        fi
+        if [ "$off_fresh" -ge "$off_cargo" ]; then
+            echo ""
+            echo "  ASSERTION FAILED: verify.sh '$action' runs freshness AFTER the first cargo leaf"
+            echo "  (freshness offset $off_fresh, first cargo offset $off_cargo) —"
+            echo "  a force applied after the compile repairs nothing."
+            return 1
+        fi
+    done
+
+    # Negative: a docs-only scope classifies RUN_RUST=0 and must keep ZERO
+    # command leaves — the freshness leaf has to be RUN_RUST-guarded exactly as
+    # the generate leaf is, or every docs-only landing grows a command.
+    local fix
+    fix=$(mk_verify_fixture) || return 1
+    printf 'docs\n' > "$fix/docs/note.md"
+    git -C "$fix" add docs/note.md >/dev/null 2>&1 || true
+    capture_print_plan plan "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && exec bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan 2>/dev/null' \
+        _ "$fix" || true
+    if ! plan_capture_complete "$plan"; then
+        echo ""
+        echo "  ASSERTION FAILED: docs-only --print-plan capture truncated after retries"
+        return 1
+    fi
+    if [[ "$plan" != *"RUN_RUST=0"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: docs-only fixture did not classify RUN_RUST=0 — negative arm is void"
+        echo "$plan"
+        return 1
+    fi
+    cmds="${plan#*# --- commands}"
+    if [[ "$cmds" == *"tree-sitter-freshness"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: docs-only (RUN_RUST=0) plan contains the freshness leaf"
+        echo "  — it must be guarded on RUN_RUST like tree-sitter-generate is."
         return 1
     fi
 }
