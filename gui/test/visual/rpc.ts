@@ -1,30 +1,28 @@
+// The §2a in-band-error discriminator and the text-block parse live in
+// ./rpcEnvelope.mjs — the single JS-side home for decoding debug-MCP responses,
+// shared with the six live smoke drivers (task 5731). The `.mjs` extension is
+// literal and correct: those drivers run under bare `node`, so the shared module
+// cannot be TypeScript, and gui/tsconfig.json's `include: ["src"]` means tsc
+// never resolves this directory anyway (vite/vitest do). isInBandError's doc
+// there carries the CROSS-LANGUAGE INVARIANT that used to live here.
+//
+// Only those two primitives are shared. parseRpcResponse keeps its OWN branch
+// table below, and that is deliberate: it collapses every failure into
+// {ok:false,error} for the typed harness, while normalizeRpcEnvelope preserves
+// the in-band shape so a driver can tell a tool OUTAGE from a wrong-shaped
+// answer. The two differ in five branches — the transport-error rendering, a
+// missing `result`, isError's positional-vs-search text lookup, the image branch
+// below, and a malformed text field — each pinned side by side in
+// ./rpc.test.ts's "documented divergence" suite. Read that before collapsing
+// these two into one.
+import { isInBandError, parseTextPayload } from "./rpcEnvelope.mjs";
+
 /**
  * Typed result from parseRpcResponse — either a successful value or an error string.
  */
 export type RpcResult<T> =
   | { ok: true; value: T }
   | { ok: false; error: string };
-
-/**
- * Detect the in-band error shape returned by reify-debug handlers.
- *
- * Debug handlers return failures as Ok(json!({"error":"<msg>",...})) — no MCP
- * isError flag is set, so the error rides inside the text/result content block
- * and must be distinguished from success values at the JS layer.
- *
- * Discriminator: a non-null object whose `.error` field is a string.
- *
- * CROSS-LANGUAGE INVARIANT (docs/debug-mcp-contract.md §2a): No success handler
- * in debug_server.rs may return a response payload with a top-level string `error`
- * field. If any handler did, its success response would be silently turned into
- * {ok:false} here. When adding a new handler to debug_server.rs, use a distinct
- * key (e.g. `lastError`, `warningMessage`) if the success payload needs to surface
- * an error-like field. The §2a contract note is the authoritative source; this
- * comment mirrors it for discoverability from the JS consumer side.
- */
-function inBandError(v: unknown): v is { error: string } {
-  return v !== null && typeof v === "object" && typeof (v as Record<string, unknown>).error === "string";
-}
 
 /**
  * Parse an MCP tools/call response envelope into a typed RpcResult.
@@ -82,23 +80,21 @@ export function parseRpcResponse<T = unknown>(envelope: unknown): RpcResult<T> {
       if (typeof first.text !== "string") {
         return { ok: false, error: "text content missing text field" };
       }
-      const text = first.text;
-      try {
-        const parsed = JSON.parse(text);
-        if (inBandError(parsed)) {
-          return { ok: false, error: parsed.error };
-        }
-        return { ok: true, value: parsed as T };
-      } catch {
-        return { ok: true, value: text as unknown as T };
+      // Equivalent to the try/JSON.parse/catch this replaced: the only value
+      // parseTextPayload newly routes through the in-band check is the raw
+      // string from a failed parse, and a string is never an in-band error.
+      const parsed = parseTextPayload(first.text);
+      if (isInBandError(parsed)) {
+        return { ok: false, error: parsed.error };
       }
+      return { ok: true, value: parsed as T };
     }
   }
 
   // Branch 5: no recognisable content — return result object.
   // Also check for the in-band {error:<string>} envelope (defensive coverage
   // for Ok({error}) results that arrive as a bare object rather than text).
-  if (inBandError(result)) {
+  if (isInBandError(result)) {
     return { ok: false, error: result.error };
   }
   return { ok: true, value: result as unknown as T };

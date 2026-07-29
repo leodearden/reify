@@ -70,8 +70,13 @@
  * `demand_dispatch` as `full_scope !== false` would blame the frontend for a
  * tool outage.
  *
+ * Declared as a type PREDICATE, not a plain boolean, so the one TypeScript
+ * consumer (`parseRpcResponse` in ./rpc.ts) narrows `unknown` to `{error: string}`
+ * and can read `.error` without a cast — the local `inBandError` this replaced
+ * was a predicate, and dropping to `boolean` would have forced a cast back in.
+ *
  * @param {unknown} v
- * @returns {boolean}
+ * @returns {v is {error: string}}
  */
 export function isInBandError(v) {
   return v !== null && typeof v === "object" && typeof (/** @type {any} */ (v).error) === "string";
