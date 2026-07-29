@@ -90,10 +90,84 @@
 
 use crate::{AuditContext, Finding};
 
+/// One `Diagnostic::error(...)` / `Diagnostic::warning(...)` construction site.
+///
+/// `coded` is the detector's whole verdict for the site: a site with
+/// `coded == false` is what the per-file ratchet counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Site {
+    /// 1-based line number of the constructor token.
+    line: usize,
+    /// A `.with_code(` attaches to this constructor.
+    coded: bool,
+}
+
+/// The anchor constructor paths, whitespace-tolerant before the open paren.
+///
+/// `Diagnostic::info` is deliberately absent: INV-SF-6 scopes codes-mandatory
+/// to Warning/Error (see the module header). The `Diagnostic::` qualifier is
+/// part of the token, which is what makes the 37 `ErrorRef::new(..)` sites and
+/// `ErrorRef::with_code` (`crates/reify-ir/src/value.rs`) harmless.
+const ANCHOR_IDENTS: &[&str] = &["Diagnostic::error", "Diagnostic::warning"];
+
+/// The code-attachment probe — the BARE method token, deliberately not
+/// `.with_code(DiagnosticCode::`. Real sites pass a severity-dispatched
+/// variable (`crates/reify-eval/src/compute_targets/fea_diagnostics.rs:53`),
+/// and probing the enum path would miss them and manufacture a false RED.
+const CODE_PROBE: &str = ".with_code(";
+
+/// Byte offsets of every anchor constructor occurrence in `line`, ascending.
+///
+/// An occurrence counts only when the next non-whitespace character after the
+/// path is `(` — so `Diagnostic::error_with_span(` and a bare `Diagnostic::error`
+/// used as a function value are both correctly non-anchors, while the
+/// `Diagnostic::error (msg)` spacing survives (this repo has no rustfmt gate,
+/// see CLAUDE.md § Formatting).
+fn anchor_positions(line: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    for ident in ANCHOR_IDENTS {
+        let mut from = 0usize;
+        while let Some(rel) = line[from..].find(ident) {
+            let at = from + rel;
+            let after = at + ident.len();
+            if line[after..].trim_start().starts_with('(') {
+                out.push(at);
+            }
+            from = after;
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+/// Per-file scan: one [`Site`] per anchor occurrence, in source order.
+///
+/// Single-line core — the bounded forward window, comment masking, the
+/// `#[cfg(test)]` block skip and the `pdiag:allow` escape layer on in later
+/// steps. Pure `&str` operations throughout: no `syn`, no `regex`.
+// The scanner is exercised by this module's unit tests but is not yet reachable
+// from `check`, which still returns an empty `Vec`. Seeding it as a live root
+// keeps the plain `cargo clippy --all-targets -- -D warnings` lib target green
+// (and transitively covers `Site`, `ANCHOR_IDENTS`, `CODE_PROBE` and
+// `anchor_positions`). Dropped when `check` is implemented.
+#[allow(dead_code)]
+fn scan_file(content: &str) -> Vec<Site> {
+    let mut out = Vec::new();
+    for (i, line) in content.lines().enumerate() {
+        for at in anchor_positions(line) {
+            // Probe from the anchor rightwards so a `.with_code(` belonging to
+            // an EARLIER constructor on the same line cannot code a later one.
+            let coded = line[at..].contains(CODE_PROBE);
+            out.push(Site { line: i + 1, coded });
+        }
+    }
+    out
+}
+
 /// PDIAG entry point — see the module header for the heuristic and scope.
 ///
-/// Stub: the scanner, scope predicate, baseline parser and ratchet land in
-/// task 5405 steps 1-12.
+/// Stub: the scope predicate, baseline parser and ratchet land in task 5405
+/// steps 7-12.
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     let _ = ctx;
     Vec::new()
