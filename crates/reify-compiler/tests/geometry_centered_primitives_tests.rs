@@ -303,6 +303,47 @@ fn cylinder_centered_lowers_to_cylinder_plus_translate() {
                      got: {other:?}"
                 ),
             }
+
+            // ── dx/dy expressions: the synthesized zero must be LENGTH ──────────────
+            //
+            // dx/dy are numerically 0, but they are bound into LENGTH-dimensioned
+            // Translate slots, so the literal must carry LENGTH — not bare Real.
+            //
+            // BOTH halves are asserted on purpose. Retyping only `result_type`
+            // would be a static lie the evaluator never reads: eval dispatches on
+            // the runtime `Value` variant and never consults `result_type`
+            // (reify-expr/src/lib.rs:220 and :5779-5780), and the eval-layer arg
+            // gate matches on the Value's own DimensionVector. A `result_type`-only
+            // assertion would therefore pass over exactly the shape that gate
+            // rejects, and `cylinder_centered(5mm, 20mm)` would break the moment
+            // the gate lands — the regression this pin exists to prevent.
+            for slot in ["dx", "dy"] {
+                let (_, expr) = args
+                    .iter()
+                    .find(|(k, _)| k == slot)
+                    .expect("already asserted dx/dy keys are present");
+
+                assert_eq!(
+                    expr.result_type,
+                    Type::length(),
+                    "{slot} must be typed Type::length() — it is bound into a \
+                     LENGTH-dimensioned Translate slot; got {:?}",
+                    expr.result_type
+                );
+
+                assert!(
+                    matches!(
+                        &expr.kind,
+                        CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
+                            if *si_value == 0.0
+                                && *dimension == reify_core::DimensionVector::LENGTH
+                    ),
+                    "{slot} must be Literal(Scalar{{LENGTH, 0.0}}), not Literal(Real(0.0)) — \
+                     a bare Real is what the eval-layer length gate rejects, and its units \
+                     would be silently dropped by eval.as_f64(); got: {:?}",
+                    expr.kind
+                );
+            }
         }
         other => panic!("op[1] must be Transform(Translate), got: {other:?}"),
     }
