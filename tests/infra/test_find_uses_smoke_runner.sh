@@ -37,6 +37,13 @@
 # Arm B is what makes Arm A's assertion non-vacuous: the same output token that
 # Arm A demands is proven absent on a run that produces the banner.
 #
+#   ARM C (post-driver post-mortem) — the launcher survives readiness, then dies
+#       DURING the driver run while the driver still exits 0:
+#       rc != 0, `phase=post-driver` marker PRESENT, banner PRESENT.
+# Arm C pins the correctness gap that a pure readiness-loop liveness check
+# leaves open: liveness was only ever checked BEFORE the driver ran, so a
+# launcher that crashed mid-run behind a green driver produced a false PASS.
+#
 # Auto-discovered by tests/infra/run_all.sh (matches test_*.sh pattern).
 
 set -euo pipefail
@@ -203,5 +210,64 @@ assert "control: happy path DOES print the startup banner (arm really ran the no
 
 assert "control: happy path emits NO launcher-death marker (so ARM A's predicate is not vacuous)" \
     bash -c '! printf "%s\n" "$2" | grep -qF "$1"' _ "$DEATH_MARKER" "$_b_out"
+
+# ===========================================================================
+# ARM C — post-driver post-mortem: the launcher survives readiness and then
+# dies DURING the driver run, while the driver still exits 0.
+#
+# This is the false-PASS shape a readiness-only liveness check cannot see:
+# liveness was confirmed before the driver started and never re-checked after,
+# so a green driver masked a dead launcher entirely.
+#
+# The scenario is deterministic, not timing-dependent. MEASURED: bash reaps a
+# backgrounded child through its SIGCHLD handler promptly, so once the driver
+# SIGKILLs the launcher, `kill -0` starts failing at the FIRST poll iteration —
+# both from the driver stub (a sibling process) and from the runner shell
+# itself. There is no window in which the dead launcher lingers as a
+# kill -0-visible zombie, so the post-mortem has no race to lose.
+# ===========================================================================
+echo ""
+echo "--- ARM C: post-driver post-mortem — a green driver must not mask a dead launcher ---"
+
+_new_bindir; _c_bin="$_BINDIR"
+_c_pidfile="$_c_bin/launcher.pid"
+
+# Launcher: publish the PID the runner holds, then stay alive well past
+# readiness. `$$` survives `exec`, so the sleep IS this pid — which is also the
+# runner's `$!`, so both sides agree on one identity with no pid translation.
+_write_stub "$_c_bin/stub_launcher.sh" \
+    'echo "$$" > "$_PIDFILE"' \
+    'exec sleep 30'
+# Health poll succeeds immediately, so readiness passes with a LIVE launcher —
+# this arm reaches the driver, unlike ARM A.
+_write_stub "$_c_bin/curl" 'exit 0'
+# Driver: kill the launcher, confirm it is really gone, then report SUCCESS.
+# Exiting 0 is the whole point — the runner must fail on the launcher's death,
+# not on the driver's exit code.
+_write_stub "$_c_bin/node" \
+    'pid=$(cat "$_PIDFILE")' \
+    'kill -9 "$pid" 2>/dev/null || true' \
+    'for _ in $(seq 1 100); do kill -0 "$pid" 2>/dev/null || exit 0; sleep 0.05; done' \
+    'echo "STUB_ERROR: launcher $pid still alive after 5s" >&2' \
+    'exit 1'
+
+_smoke_arm_run "$_c_bin" "$RUNNER" 59997 30000 _PIDFILE="$_c_pidfile"
+_c_rc="$_ARM_RC"
+_c_out="$_ARM_OUT"
+
+# Guard the arm's own premise: if the driver stub had bailed out via its error
+# path it would exit 1, and the rc!=0 assertion below would pass for entirely
+# the wrong reason. Absence of STUB_ERROR proves the driver really returned 0.
+assert "post-driver: driver stub really reported SUCCESS (rc!=0 below cannot come from the driver)" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "STUB_ERROR"' _ "$_c_out"
+
+assert "post-driver: happy-path banner IS present (arm reached the driver, unlike ARM A)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "launcher PID="' _ "$_c_out"
+
+assert "post-driver: runner exits non-zero — a green driver does not mask a dead launcher" \
+    bash -c '[ "$1" -ne 0 ]' _ "$_c_rc"
+
+assert "post-driver: runner emits the post-driver-phase launcher-death marker" \
+    bash -c 'printf "%s\n" "$2" | grep -qF "$1 phase=post-driver rc="' _ "$DEATH_MARKER" "$_c_out"
 
 test_summary
