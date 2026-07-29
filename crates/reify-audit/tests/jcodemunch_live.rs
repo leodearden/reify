@@ -29,6 +29,8 @@
 //! always run as part of standard `cargo test` and catch compile-time drift
 //! in the wire shape.
 
+mod common;
+
 // -----------------------------------------------------------------------
 // Finding-shape predicates (pure; no serve needed)
 // -----------------------------------------------------------------------
@@ -355,17 +357,6 @@ mod serve_preflight {
     use super::*;
     use std::net::{SocketAddr, TcpListener};
 
-    /// URL the preflight gate is probed against.
-    ///
-    /// Binds an OS-assigned port, records it, then drops the listener so the
-    /// port is freed before the probe runs.
-    fn preflight_probe_url() -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-        let port = listener.local_addr().expect("local_addr").port();
-        drop(listener); // port is now freed
-        format!("http://127.0.0.1:{port}/mcp")
-    }
-
     /// The endpoint the preflight gate probes must be unreachable BY
     /// CONSTRUCTION — not merely unowned at the instant its URL was minted.
     ///
@@ -382,7 +373,7 @@ mod serve_preflight {
     /// responder needed — is enough to defeat it.
     #[test]
     fn unreachable_sentinel_is_not_reachable_under_a_racing_binder() {
-        let url = preflight_probe_url();
+        let url = common::net::unreachable_mcp_url();
         let host_port = url
             .trim_start_matches("http://")
             .split('/')
