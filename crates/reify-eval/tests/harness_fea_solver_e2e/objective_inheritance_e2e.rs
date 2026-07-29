@@ -14,6 +14,45 @@
 //      inherited governance.
 //    - `reify explain` shows C.k `inherited from P` and P.w `source=explicit`.
 //
+// ## Why byte-identity — and the tripwire that would retire it (task #5618)
+//
+// BT2/BT7 pin the *centrality midpoint* of an objective-less scope's two-sided
+// box.  Task #5618 changed how that value is produced and drifted both goldens;
+// they were re-blessed on 2026-07-28 under an L2 ruling.  The reasoning is
+// recorded here so it is not re-litigated on the next sighting.
+//
+// BEFORE #5618 the solver seeded at a fixed 0.01 and the printed value was
+// wherever Nelder-Mead happened to terminate — an *iterative* result.  Scored
+// against the exact midpoint of each box as represented, all three values were
+// wrong: BT7 `k` by 1 ULP, BT2 `A.a` by 4 ULP, BT2 `B.b` by 1 ULP.
+//
+// AFTER #5618 `extract_initial_point` seeds a two-sided constraint-derived box
+// at `(box_lo + box_hi) / 2.0` (reify-constraints/src/solver.rs, arm 3).  That
+// point is the unique argmax of the synthesised Chebyshev-centre objective on a
+// box, and Nelder-Mead returns its best-ever vertex — so the solver returns the
+// seed bitwise, with no iteration contributing to the result.  All three values
+// are now exactly the represented midpoint; none were before.
+//
+// So byte-identity here became MORE defensible, not less.  The printed value is
+// now a two-operation closed form (one unit conversion, one halving), each a
+// single correctly-rounded IEEE-754 op — stable across libm, CPU, opt-level and
+// iteration count, none of which the old iterative values were.  Byte-identity
+// is the wrong contract for an iteratively-derived float (it pins termination
+// artifacts and fires on every legitimate numerical change) and the right one
+// for a closed-form float.  #5618 moved these three from the first case to the
+// second.
+//
+// TRIPWIRE: that argument holds only while centrality stays closed-form.  If it
+// ever becomes iterative again — a coupled or non-box feasible region, a
+// smoothed max-min, or any polish pass applied after the seed — byte-identity
+// reverts to pinning solver artifacts and MUST be replaced with a ULP-bounded
+// assertion.  Re-blessing these goldens under those conditions would be
+// absorbing a regression, which is exactly what this corpus exists to prevent.
+//
+// Note the INV-2 leg of BT2 (`stdout_ab == stdout_ba`) is a genuine byte-
+// identity property and is unconditionally correct to assert exactly; the
+// tripwire above concerns only the absolute values compared against the golden.
+//
 // ## Harness notes
 //
 // The test binary lives at `.../target/<profile>/deps/<testbin>`.  Its

@@ -2,16 +2,30 @@
 //
 // Two uncoupled objective-less scopes declared A-then-B, each with a two-sided
 // bound.  No cross-scope reads — the scopes are independent.  The solver
-// synthesises centrality for each:
-//   A.a → midpoint of [1mm, 5mm] = 3mm
-//   B.b → midpoint of [2mm, 9mm] = 5.5mm
+// synthesises centrality for each and returns the midpoint of the box AS
+// REPRESENTED:
+//   A.a → midpoint of [1mm, 5mm] = 0.003 m, exactly.
+//   B.b → midpoint of [2mm, 9mm] = 0.0055000000000000005 m — NOT the 0.0055
+//         you get by typing `5.5mm`.  This is not a solver artifact: `9mm`
+//         converts as 9.0 * 1e-3 = 0.009000000000000001, which is 1 ULP above
+//         0.009, so the box as represented is [0.002, 0.009000000000000001]
+//         and 0.0055000000000000005 IS its exact midpoint.  Verified by
+//         probe: spelling the identical bounds `0.002m`/`0.009m` instead
+//         yields exactly 0.0055.
+//         DO NOT "correct" this golden to 0.0055 — that value is 1 ULP BELOW
+//         the midpoint of the box this fixture actually declares, and was the
+//         pre-#5618 Nelder-Mead artifact.
 //
 // `reify eval` output is cell-id-SORTED, so the AB and BA orderings must
 // produce BYTE-IDENTICAL stdout (INV-2 declaration-order independence).
 //
+// Both values were re-blessed for task #5618; rationale and the tripwire that
+// would invalidate byte-identity here are in the test file's module header
+// ("Why byte-identity").
+//
 // Shared golden: crates/reify-eval/tests/golden/bt2_uncoupled.txt
 // Counterpart:   tests/fixtures/backcompat/bt2_uncoupled_ba.ri
-// Test:          crates/reify-eval/tests/objective_inheritance_e2e.rs::bt2_uncoupled_declaration_order_independence
+// Test:          crates/reify-eval/tests/harness_fea_solver_e2e/objective_inheritance_e2e.rs::bt2_uncoupled_declaration_order_independence
 structure A {
     param a: Length = auto
 
