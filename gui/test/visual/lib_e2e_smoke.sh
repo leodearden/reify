@@ -290,7 +290,32 @@ e2e_smoke_run() {
     REIFY_DEBUG_PORT="$PORT" node "$DRIVER" || DRIVER_RC=$?
 
     # -----------------------------------------------------------------------
-    # 8. Reap the GUI launcher (its trap reaps both vite and reify-gui).
+    # 8. Post-driver post-mortem — run BEFORE the teardown branch below, which
+    #    would otherwise assume it has a live process to SIGTERM.
+    #
+    #    Liveness was last confirmed inside the readiness loop, i.e. before the
+    #    driver started, and was never re-checked afterwards.  A launcher that
+    #    crashed DURING the driver run, behind a driver that still exited 0,
+    #    therefore produced a false PASS: DRIVER_RC=0 propagated straight out
+    #    and the teardown SIGTERM'd an already-dead pid without noticing.
+    #
+    #    max(DRIVER_RC, 1) is the exit rule: never mask a real driver failure
+    #    by overwriting a non-zero rc, and never invent a failure on the normal
+    #    path — a live launcher takes the teardown branch below instead, which
+    #    stays marker-free (pinned by ARM B of the infra guard).
+    # -----------------------------------------------------------------------
+    if [ -n "$GUI_LAUNCHER_PID" ] && ! kill -0 "$GUI_LAUNCHER_PID" 2>/dev/null; then
+        local _post_rc=0
+        local _post_pid="$GUI_LAUNCHER_PID"
+        wait "$GUI_LAUNCHER_PID" 2>/dev/null || _post_rc=$?
+        GUI_LAUNCHER_PID=""
+        _e2e_smoke_report_launcher_death "$name" post-driver "$_post_rc" "$_post_pid"
+        exit "$(( DRIVER_RC > 0 ? DRIVER_RC : 1 ))"
+    fi
+
+    # -----------------------------------------------------------------------
+    #    Normal path: reap the still-live GUI launcher (its own trap reaps both
+    #    vite and reify-gui).
     # -----------------------------------------------------------------------
     if [ -n "$GUI_LAUNCHER_PID" ]; then
         echo "${name}: sending SIGTERM to launcher (PID=$GUI_LAUNCHER_PID)"
