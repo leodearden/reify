@@ -12,7 +12,7 @@ import { FeaModeToolbar } from './FeaModeToolbar';
 import { bakeColours } from './colormap';
 import { computeScalarRange } from './scalarRange';
 import { channelUnit } from './channelTags';
-import { pickDefaultScalarChannel } from './defaultScalarChannel';
+import { pickDefaultScalarChannel, PREFERRED_FEA_CHANNELS } from './defaultScalarChannel';
 import { feaToolbarChannels } from './feaToolbarChannels';
 import type { ViewportStore, CameraState, FeaModeStore } from '../stores';
 import { subscribeFeaCaseToStore, setActiveFeaCase } from '../bridge';
@@ -126,19 +126,37 @@ export function Viewport(props: ViewportProps) {
   // pickDefaultScalarChannel legitimately auto-selects 'vonMises_top' for a
   // shell mesh (PREFERRED_FEA_CHANNELS), so feaModeStore.state.channel can be
   // a value absent from feaToolbarChannels' list, desyncing the rendered
-  // <select> from the store. Widen the option list here with any other
-  // non-empty scalar channel actually present across the active mesh set
-  // (mirroring pickDefaultScalarChannel's nonEmpty scan) so the dropdown
+  // <select> from the store. Widen the option list here so the dropdown
   // always has a matching <option> for the store's current channel.
   //
-  // The store's *current* channel is also seeded into the extras set before
-  // the mesh scan, not just whatever the live mesh set happens to carry:
-  // auto-enable is one-shot (autoEnabledOnce, below), so a later mesh-set
-  // replacement (e.g. a shell result swapped for a solid-only rebuild) can
-  // leave store.state.channel pointing at a channel absent from the *new*
-  // mesh set entirely. Without this seed the option list would collapse back
-  // to the base list on that second delivery and reopen the exact dropdown
-  // desync this memo exists to prevent — just one mesh update later.
+  // Two widening sources, deliberately narrow (both are needed; neither is
+  // sufficient alone):
+  //
+  //  1. The store's *current* channel, seeded before the mesh scan. This is
+  //     what actually closes the desync in full generality — including for a
+  //     channel outside PREFERRED_FEA_CHANNELS entirely, since
+  //     pickDefaultScalarChannel's last-resort branch auto-selects the
+  //     lexicographically smallest non-empty channel whatever it is named.
+  //     It is seeded from the store rather than derived from the live mesh
+  //     set because auto-enable is one-shot (autoEnabledOnce, below), so a
+  //     later mesh-set replacement (e.g. a shell result swapped for a
+  //     solid-only rebuild) can leave store.state.channel pointing at a
+  //     channel absent from the *new* mesh set entirely. Without this seed
+  //     the option list would collapse back to the base list on that second
+  //     delivery and reopen the exact desync this memo exists to prevent.
+  //
+  //  2. Members of PREFERRED_FEA_CHANNELS carrying non-empty data somewhere
+  //     in the active mesh set. This is what makes the *sibling* shell
+  //     surfaces selectable: with only (1), a shell mesh would offer
+  //     'vonMises_top' but the user could never switch to '_mid'/'_bottom'.
+  //
+  // The mesh scan is deliberately restricted to PREFERRED_FEA_CHANNELS rather
+  // than admitting every non-empty scalar channel present: a design carrying
+  // arbitrary vertex scalars would otherwise list them all as selectable
+  // "FEA" channels, which is a broader change than the defect requires and
+  // would cost the toolbar its FEA-specific meaning. Anything outside the
+  // preference list still reaches the dropdown via (1) when it is in fact the
+  // selected channel, which is the only case that can desync.
   const feaChannelOptions = createMemo(() => {
     const base = feaToolbarChannels(props.meshes);
     const extra = new Set<string>();
@@ -148,8 +166,10 @@ export function Viewport(props: ViewportProps) {
     }
     for (const mesh of Object.values(props.meshes)) {
       if (!mesh.scalar_channels) continue;
-      for (const [name, data] of Object.entries(mesh.scalar_channels)) {
-        if (data && data.length > 0 && !base.includes(name)) {
+      for (const name of PREFERRED_FEA_CHANNELS) {
+        if (base.includes(name) || extra.has(name)) continue;
+        const data = mesh.scalar_channels[name];
+        if (data && data.length > 0) {
           extra.add(name);
         }
       }
