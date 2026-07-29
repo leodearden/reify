@@ -172,8 +172,10 @@ tasks:
   - name: groove-volume-formula
     binding: 'numeric floor — ΔV ≈ 0.5·π·r²·L_helix ±15%; basis = #5342 acceptance
       math (L_helix ≈ 1.359 m for 24/7/63); reference value re-spec''d π·r²·L_helix
-      → 0.5·π·r²·L_helix by #5580 (half-round rope seat — only the outer half of the
-      swept tube is ever stock), band width and L_helix formula unchanged'
+      → 0.5·π·r²·L_helix by #5580 (half-round rope seat, arc centre on the land
+      surface — only the radially INNER half of the swept tube is ever stock; the
+      outer half sweeps through air above the land, except where it emerges into the
+      flanges at the band ends), band width and L_helix formula unchanged'
     verdict: PASS
     delivered_check:
       kind: manual
