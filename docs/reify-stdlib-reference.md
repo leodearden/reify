@@ -1026,37 +1026,37 @@ trait TemperatureDependent {
 // design drift #3487. Conformers carry density/name via a separate `material : MaterialSpec`
 // slot rather than inheriting from the base trait directly.
 trait Elastic {
-    param youngs_modulus : Pressure  // shipped: Real (aspiration pending #3111)
-    param poissons_ratio : Real
-    param shear_modulus : Pressure = undef  // shipped: Real (aspiration pending #3111)
+    param youngs_modulus : Pressure
+    param poissons_ratio : Real // dimensionless
+    param shear_modulus : Pressure = undef // optional — omit when not independently measured
     constraint 0 < poissons_ratio < 0.5
 }
 trait Strong {
-    param yield_strength : Pressure  // shipped: Real (aspiration pending #3111)
-    param ultimate_tensile_strength : Pressure  // shipped: Real (aspiration pending #3111)
-    param compressive_strength : Pressure = undef  // shipped: Real (aspiration pending #3111)
+    param yield_strength : Pressure
+    param ultimate_tensile_strength : Pressure
+    param compressive_strength : Pressure = undef // optional — omit when not reported
     constraint ultimate_tensile_strength >= yield_strength
 }
 trait Hard {
-    param hardness_value : Real
+    param hardness_value : Real // dimensionless — scale-dependent (Rockwell/Brinell/Vickers/Shore)
     param hardness_scale : HardnessScale
 }
 enum HardnessScale { Rockwell_A, Rockwell_B, Rockwell_C, Brinell, Vickers, Shore_A, Shore_D }
 trait FatigueRated : MaterialSpec {
-    param fatigue_limit : Pressure = undef  // shipped: Real (aspiration pending #3111)
-    param fatigue_strength_at : Pressure = undef  // shipped: Real (aspiration pending #3111)
-    param fatigue_cycles : Int = undef
+    param fatigue_limit : Pressure = undef        // optional — stress amplitude for unlimited cycles
+    param fatigue_strength_at : Pressure = undef  // optional — stress amplitude at fatigue_cycles
+    param fatigue_cycles : Int = undef            // optional — cycle count for fatigue_strength_at
 }
 trait FractureTough : MaterialSpec {
     param fracture_toughness : FractureToughness  // Pa·√m — tightened from Scalar<> by task #3115
 }
 trait Ductile {
-    param elongation_at_break : Real
-    param reduction_of_area : Real = undef
+    param elongation_at_break : Real // dimensionless
+    param reduction_of_area : Real = undef // optional — omit when not reported
 }
 trait ImpactResistant : MaterialSpec {
-    param charpy_impact : Energy = undef  // shipped: Real (aspiration pending #3111)
-    param izod_impact : Energy = undef  // shipped: Real (aspiration pending #3111)
+    param charpy_impact : Energy = undef  // optional — energy absorbed in Charpy test (J)
+    param izod_impact : Energy = undef    // optional — energy absorbed in Izod test (J)
 }
 trait Damping : MaterialSpec {
     param damping_ratio : Real  // fraction of critical damping (dimensionless)
