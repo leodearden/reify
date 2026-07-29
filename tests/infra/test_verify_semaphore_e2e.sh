@@ -73,6 +73,12 @@ source "$SCRIPT_DIR/test_helpers.sh"
 [ -f "$SCRIPT_DIR/load_tolerance_lib.sh" ] || { echo "ERROR: load_tolerance_lib.sh not found at $SCRIPT_DIR/load_tolerance_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/load_tolerance_lib.sh"
 
+# For nextest_available_in_plan (the plan-header availability probe below).
+# Sourcing the lib installs no trap and builds no environment — only
+# nextest_absent_init does that, and this suite deliberately never calls it.
+[ -f "$SCRIPT_DIR/nextest_absent_lib.sh" ] || { echo "ERROR: nextest_absent_lib.sh not found at $SCRIPT_DIR/nextest_absent_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/nextest_absent_lib.sh"
+
 # compute_sha256 (task 5144): needed by the tree-sitter readiness helpers
 # below (ensure_tree_sitter_ready's stamp-match check) and by the
 # _make_fake_ts_dir unit-test fixture, so both sides of the contract use the
@@ -1173,12 +1179,16 @@ capture_plans
 #     `all --scope all` plan: ACQUIRE 24 < cargo test 29 < RELEASE 30), so they
 #     use the `cargo (test|nextest run)` alternation instead.
 # The probe reads the header off the already-captured PLAN_TEST_FULL — no extra
-# verify.sh invocation (idiom from test_verify_retry_failed_only.sh:89-93).
+# verify.sh invocation. That "no extra invocation" property is exactly why
+# nextest_available_in_plan exists (tests/infra/nextest_absent_lib.sh:546-563,
+# task 5644): verify.sh cannot emit the `nextest=` header without genuinely
+# probing, and the worst case forks cargo up to 4x plus two sleeps. The idiom's
+# home is now that lib rather than a sibling suite.
 # Guarded by tests/infra/test_verify_nextest_absent_suites.sh.
 NEXTEST_AVAILABLE=0
-case "$(printf '%s\n' "$PLAN_TEST_FULL" | grep '^# verify.sh plan')" in
-    *"nextest=1"*) NEXTEST_AVAILABLE=1 ;;
-esac
+if nextest_available_in_plan "$PLAN_TEST_FULL"; then
+    NEXTEST_AVAILABLE=1
+fi
 
 if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
     assert "test plan: all nextest run lines carry --config-file with reify-nextest-occt path" \
