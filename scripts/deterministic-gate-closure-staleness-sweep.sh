@@ -690,8 +690,6 @@ PY
 # row to `unknown` — the adjudication is scoped to --repo and nothing else.
 _MAIN_REF_SHA="$(git -C "$REPO" rev-parse --verify --quiet "${MAIN_REF}^{commit}" 2>/dev/null || true)"
 
-# _classify_merge_verify_red <task_id> — sets _MVR_MATCHED plus, when matched,
-# _MVR_VERDICT / _MVR_ACTION / _MVR_EVIDENCE.
 # _classify_gate_closure <task_id> <status> <task_kind> <always_escalates>
 # <adjudicate:0|1> — sets _GC_MATCHED plus, when matched and adjudicating,
 # _GC_VERDICT / _GC_ACTION / _GC_EVIDENCE. `blocked`-only (invariant L4).
