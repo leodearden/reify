@@ -950,3 +950,56 @@ fn flexure_compliance_accessor_fn_signature_and_eval() {
         ),
     }
 }
+
+// ─── FlexureJoint marker (task 5476, placeholder-ratchet α) ──────────────────
+
+/// `structure def FlexureJoint : DrivingJoint { }` — the α static-layer marker
+/// that gives `flexure_compliance` a nominal parameter type to retarget onto in
+/// step-12, replacing the `Length` placeholder.
+///
+/// Three properties, each load-bearing:
+///
+/// 1. **It exists in `std/flexures`.** The marker has to be declared in the same
+///    module as the accessor whose signature names it.
+/// 2. **It is empty — no value cells at all.** PRD §7.1: the typed-joints
+///    migration stays rejected, so the RUNTIME joint representation is still an
+///    untouched `Value::Map`. The marker is a static-layer tag only; giving it
+///    fields would start exactly the migration the PRD declined. Asserted on
+///    `value_cells` (not just `param_cells`) so a stray `let` is caught too.
+/// 3. **It conforms to `DrivingJoint`.** This keeps the #4310 compile-time bound
+///    checks on `bind`/`sweep`/`dim` uniform — to the mechanism layer a flexure
+///    joint "is just a Revolute". Mirrors the accessor used by
+///    `kinematic_stdlib_compile.rs::conforming_joints_have_driving_joint_bound`
+///    (`template.trait_bounds`), rather than inventing a new one.
+///
+/// RED until step-6, which must land TWO coupled edits: the declaration here AND
+/// the `stdlib_loader.rs` move of `std.flexures` to after `std.kinematic`.
+/// Without the move, `DrivingJoint` (kinematic.ri) is not yet in the growing
+/// sequential prelude when flexures.ri compiles, and the declaration alone
+/// cannot resolve it — that failure surfaces through the
+/// `std_flexures_module_loads_with_no_errors` canary above, which is left
+/// untouched precisely so it can catch this.
+#[test]
+fn std_flexures_declares_flexure_joint_marker() {
+    let template = find_structure("FlexureJoint");
+
+    assert!(
+        template.value_cells.is_empty(),
+        "FlexureJoint must be an EMPTY marker — no params, no lets (PRD §7.1: \
+         joints stay Value::Map at runtime; the marker is static-layer only). \
+         Got value cells: {:?}",
+        template
+            .value_cells
+            .iter()
+            .map(|vc| (&vc.id.member, &vc.kind))
+            .collect::<Vec<_>>(),
+    );
+
+    assert!(
+        template.trait_bounds.contains(&"DrivingJoint".to_owned()),
+        "FlexureJoint must declare conformance to DrivingJoint so the #4310 \
+         compile-time bind/sweep/dim bound checks treat it like any other \
+         driving joint; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+}
