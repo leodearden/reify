@@ -6,7 +6,7 @@
 //!   - expected_type_pushdown_let_tests.rs  — β #4702 let-position unit suite
 //!   - expected_type_arg_pushdown_tests.rs  — δ #4703 arg-position unit suite
 //!
-//! Unlike those suites, this gate asserts via `cell_type` / `cell_expr.result_type`
+//! Unlike those suites, this gate asserts via `cell_type` / `get_let_expr(…).result_type`
 //! and `DiagnosticCode` — never message substrings — so it survives diagnostic
 //! wording changes while remaining a durable end-to-end contract.
 //!
@@ -15,7 +15,7 @@
 //! the task is escalated rather than patching compiler code here.
 
 use reify_core::{DiagnosticCode, Type};
-use reify_test_support::{compile_source, errors_only, warnings_only};
+use reify_test_support::{compile_source, errors_only, get_let_expr, warnings_only};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -28,22 +28,6 @@ fn cell_type<'a>(module: &'a reify_compiler::CompiledModule, member: &str) -> &'
         .find(|vc| vc.id.member == member)
         .unwrap_or_else(|| panic!("value cell '{member}' not found in templates[0]"))
         .cell_type
-}
-
-/// Return the `default_expr` of a named value cell in `templates[0]`.
-fn cell_expr<'a>(
-    module: &'a reify_compiler::CompiledModule,
-    member: &str,
-) -> &'a reify_ir::CompiledExpr {
-    let template = &module.templates[0];
-    template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == member)
-        .unwrap_or_else(|| panic!("value cell '{member}' not found in templates[0]"))
-        .default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("value cell '{member}' has no default_expr"))
 }
 
 // ── §7#1: consumer-let list resolve ──────────────────────────────────────────
@@ -253,7 +237,7 @@ structure S {
 /// resolution finds the candidate, and:
 ///   - no Error diagnostics (the "no matching overload" error is gone),
 ///   - no empty-list Warning (suppressed when expected element type is concrete),
-///   - `cell_expr("n").result_type == Type::Int` (fn return type),
+///   - `get_let_expr("n").result_type == Type::Int` (fn return type),
 ///   - expression kind is `UserFunctionCall { function_name: "firstlen", … }`,
 ///   - `args[0].result_type == Type::List(Box::new(Type::length()))`.
 ///
@@ -277,7 +261,7 @@ fn integration_arg_list_push_down_resolves_empty_literal() {
         warnings_only(&module)
     );
     // Result type is Int.
-    let n_expr = cell_expr(&module, "n");
+    let n_expr = get_let_expr(&module, "n");
     assert_eq!(
         n_expr.result_type,
         Type::Int,
