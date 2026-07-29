@@ -56,6 +56,14 @@
 //!   site (none observed in the corpus; `pdiag:allow` escapes it).
 //! - An unrelated `.with_code(` inside a site's window can mark it coded —
 //!   7/730 sites repo-wide, all in `#[cfg(test)]` code this detector excludes.
+//! - The comment mask is line-granular and keyed on each line's FIRST
+//!   non-whitespace token, so nothing mid-line is ever stripped. That is
+//!   deliberate: stripping `//`-to-end-of-line would let a `//` inside a string
+//!   literal (`"a//b"`) swallow a real `.with_code(` and produce a false RED.
+//!   The cost is that a `//` or `/*` inside a string literal can still nudge the
+//!   block-region state — which only ever masks MORE lines, i.e. under-counts.
+//! - A `.with_code(` sitting in a trailing `//` comment on the anchor line
+//!   itself marks the site coded. Permissive, and vanishingly rare.
 //!
 //! ## Scope
 //!
@@ -116,6 +124,73 @@ const ANCHOR_IDENTS: &[&str] = &["Diagnostic::error", "Diagnostic::warning"];
 /// and probing the enum path would miss them and manufacture a false RED.
 const CODE_PROBE: &str = ".with_code(";
 
+/// How many NON-COMMENT lines below a constructor are searched for its
+/// `.with_code(`.
+///
+/// Measured against the real corpus: the widest constructor -> `.with_code(`
+/// gap anywhere in the tree is 13 lines
+/// (`crates/reify-compiler/src/expr.rs:5895` -> `:5908`), so 15 covers 100% of
+/// observed offsets with two lines of headroom. Counting non-comment lines
+/// (rather than physical ones) means an interleaved doc block cannot push a
+/// real code attachment out of reach. Widening this is a one-line change —
+/// re-measure the corpus first, and note that widening only ever makes the
+/// detector MORE permissive.
+const PDIAG_CODE_WINDOW: usize = 15;
+
+/// Per-line comment mask: `mask[i]` is `true` when line `i` is comment-only and
+/// therefore invisible to BOTH anchoring and the `.with_code(` probe.
+///
+/// Line-granular and keyed on the line's first non-whitespace token, which is
+/// what keeps it safe without a lexer: nothing mid-line is ever stripped, so a
+/// `//` or `/*` inside a string literal can never truncate a real
+/// `.with_code(` and manufacture a false RED. A line is comment-only when it
+/// begins inside an unclosed `/* ... */` region, or its first non-whitespace
+/// token is `//` (covering `///` and `//!`), `/*`, or `* ` (a block-comment
+/// continuation — the trailing space keeps `*out = ...` deref expressions
+/// live).
+fn comment_mask(lines: &[&str]) -> Vec<bool> {
+    let mut mask = Vec::with_capacity(lines.len());
+    let mut in_block = false;
+    for line in lines {
+        let started_in_block = in_block;
+        // Walk the line for `/*` / `*/` tokens to carry the region state
+        // forward. `//` ends the scan: the rest of the line is a comment, so a
+        // `/*` after it must not open a region.
+        // Byte comparison rather than `&line[i..]` slicing: `/` and `*` are
+        // ASCII and so can never be a UTF-8 continuation byte, which keeps an
+        // em-dash in a comment from panicking on a non-boundary index.
+        let bytes = line.as_bytes();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            let pair = (bytes[i], bytes.get(i + 1).copied());
+            if in_block {
+                if pair == (b'*', Some(b'/')) {
+                    in_block = false;
+                    i += 2;
+                    continue;
+                }
+            } else if pair == (b'/', Some(b'*')) {
+                in_block = true;
+                i += 2;
+                continue;
+            } else if pair == (b'/', Some(b'/')) {
+                break;
+            }
+            i += 1;
+        }
+
+        let head = line.trim_start();
+        mask.push(
+            started_in_block
+                || head.starts_with("//")
+                || head.starts_with("/*")
+                || head.starts_with("* ")
+                || head == "*",
+        );
+    }
+    mask
+}
+
 /// Byte offsets of every anchor constructor occurrence in `line`, ascending.
 ///
 /// An occurrence counts only when the next non-whitespace character after the
@@ -142,26 +217,55 @@ fn anchor_positions(line: &str) -> Vec<usize> {
 
 /// Per-file scan: one [`Site`] per anchor occurrence, in source order.
 ///
-/// Single-line core — the bounded forward window, comment masking, the
-/// `#[cfg(test)]` block skip and the `pdiag:allow` escape layer on in later
-/// steps. Pure `&str` operations throughout: no `syn`, no `regex`.
+/// A site is **coded** when `.with_code(` appears at or after the anchor
+/// position on the anchor line, or anywhere on the next [`PDIAG_CODE_WINDOW`]
+/// non-comment lines. Comment lines are invisible to both anchoring and the
+/// probe, and do not consume window budget.
+///
+/// The `#[cfg(test)]` block skip and the `pdiag:allow` escape layer on in a
+/// later step. Pure `&str` operations throughout: no `syn`, no `regex`.
 // The scanner is exercised by this module's unit tests but is not yet reachable
 // from `check`, which still returns an empty `Vec`. Seeding it as a live root
 // keeps the plain `cargo clippy --all-targets -- -D warnings` lib target green
-// (and transitively covers `Site`, `ANCHOR_IDENTS`, `CODE_PROBE` and
-// `anchor_positions`). Dropped when `check` is implemented.
+// (and transitively covers `Site`, `ANCHOR_IDENTS`, `CODE_PROBE`,
+// `comment_mask` and `anchor_positions`). Dropped when `check` is implemented.
 #[allow(dead_code)]
 fn scan_file(content: &str) -> Vec<Site> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mask = comment_mask(&lines);
     let mut out = Vec::new();
-    for (i, line) in content.lines().enumerate() {
+
+    for (i, line) in lines.iter().enumerate() {
+        if mask[i] {
+            continue;
+        }
         for at in anchor_positions(line) {
             // Probe from the anchor rightwards so a `.with_code(` belonging to
             // an EARLIER constructor on the same line cannot code a later one.
-            let coded = line[at..].contains(CODE_PROBE);
+            let coded = line[at..].contains(CODE_PROBE) || code_in_window(&lines, &mask, i);
             out.push(Site { line: i + 1, coded });
         }
     }
     out
+}
+
+/// `true` when a `.with_code(` appears on one of the [`PDIAG_CODE_WINDOW`]
+/// non-comment lines below `anchor_line` (a 0-based index into `lines`).
+fn code_in_window(lines: &[&str], mask: &[bool], anchor_line: usize) -> bool {
+    let mut budget = PDIAG_CODE_WINDOW;
+    for (line, is_comment) in lines.iter().zip(mask).skip(anchor_line + 1) {
+        if *is_comment {
+            continue;
+        }
+        if line.contains(CODE_PROBE) {
+            return true;
+        }
+        budget -= 1;
+        if budget == 0 {
+            return false;
+        }
+    }
+    false
 }
 
 /// PDIAG entry point — see the module header for the heuristic and scope.
