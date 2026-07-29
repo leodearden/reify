@@ -259,6 +259,30 @@ PYEOF
     assert "census failure names the stale entry" \
         bash -c "python3 '$_PARSE_PY' '$_CENSUS_STALE_FIXTURE' census_ignore_entries_resolve 2>&1 | grep -q 'cpu_governance.__stale_fixture_knob__'"
 
+    assert "config_key_census.ignore is a non-empty list of strings" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" census_ignore_is_nonempty_list
+
+    # Negative fixture: the real YAML with the entire config_key_census block
+    # deleted, so the vacuity check must fail loudly rather than pass over an
+    # absent block vacuously.
+    _CENSUS_ABSENT_FIXTURE="$(mktemp /tmp/cpu_gov_census_absent_XXXXXX.yaml)"
+    trap 'rm -f "$_PARSE_PY" "${_CENSUS_STALE_FIXTURE:-}" "${_CENSUS_ABSENT_FIXTURE:-}"' EXIT
+    python3 -c 'import sys,yaml; d=yaml.safe_load(open(sys.argv[1])); del d["config_key_census"]; yaml.safe_dump(d, open(sys.argv[2],"w"))' \
+        "$ORCH_YAML" "$_CENSUS_ABSENT_FIXTURE"
+
+    assert "vacuity check FAILS when the config_key_census block is absent" \
+        bash -c "! python3 '$_PARSE_PY' '$_CENSUS_ABSENT_FIXTURE' census_ignore_is_nonempty_list"
+
+    assert "vacuity failure names the absent census block" \
+        bash -c "python3 '$_PARSE_PY' '$_CENSUS_ABSENT_FIXTURE' census_ignore_is_nonempty_list 2>&1 | grep -q 'config_key_census'"
+
+    # Division of labour: the staleness check stays deliberately SILENT (exit
+    # 0) on an absent census block — census_ignore_is_nonempty_list above is
+    # what catches that. Pinning this prevents a later refactor from
+    # conflating the two diagnostics.
+    assert "census_ignore_entries_resolve stays silent (exit 0) on an absent census block" \
+        python3 "$_PARSE_PY" "$_CENSUS_ABSENT_FIXTURE" census_ignore_entries_resolve
+
 fi
 
 # ---------------------------------------------------------------------------
