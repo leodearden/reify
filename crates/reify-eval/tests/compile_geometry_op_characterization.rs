@@ -474,6 +474,18 @@ fn boolean_step_handles() -> Vec<GeometryHandleId> {
 const ALL_BOOLEAN: [BooleanOp; 3] =
     [BooleanOp::Union, BooleanOp::Difference, BooleanOp::Intersection];
 
+/// Compile-time registry lock for the Boolean family (task #5754).
+///
+/// `BooleanOp` has no production `*_COMPILERS` fn-table (booleans dispatch by
+/// inline match), so `ALL_BOOLEAN` here is the whole registry surface for this
+/// family — which is why its lock lives in this file rather than beside the
+/// other seven in `geometry_ops/tests.rs`.
+const _: () = assert!(
+    ALL_BOOLEAN.len() == BooleanOp::VARIANT_COUNT,
+    "ALL_BOOLEAN / BooleanOp::VARIANT_COUNT mismatch — a variant was added without \
+     registering it; extend ALL_BOOLEAN and BooleanOp::ALL together"
+);
+
 /// Build a `Boolean` op for `op` with both operands resolvable via
 /// `boolean_step_handles` (`left = Step(0)`, `right = Step(1)`).
 fn boolean_case(op: BooleanOp) -> CompiledGeometryOp {
@@ -1692,6 +1704,17 @@ fn characterize_profile_family() {
 /// node (not the earlier step-6 stub error).
 const ALL_SURFACE: [SurfaceKind; 1] = [SurfaceKind::Nurbs];
 
+/// Compile-time registry lock for the Surface family (task #5754).
+///
+/// Like `BooleanOp`, `SurfaceKind` has no production `*_COMPILERS` fn-table
+/// (surfaces dispatch by inline match), so `ALL_SURFACE` here is the whole
+/// registry surface for this family.
+const _: () = assert!(
+    ALL_SURFACE.len() == SurfaceKind::VARIANT_COUNT,
+    "ALL_SURFACE / SurfaceKind::VARIANT_COUNT mismatch — a variant was added without \
+     registering it; extend ALL_SURFACE and SurfaceKind::ALL together"
+);
+
 /// Build a representative `Surface` op for `k` (no kernel step needed).
 /// EXHAUSTIVE match (no `_`); mirrors production arg shape for each kind.
 fn surface_case(k: SurfaceKind) -> CompiledGeometryOp {
@@ -1915,6 +1938,14 @@ fn _assert_variant_families_exhaustive(op: &CompiledGeometryOp) {
     }
 }
 
+/// The nine-kind-family census as documented in the doc block of
+/// [`coverage_all_variant_families_and_nested_kinds`] below.
+///
+/// Kept as a named constant so the prose and the assertion cannot drift apart
+/// silently: the test compares this against the sum of the nine
+/// `VARIANT_COUNT`s, so if the doc arithmetic is wrong the test fails.
+const DOCUMENTED_KIND_FAMILY_CENSUS: usize = 50;
+
 /// Runtime census cross-check for the 8-family / 48-nested-kind oracle.
 ///
 /// # Coverage protection model (be precise — this matters for L5)
@@ -1941,21 +1972,24 @@ fn _assert_variant_families_exhaustive(op: &CompiledGeometryOp) {
 /// 8 + 3 + 9 + 5 + 5 + 9 + 6 + 4 + 1 = 50.
 #[test]
 fn coverage_all_variant_families_and_nested_kinds() {
-    // Per-family array widths. For Primitive/Boolean/Transform/Pattern/Sweep/
-    // Curve/Profile/Surface these are tautological checks (the static [Kind; N]
-    // type makes .len() a compile-time constant equal to N). They're kept to
-    // document the expected census and catch any manual desync between the literal
-    // and the type annotation; but they cannot detect a variant omitted from ALL_*.
-    // Modify's separate VARIANT_COUNT assert below IS a real runtime tripwire.
-    assert_eq!(ALL_PRIMITIVE.len(), 8, "ALL_PRIMITIVE census (tautological — real tripwire is exhaustive match)");
-    assert_eq!(ALL_BOOLEAN.len(), 3, "ALL_BOOLEAN census (tautological — real tripwire is exhaustive match)");
+    // Per-family array widths, each cross-checked against the compiler's
+    // authoritative `VARIANT_COUNT` (task #5754). These are NO LONGER
+    // tautological: `XKind::VARIANT_COUNT` is derived from `XKind::ALL` in
+    // reify-compiler, so a variant added there but omitted from the `ALL_*`
+    // array here fails this assertion. (The same pairs are additionally locked
+    // at compile time — seven beside their tables in `geometry_ops/tests.rs`,
+    // and Boolean/Surface beside theirs above.)
+    assert_eq!(ALL_PRIMITIVE.len(), PrimitiveKind::VARIANT_COUNT, "ALL_PRIMITIVE is out of sync with PrimitiveKind::VARIANT_COUNT — update both together");
+    assert_eq!(ALL_BOOLEAN.len(), BooleanOp::VARIANT_COUNT, "ALL_BOOLEAN is out of sync with BooleanOp::VARIANT_COUNT — update both together");
     assert_eq!(ALL_MODIFY.len(), 9, "ALL_MODIFY census");
-    assert_eq!(ALL_TRANSFORM.len(), 7, "ALL_TRANSFORM census (tautological — real tripwire is exhaustive match)");
-    assert_eq!(ALL_PATTERN.len(), 5, "ALL_PATTERN census (tautological — real tripwire is exhaustive match)");
-    assert_eq!(ALL_SWEEP.len(), 9, "ALL_SWEEP census (tautological — real tripwire is exhaustive match)");
-    assert_eq!(ALL_CURVE.len(), 6, "ALL_CURVE census (tautological — real tripwire is exhaustive match)");
-    assert_eq!(ALL_PROFILE.len(), 4, "ALL_PROFILE census (tautological — real tripwire is exhaustive match)");
-    assert_eq!(ALL_SURFACE.len(), 1, "ALL_SURFACE census (tautological — real tripwire is exhaustive match)");
+    assert_eq!(ALL_TRANSFORM.len(), TransformKind::VARIANT_COUNT, "ALL_TRANSFORM is out of sync with TransformKind::VARIANT_COUNT — update both together");
+    assert_eq!(ALL_PATTERN.len(), PatternKind::VARIANT_COUNT, "ALL_PATTERN is out of sync with PatternKind::VARIANT_COUNT — update both together");
+    assert_eq!(ALL_SWEEP.len(), SweepKind::VARIANT_COUNT, "ALL_SWEEP is out of sync with SweepKind::VARIANT_COUNT — update both together");
+    assert_eq!(ALL_CURVE.len(), CurveKind::VARIANT_COUNT, "ALL_CURVE is out of sync with CurveKind::VARIANT_COUNT — update both together");
+    assert_eq!(ALL_PROFILE.len(), ProfileKind::VARIANT_COUNT, "ALL_PROFILE is out of sync with ProfileKind::VARIANT_COUNT — update both together");
+    assert_eq!(ALL_SURFACE.len(), SurfaceKind::VARIANT_COUNT, "ALL_SURFACE is out of sync with SurfaceKind::VARIANT_COUNT — update both together");
+    // Isosurface is a marker family with no nested kind enum, so it has no
+    // VARIANT_COUNT to cross-check against; this one stays tautological.
     assert_eq!(ALL_ISOSURFACE.len(), 1, "ALL_ISOSURFACE census (tautological — real tripwire is exhaustive match)");
 
     // Modify: real runtime cross-check against the compiler's source-of-truth.
@@ -1969,24 +2003,47 @@ fn coverage_all_variant_families_and_nested_kinds() {
     // no-`_` guard in `_assert_variant_families_exhaustive`). This array's own
     // .len() == 10 is also tautological (hardcoded 10 entries), but the
     // _assert_variant_families_exhaustive match is the real compile-time guard.
+    // Widths taken from the compiler's VARIANT_COUNTs, NOT from the local arrays
+    // (task #5754) — so this roll-up is anchored to reify-compiler's source of
+    // truth rather than re-deriving itself from the very tables it is auditing.
+    // The nine per-family assertions above are what tie the local arrays to it.
+    let kind_family_counts = [
+        PrimitiveKind::VARIANT_COUNT,
+        BooleanOp::VARIANT_COUNT,
+        ModifyKind::VARIANT_COUNT,
+        TransformKind::VARIANT_COUNT,
+        PatternKind::VARIANT_COUNT,
+        SweepKind::VARIANT_COUNT,
+        CurveKind::VARIANT_COUNT,
+        ProfileKind::VARIANT_COUNT,
+        SurfaceKind::VARIANT_COUNT,
+    ];
     let family_widths = [
-        ALL_PRIMITIVE.len(),
-        ALL_BOOLEAN.len(),
-        ALL_MODIFY.len(),
-        ALL_TRANSFORM.len(),
-        ALL_PATTERN.len(),
-        ALL_SWEEP.len(),
-        ALL_CURVE.len(),
-        ALL_PROFILE.len(),
-        ALL_SURFACE.len(),
+        kind_family_counts[0],
+        kind_family_counts[1],
+        kind_family_counts[2],
+        kind_family_counts[3],
+        kind_family_counts[4],
+        kind_family_counts[5],
+        kind_family_counts[6],
+        kind_family_counts[7],
+        kind_family_counts[8],
         ALL_ISOSURFACE.len(),
     ];
     assert_eq!(family_widths.len(), 10, "CompiledGeometryOp variant family count");
 
-    // Total nested-kind census across all families. Because the per-family widths
-    // are tautological for statically-typed arrays (except Modify), this sum also
-    // cannot independently detect a variant omitted from ALL_*; it documents the
-    // expected census and catches any manual size change not reflected here.
+    // The nine kind families' census, derived from VARIANT_COUNT, must match the
+    // figure documented in this test's doc block above. A doc/data mismatch here
+    // means the narrative has drifted from the compiler and must be corrected.
+    let kind_family_total: usize = kind_family_counts.iter().sum();
+    assert_eq!(
+        kind_family_total, DOCUMENTED_KIND_FAMILY_CENSUS,
+        "the nine-family VARIANT_COUNT census disagrees with the figure documented on \
+         coverage_all_variant_families_and_nested_kinds — fix the doc block, not this assert"
+    );
+
+    // Total nested-kind census across all ten families (the nine kind families
+    // plus the Isosurface marker).
     let total: usize = family_widths.iter().sum();
     assert_eq!(total, 53, "total nested-kind census; update if any ALL_* array is resized");
 }
