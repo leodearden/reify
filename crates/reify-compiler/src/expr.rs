@@ -10067,6 +10067,90 @@ structure S {
             get_let_expr(&m, "y").result_type
         );
     }
+
+    /// The GENERAL `OverloadResolution::NoMatch` poison Error carries
+    /// `DiagnosticCode::NoMatchingOverload` (`E_NO_MATCHING_OVERLOAD`), and its
+    /// rendered message is byte-identical to the pre-#5476 text.
+    ///
+    /// A nominal (structure-typed) param called with a bare dimensioned literal
+    /// is the plainest general no-match: it is not a `Selector`→`Selector` kind
+    /// mismatch, so it must take the `else` branch of the NoMatch arm's code
+    /// conditional. The verbatim message assertion is the mechanical form of the
+    /// task's "message text unchanged" contract — a future edit that improves the
+    /// wording has to come here and say so, rather than silently breaking every
+    /// consumer that greps the string.
+    ///
+    /// PRD `docs/prds/v0_6/placeholder-type-eradication-ratchet.md` §3.3 /
+    /// INV-SF-6 (task #5476).
+    #[test]
+    fn no_matching_overload_error_carries_no_matching_overload_code() {
+        use reify_test_support::compile_source;
+
+        let source = r#"
+structure def Marker { }
+pub fn takes_marker(m: Marker) -> Real { 1.0 }
+structure def Probe { let x = takes_marker(5mm) }
+"#;
+        let compiled = compile_source(source);
+        let err = the_one_error(&compiled.diagnostics);
+
+        assert_eq!(
+            err.code,
+            Some(DiagnosticCode::NoMatchingOverload),
+            "the general no-match poison Error must carry NoMatchingOverload, got: {:?}",
+            err
+        );
+        assert_eq!(
+            err.message,
+            "no matching overload for takes_marker(Scalar[m]), \
+             candidates: takes_marker(Marker) -> Real",
+            "the NoMatch message text must be unchanged by the code tagging"
+        );
+    }
+
+    /// Non-clobber guard for the code added above: when the no-match is
+    /// specifically a wrong-kind `Selector`→`Selector` param mismatch,
+    /// `coerce::is_selector_kind_mismatch_nomatch` holds and the diagnostic keeps
+    /// `DiagnosticCode::SelectorKindMismatch` — it must NOT be overwritten with
+    /// `NoMatchingOverload`.
+    ///
+    /// `edges(b)` is `Selector(Edge)`; `f`'s param is `FaceSelector` =
+    /// `Selector(Face)`. Same arity, non-generic, every other param equal — the
+    /// exact shape `is_selector_kind_mismatch_nomatch` looks for. This pins the
+    /// task 4581 / esc-4120-17 BT1↔BT6 code-uniformity contract, which is what
+    /// makes the composition path (`units.rs`) and this param-binding path report
+    /// one code. GREEN before #5476 and must stay GREEN after.
+    #[test]
+    fn selector_kind_mismatch_nomatch_keeps_its_own_code() {
+        use reify_test_support::compile_source_with_stdlib;
+
+        let source = r#"module test.selector_kind_nomatch
+pub fn takes_face(f: FaceSelector) -> Real { 1.0 }
+structure def Probe {
+    let b = box(10mm, 10mm, 10mm)
+    let x = takes_face(edges(b))
+}
+"#;
+        let compiled = compile_source_with_stdlib(source);
+        let nomatch: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.starts_with("no matching overload for takes_face"))
+            .collect();
+        assert_eq!(
+            nomatch.len(),
+            1,
+            "expected exactly one no-match diagnostic for takes_face, got: {:?}",
+            compiled.diagnostics
+        );
+        assert_eq!(
+            nomatch[0].code,
+            Some(DiagnosticCode::SelectorKindMismatch),
+            "a wrong-kind Selector→Selector no-match must KEEP SelectorKindMismatch \
+             and must not be clobbered with NoMatchingOverload, got: {:?}",
+            nomatch[0]
+        );
+    }
 }
 
 /// compiler-type-hygiene ε2: `Type`-variant MemberAccess completeness canary
