@@ -3722,6 +3722,38 @@ fn compile_expr_guarded_with_expected_inner(
                         // families by the units.rs disjointness test, so this
                         // arm's position in the ladder is unobservable.
                         joint_ctor_result_type(name, &compiled_args)
+                    } else if is_flexure_typed_fn(name) {
+                        // PRB flexure constructor family (placeholder-ratchet α,
+                        // PRD docs/prds/v0_6/placeholder-type-eradication-ratchet.md
+                        // §3.2, task #5476). All 13 prb_* ctors set the cell type
+                        // up-front to the nominal StructureRef("FlexureJoint") so
+                        // `flexure_compliance(joint: FlexureJoint)` matches a real
+                        // ctor result and REJECTS every bare literal through the
+                        // exact-equality overload filter (type_compat.rs).
+                        //
+                        // Falling through to the first-arg fallback instead
+                        // mis-types a flexure joint as its first geometric
+                        // argument's type — e.g. Scalar[LENGTH] from
+                        // notch_radius — which is exactly the placeholder PRD §2
+                        // names as the root cause: it made a bare `5mm`
+                        // statically indistinguishable from a real joint.
+                        //
+                        // Runtime stays Value::Map (esc-3845-91): StructureRef is
+                        // a representable cell type and value_type_kind_matches is
+                        // not enforced on let-cells. These cells already carry the
+                        // first-arg Scalar[LENGTH] mismatch today, so StructureRef
+                        // is strictly more correct. PRD §7.1's rejection of the
+                        // typed-joints migration is NOT reopened.
+                        //
+                        // Unlike the joint arm above, this family is name- AND
+                        // argument-agnostic — all 13 map to the one marker type,
+                        // so there is no Coupling-style args-aware branch.
+                        //
+                        // The family is pinned disjoint from all sibling families
+                        // by the units.rs disjointness test, so this arm's
+                        // position in the ladder is unobservable. The one hard
+                        // requirement is that it precede the first-arg fallback.
+                        flexure_ctor_result_type(name, &compiled_args)
                     } else if is_analysis_typed_fn(name) {
                         // FEA stress-analysis reduction family (FEA-5, task
                         // 2884): von_mises / principal_stresses / max_shear /
