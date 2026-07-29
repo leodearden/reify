@@ -1681,13 +1681,70 @@ _SWEEP_ENV=()
 assert "G9: REIFY_GATE_STALENESS_REQUESTS_DIR emits the same request set as the flag" \
     test "$G_SNAP1" = "$(_request_snapshot "$G_REQ_ENV")"
 
+# The default-writes-nothing proof. Asserting `_request_count_is <dir> 0` after
+# a flagless run is VACUOUS on its own: the SUT was never told that dir exists,
+# so the assert passes whether or not the default emits — it would pass against
+# an empty script. Two things fix that:
+#   1. a CONTROL run that emits into the very same dir first, so the dir is
+#      demonstrably reachable, writable, and one this fixture DOES emit into —
+#      making the 0 an observed difference attributable to the knob alone, since
+#      the knob is the only thing that changes between the two runs;
+#   2. a sandbox run for the hole no assert against a KNOWN dir can ever catch —
+#      a default target the SUT resolves for itself, relative to cwd or $HOME.
+#
+# _tree_is_empty <dir> — nothing at all was created anywhere beneath <dir>.
+# Deliberately broader than _request_count_is (which is maxdepth 1, -type f):
+# a reintroduced default may well mkdir -p a subdirectory first.
+_tree_is_empty() {
+    local dir="$1" got
+    got="$(find "$dir" -mindepth 1 2>/dev/null | wc -l)"
+    [ "$got" = 0 ] || {
+        echo "expected an empty tree under $dir, found $got entr(y|ies):"
+        find "$dir" -mindepth 1 2>/dev/null
+        return 1
+    }
+}
+
 G_NONE="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-gnone-XXXXXX")"
 _TMPDIRS+=("$G_NONE")
+
+# (a) CONTROL: this fixture demonstrably emits into G_NONE when pointed at it.
+_SWEEP_ENV=(REIFY_GATE_STALENESS_REQUESTS_DIR="$G_NONE")
+run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" --format json
+_SWEEP_ENV=()
+assert "G9: CONTROL — pointed at it, the sweep emits all three requests into G_NONE" \
+    _request_count_is "$G_NONE" 3
+
+# (b) Cleared, so the flagless run below starts from a known-zero dir.
+rm -f "$G_NONE"/*
+assert "G9: CONTROL — G_NONE is back to empty before the flagless run" \
+    _request_count_is "$G_NONE" 0
+
+# (c) FLAGLESS: same fixture, same dir, knob removed — the ONLY difference.
 run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" --format json
 assert "G9: with neither the flag nor its env knob set, the sweep writes nothing" \
     _request_count_is "$G_NONE" 0
 assert "G9: ... and the previously-emitted request set is left untouched" \
     test "$G_SNAP1" = "$(_request_snapshot "$G_REQ")"
+
+# (d) No SELF-CHOSEN default target either. cwd AND $HOME both point into a
+# fresh sandbox and the env knob is explicitly unset, so a default resolved
+# against either one lands inside the sandbox and is caught. TMPDIR is
+# deliberately NOT redirected here: the SUT legitimately mktemps its rows TSV
+# and its proposal-parser helper there, and those are not request emission.
+G_SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-gsandbox-XXXXXX")"
+_TMPDIRS+=("$G_SANDBOX")
+_SWEEP_ENV=(-u REIFY_GATE_STALENESS_REQUESTS_DIR HOME="$G_SANDBOX")
+_G_OLDPWD="$PWD"
+cd "$G_SANDBOX"
+run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" --format json
+cd "$_G_OLDPWD"
+_SWEEP_ENV=()
+assert "G9: a flagless sweep still exits 0 with cwd and HOME inside a sandbox" _rc_is 0
+assert "G9: ... and still produces its complete report (so the run was real)" \
+    _json_is 's["gate_closure"] == 1 and s["merge_verify_red"] == 1 and s["unmet_dependency"] == 1'
+assert "G9: ... and created NOTHING under cwd/\$HOME — there is no default emit target" \
+    _tree_is_empty "$G_SANDBOX"
 
 # --- G10: the two DB engines are interchangeable, not one-and-a-stub ---------
 #
