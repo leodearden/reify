@@ -145,44 +145,27 @@ pub fn compute_dirty_cone_with_realizations(
 
 /// Topologically sort a set of nodes — a thin delegate to the ONE scheduling core.
 ///
-/// This function owns no scheduling logic of its own. It forwards to
+/// This function owns no scheduling logic of its own: it forwards to
 /// [`crate::engine_fixpoint::run_unified_pass_seeded`], the single Kahn core
-/// (INV-EVAL-5) shared with the cold, build, edit and concurrent paths. There is
-/// exactly one scheduler in this crate; a second implementation here would be
-/// free to drift from it silently, which is precisely what happened before
-/// (a level-batched drain that diverged on both drain shape and edge kinds).
-///
-/// The returned order is therefore the core's own, with two properties callers
-/// may rely on:
-///
-/// - It is the GLOBAL `DebugOrd`-priority Kahn order — a single `pop_first` off
-///   one ready set, NOT a per-level batch drain. A deep chain drains completely
-///   before a `DebugOrd`-larger shallow sibling, rather than the two interleaving
-///   level by level.
-/// - It is REALIZATION-AWARE: in-degree counts both `reads` (→ [`NodeId::Value`])
-///   and `realization_reads` (→ [`NodeId::Realization`]) whenever the predecessor
-///   is itself in `nodes`, and the decrement fires uniformly for every scheduled
-///   node kind. A `realization_reads` consumer can no longer be emitted ahead of
-///   its producer.
-///
-/// Only edges *within* `nodes` are considered: a read naming an out-of-set
-/// producer is not counted, so a node whose producer was already evaluated
-/// upstream still reaches in-degree 0 and is scheduled.
+/// (INV-EVAL-5) shared with the cold, build, edit and concurrent paths. For the
+/// order's mechanics — drain shape, which reads contribute in-degree, how
+/// out-of-set producers are treated — read that function's doc; deliberately not
+/// restated here, so this comment cannot drift out of sync with the core.
 ///
 /// # Cycle-drop contract
 ///
-/// This delegate is deliberately PURE — it must never append cyclic residue to
-/// recover a total order. A node inside a dependency cycle never reaches
-/// in-degree 0, so it is absent from the returned vector, and `sorted.len() <
-/// nodes.len()` is exactly the cycle signal three production sites rely on:
-/// [`crate::engine_eval`]'s `detect_let_cycle` and `build_combined_param_let_graph`
-/// (which checks it twice — once on the combined param+let graph, once on the
-/// let-only re-check), and [`crate::unfold`]'s `elaborate_child_lets_only`.
-/// Appending residue here would silently disable all three cycle diagnostics
-/// while leaving their call sites looking correct. Callers that need a total
-/// order over a possibly-cyclic set must append the residue *themselves*, at
-/// their own call site, where the choice is visible (the edit executor in
-/// [`crate::engine_edit`] does exactly that).
+/// The one property callers rely on that is NOT visible from the core's
+/// signature: this delegate is PURE and must stay so — it must never append
+/// cyclic residue to recover a total order. A node inside a dependency cycle
+/// never reaches in-degree 0, so it is absent from the returned vector, and
+/// `sorted.len() < nodes.len()` is exactly the cycle signal three production
+/// sites rely on: [`crate::engine_eval`]'s `detect_let_cycle` and
+/// `build_combined_param_let_graph` (which checks it twice — once on the combined
+/// param+let graph, once on the let-only re-check), and [`crate::unfold`]'s
+/// `elaborate_child_lets_only`. Appending residue here would silently disable all
+/// three cycle diagnostics while leaving their call sites looking correct.
+/// Callers that need a total order over a possibly-cyclic set must append the
+/// residue *themselves*, at their own call site, where the choice is visible.
 pub fn topological_sort(
     nodes: &HashSet<NodeId>,
     traces: &HashMap<NodeId, DependencyTrace>,
@@ -195,10 +178,9 @@ pub fn topological_sort(
 /// topologically sorted so dependencies are evaluated before dependents.
 ///
 /// The sort is [`topological_sort`], so this entry point inherits the ONE
-/// scheduling core's order transitively: the global `DebugOrd`-priority Kahn
-/// order, realization-aware, with cyclic members dropped rather than appended.
-/// This is the order the edit path re-evaluates in, and it is the same order the
-/// cold/build paths schedule — the two surfaces cannot diverge because there is
+/// scheduling core's order — and its cycle-drop contract — transitively. This is
+/// the order the edit path re-evaluates in, and it is the same order the
+/// cold/build paths schedule; the two surfaces cannot diverge because there is
 /// only one implementation to diverge from.
 pub fn compute_eval_set(
     dirty: &HashSet<NodeId>,
@@ -373,28 +355,6 @@ pub(crate) fn assert_dag_complete_from_graph(
     let traces = crate::deps::build_trace_map_and_fields(graph, fields);
     if let Err(violation) = check_dag_complete(&traces, exec_order) {
         panic!("{}", violation.describe());
-    }
-}
-
-/// Wrapper for NodeId that implements Ord based on Debug representation.
-/// Used for deterministic tie-breaking in topological sort.
-///
-/// Promoted to `pub(crate)` (task 4357 δ) so `engine_fixpoint::run_unified_pass`
-/// reuses the SAME determinism tie-break for its Kahn worklist ready-set and
-/// Tarjan outer-iteration/successor order — a single source of total ordering,
-/// no duplicated wrapper.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DebugOrd(pub(crate) NodeId);
-
-impl PartialOrd for DebugOrd {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for DebugOrd {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        format!("{:?}", self.0).cmp(&format!("{:?}", other.0))
     }
 }
 
