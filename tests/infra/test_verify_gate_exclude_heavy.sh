@@ -21,6 +21,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
     echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# For nextest_available_ambient (the plan-header availability probe below).
+# Sourcing the lib installs no trap and builds no environment — only
+# nextest_absent_init does that, and this suite deliberately never calls it.
+[ -f "$SCRIPT_DIR/nextest_absent_lib.sh" ] || {
+    echo "ERROR: nextest_absent_lib.sh not found at $SCRIPT_DIR/nextest_absent_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/nextest_absent_lib.sh"
+
 echo "=== REIFY_GATE_EXCLUDE_HEAVY knob-gated gate exclusion tests (task 4915 / A4) ==="
 
 # Single source of truth for the `heavy` filter expression (A1 / task 4912) —
@@ -55,17 +62,33 @@ esac
 NOT_PATTERN='-E "not ('
 
 # ---------------------------------------------------------------------------
-# Detect nextest availability once. NEXTEST is computed in verify.sh before
-# any role/knob logic runs and is role/knob-invariant; the plan header
-# `nextest=$NEXTEST` reports it directly. Positive assertions (below) only
-# make sense on the nextest path — the cargo-test fallback has no -E support.
+# Detect nextest availability once, via the shared detector in
+# tests/infra/nextest_absent_lib.sh (task 5644) — the same plan-header parse
+# seven suites had each open-coded. Positive assertions (below) only make sense
+# on the nextest path; the cargo-test fallback has no -E support.
+#
+# This probe makes its own dedicated --print-plan capture (read by nothing else
+# in this file), so it takes the AMBIENT form rather than nextest_available_in_
+# plan.
+#
+# The dropped `env -u REIFY_GATE_EXCLUDE_HEAVY DF_VERIFY_ROLE=task` pin.
+# nextest_available_ambient runs verify.sh with no env prefix, so the migration
+# only preserves behaviour if NEXTEST is genuinely role/knob-invariant. It is,
+# and for a checkable reason rather than the one the old comment gave (it said
+# NEXTEST is computed "before any role/knob logic runs" — it is not; it is
+# computed after both): scripts/verify.sh:1509-1544 derives NEXTEST from
+# `cargo nextest --version` / `command -v cargo-nextest` ALONE, reading neither
+# DF_VERIFY_ROLE (defaulted :616) nor REIFY_GATE_EXCLUDE_HEAVY (read :709). The
+# header at :2598 interpolates that same $NEXTEST.
+#
+# Net robustness gain, too: the old capture had no `|| true`, so a verify.sh
+# hiccup aborted the suite under `set -o pipefail` before test_summary. The lib
+# path is guarded at nextest_absent_lib.sh:712 and degrades to "not available".
 # ---------------------------------------------------------------------------
-_PROBE_HEADER="$(env -u REIFY_GATE_EXCLUDE_HEAVY DF_VERIFY_ROLE=task \
-    bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan | grep '^# verify.sh plan')"
 NEXTEST_AVAILABLE=0
-case "$_PROBE_HEADER" in
-    *"nextest=1"*) NEXTEST_AVAILABLE=1 ;;
-esac
+if nextest_available_ambient "$REPO_ROOT/scripts/verify.sh"; then
+    NEXTEST_AVAILABLE=1
+fi
 echo "(nextest available on this host: $NEXTEST_AVAILABLE)"
 
 # ---------------------------------------------------------------------------
