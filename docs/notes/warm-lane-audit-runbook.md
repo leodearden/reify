@@ -288,11 +288,14 @@ timer unit is wired by this task**; a follow-up may implement one.
   `preserved_live_ref=L` (task 5572) is **the share of K** held back by a live process reference — a
   process with its cwd, an open fd, or an mmap at or under the lane dir. It is a breakdown of
   `preserved`, **not** an additional bucket: L ≤ K, and K + L double-counts. Worth watching, because
-  it is the only preserve reason that can shield an entry indefinitely — the dirty and unlanded
-  reasons clear when the work lands, so a persistently non-zero L is the signal to go look for a
-  stuck process holding a lane. New fields are APPENDED to this line, never interposed, so consumers
-  matching the `reset=`/`removed=`/`preserved=` prefix keep working (`scripts/warm-lane-gc.sh`
-  stdout contract).
+  it is the only *reclaim-eligible* preserve reason that can shield an entry indefinitely — the
+  dirty and unlanded reasons clear when the work lands, so a persistently non-zero L is the signal
+  to go look for a stuck process holding a lane. (K also lumps in protect-glob skips, which shield
+  an entry for as long as the glob is passed — permanent under the default `--protect-glob`, but
+  deliberate and operator-selected, so they never enter reclaim at all. Read a persistently high K
+  with a zero L as that, not as a leak.) New fields are APPENDED to this line, never interposed, so
+  consumers matching the `reset=`/`removed=`/`preserved=` prefix keep working
+  (`scripts/warm-lane-gc.sh` stdout contract).
 
 ## Pointers
 
