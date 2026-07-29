@@ -266,6 +266,8 @@ _FX_OPEN_APPEND='ex''ec 9>>"$LOCK"'
 _FX_ACQ_IF='if ! flo''ck -n 9; then'
 _FX_ACQ_OR='flo''ck -xn 9 || exit 1'
 _FX_ACQ_INHERIT='flo''ck -n 9 || true'
+_FX_ACQ_SHARED='    flo''ck -s 9'
+_FX_SQUAT_ONELINE='( flo''ck -x 9 && touch "$READY" && sleep 300 ) 9>"$LOCK" '"$_FX_AMP"
 _FX_DETACH='{ rm -rf "$TRASH"; } 9<&- '"$_FX_AMP"
 _FX_FG_CHILD='"$@" 9<&-'
 _FX_UNLOCK='    flo''ck -u 9 2>/dev/null || true'
@@ -551,5 +553,55 @@ assert "real tree: scripts/thin-warm-lane.sh is CLEAN" \
     _scans_clean "$REPO_ROOT/scripts/thin-warm-lane.sh"
 assert "real tree: tests/infra/run_all.sh is CLEAN" \
     _scans_clean "$REPO_ROOT/tests/infra/run_all.sh"
+
+# ---------------------------------------------------------------------------
+# Cycle 6 — SUBSHELL-SCOPED opens: a lock-holder SQUATTER is not the holder.
+#
+# When the open AND the acquire both happen INSIDE the backgrounded compound,
+# the forking shell never holds the lock: there is nothing for it to release
+# and nothing for it to leak.  This is the standard test-fixture idiom for
+# "occupy a lock so the code under test observes contention", used across the
+# warm-lane suites — flagging it would put a permanent false positive on files
+# that are doing nothing wrong.
+#
+# The guard therefore qualifies OPEN and ACQUIRE on subshell depth 0 at the
+# line's START, so an open nested inside a subshell is not the holder opening
+# it, while DETACH is qualified on depth 0 at the line's END so `) &` still
+# counts as a fork performed BY the lock-holding shell.
+# ---------------------------------------------------------------------------
+echo "--- Cycle 6: subshell-scoped squatters are CLEAN ---"
+
+_write_fixture neg_squatter_block.sh \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'LOCK=/tmp/fixture.lock' \
+    '(' \
+    "    $_FX_OPEN" \
+    "$_FX_ACQ_SHARED" \
+    '    sleep 300' \
+    ') '"$_FX_AMP" \
+    'echo "squatter running"'
+
+assert "squatter (block form): open+acquire inside the fork is CLEAN" \
+    _scans_clean "$TMPWORK/neg_squatter_block.sh"
+
+_write_fixture neg_squatter_oneline.sh \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'LOCK=/tmp/fixture.lock' \
+    'READY=/tmp/fixture.ready' \
+    "$_FX_SQUAT_ONELINE" \
+    'echo "squatter running"'
+
+assert "squatter (one-line form): subshell opens and closes on one line, CLEAN" \
+    _scans_clean "$TMPWORK/neg_squatter_oneline.sh"
+
+# Real-tree controls — the live squatters in the warm-lane suites.
+assert "real tree: tests/infra/test_warm_base_coherence.sh is CLEAN" \
+    _scans_clean "$REPO_ROOT/tests/infra/test_warm_base_coherence.sh"
+assert "real tree: tests/infra/test_warm_lane_gc.sh is CLEAN" \
+    _scans_clean "$REPO_ROOT/tests/infra/test_warm_lane_gc.sh"
+assert "real tree: tests/infra/test_warm_lane_audit.sh is CLEAN" \
+    _scans_clean "$REPO_ROOT/tests/infra/test_warm_lane_audit.sh"
 
 test_summary
