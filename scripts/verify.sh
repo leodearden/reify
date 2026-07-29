@@ -2555,6 +2555,28 @@ build_plan() {
         add_tool "./scripts/tree-sitter-generate.sh"
     fi
 
+    # tree-sitter COMPILED-parser freshness (task #5629, esc-5392-1). The leaf
+    # above refreshes tree-sitter-reify/src/ ON DISK but does not by itself make
+    # cargo recompile it: cargo re-runs a build script only for paths declared
+    # via rerun-if-changed, and cc emits none of its own. So without this leaf
+    # the gate can link a libtree_sitter_reify.a built from different bytes than
+    # the tree it is verifying — a false GREEN for an external-scanner change.
+    # `ensure` repairs (bumps the watched inputs' mtime so cargo must rebuild)
+    # rather than hard-failing; `check` is the assert-only mode for a checkpoint.
+    #
+    # Placement is load-bearing, both halves:
+    #   AFTER tree-sitter-generate.sh  — src/parser.c must be current on disk
+    #     before it is fingerprinted, or the verdict describes a stale input set.
+    #   BEFORE `verify.sh compile-gate` and every cargo leaf — a force applied
+    #     after the compile repairs nothing.
+    # Guarded on RUN_RUST exactly as the generate leaf is, so docs-only /
+    # gui-src-only plans keep zero command leaves.
+    # Pinned by tests/infra/test_tree_sitter_pipeline.sh's
+    # test_verify_plan_includes_freshness_after_generation.
+    if [ "$RUN_RUST" -eq 1 ]; then
+        add "./scripts/tree-sitter-freshness.sh ensure"
+    fi
+
     # Compile-phase PSI admission gate (task 4618): soft backpressure backstop
     # for the jobserver's implicit-token leak (FIFO pool tokens + 1 implicit
     # token per concurrent cargo) and non-cargo load.  Emitted only when
