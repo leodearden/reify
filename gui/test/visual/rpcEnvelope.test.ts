@@ -23,7 +23,12 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { isInBandError, normalizeRpcEnvelope, parseTextPayload } from "./rpcEnvelope.mjs";
+import {
+  isInBandError,
+  makeDebugRpc,
+  normalizeRpcEnvelope,
+  parseTextPayload,
+} from "./rpcEnvelope.mjs";
 
 describe("isInBandError — the §2a tool-outage discriminator", () => {
   // Moved verbatim from meshCountParity.test.ts, which pinned this while it was
@@ -235,6 +240,114 @@ describe("normalizeRpcEnvelope — the two failure dialects folded into one shap
       expect(() => normalizeRpcEnvelope(envelope as never)).not.toThrow();
       expect(normalizeRpcEnvelope(envelope as never).payload ?? null).toBeNull();
     }
+  });
+});
+
+describe("makeDebugRpc — the transport the six smoke drivers duplicate", () => {
+  // FIRST-EVER cover for this layer. Each driver inlined its own copy of the
+  // fetch + JSON-RPC body + decode, and since a driver needs a live webview and
+  // OCCT, CI could never execute any of them. The `fetchImpl` injection point
+  // exists solely so this suite can drive the real code path with no server.
+  const DEBUG_URL = "http://127.0.0.1:3939/mcp";
+
+  /** A fetch stub that records its call and answers with `envelope`. */
+  function stubFetch(envelope: unknown) {
+    const calls: Array<[string, RequestInit]> = [];
+    const fetchImpl = (url: string, init: RequestInit) => {
+      calls.push([url, init]);
+      return Promise.resolve({ json: () => Promise.resolve(envelope) });
+    };
+    return { calls, fetchImpl };
+  }
+
+  const textEnvelope = (value: unknown) => ({
+    result: { content: [{ type: "text", text: JSON.stringify(value) }] },
+  });
+
+  // ─── Request shape — the half that has never been tested ──────────────────
+  it("POSTs one MCP tools/call to the url it was built with", async () => {
+    const { calls, fetchImpl } = stubFetch(textEnvelope({ ok: true }));
+    const rpc = makeDebugRpc(DEBUG_URL, { fetchImpl });
+
+    await rpc("viewport_state", { pane: 2 });
+
+    expect(calls).toHaveLength(1);
+    const [url, init] = calls[0];
+    expect(url).toBe(DEBUG_URL);
+    expect(init.method).toBe("POST");
+    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(JSON.parse(init.body as string)).toEqual({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "viewport_state", arguments: { pane: 2 } },
+    });
+  });
+
+  it("defaults `arguments` to {} when the caller omits args", async () => {
+    // Every driver's waitForServer polls with a bare `rpc('health')`.
+    const { calls, fetchImpl } = stubFetch(textEnvelope({ ok: true }));
+    await makeDebugRpc(DEBUG_URL, { fetchImpl })("health");
+    expect(JSON.parse(calls[0][1].body as string).params).toEqual({
+      name: "health",
+      arguments: {},
+    });
+  });
+
+  // ─── Response handling — assert the seam, not normalizeRpcEnvelope's table ─
+  it("resolves to the decoded payload for a healthy JSON text block", async () => {
+    const { fetchImpl } = stubFetch(textEnvelope({ meshCount: 7 }));
+    await expect(makeDebugRpc(DEBUG_URL, { fetchImpl })("mesh_stats")).resolves.toEqual({
+      meshCount: 7,
+    });
+  });
+
+  it("RESOLVES to {error} for a §2b isError response rather than throwing", async () => {
+    // The fold the five drivers gain: they previously JSON.parse-failed on the
+    // `Error: <msg>` text and handed back the bare string, which then reached
+    // `'error' in x` and threw a TypeError.
+    const { fetchImpl } = stubFetch({
+      result: {
+        content: [{ type: "text", text: "Error: debug-request timed out after 5000ms" }],
+        isError: true,
+      },
+    });
+    const payload = await makeDebugRpc(DEBUG_URL, { fetchImpl })("viewport_state");
+    expect(isInBandError(payload)).toBe(true);
+    expect(payload).toEqual({ error: "Error: debug-request timed out after 5000ms" });
+  });
+
+  it("resolves to null when there is no text block to interpret", async () => {
+    // Load-bearing for waitForServer, which polls on `if (r !== null) return;`.
+    const { fetchImpl } = stubFetch({
+      result: { content: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] },
+    });
+    await expect(makeDebugRpc(DEBUG_URL, { fetchImpl })("screenshot")).resolves.toBeNull();
+  });
+
+  it("resolves to the raw text when the block is not JSON", async () => {
+    const { fetchImpl } = stubFetch({ result: { content: [{ type: "text", text: "pong" }] } });
+    await expect(makeDebugRpc(DEBUG_URL, { fetchImpl })("health")).resolves.toBe("pong");
+  });
+
+  // ─── The throw/resolve split waitForServer's bare catch{} depends on ───────
+  it("REJECTS with the verbatim transport-error message on a §2c envelope error", async () => {
+    // Pinned byte-for-byte: waitForServer swallows this in a bare `catch {}`, so
+    // a wording change would be invisible until a live run.
+    const { fetchImpl } = stubFetch({ error: { code: -32601, message: "method not found: x" } });
+    await expect(makeDebugRpc(DEBUG_URL, { fetchImpl })("x")).rejects.toThrow(
+      new Error('RPC error: {"code":-32601,"message":"method not found: x"}'),
+    );
+  });
+
+  it("propagates a rejecting fetch, so waitForServer keeps polling", async () => {
+    // Connection refused while the GUI is still booting: the driver must see a
+    // rejection (its catch swallows it and retries), never a null payload that
+    // would read as "server up, nothing to interpret".
+    const refused = () => Promise.reject(new Error("fetch failed"));
+    await expect(
+      makeDebugRpc(DEBUG_URL, { fetchImpl: refused })("health"),
+    ).rejects.toThrow("fetch failed");
   });
 });
 
