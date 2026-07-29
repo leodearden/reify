@@ -25,6 +25,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
     echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# For nextest_available_in_plan (the plan-header availability probe below).
+# Sourcing the lib installs no trap and builds no environment — only
+# nextest_absent_init does that, and this suite deliberately never calls it.
+[ -f "$SCRIPT_DIR/nextest_absent_lib.sh" ] || {
+    echo "ERROR: nextest_absent_lib.sh not found at $SCRIPT_DIR/nextest_absent_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/nextest_absent_lib.sh"
+
 # Hermetic against the ambient REIFY_RELEASE_DELTA_SKIP knob (task #5280 zeta;
 # dark-factory-orchestrator.yaml exports it into the whole merge-gate verify.sh
 # process tree once armed). The knob is consulted ONLY under DF_VERIFY_ROLE=merge
@@ -312,14 +319,28 @@ esac
 POSITIVE_PATTERN='-E "('
 NEGATIVE_PATTERN='-E "not ('
 
-# nextest availability — reuse the Cycle D offline plan header (NEXTEST is
-# role/knob-invariant, computed once in verify.sh before role logic runs;
-# same probe idiom as the A4 test).
-_OFFLINE_HEADER="$(printf '%s\n' "$OFFLINE_FULL" | grep '^# verify.sh plan')"
+# nextest availability — reuse the Cycle D offline plan header, read back OUT of
+# the already-captured OFFLINE_FULL via the shared detector in
+# tests/infra/nextest_absent_lib.sh (task 5644), which is where the "same probe
+# idiom as the A4 test" now lives for all eight suites that carry it. No extra
+# verify.sh invocation; OFFLINE_FULL stays, since the Cycle D asserts read it.
+#
+# Reading availability out of a plan captured under DF_VERIFY_ROLE=offline is
+# sound because NEXTEST is role/knob-invariant. The old comment justified that by
+# saying NEXTEST is "computed once in verify.sh before role logic runs" — it is
+# not; scripts/verify.sh computes it at :1509-1544, AFTER DF_VERIFY_ROLE is
+# defaulted at :616. The invariance holds for a checkable reason instead: that
+# computation derives NEXTEST from `cargo nextest --version` /
+# `command -v cargo-nextest` ALONE and never reads the role, and the header at
+# :2598 interpolates that same $NEXTEST.
+#
+# Net robustness gain: the old parse had no `|| true`, so an empty OFFLINE_FULL
+# aborted the suite under pipefail. _nextest_absent_header_of is `|| true`-guarded
+# (nextest_absent_lib.sh:712) and reports unavailable instead.
 NEXTEST_AVAILABLE=0
-case "$_OFFLINE_HEADER" in
-    *"nextest=1"*) NEXTEST_AVAILABLE=1 ;;
-esac
+if nextest_available_in_plan "$OFFLINE_FULL"; then
+    NEXTEST_AVAILABLE=1
+fi
 echo "(nextest available on this host: $NEXTEST_AVAILABLE)"
 
 if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
