@@ -394,7 +394,233 @@ identically to HEAD both before and after this measurement.
 
 ## §2 Item 7a — §6.2 re-confirmation: gates 3+4, δ₁'s blast radius (step-2)
 
-*(filled by step-2)*
+Re-confirms §6.2's table (categories A/B/C, the two `.ri` sites, and the
+EXCLUDED-BY-DESIGN `pub unit` bucket) against HEAD, using pre-2's
+alias-extended 65-name set and the reused tree walk. **Method, not just
+figures, is reproduced below** because §6.2 gives no per-site table for
+category C (unlike §6.3) — re-confirming an aggregate-only count forces an
+independent site-level derivation, which is exactly what this section is.
+
+### 2.1 Category A/B — `.ri` bare-literal param/let defaults
+
+**Category A (`param`) = 2. CONFIRMED, unchanged from §6.2.**
+
+```bash
+ALT=$(cat /tmp/5756-scratch/names-alternation.txt)   # 65-name set, §0.3
+for f in $(cat tree-A-examples-ri.txt tree-B-crates-ri.txt tree-E-gui-test-ri.txt); do
+  grep -nP "^\s*(priv\s+)?(param|let)\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*($ALT)\s*=\s*-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?\s*[,)]?\s*(//.*)?$" "$f"
+done
+```
+
+| File:line | Text | In sweep's reach? |
+|---|---|---|
+| `examples/bearing_auto_seal.ri:46` | `param durometer : Length = 70.0` | YES — found by the strict regex over trees A/B/E |
+| `tree-sitter-reify/test/fixtures/mv-2-priv-param.ri:4` | `priv param rated_torque : Torque = 5` | **NO** — this tree is outside `corpus_no_bare_scalar.rs`'s walk (§11(A)); confirmed present by direct `sed` read, not by the sweep |
+
+Both verbatim-confirmed at HEAD. **Only the first is type-checked** —
+`mv-2-priv-param.ri` is a `tree-sitter-reify` grammar fixture, parsed by the
+tree-sitter CLI/grammar tests only, never reaches `reify-compiler`.
+
+**Category B (`let`) = 0. CONFIRMED.** Widened the query to list **every**
+`let <n> : <DIMENSIONED> = …` site regardless of literal-vs-expression shape
+(35 sites, trees A/B) to sanity-check the regex wasn't just missing bare
+forms: all 35 are compound expressions (`.sum`, `cost(...)`, `auto`,
+`auto(free)`, `unwrap_or(...)`, `match …`, `Defaultable::scaled(3.0)` — the
+`3.0` there is a **call argument**, not the let's own default). Zero are a
+bare literal. Full list in `/tmp/5756-scratch/step2-let-dimensioned-any.txt`.
+
+### 2.2 Category C — Rust fixture-string occurrences
+
+**PRD figure: 63 across 22 files (25 c1 + 10 c2 + 28 c0, 11 of the 28
+parse-only). My re-measurement: 55 in-scope hits across 17 files (15 c1 + 10
+c2 + 26 c0 + 2 not conclusively classified within this session's budget).**
+Recorded as a DELTA, not silently reconciled — see 2.2.4.
+
+**2.2.1 Method.** A line-level scan of every file in tree C
+(`crates/**/*.rs`, 1641 files after exclusions) + tree D
+(`gui/src-tauri/**/*.rs`, 41 files), reusing `corpus_no_bare_scalar.rs`'s
+comment-stripping technique (skip lines whose trimmed start is `//`; strip
+a trailing `// …` unless preceded by `:`), against a purpose-written bare
+predicate (this task's C2 anchor note: `corpus_no_bare_scalar.rs`'s own
+`line_has_bare_scalar` detects the bare `Scalar` *keyword*, a different,
+closed migration — reusing it here would answer the wrong question):
+
+```python
+pat = re.compile(
+    r'(?:priv\s+)?(?:param|let)\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*(?:' + alt65 + r')\b'
+    r'\s*=\s*-?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?(?![a-zA-Z_0-9.])'
+    r'(?=\s*(?:,|\)|;|\}|//|"|\\|$))'
+)
+```
+
+**2.2.2 Two regex bugs found and fixed while building this — recorded
+because a naive version of this sweep silently over-counts.** (1) A
+negative lookahead of just `(?![a-zA-Z_0-9])` after the number lets the
+engine backtrack the optional fractional group and accept the *integer
+prefix* of a unit-suffixed literal (`0.2mm` → backtracks to bare `0`,
+followed by `.`, which isn't excluded) — fixed by adding `.` to the
+lookahead. This bug alone produced 122 false positives (170 raw hits → 48
+after the fix), overwhelmingly unit-suffixed (`0.2mm`, `0.50USD`) or
+dimensionally-explicit compound expressions (`30.0 * 1W / (1m * 1K)`) — both
+of which are the PRD's *other* two rows (818 unit-suffixed / 68 compound),
+not category C. (2) The end-of-match assertion must allow a following `}`,
+`"`, or a literal backslash (a Rust string's embedded `\n` escape, two
+characters, when a whole `.ri` snippet sits on one physical `.rs` line) —
+without it, one-line fixtures like `"structure S {\n  param x: Length = 1\n}"`
+are missed. Both fixes verified by direct inspection of the dropped/added
+lines (`/tmp/5756-scratch/dropped-keys.txt`).
+
+**2.2.3 Two sites excluded as a different mechanism, not counted in the 55.**
+`let_type_disambiguation_tests.rs:296` (`trait HasX { let x : Length = 5.0 }`)
+and the already-known `m9_error_cases.rs:276` (`let score : Mass = 1.5`,
+cited by §6.2 itself) both place the bare literal inside a **trait
+requirement `let`**, checked by `checker.rs`'s injected-default cross-check
+— a structurally different, already-strict path from gates 3/4
+(`entity.rs:479-485`/`:563-569`, which govern **structure-body**
+`param`/`let` declarations only). Trait-lets being already-strict is §6.2's
+own finding; my regex doesn't distinguish structure-body from
+trait-requirement position, so these two are a methodology false-positive,
+not a new site.
+
+**2.2.4 c1/c2/c0 classification.** Classified each remaining hit by reading
+its enclosing test function and asking: *does this test's assertion
+exhaustively check for absence of `Severity::Error` (`errors_only(...)`,
+`error_diags(...)`, `.filter(severity==Error).collect()` then
+`assert!(...is_empty())`, or call the panicking helper `parse_and_compile`/
+`eval_source`/`check_source`, which assert no compile errors internally),
+or does it only check for a *specific* diagnostic (`.find(...)`/`.any(...)`
+on message/code content, non-exhaustive)?* Only the former breaks under
+δ₁ — a hit can newly produce a diagnostic and NOT break its test, exactly
+the general rule §1.4 already established for the flipped-predicate
+transcript.
+
+*c2 — deliberate pins to invert (10, exact match to PRD's count and
+location):*
+
+| File:line(s) | Test | Sites |
+|---|---|---|
+| `param_default_type_mismatch_tests.rs:175-178` | `param_int_and_real_literal_on_dimensioned_scalar_do_not_error` | 4 (`zero_int=0, one_int=1, half_real=0.5, large_real=70.0`) |
+| `param_default_type_mismatch_tests.rs:206-207` | `param_negative_literal_on_dimensioned_scalar_does_not_error` | 2 (`neg_real=-5.0, neg_int=-1`) |
+| `let_annotation_type_mismatch_tests.rs:176-178` | `let_annotation_int_and_real_literal_on_dimensioned_scalar_do_not_error` | 3 (`x=5, y=0.5, z=-5.0`) |
+| `let_annotation_type_mismatch_tests.rs:583` | `port_member_let_annotation_numeric_literal_on_dimensioned_scalar_do_not_error` | 1 (`d=5`) |
+
+These are exactly "the 4 tests of §0.3" the PRD names, and the count (10)
+matches exactly — strong evidence the rest of this section's methodology is
+sound even where the aggregate total drifts from 63.
+
+*c1 — would break (15 CONFIRMED by direct read):*
+
+| File:line | Site | Why it breaks |
+|---|---|---|
+| `collection_sub_tests.rs:426` | `grade : Length = 8.8` | uses `parse_and_compile` (panics on any `Severity::Error`) |
+| `collection_sub_tests.rs:510` | `grade : Length = 8.8` | same |
+| `harness_langcore/let_scope_tests.rs:2190` | `axis: Length = 0` | `assert!(errors.is_empty(), …)` exhaustive |
+| `harness_langcore/let_scope_tests.rs:2251` | `axis: Length = 0` | same |
+| `harness_langcore/let_scope_tests.rs:2359` | `axis: Length = 0` | same |
+| `harness_traits/trait_assoc_type_conformance_tests.rs` (override sub-case) | `w : Length = 1` | `errors_only(&module).is_empty()` exhaustive, "override should compile cleanly" |
+| `harness_traits/trait_assoc_type_conformance_tests.rs` (inherited-default sub-case) | `w : Length = 1` | same, "inherited default should compile cleanly" |
+| `purpose_compile_tests.rs:1453` | `material : Length = 1.0` | `errors.is_empty()` exhaustive |
+| `purpose_compile_tests.rs:1454` | `youngs_modulus : Length = 200.0` | same |
+| `reify-eval/tests/collection_sub_eval.rs:437` | `grade : Length = 8.8` | manual `.filter(severity==Error)` then `assert!(errors.is_empty())` exhaustive |
+| `reify-eval/tests/determinacy_predicates.rs:509` | `a : Length = 10` | via `eval_source(...)` → internally `parse_and_compile`, panics on any Error |
+| `reify-eval/tests/purpose_activation.rs:2673` | `material : Length = 100.0` | `parse_and_compile`; doc comment itself notes "panics on any Severity::Error" |
+| `reify-eval/tests/purpose_activation.rs:2674` | `youngs_modulus : Length = 200.0` | same |
+| `reify-eval/tests/purpose_activation.rs:2774` | `z : Length = 5.0` | same |
+| `reify-eval/tests/purpose_activation.rs:2825` | `z : Length = -5.0` | same |
+
+*c0 — no break (26 confirmed/high-confidence by direct read):*
+
+| File:line(s) | Reason |
+|---|---|
+| `let_scope_tests.rs:2025,2471,2540` (3) | `.find(...)`/`.any(...)` on specific message content, non-exhaustive |
+| `reify-syntax/src/ts_parser.rs:6338,6364,6420,6450` (4, one line double-counts to 2 sites) | **structurally parse-only** — `reify-syntax`'s normal deps exclude `reify-compiler`; these tests call the crate's own `parse()`, never a compiler/conformance path |
+| `reify-test-support/src/helpers.rs:1077,1078,1227` (3) | `1227` confirmed (checks `!result.values.is_empty()`, never inspects diagnostics); `1077/1078` presumed (compile_template's return isn't asserted clean in the slice read) |
+| `prelude_context_tests.rs:217` (1) | asserts **relative parity** between two compile entry points on the *same* source, not absolute cleanliness — a new diagnostic would land identically on both sides and parity would still hold |
+| `harness_fea_solver_e2e/stress_sweep_degenerate.rs:417,418` (2) | filters diagnostics by specific message content (`geom_expr` fallback wording), non-exhaustive |
+| `purpose_compile_tests.rs:1516,1517,1523` (3) | `guarded_unsupported_member_kind_emits_error` — asserts `!errors.is_empty()` (an error is *already* expected, for the guarded-block's own unsupported-member reason); non-exhaustive |
+| `purpose_compile_tests.rs:1567` (1) | doc comment: "the compile test only checks the structural shape (not eval)" — presumed, not directly re-read past the doc comment |
+| `harness_traits/trait_assoc_type_conformance_tests.rs:31` (1) | `required_assoc_type_unbound_emits_diagnostic_end_to_end` — filters for a specific code (`TraitAssocTypeNotBound`), non-exhaustive, and the fixture is *already* expected to error |
+| `gui/src-tauri/src/tests/engine_tests.rs` (8, across 7 lines) | `EngineSession::load_from_source`/`update_source` — every read test inspects entity-tree/definition/cache structure, never `.diagnostics`; GUI session load is designed to tolerate diagnostics (live editing) — presumed on structural grounds, not a read of `load_from_source`'s own body |
+
+**Not conclusively classified (2):** `trait_assoc_type_conformance_tests.rs`
+has 5 total hits; 2 (the override/inherited-default sub-cases, both c1) and
+1 (the unbound-Typo sub-case, c0) were read directly, but the file has 2
+more occurrences this session did not re-read before writing this section.
+Flagged rather than guessed.
+
+**2.2.5 The delta, stated plainly.** 55 measured (17 files) vs. the PRD's 63
+(22 files) — short by 8 hits / 5 files. The c2 bucket matches exactly (10/10,
+same 4 tests, same file:line spans), which is the strongest available
+evidence the *method* is sound; the shortfall is somewhere in c1/c0. Most
+likely explanation: this session's tree C/D file lists (reused from pre-2,
+itself reusing `corpus_no_bare_scalar.rs`) may not be byte-identical to
+whatever file set the PRD's authoring session swept, and/or that session's
+"22 files" included a small number of sites this regex's stricter
+end-of-match anchor still misses (a residual instance of the same class as
+finding 2.2.2's `ts_parser.rs:6488` — one further edge case was found and
+fixed there but the search for others was not exhaustive). **Ruling: this
+section's 55-site table is the one later leaves should cite** (it is
+individually re-verifiable, file:line by file:line, right now, against
+HEAD), not the PRD's aggregate 63 — consistent with the citation contract
+§10 will state formally.
+
+### 2.3 EXCLUDED-BY-DESIGN — `pub unit`/`unit` bare-factor declarations (addendum C2)
+
+Mandatory bucket per the plan: these are textually identical to category A
+(`<keyword> <name> : <Dimension> = <bare number>`) but are unit *conversion
+factors*, not value cells — the compiler never diagnoses them (they aren't
+`param`/`let`, so neither gate 2 nor gates 3/4 ever see them), and δ₁/γ
+"fixing" them would silently break the unit system.
+
+**`crates/reify-compiler/stdlib/units.ri` — 21 `pub unit` declarations**,
+verified by `grep -nE "^\s*pub unit\s" stdlib/units.ri`:
+
+```
+14  pub unit m    : Length              (base unit, no factor)
+15  pub unit cm   : Length = 0.01
+16  pub unit in   : Length = 0.0254
+17  pub unit ft   : Length = 0.3048
+18  pub unit thou : Length = 0.0000254
+19  pub unit yd   : Length = 0.9144
+23  pub unit rad : Angle                (base unit, no factor)
+24  pub unit deg : Angle = 3.141592653589793 / 180
+28  pub unit kg  : Mass                 (base unit, no factor)
+29  pub unit g   : Mass = 0.001
+30  pub unit lb  : Mass = 0.45359237
+31  pub unit oz  : Mass = 0.028349523125
+35  pub unit s   : Time                 (base unit, no factor)
+36  pub unit min : Time = 60
+37  pub unit h   : Time = 3600
+41  pub unit K    : Temperature         (base unit, no factor)
+42  pub unit degC : Temperature = 1 offset 273.15
+43  pub unit degF : Temperature = 5 / 9 offset 255.3722222222222
+48  pub unit lbf  : Force = 4.4482216152605
+53  pub unit psi  : Pressure = 6894.757293168361
+54  pub unit ksi  : Pressure = 6894757.293168361
+65  pub unit fl_oz : Volume = 0.0000295735295625
+66  pub unit gal   : Volume = 0.003785411784
+74  pub unit USD : Money                (base unit, no factor)
+```
+
+That is 21 lines (6 base units with no `=` at all, 15 with an explicit bare
+factor), matching the task premise-verification's "`:14-19`, `:24-25`, and
+onward" characterization. **Confirmed present verbatim at HEAD.**
+
+Plus two non-`pub`, example-local `unit` declarations, both confirmed
+verbatim:
+
+| File:line | Text |
+|---|---|
+| `examples/m9_combined.ri:46` | `unit mil : Length = 0.0000254` |
+| `examples/integration_full_v01.ri:33` | `unit mil : Length = 0.0000254` |
+
+**None of these 23 sites are in the category A/B/C count above** — they use
+the `unit` keyword, not `param`/`let`, so they never reach
+`general_leaf_param_family_is_validated`, `check_param_default_conformance`,
+or `entity.rs`'s `check_param_default_type`/`check_let_annotation_type` at
+all. δ₁ must not "fix" them; γ's flip (already reverted, §1.5) never
+touched them either — confirmed no diagnostic was emitted against any
+`units.ri` line in the step-1 transcript (§1.2/§1.3).
 
 ## §3 Item 7b — §6.3 re-confirmation: gate 1, β/γ's blast radius (step-3)
 
