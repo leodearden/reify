@@ -168,4 +168,182 @@ else
         contains "$HOSTILE_OUT" 'header and source version mismatch'
 fi
 
+# ---------------------------------------------------------------------------
+# Sections C/D: the STRUCTURAL guard.
+#
+# Scrubbing today's tool lines fixes today's bite; what can still regress is a
+# NEW tool plan line added with plain add() instead of add_tool(), silently
+# re-inheriting the conda prefix. That is what these sections lock down — per
+# the task's design decision, this plan-oracle assertion (not a per-call-site
+# `sqlite3` lint) is the structural guard.
+#
+# The scrub token is matched as a LITERAL substring, single-quoted here so
+# `$REIFY_AMBIENT_LD_LIBRARY_PATH` stays a variable NAME. That is deliberate on
+# both sides: verify.sh emits the name (not its value), so --print-plan remains
+# a hermetic, host-independent oracle with no absolute host path baked into
+# plan text, and the restore happens at EXECUTION time.
+# ---------------------------------------------------------------------------
+LD_SCRUB='export LD_LIBRARY_PATH="$REIFY_AMBIENT_LD_LIBRARY_PATH"; '
+
+# Second capture: role=task, action=all, --include-infra. Reaches the plan lines
+# the merge-role test capture does not carry — the backgrounded node lane, the
+# cheap static lint-side infra checks, and the mixed gui-sidecar line.
+PLAN_ALL=""
+capture_print_plan PLAN_ALL 3 \
+    env -u REIFY_INFRA_SUITE_ACTIVE REIFY_NEXTEST_PROBE_RETRY_SLEEP=0 \
+    bash "$REPO_ROOT/scripts/verify.sh" all --scope all --include-infra --print-plan || true
+
+# Third capture: action=typecheck reaches the bare `cargo check --workspace
+# --tests` line, which no other action emits (clippy --all-targets is a strict
+# superset, so verify.sh suppresses it whenever DO_LINT=1).
+PLAN_TYPECHECK=""
+capture_print_plan PLAN_TYPECHECK 3 \
+    env -u REIFY_INFRA_SUITE_ACTIVE REIFY_NEXTEST_PROBE_RETRY_SLEEP=0 \
+    bash "$REPO_ROOT/scripts/verify.sh" typecheck --scope all --print-plan || true
+
+# count_plan_lines <dump> <needle> — sets _MATCH_COUNT / _MATCH_SCRUBBED over
+# the dump's COMMAND lines (comments and blanks skipped). Fork-free, and
+# main-shell (globals, no command substitution) so `assert` can read the result.
+_MATCH_COUNT=0
+_MATCH_SCRUBBED=0
+count_plan_lines() {
+    local dump="$1" needle="$2" _line
+    _MATCH_COUNT=0
+    _MATCH_SCRUBBED=0
+    while IFS= read -r _line; do
+        case "$_line" in
+            '#'* | '') continue ;;
+        esac
+        case "$_line" in
+            *"$needle"*)
+                _MATCH_COUNT=$((_MATCH_COUNT + 1))
+                case "$_line" in
+                    *"$LD_SCRUB"*) _MATCH_SCRUBBED=$((_MATCH_SCRUBBED + 1)) ;;
+                esac
+                ;;
+        esac
+    done <<< "$dump"
+}
+
+# Both predicates require _MATCH_COUNT >= 1, so a plan-shape change that stops
+# emitting a line can never turn its assertion into a silent vacuous PASS.
+_all_scrubbed()  { [ "$_MATCH_COUNT" -ge 1 ] && [ "$_MATCH_SCRUBBED" -eq "$_MATCH_COUNT" ]; }
+_none_scrubbed() { [ "$_MATCH_COUNT" -ge 1 ] && [ "$_MATCH_SCRUBBED" -eq 0 ]; }
+
+# expect_scrubbed <dump> <needle> <label> — non-vacuity + all-scrubbed.
+expect_scrubbed() {
+    local dump="$1" needle="$2" label="$3"
+    count_plan_lines "$dump" "$needle"
+    assert "non-vacuity: >=1 plan line matches '$needle' ($label)" \
+        test "$_MATCH_COUNT" -ge 1
+    assert "TOOL line carries the LD_LIBRARY_PATH scrub: '$needle' ($label; $_MATCH_SCRUBBED/$_MATCH_COUNT)" \
+        _all_scrubbed
+}
+
+# expect_unscrubbed <dump> <needle> <label> — non-vacuity + none-scrubbed.
+expect_unscrubbed() {
+    local dump="$1" needle="$2" label="$3"
+    count_plan_lines "$dump" "$needle"
+    assert "non-vacuity: >=1 plan line matches '$needle' ($label)" \
+        test "$_MATCH_COUNT" -ge 1
+    assert "CARGO line keeps the OCCT export (NOT scrubbed): '$needle' ($label; $_MATCH_SCRUBBED/$_MATCH_COUNT scrubbed)" \
+        _none_scrubbed
+}
+
+echo ""
+echo "--- Section C: every TOOL plan line carries the scrub ---"
+
+# Cheap static infra checks — pure shell, no cargo. (merge-role test capture.)
+expect_scrubbed "$PLAN_DUMP" 'check-infra-classification-manifest.sh' 'merge test'
+expect_scrubbed "$PLAN_DUMP" 'check-harness-baseline-registration.sh' 'merge test'
+expect_scrubbed "$PLAN_DUMP" 'check-manifold-deps.sh'                 'merge test'
+expect_scrubbed "$PLAN_DUMP" 'tree-sitter-generate.sh'                'merge test'
+
+# Node lane, sequential form (action=test => DO_LINT=0, so the three npm
+# commands are emitted as separate plan lines rather than backgrounded).
+expect_scrubbed "$PLAN_DUMP" "npm run typecheck && npm test"          'merge test / gui'
+expect_scrubbed "$PLAN_DUMP" 'gui/sidecar/package-lock.json'          'merge test / sidecar'
+expect_scrubbed "$PLAN_DUMP" 'tree-sitter-reify/package-lock.json'    'merge test / tree-sitter'
+
+# The wholesale infra pool — the line both known bites were reached through.
+expect_scrubbed "$PLAN_DUMP" 'bash tests/infra/run_all.sh'            'merge test / infra pool'
+
+# Placement, asserted directly rather than only via the coupled ledger guard.
+# The scrub must be a leading STATEMENT at the HEAD of the line, before the
+# `if`. tests/infra/test_run_all_ambient_isolation.sh derives the live
+# injected-var set from this line with a `then`-anchored KEY=VALUE regex and
+# cross-checks SET EQUALITY against tests/infra/run-all-ambient-vars.manifest;
+# a token placed after `then` would enter that window and unbalance the ledger.
+RUN_ALL_LINE=""
+while IFS= read -r _line; do
+    case "$_line" in
+        '#'* | '') continue ;;
+        *"bash tests/infra/run_all.sh"*) RUN_ALL_LINE="$_line" ;;
+    esac
+done <<< "$PLAN_DUMP"
+assert "run_all.sh line: scrub sits at the HEAD of the line, before the 'if' (keeps it OUT of test_run_all_ambient_isolation.sh's 'then'-anchored KEY=VALUE window, so the run-all-ambient-vars.manifest set-equality ledger stays balanced)" \
+    test "${RUN_ALL_LINE:0:${#LD_SCRUB}}" = "$LD_SCRUB"
+
+# Lint-side lines, reached only by the role=task --include-infra capture.
+# The backgrounded node lane is the ONE line where the scrub is NOT at the head:
+# that line is eval'd in the executor's MAIN shell, so a head-of-line export
+# would leak into every subsequent plan line. It goes inside the `{ ... ; } &`
+# braces (a background subshell) instead — a substring match covers both forms.
+expect_scrubbed "$PLAN_ALL" '& _VERIFY_NODE_BG_PID='                  'all+infra / node lane (bg)'
+expect_scrubbed "$PLAN_ALL" 'tests/sync_comments_test.sh'             'all+infra'
+expect_scrubbed "$PLAN_ALL" 'test_pm_standardization.sh'              'all+infra'
+expect_scrubbed "$PLAN_ALL" 'check_event_inventory.sh'                'all+infra'
+expect_scrubbed "$PLAN_ALL" 'check-nan-safe-ordering.sh'              'all+infra'
+
+# The selective per-artifact infra loop (verify.sh's `( for _vt in <glob>; ...`)
+# is emitted only under --scope branch/staged with a changed verify-pipeline
+# artifact, which no hermetic --scope all capture can reach; building a branch
+# fixture for it would duplicate tests/infra/test_verify_scope.sh's machinery.
+# It is asserted at SOURCE level instead: the emission site must call add_tool.
+# The occurrence count is asserted too, so a second emission site (or a rename)
+# fails here rather than slipping through unscrubbed.
+_SEL_TOTAL=0
+_SEL_TOOL=0
+while IFS= read -r _line; do
+    case "$_line" in
+        *'for _vt in '*)
+            case "$_line" in
+                *'add '*|*'add_tool '*) _SEL_TOTAL=$((_SEL_TOTAL + 1)) ;;
+                *) continue ;;
+            esac
+            case "$_line" in
+                *'add_tool '*) _SEL_TOOL=$((_SEL_TOOL + 1)) ;;
+            esac
+            ;;
+    esac
+done < "$REPO_ROOT/scripts/verify.sh"
+
+assert "non-vacuity: scripts/verify.sh has exactly one selective-infra ('for _vt in') plan emission site" \
+    test "$_SEL_TOTAL" -eq 1
+assert "selective-infra emission site uses add_tool() (source-level: this line is unreachable from any hermetic --scope all capture, so the plan oracle above cannot cover it)" \
+    test "$_SEL_TOOL" -eq "$_SEL_TOTAL"
+
+echo ""
+echo "--- Section D: CARGO plan lines keep the OCCT export ---"
+
+# OCCT scope discipline, the other half of the invariant. cargo lines MUST keep
+# the process-wide LD_LIBRARY_PATH: scrubbing them would strip the OCCT search
+# dir from the Rust path this task deliberately leaves byte-identical. These
+# assertions catch a future blanket application of add_tool().
+expect_unscrubbed "$PLAN_TYPECHECK" 'cargo check --workspace --tests'      'typecheck'
+expect_unscrubbed "$PLAN_ALL"       'cargo clippy --workspace'             'all+infra'
+expect_unscrubbed "$PLAN_ALL"       'cargo nextest run'                    'all+infra'
+expect_unscrubbed "$PLAN_DUMP"      'cargo nextest run'                    'merge test'
+expect_unscrubbed "$PLAN_DUMP"      'cargo build --release -p reify-audit' 'merge test'
+expect_unscrubbed "$PLAN_DUMP"      'cargo build --release -p reify-cli'   'merge test'
+
+# UNTOUCHED BY DESIGN — do not "fix" this apparent gap.
+# The gui-feature compile-check line is MIXED: it runs a shell script AND cargo
+# (`if test -f gui/src-tauri/Cargo.toml; then ./scripts/ensure-gui-sidecar-placeholder.sh
+# && ... cargo check -p reify-gui --features gui --tests; fi`). The rule is
+# conservative: ANY line that reaches cargo keeps the export, because losing the
+# OCCT search dir on a Rust line is a hard link/load failure across the whole
+# gate, whereas an unscrubbed shell helper is at worst the status quo ante.
+expect_unscrubbed "$PLAN_ALL" 'ensure-gui-sidecar-placeholder.sh' 'all+infra / MIXED shell+cargo, untouched by design'
+
 test_summary
