@@ -59,6 +59,12 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# For nextest_available_ambient (the plan-header availability probe below).
+# Sourcing the lib installs no trap and builds no environment — only
+# nextest_absent_init does that, and this suite deliberately never calls it.
+[ -f "$SCRIPT_DIR/nextest_absent_lib.sh" ] || { echo "ERROR: nextest_absent_lib.sh not found at $SCRIPT_DIR/nextest_absent_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/nextest_absent_lib.sh"
+
 VERIFY="$REPO_ROOT/scripts/verify.sh"
 
 echo "=== verify.sh retry-subset plan-shape tests (task 5287, PRD verify-retry-failed-only α) ==="
@@ -78,13 +84,36 @@ ID1="reify_core::foo::test_alpha"
 ID2="reify_core::bar::test_beta"
 printf '%s\n%s\n' "$ID1" "$ID2" > "$FILTER"
 
-# --- nextest availability probe (off the byte-identical default plan) --------
+# --- nextest availability probe ----------------------------------------------
+#
+# The probe itself is nextest_available_ambient, from
+# tests/infra/nextest_absent_lib.sh (task 5602) — the same plan-header parse
+# three other suites had each open-coded.
+#
+# Note what does NOT happen here: this suite does not build a nextest-absent
+# simulation and must not. It deliberately tests against the host's REAL nextest
+# state, so forcing absence would silently drop every assert the
+# NEXTEST_AVAILABLE guards below protect. Consolidation here means sharing the
+# DETECTOR, not adopting the harness. (The task description lists this file as a
+# fourth hand-rolled simulation harness; it never was one — corrected in
+# esc-5602-4.)
+#
+# ONE capture serves both readers. PLAN_DEFAULT is captured here because Test
+# 1's byte-identical-default assert reads it, and the availability answer is
+# then read back OUT of it via nextest_available_in_plan rather than by running
+# --print-plan a second time.
+#
+# That second run would not have been free, which is the reason for the shared
+# capture: verify.sh cannot emit the `nextest=` header without genuinely
+# probing (`if cargo nextest --version >/dev/null 2>&1`), and its own comment
+# records that the worst case — cargo-nextest present but every probe failing —
+# forks cargo up to 4x and sleeps up to 2*REIFY_NEXTEST_PROBE_RETRY_SLEEP
+# before hard-failing. Reading the captured plan is what is actually free.
 PLAN_DEFAULT="$(bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
-_HEADER="$(printf '%s\n' "$PLAN_DEFAULT" | grep '^# verify.sh plan' || true)"
 NEXTEST_AVAILABLE=0
-case "$_HEADER" in
-    *"nextest=1"*) NEXTEST_AVAILABLE=1 ;;
-esac
+if nextest_available_in_plan "$PLAN_DEFAULT"; then
+    NEXTEST_AVAILABLE=1
+fi
 echo "(nextest available on this host: $NEXTEST_AVAILABLE)"
 
 # Shared fallback-refusal helper for the 5 host-guarded 'retry refused' STDERR

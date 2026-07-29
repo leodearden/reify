@@ -12,6 +12,11 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# The nextest-absent simulation for (1q) below — task 5602 consolidated the
+# hand-rolled version that used to live there onto this shared lib.
+[ -f "$SCRIPT_DIR/nextest_absent_lib.sh" ] || { echo "ERROR: nextest_absent_lib.sh not found at $SCRIPT_DIR/nextest_absent_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/nextest_absent_lib.sh"
+
 echo "=== verify.sh + merge-exemption semaphore wiring tests (task 4502) ==="
 
 _TMPDIRS=()
@@ -167,23 +172,37 @@ assert "task plan: all test passes fall BETWEEN acquire and release markers" \
 # the "present but probe failed" retry-then-hard-fail branch that fires when the
 # real cargo-nextest is still reachable via ~/.cargo/bin.
 #
-# Hermeticity (mirrors tests/infra/test_verify_nextest_probe.sh): a temp HOME so
-# verify.sh:626 skips `. ~/.cargo/env` (which would re-prepend ~/.cargo/bin — the
-# sole home of the real cargo-nextest — and defeat the absence simulation), and
-# PATH="$_NX0_TMP:/usr/bin:/bin" excluding ~/.cargo/bin. The stub `cargo` exits 1
-# for every invocation; `--scope all --print-plan` never reaches the cargo-metadata
-# narrowing path, so no real cargo call is needed during plan-building.
-_NX0_TMP="$(mktemp -d)"
-_TMPDIRS+=("$_NX0_TMP")
-_NX0_HOME="$(mktemp -d)"
-_TMPDIRS+=("$_NX0_HOME")
-cat > "$_NX0_TMP/cargo" <<'STUB_CARGO'
-#!/usr/bin/env bash
-exit 1
-STUB_CARGO
-chmod +x "$_NX0_TMP/cargo"
+# Hermeticity: tests/infra/nextest_absent_lib.sh (task 5602). It supplies a temp
+# HOME so verify.sh:626 skips `. ~/.cargo/env` (which would re-prepend
+# ~/.cargo/bin — the sole home of the real cargo-nextest — and defeat the
+# absence simulation), and a symlink farm mirroring the cargo bin dir MINUS
+# cargo-nextest, first on PATH.
+#
+# STRICTLY MORE FAITHFUL than the hand-rolled harness this replaces, which used
+# a stub `cargo` that exited 1 for EVERY invocation behind
+# PATH="$_NX0_TMP:/usr/bin:/bin". That did reach NEXTEST=0, but partly for the
+# wrong reason: with `cargo nextest --version` failing because cargo itself was
+# broken, the assert could not distinguish the graceful genuine-absence branch
+# from a toolchain that simply does not work. The farm supplies a REAL cargo
+# with only cargo-nextest hidden, so verify.sh:1412 takes the NEXTEST=0 branch
+# for exactly the intended reason.
+#
+# This file registers `trap cleanup EXIT` at line 24, BEFORE the init below —
+# which is the half of the lib's trap contract that composes: nextest_absent_init
+# stashes that handler and arms a dispatcher running its own teardown and then
+# this file's cleanup, on EXIT/INT/TERM/HUP. So Section 2/3's throwaway repos are
+# still removed, this file's trap is upgraded from bare EXIT to all four signals,
+# and NX_WORKDIR needs no hand-patching onto _TMPDIRS. Anything registered AFTER
+# this point would be caller-owned and would have to call nextest_absent_cleanup
+# itself — this file registers nothing after it.
+nextest_absent_init
 
-NX0_FULL="$(HOME="$_NX0_HOME" PATH="$_NX0_TMP:/usr/bin:/bin" bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan)"
+# Deliberately NOT guarded on nextest_absent_available. If the simulation cannot
+# be built this assert must go RED, not skip: (1q) is meaningless without it, and
+# a silent skip is precisely the vacuous-green failure mode that
+# test_verify_nextest_absent_suites.sh's S2 pass floor of 22 exists to catch —
+# which counts this assert.
+NX0_FULL="$(nx_run bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan)"
 NX0_CMDS="$(printf '%s\n' "$NX0_FULL" | grep -v '^#')"
 
 assert "NEXTEST=0 fallback: execution line carries 'cargo test ... -- --test-threads=1' (no --no-run)" \
