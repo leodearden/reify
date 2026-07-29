@@ -229,8 +229,12 @@ _flock_fork_offenders() {
 _FX_AMP='&'
 _FX_OPEN='ex''ec 9>"$LOCK"'
 _FX_CLOSE='ex''ec 9>&- || true'
+_FX_CLOSE_BARE='ex''ec 9>&-'
+_FX_OPEN_APPEND='ex''ec 9>>"$LOCK"'
 _FX_ACQ_IF='if ! flo''ck -n 9; then'
+_FX_ACQ_OR='flo''ck -xn 9 || exit 1'
 _FX_DETACH='{ rm -rf "$TRASH"; } 9<&- '"$_FX_AMP"
+_FX_FG_CHILD='"$@" 9<&-'
 _FX_UNLOCK='    flo''ck -u 9 2>/dev/null || true'
 
 # ---------------------------------------------------------------------------
@@ -256,6 +260,18 @@ _out_lacks() { case "$OFFENDERS_OUT" in *"$1"*) return 1 ;; *) return 0 ;; esac;
 _out_empty() { [ -z "$OFFENDERS_OUT" ]; }
 
 _lt() { [ "$1" -lt "$2" ]; }
+
+# Scan <file>... and succeed only if NOTHING was flagged.  Offender lines are
+# echoed on failure so assert's captured-output dump names the file, the FD and
+# the line numbers rather than just reporting a false boolean.
+_scans_clean() {
+    _run_offenders "$@"
+    if [ -n "$OFFENDERS_OUT" ]; then
+        printf '%s\n' "$OFFENDERS_OUT"
+        return 1
+    fi
+    [ "$OFFENDERS_RC" -eq 0 ]
+}
 
 _out_line_count_is() {
     local _n=0
@@ -391,5 +407,57 @@ _run_offenders "$_SEED_SRC"
 
 assert "mutation control: the SHIPPED real script is CLEAN (rc 0)" _rc_is 0
 assert "mutation control: the SHIPPED real script prints nothing" _out_empty
+
+# ---------------------------------------------------------------------------
+# Cycle 4 — FALSE-POSITIVE TRAP #1: FOREGROUND children are SAFE.
+#
+# A lock-holder that runs its child in the FOREGROUND is doing nothing wrong:
+# it holds the lock for exactly the child's duration and reaps it before
+# exiting.  Flagging that shape would be actively harmful — it would push
+# scripts toward releasing a lock they are still legitimately using.
+#
+# The exemption is STRUCTURAL: only a line whose FINAL EFFECTIVE TOKEN is a
+# bare `&` is a DETACH, so `"$@" 9<&-` can never enter the candidate set.
+# ---------------------------------------------------------------------------
+echo "--- Cycle 4: foreground children and ampersand-lookalikes are CLEAN ---"
+
+# The scripts/lib_test_semaphore.sh shape: hold the slot for the child's whole
+# run, with FD 9 closed in the child so no descendant daemon inherits it.
+_write_fixture neg_foreground.sh \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'LOCK=/tmp/fixture.lock' \
+    "$_FX_OPEN_APPEND" \
+    "$_FX_ACQ_OR" \
+    "$_FX_FG_CHILD" \
+    "$_FX_CLOSE_BARE"
+
+assert "foreground child: the semaphore shape is CLEAN" \
+    _scans_clean "$TMPWORK/neg_foreground.sh"
+
+# Lines that merely CONTAIN an ampersand are not forks.
+_write_fixture neg_nondetach_tokens.sh \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'LOCK=/tmp/fixture.lock' \
+    "$_FX_OPEN_APPEND" \
+    "$_FX_ACQ_OR" \
+    'echo hi 2>&1' \
+    'true && echo ok' \
+    'printf x >&2' \
+    'cat /dev/null 9<&-' \
+    '# a comment whose text ends with an ampersand: sleep 1 '"$_FX_AMP" \
+    "$_FX_CLOSE_BARE"
+
+assert "ampersand lookalikes: 2>&1 / && / >&2 / 9<&- / comment are CLEAN" \
+    _scans_clean "$TMPWORK/neg_nondetach_tokens.sh"
+
+# Real-tree controls — the files the task names as must-not-flag.
+assert "real tree: scripts/lib_test_semaphore.sh is CLEAN" \
+    _scans_clean "$REPO_ROOT/scripts/lib_test_semaphore.sh"
+assert "real tree: scripts/cargo-test-occt-gated.sh is CLEAN" \
+    _scans_clean "$REPO_ROOT/scripts/cargo-test-occt-gated.sh"
+assert "real tree: scripts/lib_lane_x_flock.sh is CLEAN" \
+    _scans_clean "$REPO_ROOT/scripts/lib_lane_x_flock.sh"
 
 test_summary
