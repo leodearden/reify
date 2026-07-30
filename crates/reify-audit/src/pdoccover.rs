@@ -56,20 +56,28 @@
 //! ### Known imprecision — measured, not theoretical
 //!
 //! The oracle is broad but the *mention* side is not selective, and on the
-//! real corpus that is where the noise is: of 12 `fabricated-name:` findings
-//! on main, ONE (`offset_surface`) is a genuine fabrication. The other 11 are
+//! real corpus that is where the noise is: of the 11 `fabricated-name:`
+//! findings on the current base, NOT ONE is a genuine fabrication. All 11 are
 //! call-shaped text that was never an API claim — user-defined names inside
 //! example source (`compute_moi(...)`, `fn lateral_area(self)`, `purpose
 //! manufacturing_ready(...)`), grammar metavariables (`predicate(x)`,
 //! `primitive(...)`, `Trait::fn(args)`), and non-function call-shaped syntax
 //! (`auto(free)`, `@region(...)`). Narrowing this needs a mention-side
 //! heuristic — skipping declaration keywords, and prose vs. example-source
-//! context — which is deliberately NOT in this task: it is **#5647**, filed
-//! with all 12 findings enumerated against their cited chunk lines. Two cheap
-//! filters named there (skip a name preceded by a `.ri` declaration keyword;
-//! skip [`RI_DECL_KEYWORDS`] members themselves) would remove 6 of the 11
+//! context — which is deliberately NOT in this task: it is **#5647**. Two
+//! cheap filters named there (skip a name preceded by a `.ri` declaration
+//! keyword; skip [`RI_DECL_KEYWORDS`] members themselves) would remove 6 of
+//! the 11 — the five `fn`/`purpose` declaration sites plus `Trait::fn` —
 //! without any context modelling. Until #5647 lands, the omission lane is the
 //! trustworthy half, which is one more reason the CLI arm is opt-in.
+//!
+//! **#5647's problem statement is stale and reads one worse than reality.**
+//! It was measured at branch base `72740a7af7`, where the corpus still held
+//! `offset_surface` at `chunks/stdlib.md:29` — a genuine fabrication, and the
+//! 12th finding. That name is gone from the chunk corpus at this branch's
+//! base, so the lane's measured precision is now 0/11, not 1/12: today it
+//! catches no true positive at all. An implementer picking up #5647 should
+//! re-measure rather than go looking for `offset_surface`.
 //!
 //! ## Finding categories
 //!
@@ -108,8 +116,9 @@
 //! runs only under an explicit `--pattern PDOCCOVER`. Its two structural
 //! siblings PTODO and PDSSENTINEL use `is_none_or` and ride the default sweep;
 //! the difference is severity plus backlog. These findings are High, the exit
-//! code is the High-severity count, and the real tree currently reports ~107,
-//! so joining the default sweep today would turn every audit run non-zero.
+//! code is the High-severity count, and the real tree currently reports 79
+//! (68 `undocumented-name:` + 11 `fabricated-name:`), so joining the default
+//! sweep today would turn every audit run non-zero.
 //! It joins when #5480 seeds the baseline and the residual reaches zero — the
 //! warn-first-then-ratchet path PTODO took.
 //!
@@ -922,7 +931,7 @@ fn in_oracle_scope(path: &str) -> bool {
 ///
 /// **Precision is deliberately deferred.** This extractor admits every
 /// `ident(` on a non-suppressed line, including declaration sites in example
-/// `.ri` source and grammar metavariables — measured 1/12 precision on the real
+/// `.ri` source and grammar metavariables — measured 0/11 precision on the real
 /// corpus (module header, "Known imprecision"). Narrowing it is **#5647**, not
 /// this function's contract today. Do not add a filter here without updating
 /// that task and the floor guard's anchor set.

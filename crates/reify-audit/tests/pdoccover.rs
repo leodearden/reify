@@ -340,8 +340,8 @@ pub const DYNAMICS_QUERY_NAMES: &[&str] = &[
 // This is the direction that costs a design-authoring agent the most: it reads
 // the chunk, writes the call, and the compile fails on something the reference
 // promised. Every disposition here is pinned in a TEMPDIR, never against the
-// real tree — #5434 will delete `offset_surface` from the real stdlib.md, and a
-// test that pinned it there would flip RED for an unrelated reason.
+// real tree — `offset_surface` has since left the real stdlib.md, and a test
+// that pinned it there would have flipped RED for an unrelated reason.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// A second chunk path, so the fabrication fixtures do not collide with the
