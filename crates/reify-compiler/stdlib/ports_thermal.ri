@@ -14,8 +14,12 @@
 //      are not admissible directly in param position — only on a type-alias RHS.
 //      Both are absent from NAMED_DIMENSIONS in reify-core/src/dimension.rs
 //      (unlike Area, Power, Temperature which are registered there). Precedent:
-//      `pub type VolumetricFlowRate = Volume / Time` in ports_fluid.ri,
-//      `pub type Velocity = Length / Time` in units.ri.
+//      `pub type VolumetricFlowRate = Volume / Time` in ports_fluid.ri, whose
+//      dimension is likewise unregistered — so the alias there is load-bearing
+//      for the same reason it is here. (Deliberately NOT units.ri's
+//      `pub type Velocity`: Velocity IS registered as of task 4580, so that
+//      alias is dead — shadowed by the builtin at every use-site, per its own
+//      doc comment — and it illustrates the opposite of the claim above.)
 //   3. ThermalContactPort.contact_conductance uses ThermalConductivity (W/m·K)
 //      even though contact conductance is physically W/m²·K — the resolvable
 //      choice since W/m²·K is absent from NAMED_DIMENSIONS (per PRD ε §5.4).
