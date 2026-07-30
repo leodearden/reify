@@ -452,3 +452,34 @@ resolve #5387 relationship per its live status (§6 row 2).
    in θ against the existing `eval_is_idempotent_for_prelude_functions` pins.
 5. **α's sweep breadth** — whether any non-examples `.ri` (prj/, dogfood worktree)
    carries the mirror pattern worth cleaning in the same task. Decide in α via grep.
+   *Resolved 2026-07-28 (α, task 5515):* **no non-examples `.ri` needed cleaning.**
+   `prj/` exists but is clean — both tracked files (`prj/printer_v01/printer.ri`,
+   `prj/printer_v01/dev_capstan.ri`) carry zero `import`, zero `enum`, zero
+   `structure def`. `designs/` (7 files, 9 `structure def`s) is likewise clean: zero
+   imports, zero enums, and every `structure def` is the design's own part, none
+   naming a stdlib type.
+
+   Within `examples/stdlib/`, `ports_breadth.ri` was the sole *mirror* instance and
+   is stripped by this task. Two adjacent findings were surfaced by α's sweep,
+   filed as follow-ups, and have **both since landed** — so the sweep leaves no
+   open remainder:
+
+   - **#5594 (done)** — `examples/stdlib/ports_mechanical.ri`'s
+     `structure def Coupling` was never a mirror: it name-collided with
+     `stdlib/kinematic.ri:197` while being a genuinely different shaft-coupling
+     type, so deleting it would have lost a real definition. Resolved by renaming
+     to `ShaftCoupling` (now `ports_mechanical.ri:23`), not by deletion.
+   - **#5582 (done)** — the **m8_tolerancing lineage**
+     (`examples/m8_tolerancing.ri`, `examples/io_export.ri`,
+     `examples/gdt_conformance_{satisfied,violated}.ri`,
+     `examples/tolerancing/gdt_pass_weave.ri`,
+     `docs/prds/v0_6/fixtures/surface_finish_functional.ri`) did carry the pattern
+     but sat outside α's declared `examples/stdlib/` scope, so α deferred it rather
+     than blind-sweeping it. That caution was warranted:
+     `gdt_conformance_violated.ri` cited a *distinct* rationale (the η pass resolves
+     a callout's type against `module.templates`, so a local re-declaration is what
+     carries the `: GeometricTolerance` bound past `satisfies_trait_bound`), and the
+     per-file probe #5582 ran confirmed several defs there — `FlatnessCallout`,
+     `WeaveScalarTol`, `WeaveFlatnessCallout` — are genuinely local types with no
+     stdlib counterpart and were correctly kept. #5582 landed at `7a21980c88`,
+     which is α's own merge base.
