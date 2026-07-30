@@ -884,6 +884,30 @@ _refresh_capture() {
     fi
 }
 
+# _wait_for_marker <marker-file> <deadline-seconds>
+# Generic causal-ordering (technique R) poll: waits for <marker-file> to
+# appear, polling in 0.05s ticks, returning 0 as soon as it exists, or
+# non-zero once the generous deadline elapses (technique T anti-hang guard).
+# The deadline is deliberately generous — it is an anti-hang guard only,
+# never a timing discriminator.
+#
+# Extracted from _wait_for_reader_lock (task #4847), which delegates to this
+# for its flock-acquisition-specific marker; also used directly for a
+# copy-completion handshake (_spawn_pinning_reader, task #5866).
+_wait_for_marker() {
+    local marker="$1"
+    local deadline_s="$2"
+    # Poll every 0.05s; max_ticks = deadline_s × 20
+    local max_ticks=$(( deadline_s * 20 ))
+    local tick=0
+    while [ "$tick" -lt "$max_ticks" ]; do
+        [ -f "$marker" ] && return 0
+        sleep 0.05
+        tick=$(( tick + 1 ))
+    done
+    return 1
+}
+
 # _wait_for_reader_lock <ready-marker> <deadline-seconds>
 # Causal ordering (technique R) for reader-readiness: polls for the READY
 # marker file in 0.05s ticks, returning 0 as soon as it appears, or non-zero
@@ -899,17 +923,7 @@ _refresh_capture() {
 # Used by Block RH (unit test) and the rewired SGSWAP3/SGSWAP4/GC/B11 fixtures.
 # Task: #4847
 _wait_for_reader_lock() {
-    local ready_marker="$1"
-    local deadline_s="$2"
-    # Poll every 0.05s; max_ticks = deadline_s × 20
-    local max_ticks=$(( deadline_s * 20 ))
-    local tick=0
-    while [ "$tick" -lt "$max_ticks" ]; do
-        [ -f "$ready_marker" ] && return 0
-        sleep 0.05
-        tick=$(( tick + 1 ))
-    done
-    return 1
+    _wait_for_marker "$1" "$2"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
