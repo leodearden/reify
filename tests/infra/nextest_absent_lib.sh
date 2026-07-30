@@ -360,6 +360,41 @@ nextest_absent_init() {
     done < <(printf '%s\n' "$PATH" | tr ':' '\n')
     NX_PATH="$NX_FARM:$filtered"
 
+    # POST-CONSTRUCTION GATE (task 5645, the residual half of task 5602's
+    # review suggestion 3). The physical mirror-source filter above only
+    # removes cargo-nextest's accessibility THROUGH the mirrored directory. A
+    # host with cargo-nextest ALSO reachable via some genuinely DIFFERENT PATH
+    # directory (e.g. a distro package in /usr/local/bin alongside a
+    # ~/.cargo/bin install) is unaffected by that filter — the farm sits in
+    # front looking correct while the simulation has silently degraded to
+    # nextest=1.
+    #
+    # Verify the OBSERVABLE INVARIANT right here rather than leaving it solely
+    # to nextest_absent_available: test_verify_semaphore_wiring.sh and
+    # test_verify_nextest_probe.sh never call nextest_absent_available before
+    # driving verify.sh under nx_run (deliberately, in the former's case — a
+    # silent skip there would be the vacuous-green mode
+    # test_verify_nextest_absent_suites.sh's S2 pass floor exists to catch), so
+    # without this check a degraded env on such a host surfaces only as a
+    # confusing plan-shape assertion failure downstream, with no clue that the
+    # harness itself was the problem.
+    #
+    # NEST-SAFETY IS PRESERVED. In the nested case mirror_src resolves to
+    # nothing (documented above), NX_FARM is empty, and the filtered PATH is
+    # the OUTER env's already-cargo-nextest-free PATH — so cargo-nextest is
+    # genuinely unreachable and this check passes, exactly as the empty-farm
+    # degrade requires.
+    #
+    # A caller that wants the graceful, does-not-abort-the-suite skip path
+    # (test_verify_nextest_absent_suites.sh) must guard this call
+    # (`nextest_absent_init || true`) and then consult nextest_absent_available
+    # itself — NX_WORKDIR/NX_FARM/NX_PATH are left fully constructed either
+    # way, so that subsequent call is valid even when this gate fails.
+    if ! _nextest_absent_check_reachable; then
+        echo "nextest_absent_init: ${_NEXTEST_ABSENT_REASON}" >&2
+        return 1
+    fi
+
     _NEXTEST_ABSENT_REASON=""
     return 0
 }
@@ -391,6 +426,26 @@ nx_run() {
 # VACUOUSLY, exactly the failure mode this harness exists to rule out.
 nx_which() { nx_run bash -c 'command -v "$1"' _ "$1"; }
 
+# _nextest_absent_check_reachable — the shared REACHABILITY conjunct: is
+# cargo-nextest resolvable under the constructed env? Shared by
+# nextest_absent_init's post-construction gate and nextest_absent_available's
+# H1 conjunct (both below), so the diagnostic text cannot drift between a
+# caller that only ever observes nextest_absent_init's return code and one
+# that goes on to call nextest_absent_available/nextest_absent_reason.
+#
+# Sets _NEXTEST_ABSENT_REASON and returns 1 when cargo-nextest IS reachable
+# (the simulation would be vacuous); leaves the reason untouched and returns 0
+# otherwise — nextest_absent_available layers its own cargo-executability
+# conjunct on top of this one.
+_nextest_absent_check_reachable() {
+    local resolved
+    if resolved="$(nx_which cargo-nextest 2>/dev/null)" && [ -n "$resolved" ]; then
+        _NEXTEST_ABSENT_REASON="cargo-nextest is still REACHABLE under the constructed env ($resolved) — the simulation would be vacuous"
+        return 1
+    fi
+    return 0
+}
+
 # nextest_absent_available — is the constructed env a genuine simulation?
 # nextest_absent_reason   — if not, which conjunct failed?
 #
@@ -419,8 +474,7 @@ nextest_absent_available() {
         return 1
     fi
 
-    if nx_which cargo-nextest >/dev/null 2>&1; then
-        _NEXTEST_ABSENT_REASON="cargo-nextest is still REACHABLE under the constructed env ($(nx_which cargo-nextest 2>/dev/null)) — the simulation would be vacuous"
+    if ! _nextest_absent_check_reachable; then
         return 1
     fi
 
