@@ -547,7 +547,7 @@ _b11_concurrent_clone_during_flip() {
     local _b11_gen1
     _b11_gen1="$(readlink "$_b11_base")"
     local _b11_gen1_lock="${_b11_gen1}.lock"
-    touch "$_b11_gen1_lock" 2>/dev/null || true
+    # _spawn_pinning_reader touches lock_file itself; no need to duplicate it here.
 
     # Step 5: _spawn_pinning_reader — holds flock -s on gen.1.lock across the
     # ENTIRE operation below (clone + flip + teardown), not just the cp -a walk.
@@ -567,8 +567,13 @@ _b11_concurrent_clone_during_flip() {
     local _b11_ready="${_b11_gen1}.ready-marker"
     local _b11_clone_done="${_b11_gen1}.clone-done"
     mkdir -p "$_b11_clone_dir"
+    # hold_s left as "" (falls through to the helper's default); reflink_mode
+    # is pinned to "always" — B11 runs only once detect_substrate/
+    # detect_private_substrate have confirmed a reflink-capable mount, so a
+    # clone that silently degraded to a full byte copy here would be a real
+    # substrate regression, not something to paper over with =auto (#5866).
     _spawn_pinning_reader "$_b11_gen1_lock" "$_b11_ready" "$_b11_clone_done" \
-        "$_b11_gen1" "$_b11_clone_dir/target"
+        "$_b11_gen1" "$_b11_clone_dir/target" "" always
     local _b11_reader_pid="$_PINNING_READER_PID"
     # Causal handshake: wait until reader has acquired flock -s (replaces fixed sleep 0.1 — #4847).
     _wait_for_marker "$_b11_ready" 30
@@ -962,19 +967,36 @@ _wait_for_reader_lock() {
     _wait_for_marker "$1" "$2"
 }
 
-# _spawn_pinning_reader <lock_file> <ready_marker> <clone_done_marker> <src> <dst> [hold_s]
+# _spawn_pinning_reader <lock_file> <ready_marker> <clone_done_marker> <src> <dst> [hold_s] [reflink_mode]
 # Backgrounds a reader that: takes flock -s on <lock_file>, signals
-# <ready_marker>, runs `cp -a --reflink=auto <src> <dst>`, signals
-# <clone_done_marker> — then DELIBERATELY keeps holding flock -s (sleep
-# hold_s, default 120) until the caller kills it.
+# <ready_marker>, runs `cp -a --reflink=<reflink_mode> <src> <dst>`, signals
+# <clone_done_marker> — then DELIBERATELY keeps holding flock -s
+# (`exec sleep hold_s`, default 3600) until the caller kills it.
 #
-# --reflink=auto (not =always): this helper is shared between the
+# hold_s defaults to a large-but-bounded 3600s: a belt-and-braces anti-hang
+# ceiling, not a timing dependency. The operation under test while the lock
+# must stay held (a real cargo build + refresh-warm-base.sh flip, in B11's
+# case) is not bounded by this file's design, so a short fixed window (the
+# previous default of 120) can itself become a source of intermittent
+# flakes on a loaded host — teardown is solely the caller's kill+wait.
+# The subshell's final statement is `exec sleep`, not a bare `sleep`, so
+# the PID returned to the caller is GUARANTEED — independent of bash's
+# undocumented last-command fork-suppression optimization — to be the
+# fd-205 holder: do not append a further command after it, or `kill` would
+# reap an orphaned sleep that keeps flock -s (and thus the lock) held for
+# the rest of the window. The subshell's stdout/stderr are redirected to
+# /dev/null so a reader stranded by a caller bug (teardown skipped) cannot
+# hold a capturing pipe (e.g. run_all.sh) open for up to hold_s.
+#
+# reflink_mode defaults to "auto": this helper is shared between the
 # always-run Block BH (plain /tmp, no reflink support required or expected)
 # and the substrate-gated B11 fixture (a confirmed reflink-capable mount).
 # =auto opportunistically takes the CoW path whenever the underlying FS
-# supports it — identical behavior to =always in B11's already-gated case —
-# and falls back to a normal copy elsewhere instead of hard-failing, which
-# is what makes Block BH genuinely FS-agnostic.
+# supports it and falls back to a normal copy elsewhere instead of
+# hard-failing, which is what makes Block BH genuinely FS-agnostic. B11
+# passes "always" explicitly so that a substrate which turns out not to be
+# reflink-capable fails loud, rather than silently degrading to a full byte
+# copy that would still pass every remaining B11 assertion.
 #
 # The shared lock models the D8 dir-entry refcount ("this gen must stay
 # live"): its lifetime is the CONSUMER's, not the copy's. Signalling
@@ -999,15 +1021,16 @@ _spawn_pinning_reader() {
     local clone_done_marker="$3"
     local src="$4"
     local dst="$5"
-    local hold_s="${6:-120}"
+    local hold_s="${6:-3600}"
+    local reflink_mode="${7:-auto}"
     touch "$lock_file" 2>/dev/null || true
     (
         flock -s 205
         touch "$ready_marker"
-        cp -a --reflink=auto "$src" "$dst"
+        cp -a --reflink="$reflink_mode" "$src" "$dst"
         touch "$clone_done_marker"
-        sleep "$hold_s"
-    ) 205>"$lock_file" &
+        exec sleep "$hold_s"
+    ) 205>"$lock_file" >/dev/null 2>&1 &
     _PINNING_READER_PID=$!
 }
 
@@ -1356,22 +1379,19 @@ assert "RH-NEG: _wait_for_reader_lock returns non-zero when marker never appears
 # ─────────────────────────────────────────────────────────────────────────────
 # Block BH — pinning-reader hold contract (ALWAYS-RUN)
 #
-# Unit-tests the generic marker-poll seam extracted from _wait_for_reader_lock
-# (task #4847) into _wait_for_marker <marker> <deadline-seconds>, and (from
-# step-3 onward) the _spawn_pinning_reader helper that models a consumer
-# holding a shared flock -s across an operation rather than releasing it the
-# instant the operation completes — the seam B11's fixture was missing
-# (task #5866).
+# Unit-tests the _spawn_pinning_reader helper (from step-4 onward) that
+# models a consumer holding a shared flock -s across an operation rather
+# than releasing it the instant the operation completes — the seam B11's
+# fixture was missing (task #5866).
 #
-# _wait_for_marker contract:
-#   (BH-POS) positive case: marker file already exists before the call;
-#     assert the helper returns 0 promptly (no unnecessary wait).
-#   (BH-NEG) anti-hang case: call with a never-created marker and a 1s
-#     deadline; assert non-zero return (times out, does not hang forever) —
-#     mirrors RH-NEG.
-#
-# RED until step-2: _wait_for_marker is undefined → command not found under
-# set -euo pipefail → non-zero exit.
+# The generic marker-poll seam this helper is built on (_wait_for_marker,
+# extracted from _wait_for_reader_lock, task #4847) is already unit-tested
+# by Block RH's RH-POS/RH-NEG immediately above, via the delegating
+# _wait_for_reader_lock — Block BH deliberately does NOT retest that same
+# poll contract a second time under the new name (that would be the same
+# code path covered twice under two names). The handshake waits below are
+# plumbing to set up BH1-BH3, guarded so a stuck handshake FAILs by name
+# instead of aborting the suite under set -euo pipefail.
 #
 # _spawn_pinning_reader <lock> <ready> <clone-done> <src> <dst> contract
 # (task #5866 — the actual regression this block exists to guard):
@@ -1396,21 +1416,6 @@ echo "--- Block BH: pinning-reader hold contract ---"
 
 _BH_PARENT="$(mktemp -d /tmp/test-warm-pool-BH-XXXXXX)"
 _TMPDIRS+=("$_BH_PARENT")
-_BH_EXISTING_MARKER="$_BH_PARENT/bh-existing-marker"
-_BH_NONEXISTENT_MARKER="$_BH_PARENT/bh-never-created"
-touch "$_BH_EXISTING_MARKER"
-
-# ── BH-POS: positive — helper returns 0 promptly when marker already exists ──
-_wait_for_marker "$_BH_EXISTING_MARKER" 30
-_BH_POS_RC=$?
-assert "BH-POS: _wait_for_marker returns 0 promptly when marker file already exists" \
-    test "$_BH_POS_RC" -eq 0
-
-# ── BH-NEG: anti-hang — helper returns non-zero when marker never appears ──
-_BH_NEG_RC=0
-_wait_for_marker "$_BH_NONEXISTENT_MARKER" 1 || _BH_NEG_RC=$?
-assert "BH-NEG: _wait_for_marker returns non-zero when marker never appears (anti-hang)" \
-    test "$_BH_NEG_RC" -ne 0
 
 # ── Setup: a tiny 3-file source dir + lock/ready/clone-done paths — plain
 # flock, no reflink required, so this runs on every host (merge gate incl.).
@@ -1428,8 +1433,21 @@ _BH_CLONE_DONE="$_BH_PARENT/pin-clone-done"
 # set -euo pipefail → script aborts → RED).
 _spawn_pinning_reader "$_BH_LOCK" "$_BH_READY" "$_BH_CLONE_DONE" "$_BH_SRC" "$_BH_DST"
 _BH_READER_PID="$_PINNING_READER_PID"
-_wait_for_marker "$_BH_READY" 30
-_wait_for_marker "$_BH_CLONE_DONE" 30
+
+# Guarded handshake waits: capture the rc via `|| var=$?` (as BH-NEG-style
+# calls elsewhere in this file already do) rather than calling
+# _wait_for_marker bare — a bare non-zero return here would trip
+# set -euo pipefail and abort the whole suite mid-block, surfacing as an
+# unattributable abort instead of a named FAIL line in run_all.sh's
+# per-test summary.
+_BH_HS_READY_RC=0
+_wait_for_marker "$_BH_READY" 30 || _BH_HS_READY_RC=$?
+assert "BH-HANDSHAKE: _spawn_pinning_reader signals ready within deadline" \
+    test "$_BH_HS_READY_RC" -eq 0
+_BH_HS_CLONE_RC=0
+_wait_for_marker "$_BH_CLONE_DONE" 30 || _BH_HS_CLONE_RC=$?
+assert "BH-HANDSHAKE: _spawn_pinning_reader signals clone-done within deadline" \
+    test "$_BH_HS_CLONE_RC" -eq 0
 
 # ── BH1: the concurrent clone actually landed and matches src ──
 assert "BH1: _spawn_pinning_reader's clone lands (dst exists)" \
