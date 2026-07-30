@@ -1267,9 +1267,14 @@ fn elaborate_child_params_only(
 /// a template-scoped key. E.g., when evaluating lets for `S.child` (template `S`):
 ///   global["S.child.child", "total"] → child_values["S.child", "total"]
 ///
-/// For templates with multiple recursive subs, `recursive_sub_names` contains all
-/// sub names. A BFS walks the full entity tree under `scoped_entity` (following all
-/// sub name branches at each level), so cross-sub values are projected correctly.
+/// `elaborated_sub_names` names every sub of `child_template` whose entity was
+/// ALREADY materialised before this call — recursive subs unfolded by
+/// [`unfold_recursive_sub`], and (since task 5360) the plain instance-nested subs
+/// phase 1.5 elaborates. It is deliberately NOT "the recursive subs": naming it
+/// that was a leftover from when this function had only the one caller, and it
+/// contradicted the projection rule directly above it. A BFS walks the full
+/// entity tree under `scoped_entity` (following all sub name branches at each
+/// level), so cross-sub values are projected correctly.
 /// E.g., for subs [left, right] at `S.left`: both `S.left.left.*` and `S.left.right.*`
 /// are projected, enabling lets like `let sum = S.left.val + S.right.val`.
 ///
@@ -1289,7 +1294,7 @@ fn elaborate_child_lets_only<'t>(
     scoped_entity: &str,
     mut child_values: ValueMap,
     meta_map: &HashMap<String, HashMap<String, String>>,
-    recursive_sub_names: &[&str],
+    elaborated_sub_names: &[&str],
     templates: &'t [TopologyTemplate],
     prelude: &'t [CompiledModule],
     diagnostics: &mut Vec<Diagnostic>,
@@ -1311,13 +1316,13 @@ fn elaborate_child_lets_only<'t>(
     // child per sub name, then expands branches where values exist. This handles both
     // single-sub chains (O(D×C)) and multi-sub trees (O(B^D×C) where B=branching, D=depth).
     // The BFS terminates naturally when no values are found at a given entity.
-    if !recursive_sub_names.is_empty() {
+    if !elaborated_sub_names.is_empty() {
         let scoped_prefix = format!("{}.", scoped_entity);
         let template_prefix = format!("{}.", child_template.name);
 
         // BFS queue carries (entity_path, entity_template) so each depth level uses
         // the correct template's value_cells for projection (heterogeneous mutual recursion).
-        let mut queue: std::collections::VecDeque<(String, &TopologyTemplate)> = recursive_sub_names
+        let mut queue: std::collections::VecDeque<(String, &TopologyTemplate)> = elaborated_sub_names
             .iter()
             .filter_map(|name| {
                 // Look up the sub declaration to find its target template.
