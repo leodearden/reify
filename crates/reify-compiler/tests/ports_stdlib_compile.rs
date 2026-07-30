@@ -3165,27 +3165,19 @@ fn example_ports_mechanical_ri_compiles_clean() {
 
 // ─── task η: Torque builtin named dimension retires the stdlib alias ─────────
 
-/// CONSUMER PROOF for task η (PRD `docs/prds/v0_6/angle-units-surface-convergence.md`
-/// §6 D4): the `pub type Torque = Force * Length / Angle` alias in
-/// ports_mechanical.ri existed SOLELY because `Torque` was absent from
-/// `NAMED_DIMENSIONS` — the module's own header said exactly that, and cited
-/// the language rule that binary dimensional-op expressions are admitted only
-/// on a type-alias RHS, never in `param x : <type>` position. Now that
-/// `DimensionVector::TORQUE` is a registered named dimension, that premise is
-/// gone, so retiring the alias is what DEMONSTRATES the builtin works.
+/// CONSUMER PROOF for task η: the `pub type Torque = Force * Length / Angle`
+/// alias in ports_mechanical.ri existed SOLELY because `Torque` was absent from
+/// `NAMED_DIMENSIONS`, so retiring it is what demonstrates the builtin works.
+/// See the `DimensionVector::TORQUE` docs in reify-core for the PRD §6 D4
+/// rationale behind the registration itself.
 ///
-/// Three assertions:
 ///  (a) no `Torque` entry remains in `module.type_aliases` — the retirement proof;
 ///  (b) `RotaryPort.max_torque` still resolves to `Scalar<TORQUE>` — the builtin
 ///      shadows the now-absent alias, resolution being builtin-before-alias
 ///      (`resolve_type_with_aliases` tries `resolve_type_with_params` first);
-///  (c) a bare user source with NO import compiles clean and carries `TORQUE` —
-///      the user-observable payoff: `.ri` authors can write `param t : Torque`
-///      without importing `std.ports.mechanical` at all.
-///
-/// Asserted against `DimensionVector::TORQUE` rather than a locally rebuilt
-/// `FORCE.mul(&LENGTH).div(&ANGLE)` (as the older `MechanicalPort` assertions
-/// above still do) so this test names the constant it is proving.
+///  (c) a bare user source with NO import compiles clean and carries `TORQUE`;
+///  (d) the negative counterpart — an Energy-dimensioned default against a
+///      `Torque` annotation is still rejected.
 ///
 /// Modelled on `rotational_stiffness_alias_removed_builtin_dimension_shadows`
 /// in flexures_stdlib_compile.rs, which pins the identical two-part invariant
@@ -3253,5 +3245,30 @@ structure def S { param t : Torque = 5N*m/rad }
         },
         "the unimported `param t : Torque` cell must carry TORQUE; got: {:?}",
         cell.cell_type
+    );
+
+    // (d) The negative counterpart to (c). Making `Torque` a bare, importless
+    // spelling puts it one keystroke away from `Energy` — `5N*m` instead of
+    // `5N*m/rad` — and the two vectors differ ONLY in the Angle⁻¹ slot. Pin
+    // that the compiler still rejects the mismatch, so the convenience of (c)
+    // cannot quietly become a way to write energy into a torque parameter.
+    let bad = compile_source_with_stdlib("structure def S { param t : Torque = 5N*m }\n");
+    let bad_errors: Vec<&String> = bad
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| &d.message)
+        .collect();
+    assert!(
+        !bad_errors.is_empty(),
+        "`param t : Torque = 5N*m` is an Energy-dimensioned default against a \
+         Torque annotation and MUST be rejected; got no Error diagnostics"
+    );
+    assert!(
+        bad_errors
+            .iter()
+            .any(|m| m.contains("rad^-1") && m.contains("must agree")),
+        "the rejection must name the Angle⁻¹ slot that separates Torque from \
+         Energy (declared `…rad^-1` vs initializer without it); got: {bad_errors:?}"
     );
 }
