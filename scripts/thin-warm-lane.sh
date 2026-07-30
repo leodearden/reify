@@ -26,7 +26,14 @@
 #                         its own (now default-on) lane-lock acquire rather than
 #                         self-refusing against thin's held lock (esc-5214/task 5354).
 #                         Best-effort: a failed re-seed is logged but does not
-#                         change the exit code (see Exit codes below).
+#                         change the exit code (see Exit codes below). A NON-ZERO
+#                         seed exit additionally DISCARDS <lane_dir>/target: the
+#                         seed's fail-closed post-conditions all fire after
+#                         target/ has been replaced with the CoW clone, so an
+#                         abort leaves an UNCERTIFIED clone the caller must
+#                         remove (PRD docs/prds/warm-lane-pool-cow-seeding.md
+#                         §9.5 inv.13, "Caller obligation on the fail-closed
+#                         path" — the single normative home for that ruling).
 #                         Requires --base. Default OFF (no clone staged).
 #   --base DIR             base_target_dir to seed from. Required with --reseed.
 #                         Per seed-warm-lane.sh's D8 resolve convention, this MUST
@@ -48,10 +55,13 @@
 #
 # Exit codes:
 #   0   — target/ freed. With --reseed, re-seeding is attempted best-effort:
-#         a failed re-seed is logged (stderr "Re-seed FAILED") but does NOT
-#         change the exit code, since the free — the operation this script
-#         guarantees — already succeeded (D10: acquire always re-seeds from
-#         base anyway, so a lane a caller re-acquires is never left cold).
+#         a failed re-seed is logged but does NOT change the exit code, since
+#         the free — the operation this script guarantees — already succeeded
+#         (D10: acquire always re-seeds from base anyway, so a lane a caller
+#         re-acquires is never left cold). With --reseed, a failed re-seed
+#         additionally DISCARDS <lane_dir>/target, so the lane is returned
+#         cold-but-safe rather than carrying an uncertified clone — which is
+#         once again exactly "target/ freed", the post-condition 0 asserts.
 #   1   — Precondition guard refusal (nonexistent lane, ==base dir, not under
 #         $REIFY_WARM_LANE_MOUNT).
 #   2   — Usage error (unknown flag, missing positional, --reseed without --base).
@@ -97,7 +107,11 @@ Usage: $(basename "$0") <lane_dir> [--reseed] [--base <base_target_dir>] [--seed
                           --assume-lane-lock-held; thin holds \${LANE_DIR}.lock on FD 9
                           across the call, so seed skips its own default acquire).
                           Best-effort: a failed re-seed is logged but does not
-                          change the exit code. Requires --base. Default OFF.
+                          change the exit code; a NON-ZERO seed exit additionally
+                          DISCARDS <lane_dir>/target, which an aborting seed
+                          leaves behind UNCERTIFIED (PRD
+                          docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13).
+                          Requires --base. Default OFF.
   --base DIR              base_target_dir to seed from. Required with --reseed.
                           Per seed-warm-lane.sh's D8 resolve convention, this MUST
                           be the CONCRETE .gen.N path, NOT the <base>/target
@@ -111,7 +125,9 @@ Usage: $(basename "$0") <lane_dir> [--reseed] [--base <base_target_dir>] [--seed
 
   Exit codes:
     0   — target/ freed. With --reseed, re-seeding is best-effort: a failed
-          re-seed is logged (stderr) but does not change the exit code.
+          re-seed is logged (stderr) but does not change the exit code, and
+          additionally DISCARDS <lane_dir>/target so the lane is returned
+          cold-but-safe rather than carrying an uncertified clone.
     1   — Precondition guard refusal (nonexistent lane, ==base dir, not under
           \$REIFY_WARM_LANE_MOUNT).
     2   — Usage error (unknown flag, missing positional, --reseed without --base).
@@ -279,7 +295,25 @@ if [ -n "$RESEED" ]; then
     if "$SEED_SCRIPT" "$BASE_TARGET_DIR" "$LANE_DIR" --fresh-checkout --assume-lane-lock-held >&2; then
         ok "Re-seeded: $LANE_DIR/target"
     else
-        warn "Re-seed FAILED ($SEED_SCRIPT); lane target/ was already freed (success not masked)"
+        # A non-zero seed exit means the seed did NOT certify this lane. Keyed on
+        # the EXIT STATUS rather than on the seed's stdout, and that is the same
+        # predicate: seed-warm-lane.sh runs under `set -euo pipefail` and writes
+        # stdout exactly once, at its terminal echo, so a guard's `err …; return 1`
+        # always yields non-zero exit AND empty stdout together. (Observing the
+        # stdout is not open to us anyway — it is redirected to stderr above, to
+        # protect this script's own single-line stdout contract.)
+        #
+        # The clone must go. The seed's fail-closed post-conditions all fire AFTER
+        # target/ has been replaced with the CoW clone, so an abort lands ONTO the
+        # hazardous state it just refused to certify; the seed deliberately leaves
+        # that clone in place, which makes discarding it the caller's obligation.
+        # docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13, "Caller obligation
+        # on the fail-closed path", is the single normative home for the ruling.
+        warn "Re-seed did not certify the lane ($SEED_SCRIPT exited non-zero); discarding the uncertified clone"
+        _rm_err=""
+        if _rm_err="$(rm -rf "$LANE_DIR/target" 2>&1)"; then
+            warn "Discarded uncertified clone: $LANE_DIR/target (§9.5 inv.13 caller obligation; lane returned cold-but-safe)"
+        fi
     fi
 fi
 
