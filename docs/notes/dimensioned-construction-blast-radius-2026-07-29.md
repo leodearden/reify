@@ -1694,7 +1694,260 @@ $ echo $?
 
 ## §10 Per-site classified ledger + consumer index (step-10)
 
-*(filled by step-10)*
+**Provenance continuation.** Measured at post-step-9 HEAD **`ffca87cd60`** (2026-07-30), base
+`main` = `bae556d6ad43` (the rebase noted at session start, `783715ca` → `bae556d6ad43`, 6 files:
+`crates/reify-eval/{src/dirty.rs,src/engine_edit.rs,src/engine_fixpoint.rs,tests/harness_engine.rs,
+tests/harness_engine/flat_sort_kahn_core_delegation.rs,tests/unified_dag_edit_path.rs}` — **zero
+overlap**, confirmed by direct inspection of that file list, with every file this ledger's counts
+depend on: `conformance/mod.rs`, `type_compat.rs`, `dimension.rs`, `examples/**`, `stdlib/**`,
+`gui/test/fixtures/**`, `tree-sitter-reify/**`, `examples_smoke.rs`,
+`struct_ctor_field_conformance_tests.rs`, `input_shape_eval_e2e.rs`,
+`auto_type_param_determinism_tests.rs` — so §§0-9's figures need no re-verification). Also
+re-verified fresh this session (needed by §11, used here): the two `gui/test/fixtures` reach-vs-gate
+anchors — `gui/src-tauri/src/debug_server.rs:1236` (`"large_assembly" =>
+Some("gui/test/fixtures/large_assembly.ri".to_string()),`) and `gui/test/visual/assertions.ts:47`
+(`large_assembly: "gui/test/fixtures/large_assembly.ri",`) — both **CONFIRMED present, unchanged**;
+neither file appears in any of the four rebases' changed-file lists.
+
+**This section performs no new measurement.** It is a synthesis of §§1-9's already-measured,
+already-cited data into one indexed table, adding four columns none of §§1-9 individually carries
+(disposition, owning consumer, and a severity-at-HEAD/post-migration transition) and a
+cross-section reconciliation. Every row cites the subsection it was lifted from; nothing below is
+re-derived from scratch.
+
+### 10.0 Table method, compression discipline, and scope
+
+**Row granularity.** Each source section already chose a row granularity when it first measured a
+bucket (e.g. §3.1 groups `large_assembly.ri`'s 6 field-hits into 2 rows; §2.2.4 groups the 4
+`param_default_type_mismatch_tests.rs`/`let_annotation_type_mismatch_tests.rs` pin sites into 4
+row-groups covering 10 literal sites). This table **reproduces each source table at its own
+established granularity**, adding columns rather than re-splitting rows — re-exploding to one row
+per literal value would not add information and would risk a transcription error on every one of
+~160 rows. A `#` column records how many individual sites each row represents, so no count is
+lost to the grouping.
+
+**Severity is stated once per gate subsection, not per row**, because it is constant within a gate
+(every hit at a given gate shares the same HEAD-vs-post-migration transition) — repeating it on
+~160 rows would be pure duplication. The step's column spec names this "severity at HEAD
+(Warning/Error) and post-γ"; that literal phrasing is accurate for gates 1/2/6 (γ's own blast
+radius) but **not** for gate "3+4" (owned by δ₁, which γ never touches — confirmed §5.0/§2's own
+gate-3+4-vs-gate-2 distinction) or gate 5 (owned by δ₂, a third, independent mechanism — §5.0).
+Each subsection below states its own correct transition and owning leaf explicitly rather than
+mechanically labeling every row "post-γ," which would misstate gates 3+4 and 5's actual mechanism.
+
+**Two out-of-scope items are represented as rollups, not exploded rows**, because their own
+sections already ruled on this and re-deriving finer granularity here would re-litigate a settled
+call: (a) §8's 118 quantity-slot sites — §8.2 itself declines per-site classification for the
+72-site Rust-fixture bucket ("the number exists solely to size the follow-up... not individually
+re-classified"); (b) §9's PRD-5 90-site load-struct list — §9.4's filing discipline explicitly
+forbids re-enumerating it here ("No PRD-5-owned work is filed from this task... re-listing them
+here would risk a stale duplicate"). Both appear in §10.6 as counts-with-pointers, outside the
+6-column schema, consistent with their own sections' rulings.
+
+**Class↔gate-5 mapping, stated once:** the step's CLASS enum (`BARE, CROSS-DIMENSION, NON-SCALAR,
+SCALARPARAM-FALSE-POSITIVE`) has no literal "INT-FOR-LENGTH" slot; gate 5's two sub-counts (§5.3
+cross-dimension, §5.4 int-for-length) map onto it as: §5.3 → `CROSS-DIMENSION` (a `Scalar{Q}` at a
+`Scalar{R}` slot), §5.4 → `BARE` (a bare `Int` is the integer-flavored case of "an undimensioned
+value at a dimensioned slot," the same phenomenon §§1-4 call BARE for `Real` literals).
+
+**Same file:line, two gates.** `bearing_auto_seal.ri:46` and `mv-2-priv-param.ri:4` are each hit by
+*two* independent mechanisms (gate 2 = `conformance/mod.rs`, γ's own blast radius; gate "3+4" =
+`entity.rs`, δ₁'s) — they appear once under each gate below, correctly, because "gate" is part of
+this table's row key and the two mechanisms can (and here do) disagree on disposition for the
+identical site (§4.2's central finding).
+
+### 10.1 Gate 1 — ctor field-slot (`conformance/mod.rs`'s ctor-call check; owner **γ**)
+
+Severity for every row: silent at HEAD → `Warning` (`CTOR_FIELD_CONFORMANCE_SEVERITY`) once γ
+lands, unless noted. Source: §3.1 (BARE), §3.2 (EXCLUDED).
+
+| File:line | Text | Bucket | Class | # | Disposition | Owning consumer |
+|---|---|---|---|---|---|---|
+| `examples/trajectory/tots_optimal_ptp.ri:67,78,79` | `JointLimit.max_force` / `TOTSShaper.velocity_limit`/`.acceleration_limit` | examples/** | BARE | 3 | BREAKS — migrate | **β**, ahead of γ |
+| `examples/trajectory/printer_print_envelope.ri:153,154,155` | same 3 fields | examples/** | BARE | 3 | BREAKS — migrate | **β**, ahead of γ |
+| `gui/test/fixtures/large_assembly.ri:18,27,36` | `Material.density` | other .ri | BARE | 3 | BREAKS — migrate | **β** (no cargo gate behind this file — §11(A); a GUI e2e run or `reify check`, not a cargo test, must confirm the fix) |
+| `gui/test/fixtures/large_assembly.ri:19,28,37` | `Material.youngs_modulus` | other .ri | BARE | 3 | BREAKS — migrate | **β**, same caveat |
+| `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs:1420` | `Limit(velocity_limit: 300.0, acceleration_limit: 5000.0)` | Rust fixture | BARE | 2 | **DELIBERATE NEGATIVE TEST — invert** (`excluded_family_dimensioned_scalar_given_dimensionless_real_is_silent`, §1.3) | **γ** (inverts/removes its own pinning test as part of landing) |
+| `crates/reify-eval/tests/input_shape_eval_e2e.rs:248,255,256` | `JointLimit.max_force`, `TOTSShaper.velocity_limit`/`.acceleration_limit` | Rust fixture | BARE | 3 | BREAKS — migrate, **silent** (suite stays GREEN under the flip — §1.4, only inspects `Severity::Error`) | none forcing — γ may optionally migrate as part of its own PR; not required to land safely |
+| `crates/reify-syntax/tests/harness_syntax/auto_binding_sites_lowering_tests.rs:245,360` | `Bearing(bore: 1.0)` inside an undeclared-structure parse fixture | Rust fixture | BARE | 2 | EXCLUDED — parse-only (walker never runs) | none — `reify-syntax` never depends on `reify-compiler` |
+| `…function_call_named_args_tests.rs:128` | `Steel(density: 1000.0)` inside an undeclared-structure parse fixture | Rust fixture | BARE | 1 | EXCLUDED — parse-only | none |
+| `crates/reify-cli/tests/fixtures/stdlib_sim_ready_material_ok.ri:11` | `Material(density: 7850.0)` against a file-local dimensionless `Material` shadow | other .ri | BARE | 1 | EXCLUDED — file-local dimensionless shadow | none — not a real dimensioned-family site |
+| `purpose_compile_tests.rs:1814`, `purpose_activation.rs:1547` | same `Material(density: 7850.0)` shadow pattern | Rust fixture | BARE | 2 | EXCLUDED — file-local dimensionless shadow | none |
+| `termination_check_tests.rs:78,346` | `Inner(x: 5)` against a file-local dimensionless `Inner` shadow | Rust fixture | BARE | 2 | EXCLUDED — file-local dimensionless shadow | none |
+
+**Sub-totals:** BARE = 17 (BREAKS 15, DELIBERATE-INVERT 2) + EXCLUDED = 8 (parse-only 3,
+file-local-shadow 5) → **25 rows**. By bucket: examples/** 6 · other .ri 7 (6 BREAKS + 1 EXCLUDED)
+· Rust fixture 12 (5 BARE + 7 EXCLUDED) · stdlib 0. CROSS-DIMENSION = 0, NON-SCALAR = 0 for this
+gate (§3.4 — corroborated over the corpus slice the four step-1 suites exercise, not exhaustively
+re-proven over the full workspace).
+
+### 10.2 Gate 2 — param-default entry (`conformance/mod.rs`; owner **γ**)
+
+Severity for every row: silent at HEAD → `Warning` once γ lands. `param`-only (the `let` twin is
+gate "3+4", §2.2.5b). Source: §2.1 (category A), §2.2 (category C), §4.1/§4.2 (gate-2-specific
+disposition).
+
+| File:line | Text | Bucket | Class | # | Disposition | Owning consumer |
+|---|---|---|---|---|---|---|
+| `examples/bearing_auto_seal.ri:46` | `param durometer : Length = 70.0` | examples/** | BARE | 1 | BREAKS — migrate, **empirically confirmed** (§1.2's transcript) | **β** — same fix as its gate-"3+4" row below; β fixes the *annotation* (Shore durometer is dimensionless), not the literal |
+| `tree-sitter-reify/test/fixtures/mv-2-priv-param.ri:4` | `priv param rated_torque : Torque = 5` | other .ri | BARE | 1 | EXCLUDED — parse-only (tree-sitter grammar fixture, never reaches `reify-compiler`) | none |
+| Category-C `param` sites, c1 group (§2.2.4, 15 file:line rows, all `param`) | e.g. `grade : Length = 8.8`, `axis: Length = 0`, `material : Length = 1.0` … | Rust fixture | BARE | 15 | BREAKS — migrate, **silent under gate 2** (§4.2: none of these additionally break because of gate 2 — their currently-passing assertions filter to `Severity::Error` only) | none forcing — γ may optionally migrate |
+| Category-C `param` sites, c2 group (`param_default_type_mismatch_tests.rs:175-178,206-207`) | `zero_int=0, one_int=1, half_real=0.5, large_real=70.0, neg_real=-5.0, neg_int=-1` | Rust fixture | BARE | 6 | BREAKS — migrate, **silent under gate 2** (§4.2: these assert on `ParamDefaultTypeMismatch`, a different code from gate 2's `ArgTypeMismatch` — invisible to gate 2, though they are gate-"3+4" pins, see §10.3) | none forcing under gate 2 |
+| Category-C `param` sites, c0 group (§2.2.4, 11 row-groups) | e.g. `ts_parser.rs` parse-only fixtures, `engine_tests.rs` structural-only reads, … | Rust fixture | BARE | 28 | BREAKS — migrate, **silent under gate 2** | none forcing |
+| Category-C `param` sites, unclassified (§2.2.4, `trait_assoc_type_conformance_tests.rs`, 2 further occurrences not re-read this session) | — | Rust fixture | BARE | 2 | **UNCLASSIFIED** — provisionally BREAKS — migrate pending resolution | δ₁/γ (whichever lands first) must resolve definitively before landing, not this ledger |
+
+**Sub-totals:** BARE = 53 (1 empirically-confirmed BREAKS + 51 silent-BREAKS [15+6+28+2] + 1
+EXCLUDED-parse-only) → **6 rows** (rollup granularity; 53 underlying sites). By bucket:
+examples/** 1 · other .ri 1 · Rust fixture 51 · stdlib 0. Matches §4.1's "52 candidates" (53 raw
+minus the 1 parse-only exclusion) exactly.
+
+### 10.3 Gates 3+4 — δ₁'s entity.rs annotation checks (`entity.rs:479-485`/`:563-569`; owner **δ₁**)
+
+Severity for every row: silent at HEAD (existing numeric-leniency carve-out, mirroring gate 5's
+Rule 4) → **`Error`** once δ₁ removes that carve-out (gates 3/4 are the primary type checker, not
+a Warning-only secondary walker — unlike gates 1/2/6). δ₁ is a wholly separate mechanism from γ;
+γ landing does not change any row in this subsection (§2's own title: "gates 3+4, δ₁'s blast
+radius"). Source: §2.1 (categories A/B), §2.2.4 (category C c1/c2/c0), §2.3 (EXCLUDED-BY-DESIGN).
+
+| File:line | Text | Bucket | Class | # | Disposition | Owning consumer |
+|---|---|---|---|---|---|---|
+| `examples/bearing_auto_seal.ri:46` | `param durometer : Length = 70.0` | examples/** | BARE | 1 | **BREAKS — migrate, MANDATORY before δ₁ lands** (post-δ₁ this is a hard compile `Error` in a *shipped example* — inferred from the mechanism, not empirically rebuilt under a not-yet-built δ₁; flagged as such) | **β**, same fix as its gate-2 row above |
+| `tree-sitter-reify/test/fixtures/mv-2-priv-param.ri:4` | `priv param rated_torque : Torque = 5` | other .ri | BARE | 1 | EXCLUDED — parse-only (never reaches `entity.rs` either) | none |
+| Category B (`let …`) | — | — | — | 0 | n/a — **0 sites found** (§2.1; 35 non-bare `let`-dimensioned sites surveyed, all compound expressions) | n/a |
+| Category-C, c1 (§2.2.4, 15 rows, reused verbatim from §10.2's table — same 15 sites) | `grade : Length = 8.8`, `axis: Length = 0`, … | Rust fixture | BARE | 15 | **BREAKS — migrate** (breaks a currently-passing `errors_only`/`parse_and_compile`-style assertion today once δ₁ lands) | **δ₁** (migrates its own test suite as part of landing) |
+| Category-C, c2 — `param_default_type_mismatch_tests.rs:175-178,206-207` | 6 sites (`zero_int`, `one_int`, `half_real`, `large_real`, `neg_real`, `neg_int`) | Rust fixture | BARE | 6 | **DELIBERATE NEGATIVE TEST — invert** (asserts `ParamDefaultTypeMismatch` is absent; δ₁ inverts) | **δ₁** |
+| Category-C, c2 — `let_annotation_type_mismatch_tests.rs:176-178,583` | 4 sites (`x=5,y=0.5,z=-5.0,d=5`) | Rust fixture | BARE | 4 | **DELIBERATE NEGATIVE TEST — invert** | **δ₁** |
+| Category-C, c0 (§2.2.4, 11 row-groups, reused from §10.2) | — | Rust fixture | BARE | 28 | BREAKS — migrate, lower-urgency (no currently-passing test forces it today) | **δ₁**, optional cleanup as part of landing |
+| Category-C, unclassified | — | Rust fixture | BARE | 2 | UNCLASSIFIED — provisionally BREAKS — migrate | **δ₁** must resolve before landing |
+| `crates/reify-compiler/stdlib/units.ri:14-19,24-25,28-74` (21 lines) | `pub unit cm : Length = 0.01`, … (§2.3's full 21-line table) | stdlib .ri | BARE-shaped | 21 | **EXCLUDED-BY-DESIGN (C2 unit decls)** — required bare conversion factors, never reach gate 3/4 (`unit`, not `param`/`let`) | **none — δ₁ must NEVER touch these** |
+| `examples/m9_combined.ri:46`, `examples/integration_full_v01.ri:33` | `unit mil : Length = 0.0000254` (×2) | examples/** | BARE-shaped | 2 | EXCLUDED-BY-DESIGN (C2 unit decls) | none — must never be touched |
+
+**Sub-totals:** BARE = 2 (category A) + 55 (category C: 15+10+28+2) = 57 → **BREAKS 44** (1 bearing
++ 15 c1 + 28 c0), **DELIBERATE-INVERT 10** (c2), **UNCLASSIFIED 2**, **EXCLUDED-parse-only 1**.
+EXCLUDED-BY-DESIGN = 23 (21 stdlib + 2 examples/**). **Total 80 rows/sites** across 9 row-groups.
+By bucket: examples/** 3 (1 BREAKS + 2 EXCLUDED-BY-DESIGN) · stdlib 21 (EXCLUDED-BY-DESIGN) ·
+other .ri 1 (EXCLUDED-parse-only) · Rust fixture 55.
+
+### 10.4 Gate 5 — constraint-def Rule 4 (`type_compat.rs:1482-1488`; owner **δ₂**)
+
+Severity for every row: silent-tolerated (Rule 4 returns `true`) at HEAD → **`Error`** once δ₂
+removes Rule 4 (§5.2, `Diagnostic::error` at the rejection fallthrough — Rule 4 is Error-severity
+by construction, unlike gates 1/2/6's Warning). δ₂ is a third, independent mechanism — step-1's
+transcript contains no gate-5 evidence at all (§5.0); this gate's own instrumented sweep
+(§5.1-§5.4) is its evidence base. Source: §5.3 (cross-dimension), §5.4 (int-for-length).
+
+| File:line | Text | Bucket | Class | # | Disposition | Owning consumer |
+|---|---|---|---|---|---|---|
+| `type_compat.rs:5041` (`constraint_arg_type_conforms_mass_for_length_is_true`) | param=`Scalar{Length}`, arg=`Scalar{Mass}` (direct `Type` values, no `.ri` source) | Rust fixture (primitive pin) | CROSS-DIMENSION | 1 | DELIBERATE NEGATIVE TEST — invert | **δ₂** |
+| `type_compat.rs:5050` (`..._dimensionless_for_length_is_true`) | param=`Scalar{Length}`, arg=`Scalar{dimensionless}` | Rust fixture (primitive pin) | CROSS-DIMENSION | 1 | DELIBERATE NEGATIVE TEST — invert | **δ₂** |
+| `type_compat.rs:5031` (`..._int_for_length_is_true`) | param=`Scalar{Length}`, arg=`Int` | Rust fixture (primitive pin) | BARE (int-for-length) | 1 | DELIBERATE NEGATIVE TEST — invert | **δ₂** |
+| `constraint_def_compile_tests.rs:1454` (`int_literal_for_length_param_no_constraint_arg_type_mismatch`) | `constraint def MinWall { param w: Length … }` / `constraint MinWall(w: 3)` | Rust fixture | BARE (int-for-length) | 1 | DELIBERATE NEGATIVE TEST — invert (test's own body: "numeric leniency — dimensional strictness is task 4490's job") | **δ₂** |
+| `forall_statement_lower_tests.rs:1646` (`forall_constraint_inst_body_emits_per_element_inst_predicates`) | `constraint def MinThreshold {…}` / `forall v in [1,2,3]: constraint MinThreshold(value: v)` | Rust fixture | BARE (int-for-length) | 1 (3 firings — one per `forall` element) | **BREAKS — migrate** (its own `errors_only(&module).is_empty()` assertion would newly fail; fix is migrating the fixture's literals to unit-bearing ones, e.g. `[1mm,2mm,3mm]`, not inverting — its *purpose* is forall label mechanics, not gate-5 tolerance) | **δ₂** (migrates its own test fixture as part of landing) |
+
+**Sub-totals:** CROSS-DIMENSION = 2 (both DELIBERATE-INVERT, 0 corpus sites — §5.3). BARE
+(int-for-length) = 3 sites / 5 firings (2 DELIBERATE-INVERT + 1 BREAKS — §5.4). **5 rows**, all
+Rust-fixture bucket (0 examples/**, stdlib, other-.ri — §5.1.2's full-corpus instrumented sweep
+found zero `.ri`-shaped hits of either shape). Two structural prerequisites carried forward, not
+resolved here (δ₂ must carry its own fence, not this ledger): §5.5 (`Type::ScalarParam` admission
+into `is_numeric`, 0 corpus sites today but latent) and §5.6 (Rule 2 precedes Rule 4 — a
+generic/trait-typed constraint-def *param* never reaches Rule 4; no site here was excluded by
+Rule 2, but a later reader must check it before attributing a silence to Rule 4).
+
+### 10.5 Gate 6 — fn-call entry (`entities_phase.rs:1493`/`:1503`; owner **γ**) — 0 rows
+
+**Measured count: 0** (§7.2's repo-wide census — no `fn` param both `type_carries_trait_object`
+and lockstep-recursing to a bare dimensioned `Type::Scalar` leaf). Reported per §7.3/§0 design
+decision as a **measurement at this HEAD, re-checkable, not a structural guarantee**: §7.1
+demonstrates the entry is mechanically *reachable* (the `couple_opt`/`takes` demos both fire, one
+at exit 1) — the 0 is a fact about today's corpus content, not the guard's shape. Per the plan's
+own escalation clause: since the count is 0, **no β-ordering change and no escalation are filed**;
+if this ledger is ever cited against a later HEAD, §7.2's census must be re-run first.
+
+**SCALARPARAM-FALSE-POSITIVE class (item 3, §6) — 0 rows, γ-scoped implementation prerequisite,
+not a migration item.** §6.1's census of all 7 dimension-generic `fn` definition sites found zero
+that forward a `Scalar<Q>` into a concrete dimensioned ctor field/param default — so this class has
+**no real corpus row** in this table. It is recorded here only as a pointer: **γ must wire
+`is_numeric_placeholder_leaf` (or an equivalent fence) into the general concrete-leaf arm before
+promoting the predicate**, or any *future* dimension-generic forwarding fn will newly false-positive
+(§6.2's scratch probe demonstrates this live, reversibly, off-corpus). The two probes in §6.2/§6.3
+are scratch-only mechanism demonstrations, not corpus sites, and are deliberately not rows here.
+
+### 10.6 Out-of-scope items, carried for completeness (not part of the migration list)
+
+| Item | Count | Disposition | Pointer |
+|---|---|---|---|
+| Quantity-slot residual (`Vector3`/`Point3`/`Matrix`/`Tensor`/`Field`) | 118 (34 stdlib/9 files + 8 examples/4 files + 4 other-.ri/3 files + 72 Rust-fixture/21 files) | EXCLUDED-BY-DESIGN — dimension-blind by construction (task 5465's shape-based arms, `is_numeric_placeholder_leaf`-gated); γ's predicate promotion never reaches them | §8 — sizing input for the 5627 candidate-2 / `reify-core/src/ty.rs` follow-up only |
+| FEA load-struct fields (`PointLoad.force`, `PressureLoad.magnitude`, `TractionLoad.traction`, `BodyForce.force_density`) | 4 field-definitions; **0 call sites** (all still `Real` at HEAD, outside the dimensioned family — no BARE call site exists for γ to catch) | EXCLUDED — PRD-5 load struct (flag-then-exclude, §9.4's disjointness proof) | §9 — PRD 5 (`dimension-checked-readers.md`, landed `efba5a8036`) owns the retype + its own 90-site call-site migration; **not re-enumerated here** per §9.4's filing discipline |
+
+### 10.7 Reconciliation against step-1's empirical evidence
+
+Two independent empirical sources exist; neither is conflated with the other or with this table's
+mechanically-implied (not rebuilt-and-run) rows.
+
+**(a) The four-suite flipped run (§1), 9 diagnostics observed, zero residual:**
+- `examples_smoke`: 7 diagnostics = 6 gate-1 BARE (`tots_optimal_ptp.ri`×3 + `printer_print_envelope.ri`×3,
+  §10.1) + 1 gate-2 BARE (`bearing_auto_seal.ri`, §10.2). 6 + 1 = 7. ✓.
+- `struct_ctor_field_conformance_tests`: 1 failing test, 2 diagnostics = the gate-1
+  `struct_ctor_field_conformance_tests.rs:1420` DELIBERATE-INVERT row (§10.1), both args. ✓.
+- `input_shape_eval_e2e` / `auto_type_param_determinism_tests`: 0 diagnostics *observed* (both
+  GREEN, §1.4) — consistent with §10.1's row for `input_shape_eval_e2e.rs`'s 3 gate-1 BARE sites
+  being marked "silent," not with those sites being absent.
+- **7 + 2 = 9 total empirically-triggered diagnostics, all 9 accounted for by rows in §10.1/§10.2.
+  Zero unexplained residual.**
+
+**(b) The independent gate-5 instrumented sweep (§5), 7 raw `RULE4_HIT` firings, self-reconciled
+in §5.4.1 and reproduced as §10.4's 5 rows/8 firings** (2+1 primitive pins + 1 site/1 firing
+`constraint_def_compile_tests.rs` + 1 site/3 firings `forall_statement_lower_tests.rs` = 2+1+1+3 =
+7 firings across 5 sites — matches §5.4.1 exactly). This sweep is structurally separate from (a):
+step-1's transcript contains no gate-5 evidence (§5.0), so (a)'s 9 and (b)'s 7 are never summed
+against each other.
+
+**Every other row in §§10.1-10.4 (BARE/CROSS-DIMENSION sites not in (a) or (b), and every EXCLUDED
+row) is either (i) confirmed present by direct source read but not exercised by any suite step-1
+or §5 actually ran (e.g. gate-1's `large_assembly.ri` 6 sites — no suite loads that file, §3.3; or
+gate-2/gate-"3+4"'s 51/55 Rust-fixture sites — step-1 never compiled `param_default_type_mismatch_tests.rs`
+etc. under the flip), and is labeled "mechanical, not empirically re-confirmed this session"
+wherever that applies (§4.1's own phrase, carried forward here); or (ii) an EXCLUDED row, whose
+whole point is that no gate ever fires there.** No row in this table claims empirical confirmation
+it does not have.
+
+### 10.8 Consumer index
+
+| Consumer | Reads (table rows) | Reads (section counts) | Must NOT touch |
+|---|---|---|---|
+| **β** (corpus migration, lands before γ/δ₁) | §10.1's examples/**+other-.ri BREAKS rows (12 sites: 6 `tots`/`printer` + 6 `large_assembly`) · §10.2's `bearing_auto_seal.ri` row · §10.3's `bearing_auto_seal.ri` row (same fix, dual benefit) | §3.1's correct-twin hint (`examples/large_assembly.ri:51-53`) · §3.3's reach-vs-gate note (large_assembly has no cargo gate — verify via GUI harness/`reify check`, not `cargo test`) | §10.3/§2.3's 23 EXCLUDED-BY-DESIGN `unit` sites (β must not "fix" required conversion factors) · §10.1/§10.2's EXCLUDED file-local-shadow/parse-only rows (not real sites) |
+| **γ** (predicate promotion) | §10.1 + §10.2 in full (its own blast radius) · §10.5 (gate 6, 0 sites — safe to land without also touching fn-call sites) | §6 in full (the `is_numeric_placeholder_leaf` fence is a **landing prerequisite**, not optional — §6.2's live demonstration) · §7 (fn-call reachability is mechanical, re-check §7.2's census before citing "0" at a later HEAD) · examples_smoke's own panic prose (reuse item: "γ — not α — rewrites its panic prose") | §10.3 (gates 3+4 — a different, δ₁-owned mechanism γ never touches) · §10.4 (gate 5 — δ₂-owned) · §10.6's quantity-slot residual (out of scope by design, §12) |
+| **δ₁** (param/let default tolerance removal, gates 3+4) | §10.3 in full: c1 (15, migrates own test suite), c2 (10, inverts own pins), c0 (28, optional), unclassified (2, must resolve before landing) | §2.2.4's full per-site c1/c0 detail (this table's rollup rows point back to it) · §2.2.5's `param`/`let` split ruling | §10.3's 23 EXCLUDED-BY-DESIGN `unit` sites (explicit warning, §2.3: "δ₁ 'fixing' them would silently break the unit system") |
+| **δ₂** (constraint-def numeric leniency removal, gate 5) | §10.4 in full (5 rows: 3 primitive pins + `constraint_def_compile_tests.rs` pin + `forall_statement_lower_tests.rs` BREAKS site) | §5.5 (ScalarParam admission into `is_numeric` is a δ₂ **prerequisite**, unresolved here — a future dimension-generic constraint arg needs its own fence) · §5.6 (Rule 2 precedes Rule 4 — check before attributing a silence to Rule 4) | §10.1-§10.3 (gates 1/2/3+4/6 — different mechanisms, different files) |
+| **§6.4 quantity-slot follow-up** (5627 candidate-2 / `reify-core/src/ty.rs`) | §10.6's quantity-slot rollup row only | §8 in full (118 sites, 9+4+3+21 files, the worked `kinematic.ri`/`dynamics.ri` contrast in §8.1) | Everything else — this residual is explicitly not a migration list for β/γ/δ₁/δ₂ (§8, §12) |
+
+### 10.9 Citation contract
+
+Every count any later leaf (β, γ, δ₁, δ₂, the §6.4 follow-up, or any future task in this program)
+asserts about the dimensioned-construction corpus must cite **this ledger, at the HEAD SHA under
+which the citing count was (re-)confirmed** — never PRD §6's scoping-phase figures directly, and
+never this task's own decompose-time plan `analysis`/`design_decisions` text, on faith.
+
+This is a **correction** of the plan's own framing, not a restatement of it. The plan's
+decompose-time `analysis` asserted that PRD §6.2's "51 named dimensions" was "already stale
+against HEAD's 49" (repeated in this task's `design_decisions` block). §0.1 above re-derived the
+figure three independent ways and found the **opposite**: **51 is CONFIRMED accurate at HEAD**,
+and the plan's own "49" was **not reproducible** — traced to a regex bug (a
+whitespace-sensitive `\(DimensionVector::` pattern silently drops the two entries whose tuples
+rustfmt wraps across 4 lines) this session caught reproducing live, plus a legitimate but
+*different* fact ("49 distinct `DimensionVector` values" vs "51 spellable names") that most likely
+is the actual source of the plan's figure. Reported non-blocking, `esc-5756-1`, before §0 was
+written.
+
+The lesson is therefore **not** "prefer 49 over 51," nor "PRD prose is always stale" — in this
+instance the PRD prose was right and this task's own plan text was wrong. The lesson is the one
+the plan states correctly elsewhere ("re-CONFIRM against HEAD rather than re-derive from PRD
+figures"): **anchors are point-in-time (this ledger's own header caveat), and every figure must be
+re-verified at whatever HEAD it is being cited from, regardless of which prior document — PRD or
+this task's own plan — it happens to agree or disagree with.** Cite this ledger's §0.1 for the
+dimension-name-set ruling (51 names, 65 with the alias union) and §§1-9/§10 for every downstream
+migration count; do not cite PRD §6 prose or this task's plan `analysis` block as ground truth for
+either without independently re-confirming it first.
 
 ## §11 Methodology closure + no-source-change proof (step-11)
 
