@@ -17,7 +17,8 @@
 // - Module name std.surface_finish is top-level (parallel to std.tolerancing /
 //   std.process / std.stackup), not std.materials.surface_finish.
 // - ArealCostRate alias required: binary dim-op only valid on type-alias RHS
-//   (units.ri esc-4026-121:80-91 precedent; mirrors Velocity/VolumetricFlowRate).
+//   (units.ri "Helper type aliases" note, esc-4026-121 precedent; mirrors
+//   Velocity/VolumetricFlowRate).
 // - Use ASCII `um` (not µm micro-sign — U+00B5) for the 0um default literal.
 //
 // Reference: docs/prds/v0_6/surface-finish-functional.md §4.1 (task α).
