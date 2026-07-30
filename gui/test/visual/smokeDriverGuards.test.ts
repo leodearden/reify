@@ -31,7 +31,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { openFileWithRetry } from "./smokeDriverGuards.mjs";
+import { describeRpcFailure, openFileWithRetry } from "./smokeDriverGuards.mjs";
+import { isInBandError } from "./rpcEnvelope.mjs";
 
 const FIXTURE = "/repo/gui/test/fixtures/find_uses_smoke.ri";
 
@@ -183,6 +184,77 @@ describe("openFileWithRetry — the retry policy smoke_find_uses.mjs was missing
     await expect(
       openFileWithRetry(rpc, FIXTURE, { attempts: 1, sleepImpl, log: quiet }),
     ).rejects.toThrow(TIMED_OUT);
+  });
+});
+
+describe("describeRpcFailure — the diagnosis smoke_multi_pane_e2e.mjs was missing", () => {
+  // GAP 2. `if (!storeState) fail('store_state returned null')` passes an
+  // in-band `{error: "<msg>"}` straight through — the payload is truthy — and
+  // the driver then reads `.viewports` as undefined, reports "got 0 viewports",
+  // and never prints the RPC error at all. A tool OUTAGE dressed up as a
+  // frontend assertion failure. Returning a diagnosis STRING (rather than a
+  // boolean) is what forces the underlying text to reach the operator.
+
+  it("returns null for a healthy payload, so the caller proceeds to its own checks", () => {
+    expect(describeRpcFailure({ viewports: { "pane-1": { meshCount: 2 } } }, "store_state")).toBeNull();
+  });
+
+  it("returns null for an EMPTY object — an empty result is not an RPC failure", () => {
+    // Load-bearing, and the reason this returns null rather than "looks wrong":
+    // gap 2's genuine "no viewports registered" case must stay a viewport-count
+    // failure with its own accurate message. Swallowing it here would trade one
+    // misdiagnosis for another.
+    expect(describeRpcFailure({}, "store_state")).toBeNull();
+  });
+
+  it("names the label when the payload is null or undefined", () => {
+    // `rpc()` resolves to null when there was no text block to interpret.
+    for (const empty of [null, undefined]) {
+      const diagnosis = describeRpcFailure(empty, "store_state");
+      expect(diagnosis).toContain("store_state");
+      expect(diagnosis).toContain("null");
+    }
+  });
+
+  it("surfaces a §2a in-band error VERBATIM, alongside the label", () => {
+    // The core of gap 2: this text is the only thing that says what actually
+    // went wrong, and today it is discarded entirely.
+    const diagnosis = describeRpcFailure({ error: "no active session" }, "store_state");
+    expect(diagnosis).toContain("store_state");
+    expect(diagnosis).toContain("no active session");
+  });
+
+  it("surfaces the folded §2b dialect the same way", () => {
+    // normalizeRpcEnvelope folds a Rust `isError: true` + `Error: <msg>` block
+    // into the §2a shape precisely so ONE check covers both dialects.
+    const diagnosis = describeRpcFailure({ error: "Error: engine thread died" }, "mesh_stats");
+    expect(diagnosis).toContain("mesh_stats");
+    expect(diagnosis).toContain("Error: engine thread died");
+  });
+
+  it("diagnoses a non-object payload instead of throwing on it", () => {
+    // `rpc()` hands back the RAW TEXT when a content block is not JSON, so a
+    // guard that assumes an object is one live run away from a TypeError — the
+    // failure mode that used to kill these drivers at exit 2 instead of
+    // reporting a clean exit-1 verdict.
+    for (const payload of ["Error: engine thread died", 42, ["pane-1"], true]) {
+      let diagnosis: string | null = null;
+      expect(() => {
+        diagnosis = describeRpcFailure(payload, "store_state");
+      }).not.toThrow();
+      expect(diagnosis).toContain("store_state");
+      expect(diagnosis).toContain(JSON.stringify(payload));
+    }
+  });
+
+  it("agrees with isInBandError on a NON-STRING error field", () => {
+    // Delegation pin. The sibling guards test `'error' in X`, which fires on any
+    // `error` key; debug-mcp-contract.md §2a specifies a STRING `error`, and
+    // 5731 made isInBandError the single home of that discriminator. Asserting
+    // both sides here means a future edit cannot give the contract a second,
+    // subtly-different definition without this failing.
+    expect(isInBandError({ error: 500 })).toBe(false);
+    expect(describeRpcFailure({ error: 500 }, "store_state")).toBeNull();
   });
 });
 
