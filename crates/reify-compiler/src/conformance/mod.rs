@@ -1512,8 +1512,10 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         // Accepts, each for a stated reason:
         //   • `Type::Matrix` / `Type::Tensor` — the nominal families themselves.
         //     Rule 3 (`type_compat.rs:163-179`) already makes
-        //     `Tensor<2,N,Q> → Matrix<N,N,Q>` legal, and the quantity slot is
-        //     loose per the ty.rs convention.
+        //     `Tensor<2,N,Q> → Matrix<N,N,Q>` legal. Since task 5766 the FAMILY
+        //     accept is followed by a QUANTITY-SLOT check (below), so the slot is
+        //     loose only while at least one side declines to name a concrete
+        //     dimension.
         //   • `Type::Vector` — Rules 1a/1b (`type_compat.rs:83-108`) make
         //     `Vector<N,Q>` and `Tensor<1,N,Q>` interconvertible.
         //   • `Type::List` — the idiomatic nested-list-literal spelling of a
@@ -1540,9 +1542,28 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         // that is decidable from the type alone; arity/PSD validation for
         // `MassProperties.inertia` is the ctor-time inertia hook's job (see
         // `examples/dynamics/pendulum_idyn.ri:24-26`), not this walker's.
-        (Type::Matrix { .. } | Type::Tensor { .. }, arg_ty)
-            if !arg_type_is_unverifiable(arg_ty) =>
-        {
+        //
+        // That asymmetry is UNCHANGED by task 5766 and ORTHOGONAL to it: ARITY is
+        // undecidable here because the idiomatic `Type::List` spelling drops the
+        // element counts, whereas the QUANTITY slot is decidable whenever the arg
+        // happens to arrive in one of the three nominal families. The same
+        // `Type::List` accept is also why strict `DimensionVector` equality is
+        // unavailable for this family and the rule must stay dimensionless-
+        // tolerant: `MassProperties.inertia` is spelled `List<List<Real>>` at all
+        // 12 corpus sites, so a strict rule would compare a declared
+        // `MomentOfInertia` against a hole. See [`quantity_slot_dimension`], and
+        // `crates/reify-core/src/ty.rs` for the normative statement.
+        (
+            Type::Matrix {
+                quantity: param_quantity,
+                ..
+            }
+            | Type::Tensor {
+                quantity: param_quantity,
+                ..
+            },
+            arg_ty,
+        ) if !arg_type_is_unverifiable(arg_ty) => {
             let is_conforming = match arg_ty {
                 Type::Matrix { .. } | Type::Tensor { .. } | Type::Vector { .. } => true,
                 Type::List(_) => list_bottoms_out_numeric(arg_ty),
@@ -1550,6 +1571,27 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
             };
             if !is_conforming {
                 emit_arg_type_mismatch(param_type, arg_ty, ctx);
+            } else if let Some(arg_quantity) = match arg_ty {
+                // QUANTITY SLOT (task 5766), checked only AFTER the family check
+                // above has passed. ONLY the three nominally-shaped arg families
+                // carry a comparable slot; the `Type::List` and
+                // `is_numeric_placeholder_leaf` branches deliberately yield
+                // `None` here and are left EXACTLY as they were:
+                //
+                //   * `Type::List` — a nested list literal carries no quantity in
+                //     its type at all, which is precisely why strict equality is
+                //     unavailable for this family (`MassProperties.inertia` is
+                //     spelled `List<List<Real>>` at all 12 corpus sites).
+                //   * a placeholder scalar — the `is_numeric_placeholder_leaf`
+                //     unknown-ness fence, which this rule must not erode.
+                Type::Matrix { quantity, .. }
+                | Type::Tensor { quantity, .. }
+                | Type::Vector { quantity, .. } => Some(quantity),
+                _ => None,
+            } {
+                if quantity_slots_conflict(param_quantity, arg_quantity) {
+                    emit_arg_type_mismatch(param_type, arg_ty, ctx);
+                }
             }
         }
         // Leaf: param type is a Selector or AnySelector (task-4598).
