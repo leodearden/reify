@@ -926,6 +926,55 @@ _wait_for_reader_lock() {
     _wait_for_marker "$1" "$2"
 }
 
+# _spawn_pinning_reader <lock_file> <ready_marker> <clone_done_marker> <src> <dst> [hold_s]
+# Backgrounds a reader that: takes flock -s on <lock_file>, signals
+# <ready_marker>, runs `cp -a --reflink=auto <src> <dst>`, signals
+# <clone_done_marker> — then DELIBERATELY keeps holding flock -s (sleep
+# hold_s, default 120) until the caller kills it.
+#
+# --reflink=auto (not =always): this helper is shared between the
+# always-run Block BH (plain /tmp, no reflink support required or expected)
+# and the substrate-gated B11 fixture (a confirmed reflink-capable mount).
+# =auto opportunistically takes the CoW path whenever the underlying FS
+# supports it — identical behavior to =always in B11's already-gated case —
+# and falls back to a normal copy elsewhere instead of hard-failing, which
+# is what makes Block BH genuinely FS-agnostic.
+#
+# The shared lock models the D8 dir-entry refcount ("this gen must stay
+# live"): its lifetime is the CONSUMER's, not the copy's. Signalling
+# copy-completion via a separate marker (rather than releasing the lock
+# there) is what lets a caller wait for "clone finished" and "lock
+# released" as two independent, causally-ordered events instead of
+# conflating them — the conflation is exactly today's B11 bug (task #5866).
+#
+# The caller is responsible for teardown: `kill "$_PINNING_READER_PID"
+# 2>/dev/null || true; wait "$_PINNING_READER_PID" 2>/dev/null || true` —
+# the same pattern as Block RH / SGSWAP3 / SGSWAP4 / Block GC.
+#
+# Sets in the caller's scope: _PINNING_READER_PID — the background PID.
+# (A `pid=$(...)` capture is impossible here: command substitution would
+# run the reader in a subshell that exits immediately, dropping the flock.)
+#
+# fd 205: 9, 200 and 201 are already in use elsewhere in this file.
+# Task: #5866
+_spawn_pinning_reader() {
+    local lock_file="$1"
+    local ready_marker="$2"
+    local clone_done_marker="$3"
+    local src="$4"
+    local dst="$5"
+    local hold_s="${6:-120}"
+    touch "$lock_file" 2>/dev/null || true
+    (
+        flock -s 205
+        touch "$ready_marker"
+        cp -a --reflink=auto "$src" "$dst"
+        touch "$clone_done_marker"
+        sleep "$hold_s"
+    ) 205>"$lock_file" &
+    _PINNING_READER_PID=$!
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block A — Script-presence / CLI-stability preconditions (ALWAYS-RUN)
 # Each of the 4 warm-lane scripts must exist as an executable, and --help must
