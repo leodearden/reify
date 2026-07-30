@@ -1255,6 +1255,48 @@ assert "RH-NEG: _wait_for_reader_lock returns non-zero when marker never appears
     test "$_RH_NEG_RC" -ne 0
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Block BH — pinning-reader hold contract (ALWAYS-RUN)
+#
+# Unit-tests the generic marker-poll seam extracted from _wait_for_reader_lock
+# (task #4847) into _wait_for_marker <marker> <deadline-seconds>, and (from
+# step-3 onward) the _spawn_pinning_reader helper that models a consumer
+# holding a shared flock -s across an operation rather than releasing it the
+# instant the operation completes — the seam B11's fixture was missing
+# (task #5866).
+#
+# _wait_for_marker contract:
+#   (BH-POS) positive case: marker file already exists before the call;
+#     assert the helper returns 0 promptly (no unnecessary wait).
+#   (BH-NEG) anti-hang case: call with a never-created marker and a 1s
+#     deadline; assert non-zero return (times out, does not hang forever) —
+#     mirrors RH-NEG.
+#
+# RED until step-2: _wait_for_marker is undefined → command not found under
+# set -euo pipefail → non-zero exit.
+# Task: #5866
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block BH: pinning-reader hold contract ---"
+
+_BH_PARENT="$(mktemp -d /tmp/test-warm-pool-BH-XXXXXX)"
+_TMPDIRS+=("$_BH_PARENT")
+_BH_EXISTING_MARKER="$_BH_PARENT/bh-existing-marker"
+_BH_NONEXISTENT_MARKER="$_BH_PARENT/bh-never-created"
+touch "$_BH_EXISTING_MARKER"
+
+# ── BH-POS: positive — helper returns 0 promptly when marker already exists ──
+_wait_for_marker "$_BH_EXISTING_MARKER" 30
+_BH_POS_RC=$?
+assert "BH-POS: _wait_for_marker returns 0 promptly when marker file already exists" \
+    test "$_BH_POS_RC" -eq 0
+
+# ── BH-NEG: anti-hang — helper returns non-zero when marker never appears ──
+_BH_NEG_RC=0
+_wait_for_marker "$_BH_NONEXISTENT_MARKER" 1 || _BH_NEG_RC=$?
+assert "BH-NEG: _wait_for_marker returns non-zero when marker never appears (anti-hang)" \
+    test "$_BH_NEG_RC" -ne 0
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Block PS-NORM — Pass-set normalizer timing-strip regression (ALWAYS-RUN)
 #
 # Exercises run_passset()'s nextest-branch normalization WITHOUT invoking cargo.
