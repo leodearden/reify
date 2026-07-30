@@ -19,7 +19,8 @@
 # backing-task-status (terminal|non-terminal|unknown) · recoverable
 # (LANDED|PUSHED|ORPHAN) · dirty (clean|residue-only|wip) · divergent_gib ·
 # age_min · classification (LIVE|PINNED|QUARANTINED|RECLAIMABLE|LEAKED|
-# PRESERVED-OK, ranked in that order) · plan_sync (OK|STRANDED|UNKNOWN|`-`).
+# PRESERVED-OK, ranked in that order) ·
+# plan_sync (OK|REWRITTEN|STRANDED|UNKNOWN|`-`).
 #
 # `live`, `assigned` and `pin` answer THREE independent questions, and are
 # three columns for that reason: is a consumer PROCESS holding this lane's
@@ -145,16 +146,21 @@
 #        warns ONCE for the directory instead of once per lane, so the per-lane
 #        naming keeps meaning "this lane, unlike its neighbours".
 #   A6 — the plan-record read is fail-safe and read-only. A missing,
-#        unreadable or corrupt <lane>/.task/plan.json, or an anchor commit
-#        absent from the object DB, all degrade that lane to
-#        `plan_sync=UNKNOWN`; it never aborts, never creates the `.task/` dir
-#        or the record (guaranteed by _plan_record, exactly as A1's guarantee
-#        is by _lane_record), and NEVER accuses a strand it cannot evidence --
-#        an absent anchor object is UNKNOWN, never STRANDED (see
-#        _read_plan_sync's resolution order for why that ordering is the whole
-#        invariant). "Nothing recorded yet" stays the distinct `-` sentinel, so
-#        a fresh lane's all-pending plan never inflates the unknown count and
-#        buries the records that genuinely could not be read.
+#        unreadable or corrupt <lane>/.task/plan.json, an anchor commit absent
+#        from the object DB, or an anchor whose patch equivalence cannot be
+#        decided, all degrade that lane to `plan_sync=UNKNOWN`; it never
+#        aborts, never creates the `.task/` dir or the record (guaranteed by
+#        _plan_record, exactly as A1's guarantee is by _lane_record), and
+#        NEVER accuses a strand it cannot evidence -- an absent anchor object
+#        is UNKNOWN, never STRANDED (see _read_plan_sync's resolution order for
+#        why that ordering is the whole invariant). "Nothing recorded yet"
+#        stays the distinct `-` sentinel, so a fresh lane's all-pending plan
+#        never inflates the unknown count and buries the records that genuinely
+#        could not be read. A non-ancestor anchor whose PATCH is still in
+#        HEAD's history is REWRITTEN, never STRANDED: the workflow rebases
+#        routinely, so accusing every rewritten sha would bury the real signal
+#        under the pool's own steady state (esc-5876-1 measured 36 of 67
+#        plan-carrying lanes non-ancestor and none of them missing work).
 #        This script never REPAIRS a strand it finds: recovery requires knowing
 #        which dangling commits belong to which task, and a wrong reflog-based
 #        repoint destroys the evidence a root-cause depends on. Ref repair
@@ -193,12 +199,18 @@ Usage: $(basename "$0") [--mount DIR] [--format table|json] [--status-cmd CMD]
               running): the RAW backing status of the task holding it, e.g.
               pending / infra-hold / in-progress / done. \`unknown\` when it
               cannot be resolved; \`-\` when the lane is not pinned.
-    plan_sync OK|STRANDED|UNKNOWN|\`-\` — does the lane's ref still hold the
-              work its plan says it committed? Tests HEAD against the ANCHOR
-              in <lane>/.task/plan.json (the plan-order-last done entry
-              carrying a commit). STRANDED means the anchor commit EXISTS but
-              nothing reaches it — a clobbered tip. \`-\` means nothing was
-              recorded yet; UNKNOWN means it could not be evaluated.
+    plan_sync OK|REWRITTEN|STRANDED|UNKNOWN|\`-\` — does the lane's ref still
+              hold the work its plan says it committed? Tests HEAD against the
+              ANCHOR in <lane>/.task/plan.json (the plan-order-last done entry
+              carrying a commit). OK: the anchor is an ancestor of HEAD.
+              REWRITTEN: it is not, but an equivalent PATCH is in HEAD's
+              history — a routine rebase, benign, and the expected steady
+              state. STRANDED: it is not, and no equivalent patch exists
+              anywhere in HEAD — the work is genuinely off the branch.
+              \`-\` means nothing was recorded yet; UNKNOWN means it could not
+              be evaluated. A non-ancestor anchor ALONE is not evidence of
+              lost work; only STRANDED is, and even then it is an
+              investigate-then-escalate signal, never an auto-repair trigger.
 
   Classification, ranked: LIVE > PINNED > QUARANTINED >
   RECLAIMABLE|LEAKED|PRESERVED-OK -- the HEADROOM partition's order exactly.
@@ -797,7 +809,7 @@ _plan_anchor() {
 # and publishes it in three globals -- the same shape, and for the same reason,
 # as _read_lane_assignment above:
 #
-#   PLAN_SYNC_STATE     OK | STRANDED | UNKNOWN | -
+#   PLAN_SYNC_STATE     OK | REWRITTEN | STRANDED | UNKNOWN | -
 #   PLAN_SYNC_CAUSE     why the state is UNKNOWN; EMPTY when it is not
 #   PLAN_ANCHOR_ID      the anchor entry's id  ('' when there is no anchor)
 #   PLAN_ANCHOR_COMMIT  the anchor entry's commit ('' when there is no anchor)
@@ -818,10 +830,23 @@ _plan_anchor() {
 #   3. parsed, no done entry with
 #      a commit                    -> `-`       (nothing recorded yet)
 #   4. anchor object ABSENT        -> UNKNOWN   (anchor-object-absent:<sha>)
-#   5. anchor present, ancestor    -> OK
-#   6. anchor present, not ancestor-> STRANDED  (the clobber)
+#   5. anchor IS an ancestor       -> OK
+#   6. not an ancestor, but an
+#      equivalent PATCH is in HEAD -> REWRITTEN (a routine rebase; benign, and
+#                                                the expected steady state)
+#   7. not an ancestor, NO
+#      equivalent patch in HEAD    -> STRANDED  (the clobber)
+#   8. equivalence undecidable     -> UNKNOWN   (equivalence-undecidable:<sha>)
 #
-# Step 4 MUST precede steps 5/6 and is why the explicit `cat-file -e` exists:
+# Steps 6/7 are the esc-5876-1 narrowing, and they are the difference between a
+# usable detector and an alarm nobody reads. Ancestry alone flagged 36 of 67
+# plan-carrying lanes on the live pool, none of which had lost anything: the
+# workflow rebases routinely, and a rebase rewrites every recorded sha while
+# preserving every patch. Patch-id equivalence -- NOT subject-line
+# reappearance, which a `--amend` or a same-message commit forges trivially --
+# is what separates the rewrite from the loss.
+#
+# Step 4 MUST precede steps 5-7 and is why the explicit `cat-file -e` exists:
 # `git merge-base --is-ancestor` exits 128 for an absent object and 1 for a
 # genuine non-ancestor, so a bare non-zero test conflates "this commit is not
 # in this repo" with "the ref was clobbered". Since the entire purpose of the
@@ -886,9 +911,62 @@ _read_plan_sync() {
 
     if git -C "$dir" merge-base --is-ancestor "$PLAN_ANCHOR_COMMIT" HEAD 2>/dev/null; then
         PLAN_SYNC_STATE='OK'
-    else
-        PLAN_SYNC_STATE='STRANDED'
+        return 0
     fi
+
+    # ── Not an ancestor. That is NOT, by itself, evidence of lost work.
+    # The lane workflow REBASES routinely (requeue, base refresh), and a rebase
+    # rewrites every recorded sha while preserving every patch -- so a
+    # non-ancestor anchor is the STEADY STATE of a healthy pool, not a
+    # signature. Measured on the live pool at the time this was written: 36 of
+    # 67 plan-carrying lanes were non-ancestor and ZERO had lost work.
+    #
+    # Discriminate on PATCH-ID equivalence, which is exactly what `git cherry`
+    # computes. `git cherry <upstream> <head> <limit>` reports each commit in
+    # <limit>..<head> prefixed `-` when an equivalent patch is already in
+    # <upstream> and `+` when it is not; with <limit> = <anchor>^ the range is
+    # the anchor alone, and <upstream> = HEAD asks the one question that matters
+    # -- is this patch still on the branch under ANY sha?
+    local cherry cherry_first cherry_mark cherry_sha
+    cherry="$(git -C "$dir" cherry HEAD "$PLAN_ANCHOR_COMMIT" "${PLAN_ANCHOR_COMMIT}^" 2>/dev/null || true)"
+    cherry_first="${cherry%%$'\n'*}"
+    cherry_mark="${cherry_first%% *}"
+    cherry_sha="${cherry_first#* }"
+
+    # THE OUTPUT MUST NAME THE ANCHOR ITSELF, on exactly one line. Two measured
+    # traps make a "leading character" test alone unsafe, and both are answered
+    # here rather than by trusting the exit code:
+    #   (a) ROOT-COMMIT anchor -- `<anchor>^` does not resolve, so git exits 128
+    #       printing nothing (and, when HEAD *is* the anchor's own repo root,
+    #       exits 0 printing nothing instead). Either way: no verdict.
+    #   (b) MERGE-COMMIT anchor -- `git cherry` SKIPS merges but does not fall
+    #       silent: it reports the second-parent side instead. With a
+    #       single-commit side branch that is ONE line with a literal leading
+    #       `+` naming the SIDE commit, which a leading-character rule would
+    #       read as a clobber that never happened.
+    # The recorded sha is a PREFIX of the printed one (plans carry 10-char
+    # abbreviations as well as full 40-char shas), so the identity test is a
+    # prefix match -- and never a `rev-parse`, which A6 keeps off this path.
+    if [ "$cherry_first" != "$cherry" ] \
+        || [ "$cherry_sha" = "$cherry_first" ] \
+        || case "$cherry_sha" in "$PLAN_ANCHOR_COMMIT"*) false ;; *) true ;; esac; then
+        PLAN_SYNC_STATE='UNKNOWN'
+        PLAN_SYNC_CAUSE="equivalence-undecidable:${PLAN_ANCHOR_COMMIT}"
+        return 0
+    fi
+
+    case "$cherry_mark" in
+        # An equivalent patch IS in HEAD's history: the recorded sha was
+        # rewritten by a rebase. Benign, and the expected steady state.
+        '-') PLAN_SYNC_STATE='REWRITTEN' ;;
+        # No equivalent patch anywhere in HEAD's history: the work the plan
+        # records is genuinely absent from the branch. THE clobber (esc-5866-8).
+        '+') PLAN_SYNC_STATE='STRANDED' ;;
+        # Any other shape is a `git cherry` this code does not understand.
+        # A6: never accuse what cannot be evidenced.
+        *)   PLAN_SYNC_STATE='UNKNOWN'
+             PLAN_SYNC_CAUSE="equivalence-undecidable:${PLAN_ANCHOR_COMMIT}" ;;
+    esac
     return 0
 }
 
