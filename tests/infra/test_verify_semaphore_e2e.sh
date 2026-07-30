@@ -208,6 +208,44 @@ _wait_for_marker() {
     return 1
 }
 
+# _clear_psi_fixture_on_marker <watch_file> <marker> <deadline_s> <fixture_path> <quiet_avg10>
+# Causal replacement for a fixed `sleep N` PSI-fixture updater (task 5839).
+# Blocks until the gate under test PROVES it observed pressure — i.e. until
+# <marker> lands in <watch_file> — and only then clears <fixture_path> to
+# <quiet_avg10>.  A wall-clock delay cannot express this: the gate's startup
+# latency (bash + verify.sh's preamble, which sources lib.sh, cpu-admit.sh and
+# lib_clock_stop.sh) is unbounded under load, and cpu-admit.sh admits on its
+# FIRST poll when avg10 is already below threshold — taking the uncontended
+# fast path with _ca_waited=0, so clock_enter_wait/clock_maybe_heartbeat are
+# never reached and clock_exit_wait emits no START.  Measured at base
+# HEAD=c89bac9267: rc=0 with ZERO clock markers and empty stderr.
+# Returns 0 once rewritten; 1 with the fixture UNCHANGED if the deadline
+# elapses, so a gate that never entered the wait fails LOUDLY downstream
+# (its own `timeout` bound fires → rc 124) instead of being handed a spurious
+# admit that would leave only the marker asserts red — the very signature 5839
+# exists to remove.
+_clear_psi_fixture_on_marker() {
+    local _watch="$1" _marker="$2" _deadline_s="$3" _fixture="$4" _avg10="$5"
+    if ! _wait_for_marker "$_watch" "$_marker" "$_deadline_s"; then
+        # Deliberately does NOT echo "$_marker": the token would leak into the
+        # parent verify stream and be parsed as a real clock-stop event by
+        # dark_factory:1916 (esc-4789-63, the same hazard assert_marker
+        # documents).  Describe the marker, never print it.
+        echo "  [5839] _clear_psi_fixture_on_marker: gate never emitted the awaited clock marker within ${_deadline_s}s; fixture left stuck (downstream asserts will fail loudly)" >&2
+        return 1
+    fi
+    # Atomic swap: the gate re-opens <fixture_path> on every poll, so a
+    # truncate-then-write could be read mid-write.  An empty read would make
+    # cpu_admit's `[ -z "$_avg10" ]` branch admit, silently converting a
+    # partial write into a passing test.  Same-directory temp + mv is a
+    # rename, so every poll sees either the old or the new content.
+    local _tmp="${_fixture}.tmp.$$"
+    printf 'some avg10=%s avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+        "$_avg10" > "$_tmp"
+    mv -f "$_tmp" "$_fixture"
+    return 0
+}
+
 # assert_marker <label> <file> <token>
 # Checks that <file> contains the literal <token> string (fixed-string grep).
 # The token argument rides ONLY in the suppressed grep-command argument — it
