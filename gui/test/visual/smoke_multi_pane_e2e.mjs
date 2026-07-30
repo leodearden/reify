@@ -39,7 +39,7 @@
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeDebugRpc } from './rpcEnvelope.mjs';
-import { describeRpcFailure } from './smokeDriverGuards.mjs';
+import { describeRpcFailure, openFileWithRetry } from './smokeDriverGuards.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -111,21 +111,12 @@ async function main() {
   console.log('  OK: server ready');
 
   // ── Boot: open multi_pane_viewport.ri (with retry for WebView init) ─────────
-  // The debug MCP server comes up before the WebKit WebView finishes loading.
-  // Retry open_file up to 8 times (≤45s) to give the WebView time to complete
-  // its startup sequence. Mirrors the approach in smoke_diagnostics_e2e.mjs.
+  // The retry budget, the `.ok` verdict and the failure wording live in
+  // ./smokeDriverGuards.mjs, where vitest can cover them; this file needs a live
+  // GUI, so nothing inline here ever could be. `fail` is passed (not `log`) so an
+  // exhausted retry exits 1 naming the underlying RPC error.
   log('Opening examples/multi_pane_viewport.ri via open_file (with retry for WebView init)…');
-  let openResult = null;
-  for (let attempt = 1; attempt <= 8; attempt++) {
-    openResult = await rpc('open_file', { path: FIXTURE });
-    console.log(`  open_file attempt ${attempt} result:`, JSON.stringify(openResult));
-    if (openResult && openResult.ok) break;
-    if (attempt < 8) {
-      console.log(`  Retrying in 3s (WebView still initialising)…`);
-      await sleep(3000);
-    }
-  }
-  if (!openResult || !openResult.ok) fail(`open_file failed after retries: ${JSON.stringify(openResult)}`);
+  await openFileWithRetry(rpc, FIXTURE, { fail });
 
   log('Waiting for engine idle…');
   const idleResult = await rpc('wait_for_idle', { timeout_ms: 15000 });
@@ -133,10 +124,9 @@ async function main() {
 
   // Row 1/boot: activeFile must contain 'multi_pane_viewport'
   const storeAfterOpen = await rpc('store_state');
-  // Same gap class as the Scenario 1 site below, four lines apart: the optional
-  // chain below reads straight past an in-band `{error: '<msg>'}` and reports
-  // `activeFile: undefined` — a store_state OUTAGE misreported as the wrong file
-  // being open. Diagnose the RPC first so the real cause is what gets printed.
+  // Diagnose the RPC before the optional chain below reads past an in-band
+  // `{error: '<msg>'}` and reports `activeFile: undefined` — see
+  // ./smokeDriverGuards.mjs for why a truthy error payload defeats a `!x` guard.
   const storeAfterOpenFailure = describeRpcFailure(storeAfterOpen, 'store_state (post-open)');
   if (storeAfterOpenFailure) fail(storeAfterOpenFailure);
   if (!storeAfterOpen?.editor?.activeFile?.includes('multi_pane_viewport')) {
@@ -150,12 +140,10 @@ async function main() {
 
   log('Scenario 1: store_state viewport map (rows 1/2)…');
   const storeState = await rpc('store_state');
-  // `if (!storeState)` was not a guard: an in-band `{error: '<msg>'}` is TRUTHY,
-  // so it passed, `.viewports` read as undefined, and this scenario reported
-  // "got 0 viewports" while the actual RPC error text was never printed — a tool
-  // outage dressed up as a frontend assertion failure. describeRpcFailure names
-  // the underlying error instead, and returns null for a healthy (including
-  // empty) object so the count check below still owns the genuine empty-map case.
+  // `if (!storeState)` was not a guard here either: it passed a truthy in-band
+  // error through and this scenario reported "got 0 viewports" instead of the RPC
+  // error text. describeRpcFailure returns null for a healthy (including empty)
+  // object, so the count check below still owns the genuine empty-map case.
   const storeStateFailure = describeRpcFailure(storeState, 'store_state');
   if (storeStateFailure) fail(storeStateFailure);
 
@@ -211,6 +199,12 @@ async function main() {
     meshInfo: pane1State?.meshInfo?.map(m => m.entityPath),
   }));
 
+  // NOT AN OVERSIGHT that two idioms now coexist in this file: the five
+  // `'error' in X` guards (here, plus design-main, pre-orbit, post-orbit and
+  // orbit_camera) are 5731's enumerated set, and task 5827 owns only the two
+  // store_state sites above. Sweeping them onto describeRpcFailure would also
+  // narrow each to §2a's STRING `error` — a behaviour change belonging to its own
+  // task, filed as a follow-up.
   if (!pane1State || typeof pane1State !== 'object' || 'error' in pane1State) {
     fail(`viewport_state('pane-1') failed: ${JSON.stringify(pane1State)}`);
   }
