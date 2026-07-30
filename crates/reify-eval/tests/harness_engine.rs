@@ -10,6 +10,16 @@
 //! resolves unchanged. Explicit `#[path]` is required: this harness root is an
 //! integration-test crate root, where a bare `mod <file>;` would resolve to the
 //! sibling `tests/<file>.rs`, not the `harness_engine/` subdir.
+//!
+//! The shared `common/differential.rs` harness is included HERE, at the unit root,
+//! rather than inside the one submodule that consumes it — the same placement
+//! `harness_selective_demand.rs` uses. rustc compiles one copy per binary either
+//! way, so root placement keeps a second consumer from silently duplicating the
+//! include, and keeps the C2 external attribution readable as a single unit-level
+//! fact. Submodules reach it as `use crate::differential;`.
+#[path = "common/differential.rs"]
+mod differential;
+
 #[path = "harness_engine/edit_param_cell_commit_migration.rs"]
 mod edit_param_cell_commit_migration;
 #[path = "harness_engine/diagnostics_cache_replay_migration.rs"]
@@ -25,3 +35,7 @@ mod reset_per_build_state_classification;
 // growing that ratchet works against the C1 consolidation direction.
 #[path = "harness_engine/topology_diagnostic_denoise_e2e.rs"]
 mod topology_diagnostic_denoise_e2e;
+// Task #5045's flat-sort/Kahn-core delegation differential test lands here for
+// the same anti-re-accretion reason as #5196's above.
+#[path = "harness_engine/flat_sort_kahn_core_delegation.rs"]
+mod flat_sort_kahn_core_delegation;

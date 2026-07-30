@@ -81,8 +81,35 @@ use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode, RealizationNodeId
 
 use crate::cache::NodeId;
 use crate::deps::DependencyTrace;
-use crate::dirty::DebugOrd;
 use crate::graph::EvaluationGraph;
+
+/// Wrapper for [`NodeId`] that implements `Ord` on the Debug representation.
+///
+/// The crate's single source of total ordering over nodes. Every order-sensitive
+/// step of the scheduling core rides it — the Kahn worklist's `BTreeSet`
+/// ready-set (`pop_first`), Tarjan's outer iteration and successor enumeration,
+/// the inter-SCC order, and the diagnostic vector — so schedules and diagnostics
+/// are byte-identical across runs and trace-map insertion orders.
+///
+/// It lives HERE, next to the core that consumes it, rather than in
+/// [`crate::dirty`] where it was introduced (task 4357 δ): `dirty` calls INTO
+/// this module for its sort (`dirty::topological_sort` delegates to
+/// [`run_unified_pass_seeded`]), so keeping the tie-break here leaves exactly one
+/// dependency direction between the two modules instead of a cycle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DebugOrd(pub(crate) NodeId);
+
+impl PartialOrd for DebugOrd {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for DebugOrd {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        format!("{:?}", self.0).cmp(&format!("{:?}", other.0))
+    }
+}
 
 /// Output of [`run_unified_pass`] — a pure structural plan (no node execution).
 ///
@@ -853,7 +880,7 @@ mod tests {
     /// (Resolution→Value). `run_unified_pass` must produce a valid topological
     /// schedule covering EXACTLY the trace-map keys, with empty residue and zero
     /// diagnostics. The realization→realization edge pins that `realization_reads`
-    /// participates in in-degree (which `compute_levels` ignores).
+    /// participates in in-degree (which the retired reads-only level sort ignored).
     ///
     /// RED until step-8 implements `run_unified_pass`.
     #[test]
@@ -1124,8 +1151,8 @@ mod tests {
     }
 
     /// Task 4357 δ (step-11c): a cross-kind cycle of a DIFFERENT pair —
-    /// realization ↔ realization via `realization_reads` (the GeomRef::Sub edge
-    /// `compute_levels` ignores) — must emit one `E_EVAL_CYCLE`, proving the
+    /// realization ↔ realization via `realization_reads` (the GeomRef::Sub edge the
+    /// retired reads-only level sort ignored) — must emit one `E_EVAL_CYCLE`, proving the
     /// detector is kind-agnostic over every edge kind α's trace map encodes.
     #[test]
     fn unified_pass_realization_cycle_is_kind_agnostic() {
