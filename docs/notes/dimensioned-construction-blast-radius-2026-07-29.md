@@ -244,9 +244,35 @@ Reproduction:
 git ls-files -- 'examples/*.ri' 'crates/*.ri' 'crates/*.rs' \
                 'gui/src-tauri/*.rs' 'gui/test/*.ri' \
   | grep -v 'corpus_no_bare_scalar\.rs$' \
-  | grep -v '^crates/reify-syntax/tests/\|^crates/reify-ast/tests/' \
-  | sort -u
+  | grep -vE '^crates/reify-(syntax|ast)/tests/.*\.rs$' \
+  | sort -u | wc -l      # -> 2120 at HEAD 08c6c42be9
 ```
+
+**[post-review] The parse-only exclusion is `.rs`-scoped, and must be.** An
+earlier revision published `grep -v '^crates/reify-syntax/tests/\|^crates/reify-ast/tests/'`
+— an un-suffixed filter applied to the *whole* union, which additionally drops
+two `.ri` fixtures that tree B's 168 counts:
+`crates/reify-syntax/tests/fixtures/affine_map_spec_example.ri` and
+`crates/reify-syntax/tests/fixtures/sub_placement_spec_example.ri`. That
+command emits **2118** at the cited HEAD, not the tabulated 2120 — a published
+repro that missed its own stated output. The five tree lists actually used for
+the sweep do count them (258 + 168 + 1641 + 41 + 12 = 2120, and their `sort -u`
+union is 2120), and this section's own framing ("the two parse-only *dirs*"
+exclusion, mirroring `corpus_no_bare_scalar.rs:185-186`) always described a
+**Rust-file** exclusion. Measured both ways:
+
+```
+$ …| grep -v '^crates/reify-syntax/tests/\|^crates/reify-ast/tests/' | sort -u | wc -l
+2118        # published earlier — over-excludes 2 .ri fixtures
+$ …| grep -vE '^crates/reify-(syntax|ast)/tests/.*\.rs$' | sort -u | wc -l
+2120        # corrected — matches the table and the tree lists
+```
+
+**No §2 site is affected**, only the substrate count: the two recovered `.ri`
+files hold one dimensioned-looking declaration between them
+(`sub_placement_spec_example.ri:18` `param teeth : Count = 24`), and `Count`
+is not in §0.3's 65-name set. The table's **2120** stands; the command was
+wrong, not the figure.
 
 ## §1 Flipped-predicate run + transcript (step-1)
 
@@ -2324,7 +2350,7 @@ Re-run fresh this session, at HEAD `80f877d7cc` (post-step-10), base `main` = `b
 $ git diff main...HEAD --name-only
 docs/notes/dimensioned-construction-blast-radius-2026-07-29.md
 
-$ git diff --exit-code -- crates/ examples/ gui/ stdlib
+$ git diff --exit-code main...HEAD -- crates/ examples/ gui/
 $ echo $?
 0
 
@@ -2339,13 +2365,27 @@ $ git status --porcelain
    section is part of. No `-transcript.md` sibling was ever created (step-1's transcript stayed
    under the ~200-line inline threshold; the design decision permitted either outcome, and this is
    the one that happened, recorded here as fact rather than left implicit).
-2. **`git diff --exit-code -- crates/ examples/ gui/ stdlib` exits 0** — every local flip this task
-   applied (step-1's predicate flip, §5's Rule-4 `eprintln!` instrumentation, every probe file
+2. **`git diff --exit-code main...HEAD -- crates/ examples/ gui/` exits 0** — every local flip this
+   task applied (step-1's predicate flip, §5's Rule-4 `eprintln!` instrumentation, every probe file
    referenced in §§6-9) was reverted before that step's own commit, and no revert was ever
    incomplete going into the next step. This is not new evidence — §1.5, §5.7, §6.4, §7.4, and
    §9.5 each already proved their own step's revert at the time it happened; this is the
    **cumulative** proof, run once more now that all 11 steps are committed, that no revert
    regressed a later one and nothing was left dirty at the end.
+
+   **[post-review] Two defects in this check's earlier spelling, both fixed above.** (a) It read
+   `git diff --exit-code -- crates/ examples/ gui/ stdlib`. The `stdlib` pathspec matches **nothing**
+   — there is no top-level `stdlib/` in this repo (it lives at `crates/reify-compiler/stdlib/`, and
+   `git ls-files -- 'stdlib/*'` returns 0 files). `git diff` does not error on an unmatched
+   pathspec, so that component was **vacuous** while reading as if it independently covered stdlib;
+   the real coverage came incidentally from `crates/`. Dropped, since `crates/` already covers it.
+   (b) A bare `git diff --exit-code -- <paths>` compares the **working tree** to the index/HEAD, not
+   HEAD to `main` — it proves "nothing uncommitted is dirty", which is check 3's job, not "this
+   branch changed no source relative to `main`". A branch that had *committed* a source edit would
+   still have exited 0. Re-spelled in the `main...HEAD` **range** form, which is what makes checks 1
+   and 2 **mutually corroborating** — check 1 enumerates the changed paths and check 2 independently
+   asserts the source trees are byte-identical to `main` — rather than check 2 being a weaker
+   restatement of check 3. Before this fix the whole claim rested on check 1 alone, unflagged.
 3. **`git status --porcelain` is empty** — no untracked scratch file, probe, or build artifact
    leaked into the tracked working tree at any point. Every scratch artifact this task used
    (`/tmp/5756-scratch/**`, including the `/tmp/5756-scratch/probes/*.ri` files §§4/6/7/9 built)
@@ -2362,7 +2402,7 @@ edit to the same ledger file pending:
 $ git diff main...HEAD --name-only
 docs/notes/dimensioned-construction-blast-radius-2026-07-29.md
 
-$ git diff --exit-code -- crates/ examples/ gui/ stdlib; echo $?
+$ git diff --exit-code main...HEAD -- crates/ examples/ gui/; echo $?
 0
 
 $ git status --porcelain
@@ -2370,11 +2410,35 @@ $ git status --porcelain
 ```
 
 **Unchanged on all three checks.** The three review-fix commits are pure ledger edits: the
-`main...HEAD` name list is still the single `docs/notes/` path, `crates/ examples/ gui/ stdlib` is
+`main...HEAD` name list is still the single `docs/notes/` path, `crates/ examples/ gui/` is
 still byte-identical to `main`, and no scratch artifact leaked in. The corrections re-ran the
 category-C sweep from `/tmp/5756-scratch/cat_c_scan4.py` — outside the repository, like every
 other measurement this task made — and touched no source file to do it. **The invariant that α
 lands nothing in source holds across all 14 steps.**
+
+**11(B).2 Re-run after the amendment-pass commits.** Re-run at HEAD `19e38761ef`, base
+`main` = `bae556d6ad43`, using the corrected range-form check 2 (this subsection's own edit to the
+same ledger file is the one pending modification `git status` reports):
+
+```
+$ git diff main...HEAD --name-only
+docs/notes/dimensioned-construction-blast-radius-2026-07-29.md
+
+$ git diff --exit-code main...HEAD -- crates/ examples/ gui/; echo $?
+0
+
+$ git status --porcelain
+ M docs/notes/dimensioned-construction-blast-radius-2026-07-29.md
+```
+
+**Unchanged, and now proved by a check that could have failed.** The amendment commits are pure
+ledger edits, and check 2 in its range form asserts what the section always claimed: the
+`crates/`, `examples/` and `gui/` trees on `task/5756` are byte-identical to `main` across every
+commit on the branch, not merely undirty in the working tree. **The invariant that α lands nothing
+in source holds across all 14 steps plus the amendment pass.** No verification step was skipped to
+reach that statement: the ledger is a docs-only artifact under `docs/notes/`, so the merge gate's
+Rust/GUI blocks have nothing in this diff to compile — the applicable checks are exactly the three
+above, all re-run at this HEAD.
 
 **This is the auditable evidence for the task's hard invariant.** α measured the blast radius of
 promoting `general_leaf_param_family_is_validated`'s dimensioned-`Scalar` arm across all six
