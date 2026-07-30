@@ -2814,4 +2814,104 @@ assert "R18g: plan_mismatch is a THIRD cross-cut — the occupancy partition is 
     "$(_headroom_field "$OUT" quarantined)" \
     "$(_headroom_field "$OUT" free)"
 
+# ── R19-R21 — operator observability, and the A6 read-only proof ─────────────
+# A count is never the only trace of a finding (A3's leak_unknown and A5's
+# state_unknown warnings exist for exactly this), but WHICH findings warn is
+# itself the design decision here. STRANDED warns; REWRITTEN does NOT.
+# Warning on REWRITTEN would have meant 36 do-not-repair alarms per timer run
+# about lanes that lost nothing (measured, esc-5876-1) — burying the one real
+# finding under the pool's own steady state. R19c asserts that silence.
+run_helper --mount "$R11_MOUNT"
+
+assert "R19-0: exit 0 — a warning is never a gate" test "$RC" -eq 0
+assert "R19a: a STRANDED lane warns on stderr, naming the lane, the anchor entry id and the anchor commit" \
+    bash -c '
+        line="$(printf "%s\n" "$1" | grep "lane=_lane-c-stranded" | grep -i "strand")"
+        [ -n "$line" ] || exit 1
+        case "$line" in *step-1*) ;; *) exit 1 ;; esac
+        case "$line" in *"${2:0:10}"*) ;; *) exit 1 ;; esac
+        exit 0' _ "$ERR_OUT" "$R11_STR"
+assert "R19b: the STRANDED warning tells the operator NOT to auto-repair the ref" \
+    bash -c 'printf "%s\n" "$1" | grep "lane=_lane-c-stranded" | grep -qiE "do not (auto-)?repair|never repair"' _ "$ERR_OUT"
+assert "R19b2: the STRANDED warning points at the HEADROOM counter (A3/A5 shape)" \
+    bash -c 'printf "%s\n" "$1" | grep "lane=_lane-c-stranded" | grep -q "HEADROOM plan_stranded"' _ "$ERR_OUT"
+# THE regression guard for the escalated failure mode.
+assert "R19c: a REWRITTEN lane emits NO per-lane warning (counter-only — it is the expected steady state)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "lane=_lane-c-rewritten"' _ "$ERR_OUT"
+assert "R19d: an OK lane and a `-` lane emit no plan warning either" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "lane=_lane-c-(ok|none):.*plan"' _ "$ERR_OUT"
+
+assert "R20a: an UNPARSEABLE plan record warns, naming its cause verbatim" \
+    bash -c 'printf "%s\n" "$1" | grep "lane=_lane-c-unknown" | grep -q "unparseable-record"' _ "$ERR_OUT"
+assert "R20b: the UNKNOWN warning points at HEADROOM plan_unknown" \
+    bash -c 'printf "%s\n" "$1" | grep "lane=_lane-c-unknown" | grep -q "HEADROOM plan_unknown"' _ "$ERR_OUT"
+assert "R20c: the STRANDED and UNKNOWN warnings are textually distinguishable (triage is not sent to the wrong place)" \
+    bash -c '! printf "%s\n" "$1" | grep "lane=_lane-c-unknown" | grep -qi "strand"' _ "$ERR_OUT"
+
+# The two remaining UNKNOWN causes, each named verbatim so a mass spike
+# carrying one repeated shape stays a distinct signal.
+run_helper --mount "$R5_MOUNT"
+assert "R20d: an ABSENT anchor object warns with the anchor-object-absent:<sha> cause" \
+    bash -c 'printf "%s\n" "$1" | grep "lane=_lane-absent" | grep -q "anchor-object-absent:deadbeef0123"' _ "$ERR_OUT"
+run_helper --mount "$R30_MOUNT"
+assert "R20e: an UNDECIDABLE equivalence warns with the equivalence-undecidable:<sha> cause" \
+    bash -c 'printf "%s\n" "$1" | grep "lane=_lane-mergeanchor" | grep -q "equivalence-undecidable:${2:0:10}"' _ "$ERR_OUT" "$R33_MERGE"
+assert "R20f: an UNDECIDABLE equivalence is never dressed up as a strand accusation" \
+    bash -c '! printf "%s\n" "$1" | grep "lane=_lane-mergeanchor" | grep -qi "do not repair"' _ "$ERR_OUT"
+
+# ── R21 — A6's read-only half, proven by before/after baseline (the P-c
+# technique). The audit reads plan.json and asks git two questions about the
+# anchor; nothing on that path may create, touch or move anything. This is not
+# ceremony: the whole task constraint is that recovery evidence survives the
+# detector that finds it.
+R21_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-r21-XXXXXX)"
+_TMPDIRS+=("$R21_MOUNT")
+
+make_lane "$R21_MOUNT/_lane-ro-stranded" "task/9030"
+git -C "$R21_MOUNT/_lane-ro-stranded" checkout -q -b _r21-side
+_r_commit "$R21_MOUNT/_lane-ro-stranded" ro-anchor
+R21_ANCHOR="$(git -C "$R21_MOUNT/_lane-ro-stranded" rev-parse HEAD)"
+git -C "$R21_MOUNT/_lane-ro-stranded" checkout -q "task/9030"
+_r_commit "$R21_MOUNT/_lane-ro-stranded" ro-foreign-tip
+git -C "$R21_MOUNT/_lane-ro-stranded" branch -q -D _r21-side
+make_plan "$R21_MOUNT/_lane-ro-stranded" 9030 "step:step-1:done:${R21_ANCHOR:0:10}"
+
+# A lane with NO .task/ dir, and one whose plan.json is a DANGLING symlink:
+# the two shapes a careless `>`-open or mkdir would materialize.
+make_lane "$R21_MOUNT/_lane-ro-noplan" "task/9031"
+_r_commit "$R21_MOUNT/_lane-ro-noplan" ro-noplan-work
+make_lane "$R21_MOUNT/_lane-ro-dangling" "task/9032"
+_r_commit "$R21_MOUNT/_lane-ro-dangling" ro-dangling-work
+mkdir -p "$R21_MOUNT/_lane-ro-dangling/.task"
+ln -s "$R21_MOUNT/nonexistent-meta/_lane-ro-dangling/plan.json" \
+    "$R21_MOUNT/_lane-ro-dangling/.task/plan.json"
+
+R21_REFS_BEFORE="$(git -C "$R21_MOUNT/_lane-ro-stranded" show-ref)"
+R21_PLAN_BEFORE="$(cat "$R21_MOUNT/_lane-ro-stranded/.task/plan.json")"
+R21_PLAN_MTIME_BEFORE="$(stat -c '%Y %s' "$R21_MOUNT/_lane-ro-stranded/.task/plan.json")"
+R21_LINK_BEFORE="$(readlink "$R21_MOUNT/_lane-ro-dangling/.task/plan.json")"
+
+run_helper --mount "$R21_MOUNT"
+
+assert "R21-0: exit 0" test "$RC" -eq 0
+assert "R21-fix: the read-only fixture really did trip the detector (else this proves nothing)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-ro-stranded .*plan_sync=STRANDED( |\$)"' _ "$OUT"
+assert "R21a: no ref was created, moved or deleted by the audit" \
+    bash -c '[ "$(git -C "$1" show-ref)" = "$2" ]' _ \
+    "$R21_MOUNT/_lane-ro-stranded" "$R21_REFS_BEFORE"
+assert "R21b: the plan record's BYTES are unchanged" \
+    bash -c '[ "$(cat "$1")" = "$2" ]' _ \
+    "$R21_MOUNT/_lane-ro-stranded/.task/plan.json" "$R21_PLAN_BEFORE"
+assert "R21c: the plan record's mtime and size are unchanged (never opened for write, never touched)" \
+    bash -c '[ "$(stat -c "%Y %s" "$1")" = "$2" ]' _ \
+    "$R21_MOUNT/_lane-ro-stranded/.task/plan.json" "$R21_PLAN_MTIME_BEFORE"
+assert "R21d: a lane with NO .task/ dir still has none (the audit never created it)" \
+    bash -c '[ ! -e "$1/.task" ]' _ "$R21_MOUNT/_lane-ro-noplan"
+assert "R21e: a DANGLING plan symlink is neither replaced nor materialized" \
+    bash -c '
+        [ -L "$1" ] || exit 1
+        [ ! -e "$1" ] || exit 1
+        [ "$(readlink "$1")" = "$2" ] || exit 1
+        exit 0' _ "$R21_MOUNT/_lane-ro-dangling/.task/plan.json" "$R21_LINK_BEFORE"
+
 test_summary
