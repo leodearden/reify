@@ -551,11 +551,17 @@ pub const FORCE: DimensionVector = {
 /// `DIMENSIONLESS` via the search-miss path (the existing contract), while `resolve_dimension_type`
 /// special-cases `"Dimensionless" => DimensionVector::DIMENSIONLESS` as a separate fallback arm.
 ///
-/// The slice contains 52 entries. The first 35 are one per named singleton in the
-/// same order as the original `canonical_name` match arms (LENGTH .. FORCE_DENSITY);
-/// the rest were appended by later tasks, including the four alias rows noted above.
-/// Nothing enforces this count — deliberately, since all consumers derive from the
-/// slice rather than from a length — so keep it in sync when adding a row.
+/// Composition: the leading run (LENGTH .. FORCE_DENSITY) is one row per named
+/// singleton, in the same order as the original `canonical_name` match arms;
+/// everything after it was appended by a later task, including the alias rows
+/// noted above.
+///
+/// NO entry count is quoted here, deliberately. Nothing derives one — every
+/// consumer iterates the slice — so a number in this comment is pure maintenance
+/// debt that silently rots on the next addition. It already has: the original
+/// "34 entries" claim was stale before task η even touched it, and a subsequent
+/// reviewer then mis-derived a replacement by hand. Count the rows if you need
+/// the number; do not re-enshrine one here.
 pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     (DimensionVector::LENGTH, "Length"),
     (DimensionVector::MASS, "Mass"),
@@ -615,17 +621,9 @@ pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     // alias precedent (task 3603 / GHR-α).
     (DimensionVector::TRANSLATIONAL_STIFFNESS, "TranslationalStiffness"),
     (DimensionVector::ROTATIONAL_STIFFNESS, "RotationalStiffness"),
-    // Task η / angle-units surface convergence (PRD v0_6 §6 D4): `Torque` is
-    // dimensionally identical to `RotationalStiffness` (both N·m/rad =
-    // kg·m²·s⁻²·rad⁻¹). Placed AFTER "RotationalStiffness" so the first-match
-    // linear scan in `canonical_name` continues to return "RotationalStiffness"
-    // for the shared dim (PRD §9 row B10 — the non-breaking guarantee). The
-    // name→dim direction (resolve_dimension_type / resolve_type_name) finds
-    // this entry when source syntax says `Torque`, which is what lets `.ri`
-    // authors write `param t : Torque` with no stdlib import and is why the
-    // `pub type Torque` alias in ports_mechanical.ri could be retired. Mirrors
-    // the Curvature/AbsorptionCoeff, TranslationalStiffness/Stiffness and
-    // Impulse/Momentum alias precedents.
+    // Alias row (task η) — MUST stay after "RotationalStiffness". See the
+    // `DimensionVector::TORQUE` docs for why; the ordering itself is pinned by
+    // `torque_named_dimension_registered_as_alias_after_rotational_stiffness`.
     (DimensionVector::TORQUE, "Torque"),
     (DimensionVector::ROTATIONAL_DAMPING, "RotationalDamping"),
     (DimensionVector::TRANSLATIONAL_DAMPING, "TranslationalDamping"),
@@ -1587,26 +1585,16 @@ mod tests {
         );
     }
 
-    /// `Torque` is a first-class `NAMED_DIMENSIONS` entry registered in
-    /// alias position, strictly AFTER the `RotationalStiffness` row.
+    /// Executable pin for the `DimensionVector::TORQUE` contract — see that
+    /// constant's docs for the PRD §6 D4 rationale.
+    /// Asserts, in order: (a) the exponent slots, spelled literally; (b) the
+    /// shared-vector claim; (c) the load-bearing row ORDER; (d) the
+    /// non-breaking `canonical_name()` guarantee.
     ///
-    /// Per PRD `docs/prds/v0_6/angle-units-surface-convergence.md` §6 D4, task η:
-    /// this is a NAME ADDITION at alias position, deliberately NOT a
-    /// re-dimensioning. The four assertions below pin, in order: the exponent
-    /// slots themselves (Force·Length/Angle, independent of any other
-    /// constant); the shared-vector claim; the load-bearing row ORDER; and the
-    /// non-breaking guarantee that `canonical_name()` still answers
-    /// `"RotationalStiffness"` (PRD §9 row B10).
-    ///
-    /// Assertions (b) and (d) are CONTINGENT, not definitional. `TORQUE` and
-    /// `ROTATIONAL_STIFFNESS` are numerically equal under Reify's *current*
-    /// model, not by construction. PRD §10 / §11 Q1 leaves PRD 5 an open
-    /// question about re-dimensioning `ROTATIONAL_STIFFNESS` to
-    /// `Force·Length/Angle²` (since τ = k·θ). If that ever lands, (b) and (d)
-    /// are exactly the assertions that must fail LOUDLY — they are the human
-    /// decision point, not incidental collateral. Assertion (a) is the one
-    /// that stays true regardless, which is why it is spelled slot-by-slot
-    /// rather than delegating to `ROTATIONAL_STIFFNESS`.
+    /// (b) and (d) are CONTINGENT, not definitional — if PRD 5 ever
+    /// re-dimensions `ROTATIONAL_STIFFNESS`, they are the intended LOUD
+    /// failure and the human decision point, not incidental collateral. (a) is
+    /// the one that holds regardless, hence the slot-by-slot spelling.
     #[test]
     fn torque_named_dimension_registered_as_alias_after_rotational_stiffness() {
         // (a) Exponent slots, pinned literally: kg·m²·s⁻²·rad⁻¹.
