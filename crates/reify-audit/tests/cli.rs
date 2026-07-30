@@ -2705,6 +2705,175 @@ mod cli {
             serde_json::Value::Array(findings.clone())
         );
     }
+
+    /// Build the incremental-ratchet fixture source: the committed header
+    /// followed by `n` copies of the committed single-site block, each copy's
+    /// `__N__` placeholder replaced by its index.
+    ///
+    /// Both halves live in `tests/fixtures/pdiag_ratchet/` rather than inline
+    /// here, so the swept anchor token never appears in this source
+    /// (SELF-MATCH DISCIPLINE, as above). One copy is one code-less site, so
+    /// the file's code-less count is exactly `n`.
+    fn pdiag_ratchet_source(n: u32) -> String {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pdiag_ratchet");
+        let header = std::fs::read_to_string(dir.join("header.rs.in"))
+            .expect("read pdiag_ratchet/header.rs.in");
+        let block = std::fs::read_to_string(dir.join("site_block.rs.in"))
+            .expect("read pdiag_ratchet/site_block.rs.in");
+        let mut out = header;
+        for i in 0..n {
+            out.push_str(&block.replace("__N__", &i.to_string()));
+        }
+        out
+    }
+
+    /// The ratchet's load-bearing direction: a file ALREADY in the committed
+    /// baseline that gains ONE more code-less site turns the gate RED.
+    ///
+    /// This is PRD §8 boundary row 8 end to end, and no other test reaches it.
+    /// The fixture-tree sweep above only exercises `NewFile` against an EMPTY
+    /// baseline — it would still pass if the ratchet compared presence rather
+    /// than counts. Here the manifest is the REAL committed
+    /// `pdiag-baseline.txt`, lifted verbatim into a throwaway repo, and the
+    /// only thing that changes between the two halves is one extra site in one
+    /// already-baselined file.
+    ///
+    /// Both halves matter and neither alone is sufficient:
+    ///
+    /// - Half 1 (live == baseline) must exit 0. Without it, half 2's non-zero
+    ///   exit would be unattributable — a detector that flagged the file
+    ///   unconditionally would pass half 2 for entirely the wrong reason.
+    /// - Half 2 (live == baseline + 1) must exit 1 with exactly one High.
+    ///
+    /// The ~65 other baseline rows have no file in the fixture tree, so they
+    /// surface as `OrphanRow` verdicts — deliberately Medium, hence
+    /// exit-neutral, which is itself worth pinning: if slack verdicts were
+    /// High, every opportunistic fix and every file deletion would become
+    /// merge-blocking, and half 1 would not exit 0.
+    #[test]
+    fn pdiag_ratchet_fires_when_a_baselined_file_gains_one_more_code_less_site() {
+        let repo = tempfile::tempdir().expect("create repo tempdir");
+        let aux = tempfile::tempdir().expect("create aux tempdir");
+
+        // Lift the REAL committed manifest — not a synthetic stand-in, so the
+        // test also fails if the shipped manifest stops parsing.
+        let baseline_text = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("pdiag-baseline.txt"),
+        )
+        .expect("read the committed crates/reify-audit/pdiag-baseline.txt");
+        let baseline = reify_audit::pdiag::parse_baseline(&baseline_text)
+            .expect("the committed pdiag-baseline.txt must parse");
+
+        // Any row proves the claim; the first is simply deterministic. Reading
+        // the path and count out of the manifest (rather than hard-coding one)
+        // keeps this test alive as rows shrink under opportunistic migration.
+        let (path, allowed) = baseline
+            .iter()
+            .next()
+            .map(|(p, c)| (p.clone(), *c))
+            .expect(
+                "the committed pdiag-baseline.txt has no rows, so there is no already-baselined \
+                 file to overrun — if the backlog genuinely reached zero, rewrite this test \
+                 against a synthetic one-row manifest rather than deleting it",
+            );
+
+        let manifest = repo.path().join("crates/reify-audit/pdiag-baseline.txt");
+        std::fs::create_dir_all(manifest.parent().unwrap()).expect("create manifest dir");
+        std::fs::write(&manifest, &baseline_text).expect("write lifted manifest");
+
+        // The source file lands at the row's own repo-relative path, so the
+        // detector matches it to that row. `parse_baseline` rejects any row
+        // outside `is_swept_path`, so the path is in-scope by construction.
+        let src = repo.path().join(&path);
+        std::fs::create_dir_all(src.parent().unwrap()).expect("create source dir");
+        std::fs::write(&src, pdiag_ratchet_source(allowed)).expect("write at-baseline source");
+
+        git_init_commit_all(repo.path());
+
+        let tasks_file = write_tasks_json(aux.path(), &[]);
+        let runs_db = write_empty_runs_db(aux.path());
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let run = || {
+            Command::new(bin)
+                .args([
+                    "--pattern",
+                    "PDIAG",
+                    "--no-jcodemunch",
+                    "--project-root",
+                    repo.path().to_str().unwrap(),
+                    "--tasks-file",
+                    tasks_file.to_str().unwrap(),
+                    "--runs-db",
+                    runs_db.to_str().unwrap(),
+                ])
+                .output()
+                .expect("invoke reify-audit --pattern PDIAG on the ratchet fixture")
+        };
+
+        // --- half 1: exactly at the baseline row → no verdict → exit 0 ------
+        let at = run();
+        let at_stderr = String::from_utf8_lossy(&at.stderr);
+        assert_eq!(
+            at.status.code(),
+            Some(0),
+            "{path} at exactly its baseline allowance of {allowed} must produce NO High finding \
+             (the ~{} other rows are exit-neutral OrphanRow Mediums)\nstderr: {at_stderr}",
+            baseline.len().saturating_sub(1)
+        );
+
+        // --- half 2: one more site → Exceeded → exit 1 ----------------------
+        // Only the file's CONTENT changes; `git ls-files` reads the index, so
+        // the path stays tracked without re-adding.
+        std::fs::write(&src, pdiag_ratchet_source(allowed + 1))
+            .expect("write one-over-baseline source");
+
+        let over = run();
+        let over_stderr = String::from_utf8_lossy(&over.stderr);
+        assert_eq!(
+            over.status.code(),
+            Some(1),
+            "{path} going from {allowed} to {} code-less site(s) must be exactly one High \
+             (Exceeded) → exit 1\nstderr: {over_stderr}",
+            allowed + 1
+        );
+
+        let findings = parse_findings_from_stderr(&over_stderr);
+        let highs: Vec<&serde_json::Value> = findings
+            .iter()
+            .filter(|f| f["severity"].as_str() == Some("High"))
+            .collect();
+        assert_eq!(
+            highs.len(),
+            1,
+            "exactly one High — the overrun file, and nothing else; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+
+        let high = highs[0];
+        assert_eq!(
+            high["pattern"].as_str(),
+            Some("PDiag"),
+            "the overrun finding must be PDiag; got:\n{high:#}"
+        );
+        assert_eq!(
+            high["task_id"].as_str(),
+            Some(path.as_str()),
+            "the overrun finding must be keyed by the offending path; got:\n{high:#}"
+        );
+
+        // A hard gate that names neither the file nor the remedy is a dead
+        // end; `tests/infra/test_reify_audit_pdiag.sh` greps for the same doc.
+        let summary = high["summary"].as_str().unwrap_or_default();
+        assert!(
+            summary.contains(path.as_str()),
+            "the Exceeded summary must name the offending file; got: {summary:?}"
+        );
+        assert!(
+            summary.contains("docs/notes/diagnostic-severity-policy.md"),
+            "the Exceeded summary must cite the remediation doc; got: {summary:?}"
+        );
+    }
 }
 
 // -----------------------------------------------------------------------
