@@ -90,7 +90,7 @@ ORCH_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
 # contract lands AHEAD of the DF-side sandboxed=True flip (see the file
 # header). Not reify-observable to keep in sync automatically; a DF-side role
 # addition needs a manual update here.
-CACHE_REDIRECT_ROLES="implementer debugger simple_task architect"
+CACHE_REDIRECT_ROLES="implementer debugger simple_task architect reviewer_comprehensive judge"
 
 # ---------------------------------------------------------------------------
 # (A) STRUCTURE -- parse YAML and assert key/value shape
@@ -141,6 +141,23 @@ Checks:
                                                collide if CARGO_HOME and
                                                npm_config_cache pointed at
                                                the same path)
+  role_keys_exactly <role...>              -- set(role_env_overrides) equals
+                                               the passed role set EXACTLY.
+                                               Two-sided on purpose: fails on
+                                               a MISSING role (silent drift
+                                               away from the covered set) AND
+                                               on an EXTRA one, so any change
+                                               to the covered set must be a
+                                               deliberate, reviewed edit to
+                                               CACHE_REDIRECT_ROLES in the
+                                               caller -- which is where the
+                                               header note explaining the
+                                               coupling lives
+  role_key_absent <role>                   -- role_env_overrides has NO entry
+                                               for <role> (pins the inert
+                                               collapsed-key trap; see the
+                                               'reviewer' assertion in the
+                                               caller)
 
 Exit 0 on pass, 1 on fail (or missing key/role), 2 on unknown check/bad args.
 """
@@ -221,6 +238,41 @@ if check == "role_key_not_under":
     norm_prefix = str(Path(prefix))
     sys.exit(1 if (norm_val == norm_prefix or norm_val.startswith(norm_prefix + "/")) else 0)
 
+if check == "role_keys_exactly":
+    if not rest:
+        print("role_keys_exactly needs at least one role", file=sys.stderr)
+        sys.exit(2)
+    overrides = d.get("role_env_overrides")
+    if not isinstance(overrides, dict):
+        print("role_env_overrides is absent or not a mapping", file=sys.stderr)
+        sys.exit(1)
+    actual = set(overrides.keys())
+    expected = set(rest)
+    if actual == expected:
+        sys.exit(0)
+    # Print the asymmetric diff -- the `assert` helper dumps captured output
+    # only on FAIL, so this turns a bare set-mismatch into a directly
+    # actionable message naming WHICH side drifted.
+    missing = sorted(expected - actual)
+    extra = sorted(actual - expected)
+    if missing:
+        print(f"declared in CACHE_REDIRECT_ROLES but MISSING from yaml: {missing}", file=sys.stderr)
+    if extra:
+        print(f"present in yaml but NOT declared in CACHE_REDIRECT_ROLES: {extra}", file=sys.stderr)
+    sys.exit(1)
+
+if check == "role_key_absent":
+    (role,) = rest
+    overrides = d.get("role_env_overrides")
+    if not isinstance(overrides, dict):
+        # Trivially absent. Every other assertion already fails loudly in
+        # this state, so reporting a pass here is honest rather than masking.
+        sys.exit(0)
+    if role in overrides:
+        print(f"role_env_overrides carries the key {role!r}, which must be absent", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
 print(f"unknown check or bad args: {check} {rest}", file=sys.stderr)
 sys.exit(2)
 PYEOF
@@ -251,6 +303,15 @@ PYEOF
             assert "role_env_overrides.${role}.CARGO_HOME and .npm_config_cache are distinct paths (a same-dir target would pass every check above yet collide cargo's and npm's cache layouts)" \
                 python3 "$_PARSE_PY" "$ORCH_YAML" role_keys_distinct "$role" CARGO_HOME npm_config_cache
         done
+
+        # Unquoted expansion is intended -- the checker takes the roles as
+        # separate argv entries.
+        # shellcheck disable=SC2086
+        assert "role_env_overrides covers exactly the declared cache-redirect role set" \
+            python3 "$_PARSE_PY" "$ORCH_YAML" role_keys_exactly $CACHE_REDIRECT_ROLES
+
+        assert "role_env_overrides does NOT carry the collapsed 'reviewer' key (KNOWN_ROLE_NAMES accepts it, but _build_agent_env keys on role.name == 'reviewer_comprehensive', so a 'reviewer' entry is silently INERT -- no DF config warning, no redirect)" \
+            python3 "$_PARSE_PY" "$ORCH_YAML" role_key_absent reviewer
     else
         echo "SKIP: sandbox.enabled is not true; cache-redirect contract does not apply (guard is conditional, see header)"
     fi
