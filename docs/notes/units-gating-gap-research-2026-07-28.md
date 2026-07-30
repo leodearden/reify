@@ -319,7 +319,7 @@ value-construction boundaries or native-reader boundaries.
 DSL SURFACE (inventory agent): 49 nameable dimension classes, all usable as param types;
 compound suffixes (7850kg/m^3, 200GPa, 9.81m/s^2) parse and are corpus-common (26 files carry
 kg/m^3). Gotchas: 5N*m = ENERGY not Torque (need /rad); display middle-dot · not parseable
-back (only ASCII *); NAMED_DIMENSIONS doc says 34, actually 51 names/49 vectors (stale);
+back (only ASCII *); NAMED_DIMENSIONS doc says 34, actually 51 names (stale);
 stdlib-reference documents Material fields as Real ("pending #3111") but live code already
 dimensioned (stale doc). [CORRECTION 2026-07-29 (#5814) — this was true as measured on
 2026-07-28 and is now FIXED, not merely stale: §6.1/§6.2 of docs/reify-stdlib-reference.md
