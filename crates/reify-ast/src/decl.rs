@@ -402,9 +402,14 @@ pub struct SubDecl {
     ///
     /// `Some(_)` only for the indexed instantiation form; `None` for the bare
     /// instantiation, collection, and specialization arms. Paired with
-    /// `index_domain`: both are `Some` or both are `None`, because the grammar
-    /// admits the clause as one indivisible `optional(seq(…))` (PRD §9.1 Q1 is
-    /// decided at α as: no binder-omission form).
+    /// `index_domain`: both are `Some` or both are `None`. The grammar makes the
+    /// clause one indivisible `optional(seq(…))` (PRD §9.1 Q1 is decided at α
+    /// as: no binder-omission form), but the type does not encode the pairing,
+    /// so it is enforced at the single producer: `ts_parser::lower_sub` lowers
+    /// the two halves JOINTLY and, if the domain expression fails to lower,
+    /// drops BOTH halves and emits a diagnostic rather than emitting a
+    /// half-populated pair. A consumer may therefore rely on the pairing (β's
+    /// domain typing does), and any new producer must uphold it.
     ///
     /// A `SpannedIdent` rather than a bare `String` because the span must cover
     /// the binder token ALONE for an unused-binder (`W_UNUSED`-conventions)

@@ -42,6 +42,28 @@ fn parse_first_structure_members(source: &str) -> Vec<MemberDecl> {
     }
 }
 
+/// Collect every `SubDecl` in `source`, across all structure declarations.
+///
+/// Unlike [`parse_first_structure_members`] this does not assume
+/// `declarations[0]` is a structure, so it also works on the multi-declaration
+/// surface fixture.
+fn all_subs(source: &str) -> Vec<SubDecl> {
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    parsed
+        .declarations
+        .iter()
+        .filter_map(|d| match d {
+            Declaration::Structure(s) => Some(s.members.clone()),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|m| match m {
+            MemberDecl::Sub(s) => Some(s),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Locate the first `MemberDecl::Sub` in a member slice.
 fn first_sub(members: &[MemberDecl]) -> SubDecl {
     members
@@ -148,13 +170,23 @@ fn indexed_sub_lowers_binder_and_domain() {
 /// The indexer must not disturb the rest of the instantiation lowering.
 ///
 /// The `is_collection == false` assertion is the explicit hazard guard, not a
-/// mere scope marker: `lower_sub`'s collection detection text-scans the DIRECT
-/// children of `sub_declaration` for a `List` token/text, and the binder
-/// identifier is a NEW direct child introduced by this very change. This pins
-/// that α leaves `is_collection` driven by the `List` keyword alone — flipping
-/// it here would route an indexed sub into the existing collection-sub compile
-/// path with no count cell and no element template, i.e. exactly the silent
-/// zero-element elaboration the PRD forbids. Collection semantics are β's.
+/// mere scope marker: `lower_sub`'s collection detection scans the DIRECT
+/// children of `sub_declaration` for the `List` keyword token, and the binder
+/// identifier and domain expression are NEW direct children introduced by this
+/// very change. This pins that α leaves `is_collection` driven by the anonymous
+/// `'List'` keyword token alone — flipping it here would route an indexed sub
+/// into the existing collection-sub compile path with no count cell and no
+/// element template, i.e. exactly the silent zero-element elaboration the PRD
+/// forbids. Collection semantics are β's.
+///
+/// The adversarial `List`-named binder/domain cases below are the teeth of that
+/// guard: before the α amendment, `lower_sub` also matched any direct child
+/// whose *source text* was `List`, so `sub xs[List in 0..4] = Foo(a: 1)` and
+/// `sub xs[i in List] = Foo(a: 1)` both flipped `is_collection` to `true` —
+/// which discards `type_args` and skips the `named_argument_list` loop entirely,
+/// silently producing a collection-form `SubDecl` for source the user wrote as
+/// an instantiation. `List` is not a reserved word (grammar.js declares no
+/// `word:` rule), so both spellings are legal input, not pathological.
 #[test]
 fn indexed_sub_preserves_existing_instantiation_lowering() {
     let members = parse_first_structure_members(INDEXED_SUB_SOURCE);
@@ -178,8 +210,83 @@ fn indexed_sub_preserves_existing_instantiation_lowering() {
         !sub.is_collection,
         "α must leave is_collection == false for an indexed sub — collection \
          elaboration is β's, and the binder identifier is a new direct child \
-         that must not trip lower_sub's `List` text-scan"
+         that must not trip lower_sub's `List` keyword scan"
     );
+
+    // Adversarial cases: a binder or a domain whose source text is exactly
+    // `List`. Both must stay on the instantiation path.
+    let list_named_cases: &[(&str, &str)] = &[
+        (
+            "binder named `List`",
+            "structure S { sub xs[List in 0..4] = Foo(a: 1) }",
+        ),
+        (
+            "domain is the bare identifier `List`",
+            "structure S { sub xs[i in List] = Foo(a: 1) }",
+        ),
+    ];
+    for (label, source) in list_named_cases {
+        let members = parse_first_structure_members(source);
+        let sub = first_sub(&members);
+        assert!(
+            !sub.is_collection,
+            "{label}: `List` as binder/domain text must NOT flip is_collection — \
+             only the anonymous `'List'` keyword token of the collection arm may"
+        );
+        assert_eq!(
+            sub.structure_name, "Foo",
+            "{label}: structure_name must still lower to `Foo`"
+        );
+        assert!(
+            sub.args.iter().any(|(k, _)| k == "a"),
+            "{label}: named constructor arg `a` must still lower (the collection \
+             branch skips the named_argument_list loop entirely); got keys {:?}",
+            sub.args.iter().map(|(k, _)| k).collect::<Vec<_>>()
+        );
+        assert!(
+            sub.index_binder.is_some() && sub.index_domain.is_some(),
+            "{label}: the indexer clause must still lower as a pair, got \
+             binder={:?} domain_is_some={}",
+            sub.index_binder,
+            sub.index_domain.is_some()
+        );
+    }
+}
+
+/// The `index_binder` / `index_domain` pairing invariant holds for every arm.
+///
+/// `SubDecl`'s two flat `Option`s cannot encode "both or neither" in the type,
+/// so the invariant is enforced at the single producer (`lower_sub` lowers the
+/// halves jointly and drops both if the domain fails to lower). This test is the
+/// executable half of that contract: across the indexed form, the three
+/// pre-existing arms, and the `List`-named adversarial spellings, the two fields
+/// must always agree on presence. β types the domain and may rely on the pair.
+#[test]
+fn index_binder_and_domain_are_always_both_some_or_both_none() {
+    let cases: &[&str] = &[
+        INDEXED_SUB_SOURCE,
+        "structure S { sub legs[k in 0..3] = Leg() }",
+        "structure S { sub xs[List in 0..4] = Foo(a: 1) }",
+        "structure S { sub xs[i in List] = Foo(a: 1) }",
+        "structure S { sub a = Foo() }",
+        "structure S { sub xs : List<Foo> }",
+        "structure S { sub m : Foo { } }",
+        SURFACE_FIXTURE,
+    ];
+    for source in cases {
+        for sub in all_subs(source) {
+            assert_eq!(
+                sub.index_binder.is_some(),
+                sub.index_domain.is_some(),
+                "PAIRING INVARIANT BROKEN for sub `{}`: index_binder.is_some() == {} \
+                 but index_domain.is_some() == {}. lower_sub must lower the indexer \
+                 halves jointly and drop both on a domain-lowering failure.",
+                sub.name,
+                sub.index_binder.is_some(),
+                sub.index_domain.is_some(),
+            );
+        }
+    }
 }
 
 /// The three pre-existing `sub` arms lower with both indexer fields `None`.
