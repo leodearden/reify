@@ -1474,6 +1474,28 @@ const WHOLE_MODEL_COST_MIN_EXAMPLE_PATH: &str = concat!(
     "/../../examples/whole_model_cost_min.ri"
 );
 
+/// Shared preamble for every `mwhole_*` test below: read the shipped M-WHOLE ε
+/// example from disk, derive its frozen-cascade counterpart via
+/// `strip_inlined_minimize`, and evaluate BOTH halves through the REAL
+/// `DimensionalSolver`. All three `mwhole_*` tests need exactly this pair, so
+/// centralising it keeps the read+strip+eval mechanics — and the "run the
+/// next impl step" panic message — a single source of truth instead of three
+/// literal copies.
+fn mwhole_halves() -> (EvalResult, EvalResult) {
+    let merged_src =
+        std::fs::read_to_string(WHOLE_MODEL_COST_MIN_EXAMPLE_PATH).unwrap_or_else(|e| {
+            panic!(
+                "Could not read {WHOLE_MODEL_COST_MIN_EXAMPLE_PATH}: {e} — run the next impl \
+                 step to create the example file",
+            )
+        });
+    let frozen_src = strip_inlined_minimize(&merged_src);
+
+    let merged = eval_ri_with_real_solver(&merged_src, "merged (inlined `minimize` present)");
+    let frozen = eval_ri_with_real_solver(&frozen_src, "frozen cascade (`minimize` removed)");
+    (merged, frozen)
+}
+
 /// BT4(i) — the joint-drive signal generalised to TWO coupled children under
 /// ONE parent objective (§6 BT1's shape). Unlike this file's
 /// `bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade`
@@ -1515,17 +1537,7 @@ const WHOLE_MODEL_COST_MIN_EXAMPLE_PATH: &str = concat!(
 /// boxes/unit_costs are tuned to produce a live, non-degenerate gap.
 #[test]
 fn mwhole_bt4_parent_objective_jointly_drives_both_child_autos_below_the_frozen_cascade() {
-    let merged_src =
-        std::fs::read_to_string(WHOLE_MODEL_COST_MIN_EXAMPLE_PATH).unwrap_or_else(|e| {
-            panic!(
-                "Could not read {WHOLE_MODEL_COST_MIN_EXAMPLE_PATH}: {e} — run the next impl \
-                 step to create the example file",
-            )
-        });
-    let frozen_src = strip_inlined_minimize(&merged_src);
-
-    let merged = eval_ri_with_real_solver(&merged_src, "merged (inlined `minimize` present)");
-    let frozen = eval_ri_with_real_solver(&frozen_src, "frozen cascade (`minimize` removed)");
+    let (merged, frozen) = mwhole_halves();
 
     // Both children, structure-keyed. A `for` loop (rather than two copies of
     // the same block) keeps the assertion — and its failure message — a
@@ -1549,13 +1561,9 @@ fn mwhole_bt4_parent_objective_jointly_drives_both_child_autos_below_the_frozen_
 }
 
 /// BT4(ii) — the merged WHOLE-ASSEMBLY cost (summed across BOTH children) is
-/// STRICTLY LESS than the frozen-cascade baseline. This is the assertion that
-/// makes the example a WHOLE-model gate rather than a per-child one:
-/// `mwhole_bt4_parent_objective_jointly_drives_both_child_autos_below_the_
-/// frozen_cascade` above could pass even in a fixture where the two children
-/// were coupled to two SEPARATE single-child clusters; this assertion is
-/// void unless the parent's SPANNING objective reaches BOTH children in one
-/// merged solve and the SUM improves.
+/// STRICTLY LESS than the frozen-cascade baseline. Reading BOTH children's
+/// `line_cost` cells (not just one) is what makes this an assertion about the
+/// WHOLE assembly rather than a single child.
 ///
 /// Reads the STRUCTURE-KEYED `line_cost` cells — the same cells the sibling
 /// test reads the accompanying auto from — and sums them for BOTH halves.
@@ -1571,21 +1579,37 @@ fn mwhole_bt4_parent_objective_jointly_drives_both_child_autos_below_the_frozen_
 /// strictly-smaller non-negative numbers is strictly smaller than the sum of
 /// their frozen counterparts.
 ///
+/// # What this value-level assertion does NOT discriminate
+///
+/// This SUM comparison, by itself, does not distinguish ONE merged cluster
+/// spanning both children from a hypothetical regression to TWO independent
+/// single-child clusters that each still carried a copy of the parent's
+/// objective: because the merged figures are the solver's `initially_feasible`
+/// SEED rather than a converged argmin (see `bt5_...`'s "eval-layer
+/// convergence boundary" note), either cluster shape would drive both autos to
+/// the same 0.01 seed and satisfy this assertion — and the sibling BT4(i) —
+/// identically. A mis-expanded or wrong-sense objective would likewise still
+/// suppress the synthesised centrality objective and still land both autos at
+/// 0.01.
+///
+/// That structural claim — a parent plus TWO children sharing ONE spanning
+/// objective union into EXACTLY ONE cluster, never two — is proven at the
+/// unit level, independently of this `.ri`-level gate, by
+/// `aggregate_objective_forms_single_spanning_cluster` (α-BT1,
+/// `crates/reify-eval/src/resolve_order.rs`), which asserts
+/// `ro.clusters.len() == 1` and `cluster.scopes == [Parent, ChildA, ChildB]`
+/// for exactly this acyclic aggregate-objective shape. This test's job is
+/// narrower and complementary: confirm the WHOLE CHAIN — cluster formation,
+/// per-trial fold, the REAL `DimensionalSolver`'s convergence direction, and
+/// write-back — produces the right end-to-end SUMMED numeric behaviour on the
+/// shipped example, not re-derive the cluster-shape discrimination the unit
+/// test already owns.
+///
 /// RED until the example's boxes/unit_costs produce a live, positive gap in
 /// the SUMMED total (not merely per-child).
 #[test]
 fn mwhole_bt4_merged_whole_assembly_cost_is_strictly_below_the_frozen_baseline() {
-    let merged_src =
-        std::fs::read_to_string(WHOLE_MODEL_COST_MIN_EXAMPLE_PATH).unwrap_or_else(|e| {
-            panic!(
-                "Could not read {WHOLE_MODEL_COST_MIN_EXAMPLE_PATH}: {e} — run the next impl \
-                 step to create the example file",
-            )
-        });
-    let frozen_src = strip_inlined_minimize(&merged_src);
-
-    let merged = eval_ri_with_real_solver(&merged_src, "merged (inlined `minimize` present)");
-    let frozen = eval_ri_with_real_solver(&frozen_src, "frozen cascade (`minimize` removed)");
+    let (merged, frozen) = mwhole_halves();
 
     let whole_assembly_cost = |result: &EvalResult, what: &str| -> f64 {
         let plate = scalar_si(result, &ValueCellId::new("Plate", "line_cost"), what);
@@ -1655,17 +1679,7 @@ fn mwhole_bt4_merged_whole_assembly_cost_is_strictly_below_the_frozen_baseline()
 /// by β/α, tracked separately; it is not a fixture-authoring gap.
 #[test]
 fn mwhole_bt3_cross_scope_surface_read_surfaces_the_co_solved_value() {
-    let merged_src =
-        std::fs::read_to_string(WHOLE_MODEL_COST_MIN_EXAMPLE_PATH).unwrap_or_else(|e| {
-            panic!(
-                "Could not read {WHOLE_MODEL_COST_MIN_EXAMPLE_PATH}: {e} — run the next impl \
-                 step to create the example file",
-            )
-        });
-    let frozen_src = strip_inlined_minimize(&merged_src);
-
-    let merged = eval_ri_with_real_solver(&merged_src, "merged (inlined `minimize` present)");
-    let frozen = eval_ri_with_real_solver(&frozen_src, "frozen cascade (`minimize` removed)");
+    let (merged, frozen) = mwhole_halves();
 
     for (instance_path, structure) in [
         ("CostAssembly.plate", "Plate"),
@@ -1691,7 +1705,13 @@ fn mwhole_bt3_cross_scope_surface_read_surfaces_the_co_solved_value() {
         );
 
         // (c) equals unit_cost * quantity_produced read from the SAME eval --
-        // the Costed closed form, so the value is derived, not pinned.
+        // the Costed closed form, so the value is derived, not pinned. A
+        // RELATIVE-epsilon comparison, not `assert_eq!`: exact f64 bit-equality
+        // here only holds because today's fold happens to multiply the same
+        // two SI magnitudes in the same order — a unit-conversion scaling,
+        // reassociation, or FMA would break bit-identity with no behavioural
+        // regression. (BT3(b) above, which compares two cells that must hold
+        // the SAME folded value, is legitimately exact.)
         let merged_unit_cost = scalar_si(
             &merged,
             &ValueCellId::new(structure, "unit_cost"),
@@ -1702,13 +1722,16 @@ fn mwhole_bt3_cross_scope_surface_read_surfaces_the_co_solved_value() {
             &ValueCellId::new(structure, "quantity_produced"),
             "merged",
         );
-        assert_eq!(
-            merged_aliased,
-            merged_unit_cost * merged_q,
+        let expected_aliased = merged_unit_cost * merged_q;
+        let tolerance = 1e-12 * expected_aliased.abs().max(1.0);
+        let diff = (merged_aliased - expected_aliased).abs();
+        assert!(
+            diff <= tolerance,
             "BT3 [{structure}] (c): the instance-path cell must be the Costed \
              closed form unit_cost * quantity_produced ({merged_unit_cost} * \
-             {merged_q}), refolded against the solved auto — not left at \
-             whatever it held before the solve",
+             {merged_q} = {expected_aliased}), refolded against the solved \
+             auto — not left at whatever it held before the solve. Got \
+             {merged_aliased} (difference {diff} exceeds tolerance {tolerance}).",
         );
 
         // (d) is STRICTLY BELOW the value the frozen cascade freezes this
