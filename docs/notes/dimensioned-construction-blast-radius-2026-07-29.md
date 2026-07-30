@@ -13,7 +13,7 @@ warns for its own anchors.
 ## Provenance
 
 - **Measured at HEAD:** `08c6c42be97d39772f93ee3368c6466bda37fbc6` (short `08c6c42be9`), branch `task/5756`, base `main`.
-- **Date:** 2026-07-29.
+- **Date:** 2026-07-29. **Post-review corrections 2026-07-30 (`2b02ef0e5e`, `e242ba6f83`) — two counts GREW; see the §10.9.1 changelog before citing any figure from an earlier revision. No migration disposition changed.**
 - **PRD:** `docs/prds/v0_6/dimensioned-construction-strictness.md`, primarily §6.5 ("What α must still measure") and §11 (decomposition plan, α's charter).
 - **Task:** 5756 — "dimensioned-construction α: blast-radius measurement + per-site migration ledger (flip the predicate locally, never land it)". Dependency 5753 (ζ₀, the ruling/reversal-history doc) landed as `767c004fd5`.
 - **Sibling record:** `docs/notes/units-gating-gap-research-2026-07-28.md` — the same units-strictness program's phase-1/phase-2 research note (HEAD `d2651bce16` / `1195020471`); its "PHASE 2" section independently pre-surveys this same predicate and is cited throughout below where it corroborates or predates a measurement here.
@@ -2065,6 +2065,65 @@ dimension-name-set ruling (51 names, 65 with the alias union) and §§1-9/§10 f
 migration count; do not cite PRD §6 prose or this task's plan `analysis` block as ground truth for
 either without independently re-confirming it first.
 
+**10.9.1 Correction changelog.** Because this section makes the figures above NORMATIVE for
+β/γ/δ₁/δ₂, every post-publication correction is logged here. A consumer who already read an
+earlier revision can diff their citations against this list.
+
+| Date | Commit | Correction | Direction | Root cause |
+|---|---|---|---|---|
+| 2026-07-30 | `2b02ef0e5e` (step-12) | §2.3 `pub unit` declarations in `stdlib/units.ri` **21 → 24**; derived EXCLUDED-BY-DESIGN total (§2.3, §10.3, §10.8 β/δ₁ rows) **23 → 26** | **GREW** — the do-not-touch list got *larger* | The prose total counted only "6 base + 15 bare factor" and silently dropped the three EXPRESSION/OFFSET-form declarations (`deg`:24, `degC`:42, `degF`:43) that §2.3's own verbatim listing always showed. Correct decomposition: 6 + 15 + 3 = 24. |
+| 2026-07-30 | `e242ba6f83` (step-13) | §2.2 category C **55 → 58** (c0 **28 → 31**; `param`/`let` split **51/4 → 54/4**), threaded through §4.1 (52 → 55 gate-2 candidates), §5, §8.3, §10.2, §10.3, §10.7, §10.8 | **GREW** — 3 previously-invisible sites recovered | The documented comment-stripper was **string-literal-blind**: it cut the line at the first `//` even inside a Rust string literal, so any fixture whose embedded `.ri` snippet *opened* with a doc/line comment had its payload discarded before the regex ran. §2.2.1 now documents the corrected string-aware stripper. |
+
+**No migration disposition changed under either correction.** The `pub unit` sites were already
+EXCLUDED-BY-DESIGN and remain so — three more of them, not a new class. The three recovered
+category-C sites are all the same structurally-parse-only **c0** class as the already-accounted
+`ts_parser.rs:6488` (§2.2.4). Nothing moved into or out of c1/c2; no BREAKS row and no
+DELIBERATE-INVERT row was added or removed. **β/γ/δ₁/δ₂ must not re-plan off either correction** —
+only counts moved, and in both cases the *safety* list (do-not-touch / no-break) is what grew.
+
+### 10.10 Post-review arithmetic reconciliation (step-14)
+
+The two corrections above thread through six sections, so the failure mode this subsection exists
+to close is a **half-applied correction** leaving the ledger internally inconsistent — which is
+exactly the defect class the review caught in the first place.
+
+**10.10.1 Residual-figure sweep.** Every superseded figure was re-grepped across the whole ledger
+in a *count* sense (`21, 23, 28, 44, 51, 52, 53, 55, 57, 80`), re-derived rather than trusted from
+the review's own line checklist. **No superseded count survives.** Every surviving occurrence is
+one of the following legitimate, deliberately-unchanged uses:
+
+| Surviving occurrence | Why it is not a stale count |
+|---|---|
+| §2.2 header "PRD figure: 63 … (25 c1 + 10 c2 + **28** c0, 11 of the 28 parse-only)" | The **PRD's own** scoping figure, quoted as the comparand. Correcting it would erase the delta §2.2.5 exists to state. |
+| §2.2.1/§2.2.2/§2.2.4/§2.3 correction narrative ("**55** → 58", "**57** → 60", "an earlier revision said **21**", "c0 moves **28** → 31") | Deliberate before/after prose and verbatim transcript output. |
+| §0.1, §0.2, §0.3, §10.9, §11.A.4 — the **51**-name `NAMED_DIMENSIONS` ruling | A different, already-resolved question (the 49/51/34 discrepancy), untouched by this review. |
+| §8's "72 sites across **21** files", §8.3's "**21** Rust test files", §10.8's "9+4+3+**21** files" | The quantity-slot census's own file count. Different method (repo-wide `git grep`), different question. |
+| §5's "**21** targeted files" / "0 hits through shard 21" | The `reify-eval` partial-run caveat. Unrelated. |
+| File:line anchors — `units.ri` listing rows `23`/`28`/`53`, `large_assembly.ri:51-53` and its `sed` recipe, `type_compat.rs:52-281`, `ports.ri`/`constitutive.ri:54-57`, `dimensionless_unification.ri:50-51`, `constraint_inst_tests.rs:57` | Positions in source files, not counts. |
+| §11's provenance HEAD `80f877d7cc` (the leading `80`), §5's "**23** files" git-range note | A commit SHA and a provenance file count. |
+
+**10.10.2 Addend audit.** Every stated sum in the corrected sections was re-computed; where a
+sentence and a total disagreed, the *sentence* was fixed, never the total silently:
+
+| Section | Stated sum | Checks |
+|---|---|---|
+| §2.3 | 6 base + 15 bare factor + 3 expression/offset = **24**; 24 stdlib + 2 example-local = **26** | ✓ ✓ |
+| §2.2 | 15 c1 + 10 c2 + 31 c0 + 2 unclassified = **58**; 54 `param` + 4 `let` = **58** | ✓ ✓ |
+| §2.2.5 | 63 (PRD) − 58 (measured) = short by **5** | ✓ |
+| §4.1 | 54 (cat C) + 2 (cat A) = **56**; 56 − 1 parse-only = **55** | ✓ ✓ |
+| §10.2 | 1 confirmed BREAKS + 54 silent-BREAKS + 1 EXCLUDED-parse-only = **56**; matches §4.1's 55 candidates (56 − 1) | ✓ ✓ |
+| §10.3 | BARE 2 + 58 = **60**; BREAKS 1 + 15 + 31 = **47**; 47 + 10 + 2 + 1 = **60**; 60 + 26 = **86**; bucket 3 + 24 + 1 + 58 = **86** | ✓ ✓ ✓ ✓ ✓ |
+
+**10.10.3 The review comment's own totals do not add — resolved here so no future reader
+reconciles against the review instead of against this ledger.** Both review findings independently
+proposed "**Total 80 → 83**" for §10.3. That is arithmetically inconsistent *as a joint
+recommendation*: the two corrections are independent and **compose** — 80 + 3 (`pub unit`
+21 → 24) + 3 (category C 55 → 58) = **86**. **83 is only the intermediate value** after the
+`pub unit` fix alone — which is precisely why the two fixes were landed as separate commits
+(`2b02ef0e5e` leaves the ledger internally consistent at 83; `e242ba6f83` takes it to 86).
+**86 is the figure to cite.** Any consumer holding an 80 or an 83 is reading a pre- or
+mid-correction revision.
+
 ## §11 Methodology closure + no-source-change proof (step-11)
 
 **Provenance.** Measured at HEAD **`80f877d7cc`** (step-10's own commit; no further rebase landed
@@ -2172,6 +2231,29 @@ $ git status --porcelain
    lived outside the repository entirely, per each step's own scratch-location note; `target/`
    (gitignored) was rebuilt several times from flipped and clean source across steps 1/4/6 but is
    correctly absent from both this diff and this status output.
+
+**11(B).1 Re-run after the three post-review commits (step-14).** The corrections of §10.9.1 added
+three further commits (`2b02ef0e5e`, `e242ba6f83`, and this one) after the proof above was
+written. Re-run at HEAD `e242ba6f83`, base `main` = `bae556d6ad`, with only this subsection's own
+edit to the same ledger file pending:
+
+```
+$ git diff main...HEAD --name-only
+docs/notes/dimensioned-construction-blast-radius-2026-07-29.md
+
+$ git diff --exit-code -- crates/ examples/ gui/ stdlib; echo $?
+0
+
+$ git status --porcelain
+(empty — no output)
+```
+
+**Unchanged on all three checks.** The three review-fix commits are pure ledger edits: the
+`main...HEAD` name list is still the single `docs/notes/` path, `crates/ examples/ gui/ stdlib` is
+still byte-identical to `main`, and no scratch artifact leaked in. The corrections re-ran the
+category-C sweep from `/tmp/5756-scratch/cat_c_scan4.py` — outside the repository, like every
+other measurement this task made — and touched no source file to do it. **The invariant that α
+lands nothing in source holds across all 14 steps.**
 
 **This is the auditable evidence for the task's hard invariant.** α measured the blast radius of
 promoting `general_leaf_param_family_is_validated`'s dimensioned-`Scalar` arm across all six
