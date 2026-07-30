@@ -1287,6 +1287,23 @@ assert "RH-NEG: _wait_for_reader_lock returns non-zero when marker never appears
 #
 # RED until step-2: _wait_for_marker is undefined → command not found under
 # set -euo pipefail → non-zero exit.
+#
+# _spawn_pinning_reader <lock> <ready> <clone-done> <src> <dst> contract
+# (task #5866 — the actual regression this block exists to guard):
+#   (BH1) the concurrent clone lands and is byte-identical to src.
+#   (BH2, REGRESSION ANCHOR) a foreground flock -n -x probe on the lock
+#     FAILS even though the clone-done marker is already present — proving
+#     the reader still holds flock -s after its copy finished. This is
+#     exactly what today's B11 reader (whose subshell ends at the cp) does
+#     NOT do, and exactly what the flip's Step-6 GC
+#     (scripts/refresh-warm-base.sh:428) tests with the identical
+#     flock -n -x idiom.
+#   (BH3, negative control) after kill+wait teardown, the same probe
+#     SUCCEEDS — proving teardown genuinely releases the lock, so a
+#     post-drain GC still has a free lock to reap against.
+#
+# RED until step-4: _spawn_pinning_reader is undefined → command not found
+# under set -euo pipefail → non-zero exit.
 # Task: #5866
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
@@ -1309,6 +1326,46 @@ _BH_NEG_RC=0
 _wait_for_marker "$_BH_NONEXISTENT_MARKER" 1 || _BH_NEG_RC=$?
 assert "BH-NEG: _wait_for_marker returns non-zero when marker never appears (anti-hang)" \
     test "$_BH_NEG_RC" -ne 0
+
+# ── Setup: a tiny 3-file source dir + lock/ready/clone-done paths — plain
+# flock, no reflink required, so this runs on every host (merge gate incl.).
+_BH_SRC="$_BH_PARENT/src"
+mkdir -p "$_BH_SRC"
+echo "one"   > "$_BH_SRC/a"
+echo "two"   > "$_BH_SRC/b"
+echo "three" > "$_BH_SRC/c"
+_BH_DST="$_BH_PARENT/dst"
+_BH_LOCK="$_BH_PARENT/pin.lock"
+_BH_READY="$_BH_PARENT/pin-ready"
+_BH_CLONE_DONE="$_BH_PARENT/pin-clone-done"
+
+# Call the helper (undefined until step-4 → command not found under
+# set -euo pipefail → script aborts → RED).
+_spawn_pinning_reader "$_BH_LOCK" "$_BH_READY" "$_BH_CLONE_DONE" "$_BH_SRC" "$_BH_DST"
+_BH_READER_PID="$_PINNING_READER_PID"
+_wait_for_marker "$_BH_READY" 30
+_wait_for_marker "$_BH_CLONE_DONE" 30
+
+# ── BH1: the concurrent clone actually landed and matches src ──
+assert "BH1: _spawn_pinning_reader's clone lands (dst exists)" \
+    test -d "$_BH_DST"
+assert "BH1: _spawn_pinning_reader's clone is byte-identical to src" \
+    diff -r "$_BH_SRC" "$_BH_DST"
+
+# ── BH2 (REGRESSION ANCHOR): reader still holds flock -s AFTER its copy
+# completed. Mirrors RH-POS's probe idiom (flock -n -x on the same lock).
+_BH2_PROBE_RC=0
+flock -n -x "$_BH_LOCK" true 2>/dev/null || _BH2_PROBE_RC=$?
+assert "BH2: flock -n -x probe FAILS after clone-done (reader still holds flock -s post-copy)" \
+    test "$_BH2_PROBE_RC" -ne 0
+
+# ── BH3 (negative control): kill+wait teardown genuinely releases the lock ──
+kill "$_BH_READER_PID" 2>/dev/null || true
+wait "$_BH_READER_PID" 2>/dev/null || true
+_BH3_PROBE_RC=1
+flock -n -x "$_BH_LOCK" true 2>/dev/null && _BH3_PROBE_RC=0 || _BH3_PROBE_RC=$?
+assert "BH3: flock -n -x probe SUCCEEDS after kill+wait teardown (lock released)" \
+    test "$_BH3_PROBE_RC" -eq 0
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block PS-NORM — Pass-set normalizer timing-strip regression (ALWAYS-RUN)
