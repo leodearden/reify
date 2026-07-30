@@ -1537,3 +1537,133 @@ fn value_floor_int_param_given_string_still_warns() {
 fn value_floor_dimensionless_real_param_given_string_still_warns() {
     assert_single_arg_type_mismatch_warning(SRC_FLOOR_REAL, "mag", "Real ← String");
 }
+
+// ===========================================================================
+// Quantity-slot dimension semantics (task 5766) — `Vector` family, `.ri` level
+// ===========================================================================
+//
+// Task 5766 rules the quantity slot of `Vector`/`Point`/`Matrix`/`Tensor` to be
+// dimension-checked under **dimensionless-tolerant strict equality**: reject iff
+// BOTH sides name a concrete dimension and they disagree. `Field` is HELD LOOSE
+// by decision (it has no quantity slot — see `field_hold_*` below and the
+// normative block in `crates/reify-core/src/ty.rs`).
+//
+// The four tests below pin the whole boundary of the `Vector` half in one place:
+// one REJECT leg (the tightening) and three legs that must stay GREEN both
+// before and after it.
+
+const SRC_VEC3_CROSS_DIMENSION: &str = r#"module test.vec3_cross_dimension
+structure def Joint { param axis : Vector3<Length> }
+structure def Root {
+    let j = Joint(axis: vec3(1kg, 0kg, 0kg))
+}
+"#;
+
+/// THE TIGHTENING (task 5766, `Vector` family): a `vec3` whose components carry
+/// a dimension that DISAGREES with the param's quantity slot is now rejected.
+///
+/// `vec3(1kg, 0kg, 0kg)` compiles to `Vector3<Scalar[kg]>`; the param declares
+/// `Vector3<Scalar[m]>`. Both sides name a concrete — and different — dimension,
+/// so this is the one case decidable from the type alone with no risk of
+/// comparing a declaration against a hole.
+///
+/// Routed through `emit_arg_type_mismatch` (→ `ArgTypeMismatch`), NOT
+/// `emit_vector_mismatch` (→ `TypeNotConformingToVector`), which keeps that
+/// bespoke code owning ARITY failures only — see
+/// `vector_string_still_rejected_family_before_quantity` below.
+#[test]
+fn vec3_cross_dimension_at_dimensioned_vector_param_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_VEC3_CROSS_DIMENSION,
+        "axis",
+        "Vector3<Length> ← Vector3<Mass>",
+    );
+}
+
+const SRC_VEC3_DIMENSIONLESS: &str = r#"module test.vec3_dimensionless
+structure def Joint { param axis : Vector3<Length> }
+structure def Root {
+    let j = Joint(axis: vec3(0, 0, 1))
+}
+"#;
+
+/// FENCE (a) — the DIMENSIONLESS leg the ruling deliberately keeps loose.
+///
+/// This is the reason the rule is dimensionless-TOLERANT rather than strict
+/// `DimensionVector` equality: `examples/dynamics/pendulum_idyn.ri:32` spells a
+/// joint axis `vec3(0, 1, 0)` into `Revolute.axis : Vec3<Length>`, and the ty.rs
+/// "Point / Vector quantity-slot convention" records that
+/// `Value::Vector::infer_type()` may yield a dimensionless (or `Int`) quantity.
+/// Green BEFORE and AFTER the tightening; its unit-level sibling is
+/// `vector_param_accepts_dimensionless_vector_arg` in `conformance/mod.rs`.
+#[test]
+fn vec3_dimensionless_at_dimensioned_vector_param_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_VEC3_DIMENSIONLESS);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a dimensionless vec3(0, 0, 1) at a Vector3<Length> param must stay SILENT — the \
+         quantity rule is dimensionless-tolerant by decision (task 5766), because the arg \
+         side is systematically erased at this arm and pendulum_idyn.ri:32 relies on this \
+         spelling. Got: {diags:#?}"
+    );
+}
+
+const SRC_VEC3_MATCHING_DIMENSION: &str = r#"module test.vec3_matching_dimension
+structure def Joint { param axis : Vector3<Length> }
+structure def Root {
+    let j = Joint(axis: vec3(0mm, 0mm, 1mm))
+}
+"#;
+
+/// FENCE (b) — dimensions AGREE, so silent. `stdlib/fdm.ri:112`'s shape.
+///
+/// Guards against a tightening that compares something other than the dimension
+/// (e.g. the rendered unit or the `Type` by structural equality): `mm` and the
+/// param's `Length` are the same `DimensionVector`, and `DimensionVector`'s
+/// derived `PartialEq` is what the rule uses.
+#[test]
+fn vec3_matching_dimension_at_dimensioned_vector_param_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_VEC3_MATCHING_DIMENSION);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "vec3(0mm, 0mm, 1mm) at a Vector3<Length> param must stay SILENT — the dimensions \
+         AGREE (mm and Length are the same DimensionVector). Got: {diags:#?}"
+    );
+}
+
+const SRC_VECTOR_GIVEN_STRING: &str = r#"module test.vector_string
+structure def Joint { param axis : Vector3<Length> }
+structure def Root {
+    let j = Joint(axis: "z")
+}
+"#;
+
+/// FENCE (c) — the unknown-ness fence's REJECT leg: FAMILY is decided BEFORE
+/// quantity, so a `String` at a `Vector3<Length>` param is still rejected.
+///
+/// Pins the ordering the ruling depends on. The quantity check is applied only
+/// AFTER the existing family/arity check passes and only to args that actually
+/// carry a quantity slot, so it can neither silence this rejection nor be
+/// reached by it. The code stays `TypeNotConformingToVector` — the `Vector`
+/// arm's bespoke family/arity code — which is what leaves `ArgTypeMismatch`
+/// free to mean "quantity conflict" at this arm.
+#[test]
+fn vector_string_still_rejected_family_before_quantity() {
+    let module = compile_source_with_stdlib(SRC_VECTOR_GIVEN_STRING);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "a String at a Vector3<Length> param must still be rejected — family is decided \
+         before the quantity slot is consulted. Got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::TypeNotConformingToVector),
+        "the Vector arm's FAMILY/ARITY rejection keeps its bespoke code; only a QUANTITY \
+         conflict routes to ArgTypeMismatch (task 5766). Got: {:?}",
+        diags[0].code
+    );
+}
