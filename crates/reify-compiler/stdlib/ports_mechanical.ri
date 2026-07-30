@@ -7,11 +7,13 @@
 //
 // Deviations from §11 spec (forced by current language scope):
 //   1. `Torque` type alias required. Torque is absent from NAMED_DIMENSIONS
-//      (reify-core/src/dimension.rs:443-494). Torque ≡ Force·Length/Angle
-//      (distinct from Energy via the Angle⁻¹ slot; see dimension.rs:1259 and
-//      reify-eval/tests/money_acceptance_sweep_eval.rs:114). Binary dimensional-
+//      in reify-core/src/dimension.rs. Torque ≡ Force·Length/Angle
+//      (distinct from Energy via the Angle⁻¹ slot; see
+//      `torque_dim_differs_from_energy_dim_via_angle_slot` in dimension.rs and
+//      `eval_torque_and_energy_remain_distinct_at_runtime_with_and_without_money_factor`
+//      in reify-eval/tests/money_acceptance_sweep_eval.rs). Binary dimensional-
 //      operation expressions are admitted ONLY on type-alias RHS, not in
-//      `param x : <type>` position (units.ri esc-4026-121:80-91) — hence the
+//      `param x : <type>` position (units.ri esc-4026-121) — hence the
 //      alias indirection, mirroring `pub type Velocity = Length / Time`.
 //      The alias is `pub` to mirror units.ri's `pub type Velocity` convention.
 //   2. Traits are NOT `pub`, matching the io.ri/process.ri convention.
@@ -141,7 +143,7 @@ trait RotaryPort : MotivePort {
 
 // Linear actuator port — delivers thrust along an axis over a finite stroke.
 //   max_speed : Velocity        — maximum continuous linear speed (Velocity alias
-//               = Length/Time; units.ri:91).
+//               = Length/Time; `pub type Velocity` in units.ri).
 //   max_force : Force           — maximum continuous thrust.
 //   stroke    : Length          — usable travel range.
 //   axis      : Vector3<Length> — travel axis (constitutive.ri convention).
