@@ -50,9 +50,9 @@ citations date from the 2026-07-05 decompose and several are demonstrably **stal
 SHA** — spot-checked there, `engine_eval.rs:1284` lands on a connector-instance comment (not
 `build_solver_problem`), `constraint.rs:288` lands mid-doc-comment (not the `ResolutionProblem`
 carrier), `registry.rs:484` lands on `candidates,` (not `eval_rank_cost`), and `constraint.rs:445`
-/ `registry.rs:311` likewise miss. Re-anchoring them was outside task 5190's file scope and is
-tracked under **#5776**. Until that lands, treat a non-BT3/BT4 line number here as a stale hint
-and re-derive it by symbol name. (The sibling
+/ `registry.rs:311` likewise miss. Re-anchoring them was outside task 5190's file scope and was
+tracked under **#5776** — now landed 2026-07-30 (see the amendment immediately below; the
+α/β/γ/δ table anchors are fresh as of `8489b49bfa`). (The sibling
 `whole-model-joint-drive-seam.capability-manifest.md` *was* fully re-anchored and enumerates its
 drift list in its own header.)
 
