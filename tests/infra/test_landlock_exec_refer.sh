@@ -29,7 +29,7 @@
 # it is strictly WORSE than not handling it: Landlock then enforces it
 # explicitly and denies reparenting on every path that lacks the grant.
 #
-# THREE TRAPS, RECORDED SO THEY ARE NOT RE-DERIVED
+# FOUR TRAPS, RECORDED SO THEY ARE NOT RE-DERIVED
 # ------------------------------------------------
 #  1. `mv` MASKS THE BUG. coreutils mv falls back to copy+unlink on EXDEV —
 #     precisely the errno an unhandled REFER produces — so an mv-based probe
@@ -38,13 +38,33 @@
 #  2. /tmp IS GRANTED WHOLESALE by the helper (accepted v1 limitation, see
 #     CLAUDE.md "Vendored sandbox helpers"). A containment assertion whose
 #     destination is under /tmp therefore SUCCEEDS even in a correct build and
-#     is a false premise. Assertion (c) below defaults to a $REPO_ROOT-rooted
-#     destination, but that is CHECKED against the granted roots rather than
-#     assumed safe: a lane provisioned in tmpfs, or a CI checkout under
-#     $TMPDIR, puts $REPO_ROOT itself inside a granted root, and (c) would then
-#     cry "CONTAINMENT BREACH" at a perfectly correct helper. When that
-#     happens it falls back to (a)'s non-/tmp base, and SKIPs if neither
-#     qualifies.
+#     is a false premise. Assertion (c)'s destination is CHECKED against the
+#     granted roots rather than assumed safe: a lane provisioned in tmpfs, or a
+#     CI checkout under $TMPDIR, puts $REPO_ROOT itself inside a granted root,
+#     and (c) would then cry "CONTAINMENT BREACH" at a perfectly correct helper.
+#     Every candidate destination clears _granted_root_hit or is rejected.
+#  4. A CROSS-FILESYSTEM ESCAPE DESTINATION MAKES (c) VACUOUS — the mirror image
+#     of trap #2, and the reason trap #2's own reasoning was not sufficient. An
+#     unhandled/ungranted REFER denial surfaces as EXDEV; so does a GENUINE
+#     cross-device rename, rejected by the VFS before Landlock is ever
+#     consulted. The two are indistinguishable at the probe: both reach
+#     os.rename(2), both print `RENAME_DENIED errno=18`, both leave no file at
+#     the destination. So the RENAME_DENIED marker — which correctly rules out a
+#     broken fixture — does NOT rule this out. MEASURED on the merge-gate host:
+#     /tmp is dev 66312 (ext4 on /) while a warm lane's worktree is dev 1821
+#     (xfs on a loop device), so the original $TMPROOT -> $REPO_ROOT escape
+#     rename returned EXDEV from the VFS and (c) passed unconditionally — it
+#     stayed green even with the helper invoked as `--writable $TMPROOT
+#     --writable $REPO_ROOT`, i.e. with containment deliberately granted away.
+#     Two independent repairs, both applied below: (i) the destination must now
+#     be on the SAME DEVICE as $TMPROOT (`stat -c %d`) — /var/tmp is the
+#     preferred candidate precisely because the helper's own comment says it is
+#     deliberately NOT granted, and it usually shares a filesystem with /tmp —
+#     plus an AMBIENT CONTROL that runs the identical escape rename UNSANDBOXED
+#     and SKIPs (c) when it already fails; and (ii) assertion (e), a plain
+#     create+write outside every granted root. A write has no EXDEV failure
+#     mode at all, so (e) tests containment directly and stays live no matter
+#     how the host's mounts are laid out.
 #  3. A /tmp-ROOTED FIXTURE BLINDS ASSERTION (a) — the mirror image of trap #2.
 #     Trap #2 is about the rename DESTINATION; this one is about the SOURCE
 #     ROOT. Landlock path_beneath rules apply down the hierarchy, so a
@@ -73,15 +93,25 @@
 #   (b) CONTROL, green before and after — a SAME-directory rename inside the
 #       writable root succeeds. Guards against the fix over-tightening the
 #       mask.
-#   (c) CONTAINMENT, green before and after — a rename OUT of every granted
-#       root is still refused, and leaves no file behind. The only INVERTED
-#       assertion here, hence the only one that can pass for the wrong reason:
-#       a bare non-zero exit is also what a broken fixture produces (the helper
-#       dying before exec, python3 unresolvable inside the ruleset, open(src)
-#       denied), and in those cases the rename was never attempted. So it
-#       requires the probe's own RENAME_DENIED marker in the captured output —
-#       proof that os.rename(2) was reached and the kernel refused it — and
-#       reports INCONCLUSIVE rather than passing on an untested code path.
+#   (c) CONTAINMENT (rename axis), green before and after — a rename OUT of
+#       every granted root is still refused, and leaves no file behind. An
+#       INVERTED assertion, hence one that can pass for the wrong reason, in
+#       TWO distinct ways, each with its own guard:
+#         * a broken fixture (the helper dying before exec, python3
+#           unresolvable inside the ruleset, open(src) denied) also exits
+#           non-zero with the rename never attempted — guarded by requiring the
+#           probe's own RENAME_DENIED marker, which reports INCONCLUSIVE rather
+#           than passing on an untested code path;
+#         * a genuine cross-device rename also reaches os.rename(2) and also
+#           reports EXDEV — guarded by the same-device destination check and the
+#           ambient control, see trap #4.
+#   (e) CONTAINMENT (write axis), green before and after — a plain create+write
+#       at a path outside every granted root is refused and leaves no file
+#       behind. Deliberately redundant with (c) on the contract and deliberately
+#       NOT redundant on the failure modes: open(2)/write(2) have no EXDEV
+#       fallback semantics and no filesystem-boundary confound, so (e) cannot be
+#       silenced by the host's mount layout the way (c) was (trap #4). If the
+#       two ever disagree, (e) is the one to believe about containment.
 #   (d) CHARACTERIZATION / ANTI-BLIND-`cp` GUARD, green at authoring time —
 #       ~/.claude is still WRITABLE under the vendored helper. This is a
 #       REIFY-ONLY DIVERGENCE from dark-factory: upstream dropped the blanket
@@ -103,10 +133,14 @@
 #     (b)/(c)/(d) still run off $TMPROOT. A silently-skipped (a) would be as
 #     bad as the blind one trap #3 describes, so the message is deliberately
 #     loud and self-diagnosing.
-#   - $REPO_ROOT itself inside a wholesale-granted root AND no fallback base
-#     -> skip ONLY (c), naming the granted root it fell under. See trap #2: on
-#     such a host the escape rename succeeds legitimately, so asserting a
-#     breach would be a false FAIL, not a finding.
+#   - no escape destination that is BOTH outside every wholesale-granted root
+#     (trap #2 — there the rename succeeds legitimately, so asserting a breach
+#     would be a false FAIL) AND on the same device as $TMPROOT (trap #4 —
+#     there the rename fails for a reason that has nothing to do with Landlock,
+#     so asserting containment would be a false PASS) -> skip ONLY (c), naming
+#     every candidate tried and which of the two checks rejected it. (e) has no
+#     device constraint and keeps covering containment on such a host.
+#   - no path outside every wholesale-granted root at all -> skip ONLY (e).
 #   - AMBIENT CONTROL fails -> skip the affected assertion(s) with a
 #     diagnostic. Landlock rulesets layer by INTERSECTION, so if the process
 #     running this test is itself already inside a ruleset that does not hand
@@ -162,11 +196,13 @@ CLAUDE_PROBE="$CLAUDE_DIR/.reify-landlock-writable-probe.$$"
 # before either is resolved, tolerates the unresolved case. ESCAPE_DST is never
 # pre-created: its non-existence afterwards is part of assertion (c).
 ESCAPE_DST=""
+WRITE_ESCAPE_DST=""
 REFERROOT=""
 cleanup() {
     rm -rf "$TMPROOT"
     rm -f "$CLAUDE_PROBE"
     if [ -n "${ESCAPE_DST:-}" ]; then rm -f "$ESCAPE_DST"; fi
+    if [ -n "${WRITE_ESCAPE_DST:-}" ]; then rm -f "$WRITE_ESCAPE_DST"; fi
     if [ -n "${REFERROOT:-}" ]; then rm -rf "$REFERROOT"; fi
     return 0
 }
@@ -286,43 +322,132 @@ if [ -z "$REFERROOT" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Assertion (c)'s escape destination -- trap #2, applied to the rename
-# DESTINATION with the same checks trap #3 applies to (a)'s SOURCE ROOT.
-# $REPO_ROOT is the natural home for it, but is NOT safe by construction: a
-# lane provisioned in tmpfs, or a CI checkout under $TMPDIR, puts the repo
-# itself inside a root the helper grants wholesale. The escape rename would
-# then legitimately SUCCEED and (c) would report "CONTAINMENT BREACH" against a
-# perfectly correct helper. So $REPO_ROOT is CHECKED here rather than assumed;
-# the fallback is $REFER_BASE, which qualified through the very same
-# _granted_root_hit test above. If neither is usable, (c) SKIPs -- a bogus FAIL
-# is worse than a missing assertion.
+# The two CONTAINMENT destinations -- (c)'s rename target and (e)'s write
+# target. Both must sit outside every root the helper grants WHOLESALE (trap
+# #2, applied to the DESTINATION with the same checks trap #3 applies to (a)'s
+# SOURCE ROOT); a lane provisioned in tmpfs, or a CI checkout under $TMPDIR,
+# puts $REPO_ROOT itself inside such a root, and the probe would then
+# legitimately succeed against a perfectly correct helper. So no candidate is
+# assumed safe -- every one clears _granted_root_hit or is rejected by name.
 #
-# Note this is about the WHOLESALE roots only: the destination must also lie
-# outside every --writable path, which it does by construction, since (c) runs
-# through run_sandboxed and so hands the helper $TMPROOT as its sole writable
-# root -- and neither $REPO_ROOT nor $REFER_BASE can be under $TMPROOT once
-# they have cleared the $TMPDIR / /tmp check.
+# (c) carries the ADDITIONAL constraint of trap #4: the destination must be on
+# the SAME DEVICE as $TMPROOT, or the rename is a genuine cross-device rename
+# that the VFS rejects with EXDEV before Landlock is consulted -- the exact
+# errno a REFER denial produces, so the assertion would pass unconditionally.
+# /var/tmp leads that ladder because the helper's own source comment says it is
+# deliberately NOT granted ("/tmp only -- avoid /var/tmp so worktrees placed
+# there stay restricted") and it typically shares a filesystem with /tmp, which
+# is where $TMPROOT is minted. (e) has no such constraint: open(2)/write(2)
+# have no EXDEV failure mode, which is precisely why (e) exists.
+#
+# Both ladders concern the WHOLESALE roots only: the destination must also lie
+# outside every --writable path, which it does by construction, since (c)/(e)
+# run through run_sandboxed and so hand the helper $TMPROOT as its sole
+# writable root -- and the explicit _is_under check below re-confirms it rather
+# than inferring it from the /tmp / $TMPDIR rejection.
 # ---------------------------------------------------------------------------
+REAL_TMPROOT="$(realpath -m "$TMPROOT" 2>/dev/null || echo "$TMPROOT")"
+TMPROOT_DEV="$(stat -c %d "$TMPROOT" 2>/dev/null || true)"
+
+# Ladder state, reset before each of the two runs below. Bash namerefs would
+# let this return a value properly, but the file targets plain bash and the
+# rest of the fixture already uses this global-accumulator idiom.
+_ESC_PICK=""
+_ESC_PICK_LABEL=""
+_ESC_REJECTS=""
+_ESC_REQUIRE_SAME_DEV=0
+
+# _consider_escape_dir <label> <path> -- try one rung. First qualifying entry
+# wins. WRITABILITY IS PART OF QUALIFYING, as in _consider_base: a candidate
+# that passes every path check but cannot be written falls through to the next
+# rung rather than skipping the assertion outright.
+_consider_escape_dir() {
+    local label="$1" cand="$2" real hit dev probe
+    if [ -n "$_ESC_PICK" ]; then return 0; fi
+    if [ -z "$cand" ]; then
+        _ESC_REJECTS="$_ESC_REJECTS
+        - $label: unset or empty"
+        return 0
+    fi
+    if [ ! -d "$cand" ]; then
+        _ESC_REJECTS="$_ESC_REJECTS
+        - $label ($cand): not an existing directory"
+        return 0
+    fi
+    real="$(realpath -m "$cand" 2>/dev/null || true)"
+    if [ -z "$real" ]; then
+        _ESC_REJECTS="$_ESC_REJECTS
+        - $label ($cand): realpath -m failed"
+        return 0
+    fi
+    if hit="$(_granted_root_hit "$real")"; then
+        _ESC_REJECTS="$_ESC_REJECTS
+        - $label ($real): at or under $hit -- granted wholesale, so the probe would
+          legitimately succeed and report a bogus breach (trap #2)"
+        return 0
+    fi
+    if _is_under "$real" "$REAL_TMPROOT"; then
+        _ESC_REJECTS="$_ESC_REJECTS
+        - $label ($real): inside \$TMPROOT ($REAL_TMPROOT), the sole --writable root"
+        return 0
+    fi
+    if [ "$_ESC_REQUIRE_SAME_DEV" = "1" ]; then
+        dev="$(stat -c %d "$real" 2>/dev/null || true)"
+        if [ -z "$TMPROOT_DEV" ] || [ -z "$dev" ]; then
+            _ESC_REJECTS="$_ESC_REJECTS
+        - $label ($real): stat -c %d unavailable, cannot prove same-filesystem (trap #4)"
+            return 0
+        fi
+        if [ "$dev" != "$TMPROOT_DEV" ]; then
+            _ESC_REJECTS="$_ESC_REJECTS
+        - $label ($real): device $dev != \$TMPROOT device $TMPROOT_DEV -- a rename there
+          is a GENUINE cross-device rename, EXDEV from the VFS before Landlock is
+          consulted, so (c) would pass without testing anything (trap #4)"
+            return 0
+        fi
+    fi
+    probe="$real/.landlock-escape-writecheck.$$"
+    if ! touch "$probe" 2>/dev/null; then
+        _ESC_REJECTS="$_ESC_REJECTS
+        - $label ($real): not writable (touch failed)"
+        return 0
+    fi
+    rm -f "$probe"
+    _ESC_PICK="$real"
+    _ESC_PICK_LABEL="$label"
+    return 0
+}
+
+# (c)'s rename destination -- same-device REQUIRED (trap #4).
+_ESC_PICK=""; _ESC_PICK_LABEL=""; _ESC_REJECTS=""; _ESC_REQUIRE_SAME_DEV=1
+_consider_escape_dir '$REIFY_LANDLOCK_ESCAPE_DIR' "${REIFY_LANDLOCK_ESCAPE_DIR:-}"
+_consider_escape_dir '/var/tmp' '/var/tmp'
+_consider_escape_dir '$REPO_ROOT' "$REPO_ROOT"
+_consider_escape_dir '$REFER_BASE' "${REFER_BASE:-}"
 ESCAPE_SKIP_REASON=""
-REAL_REPO_ROOT="$(realpath -m "$REPO_ROOT" 2>/dev/null || true)"
-ESCAPE_REPO_HIT=""
-if [ -z "$REAL_REPO_ROOT" ]; then
-    ESCAPE_REPO_HIT="realpath -m failed on $REPO_ROOT"
-elif ESCAPE_REPO_HIT="$(_granted_root_hit "$REAL_REPO_ROOT")"; then
-    : # repo root is inside a wholesale-granted root; fall through to $REFER_BASE
+if [ -n "$_ESC_PICK" ]; then
+    ESCAPE_DST="$_ESC_PICK/.landlock-refer-escape-probe.$$"
+    echo "--- assertion (c) escape destination: $ESCAPE_DST"
+    echo "    (base: $_ESC_PICK_LABEL; outside every granted root, device $TMPROOT_DEV == \$TMPROOT's) ---"
 else
-    ESCAPE_REPO_HIT=""
+    ESCAPE_SKIP_REASON="no candidate qualified. Tried:$_ESC_REJECTS"
 fi
 
-if [ -z "$ESCAPE_REPO_HIT" ]; then
-    ESCAPE_DST="$REPO_ROOT/.landlock-refer-escape-probe.$$"
-elif [ -n "$REFER_BASE" ]; then
-    ESCAPE_DST="$REFER_BASE/.landlock-refer-escape-probe.$$"
-    echo "NOTE: \$REPO_ROOT is $ESCAPE_REPO_HIT, which the helper grants wholesale;"
-    echo "      assertion (c) uses $ESCAPE_DST instead so a legitimate rename is not"
-    echo "      mistaken for a containment breach (trap #2)."
+# (e)'s write destination -- device irrelevant, so the ladder prefers
+# $REPO_ROOT (the closest analogue of a real out-of-sandbox target) and only
+# then falls back. This is the assertion that survives a host where every
+# out-of-root path lives on another filesystem.
+_ESC_PICK=""; _ESC_PICK_LABEL=""; _ESC_REJECTS=""; _ESC_REQUIRE_SAME_DEV=0
+_consider_escape_dir '$REIFY_LANDLOCK_ESCAPE_DIR' "${REIFY_LANDLOCK_ESCAPE_DIR:-}"
+_consider_escape_dir '$REPO_ROOT' "$REPO_ROOT"
+_consider_escape_dir '/var/tmp' '/var/tmp'
+_consider_escape_dir '$REFER_BASE' "${REFER_BASE:-}"
+WRITE_ESCAPE_SKIP_REASON=""
+if [ -n "$_ESC_PICK" ]; then
+    WRITE_ESCAPE_DST="$_ESC_PICK/.landlock-containment-probe.$$"
+    echo "--- assertion (e) write destination: $WRITE_ESCAPE_DST (base: $_ESC_PICK_LABEL) ---"
 else
-    ESCAPE_SKIP_REASON="\$REPO_ROOT is $ESCAPE_REPO_HIT and no fallback base qualified:$REFER_REJECTS"
+    WRITE_ESCAPE_SKIP_REASON="no candidate qualified. Tried:$_ESC_REJECTS"
 fi
 
 RENAME_PY="$TMPROOT/rename_probe.py"
@@ -449,6 +574,59 @@ if [ "$RUN_BEHAVIOURAL" = "1" ]; then
     fi
 fi
 
+# Assertion (c)'s own ambient control -- and the single most important one in
+# this file, because (c) is INVERTED: for (a)/(b)/(d) a missing ambient control
+# risks a false FAIL, but for (c) it risks a false PASS, which is silent. See
+# trap #4: an ambient EXDEV here means source and destination are on different
+# filesystems (or an outer layer already denies the rename), so the sandboxed
+# form would be refused by something other than the vendored helper and (c)
+# would report a containment it never observed. The same-device check above
+# already rejects the common case by construction; this control is the
+# behavioural backstop for everything it cannot see (bind mounts, overlayfs,
+# an outer Landlock layer, a read-only remount).
+RUN_ESCAPE=0
+if [ "$RUN_BEHAVIOURAL" = "1" ]; then
+    if [ -z "$ESCAPE_DST" ]; then
+        echo "SKIP: assertion (c) -- no usable rename destination: $ESCAPE_SKIP_REASON"
+        echo "      (c) needs a destination that is BOTH outside every wholesale-granted root"
+        echo "      (trap #2 -- else the rename legitimately succeeds) AND on \$TMPROOT's own"
+        echo "      filesystem (trap #4 -- else EXDEV comes from the VFS, not from Landlock,"
+        echo "      and (c) passes without testing anything). Set \$REIFY_LANDLOCK_ESCAPE_DIR"
+        echo "      to such a directory to re-enable it. (e) still covers containment."
+    elif ! AMBIENT_ESCAPE_OUT="$(python3 "$RENAME_PY" "$TMPROOT/ambient-escape/src.rmeta" "$ESCAPE_DST" 2>&1)"; then
+        rm -f "$ESCAPE_DST"
+        echo "SKIP: assertion (c) -- the ambient (unsandboxed) escape rename to $ESCAPE_DST"
+        echo "      ALREADY fails, so its sandboxed form would be refused by something other"
+        echo "      than the vendored helper and (c) could only pass for the wrong reason"
+        echo "      (trap #4). An errno=18 here specifically means source and destination are"
+        echo "      on different filesystems. Probe said: $AMBIENT_ESCAPE_OUT"
+    else
+        # The ambient rename SUCCEEDED, so it left the file behind; reclaim it
+        # before (c) asserts on the destination's non-existence.
+        rm -f "$ESCAPE_DST"
+        RUN_ESCAPE=1
+    fi
+fi
+
+# Assertion (e)'s ambient control. Same reasoning, one axis over: if the
+# unsandboxed write already fails (an outer ruleset, a read-only mount, a
+# permissions quirk), the sandboxed refusal proves nothing about the helper.
+# WRITE_PY unlinks what it writes, so a successful control leaves no residue.
+RUN_WRITE_ESCAPE=0
+if [ "$RUN_BEHAVIOURAL" = "1" ]; then
+    if [ -z "$WRITE_ESCAPE_DST" ]; then
+        echo "SKIP: assertion (e) -- no path outside every wholesale-granted root:"
+        echo "      $WRITE_ESCAPE_SKIP_REASON"
+    elif ! AMBIENT_WRITE_ESCAPE_OUT="$(python3 "$WRITE_PY" "$WRITE_ESCAPE_DST" 2>&1)"; then
+        rm -f "$WRITE_ESCAPE_DST"
+        echo "SKIP: assertion (e) -- the ambient (unsandboxed) write to $WRITE_ESCAPE_DST"
+        echo "      already fails, so a sandboxed refusal would not be attributable to the"
+        echo "      vendored helper. Probe said: $AMBIENT_WRITE_ESCAPE_OUT"
+    else
+        RUN_WRITE_ESCAPE=1
+    fi
+fi
+
 if [ "$RUN_BEHAVIOURAL" = "1" ]; then
     echo "--- behavioural assertions against the real helper ---"
 
@@ -476,27 +654,26 @@ if [ "$RUN_BEHAVIOURAL" = "1" ]; then
     assert "(b) same-directory rename inside the --writable root still succeeds" \
         samedir_rename_succeeds
 
-    # (c) CONTAINMENT -- renaming OUT of every granted root stays refused.
+    # (c) CONTAINMENT, rename axis -- renaming OUT of every granted root stays
+    # refused.
     #
-    # The ONLY inverted assertion in this file, and therefore the only one that
-    # can pass for the wrong reason: (a)/(b)/(d) pass on success, so a broken
+    # An INVERTED assertion, and therefore one that can pass for the wrong
+    # reason: (a)/(b)/(d)/(e)'s ambient forms pass on success, so a broken
     # fixture turns them red, but here a broken fixture looks exactly like a
-    # refusal. A bare non-zero exit is not proof -- the inner probe also exits
-    # non-zero when its own setup fails (open(src) denied, python3 unresolvable
-    # inside the ruleset) and the helper exits non-zero when it dies before
-    # exec (bad argv, create_ruleset/restrict_self failing). In every one of
-    # those cases the rename was never attempted, so containment was never
-    # tested; without this check (c) would keep passing even if containment
-    # broke in a way that also broke the setup. Requiring the probe's own
-    # RENAME_DENIED marker pins the pass to "os.rename(2) was reached and the
-    # kernel refused it".
-    if [ -z "$ESCAPE_DST" ]; then
-        echo "SKIP: assertion (c) -- no rename destination outside the wholesale-granted"
-        echo "      roots: $ESCAPE_SKIP_REASON"
-        echo "      A rename INTO a wholesale-granted root succeeds even on a correct"
-        echo "      helper (trap #2), so running (c) here would report a bogus breach."
-        echo "      Set \$REIFY_LANDLOCK_TEST_ROOT to a writable non-/tmp dir to re-enable it."
-    else
+    # refusal. Three guards, each closing a different way to pass vacuously:
+    #   1. A bare non-zero exit is not proof -- the inner probe also exits
+    #      non-zero when its own setup fails (open(src) denied, python3
+    #      unresolvable inside the ruleset) and the helper exits non-zero when
+    #      it dies before exec (bad argv, create_ruleset/restrict_self
+    #      failing). In every one of those cases the rename was never
+    #      attempted. Requiring the probe's own RENAME_DENIED marker pins the
+    #      pass to "os.rename(2) was reached and the kernel refused it".
+    #   2. That marker does NOT distinguish a Landlock REFER denial from a
+    #      genuine cross-device EXDEV -- both reach os.rename(2) and both print
+    #      errno=18. Closed by the same-device destination check (trap #4).
+    #   3. ...and by the ambient control above, which proves the identical
+    #      rename SUCCEEDS unsandboxed on this host.
+    if [ "$RUN_ESCAPE" = "1" ]; then
         escape_rename_refused() {
             local out rc
             rm -rf "$TMPROOT/escape"
@@ -525,6 +702,43 @@ if [ "$RUN_BEHAVIOURAL" = "1" ]; then
         }
         assert "(c) rename out of every granted root is refused (probe reached os.rename and was denied) and leaves no file behind" \
             escape_rename_refused
+    fi
+
+    # (e) CONTAINMENT, write axis -- the confound-free half of the containment
+    # contract. (c) can be silenced by the host's mount layout because EXDEV is
+    # overloaded (trap #4); open(2)/write(2) has no EXDEV failure mode at all,
+    # so the only thing that can deny this write is an access-control decision.
+    # It still requires the probe's own WRITE_DENIED marker for guard #1 above
+    # -- a fixture that dies before reaching open(2) must not read as
+    # containment.
+    if [ "$RUN_WRITE_ESCAPE" = "1" ]; then
+        escape_write_refused() {
+            local out rc
+            rm -f "$WRITE_ESCAPE_DST"
+            out="$(run_sandboxed "$WRITE_PY" "$WRITE_ESCAPE_DST" 2>&1)" && rc=0 || rc=$?
+            if [ "$rc" = "0" ]; then
+                echo "CONTAINMENT BREACH: wrote $WRITE_ESCAPE_DST, outside every granted root"
+                echo "  probe said: $out"
+                rm -f "$WRITE_ESCAPE_DST"
+                return 1
+            fi
+            if ! printf '%s\n' "$out" | grep -q 'WRITE_DENIED errno='; then
+                echo "INCONCLUSIVE: the sandboxed probe exited $rc WITHOUT reaching open(2),"
+                echo "  so containment was never exercised -- a fixture failure, not a refusal."
+                echo "  (e) fails rather than passing on an untested code path. Probe said: $out"
+                rm -f "$WRITE_ESCAPE_DST"
+                return 1
+            fi
+            if [ -e "$WRITE_ESCAPE_DST" ]; then
+                echo "CONTAINMENT BREACH: $WRITE_ESCAPE_DST exists after a supposedly-refused write"
+                echo "  probe said: $out"
+                rm -f "$WRITE_ESCAPE_DST"
+                return 1
+            fi
+            return 0
+        }
+        assert "(e) create+write outside every granted root is refused (probe reached open(2) and was denied; no EXDEV confound) and leaves no file behind" \
+            escape_write_refused
     fi
 
     # (d) CHARACTERIZATION -- the anti-blind-`cp` guard. See the header.
