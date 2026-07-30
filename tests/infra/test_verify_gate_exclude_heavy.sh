@@ -76,14 +76,26 @@ NOT_PATTERN='-E "not ('
 # only preserves behaviour if NEXTEST is genuinely role/knob-invariant. It is,
 # and for a checkable reason rather than the one the old comment gave (it said
 # NEXTEST is computed "before any role/knob logic runs" — it is not; it is
-# computed after both): scripts/verify.sh:1509-1544 derives NEXTEST from
-# `cargo nextest --version` / `command -v cargo-nextest` ALONE, reading neither
-# DF_VERIFY_ROLE (defaulted :616) nor REIFY_GATE_EXCLUDE_HEAVY (read :709). The
-# header at :2598 interpolates that same $NEXTEST.
+# computed after both): verify.sh's `NEXTEST=0; if cargo nextest --version ...`
+# probe derives NEXTEST from cargo-nextest resolvability ALONE, reading neither
+# DF_VERIFY_ROLE nor REIFY_GATE_EXCLUDE_HEAVY, and the plan header interpolates
+# that same $NEXTEST.
 #
-# Net robustness gain, too: the old capture had no `|| true`, so a verify.sh
-# hiccup aborted the suite under `set -o pipefail` before test_summary. The lib
-# path is guarded at nextest_absent_lib.sh:712 and degrades to "not available".
+# WHAT THE SHARED PATH TRADES — not a free robustness win. The lib's extractor
+# is `|| true`-guarded, so it does not remove the old failure mode, it CONVERTS
+# it: where the old unguarded capture aborted the suite under `set -o pipefail`,
+# this one answers "not available" and carries on. That moves the failure TOWARD
+# vacuous green, not away from it, and dropping the role pin supplies a concrete
+# trigger — an ambient unrecognized role now short-circuits the probe
+# (`DF_VERIFY_ROLE=bogus bash scripts/verify.sh test --scope all --print-plan`
+# exits 64 with nothing on stdout, measured), where the pinned form was immune.
+#
+# What makes that acceptable is NOT the guard — it is the else branch below. A
+# false "not available" on a nextest-present host takes the fallback arm, whose
+# "role=..., knob=1, nextest unavailable: plan has NO ..." assert then fails
+# loudly against a plan that DOES carry the -E exclusion. So that arm is this
+# probe's only detector of a wrong answer: do not delete it as dead weight on a
+# nextest-present host.
 # ---------------------------------------------------------------------------
 NEXTEST_AVAILABLE=0
 if nextest_available_ambient "$REPO_ROOT/scripts/verify.sh"; then

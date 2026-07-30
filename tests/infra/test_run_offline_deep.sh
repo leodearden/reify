@@ -144,9 +144,13 @@ POSITIVE_PATTERN='-E "('
 # agree.
 #
 # The empty-PLAN_FULL (RED phase) guard the local `|| true` used to provide is
-# preserved: _nextest_absent_header_of is itself `|| true`-guarded
-# (nextest_absent_lib.sh:712), so an empty plan yields NEXTEST_AVAILABLE=0
-# instead of aborting this script under pipefail.
+# preserved: _nextest_absent_header_of is itself `|| true`-guarded, so an empty
+# plan yields NEXTEST_AVAILABLE=0 instead of aborting this script under pipefail.
+# That is a converted failure mode, not an eliminated one — a quiet
+# NEXTEST_AVAILABLE=0 skips the nextest arm below. What catches it is the
+# unconditional "run-offline-deep.sh --print-plan exits 0" assert above, which
+# sits outside every NEXTEST_AVAILABLE branch and fails loudly on exactly the
+# empty/failed capture that could produce a wrong availability answer.
 NEXTEST_AVAILABLE=0
 if nextest_available_in_plan "$PLAN_FULL"; then
     NEXTEST_AVAILABLE=1

@@ -92,11 +92,19 @@ PLAN_DEFAULT="$(bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || tr
 # by running --print-plan a third time. PLAN_DEFAULT stays: the default-invariant
 # asserts below read it too.
 #
-# The empty-plan (RED) guard the local `|| true` used to provide is preserved and
-# strengthened rather than lost — nextest_available_in_plan routes through
-# _nextest_absent_header_of, which is itself `|| true`-guarded
-# (nextest_absent_lib.sh:712) and returns non-zero (=> NEXTEST_AVAILABLE=0) on an
-# empty plan instead of aborting under pipefail.
+# The empty-plan (RED) guard the local `|| true` used to provide is preserved:
+# nextest_available_in_plan routes through _nextest_absent_header_of, which is
+# itself `|| true`-guarded and returns non-zero (=> NEXTEST_AVAILABLE=0) on an
+# empty plan instead of aborting under pipefail. That CONVERTS the failure mode
+# rather than removing it — an abort becomes a quiet "unavailable" — so it is
+# not a robustness win on its own.
+#
+# What makes it safe is the else arm below, which is all POSITIVE asserts on the
+# fallback shape ("fallback: --test-threads=4 threads into the cargo test line"
+# and the two after it, all grepping `cargo test `). A false "unavailable" on a
+# nextest-present host routes into that arm and fails loudly against a plan that
+# emits `cargo nextest run` instead. Do not weaken those to absence checks — the
+# positive form is what keeps a wrong availability answer from going green.
 NEXTEST_AVAILABLE=0
 if nextest_available_in_plan "$PLAN_DEFAULT"; then
     NEXTEST_AVAILABLE=1

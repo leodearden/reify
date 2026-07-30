@@ -112,12 +112,21 @@ RAMEMBER2="test_verify_retry_subset.sh"
 # and the ambient one is wrong here: verify.sh cannot emit the `nextest=` header
 # without genuinely probing, and the worst case — cargo-nextest present but every
 # probe failing — forks cargo up to 4x plus two sleeps before hard-failing
-# (nextest_absent_lib.sh:546-563). Reading the captured plan is what is free.
+# (the rationale is recorded on nextest_available_in_plan itself). Reading the
+# captured plan is what is free.
 #
 # The `|| true` on the capture still guards a RED-phase empty plan under
-# pipefail, and the lib strengthens it: _nextest_absent_header_of is itself
-# `|| true`-guarded (nextest_absent_lib.sh:712) and reports unavailable on an
-# empty plan rather than aborting.
+# pipefail, and _nextest_absent_header_of is itself `|| true`-guarded, so an
+# empty plan reports unavailable rather than aborting. Note what that converts
+# rather than removes: an unavailable answer SKIPS the nextest arm instead of
+# failing it, so the guard moves the failure toward vacuous green. And the
+# byte-identical-default assert below does NOT catch that — it is an ABSENCE
+# check (`! grep -qF "$MARKER"`), which an empty PLAN_DEFAULT satisfies
+# vacuously. What still fails loudly is this suite's unconditional POSITIVE
+# asserts, which make their own verify.sh captures: "count (b) ... ⇒ marker
+# carries run_all=2" and "B2 tree-drift: STDERR carries the loud 'retry
+# refused: tree drift' line". A verify.sh broken enough to empty PLAN_DEFAULT
+# cannot leave this suite green through those.
 PLAN_DEFAULT="$(bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
 NEXTEST_AVAILABLE=0
 if nextest_available_in_plan "$PLAN_DEFAULT"; then

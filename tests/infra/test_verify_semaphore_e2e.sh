@@ -1180,10 +1180,20 @@ capture_plans
 #     use the `cargo (test|nextest run)` alternation instead.
 # The probe reads the header off the already-captured PLAN_TEST_FULL — no extra
 # verify.sh invocation. That "no extra invocation" property is exactly why
-# nextest_available_in_plan exists (tests/infra/nextest_absent_lib.sh:546-563,
-# task 5644): verify.sh cannot emit the `nextest=` header without genuinely
-# probing, and the worst case forks cargo up to 4x plus two sleeps. The idiom's
-# home is now that lib rather than a sibling suite.
+# nextest_available_in_plan exists (tests/infra/nextest_absent_lib.sh, task
+# 5644): verify.sh cannot emit the `nextest=` header without genuinely probing,
+# and the worst case forks cargo up to 4x plus two sleeps. The idiom's home is
+# now that lib rather than a sibling suite.
+#
+# The lib's extractor is `|| true`-guarded, which CONVERTS an aborting capture
+# into a quiet "unavailable" rather than eliminating the failure. A wrong answer
+# still fails loudly here, but for a reason that has to be preserved
+# deliberately: the else arm below asserts the fallback shape POSITIVELY
+# ("cargo-test fallback lines carry NO --config-file" requires `cargo test` to
+# be present AND --config-file to be absent), so on a nextest-present host it
+# fails on both counts. The ordering and no---no-run asserts are unguarded
+# anyway — they use the `cargo (test|nextest run)` alternation and hold on both
+# host shapes.
 # Guarded by tests/infra/test_verify_nextest_absent_suites.sh.
 NEXTEST_AVAILABLE=0
 if nextest_available_in_plan "$PLAN_TEST_FULL"; then

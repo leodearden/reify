@@ -88,10 +88,10 @@ NOT_PATTERN='-E "not ('
 # The dropped `env -u REIFY_GATE_EXCLUDE_HEAVY DF_VERIFY_ROLE=task` pin.
 # nextest_available_ambient runs verify.sh with no env prefix, so this only
 # preserves behaviour if NEXTEST is genuinely role/knob-invariant -- verified in
-# the source: scripts/verify.sh:1509-1544 derives NEXTEST from
-# `cargo nextest --version` / `command -v cargo-nextest` ALONE, reading neither
-# DF_VERIFY_ROLE (defaulted :616) nor REIFY_GATE_EXCLUDE_HEAVY (read :709), and
-# the header at :2598 interpolates that same $NEXTEST.
+# the source: verify.sh's `NEXTEST=0; if cargo nextest --version ...` probe
+# derives NEXTEST from cargo-nextest resolvability ALONE, reading neither
+# DF_VERIFY_ROLE nor REIFY_GATE_EXCLUDE_HEAVY, and the plan header interpolates
+# that same $NEXTEST.
 #
 # UNDER THE NEXTEST-ABSENT HARNESS. This suite is S3 in
 # tests/infra/test_verify_nextest_absent_suites.sh, so it also runs as a child
@@ -100,9 +100,22 @@ NOT_PATTERN='-E "not ('
 # `bash "$verify" --print-plan` inherits it exactly as the old open-coded
 # capture did -- reading nextest=0, NEXTEST_AVAILABLE=0, unchanged.
 #
-# Net robustness gain: the old capture had no `|| true`, so a verify.sh hiccup
-# aborted the suite under `set -o pipefail` before test_summary. The lib path is
-# guarded at nextest_absent_lib.sh:712 and degrades to "not available".
+# WHAT THE SHARED PATH TRADES -- not a free robustness win. The lib's extractor
+# is `|| true`-guarded, so it does not remove the old failure mode, it CONVERTS
+# it: where the old unguarded capture aborted the suite under `set -o pipefail`,
+# this one answers "not available" and carries on. That moves the failure TOWARD
+# vacuous green, not away from it, and dropping the role pin supplies a concrete
+# trigger -- an ambient unrecognized role now short-circuits the probe
+# (`DF_VERIFY_ROLE=bogus bash scripts/verify.sh test --scope all --print-plan`
+# exits 64 with nothing on stdout, measured), where the pinned form was immune.
+#
+# What makes that acceptable is NOT the guard -- it is the else arm of every
+# NEXTEST_AVAILABLE branch below. A false "not available" on a nextest-present
+# host routes assertion (b) into `_gate_lacks ... "$NOT_PATTERN"` and assertions
+# (c)/(d) into `_offline_lacks '-E "('`, all three of which then fail loudly
+# against a plan that DOES carry the -E expression. Those else arms are this
+# probe's only detector of a wrong answer: do not delete them as dead weight on
+# a nextest-present host.
 # ---------------------------------------------------------------------------
 NEXTEST_AVAILABLE=0
 if nextest_available_ambient "$REPO_ROOT/scripts/verify.sh"; then
