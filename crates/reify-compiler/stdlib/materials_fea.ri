@@ -47,10 +47,10 @@
 //     conformance and a single solver-facing trait: `solve_elastic_static`
 //     accepts a `material : ConstitutiveLaw` param, so only a
 //     `ConstitutiveLaw` conformer type-checks there, and `ElasticMaterial`
-//     bundles `density`/`yield_stress` into that one trait rather than
-//     requiring the `MaterialSpec + Elastic + Strong` composition idiom
-//     used elsewhere in this module (`examples/io_export.ri`,
-//     `examples/m8_materials.ri`). It is NOT dimension-typing (both
+//     bundles `density`/`yield_stress` into that one trait, rather than
+//     composing the narrow single-concern traits `materials_mechanical.ri`
+//     is built around (`MaterialSpec` for `density`, `Elastic` for E/ν,
+//     `Strong` for `yield_strength`). It is NOT dimension-typing (both
 //     traits are now dimensioned) or the Poisson range (a minor,
 //     `Elastic`-is-narrower difference). New FEA-bound code should
 //     depend on `ElasticMaterial`.
