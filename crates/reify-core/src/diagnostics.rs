@@ -2532,12 +2532,20 @@ pub enum DiagnosticCode {
     /// Emitted as a `Severity::Warning` by the eval-time `flexure_diagnose`
     /// `__flexure_compliance_get` arm when the accessor's argument is NOT a joint
     /// `Value::Map` carrying the reserved hidden `__flexure_compliance` record
-    /// (e.g. a bare `Length`). The DSL `flexure_compliance(joint: Length)`
-    /// signature cannot distinguish a real PRB-ctor joint from any other `Length`
-    /// at compile time, so the intrinsic silently yields a sentinel-zero record;
-    /// this runtime warning surfaces that documented type-lie. A real joint
-    /// argument emits nothing. Full static enforcement rides the future
-    /// typed-joint work (out of scope here).
+    /// (e.g. a fabricated `FlexureJoint()`). A real joint argument emits nothing.
+    ///
+    /// RETAINED AS DEFENSE-IN-DEPTH, not superseded (task #5476, PRD
+    /// `docs/prds/v0_6/placeholder-type-eradication-ratchet.md` §3.6). The DSL
+    /// accessor is now `flexure_compliance(joint: FlexureJoint)`, so the bare-
+    /// literal case this warning was originally written for — any `Length`, e.g.
+    /// `5mm`, silently matching the old `joint: Length` placeholder and yielding a
+    /// sentinel-zero record — is a hard compile Error carrying
+    /// [`DiagnosticCode::NoMatchingOverload`]. What remains is the narrower
+    /// residual hole the type cannot close: `FlexureJoint` must be spellable in
+    /// that public signature, so a bare `FlexureJoint()` fabrication is
+    /// statically legal while carrying no `__flexure_compliance` cache entry.
+    /// This warning is the arm that keeps that case loud — INV-SF-5 bans a
+    /// placeholder being both statically and dynamically silent.
     ///
     /// The PRD-prose mnemonic for this code is `W_FLEXURE_NON_JOINT_ARG`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).

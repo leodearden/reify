@@ -44,12 +44,17 @@ const PRB_ANGLE_LIMIT_DEG: f64 = 5.0;
 /// dedup is the reify-expr emission layer's responsibility (step-10), not this
 /// classifier's.
 pub fn flexure_diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagnostic> {
-    // Disposition 5 (task 4547): the `__flexure_compliance_get` accessor intrinsic
-    // backs the DSL `flexure_compliance(joint: Length)` accessor. Its declared
-    // `Length` arg type cannot statically distinguish a real PRB-ctor joint from
-    // any other length, so the intrinsic silently returns a sentinel-zero record
-    // for a non-joint arg (see `mod.rs::flexure_compliance_get`). Surface that
-    // documented type-lie here at eval time: warn when args[0] is NOT a joint
+    // Disposition 5 (task 4547), RETAINED as defense-in-depth by task #5476
+    // (PRD docs/prds/v0_6/placeholder-type-eradication-ratchet.md §3.6): the
+    // `__flexure_compliance_get` accessor intrinsic backs the DSL
+    // `flexure_compliance(joint: FlexureJoint)` accessor. The declared arg type is
+    // now the nominal `FlexureJoint` marker, so a bare `Length` (the old
+    // `joint: Length` placeholder's hole) is rejected at COMPILE time with
+    // `DiagnosticCode::NoMatchingOverload`. But `FlexureJoint` is necessarily
+    // spellable, so a fabricated `FlexureJoint()` still reaches the intrinsic
+    // carrying no `__flexure_compliance` record, and the intrinsic still returns a
+    // sentinel-zero record for it (see `mod.rs::flexure_compliance_get`). Surface
+    // that residual case here at eval time: warn when args[0] is NOT a joint
     // `Value::Map` carrying the cached `__flexure_compliance` record; a real joint
     // arg emits nothing. This dedicated arm sits BEFORE the `is_flexure_ctor`
     // short-circuit below — the accessor is not a ctor, and adding it to
@@ -646,11 +651,12 @@ mod tests {
         assert!(!msg.contains('°'), "prismatic suggestion does not cite degrees: {msg}");
     }
 
-    /// Disposition 5 (task 4547): the `flexure_compliance(joint: Length)` accessor
-    /// (body `__flexure_compliance_get(joint)`) is a documented type-lie — the
-    /// intrinsic silently returns a sentinel-zero record for ANY bare `Length`
-    /// arg, since only a joint `Value::Map` carrying `__flexure_compliance`
-    /// resolves a real record. `flexure_diagnose` surfaces that lie at eval time
+    /// Disposition 5 (task 4547), RETAINED by task #5476 (PRD §3.6): the
+    /// `flexure_compliance(joint: FlexureJoint)` accessor (body
+    /// `__flexure_compliance_get(joint)`) still returns a sentinel-zero record for
+    /// an arg that is not a joint `Value::Map` carrying `__flexure_compliance` —
+    /// reachable now only via a fabricated `FlexureJoint()`, since a bare `Length`
+    /// is rejected at compile time. `flexure_diagnose` surfaces that at eval time
     /// via a dedicated `__flexure_compliance_get` arm (placed BEFORE the
     /// `is_flexure_ctor` short-circuit), emitting `W_FlexureNonJointArg`
     /// (Warning) when `args[0]` is not a joint Map carrying the compliance record.
