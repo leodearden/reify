@@ -604,11 +604,39 @@ sandbox:
   enabled: true
   backend: landlock
 
-# Sandbox companion (task γ6a): toolchain-cache redirect for the three
-# sandboxed roles (implementer, debugger, simple_task — a hardcoded copy of
-# DF's roles.py sandboxed=True set; reify cannot observe a DF-side 4th
-# role addition, see the "SECOND, UNGUARDED COUPLING" note in
-# tests/infra/test_sandbox_cache_writability_seam.sh's header).
+# Sandbox companion (task γ6a): toolchain-cache redirect, now covering 6 of
+# the 9 dispatch roles in DF's ROLES registry (roles.py:1512).
+#   implementer, debugger, simple_task — DF roles.py sandboxed=True TODAY.
+#   architect, reviewer_comprehensive, judge — redirect landed AHEAD of the
+#   DF-side sandboxed=True flip (task 5858 is the load-bearing prerequisite
+#   half; the DF half must NOT land first, or every newly-sandboxed agent
+#   dies on its first cargo write).
+#   Safe to land alone: entries for not-yet-sandboxed roles are INERT BUT
+#   HARMLESS — workflow.py:_build_agent_env merges
+#   role_env_overrides.get(role.name, {}) LAST for EVERY role.
+#   The key is `reviewer_comprehensive`, NOT `reviewer`. KNOWN_ROLE_NAMES
+#   (shared/task_metadata.py:70) accepts the collapsed `reviewer`, so DF's
+#   _warn_unknown_role_env_overrides_keys (config.py:4003) would stay SILENT
+#   on it — but _build_agent_env keys on role.name, which _reviewer_role
+#   (roles.py:643) builds as f'reviewer_{name}'. A `reviewer:` entry would
+#   validate cleanly, look right in review, and deliver NO redirect at all.
+#   Pinned by the `role_key_absent reviewer` assertion in the seam test.
+#   WHY `judge` IS SAFE despite workflow.py:10358's "do not add 'judge' to
+#   role_env_overrides": that rule is scoped to ENDPOINT env
+#   (ANTHROPIC_BASE_URL/AUTH_TOKEN routing judge through vLLM, where
+#   max_model_len breaks tool-use after 2 rounds, 3cd380a079). CARGO_HOME /
+#   npm_config_cache route nothing; the global `env_overrides` that would
+#   carry ANTHROPIC_* is merged only for implementer/debugger and is not even
+#   set in this file; and judge already receives a non-None env dict today
+#   via apply_mcp_startup_env (mcp_lifecycle.py:51). Consumption is
+#   `env.update(...)` (invoke.py:277) — a merge, never a replacement.
+#   NOT covered, deliberately: merger, steward, deep_reviewer. merger is
+#   excluded on blast radius — redirecting the merge agent's CARGO_HOME to a
+#   cold /tmp cache would diverge it from the verify subprocess cache path on
+#   the one gate that lands everything (the same reasoning applied to
+#   verify_env below). reify still cannot observe a DF-side role addition;
+#   see the coupling note in
+#   tests/infra/test_sandbox_cache_writability_seam.sh's header.
 #   WHY: compute_write_set (DF-owned, orchestrator/agents/write_set.py)
 #   grants worktree + <base>/.task-meta/<name> + main .git carve-outs +
 #   ~/.cache/uv + ~/.claude/fleet + /tmp + /dev, and NOTHING under
@@ -660,6 +688,8 @@ role_env_overrides:
   debugger: *sandbox_cache_env
   simple_task: *sandbox_cache_env
   architect: *sandbox_cache_env
+  reviewer_comprehensive: *sandbox_cache_env
+  judge: *sandbox_cache_env
 
 # Escalation
 escalation:
