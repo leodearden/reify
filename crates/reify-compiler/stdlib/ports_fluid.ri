@@ -7,7 +7,7 @@
 //
 // Deviations from §11 spec (forced by current language scope):
 //   1. `VolumetricFlowRate` type alias required. Volumetric flow rate (m³/s)
-//      is absent from NAMED_DIMENSIONS (reify-core/src/dimension.rs:443-494).
+//      is absent from NAMED_DIMENSIONS in reify-core/src/dimension.rs.
 //      Binary dimensional-operation expressions are admitted ONLY on type-alias
 //      RHS, not in `param x : <type>` position (units.ri esc-4026-121:80-91) —
 //      hence the alias indirection `pub type VolumetricFlowRate = Volume / Time`,
