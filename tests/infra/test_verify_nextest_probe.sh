@@ -101,6 +101,17 @@ _REAL_CARGO="$(command -v cargo)" || {
 # Builds the farm + temp HOME and registers the cleanup trap (EXIT/INT/TERM/HUP
 # — a strict superset of the bare EXIT trap this suite used to install). This is
 # the only trap in this file, so there is nothing to compose with.
+#
+# BARE CALL, INTENTIONALLY. As of task 5645 nextest_absent_init verifies the
+# observable invariant (cargo-nextest unreachable under the constructed env)
+# and returns non-zero when the simulation would be vacuous — e.g. on a host
+# where a second, non-mirror-source PATH directory still exposes cargo-nextest.
+# Under this file's `set -euo pipefail` that aborts the suite right here with a
+# named harness diagnostic on stderr, which is the wanted outcome: every assert
+# below is meaningless without a genuine simulation. Do NOT add `|| true` — the
+# graceful skip path belongs to test_verify_nextest_absent_suites.sh, which
+# consults nextest_absent_available and reports a HOST PRECONDITION SKIP; this
+# suite has no such path and a swallowed failure would go silently vacuous.
 nextest_absent_init
 
 # Inside the lib's workdir, so the same trap removes it.
