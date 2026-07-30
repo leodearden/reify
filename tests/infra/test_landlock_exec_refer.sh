@@ -134,8 +134,8 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
-# Fixture — hermetic (pool-safe): one mktemp -d root, plus two paths OUTSIDE
-# it that the assertions probe and the trap reclaims.
+# Fixture — hermetic (pool-safe): two mktemp -d roots, plus two paths OUTSIDE
+# them that the assertions probe and the trap reclaims.
 # ---------------------------------------------------------------------------
 TMPROOT="$(mktemp -d "${TMPDIR:-/tmp}/reify-landlock-refer.XXXXXX")"
 # Destination for the containment probe. MUST be outside /tmp (granted
@@ -145,7 +145,113 @@ TMPROOT="$(mktemp -d "${TMPDIR:-/tmp}/reify-landlock-refer.XXXXXX")"
 ESCAPE_DST="$REPO_ROOT/.landlock-refer-escape-probe.$$"
 CLAUDE_DIR="$(python3 -c 'import os; print(os.path.expanduser("~/.claude"))')"
 CLAUDE_PROBE="$CLAUDE_DIR/.reify-landlock-writable-probe.$$"
-trap 'rm -rf "$TMPROOT"; rm -f "$ESCAPE_DST" "$CLAUDE_PROBE"' EXIT
+# Assertion (a)'s own root, minted below and deliberately OUTSIDE /tmp (trap
+# #3). Initialised empty so the EXIT trap -- installed before it is resolved --
+# tolerates the unresolved case.
+REFERROOT=""
+cleanup() {
+    rm -rf "$TMPROOT"
+    rm -f "$ESCAPE_DST" "$CLAUDE_PROBE"
+    if [ -n "${REFERROOT:-}" ]; then rm -rf "$REFERROOT"; fi
+    return 0
+}
+trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
+# Assertion (a)'s non-/tmp fixture root. See trap #3 in the header: a root
+# minted under /tmp (or under ~/.claude) inherits that root's WHOLESALE
+# fs_writable_all grant, so it cannot observe whether the helper's
+# `for path in ns.writable` loop grants REFER -- the grant that actually
+# matters in production, where the sidecar's writable root is REIFY_WORKSPACE.
+#
+# Candidate ladder, first qualifying entry wins:
+#   1. $REIFY_LANDLOCK_TEST_ROOT -- explicit override for exotic hosts / CI.
+#   2. $REPO_ROOT/target         -- default: gitignored (.gitignore "/target"),
+#                                   so scratch there never dirties the worktree;
+#                                   preserved by the lane `git clean -xfd -e
+#                                   target`; always writable; outside /tmp.
+#   3. $HOME.
+# A candidate qualifies only if it is an existing directory that, realpath'd,
+# is neither /tmp, $TMPDIR nor ~/.claude, nor beneath any of them, AND under
+# which `mktemp -d` actually succeeds -- writability is part of qualifying, so
+# an unwritable rung falls through to the next instead of skipping (a).
+# ---------------------------------------------------------------------------
+REAL_TMP="$(realpath -m /tmp 2>/dev/null || echo /tmp)"
+REAL_TMPDIR=""
+if [ -n "${TMPDIR:-}" ]; then REAL_TMPDIR="$(realpath -m "$TMPDIR" 2>/dev/null || true)"; fi
+REAL_CLAUDE="$(realpath -m "$CLAUDE_DIR" 2>/dev/null || true)"
+
+# _is_under <realpath> <realpath-prefix> -- true when <path> IS <prefix> or
+# lies beneath it. The trailing slash is what stops /tmpfoo matching /tmp.
+_is_under() {
+    local path="$1" prefix="$2"
+    if [ -z "$prefix" ]; then return 1; fi
+    if [ "$path" = "$prefix" ]; then return 0; fi
+    case "$path" in
+        "${prefix%/}"/*) return 0 ;;
+    esac
+    return 1
+}
+
+REFER_BASE=""
+REFER_REJECTS=""
+# _consider_base <label> <path> -- try one rung of the ladder. WRITABILITY IS
+# PART OF QUALIFYING: the mktemp is attempted here, so a base that passes the
+# path checks but cannot be written falls through to the next candidate rather
+# than skipping (a) outright. MEASURED: under a dark-factory-sandboxed agent
+# role $HOME is not writable (mktemp -> EACCES), which is exactly the rung this
+# fall-through exists for.
+_consider_base() {
+    local label="$1" cand="$2" real pname pval spec
+    if [ -n "$REFER_BASE" ]; then return 0; fi
+    if [ -z "$cand" ]; then
+        REFER_REJECTS="$REFER_REJECTS
+        - $label: unset or empty"
+        return 0
+    fi
+    if [ ! -d "$cand" ]; then
+        REFER_REJECTS="$REFER_REJECTS
+        - $label ($cand): not an existing directory"
+        return 0
+    fi
+    real="$(realpath -m "$cand" 2>/dev/null || true)"
+    if [ -z "$real" ]; then
+        REFER_REJECTS="$REFER_REJECTS
+        - $label ($cand): realpath -m failed"
+        return 0
+    fi
+    for spec in "/tmp:$REAL_TMP" "\$TMPDIR:$REAL_TMPDIR" "~/.claude:$REAL_CLAUDE"; do
+        pname="${spec%%:*}"
+        pval="${spec#*:}"
+        if _is_under "$real" "$pval"; then
+            REFER_REJECTS="$REFER_REJECTS
+        - $label ($real): at or under $pname ($pval) -- would inherit its wholesale grant (trap #3)"
+            return 0
+        fi
+    done
+    if ! REFERROOT="$(mktemp -d "$real/reify-landlock-refer-nontmp.XXXXXX" 2>"$TMPROOT/mktemp.err")"; then
+        REFER_REJECTS="$REFER_REJECTS
+        - $label ($real): mktemp -d failed: $(cat "$TMPROOT/mktemp.err" 2>/dev/null || true)"
+        REFERROOT=""
+        # Falling through past a candidate that existed but could not be
+        # written is worth one visible line -- otherwise an explicit
+        # $REIFY_LANDLOCK_TEST_ROOT could be silently ignored.
+        echo "NOTE: assertion (a) base candidate $label ($real) is not writable; trying the next rung"
+        return 0
+    fi
+    REFER_BASE="$real"
+    return 0
+}
+
+mkdir -p "$REPO_ROOT/target" 2>/dev/null || true
+_consider_base '$REIFY_LANDLOCK_TEST_ROOT' "${REIFY_LANDLOCK_TEST_ROOT:-}"
+_consider_base '$REPO_ROOT/target' "$REPO_ROOT/target"
+_consider_base '$HOME' "${HOME:-}"
+
+REFER_SKIP_REASON=""
+if [ -z "$REFERROOT" ]; then
+    REFER_SKIP_REASON="no candidate base qualified. Tried:$REFER_REJECTS"
+fi
 
 RENAME_PY="$TMPROOT/rename_probe.py"
 cat > "$RENAME_PY" << 'PYEOF'
@@ -200,10 +306,21 @@ print('WRITE_OK %s' % path)
 sys.exit(0)
 PYEOF
 
-# run_sandboxed <inner.py> [args...] -- invoke the REAL vendored helper with
-# $TMPROOT as its sole --writable root, then the inner probe.
+# run_sandboxed_in <root> <inner.py> [args...] -- invoke the REAL vendored
+# helper with <root> as its SOLE --writable root, then the inner probe. Sole,
+# so that for assertion (a) the per-path grant on <root> is the only thing that
+# can authorize the rename. The probe scripts themselves live under $TMPROOT
+# and stay READABLE regardless: the helper grants '/' FS_RO.
+run_sandboxed_in() {
+    local root="$1"
+    shift
+    python3 "$HELPER" --writable "$root" -- python3 "$@"
+}
+
+# run_sandboxed <inner.py> [args...] -- the $TMPROOT-rooted form, used by
+# (b)/(c)/(d).
 run_sandboxed() {
-    python3 "$HELPER" --writable "$TMPROOT" -- python3 "$@"
+    run_sandboxed_in "$TMPROOT" "$@"
 }
 
 # ---------------------------------------------------------------------------
@@ -225,9 +342,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# AMBIENT CONTROL -- same cross-directory rename, UNSANDBOXED. Landlock layers
-# intersect, so an outer ruleset that omits REFER (or an exotic FS) would deny
-# the inner rename regardless of the helper. Downgrade to SKIP, never FAIL.
+# AMBIENT CONTROLS -- the same probes, UNSANDBOXED. Landlock layers intersect,
+# so an outer ruleset that omits REFER (or an exotic FS) would deny the inner
+# probe regardless of the helper. Downgrade to SKIP, never FAIL.
 # ---------------------------------------------------------------------------
 if [ "$RUN_BEHAVIOURAL" = "1" ]; then
     AMBIENT_OUT="$(python3 "$RENAME_PY" "$TMPROOT/ambient/full.rmeta" "$TMPROOT/ambient-dst.rmeta" 2>&1)" || {
@@ -238,18 +355,46 @@ if [ "$RUN_BEHAVIOURAL" = "1" ]; then
     }
 fi
 
+# Assertion (a) runs off $REFERROOT, not $TMPROOT, so it needs its own gate:
+# the non-/tmp base may not have resolved at all, and even when it did it can
+# fall outside a sandboxed agent role's write set while $TMPROOT does not.
+RUN_REFER=0
+if [ "$RUN_BEHAVIOURAL" = "1" ]; then
+    if [ -z "$REFERROOT" ]; then
+        echo "SKIP: assertion (a) -- could not mint a --writable root outside /tmp:"
+        echo "      $REFER_SKIP_REASON"
+        echo "      (a) needs such a root to observe the PER-PATH FS_REFER grant; a /tmp-rooted"
+        echo "      one inherits /tmp's wholesale grant (trap #3) and would stay GREEN on a"
+        echo "      broken ruleset. Set \$REIFY_LANDLOCK_TEST_ROOT to a writable non-/tmp dir to"
+        echo "      re-enable it. (b)/(c)/(d) still run off \$TMPROOT."
+    elif ! AMBIENT_REFER_OUT="$(python3 "$RENAME_PY" "$REFERROOT/ambient/full.rmeta" "$REFERROOT/ambient-dst.rmeta" 2>&1)"; then
+        echo "SKIP: assertion (a) -- ambient (unsandboxed) cross-directory rename inside"
+        echo "      $REFERROOT already fails, so a RED there would not be attributable to the"
+        echo "      vendored helper. Probe said: $AMBIENT_REFER_OUT"
+    else
+        echo "--- assertion (a) writable root: $REFERROOT (base: $REFER_BASE, outside /tmp) ---"
+        RUN_REFER=1
+    fi
+fi
+
 if [ "$RUN_BEHAVIOURAL" = "1" ]; then
     echo "--- behavioural assertions against the real helper ---"
 
     # (a) RED at authoring time. Mirrors rustc's encode_and_write_metadata:
     #     write the .rmeta into a temp subdirectory, rename it up one level.
-    crossdir_rename_succeeds() {
-        rm -rf "$TMPROOT/sub"
-        rm -f "$TMPROOT/libx.rmeta"
-        run_sandboxed "$RENAME_PY" "$TMPROOT/sub/full.rmeta" "$TMPROOT/libx.rmeta"
-    }
-    assert "(a) cross-directory rename inside the --writable root succeeds (FS_REFER handled + granted)" \
-        crossdir_rename_succeeds
+    #     Rooted at $REFERROOT -- OUTSIDE /tmp -- so that the helper's per-path
+    #     `for path in ns.writable` grant is the only thing that can authorize
+    #     the rename. See trap #3: a $TMPROOT-rooted form of this assertion
+    #     rides /tmp's wholesale grant and stays green on a broken ruleset.
+    if [ "$RUN_REFER" = "1" ]; then
+        crossdir_rename_succeeds() {
+            rm -rf "$REFERROOT/sub"
+            rm -f "$REFERROOT/libx.rmeta"
+            run_sandboxed_in "$REFERROOT" "$RENAME_PY" "$REFERROOT/sub/full.rmeta" "$REFERROOT/libx.rmeta"
+        }
+        assert "(a) cross-directory rename inside a --writable root OUTSIDE /tmp succeeds (per-path FS_REFER grant, not /tmp's wholesale grant)" \
+            crossdir_rename_succeeds
+    fi
 
     # (b) CONTROL -- same-directory rename must keep working.
     samedir_rename_succeeds() {
