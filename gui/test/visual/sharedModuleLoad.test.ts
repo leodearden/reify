@@ -16,7 +16,11 @@
  */
 import { describe, it, expect } from "vitest";
 
-import { findBareNodeLoadViolations } from "./sharedModuleLoad.js";
+import {
+  SHARED_ESM_MODULES,
+  expectBareNodeLoadable,
+  findBareNodeLoadViolations,
+} from "./sharedModuleLoad.js";
 
 describe("findBareNodeLoadViolations — the pure predicate behind the constraint", () => {
   it("returns no violations for plain ESM that a bare-`node` driver can load", () => {
@@ -58,5 +62,27 @@ describe("findBareNodeLoadViolations — the pure predicate behind the constrain
       "references a `node:` builtin",
       "uses CommonJS `require(`",
     ]);
+  });
+});
+
+describe("the load constraint that makes the shared driver modules .mjs", () => {
+  // The executable replacement for BOTH deleted copies. The `smoke_*.mjs`
+  // drivers are excluded from the table ON PURPOSE: they are node-only entry
+  // points and legitimately import `node:path` / `node:url`. Only the shared
+  // library modules — the ones loaded by BOTH consumer families, vitest through
+  // vite's browser-condition resolver and the drivers through a bare `node` —
+  // are subject to the constraint.
+  it.each(SHARED_ESM_MODULES)("%s is plain ESM a bare-`node` driver can load", (name) => {
+    expectBareNodeLoadable(name);
+  });
+
+  it("names the three known shared modules — an empty table is not a pass", () => {
+    // Without this, an edit that empties the table turns the `it.each` above
+    // into zero registered tests: a vacuously green suite with the constraint
+    // silently gone, which is the same inert-by-default failure the negative
+    // controls guard against on the regex side.
+    expect(SHARED_ESM_MODULES).toEqual(
+      expect.arrayContaining(["rpcEnvelope.mjs", "meshCountParity.mjs", "smokeDriverGuards.mjs"]),
+    );
   });
 });
