@@ -13,8 +13,9 @@
 //      `eval_torque_and_energy_remain_distinct_at_runtime_with_and_without_money_factor`
 //      in reify-eval/tests/money_acceptance_sweep_eval.rs). Binary dimensional-
 //      operation expressions are admitted ONLY on type-alias RHS, not in
-//      `param x : <type>` position (units.ri esc-4026-121) — hence the
-//      alias indirection, mirroring `pub type Velocity = Length / Time`.
+//      `param x : <type>` position (units.ri "Helper type aliases" note,
+//      esc-4026-121) — hence the alias indirection, mirroring
+//      `pub type Velocity = Length / Time`.
 //      The alias is `pub` to mirror units.ri's `pub type Velocity` convention.
 //   2. Traits are NOT `pub`, matching the io.ri/process.ri convention.
 //   3. No `#no_prelude` pragma. std.ports.mechanical refines LocatedPort from
