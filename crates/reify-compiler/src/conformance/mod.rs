@@ -1456,12 +1456,15 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         //
         // Accepts:
         //   • `Type::Point { n: arg_n, .. }` when `arg_n` matches the param's
-        //     `n`. The QUANTITY slot is intentionally loose — see the
-        //     "Point / Vector quantity-slot convention" section of
-        //     `crates/reify-core/src/ty.rs`, which records that the resolver
-        //     always wraps `Q` in `Type::Scalar` while `Value::Point::infer_type`
-        //     may yield a dimensionless or `Int` quantity, and that "the
-        //     looseness is intentional".
+        //     `n` AND the two QUANTITY slots do not conflict. Since task 5766 the
+        //     slot rule is: loose whenever either side declines to name a
+        //     concrete dimension (a dimensionless `Scalar`, `Type::Int`, or
+        //     `Type::ScalarParam` — `Value::Point::infer_type` yields the first
+        //     two), strict `DimensionVector` equality when BOTH name one. The
+        //     normative statement lives in the "Point / Vector quantity-slot
+        //     convention" section of `crates/reify-core/src/ty.rs` and is
+        //     deliberately not restated here; the predicate is
+        //     [`quantity_slots_conflict`].
         //   • Scalar-like numeric args, as the expression compiler's
         //     numeric-fallback placeholder for point-producing builtins.
         //
@@ -1490,7 +1493,20 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         // The tolerance can be tightened to a FunctionCall-shaped check once
         // `point3` carries a real return type — tracked by the family-5 /
         // placeholder follow-up filed with this task.
-        (Type::Point { .. }, arg_ty) if !arg_type_is_unverifiable(arg_ty) => {
+        //
+        // That bounded cost is UNCHANGED by task 5766's quantity rule, and for the
+        // same structural reason it exists: a bare numeric literal reaches this arm
+        // through the `is_numeric_placeholder_leaf` branch, which carries no
+        // quantity slot for the rule to compare. 5766 tightens the case where the
+        // arg IS a `Type::Point` and its slot names a conflicting dimension; it
+        // does not and cannot reach the placeholder branch.
+        (
+            Type::Point {
+                quantity: param_quantity,
+                ..
+            },
+            arg_ty,
+        ) if !arg_type_is_unverifiable(arg_ty) => {
             let is_conforming = match arg_ty {
                 Type::Point { n: arg_n, .. } => match param_type {
                     Type::Point { n: param_n, .. } => param_n == arg_n,
@@ -1501,6 +1517,20 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
             };
             if !is_conforming {
                 emit_arg_type_mismatch(param_type, arg_ty, ctx);
+            } else if let Type::Point {
+                quantity: arg_quantity,
+                ..
+            } = arg_ty
+            {
+                // QUANTITY SLOT (task 5766), checked only AFTER the arity match
+                // above has succeeded, and only for a genuinely `Type::Point` arg.
+                // The `is_numeric_placeholder_leaf` branch is deliberately NOT
+                // routed through here: a placeholder scalar has no quantity slot,
+                // and that branch is the one every real corpus `point3(…)` arg
+                // takes — it must stay dimension-blind.
+                if quantity_slots_conflict(param_quantity, arg_quantity) {
+                    emit_arg_type_mismatch(param_type, arg_ty, ctx);
+                }
             }
         }
         // Leaf: param type is a Matrix or Tensor (task 5465, family 2).
