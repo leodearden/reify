@@ -17,6 +17,9 @@
 #   B — precondition-refusal + T3 flock guard (step-3/step-4)
 #   C — FREE-FIRST reclaim + T1 source-intact (step-5/step-6)
 #   D — --reseed opt-in + free-BEFORE-stage ordering (step-7/step-8)
+#   E — seed fail-closed abort ⇒ the caller DISCARDS the uncertified
+#       <lane>/target it aborted onto (task 5635; PRD
+#       docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13 caller obligation)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -475,6 +478,92 @@ assert "D3: --reseed with a failing seed-script still exits 0 (best-effort)" \
     test "$RC" -eq 0
 assert "D3: target/ is still gone despite the reseed failure" \
     bash -c '[ ! -e "$1" ]' _ "$D_LANE_C/target"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block E — seed fail-closed abort ⇒ discard the uncertified lane target/
+# (task 5635; PRD docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13,
+# "Caller obligation on the fail-closed path")
+#
+# D3 above covers a PRE-clone seed failure — its stub never recreates target/, so
+# the free-first rm is the whole story and "already freed" is accurate. This block
+# covers the POST-clone case, which is the one the seed's three fail-closed
+# post-conditions actually produce: they all fire AFTER target/ has been replaced
+# with the CoW clone, so the seed aborts ONTO a hazardous clone it just refused to
+# certify — and deliberately does not rm it, leaving that to the caller.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block E: seed fail-closed abort => discard the uncertified lane target/ ---"
+
+E_BASE="$(mktemp -d /tmp/test-thin-warm-lane-e-base-XXXXXX)"
+_TMPDIRS+=("$E_BASE")
+
+E_SEED_LOG="$(mktemp /tmp/test-thin-warm-lane-e-seedlog-XXXXXX)"
+_TMPDIRS+=("$E_SEED_LOG")
+
+# ONE stub serves both E1 and E2; only $SEED_RC differs between the two runs.
+# That IS the pair's point: the discard is keyed on the seed's EXIT STATUS, so a
+# stub leaving a byte-identical <lane>/target behind must have that clone
+# DISCARDED at rc=1 and PRESERVED at rc=0. Without E2 an unconditional `rm -rf`
+# would keep E1 green. (Neutral marker name: the same staged clone is hazardous
+# only when the seed refused to certify it.)
+E_SEED_STUB="$(mktemp /tmp/test-thin-warm-lane-e-seedstub-XXXXXX)"
+_TMPDIRS+=("$E_SEED_STUB")
+cat > "$E_SEED_STUB" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+mkdir -p "$LANE_DIR/target"
+touch "$LANE_DIR/target/CLONE_MARKER"
+exit "${SEED_RC:-0}"
+STUB_EOF
+chmod +x "$E_SEED_STUB"
+export SEED_LOG="$E_SEED_LOG"
+
+# ── E1: a POST-CLONE fail-closed abort ⇒ the clone is discarded, exit still 0 ──
+E_LANE_A="$(mktemp -d /tmp/test-thin-warm-lane-e-a-XXXXXX)"
+_TMPDIRS+=("$E_LANE_A")
+mkdir -p "$E_LANE_A/target"
+touch "$E_LANE_A/target/MARKER"
+
+SEED_RC=1 run_helper "$E_LANE_A" --reseed --base "$E_BASE" --seed-script "$E_SEED_STUB"
+
+assert "E1: the uncertified clone is DISCARDED — <lane>/target is GONE" \
+    bash -c '[ ! -e "$1" ]' _ "$E_LANE_A/target"
+# The lane is now in exactly the state thin GUARANTEES (target/ freed) — cold but
+# safe — so the documented best-effort-reseed contract still holds and the exit
+# code stays 0. thin's exit code tracks whether the lane is left SAFE, not whether
+# the re-seed succeeded.
+assert "E1: exit is still 0 (lane left cold-but-safe; best-effort reseed contract holds)" \
+    test "$RC" -eq 0
+assert "E1: stdout is still exactly the resolved lane_dir (single line, contract intact)" \
+    test "$OUT" = "$(realpath -m "$E_LANE_A")"
+# Anchored on a [warn]-tagged line specifically: the free-first `ok "Freed
+# <lane>/target"` already names that same path, so an unanchored grep would go
+# green without the discard ever being reported.
+assert "E1: a stderr [warn] line names the discarded path" \
+    bash -c 'printf "%s\n" "$1" | grep -F "[warn]" | grep -qF "$2/target"' _ "$ERR_OUT" "$E_LANE_A"
+assert "E1: stderr cites the §9.5 inv.13 caller obligation" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "inv.13"' _ "$ERR_OUT"
+# "already freed" describes a PRE-clone abort only. After a post-clone abort the
+# lane target/ is NOT already freed — the seed put a fresh, uncertified clone
+# there — so the old wording is now actively misleading and must be gone.
+assert "E1: the stale 'lane target/ was already freed' wording is GONE" \
+    bash -c '! printf "%s\n" "$1" | grep -q "already freed"' _ "$ERR_OUT"
+
+# ── E2: POSITIVE CONTROL — a CERTIFYING seed's clone is never discarded ────────
+# Load-bearing: same stub, same staged target/, rc=0 instead of rc=1.
+E_LANE_B="$(mktemp -d /tmp/test-thin-warm-lane-e-b-XXXXXX)"
+_TMPDIRS+=("$E_LANE_B")
+mkdir -p "$E_LANE_B/target"
+touch "$E_LANE_B/target/MARKER"
+
+SEED_RC=0 run_helper "$E_LANE_B" --reseed --base "$E_BASE" --seed-script "$E_SEED_STUB"
+
+assert "E2: exit 0" test "$RC" -eq 0
+assert "E2: a certifying seed's <lane>/target SURVIVES (discard keys on exit status, not on presence)" \
+    test -d "$E_LANE_B/target"
+assert "E2: the staged clone is byte-intact (nothing was discarded)" \
+    test -f "$E_LANE_B/target/CLONE_MARKER"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
