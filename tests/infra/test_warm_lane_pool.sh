@@ -677,14 +677,22 @@ _b13_reseed_vs_resetinplace() {
     local _b13_gen
     _b13_gen="$(readlink "$_b13_base")"
 
-    # Step 2: create the staled lane — copy sources from base_ws, add a delta,
-    # then CoW-seed from base_ws/target (same build artifacts as gen.1, "at head")
-    # and STALE the target by rebuilding with one extra fn (simulates drift).
-    mkdir -p "$_b13_stale_lane"
-    cp "$_b13_base_ws/Cargo.toml" "$_b13_stale_lane/Cargo.toml"
-    cp "$_b13_base_ws/Cargo.lock" "$_b13_stale_lane/Cargo.lock" 2>/dev/null || true
-    cp -a "$_b13_base_ws/warm_dep" "$_b13_stale_lane/"
-    cp -a "$_b13_base_ws/warm_leaf" "$_b13_stale_lane/"
+    # Step 2: create the staled lane by CLONING the already-committed base
+    # workspace, rather than an independent copy + standalone `git init`. The
+    # lane needs GIT HISTORY that actually contains _b13_base_head: seed's
+    # `_touch_git_delta` runs `git -C "$LANE_DIR" diff --name-only "$sha"`,
+    # which fails closed (exit 128, "fatal: bad object") when `$sha` is not
+    # reachable in the LANE's own repo — an independently `git init`-ed lane
+    # never shares history with base_ws, no matter how the sha reaches it
+    # (`.basecommit` or `--base-commit`). `--no-hardlinks` keeps the two object
+    # stores independent so teardown order under ws_root cannot matter.
+    # Confirmed properties: carries the committed Cargo.lock (base_ws is
+    # committed after its own cold build, by _b7_init_git_lane above); never
+    # carries target/ (untracked, excluded by _b7_init_git_lane's ':!target'
+    # pathspec); lands at now-mtimes (irrelevant — seed's --fresh-checkout
+    # bulk-stamp and this arm's own commit below are what set the mtimes that
+    # matter).
+    git clone --no-hardlinks --quiet "$_b13_base_ws" "$_b13_stale_lane"
 
     # Apply the "staling" delta to the lane's source (extra fn in warm_dep so the
     # stale target/ is behind head by a non-trivial compilation unit)
@@ -697,14 +705,17 @@ _b13_reseed_vs_resetinplace() {
     CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
         cargo build --manifest-path "$_b13_stale_lane/Cargo.toml" >/dev/null 2>&1
 
-    # git-init the stale lane so reset-in-place (git checkout -- .) is faithful.
-    # Commit after the cold build so the leaf sources are at current mtime.
-    git -C "$_b13_stale_lane" init -q
+    # Commit the delta ON TOP of the cloned base commit (shared history with
+    # _b13_base_head — no `git init`, that would sever it) so reset-in-place
+    # (git checkout -- .) is faithful: a clean working tree lets checkout skip
+    # rewriting already-committed, unmodified files, preserving the stale
+    # build's recorded mtimes (same mechanism _b7_init_git_lane documents,
+    # applied here on the clone instead of a fresh init).
     git -C "$_b13_stale_lane" add -- . ':!target'
     git -C "$_b13_stale_lane" \
         -c user.email="warm-lane-test@localhost" \
         -c user.name="Warm Lane Test" \
-        commit -q -m "initial: B13 staled lane"
+        commit -q -m "stale: B13 staled lane (delta applied on top of cloned base)"
 
     # ── CONTROL: reset-in-place rebuild ───────────────────────────────────────
     # Reset source to committed state; stale target/ preserved (-e target).
