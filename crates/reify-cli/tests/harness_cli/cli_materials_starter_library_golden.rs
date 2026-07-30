@@ -47,30 +47,26 @@ fn cli_reify_eval_prints_inspectable_material_values() {
         return;
     }
 
-    // Defence-in-depth: assert the committed golden itself names all three
-    // materials. Checked against the on-disk golden (not `stdout`) so the intent
-    // is explicit — this fires if someone regenerated the golden against a
-    // regressed binary before the byte comparison above is reached.
-    let expected = std::fs::read_to_string(&golden).expect(
-        "golden crates/reify-eval/tests/golden/materials_starter_library.txt missing; \
-         run once with REIFY_REGENERATE_GOLDEN=1",
+    // Defence-in-depth: the wave-2 signal itself, independent of golden content —
+    // all three materials must be named. Asserted on `stdout`, matching the two
+    // sibling relocated goldens (`cli_structure_instance_golden.rs`,
+    // `cli_tensegrity_t0a_golden.rs`). Equivalent to asserting on the golden text
+    // at this point, since the only way to reach here is
+    // `assert_or_regenerate_golden` having already proved `stdout == golden`, but
+    // it avoids a second read of a file just compared byte-for-byte.
+    assert!(
+        stdout.contains("Aluminium_6061_T6 {"),
+        "wave-2 signal: expected an inspectable Aluminium_6061_T6 structure value \
+         (not `undef`) in `reify eval` output; got:\n{stdout}"
     );
     assert!(
-        expected.contains("Aluminium_6061_T6 {"),
-        "committed golden must mention Aluminium_6061_T6 — golden may have been \
-         regenerated against a regressed binary; re-run with REIFY_REGENERATE_GOLDEN=1 \
-         after fixing the regression.\ngolden:\n{expected}"
+        stdout.contains("Titanium_Ti6Al4V {"),
+        "wave-2 signal: expected an inspectable Titanium_Ti6Al4V structure value \
+         (not `undef`) in `reify eval` output; got:\n{stdout}"
     );
     assert!(
-        expected.contains("Titanium_Ti6Al4V {"),
-        "committed golden must mention Titanium_Ti6Al4V — golden may have been \
-         regenerated against a regressed binary; re-run with REIFY_REGENERATE_GOLDEN=1 \
-         after fixing the regression.\ngolden:\n{expected}"
-    );
-    assert!(
-        expected.contains("ABS_Plastic {"),
-        "committed golden must mention ABS_Plastic — golden may have been \
-         regenerated against a regressed binary; re-run with REIFY_REGENERATE_GOLDEN=1 \
-         after fixing the regression.\ngolden:\n{expected}"
+        stdout.contains("ABS_Plastic {"),
+        "wave-2 signal: expected an inspectable ABS_Plastic structure value \
+         (not `undef`) in `reify eval` output; got:\n{stdout}"
     );
 }
