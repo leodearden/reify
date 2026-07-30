@@ -1644,10 +1644,12 @@ run_compile_gate_psi_capture() {
 # ===========================================================================
 # Section G0: G2 harness/updater contracts (task 5839)
 # ===========================================================================
-# Pins the two harness contracts Section G2's causal updater depends on.  Both
-# cases drive the gate against an ALREADY-QUIET PSI fixture, so each spawn
-# admits on its first poll and costs ~0.3s — this whole section is fast and
-# load-independent.
+# Pins the harness contracts Section G2's causal updater depends on (T3a-T3c),
+# the root cause that forces the updater to be causal at all (T5a/T5b), and a
+# late-start regression witness for the fix itself (T5c-T5f).  T3a-T5b drive the
+# gate against an ALREADY-QUIET PSI fixture, so each spawn admits on its first
+# poll and costs ~0.3s; only the T5c-T5f witness runs a real hold, and it is
+# bounded by the same load-scaled deadline Section G2 uses.
 #
 # Why the explicit-capture-path contract is a CORRECTNESS requirement, not
 # ergonomics: run_compile_gate_psi_capture assigns G_ERR INSIDE the call, but
@@ -1698,6 +1700,62 @@ assert "T3c: 3-arg form's capture file exists" \
     test -f "$G_ERR"
 assert "T3c: 3-arg form's capture file is PRIVATE (not the explicit path from T3a)" \
     test "$G_ERR" != "$_G0_EXPLICIT"
+
+# --- T5a/T5b: ROOT-CAUSE GUARD — the exact 5839 failure signature ---
+# The load-independent proof of WHY the fix must be causal rather than a longer
+# sleep, shaped like Section E's own "load-robustness root-cause guard" below.
+# A gate whose FIRST poll reads a below-threshold fixture takes cpu-admit.sh's
+# uncontended fast path with _ca_waited=0: clock_enter_wait (the sole STOP
+# emitter) and clock_maybe_heartbeat are never reached, and clock_exit_wait
+# emits START only when WAITED=1 — so it exits 0 having emitted NO clock marker
+# at all.  The architect measured exactly this at base HEAD=c89bac9267 under
+# G2's env (MAX_WAIT=2, POLL=1, CLOCK_HEARTBEAT_SECS=1): rc=0, zero markers,
+# empty stderr.  That is precisely what a wall-clock updater which WINS the
+# race hands to Section G2 — the rc==0 assert green, all three marker asserts
+# red — i.e. the whole bug, in one assert, for ~0.3s.
+_G0_ROOTCAUSE_ERR="$_G0_TMPDIR/g0_rootcause_err.txt"
+: > "$_G0_ROOTCAUSE_ERR"
+
+G_RC=0
+G_ERR=""
+run_compile_gate_psi_capture "$_G0_PSI_QUIET" "$_G0_MEM_QUIET" \
+    "$(_load_scaled_deadline 30 120)" "$_G0_ROOTCAUSE_ERR"
+
+assert "T5a: G0 root-cause: an already-cleared PSI fixture admits on the first poll (exit 0; got ${G_RC})" \
+    test "$G_RC" -eq 0
+assert "T5b: G0 root-cause: that admit emits NO clock marker at all (the 5839 failure signature)" \
+    bash -c '! grep -qF "@@REIFY_CLOCK_" "$1"' _ "$_G0_ROOTCAUSE_ERR"
+
+# --- T5c-T5f: LATE-START REGRESSION WITNESS ---
+# Drives the G2 arrangement with the gate's start deliberately delayed, so the
+# updater has every chance to clear the fixture first.  The delay is NOT a tuned
+# threshold: it is strictly greater than the 2s the old fixed-sleep updater
+# waited, and per T5b ANY gate start after that clear deterministically yields
+# rc=0 with zero markers.  This scenario therefore fails 3 of its 4 asserts
+# against the old arrangement and passes against the causal one — a real
+# regression witness, not a timing coincidence.  Being a simulated startup
+# latency rather than an anti-hang deadline it stays FIXED and un-load-scaled,
+# matching this file's HOLD_S / C_HOLD_S convention (header lines 55-63).
+_G0_LATE_START_S=4
+
+G_RC=0
+G_ERR=""
+# `|| G_RC=$?` covers BOTH states: with run_g2_admit_on_drop_scenario still
+# undefined, bash's command-not-found 127 lands in G_RC — so T5c is genuinely
+# RED rather than spuriously green on the pre-reset 0 — and `set -e` is
+# neutralised so T5d-T5f still run instead of aborting the suite.  Once the
+# helper exists it returns 0 and G_RC keeps the value the harness assigned.
+run_g2_admit_on_drop_scenario "$_G0_LATE_START_S" "$_G0_MEM_QUIET" \
+    "$(_load_scaled_deadline 30 120)" || G_RC=$?
+
+assert "T5c: G0-late: admits once PSI drops despite a ${_G0_LATE_START_S}s-delayed gate start (exit 0; got ${G_RC})" \
+    test "$G_RC" -eq 0
+assert_marker "T5d: G0-late: G_ERR captured the CLOCK_STOP marker (reason=psi_pressure)" \
+    "$G_ERR" '@@REIFY_CLOCK_STOP@@ reason=psi_pressure'
+assert_marker "T5e: G0-late: G_ERR captured the CLOCK_HEARTBEAT marker" \
+    "$G_ERR" '@@REIFY_CLOCK_HEARTBEAT@@'
+assert_marker "T5f: G0-late: G_ERR captured the CLOCK_START marker (reason=psi_pressure)" \
+    "$G_ERR" '@@REIFY_CLOCK_START@@ reason=psi_pressure'
 
 # ===========================================================================
 # Section G: compile-gate PSI hold + admit-on-drop (execution; task 4920)
