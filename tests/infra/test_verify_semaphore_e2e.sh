@@ -655,6 +655,95 @@ assert "_load_scaled_deadline factor=1 base=60 == 60 (idle floor: factor=1 prese
     test "$_LSD_T3" = "60"
 
 # ===========================================================================
+# _clear_psi_fixture_on_marker unit tests (G2 causal updater, task 5839)
+# ===========================================================================
+# Pins the contract of the causal replacement for Section G2's old fixed
+# `sleep 2` PSI-fixture updater: the fixture must be cleared when the gate has
+# PROVEN it observed pressure (a clock marker landed in the watch file), and
+# NEVER on wall-clock alone.  Every case here is hermetic — the watch file is a
+# plain fixture written by this block, no verify.sh is spawned — so the whole
+# block runs in ~3s and is load-independent apart from T1e's deliberate 2s
+# writer delay.  Runs early (before the heavy execute sections) for fast
+# feedback.  The awaited token rides only in printf/helper ARGUMENTS here,
+# never in an echoed assert description (esc-4789-63; see assert_marker).
+echo ""
+echo "--- _clear_psi_fixture_on_marker unit tests (G2 causal updater, task 5839) ---"
+
+_CPF_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_CPF_DIR")
+_CPF_STUCK='some avg10=99.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n'
+
+# --- T1a/T1b: marker ALREADY present → returns 0 and rewrites the fixture ---
+_CPF_WATCH_A="$_CPF_DIR/watch_a.txt"
+_CPF_PSI_A="$_CPF_DIR/psi_a"
+# shellcheck disable=SC2059  # _CPF_STUCK is a literal format string, not user input
+printf "$_CPF_STUCK" > "$_CPF_PSI_A"
+printf '%s\n' '@@REIFY_CLOCK_HEARTBEAT@@ reason=psi_pressure waited=1' > "$_CPF_WATCH_A"
+
+_CPF_RC_A=0
+_clear_psi_fixture_on_marker "$_CPF_WATCH_A" '@@REIFY_CLOCK_HEARTBEAT@@' 5 "$_CPF_PSI_A" 10.00 \
+    2>/dev/null || _CPF_RC_A=$?
+
+assert "T1a: _clear_psi_fixture_on_marker returns 0 when the awaited marker is already present" \
+    test "$_CPF_RC_A" -eq 0
+assert "T1b: marker observed → fixture rewritten to the quiet avg10 (10.00 present, 99.00 gone)" \
+    bash -c 'grep -qF "avg10=10.00" "$1" && ! grep -qF "avg10=99.00" "$1"' _ "$_CPF_PSI_A"
+
+# --- T1c/T1d/T1f: deadline expiry → non-zero, fixture UNCHANGED, no token leak ---
+# T1d is THE assert that encodes the 5839 fix: a wall-clock deadline must never
+# be sufficient to clear the fixture.  Deadline 1 keeps this to ~1s
+# (_wait_for_marker ticks at 0.05s × 20/s).
+_CPF_WATCH_C="$_CPF_DIR/watch_c.txt"
+_CPF_PSI_C="$_CPF_DIR/psi_c"
+_CPF_DIAG_C="$_CPF_DIR/diag_c.txt"
+: > "$_CPF_WATCH_C"
+# shellcheck disable=SC2059
+printf "$_CPF_STUCK" > "$_CPF_PSI_C"
+
+_CPF_RC_C=0
+_clear_psi_fixture_on_marker "$_CPF_WATCH_C" '@@REIFY_CLOCK_HEARTBEAT@@' 1 "$_CPF_PSI_C" 10.00 \
+    2>"$_CPF_DIAG_C" || _CPF_RC_C=$?
+
+assert "T1c: deadline elapses with no marker → returns non-zero (got ${_CPF_RC_C})" \
+    test "$_CPF_RC_C" -ne 0
+assert "T1d: deadline expiry leaves the fixture UNCHANGED (never clears on wall-clock alone)" \
+    bash -c 'grep -qF "avg10=99.00" "$1" && ! grep -qF "avg10=10.00" "$1"' _ "$_CPF_PSI_C"
+assert "T1f: timeout diagnostic does not leak a clock marker into the parent stream" \
+    bash -c '! grep -qF "@@REIFY_CLOCK_" "$1"' _ "$_CPF_DIAG_C"
+
+# --- T1e: late-arriving marker → the helper BLOCKS until it exists ---
+# The elapsed bound is guaranteed by construction, not tuned: the writer sleeps
+# 2s before the marker exists, so the helper cannot return before t0+2, and
+# floor(t0+2) >= floor(t0)+1 makes the >= 1 integer-seconds check exact.
+_CPF_WATCH_E="$_CPF_DIR/watch_e.txt"
+_CPF_PSI_E="$_CPF_DIR/psi_e"
+: > "$_CPF_WATCH_E"
+# shellcheck disable=SC2059
+printf "$_CPF_STUCK" > "$_CPF_PSI_E"
+(
+    sleep 2
+    printf '%s\n' '@@REIFY_CLOCK_HEARTBEAT@@ reason=psi_pressure waited=1' >> "$_CPF_WATCH_E"
+) &
+_CPF_WRITER_E=$!
+
+_CPF_T0="$(date +%s)"
+_CPF_RC_E=0
+_clear_psi_fixture_on_marker "$_CPF_WATCH_E" '@@REIFY_CLOCK_HEARTBEAT@@' \
+    "$(_load_scaled_deadline 30 120)" "$_CPF_PSI_E" 10.00 2>/dev/null || _CPF_RC_E=$?
+_CPF_T1="$(date +%s)"
+
+kill "$_CPF_WRITER_E" 2>/dev/null || true
+wait "$_CPF_WRITER_E" 2>/dev/null || true
+
+_CPF_ELAPSED_E=$(( _CPF_T1 - _CPF_T0 ))
+assert "T1e: late-arriving marker is observed → returns 0 (got ${_CPF_RC_E})" \
+    test "$_CPF_RC_E" -eq 0
+assert "T1e: late-arriving marker → fixture rewritten to the quiet avg10" \
+    bash -c 'grep -qF "avg10=10.00" "$1" && ! grep -qF "avg10=99.00" "$1"' _ "$_CPF_PSI_E"
+assert "T1e: helper BLOCKED until the marker existed (elapsed ${_CPF_ELAPSED_E}s >= 1; writer sleeps 2s)" \
+    test "$_CPF_ELAPSED_E" -ge 1
+
+# ===========================================================================
 # _ts_outputs_healthy unit tests (Part C helper, task 5144 F1)
 # ===========================================================================
 # Pure existence+non-empty check over a <ts_src_dir> (TS_DIR-shaped: outputs
