@@ -598,8 +598,8 @@ sound even where the aggregate total drifts from 63.
 | `harness_langcore/let_scope_tests.rs:2190` | `axis: Length = 0` | `assert!(errors.is_empty(), …)` exhaustive |
 | `harness_langcore/let_scope_tests.rs:2251` | `axis: Length = 0` | same |
 | `harness_langcore/let_scope_tests.rs:2359` | `axis: Length = 0` | same |
-| `harness_traits/trait_assoc_type_conformance_tests.rs` (override sub-case) | `w : Length = 1` | `errors_only(&module).is_empty()` exhaustive, "override should compile cleanly" |
-| `harness_traits/trait_assoc_type_conformance_tests.rs` (inherited-default sub-case) | `w : Length = 1` | same, "inherited default should compile cleanly" |
+| `harness_traits/trait_assoc_type_conformance_tests.rs:110` (override sub-case, `structure_override_assoc_type_populates_template_table`) | `w : Length = 1` | `errors_only(&module)` at `:114` then `errors.is_empty()` at `:116` — exhaustive, "override should compile cleanly" (`:117`) |
+| `harness_traits/trait_assoc_type_conformance_tests.rs:166` (inherited-default sub-case, `inherited_default_assoc_type_populates_template_table`) | `w : Length = 1` | same shape — `errors_only` at `:170`, `errors.is_empty()` at `:172`, "inherited default should compile cleanly" (`:173`) |
 | `purpose_compile_tests.rs:1453` | `material : Length = 1.0` | `errors.is_empty()` exhaustive |
 | `purpose_compile_tests.rs:1454` | `youngs_modulus : Length = 200.0` | same |
 | `reify-eval/tests/collection_sub_eval.rs:437` | `grade : Length = 8.8` | manual `.filter(severity==Error)` then `assert!(errors.is_empty())` exhaustive |
@@ -609,21 +609,79 @@ sound even where the aggregate total drifts from 63.
 | `reify-eval/tests/purpose_activation.rs:2774` | `z : Length = 5.0` | same |
 | `reify-eval/tests/purpose_activation.rs:2825` | `z : Length = -5.0` | same |
 
-*c0 — no break (31 confirmed/high-confidence by direct read; 11 row-groups):*
+*c0 — no break (31 sites; 11 row-groups).* **[post-review]** Two orthogonal
+qualifiers are now carried per row, because §10 renders these rows with the
+same authority as the empirically-confirmed ones and a δ₁ reader must be able
+to tell them apart:
 
-| File:line(s) | Reason |
-|---|---|
-| `let_scope_tests.rs:2025,2471,2540` (3) | `.find(...)`/`.any(...)` on specific message content, non-exhaustive |
-| `reify-syntax/src/ts_parser.rs:6338,6364,6420,6450` (4, one line double-counts to 2 sites) | **structurally parse-only** — `reify-syntax`'s normal deps exclude `reify-compiler`; these tests call the crate's own `parse()`, never a compiler/conformance path |
-| `reify-test-support/src/helpers.rs:1077,1078,1227` (3) | `1227` confirmed (checks `!result.values.is_empty()`, never inspects diagnostics); `1077/1078` presumed (compile_template's return isn't asserted clean in the slice read) |
-| `prelude_context_tests.rs:217` (1) | asserts **relative parity** between two compile entry points on the *same* source, not absolute cleanliness — a new diagnostic would land identically on both sides and parity would still hold |
-| `harness_fea_solver_e2e/stress_sweep_degenerate.rs:417,418` (2) | filters diagnostics by specific message content (`geom_expr` fallback wording), non-exhaustive |
-| `purpose_compile_tests.rs:1516,1517,1523` (3) | `guarded_unsupported_member_kind_emits_error` — asserts `!errors.is_empty()` (an error is *already* expected, for the guarded-block's own unsupported-member reason); non-exhaustive |
-| `purpose_compile_tests.rs:1567` (1) | doc comment: "the compile test only checks the structural shape (not eval)" — presumed, not directly re-read past the doc comment |
-| `harness_traits/trait_assoc_type_conformance_tests.rs:31` (1) | `required_assoc_type_unbound_emits_diagnostic_end_to_end` — filters for a specific code (`TraitAssocTypeNotBound`), non-exhaustive, and the fixture is *already* expected to error |
-| `gui/src-tauri/src/tests/engine_tests.rs` (8, across 7 lines) | `EngineSession::load_from_source`/`update_source` — every read test inspects entity-tree/definition/cache structure, never `.diagnostics`; GUI session load is designed to tolerate diagnostics (live editing) — presumed on structural grounds, not a read of `load_from_source`'s own body |
-| `reify-eval/tests/eval_param_overrides.rs:1639` (1) | `param p: Money = 0`, via non-panicking `compile_source(...)`; the test's assertion ("exactly one Warning mentioning S.p") reads `result_b.diagnostics` from `engine.eval(&module_b)` — the **eval**-phase warning about a param-override dimension mismatch, not `module_b`'s compile-phase diagnostics — so a new compile-time `ParamDefaultTypeMismatch` under δ₁ lands in a different collection than what this assertion inspects. (This is the PRD's own cited "stale rationale" fixture, §6.2; δ₁ retires its doc comment regardless of whether the test itself breaks.) |
-| `reify-syntax/src/ts_parser.rs:6466,6477,6488,6499` (4) | same structurally-parse-only reasoning as the other 4 `ts_parser.rs` hits — `6488` is the one-line fixture `"structure S {\n  param x: Length = 1\n}"` whose trailing `\n}` (a literal backslash-n, not a real newline) is the edge case finding 2.2.2 (2) fixed the terminator regex for; `6466`/`6477`/`6499` are the three doc-comment-extraction fixtures recovered by finding 2.2.2 **(3)**'s string-literal-aware stripper. All four call `reify-syntax`'s own `parse()`; the crate's deps exclude `reify-compiler`, so no conformance path ever runs on them |
+- **Evidence** — `CONFIRMED` (the enclosing test's assertion was actually
+  read) vs `PRESUMED` (disposition inferred on structural grounds; the
+  enclosing body was *not* read). Split: **20 CONFIRMED / 11 PRESUMED**. The
+  distinction is load-bearing because a c0 disposition turns on whether the
+  enclosing test filters to `Severity::Error` (§1.4) — a property of code
+  that was not read for the 11.
+- **Reachability** — 8 of the 31 are `crates/reify-syntax/src/ts_parser.rs`
+  sites that **no conformance gate can ever reach**, so they are
+  **EXCLUDED — parse-only**, not BREAKS. See 2.2.4b. The other 23 are
+  BREAKS-class-but-unforced ("migrate, lower-urgency").
+
+| File:line(s) | Evidence | Reason |
+|---|---|---|
+| `let_scope_tests.rs:2025,2471,2540` (3) | CONFIRMED | `.find(...)`/`.any(...)` on specific message content, non-exhaustive |
+| `reify-syntax/src/ts_parser.rs:6338,6364,6420,6450` (4) | CONFIRMED (deps read) | **structurally parse-only** — `reify-syntax`'s normal deps exclude `reify-compiler`; these tests call the crate's own `parse()`, never a compiler/conformance path. **EXCLUDED — parse-only**, not BREAKS (2.2.4b) |
+| `reify-test-support/src/helpers.rs:1077,1078,1227` (3) | 1227 CONFIRMED · 1077,1078 **PRESUMED** | `1227` confirmed (checks `!result.values.is_empty()`, never inspects diagnostics); `1077/1078` presumed (compile_template's return isn't asserted clean in the slice read) |
+| `prelude_context_tests.rs:217` (1) | CONFIRMED | asserts **relative parity** between two compile entry points on the *same* source, not absolute cleanliness — a new diagnostic would land identically on both sides and parity would still hold |
+| `harness_fea_solver_e2e/stress_sweep_degenerate.rs:417,418` (2) | CONFIRMED | filters diagnostics by specific message content (`geom_expr` fallback wording), non-exhaustive |
+| `purpose_compile_tests.rs:1516,1517,1523` (3) | CONFIRMED | `guarded_unsupported_member_kind_emits_error` — asserts `!errors.is_empty()` (an error is *already* expected, for the guarded-block's own unsupported-member reason); non-exhaustive |
+| `purpose_compile_tests.rs:1567` (1) | **PRESUMED** | doc comment: "the compile test only checks the structural shape (not eval)" — presumed, not directly re-read past the doc comment |
+| `harness_traits/trait_assoc_type_conformance_tests.rs:31` (1) | CONFIRMED | `required_assoc_type_unbound_emits_diagnostic_end_to_end` — filters for a specific code (`TraitAssocTypeNotBound`), non-exhaustive, and the fixture is *already* expected to error |
+| `gui/src-tauri/src/tests/engine_tests.rs:3658,3884,4145,4162,4197,4842,4858` (8, across 7 lines — `4858` matches twice) | **PRESUMED** (all 8) | `EngineSession::load_from_source`/`update_source` — every read test inspects entity-tree/definition/cache structure, never `.diagnostics`; GUI session load is designed to tolerate diagnostics (live editing) — presumed on structural grounds, not a read of `load_from_source`'s own body |
+| `reify-eval/tests/eval_param_overrides.rs:1639` (1) | CONFIRMED | `param p: Money = 0`, via non-panicking `compile_source(...)`; the test's assertion ("exactly one Warning mentioning S.p") reads `result_b.diagnostics` from `engine.eval(&module_b)` — the **eval**-phase warning about a param-override dimension mismatch, not `module_b`'s compile-phase diagnostics — so a new compile-time `ParamDefaultTypeMismatch` under δ₁ lands in a different collection than what this assertion inspects. (This is the PRD's own cited "stale rationale" fixture, §6.2; δ₁ retires its doc comment regardless of whether the test itself breaks.) |
+| `reify-syntax/src/ts_parser.rs:6466,6477,6488,6499` (4) | CONFIRMED (deps read) | same structurally-parse-only reasoning as the other 4 `ts_parser.rs` hits — `6488` is the one-line fixture `"structure S {\n  param x: Length = 1\n}"` whose trailing `\n}` (a literal backslash-n, not a real newline) is the edge case finding 2.2.2 (2) fixed the terminator regex for; `6466`/`6477`/`6499` are the three doc-comment-extraction fixtures recovered by finding 2.2.2 **(3)**'s string-literal-aware stripper. All four call `reify-syntax`'s own `parse()`; the crate's deps exclude `reify-compiler`, so no conformance path ever runs on them. **EXCLUDED — parse-only** (2.2.4b) |
+
+**Evidence roll-up (11 PRESUMED):** `helpers.rs:1077,1078` (2) ·
+`purpose_compile_tests.rs:1567` (1) · `engine_tests.rs` (8). Everything else
+in c0 is CONFIRMED — 31 − 11 = **20**. Of the 23 c0 sites that are *not*
+parse-only, the split is **12 CONFIRMED / 11 PRESUMED**; all 8 parse-only
+sites are CONFIRMED (by a read of `crates/reify-syntax/Cargo.toml`, not of a
+test body — a stronger and cheaper form of evidence, since it settles the
+whole file at once).
+
+**2.2.4b [post-review] The 8 `ts_parser.rs` sites are EXCLUDED — parse-only,
+not BREAKS.** An earlier revision folded all 31 c0 sites into a single
+"BREAKS — migrate, lower-urgency" disposition in §10.2/§10.3, which put the
+8 `ts_parser.rs` sites two rows away from `mv-2-priv-param.ri:4` — a row
+whose disposition is `EXCLUDED — parse-only (never reaches reify-compiler)`
+— under **the same reasoning and the opposite verdict**. Re-verified at HEAD:
+
+```
+$ sed -n '/^\[dependencies\]/,$p' crates/reify-syntax/Cargo.toml
+[dependencies]
+reify-core.workspace = true
+reify-ast.workspace = true
+tree-sitter.workspace = true
+tree-sitter-reify.workspace = true
+
+[dev-dependencies]
+reify-ast.workspace = true
+reify-core.workspace = true
+reify-test-support.workspace = true
+```
+
+`reify-compiler` appears on **neither** list, so these 8 in-crate unit tests
+cannot reach gate 2 (`conformance/mod.rs`), gate 3 or gate 4 (`entity.rs`) by
+any path — the same structural argument, and the same strength of argument,
+that excludes `mv-2-priv-param.ri:4`. **Ruling: the two must be classified
+identically.** All 8 move to `EXCLUDED — parse-only`; §4.1's gate-2 candidate
+count, §10.2's and §10.3's sub-totals, and §10.8's δ₁ row are restated
+accordingly. This *shrinks* the normative BREAKS counts — it never adds work.
+
+**No disposition moves into or out of c1/c2, and no site leaves the 58.** The
+8 remain category-C hits and remain c0; only their *disposition label* is
+corrected from BREAKS-lower-urgency to EXCLUDED-parse-only. **β/γ/δ₁/δ₂ must
+not re-plan off this correction** — δ₁'s optional-cleanup list simply gets 8
+items shorter, and every one of the 8 was provably incapable of changing a
+diagnostic in the first place.
 
 **DISPOSITION IMPACT OF FINDING 2.2.2 (3) IS NIL.** All three newly-recovered
 sites are the same **structurally-parse-only c0** class as the
@@ -632,13 +690,20 @@ added as new row-groups, which is why c0 moves **28 → 31 sites while the c0
 row-group count stays 11**. No consumer's migration work changes: nothing
 moves into or out of c1/c2, no BREAKS row is added, no DELIBERATE-INVERT row
 is added. **β/γ/δ₁ must not re-plan off this correction** — only the ledger's
-counts move.
+counts move. (Under 2.2.4b those three are now EXCLUDED-parse-only rather
+than BREAKS-lower-urgency, which makes their impact less than nil: they
+subtract from the migration list rather than adding to it.)
 
 **Not conclusively classified (2):** `trait_assoc_type_conformance_tests.rs`
-has 5 total hits; 2 (the override/inherited-default sub-cases, both c1) and
-1 (the unbound-Typo sub-case, c0) were read directly, but the file has 2
-more occurrences this session did not re-read before writing this section.
-Flagged rather than guessed.
+has 5 total hits — `:31`, `:76`, `:110`, `:166`, `:224`. Three were read
+directly: `:110` (override sub-case, c1), `:166` (inherited-default sub-case,
+c1), and `:31` (unbound sub-case, c0). The remaining **`:76`
+(`required_assoc_type_satisfied_by_default_no_diagnostic`) and `:224`
+(`structure_binding_to_nonexistent_type_emits_diagnostic`)** are the 2 this
+session did not re-read before writing this section. Flagged rather than
+guessed; **file:line given so a consumer resolving the pair knows exactly
+which two occurrences are still open and which three are already accounted
+for.**
 
 **2.2.5b `param` vs `let` split (needed by step-4's gate-2 attribution).**
 Of the **58** in-scope hits, **54 are `param` declarations and 4 are `let`**
@@ -893,24 +958,33 @@ untouched by this predicate). Never separately measured before this task.
 
 Every §2 category-A/C site whose keyword is `param` (not `let`) is a gate-2
 candidate: **54 (Category C, Rust fixtures) + 2 (Category A, `.ri`) = 56**,
-minus **1 parse-only** (`mv-2-priv-param.ri:4`, never reaches
-`reify-compiler` at all) = **55 sites where the compiler, if it compiles
+minus **9 parse-only** = **47 sites where the compiler, if it compiles
 that file under the flip, newly emits a gate-2 `Warning`/`ArgTypeMismatch`.**
 Split: `examples/**` 1 (`bearing_auto_seal.ri`) · stdlib `.ri` 0 ·
-Rust fixture strings 54 · other `.ri` 0 (§2's Category A/C tables list every
+Rust fixture strings 46 · other `.ri` 0 (§2's Category A/C tables list every
 site; not reproduced again here).
 
-Of these 55, **step-1's actual flipped run empirically confirms exactly 1**
+**The 9 parse-only exclusions [post-review].** `mv-2-priv-param.ri:4` (a
+tree-sitter grammar fixture, never reaches `reify-compiler` at all) **plus
+the 8 `crates/reify-syntax/src/ts_parser.rs` sites** (`:6338,6364,6420,6450,
+6466,6477,6488,6499`), which 2.2.4b re-verified are unreachable by the
+identical argument — `reify-syntax`'s `[dependencies]` and
+`[dev-dependencies]` both exclude `reify-compiler`, so gate 2 cannot run on
+them. An earlier revision of this section subtracted only the 1, which
+over-stated the candidate set by 8; the correction **shrinks** the count
+(55 → 47) and adds no work anywhere.
+
+Of these 47, **step-1's actual flipped run empirically confirms exactly 1**
 — `bearing_auto_seal.ri:46`, diagnostic `argument 'durometer' has type
 'Real' but param 'durometer' requires type 'Scalar[m]'`, reconciled in
-§1.2 as the union's non-ctor-call member. The other 54 sit in Rust test
+§1.2 as the union's non-ctor-call member. The other 46 sit in Rust test
 binaries this session did not compile under the flip (step-1 ran 4 named
 suites, not the whole workspace), so their gate-2 firing is **mechanical,
 not empirically re-confirmed this session** — the walker doesn't
 distinguish "is anyone testing this," it fires whenever
 `general_leaf_param_family_is_validated` returns `true` for that field's
 type and the arg's inferred type differs, which is true of a bare `Real`
-literal against every one of these 54 declared-dimensioned params by
+literal against every one of these 46 declared-dimensioned params by
 construction.
 
 ### 4.2 BREAKS vs DELIBERATE-NEGATIVE-TEST-TO-INVERT — gate 2 specifically
@@ -1907,13 +1981,14 @@ disposition).
 | `tree-sitter-reify/test/fixtures/mv-2-priv-param.ri:4` | `priv param rated_torque : Torque = 5` | other .ri | BARE | 1 | EXCLUDED — parse-only (tree-sitter grammar fixture, never reaches `reify-compiler`) | none |
 | Category-C `param` sites, c1 group (§2.2.4, 15 file:line rows, all `param`) | e.g. `grade : Length = 8.8`, `axis: Length = 0`, `material : Length = 1.0` … | Rust fixture | BARE | 15 | BREAKS — migrate, **silent under gate 2** (§4.2: none of these additionally break because of gate 2 — their currently-passing assertions filter to `Severity::Error` only) | none forcing — γ may optionally migrate |
 | Category-C `param` sites, c2 group (`param_default_type_mismatch_tests.rs:175-178,206-207`) | `zero_int=0, one_int=1, half_real=0.5, large_real=70.0, neg_real=-5.0, neg_int=-1` | Rust fixture | BARE | 6 | BREAKS — migrate, **silent under gate 2** (§4.2: these assert on `ParamDefaultTypeMismatch`, a different code from gate 2's `ArgTypeMismatch` — invisible to gate 2, though they are gate-"3+4" pins, see §10.3) | none forcing under gate 2 |
-| Category-C `param` sites, c0 group (§2.2.4, 11 row-groups) | e.g. `ts_parser.rs` parse-only fixtures, `engine_tests.rs` structural-only reads, … | Rust fixture | BARE | 31 | BREAKS — migrate, **silent under gate 2** | none forcing |
-| Category-C `param` sites, unclassified (§2.2.4, `trait_assoc_type_conformance_tests.rs`, 2 further occurrences not re-read this session) | — | Rust fixture | BARE | 2 | **UNCLASSIFIED** — provisionally BREAKS — migrate pending resolution | δ₁/γ (whichever lands first) must resolve definitively before landing, not this ledger |
+| Category-C `param` sites, c0 group — **actionable** (§2.2.4, 9 row-groups; **12 CONFIRMED + 11 PRESUMED**, §2.2.4's evidence roll-up) | e.g. `engine_tests.rs` structural-only reads (8, PRESUMED), `let_scope_tests.rs` message-content filters (3, CONFIRMED), … | Rust fixture | BARE | 23 | BREAKS — migrate, **silent under gate 2** | none forcing |
+| Category-C `param` sites, c0 group — **parse-only** (`reify-syntax/src/ts_parser.rs:6338,6364,6420,6450,6466,6477,6488,6499`) | in-crate `parse()` unit-test fixtures | Rust fixture | BARE | 8 | **EXCLUDED — parse-only** (`reify-syntax`'s deps exclude `reify-compiler`; gate 2 can never run on them — §2.2.4b, same ruling as the `mv-2-priv-param.ri:4` row above) | none |
+| Category-C `param` sites, unclassified (§2.2.4, `trait_assoc_type_conformance_tests.rs:76,224` — 2 occurrences not re-read this session) | — | Rust fixture | BARE | 2 | **UNCLASSIFIED** — provisionally BREAKS — migrate pending resolution | δ₁/γ (whichever lands first) must resolve definitively before landing, not this ledger |
 
-**Sub-totals:** BARE = 56 (1 empirically-confirmed BREAKS + 54 silent-BREAKS [15+6+31+2] + 1
-EXCLUDED-parse-only) → **6 rows** (rollup granularity; 56 underlying sites). By bucket:
-examples/** 1 · other .ri 1 · Rust fixture 54 · stdlib 0. Matches §4.1's "55 candidates" (56 raw
-minus the 1 parse-only exclusion) exactly.
+**Sub-totals:** BARE = 56 (1 empirically-confirmed BREAKS + 46 silent-BREAKS [15+6+23+2] + 9
+EXCLUDED-parse-only [1 `mv-2-priv-param.ri` + 8 `ts_parser.rs`]) → **7 rows** (rollup granularity;
+56 underlying sites). By bucket: examples/** 1 · other .ri 1 · Rust fixture 54 · stdlib 0. Matches
+§4.1's "47 candidates" (56 raw minus the 9 parse-only exclusions) exactly.
 
 ### 10.3 Gates 3+4 — δ₁'s entity.rs annotation checks (`entity.rs:479-485`/`:563-569`; owner **δ₁**)
 
@@ -1928,21 +2003,24 @@ radius"). Source: §2.1 (categories A/B), §2.2.4 (category C c1/c2/c0), §2.3 (
 | `examples/bearing_auto_seal.ri:46` | `param durometer : Length = 70.0` | examples/** | BARE | 1 | **BREAKS — migrate, MANDATORY before δ₁ lands** (post-δ₁ this is a hard compile `Error` in a *shipped example* — inferred from the mechanism, not empirically rebuilt under a not-yet-built δ₁; flagged as such) | **β**, same fix as its gate-2 row above |
 | `tree-sitter-reify/test/fixtures/mv-2-priv-param.ri:4` | `priv param rated_torque : Torque = 5` | other .ri | BARE | 1 | EXCLUDED — parse-only (never reaches `entity.rs` either) | none |
 | Category B (`let …`) | — | — | — | 0 | n/a — **0 sites found** (§2.1; 35 non-bare `let`-dimensioned sites surveyed, all compound expressions) | n/a |
-| Category-C, c1 (§2.2.4, 15 rows, reused verbatim from §10.2's table — same 15 sites) | `grade : Length = 8.8`, `axis: Length = 0`, … | Rust fixture | BARE | 15 | **BREAKS — migrate** (breaks a currently-passing `errors_only`/`parse_and_compile`-style assertion today once δ₁ lands) | **δ₁** (migrates its own test suite as part of landing) |
+| Category-C, c1 (§2.2.4, 15 rows, reused verbatim from §10.2's table — same 15 sites; includes `trait_assoc_type_conformance_tests.rs:110` override + `:166` inherited-default) | `grade : Length = 8.8`, `axis: Length = 0`, … | Rust fixture | BARE | 15 | **BREAKS — migrate** (breaks a currently-passing `errors_only`/`parse_and_compile`-style assertion today once δ₁ lands) | **δ₁** (migrates its own test suite as part of landing) |
 | Category-C, c2 — `param_default_type_mismatch_tests.rs:175-178,206-207` | 6 sites (`zero_int`, `one_int`, `half_real`, `large_real`, `neg_real`, `neg_int`) | Rust fixture | BARE | 6 | **DELIBERATE NEGATIVE TEST — invert** (asserts `ParamDefaultTypeMismatch` is absent; δ₁ inverts) | **δ₁** |
 | Category-C, c2 — `let_annotation_type_mismatch_tests.rs:176-178,583` | 4 sites (`x=5,y=0.5,z=-5.0,d=5`) | Rust fixture | BARE | 4 | **DELIBERATE NEGATIVE TEST — invert** | **δ₁** |
-| Category-C, c0 (§2.2.4, 11 row-groups, reused from §10.2) | — | Rust fixture | BARE | 31 | BREAKS — migrate, lower-urgency (no currently-passing test forces it today) | **δ₁**, optional cleanup as part of landing |
-| Category-C, unclassified | — | Rust fixture | BARE | 2 | UNCLASSIFIED — provisionally BREAKS — migrate | **δ₁** must resolve before landing |
+| Category-C, c0 — **actionable** (§2.2.4, 9 row-groups, reused from §10.2; **12 CONFIRMED + 11 PRESUMED**) | — | Rust fixture | BARE | 23 | BREAKS — migrate, lower-urgency (no currently-passing test forces it today). **The 11 PRESUMED rows (`helpers.rs:1077,1078` · `purpose_compile_tests.rs:1567` · `engine_tests.rs`×8) rest on a structural inference, not a read of the enclosing assertion — δ₁ must read them before landing a change that depends on the disposition** | **δ₁**, optional cleanup as part of landing |
+| Category-C, c0 — **parse-only** (`reify-syntax/src/ts_parser.rs:6338,6364,6420,6450,6466,6477,6488,6499`) | in-crate `parse()` unit-test fixtures | Rust fixture | BARE | 8 | **EXCLUDED — parse-only** (never reaches `entity.rs` either; `reify-syntax`'s deps exclude `reify-compiler` — §2.2.4b, same ruling as the `mv-2-priv-param.ri:4` row above) | none — **not δ₁ cleanup work; migrating them provably cannot change any diagnostic** |
+| Category-C, unclassified (`trait_assoc_type_conformance_tests.rs:76,224`) | — | Rust fixture | BARE | 2 | UNCLASSIFIED — provisionally BREAKS — migrate | **δ₁** must resolve before landing |
 | `crates/reify-compiler/stdlib/units.ri:14-19,23-24,28-31,35-37,41-43,48,53-54,65-66,74` (24 lines) | `pub unit cm : Length = 0.01`, … (§2.3's full 24-line table) | stdlib .ri | BARE-shaped | 24 | **EXCLUDED-BY-DESIGN (C2 unit decls)** — required bare conversion factors, never reach gate 3/4 (`unit`, not `param`/`let`) | **none — δ₁ must NEVER touch these** |
 | `examples/m9_combined.ri:46`, `examples/integration_full_v01.ri:33` | `unit mil : Length = 0.0000254` (×2) | examples/** | BARE-shaped | 2 | EXCLUDED-BY-DESIGN (C2 unit decls) | none — must never be touched |
 
-**Sub-totals:** BARE = 2 (category A) + 58 (category C: 15+10+31+2) = 60 → **BREAKS 47** (1 bearing
-+ 15 c1 + 31 c0), **DELIBERATE-INVERT 10** (c2), **UNCLASSIFIED 2**, **EXCLUDED-parse-only 1**
-(check: 47 + 10 + 2 + 1 = 60).
-EXCLUDED-BY-DESIGN = 26 (24 stdlib + 2 examples/**). **Total 86 rows/sites** across 9 row-groups
+**Sub-totals:** BARE = 2 (category A) + 58 (category C: 15+10+23+8+2) = 60 → **BREAKS 39** (1
+bearing + 15 c1 + 23 c0-actionable), **DELIBERATE-INVERT 10** (c2), **UNCLASSIFIED 2**,
+**EXCLUDED-parse-only 9** (1 `mv-2-priv-param.ri` + 8 `ts_parser.rs`) — check: 39 + 10 + 2 + 9 = 60.
+EXCLUDED-BY-DESIGN = 26 (24 stdlib + 2 examples/**). **Total 86 rows/sites** across 10 row-groups
 (60 BARE + 26 EXCLUDED-BY-DESIGN).
 By bucket: examples/** 3 (1 BREAKS + 2 EXCLUDED-BY-DESIGN) · stdlib 24 (EXCLUDED-BY-DESIGN) ·
 other .ri 1 (EXCLUDED-parse-only) · Rust fixture 58 (check: 3 + 24 + 1 + 58 = 86).
+Of the 39 BREAKS, **28 are CONFIRMED by a read of the enclosing assertion** (1 bearing + 15 c1 +
+12 c0-actionable-CONFIRMED) and **11 are PRESUMED** (§2.2.4's evidence roll-up).
 
 ### 10.4 Gate 5 — constraint-def Rule 4 (`type_compat.rs:1482-1488`; owner **δ₂**)
 
@@ -2033,7 +2111,7 @@ it does not have.
 |---|---|---|---|
 | **β** (corpus migration, lands before γ/δ₁) | §10.1's examples/**+other-.ri BREAKS rows (12 sites: 6 `tots`/`printer` + 6 `large_assembly`) · §10.2's `bearing_auto_seal.ri` row · §10.3's `bearing_auto_seal.ri` row (same fix, dual benefit) | §3.1's correct-twin hint (`examples/large_assembly.ri:51-53`) · §3.3's reach-vs-gate note (large_assembly has no cargo gate — verify via GUI harness/`reify check`, not `cargo test`) | §10.3/§2.3's 26 EXCLUDED-BY-DESIGN `unit` sites (β must not "fix" required conversion factors) · §10.1/§10.2's EXCLUDED file-local-shadow/parse-only rows (not real sites) |
 | **γ** (predicate promotion) | §10.1 + §10.2 in full (its own blast radius) · §10.5 (gate 6, 0 sites — safe to land without also touching fn-call sites) | §6 in full (the `is_numeric_placeholder_leaf` fence is a **landing prerequisite**, not optional — §6.2's live demonstration) · §7 (fn-call reachability is mechanical, re-check §7.2's census before citing "0" at a later HEAD) · examples_smoke's own panic prose (reuse item: "γ — not α — rewrites its panic prose") | §10.3 (gates 3+4 — a different, δ₁-owned mechanism γ never touches) · §10.4 (gate 5 — δ₂-owned) · §10.6's quantity-slot residual (out of scope by design, §12) |
-| **δ₁** (param/let default tolerance removal, gates 3+4) | §10.3 in full: c1 (15, migrates own test suite), c2 (10, inverts own pins), c0 (31, optional), unclassified (2, must resolve before landing) | §2.2.4's full per-site c1/c0 detail (this table's rollup rows point back to it) · §2.2.5's `param`/`let` split ruling | §10.3's 26 EXCLUDED-BY-DESIGN `unit` sites (explicit warning, §2.3: "δ₁ 'fixing' them would silently break the unit system") |
+| **δ₁** (param/let default tolerance removal, gates 3+4) | §10.3 in full: c1 (15, migrates own test suite), c2 (10, inverts own pins), c0-actionable (**23**, optional — of which **11 are PRESUMED** and must be read before δ₁ relies on their disposition), unclassified (2, `trait_assoc_type_conformance_tests.rs:76,224` — must resolve before landing) | §2.2.4's full per-site c1/c0 detail incl. its CONFIRMED/PRESUMED evidence column (this table's rollup rows point back to it) · §2.2.5's `param`/`let` split ruling | §10.3's 26 EXCLUDED-BY-DESIGN `unit` sites (explicit warning, §2.3: "δ₁ 'fixing' them would silently break the unit system") · §10.3's **8 EXCLUDED-parse-only `ts_parser.rs` sites** (§2.2.4b — not cleanup work; migrating them provably cannot change any diagnostic) |
 | **δ₂** (constraint-def numeric leniency removal, gate 5) | §10.4 in full (5 rows: 3 primitive pins + `constraint_def_compile_tests.rs` pin + `forall_statement_lower_tests.rs` BREAKS site) | §5.5 (ScalarParam admission into `is_numeric` is a δ₂ **prerequisite**, unresolved here — a future dimension-generic constraint arg needs its own fence) · §5.6 (Rule 2 precedes Rule 4 — check before attributing a silence to Rule 4) | §10.1-§10.3 (gates 1/2/3+4/6 — different mechanisms, different files) |
 | **§6.4 quantity-slot follow-up** (5627 candidate-2 / `reify-core/src/ty.rs`) | §10.6's quantity-slot rollup row only | §8 in full (118 sites, 9+4+3+21 files, the worked `kinematic.ri`/`dynamics.ri` contrast in §8.1) | Everything else — this residual is explicitly not a migration list for β/γ/δ₁/δ₂ (§8, §12) |
 
@@ -2073,13 +2151,28 @@ earlier revision can diff their citations against this list.
 |---|---|---|---|---|
 | 2026-07-30 | `2b02ef0e5e` (step-12) | §2.3 `pub unit` declarations in `stdlib/units.ri` **21 → 24**; derived EXCLUDED-BY-DESIGN total (§2.3, §10.3, §10.8 β/δ₁ rows) **23 → 26** | **GREW** — the do-not-touch list got *larger* | The prose total counted only "6 base + 15 bare factor" and silently dropped the three EXPRESSION/OFFSET-form declarations (`deg`:24, `degC`:42, `degF`:43) that §2.3's own verbatim listing always showed. Correct decomposition: 6 + 15 + 3 = 24. |
 | 2026-07-30 | `e242ba6f83` (step-13) | §2.2 category C **55 → 58** (c0 **28 → 31**; `param`/`let` split **51/4 → 54/4**), threaded through §4.1 (52 → 55 gate-2 candidates), §5, §8.3, §10.2, §10.3, §10.7, §10.8 | **GREW** — 3 previously-invisible sites recovered | The documented comment-stripper was **string-literal-blind**: it cut the line at the first `//` even inside a Rust string literal, so any fixture whose embedded `.ri` snippet *opened* with a doc/line comment had its payload discarded before the regex ran. §2.2.1 now documents the corrected string-aware stripper. |
+| 2026-07-30 | amendment pass (§2.2.4b) | The **8 `reify-syntax/src/ts_parser.rs` c0 sites reclassified BREAKS → EXCLUDED — parse-only.** Derived figures restated: §4.1 gate-2 candidates **55 → 47** (56 raw − **9** parse-only, was − 1); §10.2 sub-totals "54 silent-BREAKS + 1 EXCLUDED-parse-only" → "**46** silent-BREAKS + **9** EXCLUDED-parse-only"; §10.3 "BREAKS 47" → "**BREAKS 39**, EXCLUDED-parse-only **9**" (39+10+2+9 = 60); §10.8's δ₁ row c0 **31 → 23 actionable**. Category-C total (58), BARE (60), and §10.3's Total (86) are **unchanged** — only dispositions moved. | **SHRANK** — the normative BREAKS/migration counts got *smaller*; no new work anywhere | The ledger classified two structurally identical parse-only situations oppositely: `mv-2-priv-param.ri:4` was `EXCLUDED — parse-only` while the 8 `ts_parser.rs` sites, unreachable by the *same* argument (`crates/reify-syntax/Cargo.toml` lists no `reify-compiler` on either dep list — re-verified at HEAD, §2.2.4b), were folded into c0's flat "BREAKS — migrate". §10.10.2's addend audit ticked the sums ✓ because it re-checked the arithmetic without re-checking the classification the arithmetic rested on. |
+| 2026-07-30 | amendment pass (§2.2.4) | **CONFIRMED/PRESUMED evidence marker added to the c0 rows** — 31 c0 = **20 CONFIRMED / 11 PRESUMED** (`helpers.rs:1077,1078` · `purpose_compile_tests.rs:1567` · `engine_tests.rs`×8); of the 23 c0-actionable sites, **12 CONFIRMED / 11 PRESUMED**. §10.3 now also reports the BREAKS split (**28 CONFIRMED / 11 PRESUMED**) and §10.8 tells δ₁ which rows still need a read. | **NEUTRAL** — no count changed; confidence made legible | §2.2.4 already marked 11 dispositions "presumed", but §10.2/§10.3 rendered them with the same authority as the rows whose enclosing assertion was actually read. A c0 disposition turns on whether the enclosing test filters to `Severity::Error` (§1.4) — a property of code that was not read for those 11. |
+| 2026-07-30 | amendment pass (§2.2.4/§10.3 c1) | **`file:line` anchors added for the 2 prose-cited c1 rows** — `trait_assoc_type_conformance_tests.rs:110` (override) and `:166` (inherited-default); the 2 UNCLASSIFIED occurrences in the same file pinned as `:76` and `:224`. | **NEUTRAL** — no count changed | Two of the 15 highest-urgency c1 rows were cited by sub-case name only, the sole exception to §2.2.5's "individually re-verifiable, file:line by file:line" promise — and in the one file that also holds the 2 unresolved occurrences, so a consumer could not tell which were already accounted for. |
+| 2026-07-30 | amendment pass (§0.4) | **§0.4's published reproduction command corrected** to scope the parse-only exclusion to `.rs` files (`grep -vE '^crates/reify-(syntax\|ast)/tests/.*\.rs$'`); it now reproduces the stated union of **2120**. | **NEUTRAL** — substrate count unchanged; the *command* was wrong, not the figure | The published `grep -v '^crates/reify-syntax/tests/\|^crates/reify-ast/tests/'` applied to the whole union, additionally dropping 2 `.ri` fixtures that tree B's 168 counts — so the command emitted 2118 at the cited HEAD, not the tabulated 2120. Neither dropped file holds an in-scope site (§0.4). |
+| 2026-07-30 | amendment pass (§11(B)) | **Check 2's command corrected** to the range form `git diff --exit-code main...HEAD -- crates/ examples/ gui/` (vacuous `stdlib` pathspec dropped). | **NEUTRAL** — the invariant held and still holds; the *proof* is now sound | The old check 2 was a working-tree diff ("nothing uncommitted is dirty"), not a branch-vs-`main` diff, so it could not have caught a *committed* source edit; and the `stdlib` pathspec matched 0 tracked files (`stdlib/` lives at `crates/reify-compiler/stdlib/`). |
+| 2026-07-30 | amendment pass (§12) | **Appendix §12 added**: the normative scanner, its 65-name alternation input, and the full **60-row `file:line` hit list** inlined into this document. | **NEUTRAL** — no count changed; the normative count made re-derivable | §2.2.1 declared its stripper normative and obliged consumers to reproduce **58**, but the only executable form was uncommitted `/tmp/5756-scratch/` scratch, and the 58 sites were never listed individually (31 c0 sites were rolled into 11 prose row-groups). |
 
-**No migration disposition changed under either correction.** The `pub unit` sites were already
-EXCLUDED-BY-DESIGN and remain so — three more of them, not a new class. The three recovered
+**No migration disposition changed under the first two corrections.** The `pub unit` sites were
+already EXCLUDED-BY-DESIGN and remain so — three more of them, not a new class. The three recovered
 category-C sites are all the same structurally-parse-only **c0** class as the already-accounted
 `ts_parser.rs:6488` (§2.2.4). Nothing moved into or out of c1/c2; no BREAKS row and no
 DELIBERATE-INVERT row was added or removed. **β/γ/δ₁/δ₂ must not re-plan off either correction** —
 only counts moved, and in both cases the *safety* list (do-not-touch / no-break) is what grew.
+
+**The amendment-pass corrections likewise require no re-planning.** The one that moves a
+disposition (§2.2.4b) moves 8 sites *out* of the migration list, and every one of them was
+provably incapable of changing a diagnostic — so a consumer holding the pre-amendment figures has
+over-scoped work, never under-scoped it. Nothing moved into or out of c1/c2 there either. The
+remaining amendment rows change no count at all: they add evidence markers, line anchors, a
+corrected reproduction command, a corrected proof command, and the appendix. **Direction summary
+for a consumer diffing citations: `pub unit` GREW (21 → 24, do-not-touch list), category C GREW
+(55 → 58, all EXCLUDED-parse-only), BREAKS SHRANK (§4.1 55 → 47, §10.3 47 → 39).**
 
 ### 10.10 Post-review arithmetic reconciliation (step-14)
 
@@ -2110,9 +2203,18 @@ sentence and a total disagreed, the *sentence* was fixed, never the total silent
 | §2.3 | 6 base + 15 bare factor + 3 expression/offset = **24**; 24 stdlib + 2 example-local = **26** | ✓ ✓ |
 | §2.2 | 15 c1 + 10 c2 + 31 c0 + 2 unclassified = **58**; 54 `param` + 4 `let` = **58** | ✓ ✓ |
 | §2.2.5 | 63 (PRD) − 58 (measured) = short by **5** | ✓ |
-| §4.1 | 54 (cat C) + 2 (cat A) = **56**; 56 − 1 parse-only = **55** | ✓ ✓ |
-| §10.2 | 1 confirmed BREAKS + 54 silent-BREAKS + 1 EXCLUDED-parse-only = **56**; matches §4.1's 55 candidates (56 − 1) | ✓ ✓ |
-| §10.3 | BARE 2 + 58 = **60**; BREAKS 1 + 15 + 31 = **47**; 47 + 10 + 2 + 1 = **60**; 60 + 26 = **86**; bucket 3 + 24 + 1 + 58 = **86** | ✓ ✓ ✓ ✓ ✓ |
+| §4.1 | 54 (cat C) + 2 (cat A) = **56**; 56 − **9** parse-only = **47** | ✓ ✓ |
+| §10.2 | 1 confirmed BREAKS + **46** silent-BREAKS [15+6+23+2] + **9** EXCLUDED-parse-only = **56**; matches §4.1's 47 candidates (56 − 9) | ✓ ✓ |
+| §10.3 | BARE 2 + 58 = **60**; category C 15 + 10 + **23** + **8** + 2 = **58**; BREAKS 1 + 15 + **23** = **39**; 39 + 10 + 2 + **9** = **60**; 60 + 26 = **86**; bucket 3 + 24 + 1 + 58 = **86** | ✓ ✓ ✓ ✓ ✓ ✓ |
+| §2.2.4 (evidence) | c0 **20** CONFIRMED + **11** PRESUMED = **31**; c0-actionable **12** + **11** = **23**; 23 + 8 parse-only = **31** | ✓ ✓ ✓ |
+| §10.3 (evidence) | BREAKS **28** CONFIRMED [1 + 15 + 12] + **11** PRESUMED = **39** | ✓ |
+
+**[amendment pass] The §4.1/§10.2/§10.3 rows above were restated by §2.2.4b's parse-only
+correction, and the two evidence rows are new.** This is the failure mode §10.10 exists to close,
+caught one level up: the pre-amendment audit ticked `54 + 2 = 56` and `56 − 1 = 55` ✓✓ because it
+re-checked the *arithmetic* without re-checking the **classification the arithmetic rested on**.
+An addend audit is only as strong as the row labels it sums — where a sum is derived from a
+disposition (`… − N parse-only`), the disposition must be re-derived too, not carried forward.
 
 **10.10.3 The review comment's own totals do not add — resolved here so no future reader
 reconciles against the review instead of against this ledger.** Both review findings independently
@@ -2123,6 +2225,25 @@ recommendation*: the two corrections are independent and **compose** — 80 + 3 
 (`2b02ef0e5e` leaves the ledger internally consistent at 83; `e242ba6f83` takes it to 86).
 **86 is the figure to cite.** Any consumer holding an 80 or an 83 is reading a pre- or
 mid-correction revision.
+
+**10.10.4 [amendment pass] Residual-figure sweep for the parse-only correction.** The
+superseded gate-2/BREAKS figures (`55` candidates, `54` silent-BREAKS, `47` BREAKS, `31` c0
+*as a disposition group*, `1` parse-only exclusion) were re-grepped across the whole ledger.
+Every surviving occurrence is one of the following legitimate uses:
+
+| Surviving occurrence | Why it is not a stale count |
+|---|---|
+| §2.2's header/narrative "**55** → 58", "an earlier revision reported 55", §10.10.3's "category C 55 → 58" | Deliberate before/after correction prose for a *different*, already-logged correction. |
+| §4.1's "(**55** → 47)", §10.9.1's "**55 → 47**", §10.10.2's "`56 − 1 = 55` ✓✓" post-mortem | The amendment's own before/after prose. |
+| c0 = **31 sites** (§2.2.4 header, §2.2.4's "28 → 31", §5's "the c0 bucket (31 sites)", §10.10.2's evidence row) | c0 is **still 31 sites** — the correction split their *disposition* (23 actionable + 8 parse-only), not their membership. Any "31" describing c0 *size* is current; only "31" used as a **BREAKS** count was restated. |
+| **54** `param` / §2.2.5b, §10.2's "Rust fixture 54" bucket line, §10.10.2's "54 (cat C) + 2 = 56" | The category-C `param` **bucket** count, unchanged: the 8 parse-only sites are still Rust-fixture category-C `param` hits, still inside the 54/56/58. |
+| `trait_assoc_type_conformance_tests.rs:**31**`, `units.ri` listing rows `31`/`54`, `assertions.ts:**47**`, `ports.ri`/`constitutive.ri:**54**-57` | File:line anchors, not counts. |
+| §10.3's "**BREAKS 47** → 39" is fully restated; **no un-restated `47` remains as a BREAKS count** | — |
+
+**Invariants preserved across the amendment:** category-C total **58**, `param`/`let` split
+**54/4**, §10.2's BARE **56**, §10.3's BARE **60**, EXCLUDED-BY-DESIGN **26**, §10.3 Total **86**,
+and every by-bucket line. The correction is disposition-only; it moves no site between buckets and
+adds or removes no site from any total.
 
 ## §11 Methodology closure + no-source-change proof (step-11)
 
