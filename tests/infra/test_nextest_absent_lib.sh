@@ -547,10 +547,62 @@ _t9d() {
     ! nextest_available_ambient "$NX_STUB_NOHDR"
 }
 
+# (e) nextest_available_in_plan — the OTHER caller-facing detector, and until
+# now the only one with no direct test. 7c and 9a-9d all exercise the ambient
+# sibling; in_plan is a different function that reads a plan string the caller
+# ALREADY holds, and it is the form six migrated suites gate every nextest-shaped
+# assert on (test_run_offline_deep.sh, test_verify_retry_failed_only.sh,
+# test_verify_role_prio.sh, test_verify_semaphore_e2e.sh,
+# test_verify_test_threads.sh, test_verify_retry_subset.sh).
+#
+# WHY IT NEEDS ITS OWN TEST. A regression here — an inverted `case` arm, an
+# extractor change that stops matching — fails nothing: it flips
+# NEXTEST_AVAILABLE to 0 in those six suites, which then SKIP their positive
+# asserts and still report green. That is the vacuous-green class this file's
+# content-keyed extractor exists to prevent, and the two backstops do not cover
+# it: 9c pins the ambient sibling only, and
+# test_verify_nextest_absent_suites.sh's pass floors are calibrated for the
+# nextest-ABSENT env, where nextest=0 is the CORRECT answer — so they cannot
+# detect a spurious nextest=0 on a nextest-present host.
+#
+# Table-driven over literal plan strings: both directions, the content-keyed
+# property asserted on THIS function rather than only on the extractor it calls,
+# and the empty plan every migrated suite's comment cites as its RED-phase /
+# pipefail guard. No verify.sh invocation, so it costs nothing.
+_NX_HDR_N1='# verify.sh plan — action=test profile=debug scope=all include_infra=0 nextest=1 role=task'
+_NX_HDR_N0='# verify.sh plan — action=test profile=debug scope=all include_infra=0 nextest=0 role=task'
+_NX_PREAMBLE_LINE='warning: apply_env — /etc/reify/env not readable, continuing'
+
+# $1 = expected rc (0 available / 1 unavailable), $2 = label, $3 = plan text.
+_nx_in_plan_case() {
+    printf 'plan:\n%s\n(expect rc=%s)\n' "$3" "$1"
+    if nextest_available_in_plan "$3"; then
+        [ "$1" -eq 0 ] || { printf 'in_plan reported AVAILABLE for %s\n' "$2"; return 1; }
+    else
+        [ "$1" -eq 1 ] || { printf 'in_plan reported UNAVAILABLE for %s\n' "$2"; return 1; }
+    fi
+    return 0
+}
+
+_NX_PLAN_N1_BARE="$_NX_HDR_N1"
+_NX_PLAN_N1_PREAMBLE="$_NX_PREAMBLE_LINE
+$_NX_HDR_N1
+# scope decision — RUN_RUST=1 RUN_GUI=1"
+_NX_PLAN_N0="$_NX_PREAMBLE_LINE
+$_NX_HDR_N0"
+
 assert "9a: nextest_absent_plan_header finds the header behind a preamble line" _t9a
 assert "9b: nextest_absent_plan_header_ambient finds the header behind a preamble line" _t9b
 assert "9c: nextest_available_ambient answers correctly in BOTH directions through a preamble" _t9c
 assert "9d: a plan with no header yields an empty header and reports unavailable" _t9d
+assert "9e-i: nextest_available_in_plan reports AVAILABLE on a bare nextest=1 plan" \
+    _nx_in_plan_case 0 "a bare nextest=1 header" "$_NX_PLAN_N1_BARE"
+assert "9e-ii: nextest_available_in_plan reports AVAILABLE on a nextest=1 plan behind a preamble line" \
+    _nx_in_plan_case 0 "a nextest=1 header behind a preamble line" "$_NX_PLAN_N1_PREAMBLE"
+assert "9e-iii: nextest_available_in_plan reports UNAVAILABLE on a nextest=0 plan (it reads the header, not a fixed answer)" \
+    _nx_in_plan_case 1 "a nextest=0 header" "$_NX_PLAN_N0"
+assert "9e-iv: nextest_available_in_plan reports UNAVAILABLE on an EMPTY plan (the RED-phase / pipefail guard every migrated suite cites)" \
+    _nx_in_plan_case 1 "an empty plan" ""
 
 # -- Test 10: trap ownership — the lib composes, it does not clobber -----------
 #
