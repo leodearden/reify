@@ -40,13 +40,15 @@
 #
 #     HEADROOM resident=… live=… pinned=… quarantined=… free=… assigned=…
 #              state_unknown=… reclaimable=… leaked=… leak_unknown=…
-#              divergent_gib=… free_gib=… budget_gib=…
+#              divergent_gib=… free_gib=… budget_gib=… plan_stranded=…
+#              plan_unknown=… plan_rewritten=…
 #     PINNED   total=… pending=… infra-hold=… blocked=… terminal=… other=…
 #              unknown=…
 #
 # HEADROOM's occupancy figures are an ORDERED, mutually exclusive PARTITION --
 # `resident = live + pinned + quarantined + free`, with `free` the residue --
-# while `assigned` and `state_unknown` are CROSS-CUTS never added into it (see
+# while `assigned`, `state_unknown` and the three `plan_*` fields are CROSS-CUTS
+# never added into it (see
 # the counter block at the resident walk, which is where that identity is
 # enforced). PINNED breaks `pinned` down by WHY each pin is held: a fixed,
 # closed bucket vocabulary in a fixed order, always emitted, zeros included
@@ -220,8 +222,12 @@ Usage: $(basename "$0") [--mount DIR] [--format table|json] [--status-cmd CMD]
     HEADROOM  occupancy is an ordered, exclusive PARTITION --
               resident = live + pinned + quarantined + free -- so \`free\` is
               the residue and never absorbs a reserved-but-idle lane.
-              \`assigned\` and \`state_unknown\` are cross-cuts, not partition
-              members.
+              \`assigned\`, \`state_unknown\` and \`plan_stranded\` /
+              \`plan_unknown\` / \`plan_rewritten\` are cross-cuts, not
+              partition members: they may overlap any bucket. plan_rewritten
+              counts routine rebases and is expected to DOMINATE a healthy
+              pool — it is emitted so the stranded figure is readable in
+              proportion to it, and needs no action.
     PINNED    why the pins are held: total + the fixed buckets pending,
               infra-hold, blocked, terminal, other, unknown. Always emitted,
               zeros included.
@@ -1160,6 +1166,23 @@ QUARANTINED_COUNT=0
 FREE_COUNT=0
 ASSIGNED_COUNT=0
 STATE_UNKNOWN_COUNT=0
+# The three plan_sync counters are CROSS-CUTS TOO, for the same reason and with
+# the same prohibition: ref integrity is orthogonal to occupancy, so a stranded
+# lane is simultaneously live, pinned, quarantined or free, and adding any of
+# these into `resident = live + pinned + quarantined + free` would break the
+# identity outright. They are three counters rather than one because an
+# operator acts on them differently:
+#   PLAN_STRANDED_COUNT   investigate (and escalate) -- work is off the branch
+#   PLAN_UNKNOWN_COUNT    the read failed; a mass spike is its own signal
+#   PLAN_REWRITTEN_COUNT  do NOTHING. Routine rebases, the pool's own steady
+#                         state, counted ONLY so the stranded figure is
+#                         readable in proportion to it rather than in a vacuum.
+# Every one of them is incremented from the RESOLVED column value, never from a
+# re-evaluated predicate, so a counter can never drift out of sync with the rows
+# it summarizes -- the discipline _pin_bucket already follows.
+PLAN_STRANDED_COUNT=0
+PLAN_UNKNOWN_COUNT=0
+PLAN_REWRITTEN_COUNT=0
 # The PINNED breakdown's six buckets (see _pin_bucket). They partition
 # PINNED_COUNT exactly -- every pinned lane increments exactly one -- and are
 # emitted unconditionally, zeros included, so "no pins" is a readable value
@@ -1302,6 +1325,16 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
         # globals (same call convention as _read_lane_assignment above).
         _read_plan_sync "$entry"
         plan_sync="$PLAN_SYNC_STATE"
+        # Keyed off the RESOLVED column value, never a re-evaluated predicate,
+        # so the counters can never disagree with the rows above them. OK and
+        # `-` are counted by nothing: they are the healthy and the
+        # nothing-recorded-yet cases, and a counter for each would say nothing
+        # the resident total does not.
+        case "$plan_sync" in
+            STRANDED)  PLAN_STRANDED_COUNT=$((PLAN_STRANDED_COUNT + 1)) ;;
+            UNKNOWN)   PLAN_UNKNOWN_COUNT=$((PLAN_UNKNOWN_COUNT + 1)) ;;
+            REWRITTEN) PLAN_REWRITTEN_COUNT=$((PLAN_REWRITTEN_COUNT + 1)) ;;
+        esac
         divergent_bytes="$(_divergent_bytes "$entry")"
         divergent_gib=$(( divergent_bytes / 1073741824 ))
         age_min="$(_age_min "$entry")"
@@ -1381,8 +1414,12 @@ if [ "$FORMAT" = "json" ]; then
         "$PIN_PENDING_COUNT" "$PIN_INFRA_HOLD_COUNT" "$PIN_BLOCKED_COUNT" "$PIN_TERMINAL_COUNT" "$PIN_OTHER_COUNT" "$PIN_UNKNOWN_COUNT"
 else
     printf '%s' "$TABLE_OUT"
-    printf 'HEADROOM resident=%d live=%d pinned=%d quarantined=%d free=%d assigned=%d state_unknown=%d reclaimable=%d leaked=%d leak_unknown=%d divergent_gib=%d free_gib=%d budget_gib=%d\n' \
-        "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB"
+    # The plan_* cross-cuts are APPENDED after budget_gib, leaving every
+    # existing field's position untouched, so a consumer matching a prefix or a
+    # fixed field order keeps working (the runbook's append-never-interpose
+    # convention).
+    printf 'HEADROOM resident=%d live=%d pinned=%d quarantined=%d free=%d assigned=%d state_unknown=%d reclaimable=%d leaked=%d leak_unknown=%d divergent_gib=%d free_gib=%d budget_gib=%d plan_stranded=%d plan_unknown=%d plan_rewritten=%d\n' \
+        "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB" "$PLAN_STRANDED_COUNT" "$PLAN_UNKNOWN_COUNT" "$PLAN_REWRITTEN_COUNT"
     # Always emitted, zeros included: a stable grep shape means "no pins" reads
     # as a value an operator can see, never as an absent line.
     printf 'PINNED total=%d pending=%d infra-hold=%d blocked=%d terminal=%d other=%d unknown=%d\n' \

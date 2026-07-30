@@ -678,8 +678,13 @@ assert "G4: HEADROOM divergent_gib is a non-negative integer" \
     bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -qE "divergent_gib=[0-9]+"' _ "$OUT"
 assert "G5: HEADROOM free_gib == floor(stub_avail_bytes / 2^30)" \
     bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "free_gib=$2 budget_gib="' _ "$OUT" "$G_EXPECTED_FREE_GIB"
+# Anchored to a FIELD BOUNDARY, not to end-of-line: budget_gib stopped being
+# the last field when the plan_* cross-cuts were appended after it, and an
+# end-of-line anchor would have made every future append look like a
+# regression. `( |$)` still pins the value exactly -- budget_gib=12 cannot
+# match budget_gib=123 -- which is the only thing this assertion is about.
 assert "G6: HEADROOM budget_gib == floor(free_gib / safety)" \
-    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -qE "budget_gib=$2\$"' _ "$OUT" "$G_EXPECTED_BUDGET_GIB"
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -qE "budget_gib=$2( |\$)"' _ "$OUT" "$G_EXPECTED_BUDGET_GIB"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block H — --format json
@@ -858,7 +863,7 @@ assert "I17: exit 0 (df failure degrades, never aborts)" test "$RC" -eq 0
 assert "I18: HEADROOM line still emitted under df failure" \
     bash -c 'printf "%s\n" "$1" | grep -q "^HEADROOM"' _ "$OUT"
 assert "I19: HEADROOM free_gib=0 budget_gib=0 under df failure" \
-    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -qE "free_gib=0 budget_gib=0$"' _ "$OUT"
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -qE "free_gib=0 budget_gib=0( |\$)"' _ "$OUT"
 
 # Release the live-flock lock.
 kill "$I_LOCK_PID" 2>/dev/null || true
