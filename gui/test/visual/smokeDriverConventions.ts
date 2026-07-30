@@ -31,6 +31,9 @@
  * each false-positive shape be pinned from a string literal with no on-disk
  * fixture.
  */
+import * as fs from "node:fs";
+
+import { VISUAL_DIR } from "./sharedModuleLoad.js";
 
 /**
  * The stable identity of a violation. Assert on THIS, never on the message.
@@ -99,4 +102,34 @@ export function findSmokeDriverConventionViolations(source: string): SmokeDriver
     });
   }
   return violations;
+}
+
+/**
+ * The live `smoke_*.mjs` e2e drivers this directory holds.
+ *
+ * Enumerated, not discovered: this is the table `./smokeDriverConventions.test.ts`
+ * drives its `it.each` off, and a directory read there would let a discovery bug
+ * collapse it to zero registered tests — trading a loud gap for a silent one
+ * (`./sharedModuleLoad.ts:106-110`). {@link discoverSmokeDrivers} cross-checks it.
+ */
+export const SMOKE_DRIVERS = [
+  "smoke_appearance_e2e.mjs",
+  "smoke_diagnostics_e2e.mjs",
+  "smoke_find_uses.mjs",
+  "smoke_mesh_count_parity_e2e.mjs",
+  "smoke_multi_pane_e2e.mjs",
+  "smoke_surface_finish_viewport_e2e.mjs",
+];
+
+/**
+ * Every `.mjs` in `dir` that IS a `smoke_*` driver — the exact complement of
+ * `discoverSharedEsmModules`'s filter, so the two tables together cover every
+ * `.mjs` in the directory and neither can silently drop one.
+ *
+ * Used ONLY by the completeness guard, never as the `it.each` source; see
+ * {@link SMOKE_DRIVERS}. The `dir` parameter exists so the filter rule stays
+ * pinnable against a fixture directory in isolation.
+ */
+export function discoverSmokeDrivers(dir: string = VISUAL_DIR): string[] {
+  return fs.readdirSync(dir).filter((name) => name.endsWith(".mjs") && name.startsWith("smoke_"));
 }

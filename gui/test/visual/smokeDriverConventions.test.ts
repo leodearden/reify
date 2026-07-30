@@ -17,9 +17,18 @@
  * Violation assertions are on `code`, never on `message`: the prose is meant to
  * stay free to reword or enrich without churning the pins.
  */
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+
 import { describe, it, expect } from "vitest";
 
-import { findSmokeDriverConventionViolations } from "./smokeDriverConventions.js";
+import { readSharedModuleSource } from "./sharedModuleLoad.js";
+import {
+  SMOKE_DRIVERS,
+  discoverSmokeDrivers,
+  findSmokeDriverConventionViolations,
+} from "./smokeDriverConventions.js";
 
 /** The violation identities a source trips, in the order the predicate reports them. */
 function codesFor(source: string): string[] {
@@ -112,5 +121,78 @@ describe("findSmokeDriverConventionViolations — the pure predicate behind the 
     expect(findSmokeDriverConventionViolations("await rpc('open_file', {});")).toEqual([
       { code: "inline-open-file", message: expect.stringContaining("openFileWithRetry") },
     ]);
+  });
+});
+
+describe("discoverSmokeDrivers — the filter rule behind the completeness guard", () => {
+  it("keeps `smoke_*` drivers, drops shared modules and non-`.mjs` files", () => {
+    // Driven off a fixture directory so the RULE is pinned in isolation, and
+    // written as the exact complement of discoverSharedEsmModules's filter: the
+    // opt-in prefix is `smoke_` WITH the underscore, so `smoke_find_uses.mjs` is
+    // a driver while `smokeDriverGuards.mjs` is a shared module. A regression
+    // from `startsWith("smoke_")` to `startsWith("smoke")` would otherwise
+    // surface only as a confusing table mismatch below, never naming the filter.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reify-smoke-drivers-"));
+    try {
+      for (const name of [
+        "smoke_find_uses.mjs", // a driver
+        "smokeDriverGuards.mjs", // `smoke` but NOT `smoke_` — a shared module
+        "rpcEnvelope.mjs", // a shared module
+        "smokeDriverConventions.ts", // not a `.mjs` at all
+        "run_find_uses_smoke.sh",
+      ]) {
+        fs.writeFileSync(path.join(dir, name), "");
+      }
+      expect(discoverSmokeDrivers(dir)).toEqual(["smoke_find_uses.mjs"]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("the convention that keeps the open_file retry policy in one home", () => {
+  // THE POINT OF THIS FILE. Each driver re-implementing the 8×3000ms loop was
+  // its own copy of the retry budget, the `.ok` verdict and the failure wording
+  // — and each inline copy silently lacks the helper's transport-error folding,
+  // so an ECONNREFUSED during the WebView boot window aborts the whole budget on
+  // attempt 1 and lands in main().catch as exit 2 instead of the clean exit-1
+  // verdict. Nothing else in CI can observe that: these drivers need a live GUI.
+  it.each(SMOKE_DRIVERS)("%s reaches open_file through openFileWithRetry", (name) => {
+    // Rendering the messages (not the codes) is the suite's job — the helper
+    // stays vitest-free, and a failure here should read as prose naming which
+    // convention broke on which driver.
+    const violations = findSmokeDriverConventionViolations(readSharedModuleSource(name));
+    expect(
+      violations.map((violation) => violation.message),
+      `${name} must not re-implement the open_file retry policy`,
+    ).toEqual([]);
+  });
+
+  it("names the six known drivers — an empty table is not a pass", () => {
+    // Without this, an edit that empties the table turns the `it.each` above
+    // into zero registered tests: a vacuously green suite with the convention
+    // silently gone, the same inert-by-default failure the negative controls
+    // guard against on the regex side.
+    expect(SMOKE_DRIVERS).toEqual(
+      expect.arrayContaining([
+        "smoke_appearance_e2e.mjs",
+        "smoke_diagnostics_e2e.mjs",
+        "smoke_find_uses.mjs",
+        "smoke_mesh_count_parity_e2e.mjs",
+        "smoke_multi_pane_e2e.mjs",
+        "smoke_surface_finish_viewport_e2e.mjs",
+      ]),
+    );
+  });
+
+  it("covers every `smoke_*.mjs` driver in the directory", () => {
+    // A hand-maintained table silently skips a NEW driver until someone
+    // remembers to add it — which is precisely how a seventh inline copy of the
+    // retry loop would get in. Reading the directory closes that.
+    //
+    // Both directions on purpose, so it also catches a STALE entry left after a
+    // driver is deleted or renamed, which would otherwise surface as a confusing
+    // ENOENT deep inside readSharedModuleSource.
+    expect(discoverSmokeDrivers().sort()).toEqual([...SMOKE_DRIVERS].sort());
   });
 });
