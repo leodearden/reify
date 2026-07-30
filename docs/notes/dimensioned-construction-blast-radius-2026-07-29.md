@@ -432,13 +432,13 @@ bare literal. Full list in `/tmp/5756-scratch/step2-let-dimensioned-any.txt`.
 ### 2.2 Category C — Rust fixture-string occurrences
 
 **PRD figure: 63 across 22 files (25 c1 + 10 c2 + 28 c0, 11 of the 28
-parse-only). My re-measurement: 55 in-scope hits across 17 files (15 c1 + 10
-c2 + 28 c0 + 2 not conclusively classified within this session's budget).**
+parse-only). My re-measurement: 58 in-scope hits across 17 files (15 c1 + 10
+c2 + 31 c0 + 2 not conclusively classified within this session's budget).**
 Recorded as a DELTA, not silently reconciled — see 2.2.4.
 
 **2.2.1 Method.** A line-level scan of every file in tree C
 (`crates/**/*.rs`, 1641 files after exclusions) + tree D
-(`gui/src-tauri/**/*.rs`, 41 files), reusing `corpus_no_bare_scalar.rs`'s
+(`gui/src-tauri/**/*.rs`, 41 files), adapting `corpus_no_bare_scalar.rs`'s
 comment-stripping technique (skip lines whose trimmed start is `//`; strip
 a trailing `// …` unless preceded by `:`), against a purpose-written bare
 predicate (this task's C2 anchor note: `corpus_no_bare_scalar.rs`'s own
@@ -453,8 +453,45 @@ pat = re.compile(
 )
 ```
 
-**2.2.2 Two regex bugs found and fixed while building this — recorded
-because a naive version of this sweep silently over-counts.** (1) A
+**This is the NORMATIVE stripper** (§10.9 makes this method citable, so a
+consumer re-running it must reproduce **58**, not the 55 an earlier revision
+of this section reported — see finding (3) in 2.2.2 for why the naive form
+under-counts). A `//` starts a comment only when it is *outside* a Rust
+string literal:
+
+```python
+def strip_trailing_comment(line):
+    """`//` starts a comment only OUTSIDE a Rust string literal."""
+    i, n = 0, len(line)
+    in_string = False
+    while i < n:
+        c = line[i]
+        if in_string:
+            if c == '\\':
+                i += 2          # skip the escaped char
+                continue
+            if c == '"':
+                in_string = False
+            i += 1
+            continue
+        if c == '"':
+            in_string = True
+            i += 1
+            continue
+        if c == '/' and i + 1 < n and line[i + 1] == '/':
+            if i == 0 or line[i - 1] != ':':   # original `:` guard, preserved
+                return line[:i]
+        i += 1
+    return line
+```
+
+Full runnable substrate, including the buggy original retained side-by-side
+for the delta measurement: `/tmp/5756-scratch/cat_c_scan4.py` (invoked as
+`cat_c_scan4.py tree-C-filtered.txt tree-D-gui-src-tauri-rs.txt`).
+
+**2.2.2 Three stripper/regex bugs found and fixed while building this —
+recorded because a naive version of this sweep silently mis-counts in both
+directions.** (1) A
 negative lookahead of just `(?![a-zA-Z_0-9])` after the number lets the
 engine backtrack the optional fractional group and accept the *integer
 prefix* of a unit-suffixed literal (`0.2mm` → backtracks to bare `0`,
@@ -470,7 +507,51 @@ without it, one-line fixtures like `"structure S {\n  param x: Length = 1\n}"`
 are missed. Both fixes verified by direct inspection of the dropped/added
 lines (`/tmp/5756-scratch/dropped-keys.txt`).
 
-**2.2.3 Two sites excluded as a different mechanism, not counted in the 55.**
+(3) **[post-review]** `strip_trailing_comment` truncated the line at the
+first `//` whose preceding char is not `:` — **including a `//` that sits
+INSIDE a Rust string literal.** So a fixture whose embedded `.ri` snippet
+*opens* with a doc/line comment had its entire payload stripped before the
+regex ever ran:
+
+```rust
+let src = "/// A bracket for mounting.\nstructure Bracket {\n  param w: Length = 1\n}";
+//        ^ everything from here on was discarded -> `let src = "`
+```
+
+This is a systematic **FALSE-NEGATIVE** class (the opposite direction from
+(1)/(2)), and it is *not* point-in-time anchor drift:
+`git diff 08c6c42be9 HEAD -- crates/reify-syntax/src/ts_parser.rs` is empty,
+so the three missed sites were always there and the sweep never saw them.
+Measured with the corrected string-literal-aware stripper (2.2.1), over the
+identical tree C + tree D file lists:
+
+```
+$ python3 cat_c_scan4.py tree-C-filtered.txt tree-D-gui-src-tauri-rs.txt
+OLD_TOTAL_HITS=57  OLD_FILES=17
+NEW_TOTAL_HITS=60  NEW_FILES=17
+ADDED=3  REMOVED=0
+  + crates/reify-syntax/src/ts_parser.rs:6466:let src = "/// A bracket for mounting.\nstructure Bracket {\n  param w: Length = 1\n}";
+  + crates/reify-syntax/src/ts_parser.rs:6477:let src = "/// Line one.\n/// Line two.\nstructure S {\n  param x: Length = 1\n}";
+  + crates/reify-syntax/src/ts_parser.rs:6499:let src = "// Just a comment\nstructure S {\n  param x: Length = 1\n}";
+```
+
+Raw hits go **57 → 60 across the SAME 17 files**; the delta is EXACTLY the
+three doc-comment-extraction tests in `ts_parser.rs` (`param w: Length = 1`
+once, `param x: Length = 1` twice), and **ZERO hits are removed** — the fix
+is **monotone** on this corpus, so it introduces no new false positives.
+In-scope total therefore moves **55 → 58** (the 57→60 raw pair less the two
+trait-requirement-`let` exclusions of 2.2.3, which are unaffected).
+
+**Spillover bound.** Re-running the corrected stripper over trees A/B/E
+(`examples/**/*.ri`, `crates/**/*.ri`, `gui/test/**/*.ri`) yields **1 / 0 / 0
+hits both before and after — ZERO delta**, so §2.1's categories A and B are
+untouched. §3's BARE table (per-site verbatim re-read) and §8's quantity-slot
+census (repo-wide `git grep`) used different methods entirely and are
+likewise untouched. **The bug's blast radius is exactly the tree-C/D Rust
+sweep, exactly 3 sites.** Full transcript:
+`/tmp/5756-scratch/step13-stripper-fix-transcript.txt`.
+
+**2.2.3 Two sites excluded as a different mechanism, not counted in the 58.**
 `let_type_disambiguation_tests.rs:296` (`trait HasX { let x : Length = 5.0 }`)
 and the already-known `m9_error_cases.rs:276` (`let score : Mass = 1.5`,
 cited by §6.2 itself) both place the bare literal inside a **trait
@@ -528,7 +609,7 @@ sound even where the aggregate total drifts from 63.
 | `reify-eval/tests/purpose_activation.rs:2774` | `z : Length = 5.0` | same |
 | `reify-eval/tests/purpose_activation.rs:2825` | `z : Length = -5.0` | same |
 
-*c0 — no break (28 confirmed/high-confidence by direct read):*
+*c0 — no break (31 confirmed/high-confidence by direct read; 11 row-groups):*
 
 | File:line(s) | Reason |
 |---|---|
@@ -542,7 +623,16 @@ sound even where the aggregate total drifts from 63.
 | `harness_traits/trait_assoc_type_conformance_tests.rs:31` (1) | `required_assoc_type_unbound_emits_diagnostic_end_to_end` — filters for a specific code (`TraitAssocTypeNotBound`), non-exhaustive, and the fixture is *already* expected to error |
 | `gui/src-tauri/src/tests/engine_tests.rs` (8, across 7 lines) | `EngineSession::load_from_source`/`update_source` — every read test inspects entity-tree/definition/cache structure, never `.diagnostics`; GUI session load is designed to tolerate diagnostics (live editing) — presumed on structural grounds, not a read of `load_from_source`'s own body |
 | `reify-eval/tests/eval_param_overrides.rs:1639` (1) | `param p: Money = 0`, via non-panicking `compile_source(...)`; the test's assertion ("exactly one Warning mentioning S.p") reads `result_b.diagnostics` from `engine.eval(&module_b)` — the **eval**-phase warning about a param-override dimension mismatch, not `module_b`'s compile-phase diagnostics — so a new compile-time `ParamDefaultTypeMismatch` under δ₁ lands in a different collection than what this assertion inspects. (This is the PRD's own cited "stale rationale" fixture, §6.2; δ₁ retires its doc comment regardless of whether the test itself breaks.) |
-| `reify-syntax/src/ts_parser.rs:6488` (1) | same structurally-parse-only reasoning as the other 4 `ts_parser.rs` hits — the one-line fixture `"structure S {\n  param x: Length = 1\n}"` whose trailing `\n}` (a literal backslash-n, not a real newline) is the edge case finding 2.2.2 fixed the terminator regex for |
+| `reify-syntax/src/ts_parser.rs:6466,6477,6488,6499` (4) | same structurally-parse-only reasoning as the other 4 `ts_parser.rs` hits — `6488` is the one-line fixture `"structure S {\n  param x: Length = 1\n}"` whose trailing `\n}` (a literal backslash-n, not a real newline) is the edge case finding 2.2.2 (2) fixed the terminator regex for; `6466`/`6477`/`6499` are the three doc-comment-extraction fixtures recovered by finding 2.2.2 **(3)**'s string-literal-aware stripper. All four call `reify-syntax`'s own `parse()`; the crate's deps exclude `reify-compiler`, so no conformance path ever runs on them |
+
+**DISPOSITION IMPACT OF FINDING 2.2.2 (3) IS NIL.** All three newly-recovered
+sites are the same **structurally-parse-only c0** class as the
+already-accounted `ts_parser.rs:6488` — folded into that row rather than
+added as new row-groups, which is why c0 moves **28 → 31 sites while the c0
+row-group count stays 11**. No consumer's migration work changes: nothing
+moves into or out of c1/c2, no BREAKS row is added, no DELIBERATE-INVERT row
+is added. **β/γ/δ₁ must not re-plan off this correction** — only the ledger's
+counts move.
 
 **Not conclusively classified (2):** `trait_assoc_type_conformance_tests.rs`
 has 5 total hits; 2 (the override/inherited-default sub-cases, both c1) and
@@ -551,8 +641,9 @@ more occurrences this session did not re-read before writing this section.
 Flagged rather than guessed.
 
 **2.2.5b `param` vs `let` split (needed by step-4's gate-2 attribution).**
-Of the 55 in-scope hits, **51 are `param` declarations and 4 are `let`**
-(exactly the 4 `let_annotation_type_mismatch_tests.rs` c2 sites — every
+Of the **58** in-scope hits, **54 are `param` declarations and 4 are `let`**
+(all three of finding 2.2.2 (3)'s newly-recovered sites are `param`; the 4
+`let`s are exactly the `let_annotation_type_mismatch_tests.rs` c2 sites — every
 other hit, across all of c1/c0/c2, is a `param`). This matters because gate
 2 (`conformance/mod.rs`'s `check_param_default_conformance`) is
 **`param`-only** per §2.1's gate table — the `let` twin lives at gate 4
@@ -560,8 +651,8 @@ other hit, across all of c1/c0/c2, is a `param`). This matters because gate
 Verified by re-scanning with a capture group on the `param|let` keyword
 rather than inferring it from table membership.
 
-**2.2.5 The delta, stated plainly.** 55 measured (17 files) vs. the PRD's 63
-(22 files) — short by 8 hits / 5 files. The c2 bucket matches exactly (10/10,
+**2.2.5 The delta, stated plainly.** **58** measured (17 files) vs. the PRD's 63
+(22 files) — short by **5** hits / 5 files. The c2 bucket matches exactly (10/10,
 same 4 tests, same file:line spans), which is the strongest available
 evidence the *method* is sound; the shortfall is somewhere in c1/c0. Most
 likely explanation: this session's tree C/D file lists (reused from pre-2,
@@ -570,8 +661,10 @@ whatever file set the PRD's authoring session swept, and/or that session's
 "22 files" included a small number of sites this regex's stricter
 end-of-match anchor still misses (a residual instance of the same class as
 finding 2.2.2's `ts_parser.rs:6488` — one further edge case was found and
-fixed there but the search for others was not exhaustive). **Ruling: this
-section's 55-site table is the one later leaves should cite** (it is
+fixed there but the search for others was not exhaustive) — finding 2.2.2
+**(3)** later closed 3 of the original 8-hit shortfall from exactly that
+class, which is corroborating evidence for this explanation. **Ruling: this
+section's 58-site table is the one later leaves should cite** (it is
 individually re-verifiable, file:line by file:line, right now, against
 HEAD), not the PRD's aggregate 63 — consistent with the citation contract
 §10 will state formally.
@@ -799,25 +892,25 @@ untouched by this predicate). Never separately measured before this task.
 ### 4.1 Candidate count
 
 Every §2 category-A/C site whose keyword is `param` (not `let`) is a gate-2
-candidate: **51 (Category C, Rust fixtures) + 2 (Category A, `.ri`) = 53**,
+candidate: **54 (Category C, Rust fixtures) + 2 (Category A, `.ri`) = 56**,
 minus **1 parse-only** (`mv-2-priv-param.ri:4`, never reaches
-`reify-compiler` at all) = **52 sites where the compiler, if it compiles
+`reify-compiler` at all) = **55 sites where the compiler, if it compiles
 that file under the flip, newly emits a gate-2 `Warning`/`ArgTypeMismatch`.**
 Split: `examples/**` 1 (`bearing_auto_seal.ri`) · stdlib `.ri` 0 ·
-Rust fixture strings 51 · other `.ri` 0 (§2's Category A/C tables list every
+Rust fixture strings 54 · other `.ri` 0 (§2's Category A/C tables list every
 site; not reproduced again here).
 
-Of these 52, **step-1's actual flipped run empirically confirms exactly 1**
+Of these 55, **step-1's actual flipped run empirically confirms exactly 1**
 — `bearing_auto_seal.ri:46`, diagnostic `argument 'durometer' has type
 'Real' but param 'durometer' requires type 'Scalar[m]'`, reconciled in
-§1.2 as the union's non-ctor-call member. The other 51 sit in Rust test
+§1.2 as the union's non-ctor-call member. The other 54 sit in Rust test
 binaries this session did not compile under the flip (step-1 ran 4 named
 suites, not the whole workspace), so their gate-2 firing is **mechanical,
 not empirically re-confirmed this session** — the walker doesn't
 distinguish "is anyone testing this," it fires whenever
 `general_leaf_param_family_is_validated` returns `true` for that field's
 type and the arg's inferred type differs, which is true of a bare `Real`
-literal against every one of these 51 declared-dimensioned params by
+literal against every one of these 54 declared-dimensioned params by
 construction.
 
 ### 4.2 BREAKS vs DELIBERATE-NEGATIVE-TEST-TO-INVERT — gate 2 specifically
@@ -1019,7 +1112,7 @@ like gates 1-4's `CTOR_FIELD_CONFORMANCE_SEVERITY`. Consequence, the mirror imag
 gate 5 is Error-severity, **any** `errors_only`/`error_diags`-filtered assertion or panicking `compile_source`/`eval_source`
 helper is *already* sensitive to a new gate-5 diagnostic — there is no Warning-shaped blind spot for δ₂ to hide behind.
 Both corpus sites found below (§5.4) sit inside exactly such error-sensitive tests; **this sweep found zero "silently
-tolerant" (c0-shaped) gate-5 corpus sites** — a structural contrast with gates 3/4's §2.2, where the c0 bucket (28 sites)
+tolerant" (c0-shaped) gate-5 corpus sites** — a structural contrast with gates 3/4's §2.2, where the c0 bucket (31 sites)
 was the majority.
 
 ### 5.3 Sub-count (a): CROSS-DIMENSION scalar-for-scalar — **0 corpus/integration sites, 2 primitive-level pins**
@@ -1558,7 +1651,7 @@ laziness.
 **118 concrete-dimensioned quantity-slot sites** (34 stdlib + 8 examples + 4 other-`.ri` + 72
 Rust-fixture) will **remain dimension-blind after γ lands** — none is touched by this PRD, none
 is a β migration item, and none is a δ leaf. This number is strictly **larger** than any other
-item's corpus figure in this ledger (§3's 17 BARE sites, §2's 2+55 category-A/C sites) —
+item's corpus figure in this ledger (§3's 17 BARE sites, §2's 2+58 category-A/C sites) —
 expected, since `Vector3`/`Point3` in particular are the idiomatic spelling for any geometric
 quantity (origins, axes, directions) across the whole mechanical/kinematic/FEA stdlib surface,
 not a narrow corner case. **Disposition: EXCLUDED-BY-DESIGN (quantity-slot territory, §12) for
@@ -1814,12 +1907,12 @@ disposition).
 | `tree-sitter-reify/test/fixtures/mv-2-priv-param.ri:4` | `priv param rated_torque : Torque = 5` | other .ri | BARE | 1 | EXCLUDED — parse-only (tree-sitter grammar fixture, never reaches `reify-compiler`) | none |
 | Category-C `param` sites, c1 group (§2.2.4, 15 file:line rows, all `param`) | e.g. `grade : Length = 8.8`, `axis: Length = 0`, `material : Length = 1.0` … | Rust fixture | BARE | 15 | BREAKS — migrate, **silent under gate 2** (§4.2: none of these additionally break because of gate 2 — their currently-passing assertions filter to `Severity::Error` only) | none forcing — γ may optionally migrate |
 | Category-C `param` sites, c2 group (`param_default_type_mismatch_tests.rs:175-178,206-207`) | `zero_int=0, one_int=1, half_real=0.5, large_real=70.0, neg_real=-5.0, neg_int=-1` | Rust fixture | BARE | 6 | BREAKS — migrate, **silent under gate 2** (§4.2: these assert on `ParamDefaultTypeMismatch`, a different code from gate 2's `ArgTypeMismatch` — invisible to gate 2, though they are gate-"3+4" pins, see §10.3) | none forcing under gate 2 |
-| Category-C `param` sites, c0 group (§2.2.4, 11 row-groups) | e.g. `ts_parser.rs` parse-only fixtures, `engine_tests.rs` structural-only reads, … | Rust fixture | BARE | 28 | BREAKS — migrate, **silent under gate 2** | none forcing |
+| Category-C `param` sites, c0 group (§2.2.4, 11 row-groups) | e.g. `ts_parser.rs` parse-only fixtures, `engine_tests.rs` structural-only reads, … | Rust fixture | BARE | 31 | BREAKS — migrate, **silent under gate 2** | none forcing |
 | Category-C `param` sites, unclassified (§2.2.4, `trait_assoc_type_conformance_tests.rs`, 2 further occurrences not re-read this session) | — | Rust fixture | BARE | 2 | **UNCLASSIFIED** — provisionally BREAKS — migrate pending resolution | δ₁/γ (whichever lands first) must resolve definitively before landing, not this ledger |
 
-**Sub-totals:** BARE = 53 (1 empirically-confirmed BREAKS + 51 silent-BREAKS [15+6+28+2] + 1
-EXCLUDED-parse-only) → **6 rows** (rollup granularity; 53 underlying sites). By bucket:
-examples/** 1 · other .ri 1 · Rust fixture 51 · stdlib 0. Matches §4.1's "52 candidates" (53 raw
+**Sub-totals:** BARE = 56 (1 empirically-confirmed BREAKS + 54 silent-BREAKS [15+6+31+2] + 1
+EXCLUDED-parse-only) → **6 rows** (rollup granularity; 56 underlying sites). By bucket:
+examples/** 1 · other .ri 1 · Rust fixture 54 · stdlib 0. Matches §4.1's "55 candidates" (56 raw
 minus the 1 parse-only exclusion) exactly.
 
 ### 10.3 Gates 3+4 — δ₁'s entity.rs annotation checks (`entity.rs:479-485`/`:563-569`; owner **δ₁**)
@@ -1838,16 +1931,18 @@ radius"). Source: §2.1 (categories A/B), §2.2.4 (category C c1/c2/c0), §2.3 (
 | Category-C, c1 (§2.2.4, 15 rows, reused verbatim from §10.2's table — same 15 sites) | `grade : Length = 8.8`, `axis: Length = 0`, … | Rust fixture | BARE | 15 | **BREAKS — migrate** (breaks a currently-passing `errors_only`/`parse_and_compile`-style assertion today once δ₁ lands) | **δ₁** (migrates its own test suite as part of landing) |
 | Category-C, c2 — `param_default_type_mismatch_tests.rs:175-178,206-207` | 6 sites (`zero_int`, `one_int`, `half_real`, `large_real`, `neg_real`, `neg_int`) | Rust fixture | BARE | 6 | **DELIBERATE NEGATIVE TEST — invert** (asserts `ParamDefaultTypeMismatch` is absent; δ₁ inverts) | **δ₁** |
 | Category-C, c2 — `let_annotation_type_mismatch_tests.rs:176-178,583` | 4 sites (`x=5,y=0.5,z=-5.0,d=5`) | Rust fixture | BARE | 4 | **DELIBERATE NEGATIVE TEST — invert** | **δ₁** |
-| Category-C, c0 (§2.2.4, 11 row-groups, reused from §10.2) | — | Rust fixture | BARE | 28 | BREAKS — migrate, lower-urgency (no currently-passing test forces it today) | **δ₁**, optional cleanup as part of landing |
+| Category-C, c0 (§2.2.4, 11 row-groups, reused from §10.2) | — | Rust fixture | BARE | 31 | BREAKS — migrate, lower-urgency (no currently-passing test forces it today) | **δ₁**, optional cleanup as part of landing |
 | Category-C, unclassified | — | Rust fixture | BARE | 2 | UNCLASSIFIED — provisionally BREAKS — migrate | **δ₁** must resolve before landing |
 | `crates/reify-compiler/stdlib/units.ri:14-19,23-24,28-31,35-37,41-43,48,53-54,65-66,74` (24 lines) | `pub unit cm : Length = 0.01`, … (§2.3's full 24-line table) | stdlib .ri | BARE-shaped | 24 | **EXCLUDED-BY-DESIGN (C2 unit decls)** — required bare conversion factors, never reach gate 3/4 (`unit`, not `param`/`let`) | **none — δ₁ must NEVER touch these** |
 | `examples/m9_combined.ri:46`, `examples/integration_full_v01.ri:33` | `unit mil : Length = 0.0000254` (×2) | examples/** | BARE-shaped | 2 | EXCLUDED-BY-DESIGN (C2 unit decls) | none — must never be touched |
 
-**Sub-totals:** BARE = 2 (category A) + 55 (category C: 15+10+28+2) = 57 → **BREAKS 44** (1 bearing
-+ 15 c1 + 28 c0), **DELIBERATE-INVERT 10** (c2), **UNCLASSIFIED 2**, **EXCLUDED-parse-only 1**.
-EXCLUDED-BY-DESIGN = 26 (24 stdlib + 2 examples/**). **Total 83 rows/sites** across 9 row-groups.
+**Sub-totals:** BARE = 2 (category A) + 58 (category C: 15+10+31+2) = 60 → **BREAKS 47** (1 bearing
++ 15 c1 + 31 c0), **DELIBERATE-INVERT 10** (c2), **UNCLASSIFIED 2**, **EXCLUDED-parse-only 1**
+(check: 47 + 10 + 2 + 1 = 60).
+EXCLUDED-BY-DESIGN = 26 (24 stdlib + 2 examples/**). **Total 86 rows/sites** across 9 row-groups
+(60 BARE + 26 EXCLUDED-BY-DESIGN).
 By bucket: examples/** 3 (1 BREAKS + 2 EXCLUDED-BY-DESIGN) · stdlib 24 (EXCLUDED-BY-DESIGN) ·
-other .ri 1 (EXCLUDED-parse-only) · Rust fixture 55.
+other .ri 1 (EXCLUDED-parse-only) · Rust fixture 58 (check: 3 + 24 + 1 + 58 = 86).
 
 ### 10.4 Gate 5 — constraint-def Rule 4 (`type_compat.rs:1482-1488`; owner **δ₂**)
 
@@ -1926,7 +2021,7 @@ against each other.
 **Every other row in §§10.1-10.4 (BARE/CROSS-DIMENSION sites not in (a) or (b), and every EXCLUDED
 row) is either (i) confirmed present by direct source read but not exercised by any suite step-1
 or §5 actually ran (e.g. gate-1's `large_assembly.ri` 6 sites — no suite loads that file, §3.3; or
-gate-2/gate-"3+4"'s 51/55 Rust-fixture sites — step-1 never compiled `param_default_type_mismatch_tests.rs`
+gate-2/gate-"3+4"'s 54/58 Rust-fixture sites — step-1 never compiled `param_default_type_mismatch_tests.rs`
 etc. under the flip), and is labeled "mechanical, not empirically re-confirmed this session"
 wherever that applies (§4.1's own phrase, carried forward here); or (ii) an EXCLUDED row, whose
 whole point is that no gate ever fires there.** No row in this table claims empirical confirmation
@@ -1938,7 +2033,7 @@ it does not have.
 |---|---|---|---|
 | **β** (corpus migration, lands before γ/δ₁) | §10.1's examples/**+other-.ri BREAKS rows (12 sites: 6 `tots`/`printer` + 6 `large_assembly`) · §10.2's `bearing_auto_seal.ri` row · §10.3's `bearing_auto_seal.ri` row (same fix, dual benefit) | §3.1's correct-twin hint (`examples/large_assembly.ri:51-53`) · §3.3's reach-vs-gate note (large_assembly has no cargo gate — verify via GUI harness/`reify check`, not `cargo test`) | §10.3/§2.3's 26 EXCLUDED-BY-DESIGN `unit` sites (β must not "fix" required conversion factors) · §10.1/§10.2's EXCLUDED file-local-shadow/parse-only rows (not real sites) |
 | **γ** (predicate promotion) | §10.1 + §10.2 in full (its own blast radius) · §10.5 (gate 6, 0 sites — safe to land without also touching fn-call sites) | §6 in full (the `is_numeric_placeholder_leaf` fence is a **landing prerequisite**, not optional — §6.2's live demonstration) · §7 (fn-call reachability is mechanical, re-check §7.2's census before citing "0" at a later HEAD) · examples_smoke's own panic prose (reuse item: "γ — not α — rewrites its panic prose") | §10.3 (gates 3+4 — a different, δ₁-owned mechanism γ never touches) · §10.4 (gate 5 — δ₂-owned) · §10.6's quantity-slot residual (out of scope by design, §12) |
-| **δ₁** (param/let default tolerance removal, gates 3+4) | §10.3 in full: c1 (15, migrates own test suite), c2 (10, inverts own pins), c0 (28, optional), unclassified (2, must resolve before landing) | §2.2.4's full per-site c1/c0 detail (this table's rollup rows point back to it) · §2.2.5's `param`/`let` split ruling | §10.3's 26 EXCLUDED-BY-DESIGN `unit` sites (explicit warning, §2.3: "δ₁ 'fixing' them would silently break the unit system") |
+| **δ₁** (param/let default tolerance removal, gates 3+4) | §10.3 in full: c1 (15, migrates own test suite), c2 (10, inverts own pins), c0 (31, optional), unclassified (2, must resolve before landing) | §2.2.4's full per-site c1/c0 detail (this table's rollup rows point back to it) · §2.2.5's `param`/`let` split ruling | §10.3's 26 EXCLUDED-BY-DESIGN `unit` sites (explicit warning, §2.3: "δ₁ 'fixing' them would silently break the unit system") |
 | **δ₂** (constraint-def numeric leniency removal, gate 5) | §10.4 in full (5 rows: 3 primitive pins + `constraint_def_compile_tests.rs` pin + `forall_statement_lower_tests.rs` BREAKS site) | §5.5 (ScalarParam admission into `is_numeric` is a δ₂ **prerequisite**, unresolved here — a future dimension-generic constraint arg needs its own fence) · §5.6 (Rule 2 precedes Rule 4 — check before attributing a silence to Rule 4) | §10.1-§10.3 (gates 1/2/3+4/6 — different mechanisms, different files) |
 | **§6.4 quantity-slot follow-up** (5627 candidate-2 / `reify-core/src/ty.rs`) | §10.6's quantity-slot rollup row only | §8 in full (118 sites, 9+4+3+21 files, the worked `kinematic.ri`/`dynamics.ri` contrast in §8.1) | Everything else — this residual is explicitly not a migration list for β/γ/δ₁/δ₂ (§8, §12) |
 
