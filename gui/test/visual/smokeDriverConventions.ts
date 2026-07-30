@@ -64,13 +64,21 @@ export interface SmokeDriverViolation {
  * `/* e.g. await rpc('open_file', {path}) *\/` — a perfectly reasonable thing to
  * write next to the helper — reads as a real call site. Newlines inside a block
  * comment are preserved so a future message can still report a line number
- * against the ORIGINAL source.
+ * against the ORIGINAL source; only line NUMBERS survive, not columns, since the
+ * `//` pass deletes rather than blanks.
  *
- * Not a parser: a `//` sequence inside a string literal (a URL, say) blanks the
- * rest of that line. Accepted, because the consequence is a MISSED violation in
- * a line that would have to contain both a URL and an inline `open_file` call,
- * never a false alarm on a compliant driver — and a false alarm is the failure
- * mode that would get "fixed" by editing correct code.
+ * NOT A PARSER, and both known blind spots point the same way — toward a MISSED
+ * violation, never a false alarm on a compliant driver. That asymmetry is the
+ * whole acceptance argument: a missed violation leaves a driver un-migrated
+ * until someone reads it, whereas a false alarm gets "fixed" by editing correct
+ * code, which is strictly worse.
+ *   - a `//` sequence inside a string literal (a URL, say) blanks the rest of
+ *     that line, so a line carrying both a URL and an inline call goes unseen.
+ *   - the block pass runs FIRST, so a `//` comment that happens to contain `/*`
+ *     ("// see /* the helper") opens a block span that runs on to the next
+ *     `*\/` anywhere below, blanking the real code in between.
+ * Both are pinned by name in `./smokeDriverConventions.test.ts` rather than left
+ * as prose, so a later "fix" that reverses the asymmetry fails loudly.
  */
 export function stripComments(source: string): string {
   return source
@@ -123,8 +131,20 @@ export const SMOKE_DRIVERS = [
 
 /**
  * Every `.mjs` in `dir` that IS a `smoke_*` driver — the exact complement of
- * `discoverSharedEsmModules`'s filter, so the two tables together cover every
+ * `discoverSharedEsmModules`'s filter, so the two together partition every
  * `.mjs` in the directory and neither can silently drop one.
+ *
+ * That complement claim is EXECUTABLE, not prose: `./smokeDriverConventions.test.ts`
+ * runs both discoveries over one fixture directory and asserts the two results
+ * are disjoint and cover it exactly. Without that, editing either filter alone
+ * — adding an `.e2e.mjs` carve-out here, say — would drop files out of BOTH
+ * tables with every test still green, which is the silent-gap failure mode
+ * {@link SMOKE_DRIVERS} exists to avoid on the other axis.
+ *
+ * The two filters remain one negated character apart, in two files. Collapsing
+ * them into a single shared partition helper is the real fix and belongs in
+ * `./sharedModuleLoad.ts`, which task 5857 does not hold; the executable
+ * cross-check is the in-scope half.
  *
  * Used ONLY by the completeness guard, never as the `it.each` source; see
  * {@link SMOKE_DRIVERS}. The `dir` parameter exists so the filter rule stays

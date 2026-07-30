@@ -23,11 +23,12 @@ import * as path from "node:path";
 
 import { describe, it, expect } from "vitest";
 
-import { readSharedModuleSource } from "./sharedModuleLoad.js";
+import { discoverSharedEsmModules, readSharedModuleSource } from "./sharedModuleLoad.js";
 import {
   SMOKE_DRIVERS,
   discoverSmokeDrivers,
   findSmokeDriverConventionViolations,
+  stripComments,
 } from "./smokeDriverConventions.js";
 
 /** The violation identities a source trips, in the order the predicate reports them. */
@@ -124,6 +125,49 @@ describe("findSmokeDriverConventionViolations — the pure predicate behind the 
   });
 });
 
+describe("stripComments — the mitigation the predicate is built on", () => {
+  // Exported and therefore pinned directly, not only through the predicate: its
+  // header makes two claims a caller could rely on, and both are load-bearing
+  // for the "future message reports a line number" affordance it promises.
+
+  it("preserves the line count across a multi-line block comment", () => {
+    // Blanking a block span to spaces rather than deleting it is what keeps
+    // ORIGINAL line numbers addressable. A `.replace(…, "")` here would still
+    // pass every predicate case above while quietly making that claim false.
+    const source = ["/* a", " b", " c */", "await rpc('open_file', {});"].join("\n");
+    expect(stripComments(source).split("\n")).toHaveLength(4);
+    expect(codesFor(source)).toEqual(["inline-open-file"]);
+  });
+
+  it("preserves the line count across a line comment", () => {
+    // The `//` pass deletes to end-of-line rather than blanking, so columns do
+    // NOT survive it — but the newline itself must, or every line number below
+    // a comment shifts.
+    const source = ["// leading note", "await rpc('open_file', {});", "// trailing note"].join("\n");
+    expect(stripComments(source).split("\n")).toHaveLength(3);
+  });
+
+  it("lets a `//` comment containing `/*` swallow the code below it", () => {
+    // A KNOWN BLIND SPOT, pinned so it stays a known one. The block pass runs
+    // FIRST, so `/*` inside a line comment opens a span that runs to the next
+    // `*/` anywhere below and blanks the real call in between.
+    //
+    // Asserted as the CURRENT behaviour, not as desirable: it is accepted only
+    // because it errs toward a MISSED violation. Should a later edit reverse
+    // that asymmetry — making some compliant driver a false alarm — this case
+    // flips and forces the trade-off to be re-argued rather than re-discovered.
+    const source = [
+      "// see /* the helper for the real thing",
+      "openResult = await rpc('open_file', { path: FIXTURE });",
+      "const done = 1; /* trailing */",
+    ].join("\n");
+    expect(findSmokeDriverConventionViolations(source)).toEqual([]);
+    // …and the same source with the stray `/*` removed IS flagged, which is what
+    // makes this a statement about the ordering rather than about the regex.
+    expect(codesFor(source.replace("/* the helper", "the helper"))).toEqual(["inline-open-file"]);
+  });
+});
+
 describe("discoverSmokeDrivers — the filter rule behind the completeness guard", () => {
   it("keeps `smoke_*` drivers, drops shared modules and non-`.mjs` files", () => {
     // Driven off a fixture directory so the RULE is pinned in isolation, and
@@ -144,6 +188,42 @@ describe("discoverSmokeDrivers — the filter rule behind the completeness guard
         fs.writeFileSync(path.join(dir, name), "");
       }
       expect(discoverSmokeDrivers(dir)).toEqual(["smoke_find_uses.mjs"]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("partitions the directory with discoverSharedEsmModules — no `.mjs` in both or neither", () => {
+    // THE COMPLEMENT CLAIM, MADE EXECUTABLE. Both filters say `.endsWith(".mjs")`
+    // and differ by one negation, in two files — so the claim that together they
+    // cover everything held only in prose, and an edit to either alone (an
+    // `.e2e.mjs` carve-out here, a rename there) would drop files out of BOTH
+    // tables with every other test still green. That is the same silent gap the
+    // SMOKE_DRIVERS completeness guard closes on the other axis, and neither of
+    // the two per-filter fixture tests can see it: each is blind to the other's
+    // rule by construction.
+    //
+    // The de-duplication this implies — one shared partition helper, both
+    // discoveries defined on top of it — belongs in ./sharedModuleLoad.ts, which
+    // task 5857 does not hold. This pins the invariant that fix would preserve.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reify-visual-partition-"));
+    try {
+      const everyMjs = [
+        "smoke_find_uses.mjs",
+        "smoke_multi_pane_e2e.mjs",
+        "smokeDriverGuards.mjs", // `smoke` but NOT `smoke_` — the discriminator
+        "rpcEnvelope.mjs",
+        "meshCountParity.mjs",
+      ];
+      for (const name of [...everyMjs, "smokeDriverConventions.ts", "run_smoke.sh"]) {
+        fs.writeFileSync(path.join(dir, name), "");
+      }
+
+      const drivers = discoverSmokeDrivers(dir);
+      const shared = discoverSharedEsmModules(dir);
+      // Disjoint: sorting the concatenation and comparing to the sorted corpus
+      // catches a file claimed TWICE, which a Set-based union would hide.
+      expect([...drivers, ...shared].sort()).toEqual([...everyMjs].sort());
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
