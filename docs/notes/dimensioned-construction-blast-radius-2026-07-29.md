@@ -116,25 +116,43 @@ mechanism is not hypothetical, it was caught in the act.
 and is a more likely source of the plan's figure: `docs/notes/units-gating-gap-research-2026-07-28.md`
 line 308 (a prior, independently-verified research note in this same
 program) states *"NAMED_DIMENSIONS doc says 34, actually 51 names/49
-vectors (stale)"* — i.e. of the 51 `(vector, name)` tuples, only **49 are
-distinct `DimensionVector` *values*** (a handful of names are deliberate
-aliases for the same physical dimension — confirmed for at least 3 pairs by
-inspection: `Stiffness`/`TranslationalStiffness` share `DimensionVector::STIFFNESS`
-by explicit const alias at `dimension.rs:289`; `AbsorptionCoeff`/`Curvature`
-both compute `from_exps(&[(0,-1)])` independently and land on the same
-value; `Impulse`/`Momentum` literally reuse `DimensionVector::IMPULSE` for
-two names at `dimension.rs:593-594`). **"49 distinct vectors" and "51 names"
-are both true simultaneously — they answer different questions** (distinct
-physical dimensions vs. distinct spellable type names), and this task's
-decompose-time analysis most plausibly conflated the two rather than
-mis-measuring from scratch.
+vectors (stale)"* — i.e. it reads the 51 `(vector, name)` tuples as covering
+fewer distinct `DimensionVector` *values*, because a handful of names are
+deliberate aliases for the same physical dimension. Three such collisions are
+confirmed here by direct inspection: `Stiffness`/`TranslationalStiffness`
+share `DimensionVector::STIFFNESS` by explicit const alias at
+`dimension.rs:289`; `AbsorptionCoeff`/`Curvature` both compute
+`from_exps(&[(0,-1)])` independently and land on the same value;
+`Impulse`/`Momentum` literally reuse `DimensionVector::IMPULSE` for two names
+at `dimension.rs:593-594`.
+
+> **The quoted "49" is NOT independently re-derived here, and does not
+> reconcile — treat it as hearsay, not as a measured figure.** Two things were
+> verified in this session: the array holds **51** tuples, and those tuples
+> name **50** distinct `DimensionVector` *constant identifiers* (only
+> `IMPULSE` is spelled twice). Deducting the three value-collisions documented
+> just above from the 51 tuples yields **48** distinct values, not 49 — so the
+> other note's figure is off by one against this section's own evidence,
+> unless there is a fourth collision (a full distinct-*value* count needs each
+> of the 50 constants evaluated, several of which are multi-line and defined
+> in terms of others; that was not done, because nothing here depends on it).
+> What *is* certain is the shape of the distinction: **"51 names" answers a
+> different question than any distinct-vector count** (distinct spellable type
+> names vs. distinct physical dimensions), and a reader who conflates the two
+> gets a number in the 48-50 band rather than 51. That conflation remains the
+> most plausible origin of the plan's "49", alongside the wrapped-tuple regex
+> bug reproduced above — but the two candidate origins are **not
+> distinguishable from the evidence available**, and this section no longer
+> claims one is "more likely".
 
 **RULING (governs every count in §§2-9):** the name set used for the sweep is
 **51 names**, because the sweep is a *textual* search over `.ri` type
 annotations — what matters is which spellings are legal, not how many
 distinct physical dimensions they collapse to. The stale "34" is never used.
-The "49 distinct vectors" fact is retained here as an explanatory footnote,
-not as a sweep input.
+The other note's "49 distinct vectors" is retained here only as an
+unreconciled explanatory footnote (see the caveat above — it is quoted, not
+re-derived, and this section's own evidence points at 48), never as a sweep
+input. **No count in §§2-9 depends on any distinct-*vector* figure.**
 
 Full 51-name list, mechanically extracted at HEAD `08c6c42be9`
 (`crates/reify-core/src/dimension.rs:514-595`), in source order:
@@ -2202,10 +2220,13 @@ against HEAD's 49" (repeated in this task's `design_decisions` block). §0.1 abo
 figure three independent ways and found the **opposite**: **51 is CONFIRMED accurate at HEAD**,
 and the plan's own "49" was **not reproducible** — traced to a regex bug (a
 whitespace-sensitive `\(DimensionVector::` pattern silently drops the two entries whose tuples
-rustfmt wraps across 4 lines) this session caught reproducing live, plus a legitimate but
-*different* fact ("49 distinct `DimensionVector` values" vs "51 spellable names") that most likely
-is the actual source of the plan's figure. Reported non-blocking, `esc-5756-1`, before §0 was
-written.
+rustfmt wraps across 4 lines) this session caught reproducing live, plus a second candidate
+origin — a *different question* being answered (distinct `DimensionVector` **values** vs "51
+spellable names"), which collapses the 51 into the 48-50 band. Per §0.1's caveat the neighbouring
+note's specific "49 vectors" is quoted, not re-derived, and does not reconcile against §0.1's own
+three documented collisions (which give 48); the two candidate origins for the plan's figure are
+**not distinguishable from the available evidence**, and neither is claimed as "the" source.
+Reported non-blocking, `esc-5756-1`, before §0 was written.
 
 The lesson is therefore **not** "prefer 49 over 51," nor "PRD prose is always stale" — in this
 instance the PRD prose was right and this task's own plan text was wrong. The lesson is the one
@@ -2231,6 +2252,7 @@ earlier revision can diff their citations against this list.
 | 2026-07-30 | amendment pass (§0.4) | **§0.4's published reproduction command corrected** to scope the parse-only exclusion to `.rs` files (`grep -vE '^crates/reify-(syntax\|ast)/tests/.*\.rs$'`); it now reproduces the stated union of **2120**. | **NEUTRAL** — substrate count unchanged; the *command* was wrong, not the figure | The published `grep -v '^crates/reify-syntax/tests/\|^crates/reify-ast/tests/'` applied to the whole union, additionally dropping 2 `.ri` fixtures that tree B's 168 counts — so the command emitted 2118 at the cited HEAD, not the tabulated 2120. Neither dropped file holds an in-scope site (§0.4). |
 | 2026-07-30 | amendment pass (§11(B)) | **Check 2's command corrected** to the range form `git diff --exit-code main...HEAD -- crates/ examples/ gui/` (vacuous `stdlib` pathspec dropped). | **NEUTRAL** — the invariant held and still holds; the *proof* is now sound | The old check 2 was a working-tree diff ("nothing uncommitted is dirty"), not a branch-vs-`main` diff, so it could not have caught a *committed* source edit; and the `stdlib` pathspec matched 0 tracked files (`stdlib/` lives at `crates/reify-compiler/stdlib/`). |
 | 2026-07-30 | amendment pass (§2.2.4b justification) | **§2.2.4b's dependency-graph justification RETRACTED and replaced by per-test-body evidence.** The 8 `ts_parser.rs` rows' evidence marker changes `CONFIRMED (deps read)` → `CONFIRMED (test bodies read)`, with per-site `fn`/call anchors (`fn` at `:6333,6358,6416,6446,6465,6476,6487,6498`); §2.2.4's claim that the Cargo.toml read was "stronger … settles the whole file at once" is deleted and explicitly withdrawn; §4.1's and §10.2/§10.3's restatements of the argument are reworded. **DISPOSITION AND EVERY COUNT UNCHANGED** — all 8 remain `EXCLUDED — parse-only`; §4.1's 47, §10.2's 46+9, §10.3's 39, §10.8's 23, category-C 58, BARE 60, §10.3's Total 86 all stand. | **NEUTRAL** — nothing to re-plan; only the *reason* beside the figures changed | The published justification rested on a FALSE premise: it read `crates/reify-syntax/Cargo.toml`, saw no `reify-compiler` on either dep list, and concluded gate 2 was unreachable "by any path". But `[dev-dependencies]` lists `reify-test-support`, and `reify-test-support/Cargo.toml:14` carries `reify-compiler` as a **normal** dep — dev-deps are linked into in-crate `#[cfg(test)]` tests, so `reify-compiler` IS transitively available to `ts_parser.rs`'s test module, which already calls `reify_test_support::bracket_source()` at `:4525`. Same failure mode as §10.10 was written to close (arithmetic audited, underlying classification argument not re-derived) — reintroduced one level up *by the fix for it*, this time in the justification rather than the sums. The disposition survived only because the per-body ground was independently true. |
+| 2026-07-30 | amendment pass (§0.1/§11.A.4) | **§0.1's secondary "49 distinct `DimensionVector` values" aside downgraded from asserted fact to unreconciled hearsay.** It was quoted from `docs/notes/units-gating-gap-research-2026-07-28.md:308` and never re-derived, and it contradicts §0.1's *own* evidence: the three value-collisions that section documents (`Stiffness`/`TranslationalStiffness`, `AbsorptionCoeff`/`Curvature`, `Impulse`/`Momentum`) deduct from 51 to **48**, not 49. Newly verified and recorded instead: 51 tuples, and **50** distinct `DimensionVector` *constant identifiers* (only `IMPULSE` is spelled twice). §11.A.4's matching "most likely is the actual source" claim softened — the regex bug and the distinct-vector conflation are **not distinguishable** as origins of the plan's 49. | **NEUTRAL** — no sweep input and no count in §§2-9 touches any distinct-*vector* figure; the ruled 51 is unaffected | Same failure mode as the §2.2.4b justification retraction one row above: a neighbouring document's number was repeated with the authority of a measurement, and its arithmetic was never checked against the evidence sitting beside it in the same paragraph. Caught while verifying `esc-5756-1`. The load-bearing figure was re-confirmed in passing — the ledger's full 51-name list is **set-identical** to a fresh extraction from `dimension.rs:514-595` at this branch's HEAD (`dimension.rs` is unchanged vs `main`, so the `08c6c42be9` attribution still holds). |
 | 2026-07-30 | amendment pass (§12) | **Appendix §12 added**: the normative scanner (self-contained — rebuilds its file lists from §0.4's `git ls-files` walk, embeds the 65-name set, reads no `/tmp`), and the full **60-row `file:line` hit list** with per-row class + evidence marker, inlined into this document. | **NEUTRAL** — no count changed; the normative count made re-derivable from the committed artifact alone | §2.2.1 declared its stripper normative and obliged consumers to reproduce **58**, but the only executable form was uncommitted `/tmp/5756-scratch/` scratch (hard-coding a second uncommitted input and six tree-list files), and the 58 sites were never listed individually (31 c0 sites were rolled into 11 prose row-groups, several without line numbers). `/tmp` does not survive a reboot or a warm-lane reclaim, and β/γ/δ₁/δ₂ land later by construction. |
 | 2026-07-30 | amendment pass (§2.2, §2.2.5, §12.2) | **File-count basis disambiguated: "58 in-scope hits across 17 files" → 58 hits / *15* files in-scope, 60 hits / *17* files raw.** | **NEUTRAL** — no hit count changed | Surfaced by §12's per-row list: `let_type_disambiguation_tests.rs` and `m9_error_cases.rs` hold exactly one hit each and both are §2.2.3 exclusions, so the 60→58 step also drops 2 whole files. The old sentence paired an in-scope hit count with a raw file count. §2.2.5's "short by 5 files" is 17-vs-22 and is unaffected. |
 
