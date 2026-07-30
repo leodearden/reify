@@ -565,6 +565,43 @@ assert "E2: a certifying seed's <lane>/target SURVIVES (discard keys on exit sta
 assert "E2: the staged clone is byte-intact (nothing was discarded)" \
     test -f "$E_LANE_B/target/CLONE_MARKER"
 
+# ── E3: the DISCARD ITSELF fails ⇒ the lane is hazardous and must NOT be
+# handed to a caller. This is thin mirroring the seed's own empty-stdout refusal
+# one level up: a lane still carrying an uncertified clone is exactly what a
+# consumer must never be given, so no lane path is emitted at all.
+# Technique + root-skip rationale: _discard_fail_seed_stub_body above.
+if [ "$(id -u)" -ne 0 ]; then
+    E_LANE_C="$(mktemp -d /tmp/test-thin-warm-lane-e-c-XXXXXX)"
+    _TMPDIRS+=("$E_LANE_C")
+    mkdir -p "$E_LANE_C/target"
+    touch "$E_LANE_C/target/MARKER"
+
+    E_FAIL_STUB="$(mktemp /tmp/test-thin-warm-lane-e-failstub-XXXXXX)"
+    _TMPDIRS+=("$E_FAIL_STUB")
+    _discard_fail_seed_stub_body > "$E_FAIL_STUB"
+    chmod +x "$E_FAIL_STUB"
+
+    run_helper "$E_LANE_C" --reseed --base "$E_BASE" --seed-script "$E_FAIL_STUB"
+    # Restore BEFORE any assertion can abort the suite: `trap cleanup EXIT`'s
+    # `rm -rf` over _TMPDIRS cannot remove a non-writable lane dir either.
+    _restore_discard_fail_lane "$E_LANE_C"
+
+    assert "E3: a FAILED discard exits NON-ZERO (the lane is not left safe)" \
+        test "$RC" -ne 0
+    assert "E3: STDOUT is EMPTY — a lane carrying an uncertified clone is never emitted" \
+        test -z "$OUT"
+    assert "E3: <lane>/target is RETAINED (the discard did not happen)" \
+        test -d "$E_LANE_C/target"
+    assert "E3: a stderr [error] line names the RETAINED <lane>/target so an operator can find it" \
+        bash -c 'printf "%s\n" "$1" | grep -F "[error]" | grep -qF "$2/target"' _ "$ERR_OUT" "$E_LANE_C"
+    assert "E3: stderr states the lane was NOT returned" \
+        bash -c 'printf "%s\n" "$1" | grep -F "[error]" | grep -qiE "not returned|not emitted"' _ "$ERR_OUT"
+    assert "E3: stderr carries the rm's own error text (failure detail not swallowed)" \
+        bash -c 'printf "%s\n" "$1" | grep -qi "permission denied"' _ "$ERR_OUT"
+else
+    echo "  SKIP: E3 discard-failure asserts (running as uid 0; DAC write checks are bypassed)"
+fi
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
 # kept as two independently-reported signals: TRASH2 can realistically only ever
