@@ -474,7 +474,12 @@ const SCOPE_EXCLUDE_PREFIXES: &[&str] = &[
 ///    its `#[cfg(test)]` on the `mod tests;` declaration in the PARENT file,
 ///    so `scan_file`'s block skip can never see the attribute from inside the
 ///    file it governs.
-fn is_swept_path(path: &str) -> bool {
+///
+/// `pub` because the manifest grammar leans on it: [`parse_baseline`] rejects a
+/// row this predicate refuses (no live scan could ever clear it), and the
+/// baseline tests drive that rule directly rather than waiting for a
+/// hand-edited manifest to exhibit it.
+pub fn is_swept_path(path: &str) -> bool {
     if !path.ends_with(".rs") {
         return false;
     }
@@ -542,7 +547,12 @@ const BASELINE_GEN_BIN: &str = "cargo run -p reify-audit --bin pdiag-baseline-ge
 ///
 /// The error string names the offending line number — this is read by whoever
 /// just broke the build, not by a parser.
-fn parse_baseline(content: &str) -> Result<BTreeMap<String, u32>, String> {
+///
+/// `pub` so `tests/pdiag_baseline.rs` can drive every rule above over synthetic
+/// content. Without that, the grammar would only ever be exercised by whatever
+/// rows the committed manifest happens to hold — and would go quietly inert as
+/// the backlog is migrated toward an empty file.
+pub fn parse_baseline(content: &str) -> Result<BTreeMap<String, u32>, String> {
     let mut out: BTreeMap<String, u32> = BTreeMap::new();
     let mut previous: Option<&str> = None;
 
@@ -726,28 +736,34 @@ fn malformed_baseline_finding(err: &str) -> Finding {
     }
 }
 
-/// PDIAG entry point — see the module header for the heuristic and scope.
+/// Census the working tree: `swept path -> code-less site count`, for every
+/// tracked file with at least one.
 ///
-/// Purely structural: enumerates through the `ls_files()` git seam, reads
-/// content straight from the working tree, and never touches jcodemunch or the
-/// task DB (the posture `pdssentinel.rs` documents). That is what keeps the
-/// detector's verdict a function of the tree alone.
+/// This is the detector's ONE derivation of "how much code-less diagnostic
+/// debt does each file carry", shared by both consumers: [`check`] diffs it
+/// against the committed manifest, and `src/bin/pdiag-baseline-gen.rs` renders
+/// it verbatim as that manifest. Keeping generation and enforcement on the same
+/// scan is what makes a regenerated baseline necessarily agreeable to the
+/// ratchet that checks it — the PRD §6.6 invariant, mirroring how
+/// `ptodo-baseline-gen` calls `ptodo::fingerprint` rather than re-deriving.
 ///
-/// Both IO fail-safes point the same way — *permissive on input, loud on
-/// comparison*:
+/// The generator cannot be built on [`check`] instead: a file sitting exactly
+/// at its baseline row produces no finding at all, and the four verdict
+/// variants carry deltas rather than absolute counts. Hence the seam.
 ///
-/// - An unreadable **source** file (absent from the working tree, non-UTF-8)
-///   is skipped, contributing no count. `ls_files()` and the tree can legitimately
+/// Two properties the manifest grammar depends on:
+///
+/// - Files with **zero** code-less sites are OMITTED, never stored as `0`.
+///   [`ratchet`] reads presence here as "has a backlog", and [`parse_baseline`]
+///   rejects a `0` row outright — a clean file has no row.
+/// - An unreadable source file (absent from the working tree, non-UTF-8) is
+///   skipped, contributing nothing. `ls_files()` and the tree can legitimately
 ///   disagree mid-rebase, and inventing a count there would be a false RED
 ///   (`ptodo.rs:1418` takes the same line).
-/// - An unreadable **baseline** is an EMPTY baseline, so every code-less file
-///   surfaces as a `NewFile` High. The inverse convention — treat a missing
-///   manifest as "nothing to check" — is the vacuous pass this gate exists to
-///   prevent.
-pub fn check(ctx: &AuditContext) -> Vec<Finding> {
-    // Live per-file code-less counts. Files with zero are OMITTED rather than
-    // stored as 0: `ratchet` reads presence in `live` as "has a backlog", and
-    // a stored zero would masquerade as one.
+///
+/// Deliberately blind to the manifest: the census must be reconstructible from
+/// the tree alone, or the generator could never regenerate from scratch.
+pub fn live_counts(ctx: &AuditContext) -> BTreeMap<String, u32> {
     let mut live: BTreeMap<String, u32> = BTreeMap::new();
     for path in ctx.git.ls_files() {
         if !is_swept_path(&path) {
@@ -762,6 +778,29 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
             live.insert(path, codeless as u32);
         }
     }
+    live
+}
+
+/// PDIAG entry point — see the module header for the heuristic and scope.
+///
+/// Purely structural: censuses the tree through [`live_counts`] (the
+/// `ls_files()` git seam plus working-tree reads) and diffs it against the
+/// committed manifest. Never touches jcodemunch or the task DB (the posture
+/// `pdssentinel.rs` documents). That is what keeps the detector's verdict a
+/// function of the tree alone.
+///
+/// Both IO fail-safes point the same way — *permissive on input, loud on
+/// comparison*:
+///
+/// - An unreadable **source** file (absent from the working tree, non-UTF-8)
+///   is skipped, contributing no count — see [`live_counts`], which owns that
+///   half.
+/// - An unreadable **baseline** is an EMPTY baseline, so every code-less file
+///   surfaces as a `NewFile` High. The inverse convention — treat a missing
+///   manifest as "nothing to check" — is the vacuous pass this gate exists to
+///   prevent.
+pub fn check(ctx: &AuditContext) -> Vec<Finding> {
+    let live = live_counts(ctx);
 
     // Resolved under `ctx.project_root`, never `CARGO_MANIFEST_DIR`, so the
     // CLI-level fixture trees can point the whole detector at a tempdir —
