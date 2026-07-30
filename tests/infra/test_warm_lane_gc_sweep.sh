@@ -46,8 +46,9 @@
 #         scan, not all-or-nothing).
 #   U — live-consumer lane guard (task 5378, relocated by task 5572): a lane
 #         with an active build is preserved despite a FREE flock — the exact
-#         esc-5375-1 gap — while a free unreferenced lane is still reset (no
-#         blanket over-preserve) and, once the reference clears, a later sweep
+#         esc-5334-6 gap (earlier instance esc-5375-1) — while a free
+#         unreferenced lane is still reset (no blanket over-preserve) and, once
+#         the reference clears, a later sweep
 #         reclaims it (preserve is temporary, mirrors T3).
 #         U1-U7 drive the REAL gc.sh end to end. They are the COMPOSITION proof
 #         and must NOT be deleted as redundant with test_warm_lane_gc.sh Block
@@ -1065,9 +1066,10 @@ assert "T7: entry B reaped once its live cwd reference is gone (second sweep)" \
 # ──────────────────────────────────────────────────────────────────────────────
 # Block U — live-consumer lane guard (task 5378)
 # ──────────────────────────────────────────────────────────────────────────────
-# ROOT CAUSE (esc-5375-1): the "one consumer per lane" flock (inv.2) is held
-# only across the ACQUIRE reseed, NOT across the consumer's long cargo verify
-# build. During that multi-minute build the flock is FREE, so gc.sh's Pass-1
+# ROOT CAUSE (esc-5334-6; earlier instance esc-5375-1): the "one consumer per
+# lane" flock (inv.2) is held only across the ACQUIRE reseed, NOT across the
+# consumer's long cargo verify build. During that multi-minute build the
+# flock is FREE, so gc.sh's Pass-1
 # always-reclaim reset renames/rm's <lane>/target out from under the live build.
 # FIX: warm-lane-gc-sweep.sh scans each pool-lane DIR realpath for a live process
 # reference (cwd/fd/mmap at or under it — the SAME /proc scanner the reseed-trash

@@ -246,10 +246,10 @@ proactive soft floor (ε). See the amendment notes in §8.3, §11, and §12 belo
   timeout, against a pass that already runs 25–40 min. Over-preserving is safe and TEMPORARY — a
   lingering reference costs one extra sweep. **What it closes:** reclaim resetting `<lane>/target`
   out from under a live build, because the inv.2 flock is FREE during the implement phase
-  (root-caused 2026-07-26, esc-5334-6). *Cite mismatch to be aware of when reading the code:* the
-  implementing comments in `warm-lane-gc.sh` and `warm-lane-gc-sweep.sh` cite `esc-5375-1` for this
-  same mechanism — an earlier, auto-dismissed L0 instance of the class, whose record carries only
-  the hypothesis. `esc-5334-6` is the record holding the root cause; follow that one.
+  (root-caused 2026-07-26, esc-5334-6; the implementing comments in `warm-lane-gc.sh` and
+  `warm-lane-gc-sweep.sh` now cite `esc-5334-6` directly, naming `esc-5375-1` — an earlier,
+  auto-dismissed L0 instance of the class whose record carries only the hypothesis — as the prior
+  instance).
   **Counter:** `preserved_live_ref=L` is the share of `preserved=K` attributable to this gate — a
   breakdown, not an extra bucket (L ≤ K) — APPENDED to the summary line so prefix-matching
   consumers keep working.

@@ -164,7 +164,8 @@
 #   - Live-reference gate (task 5572, both passes): the inv.2 flock is held only
 #     across the ACQUIRE reseed, NOT across the consumer's long cargo verify
 #     build, so during that build the flock is FREE and always-reclaim would wipe
-#     <lane>/target out from under a live build (esc-5375-1). The check lives
+#     <lane>/target out from under a live build (esc-5334-6; earlier instance
+#     esc-5375-1). The check lives
 #     HERE, in the primitive, rather than in a wrapper, because there are TWO
 #     entry points and only one of them ever passed --extra-protect-glob:
 #     warm-lane-gc-sweep.sh (the δ systemd backstop) did; dark-factory's ε path
@@ -549,7 +550,8 @@ _do_reclaim() {
         # Live-reference gate (task 5572). The flock above proves no consumer is
         # mid-ACQUIRE; it does NOT prove no consumer is mid-BUILD, because the
         # inv.2 flock is released once the acquire reseed completes while the
-        # verify build runs on for minutes (esc-5375-1). So before resetting,
+        # verify build runs on for minutes (esc-5334-6; earlier instance
+        # esc-5375-1). So before resetting,
         # ask /proc directly: does any live process reference this lane dir or
         # anything under it (cwd / open fd / mmap)?
         #
