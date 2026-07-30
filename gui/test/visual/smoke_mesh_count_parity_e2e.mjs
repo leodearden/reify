@@ -71,6 +71,7 @@ import {
   formatFailures,
 } from './meshCountParity.mjs';
 import { isInBandError, makeDebugRpc } from './rpcEnvelope.mjs';
+import { openFileWithRetry } from './smokeDriverGuards.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -167,22 +168,12 @@ async function main() {
   console.log('  OK: server ready');
 
   // ── Boot: open large_assembly.ri (with retry for WebView init) ──────────────
-  // The debug MCP server comes up before the WebKit WebView finishes loading,
-  // so a single open_file races. Retry up to 8 times (≤45s).
+  // The retry budget, the `.ok` verdict and the failure wording live in
+  // ./smokeDriverGuards.mjs, where vitest can cover them; this file needs a live
+  // GUI, so nothing inline here ever could be. `fail` is passed (not `log`) so an
+  // exhausted retry exits 1 naming the underlying RPC error.
   log('Opening gui/test/fixtures/large_assembly.ri via open_file (with retry for WebView init)…');
-  let openResult = null;
-  for (let attempt = 1; attempt <= 8; attempt++) {
-    openResult = await rpc('open_file', { path: FIXTURE });
-    console.log(`  open_file attempt ${attempt} result:`, JSON.stringify(openResult));
-    if (openResult && openResult.ok) break;
-    if (attempt < 8) {
-      console.log('  Retrying in 3s (WebView still initialising)…');
-      await sleep(3000);
-    }
-  }
-  if (!openResult || !openResult.ok) {
-    fail(`open_file failed after retries: ${JSON.stringify(openResult)}`);
-  }
+  await openFileWithRetry(rpc, FIXTURE, { fail });
 
   log('Waiting for engine idle…');
   const idleResult = await rpc('wait_for_idle', { timeout_ms: 15000 });
