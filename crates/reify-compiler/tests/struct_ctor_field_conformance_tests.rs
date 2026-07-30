@@ -1667,3 +1667,86 @@ fn vector_string_still_rejected_family_before_quantity() {
         diags[0].code
     );
 }
+
+// ===========================================================================
+// Quantity-slot dimension semantics (task 5766) — `Matrix`/`Tensor` family
+// ===========================================================================
+
+const SRC_MATRIX_CROSS_DIMENSION: &str = r#"module test.matrix_cross_dimension
+structure def Body { param inertia : Matrix<3, 3, MomentOfInertia> }
+structure def Root {
+    let b = Body(inertia: matrix([[1mm, 0mm, 0mm], [0mm, 1mm, 0mm], [0mm, 0mm, 1mm]]))
+}
+"#;
+
+/// THE TIGHTENING (task 5766, `Matrix`/`Tensor` family), on the task's own named
+/// example type.
+///
+/// `math_fn_result_type("matrix", …)` takes the quantity from the first element,
+/// so `matrix([[1mm, …], …])` compiles to `Tensor2x3<Scalar[m]>` while the param
+/// declares `Matrix3x3<Scalar[m^2·kg]>`. Both sides name a concrete — and
+/// different — dimension, so the conflict is decidable from the type alone.
+///
+/// Also the empirical proof that `MomentOfInertia` in a `Matrix<3,3,…>` slot
+/// resolves through `resolve_type_expr_with_aliases` all the way to
+/// `Type::Scalar { dimension }` and not to an alias or `Applied` form — if it
+/// did not, [`quantity_slot_dimension`] would need an alias-resolution step and
+/// this fixture would be silent.
+///
+/// Note the arg is a `Type::Tensor` and the param a `Type::Matrix`: Rule 3
+/// (`type_compat.rs`) already makes that conversion legal, so the FAMILY check
+/// passes and only the quantity slot separates them.
+#[test]
+fn matrix_builtin_cross_dimension_at_inertia_param_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_MATRIX_CROSS_DIMENSION,
+        "inertia",
+        "Matrix<3,3,MomentOfInertia> ← Tensor2x3<Length>",
+    );
+}
+
+// FENCES (a) and (b) for this family are ALREADY PINNED above and must stay
+// green through the tightening; they are cited here rather than cloned, because
+// re-asserting an identical fixture in two places is the lockstep duplication
+// that rots (house rule G7):
+//
+//   (a) `matrix_param_given_nested_list_literal_stays_clean` — a
+//       `Matrix<3,3,MomentOfInertia>` param fed `[[0.0, …], …]`. `Type::List`
+//       carries NO quantity slot, so there is nothing to compare and the arm
+//       must stay silent. This is the spelling all 12 corpus
+//       `MassProperties.inertia` sites use (`examples/dynamics/*_idyn.ri`), and
+//       it is the reason strict equality is unavailable for this family.
+//   (b) `tensor_param_given_vector_stays_clean` — a `Tensor<1,3,Length>` param
+//       fed `vec3(0m, 0m, 1m)`: dimensions AGREE, so silent.
+
+const SRC_TENSOR_MATCHING_DIMENSION: &str = r#"module test.tensor_matching_dimension
+structure def Surface {
+    param moi : Tensor<2, 3, MomentOfInertia>
+}
+structure def Root {
+    let s = Surface(moi: matrix([
+        [1.0 * 1kg * 1m * 1m, 0.0 * 1kg * 1m * 1m, 0.0 * 1kg * 1m * 1m],
+        [0.0 * 1kg * 1m * 1m, 1.0 * 1kg * 1m * 1m, 0.0 * 1kg * 1m * 1m],
+        [0.0 * 1kg * 1m * 1m, 0.0 * 1kg * 1m * 1m, 1.0 * 1kg * 1m * 1m]
+    ]))
+}
+"#;
+
+/// FENCE (c) — a MATCHING concrete dimension at a `Tensor` param stays clean.
+///
+/// The build form is lifted verbatim from `examples/type_hygiene/type_hygiene_surface.ri:26`'s
+/// own `HasInertia.moi` default, so this pins the tightening against the one
+/// non-`Length` `Tensor` spelling that actually exists in the corpus. Green both
+/// before and after the tightening; distinguishes "compares the dimension" from
+/// "rejects any dimensioned `matrix(…)` arg".
+#[test]
+fn tensor_matching_dimension_at_moi_param_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_TENSOR_MATCHING_DIMENSION);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a Tensor<2,3,MomentOfInertia> param fed a matrix(…) whose elements carry the SAME \
+         dimension (kg·m²) must stay SILENT — the quantity rule compares DimensionVectors, \
+         it does not reject dimensioned args. Got: {diags:#?}"
+    );
+}
