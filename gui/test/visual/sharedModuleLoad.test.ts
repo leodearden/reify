@@ -18,6 +18,7 @@ import { describe, it, expect } from "vitest";
 
 import {
   SHARED_ESM_MODULES,
+  discoverSharedEsmModules,
   expectBareNodeLoadable,
   findBareNodeLoadViolations,
 } from "./sharedModuleLoad.js";
@@ -84,5 +85,21 @@ describe("the load constraint that makes the shared driver modules .mjs", () => 
     expect(SHARED_ESM_MODULES).toEqual(
       expect.arrayContaining(["rpcEnvelope.mjs", "meshCountParity.mjs", "smokeDriverGuards.mjs"]),
     );
+  });
+
+  it("covers every shared `.mjs` in the directory — a new one cannot be forgotten", () => {
+    // The one behaviour the hoist ADDS beyond de-duplication. Giving the
+    // constraint a single home halves the drift surface but does not remove it:
+    // a hand-maintained table still silently skips a NEW shared module until
+    // someone remembers to add it. Reading the directory closes that.
+    //
+    // Both directions on purpose — it also catches a STALE entry left after a
+    // module is deleted or renamed, which would otherwise surface as a confusing
+    // ENOENT deep inside expectBareNodeLoadable.
+    //
+    // This also makes the `smoke_` prefix load-bearing rather than decorative: a
+    // legitimately node-only helper added here MUST be named `smoke_*` to opt
+    // out of the constraint, and a failure here says so.
+    expect(discoverSharedEsmModules().sort()).toEqual([...SHARED_ESM_MODULES].sort());
   });
 });
