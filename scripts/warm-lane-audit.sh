@@ -144,6 +144,21 @@
 #        unresolvable backing-task status. A state dir that is absent ENTIRELY
 #        warns ONCE for the directory instead of once per lane, so the per-lane
 #        naming keeps meaning "this lane, unlike its neighbours".
+#   A6 — the plan-record read is fail-safe and read-only. A missing,
+#        unreadable or corrupt <lane>/.task/plan.json, or an anchor commit
+#        absent from the object DB, all degrade that lane to
+#        `plan_sync=UNKNOWN`; it never aborts, never creates the `.task/` dir
+#        or the record (guaranteed by _plan_record, exactly as A1's guarantee
+#        is by _lane_record), and NEVER accuses a strand it cannot evidence --
+#        an absent anchor object is UNKNOWN, never STRANDED (see
+#        _read_plan_sync's resolution order for why that ordering is the whole
+#        invariant). "Nothing recorded yet" stays the distinct `-` sentinel, so
+#        a fresh lane's all-pending plan never inflates the unknown count and
+#        buries the records that genuinely could not be read.
+#        This script never REPAIRS a strand it finds: recovery requires knowing
+#        which dangling commits belong to which task, and a wrong reflog-based
+#        repoint destroys the evidence a root-cause depends on. Ref repair
+#        belongs to the lane lifecycle and to a human (A1; PRD §9.5 inv.12).
 
 set -euo pipefail
 
@@ -659,10 +674,38 @@ _plan_record() {
     return 0
 }
 
-# _plan_anchor <dir>
+# _plan_record_parses <record-text>
+# True iff the slurped record is structurally a JSON OBJECT: non-empty, opening
+# `{` and closing `}` once surrounding whitespace is stripped.
+#
+# Deliberately STRUCTURAL, not semantic. A hand-rolled reader cannot validate
+# JSON, and pretending otherwise would be worse than not trying: this check is
+# calibrated to the corruption mode that actually occurs -- a record truncated
+# mid-write by a producer that died -- which never closes its object. Its ONLY
+# job is to keep an unparseable record from silently reaching the anchor scan,
+# where it would find no anchor and be reported as the innocuous `-` ("nothing
+# recorded yet") instead of UNKNOWN ("could not be evaluated"). That is exactly
+# the A3/A5 distinction, on a third surface.
+_plan_record_parses() {
+    local text="$1"
+    text="${text#"${text%%[![:space:]]*}"}"
+    text="${text%"${text##*[![:space:]]}"}"
+    case "$text" in
+        '{'*'}') return 0 ;;
+    esac
+    return 1
+}
+
+# _plan_anchor <record-text>
 # Prints "<entry_id> <commit>" for the ANCHOR -- the plan-order-LAST entry
 # (prerequisites then steps) whose status is done and whose commit is non-empty
 # -- or nothing when there is no such entry.
+#
+# Takes already-slurped TEXT, not a path, exactly as _record_scalar does: the
+# record is read ONCE by _read_plan_sync and every value is extracted from that
+# one in-memory snapshot, so the verdict and the anchor it names can never
+# describe two different instants of a record being rewritten underneath them
+# (the property _read_lane_assignment documents at length).
 #
 # The LAST done entry rather than every done entry, because steps execute in
 # order and each commits atop the previous: if the deepest done commit is an
@@ -680,11 +723,7 @@ _plan_record() {
 # read that as empty -- the same property that makes _record_scalar report an
 # unassigned task_id as empty.
 _plan_anchor() {
-    local dir="$1"
-    local record text
-    record="$(_plan_record "$dir")"
-    [ -n "$record" ] || return 0
-    text="$(_record_text "$record")" || return 0
+    local text="$1"
     printf '%s' "$text" | awk '
         {
             rest = $0
@@ -720,28 +759,102 @@ _plan_anchor() {
     return 0
 }
 
-# _plan_sync <dir>  ->  OK | STRANDED | UNKNOWN | -
-# OK        the anchor is an ancestor of HEAD.
-# STRANDED  the anchor is NOT an ancestor -- the clobber signature.
-# -         nothing recorded yet: no readable plan, or no done entry with a
-#           commit. Kept strictly distinct from UNKNOWN (A3/A5's doctrine:
-#           "nothing recorded" is the common case, "could not evaluate" is the
-#           signal).
+# _read_plan_sync <dir>
+# Resolves EVERYTHING this script needs about <dir>'s plan from a SINGLE read,
+# and publishes it in three globals -- the same shape, and for the same reason,
+# as _read_lane_assignment above:
+#
+#   PLAN_SYNC_STATE     OK | STRANDED | UNKNOWN | -
+#   PLAN_SYNC_CAUSE     why the state is UNKNOWN; EMPTY when it is not
+#   PLAN_ANCHOR_ID      the anchor entry's id  ('' when there is no anchor)
+#   PLAN_ANCHOR_COMMIT  the anchor entry's commit ('' when there is no anchor)
+#
+# Globals rather than a printed value, because the warning an operator reads
+# must name the SAME anchor the verdict was computed from. A second read is a
+# DIFFERENT INSTANT: the architect and the implementer both rewrite plan.json
+# mid-run, so re-deriving the anchor for the warning could name a step that had
+# nothing to do with the verdict beside it.
+#
+# THE RESOLUTION ORDER IS THE INVARIANT (A6). Each failure mode is caught
+# BEFORE the test it would corrupt, so no failure to evaluate can ever be
+# reported as evidence of a clobber:
+#
+#   1. no readable record          -> `-`       (the fresh-lane shape: most of
+#                                                the pool, not a failure)
+#   2. readable but unparseable    -> UNKNOWN   (unparseable-record)
+#   3. parsed, no done entry with
+#      a commit                    -> `-`       (nothing recorded yet)
+#   4. anchor object ABSENT        -> UNKNOWN   (anchor-object-absent:<sha>)
+#   5. anchor present, ancestor    -> OK
+#   6. anchor present, not ancestor-> STRANDED  (the clobber)
+#
+# Step 4 MUST precede steps 5/6 and is why the explicit `cat-file -e` exists:
+# `git merge-base --is-ancestor` exits 128 for an absent object and 1 for a
+# genuine non-ancestor, so a bare non-zero test conflates "this commit is not
+# in this repo" with "the ref was clobbered". Since the entire purpose of the
+# column is to ACCUSE a clobber, that conflation would send an operator hunting
+# a data-loss incident that never happened. Relying on the 128-vs-1 numeric
+# distinction would work but is fragile and opaque; the existence guard states
+# the intent in the code.
 #
 # Resolved against HEAD rather than refs/heads/task/N: HEAD is what a clobbered
 # symbolic ref resolves THROUGH, so this reproduces the incident exactly, and
 # it keeps the column meaningful on a detached lane where no task/N ref
 # applies. Mirrors _recoverable's own use of HEAD.
-_plan_sync() {
+#
+# Every git call is a pure READER guarded with `2>/dev/null`, and every branch
+# returns 0, so nothing here can abort the walk under `set -euo pipefail`.
+PLAN_SYNC_STATE='-'
+PLAN_SYNC_CAUSE=''
+PLAN_ANCHOR_ID=''
+PLAN_ANCHOR_COMMIT=''
+_read_plan_sync() {
+    # Reset first: every lane is resolved from scratch, so a lane whose record
+    # cannot be read can never inherit its predecessor's anchor.
+    PLAN_SYNC_STATE='-'
+    PLAN_SYNC_CAUSE=''
+    PLAN_ANCHOR_ID=''
+    PLAN_ANCHOR_COMMIT=''
+
     local dir="$1"
-    local anchor sha
-    anchor="$(_plan_anchor "$dir")"
-    [ -n "$anchor" ] || { printf '%s' '-'; return 0; }
-    sha="${anchor##* }"
-    if git -C "$dir" merge-base --is-ancestor "$sha" HEAD 2>/dev/null; then
-        printf 'OK'
+    local record text anchor
+
+    record="$(_plan_record "$dir")"
+    # No plan recorded at all -- no .task/, no plan.json, or the usual dangling
+    # .task-meta symlink. The fresh-lane shape, and NOT a failure to evaluate.
+    [ -n "$record" ] || return 0
+
+    if ! text="$(_record_text "$record")"; then
+        PLAN_SYNC_STATE='UNKNOWN'
+        PLAN_SYNC_CAUSE='no-readable-record'
+        return 0
+    fi
+    if ! _plan_record_parses "$text"; then
+        PLAN_SYNC_STATE='UNKNOWN'
+        PLAN_SYNC_CAUSE='unparseable-record'
+        return 0
+    fi
+
+    anchor="$(_plan_anchor "$text")"
+    # Parsed cleanly, but no done entry carries a commit yet: `-`, never
+    # UNKNOWN. This is the split A6 exists to hold.
+    [ -n "$anchor" ] || return 0
+    PLAN_ANCHOR_ID="${anchor%% *}"
+    PLAN_ANCHOR_COMMIT="${anchor##* }"
+
+    if ! git -C "$dir" cat-file -e "${PLAN_ANCHOR_COMMIT}^{commit}" 2>/dev/null; then
+        PLAN_SYNC_STATE='UNKNOWN'
+        # Reported VERBATIM: a mass spike carrying one repeated shape is a
+        # distinct signal (an over-aggressive `git gc` across the pool) from a
+        # one-off corrupt record, and no other cause looks like that.
+        PLAN_SYNC_CAUSE="anchor-object-absent:${PLAN_ANCHOR_COMMIT}"
+        return 0
+    fi
+
+    if git -C "$dir" merge-base --is-ancestor "$PLAN_ANCHOR_COMMIT" HEAD 2>/dev/null; then
+        PLAN_SYNC_STATE='OK'
     else
-        printf 'STRANDED'
+        PLAN_SYNC_STATE='STRANDED'
     fi
     return 0
 }
@@ -1072,8 +1185,12 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
         recoverable="$(_recoverable "$entry" "$raw_branch")"
         dirty="$(_dirty_state "$entry")"
         # Ref integrity, orthogonal to occupancy and to `recoverable`: does the
-        # lane's HEAD still descend from the last commit its plan records?
-        plan_sync="$(_plan_sync "$entry")"
+        # lane's HEAD still descend from the last commit its plan records? ONE
+        # read publishes the verdict, its UNKNOWN cause, and the anchor -- NOT
+        # a command substitution, which would run in a subshell and discard the
+        # globals (same call convention as _read_lane_assignment above).
+        _read_plan_sync "$entry"
+        plan_sync="$PLAN_SYNC_STATE"
         divergent_bytes="$(_divergent_bytes "$entry")"
         divergent_gib=$(( divergent_bytes / 1073741824 ))
         age_min="$(_age_min "$entry")"
