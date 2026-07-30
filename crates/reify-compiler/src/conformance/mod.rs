@@ -7338,6 +7338,127 @@ mod tests {
         );
     }
 
+    /// CROSS-DIMENSION leg of the `Type::Point` arm (task 5766): a `Point{n:3}`
+    /// arg whose quantity slot names a CONCRETE dimension different from the
+    /// param's is exactly one `ArgTypeMismatch`.
+    ///
+    /// **Why this is an in-module unit test and not a `.ri` fixture.**
+    /// `resolve_parameterized_builtin_type` recognises `Point3` only, and
+    /// `point3(…)` is an eval-builtin with no `.ri` return type — its calls
+    /// compile to a `Scalar[m]` / `Int` placeholder. No `.ri` source can
+    /// therefore produce a *dimensioned* `Type::Point` arg, so the `Type` is
+    /// constructed directly, exactly as the adjacent arity and dimensionless
+    /// probes do (see `struct_ctor_field_conformance_tests.rs`'s own note on this).
+    ///
+    /// The complement of `point_param_accepts_dimensionless_point_arg` directly
+    /// above: that one pins the TOLERANT half (either side declines to name a
+    /// concrete dimension ⇒ silent), this one pins the STRICT half (both name one
+    /// and they differ ⇒ reject).
+    #[test]
+    fn point_param_rejects_cross_dimension_point_arg() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "p"),
+            Type::Point {
+                n: 3,
+                quantity: Box::new(Type::Scalar {
+                    dimension: DimensionVector::MASS,
+                }),
+            },
+        );
+        let param_type = Type::point3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        });
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &param_type,
+            "origin",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "a Point3<Mass> arg at a Point3<Length> param must be rejected — both sides \
+             name a concrete dimension and they disagree (task 5766), got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+        assert_eq!(
+            diagnostics[0].code,
+            Some(DiagnosticCode::ArgTypeMismatch),
+            "expected ArgTypeMismatch, got {:?}",
+            diagnostics[0].code,
+        );
+    }
+
+    /// CROSS-DIMENSION leg of the `Type::Vector` arm at the direct-`Type` seam
+    /// (task 5766), sibling of `point_param_rejects_cross_dimension_point_arg`.
+    ///
+    /// The `.ri` seam for the same rule is
+    /// `vec3_cross_dimension_at_dimensioned_vector_param_warns_arg_type_mismatch`
+    /// in `struct_ctor_field_conformance_tests.rs`. Pinning BOTH seams matters
+    /// because they reach the arm by different routes — a `ValueRef` carrying a
+    /// persisted `Type::Vector` here, versus a `FunctionCall`'s inferred
+    /// `result_type` there — and only the type-level walker sees the former.
+    ///
+    /// The code assertion is the load-bearing half: a quantity conflict must
+    /// route to `ArgTypeMismatch`, NOT to this arm's bespoke
+    /// `TypeNotConformingToVector`, which keeps owning ARITY/FAMILY failures only
+    /// (`vector_param_rejects_wrong_arity_vector_arg` pins that side).
+    #[test]
+    fn vector_param_rejects_cross_dimension_vector_arg() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "v"),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::Scalar {
+                    dimension: DimensionVector::MASS,
+                }),
+            },
+        );
+        let param_type = Type::vec3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        });
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &param_type,
+            "axis",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "a Vector3<Mass> arg at a Vector3<Length> param must be rejected — both sides \
+             name a concrete dimension and they disagree (task 5766), got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+        assert_eq!(
+            diagnostics[0].code,
+            Some(DiagnosticCode::ArgTypeMismatch),
+            "a QUANTITY conflict must route to ArgTypeMismatch, leaving \
+             TypeNotConformingToVector owning ARITY/FAMILY only, got {:?}",
+            diagnostics[0].code,
+        );
+    }
+
     /// Arity leg of the `Type::Point` arm (task 5465, family 1): a `Point{n:2}`
     /// arg against a `Point3<Length>` param is exactly one `ArgTypeMismatch`.
     ///
