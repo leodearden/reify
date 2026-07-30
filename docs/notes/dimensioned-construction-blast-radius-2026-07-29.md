@@ -1951,4 +1951,116 @@ either without independently re-confirming it first.
 
 ## §11 Methodology closure + no-source-change proof (step-11)
 
-*(filled by step-11)*
+**Provenance.** Measured at HEAD **`80f877d7cc`** (step-10's own commit; no further rebase landed
+between step-10 and this section), base `main` = `bae556d6ad43` — same base as §10's provenance
+note (zero-overlap with this ledger's dependency files already established there and in §6's).
+
+### 11(A) Reach census (addendum C3)
+
+Every count below was re-run mechanically this session (`git ls-files`, HEAD `80f877d7cc`), not
+carried forward from the plan's decompose-time text on faith — and it reconciles to that text
+exactly (zero drift across all five rebases since decompose time, because none of them touched a
+`.ri` file — confirmed by inspecting all four rebases' changed-file lists, §10's provenance note
+and §6's).
+
+**11.A.1 What the reused walk (`corpus_no_bare_scalar.rs`, pre-2/§0.4) reaches: 438 of 595 tracked `.ri` files.**
+
+| Tree | Pattern | Count | Reached? |
+|---|---|---|---|
+| `examples/**` | `examples/*.ri` | 258 | YES |
+| `crates/**` | `crates/*.ri` | 168 | YES |
+| `gui/test/**` | `gui/test/*.ri` | 12 | YES — but see 11.A.3, reach ≠ gate |
+| **Reached subtotal** | | **438** | |
+
+**11.A.2 Out of its reach entirely, and compiled by no gate: 157 tracked `.ri` files.**
+
+| Tree | Count | Why unreached |
+|---|---|---|
+| `docs/prds/**/fixtures/**` | 50 | Not one of the walk's five trees (§0.4); PRD-authoring fixtures |
+| `tests/prd-gate/fixtures/**` | 71 | Not one of the walk's five trees; **many are orphaned** — spot-checked 5 of 71 fixture names against every `.rs`/`.json` file outside their own directory: 4 of 5 matched at least one reference (a `*-probe-set.json` or a `.rs` test), 1 of 5 (`collection_sub_at_placement_rejected.ri`) matched **zero** files outside `tests/prd-gate/fixtures/` itself — corroborating, not exhaustively re-proving, the "many orphaned" characterization (a full 71-file audit is outside this step's scope). The directory also holds exactly 7 probe-set `.json` files and 1 `README.md` at its top level, confirmed present by direct listing. |
+| `designs/litter_tray/**` | 7 | Not one of the walk's five trees; a worked design example, not test/example corpus |
+| `prj/**` | 2 | Not one of the walk's five trees (also separately excluded from §0.2's alias census — `prj/printer_v01/printer.ri:60`'s local `Acceleration` redeclaration) |
+| `tree-sitter-reify/test/fixtures/**` | 27 | Not one of the walk's five trees; parse-only via the tree-sitter grammar test harness, never reaches `reify-compiler` — the same parse-only mechanism as §0.4/§3.2's individual exclusions, just an entire directory of it |
+| **Unreached subtotal** | **157** | |
+
+**438 + 157 = 595 — exact reconciliation, no residual, no double-count**, matching the plan's own
+decompose-time figures precisely (unlike the `NAMED_DIMENSIONS` cardinality, §11.A.4, nothing here
+needed correction). Separately: this task's own worktree — an isolated warm-lane checkout, not the
+shared dev checkout CLAUDE.md's own conventions describe — has **zero** `.orchestrator-scratch/`,
+`.claude/worktrees/`, or `.eval-worktrees/` directories today (checked directly, `[ -d ... ]`).
+That is a fact about *this* checkout, not what makes the counts trustworthy: pre-2 built the
+exclusion discipline into the *method* (every file list here is driven from `git ls-files`, never
+a raw filesystem walk), so the counts reproduce identically regardless of which checkout they are
+run from. (Addendum C3's own "167" figure counted untracked scratch copies present in a
+*different* checkout at a *different* time — §0's premise-verification note, carried forward here
+rather than re-litigated.)
+
+**11.A.3 The reach-vs-gate distinction (why "corpus clean" ≠ "every `.ri` clean").** The 438 files
+the walk reaches are not uniformly *compiled* by a gate either — most sharply for the 12
+`gui/test/fixtures/*.ri` files (including `large_assembly.ri`, §10.1's 6-row BREAKS target):
+swept by the tree walk (so counted in every §§2-9 sweep and in §10's table), but loaded only by
+`gui/src-tauri/src/debug_server.rs:1236` (`"large_assembly" =>
+Some("gui/test/fixtures/large_assembly.ri".to_string()),`) and
+`gui/test/visual/assertions.ts:47` (`large_assembly: "gui/test/fixtures/large_assembly.ri",`) —
+both **re-confirmed present, unchanged, this session** (also noted in §10's provenance note).
+Neither is a `cargo test` target. **Consequence for β:** a passing `cargo test -p reify-compiler`
+(or any other crate) proves nothing about whether `large_assembly.ri`'s BARE sites are fixed —
+only the GUI e2e harness (`gui/test/visual/*`) or a manual
+`reify check gui/test/fixtures/large_assembly.ri` can confirm it. The remaining 426 of the 438
+reached files (`examples/**` + `crates/**`) sit behind at least one cargo gate each —
+`examples/**` via `examples_smoke` (§0 anchor #9) or a targeted eval test, `crates/**` via
+whichever suite embeds or loads that fixture — so this specific gap is confined to the
+`gui/test/fixtures/**` tree, not general across all 438 reached files.
+
+**11.A.4 `NAMED_DIMENSIONS` 49/51/34 discrepancy — ruling carried forward, not re-litigated.**
+§0.1 resolved this: the array holds **51** names at HEAD (three independent re-derivations, all
+51), the plan's own decompose-time "49" was **not reproducible** (a regex bug, reported
+`esc-5756-1`), and the `dimension.rs:513` doc comment's "34" is stale/contradicted. Every count in
+§§2-9 uses the 51-name registry set unioned with the 14 `.ri` type aliases from §0.2 (65 names
+total, §0.3) — never the plan's "49" and never the doc comment's "34". §10.9's citation contract
+states the consequence for later leaves normatively.
+
+### 11(B) No-source-change proof
+
+Re-run fresh this session, at HEAD `80f877d7cc` (post-step-10), base `main` = `bae556d6ad43`:
+
+```
+$ git diff main...HEAD --name-only
+docs/notes/dimensioned-construction-blast-radius-2026-07-29.md
+
+$ git diff --exit-code -- crates/ examples/ gui/ stdlib
+$ echo $?
+0
+
+$ git status --porcelain
+(empty — no output)
+```
+
+**Three independent checks, all clean:**
+
+1. **`git diff main...HEAD --name-only` names exactly one path, and it is under `docs/notes/`** —
+   the entire task diff, across all 11 steps and 2 prerequisites, is the single ledger file this
+   section is part of. No `-transcript.md` sibling was ever created (step-1's transcript stayed
+   under the ~200-line inline threshold; the design decision permitted either outcome, and this is
+   the one that happened, recorded here as fact rather than left implicit).
+2. **`git diff --exit-code -- crates/ examples/ gui/ stdlib` exits 0** — every local flip this task
+   applied (step-1's predicate flip, §5's Rule-4 `eprintln!` instrumentation, every probe file
+   referenced in §§6-9) was reverted before that step's own commit, and no revert was ever
+   incomplete going into the next step. This is not new evidence — §1.5, §5.7, §6.4, §7.4, and
+   §9.5 each already proved their own step's revert at the time it happened; this is the
+   **cumulative** proof, run once more now that all 11 steps are committed, that no revert
+   regressed a later one and nothing was left dirty at the end.
+3. **`git status --porcelain` is empty** — no untracked scratch file, probe, or build artifact
+   leaked into the tracked working tree at any point. Every scratch artifact this task used
+   (`/tmp/5756-scratch/**`, including the `/tmp/5756-scratch/probes/*.ri` files §§4/6/7/9 built)
+   lived outside the repository entirely, per each step's own scratch-location note; `target/`
+   (gitignored) was rebuilt several times from flipped and clean source across steps 1/4/6 but is
+   correctly absent from both this diff and this status output.
+
+**This is the auditable evidence for the task's hard invariant.** α measured the blast radius of
+promoting `general_leaf_param_family_is_validated`'s dimensioned-`Scalar` arm across all six
+gates that reach it or a sibling numeric-leniency mechanism, produced the per-site migration
+ledger §10 indexes for β/γ/δ₁/δ₂ and the §6.4 quantity-slot follow-up to consume, and **landed
+nothing under `crates/`, `examples/`, `gui/`, or `stdlib`** — the entire task diff is the `files`
+list this plan declares (in the end, one of the two declared paths; the second was never needed,
+per §1's design decision allowing either outcome).
