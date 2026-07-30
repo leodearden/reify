@@ -25,23 +25,34 @@
 // are tagged in a comment line directly above each `structure def`.
 //
 // Relationship to existing material traits:
-//   - This module's `ElasticMaterial` is a NEW, dimensioned trait designed for
-//     the FEA solver. It extends `ConstitutiveLaw`, adds `density` and
-//     `yield_stress` alongside `youngs_modulus`/`poisson_ratio`, and
-//     constrains `poisson_ratio` to the half-open interval `[0, 0.5)`.
+//   - This module's `ElasticMaterial` is a NEW, dimensioned trait designed
+//     for the FEA solver. It extends `ConstitutiveLaw`, adds `density`
+//     and `yield_stress` alongside `youngs_modulus`/`poisson_ratio`. See
+//     the trait doc below for `poisson_ratio`'s range and rationale.
 //   - The pre-existing `Elastic` trait in `materials_mechanical.ri` is
 //     already dimensioned too: `youngs_modulus`/`shear_modulus` are
 //     `Pressure`, and only `poissons_ratio` is `Real` (correctly so — it's
-//     a dimensionless ratio). It mixes an optional `shear_modulus` alongside
-//     `youngs_modulus`, and constrains `poissons_ratio` to the open interval
-//     `(0, 0.5)` — a narrower range than `ElasticMaterial`'s, not an absent
-//     one. It is retained verbatim for legacy consumers — existing
-//     conformers in `examples/` and the compiler test fixtures.
+//     a dimensionless ratio). It mixes an optional `shear_modulus`
+//     alongside `youngs_modulus`, and constrains `poissons_ratio` to the
+//     open interval `(0, 0.5)` — a narrower range than `ElasticMaterial`'s,
+//     not an absent one. It is retained verbatim for legacy consumers —
+//     existing conformers in `examples/` and the compiler test fixtures.
+//   - The two traits also spell the ratio param differently:
+//     `poissons_ratio` on `Elastic` vs `poisson_ratio` on
+//     `ElasticMaterial`. A structure conforming to both traits must
+//     declare both params — porting between them on name alone raises
+//     `MissingRequiredMember`.
 //   - Neither trait supersedes the other; they coexist for different
-//     purposes. The real justification for the split is `ElasticMaterial`'s
-//     extra `density`/`yield_stress` fields and `ConstitutiveLaw`
-//     conformance, not dimension-typing (both traits are now dimensioned)
-//     or the Poisson range (a minor difference). New FEA-bound code should
+//     purposes. The real justification for the split is `ConstitutiveLaw`
+//     conformance and a single solver-facing trait: `solve_elastic_static`
+//     accepts a `material : ConstitutiveLaw` param, so only a
+//     `ConstitutiveLaw` conformer type-checks there, and `ElasticMaterial`
+//     bundles `density`/`yield_stress` into that one trait rather than
+//     requiring the `MaterialSpec + Elastic + Strong` composition idiom
+//     used elsewhere in this module (`examples/io_export.ri`,
+//     `examples/m8_materials.ri`). It is NOT dimension-typing (both
+//     traits are now dimensioned) or the Poisson range (a minor,
+//     `Elastic`-is-narrower difference). New FEA-bound code should
 //     depend on `ElasticMaterial`.
 
 // ── Provenance ───────────────────────────────────────────────────────────────
