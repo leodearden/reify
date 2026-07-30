@@ -19,13 +19,21 @@
 # backing-task-status (terminal|non-terminal|unknown) · recoverable
 # (LANDED|PUSHED|ORPHAN) · dirty (clean|residue-only|wip) · divergent_gib ·
 # age_min · classification (LIVE|PINNED|QUARANTINED|RECLAIMABLE|LEAKED|
-# PRESERVED-OK, ranked in that order).
+# PRESERVED-OK, ranked in that order) · plan_sync (OK|STRANDED|UNKNOWN|`-`).
 #
 # `live`, `assigned` and `pin` answer THREE independent questions, and are
 # three columns for that reason: is a consumer PROCESS holding this lane's
 # flock; has the pool RESERVED it (read from the orchestrator's own record at
 # <state-dir>/<lane>.json, never inferred from the lock); and, when it is
 # reserved with nothing running, WHO holds it.
+#
+# `plan_sync` answers a FOURTH, orthogonal question -- does the lane's ref
+# still hold the work its plan says it committed? -- by testing the lane's HEAD
+# against the ANCHOR in <lane>/.task/plan.json: the plan-order-last done entry
+# (prerequisites then steps) carrying a commit. It is a CROSS-CUT, never a
+# `classification` verdict, because ref integrity is orthogonal to occupancy: a
+# stranded lane can be LIVE, PINNED or RECLAIMABLE at the same time (task 5876,
+# esc-5866-8).
 #
 # Two summary lines follow the per-lane rows:
 #
@@ -170,6 +178,12 @@ Usage: $(basename "$0") [--mount DIR] [--format table|json] [--status-cmd CMD]
               running): the RAW backing status of the task holding it, e.g.
               pending / infra-hold / in-progress / done. \`unknown\` when it
               cannot be resolved; \`-\` when the lane is not pinned.
+    plan_sync OK|STRANDED|UNKNOWN|\`-\` — does the lane's ref still hold the
+              work its plan says it committed? Tests HEAD against the ANCHOR
+              in <lane>/.task/plan.json (the plan-order-last done entry
+              carrying a commit). STRANDED means the anchor commit EXISTS but
+              nothing reaches it — a clobbered tip. \`-\` means nothing was
+              recorded yet; UNKNOWN means it could not be evaluated.
 
   Classification, ranked: LIVE > PINNED > QUARANTINED >
   RECLAIMABLE|LEAKED|PRESERVED-OK -- the HEADROOM partition's order exactly.
@@ -619,6 +633,119 @@ _recoverable() {
     return 0
 }
 
+# ── plan_sync: does the ref still hold the work the plan says it committed? ───
+# The question `recoverable` cannot answer. `recoverable` asks only whether
+# HEAD is reachable from main -- which a branch whose tip was CLOBBERED to some
+# other task's satisfies exactly as well as a healthy one. So a lane could lose
+# every commit its plan recorded and still report a clean row (esc-5866-8: the
+# ref kept its NAME, refs/heads/task/5866, while its TIP became task/5632's).
+#
+# _plan_record <dir>
+# The ONLY site in this script that composes a plan path, mirroring
+# _lane_record: prints <dir>/.task/plan.json when it exists and is readable,
+# and NOTHING otherwise -- so every caller's access is guarded by construction
+# and the non-creating guarantee has exactly one place it could be broken.
+# Purely existence/readability tests: no `>`-open, no touch, no mkdir.
+#
+# `[ -f ]` FOLLOWS symlinks, which is what makes the common real-lane shape
+# degrade correctly with no special case: since the W11 relocation .task/plan.json
+# is an absolute symlink into <worktree_base>/.task-meta/<lane>/, and it dangles
+# on every lane until the architect writes the plan.
+_plan_record() {
+    local dir="$1"
+    local record="$dir/.task/plan.json"
+    [ -f "$record" ] && [ -r "$record" ] || return 0
+    printf '%s' "$record"
+    return 0
+}
+
+# _plan_anchor <dir>
+# Prints "<entry_id> <commit>" for the ANCHOR -- the plan-order-LAST entry
+# (prerequisites then steps) whose status is done and whose commit is non-empty
+# -- or nothing when there is no such entry.
+#
+# The LAST done entry rather than every done entry, because steps execute in
+# order and each commits atop the previous: if the deepest done commit is an
+# ancestor of the tip then every earlier one is too. Two git calls per lane,
+# which matters for a pool walked by a timer. Because `prerequisites` precedes
+# `steps` in the emitted document, plain document order already yields the
+# required traversal -- no separate array handling.
+#
+# awk, not jq/python3: this script declares no-jq/no-python3 as a design
+# property (see _record_scalar) because it runs from a systemd timer and the
+# disk-pressure paths and is forbidden from ever aborting. awk is already used
+# here for the df/du arithmetic, so this adds no dependency.
+#
+# A pending entry's commit is unquoted `null`, and the required quotes below
+# read that as empty -- the same property that makes _record_scalar report an
+# unassigned task_id as empty.
+_plan_anchor() {
+    local dir="$1"
+    local record text
+    record="$(_plan_record "$dir")"
+    [ -n "$record" ] || return 0
+    text="$(_record_text "$record")" || return 0
+    printf '%s' "$text" | awk '
+        {
+            rest = $0
+            id = ""; pending_status = ""; pending_id = ""
+            anchor_id = ""; anchor_commit = ""
+            while (match(rest, /"(id|status|commit)"[[:space:]]*:[[:space:]]*/)) {
+                key = substr(rest, RSTART, RLENGTH)
+                sub(/^"/, "", key)
+                sub(/".*/, "", key)
+                rest = substr(rest, RSTART + RLENGTH)
+                val = ""
+                if (substr(rest, 1, 1) == "\"") {
+                    v = substr(rest, 2)
+                    q = index(v, "\"")
+                    if (q > 0) { val = substr(v, 1, q - 1) }
+                }
+                if (key == "id") {
+                    id = val
+                    pending_status = ""
+                } else if (key == "status") {
+                    pending_status = val
+                    pending_id = id
+                } else if (key == "commit") {
+                    if (pending_status == "done" && val != "") {
+                        anchor_id = pending_id
+                        anchor_commit = val
+                    }
+                    pending_status = ""
+                }
+            }
+            if (anchor_commit != "") { printf "%s %s", anchor_id, anchor_commit }
+        }' 2>/dev/null || true
+    return 0
+}
+
+# _plan_sync <dir>  ->  OK | STRANDED | UNKNOWN | -
+# OK        the anchor is an ancestor of HEAD.
+# STRANDED  the anchor is NOT an ancestor -- the clobber signature.
+# -         nothing recorded yet: no readable plan, or no done entry with a
+#           commit. Kept strictly distinct from UNKNOWN (A3/A5's doctrine:
+#           "nothing recorded" is the common case, "could not evaluate" is the
+#           signal).
+#
+# Resolved against HEAD rather than refs/heads/task/N: HEAD is what a clobbered
+# symbolic ref resolves THROUGH, so this reproduces the incident exactly, and
+# it keeps the column meaningful on a detached lane where no task/N ref
+# applies. Mirrors _recoverable's own use of HEAD.
+_plan_sync() {
+    local dir="$1"
+    local anchor sha
+    anchor="$(_plan_anchor "$dir")"
+    [ -n "$anchor" ] || { printf '%s' '-'; return 0; }
+    sha="${anchor##* }"
+    if git -C "$dir" merge-base --is-ancestor "$sha" HEAD 2>/dev/null; then
+        printf 'OK'
+    else
+        printf 'STRANDED'
+    fi
+    return 0
+}
+
 # ── helper: name/path matches a glob pattern ──────────────────────────────────
 # _matches_glob <value> <comma-separated-globs>
 # Lifted verbatim from warm-lane-gc.sh's identically-named helper.
@@ -944,6 +1071,9 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
 
         recoverable="$(_recoverable "$entry" "$raw_branch")"
         dirty="$(_dirty_state "$entry")"
+        # Ref integrity, orthogonal to occupancy and to `recoverable`: does the
+        # lane's HEAD still descend from the last commit its plan records?
+        plan_sync="$(_plan_sync "$entry")"
         divergent_bytes="$(_divergent_bytes "$entry")"
         divergent_gib=$(( divergent_bytes / 1073741824 ))
         age_min="$(_age_min "$entry")"
@@ -974,7 +1104,9 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
             warn "lane=$name: backing-task status unknown -- cannot confirm LEAKED (would classify LEAKED if status resolved non-terminal); reported PRESERVED-OK. See HEADROOM leak_unknown."
         fi
 
-        TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} live=${live} assigned=${assigned_state} pin=${pin} branch=${branch} status=${status} recoverable=${recoverable} dirty=${dirty} divergent_gib=${divergent_gib} age_min=${age_min} classification=${classification}
+        # plan_sync is APPENDED after classification, never interposed, so a
+        # consumer matching the existing field order keeps working.
+        TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} live=${live} assigned=${assigned_state} pin=${pin} branch=${branch} status=${status} recoverable=${recoverable} dirty=${dirty} divergent_gib=${divergent_gib} age_min=${age_min} classification=${classification} plan_sync=${plan_sync}
 "
         JSON_LANE_OBJS+=("{\"lane\":\"$(_json_escape "$name")\",\"role\":\"${role}\",\"live\":\"${live}\",\"assigned\":\"${assigned_state}\",\"pin\":\"$(_json_escape "$pin")\",\"branch\":\"$(_json_escape "$branch")\",\"status\":\"${status}\",\"recoverable\":\"${recoverable}\",\"dirty\":\"${dirty}\",\"divergent_gib\":${divergent_gib},\"age_min\":${age_min},\"classification\":\"${classification}\"}")
     done
