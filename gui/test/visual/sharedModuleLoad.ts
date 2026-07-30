@@ -19,8 +19,16 @@
  * regression back to the narrow reading cannot happen.
  *
  * The predicate below is PURE — no I/O, no vitest — which is what lets those
- * forms be tested from string literals with no on-disk fixture.
+ * forms be tested from string literals with no on-disk fixture. Importing
+ * `expect` in a non-`.test.ts` helper is a deliberate, isolated divergence from
+ * this directory's pure-module convention (assertions.ts, diff.ts, paths.ts,
+ * rpc.ts): it is confined to the thin `expectBareNodeLoadable` wrapper, and the
+ * regex logic itself stays vitest-free and unit-testable.
  */
+import { expect } from "vitest";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 /**
  * Every way `source` would fail to load under a bare `node <driver>.mjs`.
@@ -34,4 +42,34 @@ export function findBareNodeLoadViolations(source: string): string[] {
   if (/["']node:/.test(source)) violations.push("references a `node:` builtin");
   if (/require\s*\(/.test(source)) violations.push("uses CommonJS `require(`");
   return violations;
+}
+
+/**
+ * The directory holding the shared `.mjs` modules and the `smoke_*.mjs` drivers.
+ *
+ * `import.meta.url` resolves to this file's own source path under vite's
+ * transform — the same idiom both retired copies used, and this file sits in the
+ * same directory, so the resolved path is unchanged.
+ */
+export const VISUAL_DIR = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * The SHARED library modules only — the ones loaded by BOTH consumer families.
+ *
+ * `smoke_*.mjs` drivers are excluded on purpose: they are node-only entry points
+ * that legitimately import `node:path` / `node:url`.
+ */
+export const SHARED_ESM_MODULES = [
+  "rpcEnvelope.mjs",
+  "meshCountParity.mjs",
+  "smokeDriverGuards.mjs",
+];
+
+/** Assert that the named module in {@link VISUAL_DIR} stays bare-`node` loadable. */
+export function expectBareNodeLoadable(name: string): void {
+  const source = fs.readFileSync(path.join(VISUAL_DIR, name), "utf8");
+  expect(
+    findBareNodeLoadViolations(source),
+    `${name} must stay loadable by bare \`node\``,
+  ).toEqual([]);
 }
