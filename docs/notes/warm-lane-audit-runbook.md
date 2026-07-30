@@ -25,6 +25,14 @@ The three questions, and why they are three:
 | Has the pool **reserved** this lane? | `assigned` | the orchestrator's own record at `<state-dir>/<lane>.json` |
 | Is it reserved but **nothing is running**? | `pin` (+ classification `PINNED`) | the derived relation `assigned == ASSIGNED ∧ live == IDLE` |
 
+A **fourth**, orthogonal question was added by task 5876 (esc-5866-8) — it is about *ref
+integrity*, not occupancy, so it is neither a fourth bucket nor a classification verdict:
+
+| Question | Column | Source of truth |
+|---|---|---|
+| Does the lane's ref still hold the work its **plan** says it committed? | `plan_sync` | `<lane>/.task/plan.json` step SHAs vs the lane's `HEAD` |
+| Is the lane on the **branch its plan names**? | `plan_task` | the plan's own `task_id` vs the branch-derived `task/NNNN` id |
+
 Until task 5363 the script had **one** column, `assigned=ASSIGNED|FREE`, sourced entirely from the
 flock probe. That is a category error: the probe measures *liveness*, and liveness was being
 reported under the name *assignment*. It produced two opposite misreads from the same root cause:
@@ -102,12 +110,36 @@ Raw record `state` → reported `assigned` column (raw values are dark-factory's
 | `divergent_gib` | integer | `du -sB1 <lane>/target`, floored to GiB; `0` if `target/` is absent or `du` fails (degrades with a stderr warning, never aborts). |
 | `age_min` | integer | Whole minutes since the worktree dir's mtime. |
 | `classification` | `LIVE` \| `PINNED` \| `QUARANTINED` \| `RECLAIMABLE` \| `LEAKED` \| `PRESERVED-OK` | See Classification below. |
+| `plan_sync` | `OK` \| `REWRITTEN` \| `STRANDED` \| `UNKNOWN` \| `-` | Ref integrity against the **anchor**: the plan-order-**last** `done` entry carrying a `commit`, scanned over `prerequisites` then `steps`. Resolved against **`HEAD`** (not `refs/heads/task/N`) — `HEAD` is what a clobbered symbolic ref resolves *through*, and it keeps the column meaningful on a detached lane. See the verdict table below. |
+| `plan_task` | `MATCH` \| `MISMATCH` \| `-` | Does the plan's top-level `task_id` equal the branch-derived `task/NNNN` id? `-` when there is no comparison to make: detached HEAD, a non-`task/` branch, a non-numeric id, or a plan carrying no `task_id`. A comparison with no left-hand side is **not** a mismatch. |
+
+### `plan_sync` verdicts
+
+The anchor is one entry, not every entry: steps execute in order and each commits atop the
+previous, so if the deepest `done` commit is reachable, every earlier one is too. Two git calls per
+lane, which matters for a pool walked by a timer.
+
+| Verdict | Meaning | What to do |
+|---|---|---|
+| `-` | Nothing recorded yet: no `.task/plan.json` (including the usual *dangling* symlink into `.task-meta/`), or no `done` entry carrying a commit. The common, uninteresting case — most residents. | Nothing. |
+| `OK` | The anchor **is** an ancestor of `HEAD`. | Nothing. |
+| `REWRITTEN` | The anchor is **not** an ancestor, but an **equivalent patch** (same patch id) **is** in `HEAD`'s history. A routine rebase — requeue, base refresh — which rewrites every recorded sha while preserving every patch. | Nothing. **Expected to dominate a healthy pool.** |
+| `STRANDED` | The anchor is not an ancestor **and no equivalent patch exists anywhere in `HEAD`'s history**. The recorded work is genuinely not on this branch. | **Investigate, then escalate.** Never auto-repair — see "Reading a STRANDED lane". |
+| `UNKNOWN` | Could not be evaluated. Causes, reported verbatim: `no-readable-record`, `unparseable-record`, `anchor-object-absent:<sha>`, `equivalence-undecidable:<sha>` (a root-commit anchor has no parent to diff against; a merge-commit anchor is skipped by the patch-id comparison). | Read the cause. A **mass spike** carrying one repeated shape is its own signal — e.g. `anchor-object-absent` across many lanes suggests an over-aggressive pool-wide `git gc`. |
+
+A non-ancestor anchor is **not, by itself, evidence of lost work** — the workflow rebases
+routinely, so non-ancestry is the *steady state* of a healthy pool. That is why the verdict is
+split, and why only `STRANDED` warns per lane while `REWRITTEN` is counted and otherwise silent.
+
+**Residual false positive, recorded honestly:** a rebase whose conflict was resolved with a
+*different* diff changes the patch id, and will read `STRANDED`. This is the reason `STRANDED` is
+an investigate-then-escalate signal and never an auto-repair trigger.
 
 **Trailing HEADROOM line** (table format: one summary line after all per-lane rows; JSON format:
 the `"headroom"` object):
 
 ```
-HEADROOM resident=N live=L pinned=P quarantined=Q free=F assigned=A state_unknown=S reclaimable=R leaked=K leak_unknown=U divergent_gib=D free_gib=G budget_gib=B
+HEADROOM resident=N live=L pinned=P quarantined=Q free=F assigned=A state_unknown=S reclaimable=R leaked=K leak_unknown=U divergent_gib=D free_gib=G budget_gib=B plan_stranded=X plan_unknown=Y plan_rewritten=Z plan_mismatch=M
 PINNED   total=P pending=X infra-hold=Y blocked=Z terminal=T other=O unknown=V
 ```
 
@@ -137,6 +169,10 @@ bucket and must never be added into the identity.
 | `divergent_gib` | Pool-wide divergent footprint, summed from raw bytes across all lanes and floored **once** at emission (sum-then-floor — never a sum of already-floored per-lane values, which would systematically undercount many small lanes). |
 | `free_gib` | Free space on `--mount`, via the stubbable `df` seam. Degrades to `0` (with a stderr warning) on a `df` failure or unparseable output — never aborts. |
 | `budget_gib` | `floor(free_gib / safety)` — a derived, recomputed quantity (P4/D8 — never a hardcoded lane-count or GB constant frozen into a test). |
+| `plan_stranded` | **Cross-cut**: lanes whose `plan_sync` is `STRANDED`. May overlap any bucket and must **never** be added into `resident = live + pinned + quarantined + free`. Each is warned by name on stderr. |
+| `plan_unknown` | **Cross-cut**: lanes whose `plan_sync` could not be evaluated (A6). Same prohibition. Warned by name, with the cause. |
+| `plan_rewritten` | **Cross-cut**: lanes whose anchor was rewritten by a rebase. Same prohibition. **Counter-only — never warned**: it is the expected steady state, and a per-lane line for each would bury the stranded lane under the pool's own background noise. Emitted so `plan_stranded` is readable *in proportion to it* rather than in a vacuum. |
+| `plan_mismatch` | **Cross-cut**: lanes whose `plan_task` is `MISMATCH`. Same prohibition. |
 
 **Trailing PINNED line** (table format: one line after HEADROOM; JSON format: a sibling
 `"pinned_by_status"` object carrying the six buckets — their total is `headroom.pinned`, so it is
@@ -188,6 +224,11 @@ be the report contradicting itself.
    and Invariant A3) — reported `PRESERVED-OK`, not silently dropped, and separately counted so
    "no leaks" stays distinguishable from "leaks could not be evaluated".
 
+`plan_sync` and `plan_task` are deliberately **not** classification verdicts. Ref integrity is
+orthogonal to occupancy: a stranded lane can be `LIVE`, `PINNED` or `RECLAIMABLE` at the same time.
+Folding `STRANDED` into the ranked verdict would either hide it beneath `LIVE` or corrupt the
+`resident = live + pinned + quarantined + free` partition this document calls normative.
+
 ## Invariants
 
 - **A1 — read-only.** Never mutates a lane (no reset/rm/reclaim). This binds **both** on-disk
@@ -216,6 +257,60 @@ be the report contradicting itself.
   the record's `task_id` come from a **single read** of the record, so the reported triple always
   describes one instant of one record — the orchestrator rewrites these on every acquire/release.
   See "Reading a PINNED-heavy pool" for the cause vocabulary and what each one means.
+
+- **A6 — fail-safe, read-only plan read.** A missing, unreadable or corrupt `<lane>/.task/plan.json`
+  (including the **dangling** absolute symlink into `<worktree_base>/.task-meta/<lane>/` that every
+  lane carries until its architect writes the plan), an anchor commit absent from the object DB, or
+  an anchor whose patch equivalence cannot be decided, all degrade that lane to
+  `plan_sync=UNKNOWN`. It never aborts, and — exactly as A1 binds the other two surfaces — never
+  creates the `.task/` dir or the record: no `>`-open, `touch` or `mkdir` anywhere on that path, and
+  every git call is a pure reader (`cat-file -e`, `merge-base --is-ancestor`, `cherry`). It
+  **never accuses a strand it cannot evidence**: an absent anchor object is `UNKNOWN`, never
+  `STRANDED`, and a non-ancestor anchor whose patch survives in `HEAD` is `REWRITTEN`, never
+  `STRANDED`. "Nothing recorded yet" stays the distinct `-` sentinel, so a fresh lane's all-pending
+  plan never inflates the unknown count. Verdict, cause, anchor and `task_id` all come from a
+  **single read**, so one row never describes two instants of a record the architect and the
+  implementer both rewrite mid-run. The script **never repairs** what it finds (A1; PRD §9.5
+  inv.12).
+
+## Reading a STRANDED lane
+
+`STRANDED` means: the plan records a `done` step at commit `<sha>`, that object still exists, it is
+**not** an ancestor of the lane's `HEAD`, and **no commit in `HEAD`'s history carries an equivalent
+patch**. The recorded work is not on the branch under any sha.
+
+**Worked example — esc-5866-8 / task 5876.** `refs/heads/task/5866` kept its *name* while its
+*tip* was clobbered to `task/5632`'s. Every commit that lane's plan recorded as done became
+unreachable from `HEAD` — dangling but still present in the object DB. No pre-existing column saw
+it: `live`/`assigned`/`pin` answer occupancy questions, and `recoverable` asks only whether `HEAD`
+is reachable from main, which a clobbered tip satisfies exactly as well as a healthy one.
+
+**Do NOT auto-repair the ref.** Recovery requires knowing *which dangling commits belong to which
+task*, and a wrong reflog-based repoint destroys the very evidence a root-cause depends on. Ref
+repair belongs to the lane lifecycle and to a human (A1; PRD §9.5 inv.12). The audit reports and
+stops, by design.
+
+Triage order:
+
+1. Read the warning — it names the lane, the anchor entry id, and the anchor commit.
+2. Check `plan_task` on the same row. `MISMATCH` points at a lane→branch **binding** failure (the
+   lane is on the wrong branch); `MATCH` with `plan_sync=STRANDED` is the observed **tip-clobber**
+   shape. They are separate signatures and route differently.
+3. Confirm the anchor is really unreachable and really patch-absent before concluding anything:
+   `git -C <lane> cat-file -e <sha>^{commit}`, `git -C <lane> merge-base --is-ancestor <sha> HEAD`,
+   `git -C <lane> cherry HEAD <sha> <sha>^` (a leading `+` = patch absent; a leading `-` = present
+   and the verdict would have been `REWRITTEN`).
+4. Rule out the residual false positive above (a conflict resolved with a different diff).
+5. Escalate with the raw observations. Do not move refs.
+
+### Relationship to `scripts/warm-lane-degenerate-ref-check.sh` (task 5006)
+
+Complementary, not redundant. That classifier's discriminant is
+`rev-list --count main..task/N == 0` **and** the tip does not cite `N` — it detects a ref parked on
+a **main ancestor**. A ref clobbered to a *different task's live tip* has count > 0 and classifies
+`live` there, so the existing classifier does **not** cover this shape. Conversely `plan_sync` does
+subsume the degenerate class whenever `plan.json` records a `done` step, since such a ref fails the
+ancestor test and carries no equivalent patch.
 
 ## Reading a PINNED-heavy pool
 
