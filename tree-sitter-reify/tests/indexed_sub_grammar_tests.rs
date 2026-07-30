@@ -13,8 +13,11 @@
 //! to the pre-existing and unrelated `test/corpus/imaginary_literal.txt`
 //! failure, task #5492), so a blanket corpus gate would false-fail. The
 //! CI-enforced grammar surface is `tree-sitter-reify/tests/*.rs` — i.e. this
-//! file. `test/corpus/indexed_sub_instantiation.txt` is developer
-//! documentation of the same CST shape, nothing more.
+//! file. `test/corpus/indexed_sub_instantiation.txt` documents the same CST
+//! shape in corpus form; rather than leaving that copy free to drift, this file
+//! `include_str!`s it and validates every case against the live parser in
+//! [`corpus_cases_match_the_live_parser`] — so the corpus is checked on every
+//! merge without depending on the `tree-sitter test` CLI at all.
 //!
 //! # TDD status of each test
 //!
@@ -285,4 +288,140 @@ fn indexer_clause_is_rejected_outside_the_instantiation_arm() {
         "bare count must be rejected",
         "structure S { sub legs[4] = Foo() }",
     );
+}
+
+// ── Corpus conformance: `test/corpus/indexed_sub_instantiation.txt` ──────────
+//
+// The corpus file states the same CST contract as this file, in
+// `tree-sitter test` S-expression form. `tree-sitter test` is not CI-invoked
+// (see the module header), so on its own that copy has nothing keeping it
+// honest: the next grammar tweak would be forced to update the Rust assertions
+// and would leave the corpus quietly wrong — worse than absent, because a
+// reader treats it as the CST reference. So instead of deleting or trimming it,
+// the test below reads the corpus file directly and validates every case
+// against the live parser. The corpus is therefore load-bearing without
+// depending on the `tree-sitter test` CLI being green.
+
+/// One `tree-sitter test` corpus case: name, source, expected S-expression.
+struct CorpusCase {
+    name: String,
+    source: String,
+    expected_sexp: String,
+}
+
+/// True when `line` is a corpus rule line — three or more repetitions of `c`
+/// and nothing else. `=` rules delimit a case header, `-` rules separate a
+/// case's source from its expected S-expression.
+fn is_rule_line(line: &str, c: char) -> bool {
+    let t = line.trim_end();
+    t.len() >= 3 && t.chars().all(|ch| ch == c)
+}
+
+/// True when a `=` header block starts at `i` (`===` / name / `===`).
+fn is_header_start(lines: &[&str], i: usize) -> bool {
+    is_rule_line(lines[i], '=') && i + 2 < lines.len() && is_rule_line(lines[i + 2], '=')
+}
+
+/// Parse the `tree-sitter test` corpus format into cases.
+///
+/// Deliberately minimal — it handles exactly the subset this corpus file uses
+/// (`===` header, source, `---` divider, expected sexp) and asserts loudly on
+/// anything malformed rather than skipping it, so a broken corpus file cannot
+/// silently reduce this test to a no-op. Leading `;` comment lines before the
+/// first header are ignored, as `tree-sitter test` itself ignores them.
+fn parse_corpus(text: &str) -> Vec<CorpusCase> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut cases = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if !is_header_start(&lines, i) {
+            i += 1;
+            continue;
+        }
+        let name = lines[i + 1].trim().to_string();
+        let mut j = i + 3;
+        let mut source = String::new();
+        while j < lines.len() && !is_rule_line(lines[j], '-') {
+            source.push_str(lines[j]);
+            source.push('\n');
+            j += 1;
+        }
+        assert!(
+            j < lines.len(),
+            "corpus case `{name}` has no `---` divider between source and \
+             expected S-expression"
+        );
+        j += 1; // consume the `---` divider
+        let mut expected_sexp = String::new();
+        while j < lines.len() && !is_header_start(&lines, j) {
+            expected_sexp.push_str(lines[j]);
+            expected_sexp.push('\n');
+            j += 1;
+        }
+        assert!(
+            !source.trim().is_empty(),
+            "corpus case `{name}` has an empty source block"
+        );
+        assert!(
+            !expected_sexp.trim().is_empty(),
+            "corpus case `{name}` has an empty expected S-expression block"
+        );
+        cases.push(CorpusCase {
+            name,
+            source,
+            expected_sexp,
+        });
+        i = j;
+    }
+    cases
+}
+
+/// Collapse all whitespace runs to single spaces so a multi-line corpus
+/// S-expression compares equal to `Node::to_sexp()`'s single-line form.
+fn normalize_sexp(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Every case in `test/corpus/indexed_sub_instantiation.txt` parses cleanly AND
+/// matches the expected S-expression the corpus file records.
+///
+/// This is what keeps the corpus from drifting: it is `include_str!`'d, so a
+/// grammar change that alters the indexed-sub CST fails HERE, in the CI-run
+/// surface, until the corpus expectations are updated too. `tree-sitter test`
+/// remains uninvoked by CI (and 218/219 on `main`, task #5492) — this test
+/// deliberately reimplements the corpus reader rather than depending on that CLI.
+///
+/// The case count is asserted so silently dropping a case is also a failure.
+#[test]
+fn corpus_cases_match_the_live_parser() {
+    const CORPUS: &str = include_str!("../test/corpus/indexed_sub_instantiation.txt");
+    let cases = parse_corpus(CORPUS);
+    assert_eq!(
+        cases.len(),
+        3,
+        "expected 3 corpus cases in test/corpus/indexed_sub_instantiation.txt \
+         (indexer+args+pose, indexer+bare ctor, bare instantiation unchanged), \
+         got {}: {:?}",
+        cases.len(),
+        cases.iter().map(|c| &c.name).collect::<Vec<_>>()
+    );
+
+    let mut parser = make_parser();
+    for case in &cases {
+        let label = format!("corpus case `{}`", case.name);
+        assert_parses_clean(&label, &case.source);
+        let tree = parser
+            .parse(case.source.as_bytes(), None)
+            .expect("tree-sitter parse failed for corpus case");
+        let actual = normalize_sexp(&tree.root_node().to_sexp());
+        let expected = normalize_sexp(&case.expected_sexp);
+        assert_eq!(
+            actual, expected,
+            "{label}: the corpus S-expression has drifted from the live parser.\n\
+             expected (from the corpus file):\n{expected}\n\
+             actual (from the grammar):\n{actual}\n\
+             Fix the corpus file — it is documentation OF the grammar, not a \
+             second source of truth."
+        );
+    }
 }

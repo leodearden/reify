@@ -1,9 +1,17 @@
-; NOTE: This corpus is developer documentation for the CST shape of the
-; indexer clause on the sub instantiation arm — `sub idlers[i in 0..4] = …`
-; (task α, docs/prds/v0_6/indexed-sub-instantiation.md §3.1). The expected
-; S-expressions below are NOT validated by CI (dark-factory-orchestrator.yaml does not run
-; `tree-sitter test`). The canonical CI regression signal is the Rust integration
-; test file tree-sitter-reify/tests/indexed_sub_grammar_tests.rs.
+; NOTE: This corpus documents the CST shape of the indexer clause on the sub
+; instantiation arm — `sub idlers[i in 0..4] = …` (task α,
+; docs/prds/v0_6/indexed-sub-instantiation.md §3.1).
+;
+; LOAD-BEARING: the expected S-expressions below ARE validated on every merge —
+; not by `tree-sitter test` (which dark-factory-orchestrator.yaml does not run),
+; but by `corpus_cases_match_the_live_parser` in
+; tree-sitter-reify/tests/indexed_sub_grammar_tests.rs, which include_str!s THIS
+; file, reparses each case with the live grammar and compares `to_sexp()` output.
+; So a grammar change that alters the indexed-sub CST fails there until these
+; expectations are updated too — this file cannot silently drift. That Rust file
+; remains the canonical CST contract; this one is documentation OF the grammar,
+; never a second source of truth. It also pins the case count (3), so dropping a
+; case below is itself a failure.
 ;
 ; Heads-up for future readers: `tree-sitter test` is 218/219 on main because of
 ; the pre-existing and unrelated test/corpus/imaginary_literal.txt failure
