@@ -8,7 +8,10 @@
 //! - `reify-audit --task <id> --pre-done`  P5 only; exit non-zero on detection.
 //! - `reify-audit --task <id>`             Spot-check, all three detectors.
 //! - `reify-audit --since <iso-date>`      Window sweep, all three detectors.
-//! - `--pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO|PDSSENTINEL|PDOCCOVER`  Restrict which detector(s) run; comma-separated for multi-detector union (e.g. `--pattern P1,P2,P5`).
+//! - `--pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO|PDSSENTINEL|PDIAG|PDOCCOVER`  Restrict which detector(s) run; comma-separated for multi-detector union (e.g. `--pattern P1,P2,P5`).
+//!   `PDIAG` is the INV-SF-6 codes-mandatory ratchet — opt-in only, and one of
+//!   the restricted detectors that move the exit code (see
+//!   `docs/notes/diagnostic-severity-policy.md`).
 //!
 //! ## Output
 //!
@@ -103,7 +106,8 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --task <id>              Spot-check a single task (all detectors)");
     let _ = writeln!(out, "  --pre-done               With --task: run P5 pre-done check only");
     let _ = writeln!(out, "  --since <iso-date>       Window sweep from ISO date (all detectors)");
-    let _ = writeln!(out, "  --pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO|PDSSENTINEL|PDOCCOVER Restrict to detector(s); comma-separated for union (e.g. --pattern P1,P2,P5)");
+    let _ = writeln!(out, "  --pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO|PDSSENTINEL|PDIAG|PDOCCOVER Restrict to detector(s); comma-separated for union (e.g. --pattern P1,P2,P5)");
+    let _ = writeln!(out, "                           PDIAG: INV-SF-6 codes-mandatory ratchet (opt-in; see docs/notes/diagnostic-severity-policy.md)");
     let _ = writeln!(out, "  --tasks-file <path>      JSON array of TaskMetadata (overrides live loader; for tests)");
     let _ = writeln!(out, "  --fused-memory-url <url> MCP endpoint (default: $FUSED_MEMORY_URL or http://localhost:8002/mcp)");
     let _ = writeln!(out, "  --runs-db <path>         SQLite runs.db path (default: data/orchestrator/runs.db)");
@@ -380,10 +384,10 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
                     if !matches!(
                         tok,
                         "P1" | "P2" | "P5" | "PDEAD" | "PUNTESTED" | "PLAYER" | "PTODO"
-                            | "PDSSENTINEL" | "PDOCCOVER"
+                            | "PDSSENTINEL" | "PDIAG" | "PDOCCOVER"
                     ) {
                         return Err(format!(
-                            "unknown --pattern value '{}'; expected P1, P2, P5, PDEAD, PUNTESTED, PLAYER, PTODO, PDSSENTINEL, or PDOCCOVER",
+                            "unknown --pattern value '{}'; expected P1, P2, P5, PDEAD, PUNTESTED, PLAYER, PTODO, PDSSENTINEL, PDIAG, or PDOCCOVER",
                             tok
                         ));
                     }
@@ -641,6 +645,28 @@ fn run_dssentinel(args: &Args) -> bool {
     args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "PDSSENTINEL"))
 }
 
+/// Opt-in dispatch predicate for PDIAG (task #5405): true only when `PDIAG` is
+/// in the comma-separated `--pattern` set.
+///
+/// `is_some_and`, mirroring PDEAD/PUNTESTED/PLAYER — deliberately NOT the
+/// `is_none_or` default-sweep shape P1/P2/P5/PTODO use. PTODO could safely
+/// join the default sweep because it is exit-neutral (Medium only); PDIAG is
+/// not. Its `Exceeded`/`NewFile` verdicts are High by design (that IS the hard
+/// gate), and the exit code is the High-severity count, so a PDIAG in the
+/// default sweep would make every bare `reify-audit` invocation — the /audit
+/// skill, `test_reify_audit_predone_wrapper.sh`, any consumer that omits
+/// `--pattern` — start exiting nonzero the moment this baseline drifted.
+/// That couples unrelated infra to this ratchet; `tests/infra/
+/// test_reify_audit_pdiag.sh` always passes the flag, so opt-in loses no
+/// coverage.
+///
+/// Structural lane like PTODO/PDSSENTINEL — `ls_files` enumeration plus
+/// working-tree reads, no jcodemunch and no task DB — hence deliberately
+/// absent from `needs_jcodemunch`.
+fn run_pdiag(args: &Args) -> bool {
+    args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PDIAG"))
+}
+
 /// Opt-in dispatch predicate for PDOCCOVER (task #5478): true only when
 /// `PDOCCOVER` is in the comma-separated `--pattern` set.
 ///
@@ -888,6 +914,12 @@ fn main() -> ExitCode {
         let run_dssentinel = run_dssentinel(&args);
         if run_dssentinel {
             all.extend(reify_audit::pdssentinel::check(&ctx));
+        }
+        // PDIAG codes-mandatory ratchet: same structural-lane posture again
+        // (ls_files + working-tree reads). Opt-in only — see `run_pdiag` for
+        // why this one may not join the default sweep.
+        if run_pdiag(&args) {
+            all.extend(reify_audit::pdiag::check(&ctx));
         }
         // PDOCCOVER structural lane: bidirectional registry↔chunk name drift.
         // Same working-tree-reads-only posture as PTODO and PDSSENTINEL, but
