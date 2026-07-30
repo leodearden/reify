@@ -16,9 +16,6 @@
  * with the branch it claims to pin deleted is not cover.
  */
 import { describe, it, expect } from "vitest";
-import * as fs from "node:fs";
-import * as path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { describeRpcFailure, openFileWithRetry } from "./smokeDriverGuards.mjs";
 import { isInBandError } from "./rpcEnvelope.mjs";
@@ -272,30 +269,5 @@ describe("describeRpcFailure — the diagnosis smoke_multi_pane_e2e.mjs was miss
   });
 });
 
-describe("the load constraint that makes the shared driver modules .mjs", () => {
-  const HERE = path.dirname(fileURLToPath(import.meta.url));
-
-  // The SHARED modules only. The `smoke_*.mjs` drivers are excluded on purpose:
-  // they are node-only entry points and legitimately import `node:path` /
-  // `node:url`. These three are the ones loaded by BOTH consumer families —
-  // vitest, through vite's browser-condition resolver, and the drivers, whose
-  // runners invoke `node <driver>.mjs` and never `tsx`.
-  const SHARED_ESM_MODULES = ["rpcEnvelope.mjs", "meshCountParity.mjs", "smokeDriverGuards.mjs"];
-
-  // TODO(#5859): hoist this into one shared helper and delete the narrower copy at
-  // rpcEnvelope.test.ts:394-403, which this broader table already subsumes.
-
-  it.each(SHARED_ESM_MODULES)("%s is plain ESM a bare-`node` driver can load", (name) => {
-    // A `node:` reference would resolve for the drivers and break under vitest —
-    // and vitest cannot catch that by merely importing the module, because this
-    // test file itself imports `node:fs` quite happily. A source-level check is
-    // the only way the constraint fails loudly instead of at the next live run.
-    //
-    // Matching on the QUOTE rather than on `from` covers every reference form:
-    // `import x from "node:fs"`, a side-effect `import "node:fs"`, the no-space
-    // `from"node:fs"`, and a dynamic `await import("node:fs")`.
-    const source = fs.readFileSync(path.join(HERE, name), "utf8");
-    expect(source).not.toMatch(/["']node:/);
-    expect(source).not.toMatch(/require\s*\(/);
-  });
-});
+// The bare-`node` load constraint on the shared .mjs modules is pinned once, in
+// ./sharedModuleLoad.test.ts.
