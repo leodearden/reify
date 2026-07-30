@@ -1397,6 +1397,29 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
         esac
         # The binding half, from the SAME read (PLAN_TASK_ID) and the
         # backing_id already resolved above -- neither is re-derived.
+        # Per-lane observability, in A3/A5's shape (`lane=<name>: <finding>.
+        # See HEADROOM <field>.`), so a count is never the only trace of a
+        # finding. Deliberately asymmetric:
+        #   STRANDED  warns -- work the plan records is off the branch.
+        #   UNKNOWN   warns, naming WHICH cause fired, so a mass spike carrying
+        #             one repeated shape (an over-aggressive pool-wide `git gc`)
+        #             stays distinguishable from a one-off corrupt record.
+        #   REWRITTEN is COUNTER-ONLY. It is the expected steady state of a
+        #             pool whose workflow rebases, and warning on it would bury
+        #             the stranded lane under its own background noise -- 36
+        #             per-run alarms about lanes that lost nothing, measured
+        #             (esc-5876-1). The counter carries it instead.
+        #   OK / `-`  say nothing.
+        case "$plan_sync" in
+            STRANDED)
+                warn "lane=$name: plan_sync=STRANDED -- HEAD does not descend from the last recorded done step (${PLAN_ANCHOR_ID:-<unknown-entry>} @ ${PLAN_ANCHOR_COMMIT}), and no equivalent patch is in HEAD's history, so that work is not on this branch. DO NOT auto-repair the ref: recovery requires knowing which dangling commits belong to which task, and a wrong reflog-based repoint destroys the evidence the root-cause depends on (task 5876 / esc-5866-8). Investigate and escalate. See HEADROOM plan_stranded." ;;
+            UNKNOWN)
+                # The wording avoids the token an operator greps for when
+                # triaging the OTHER verdict: this line reaches no verdict and
+                # implies none, so it must not surface in that search at all.
+                warn "lane=$name: plan_sync=UNKNOWN (${PLAN_SYNC_CAUSE:-unspecified-cause}) -- the plan record could not be evaluated; no verdict was reached and none is implied. See HEADROOM plan_unknown." ;;
+        esac
+
         plan_task="$(_plan_task "$backing_id")"
         [ "$plan_task" != "MISMATCH" ] || PLAN_MISMATCH_COUNT=$((PLAN_MISMATCH_COUNT + 1))
         divergent_bytes="$(_divergent_bytes "$entry")"
