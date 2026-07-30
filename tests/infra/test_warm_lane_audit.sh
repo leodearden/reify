@@ -2656,4 +2656,89 @@ assert "R13b: the HEADROOM line still carries budget_gib= (existing consumers ke
 assert "R13c: the new counters come AFTER budget_gib on the HEADROOM line" \
     bash -c 'printf "%s\n" "$1" | grep -qE "^HEADROOM .*budget_gib=[0-9]+ .*plan_stranded="' _ "$OUT"
 
+# ── R14-R15 — `--format json` parity ─────────────────────────────────────────
+# Two emitters, one report. They drift silently unless something asserts they
+# agree, so R15 runs BOTH over one fixture and compares verdicts rather than
+# checking each against its own expectation.
+#
+# Validated by PARSING the document (python3 heredoc + native assert), the
+# established pattern for JSON-mode cases here (Blocks H/I/L/N/O): a grep would
+# pass just as happily against a malformed emission.
+R14_PY="$(mktemp /tmp/test-warm-lane-audit-r14-XXXXXX.py)"
+_TMPDIRS+=("$R14_PY")
+cat > "$R14_PY" << 'PYEOF'
+import json, sys
+
+data = json.load(sys.stdin)
+lanes = {obj["lane"]: obj for obj in data["lanes"]}
+headroom = data["headroom"]
+
+expected = {
+    "_lane-c-ok": "OK",
+    "_lane-c-rewritten": "REWRITTEN",
+    "_lane-c-stranded": "STRANDED",
+    "_lane-c-unknown": "UNKNOWN",
+    "_lane-c-none": "-",
+}
+for lane, verdict in expected.items():
+    assert lane in lanes, (lane, sorted(lanes))
+    assert "plan_sync" in lanes[lane], lanes[lane]
+    assert lanes[lane]["plan_sync"] == verdict, (lane, lanes[lane]["plan_sync"], verdict)
+
+# The counters are the same cross-cuts, and they must agree with the per-lane
+# objects in the SAME document -- not merely be present.
+for key in ("plan_stranded", "plan_unknown", "plan_rewritten"):
+    assert key in headroom, sorted(headroom)
+for key, verdict in (("plan_stranded", "STRANDED"),
+                     ("plan_unknown", "UNKNOWN"),
+                     ("plan_rewritten", "REWRITTEN")):
+    rows = sum(1 for obj in data["lanes"] if obj["plan_sync"] == verdict)
+    assert headroom[key] == rows, (key, headroom[key], rows)
+    assert headroom[key] == 1, (key, headroom[key])
+
+# The occupancy partition is untouched by the cross-cuts, in JSON exactly as in
+# the table (R12's assertion, on the other emitter).
+assert headroom["resident"] == (headroom["live"] + headroom["pinned"]
+                                + headroom["quarantined"] + headroom["free"]), headroom
+PYEOF
+
+run_helper --mount "$R11_MOUNT" --format json
+assert "R14-0: exit 0 (json format)" test "$RC" -eq 0
+assert "R14: each lane object carries plan_sync and the headroom object carries all three plan_* counters, agreeing with the rows" \
+    bash -c 'printf "%s" "$1" | python3 "$2"' _ "$OUT" "$R14_PY"
+
+# R15 — table/JSON agreement over ONE fixture, so the two emitters cannot drift
+# apart without failing here.
+R15_TABLE_OUT=""
+run_helper --mount "$R11_MOUNT"
+R15_TABLE_OUT="$OUT"
+run_helper --mount "$R11_MOUNT" --format json
+assert "R15a: the STRANDED lane's verdict is identical in the table and in JSON" \
+    bash -c '
+        t="$(printf "%s\n" "$1" | sed -n -E "s/^lane=_lane-c-stranded .*plan_sync=([A-Z-]+).*/\1/p")"
+        j="$(printf "%s" "$2" | python3 -c "
+import json,sys
+lanes={o[\"lane\"]: o for o in json.load(sys.stdin)[\"lanes\"]}
+print(lanes[\"_lane-c-stranded\"][\"plan_sync\"])")"
+        [ -n "$t" ] && [ "$t" = "STRANDED" ] && [ "$t" = "$j" ]' _ "$R15_TABLE_OUT" "$OUT"
+assert "R15b: the REWRITTEN lane's verdict is identical in the table and in JSON" \
+    bash -c '
+        t="$(printf "%s\n" "$1" | sed -n -E "s/^lane=_lane-c-rewritten .*plan_sync=([A-Z-]+).*/\1/p")"
+        j="$(printf "%s" "$2" | python3 -c "
+import json,sys
+lanes={o[\"lane\"]: o for o in json.load(sys.stdin)[\"lanes\"]}
+print(lanes[\"_lane-c-rewritten\"][\"plan_sync\"])")"
+        [ -n "$t" ] && [ "$t" = "REWRITTEN" ] && [ "$t" = "$j" ]' _ "$R15_TABLE_OUT" "$OUT"
+assert "R15c: the three counters are identical in the table and in JSON" \
+    bash -c '
+        j="$(printf "%s" "$2" | python3 -c "
+import json,sys
+h=json.load(sys.stdin)[\"headroom\"]
+print(h[\"plan_stranded\"], h[\"plan_unknown\"], h[\"plan_rewritten\"])")"
+        t="$3 $4 $5"
+        [ -n "$3" ] && [ "$t" = "$j" ]' _ "$R15_TABLE_OUT" "$OUT" \
+        "$(_headroom_field "$R15_TABLE_OUT" plan_stranded)" \
+        "$(_headroom_field "$R15_TABLE_OUT" plan_unknown)" \
+        "$(_headroom_field "$R15_TABLE_OUT" plan_rewritten)"
+
 test_summary
