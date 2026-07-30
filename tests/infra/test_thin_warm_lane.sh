@@ -89,6 +89,58 @@ run_helper() {
     RC=$rc
 }
 
+# ── discard-FAILURE fixture (shared shape with tests/infra/test_warm_lane_gc.sh) ──
+# _discard_fail_seed_stub_body — printed to stdout; redirect into a --seed-script
+# stub file. Models a POST-CLONE fail-closed seed abort whose caller-side discard
+# of <lane>/target then FAILS:
+#   1. recreates "$2/target" carrying a HAZARD marker — the uncertified CoW clone
+#      the seed aborted ONTO (seed-warm-lane.sh deliberately does not rm it; PRD
+#      docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13);
+#   2. `chmod a-w "$2"` so the caller's `rm -rf "$2/target"` cannot unlink the
+#      `target` entry from the lane dir and exits non-zero (EACCES);
+#   3. exits 1 — the non-zero exit IS the caller's discard predicate (for the real
+#      primitive, which runs under `set -euo pipefail` and writes stdout exactly
+#      once at its terminal echo, non-zero exit and empty stdout always arrive
+#      together).
+# The chmod deliberately lands only AFTER the free-first `rm -rf <lane>/target`
+# this script performs BEFORE the re-seed (T2 ordering), so that first rm still
+# succeeds and only the post-abort discard fails — which a PATH-level `rm` stub
+# (tests/infra/test_warm_lane_gc.sh's K4 technique) could not achieve.
+#
+# MEASURED technique (2026-07-31, this suite's /tmp): with the lane dir
+# non-writable, `rm -rf <lane>/target` still removes target/'s CONTENTS but cannot
+# unlink the `target` entry itself — it exits 1 and prints "Permission denied".
+# Assert on the PRESENCE of <lane>/target, therefore, not on the HAZARD marker
+# inside it.
+#
+# Every arm built on this stub MUST:
+#   - be gated on `[ "$(id -u)" -ne 0 ]` — uid 0 bypasses DAC write checks, so the
+#     fixture silently inverts under root (same skip idiom as
+#     tests/infra/test_warm_lane_audit.sh's mode-000 record arm); and
+#   - call `_restore_discard_fail_lane <lane_dir>` immediately after the run and
+#     BEFORE any assertion can abort the suite — `trap cleanup EXIT`'s `rm -rf`
+#     over _TMPDIRS cannot remove a non-writable lane dir either.
+_discard_fail_seed_stub_body() {
+    cat << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+# POST-CLONE fail-closed abort: the uncertified CoW clone is left in place, and
+# the lane dir is made non-writable so the caller's discard of it fails.
+mkdir -p "$LANE_DIR/target"
+touch "$LANE_DIR/target/HAZARD"
+chmod a-w "$LANE_DIR"
+exit 1
+STUB_EOF
+}
+
+# _restore_discard_fail_lane <lane_dir> — undo the stub's `chmod a-w` so the
+# suite's EXIT-trap cleanup can remove the fixture. Idempotent; safe to call on a
+# lane the stub never touched.
+_restore_discard_fail_lane() {
+    chmod u+w "$1" 2>/dev/null || true
+}
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block A — CLI/usage contract + lane_dir existence guard
 # ──────────────────────────────────────────────────────────────────────────────

@@ -185,6 +185,65 @@ exit 0
 STUB_EOF
 }
 
+# ── discard-FAILURE fixture (shared shape with tests/infra/test_thin_warm_lane.sh) ──
+# _discard_fail_seed_stub_body — printed to stdout; redirect into a --seed-script
+# stub file. Models a POST-CLONE fail-closed seed abort whose caller-side discard
+# of <lane>/target then FAILS:
+#   1. recreates "$2/target" carrying a HAZARD marker — the uncertified CoW clone
+#      the seed aborted ONTO (seed-warm-lane.sh deliberately does not rm it; PRD
+#      docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13);
+#   2. `chmod a-w "$2"` so the caller's `rm -rf "$2/target"` cannot unlink the
+#      `target` entry from the lane dir and exits non-zero (EACCES);
+#   3. exits 1 — the non-zero exit IS the callers' discard predicate (for the real
+#      primitive, which runs under `set -euo pipefail` and writes stdout exactly
+#      once at its terminal echo, non-zero exit and empty stdout always arrive
+#      together).
+# With $HAZARD_LANE set, only the lane of that basename aborts; every other lane
+# gets the ordinary successful α reseed, so one stub serves a mixed fixture (the
+# sweep-continues control lane).
+#
+# MEASURED technique (2026-07-31, this suite's /tmp): with the lane dir
+# non-writable, `rm -rf <lane>/target` still removes target/'s CONTENTS but cannot
+# unlink the `target` entry itself — it exits 1 and prints "Permission denied".
+# Assert on the PRESENCE of <lane>/target, therefore, not on the HAZARD marker
+# inside it. (Block K4 stubs `rm` via PATH instead; that technique is root-safe but
+# unconditional, so it cannot fail one lane's discard while letting a control
+# lane's sweep proceed — nor, in thin-warm-lane.sh, spare the free-first rm that
+# runs BEFORE the re-seed.)
+#
+# Every arm built on this stub MUST:
+#   - be gated on `[ "$(id -u)" -ne 0 ]` — uid 0 bypasses DAC write checks, so the
+#     fixture silently inverts under root (same skip idiom as
+#     tests/infra/test_warm_lane_audit.sh's mode-000 record arm); and
+#   - call `_restore_discard_fail_lane <lane_dir>` immediately after the run and
+#     BEFORE any assertion can abort the suite — `trap cleanup EXIT`'s `rm -rf`
+#     over _TMPDIRS cannot remove a non-writable lane dir either.
+_discard_fail_seed_stub_body() {
+    cat << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+if [ -n "${HAZARD_LANE:-}" ] && [ "$(basename "$LANE_DIR")" != "$HAZARD_LANE" ]; then
+    # Control lane: ordinary successful α reseed (thins the divergent marker).
+    rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
+    exit 0
+fi
+# POST-CLONE fail-closed abort: the uncertified CoW clone is left in place, and
+# the lane dir is made non-writable so the caller's discard of it fails.
+mkdir -p "$LANE_DIR/target"
+touch "$LANE_DIR/target/HAZARD"
+chmod a-w "$LANE_DIR"
+exit 1
+STUB_EOF
+}
+
+# _restore_discard_fail_lane <lane_dir> — undo the stub's `chmod a-w` so the
+# suite's EXIT-trap cleanup can remove the fixture. Idempotent; safe to call on a
+# lane the stub never touched.
+_restore_discard_fail_lane() {
+    chmod u+w "$1" 2>/dev/null || true
+}
+
 # _wait_for_reader_lock <ready-marker> <deadline-seconds>
 # Causal ordering (technique R, docs/prds/infra-test-wallclock-deflake.md,
 # task #4847): polls for the READY marker file in 0.05s ticks, returning 0
