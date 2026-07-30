@@ -643,6 +643,9 @@ _b11_concurrent_clone_during_flip() {
 #   _B13_TREAT_FRESH   — fresh compiler-artifact count for the treatment build
 #   _B13_CTRL_WALL_MS  — build wall-time for the control (ms)
 #   _B13_TREAT_WALL_MS — build wall-time for the treatment (ms)
+#   _B13_SEED_RC       — exit code of the treatment seed-warm-lane.sh invocation
+#   _B13_SEED_OUT      — stdout of the treatment seed-warm-lane.sh invocation
+#                        (the caller-obligation contract: non-empty == warm-safe)
 _b13_reseed_vs_resetinplace() {
     local ws_root="$1"
     local _b13_base_ws="$ws_root/base_ws"
@@ -727,20 +730,49 @@ _b13_reseed_vs_resetinplace() {
     # Remove the stale lane/target first so seed's clobber guard passes.
     echo "B13: treatment — re-seed from at-head base..." >&2
     rm -rf "$_b13_stale_lane/target" 2>/dev/null || true
-    RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
-        bash "$SEED_SCRIPT" "$_b13_gen" "$_b13_stale_lane" \
-            --fresh-checkout \
-            --touch "$_b13_stale_lane/warm_leaf/src/lib.rs" >/dev/null
-    local _b13_treat_t0
-    _b13_treat_t0="$(date +%s%3N)"
-    _B13_TREAT_FRESH="$(
-        CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
-            cargo build --manifest-path "$_b13_stale_lane/Cargo.toml" \
-                --message-format=json 2>/dev/null \
-        | grep '"reason":"compiler-artifact"' \
-        | grep -c '"fresh":true' || true
-    )"
-    _B13_TREAT_WALL_MS=$(( $(date +%s%3N) - _b13_treat_t0 ))
+    # rc + stdout are captured explicitly (rather than a bare call) because
+    # seed-warm-lane.sh's CALLER OBLIGATION (scripts/seed-warm-lane.sh:63-79)
+    # makes non-empty stdout the ONLY warm-safe signal: the seed's fail-closed
+    # guards are BY DESIGN and this repair does not change them — the caller,
+    # not the seed, owns deciding what happens on a refusal. `|| _b13_seed_rc=$?`
+    # makes the assignment errexit-exempt so a fail-closed abort (e.g. exit 128
+    # from git diff on a foreign base commit) is observable instead of killing
+    # the whole suite. Deliberately NOT redirecting stderr: seed's `err`
+    # diagnostics on a fail-closed abort are the diagnostic payload and must
+    # stay visible in the run log.
+    local _b13_seed_rc=0
+    local _b13_seed_out=""
+    _b13_seed_out="$(
+        RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
+            bash "$SEED_SCRIPT" "$_b13_gen" "$_b13_stale_lane" \
+                --fresh-checkout \
+                --touch "$_b13_stale_lane/warm_leaf/src/lib.rs"
+    )" || _b13_seed_rc=$?
+    _B13_SEED_RC="$_b13_seed_rc"
+    _B13_SEED_OUT="$_b13_seed_out"
+
+    # Honour the caller obligation: an empty stdout (or non-zero rc) means the
+    # seed refused to certify the lane warm-safe, and it aborted ONTO the
+    # hazardous state (CoW clone already in place, sources already bulk-stamped
+    # to 2020-01-01). Building here would inherit exactly the stale-artifact
+    # false green the guard fired to prevent, so skip the build entirely and
+    # record a sentinel so the warmth comparison fails loudly too.
+    if [ "$_b13_seed_rc" -eq 0 ] && [ -n "$_b13_seed_out" ]; then
+        local _b13_treat_t0
+        _b13_treat_t0="$(date +%s%3N)"
+        _B13_TREAT_FRESH="$(
+            CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
+                cargo build --manifest-path "$_b13_stale_lane/Cargo.toml" \
+                    --message-format=json 2>/dev/null \
+            | grep '"reason":"compiler-artifact"' \
+            | grep -c '"fresh":true' || true
+        )"
+        _B13_TREAT_WALL_MS=$(( $(date +%s%3N) - _b13_treat_t0 ))
+    else
+        echo "B13: treatment seed REFUSED to certify the lane (rc=$_b13_seed_rc, stdout=${_b13_seed_out:-<empty>}) — skipping the treatment build rather than measuring a half-seeded lane (caller obligation, scripts/seed-warm-lane.sh:63-79)" >&2
+        _B13_TREAT_FRESH=-1
+        _B13_TREAT_WALL_MS=-1
+    fi
 
     echo "B13: ctrl fresh=${_B13_CTRL_FRESH} wall=${_B13_CTRL_WALL_MS}ms  treat fresh=${_B13_TREAT_FRESH} wall=${_B13_TREAT_WALL_MS}ms" >&2
 }
@@ -2267,6 +2299,14 @@ _TMPDIRS+=("$_B13_WS_ROOT")
 # Call the helper (undefined until step-10 → exits 127 under set -euo pipefail
 # on a substrate host → RED; SKIPs gracefully off-substrate via the gate above).
 _b13_reseed_vs_resetinplace "$_B13_WS_ROOT"
+
+# ── (contract) Treatment honoured seed-warm-lane.sh's caller obligation ───────
+# Non-empty stdout (with exit 0) is the ONLY signal the seed considers the lane
+# warm-safe (scripts/seed-warm-lane.sh:63-79). Asserting this explicitly means a
+# fail-closed abort in the treatment seed is now an isolated, diagnosable RED
+# line instead of the whole-suite abort it used to be.
+assert "B13: treatment re-seed honoured seed-warm-lane.sh's caller contract (exit 0 + non-empty stdout)" \
+    bash -c '[ "$1" -eq 0 ] && [ -n "$2" ]' _ "$_B13_SEED_RC" "$_B13_SEED_OUT"
 
 # ── (a) Treatment is warmer than control ──────────────────────────────────────
 # Re-seed from at-head base gives a higher fresh-unit count than reset-in-place.
