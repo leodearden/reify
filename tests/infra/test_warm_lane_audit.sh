@@ -2420,4 +2420,138 @@ assert "R10b: a 10-char abbreviated recorded sha resolves" \
 assert "R10c: a [COMMITTED <sha>] description prefix is not mistaken for the commit field" \
     bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-committed-prefix .*plan_sync=OK( |\$)"' _ "$OUT"
 
+# ── R30-R33 — REWRITTEN vs STRANDED: the patch-id discriminator ───────────────
+# Numbered R30+ deliberately, out of the way of R11-R21: these cases were added
+# by the esc-5876-1 resolution AFTER the block's later cases were specified, and
+# renumbering to close the gap would silently move case IDs already cited in the
+# plan and the escalation record.
+#
+# WHY THIS EXISTS. "The anchor is not an ancestor of HEAD" was the whole
+# STRANDED test until the first live-pool sweep measured 36 of 67 lanes flagged
+# and ZERO of them actually missing work. The lane workflow REBASES routinely
+# (requeue, base refresh), and a rebase rewrites every recorded sha while
+# preserving every patch -- so non-ancestry is the STEADY STATE of a healthy
+# pool, not evidence of loss. Shipping the un-narrowed verdict would have
+# emitted 36 do-not-repair alarms per timer run about lanes that lost nothing,
+# which is precisely the burial failure mode the `-`/UNKNOWN split exists to
+# prevent, one surface up.
+#
+# The discriminator is PATCH-ID equivalence, not subject-line reappearance: a
+# rebase preserves the patch id, a genuine clobber leaves no equivalent patch
+# anywhere in HEAD's history, and `git cherry` answers exactly that question.
+#   REWRITTEN  not an ancestor, but an equivalent patch IS in HEAD  (benign)
+#   STRANDED   not an ancestor and NO equivalent patch in HEAD      (the clobber)
+R30_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-r30-XXXXXX)"
+_TMPDIRS+=("$R30_MOUNT")
+
+# R30 — REWRITTEN: the routine rebase. The recorded anchor is committed on a
+# side branch and left dangling, and its PATCH is re-applied on the lane's own
+# branch under a new sha. To every test the pre-resolution code performed this
+# is byte-for-byte R2's shape -- object present, not an ancestor -- which is the
+# entire point: the two are separable only by patch id.
+make_lane "$R30_MOUNT/_lane-rewritten" "task/9015"
+_r_commit "$R30_MOUNT/_lane-rewritten" base-work
+git -C "$R30_MOUNT/_lane-rewritten" checkout -q -b _r30-side
+_r_commit "$R30_MOUNT/_lane-rewritten" rebased-work
+R30_ANCHOR="$(git -C "$R30_MOUNT/_lane-rewritten" rev-parse HEAD)"
+git -C "$R30_MOUNT/_lane-rewritten" checkout -q task/9015
+_r_commit "$R30_MOUNT/_lane-rewritten" base-moves-on
+git -C "$R30_MOUNT/_lane-rewritten" cherry-pick "$R30_ANCHOR" >/dev/null 2>&1
+git -C "$R30_MOUNT/_lane-rewritten" branch -q -D _r30-side
+make_plan "$R30_MOUNT/_lane-rewritten" 9015 \
+    "step:step-1:done:${R30_ANCHOR:0:10}" \
+    "step:step-2:pending:"
+# Fixture controls. Without these the case could pass while proving nothing:
+# (a) the anchor must still be present-but-unreachable, or this is R6's absent
+# -object shape; (b) the patch must genuinely have landed on the tip, or the
+# cherry-pick failed silently and the lane really IS stranded.
+assert "R30-fix-a: the rebased fixture's anchor is present but NOT an ancestor (R2's exact shape)" \
+    bash -c 'git -C "$1" cat-file -e "$2^{commit}" && ! git -C "$1" merge-base --is-ancestor "$2" HEAD' _ \
+    "$R30_MOUNT/_lane-rewritten" "$R30_ANCHOR"
+assert "R30-fix-b: the rebased fixture's patch really was re-applied on the tip (cherry-pick succeeded)" \
+    bash -c 'git -C "$1" cat-file -e "HEAD:rebased-work.txt"' _ "$R30_MOUNT/_lane-rewritten"
+
+# R32 — ROOT-COMMIT anchor. `<anchor>^` does not resolve, so the discriminator
+# cannot be evaluated at all: measured on git 2.43.0, `git cherry` exits 128
+# printing nothing. That is a failure to EVALUATE, and A6 says a failure to
+# evaluate is never dressed up as an accusation -- UNKNOWN, never STRANDED.
+make_lane "$R30_MOUNT/_lane-rootanchor" "task/9016"
+R32_ROOT="$(git -C "$R30_MOUNT/_lane-rootanchor" rev-parse HEAD)"
+git -C "$R30_MOUNT/_lane-rootanchor" checkout -q --orphan _r32-orphan
+git -C "$R30_MOUNT/_lane-rootanchor" rm -q -rf . >/dev/null 2>&1 || true
+printf 'unrelated\n' > "$R30_MOUNT/_lane-rootanchor/unrelated.txt"
+git -C "$R30_MOUNT/_lane-rootanchor" add unrelated.txt
+git -C "$R30_MOUNT/_lane-rootanchor" commit -q -m "unrelated root"
+R32_ORPHAN="$(git -C "$R30_MOUNT/_lane-rootanchor" rev-parse HEAD)"
+git -C "$R30_MOUNT/_lane-rootanchor" branch -q -f "task/9016" "$R32_ORPHAN"
+git -C "$R30_MOUNT/_lane-rootanchor" checkout -q "task/9016"
+git -C "$R30_MOUNT/_lane-rootanchor" branch -q -D _r32-orphan
+make_plan "$R30_MOUNT/_lane-rootanchor" 9016 "step:step-1:done:${R32_ROOT:0:10}"
+assert "R32-fix: the root-commit anchor is present, not an ancestor, and has no parent to diff against" \
+    bash -c '
+        git -C "$1" cat-file -e "$2^{commit}" || exit 1
+        ! git -C "$1" merge-base --is-ancestor "$2" HEAD || exit 1
+        ! git -C "$1" rev-parse -q --verify "$2^^{commit}" >/dev/null 2>&1 || exit 1
+        exit 0' _ "$R30_MOUNT/_lane-rootanchor" "$R32_ROOT"
+
+# R33 — MERGE-COMMIT anchor: the trap that makes a literal-leading-character
+# test insufficient, and the reason this case earns its keep the way R2a/R2b
+# did. `git cherry` SKIPS merges, but it does not fall silent: with a
+# single-commit side branch it prints exactly ONE line, with a literal leading
+# `+`, naming the SIDE commit -- not the anchor. A rule reading only that first
+# character would accuse a clobber that did not happen. The verdict is therefore
+# gated on the reported sha being the ANCHOR ITSELF.
+make_lane "$R30_MOUNT/_lane-mergeanchor" "task/9017"
+_r_commit "$R30_MOUNT/_lane-mergeanchor" merge-base-work
+R33_BASE="$(git -C "$R30_MOUNT/_lane-mergeanchor" rev-parse HEAD)"
+git -C "$R30_MOUNT/_lane-mergeanchor" checkout -q -b _r33-side
+_r_commit "$R30_MOUNT/_lane-mergeanchor" side-work
+git -C "$R30_MOUNT/_lane-mergeanchor" checkout -q "task/9017"
+git -C "$R30_MOUNT/_lane-mergeanchor" merge -q --no-ff _r33-side -m "merge side work" >/dev/null 2>&1
+R33_MERGE="$(git -C "$R30_MOUNT/_lane-mergeanchor" rev-parse HEAD)"
+git -C "$R30_MOUNT/_lane-mergeanchor" checkout -q --detach "$R33_BASE"
+git -C "$R30_MOUNT/_lane-mergeanchor" branch -q -f "task/9017" "$R33_BASE"
+git -C "$R30_MOUNT/_lane-mergeanchor" checkout -q "task/9017"
+git -C "$R30_MOUNT/_lane-mergeanchor" branch -q -D _r33-side
+make_plan "$R30_MOUNT/_lane-mergeanchor" 9017 "step:step-1:done:${R33_MERGE:0:10}"
+# Fixture control: prove the trap is live in THIS git, i.e. that the raw
+# discriminator really does emit a single leading-`+` line naming a sha that is
+# NOT the anchor. If a future git stopped doing that, this control fails loudly
+# rather than letting R33 pass for the wrong reason.
+assert "R33-fix: a merge anchor makes the raw discriminator print one leading-\`+\` line naming a NON-anchor sha" \
+    bash -c '
+        out="$(git -C "$1" cherry HEAD "$2" "$2^" 2>/dev/null || true)"
+        [ "$(printf "%s\n" "$out" | grep -c .)" -eq 1 ] || exit 1
+        case "$out" in "+ "*) ;; *) exit 1 ;; esac
+        case "${out#+ }" in "$2"*) exit 1 ;; esac
+        exit 0' _ "$R30_MOUNT/_lane-mergeanchor" "$R33_MERGE"
+
+run_helper --mount "$R30_MOUNT"
+
+assert "R30-0: exit 0" test "$RC" -eq 0
+assert "R30: a REBASED anchor (equivalent patch present in HEAD) reports plan_sync=REWRITTEN" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-rewritten .*plan_sync=REWRITTEN( |\$)"' _ "$OUT"
+assert "R30b: a REBASED anchor is NEVER reported STRANDED (the 36-false-alarm regression)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "lane=_lane-rewritten .*plan_sync=STRANDED"' _ "$OUT"
+assert "R32: a ROOT-COMMIT anchor reports plan_sync=UNKNOWN (the discriminator cannot be evaluated)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-rootanchor .*plan_sync=UNKNOWN( |\$)"' _ "$OUT"
+assert "R32b: a ROOT-COMMIT anchor is NEVER reported STRANDED" \
+    bash -c '! printf "%s\n" "$1" | grep -q "lane=_lane-rootanchor .*plan_sync=STRANDED"' _ "$OUT"
+assert "R33: a MERGE-COMMIT anchor reports plan_sync=UNKNOWN" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-mergeanchor .*plan_sync=UNKNOWN( |\$)"' _ "$OUT"
+assert "R33b: a MERGE-COMMIT anchor is NEVER reported STRANDED (a leading \`+\` naming a non-anchor sha is not evidence)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "lane=_lane-mergeanchor .*plan_sync=STRANDED"' _ "$OUT"
+
+# R31 — the STRANDED verdict is NARROWED, not renamed: R2's foreign-tip clobber
+# (the esc-5866-8 shape, where the patch is genuinely absent from the branch)
+# must still fire. Re-run against R2's own pool so the two verdicts are pinned
+# against the same fixture set they were introduced with.
+run_helper --mount "$R_MOUNT"
+assert "R31: the foreign-tip clobber is STILL STRANDED under the narrowed verdict" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-stranded .*plan_sync=STRANDED( |\$)"' _ "$OUT"
+assert "R31b: the foreign-tip clobber is NOT REWRITTEN (no equivalent patch exists in HEAD)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "lane=_lane-stranded .*plan_sync=REWRITTEN"' _ "$OUT"
+assert "R31c: an OK lane is unaffected by the discriminator (it never runs on the ancestor path)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-ok .*plan_sync=OK( |\$)"' _ "$OUT"
+
 test_summary
