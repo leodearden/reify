@@ -140,7 +140,11 @@ echo "inner: HOME=$HOME CARGO_HOME=${CARGO_HOME:-(unset)}"
 _ms="${CARGO_HOME:-$HOME/.cargo}/bin"
 echo "inner: naive mirror source $_ms -> $([ -d "$_ms" ] && echo EXISTS || echo MISSING)"
 
-nextest_absent_init
+if ! nextest_absent_init; then
+    echo "inner: FAILED — nextest_absent_init's post-construction gate hard-failed in the NESTED case"
+    echo "inner: reason: $(nextest_absent_reason)"
+    exit 1
+fi
 echo "inner: farm entries = $(find "$NX_FARM" -mindepth 1 | wc -l)"
 
 if ! nextest_absent_available; then
@@ -887,21 +891,81 @@ assert "10d: a timeout kill of a semaphore_wiring-shaped consumer removes the CA
 # that skips nextest_absent_available (test_verify_semaphore_wiring.sh,
 # test_verify_nextest_probe.sh) still get a precise diagnostic instead of a
 # confusing downstream plan-shape failure.
+#
+# HOST-SHAPE COLLISION (MEASURED, not hypothesised). `_nextest_absent_mirror_
+# source`'s third, fallback candidate is "the directory containing cargo-
+# nextest itself, when it resolves" (nextest_absent_lib.sh:143-146). On a host
+# with NEITHER `$CARGO_HOME/bin` NOR `$HOME/.cargo/bin`, that fallback resolves
+# to THIS ARM'S OWN manufactured second_dir — so the farm mirrors it minus
+# cargo-nextest, the PATH filter drops it, and init correctly (for the wrong
+# reason) returns 0. Reproduced directly under `env -i HOME=<throwaway>
+# PATH=<manufactured dir>:/usr/bin:/bin`: `_nextest_absent_mirror_source`
+# printed the manufactured dir and `nextest_absent_init` returned 0. That is
+# precisely the distro-packaged-cargo host this test's own motivating example
+# names. Latent on THIS host (/home/leo/.cargo/bin exists, so candidate 2 wins
+# before candidate 3 is ever reached) — which is when it is cheap to close,
+# exactly as task 5602 closed the spelling half of this same gap.
+#
+# Arm 11 below is therefore neutralised against the collision (a throwaway
+# CARGO_HOME with an empty bin/, forcing candidate 1 to win unconditionally)
+# and self-checks that the neutralisation held before drawing any conclusion
+# from init's return code — the same "sabotage, then verify the sabotage took
+# effect" shape Test 4b uses at :183-188. Arm 11b sidesteps the collision
+# instead of neutralising it: it manufactures TWO cargo-nextest-bearing
+# directories under a fully-controlled PATH with no real $CARGO_HOME/bin or
+# $HOME/.cargo/bin candidate at all, so the first genuinely (and correctly)
+# becomes the mirror source while the second is the actual task-5645 defect
+# shape — a cargo-nextest reachable via a directory that is NOT the mirror
+# source. This pins the real defect host-shape-independently, without relying
+# on arm 11's neutralisation trick or on any particular host already having a
+# real cargo bin directory.
 echo ""
 echo "--- Test 11: nextest_absent_init fails loudly when a second PATH directory exposes cargo-nextest ---"
 
 _t11_second_dir_reachable() {
-    local rc=0 second_dir saved_path
+    local rc=0 second_dir saved_path fake_cargo_home cargo_home_was_set="" saved_cargo_home=""
 
     second_dir="$(mktemp -d)" || { echo "mktemp failed"; return 1; }
     printf '#!/usr/bin/env bash\n# task-5645 test stub — presence marker only\nexit 0\n' \
         > "$second_dir/cargo-nextest"
     chmod +x "$second_dir/cargo-nextest"
 
+    # Neutralise the mirror-source collision documented above: pin
+    # _nextest_absent_mirror_source's FIRST candidate (CARGO_HOME/bin) so its
+    # THIRD, cargo-nextest-location fallback — the one that would swallow
+    # second_dir on a host with no real candidate — is never reached. The
+    # farm this produces is empty, which the assertions below do not care
+    # about; only the post-construction gate's verdict on second_dir matters.
+    #
+    # Save "was CARGO_HOME set at all" separately from its value: an
+    # originally-UNSET CARGO_HOME and an originally-EMPTY one are equivalent
+    # to _nextest_absent_mirror_source's `[ -n "${CARGO_HOME:-}" )]` check, but
+    # NOT equivalent to every later re-init in this file, which re-reads the
+    # ambient CARGO_HOME. Restoring "unset" as "empty" would leak a variable
+    # the host never had.
+    if [ "${CARGO_HOME+set}" = "set" ]; then
+        cargo_home_was_set="1"
+        saved_cargo_home="$CARGO_HOME"
+    fi
+    fake_cargo_home="$(mktemp -d)" || { echo "mktemp failed"; rm -rf "$second_dir"; return 1; }
+    mkdir -p "$fake_cargo_home/bin"
+    export CARGO_HOME="$fake_cargo_home"
+
     saved_path="$PATH"
     PATH="$second_dir:$PATH"
 
-    if nextest_absent_init; then
+    # Non-vacuity precondition: the neutralisation above must actually have
+    # worked, or the assert below would pass/fail for a reason unrelated to
+    # what it pins.
+    local mirror_src
+    mirror_src="$(_nextest_absent_mirror_source)"
+    if [ "$mirror_src" = "$second_dir" ]; then
+        echo "Sanity FAILED: the manufactured second directory ($second_dir) was"
+        echo "itself selected as the mirror source — the CARGO_HOME neutralisation"
+        echo "did not take effect (mirror_src=$mirror_src). This arm is testing"
+        echo "nothing until that is fixed."
+        rc=1
+    elif nextest_absent_init; then
         echo "nextest_absent_init returned 0 with cargo-nextest reachable via a"
         echo "second, non-mirror-source PATH directory ($second_dir) — exactly"
         echo "the degrade this test exists to catch."
@@ -923,7 +987,12 @@ _t11_second_dir_reachable() {
     fi
 
     PATH="$saved_path"
-    rm -rf "$second_dir"
+    rm -rf "$second_dir" "$fake_cargo_home"
+    if [ -n "$cargo_home_was_set" ]; then
+        export CARGO_HOME="$saved_cargo_home"
+    else
+        unset CARGO_HOME
+    fi
 
     # Restore a genuinely usable env for anything appended after this test —
     # nextest_absent_init tears its own previous (failed-gate) workdir down on
@@ -938,5 +1007,95 @@ _t11_second_dir_reachable() {
 
 assert "11: nextest_absent_init FAILS, naming the offending directory, when cargo-nextest is reachable via a second PATH directory that is not the mirror source" \
     _t11_second_dir_reachable
+
+# -- Test 11b: the real defect, host-shape-INDEPENDENT (no reliance on --------
+# -- $CARGO_HOME/bin or $HOME/.cargo/bin existing or not existing) -----------
+#
+# Arm 11 neutralises the single-manufactured-directory collision described
+# above by forcing a throwaway CARGO_HOME to win candidate 1. This arm instead
+# sidesteps the collision entirely by manufacturing TWO cargo-nextest-bearing
+# directories (dir_a, dir_b) under a fully-controlled PATH with no real
+# $CARGO_HOME/bin or $HOME/.cargo/bin candidate at all. `command -v
+# cargo-nextest` — and therefore _nextest_absent_mirror_source's fallback
+# candidate 3 — resolves dir_a (it is first on PATH), so dir_a legitimately
+# BECOMES the mirror source and is correctly hidden. dir_b is a genuinely
+# SEPARATE PATH directory, untouched by that resolution, and is exactly the
+# shape task 5645 names as the residual gap: "a cargo-nextest reachable
+# through any genuinely DIFFERENT PATH directory". MEASURED: without this
+# arm's PATH construction, dir_b remains reachable after farm construction;
+# the post-construction gate added by the base commit (0c13be9461) is what
+# must catch it. Runs the lib fresh inside a throwaway HOME via `bash -c`,
+# matching the isolation `_defines` already uses in Test 1.
+_t11b_second_cargo_nextest_dir() {
+    local rc=0 outer_dir throwaway_home dir_a dir_b out
+
+    outer_dir="$(mktemp -d)" || { echo "mktemp failed"; return 1; }
+    throwaway_home="$outer_dir/home"
+    dir_a="$outer_dir/dir_a"
+    dir_b="$outer_dir/dir_b"
+    mkdir -p "$throwaway_home" "$dir_a" "$dir_b"
+    printf '#!/usr/bin/env bash\n# task-5645 test stub — presence marker only\nexit 0\n' \
+        > "$dir_a/cargo-nextest"
+    chmod +x "$dir_a/cargo-nextest"
+    printf '#!/usr/bin/env bash\n# task-5645 test stub — presence marker only\nexit 0\n' \
+        > "$dir_b/cargo-nextest"
+    chmod +x "$dir_b/cargo-nextest"
+
+    out="$(env -i HOME="$throwaway_home" PATH="$dir_a:$dir_b:/usr/bin:/bin" bash -c '
+        set -uo pipefail
+        cd "$1" || exit 2
+        source tests/infra/nextest_absent_lib.sh
+        ms="$(_nextest_absent_mirror_source)"
+        echo "mirror_source: $ms"
+        if [ "$ms" = "$2" ]; then
+            echo "MIRROR-SOURCE-IS-DIR-A"
+        else
+            echo "MIRROR-SOURCE-UNEXPECTED (expected dir_a to win the command -v cargo-nextest fallback)"
+        fi
+        if nextest_absent_init; then
+            echo "INIT-RC=0"
+        else
+            echo "INIT-RC=1"
+            echo "reason: $(nextest_absent_reason)"
+        fi
+    ' _ "$REPO_ROOT" "$dir_a" 2>&1)"
+    echo "$out"
+
+    # Non-vacuity precondition: dir_a must genuinely have become the mirror
+    # source (the fallback this arm is exercising), or the "still reachable
+    # via dir_b" claim below is testing an unrelated PATH shape.
+    case "$out" in
+        *MIRROR-SOURCE-IS-DIR-A*) : ;;
+        *)
+            echo "dir_a did not become the mirror source on this host — this arm's"
+            echo "PATH construction did not exercise the intended fallback"
+            rc=1
+            ;;
+    esac
+
+    case "$out" in
+        *"INIT-RC=1"*) : ;;
+        *) echo "nextest_absent_init returned 0 with cargo-nextest reachable via dir_b"
+           echo "(a genuinely different PATH directory from the mirror source dir_a) —"
+           echo "exactly the degrade task 5645 exists to catch"
+           rc=1 ;;
+    esac
+    case "$out" in
+        *"cargo-nextest"*"REACHABLE"*) : ;;
+        *) echo "reason does not name the failing conjunct (cargo-nextest reachable)"
+           rc=1 ;;
+    esac
+    case "$out" in
+        *"$dir_b"*) : ;;
+        *) echo "reason does not cite the offending second directory ($dir_b)"
+           rc=1 ;;
+    esac
+
+    rm -rf "$outer_dir"
+    return "$rc"
+}
+
+assert "11b: nextest_absent_init still fails loudly on a SECOND cargo-nextest directory even when the FIRST legitimately becomes the mirror source (host-shape-independent: no reliance on \$CARGO_HOME/bin or \$HOME/.cargo/bin)" \
+    _t11b_second_cargo_nextest_dir
 
 test_summary
