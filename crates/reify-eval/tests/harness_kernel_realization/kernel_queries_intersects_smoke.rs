@@ -224,15 +224,14 @@ fn clearance_oracle_evals_expected_fouls_and_gap() {
     // (ClearanceOracle#constraint[0]) and `constraint gap > min_gap`
     // (ClearanceOracle#constraint[1]) — index order per the header's own
     // quoted diagnostics — are `Indeterminate` under `check()` alone but must
-    // resolve on the build() surface once the
-    // geometry-consumer builtins they depend on
-    // (`intersects`/`distance`) are realized (the task-4229 post-geometry
-    // re-check, `engine_build.rs` `BuildResult` construction). Asserting this
-    // — not just the raw `fouls`/`gap` cell values above — pins the "run it
-    // on a surface that can answer it" promise the fixture's header makes: a
-    // regression that stalls these constraints at `Indeterminate` on
-    // `build()` while the value cells still populate from the same kernel
-    // queries would otherwise leave this test green.
+    // resolve on the build() surface once the geometry-consumer builtins
+    // they depend on (`intersects`/`distance`) are realized (the task-4229
+    // post-geometry re-check, `engine_build.rs` `BuildResult` construction).
+    // Asserting this — not just the raw `fouls`/`gap` cell values above —
+    // pins the "run it on a surface that can answer it" promise the
+    // fixture's header makes: a regression that stalls these constraints at
+    // `Indeterminate` on `build()` while the value cells still populate from
+    // the same kernel queries would otherwise leave this test green.
     let find_constraint = |index: u32| {
         result
             .constraint_results
