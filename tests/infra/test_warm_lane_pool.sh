@@ -194,6 +194,24 @@ chmod +x "$PASSTHROUGH_STUB_DIR/cp"
 # Substrate helper functions
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Exercising the substrate-gated layer (Blocks B11/B13 etc.) on a pool host,
+# without sudo/losetup: warm-lane worktrees live ON the XFS pool volume, so
+# pointing TMPDIR at a scratch dir INSIDE the worktree makes rung 2's reflink
+# probe below succeed —
+#
+#   mkdir -p .b11-scratch && TMPDIR="$PWD/.b11-scratch" bash tests/infra/test_warm_lane_pool.sh
+#
+# — and Blocks B11/B13 actually run for real. Under DEFAULT env (no TMPDIR
+# override) both rung 1 and rung 2 fail on a pool host: /tmp is ext4 (no
+# reflink support, so rung 2's default ${TMPDIR:-/tmp} probe fails), and the
+# pool volume's ROOT is not writable from inside a lane's Landlock scope (so
+# an explicit REIFY_WARM_LANE_MOUNT pointed at the volume root would fail
+# rung 1 too). The whole substrate-gated layer then SKIPs ("SKIP: no XFS
+# reflink substrate") and the suite reports an all-green result that proves
+# NOTHING about B11/B13 — this is exactly the discoverability gap that let
+# the B11 fixture bug (reader releasing flock -s before the flip's Step-6 GC
+# ran) live on main undetected by the merge gate. Task #5866.
+
 # detect_substrate() — Substrate acquisition ladder; sets _GATE_DIR on success.
 #   Returns 0 when a reflink-capable directory is found, 1 otherwise.
 #   Ladder:
