@@ -584,8 +584,13 @@ factors*, not value cells — the compiler never diagnoses them (they aren't
 `param`/`let`, so neither gate 2 nor gates 3/4 ever see them), and δ₁/γ
 "fixing" them would silently break the unit system.
 
-**`crates/reify-compiler/stdlib/units.ri` — 21 `pub unit` declarations**,
-verified by `grep -nE "^\s*pub unit\s" stdlib/units.ri`:
+**`crates/reify-compiler/stdlib/units.ri` — 24 `pub unit` declarations**,
+re-runnable at any HEAD by:
+
+```bash
+grep -cE "^\s*pub unit\s" crates/reify-compiler/stdlib/units.ri   # -> 24
+grep -nE  "^\s*pub unit\s" crates/reify-compiler/stdlib/units.ri  # -> the 24 rows below
+```
 
 ```
 14  pub unit m    : Length              (base unit, no factor)
@@ -614,9 +619,24 @@ verified by `grep -nE "^\s*pub unit\s" stdlib/units.ri`:
 74  pub unit USD : Money                (base unit, no factor)
 ```
 
-That is 21 lines (6 base units with no `=` at all, 15 with an explicit bare
-factor), matching the task premise-verification's "`:14-19`, `:24-25`, and
-onward" characterization. **Confirmed present verbatim at HEAD.**
+That is **24** lines, decomposing as **6 base units with no `=` at all**
+(`m`:14, `rad`:23, `kg`:28, `s`:35, `K`:41, `USD`:74) **+ 15 with a single
+bare-literal factor + 3 with an expression/offset factor** (`deg`:24 =
+`3.141592653589793 / 180`, `degC`:42 = `1 offset 273.15`, `degF`:43 =
+`5 / 9 offset 255.3722222222222`) — 6 + 15 + 3 = 24. **Confirmed present
+verbatim at HEAD.**
+
+> **Correction (post-review).** An earlier revision of this section said "21
+> lines (6 base + 15 bare factor)", silently dropping the three
+> expression/offset forms — even though the verbatim listing directly above
+> it always showed all 24 rows. It was the prose total that was wrong,
+> contradicted by the section's own quoted evidence; the listing was never
+> short. All 24 are equally EXCLUDED-BY-DESIGN: the expression/offset forms
+> are no more a `param`/`let` than the bare-factor ones, so none of them
+> reaches gate 2 or gates 3/4 either. The premise-verification's
+> "`:14-19`, `:24-25`, and onward" characterization is also imprecise and is
+> superseded by the anchor list above: line 25 is blank, and `rad` is line
+> **23**, not part of a `:24-25` span.
 
 Plus two non-`pub`, example-local `unit` declarations, both confirmed
 verbatim:
@@ -626,7 +646,8 @@ verbatim:
 | `examples/m9_combined.ri:46` | `unit mil : Length = 0.0000254` |
 | `examples/integration_full_v01.ri:33` | `unit mil : Length = 0.0000254` |
 
-**None of these 23 sites are in the category A/B/C count above** — they use
+**None of these 26 sites** (24 stdlib `pub unit` + 2 example-local `unit`)
+**are in the category A/B/C count above** — they use
 the `unit` keyword, not `param`/`let`, so they never reach
 `general_leaf_param_family_is_validated`, `check_param_default_conformance`,
 or `entity.rs`'s `check_param_default_type`/`check_let_annotation_type` at
@@ -1819,13 +1840,13 @@ radius"). Source: §2.1 (categories A/B), §2.2.4 (category C c1/c2/c0), §2.3 (
 | Category-C, c2 — `let_annotation_type_mismatch_tests.rs:176-178,583` | 4 sites (`x=5,y=0.5,z=-5.0,d=5`) | Rust fixture | BARE | 4 | **DELIBERATE NEGATIVE TEST — invert** | **δ₁** |
 | Category-C, c0 (§2.2.4, 11 row-groups, reused from §10.2) | — | Rust fixture | BARE | 28 | BREAKS — migrate, lower-urgency (no currently-passing test forces it today) | **δ₁**, optional cleanup as part of landing |
 | Category-C, unclassified | — | Rust fixture | BARE | 2 | UNCLASSIFIED — provisionally BREAKS — migrate | **δ₁** must resolve before landing |
-| `crates/reify-compiler/stdlib/units.ri:14-19,24-25,28-74` (21 lines) | `pub unit cm : Length = 0.01`, … (§2.3's full 21-line table) | stdlib .ri | BARE-shaped | 21 | **EXCLUDED-BY-DESIGN (C2 unit decls)** — required bare conversion factors, never reach gate 3/4 (`unit`, not `param`/`let`) | **none — δ₁ must NEVER touch these** |
+| `crates/reify-compiler/stdlib/units.ri:14-19,23-24,28-31,35-37,41-43,48,53-54,65-66,74` (24 lines) | `pub unit cm : Length = 0.01`, … (§2.3's full 24-line table) | stdlib .ri | BARE-shaped | 24 | **EXCLUDED-BY-DESIGN (C2 unit decls)** — required bare conversion factors, never reach gate 3/4 (`unit`, not `param`/`let`) | **none — δ₁ must NEVER touch these** |
 | `examples/m9_combined.ri:46`, `examples/integration_full_v01.ri:33` | `unit mil : Length = 0.0000254` (×2) | examples/** | BARE-shaped | 2 | EXCLUDED-BY-DESIGN (C2 unit decls) | none — must never be touched |
 
 **Sub-totals:** BARE = 2 (category A) + 55 (category C: 15+10+28+2) = 57 → **BREAKS 44** (1 bearing
 + 15 c1 + 28 c0), **DELIBERATE-INVERT 10** (c2), **UNCLASSIFIED 2**, **EXCLUDED-parse-only 1**.
-EXCLUDED-BY-DESIGN = 23 (21 stdlib + 2 examples/**). **Total 80 rows/sites** across 9 row-groups.
-By bucket: examples/** 3 (1 BREAKS + 2 EXCLUDED-BY-DESIGN) · stdlib 21 (EXCLUDED-BY-DESIGN) ·
+EXCLUDED-BY-DESIGN = 26 (24 stdlib + 2 examples/**). **Total 83 rows/sites** across 9 row-groups.
+By bucket: examples/** 3 (1 BREAKS + 2 EXCLUDED-BY-DESIGN) · stdlib 24 (EXCLUDED-BY-DESIGN) ·
 other .ri 1 (EXCLUDED-parse-only) · Rust fixture 55.
 
 ### 10.4 Gate 5 — constraint-def Rule 4 (`type_compat.rs:1482-1488`; owner **δ₂**)
@@ -1915,9 +1936,9 @@ it does not have.
 
 | Consumer | Reads (table rows) | Reads (section counts) | Must NOT touch |
 |---|---|---|---|
-| **β** (corpus migration, lands before γ/δ₁) | §10.1's examples/**+other-.ri BREAKS rows (12 sites: 6 `tots`/`printer` + 6 `large_assembly`) · §10.2's `bearing_auto_seal.ri` row · §10.3's `bearing_auto_seal.ri` row (same fix, dual benefit) | §3.1's correct-twin hint (`examples/large_assembly.ri:51-53`) · §3.3's reach-vs-gate note (large_assembly has no cargo gate — verify via GUI harness/`reify check`, not `cargo test`) | §10.3/§2.3's 23 EXCLUDED-BY-DESIGN `unit` sites (β must not "fix" required conversion factors) · §10.1/§10.2's EXCLUDED file-local-shadow/parse-only rows (not real sites) |
+| **β** (corpus migration, lands before γ/δ₁) | §10.1's examples/**+other-.ri BREAKS rows (12 sites: 6 `tots`/`printer` + 6 `large_assembly`) · §10.2's `bearing_auto_seal.ri` row · §10.3's `bearing_auto_seal.ri` row (same fix, dual benefit) | §3.1's correct-twin hint (`examples/large_assembly.ri:51-53`) · §3.3's reach-vs-gate note (large_assembly has no cargo gate — verify via GUI harness/`reify check`, not `cargo test`) | §10.3/§2.3's 26 EXCLUDED-BY-DESIGN `unit` sites (β must not "fix" required conversion factors) · §10.1/§10.2's EXCLUDED file-local-shadow/parse-only rows (not real sites) |
 | **γ** (predicate promotion) | §10.1 + §10.2 in full (its own blast radius) · §10.5 (gate 6, 0 sites — safe to land without also touching fn-call sites) | §6 in full (the `is_numeric_placeholder_leaf` fence is a **landing prerequisite**, not optional — §6.2's live demonstration) · §7 (fn-call reachability is mechanical, re-check §7.2's census before citing "0" at a later HEAD) · examples_smoke's own panic prose (reuse item: "γ — not α — rewrites its panic prose") | §10.3 (gates 3+4 — a different, δ₁-owned mechanism γ never touches) · §10.4 (gate 5 — δ₂-owned) · §10.6's quantity-slot residual (out of scope by design, §12) |
-| **δ₁** (param/let default tolerance removal, gates 3+4) | §10.3 in full: c1 (15, migrates own test suite), c2 (10, inverts own pins), c0 (28, optional), unclassified (2, must resolve before landing) | §2.2.4's full per-site c1/c0 detail (this table's rollup rows point back to it) · §2.2.5's `param`/`let` split ruling | §10.3's 23 EXCLUDED-BY-DESIGN `unit` sites (explicit warning, §2.3: "δ₁ 'fixing' them would silently break the unit system") |
+| **δ₁** (param/let default tolerance removal, gates 3+4) | §10.3 in full: c1 (15, migrates own test suite), c2 (10, inverts own pins), c0 (28, optional), unclassified (2, must resolve before landing) | §2.2.4's full per-site c1/c0 detail (this table's rollup rows point back to it) · §2.2.5's `param`/`let` split ruling | §10.3's 26 EXCLUDED-BY-DESIGN `unit` sites (explicit warning, §2.3: "δ₁ 'fixing' them would silently break the unit system") |
 | **δ₂** (constraint-def numeric leniency removal, gate 5) | §10.4 in full (5 rows: 3 primitive pins + `constraint_def_compile_tests.rs` pin + `forall_statement_lower_tests.rs` BREAKS site) | §5.5 (ScalarParam admission into `is_numeric` is a δ₂ **prerequisite**, unresolved here — a future dimension-generic constraint arg needs its own fence) · §5.6 (Rule 2 precedes Rule 4 — check before attributing a silence to Rule 4) | §10.1-§10.3 (gates 1/2/3+4/6 — different mechanisms, different files) |
 | **§6.4 quantity-slot follow-up** (5627 candidate-2 / `reify-core/src/ty.rs`) | §10.6's quantity-slot rollup row only | §8 in full (118 sites, 9+4+3+21 files, the worked `kinematic.ri`/`dynamics.ri` contrast in §8.1) | Everything else — this residual is explicitly not a migration list for β/γ/δ₁/δ₂ (§8, §12) |
 
