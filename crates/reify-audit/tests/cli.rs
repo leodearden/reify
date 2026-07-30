@@ -2525,6 +2525,186 @@ mod cli {
             "override DB is present → no degradation; stderr:\n{stderr}"
         );
     }
+
+    // -------------------------------------------------------------------
+    // PDIAG — codes-mandatory ratchet (INV-SF-6, task #5405)
+    //
+    // SELF-MATCH DISCIPLINE. Every literal `Diagnostic::error(` /
+    // `Diagnostic::warning(` / `pdiag:allow` token lives in the fixture
+    // FILES under `tests/fixtures/pdiag/`, never in this source. This file is
+    // doubly out of PDIAG's own sweep (a `tests` path segment AND the
+    // `crates/reify-audit/` scope exclusion), so nothing here could go RED
+    // today — but `test_reify_audit_ptodo.sh` keeps the same discipline
+    // explicitly, and a detector whose tests seed its own corpus is one
+    // scope change away from ratcheting against itself.
+    // -------------------------------------------------------------------
+
+    /// `reify-audit --pattern PDIAG` over the fixture tree.
+    ///
+    /// The fixture root becomes the project root, so the fixtures' tracked
+    /// paths (`crates/reify-eval/src/…`, `crates/reify-compiler/src/…`) land
+    /// inside the sweep. No `pdiag-baseline.txt` is lifted, so the manifest is
+    /// EMPTY — deliberately the fail-loud direction: every code-less file
+    /// surfaces as a `NewFile` High rather than passing vacuously.
+    ///
+    /// Three claims, in order of what would break first:
+    ///
+    /// 1. `--pattern PDIAG` is ACCEPTED. Exit 125 (`ERROR_EXIT`) is the
+    ///    unknown-`--pattern` arg-parse failure, so asserting `!= 125` is the
+    ///    literal "the detector is reachable from the binary" claim.
+    /// 2. The exit code is the count of High FINDINGS — one per code-less
+    ///    file, not one per site. The fixture tree holds 3 code-less sites
+    ///    across 2 files, so exit 2 (not 3) is what pins the ratchet as
+    ///    per-file.
+    /// 3. The coded, escaped and out-of-scope fixtures contribute NOTHING.
+    ///
+    /// RED until the dispatch arm and the `--pattern` token validator are
+    /// wired in `src/bin/reify-audit.rs`; until then every assertion fails on
+    /// the arg error.
+    #[test]
+    fn pdiag_fixture_tree_hard_gates_code_less_files_and_suppresses_the_rest() {
+        // Repo dir holds ONLY the committed fixtures (so ls-files is exactly
+        // the fixture set); the tasks-file/runs-db live in a separate aux dir
+        // so they are never tracked and never enumerated by the sweep.
+        let repo = tempfile::tempdir().expect("create repo tempdir");
+        let aux = tempfile::tempdir().expect("create aux tempdir");
+
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pdiag");
+        copy_dir_recursive(&fixtures, repo.path());
+        git_init_commit_all(repo.path());
+
+        let tasks_file = write_tasks_json(aux.path(), &[]);
+        let runs_db = write_empty_runs_db(aux.path());
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--pattern",
+                "PDIAG",
+                "--no-jcodemunch",
+                "--project-root",
+                repo.path().to_str().unwrap(),
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --pattern PDIAG on fixture tree");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        // (1) The token is a known --pattern value.
+        assert_ne!(
+            out.status.code(),
+            Some(125),
+            "`--pattern PDIAG` must be an accepted token, not an arg-parse error \
+             (125 = ERROR_EXIT)\nstderr: {stderr}"
+        );
+
+        // (2) Exit code = High-severity finding count = one per code-less FILE.
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "PDIAG fixture sweep must exit 2 — one NewFile High per code-less file \
+             (scenario01 has 1 site, scenario05 has 2; 3 sites but 2 files)\nstderr: {stderr}"
+        );
+
+        let findings = parse_findings_from_stderr(&stderr);
+        assert_eq!(
+            findings.len(),
+            2,
+            "PDIAG fixture sweep must emit exactly 2 findings; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+
+        for f in &findings {
+            assert_eq!(
+                f["pattern"].as_str(),
+                Some("PDiag"),
+                "every fixture finding must be PDiag; got:\n{f:#}"
+            );
+            assert_eq!(
+                f["severity"].as_str(),
+                Some("High"),
+                "a NewFile verdict is the hard gate — it must be High; got:\n{f:#}"
+            );
+        }
+
+        // (3) Exactly the two code-less files, keyed by path. Membership is
+        // asserted as a set, so the coded / escaped / `tests`-segment fixtures
+        // being absent is the same assertion as these two being present.
+        let mut keyed: Vec<&str> =
+            findings.iter().filter_map(|f| f["task_id"].as_str()).collect();
+        keyed.sort_unstable();
+        assert_eq!(
+            keyed,
+            vec![
+                "crates/reify-compiler/src/scenario05_codeless_pair.rs",
+                "crates/reify-eval/src/scenario01_codeless.rs",
+            ],
+            "only the code-less swept files may be keyed — the coded, `pdiag:allow`-escaped \
+             and `tests`-segment fixtures must each contribute nothing\nstderr: {stderr}"
+        );
+
+        // Every hard-gate summary must route the reader to the policy doc;
+        // `tests/infra/test_reify_audit_pdiag.sh` greps for the same string.
+        for f in &findings {
+            let summary = f["summary"].as_str().unwrap_or_default();
+            assert!(
+                summary.contains("docs/notes/diagnostic-severity-policy.md"),
+                "a High finding must cite the remediation doc; got: {summary:?}"
+            );
+        }
+    }
+
+    /// PDIAG is OPT-IN: a bare sweep with no `--pattern` must NOT run it.
+    ///
+    /// Load-bearing, not stylistic. `reify-audit`'s exit code IS the
+    /// High-severity finding count, and PDIAG's `Exceeded`/`NewFile` verdicts
+    /// are High by design. Joining the default sweep (the `is_none_or` shape
+    /// P1/P2/P5/PTODO use) would make every bare `reify-audit` invocation —
+    /// the /audit skill, `test_reify_audit_predone_wrapper.sh`, anything else
+    /// that omits `--pattern` — start exiting nonzero the moment this
+    /// ratchet drifted, coupling unrelated infra to it. So the predicate is
+    /// `is_some_and`, mirroring PDEAD/PUNTESTED/PLAYER.
+    #[test]
+    fn pdiag_does_not_join_the_default_all_detector_sweep() {
+        let repo = tempfile::tempdir().expect("create repo tempdir");
+        let aux = tempfile::tempdir().expect("create aux tempdir");
+
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pdiag");
+        copy_dir_recursive(&fixtures, repo.path());
+        git_init_commit_all(repo.path());
+
+        let tasks_file = write_tasks_json(aux.path(), &[]);
+        let runs_db = write_empty_runs_db(aux.path());
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--since",
+                "1970-01-01",
+                "--no-jcodemunch",
+                "--project-root",
+                repo.path().to_str().unwrap(),
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit with no --pattern on the PDIAG fixture tree");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.iter().all(|f| f["pattern"].as_str() != Some("PDiag")),
+            "a bare sweep must not run PDIAG — its High findings would move the exit code \
+             for every consumer that omits --pattern; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+    }
 }
 
 // -----------------------------------------------------------------------
