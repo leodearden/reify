@@ -801,3 +801,84 @@ structure def Parent {
         );
     }
 }
+
+/// esc-5360-9 (review): a nested sub whose target structure lives in the STDLIB
+/// PRELUDE must be elaborated at instance scope too.
+///
+/// Stdlib templates live in `Engine::prelude` and are deliberately NOT merged
+/// into `CompiledModule::templates` (io-export δ / esc-4287-15). Phase 1.5
+/// originally resolved a nested sub with a bare module-only `find_template`,
+/// while the top-level sub-elaboration loop in `engine_eval.rs` resolves with
+/// the prelude fallback. Two distinct defects followed from that asymmetry, and
+/// this test pins both:
+///
+///  1. `Mid.tol` elaborated at template scope but `Parent.m.tol` did not —
+///     re-opening, for every prelude-typed sub, the exact instance/template gap
+///     this task exists to close. So `Parent.m.relay` / `Parent.echo` went
+///     silently `Undef`.
+///  2. The skip was recorded as "target structure not found in this module",
+///     so `report_unresolvable_nested_reads` raised a NEW error naming a
+///     structure that is in fact perfectly resolvable — a false positive where
+///     the pre-change behaviour had at least been silent.
+///
+/// `DimensionalTolerance` (`stdlib/tolerancing.ri`) is the fixture type because
+/// it carries its OWN derived let (`tolerance_band = upper_deviation -
+/// lower_deviation`). The chain therefore exercises the full path — a prelude
+/// template's params AND its lets must be elaborated at nested instance scope,
+/// not just the entity's existence.
+///
+/// SCOPE NOTE — why this stops at the nested entity's own cells and does not
+/// also assert a relaying `let relay = self.tol.tolerance_band` on `Mid`:
+/// such a let is typed `Geometry` by the compiler and evaluates to a
+/// `GeometryHandle`, NOT the `Scalar` the member holds. That is a separate,
+/// pre-existing, COMPILER-side member-type-inference gap for prelude-typed sub
+/// reads, and it bites identically at TEMPLATE scope (`Mid.relay`), which this
+/// eval-side change does not touch — measured by re-running this fixture with
+/// the `unfold.rs`/`engine_eval.rs` changes stashed: byte-identical failure.
+/// Asserting it here would pin an unrelated defect to this test. Tracked
+/// separately as #5867, which carries the full measurement.
+#[test]
+fn prelude_typed_nested_sub_resolves_at_instance_scope() {
+    // tolerance_band = 2mm - 1mm = 1mm, on a sub two levels down.
+    const SOURCE: &str = r#"
+structure def Mid {
+    sub tol = DimensionalTolerance(nominal: 10mm, upper_deviation: 2mm, lower_deviation: 1mm)
+}
+
+structure def Parent {
+    sub m = Mid()
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    // Control: template scope elaborates the prelude-typed sub today — this is
+    // the achievability basis for the instance-scope expectation below.
+    assert_scalar_si(&result.values, "Mid.tol", "tolerance_band", 0.001);
+    assert_scalar_si(&result.values, "Mid.tol", "nominal", 0.010);
+
+    // (1) The nested prelude-typed entity must be materialised at instance
+    // scope too — its constructor-threaded params AND its own derived let.
+    // Pre-fix, the module-only lookup skipped it and these cells were absent.
+    assert_scalar_si(&result.values, "Parent.m.tol", "nominal", 0.010);
+    assert_scalar_si(&result.values, "Parent.m.tol", "tolerance_band", 0.001);
+
+    // (2) No false-positive "not found" error for a name that IS resolvable.
+    let errors: Vec<&Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors
+            .iter()
+            .any(|d| d.message.contains("not found") || d.message.contains("unknown structure")),
+        "a prelude-typed nested sub must not be reported as unresolvable — the \
+         module-only lookup is the bug; got: {errors:?}",
+    );
+    assert_no_error_diagnostics(
+        &result.diagnostics,
+        "prelude_typed_nested_sub_resolves_at_instance_scope",
+    );
+}
