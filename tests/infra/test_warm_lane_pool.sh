@@ -470,19 +470,24 @@ _b7_init_git_lane() {
 #
 # Builds a warm at-head base (symlink-gen, gen.1) from a synth workspace on the
 # substrate, then exercises torn-base coherence by running a concurrent
-# cp -a --reflink=always clone of the resolved gen.1 dir during a generation flip:
+# CoW clone of the resolved gen.1 dir during a generation flip:
 #
 #   1. Build synth workspace in $ws_root/lane (cargo cold-build on substrate).
 #   2. git-init the lane (committed, no target/) so the provenance guard passes.
 #   3. First refresh: base.gen.1 created, $ws_root/base → base.gen.1 symlink.
 #   4. Resolve $ws_root/base → concrete gen.1 path.
-#   5. Background reader: takes flock -s on gen.1.lock (D8 seam; holds dir-entry
-#      refcount) AND runs cp -a --reflink=always gen.1_dir → clone/target.
+#   5. _spawn_pinning_reader: takes flock -s on gen.1.lock (D8 seam; holds
+#      dir-entry refcount), clones gen.1_dir → clone/target, signals the
+#      clone-done marker, then HOLDS flock -s until explicitly killed — the
+#      lock's lifetime is the consumer's, not the copy's (task #5866; see
+#      step 9).
 #   6. Records _B11_DF_BEFORE_AVAIL (df --output=avail on substrate, MiB).
 #   7. Flip: second refresh → base.gen.2, symlink re-pointed; GC attempt deferred
-#      (reader holds flock -s → flock -n -x fails → rm skipped).
+#      (reader still holds flock -s → flock -n -x fails → rm skipped).
 #   8. Records _B11_DF_AFTER_AVAIL.
-#   9. Joins the reader (flock -s released, clone complete).
+#   9. Waits for the clone-done marker (walk genuinely complete), then
+#      kill+wait tears the reader down, releasing flock -s so the post-drain
+#      refresh can reap gen.1.
 #
 # Sets in the caller's scope:
 #   _B11_CLONE_DIR        — parent dir of the concurrent clone ($ws_root/clone)
@@ -526,23 +531,29 @@ _b11_concurrent_clone_during_flip() {
     local _b11_gen1_lock="${_b11_gen1}.lock"
     touch "$_b11_gen1_lock" 2>/dev/null || true
 
-    # Step 5: background reader — holds flock -s on gen.1.lock AND runs
-    # cp -a --reflink=always gen.1_dir → clone/target concurrently.
-    # The flock is held for the entire duration of the cp walk (D8 seam: consumer
-    # holds flock -s to signal "dir entry must remain live during the walk").
+    # Step 5: _spawn_pinning_reader — holds flock -s on gen.1.lock across the
+    # ENTIRE operation below (clone + flip + teardown), not just the cp -a walk.
+    #
+    # The reader signals copy completion via the clone-done marker (step 9
+    # waits on it) but DELIBERATELY keeps flock -s held until explicitly
+    # killed. This fixture's reader used to release flock -s the instant its
+    # cp -a finished; on a reflink substrate that CoW copy (~120ms measured)
+    # completes well before the flip's Step-6 GC sweep runs (~490ms measured
+    # for the whole flip, refresh-warm-base.sh) — so the reader was always
+    # gone by the time GC ran, GC correctly saw no active reader, and reaped
+    # gen.1 out from under this test (task #5866). _wait_for_marker on the
+    # ready marker only proves the lock was ACQUIRED, never that it is still
+    # HELD later — the walk's duration is exactly what determines whether
+    # the reader is still gone or still holding by the time GC fires.
     local _b11_clone_dir="$ws_root/clone"
     local _b11_ready="${_b11_gen1}.ready-marker"
+    local _b11_clone_done="${_b11_gen1}.clone-done"
     mkdir -p "$_b11_clone_dir"
-    (
-        flock -s 9
-        touch "$_b11_ready"  # signal READY after acquiring flock -s (#4847)
-        cp -a --reflink=always "$_b11_gen1" "$_b11_clone_dir/target"
-    ) 9>"$_b11_gen1_lock" &
-    local _b11_reader_pid=$!
+    _spawn_pinning_reader "$_b11_gen1_lock" "$_b11_ready" "$_b11_clone_done" \
+        "$_b11_gen1" "$_b11_clone_dir/target"
+    local _b11_reader_pid="$_PINNING_READER_PID"
     # Causal handshake: wait until reader has acquired flock -s (replaces fixed sleep 0.1 — #4847).
-    # B11 only requires the reader to HOLD flock -s during the flip; the cp -a walk's duration is
-    # irrelevant to the GC-defer invariant (GC defers when flock -n -x fails, not when cp finishes).
-    _wait_for_reader_lock "$_b11_ready" 30
+    _wait_for_marker "$_b11_ready" 30
 
     # Step 6: record df --output=avail before the flip (MiB)
     # Measured on ws_root (the block's actual workspace dir) rather than the
@@ -562,7 +573,14 @@ _b11_concurrent_clone_during_flip() {
     _B11_DF_AFTER_AVAIL="$(df --output=avail -m "$ws_root" 2>/dev/null \
         | tail -1 | tr -d ' ' || echo 0)"
 
-    # Step 9: join the reader (clone complete, flock -s released)
+    # Step 9: wait for the clone-done marker — a causal guarantee the cp -a
+    # walk actually completed (technique R), not just that it started, so
+    # the coherence diff never compares a partial tree — then tear the
+    # reader down (kill+wait), releasing flock -s so the post-drain refresh
+    # can reap gen.1. Generous anti-hang deadline (technique T); measured
+    # slack is large (copy ~120ms vs. the flip alone ~490ms).
+    _wait_for_marker "$_b11_clone_done" 300
+    kill "$_b11_reader_pid" 2>/dev/null || true
     wait "$_b11_reader_pid" 2>/dev/null || true
 
     # Set output variables
