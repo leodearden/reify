@@ -882,3 +882,166 @@ structure def Parent {
         "prelude_typed_nested_sub_resolves_at_instance_scope",
     );
 }
+
+/// (t9a) An UNGUARDED SELF-recursive plain sub must be CUT at instance scope,
+/// not recursed into forever.
+///
+/// The ancestor-chain guard in `elaborate_child_instance_nested` is the ONLY
+/// thing that terminates the phase-1.5 recursion: plain sub nesting is not a
+/// DAG. `structure def Node { sub child : Node }` is admitted by the compiler
+/// (it reports "recursive sub has no termination condition" but still emits the
+/// template), so eval genuinely sees a cyclic sub graph — an unguarded
+/// recursion here is a stack overflow, not a hang. Nothing pinned that until
+/// now.
+///
+/// Built via the template builders rather than `.ri` source on purpose:
+/// `parse_and_compile_with_stdlib` asserts zero compile errors, and this shape
+/// is exactly the one the compiler errors on. The builders model what eval
+/// actually receives — the emitted-anyway template.
+#[test]
+fn self_recursive_plain_sub_is_cut_not_overflowed() {
+    let node = TopologyTemplateBuilder::new("Node")
+        .param(
+            "Node",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
+        )
+        // UNGUARDED self-reference: `sub child : Node`.
+        .sub_component("child", "Node", vec![])
+        .let_binding(
+            "Node",
+            "echo",
+            Type::Int,
+            value_ref_typed("Node.child", "n", Type::Int),
+        )
+        .build();
+
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .sub_component("node", "Node", vec![])
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(node)
+        .template(parent)
+        .build();
+    let mut engine = make_simple_engine();
+    // Reaching the next line at all IS the termination assertion.
+    let result = engine.eval(&module);
+
+    // The instance itself is elaborated — its own param lands.
+    assert_eq!(
+        result.values.get(&ValueCellId::new("Parent.node", "n")),
+        Some(&Value::Int(1)),
+        "Parent.node.n should be the Node param default (proves the instance was elaborated)",
+    );
+
+    // ...but the self-referential nested sub is cut, so the grandchild entity
+    // never materialises and the read across it cannot resolve.
+    assert!(
+        !result
+            .values
+            .contains(&ValueCellId::new("Parent.node.child", "n")),
+        "Parent.node.child.n must not exist — the cycle guard must cut the self-reference",
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("Parent.node", "echo")),
+        Some(&Value::Undef),
+        "Parent.node.echo is expected to be Undef — the point is that it must not be SILENTLY so",
+    );
+
+    // The cut is surfaced, and names itself as a cycle cut rather than as one
+    // of the other three skip shapes.
+    let errors: Vec<&Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.iter().any(|d| d.message.contains("Parent.node.echo")
+            && d.message.contains("Parent.node.child.n")
+            && d.message.contains("cyclic sub nesting cut")),
+        "expected an error naming the starved let, the nested cell it reads, and the \
+         \"cyclic sub nesting cut\" reason; got: {errors:?}",
+    );
+}
+
+/// (t9b) MUTUALLY-recursive plain subs (`A { sub b : B }` / `B { sub a : A }`)
+/// must terminate too — and the guard must cut at the RE-ENTRY, not earlier.
+///
+/// The companion to t9a: a self-reference is cut at depth 1, so it cannot tell
+/// a correct ancestor-chain guard from one that simply refuses to nest at all.
+/// Here the first level MUST be elaborated (`Parent.x.b.q` = 7, and `A`'s
+/// cross-sub read of it resolves) and only the re-entry into `A` is cut.
+#[test]
+fn mutually_recursive_plain_subs_cut_at_reentry() {
+    let a = TopologyTemplateBuilder::new("A")
+        .sub_component("b", "B", vec![])
+        .let_binding("A", "echo", Type::Int, value_ref_typed("A.b", "q", Type::Int))
+        .build();
+
+    let b = TopologyTemplateBuilder::new("B")
+        .param(
+            "B",
+            "q",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(7), Type::Int)),
+        )
+        // Closes the A -> B -> A cycle.
+        .sub_component("a", "A", vec![])
+        .let_binding(
+            "B",
+            "back",
+            Type::Int,
+            value_ref_typed("B.a", "echo", Type::Int),
+        )
+        .build();
+
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .sub_component("x", "A", vec![])
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(a)
+        .template(b)
+        .template(parent)
+        .build();
+    let mut engine = make_simple_engine();
+    // Reaching the next line at all IS the termination assertion.
+    let result = engine.eval(&module);
+
+    // Depth 1 IS elaborated: the guard must not be over-eager.
+    assert_eq!(
+        result.values.get(&ValueCellId::new("Parent.x.b", "q")),
+        Some(&Value::Int(7)),
+        "Parent.x.b.q must exist — the A -> B step is not a cycle and must be nested",
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("Parent.x", "echo")),
+        Some(&Value::Int(7)),
+        "Parent.x.echo must relay the nested value (the task-5360 contract, one level in)",
+    );
+
+    // Depth 2 re-enters `A`, which is already on the chain — cut there.
+    assert!(
+        !result
+            .values
+            .contains(&ValueCellId::new("Parent.x.b.a", "echo")),
+        "Parent.x.b.a.echo must not exist — re-entering A must be cut",
+    );
+
+    // ...and the cut at that deeper level is surfaced, proving the report runs
+    // at every nesting level rather than only at the outermost one.
+    let errors: Vec<&Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.iter().any(|d| d.message.contains("Parent.x.b.back")
+            && d.message.contains("Parent.x.b.a.echo")
+            && d.message.contains("cyclic sub nesting cut")),
+        "expected an error naming the starved let at the NESTED scope \
+         (\"Parent.x.b.back\"), the cell it reads, and the cycle-cut reason; got: {errors:?}",
+    );
+}

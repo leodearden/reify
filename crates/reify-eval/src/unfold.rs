@@ -316,7 +316,8 @@ pub(crate) fn unfold_recursive_sub<'t>(
     );
 }
 
-/// Elaborate a single child instance into the values/snapshot maps.
+/// Elaborate a child instance — and its plain nested subtree — into the
+/// values/snapshot maps.
 ///
 /// This handles both non-collection subs (single instance) and individual
 /// collection sub instances (called in a loop for each index).
@@ -553,15 +554,18 @@ fn elaborate_child_instance_nested<'t>(
 
         // `dropped` is NOT the cycle — it is the cycle PLUS everything
         // transitively downstream of it, because Kahn omits a node whose
-        // dependency it could never place. Both the gate and the prose below
-        // ask "which nodes are on the cycle?", so both must key on computed
-        // membership; keying on `dropped` fires the gate for a merely
-        // downstream sub and names bystanders. See [`phase15_cycle_members`],
-        // which carries the measured example — do not collapse this back into
-        // `dropped`.
+        // dependency it could never place. Both the gate and the diagnostic
+        // below ask "which nodes are on the cycle?", so both must key on
+        // computed membership; keying on `dropped` fires the gate for a merely
+        // downstream sub and names bystanders. Pinned by
+        // `nested_pure_let_cycle_with_downstream_sub_is_reported_once_per_scope`
+        // and `nested_sub_cycle_diagnostic_names_only_real_participants`
+        // (tests/harness_engine/nested_sub_derived_let_e2e.rs);
+        // see [`phase15_cycle_members`] for the measured example.
         let cycle_members = phase15_cycle_members(&dropped, &node_traces);
 
-        // ONE OWNER PER CYCLE CLASS — do not remove this gate.
+        // ONE OWNER PER CYCLE CLASS. Pinned by
+        // `nested_pure_let_cycle_is_reported_once_per_scope`.
         //
         // A cycle confined entirely to LET nodes belongs to phase 2: it is
         // already reported at instance scope by `elaborate_child_lets_only` and
@@ -715,11 +719,9 @@ fn elaborate_child_instance_nested<'t>(
                     version_id,
                     // `template` is `&&'t StructureTemplate` here (bound by
                     // ref-pattern off the `nodes` lookup); auto-deref reborrows
-                    // it to the `&StructureTemplate` the callee takes. An
-                    // earlier explicit `*template` was tried on the theory that
-                    // the callee needed the `'t` reference itself, but it does
-                    // not — the reborrow typechecks, and the explicit deref was
-                    // a `clippy::explicit_auto_deref` failure under `-D warnings`.
+                    // it to the `&StructureTemplate` the callee takes. Writing
+                    // `*template` is a `clippy::explicit_auto_deref` failure
+                    // under `-D warnings`.
                     template,
                     &nested_entity,
                     &concrete_args,
@@ -1361,10 +1363,13 @@ fn elaborate_child_lets_only<'t>(
             // proving unfold_recursive_sub actually created descendants. Without this
             // check, two structural intermediaries forming a cycle (W1→W2→W1) would
             // cause the BFS to generate ever-growing entity paths without bound.
-            let intermediary_has_descendants = entity_template.value_cells.is_empty()
-                && values
-                    .iter()
-                    .any(|(k, _)| k.entity.starts_with(&format!("{}.", depth_entity)));
+            // The prefix is built ONCE per BFS node, not once per `values`
+            // entry: this scan is O(|values|) and the `format!` used to sit
+            // inside the closure, allocating a `String` on every probe.
+            let intermediary_has_descendants = entity_template.value_cells.is_empty() && {
+                let depth_prefix = format!("{}.", depth_entity);
+                values.iter().any(|(k, _)| k.entity.starts_with(&depth_prefix))
+            };
             if found_any || intermediary_has_descendants {
                 // Enqueue children if:
                 // 1. found_any: values were projected from this entity (entity exists), OR
@@ -1503,25 +1508,6 @@ fn elaborate_child_lets_only<'t>(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Compile-time assertion: elaborate_child_instance is accessible from this module.
-    #[test]
-    fn elaborate_child_instance_accessible() {
-        let _: fn() -> String = || {
-            // Reference the function to prove it exists in this module's namespace.
-            let _ = elaborate_child_instance as fn(_, _, _, _, _, _, _, _, _, _, _, _, _);
-            String::new()
-        };
-    }
-
-    /// Compile-time assertion: unfold_recursive_sub is accessible from this module.
-    #[test]
-    fn unfold_recursive_sub_accessible() {
-        let _: fn() -> String = || {
-            let _ = unfold_recursive_sub as fn(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _);
-            String::new()
-        };
-    }
 
     // amend (#5057 reviewer_comprehensive, suggestion #2 — test-coverage-gap):
     // every existing parity fixture (`tests/unfold_commit_parity.rs`) supplies
