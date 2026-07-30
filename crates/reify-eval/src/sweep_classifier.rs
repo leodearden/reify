@@ -527,6 +527,57 @@ fn normalise_ccw(mut ring: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
     ring
 }
 
+/// Why a [`SweptKind`]'s profile could not be turned into a
+/// [`reify_solver_elastic::ProfileBoundary`].
+///
+/// Carried by [`swept_kind_to_profile_boundary`] in place of a bare `None` so
+/// [`build_swept_2d_mesh`] can name the actual cause in its
+/// [`reify_solver_elastic::Mesh2dError::ProfileUnresolvable`] payload. Without
+/// it every producer-side failure would collapse onto
+/// [`reify_solver_elastic::Mesh2dError::EmptyBoundary`], which that variant's
+/// own docs single out as the conflation to avoid: `EmptyBoundary` means a
+/// boundary WAS produced and its outer ring turned out to be empty, so reusing
+/// it here makes a downstream diagnostic misreport an upstream resolution
+/// failure as a degenerate cross-section.
+///
+/// The [`std::fmt::Display`] text IS the `ProfileUnresolvable` payload — that
+/// crate deliberately takes the reason as text rather than depending on this
+/// enum (see the variant's docs), so this impl is the seam where the typed
+/// reason becomes the reported one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileResolveError {
+    /// The `profile` handle has no positional match in the `handles` slice, so
+    /// no source op could be resolved at all — a malformed `ops`/`handles`
+    /// pair, or a handle from outside this realization's slice (see the
+    /// bare-integer collision caveat on [`swept_kind_to_profile_boundary`]).
+    UnresolvableHandle,
+    /// The handle resolved, but its source op is not one of the recognised
+    /// single-ring 2-D profile ops — e.g. a solid primitive such as
+    /// [`GeometryOp::Box`].
+    NotAProfileOp,
+    /// The source op IS a recognised profile op, but one of its extents (or a
+    /// [`GeometryOp::PolygonProfile`] vertex coordinate) is NaN or infinite, so
+    /// no usable ring can be sampled from it. Reported separately from
+    /// [`ProfileResolveError::NotAProfileOp`] because the op kind is fine and
+    /// only its operands are not.
+    NonFiniteExtent,
+}
+
+impl std::fmt::Display for ProfileResolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reason = match self {
+            Self::UnresolvableHandle => {
+                "profile handle does not resolve to any op in this realization slice"
+            }
+            Self::NotAProfileOp => "profile handle resolves to an op that is not a 2-D profile",
+            Self::NonFiniteExtent => {
+                "profile op has a non-finite (NaN or infinite) extent or vertex coordinate"
+            }
+        };
+        f.write_str(reason)
+    }
+}
+
 /// Sample a 2-D profile op's outer boundary ring as a list of `[x, y]` points
 /// in the profile's local XY plane (`z = 0`).
 ///
@@ -643,11 +694,14 @@ fn profile_sample_2d(op: &GeometryOp) -> Result<Vec<[f64; 2]>, ProfileResolveErr
 ///
 /// # Returns
 ///
-/// `None` when the profile handle has no positional match in `handles` (a
-/// malformed ops/handles pair, or a handle from outside this realization's
-/// slice that happens to collide with no local id), or when the resolved
-/// source op is not a recognised profile op — including one whose extents are
-/// non-finite (see [`profile_sample_2d`]).
+/// [`ProfileResolveError::UnresolvableHandle`] when the profile handle has no
+/// positional match in `handles` (a malformed ops/handles pair, or a handle
+/// from outside this realization's slice that happens to collide with no local
+/// id), [`ProfileResolveError::NotAProfileOp`] when the resolved source op is
+/// not a recognised profile op, and [`ProfileResolveError::NonFiniteExtent`]
+/// when it is one but its extents are non-finite (see [`profile_sample_2d`]).
+/// The three are kept distinct so [`build_swept_2d_mesh`] can name the cause
+/// rather than collapsing all of them onto one opaque failure.
 ///
 /// # Caveat: bare-integer handle resolution (#4349)
 ///
@@ -670,7 +724,7 @@ pub fn swept_kind_to_profile_boundary(
     kind: &SweptKind,
     ops: &[GeometryOp],
     handles: &[GeometryHandleId],
-) -> Option<reify_solver_elastic::ProfileBoundary> {
+) -> Result<reify_solver_elastic::ProfileBoundary, ProfileResolveError> {
     // Every recognised swept kind carries the handle of the 2-D profile op it
     // sweeps; the cross-section is that op's own geometry regardless of the
     // sweep motion (extrude axis / revolve axis / linear path), so all three
@@ -683,12 +737,13 @@ pub fn swept_kind_to_profile_boundary(
     let source_op = handles
         .iter()
         .position(|h| h == profile)
-        .and_then(|i| ops.get(i))?;
+        .and_then(|i| ops.get(i))
+        .ok_or(ProfileResolveError::UnresolvableHandle)?;
     // Single seam: every sampled ring passes through the winding normaliser on
     // its way to becoming a ProfileBoundary, so the CCW postcondition is a
     // property of this function rather than of each individual sampler arm.
     let outer = normalise_ccw(profile_sample_2d(source_op)?);
-    Some(reify_solver_elastic::ProfileBoundary {
+    Ok(reify_solver_elastic::ProfileBoundary {
         outer,
         holes: vec![],
     })
@@ -701,9 +756,17 @@ pub fn swept_kind_to_profile_boundary(
 /// Produces the [`reify_solver_elastic::ProfileBoundary`] via
 /// [`swept_kind_to_profile_boundary`] and forwards it to
 /// [`reify_solver_elastic::mesh_swept_profile_2d`]. A profile that fails to
-/// resolve — an unresolvable handle or a non-profile source op — collapses to
-/// [`reify_solver_elastic::Mesh2dError::EmptyBoundary`], short-circuiting before
-/// any Gmsh call.
+/// resolve — an unresolvable handle, a non-profile source op, or a non-finite
+/// extent — becomes
+/// [`reify_solver_elastic::Mesh2dError::ProfileUnresolvable`] carrying that
+/// [`ProfileResolveError`]'s text, short-circuiting before any Gmsh call.
+///
+/// The reason is reported rather than discarded, and specifically NOT collapsed
+/// onto [`reify_solver_elastic::Mesh2dError::EmptyBoundary`]: that variant
+/// means a boundary was produced and its outer ring turned out to be empty, so
+/// reusing it for "no boundary could be produced at all" would make the
+/// downstream `"swept hex/wedge path failed: …"` diagnostic misreport an
+/// upstream resolution failure as a degenerate cross-section.
 ///
 /// This is the producer the swept `gmsh_2d` dispatch edge invokes (see the
 /// `dispatch_volume_mesh` call in `execute_realization_ops`, `engine_build.rs`).
@@ -715,8 +778,10 @@ pub fn build_swept_2d_mesh(
     options: &reify_solver_elastic::Mesh2dOptions,
 ) -> Result<reify_solver_elastic::Mesh2dReport, reify_solver_elastic::Mesh2dError> {
     match swept_kind_to_profile_boundary(kind, ops, handles) {
-        Some(boundary) => reify_solver_elastic::mesh_swept_profile_2d(&boundary, target, options),
-        None => Err(reify_solver_elastic::Mesh2dError::EmptyBoundary),
+        Ok(boundary) => reify_solver_elastic::mesh_swept_profile_2d(&boundary, target, options),
+        Err(why) => Err(reify_solver_elastic::Mesh2dError::ProfileUnresolvable(
+            why.to_string(),
+        )),
     }
 }
 
@@ -1750,8 +1815,9 @@ mod tests {
     // handle to its source profile op (via the parallel handles slice, exactly
     // as `swept_kind_to_sweep_params` resolves a SweepLinear path) and samples
     // the 2-D outer ring. Rectangle → 4 CCW corners; Polygon → points verbatim;
-    // unresolvable handle or a non-profile source op → None. `holes` is always
-    // empty (single-ring profiles; multiply-connected sections are Phase B).
+    // unresolvable handle → Err(UnresolvableHandle); non-profile source op →
+    // Err(NotAProfileOp). `holes` is always empty (single-ring profiles;
+    // multiply-connected sections are Phase B).
 
     #[test]
     fn swept_kind_to_profile_boundary_rectangle_samples_four_ccw_corners() {
@@ -1801,9 +1867,9 @@ mod tests {
     }
 
     #[test]
-    fn swept_kind_to_profile_boundary_unresolvable_handle_returns_none() {
+    fn swept_kind_to_profile_boundary_unresolvable_handle_is_rejected() {
         // The SweptKind's profile handle (99) is absent from `handles`, so the
-        // producer cannot resolve a source op → None.
+        // producer cannot resolve a source op at all.
         let (ops, handles, _) = extrude_fixture(GeometryOp::RectangleProfile {
             width: Value::length(0.04),
             height: Value::length(0.02),
@@ -1814,24 +1880,28 @@ mod tests {
             length: Value::length(FIXTURE_EXTRUDE_DISTANCE),
             profile: GeometryHandleId(99),
         };
-        assert!(
-            swept_kind_to_profile_boundary(&kind, &ops, &handles).is_none(),
-            "an unresolvable profile handle must produce None"
+        assert_eq!(
+            swept_kind_to_profile_boundary(&kind, &ops, &handles).err(),
+            Some(ProfileResolveError::UnresolvableHandle),
+            "an unresolvable profile handle must be reported as UnresolvableHandle, \
+             distinctly from a resolved-but-unusable op"
         );
     }
 
     #[test]
-    fn swept_kind_to_profile_boundary_non_profile_op_returns_none() {
+    fn swept_kind_to_profile_boundary_non_profile_op_is_rejected() {
         // The profile handle resolves to a Box (a solid primitive, not a 2-D
-        // profile op) → the sampler rejects it → None.
+        // profile op) → the sampler rejects it.
         let (ops, handles, kind) = extrude_fixture(GeometryOp::Box {
             width: Value::length(0.04),
             height: Value::length(0.02),
             depth: Value::length(0.03),
         });
-        assert!(
-            swept_kind_to_profile_boundary(&kind, &ops, &handles).is_none(),
-            "a profile handle resolving to a non-profile op must produce None"
+        assert_eq!(
+            swept_kind_to_profile_boundary(&kind, &ops, &handles).err(),
+            Some(ProfileResolveError::NotAProfileOp),
+            "a profile handle resolving to a non-profile op must be reported as \
+             NotAProfileOp — the handle DID resolve, so it is not UnresolvableHandle"
         );
     }
 
@@ -2259,15 +2329,19 @@ mod tests {
 
     // ── Task 5218 step-9: build_swept_2d_mesh error/forward contract ────────
     // build_swept_2d_mesh = producer → mesh_swept_profile_2d. When the producer
-    // yields None (unresolvable handle / non-profile op) it short-circuits to
-    // Err(EmptyBoundary) before any Gmsh call; a valid boundary validates and
-    // is forwarded (Ok in a libgmsh build, Err(GmshUnavailable) in a stub
-    // build). Mesh2dError has no PartialEq → assert via matches!(&result, …).
+    // fails (unresolvable handle / non-profile op / non-finite extent) it
+    // short-circuits to Err(ProfileUnresolvable(reason)) before any Gmsh call —
+    // deliberately NOT EmptyBoundary, which would misreport "no boundary could
+    // be produced" as "a boundary was produced and its outer ring was empty".
+    // A valid boundary validates and is forwarded (Ok in a libgmsh build,
+    // Err(GmshUnavailable) in a stub build). Mesh2dError has no PartialEq →
+    // assert via matches!(&result, …).
 
     #[test]
-    fn build_swept_2d_mesh_unresolvable_profile_is_empty_boundary() {
-        // Profile handle 99 is absent from `handles` → producer None →
-        // Err(EmptyBoundary), deterministic in libgmsh and stub builds alike.
+    fn build_swept_2d_mesh_unresolvable_profile_is_profile_unresolvable() {
+        // Profile handle 99 is absent from `handles` → producer
+        // Err(UnresolvableHandle) → Err(ProfileUnresolvable), deterministic in
+        // libgmsh and stub builds alike.
         let (ops, handles, _) = extrude_fixture(GeometryOp::RectangleProfile {
             width: Value::length(0.04),
             height: Value::length(0.02),
@@ -2282,16 +2356,19 @@ mod tests {
         assert!(
             matches!(
                 &result,
-                Err(reify_solver_elastic::Mesh2dError::EmptyBoundary)
+                Err(reify_solver_elastic::Mesh2dError::ProfileUnresolvable(reason))
+                    if reason == &ProfileResolveError::UnresolvableHandle.to_string()
             ),
-            "an unresolvable profile handle must short-circuit to Err(EmptyBoundary); got {result:?}"
+            "an unresolvable profile handle must short-circuit to \
+             Err(ProfileUnresolvable) carrying the UnresolvableHandle reason — never \
+             EmptyBoundary, which claims a boundary was produced; got {result:?}"
         );
     }
 
     #[test]
-    fn build_swept_2d_mesh_non_profile_op_is_empty_boundary() {
-        // Profile handle resolves to a Box (non-profile op) → producer None →
-        // Err(EmptyBoundary), before any Gmsh call.
+    fn build_swept_2d_mesh_non_profile_op_is_profile_unresolvable() {
+        // Profile handle resolves to a Box (non-profile op) → producer
+        // Err(NotAProfileOp) → Err(ProfileUnresolvable), before any Gmsh call.
         let (ops, handles, kind) = extrude_fixture(GeometryOp::Box {
             width: Value::length(0.04),
             height: Value::length(0.02),
@@ -2301,9 +2378,11 @@ mod tests {
         assert!(
             matches!(
                 &result,
-                Err(reify_solver_elastic::Mesh2dError::EmptyBoundary)
+                Err(reify_solver_elastic::Mesh2dError::ProfileUnresolvable(reason))
+                    if reason == &ProfileResolveError::NotAProfileOp.to_string()
             ),
-            "a non-profile source op must short-circuit to Err(EmptyBoundary); got {result:?}"
+            "a non-profile source op must short-circuit to Err(ProfileUnresolvable) \
+             carrying the NotAProfileOp reason; got {result:?}"
         );
     }
 
@@ -2313,8 +2392,9 @@ mod tests {
         // non-degenerate boundary that validates and is forwarded to
         // mesh_swept_profile_2d. The outcome is Ok in a libgmsh build and
         // Err(GmshUnavailable) in a stub build — but NEVER
-        // EmptyBoundary/DegenerateBoundary. Asserted gmsh-agnostically so it is
-        // deterministic in both build configs.
+        // ProfileUnresolvable (the producer DID resolve and sample a profile)
+        // and never EmptyBoundary/DegenerateBoundary. Asserted gmsh-agnostically
+        // so it is deterministic in both build configs.
         let (ops, handles, kind) = extrude_fixture(GeometryOp::RectangleProfile {
             width: Value::length(0.04),
             height: Value::length(0.02),
@@ -2325,9 +2405,11 @@ mod tests {
                 &result,
                 Err(reify_solver_elastic::Mesh2dError::EmptyBoundary)
                     | Err(reify_solver_elastic::Mesh2dError::DegenerateBoundary)
+                    | Err(reify_solver_elastic::Mesh2dError::ProfileUnresolvable(_))
             ),
             "a valid rectangle extrude must validate and forward to mesh_swept_profile_2d \
-             (Ok in libgmsh, Err(GmshUnavailable) in stub) — never EmptyBoundary/DegenerateBoundary; got {result:?}"
+             (Ok in libgmsh, Err(GmshUnavailable) in stub) — never \
+             ProfileUnresolvable/EmptyBoundary/DegenerateBoundary; got {result:?}"
         );
     }
 
@@ -2341,54 +2423,58 @@ mod tests {
     // meshed. The sampler is therefore the party that rejects it.
 
     #[test]
-    fn swept_kind_to_profile_boundary_nan_rectangle_width_returns_none() {
+    fn swept_kind_to_profile_boundary_nan_rectangle_width_is_rejected() {
         let (ops, handles, kind) = extrude_fixture(GeometryOp::RectangleProfile {
             width: Value::length(f64::NAN),
             height: Value::length(0.02),
         });
-        assert!(
-            swept_kind_to_profile_boundary(&kind, &ops, &handles).is_none(),
+        assert_eq!(
+            swept_kind_to_profile_boundary(&kind, &ops, &handles).err(),
+            Some(ProfileResolveError::NonFiniteExtent),
             "a NaN rectangle width must be rejected by the sampler, not forwarded as an all-NaN ring"
         );
     }
 
     #[test]
-    fn swept_kind_to_profile_boundary_infinite_rectangle_height_returns_none() {
+    fn swept_kind_to_profile_boundary_infinite_rectangle_height_is_rejected() {
         let (ops, handles, kind) = extrude_fixture(GeometryOp::RectangleProfile {
             width: Value::length(0.04),
             height: Value::length(f64::INFINITY),
         });
-        assert!(
-            swept_kind_to_profile_boundary(&kind, &ops, &handles).is_none(),
+        assert_eq!(
+            swept_kind_to_profile_boundary(&kind, &ops, &handles).err(),
+            Some(ProfileResolveError::NonFiniteExtent),
             "an infinite rectangle height must be rejected by the sampler"
         );
     }
 
     #[test]
-    fn swept_kind_to_profile_boundary_nan_circle_radius_returns_none() {
+    fn swept_kind_to_profile_boundary_nan_circle_radius_is_rejected() {
         let (ops, handles, kind) = extrude_fixture(GeometryOp::CircleProfile {
             radius: Value::length(f64::NAN),
         });
-        assert!(
-            swept_kind_to_profile_boundary(&kind, &ops, &handles).is_none(),
+        assert_eq!(
+            swept_kind_to_profile_boundary(&kind, &ops, &handles).err(),
+            Some(ProfileResolveError::NonFiniteExtent),
             "a NaN circle radius must be rejected by the sampler"
         );
     }
 
     #[test]
-    fn swept_kind_to_profile_boundary_nan_ellipse_semi_minor_returns_none() {
+    fn swept_kind_to_profile_boundary_nan_ellipse_semi_minor_is_rejected() {
         let (ops, handles, kind) = extrude_fixture(GeometryOp::EllipseProfile {
             semi_major: Value::length(0.05),
             semi_minor: Value::length(f64::NAN),
         });
-        assert!(
-            swept_kind_to_profile_boundary(&kind, &ops, &handles).is_none(),
+        assert_eq!(
+            swept_kind_to_profile_boundary(&kind, &ops, &handles).err(),
+            Some(ProfileResolveError::NonFiniteExtent),
             "a NaN ellipse semi-minor axis must be rejected by the sampler"
         );
     }
 
     #[test]
-    fn swept_kind_to_profile_boundary_non_finite_polygon_point_returns_none() {
+    fn swept_kind_to_profile_boundary_non_finite_polygon_point_is_rejected() {
         // PolygonProfile points are pre-checked upstream by
         // `eval_all_args_to_f64`, but the sampler re-checks so the
         // "no non-finite coordinate leaves this function" postcondition holds
@@ -2401,18 +2487,19 @@ mod tests {
                 [0.0, 0.05],
             ],
         });
-        assert!(
-            swept_kind_to_profile_boundary(&kind, &ops, &handles).is_none(),
+        assert_eq!(
+            swept_kind_to_profile_boundary(&kind, &ops, &handles).err(),
+            Some(ProfileResolveError::NonFiniteExtent),
             "a non-finite polygon vertex coordinate must be rejected by the sampler"
         );
     }
 
     #[test]
-    fn build_swept_2d_mesh_nan_rectangle_width_is_empty_boundary() {
-        // End-to-end shape of the rejection: the sampler's None collapses to
-        // Err(EmptyBoundary) — matching the existing "unresolvable profile"
-        // rejection — and short-circuits before any Gmsh call, so this is
-        // deterministic in libgmsh and stub builds alike.
+    fn build_swept_2d_mesh_nan_rectangle_width_is_profile_unresolvable() {
+        // End-to-end shape of the rejection: the sampler's NonFiniteExtent is
+        // reported as Err(ProfileUnresolvable) — matching the existing
+        // "unresolvable profile" rejection — and short-circuits before any Gmsh
+        // call, so this is deterministic in libgmsh and stub builds alike.
         let (ops, handles, kind) = extrude_fixture(GeometryOp::RectangleProfile {
             width: Value::length(f64::NAN),
             height: Value::length(0.02),
@@ -2421,9 +2508,11 @@ mod tests {
         assert!(
             matches!(
                 &result,
-                Err(reify_solver_elastic::Mesh2dError::EmptyBoundary)
+                Err(reify_solver_elastic::Mesh2dError::ProfileUnresolvable(reason))
+                    if reason == &ProfileResolveError::NonFiniteExtent.to_string()
             ),
-            "a NaN profile extent must short-circuit to Err(EmptyBoundary) before Gmsh; got {result:?}"
+            "a NaN profile extent must short-circuit to Err(ProfileUnresolvable) \
+             carrying the NonFiniteExtent reason before Gmsh; got {result:?}"
         );
     }
 }

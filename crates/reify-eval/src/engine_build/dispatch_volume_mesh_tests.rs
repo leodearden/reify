@@ -288,9 +288,12 @@
         };
 
         // Recorded inside the gmsh_2d closure: whether the producer validated a
-        // boundary (anything but EmptyBoundary/DegenerateBoundary) and whether
-        // this build simply has no Gmsh linked (the one outcome that licenses
-        // the lenient Tet-fallback assertion below).
+        // boundary (anything but ProfileUnresolvable/EmptyBoundary/
+        // DegenerateBoundary) and whether this build simply has no Gmsh linked
+        // (the one outcome that licenses the lenient Tet-fallback assertion
+        // below). ProfileUnresolvable is load-bearing in that list: it is how a
+        // producer-side resolution failure now reports, so omitting it would let
+        // an unresolvable profile silently satisfy `reached_mesher`.
         let reached_mesher = Cell::new(false);
         let gmsh_unavailable = Cell::new(false);
 
@@ -310,7 +313,9 @@
                 );
                 reached_mesher.set(!matches!(
                     &r,
-                    Err(Mesh2dError::EmptyBoundary) | Err(Mesh2dError::DegenerateBoundary)
+                    Err(Mesh2dError::EmptyBoundary)
+                        | Err(Mesh2dError::DegenerateBoundary)
+                        | Err(Mesh2dError::ProfileUnresolvable(_))
                 ));
                 gmsh_unavailable.set(matches!(&r, Err(Mesh2dError::GmshUnavailable)));
                 r
@@ -322,7 +327,8 @@
         assert!(
             reached_mesher.get(),
             "the real producer must build a valid boundary and forward to \
-             mesh_swept_profile_2d — never fall back via EmptyBoundary/DegenerateBoundary"
+             mesh_swept_profile_2d — never fall back via \
+             ProfileUnresolvable/EmptyBoundary/DegenerateBoundary"
         );
         if gmsh_unavailable.get() {
             assert!(
