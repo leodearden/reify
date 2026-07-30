@@ -194,6 +194,24 @@ chmod +x "$PASSTHROUGH_STUB_DIR/cp"
 # Substrate helper functions
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Exercising the substrate-gated layer (Blocks B11/B13 etc.) on a pool host,
+# without sudo/losetup: warm-lane worktrees live ON the XFS pool volume, so
+# pointing TMPDIR at a scratch dir INSIDE the worktree makes rung 2's reflink
+# probe below succeed —
+#
+#   mkdir -p .b11-scratch && TMPDIR="$PWD/.b11-scratch" bash tests/infra/test_warm_lane_pool.sh
+#
+# — and Blocks B11/B13 actually run for real. Under DEFAULT env (no TMPDIR
+# override) both rung 1 and rung 2 fail on a pool host: /tmp is ext4 (no
+# reflink support, so rung 2's default ${TMPDIR:-/tmp} probe fails), and the
+# pool volume's ROOT is not writable from inside a lane's Landlock scope (so
+# an explicit REIFY_WARM_LANE_MOUNT pointed at the volume root would fail
+# rung 1 too). The whole substrate-gated layer then SKIPs ("SKIP: no XFS
+# reflink substrate") and the suite reports an all-green result that proves
+# NOTHING about B11/B13 — this is exactly the discoverability gap that let
+# the B11 fixture bug (reader releasing flock -s before the flip's Step-6 GC
+# ran) live on main undetected by the merge gate. Task #5866.
+
 # detect_substrate() — Substrate acquisition ladder; sets _GATE_DIR on success.
 #   Returns 0 when a reflink-capable directory is found, 1 otherwise.
 #   Ladder:
@@ -470,19 +488,24 @@ _b7_init_git_lane() {
 #
 # Builds a warm at-head base (symlink-gen, gen.1) from a synth workspace on the
 # substrate, then exercises torn-base coherence by running a concurrent
-# cp -a --reflink=always clone of the resolved gen.1 dir during a generation flip:
+# CoW clone of the resolved gen.1 dir during a generation flip:
 #
 #   1. Build synth workspace in $ws_root/lane (cargo cold-build on substrate).
 #   2. git-init the lane (committed, no target/) so the provenance guard passes.
 #   3. First refresh: base.gen.1 created, $ws_root/base → base.gen.1 symlink.
 #   4. Resolve $ws_root/base → concrete gen.1 path.
-#   5. Background reader: takes flock -s on gen.1.lock (D8 seam; holds dir-entry
-#      refcount) AND runs cp -a --reflink=always gen.1_dir → clone/target.
+#   5. _spawn_pinning_reader: takes flock -s on gen.1.lock (D8 seam; holds
+#      dir-entry refcount), clones gen.1_dir → clone/target, signals the
+#      clone-done marker, then HOLDS flock -s until explicitly killed — the
+#      lock's lifetime is the consumer's, not the copy's (task #5866; see
+#      step 9).
 #   6. Records _B11_DF_BEFORE_AVAIL (df --output=avail on substrate, MiB).
 #   7. Flip: second refresh → base.gen.2, symlink re-pointed; GC attempt deferred
-#      (reader holds flock -s → flock -n -x fails → rm skipped).
+#      (reader still holds flock -s → flock -n -x fails → rm skipped).
 #   8. Records _B11_DF_AFTER_AVAIL.
-#   9. Joins the reader (flock -s released, clone complete).
+#   9. Waits for the clone-done marker (walk genuinely complete), then
+#      kill+wait tears the reader down, releasing flock -s so the post-drain
+#      refresh can reap gen.1.
 #
 # Sets in the caller's scope:
 #   _B11_CLONE_DIR        — parent dir of the concurrent clone ($ws_root/clone)
@@ -524,25 +547,36 @@ _b11_concurrent_clone_during_flip() {
     local _b11_gen1
     _b11_gen1="$(readlink "$_b11_base")"
     local _b11_gen1_lock="${_b11_gen1}.lock"
-    touch "$_b11_gen1_lock" 2>/dev/null || true
+    # _spawn_pinning_reader touches lock_file itself; no need to duplicate it here.
 
-    # Step 5: background reader — holds flock -s on gen.1.lock AND runs
-    # cp -a --reflink=always gen.1_dir → clone/target concurrently.
-    # The flock is held for the entire duration of the cp walk (D8 seam: consumer
-    # holds flock -s to signal "dir entry must remain live during the walk").
+    # Step 5: _spawn_pinning_reader — holds flock -s on gen.1.lock across the
+    # ENTIRE operation below (clone + flip + teardown), not just the cp -a walk.
+    #
+    # The reader signals copy completion via the clone-done marker (step 9
+    # waits on it) but DELIBERATELY keeps flock -s held until explicitly
+    # killed. This fixture's reader used to release flock -s the instant its
+    # cp -a finished; on a reflink substrate that CoW copy (~120ms measured)
+    # completes well before the flip's Step-6 GC sweep runs (~490ms measured
+    # for the whole flip, refresh-warm-base.sh) — so the reader was always
+    # gone by the time GC ran, GC correctly saw no active reader, and reaped
+    # gen.1 out from under this test (task #5866). _wait_for_marker on the
+    # ready marker only proves the lock was ACQUIRED, never that it is still
+    # HELD later — the walk's duration is exactly what determines whether
+    # the reader is still gone or still holding by the time GC fires.
     local _b11_clone_dir="$ws_root/clone"
     local _b11_ready="${_b11_gen1}.ready-marker"
+    local _b11_clone_done="${_b11_gen1}.clone-done"
     mkdir -p "$_b11_clone_dir"
-    (
-        flock -s 9
-        touch "$_b11_ready"  # signal READY after acquiring flock -s (#4847)
-        cp -a --reflink=always "$_b11_gen1" "$_b11_clone_dir/target"
-    ) 9>"$_b11_gen1_lock" &
-    local _b11_reader_pid=$!
+    # hold_s left as "" (falls through to the helper's default); reflink_mode
+    # is pinned to "always" — B11 runs only once detect_substrate/
+    # detect_private_substrate have confirmed a reflink-capable mount, so a
+    # clone that silently degraded to a full byte copy here would be a real
+    # substrate regression, not something to paper over with =auto (#5866).
+    _spawn_pinning_reader "$_b11_gen1_lock" "$_b11_ready" "$_b11_clone_done" \
+        "$_b11_gen1" "$_b11_clone_dir/target" "" always
+    local _b11_reader_pid="$_PINNING_READER_PID"
     # Causal handshake: wait until reader has acquired flock -s (replaces fixed sleep 0.1 — #4847).
-    # B11 only requires the reader to HOLD flock -s during the flip; the cp -a walk's duration is
-    # irrelevant to the GC-defer invariant (GC defers when flock -n -x fails, not when cp finishes).
-    _wait_for_reader_lock "$_b11_ready" 30
+    _wait_for_marker "$_b11_ready" 30
 
     # Step 6: record df --output=avail before the flip (MiB)
     # Measured on ws_root (the block's actual workspace dir) rather than the
@@ -562,7 +596,14 @@ _b11_concurrent_clone_during_flip() {
     _B11_DF_AFTER_AVAIL="$(df --output=avail -m "$ws_root" 2>/dev/null \
         | tail -1 | tr -d ' ' || echo 0)"
 
-    # Step 9: join the reader (clone complete, flock -s released)
+    # Step 9: wait for the clone-done marker — a causal guarantee the cp -a
+    # walk actually completed (technique R), not just that it started, so
+    # the coherence diff never compares a partial tree — then tear the
+    # reader down (kill+wait), releasing flock -s so the post-drain refresh
+    # can reap gen.1. Generous anti-hang deadline (technique T); measured
+    # slack is large (copy ~120ms vs. the flip alone ~490ms).
+    _wait_for_marker "$_b11_clone_done" 300
+    kill "$_b11_reader_pid" 2>/dev/null || true
     wait "$_b11_reader_pid" 2>/dev/null || true
 
     # Set output variables
@@ -884,6 +925,30 @@ _refresh_capture() {
     fi
 }
 
+# _wait_for_marker <marker-file> <deadline-seconds>
+# Generic causal-ordering (technique R) poll: waits for <marker-file> to
+# appear, polling in 0.05s ticks, returning 0 as soon as it exists, or
+# non-zero once the generous deadline elapses (technique T anti-hang guard).
+# The deadline is deliberately generous — it is an anti-hang guard only,
+# never a timing discriminator.
+#
+# Extracted from _wait_for_reader_lock (task #4847), which delegates to this
+# for its flock-acquisition-specific marker; also used directly for a
+# copy-completion handshake (_spawn_pinning_reader, task #5866).
+_wait_for_marker() {
+    local marker="$1"
+    local deadline_s="$2"
+    # Poll every 0.05s; max_ticks = deadline_s × 20
+    local max_ticks=$(( deadline_s * 20 ))
+    local tick=0
+    while [ "$tick" -lt "$max_ticks" ]; do
+        [ -f "$marker" ] && return 0
+        sleep 0.05
+        tick=$(( tick + 1 ))
+    done
+    return 1
+}
+
 # _wait_for_reader_lock <ready-marker> <deadline-seconds>
 # Causal ordering (technique R) for reader-readiness: polls for the READY
 # marker file in 0.05s ticks, returning 0 as soon as it appears, or non-zero
@@ -899,17 +964,74 @@ _refresh_capture() {
 # Used by Block RH (unit test) and the rewired SGSWAP3/SGSWAP4/GC/B11 fixtures.
 # Task: #4847
 _wait_for_reader_lock() {
-    local ready_marker="$1"
-    local deadline_s="$2"
-    # Poll every 0.05s; max_ticks = deadline_s × 20
-    local max_ticks=$(( deadline_s * 20 ))
-    local tick=0
-    while [ "$tick" -lt "$max_ticks" ]; do
-        [ -f "$ready_marker" ] && return 0
-        sleep 0.05
-        tick=$(( tick + 1 ))
-    done
-    return 1
+    _wait_for_marker "$1" "$2"
+}
+
+# _spawn_pinning_reader <lock_file> <ready_marker> <clone_done_marker> <src> <dst> [hold_s] [reflink_mode]
+# Backgrounds a reader that: takes flock -s on <lock_file>, signals
+# <ready_marker>, runs `cp -a --reflink=<reflink_mode> <src> <dst>`, signals
+# <clone_done_marker> — then DELIBERATELY keeps holding flock -s
+# (`exec sleep hold_s`, default 3600) until the caller kills it.
+#
+# hold_s defaults to a large-but-bounded 3600s: a belt-and-braces anti-hang
+# ceiling, not a timing dependency. The operation under test while the lock
+# must stay held (a real cargo build + refresh-warm-base.sh flip, in B11's
+# case) is not bounded by this file's design, so a short fixed window (the
+# previous default of 120) can itself become a source of intermittent
+# flakes on a loaded host — teardown is solely the caller's kill+wait.
+# The subshell's final statement is `exec sleep`, not a bare `sleep`, so
+# the PID returned to the caller is GUARANTEED — independent of bash's
+# undocumented last-command fork-suppression optimization — to be the
+# fd-205 holder: do not append a further command after it, or `kill` would
+# reap an orphaned sleep that keeps flock -s (and thus the lock) held for
+# the rest of the window. The subshell's stdout/stderr are redirected to
+# /dev/null so a reader stranded by a caller bug (teardown skipped) cannot
+# hold a capturing pipe (e.g. run_all.sh) open for up to hold_s.
+#
+# reflink_mode defaults to "auto": this helper is shared between the
+# always-run Block BH (plain /tmp, no reflink support required or expected)
+# and the substrate-gated B11 fixture (a confirmed reflink-capable mount).
+# =auto opportunistically takes the CoW path whenever the underlying FS
+# supports it and falls back to a normal copy elsewhere instead of
+# hard-failing, which is what makes Block BH genuinely FS-agnostic. B11
+# passes "always" explicitly so that a substrate which turns out not to be
+# reflink-capable fails loud, rather than silently degrading to a full byte
+# copy that would still pass every remaining B11 assertion.
+#
+# The shared lock models the D8 dir-entry refcount ("this gen must stay
+# live"): its lifetime is the CONSUMER's, not the copy's. Signalling
+# copy-completion via a separate marker (rather than releasing the lock
+# there) is what lets a caller wait for "clone finished" and "lock
+# released" as two independent, causally-ordered events instead of
+# conflating them — the conflation is exactly today's B11 bug (task #5866).
+#
+# The caller is responsible for teardown: `kill "$_PINNING_READER_PID"
+# 2>/dev/null || true; wait "$_PINNING_READER_PID" 2>/dev/null || true` —
+# the same pattern as Block RH / SGSWAP3 / SGSWAP4 / Block GC.
+#
+# Sets in the caller's scope: _PINNING_READER_PID — the background PID.
+# (A `pid=$(...)` capture is impossible here: command substitution would
+# run the reader in a subshell that exits immediately, dropping the flock.)
+#
+# fd 205: 9, 200 and 201 are already in use elsewhere in this file.
+# Task: #5866
+_spawn_pinning_reader() {
+    local lock_file="$1"
+    local ready_marker="$2"
+    local clone_done_marker="$3"
+    local src="$4"
+    local dst="$5"
+    local hold_s="${6:-3600}"
+    local reflink_mode="${7:-auto}"
+    touch "$lock_file" 2>/dev/null || true
+    (
+        flock -s 205
+        touch "$ready_marker"
+        cp -a --reflink="$reflink_mode" "$src" "$dst"
+        touch "$clone_done_marker"
+        exec sleep "$hold_s"
+    ) 205>"$lock_file" >/dev/null 2>&1 &
+    _PINNING_READER_PID=$!
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1253,6 +1375,100 @@ _RH_NEG_RC=0
 _wait_for_reader_lock "$_RH_NONEXISTENT" 1 || _RH_NEG_RC=$?
 assert "RH-NEG: _wait_for_reader_lock returns non-zero when marker never appears (anti-hang)" \
     test "$_RH_NEG_RC" -ne 0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block BH — pinning-reader hold contract (ALWAYS-RUN)
+#
+# Unit-tests the _spawn_pinning_reader helper (from step-4 onward) that
+# models a consumer holding a shared flock -s across an operation rather
+# than releasing it the instant the operation completes — the seam B11's
+# fixture was missing (task #5866).
+#
+# The generic marker-poll seam this helper is built on (_wait_for_marker,
+# extracted from _wait_for_reader_lock, task #4847) is already unit-tested
+# by Block RH's RH-POS/RH-NEG immediately above, via the delegating
+# _wait_for_reader_lock — Block BH deliberately does NOT retest that same
+# poll contract a second time under the new name (that would be the same
+# code path covered twice under two names). The handshake waits below are
+# plumbing to set up BH1-BH3, guarded so a stuck handshake FAILs by name
+# instead of aborting the suite under set -euo pipefail.
+#
+# _spawn_pinning_reader <lock> <ready> <clone-done> <src> <dst> contract
+# (task #5866 — the actual regression this block exists to guard):
+#   (BH1) the concurrent clone lands and is byte-identical to src.
+#   (BH2, REGRESSION ANCHOR) a foreground flock -n -x probe on the lock
+#     FAILS even though the clone-done marker is already present — proving
+#     the reader still holds flock -s after its copy finished. This is
+#     exactly what today's B11 reader (whose subshell ends at the cp) does
+#     NOT do, and exactly what the flip's Step-6 GC
+#     (scripts/refresh-warm-base.sh:428) tests with the identical
+#     flock -n -x idiom.
+#   (BH3, negative control) after kill+wait teardown, the same probe
+#     SUCCEEDS — proving teardown genuinely releases the lock, so a
+#     post-drain GC still has a free lock to reap against.
+#
+# RED until step-4: _spawn_pinning_reader is undefined → command not found
+# under set -euo pipefail → non-zero exit.
+# Task: #5866
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block BH: pinning-reader hold contract ---"
+
+_BH_PARENT="$(mktemp -d /tmp/test-warm-pool-BH-XXXXXX)"
+_TMPDIRS+=("$_BH_PARENT")
+
+# ── Setup: a tiny 3-file source dir + lock/ready/clone-done paths — plain
+# flock, no reflink required, so this runs on every host (merge gate incl.).
+_BH_SRC="$_BH_PARENT/src"
+mkdir -p "$_BH_SRC"
+echo "one"   > "$_BH_SRC/a"
+echo "two"   > "$_BH_SRC/b"
+echo "three" > "$_BH_SRC/c"
+_BH_DST="$_BH_PARENT/dst"
+_BH_LOCK="$_BH_PARENT/pin.lock"
+_BH_READY="$_BH_PARENT/pin-ready"
+_BH_CLONE_DONE="$_BH_PARENT/pin-clone-done"
+
+# Call the helper (undefined until step-4 → command not found under
+# set -euo pipefail → script aborts → RED).
+_spawn_pinning_reader "$_BH_LOCK" "$_BH_READY" "$_BH_CLONE_DONE" "$_BH_SRC" "$_BH_DST"
+_BH_READER_PID="$_PINNING_READER_PID"
+
+# Guarded handshake waits: capture the rc via `|| var=$?` (as BH-NEG-style
+# calls elsewhere in this file already do) rather than calling
+# _wait_for_marker bare — a bare non-zero return here would trip
+# set -euo pipefail and abort the whole suite mid-block, surfacing as an
+# unattributable abort instead of a named FAIL line in run_all.sh's
+# per-test summary.
+_BH_HS_READY_RC=0
+_wait_for_marker "$_BH_READY" 30 || _BH_HS_READY_RC=$?
+assert "BH-HANDSHAKE: _spawn_pinning_reader signals ready within deadline" \
+    test "$_BH_HS_READY_RC" -eq 0
+_BH_HS_CLONE_RC=0
+_wait_for_marker "$_BH_CLONE_DONE" 30 || _BH_HS_CLONE_RC=$?
+assert "BH-HANDSHAKE: _spawn_pinning_reader signals clone-done within deadline" \
+    test "$_BH_HS_CLONE_RC" -eq 0
+
+# ── BH1: the concurrent clone actually landed and matches src ──
+assert "BH1: _spawn_pinning_reader's clone lands (dst exists)" \
+    test -d "$_BH_DST"
+assert "BH1: _spawn_pinning_reader's clone is byte-identical to src" \
+    diff -r "$_BH_SRC" "$_BH_DST"
+
+# ── BH2 (REGRESSION ANCHOR): reader still holds flock -s AFTER its copy
+# completed. Mirrors RH-POS's probe idiom (flock -n -x on the same lock).
+_BH2_PROBE_RC=0
+flock -n -x "$_BH_LOCK" true 2>/dev/null || _BH2_PROBE_RC=$?
+assert "BH2: flock -n -x probe FAILS after clone-done (reader still holds flock -s post-copy)" \
+    test "$_BH2_PROBE_RC" -ne 0
+
+# ── BH3 (negative control): kill+wait teardown genuinely releases the lock ──
+kill "$_BH_READER_PID" 2>/dev/null || true
+wait "$_BH_READER_PID" 2>/dev/null || true
+_BH3_PROBE_RC=1
+flock -n -x "$_BH_LOCK" true 2>/dev/null && _BH3_PROBE_RC=0 || _BH3_PROBE_RC=$?
+assert "BH3: flock -n -x probe SUCCEEDS after kill+wait teardown (lock released)" \
+    test "$_BH3_PROBE_RC" -eq 0
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block PS-NORM — Pass-set normalizer timing-strip regression (ALWAYS-RUN)
