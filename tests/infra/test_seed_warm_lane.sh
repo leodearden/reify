@@ -3819,7 +3819,10 @@ assert "T4b: counterfactual control — the SAME detached grandchild whose stub 
 # guard's call position relative to the invalidation sweep; U1c/U1d straddle the
 # -maxdepth 3 probe bound; U2/U2b straddle what the guard keys on (base
 # resolution — NOT an empty delta set, and NOT an explicit --touch list);
-# U3/U3b/U3c straddle the opt-out knob's exact-"1" contract.
+# U3/U3b/U3c straddle the opt-out knob's exact-"1" contract; U4/U4b/U4c straddle
+# `absent` vs `present but empty` in the refusal's per-tier attribution, with
+# U4b/U4d straddling the .basecommit trailing-whitespace trim that the same
+# distinction rests on.
 #
 #   Placed AFTER the task-#5633 Block T and BEFORE Block R, for the same reason
 #   Block S is: per Block R's ordering note, a block appended after R2/R5 gets
@@ -4069,6 +4072,110 @@ assert "U3c: REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=yes does NOT downgrade the gua
     test "$RC" -ne 0
 assert "U3c: =yes abort still leaves STDOUT empty" \
     bash -c '[ -z "$1" ]' _ "$OUT"
+
+# ── U4/U4b/U4c/U4d: the no-base diagnostic's PER-TIER ATTRIBUTION and the
+# .basecommit trailing-whitespace trim. Both are what an operator READS and ACTS
+# ON when a lane refuses to seed, so "absent" (go hunt for a missing file) vs
+# "present but empty" (go inspect the file's content) is the difference between
+# the right next action and the wrong one. All four reuse _u_make_fixture WITH
+# .fingerprint so inv.13's guard is live, and vary ONLY the stamp/sidecar state.
+#
+# The attribution is built ONCE at the resolve site and consumed by BOTH the
+# retained no-base [warn] and inv.13's [error]. Each arm asserts the SAME
+# substring on BOTH levels (via _u4_assert_attribution), so a future edit that
+# splits the one string into two independently-maintained literals goes red on
+# the first divergence rather than drifting silently.
+#
+# These pin RUNTIME behaviour — a running script's stderr, exit status, and the
+# sha its git diff actually received — not comment prose.
+
+# _u4_assert_attribution <arm> <substring> — the substring must appear on a
+# [warn] line AND on an [error] line. Both greps are LEVEL-SCOPED for the reason
+# U1 documents: the retained no-base warn names the same condition as the err,
+# so an unscoped grep over all of stderr cannot tell the two consumers apart and
+# would pass with either one missing.
+_u4_assert_attribution() {
+    local arm="$1" frag="$2"
+    assert "$arm: the no-base [warn] attributes — $frag" \
+        bash -c 'printf "%s\n" "$1" | grep "\[warn\]" | grep -qF "$2"' _ "$ERR_OUT" "$frag"
+    assert "$arm: inv.13's [error] carries the SAME attribution — $frag" \
+        bash -c 'printf "%s\n" "$1" | grep "\[error\]" | grep -qF "$2"' _ "$ERR_OUT" "$frag"
+}
+
+# U4: the BASELINE attribution — nothing present at either file-backed tier.
+# Both must read `absent`, which is what makes U4b/U4c's `present but empty`
+# a distinction rather than the only thing the diagnostic ever says.
+IFS='|' read -r U4_BASE U4_LANE <<< "$(_u_make_fixture U4 1)"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$U4_BASE" "$U4_LANE" --fresh-checkout
+
+assert "U4: no .basecommit file and no BASE_COMMIT= line ⇒ seed refuses" \
+    test "$RC" -ne 0
+_u4_assert_attribution "U4" "${U4_BASE}.basecommit absent"
+_u4_assert_attribution "U4" ".warm-base-meta BASE_COMMIT absent"
+
+# U4b: tier 2 PRESENT BUT EMPTY — the shape a refresh-warm-base.sh Step-4b write
+# truncated mid-`printf` leaves behind. Two things are pinned at once: the stamp
+# does NOT resolve a base (the trim's NEGATIVE direction — without it `cat`
+# yields "   ", which is non-empty and would sail past the caller's [ -n ] check
+# as a falsely-resolved base and seed the lane), and the diagnostic says the
+# file is there rather than sending an operator hunting for it.
+IFS='|' read -r U4B_BASE U4B_LANE <<< "$(_u_make_fixture U4b 1)"
+printf '   \n' > "${U4B_BASE}.basecommit"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$U4B_BASE" "$U4B_LANE" --fresh-checkout
+
+assert "U4b: a whitespace-only .basecommit resolves NO base ⇒ seed still refuses" \
+    test "$RC" -ne 0
+assert "U4b: whitespace-only-stamp abort still leaves STDOUT empty" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+_u4_assert_attribution "U4b" "${U4B_BASE}.basecommit present but empty"
+assert "U4b: the file EXISTS, so the diagnostic must NOT call tier 2 'absent'" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "$2"' _ "$ERR_OUT" "${U4B_BASE}.basecommit absent"
+_u4_assert_attribution "U4b" ".warm-base-meta BASE_COMMIT absent"
+
+# U4c: tier 3 PRESENT BUT EMPTY — the sidecar carries the BASE_COMMIT key with
+# no value. Same presence-vs-empty distinction, one tier down; without it the
+# attribution could be keyed on tier 2 alone and stay green on U4/U4b.
+IFS='|' read -r U4C_BASE U4C_LANE <<< "$(_u_make_fixture U4c 1)"
+printf 'RUSTFLAGS=\nINVOCATION=\nBASE_COMMIT=\n' > "$(dirname "$U4C_BASE")/.warm-base-meta"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$U4C_BASE" "$U4C_LANE" --fresh-checkout
+
+assert "U4c: a valueless BASE_COMMIT= line resolves NO base ⇒ seed still refuses" \
+    test "$RC" -ne 0
+_u4_assert_attribution "U4c" ".warm-base-meta BASE_COMMIT present but empty"
+_u4_assert_attribution "U4c" "${U4C_BASE}.basecommit absent"
+
+# U4d: the trim's POSITIVE direction — a real sha must survive it intact and
+# still resolve. The trailing character is a SPACE, not a newline: `$(cat)`
+# already strips trailing newlines, so a newline-only fixture would be green
+# with the trim deleted and pin nothing. With a trailing space, an untrimmed
+# value reaches `git diff --name-only` as `shaTRIM ` — hence the `shaTRIM$`
+# anchor on the recorded call (the sha is _touch_git_delta's LAST argument, so
+# the stub's `echo "git $*"` line ends exactly where the sha does).
+IFS='|' read -r U4D_BASE U4D_LANE <<< "$(_u_make_fixture U4d 1)"
+printf 'shaTRIM \n' > "${U4D_BASE}.basecommit"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_TEST_GIT_DIFF_FILES="src/tracked.rs" \
+    run_helper_real "$U4D_BASE" "$U4D_LANE" --fresh-checkout
+
+assert "U4d: a sha padded with trailing whitespace still RESOLVES ⇒ seed exits 0" \
+    test "$RC" -eq 0
+assert "U4d: STDOUT is exactly <lane>/target" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$U4D_LANE/target"
+assert "U4d: git diff received the TRIMMED sha (line ends at shaTRIM, no trailing pad)" \
+    bash -c 'grep "^git" "$1" | grep "diff" | grep -q "shaTRIM$"' _ "$CALLS_FILE"
+U4D_SRC_MTIME="$(stat -c '%Y' "$U4D_LANE/src/tracked.rs")"
+assert "U4d: the resolved base really delta-touched the changed source off the 2020-01-01 stamp" \
+    test "$U4D_SRC_MTIME" -ne "$EPOCH_2020"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block R: lane isolation guards (task 5590) — every lane created in this file
