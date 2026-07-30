@@ -39,6 +39,7 @@
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeDebugRpc } from './rpcEnvelope.mjs';
+import { describeRpcFailure } from './smokeDriverGuards.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -132,6 +133,12 @@ async function main() {
 
   // Row 1/boot: activeFile must contain 'multi_pane_viewport'
   const storeAfterOpen = await rpc('store_state');
+  // Same gap class as the Scenario 1 site below, four lines apart: the optional
+  // chain below reads straight past an in-band `{error: '<msg>'}` and reports
+  // `activeFile: undefined` — a store_state OUTAGE misreported as the wrong file
+  // being open. Diagnose the RPC first so the real cause is what gets printed.
+  const storeAfterOpenFailure = describeRpcFailure(storeAfterOpen, 'store_state (post-open)');
+  if (storeAfterOpenFailure) fail(storeAfterOpenFailure);
   if (!storeAfterOpen?.editor?.activeFile?.includes('multi_pane_viewport')) {
     fail(`Expected activeFile to contain 'multi_pane_viewport', got: ${storeAfterOpen?.editor?.activeFile}`);
   }
@@ -143,16 +150,26 @@ async function main() {
 
   log('Scenario 1: store_state viewport map (rows 1/2)…');
   const storeState = await rpc('store_state');
-  if (!storeState) fail('store_state returned null');
+  // `if (!storeState)` was not a guard: an in-band `{error: '<msg>'}` is TRUTHY,
+  // so it passed, `.viewports` read as undefined, and this scenario reported
+  // "got 0 viewports" while the actual RPC error text was never printed — a tool
+  // outage dressed up as a frontend assertion failure. describeRpcFailure names
+  // the underlying error instead, and returns null for a healthy (including
+  // empty) object so the count check below still owns the genuine empty-map case.
+  const storeStateFailure = describeRpcFailure(storeState, 'store_state');
+  if (storeStateFailure) fail(storeStateFailure);
 
   const viewports = storeState.viewports ?? {};
   const viewportIds = Object.keys(viewports);
   console.log('  viewport IDs:', viewportIds);
   console.log('  engine meshKeys:', storeState.engine?.meshKeys);
 
-  // At least 2 viewports (design-main + pane-1 at minimum)
+  // At least 2 viewports (design-main + pane-1 at minimum). Now that the guard
+  // above catches a failed RPC, this wording is only reachable for a store_state
+  // that genuinely answered — so name its top-level keys, which distinguishes
+  // "no viewports registered" from "the payload has no viewports field at all".
   if (viewportIds.length < 2) {
-    fail(`Expected ≥2 viewports in store_state; got ${viewportIds.length}: ${JSON.stringify(viewportIds)}`);
+    fail(`Expected ≥2 viewports in store_state; got ${viewportIds.length}: ${JSON.stringify(viewportIds)} (store_state keys: ${JSON.stringify(Object.keys(storeState))})`);
   }
   console.log('  OK: ≥2 viewports registered');
 
