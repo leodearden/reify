@@ -389,7 +389,13 @@ _read_basecommit_stamp() {
         # newline/space must not smuggle a whitespace-only value past the
         # caller's [ -n ] check as a falsely-resolved base (task 5632
         # amendment). The caller's presence-vs-empty attribution for this
-        # stamp is built at the resolve site below, not here.
+        # stamp is built at the resolve site below, not here: this reader
+        # returns a VALUE, the resolver owns presence-vs-empty.
+        # Pinned from both sides by Block U — U4b (a whitespace-only stamp must
+        # not resolve) and U4d (a real sha padded with trailing whitespace must
+        # still resolve, trimmed). U4d's pad is a SPACE, not a newline, because
+        # $(...) already strips trailing newlines and a newline-only fixture
+        # would stay green with this trim deleted.
         printf '%s' "${content%"${content##*[![:space:]]}"}"
     else
         echo ""
@@ -565,7 +571,8 @@ _assert_delta_newer_than_build_outputs() {
 # restated here (G7 no-lockstep-duplication), exactly as
 # _assert_delta_newer_than_build_outputs points at inv.12. Pinned by Block U:
 # U1/U1b the .fingerprint gate, U1c/U1d the -maxdepth 3 bound, U2/U2b what the
-# guard keys on, U3/U3b/U3c the opt-out knob's exact-"1" contract.
+# guard keys on, U3/U3b/U3c the opt-out knob's exact-"1" contract, U4/U4b/U4c
+# the per-tier attribution this err shares with the resolve site's warn.
 #
 # Implementation notes (local to this site):
 #   - -maxdepth 3 mirrors the non-relocatable build-dir deletion sweep's walk
@@ -1129,7 +1136,19 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # false "absent" when a stamp/sidecar file exists but its value read back
     # blank (e.g. a write truncated mid-printf) — the file is right there, and
     # the fix is to inspect it, not to `ls` for something already present
-    # (task 5632 amendment).
+    # (task 5632 amendment). Pinned by Block U's U4/U4b/U4c.
+    #
+    # set -e SAFETY of the two `[ -f X ] && VAR=...` promotions below — measured,
+    # not assumed. In an `A && B` list a failing A is exempt from errexit (only
+    # the command after the FINAL && is not), so a false `[ -f X ]` leaves the
+    # status at "absent" and execution continues; verified against the exact
+    # nested if/else shape used here. That exemption is POSITIONAL, not a
+    # property of the idiom: the same list as the LAST command of a function
+    # makes the function return non-zero, and errexit then kills the seed at the
+    # CALL site (measured: `set -e; g(){ [ -f /nonexistent ] && FOO=1; }; g`
+    # exits 1 without reaching the next statement). So no `|| true` is needed
+    # where these lines sit today, but moving either one to a function's tail
+    # makes one mandatory.
     _BASE_COMMIT_TIER2_STATUS="absent"
     _BASE_COMMIT_TIER3_STATUS="absent"
     if [ -n "$BASE_COMMIT" ]; then
