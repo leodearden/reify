@@ -77,10 +77,12 @@ function fail(msg) {
 // in-band shape `{error: "<msg>"}`: frontend-mediated tools (viewport_state,
 // orbit_camera, ... via query_frontend) already answer in-band that way, and
 // Rust-dispatched `isError: true` + plain-text `Error: <msg>` blocks are folded
-// into it. That fold is what lets the five `'error' in X` guards below stay
-// guards: given a bare string they threw a TypeError and this driver died at
-// exit 2 instead of reporting a clean exit-1 failure. A top-level envelope error
-// is a TRANSPORT failure and still throws, so waitForServer keeps polling.
+// into it. That fold is what lets EVERY guard below delegate to
+// describeRpcFailure: both dialects arrive as §2a, so one diagnosis covers them.
+// Without it a bare string reached a guard that assumed an object, threw a
+// TypeError, and killed this driver at exit 2 instead of reporting a clean
+// exit-1 failure. A top-level envelope error is a TRANSPORT failure and still
+// throws, so waitForServer keeps polling.
 const rpc = makeDebugRpc(DEBUG_URL);
 
 function sleep(ms) {
@@ -199,15 +201,8 @@ async function main() {
     meshInfo: pane1State?.meshInfo?.map(m => m.entityPath),
   }));
 
-  // TODO(#5857): sweep the five `'error' in X` guards in this file (here, plus
-  // design-main, pre-orbit, post-orbit and orbit_camera) onto describeRpcFailure.
-  // Two idioms coexisting here is deliberate rather than accidental: these five are
-  // 5731's enumerated set and task 5827 owned only the two store_state sites above.
-  // Converting them also narrows each to §2a's STRING `error`, a behaviour change
-  // that belongs to its own task.
-  if (!pane1State || typeof pane1State !== 'object' || 'error' in pane1State) {
-    fail(`viewport_state('pane-1') failed: ${JSON.stringify(pane1State)}`);
-  }
+  const pane1StateFailure = describeRpcFailure(pane1State, "viewport_state('pane-1')");
+  if (pane1StateFailure) fail(pane1StateFailure);
 
   // meshCount must be exactly 2 (db→b, dc→c; many-to-one, two distinct subjects)
   if (pane1State.meshCount !== 2) {
@@ -235,9 +230,8 @@ async function main() {
     meshInfo: mainState?.meshInfo?.map(m => m.entityPath),
   }));
 
-  if (!mainState || typeof mainState !== 'object' || 'error' in mainState) {
-    fail(`viewport_state('design-main') failed: ${JSON.stringify(mainState)}`);
-  }
+  const mainStateFailure = describeRpcFailure(mainState, "viewport_state('design-main')");
+  if (mainStateFailure) fail(mainStateFailure);
 
   // design-main must have ≥1 mesh (contains at least subject a from da + dd)
   if (mainState.meshCount < 1) {
@@ -262,9 +256,8 @@ async function main() {
 
   // Capture design-main camera before orbit
   const mainBefore = await rpc('viewport_state', { viewportId: 'design-main' });
-  if (!mainBefore || typeof mainBefore !== 'object' || 'error' in mainBefore) {
-    fail(`viewport_state('design-main') pre-orbit failed: ${JSON.stringify(mainBefore)}`);
-  }
+  const mainBeforeFailure = describeRpcFailure(mainBefore, "viewport_state('design-main') pre-orbit");
+  if (mainBeforeFailure) fail(mainBeforeFailure);
   const mainCamBefore = mainBefore.camera;
   if (!mainCamBefore?.position) {
     fail('design-main camera/position missing before orbit');
@@ -279,9 +272,8 @@ async function main() {
     camera: orbitResult?.camera,
   }));
 
-  if (!orbitResult || typeof orbitResult !== 'object' || 'error' in orbitResult) {
-    fail(`orbit_camera('pane-1') failed: ${JSON.stringify(orbitResult)}`);
-  }
+  const orbitResultFailure = describeRpcFailure(orbitResult, "orbit_camera('pane-1')");
+  if (orbitResultFailure) fail(orbitResultFailure);
 
   // orbit_camera itself reports azimuthDelta > 0 (camera actually moved)
   if (!(orbitResult.azimuthDelta > 0)) {
@@ -293,9 +285,8 @@ async function main() {
 
   // design-main camera must be UNCHANGED (independent cameras)
   const mainAfter = await rpc('viewport_state', { viewportId: 'design-main' });
-  if (!mainAfter || typeof mainAfter !== 'object' || 'error' in mainAfter) {
-    fail(`viewport_state('design-main') post-orbit failed: ${JSON.stringify(mainAfter)}`);
-  }
+  const mainAfterFailure = describeRpcFailure(mainAfter, "viewport_state('design-main') post-orbit");
+  if (mainAfterFailure) fail(mainAfterFailure);
   const mainCamAfter = mainAfter.camera;
   if (!mainCamAfter?.position) {
     fail('design-main camera/position missing after orbit');
