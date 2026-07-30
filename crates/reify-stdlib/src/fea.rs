@@ -6297,7 +6297,7 @@ mod tests {
     //   eval_fea returns Some(Value::Undef) for bad args, Some(Value::String)
     //   for the case with the smallest modes[0].eigenvalue.
 
-    /// Build a minimal `BucklingResult` StructureInstance with one Mode at
+    /// Build a minimal `BucklingResult` StructureInstance with one BucklingMode at
     /// the given eigenvalue.  Mirrors the trampoline's output shape.
     fn make_buckling_result(eigenvalue: f64) -> Value {
         let mode_fields: PersistentMap<String, Value> = [
@@ -6308,7 +6308,7 @@ mod tests {
         .collect();
         let mode = Value::StructureInstance(Box::new(StructureInstanceData {
             type_id: StructureTypeId(u32::MAX),
-            type_name: "Mode".to_string(),
+            type_name: "BucklingMode".to_string(),
             version: 1,
             fields: mode_fields,
         }));
@@ -6430,7 +6430,7 @@ mod tests {
 
     #[test]
     fn worst_buckling_case_non_real_eigenvalue_returns_undef() {
-        // Mode with eigenvalue: Undef (non-Real) → skip → no finite eigenvalue → Undef.
+        // BucklingMode with eigenvalue: Undef (non-Real) → skip → no finite eigenvalue → Undef.
         let mode_fields: PersistentMap<String, Value> = [
             ("eigenvalue".to_string(), Value::Undef),
         ]
@@ -6438,7 +6438,7 @@ mod tests {
         .collect();
         let mode = Value::StructureInstance(Box::new(StructureInstanceData {
             type_id: StructureTypeId(u32::MAX),
-            type_name: "Mode".to_string(),
+            type_name: "BucklingMode".to_string(),
             version: 1,
             fields: mode_fields,
         }));
@@ -6578,7 +6578,7 @@ mod tests {
         .collect();
         let mode = Value::StructureInstance(Box::new(StructureInstanceData {
             type_id: StructureTypeId(u32::MAX),
-            type_name: "Mode".to_string(),
+            type_name: "BucklingMode".to_string(),
             version: 1,
             fields: mode_fields,
         }));

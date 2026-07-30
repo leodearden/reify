@@ -40,19 +40,39 @@
 # Keystone for H2 (reads intra-run-serial), H3/H9 (read host-exclusive), and
 # H5-H7 (reclassify entries as they rescue/split host-exclusive files).
 
-# --- intra-run-serial (3) ----------------------------------------------------
+# --- intra-run-serial (4) ----------------------------------------------------
 test_reify_audit_ptodo.sh intra-run-serial
 test_tree_sitter_pipeline.sh intra-run-serial
+# test_verify_nextest_absent_suites.sh nests test_verify_semaphore_e2e.sh (the
+# row directly below), so it inherits that file's intra-run-serial bucket —
+# running it from `pool` would let semaphore_e2e's lane-shared mutations
+# (working-tree parser.c, CoW target/) race other pool members. Conservative-
+# first per the header; it also nests seven `pool` suites, which is harmless
+# (task 5604 added four: scope, failfast_order, occt_gated_scope,
+# release_mode_in_test_command — all hermetic pool members that build their
+# own throwaway fixtures). semaphore_e2e remains the binding reason for this
+# bucket; the classification itself is unchanged.
+test_verify_nextest_absent_suites.sh intra-run-serial
 test_verify_semaphore_e2e.sh intra-run-serial
 
-# --- host-exclusive (4) ------------------------------------------------------
+# --- host-exclusive (5) ------------------------------------------------------
 test_cpu_governed_exec_hostexcl.sh host-exclusive
 test_cpu_load_governance.sh host-exclusive
 test_cpu_load_governance_deflake.sh host-exclusive
+# test_seed_lane_lock_release_soak.sh (task #5705) is default-SKIPPING: its
+# always-run layer is a sub-second hermetic probe control, and the real repeat-N
+# soak arms only under REIFY_RUN_SEED_LANE_LOCK_SOAK=1. It is classified
+# host-exclusive anyway, conservative-first per the header — when armed it runs
+# min(nproc,24) cpu_load_fixture.sh busy-spin workers, which is exactly the
+# "real CPU burn" this bucket exists for, and would give every concurrent pool
+# member a false-RED. Mirrors test_warm_lane_pool.sh, the closest analogue
+# (also arm-with-a-knob, also capable of real resource burn).
+test_seed_lane_lock_release_soak.sh host-exclusive
 test_warm_lane_pool.sh host-exclusive
 
-# --- pool (129, the hermetic majority incl. this drift-guard itself) -------
+# --- pool (130, the hermetic majority incl. this drift-guard itself) -------
 test_affected_crates_lib.sh pool
+test_agent_cache_redirect.sh pool
 test_agent_cargo_shim.sh pool
 test_amendment_rounds_default_restored.sh pool
 test_audit_orphan_producers.sh pool
@@ -62,6 +82,7 @@ test_copy_list_preflight.sh pool
 test_cpu_admit.sh pool
 test_cpu_governance_config.sh pool
 test_cpu_governed_exec.sh pool
+test_deterministic_gate_closure_staleness_sweep.sh pool
 test_engine_hash_closure.sh pool
 test_ensure_gui_sidecar_placeholder.sh pool
 test_ensure_warm_base.sh pool
@@ -69,6 +90,7 @@ test_event_inventory_wired.sh pool
 test_fea_e2e_crate_occt_free.sh pool
 test_find_uses_smoke_runner.sh pool
 test_fleet_load_detector.sh pool
+test_flock_detached_fork_guard.sh pool
 test_gui_dist_gitignored.sh pool
 test_gui_test_script.sh pool
 test_gui_typecheck_test_side.sh pool
@@ -94,7 +116,9 @@ test_lock_charter_lifecycle.sh pool
 test_main_gate_worktree_config.sh pool
 test_merge_role_lint_first_seam.sh pool
 test_merge_verify_cold_outer_timeout.sh pool
+test_mesh_count_parity_smoke_runner.sh pool
 test_nan_safe_ordering_guard_wired.sh pool
+test_nextest_absent_lib.sh pool
 test_nextest_slow_priority.sh pool
 test_no_dead_taskmaster_artifacts.sh pool
 test_no_new_wallclock_upper_bounds.sh pool
@@ -141,6 +165,7 @@ test_run_all_pool_lock_host_global.sh pool
 test_run_all_tiering.sh pool
 test_run_gui_scripts.sh pool
 test_run_offline_deep.sh pool
+test_sandbox_cache_writability_seam.sh pool
 test_scope_boundary.sh pool
 test_seed_warm_base_initial.sh pool
 test_seed_warm_lane.sh pool
@@ -180,6 +205,7 @@ test_warm_lane_degenerate_ref.sh pool
 test_warm_lane_disk_guard.sh pool
 test_warm_lane_gc.sh pool
 test_warm_lane_gc_sweep.sh pool
+test_warm_lane_lock_guard.sh pool
 test_warm_lane_pool_config.sh pool
 test_warm_lane_preflight.sh pool
 test_warm_lane_ref_visibility.sh pool

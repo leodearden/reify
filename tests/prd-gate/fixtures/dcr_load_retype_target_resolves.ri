@@ -1,0 +1,44 @@
+module dcr_load_retype_target_resolves
+
+// D3 decompose-phase GRAMMAR/RESOLUTION probe for PRD
+// `docs/prds/v0_6/dimension-checked-readers.md` leaf γ2.
+//
+// γ2 retypes the four `fea_multi_case.ri` load fields
+// (`PointLoad.force -> Force`, `PressureLoad.magnitude -> Pressure`,
+//  `TractionLoad.traction -> Pressure`, `BodyForce.force_density -> ForceDensity`)
+// and migrates every in-scope call site to a dimensioned literal.
+//
+// This fixture declares the EXACT target shape under locally-named structures
+// (so it never shadows the stdlib declarations) and constructs each one with the
+// migrated spelling. It must PARSE with zero ERROR nodes and `reify check` /
+// `reify eval` clean at exit 0 — proving `Force` / `Pressure` / `ForceDensity`
+// param types, the `0N` / `0Pa` / `0N/m^3` dimensioned defaults, and the
+// dimensioned ctor arguments are all EXISTING grammar with no substrate work.
+// MEASURED at decompose 2026-07-28 (main efba5a8036): exit 0, zero diagnostics.
+
+structure def DcrRetypedPointLoad {
+    param point     : String     = ""
+    param force     : Force      = 0N
+    param direction : List<Real> = [0.0, 0.0, -1.0]
+}
+
+structure def DcrRetypedPressureLoad {
+    param magnitude : Pressure = 0Pa
+}
+
+structure def DcrRetypedTractionLoad {
+    param face     : String   = ""
+    param traction : Pressure = 0Pa
+}
+
+structure def DcrRetypedBodyForce {
+    param body          : String       = ""
+    param force_density : ForceDensity = 0N/m^3
+}
+
+structure def DcrLoadRetypeTargetResolves {
+    let a = DcrRetypedPointLoad(point: "tip", force: 5000N)
+    let b = DcrRetypedPressureLoad(magnitude: 1000000Pa)
+    let c = DcrRetypedTractionLoad(face: "top", traction: 5000000Pa)
+    let d = DcrRetypedBodyForce(body: "all", force_density: -77000N/m^3)
+}

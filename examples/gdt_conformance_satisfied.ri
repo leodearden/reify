@@ -17,10 +17,9 @@
 //            (without OCCT — no kernel → deviation cannot be measured → C1
 //             graceful degradation, never a false Violated)
 
-// Local enum re-declaration (eval-time availability; mirrors m8_tolerancing.ri).
-enum MaterialCondition { MMC, LMC, RFS }
-
 // Local GeometricTolerance callout type (see gdt_conformance_violated.ri).
+// MaterialCondition is consumed from the stdlib prelude
+// (crates/reify-compiler/stdlib/tolerancing.ri).
 structure def FlatnessCallout : GeometricTolerance {
     param tolerance_value : Length = 0mm
     param feature : Geometry = box(1mm, 1mm, 1mm)

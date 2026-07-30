@@ -678,14 +678,25 @@ pub enum DiagnosticCode {
     /// reading of that prose requires a *prior-vs-current* comparison across two
     /// builds. The current emitter is a forward-looking *risk* detector:
     /// constructed at populator time, it fires when two `(feature_id, role)`-
-    /// peer entries have geometrically tied centroids within a kernel-epsilon
-    /// tolerance — meaning the kernel's enumeration order is the only thing
-    /// disambiguating their `local_index` assignment, and a future edit could
-    /// shuffle them. So the variant currently warns that resolution **may**
-    /// shuffle under a future edit, not that it **did** shuffle since a prior
-    /// build. Cross-build delta comparison is recorded as a deferred follow-up
-    /// (see task #2654 design decisions); this variant doc-comment will be
-    /// updated when that lands.
+    /// peer entries with DISTINCT `local_index` values have geometrically
+    /// tied centroids within a kernel-epsilon tolerance — meaning the
+    /// kernel's enumeration order is the only thing disambiguating which of
+    /// the two distinct indices ends up assigned to which physical face, and
+    /// a future edit could shuffle them. So the variant currently warns that
+    /// resolution **may** shuffle under a future edit, not that it **did**
+    /// shuffle since a prior build. Cross-build delta comparison is recorded
+    /// as a deferred follow-up (see task #2654 design decisions); this
+    /// variant doc-comment will be updated when that lands.
+    ///
+    /// **Equal-index peers are excluded (task #5196).** Peers that already
+    /// share the same `local_index` have an identity key
+    /// `(feature_id, role, local_index)` that already collides, so there is
+    /// no enumeration-order disambiguation happening for them in the first
+    /// place — `union_all` legitimately mass-produces equal indices since
+    /// they are per-primitive-relative (PRD line 81 scopes the
+    /// construction-order tiebreak to genuine geometric ties, not
+    /// group-unique indices). Only near-coincident DISTINCT-index pairs are
+    /// reported.
     ///
     /// Canonical message form (current construction-time emitter):
     ///   `"topology-attribute selector for (feature '<feature_id>', role '<role>') has geometrically tied local_index assignments at indices <i> and <j>; selector resolution may shuffle after edits"`
@@ -707,10 +718,12 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_ATTRIBUTE_LOCAL_INDEX_REASSIGNED`.
     TopologyAttributeLocalIndexReassigned,
     /// Origin: `crates/reify-eval/src/engine_build.rs::execute_realization_ops`
-    /// (via `diagnose_topology_correspondence_drops`).
+    /// (accumulated per-op and flushed per-realization via
+    /// `TopologyCorrespondenceDropTally`, task #5196 L4).
     ///
-    /// Emitted as `Severity::Warning` when a kernel history record reports a
-    /// non-zero topology-correspondence-loss counter after a boolean, sweep, or
+    /// Emitted as `Severity::Info` (task #5196; was `Severity::Warning` under
+    /// task #4545) when a kernel history record reports a non-zero
+    /// topology-correspondence-loss counter after a boolean, sweep, or
     /// local-feature operation. The following counters are covered:
     ///
     /// - `BooleanOpHistoryRecords::silent_drop_count` — a child subshape was
@@ -2592,6 +2605,22 @@ pub enum DiagnosticCode {
     /// are stranded-downstream and do NOT emit this code. Kind-agnostic: detects
     /// value↔value, geom↔constraint, realization↔realization (GeomRef::Sub) and
     /// any other cross-kind cycle over the edges α's trace map encodes.
+    ///
+    /// Origin: `crates/reify-eval/src/engine_eval.rs::build_dependent_cells`
+    /// stage (f) (task 5189 β; the JOINT-DRIVE SCC-admissibility guardrail, PRD
+    /// `docs/prds/v0_6/whole-model-joint-drive-seam.md` §6.4).
+    ///
+    /// Canonical message form: `"circular value-cell dependency across the
+    /// coupled solve scopes: [<entity.member>, …] -- …"`, sorted for
+    /// determinism. Ids are rendered FULLY QUALIFIED because that detector is
+    /// cross-template, so the bare member name the other sites use would be
+    /// ambiguous.
+    ///
+    /// Emitted as a `Severity::Error` when the induced non-auto sub-DAG of the
+    /// coupled dependent-cell set fails to sort completely. That length check IS
+    /// the admissibility test: the node set excludes auto params by construction
+    /// and the only admissible back-edge (the solver feedback edge) runs THROUGH
+    /// an auto, so any Kahn drop is by construction an inadmissible data cycle.
     ///
     /// The PRD-prose mnemonic for this code is `E_EVAL_CYCLE`.
     EvalCycle,
@@ -4785,17 +4814,37 @@ mod tests {
     // variant-specific round-trip and serde wire-format tests are added here.
 
     /// `DiagnosticCode::TopologyAttributeLocalIndexReassigned` round-trips through
-    /// `Diagnostic::warning(...).with_code(...)` carrying both the expected
+    /// `Diagnostic::warning(...).with_code(...)`, carrying both the expected
     /// `Severity::Warning` and `Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned)`.
-    /// Pins the warning-severity contract and variant existence for the typed
-    /// disambiguation of the ordering-shuffle rebind outcome (no split, same
-    /// `(feature_id, role, user_label)`, different resolved `local_index`).
+    /// Pins builder mechanics and variant existence only — `.with_code()` never
+    /// touches severity, so this is NOT a claim about the production emit
+    /// site's severity. The production emitter
+    /// (`detect_local_index_reassignment_diagnostics`) uses `Diagnostic::info`
+    /// as of task #5196 (was `Diagnostic::warning` under task #2654); see the
+    /// sibling round-trip test below.
     #[test]
     fn diagnostic_code_topology_attribute_local_index_reassigned_with_code_round_trips() {
         use super::Severity;
         let d = Diagnostic::warning("x")
             .with_code(DiagnosticCode::TopologyAttributeLocalIndexReassigned);
         assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned)
+        );
+    }
+
+    /// Production emit-site contract (task #5196):
+    /// `detect_local_index_reassignment_diagnostics` constructs via
+    /// `Diagnostic::info(...).with_code(...)`, so the code must round-trip
+    /// under `Severity::Info` as well — `.with_code()` is independent of
+    /// which severity constructor built the `Diagnostic`.
+    #[test]
+    fn diagnostic_code_topology_attribute_local_index_reassigned_with_code_round_trips_at_info() {
+        use super::Severity;
+        let d = Diagnostic::info("x")
+            .with_code(DiagnosticCode::TopologyAttributeLocalIndexReassigned);
+        assert_eq!(d.severity, Severity::Info);
         assert_eq!(
             d.code,
             Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned)
@@ -5864,24 +5913,44 @@ mod tests {
     }
 
     // --- TopologyCorrespondenceDropped tests (task 4545 — W_TOPOLOGY_CORRESPONDENCE_DROPPED) ---
-    // Pairs with diagnose_topology_correspondence_drops in
+    // Pairs with TopologyCorrespondenceDropTally in
     // `crates/reify-eval/src/engine_build.rs` (wired in execute_realization_ops).
     // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
     // covered by `diagnostic_code_derives` above; only the variant-specific
     // round-trip and serde wire-format tests are added here.
 
     /// `DiagnosticCode::TopologyCorrespondenceDropped` round-trips through
-    /// `Diagnostic::warning(...).with_code(...)` carrying both the expected
+    /// `Diagnostic::warning(...).with_code(...)`, carrying both the expected
     /// `Severity::Warning` and `Some(DiagnosticCode::TopologyCorrespondenceDropped)`.
-    /// Pins the warning-severity contract and variant existence for the
-    /// topology-correspondence-drop diagnostic (PRD-prose mnemonic
-    /// W_TOPOLOGY_CORRESPONDENCE_DROPPED).
+    /// Pins builder mechanics and variant existence only — `.with_code()`
+    /// never touches severity, so this is NOT a claim about the production
+    /// emit site's severity. The production emitter
+    /// (`TopologyCorrespondenceDropTally::flush`) uses `Diagnostic::info` as
+    /// of task #5196 (was `Diagnostic::warning` under task #4545); see the
+    /// sibling round-trip test below.
     #[test]
     fn diagnostic_code_topology_correspondence_dropped_with_code_round_trips() {
         use super::Severity;
         let d = Diagnostic::warning("x")
             .with_code(DiagnosticCode::TopologyCorrespondenceDropped);
         assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::TopologyCorrespondenceDropped)
+        );
+    }
+
+    /// Production emit-site contract (task #5196):
+    /// `TopologyCorrespondenceDropTally::flush` constructs via
+    /// `Diagnostic::info(...).with_code(...)`, so the code must round-trip
+    /// under `Severity::Info` as well — `.with_code()` is independent of
+    /// which severity constructor built the `Diagnostic`.
+    #[test]
+    fn diagnostic_code_topology_correspondence_dropped_with_code_round_trips_at_info() {
+        use super::Severity;
+        let d = Diagnostic::info("x")
+            .with_code(DiagnosticCode::TopologyCorrespondenceDropped);
+        assert_eq!(d.severity, Severity::Info);
         assert_eq!(
             d.code,
             Some(DiagnosticCode::TopologyCorrespondenceDropped)

@@ -17,27 +17,47 @@ module continuous_cost_min
 //
 // Integration test:
 //   crates/reify-eval/tests/continuous_cost_min_example_e2e.rs
-//   asserts thickness > 2mm AND exactly one RobustnessFloorApplied Info
-//   containing 'cost_robustness_tradeoff'.
+//   asserts 2mm < thickness < 2.5mm (measured: 2.040mm, the floored bound) AND
+//   exactly one RobustnessFloorApplied Info containing 'cost_robustness_tradeoff'.
 //
 // # Why auto(free), not strict auto
 //
 // A strict `auto` triggers the uniqueness re-solve (perturbing the start from
-// ~9m and checking convergence within UNIQUENESS_SD_TOLERANCE).  Because the
-// eval-layer solver returns the initially-feasible SEED (~10mm) via the
-// `initially_feasible` fallback — rather than a unique convergent point — the
-// perturbed re-solve does not reconverge to the same value, and `ConstraintNonUnique`
-// would mask the floor signal.  `auto(free)` skips the uniqueness check here;
-// the floor behaviour is the concern, not uniqueness.  Same reasoning as
+// ~9m and checking convergence within UNIQUENESS_SD_TOLERANCE).
+//
+// The ORIGINAL reason for `auto(free)` no longer holds: it was that the eval-layer
+// solver returned the initially-feasible SEED (~10mm) via the `initially_feasible`
+// fallback rather than a unique convergent point, so the perturbed re-solve did not
+// reconverge and `ConstraintNonUnique` would mask the floor signal.  Since task #5618
+// this example converges to 2.040mm — the floored bound, an actual argmin.
+//
+// It stays `auto(free)` anyway, deliberately.  Whether a strict auto would now SURVIVE
+// the uniqueness re-solve is not re-tested here, and it is not a safe assumption:
+// `verify_uniqueness` still anchors its perturbation off the un-derived box, which is
+// exactly the uniqueness-contract question task #5711 owns.  Flipping this example to
+// a strict auto is that task's call, not this file's.  Same reasoning as
 // crates/reify-eval/tests/fixtures/cost_min_robustness_floor.ri.
 //
 // # Why Length, not bare Real
 //
-// `default_bounds_for` returns Length = [1µm, 10m] but dimensionless/Real = [−1e6, 1e6].
-// A cost-minimiser driving toward the lower bound would push a Real param toward
-// −1e6 (unphysical; the slack/penalty interplay can yield infeasible/undef), whereas
-// a Length param is clamped to a physical positive range and falls back cleanly to
-// the feasible seed.  PRD §9 Q2 tactical confirmation — no fix required.
+// This used to be a workaround.  `default_bounds_for` returns Length = [1µm, 10m] but
+// dimensionless/Real = [−1e6, 1e6], and since `AutoParam.bounds` was always `None` in
+// production that default box was the ONLY box the solver had.  A cost-minimiser
+// driving toward the lower bound would push a Real param toward −1e6 (unphysical; the
+// slack/penalty interplay can yield infeasible/undef), so choosing Length bought a
+// physically-bounded fallback.  Recorded then as "PRD §9 Q2 tactical confirmation —
+// no fix required".
+//
+// Task #5618 removed the need for it.  The solver now derives the seed and clamp
+// boxes from the inequality constraints themselves, so `thickness > 2mm` brackets the
+// param regardless of its dimension — a bare `Real` here would be bracketed by the
+// same constraint rather than by `default_bounds_for`, and would no longer run away
+// to −1e6.  (#5618's headline regression is precisely a dimensionless auto bracketed
+// away from 0, which used to report a false RobustnessFloorInfeasible.)
+//
+// The model deliberately KEEPS Length: a wall thickness is a length, and the type
+// carries that meaning to every reader and every unit check.  What changed is that it
+// is now a modelling choice rather than a solver workaround.
 structure CostMinBracket {
     param thickness : Length = auto(free)
     param unit_cost : Money = 5USD

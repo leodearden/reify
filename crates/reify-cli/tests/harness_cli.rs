@@ -129,6 +129,8 @@ mod cli_purpose_stdlib;
 mod cli_report;
 #[path = "harness_cli/cli_representation_within.rs"]
 mod cli_representation_within;
+#[path = "harness_cli/cli_reset_per_build_interleaving.rs"]
+mod cli_reset_per_build_interleaving;
 #[path = "harness_cli/cli_run.rs"]
 mod cli_run;
 #[path = "harness_cli/cli_shell_eval.rs"]

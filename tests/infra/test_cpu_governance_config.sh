@@ -20,9 +20,25 @@
 #         REIFY_CPU_ADMIT_AGENT_THRESHOLD — scripts/agent-bin/cargo
 #       NOT grep-checked: DF_AGENT_CPU_GOVERN (dark-factory consumed; no reify
 #       script reads it).
+#   (C) CENSUS IGNORE-LIST STALENESS — every config_key_census.ignore entry
+#       must still fnmatch.fnmatchcase-match >=1 dotted path flattened from the
+#       WHOLE dark-factory-orchestrator.yaml tree. This mirrors dark-factory
+#       task 2989's ConfigKeyCensusConfig.ignore fnmatch.fnmatchcase MATCHING
+#       function only (stdlib fnmatch, no cross-repo import) — NOT its path
+#       universe: 2989's own _walk_unknown_keys stops descending at
+#       unknown/ignored/reserved keys and at lists, so it is deliberately
+#       CONSERVATIVE here (a broader path set can miss a dead entry but can
+#       never report a live one as STALE). Only the STALE direction is
+#       guarded: the COMPLETE direction (a new unlisted key) is
+#       self-announcing via 2989's born-at-L2 census escalation.
+#       A separate vacuity check (census_ignore_is_nonempty_list) guards the
+#       block itself: it FAILS loudly if config_key_census is absent, empty,
+#       or holds a non-string entry, so the staleness check above — which
+#       stays silently green on zero entries — cannot degrade into a no-op if
+#       the block is ever deleted or emptied.
 #
-# (A) and (A2) are SKIPPED if python3 + PyYAML are unavailable (mirrors the
-#     tomllib SKIP idiom in test_cargo_incremental_lane_decision.sh:25).
+# (A), (A2), and (C) are SKIPPED if python3 + PyYAML are unavailable (mirrors
+#     the tomllib SKIP idiom in test_cargo_incremental_lane_decision.sh:25).
 # (B) always runs — plain bash grep, no python needed.
 
 set -euo pipefail
@@ -52,7 +68,14 @@ else
 
     # Write a Python helper to a temp file so assert() can invoke it as a command.
     _PARSE_PY="$(mktemp /tmp/cpu_gov_config_parse_XXXXXX.py)"
-    trap 'rm -f "$_PARSE_PY"' EXIT
+    # _FIXTURE_FILES accumulates every negative-fixture path minted by
+    # _mutate_fixture (defined in the (C) section below) so this ONE trap
+    # covers all of them dynamically — no call site needs to re-declare the
+    # trap with one more path appended. Declared here (even though empty)
+    # so the trap body's "${_FIXTURE_FILES[@]}" is always a defined array
+    # under `set -u`, on every path that reaches this point.
+    _FIXTURE_FILES=()
+    trap 'rm -f "$_PARSE_PY" "${_FIXTURE_FILES[@]}"' EXIT
 
     cat > "$_PARSE_PY" << 'PYEOF'
 """Validate dark-factory-orchestrator.yaml cpu_governance block.
@@ -66,13 +89,25 @@ Checks (no <script_path>):
   agent_admit_threshold_50 — cpu_governance.agent_admit.threshold == 50
   agent_admit_enabled      — cpu_governance.agent_admit.enabled is truthy
   df_agent_cpu_govern_present — 'DF_AGENT_CPU_GOVERN' key present in block
+  census_ignore_entries_resolve — every config_key_census.ignore entry still
+                                   fnmatch.fnmatchcase-matches >=1 dotted path
+                                   in a deliberately over-broad flatten of the
+                                   whole YAML tree (conservative: may miss a
+                                   dead entry, cannot false-report a live one
+                                   as STALE; STALE direction only — see (C) in
+                                   the file header)
+  census_ignore_is_nonempty_list — config_key_census.ignore is present and a
+                                    non-empty list of strings (the vacuity
+                                    check: catches an absent/emptied/malformed
+                                    block, which the staleness check above
+                                    stays silent on by design)
 Checks (with <script_path> — value-drift cross-check):
   w_task_yaml_vs_lib_cgroup       — YAML weights.task == lib_cgroup.sh :-fallback
   w_merge_yaml_vs_lib_cgroup      — YAML weights.merge == lib_cgroup.sh :-fallback
   threshold_yaml_vs_agent_cargo   — YAML agent_admit.threshold == agent-bin/cargo :-fallback
 Exit 0 on pass, 1 on fail.
 """
-import sys, yaml, re
+import sys, yaml, re, fnmatch
 
 orch_yaml_path = sys.argv[1]
 check = sys.argv[2]
@@ -82,6 +117,53 @@ with open(orch_yaml_path) as f:
 
 if check == "parse_ok":
     # If we got here, the file parsed
+    sys.exit(0)
+
+def _flatten(node, prefix=""):
+    """Every dotted path in the config, INCLUDING intermediates."""
+    out = set()
+    if isinstance(node, dict):
+        for k, v in node.items():
+            p = f"{prefix}{k}"
+            out.add(p)
+            out |= _flatten(v, p + ".")
+    return out
+
+if check == "census_ignore_entries_resolve":
+    census = d.get("config_key_census") or {}
+    entries = census.get("ignore") or []
+    paths = _flatten(d)
+    stale = [e for e in entries
+             if not any(fnmatch.fnmatchcase(p, e) for p in paths)]
+    if stale:
+        print("STALE config_key_census.ignore entries (match no live key in "
+              "dark-factory-orchestrator.yaml): " + ", ".join(repr(e) for e in stale),
+              file=sys.stderr)
+        print("Each entry excuses a reify-owned key from dark-factory task 2989's "
+              "unknown-config-key census. If the knob was deliberately renamed or "
+              "removed, drop its ignore entry in the same commit (see e61fae8017).",
+              file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
+if check == "census_ignore_is_nonempty_list":
+    census = d.get("config_key_census")
+    if not isinstance(census, dict):
+        print("config_key_census block is absent or not a mapping. If the census "
+              "allowlist was deliberately retired, remove the (C) group from this "
+              "test in the same commit rather than leaving a guard that passes "
+              "vacuously.", file=sys.stderr)
+        sys.exit(1)
+    entries = census.get("ignore")
+    if not isinstance(entries, list) or not entries:
+        print(f"config_key_census.ignore must be a non-empty list, got {entries!r}",
+              file=sys.stderr)
+        sys.exit(1)
+    bad = [e for e in entries if not isinstance(e, str)]
+    if bad:
+        print(f"config_key_census.ignore entries must be strings; got {bad!r}",
+              file=sys.stderr)
+        sys.exit(1)
     sys.exit(0)
 
 cg = d.get("cpu_governance")
@@ -192,6 +274,130 @@ PYEOF
 
     assert "REIFY_CPU_ADMIT_AGENT_THRESHOLD: YAML agent_admit.threshold matches agent-bin/cargo :-fallback" \
         python3 "$_PARSE_PY" "$ORCH_YAML" threshold_yaml_vs_agent_cargo "$AGENT_CARGO"
+
+    # ---------------------------------------------------------------------------
+    # (C) CENSUS IGNORE-LIST STALENESS — every config_key_census.ignore entry
+    # must still match >=1 dotted path flattened from the WHOLE
+    # dark-factory-orchestrator.yaml tree, so a knob rename/removal (e.g.
+    # e61fae8017's fairness.scheduler_v2) cannot leave a dead excuse behind
+    # silently. Deliberately conservative vs. dark-factory task 2989's own
+    # path universe (see the file header for why); only the STALE direction is
+    # guarded here, the COMPLETE direction is self-announcing via 2989's
+    # born-at-L2 census escalation.
+    # ---------------------------------------------------------------------------
+    echo "--- (C) census ignore-list staleness ---"
+
+    assert "every config_key_census.ignore entry still matches a live key in dark-factory-orchestrator.yaml" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" census_ignore_entries_resolve
+
+    # Asserted here, BEFORE any fixture is built below: the fixture builders
+    # mutate a copy of the real YAML on the assumption that config_key_census
+    # already exists there. If that block is ever removed from the REAL
+    # dark-factory-orchestrator.yaml, THIS is the assertion that must report it
+    # cleanly — rather than the run getting no further to report anything at
+    # all (see _mutate_fixture's defensiveness note below for why that would
+    # otherwise be a real risk).
+    assert "config_key_census.ignore is a non-empty list of strings" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" census_ignore_is_nonempty_list
+
+    # _mutate_fixture <python-statement(s)-on-d> — loads $ORCH_YAML, applies the
+    # given statement(s) to the dict `d`, and yaml.safe_dump's the result to a
+    # fresh mktemp path recorded in $_LAST_FIXTURE. Registers that path in
+    # _FIXTURE_FILES for the single shared EXIT trap (set where $_PARSE_PY is
+    # created, above), instead of every call site re-declaring the trap with
+    # one more path appended.
+    #
+    # $_LAST_FIXTURE is a global written as a side effect, not echoed/captured:
+    # this function must be invoked as a plain statement, never via `$(...)`,
+    # because a command-substitution capture runs in a subshell and the
+    # _FIXTURE_FILES+=(...) append below would be silently discarded once that
+    # subshell exits — leaking the fixture instead of registering it.
+    #
+    # Mutations MUST be defensive (setdefault/pop, never a raw d[...] index):
+    # this runs as a bare statement under `set -euo pipefail`, so if
+    # config_key_census is ever absent from the real YAML, a raw index would
+    # KeyError right here and abort the whole suite instead of letting the
+    # assertion above report the intended diagnostic.
+    _mutate_fixture() {
+        local mutation="$1"
+        _LAST_FIXTURE="$(mktemp /tmp/cpu_gov_census_fixture_XXXXXX.yaml)"
+        python3 -c "import sys, yaml; d = yaml.safe_load(open(sys.argv[1])); $mutation; yaml.safe_dump(d, open(sys.argv[2], 'w'))" \
+            "$ORCH_YAML" "$_LAST_FIXTURE"
+        _FIXTURE_FILES+=("$_LAST_FIXTURE")
+    }
+
+    # Negative fixture: the real YAML with one bogus, never-matching entry
+    # appended to config_key_census.ignore.
+    _mutate_fixture 'd.setdefault("config_key_census", {}).setdefault("ignore", []).append("cpu_governance.__stale_fixture_knob__")'
+    _CENSUS_STALE_FIXTURE="$_LAST_FIXTURE"
+
+    assert "census check FAILS on a fixture with a stale ignore entry" \
+        bash -c "! python3 '$_PARSE_PY' '$_CENSUS_STALE_FIXTURE' census_ignore_entries_resolve"
+
+    assert "census failure names the stale entry" \
+        bash -c "python3 '$_PARSE_PY' '$_CENSUS_STALE_FIXTURE' census_ignore_entries_resolve 2>&1 | grep -q 'cpu_governance.__stale_fixture_knob__'"
+
+    # Negative fixture: a REAL ignored key removed from cpu_governance — the
+    # actual regression shape e61fae8017 guards against (a live YAML key
+    # renamed/removed while its ignore entry stays behind), not just a
+    # synthetic never-matching literal. The stale-fixture case above would
+    # still be caught even if _flatten were badly over-broad (nothing could
+    # ever match a literal that was never a real key); only a key-removal
+    # fixture proves the flatten/traversal half actually narrows when the
+    # config narrows.
+    _mutate_fixture 'd.get("cpu_governance", {}).pop("fleet_load_detector", None)'
+    _CENSUS_KEY_REMOVED_FIXTURE="$_LAST_FIXTURE"
+
+    assert "census check FAILS when a live ignored key is removed from the config" \
+        bash -c "! python3 '$_PARSE_PY' '$_CENSUS_KEY_REMOVED_FIXTURE' census_ignore_entries_resolve"
+
+    assert "census failure on key removal names the now-stale entry" \
+        bash -c "python3 '$_PARSE_PY' '$_CENSUS_KEY_REMOVED_FIXTURE' census_ignore_entries_resolve 2>&1 | grep -q 'cpu_governance.fleet_load_detector'"
+
+    # Negative fixture: the entire config_key_census block deleted, so the
+    # vacuity check must fail loudly rather than pass over an absent block
+    # vacuously.
+    _mutate_fixture 'd.pop("config_key_census", None)'
+    _CENSUS_ABSENT_FIXTURE="$_LAST_FIXTURE"
+
+    assert "vacuity check FAILS when the config_key_census block is absent" \
+        bash -c "! python3 '$_PARSE_PY' '$_CENSUS_ABSENT_FIXTURE' census_ignore_is_nonempty_list"
+
+    assert "absent-block failure names the block absent-or-not-a-mapping" \
+        bash -c "python3 '$_PARSE_PY' '$_CENSUS_ABSENT_FIXTURE' census_ignore_is_nonempty_list 2>&1 | grep -q 'absent or not a mapping'"
+
+    # Division of labour: the staleness check stays deliberately SILENT (exit
+    # 0) on an absent census block — census_ignore_is_nonempty_list above is
+    # what catches that. Pinning this prevents a later refactor from
+    # conflating the two diagnostics.
+    assert "census_ignore_entries_resolve stays silent (exit 0) on an absent census block" \
+        python3 "$_PARSE_PY" "$_CENSUS_ABSENT_FIXTURE" census_ignore_entries_resolve
+
+    # Negative fixture: config_key_census present but its ignore list emptied
+    # out (e.g. the last entry deleted/commented by hand) — distinct from the
+    # block being absent entirely, and a cheap, plausible real-world drift
+    # shape in its own right.
+    _mutate_fixture 'd.setdefault("config_key_census", {})["ignore"] = []'
+    _CENSUS_EMPTY_FIXTURE="$_LAST_FIXTURE"
+
+    assert "vacuity check FAILS when config_key_census.ignore is an empty list" \
+        bash -c "! python3 '$_PARSE_PY' '$_CENSUS_EMPTY_FIXTURE' census_ignore_is_nonempty_list"
+
+    assert "empty-list failure names the non-empty-list requirement" \
+        bash -c "python3 '$_PARSE_PY' '$_CENSUS_EMPTY_FIXTURE' census_ignore_is_nonempty_list 2>&1 | grep -q 'must be a non-empty list'"
+
+    # Negative fixture: ignore holds a non-string entry (e.g. an unquoted entry
+    # YAML coerces to a number) — fnmatch.fnmatchcase requires a str, so this
+    # must be rejected before it ever reaches the staleness matcher.
+    _mutate_fixture 'd.setdefault("config_key_census", {})["ignore"] = [123]'
+    _CENSUS_NONSTRING_FIXTURE="$_LAST_FIXTURE"
+
+    assert "vacuity check FAILS when config_key_census.ignore holds a non-string entry" \
+        bash -c "! python3 '$_PARSE_PY' '$_CENSUS_NONSTRING_FIXTURE' census_ignore_is_nonempty_list"
+
+    assert "non-string-entry failure names the strings requirement" \
+        bash -c "python3 '$_PARSE_PY' '$_CENSUS_NONSTRING_FIXTURE' census_ignore_is_nonempty_list 2>&1 | grep -q 'must be strings'"
+
 fi
 
 # ---------------------------------------------------------------------------

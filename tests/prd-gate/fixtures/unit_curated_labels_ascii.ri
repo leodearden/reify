@@ -1,0 +1,51 @@
+// G3 grammar fixture for docs/prds/v0_6/angle-units-surface-convergence.md cluster C
+// (ratified decision 7b: normalize curated unit labels to parseable ASCII).
+//
+// THIS FIXTURE PARSES TODAY. Measured at HEAD dc83d4fd60: `tree-sitter parse
+// --quiet` exits 0. The ASCII `^`-exponent alphabet that leaf λ normalizes the
+// curated labels ONTO is therefore already in-grammar — λ needs NO grammar work,
+// only label-string edits. grammar_confirmed: TRUE for cluster C's λ half.
+// (The `·` half is separate: see unit_middot_mul.ri, grammar_confirmed: false.)
+//
+// Every literal below is one rung of a curated ladder, rewritten from the label the
+// ladder emits today into the ASCII form λ will emit:
+//   reify-core/src/display_units.rs:414,422,427,432  mm²/cm²/m²   -> mm^2/cm^2/m^2
+//   reify-core/src/display_units.rs:440,448,453,463  mm³/cm³/m³   -> mm^3/cm^3/m^3
+//   reify-core/src/display_units.rs:540,548,553      kg/m³, g/cm³ -> kg/m^3, g/cm^3
+//   reify-core/src/dimension.rs:465,467              mm²/mm³      (to_display_units)
+//   reify-ir/src/value.rs:3072,3074                  m²/m³        (dimension_unit_label)
+//
+// Probe-verified RESOLUTION at HEAD dc83d4fd60 (each literal checked individually —
+// `unknown unit` is file-fatal, so today this whole fixture stops at the litre and
+// prints no values). Every label resolves EXCEPT the litre, which is the live defect
+// the round-trip property test (leaf μ) catches:
+//
+//   1mm^2 -> 1e-6 m^2      1kg/m^3 -> 1 kg·m^-3     1g/cm^3 -> 999.9999999999999 kg·m^-3
+//   1USD  -> 1 USD         1deg    -> 0.01745… rad  1Pa/1N/1J/1W -> resolve
+//   1L    -> error: unknown unit: L   (file-fatal today)
+//
+// `L` is a rung of the Volume ladder (display_units.rs:458, si_scale 1e-3) naming a
+// unit that does not exist in any table — units.ri:56-60 says so explicitly. Leaf λ
+// declares `pub unit L : Volume = 0.001` (decision D7). The `1L` line below is
+// therefore expected to PARSE today and to RESOLVE only after λ.
+//
+// The g/cm^3 value is why Invariant R's scale comparison carries a 1e-12 relative
+// tolerance rather than exact equality.
+
+structure def UnitCuratedLabelsAscii {
+    let area_mm    = 1mm^2
+    let area_cm    = 1cm^2
+    let area_m     = 1m^2
+    let vol_mm     = 1mm^3
+    let vol_cm     = 1cm^3
+    let vol_m      = 1m^3
+    let vol_litre  = 1L
+    let density_si = 1kg/m^3
+    let density_cgs = 1g/cm^3
+    let money      = 1USD
+    let angle      = 1deg
+    let pressure   = 1Pa
+    let force      = 1N
+    let energy     = 1J
+    let power      = 1W
+}

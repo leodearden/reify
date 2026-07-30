@@ -14,16 +14,22 @@ module cost_robustness_tradeoff
 //     Chebyshev centre of the box (13mm), identical argmax to
 //     `build_centrality_objective` by construction (PRD §8.1).
 //
-// The sweep λ=1 → 0.5 → 0 resolves to a strictly increasing sequence of
-// `thickness` values (smallest at λ=1, largest at λ=0) — the boundary→blend→
-// centre signal. `cost_robustness_tradeoff` REPLACES the α robustness floor
+// NOTE (task #5715): at THIS layer the sweep is observably FLAT — all three λ
+// resolve to the same 13mm. Both anchors coincide here: the floor-free λ=1 cost
+// anchor cannot reach the strict 1mm boundary (see "Why the λ=1 value isn't
+// pinned" below) so it returns its seed, and for a two-sided box the
+// constraint-derived seed midpoint IS the Chebyshev centre by construction. The
+// boundary→blend→centre signal is real but only observable with explicit
+// `AutoParam` bounds, which `.ri` cannot yet express — it is verified in
+// `crates/reify-constraints/tests/cost_robustness_tradeoff_blend.rs`.
+// `cost_robustness_tradeoff` REPLACES the α robustness floor
 // for all three (see
 // `crates/reify-eval/src/engine_eval.rs::scope_qualifies_for_robustness_floor`,
 // task γ step-08): none of these scopes emit `RobustnessFloorApplied`.
 //
 // Integration test: crates/reify-eval/tests/cost_robustness_tradeoff_example_e2e.rs
-// asserts the strict ordering t(λ=1) < t(λ=0.5) < t(λ=0), t(λ=0) near the 13mm
-// centre, and zero error-severity diagnostics.
+// asserts zero error-severity diagnostics, every λ strictly inside the box, and
+// (task #5715) that all three λ coincide at this layer.
 //
 // # Why the λ=1 value isn't pinned to the exact 1mm boundary here
 //
@@ -37,11 +43,12 @@ module cost_robustness_tradeoff
 // penalty has zero slope exactly at its own root (the same characteristic
 // that originally motivated the α robustness floor, task #4789) — so
 // `solve_core_with_sd_tolerance`'s "optimizer drifted infeasible → fall back
-// to the initially-feasible seed" safety net reports the fixed default seed
-// (10mm, `extract_initial_point`'s Length default) rather than a
-// boundary-adjacent value. This example instead asserts the reliable,
-// solver-independent signal that IS meaningful at this layer: the strict
-// ordering t(λ=1) < t(λ=0.5) < t(λ=0).
+// to the initially-feasible seed" safety net reports THE SEED rather than a
+// boundary-adjacent value. Pre-#5618 that seed was a fixed 10mm, which sat
+// below the 13mm centre and so produced an apparent λ ordering; #5618 derives
+// the seed from the constraint box, making it 13mm — the centre itself. The
+// ordering was therefore always an artifact of the seed's arbitrary position,
+// never evidence that λ drives the blend. See task #5715.
 //
 // # Why auto(free), not strict auto
 //

@@ -20,6 +20,48 @@ the `reify-constraints` solver+registry, the `reify-ir` carriers, and the `struc
 sentinel `Value::Undef` — **N/A here** (this PRD is solver/eval control-flow, no result-field
 sampling; the FEA/modal field-population hot zone does not apply).
 
+**Amended 2026-07-28 (task 5190, joint-drive-seam PRD §10 Phase 3).** **BT4** — the one
+capability in this manifest originally justified by an *achievability argument alone*, with no
+`producer:task-…` binding — is now bound to `producer:task-5189` (the joint-drive-seam PRD's β
+leaf, landed `3e54addf4a`). BT3's evidence is likewise split between the merged write-back
+(M-WHOLE's own β = 5014) and the *movement* of the co-solved child `auto` (5189).
+
+**Extent of that re-verification — read this before trusting a `grep:` anchor below.** What task
+5190 re-verified against main `bd10b6d0e1e2dd32b09065f2304bd029f04b6506` is *only* the BT3/BT4
+producer bindings and the landed-commit ancestry claims stated in this paragraph — **one merge
+commit per task, never two tasks sharing a hash**: 5189 = `3e54addf4a`, 5188 = `a2864ad5bd`,
+5334 = `db64320f66` (all three ancestors of `bd10b6d0e1`), plus the `5017 depends_on 5189`
+Taskmaster edge. Rather than a blanket "confirmed at that SHA": the per-task merge SHAs were
+re-confirmed with `git log -1 --format=%s <sha>` and the ancestry with
+`git merge-base --is-ancestor <sha> bd10b6d0e1` (exit 0 for each), both re-run during task
+5190's review round. **Correction, recorded rather than silently applied:** the original
+2026-07-28 wording of this paragraph read "5188 + 5334 = `db64320f66`", collapsing two merges
+four days apart onto one hash — `db64320f66` is *"Merge task/5334 into main"* (2026-07-26) and
+its stat carries only δ's Gap-C artefacts (`resolve_order.rs`, `engine_eval.rs`,
+`harness_engine/joint_drive_cluster_formation.rs`), none of α's; 5188 landed at `a2864ad5bd`
+(*"Merge task/5188 into main"*, 2026-07-22), whose stat carries α's (`constraint.rs` +24 for
+the `ResolutionProblem` carrier, `engine_eval.rs` +456, `joint_drive_expansion_boundary.rs`
++841). The seam PRD body corroborates independently (`whole-model-joint-drive-seam.md:23`,
+`:177` — "on main `a2864ad5`"). The binding was corrected by re-running
+`git log -1 --format=%s` on each SHA, **not** by re-reading the prior text. The paragraph's
+conclusion is unaffected: all three merges remain ancestors of `bd10b6d0e1`.
+It is **not** a whole-document provenance claim. This manifest's *other* `grep:<file>:<line>`
+citations date from the 2026-07-05 decompose and several are demonstrably **stale at that very
+SHA** — spot-checked there, `engine_eval.rs:1284` lands on a connector-instance comment (not
+`build_solver_problem`), `constraint.rs:288` lands mid-doc-comment (not the `ResolutionProblem`
+carrier), `registry.rs:484` lands on `candidates,` (not `eval_rank_cost`), and `constraint.rs:445`
+/ `registry.rs:311` likewise miss. Re-anchoring them was outside task 5190's file scope and is
+tracked under **#5776**. Until that lands, treat a non-BT3/BT4 line number here as a stale hint
+and re-derive it by symbol name. (The sibling
+`whole-model-joint-drive-seam.capability-manifest.md` *was* fully re-anchored and enumerates its
+drift list in its own header.)
+
+Note that the numeric form
+`producer:task-5189` is used deliberately: the bare Greek `producer:task-β` already means
+**M-WHOLE's own β (= 5014)** everywhere else in this document, so re-using it for the seam
+PRD's β would be a homograph that misattributes the binding to a task which demonstrably does
+**not** deliver the joint drive.
+
 ---
 
 ## β is the only pure-intermediate (no standalone signal)
@@ -109,13 +151,21 @@ Leaf signal: committed `examples/whole_model_cost_min.ri` + eval test —
 | Merged cross-scope builder + N-scope write-back | `producer:task-β` (upstream; ε `depends_on β`) | PASS |
 | `cost(self.descendants)` subtree objective | `producer:task-γ` (upstream; ε `depends_on γ`) | PASS |
 | Best-of-K back-end emitting `RankedSolveResult` | `producer:task-δ` (upstream; ε `depends_on δ`) | PASS |
-| **BT3** cross-scope solved-auto **surface read** (F-inherit ζ #4826 deferral, homed on M-WHOLE per commit 85580c7d3e) | `producer:task-β` (the merged write-back makes the other scope's solved cell readable; impossible pre-β) — DAG upstream | PASS |
-| **BT4** `merged cost < strictly frozen baseline` (comparative, **not** an absolute bound) | achievability basis: the merged solve optimises over a **superset** of free variables vs the frozen cascade ⇒ merged optimum ≤ frozen; **strict** because the ε fixture is authored with **active** coupling (co-solved child `auto` ≠ its frozen freeze). No numeric-floor branch fires (no absolute-accuracy claim). | PASS |
+| **BT3** cross-scope solved-auto **surface read** (F-inherit ζ #4826 deferral, homed on M-WHOLE per commit 85580c7d3e) | `producer:task-β` (the merged write-back makes the other scope's solved cell readable; impossible pre-β) — DAG upstream. The **movement** of that cell — the co-solved child `auto` landing on a value ≠ its frozen freeze, as opposed to merely becoming readable — is `producer:task-5189` (joint-drive-seam β, landed `3e54addf4a`; per-trial SCC recompute). M-WHOLE's β = 5014 still owns the write-back | PASS |
+| **BT4** `merged cost < strictly frozen baseline` (comparative, **not** an absolute bound) | `producer:task-5189` (joint-drive-seam β, landed `3e54addf4a`, ancestor of main `bd10b6d0e1`) over that PRD's α = 5188 + δ = 5334 — ε `depends_on` 5189, so DAG-direction OK. Achievability basis (**retained** — it is the G6-branch-3 argument for why the comparison is *strict*, which naming a producer does not make redundant): the merged solve optimises over a **superset** of free variables vs the frozen cascade ⇒ merged optimum ≤ frozen; **strict** because the ε fixture is authored with **active** coupling (co-solved child `auto` ≠ its frozen freeze). No numeric-floor branch fires (no absolute-accuracy claim). | PASS |
 | `examples/whole_model_cost_min.ri` new file | absent today (`ls` → not found) = ε creates it; parent `minimize cost(self.descendants)` parses (γ substrate + grammar gate); `grammar_confirmed=true` | PASS |
 
 G6 branch 3 (end-to-end capability): every capability ε's signal requires is delivered by ε's
-**upstream** prerequisites (β, γ, δ — all wired as `depends_on` edges) — none by a task that
-**depends on** ε. No misattribution.
+**upstream** prerequisites — M-WHOLE's own β, γ, δ **and** the joint-drive-seam PRD's β =
+**5189** (itself over α = 5188 + δ = 5334), all wired as `depends_on` edges — none by a task
+that **depends on** ε. No misattribution.
+
+**DAG-direction check, stated explicitly (amended 2026-07-28, task 5190).** ε was dispatched as
+task **5017**, whose `dependencies` are `[5014, 5015, 5016, 5125, 5189]` — a real Taskmaster
+edge, verified this session. So `5017 depends_on 5189` ⇒ **5189 is upstream of ε**, and binding
+BT3/BT4 to `producer:task-5189` is *not* a `producer-downstream` FAIL. 5189 is landed
+(`3e54addf4a`), as are its own upstreams 5188 (`a2864ad5bd`) and 5334 (`db64320f66`); all three
+are ancestors of main `bd10b6d0e1e2dd32b09065f2304bd029f04b6506`.
 
 ---
 
@@ -126,10 +176,18 @@ G6 branch 3 (end-to-end capability): every capability ε's signal requires is de
 | α | `W_COUPLING_APPROXIMATED` on over-cap fixture | 6 PASS | no |
 | γ | `cost(self.descendants)` sums `Money` | 6 PASS | no |
 | δ | `RankedSolveResult` K-candidate + `BestFound` | 7 PASS | no |
-| ε | BT3 co-solved surface read + BT4 merged<frozen | 6 PASS | no |
+| ε | BT3 co-solved surface read + BT4 merged<frozen | 6 PASS (BT3 + BT4 now also bound to `producer:task-5189`) | no |
 | β (intermediate) | roped into ε | 5 PASS | no |
 
-**No FAIL bindings.** All assumed substrate is landed & wired on main; all novel capability is
-`producer:task-<label>` with the producer **upstream** of every leaf that observes it. Batch
-clears the manifest gate. No cross-PRD dependency edges (§8: 4785 consumes the fold abstractly,
-proceeds independently of 4786; the shared fold-site edits are merge-churn, not a semantic dep).
+**No FAIL bindings.** All assumed substrate is landed & wired on main; **every** novel
+capability — BT4 included, as of the 2026-07-28 amendment — is bound to a `producer:task-<label>`
+that is **upstream** of every leaf observing it. Batch clears the manifest gate.
+
+**Cross-PRD dependency edges (amended 2026-07-28, task 5190).** The original claim of "no
+cross-PRD dependency edges" was scoped to **4786 / M-UNITS**, and remains true *for that pair*:
+4785 consumes the objective fold abstractly (§8), proceeds independently of 4786, and the shared
+fold-site edits are merge-churn, not a semantic dep. It is **not** true in general — ε (task
+5017) carries a real `depends_on` edge onto **5189**, the joint-drive-seam PRD's β, which is what
+supplies BT3's child-`auto` *movement* and BT4's joint-drive premise (§8 cross-PRD table, row
+`whole-model-joint-drive-seam.md`). That edge is upstream-directed and landed, so it strengthens
+rather than weakens the manifest's verdicts.

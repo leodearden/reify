@@ -5,51 +5,21 @@
 //     Physical is the spec-shape body trait (geometry + material struct slot)
 //     introduced by PRD §8 Phase 1 / GHR-α.
 //   • DimensionalTolerance sub with computed lets (upper_limit, lower_limit, band)
-//   • Flatness and SurfaceFinish subs for GD&T annotation
-//   • Geometry body (box) supplied via the Physical `geometry` slot.
+//   • Flatness and SurfaceFinish subs for GD&T annotation, both consumed from
+//     the stdlib prelude (Flatness also contributes `nominal_zone` via its
+//     `: GeometricTolerance` bound).
+//   • Geometry body (box) supplied via the Physical `geometry` slot, and passed
+//     to the Flatness callout as the feature under inspection.
 //
-// NOTE: enum types and GD&T structure definitions are re-declared locally.
-// This is the same workaround as m8_tolerancing.ri: compile_with_stdlib provides
-// type resolution, but the output CompiledModule only contains user-defined
-// templates. The eval engine resolves sub-component templates from module.templates,
-// so DimensionalTolerance, Flatness, etc. must be re-declared locally.
-// See m8_tolerancing.ri for the full rationale and TODO tracking.
-
-// ── Local enum re-declarations ────────────────────────────────────────────────
-
-enum MaterialCondition { MMC, LMC, RFS }
-enum SurfaceParameter { Ra, Rz, Rq, Rt, Rp, Rv, Rsk, Rku }
-enum SurfaceDirection { Parallel, Perpendicular, Crossed, Multidirectional, Circular, Radial }
-
-// ── Local structure definitions (eval-time availability) ─────────────────────
-// Must appear before ExportPart so the compiled module contains them when
-// sub declarations in ExportPart are resolved.
-
-// GD&T flatness tolerance (form)
-structure def Flatness {
-    param tolerance_value : Length = 0mm
-    param feature : Real = 0.0
-    param material_condition : MaterialCondition = MaterialCondition.RFS
-}
-
-// Surface texture specification per ISO 1302
-structure def SurfaceFinish {
-    param parameter : SurfaceParameter
-    param value : Length
-    param direction : SurfaceDirection
-    param process : String
-}
-
-// Dimensional tolerance with computed limits and band
-structure def DimensionalTolerance {
-    param nominal : Length
-    param upper_deviation : Length
-    param lower_deviation : Length
-    let upper_limit   = nominal + upper_deviation
-    let lower_limit   = nominal + lower_deviation
-    let tolerance_band = upper_deviation - lower_deviation
-    constraint upper_deviation >= lower_deviation
-}
+// All GD&T types are consumed from the stdlib prelude WITHOUT inline
+// redeclaration. crates/reify-compiler/stdlib/tolerancing.ri owns every one:
+//   - enums:      MaterialCondition, SurfaceParameter, SurfaceDirection
+//   - structures: Flatness, SurfaceFinish, DimensionalTolerance
+// Sub-component templates resolve against the prelude at eval time (Regime B,
+// docs/prds/v0_6/resolution-unification.md §1).
+//
+// Auto-discovered by crates/reify-compiler/tests/examples_smoke.rs; the cells
+// below are locked by crates/reify-eval/tests/m8_4_stdlib_integration.rs.
 
 // ── Export-ready part ─────────────────────────────────────────────────────────
 //
@@ -101,11 +71,14 @@ structure def ExportPart : Physical + Elastic + Strong {
         lower_deviation: -0.05mm
     )
 
-    // Flatness tolerance: 0.02mm zone
+    // Flatness tolerance: 0.02mm zone.
+    // `feature` is the part's own body — stdlib Flatness declares
+    // `feature : Geometry` (#3116) with no default, so a geometry expression is
+    // required. Yields the live handle ExportPart#realization[0].
     sub flat = Flatness(
         tolerance_value:    0.02mm,
         material_condition: MaterialCondition.RFS,
-        feature:            0.0
+        feature:            self.geometry
     )
 
     // Surface finish: Ra 0.8 μm, parallel lay, milling process

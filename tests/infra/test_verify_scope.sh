@@ -11,6 +11,9 @@
 #
 # Assertions encode the scope contract:
 #   docs/md/yaml only      -> nothing heavy (RUN_RUST=0 RUN_GUI=0)
+#   prd-gate .ri fixture   -> nothing heavy, UNLESS the basename is in
+#                             verify.sh's _RUST_COUPLED_RI_FIXTURES (task 5536);
+#                             for a rename, the R entry's SOURCE basename counts too
 #   gui/src (frontend TS)  -> GUI only, no cargo (RUN_RUST=0 RUN_GUI=1)
 #   non-OCCT crate         -> Rust+GUI, NO gated pass (RUN_OCCT_GATE=0)
 #   OCCT-touching crate    -> gated + ungated (RUN_OCCT_GATE=1)
@@ -140,6 +143,200 @@ assert "docs/yaml-only: zero command leaves (preamble only)" \
     test "$(plan_cmdcount)" -eq 0
 
 # ---------------------------------------------------------------------------
+# Scenario PG-*: PRD-gate .ri fixture classification (task 5536).
+#
+# The /prd SOP lands a PRD's .md + .capability-manifest.yaml + its .ri probe
+# fixtures directly on `main` in ONE commit, gated by hooks/pre-commit ->
+# hooks/project-checks -> `verify.sh all --profile debug --scope staged
+# --include-infra`. Before 5536 a `tests/prd-gate/fixtures/*.ri` path matched
+# no case arm and fell to decide_scope's conservative `*)` catch-all, so a
+# docs-landing commit that included fixtures escalated to a full workspace
+# nextest run (measured RED baseline: RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1,
+# 16 command leaves) — which is why both 2026-07-25 PRD sessions split their
+# fixtures out into implementation tasks instead.
+#
+# PG-1/PG-1b are the user-observable signal (RED until step-2). PG-2..PG-5 are
+# CONTROLS: green before AND after, they pin the carve-out as narrow and
+# never-subtracting, so any later widening has to be a deliberate, reviewed
+# act rather than a silent side effect. PG-1b lives with the branch-scope
+# family below (plan_for_branch is not defined until then).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PG-1: docs + manifest + NEW prd-gate .ri fixture -> no heavy checks (RED until step-2) ---"
+plan_for staged docs/prds/v0_6/foo.md docs/prds/v0_6/foo.capability-manifest.yaml \
+    tests/prd-gate/fixtures/new_prd_fixture.ri
+assert "PG-1/docs+fixture: scope decision RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
+assert "PG-1/docs+fixture: zero command leaves (hook completes in seconds — no cargo nextest --workspace)" \
+    test "$(plan_cmdcount)" -eq 0
+
+echo ""
+echo "--- Scenario PG-2: Rust-consumed prd-gate fixture -> stays conservative (control, green before AND after) ---"
+# geometry_let_selector_consumer.ri is pushed into corpus_files() by
+# crates/reify-eval/tests/no_stale_undef_invariant_gate.rs:772 — it is a
+# runtime input to a compiled test target, so EDITING it must keep today's
+# conservative classification even though ADDING an unrelated fixture is inert.
+plan_for staged tests/prd-gate/fixtures/geometry_let_selector_consumer.ri
+assert "PG-2/coupled fixture: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (read by no_stale_undef_invariant_gate.rs)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_OUT"
+
+echo ""
+echo "--- Scenario PG-3: tests/prd-gate/*.json (non-.ri) -> stays conservative (control) ---"
+# The carve-out is tests/prd-gate/fixtures/*.ri, NOT tests/prd-gate/** —
+# probe-set JSONs keep the catch-all classification. Widening later must be a
+# deliberate act, which this control turns into an explicit test edit.
+plan_for staged tests/prd-gate/corpus-probe-set.json
+assert "PG-3/probe-set json: RUN_RUST=1 (carve-out is fixtures/*.ri, not tests/prd-gate/**)" \
+    plan_has 'RUN_RUST=1'
+
+echo ""
+echo "--- Scenario PG-4: examples/**/*.ri -> stays conservative (control) ---"
+# The carve-out is path-scoped, not extension-scoped: reify-eval's
+# corpus_files() walks examples/ wholesale, so an examples .ri IS a Rust
+# test input.
+plan_for staged examples/foo/bar.ri
+assert "PG-4/examples .ri: RUN_RUST=1 (examples/*.ri is in reify-eval's corpus sweep)" \
+    plan_has 'RUN_RUST=1'
+
+echo ""
+echo "--- Scenario PG-5: crate change + NEW prd-gate fixture together -> RUN_RUST=1 (control: the arm never subtracts) ---"
+# `rust` is a monotone OR accumulator (starts 0, only ever set to 1), so a
+# mixed diff can never be masked by the new no-heavy arm.
+plan_for staged crates/reify-doc/src/lib.rs tests/prd-gate/fixtures/new_prd_fixture.ri
+assert "PG-5/mixed diff: RUN_RUST=1 (monotone accumulator — the fixture arm cannot subtract)" \
+    plan_has 'RUN_RUST=1'
+
+# ---------------------------------------------------------------------------
+# Scenario PG-RENAME/PG-RENAME-b: the RENAME vector (task 5536 amendment).
+#
+# `git diff --name-only` prints only a rename's DESTINATION (measured here:
+# `git mv a.ri b.ri` yields just `b.ri`, while --name-status shows
+# `R100 a.ri b.ri`). So a bare destination-basename exclusion test would let
+# `git mv <coupled>.ri <new>.ri` classify no-heavy — breaking the #[test] that
+# opens the OLD literal path, on the one route (a hook-gated docs commit on
+# `main`) that has no later gate. decide_scope recovers the source side of R
+# entries under the carve-out directory; PG-RENAME pins that, PG-RENAME-b pins
+# that the recovery does not over-escalate an ordinary uncoupled-fixture
+# rename.
+#
+# Needs its own fixture: a rename requires the source to exist at HEAD, and
+# plan_for's shared FIX is never committed to (every other staged scenario
+# diffs an unborn HEAD, so seeding a commit there would leak this file into
+# their diffs).
+# ---------------------------------------------------------------------------
+FIX_PGR=""
+make_fixture FIX_PGR
+mkdir -p "$FIX_PGR/tests/prd-gate/fixtures"
+printf 'seed\n' > "$FIX_PGR/tests/prd-gate/fixtures/geometry_let_selector_consumer.ri"
+printf 'seed\n' > "$FIX_PGR/tests/prd-gate/fixtures/uncoupled_probe.ri"
+git -C "$FIX_PGR" add tests/prd-gate/fixtures/geometry_let_selector_consumer.ri \
+                      tests/prd-gate/fixtures/uncoupled_probe.ri
+git -C "$FIX_PGR" commit -q -m "seed PG-RENAME sources"
+
+# plan_for_staged_rename <src> <dst> — stage a rename in FIX_PGR, capture the
+# plan for --scope staged, then restore the index and worktree.
+plan_for_staged_rename() {
+    git -C "$FIX_PGR" mv "$1" "$2"
+    capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && exec bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan' \
+        _ "$FIX_PGR" || true
+    git -C "$FIX_PGR" reset -q --hard HEAD
+}
+
+echo ""
+echo "--- Scenario PG-RENAME: git mv of a Rust-consumed fixture -> RUN_RUST=1 (source side recovered from the R entry) ---"
+plan_for_staged_rename tests/prd-gate/fixtures/geometry_let_selector_consumer.ri \
+                       tests/prd-gate/fixtures/renamed_probe_v2.ri
+assert "PG-RENAME: renaming a coupled fixture still classifies RUN_RUST=1 (destination basename alone would say no-heavy)" \
+    plan_has 'RUN_RUST=1'
+
+echo ""
+echo "--- Scenario PG-RENAME-b: git mv of an UNCOUPLED fixture -> still no heavy checks (control: recovery does not over-escalate) ---"
+plan_for_staged_rename tests/prd-gate/fixtures/uncoupled_probe.ri \
+                       tests/prd-gate/fixtures/uncoupled_probe_v2.ri
+assert "PG-RENAME-b: renaming an uncoupled fixture stays RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
+
+# ---------------------------------------------------------------------------
+# Scenario PG-DRIFT: coupling drift guard (task 5536).
+#
+# CONTRACT (two halves, both derived from the real repo — never a restated
+# list, so this guard cannot become a third copy of _RUST_COUPLED_RI_FIXTURES):
+#
+#  (a) PER-FIXTURE. Every tests/prd-gate/fixtures/<name>.ri path named by ANY
+#      tracked *.rs must still classify RUN_RUST=1 — a fixture a compiled test
+#      target reads must never be no-heavy, because a hook-gated docs commit on
+#      `main` has no later gate to catch a bad edit to it. Adding such a
+#      reference WITHOUT adding <name>.ri to verify.sh's
+#      _RUST_COUPLED_RI_FIXTURES turns this RED. The pathspec is ALL *.rs, not
+#      just crates/*.rs: gui/src-tauri is a compiled Rust target too (it hits
+#      no fixture today — the derived set is identical either way — so the
+#      widening costs nothing and closes the gap between the stated contract
+#      and what is actually searched).
+#
+#  (b) DIRECTORY-LEVEL. verify.sh's arm rests on "nothing globs this
+#      directory", which is what makes ADDING a fixture provably inert. A
+#      corpus walker (`read_dir("…/tests/prd-gate/fixtures")`,
+#      `fixtures_dir.join(name)`, `glob("…/fixtures/*.ri")`, a format!-built
+#      path) names the DIRECTORY, never a `<name>.ri` leaf, so half (a) would
+#      stay green while every newly added fixture silently became an ungated
+#      Rust input. So: no tracked *.rs may name the directory with a
+#      string-literal/format/glob terminator (`"`, `{`, `*`) where the leaf
+#      should be. Prose that merely mentions the path (`/// see
+#      tests/prd-gate/fixtures/foo.ri`) is untouched. Residual, stated
+#      honestly: a path assembled from a non-literal constant is out of reach
+#      of any grep. If this half fires, the fix is NOT to extend
+#      _RUST_COUPLED_RI_FIXTURES — the carve-out's premise is void and the arm
+#      itself has to be re-examined.
+#
+# Both halves are checked non-vacuously (a) and are BEHAVIOURAL where they can
+# be — (a) stages the path and reads --print-plan rather than grepping
+# verify.sh, so it survives any refactor of how the list is stored. (a) is
+# deliberately comment-inclusive (a doc-comment mention counts): no
+# code-vs-comment discrimination needed, and it always errs conservative.
+# Today (a) derives 5 paths and (b) is empty.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PG-DRIFT: every *.rs-referenced prd-gate fixture still classifies RUN_RUST=1 ---"
+_PG_COUPLED="$(git -C "$REPO_ROOT" grep -h -o -E 'tests/prd-gate/fixtures/[A-Za-z0-9_.-]+\.ri' -- '*.rs' | sort -u || true)"
+# Non-empty FIRST: a broken grep, a moved fixtures dir or a changed pathspec
+# must fail loudly here instead of vacuously passing an empty loop.
+assert "PG-DRIFT: derived coupled-fixture set is NON-EMPTY (guard is not vacuous)" \
+    test -n "$_PG_COUPLED"
+while IFS= read -r _pg_path; do
+    [ -n "$_pg_path" ] || continue
+    plan_for staged "$_pg_path"
+    assert "PG-DRIFT: $_pg_path -> RUN_RUST=1 (read by a compiled test target; must be in verify.sh's _RUST_COUPLED_RI_FIXTURES)" \
+        plan_has 'RUN_RUST=1'
+done <<< "$_PG_COUPLED"
+
+echo ""
+echo "--- Scenario PG-DRIFT-DIR: no tracked *.rs walks the fixtures DIRECTORY (the carve-out's load-bearing premise) ---"
+# A directory-level use materializes the directory path and then appends the
+# leaf separately, so the character where a `<name>.ri` leaf should be is a
+# string terminator (`"`), a format placeholder (`{`) or a glob (`*`).
+_PG_DIR_PAT='tests/prd-gate/fixtures/?["{*]'
+_PG_DIRREF="$(git -C "$REPO_ROOT" grep -n -E "$_PG_DIR_PAT" -- '*.rs' || true)"
+assert "PG-DRIFT-DIR: no *.rs names the fixtures directory itself (would void 'adding a fixture is inert' — re-examine verify.sh's arm, do NOT just extend _RUST_COUPLED_RI_FIXTURES). Found: ${_PG_DIRREF:-none}" \
+    test -z "$_PG_DIRREF"
+# Non-vacuity for a MUST-BE-EMPTY assertion: an empty result is also exactly
+# what a typo'd pattern or pathspec produces. Self-test the pattern against
+# synthetic lines — the four directory-level idioms must match, and the two
+# benign forms (a well-formed leaf reference, a prose mention) must not.
+assert "PG-DRIFT-DIR: pattern self-test — all 4 directory-walk idioms match (guard is not vacuous)" \
+    test "$(printf '%s\n' \
+        'let d = Path::new("tests/prd-gate/fixtures");' \
+        'let p = base.join("../../tests/prd-gate/fixtures/");' \
+        'let p = format!("{}/tests/prd-gate/fixtures/{}", root, name);' \
+        'for e in glob("tests/prd-gate/fixtures/*.ri") {}' \
+        | grep -c -E "$_PG_DIR_PAT" || true)" -eq 4
+assert "PG-DRIFT-DIR: pattern self-test — a <name>.ri leaf and a prose mention do NOT match (no nuisance RED)" \
+    test "$(printf '%s\n' \
+        'let p = root.join("../../tests/prd-gate/fixtures/geometry_let_selector_consumer.ri");' \
+        '/// see tests/prd-gate/fixtures/stdlib_ns_mode_member.ri).' \
+        | grep -c -E "$_PG_DIR_PAT" || true)" -eq 0
+
+# ---------------------------------------------------------------------------
 # Scenario 2: gui/src frontend TS -> GUI only, no cargo
 # ---------------------------------------------------------------------------
 echo ""
@@ -162,8 +359,19 @@ plan_for staged crates/reify-doc/src/lib.rs
 assert "reify-doc: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
 assert "reify-doc: clippy present" plan_has 'cargo clippy --workspace'
-assert "reify-doc: nextest workspace pass present (no --exclude, OCCT folded in, task 4451)" plan_has 'cargo nextest run --workspace'
-assert "reify-doc: nextest workspace pass has NO --exclude (task 4451: OCCT in pool)" plan_lacks 'cargo nextest run --workspace.*--exclude'
+# RUNNER-AGNOSTIC PLAN-SHAPE ASSERTS (task 5604). From here on, every
+# plan_has/plan_lacks that names the test pass matches the ERE alternation
+# `cargo (test|nextest run)` rather than the literal `cargo nextest run`, so
+# these asserts check plan SHAPE rather than runner identity. Rationale and
+# verify.sh's two emission branches: see the "WHY THE FALLBACK IS
+# SHAPE-IDENTICAL" block in tests/infra/test_verify_nextest_absent_suites.sh,
+# which is the canonical copy and is what pins this suite (S5, floor 153).
+# Runner identity itself is pinned separately by the `nextest=N` plan header,
+# which tests/infra/test_verify_nextest_probe.sh owns.
+# The assert TITLES still say "nextest" — deliberately left alone, so they
+# keep matching the FAIL lines recorded in that guard's audit trail.
+assert "reify-doc: nextest workspace pass present (no --exclude, OCCT folded in, task 4451)" plan_has 'cargo (test|nextest run) --workspace'
+assert "reify-doc: nextest workspace pass has NO --exclude (task 4451: OCCT in pool)" plan_lacks 'cargo (test|nextest run) --workspace.*--exclude'
 assert "reify-doc: gated OCCT pass ABSENT" plan_lacks 'cargo-test-occt-gated\.sh'
 
 # ---------------------------------------------------------------------------
@@ -175,8 +383,8 @@ plan_for staged crates/reify-eval/src/cache.rs
 assert "reify-eval: scope decision RUN_OCCT_GATE=1" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_OUT"
 assert "reify-eval: no gated OCCT pass (task 4451: OCCT folded into nextest pool)" plan_lacks 'cargo-test-occt-gated\.sh'
-assert "reify-eval: nextest workspace pass present (OCCT folded in, task 4451)" plan_has 'cargo nextest run --workspace'
-assert "reify-eval: nextest workspace pass has NO --exclude (task 4451)" plan_lacks 'cargo nextest run --workspace.*--exclude'
+assert "reify-eval: nextest workspace pass present (OCCT folded in, task 4451)" plan_has 'cargo (test|nextest run) --workspace'
+assert "reify-eval: nextest workspace pass has NO --exclude (task 4451)" plan_lacks 'cargo (test|nextest run) --workspace.*--exclude'
 
 # ---------------------------------------------------------------------------
 # Scenario 5: gui/src-tauri (Rust crate, OCCT-clean) -> Rust+GUI, no gate
@@ -198,8 +406,8 @@ plan_for staged Cargo.lock
 assert "Cargo.lock: scope decision RUN_OCCT_GATE=1" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_OUT"
 assert "Cargo.lock: no gated OCCT pass (task 4451: OCCT folded into nextest pool)" plan_lacks 'cargo-test-occt-gated\.sh'
-assert "Cargo.lock: nextest workspace pass present with no --exclude (task 4451)" plan_has 'cargo nextest run --workspace'
-assert "Cargo.lock: nextest workspace pass has NO --exclude (OCCT folded in)" plan_lacks 'cargo nextest run --workspace.*--exclude'
+assert "Cargo.lock: nextest workspace pass present with no --exclude (task 4451)" plan_has 'cargo (test|nextest run) --workspace'
+assert "Cargo.lock: nextest workspace pass has NO --exclude (OCCT folded in)" plan_lacks 'cargo (test|nextest run) --workspace.*--exclude'
 
 # ---------------------------------------------------------------------------
 # Scenario 7: unrecognised path -> conservative rust+gui+gate
@@ -383,6 +591,20 @@ assert "branch/docs: zero command leaves (empty plan)" \
     test "$(plan_cmdcount)" -eq 0
 
 # ---------------------------------------------------------------------------
+# Scenario PG-1b: branch-scope twin of PG-1 (task 5536). Lives here, not
+# beside its PG-* siblings above, because plan_for_branch/FIX_B are not
+# defined until this section — the block above runs before them.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PG-1b: docs + manifest + NEW prd-gate .ri fixture on a BRANCH -> no heavy checks (RED until step-2) ---"
+plan_for_branch docs/prds/v0_6/foo.md docs/prds/v0_6/foo.capability-manifest.yaml \
+    tests/prd-gate/fixtures/new_prd_fixture.ri
+assert "PG-1b/branch docs+fixture: scope decision RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
+assert "PG-1b/branch docs+fixture: zero command leaves (empty plan)" \
+    test "$(plan_cmdcount)" -eq 0
+
+# ---------------------------------------------------------------------------
 # Scenario B2: non-OCCT crate branch -> ungated Rust tail, no gated pass
 # ---------------------------------------------------------------------------
 echo ""
@@ -391,8 +613,8 @@ plan_for_branch crates/reify-doc/src/lib.rs
 assert "branch/reify-doc: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
 assert "branch/reify-doc: clippy present" plan_has 'cargo clippy --workspace'
-assert "branch/reify-doc: nextest workspace pass present (no --exclude, task 4451)" plan_has 'cargo nextest run --workspace'
-assert "branch/reify-doc: nextest workspace pass has NO --exclude (OCCT folded in, task 4451)" plan_lacks 'cargo nextest run --workspace.*--exclude'
+assert "branch/reify-doc: nextest workspace pass present (no --exclude, task 4451)" plan_has 'cargo (test|nextest run) --workspace'
+assert "branch/reify-doc: nextest workspace pass has NO --exclude (OCCT folded in, task 4451)" plan_lacks 'cargo (test|nextest run) --workspace.*--exclude'
 assert "branch/reify-doc: gated OCCT pass ABSENT" plan_lacks 'cargo-test-occt-gated\.sh'
 
 # ---------------------------------------------------------------------------
@@ -449,8 +671,8 @@ plan_for_branch crates/reify-eval/src/lib.rs
 assert "branch/reify-eval: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_OUT"
 assert "branch/reify-eval: no gated OCCT pass (task 4451: OCCT folded into nextest pool)" plan_lacks 'cargo-test-occt-gated\.sh'
-assert "branch/reify-eval: nextest workspace pass present (OCCT in pool, task 4451)" plan_has 'cargo nextest run --workspace'
-assert "branch/reify-eval: nextest workspace pass has NO --exclude (task 4451)" plan_lacks 'cargo nextest run --workspace.*--exclude'
+assert "branch/reify-eval: nextest workspace pass present (OCCT in pool, task 4451)" plan_has 'cargo (test|nextest run) --workspace'
+assert "branch/reify-eval: nextest workspace pass has NO --exclude (task 4451)" plan_lacks 'cargo (test|nextest run) --workspace.*--exclude'
 assert "branch/reify-eval: clippy present" plan_has 'cargo clippy --workspace'
 
 # ---------------------------------------------------------------------------
@@ -899,14 +1121,20 @@ assert "Intersect/C3: RUN_OCCT_GATE=0 from changed file (reify-doc is non-OCCT)"
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
 assert "Intersect/C3: no cargo-test-occt-gated.sh in plan (task 4451: OCCT folded into nextest pool)" \
     bash -c '! printf "%s\n" "$1" | grep -q "cargo-test-occt-gated\.sh"' _ "$PLAN_OUT"
+# Same runner-agnostic convention as the plan_has/plan_lacks asserts above
+# (task 5604): the `grep -qE` bodies below also match the
+# `cargo (test|nextest run)` alternation, because the tokens they check
+# (-p <crate>, --workspace, --release) are emitted identically by verify.sh's
+# nextest and cargo-test branches. These sites were already `grep -qE`, so
+# only the pattern changed — no BRE/ERE switch was needed.
 assert "Intersect/C3: nextest pass has -p reify-eval (OCCT crate in narrowed nextest pass, task 4451)" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "cargo nextest run .*-p reify-eval"' _ "$PLAN_OUT"
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) .*-p reify-eval"' _ "$PLAN_OUT"
 assert "Intersect/C3: nextest pass LACKS reify-kernel-occt (only affected ∩ OCCT, not full OCCT set)" \
-    bash -c '! printf "%s\n" "$1" | grep -qE "cargo nextest run .*-p reify-kernel-occt"' _ "$PLAN_OUT"
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) .*-p reify-kernel-occt"' _ "$PLAN_OUT"
 assert "Intersect/C3: nextest tail has -p reify-doc" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "cargo nextest run .*-p reify-doc"' _ "$PLAN_OUT"
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) .*-p reify-doc"' _ "$PLAN_OUT"
 assert "Intersect/C3: nextest tail LACKS --workspace (narrowed to affected set)" \
-    bash -c '! printf "%s\n" "$1" | grep -qE "cargo nextest run --workspace"' _ "$PLAN_OUT"
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace"' _ "$PLAN_OUT"
 
 # ---------------------------------------------------------------------------
 # Scenario C1-guard: scope=all + override -> --workspace preserved, override ignored
@@ -983,9 +1211,9 @@ plan_for staged crates/reify-doc/src/lib.rs
 assert "B9-default: NARROW_ACTIVE=0 (coupling invariant — clippy & nextest --workspace both derive from this single global)" \
     test "$(plan_narrow_active "$PLAN_OUT")" = "0"
 assert "B9-default: nextest workspace pass keeps --workspace (staged, no --narrow flag, task 4451)" \
-    plan_has 'cargo nextest run --workspace'
+    plan_has 'cargo (test|nextest run) --workspace'
 assert "B9-default: nextest workspace pass has NO --exclude (OCCT folded in, task 4451)" \
-    plan_lacks 'cargo nextest run --workspace.*--exclude'
+    plan_lacks 'cargo (test|nextest run) --workspace.*--exclude'
 assert "B9-default: clippy keeps --workspace (staged, no --narrow flag)" \
     plan_has 'cargo clippy --workspace'
 
@@ -1104,9 +1332,9 @@ assert "MG-B5: scope=all in plan header" \
 assert "MG-B5: clippy keeps --workspace (scope=all ignores override, C1 contract)" \
     bash -c 'printf "%s\n" "$1" | grep -qE "cargo clippy --workspace"' _ "$PLAN_MG_B5"
 assert "MG-B5: nextest debug tail keeps --workspace (task 4451: OCCT folded in, no --exclude)" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "cargo nextest run --workspace"' _ "$PLAN_MG_B5"
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace"' _ "$PLAN_MG_B5"
 assert "MG-B5: nextest --workspace pass has NO --exclude (task 4451: OCCT in pool)" \
-    bash -c '! printf "%s\n" "$1" | grep -qE "cargo nextest run --workspace.*--exclude"' _ "$PLAN_MG_B5"
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace.*--exclude"' _ "$PLAN_MG_B5"
 assert "MG-B5: NO -p reify-doc (no branch-diff narrowing in merge gate)" \
     bash -c '! printf "%s\n" "$1" | grep -qE " -p reify-doc"' _ "$PLAN_MG_B5"
 assert "MG-B5: NO -p reify-ir (no branch-diff narrowing in merge gate)" \
@@ -1114,7 +1342,7 @@ assert "MG-B5: NO -p reify-ir (no branch-diff narrowing in merge gate)" \
 assert "MG-B5: no cargo-test-occt-gated.sh in plan (task 4451: OCCT folded into nextest pool)" \
     bash -c '! printf "%s\n" "$1" | grep -qE "cargo-test-occt-gated\.sh"' _ "$PLAN_MG_B5"
 assert "MG-B5: release-sensitivity pass present with -p reify- (permitted axis: release scope)" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "cargo nextest run .*-p reify-.*--release"' _ "$PLAN_MG_B5"
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) .*-p reify-.*--release"' _ "$PLAN_MG_B5"
 
 # ---------------------------------------------------------------------------
 # Scenario MG-hook: pre-merge-commit hook drift guard (GREEN now)

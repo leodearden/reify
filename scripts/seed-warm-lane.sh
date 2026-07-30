@@ -28,8 +28,10 @@
 #     --fresh-checkout it is acquired BY DEFAULT: the #5223 guard was opt-in via
 #     --lane-lock and thus bypassable by an acquire-path caller that simply
 #     omitted the flag (exactly esc-5214, where a reseed clobbered a live
-#     consumer's in-flight build). Non-blocking by default: refuses with
-#     EX_TEMPFAIL (75) when a live consumer already holds it.
+#     consumer's in-flight build). Non-blocking by default: refuses when a live
+#     consumer already holds it -- with EX_TEMPFAIL (75) by default, or 77 under
+#     --distinct-lock-refusal-rc (task #5568). Either way the refusal is
+#     prefixed `LANE_LOCK_CONTENDED:` on stderr.
 #   --lane-lock: still accepted (now implied under --fresh-checkout; still the
 #     explicit opt-in for the --reset-in-place control arm, which does not lock
 #     by default).
@@ -41,6 +43,12 @@
 #     FD 9 (fixed, matching thin-warm-lane.sh's T3 convention): a caller that
 #     lets seed acquire the lock MUST NOT itself hold a load-bearing FD 9 open
 #     across this invocation -- `exec 9>"$LANE_LOCK"` would silently reassign it.
+#     RELEASE CONTRACT (task #5705): when seed acquires the lock itself, it is
+#     released by an EXPLICIT `flock -u 9` in an EXIT trap -- NOT by process
+#     exit -- and announced on stderr ("... explicit flock -u before exit ...").
+#     An inherited FD 9 is never unlocked. Full rationale, signal coverage and
+#     measured rates: the LANE-LOCK RELEASE CONTRACT block at the flock acquire
+#     below (single source of truth; do not restate it here).
 #   --assume-lane-lock-held: opt OUT of the default acquire for a caller that
 #     ALREADY holds ${LANE_DIR}.lock itself (thin-warm-lane.sh --reseed on FD 9,
 #     warm-lane-gc.sh reclaim on FD 8). flock is not re-entrant across a process
@@ -134,7 +142,8 @@ _usage() {
     cat >&2 <<'EOF'
 Usage:
   seed-warm-lane.sh <base_target_dir> <lane_dir> (--fresh-checkout|--reset-in-place) \
-      [--base-commit <sha>] [--touch <path>]... [--lane-lock] [--assume-lane-lock-held]
+      [--base-commit <sha>] [--touch <path>]... [--lane-lock] [--assume-lane-lock-held] \
+      [--distinct-lock-refusal-rc]
   seed-warm-lane.sh --record-base <base_target_dir>
 
 Seed mode: CoW-clone a warm base target/ into a pool lane.
@@ -151,8 +160,9 @@ Seed mode: CoW-clone a warm base target/ into a pool lane.
                       is acquired BY DEFAULT (esc-5214/task 5354 fail-safe). Still the
                       explicit opt-in for the --reset-in-place control arm. Holds an
                       exclusive flock on the sibling ${LANE_DIR}.lock across the whole
-                      run, BEFORE any target mutation; refuses (EX_TEMPFAIL 75) if a
-                      live consumer already holds it (inv.2 one-consumer-per-lane).
+                      run, BEFORE any target mutation; refuses if a live consumer
+                      already holds it (inv.2 one-consumer-per-lane) -- with
+                      EX_TEMPFAIL 75 by default, 77 under --distinct-lock-refusal-rc.
                       REIFY_WARM_LANE_LANE_LOCK_WAIT (env, whenever the lock is
                       acquired): 0 (default) = non-blocking refuse (flock -n); N>0 =
                       queue up to N seconds before refusing (flock -w N); "unlimited"
@@ -161,13 +171,38 @@ Seed mode: CoW-clone a warm base target/ into a pool lane.
                       Uses a fixed FD 9 (matching thin-warm-lane.sh's T3): a caller
                       that lets seed acquire the lock must not itself hold a
                       load-bearing FD 9 open across this invocation.
+                      Released by an explicit `flock -u 9` in an EXIT trap (task
+                      #5705), NOT by process exit; see the LANE-LOCK RELEASE
+                      CONTRACT block at the flock acquire in this script for why.
   --assume-lane-lock-held
                       Opt OUT of the default acquire for a caller that ALREADY holds
                       ${LANE_DIR}.lock itself (thin --reseed on FD 9, gc reclaim on
                       FD 8). flock is not re-entrant across a process tree, so having
                       seed re-acquire the same file would self-refuse; this makes seed
                       skip its own acquire. Mutually exclusive with --lane-lock (usage
-                      error, exit 2).
+                      error, exit 2). Seed never unlocks an FD 9 it did not open, so
+                      the caller's own lock is untouched (#5705).
+  --distinct-lock-refusal-rc
+                      Exit 77 (EX_NOPERM — "another consumer owns this lane")
+                      instead of 75 (EX_TEMPFAIL) on a lane-lock refusal — either
+                      arm: the flock -n immediate refusal and the flock -w N queue
+                      timeout share ONE code (same cause, same remediation).
+                      OPT-IN: omit the flag and the exit code is unchanged at 75.
+                      Task #5568; the rationale (why 75 is the wrong code, why the
+                      flag is opt-in rather than an unconditional flip, the
+                      dark-factory arm) lives in ONE place — see
+                      docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.11.
+                      ACCEPTED-BUT-INERT wherever no refusal is reachable
+                      (--assume-lane-lock-held, --record-base, WAIT=unlimited) --
+                      never a usage error, so a caller may pass it unconditionally
+                      without replicating this script's internal mode logic.
+                      The flag string above is what dark-factory's capability probe
+                      text-greps the lane's own copy of this script for, so it must
+                      stay a literal in the arg parser.
+                      INDEPENDENT of this flag, both refusal arms ALWAYS prefix
+                      `LANE_LOCK_CONTENDED:` onto the first stderr line, so
+                      `grep LANE_LOCK_CONTENDED` separates lock contention from disk
+                      pressure even on a fleet still receiving 75.
 
 Record-base mode: stamp provenance beside the base target dir.
   --record-base dir   Write sidecar at $(dirname dir)/.warm-base-meta; print path on stdout.
@@ -202,6 +237,7 @@ TOUCH_PATHS=()
 RECORD_BASE_DIR=""
 LANE_LOCK_OPT=""
 ASSUME_LANE_LOCK_HELD=""
+DISTINCT_LOCK_REFUSAL_RC=""
 _POSITIONALS=()
 
 while [ $# -gt 0 ]; do
@@ -224,6 +260,15 @@ while [ $# -gt 0 ]; do
             ;;
         --assume-lane-lock-held)
             ASSUME_LANE_LOCK_HELD=1
+            shift
+            ;;
+        # NOTE: this flag string must stay a LITERAL here. dark-factory's
+        # capability probe text-greps the LANE's own copy of this script for
+        # it (the proven _seed_script_supports_assume_lane_lock_held
+        # mechanism), so a value synthesised from a variable would be
+        # invisible to the probe and the flag would never be passed.
+        --distinct-lock-refusal-rc)
+            DISTINCT_LOCK_REFUSAL_RC=1
             shift
             ;;
         --base-commit)
@@ -723,6 +768,32 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     # REIFY_LANE_X_FLOCK_WAIT gate (non-negative integer or "unlimited",
     # else exit 64/usage) and runs BEFORE the lock FD is even opened, so a
     # bad knob can never touch the target.
+    # ══ LANE-LOCK REFUSAL EXIT CODE (task #5568) ═════════════════════════════
+    #
+    # WHY (75-as-disk-pressure conflation, esc-5556-1, why the flag is opt-in,
+    # the reserved-code survey, the dark-factory arm): docs/prds/
+    # warm-lane-pool-cow-seeding.md §9.5 inv.11 is the SINGLE normative home.
+    # Deliberately not restated here (G7 no-lockstep-duplication) -- the same
+    # pointer-not-copy discipline inv.12 already uses for this script.
+    #
+    # MECHANICS (defined ONCE here, used by BOTH refusal arms below -- the
+    # flock -n immediate refusal and the flock -w queue timeout share ONE code):
+    #   75 (EX_TEMPFAIL) by DEFAULT -- unchanged from before #5568.
+    #   77 (EX_NOPERM)   under --distinct-lock-refusal-rc.
+    # (Tests: Block Q H11a/H11b, H12a/H12b.)
+    LANE_LOCK_REFUSAL_RC=75
+    if [ -n "$DISTINCT_LOCK_REFUSAL_RC" ]; then
+        LANE_LOCK_REFUSAL_RC=77
+    fi
+    # The flag is ACCEPTED-BUT-INERT, never a usage error, wherever no refusal
+    # is reachable (--assume-lane-lock-held, --record-base, WAIT=unlimited), so
+    # a caller may pass it unconditionally. (H11d/H11e/H11f pin the inert
+    # paths; contrast --assume-lane-lock-held + --lane-lock, which IS a usage
+    # error because those two contradict each other.) The `LANE_LOCK_CONTENDED:`
+    # stderr prefix both arms emit is INDEPENDENT of this flag -- always on.
+    # (Tests: Block Q H13.)
+    # ═════════════════════════════════════════════════════════════════════════
+
     LANE_LOCK_WAIT="${REIFY_WARM_LANE_LANE_LOCK_WAIT:-0}"
     _llw_unlimited=0
     case "$LANE_LOCK_WAIT" in
@@ -749,25 +820,128 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     # holds ${LANE_DIR}.lock on FD 9 itself and therefore omits --lane-lock.
     exec 9>"$LANE_LOCK"
     if [ "$_llw_unlimited" -eq 1 ]; then
-        flock 9   # block until acquired -- never refuses, no exit-75 case
+        flock 9   # block until acquired -- never refuses, no refusal-rc case
     elif [ "$LANE_LOCK_WAIT" = "0" ]; then
         if ! flock -n 9; then
             exec 9>&-
-            err "Lane lock held by a live consumer (flock -n failed): $LANE_LOCK"
+            err "LANE_LOCK_CONTENDED: Lane lock held by a live consumer (flock -n failed): $LANE_LOCK"
             err "Refusing to reseed an ASSIGNED lane (inv.2: one consumer per lane at a time)."
-            exit 75
+            exit "$LANE_LOCK_REFUSAL_RC"
         fi
     else
         if ! flock -w "$LANE_LOCK_WAIT" 9; then
             exec 9>&-
-            err "Lane lock still held by a live consumer after waiting ${LANE_LOCK_WAIT}s (flock -w timed out): $LANE_LOCK"
+            err "LANE_LOCK_CONTENDED: Lane lock still held by a live consumer after waiting ${LANE_LOCK_WAIT}s (flock -w timed out): $LANE_LOCK"
             err "Refusing to reseed an ASSIGNED lane (inv.2: one consumer per lane at a time)."
-            exit 75
+            exit "$LANE_LOCK_REFUSAL_RC"
         fi
     fi
     unset _llw_unlimited
     # FD 9 stays open (lock held) for the rest of the run -- spanning the
-    # mv+clone below with no check-then-act gap; bash releases it on exit.
+    # mv+clone below with no check-then-act gap.
+    #
+    # ══ LANE-LOCK RELEASE CONTRACT (task #5705) ══════════════════════════════
+    #
+    # THIS BLOCK IS THE SINGLE SOURCE OF TRUTH for the mechanism and for the
+    # measured rates. Every other site that touches FD 9 -- the --lane-lock
+    # header note, _usage(), the two `{ rm -rf ...; } 9<&- &` call sites below,
+    # tests/infra/test_seed_lane_lock_release_soak.sh, tests/infra/README.md --
+    # carries a ONE-LINE POINTER here, never a copy of the argument or of the
+    # numbers. Re-measuring (which is exactly what the soak harness exists to
+    # make easy) must then edit one place, not six; the house G7
+    # no-lockstep-duplication rule, and the reason the pre-amendment version of
+    # this comment was cut down.
+    #
+    # WHY AN EXPLICIT LOCK_UN AND NOT JUST PROCESS EXIT / `exec 9>&-`:
+    # a flock is attached to the OPEN FILE DESCRIPTION, not to the descriptor.
+    # The detached background jobs below (`{ rm -rf ...; } 9<&- &`, the orphan
+    # sweep and the reseed-trash rm) perform their `9<&-` in the forked CHILD,
+    # AFTER the fork -- so between fork() and that close the child holds a dup
+    # of this very OFD and the exclusive lock is STILL HELD, even once this
+    # process has exited. A consumer probing the instant seed exits then sees a
+    # held lock, and acquire_lane's default is a non-blocking `flock -n`
+    # (refusing with $LANE_LOCK_REFUSAL_RC -- 75 EX_TEMPFAIL by default, 77
+    # under --distinct-lock-refusal-rc), so it is spuriously refused. Note the
+    # refusal is spurious EITHER WAY: #5568's rc only makes a real refusal
+    # legible, it does not make this window benign. `flock -u` on any
+    # descriptor referring to the OFD drops the lock for every process holding
+    # a dup, which closes the window; closing our own descriptor provably does
+    # not. Measured on a 32-core host under 24 busy-spin workers,
+    # held-after-exit over 200 trials: `9<&-` alone 16/200, `9<&-` + parent
+    # `exec 9>&-` 14/200, `9<&-` + parent `flock -u 9` 0/200.
+    #
+    # WHY AN EXIT TRAP AND NOT A STATEMENT AT THE SUCCESS TAIL: a tail
+    # statement is unreachable the moment seed aborts after acquiring -- the
+    # hard reflink error, the same-FS check, and every `set -euo pipefail`
+    # abort in the mid-run find walks / the _assert_delta_newer_than_build_
+    # outputs post-condition are all DOWNSTREAM of the orphan sweep that has
+    # already forked a detached child, so they carry the identical race.
+    # (test_seed_warm_lane.sh H4e pins that failure-path coverage.)
+    #
+    # SIGNAL COVERAGE -- what "every exit path" does and does not include:
+    # an EXIT trap covers signal death too, for TERM/INT/HUP. That is not an
+    # assumption, it is bash's documented termsig_handler behaviour: on a
+    # terminating signal bash runs the EXIT trap FIRST and only then re-raises
+    # the signal against itself, so the exit status stays signal-accurate.
+    # Measured directly against this release shape (parent holds the lock, a
+    # live child holds a dup of the OFD and never closes it, probe fires after
+    # the parent is gone), for both a foreground-child and a builtin-loop
+    # victim: TERM -> trap ran, rc 143, lock FREE; INT -> trap ran, rc 130,
+    # lock FREE; HUP -> trap ran, rc 129, lock FREE; KILL -> trap did NOT run,
+    # lock HELD. So SIGKILL is the ONE uncovered case, and it is uncoverable in
+    # principle: no userspace release can run. Its residual exposure is the
+    # same fork window described above and no wider -- the kernel closes FD 9,
+    # and only a detached child forked microseconds earlier can still be
+    # holding a dup; in the dominant real shapes (systemd stop, an orchestrator
+    # tearing down a cgroup, Ctrl-C on a pipeline) the signal reaches the whole
+    # process group, so that child dies with us.
+    # REJECTED ALTERNATIVE -- adding `trap _release_lane_lock EXIT INT TERM HUP`
+    # explicitly: it is redundant given the above, and it would be actively
+    # harmful. Installing a handler for a terminating signal switches bash from
+    # "die now" to bash's DEFERRED-trap semantics -- a trapped signal received
+    # while a foreground command runs is not delivered until that command
+    # completes -- so a SIGTERM arriving during the multi-GB `cp -a` clone or a
+    # whole-tree `find` walk would be ignored for the duration, blowing through
+    # an orchestrator stop window that today kills seed promptly.
+    #
+    # WHY THE TRAP IS INSTALLED *HERE* RATHER THAN UNCONDITIONALLY WITH AN
+    # IN-BODY GUARD: under --assume-lane-lock-held (thin --reseed on FD 9,
+    # warm-lane-gc.sh reclaim) _should_acquire_lane_lock is empty, we never
+    # open FD 9, and FD 9 is INHERITED from the caller -- an unguarded
+    # `flock -u 9` would release the CALLER's lock, strictly worse than the bug
+    # being fixed. Installing inside this branch makes that structurally
+    # impossible rather than conditionally avoided: on the inheritance path the
+    # trap does not exist at all. (H7b pins it.)
+    #
+    # Ordering note: the $LANE_LOCK_REFUSAL_RC refusal paths above do their own `exec 9>&-`
+    # and error out BEFORE this line, so they never reach the trap and there is
+    # no double-close. The script has no other trap to compose with.
+    # ═════════════════════════════════════════════════════════════════════════
+    _release_lane_lock() {
+        # $? on the FIRST line captures the status that triggered the trap;
+        # `return $_rc` preserves it so exit codes are unchanged (notably the
+        # exit 1 of the reflink hard-error path, which is downstream of here).
+        local _rc=$?
+        # Every command is `|| true`-guarded: `set -euo pipefail` is in force,
+        # and a failing command inside an EXIT trap would abort the trap
+        # mid-way and lose the exit status. `exec 9>&-` is deliberately NOT
+        # written as `exec 9>&- 2>/dev/null || true` -- an `exec` carrying
+        # redirections and NO command applies them PERMANENTLY to the shell,
+        # so that `2>/dev/null` would silence every later diagnostic rather
+        # than just this close.
+        flock -u 9 2>/dev/null || true
+        exec 9>&- || true
+        # STRUCTURAL RELEASE MARKER (technique S, docs/prds/
+        # infra-test-wallclock-deflake.md §2): proves this path ran without a
+        # timing assertion. test_seed_warm_lane.sh's H4b/H4e grep the literal
+        # phrase "explicit flock -u before exit" -- keep it verbatim. STDERR
+        # only, via info(): STDOUT is seed's machine-readable contract with
+        # acquire_lane (exactly "<lane_dir>/target", pinned by H7; asserted
+        # EMPTY on the fail-closed path by H3), so nothing may be added to it.
+        info "Lane lock released (explicit flock -u before exit): $LANE_LOCK" || true
+        return $_rc
+    }
+    trap _release_lane_lock EXIT
 fi
 
 # ── mode-split: replace-existing (fresh-checkout) vs clobber-guard (reset-in-place) ──
@@ -873,10 +1047,11 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         # seed — it is always a prior-crash orphan and is safe to reclaim now.
         # Background rm mirrors the main rm (large tree, must not block acquire).
         # 9<&-: close the (possibly held, --lane-lock) exclusive lane-lock FD
-        # before backgrounding so a detached child never inherits it -- the
-        # lock must release exactly when seed exits, not whenever this rm
-        # happens to finish (lib_slot_acquire.sh daemon-FD-inheritance guard).
-        # A no-op when FD 9 was never opened (--lane-lock not passed).
+        # so a detached child does not keep it open for its whole lifetime
+        # (lib_slot_acquire.sh daemon-FD-inheritance guard). A no-op when FD 9
+        # was never opened (--lane-lock not passed). It only NARROWS the
+        # fork-to-close window and cannot close it -- see the LANE-LOCK RELEASE
+        # CONTRACT block at the flock acquire above (#5705).
         while IFS= read -r -d '' _rp_orphan; do
             warn "Sweeping orphaned trash entry (prior-crash recovery): $_rp_orphan"
             { rm -rf "$_rp_orphan" || warn "orphan trash sweep rm failed (leaked): $_rp_orphan"; } 9<&- &
@@ -1223,12 +1398,13 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # On cp failure RESEED_TRASH is unset (no rename happened), so this block is skipped.
     # Background by default (production: large lane rm must not block acquire).
     # Foreground when REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 (test-determinism knob).
-    # 9<&-: close the (possibly held, --lane-lock) exclusive lane-lock FD
-    # before backgrounding so a detached child never inherits it -- the lock
-    # must release exactly when seed exits, not whenever this rm happens to
-    # finish (lib_slot_acquire.sh daemon-FD-inheritance guard). No-op when
-    # FD 9 was never opened (--lane-lock not passed); the SYNC (foreground)
-    # branch needs no change -- it completes before seed exits either way.
+    # 9<&-: close the (possibly held, --lane-lock) exclusive lane-lock FD so a
+    # detached child does not keep it open for its whole lifetime
+    # (lib_slot_acquire.sh daemon-FD-inheritance guard). No-op when FD 9 was
+    # never opened (--lane-lock not passed); the SYNC (foreground) branch needs
+    # no change -- it completes before seed exits either way. As at the orphan
+    # sweep above, 9<&- only NARROWS the fork-to-close window -- see the
+    # LANE-LOCK RELEASE CONTRACT block at the flock acquire above (#5705).
     if [ -n "$RESEED_TRASH" ] && [ -d "$RESEED_TRASH" ]; then
         info "Removing reseed trash: $(basename "$RESEED_TRASH") ..."
         if [ "${REIFY_WARM_LANE_RESEED_TRASH_SYNC:-}" = "1" ]; then

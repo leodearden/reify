@@ -1,0 +1,33 @@
+module dcr_load_ctor_dimension_silent
+
+// D3 decompose-phase RED before-image for PRD `docs/prds/v0_6/dimension-checked-readers.md`
+// leaves γ1 / γ2 / γ3 (boundary rows B1, B2, B3).
+//
+// All four load structures declare their magnitude field as `Real`
+// (crates/reify-compiler/stdlib/fea_multi_case.ri PointLoad:317, PressureLoad:419,
+// TractionLoad:448, BodyForce:478). MEASURED at decompose (2026-07-28,
+// main efba5a8036):
+//
+//   * the units-CORRECT spelling `force: 5000N` emits only a WARNING
+//     ("argument 'force' has type 'Scalar[m*kg*s^-2]' but param 'force'
+//      requires type 'Real'") and stores a `Value::Scalar`;
+//   * `extract_loads` (crates/reify-eval/src/compute_targets/elastic_static.rs:4029)
+//     matches `Some(Value::Real(f))` ONLY, so that Scalar contributes ZERO force
+//     to `solve_elastic_static`, while `extract_total_load`
+//     (buckling.rs:726/:730) accepts both and contributes 5000 N;
+//   * `TractionLoad` and `BodyForce` have ZERO occurrences anywhere in
+//     elastic_static.rs (verified by grep at decompose) — they are dropped
+//     silently (INV-SF-3);
+//   * `reify eval` EXIT 0.
+//
+// This file must EVAL CLEAN (exit 0) today. After γ3 the bare spellings must
+// exit 1 with `ArgDimensionMismatch`, and TractionLoad/BodyForce reaching a
+// solver must exit 1 with `FeaLoadKindUnsupported`.
+
+structure def DcrLoadCtorDimensionSilent {
+    let dimensioned_point = PointLoad(point: "tip", force: 5000N)
+    let bare_point        = PointLoad(point: "tip", force: 5000.0)
+    let bare_pressure     = PressureLoad(magnitude: 1000000.0)
+    let traction          = TractionLoad(face: "top", traction: 5000000Pa)
+    let body_force        = BodyForce(body: "all", force_density: -77000.0)
+}

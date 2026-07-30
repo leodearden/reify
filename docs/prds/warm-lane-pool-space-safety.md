@@ -207,8 +207,10 @@ proactive soft floor (ε). See the amendment notes in §8.3, §11, and §12 belo
 - `reclaim` runs two passes:
   - **Pass 1 — FREE pool lanes (`_lane-*`/`_spec-*`).** Reset `target/` to thin (via the α
     primitive) for **every** lane whose per-lane `flock -n` is free — **regardless of dirty tracked
-    changes, an ahead-of-`main` tip, or backing-task status**. The live-consumer flock (inv.2) is
-    the **sole** Pass-1 preserve gate. Safe because `acquire_lane` always re-seeds from base
+    changes, an ahead-of-`main` tip, or backing-task status**. Pass 1 has exactly **two** preserve
+    gates, checked in this order: (1) the live-consumer flock (inv.2), and (2) — since task 5572 —
+    a live **process reference** at or under the lane dir (see the live-reference gate bullet
+    below). Safe because `acquire_lane` always re-seeds from base
     (cow-seeding §9.5), so a FREE lane's divergent `target/` is never reused; reset touches only
     `target/` (never the source tree or the branch), and committed work lives on
     `refs/heads/task/NNNN` — see D6 and the `warm-lane-pool-sizing-lifecycle.md` T1/D5
@@ -217,7 +219,40 @@ proactive soft floor (ε). See the amendment notes in §8.3, §11, and §12 belo
     landed (`git merge-base --is-ancestor <branch> main`) **and** have no live consumer — the
     conservative `_is_reclaimable` predicate is retained here because removing a real worktree is
     destructive. **inv.preserve (Pass 2):** dirty WIP / unlanded-ahead / live-consumer is never
-    touched.
+    touched — where "live-consumer" is **two** distinct tests since task 5572: the `_is_reclaimable`
+    flock, and a live process reference at or under the entry, which sits OUTSIDE that predicate and
+    runs after it (see the live-reference gate bullet below).
+- **Live-reference gate (task 5572), both passes.** A per-lane live **process-reference** check
+  (`live_ref_present`, `scripts/lib_live_refs.sh`): does any process hold its cwd, an open fd, or an
+  mmap at or under the entry? It sits deliberately **OUTSIDE** the `_is_reclaimable` predicate,
+  which is precisely why its share of the preserved count is reported separately rather than folded
+  into `preserved`. **Order:** Pass 1 gains it as its second preserve gate (after the flock); in
+  Pass 2 it runs **AFTER** `_is_reclaimable` — cheapest decisive predicate first, so only an orphan
+  that would actually be removed pays for the walk (the `_is_reclaimable` git pair is ~18 ms).
+  **Why per-lane and not a batch snapshot:** it is evaluated immediately before that entry's reset
+  (Pass 1) or remove (Pass 2), under the flock the loop already holds. An up-front batch scan is the
+  TOCTOU this gate exists to close — it would leave a lane that goes live mid-traversal unprotected
+  across a 25–40 minute pass. It lives in the primitive rather than a wrapper because only one of
+  the two entry points ever passed `--extra-protect-glob` (`warm-lane-gc-sweep.sh` did; dark-factory's
+  ε path, `git_ops.py _run_warm_lane_gc_reclaim`, never has), so every caller inherits the guard
+  with no dark-factory change. **Cost — and an explicit reversal.** Moving from one batch `/proc`
+  scan to a per-entry scan is O(entries × `/proc`): ~1.9 s per call (≈1.5 s find+awk over `/proc`
+  cwd/fd, ≈0.38 s grep over `/proc/*/maps`), measured on 1159 live processes / 11527 fd+cwd
+  symlinks, giving ≈2–3 min of added wall clock for a 93-entry pool across both passes (measured
+  2026-07-28 on the live host). Budget for the full `entries × 1.9 s`: "only flock-FREE entries pay
+  the walk" is true but nearly vacuous, since in a pool at rest almost every lane is flock-free.
+  This **SUPERSEDES** — not silently contradicts — the earlier judgement that a per-entry scan was
+  "too costly for the hot path": it lands on dark-factory's ε admission path, which imposes **no**
+  timeout, against a pass that already runs 25–40 min. Over-preserving is safe and TEMPORARY — a
+  lingering reference costs one extra sweep. **What it closes:** reclaim resetting `<lane>/target`
+  out from under a live build, because the inv.2 flock is FREE during the implement phase
+  (root-caused 2026-07-26, esc-5334-6). *Cite mismatch to be aware of when reading the code:* the
+  implementing comments in `warm-lane-gc.sh` and `warm-lane-gc-sweep.sh` cite `esc-5375-1` for this
+  same mechanism — an earlier, auto-dismissed L0 instance of the class, whose record carries only
+  the hypothesis. `esc-5334-6` is the record holding the root cause; follow that one.
+  **Counter:** `preserved_live_ref=L` is the share of `preserved=K` attributable to this gate — a
+  breakdown, not an extra bucket (L ≤ K) — APPENDED to the summary line so prefix-matching
+  consumers keep working.
 - **Terminal-task reclaim tier (task 5167) — SUBSUMED (task 5326).** The former Pass-1 tier that
   reclaimed a `task/NNNN`-backed FREE lane (ahead-of-`main` and dirty notwithstanding) only once its
   backing task's status was terminal (`done`/`cancelled`), read from an advisory `--status-cmd` /
@@ -233,12 +268,13 @@ proactive soft floor (ε). See the amendment notes in §8.3, §11, and §12 belo
   768G/404G and wedged ~8 verifies) is now closed *a fortiori*: such a lane is reclaimed on the
   first FREE sweep, terminal or not. Human decision: Leo, 2026-07-22, on task 5301 / esc-5322-1.
 - **Disk-pressure fast-path (task 5167).** `--disk-pressure` / `REIFY_WARM_LANE_GC_DISK_PRESSURE`
-  (off by default) switches the Pass-1 reset action, for any FREE pool lane Pass 1 reclaims (now
-  flock-gated only), from the α reflink-reseed clone to a direct `rm -rf <lane>/target` — no reseed
-  clone, so none of the clone's transient 2×-space window (old divergent `target/` and the new
-  clone briefly coexisting). Valid because `acquire_lane` always re-seeds from base
-  (warm-lane-pool-cow-seeding.md §9.5), so an empty/missing `target/` is a legal lane state. Still
-  counted as `reset` in the `reclaim: reset=N removed=M preserved=K` summary. Mirrors the manual
+  (off by default) switches the Pass-1 reset action, for any FREE pool lane Pass 1 reclaims (i.e.
+  one that clears both Pass-1 preserve gates), from the α reflink-reseed clone to a direct
+  `rm -rf <lane>/target` — no reseed clone, so none of the clone's transient 2×-space window (old
+  divergent `target/` and the new clone briefly coexisting). Valid because `acquire_lane` always
+  re-seeds from base (warm-lane-pool-cow-seeding.md §9.5), so an empty/missing `target/` is a legal
+  lane state. Still counted as `reset` in the
+  `reclaim: reset=N removed=M preserved=K preserved_live_ref=L` summary. Mirrors the manual
   2026-07-10 remediation for the leaked lanes above.
 - **Emergency low-water trigger (task 5168).** `warm-lane-gc-sweep.sh` (the periodic-timer and
   hand-run GC backstop) now measures available bytes on `--mount` (`df`; override via `--df` /
@@ -252,8 +288,9 @@ proactive soft floor (ε). See the amendment notes in §8.3, §11, and §12 belo
   reset=N/removed=0 deadlock (and sometimes free-lowering) behind the 2026-07-10 outage. A hand-run
   or periodic sweep now makes forward progress at true ENOSPC instead of wedging. The mechanism
   itself (rm-outright and its per-lane flock gate) is unchanged from task 5167; under the task-5326
-  always-reclaim policy the Pass-1 preserve gate is the live-consumer flock alone (see the first
-  §8.4 bullet); the trigger fires only on a positive low-water measurement — a df failure or
+  always-reclaim policy the Pass-1 preserve gates are the live-consumer flock and — since task 5572
+  — the live process reference (see the first §8.4 bullet); the trigger fires only on a positive
+  low-water measurement — a df failure or
   unparseable output falls back to the plain (α) `reclaim` invocation unchanged (fail-to-α), so a
   benign df misconfiguration in steady state never silently cold-ifies every reclaimable lane on
   every periodic sweep. `warm-lane-gc.sh reclaim` itself is untouched by this trigger.

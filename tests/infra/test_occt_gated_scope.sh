@@ -135,6 +135,39 @@ echo "--- Test 4 (task 4451): plan has NO cargo-test-occt-gated.sh invocation (f
 assert "plan contains NO cargo-test-occt-gated.sh (gated pass dropped, OCCT in nextest pool)" \
     bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q 'cargo-test-occt-gated\.sh'"
 
+# NEXTEST-LESS HOST AUDIT (task 5604): Tests 5-8 need NO change — they are
+# host-independent BY CONSTRUCTION, and this is the shape to copy. Why the
+# alternation is sound at all (verify.sh's two emission branches share their
+# selector fragment): see the canonical "WHY THE FALLBACK IS SHAPE-IDENTICAL"
+# block in tests/infra/test_verify_nextest_absent_suites.sh.
+#
+# Each one EXTRACTS with the `cargo (test|nextest run)` alternation into
+# FULL_WS_DEBUG / NEXTEST_RELEASE, asserts the extract is NON-EMPTY
+# (`test -n`), and only THEN negative-greps the extract. That ordering is what
+# makes them non-vacuous: a negative grep run directly against the whole plan
+# passes for free on a nextest-less host (its needle matches nothing), whereas
+# here the `test -n` assert fails first if the pass is missing. Sibling suites
+# that instead negative-grepped a hard-coded `cargo nextest run` against the
+# raw plan were silently asserting nothing on that path — see task 5604's fix
+# to test_verify_scope.sh / test_verify_failfast_order.sh.
+#
+# Two deliberate exceptions further down, neither of them a defect:
+#   - Test 9 (--config-file / reify-nextest-occt) is GENUINELY nextest-only:
+#     cargo test has no --config-file. It carries an explicit PLAN_HAS_NEXTEST
+#     guard with a written reason — the correct form when a property really is
+#     runner-specific, as opposed to widening the grep. The guard is written
+#     OUTSIDE the assert (skip-and-echo), not as an early `exit 0` inside the
+#     assert body; see the "GUARD FORM MATTERS" note at Test 9 for why that
+#     distinction is what keeps S7's floor load-bearing.
+#   - Tests 9b/9c are negative regression guards whose subject is a
+#     `cargo nextest run` line. When NEXTEST=0 no such line exists, so they are
+#     INERT by construction rather than vacuous by accident: the thing they
+#     forbid (a broken --config form on a nextest line) cannot occur where
+#     there are no nextest lines at all.
+#
+# Pinned mechanically by S7 in test_verify_nextest_absent_suites.sh, floor 48
+# = 49 ambient minus Test 9's runner-specific skip, so this verdict fails
+# loudly if a future edit guards a further assert away here.
 echo ""
 echo "--- Test 5 (task 4451): full-workspace nextest pass has --workspace with NO --exclude ---"
 FULL_WS_DEBUG="$(printf '%s\n' "$TEST_PLAN_SEGS" \
@@ -208,6 +241,16 @@ assert "workspace nextest pass is wrapped in 'timeout --kill-after=60 [0-9]+m'" 
 # Guard: plan-shape assertions are only meaningful when the plan actually uses
 # cargo nextest run.  When NEXTEST=0 the plan uses cargo test (no --config-file
 # support), so skip the plan-shape checks (vacuous pass).
+#
+# GUARD FORM MATTERS (task 5604 amendment).  The skip is expressed OUTSIDE the
+# assert (`if [ "$PLAN_HAS_NEXTEST" -gt 0 ]; then assert ...; else echo SKIP; fi`)
+# rather than as an early `exit 0` INSIDE the assert body.  test_helpers.sh:42
+# counts any zero-exit checker as a PASS, so an in-body `exit 0` guard still
+# increments PASS while checking nothing — invisible to S7's pass floor in
+# test_verify_nextest_absent_suites.sh, which is the mechanism meant to catch
+# exactly this.  The outside form makes the skip VISIBLE as a count of 48 rather
+# than 49 on a nextest-less host, so a future guard that silently swallows
+# coverage trips the floor.  Copy this shape, not an in-body `exit 0`.
 # ---------------------------------------------------------------------------
 PLAN_HAS_NEXTEST="$(printf '%s\n' "$TEST_PLAN_SEGS" | grep -c 'cargo nextest run' || true)"
 GEN_CFG="$REPO_ROOT/scripts/gen-nextest-config.sh"
@@ -218,14 +261,26 @@ echo "--- Tests 9–12 (task 4503/γ): --config-file plan assertions for env-dri
 # Test 9 (plan-shape): every cargo nextest run line carries --config-file <path>
 # where the path contains the 'reify-nextest-occt' prefix.  In --print-plan mode
 # (used here) this is the static placeholder; in execute mode it is the real temp path.
-assert "every 'cargo nextest run' plan line carries '--config-file' with 'reify-nextest-occt' path" \
-    bash -c "
-        if [ '${PLAN_HAS_NEXTEST}' -eq 0 ]; then exit 0; fi
-        bad=\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" \
-            | grep 'cargo nextest run' \
-            | grep -v -- '--config-file.*reify-nextest-occt' || true)
-        [ -z \"\$bad\" ]
-    "
+#
+# Genuinely nextest-only: `cargo test` has no --config-file, so this cannot be
+# fixed by widening the grep the way task 5604 fixed its siblings.  Guarded in
+# the skip-outside-assert form per the note above — this is the ONE assert
+# behind S7's 48-nextest-less / 49-ambient delta.
+if [ "$PLAN_HAS_NEXTEST" -gt 0 ]; then
+    assert "every 'cargo nextest run' plan line carries '--config-file' with 'reify-nextest-occt' path" \
+        bash -c "
+            bad=\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" \
+                | grep 'cargo nextest run' \
+                | grep -v -- '--config-file.*reify-nextest-occt' || true)
+            [ -z \"\$bad\" ]
+        "
+else
+    echo "  SKIP: Test 9 (--config-file / reify-nextest-occt) — the plan has no"
+    echo "        'cargo nextest run' line on this host (nextest=0) and cargo test"
+    echo "        has no --config-file, so the property is genuinely runner-specific."
+    echo "        S7's floor in test_verify_nextest_absent_suites.sh is pinned at 48"
+    echo "        (= 49 ambient minus this assert) to account for exactly this skip."
+fi
 
 # Regression guard: NO cargo nextest run line may carry the broken Cargo-config form.
 # cargo --config overrides CARGO configuration only; test-groups is a nextest config

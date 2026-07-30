@@ -14,10 +14,64 @@
 //! emitted-op inspection (`operations_ref`) modelled on
 //! `arbitrary_pattern_transform_e2e.rs`.
 
-use reify_core::Severity;
+use reify_core::{DiagnosticCode, Severity};
 use reify_eval::{BuildResult, Engine};
 use reify_ir::{ExportFormat, GeometryOp};
-use reify_test_support::{MockConstraintChecker, MockGeometryKernel, parse_and_compile};
+use reify_test_support::{
+    MockConstraintChecker, MockGeometryKernel, compile_source, parse_and_compile,
+};
+
+/// Compile a source whose pattern spacing is deliberately BARE.
+///
+/// Task 5652 added a compile-LAYER `ArgTypeMismatch` Error for bare pattern
+/// spacing, so these sources no longer compile clean and `parse_and_compile`
+/// (which hard-asserts zero Error diagnostics) would panic before eval ever
+/// runs. The non-asserting `compile_source` keeps this file testing what it
+/// exists to test: task 5214's EVAL-layer gate.
+///
+/// The assertions below are what make that switch a TIGHTENING rather than a
+/// loosening. They keep BOTH halves of what `parse_and_compile` used to give:
+///
+/// 1. The expected compile-layer `ArgTypeMismatch` really is emitted, so this
+///    file cannot silently stop noticing if task 5652's gate regresses.
+/// 2. It is the ONLY Error-severity compile diagnostic. Without this, ANY
+///    unrelated compile Error would go unnoticed — and if e.g. `box(…)` or
+///    `linear_pattern_2d(…)` stopped lowering, each caller's "no pattern op
+///    reached the kernel" assertion would then hold VACUOUSLY (op absent
+///    because compilation broke, not because task 5214's eval gate dropped it),
+///    which is precisely the wrong-reason pass this file exists to prevent.
+///
+/// Each caller's eval-layer assertions still run, because
+/// `check_builtin_arg_types` is anti-cascade: lowering is untouched, so the op
+/// is still emitted and must still be DROPPED at eval.
+fn compile_bare_spacing(source: &str) -> reify_compiler::CompiledModule {
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "a bare pattern spacing must ALSO be rejected at compile time (task 5652 \
+         ArgTypeMismatch), not only at eval; got no Error diagnostics in: {:?}",
+        compiled.diagnostics
+    );
+    assert!(
+        errors
+            .iter()
+            .all(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch)),
+        "ArgTypeMismatch must be the ONLY compile Error in this fixture, else the \
+         callers' \"no pattern op reached the kernel\" assertions could pass \
+         because compilation broke rather than because the eval gate dropped the \
+         op; unexpected errors: {:?}",
+        errors
+            .iter()
+            .filter(|d| d.code != Some(DiagnosticCode::ArgTypeMismatch))
+            .collect::<Vec<_>>()
+    );
+    compiled
+}
 
 /// BARE `20` spacings on `linear_pattern_2d` → the op is dropped: at least one
 /// `Severity::Error` diagnostic is emitted and NO `LinearPattern2D` op reaches
@@ -34,7 +88,7 @@ fn linear_pattern_2d_bare_spacing_drops_op_with_error() {
         }
     "#;
 
-    let compiled = parse_and_compile(source);
+    let compiled = compile_bare_spacing(source);
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
     let mut engine = Engine::new(
@@ -72,15 +126,17 @@ fn linear_pattern_2d_bare_spacing_drops_op_with_error() {
 /// `(error_diagnostic_count, matching_op_count)`, where an op matches when
 /// `is_pattern` accepts it. Shared by the 1D `linear_pattern` pair below, whose
 /// two cases differ only in the source and the expected counts.
-fn build_and_count(source: &str, is_pattern: fn(&GeometryOp) -> bool) -> (usize, usize) {
-    let compiled = parse_and_compile(source);
+fn build_and_count(
+    compiled: &reify_compiler::CompiledModule,
+    is_pattern: fn(&GeometryOp) -> bool,
+) -> (usize, usize) {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
     let mut engine = Engine::new(
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );
-    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
+    let result: BuildResult = engine.build(compiled, ExportFormat::Step);
 
     let error_count = result
         .diagnostics
@@ -104,11 +160,13 @@ fn linear_pattern_1d_bare_spacing_drops_op_dimensioned_builds() {
     let is_linear = |op: &GeometryOp| matches!(op, GeometryOp::LinearPattern { .. });
 
     let (bare_errors, bare_ops) = build_and_count(
-        r#"
+        &compile_bare_spacing(
+            r#"
         structure def BareSpacingRow {
             let row = linear_pattern(box(10mm, 10mm, 10mm), 1, 0, 0, 3, 20)
         }
         "#,
+        ),
         is_linear,
     );
     assert!(
@@ -122,12 +180,17 @@ fn linear_pattern_1d_bare_spacing_drops_op_dimensioned_builds() {
          20 SI-metre spacing; emitted LinearPattern ops: {bare_ops}"
     );
 
+    // The dimensioned control keeps the STRICT `parse_and_compile`: it must
+    // still compile with zero Error diagnostics, which is what proves the new
+    // compile-layer slot does not fire on valid code.
     let (dim_errors, dim_ops) = build_and_count(
-        r#"
+        &parse_and_compile(
+            r#"
         structure def DimSpacingRow {
             let row = linear_pattern(box(10mm, 10mm, 10mm), 1, 0, 0, 3, 20mm)
         }
         "#,
+        ),
         is_linear,
     );
     assert_eq!(

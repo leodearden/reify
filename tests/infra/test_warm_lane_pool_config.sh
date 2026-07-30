@@ -38,6 +38,12 @@
 #                     relation/drift checks above — not re-pinned via a
 #                     comment-wording grep against the env-var name.
 #
+# Note: the `warm_lane_pool` entry in dark-factory-orchestrator.yaml's
+#       top-level config_key_census.ignore allowlist is NOT guarded here.
+#       That entry is checked for stale drift by group (C) CENSUS
+#       IGNORE-LIST STALENESS in tests/infra/test_cpu_governance_config.sh,
+#       which is generic over the whole YAML file rather than per-block.
+#
 # (A) and (A2) are SKIPPED if python3 + PyYAML are unavailable (mirrors the
 #     tomllib SKIP idiom in test_cargo_incremental_lane_decision.sh:25).
 # (B) always runs — plain bash grep, no python needed.

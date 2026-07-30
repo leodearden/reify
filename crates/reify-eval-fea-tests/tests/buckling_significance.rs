@@ -74,7 +74,7 @@ fn make_pre_stress(pre_stress_disp: &[f64]) -> Value {
     }))
 }
 
-/// Build a Mode StructureInstance with the given eigenvalue and displaced
+/// Build a BucklingMode StructureInstance with the given eigenvalue and displaced
 /// positions list.
 ///
 /// Exact field layout:
@@ -102,7 +102,7 @@ fn make_mode(eigenvalue: f64, displaced_positions: &[f64]) -> Value {
 
     Value::StructureInstance(Box::new(StructureInstanceData {
         type_id: StructureTypeId(u32::MAX),
-        type_name: "Mode".to_string(),
+        type_name: "BucklingMode".to_string(),
         version: 1,
         fields,
     }))
@@ -114,7 +114,8 @@ fn make_mode(eigenvalue: f64, displaced_positions: &[f64]) -> Value {
 /// Field layout:
 /// ```text
 /// BucklingResult {
-///   modes: List<Mode{eigenvalue:Real, mode_shape:Map{"displaced_positions":List<Real>}}>,
+///   modes: List<BucklingMode{eigenvalue:Real,
+///                          mode_shape:Map{"displaced_positions":List<Real>}}>,
 ///   converged: Bool,
 ///   iterations: Int(0),
 ///   pre_stress: ElasticResult StructureInstance,
@@ -410,14 +411,14 @@ fn buckling_different_for_mode_missing_eigenvalue() {
 
     let good = make_buckling_result(&[1000.0], true, &[&[0.1, 0.2, 0.3]], pre);
 
-    // Build a Mode StructureInstance without the eigenvalue field.
+    // Build a BucklingMode StructureInstance without the eigenvalue field.
     let mode_fields: PersistentMap<String, Value> =
         [("mode_shape".to_string(), Value::Map(BTreeMap::new()))]
             .into_iter()
             .collect();
     let mode_no_ev = Value::StructureInstance(Box::new(StructureInstanceData {
         type_id: StructureTypeId(u32::MAX),
-        type_name: "Mode".to_string(),
+        type_name: "BucklingMode".to_string(),
         version: 1,
         fields: mode_fields,
     }));
@@ -734,7 +735,7 @@ fn buckling_different_for_mode_shape_not_a_map() {
 
     let good = make_buckling_result(&[ev], true, &[&[0.1, 0.2, 0.3]], pre);
 
-    // Build a Mode with mode_shape = Value::Real instead of Map.
+    // Build a BucklingMode with mode_shape = Value::Real instead of Map.
     let mode_fields: PersistentMap<String, Value> = [
         ("eigenvalue".to_string(), Value::Real(ev)),
         ("mode_shape".to_string(), Value::Real(99.0)), // wrong type
@@ -743,7 +744,7 @@ fn buckling_different_for_mode_shape_not_a_map() {
     .collect();
     let bad_mode = Value::StructureInstance(Box::new(StructureInstanceData {
         type_id: StructureTypeId(u32::MAX),
-        type_name: "Mode".to_string(),
+        type_name: "BucklingMode".to_string(),
         version: 1,
         fields: mode_fields,
     }));
@@ -779,7 +780,7 @@ fn buckling_different_for_mode_shape_missing_displaced_positions() {
 
     let good = make_buckling_result(&[ev], true, &[&[0.1, 0.2, 0.3]], pre);
 
-    // Build a Mode where mode_shape Map lacks "displaced_positions".
+    // Build a BucklingMode where mode_shape Map lacks "displaced_positions".
     let empty_map: BTreeMap<Value, Value> = BTreeMap::new();
     let mode_fields: PersistentMap<String, Value> = [
         ("eigenvalue".to_string(), Value::Real(ev)),
@@ -789,7 +790,7 @@ fn buckling_different_for_mode_shape_missing_displaced_positions() {
     .collect();
     let bad_mode = Value::StructureInstance(Box::new(StructureInstanceData {
         type_id: StructureTypeId(u32::MAX),
-        type_name: "Mode".to_string(),
+        type_name: "BucklingMode".to_string(),
         version: 1,
         fields: mode_fields,
     }));

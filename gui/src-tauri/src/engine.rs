@@ -1041,21 +1041,48 @@ impl EngineSession {
     /// Both `new` and `with_registered_kernel` delegate here so the field list
     /// stays in one place and the two constructors cannot drift.
     ///
-    /// CRITICAL: `register_compute_fns` is called HERE (once) rather than in
-    /// `new` or `with_registered_kernel` individually.  Both public constructors
-    /// delegate to this method (`new` → `from_engine(Engine::new(..))`,
+    /// CRITICAL: `register_production_compute_fns` is called HERE (once) rather
+    /// than in `new` or `with_registered_kernel` individually.  Both public
+    /// constructors delegate to this method (`new` → `from_engine(Engine::new(..))`,
     /// `with_registered_kernel` → `from_engine(Engine::with_registered_kernel(..))`),
-    /// so registering here covers both paths.  `register_compute_fns` **panics on
-    /// duplicate registration** (compute_targets/mod.rs:89); calling it in `new`
-    /// *and* here would register twice on the same `Engine` → guaranteed panic.
-    /// PRD §4.5 / esc-2962-66 root cause.
+    /// so registering here covers both paths.  `register_production_compute_fns`
+    /// **panics on duplicate registration** — it inherits the single-install
+    /// discipline of the trampoline registrars it bundles internally (see its
+    /// rustdoc "# Panics" on `Engine::register_production_compute_fns`,
+    /// compute_targets/mod.rs); calling it in `new` *and* here would register
+    /// twice on the same `Engine` → guaranteed panic.
+    /// PRD §4.5 / esc-2962-66 root cause; PRD docs/prds/compute-fea-hardening.md
+    /// task A3.
     fn from_engine(mut engine: Engine) -> Self {
-        // Install FEA / buckling / modal compute trampolines once at session
-        // construction.  This is the single registration site — see doc above.
-        reify_eval::compute_targets::register_compute_fns(&mut engine);
-        // Register the shell-extract trampoline so shell-classified bodies
-        // can produce a ShellExtractionResult (task θ / #3598 pre-1).
-        reify_eval::register_shell_extract_compute_fns(&mut engine);
+        // Canonical production compute-trampoline bundle (INV-FEA-1; PRD
+        // docs/prds/compute-fea-hardening.md task A1/A3): one call installs the
+        // FEA / buckling / modal / form-find / multi-case / dynamics / trajectory
+        // trampolines, the shell-extract trampoline, and — new here, the
+        // esc-2962-66-class gap this migration closes — the mesh-morph producer.
+        //
+        // `reify-mesh-morph` is optional, gated on this crate's `gui` feature,
+        // while this module is ungated — so the non-`gui` lib/bin build cannot
+        // name `reify_mesh_morph::` directly, forcing the cfg split below. See
+        // `MorphRegistration`'s rustdoc (reify-eval's `compute_targets` module)
+        // for the `Unavailable` contract this feeds.
+        #[cfg(feature = "gui")]
+        let morph =
+            reify_eval::MorphRegistration::Enabled(reify_mesh_morph::register_morph_producer);
+        #[cfg(not(feature = "gui"))]
+        let morph = reify_eval::MorphRegistration::Unavailable {
+            // Scoped to the lib/bin (shipping) build, not the test build:
+            // reify-mesh-morph is also an unconditional *dev*-dependency
+            // (`features = ["testing"]`), so it IS on the crate graph for
+            // `cargo test`'s gui-off compilation and this arm still runs
+            // there (the split is on `feature = "gui"`, not `cfg(test)`) —
+            // the reason text must not overclaim un-linkability in that
+            // configuration, only in a real shipping build.
+            reason: "reify-gui lib/bin built without the `gui` feature: \
+                     reify-mesh-morph is an optional (non-dev) dep gated on \
+                     that feature, so no producer fn is linkable in a \
+                     shipping build",
+        };
+        engine.register_production_compute_fns(morph);
         // Enable undef-cause capture before any check/eval so the per-cell
         // origin side-map and post-eval snapshot are populated. Capture is
         // purely additive (PRD A1): values, determinacy, constraints, and

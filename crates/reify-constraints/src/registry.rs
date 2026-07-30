@@ -240,13 +240,30 @@ impl SolverRegistry {
                 None
             };
 
+            // β (task #5189): build from `..problem.clone()` and override only the
+            // fields that genuinely differ per component.  The functional update
+            // syntax is load-bearing, NOT cosmetic: `dependent_cells` must reach
+            // the domain solver or `fold_dependent_cells` takes its empty-vector
+            // early return and the per-trial recompute silently never runs on the
+            // production path (`SolverRegistry::production()` is what the CLI
+            // wires in `configured_eval_engine`).  Listing fields explicitly here
+            // is how that field got zeroed in the first place; spreading means the
+            // NEXT field added to `ResolutionProblem` cannot be silently dropped.
+            //
+            // `dependent_cells` is passed wholesale rather than filtered to this
+            // component's autos: the fold is idempotent for cells whose inputs did
+            // not move (re-evaluating `line_cost` from unchanged inputs reproduces
+            // the same value), and `sub_values` already carries every cell in
+            // `problem.current_values`, so every dependent expression stays
+            // evaluable.  No auto-collision is possible — reify-eval's
+            // `build_dependent_cells` excludes autos globally, and
+            // `sub_auto_params` is a subset of `problem.auto_params`.
             let sub_problem = ResolutionProblem {
-                dependent_cells: Vec::new(),
                 auto_params: sub_auto_params,
                 constraints: component.constraints.clone(),
                 current_values: sub_values,
                 objective: sub_objective,
-                functions: problem.functions.clone(),
+                ..problem.clone()
             };
 
             // Select solver based on component domain
@@ -557,13 +574,19 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
             .map(|ap| AutoParam { free: true, ..ap.clone() })
             .collect();
 
+        // β (task #5189): mirror the degenerate single-priority path above, which
+        // builds `ws_problem` as `ResolutionProblem { objective, ..base.clone() }`
+        // and therefore inherits `dependent_cells`.  Enumerating fields here made
+        // the same function behave differently depending on how many distinct
+        // priorities the objective carries — a multi-rank lexicographic objective
+        // over a joint-drive cluster dropped the per-trial fold at every stage.
+        // Override only what genuinely differs per stage.
         let stage_problem = ResolutionProblem {
-            dependent_cells: Vec::new(),
             auto_params: free_auto_params,
             constraints: accumulated_constraints.clone(),
             current_values: current_values.clone(),
             objective: Some(stage_objective),
-            functions: base.functions.clone(),
+            ..base.clone()
         };
 
         let stage_result = solver.solve(&stage_problem);
@@ -582,29 +605,57 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
                 // uniqueness-verified.  The final stage's own verdict is preserved —
                 // given the accumulated ε-band constraints it may be fully determined.
                 let result_unique = is_final && stage_unique;
-                last_result = Some(SolveResult::Solved { values, unique: result_unique });
-
-                if is_final {
-                    break;
-                }
 
                 // Freeze this rank's realized optimum as an ε-band for the next stage.
                 // If any term is non-finite, skip the band and warn — the lexicographic
                 // ordering is NOT enforced for this rank, so later ranks may freely
                 // sacrifice it.
-                match eval_rank_cost(&rank_terms, &current_values, &base.functions) {
-                    Some(obj_star) => {
-                        accumulated_constraints
-                            .extend(build_band_constraints(&rank_terms, obj_star, stage_idx));
+                //
+                // esc-5189-7: `obj*` MUST be measured on the same folded map the next
+                // stage evaluates the band against.  `build_band_constraints` bakes
+                // `obj*` in as a LITERAL, while the band's `cost_expr` is built from
+                // this rank's term exprs — which read the cluster's dependent cells and
+                // are therefore folded by the next stage's cost surface (the stage
+                // problem inherits `dependent_cells` via `..base.clone()` above).
+                // Reading `obj*` off `current_values` measured the two sides of ONE
+                // constraint on two different value maps: `current_values` carries the
+                // warm-started solved AUTOS, but `SolveResult::Solved` returns only
+                // autos, so every dependent cell in it is still at its stale base
+                // value.  A trivially feasible model then reported
+                // `ConstraintUnsatisfiable`, off by the full stale-vs-folded gap.
+                // `build_scoring_values` is the single fold authority (solver.rs) —
+                // this site is the reason its INVARIANT is crate-scoped, not
+                // module-scoped.
+                //
+                // Computed here, before `values` is moved into `last_result`, and only
+                // on the non-final path — the final stage builds no band.
+                if !is_final {
+                    let scored = crate::solver::build_scoring_values(
+                        &current_values,
+                        &values,
+                        &base.dependent_cells,
+                        &base.functions,
+                    );
+                    match eval_rank_cost(&rank_terms, &scored, &base.functions) {
+                        Some(obj_star) => {
+                            accumulated_constraints
+                                .extend(build_band_constraints(&rank_terms, obj_star, stage_idx));
+                        }
+                        None => {
+                            tracing::warn!(
+                                stage = stage_idx,
+                                "solve_lexicographic: stage {} rank produced non-finite obj*; \
+                                 ε-band skipped — lexicographic ordering not enforced for this rank",
+                                stage_idx,
+                            );
+                        }
                     }
-                    None => {
-                        tracing::warn!(
-                            stage = stage_idx,
-                            "solve_lexicographic: stage {} rank produced non-finite obj*; \
-                             ε-band skipped — lexicographic ordering not enforced for this rank",
-                            stage_idx,
-                        );
-                    }
+                }
+
+                last_result = Some(SolveResult::Solved { values, unique: result_unique });
+
+                if is_final {
+                    break;
                 }
             }
             infeasible_or_no_progress => {

@@ -2930,7 +2930,7 @@ structure def HydroConformer {
 /// std.ports.fluid; declares
 ///   `structure def ActuatorInterface<P: PowerPort, T: ThermalPort, F: FluidPort>`
 /// with three ports.  No concrete conformer is instantiated (PRD §4 decision 4;
-/// mirrors Coupling in examples/stdlib/ports_mechanical.ri).
+/// mirrors ShaftCoupling in examples/stdlib/ports_mechanical.ri).
 #[test]
 fn example_ports_domains_ri_compiles_clean() {
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -3066,7 +3066,10 @@ structure def S {
 // ─── step-9: capstone example compile ─────────────────────────────────────────
 
 /// examples/stdlib/ports_mechanical.ri must compile without errors and
-/// structurally declare a template named "Coupling" of EntityKind::Structure.
+/// structurally declare a template named "ShaftCoupling" of EntityKind::Structure.
+/// (Renamed from "Coupling" in task #5594 to resolve an accidental name
+/// collision with the unrelated stdlib `Coupling<P: DrivingJoint + HasMotion>`
+/// kinematic joint type in crates/reify-compiler/stdlib/kinematic.ri.)
 ///
 /// Note: direction/Bidi/StructurePort/Bore/Shaft and torque_capacity/max_speed
 /// params are not exercised through an actual conformance path in this example
@@ -3101,10 +3104,55 @@ fn example_ports_mechanical_ri_compiles_clean() {
         compiled
             .templates
             .iter()
-            .any(|t| { t.name == "Coupling" && t.entity_kind == EntityKind::Structure }),
+            .any(|t| { t.name == "ShaftCoupling" && t.entity_kind == EntityKind::Structure }),
         "examples/stdlib/ports_mechanical.ri should declare \
-         'structure def Coupling<D: RotaryPort, N: RotaryPort>'; \
+         'structure def ShaftCoupling<D: RotaryPort, N: RotaryPort>'; \
          found templates: {:?}",
+        compiled
+            .templates
+            .iter()
+            .map(|t| (&t.name, &t.entity_kind))
+            .collect::<Vec<_>>()
+    );
+
+    // Anti-recollision guard (task #5594), stated at the level of the bug
+    // CLASS rather than the one name that tripped it: no template this
+    // example declares may share a name with ANY template exported by a
+    // stdlib prelude module.  Every stdlib module is in the same prelude, so
+    // a same-named local decl wins name resolution and silently shadows the
+    // stdlib definition — which is exactly what a local `Coupling` here did
+    // to the unrelated stdlib kinematic joint
+    // `Coupling<P: DrivingJoint + HasMotion>` from `std.kinematic`: same
+    // name, different semantics, different type params/bounds.
+    //
+    // Note the deliberately NEGATIVE form: `compiled.templates` is
+    // user-module-only (prelude definitions are resolution context, not
+    // output — see the `compile_with_prelude` doc comment in
+    // crates/reify-compiler/src/lib.rs), so no stdlib template ever appears
+    // in this vec and a positive "exactly one Coupling, and it is the stdlib
+    // one" assertion would be unsatisfiable.  Synthetic monomorph clones are
+    // skipped: their names always contain `$`.
+    let prelude_template_names: std::collections::HashSet<&str> = stdlib_loader::load_stdlib()
+        .iter()
+        .flat_map(|m| m.templates.iter())
+        .map(|t| t.name.as_str())
+        .collect();
+    let shadowed: Vec<&str> = compiled
+        .templates
+        .iter()
+        .map(|t| t.name.as_str())
+        .filter(|name| !name.contains('$') && prelude_template_names.contains(name))
+        .collect();
+    assert!(
+        shadowed.is_empty(),
+        "examples/stdlib/ports_mechanical.ri must not declare a template whose name \
+         collides with a stdlib prelude template; these shadow same-named prelude \
+         definitions during name resolution: {:?}. Task #5594 hit exactly this with \
+         'Coupling', which shadowed the unrelated stdlib kinematic \
+         'Coupling<P: DrivingJoint + HasMotion>' from std.kinematic (both modules are \
+         in the same prelude), and renamed it to 'ShaftCoupling'; \
+         found templates: {:?}",
+        shadowed,
         compiled
             .templates
             .iter()

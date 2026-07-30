@@ -81,9 +81,10 @@ fn lit(v: f64) -> CompiledExpr {
 /// Build a `CompiledExpr` literal from a LENGTH-dimensioned scalar (SI metres).
 ///
 /// Mirrors the in-module `literal_length` helper at `geometry_ops.rs`. The
-/// length-semantic pattern args (spacing, mirror-plane origin, arbitrary-pattern
-/// offsets) require a dimensioned Length after task 5214 — a bare `lit(..)` in
-/// those positions is now rejected at eval.
+/// length-semantic pattern args (spacing, mirror-plane origin, circular-pattern
+/// axis origin, arbitrary-pattern offsets) require a dimensioned Length after
+/// tasks 5214 and 5350 — a bare `lit(..)` in those positions is now rejected at
+/// eval.
 fn lit_len(v: f64) -> CompiledExpr {
     CompiledExpr::literal(Value::length(v), reify_core::Type::length())
 }
@@ -1012,9 +1013,11 @@ fn pattern_case(k: PatternKind) -> CompiledGeometryOp {
             ("spacing".to_string(), lit_len(0.01)),
         ],
         PatternKind::Circular => vec![
-            ("ox".to_string(), lit(0.0)),
-            ("oy".to_string(), lit(0.0)),
-            ("oz".to_string(), lit(0.0)),
+            // Axis ORIGIN is length-semantic → dimensioned Length (task 5350);
+            // axis DIRECTION stays a bare dimensionless unit vector.
+            ("ox".to_string(), lit_len(0.0)),
+            ("oy".to_string(), lit_len(0.0)),
+            ("oz".to_string(), lit_len(0.0)),
             ("ax".to_string(), lit(0.0)),
             ("ay".to_string(), lit(0.0)),
             ("az".to_string(), lit(1.0)),

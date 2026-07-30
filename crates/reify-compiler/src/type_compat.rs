@@ -324,16 +324,35 @@ pub(crate) fn enum_payload_compatible(
     supplied: &Type,
     enum_defs: &[EnumDef],
 ) -> bool {
-    let declared_enum_name = match declared {
+    match (base_enum_name(declared, enum_defs), supplied) {
+        (Some(dn), Type::Enum(sn)) => dn == sn,
+        _ => false,
+    }
+}
+
+/// The base enum name `ty` denotes, if it denotes one at all: `Some(n)` for a
+/// bare `Type::Enum(n)` and for a `Type::Applied { name: n, .. }` whose `n`
+/// names a declared enum in `enum_defs`; `None` otherwise.
+///
+/// This is the SINGLE oracle for "which enum is this type, ignoring the
+/// D1/F-Mono erasure gap between the bare and applied spellings". Both
+/// [`enum_payload_compatible`] (the payload-field / declared-side guard) and the
+/// ctor-conformance walker's enum accept in `conformance/mod.rs` route through
+/// it, so the two cannot disagree about what counts as an applied enum.
+///
+/// **Why the `enum_defs` membership check.** `Type::Applied { name, .. }` is not
+/// enum-exclusive — a generic user-defined structure reference (e.g.
+/// `Coupling<T>`) is spelled the same way (see
+/// `type_arg_applied_resolution_tests.rs`). Returning a name for those would let
+/// a generic-STRUCT type be treated as an enum whenever it shares a base name
+/// with an unrelated enum.
+pub(crate) fn base_enum_name<'t>(ty: &'t Type, enum_defs: &[EnumDef]) -> Option<&'t str> {
+    match ty {
         Type::Enum(name) => Some(name.as_str()),
         Type::Applied { name, .. } if enum_defs.iter().any(|e| e.name == *name) => {
             Some(name.as_str())
         }
         _ => None,
-    };
-    match (declared_enum_name, supplied) {
-        (Some(dn), Type::Enum(sn)) => dn == sn,
-        _ => false,
     }
 }
 

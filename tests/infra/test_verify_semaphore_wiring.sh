@@ -12,6 +12,11 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# The nextest-absent simulation for (1q) below — task 5602 consolidated the
+# hand-rolled version that used to live there onto this shared lib.
+[ -f "$SCRIPT_DIR/nextest_absent_lib.sh" ] || { echo "ERROR: nextest_absent_lib.sh not found at $SCRIPT_DIR/nextest_absent_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/nextest_absent_lib.sh"
+
 echo "=== verify.sh + merge-exemption semaphore wiring tests (task 4502) ==="
 
 _TMPDIRS=()
@@ -65,43 +70,55 @@ assert "task plan: acquire marker ordered AFTER psi-gate" \
         [ -n "$PSI_IDX" ] && [ -n "$ACQ_IDX" ] && [ "$ACQ_IDX" -gt "$PSI_IDX" ]
     ' _ "$TASK_FULL"
 
-# (1f) first nextest pass index > acquire marker index (build+exec pass AFTER acquire).
-# Post-4862 revert: all nextest passes are inside the slot; no --no-run filter needed.
-assert "task plan: first nextest pass ordered AFTER acquire marker" \
+# HOST-INDEPENDENCE (task 5599). The test-line greps in (1f)-(1i), (1k), (1m)
+# and (1o) match `cargo (test|nextest run)` rather than the bare
+# `cargo nextest run`, so they hold on a host WITHOUT cargo-nextest, where
+# verify.sh gracefully falls back to emitting `cargo test` (plan header
+# nextest=0). Every property asserted below is a plan-SHAPE fact — ordering
+# relative to the ACQUIRE/RELEASE markers (which are emitted on the fallback
+# plan too), the trailing FD-close, the absence of --no-run — none of which is
+# nextest-specific. Before the widening, (1f)-(1i)/(1o) FAILED on such a host
+# and (1k)/(1m) passed VACUOUSLY (their grep matched no line at all). Same
+# alternation as tests/infra/test_verify_role_prio.sh; guarded by
+# tests/infra/test_verify_nextest_absent_suites.sh.
+#
+# (1f) first test pass index > acquire marker index (build+exec pass AFTER acquire).
+# Post-4862 revert: all test passes are inside the slot; no --no-run filter needed.
+assert "task plan: first test pass ordered AFTER acquire marker" \
     bash -c '
         ACQ_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
-        NEXT_IDX=$(printf "%s\n" "$1" | grep -n "cargo nextest run" | head -1 | cut -d: -f1)
+        NEXT_IDX=$(printf "%s\n" "$1" | grep -nE "cargo (test|nextest run)" | head -1 | cut -d: -f1)
         [ -n "$ACQ_IDX" ] && [ -n "$NEXT_IDX" ] && [ "$NEXT_IDX" -gt "$ACQ_IDX" ]
     ' _ "$TASK_FULL"
 
-# (1g) release marker index > last nextest pass index (nextest BEFORE release).
-assert "task plan: release marker ordered AFTER last nextest pass" \
+# (1g) release marker index > last test pass index (test pass BEFORE release).
+assert "task plan: release marker ordered AFTER last test pass" \
     bash -c '
         REL_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*RELEASE" | head -1 | cut -d: -f1)
-        LAST_NEXT_IDX=$(printf "%s\n" "$1" | grep -n "cargo nextest run" | tail -1 | cut -d: -f1)
+        LAST_NEXT_IDX=$(printf "%s\n" "$1" | grep -nE "cargo (test|nextest run)" | tail -1 | cut -d: -f1)
         [ -n "$REL_IDX" ] && [ -n "$LAST_NEXT_IDX" ] && [ "$REL_IDX" -gt "$LAST_NEXT_IDX" ]
     ' _ "$TASK_FULL"
 
-# (1h) for --profile both: debug nextest pass BETWEEN acquire and release.
-# Post-4862 revert: all nextest passes are inside the slot; no --no-run filter needed.
-assert "both-profile plan: debug nextest pass BETWEEN acquire and release markers" \
+# (1h) for --profile both: debug test pass BETWEEN acquire and release.
+# Post-4862 revert: all test passes are inside the slot; no --no-run filter needed.
+assert "both-profile plan: debug test pass BETWEEN acquire and release markers" \
     bash -c '
         ACQ_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
         REL_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*RELEASE" | head -1 | cut -d: -f1)
-        # debug pass: nextest run --workspace without --release
-        DBG_IDX=$(printf "%s\n" "$1" | grep -n "cargo nextest run --workspace" | grep -v -- "--release" | head -1 | cut -d: -f1)
+        # debug pass: test run --workspace without --release
+        DBG_IDX=$(printf "%s\n" "$1" | grep -nE "cargo (test|nextest run) --workspace" | grep -v -- "--release" | head -1 | cut -d: -f1)
         [ -n "$ACQ_IDX" ] && [ -n "$REL_IDX" ] && [ -n "$DBG_IDX" ]
         [ "$DBG_IDX" -gt "$ACQ_IDX" ] && [ "$DBG_IDX" -lt "$REL_IDX" ]
     ' _ "$BOTH_FULL"
 
-# (1i) for --profile both: release nextest pass BETWEEN acquire and release.
-# Post-4862 revert: all nextest passes are inside the slot; no --no-run filter needed.
-assert "both-profile plan: release nextest pass BETWEEN acquire and release markers" \
+# (1i) for --profile both: release test pass BETWEEN acquire and release.
+# Post-4862 revert: all test passes are inside the slot; no --no-run filter needed.
+assert "both-profile plan: release test pass BETWEEN acquire and release markers" \
     bash -c '
         ACQ_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
         REL_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*RELEASE" | head -1 | cut -d: -f1)
-        # release pass: nextest run with --release
-        RLS_IDX=$(printf "%s\n" "$1" | grep -n "cargo nextest run.*--release" | head -1 | cut -d: -f1)
+        # release pass: test run with --release
+        RLS_IDX=$(printf "%s\n" "$1" | grep -nE "cargo (test|nextest run).*--release" | head -1 | cut -d: -f1)
         [ -n "$ACQ_IDX" ] && [ -n "$REL_IDX" ] && [ -n "$RLS_IDX" ]
         [ "$RLS_IDX" -gt "$ACQ_IDX" ] && [ "$RLS_IDX" -lt "$REL_IDX" ]
     ' _ "$BOTH_FULL"
@@ -114,13 +131,13 @@ assert "all plan: cargo clippy ordered BEFORE acquire marker (lint outside gated
         [ -n "$ACQ_IDX" ] && [ -n "$CLIP_IDX" ] && [ "$CLIP_IDX" -lt "$ACQ_IDX" ]
     ' _ "$ALL_FULL"
 
-# (1k) every cargo nextest run line in commands-only view carries trailing " 9<&-".
-assert "task plan: every nextest pass carries trailing ' 9<&-' (FD-close for children)" \
-    bash -c '! printf "%s\n" "$1" | grep "cargo nextest run" | grep -vq " 9<&-"' \
+# (1k) every cargo test/nextest run line in commands-only view carries trailing " 9<&-".
+assert "task plan: every test pass carries trailing ' 9<&-' (FD-close for children)" \
+    bash -c '! printf "%s\n" "$1" | grep -E "cargo (test|nextest run)" | grep -vq " 9<&-"' \
     _ "$TASK_CMDS"
 
-assert "both-profile plan: every nextest pass carries trailing ' 9<&-'" \
-    bash -c '! printf "%s\n" "$1" | grep "cargo nextest run" | grep -vq " 9<&-"' \
+assert "both-profile plan: every test pass carries trailing ' 9<&-'" \
+    bash -c '! printf "%s\n" "$1" | grep -E "cargo (test|nextest run)" | grep -vq " 9<&-"' \
     _ "$BOTH_CMDS"
 
 # (1l) verify.sh sources lib_test_semaphore.sh (structural wiring check).
@@ -129,19 +146,19 @@ assert "verify.sh sources scripts/lib_test_semaphore.sh" \
 
 # (1m) NO --no-run compile line anywhere in the plan (task 4862 revert: build+test
 # are one unbroken block inside the held slot; no separate compile pass outside).
-assert "task plan: NO 'cargo nextest run ... --no-run' line appears anywhere in the plan" \
-    bash -c '! printf "%s\n" "$1" | grep -q "cargo nextest run.*--no-run"' \
+assert "task plan: NO 'cargo (test|nextest run) ... --no-run' line appears anywhere in the plan" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run).*--no-run"' \
     _ "$TASK_CMDS"
 
-# (1o) all nextest build+exec passes fall BETWEEN ACQUIRE and RELEASE (task 4862 revert).
-# There is no separate compile pass outside the slot; every nextest pass is inside.
-assert "task plan: all nextest passes fall BETWEEN acquire and release markers" \
+# (1o) all build+exec test passes fall BETWEEN ACQUIRE and RELEASE (task 4862 revert).
+# There is no separate compile pass outside the slot; every test pass is inside.
+assert "task plan: all test passes fall BETWEEN acquire and release markers" \
     bash -c '
         ACQ_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
         REL_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*RELEASE" | head -1 | cut -d: -f1)
         [ -n "$ACQ_IDX" ] && [ -n "$REL_IDX" ]
-        FIRST_IDX=$(printf "%s\n" "$1" | grep -n "cargo nextest run" | head -1 | cut -d: -f1)
-        LAST_IDX=$(printf "%s\n" "$1" | grep -n "cargo nextest run" | tail -1 | cut -d: -f1)
+        FIRST_IDX=$(printf "%s\n" "$1" | grep -nE "cargo (test|nextest run)" | head -1 | cut -d: -f1)
+        LAST_IDX=$(printf "%s\n" "$1" | grep -nE "cargo (test|nextest run)" | tail -1 | cut -d: -f1)
         [ -n "$FIRST_IDX" ] && [ -n "$LAST_IDX" ]
         [ "$FIRST_IDX" -gt "$ACQ_IDX" ] && [ "$LAST_IDX" -lt "$REL_IDX" ]
     ' _ "$TASK_FULL"
@@ -155,23 +172,37 @@ assert "task plan: all nextest passes fall BETWEEN acquire and release markers" 
 # the "present but probe failed" retry-then-hard-fail branch that fires when the
 # real cargo-nextest is still reachable via ~/.cargo/bin.
 #
-# Hermeticity (mirrors tests/infra/test_verify_nextest_probe.sh): a temp HOME so
-# verify.sh:626 skips `. ~/.cargo/env` (which would re-prepend ~/.cargo/bin — the
-# sole home of the real cargo-nextest — and defeat the absence simulation), and
-# PATH="$_NX0_TMP:/usr/bin:/bin" excluding ~/.cargo/bin. The stub `cargo` exits 1
-# for every invocation; `--scope all --print-plan` never reaches the cargo-metadata
-# narrowing path, so no real cargo call is needed during plan-building.
-_NX0_TMP="$(mktemp -d)"
-_TMPDIRS+=("$_NX0_TMP")
-_NX0_HOME="$(mktemp -d)"
-_TMPDIRS+=("$_NX0_HOME")
-cat > "$_NX0_TMP/cargo" <<'STUB_CARGO'
-#!/usr/bin/env bash
-exit 1
-STUB_CARGO
-chmod +x "$_NX0_TMP/cargo"
+# Hermeticity: tests/infra/nextest_absent_lib.sh (task 5602). It supplies a temp
+# HOME so verify.sh:626 skips `. ~/.cargo/env` (which would re-prepend
+# ~/.cargo/bin — the sole home of the real cargo-nextest — and defeat the
+# absence simulation), and a symlink farm mirroring the cargo bin dir MINUS
+# cargo-nextest, first on PATH.
+#
+# STRICTLY MORE FAITHFUL than the hand-rolled harness this replaces, which used
+# a stub `cargo` that exited 1 for EVERY invocation behind
+# PATH="$_NX0_TMP:/usr/bin:/bin". That did reach NEXTEST=0, but partly for the
+# wrong reason: with `cargo nextest --version` failing because cargo itself was
+# broken, the assert could not distinguish the graceful genuine-absence branch
+# from a toolchain that simply does not work. The farm supplies a REAL cargo
+# with only cargo-nextest hidden, so verify.sh:1412 takes the NEXTEST=0 branch
+# for exactly the intended reason.
+#
+# This file registers `trap cleanup EXIT` at line 24, BEFORE the init below —
+# which is the half of the lib's trap contract that composes: nextest_absent_init
+# stashes that handler and arms a dispatcher running its own teardown and then
+# this file's cleanup, on EXIT/INT/TERM/HUP. So Section 2/3's throwaway repos are
+# still removed, this file's trap is upgraded from bare EXIT to all four signals,
+# and NX_WORKDIR needs no hand-patching onto _TMPDIRS. Anything registered AFTER
+# this point would be caller-owned and would have to call nextest_absent_cleanup
+# itself — this file registers nothing after it.
+nextest_absent_init
 
-NX0_FULL="$(HOME="$_NX0_HOME" PATH="$_NX0_TMP:/usr/bin:/bin" bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan)"
+# Deliberately NOT guarded on nextest_absent_available. If the simulation cannot
+# be built this assert must go RED, not skip: (1q) is meaningless without it, and
+# a silent skip is precisely the vacuous-green failure mode that
+# test_verify_nextest_absent_suites.sh's S2 pass floor of 22 exists to catch —
+# which counts this assert.
+NX0_FULL="$(nx_run bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan)"
 NX0_CMDS="$(printf '%s\n' "$NX0_FULL" | grep -v '^#')"
 
 assert "NEXTEST=0 fallback: execution line carries 'cargo test ... -- --test-threads=1' (no --no-run)" \

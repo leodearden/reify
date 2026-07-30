@@ -51,6 +51,20 @@ a drift surface.  The invariant is enforced at test time (see below).
 > with `viewport_state.meshCount` even while the frontend's delta path runs
 > selective demand (where the plain `build_gui_state` returns only the incremental
 > delta subset, per the engine_build.rs DELTA CONTRACT).
+> That consistency is ENFORCED end-to-end (task 5367) by
+> `gui/test/visual/smoke_mesh_count_parity_e2e.mjs` — live-only,
+> `npm --prefix gui run test:smoke:mesh-count-parity` — which asserts
+> `viewport_state.meshCount === mesh_stats.meshes.length === engine_state.meshes.length`;
+> its decision logic is CI-covered by `gui/test/visual/meshCountParity.test.ts`.
+> The smoke first requires `demand_dispatch.full_scope === false`, because under
+> full scope `build_gui_state` and `build_gui_state_full_scene` agree by
+> construction, so the parity would be trivially true and prove nothing.
+> The equality is CONDITIONAL on every realized body being in `show` visibility
+> state: `viewport_state.meshCount` counts `meshManager.getSceneMeshes()`, which
+> excludes ghosted and hidden meshes — and aux realizations (`default_visible:
+> false`) are default-hidden — whereas the two debug reads always report the full
+> realized scene. Hiding a body, or a fixture carrying an aux component, breaks
+> the equality legitimately.
 
 ### REST-only handlers (not advertised in tools/list)
 
@@ -201,6 +215,28 @@ inside a tool result.
 | JS bridge handler | `{ "error": "…" }` inside tool-result text | ✗ (not set) |
 | Rust Err(String) | `{ content:[…], isError:true }` | ✓ |
 | Unknown JSON-RPC method | `{ error: { code, message } }` | n/a (protocol layer) |
+
+### JS-side decoders
+
+`gui/test/visual/rpcEnvelope.mjs` is the single home of the JS-side decode of all
+three shapes above — read it, not this table, for the exact branch order:
+
+- **§2a** in-band `{error: string}` → `isInBandError`
+- **§2b** `isError: true` → folded into the §2a shape by `normalizeRpcEnvelope`
+- **§2c** JSON-RPC method error → surfaced as `transportError`, which the
+  `makeDebugRpc` transport throws (so a driver's server-poll loop keeps retrying
+  rather than mistaking an outage for an answer)
+
+It is CI-covered by `gui/test/visual/rpcEnvelope.test.ts`. The six `smoke_*.mjs`
+drivers all obtain their `rpc()` from `makeDebugRpc`; none decodes an envelope
+itself.
+
+`parseRpcResponse` (`gui/test/visual/rpc.ts`) is the typed harness's separate
+rendering. It shares the §2a discriminator and the text-payload parse with the
+module above, but deliberately keeps its own branch table — it collapses every
+failure into `{ok: false, error}` where `normalizeRpcEnvelope` preserves the
+in-band shape. That divergence is intentional and pinned case-by-case by
+`gui/test/visual/rpc.test.ts`; consult those tests before collapsing the two.
 
 ---
 

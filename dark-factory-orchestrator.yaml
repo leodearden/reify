@@ -515,11 +515,16 @@ timeouts:
 unblock_auto:
   timeout_seconds: 1800
 
-# Scheduler v2 — eager parks, cross-tier preemption, owner-state GC sweep.
-# Burn-in cycle complete in dark-factory; flipping on here to exercise the
-# new anti-starvation path against reify's larger task tree.
-fairness:
-  scheduler_v2: true
+# Scheduler v2 (eager parks, cross-tier preemption, owner-state GC sweep) is
+# UNCONDITIONAL in dark-factory since 2026-05-30 — there is no flag to set.
+# The former `fairness.scheduler_v2` knob was real and load-bearing for 17 days
+# (2026-05-13 -> 05-30), then retired: DF 29b85d256b dropped the gate,
+# 44ee41c83a removed the field, b8f3f0800a stripped it from defaults, and
+# test_scheduler.py::test_scheduler_v2_field_removed now pins its absence.
+# Reify gets v2 behaviour regardless. Removed 2026-07-29 (Leo) — it had been
+# inert for ~2 months and read as a live knob. The only real fairness tunable
+# left is `fairness.skip_threshold` (per-tier; unset here, so package defaults
+# apply).
 
 # Starvation watchdog — raise the wall-clock TIME threshold from the 1800s (30min)
 # package default to 24h (Leo, 2026-07-03). Rationale: _skip_count increments ~1/tick
@@ -593,9 +598,67 @@ fused_memory:
   project_id: "reify"
   server_command: []
 
-# Sandbox (disabled — bwrap uid map broken on this kernel)
+# Sandbox (landlock: kernel-enforced whole-filesystem read-only except each
+# task's own writable scope; see PRD os-sandbox-worktree-containment, task γ6)
 sandbox:
-  enabled: false
+  enabled: true
+  backend: landlock
+
+# Sandbox companion (task γ6a): toolchain-cache redirect for the three
+# sandboxed roles (implementer, debugger, simple_task — a hardcoded copy of
+# DF's roles.py sandboxed=True set; reify cannot observe a DF-side 4th
+# role addition, see the "SECOND, UNGUARDED COUPLING" note in
+# tests/infra/test_sandbox_cache_writability_seam.sh's header).
+#   WHY: compute_write_set (DF-owned, orchestrator/agents/write_set.py)
+#   grants worktree + <base>/.task-meta/<name> + main .git carve-outs +
+#   ~/.cache/uv + ~/.claude/fleet + /tmp + /dev, and NOTHING under
+#   ~/.cargo or ~/.npm; without this redirect a sandboxed agent that
+#   adds/bumps a dependency dies on an opaque EACCES mid-build (reproduced
+#   on this host: `cargo fetch` exit 101 — Permission denied (os error 13)
+#   opening ~/.cargo/registry/cache/index.crates.io-*/hex-literal-0.4.1.crate;
+#   `npm install` exit 1 — ~/.npm/_logs unwritable). Warm paths still
+#   succeed, so this bites exactly on dependency-adding / cold-cache tasks.
+#   Upstream fix (add ~/.cargo + ~/.npm carve-outs to compute_write_set
+#   directly, which would retire this whole redirect): reify task 5724.
+#   WHY THIS LEVER: role_env_overrides is merged LAST by DF's
+#   workflow.py:_build_agent_env for every role. verify_env (above) is the
+#   WRONG surface for this — verify subprocesses are not sandboxed.
+#   WHY /tmp: it is the one host-global writable root in the write set, so
+#   the two dirs are shared across warm lanes and warm ONCE rather than
+#   per-lane; cargo's own .package-cache flock serializes concurrent access
+#   exactly as it already does for the shared ~/.cargo today (no new
+#   contention).
+#   KNOWN GAPS (tracked, not yet fixed — ticket tkt_0RRSYZX0Y446V2HSW0GHHNRYYH):
+#     - COST is worse than "one-time": /usr/lib/tmpfiles.d/tmp.conf on this
+#       host reads `D /tmp 1777 root root 30d`, confirmed to empty /tmp at
+#       EVERY boot, not just on rare wipes — so the first dependency-
+#       touching agent run after every reboot re-downloads the crates.io
+#       index + dep tree on a live task's critical path, and a second full
+#       copy of ~/.cargo (1.3G measured) / ~/.npm (6.0G measured) now
+#       accumulates permanently under /tmp alongside the originals.
+#     - The same tmpfiles rule also age-deletes /tmp CONTENTS while the
+#       orchestrator stays up, which can partially gut a populated cargo
+#       registry (source files removed under registry/src/<crate>/ while
+#       that crate's .cargo-ok marker survives) or npm's cacache store,
+#       producing missing-source build failures that don't look like a
+#       cache problem and surface only after long uptime.
+#     - Considered mirroring CARGO_HOME/npm_config_cache into verify_env
+#       too, so verify shares this /tmp cache instead of ~/.cargo/~/.npm,
+#       as an alternative fix for the double-copy problem; deferred —
+#       that would change the merge-gate build's cache path for EVERY
+#       task's verify run (high blast radius on the one gate that lands
+#       everything), whereas pre-seeding /tmp from the existing warm
+#       ~/.cargo/~/.npm (the ticket above) fixes the cold start without
+#       touching verify's cache path at all.
+#   Restart-tier: inert until the orchestrator restarts (companion task
+#   γ6b). Reify-side seam guard:
+#   tests/infra/test_sandbox_cache_writability_seam.sh.
+role_env_overrides:
+  implementer: &sandbox_cache_env
+    CARGO_HOME: /tmp/reify-agent-cargo-home
+    npm_config_cache: /tmp/reify-agent-npm-cache
+  debugger: *sandbox_cache_env
+  simple_task: *sandbox_cache_env
 
 # Escalation
 escalation:
@@ -677,6 +740,42 @@ git:
   # phantom that lazy lowest-numbered-first acquire never demands. Fail-open,
   # idempotent, consulted once at startup.
   warm_lane_prewarm: true
+
+# Unknown-config-key census allowlist (dark-factory task 2989, filed as reify
+# task 5733 follow-up from escalation agent-followup-2989). 2989 adds a
+# raw-YAML-vs-OrchestratorConfig-schema walk that files a born-at-L2 critical
+# escalation listing every unknown top-level/nested key, added after the
+# 2026-07-22 warm-lane exhaustion incident (reify task 5358) where a misplaced
+# top-level `spare_warm_lanes` silently no-opped under Pydantic extra='ignore'
+# instead of landing on GitConfig. Matching semantics (fnmatch.fnmatchcase over
+# the dotted path) are documented at ConfigKeyCensusConfig.ignore in
+# dark-factory's orchestrator/src/orchestrator/config.py (task 2989) — not
+# restated here since none of the entries below use a glob.
+#
+# Every entry below is a DELIBERATE reify-owned knob, not a typo or dead
+# config; see each key's own in-line documentation above (the cpu_governance:,
+# fairness:, and warm_lane_pool: blocks) for what it does and who consumes it.
+# cpu_governance's four reify-owned sub-keys are listed individually rather
+# than globbed as 'cpu_governance.*', because that namespace is mixed-consumer
+# — cpu_governance.enabled IS a real dark-factory CpuGovernConfig field and
+# must keep surfacing as unknown if it is ever renamed or removed.
+#
+# Do NOT "fix" warm_lane_pool by moving it under git: — the census's shadow
+# hint suggesting git.warm_lane_pool is a coincidental name collision;
+# GitConfig.warm_lane_pool is an unrelated bool (already set correctly at
+# git.warm_lane_pool: true above), and feeding this dict to that bool field
+# would hard-fail config validation.
+#
+# This block is inert until 2989 merges (currently tolerated as another
+# unknown top-level key under extra='ignore'); once merged, config_key_census
+# is green-tier reloadable, so no restart is required to pick it up.
+config_key_census:
+  ignore:
+    - 'cpu_governance.weights'
+    - 'cpu_governance.agent_admit'
+    - 'cpu_governance.DF_AGENT_CPU_GOVERN'
+    - 'cpu_governance.fleet_load_detector'
+    - 'warm_lane_pool'
 
 # Project root (absolute path)
 project_root: "/home/leo/src/reify"
