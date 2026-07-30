@@ -85,10 +85,12 @@ source "$SCRIPT_DIR/test_helpers.sh"
 echo "=== sandbox cache-writability seam contract tests (task 5332) ==="
 
 ORCH_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
-# Hardcoded copy of DF's roles.py sandboxed=True set -- see the "SECOND,
-# UNGUARDED COUPLING" note in the file header. Not reify-observable to keep
-# in sync automatically; a DF-side role addition needs a manual update here.
-SANDBOXED_ROLES="implementer debugger simple_task"
+# The roles whose toolchain caches reify's yaml REDIRECTS -- deliberately a
+# SUPERSET of DF's roles.py sandboxed=True set, because reify's half of the
+# contract lands AHEAD of the DF-side sandboxed=True flip (see the file
+# header). Not reify-observable to keep in sync automatically; a DF-side role
+# addition needs a manual update here.
+CACHE_REDIRECT_ROLES="implementer debugger simple_task architect"
 
 # ---------------------------------------------------------------------------
 # (A) STRUCTURE -- parse YAML and assert key/value shape
@@ -227,8 +229,8 @@ PYEOF
         python3 "$_PARSE_PY" "$ORCH_YAML" parse_ok
 
     if python3 "$_PARSE_PY" "$ORCH_YAML" sandbox_enabled_true; then
-        echo "sandbox.enabled == true; asserting cache-writability contract for sandboxed roles ($SANDBOXED_ROLES)"
-        for role in $SANDBOXED_ROLES; do
+        echo "sandbox.enabled == true; asserting cache-writability contract for cache-redirect roles ($CACHE_REDIRECT_ROLES)"
+        for role in $CACHE_REDIRECT_ROLES; do
             for key in CARGO_HOME npm_config_cache; do
                 assert "role_env_overrides.${role}.${key} is present and non-empty" \
                     python3 "$_PARSE_PY" "$ORCH_YAML" role_key_present "$role" "$key"
