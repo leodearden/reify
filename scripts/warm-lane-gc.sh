@@ -165,17 +165,16 @@
 #     across the ACQUIRE reseed, NOT across the consumer's long cargo verify
 #     build, so during that build the flock is FREE and always-reclaim would wipe
 #     <lane>/target out from under a live build (esc-5334-6; earlier instance
-#     esc-5375-1). The check lives
-#     HERE, in the primitive, rather than in a wrapper, because there are TWO
-#     entry points and only one of them ever passed --extra-protect-glob:
-#     warm-lane-gc-sweep.sh (the δ systemd backstop) did; dark-factory's ε path
-#     (git_ops.py _run_warm_lane_gc_reclaim) invokes `warm-lane-gc.sh reclaim
-#     --mount <base>` and never has. Every caller now inherits the guard with no
-#     dark-factory change. It runs PER LANE, immediately before that lane's
-#     reset and under the flock this loop already holds — not as an up-front
-#     snapshot, which would leave a lane that goes live mid-traversal
-#     unprotected across a 25-40 minute pass. Over-preserving is safe and
-#     TEMPORARY: a lingering reference costs one extra sweep.
+#     esc-5375-1). The check lives HERE, in the primitive, rather than in a
+#     wrapper, because there are TWO entry points and only one of them ever
+#     passed --extra-protect-glob: warm-lane-gc-sweep.sh (the δ systemd backstop)
+#     did; dark-factory's ε path (git_ops.py _run_warm_lane_gc_reclaim) invokes
+#     `warm-lane-gc.sh reclaim --mount <base>` and never has. Every caller now
+#     inherits the guard with no dark-factory change. It runs PER LANE,
+#     immediately before that lane's reset and under the flock this loop already
+#     holds — not as an up-front snapshot, which would leave a lane that goes
+#     live mid-traversal unprotected across a 25-40 minute pass. Over-preserving
+#     is safe and TEMPORARY: a lingering reference costs one extra sweep.
 #   - COST REVERSAL, stated explicitly (task 5572 review). Moving from ONE batch
 #     /proc scan to a PER-ENTRY scan is O(entries × /proc), and the sweep comment
 #     this replaced called a per-entry scan "too costly for the hot path". That
@@ -551,9 +550,9 @@ _do_reclaim() {
         # mid-ACQUIRE; it does NOT prove no consumer is mid-BUILD, because the
         # inv.2 flock is released once the acquire reseed completes while the
         # verify build runs on for minutes (esc-5334-6; earlier instance
-        # esc-5375-1). So before resetting,
-        # ask /proc directly: does any live process reference this lane dir or
-        # anything under it (cwd / open fd / mmap)?
+        # esc-5375-1). So before resetting, ask /proc directly: does any live
+        # process reference this lane dir or anything under it (cwd / open fd /
+        # mmap)?
         #
         # Placement is load-bearing on three axes:
         #   - AFTER the flock acquire, so a flock-held lane keeps its own
