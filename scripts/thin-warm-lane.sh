@@ -63,10 +63,16 @@
 #         cold-but-safe rather than carrying an uncertified clone — which is
 #         once again exactly "target/ freed", the post-condition 0 asserts.
 #   1   — Precondition guard refusal (nonexistent lane, ==base dir, not under
-#         $REIFY_WARM_LANE_MOUNT).
+#         $REIFY_WARM_LANE_MOUNT); or, under --reseed, the post-abort discard of
+#         <lane_dir>/target failed — the lane is left carrying an uncertified
+#         clone and is deliberately NOT emitted on stdout.
 #   2   — Usage error (unknown flag, missing positional, --reseed without --base).
 #   75  — EX_TEMPFAIL: the lane's own flock is held by a live consumer
 #         (ASSIGNED lane; inv.2 one-consumer-per-lane-at-a-time).
+#
+#   The exit code tracks whether the lane is left SAFE, not whether the re-seed
+#   succeeded: a re-seed that failed but whose clone was discarded leaves exactly
+#   the post-condition this script guarantees (target/ freed), so it stays 0.
 #
 # Invariants (PRD §9.3):
 #   T1 — only target/ is ever removed; source tree / .git / uncommitted WIP
@@ -129,7 +135,10 @@ Usage: $(basename "$0") <lane_dir> [--reseed] [--base <base_target_dir>] [--seed
           additionally DISCARDS <lane_dir>/target so the lane is returned
           cold-but-safe rather than carrying an uncertified clone.
     1   — Precondition guard refusal (nonexistent lane, ==base dir, not under
-          \$REIFY_WARM_LANE_MOUNT).
+          \$REIFY_WARM_LANE_MOUNT); or, under --reseed, the post-abort discard
+          of <lane_dir>/target failed — the lane is left carrying an uncertified
+          clone and is deliberately NOT emitted on stdout. (The exit code tracks
+          whether the lane is left SAFE, not whether the re-seed succeeded.)
     2   — Usage error (unknown flag, missing positional, --reseed without --base).
     75  — EX_TEMPFAIL: the lane's flock is held by a live consumer (ASSIGNED
           lane; inv.2 one-consumer-per-lane).
@@ -313,6 +322,16 @@ if [ -n "$RESEED" ]; then
         _rm_err=""
         if _rm_err="$(rm -rf "$LANE_DIR/target" 2>&1)"; then
             warn "Discarded uncertified clone: $LANE_DIR/target (§9.5 inv.13 caller obligation; lane returned cold-but-safe)"
+        else
+            # The discard we just took on as an obligation did not happen, so the
+            # lane is NOT safe. Exit 1 without reaching the trailing echo, leaving
+            # stdout empty — this script mirroring the seed's own empty-stdout
+            # refusal one level up. Exit code 1 is reused deliberately: it is
+            # already this script's "the rm we guarantee did not happen" code (the
+            # free-first failure above), and the condition is the same one.
+            err "rm -rf $LANE_DIR/target failed: ${_rm_err:-<rm produced no output>}"
+            err "Lane RETAINS an uncertified clone at $LANE_DIR/target — it must not be built in; NOT returned on stdout."
+            exit 1
         fi
     fi
 fi
