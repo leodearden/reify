@@ -65,6 +65,20 @@ export const SHARED_ESM_MODULES = [
   "smokeDriverGuards.mjs",
 ];
 
+/**
+ * Every `.mjs` in this directory that is NOT a `smoke_*` driver — i.e. every
+ * module the constraint applies to, derived rather than remembered.
+ *
+ * Deliberately used ONLY by the completeness guard, never as the source for the
+ * `it.each` table: driving the table off a directory read would let a discovery
+ * bug (wrong `dir`, a filter typo) collapse it to zero registered tests and a
+ * silently green suite. {@link SHARED_ESM_MODULES} stays the table; this only
+ * cross-checks it.
+ */
+export function discoverSharedEsmModules(dir: string = VISUAL_DIR): string[] {
+  return fs.readdirSync(dir).filter((name) => name.endsWith(".mjs") && !name.startsWith("smoke_"));
+}
+
 /** Assert that the named module in {@link VISUAL_DIR} stays bare-`node` loadable. */
 export function expectBareNodeLoadable(name: string): void {
   const source = fs.readFileSync(path.join(VISUAL_DIR, name), "utf8");
