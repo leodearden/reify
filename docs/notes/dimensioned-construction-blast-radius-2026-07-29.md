@@ -1556,7 +1556,141 @@ direct-read classification; there is nothing to revert.
 
 ## §9 Item 6 — Load-struct intersection flag for PRD 5, §10.2 (step-9)
 
-*(filled by step-9)*
+**Purpose: FLAG, then EXCLUDE**, so this PRD's (γ/β) migration list and PRD 5's
+(`dimension-checked-readers.md`, landed `efba5a8036` — confirmed a real commit at HEAD)
+90-site list are **provably disjoint**: no site is double-counted or double-edited by two
+different tasks (§10.2's filing rule).
+
+### 9.1 The four `Real`-typed load fields, re-verified at HEAD
+
+| Field | Cited at | Text at HEAD |
+|---|---|---|
+| `PointLoad.force` | `crates/reify-compiler/stdlib/fea_multi_case.ri:315-317` | `structure def PointLoad : Load {` / `param point : String = ""` / `param force : Real = 0.0` |
+| `PressureLoad.magnitude` | `:418-419` | `structure def PressureLoad : Load {` / `param magnitude : Real = 0.0` |
+| `TractionLoad.traction` | `:446-448` | `structure def TractionLoad : Load {` / `param face : String = ""` / `param traction : Real   = 0.0` |
+| `BodyForce.force_density` | `:476-478` | `structure def BodyForce : Load {` / `param body : String = ""` / `param force_density : Real   = 0.0` |
+
+All four **CONFIRMED still `Real` at HEAD `08c6c42be9`** — line numbers re-verified by
+direct `grep -n` against the file, exactly matching the governing PRD's own §10.2 citation
+(same four spans). **`Gravity.magnitude : Acceleration = STANDARD_GRAVITY()` (`:516`) is the
+ONLY dimensioned Scalar field in the entire FEA-load cluster today** — also re-verified
+verbatim.
+
+### 9.2 Full enumeration of the FEA-load cluster (audit surface for the exclusion)
+
+Every `structure def … : Load` in the tracked corpus (`git grep -n "structure def.*: Load\b" -- '*.ri'`
+confirms `fea_multi_case.ri` is this trait's *only* implementor repo-wide):
+
+| Structure | Fields | Dimensioned-Scalar? |
+|---|---|---|
+| `PointLoad` (`:315`) | `point : String`, `force : Real` | No — `Real` is dimensionless |
+| `PressureLoad` (`:418`) | `magnitude : Real`, `face : Option<FaceSelector>`, `direction : String` | No |
+| `TractionLoad` (`:446`) | `face : String`, `traction : Real` | No |
+| `BodyForce` (`:476`) | `body : String`, `force_density : Real` | No |
+| `Gravity` (`:515`) | `magnitude : Acceleration`, `direction : List<Real>` | **Yes** — `Acceleration` is a named dimension already in the §0.1 name set |
+
+(Recorded for completeness, not because it is in scope: `FixedSupport`/`PinnedSupport`
+(`:354`/`:379`) implement the sibling `Support` trait, not `Load`, and each carries only
+`target : String` — no Scalar field at all. Excluded on two independent grounds and not
+enumerated further.)
+
+**`Gravity` is the one FEA-load-cluster structure this PRD's γ already reaches** —
+`Gravity.magnitude` is dimensioned `Scalar` today, so it was never outside the family γ
+promotes; it needs no exclusion because it was never in the "flag-then-exclude" set to
+begin with. It is also, empirically, a non-issue for β: a repo-wide `git grep -n "Gravity("`
+over every tracked `.ri`/`.rs` file finds every call site passing either no `magnitude`
+override (bare `Gravity()`, the default) or a compound expression (`STANDARD_GRAVITY()`,
+`5 * STANDARD_GRAVITY()`, `2 * STANDARD_GRAVITY()`, `0 * STANDARD_GRAVITY()`) — **zero bare
+numeric literals**, so there is no BARE `Gravity.magnitude` call site anywhere in the corpus
+today for β to migrate. (This is a direct-grep spot-check, not a full walker-equivalent
+sweep — offered as corroborating context for this section, not as a new item; it does not
+change any other section's count.)
+
+### 9.3 Polarity finding, re-verified empirically (not merely re-quoted from the PRD)
+
+The governing PRD's §10.2 states the seam is *"the opposite of the obvious reading"*:
+because `Real` is dimensionless `Scalar`, and dimensionless `Scalar` is already in the
+vetted family (§0 anchor table #1) **regardless of α's flip**, the units-**correct** call is
+the one that warns today, and the units-*wrong* (bare) call is silent. Re-derived
+independently this session — not trusted from the PRD's prose — with the built
+`target/debug/reify check` binary against a two-file scratch repro
+(`/tmp/5756-scratch/step9-pointload-{polarity,dimensioned}.ri`, uncommitted, outside the
+tracked tree, modelled on the existing `PointLoad(point: "tip", force: 1000.0)` call in
+`crates/reify-eval-fea-tests/tests/fixtures/fea_no_supports.ri:19`):
+
+```
+$ ./target/debug/reify check /tmp/5756-scratch/step9-pointload-polarity.ri      # force: 1000.0 (bare)
+warning: W_MODULE_DECL_MISSING: file has no top-of-file `module` declaration; ...
+All constraints satisfied.
+$ echo $?
+0
+
+$ ./target/debug/reify check /tmp/5756-scratch/step9-pointload-dimensioned.ri   # force: 1000N (units-correct)
+warning: argument 'force' has type 'Scalar[m·kg·s^-2]' but param 'force' requires type 'Real'
+warning: W_MODULE_DECL_MISSING: file has no top-of-file `module` declaration; ...
+All constraints satisfied.
+$ echo $?
+0
+```
+
+**Confirmed exactly as PRD §10.2 states:** `PointLoad(force: 1000.0)` (bare, units-wrong) is
+silent; `PointLoad(force: 1000N)` (units-correct) already warns, TODAY, at current HEAD,
+with **no predicate flip involved on either side** — the flip only widens
+`general_leaf_param_family_is_validated`'s *dimensioned*-`Scalar` arm (§0 anchor table #1);
+the *dimensionless* arm that governs `Real` params was already `true` before this task
+touched anything, so this diagnostic is identical whether or not α's local flip is applied
+(re-confirmed: the flip was not applied for either invocation above). This polarity is the
+**opposite** of every other item in this ledger (there, a bare literal at a *dimensioned*
+param is the thing γ newly catches; here, a bare literal at this *dimensionless* param is
+already the silent/clean case, and it is the *dimensioned* value that already warns) — which
+is exactly why γ's promotion changes nothing here: it has no dimensionless-arm effect to
+give, and the dimensioned-arm effect it does have cannot reach a field that isn't dimensioned
+yet.
+
+### 9.4 Disjointness proof and PRD-5 citation
+
+Because all four fields (§9.1) are `Real` — outside the dimensioned family — at HEAD, and
+because γ's flip only ever *adds* eligibility to the dimensioned-`Scalar` arm without
+touching the dimensionless arm's existing behaviour (§9.3), **every call site of
+`PointLoad`/`PressureLoad`/`TractionLoad`/`BodyForce` is outside this PRD's (γ/β) migration
+list by construction, today and after γ lands** — there is no diagnostic these four fields
+could newly produce under γ that they do not already produce today. Their existing
+diagnostic behaviour changes only at the moment PRD 5 retypes a field to a dimensioned
+`Scalar`, which is PRD 5's act, not this task's or β's.
+
+**PRD 5 = `dimension-checked-readers.md`** (landed `efba5a8036`, per this task's own
+governing PRD's §10.2 citation) **owns the retyping and its own 90-site call-site
+migration**: 90 in-scope constructor sites (78 `PointLoad` + 2 `TractionLoad` + the
+remainder), split 35 `.ri` / 77 `.rs` — **PRD 5's own measured figure, cited here, not
+re-derived**; re-deriving it would duplicate PRD 5's work and risk silently drifting from
+its own count the moment that count moves. The governing PRD records a **reciprocal check,
+already passed**, from PRD 5's own text: *"PRD 4 [this program] owns `conformance/mod.rs` /
+`type_compat.rs` …; this PRD [5] owns the `.ri` retype + the 90-site migration"* — no
+reciprocal "the other owns it" ambiguity between the two PRDs.
+
+**Filing discipline (§10.2, honoured here):**
+- **No PRD-5-owned work is filed from this task.** The 90 call sites are PRD 5's to
+  enumerate, not this ledger's — re-listing them here would risk a stale duplicate the
+  moment PRD 5's own count moves.
+- **No δ leaf is filed for the `CTOR_FIELD_CONFORMANCE_SEVERITY` Warning→Error flip.** Per
+  the governing PRD's own ownership clarification (§10.2, D4-7/§12), that flip is a
+  separate, pre-existing work item this PRD's decomposition neither owns nor blocks on;
+  PRD 5's seam row phrasing could be misread as assigning it to "PRD 4" (this program) but
+  does not actually do so — flagged here so a later reader does not mis-file it against this
+  ledger's consumers.
+
+### 9.5 Revert proof
+
+This step read source only (`fea_multi_case.ri`, the governing PRD) and ran the pre-built
+`target/debug/reify` binary against two uncommitted scratch fixtures under `/tmp/`; it
+required no local predicate flip and touched no tracked file:
+
+```
+$ git status --porcelain
+$ git diff --exit-code -- crates/ examples/ gui/ stdlib
+$ echo $?
+0
+```
 
 ## §10 Per-site classified ledger + consumer index (step-10)
 
