@@ -29,8 +29,8 @@
 # it is strictly WORSE than not handling it: Landlock then enforces it
 # explicitly and denies reparenting on every path that lacks the grant.
 #
-# TWO TRAPS, RECORDED SO THEY ARE NOT RE-DERIVED
-# ----------------------------------------------
+# THREE TRAPS, RECORDED SO THEY ARE NOT RE-DERIVED
+# ------------------------------------------------
 #  1. `mv` MASKS THE BUG. coreutils mv falls back to copy+unlink on EXDEV —
 #     precisely the errno an unhandled REFER produces — so an mv-based probe
 #     reports success while the ruleset is broken. Every rename below is a raw
@@ -41,11 +41,31 @@
 #     is a false premise. Assertion (c) below uses a $REPO_ROOT-rooted
 #     destination, outside /tmp, outside ~/.claude and outside every
 #     --writable path.
+#  3. A /tmp-ROOTED FIXTURE BLINDS ASSERTION (a) — the mirror image of trap #2.
+#     Trap #2 is about the rename DESTINATION; this one is about the SOURCE
+#     ROOT. Landlock path_beneath rules apply down the hierarchy, so a
+#     --writable root minted under /tmp (or under ~/.claude) already inherits
+#     that root's wholesale fs_writable_all — including REFER — no matter what
+#     the helper's `for path in ns.writable` loop grants. MEASURED on this host
+#     (ABI 6), regressing ONLY that loop to the v1-only mask:
+#         pristine  + root under /tmp -> OK  | pristine  + root outside /tmp -> OK
+#         REGRESSED + root under /tmp -> OK  | REGRESSED + root outside /tmp -> errno=18
+#     i.e. a /tmp-rooted fixture stays GREEN on a broken ruleset. Assertion (a)
+#     therefore mints its own root OUTSIDE /tmp ($REPO_ROOT/target by default).
+#     This is not hypothetical for production: the GUI sidecar's real writable
+#     root is REIFY_WORKSPACE — the user's project dir, per compute_sidecar_env
+#     in gui/src-tauri/src/claude_bridge.rs — which is not under /tmp.
 #
 # ASSERTIONS
 #   (a) RED at authoring time — a cross-directory rename INSIDE the single
 #       --writable root succeeds. Measured with the vendored helper before the
 #       fix: errno=18 (EXDEV). Measured with dark-factory's fixed helper: OK.
+#       That root is deliberately OUTSIDE /tmp (see trap #3), so this assertion
+#       observes the PER-PATH --writable REFER grant rather than /tmp's
+#       wholesale one. It therefore catches BOTH failure modes: the wholesale
+#       revert that drops REFER from handled_access_fs (its authoring-time RED,
+#       which denies reparenting everywhere) and the narrower regression that
+#       handles REFER but stops granting it on --writable paths.
 #   (b) CONTROL, green before and after — a SAME-directory rename inside the
 #       writable root succeeds. Guards against the fix over-tightening the
 #       mask.
@@ -67,6 +87,11 @@
 #   - kernel Landlock ABI < 2 (or absent) -> skip the behavioural block; below
 #     ABI 2 the v1-only mask is the correct mask and REFER cannot be set at
 #     all (landlock_create_ruleset returns EINVAL).
+#   - no usable non-/tmp base for assertion (a)'s root -> skip ONLY (a), with a
+#     diagnostic naming every candidate tried and why it was rejected;
+#     (b)/(c)/(d) still run off $TMPROOT. A silently-skipped (a) would be as
+#     bad as the blind one trap #3 describes, so the message is deliberately
+#     loud and self-diagnosing.
 #   - AMBIENT CONTROL fails -> skip the affected assertion(s) with a
 #     diagnostic. Landlock rulesets layer by INTERSECTION, so if the process
 #     running this test is itself already inside a ruleset that does not hand
@@ -74,8 +99,11 @@
 #     correct the vendored helper is -- the inner ruleset can only ever
 #     SUBTRACT. Running each probe unsandboxed FIRST makes a RED attributable
 #     to the ruleset under test rather than to the ambient environment or an
-#     exotic filesystem. Two ambient controls, one per axis:
-#       * cross-directory rename inside $TMPROOT, gating (a)/(b)/(c);
+#     exotic filesystem. Three ambient controls, one per axis:
+#       * cross-directory rename inside $TMPROOT, gating (b)/(c);
+#       * cross-directory rename inside $REFERROOT, gating (a) -- a separate
+#         control because that root sits outside /tmp and so may fall outside a
+#         sandboxed agent role's write set even when $TMPROOT does not;
 #       * a write to ~/.claude, gating (d).
 #     MEASURED: under a dark-factory-sandboxed agent role, the ambient ~/.claude
 #     write is already refused with errno=13 -- DF's compute_write_set grants
