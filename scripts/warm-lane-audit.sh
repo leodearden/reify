@@ -726,27 +726,60 @@ _plan_anchor() {
     local text="$1"
     printf '%s' "$text" | awk '
         {
-            rest = $0
+            text = $0
+            pos = 1
             id = ""; pending_status = ""; pending_id = ""
             anchor_id = ""; anchor_commit = ""
-            while (match(rest, /"(id|status|commit)"[[:space:]]*:[[:space:]]*/)) {
-                key = substr(rest, RSTART, RLENGTH)
+            n = length(text)
+            # ONE pass in document order. `pos` walks the ORIGINAL text rather
+            # than truncating a remainder, so the character immediately BEFORE
+            # a match is always addressable -- which is what makes guard (1)
+            # below expressible at all.
+            while (pos <= n && match(substr(text, pos), /"(id|status|commit)"[[:space:]]*:[[:space:]]*/)) {
+                abs = pos + RSTART - 1          # index of the opening quote
+                key = substr(text, abs, RLENGTH)
                 sub(/^"/, "", key)
                 sub(/".*/, "", key)
-                rest = substr(rest, RSTART + RLENGTH)
+                pos = abs + RLENGTH             # advance past the whole token
+
+                # ── Guard (1): the key opening quote must be UN-BACKSLASHED.
+                # JSON escapes any inner quote as \", so a bare quote before a
+                # key can only be a REAL key. This is not hypothetical: a
+                # plan analysis or step description routinely quotes the very
+                # keys being parsed (task 5876/#5866 plans do), and without
+                # this an escaped \"status\": \"done\", \"commit\": \"...\"
+                # inside prose would be adopted as the anchor.
+                if (abs > 1 && substr(text, abs - 1, 1) == "\\") { continue }
+
+                # ── Guard (2): the value must be QUOTED. Two jobs. It makes a
+                # pending entry -- whose commit the producer writes as
+                # unquoted `null` -- read as empty, exactly as _record_scalar
+                # treats an unassigned task_id. And it independently defeats
+                # the same escaped-prose hazard, since an escaped value opens
+                # with \" rather than a bare quote.
                 val = ""
-                if (substr(rest, 1, 1) == "\"") {
-                    v = substr(rest, 2)
+                if (substr(text, pos, 1) == "\"") {
+                    v = substr(text, pos + 1)
                     q = index(v, "\"")
                     if (q > 0) { val = substr(v, 1, q - 1) }
                 }
+
                 if (key == "id") {
+                    # A new entry begins; drop any status left unpaired by a
+                    # malformed predecessor rather than pairing it across an
+                    # entry boundary.
                     id = val
                     pending_status = ""
                 } else if (key == "status") {
+                    # Pair each status with the commit that FOLLOWS it, and
+                    # carry the enclosing entry id for the operator warning.
                     pending_status = val
                     pending_id = id
                 } else if (key == "commit") {
+                    # Keep the LAST done+commit pair. Document order already
+                    # gives the prerequisites-then-steps traversal, because
+                    # the producer emits prerequisites before steps -- no
+                    # separate array handling is needed.
                     if (pending_status == "done" && val != "") {
                         anchor_id = pending_id
                         anchor_commit = val
