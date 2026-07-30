@@ -624,9 +624,15 @@ _b11_concurrent_clone_during_flip() {
 #      build to populate base_ws/target, first refresh → ws_root/base (symlink-gen).
 #   2. git-init the advancing lane (ws_root/base_ws, committed at mtime-2020-01-01
 #      state via _b7_init_git_lane after seeding) so the provenance guard passes.
-#   3. Create a staled lane in ws_root/stale_lane: copy sources from base_ws,
-#      then apply a non-trivial delta (one new fn in warm_leaf); the lane's target/
-#      is pinned far behind head by CoW-seeding from a stale cold build.
+#   3. Create a staled lane in ws_root/stale_lane (cloned from base_ws, so it
+#      shares git history with _b13_base_head): regress warm_dep to a single fn
+#      and cold-build (target/ now holds artifacts for OLD dep code), restore
+#      the at-head dep from git, then apply a non-trivial delta (one new fn in
+#      warm_leaf) and commit on top of the clone. Reset-in-place ends up
+#      near-cold because both the dep-restore and the leaf-delta land AFTER
+#      the stale build — their mtimes out-date its recorded fingerprints, and
+#      a clean committed tree means control's `git checkout -- .` cannot undo
+#      that (it only preserves; it never re-stales).
 #
 # Control arm (reset-in-place):
 #   4. git checkout -- . && git clean -xfd -e target in stale_lane (resets source
@@ -729,28 +735,33 @@ _b13_reseed_vs_resetinplace() {
     # matter).
     git clone --no-hardlinks --quiet "$_b13_base_ws" "$_b13_stale_lane"
 
-    # Apply the "staling" delta to the lane's source (extra fn in warm_dep so the
-    # stale target/ is behind head by a non-trivial compilation unit)
-    local _b13_stale_fn_count="${REIFY_WARM_LANE_GATE_DEP_FNS:-500}"
-    printf '\npub fn stale_delta_fn() -> u64 { %d }\n' \
-        "$(( _b13_stale_fn_count + 1 ))" >> "$_b13_stale_lane/warm_dep/src/lib.rs"
-
-    # Cold-build the stale lane (produces stale artifacts in stale_lane/target)
-    echo "B13: cold build for stale lane..." >&2
+    # Stale the target from a source state genuinely BEHIND head (not ahead of
+    # it): regress the heavy dep to a single fn and cold-build — target/ now
+    # holds artifacts for OLD dep code, and this is CHEAPER than building the
+    # full dep_fns count. warm_leaf's only call is to fn_1 (gen_synth_workspace),
+    # which the regressed dep still provides, so the build is valid.
+    printf 'pub fn fn_1() -> u64 { 1 }\n' > "$_b13_stale_lane/warm_dep/src/lib.rs"
+    echo "B13: cold build for stale lane (regressed dep)..." >&2
     CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
         cargo build --manifest-path "$_b13_stale_lane/Cargo.toml" >/dev/null 2>&1
 
-    # Commit the delta ON TOP of the cloned base commit (shared history with
-    # _b13_base_head — no `git init`, that would sever it) so reset-in-place
-    # (git checkout -- .) is faithful: a clean working tree lets checkout skip
-    # rewriting already-committed, unmodified files, preserving the stale
-    # build's recorded mtimes (same mechanism _b7_init_git_lane documents,
-    # applied here on the clone instead of a fresh init).
-    git -C "$_b13_stale_lane" add -- . ':!target'
+    # Restore the at-head dep from git: content differs from the index (the
+    # regression above), so checkout REWRITES the file — its mtime becomes now,
+    # strictly newer than the stale build's just-recorded fingerprint. This is
+    # what makes reset-in-place near-cold below: after the commit two lines
+    # down, the tree is clean, so control's `git checkout -- .` is a no-op that
+    # PRESERVES this mtime rather than re-staling it.
+    git -C "$_b13_stale_lane" checkout -- warm_dep/src/lib.rs
+
+    # Apply the head-ward delta to the LEAF (matches Setup-3 above and the
+    # --touch path the treatment call has always passed) and commit on top of
+    # the cloned base commit. warm_dep is already clean (the restore above made
+    # it match the index), so this commit's -a picks up only the leaf.
+    printf '\npub fn delta_fn() -> u64 { 42 }\n' >> "$_b13_stale_lane/warm_leaf/src/lib.rs"
     git -C "$_b13_stale_lane" \
         -c user.email="warm-lane-test@localhost" \
         -c user.name="Warm Lane Test" \
-        commit -q -m "stale: B13 staled lane (delta applied on top of cloned base)"
+        commit -qam "stale: B13 staled lane (head-ward delta in warm_leaf)"
 
     # ── CONTROL: reset-in-place rebuild ───────────────────────────────────────
     # Reset source to committed state; stale target/ preserved (-e target).
