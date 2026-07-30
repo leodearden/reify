@@ -12,6 +12,15 @@
 # $CARGO_HOME (~/.cargo, cargo's default) or the npm cache (~/.npm, npm's
 # default).
 #
+# Those three are what DF sandboxes TODAY. This guard's redirect set
+# (CACHE_REDIRECT_ROLES below) is deliberately WIDER — reify's half of the
+# contract lands AHEAD of the DF-side sandboxed=True flip, so a role is
+# redirected here BEFORE DF confines it (task 5858 added architect,
+# reviewer_comprehensive and judge on exactly that basis). Landing the wider
+# set alone is safe: workflow.py:_build_agent_env merges
+# role_env_overrides.get(role.name, {}) last for EVERY role, so an entry for
+# a not-yet-sandboxed role is inert but harmless.
+#
 # REPRODUCED on this host with the real helper
 # (orchestrator/agents/landlock_exec.py):
 #   (A) uncached dep, default CARGO_HOME: `cargo fetch` -> exit 101,
@@ -40,20 +49,34 @@
 # ("add ~/.cargo and ~/.npm to compute_write_set...") -- landing that
 # would retire both this guard and the /tmp redirect below.
 #
-# SECOND, UNGUARDED COUPLING: SANDBOXED_ROLES below is a hardcoded reify-side
-# copy of DF's roles.py sandboxed=True set (orchestrator/agents/roles.py --
-# implementer, debugger, simple_task). If DF ever marks a fourth role
-# sandboxed, THIS guard stays green while that role runs with an unwritable
-# ~/.cargo -- the exact EACCES-mid-build failure this guard exists to
-# prevent, just on a role this file doesn't know to check. There is no
-# reify-observable way to close that gap from this repo (roles.py is
-# DF-owned); a DF-side role addition needs a breadcrumb back to this file
-# and to dark-factory-orchestrator.yaml's role_env_overrides comment.
+# SECOND COUPLING (now PARTLY guarded -- task 5858):
+#   GUARDED: the covered set is pinned EXACTLY by the role_keys_exactly
+#   assertion against CACHE_REDIRECT_ROLES, in BOTH directions. A role
+#   silently dropped from -- or added to -- the yaml now FAILS this guard
+#   instead of drifting, so any change to the covered set must be a
+#   deliberate, reviewed edit to CACHE_REDIRECT_ROLES below. The
+#   role_key_absent assertion additionally pins the collapsed-key trap: a
+#   `reviewer:` entry passes DF's KNOWN_ROLE_NAMES shape guard silently but
+#   delivers NO redirect, because _build_agent_env keys on role.name ==
+#   'reviewer_comprehensive'.
+#   STILL UNGUARDED: CACHE_REDIRECT_ROLES is a hand-maintained reify-side
+#   declaration. roles.py is DF-owned and NOT reify-observable, so if DF
+#   marks one of the three still-uncovered dispatch roles sandboxed --
+#   namely MERGER, STEWARD or DEEP_REVIEWER -- this guard stays green while
+#   that role runs with an unwritable ~/.cargo, the exact EACCES-mid-build
+#   failure this guard exists to prevent. Naming those three exactly (rather
+#   than a vague "a fourth role") is the point: a DF-side author flipping
+#   sandboxed=True on any of them needs a breadcrumb back to this file and
+#   to dark-factory-orchestrator.yaml's role_env_overrides comment.
+#   merger is EXCLUDED ON PURPOSE, not merely un-added: redirecting the
+#   merge agent's CARGO_HOME to a cold /tmp cache would diverge it from the
+#   verify subprocess cache path on the one gate that lands everything. Do
+#   NOT "close the gap" by blanket-adding every role in DF's ROLES registry.
 #
 # Pins, against dark-factory-orchestrator.yaml:
 #   (A) STRUCTURE (python3+PyYAML, SKIP-guarded): IF sandbox.enabled is
-#       true, THEN for EACH sandboxed role (implementer, debugger,
-#       simple_task), role_env_overrides[<role>] defines BOTH CARGO_HOME
+#       true, THEN for EACH role in CACHE_REDIRECT_ROLES,
+#       role_env_overrides[<role>] defines BOTH CARGO_HOME
 #       and npm_config_cache, each an absolute path lying under /tmp (the
 #       landlock write set's host-global writable root) and explicitly
 #       NOT under $HOME/.cargo or $HOME/.npm — the exact regression this
@@ -61,6 +84,13 @@
 #       correct if sandbox is ever flipped back off (mirrors the
 #       precondition-gated structure of
 #       test_merge_role_lint_first_seam.sh's concurrent_verify guard).
+#       PLUS, after the per-role loop:
+#         - role_keys_exactly: role_env_overrides' key set equals
+#           CACHE_REDIRECT_ROLES EXACTLY. Two-sided (missing AND extra), so
+#           a covered-set change cannot land as a silent yaml-only edit.
+#         - role_key_absent reviewer: the collapsed 'reviewer' key is
+#           NOT present. It would validate cleanly against DF's
+#           KNOWN_ROLE_NAMES yet deliver no redirect at all.
 #   (B) KNOB-NAME CROSS-CHECK (plain bash grep, always runs, no python
 #       needed): `backend: landlock` and `enabled: true` are cited under
 #       the sandbox block, and `role_env_overrides:`, `CARGO_HOME:` and
@@ -71,8 +101,12 @@
 #     test_cpu_governance_config.sh).
 # (B) always runs — plain bash grep, no python needed.
 #
-# RED at authoring time: role_env_overrides is absent from the yaml while
-# sandbox.enabled is true.
+# RED at authoring time (task 5332): role_env_overrides is absent from the
+# yaml entirely while sandbox.enabled is true.
+# RED when the redirect set was widened (task 5858): architect,
+# reviewer_comprehensive and judge are required by CACHE_REDIRECT_ROLES but
+# absent from role_env_overrides, and role_keys_exactly reports the
+# missing-side diff.
 
 set -euo pipefail
 
