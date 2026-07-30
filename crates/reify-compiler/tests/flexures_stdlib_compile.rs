@@ -672,24 +672,36 @@ fn flexure_compliance_accessor_fn_signature_and_eval() {
         func.params[0].0
     );
 
-    // Joint param is `Length` — the λ task (3871) retargeted the β `Real`
-    // placeholder so the accessor typechecks against a real PRB-ctor joint.
-    // A native-builtin PRB ctor (e.g. `prb_cantilever_beam`) has its return
-    // type inferred as its first arg's type, which is the LENGTH segment
-    // length, so the accessor's joint param must resolve to the same
-    // `Scalar { LENGTH }` for the call to overload-match (expr.rs first-arg
-    // inference + type_compat exact equality). Still a placeholder —
-    // `TODO(joint-type)` retargets to `DrivingJoint` / `Joint` when KCC-ζ // ptodo:allow doc reference to a placeholder marker - not tracked debt
-    // lands (task 3845).
+    // Joint param is the nominal `FlexureJoint` marker (task #5476,
+    // placeholder-ratchet α; PRD docs/prds/v0_6/placeholder-type-eradication-ratchet.md
+    // §3.2/§3.3).
+    //
+    // HISTORY of this assertion, because it has now been retargeted twice and
+    // the previous two values were BOTH placeholders:
+    //   β  (task 3861) — `Real`.   Pure stand-in; no joint type existed.
+    //   λ  (task 3871) — `Length`. Chosen so the accessor would overload-match a
+    //                    PRB-ctor result, whose type the compiler inferred from
+    //                    its first (LENGTH) argument via the expr.rs first-arg
+    //                    fallback. Side effect: a bare `5mm` matched too, so the
+    //                    misuse degraded to a sentinel-zero record + a warning.
+    //   α  (task 5476) — `StructureRef("FlexureJoint")`. NOT a stand-in: the
+    //                    13 `prb_*` ctors now type their call sites as this
+    //                    nominal marker (flexure_signatures.rs), so the exact-
+    //                    equality overload filter accepts a real joint and
+    //                    rejects `Scalar[LENGTH]` with a hard compile Error
+    //                    (DiagnosticCode::NoMatchingOverload). The runtime
+    //                    representation stays `Value::Map` (PRD §7.1).
+    //
+    // Pinning this param type is what makes the ratchet non-reversible: loosening
+    // it back to any structural type re-opens the bare-literal hole INV-SF-5 bans.
     assert_eq!(
         func.params[0].1,
-        Type::Scalar {
-            dimension: DimensionVector::LENGTH,
-        },
-        "flexure_compliance.joint param type should be Length (λ task 3871 \
-         retargeted the β `Real` placeholder so the accessor overload-matches \
-         a PRB-ctor joint, whose native-builtin return type is inferred as its \
-         first LENGTH arg); got: {:?}",
+        Type::StructureRef("FlexureJoint".to_string()),
+        "flexure_compliance.joint param type should be the nominal \
+         StructureRef(\"FlexureJoint\") marker (task #5476 placeholder-ratchet α). \
+         A `Scalar[LENGTH]` here is the RETIRED λ-era placeholder — it lets a bare \
+         `5mm` overload-match and silently yield a sentinel-zero compliance \
+         record instead of a type error; got: {:?}",
         func.params[0].1
     );
 
@@ -707,18 +719,25 @@ fn flexure_compliance_accessor_fn_signature_and_eval() {
     // directly) — robust against future `let`-binding refactors per the
     // standard_stock_tests / standard_gravity_tests precedent.
     //
-    // The probe arg must carry a LENGTH `result_type`: `eval_user_function_call`
-    // → `find_matching_compiled_function` selects the overload by exact arg-
-    // `result_type` ↔ param-type equality, and λ retyped the `joint` param to
-    // `Length` (see (a) above). A `Type::dimensionless_scalar()` arg (the β probe) would miss the
-    // overload and eval to `Undef`. A zero-length `0m` is still a non-joint
-    // value (not a Map carrying `__flexure_compliance`), so the
-    // `__flexure_compliance_get` intrinsic returns the sentinel default record.
+    // The probe arg must carry a `StructureRef("FlexureJoint")` `result_type`:
+    // `eval_user_function_call` → `find_matching_compiled_function` selects the
+    // overload by exact arg-`result_type` ↔ param-type equality, and task #5476
+    // retyped the `joint` param to the nominal `FlexureJoint` marker (see (a)
+    // above). The earlier probe types — `Type::dimensionless_scalar()` (β) and
+    // `Scalar[LENGTH]` (λ) — would now miss the overload and eval to `Undef`.
+    //
+    // The VALUE stays a deliberate non-joint `0m`. That mismatch between the
+    // static tag and the runtime value is not sloppiness — it is precisely the
+    // PRD §3.6 fabrication case (`FlexureJoint()` is statically legal, so a
+    // marker-typed expression may carry no `__flexure_compliance` cache entry),
+    // and it is what makes this an eval-SHAPE probe: `__flexure_compliance_get`
+    // sees a non-Map value and returns the sentinel default record, whose
+    // seven-field shape is what the assertions below pin. The eval-time
+    // `W_FLEXURE_NON_JOINT_ARG` arm that fires on exactly this case is covered
+    // separately (task 4547; reify-stdlib/src/flexures/diagnostics.rs).
     let joint_arg = CompiledExpr::literal(
         Value::length(0.0),
-        Type::Scalar {
-            dimension: DimensionVector::LENGTH,
-        },
+        Type::StructureRef("FlexureJoint".to_string()),
     );
     let call_expr = CompiledExpr::user_function_call(
         "flexure_compliance".to_string(),
