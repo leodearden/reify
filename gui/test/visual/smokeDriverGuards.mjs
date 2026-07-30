@@ -102,11 +102,68 @@ export async function openFileWithRetry(rpc, filePath, options = {}) {
   // failure as `{"error":"debug-request timed out after 5000ms"}` — readable,
   // but it buries the one string the operator needs behind punctuation, and it
   // renders a null payload as the bare literal `null` with no subject.
-  const diagnosis = isInBandError(result)
-    ? `open_file failed: ${result.error}`
-    : result === null || result === undefined
-      ? "open_file returned null"
-      : `open_file did not report ok: ${JSON.stringify(result)}`;
+  //
+  // The `??` branch is reached when the payload was WELL-FORMED and simply did
+  // not report ok — a refusal, not an outage. There is no underlying error text
+  // to quote, so the payload itself is the diagnosis.
+  const diagnosis =
+    describeRpcFailure(result, "open_file") ??
+    `open_file did not report ok: ${JSON.stringify(result)}`;
   fail(`open_file failed after ${attempts} attempts: ${diagnosis}`);
   return result;
+}
+
+/**
+ * Diagnose a decoded RPC payload: a message naming the failure, or `null` when
+ * the payload is healthy enough for the caller to start reading fields.
+ *
+ * THE FAILURE MODE THIS EXISTS FOR: a driver guards an RPC with `if (!payload)`,
+ * the tool fails in-band with `{error: "<msg>"}`, and the guard passes because
+ * that object is TRUTHY. The driver then reads its fields as `undefined` and
+ * reports a field-shape problem — "got 0 viewports" — while the one string that
+ * says what actually broke is never printed. A tool OUTAGE misreported as a
+ * frontend assertion failure, with the real cause discarded.
+ *
+ * Returning a STRING rather than a boolean is the point: it forces the
+ * underlying error text into the operator-visible message at every call site,
+ * which a `if (isInBandError(x)) fail('rpc failed')` idiom would not.
+ *
+ * Branch table, in order:
+ *   1. null / undefined  → `<label> returned null`
+ *   2. §2a in-band error → `<label> failed: <error>` — the verbatim text
+ *   3. non-object        → `<label> returned a non-object payload: <json>`.
+ *                          `rpc()` hands back RAW TEXT when a content block is
+ *                          not JSON, so this is reachable in a live run and must
+ *                          not throw.
+ *   4. otherwise         → `null`; the payload is an object and the caller's own
+ *                          field checks take over.
+ *
+ * BRANCH 4 INCLUDES THE EMPTY OBJECT, deliberately. `{}` is a healthy answer
+ * that happens to be empty, not a failed RPC, and the caller's own check ("≥2
+ * viewports") already words that case accurately. Claiming it here would trade
+ * one misdiagnosis for another.
+ *
+ * The §2a discriminator is NOT re-implemented — {@link isInBandError} from
+ * `./rpcEnvelope.mjs` is its single home (task 5731) and
+ * `docs/debug-mcp-contract.md` §2a is authoritative. That matters concretely:
+ * §2a specifies a STRING `error`, while the sibling drivers' `'error' in X`
+ * idiom fires on any `error` key at all. Delegating keeps one definition;
+ * `./smokeDriverGuards.test.ts` pins the agreement with a `{error: 500}` case
+ * asserted against both functions side by side.
+ *
+ * Never throws, whatever the shape of `payload`.
+ *
+ * @param {unknown} payload  A payload as returned by `rpc()` — already decoded
+ *        by `normalizeRpcEnvelope`, so BOTH failure dialects arrive as §2a.
+ * @param {string} label  The tool name (plus any call-site qualifier) to name in
+ *        the message, e.g. `store_state` or `store_state (post-open)`.
+ * @returns {string | null} The diagnosis, or `null` when there is nothing wrong.
+ */
+export function describeRpcFailure(payload, label) {
+  if (payload === null || payload === undefined) return `${label} returned null`;
+  if (isInBandError(payload)) return `${label} failed: ${payload.error}`;
+  if (typeof payload !== "object" || Array.isArray(payload)) {
+    return `${label} returned a non-object payload: ${JSON.stringify(payload)}`;
+  }
+  return null;
 }
