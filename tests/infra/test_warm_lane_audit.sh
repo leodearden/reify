@@ -176,6 +176,16 @@ make_plan() {
     } > "$dir/.task/plan.json"
 }
 
+# make_plan_raw DIR TEXT
+# Writes arbitrary bytes to DIR/.task/plan.json -- the corrupt-record and
+# escaped-key-prose cases, which by construction cannot go through make_plan.
+# Mirrors the make_lane_state / make_lane_state_raw split above.
+make_plan_raw() {
+    local dir="$1" text="$2"
+    mkdir -p "$dir/.task"
+    printf '%s' "$text" > "$dir/.task/plan.json"
+}
+
 # _wait_for_reader_lock <ready-marker> <deadline-seconds>
 # Causal ordering (technique R, docs/prds/infra-test-wallclock-deflake.md,
 # task #4847): polls for the READY marker file in 0.05s ticks, returning 0 as
@@ -2179,5 +2189,88 @@ assert "R3b: a lane with no plan is NOT reported UNKNOWN" \
 assert "R4: a DANGLING plan symlink reports plan_sync=- and never crashes" \
     bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-dangling .*plan_sync=-( |\$)"' _ "$OUT"
 assert "R4b: exit 0 with a dangling plan symlink in the pool" test "$RC" -eq 0
+
+# ── R5-R7 — fail-safe degradation (invariant A6, mirroring A3/A5) ────────────
+# Three ways the read can fail, and the verdicts must not blur them. The column
+# exists to ACCUSE a clobber, so a failure to evaluate must never be dressed up
+# as evidence of one -- that is the whole content of A6.
+R5_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-r5-XXXXXX)"
+_TMPDIRS+=("$R5_MOUNT")
+
+# R5 — the record is present and readable but CORRUPT. Two shapes, because a
+# producer can die two ways: a write truncated mid-object (the realistic one --
+# the record simply never closes), and bytes that were never JSON at all.
+make_lane "$R5_MOUNT/_lane-truncated" "task/9005"
+_add_ahead_commit "$R5_MOUNT/_lane-truncated"
+make_plan_raw "$R5_MOUNT/_lane-truncated" \
+    '{
+  "task_id": "9005",
+  "steps": [
+    {
+      "id": "step-1",
+      "status": "done",
+      "com'
+
+make_lane "$R5_MOUNT/_lane-notjson" "task/9006"
+_add_ahead_commit "$R5_MOUNT/_lane-notjson"
+make_plan_raw "$R5_MOUNT/_lane-notjson" 'this file is not json at all'
+
+# R6 — the anchor's OBJECT IS ABSENT. This is the case a naive
+# `if ! merge-base --is-ancestor` gets catastrophically wrong: git exits 128
+# for an absent object and 1 for a genuine non-ancestor, so a bare non-zero
+# test reports STRANDED and sends an operator hunting a data-loss incident that
+# never happened. `deadbeef0123` is well-formed hex that resolves to nothing.
+make_lane "$R5_MOUNT/_lane-absent" "task/9007"
+_add_ahead_commit "$R5_MOUNT/_lane-absent"
+make_plan "$R5_MOUNT/_lane-absent" 9007 "step:step-1:done:deadbeef0123"
+assert "R6a: the absent-anchor fixture's commit really is absent from the object DB" \
+    bash -c '! git -C "$1" cat-file -e "deadbeef0123^{commit}" 2>/dev/null' _ \
+    "$R5_MOUNT/_lane-absent"
+
+# R7 — nothing recorded YET: every entry pending with an unquoted `null`
+# commit. This is the fresh-lane shape, and it must stay `-`. Folding it into
+# UNKNOWN would make that counter permanently large and bury the records that
+# genuinely could not be evaluated.
+make_lane "$R5_MOUNT/_lane-allpending" "task/9008"
+_add_ahead_commit "$R5_MOUNT/_lane-allpending"
+make_plan "$R5_MOUNT/_lane-allpending" 9008 \
+    "prereq:pre-1:pending:" "step:step-1:pending:" "step:step-2:pending:"
+
+# ...and a .task/ dir that exists but holds no plan.json at all.
+make_lane "$R5_MOUNT/_lane-emptytask" "task/9009"
+_add_ahead_commit "$R5_MOUNT/_lane-emptytask"
+mkdir -p "$R5_MOUNT/_lane-emptytask/.task"
+
+run_helper --mount "$R5_MOUNT"
+
+assert "R5a: exit 0 with corrupt plan records in the pool (degrades, never aborts)" \
+    test "$RC" -eq 0
+assert "R5b: a TRUNCATED plan record reports plan_sync=UNKNOWN" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-truncated .*plan_sync=UNKNOWN( |\$)"' _ "$OUT"
+assert "R5c: a not-JSON plan record reports plan_sync=UNKNOWN" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-notjson .*plan_sync=UNKNOWN( |\$)"' _ "$OUT"
+# One bad plan must never cost the pool-wide report: the HEADROOM line is still
+# complete and its partition identity still holds.
+assert "R5d: HEADROOM still reports every resident despite the corrupt records" \
+    bash -c '[ "$1" = "5" ]' _ "$(_headroom_field "$OUT" resident)"
+assert "R5e: the partition identity still holds with corrupt records present" \
+    _partition_holds \
+    "$(_headroom_field "$OUT" resident)" \
+    "$(_headroom_field "$OUT" live)" \
+    "$(_headroom_field "$OUT" pinned)" \
+    "$(_headroom_field "$OUT" quarantined)" \
+    "$(_headroom_field "$OUT" free)"
+
+assert "R6b: an ABSENT anchor object reports plan_sync=UNKNOWN" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-absent .*plan_sync=UNKNOWN( |\$)"' _ "$OUT"
+assert "R6c: an ABSENT anchor object is NEVER reported STRANDED (no clobber it cannot evidence)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "lane=_lane-absent .*plan_sync=STRANDED"' _ "$OUT"
+
+assert "R7a: an all-pending plan reports plan_sync=- (nothing recorded yet)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-allpending .*plan_sync=-( |\$)"' _ "$OUT"
+assert "R7b: an all-pending plan is NOT reported UNKNOWN (the sentinel split)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "lane=_lane-allpending .*plan_sync=UNKNOWN"' _ "$OUT"
+assert "R7c: a .task/ dir holding no plan.json reports plan_sync=-" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-emptytask .*plan_sync=-( |\$)"' _ "$OUT"
 
 test_summary
