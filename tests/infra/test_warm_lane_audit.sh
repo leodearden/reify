@@ -2554,4 +2554,101 @@ assert "R31b: the foreign-tip clobber is NOT REWRITTEN (no equivalent patch exis
 assert "R31c: an OK lane is unaffected by the discriminator (it never runs on the ancestor path)" \
     bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-ok .*plan_sync=OK( |\$)"' _ "$OUT"
 
+# ── R11-R13 — the HEADROOM cross-cut counters ────────────────────────────────
+# Three counters, because there are three things an operator acts on
+# differently: plan_stranded (investigate), plan_unknown (the read failed) and
+# plan_rewritten (nothing — the pool's own steady state, counted so the
+# stranded figure is readable in proportion to it rather than in a vacuum).
+#
+# All three are CROSS-CUTS, exactly like `assigned` and `state_unknown`: a
+# stranded lane is simultaneously live, pinned, quarantined or free, so folding
+# any of them into `resident = live + pinned + quarantined + free` would break
+# the identity the runbook calls normative. R12 proves that directly.
+R11_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-r11-XXXXXX)"
+_TMPDIRS+=("$R11_MOUNT")
+
+# One lane per verdict, so every counter is exercised and none can pass by
+# defaulting to the pool size.
+#   _lane-c-ok         anchor is an ancestor              => OK
+#   _lane-c-rewritten  rebased anchor, patch re-applied   => REWRITTEN
+#   _lane-c-stranded   foreign-tip clobber                => STRANDED
+#   _lane-c-unknown    corrupt record                     => UNKNOWN
+#   _lane-c-none       no plan at all                     => `-`
+make_lane "$R11_MOUNT/_lane-c-ok" "task/9020"
+_r_commit "$R11_MOUNT/_lane-c-ok" c-ok-anchor
+R11_OK="$(git -C "$R11_MOUNT/_lane-c-ok" rev-parse HEAD)"
+_r_commit "$R11_MOUNT/_lane-c-ok" c-ok-later
+make_plan "$R11_MOUNT/_lane-c-ok" 9020 "step:step-1:done:${R11_OK:0:10}"
+
+make_lane "$R11_MOUNT/_lane-c-rewritten" "task/9021"
+_r_commit "$R11_MOUNT/_lane-c-rewritten" c-rw-base
+git -C "$R11_MOUNT/_lane-c-rewritten" checkout -q -b _r11-side
+_r_commit "$R11_MOUNT/_lane-c-rewritten" c-rw-work
+R11_RW="$(git -C "$R11_MOUNT/_lane-c-rewritten" rev-parse HEAD)"
+git -C "$R11_MOUNT/_lane-c-rewritten" checkout -q "task/9021"
+_r_commit "$R11_MOUNT/_lane-c-rewritten" c-rw-base-moves
+git -C "$R11_MOUNT/_lane-c-rewritten" cherry-pick "$R11_RW" >/dev/null 2>&1
+git -C "$R11_MOUNT/_lane-c-rewritten" branch -q -D _r11-side
+make_plan "$R11_MOUNT/_lane-c-rewritten" 9021 "step:step-1:done:${R11_RW:0:10}"
+
+make_lane "$R11_MOUNT/_lane-c-stranded" "task/9022"
+git -C "$R11_MOUNT/_lane-c-stranded" checkout -q -b _r11b-side
+_r_commit "$R11_MOUNT/_lane-c-stranded" c-str-work
+R11_STR="$(git -C "$R11_MOUNT/_lane-c-stranded" rev-parse HEAD)"
+git -C "$R11_MOUNT/_lane-c-stranded" checkout -q "task/9022"
+_r_commit "$R11_MOUNT/_lane-c-stranded" c-str-foreign-tip
+git -C "$R11_MOUNT/_lane-c-stranded" branch -q -D _r11b-side
+make_plan "$R11_MOUNT/_lane-c-stranded" 9022 "step:step-1:done:${R11_STR:0:10}"
+
+make_lane "$R11_MOUNT/_lane-c-unknown" "task/9023"
+_r_commit "$R11_MOUNT/_lane-c-unknown" c-unk-work
+make_plan_raw "$R11_MOUNT/_lane-c-unknown" 'not json at all'
+
+# The `-` lane is also R12's CONTROL: identical to the stranded lane in every
+# input the classifier reads (clean, idle, same age, no state record) and
+# differing only in its plan. If a stranded lane's occupancy verdict ever
+# started to differ from this twin's, the two axes would have been fused.
+make_lane "$R11_MOUNT/_lane-c-none" "task/9024"
+_r_commit "$R11_MOUNT/_lane-c-none" c-none-work
+
+run_helper --mount "$R11_MOUNT"
+
+assert "R11-0: exit 0" test "$RC" -eq 0
+assert "R11a: HEADROOM carries plan_stranded= with the expected count" \
+    bash -c '[ "$1" = "1" ]' _ "$(_headroom_field "$OUT" plan_stranded)"
+assert "R11b: HEADROOM carries plan_unknown= with the expected count" \
+    bash -c '[ "$1" = "1" ]' _ "$(_headroom_field "$OUT" plan_unknown)"
+assert "R11c: HEADROOM carries plan_rewritten= with the expected count" \
+    bash -c '[ "$1" = "1" ]' _ "$(_headroom_field "$OUT" plan_rewritten)"
+# The counters are keyed off the RESOLVED column value, so a row and its
+# counter can never disagree. Proven, not asserted: count the rows.
+assert "R11d: plan_stranded equals the number of STRANDED rows" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -c "plan_sync=STRANDED")" = "$2" ]' _ \
+    "$OUT" "$(_headroom_field "$OUT" plan_stranded)"
+assert "R11e: plan_rewritten equals the number of REWRITTEN rows" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -c "plan_sync=REWRITTEN")" = "$2" ]' _ \
+    "$OUT" "$(_headroom_field "$OUT" plan_rewritten)"
+
+assert "R12a: the normative partition identity still holds with the new cross-cuts present" \
+    _partition_holds \
+    "$(_headroom_field "$OUT" resident)" \
+    "$(_headroom_field "$OUT" live)" \
+    "$(_headroom_field "$OUT" pinned)" \
+    "$(_headroom_field "$OUT" quarantined)" \
+    "$(_headroom_field "$OUT" free)"
+assert "R12b: a STRANDED lane's classification is IDENTICAL to its otherwise-identical unflagged twin's (ref integrity is orthogonal to occupancy)" \
+    bash -c '
+        s="$(printf "%s\n" "$1" | sed -n -E "s/^lane=_lane-c-stranded .*classification=([A-Z-]+).*/\1/p")"
+        t="$(printf "%s\n" "$1" | sed -n -E "s/^lane=_lane-c-none .*classification=([A-Z-]+).*/\1/p")"
+        [ -n "$s" ] && [ "$s" = "$t" ]' _ "$OUT"
+assert "R12c: no new classification verdict was introduced (STRANDED never appears as a classification)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "classification=\(STRANDED\|REWRITTEN\)"' _ "$OUT"
+
+assert "R13a: the HEADROOM line still BEGINS resident= (fields appended, never interposed)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "^HEADROOM resident="' _ "$OUT"
+assert "R13b: the HEADROOM line still carries budget_gib= (existing consumers keep working)" \
+    bash -c '[ -n "$1" ]' _ "$(_headroom_field "$OUT" budget_gib)"
+assert "R13c: the new counters come AFTER budget_gib on the HEADROOM line" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^HEADROOM .*budget_gib=[0-9]+ .*plan_stranded="' _ "$OUT"
+
 test_summary
