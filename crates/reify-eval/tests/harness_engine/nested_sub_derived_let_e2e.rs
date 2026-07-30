@@ -51,6 +51,41 @@ fn assert_scalar_si(values: &reify_ir::ValueMap, entity: &str, member: &str, exp
     }
 }
 
+/// Assert that `entity.member` holds a `Value::StructureInstance` carrying a
+/// `Scalar` field `field` whose `si_value` matches `expected`.
+///
+/// Checks the collapsed structure value (SIR-α / the `__self` alias), not the
+/// per-member scoped cells [`assert_scalar_si`] covers — the two are separate
+/// commits and only the latter existed at instance scope before review #1.
+fn assert_si_field_scalar(
+    values: &reify_ir::ValueMap,
+    entity: &str,
+    member: &str,
+    field: &str,
+    expected: f64,
+) {
+    let id = ValueCellId::new(entity, member);
+    let got = values
+        .get(&id)
+        .unwrap_or_else(|| panic!("cell {entity}.{member} is absent from the values map"));
+    let Value::StructureInstance(data) = got else {
+        panic!("cell {entity}.{member}: expected Value::StructureInstance, got {got:?}");
+    };
+    let field_val = data
+        .fields
+        .get(field)
+        .unwrap_or_else(|| panic!("cell {entity}.{member}: instance has no field \"{field}\""));
+    match field_val {
+        Value::Scalar { si_value, .. } => assert!(
+            (si_value - expected).abs() < EPS,
+            "cell {entity}.{member}.{field}: expected si_value {expected}, got {si_value}",
+        ),
+        other => panic!(
+            "cell {entity}.{member}.{field}: expected Value::Scalar({expected}), got {other:?}"
+        ),
+    }
+}
+
 /// Assert the eval produced no `Severity::Error` diagnostics.
 fn assert_no_error_diagnostics(diagnostics: &[Diagnostic], what: &str) {
     let errors: Vec<&Diagnostic> = diagnostics
@@ -1043,5 +1078,98 @@ fn mutually_recursive_plain_subs_cut_at_reentry() {
             && d.message.contains("cyclic sub nesting cut")),
         "expected an error naming the starved let at the NESTED scope \
          (\"Parent.x.b.back\"), the cell it reads, and the cycle-cut reason; got: {errors:?}",
+    );
+}
+
+/// Amendment (review #1) — the COLLAPSED structure value, not just the member
+/// cells.
+///
+/// Phase 1.5 materialises `Parent.m.k.off` but used to stop there. At TEMPLATE
+/// scope `engine_eval.rs` additionally commits a `Value::StructureInstance` at
+/// `ValueCellId("Mid", "k")` (SIR-α, task 3540) plus its `__self` alias at
+/// `ValueCellId("Mid.k", "__self")` (task 3941 ζ) — the cell a bare sub
+/// reference used as a WHOLE value lowers to
+/// (`resolve_non_collection_sub_to_structure_ref`, expr.rs). Without the same
+/// pair at instance scope, a whole-value use of `k` resolves under `Mid` and is
+/// silently `Undef` under `Parent.m` — the exact template/instance asymmetry
+/// this task exists to close, left half-closed for non-scalar reads.
+///
+/// The template-scope cells are asserted first as the achievability control.
+#[test]
+fn nested_sub_collapsed_instance_and_self_alias_exist_at_instance_scope() {
+    const SOURCE: &str = r#"
+structure def Kid {
+    param w : Length = 10mm
+    let off = w * 2.0
+}
+
+structure def Mid {
+    sub k = Kid()
+    let relay = self.k.off
+}
+
+structure def Parent {
+    sub m = Mid()
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    // Control: template scope already commits both, and the member cell the
+    // collapsed value is gathered from.
+    assert_scalar_si(&result.values, "Mid.k", "off", 0.02);
+    assert_si_field_scalar(&result.values, "Mid", "k", "off", 0.02);
+    assert_si_field_scalar(&result.values, "Mid.k", "__self", "off", 0.02);
+
+    // Instance scope must mirror it exactly.
+    assert_scalar_si(&result.values, "Parent.m.k", "off", 0.02);
+    assert_si_field_scalar(&result.values, "Parent.m", "k", "off", 0.02);
+    assert_si_field_scalar(&result.values, "Parent.m.k", "__self", "off", 0.02);
+
+    assert_no_error_diagnostics(
+        &result.diagnostics,
+        "nested_sub_collapsed_instance_and_self_alias_exist_at_instance_scope",
+    );
+}
+
+/// Amendment (review #1), behavioural half — a `let` that reads the nested sub
+/// as a WHOLE value must resolve at instance scope.
+///
+/// `self.k` in a let of `Mid` compiles to `ValueRef(ValueCellId("Mid.k",
+/// "__self"))`, and phase 2 evaluates `Mid`'s lets against `child_values`, NOT
+/// against the phase-1.5 overlay. So committing the alias into the global map
+/// alone is not enough: the collapsed pair must also reach phase 2's let scope,
+/// or `Parent.m.whole` stays `Undef` while `Mid.whole` resolves.
+#[test]
+fn nested_sub_whole_value_let_resolves_at_instance_scope() {
+    const SOURCE: &str = r#"
+structure def Kid {
+    param w : Length = 10mm
+    let off = w * 2.0
+}
+
+structure def Mid {
+    sub k = Kid()
+    let whole = self.k
+}
+
+structure def Parent {
+    sub m = Mid()
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    // Control: the whole-value read resolves at template scope today.
+    assert_si_field_scalar(&result.values, "Mid", "whole", "off", 0.02);
+
+    // The instance-scope let must carry the same collapsed structure.
+    assert_si_field_scalar(&result.values, "Parent.m", "whole", "off", 0.02);
+
+    assert_no_error_diagnostics(
+        &result.diagnostics,
+        "nested_sub_whole_value_let_resolves_at_instance_scope",
     );
 }

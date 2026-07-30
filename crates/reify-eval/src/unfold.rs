@@ -430,6 +430,16 @@ pub(crate) fn elaborate_child_instance<'t>(
 /// rather than by declaration also makes the result order-insensitive: a sub
 /// declared before the sibling it reads resolves identically.
 ///
+/// A SUB node also commits the COLLAPSED instance value — the SIR-α
+/// `Value::StructureInstance` at `{scoped_entity}`/`{sub}` and its `__self`
+/// alias at `{scoped_entity}.{sub}`/`__self` — mirroring what `engine_eval.rs`
+/// commits for the same sub at template scope. The per-member cells serve
+/// `self.<sub>.<member>`; the collapsed pair serves every use of the sub as a
+/// WHOLE value, which is a distinct compiler lowering
+/// (`resolve_non_collection_sub_to_structure_ref`). Both are also handed to
+/// phase 2, whose projection BFS structurally cannot derive them: it walks
+/// declared `value_cells`, and neither a sub name nor `__self` is one.
+///
 /// When the walk CANNOT be ordered — a dependency cycle among phase-1.5 nodes,
 /// which [`topological_sort`] (Kahn) reports by silently omitting the members —
 /// the dropped nodes are appended back in declaration order so evaluation still
@@ -470,7 +480,7 @@ fn elaborate_child_instance_nested<'t>(
     prelude: &'t [CompiledModule],
     ancestors: &mut Vec<&'t str>,
 ) {
-    let child_values = elaborate_child_params_only(
+    let mut child_values = elaborate_child_params_only(
         values,
         snapshot,
         functions,
@@ -623,11 +633,16 @@ fn elaborate_child_instance_nested<'t>(
 
     // The running overlay: template-scoped keys visible to this instance's
     // nested-arg evaluation, seeded with phase 1's params and extended as the
-    // walk goes. `child_values` itself stays untouched — phase 2 must recompute
-    // its lets against its own BFS-enriched map, and seeding it with these
-    // scratch values would mask a phase-2 regression.
+    // walk goes. None of these SCRATCH LET values reach `child_values` — phase 2
+    // must recompute its lets against its own BFS-enriched map, and seeding it
+    // with them would mask a phase-2 regression. (The collapsed instance values
+    // gathered into `collapsed` are the one deliberate exception; the hand-off
+    // below says why they are not the same thing.)
     let mut overlay = child_values.clone();
     let mut elaborated: HashSet<&str> = HashSet::new();
+    // Collapsed nested-sub instance values (and their `__self` aliases), keyed
+    // template-scoped, held aside for the phase-2 hand-off below.
+    let mut collapsed: Vec<(ValueCellId, Value)> = Vec::new();
 
     for node_id in &walk_order {
         // `walk_order` only ever contains keys of `nodes` (topological_sort
@@ -747,6 +762,60 @@ fn elaborate_child_instance_nested<'t>(
                         );
                     }
                 }
+
+                // The COLLAPSED instance value, mirroring the SIR-α block
+                // `engine_eval.rs` runs for a TEMPLATE-scope plain sub (task
+                // 3540 + the task 3941 ζ `__self` alias). The per-member cells
+                // projected above serve `self.<sub>.<member>`; they do NOT serve
+                // a use of the sub as a WHOLE value — a bare `k`, a `self.k`
+                // member-access chain, or the receiver of `k.(Trait::method)()`
+                // — which `resolve_non_collection_sub_to_structure_ref`
+                // (expr.rs) lowers to `ValueRef(ValueCellId("{tmpl}.{sub}",
+                // "__self"))`. Without this block those resolved at template
+                // scope and were silently `Undef` at instance scope: the same
+                // instance/template asymmetry this path exists to close, left
+                // open for every non-scalar read. Fields are gathered from the
+                // just-committed nested cells in declaration order, exactly as
+                // the template-scope block gathers them.
+                let mut fields: PersistentMap<String, Value> = PersistentMap::new();
+                for cell in &template.value_cells {
+                    if let Some(v) = values.get(&ValueCellId::new(&nested_entity, &cell.id.member)) {
+                        fields.insert(cell.id.member.clone(), v.clone());
+                    }
+                }
+                let si = Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
+                    type_id: reify_ir::StructureTypeId(0),
+                    type_name: sub.structure_name.clone(),
+                    version: template.version(),
+                    fields,
+                }));
+                // Direct inserts, not `commit_cell_result`: the template-scope
+                // block does the same. This is a derived VIEW of cells already
+                // committed with their own provenance, so giving it a journal
+                // entry and a cache record of its own would double-count the
+                // nested elaboration.
+                let sub_id = ValueCellId::new(scoped_entity, &sub.name);
+                values.insert(sub_id.clone(), si.clone());
+                snapshot
+                    .values
+                    .insert(sub_id, (si.clone(), DeterminacyState::Determined));
+                let self_alias_id = ValueCellId::new(&nested_entity, "__self");
+                values.insert(self_alias_id.clone(), si.clone());
+                snapshot
+                    .values
+                    .insert(self_alias_id, (si.clone(), DeterminacyState::Determined));
+
+                // Both keys, template-scoped, for the two consumers that cannot
+                // reach the global map: the overlay (later phase-1.5 nodes'
+                // ARGS) and `collapsed` (phase 2's LET scope — see the note at
+                // its application site below).
+                let collapsed_key = ValueCellId::new(&child_template.name, &sub.name);
+                let collapsed_alias = ValueCellId::new(&projected_entity, "__self");
+                overlay.insert(collapsed_key.clone(), si.clone());
+                overlay.insert(collapsed_alias.clone(), si.clone());
+                collapsed.push((collapsed_key, si.clone()));
+                collapsed.push((collapsed_alias, si));
+
                 elaborated.insert(sub.name.as_str());
             }
         }
@@ -762,6 +831,23 @@ fn elaborate_child_instance_nested<'t>(
         .map(|sub| sub.name.as_str())
         .filter(|name| elaborated.contains(name))
         .collect();
+
+    // Hand phase 2 the collapsed instance values. This is the ONE thing the
+    // "child_values stays untouched" rule above does not cover, and the
+    // exception is structural rather than a convenience: phase 2's projection
+    // BFS walks `entity_template.value_cells`, and NEITHER key here is a
+    // declared value cell — `{tmpl}.{sub}` is a sub, and `__self` is a compiler
+    // alias — so the BFS can never produce them however far it walks. Without
+    // this a let reading the sub as a whole value (`let whole = self.k`) sees no
+    // `Mid.k.__self` in its scope and lands `Undef` at instance scope while
+    // resolving fine at template scope.
+    //
+    // These are NOT let scratch values: each is a derived view of cells phase 2
+    // itself has no part in producing, so seeding them cannot mask a phase-2
+    // let regression the way seeding the overlay's let values would.
+    for (key, value) in collapsed {
+        child_values.insert(key, value);
+    }
 
     elaborate_child_lets_only(
         values,
