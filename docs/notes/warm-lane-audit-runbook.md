@@ -350,6 +350,26 @@ rather than assuming the file is absent:
 | `unparseable-record` | The record is present and readable but no `state` string could be read out of it. | A corrupt, truncated, or reshaped write — inspect the named file; it *is* there. |
 | `unrecognized-state:<raw>` | The record parsed and named a state this script does not map. | **Schema drift.** A mass spike carrying one repeated `<raw>` value means dark-factory's `LaneState` gained a member; extend the mapping table above. Nothing is wrong with the pool. |
 
+### Cross-pool strandedness sweep
+
+Safe to run at any time — read-only, never gates, exit 0 regardless of what it finds.
+
+```bash
+# Pool-wide counters (the four cross-cuts):
+scripts/warm-lane-audit.sh --mount "$REIFY_WARM_LANE_MOUNT" --format json \
+  | python3 -c 'import json,sys; h=json.load(sys.stdin)["headroom"]; print({k:h[k] for k in ("plan_stranded","plan_unknown","plan_rewritten","plan_mismatch")})'
+
+# The per-lane rows behind them:
+scripts/warm-lane-audit.sh --mount "$REIFY_WARM_LANE_MOUNT" \
+  | grep -E 'plan_sync=(STRANDED|UNKNOWN)|plan_task=MISMATCH'
+```
+
+Expect `plan_rewritten` to dominate — that is a healthy pool, not a finding. A non-zero
+`plan_stranded` is an **investigate-then-escalate** signal, never an auto-repair trigger; work the
+triage order in "Reading a STRANDED lane" above. No measured counts are recorded here on purpose: a
+point-in-time number frozen into a runbook is the frozen-constant antipattern D8/G6 reject — the
+recipe belongs in tracked docs, its output does not.
+
 ## Exit codes
 
 | Code | Meaning |
