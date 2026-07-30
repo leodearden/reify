@@ -62,7 +62,7 @@ Probe ground truth (2026-07-24, artifacts `probe-relations/` in the review scrat
 | Trig/vector math for tangent construction (`atan2`, `acos`, `sqrt`, …) | EXISTS | math_signatures.rs:49, 97–99 |
 | List iteration producing geometry (`generate(n, \|i\| geom)`) | **BROKEN — #5385** (silent Undef; pending, high) | list_helpers.rs:62; λ hard-depends on it |
 | `helix()` as sweep spine | IN-PROGRESS #5342 (not needed for belt — flat paths) | task text |
-| `pipe()` non-+Z paths | DONE #5343 (landed 2026-07-29) — `pipe()` accepts any finite start-tangent orientation | `reify-kernel-occt/src/lib.rs` `validate_pipe_start_tangent` (guard narrowed to non-finite/NaN only; called from the `Pipe` arm); acceptance: `helix_wire_pipes_to_positive_volume_solid` in `crates/reify-kernel-occt/tests/harness_occt/helix_sweep_integration.rs` (helix spine, start tangent ≈+Y) |
+| `pipe()` non-+Z paths | DONE #5343 (landed 2026-07-29) — `pipe()` accepts any finite start-tangent orientation | `crates/reify-kernel-occt/src/lib.rs` `validate_pipe_start_tangent` (guard narrowed to non-finite/NaN only; called from the `Pipe` arm); acceptance: `crates/reify-kernel-occt/tests/harness_occt/helix_sweep_integration.rs` `helix_wire_pipes_to_positive_volume_solid` (helix spine, start tangent ≈+Y) |
 | `Type::Set` / `Type::List` | EXIST (List is the v1 surface) | reify-core/src/ty.rs:132,134 |
 | printer_v01 on main | EXISTS | `prj/printer_v01/` (tracked; last touched 361706754e) |
 
