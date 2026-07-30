@@ -18,29 +18,63 @@
  * broader one, and `./sharedModuleLoad.test.ts` pins each form so a silent
  * regression back to the narrow reading cannot happen.
  *
- * The predicate below is PURE — no I/O, no vitest — which is what lets those
- * forms be tested from string literals with no on-disk fixture. Importing
- * `expect` in a non-`.test.ts` helper is a deliberate, isolated divergence from
- * this directory's pure-module convention (assertions.ts, diff.ts, paths.ts,
- * rpc.ts): it is confined to the thin `expectBareNodeLoadable` wrapper, and the
- * regex logic itself stays vitest-free and unit-testable.
+ * This module is vitest-free, like every other helper in this directory
+ * (assertions.ts, diff.ts, paths.ts, rpc.ts): it exposes a pure predicate and a
+ * plain read, and every `expect` lives in `./sharedModuleLoad.test.ts`. The
+ * predicate doing no I/O is what lets each reference form be pinned from a
+ * string literal with no on-disk fixture.
  */
-import { expect } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
+ * The stable identity of a violation. Assert on THIS, never on the message.
+ *
+ * `node-builtin` — a `node:` builtin is referenced in any form.
+ * `commonjs-require` — a CommonJS `require(` call, which ESM has no such thing as.
+ */
+export type BareNodeViolationCode = "node-builtin" | "commonjs-require";
+
+/**
+ * One reason a source would fail to load under a bare `node <driver>.mjs`.
+ *
+ * The split exists so the two halves can evolve independently: `code` is the
+ * contract the suite asserts on, leaving `message` free to be reworded or
+ * enriched — with the offending line number, say — without churning a single
+ * assertion.
+ */
+export interface BareNodeViolation {
+  readonly code: BareNodeViolationCode;
+  readonly message: string;
+}
+
+/**
  * Every way `source` would fail to load under a bare `node <driver>.mjs`.
  *
- * Returns a human-readable list; `[]` means loadable. A LIST rather than a
- * boolean on purpose: the assertion failure then names which constraint broke,
- * instead of dumping the whole source blob.
+ * Returns a list; `[]` means loadable. A LIST rather than a boolean on purpose:
+ * the assertion failure then names which constraint broke, instead of dumping
+ * the whole source blob.
+ *
+ * SCOPE — this matches the WHOLE source, comments and string literals included;
+ * there is no parse. A shared module that merely *documents* the constraint
+ * therefore trips it, and the message will point at an import that does not
+ * exist: writing `import "node:fs"` in a doc example, or the word `require(` in
+ * prose, is enough. `./rpcEnvelope.mjs`'s header discusses `node:` imports at
+ * length and survives only because it writes them in backticks rather than
+ * quotes. If that false positive ever bites, strip line and block comments
+ * before matching — do NOT narrow the regexes back toward the `from`-anchored
+ * form this file deliberately retired, which would reopen the side-effect and
+ * dynamic-import blind spots the negative controls exist to pin.
  */
-export function findBareNodeLoadViolations(source: string): string[] {
-  const violations: string[] = [];
-  if (/["']node:/.test(source)) violations.push("references a `node:` builtin");
-  if (/require\s*\(/.test(source)) violations.push("uses CommonJS `require(`");
+export function findBareNodeLoadViolations(source: string): BareNodeViolation[] {
+  const violations: BareNodeViolation[] = [];
+  if (/["']node:/.test(source)) {
+    violations.push({ code: "node-builtin", message: "references a `node:` builtin" });
+  }
+  if (/require\s*\(/.test(source)) {
+    violations.push({ code: "commonjs-require", message: "uses CommonJS `require(`" });
+  }
   return violations;
 }
 
@@ -66,24 +100,32 @@ export const SHARED_ESM_MODULES = [
 ];
 
 /**
- * Every `.mjs` in this directory that is NOT a `smoke_*` driver — i.e. every
- * module the constraint applies to, derived rather than remembered.
+ * Every `.mjs` in `dir` that is NOT a `smoke_*` driver — i.e. every module the
+ * constraint applies to, derived rather than remembered.
  *
  * Deliberately used ONLY by the completeness guard, never as the source for the
  * `it.each` table: driving the table off a directory read would let a discovery
  * bug (wrong `dir`, a filter typo) collapse it to zero registered tests and a
  * silently green suite. {@link SHARED_ESM_MODULES} stays the table; this only
  * cross-checks it.
+ *
+ * The `dir` parameter exists so that filter rule can be pinned against a fixture
+ * directory in isolation. The subtlety worth pinning: the opt-out is the prefix
+ * `smoke_` WITH the underscore, so `smokeDriverGuards.mjs` is a shared module and
+ * `smoke_appearance_e2e.mjs` is a driver.
  */
 export function discoverSharedEsmModules(dir: string = VISUAL_DIR): string[] {
   return fs.readdirSync(dir).filter((name) => name.endsWith(".mjs") && !name.startsWith("smoke_"));
 }
 
-/** Assert that the named module in {@link VISUAL_DIR} stays bare-`node` loadable. */
-export function expectBareNodeLoadable(name: string): void {
-  const source = fs.readFileSync(path.join(VISUAL_DIR, name), "utf8");
-  expect(
-    findBareNodeLoadViolations(source),
-    `${name} must stay loadable by bare \`node\``,
-  ).toEqual([]);
+/**
+ * Read the named module out of {@link VISUAL_DIR}, for checking with
+ * {@link findBareNodeLoadViolations}.
+ *
+ * Split from the assertion so this module stays vitest-free; the `expect` lives
+ * in `./sharedModuleLoad.test.ts`, which is also where the violation messages get
+ * rendered into the failure output.
+ */
+export function readSharedModuleSource(name: string): string {
+  return fs.readFileSync(path.join(VISUAL_DIR, name), "utf8");
 }
