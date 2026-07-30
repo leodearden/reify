@@ -282,6 +282,9 @@ describe("the load constraint that makes the shared driver modules .mjs", () => 
   // runners invoke `node <driver>.mjs` and never `tsx`.
   const SHARED_ESM_MODULES = ["rpcEnvelope.mjs", "meshCountParity.mjs", "smokeDriverGuards.mjs"];
 
+  // TODO(#5859): hoist this into one shared helper and delete the narrower copy at
+  // rpcEnvelope.test.ts:394-403, which this broader table already subsumes.
+
   it.each(SHARED_ESM_MODULES)("%s is plain ESM a bare-`node` driver can load", (name) => {
     // A `node:` reference would resolve for the drivers and break under vitest —
     // and vitest cannot catch that by merely importing the module, because this

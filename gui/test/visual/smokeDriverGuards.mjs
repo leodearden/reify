@@ -29,6 +29,11 @@ import { isInBandError } from "./rpcEnvelope.mjs";
  * context, and until it has, `open_file` returns the in-band error
  * "debug-request timed out after 5000ms". Re-measure against a live GUI before
  * changing these, rather than reasoning about them from here.
+ *
+ * TODO(#5857): four drivers still carry that loop inline (smoke_appearance_e2e,
+ * smoke_diagnostics_e2e, smoke_mesh_count_parity_e2e and
+ * smoke_surface_finish_viewport_e2e) — migrate them onto this helper so the
+ * constants, the `.ok` verdict and the failure wording have one home.
  */
 export const OPEN_FILE_ATTEMPTS = 8;
 

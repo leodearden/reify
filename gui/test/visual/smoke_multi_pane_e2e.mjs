@@ -199,12 +199,12 @@ async function main() {
     meshInfo: pane1State?.meshInfo?.map(m => m.entityPath),
   }));
 
-  // NOT AN OVERSIGHT that two idioms now coexist in this file: the five
-  // `'error' in X` guards (here, plus design-main, pre-orbit, post-orbit and
-  // orbit_camera) are 5731's enumerated set, and task 5827 owns only the two
-  // store_state sites above. Sweeping them onto describeRpcFailure would also
-  // narrow each to §2a's STRING `error` — a behaviour change belonging to its own
-  // task, filed as a follow-up.
+  // TODO(#5857): sweep the five `'error' in X` guards in this file (here, plus
+  // design-main, pre-orbit, post-orbit and orbit_camera) onto describeRpcFailure.
+  // Two idioms coexisting here is deliberate rather than accidental: these five are
+  // 5731's enumerated set and task 5827 owned only the two store_state sites above.
+  // Converting them also narrows each to §2a's STRING `error`, a behaviour change
+  // that belongs to its own task.
   if (!pane1State || typeof pane1State !== 'object' || 'error' in pane1State) {
     fail(`viewport_state('pane-1') failed: ${JSON.stringify(pane1State)}`);
   }
