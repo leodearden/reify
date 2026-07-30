@@ -1063,7 +1063,18 @@ echo "out" > "$H3c_BASE/debug/build/tauri-ZZZZ/output"
 echo "libserde.rlib" > "$H3c_BASE/debug/deps/libserde.rlib"
 echo "fp" > "$H3c_BASE/debug/.fingerprint/serde-abc123"
 
+# REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 (task 5632): this fixture resolves no
+# delta-touch base (no BASE_COMMIT in the sidecar, no ${H3c_BASE}.basecommit, no
+# --base-commit) AND the debug/.fingerprint dir it deliberately creates is
+# exactly the evidence §9.5 inv.13 refuses on, so the seed would otherwise abort
+# before reaching the build-dir invalidation sweep this arm exists to measure.
+# The knob is the semantically correct annotation rather than a workaround: the
+# .fingerprint dir is LOAD-BEARING for what H3c asserts (that the sweep
+# preserves non-build siblings), so it cannot be dropped; and passing
+# --base-commit instead would divert H3c onto the _touch_git_delta stub-git path
+# it does not otherwise exercise. Block U's U1 covers the refusal itself.
 reset_calls
+REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 \
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
     run_helper_real "$H3c_BASE" "$H3c_LANE" --fresh-checkout
 assert "H3c: --fresh-checkout exits 0 (sibling dirs preserved)" test "$RC" -eq 0
@@ -3531,12 +3542,13 @@ assert "S2f: sub-second abort names BOTH the output and the delta path on [error
 # by a different route. Today that condition is COMPLETELY SILENT: the
 # `if [ -n "$EFFECTIVE_BASE_COMMIT" ]` block simply has no else.
 #
-# Scope note: this asserts a warn ONLY. Making the bulk stamp conditional (or
-# failing closed) would break two currently-green DECLARED contracts — Block D
-# above (D1/D2/D4 assert the bulk stamp fires with no base commit in the
-# fixture) and tests/infra/test_warm_lane_pool.sh:398 (--fresh-checkout --touch
-# with no --base-commit) — so it is a D5-contract change needing its own
-# ruling, tracked as task #5632. S3b pins that the warn stays purely additive.
+# Scope note: this asserts a warn ONLY, and S3b pins that the warn stays purely
+# additive. The ruling that question was awaiting landed as §9.5 inv.13 (task
+# 5632): a no-base seed now REFUSES — but only when the clone carries recorded
+# prior compilations for the bulk stamp to wrongly re-Freshen. S3's fixture
+# deliberately carries NO .fingerprint dir, so it stays BELOW inv.13's hazard
+# gate and keeps asserting the accept path unchanged. That makes S3a/S3b the
+# below-threshold CONTROL for Block U's U1; see Block U for the refusal arms.
 # ─────────────────────────────────────────────────────────────────────────────
 S3_BASE_PARENT="$(mktemp -d /tmp/test-seed-S3-parent-XXXXXX)"
 S3_BASE="$S3_BASE_PARENT/target"
@@ -3790,6 +3802,380 @@ assert "T4: mechanism positive control — a detached grandchild whose stub dir 
 
 assert "T4b: counterfactual control — the SAME detached grandchild whose stub dir is instead RETAINED past its PATH lookup does NOT delete the trash (proves the stub dir's lifetime, not incidental timing, is the causal variable T1 guards)" \
     _t4_control retain
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block U — a --fresh-checkout that resolves NO delta-touch base must REFUSE,
+# not return a lane whose freshness claim it cannot substantiate (task 5632).
+#
+# Contract under test, its reasoning, the causal `.fingerprint` gate below and
+# the opt-out knob all live in ONE place — docs/prds/warm-lane-pool-cow-seeding.md
+# §9.5 inv.13 — deliberately NOT restated here (G7 no-lockstep-duplication).
+# Block S's S3a/S3b are the BELOW-THRESHOLD control for U1: S3's fixture carries
+# no .fingerprint dir, so it stays under inv.13's hazard gate and keeps asserting
+# the accept path unchanged.
+#
+# The arms are built as two-sided pairs, so that no single-sided edit to the
+# guard can stay green: U1/U1b straddle the causal .fingerprint gate AND the
+# guard's call position relative to the invalidation sweep; U1c/U1d straddle the
+# -maxdepth 3 probe bound; U2/U2b straddle what the guard keys on (base
+# resolution — NOT an empty delta set, and NOT an explicit --touch list);
+# U3/U3b/U3c straddle the opt-out knob's exact-"1" contract; U4/U4b/U4c straddle
+# `absent` vs `present but empty` in the refusal's per-tier attribution, with
+# U4b/U4d straddling the .basecommit trailing-whitespace trim that the same
+# distinction rests on.
+#
+#   Placed AFTER the task-#5633 Block T and BEFORE Block R, for the same reason
+#   Block S is: per Block R's ordering note, a block appended after R2/R5 gets
+#   no shared-trash-litter coverage from R1.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block U: no delta-touch base ⇒ seed refuses (task 5632) ---"
+
+_u_make_fixture() {
+    # <prefix> <with_fingerprint:0|1> [fingerprint_parent_relpath] —
+    # echoes "<base>|<lane>".
+    #
+    # Base parent and lane are BOTH minted via make_isolated_lane (i.e. under
+    # $_LANE_ROOT), NOT bare /tmp, for the SUBSHELL reason documented above
+    # _s_make_fixture and _LANE_ROOT: every call site reads this function's
+    # stdout via command substitution, so a `_TMPDIRS+=(...)` here would be
+    # silently discarded when the subshell exits and every base parent would
+    # leak into bare /tmp.
+    #
+    # The optional 3rd arg is the .fingerprint dir's PARENT, relative to
+    # <base>, and defaults to the depth-2 `debug` shape. U1c/U1d override it to
+    # drive the guard's -maxdepth 3 bound from both sides; nothing else should
+    # need it.
+    local prefix="$1" with_fingerprint="$2" fp_parent="${3:-debug}" parent base lane
+    parent="$(make_isolated_lane "$prefix-base")"
+    base="$parent/target"
+    lane="$(make_isolated_lane "$prefix-lane")"
+    # All three base-resolution tiers deliberately empty: the sidecar carries NO
+    # BASE_COMMIT line, no ${base}.basecommit stamp is written, and no
+    # --base-commit flag is passed (except by U2, which is the discriminator).
+    printf 'RUSTFLAGS=\nINVOCATION=\n' > "$parent/.warm-base-meta"
+    mkdir -p "$base/debug"
+    echo "artifact" > "$base/debug/artifact.a"
+    # ORDERING WITNESS for the guard's documented call position (before the
+    # non-relocatable build-dir invalidation sweep). debug/build/tauri-TTTT
+    # matches the sweep's `tauri-*` allow-list glob, so it survives IFF the
+    # guard aborted first and is GONE on every path where the seed proceeded —
+    # a two-sided pin (U1 asserts survival, U1b asserts deletion) of a property
+    # that is otherwise only stated in a comment. The marker file is
+    # deliberately NOT named `output`: that is the inv.12 guard's freshness
+    # reference, and this fixture must exercise inv.13 alone.
+    mkdir -p "$base/debug/build/tauri-TTTT"
+    echo "marker" > "$base/debug/build/tauri-TTTT/marker"
+    if [ "$with_fingerprint" = "1" ]; then
+        # Default fp_parent=debug ⇒ target/debug/.fingerprint = depth 2 from
+        # LANE_TARGET, inside the guard's probe bound. Reaches the lane via
+        # run_helper_real's cp stub (/bin/cp -a), the same propagation mechanism
+        # Block D's D4 relies on for debug/artifact.a. Named lib-somepkg, NOT
+        # `output`, so this fixture stays clear of the inv.12 guard and only
+        # inv.13 is under test here.
+        mkdir -p "$base/$fp_parent/.fingerprint/somepkg-1111"
+        echo "fp" > "$base/$fp_parent/.fingerprint/somepkg-1111/lib-somepkg"
+    fi
+    mkdir -p "$lane/src"
+    echo 'pub fn tracked() {}' > "$lane/src/tracked.rs"
+    printf '%s|%s' "$base" "$lane"
+}
+
+# ── U1: THE RED ARM — no base resolves AND the clone carries recorded prior
+# compilations for the bulk stamp to wrongly re-Freshen ⇒ refuse.
+IFS='|' read -r U1_BASE U1_LANE <<< "$(_u_make_fixture U1 1)"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$U1_BASE" "$U1_LANE" --fresh-checkout
+
+assert "U1: seed exits NON-zero when no delta-touch base resolves and the clone carries recorded compilations" \
+    test "$RC" -ne 0
+assert "U1: STDOUT is EMPTY on the unsubstantiated-base abort (caller falls back to a cold rebuild)" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+# Both message assertions are scoped to [error]-level lines. The RETAINED no-base
+# [warn] names the very same condition, so an unscoped grep over all of stderr
+# passes even when the guard never fired at all — the same measured hazard S2c
+# documents for the inv.12 guard.
+assert "U1: an [error] line names the unresolved delta-touch base condition" \
+    bash -c 'printf "%s\n" "$1" | grep "\[error\]" | grep -q "delta-touch base"' _ "$ERR_OUT"
+assert "U1: an [error] line names the .fingerprint evidence found under the lane target" \
+    bash -c 'printf "%s\n" "$1" | grep "\[error\]" | grep -qF "$2"' _ "$ERR_OUT" \
+    "$U1_LANE/target/debug/.fingerprint"
+# ORDERING PIN (positive half; U1b holds the negative half). The guard is
+# documented as running BEFORE the non-relocatable build-dir invalidation sweep,
+# the inv.8 relocation sweep and the env!() relink, so a doomed seed pays none
+# of those walks. debug/build/tauri-TTTT matches the sweep's allow-list glob, so
+# its SURVIVAL is direct evidence the abort preceded the sweep. Without this,
+# moving the call after the sweep keeps every other U-arm green.
+assert "U1: the tauri-* build dir SURVIVES the abort ⇒ the guard ran before the invalidation sweep" \
+    test -d "$U1_LANE/target/debug/build/tauri-TTTT"
+
+# ── U1b: POSITIVE CONTROL (green before AND after) — byte-identical fixture
+# MINUS the .fingerprint dir. Without this arm U1 would also pass against an
+# implementation that simply always aborts on a missing base; this is the arm
+# that pins the CAUSAL .fingerprint gate, and it is what keeps Block D and Block
+# S's S3 below the threshold by construction rather than by exemption.
+IFS='|' read -r U1B_BASE U1B_LANE <<< "$(_u_make_fixture U1b 0)"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$U1B_BASE" "$U1B_LANE" --fresh-checkout
+
+assert "U1b: no .fingerprint under the clone ⇒ nothing to mis-gate ⇒ seed still exits 0" \
+    test "$RC" -eq 0
+assert "U1b: STDOUT is exactly <lane>/target" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$U1B_LANE/target"
+U1B_SRC_MTIME="$(stat -c '%Y' "$U1B_LANE/src/tracked.rs")"
+assert "U1b: tracked source still carries the 2020-01-01 bulk stamp ($EPOCH_2020) — accept path unchanged" \
+    test "$U1B_SRC_MTIME" -eq "$EPOCH_2020"
+# ORDERING PIN (negative half — the control that gives U1's survival assertion
+# its meaning). On a path where the guard does NOT abort, the sweep runs and the
+# allow-listed dir is gone; so U1's surviving dir cannot be explained by the
+# sweep simply never touching this fixture.
+assert "U1b: the tauri-* build dir is GONE when the seed proceeds ⇒ the sweep does run on this fixture" \
+    bash -c '[ ! -e "$1" ]' _ "$U1B_LANE/target/debug/build/tauri-TTTT"
+
+# ── U1c/U1d: the guard's -maxdepth 3 probe bound, driven from BOTH sides. The
+# bound is the load-bearing half of the causal claim (it is what makes the guard
+# cover the same tree the build-dir deletion sweep walks), yet U1/U1b/U2/U3 all
+# use the depth-2 `debug/.fingerprint` shape and would stay green under a
+# narrowed -maxdepth 2 — which would let EVERY cross-compiled warm base through
+# the gate. Mirrors the boundary arm H3d already keeps on the sweep itself.
+
+# U1c: depth 3 — the cross-compile <triple>/<profile>/.fingerprint shape, which
+# is INSIDE the bound and must still be refused.
+IFS='|' read -r U1C_BASE U1C_LANE <<< "$(_u_make_fixture U1c 1 x86_64-unknown-linux-gnu/debug)"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$U1C_BASE" "$U1C_LANE" --fresh-checkout
+
+assert "U1c: a depth-3 cross-compile <triple>/debug/.fingerprint is INSIDE the probe bound ⇒ still refuses" \
+    test "$RC" -ne 0
+assert "U1c: depth-3 abort still leaves STDOUT empty" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+assert "U1c: the [error] line names the depth-3 .fingerprint path it found" \
+    bash -c 'printf "%s\n" "$1" | grep "\[error\]" | grep -qF "$2"' _ "$ERR_OUT" \
+    "$U1C_LANE/target/x86_64-unknown-linux-gnu/debug/.fingerprint"
+
+# U1d: depth 4 — a .fingerprint nested inside a build-script output dir, OUTSIDE
+# the bound. It is not a cargo profile fingerprint dir, so it is deliberately
+# not probed and the seed must still proceed. This is the arm a WIDENED bound
+# would fail, keeping the guard's coverage tied to the sweep's rather than
+# drifting into false refusals.
+IFS='|' read -r U1D_BASE U1D_LANE <<< "$(_u_make_fixture U1d 1 debug/build/somepkg-2222)"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$U1D_BASE" "$U1D_LANE" --fresh-checkout
+
+assert "U1d: a depth-4 .fingerprint nested in a build-script out dir is OUTSIDE the bound ⇒ seed proceeds" \
+    test "$RC" -eq 0
+assert "U1d: STDOUT is exactly <lane>/target" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$U1D_LANE/target"
+
+# ── U2: DISCRIMINATOR (green before AND after) — .fingerprint present, but a
+# base RESOLVES via --base-commit while the stub git returns an EMPTY
+# `diff --name-only` (REIFY_TEST_GIT_DIFF_FILES deliberately left unset, the
+# Block J3/K1 shape). Pins that the guard keys on BASE RESOLUTION, not on the
+# delta set being empty: a lane legitimately sitting AT the base commit has an
+# empty delta and must still seed. This is the arm that fails against the
+# plausible-but-wrong implementation keyed on an empty _DELTA_PATHS.
+IFS='|' read -r U2_BASE U2_LANE <<< "$(_u_make_fixture U2 1)"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$U2_BASE" "$U2_LANE" --fresh-checkout --base-commit shaU2
+
+assert "U2: base RESOLVES (empty delta) ⇒ seed exits 0 even with .fingerprint present" \
+    test "$RC" -eq 0
+assert "U2: STDOUT is exactly <lane>/target" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$U2_LANE/target"
+
+# ── U2b: the OTHER half of the same discriminator — an explicit --touch list is
+# NOT substantiation. --touch feeds the same _DELTA_PATHS array as the git-diff
+# delta-touch, so `non-empty _DELTA_PATHS ⇒ substantiated` is the obvious
+# refactor; it is wrong, because --touch is an ADDITIONAL path to touch (see the
+# usage block in scripts/seed-warm-lane.sh), not a declaration that the delta
+# set is COMPLETE, and no flag exists with which a caller could assert
+# completeness. Together with U2 this pins the guard's key exactly: BASE
+# RESOLUTION, neither more nor less. Ruling and reasoning: §9.5 inv.13.
+IFS='|' read -r U2B_BASE U2B_LANE <<< "$(_u_make_fixture U2b 1)"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$U2B_BASE" "$U2B_LANE" --fresh-checkout \
+        --touch "$U2B_LANE/src/tracked.rs"
+
+assert "U2b: a non-empty --touch list does NOT substantiate a missing base ⇒ still refuses" \
+    test "$RC" -ne 0
+assert "U2b: --touch abort still leaves STDOUT empty" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+
+# ── U3: the narrow opt-out knob, honoured. REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1
+# downgrades the refusal to a warn and reaches the accept path VERBATIM (same
+# exit 0, same stdout, same 2020-01-01 bulk stamp U1b asserts) — not a new third
+# behaviour. The warn is level-scoped so an honoured downgrade is visible in a
+# production log.
+#
+# Polarity is the load-bearing choice and is the INVERSE of the esc-5214
+# mistake: the guard is default-ON and only an explicit export can downgrade it,
+# so no forgetful caller can bypass it by omission.
+IFS='|' read -r U3_BASE U3_LANE <<< "$(_u_make_fixture U3 1)"
+
+reset_calls
+REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 \
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$U3_BASE" "$U3_LANE" --fresh-checkout
+
+assert "U3: REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 downgrades the refusal ⇒ exits 0" \
+    test "$RC" -eq 0
+assert "U3: knob-honoured seed returns exactly <lane>/target on STDOUT" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$U3_LANE/target"
+U3_SRC_MTIME="$(stat -c '%Y' "$U3_LANE/src/tracked.rs")"
+assert "U3: tracked source still carries the 2020-01-01 bulk stamp ($EPOCH_2020) — accept path reached verbatim" \
+    test "$U3_SRC_MTIME" -eq "$EPOCH_2020"
+assert "U3: a [warn] line names the knob, so an honoured downgrade is visible in a production log" \
+    bash -c 'printf "%s\n" "$1" | grep "\[warn\]" | grep -qF "REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT"' \
+    _ "$ERR_OUT"
+
+# ── U3b/U3c: the EXACT-"1" contract. Without these, a truthy-ish comparison
+# (-n) would silently let =0, a stray empty-string export, or any unrecognised
+# value bypass a default-ON safety guard. Mirrors the REIFY_WARM_LANE_RESEED_TRASH_SYNC
+# = "1" idiom already used in scripts/seed-warm-lane.sh.
+#
+# Deliberately NO usage/exit-64 validation arm for the knob: unlike
+# REIFY_WARM_LANE_LANE_LOCK_WAIT (whose bad value could reach a destructive
+# flock/mv), an unrecognised value here fails SAFE — it simply leaves the
+# default fail-closed abort in force, which is exactly what these two arms pin.
+IFS='|' read -r U3B_BASE U3B_LANE <<< "$(_u_make_fixture U3b 1)"
+
+reset_calls
+REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=0 \
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$U3B_BASE" "$U3B_LANE" --fresh-checkout
+
+assert "U3b: REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=0 does NOT downgrade the guard (exact-1 match) ⇒ still exits non-zero" \
+    test "$RC" -ne 0
+assert "U3b: =0 abort still leaves STDOUT empty" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+
+IFS='|' read -r U3C_BASE U3C_LANE <<< "$(_u_make_fixture U3c 1)"
+
+reset_calls
+REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=yes \
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$U3C_BASE" "$U3C_LANE" --fresh-checkout
+
+assert "U3c: REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=yes does NOT downgrade the guard (exact-1, not truthiness) ⇒ still exits non-zero" \
+    test "$RC" -ne 0
+assert "U3c: =yes abort still leaves STDOUT empty" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+
+# ── U4/U4b/U4c/U4d: the no-base diagnostic's PER-TIER ATTRIBUTION and the
+# .basecommit trailing-whitespace trim. Both are what an operator READS and ACTS
+# ON when a lane refuses to seed, so "absent" (go hunt for a missing file) vs
+# "present but empty" (go inspect the file's content) is the difference between
+# the right next action and the wrong one. All four reuse _u_make_fixture WITH
+# .fingerprint so inv.13's guard is live, and vary ONLY the stamp/sidecar state.
+#
+# The attribution is built ONCE at the resolve site and consumed by BOTH the
+# retained no-base [warn] and inv.13's [error]. Each arm asserts the SAME
+# substring on BOTH levels (via _u4_assert_attribution), so a future edit that
+# splits the one string into two independently-maintained literals goes red on
+# the first divergence rather than drifting silently.
+#
+# These pin RUNTIME behaviour — a running script's stderr, exit status, and the
+# sha its git diff actually received — not comment prose.
+
+# _u4_assert_attribution <arm> <substring> — the substring must appear on a
+# [warn] line AND on an [error] line. Both greps are LEVEL-SCOPED for the reason
+# U1 documents: the retained no-base warn names the same condition as the err,
+# so an unscoped grep over all of stderr cannot tell the two consumers apart and
+# would pass with either one missing.
+_u4_assert_attribution() {
+    local arm="$1" frag="$2"
+    assert "$arm: the no-base [warn] attributes — $frag" \
+        bash -c 'printf "%s\n" "$1" | grep "\[warn\]" | grep -qF "$2"' _ "$ERR_OUT" "$frag"
+    assert "$arm: inv.13's [error] carries the SAME attribution — $frag" \
+        bash -c 'printf "%s\n" "$1" | grep "\[error\]" | grep -qF "$2"' _ "$ERR_OUT" "$frag"
+}
+
+# U4: the BASELINE attribution — nothing present at either file-backed tier.
+# Both must read `absent`, which is what makes U4b/U4c's `present but empty`
+# a distinction rather than the only thing the diagnostic ever says.
+IFS='|' read -r U4_BASE U4_LANE <<< "$(_u_make_fixture U4 1)"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$U4_BASE" "$U4_LANE" --fresh-checkout
+
+assert "U4: no .basecommit file and no BASE_COMMIT= line ⇒ seed refuses" \
+    test "$RC" -ne 0
+_u4_assert_attribution "U4" "${U4_BASE}.basecommit absent"
+_u4_assert_attribution "U4" ".warm-base-meta BASE_COMMIT absent"
+
+# U4b: tier 2 PRESENT BUT EMPTY — the shape a refresh-warm-base.sh Step-4b write
+# truncated mid-`printf` leaves behind. Two things are pinned at once: the stamp
+# does NOT resolve a base (the trim's NEGATIVE direction — without it `cat`
+# yields "   ", which is non-empty and would sail past the caller's [ -n ] check
+# as a falsely-resolved base and seed the lane), and the diagnostic says the
+# file is there rather than sending an operator hunting for it.
+IFS='|' read -r U4B_BASE U4B_LANE <<< "$(_u_make_fixture U4b 1)"
+printf '   \n' > "${U4B_BASE}.basecommit"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$U4B_BASE" "$U4B_LANE" --fresh-checkout
+
+assert "U4b: a whitespace-only .basecommit resolves NO base ⇒ seed still refuses" \
+    test "$RC" -ne 0
+assert "U4b: whitespace-only-stamp abort still leaves STDOUT empty" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+_u4_assert_attribution "U4b" "${U4B_BASE}.basecommit present but empty"
+assert "U4b: the file EXISTS, so the diagnostic must NOT call tier 2 'absent'" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "$2"' _ "$ERR_OUT" "${U4B_BASE}.basecommit absent"
+_u4_assert_attribution "U4b" ".warm-base-meta BASE_COMMIT absent"
+
+# U4c: tier 3 PRESENT BUT EMPTY — the sidecar carries the BASE_COMMIT key with
+# no value. Same presence-vs-empty distinction, one tier down; without it the
+# attribution could be keyed on tier 2 alone and stay green on U4/U4b.
+IFS='|' read -r U4C_BASE U4C_LANE <<< "$(_u_make_fixture U4c 1)"
+printf 'RUSTFLAGS=\nINVOCATION=\nBASE_COMMIT=\n' > "$(dirname "$U4C_BASE")/.warm-base-meta"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$U4C_BASE" "$U4C_LANE" --fresh-checkout
+
+assert "U4c: a valueless BASE_COMMIT= line resolves NO base ⇒ seed still refuses" \
+    test "$RC" -ne 0
+_u4_assert_attribution "U4c" ".warm-base-meta BASE_COMMIT present but empty"
+_u4_assert_attribution "U4c" "${U4C_BASE}.basecommit absent"
+
+# U4d: the trim's POSITIVE direction — a real sha must survive it intact and
+# still resolve. The trailing character is a SPACE, not a newline: `$(cat)`
+# already strips trailing newlines, so a newline-only fixture would be green
+# with the trim deleted and pin nothing. With a trailing space, an untrimmed
+# value reaches `git diff --name-only` as `shaTRIM ` — hence the `shaTRIM$`
+# anchor on the recorded call (the sha is _touch_git_delta's LAST argument, so
+# the stub's `echo "git $*"` line ends exactly where the sha does).
+IFS='|' read -r U4D_BASE U4D_LANE <<< "$(_u_make_fixture U4d 1)"
+printf 'shaTRIM \n' > "${U4D_BASE}.basecommit"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_TEST_GIT_DIFF_FILES="src/tracked.rs" \
+    run_helper_real "$U4D_BASE" "$U4D_LANE" --fresh-checkout
+
+assert "U4d: a sha padded with trailing whitespace still RESOLVES ⇒ seed exits 0" \
+    test "$RC" -eq 0
+assert "U4d: STDOUT is exactly <lane>/target" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$U4D_LANE/target"
+assert "U4d: git diff received the TRIMMED sha (line ends at shaTRIM, no trailing pad)" \
+    bash -c 'grep "^git" "$1" | grep "diff" | grep -q "shaTRIM$"' _ "$CALLS_FILE"
+U4D_SRC_MTIME="$(stat -c '%Y' "$U4D_LANE/src/tracked.rs")"
+assert "U4d: the resolved base really delta-touched the changed source off the 2020-01-01 stamp" \
+    test "$U4D_SRC_MTIME" -ne "$EPOCH_2020"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block R: lane isolation guards (task 5590) — every lane created in this file

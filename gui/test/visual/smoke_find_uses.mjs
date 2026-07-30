@@ -24,6 +24,7 @@
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeDebugRpc } from './rpcEnvelope.mjs';
+import { openFileWithRetry } from './smokeDriverGuards.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -94,10 +95,13 @@ async function main() {
   await waitForServer(60_000);
   console.log('  OK: server ready');
 
-  // Step 2: open the find_uses_smoke fixture
-  log('Opening find_uses_smoke fixture via open_file…');
-  const openResult = await rpc('open_file', { path: FIXTURE_PATH });
-  console.log('  open_file result:', JSON.stringify(openResult));
+  // Step 2: open the find_uses_smoke fixture.
+  // The retry budget, the `.ok` verdict and the failure wording live in
+  // ./smokeDriverGuards.mjs, where vitest can cover them; this file needs a live
+  // GUI, so nothing inline here ever could be. `fail` is passed (not `log`) so an
+  // exhausted retry exits 1 naming the underlying RPC error.
+  log('Opening find_uses_smoke fixture via open_file (with retry for WebView init)…');
+  await openFileWithRetry(rpc, FIXTURE_PATH, { fail });
   await sleep(1000); // wait for engine eval
 
   // Step 3: confirm activeFile

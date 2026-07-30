@@ -297,8 +297,9 @@ tasks:
       reason: 'cross-batch DAG-direction binding; #5385''s own fix carries the mechanical
         test'
   - name: findings-doc-deliverable
-    binding: producer-self — docs/notes/belt-path-language-findings.md with pre-registered
-      F0–F2 rows is part of λ's signal (§8 protocol)
+    binding: 'producer-self — docs/notes/belt-path-language-findings.md with pre-registered
+      F0–F1 rows (F2 retired: #5343 landed, so it is no longer a .ri-inexpressibility
+      finding under §8) is part of λ''s signal (§8 protocol)'
     verdict: PASS
     delivered_check:
       kind: grep

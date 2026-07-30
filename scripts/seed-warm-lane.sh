@@ -61,6 +61,23 @@
 #   sidecar=$(scripts/seed-warm-lane.sh --record-base <base_target_dir>)
 #
 # Stdout (seed mode):   resolved <lane_dir>/target path on success.
+#
+#   CALLER OBLIGATION on an EMPTY stdout. Non-empty stdout is the ONLY signal
+#   that the returned lane is safe to build WARM; an empty stdout obliges the
+#   caller to REMOVE (or re-seed over) <lane_dir>/target before building
+#   anything in that lane. This is load-bearing rather than advisory because the
+#   three fail-closed post-conditions -- _assert_no_stale_delta_stamp (inv.9),
+#   _assert_delta_newer_than_build_outputs (inv.12) and
+#   _assert_delta_touch_base_substantiated (inv.13) -- all run AFTER target/ has
+#   been replaced with the CoW clone and the sources bulk-stamped to 2020-01-01.
+#   Each therefore ABORTS ONTO exactly the hazardous state it just refused to
+#   certify, and a "cold fallback" that merely re-runs cargo in the same lane
+#   inherits the stale-artifact false green the guard fired to prevent. The seed
+#   deliberately does not rm -rf the clone itself: that would destroy the
+#   forensic evidence inv.12's operator remedy sends an operator to read.
+#   (§9.5 inv.12/inv.13; the callers' side of this contract is NOT yet enforced
+#   -- see the same PRD note.)
+#
 # Stdout (record mode): resolved sidecar path on success.
 # Stderr:               all diagnostics, progress messages, and errors.
 #
@@ -87,9 +104,22 @@
 #   --fresh-checkout: bulk-stamp sources to 2020-01-01 (find, pruning target/ & .git/)
 #                     then touch delta (--touch paths + git diff --name-only <base_commit>) to now.
 #                     No base resolved from any of the three tiers → nothing is
-#                     delta-touched; warns, since every tracked source then keeps
-#                     the 2020-01-01 stamp.
+#                     delta-touched, so every tracked source keeps the 2020-01-01
+#                     stamp; warns, and `_assert_delta_touch_base_substantiated`
+#                     then REFUSES if the clone carries recorded prior
+#                     compilations to wrongly re-Freshen (task 5632 — full
+#                     statement: §9.5 inv.13).
+#     Knobs: REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT (see below).
 #   --reset-in-place: no bulk stamp (git clean -xfd -e target already moved changed mtimes).
+#
+# REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 — HERMETIC-FIXTURE / deliberate-accept
+#   seam, NOT a production knob. Downgrades inv.13's refusal to a [warn] (the
+#   downgrade is itself logged) so a fixture that intentionally exercises the
+#   no-base accept path can still seed; exporting it in production re-opens
+#   the false green inv.13 exists to prevent. Exact `= "1"` match (the
+#   REIFY_WARM_LANE_RESEED_TRASH_SYNC idiom): 0, yes and a stray empty export
+#   all fail safe into the abort. Default-OFF; polarity rationale: §9.5 inv.13
+#   (G7 — not restated here).
 #
 # Build-script freshness references (task 5630 — full statement: §9.5 inv.12):
 #   No step here may leave a build-script replay file
@@ -352,7 +382,21 @@ _read_basecommit_stamp() {
     local base_target_dir="$1"
     local stamp="${base_target_dir}.basecommit"
     if [ -f "$stamp" ]; then
-        cat "$stamp"
+        local content
+        content="$(cat "$stamp")"
+        # Trim trailing whitespace: a stamp write interrupted mid-`printf`
+        # (refresh-warm-base.sh Step 4b) or padded with a stray trailing
+        # newline/space must not smuggle a whitespace-only value past the
+        # caller's [ -n ] check as a falsely-resolved base (task 5632
+        # amendment). The caller's presence-vs-empty attribution for this
+        # stamp is built at the resolve site below, not here: this reader
+        # returns a VALUE, the resolver owns presence-vs-empty.
+        # Pinned from both sides by Block U — U4b (a whitespace-only stamp must
+        # not resolve) and U4d (a real sha padded with trailing whitespace must
+        # still resolve, trimmed). U4d's pad is a SPACE, not a newline, because
+        # $(...) already strips trailing newlines and a newline-only fixture
+        # would stay green with this trim deleted.
+        printf '%s' "${content%"${content##*[![:space:]]}"}"
     else
         echo ""
     fi
@@ -507,12 +551,65 @@ _assert_delta_newer_than_build_outputs() {
     # EVERY acquire against that generation aborts identically and the pool
     # degrades to cold fallback until the base is re-promoted. Say so, so an
     # operator is not left diagnosing the lane. (Self-healing by backdating the
-    # offending `output` is strictly conservative — an older `output` can only
-    # cause an extra build-script rerun, never a stale link — but that is a
-    # behavioural change to the ratified fail-closed posture, so it is tracked as
-    # task #5632 rather than taken as a drive-by here.)
+    # offending `output` was evaluated and REJECTED — see §9.5 inv.12.)
     err "The offending mtime is under $LANE_TARGET, which is a CoW clone of ${BASE_TARGET_DIR} — if the inversion came with the base, every acquire against that generation aborts the same way; re-promote a clean base with scripts/refresh-warm-base.sh --landed-commit <sha>"
     err "_assert_delta_newer_than_build_outputs: seed aborted (cold rebuild forced)"
+    return 1
+}
+
+# Seed-time post-condition (task 5632): under --fresh-checkout, when all three
+# delta-touch-base resolution tiers come back empty, the seed must REFUSE
+# rather than return a lane whose freshness claim it cannot substantiate.
+# Sibling of _assert_no_stale_delta_stamp and _assert_delta_newer_than_build_outputs
+# above, same defense-in-depth posture.
+#
+# The normative statement — including WHY the refusal is conditioned on the
+# clone carrying recorded prior compilations, why it keys on base resolution
+# only (an explicit --touch list does NOT substantiate: see the usage block
+# above), and the operator remedy — lives in ONE place —
+# docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13 — deliberately NOT
+# restated here (G7 no-lockstep-duplication), exactly as
+# _assert_delta_newer_than_build_outputs points at inv.12. Pinned by Block U:
+# U1/U1b the .fingerprint gate, U1c/U1d the -maxdepth 3 bound, U2/U2b what the
+# guard keys on, U3/U3b/U3c the opt-out knob's exact-"1" contract, U4/U4b/U4c
+# the per-tier attribution this err shares with the resolve site's warn.
+#
+# Implementation notes (local to this site):
+#   - -maxdepth 3 mirrors the non-relocatable build-dir deletion sweep's walk
+#     below (rationale: §9.5 inv.13). -print -quit makes this an early-exit
+#     probe rather than a full walk.
+#   - The probe's exit status is captured EXPLICITLY rather than left to
+#     set -e on a bare assignment: no-match and early--quit both exit 0, but a
+#     TRAVERSAL failure (unreadable subdirectory, or LANE_TARGET missing) exits
+#     non-zero, which would abort the whole seed with find's own stderr and no
+#     attribution to a seed guard. An unknown probe result cannot substantiate
+#     the claim either, so it becomes an attributed fail-closed abort.
+#   - A violation errs + return 1. Under set -e that aborts the seed before
+#     `echo "$LANE_TARGET"`, leaving stdout empty → the caller falls back to a
+#     cold rebuild (slow but CORRECT); see the CALLER OBLIGATION in the stdout
+#     contract at the top of this file.
+_assert_delta_touch_base_substantiated() {
+    local fingerprint_dir
+    if ! fingerprint_dir="$(find "$LANE_TARGET" -maxdepth 3 -type d -name .fingerprint -print -quit)"; then
+        err "Delta-touch-base substantiation probe FAILED to walk $LANE_TARGET (find exited non-zero — unreadable subdirectory, or the lane target is missing), so whether the clone carries recorded prior compilations is UNKNOWN and the no-base freshness claim cannot be substantiated (§9.5 inv.13)"
+        err "_assert_delta_touch_base_substantiated: seed aborted (cold rebuild forced)"
+        return 1
+    fi
+    if [ -z "$fingerprint_dir" ]; then
+        info "Post-condition skipped: no .fingerprint dir under $LANE_TARGET — the clone records no prior compilation for the 2020-01-01 bulk stamp to wrongly re-Freshen"
+        return 0
+    fi
+    # Probe FIRST, knob second: the vacuous no-.fingerprint skip above keeps its
+    # own distinct info line, and this warn only ever appears when the knob
+    # actually suppressed a refusal.
+    if [ "${REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT:-}" = "1" ]; then
+        warn "REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 honoured: accepting a lane with NO delta-touch base despite the recorded prior compilations at $fingerprint_dir — this lane's cloned artifacts may be treated as Fresh against un-delta-touched sources (§9.5 inv.13)"
+        return 0
+    fi
+    err "Unsubstantiated delta-touch base: no base resolved (${_BASE_COMMIT_ATTRIBUTION}), so NOTHING is delta-touched (§9.5 inv.13)"
+    err "The clone records prior compilations at $fingerprint_dir, and every tracked source keeps the 2020-01-01 bulk stamp — so no changed source can out-date any cloned artifact and cargo would report them Fresh"
+    err "Pass --base-commit <sha>, or re-run scripts/refresh-warm-base.sh so the authoritative .basecommit stamp exists"
+    err "_assert_delta_touch_base_substantiated: seed aborted (cold rebuild forced)"
     return 1
 }
 
@@ -1034,6 +1131,26 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     #   3. .warm-base-meta BASE_COMMIT (legacy fallback; drift-prone)
     # An empty result means no base is known → no delta-touch (Block D unchanged).
     EFFECTIVE_BASE_COMMIT=""
+    # Per-tier attribution for tiers 2/3, threaded into the no-base warn/err
+    # messages below so an operator is told "present but empty" rather than a
+    # false "absent" when a stamp/sidecar file exists but its value read back
+    # blank (e.g. a write truncated mid-printf) — the file is right there, and
+    # the fix is to inspect it, not to `ls` for something already present
+    # (task 5632 amendment). Pinned by Block U's U4/U4b/U4c.
+    #
+    # set -e SAFETY of the two `[ -f X ] && VAR=...` promotions below — measured,
+    # not assumed. In an `A && B` list a failing A is exempt from errexit (only
+    # the command after the FINAL && is not), so a false `[ -f X ]` leaves the
+    # status at "absent" and execution continues; verified against the exact
+    # nested if/else shape used here. That exemption is POSITIONAL, not a
+    # property of the idiom: the same list as the LAST command of a function
+    # makes the function return non-zero, and errexit then kills the seed at the
+    # CALL site (measured: `set -e; g(){ [ -f /nonexistent ] && FOO=1; }; g`
+    # exits 1 without reaching the next statement). So no `|| true` is needed
+    # where these lines sit today, but moving either one to a function's tail
+    # makes one mandatory.
+    _BASE_COMMIT_TIER2_STATUS="absent"
+    _BASE_COMMIT_TIER3_STATUS="absent"
     if [ -n "$BASE_COMMIT" ]; then
         EFFECTIVE_BASE_COMMIT="$BASE_COMMIT"
         # Tier 1 (CLI --base-commit): source is self-evident; logged below.
@@ -1043,6 +1160,7 @@ if [ -n "$FRESH_CHECKOUT" ]; then
             # Tier 2: authoritative per-gen stamp (refresh-written, TOCTOU-free).
             info "delta-touch base from authoritative .basecommit: $EFFECTIVE_BASE_COMMIT"
         else
+            [ -f "${BASE_TARGET_DIR}.basecommit" ] && _BASE_COMMIT_TIER2_STATUS="present but empty"
             EFFECTIVE_BASE_COMMIT="$(_sidecar_read "$SIDECAR" "BASE_COMMIT")"
             if [ -n "$EFFECTIVE_BASE_COMMIT" ]; then
                 # Tier 3: legacy fallback.  Stamp absent means either a pre-fix base
@@ -1050,9 +1168,17 @@ if [ -n "$FRESH_CHECKOUT" ]; then
                 # unresolved symlink instead of the concrete .gen.N path (D8 seam
                 # contract violation).  Either way, this is diagnosable from logs.
                 warn "delta-touch base from legacy .warm-base-meta BASE_COMMIT (authoritative stamp absent — caller may have passed an unresolved symlink): $EFFECTIVE_BASE_COMMIT"
+            else
+                [ -f "$SIDECAR" ] && grep -q "^BASE_COMMIT=" "$SIDECAR" 2>/dev/null && _BASE_COMMIT_TIER3_STATUS="present but empty"
             fi
         fi
     fi
+    # Single attribution string shared by the warn below and by
+    # _assert_delta_touch_base_substantiated's err (§9.5 inv.13): naming
+    # "present but empty" instead of "absent" for a tier whose file exists
+    # sends an operator to inspect the file's CONTENT, not to hunt for a file
+    # that was there all along.
+    _BASE_COMMIT_ATTRIBUTION="--base-commit absent, ${BASE_TARGET_DIR}.basecommit ${_BASE_COMMIT_TIER2_STATUS}, .warm-base-meta BASE_COMMIT ${_BASE_COMMIT_TIER3_STATUS}"
 
     if [ -n "$EFFECTIVE_BASE_COMMIT" ]; then
         info "Touching git diff --name-only $EFFECTIVE_BASE_COMMIT paths to now ..."
@@ -1064,21 +1190,18 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     else
         # All three resolution tiers came back empty, so NOTHING is delta-touched
         # and every tracked source keeps the 2020-01-01 bulk stamp above. Report
-        # the condition and what it implies; do not diagnose why it happened.
-        #
-        # DELIBERATELY a warn and nothing more (task 5630). The stronger remedy —
-        # skip the bulk stamp, or fail closed, when no base resolves — would break
-        # two currently-green DECLARED contracts rather than merely require new
-        # tests: tests/infra/test_seed_warm_lane.sh Block D (D1/D2/D4 assert the
-        # bulk stamp DOES fire on a fixture with no base commit) and
-        # tests/infra/test_warm_lane_pool.sh:398 (--fresh-checkout --touch with no
-        # --base-commit, relying on the 2020 stamp for its warmth assertions).
-        # That is a D5-contract change needing its own ruling, tracked as task
-        # #5632 (pending); silently flipping it inside a task scoped to a
-        # different, measured defect would conflate a confirmed fix with an
-        # unratified design change. Until then this at least makes the condition
-        # diagnosable from seed logs instead of completely silent.
-        warn "No delta-touch base resolved (--base-commit absent, ${BASE_TARGET_DIR}.basecommit absent, .warm-base-meta BASE_COMMIT absent) — no tracked source is touched to now, so every tracked source keeps the 2020-01-01 bulk stamp and cannot out-date any cloned build artifact; cargo will treat stale build-script outputs as Fresh. Pass --base-commit <sha>, or re-run scripts/refresh-warm-base.sh so the authoritative .basecommit stamp exists."
+        # the condition and what it implies; do not diagnose why it happened,
+        # then refuse via _assert_delta_touch_base_substantiated immediately
+        # below (task 5632 — full statement: §9.5 inv.13).
+        warn "No delta-touch base resolved (${_BASE_COMMIT_ATTRIBUTION}) — no tracked source is touched to now, so every tracked source keeps the 2020-01-01 bulk stamp and cannot out-date any cloned build artifact; cargo will treat stale build-script outputs as Fresh. Pass --base-commit <sha>, or re-run scripts/refresh-warm-base.sh so the authoritative .basecommit stamp exists."
+        # Called HERE — before the non-relocatable build-dir invalidation, the
+        # links-metadata/OUT_DIR relocation sweep and the env!() relink below —
+        # so a doomed seed pays none of those walks. This is the mirror-image of
+        # _assert_delta_newer_than_build_outputs, which is called LAST because it
+        # must observe FINAL mtimes; this guard depends on nothing later.
+        # The warn above is retained: it is the human-readable diagnosis and
+        # still fires on the paths where the seed legitimately proceeds.
+        _assert_delta_touch_base_substantiated
     fi
 
     # ── non-relocatable build-script output-dir invalidation ──────────────────

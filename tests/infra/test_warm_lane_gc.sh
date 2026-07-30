@@ -1460,7 +1460,7 @@ assert "O-env5: summary preserved=2 (env _lane-9 + default _mainsweep-x)" \
 # _run_warm_lane_gc_reclaim) invokes `warm-lane-gc.sh reclaim --mount <base>`
 # with NO --extra-protect-glob, ever. A guard living in the WRAPPER therefore
 # covered only one of the two callers, and ε — the hot, per-acquire path — was
-# the uncovered one (the esc-5375-1 gap, reopened).
+# the uncovered one: the esc-5334-6 gap (earlier instance esc-5375-1), reopened.
 #
 # FIX: the liveness check moves INTO this primitive, per-lane, immediately
 # before the reset and under the lane flock this loop already holds. Both cases

@@ -32,8 +32,9 @@
 #      gc.sh; dark-factory's ε reclaim (git_ops.py _run_warm_lane_gc_reclaim)
 #      invokes `warm-lane-gc.sh reclaim --mount <base>` and has never passed
 #      --extra-protect-glob. A wrapper-side guard could therefore never cover the
-#      hot per-acquire path — which is precisely where esc-5375-1 bites. In the
-#      primitive, every caller inherits it with no dark-factory change.
+#      hot per-acquire path — which is precisely where esc-5334-6 (earlier
+#      instance esc-5375-1) bites. In the primitive, every caller inherits it
+#      with no dark-factory change.
 #   2. The up-front CSV was itself a TOCTOU. It was computed ONCE and then
 #      consumed across a 25-40 minute lane-by-lane traversal, so a lane that went
 #      live mid-pass was unprotected. Checking per lane, immediately before that

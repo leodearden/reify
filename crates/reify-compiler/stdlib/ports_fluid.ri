@@ -7,15 +7,16 @@
 //
 // Deviations from §11 spec (forced by current language scope):
 //   1. `VolumetricFlowRate` type alias required. Volumetric flow rate (m³/s)
-//      is absent from the NAMED_DIMENSIONS table in reify-core/src/dimension.rs.
+//      is absent from NAMED_DIMENSIONS in reify-core/src/dimension.rs.
 //      Binary dimensional-operation expressions are admitted ONLY on type-alias
-//      RHS, not in `param x : <type>` position (units.ri, esc-4026-121) —
-//      hence the alias indirection `pub type VolumetricFlowRate = Volume / Time`.
-//      This alias is load-bearing: delete it and the `param` positions below
-//      stop resolving. Contrast units.ri's `pub type Velocity = Length / Time`,
-//      which is the syntactic model for the `pub` spelling but NOT a precedent
-//      for the necessity — Velocity IS registered in NAMED_DIMENSIONS as of
-//      task 4580, so that alias is dead and shadowed by the builtin.
+//      RHS, not in `param x : <type>` position (units.ri "Helper type aliases"
+//      note, esc-4026-121) — hence the alias indirection
+//      `pub type VolumetricFlowRate = Volume / Time`. This alias is
+//      load-bearing: delete it and the `param` positions below stop resolving.
+//      Contrast units.ri's `pub type Velocity = Length / Time`, which is the
+//      syntactic model for the `pub` spelling but NOT a precedent for the
+//      necessity — Velocity IS registered in NAMED_DIMENSIONS as of task 4580,
+//      so that alias is dead and shadowed by the builtin.
 //   2. `medium` is Type::String (open medium set). Fluid media (water, air,
 //      hydraulic oil, etc.) are best represented as free-form identifiers rather
 //      than a fixed enum — matches the free-form-identifier precedent in io.ri.
