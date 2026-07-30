@@ -230,6 +230,25 @@ grep in §§2-9 is keyed on. Saved at
 part of this task's diff — see §11(A) for the reach/gate discussion and
 §11(B) for the no-source-change proof).
 
+> **Forward-compat guard on the 65 (task 5785, in-progress at the time of
+> writing).** Task 5785 (`angle-units η`) *promotes* `Torque` from a stdlib
+> type alias into `NAMED_DIMENSIONS`: it adds a `(DimensionVector::TORQUE,
+> "Torque")` row to the registry **and** retires the alias
+> `pub type Torque = Force * Length / Angle`
+> (`crates/reify-compiler/stdlib/ports_mechanical.ri:29`) that put `Torque`
+> into this ledger's 14-name alias union in the first place (§0.2, `:194`).
+> So once 5785 lands the two addends move in **opposite** directions —
+> registry 51 → 52, alias union 14 → 13 — and **the 65-name search set is
+> UNCHANGED.** Two consequences for a later reader:
+> (a) finding 52 rows in `NAMED_DIMENSIONS` does **not** make this ledger's
+> sweep input stale and is **not** grounds to re-run §§2-9; and (b) `52 + 14
+> = 66` is the wrong recomputation — it double-counts `Torque`, which is a
+> *promotion* across the registry/alias boundary, not a new name. The name
+> **set** is what §§2-9 are keyed on, and `Torque` is in it either way.
+> Not verified here beyond 5785's filed scope — 5785 had not landed at this
+> HEAD, so this is a statement about its *declared* work, to be re-checked
+> against the landed commit.
+
 ### 0.4 Tree-walk substrate (reused, not reinvented)
 
 Per the reuse item in the plan, the walk is lifted from
@@ -2255,6 +2274,7 @@ earlier revision can diff their citations against this list.
 | 2026-07-30 | amendment pass (§0.1/§11.A.4) | **§0.1's secondary "49 distinct `DimensionVector` values" aside downgraded from asserted fact to unreconciled hearsay.** It was quoted from `docs/notes/units-gating-gap-research-2026-07-28.md:308` and never re-derived, and it contradicts §0.1's *own* evidence: the three value-collisions that section documents (`Stiffness`/`TranslationalStiffness`, `AbsorptionCoeff`/`Curvature`, `Impulse`/`Momentum`) deduct from 51 to **48**, not 49. Newly verified and recorded instead: 51 tuples, and **50** distinct `DimensionVector` *constant identifiers* (only `IMPULSE` is spelled twice). §11.A.4's matching "most likely is the actual source" claim softened — the regex bug and the distinct-vector conflation are **not distinguishable** as origins of the plan's 49. | **NEUTRAL** — no sweep input and no count in §§2-9 touches any distinct-*vector* figure; the ruled 51 is unaffected | Same failure mode as the §2.2.4b justification retraction one row above: a neighbouring document's number was repeated with the authority of a measurement, and its arithmetic was never checked against the evidence sitting beside it in the same paragraph. Caught while verifying `esc-5756-1`. The load-bearing figure was re-confirmed in passing — the ledger's full 51-name list is **set-identical** to a fresh extraction from `dimension.rs:514-595` at this branch's HEAD (`dimension.rs` is unchanged vs `main`, so the `08c6c42be9` attribution still holds). |
 | 2026-07-30 | amendment pass (§12) | **Appendix §12 added**: the normative scanner (self-contained — rebuilds its file lists from §0.4's `git ls-files` walk, embeds the 65-name set, reads no `/tmp`), and the full **60-row `file:line` hit list** with per-row class + evidence marker, inlined into this document. | **NEUTRAL** — no count changed; the normative count made re-derivable from the committed artifact alone | §2.2.1 declared its stripper normative and obliged consumers to reproduce **58**, but the only executable form was uncommitted `/tmp/5756-scratch/` scratch (hard-coding a second uncommitted input and six tree-list files), and the 58 sites were never listed individually (31 c0 sites were rolled into 11 prose row-groups, several without line numbers). `/tmp` does not survive a reboot or a warm-lane reclaim, and β/γ/δ₁/δ₂ land later by construction. |
 | 2026-07-30 | amendment pass (§2.2, §2.2.5, §12.2) | **File-count basis disambiguated: "58 in-scope hits across 17 files" → 58 hits / *15* files in-scope, 60 hits / *17* files raw.** | **NEUTRAL** — no hit count changed | Surfaced by §12's per-row list: `let_type_disambiguation_tests.rs` and `m9_error_cases.rs` hold exactly one hit each and both are §2.2.3 exclusions, so the 60→58 step also drops 2 whole files. The old sentence paired an in-scope hit count with a raw file count. §2.2.5's "short by 5 files" is 17-vs-22 and is unaffected. |
+| 2026-07-30 | amendment pass (§0.3) | **Forward-compat guard added to §0.3**, stating that in-progress task 5785's promotion of `Torque` (alias → `NAMED_DIMENSIONS` row, with the `ports_mechanical.ri:29` alias retired in the same task) moves the two addends in opposite directions — registry 51 → 52, alias union 14 → 13 — leaving the **65-name search set unchanged**. No figure in this ledger edited. | **NEUTRAL** — pre-emptive; nothing to re-plan, and explicitly *not* grounds to re-run §§2-9 when a reader finds 52 registry rows | Filed as a guard, not a correction: §0.3's 65 is the key every grep in §§2-9 is keyed on, 5785 was in-progress against `dimension.rs` while this ledger was being written, and the two failure modes were concrete — reading 52-vs-51 as staleness, or recomputing `52 + 14 = 66` and double-counting `Torque` across the registry/alias boundary. The guard describes 5785's *declared* scope only; it had not landed at this HEAD and is flagged for re-check against the landed commit. |
 
 **No migration disposition changed under the first two corrections.** The `pub unit` sites were
 already EXCLUDED-BY-DESIGN and remain so — three more of them, not a new class. The three recovered
