@@ -234,6 +234,18 @@ async function main() {
   if (mainStateFailure) fail(mainStateFailure);
 
   // design-main must have ≥1 mesh (contains at least subject a from da + dd)
+  //
+  // The type check is load-bearing, exactly as it is for pane-1 above: `<` is a
+  // ONE-SIDED guard, and `undefined < 1` is FALSE, so a payload that carried an
+  // `error` describeRpcFailure does not diagnose — §2a admits only a STRING
+  // `error`, so a hypothetical `{error: 500}` folds to "healthy" — would sail
+  // past here, leave meshInfo empty (making the inv.1 loop below a no-op) and
+  // print `meshCount=undefined` as an OK. A smoke driver reporting green on a
+  // failed RPC is the one outcome these guards exist to prevent, so the absence
+  // of a number is named before its magnitude is compared.
+  if (typeof mainState.meshCount !== 'number') {
+    fail(`Expected design-main meshCount to be a number; got ${typeof mainState.meshCount}: ${JSON.stringify(mainState.meshCount)} (viewport_state keys: ${JSON.stringify(Object.keys(mainState))})`);
+  }
   if (mainState.meshCount < 1) {
     fail(`Expected design-main meshCount>=1; got ${mainState.meshCount}`);
   }
