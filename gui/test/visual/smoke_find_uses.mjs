@@ -24,6 +24,7 @@
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeDebugRpc } from './rpcEnvelope.mjs';
+import { openFileWithRetry } from './smokeDriverGuards.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -95,9 +96,22 @@ async function main() {
   console.log('  OK: server ready');
 
   // Step 2: open the find_uses_smoke fixture
-  log('Opening find_uses_smoke fixture via open_file…');
-  const openResult = await rpc('open_file', { path: FIXTURE_PATH });
-  console.log('  open_file result:', JSON.stringify(openResult));
+  //
+  // The debug MCP server answers `health` before the WebKit WebView has
+  // finished initialising, so the first open_file calls come back in-band-failed
+  // with "debug-request timed out after 5000ms". This driver previously issued a
+  // bare open_file and asserted nothing about the result, so that failure was
+  // swallowed and resurfaced at step 3 as an `activeFile` mismatch — blaming the
+  // frontend for a tool outage. openFileWithRetry owns both the wait and the
+  // verdict, and is CI-covered by ./smokeDriverGuards.test.ts (this file needs a
+  // live GUI, so nothing inline here could be).
+  //
+  // Passing this driver's own `fail` makes an exhausted retry a clean exit-1
+  // failure naming the underlying RPC error. Note it is `fail` and NOT `log`:
+  // the helper logs raw progress lines via console.log, whereas `log()` here
+  // increments the [step N] counter.
+  log('Opening find_uses_smoke fixture via open_file (with retry for WebView init)…');
+  await openFileWithRetry(rpc, FIXTURE_PATH, { fail });
   await sleep(1000); // wait for engine eval
 
   // Step 3: confirm activeFile
