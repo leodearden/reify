@@ -1641,6 +1641,67 @@ run_compile_gate_psi_capture() {
     ) 2>"$G_ERR" || G_RC=$?
 }
 
+# run_g2_admit_on_drop_scenario <startup_delay_s> <mem_proc_path> <bound>
+# The G2 "admit-on-drop" arrangement, made causal (task 5839).  Seeds a stuck
+# avg10=99 PSI fixture, spawns an updater that clears it to avg10=10 ONLY once
+# the gate has proven it observed pressure, optionally delays the gate's start
+# by <startup_delay_s> to simulate load-induced startup latency, runs the gate,
+# and reaps the updater.  Sets G_RC / G_ERR.
+#
+# The old form used a FIXED `sleep 2` before clearing.  That raced a load-scaled
+# deadline: under heavy load the gate's bash + verify.sh-preamble startup
+# exceeded 2s, so its FIRST poll read an ALREADY-cleared fixture and
+# cpu-admit.sh admitted immediately with _ca_waited=0 — rc=0 and NONE of
+# @@REIFY_CLOCK_{STOP,HEARTBEAT,START}@@ (Section G0's T5a/T5b root-cause guard
+# pins that behaviour directly).  Observed at task/5644 HEAD=3ae7db94f0, load
+# avg 242.36 on 32 cores: 62/65, with exactly the three G2 marker asserts red
+# and the neighbouring rc==0 assert green.
+#
+# Scaling the sleep with load_tolerance_factor would only WIDEN the window — the
+# same whack-a-mole load_tolerance_lib.sh's own header exists to end.  The delay
+# is a wall-clock guess about ANOTHER process's startup latency, so it can
+# always be lost on a hot enough box; only a causal wait removes the race.
+#
+# Synchronising on @@REIFY_CLOCK_HEARTBEAT@@ (not STOP) is deliberate:
+# lib_clock_stop.sh emits STOP from clock_enter_wait and only then stamps
+# last_hb, so a HEARTBEAT can only ever follow a STOP on the same stream —
+# observing it banks BOTH markers before the fixture is touched, leaving only
+# START causally dependent on the clear.
+run_g2_admit_on_drop_scenario() {
+    local _startup_delay="$1" _mem="$2" _bound="$3"
+    local _tmpdir
+    _tmpdir="$(mktemp -d)"
+    _TMPDIRS+=("$_tmpdir")
+    local _psi="$_tmpdir/psi" _err="$_tmpdir/g2_err.txt"
+    printf 'some avg10=99.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+        > "$_psi"
+    # Pre-create so the updater's poll and the gate's capture are provably the
+    # SAME file from the start — $G_ERR still holds the PREVIOUS section's
+    # capture file at this point, and that file legitimately contains its own
+    # HEARTBEAT marker (G1 asserts exactly that), so an updater polling $G_ERR
+    # would match a stale marker and silently reinstate the race being fixed.
+    : > "$_err"
+
+    _clear_psi_fixture_on_marker "$_err" '@@REIFY_CLOCK_HEARTBEAT@@' \
+        "$_bound" "$_psi" 10.00 &
+    local _updater=$!
+
+    # Simulated gate-startup latency (0 in production use).  It cannot affect
+    # correctness: the updater cannot clear before the gate emits a heartbeat,
+    # and the gate cannot emit one before it starts — so the arrangement holds
+    # at ANY startup latency, which is the whole point of the fix.  Written as
+    # an explicit `if` rather than `[ … ] && sleep …` so a zero delay can never
+    # make this the function's non-zero-returning last statement under `set -e`.
+    if [ "${_startup_delay:-0}" -gt 0 ] 2>/dev/null; then
+        sleep "$_startup_delay"
+    fi
+
+    run_compile_gate_psi_capture "$_psi" "$_mem" "$_bound" "$_err"
+
+    kill "$_updater" 2>/dev/null || true
+    wait "$_updater" 2>/dev/null || true
+}
+
 # ===========================================================================
 # Section G0: G2 harness/updater contracts (task 5839)
 # ===========================================================================
@@ -1770,8 +1831,9 @@ assert_marker "T5f: G0-late: G_ERR captured the CLOCK_START marker (reason=psi_p
 #     still holding, well past the old MAX_WAIT=2s), stderr has STOP+HEARTBEAT,
 #     never an admit/fairness-floor message (removed) nor START.
 # G2 (admit-on-drop): same stuck start, a background updater clears the
-#     fixture to a low avg10 after ~2s → exit 0, STOP+HEARTBEAT+START all
-#     present (balanced), no fairness message.
+#     fixture to a low avg10 once the gate's FIRST heartbeat proves it observed
+#     the pressure (task 5839 — causal, never on wall-clock) → exit 0,
+#     STOP+HEARTBEAT+START all present (balanced), no fairness message.
 # RED today: compile_gate() sets no _ca_clock_reason → admits-on-timeout at
 # MAX_WAIT=2s → the bounded `timeout` never fires, no STOP marker at all.
 # ===========================================================================
@@ -1804,24 +1866,13 @@ assert "G1: stderr does NOT match admit/fairness-floor message (removed — neve
 assert "G1: stderr does NOT contain the CLOCK_START marker (never admitted)" \
     bash -c '! grep -qF "@@REIFY_CLOCK_START@@" "$1"' _ "$G_ERR"
 
-# G2: same stuck-fixture start, a background updater clears it to avg10=10
-# after ~2s → the hold admits on the PSI drop, not on a timeout.
-G_PSI_2="$_G_TMPDIR/psi-g2"
-printf 'some avg10=99.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
-    > "$G_PSI_2"
-(
-    sleep 2
-    printf 'some avg10=10.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
-        > "$G_PSI_2"
-) &
-_G2_UPDATER=$!
-
+# G2: same stuck-fixture start; the updater clears it to avg10=10 only once the
+# gate has PROVEN it observed pressure (task 5839 — the old fixed `sleep 2`
+# raced the load-scaled deadline).  The hold therefore admits on the PSI drop,
+# not on a timeout, at any gate-startup latency.
 G_RC=0
 G_ERR=""
-run_compile_gate_psi_capture "$G_PSI_2" "$G_MEM_QUIET" "$(_load_scaled_deadline 30 120)"
-
-kill "$_G2_UPDATER" 2>/dev/null || true
-wait "$_G2_UPDATER" 2>/dev/null || true
+run_g2_admit_on_drop_scenario 0 "$G_MEM_QUIET" "$(_load_scaled_deadline 30 120)"
 
 assert "G2: admits once PSI drops (exit 0; got ${G_RC})" \
     test "$G_RC" -eq 0
