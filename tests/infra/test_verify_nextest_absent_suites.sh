@@ -136,7 +136,15 @@ echo "=== the nine covered plan-oracle infra suites are host-independent on a ne
 # tests/infra/nextest_absent_lib.sh, which also supplies nx_run below.
 # ---------------------------------------------------------------------------
 
-nextest_absent_init
+# Guarded: nextest_absent_init (task 5645) now fails loudly and returns
+# non-zero when the constructed env is not genuinely nextest-absent (e.g. a
+# second, non-mirror-source PATH directory still exposes cargo-nextest). This
+# suite already treats that exact condition as a HOST PRECONDITION SKIP via
+# nextest_absent_available immediately below, not a suite failure, so a
+# non-zero return here must not abort the suite via `set -e` before that skip
+# check runs. NX_WORKDIR/NX_FARM/NX_PATH are left fully constructed either
+# way, so the nextest_absent_available call below is valid regardless.
+nextest_absent_init || true
 
 # HOST PRECONDITION (skip, do NOT fail). Where the constructed env is not a
 # genuine simulation — cargo-nextest still reachable, or cargo not executable

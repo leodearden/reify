@@ -866,4 +866,77 @@ assert "10b: nextest_absent_cleanup lets a handler registered AFTER init tear th
 assert "10c: the composed trap is armed on INT/TERM/HUP as well as EXIT" _t10c
 assert "10d: a timeout kill of a semaphore_wiring-shaped consumer removes the CALLER's temp dirs too" _t10d
 
+# -- Test 11: nextest_absent_init fails loudly on a SECOND, non-mirror-source --
+# -- PATH directory that still exposes cargo-nextest (task 5645) -------------
+#
+# Task 5602 closed the SPELLING half of this gap (a trailing slash, a doubled
+# separator, a symlinked equivalent, or a differently-spelled CARGO_HOME all
+# now resolve to the mirror source and get filtered). This is the other half:
+# a cargo-nextest reachable through a directory that is genuinely NOT the
+# mirror source at all — e.g. a distro package living in /usr/local/bin
+# alongside a ~/.cargo/bin install — was, before this task, invisible to
+# nextest_absent_init itself. The farm still looked correct; the simulation
+# had just silently degraded to nextest=1.
+#
+# This manufactures exactly that: a fresh directory, unrelated to whatever
+# this host's real mirror source is, holding a cargo-nextest stub, prepended
+# to $PATH before nextest_absent_init runs. The post-construction gate added
+# to nextest_absent_init must see it (it survives the mirror-source filter
+# untouched, by construction) and fail loudly, naming the reachable
+# cargo-nextest in _NEXTEST_ABSENT_REASON — precisely what lets a consumer
+# that skips nextest_absent_available (test_verify_semaphore_wiring.sh,
+# test_verify_nextest_probe.sh) still get a precise diagnostic instead of a
+# confusing downstream plan-shape failure.
+echo ""
+echo "--- Test 11: nextest_absent_init fails loudly when a second PATH directory exposes cargo-nextest ---"
+
+_t11_second_dir_reachable() {
+    local rc=0 second_dir saved_path
+
+    second_dir="$(mktemp -d)" || { echo "mktemp failed"; return 1; }
+    printf '#!/usr/bin/env bash\n# task-5645 test stub — presence marker only\nexit 0\n' \
+        > "$second_dir/cargo-nextest"
+    chmod +x "$second_dir/cargo-nextest"
+
+    saved_path="$PATH"
+    PATH="$second_dir:$PATH"
+
+    if nextest_absent_init; then
+        echo "nextest_absent_init returned 0 with cargo-nextest reachable via a"
+        echo "second, non-mirror-source PATH directory ($second_dir) — exactly"
+        echo "the degrade this test exists to catch."
+        rc=1
+    else
+        local reason
+        reason="$(nextest_absent_reason)"
+        echo "reason: $reason"
+        case "$reason" in
+            *cargo-nextest*REACHABLE*) : ;;
+            *) echo "reason does not name the failing conjunct (cargo-nextest reachable)"
+               rc=1 ;;
+        esac
+        case "$reason" in
+            *"$second_dir"*) : ;;
+            *) echo "reason does not cite the offending second directory ($second_dir)"
+               rc=1 ;;
+        esac
+    fi
+
+    PATH="$saved_path"
+    rm -rf "$second_dir"
+
+    # Restore a genuinely usable env for anything appended after this test —
+    # nextest_absent_init tears its own previous (failed-gate) workdir down on
+    # re-entry regardless of the prior call's return code.
+    if ! nextest_absent_init; then
+        echo "failed to restore a clean env after the negative arm: $(nextest_absent_reason)"
+        rc=1
+    fi
+
+    return "$rc"
+}
+
+assert "11: nextest_absent_init FAILS, naming the offending directory, when cargo-nextest is reachable via a second PATH directory that is not the mirror source" \
+    _t11_second_dir_reachable
+
 test_summary
