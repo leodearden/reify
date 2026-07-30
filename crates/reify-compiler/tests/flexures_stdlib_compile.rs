@@ -1106,3 +1106,82 @@ structure def PrbCellType {
         );
     }
 }
+
+// ─── BT1, library half: the typed diagnostic code (task 5476) ────────────────
+
+/// `flexure_compliance(5mm)` must produce a `Severity::Error` diagnostic
+/// carrying `DiagnosticCode::NoMatchingOverload` (PRD-prose mnemonic
+/// `E_NO_MATCHING_OVERLOAD`).
+///
+/// This is the library half of PRD §7.3 BT1; the user-observable half (the
+/// exit-code flip) is
+/// `reify-cli/tests/harness_cli/cli_check.rs::check_flexure_compliance_non_joint_exits_failure`.
+///
+/// The split is forced, not stylistic: `DiagnosticCode` has no `Display`,
+/// `code_str()` or `as_str()` anywhere in the workspace — the `E_*`/`W_*`
+/// mnemonics live only in doc-comment prose — and this task contractually
+/// freezes the no-matching-overload message text, so the mnemonic is never
+/// rendered and a CLI substring assertion cannot reach it.  The typed code is
+/// therefore asserted here with the house `d.code == Some(...)` idiom
+/// (cf. expr.rs:9203, :7167), and the CLI test carries the §G2 exit flip.
+///
+/// RED until step-12 retargets `flexure_compliance(joint: Length)` to
+/// `flexure_compliance(joint: FlexureJoint)`: today `5mm` overload-MATCHES the
+/// `Length` parameter, so no `NoMatch` is produced at all and this test finds
+/// zero Error diagnostics rather than a wrongly-coded one.
+#[test]
+fn flexure_compliance_on_bare_length_emits_no_matching_overload_code() {
+    let source = r#"
+module flexure_compliance_bare_length_probe
+
+structure def FlexureComplianceBareLength {
+    let c = flexure_compliance(5mm)
+}
+"#;
+
+    let module = compile_source_with_stdlib(source);
+    let errors: Vec<&Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        !errors.is_empty(),
+        "flexure_compliance(5mm) must be a hard Error — a bare Length is not a \
+         flexure joint (PRD §7.3 BT1, task #5476). Zero Error diagnostics means \
+         the `joint: Length` placeholder signature still matches `5mm` in \
+         crates/reify-compiler/stdlib/flexures.ri, so the accessor silently \
+         returns a sentinel-zero compliance record. All diagnostics: {:?}",
+        module
+            .diagnostics
+            .iter()
+            .map(|d| (&d.severity, &d.message, &d.code))
+            .collect::<Vec<_>>()
+    );
+
+    let coded: Vec<&&Diagnostic> = errors
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::NoMatchingOverload))
+        .collect();
+
+    assert_eq!(
+        coded.len(),
+        1,
+        "expected exactly one Error carrying DiagnosticCode::NoMatchingOverload \
+         (INV-SF-6); got errors: {:?}",
+        errors
+            .iter()
+            .map(|d| (&d.message, &d.code))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        coded[0]
+            .message
+            .contains("no matching overload for flexure_compliance"),
+        "the coded Error must be the flexure_compliance call-site NoMatch, and its \
+         message text is contractually unchanged by this task (the mnemonic is NOT \
+         baked into the message); got: {}",
+        coded[0].message
+    );
+}
