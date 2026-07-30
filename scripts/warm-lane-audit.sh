@@ -1369,7 +1369,7 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
         # consumer matching the existing field order keeps working.
         TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} live=${live} assigned=${assigned_state} pin=${pin} branch=${branch} status=${status} recoverable=${recoverable} dirty=${dirty} divergent_gib=${divergent_gib} age_min=${age_min} classification=${classification} plan_sync=${plan_sync}
 "
-        JSON_LANE_OBJS+=("{\"lane\":\"$(_json_escape "$name")\",\"role\":\"${role}\",\"live\":\"${live}\",\"assigned\":\"${assigned_state}\",\"pin\":\"$(_json_escape "$pin")\",\"branch\":\"$(_json_escape "$branch")\",\"status\":\"${status}\",\"recoverable\":\"${recoverable}\",\"dirty\":\"${dirty}\",\"divergent_gib\":${divergent_gib},\"age_min\":${age_min},\"classification\":\"${classification}\"}")
+        JSON_LANE_OBJS+=("{\"lane\":\"$(_json_escape "$name")\",\"role\":\"${role}\",\"live\":\"${live}\",\"assigned\":\"${assigned_state}\",\"pin\":\"$(_json_escape "$pin")\",\"branch\":\"$(_json_escape "$branch")\",\"status\":\"${status}\",\"recoverable\":\"${recoverable}\",\"dirty\":\"${dirty}\",\"divergent_gib\":${divergent_gib},\"age_min\":${age_min},\"classification\":\"${classification}\",\"plan_sync\":\"${plan_sync}\"}")
     done
 fi
 
@@ -1409,8 +1409,14 @@ if [ "$FORMAT" = "json" ]; then
     # pinned_by_status sits ALONGSIDE headroom rather than inside it, and
     # carries only the six buckets: their total is headroom.pinned, so
     # repeating it here would be a second copy of a number that must agree.
-    printf '{"lanes":[%s],"headroom":{"resident":%d,"live":%d,"pinned":%d,"quarantined":%d,"free":%d,"assigned":%d,"state_unknown":%d,"reclaimable":%d,"leaked":%d,"leak_unknown":%d,"divergent_gib":%d,"free_gib":%d,"budget_gib":%d},"pinned_by_status":{"pending":%d,"infra-hold":%d,"blocked":%d,"terminal":%d,"other":%d,"unknown":%d}}\n' \
-        "$lanes_json" "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB" \
+    # The plan_* counters land after budget_gib here too -- the same append
+    # position as the table's HEADROOM line -- so the two emitters stay
+    # structurally parallel and a future field has one obvious place in each.
+    # `plan_sync` is a fixed enum (OK|REWRITTEN|STRANDED|UNKNOWN|-) so it needs
+    # no _json_escape, consistent with the other enum columns; only the
+    # free-form lane/branch/pin values are escaped.
+    printf '{"lanes":[%s],"headroom":{"resident":%d,"live":%d,"pinned":%d,"quarantined":%d,"free":%d,"assigned":%d,"state_unknown":%d,"reclaimable":%d,"leaked":%d,"leak_unknown":%d,"divergent_gib":%d,"free_gib":%d,"budget_gib":%d,"plan_stranded":%d,"plan_unknown":%d,"plan_rewritten":%d},"pinned_by_status":{"pending":%d,"infra-hold":%d,"blocked":%d,"terminal":%d,"other":%d,"unknown":%d}}\n' \
+        "$lanes_json" "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB" "$PLAN_STRANDED_COUNT" "$PLAN_UNKNOWN_COUNT" "$PLAN_REWRITTEN_COUNT" \
         "$PIN_PENDING_COUNT" "$PIN_INFRA_HOLD_COUNT" "$PIN_BLOCKED_COUNT" "$PIN_TERMINAL_COUNT" "$PIN_OTHER_COUNT" "$PIN_UNKNOWN_COUNT"
 else
     printf '%s' "$TABLE_OUT"
