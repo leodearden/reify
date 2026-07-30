@@ -20,7 +20,8 @@
 # (LANDED|PUSHED|ORPHAN) · dirty (clean|residue-only|wip) · divergent_gib ·
 # age_min · classification (LIVE|PINNED|QUARANTINED|RECLAIMABLE|LEAKED|
 # PRESERVED-OK, ranked in that order) ·
-# plan_sync (OK|REWRITTEN|STRANDED|UNKNOWN|`-`).
+# plan_sync (OK|REWRITTEN|STRANDED|UNKNOWN|`-`) ·
+# plan_task (MATCH|MISMATCH|`-`).
 #
 # `live`, `assigned` and `pin` answer THREE independent questions, and are
 # three columns for that reason: is a consumer PROCESS holding this lane's
@@ -41,13 +42,13 @@
 #     HEADROOM resident=… live=… pinned=… quarantined=… free=… assigned=…
 #              state_unknown=… reclaimable=… leaked=… leak_unknown=…
 #              divergent_gib=… free_gib=… budget_gib=… plan_stranded=…
-#              plan_unknown=… plan_rewritten=…
+#              plan_unknown=… plan_rewritten=… plan_mismatch=…
 #     PINNED   total=… pending=… infra-hold=… blocked=… terminal=… other=…
 #              unknown=…
 #
 # HEADROOM's occupancy figures are an ORDERED, mutually exclusive PARTITION --
 # `resident = live + pinned + quarantined + free`, with `free` the residue --
-# while `assigned`, `state_unknown` and the three `plan_*` fields are CROSS-CUTS
+# while `assigned`, `state_unknown` and the four `plan_*` fields are CROSS-CUTS
 # never added into it (see
 # the counter block at the resident walk, which is where that identity is
 # enforced). PINNED breaks `pinned` down by WHY each pin is held: a fixed,
@@ -213,6 +214,12 @@ Usage: $(basename "$0") [--mount DIR] [--format table|json] [--status-cmd CMD]
               be evaluated. A non-ancestor anchor ALONE is not evidence of
               lost work; only STRANDED is, and even then it is an
               investigate-then-escalate signal, never an auto-repair trigger.
+    plan_task MATCH|MISMATCH|\`-\` — does the lane's branch-derived task id
+              equal the plan's own task_id? A SECOND, orthogonal signature:
+              plan_sync sees a ref whose TIP was clobbered, plan_task sees a
+              lane bound to the WRONG BRANCH. \`-\` when there is no
+              comparison to make (detached HEAD, non-\`task/\` branch, or no
+              task_id in the plan) — never MISMATCH.
 
   Classification, ranked: LIVE > PINNED > QUARANTINED >
   RECLAIMABLE|LEAKED|PRESERVED-OK -- the HEADROOM partition's order exactly.
@@ -223,8 +230,9 @@ Usage: $(basename "$0") [--mount DIR] [--format table|json] [--status-cmd CMD]
               resident = live + pinned + quarantined + free -- so \`free\` is
               the residue and never absorbs a reserved-but-idle lane.
               \`assigned\`, \`state_unknown\` and \`plan_stranded\` /
-              \`plan_unknown\` / \`plan_rewritten\` are cross-cuts, not
-              partition members: they may overlap any bucket. plan_rewritten
+              \`plan_unknown\` / \`plan_rewritten\` / \`plan_mismatch\` are
+              cross-cuts, not partition members: they may overlap any bucket.
+              plan_rewritten
               counts routine rebases and is expected to DOMINATE a healthy
               pool — it is emitted so the stranded figure is readable in
               proportion to it, and needs no action.
@@ -819,6 +827,14 @@ _plan_anchor() {
 #   PLAN_SYNC_CAUSE     why the state is UNKNOWN; EMPTY when it is not
 #   PLAN_ANCHOR_ID      the anchor entry's id  ('' when there is no anchor)
 #   PLAN_ANCHOR_COMMIT  the anchor entry's commit ('' when there is no anchor)
+#   PLAN_TASK_ID        the plan's own top-level task_id ('' when absent)
+#
+# PLAN_TASK_ID is published from the SAME slurped text rather than by a second
+# `_plan_task_id <dir>` read, for this function's stated reason: a second read
+# is a different INSTANT, and the architect and the implementer both rewrite
+# plan.json mid-run, so the two columns could otherwise describe two different
+# records side by side in one row. It is a flat top-level scalar, so it is
+# extracted with _record_scalar verbatim -- not the anchor scan.
 #
 # Globals rather than a printed value, because the warning an operator reads
 # must name the SAME anchor the verdict was computed from. A second read is a
@@ -872,6 +888,7 @@ PLAN_SYNC_STATE='-'
 PLAN_SYNC_CAUSE=''
 PLAN_ANCHOR_ID=''
 PLAN_ANCHOR_COMMIT=''
+PLAN_TASK_ID=''
 _read_plan_sync() {
     # Reset first: every lane is resolved from scratch, so a lane whose record
     # cannot be read can never inherit its predecessor's anchor.
@@ -879,6 +896,7 @@ _read_plan_sync() {
     PLAN_SYNC_CAUSE=''
     PLAN_ANCHOR_ID=''
     PLAN_ANCHOR_COMMIT=''
+    PLAN_TASK_ID=''
 
     local dir="$1"
     local record text anchor
@@ -898,6 +916,12 @@ _read_plan_sync() {
         PLAN_SYNC_CAUSE='unparseable-record'
         return 0
     fi
+
+    # The lane-identity half, from the same snapshot. Deliberately resolved
+    # BEFORE the anchor branches return: a plan that records nothing yet (`-`
+    # for plan_sync) still binds the lane to a task, and that binding is
+    # exactly what a fresh, wrongly-bound lane would show.
+    PLAN_TASK_ID="$(_record_scalar "$text" task_id)"
 
     anchor="$(_plan_anchor "$text")"
     # Parsed cleanly, but no done entry carries a commit yet: `-`, never
@@ -973,6 +997,40 @@ _read_plan_sync() {
         *)   PLAN_SYNC_STATE='UNKNOWN'
              PLAN_SYNC_CAUSE="equivalence-undecidable:${PLAN_ANCHOR_COMMIT}" ;;
     esac
+    return 0
+}
+
+# _plan_task <backing-id>
+# Prints MATCH | MISMATCH | `-` for the lane↔branch BINDING, reading
+# PLAN_TASK_ID from the _read_plan_sync call already made for this lane.
+#
+# A SECOND signature, orthogonal to plan_sync and a separate column for the
+# reason live/assigned/pin are three columns: the observed incident kept the
+# ref's NAME and clobbered its TIP (plan_sync only), while a lane checked out
+# on another task's branch is the converse binding failure (plan_task only).
+#
+# `-` whenever there is no comparison to make: no readable plan record, a plan
+# carrying no task_id, or an empty backing id -- which _backing_task_id already
+# returns for a detached HEAD, a non-`task/` branch and a non-numeric id alike,
+# so no new branch parsing is added here. A comparison with no left-hand side
+# is NOT a mismatch, and reporting one would accuse every detached lane in the
+# pool (the A6 discipline, on the binding surface).
+#
+# Compared as STRINGS with no normalization: plan.json stores task_id quoted
+# (`"task_id": "5876"`) and the branch yields a digit run, and stripping
+# leading zeros would make "05876" silently equal 5876 -- a difference worth
+# reporting, not erasing.
+_plan_task() {
+    local backing_id="$1"
+    if [ -z "$PLAN_TASK_ID" ] || [ -z "$backing_id" ]; then
+        printf '%s' '-'
+        return 0
+    fi
+    if [ "$PLAN_TASK_ID" = "$backing_id" ]; then
+        printf 'MATCH'
+    else
+        printf 'MISMATCH'
+    fi
     return 0
 }
 
@@ -1183,6 +1241,8 @@ STATE_UNKNOWN_COUNT=0
 PLAN_STRANDED_COUNT=0
 PLAN_UNKNOWN_COUNT=0
 PLAN_REWRITTEN_COUNT=0
+# The binding cross-cut, under the same prohibition for the same reason.
+PLAN_MISMATCH_COUNT=0
 # The PINNED breakdown's six buckets (see _pin_bucket). They partition
 # PINNED_COUNT exactly -- every pinned lane increments exactly one -- and are
 # emitted unconditionally, zeros included, so "no pins" is a readable value
@@ -1335,6 +1395,10 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
             UNKNOWN)   PLAN_UNKNOWN_COUNT=$((PLAN_UNKNOWN_COUNT + 1)) ;;
             REWRITTEN) PLAN_REWRITTEN_COUNT=$((PLAN_REWRITTEN_COUNT + 1)) ;;
         esac
+        # The binding half, from the SAME read (PLAN_TASK_ID) and the
+        # backing_id already resolved above -- neither is re-derived.
+        plan_task="$(_plan_task "$backing_id")"
+        [ "$plan_task" != "MISMATCH" ] || PLAN_MISMATCH_COUNT=$((PLAN_MISMATCH_COUNT + 1))
         divergent_bytes="$(_divergent_bytes "$entry")"
         divergent_gib=$(( divergent_bytes / 1073741824 ))
         age_min="$(_age_min "$entry")"
@@ -1367,9 +1431,9 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
 
         # plan_sync is APPENDED after classification, never interposed, so a
         # consumer matching the existing field order keeps working.
-        TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} live=${live} assigned=${assigned_state} pin=${pin} branch=${branch} status=${status} recoverable=${recoverable} dirty=${dirty} divergent_gib=${divergent_gib} age_min=${age_min} classification=${classification} plan_sync=${plan_sync}
+        TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} live=${live} assigned=${assigned_state} pin=${pin} branch=${branch} status=${status} recoverable=${recoverable} dirty=${dirty} divergent_gib=${divergent_gib} age_min=${age_min} classification=${classification} plan_sync=${plan_sync} plan_task=${plan_task}
 "
-        JSON_LANE_OBJS+=("{\"lane\":\"$(_json_escape "$name")\",\"role\":\"${role}\",\"live\":\"${live}\",\"assigned\":\"${assigned_state}\",\"pin\":\"$(_json_escape "$pin")\",\"branch\":\"$(_json_escape "$branch")\",\"status\":\"${status}\",\"recoverable\":\"${recoverable}\",\"dirty\":\"${dirty}\",\"divergent_gib\":${divergent_gib},\"age_min\":${age_min},\"classification\":\"${classification}\",\"plan_sync\":\"${plan_sync}\"}")
+        JSON_LANE_OBJS+=("{\"lane\":\"$(_json_escape "$name")\",\"role\":\"${role}\",\"live\":\"${live}\",\"assigned\":\"${assigned_state}\",\"pin\":\"$(_json_escape "$pin")\",\"branch\":\"$(_json_escape "$branch")\",\"status\":\"${status}\",\"recoverable\":\"${recoverable}\",\"dirty\":\"${dirty}\",\"divergent_gib\":${divergent_gib},\"age_min\":${age_min},\"classification\":\"${classification}\",\"plan_sync\":\"${plan_sync}\",\"plan_task\":\"${plan_task}\"}")
     done
 fi
 
@@ -1415,8 +1479,8 @@ if [ "$FORMAT" = "json" ]; then
     # `plan_sync` is a fixed enum (OK|REWRITTEN|STRANDED|UNKNOWN|-) so it needs
     # no _json_escape, consistent with the other enum columns; only the
     # free-form lane/branch/pin values are escaped.
-    printf '{"lanes":[%s],"headroom":{"resident":%d,"live":%d,"pinned":%d,"quarantined":%d,"free":%d,"assigned":%d,"state_unknown":%d,"reclaimable":%d,"leaked":%d,"leak_unknown":%d,"divergent_gib":%d,"free_gib":%d,"budget_gib":%d,"plan_stranded":%d,"plan_unknown":%d,"plan_rewritten":%d},"pinned_by_status":{"pending":%d,"infra-hold":%d,"blocked":%d,"terminal":%d,"other":%d,"unknown":%d}}\n' \
-        "$lanes_json" "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB" "$PLAN_STRANDED_COUNT" "$PLAN_UNKNOWN_COUNT" "$PLAN_REWRITTEN_COUNT" \
+    printf '{"lanes":[%s],"headroom":{"resident":%d,"live":%d,"pinned":%d,"quarantined":%d,"free":%d,"assigned":%d,"state_unknown":%d,"reclaimable":%d,"leaked":%d,"leak_unknown":%d,"divergent_gib":%d,"free_gib":%d,"budget_gib":%d,"plan_stranded":%d,"plan_unknown":%d,"plan_rewritten":%d,"plan_mismatch":%d},"pinned_by_status":{"pending":%d,"infra-hold":%d,"blocked":%d,"terminal":%d,"other":%d,"unknown":%d}}\n' \
+        "$lanes_json" "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB" "$PLAN_STRANDED_COUNT" "$PLAN_UNKNOWN_COUNT" "$PLAN_REWRITTEN_COUNT" "$PLAN_MISMATCH_COUNT" \
         "$PIN_PENDING_COUNT" "$PIN_INFRA_HOLD_COUNT" "$PIN_BLOCKED_COUNT" "$PIN_TERMINAL_COUNT" "$PIN_OTHER_COUNT" "$PIN_UNKNOWN_COUNT"
 else
     printf '%s' "$TABLE_OUT"
@@ -1424,8 +1488,8 @@ else
     # existing field's position untouched, so a consumer matching a prefix or a
     # fixed field order keeps working (the runbook's append-never-interpose
     # convention).
-    printf 'HEADROOM resident=%d live=%d pinned=%d quarantined=%d free=%d assigned=%d state_unknown=%d reclaimable=%d leaked=%d leak_unknown=%d divergent_gib=%d free_gib=%d budget_gib=%d plan_stranded=%d plan_unknown=%d plan_rewritten=%d\n' \
-        "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB" "$PLAN_STRANDED_COUNT" "$PLAN_UNKNOWN_COUNT" "$PLAN_REWRITTEN_COUNT"
+    printf 'HEADROOM resident=%d live=%d pinned=%d quarantined=%d free=%d assigned=%d state_unknown=%d reclaimable=%d leaked=%d leak_unknown=%d divergent_gib=%d free_gib=%d budget_gib=%d plan_stranded=%d plan_unknown=%d plan_rewritten=%d plan_mismatch=%d\n' \
+        "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB" "$PLAN_STRANDED_COUNT" "$PLAN_UNKNOWN_COUNT" "$PLAN_REWRITTEN_COUNT" "$PLAN_MISMATCH_COUNT"
     # Always emitted, zeros included: a stable grep shape means "no pins" reads
     # as a value an operator can see, never as an absent line.
     printf 'PINNED total=%d pending=%d infra-hold=%d blocked=%d terminal=%d other=%d unknown=%d\n' \
