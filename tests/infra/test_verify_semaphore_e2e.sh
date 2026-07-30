@@ -1626,6 +1626,64 @@ run_compile_gate_psi_capture() {
 }
 
 # ===========================================================================
+# Section G0: G2 harness/updater contracts (task 5839)
+# ===========================================================================
+# Pins the two harness contracts Section G2's causal updater depends on.  Both
+# cases drive the gate against an ALREADY-QUIET PSI fixture, so each spawn
+# admits on its first poll and costs ~0.3s — this whole section is fast and
+# load-independent.
+#
+# Why the explicit-capture-path contract is a CORRECTNESS requirement, not
+# ergonomics: run_compile_gate_psi_capture assigns G_ERR INSIDE the call, but
+# G2 must fork its updater BEFORE that call — at which point $G_ERR still holds
+# the PREVIOUS section's capture file, which legitimately contains its own
+# HEARTBEAT marker (G1 asserts exactly that).  An updater polling $G_ERR would
+# match G1's stale marker, fire immediately, and silently reinstate the very
+# race being fixed — a fix that LOOKS causal but is not.  Pre-creating the path
+# and passing it in makes the updater and the gate provably agree on one file.
+echo ""
+echo "--- Section G0: G2 harness/updater contracts (task 5839) ---"
+
+_G0_TMPDIR="$(mktemp -d)"
+_TMPDIRS+=("$_G0_TMPDIR")
+_G0_MEM_QUIET="$_G0_TMPDIR/mem-quiet"
+printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+    > "$_G0_MEM_QUIET"
+# Below the gate's threshold (85), so the gate admits on its FIRST poll.
+_G0_PSI_QUIET="$_G0_TMPDIR/psi-quiet"
+printf 'some avg10=10.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+    > "$_G0_PSI_QUIET"
+
+# --- T3a/T3b: the optional 4th [err_path] argument is honoured ---
+_G0_EXPLICIT="$_G0_TMPDIR/g0_explicit_err.txt"
+: > "$_G0_EXPLICIT"
+
+G_RC=0
+G_ERR=""
+run_compile_gate_psi_capture "$_G0_PSI_QUIET" "$_G0_MEM_QUIET" \
+    "$(_load_scaled_deadline 30 120)" "$_G0_EXPLICIT"
+
+assert "T3a: explicit [err_path] is honoured (G_ERR is the caller's pre-created path, not a private mktemp)" \
+    test "$G_ERR" = "$_G0_EXPLICIT"
+assert "T3b: quiet fixture admits on the first poll (exit 0; got ${G_RC})" \
+    test "$G_RC" -eq 0
+assert "T3b: the caller's explicit capture file exists after the run" \
+    test -f "$_G0_EXPLICIT"
+
+# --- T3c: 3-arg back-compat — G1's untouched call site keeps a PRIVATE file ---
+G_RC=0
+G_ERR=""
+run_compile_gate_psi_capture "$_G0_PSI_QUIET" "$_G0_MEM_QUIET" \
+    "$(_load_scaled_deadline 30 120)"
+
+assert "T3c: 3-arg form still assigns a capture path (G_ERR non-empty)" \
+    test -n "$G_ERR"
+assert "T3c: 3-arg form's capture file exists" \
+    test -f "$G_ERR"
+assert "T3c: 3-arg form's capture file is PRIVATE (not the explicit path from T3a)" \
+    test "$G_ERR" != "$_G0_EXPLICIT"
+
+# ===========================================================================
 # Section G: compile-gate PSI hold + admit-on-drop (execution; task 4920)
 # ===========================================================================
 # Section E proves compile-gate is DISABLED in the hermetic harness (via
