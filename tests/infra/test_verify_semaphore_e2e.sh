@@ -1596,7 +1596,7 @@ assert "Section E structural: stderr contains compile-gate disabled marker (veri
 assert "Section E: verify.sh compile-gate exits 0 (execute-only entry, gate disabled)" \
     test "$E_RC" -eq 0
 
-# run_compile_gate_psi_capture <psi_proc_path> <mem_proc_path> <timeout_secs>
+# run_compile_gate_psi_capture <psi_proc_path> <mem_proc_path> <timeout_secs> [err_path]
 # Drives `verify.sh compile-gate` (execute-only entry, dispatched before the
 # cargo/npm/tree-sitter pipeline — no make_stub_bin needed) under an injected
 # PSI fixture.  Unlike run_hermetic_compile_gate_capture, this does NOT use
@@ -1605,13 +1605,29 @@ assert "Section E: verify.sh compile-gate exits 0 (execute-only entry, gate disa
 # the `timeout`-wrapped exit code (124 when still holding at the bound).
 # Mirrors run_hermetic_compile_gate_capture's shape (task 4920: proves the
 # admit-mode hold + clock-stop markers on the verify.sh compile-gate path).
+# [err_path] (optional, task 5839): capture the child's stderr to exactly this
+# path and set G_ERR to it, instead of to a private mktemp path.
 run_compile_gate_psi_capture() {
-    local _psi="$1" _mem="$2" _bound="$3"
+    local _psi="$1" _mem="$2" _bound="$3" _err="${4:-}"
     local _tmpdir
     _tmpdir="$(mktemp -d)"
     _TMPDIRS+=("$_tmpdir")
 
-    G_ERR="$_tmpdir/g_err.txt"
+    # Optional explicit capture path (task 5839): Section G2's causal updater
+    # must poll the SAME file the gate writes, and it forks BEFORE this
+    # function runs — at which point $G_ERR still holds the PREVIOUS section's
+    # capture file, which legitimately contains its own HEARTBEAT marker.
+    # Letting the caller pre-create and pass the path removes that stale-marker
+    # hazard.  Omitted → the original private mktemp path (G1's call site is
+    # unchanged).
+    if [ -n "$_err" ]; then
+        G_ERR="$_err"
+    else
+        G_ERR="$_tmpdir/g_err.txt"
+    fi
+    # Idempotent on an already-created file; preserves the "capture file always
+    # exists before the child starts" guarantee _wait_for_marker's
+    # `grep … 2>/dev/null` relies on.
     touch "$G_ERR"
 
     G_RC=0
