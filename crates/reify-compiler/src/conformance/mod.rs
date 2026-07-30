@@ -7489,6 +7489,159 @@ mod tests {
         );
     }
 
+    /// Shared scaffold for the task 5766 boundary fences below: assert that
+    /// `arg_ty` at `param_type` produces NO diagnostic.
+    ///
+    /// Same empty-registry `check_fn_arg_conformance` scaffold as the probes
+    /// above; factored out only because the four fences differ solely in their
+    /// two `Type`s and their reason.
+    fn assert_quantity_slot_clean(param_type: Type, arg_ty: Type, arg_name: &str, why: &str) {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let compiled_arg = CompiledExpr::value_ref(ValueCellId::new("Test", "a"), arg_ty);
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &param_type,
+            arg_name,
+            &compiled_arg,
+            SourceSpan::empty(0),
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            0,
+            "{why}\ngot {} diagnostic(s): {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+    }
+
+    /// FENCE (a-i), task 5766 unknown-ness boundary: a dimension-GENERIC param
+    /// slot accepts a concretely-dimensioned arg.
+    ///
+    /// `Vec3<Q: Dimension>` (`stdlib/trajectory.ri:103`) resolves its quantity to
+    /// `Type::ScalarParam("Q")`. A generic slot names no dimension, so there is
+    /// nothing to conflict with and the rule must stay silent — otherwise every
+    /// instantiation of a dimension-generic vector wrapper would warn.
+    #[test]
+    fn generic_quantity_param_accepts_dimensioned_vector_arg() {
+        assert_quantity_slot_clean(
+            Type::vec3(Type::ScalarParam("Q".to_string())),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                }),
+            },
+            "axis",
+            "a Vector3<Length> arg at a dimension-GENERIC Vector3<Scalar<Q>> param must stay \
+             CLEAN — a ScalarParam slot names no concrete dimension, so quantity_slot_dimension \
+             yields None and there is nothing to conflict with (task 5766).",
+        );
+    }
+
+    /// FENCE (a-ii), the SAME boundary in the opposite direction: a concretely
+    /// dimensioned param slot accepts a dimension-GENERIC arg.
+    ///
+    /// Pinned separately from (a-i) because a rule that compared only one side
+    /// against `None` would pass (a-i) and fail here. Together they pin that
+    /// `quantity_slots_conflict` requires BOTH sides to name a dimension —
+    /// which is also how the `is_numeric_placeholder_leaf` unknown-ness fence
+    /// (D4-5) survives at these arms.
+    #[test]
+    fn dimensioned_quantity_param_accepts_generic_vector_arg() {
+        assert_quantity_slot_clean(
+            Type::vec3(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::ScalarParam("Q".to_string())),
+            },
+            "axis",
+            "a dimension-GENERIC Vector3<Scalar<Q>> arg at a Vector3<Length> param must stay \
+             CLEAN — the rule requires BOTH sides to name a concrete dimension before it can \
+             fire (task 5766); widening it here would re-open the D4-5 unknown-ness hole.",
+        );
+    }
+
+    /// FENCE (b), task 5766: an `Int` quantity slot stays CLEAN.
+    ///
+    /// Pins the ty.rs convention's statement that `Value::Vector::infer_type()`
+    /// may yield a `Type::Int` quantity for a unit-less component vector — the
+    /// shape `vec3(0, 1, 0)` takes. `Type::Int` names no dimension, so the rule
+    /// is silent for the same structural reason as the dimensionless leg.
+    #[test]
+    fn int_quantity_vector_arg_at_dimensioned_param_stays_clean() {
+        assert_quantity_slot_clean(
+            Type::vec3(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::Int),
+            },
+            "axis",
+            "a Vector3<Int> arg at a Vector3<Length> param must stay CLEAN — the ty.rs \
+             quantity-slot convention records that Value::Vector::infer_type() may yield an \
+             Int quantity, and Int names no dimension (task 5766).",
+        );
+    }
+
+    /// FENCE (c) — THE `Field` HOLD. This is a DECISION, not an oversight.
+    ///
+    /// `Type::Field` is not on the same axis as the four families task 5766
+    /// tightens: **it has no quantity slot at all.** It carries `domain` and
+    /// `codomain` `Type` slots, and BOTH erase to `Real` at every call site —
+    /// `examples/fea_shell_channels.ri` supplies `Real -> Real` analytical field
+    /// defs to `solver_elastic.ri`'s `Field<Point3<Length>, Tensor<2,3,Pressure>>`
+    /// slots, and the arm's own comment records that comparing the declaration
+    /// against that placeholder produced six false warnings before the arm
+    /// existed. There is literally nothing for a quantity rule to compare, so a
+    /// `Field` tightening would be zero-signal and non-zero-risk.
+    ///
+    /// This test exists so that a later session noticing the asymmetry with the
+    /// other four arms finds the RULING here instead of "fixing" it by false
+    /// symmetry. The normative statement is in `crates/reify-core/src/ty.rs`.
+    /// The `.ri`-level leg of the same claim is already pinned by
+    /// `field_param_given_erased_analytical_field_stays_clean` in
+    /// `struct_ctor_field_conformance_tests.rs`.
+    #[test]
+    fn field_param_holds_loose_against_fully_erased_field_arg() {
+        assert_quantity_slot_clean(
+            Type::Field {
+                domain: Box::new(Type::point3(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                })),
+                codomain: Box::new(Type::tensor(
+                    2,
+                    3,
+                    Type::Scalar {
+                        dimension: DimensionVector::PRESSURE,
+                    },
+                )),
+            },
+            Type::Field {
+                domain: Box::new(Type::dimensionless_scalar()),
+                codomain: Box::new(Type::dimensionless_scalar()),
+            },
+            "stress",
+            "THE FIELD HOLD IS A DECISION, NOT AN OVERSIGHT (task 5766): a \
+             Field<Point3<Length>, Tensor<2,3,Pressure>> param fed a Field<Real, Real> arg must \
+             stay CLEAN. Field has NO quantity slot — it has domain/codomain Type slots, both of \
+             which erase to Real at every call site (examples/fea_shell_channels.ri supplies \
+             Real -> Real analytical fields to solver_elastic.ri's dimensioned codomain slots), \
+             so there is nothing for a quantity rule to compare. Do NOT 'fix' this by symmetry \
+             with the Vector/Point/Matrix/Tensor arms; see the quantity-slot convention block in \
+             crates/reify-core/src/ty.rs.",
+        );
+    }
+
     /// Arity leg of the `Type::Point` arm (task 5465, family 1): a `Point{n:2}`
     /// arg against a `Point3<Length>` param is exactly one `ArgTypeMismatch`.
     ///
