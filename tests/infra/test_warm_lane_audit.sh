@@ -109,6 +109,73 @@ make_lane() {
     esac
 }
 
+# _join_plan_entries ENTRY... — joins already-rendered plan entries with a
+# ",\n" separator (and a trailing newline when non-empty), so an EMPTY array
+# renders as a genuinely empty `[]` body rather than a stray comma. Split out
+# because both plan arrays need it and bash has no join primitive.
+_join_plan_entries() {
+    local e i=0
+    for e in "$@"; do
+        [ "$i" -eq 0 ] || printf ',\n'
+        printf '%s' "$e"
+        i=$(( i + 1 ))
+    done
+    [ "$i" -eq 0 ] || printf '\n'
+}
+
+# make_plan DIR TASK_ID SPEC...
+# Writes DIR/.task/plan.json in the REAL producer's shape (dark-factory
+# orchestrator plan_tools.py: json.dumps(..., indent=2) over top-level
+# task_id/title/analysis/files/prerequisites/steps, with each entry carrying
+# id/type/description/status/commit).
+#
+# Two shape details are load-bearing rather than cosmetic:
+#   - a pending entry's `commit` is UNQUOTED `null`, exactly as the producer
+#     emits it. _record_scalar's required-quotes rule reads that as empty,
+#     which is the reading the anchor scan depends on -- a fixture that wrote
+#     `""` instead would never exercise it.
+#   - `prerequisites` is emitted BEFORE `steps`, because plain document order
+#     is what gives the anchor scan its prerequisites-then-steps traversal
+#     (see the R8 cases). A fixture that reordered them would silently make
+#     that traversal untestable.
+#
+# Each SPEC is  <array>:<id>:<status>:<commit>  with <array> in {prereq, step}
+# and an empty <commit> emitting `null`. Arbitrary-byte records (corrupt
+# input, prose containing escaped key text) go through make_plan_raw instead,
+# mirroring the make_lane_state / make_lane_state_raw split above.
+make_plan() {
+    local dir="$1" task_id="$2"; shift 2
+    local -a mp_prereq=() mp_step=()
+    local spec mp_array mp_id mp_status mp_commit mp_commit_json entry
+    for spec in "$@"; do
+        IFS=':' read -r mp_array mp_id mp_status mp_commit <<< "$spec"
+        mp_commit_json='null'
+        if [ -n "$mp_commit" ]; then
+            mp_commit_json="\"$mp_commit\""
+        fi
+        entry="$(printf '    {\n      "id": "%s",\n      "type": "impl",\n      "description": "fixture entry %s",\n      "status": "%s",\n      "commit": %s\n    }' \
+            "$mp_id" "$mp_id" "$mp_status" "$mp_commit_json")"
+        case "$mp_array" in
+            prereq) mp_prereq+=("$entry") ;;
+            *)      mp_step+=("$entry") ;;
+        esac
+    done
+    mkdir -p "$dir/.task"
+    {
+        printf '{\n  "task_id": "%s",\n' "$task_id"
+        printf '  "title": "fixture plan for task %s",\n' "$task_id"
+        printf '  "analysis": "fixture analysis",\n'
+        printf '  "files": [],\n'
+        printf '  "prerequisites": [\n'
+        _join_plan_entries "${mp_prereq[@]+"${mp_prereq[@]}"}"
+        printf '  ],\n'
+        printf '  "steps": [\n'
+        _join_plan_entries "${mp_step[@]+"${mp_step[@]}"}"
+        printf '  ],\n'
+        printf '  "_schema_version": 1\n}'
+    } > "$dir/.task/plan.json"
+}
+
 # _wait_for_reader_lock <ready-marker> <deadline-seconds>
 # Causal ordering (technique R, docs/prds/infra-test-wallclock-deflake.md,
 # task #4847): polls for the READY marker file in 0.05s ticks, returning 0 as
@@ -1995,5 +2062,122 @@ assert "Q8: HEADROOM reports free=1 and reclaimable=1 (the shared lane's freed c
 
 kill "$Q_SHARED_PID" "$Q_EXCL_PID" 2>/dev/null || true
 _BGPIDS=()  # clear so cleanup doesn't double-kill
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block R — plan.json step-SHA vs branch-tip strandedness (task 5876,
+#           esc-5866-8): the `plan_sync` column
+# ──────────────────────────────────────────────────────────────────────────────
+# The incident: refs/heads/task/5866 kept its NAME while its TIP was clobbered
+# to a different task's, so every commit the lane's plan.json recorded as done
+# became unreachable from HEAD -- dangling but still present in the object DB.
+# No existing column sees that: `live`/`assigned`/`pin` answer occupancy
+# questions, and `recoverable` asks only whether HEAD is reachable from main,
+# which a clobbered tip satisfies just as well as a healthy one.
+#
+# `plan_sync` asks the missing question -- does the lane's ref still hold the
+# work its plan says it committed? -- against the ANCHOR: the plan-order-last
+# done entry (prerequisites then steps) that carries a commit.
+#
+# The verdict vocabulary keeps two failure modes apart on purpose:
+#   OK        the anchor is an ancestor of HEAD.
+#   STRANDED  the anchor object EXISTS but is not an ancestor -- the clobber.
+#   UNKNOWN   present but not evaluable (Block R5-R7).
+#   -         nothing recorded yet: no plan, or no done entry with a commit.
+# `-` and UNKNOWN are deliberately NOT merged, for A3/A5's reason: "nothing
+# recorded" is the common uninteresting case (most residents), while "could
+# not evaluate" is the signal, and folding the first into the second buries it.
+echo ""
+echo "--- Block R: plan.json step-SHA vs branch-tip strandedness (plan_sync) ---"
+
+R_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-r-XXXXXX)"
+_TMPDIRS+=("$R_MOUNT")
+
+# _r_commit DIR TAG — commit a uniquely-named file, and NOT _add_ahead_commit,
+# wherever this block builds two SIBLING commits (same parent).
+# _add_ahead_commit appends identical bytes with an identical message, so two
+# calls on the same parent inside the same clock second produce a
+# byte-identical commit OBJECT -- same tree, same parent, same message, same
+# timestamps -- which git deduplicates to ONE sha. The "clobbered" branch would
+# then point at the very commit the plan records, the ancestor test would
+# rightly say OK, and a STRANDED assertion could only ever pass by accident.
+# R2a/R2b exist to catch that, and did.
+_r_commit() {
+    local dir="$1" tag="$2"
+    printf '%s\n' "$tag" > "$dir/$tag.txt"
+    git -C "$dir" add "$tag.txt"
+    git -C "$dir" commit -q -m "commit $tag"
+}
+
+# ── R1 — OK: the anchor is an ancestor of HEAD.
+# Two ahead-of-main commits; the FIRST is recorded as the done step, so the
+# lane's tip genuinely descends from it. The recorded SHA is abbreviated to 10
+# chars, one of the two widths real plans carry.
+make_lane "$R_MOUNT/_lane-ok" "task/9001"
+_add_ahead_commit "$R_MOUNT/_lane-ok"
+R_OK_ANCHOR="$(git -C "$R_MOUNT/_lane-ok" rev-parse HEAD)"
+_add_ahead_commit "$R_MOUNT/_lane-ok"
+make_plan "$R_MOUNT/_lane-ok" 9001 \
+    "step:step-1:done:${R_OK_ANCHOR:0:10}" \
+    "step:step-2:pending:"
+
+# ── R2 — STRANDED: the esc-5866-8 signature, reproduced.
+# The anchor is committed on a side branch, recorded as the done step, and the
+# lane's own branch is then advanced to an UNRELATED commit (the clobber);
+# deleting the side branch leaves the anchor dangling-but-present. That is the
+# exact pair the column keys off: `cat-file -e` succeeds (the object is right
+# there) while `merge-base --is-ancestor` fails (nothing reaches it).
+make_lane "$R_MOUNT/_lane-stranded" "task/9002"
+git -C "$R_MOUNT/_lane-stranded" checkout -q -b _anchor-side
+_r_commit "$R_MOUNT/_lane-stranded" anchor-work
+R_STRANDED_ANCHOR="$(git -C "$R_MOUNT/_lane-stranded" rev-parse HEAD)"
+git -C "$R_MOUNT/_lane-stranded" checkout -q task/9002
+_r_commit "$R_MOUNT/_lane-stranded" foreign-tip
+git -C "$R_MOUNT/_lane-stranded" branch -q -D _anchor-side
+make_plan "$R_MOUNT/_lane-stranded" 9002 \
+    "step:step-1:done:${R_STRANDED_ANCHOR:0:10}" \
+    "step:step-2:pending:"
+
+# Fixture-integrity controls. An assertion that a lane reports STRANDED passes
+# for the WRONG reason if the anchor object were actually gone (that shape is
+# UNKNOWN, and R6 pins it) -- so prove here, test-side, that the fixture really
+# is "present but unreachable" before asking the script about it.
+assert "R2a: the stranded fixture's anchor object is PRESENT (dangling, not absent)" \
+    bash -c 'git -C "$1" cat-file -e "$2^{commit}"' _ "$R_MOUNT/_lane-stranded" "$R_STRANDED_ANCHOR"
+assert "R2b: the stranded fixture's anchor is NOT an ancestor of HEAD (the clobber)" \
+    bash -c '! git -C "$1" merge-base --is-ancestor "$2" HEAD' _ \
+    "$R_MOUNT/_lane-stranded" "$R_STRANDED_ANCHOR"
+
+# ── R3 — no plan at all: the `-` sentinel, never UNKNOWN.
+# 65 of the live pool's 112 residents look like this. Reporting them UNKNOWN
+# would make that counter permanently large and hide the handful that matter.
+make_lane "$R_MOUNT/_lane-noplan" "task/9003"
+_add_ahead_commit "$R_MOUNT/_lane-noplan"
+
+# ── R4 — a DANGLING plan symlink, the normal pre-architect state.
+# In real lanes .task/plan.json is an ABSOLUTE symlink into
+# <worktree_base>/.task-meta/<lane>/plan.json (the W11 relocation), and it
+# dangles until the architect writes the plan. `[ -f ]` follows symlinks, so
+# this must fall out of the existence guard rather than needing a special case.
+make_lane "$R_MOUNT/_lane-dangling" "task/9004"
+mkdir -p "$R_MOUNT/_lane-dangling/.task"
+ln -s "$R_MOUNT/nonexistent-task-meta/_lane-dangling/plan.json" \
+    "$R_MOUNT/_lane-dangling/.task/plan.json"
+assert "R4a: the dangling-symlink fixture's link exists but its target does not" \
+    bash -c '[ -L "$1" ] && [ ! -e "$1" ]' _ "$R_MOUNT/_lane-dangling/.task/plan.json"
+
+run_helper --mount "$R_MOUNT"
+
+assert "R0: exit 0" test "$RC" -eq 0
+assert "R1: an anchor that IS an ancestor of HEAD reports plan_sync=OK" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-ok .*plan_sync=OK( |\$)"' _ "$OUT"
+assert "R2: a present-but-unreachable anchor reports plan_sync=STRANDED (the esc-5866-8 signature)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-stranded .*plan_sync=STRANDED( |\$)"' _ "$OUT"
+assert "R3: a lane with no .task/ dir reports plan_sync=- (the sentinel, NOT UNKNOWN)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-noplan .*plan_sync=-( |\$)"' _ "$OUT"
+assert "R3b: a lane with no plan is NOT reported UNKNOWN" \
+    bash -c '! printf "%s\n" "$1" | grep -q "lane=_lane-noplan .*plan_sync=UNKNOWN"' _ "$OUT"
+assert "R4: a DANGLING plan symlink reports plan_sync=- and never crashes" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-dangling .*plan_sync=-( |\$)"' _ "$OUT"
+assert "R4b: exit 0 with a dangling plan symlink in the pool" test "$RC" -eq 0
 
 test_summary
