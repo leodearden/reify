@@ -18,13 +18,73 @@
 //! the manifest grammar can be driven directly from tests rather than only
 //! through whatever rows the committed file happens to contain.
 //!
+//! ## Test tiers
+//!
+//! (a/b) **seam tests** — hermetic tempdir fixtures pinning `live_counts`'s
+//!   census contract and `parse_baseline`'s round trip.
+//!
+//! (A) **`baseline_exists_and_parses`** — always-on, hermetic. Resolves
+//!   `crates/reify-audit/pdiag-baseline.txt` via `CARGO_MANIFEST_DIR` (so it
+//!   works in any worktree), asserts the file EXISTS, and runs the real
+//!   `parse_baseline` over it. Existence is asserted rather than skipped-on:
+//!   `pdiag::check` treats an unreadable manifest as an EMPTY one, which is the
+//!   fail-LOUD direction for the ratchet but would let a deleted or renamed
+//!   manifest slip past *this* test vacuously.
+//!
+//! (A′) **`rejects_*`** — always-on, hermetic. Drives crafted content straight
+//!   through the same `parse_baseline`, so every grammar rule keeps real
+//!   coverage independent of what the committed file holds. PDIAG's manifest
+//!   ships POPULATED (unlike PTODO's zero-residual empty one), so (A) is
+//!   non-vacuous today — but migration is opportunistic per PRD §6.7, and these
+//!   rules must not go inert as rows burn down toward zero.
+//!
+//! (B) **`live_counts_are_within_the_committed_baseline`** — on-demand,
+//!   `#[ignore]`. Runs `pdiag::check` over the real working tree with
+//!   `RealGitOps` and asserts ZERO `Severity::High` findings, i.e. no file
+//!   exceeds its row and no code-less file is missing one. Medium (slack)
+//!   findings are expected and deliberately tolerated: a file someone
+//!   opportunistically improved must never turn a diff RED.
+//!
 //! User-observable signal:
-//!   `cargo test -p reify-audit --test pdiag_baseline`
+//!   `cargo test -p reify-audit --test pdiag_baseline`               (a/b + A + A′)
+//!   `cargo test -p reify-audit --test pdiag_baseline -- --ignored`  (+ B)
+//!
+//! On (B) failure the fix is never a hand-edit — regenerate:
+//!   ```text
+//!   cargo run -p reify-audit --bin pdiag-baseline-gen -- --project-root . \
+//!     > crates/reify-audit/pdiag-baseline.txt
+//!   ```
+//!   …and only after confirming the new sites genuinely warrant no code. The
+//!   remediation triad (attach a `DiagnosticCode` / take the reviewed
+//!   `pdiag:allow` opt-out / shrink the row) is in
+//!   `docs/notes/diagnostic-severity-policy.md` §3.
 
-use reify_audit::pdiag::{live_counts, parse_baseline};
-use reify_audit::{AuditContext, MockGitOps, MockJCodemunchOps};
+use reify_audit::pdiag::{is_swept_path, live_counts, parse_baseline};
+use reify_audit::{AuditContext, MockGitOps, MockJCodemunchOps, Severity};
 use rusqlite::Connection;
 use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
+
+/// `crates/reify-audit/pdiag-baseline.txt`, resolved from the manifest dir so
+/// the test is worktree-independent.
+fn baseline_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("pdiag-baseline.txt")
+}
+
+/// Repo root: `crates/reify-audit` → two `.parent()` hops.
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crates/reify-audit has a parent (crates/)")
+        .parent()
+        .expect("crates/ has a parent (repo root)")
+        .to_path_buf()
+}
+
+/// The canonical regeneration command, quoted in every failure message so
+/// whoever just went RED never reaches for a hand-edit.
+const REGEN: &str = "cargo run -p reify-audit --bin pdiag-baseline-gen -- \
+                     --project-root . > crates/reify-audit/pdiag-baseline.txt";
 
 // -----------------------------------------------------------------------
 // Fixture — a tempdir working tree plus a MockGitOps that tracks exactly
@@ -261,4 +321,189 @@ fn a_live_census_renders_rows_that_parse_back_unchanged() {
         census.iter().map(|(path, count)| format!("{path} {count}\n")).collect();
 
     assert_eq!(parse_baseline(&rendered).expect("rendered census must parse"), census);
+}
+
+// -----------------------------------------------------------------------
+// (A) The committed manifest exists and parses
+// -----------------------------------------------------------------------
+
+/// The committed `pdiag-baseline.txt` EXISTS and the real `parse_baseline`
+/// accepts it.
+///
+/// Existence is a hard assertion, not a graceful skip. `pdiag::check` reads an
+/// unreadable manifest as an EMPTY one — deliberately fail-loud for the
+/// ratchet, since every code-less file then surfaces as a `NewFile` High — but
+/// that convention would make *this* test pass vacuously against a manifest
+/// someone deleted or renamed. So the two guards point opposite ways on
+/// purpose, and between them there is no way to lose the manifest quietly.
+#[test]
+fn baseline_exists_and_parses() {
+    let path = baseline_path();
+    assert!(
+        path.exists(),
+        "pdiag-baseline.txt not found at {path:?} — the PDIAG ratchet has no manifest to \
+         ratchet against. Regenerate it with:\n  {REGEN}"
+    );
+
+    let content =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {path:?}: {e}"));
+
+    if let Err(err) = parse_baseline(&content) {
+        panic!("pdiag-baseline.txt does not parse: {err}\nRegenerate it with:\n  {REGEN}");
+    }
+}
+
+// -----------------------------------------------------------------------
+// (A′) Grammar rules, driven over synthetic content
+//
+// PDIAG's committed manifest ships POPULATED, so (A) is non-vacuous today.
+// But migration of the existing backlog is opportunistic (PRD §6.7), so the
+// row count is meant to fall toward zero — at which point (A) would exercise
+// nothing but `path.exists()`. These drive the SAME validator directly, so
+// each rule keeps permanent coverage.
+//
+// Every rejection is asserted to name `pdiag-baseline.txt:<lineno>`: the
+// error string is read by whoever just broke the build, and a rule that
+// cannot say *which line* is a rule they cannot act on.
+// -----------------------------------------------------------------------
+
+/// Assert `content` is rejected and the message names line `lineno`.
+fn rejected_at(content: &str, lineno: usize) -> String {
+    let err = parse_baseline(content)
+        .expect_err("content must be rejected")
+        .to_string();
+    assert!(
+        err.contains(&format!("pdiag-baseline.txt:{lineno}")),
+        "error must name pdiag-baseline.txt:{lineno}, got {err:?}"
+    );
+    err
+}
+
+#[test]
+fn rejects_a_row_without_exactly_two_fields() {
+    rejected_at("crates/reify-eval/src/a.rs\n", 1);
+    rejected_at("crates/reify-eval/src/a.rs 3 extra\n", 1);
+}
+
+#[test]
+fn rejects_a_non_numeric_count() {
+    rejected_at("crates/reify-eval/src/a.rs three\n", 1);
+    // Negative counts are not a thing: the census is a `u32`.
+    rejected_at("crates/reify-eval/src/a.rs -1\n", 1);
+}
+
+#[test]
+fn rejects_a_literal_zero_count() {
+    // A clean file has NO row. A `0` would be a second spelling of the same
+    // state and would make the orphan-row advisory unrepresentable.
+    let err = rejected_at("crates/reify-eval/src/a.rs 0\n", 1);
+    assert!(err.contains("delete the line"), "the fix must be stated, got {err:?}");
+}
+
+#[test]
+fn rejects_a_path_outside_the_sweep() {
+    // Kept honestly coupled to the predicate the live scan uses: a row no
+    // scan can ever clear would otherwise sit in the manifest forever as a
+    // permanent advisory, which is how a scope narrowing goes unnoticed.
+    const OUT_OF_SCOPE: &str = "crates/reify-audit/src/pdiag.rs";
+    assert!(!is_swept_path(OUT_OF_SCOPE), "fixture must actually be out of scope");
+    rejected_at(&format!("{OUT_OF_SCOPE} 2\n"), 1);
+
+    assert!(!is_swept_path("docs/notes/severity.md"));
+    rejected_at("docs/notes/severity.md 2\n", 1);
+}
+
+#[test]
+fn rejects_rows_out_of_ascending_order() {
+    let unsorted = "crates/reify-eval/src/b.rs 1\ncrates/reify-eval/src/a.rs 1\n";
+    rejected_at(unsorted, 2);
+}
+
+#[test]
+fn rejects_a_duplicate_path() {
+    // Silent last-wins would let a bad merge double a file's allowance.
+    // Adjacent duplicates are caught by the ordering rule (`path <= previous`)
+    // before the insert-collision branch, and non-adjacent ones cannot be
+    // ascending either — so the message may name either rule. What matters
+    // here is that the row is REJECTED and the offending line is named.
+    rejected_at("crates/reify-eval/src/a.rs 1\ncrates/reify-eval/src/a.rs 2\n", 2);
+    rejected_at(
+        "crates/reify-eval/src/a.rs 1\ncrates/reify-eval/src/b.rs 1\ncrates/reify-eval/src/a.rs 2\n",
+        3,
+    );
+}
+
+#[test]
+fn line_numbers_count_comment_and_blank_lines() {
+    // The reported number must index the FILE, not the surviving rows —
+    // otherwise it points at the wrong line in a manifest with a header block.
+    rejected_at("# header\n\ncrates/reify-eval/src/a.rs 0\n", 3);
+}
+
+// -----------------------------------------------------------------------
+// (B) The committed manifest actually covers the live tree
+// -----------------------------------------------------------------------
+
+/// On-demand: run `pdiag::check` over the real working tree and assert it emits
+/// ZERO `Severity::High` findings.
+///
+/// High is exactly the hard-gate set — `Exceeded` (a file went UP) and
+/// `NewFile` (a code-less file with no row at all) — and the CLI's exit code is
+/// the count of High findings, so "zero High" is precisely "`reify-audit
+/// --pattern PDIAG` exits 0 on this tree".
+///
+/// Medium findings (`Stale`, `OrphanRow`) are NOT asserted against. They mean
+/// someone fixed something the manifest still budgets for, and turning that
+/// RED would make every opportunistic migration merge-blocking — the exact
+/// posture PRD §6.7 rules out.
+///
+/// Graceful-skip when `git` is unavailable or the resolved root is not a
+/// checkout; the always-on tiers above still cover the grammar.
+#[ignore = "on-demand whole-repo ratchet; run via --ignored. Needs a real git \
+    checkout — graceful-skip otherwise."]
+#[test]
+fn live_counts_are_within_the_committed_baseline() {
+    if std::process::Command::new("git").arg("--version").output().is_err() {
+        eprintln!("pdiag_baseline: skipping whole-repo ratchet — git not available");
+        return;
+    }
+    let root = repo_root();
+    if !root.join(".git").exists() {
+        eprintln!("pdiag_baseline: skipping whole-repo ratchet — {root:?} is not a git checkout");
+        return;
+    }
+
+    // `conn`, `jc` and `task_metadata` are inert placeholders: PDIAG is a
+    // purely structural lane (ls_files + working-tree reads), touching neither
+    // the task DB nor jcodemunch.
+    let git = reify_audit::RealGitOps::new(root.clone());
+    let conn = Connection::open_in_memory().expect("in-memory sqlite");
+    let jc = MockJCodemunchOps::new();
+    let ctx = AuditContext {
+        project_root: root.clone(),
+        conn: &conn,
+        git: &git,
+        jcodemunch: &jc,
+        task_metadata: HashMap::new(),
+        target_task_id: None,
+        window: None,
+        now: None,
+        producer_branch: None,
+    };
+
+    let high: Vec<String> = reify_audit::pdiag::check(&ctx)
+        .into_iter()
+        .filter(|f| f.severity == Severity::High)
+        .map(|f| f.summary)
+        .collect();
+
+    assert!(
+        high.is_empty(),
+        "{} PDIAG hard-gate finding(s) against the committed baseline:\n{}\n\n\
+         Attach a DiagnosticCode, or take the reviewed `pdiag:allow` opt-out \
+         (docs/notes/diagnostic-severity-policy.md §3). Only if the sites are \
+         genuinely warranted, regenerate:\n  {REGEN}",
+        high.len(),
+        high.join("\n"),
+    );
 }
