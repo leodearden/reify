@@ -1,11 +1,16 @@
-# VENDORED_FROM: dark-factory@86e54a8498fda03060c2418b4583d6d1ad4ee97d orchestrator/src/orchestrator/agents/landlock.py
+# VENDORED_FROM: dark-factory@408f42d6299ea046ca9f4aa629a371d0055aec29 orchestrator/src/orchestrator/agents/landlock.py
 # Refresh: TARGETED PATCH ONLY — see DIVERGENCE below; a blind cp regresses the GUI sidecar.
 #   Port the upstream hunk by hand, keep the divergence, then bump the SHA above.
 # DIVERGENCE from upstream: build_landlock_command's docstring below still documents
-#   ``~/.claude`` as writable. That is correct for reify and deliberate — the vendored
-#   landlock_exec.py keeps the blanket grant dark-factory dropped (see the DIVERGENCE
-#   note in that file's header for why). Apart from this header and that one docstring
-#   bullet, this file is byte-identical to upstream.
+#   ``~/.claude`` as writable — deliberately held at the pre-8c31a9a940 wording, where
+#   upstream now says it is read-only except for ``writable_extras``. That is correct
+#   for reify: the vendored landlock_exec.py keeps the blanket grant dark-factory
+#   dropped (see the DIVERGENCE note in that file's header for why). Apart from this
+#   header and that one docstring bullet, this file is byte-identical to upstream at
+#   the SHA above — VERIFIED by diff, which is why the pin tracks the same snapshot as
+#   landlock_exec.py's even though the fix that bumped it touched only that file. A
+#   pin left behind on a content-current file reads as "no drift" to the next
+#   refresher and hides the fact that they are diffing against a stale snapshot.
 """Landlock LSM filesystem sandbox for agent invocations.
 
 Alternative to bwrap that does not use user namespaces, so it sidesteps the
