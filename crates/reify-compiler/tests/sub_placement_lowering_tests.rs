@@ -444,3 +444,85 @@ fn match_arm_sub_pose_is_lowered() {
         "match-arm sub with `at <pose>` must lower to SubComponentDecl.pose = Some(…); got None"
     );
 }
+
+// ── Interim α→β behaviour of the indexed-sub instantiation form ──────────────
+
+/// PIN OF CURRENT (WRONG) BEHAVIOUR, NOT OF DESIRED BEHAVIOUR.
+///
+/// `sub legs[k in 0..3] = Leg()` — the indexer clause added by task α of
+/// `docs/prds/v0_6/indexed-sub-instantiation.md` — parses and lowers into
+/// `SubDecl::index_binder` / `index_domain`, but **nothing in reify-compiler
+/// reads those fields yet**. So the clause is parsed and discarded: the source
+/// elaborates to exactly ONE `legs` instance instead of four, with no error and
+/// no warning. That is a silent-miscompile window that stays open until β
+/// (#5482) derives the count cell and elaborates the element template.
+///
+/// This test exists so that window is VISIBLE in the suite rather than implicit.
+/// It deliberately asserts today's single-instance outcome AND today's empty
+/// error set, so:
+///   - β cannot land its elaboration without this test going red, forcing the
+///     pin to be replaced by a real N-instance assertion; and
+///   - an interim rejection diagnostic (see below) also goes red here, forcing
+///     the same explicit update.
+///
+/// The precedent for that interim diagnostic is one arm away in the same
+/// lowering: a collection sub carrying `at <pose>` is grammatically accepted and
+/// then rejected by T2 with `DiagnosticCode::AtOnCollectionSub`
+/// (`crates/reify-compiler/src/entity.rs`, ~line 2656). The indexed sub has no
+/// counterpart. Adding one is the reviewer-preferred fix, but it requires
+/// editing `crates/reify-compiler/src/entity.rs` (and a new `DiagnosticCode`
+/// variant in reify-core) — both OUTSIDE task 5481's locked module set, so it is
+/// filed as follow-up work rather than done here.
+#[test]
+fn indexed_sub_currently_elaborates_to_one_instance_no_diagnostic() {
+    let source = r#"structure Leg {
+    param h: Length = 10mm
+}
+structure Rig {
+    sub legs[k in 0..3] = Leg()
+}"#;
+    let compiled = reify_test_support::compile_source_with_stdlib(source);
+
+    let errors: Vec<String> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .map(|d| d.message.clone())
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "INTERIM PIN (α→β window, #5482): an indexed sub currently produces NO \
+         error diagnostic. If this failed because a rejection diagnostic was \
+         added (the `AtOnCollectionSub` precedent) or because β started \
+         elaborating, that is progress — update this test to assert the new \
+         contract instead of deleting it. Got: {errors:?}"
+    );
+
+    let rig = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Rig")
+        .expect("Rig template not found");
+
+    let legs: Vec<_> = rig
+        .sub_components
+        .iter()
+        .filter(|s| s.name == "legs")
+        .collect();
+    assert_eq!(
+        legs.len(),
+        1,
+        "INTERIM PIN (α→β window, #5482): `sub legs[k in 0..3] = Leg()` currently \
+         elaborates to exactly ONE instance because α stores the indexer \
+         syntactically and no compiler pass reads it. β must turn this into the \
+         range's worth of instances (or an explicit rejection); when it does, \
+         replace this pin. Got {} `legs` sub_components.",
+        legs.len()
+    );
+    assert!(
+        !legs[0].is_collection,
+        "α must leave is_collection == false on an indexed sub — flipping it \
+         would route the sub into the collection-sub path with no count cell and \
+         no element template"
+    );
+}
