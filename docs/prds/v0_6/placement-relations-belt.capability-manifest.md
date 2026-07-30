@@ -247,17 +247,20 @@ belt degenerate-input errors) is instructed to carry a `DiagnosticCode`.
   defect, report extending #5385 — never work around.
 - `wire-join-upstream` → PASS, producer:κ upstream (hard edge) — F1
   pre-registered escape.
-- `pipe-fallback` (F2) → PASS. #5343 (pipe non-+Z) has LANDED: `pipe()`
-  accepts any finite start-tangent, so the posed-profile `sweep` fallback
-  previously documented in μ's text is no longer needed.
+- `pipe-orientation` (was `pipe-fallback`; F2, retired) → PASS. #5343 (pipe
+  non-+Z) has LANDED: `pipe()` accepts any finite start-tangent, so the
+  posed-profile `sweep` fallback previously documented in μ's text is no
+  longer needed. Slug renamed to a status-neutral name because there is no
+  fallback left to name.
 - `degenerate-inputs-rejection` (G6 branch 4) → producer-self: overlapping
   pitch circles / tangent nonexistence ⇒ error naming pulley indices, never
   Undef geometry (λ's own boundary test; INV-SF-1).
 - `module-placement` → tactical: conform to stdlib-module-arch outcome at
   dispatch (PRD §12 Q3; content ours, layout theirs — G4 row).
 - `findings-doc-deliverable` → producer-self:
-  `docs/notes/belt-path-language-findings.md` with pre-registered F0–F2
-  rows is part of λ's signal (§8 protocol).
+  `docs/notes/belt-path-language-findings.md` with pre-registered F0–F1
+  rows (F2 retired: #5343 landed, so it is no longer a `.ri`-inexpressibility
+  finding under §8) is part of λ's signal (§8 protocol).
 
 ## μ — printer_v01 rear-drive routing v2 (THE LEAF)
 
@@ -278,7 +281,7 @@ belt degenerate-input errors) is instructed to carry a `DiagnosticCode`.
   boundary assertion over ι's constraint — every asserted capability is in
   μ's dependency closure (G6 branch 3 clean).
 - `tendon-solid-route` → resolved: #5343 landed; μ uses `pipe()` directly
-  for the tendon solid (PRD §12 Q5 resolved; see λ's `pipe-fallback` (F2)
+  for the tendon solid (PRD §12 Q5 resolved; see λ's `pipe-orientation`
   entry above for the substrate fact).
 
 ## ν — doc-chunk updates (project gate leaf 1)
