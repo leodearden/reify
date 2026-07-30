@@ -71,6 +71,12 @@
 #       basename is merely a name-prefix of it. Lives here now because the
 #       boundary matcher is called by gc.sh directly; GREEN on arrival — its
 #       job is to keep the regression pinned at the right layer, not to go red
+#   S — seed fail-closed abort ⇒ the caller DISCARDS the uncertified
+#       <lane>/target the α seed aborted onto (task 5635; PRD
+#       docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13 caller obligation),
+#       counted `reset` with the appended `reset_cold` sub-count. S2 is the
+#       positive control that pins the discard to the seed's EXIT STATUS rather
+#       than to an empty stdout; S3 covers a discard that itself fails
 #
 # The former Tier-3 blocks I/J/L (terminal-task reclaim + Pass-2 boundary,
 # task 5167) were deleted when task 5326 collapsed the Pass-1 gate to the
@@ -1981,6 +1987,120 @@ assert "R6: stderr does NOT claim a process reference for _lane-1" \
 kill "$R_HELPER_PID" 2>/dev/null || true
 wait "$R_HELPER_PID" 2>/dev/null || true
 _BGPIDS=()  # clear so EXIT cleanup does not re-kill a possibly-reused PID
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block S — seed fail-closed abort ⇒ discard the uncertified lane target/
+# (task 5635; PRD docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13,
+# "Caller obligation on the fail-closed path")
+#
+# The α seed's three fail-closed post-conditions (inv.9 / inv.12 / inv.13) all
+# fire AFTER target/ has been replaced with the CoW clone, so an abort lands ONTO
+# the hazardous state the guard just refused to certify — and the seed
+# deliberately leaves that clone in place (it refuses, it does not repair).
+# Discarding it is therefore the caller's obligation, which gc did not honour: it
+# logged the seed error and counted the lane PRESERVED, leaving the next consumer
+# to inherit an uncertified clone.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block S: seed fail-closed abort => discard the uncertified lane target/ ---"
+
+S_ROOT="$(mktemp -d /tmp/test-gc-s-XXXXXX)"
+_TMPDIRS+=("$S_ROOT")
+
+# ── S1: a POST-CLONE α abort ⇒ the clone is discarded and counted reset ────────
+S1_REPO="$S_ROOT/s1-repo"
+S1_WORKTREES="$S_ROOT/s1-worktrees"
+S1_BASE="$S_ROOT/s1-base"
+mkdir -p "$S1_WORKTREES" "$S1_BASE"
+make_repo "$S1_REPO"
+mkdir -p "$S1_BASE/target.gen.1"
+touch "$S1_BASE/target.gen.1.lock"
+ln -sfn "$S1_BASE/target.gen.1" "$S1_BASE/target"
+
+make_task_lane "$S1_REPO" "$S1_WORKTREES" "_lane-1" "task/5635" "ahead"
+
+# Post-clone abort stub: same argv-logging and "$2"-is-the-lane conventions as
+# _seed_stub_body, but it RECREATES <lane>/target with a HAZARD marker before
+# exiting non-zero — modelling the clone an aborting seed leaves behind, without
+# needing a reflink-capable filesystem. (No chmod here; S3 adds that.)
+S1_SEED_LOG="$S_ROOT/s1-seed-calls.log"
+S1_SEED_STUB="$S_ROOT/s1-seed-stub.sh"
+cat > "$S1_SEED_STUB" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+mkdir -p "$LANE_DIR/target"
+touch "$LANE_DIR/target/HAZARD"
+exit 1
+STUB_EOF
+chmod +x "$S1_SEED_STUB"
+export SEED_LOG="$S1_SEED_LOG"
+
+# No --disk-pressure: this must exercise the α reseed branch, the one that
+# actually invokes the seed and so is the only one that can see it abort.
+run_helper reclaim \
+    --worktrees-dir "$S1_WORKTREES" \
+    --base-target "$S1_BASE/target" \
+    --seed-script "$S1_SEED_STUB"
+
+assert "S1: exit 0 (per-candidate failures warn + continue)" test "$RC" -eq 0
+assert "S1: seed-script WAS invoked (α branch, not the disk-pressure fast path)" \
+    bash -c 'test -f "$1" && grep -q "_lane-1" "$1"' _ "$S1_SEED_LOG"
+assert "S1: the uncertified clone is DISCARDED — <lane>/target is GONE" \
+    bash -c '[ ! -e "$1" ]' _ "$S1_WORKTREES/_lane-1/target"
+assert "S1: a stderr [warn] line names the discarded path" \
+    bash -c 'printf "%s\n" "$1" | grep -F "[warn]" | grep -qF "$2/target"' \
+        _ "$ERR_OUT" "$S1_WORKTREES/_lane-1"
+assert "S1: stderr cites the §9.5 inv.13 caller obligation" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "inv.13"' _ "$ERR_OUT"
+# The old wording reported the seed error and stopped there — it never said what
+# became of the clone, which was the whole defect.
+assert "S1: the bare seed-script-error/continuing wording is GONE" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "(seed-script error); continuing"' _ "$ERR_OUT"
+# The discard is the same operation the disk-pressure path already counts as
+# reset (K1), so it belongs in the same bucket — `preserved` is factually false
+# once target/ is destroyed.
+assert "S1: summary counts the discard as reset, not preserved (reset=1 preserved=0)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "reset=1 removed=0 preserved=0"' _ "$OUT"
+# APPENDED sub-count: a bare reset=N cannot distinguish a lane left WARM from one
+# left COLD, which hides exactly the pool-wide degradation inv.12 predicts.
+assert "S1: summary carries the appended reset_cold=1 sub-count" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "reset_cold=1"' _ "$OUT"
+
+# ── S2: POSITIVE CONTROL — a CERTIFYING seed's clone is never discarded ────────
+# Load-bearing, and specifically what pins the discard to the seed's EXIT STATUS
+# rather than to an EMPTY STDOUT: _seed_stub_body exits 0 and prints NOTHING to
+# stdout, so an empty-stdout rule would destroy this lane's target/ too (the same
+# premise K2 already relies on).
+S2_REPO="$S_ROOT/s2-repo"
+S2_WORKTREES="$S_ROOT/s2-worktrees"
+S2_BASE="$S_ROOT/s2-base"
+mkdir -p "$S2_WORKTREES" "$S2_BASE"
+make_repo "$S2_REPO"
+mkdir -p "$S2_BASE/target.gen.1"
+touch "$S2_BASE/target.gen.1.lock"
+ln -sfn "$S2_BASE/target.gen.1" "$S2_BASE/target"
+
+make_task_lane "$S2_REPO" "$S2_WORKTREES" "_lane-1" "task/5635" "ahead"
+
+S2_SEED_LOG="$S_ROOT/s2-seed-calls.log"
+S2_SEED_STUB="$S_ROOT/s2-seed-stub.sh"
+_seed_stub_body > "$S2_SEED_STUB"
+chmod +x "$S2_SEED_STUB"
+export SEED_LOG="$S2_SEED_LOG"
+
+run_helper reclaim \
+    --worktrees-dir "$S2_WORKTREES" \
+    --base-target "$S2_BASE/target" \
+    --seed-script "$S2_SEED_STUB"
+
+assert "S2: exit 0" test "$RC" -eq 0
+assert "S2: a certifying seed's <lane>/target SURVIVES (discard keys on exit status, not on empty stdout)" \
+    test -d "$S2_WORKTREES/_lane-1/target"
+assert "S2: summary shows reset=1" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "reset=1"' _ "$OUT"
+assert "S2: summary shows reset_cold=0 (the lane was reset WARM, not discarded cold)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "reset_cold=0"' _ "$OUT"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
