@@ -224,6 +224,17 @@ _wait_for_marker() {
 # (its own `timeout` bound fires → rc 124) instead of being handed a spurious
 # admit that would leave only the marker asserts red — the very signature 5839
 # exists to remove.
+#
+# MARKER-STREAM NOTE: this helper is not marker-silent, and is not meant to be.
+# _wait_for_marker calls load_tolerant_keepalive on every 0.05s tick, and that
+# emits a real @@REIFY_CLOCK_HEARTBEAT@@ line to ${REIFY_KEEPALIVE_FD:-2} — fd 3
+# in this suite (line 99), i.e. the parent stream — on the FIRST tick, because
+# the throttle's _REIFY_KEEPALIVE_LAST_EMIT_EPOCH starts empty and defaults to 0.
+# That emission is deliberate (it is what keeps a long causal wait from tripping
+# dark-factory's 180s heartbeat-idle backstop) and it can never reach the file
+# being polled, since fd 3 is dup'd from the ORIGINAL stderr, kept distinct from
+# every $*_ERR capture this suite greps.  What must stay marker-free is the
+# helper's own DIAGNOSTIC LINE below (T1f pins exactly that, and no more).
 _clear_psi_fixture_on_marker() {
     local _watch="$1" _marker="$2" _deadline_s="$3" _fixture="$4" _avg10="$5"
     if ! _wait_for_marker "$_watch" "$_marker" "$_deadline_s"; then
@@ -746,7 +757,14 @@ assert "T1c: deadline elapses with no marker → returns non-zero (got ${_CPF_RC
     test "$_CPF_RC_C" -ne 0
 assert "T1d: deadline expiry leaves the fixture UNCHANGED (never clears on wall-clock alone)" \
     bash -c 'grep -qF "avg10=99.00" "$1" && ! grep -qF "avg10=10.00" "$1"' _ "$_CPF_PSI_C"
-assert "T1f: timeout diagnostic does not leak a clock marker into the parent stream" \
+# T1f is scoped to the helper's OWN fd-2 diagnostic ($_CPF_DIAG_C) and claims
+# nothing about the parent stream: _wait_for_marker's per-tick
+# load_tolerant_keepalive legitimately writes a @@REIFY_CLOCK_HEARTBEAT@@ line to
+# fd 3 (the suite's real stderr) on its first tick, so the run above DOES put a
+# marker on the parent stream by design.  The regression this catches is a
+# diagnostic that interpolates the awaited token (esc-4789-63) — see the helper's
+# MARKER-STREAM NOTE for why the two streams are deliberately different.
+assert "T1f: the timeout DIAGNOSTIC LINE carries no clock-marker token (the fd-3 keepalive heartbeat is separate and intentional)" \
     bash -c '! grep -qF "@@REIFY_CLOCK_" "$1"' _ "$_CPF_DIAG_C"
 
 # --- T1e: late-arriving marker → the helper BLOCKS until it exists ---
@@ -1646,7 +1664,9 @@ run_compile_gate_psi_capture() {
 # avg10=99 PSI fixture, spawns an updater that clears it to avg10=10 ONLY once
 # the gate has proven it observed pressure, optionally delays the gate's start
 # by <startup_delay_s> to simulate load-induced startup latency, runs the gate,
-# and reaps the updater.  Sets G_RC / G_ERR.
+# and reaps the updater.  Sets G_RC / G_ERR.  The updater's own deadline is
+# <bound> + <startup_delay_s>, so it is guaranteed to outlive the gate's
+# `timeout` bound however large the simulated latency gets.
 #
 # The old form used a FIXED `sleep 2` before clearing.  That raced a load-scaled
 # deadline: under heavy load the gate's bash + verify.sh-preamble startup
@@ -1669,6 +1689,11 @@ run_compile_gate_psi_capture() {
 # START causally dependent on the clear.
 run_g2_admit_on_drop_scenario() {
     local _startup_delay="$1" _mem="$2" _bound="$3"
+    # Normalise the delay once: it feeds BOTH the updater's deadline arithmetic
+    # and the sleep below, and a non-numeric value must degrade to "no delay"
+    # rather than abort the suite inside $(( … )) under `set -e`.
+    local _delay="${_startup_delay:-0}"
+    case "$_delay" in ''|*[!0-9]*) _delay=0 ;; esac
     local _tmpdir
     _tmpdir="$(mktemp -d)"
     _TMPDIRS+=("$_tmpdir")
@@ -1682,8 +1707,18 @@ run_g2_admit_on_drop_scenario() {
     # would match a stale marker and silently reinstate the race being fixed.
     : > "$_err"
 
+    # The updater's deadline is the gate's bound PLUS the simulated startup
+    # latency, because the updater's clock starts here while the gate's `timeout`
+    # only starts after the sleep below.  Sharing one bound would silently shrink
+    # the updater's headroom as _delay grows, and a caller passing a delay near
+    # the bound would get an updater that gave up while the gate was still
+    # holding — surfacing as an opaque rc=124 instead of the helper's own
+    # diagnostic.  Offsetting makes the updater outlive the gate's bound by
+    # construction, at ANY delay, so the invariant is enforced rather than
+    # documented as a _delay << _bound precondition.
+    local _updater_deadline=$(( _bound + _delay ))
     _clear_psi_fixture_on_marker "$_err" '@@REIFY_CLOCK_HEARTBEAT@@' \
-        "$_bound" "$_psi" 10.00 &
+        "$_updater_deadline" "$_psi" 10.00 &
     local _updater=$!
 
     # Simulated gate-startup latency (0 in production use).  It cannot affect
@@ -1692,8 +1727,8 @@ run_g2_admit_on_drop_scenario() {
     # at ANY startup latency, which is the whole point of the fix.  Written as
     # an explicit `if` rather than `[ … ] && sleep …` so a zero delay can never
     # make this the function's non-zero-returning last statement under `set -e`.
-    if [ "${_startup_delay:-0}" -gt 0 ] 2>/dev/null; then
-        sleep "$_startup_delay"
+    if [ "$_delay" -gt 0 ]; then
+        sleep "$_delay"
     fi
 
     run_compile_gate_psi_capture "$_psi" "$_mem" "$_bound" "$_err"
@@ -1707,10 +1742,11 @@ run_g2_admit_on_drop_scenario() {
 # ===========================================================================
 # Pins the harness contracts Section G2's causal updater depends on (T3a-T3c),
 # the root cause that forces the updater to be causal at all (T5a/T5b), and a
-# late-start regression witness for the fix itself (T5c-T5f).  T3a-T5b drive the
-# gate against an ALREADY-QUIET PSI fixture, so each spawn admits on its first
-# poll and costs ~0.3s; only the T5c-T5f witness runs a real hold, and it is
-# bounded by the same load-scaled deadline Section G2 uses.
+# late-start regression witness for the fix itself (T5c-T5f).  The whole section
+# costs TWO gate spawns plus one real hold: T3a/T3b and T3c each drive an
+# ALREADY-QUIET PSI fixture and admit on the first poll (~0.3s apiece), T5a/T5b
+# re-read the T3a/T3b run rather than repeating it, and only the T5c-T5f witness
+# holds — bounded by the same load-scaled deadline Section G2 uses.
 #
 # Why the explicit-capture-path contract is a CORRECTNESS requirement, not
 # ergonomics: run_compile_gate_psi_capture assigns G_ERR INSIDE the call, but
@@ -1741,6 +1777,9 @@ G_RC=0
 G_ERR=""
 run_compile_gate_psi_capture "$_G0_PSI_QUIET" "$_G0_MEM_QUIET" \
     "$(_load_scaled_deadline 30 120)" "$_G0_EXPLICIT"
+# Saved before T3c overwrites G_RC — T5a's root-cause guard reads THIS run's
+# exit code rather than paying for a third identical spawn (see T5a/T5b).
+_G0_EXPLICIT_RC="$G_RC"
 
 assert "T3a: explicit [err_path] is honoured (G_ERR is the caller's pre-created path, not a private mktemp)" \
     test "$G_ERR" = "$_G0_EXPLICIT"
@@ -1773,19 +1812,20 @@ assert "T3c: 3-arg form's capture file is PRIVATE (not the explicit path from T3
 # G2's env (MAX_WAIT=2, POLL=1, CLOCK_HEARTBEAT_SECS=1): rc=0, zero markers,
 # empty stderr.  That is precisely what a wall-clock updater which WINS the
 # race hands to Section G2 — the rc==0 assert green, all three marker asserts
-# red — i.e. the whole bug, in one assert, for ~0.3s.
-_G0_ROOTCAUSE_ERR="$_G0_TMPDIR/g0_rootcause_err.txt"
-: > "$_G0_ROOTCAUSE_ERR"
-
-G_RC=0
-G_ERR=""
-run_compile_gate_psi_capture "$_G0_PSI_QUIET" "$_G0_MEM_QUIET" \
-    "$(_load_scaled_deadline 30 120)" "$_G0_ROOTCAUSE_ERR"
-
-assert "T5a: G0 root-cause: an already-cleared PSI fixture admits on the first poll (exit 0; got ${G_RC})" \
-    test "$G_RC" -eq 0
+# red — i.e. the whole bug, in one pair of asserts.
+#
+# NO EXTRA SPAWN: this guard reads the T3a/T3b run — byte-identical fixtures,
+# env and bound — rather than starting a third `verify.sh compile-gate` child.
+# The rc comes from _G0_EXPLICIT_RC (saved before T3c clobbered G_RC) and the
+# stderr from $_G0_EXPLICIT, which already holds exactly the text T5b greps.
+# The load-independence argument is unchanged: cpu_admit reads only the injected
+# PSI/mem fixtures, never a loadavg axis, so the observation is the same whoever
+# made it.  This suite is re-run wholesale by
+# test_verify_nextest_absent_suites.sh's S4, so a redundant spawn is paid twice.
+assert "T5a: G0 root-cause: an already-cleared PSI fixture admits on the first poll (exit 0; got ${_G0_EXPLICIT_RC}) — same run as T3b" \
+    test "$_G0_EXPLICIT_RC" -eq 0
 assert "T5b: G0 root-cause: that admit emits NO clock marker at all (the 5839 failure signature)" \
-    bash -c '! grep -qF "@@REIFY_CLOCK_" "$1"' _ "$_G0_ROOTCAUSE_ERR"
+    bash -c '! grep -qF "@@REIFY_CLOCK_" "$1"' _ "$_G0_EXPLICIT"
 
 # --- T5c-T5f: LATE-START REGRESSION WITNESS ---
 # Drives the G2 arrangement with the gate's start deliberately delayed, so the
