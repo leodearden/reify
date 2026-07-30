@@ -337,6 +337,23 @@ PYEOF
     assert "census failure names the stale entry" \
         bash -c "python3 '$_PARSE_PY' '$_CENSUS_STALE_FIXTURE' census_ignore_entries_resolve 2>&1 | grep -q 'cpu_governance.__stale_fixture_knob__'"
 
+    # Negative fixture: a REAL ignored key removed from cpu_governance — the
+    # actual regression shape e61fae8017 guards against (a live YAML key
+    # renamed/removed while its ignore entry stays behind), not just a
+    # synthetic never-matching literal. The stale-fixture case above would
+    # still be caught even if _flatten were badly over-broad (nothing could
+    # ever match a literal that was never a real key); only a key-removal
+    # fixture proves the flatten/traversal half actually narrows when the
+    # config narrows.
+    _mutate_fixture 'd.get("cpu_governance", {}).pop("fleet_load_detector", None)'
+    _CENSUS_KEY_REMOVED_FIXTURE="$_LAST_FIXTURE"
+
+    assert "census check FAILS when a live ignored key is removed from the config" \
+        bash -c "! python3 '$_PARSE_PY' '$_CENSUS_KEY_REMOVED_FIXTURE' census_ignore_entries_resolve"
+
+    assert "census failure on key removal names the now-stale entry" \
+        bash -c "python3 '$_PARSE_PY' '$_CENSUS_KEY_REMOVED_FIXTURE' census_ignore_entries_resolve 2>&1 | grep -q 'cpu_governance.fleet_load_detector'"
+
     # Negative fixture: the entire config_key_census block deleted, so the
     # vacuity check must fail loudly rather than pass over an absent block
     # vacuously.
@@ -345,6 +362,9 @@ PYEOF
 
     assert "vacuity check FAILS when the config_key_census block is absent" \
         bash -c "! python3 '$_PARSE_PY' '$_CENSUS_ABSENT_FIXTURE' census_ignore_is_nonempty_list"
+
+    assert "absent-block failure names the block absent-or-not-a-mapping" \
+        bash -c "python3 '$_PARSE_PY' '$_CENSUS_ABSENT_FIXTURE' census_ignore_is_nonempty_list 2>&1 | grep -q 'absent or not a mapping'"
 
     # Division of labour: the staleness check stays deliberately SILENT (exit
     # 0) on an absent census block — census_ignore_is_nonempty_list above is
@@ -363,6 +383,9 @@ PYEOF
     assert "vacuity check FAILS when config_key_census.ignore is an empty list" \
         bash -c "! python3 '$_PARSE_PY' '$_CENSUS_EMPTY_FIXTURE' census_ignore_is_nonempty_list"
 
+    assert "empty-list failure names the non-empty-list requirement" \
+        bash -c "python3 '$_PARSE_PY' '$_CENSUS_EMPTY_FIXTURE' census_ignore_is_nonempty_list 2>&1 | grep -q 'must be a non-empty list'"
+
     # Negative fixture: ignore holds a non-string entry (e.g. an unquoted entry
     # YAML coerces to a number) — fnmatch.fnmatchcase requires a str, so this
     # must be rejected before it ever reaches the staleness matcher.
@@ -371,6 +394,9 @@ PYEOF
 
     assert "vacuity check FAILS when config_key_census.ignore holds a non-string entry" \
         bash -c "! python3 '$_PARSE_PY' '$_CENSUS_NONSTRING_FIXTURE' census_ignore_is_nonempty_list"
+
+    assert "non-string-entry failure names the strings requirement" \
+        bash -c "python3 '$_PARSE_PY' '$_CENSUS_NONSTRING_FIXTURE' census_ignore_is_nonempty_list 2>&1 | grep -q 'must be strings'"
 
 fi
 
