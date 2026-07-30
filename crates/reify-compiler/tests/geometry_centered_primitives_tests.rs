@@ -339,7 +339,7 @@ fn cylinder_centered_lowers_to_cylinder_plus_translate() {
                                 && *dimension == reify_core::DimensionVector::LENGTH
                     ),
                     "{slot} must be Literal(Scalar{{LENGTH, 0.0}}), not Literal(Real(0.0)) — \
-                     a bare Real is what the eval-layer length gate rejects, and its units \
+                     a bare Real is what the incoming eval-layer length gate rejects, and its units \
                      would be silently dropped by eval.as_f64(); got: {:?}",
                     expr.kind
                 );
@@ -361,8 +361,8 @@ fn cylinder_centered_lowers_to_cylinder_plus_translate() {
 /// harness-baseline registration guard unless a row is added to the
 /// explicitly-SHRINKING `harness-layout-baseline.manifest`.
 ///
-/// RED: today the slot is `Value::Real(TAU)` + `Type::dimensionless_scalar()`
-/// (geometry.rs), and nothing anywhere asserts on this arg.
+/// This is the ONLY assertion anywhere on `revolve_full`'s synthesized `angle`
+/// arg; nothing else covers it.
 #[test]
 fn revolve_full_injects_angle_dimensioned_tau() {
     let source = r#"structure def S {

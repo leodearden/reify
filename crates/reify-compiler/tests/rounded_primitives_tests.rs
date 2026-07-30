@@ -60,31 +60,6 @@ fn has_any_error(module: &reify_compiler::CompiledModule) -> bool {
         .any(|d| d.severity == Severity::Error)
 }
 
-/// Assert `expr` is a dimensioned (non-dimensionless) `Mul(<magnitude>,
-/// Literal(Real(sign)))` and return the `sign` factor — the shared shape used
-/// by the dz/dx/dy Translate-arg assertions below (mirrors the dz check in
-/// `cylinder_centered_lowers_to_cylinder_plus_translate`).
-fn assert_signed_mul(expr: &CompiledExpr, label: &str) -> f64 {
-    assert_ne!(
-        expr.result_type,
-        Type::dimensionless_scalar(),
-        "{label} must be typed as a dimensioned Scalar (Length), not bare Real — \
-         units would be silently dropped by eval.as_f64(); got {:?}",
-        expr.result_type
-    );
-    match &expr.kind {
-        CompiledExprKind::BinOp {
-            op: BinOp::Mul,
-            right,
-            ..
-        } => match &right.kind {
-            CompiledExprKind::Literal(Value::Real(factor)) => *factor,
-            other => panic!("{label} Mul right operand must be a Real literal, got: {other:?}"),
-        },
-        other => panic!("{label} expression must be a Mul(<magnitude>, <sign literal>), got: {other:?}"),
-    }
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // Step-1: rounded_box — RED tests
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -93,9 +68,11 @@ fn assert_signed_mul(expr: &CompiledExpr, label: &str) -> f64 {
 /// is LENGTH-dimensioned but the right-hand MULTIPLIER is a bare dimensionless
 /// `Real`. Returns the factor.
 ///
-/// This is the negative-space counterpart to `assert_signed_mul`: that helper
-/// pins the outer node as non-dimensionless, this one additionally pins the
-/// inner factor as dimensionless-and-bare.
+/// The single shared shape assertion for every scaled Translate/Thicken arg in
+/// this file — the corner dx/dy/dz offsets AND the negative-space pins below.
+/// It pins BOTH halves of the product: the outer node must be exactly
+/// `Type::length()` (units are not silently dropped by `eval.as_f64()`), and
+/// the inner factor must stay a bare dimensionless `Literal(Real(..))`.
 fn assert_length_scaled_by_dimensionless(expr: &CompiledExpr, label: &str) -> f64 {
     assert_eq!(
         expr.result_type,
@@ -114,8 +91,8 @@ fn assert_length_scaled_by_dimensionless(expr: &CompiledExpr, label: &str) -> f6
                 right.result_type,
                 Type::dimensionless_scalar(),
                 "{label}: the scale factor must stay dimensionless — a LENGTH-typed \
-                 multiplier makes this Scalar{{AREA}} at eval, which the task-beta \
-                 length gate rejects; got {:?}",
+                 multiplier makes this Scalar{{AREA}} at eval, which the incoming \
+                 eval-layer length gate rejects; got {:?}",
                 right.result_type
             );
             match &right.kind {
@@ -123,7 +100,7 @@ fn assert_length_scaled_by_dimensionless(expr: &CompiledExpr, label: &str) -> f6
                 other => panic!(
                     "{label}: the scale factor must stay a bare Literal(Real(..)) — \
                      a dimensioned Scalar multiplier makes this Scalar{{AREA}} at eval, \
-                     which the task-beta length gate rejects; got: {other:?}"
+                     which the incoming eval-layer length gate rejects; got: {other:?}"
                 ),
             }
         }
@@ -136,13 +113,15 @@ fn assert_length_scaled_by_dimensionless(expr: &CompiledExpr, label: &str) -> f6
 /// NEGATIVE-SPACE PIN — the `-0.5`/`+0.5` scale factors must STAY dimensionless
 /// while their enclosing `Mul` stays LENGTH.
 ///
-/// This guards a documented drift in the units-length PRD (§8 α, §4 M1 and the
-/// §2 anchor table), which instructs a future reader to retype geometry.rs's
-/// `:2362` and `:2439` `-0.5` literals to LENGTH. That instruction is wrong
+/// This guards a documented drift in the units-length PRD
+/// (`docs/prds/v0_6/units-length-gate-completion.md` §8 α, §4 M1 and the §2
+/// anchor table), which instructs a future reader to retype two `-0.5` literals
+/// in `reify-compiler/src/geometry.rs` to LENGTH. That instruction is wrong
 /// twice over, and this test makes it un-implementable rather than merely
-/// un-done (see esc-5742-1):
+/// un-done (see esc-5742-1). Deliberately cited by binding + function name, not
+/// by line number — the PRD's own line-number attribution is what went stale:
 ///
-///  1. MIS-ATTRIBUTION — `:2362` is not in `rounded_box` at all. It is
+///  1. MIS-ATTRIBUTION — one of the two is not in `rounded_box` at all. It is
 ///     `minus_offset = w * (-0.5)` inside the `zone_profile` arm, feeding a
 ///     `Modify{Thicken}` "offset" slot. `rounded_box` has exactly ONE dz.
 ///  2. WRONG CLASS — both are dimensionless MULTIPLIERS, not slot-bound zeros.
@@ -151,9 +130,6 @@ fn assert_length_scaled_by_dimensionless(expr: &CompiledExpr, label: &str) -> f6
 ///     preserves LENGTH. Retyping the factor would switch eval onto the
 ///     Scalar×Scalar arm and yield `Scalar{AREA}` — which the length gate this
 ///     task exists to satisfy would then REJECT, inverting α's purpose.
-///
-/// Unlike the dx/dy, dz and angle pins, this one is expected GREEN on arrival:
-/// it locks in behaviour the retype must NOT disturb.
 #[test]
 fn rounded_box_dz_is_length_scaled_by_a_dimensionless_factor() {
     let source = r#"structure def S {
@@ -180,10 +156,13 @@ fn rounded_box_dz_is_length_scaled_by_a_dimensionless_factor() {
                 .find(|(k, _)| k == "dz")
                 .expect("rounded_box corner Translate must carry a dz");
             let factor = assert_length_scaled_by_dimensionless(dz_expr, "rounded_box corner dz");
-            assert!(
-                factor < 0.0,
-                "rounded_box corner dz factor must stay negative (centre the cylinder), \
-                 got {factor}"
+            // Bit-exact, not merely negative: the magnitude is the invariant. A drift
+            // to -1.0 would push each corner cylinder a FULL height below centre
+            // instead of half, and a sign-only check would stay green through it.
+            assert_eq!(
+                factor, -0.5,
+                "rounded_box corner dz factor must be exactly -0.5 (dz = -height/2 \
+                 centres the cylinder on z=0); got {factor}"
             );
             checked += 1;
         }
@@ -195,10 +174,22 @@ fn rounded_box_dz_is_length_scaled_by_a_dimensionless_factor() {
     );
 }
 
-/// The `zone_profile` half of the same negative-space pin — `:2355`/`:2362`,
-/// the lines the PRD text actually names while attributing them to
-/// `rounded_box`. Both `±0.5` offsets must stay dimensionless multipliers of a
-/// LENGTH width, feeding the two `Modify{Thicken}` "offset" slots.
+/// The `zone_profile` half of the same negative-space pin: `zone_profile`'s
+/// `plus_offset`/`minus_offset` are the two literals the units-length PRD
+/// (`docs/prds/v0_6/units-length-gate-completion.md` §8 α / §4 M1 / §2 anchor
+/// table) actually names, while attributing them to `rounded_box`'s corner dz.
+/// Both `±0.5` offsets must stay dimensionless multipliers of a LENGTH width,
+/// feeding the two `Modify{Thicken}` "offset" slots.
+///
+/// HOME RATIONALE: `zone_profile` also has structural coverage in
+/// `reify-eval/tests/zone_constructors_e2e.rs`, which would otherwise be the
+/// natural neighbour. This pin lives here instead because it is one half of a
+/// single indivisible claim — "the PRD's two `-0.5` literals must BOTH stay
+/// dimensionless, and neither is `rounded_box`'s dz" — whose other half is
+/// `rounded_box_dz_is_length_scaled_by_a_dimensionless_factor` directly above.
+/// The two share `assert_length_scaled_by_dimensionless` and are only legible
+/// together; splitting them across crates would leave each half looking
+/// arbitrary. `reify-eval` is also outside this task's lock scope.
 #[test]
 fn zone_profile_offsets_are_length_scaled_by_dimensionless_factors() {
     let source = r#"structure def S {
@@ -234,10 +225,19 @@ fn zone_profile_offsets_are_length_scaled_by_dimensionless_factors() {
          got {} — if this changed, the pin above is no longer covering what it claims to",
         factors.len()
     );
-    assert!(
-        factors.iter().any(|f| *f > 0.0) && factors.iter().any(|f| *f < 0.0),
-        "zone_profile's two thicken offsets must be a +/- pair (outer and inner \
-         shell walls), got {factors:?}"
+    // ORDERED and bit-exact, not just "a +/- pair somewhere". `zone_profile` pushes
+    // plus_offset (at plus_step) BEFORE minus_offset (at minus_step) and then emits
+    // Boolean{Difference, left: plus_step, right: minus_step} — so the outer shell is
+    // positionally the first Thicken. Swapping the two offset expressions would invert
+    // outer/inner and yield an empty or inverted zone, which an unordered
+    // any-positive-and-any-negative check would pass straight through. The ±0.5
+    // magnitudes are the half-width contract (offset = ±w/2).
+    assert_eq!(
+        factors,
+        vec![0.5, -0.5],
+        "zone_profile's thicken offsets must be exactly [+0.5, -0.5] in emission order \
+         (outer shell first, then inner — Boolean{{Difference}} depends on that order); \
+         got {factors:?}"
     );
 }
 
@@ -400,17 +400,17 @@ fn rounded_box_lowers_to_boolean_compose() {
                 let (_, dy_expr) = args.iter().find(|(k, _)| k == "dy").unwrap();
                 let (_, dz_expr) = args.iter().find(|(k, _)| k == "dz").unwrap();
 
-                let dx_sign = assert_signed_mul(dx_expr, &format!("corner {corner} dx"));
+                let dx_sign = assert_length_scaled_by_dimensionless(dx_expr, &format!("corner {corner} dx"));
                 assert!(
                     (dx_sign - sx).abs() < 1e-9,
                     "corner {corner}: dx sign must be {sx}, got {dx_sign}"
                 );
-                let dy_sign = assert_signed_mul(dy_expr, &format!("corner {corner} dy"));
+                let dy_sign = assert_length_scaled_by_dimensionless(dy_expr, &format!("corner {corner} dy"));
                 assert!(
                     (dy_sign - sy).abs() < 1e-9,
                     "corner {corner}: dy sign must be {sy}, got {dy_sign}"
                 );
-                let dz_sign = assert_signed_mul(dz_expr, &format!("corner {corner} dz"));
+                let dz_sign = assert_length_scaled_by_dimensionless(dz_expr, &format!("corner {corner} dz"));
                 assert!(
                     dz_sign < 0.0,
                     "corner {corner}: dz Mul factor must be negative (shift down by height/2), got {dz_sign}"
@@ -784,12 +784,12 @@ fn rounded_rect_lowers_to_boolean_compose() {
                 let (_, dy_expr) = args.iter().find(|(k, _)| k == "dy").unwrap();
                 let (_, dz_expr) = args.iter().find(|(k, _)| k == "dz").unwrap();
 
-                let dx_sign = assert_signed_mul(dx_expr, &format!("corner {corner} dx"));
+                let dx_sign = assert_length_scaled_by_dimensionless(dx_expr, &format!("corner {corner} dx"));
                 assert!(
                     (dx_sign - sx).abs() < 1e-9,
                     "corner {corner}: dx sign must be {sx}, got {dx_sign}"
                 );
-                let dy_sign = assert_signed_mul(dy_expr, &format!("corner {corner} dy"));
+                let dy_sign = assert_length_scaled_by_dimensionless(dy_expr, &format!("corner {corner} dy"));
                 assert!(
                     (dy_sign - sy).abs() < 1e-9,
                     "corner {corner}: dy sign must be {sy}, got {dy_sign}"
@@ -799,7 +799,7 @@ fn rounded_rect_lowers_to_boolean_compose() {
                 // the value is a z-offset bound into a LENGTH slot. Both halves are
                 // asserted — eval dispatches on the runtime `Value` and never reads
                 // `result_type`, so a result_type-only pin would pass over exactly
-                // the bare-Real shape the eval-layer length gate rejects.
+                // the bare-Real shape the incoming eval-layer length gate rejects.
                 assert_eq!(
                     dz_expr.result_type,
                     Type::length(),
@@ -816,8 +816,8 @@ fn rounded_rect_lowers_to_boolean_compose() {
                                 && *dimension == reify_core::DimensionVector::LENGTH
                     ),
                     "corner {corner}: dz must be Literal(Scalar{{LENGTH, 0.0}}) (planar, z=0), \
-                     not Literal(Real(0.0)) — a bare Real is what the eval-layer length gate \
-                     rejects; got: {:?}",
+                     not Literal(Real(0.0)) — a bare Real is what the incoming eval-layer \
+                     length gate rejects; got: {:?}",
                     dz_expr.kind
                 );
             }
