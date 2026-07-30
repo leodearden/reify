@@ -62,6 +62,15 @@ Note that the numeric form
 PRD's β would be a homograph that misattributes the binding to a task which demonstrably does
 **not** deliver the joint drive.
 
+**Amended 2026-07-30 (task 5776).** The α/β/γ/δ table `grep:<file>:<line>` anchors flagged as
+stale by the paragraph above (task 5190, 2026-07-28) are re-anchored below against main
+`8489b49bfaefddd4abbe875a970661220dacbd57` (a descendant of
+`bd10b6d0e1e2dd32b09065f2304bd029f04b6506`, confirmed via `git merge-base --is-ancestor`). Each
+anchor was re-resolved with `grep -n '<symbol>'` at that SHA — no line number here was copied
+from the earlier drift list. All named symbols still exist; this is a legibility fix for line
+drift, not a capability regression, so no verdict below changes. §ε, the header amendment block
+above, and the Summary are untouched (already refreshed by task 5190).
+
 ---
 
 ## β is the only pure-intermediate (no standalone signal)
@@ -72,11 +81,11 @@ still bound here for the DAG:
 
 | Capability | Evidence | Verdict |
 |---|---|---|
-| `build_solver_problem` own-template collection + `current_values` freeze (the two things β undoes) | `grep:crates/reify-eval/src/engine_eval.rs:1284` (builder), `:1377` (`current_values`) — wired | PASS |
-| `ResolutionProblem` carrier to union cluster cells/constraints/objectives into | `grep:crates/reify-ir/src/constraint.rs:288` — wired | PASS |
+| `build_solver_problem` own-template collection + `current_values` freeze (the two things β undoes) | `grep:crates/reify-eval/src/engine_eval.rs:2024` (`fn build_solver_problem`), `:2169` (`current_values` freeze); field decl `crates/reify-ir/src/constraint.rs:370` — wired (refreshed #5776, HEAD `8489b49bfa`) | PASS |
+| `ResolutionProblem` carrier to union cluster cells/constraints/objectives into | `grep:crates/reify-ir/src/constraint.rs:364` (`pub struct ResolutionProblem {`) — wired (refreshed #5776, HEAD `8489b49bfa`) | PASS |
 | Cluster partition to union over | `producer:task-α` (upstream; `depends_on α`) | PASS |
 | Merged builder + N-scope write-back | `producer:task-β` (β-owned; undoes F-inherit INV-5) | PASS |
-| Objective fold consumed **abstractly** (no raw-f64 weight hard-coding; §5.2) | `grep:crates/reify-constraints/src/registry.rs:484` (`eval_rank_cost`), solver.rs `eval_objective_set` fold — β hands `ObjectiveSet` to the existing weighted fold | PASS |
+| Objective fold consumed **abstractly** (no raw-f64 weight hard-coding; §5.2) | `grep:crates/reify-constraints/src/registry.rs:680` (`fn eval_rank_cost`), `crates/reify-constraints/src/solver.rs:1356` (`fn eval_objective_set`) fold — β hands `ObjectiveSet` to the existing weighted fold (refreshed #5776, HEAD `8489b49bfa`) | PASS |
 
 Consumer: ε (integration gate) + δ (back-end). No orphan.
 
@@ -90,12 +99,12 @@ naming the cluster + dim + cap; result falls back to bottom-up approximate. Also
 
 | Capability | Evidence | Verdict |
 |---|---|---|
-| `sccs_topo` SCC condensation, consumable as clusters | `grep:crates/reify-eval/src/resolve_order.rs:259` (`sccs_topo` built) — wired (F-inherit β #4822) | PASS |
-| `W_SCOPE_COUPLING` diagnostic to **graduate** (α turns the sensor into an actuator) | `grep:crates/reify-eval/src/resolve_order.rs:374` — wired | PASS |
+| `sccs_topo` SCC condensation, consumable as clusters | `grep:crates/reify-eval/src/resolve_order.rs:411` (`sccs_topo` built) — wired (F-inherit β #4822; refreshed #5776, HEAD `8489b49bfa`) | PASS |
+| `W_SCOPE_COUPLING` diagnostic to **graduate** (α turns the sensor into an actuator) | `grep:crates/reify-eval/src/resolve_order.rs:548` (`fn emit_cycle_coupling_diagnostics`) — wired (refreshed #5776, HEAD `8489b49bfa`) | PASS |
 | `W_COUPLING_APPROXIMATED` new named diagnostic | `producer:task-α` (α-owned; grep-absent today = correct — this leaf emits it) | PASS |
 | `WHOLE_MODEL_CLUSTER_DIM_CAP` cap constant | `producer:task-α` (α-owned scalar; value tactical per §11 Q2) | PASS |
 | Rejection/diagnostic **fires** on over-cap (G6 branch 4) | in-task: α builds **both** the cap check and the emitter → the observing leaf owns the mechanism (not a rejection of pre-existing substrate) | PASS |
-| Back-compat: no-cross-scope-read model yields zero clusters, byte-identical result (resolve_order INV-2) | `grep:crates/reify-eval/src/resolve_order.rs:448` (acyclic-crossing test asserts no emission) — invariant already tested | PASS |
+| Back-compat: no-cross-scope-read model yields zero clusters, byte-identical result (resolve_order INV-2) | `grep:crates/reify-eval/src/resolve_order.rs:1243` (acyclic-crossing test asserts no emission) — invariant already tested (refreshed #5776, HEAD `8489b49bfa`) | PASS |
 
 ---
 
@@ -106,8 +115,8 @@ over descendants. Also unlocks ε.
 
 | Capability | Evidence | Verdict |
 |---|---|---|
-| `self.descendants` accessor (eval dispatch) | `grep:crates/reify-eval/src/structural_query.rs:462` (`enumerate_descendants`), `:491`; compiler `crates/reify-compiler/src/expr.rs:985` (`STRUCTURAL_QUERY_ACCESSORS`) — wired (#3988/#3982) | PASS |
-| `filter(self.descendants, Trait)` | `grep:crates/reify-eval/src/structural_query.rs:559`; `crates/reify-compiler/src/expr.rs:2060` — wired (#3991) | PASS |
+| `self.descendants` accessor (eval dispatch) | `grep:crates/reify-eval/src/structural_query.rs:147` (`fn enumerate_descendants`), `:492` (dispatch call site); compiler `crates/reify-compiler/src/expr.rs:1055` (`STRUCTURAL_QUERY_ACCESSORS`) — wired (#3988/#3982; refreshed #5776, HEAD `8489b49bfa`) | PASS |
+| `filter(self.descendants, Trait)` | `grep:crates/reify-eval/src/structural_query.rs:559` (`if function.name == "filter"`); `crates/reify-compiler/src/expr.rs:2270` (`if name == "filter"`) — wired (#3991; refreshed #5776, HEAD `8489b49bfa`) | PASS |
 | `Costed` trait + `line_cost : Money` (per-line cost cell) | `grep:crates/reify-compiler/stdlib/io.ri:111` (`trait Costed`), `:113` (`line_cost : Money`) — wired (#4292) | PASS |
 | BOM / cost roll-up over lifecycle traits | `grep:crates/reify-eval/src/bom_report.rs:1` — wired (#4292) | PASS |
 | `cost(collection)` aggregate **semantic** (desugars to `sum(flat_map(filter(self.descendants, Costed), \|c\| [c.line_cost]))`) | `producer:task-γ` (γ-owned; continuous-cost §2.1 explicitly reserved this for M-WHOLE — owned work, not fiction) | PASS |
@@ -126,10 +135,10 @@ optimality on a merged cluster. Prereq β + landed F-result.
 | Capability | Evidence | Verdict |
 |---|---|---|
 | `RankedSolveResult` carrier | `grep:crates/reify-ir/src/ranked.rs:106` (`enum RankedSolveResult`) — landed F-result (#4801) | PASS |
-| `solve_ranked` defaulted trait method (δ produces **into** it) | `grep:crates/reify-ir/src/constraint.rs:445` (defaulted); `crates/reify-constraints/src/registry.rs:297` (override) — wired | PASS |
-| `OptimalityStatus::BestFound` (never `ProvenOptimal`; I3) | `grep:crates/reify-constraints/src/registry.rs:311`; `crates/reify-constraints/src/solver.rs:1624` — wired | PASS |
+| `solve_ranked` defaulted trait method (δ produces **into** it) | `grep:crates/reify-ir/src/constraint.rs:538` (defaulted, `ConstraintSolver::solve_ranked`); `crates/reify-constraints/src/registry.rs:448` (`SolverRegistry` override) — wired (refreshed #5776, HEAD `8489b49bfa`) | PASS |
+| `OptimalityStatus::BestFound` (never `ProvenOptimal`; I3) | `grep:crates/reify-constraints/src/registry.rs:463`; `crates/reify-constraints/src/solver.rs:2575` — wired (refreshed #5776, HEAD `8489b49bfa`) | PASS |
 | Nelder-Mead `DimensionalSolver` back-end (kept; multistart wraps it) | `grep:crates/reify-constraints/src/solver.rs:6` (`argmin::solver::neldermead::NelderMead`) — wired | PASS |
-| I3 weighted fold reused (consumed abstractly) | `grep:crates/reify-constraints/src/registry.rs:484` (`eval_rank_cost`); solver.rs `eval_objective_set` — wired | PASS |
+| I3 weighted fold reused (consumed abstractly) | `grep:crates/reify-constraints/src/registry.rs:680` (`fn eval_rank_cost`); `crates/reify-constraints/src/solver.rs:1356` (`fn eval_objective_set`) — wired (refreshed #5776, HEAD `8489b49bfa`) | PASS |
 | Merged cluster to solve over | `producer:task-β` (upstream; δ `depends_on β`) — DAG-direction OK | PASS |
 | Best-of-K fixed deterministic start set (no RNG, no seed) | `producer:task-δ` (δ-owned; determinism-by-absence-of-stochasticity preserves today's regime) | PASS |
 
