@@ -33,10 +33,17 @@
 //! Modelled on `crates/reify-eval/tests/kernel_queries_contains.rs` (Bool
 //! assertion pattern) and `crates/reify-eval/tests/kernel_queries_distance_smoke.rs`
 //! (unconditional compile check + OCCT-gated value assertions).
+//!
+//! Also pins `examples/best_practices/clearance_oracle.ri`'s eval-surface
+//! answers (#5674) via `clearance_oracle_evals_expected_fouls_and_gap` below.
+//! That fixture is unrelated to KGQ-γ intersects dispatch — the test lives
+//! here rather than in its own module file only because #5674's locked scope
+//! excludes `harness_kernel_realization.rs` (which would need a new
+//! `mod`/`#[path]` registration); splitting it out is left as a follow-up.
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::ValueCellId;
-use reify_ir::{ExportFormat, Value};
+use reify_core::{ConstraintNodeId, ValueCellId};
+use reify_ir::{ExportFormat, Satisfaction, Value};
 use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 
 const INTERSECTS_SMOKE_PATH: &str = concat!(
@@ -124,19 +131,17 @@ fn intersects_smoke_evals_expected_booleans() {
 }
 
 /// Pins the eval-surface answers documented in `examples/best_practices/
-/// clearance_oracle.ri`'s own header comment (task 5674, filed as an
-/// out-of-scope follow-up by task #5389): the canonical FORM B (no-ceremony)
-/// interference-oracle idiom was compile-gated only
+/// clearance_oracle.ri` (the authority for parameters and expected values;
+/// #5674, filed as an out-of-scope follow-up by #5389): the canonical FORM B
+/// (no-ceremony) interference-oracle idiom was compile-gated only
 /// (`examples_smoke.rs::all_examples_parse_and_compile_with_stdlib`), with no
 /// test pinning the values `reify eval` / the GUI actually resolve.
 ///
-/// Geometry: `housing = cylinder_centered(bore_r=10mm, length=40mm)` centred
-/// at the origin, radius 10mm; `bracket = translate(box(20mm,20mm,20mm),
-/// 30mm,0mm,0mm)` spans 20..40mm in X. The header states the kernel resolves
-/// `fouls = intersects(housing, bracket) -> false` and
-/// `gap = distance(housing, bracket) -> 0.01 m` — independently confirmed by
-/// direct probe on the release binary at HEAD a0520c83
-/// (`distance` ≈ 0.009999999999999998 m).
+/// Derivation: `housing = cylinder_centered(bore_r=10mm, length=40mm)`
+/// centred at the origin has its lateral surface at x = 10mm; `bracket =
+/// translate(box(20mm,20mm,20mm), 30mm,0mm,0mm)` spans x = 20..40mm — no
+/// overlap, so `fouls = intersects(housing, bracket) -> false` and
+/// `gap = distance(housing, bracket) -> 0.01 m` (20mm − 10mm).
 ///
 /// Skips cleanly (via early return) when OCCT is not available, matching the
 /// sibling oracle pins (`kernel_queries_distance_smoke.rs`,
@@ -186,15 +191,21 @@ fn clearance_oracle_evals_expected_fouls_and_gap() {
     let gap_actual = result.values.get(&gap_cell);
 
     // Allow a small floating-point epsilon on the si_value while requiring the
-    // LENGTH dimension. Modelled on the Scalar epsilon-match in
-    // kernel_queries_distance_smoke.rs::distance_box_point_evals_to_15mm.
+    // LENGTH dimension. Unlike kernel_queries_distance_smoke.rs's box-point
+    // case (an exactly representable closest-feature pair), the closest
+    // features here are a cylinder's lateral surface and a planar box face,
+    // which OCCT resolves through its extrema machinery at a working
+    // tolerance around `Precision::Confusion()` (1e-7 m) — so the bound below
+    // is chosen relative to the kernel's own extrema tolerance, not copied
+    // from the planar box-point case. The semantic margin (min_gap = 1mm vs
+    // gap = 10mm) is enormous, so 1µm is ample without being version-fragile.
     match gap_actual {
         Some(Value::Scalar {
             si_value,
             dimension,
         }) if *dimension == reify_core::DimensionVector::LENGTH => {
             let expected = 0.01_f64; // 10 mm in SI metres, per the header comment
-            let epsilon = 1e-9;
+            let epsilon = 1e-6;
             assert!(
                 (si_value - expected).abs() < epsilon,
                 "ClearanceOracle.gap si_value should be 0.01 (10 mm), \
@@ -207,4 +218,47 @@ fn clearance_oracle_evals_expected_fouls_and_gap() {
             other
         ),
     }
+
+    // Pin the fixture's own documented `reify check` behaviour (its
+    // "EVAL/BUILD ONLY" header section): `constraint not fouls`
+    // (ClearanceOracle#constraint[0]) and `constraint gap > min_gap`
+    // (ClearanceOracle#constraint[1]) — index order per the header's own
+    // quoted diagnostics — are `Indeterminate` under `check()` alone but must
+    // resolve on the build() surface once the
+    // geometry-consumer builtins they depend on
+    // (`intersects`/`distance`) are realized (the task-4229 post-geometry
+    // re-check, `engine_build.rs` `BuildResult` construction). Asserting this
+    // — not just the raw `fouls`/`gap` cell values above — pins the "run it
+    // on a surface that can answer it" promise the fixture's header makes: a
+    // regression that stalls these constraints at `Indeterminate` on
+    // `build()` while the value cells still populate from the same kernel
+    // queries would otherwise leave this test green.
+    let find_constraint = |index: u32| {
+        result
+            .constraint_results
+            .iter()
+            .find(|entry| entry.id == ConstraintNodeId::new("ClearanceOracle", index))
+    };
+
+    let fouls_constraint = find_constraint(0).expect(
+        "ClearanceOracle#constraint[0] (`not fouls`) missing from result.constraint_results",
+    );
+    assert_eq!(
+        fouls_constraint.satisfaction,
+        Satisfaction::Satisfied,
+        "ClearanceOracle#constraint[0] (`not fouls`) should be Satisfaction::Satisfied \
+         on the build() surface, got {:?}",
+        fouls_constraint.satisfaction
+    );
+
+    let gap_constraint = find_constraint(1).expect(
+        "ClearanceOracle#constraint[1] (`gap > min_gap`) missing from result.constraint_results",
+    );
+    assert_eq!(
+        gap_constraint.satisfaction,
+        Satisfaction::Satisfied,
+        "ClearanceOracle#constraint[1] (`gap > min_gap`) should be Satisfaction::Satisfied \
+         on the build() surface, got {:?}",
+        gap_constraint.satisfaction
+    );
 }
