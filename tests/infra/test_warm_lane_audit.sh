@@ -2741,4 +2741,77 @@ print(h[\"plan_stranded\"], h[\"plan_unknown\"], h[\"plan_rewritten\"])")"
         "$(_headroom_field "$R15_TABLE_OUT" plan_unknown)" \
         "$(_headroom_field "$R15_TABLE_OUT" plan_rewritten)"
 
+# ── R16-R18 — `plan_task`: the lane↔branch binding, a SECOND signature ───────
+# Distinct from plan_sync, and a separate column for the reason the runbook
+# already gives for splitting live/assigned/pin. The OBSERVED incident trips
+# only plan_sync: refs/heads/task/5866 kept its NAME and had its TIP clobbered.
+# The CONVERSE -- a lane checked out on some other task's branch -- is the
+# hypothesized lane→branch binding failure and trips only plan_task. One merged
+# column would make that triage-relevant distinction unreadable.
+R16_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-r16-XXXXXX)"
+_TMPDIRS+=("$R16_MOUNT")
+
+# R16 MATCH — the healthy binding, using the incident's own task id.
+make_lane "$R16_MOUNT/_lane-bind-ok" "task/5866"
+_r_commit "$R16_MOUNT/_lane-bind-ok" bind-ok-work
+R16_A="$(git -C "$R16_MOUNT/_lane-bind-ok" rev-parse HEAD)"
+_r_commit "$R16_MOUNT/_lane-bind-ok" bind-ok-later
+make_plan "$R16_MOUNT/_lane-bind-ok" 5866 "step:step-1:done:${R16_A:0:10}"
+
+# R17 MISMATCH — the incident's neighbouring-task-id coincidence, as a BINDING
+# failure rather than a tip clobber: the lane is on task/5632 while its plan
+# says 5866. plan_sync is whatever this lane's own commits dictate (OK here),
+# and MISMATCH is reported regardless -- the two axes are independent.
+make_lane "$R16_MOUNT/_lane-bind-bad" "task/5632"
+_r_commit "$R16_MOUNT/_lane-bind-bad" bind-bad-work
+R17_A="$(git -C "$R16_MOUNT/_lane-bind-bad" rev-parse HEAD)"
+_r_commit "$R16_MOUNT/_lane-bind-bad" bind-bad-later
+make_plan "$R16_MOUNT/_lane-bind-bad" 5866 "step:step-1:done:${R17_A:0:10}"
+
+# R18 not-applicable, three ways. All `-`: a comparison with no left-hand side
+# is not a mismatch, and reporting one would accuse every detached lane in the
+# pool.
+make_lane "$R16_MOUNT/_lane-bind-detached" "DETACH"
+_r_commit "$R16_MOUNT/_lane-bind-detached" detached-work
+R18_A="$(git -C "$R16_MOUNT/_lane-bind-detached" rev-parse HEAD)"
+make_plan "$R16_MOUNT/_lane-bind-detached" 5866 "step:step-1:done:${R18_A:0:10}"
+
+make_lane "$R16_MOUNT/_lane-bind-noplan" "task/5867"
+_r_commit "$R16_MOUNT/_lane-bind-noplan" noplan-work
+
+make_lane "$R16_MOUNT/_lane-bind-mainbranch" "main"
+_r_commit "$R16_MOUNT/_lane-bind-mainbranch" main-work
+R18_C="$(git -C "$R16_MOUNT/_lane-bind-mainbranch" rev-parse HEAD)"
+make_plan "$R16_MOUNT/_lane-bind-mainbranch" 5868 "step:step-1:done:${R18_C:0:10}"
+
+run_helper --mount "$R16_MOUNT"
+
+assert "R16-0: exit 0" test "$RC" -eq 0
+assert "R16: branch task/5866 + plan task_id 5866 reports plan_task=MATCH" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-bind-ok .*plan_task=MATCH( |\$)"' _ "$OUT"
+assert "R17: branch task/5632 + plan task_id 5866 reports plan_task=MISMATCH" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-bind-bad .*plan_task=MISMATCH( |\$)"' _ "$OUT"
+assert "R17b: the two signals are INDEPENDENT — the mismatched lane's own commits are intact, so plan_sync=OK beside plan_task=MISMATCH" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-bind-bad .*plan_sync=OK plan_task=MISMATCH( |\$)"' _ "$OUT"
+assert "R18a: a DETACHED lane reports plan_task=- (no branch-derived id to compare)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-bind-detached .*plan_task=-( |\$)"' _ "$OUT"
+assert "R18b: a lane with no plan reports plan_task=-" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-bind-noplan .*plan_task=-( |\$)"' _ "$OUT"
+assert "R18c: a lane on a non-task/ branch reports plan_task=-" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-bind-mainbranch .*plan_task=-( |\$)"' _ "$OUT"
+assert "R18d: none of the not-applicable shapes is reported MISMATCH" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "lane=_lane-bind-(detached|noplan|mainbranch) .*plan_task=MISMATCH"' _ "$OUT"
+assert "R18e: HEADROOM carries plan_mismatch= with the expected count" \
+    bash -c '[ "$1" = "1" ]' _ "$(_headroom_field "$OUT" plan_mismatch)"
+assert "R18f: plan_mismatch equals the number of MISMATCH rows" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -c "plan_task=MISMATCH")" = "$2" ]' _ \
+    "$OUT" "$(_headroom_field "$OUT" plan_mismatch)"
+assert "R18g: plan_mismatch is a THIRD cross-cut — the occupancy partition is untouched" \
+    _partition_holds \
+    "$(_headroom_field "$OUT" resident)" \
+    "$(_headroom_field "$OUT" live)" \
+    "$(_headroom_field "$OUT" pinned)" \
+    "$(_headroom_field "$OUT" quarantined)" \
+    "$(_headroom_field "$OUT" free)"
+
 test_summary
