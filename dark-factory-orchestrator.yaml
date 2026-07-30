@@ -659,6 +659,7 @@ role_env_overrides:
     npm_config_cache: /tmp/reify-agent-npm-cache
   debugger: *sandbox_cache_env
   simple_task: *sandbox_cache_env
+  architect: *sandbox_cache_env
 
 # Escalation
 escalation:
