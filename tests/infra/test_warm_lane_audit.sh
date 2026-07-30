@@ -2273,4 +2273,151 @@ assert "R7b: an all-pending plan is NOT reported UNKNOWN (the sentinel split)" \
 assert "R7c: a .task/ dir holding no plan.json reports plan_sync=-" \
     bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-emptytask .*plan_sync=-( |\$)"' _ "$OUT"
 
+# ── R8-R10 — anchor semantics and JSON-reading robustness ────────────────────
+R8_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-r8-XXXXXX)"
+_TMPDIRS+=("$R8_MOUNT")
+
+# R8a — the anchor is the plan-order-LAST done entry, and a trailing PENDING
+# entry does not shadow it.
+# Topology: pre-1's A and step-1's B are both ancestors of the tip; step-2's X
+# is committed on a side branch that is then deleted, and the branch advances
+# to C instead. So the EARLIER done commits are reachable and only the LAST one
+# is not.
+#   - anchor = first done entry  => OK       (wrong)
+#   - anchor = last entry, period => '-'     (wrong: step-3 is pending/null)
+#   - anchor = last DONE entry   => STRANDED (right)
+make_lane "$R8_MOUNT/_lane-lastdone" "task/9010"
+_r_commit "$R8_MOUNT/_lane-lastdone" pre-work
+R8_A="$(git -C "$R8_MOUNT/_lane-lastdone" rev-parse HEAD)"
+_r_commit "$R8_MOUNT/_lane-lastdone" step-one-work
+R8_B="$(git -C "$R8_MOUNT/_lane-lastdone" rev-parse HEAD)"
+git -C "$R8_MOUNT/_lane-lastdone" checkout -q -b _r8-side
+_r_commit "$R8_MOUNT/_lane-lastdone" step-two-work
+R8_X="$(git -C "$R8_MOUNT/_lane-lastdone" rev-parse HEAD)"
+git -C "$R8_MOUNT/_lane-lastdone" checkout -q task/9010
+_r_commit "$R8_MOUNT/_lane-lastdone" foreign-tip
+git -C "$R8_MOUNT/_lane-lastdone" branch -q -D _r8-side
+make_plan "$R8_MOUNT/_lane-lastdone" 9010 \
+    "prereq:pre-1:done:${R8_A:0:10}" \
+    "step:step-1:done:${R8_B:0:10}" \
+    "step:step-2:done:${R8_X:0:10}" \
+    "step:step-3:pending:"
+# Fixture control: the discrimination only exists if the EARLIER done commits
+# really are reachable. Otherwise a scan-everything implementation would report
+# STRANDED too and R8a would prove nothing.
+assert "R8a-fix: the earlier done commits ARE ancestors of the tip" \
+    bash -c 'git -C "$1" merge-base --is-ancestor "$2" HEAD && git -C "$1" merge-base --is-ancestor "$3" HEAD' _ \
+    "$R8_MOUNT/_lane-lastdone" "$R8_A" "$R8_B"
+
+# R8b — the mirror, and the case that pins exactly ONE ancestor test rather
+# than an all-entries scan: the LAST done entry IS an ancestor while an EARLIER
+# one is deliberately unreachable.
+#   - scan every done entry      => STRANDED (wrong: pre-1's A is dangling)
+#   - steps scanned before prereqs => STRANDED (wrong: anchor would be A)
+#   - anchor = plan-order-last done => OK     (right)
+make_lane "$R8_MOUNT/_lane-firstdone" "task/9011"
+git -C "$R8_MOUNT/_lane-firstdone" checkout -q -b _r8b-side
+_r_commit "$R8_MOUNT/_lane-firstdone" orphan-prereq
+R8_ORPHAN="$(git -C "$R8_MOUNT/_lane-firstdone" rev-parse HEAD)"
+git -C "$R8_MOUNT/_lane-firstdone" checkout -q task/9011
+_r_commit "$R8_MOUNT/_lane-firstdone" reachable-step-one
+R8_B2="$(git -C "$R8_MOUNT/_lane-firstdone" rev-parse HEAD)"
+_r_commit "$R8_MOUNT/_lane-firstdone" reachable-tip
+git -C "$R8_MOUNT/_lane-firstdone" branch -q -D _r8b-side
+make_plan "$R8_MOUNT/_lane-firstdone" 9011 \
+    "prereq:pre-1:done:${R8_ORPHAN:0:10}" \
+    "step:step-1:done:${R8_B2:0:10}" \
+    "step:step-2:pending:"
+assert "R8b-fix: the EARLIER prereq commit is present but unreachable (so a scan-all impl would say STRANDED)" \
+    bash -c 'git -C "$1" cat-file -e "$2^{commit}" && ! git -C "$1" merge-base --is-ancestor "$2" HEAD' _ \
+    "$R8_MOUNT/_lane-firstdone" "$R8_ORPHAN"
+
+# R9 — escaped-key robustness. A plan's own prose routinely quotes the very
+# keys being parsed (this task's plan analysis does). JSON escapes an inner
+# quote as \", so a key's opening quote is unambiguous ONLY if the extractor
+# requires it to be UN-backslashed. Here the escaped prose names a nonexistent
+# commit and sits AFTER the genuine anchor, so an unguarded scan would adopt
+# the bogus pair as the last done+commit and report UNKNOWN
+# (anchor-object-absent) instead of OK.
+make_lane "$R8_MOUNT/_lane-escaped" "task/9012"
+_r_commit "$R8_MOUNT/_lane-escaped" genuine-anchor
+R9_ANCHOR="$(git -C "$R8_MOUNT/_lane-escaped" rev-parse HEAD)"
+_r_commit "$R8_MOUNT/_lane-escaped" later-work
+make_plan_raw "$R8_MOUNT/_lane-escaped" "$(printf '{
+  "task_id": "9012",
+  "title": "escaped-key prose fixture",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "impl",
+      "description": "the genuine done step",
+      "status": "done",
+      "commit": "%s"
+    },
+    {
+      "id": "step-2",
+      "type": "test",
+      "description": "prose quoting the parsed keys: \\"status\\": \\"done\\", \\"commit\\": \\"deadbeef0123\\" must never parse as real fields",
+      "status": "pending",
+      "commit": null
+    }
+  ],
+  "_schema_version": 1
+}' "${R9_ANCHOR:0:10}")"
+# The needle is passed as an ARGUMENT, not inlined into the `bash -c` script
+# text: a backslash-and-quote literal re-escaped through both shells is
+# unreadable and easy to get wrong in the direction that passes vacuously (an
+# over-escaped pattern matching nothing would make R9 prove nothing at all).
+assert "R9-fix: the escaped-prose fixture really does contain a backslash-escaped commit token" \
+    bash -c 'grep -qF -- "$2" "$1/.task/plan.json"' _ "$R8_MOUNT/_lane-escaped" '\"commit\"'
+
+# R10 — both recorded SHA widths. mark_step_committed writes a FULL 40-char
+# sha; plans on disk also carry 10-char abbreviations. Both must resolve.
+make_lane "$R8_MOUNT/_lane-fullsha" "task/9013"
+_r_commit "$R8_MOUNT/_lane-fullsha" full-sha-anchor
+R10_FULL="$(git -C "$R8_MOUNT/_lane-fullsha" rev-parse HEAD)"
+_r_commit "$R8_MOUNT/_lane-fullsha" later-work
+make_plan "$R8_MOUNT/_lane-fullsha" 9013 "step:step-1:done:$R10_FULL"
+
+# ...and the producer's `[COMMITTED <sha[:12]>]` description prefix, which puts
+# SHA-like text inside the very field the scan reads past. The prefix names a
+# nonexistent commit; the real `commit` field names the genuine anchor.
+make_lane "$R8_MOUNT/_lane-committed-prefix" "task/9014"
+_r_commit "$R8_MOUNT/_lane-committed-prefix" prefix-anchor
+R10_PREFIX="$(git -C "$R8_MOUNT/_lane-committed-prefix" rev-parse HEAD)"
+_r_commit "$R8_MOUNT/_lane-committed-prefix" later-work
+make_plan_raw "$R8_MOUNT/_lane-committed-prefix" "$(printf '{
+  "task_id": "9014",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "impl",
+      "description": "[COMMITTED deadbeef0123] do the thing",
+      "status": "done",
+      "commit": "%s"
+    }
+  ],
+  "_schema_version": 1
+}' "${R10_PREFIX:0:10}")"
+
+run_helper --mount "$R8_MOUNT"
+
+assert "R8-0: exit 0" test "$RC" -eq 0
+assert "R8a: the anchor is the plan-order-LAST done entry (a trailing pending entry does not shadow it)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-lastdone .*plan_sync=STRANDED( |\$)"' _ "$OUT"
+assert "R8b: exactly ONE ancestor test is performed — an earlier unreachable done entry does not make the lane STRANDED" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-firstdone .*plan_sync=OK( |\$)"' _ "$OUT"
+assert "R9: escaped key text inside a description is NOT parsed as a real field (verdict stays OK)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-escaped .*plan_sync=OK( |\$)"' _ "$OUT"
+assert "R9b: the escaped-prose lane is neither STRANDED nor UNKNOWN" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "lane=_lane-escaped .*plan_sync=(STRANDED|UNKNOWN)"' _ "$OUT"
+assert "R10a: a FULL 40-char recorded sha resolves (mark_step_committed's own width)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-fullsha .*plan_sync=OK( |\$)"' _ "$OUT"
+assert "R10b: a 10-char abbreviated recorded sha resolves" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-lastdone .*plan_sync=STRANDED( |\$)"' _ "$OUT"
+assert "R10c: a [COMMITTED <sha>] description prefix is not mistaken for the commit field" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-committed-prefix .*plan_sync=OK( |\$)"' _ "$OUT"
+
 test_summary
