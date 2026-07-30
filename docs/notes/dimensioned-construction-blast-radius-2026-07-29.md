@@ -56,7 +56,7 @@ text). All CONFIRMED unless noted.
 | 2 | Gate 2 (conformance param-default entry) | `conformance/mod.rs:517-532` | **CONFIRMED** — `_ =>` arm; anti-cascade `Type::Error` guard at :519-521; `severity: CTOR_FIELD_CONFORMANCE_SEVERITY` at :530; `walk_param_against_arg(&vc.cell_type, default, &mut ctx)` at :532. |
 | 3 | `CTOR_FIELD_CONFORMANCE_SEVERITY` | `conformance/mod.rs:32` | **CONFIRMED** — `Severity::Warning`. α does not touch this const. |
 | 4 | Walker lockstep recursion | `conformance/mod.rs:669-701` | **CONFIRMED** — `walk_param_against_arg`: `Option`/`List`(+`ReflectiveCellList`)/`Set`/`Map` arms recurse; `TraitObject` is a leaf (handled after :704). |
-| 5 | Gate 5 / Rule 4 (constraint-def numeric leniency) | `crates/reify-compiler/src/type_compat.rs:1482-1486` | **CONFIRMED** — `let is_numeric = |t| matches!(t, Type::Int \| Type::Scalar{..} \| Type::ScalarParam(_)); if is_numeric(param_ty) && is_numeric(arg_ty) { return true }`. Rule 2 at :1474 (`type_carries_type_param \|\| type_carries_trait_object`) already short-circuits before Rule 4. |
+| 5 | Gate 5 / Rule 4 (constraint-def numeric leniency) | `crates/reify-compiler/src/type_compat.rs:1482-1486` | **CONFIRMED** — `let is_numeric = \|t\| matches!(t, Type::Int \| Type::Scalar{..} \| Type::ScalarParam(_)); if is_numeric(param_ty) && is_numeric(arg_ty) { return true }`. Rule 2 at :1474 (`type_carries_type_param \|\| type_carries_trait_object`) already short-circuits before Rule 4. |
 | 6 | Fn-call entry guard (i) | `compile_builder/entities_phase.rs:1493` | **CONFIRMED** — `if !type_carries_trait_object(param_ty) { continue; }`, immediately preceding the only production `check_fn_arg_conformance` call at `:1503`. |
 | 7 | `OverloadResolution::Resolved` gate | `compile_builder/entities_phase.rs:1486-1488` | **CONFIRMED, and this is anchor drift versus the PRD.** The PRD's own text cites `:1508-1511`; the real anchor at HEAD is `:1486-1488` (`let f = match resolve_function_overload(...) { OverloadResolution::Resolved(f) => f, _ => return };`). Addendum C1's correction re-confirmed. |
 | 8 | Guard (ii) candidate backstop, `resolve_function_overload`'s filter | `type_compat.rs:1155` (fn), filter body `:1194-1201` | **CONFIRMED, and FALSIFIED as an independent backstop.** The filter's first disjunct is `type_carries_trait_object(param_ty)` (`:1196`) — the **same predicate** as guard (i). The two guards are mutually exclusive, not conjunctive. See §7 (item 4) for the reachability consequence. |
@@ -458,9 +458,20 @@ bare literal. Full list in `/tmp/5756-scratch/step2-let-dimensioned-any.txt`.
 ### 2.2 Category C — Rust fixture-string occurrences
 
 **PRD figure: 63 across 22 files (25 c1 + 10 c2 + 28 c0, 11 of the 28
-parse-only). My re-measurement: 58 in-scope hits across 17 files (15 c1 + 10
-c2 + 31 c0 + 2 not conclusively classified within this session's budget).**
-Recorded as a DELTA, not silently reconciled — see 2.2.4.
+parse-only). My re-measurement: 58 in-scope hits (15 c1 + 10 c2 + 31 c0 + 2
+not conclusively classified within this session's budget), drawn from 60 raw
+hits across 17 files.** Recorded as a DELTA, not silently reconciled — see
+2.2.4.
+
+**[amendment pass] File-count basis.** An earlier revision wrote "58 in-scope
+hits across 17 files", pairing two figures measured on **different bases**:
+**17** files contain a category-C *hit* (of the 60 raw), but only **15**
+contain an *in-scope* one — `let_type_disambiguation_tests.rs` and
+`m9_error_cases.rs` hold exactly one hit each and both are 2.2.3 exclusions,
+so dropping those 2 hits drops 2 whole files. Cite **58 hits / 15 files** for
+the in-scope set and **60 hits / 17 files** for the raw set; never mix them.
+2.2.5's "short by 5 files" comparison is 17-vs-22 and stands (both sides count
+files containing a hit). Full derivation and the per-row list: **§12**.
 
 **2.2.1 Method.** A line-level scan of every file in tree C
 (`crates/**/*.rs`, 1641 files after exclusions) + tree D
@@ -742,8 +753,9 @@ other hit, across all of c1/c0/c2, is a `param`). This matters because gate
 Verified by re-scanning with a capture group on the `param|let` keyword
 rather than inferring it from table membership.
 
-**2.2.5 The delta, stated plainly.** **58** measured (17 files) vs. the PRD's 63
-(22 files) — short by **5** hits / 5 files. The c2 bucket matches exactly (10/10,
+**2.2.5 The delta, stated plainly.** **58** measured (17 files *containing a
+category-C hit* — the basis the PRD's own file count uses; 15 contain an
+in-scope hit, §12.2) vs. the PRD's 63 (22 files) — short by **5** hits / 5 files. The c2 bucket matches exactly (10/10,
 same 4 tests, same file:line spans), which is the strongest available
 evidence the *method* is sound; the shortfall is somewhere in c1/c0. Most
 likely explanation: this session's tree C/D file lists (reused from pre-2,
@@ -2182,7 +2194,8 @@ earlier revision can diff their citations against this list.
 | 2026-07-30 | amendment pass (§2.2.4/§10.3 c1) | **`file:line` anchors added for the 2 prose-cited c1 rows** — `trait_assoc_type_conformance_tests.rs:110` (override) and `:166` (inherited-default); the 2 UNCLASSIFIED occurrences in the same file pinned as `:76` and `:224`. | **NEUTRAL** — no count changed | Two of the 15 highest-urgency c1 rows were cited by sub-case name only, the sole exception to §2.2.5's "individually re-verifiable, file:line by file:line" promise — and in the one file that also holds the 2 unresolved occurrences, so a consumer could not tell which were already accounted for. |
 | 2026-07-30 | amendment pass (§0.4) | **§0.4's published reproduction command corrected** to scope the parse-only exclusion to `.rs` files (`grep -vE '^crates/reify-(syntax\|ast)/tests/.*\.rs$'`); it now reproduces the stated union of **2120**. | **NEUTRAL** — substrate count unchanged; the *command* was wrong, not the figure | The published `grep -v '^crates/reify-syntax/tests/\|^crates/reify-ast/tests/'` applied to the whole union, additionally dropping 2 `.ri` fixtures that tree B's 168 counts — so the command emitted 2118 at the cited HEAD, not the tabulated 2120. Neither dropped file holds an in-scope site (§0.4). |
 | 2026-07-30 | amendment pass (§11(B)) | **Check 2's command corrected** to the range form `git diff --exit-code main...HEAD -- crates/ examples/ gui/` (vacuous `stdlib` pathspec dropped). | **NEUTRAL** — the invariant held and still holds; the *proof* is now sound | The old check 2 was a working-tree diff ("nothing uncommitted is dirty"), not a branch-vs-`main` diff, so it could not have caught a *committed* source edit; and the `stdlib` pathspec matched 0 tracked files (`stdlib/` lives at `crates/reify-compiler/stdlib/`). |
-| 2026-07-30 | amendment pass (§12) | **Appendix §12 added**: the normative scanner, its 65-name alternation input, and the full **60-row `file:line` hit list** inlined into this document. | **NEUTRAL** — no count changed; the normative count made re-derivable | §2.2.1 declared its stripper normative and obliged consumers to reproduce **58**, but the only executable form was uncommitted `/tmp/5756-scratch/` scratch, and the 58 sites were never listed individually (31 c0 sites were rolled into 11 prose row-groups). |
+| 2026-07-30 | amendment pass (§12) | **Appendix §12 added**: the normative scanner (self-contained — rebuilds its file lists from §0.4's `git ls-files` walk, embeds the 65-name set, reads no `/tmp`), and the full **60-row `file:line` hit list** with per-row class + evidence marker, inlined into this document. | **NEUTRAL** — no count changed; the normative count made re-derivable from the committed artifact alone | §2.2.1 declared its stripper normative and obliged consumers to reproduce **58**, but the only executable form was uncommitted `/tmp/5756-scratch/` scratch (hard-coding a second uncommitted input and six tree-list files), and the 58 sites were never listed individually (31 c0 sites were rolled into 11 prose row-groups, several without line numbers). `/tmp` does not survive a reboot or a warm-lane reclaim, and β/γ/δ₁/δ₂ land later by construction. |
+| 2026-07-30 | amendment pass (§2.2, §2.2.5, §12.2) | **File-count basis disambiguated: "58 in-scope hits across 17 files" → 58 hits / *15* files in-scope, 60 hits / *17* files raw.** | **NEUTRAL** — no hit count changed | Surfaced by §12's per-row list: `let_type_disambiguation_tests.rs` and `m9_error_cases.rs` hold exactly one hit each and both are §2.2.3 exclusions, so the 60→58 step also drops 2 whole files. The old sentence paired an in-scope hit count with a raw file count. §2.2.5's "short by 5 files" is 17-vs-22 and is unaffected. |
 
 **No migration disposition changed under the first two corrections.** The `pub unit` sites were
 already EXCLUDED-BY-DESIGN and remain so — three more of them, not a new class. The three recovered
@@ -2447,3 +2460,257 @@ ledger §10 indexes for β/γ/δ₁/δ₂ and the §6.4 quantity-slot follow-up 
 nothing under `crates/`, `examples/`, `gui/`, or `stdlib`** — the entire task diff is the `files`
 list this plan declares (in the end, one of the two declared paths; the second was never needed,
 per §1's design decision allowing either outcome).
+
+
+## §12 Appendix — self-contained re-derivation of §2.2's normative 58 (amendment pass)
+
+§2.2.1 declares its stripper **normative** and §10.9 obliges β/γ/δ₁/δ₂ to reproduce **58**. Until
+this appendix, the only *executable* form of that method was
+`/tmp/5756-scratch/cat_c_scan4.py` — uncommitted scratch that hard-coded a second uncommitted
+input (`names-alternation.txt`) and six tree-list files passed as `argv`. This note references
+`/tmp/5756-scratch/**` artifacts throughout as substantiating evidence; every one of them was
+present and re-run during the amendment pass, but **`/tmp` does not survive a reboot or a warm-lane
+reclaim, and β/γ/δ₁/δ₂ land later by construction.** The regex and the stripper body were already
+inlined (§2.2.1), but the 58 sites themselves were not: §2.2.4 gives the 15 c1 rows individually
+and rolls the 31 c0 sites into 11 prose row-groups, several without line numbers — so a consumer
+who could not run the script could not re-derive the count they are obliged to reproduce.
+
+This appendix closes that gap **inside the committed artifact**. Nothing below reads `/tmp`.
+
+### 12.1 The scanner, self-contained
+
+Depends on nothing but the repository and Python 3. It rebuilds tree C + tree D with §0.4's own
+`git ls-files` walk (`.rs`-scoped exclusion — §0.4's post-review correction), embeds §0.3's 65-name
+search set, and applies §2.2.1's regex and string-literal-aware stripper verbatim. Run from the
+repository root; it exits non-zero if the in-scope count is not 58.
+
+```python
+#!/usr/bin/env python3
+"""Self-contained re-derivation of the ledger's normative category-C count (58).
+
+No inputs beyond the repo itself: builds tree C + tree D with the same
+`git ls-files` walk §0.4 publishes, embeds §0.3's 65-name search set, and
+applies §2.2.1's string-literal-aware comment stripper and regex verbatim.
+
+Run from the repository root:  python3 cat_c_scan.py
+Expected at the ledger's HEAD:  RAW=60  IN_SCOPE=58  FILES=17
+"""
+import re, subprocess, sys
+
+# --- §0.3 search set: 51 NAMED_DIMENSIONS names + 14 `.ri` type aliases ------
+NAMES = """
+AbsorbedDose AbsorptionCoeff Acceleration Action AmountOfSubstance Angle
+AngularVelocity Area ArealCostRate Capacitance Charge Conductance Current
+Curvature Density DielectricStrength DynamicViscosity ElectricalConductivity
+ElectricResistivity Energy Force ForceDensity FractureToughness Frequency
+HeatCapacity HeatFlux Illuminance Impulse Inductance InverseAmount Jerk
+Length LuminousFlux LuminousIntensity MagneticFlux MagneticFluxDensity Mass
+MolarGasConstant MomentOfInertia Momentum Money Permeability Permittivity
+Power Pressure Resistance RotationalDamping RotationalStiffness SolidAngle
+SpecificHeat StefanBoltzmannDim Stiffness Stress Temperature
+ThermalConductivity ThermalExpansion ThermalResistance Time Torque
+TranslationalDamping TranslationalStiffness Velocity Voltage Volume
+VolumetricFlowRate
+""".split()
+assert len(NAMES) == 65, len(NAMES)
+
+# Longest-first so `ThermalConductivity` wins over a `Thermal…` prefix.
+ALT = '|'.join(re.escape(n) for n in sorted(NAMES, key=len, reverse=True))
+
+# --- §2.2.1 predicate --------------------------------------------------------
+PAT = re.compile(
+    r'(?:priv\s+)?(?:param|let)\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*(?:' + ALT + r')\b'
+    r'\s*=\s*-?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?(?![a-zA-Z_0-9.])'
+    r'(?=\s*(?:,|\)|;|\}|//|"|\\|$))'
+)
+
+# --- §2.2.3 exclusions: trait-requirement `let`s, a different mechanism ------
+EXCLUDED = {
+    'crates/reify-compiler/tests/harness_langcore/let_type_disambiguation_tests.rs:296',
+    'crates/reify-compiler/tests/m9_error_cases.rs:276',
+}
+
+
+def strip_trailing_comment(line):
+    """`//` starts a comment only OUTSIDE a Rust string literal (§2.2.2 (3))."""
+    i, n, in_string = 0, len(line), False
+    while i < n:
+        c = line[i]
+        if in_string:
+            if c == '\\':
+                i += 2
+                continue
+            if c == '"':
+                in_string = False
+            i += 1
+            continue
+        if c == '"':
+            in_string = True
+            i += 1
+            continue
+        if c == '/' and i + 1 < n and line[i + 1] == '/':
+            if i == 0 or line[i - 1] != ':':     # original `:` guard, preserved
+                return line[:i]
+        i += 1
+    return line
+
+
+def trees_c_and_d():
+    """§0.4's walk, .rs half: crates/**/*.rs (minus self + the two parse-only
+    test dirs) + gui/src-tauri/**/*.rs."""
+    out = subprocess.run(
+        ['git', 'ls-files', '--', 'crates/*.rs', 'gui/src-tauri/*.rs'],
+        capture_output=True, text=True, check=True).stdout.split()
+    drop = re.compile(r'corpus_no_bare_scalar\.rs$|^crates/reify-(syntax|ast)/tests/.*\.rs$')
+    return sorted(f for f in out if not drop.search(f))
+
+
+def main():
+    files = trees_c_and_d()
+    hits = []
+    for rel in files:
+        with open(rel, encoding='utf-8', errors='replace') as fh:
+            for lineno, raw in enumerate(fh, start=1):
+                line = raw.rstrip('\n')
+                if line.strip().startswith('//'):      # whole-line comment
+                    continue
+                for _ in PAT.finditer(strip_trailing_comment(line)):
+                    hits.append((f'{rel}:{lineno}', line.strip()))
+    in_scope = [h for h in hits if h[0] not in EXCLUDED]
+    print(f'TREE_C+D_FILES={len(files)}')
+    print(f'RAW={len(hits)}  IN_SCOPE={len(in_scope)}  '
+          f'FILES={len({k.rsplit(":", 1)[0] for k, _ in in_scope})}')
+    for k, text in hits:
+        print(f'{"EXCL " if k in EXCLUDED else "     "}{k}: {text}')
+    return 0 if len(in_scope) == 58 else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
+```
+
+Measured during the amendment pass, at this branch's HEAD:
+
+```
+$ python3 cat_c_scan.py | head -2
+TREE_C+D_FILES=1683
+RAW=60  IN_SCOPE=58  FILES=15
+```
+
+`TREE_C+D_FILES=1683` vs §0.4's `1641 + 41 = 1682`: **one file was added to `crates/**/*.rs`
+between §0.4's measurement HEAD (`08c6c42be9`) and this branch's rebased base** — the same
++1 drift §0.4's corrected command shows (2120 at `08c6c42be9`, 2121 now). The 60 raw hits are
+unchanged across that drift.
+
+### 12.2 File-count basis — 17 vs 15, stated explicitly
+
+`RAW=60 … FILES=15` exposes a conflation in §2.2's earlier phrasing "58 in-scope hits across 17
+files". The two figures rest on **different bases**:
+
+- **17 files contain a category-C hit** (the 60 raw hits) — the figure `cat_c_scan4.py` printed as
+  `NEW_FILES`, and the one §2.2.5 compares against the PRD's "22 files".
+- **15 files contain an *in-scope* hit** (the 58). `let_type_disambiguation_tests.rs` and
+  `m9_error_cases.rs` hold exactly one hit each, and both are §2.2.3's trait-requirement-`let`
+  exclusions — so removing those 2 hits removes 2 whole files.
+
+Both are correct on their own basis; only the sentence that paired "58" with "17 files" was wrong.
+**§2.2.5's "short by 5 hits / 5 files" comparison stands** — it is 17-vs-22, an apples-to-apples
+comparison of *files containing a hit*. Cite **58 hits / 15 files** for the in-scope set and
+**60 hits / 17 files** for the raw set; never mix them.
+
+### 12.3 The full 60-row hit list
+
+Every row emitted by 12.1, in scan order, with §2.2.4's classification and (for c0) its
+CONFIRMED/PRESUMED evidence marker. The 2 rows marked *(§2.2.3 excluded)* are the
+trait-requirement `let`s that are **not** part of the 58. This table is the appendix form of the
+same data §2.2.4 presents by row-group; where they disagree, they do not — both were generated
+from the same run, and 12.4 reconciles the totals.
+
+| # | `file:line` | Declaration (comment-stripped) | Class | Evidence | Disposition |
+|---:|---|---|---|---|---|
+| 1 | `crates/reify-compiler/tests/collection_sub_tests.rs:426` | `param grade : Length = 8.8` | **c1** | CONFIRMED | **BREAKS — migrate** (δ₁) |
+| 2 | `crates/reify-compiler/tests/collection_sub_tests.rs:510` | `structure Bolt { param grade : Length = 8.8 }` | **c1** | CONFIRMED | **BREAKS — migrate** (δ₁) |
+| 3 | `crates/reify-compiler/tests/harness_langcore/let_annotation_type_mismatch_tests.rs:176` | `let x : Length = 5` | **c2** | CONFIRMED | **DELIBERATE NEGATIVE TEST — invert** (δ₁) |
+| 4 | `crates/reify-compiler/tests/harness_langcore/let_annotation_type_mismatch_tests.rs:177` | `let y : Length = 0.5` | **c2** | CONFIRMED | **DELIBERATE NEGATIVE TEST — invert** (δ₁) |
+| 5 | `crates/reify-compiler/tests/harness_langcore/let_annotation_type_mismatch_tests.rs:178` | `let z : Length = -5.0` | **c2** | CONFIRMED | **DELIBERATE NEGATIVE TEST — invert** (δ₁) |
+| 6 | `crates/reify-compiler/tests/harness_langcore/let_annotation_type_mismatch_tests.rs:583` | `let d : Length = 5` | **c2** | CONFIRMED | **DELIBERATE NEGATIVE TEST — invert** (δ₁) |
+| 7 | `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:2025` | `param axis: Length = 0` | c0 | CONFIRMED | BREAKS — migrate, lower-urgency |
+| 8 | `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:2190` | `param axis: Length = 0` | **c1** | CONFIRMED | **BREAKS — migrate** (δ₁) |
+| 9 | `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:2251` | `param axis: Length = 0` | **c1** | CONFIRMED | **BREAKS — migrate** (δ₁) |
+| 10 | `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:2359` | `param axis: Length = 0` | **c1** | CONFIRMED | **BREAKS — migrate** (δ₁) |
+| 11 | `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:2471` | `param cond: Length = 0` | c0 | CONFIRMED | BREAKS — migrate, lower-urgency |
+| 12 | `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:2540` | `param cond: Length = 0` | c0 | CONFIRMED | BREAKS — migrate, lower-urgency |
+| 13 | `crates/reify-compiler/tests/harness_langcore/let_type_disambiguation_tests.rs:296` | `let x : Length = 5.0` | —  *(§2.2.3 excluded)* | n/a | not counted in the 58 — trait-requirement `let`, a different mechanism |
+| 14 | `crates/reify-compiler/tests/harness_traits/trait_assoc_type_conformance_tests.rs:31` | `param w : Length = 1` | c0 | CONFIRMED | BREAKS — migrate, lower-urgency |
+| 15 | `crates/reify-compiler/tests/harness_traits/trait_assoc_type_conformance_tests.rs:76` | `param w : Length = 1` | **?** | CONFIRMED | UNCLASSIFIED — resolve before landing |
+| 16 | `crates/reify-compiler/tests/harness_traits/trait_assoc_type_conformance_tests.rs:110` | `param w : Length = 1` | **c1** | CONFIRMED | **BREAKS — migrate** (δ₁) |
+| 17 | `crates/reify-compiler/tests/harness_traits/trait_assoc_type_conformance_tests.rs:166` | `param w : Length = 1` | **c1** | CONFIRMED | **BREAKS — migrate** (δ₁) |
+| 18 | `crates/reify-compiler/tests/harness_traits/trait_assoc_type_conformance_tests.rs:224` | `param w : Length = 1` | **?** | CONFIRMED | UNCLASSIFIED — resolve before landing |
+| 19 | `crates/reify-compiler/tests/m9_error_cases.rs:276` | `let score : Mass = 1.5` | —  *(§2.2.3 excluded)* | n/a | not counted in the 58 — trait-requirement `let`, a different mechanism |
+| 20 | `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:175` | `param zero_int   : Length = 0` | **c2** | CONFIRMED | **DELIBERATE NEGATIVE TEST — invert** (δ₁) |
+| 21 | `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:176` | `param one_int    : Length = 1` | **c2** | CONFIRMED | **DELIBERATE NEGATIVE TEST — invert** (δ₁) |
+| 22 | `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:177` | `param half_real  : Length = 0.5` | **c2** | CONFIRMED | **DELIBERATE NEGATIVE TEST — invert** (δ₁) |
+| 23 | `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:178` | `param large_real : Length = 70.0` | **c2** | CONFIRMED | **DELIBERATE NEGATIVE TEST — invert** (δ₁) |
+| 24 | `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:206` | `param neg_real : Length = -5.0` | **c2** | CONFIRMED | **DELIBERATE NEGATIVE TEST — invert** (δ₁) |
+| 25 | `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:207` | `param neg_int  : Length = -1` | **c2** | CONFIRMED | **DELIBERATE NEGATIVE TEST — invert** (δ₁) |
+| 26 | `crates/reify-compiler/tests/prelude_context_tests.rs:217` | `param x : Length = 42` | c0 | CONFIRMED | BREAKS — migrate, lower-urgency |
+| 27 | `crates/reify-compiler/tests/purpose_compile_tests.rs:1453` | `param material : Length = 1.0` | **c1** | CONFIRMED | **BREAKS — migrate** (δ₁) |
+| 28 | `crates/reify-compiler/tests/purpose_compile_tests.rs:1454` | `param youngs_modulus : Length = 200.0` | **c1** | CONFIRMED | **BREAKS — migrate** (δ₁) |
+| 29 | `crates/reify-compiler/tests/purpose_compile_tests.rs:1516` | `param material : Length = 1.0` | c0 | CONFIRMED | BREAKS — migrate, lower-urgency |
+| 30 | `crates/reify-compiler/tests/purpose_compile_tests.rs:1517` | `param youngs_modulus : Length = 200.0` | c0 | CONFIRMED | BREAKS — migrate, lower-urgency |
+| 31 | `crates/reify-compiler/tests/purpose_compile_tests.rs:1523` | `param x : Length = 1.0` | c0 | CONFIRMED | BREAKS — migrate, lower-urgency |
+| 32 | `crates/reify-compiler/tests/purpose_compile_tests.rs:1567` | `param z : Length = 5.0` | c0 | **PRESUMED** | BREAKS — migrate, lower-urgency |
+| 33 | `crates/reify-eval/tests/collection_sub_eval.rs:437` | `structure Bolt { param grade : Length = 8.8 }` | **c1** | CONFIRMED | **BREAKS — migrate** (δ₁) |
+| 34 | `crates/reify-eval/tests/determinacy_predicates.rs:509` | `param a : Length = 10` | **c1** | CONFIRMED | **BREAKS — migrate** (δ₁) |
+| 35 | `crates/reify-eval/tests/eval_param_overrides.rs:1639` | `let module_b = compile_source("structure S { param p: Money = 0 }");` | c0 | CONFIRMED | BREAKS — migrate, lower-urgency |
+| 36 | `crates/reify-eval/tests/harness_fea_solver_e2e/stress_sweep_degenerate.rs:417` | `param x: Length = 5` | c0 | CONFIRMED | BREAKS — migrate, lower-urgency |
+| 37 | `crates/reify-eval/tests/harness_fea_solver_e2e/stress_sweep_degenerate.rs:418` | `param y: Length = 10` | c0 | CONFIRMED | BREAKS — migrate, lower-urgency |
+| 38 | `crates/reify-eval/tests/purpose_activation.rs:2673` | `param material : Length = 100.0` | **c1** | CONFIRMED | **BREAKS — migrate** (δ₁) |
+| 39 | `crates/reify-eval/tests/purpose_activation.rs:2674` | `param youngs_modulus : Length = 200.0` | **c1** | CONFIRMED | **BREAKS — migrate** (δ₁) |
+| 40 | `crates/reify-eval/tests/purpose_activation.rs:2774` | `param z : Length = 5.0` | **c1** | CONFIRMED | **BREAKS — migrate** (δ₁) |
+| 41 | `crates/reify-eval/tests/purpose_activation.rs:2825` | `param z : Length = -5.0` | **c1** | CONFIRMED | **BREAKS — migrate** (δ₁) |
+| 42 | `crates/reify-syntax/src/ts_parser.rs:6338` | `"structure S { port a : in T { /* comment */ param x: Length = 1 } }",` | c0 | CONFIRMED | **EXCLUDED — parse-only** (§2.2.4b) |
+| 43 | `crates/reify-syntax/src/ts_parser.rs:6364` | `let source = "structure S { port a : in T { param x: Length = 1 }  sub b = T() }";` | c0 | CONFIRMED | **EXCLUDED — parse-only** (§2.2.4b) |
+| 44 | `crates/reify-syntax/src/ts_parser.rs:6420` | `let source = "structure S { param x: Length = 1  port a : in T { param y: Length …` | c0 | CONFIRMED | **EXCLUDED — parse-only** (§2.2.4b) |
+| 45 | `crates/reify-syntax/src/ts_parser.rs:6450` | `let source = "/* comment */\nstructure S { param x: Length = 1 }";` | c0 | CONFIRMED | **EXCLUDED — parse-only** (§2.2.4b) |
+| 46 | `crates/reify-syntax/src/ts_parser.rs:6466` | `let src = "/// A bracket for mounting.\nstructure Bracket {\n  param w: Length = …` | c0 | CONFIRMED | **EXCLUDED — parse-only** (§2.2.4b) |
+| 47 | `crates/reify-syntax/src/ts_parser.rs:6477` | `let src = "/// Line one.\n/// Line two.\nstructure S {\n  param x: Length = 1\n}";` | c0 | CONFIRMED | **EXCLUDED — parse-only** (§2.2.4b) |
+| 48 | `crates/reify-syntax/src/ts_parser.rs:6488` | `let src = "structure S {\n  param x: Length = 1\n}";` | c0 | CONFIRMED | **EXCLUDED — parse-only** (§2.2.4b) |
+| 49 | `crates/reify-syntax/src/ts_parser.rs:6499` | `let src = "// Just a comment\nstructure S {\n  param x: Length = 1\n}";` | c0 | CONFIRMED | **EXCLUDED — parse-only** (§2.2.4b) |
+| 50 | `crates/reify-test-support/src/helpers.rs:1077` | `structure Alpha { param x: Length = 1 }` | c0 | **PRESUMED** | BREAKS — migrate, lower-urgency |
+| 51 | `crates/reify-test-support/src/helpers.rs:1078` | `structure Beta { param y: Length = 2 }` | c0 | **PRESUMED** | BREAKS — migrate, lower-urgency |
+| 52 | `crates/reify-test-support/src/helpers.rs:1227` | `let source = "structure S { param x: Length = 42 }";` | c0 | CONFIRMED | BREAKS — migrate, lower-urgency |
+| 53 | `gui/src-tauri/src/tests/engine_tests.rs:3658` | `r#"structure Bolt { param mass: Length = 1 }` | c0 | **PRESUMED** | BREAKS — migrate, lower-urgency |
+| 54 | `gui/src-tauri/src/tests/engine_tests.rs:3884` | `r#"structure Bolt { param mass: Length = 1 }` | c0 | **PRESUMED** | BREAKS — migrate, lower-urgency |
+| 55 | `gui/src-tauri/src/tests/engine_tests.rs:4145` | `let source = "structure Foo { param x: Length = 1 }";` | c0 | **PRESUMED** | BREAKS — migrate, lower-urgency |
+| 56 | `gui/src-tauri/src/tests/engine_tests.rs:4162` | `let source = "structure Foo { param x: Length = 1 }\n// outside any def";` | c0 | **PRESUMED** | BREAKS — migrate, lower-urgency |
+| 57 | `gui/src-tauri/src/tests/engine_tests.rs:4197` | `let source = "structure Foo { param x: Length = 1 }";` | c0 | **PRESUMED** | BREAKS — migrate, lower-urgency |
+| 58 | `gui/src-tauri/src/tests/engine_tests.rs:4842` | `let source1 = "structure A { param x: Length = 1 }";` | c0 | **PRESUMED** | BREAKS — migrate, lower-urgency |
+| 59 | `gui/src-tauri/src/tests/engine_tests.rs:4858` | `let source2 = "structure A { param x: Length = 1 }\nstructure B { param y: Length…` | c0 | **PRESUMED** | BREAKS — migrate, lower-urgency |
+| 60 | `gui/src-tauri/src/tests/engine_tests.rs:4858` | `let source2 = "structure A { param x: Length = 1 }\nstructure B { param y: Length…` | c0 | **PRESUMED** | BREAKS — migrate, lower-urgency |
+
+### 12.4 Reconciliation
+
+| Bucket | # | Source of truth |
+|---|---:|---|
+| c1 — BREAKS | 15 | §2.2.4 c1 table |
+| c2 — DELIBERATE-INVERT | 10 | §2.2.4 c2 table |
+| c0 — actionable (12 CONFIRMED + 11 PRESUMED) | 23 | §2.2.4 c0 table, minus the parse-only rows |
+| c0 — EXCLUDED-parse-only (`ts_parser.rs`) | 8 | §2.2.4b |
+| UNCLASSIFIED (`trait_assoc_type_conformance_tests.rs:76,224`) | 2 | §2.2.4 |
+| **In-scope total** | **58** | **§2.2, §10.2, §10.3 — the normative figure** |
+| §2.2.3 exclusions (trait-requirement `let`) | 2 | §2.2.3 — *not* part of the 58 |
+| **Raw scan total** | **60** | §2.2.2 (3)'s transcript (`NEW_TOTAL_HITS=60`) |
+
+15 + 10 + 23 + 8 + 2 = **58** ✓ · 58 + 2 = **60** ✓ · `param` 54 + `let` 4 = **58** ✓ (§2.2.5b;
+the 4 `let`s are rows 3-6, all `let_annotation_type_mismatch_tests.rs` c2 pins).
+
+### 12.5 What this appendix does and does not durably replace
+
+It makes **§2.2's 58 re-derivable from this file alone**. It does **not** re-house the other
+`/tmp/5756-scratch/**` evidence this note cites — §5's instrumented gate-5 sweep transcript, §§6-9's
+probe `.ri` files, `step13-stripper-fix-transcript.txt`, `dropped-keys.txt`. Those substantiate
+counts that each have their own inline reproduction command in their own section, so a consumer can
+re-run the measurement even after the scratch directory is gone; the scratch files are corroborating
+detail, not the sole executable form of a normative method. §2.2 was the one place where that was
+not true, which is why it — and only it — is reproduced here in full.
