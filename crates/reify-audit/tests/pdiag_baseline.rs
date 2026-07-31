@@ -59,10 +59,10 @@
 //!   `pdiag:allow` opt-out / shrink the row) is in
 //!   `docs/notes/diagnostic-severity-policy.md` §3.
 
-use reify_audit::pdiag::{is_swept_path, live_counts, parse_baseline};
-use reify_audit::{AuditContext, MockGitOps, MockJCodemunchOps, Severity};
-use rusqlite::Connection;
-use std::collections::{BTreeMap, HashMap};
+use reify_audit::Severity;
+use reify_audit::pdiag::test_support::{Fixture, coded_src, codeless_src};
+use reify_audit::pdiag::{is_swept_path, parse_baseline};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// `crates/reify-audit/pdiag-baseline.txt`, resolved from the manifest dir so
@@ -86,83 +86,10 @@ fn repo_root() -> PathBuf {
 const REGEN: &str = "cargo run -p reify-audit --bin pdiag-baseline-gen -- \
                      --project-root . > crates/reify-audit/pdiag-baseline.txt";
 
-// -----------------------------------------------------------------------
-// Fixture — a tempdir working tree plus a MockGitOps that tracks exactly
-// what was written. Deliberately the same shape as `pdiag.rs`'s in-module
-// `Fixture`: the enumeration seam is `ls_files()`, but content is read from
-// the real working tree, so the IO fail-safe branches stay reachable rather
-// than mocked away.
-// -----------------------------------------------------------------------
-
-struct Fixture {
-    root: tempfile::TempDir,
-    tracked: Vec<String>,
-}
-
-impl Fixture {
-    fn new() -> Self {
-        Self { root: tempfile::tempdir().expect("tempdir"), tracked: Vec::new() }
-    }
-
-    /// Write `content` at `path` and track it.
-    fn write(&mut self, path: &str, content: &str) -> &mut Self {
-        let full = self.root.path().join(path);
-        std::fs::create_dir_all(full.parent().expect("parent")).expect("mkdir");
-        std::fs::write(&full, content).expect("write");
-        self.tracked.push(path.to_string());
-        self
-    }
-
-    /// Track a path WITHOUT creating it — the `ls_files`/working-tree skew a
-    /// mid-rebase or just-deleted file produces.
-    fn track_only(&mut self, path: &str) -> &mut Self {
-        self.tracked.push(path.to_string());
-        self
-    }
-
-    /// Write an untracked data file (used to plant a baseline manifest, which
-    /// `live_counts` must be blind to).
-    fn write_untracked(&mut self, path: &str, content: &str) -> &mut Self {
-        let full = self.root.path().join(path);
-        std::fs::create_dir_all(full.parent().expect("parent")).expect("mkdir");
-        std::fs::write(&full, content).expect("write");
-        self
-    }
-
-    fn counts(&self) -> BTreeMap<String, u32> {
-        let conn = Connection::open_in_memory().expect("in-memory db");
-        let jc = MockJCodemunchOps::new();
-        let mut git = MockGitOps::new();
-        git.set_ls_files(self.tracked.clone());
-        let ctx = AuditContext {
-            project_root: self.root.path().to_path_buf(),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
-        live_counts(&ctx)
-    }
-}
-
-/// `n` code-less constructor sites, one per line — the dominant real shape
-/// (`crates/reify-eval/src/geometry_ops.rs:313`).
-fn codeless_src(n: usize) -> String {
-    (0..n).map(|i| format!("    out.push(Diagnostic::error(format!(\"boom {i}\")));\n")).collect()
-}
-
-/// `n` sites that each carry a code on the same line.
-fn coded_src(n: usize) -> String {
-    (0..n)
-        .map(|i| {
-            format!("    out.push(Diagnostic::error(format!(\"boom {i}\")).with_code(code));\n")
-        })
-        .collect()
-}
+// The fixture, `codeless_src` and `coded_src` are `pdiag::test_support`'s —
+// the SAME harness `pdiag.rs`'s unit tests drive, so the nine-field
+// `AuditContext` literal and the census helpers exist in exactly one place.
+// The fixture borrows its root, so each test owns the `TempDir`.
 
 /// Expected map, spelled as `(path, count)` pairs.
 fn expect(pairs: &[(&str, u32)]) -> BTreeMap<String, u32> {
@@ -175,7 +102,8 @@ fn expect(pairs: &[(&str, u32)]) -> BTreeMap<String, u32> {
 
 #[test]
 fn live_counts_reports_absolute_code_less_counts_per_tracked_path() {
-    let mut fx = Fixture::new();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut fx = Fixture::new(tmp.path());
     fx.write("crates/reify-eval/src/geometry_ops.rs", &codeless_src(3));
     fx.write("crates/reify-compiler/src/expr.rs", &codeless_src(1));
     fx.write("gui/src-tauri/src/lib.rs", &codeless_src(2));
@@ -195,7 +123,8 @@ fn live_counts_reports_absolute_code_less_counts_per_tracked_path() {
 fn files_with_no_code_less_sites_are_omitted_rather_than_stored_as_zero() {
     // The manifest grammar rejects a `0` row outright (a clean file has NO
     // row), so a zero-valued entry here would render an unparseable baseline.
-    let mut fx = Fixture::new();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut fx = Fixture::new(tmp.path());
     fx.write("crates/reify-eval/src/coded.rs", &coded_src(4));
     fx.write("crates/reify-eval/src/empty.rs", "pub fn nothing() {}\n");
     fx.write("crates/reify-eval/src/dirty.rs", &codeless_src(2));
@@ -205,7 +134,8 @@ fn files_with_no_code_less_sites_are_omitted_rather_than_stored_as_zero() {
 
 #[test]
 fn live_counts_honours_the_is_swept_path_scope() {
-    let mut fx = Fixture::new();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut fx = Fixture::new(tmp.path());
     // In scope.
     fx.write("crates/reify-eval/src/in_scope.rs", &codeless_src(1));
     // Out: a `tests` path segment, and the `tests.rs` / `*_tests.rs` stems.
@@ -226,7 +156,8 @@ fn live_counts_honours_the_is_swept_path_scope() {
 
 #[test]
 fn live_counts_honours_the_pdiag_allow_escape() {
-    let mut fx = Fixture::new();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut fx = Fixture::new(tmp.path());
     let escaped = "    out.push(Diagnostic::error(\"boom\")); // pdiag:allow — reviewed\n";
     fx.write(
         "crates/reify-eval/src/mixed.rs",
@@ -245,7 +176,8 @@ fn live_counts_honours_the_pdiag_allow_escape() {
 fn tracked_paths_absent_from_the_working_tree_are_skipped() {
     // `ls_files()` and the tree can legitimately disagree mid-rebase; inventing
     // a count there would be a false RED, so the read failure is a skip.
-    let mut fx = Fixture::new();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut fx = Fixture::new(tmp.path());
     fx.track_only("crates/reify-eval/src/vanished.rs");
     fx.write("crates/reify-eval/src/present.rs", &codeless_src(1));
 
@@ -259,7 +191,8 @@ fn live_counts_is_blind_to_the_committed_baseline() {
     // by whatever the manifest currently allows — a file sitting exactly at its
     // baseline row emits no finding, yet must still render a row.
     let path = "crates/reify-eval/src/geometry_ops.rs";
-    let mut fx = Fixture::new();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut fx = Fixture::new(tmp.path());
     fx.write(path, &codeless_src(7));
     fx.write_untracked("crates/reify-audit/pdiag-baseline.txt", &format!("{path} 7\n"));
 
@@ -272,7 +205,8 @@ fn live_counts_is_blind_to_the_committed_baseline() {
 
 #[test]
 fn an_empty_tree_yields_an_empty_census() {
-    assert_eq!(Fixture::new().counts(), BTreeMap::new());
+    let tmp = tempfile::tempdir().expect("tempdir");
+    assert_eq!(Fixture::new(tmp.path()).counts(), BTreeMap::new());
 }
 
 // -----------------------------------------------------------------------
@@ -311,7 +245,8 @@ fn a_live_census_renders_rows_that_parse_back_unchanged() {
     // The generator's whole contract in one assertion: whatever `live_counts`
     // reports must be expressible in — and recoverable from — the manifest
     // grammar. If these two ever drift, a regenerated baseline stops parsing.
-    let mut fx = Fixture::new();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut fx = Fixture::new(tmp.path());
     fx.write("crates/reify-eval/src/geometry_ops.rs", &codeless_src(3));
     fx.write("crates/reify-compiler/src/expr.rs", &codeless_src(1));
     fx.write("gui/src-tauri/src/lib.rs", &codeless_src(2));

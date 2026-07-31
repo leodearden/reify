@@ -933,12 +933,164 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         .collect()
 }
 
+// -----------------------------------------------------------------------
+// Test support — the ONE PDIAG fixture, shared by both suites
+// -----------------------------------------------------------------------
+
+/// The tempdir-backed [`check`]/[`live_counts`] fixture.
+///
+/// Shared by this module's unit tests and `tests/pdiag_baseline.rs`, which
+/// previously carried near-identical copies — including the nine-field
+/// [`AuditContext`] literal, which had to be edited in both places whenever
+/// the context gained a field.
+///
+/// Gated behind `feature = "test-support"` exactly like [`crate::MockGitOps`],
+/// which the crate self-pulls in its own `[dev-dependencies]` so integration
+/// tests see it.
+///
+/// The fixture BORROWS its root rather than owning a `tempfile::TempDir`:
+/// `tempfile` is a dev-dependency, and a `feature = "test-support"` item in the
+/// library is compiled as an ordinary dependency (where dev-deps are not in
+/// scope) when an integration test pulls the crate in. Each caller therefore
+/// owns the tempdir and passes `tmp.path()`. That is also why the fixture reads
+/// real files: the enumeration seam is `ls_files()`, but content comes from the
+/// working tree (the `ptodo.rs:1418` posture), so the missing-file and non-UTF-8
+/// fail-safe branches stay reachable rather than mocked away.
+#[cfg(any(test, feature = "test-support"))]
+// G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+pub mod test_support {
+    use super::{BASELINE_PATH, check, live_counts};
+    use crate::{AuditContext, Finding, MockGitOps, MockJCodemunchOps, Severity};
+    use rusqlite::Connection;
+    use std::collections::{BTreeMap, HashMap};
+    use std::path::Path;
+
+    /// A working tree at `root` plus the exact set of paths `ls_files()` reports.
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub struct Fixture<'a> {
+        root: &'a Path,
+        tracked: Vec<String>,
+    }
+
+    impl<'a> Fixture<'a> {
+        /// Empty tree at `root` — caller owns the `tempfile::TempDir`.
+        // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+        pub fn new(root: &'a Path) -> Self {
+            Self { root, tracked: Vec::new() }
+        }
+
+        /// The tree root, for tests that assert on the tree itself.
+        // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+        pub fn root(&self) -> &Path {
+            self.root
+        }
+
+        /// Write `content` at `path` and track it.
+        // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+        pub fn write(&mut self, path: &str, content: &str) -> &mut Self {
+            self.write_bytes(path, content.as_bytes())
+        }
+
+        /// Write raw `bytes` at `path` and track it — the non-UTF-8 lane.
+        // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+        pub fn write_bytes(&mut self, path: &str, bytes: &[u8]) -> &mut Self {
+            self.put(path, bytes);
+            self.tracked.push(path.to_string());
+            self
+        }
+
+        /// Write `content` at `path` WITHOUT tracking it — a data file the
+        /// census must be blind to (a planted manifest, a stray artifact).
+        // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+        pub fn write_untracked(&mut self, path: &str, content: &str) -> &mut Self {
+            self.put(path, content.as_bytes());
+            self
+        }
+
+        /// Track a path WITHOUT creating it — the `ls_files`/working-tree skew
+        /// a mid-rebase or just-deleted file produces.
+        // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+        pub fn track_only(&mut self, path: &str) -> &mut Self {
+            self.tracked.push(path.to_string());
+            self
+        }
+
+        /// Plant the baseline manifest at its canonical in-tree location. Not
+        /// tracked: the manifest is data, never a swept source file.
+        // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+        pub fn baseline(&mut self, content: &str) -> &mut Self {
+            self.write_untracked(BASELINE_PATH, content)
+        }
+
+        /// [`live_counts`] over this tree — the generator's census seam.
+        // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+        pub fn counts(&self) -> BTreeMap<String, u32> {
+            self.with_ctx(live_counts)
+        }
+
+        /// [`check`] over this tree — the detector end to end.
+        // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+        pub fn run(&self) -> Vec<Finding> {
+            self.with_ctx(check)
+        }
+
+        /// `(task_id, severity)` per finding, in emission order.
+        // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+        pub fn keys(&self) -> Vec<(String, Severity)> {
+            self.run().into_iter().map(|f| (f.task_id, f.severity)).collect()
+        }
+
+        fn put(&self, path: &str, bytes: &[u8]) {
+            let full = self.root.join(path);
+            std::fs::create_dir_all(full.parent().expect("parent")).expect("mkdir");
+            std::fs::write(&full, bytes).expect("write");
+        }
+
+        /// The nine-field `AuditContext` literal, spelled ONCE. Everything
+        /// except `project_root` and `git` is inert for PDIAG — the detector is
+        /// purely structural and never reads the DB or the jcodemunch seam.
+        fn with_ctx<R>(&self, f: impl FnOnce(&AuditContext) -> R) -> R {
+            let conn = Connection::open_in_memory().expect("in-memory db");
+            let jc = MockJCodemunchOps::new();
+            let mut git = MockGitOps::new();
+            git.set_ls_files(self.tracked.clone());
+            let ctx = AuditContext {
+                project_root: self.root.to_path_buf(),
+                conn: &conn,
+                git: &git,
+                jcodemunch: &jc,
+                task_metadata: HashMap::new(),
+                target_task_id: None,
+                window: None,
+                now: None,
+                producer_branch: None,
+            };
+            f(&ctx)
+        }
+    }
+
+    /// `n` code-less constructor sites, one per line — the dominant real shape
+    /// (`crates/reify-eval/src/geometry_ops.rs:313`).
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn codeless_src(n: usize) -> String {
+        (0..n).map(|i| format!("    out.push(Diagnostic::error(format!(\"boom {i}\")));\n")).collect()
+    }
+
+    /// `n` sites that each carry a code on the same line.
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn coded_src(n: usize) -> String {
+        (0..n)
+            .map(|i| {
+                format!("    out.push(Diagnostic::error(format!(\"boom {i}\")).with_code(code));\n")
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::test_support::{Fixture, codeless_src};
     use super::*;
-    use crate::{MockGitOps, MockJCodemunchOps};
-    use rusqlite::Connection;
-    use std::collections::HashMap;
 
     /// Terse view of a scan: one `(line, coded)` pair per site, in scan order.
     fn sites(content: &str) -> Vec<(usize, bool)> {
@@ -1777,92 +1929,16 @@ mod tests {
 
     // -- detector entry point -----------------------------------------------
 
-    /// A `check(...)` fixture: a tempdir `project_root`, real files on disk,
-    /// and a `MockGitOps` whose `ls_files()` returns exactly what was tracked.
-    ///
-    /// Deliberately exercises the real `std::fs` read path rather than mocking
-    /// it — the enumeration seam is `ls_files()`, but content comes from the
-    /// working tree (the ptodo.rs:1418 posture), so the missing-file and
-    /// non-UTF-8 fail-safe branches are only reachable through real IO.
-    struct Fixture {
-        root: tempfile::TempDir,
-        tracked: Vec<String>,
-    }
-
-    impl Fixture {
-        fn new() -> Self {
-            Self { root: tempfile::tempdir().expect("tempdir"), tracked: Vec::new() }
-        }
-
-        /// Write `content` at `path` and track it.
-        fn write(&mut self, path: &str, content: &str) -> &mut Self {
-            self.write_bytes(path, content.as_bytes())
-        }
-
-        /// Write raw `bytes` at `path` and track it — the non-UTF-8 lane.
-        fn write_bytes(&mut self, path: &str, bytes: &[u8]) -> &mut Self {
-            let full = self.root.path().join(path);
-            std::fs::create_dir_all(full.parent().expect("parent")).expect("mkdir");
-            std::fs::write(&full, bytes).expect("write");
-            self.tracked.push(path.to_string());
-            self
-        }
-
-        /// Track a path WITHOUT creating it — the ls_files/working-tree skew a
-        /// mid-rebase or just-deleted file produces.
-        fn track_only(&mut self, path: &str) -> &mut Self {
-            self.tracked.push(path.to_string());
-            self
-        }
-
-        /// Write the baseline manifest at its canonical in-tree location. Not
-        /// tracked: the manifest is data, never a swept source file.
-        fn baseline(&mut self, content: &str) -> &mut Self {
-            let full = self.root.path().join(BASELINE_PATH);
-            std::fs::create_dir_all(full.parent().expect("parent")).expect("mkdir");
-            std::fs::write(&full, content).expect("write baseline");
-            self
-        }
-
-        fn run(&self) -> Vec<Finding> {
-            let conn = Connection::open_in_memory().expect("in-memory db");
-            let jc = MockJCodemunchOps::new();
-            let mut git = MockGitOps::new();
-            git.set_ls_files(self.tracked.clone());
-            let ctx = AuditContext {
-                project_root: self.root.path().to_path_buf(),
-                conn: &conn,
-                git: &git,
-                jcodemunch: &jc,
-                task_metadata: HashMap::new(),
-                target_task_id: None,
-                window: None,
-                now: None,
-                producer_branch: None,
-            };
-            check(&ctx)
-        }
-
-        /// `(task_id, severity)` per finding, in emission order.
-        fn keys(&self) -> Vec<(String, Severity)> {
-            self.run().into_iter().map(|f| (f.task_id, f.severity)).collect()
-        }
-    }
-
-    /// `n` code-less constructor sites, one per line — the dominant real shape
-    /// (`crates/reify-eval/src/geometry_ops.rs:313`).
-    fn codeless_src(n: usize) -> String {
-        (0..n)
-            .map(|i| format!("    diagnostics.push(Diagnostic::error(format!(\"e{i}\")));"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
+    // The `check(...)` fixture and `codeless_src` live in `super::test_support`
+    // so `tests/pdiag_baseline.rs` drives the identical harness. Each caller
+    // owns the tempdir; see that module on why the fixture borrows its root.
 
     #[test]
     fn live_count_equal_to_the_baseline_row_is_clean() {
         // The steady state the ratchet exists to hold: the backlog is exactly
         // as large as the manifest says, so nothing is reported at all.
-        let mut fx = Fixture::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
         fx.write(GEOM, &codeless_src(2)).baseline(&format!("{GEOM} 2\n"));
         assert_eq!(fx.run(), Vec::new());
     }
@@ -1871,7 +1947,8 @@ mod tests {
     fn live_count_over_the_baseline_row_is_one_high_finding() {
         // Someone added a code-less site to a file that already had one. This
         // is the ratchet violation the merge gate exists to catch.
-        let mut fx = Fixture::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
         fx.write(GEOM, &codeless_src(2)).baseline(&format!("{GEOM} 1\n"));
         let findings = fx.run();
         assert_eq!(findings.len(), 1, "expected exactly one finding, got {findings:?}");
@@ -1886,7 +1963,8 @@ mod tests {
     fn a_swept_file_with_no_baseline_row_is_high() {
         // A brand-new file carrying code-less diagnostics — precisely the
         // "enforcement is for new sites" case of PRD §6 decision 3.
-        let mut fx = Fixture::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
         fx.write(GEOM, &codeless_src(2)).baseline("");
         assert_eq!(fx.keys(), vec![(GEOM.to_string(), Severity::High)]);
     }
@@ -1896,7 +1974,8 @@ mod tests {
         // A file whose every constructor carries a code has no live row at
         // all, so an absent baseline row is the correct steady state — not a
         // NewFile violation.
-        let mut fx = Fixture::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
         fx.write(GEOM, "    Diagnostic::error(msg).with_code(DiagnosticCode::X);")
             .baseline("");
         assert_eq!(fx.run(), Vec::new());
@@ -1909,7 +1988,8 @@ mod tests {
         // tokens in pdssentinel.rs doc comments alone), test-support, and any
         // `tests/`-segment path must contribute nothing even with an empty
         // baseline that would otherwise flag every one of them.
-        let mut fx = Fixture::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
         let src = codeless_src(3);
         fx.write("crates/reify-audit/src/pdiag.rs", &src)
             .write("crates/reify-test-support/src/helpers.rs", &src)
@@ -1926,7 +2006,8 @@ mod tests {
         // scaffolding would manufacture a recurring false RED for every future
         // test author, so the in-src `#[cfg(test)]` exclusion must survive the
         // trip through `check`, not just `scan_file`.
-        let mut fx = Fixture::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
         fx.write(
             GEOM,
             &file(&[
@@ -1947,7 +2028,8 @@ mod tests {
         // ls_files() and the working tree can disagree (a deletion staged but
         // not yet reflected, a mid-rebase tree). Fail-safe: skip, never panic
         // and never invent a count. Mirrors ptodo.rs:1418.
-        let mut fx = Fixture::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
         fx.track_only(GEOM).baseline("");
         assert_eq!(fx.run(), Vec::new());
     }
@@ -1956,7 +2038,8 @@ mod tests {
     fn a_non_utf8_tracked_file_is_skipped() {
         // `read_to_string` fails on invalid UTF-8; the detector must degrade
         // to "no sites here" rather than unwrapping.
-        let mut fx = Fixture::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
         fx.write_bytes(GEOM, &[0x66, 0x6f, 0xff, 0xfe, 0x6f]).baseline("");
         assert_eq!(fx.run(), Vec::new());
     }
@@ -1968,10 +2051,11 @@ mod tests {
         // scripts/check-infra-classification-manifest.sh:41-57 refuses to
         // allow. An absent baseline is an EMPTY baseline, so every code-less
         // file is a NewFile violation and the gate goes RED.
-        let mut fx = Fixture::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
         fx.write(GEOM, &codeless_src(2));
         assert!(
-            !fx.root.path().join(BASELINE_PATH).exists(),
+            !fx.root().join(BASELINE_PATH).exists(),
             "fixture must leave the baseline absent"
         );
         assert_eq!(fx.keys(), vec![(GEOM.to_string(), Severity::High)]);
@@ -1982,7 +2066,8 @@ mod tests {
         // A corrupt manifest must never be readable as "allows everything".
         // One High finding, so the exit code moves, and it names both the
         // manifest and the parse error so the fix is obvious.
-        let mut fx = Fixture::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
         fx.write(GEOM, &codeless_src(2)).baseline("this row has three fields\n");
         let findings = fx.run();
         assert_eq!(findings.len(), 1, "expected exactly one finding, got {findings:?}");
@@ -2010,7 +2095,8 @@ mod tests {
         // (lib.rs `run_or_warn`), and an empty census makes every committed row
         // an exit-neutral Medium OrphanRow — the ratchet would report "all
         // clear" from a run that scanned nothing at all.
-        let mut fx = Fixture::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
         let gone = "crates/reify-stdlib/src/dfm.rs";
         // No tracked files whatsoever: the degenerate enumeration.
         fx.baseline(&format!("{GEOM} 2\n{gone} 1\n"));
@@ -2040,7 +2126,8 @@ mod tests {
         // detector's own crate and a shell script reached zero files it could
         // ever have a verdict about, so the manifest is just as unverified as
         // if `ls_files()` had returned nothing.
-        let mut fx = Fixture::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
         fx.write("crates/reify-audit/src/pdiag.rs", &codeless_src(3))
             .write("scripts/not-rust.sh", &codeless_src(3))
             .baseline(&format!("{GEOM} 2\n"));
@@ -2057,7 +2144,8 @@ mod tests {
         // carries a code. Guarding on `live.is_empty()` instead of on the
         // enumeration would turn the ratchet's own success state RED, and the
         // orphan row must still surface as its ordinary Medium advisory.
-        let mut fx = Fixture::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
         let gone = "crates/reify-stdlib/src/dfm.rs";
         fx.write(GEOM, "    Diagnostic::error(msg).with_code(DiagnosticCode::X);")
             .baseline(&format!("{gone} 4\n"));
@@ -2069,7 +2157,8 @@ mod tests {
         // Nothing tracked AND nothing baselined: there is no row whose
         // enforcement just went unverified, so the guard must not manufacture
         // a finding. Hermetic fixture trees rely on this staying quiet.
-        let mut fx = Fixture::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
         fx.baseline("");
         assert_eq!(fx.run(), Vec::new());
     }
@@ -2080,7 +2169,8 @@ mod tests {
         // actionable of the two — it names a line — and reporting the census
         // guard instead would send the reader looking at `git` when the file
         // in front of them will not parse.
-        let mut fx = Fixture::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
         fx.baseline("this row has three fields\n");
         let findings = fx.run();
         assert_eq!(findings.len(), 1, "expected exactly one finding, got {findings:?}");
@@ -2096,7 +2186,8 @@ mod tests {
         // Stable output across runs is what lets the infra gate and a human
         // reviewer diff two runs at all. ls_files() order is deliberately
         // scrambled relative to path order here.
-        let mut fx = Fixture::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
         let a = "crates/reify-compiler/src/expr.rs";
         let b = "crates/reify-eval/src/geometry_ops.rs";
         let c = "crates/reify-stdlib/src/dfm.rs";
@@ -2112,7 +2203,8 @@ mod tests {
     fn an_under_count_and_an_orphan_row_stay_exit_neutral() {
         // Both slack directions reach `check` as Medium advisories. If either
         // were High, deleting a file or fixing one site would block a merge.
-        let mut fx = Fixture::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
         let fixed = "crates/reify-compiler/src/expr.rs";
         let gone = "crates/reify-stdlib/src/dfm.rs";
         fx.write(fixed, &codeless_src(1))

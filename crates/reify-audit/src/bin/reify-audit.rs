@@ -53,47 +53,16 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+// `NoopJCodemunchOps` — the inert stub bound for `--no-jcodemunch` and for
+// detector runs that never touch the seam — now lives in the library, where
+// its doc records the three call sites. It used to be copy-pasted into this
+// bin and both `*-baseline-gen` bins; the library's `MockJCodemunchOps`
+// remains test-only via the `test-support` feature.
 use reify_audit::{
-    AuditContext, ChangedSymbol, DeadSymbol, Finding, JCodemunchOps, LayerViolation, RealGitOps,
-    Severity, SymbolReference, TaskMetadata, TimeWindow, UntestedSymbol,
-    fused_memory_client::FusedMemoryClient,
-    jcodemunch_client::RealJCodemunchOps,
+    AuditContext, Finding, JCodemunchOps, NoopJCodemunchOps, RealGitOps, Severity, TaskMetadata,
+    TimeWindow, fused_memory_client::FusedMemoryClient, jcodemunch_client::RealJCodemunchOps,
     jcodemunch_index,
 };
-
-// -----------------------------------------------------------------------
-// NoopJCodemunchOps — inert stub for non-P1 runs and --no-jcodemunch
-// -----------------------------------------------------------------------
-
-/// Inert no-op implementation of [`JCodemunchOps`].
-///
-/// Used in two cases:
-/// 1. `--no-jcodemunch` explicit escape hatch (offline/test mode — P1
-///    runs but produces zero findings without opening any socket).
-/// 2. Detector runs that don't need jcodemunch (P5/pre-done, P2-only) —
-///    `needs_jcodemunch` returns false, so no connection is ever attempted.
-///
-/// Never escapes this bin file; the library's `MockJCodemunchOps` remains
-/// test-only via the `test-support` feature.
-struct NoopJCodemunchOps;
-
-impl JCodemunchOps for NoopJCodemunchOps {
-    fn get_changed_symbols(&self, _since_sha: &str, _until_sha: &str) -> Vec<ChangedSymbol> {
-        vec![]
-    }
-    fn find_references(&self, _symbol: &ChangedSymbol) -> Vec<SymbolReference> {
-        vec![]
-    }
-    fn get_dead_code(&self, _min_confidence: f64) -> Vec<DeadSymbol> {
-        vec![]
-    }
-    fn get_untested_symbols(&self, _min_confidence: f64) -> Vec<UntestedSymbol> {
-        vec![]
-    }
-    fn get_layer_violations(&self) -> Vec<LayerViolation> {
-        vec![]
-    }
-}
 
 // -----------------------------------------------------------------------
 // Usage / help

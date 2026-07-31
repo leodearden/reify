@@ -34,34 +34,10 @@
 
 use std::path::PathBuf;
 
-use reify_audit::{
-    AuditContext, ChangedSymbol, DeadSymbol, JCodemunchOps, LayerViolation, RealGitOps,
-    SymbolReference, UntestedSymbol,
-};
-
-/// Inert [`JCodemunchOps`] — PDIAG is a purely structural lane (`ls_files` plus
-/// working-tree reads) and never touches the jcodemunch seam, but
-/// `AuditContext` requires the field. Mirrors the `NoopJCodemunchOps` in
-/// `ptodo-baseline-gen` and the main `reify-audit` bin.
-struct NoopJCodemunchOps;
-
-impl JCodemunchOps for NoopJCodemunchOps {
-    fn get_changed_symbols(&self, _since_sha: &str, _until_sha: &str) -> Vec<ChangedSymbol> {
-        vec![]
-    }
-    fn find_references(&self, _symbol: &ChangedSymbol) -> Vec<SymbolReference> {
-        vec![]
-    }
-    fn get_dead_code(&self, _min_confidence: f64) -> Vec<DeadSymbol> {
-        vec![]
-    }
-    fn get_untested_symbols(&self, _min_confidence: f64) -> Vec<UntestedSymbol> {
-        vec![]
-    }
-    fn get_layer_violations(&self) -> Vec<LayerViolation> {
-        vec![]
-    }
-}
+// `NoopJCodemunchOps` is the library's: PDIAG is a purely structural lane
+// (`ls_files` plus working-tree reads) and never touches the jcodemunch seam,
+// but `AuditContext` requires the field.
+use reify_audit::{AuditContext, NoopJCodemunchOps, RealGitOps};
 
 /// The `#` preamble every generated manifest carries.
 ///

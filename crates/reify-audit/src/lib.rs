@@ -1510,6 +1510,44 @@ pub trait JCodemunchOps {
     fn get_layer_violations(&self) -> Vec<LayerViolation>;
 }
 
+/// Inert [`JCodemunchOps`] — every query answers "nothing".
+///
+/// Unlike [`MockJCodemunchOps`] this is NOT test-support: it is the production
+/// binding whenever a run does not need the jcodemunch seam at all, and it is
+/// ungated for exactly that reason. Three call sites, all of them real:
+///
+/// 1. `--no-jcodemunch` — the explicit offline escape hatch: P1 runs and
+///    produces zero findings without opening a socket.
+/// 2. Detector runs that never touch the seam (`needs_jcodemunch() == false`):
+///    P5/pre-done, P2-only, and the purely structural lanes (PTODO, PDIAG).
+/// 3. The `*-baseline-gen` bins, which are structural censuses but still have
+///    to populate [`AuditContext`]'s field.
+///
+/// Lives here rather than in each bin because it was copy-pasted into three of
+/// them, so every future change to the trait had to be replayed by hand in
+/// three places — a silent drift hazard with no compiler backstop until one
+/// copy stopped building. Adding a trait method now breaks exactly one impl.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoopJCodemunchOps;
+
+impl JCodemunchOps for NoopJCodemunchOps {
+    fn get_changed_symbols(&self, _since_sha: &str, _until_sha: &str) -> Vec<ChangedSymbol> {
+        vec![]
+    }
+    fn find_references(&self, _symbol: &ChangedSymbol) -> Vec<SymbolReference> {
+        vec![]
+    }
+    fn get_dead_code(&self, _min_confidence: f64) -> Vec<DeadSymbol> {
+        vec![]
+    }
+    fn get_untested_symbols(&self, _min_confidence: f64) -> Vec<UntestedSymbol> {
+        vec![]
+    }
+    fn get_layer_violations(&self) -> Vec<LayerViolation> {
+        vec![]
+    }
+}
+
 /// HashMap-backed [`JCodemunchOps`] for tests. Gated behind
 /// `feature = "test-support"` so it never pollutes the production public API
 /// (mirrors [`MockGitOps`]). The crate self-pulls this feature in its own
