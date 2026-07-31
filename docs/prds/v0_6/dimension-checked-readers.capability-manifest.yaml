@@ -386,9 +386,15 @@ tasks:
       expect: absent
   - name: rotational-stiffness-dimension-is-under-question-and-OWNED
     binding: 'DimensionVector::ROTATIONAL_STIFFNESS (crates/reify-core/src/dimension.rs:275,
-      [(0,2),(1,1),(2,-2),(7,-1)]) is byte-identical to `pub type Torque = Force *
-      Length / Angle` (crates/reify-compiler/stdlib/ports_mechanical.ri:29), and k
-      = τ/θ arguably implies rad^-2. Handed to PRD 5 by PRD 3''s landed text. RESOLVED,
+      [(0,2),(1,1),(2,-2),(7,-1)]) is byte-identical to DimensionVector::TORQUE
+      (crates/reify-core/src/dimension.rs:328, same exponent tuple), registered as the
+      NAMED_DIMENSIONS row (DimensionVector::TORQUE, "Torque") at dimension.rs:627.
+      [Repointed 2026-07-31: this clause used to cite the stdlib alias `pub type Torque
+      = Force * Length / Angle` at crates/reify-compiler/stdlib/ports_mechanical.ri:29.
+      η (task 5785, merge commit 61300d09) retired that alias and promoted `Torque` to
+      a built-in named dimension, so the byte-identity claim is unchanged but its twin
+      is now the registry const, not a .ri type-alias.] And k = τ/θ arguably implies
+      rad^-2. Handed to PRD 5 by PRD 3''s landed text. RESOLVED,
       not guessed: task ρ (filed live in this batch) owns the ruling; ε reads the
       vector FROM the registry const by reference so a later re-dimensioning is a
       one-line change and the gate can never reject a correctly-declared corpus site.'
