@@ -3939,6 +3939,201 @@ mod tests {
         );
     }
 
+    // ---- classify_uniqueness tests (task #5711) ----
+    //
+    // classify_uniqueness is the pure verdict classifier behind PRD
+    // docs/reify-implementation-architecture.md:1140 §11.6's two disjunctive
+    // well-determinedness tests: parameter comparison answers "uniquely
+    // determined by constraints", objective-score comparison answers
+    // "uniquely optimal under the applicable objective". `objective_scores`
+    // is `(incumbent, perturbed)` on the pure-minimiser scale where LOWER is
+    // better, matching `eval_objective_set`'s convention.
+
+    #[test]
+    fn classify_uniqueness_params_agree_with_score_returns_unique() {
+        use std::collections::HashMap;
+
+        use super::{UniquenessVerdict, classify_uniqueness};
+        use reify_core::ValueCellId;
+
+        let (param_id, params) = test_param();
+
+        let mut solved: HashMap<ValueCellId, _> = HashMap::new();
+        solved.insert(param_id.clone(), scalar(0.5));
+        let mut perturbed: HashMap<ValueCellId, _> = HashMap::new();
+        perturbed.insert(param_id.clone(), scalar(0.5000001)); // within tolerance
+
+        // Even a score pair that LOOKS like a suboptimality signal must not
+        // matter once the params already agree — there's nothing to suppress.
+        let verdict = classify_uniqueness(&params, &solved, &perturbed, Some((10.0, 1.0)));
+        assert_eq!(
+            verdict,
+            UniquenessVerdict::Unique,
+            "params agreeing within tolerance must be Unique regardless of objective_scores"
+        );
+    }
+
+    #[test]
+    fn classify_uniqueness_params_agree_without_score_returns_unique() {
+        use std::collections::HashMap;
+
+        use super::{UniquenessVerdict, classify_uniqueness};
+        use reify_core::ValueCellId;
+
+        let (param_id, params) = test_param();
+
+        let mut solved: HashMap<ValueCellId, _> = HashMap::new();
+        solved.insert(param_id.clone(), scalar(0.5));
+        let mut perturbed: HashMap<ValueCellId, _> = HashMap::new();
+        perturbed.insert(param_id.clone(), scalar(0.5000001));
+
+        let verdict = classify_uniqueness(&params, &solved, &perturbed, None);
+        assert_eq!(
+            verdict,
+            UniquenessVerdict::Unique,
+            "params agreeing within tolerance must be Unique even with no objective score"
+        );
+    }
+
+    #[test]
+    fn classify_uniqueness_params_differ_no_objective_returns_non_unique() {
+        use std::collections::HashMap;
+
+        use super::{UniquenessVerdict, classify_uniqueness};
+        use reify_core::ValueCellId;
+
+        let (param_id, params) = test_param();
+
+        let mut solved: HashMap<ValueCellId, _> = HashMap::new();
+        solved.insert(param_id.clone(), scalar(0.1));
+        let mut perturbed: HashMap<ValueCellId, _> = HashMap::new();
+        perturbed.insert(param_id.clone(), scalar(0.9));
+
+        // No effective objective at all (no explicit, no synthesisable) — the
+        // ONLY applicable §11.6 test is "uniquely determined by constraints",
+        // and the params differ, so NonUnique.
+        let verdict = classify_uniqueness(&params, &solved, &perturbed, None);
+        assert_eq!(verdict, UniquenessVerdict::NonUnique);
+    }
+
+    #[test]
+    fn classify_uniqueness_params_differ_scores_tie_returns_non_unique() {
+        use std::collections::HashMap;
+
+        use super::{UniquenessVerdict, classify_uniqueness};
+        use reify_core::ValueCellId;
+
+        let (param_id, params) = test_param();
+
+        let mut solved: HashMap<ValueCellId, _> = HashMap::new();
+        solved.insert(param_id.clone(), scalar(0.1));
+        let mut perturbed: HashMap<ValueCellId, _> = HashMap::new();
+        perturbed.insert(param_id.clone(), scalar(0.9));
+
+        // Params differ, but the objective ties (flat region) — genuinely
+        // NOT uniquely optimal, so NonUnique (the flat-objective /
+        // defined_objective_at_fallback_returns_solved mechanism).
+        let verdict = classify_uniqueness(&params, &solved, &perturbed, Some((5.0, 5.0)));
+        assert_eq!(verdict, UniquenessVerdict::NonUnique);
+    }
+
+    #[test]
+    fn classify_uniqueness_params_differ_perturbed_strictly_lower_returns_incumbent_suboptimal()
+     {
+        use std::collections::HashMap;
+
+        use super::{UniquenessVerdict, classify_uniqueness};
+        use reify_core::ValueCellId;
+
+        let (param_id, params) = test_param();
+
+        let mut solved: HashMap<ValueCellId, _> = HashMap::new();
+        solved.insert(param_id.clone(), scalar(0.1));
+        let mut perturbed: HashMap<ValueCellId, _> = HashMap::new();
+        perturbed.insert(param_id.clone(), scalar(0.9));
+
+        // Perturbed strictly BETTER (lower, pure-minimiser scale) beyond
+        // tolerance: the incumbent was not the argmin, so this is a
+        // suboptimality finding, not a non-uniqueness one — suppress.
+        let verdict = classify_uniqueness(&params, &solved, &perturbed, Some((10.0, 5.0)));
+        assert_eq!(verdict, UniquenessVerdict::IncumbentSuboptimal);
+    }
+
+    #[test]
+    fn classify_uniqueness_params_differ_perturbed_strictly_higher_returns_non_unique() {
+        use std::collections::HashMap;
+
+        use super::{UniquenessVerdict, classify_uniqueness};
+        use reify_core::ValueCellId;
+
+        let (param_id, params) = test_param();
+
+        let mut solved: HashMap<ValueCellId, _> = HashMap::new();
+        solved.insert(param_id.clone(), scalar(0.1));
+        let mut perturbed: HashMap<ValueCellId, _> = HashMap::new();
+        perturbed.insert(param_id.clone(), scalar(0.9));
+
+        // Perturbed strictly WORSE beyond tolerance: logically inconclusive
+        // (the re-solve may have simply stalled at a worse point), but
+        // DELIBERATELY kept at today's NonUnique verdict — see
+        // classify_uniqueness's doc comment for why. Pinned here so a later
+        // reader cannot mistake this for an oversight.
+        let verdict = classify_uniqueness(&params, &solved, &perturbed, Some((5.0, 10.0)));
+        assert_eq!(verdict, UniquenessVerdict::NonUnique);
+    }
+
+    #[test]
+    fn classify_uniqueness_large_magnitude_tie_uses_relative_tolerance() {
+        use std::collections::HashMap;
+
+        use super::{UniquenessVerdict, classify_uniqueness};
+        use reify_core::ValueCellId;
+
+        let (param_id, params) = test_param();
+
+        let mut solved: HashMap<ValueCellId, _> = HashMap::new();
+        solved.insert(param_id.clone(), scalar(0.1));
+        let mut perturbed: HashMap<ValueCellId, _> = HashMap::new();
+        perturbed.insert(param_id.clone(), scalar(0.9));
+
+        // 1e8-scale pair at the `defined_objective_at_fallback_returns_solved`
+        // magnitude: incumbent 1e8, perturbed 1e8 - 50.0. An ABSOLUTE-only
+        // tolerance (UNIQUENESS_ABS_TOL = 1e-10) would see a diff of 50 as
+        // "different" and misclassify this as IncumbentSuboptimal (perturbed
+        // is numerically lower). The RELATIVE arm (UNIQUENESS_REL_TOL * scale
+        // = 1e-6 * 1e8 = 100) correctly treats a 50-unit difference at this
+        // magnitude as a tie, so the verdict must be NonUnique.
+        let verdict = classify_uniqueness(&params, &solved, &perturbed, Some((1e8, 1e8 - 50.0)));
+        assert_eq!(
+            verdict,
+            UniquenessVerdict::NonUnique,
+            "a 50-unit diff at 1e8 scale is within the RELATIVE tolerance arm and must tie"
+        );
+    }
+
+    #[test]
+    fn classify_uniqueness_params_missing_returns_non_unique() {
+        use std::collections::HashMap;
+
+        use super::{UniquenessVerdict, classify_uniqueness};
+        use reify_core::ValueCellId;
+        use reify_ir::Value;
+
+        let (_param_id, params) = test_param();
+
+        // Both maps empty — the param is missing from both. solutions_agree
+        // already treats this as "loud, not silent" (returns false rather
+        // than defaulting to 0.0); classify_uniqueness must preserve that —
+        // a missing/non-numeric value is never grounds to report Unique.
+        let solved: HashMap<ValueCellId, Value> = HashMap::new();
+        let perturbed: HashMap<ValueCellId, Value> = HashMap::new();
+
+        let verdict = classify_uniqueness(&params, &solved, &perturbed, None);
+        assert_eq!(verdict, UniquenessVerdict::NonUnique);
+    }
+
+    // ---- end classify_uniqueness tests ----
+
     #[test]
     fn single_param_feasibility() {
         use crate::DimensionalSolver;
