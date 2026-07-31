@@ -1235,6 +1235,72 @@ class TestMain(unittest.TestCase):
         )
         self.assertIn("arrow-type", out, "output must include probe capability names")
 
+    # ── diagnosability of HARNESS_ERROR text output (5894 step-7) ─────────────
+    #
+    # The text renderer previews stderr at 200 chars.  For a PASS/FAIL that keeps
+    # output compact, but for a HARNESS_ERROR it truncates away the one thing the
+    # operator needs: WHAT was denied.  The measured cache-denial signature is
+    # 253 chars and the cut lands mid-path at ".../home/leo/", so the reader sees
+    # a permission denial naming nothing -- which is why the original failure cost
+    # several probes to attribute.
+
+    def _cache_denial_runner(self):
+        """Runner whose grammar probe reproduces the measured cache denial.
+
+        exit 1 + "Failed to load language" is what observe() classifies as
+        _HARNESS_ERROR, so this is the real rendering path, not a synthetic one.
+        """
+        return self._make_runner({
+            "grammar": (1, "", _CACHE_DENIED_STDERR),
+            "check":   (1, "", "rejection: bad arg"),
+            "ir":      (0, "a = 0.01 m", ""),
+        })
+
+    def test_harness_error_stderr_is_not_truncated(self):
+        """A HARNESS_ERROR's stderr is emitted in FULL, so the denied path is visible."""
+        rc, out, _ = self._run_main_capturing(
+            [str(_EXAMPLE_PROBE_SET)], runner=self._cache_denial_runner()
+        )
+        self.assertEqual(rc, 70, "precondition: the grammar probe is a HARNESS_ERROR")
+        self.assertIn(
+            "/home/leo/.cache/tree-sitter/lock/reify-69604127a681544d.lock", out,
+            "the 200-char preview cuts the lock path mid-token; a HARNESS_ERROR "
+            "must show the operator WHAT was denied",
+        )
+
+    def test_harness_error_cache_denial_emits_actionable_hint(self):
+        """A recognised cache denial adds a hint naming the cause and the next step."""
+        rc, out, _ = self._run_main_capturing(
+            [str(_EXAMPLE_PROBE_SET)], runner=self._cache_denial_runner()
+        )
+        lowered = out.lower()
+        self.assertIn("tree-sitter", lowered)
+        self.assertIn("cache", lowered)
+        self.assertIn(
+            "--grammar-substrate-status", out,
+            "the hint must point at the mode that turns this into a clean SKIP",
+        )
+
+    def test_non_harness_error_stderr_is_still_previewed(self):
+        """PASS/FAIL results keep the 200-char preview so ordinary output stays compact.
+
+        The untruncated emission is scoped to HARNESS_ERROR precisely because
+        that is the case where the operator needs the whole message; widening it
+        to every verdict would bury a normal run in probe stderr.
+        """
+        long_tail = "TAIL_BEYOND_200_CHARS"
+        runner = self._make_runner({
+            "grammar": (0, "", ""),
+            "check":   (1, "", "rejection: " + ("x" * 250) + long_tail),
+            "ir":      (0, "a = 0.01 m", ""),
+        })
+        rc, out, _ = self._run_main_capturing([str(_EXAMPLE_PROBE_SET)], runner=runner)
+        self.assertEqual(rc, 0, "precondition: no HARNESS_ERROR in this run")
+        self.assertNotIn(
+            long_tail, out,
+            "a non-HARNESS_ERROR result must still be truncated at 200 chars",
+        )
+
     # ── --json output ─────────────────────────────────────────────────────────
 
     def test_main_json_is_parseable(self):
