@@ -2085,6 +2085,38 @@ assert "PS-RC A: cargo-test rc=101 nresults=0 → build-failure" \
 assert "PS-RC A: unknown runner → runner-error (a typo can never silently read as ok)" \
     test "$_PSRC_A_UNKNOWN" = "runner-error"
 
+# ── Arm B: _passset_report_failure <class> <manifest> <rc> <runner> diagnostic
+# contract. Stderr/stdout captured SEPARATELY via the SG3 idiom (:1424):
+# `2>&1 1>/dev/null` inside the `$( )` routes stderr into the capture and
+# discards stdout; `2>/dev/null` does the inverse. This is the byte-stability
+# guard for Block PS — a diagnostic that leaked onto stdout would corrupt the
+# captured pass-set string run_passset's caller compares.
+_PSRC_B_ERR="$(_passset_report_failure build-failure /nonexistent/Cargo.toml 101 nextest 2>&1 1>/dev/null || true)"
+_PSRC_B_OUT="$(_passset_report_failure build-failure /nonexistent/Cargo.toml 101 nextest 2>/dev/null || true)"
+
+assert "PS-RC B: stderr contains the PASSSET-RUN-FAILURE marker" \
+    bash -c 'printf "%s\n" "$1" | grep -q "PASSSET-RUN-FAILURE"' _ "$_PSRC_B_ERR"
+assert "PS-RC B: stderr names the class (class=build-failure)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "class=build-failure"' _ "$_PSRC_B_ERR"
+assert "PS-RC B: stderr names the rc (rc=101)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "rc=101"' _ "$_PSRC_B_ERR"
+assert "PS-RC B: stderr names the runner (runner=nextest)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "runner=nextest"' _ "$_PSRC_B_ERR"
+assert "PS-RC B: stderr names the manifest path (manifest=/nonexistent/Cargo.toml)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "manifest=/nonexistent/Cargo.toml"' _ "$_PSRC_B_ERR"
+assert "PS-RC B: stderr states this is a build/runner failure, NOT a warm-lane CoW divergence (anti-misdiagnosis)" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "not a warm-lane cow divergence"' _ "$_PSRC_B_ERR"
+assert "PS-RC B: stdout is EMPTY (a diagnostic on stdout would corrupt Block PS's pass-set comparison)" \
+    test -z "$_PSRC_B_OUT"
+
+# Anti-tautology: a second invocation with DIFFERENT class/rc/runner must
+# show those fields tracking the arguments, not a hardcoded string.
+_PSRC_B2_ERR="$(_passset_report_failure runner-error /other/Cargo.toml 137 cargo-test 2>&1 1>/dev/null || true)"
+assert "PS-RC B: second invocation's stderr tracks its OWN class (class=runner-error, not hardcoded)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "class=runner-error"' _ "$_PSRC_B2_ERR"
+assert "PS-RC B: second invocation's stderr tracks its OWN rc (rc=137, not hardcoded)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "rc=137"' _ "$_PSRC_B2_ERR"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block PG — Provenance-guard refusal + rename-negative-control (ALWAYS-RUN)
 #
