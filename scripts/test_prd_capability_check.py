@@ -1365,5 +1365,102 @@ class TestBuildCommandAbsoluteFixture(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# 5894 step-1 (RED): grammar_cache_denied() — narrow cache-denial predicate
+# ---------------------------------------------------------------------------
+
+# The exact stderr tree-sitter 0.26.8 emits when the grammar loads but its
+# on-disk lock/cache directory is not writable.  Measured in a sandboxed agent
+# role (`touch ~/.cache/tree-sitter/lock/_probe` → EACCES while the directory is
+# drwxrwxr-x owned by the invoking user — the denial is a landlock LSM hook, not
+# a mode bit, which is precisely why an os.access(..., W_OK) probe cannot see it).
+_CACHE_DENIED_STDERR = (
+    'Error: Failed to load language for path "/home/leo/src/reify/tests/prd-gate/'
+    'fixtures/arrow_type.ri"\n'
+    "Caused by: Failed to load language in current directory:\n"
+    "Permission denied (os error 13) "
+    "(/home/leo/.cache/tree-sitter/lock/reify-69604127a681544d.lock)\n"
+)
+
+
+class TestGrammarCacheDenied(unittest.TestCase):
+    """Pins pcc.grammar_cache_denied(run) -> bool.
+
+    Hermetic: ProbeRun objects are constructed directly, no subprocess.
+
+    The predicate is deliberately NARROW — it requires a grammar *load* failure
+    AND a permission denial simultaneously.  The negative cases below are the
+    load-bearing half: they prove it cannot absorb a genuine grammar regression
+    (which surfaces as a *parse* error, exit 1 with no load failure) nor a
+    non-permission load failure.  Both must keep reaching _HARNESS_ERROR/exit 70,
+    because the skip this predicate authorizes happens in the *callers*, never in
+    the probe verdict.
+    """
+
+    @staticmethod
+    def _run(exit_code, stderr, stdout=""):
+        return pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr)
+
+    # ── positives ─────────────────────────────────────────────────────────────
+
+    def test_measured_sandbox_signature_is_denied(self):
+        """(a) The verbatim measured sandbox stderr → True."""
+        self.assertTrue(
+            pcc.grammar_cache_denied(self._run(1, _CACHE_DENIED_STDERR)),
+            "the measured sandbox cache-denial signature must be recognised",
+        )
+
+    def test_os_error_13_spelling_alone_is_denied(self):
+        """(b) A denial spelled only 'os error 13' (no 'Permission denied') → True.
+
+        tree-sitter surfaces the errno either way depending on which layer
+        reports it; keying on only one spelling would make the guard flaky.
+        """
+        stderr = (
+            "Error: Failed to load language for path \"x.ri\"\n"
+            "Caused by: os error 13\n"
+        )
+        self.assertTrue(pcc.grammar_cache_denied(self._run(1, stderr)))
+
+    # ── negatives (the narrowness guards) ─────────────────────────────────────
+
+    def test_plain_parse_failure_is_not_denied(self):
+        """(c) A real grammar rejection (exit 1, no load failure) → False.
+
+        This is the ABSENT path — the grammar loaded fine and rejected the
+        fixture.  Swallowing it would silently green a probe that legitimately
+        FAILs, which is the whole risk this predicate is narrowed against.
+        """
+        stderr = "x.ri\t0 ms\t(ERROR [0, 0] - [3, 0])\n"
+        self.assertFalse(pcc.grammar_cache_denied(self._run(1, stderr)))
+
+    def test_successful_run_is_not_denied(self):
+        """(d) exit 0 with empty stderr → False."""
+        self.assertFalse(pcc.grammar_cache_denied(self._run(0, "")))
+
+    def test_load_failure_without_permission_indicator_is_not_denied(self):
+        """(e) A load failure with NO permission indicator → False.
+
+        A genuinely broken/absent grammar must still reach HARNESS_ERROR (70)
+        rather than being written off as an environmental skip.  This is the
+        assertion that fails first if someone widens the predicate to 'any load
+        failure'.
+        """
+        stderr = (
+            "Error: Failed to load language for path \"x.ri\"\n"
+            "Caused by: No language found for path\n"
+        )
+        self.assertFalse(pcc.grammar_cache_denied(self._run(1, stderr)))
+
+    def test_permission_denial_without_load_failure_is_not_denied(self):
+        """A permission error unrelated to grammar loading → False.
+
+        Both halves are required.  An EACCES reading the *fixture* is a real
+        harness error the operator needs to see, not a grammar-substrate skip.
+        """
+        stderr = "Error: Permission denied (os error 13) (x.ri)\n"
+        self.assertFalse(pcc.grammar_cache_denied(self._run(1, stderr)))
+
+
 if __name__ == "__main__":
     unittest.main()
