@@ -2463,6 +2463,13 @@ assert "PS-RC D2: stderr names class=build-failure" \
     bash -c 'printf "%s\n" "$1" | grep -q "class=build-failure"' _ "$_PSRC_D2_ERR"
 assert "PS-RC D2: stderr names runner=cargo-test" \
     bash -c 'printf "%s\n" "$1" | grep -q "runner=cargo-test"' _ "$_PSRC_D2_ERR"
+# amendment: the cargo-test branch's counterpart to C1's stdout-shape check —
+# run_passset()'s docblock claims the pass-set is printed to stdout BEFORE
+# the fatal return on BOTH branches; only C1 pinned that for nextest. Without
+# this, a regression that swapped the printf/return order (or dropped the
+# printf) in the cargo-test branch ONLY would go undetected.
+assert "PS-RC D2: stdout keeps the unchanged passed=0 failed=0 ignored=0 shape" \
+    bash -c 'test "$(printf "%s\n" "$1" | head -1)" = "passed=0 failed=0 ignored=0"' _ "$_PSRC_D2_OUT"
 
 # (D3) canned TEST FAILURE: rc=101 — the SAME rc a compile failure produces
 # under libtest — so only the result-line count (not rc alone) can tell
