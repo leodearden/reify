@@ -1949,6 +1949,79 @@ mod tests {
         );
     }
 
+    // ─── Task #5799 (ruled by Leo 2026-07-29): the rotational-stiffness/damping
+    //     ARITHMETIC IDENTITIES ────────────────────────────────────────────────
+    //
+    // These four tests encode the ruling's actual ARGUMENT, not merely its
+    // resulting exponent literal. `rotational_stiffness_has_correct_exponents`
+    // above is a literal echo of the constant it guards: it would pass for any
+    // typo the constant also contained. The identities below close ONLY at
+    // rad⁻², so they are the executable statement of WHY rad⁻² is the unique
+    // correct answer — putting the reasoning in code instead of in a comment,
+    // which is precisely the failure mode that produced the rad⁻¹ bug.
+
+    /// τ = k·θ — rotational stiffness times an angle must be a TORQUE.
+    ///
+    /// Task #5799, ruled by Leo 2026-07-29. Reify's τ is N·m/rad (slot 7 = -1,
+    /// `DimensionVector::TORQUE`), so k = τ/θ forces slot 7 = -2 on k. At the
+    /// pre-ruling rad⁻¹ this product yields ENERGY, not TORQUE.
+    #[test]
+    fn rotational_stiffness_closes_the_torque_identity() {
+        assert_eq!(
+            DimensionVector::ROTATIONAL_STIFFNESS.mul(&DimensionVector::ANGLE),
+            DimensionVector::TORQUE,
+            "τ = k·θ must close: RotationalStiffness · Angle should be Torque \
+             (N·m/rad² · rad = N·m/rad). Task #5799, ruled 2026-07-29."
+        );
+    }
+
+    /// U = ½·k·θ² — rotational stiffness times an angle SQUARED must be ENERGY.
+    ///
+    /// Task #5799, ruled by Leo 2026-07-29. The ½ is a pure number and carries
+    /// no dimension. At the pre-ruling rad⁻¹ this product yields an unnamed
+    /// vector (N·m·rad) matching nothing in `NAMED_DIMENSIONS`.
+    #[test]
+    fn rotational_stiffness_closes_the_energy_identity() {
+        assert_eq!(
+            DimensionVector::ROTATIONAL_STIFFNESS.mul(&DimensionVector::ANGLE.pow(2)),
+            DimensionVector::ENERGY,
+            "U = ½·k·θ² must close: RotationalStiffness · Angle² should be Energy \
+             (N·m/rad² · rad² = J). Task #5799, ruled 2026-07-29."
+        );
+    }
+
+    /// τ = c·θ̇ — rotational damping times an angular velocity must be a TORQUE.
+    ///
+    /// Task #5799, ruled by Leo 2026-07-29. `ANGULAR_VELOCITY` is rad·s⁻¹, so
+    /// c must be kg·m²·s⁻¹·rad⁻² for the product to land on N·m/rad.
+    #[test]
+    fn rotational_damping_closes_the_torque_identity() {
+        assert_eq!(
+            DimensionVector::ROTATIONAL_DAMPING.mul(&DimensionVector::ANGULAR_VELOCITY),
+            DimensionVector::TORQUE,
+            "τ = c·θ̇ must close: RotationalDamping · AngularVelocity should be Torque \
+             (N·m·s/rad² · rad·s⁻¹ = N·m/rad). Task #5799, ruled 2026-07-29."
+        );
+    }
+
+    /// A torque vector must report itself as `"Torque"`.
+    ///
+    /// Task #5799, ruled by Leo 2026-07-29. Pre-ruling, `TORQUE` and
+    /// `ROTATIONAL_STIFFNESS` were byte-identical and `canonical_name()`'s
+    /// forward first-match scan handed torque values the misleading name
+    /// `"RotationalStiffness"`. Once the vectors diverge, TORQUE is the sole
+    /// holder of (0,2)(1,1)(2,-2)(7,-1) and the scan finds it regardless of
+    /// row position.
+    #[test]
+    fn torque_vector_canonical_name_is_torque() {
+        assert_eq!(
+            DimensionVector::TORQUE.canonical_name(),
+            Some("Torque"),
+            "a torque vector must report \"Torque\", not the name of a different \
+             physical quantity. Task #5799, ruled 2026-07-29."
+        );
+    }
+
     #[test]
     fn translational_stiffness_equals_stiffness_alias() {
         // N/m = kg·s⁻² — identical to the existing STIFFNESS constant.
