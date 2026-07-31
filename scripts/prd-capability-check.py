@@ -274,6 +274,63 @@ class ProbeRun:
 _HARNESS_ERROR = "HARNESS_ERROR"
 
 
+# Substrings tree-sitter uses to report an errno-13 denial.  Either spelling may
+# appear depending on which layer surfaces the error, so both are accepted.
+_PERMISSION_DENIAL_MARKERS = ("Permission denied", "os error 13")
+
+# Substring marking a grammar *load* failure, as opposed to a parse failure.
+_GRAMMAR_LOAD_FAILURE_MARKER = "Failed to load language"
+
+
+def grammar_cache_denied(run: ProbeRun) -> bool:
+    """Return True iff `run` shows tree-sitter denied write access to its cache.
+
+    Recognises the condition where the tree-sitter CLI and the generated grammar
+    are both present, but tree-sitter cannot write the on-disk lock/cache
+    directory it needs in order to *load* the grammar — the signature a
+    sandboxed agent role produces when its landlock write set does not grant
+    ``~/.cache/tree-sitter/``::
+
+        Error: Failed to load language for path "…"
+        Caused by: Failed to load language in current directory:
+        Permission denied (os error 13) (~/.cache/tree-sitter/lock/reify-….lock)
+
+    NARROWNESS CONTRACT — this predicate requires BOTH a grammar *load* failure
+    AND a permission denial, and neither half alone is sufficient:
+
+    * A genuine grammar regression surfaces as a *parse* error (exit 1, no load
+      failure) and is therefore never matched, so this can never mask a real
+      capability gap by turning its FAIL into an environmental skip.
+    * A load failure with no permission indicator (a missing or corrupt grammar)
+      is likewise never matched, and keeps reaching _HARNESS_ERROR / exit 70.
+
+    Detection keys on the observed stderr rather than on a filesystem
+    writability query.  ``os.access(path, os.W_OK)`` consults DAC only, so under
+    a landlock LSM hook it reports the directory writable while the write
+    returns EACCES — measured directly: the lock dir is ``drwxrwxr-x`` owned by
+    the invoking user, yet ``touch`` there fails.  Keying on stderr is also
+    robust to tree-sitter relocating its cache via XDG_CACHE_HOME /
+    TREE_SITTER_LIBDIR / TREE_SITTER_DIR, which would defeat any hardcoded path.
+
+    This function is a pure observation over captured output.  It does NOT
+    influence observe(), verdict() or harness_exit_code() — a denied probe still
+    yields HARNESS_ERROR / exit 70, because "I could not run, do not trust me"
+    is the semantically correct verdict and capability manifests cite it as
+    binding evidence.  Callers use this to decide whether to SKIP.
+
+    Args:
+        run: Captured probe output (exit_code, stdout, stderr).
+
+    Returns:
+        True iff stderr shows a grammar load failure accompanied by a
+        permission denial.
+    """
+    stderr = run.stderr
+    if _GRAMMAR_LOAD_FAILURE_MARKER not in stderr:
+        return False
+    return any(marker in stderr for marker in _PERMISSION_DENIAL_MARKERS)
+
+
 def match_predicate(run: ProbeRun, match: Dict[str, Any]) -> bool:
     """Return True iff all fields in the match dict are satisfied by `run`.
 
