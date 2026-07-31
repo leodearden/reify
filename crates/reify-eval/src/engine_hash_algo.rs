@@ -319,8 +319,7 @@ pub struct ContributorWalk {
 // workaround added in commit 95b3d3c6af). Re-verification on 2026-05-11
 // confirmed the attributes are no longer needed:
 //   rustc 1.94.1 (e408947bf 2026-03-25), LLVM 21.1.8
-//   narrow repro: cargo test --release -p reify-eval --test harness_fea_solver_e2e \
-//                 -- kinematic_sweep_closed_chain::
+//   narrow repro: cargo test --release -p reify-eval --test harness_fea_solver_e2e -- kinematic_sweep_closed_chain::
 //   full suite:   cargo test --release -p reify-eval (2116 tests, all passed)
 //   base commit: 65a7156bd40ee9d47c400f6f50a4d6a52212130e
 // The symmetric attributes on `walk_recursive` and `is_editor_debris` were removed in the
