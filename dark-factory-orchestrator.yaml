@@ -650,13 +650,38 @@ sandbox:
 #       everything), whereas pre-seeding /tmp from the existing warm
 #       ~/.cargo/~/.npm (the ticket above) fixes the cold start without
 #       touching verify's cache path at all.
+#   XDG_CACHE_HOME (task 5909): compute_write_set() grants ~/.cache/uv but
+#   NOTHING under ~/.cache/tree-sitter, so a sandboxed role's grammar probe
+#   dies writing ~/.cache/tree-sitter/lock (the failure behind tasks
+#   5894/5904/5897 — test_prd_capability_check.sh, test_prd_gate_corpus.sh,
+#   test_prd_gate_compiler_type_hygiene.sh).
+#     WHY THIS VARIABLE: tree-sitter 0.26.8 (on PATH at
+#     /home/leo/.cargo/bin/tree-sitter) exposes no tree-sitter-specific
+#     cache-dir env var, so XDG_CACHE_HOME is the only lever — MEASURED on
+#     this host to relocate its lib/ + lock/ dirs and to create the whole
+#     tree when the root is absent (no provisioning step needed).
+#     UPSTREAM: cross-repo task 5896 adds the ~/.cache/tree-sitter
+#     carve-out to compute_write_set() directly; landing it retires this
+#     leg of the redirect (same shape as task 5724 above for
+#     ~/.cargo/~/.npm).
+#     DELIBERATELY NOT SEEDED: unlike CARGO_HOME/npm_config_cache, this dir
+#     gets no pre-seed and no tmpfiles `x` age-clean exclusion in
+#     scripts/setup-agent-cache-redirect.sh — the tree-sitter cache is
+#     DERIVED and self-healing (a missing lib/*.so is simply recompiled
+#     from grammar source), so neither fix the seeder exists to provide
+#     applies. Adding a third seeder destination would also turn
+#     tests/infra/test_agent_cache_redirect.sh's G2/G3 ("exactly two
+#     destination dirs", "conf paths == seeder destinations") red for no
+#     benefit — do not "complete the pattern" here.
 #   Restart-tier: inert until the orchestrator restarts (companion task
-#   γ6b). Reify-side seam guard:
+#   γ6b; XDG_CACHE_HOME rides the same tier — config loads once at
+#   startup, no hot-reload). Reify-side seam guard:
 #   tests/infra/test_sandbox_cache_writability_seam.sh.
 role_env_overrides:
   implementer: &sandbox_cache_env
     CARGO_HOME: /tmp/reify-agent-cargo-home
     npm_config_cache: /tmp/reify-agent-npm-cache
+    XDG_CACHE_HOME: /tmp/reify-agent-xdg-cache
   debugger: *sandbox_cache_env
   simple_task: *sandbox_cache_env
 
