@@ -13,6 +13,12 @@
 ; never a second source of truth. It also pins the case count (3), so dropping a
 ; case below is itself a failure.
 ;
+; SCOPE: this file pins the CST shape ONLY. The same sources are still rejected
+; one layer down, at CST→AST lowering, by α's interim `#5482` diagnostic (see
+; `lower_sub` in crates/reify-syntax/src/ts_parser.rs) — the clause parses but
+; no compiler pass reads it until β. A green case below therefore means "the
+; grammar shape is right", never "this source compiles".
+;
 ; Heads-up for future readers: `tree-sitter test` is 218/219 on main because of
 ; the pre-existing and unrelated test/corpus/imaginary_literal.txt failure
 ; (task #5492). That red is NOT your regression — scope any run with

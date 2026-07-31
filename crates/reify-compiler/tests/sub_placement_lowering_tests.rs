@@ -447,55 +447,81 @@ fn match_arm_sub_pose_is_lowered() {
 
 // ── Interim α→β behaviour of the indexed-sub instantiation form ──────────────
 
-/// PIN OF CURRENT (WRONG) BEHAVIOUR, NOT OF DESIRED BEHAVIOUR.
+/// The α→β window is CLOSED by a rejection, and this pins both halves of it.
 ///
 /// `sub legs[k in 0..3] = Leg()` — the indexer clause added by task α of
 /// `docs/prds/v0_6/indexed-sub-instantiation.md` — parses and lowers into
 /// `SubDecl::index_binder` / `index_domain`, but **nothing in reify-compiler
-/// reads those fields yet**. So the clause is parsed and discarded: the source
-/// elaborates to exactly ONE `legs` instance instead of four, with no error and
-/// no warning. That is a silent-miscompile window that stays open until β
-/// (#5482) derives the count cell and elaborates the element template.
+/// reads those fields yet**. Left unguarded that would be a silent miscompile:
+/// the source elaborating to exactly ONE `legs` instance instead of four, with
+/// no error and no warning.
 ///
-/// This test exists so that window is VISIBLE in the suite rather than implicit.
-/// It deliberately asserts today's single-instance outcome AND today's empty
-/// error set, so:
-///   - β cannot land its elaboration without this test going red, forcing the
-///     pin to be replaced by a real N-instance assertion; and
-///   - an interim rejection diagnostic (see below) also goes red here, forcing
-///     the same explicit update.
+/// α closes that window inside its own crate: `reify_syntax::lower_sub` emits
+/// an interim `#5482` rejection over the parse-error channel on every indexer
+/// clause it lowers, so the declaration no longer compiles for any user. The
+/// single-instance shape asserted below is therefore UNREACHABLE in practice —
+/// it is pinned only to document what the fields currently do downstream, and
+/// to make β's elaboration a visible, deliberate change rather than a silent
+/// one.
 ///
-/// The precedent for that interim diagnostic is one arm away in the same
-/// lowering: a collection sub carrying `at <pose>` is grammatically accepted and
-/// then rejected by T2 with `DiagnosticCode::AtOnCollectionSub`
-/// (`crates/reify-compiler/src/entity.rs`, ~line 2656). The indexed sub has no
-/// counterpart. Adding one is the reviewer-preferred fix, but it requires
-/// editing `crates/reify-compiler/src/entity.rs` (and a new `DiagnosticCode`
-/// variant in reify-core) — both OUTSIDE task 5481's locked module set, so it is
-/// filed as follow-up work rather than done here.
+/// The `AtOnCollectionSub` T2 check (`crates/reify-compiler/src/entity.rs`,
+/// ~line 2656) is cited only as the SHAPE β may later promote this to — a
+/// compile-layer `DiagnosticCode` with a code of its own. That promotion is
+/// β's call; the parse layer is where α can reject without widening its module
+/// set, and it is strictly louder (the CLI, MCP, and `parse_or_panic` paths all
+/// hard-abort on a non-empty `parsed.errors`, which no compile-layer diagnostic
+/// achieves).
+///
+/// β (#5482) turns this into a real N-instance assertion when it deletes the
+/// rejection and derives the count cell.
 #[test]
-fn indexed_sub_currently_elaborates_to_one_instance_no_diagnostic() {
+fn indexed_sub_is_rejected_with_interim_diagnostic_and_elaborates_to_one_instance() {
     let source = r#"structure Leg {
     param h: Length = 10mm
 }
 structure Rig {
     sub legs[k in 0..3] = Leg()
 }"#;
-    let compiled = reify_test_support::compile_source_with_stdlib(source);
+    // `compile_source_with_stdlib` cannot be used here: it routes through
+    // `parse_with_stdlib_or_panic`, which PANICS on any parse error, so it
+    // would abort rather than fail informatively now that α rejects at parse
+    // time. The `_allow_parse_errors` variant forwards the parse diagnostics
+    // and still compiles the (here complete) AST, so the rejection and the
+    // elaboration shape can both be asserted in one test.
+    let compiled = reify_test_support::compile_source_with_stdlib_allow_parse_errors(source);
 
+    // Filter to Severity::Error deliberately — do NOT assert on
+    // `diagnostics.len()`. The same parse error appears TWICE by design:
+    // `compile_source_with_stdlib_allow_parse_errors` prepends it as
+    // `Diagnostic::error` (reify-test-support helpers.rs), while
+    // `compile_builder::pre_pass::forward_parse_errors` independently pushes it
+    // as `Diagnostic::warning("parse error: …")`. That duplication is the
+    // helper's contract, not a bug to "fix".
     let errors: Vec<String> = compiled
         .diagnostics
         .iter()
         .filter(|d| d.severity == reify_core::Severity::Error)
         .map(|d| d.message.clone())
         .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "INTERIM PIN (α→β window): an indexed sub must be rejected by exactly \
+         one error diagnostic. If this failed because β started elaborating, \
+         that is progress — replace this pin with a real N-instance assertion \
+         instead of deleting it. Got: {errors:?}"
+    );
     assert!(
-        errors.is_empty(),
-        "INTERIM PIN (α→β window, #5482): an indexed sub currently produces NO \
-         error diagnostic. If this failed because a rejection diagnostic was \
-         added (the `AtOnCollectionSub` precedent) or because β started \
-         elaborating, that is progress — update this test to assert the new \
-         contract instead of deleting it. Got: {errors:?}"
+        errors[0].contains("#5482"),
+        "the rejection must carry the `#5482` cite so β's removal of it is \
+         greppable; got {:?}",
+        errors[0]
+    );
+    assert!(
+        errors[0].contains("legs[k in"),
+        "the rejection must echo the sub and its binder as written, so the user \
+         can see which clause to remove; got {:?}",
+        errors[0]
     );
 
     let rig = compiled
