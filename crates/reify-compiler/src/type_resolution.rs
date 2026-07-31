@@ -4742,6 +4742,60 @@ mod tests {
         }
     }
 
+    /// Regression oracle for the builtin-before-alias half of the same
+    /// precedence contract, but for the DIMENSION-ALGEBRA entry point:
+    /// `resolve_type_alias_expr_to_dimension` — the path `Scalar<Velocity>`
+    /// port fields actually traverse (see ports_mechanical.ri /
+    /// ports_stdlib_compile.rs). `resolve_dimension_type` scans
+    /// `reify_core::NAMED_DIMENSIONS` (dimension.rs:514) so `"Velocity"`
+    /// (dimension.rs:550) is found there first, before the `Named` arm's
+    /// `alias_registry.lookup` fallback. Task #5892.
+    #[test]
+    fn builtin_dimension_shadows_same_named_alias_in_dimension_resolution() {
+        for seeded in [false, true] {
+            let reg = velocity_alias_registry(seeded);
+
+            // Fixture self-check (same rationale as the sibling test above):
+            // without this, an empty or misspelled registry would pass this
+            // test while pinning nothing.
+            assert_eq!(
+                reg.lookup("Velocity").and_then(|e| e.resolved_type.clone()),
+                Some(Type::Scalar {
+                    dimension: DimensionVector::MASS
+                }),
+                "fixture bug (seeded={seeded}): the alias registry entry for \
+                 \"Velocity\" must be present and hold the deliberately-wrong \
+                 MASS dimension, or this test pins nothing"
+            );
+
+            let expr = named_type_expr("Velocity");
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let dim = resolve_type_alias_expr_to_dimension(&expr, &reg, &mut diags);
+
+            assert_eq!(
+                dim,
+                Some(DimensionVector::VELOCITY),
+                "resolve_type_alias_expr_to_dimension (seeded={seeded}) must \
+                 resolve the NAMED_DIMENSIONS builtin \"Velocity\" (via \
+                 resolve_dimension_type) BEFORE consulting the alias \
+                 registry; got: {dim:?}"
+            );
+            assert_ne!(
+                dim,
+                Some(DimensionVector::MASS),
+                "resolve_type_alias_expr_to_dimension (seeded={seeded}) must \
+                 NOT return the alias registry's MASS dimension for \
+                 \"Velocity\" — the builtin must shadow the alias"
+            );
+            assert!(
+                diags.is_empty(),
+                "resolve_type_alias_expr_to_dimension (seeded={seeded}) must \
+                 return via the builtin hit before reaching the \"cannot \
+                 resolve … to a dimension type\" diagnostic; got: {diags:?}"
+            );
+        }
+    }
+
     // ── AnySelector type-name resolution (task 4369 / A2) ────────────────────
     //
     // The bare `Selector` spelling (no kind qualifier) must resolve to
