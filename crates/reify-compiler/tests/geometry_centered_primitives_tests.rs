@@ -13,7 +13,7 @@
 use reify_compiler::geometry_traits_inference::{
     InferredTraits, try_infer_traits_for_function_call,
 };
-use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind, TransformKind};
+use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind, SweepKind, TransformKind};
 use reify_core::{Severity, Type};
 use reify_ir::{BinOp, CompiledExprKind, Value};
 
@@ -303,8 +303,132 @@ fn cylinder_centered_lowers_to_cylinder_plus_translate() {
                      got: {other:?}"
                 ),
             }
+
+            // ── dx/dy expressions: the synthesized zero must be LENGTH ──────────────
+            //
+            // dx/dy are numerically 0, but they are bound into LENGTH-dimensioned
+            // Translate slots, so the literal must carry LENGTH — not bare Real.
+            //
+            // BOTH halves are asserted on purpose. Retyping only `result_type`
+            // would be a static lie the evaluator never reads: eval dispatches on
+            // the runtime `Value` variant and never consults `result_type`
+            // (reify-expr/src/lib.rs:220 and :5779-5780), and the eval-layer arg
+            // gate matches on the Value's own DimensionVector. A `result_type`-only
+            // assertion would therefore pass over exactly the shape that gate
+            // rejects, and `cylinder_centered(5mm, 20mm)` would break the moment
+            // the gate lands — the regression this pin exists to prevent.
+            for slot in ["dx", "dy"] {
+                let (_, expr) = args
+                    .iter()
+                    .find(|(k, _)| k == slot)
+                    .expect("already asserted dx/dy keys are present");
+
+                assert_eq!(
+                    expr.result_type,
+                    Type::length(),
+                    "{slot} must be typed Type::length() — it is bound into a \
+                     LENGTH-dimensioned Translate slot; got {:?}",
+                    expr.result_type
+                );
+
+                assert!(
+                    matches!(
+                        &expr.kind,
+                        CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
+                            if *si_value == 0.0
+                                && *dimension == reify_core::DimensionVector::LENGTH
+                    ),
+                    "{slot} must be Literal(Scalar{{LENGTH, 0.0}}), not Literal(Real(0.0)) — \
+                     a bare Real is what the incoming eval-layer length gate rejects, and its units \
+                     would be silently dropped by eval.as_f64(); got: {:?}",
+                    expr.kind
+                );
+            }
         }
         other => panic!("op[1] must be Transform(Translate), got: {other:?}"),
+    }
+}
+
+/// `revolve_full` injects a literal 2π for the `angle` slot it synthesizes.
+/// That literal must be ANGLE-dimensioned, not a bare `Real`.
+///
+/// SEAM NOTE: this TAU is dimensioned HERE, in the same leaf that dimensions
+/// the three LENGTH literals, per the binding program's seam table — "one
+/// leaf, all four functions" — even though all OTHER angle gating belongs to
+/// `docs/prds/v0_6/angle-units-surface-convergence.md` (PRD 3). Co-located in
+/// this file rather than a new `tests/*.rs` on purpose: a new standalone
+/// integration binary trips both the harness KLOC cap and the
+/// harness-baseline registration guard unless a row is added to the
+/// explicitly-SHRINKING `harness-layout-baseline.manifest`.
+///
+/// This is the ONLY assertion anywhere on `revolve_full`'s synthesized `angle`
+/// arg; nothing else covers it.
+#[test]
+fn revolve_full_injects_angle_dimensioned_tau() {
+    let source = r#"structure def S {
+    let body = revolve_full(rectangle(5mm, 10mm), 0mm, 0mm, 0mm, 0, 0, 1)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template not found");
+
+    let ops = &template.realizations[0].operations;
+
+    // Locate the Sweep by MATCHING, not by a fixed index: `revolve_full` pushes
+    // its Sweep onto a `sub_ops` that already holds the inline `rectangle`'s
+    // Profile op, so the Sweep's position depends on how the profile argument
+    // lowers. A fixed index would break as a confusing navigation panic on any
+    // unrelated `rectangle` lowering change.
+    let (_, angle_expr) = ops
+        .iter()
+        .find_map(|op| match op {
+            CompiledGeometryOp::Sweep {
+                kind: SweepKind::Revolve,
+                args,
+                ..
+            } => args.iter().find(|(k, _)| k == "angle"),
+            _ => None,
+        })
+        .expect("revolve_full must lower to a Sweep{Revolve} carrying an `angle` arg");
+
+    assert_eq!(
+        angle_expr.result_type,
+        reify_core::Type::angle(),
+        "revolve_full's injected angle must be typed Type::angle(); got {:?}",
+        angle_expr.result_type
+    );
+
+    assert!(
+        matches!(
+            &angle_expr.kind,
+            CompiledExprKind::Literal(Value::Scalar { dimension, .. })
+                if *dimension == reify_core::DimensionVector::ANGLE
+        ),
+        "revolve_full's injected angle must be Literal(Scalar{{ANGLE, ..}}), not \
+         Literal(Real(..)) — eval dispatches on the runtime Value, so a bare Real \
+         is what an angle gate rejects; got: {:?}",
+        angle_expr.kind
+    );
+
+    // Bit-exact on purpose, and NOT a tuned tolerance: the implementation copies
+    // the constant verbatim into `Value::Scalar { si_value }` with no arithmetic,
+    // and the SI base unit for ANGLE is the radian, so no conversion intervenes.
+    // Asserting only "is ANGLE-dimensioned" would let a future edit silently
+    // substitute PI (half-turn) while keeping this test green, losing
+    // `revolve_full`'s defining full-turn semantics.
+    match &angle_expr.kind {
+        CompiledExprKind::Literal(Value::Scalar { si_value, .. }) => {
+            assert_eq!(
+                *si_value,
+                std::f64::consts::TAU,
+                "revolve_full's angle must be exactly TAU radians (a FULL turn) — \
+                 PI would silently produce a half revolve"
+            );
+        }
+        other => panic!("angle must be a Scalar literal, got: {other:?}"),
     }
 }
 
