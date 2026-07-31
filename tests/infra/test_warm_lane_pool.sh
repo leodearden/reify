@@ -1196,24 +1196,45 @@ run_passset() {
                 ;;
         esac
     else
-        # cargo test: capture test names and the summary line
-        test_output="$(
+        # cargo test: capture raw output + rc FIRST, normalize SECOND — same
+        # split as the nextest branch above, same rationale (avoids
+        # PIPESTATUS; keeps the normalizer a pure filter; `raw` declared
+        # bare so its assignment's own exit status, not `local`'s, reaches
+        # `|| rc=$?`).
+        #
+        # NOTE: no `-- --test-output immediate-fail` here. That flag is
+        # NEXTEST-only; libtest rejects it (`error: Unrecognized option:
+        # 'test-output'`, probed empirically) and aborts before running any
+        # test, so restoring it would make this branch report
+        # build-failure on EVERY run, healthy or not (#5885) — do not add
+        # it back.
+        local raw
+        raw="$(
             CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
                 cargo test \
-                    --manifest-path "$manifest" \
-                    -- --test-output immediate-fail 2>&1 \
-            || true
-        )"
+                    --manifest-path "$manifest" 2>&1
+        )" || rc=$?
         # Extract sorted test identifiers via _passset_normalize_cargo_test
         local test_lines
-        test_lines="$(printf '%s\n' "$test_output" \
+        test_lines="$(printf '%s\n' "$raw" \
             | _passset_normalize_cargo_test \
             || true)"
         passed="$(printf '%s\n' "$test_lines" | grep -c '\.\.\. ok$' || true)"
         failed="$(printf '%s\n' "$test_lines" | grep -c '\.\.\. FAILED$' || true)"
         ignored="$(printf '%s\n' "$test_lines" | grep -c '\.\.\. ignored$' || true)"
+        nresults="$(printf '%s\n' "$test_lines" | grep -c '.' || true)"
         printf 'passed=%s failed=%s ignored=%s\n%s\n' \
             "$passed" "$failed" "$ignored" "$test_lines"
+        # libtest exits 101 for BOTH a compile failure and an honest test
+        # failure — nresults (not rc alone) is what tells them apart.
+        class="$(_passset_classify_rc cargo-test "$rc" "$nresults")"
+        case "$class" in
+            ok|test-failures) ;;
+            *)
+                _passset_report_failure "$class" "$manifest" "$rc" cargo-test
+                return 3
+                ;;
+        esac
     fi
 }
 
