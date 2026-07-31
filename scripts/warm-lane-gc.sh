@@ -668,7 +668,7 @@ _do_reclaim() {
                 # anyway — the α call's whole output is piped through the [seed]
                 # warn loop above, to protect this script's own single-line
                 # stdout contract.
-                warn "  reset did not certify $name (seed-script exited non-zero); discarding the uncertified target/"
+                warn "  reset did not certify $name (seed-script exited non-zero); discarding any target/ it left behind"
                 # Probe BEFORE the rm: `rm -rf` exits 0 on a missing path, so its
                 # own status cannot tell "removed the uncertified target/" from
                 # "there was nothing there". A seed can refuse with the lane

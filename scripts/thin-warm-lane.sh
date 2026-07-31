@@ -318,7 +318,7 @@ if [ -n "$RESEED" ]; then
         # that clone in place, which makes discarding it the caller's obligation.
         # docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13, "Caller obligation
         # on the fail-closed path", is the single normative home for the ruling.
-        warn "Re-seed did not certify the lane ($SEED_SCRIPT exited non-zero); discarding the uncertified clone"
+        warn "Re-seed did not certify the lane ($SEED_SCRIPT exited non-zero); discarding any clone it left behind"
         # Probe BEFORE the rm: `rm -rf` exits 0 on a missing path, so its own
         # status cannot tell "removed the uncertified clone" from "there was
         # nothing there". Both happen here — a seed that refuses BEFORE staging
