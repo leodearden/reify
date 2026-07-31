@@ -151,6 +151,99 @@ exit 0
 STUB_EOF
 chmod +x "$STUB_DIR/git"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# _PSRC_STUB_DIR — dedicated PATH-stub for run_passset()'s rc-classification
+# coverage (Block PS-RC, task #5885). DELIBERATELY SEPARATE from STUB_DIR
+# above: Blocks FC/SG/PRIV prepend STUB_DIR to PATH to drive the REAL
+# seed-warm-lane.sh, so planting a `cargo`/`cargo-nextest` stub there could
+# silently alter those blocks. Nothing here compiles anything — argv is
+# recorded, output/rc are canned via env knobs — so Block PS-RC's arms run in
+# milliseconds with zero cargo invocations.
+#
+# Split into two directories so a caller can independently control whether
+# `command -v cargo-nextest` succeeds, which run_passset's branch-selection
+# `if` OR-gates against `cargo nextest --version`:
+#   $_PSRC_STUB_DIR          — the `cargo` stub only.
+#   $_PSRC_STUB_DIR_NEXTEST  — a NESTED dir holding a `cargo-nextest` stub,
+#                              kept out of $_PSRC_STUB_DIR itself so a PATH
+#                              can include the former without the latter.
+#                              Arm C (nextest branch) puts BOTH dirs on PATH;
+#                              arm D (cargo-test fallback) puts ONLY
+#                              $_PSRC_STUB_DIR on PATH (plus /usr/bin:/bin,
+#                              excluding ~/.cargo/bin) so `command -v
+#                              cargo-nextest` genuinely fails rather than
+#                              finding either our stub or the host's real
+#                              plugin — the only way to reach the `cargo
+#                              nextest --version` half of the OR-gate that
+#                              REIFY_TEST_PASSSET_NEXTEST=0 controls.
+# Nested under $_PSRC_STUB_DIR (not a second _TMPDIRS entry): the parent's
+# `rm -rf` in cleanup() already reclaims it.
+#
+# Env knobs read by the `cargo` stub:
+#   REIFY_TEST_PASSSET_CALLS    — argv sink (both stubs); default /dev/null.
+#   REIFY_TEST_PASSSET_NEXTEST  — `cargo nextest --version` probe result:
+#                                 "1" (default) → exit 0 (available);
+#                                 anything else → exit 1 (unavailable).
+#   REIFY_TEST_PASSSET_OUT      — path to a file whose contents are cat'd to
+#                                 stdout for a `nextest run` / `test`
+#                                 invocation (the canned fixture).
+#   REIFY_TEST_PASSSET_RC       — exit code for a `nextest run` / `test`
+#                                 invocation; default 0.
+# ─────────────────────────────────────────────────────────────────────────────
+_PSRC_STUB_DIR="$(mktemp -d /tmp/test-warm-pool-psrc-stub-XXXXXX)"
+_TMPDIRS+=("$_PSRC_STUB_DIR")
+
+_PSRC_STUB_DIR_NEXTEST="$_PSRC_STUB_DIR/nextest-plugin"
+mkdir -p "$_PSRC_STUB_DIR_NEXTEST"
+
+_PSRC_CALLS_FILE="$(mktemp /tmp/test-warm-pool-psrc-calls-XXXXXX)"
+_TMPDIRS+=("$_PSRC_CALLS_FILE")
+
+_PSRC_ERRF="$(mktemp /tmp/test-warm-pool-psrc-err-XXXXXX)"
+_TMPDIRS+=("$_PSRC_ERRF")
+
+# cargo stub: record argv; answer `nextest --version` per
+# REIFY_TEST_PASSSET_NEXTEST; for `nextest run …` / `test …`, cat the canned
+# fixture named by REIFY_TEST_PASSSET_OUT (if set) to stdout, then exit
+# REIFY_TEST_PASSSET_RC (default 0). Any other invocation shape is a loud
+# failure rather than a silent pass-through, so a call this stub does not
+# recognize cannot masquerade as a canned result.
+cat > "$_PSRC_STUB_DIR/cargo" << 'PSRC_CARGO_EOF'
+#!/usr/bin/env bash
+echo "cargo $*" >> "${REIFY_TEST_PASSSET_CALLS:-/dev/null}"
+
+if [ "${1:-}" = "nextest" ] && [ "${2:-}" = "--version" ]; then
+    if [ "${REIFY_TEST_PASSSET_NEXTEST:-1}" = "1" ]; then
+        echo "cargo-nextest-stub 0.0.0 (canned)"
+        exit 0
+    fi
+    exit 1
+fi
+
+case "${1:-}" in
+    nextest|test)
+        if [ -n "${REIFY_TEST_PASSSET_OUT:-}" ] && [ -f "${REIFY_TEST_PASSSET_OUT:-}" ]; then
+            cat "${REIFY_TEST_PASSSET_OUT}"
+        fi
+        exit "${REIFY_TEST_PASSSET_RC:-0}"
+        ;;
+esac
+
+echo "cargo-stub (Block PS-RC, #5885): unhandled invocation: $*" >&2
+exit 127
+PSRC_CARGO_EOF
+chmod +x "$_PSRC_STUB_DIR/cargo"
+
+# cargo-nextest stub: argv-recording only, always exit 0. Lives in the nested
+# $_PSRC_STUB_DIR_NEXTEST (see header above) so it can be included/excluded
+# from PATH independently of the cargo stub.
+cat > "$_PSRC_STUB_DIR_NEXTEST/cargo-nextest" << 'PSRC_NEXTEST_EOF'
+#!/usr/bin/env bash
+echo "cargo-nextest $*" >> "${REIFY_TEST_PASSSET_CALLS:-/dev/null}"
+exit 0
+PSRC_NEXTEST_EOF
+chmod +x "$_PSRC_STUB_DIR_NEXTEST/cargo-nextest"
+
 # run_helper — invoke SEED_SCRIPT under stub PATH; capture OUT/ERR_OUT/RC.
 run_helper() {
     local rc=0
