@@ -1112,6 +1112,30 @@ _passset_classify_rc() {
     return 0
 }
 
+# _passset_report_failure(class, manifest, rc, runner) — loud, greppable
+# diagnostic for a run_passset() classification other than ok/test-failures.
+# Writes a multi-line block to STDERR ONLY (grouped `{ …; } >&2`) and never
+# touches stdout, so a fatal run's diagnostic can never corrupt the pass-set
+# string the caller captures via `$( )` — that byte-stability is what keeps
+# Block PS's comparison semantics unchanged (#5885). Always returns 0; all
+# four fields are interpolated from the arguments, never hardcoded.
+#
+# Line 1 carries the single stable marker token PASSSET-RUN-FAILURE plus
+# machine-readable class=/runner=/rc=/manifest= fields (grep-friendly).
+# The remaining lines exist to stop the #5878-shaped misdiagnosis by name:
+# a reader who sees Block PS's identity assert fail must land here and learn
+# this is a BUILD/RUNNER failure, NOT a warm-lane CoW divergence.
+_passset_report_failure() {
+    local class="$1" manifest="$2" rc="$3" runner="$4"
+    {
+        echo "ERROR: PASSSET-RUN-FAILURE class=$class runner=$runner rc=$rc manifest=$manifest"
+        echo "  run_passset() could not produce a valid pass-set: the cargo run"
+        echo "  did not complete (see class= above)."
+        echo "  This is a BUILD/RUNNER failure, NOT a warm-lane CoW divergence (#5885)."
+    } >&2
+    return 0
+}
+
 # run_passset(manifest) — run the workspace tests (cargo nextest run if available,
 # else cargo test) and produce a normalized, deterministic string capturing the
 # sorted test identifiers plus the pass/fail counts.  Output is on stdout.
