@@ -293,6 +293,41 @@ impl DimensionVector {
     pub const TRANSLATIONAL_DAMPING: DimensionVector =
         DimensionVector::from_exps(&[(1, 1), (2, -1)]);
 
+    // ─── Angle-units surface convergence (task η / PRD v0_6) ────────────────────
+
+    /// Torque: N·m/rad = kg·m²·s⁻²·rad⁻¹ — Force·Length/Angle.
+    ///
+    /// Distinct from `ENERGY` (J = N·m) precisely by the Angle⁻¹ slot; see
+    /// `torque_dim_differs_from_energy_dim_via_angle_slot` below.
+    ///
+    /// Numerically identical to [`ROTATIONAL_STIFFNESS`](Self::ROTATIONAL_STIFFNESS).
+    /// Both names exist because `docs/prds/v0_6/angle-units-surface-convergence.md`
+    /// §6 D4 registers `Torque` in ALIAS POSITION — a NAME ADDITION so `.ri`
+    /// authors can write `param t : Torque` with no stdlib import, deliberately
+    /// NOT a re-dimensioning. The `NAMED_DIMENSIONS` row is therefore placed
+    /// AFTER the `RotationalStiffness` row, keeping `canonical_name()`'s answer
+    /// for this vector unchanged at `"RotationalStiffness"` (PRD §9 row B10)
+    /// while the name→dim direction still resolves `Torque` via
+    /// `resolve_dimension_type`.
+    ///
+    /// Spelled out slot-by-slot rather than as `= DimensionVector::ROTATIONAL_STIFFNESS`
+    /// ON PURPOSE — the equality is CONTINGENT, not definitional. (Contrast
+    /// [`TRANSLATIONAL_STIFFNESS`](Self::TRANSLATIONAL_STIFFNESS), which IS
+    /// defined as `= STIFFNESS` because there the identity is definitional: both
+    /// are N/m.)
+    ///
+    /// FORWARD-COUPLING BREADCRUMB: PRD §10 / §11 Q1 leaves PRD 5 an open
+    /// question about re-dimensioning `ROTATIONAL_STIFFNESS` to
+    /// `Force·Length/Angle²` (since τ = k·θ forces k = τ/θ). If that ever lands,
+    /// this row STOPS being an alias: `canonical_name()` for this vector flips
+    /// from `"RotationalStiffness"` to `"Torque"`, and every reverse-lookup
+    /// consumer's output changes with it. That must be done DELIBERATELY, not
+    /// incidentally — which is why the independent slot spelling here makes
+    /// `torque_named_dimension_registered_as_alias_after_rotational_stiffness`
+    /// fail loudly at exactly that decision point.
+    pub const TORQUE: DimensionVector =
+        DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -2), (7, -1)]);
+
     const fn basis(index: usize) -> DimensionVector {
         let mut v = [Rational::ZERO; 10];
         v[index] = Rational::ONE;
@@ -503,14 +538,30 @@ pub const FORCE: DimensionVector = {
 /// This table drives both:
 /// - [`DimensionVector::canonical_name`] — dimension → name direction (linear scan forward).
 /// - `resolve_dimension_type` in `crates/reify-compiler/src/type_resolution.rs` — name → dimension
-///   direction (linear scan backward).
+///   direction (linear scan forward).
+///
+/// Both directions are FIRST-MATCH, which is why ENTRY ORDER IS LOAD-BEARING: an
+/// alias row (`TranslationalStiffness`, `Curvature`, `Momentum`, `Torque`) is placed
+/// AFTER the canonical row it shares a vector with, so `canonical_name()` keeps
+/// returning the canonical name while the alias name still resolves in the
+/// name→dim direction. Inserting one BEFORE its canonical row would silently
+/// change every reverse-lookup consumer's output.
 ///
 /// **`DIMENSIONLESS` is intentionally excluded.** `canonical_name` returns `None` for
 /// `DIMENSIONLESS` via the search-miss path (the existing contract), while `resolve_dimension_type`
 /// special-cases `"Dimensionless" => DimensionVector::DIMENSIONLESS` as a separate fallback arm.
 ///
-/// The slice contains 34 entries, one per named singleton, in the same order as the
-/// original `canonical_name` match arms (LENGTH .. FORCE_DENSITY).
+/// Composition: the leading run (LENGTH .. FORCE_DENSITY) is one row per named
+/// singleton, in the same order as the original `canonical_name` match arms;
+/// everything after it was appended by a later task, including the alias rows
+/// noted above.
+///
+/// NO entry count is quoted here, deliberately. Nothing derives one — every
+/// consumer iterates the slice — so a number in this comment is pure maintenance
+/// debt that silently rots on the next addition. It already has: the original
+/// "34 entries" claim was stale before task η even touched it, and a subsequent
+/// reviewer then mis-derived a replacement by hand. Count the rows if you need
+/// the number; do not re-enshrine one here.
 pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     (DimensionVector::LENGTH, "Length"),
     (DimensionVector::MASS, "Mass"),
@@ -570,6 +621,10 @@ pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     // alias precedent (task 3603 / GHR-α).
     (DimensionVector::TRANSLATIONAL_STIFFNESS, "TranslationalStiffness"),
     (DimensionVector::ROTATIONAL_STIFFNESS, "RotationalStiffness"),
+    // Alias row (task η) — MUST stay after "RotationalStiffness". See the
+    // `DimensionVector::TORQUE` docs for why; the ordering itself is pinned by
+    // `torque_named_dimension_registered_as_alias_after_rotational_stiffness`.
+    (DimensionVector::TORQUE, "Torque"),
     (DimensionVector::ROTATIONAL_DAMPING, "RotationalDamping"),
     (DimensionVector::TRANSLATIONAL_DAMPING, "TranslationalDamping"),
     (DimensionVector::ABSORPTION_COEFF, "AbsorptionCoeff"),
@@ -1527,6 +1582,85 @@ mod tests {
             torque.content_hash(),
             energy.content_hash(),
             "Torque and Energy content hashes must differ"
+        );
+    }
+
+    /// Executable pin for the `DimensionVector::TORQUE` contract — see that
+    /// constant's docs for the PRD §6 D4 rationale.
+    /// Asserts, in order: (a) the exponent slots, spelled literally; (b) the
+    /// shared-vector claim; (c) the load-bearing row ORDER; (d) the
+    /// non-breaking `canonical_name()` guarantee.
+    ///
+    /// (b) and (d) are CONTINGENT, not definitional — if PRD 5 ever
+    /// re-dimensions `ROTATIONAL_STIFFNESS`, they are the intended LOUD
+    /// failure and the human decision point, not incidental collateral. (a) is
+    /// the one that holds regardless, hence the slot-by-slot spelling.
+    #[test]
+    fn torque_named_dimension_registered_as_alias_after_rotational_stiffness() {
+        // (a) Exponent slots, pinned literally: kg·m²·s⁻²·rad⁻¹.
+        let t = DimensionVector::TORQUE;
+        assert_eq!(
+            t.0[0],
+            Rational::new(2, 1),
+            "TORQUE slot 0 (Length) should be 2"
+        );
+        assert_eq!(t.0[1], Rational::ONE, "TORQUE slot 1 (Mass) should be 1");
+        assert_eq!(
+            t.0[2],
+            Rational::new(-2, 1),
+            "TORQUE slot 2 (Time) should be -2"
+        );
+        assert_eq!(
+            t.0[7],
+            Rational::new(-1, 1),
+            "TORQUE slot 7 (Angle) should be -1"
+        );
+        for (i, slot) in t.0.iter().enumerate() {
+            if !matches!(i, 0 | 1 | 2 | 7) {
+                assert_eq!(*slot, Rational::ZERO, "TORQUE slot {i} should be ZERO");
+            }
+        }
+
+        // (b) D4 shared-vector claim — exact, both being the same from_exps list.
+        assert_eq!(
+            DimensionVector::TORQUE,
+            DimensionVector::ROTATIONAL_STIFFNESS,
+            "TORQUE and ROTATIONAL_STIFFNESS share one vector under PRD §6 D4; \
+             if PRD 5 re-dimensions ROTATIONAL_STIFFNESS to Force·Length/Angle², \
+             this failure is the intended decision point"
+        );
+
+        // (c) Exactly one "Torque" row, placed AFTER "RotationalStiffness".
+        let torque_rows: Vec<usize> = super::NAMED_DIMENSIONS
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, name))| *name == "Torque")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            torque_rows.len(),
+            1,
+            "NAMED_DIMENSIONS should contain exactly one \"Torque\" row, found {torque_rows:?}"
+        );
+        let rot_stiffness_idx = super::NAMED_DIMENSIONS
+            .iter()
+            .position(|(_, name)| *name == "RotationalStiffness")
+            .expect("NAMED_DIMENSIONS should contain a \"RotationalStiffness\" row");
+        assert!(
+            torque_rows[0] > rot_stiffness_idx,
+            "the \"Torque\" row (index {}) must come strictly AFTER the \
+             \"RotationalStiffness\" row (index {rot_stiffness_idx}); canonical_name is a \
+             forward first-match scan, so placing it earlier would silently flip every \
+             reverse-lookup consumer's output",
+            torque_rows[0]
+        );
+
+        // (d) Non-breaking guarantee — dim→name output must NOT flip to "Torque".
+        assert_eq!(
+            DimensionVector::TORQUE.canonical_name(),
+            Some("RotationalStiffness"),
+            "canonical_name() for the shared vector must stay \"RotationalStiffness\" \
+             (PRD §9 row B10); a flip to \"Torque\" means the row was mis-ordered"
         );
     }
 

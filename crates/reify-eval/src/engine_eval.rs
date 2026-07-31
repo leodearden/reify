@@ -56,16 +56,21 @@ use crate::{
 /// occurrence template through the SAME module-first/prelude-fallback rule the
 /// evaluator uses — stdlib `Output` occurrence templates (`STLOutput` et al.)
 /// live in the prelude, not `CompiledModule::templates`.
+/// This is a thin `&CompiledModule` adapter over
+/// [`crate::unfold::find_template_in_scope`], which is the single source of
+/// truth for the module-first/prelude-fallback rule. `unfold.rs` cannot call
+/// this overload — its recursion carries `&[TopologyTemplate]`, not the owning
+/// `CompiledModule` — so the rule lives there and this delegates. Keep it that
+/// way: the two sites diverging is exactly the defect esc-5360-9 reported (the
+/// instance-scope nesting recursion resolved module-only, so a prelude-typed
+/// nested sub was silently skipped AND then falsely reported "not found in this
+/// module").
 pub(crate) fn find_template_with_prelude<'a>(
     module: &'a CompiledModule,
     prelude: &'a [CompiledModule],
     name: &str,
 ) -> Option<&'a TopologyTemplate> {
-    find_template(&module.templates, name).or_else(|| {
-        prelude
-            .iter()
-            .find_map(|pm| find_template(&pm.templates, name))
-    })
+    crate::unfold::find_template_in_scope(&module.templates, prelude, name)
 }
 
 /// Sentinel substring included in every panic raised by
@@ -4400,6 +4405,8 @@ impl Engine {
                                 &sub.args,
                                 &self.meta_map,
                                 &mut diagnostics,
+                                &module.templates,
+                                self.prelude,
                             );
                         }
 
@@ -4456,6 +4463,8 @@ impl Engine {
                             overrides,
                             &self.meta_map,
                             &mut diagnostics,
+                            &module.templates,
+                            self.prelude,
                         );
 
                         // Per-key SIR-α StructureInstance at
@@ -4518,6 +4527,7 @@ impl Engine {
                         &self.meta_map,
                         &mut diagnostics,
                         &module.templates,
+                        self.prelude,
                         &mut unfold_budget,
                     );
                     continue;
@@ -4538,6 +4548,8 @@ impl Engine {
                     &sub.args,
                     &self.meta_map,
                     &mut diagnostics,
+                    &module.templates,
+                    self.prelude,
                 );
 
                 // task 3540 (SIR-α), handler esc-3540-182 (A): expose the
