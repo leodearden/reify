@@ -802,11 +802,53 @@ impl<'a> Lowering<'a> {
             .collect()
     }
 
+    /// Dot-join a `namespaced_name` node's `binding` and `name` CST fields.
+    ///
+    /// Returns `None` if `node` is not a `namespaced_name` or is missing either
+    /// field (only reachable on an error-recovery tree).
+    ///
+    /// **Encoding contract for the resolution phase (task ν; PRD
+    /// `docs/prds/v0_6/stdlib-namespace.md` §3.3 NS-Q1/Q3, D-7).** A qualified
+    /// reference through an import binding (`pp.Pulley`, from `import parts as
+    /// pp`) is carried DOT-JOINED in the existing `String` name slots —
+    /// `TypeExprKind::Named { name }`, `SubDecl::structure_name`, and
+    /// `ExprKind::FunctionCall { name }`. μ deliberately introduces NO new
+    /// `TypeExprKind` / `ExprKind` variant: `.` is not a legal identifier
+    /// character, so `name.contains('.')` is an unambiguous, cheap discriminator
+    /// for ν's resolution-phase rewrite. That mirrors resolution-unification D-9
+    /// exactly (the parse leaves an under-specified form; resolution rewrites
+    /// it), and it is already this AST's convention for module paths
+    /// (`ImportDecl::path` is a dot-joined `String`).
+    ///
+    /// Joining the two FIELDS — rather than reading the node's source text — is
+    /// what normalises interior whitespace, so `pp . Pulley` yields exactly
+    /// `"pp.Pulley"` and ν's discriminator never has to cope with a spaced
+    /// variant. Pinned by `qualified_type_whitespace_is_normalised` and
+    /// `sub_structure_name_whitespace_is_normalised` in
+    /// `tests/harness_syntax/namespaced_ref_lowering_tests.rs`.
+    ///
+    /// Pre-ν behaviour is loud, never silent: an unresolved `"pp.Pulley"`
+    /// produces the ordinary unresolved-name / unknown-type diagnostic.
+    fn namespaced_name_text(&self, node: tree_sitter::Node) -> Option<String> {
+        if node.kind() != "namespaced_name" {
+            return None;
+        }
+        let binding = node.child_by_field_name("binding")?;
+        let name = node.child_by_field_name("name")?;
+        Some(format!(
+            "{}.{}",
+            self.node_text(binding),
+            self.node_text(name)
+        ))
+    }
+
     /// Lower a type_expr node to a TypeExpr. Handles bare identifiers, parameterized types,
-    /// and qualified associated-type paths (`Beam::Material`, `Beam::(HasMaterial::Material)`).
+    /// qualified associated-type paths (`Beam::Material`, `Beam::(HasMaterial::Material)`),
+    /// and namespaced references through an import binding (`pp.Pulley`).
     fn lower_type_expr_node(&self, node: tree_sitter::Node) -> TypeExpr {
         if node.kind() == "type_expr" {
-            // type_expr is choice(function_type, parameterized_type, qualified_type, identifier)
+            // type_expr is choice(function_type, parameterized_type, qualified_type,
+            // namespaced_name, identifier)
             let child = node.child(0).unwrap_or(node);
             if child.kind() == "function_type" {
                 return self.lower_function_type(child);
@@ -816,6 +858,17 @@ impl<'a> Lowering<'a> {
             }
             if child.kind() == "qualified_type" {
                 return self.lower_qualified_type(child);
+            }
+            // Namespaced reference `pp.Pulley` (task 5495 μ) — see
+            // `namespaced_name_text` for the dot-joined encoding contract.
+            if let Some(dotted) = self.namespaced_name_text(child) {
+                return TypeExpr {
+                    kind: TypeExprKind::Named {
+                        name: dotted,
+                        type_args: vec![],
+                    },
+                    span: self.span(child),
+                };
             }
             // bare identifier
             TypeExpr {
@@ -831,6 +884,16 @@ impl<'a> Lowering<'a> {
             self.lower_parameterized_type(node)
         } else if node.kind() == "qualified_type" {
             self.lower_qualified_type(node)
+        } else if let Some(dotted) = self.namespaced_name_text(node) {
+            // Un-wrapped `namespaced_name` (e.g. a `sub`'s structure_name node
+            // reached directly rather than through a `type_expr` wrapper).
+            TypeExpr {
+                kind: TypeExprKind::Named {
+                    name: dotted,
+                    type_args: vec![],
+                },
+                span: self.span(node),
+            }
         } else {
             // treat as bare identifier
             TypeExpr {
@@ -2519,7 +2582,13 @@ impl<'a> Lowering<'a> {
         let name = self.node_text(name_node).to_string();
 
         let struct_node = node.child_by_field_name("structure_name")?;
-        let structure_name = self.node_text(struct_node).to_string();
+        // A `namespaced_name` structure_name (`sub p = pp.Pulley()`, task 5495 μ)
+        // is joined from its `binding`/`name` CST fields so interior whitespace
+        // is normalised — see `namespaced_name_text` for the encoding contract
+        // that ν's resolution-phase fixup reads.
+        let structure_name = self
+            .namespaced_name_text(struct_node)
+            .unwrap_or_else(|| self.node_text(struct_node).to_string());
 
         // Detect collection form: `sub name : List<StructName>` by looking for
         // the anonymous `'List'` keyword token among the DIRECT children. An
