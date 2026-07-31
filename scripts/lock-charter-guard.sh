@@ -18,6 +18,9 @@
 #                            Any directory path → exit 1 (prints each REJECT <path>).
 #   --list-extensions      — prints the canonical extension allowlist sorted-unique,
 #                            one extension per line (shared α/γ test vector, PRD §11 Q1).
+#   --list-extensionless   — prints the canonical extensionless-basename allowlist
+#                            sorted-unique in BYTE order, one name per line
+#                            (shared α/γ test vector, PRD §11 Q2).
 #
 # Exit-code contract:
 #   0 — ACCEPT (file-level declaration or empty list)
@@ -215,11 +218,25 @@ case "$_subcmd" in
         exit 0
         ;;
 
+    --list-extensionless)
+        # Shared α/γ extensionless-basename vector — the machine-readable
+        # counterpart to --list-extensions, and what makes the cross-source
+        # Tier-2 drift comparison possible from γ's side (dark_factory:3248).
+        # LC_ALL=C is load-bearing, not decoration: this list has uppercase
+        # members, so an ambient en_US locale sorts it cargo/…/Dockerfile/LICENSE
+        # while γ's Python sorted() is code-point order.  Byte order is the only
+        # ordering the two sides can agree on, and the only one that is
+        # host-independent as C-P3 requires.
+        printf '%s\n' $_EXTLESS | LC_ALL=C sort -u
+        exit 0
+        ;;
+
     *)
-        printf 'Usage: %s classify <path> | check [path...] | --list-extensions\n' "$(basename "$0")" >&2
-        printf '  classify <path>    — exit 0=ACCEPT (file), exit 1=REJECT (directory)\n' >&2
-        printf '  check [path...]    — exit 0=all-file/empty, exit 1=any-directory; reads stdin if no args\n' >&2
-        printf '  --list-extensions  — print canonical extension allowlist (sorted-unique)\n' >&2
+        printf 'Usage: %s classify <path> | check [path...] | --list-extensions | --list-extensionless\n' "$(basename "$0")" >&2
+        printf '  classify <path>       — exit 0=ACCEPT (file), exit 1=REJECT (directory)\n' >&2
+        printf '  check [path...]       — exit 0=all-file/empty, exit 1=any-directory; reads stdin if no args\n' >&2
+        printf '  --list-extensions     — print canonical extension allowlist (sorted-unique)\n' >&2
+        printf '  --list-extensionless  — print canonical extensionless-basename allowlist (sorted-unique)\n' >&2
         exit 2
         ;;
 esac
