@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { highlightTree, classHighlighter } from '@lezer/highlight';
 import { parser } from '../editor/reifyParser.js';
+import { reifyLRLanguage } from '../editor/reifyLanguage';
 
 /**
  * Corpus test for the GUI Lezer grammar (`gui/src/editor/reify.grammar`).
@@ -167,5 +169,55 @@ describe('reify.grammar snippets — TypeExpr', () => {
     const src = 'structure def F { param thickness : Length = 5mm\n  constraint thickness < 50mm }';
     expect(countErrorNodes(src)).toBe(0);
     expect(nodeNames(src)).toContain('CompareOp');
+  });
+});
+
+/**
+ * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
+ * with the `@external propSource` — through `highlightTree`, and collects the
+ * source text of every span that received `t.keyword`.
+ */
+function keywordSpans(src: string): string[] {
+  const tree = reifyLRLanguage.parser.parse(src);
+  const spans: string[] = [];
+  highlightTree(tree, classHighlighter, (from, to, classes) => {
+    if (classes.split(' ').includes('tok-keyword')) spans.push(src.slice(from, to));
+  });
+  return spans;
+}
+
+/**
+ * Promoting a word out of the `ReservedWord` @specialize list is mandatory
+ * (lezer-generator otherwise hard-fails on a conflicting specialization), but
+ * it silently drops that word out of the `ReservedWord: t.keyword` styleTags
+ * rule — it becomes its own node that no selector names, so it renders
+ * unstyled. That is precisely the "degrading syntax highlighting" symptom this
+ * task is about, so it gets a real assertion instead of being left to review.
+ */
+describe('reify.grammar — keyword highlighting for promoted keywords', () => {
+  it('styles `module` as a keyword', () => {
+    expect(keywordSpans('module a.b')).toContain('module');
+  });
+
+  it('styles `pub` and `as` as keywords', () => {
+    const spans = keywordSpans('pub import a.b as c');
+    expect(spans).toContain('pub');
+    expect(spans).toContain('as');
+    // control: `import` was never de-specialized and must still be styled
+    expect(spans).toContain('import');
+  });
+
+  it('styles `def` as a keyword', () => {
+    expect(keywordSpans('pub structure def Foo { param w : Length = 1mm }')).toContain('def');
+  });
+
+  it('still styles the untouched `structure` and `param` keywords', () => {
+    const spans = keywordSpans('pub structure def Foo { param w : Length = 1mm }');
+    expect(spans).toContain('structure');
+    expect(spans).toContain('param');
+  });
+
+  it('still styles a word that remains in the ReservedWord list', () => {
+    expect(keywordSpans('structure def F { let x = trait }')).toContain('trait');
   });
 });
