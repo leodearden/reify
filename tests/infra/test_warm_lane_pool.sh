@@ -3013,6 +3013,18 @@ assert "B4: fresh-unit count in warm lane == in-place control (path-independence
 # C4). run_passset()'s stderr diagnostic (_passset_report_failure) is NOT
 # captured by the `$( )` below — stdout only — so on a real failure it still
 # reaches the console/verify log even though only the rc is asserted here.
+#
+# Identity assert is GUARDED on both rcs being 0 (amendment): running it
+# unconditionally would still show a misleading PASS line — "warm-lane test
+# identifiers == cold control" — on the exact symmetric double-build-failure
+# case the two rc asserts above exist to catch, since two untrustworthy
+# empty pass-sets are trivially byte-equal to each other. The suite as a
+# whole still correctly fails (via the rc asserts), but a reader scanning for
+# the FAILING line would see this one reported green right next to it. When
+# either side's rc is nonzero the comparison is skipped outright — logged,
+# not asserted — rather than reusing this file's whole-script _skip()
+# (:478), which calls test_summary and exit 0 and would abort every block
+# still to come (B6/B11/B13/TRASH3).
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block PS: identical test pass-set (warm vs cold) ---"
@@ -3027,8 +3039,12 @@ assert "PS: cold-control pass-set run completed without a build/runner failure (
 assert "PS: warm-lane pass-set run completed without a build/runner failure (#5885)" \
     test "$_PS_WARM_RC" -eq 0
 
-assert "PS: warm-lane test identifiers == cold control (byte-identical source)" \
-    test "$_PS_COLD" = "$_PS_WARM"
+if [ "$_PS_COLD_RC" -eq 0 ] && [ "$_PS_WARM_RC" -eq 0 ]; then
+    assert "PS: warm-lane test identifiers == cold control (byte-identical source)" \
+        test "$_PS_COLD" = "$_PS_WARM"
+else
+    echo "  PS-IDENTITY-SUPPRESSED: warm-lane test identifiers == cold control — comparison skipped because a pass-set run failed above (see PASSSET-RUN-FAILURE and the failed rc assert); two untrustworthy pass-sets can be byte-equal without meaning anything (#5885 arm C4)." >&2
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block B7 — Reset-in-place stability: K cycles (SUBSTRATE-GATED)
