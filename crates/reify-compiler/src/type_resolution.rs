@@ -632,6 +632,10 @@ pub(crate) fn resolve_type_with_params(
 /// LAST so existing sources that happened to reuse a name present in the
 /// builtin/alias/generic-param/structure namespaces keep their prior
 /// resolution behavior; trait names only resolve when no earlier kind matches.
+///
+/// Regression oracle for the builtin-before-alias half of this ordering:
+/// `tests::builtin_dimension_shadows_same_named_alias_with_different_dimension`
+/// (task #5892).
 pub(crate) fn resolve_type_with_aliases(
     name: &str,
     type_param_names: &HashSet<String>,
