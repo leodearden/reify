@@ -878,14 +878,23 @@ _b13_reseed_vs_resetinplace() {
 }
 
 # _passset_normalize_nextest — pure stdin→stdout normalizer for `cargo nextest run`
-# output.  Selects PASS/FAIL/SKIP lines, strips the volatile bracketed duration
-# column (e.g. `[   0.012s]`), collapses internal whitespace, trims, and sorts →
-# produces a timing-free, byte-stable pass-set string suitable for comparison.
+# output.  Selects PASS/FAIL/SKIP lines, strips BOTH volatile columns nextest
+# emits per result line — the bracketed duration (e.g. `[   0.012s]`) and the
+# `(N/M)` progress counter — collapses internal whitespace, trims, and sorts →
+# produces a byte-stable pass-set string suitable for comparison.
+#
+# The `(N/M)` counter must be stripped too, not just the timing (#5878): it
+# encodes nondeterministic test-COMPLETION order (nextest runs test binaries
+# in parallel), so leaving it in place makes the trailing `sort` order by
+# completion rather than by test identifier — serializing an identical test
+# set into two different byte strings depending on which test happened to
+# finish first.
 #
 # Used by run_passset's nextest branch and the PS-NORM always-run regression block.
 _passset_normalize_nextest() {
     grep -E '^\s*(PASS|FAIL|SKIP)' \
     | sed -E 's/\[[^]]*\]//g' \
+    | sed -E 's/\([0-9]+\/[0-9]+\)//' \
     | sed -E 's/[[:space:]]+/ /g' \
     | sed -E 's/^ //;s/ $//' \
     | sort
@@ -907,9 +916,10 @@ _passset_normalize_cargo_test() {
 #
 # Normalization:
 #   - nextest branch: PASS/FAIL/SKIP lines → _passset_normalize_nextest (strips
-#     the volatile `[...]` timing column → byte-stable across independent builds).
-#   - cargo test branch: `test ... ok/FAILED/ignored` lines (already timing-free)
-#     → grep + sort only (no timing column to strip).
+#     the volatile `[...]` timing column AND the `(N/M)` progress counter →
+#     byte-stable across independent builds and parallel-run completion order).
+#   - cargo test branch: `test ... ok/FAILED/ignored` lines (already timing-free
+#     and counter-free) → grep + sort only (nothing volatile to strip).
 # The output format is designed to be byte-comparable between two runs on
 # semantically identical workspaces.
 run_passset() {
@@ -918,7 +928,7 @@ run_passset() {
 
     if command -v cargo-nextest >/dev/null 2>&1 || \
        cargo nextest --version >/dev/null 2>&1; then
-        # nextest: normalize via _passset_normalize_nextest (strips timing column)
+        # nextest: normalize via _passset_normalize_nextest (strips timing column + progress counter)
         test_output="$(
             CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
                 cargo nextest run \
