@@ -22,6 +22,11 @@
 //! - Exception: `loft_guided_accepts_circle_face_profiles` feeds
 //!   `CircleProfile` **faces** — the only section kind a DSL `loft_guided()`
 //!   call can produce — and pins the face → outer-wire → solid path.
+//!   `loft_guided_mixed_face_and_wire_sections_yield_shell` pins the third
+//!   branch (reduce the face, but do not solidify), and the two
+//!   `loft_guided_rejects_*` cases pin this entry point's own rejection
+//!   diagnostics — `sweep_guided_integration.rs` drives only
+//!   `GeometryOp::SweepGuided`, so it cannot cover them.
 
 #![cfg(has_occt)]
 
@@ -103,6 +108,84 @@ fn loft_guided_smooth_surface_between_profiles() {
         z_span > 0.09,
         "loft_guided bbox z-span should cover both profiles (≥0.09), got {z_span}"
     );
+
+    // All sections are WIRES, so the result must stay an un-capped SHELL. This
+    // is the false branch of loft_guided_profiles' `all_sections_were_faces`
+    // solidification gate — the reason that gate is conditional at all.
+    // Without this assertion, flipping the C++ to an unconditional
+    // `MakeSolid()` would pass every test in this file.
+    assert_not_closed(&kernel, result.id, "an all-wire section set");
+}
+
+/// Assert `id` is an open (un-capped) shell rather than a closed solid.
+#[track_caller]
+fn assert_not_closed(kernel: &OcctKernel, id: GeometryHandleId, what: &str) {
+    match kernel
+        .query(&GeometryQuery::IsClosed(id))
+        .expect("IsClosed query should succeed")
+    {
+        Value::Bool(closed) => assert!(
+            !closed,
+            "{what} must loft to an open (un-capped) shell; got a closed \
+             result, which means the all-faces solidification gate has been \
+             widened beyond all-face section sets"
+        ),
+        other => panic!("expected IsClosed Bool, got {:?}", other),
+    }
+}
+
+/// Run a `LoftGuided` that must be rejected and assert the diagnostic is
+/// Reify-authored and attributed to `loft_guided_profiles` — NOT to
+/// `make_pipe_shell`, even though both entry points share
+/// `section_profile_to_wire` and `BRepOffsetAPI_MakePipeShell` underneath.
+///
+/// `expected_fragment` is matched verbatim and case-sensitively; see the note
+/// on `sweep_guided_integration::assert_profile_rejected` for why a bare type
+/// word would match vacuously, and for the standing caveat that
+/// `loft_guided_profiles` is the C++ wrapper name rather than the DSL-level
+/// `loft_guided(...)` the author actually wrote.
+#[track_caller]
+fn assert_section_rejected(
+    kernel: &mut OcctKernel,
+    sections: Vec<GeometryHandleId>,
+    expected_fragment: &str,
+) -> String {
+    let spine = make_spine(kernel, 0.1);
+    match kernel.execute(&GeometryOp::LoftGuided {
+        profiles: sections,
+        guides: vec![spine],
+    }) {
+        Err(GeometryError::OperationFailed(msg)) => {
+            assert!(
+                msg.contains(expected_fragment),
+                "error must contain the distinguishing phrase \
+                 {expected_fragment:?}, got: {msg}"
+            );
+            assert!(
+                msg.contains("loft_guided_profiles"),
+                "error must attribute the loft entry point, not make_pipe_shell, \
+                 got: {msg}"
+            );
+            assert!(
+                !msg.contains("make_pipe_shell"),
+                "error must not misattribute a loft failure to make_pipe_shell, \
+                 got: {msg}"
+            );
+            assert!(
+                !msg.contains("BRepFill_Section"),
+                "error must be a Reify diagnostic, not OCCT's opaque internal \
+                 wording, got: {msg}"
+            );
+            assert!(
+                !msg.to_lowercase().contains("unexpected"),
+                "a known contract violation must not be framed as an unexpected \
+                 OCCT exception, got: {msg}"
+            );
+            msg
+        }
+        Ok(_) => panic!("expected OperationFailed for {expected_fragment:?}, got Ok"),
+        Err(other) => panic!("expected OperationFailed, got {:?}", other),
+    }
 }
 
 /// `loft_guided_profiles` used to add each section with a bare
@@ -200,6 +283,123 @@ fn loft_guided_accepts_circle_face_profiles() {
     assert!(
         volume > 0.0 && (volume - frustum).abs() / frustum < 0.25,
         "lofted solid volume {volume} should be near the frustum volume {frustum}"
+    );
+}
+
+/// A MIXED section set — one face, one wire — must still be accepted (the face
+/// is reduced to its outer wire like any other), but must NOT be solidified.
+///
+/// This is the third branch of `all_sections_were_faces`, distinct from both
+/// the all-wire and all-face cases: the flag goes false while the face is still
+/// reduced, so `Add` succeeds and the result stays a shell. A mixed set has no
+/// coherent solid interpretation — a wire section carries no enclosed region
+/// for an end cap to close over — so leaving it open is the documented
+/// behaviour, and this test is what pins it.
+#[test]
+fn loft_guided_mixed_face_and_wire_sections_yield_shell() {
+    let mut kernel = OcctKernel::new();
+    // Section 1: a CircleProfile FACE at z=0.
+    let face = kernel
+        .execute(&GeometryOp::CircleProfile {
+            radius: Value::Real(0.02),
+        })
+        .expect("CircleProfile (20mm) should build")
+        .id;
+    // Section 2: an Arc WIRE at z=0.1.
+    let wire = make_circle_profile(&mut kernel, 0.01, 0.1);
+    let spine = make_spine(&mut kernel, 0.1);
+
+    let result = match kernel.execute(&GeometryOp::LoftGuided {
+        profiles: vec![face, wire],
+        guides: vec![spine],
+    }) {
+        Ok(r) => r,
+        Err(e) => panic!(
+            "a mixed face/wire section set must still loft (the face is reduced \
+             to its outer wire), got: {e}"
+        ),
+    };
+
+    // The face was reduced, so the loft really did span both sections.
+    let (_, _, z_span) = bbox_spans(&kernel, result.id);
+    assert!(
+        z_span > 0.09,
+        "mixed-section loft z-span should cover both profile planes (≥0.09), \
+         got {z_span}"
+    );
+
+    assert_not_closed(&kernel, result.id, "a mixed face/wire section set");
+}
+
+/// An unsupported SECTION type must be rejected through the loft entry point
+/// with its own attribution. The rejection assertions in
+/// sweep_guided_integration.rs all drive `GeometryOp::SweepGuided`, so without
+/// this the loft path's diagnostics are unverified even though both ops share
+/// `section_profile_to_wire`.
+#[test]
+fn loft_guided_rejects_unsupported_section_type() {
+    let mut kernel = OcctKernel::new();
+    let solid = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(0.01),
+            height: Value::Real(0.01),
+            depth: Value::Real(0.01),
+        })
+        .expect("Box should build")
+        .id;
+    let ok_section = make_circle_profile(&mut kernel, 0.02, 0.1);
+
+    assert_section_rejected(
+        &mut kernel,
+        vec![ok_section, solid],
+        "shape type 'Solid'",
+    );
+}
+
+/// A holed face SECTION must be rejected through the loft entry point too —
+/// silently dropping the hole is exactly as wrong here as in `sweep_guided`,
+/// and (since an all-face section set is solidified) yields the same
+/// plausible-looking filled solid.
+#[test]
+fn loft_guided_rejects_holed_face_section() {
+    let mut kernel = OcctKernel::new();
+    // A tube's flat end caps are annuli — an outer wire plus one inner wire.
+    let tube = kernel
+        .execute(&GeometryOp::Tube {
+            outer_r: Value::Real(0.03),
+            inner_r: Value::Real(0.015),
+            height: Value::Real(0.05),
+        })
+        .expect("Tube should build")
+        .id;
+    let faces = kernel
+        .extract_faces(tube)
+        .expect("extract_faces on a tube should succeed");
+    let annulus = faces
+        .iter()
+        .copied()
+        .find(|f| {
+            matches!(
+                kernel.query(&GeometryQuery::FaceSurfaceKind(*f)),
+                Ok(Value::String(ref k)) if k == "Plane"
+            )
+        })
+        .expect("a tube has planar annular end faces");
+    let ok_section = kernel
+        .execute(&GeometryOp::CircleProfile {
+            radius: Value::Real(0.02),
+        })
+        .expect("CircleProfile (20mm) should build")
+        .id;
+
+    let msg = assert_section_rejected(
+        &mut kernel,
+        vec![ok_section, annulus],
+        "1 inner wire(s)",
+    );
+    assert!(
+        msg.contains("discard"),
+        "diagnostic should explain that the hole(s) would be discarded, got: {msg}"
     );
 }
 

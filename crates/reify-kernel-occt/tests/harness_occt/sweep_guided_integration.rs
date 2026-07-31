@@ -138,11 +138,26 @@ fn sweep_guided_produces_valid_shape() {
         .expect("SweepGuided should succeed");
 
     // The pipe-shell should have a finite, non-degenerate bounding box.
-    let bbox = common::bbox_of(kernel.query(&GeometryQuery::BoundingBox(result.id)));
-    assert!(
-        bbox.all_finite(),
-        "bbox components must all be finite, got {bbox:?}"
-    );
+    let _ = bbox_spans(&kernel, result.id);
+
+    // A WIRE profile must stay an un-capped SHELL. This is the false branch of
+    // make_pipe_shell's `profile_was_face` solidification gate — the reason
+    // that gate is conditional at all. Without this assertion, flipping the
+    // C++ to an unconditional `MakeSolid()` would pass every test in this
+    // file. A wire section carries no enclosed region for end caps to close
+    // over, so there is nothing to solidify.
+    match kernel
+        .query(&GeometryQuery::IsClosed(result.id))
+        .expect("IsClosed query should succeed")
+    {
+        Value::Bool(closed) => assert!(
+            !closed,
+            "a wire profile must sweep to an open (un-capped) shell; got a \
+             closed result, which means the face-only solidification gate has \
+             been widened to wire profiles too"
+        ),
+        other => panic!("expected IsClosed Bool, got {:?}", other),
+    }
 }
 
 /// A `CircleProfile` face — the only profile a DSL `sweep_guided()` call can
@@ -289,13 +304,27 @@ fn sweep_guided_face_profile_yields_solid_volume() {
 }
 
 /// Run a `SweepGuided` that must be rejected, and assert the diagnostic is
-/// Reify-authored: it names `expected_type`, attributes `make_pipe_shell`, and
-/// leaks neither OCCT's opaque `BRepFill_Section` wording nor the "unexpected"
-/// framing `wrap_occt_call` reserves for genuinely unforeseen exceptions.
+/// Reify-authored.
+///
+/// `expected_fragment` is matched **verbatim and case-sensitively**, so callers
+/// pass the full distinguishing phrase (`"shape type 'Edge'"`, not `"Edge"`).
+/// A bare type word would match vacuously: the rejection message's own fixed
+/// tail — "must be a Wire, a Vertex, or a Face" — already contains "wire",
+/// "vertex" and "face", so a lowercased substring test would pass for those
+/// three types no matter what the offending shape actually was.
+///
+/// The attribution assertion pins `make_pipe_shell`, the C++ wrapper entry
+/// point. That name is what distinguishes this op's diagnostics from
+/// `loft_guided_profiles`' (see loft_guided_integration.rs), which is why it is
+/// asserted. It is NOT the name a DSL author wrote — they typed
+/// `sweep_guided(...)` — so the string does leak an implementation symbol into
+/// user-facing text. Promoting these diagnostics to DSL-level op names needs
+/// display-name plumbing from the Rust dispatch layer into the C++ wrapper,
+/// which is beyond this task's scope; filed as follow-up work.
 fn assert_profile_rejected(
     kernel: &mut OcctKernel,
     profile: GeometryHandleId,
-    expected_type: &str,
+    expected_fragment: &str,
 ) -> String {
     let path = make_straight_path(kernel, 0.1);
     let guide = make_offset_guide(kernel, 0.05, 0.03, 0.1);
@@ -306,10 +335,10 @@ fn assert_profile_rejected(
         guide,
     }) {
         Err(GeometryError::OperationFailed(msg)) => {
-            let lower = msg.to_lowercase();
             assert!(
-                lower.contains(&expected_type.to_lowercase()),
-                "error must name the offending shape type ('{expected_type}'), got: {msg}"
+                msg.contains(expected_fragment),
+                "error must contain the distinguishing phrase \
+                 {expected_fragment:?}, got: {msg}"
             );
             assert!(
                 msg.contains("make_pipe_shell"),
@@ -321,13 +350,13 @@ fn assert_profile_rejected(
                  wording, got: {msg}"
             );
             assert!(
-                !lower.contains("unexpected"),
+                !msg.to_lowercase().contains("unexpected"),
                 "a known contract violation must not be framed as an unexpected \
                  OCCT exception, got: {msg}"
             );
             msg
         }
-        Ok(_) => panic!("expected OperationFailed for a {expected_type} profile, got Ok"),
+        Ok(_) => panic!("expected OperationFailed for {expected_fragment:?}, got Ok"),
         Err(other) => panic!("expected OperationFailed, got {:?}", other),
     }
 }
@@ -351,7 +380,7 @@ fn sweep_guided_rejects_unsupported_profile_type() {
         })
         .expect("Box should build")
         .id;
-    assert_profile_rejected(&mut kernel, solid, "Solid");
+    assert_profile_rejected(&mut kernel, solid, "shape type 'Solid'");
 
     // EDGE — obtained by topology extraction from a circle profile face, the
     // same route by which a selector can hand an edge handle to an op.
@@ -368,7 +397,41 @@ fn sweep_guided_rejects_unsupported_profile_type() {
     let edge = *edges
         .first()
         .expect("a circle profile face has at least one edge");
-    assert_profile_rejected(&mut kernel, edge, "Edge");
+    assert_profile_rejected(&mut kernel, edge, "shape type 'Edge'");
+}
+
+/// An UNBOUNDED face (zero wires) must be rejected by name, not left to raise
+/// OCCT's opaque `Standard_NullObject`.
+///
+/// `BRepTools::OuterWire` returns a NULL wire for a face with no bounding wire,
+/// and that null shape reaches `maker.Add(...)`. The input is reachable:
+/// `make_half_space` builds its boundary from a bare `gp_Pln` via
+/// `BRepBuilderAPI_MakeFace`, and `extract_faces` on the resulting solid mints
+/// that wire-less face as a `Surface`-typed handle a DSL selector can hand
+/// straight to `sweep_guided`. A `wire_count > 1`-only guard would let it
+/// through — this pins `!= 1`.
+#[test]
+fn sweep_guided_rejects_unbounded_face_profile() {
+    let mut kernel = OcctKernel::new();
+    let half_space = kernel
+        .execute(&GeometryOp::HalfSpace {
+            px: Value::Real(0.0),
+            py: Value::Real(0.0),
+            pz: Value::Real(0.0),
+            nx: Value::Real(0.0),
+            ny: Value::Real(0.0),
+            nz: Value::Real(1.0),
+        })
+        .expect("HalfSpace should build")
+        .id;
+    let faces = kernel
+        .extract_faces(half_space)
+        .expect("extract_faces on a half-space should succeed");
+    let unbounded = *faces
+        .first()
+        .expect("a half-space has one (unbounded planar) face");
+
+    assert_profile_rejected(&mut kernel, unbounded, "no bounding wire");
 }
 
 /// A face carrying inner (hole) wires must be rejected, not silently reduced
@@ -406,7 +469,7 @@ fn sweep_guided_rejects_holed_face_profile() {
         })
         .expect("a tube has planar annular end faces");
 
-    let msg = assert_profile_rejected(&mut kernel, annulus, "inner wire");
+    let msg = assert_profile_rejected(&mut kernel, annulus, "1 inner wire(s)");
     assert!(
         msg.contains("discard"),
         "diagnostic should explain that the hole(s) would be discarded, got: {msg}"

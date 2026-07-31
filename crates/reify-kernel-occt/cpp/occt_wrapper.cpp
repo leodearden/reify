@@ -174,13 +174,19 @@ namespace occt {
 
 namespace {
 
-/// A precondition violation detected by Reify's own validation, as opposed to
-/// a failure raised from inside OCCT.
+/// A contract violation Reify itself detects and diagnoses — either a
+/// PREcondition it validates before handing a shape to OCCT, or a
+/// POSTcondition it checks on the result — as opposed to a failure raised
+/// from inside OCCT.
 ///
 /// `wrap_occt_call` gives these their own catch arm so they surface as
 /// "<op>: <message>" — the "OCCT <op>: unexpected: …" framing is reserved for
 /// genuine OCCT-originated or otherwise unforeseen exceptions, and labelling a
 /// well-understood contract violation that way misattributes it.
+///
+/// Messages thrown as a ContractViolation must NOT repeat the op name:
+/// `wrap_occt_call` already prefixes it, and a hand-written prefix duplicates
+/// it in the text the user reads.
 struct ContractViolation : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
@@ -242,13 +248,17 @@ static const char* topabs_name(TopAbs_ShapeEnum type) {
 /// `CircleProfile` → `make_circle_face`), so they are reduced here to their
 /// outer wire rather than rejected.
 ///
-/// A face with inner (hole) wires has no single-wire representation, so it is
-/// rejected rather than silently reduced: keeping only the outer wire would
-/// delete the holes, and — since a face profile is then solidified — yield a
-/// filled-in solid that looks plausible but is the wrong part. Every profile
-/// the compiler emits today (`CircleProfile` / `RectangleProfile` /
-/// `EllipseProfile` / `PolygonProfile`) is single-wire, but an extracted face
-/// (`extract_faces`, `BRepKind::Face`) is `Surface`-typed and can carry them.
+/// A face is accepted only when it has EXACTLY ONE wire:
+///   - 0 wires — an unbounded face, as `make_half_space` builds from a bare
+///     `gp_Pln`. `BRepTools::OuterWire` returns a NULL wire for it, which
+///     would reach `Add` and raise `Standard_NullObject`.
+///   - >1 wires — a holed face. It has no single-wire representation, so it is
+///     rejected rather than silently reduced: keeping only the outer wire
+///     would delete the holes, and — since a face profile is then solidified —
+///     yield a filled-in solid that looks plausible but is the wrong part.
+/// Every profile the compiler emits today (`CircleProfile` / `RectangleProfile`
+/// / `EllipseProfile` / `PolygonProfile`) is single-wire, but an extracted face
+/// (`extract_faces`, `BRepKind::Face`) is `Surface`-typed and can be either.
 static TopoDS_Shape section_profile_to_wire(const TopoDS_Shape& profile) {
     switch (profile.ShapeType()) {
         case TopAbs_FACE: {
@@ -257,10 +267,20 @@ static TopoDS_Shape section_profile_to_wire(const TopoDS_Shape& profile) {
             for (TopExp_Explorer exp(face, TopAbs_WIRE); exp.More(); exp.Next()) {
                 ++wire_count;
             }
+            // Both messages below deliberately avoid naming BRepFill_Section:
+            // they are user-facing diagnostics, and the OCCT internals are
+            // documented for maintainers in this helper's doc comment.
+            if (wire_count == 0) {
+                // BRepTools::OuterWire would return a NULL wire here, which
+                // reaches maker.Add() and raises Standard_NullObject —
+                // resurfacing as the opaque "OCCT <op>: …" text this helper
+                // exists to replace. Diagnose it by name instead.
+                throw ContractViolation(
+                    "section profile face has no bounding wire (an unbounded "
+                    "face, e.g. a half-space boundary plane); a swept section "
+                    "must be a bounded profile");
+            }
             if (wire_count > 1) {
-                // The message deliberately does not name BRepFill_Section:
-                // it is a user-facing diagnostic, and the OCCT internals are
-                // documented for maintainers in this helper's doc comment.
                 throw ContractViolation(
                     "section profile face has " + std::to_string(wire_count - 1)
                     + " inner wire(s); a swept section is a single wire, so a "
@@ -3529,10 +3549,19 @@ std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
         // signature `sweep_guided(profile: Surface, ...) -> Solid`.
         // The gate is the input's face-ness because only a face carries the
         // enclosed region the end caps close over; a bare wire section has no
-        // such region, and the wire-profile tests pin that raw shell result.
+        // such region. The false branch is pinned by
+        // sweep_guided_produces_valid_shape, which asserts the wire-profile
+        // result is NOT closed — flipping this to an unconditional MakeSolid()
+        // fails there.
+        //
+        // ContractViolation, not std::runtime_error: this is a postcondition
+        // Reify checks on a well-understood input class, so it must not be
+        // framed as an "unexpected" OCCT exception. The op name is omitted —
+        // wrap_occt_call prefixes it.
         if (profile_was_face && !maker.MakeSolid()) {
-            throw std::runtime_error(
-                "make_pipe_shell: MakeSolid failed — face profile swept to an open shell");
+            throw ContractViolation(
+                "MakeSolid failed — the face profile swept to a shell that "
+                "could not be capped into a solid");
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
@@ -3575,12 +3604,19 @@ std::unique_ptr<OcctShape> loft_guided_profiles(const OcctShapeVec& profiles,
         // BRepKind::Solid repr, so an all-face section set — the only kind a
         // DSL call can supply — must close into a real solid rather than be
         // mislabelled as one. Mixed or all-wire section sets keep the raw
-        // shell: a wire section carries no enclosed region to cap, and the
-        // wire-profile tests pin that result.
+        // shell: a wire section carries no enclosed region to cap. That false
+        // branch is pinned by loft_guided_smooth_surface_between_profiles
+        // (all-wire) and loft_guided_mixed_face_and_wire_sections_yield_shell
+        // (mixed), both of which assert the result is NOT closed — flipping
+        // this to an unconditional MakeSolid() fails there.
+        //
+        // ContractViolation for the same reason as make_pipe_shell: a checked
+        // postcondition, not an unforeseen OCCT exception. Op name omitted —
+        // wrap_occt_call prefixes it.
         if (all_sections_were_faces && !maker.MakeSolid()) {
-            throw std::runtime_error(
-                "loft_guided_profiles: MakeSolid failed — face sections lofted "
-                "to an open shell");
+            throw ContractViolation(
+                "MakeSolid failed — the face sections lofted to a shell that "
+                "could not be capped into a solid");
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
