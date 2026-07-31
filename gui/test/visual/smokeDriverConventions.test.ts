@@ -1,18 +1,27 @@
 /**
  * CI cover for `./smokeDriverConventions.ts` — the structural conventions the
- * live `smoke_*.mjs` drivers must follow (task 5857).
+ * live `smoke_*.mjs` drivers must follow: today, the `open_file` retry policy
+ * living in one home (task 5857) and the post-open `store_state` payload being
+ * diagnosed before it is read (task 5884).
  *
  * Read that module's header for WHY a source-level check is the only executable
  * signal available here: a driver needs a live reify-gui (WebKit WebView +
  * OCCT), so CI can never run one and `node --check` catches syntax alone.
  *
  * The negative controls below are the load-bearing half. A source-level regex
- * check is INERT BY DEFAULT — a regex that matches too much reports the two
- * ALREADY-COMPLIANT drivers as violators, and a regex that matches too little
+ * check is INERT BY DEFAULT — a regex that matches too much reports an
+ * ALREADY-COMPLIANT driver as a violator, and a regex that matches too little
  * reports nobody at all; either way the constraint stops meaning what it says.
- * `open_file` appears in prose comments in all six drivers AND inside a string
- * literal that SURVIVES migration, so each of those false-positive shapes gets
- * its own case, one per mechanism.
+ * So each false-positive shape gets its own case, one per mechanism:
+ *   - `open_file` appears in prose comments in all six drivers AND inside a
+ *     string literal that SURVIVES migration.
+ *   - the `store_state` check adds two shapes of its own, because it is a
+ *     NEGATIVE-presence check ("reads X and lacks Y") and so has a false-alarm
+ *     mechanism the first one does not: a driver carrying the compliant guard,
+ *     and a driver that never binds `storeAfterOpen` at all and therefore has no
+ *     read to diagnose. Its raw-vs-stripped asymmetry — the thing that keeps
+ *     those from false-alarming — is pinned in BOTH directions, so a later
+ *     "make it consistent" edit flips a case instead of reversing an argument.
  *
  * Violation assertions are on `code`, never on `message`: the prose is meant to
  * stay free to reword or enrich without churning the pins.
@@ -192,6 +201,77 @@ describe("findSmokeDriverConventionViolations — the post-open `store_state` di
     expect(findSmokeDriverConventionViolations(source)).toEqual([]);
   });
 
+  it("does not flag a plain-dot read of the same payload", () => {
+    // A DELIBERATE non-violation, pinned by name so it stays deliberate. This
+    // convention defends against SILENCE, not against every unguarded read: on
+    // an `{error: '<msg>'}` payload the plain-dot form yields `undefined` at
+    // `.editor` and then THROWS a TypeError at `.activeFile` — a stack trace
+    // naming the exact line, already loud and already attributable. Only the
+    // optional chain reads past the error to a quiet `got: undefined`.
+    const source = [
+      "  const storeAfterOpen = await rpc('store_state');",
+      "  if (!storeAfterOpen.editor.activeFile.includes('large_assembly')) fail('nope');",
+    ].join("\n");
+    expect(findSmokeDriverConventionViolations(source)).toEqual([]);
+  });
+
+  it("reads the diagnosis off the RAW source, so a blind spot cannot false-alarm", () => {
+    // DIRECTION 1 of the raw-vs-stripped asymmetry. The `//`-containing-`/*`
+    // blind spot pinned below opens a block span that blanks lines 1-3 here —
+    // swallowing the REAL diagnosis while leaving the read on line 4 intact. Were
+    // DIAG matched against the stripped code, `lacks DIAG` would be true and this
+    // COMPLIANT driver would be reported as a violator: a false alarm, which the
+    // module's header calls strictly worse because it gets fixed by editing
+    // correct code. Matching DIAG on the raw source puts the blind spot out of
+    // reach for this half. A later "make it consistent, strip for both" cleanup
+    // flips THIS case rather than silently reversing the acceptance argument.
+    const source = [
+      "  // see /* the helper for the real thing",
+      "  const storeAfterOpenFailure = describeRpcFailure(storeAfterOpen, 'store_state (post-open)');",
+      "  if (storeAfterOpenFailure) fail(storeAfterOpenFailure); /* end */",
+      "  if (!storeAfterOpen?.editor?.activeFile?.includes('large_assembly')) fail('nope');",
+    ].join("\n");
+    expect(findSmokeDriverConventionViolations(source)).toEqual([]);
+    // …and the SAME source with the diagnosis genuinely gone IS flagged. Without
+    // this counter-assertion the case above would pass for a predicate that
+    // never fires at all — the inert-by-default failure this file exists to stop.
+    expect(
+      codesFor(source.replace("describeRpcFailure(storeAfterOpen", "JSON.stringify(storeAfterOpen")),
+    ).toEqual(["undiagnosed-store-state"]);
+  });
+
+  it("lets a diagnosis written only inside a comment suppress the flag", () => {
+    // DIRECTION 2, and the PRICE of direction 1. Reading DIAG off the raw source
+    // means a `describeRpcFailure(storeAfterOpen, …)` that exists only as prose
+    // silences a genuinely unguarded read.
+    //
+    // Asserted as the CURRENT behaviour, not as desirable: it is accepted only
+    // because it errs toward a MISSED violation — one driver stays unmigrated
+    // until someone reads it — which is the direction this module already
+    // accepts everywhere else. Both halves obey one rule: each is matched
+    // against whichever text errs toward silence.
+    const source = [
+      "  // Diagnose with describeRpcFailure(storeAfterOpen, 'store_state (post-open)') first.",
+      "  if (!storeAfterOpen?.editor?.activeFile?.includes('large_assembly')) fail('nope');",
+    ].join("\n");
+    expect(findSmokeDriverConventionViolations(source)).toEqual([]);
+    // The discriminating half again: drop the mention and the read IS flagged.
+    expect(codesFor(source.replace("describeRpcFailure(storeAfterOpen, ", "the helper on "))).toEqual(
+      ["undiagnosed-store-state"],
+    );
+  });
+
+  it("carries a human-readable message alongside the code", () => {
+    // As above, the code is the contract and this is the ONE place this
+    // convention's prose is pinned, so rewording stays a one-line edit.
+    expect(findSmokeDriverConventionViolations("storeAfterOpen?.editor?.activeFile;")).toEqual([
+      {
+        code: "undiagnosed-store-state",
+        message: expect.stringContaining("describeRpcFailure"),
+      },
+    ]);
+  });
+
   it("reports each convention exactly once for a driver tripping both", () => {
     // The at-most-once contract, pinned across the WIDENED predicate: a driver
     // with two problems gets two violations, not one per offending line.
@@ -273,21 +353,31 @@ describe("discoverSmokeDrivers — the delegation to the shared split rule", () 
   });
 });
 
-describe("the convention that keeps the open_file retry policy in one home", () => {
-  // THE POINT OF THIS FILE. Each driver re-implementing the 8×3000ms loop was
-  // its own copy of the retry budget, the `.ok` verdict and the failure wording
-  // — and each inline copy silently lacks the helper's transport-error folding,
-  // so an ECONNREFUSED during the WebView boot window aborts the whole budget on
-  // attempt 1 and lands in main().catch as exit 2 instead of the clean exit-1
-  // verdict. Nothing else in CI can observe that: these drivers need a live GUI.
-  it.each(SMOKE_DRIVERS)("%s reaches open_file through openFileWithRetry", (name) => {
+describe("the conventions the live drivers are held to, across the whole corpus", () => {
+  // THE POINT OF THIS FILE, for each convention in turn. Each driver
+  // re-implementing the 8×3000ms loop was its own copy of the retry budget, the
+  // `.ok` verdict and the failure wording — and each inline copy silently lacks
+  // the helper's transport-error folding, so an ECONNREFUSED during the WebView
+  // boot window aborts the whole budget on attempt 1 and lands in main().catch
+  // as exit 2 instead of the clean exit-1 verdict. Each unguarded post-open
+  // `store_state` read, in turn, reports `activeFile: undefined` when the RPC
+  // itself failed, sending whoever reads the run at the frontend instead of at
+  // the tool. Nothing else in CI can observe either: these drivers need a live GUI.
+  it.each(SMOKE_DRIVERS)("%s breaks none of the driver conventions", (name) => {
     // Rendering the messages (not the codes) is the suite's job — the helper
     // stays vitest-free, and a failure here should read as prose naming which
     // convention broke on which driver.
+    //
+    // The hint stays convention-NEUTRAL on purpose. Naming one convention here
+    // misattributes every other: a RED `undiagnosed-store-state` under an
+    // "open_file retry policy" hint sends an operator to entirely the wrong
+    // subsystem. The `message` above already names the right one — the same
+    // code-is-the-contract / message-is-free split ./smokeDriverConventions.ts
+    // documents.
     const violations = findSmokeDriverConventionViolations(readSharedModuleSource(name));
     expect(
       violations.map((violation) => violation.message),
-      `${name} must not re-implement the open_file retry policy`,
+      `${name} must follow the conventions in ./smokeDriverConventions.ts (see the message above)`,
     ).toEqual([]);
   });
 
