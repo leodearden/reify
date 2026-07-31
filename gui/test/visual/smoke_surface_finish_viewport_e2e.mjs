@@ -42,7 +42,7 @@
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeDebugRpc } from './rpcEnvelope.mjs';
-import { openFileWithRetry } from './smokeDriverGuards.mjs';
+import { describeRpcFailure, openFileWithRetry } from './smokeDriverGuards.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -128,6 +128,10 @@ async function main() {
 
   // Boot: activeFile must contain 'surface_finish_viewport'
   const storeAfterOpen = await rpc('store_state');
+  // Diagnose the RPC before the optional chain reads past an in-band error —
+  // see ./smokeDriverGuards.mjs (describeRpcFailure).
+  const storeAfterOpenFailure = describeRpcFailure(storeAfterOpen, 'store_state (post-open)');
+  if (storeAfterOpenFailure) fail(storeAfterOpenFailure);
   if (!storeAfterOpen?.editor?.activeFile?.includes('surface_finish_viewport')) {
     fail(`Expected activeFile to contain 'surface_finish_viewport', got: ${storeAfterOpen?.editor?.activeFile}`);
   }
