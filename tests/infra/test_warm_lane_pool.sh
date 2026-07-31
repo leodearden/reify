@@ -624,9 +624,15 @@ _b11_concurrent_clone_during_flip() {
 #      build to populate base_ws/target, first refresh → ws_root/base (symlink-gen).
 #   2. git-init the advancing lane (ws_root/base_ws, committed at mtime-2020-01-01
 #      state via _b7_init_git_lane after seeding) so the provenance guard passes.
-#   3. Create a staled lane in ws_root/stale_lane: copy sources from base_ws,
-#      then apply a non-trivial delta (one new fn in warm_leaf); the lane's target/
-#      is pinned far behind head by CoW-seeding from a stale cold build.
+#   3. Create a staled lane in ws_root/stale_lane (cloned from base_ws, so it
+#      shares git history with _b13_base_head): regress warm_dep to a single fn
+#      and cold-build (target/ now holds artifacts for OLD dep code), restore
+#      the at-head dep from git, then apply a non-trivial delta (one new fn in
+#      warm_leaf) and commit on top of the clone. Reset-in-place ends up
+#      near-cold because both the dep-restore and the leaf-delta land AFTER
+#      the stale build — their mtimes out-date its recorded fingerprints, and
+#      a clean committed tree means control's `git checkout -- .` cannot undo
+#      that (it only preserves; it never re-stales).
 #
 # Control arm (reset-in-place):
 #   4. git checkout -- . && git clean -xfd -e target in stale_lane (resets source
@@ -635,14 +641,62 @@ _b11_concurrent_clone_during_flip() {
 #
 # Treatment arm (re-seed from at-head base):
 #   6. Resolve ws_root/base symlink → concrete .gen.N path.
-#   7. Call seed-warm-lane.sh --fresh-checkout <gen_dir> <stale_lane> (D10 path).
+#   7. Call seed-warm-lane.sh --fresh-checkout <gen_dir> <stale_lane> (D10 path;
+#      deliberately NO --touch — the leaf delta is already git-diff-visible
+#      from the cloned history, so this exercises _touch_git_delta's
+#      base-commit resolution directly instead of an explicit touch).
 #   8. First build → _B13_TREAT_FRESH + _B13_TREAT_WALL_MS.
 #
 # Sets in caller scope:
-#   _B13_CTRL_FRESH    — fresh compiler-artifact count for the control build
-#   _B13_TREAT_FRESH   — fresh compiler-artifact count for the treatment build
-#   _B13_CTRL_WALL_MS  — build wall-time for the control (ms)
-#   _B13_TREAT_WALL_MS — build wall-time for the treatment (ms)
+#   _B13_CTRL_FRESH     — fresh compiler-artifact count for the control build
+#   _B13_TREAT_FRESH    — fresh compiler-artifact count for the treatment build
+#   _B13_CTRL_WALL_MS   — build wall-time for the control (ms)
+#   _B13_TREAT_WALL_MS  — build wall-time for the treatment (ms)
+#   _B13_SEED_RC        — exit code of the treatment seed-warm-lane.sh invocation
+#   _B13_SEED_OUT       — stdout of the treatment seed-warm-lane.sh invocation
+#                         (the caller-obligation contract: non-empty == warm-safe)
+#   _B13_LEAF_MTIME     — post-seed mtime (epoch secs) of warm_leaf/src/lib.rs
+#   _B13_DEP_MTIME      — post-seed mtime (epoch secs) of warm_dep/src/lib.rs
+#   _B13_STALE_EPOCH    — epoch secs for the 2020-01-01 bulk-stamp (computed,
+#                         TZ-robust; never the hardcoded 1577836800)
+#   _B13_CTRL_DEP_FRESH  — tri-state "true"/"false"/"" for the control build's
+#                          warm_dep unit freshness ("" when no warm_dep
+#                          artifact line exists at all, e.g. the build failed)
+#   _B13_TREAT_DEP_FRESH — tri-state "true"/"false"/"" for the treatment build's
+#                          warm_dep unit freshness (also "" when the seed
+#                          refused to certify and no treatment build ran)
+
+# _b13_build_fresh_counts(lane_dir, json_out_path) — run `cargo build
+# --message-format=json` on lane_dir's workspace (same env as every other
+# fresh-unit measurement in this file: CARGO_INCREMENTAL=0 RUSTC_WRAPPER=""
+# RUSTFLAGS=""), keep the compiler-artifact lines at json_out_path (callers
+# place this under $ws_root so the suite's _TMPDIRS cleanup reclaims it), and
+# set in caller scope:
+#   _B13_FRESH_TOTAL — count of compiler-artifact lines with "fresh":true
+#   _B13_DEP_FRESH   — tri-state "true"/"false"/"" (empty when no warm_dep
+#                      artifact line exists at all — e.g. the build failed
+#                      outright): NOT a 0/1 collapse, so a build that never
+#                      reports on warm_dep cannot silently read the same as
+#                      one that legitimately reports fresh:false. Mirrors B3's
+#                      tri-state idiom (_B3_DEP_FRESH, ~line 2056).
+# Used by BOTH the control and treatment arms so the two builds are measured
+# identically; callers copy these two outputs into their own arm-specific
+# _B13_*_FRESH / _B13_*_DEP_FRESH variables immediately after the call.
+_b13_build_fresh_counts() {
+    local lane_dir="$1"
+    local json_out="$2"
+
+    CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
+        cargo build --manifest-path "$lane_dir/Cargo.toml" \
+            --message-format=json 2>/dev/null \
+        | grep '"reason":"compiler-artifact"' > "$json_out" || true
+
+    _B13_FRESH_TOTAL="$(grep -c '"fresh":true' "$json_out" || true)"
+
+    _B13_DEP_FRESH="$(grep '"name":"warm_dep"' "$json_out" | \
+        grep -o '"fresh":[a-z]*' | head -1 | sed 's/"fresh"://;s/"//g')"
+}
+
 _b13_reseed_vs_resetinplace() {
     local ws_root="$1"
     local _b13_base_ws="$ws_root/base_ws"
@@ -674,34 +728,54 @@ _b13_reseed_vs_resetinplace() {
     local _b13_gen
     _b13_gen="$(readlink "$_b13_base")"
 
-    # Step 2: create the staled lane — copy sources from base_ws, add a delta,
-    # then CoW-seed from base_ws/target (same build artifacts as gen.1, "at head")
-    # and STALE the target by rebuilding with one extra fn (simulates drift).
-    mkdir -p "$_b13_stale_lane"
-    cp "$_b13_base_ws/Cargo.toml" "$_b13_stale_lane/Cargo.toml"
-    cp "$_b13_base_ws/Cargo.lock" "$_b13_stale_lane/Cargo.lock" 2>/dev/null || true
-    cp -a "$_b13_base_ws/warm_dep" "$_b13_stale_lane/"
-    cp -a "$_b13_base_ws/warm_leaf" "$_b13_stale_lane/"
+    # Step 2: create the staled lane by CLONING the already-committed base
+    # workspace, rather than an independent copy + standalone `git init`. The
+    # lane needs GIT HISTORY that actually contains _b13_base_head: seed's
+    # `_touch_git_delta` runs `git -C "$LANE_DIR" diff --name-only "$sha"`,
+    # which fails closed (exit 128, "fatal: bad object") when `$sha` is not
+    # reachable in the LANE's own repo — an independently `git init`-ed lane
+    # never shares history with base_ws, no matter how the sha reaches it
+    # (`.basecommit` or `--base-commit`). `--no-hardlinks` keeps the two object
+    # stores independent so teardown order under ws_root cannot matter.
+    # Confirmed properties: carries the committed Cargo.lock (base_ws is
+    # committed after its own cold build, by _b7_init_git_lane above); never
+    # carries target/ (untracked, excluded by _b7_init_git_lane's ':!target'
+    # pathspec); lands at now-mtimes (irrelevant — seed's --fresh-checkout
+    # bulk-stamp and this arm's own commit below are what set the mtimes that
+    # matter).
+    git clone --no-hardlinks --quiet "$_b13_base_ws" "$_b13_stale_lane"
 
-    # Apply the "staling" delta to the lane's source (extra fn in warm_dep so the
-    # stale target/ is behind head by a non-trivial compilation unit)
-    local _b13_stale_fn_count="${REIFY_WARM_LANE_GATE_DEP_FNS:-500}"
-    printf '\npub fn stale_delta_fn() -> u64 { %d }\n' \
-        "$(( _b13_stale_fn_count + 1 ))" >> "$_b13_stale_lane/warm_dep/src/lib.rs"
-
-    # Cold-build the stale lane (produces stale artifacts in stale_lane/target)
-    echo "B13: cold build for stale lane..." >&2
+    # Stale the target from a source state genuinely BEHIND head (not ahead of
+    # it): regress the heavy dep to a single fn and cold-build — target/ now
+    # holds artifacts for OLD dep code, and this is CHEAPER than building the
+    # full dep_fns count. warm_leaf's only call is to fn_1 (gen_synth_workspace),
+    # which the regressed dep still provides, so the build is valid.
+    printf 'pub fn fn_1() -> u64 { 1 }\n' > "$_b13_stale_lane/warm_dep/src/lib.rs"
+    echo "B13: cold build for stale lane (regressed dep)..." >&2
     CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
         cargo build --manifest-path "$_b13_stale_lane/Cargo.toml" >/dev/null 2>&1
 
-    # git-init the stale lane so reset-in-place (git checkout -- .) is faithful.
-    # Commit after the cold build so the leaf sources are at current mtime.
-    git -C "$_b13_stale_lane" init -q
-    git -C "$_b13_stale_lane" add -- . ':!target'
+    # Restore the at-head dep from git: content differs from the index (the
+    # regression above), so checkout REWRITES the file — its mtime becomes now,
+    # strictly newer than the stale build's just-recorded fingerprint. This is
+    # what makes reset-in-place near-cold below: after the commit two lines
+    # down, the tree is clean, so control's `git checkout -- .` is a no-op that
+    # PRESERVES this mtime rather than re-staling it.
+    git -C "$_b13_stale_lane" checkout -- warm_dep/src/lib.rs
+
+    # Apply the head-ward delta to the LEAF (matches Setup-3 above) and commit
+    # on top of the cloned base commit. warm_dep is already clean (the restore
+    # above made it match the index), so this commit's -a picks up only the
+    # leaf. Committing it here (rather than relying on an explicit --touch at
+    # the treatment call below) means `git diff --name-only $_b13_base_head`
+    # inside the lane already lists this path, so seed's _touch_git_delta
+    # touches it on its own — the leaf-mtime assertion below then pins
+    # base-commit resolution itself, not a trivially-satisfied explicit touch.
+    printf '\npub fn delta_fn() -> u64 { 42 }\n' >> "$_b13_stale_lane/warm_leaf/src/lib.rs"
     git -C "$_b13_stale_lane" \
         -c user.email="warm-lane-test@localhost" \
         -c user.name="Warm Lane Test" \
-        commit -q -m "initial: B13 staled lane"
+        commit -qam "stale: B13 staled lane (head-ward delta in warm_leaf)"
 
     # ── CONTROL: reset-in-place rebuild ───────────────────────────────────────
     # Reset source to committed state; stale target/ preserved (-e target).
@@ -712,13 +786,9 @@ _b13_reseed_vs_resetinplace() {
         && git clean -xfd -e target -q 2>/dev/null) || true
     local _b13_ctrl_t0
     _b13_ctrl_t0="$(date +%s%3N)"
-    _B13_CTRL_FRESH="$(
-        CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
-            cargo build --manifest-path "$_b13_stale_lane/Cargo.toml" \
-                --message-format=json 2>/dev/null \
-        | grep '"reason":"compiler-artifact"' \
-        | grep -c '"fresh":true' || true
-    )"
+    _b13_build_fresh_counts "$_b13_stale_lane" "$ws_root/b13-ctrl-fresh.json"
+    _B13_CTRL_FRESH="$_B13_FRESH_TOTAL"
+    _B13_CTRL_DEP_FRESH="$_B13_DEP_FRESH"
     _B13_CTRL_WALL_MS=$(( $(date +%s%3N) - _b13_ctrl_t0 ))
 
     # ── TREATMENT: re-seed from at-head base ──────────────────────────────────
@@ -727,20 +797,82 @@ _b13_reseed_vs_resetinplace() {
     # Remove the stale lane/target first so seed's clobber guard passes.
     echo "B13: treatment — re-seed from at-head base..." >&2
     rm -rf "$_b13_stale_lane/target" 2>/dev/null || true
-    RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
-        bash "$SEED_SCRIPT" "$_b13_gen" "$_b13_stale_lane" \
-            --fresh-checkout \
-            --touch "$_b13_stale_lane/warm_leaf/src/lib.rs" >/dev/null
-    local _b13_treat_t0
-    _b13_treat_t0="$(date +%s%3N)"
-    _B13_TREAT_FRESH="$(
-        CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
-            cargo build --manifest-path "$_b13_stale_lane/Cargo.toml" \
-                --message-format=json 2>/dev/null \
-        | grep '"reason":"compiler-artifact"' \
-        | grep -c '"fresh":true' || true
-    )"
-    _B13_TREAT_WALL_MS=$(( $(date +%s%3N) - _b13_treat_t0 ))
+    # rc + stdout are captured explicitly (rather than a bare call) because
+    # seed-warm-lane.sh's CALLER OBLIGATION (scripts/seed-warm-lane.sh:63-79)
+    # makes non-empty stdout the ONLY warm-safe signal: the seed's fail-closed
+    # guards are BY DESIGN and this repair does not change them — the caller,
+    # not the seed, owns deciding what happens on a refusal. `|| _b13_seed_rc=$?`
+    # makes the assignment errexit-exempt so a fail-closed abort (e.g. exit 128
+    # from git diff on a foreign base commit) is observable instead of killing
+    # the whole suite. Deliberately NOT redirecting stderr: seed's `err`
+    # diagnostics on a fail-closed abort are the diagnostic payload and must
+    # stay visible in the run log.
+    #
+    # No --touch here (deliberately): the leaf delta is already committed on
+    # top of the cloned base commit (see the commit above), so it is already
+    # listed by `git diff --name-only $_b13_base_head` inside the lane. An
+    # explicit --touch would touch that same path unconditionally, BEFORE base
+    # resolution even runs — masking a base-commit-resolution regression
+    # behind a leaf mtime that would look fine regardless. Leaving it out
+    # makes the leaf-mtime assertion below a genuine pin on
+    # _touch_git_delta's git-diff resolution. This weakens no guard: PRD
+    # §9.5 inv.13 (_assert_delta_touch_base_substantiated) already keys only
+    # on base-commit resolution, not on the explicit --touch list.
+    local _b13_seed_rc=0
+    local _b13_seed_out=""
+    _b13_seed_out="$(
+        RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
+            bash "$SEED_SCRIPT" "$_b13_gen" "$_b13_stale_lane" \
+                --fresh-checkout
+    )" || _b13_seed_rc=$?
+    _B13_SEED_RC="$_b13_seed_rc"
+    _B13_SEED_OUT="$_b13_seed_out"
+
+    # TZ-robust stale-bulk-stamp epoch (mirrors seed's own
+    # _assert_no_stale_delta_stamp idiom, scripts/seed-warm-lane.sh:455) —
+    # never the hardcoded 1577836800, which is only correct under TZ=UTC.
+    _B13_STALE_EPOCH="$(date -d '2020-01-01T00:00:00' +%s)"
+
+    # Honour the caller obligation: an empty stdout (or non-zero rc) means the
+    # seed refused to certify the lane warm-safe, and it aborted ONTO the
+    # hazardous state (CoW clone already in place, sources already bulk-stamped
+    # to 2020-01-01). Building here would inherit exactly the stale-artifact
+    # false green the guard fired to prevent, so skip the build entirely and
+    # record a sentinel so the warmth comparison fails loudly too.
+    if [ "$_b13_seed_rc" -eq 0 ] && [ -n "$_b13_seed_out" ]; then
+        # Delta-touch set: pin WHAT the re-seed actually touched, immediately
+        # after it returns and before the build can observe/alter anything.
+        # The head-ward leaf must be newer than the 2020 bulk stamp — and,
+        # since no --touch is passed for it (see the call above), that can
+        # only come from _touch_git_delta's git-diff resolution, making this
+        # a genuine pin on base-commit resolution. The unchanged heavy dep
+        # must still BE at the 2020 bulk stamp — together, the delta-touch
+        # set is exactly the head-ward delta, nothing more.
+        _B13_LEAF_MTIME="$(stat -c '%Y' "$_b13_stale_lane/warm_leaf/src/lib.rs")"
+        _B13_DEP_MTIME="$(stat -c '%Y' "$_b13_stale_lane/warm_dep/src/lib.rs")"
+
+        local _b13_treat_t0
+        _b13_treat_t0="$(date +%s%3N)"
+        _b13_build_fresh_counts "$_b13_stale_lane" "$ws_root/b13-treat-fresh.json"
+        _B13_TREAT_FRESH="$_B13_FRESH_TOTAL"
+        _B13_TREAT_DEP_FRESH="$_B13_DEP_FRESH"
+        _B13_TREAT_WALL_MS=$(( $(date +%s%3N) - _b13_treat_t0 ))
+    else
+        echo "B13: treatment seed REFUSED to certify the lane (rc=$_b13_seed_rc, stdout=${_b13_seed_out:-<empty>}) — skipping the treatment build rather than measuring a half-seeded lane (caller obligation, scripts/seed-warm-lane.sh:63-79)" >&2
+        # Sentinels chosen so EVERY treatment-side assertion below FAILs
+        # (rather than accidentally passing, or crashing reading a missing/
+        # stale file): _B13_LEAF_MTIME equal to the stale epoch fails the
+        # "-ne" leaf assertion; _B13_DEP_MTIME not equal to it fails the
+        # "-eq" dep assertion; _B13_TREAT_FRESH=-1 fails the "-gt" aggregate
+        # comparison; _B13_TREAT_DEP_FRESH="" (absent, matching the tri-state
+        # "no build ran" case — never "false") fails the "= true" per-unit
+        # dep-freshness check.
+        _B13_LEAF_MTIME="$_B13_STALE_EPOCH"
+        _B13_DEP_MTIME=-1
+        _B13_TREAT_FRESH=-1
+        _B13_TREAT_DEP_FRESH=""
+        _B13_TREAT_WALL_MS=-1
+    fi
 
     echo "B13: ctrl fresh=${_B13_CTRL_FRESH} wall=${_B13_CTRL_WALL_MS}ms  treat fresh=${_B13_TREAT_FRESH} wall=${_B13_TREAT_WALL_MS}ms" >&2
 }
@@ -2267,6 +2399,45 @@ _TMPDIRS+=("$_B13_WS_ROOT")
 # Call the helper (undefined until step-10 → exits 127 under set -euo pipefail
 # on a substrate host → RED; SKIPs gracefully off-substrate via the gate above).
 _b13_reseed_vs_resetinplace "$_B13_WS_ROOT"
+
+# ── (contract) Treatment honoured seed-warm-lane.sh's caller obligation ───────
+# Non-empty stdout (with exit 0) is the ONLY signal the seed considers the lane
+# warm-safe (scripts/seed-warm-lane.sh:63-79). Asserting this explicitly means a
+# fail-closed abort in the treatment seed is now an isolated, diagnosable RED
+# line instead of the whole-suite abort it used to be.
+assert "B13: treatment re-seed honoured seed-warm-lane.sh's caller contract (exit 0 + non-empty stdout)" \
+    bash -c '[ "$1" -eq 0 ] && [ -n "$2" ]' _ "$_B13_SEED_RC" "$_B13_SEED_OUT"
+
+# ── (delta-touch set) The re-seed touched exactly the head-ward delta ────────
+# Pins WHAT the re-seed actually delta-touched: the resolved base commit must
+# produce a MEANINGFUL (leaf touched to now) yet MINIMAL (dep left alone)
+# delta, so the aggregate comparison below can never pass for the wrong reason
+# (e.g. a repair that silently widened or emptied the delta-touch set). The
+# treatment call passes no --touch for the leaf (see _b13_reseed_vs_resetinplace
+# above), so the leaf assertion below exercises _touch_git_delta's git-diff
+# base-commit resolution directly rather than being trivially satisfied by an
+# explicit touch that fires regardless of whether base resolution succeeded.
+echo "B13 mtimes: leaf=${_B13_LEAF_MTIME} dep=${_B13_DEP_MTIME} stale_epoch=${_B13_STALE_EPOCH}" >&2
+assert "B13: re-seed delta-touched the head-ward leaf to now (not the 2020 bulk stamp)" \
+    bash -c '[ "$1" -ne "$2" ]' _ "$_B13_LEAF_MTIME" "$_B13_STALE_EPOCH"
+assert "B13: re-seed left the unchanged heavy dep at the 2020 bulk stamp (delta-touch set == head-ward delta only)" \
+    bash -c '[ "$1" -eq "$2" ]' _ "$_B13_DEP_MTIME" "$_B13_STALE_EPOCH"
+
+# ── (warmth mechanism) Per-unit freshness explains the aggregate comparison ──
+# The aggregate fresh-unit comparison below has only two compilation units, so
+# a bare inequality is satisfiable by accident. Assert the MECHANISM directly:
+# the treatment's unchanged heavy dep is CoW-reused from the at-head base
+# (fresh:true), while the control's reset-in-place rebuild is genuinely
+# near-cold for that same dep (fresh:false). Tri-state string comparison
+# ("true"/"false"), not -eq 1/0: a build that emits no warm_dep
+# compiler-artifact line at all (e.g. it failed outright) yields an EMPTY
+# _B13_*_DEP_FRESH, which fails both checks below instead of silently
+# matching the "rebuilt"/"not fresh" case.
+echo "B13 dep-fresh: control=${_B13_CTRL_DEP_FRESH:-<absent>} treatment=${_B13_TREAT_DEP_FRESH:-<absent>}" >&2
+assert "B13: treatment keeps the unchanged heavy dep warm (warm_dep fresh:true from the CoW base clone)" \
+    test "$_B13_TREAT_DEP_FRESH" = "true"
+assert "B13: control rebuilt the heavy dep (reset-in-place is genuinely near-cold)" \
+    test "$_B13_CTRL_DEP_FRESH" = "false"
 
 # ── (a) Treatment is warmer than control ──────────────────────────────────────
 # Re-seed from at-head base gives a higher fresh-unit count than reset-in-place.
