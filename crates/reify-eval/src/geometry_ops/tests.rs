@@ -20394,6 +20394,40 @@
         }
     }
 
+    /// Shared runtime predicate behind the registry-completeness backstop:
+    /// `Ok(())` when a family's registry width matches its `VARIANT_COUNT`,
+    /// otherwise an `Err` naming the family and both numbers.
+    ///
+    /// This is DELIBERATELY redundant with the compile-time
+    /// `const _: () = assert!(ALL_X.len() == XKind::VARIANT_COUNT, …)` locks
+    /// beside each table.  Those are the primary shape — they fire at
+    /// `cargo check`, before any test runs.  This helper is the *seedable*
+    /// layer: a const assert cannot be seeded in-tree (no trybuild in this
+    /// workspace, and `pub(crate)` blocks rustdoc `compile_fail` doctests —
+    /// see `reify-eval/src/cell_eval_ctx.rs:120-121`), so routing the runtime
+    /// side through one shared fn is what lets
+    /// `seeded_unregistered_sweep_variant_fails_registry_completeness` prove
+    /// the backstop actually rejects drift.
+    ///
+    /// Do NOT delete either layer as duplicate coverage: drop the const asserts
+    /// and drift stops failing the build; drop this helper and the guard
+    /// becomes unfalsifiable.  The ModifyKind precedent already carries both
+    /// shapes (`geometry_modify.rs:1005` and this fn's callers).
+    fn registry_completeness(
+        family: &str,
+        registry_len: usize,
+        variant_count: usize,
+    ) -> Result<(), String> {
+        if registry_len == variant_count {
+            Ok(())
+        } else {
+            Err(format!(
+                "{family}: registry has {registry_len} entries but {family}::VARIANT_COUNT is \
+                 {variant_count} — a variant was added without registering it"
+            ))
+        }
+    }
+
     /// L5 step-1: every kind in every family must have a registered compiler
     /// in the fn-table. RED until the 7 lookup fns + static tables are added
     /// in step-2.
@@ -20404,7 +20438,7 @@
             TransformKind,
         };
 
-        // Primitive (7 variants)
+        // Primitive (8 variants)
         const ALL_PRIMITIVE: [PrimitiveKind; 8] = [
             PrimitiveKind::Box,
             PrimitiveKind::Cylinder,
@@ -20415,6 +20449,13 @@
             PrimitiveKind::Torus,
             PrimitiveKind::HalfSpace,
         ];
+        const _: () = assert!(
+            ALL_PRIMITIVE.len() == PrimitiveKind::VARIANT_COUNT,
+            "ALL_PRIMITIVE / PrimitiveKind::VARIANT_COUNT mismatch — a variant was added \
+             without registering it; extend ALL_PRIMITIVE and PrimitiveKind::ALL together"
+        );
+        registry_completeness("PrimitiveKind", ALL_PRIMITIVE.len(), PrimitiveKind::VARIANT_COUNT)
+            .expect("Primitive registry completeness");
         for k in ALL_PRIMITIVE {
             let _ = kind_idx_primitive(k);
             assert!(lookup_primitive(k).is_some(), "no Primitive entry: {:?}", k);
@@ -20432,7 +20473,13 @@
             ModifyKind::OffsetSolid,
             ModifyKind::OffsetCurve,
         ];
-        assert_eq!(ALL_MODIFY.len(), ModifyKind::VARIANT_COUNT, "ALL_MODIFY / VARIANT_COUNT mismatch");
+        const _: () = assert!(
+            ALL_MODIFY.len() == ModifyKind::VARIANT_COUNT,
+            "ALL_MODIFY / ModifyKind::VARIANT_COUNT mismatch — a variant was added \
+             without registering it; extend ALL_MODIFY and ModifyKind::ALL together"
+        );
+        registry_completeness("ModifyKind", ALL_MODIFY.len(), ModifyKind::VARIANT_COUNT)
+            .expect("Modify registry completeness");
         for k in ALL_MODIFY {
             let _ = kind_idx_modify(k);
             assert!(lookup_modify(k).is_some(), "no Modify entry: {:?}", k);
@@ -20448,6 +20495,13 @@
             TransformKind::AffineApply,
             TransformKind::ScaleNonUniform,
         ];
+        const _: () = assert!(
+            ALL_TRANSFORM.len() == TransformKind::VARIANT_COUNT,
+            "ALL_TRANSFORM / TransformKind::VARIANT_COUNT mismatch — a variant was added \
+             without registering it; extend ALL_TRANSFORM and TransformKind::ALL together"
+        );
+        registry_completeness("TransformKind", ALL_TRANSFORM.len(), TransformKind::VARIANT_COUNT)
+            .expect("Transform registry completeness");
         for k in ALL_TRANSFORM {
             let _ = kind_idx_transform(k);
             assert!(lookup_transform(k).is_some(), "no Transform entry: {:?}", k);
@@ -20461,22 +20515,37 @@
             PatternKind::Linear2D,
             PatternKind::Arbitrary,
         ];
+        const _: () = assert!(
+            ALL_PATTERN.len() == PatternKind::VARIANT_COUNT,
+            "ALL_PATTERN / PatternKind::VARIANT_COUNT mismatch — a variant was added \
+             without registering it; extend ALL_PATTERN and PatternKind::ALL together"
+        );
+        registry_completeness("PatternKind", ALL_PATTERN.len(), PatternKind::VARIANT_COUNT)
+            .expect("Pattern registry completeness");
         for k in ALL_PATTERN {
             let _ = kind_idx_pattern(k);
             assert!(lookup_pattern(k).is_some(), "no Pattern entry: {:?}", k);
         }
 
-        // Sweep (8 variants)
-        const ALL_SWEEP: [SweepKind; 8] = [
+        // Sweep (9 variants)
+        const ALL_SWEEP: [SweepKind; 9] = [
             SweepKind::Loft,
             SweepKind::Extrude,
             SweepKind::Revolve,
             SweepKind::Sweep,
             SweepKind::ExtrudeSymmetric,
+            SweepKind::ExtrudeInfinite,
             SweepKind::SweepGuided,
             SweepKind::LoftGuided,
             SweepKind::Pipe,
         ];
+        const _: () = assert!(
+            ALL_SWEEP.len() == SweepKind::VARIANT_COUNT,
+            "ALL_SWEEP / SweepKind::VARIANT_COUNT mismatch — a variant was added \
+             without registering it; extend ALL_SWEEP and SweepKind::ALL together"
+        );
+        registry_completeness("SweepKind", ALL_SWEEP.len(), SweepKind::VARIANT_COUNT)
+            .expect("Sweep registry completeness");
         for k in ALL_SWEEP {
             let _ = kind_idx_sweep(k);
             assert!(lookup_sweep(k).is_some(), "no Sweep entry: {:?}", k);
@@ -20491,6 +20560,13 @@
             CurveKind::BezierCurve,
             CurveKind::NurbsCurve,
         ];
+        const _: () = assert!(
+            ALL_CURVE.len() == CurveKind::VARIANT_COUNT,
+            "ALL_CURVE / CurveKind::VARIANT_COUNT mismatch — a variant was added \
+             without registering it; extend ALL_CURVE and CurveKind::ALL together"
+        );
+        registry_completeness("CurveKind", ALL_CURVE.len(), CurveKind::VARIANT_COUNT)
+            .expect("Curve registry completeness");
         for k in ALL_CURVE {
             let _ = kind_idx_curve(k);
             assert!(lookup_curve(k).is_some(), "no Curve entry: {:?}", k);
@@ -20503,10 +20579,98 @@
             ProfileKind::Polygon,
             ProfileKind::Ellipse,
         ];
+        const _: () = assert!(
+            ALL_PROFILE.len() == ProfileKind::VARIANT_COUNT,
+            "ALL_PROFILE / ProfileKind::VARIANT_COUNT mismatch — a variant was added \
+             without registering it; extend ALL_PROFILE and ProfileKind::ALL together"
+        );
+        registry_completeness("ProfileKind", ALL_PROFILE.len(), ProfileKind::VARIANT_COUNT)
+            .expect("Profile registry completeness");
         for k in ALL_PROFILE {
             let _ = kind_idx_profile(k);
             assert!(lookup_profile(k).is_some(), "no Profile entry: {:?}", k);
         }
+    }
+
+    /// Anti-vacuity seed for PRD §6 boundary row 15 (units-length κ).
+    ///
+    /// The compile-time `const _: () = assert!(…)` locks in
+    /// `compile_geometry_op_registry_completeness` are the primary shape, but
+    /// they CANNOT be seeded in-tree: this workspace has no trybuild, and
+    /// `pub(crate)` items block rustdoc `compile_fail` doctests (stated verbatim
+    /// at `reify-eval/src/cell_eval_ctx.rs:120-121`).  A seeded drift there
+    /// would simply fail to compile the crate, taking the seed down with it.
+    ///
+    /// So this seed drives the RUNTIME shape — and that is exactly why
+    /// [`registry_completeness`] is factored out as a shared helper rather than
+    /// written as a bare `assert_eq!` at each site: the seed then exercises the
+    /// SAME predicate the real backstop runs, not a look-alike re-implementation
+    /// that could pass while the real one rotted.  This mirrors closure-guard
+    /// ι's boundary-row-11 discipline ("shrink the guarded set by one entry and
+    /// require the guard to fail").
+    ///
+    /// SweepKind is the family PRD §6 row 15 names, and the family whose real
+    /// drift this backstop caught on its first application — `ALL_SWEEP` had
+    /// silently omitted `ExtrudeInfinite` while `SWEEP_COMPILERS` registered it.
+    #[test]
+    fn seeded_unregistered_sweep_variant_fails_registry_completeness() {
+        use reify_compiler::SweepKind;
+
+        const ALL_SWEEP: [SweepKind; 9] = [
+            SweepKind::Loft,
+            SweepKind::Extrude,
+            SweepKind::Revolve,
+            SweepKind::Sweep,
+            SweepKind::ExtrudeSymmetric,
+            SweepKind::ExtrudeInfinite,
+            SweepKind::SweepGuided,
+            SweepKind::LoftGuided,
+            SweepKind::Pipe,
+        ];
+        const _: () = assert!(
+            ALL_SWEEP.len() == SweepKind::VARIANT_COUNT,
+            "ALL_SWEEP / SweepKind::VARIANT_COUNT mismatch — a variant was added \
+             without registering it; extend ALL_SWEEP and SweepKind::ALL together"
+        );
+
+        // Measure the registry width through the production `lookup_sweep` fn
+        // rather than hand-copying a literal, so the positive control is
+        // anchored to what SWEEP_COMPILERS actually holds today.
+        let registered = ALL_SWEEP
+            .into_iter()
+            .filter(|k| lookup_sweep(*k).is_some())
+            .count();
+
+        // (a) POSITIVE CONTROL — the shipped pair must agree.
+        assert!(
+            registry_completeness("SweepKind", registered, SweepKind::VARIANT_COUNT).is_ok(),
+            "positive control failed: registry has {registered} entries but \
+             SweepKind::VARIANT_COUNT is {}",
+            SweepKind::VARIANT_COUNT
+        );
+
+        // (b) SEED ONE — stands in for "a variant was added to SweepKind and to
+        // SweepKind::ALL but never registered in SWEEP_COMPILERS": the registry
+        // is one row short.  Must be REJECTED.
+        let err = registry_completeness("SweepKind", registered - 1, SweepKind::VARIANT_COUNT)
+            .expect_err(
+                "seeded drift (registry one row short) was NOT rejected — the backstop is vacuous",
+            );
+        assert!(
+            err.contains("SweepKind"),
+            "diagnostic must name the family, got: {err}"
+        );
+
+        // (c) SEED TWO — the opposite drift direction: VARIANT_COUNT one higher
+        // than the registry.  Must also be REJECTED.
+        let err = registry_completeness("SweepKind", registered, SweepKind::VARIANT_COUNT + 1)
+            .expect_err(
+                "seeded drift (VARIANT_COUNT one higher) was NOT rejected — the backstop is vacuous",
+            );
+        assert!(
+            err.contains("SweepKind"),
+            "diagnostic must name the family, got: {err}"
+        );
     }
 
     /// L5 step-3: the non-test region of geometry_ops.rs must contain ZERO
