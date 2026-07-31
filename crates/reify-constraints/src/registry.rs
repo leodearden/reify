@@ -784,3 +784,191 @@ fn build_band_constraints(
         (ConstraintNodeId::new("__lex_freeze__", base_idx + 1), ge_expr),
     ]
 }
+
+/// Unit tests for [`objective_consumption`] — the pure fact function that
+/// reports which of `solve_inner`'s three objective drop sites (if any) a
+/// given [`ResolutionProblem`] lands on (task γ #5417, PRD
+/// `docs/prds/v0_6/declared-intent-consumption-accounting.md` §3 decision 3).
+///
+/// Every case is a hand-built `ResolutionProblem`; none of them runs a solve,
+/// which is the point — the fact must be derivable from the problem alone so
+/// the engine can consult it without a solver in hand.
+#[cfg(test)]
+mod objective_consumption_tests {
+    use super::*;
+    use reify_ir::ValueMap;
+
+    /// A `param_type: Real`, unbounded, non-free auto param.
+    fn auto(entity: &str, member: &str) -> AutoParam {
+        AutoParam {
+            id: ValueCellId::new(entity, member),
+            param_type: Type::dimensionless_scalar(),
+            bounds: None,
+            free: false,
+        }
+    }
+
+    fn vref(entity: &str, member: &str) -> CompiledExpr {
+        CompiledExpr::value_ref(
+            ValueCellId::new(entity, member),
+            Type::dimensionless_scalar(),
+        )
+    }
+
+    /// `<entity>.<member> >= 1.0` — a constraint that references exactly one
+    /// cell, so `decompose_into_components` puts it in its own component iff
+    /// that cell is an auto param.
+    fn ge_one(entity: &str, member: &str, idx: u32) -> (ConstraintNodeId, CompiledExpr) {
+        (
+            ConstraintNodeId::new(entity, idx),
+            CompiledExpr::binop(
+                BinOp::Ge,
+                vref(entity, member),
+                CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
+                Type::Bool,
+            ),
+        )
+    }
+
+    /// `minimize <entity>.<member>` as a 1-term `WeightedSum` set.
+    fn minimize_ref(entity: &str, member: &str) -> ObjectiveSet {
+        ObjectiveSet::single(ObjectiveSense::Minimize, vref(entity, member))
+    }
+
+    fn problem(
+        auto_params: Vec<AutoParam>,
+        constraints: Vec<(ConstraintNodeId, CompiledExpr)>,
+        objective: Option<ObjectiveSet>,
+    ) -> ResolutionProblem {
+        ResolutionProblem {
+            auto_params,
+            constraints,
+            current_values: ValueMap::new(),
+            objective,
+            functions: vec![].into(),
+            dependent_cells: Vec::new(),
+        }
+    }
+
+    /// (1) No declared objective at all ⇒ `NoObjective`, regardless of how
+    /// many autos or constraints the problem has. `NoObjective` takes
+    /// precedence over every other verdict: there is no objective whose
+    /// consumption could be in question.
+    #[test]
+    fn no_objective_reports_no_objective() {
+        let p = problem(vec![auto("P", "a")], vec![ge_one("P", "a", 0)], None);
+        assert_eq!(objective_consumption(&p), ObjectiveConsumption::NoObjective);
+
+        // …and also when the problem is otherwise empty (precedence over the
+        // `NoAutoParams` / `NoComponents` verdicts).
+        let empty = problem(vec![], vec![], None);
+        assert_eq!(
+            objective_consumption(&empty),
+            ObjectiveConsumption::NoObjective
+        );
+    }
+
+    /// (2) Objective present but zero auto params ⇒ `NoAutoParams` — the
+    /// `solve_inner` `problem.auto_params.is_empty()` early-exit shape, which
+    /// returns `Solved { values: {} }` without ever looking at the objective.
+    #[test]
+    fn objective_with_no_auto_params_reports_no_auto_params() {
+        let p = problem(
+            vec![],
+            vec![ge_one("P", "k", 0)],
+            Some(minimize_ref("P", "k")),
+        );
+        assert_eq!(objective_consumption(&p), ObjectiveConsumption::NoAutoParams);
+    }
+
+    /// (3) Objective present, one auto, ZERO constraints ⇒ `NoComponents` —
+    /// the `solve_inner` `components.is_empty()` shape. This is exactly
+    /// `docs/prds/v0_6/fixtures/dic_min_unconstrained.ri`: the objective
+    /// reaches auto `a`, the decomposition builds no components, and the
+    /// registry drops the objective silently.
+    #[test]
+    fn objective_over_unconstrained_auto_reports_no_components() {
+        let p = problem(
+            vec![auto("P", "a")],
+            vec![],
+            Some(minimize_ref("P", "a")),
+        );
+        assert_eq!(objective_consumption(&p), ObjectiveConsumption::NoComponents);
+    }
+
+    /// (4) The healthy case: the objective references an auto that a
+    /// constraint also references, so that auto's component genuinely carries
+    /// the objective ⇒ `Consumed { component: 0 }`.
+    #[test]
+    fn objective_over_constrained_auto_is_consumed() {
+        let p = problem(
+            vec![auto("P", "a")],
+            vec![ge_one("P", "a", 0)],
+            Some(minimize_ref("P", "a")),
+        );
+        assert_eq!(
+            objective_consumption(&p),
+            ObjectiveConsumption::Consumed { component: 0 }
+        );
+    }
+
+    /// (5) The objective references NO auto param while ≥1 component exists ⇒
+    /// `FallbackComponentZero` — `solve_inner`'s silent attach-the-objective-
+    /// to-component-0 shape. The objective governs nothing, but the solve
+    /// still succeeds, so today this is invisible.
+    #[test]
+    fn objective_matching_no_component_reports_fallback_component_zero() {
+        let p = problem(
+            vec![auto("P", "a")],
+            vec![ge_one("P", "a", 0)],
+            // `k` is not an auto param and appears in no constraint.
+            Some(minimize_ref("P", "k")),
+        );
+        assert_eq!(
+            objective_consumption(&p),
+            ObjectiveConsumption::FallbackComponentZero
+        );
+    }
+
+    /// A multi-term objective is consumed when ANY term reaches a component's
+    /// auto param — the refs of every term are unioned, matching
+    /// `solve_inner`'s `for term in &obj.terms` collection.
+    #[test]
+    fn multi_term_objective_is_consumed_when_any_term_reaches_a_component() {
+        let objective = ObjectiveSet {
+            terms: vec![
+                ObjectiveTerm::new(ObjectiveSense::Minimize, vref("P", "k")),
+                ObjectiveTerm::new(ObjectiveSense::Minimize, vref("P", "a")),
+            ],
+            combination: ObjectiveCombination::WeightedSum,
+            cost_robustness_lambda: None,
+        };
+        let p = problem(
+            vec![auto("P", "a")],
+            vec![ge_one("P", "a", 0)],
+            Some(objective),
+        );
+        assert_eq!(
+            objective_consumption(&p),
+            ObjectiveConsumption::Consumed { component: 0 }
+        );
+    }
+
+    /// The function is pure and deterministic: the same problem yields the
+    /// same verdict every time, and the problem itself is untouched (it is
+    /// borrowed immutably and no solve is performed — the signature takes no
+    /// solver, so a solve is not even expressible).
+    #[test]
+    fn objective_consumption_is_pure_and_deterministic() {
+        let p = problem(
+            vec![auto("P", "a")],
+            vec![ge_one("P", "a", 0)],
+            Some(minimize_ref("P", "a")),
+        );
+        let before = format!("{p:?}");
+        let first = objective_consumption(&p);
+        let second = objective_consumption(&p);
+        assert_eq!(first, second);
+        assert_eq!(format!("{p:?}"), before, "problem must not be mutated");
+    }
+}
