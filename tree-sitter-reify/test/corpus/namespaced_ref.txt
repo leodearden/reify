@@ -1,0 +1,174 @@
+================================================================================
+namespaced_ref: qualified type annotation (pp.Pulley)
+================================================================================
+
+structure S {
+  param p : pp.Pulley
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (namespaced_name
+          binding: (identifier)
+          name: (identifier))))))
+
+================================================================================
+namespaced_ref: qualified type as a type argument (List<pp.Pulley>)
+================================================================================
+
+structure S {
+  param q : List<pp.Pulley>
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (parameterized_type
+          name: (identifier)
+          type_args: (type_arg_list
+            (type_expr
+              (namespaced_name
+                binding: (identifier)
+                name: (identifier)))))))))
+
+================================================================================
+namespaced_ref: sub instantiation arm (sub p = pp.Pulley())
+================================================================================
+
+structure S {
+  sub p = pp.Pulley()
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (namespaced_name
+        binding: (identifier)
+        name: (identifier)))))
+
+================================================================================
+namespaced_ref: sub specialization arm (sub h : pp.Pulley)
+================================================================================
+
+structure S {
+  sub h : pp.Pulley
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (namespaced_name
+        binding: (identifier)
+        name: (identifier)))))
+
+================================================================================
+namespaced_ref: sub collection arm (sub i : List<pp.Pulley>)
+================================================================================
+
+structure S {
+  sub i : List<pp.Pulley>
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (namespaced_name
+        binding: (identifier)
+        name: (identifier)))))
+
+================================================================================
+namespaced_ref control: unqualified structure_name stays an identifier
+================================================================================
+
+structure S {
+  sub j = Plain()
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier))))
+
+================================================================================
+namespaced_ref control: :: type stays a qualified_type (Beam::Material)
+================================================================================
+
+structure S {
+  param n : Beam::Material
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (qualified_type
+          base: (identifier)
+          member: (identifier))))))
+
+================================================================================
+namespaced_ref control: List<Foo> still takes the collection arm (lexer rule #2)
+================================================================================
+
+structure S {
+  sub a : List<Foo>
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier))))
+
+================================================================================
+namespaced_ref control: Listicle<Foo> still takes the specialization arm (rule #1)
+================================================================================
+
+structure S {
+  sub b : Listicle<Foo>
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier)
+      type_args: (type_arg_list
+        (type_expr
+          (identifier))))))

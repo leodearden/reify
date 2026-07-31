@@ -845,7 +845,8 @@ module.exports = grammar({
         // `0..4` domain needs zero new grammar.
         optional(seq('[', field('binder', $.identifier), 'in', field('domain', $._expression), ']')),
         '=',
-        field('structure_name', $.identifier),
+        // `$.namespaced_name` admits `sub p = pp.Pulley()` (task 5495 μ).
+        field('structure_name', choice($.identifier, $.namespaced_name)),
         optional(field('type_args', seq('<', $.type_arg_list, '>'))),
         '(',
         optional($.named_argument_list),
@@ -872,7 +873,8 @@ module.exports = grammar({
         ':',
         'List',
         '<',
-        field('structure_name', $.identifier),
+        // `$.namespaced_name` admits `sub i : List<pp.Pulley>` (task 5495 μ).
+        field('structure_name', choice($.identifier, $.namespaced_name)),
         '>',
         optional(field('guard', $.where_clause)),
         optional(seq('at', field('pose', choice($._expression, $.auto_keyword)), optional(field('relations', $.sub_relate_block)))),
@@ -919,7 +921,13 @@ module.exports = grammar({
         'sub',
         field('name', $.identifier),
         ':',
-        field('structure_name', $.identifier),
+        // `$.namespaced_name` admits `sub h : pp.Pulley` (task 5495 μ).  The
+        // dotted form cannot collide with the `List<…>` collection arm above
+        // (which requires `<` immediately after `List`), so the lexer rule-#1 /
+        // rule-#2 discipline documented above is untouched — pinned by
+        // `list_vs_listicle_lexer_discipline_unchanged` in
+        // tree-sitter-reify/tests/qualified_ref_grammar_tests.rs.
+        field('structure_name', choice($.identifier, $.namespaced_name)),
         optional(field('type_args', seq('<', $.type_arg_list, '>'))),
         optional(field('guard', $.where_clause)),
         optional(field('body', choice($.specialization_body, $.keyed_member_block))),
@@ -1096,10 +1104,17 @@ module.exports = grammar({
     // unambiguous from '<' and any identifier suffix, so tree-sitter does NOT
     // request a new conflict entry for it.  (Confirmed: `tree-sitter generate`
     // runs clean with no new unresolved-conflict errors after adding this rule.)
+    // The `$.namespaced_name` arm (task 5495 μ) adds the dotted qualified-ref
+    // form `pp.Pulley`.  Placing it here — rather than at each of the 23
+    // `$.type_expr` use sites — covers every type position plus `type_arg_list`
+    // (`List<pp.Pulley>`) with a single arm.  It is unambiguous against the
+    // three arms above: `.` is not `<` (parameterized), not `::` (qualified),
+    // and not `(` (function).
     type_expr: $ => choice(
       $.function_type,
       $.parameterized_type,
       $.qualified_type,
+      $.namespaced_name,
       $.identifier,
     ),
 
@@ -1147,6 +1162,30 @@ module.exports = grammar({
           ')',
         ),
       ),
+    ),
+
+    // Namespaced (qualified) reference through an import binding: `pp.Pulley`,
+    // where `pp` comes from `import parts as pp`.  PRD
+    // `docs/prds/v0_6/stdlib-namespace.md` §3.3 NS-Q2 / D-7 (task 5495 μ).
+    //
+    // ONE shared rule serves BOTH type position (via the `$.type_expr` arm
+    // above) and `sub_declaration`'s `structure_name` (all three arms), so the
+    // two positions cannot drift.  Expression position deliberately does NOT
+    // get a node of this kind: bare `pp.Pulley` is indistinguishable from
+    // `self.width` at parse time (a single case-agnostic `identifier` regex,
+    // grammar.js:1683), so it keeps parsing as `member_access` and the
+    // resolution phase (task ν) performs the fixup — the same deferral the
+    // `Foo.Bar` enum-access form already relies on (resolution-unification D-9).
+    // The call form is handled separately by `namespaced_call`.
+    //
+    // Exactly two segments, and NO `optional(type_args)`: qualified GENERIC
+    // types (`pp.Box<T>`) are out of scope for μ.  Adding a `type_args` option
+    // here is the one formulation that produces an unresolved LR conflict
+    // (`namespaced_name … • '<'`) — verified during planning; do not add it.
+    namespaced_name: $ => seq(
+      field('binding', $.identifier),
+      '.',
+      field('name', $.identifier),
     ),
 
     // A type with type arguments: `Box<T>`, `Map<String, Int>`
