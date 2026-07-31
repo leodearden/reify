@@ -207,8 +207,8 @@
 #     (D8 reader-refcount seam; same contract as the acquire path).
 #   - Safety-ranked order: reset lanes first (cheap), then remove orphans (destructive).
 #   - Stdout: machine-readable summary line only —
-#     `reclaim: reset=N removed=N preserved=N preserved_live_ref=N`. New fields
-#     are APPENDED so prefix-matching consumers keep working.
+#     `reclaim: reset=N removed=N preserved=N preserved_live_ref=N reset_cold=N`.
+#     New fields are APPENDED so prefix-matching consumers keep working.
 #     Stderr: all diagnostics (info/ok/warn/err).
 
 set -euo pipefail
@@ -280,9 +280,12 @@ Usage: $(basename "$0") reclaim --mount WORKTREE_BASE [OPTIONS]
 
   Output:
     stdout: machine-readable summary:
-            reclaim: reset=N removed=M preserved=K preserved_live_ref=L
+            reclaim: reset=N removed=M preserved=K preserved_live_ref=L reset_cold=C
             (L is the share of K held back by a live process reference — the
-             only preserve reason that can shield an entry indefinitely)
+             only preserve reason that can shield an entry indefinitely;
+             C is the share of N left COLD because the α seed REFUSED — its
+             uncertified target/ discarded here, or nothing staged to discard —
+             PRD docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13)
     stderr: all diagnostics.
 EOF
 }
@@ -478,6 +481,21 @@ _do_reclaim() {
     # per-entry `preserving <name>: live consumer (process reference)` warn on
     # stderr names WHICH entries, so an operator can find and clear the holder.
     local preserved_live_ref_count=0
+    # Sub-count of reset_count left COLD rather than warm: lanes a REFUSING α
+    # seed left with no usable target/ — whether it aborted fail-closed onto the
+    # uncertified clone this script then discarded (§9.5 inv.13 caller
+    # obligation) or refused before staging one at all, leaving nothing to
+    # discard. The two are not distinguishable from here (see the discard branch)
+    # and need not be: what the count names is the lane's OUTCOME — reset to
+    # nothing — not which guard produced it. Reported separately because a bare
+    # reset=N cannot distinguish a lane reset WARM — the normal, valuable
+    # outcome — from one reset to nothing, and a fail-closed seed abort is
+    # rarely per-lane: inv.12 predicts that a bad base generation makes EVERY
+    # acquire against it abort identically, degrading the whole pool to cold
+    # fallback. A rising reset_cold in dark-factory's logs is that degradation
+    # becoming visible; the per-lane warns on stderr name WHICH lanes and carry
+    # the seed's own [error] lines, which name the offending paths.
+    local reset_cold_count=0
 
     info "warm-lane-gc.sh reclaim: worktrees_dir=$WORKTREES_DIR  base_target=$BASE_TARGET  main_ref=$MAIN_REF"
 
@@ -632,8 +650,67 @@ _do_reclaim() {
                 ok "  reset lane: $name"
                 reset_count=$((reset_count + 1))
             else
-                warn "  reset failed for $name (seed-script error); continuing"
-                preserved_count=$((preserved_count + 1))
+                # A non-zero α exit means the seed did NOT certify this lane, and
+                # its three fail-closed post-conditions all fire AFTER target/ has
+                # been replaced with the CoW clone — so the abort lands ONTO the
+                # hazardous state it just refused to certify. The seed
+                # deliberately leaves that clone in place (it refuses, it does not
+                # repair), which makes discarding it the caller's obligation:
+                # docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13, "Caller
+                # obligation on the fail-closed path", is the single normative
+                # home for the ruling.
+                #
+                # Keyed on the EXIT STATUS, not on the seed's stdout, and that is
+                # the same predicate: seed-warm-lane.sh runs under
+                # `set -euo pipefail` and writes stdout exactly once, at its
+                # terminal echo, so `err …; return 1` yields non-zero exit and
+                # empty stdout together. Observing that stdout is not open to us
+                # anyway — the α call's whole output is piped through the [seed]
+                # warn loop above, to protect this script's own single-line
+                # stdout contract.
+                warn "  reset did not certify $name (seed-script exited non-zero); discarding any target/ it left behind"
+                # Probe BEFORE the rm: `rm -rf` exits 0 on a missing path, so its
+                # own status cannot tell "removed the uncertified target/" from
+                # "there was nothing there". A seed can refuse with the lane
+                # already empty — it moves the old target/ into its reseed trash
+                # BEFORE staging the clone, so any guard firing in that window
+                # (base absent, RUSTFLAGS mismatch, a usage error) leaves nothing
+                # behind. Reporting a discard that never happened would be a
+                # plain falsehood in the operator's log; the probe picks the
+                # wording. Note the converse is NOT knowable here: a target/ that
+                # IS present may be the fail-closed CoW clone or the lane's own
+                # pre-existing target/ (a refusal before the trash-move), hence
+                # "uncertified target/" rather than "clone" — either way the seed
+                # did not certify it and gc's job on this branch is to reset.
+                local had_target=0
+                [ -e "$lane/target" ] && had_target=1
+                local rm_err
+                if rm_err="$(rm -rf "$lane/target" 2>&1)"; then
+                    if [ "$had_target" = "1" ]; then
+                        warn "  discarded uncertified target/: $lane/target (§9.5 inv.13 caller obligation; lane left cold-but-safe)"
+                    else
+                        warn "  nothing to discard at $lane/target — the seed refused leaving none (§9.5 inv.13 caller obligation; lane left cold-but-safe)"
+                    fi
+                    # Counted identically on both wordings: the lane is left COLD
+                    # by a REFUSING seed either way, which is what reset_cold
+                    # names (see its declaration). A refusal that staged nothing
+                    # is if anything MORE likely to be inv.12's pool-wide
+                    # degradation than a per-lane one, so excluding it would hide
+                    # the signal the sub-count exists for.
+                    reset_count=$((reset_count + 1))
+                    reset_cold_count=$((reset_cold_count + 1))
+                else
+                    # The discard we just took on as an obligation did not happen,
+                    # so the clone survives. Count `preserved` and continue the
+                    # sweep — the same accounting the disk-pressure rm-failure
+                    # branch above uses, for the same reason: the lane was left
+                    # untouched, so calling it reset would be a lie. Deliberately
+                    # NOT reset_count/reset_cold_count, and deliberately not an
+                    # abort (per-candidate failures warn + continue).
+                    warn "  discard failed for $name: ${rm_err:-<rm produced no output>}; continuing"
+                    warn "  $lane/target RETAINS an uncertified clone — the next consumer must not build in it"
+                    preserved_count=$((preserved_count + 1))
+                fi
             fi
         fi
         exec 8>&-  # release lane lock; NOT removed — persists as per-lane mutex
@@ -719,12 +796,12 @@ _do_reclaim() {
     done
 
     # ── Summary ───────────────────────────────────────────────────────────────
-    # preserved_live_ref is APPENDED, never interposed: existing consumers match
-    # the reset=/removed=/preserved= prefix, so a trailing field extends the line
-    # without breaking them.
-    printf 'reclaim: reset=%d removed=%d preserved=%d preserved_live_ref=%d\n' \
-        "$reset_count" "$removed_count" "$preserved_count" "$preserved_live_ref_count"
-    ok "reclaim complete: reset=$reset_count removed=$removed_count preserved=$preserved_count preserved_live_ref=$preserved_live_ref_count"
+    # preserved_live_ref and reset_cold are APPENDED, never interposed: existing
+    # consumers match the reset=/removed=/preserved= prefix, so trailing fields
+    # extend the line without breaking them.
+    printf 'reclaim: reset=%d removed=%d preserved=%d preserved_live_ref=%d reset_cold=%d\n' \
+        "$reset_count" "$removed_count" "$preserved_count" "$preserved_live_ref_count" "$reset_cold_count"
+    ok "reclaim complete: reset=$reset_count removed=$removed_count preserved=$preserved_count preserved_live_ref=$preserved_live_ref_count reset_cold=$reset_cold_count"
 }
 
 # ── dispatch ───────────────────────────────────────────────────────────────────

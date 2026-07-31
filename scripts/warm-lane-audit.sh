@@ -19,7 +19,9 @@
 # backing-task-status (terminal|non-terminal|unknown) · recoverable
 # (LANDED|PUSHED|ORPHAN) · dirty (clean|residue-only|wip) · divergent_gib ·
 # age_min · classification (LIVE|PINNED|QUARANTINED|RECLAIMABLE|LEAKED|
-# PRESERVED-OK, ranked in that order).
+# PRESERVED-OK, ranked in that order) ·
+# plan_sync (OK|REWRITTEN|STRANDED|UNKNOWN|`-`) ·
+# plan_task (MATCH|MISMATCH|`-`).
 #
 # `live`, `assigned` and `pin` answer THREE independent questions, and are
 # three columns for that reason: is a consumer PROCESS holding this lane's
@@ -27,17 +29,27 @@
 # <state-dir>/<lane>.json, never inferred from the lock); and, when it is
 # reserved with nothing running, WHO holds it.
 #
+# `plan_sync` answers a FOURTH, orthogonal question -- does the lane's ref
+# still hold the work its plan says it committed? -- by testing the lane's HEAD
+# against the ANCHOR in <lane>/.task/plan.json: the plan-order-last done entry
+# (prerequisites then steps) carrying a commit. It is a CROSS-CUT, never a
+# `classification` verdict, because ref integrity is orthogonal to occupancy: a
+# stranded lane can be LIVE, PINNED or RECLAIMABLE at the same time (task 5876,
+# esc-5866-8).
+#
 # Two summary lines follow the per-lane rows:
 #
 #     HEADROOM resident=… live=… pinned=… quarantined=… free=… assigned=…
 #              state_unknown=… reclaimable=… leaked=… leak_unknown=…
-#              divergent_gib=… free_gib=… budget_gib=…
+#              divergent_gib=… free_gib=… budget_gib=… plan_stranded=…
+#              plan_unknown=… plan_rewritten=… plan_mismatch=…
 #     PINNED   total=… pending=… infra-hold=… blocked=… terminal=… other=…
 #              unknown=…
 #
 # HEADROOM's occupancy figures are an ORDERED, mutually exclusive PARTITION --
 # `resident = live + pinned + quarantined + free`, with `free` the residue --
-# while `assigned` and `state_unknown` are CROSS-CUTS never added into it (see
+# while `assigned`, `state_unknown` and the four `plan_*` fields are CROSS-CUTS
+# never added into it (see
 # the counter block at the resident walk, which is where that identity is
 # enforced). PINNED breaks `pinned` down by WHY each pin is held: a fixed,
 # closed bucket vocabulary in a fixed order, always emitted, zeros included
@@ -136,6 +148,26 @@
 #        unresolvable backing-task status. A state dir that is absent ENTIRELY
 #        warns ONCE for the directory instead of once per lane, so the per-lane
 #        naming keeps meaning "this lane, unlike its neighbours".
+#   A6 — the plan-record read is fail-safe and read-only. A missing,
+#        unreadable or corrupt <lane>/.task/plan.json, an anchor commit absent
+#        from the object DB, or an anchor whose patch equivalence cannot be
+#        decided, all degrade that lane to `plan_sync=UNKNOWN`; it never
+#        aborts, never creates the `.task/` dir or the record (guaranteed by
+#        _plan_record, exactly as A1's guarantee is by _lane_record), and
+#        NEVER accuses a strand it cannot evidence -- an absent anchor object
+#        is UNKNOWN, never STRANDED (see _read_plan_sync's resolution order for
+#        why that ordering is the whole invariant). "Nothing recorded yet"
+#        stays the distinct `-` sentinel, so a fresh lane's all-pending plan
+#        never inflates the unknown count and buries the records that genuinely
+#        could not be read. A non-ancestor anchor whose PATCH is still in
+#        HEAD's history is REWRITTEN, never STRANDED: the workflow rebases
+#        routinely, so accusing every rewritten sha would bury the real signal
+#        under the pool's own steady state (esc-5876-1 measured 36 of 67
+#        plan-carrying lanes non-ancestor and none of them missing work).
+#        This script never REPAIRS a strand it finds: recovery requires knowing
+#        which dangling commits belong to which task, and a wrong reflog-based
+#        repoint destroys the evidence a root-cause depends on. Ref repair
+#        belongs to the lane lifecycle and to a human (A1; PRD §9.5 inv.12).
 
 set -euo pipefail
 
@@ -170,6 +202,24 @@ Usage: $(basename "$0") [--mount DIR] [--format table|json] [--status-cmd CMD]
               running): the RAW backing status of the task holding it, e.g.
               pending / infra-hold / in-progress / done. \`unknown\` when it
               cannot be resolved; \`-\` when the lane is not pinned.
+    plan_sync OK|REWRITTEN|STRANDED|UNKNOWN|\`-\` — does the lane's ref still
+              hold the work its plan says it committed? Tests HEAD against the
+              ANCHOR in <lane>/.task/plan.json (the plan-order-last done entry
+              carrying a commit). OK: the anchor is an ancestor of HEAD.
+              REWRITTEN: it is not, but an equivalent PATCH is in HEAD's
+              history — a routine rebase, benign, and the expected steady
+              state. STRANDED: it is not, and no equivalent patch exists
+              anywhere in HEAD — the work is genuinely off the branch.
+              \`-\` means nothing was recorded yet; UNKNOWN means it could not
+              be evaluated. A non-ancestor anchor ALONE is not evidence of
+              lost work; only STRANDED is, and even then it is an
+              investigate-then-escalate signal, never an auto-repair trigger.
+    plan_task MATCH|MISMATCH|\`-\` — does the lane's branch-derived task id
+              equal the plan's own task_id? A SECOND, orthogonal signature:
+              plan_sync sees a ref whose TIP was clobbered, plan_task sees a
+              lane bound to the WRONG BRANCH. \`-\` when there is no
+              comparison to make (detached HEAD, non-\`task/\` branch, or no
+              task_id in the plan) — never MISMATCH.
 
   Classification, ranked: LIVE > PINNED > QUARANTINED >
   RECLAIMABLE|LEAKED|PRESERVED-OK -- the HEADROOM partition's order exactly.
@@ -179,8 +229,13 @@ Usage: $(basename "$0") [--mount DIR] [--format table|json] [--status-cmd CMD]
     HEADROOM  occupancy is an ordered, exclusive PARTITION --
               resident = live + pinned + quarantined + free -- so \`free\` is
               the residue and never absorbs a reserved-but-idle lane.
-              \`assigned\` and \`state_unknown\` are cross-cuts, not partition
-              members.
+              \`assigned\`, \`state_unknown\` and \`plan_stranded\` /
+              \`plan_unknown\` / \`plan_rewritten\` / \`plan_mismatch\` are
+              cross-cuts, not partition members: they may overlap any bucket.
+              plan_rewritten
+              counts routine rebases and is expected to DOMINATE a healthy
+              pool — it is emitted so the stranded figure is readable in
+              proportion to it, and needs no action.
     PINNED    why the pins are held: total + the fixed buckets pending,
               infra-hold, blocked, terminal, other, unknown. Always emitted,
               zeros included.
@@ -619,6 +674,366 @@ _recoverable() {
     return 0
 }
 
+# ── plan_sync: does the ref still hold the work the plan says it committed? ───
+# The question `recoverable` cannot answer. `recoverable` asks only whether
+# HEAD is reachable from main -- which a branch whose tip was CLOBBERED to some
+# other task's satisfies exactly as well as a healthy one. So a lane could lose
+# every commit its plan recorded and still report a clean row (esc-5866-8: the
+# ref kept its NAME, refs/heads/task/5866, while its TIP became task/5632's).
+#
+# _plan_record <dir>
+# The ONLY site in this script that composes a plan path, mirroring
+# _lane_record: prints <dir>/.task/plan.json when it exists and is readable,
+# and NOTHING otherwise -- so every caller's access is guarded by construction
+# and the non-creating guarantee has exactly one place it could be broken.
+# Purely existence/readability tests: no `>`-open, no touch, no mkdir.
+#
+# `[ -f ]` FOLLOWS symlinks, which is what makes the common real-lane shape
+# degrade correctly with no special case: since the W11 relocation .task/plan.json
+# is an absolute symlink into <worktree_base>/.task-meta/<lane>/, and it dangles
+# on every lane until the architect writes the plan.
+_plan_record() {
+    local dir="$1"
+    local record="$dir/.task/plan.json"
+    [ -f "$record" ] && [ -r "$record" ] || return 0
+    printf '%s' "$record"
+    return 0
+}
+
+# _plan_record_parses <record-text>
+# True iff the slurped record is structurally a JSON OBJECT: non-empty, opening
+# `{` and closing `}` once surrounding whitespace is stripped.
+#
+# Deliberately STRUCTURAL, not semantic. A hand-rolled reader cannot validate
+# JSON, and pretending otherwise would be worse than not trying: this check is
+# calibrated to the corruption mode that actually occurs -- a record truncated
+# mid-write by a producer that died -- which never closes its object. Its ONLY
+# job is to keep an unparseable record from silently reaching the anchor scan,
+# where it would find no anchor and be reported as the innocuous `-` ("nothing
+# recorded yet") instead of UNKNOWN ("could not be evaluated"). That is exactly
+# the A3/A5 distinction, on a third surface.
+_plan_record_parses() {
+    local text="$1"
+    text="${text#"${text%%[![:space:]]*}"}"
+    text="${text%"${text##*[![:space:]]}"}"
+    case "$text" in
+        '{'*'}') return 0 ;;
+    esac
+    return 1
+}
+
+# _plan_anchor <record-text>
+# Prints "<entry_id> <commit>" for the ANCHOR -- the plan-order-LAST entry
+# (prerequisites then steps) whose status is done and whose commit is non-empty
+# -- or nothing when there is no such entry.
+#
+# Takes already-slurped TEXT, not a path, exactly as _record_scalar does: the
+# record is read ONCE by _read_plan_sync and every value is extracted from that
+# one in-memory snapshot, so the verdict and the anchor it names can never
+# describe two different instants of a record being rewritten underneath them
+# (the property _read_lane_assignment documents at length).
+#
+# The LAST done entry rather than every done entry, because steps execute in
+# order and each commits atop the previous: if the deepest done commit is an
+# ancestor of the tip then every earlier one is too. Two git calls per lane,
+# which matters for a pool walked by a timer. Because `prerequisites` precedes
+# `steps` in the emitted document, plain document order already yields the
+# required traversal -- no separate array handling.
+#
+# awk, not jq/python3: this script declares no-jq/no-python3 as a design
+# property (see _record_scalar) because it runs from a systemd timer and the
+# disk-pressure paths and is forbidden from ever aborting. awk is already used
+# here for the df/du arithmetic, so this adds no dependency.
+#
+# A pending entry's commit is unquoted `null`, and the required quotes below
+# read that as empty -- the same property that makes _record_scalar report an
+# unassigned task_id as empty.
+_plan_anchor() {
+    local text="$1"
+    printf '%s' "$text" | awk '
+        {
+            text = $0
+            pos = 1
+            id = ""; pending_status = ""; pending_id = ""
+            anchor_id = ""; anchor_commit = ""
+            n = length(text)
+            # ONE pass in document order. `pos` walks the ORIGINAL text rather
+            # than truncating a remainder, so the character immediately BEFORE
+            # a match is always addressable -- which is what makes guard (1)
+            # below expressible at all.
+            while (pos <= n && match(substr(text, pos), /"(id|status|commit)"[[:space:]]*:[[:space:]]*/)) {
+                abs = pos + RSTART - 1          # index of the opening quote
+                key = substr(text, abs, RLENGTH)
+                sub(/^"/, "", key)
+                sub(/".*/, "", key)
+                pos = abs + RLENGTH             # advance past the whole token
+
+                # ── Guard (1): the key opening quote must be UN-BACKSLASHED.
+                # JSON escapes any inner quote as \", so a bare quote before a
+                # key can only be a REAL key. This is not hypothetical: a
+                # plan analysis or step description routinely quotes the very
+                # keys being parsed (task 5876/#5866 plans do), and without
+                # this an escaped \"status\": \"done\", \"commit\": \"...\"
+                # inside prose would be adopted as the anchor.
+                if (abs > 1 && substr(text, abs - 1, 1) == "\\") { continue }
+
+                # ── Guard (2): the value must be QUOTED. Two jobs. It makes a
+                # pending entry -- whose commit the producer writes as
+                # unquoted `null` -- read as empty, exactly as _record_scalar
+                # treats an unassigned task_id. And it independently defeats
+                # the same escaped-prose hazard, since an escaped value opens
+                # with \" rather than a bare quote.
+                val = ""
+                if (substr(text, pos, 1) == "\"") {
+                    v = substr(text, pos + 1)
+                    q = index(v, "\"")
+                    if (q > 0) { val = substr(v, 1, q - 1) }
+                }
+
+                if (key == "id") {
+                    # A new entry begins; drop any status left unpaired by a
+                    # malformed predecessor rather than pairing it across an
+                    # entry boundary.
+                    id = val
+                    pending_status = ""
+                } else if (key == "status") {
+                    # Pair each status with the commit that FOLLOWS it, and
+                    # carry the enclosing entry id for the operator warning.
+                    pending_status = val
+                    pending_id = id
+                } else if (key == "commit") {
+                    # Keep the LAST done+commit pair. Document order already
+                    # gives the prerequisites-then-steps traversal, because
+                    # the producer emits prerequisites before steps -- no
+                    # separate array handling is needed.
+                    if (pending_status == "done" && val != "") {
+                        anchor_id = pending_id
+                        anchor_commit = val
+                    }
+                    pending_status = ""
+                }
+            }
+            if (anchor_commit != "") { printf "%s %s", anchor_id, anchor_commit }
+        }' 2>/dev/null || true
+    return 0
+}
+
+# _read_plan_sync <dir>
+# Resolves EVERYTHING this script needs about <dir>'s plan from a SINGLE read,
+# and publishes it in three globals -- the same shape, and for the same reason,
+# as _read_lane_assignment above:
+#
+#   PLAN_SYNC_STATE     OK | REWRITTEN | STRANDED | UNKNOWN | -
+#   PLAN_SYNC_CAUSE     why the state is UNKNOWN; EMPTY when it is not
+#   PLAN_ANCHOR_ID      the anchor entry's id  ('' when there is no anchor)
+#   PLAN_ANCHOR_COMMIT  the anchor entry's commit ('' when there is no anchor)
+#   PLAN_TASK_ID        the plan's own top-level task_id ('' when absent)
+#
+# PLAN_TASK_ID is published from the SAME slurped text rather than by a second
+# `_plan_task_id <dir>` read, for this function's stated reason: a second read
+# is a different INSTANT, and the architect and the implementer both rewrite
+# plan.json mid-run, so the two columns could otherwise describe two different
+# records side by side in one row. It is a flat top-level scalar, so it is
+# extracted with _record_scalar verbatim -- not the anchor scan.
+#
+# Globals rather than a printed value, because the warning an operator reads
+# must name the SAME anchor the verdict was computed from. A second read is a
+# DIFFERENT INSTANT: the architect and the implementer both rewrite plan.json
+# mid-run, so re-deriving the anchor for the warning could name a step that had
+# nothing to do with the verdict beside it.
+#
+# THE RESOLUTION ORDER IS THE INVARIANT (A6). Each failure mode is caught
+# BEFORE the test it would corrupt, so no failure to evaluate can ever be
+# reported as evidence of a clobber:
+#
+#   1. no readable record          -> `-`       (the fresh-lane shape: most of
+#                                                the pool, not a failure)
+#   2. readable but unparseable    -> UNKNOWN   (unparseable-record)
+#   3. parsed, no done entry with
+#      a commit                    -> `-`       (nothing recorded yet)
+#   4. anchor object ABSENT        -> UNKNOWN   (anchor-object-absent:<sha>)
+#   5. anchor IS an ancestor       -> OK
+#   6. not an ancestor, but an
+#      equivalent PATCH is in HEAD -> REWRITTEN (a routine rebase; benign, and
+#                                                the expected steady state)
+#   7. not an ancestor, NO
+#      equivalent patch in HEAD    -> STRANDED  (the clobber)
+#   8. equivalence undecidable     -> UNKNOWN   (equivalence-undecidable:<sha>)
+#
+# Steps 6/7 are the esc-5876-1 narrowing, and they are the difference between a
+# usable detector and an alarm nobody reads. Ancestry alone flagged 36 of 67
+# plan-carrying lanes on the live pool, none of which had lost anything: the
+# workflow rebases routinely, and a rebase rewrites every recorded sha while
+# preserving every patch. Patch-id equivalence -- NOT subject-line
+# reappearance, which a `--amend` or a same-message commit forges trivially --
+# is what separates the rewrite from the loss.
+#
+# Step 4 MUST precede steps 5-7 and is why the explicit `cat-file -e` exists:
+# `git merge-base --is-ancestor` exits 128 for an absent object and 1 for a
+# genuine non-ancestor, so a bare non-zero test conflates "this commit is not
+# in this repo" with "the ref was clobbered". Since the entire purpose of the
+# column is to ACCUSE a clobber, that conflation would send an operator hunting
+# a data-loss incident that never happened. Relying on the 128-vs-1 numeric
+# distinction would work but is fragile and opaque; the existence guard states
+# the intent in the code.
+#
+# Resolved against HEAD rather than refs/heads/task/N: HEAD is what a clobbered
+# symbolic ref resolves THROUGH, so this reproduces the incident exactly, and
+# it keeps the column meaningful on a detached lane where no task/N ref
+# applies. Mirrors _recoverable's own use of HEAD.
+#
+# Every git call is a pure READER guarded with `2>/dev/null`, and every branch
+# returns 0, so nothing here can abort the walk under `set -euo pipefail`.
+PLAN_SYNC_STATE='-'
+PLAN_SYNC_CAUSE=''
+PLAN_ANCHOR_ID=''
+PLAN_ANCHOR_COMMIT=''
+PLAN_TASK_ID=''
+_read_plan_sync() {
+    # Reset first: every lane is resolved from scratch, so a lane whose record
+    # cannot be read can never inherit its predecessor's anchor.
+    PLAN_SYNC_STATE='-'
+    PLAN_SYNC_CAUSE=''
+    PLAN_ANCHOR_ID=''
+    PLAN_ANCHOR_COMMIT=''
+    PLAN_TASK_ID=''
+
+    local dir="$1"
+    local record text anchor
+
+    record="$(_plan_record "$dir")"
+    # No plan recorded at all -- no .task/, no plan.json, or the usual dangling
+    # .task-meta symlink. The fresh-lane shape, and NOT a failure to evaluate.
+    [ -n "$record" ] || return 0
+
+    if ! text="$(_record_text "$record")"; then
+        PLAN_SYNC_STATE='UNKNOWN'
+        PLAN_SYNC_CAUSE='no-readable-record'
+        return 0
+    fi
+    if ! _plan_record_parses "$text"; then
+        PLAN_SYNC_STATE='UNKNOWN'
+        PLAN_SYNC_CAUSE='unparseable-record'
+        return 0
+    fi
+
+    # The lane-identity half, from the same snapshot. Deliberately resolved
+    # BEFORE the anchor branches return: a plan that records nothing yet (`-`
+    # for plan_sync) still binds the lane to a task, and that binding is
+    # exactly what a fresh, wrongly-bound lane would show.
+    PLAN_TASK_ID="$(_record_scalar "$text" task_id)"
+
+    anchor="$(_plan_anchor "$text")"
+    # Parsed cleanly, but no done entry carries a commit yet: `-`, never
+    # UNKNOWN. This is the split A6 exists to hold.
+    [ -n "$anchor" ] || return 0
+    PLAN_ANCHOR_ID="${anchor%% *}"
+    PLAN_ANCHOR_COMMIT="${anchor##* }"
+
+    if ! git -C "$dir" cat-file -e "${PLAN_ANCHOR_COMMIT}^{commit}" 2>/dev/null; then
+        PLAN_SYNC_STATE='UNKNOWN'
+        # Reported VERBATIM: a mass spike carrying one repeated shape is a
+        # distinct signal (an over-aggressive `git gc` across the pool) from a
+        # one-off corrupt record, and no other cause looks like that.
+        PLAN_SYNC_CAUSE="anchor-object-absent:${PLAN_ANCHOR_COMMIT}"
+        return 0
+    fi
+
+    if git -C "$dir" merge-base --is-ancestor "$PLAN_ANCHOR_COMMIT" HEAD 2>/dev/null; then
+        PLAN_SYNC_STATE='OK'
+        return 0
+    fi
+
+    # ── Not an ancestor. That is NOT, by itself, evidence of lost work.
+    # The lane workflow REBASES routinely (requeue, base refresh), and a rebase
+    # rewrites every recorded sha while preserving every patch -- so a
+    # non-ancestor anchor is the STEADY STATE of a healthy pool, not a
+    # signature. Measured on the live pool at the time this was written: 36 of
+    # 67 plan-carrying lanes were non-ancestor and ZERO had lost work.
+    #
+    # Discriminate on PATCH-ID equivalence, which is exactly what `git cherry`
+    # computes. `git cherry <upstream> <head> <limit>` reports each commit in
+    # <limit>..<head> prefixed `-` when an equivalent patch is already in
+    # <upstream> and `+` when it is not; with <limit> = <anchor>^ the range is
+    # the anchor alone, and <upstream> = HEAD asks the one question that matters
+    # -- is this patch still on the branch under ANY sha?
+    local cherry cherry_first cherry_mark cherry_sha
+    cherry="$(git -C "$dir" cherry HEAD "$PLAN_ANCHOR_COMMIT" "${PLAN_ANCHOR_COMMIT}^" 2>/dev/null || true)"
+    cherry_first="${cherry%%$'\n'*}"
+    cherry_mark="${cherry_first%% *}"
+    cherry_sha="${cherry_first#* }"
+
+    # THE OUTPUT MUST NAME THE ANCHOR ITSELF, on exactly one line. Two measured
+    # traps make a "leading character" test alone unsafe, and both are answered
+    # here rather than by trusting the exit code:
+    #   (a) ROOT-COMMIT anchor -- `<anchor>^` does not resolve, so git exits 128
+    #       printing nothing (and, when HEAD *is* the anchor's own repo root,
+    #       exits 0 printing nothing instead). Either way: no verdict.
+    #   (b) MERGE-COMMIT anchor -- `git cherry` SKIPS merges but does not fall
+    #       silent: it reports the second-parent side instead. With a
+    #       single-commit side branch that is ONE line with a literal leading
+    #       `+` naming the SIDE commit, which a leading-character rule would
+    #       read as a clobber that never happened.
+    # The recorded sha is a PREFIX of the printed one (plans carry 10-char
+    # abbreviations as well as full 40-char shas), so the identity test is a
+    # prefix match -- and never a `rev-parse`, which A6 keeps off this path.
+    if [ "$cherry_first" != "$cherry" ] \
+        || [ "$cherry_sha" = "$cherry_first" ] \
+        || case "$cherry_sha" in "$PLAN_ANCHOR_COMMIT"*) false ;; *) true ;; esac; then
+        PLAN_SYNC_STATE='UNKNOWN'
+        PLAN_SYNC_CAUSE="equivalence-undecidable:${PLAN_ANCHOR_COMMIT}"
+        return 0
+    fi
+
+    case "$cherry_mark" in
+        # An equivalent patch IS in HEAD's history: the recorded sha was
+        # rewritten by a rebase. Benign, and the expected steady state.
+        '-') PLAN_SYNC_STATE='REWRITTEN' ;;
+        # No equivalent patch anywhere in HEAD's history: the work the plan
+        # records is genuinely absent from the branch. THE clobber (esc-5866-8).
+        '+') PLAN_SYNC_STATE='STRANDED' ;;
+        # Any other shape is a `git cherry` this code does not understand.
+        # A6: never accuse what cannot be evidenced.
+        *)   PLAN_SYNC_STATE='UNKNOWN'
+             PLAN_SYNC_CAUSE="equivalence-undecidable:${PLAN_ANCHOR_COMMIT}" ;;
+    esac
+    return 0
+}
+
+# _plan_task <backing-id>
+# Prints MATCH | MISMATCH | `-` for the lane↔branch BINDING, reading
+# PLAN_TASK_ID from the _read_plan_sync call already made for this lane.
+#
+# A SECOND signature, orthogonal to plan_sync and a separate column for the
+# reason live/assigned/pin are three columns: the observed incident kept the
+# ref's NAME and clobbered its TIP (plan_sync only), while a lane checked out
+# on another task's branch is the converse binding failure (plan_task only).
+#
+# `-` whenever there is no comparison to make: no readable plan record, a plan
+# carrying no task_id, or an empty backing id -- which _backing_task_id already
+# returns for a detached HEAD, a non-`task/` branch and a non-numeric id alike,
+# so no new branch parsing is added here. A comparison with no left-hand side
+# is NOT a mismatch, and reporting one would accuse every detached lane in the
+# pool (the A6 discipline, on the binding surface).
+#
+# Compared as STRINGS with no normalization: plan.json stores task_id quoted
+# (`"task_id": "5876"`) and the branch yields a digit run, and stripping
+# leading zeros would make "05876" silently equal 5876 -- a difference worth
+# reporting, not erasing.
+_plan_task() {
+    local backing_id="$1"
+    if [ -z "$PLAN_TASK_ID" ] || [ -z "$backing_id" ]; then
+        printf '%s' '-'
+        return 0
+    fi
+    if [ "$PLAN_TASK_ID" = "$backing_id" ]; then
+        printf 'MATCH'
+    else
+        printf 'MISMATCH'
+    fi
+    return 0
+}
+
 # ── helper: name/path matches a glob pattern ──────────────────────────────────
 # _matches_glob <value> <comma-separated-globs>
 # Lifted verbatim from warm-lane-gc.sh's identically-named helper.
@@ -809,6 +1224,25 @@ QUARANTINED_COUNT=0
 FREE_COUNT=0
 ASSIGNED_COUNT=0
 STATE_UNKNOWN_COUNT=0
+# The three plan_sync counters are CROSS-CUTS TOO, for the same reason and with
+# the same prohibition: ref integrity is orthogonal to occupancy, so a stranded
+# lane is simultaneously live, pinned, quarantined or free, and adding any of
+# these into `resident = live + pinned + quarantined + free` would break the
+# identity outright. They are three counters rather than one because an
+# operator acts on them differently:
+#   PLAN_STRANDED_COUNT   investigate (and escalate) -- work is off the branch
+#   PLAN_UNKNOWN_COUNT    the read failed; a mass spike is its own signal
+#   PLAN_REWRITTEN_COUNT  do NOTHING. Routine rebases, the pool's own steady
+#                         state, counted ONLY so the stranded figure is
+#                         readable in proportion to it rather than in a vacuum.
+# Every one of them is incremented from the RESOLVED column value, never from a
+# re-evaluated predicate, so a counter can never drift out of sync with the rows
+# it summarizes -- the discipline _pin_bucket already follows.
+PLAN_STRANDED_COUNT=0
+PLAN_UNKNOWN_COUNT=0
+PLAN_REWRITTEN_COUNT=0
+# The binding cross-cut, under the same prohibition for the same reason.
+PLAN_MISMATCH_COUNT=0
 # The PINNED breakdown's six buckets (see _pin_bucket). They partition
 # PINNED_COUNT exactly -- every pinned lane increments exactly one -- and are
 # emitted unconditionally, zeros included, so "no pins" is a readable value
@@ -944,6 +1378,50 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
 
         recoverable="$(_recoverable "$entry" "$raw_branch")"
         dirty="$(_dirty_state "$entry")"
+        # Ref integrity, orthogonal to occupancy and to `recoverable`: does the
+        # lane's HEAD still descend from the last commit its plan records? ONE
+        # read publishes the verdict, its UNKNOWN cause, and the anchor -- NOT
+        # a command substitution, which would run in a subshell and discard the
+        # globals (same call convention as _read_lane_assignment above).
+        _read_plan_sync "$entry"
+        plan_sync="$PLAN_SYNC_STATE"
+        # Keyed off the RESOLVED column value, never a re-evaluated predicate,
+        # so the counters can never disagree with the rows above them. OK and
+        # `-` are counted by nothing: they are the healthy and the
+        # nothing-recorded-yet cases, and a counter for each would say nothing
+        # the resident total does not.
+        case "$plan_sync" in
+            STRANDED)  PLAN_STRANDED_COUNT=$((PLAN_STRANDED_COUNT + 1)) ;;
+            UNKNOWN)   PLAN_UNKNOWN_COUNT=$((PLAN_UNKNOWN_COUNT + 1)) ;;
+            REWRITTEN) PLAN_REWRITTEN_COUNT=$((PLAN_REWRITTEN_COUNT + 1)) ;;
+        esac
+        # The binding half, from the SAME read (PLAN_TASK_ID) and the
+        # backing_id already resolved above -- neither is re-derived.
+        # Per-lane observability, in A3/A5's shape (`lane=<name>: <finding>.
+        # See HEADROOM <field>.`), so a count is never the only trace of a
+        # finding. Deliberately asymmetric:
+        #   STRANDED  warns -- work the plan records is off the branch.
+        #   UNKNOWN   warns, naming WHICH cause fired, so a mass spike carrying
+        #             one repeated shape (an over-aggressive pool-wide `git gc`)
+        #             stays distinguishable from a one-off corrupt record.
+        #   REWRITTEN is COUNTER-ONLY. It is the expected steady state of a
+        #             pool whose workflow rebases, and warning on it would bury
+        #             the stranded lane under its own background noise -- 36
+        #             per-run alarms about lanes that lost nothing, measured
+        #             (esc-5876-1). The counter carries it instead.
+        #   OK / `-`  say nothing.
+        case "$plan_sync" in
+            STRANDED)
+                warn "lane=$name: plan_sync=STRANDED -- HEAD does not descend from the last recorded done step (${PLAN_ANCHOR_ID:-<unknown-entry>} @ ${PLAN_ANCHOR_COMMIT}), and no equivalent patch is in HEAD's history, so that work is not on this branch. DO NOT auto-repair the ref: recovery requires knowing which dangling commits belong to which task, and a wrong reflog-based repoint destroys the evidence the root-cause depends on (task 5876 / esc-5866-8). Investigate and escalate. See HEADROOM plan_stranded." ;;
+            UNKNOWN)
+                # The wording avoids the token an operator greps for when
+                # triaging the OTHER verdict: this line reaches no verdict and
+                # implies none, so it must not surface in that search at all.
+                warn "lane=$name: plan_sync=UNKNOWN (${PLAN_SYNC_CAUSE:-unspecified-cause}) -- the plan record could not be evaluated; no verdict was reached and none is implied. See HEADROOM plan_unknown." ;;
+        esac
+
+        plan_task="$(_plan_task "$backing_id")"
+        [ "$plan_task" != "MISMATCH" ] || PLAN_MISMATCH_COUNT=$((PLAN_MISMATCH_COUNT + 1))
         divergent_bytes="$(_divergent_bytes "$entry")"
         divergent_gib=$(( divergent_bytes / 1073741824 ))
         age_min="$(_age_min "$entry")"
@@ -974,9 +1452,11 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
             warn "lane=$name: backing-task status unknown -- cannot confirm LEAKED (would classify LEAKED if status resolved non-terminal); reported PRESERVED-OK. See HEADROOM leak_unknown."
         fi
 
-        TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} live=${live} assigned=${assigned_state} pin=${pin} branch=${branch} status=${status} recoverable=${recoverable} dirty=${dirty} divergent_gib=${divergent_gib} age_min=${age_min} classification=${classification}
+        # plan_sync is APPENDED after classification, never interposed, so a
+        # consumer matching the existing field order keeps working.
+        TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} live=${live} assigned=${assigned_state} pin=${pin} branch=${branch} status=${status} recoverable=${recoverable} dirty=${dirty} divergent_gib=${divergent_gib} age_min=${age_min} classification=${classification} plan_sync=${plan_sync} plan_task=${plan_task}
 "
-        JSON_LANE_OBJS+=("{\"lane\":\"$(_json_escape "$name")\",\"role\":\"${role}\",\"live\":\"${live}\",\"assigned\":\"${assigned_state}\",\"pin\":\"$(_json_escape "$pin")\",\"branch\":\"$(_json_escape "$branch")\",\"status\":\"${status}\",\"recoverable\":\"${recoverable}\",\"dirty\":\"${dirty}\",\"divergent_gib\":${divergent_gib},\"age_min\":${age_min},\"classification\":\"${classification}\"}")
+        JSON_LANE_OBJS+=("{\"lane\":\"$(_json_escape "$name")\",\"role\":\"${role}\",\"live\":\"${live}\",\"assigned\":\"${assigned_state}\",\"pin\":\"$(_json_escape "$pin")\",\"branch\":\"$(_json_escape "$branch")\",\"status\":\"${status}\",\"recoverable\":\"${recoverable}\",\"dirty\":\"${dirty}\",\"divergent_gib\":${divergent_gib},\"age_min\":${age_min},\"classification\":\"${classification}\",\"plan_sync\":\"${plan_sync}\",\"plan_task\":\"${plan_task}\"}")
     done
 fi
 
@@ -1016,13 +1496,23 @@ if [ "$FORMAT" = "json" ]; then
     # pinned_by_status sits ALONGSIDE headroom rather than inside it, and
     # carries only the six buckets: their total is headroom.pinned, so
     # repeating it here would be a second copy of a number that must agree.
-    printf '{"lanes":[%s],"headroom":{"resident":%d,"live":%d,"pinned":%d,"quarantined":%d,"free":%d,"assigned":%d,"state_unknown":%d,"reclaimable":%d,"leaked":%d,"leak_unknown":%d,"divergent_gib":%d,"free_gib":%d,"budget_gib":%d},"pinned_by_status":{"pending":%d,"infra-hold":%d,"blocked":%d,"terminal":%d,"other":%d,"unknown":%d}}\n' \
-        "$lanes_json" "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB" \
+    # The plan_* counters land after budget_gib here too -- the same append
+    # position as the table's HEADROOM line -- so the two emitters stay
+    # structurally parallel and a future field has one obvious place in each.
+    # `plan_sync` is a fixed enum (OK|REWRITTEN|STRANDED|UNKNOWN|-) so it needs
+    # no _json_escape, consistent with the other enum columns; only the
+    # free-form lane/branch/pin values are escaped.
+    printf '{"lanes":[%s],"headroom":{"resident":%d,"live":%d,"pinned":%d,"quarantined":%d,"free":%d,"assigned":%d,"state_unknown":%d,"reclaimable":%d,"leaked":%d,"leak_unknown":%d,"divergent_gib":%d,"free_gib":%d,"budget_gib":%d,"plan_stranded":%d,"plan_unknown":%d,"plan_rewritten":%d,"plan_mismatch":%d},"pinned_by_status":{"pending":%d,"infra-hold":%d,"blocked":%d,"terminal":%d,"other":%d,"unknown":%d}}\n' \
+        "$lanes_json" "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB" "$PLAN_STRANDED_COUNT" "$PLAN_UNKNOWN_COUNT" "$PLAN_REWRITTEN_COUNT" "$PLAN_MISMATCH_COUNT" \
         "$PIN_PENDING_COUNT" "$PIN_INFRA_HOLD_COUNT" "$PIN_BLOCKED_COUNT" "$PIN_TERMINAL_COUNT" "$PIN_OTHER_COUNT" "$PIN_UNKNOWN_COUNT"
 else
     printf '%s' "$TABLE_OUT"
-    printf 'HEADROOM resident=%d live=%d pinned=%d quarantined=%d free=%d assigned=%d state_unknown=%d reclaimable=%d leaked=%d leak_unknown=%d divergent_gib=%d free_gib=%d budget_gib=%d\n' \
-        "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB"
+    # The plan_* cross-cuts are APPENDED after budget_gib, leaving every
+    # existing field's position untouched, so a consumer matching a prefix or a
+    # fixed field order keeps working (the runbook's append-never-interpose
+    # convention).
+    printf 'HEADROOM resident=%d live=%d pinned=%d quarantined=%d free=%d assigned=%d state_unknown=%d reclaimable=%d leaked=%d leak_unknown=%d divergent_gib=%d free_gib=%d budget_gib=%d plan_stranded=%d plan_unknown=%d plan_rewritten=%d plan_mismatch=%d\n' \
+        "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB" "$PLAN_STRANDED_COUNT" "$PLAN_UNKNOWN_COUNT" "$PLAN_REWRITTEN_COUNT" "$PLAN_MISMATCH_COUNT"
     # Always emitted, zeros included: a stable grep shape means "no pins" reads
     # as a value an operator can see, never as an absent line.
     printf 'PINNED total=%d pending=%d infra-hold=%d blocked=%d terminal=%d other=%d unknown=%d\n' \

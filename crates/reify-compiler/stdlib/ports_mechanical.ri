@@ -140,8 +140,8 @@ trait RotaryPort : MotivePort {
 }
 
 // Linear actuator port — delivers thrust along an axis over a finite stroke.
-//   max_speed : Velocity        — maximum continuous linear speed (Velocity alias
-//               = Length/Time; `pub type Velocity` in units.ri).
+//   max_speed : Velocity        — maximum continuous linear speed (m/s;
+//               NAMED_DIMENSIONS builtin; back-compat `pub type Velocity` in units.ri).
 //   max_force : Force           — maximum continuous thrust.
 //   stroke    : Length          — usable travel range.
 //   axis      : Vector3<Length> — travel axis (constitutive.ri convention).

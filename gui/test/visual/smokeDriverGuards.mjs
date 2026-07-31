@@ -24,16 +24,18 @@ import { isInBandError } from "./rpcEnvelope.mjs";
  * How many times {@link openFileWithRetry} issues `open_file` before giving up.
  *
  * EMPIRICAL, NOT TUNABLE-BY-TASTE: 8 × 3000 ms (≤45 s) is lifted verbatim from
- * the drivers that already carry this loop inline. The debug MCP server answers
- * `health` before the WebKit WebView has finished initialising its EGL/GLX
- * context, and until it has, `open_file` returns the in-band error
+ * the six drivers that used to carry this loop inline. The debug MCP server
+ * answers `health` before the WebKit WebView has finished initialising its
+ * EGL/GLX context, and until it has, `open_file` returns the in-band error
  * "debug-request timed out after 5000ms". Re-measure against a live GUI before
  * changing these, rather than reasoning about them from here.
  *
- * TODO(#5857): four drivers still carry that loop inline (smoke_appearance_e2e,
- * smoke_diagnostics_e2e, smoke_mesh_count_parity_e2e and
- * smoke_surface_finish_viewport_e2e) — migrate them onto this helper so the
- * constants, the `.ok` verdict and the failure wording have one home.
+ * THIS IS NOW THEIR ONLY HOME. Every `smoke_*.mjs` driver reaches `open_file`
+ * through {@link openFileWithRetry}, so the constants, the `.ok` verdict and the
+ * failure wording cannot drift apart across six copies again. That is enforced,
+ * not merely intended: `./smokeDriverConventions.test.ts` fails on any driver
+ * that calls the tool directly — the only executable signal available, since a
+ * driver needs a live GUI and CI can never run one.
  */
 export const OPEN_FILE_ATTEMPTS = 8;
 

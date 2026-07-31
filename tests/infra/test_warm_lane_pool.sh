@@ -194,6 +194,24 @@ chmod +x "$PASSTHROUGH_STUB_DIR/cp"
 # Substrate helper functions
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Exercising the substrate-gated layer (Blocks B11/B13 etc.) on a pool host,
+# without sudo/losetup: warm-lane worktrees live ON the XFS pool volume, so
+# pointing TMPDIR at a scratch dir INSIDE the worktree makes rung 2's reflink
+# probe below succeed —
+#
+#   mkdir -p .b11-scratch && TMPDIR="$PWD/.b11-scratch" bash tests/infra/test_warm_lane_pool.sh
+#
+# — and Blocks B11/B13 actually run for real. Under DEFAULT env (no TMPDIR
+# override) both rung 1 and rung 2 fail on a pool host: /tmp is ext4 (no
+# reflink support, so rung 2's default ${TMPDIR:-/tmp} probe fails), and the
+# pool volume's ROOT is not writable from inside a lane's Landlock scope (so
+# an explicit REIFY_WARM_LANE_MOUNT pointed at the volume root would fail
+# rung 1 too). The whole substrate-gated layer then SKIPs ("SKIP: no XFS
+# reflink substrate") and the suite reports an all-green result that proves
+# NOTHING about B11/B13 — this is exactly the discoverability gap that let
+# the B11 fixture bug (reader releasing flock -s before the flip's Step-6 GC
+# ran) live on main undetected by the merge gate. Task #5866.
+
 # detect_substrate() — Substrate acquisition ladder; sets _GATE_DIR on success.
 #   Returns 0 when a reflink-capable directory is found, 1 otherwise.
 #   Ladder:
@@ -470,19 +488,24 @@ _b7_init_git_lane() {
 #
 # Builds a warm at-head base (symlink-gen, gen.1) from a synth workspace on the
 # substrate, then exercises torn-base coherence by running a concurrent
-# cp -a --reflink=always clone of the resolved gen.1 dir during a generation flip:
+# CoW clone of the resolved gen.1 dir during a generation flip:
 #
 #   1. Build synth workspace in $ws_root/lane (cargo cold-build on substrate).
 #   2. git-init the lane (committed, no target/) so the provenance guard passes.
 #   3. First refresh: base.gen.1 created, $ws_root/base → base.gen.1 symlink.
 #   4. Resolve $ws_root/base → concrete gen.1 path.
-#   5. Background reader: takes flock -s on gen.1.lock (D8 seam; holds dir-entry
-#      refcount) AND runs cp -a --reflink=always gen.1_dir → clone/target.
+#   5. _spawn_pinning_reader: takes flock -s on gen.1.lock (D8 seam; holds
+#      dir-entry refcount), clones gen.1_dir → clone/target, signals the
+#      clone-done marker, then HOLDS flock -s until explicitly killed — the
+#      lock's lifetime is the consumer's, not the copy's (task #5866; see
+#      step 9).
 #   6. Records _B11_DF_BEFORE_AVAIL (df --output=avail on substrate, MiB).
 #   7. Flip: second refresh → base.gen.2, symlink re-pointed; GC attempt deferred
-#      (reader holds flock -s → flock -n -x fails → rm skipped).
+#      (reader still holds flock -s → flock -n -x fails → rm skipped).
 #   8. Records _B11_DF_AFTER_AVAIL.
-#   9. Joins the reader (flock -s released, clone complete).
+#   9. Waits for the clone-done marker (walk genuinely complete), then
+#      kill+wait tears the reader down, releasing flock -s so the post-drain
+#      refresh can reap gen.1.
 #
 # Sets in the caller's scope:
 #   _B11_CLONE_DIR        — parent dir of the concurrent clone ($ws_root/clone)
@@ -524,25 +547,36 @@ _b11_concurrent_clone_during_flip() {
     local _b11_gen1
     _b11_gen1="$(readlink "$_b11_base")"
     local _b11_gen1_lock="${_b11_gen1}.lock"
-    touch "$_b11_gen1_lock" 2>/dev/null || true
+    # _spawn_pinning_reader touches lock_file itself; no need to duplicate it here.
 
-    # Step 5: background reader — holds flock -s on gen.1.lock AND runs
-    # cp -a --reflink=always gen.1_dir → clone/target concurrently.
-    # The flock is held for the entire duration of the cp walk (D8 seam: consumer
-    # holds flock -s to signal "dir entry must remain live during the walk").
+    # Step 5: _spawn_pinning_reader — holds flock -s on gen.1.lock across the
+    # ENTIRE operation below (clone + flip + teardown), not just the cp -a walk.
+    #
+    # The reader signals copy completion via the clone-done marker (step 9
+    # waits on it) but DELIBERATELY keeps flock -s held until explicitly
+    # killed. This fixture's reader used to release flock -s the instant its
+    # cp -a finished; on a reflink substrate that CoW copy (~120ms measured)
+    # completes well before the flip's Step-6 GC sweep runs (~490ms measured
+    # for the whole flip, refresh-warm-base.sh) — so the reader was always
+    # gone by the time GC ran, GC correctly saw no active reader, and reaped
+    # gen.1 out from under this test (task #5866). _wait_for_marker on the
+    # ready marker only proves the lock was ACQUIRED, never that it is still
+    # HELD later — the walk's duration is exactly what determines whether
+    # the reader is still gone or still holding by the time GC fires.
     local _b11_clone_dir="$ws_root/clone"
     local _b11_ready="${_b11_gen1}.ready-marker"
+    local _b11_clone_done="${_b11_gen1}.clone-done"
     mkdir -p "$_b11_clone_dir"
-    (
-        flock -s 9
-        touch "$_b11_ready"  # signal READY after acquiring flock -s (#4847)
-        cp -a --reflink=always "$_b11_gen1" "$_b11_clone_dir/target"
-    ) 9>"$_b11_gen1_lock" &
-    local _b11_reader_pid=$!
+    # hold_s left as "" (falls through to the helper's default); reflink_mode
+    # is pinned to "always" — B11 runs only once detect_substrate/
+    # detect_private_substrate have confirmed a reflink-capable mount, so a
+    # clone that silently degraded to a full byte copy here would be a real
+    # substrate regression, not something to paper over with =auto (#5866).
+    _spawn_pinning_reader "$_b11_gen1_lock" "$_b11_ready" "$_b11_clone_done" \
+        "$_b11_gen1" "$_b11_clone_dir/target" "" always
+    local _b11_reader_pid="$_PINNING_READER_PID"
     # Causal handshake: wait until reader has acquired flock -s (replaces fixed sleep 0.1 — #4847).
-    # B11 only requires the reader to HOLD flock -s during the flip; the cp -a walk's duration is
-    # irrelevant to the GC-defer invariant (GC defers when flock -n -x fails, not when cp finishes).
-    _wait_for_reader_lock "$_b11_ready" 30
+    _wait_for_marker "$_b11_ready" 30
 
     # Step 6: record df --output=avail before the flip (MiB)
     # Measured on ws_root (the block's actual workspace dir) rather than the
@@ -562,7 +596,14 @@ _b11_concurrent_clone_during_flip() {
     _B11_DF_AFTER_AVAIL="$(df --output=avail -m "$ws_root" 2>/dev/null \
         | tail -1 | tr -d ' ' || echo 0)"
 
-    # Step 9: join the reader (clone complete, flock -s released)
+    # Step 9: wait for the clone-done marker — a causal guarantee the cp -a
+    # walk actually completed (technique R), not just that it started, so
+    # the coherence diff never compares a partial tree — then tear the
+    # reader down (kill+wait), releasing flock -s so the post-drain refresh
+    # can reap gen.1. Generous anti-hang deadline (technique T); measured
+    # slack is large (copy ~120ms vs. the flip alone ~490ms).
+    _wait_for_marker "$_b11_clone_done" 300
+    kill "$_b11_reader_pid" 2>/dev/null || true
     wait "$_b11_reader_pid" 2>/dev/null || true
 
     # Set output variables
@@ -583,9 +624,15 @@ _b11_concurrent_clone_during_flip() {
 #      build to populate base_ws/target, first refresh → ws_root/base (symlink-gen).
 #   2. git-init the advancing lane (ws_root/base_ws, committed at mtime-2020-01-01
 #      state via _b7_init_git_lane after seeding) so the provenance guard passes.
-#   3. Create a staled lane in ws_root/stale_lane: copy sources from base_ws,
-#      then apply a non-trivial delta (one new fn in warm_leaf); the lane's target/
-#      is pinned far behind head by CoW-seeding from a stale cold build.
+#   3. Create a staled lane in ws_root/stale_lane (cloned from base_ws, so it
+#      shares git history with _b13_base_head): regress warm_dep to a single fn
+#      and cold-build (target/ now holds artifacts for OLD dep code), restore
+#      the at-head dep from git, then apply a non-trivial delta (one new fn in
+#      warm_leaf) and commit on top of the clone. Reset-in-place ends up
+#      near-cold because both the dep-restore and the leaf-delta land AFTER
+#      the stale build — their mtimes out-date its recorded fingerprints, and
+#      a clean committed tree means control's `git checkout -- .` cannot undo
+#      that (it only preserves; it never re-stales).
 #
 # Control arm (reset-in-place):
 #   4. git checkout -- . && git clean -xfd -e target in stale_lane (resets source
@@ -594,14 +641,62 @@ _b11_concurrent_clone_during_flip() {
 #
 # Treatment arm (re-seed from at-head base):
 #   6. Resolve ws_root/base symlink → concrete .gen.N path.
-#   7. Call seed-warm-lane.sh --fresh-checkout <gen_dir> <stale_lane> (D10 path).
+#   7. Call seed-warm-lane.sh --fresh-checkout <gen_dir> <stale_lane> (D10 path;
+#      deliberately NO --touch — the leaf delta is already git-diff-visible
+#      from the cloned history, so this exercises _touch_git_delta's
+#      base-commit resolution directly instead of an explicit touch).
 #   8. First build → _B13_TREAT_FRESH + _B13_TREAT_WALL_MS.
 #
 # Sets in caller scope:
-#   _B13_CTRL_FRESH    — fresh compiler-artifact count for the control build
-#   _B13_TREAT_FRESH   — fresh compiler-artifact count for the treatment build
-#   _B13_CTRL_WALL_MS  — build wall-time for the control (ms)
-#   _B13_TREAT_WALL_MS — build wall-time for the treatment (ms)
+#   _B13_CTRL_FRESH     — fresh compiler-artifact count for the control build
+#   _B13_TREAT_FRESH    — fresh compiler-artifact count for the treatment build
+#   _B13_CTRL_WALL_MS   — build wall-time for the control (ms)
+#   _B13_TREAT_WALL_MS  — build wall-time for the treatment (ms)
+#   _B13_SEED_RC        — exit code of the treatment seed-warm-lane.sh invocation
+#   _B13_SEED_OUT       — stdout of the treatment seed-warm-lane.sh invocation
+#                         (the caller-obligation contract: non-empty == warm-safe)
+#   _B13_LEAF_MTIME     — post-seed mtime (epoch secs) of warm_leaf/src/lib.rs
+#   _B13_DEP_MTIME      — post-seed mtime (epoch secs) of warm_dep/src/lib.rs
+#   _B13_STALE_EPOCH    — epoch secs for the 2020-01-01 bulk-stamp (computed,
+#                         TZ-robust; never the hardcoded 1577836800)
+#   _B13_CTRL_DEP_FRESH  — tri-state "true"/"false"/"" for the control build's
+#                          warm_dep unit freshness ("" when no warm_dep
+#                          artifact line exists at all, e.g. the build failed)
+#   _B13_TREAT_DEP_FRESH — tri-state "true"/"false"/"" for the treatment build's
+#                          warm_dep unit freshness (also "" when the seed
+#                          refused to certify and no treatment build ran)
+
+# _b13_build_fresh_counts(lane_dir, json_out_path) — run `cargo build
+# --message-format=json` on lane_dir's workspace (same env as every other
+# fresh-unit measurement in this file: CARGO_INCREMENTAL=0 RUSTC_WRAPPER=""
+# RUSTFLAGS=""), keep the compiler-artifact lines at json_out_path (callers
+# place this under $ws_root so the suite's _TMPDIRS cleanup reclaims it), and
+# set in caller scope:
+#   _B13_FRESH_TOTAL — count of compiler-artifact lines with "fresh":true
+#   _B13_DEP_FRESH   — tri-state "true"/"false"/"" (empty when no warm_dep
+#                      artifact line exists at all — e.g. the build failed
+#                      outright): NOT a 0/1 collapse, so a build that never
+#                      reports on warm_dep cannot silently read the same as
+#                      one that legitimately reports fresh:false. Mirrors B3's
+#                      tri-state idiom (_B3_DEP_FRESH, ~line 2056).
+# Used by BOTH the control and treatment arms so the two builds are measured
+# identically; callers copy these two outputs into their own arm-specific
+# _B13_*_FRESH / _B13_*_DEP_FRESH variables immediately after the call.
+_b13_build_fresh_counts() {
+    local lane_dir="$1"
+    local json_out="$2"
+
+    CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
+        cargo build --manifest-path "$lane_dir/Cargo.toml" \
+            --message-format=json 2>/dev/null \
+        | grep '"reason":"compiler-artifact"' > "$json_out" || true
+
+    _B13_FRESH_TOTAL="$(grep -c '"fresh":true' "$json_out" || true)"
+
+    _B13_DEP_FRESH="$(grep '"name":"warm_dep"' "$json_out" | \
+        grep -o '"fresh":[a-z]*' | head -1 | sed 's/"fresh"://;s/"//g')"
+}
+
 _b13_reseed_vs_resetinplace() {
     local ws_root="$1"
     local _b13_base_ws="$ws_root/base_ws"
@@ -633,34 +728,54 @@ _b13_reseed_vs_resetinplace() {
     local _b13_gen
     _b13_gen="$(readlink "$_b13_base")"
 
-    # Step 2: create the staled lane — copy sources from base_ws, add a delta,
-    # then CoW-seed from base_ws/target (same build artifacts as gen.1, "at head")
-    # and STALE the target by rebuilding with one extra fn (simulates drift).
-    mkdir -p "$_b13_stale_lane"
-    cp "$_b13_base_ws/Cargo.toml" "$_b13_stale_lane/Cargo.toml"
-    cp "$_b13_base_ws/Cargo.lock" "$_b13_stale_lane/Cargo.lock" 2>/dev/null || true
-    cp -a "$_b13_base_ws/warm_dep" "$_b13_stale_lane/"
-    cp -a "$_b13_base_ws/warm_leaf" "$_b13_stale_lane/"
+    # Step 2: create the staled lane by CLONING the already-committed base
+    # workspace, rather than an independent copy + standalone `git init`. The
+    # lane needs GIT HISTORY that actually contains _b13_base_head: seed's
+    # `_touch_git_delta` runs `git -C "$LANE_DIR" diff --name-only "$sha"`,
+    # which fails closed (exit 128, "fatal: bad object") when `$sha` is not
+    # reachable in the LANE's own repo — an independently `git init`-ed lane
+    # never shares history with base_ws, no matter how the sha reaches it
+    # (`.basecommit` or `--base-commit`). `--no-hardlinks` keeps the two object
+    # stores independent so teardown order under ws_root cannot matter.
+    # Confirmed properties: carries the committed Cargo.lock (base_ws is
+    # committed after its own cold build, by _b7_init_git_lane above); never
+    # carries target/ (untracked, excluded by _b7_init_git_lane's ':!target'
+    # pathspec); lands at now-mtimes (irrelevant — seed's --fresh-checkout
+    # bulk-stamp and this arm's own commit below are what set the mtimes that
+    # matter).
+    git clone --no-hardlinks --quiet "$_b13_base_ws" "$_b13_stale_lane"
 
-    # Apply the "staling" delta to the lane's source (extra fn in warm_dep so the
-    # stale target/ is behind head by a non-trivial compilation unit)
-    local _b13_stale_fn_count="${REIFY_WARM_LANE_GATE_DEP_FNS:-500}"
-    printf '\npub fn stale_delta_fn() -> u64 { %d }\n' \
-        "$(( _b13_stale_fn_count + 1 ))" >> "$_b13_stale_lane/warm_dep/src/lib.rs"
-
-    # Cold-build the stale lane (produces stale artifacts in stale_lane/target)
-    echo "B13: cold build for stale lane..." >&2
+    # Stale the target from a source state genuinely BEHIND head (not ahead of
+    # it): regress the heavy dep to a single fn and cold-build — target/ now
+    # holds artifacts for OLD dep code, and this is CHEAPER than building the
+    # full dep_fns count. warm_leaf's only call is to fn_1 (gen_synth_workspace),
+    # which the regressed dep still provides, so the build is valid.
+    printf 'pub fn fn_1() -> u64 { 1 }\n' > "$_b13_stale_lane/warm_dep/src/lib.rs"
+    echo "B13: cold build for stale lane (regressed dep)..." >&2
     CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
         cargo build --manifest-path "$_b13_stale_lane/Cargo.toml" >/dev/null 2>&1
 
-    # git-init the stale lane so reset-in-place (git checkout -- .) is faithful.
-    # Commit after the cold build so the leaf sources are at current mtime.
-    git -C "$_b13_stale_lane" init -q
-    git -C "$_b13_stale_lane" add -- . ':!target'
+    # Restore the at-head dep from git: content differs from the index (the
+    # regression above), so checkout REWRITES the file — its mtime becomes now,
+    # strictly newer than the stale build's just-recorded fingerprint. This is
+    # what makes reset-in-place near-cold below: after the commit two lines
+    # down, the tree is clean, so control's `git checkout -- .` is a no-op that
+    # PRESERVES this mtime rather than re-staling it.
+    git -C "$_b13_stale_lane" checkout -- warm_dep/src/lib.rs
+
+    # Apply the head-ward delta to the LEAF (matches Setup-3 above) and commit
+    # on top of the cloned base commit. warm_dep is already clean (the restore
+    # above made it match the index), so this commit's -a picks up only the
+    # leaf. Committing it here (rather than relying on an explicit --touch at
+    # the treatment call below) means `git diff --name-only $_b13_base_head`
+    # inside the lane already lists this path, so seed's _touch_git_delta
+    # touches it on its own — the leaf-mtime assertion below then pins
+    # base-commit resolution itself, not a trivially-satisfied explicit touch.
+    printf '\npub fn delta_fn() -> u64 { 42 }\n' >> "$_b13_stale_lane/warm_leaf/src/lib.rs"
     git -C "$_b13_stale_lane" \
         -c user.email="warm-lane-test@localhost" \
         -c user.name="Warm Lane Test" \
-        commit -q -m "initial: B13 staled lane"
+        commit -qam "stale: B13 staled lane (head-ward delta in warm_leaf)"
 
     # ── CONTROL: reset-in-place rebuild ───────────────────────────────────────
     # Reset source to committed state; stale target/ preserved (-e target).
@@ -671,13 +786,9 @@ _b13_reseed_vs_resetinplace() {
         && git clean -xfd -e target -q 2>/dev/null) || true
     local _b13_ctrl_t0
     _b13_ctrl_t0="$(date +%s%3N)"
-    _B13_CTRL_FRESH="$(
-        CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
-            cargo build --manifest-path "$_b13_stale_lane/Cargo.toml" \
-                --message-format=json 2>/dev/null \
-        | grep '"reason":"compiler-artifact"' \
-        | grep -c '"fresh":true' || true
-    )"
+    _b13_build_fresh_counts "$_b13_stale_lane" "$ws_root/b13-ctrl-fresh.json"
+    _B13_CTRL_FRESH="$_B13_FRESH_TOTAL"
+    _B13_CTRL_DEP_FRESH="$_B13_DEP_FRESH"
     _B13_CTRL_WALL_MS=$(( $(date +%s%3N) - _b13_ctrl_t0 ))
 
     # ── TREATMENT: re-seed from at-head base ──────────────────────────────────
@@ -686,33 +797,112 @@ _b13_reseed_vs_resetinplace() {
     # Remove the stale lane/target first so seed's clobber guard passes.
     echo "B13: treatment — re-seed from at-head base..." >&2
     rm -rf "$_b13_stale_lane/target" 2>/dev/null || true
-    RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
-        bash "$SEED_SCRIPT" "$_b13_gen" "$_b13_stale_lane" \
-            --fresh-checkout \
-            --touch "$_b13_stale_lane/warm_leaf/src/lib.rs" >/dev/null
-    local _b13_treat_t0
-    _b13_treat_t0="$(date +%s%3N)"
-    _B13_TREAT_FRESH="$(
-        CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
-            cargo build --manifest-path "$_b13_stale_lane/Cargo.toml" \
-                --message-format=json 2>/dev/null \
-        | grep '"reason":"compiler-artifact"' \
-        | grep -c '"fresh":true' || true
-    )"
-    _B13_TREAT_WALL_MS=$(( $(date +%s%3N) - _b13_treat_t0 ))
+    # rc + stdout are captured explicitly (rather than a bare call) because
+    # seed-warm-lane.sh's CALLER OBLIGATION (scripts/seed-warm-lane.sh:63-79)
+    # makes non-empty stdout the ONLY warm-safe signal: the seed's fail-closed
+    # guards are BY DESIGN and this repair does not change them — the caller,
+    # not the seed, owns deciding what happens on a refusal. `|| _b13_seed_rc=$?`
+    # makes the assignment errexit-exempt so a fail-closed abort (e.g. exit 128
+    # from git diff on a foreign base commit) is observable instead of killing
+    # the whole suite. Deliberately NOT redirecting stderr: seed's `err`
+    # diagnostics on a fail-closed abort are the diagnostic payload and must
+    # stay visible in the run log.
+    #
+    # No --touch here (deliberately): the leaf delta is already committed on
+    # top of the cloned base commit (see the commit above), so it is already
+    # listed by `git diff --name-only $_b13_base_head` inside the lane. An
+    # explicit --touch would touch that same path unconditionally, BEFORE base
+    # resolution even runs — masking a base-commit-resolution regression
+    # behind a leaf mtime that would look fine regardless. Leaving it out
+    # makes the leaf-mtime assertion below a genuine pin on
+    # _touch_git_delta's git-diff resolution. This weakens no guard: PRD
+    # §9.5 inv.13 (_assert_delta_touch_base_substantiated) already keys only
+    # on base-commit resolution, not on the explicit --touch list.
+    local _b13_seed_rc=0
+    local _b13_seed_out=""
+    _b13_seed_out="$(
+        RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
+            bash "$SEED_SCRIPT" "$_b13_gen" "$_b13_stale_lane" \
+                --fresh-checkout
+    )" || _b13_seed_rc=$?
+    _B13_SEED_RC="$_b13_seed_rc"
+    _B13_SEED_OUT="$_b13_seed_out"
+
+    # TZ-robust stale-bulk-stamp epoch (mirrors seed's own
+    # _assert_no_stale_delta_stamp idiom, scripts/seed-warm-lane.sh:455) —
+    # never the hardcoded 1577836800, which is only correct under TZ=UTC.
+    _B13_STALE_EPOCH="$(date -d '2020-01-01T00:00:00' +%s)"
+
+    # Honour the caller obligation: an empty stdout (or non-zero rc) means the
+    # seed refused to certify the lane warm-safe, and it aborted ONTO the
+    # hazardous state (CoW clone already in place, sources already bulk-stamped
+    # to 2020-01-01). Building here would inherit exactly the stale-artifact
+    # false green the guard fired to prevent, so skip the build entirely and
+    # record a sentinel so the warmth comparison fails loudly too.
+    if [ "$_b13_seed_rc" -eq 0 ] && [ -n "$_b13_seed_out" ]; then
+        # Delta-touch set: pin WHAT the re-seed actually touched, immediately
+        # after it returns and before the build can observe/alter anything.
+        # The head-ward leaf must be newer than the 2020 bulk stamp — and,
+        # since no --touch is passed for it (see the call above), that can
+        # only come from _touch_git_delta's git-diff resolution, making this
+        # a genuine pin on base-commit resolution. The unchanged heavy dep
+        # must still BE at the 2020 bulk stamp — together, the delta-touch
+        # set is exactly the head-ward delta, nothing more.
+        _B13_LEAF_MTIME="$(stat -c '%Y' "$_b13_stale_lane/warm_leaf/src/lib.rs")"
+        _B13_DEP_MTIME="$(stat -c '%Y' "$_b13_stale_lane/warm_dep/src/lib.rs")"
+
+        local _b13_treat_t0
+        _b13_treat_t0="$(date +%s%3N)"
+        _b13_build_fresh_counts "$_b13_stale_lane" "$ws_root/b13-treat-fresh.json"
+        _B13_TREAT_FRESH="$_B13_FRESH_TOTAL"
+        _B13_TREAT_DEP_FRESH="$_B13_DEP_FRESH"
+        _B13_TREAT_WALL_MS=$(( $(date +%s%3N) - _b13_treat_t0 ))
+    else
+        echo "B13: treatment seed REFUSED to certify the lane (rc=$_b13_seed_rc, stdout=${_b13_seed_out:-<empty>}) — skipping the treatment build rather than measuring a half-seeded lane (caller obligation, scripts/seed-warm-lane.sh:63-79)" >&2
+        # Sentinels chosen so EVERY treatment-side assertion below FAILs
+        # (rather than accidentally passing, or crashing reading a missing/
+        # stale file): _B13_LEAF_MTIME equal to the stale epoch fails the
+        # "-ne" leaf assertion; _B13_DEP_MTIME not equal to it fails the
+        # "-eq" dep assertion; _B13_TREAT_FRESH=-1 fails the "-gt" aggregate
+        # comparison; _B13_TREAT_DEP_FRESH="" (absent, matching the tri-state
+        # "no build ran" case — never "false") fails the "= true" per-unit
+        # dep-freshness check.
+        _B13_LEAF_MTIME="$_B13_STALE_EPOCH"
+        _B13_DEP_MTIME=-1
+        _B13_TREAT_FRESH=-1
+        _B13_TREAT_DEP_FRESH=""
+        _B13_TREAT_WALL_MS=-1
+    fi
 
     echo "B13: ctrl fresh=${_B13_CTRL_FRESH} wall=${_B13_CTRL_WALL_MS}ms  treat fresh=${_B13_TREAT_FRESH} wall=${_B13_TREAT_WALL_MS}ms" >&2
 }
 
 # _passset_normalize_nextest — pure stdin→stdout normalizer for `cargo nextest run`
-# output.  Selects PASS/FAIL/SKIP lines, strips the volatile bracketed duration
-# column (e.g. `[   0.012s]`), collapses internal whitespace, trims, and sorts →
-# produces a timing-free, byte-stable pass-set string suitable for comparison.
+# output.  Selects PASS/FAIL/SKIP lines, strips BOTH volatile columns nextest
+# emits per result line — the bracketed duration (e.g. `[   0.012s]`) and the
+# `(N/M)` progress counter — collapses internal whitespace, trims, and sorts →
+# produces a byte-stable pass-set string suitable for comparison.
+#
+# The `(N/M)` counter must be stripped too, not just the timing (#5878): it
+# encodes nondeterministic test-COMPLETION order (nextest runs test binaries
+# in parallel), so leaving it in place makes the trailing `sort` order by
+# completion rather than by test identifier — serializing an identical test
+# set into two different byte strings depending on which test happened to
+# finish first.
+#
+# nextest RIGHT-ALIGNS the counter's numerator to the width of the run
+# total, so `(1/2)`, `( 1/12)`, and `(  1/105)` are all the same token with
+# 0/1/2 leading spaces of padding — the strip regex must tolerate that
+# padding. Without it, the strip silently no-ops on padded lines while
+# still succeeding on unpadded ones in the very same run, yielding a
+# partially-normalized, interleaved stream that is harder to diagnose than
+# a clean failure (#5878).
 #
 # Used by run_passset's nextest branch and the PS-NORM always-run regression block.
 _passset_normalize_nextest() {
     grep -E '^\s*(PASS|FAIL|SKIP)' \
     | sed -E 's/\[[^]]*\]//g' \
+    | sed -E 's/\([[:space:]]*[0-9]+\/[0-9]+\)//' \
     | sed -E 's/[[:space:]]+/ /g' \
     | sed -E 's/^ //;s/ $//' \
     | sort
@@ -734,9 +924,10 @@ _passset_normalize_cargo_test() {
 #
 # Normalization:
 #   - nextest branch: PASS/FAIL/SKIP lines → _passset_normalize_nextest (strips
-#     the volatile `[...]` timing column → byte-stable across independent builds).
-#   - cargo test branch: `test ... ok/FAILED/ignored` lines (already timing-free)
-#     → grep + sort only (no timing column to strip).
+#     the volatile `[...]` timing column AND the `(N/M)` progress counter →
+#     byte-stable across independent builds and parallel-run completion order).
+#   - cargo test branch: `test ... ok/FAILED/ignored` lines (already timing-free
+#     and counter-free) → grep + sort only (nothing volatile to strip).
 # The output format is designed to be byte-comparable between two runs on
 # semantically identical workspaces.
 run_passset() {
@@ -745,7 +936,7 @@ run_passset() {
 
     if command -v cargo-nextest >/dev/null 2>&1 || \
        cargo nextest --version >/dev/null 2>&1; then
-        # nextest: normalize via _passset_normalize_nextest (strips timing column)
+        # nextest: normalize via _passset_normalize_nextest (strips timing column + progress counter)
         test_output="$(
             CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
                 cargo nextest run \
@@ -884,6 +1075,30 @@ _refresh_capture() {
     fi
 }
 
+# _wait_for_marker <marker-file> <deadline-seconds>
+# Generic causal-ordering (technique R) poll: waits for <marker-file> to
+# appear, polling in 0.05s ticks, returning 0 as soon as it exists, or
+# non-zero once the generous deadline elapses (technique T anti-hang guard).
+# The deadline is deliberately generous — it is an anti-hang guard only,
+# never a timing discriminator.
+#
+# Extracted from _wait_for_reader_lock (task #4847), which delegates to this
+# for its flock-acquisition-specific marker; also used directly for a
+# copy-completion handshake (_spawn_pinning_reader, task #5866).
+_wait_for_marker() {
+    local marker="$1"
+    local deadline_s="$2"
+    # Poll every 0.05s; max_ticks = deadline_s × 20
+    local max_ticks=$(( deadline_s * 20 ))
+    local tick=0
+    while [ "$tick" -lt "$max_ticks" ]; do
+        [ -f "$marker" ] && return 0
+        sleep 0.05
+        tick=$(( tick + 1 ))
+    done
+    return 1
+}
+
 # _wait_for_reader_lock <ready-marker> <deadline-seconds>
 # Causal ordering (technique R) for reader-readiness: polls for the READY
 # marker file in 0.05s ticks, returning 0 as soon as it appears, or non-zero
@@ -899,17 +1114,74 @@ _refresh_capture() {
 # Used by Block RH (unit test) and the rewired SGSWAP3/SGSWAP4/GC/B11 fixtures.
 # Task: #4847
 _wait_for_reader_lock() {
-    local ready_marker="$1"
-    local deadline_s="$2"
-    # Poll every 0.05s; max_ticks = deadline_s × 20
-    local max_ticks=$(( deadline_s * 20 ))
-    local tick=0
-    while [ "$tick" -lt "$max_ticks" ]; do
-        [ -f "$ready_marker" ] && return 0
-        sleep 0.05
-        tick=$(( tick + 1 ))
-    done
-    return 1
+    _wait_for_marker "$1" "$2"
+}
+
+# _spawn_pinning_reader <lock_file> <ready_marker> <clone_done_marker> <src> <dst> [hold_s] [reflink_mode]
+# Backgrounds a reader that: takes flock -s on <lock_file>, signals
+# <ready_marker>, runs `cp -a --reflink=<reflink_mode> <src> <dst>`, signals
+# <clone_done_marker> — then DELIBERATELY keeps holding flock -s
+# (`exec sleep hold_s`, default 3600) until the caller kills it.
+#
+# hold_s defaults to a large-but-bounded 3600s: a belt-and-braces anti-hang
+# ceiling, not a timing dependency. The operation under test while the lock
+# must stay held (a real cargo build + refresh-warm-base.sh flip, in B11's
+# case) is not bounded by this file's design, so a short fixed window (the
+# previous default of 120) can itself become a source of intermittent
+# flakes on a loaded host — teardown is solely the caller's kill+wait.
+# The subshell's final statement is `exec sleep`, not a bare `sleep`, so
+# the PID returned to the caller is GUARANTEED — independent of bash's
+# undocumented last-command fork-suppression optimization — to be the
+# fd-205 holder: do not append a further command after it, or `kill` would
+# reap an orphaned sleep that keeps flock -s (and thus the lock) held for
+# the rest of the window. The subshell's stdout/stderr are redirected to
+# /dev/null so a reader stranded by a caller bug (teardown skipped) cannot
+# hold a capturing pipe (e.g. run_all.sh) open for up to hold_s.
+#
+# reflink_mode defaults to "auto": this helper is shared between the
+# always-run Block BH (plain /tmp, no reflink support required or expected)
+# and the substrate-gated B11 fixture (a confirmed reflink-capable mount).
+# =auto opportunistically takes the CoW path whenever the underlying FS
+# supports it and falls back to a normal copy elsewhere instead of
+# hard-failing, which is what makes Block BH genuinely FS-agnostic. B11
+# passes "always" explicitly so that a substrate which turns out not to be
+# reflink-capable fails loud, rather than silently degrading to a full byte
+# copy that would still pass every remaining B11 assertion.
+#
+# The shared lock models the D8 dir-entry refcount ("this gen must stay
+# live"): its lifetime is the CONSUMER's, not the copy's. Signalling
+# copy-completion via a separate marker (rather than releasing the lock
+# there) is what lets a caller wait for "clone finished" and "lock
+# released" as two independent, causally-ordered events instead of
+# conflating them — the conflation is exactly today's B11 bug (task #5866).
+#
+# The caller is responsible for teardown: `kill "$_PINNING_READER_PID"
+# 2>/dev/null || true; wait "$_PINNING_READER_PID" 2>/dev/null || true` —
+# the same pattern as Block RH / SGSWAP3 / SGSWAP4 / Block GC.
+#
+# Sets in the caller's scope: _PINNING_READER_PID — the background PID.
+# (A `pid=$(...)` capture is impossible here: command substitution would
+# run the reader in a subshell that exits immediately, dropping the flock.)
+#
+# fd 205: 9, 200 and 201 are already in use elsewhere in this file.
+# Task: #5866
+_spawn_pinning_reader() {
+    local lock_file="$1"
+    local ready_marker="$2"
+    local clone_done_marker="$3"
+    local src="$4"
+    local dst="$5"
+    local hold_s="${6:-3600}"
+    local reflink_mode="${7:-auto}"
+    touch "$lock_file" 2>/dev/null || true
+    (
+        flock -s 205
+        touch "$ready_marker"
+        cp -a --reflink="$reflink_mode" "$src" "$dst"
+        touch "$clone_done_marker"
+        exec sleep "$hold_s"
+    ) 205>"$lock_file" >/dev/null 2>&1 &
+    _PINNING_READER_PID=$!
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1255,29 +1527,144 @@ assert "RH-NEG: _wait_for_reader_lock returns non-zero when marker never appears
     test "$_RH_NEG_RC" -ne 0
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Block PS-NORM — Pass-set normalizer timing-strip regression (ALWAYS-RUN)
+# Block BH — pinning-reader hold contract (ALWAYS-RUN)
+#
+# Unit-tests the _spawn_pinning_reader helper (from step-4 onward) that
+# models a consumer holding a shared flock -s across an operation rather
+# than releasing it the instant the operation completes — the seam B11's
+# fixture was missing (task #5866).
+#
+# The generic marker-poll seam this helper is built on (_wait_for_marker,
+# extracted from _wait_for_reader_lock, task #4847) is already unit-tested
+# by Block RH's RH-POS/RH-NEG immediately above, via the delegating
+# _wait_for_reader_lock — Block BH deliberately does NOT retest that same
+# poll contract a second time under the new name (that would be the same
+# code path covered twice under two names). The handshake waits below are
+# plumbing to set up BH1-BH3, guarded so a stuck handshake FAILs by name
+# instead of aborting the suite under set -euo pipefail.
+#
+# _spawn_pinning_reader <lock> <ready> <clone-done> <src> <dst> contract
+# (task #5866 — the actual regression this block exists to guard):
+#   (BH1) the concurrent clone lands and is byte-identical to src.
+#   (BH2, REGRESSION ANCHOR) a foreground flock -n -x probe on the lock
+#     FAILS even though the clone-done marker is already present — proving
+#     the reader still holds flock -s after its copy finished. This is
+#     exactly what today's B11 reader (whose subshell ends at the cp) does
+#     NOT do, and exactly what the flip's Step-6 GC
+#     (scripts/refresh-warm-base.sh:428) tests with the identical
+#     flock -n -x idiom.
+#   (BH3, negative control) after kill+wait teardown, the same probe
+#     SUCCEEDS — proving teardown genuinely releases the lock, so a
+#     post-drain GC still has a free lock to reap against.
+#
+# RED until step-4: _spawn_pinning_reader is undefined → command not found
+# under set -euo pipefail → non-zero exit.
+# Task: #5866
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block BH: pinning-reader hold contract ---"
+
+_BH_PARENT="$(mktemp -d /tmp/test-warm-pool-BH-XXXXXX)"
+_TMPDIRS+=("$_BH_PARENT")
+
+# ── Setup: a tiny 3-file source dir + lock/ready/clone-done paths — plain
+# flock, no reflink required, so this runs on every host (merge gate incl.).
+_BH_SRC="$_BH_PARENT/src"
+mkdir -p "$_BH_SRC"
+echo "one"   > "$_BH_SRC/a"
+echo "two"   > "$_BH_SRC/b"
+echo "three" > "$_BH_SRC/c"
+_BH_DST="$_BH_PARENT/dst"
+_BH_LOCK="$_BH_PARENT/pin.lock"
+_BH_READY="$_BH_PARENT/pin-ready"
+_BH_CLONE_DONE="$_BH_PARENT/pin-clone-done"
+
+# Call the helper (undefined until step-4 → command not found under
+# set -euo pipefail → script aborts → RED).
+_spawn_pinning_reader "$_BH_LOCK" "$_BH_READY" "$_BH_CLONE_DONE" "$_BH_SRC" "$_BH_DST"
+_BH_READER_PID="$_PINNING_READER_PID"
+
+# Guarded handshake waits: capture the rc via `|| var=$?` (as BH-NEG-style
+# calls elsewhere in this file already do) rather than calling
+# _wait_for_marker bare — a bare non-zero return here would trip
+# set -euo pipefail and abort the whole suite mid-block, surfacing as an
+# unattributable abort instead of a named FAIL line in run_all.sh's
+# per-test summary.
+_BH_HS_READY_RC=0
+_wait_for_marker "$_BH_READY" 30 || _BH_HS_READY_RC=$?
+assert "BH-HANDSHAKE: _spawn_pinning_reader signals ready within deadline" \
+    test "$_BH_HS_READY_RC" -eq 0
+_BH_HS_CLONE_RC=0
+_wait_for_marker "$_BH_CLONE_DONE" 30 || _BH_HS_CLONE_RC=$?
+assert "BH-HANDSHAKE: _spawn_pinning_reader signals clone-done within deadline" \
+    test "$_BH_HS_CLONE_RC" -eq 0
+
+# ── BH1: the concurrent clone actually landed and matches src ──
+assert "BH1: _spawn_pinning_reader's clone lands (dst exists)" \
+    test -d "$_BH_DST"
+assert "BH1: _spawn_pinning_reader's clone is byte-identical to src" \
+    diff -r "$_BH_SRC" "$_BH_DST"
+
+# ── BH2 (REGRESSION ANCHOR): reader still holds flock -s AFTER its copy
+# completed. Mirrors RH-POS's probe idiom (flock -n -x on the same lock).
+_BH2_PROBE_RC=0
+flock -n -x "$_BH_LOCK" true 2>/dev/null || _BH2_PROBE_RC=$?
+assert "BH2: flock -n -x probe FAILS after clone-done (reader still holds flock -s post-copy)" \
+    test "$_BH2_PROBE_RC" -ne 0
+
+# ── BH3 (negative control): kill+wait teardown genuinely releases the lock ──
+kill "$_BH_READER_PID" 2>/dev/null || true
+wait "$_BH_READER_PID" 2>/dev/null || true
+_BH3_PROBE_RC=1
+flock -n -x "$_BH_LOCK" true 2>/dev/null && _BH3_PROBE_RC=0 || _BH3_PROBE_RC=$?
+assert "BH3: flock -n -x probe SUCCEEDS after kill+wait teardown (lock released)" \
+    test "$_BH3_PROBE_RC" -eq 0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block PS-NORM — Pass-set normalizer volatile-column regression (ALWAYS-RUN)
 #
 # Exercises run_passset()'s nextest-branch normalization WITHOUT invoking cargo.
-# Feeds two canned `cargo nextest run` outputs that are byte-identical EXCEPT
-# for the volatile per-test duration column (the `[   0.0NNs]` token) through
+# Covers BOTH volatile columns real nextest output carries per result line:
+# the bracketed per-test duration (`[   0.0NNs]`) and the `(N/M)` progress
+# counter.
+#
+# Arm 1 (timing): feeds two canned `cargo nextest run` outputs that are
+# byte-identical EXCEPT for the duration column through
 # _passset_normalize_nextest and asserts:
 #   (a) the two normalized outputs are BYTE-IDENTICAL;
 #   (b) their derived PASS/FAIL counts match.
-#
 # Premise (exactness): the inputs differ ONLY inside the bracketed `[...]`
 # token; the normalizer strips every `[...]` token so post-normalization byte
 # streams are identical by construction.
 #
-# Without timing stripping the `[   0.0NNs]` column is retained → strings
-# differ → assertion fails → RED.  _passset_normalize_nextest is defined in
-# impl-passset-timing-strip; until then, calling it under set -euo pipefail
-# aborts the script → RED.
+# Arm 2 (progress counter, #5878): feeds two canned outputs shaped like REAL
+# nextest 0.9.136 output — every line carries BOTH the `[...]` duration AND
+# the `(N/M)` counter, the counter positioned after the bracket, matching a
+# probe of actual nextest output — that differ in the counter-TO-TEST
+# binding (i.e. which test won the completion race), mirroring the genuine
+# nondeterminism of nextest's parallel test execution, and asserts the same
+# (a)/(b) pair.
+# Premise (exactness): the inputs differ ONLY inside the `[...]` and `(N/M)`
+# tokens, both of which the normalizer strips; post-normalization byte
+# streams contain the same token multiset and `sort` is a total order on
+# test identifiers, so byte-identity is a theorem, not a tolerance.
+#
+# Arm 1 without timing-column stripping: the `[   0.0NNs]` column survives →
+# strings differ → assertion (a) fails → RED. (Historically, before
+# _passset_normalize_nextest existed at all, this block instead aborted the
+# whole script under set -euo pipefail with "command not found".)
+#
+# Arm 2 without progress-counter stripping: the `(N/M)` counter survives, its
+# binding to a test varies by completion order, and the trailing `sort` keys
+# off it → strings differ → assertion (a) fails → RED (#5878). The function
+# already exists at this point, so this arm's RED is an assertion failure,
+# not a script abort.
 #
 # Also asserts cargo-test fallback lines (already timing-free) are sort-stable
 # across different emission orderings (regression guard).
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
-echo "--- Block PS-NORM: pass-set normalizer timing-strip regression ---"
+echo "--- Block PS-NORM: pass-set normalizer volatile-column regression ---"
 
 # ── Canned nextest outputs — differ ONLY in the [   0.0NNs] timing column ─────
 _PSNORM_COLD_INPUT="$(cat << 'PSNORM_EOF'
@@ -1304,6 +1691,99 @@ _PSNORM_COLD_PASS="$(printf '%s\n' "$_PSNORM_COLD_NORM" | grep -c 'PASS' || echo
 _PSNORM_WARM_PASS="$(printf '%s\n' "$_PSNORM_WARM_NORM" | grep -c 'PASS' || echo 0)"
 assert "PS-NORM: derived PASS count matches between cold and warm normalized outputs" \
     test "$_PSNORM_COLD_PASS" -eq "$_PSNORM_WARM_PASS"
+
+# ── Canned nextest outputs (#5878) — nextest right-aligns the `(N/M)` counter's
+# numerator to the width of the run total, so the counter has THREE observed
+# shapes: unpadded at ≤9 total (`(1/2)`), one-space-padded at 10-99 total
+# (`( 1/12)`), and two-space-padded at 100+ total (`(  1/105)`). This arm pins
+# the UNPADDED width — every line carries both the `[...]` duration AND the
+# unpadded `(N/M)` counter (probed against real nextest 0.9.136). Differ in
+# the counter-TO-TEST binding (which test won the completion race), mirroring
+# nextest's genuine parallel-run nondeterminism — not just in counter values.
+# Arm 3 (below) pins the padded widths.
+_PSNORM_CTR_COLD_INPUT="$(cat << 'PSNORM_EOF'
+  PASS [   0.017s] (1/2) warm_leaf tests::leaf_smoke
+  PASS [   0.024s] (2/2) warm_dep tests::dep_smoke
+PSNORM_EOF
+)"
+_PSNORM_CTR_WARM_INPUT="$(cat << 'PSNORM_EOF'
+  PASS [   0.031s] (1/2) warm_dep tests::dep_smoke
+  PASS [   0.052s] (2/2) warm_leaf tests::leaf_smoke
+PSNORM_EOF
+)"
+
+# Normalize through the same helper. Discriminating power: a normalizer
+# that leaves the `(N/M)` counter unstripped keeps a token that encodes
+# nondeterministic test-completion order, so the trailing `sort` keys off
+# it — swapping which test claims which counter slot then yields two
+# different byte streams → assertion (a) fails (#5878). The shipped
+# normalizer strips the counter → GREEN.
+_PSNORM_CTR_COLD_NORM="$(printf '%s\n' "$_PSNORM_CTR_COLD_INPUT" | _passset_normalize_nextest)"
+_PSNORM_CTR_WARM_NORM="$(printf '%s\n' "$_PSNORM_CTR_WARM_INPUT" | _passset_normalize_nextest)"
+
+assert "PS-NORM: nextest normalized output is byte-identical across progress-counter assignment (#5878)" \
+    test "$_PSNORM_CTR_COLD_NORM" = "$_PSNORM_CTR_WARM_NORM"
+
+# ── Derived PASS count must be exactly 2 (the preceding byte-identity
+# assertion already proves cold == warm, so cross-comparing the two counts
+# would be tautological; asserting the absolute value instead genuinely
+# discriminates a normalizer that drops or duplicates a result line) ──────
+_PSNORM_CTR_COLD_PASS="$(printf '%s\n' "$_PSNORM_CTR_COLD_NORM" | grep -c 'PASS' || echo 0)"
+_PSNORM_CTR_WARM_PASS="$(printf '%s\n' "$_PSNORM_CTR_WARM_NORM" | grep -c 'PASS' || echo 0)"
+assert "PS-NORM: derived PASS count for progress-counter arm (cold) is exactly 2 (#5878)" \
+    test "$_PSNORM_CTR_COLD_PASS" -eq 2
+assert "PS-NORM: derived PASS count for progress-counter arm (warm) is exactly 2 (#5878)" \
+    test "$_PSNORM_CTR_WARM_PASS" -eq 2
+
+# ── Canned nextest outputs (#5878) — PADDED progress-counter shapes. nextest
+# right-aligns the `(N/M)` numerator to the width of the run total: a 12-test
+# run pads single-digit numerators with ONE leading space (`( 1/12)`) while
+# double-digit numerators need no padding (`(12/12)`); a 105-test run pads
+# single-digit numerators with TWO leading spaces (`(  1/105)`) while
+# triple-digit numerators need no padding (`(105/105)`) — so a single run's
+# output MIXES padded and unpadded counters. This arm mixes BOTH the
+# one-space (10-99 total) and two-space (100+ total) widths on one fixture
+# pair, differing in the counter-TO-TEST binding as arm 2 does — so all
+# three documented counter widths (arm 2's unpadded plus this arm's two
+# padded widths) are pinned by fixtures.
+_PSNORM_PAD_COLD_INPUT="$(cat << 'PSNORM_EOF'
+  PASS [   0.009s] ( 1/12) warm_leaf tests::leaf_smoke
+  PASS [   0.031s] (12/12) warm_dep tests::dep_smoke
+  PASS [   0.011s] (  1/105) nxprobe2 tests::t001
+  PASS [   0.044s] (105/105) nxprobe2 tests::t105
+PSNORM_EOF
+)"
+_PSNORM_PAD_WARM_INPUT="$(cat << 'PSNORM_EOF'
+  PASS [   0.014s] ( 1/12) warm_dep tests::dep_smoke
+  PASS [   0.052s] (12/12) warm_leaf tests::leaf_smoke
+  PASS [   0.017s] (  1/105) nxprobe2 tests::t105
+  PASS [   0.061s] (105/105) nxprobe2 tests::t001
+PSNORM_EOF
+)"
+
+# Normalize through the same helper. Discriminating power: a counter regex
+# that anchors `(` directly against a digit leaves padded tokens like
+# `( 1/12)` and `(  1/105)` intact while stripping unpadded tokens like
+# `(12/12)` and `(105/105)` on the SAME fixture, producing a
+# partially-normalized, interleaved stream whose sort order flips →
+# assertion (a) fails (#5878). The shipped `[[:space:]]*`-tolerant regex
+# strips every width uniformly → GREEN.
+_PSNORM_PAD_COLD_NORM="$(printf '%s\n' "$_PSNORM_PAD_COLD_INPUT" | _passset_normalize_nextest)"
+_PSNORM_PAD_WARM_NORM="$(printf '%s\n' "$_PSNORM_PAD_WARM_INPUT" | _passset_normalize_nextest)"
+
+assert "PS-NORM: nextest normalized output is byte-identical across PADDED progress-counter assignment (#5878)" \
+    test "$_PSNORM_PAD_COLD_NORM" = "$_PSNORM_PAD_WARM_NORM"
+
+# ── Derived PASS count must be exactly 4 (the preceding byte-identity
+# assertion already proves cold == warm, so cross-comparing the two counts
+# would be tautological; asserting the absolute value instead genuinely
+# discriminates a normalizer that drops or duplicates a result line) ──────
+_PSNORM_PAD_COLD_PASS="$(printf '%s\n' "$_PSNORM_PAD_COLD_NORM" | grep -c 'PASS' || echo 0)"
+_PSNORM_PAD_WARM_PASS="$(printf '%s\n' "$_PSNORM_PAD_WARM_NORM" | grep -c 'PASS' || echo 0)"
+assert "PS-NORM: derived PASS count for padded progress-counter arm (cold) is exactly 4 (#5878)" \
+    test "$_PSNORM_PAD_COLD_PASS" -eq 4
+assert "PS-NORM: derived PASS count for padded progress-counter arm (warm) is exactly 4 (#5878)" \
+    test "$_PSNORM_PAD_WARM_PASS" -eq 4
 
 # ── Cargo-test fallback regression guard ─────────────────────────────────────
 # Cargo-test `... ok/FAILED/ignored` lines carry no timing column; they are
@@ -2051,6 +2531,45 @@ _TMPDIRS+=("$_B13_WS_ROOT")
 # Call the helper (undefined until step-10 → exits 127 under set -euo pipefail
 # on a substrate host → RED; SKIPs gracefully off-substrate via the gate above).
 _b13_reseed_vs_resetinplace "$_B13_WS_ROOT"
+
+# ── (contract) Treatment honoured seed-warm-lane.sh's caller obligation ───────
+# Non-empty stdout (with exit 0) is the ONLY signal the seed considers the lane
+# warm-safe (scripts/seed-warm-lane.sh:63-79). Asserting this explicitly means a
+# fail-closed abort in the treatment seed is now an isolated, diagnosable RED
+# line instead of the whole-suite abort it used to be.
+assert "B13: treatment re-seed honoured seed-warm-lane.sh's caller contract (exit 0 + non-empty stdout)" \
+    bash -c '[ "$1" -eq 0 ] && [ -n "$2" ]' _ "$_B13_SEED_RC" "$_B13_SEED_OUT"
+
+# ── (delta-touch set) The re-seed touched exactly the head-ward delta ────────
+# Pins WHAT the re-seed actually delta-touched: the resolved base commit must
+# produce a MEANINGFUL (leaf touched to now) yet MINIMAL (dep left alone)
+# delta, so the aggregate comparison below can never pass for the wrong reason
+# (e.g. a repair that silently widened or emptied the delta-touch set). The
+# treatment call passes no --touch for the leaf (see _b13_reseed_vs_resetinplace
+# above), so the leaf assertion below exercises _touch_git_delta's git-diff
+# base-commit resolution directly rather than being trivially satisfied by an
+# explicit touch that fires regardless of whether base resolution succeeded.
+echo "B13 mtimes: leaf=${_B13_LEAF_MTIME} dep=${_B13_DEP_MTIME} stale_epoch=${_B13_STALE_EPOCH}" >&2
+assert "B13: re-seed delta-touched the head-ward leaf to now (not the 2020 bulk stamp)" \
+    bash -c '[ "$1" -ne "$2" ]' _ "$_B13_LEAF_MTIME" "$_B13_STALE_EPOCH"
+assert "B13: re-seed left the unchanged heavy dep at the 2020 bulk stamp (delta-touch set == head-ward delta only)" \
+    bash -c '[ "$1" -eq "$2" ]' _ "$_B13_DEP_MTIME" "$_B13_STALE_EPOCH"
+
+# ── (warmth mechanism) Per-unit freshness explains the aggregate comparison ──
+# The aggregate fresh-unit comparison below has only two compilation units, so
+# a bare inequality is satisfiable by accident. Assert the MECHANISM directly:
+# the treatment's unchanged heavy dep is CoW-reused from the at-head base
+# (fresh:true), while the control's reset-in-place rebuild is genuinely
+# near-cold for that same dep (fresh:false). Tri-state string comparison
+# ("true"/"false"), not -eq 1/0: a build that emits no warm_dep
+# compiler-artifact line at all (e.g. it failed outright) yields an EMPTY
+# _B13_*_DEP_FRESH, which fails both checks below instead of silently
+# matching the "rebuilt"/"not fresh" case.
+echo "B13 dep-fresh: control=${_B13_CTRL_DEP_FRESH:-<absent>} treatment=${_B13_TREAT_DEP_FRESH:-<absent>}" >&2
+assert "B13: treatment keeps the unchanged heavy dep warm (warm_dep fresh:true from the CoW base clone)" \
+    test "$_B13_TREAT_DEP_FRESH" = "true"
+assert "B13: control rebuilt the heavy dep (reset-in-place is genuinely near-cold)" \
+    test "$_B13_CTRL_DEP_FRESH" = "false"
 
 # ── (a) Treatment is warmer than control ──────────────────────────────────────
 # Re-seed from at-head base gives a higher fresh-unit count than reset-in-place.

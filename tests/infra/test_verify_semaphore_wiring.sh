@@ -195,6 +195,12 @@ assert "task plan: all test passes fall BETWEEN acquire and release markers" \
 # and NX_WORKDIR needs no hand-patching onto _TMPDIRS. Anything registered AFTER
 # this point would be caller-owned and would have to call nextest_absent_cleanup
 # itself — this file registers nothing after it.
+#
+# CALL LEFT DELIBERATELY UNGUARDED (see the block below for why, and note that
+# as of task 5645 this call can itself return non-zero). Do NOT "tidy" it into
+# `nextest_absent_init || true` — that guard belongs to
+# test_verify_nextest_absent_suites.sh, which genuinely wants a skip; here it
+# would reintroduce the silent-skip mode this file exists to rule out.
 nextest_absent_init
 
 # Deliberately NOT guarded on nextest_absent_available. If the simulation cannot
@@ -202,6 +208,20 @@ nextest_absent_init
 # a silent skip is precisely the vacuous-green failure mode that
 # test_verify_nextest_absent_suites.sh's S2 pass floor of 22 exists to catch —
 # which counts this assert.
+#
+# As of task 5645 that RED arrives EARLIER and far more precisely. nextest_absent_init
+# now verifies the OBSERVABLE invariant itself — cargo-nextest must be unreachable
+# under the constructed env — and returns non-zero when it is not (e.g. a second,
+# non-mirror-source PATH directory still exposes it, which the mirror-source filter
+# by construction cannot catch). Under this file's `set -euo pipefail` that aborts
+# the suite AT the init call above, on stderr, naming the reachable cargo-nextest
+# and its directory. Previously such a host got no harness diagnostic at all: the
+# degraded env survived to fail the (1q) assert below — a statement about verify.sh's
+# plan shape that says nothing about the harness never having been built.
+#
+# So leaving this call unguarded is now load-bearing in a SECOND way: it is what
+# routes the harness's own precise diagnostic to the surface instead of swallowing
+# it into a downstream plan-shape mystery.
 NX0_FULL="$(nx_run bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan)"
 NX0_CMDS="$(printf '%s\n' "$NX0_FULL" | grep -v '^#')"
 

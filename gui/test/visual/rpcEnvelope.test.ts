@@ -19,9 +19,6 @@
  * edits the branch table.
  */
 import { describe, it, expect } from "vitest";
-import * as fs from "node:fs";
-import * as path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import {
   isInBandError,
@@ -385,21 +382,5 @@ describe("one home — meshCountParity.mjs no longer carries an envelope decoder
   });
 });
 
-describe("rpcEnvelope.mjs — the load constraint that makes it a .mjs", () => {
-  const modulePath = path.join(
-    path.dirname(fileURLToPath(import.meta.url)),
-    "rpcEnvelope.mjs",
-  );
-
-  it("is plain ESM with no `node:` imports, so a bare-`node` driver can load it", () => {
-    // Not a style rule: the six smoke runners invoke `node <driver>.mjs` (never
-    // `tsx`), while vitest loads the same module through vite's browser-condition
-    // resolver. A `node:` import would resolve for the drivers and break here —
-    // and vitest cannot catch that by merely importing the module, because this
-    // test file itself imports `node:fs` quite happily. A source-level check is
-    // the only way the constraint can fail loudly instead of at the next live run.
-    const source = fs.readFileSync(modulePath, "utf8");
-    expect(source).not.toMatch(/from\s+["']node:/);
-    expect(source).not.toMatch(/require\s*\(/);
-  });
-});
+// The bare-`node` load constraint on the shared .mjs modules is pinned once, in
+// ./sharedModuleLoad.test.ts.
