@@ -183,9 +183,16 @@ A pure, LLM-free check over a single declared path string:
     names and stay rejected.
   - Membership is fixed by a **measured sweep**, not judgement: the tracked corpora of
     both repos, submodule gitlinks (mode 160000) excluded, restricted to dotless final
-    segments. Admitting them is safe only because the same sweep shows **zero
+    segments. The canonical command is pinned verbatim in the `_EXTLESS` header of
+    `scripts/lock-charter-guard.sh` and re-run as a standing CI alarm by Cycle 9 of
+    `tests/infra/test_lock_charter_guard.sh`; re-run it rather than re-deriving it, since
+    the NUL/tab-delimited parse it uses is load-bearing against tracked paths containing
+    spaces. Admitting them is safe only because the same sweep shows **zero
     directory-name collisions** for any member across *all* path components of either
-    corpus. Growing the list means re-running the sweep and updating α and γ in lockstep.
+    corpus — *tracked* path components, which is the universe a charter declares from
+    (an untracked scratch directory is not something a `metadata.files` entry names, and
+    C-P3 forbids the stat that would be needed to consult one). Growing the list means
+    re-running the sweep and updating α and γ in lockstep.
   - Emitted for cross-implementation comparison by
     `scripts/lock-charter-guard.sh --list-extensionless` (see §11 Q2).
 - **C-P2 (accept predicate).** A file-level path (`crates/x/src/foo.rs`,

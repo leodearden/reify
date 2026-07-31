@@ -16,11 +16,12 @@
 #                            Empty list (the [] defer-to-architect value) → exit 0.
 #                            All-file list → exit 0.
 #                            Any directory path → exit 1 (prints each REJECT <path>).
-#   --list-extensions      — prints the canonical extension allowlist sorted-unique,
-#                            one extension per line (shared α/γ test vector, PRD §11 Q1).
+#   --list-extensions      — prints the canonical extension allowlist sorted-unique
+#                            in BYTE order, one extension per line
+#                            (shared α/γ test vector, PRD §11 Q2).
 #   --list-extensionless   — prints the canonical extensionless-basename allowlist
 #                            sorted-unique in BYTE order, one name per line
-#                            (shared α/γ test vector, PRD §11 Q1).
+#                            (shared α/γ test vector, PRD §11 Q2).
 #
 # Exit-code contract:
 #   0 — ACCEPT (file-level declaration or empty list)
@@ -42,8 +43,10 @@
 #
 # Cross-repo seam: γ (fused-memory / dark-factory submit_task backstop)
 #   re-implements this predicate against the PRD §4.1 spec using the shared
-#   --list-extensions / --list-extensionless test vectors (PRD §11 Q1, Q2)
-#   rather than taking a runtime dependency on this script.
+#   --list-extensions / --list-extensionless test vectors (PRD §11 Q2 — the
+#   allowlist-completeness question; §11 Q1 is the separate transport question
+#   this paragraph's re-implement-don't-shell-out choice answers) rather than
+#   taking a runtime dependency on this script.
 #
 #   There are now TWO shared vectors across this seam, at different stages.
 #
@@ -114,9 +117,23 @@ _EXTS="c cc cjs conf cpp css cts cxx diff envrc example example-systemd-config g
 # plausible directory names and must stay REJECT.  Both properties are pinned by
 # Cycle 8's over-accept block in tests/infra/test_lock_charter_guard.sh.
 #
-# Sweep of both repos' tracked corpora 2026-07-31, mode-160000 gitlinks excluded:
-#   git ls-files -s | awk '$1 != "160000" {print $4}' \
-#     | awk -F/ '{print $NF}' | grep -v '\.' | sort -u
+# Sweep of both repos' tracked corpora 2026-07-31, mode-160000 gitlinks excluded.
+# This is the canonical command — re-run it verbatim to grow the list:
+#   git ls-files -s -z \
+#     | awk 'BEGIN { RS = "\0"; FS = "\t" }
+#            $1 !~ /^160000 / { n = split($2, s, "/"); print s[n] }' \
+#     | grep -v '\.' | LC_ALL=C sort -u
+# The -z + FS="\t" shape is load-bearing, not style: `git ls-files -s` emits
+# "<mode> SP <sha> SP <stage> TAB <path>", so the whitespace-splitting
+# `awk '{print $4}'` form this sweep was first written with truncates any path
+# containing a space at that space ("docs/my file.md" -> "docs/my", a dotless
+# segment that then looks like a missing allowlist entry).  Neither repo tracks
+# such a path today (measured: `git ls-files | grep -c ' '` -> 0 in both), so
+# that was latent — but Cycle 9 in tests/infra/test_lock_charter_guard.sh runs
+# this sweep as a STANDING alarm over a growing corpus, and it must not be able
+# to RED against a basename that does not exist.  All three copies of the
+# command (here, Cycle 7's provenance comment, Cycle 9's executable form) are
+# kept identical on purpose.
 # reify-evidenced (7, all real tracked files):
 #   LICENSE cargo cargo-audit-orphans pre-commit pre-merge-commit
 #   project-checks reference-transaction
@@ -130,7 +147,22 @@ _EXTS="c cc cjs conf cpp css cts cxx diff envrc example example-systemd-config g
 # Bounded by measurement, not by heuristic: the same sweep found ZERO
 # directory-name collisions for any of the 8 names across ALL path components
 # (not just leaves) of either corpus — 177 distinct reify directory names, 97
-# dark-factory — so no real directory becomes declarable.  Growing this list
+# dark-factory — so no real directory becomes declarable.
+#
+# UNIVERSE OF THAT MEASUREMENT: TRACKED path components only.  That is the right
+# universe and not merely the convenient one — a lock charter declares paths in
+# the tracked corpus, so a tracked directory is the only kind whose name being
+# admitted here would let a real directory declaration slip through the gate.
+# An untracked scratch directory that happens to be named `cargo` is not
+# something a charter names, and C-P3 forbids this predicate from stating the
+# filesystem to find out either way.  The distinction is worth stating because
+# Cycle 6's anti-dotfile rationale in tests/infra/test_lock_charter_guard.sh
+# argues from UNTRACKED directories (.worktrees, .task, .claude, .cargo,
+# .taskmaster) — a different set — so the two rationales must not be read as
+# resting on the same sweep.  Spot-checked anyway at amendment time: no
+# untracked directory named any of the 8 exists in the main checkout
+# (find -maxdepth 4 -type d, target/ and node_modules/ excluded) — a check, not
+# a guarantee, since the untracked set is per-host and unbounded.  Growing this list
 # requires re-running the sweep and updating γ's EXTENSIONLESS_FILENAMES in
 # lockstep; Cycle 9's live-corpus alarm goes RED if a new tracked extensionless
 # basename lands here without one.
@@ -228,9 +260,19 @@ case "$_subcmd" in
         ;;
 
     --list-extensions)
-        # step-8: Cycle 4 GREEN — print canonical OQ#2 allowlist sorted-unique.
-        # Shared α/γ test vector (PRD §11 Q1); drift-guarded by test_lock_charter_guard.sh.
-        printf '%s\n' $_EXTS | sort -u
+        # step-8: Cycle 4 GREEN — print canonical extension allowlist sorted-unique.
+        # Shared α/γ test vector (PRD §11 Q2); drift-guarded by test_lock_charter_guard.sh.
+        # LC_ALL=C for the same reason as --list-extensionless below: γ's Tier-2
+        # comparison is against Python sorted() (code-point order), so byte order
+        # is the only ordering the two sides can agree on and the only one that is
+        # host-independent as C-P3 requires.  Today's 58 entries happen to sort
+        # identically under C and en_US.UTF-8 (measured, md5-identical), so this
+        # is a no-op on the current vector — but the list already carries
+        # hyphenated members (example-systemd-config, python-version) and glibc
+        # collation ignores punctuation at the primary level, so one future
+        # hyphen/underscore entry could silently reorder this output on a
+        # non-C-locale host and RED the γ side.  Pinned before that can happen.
+        printf '%s\n' $_EXTS | LC_ALL=C sort -u
         exit 0
         ;;
 

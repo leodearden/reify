@@ -216,7 +216,14 @@ echo ""
 echo "--- Cycle 4: --list-extensions drift guard + coherence ---"
 
 # Canonical OQ#2 allowlist — sorted-unique, one extension per line.
-# This is the pinned shared α/γ test vector (PRD §11 Q1).
+# This is the pinned shared α/γ test vector (PRD §11 Q2 — the allowlist-
+# completeness question; §11 Q1 is the separate predicate-transport one).
+# Pinned in BYTE order, for the same reason Cycle 8's CANONICAL_EXTLESS is: γ's
+# Tier-2 comparison is against Python sorted() (code-point order), so the emitter
+# pins LC_ALL=C and this vector must match that, not the ambient-locale order.
+# Invisible on today's all-lowercase vector — the two orderings are md5-identical
+# — but the list already carries hyphenated members and glibc collation ignores
+# punctuation at the primary level, so it will not stay invisible forever.
 CANONICAL_EXTS="c
 cc
 cjs
@@ -381,9 +388,15 @@ done
 # declaring hooks/project-checks in a lock charter was REJECTed as a directory.
 #
 # PROVENANCE of the pinned vector — sweep of BOTH repos' tracked corpora, run
-# 2026-07-31, mode-160000 gitlinks excluded:
-#     git ls-files -s | awk '$1 != "160000" {print $4}' \
-#       | awk -F/ '{print $NF}' | grep -v '\.' | sort -u
+# 2026-07-31, mode-160000 gitlinks excluded.  Kept byte-identical to the copies
+# in the _EXTLESS header (scripts/lock-charter-guard.sh) and in Cycle 9's
+# executable form below; the -z + FS="\t" shape is tab-split-not-whitespace-split
+# on purpose, so a tracked path containing a space is not truncated at it (see
+# Cycle 9's comment for why that matters there):
+#     git ls-files -s -z \
+#       | awk 'BEGIN { RS = "\0"; FS = "\t" }
+#              $1 !~ /^160000 / { n = split($2, s, "/"); print s[n] }' \
+#       | grep -v '\.' | LC_ALL=C sort -u
 #   reify (@ab664afb9c): 7 names — LICENSE cargo cargo-audit-orphans pre-commit
 #                        pre-merge-commit project-checks reference-transaction
 #   dark-factory (main @8d276d3c5f): 5 names — Dockerfile LICENSE pre-commit
@@ -501,6 +514,37 @@ do
         test "${GUARD_OUT#*REJECT}" != "$GUARD_OUT"
 done
 
+# (d) ACCEPTED-LIMITATION pin (PRD §10) — a trailing directory slash does NOT
+#     rescue the classification.  Both α and γ strip trailing slashes BEFORE
+#     segmentation, so `hooks/project-checks/` — written with an explicit,
+#     unambiguous directory marker — still ACCEPTs.  That is knowingly wrong and
+#     knowingly kept: an α-only special case would manufacture a fresh α/γ
+#     divergence, which is the exact failure class this whole seam exists to
+#     prevent, so closing it is a JOINT α/γ decision (§10).
+#
+#     Pinned here because an accepted limitation with no test behind it is
+#     indistinguishable from an untested accident: without these assertions a
+#     future contributor could "fix" it α-only and nothing would fire, and
+#     conversely a later joint flip would land with no signal that this file
+#     records the old behaviour.  RED here is not "the guard is broken" — it is
+#     "§10 changed, go read it and check γ changed too".
+#
+#     Distinct from Cycle 1's trailing-slash REJECTs (crates/, a/b/c/), which
+#     cover segments outside BOTH allowlists; these are the allowlisted-basename
+#     case, which is the one §10 flags.
+for _slashed in \
+    "hooks/project-checks/" \
+    "LICENSE/" \
+    "scripts/agent-bin/cargo/" \
+    "Dockerfile//"
+do
+    run_classify "$_slashed"
+    assert "accepted limitation (PRD §10): classify '$_slashed' exits 0 (trailing slash stripped)" \
+        test "$GUARD_RC" -eq 0
+    assert "accepted limitation (PRD §10): classify '$_slashed' stdout contains ACCEPT" \
+        test "${GUARD_OUT#*ACCEPT}" != "$GUARD_OUT"
+done
+
 # ---------------------------------------------------------------------------
 # Cycle 9 — live-corpus drift alarm (standing guard against a stale _EXTLESS)
 #
@@ -541,6 +585,11 @@ done
 # copy of the guard turns this block RED with
 #   FAIL: live-corpus drift: 'project-checks' present in --list-extensionless
 # Mutant not committed.
+#
+# The tab-split parse below was likewise shown to matter rather than argued to:
+# in a scratch repo tracking `docs/my file.md` and `LICENSE`, the old
+# whitespace-split form emits `LICENSE` AND the phantom `my`, the -z/FS="\t" form
+# emits `LICENSE` only.  Scratch repo not committed.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Cycle 9: live-corpus drift alarm (_EXTLESS covers tracked corpus) ---"
@@ -553,10 +602,23 @@ else
     _emitted="$GUARD_OUT"
 
     # Tracked, non-gitlink, dotless final segments.
+    #
+    # Split on the TAB, not on whitespace.  `git ls-files -s` emits
+    # "<mode> SP <sha> SP <stage> TAB <path>", so the whitespace-splitting
+    # `awk '{print $4}'` form truncates any tracked path containing a space at
+    # that space: "docs/my file.md" -> "docs/my", whose final segment "my" has no
+    # dot, survives the grep, and then FAILS the presence assertion below against
+    # a basename that exists nowhere.  A standing alarm must not be able to RED
+    # against a phantom name — the reader would go looking for a file that isn't
+    # there.  Neither repo tracks such a path today (measured:
+    # `git ls-files | grep -c ' '` -> 0 in both), so this is hardening against
+    # corpus growth, which is precisely what this block exists for.  -z also makes
+    # the git->awk hop newline-safe.  The `^160000 ` anchor still matches the mode
+    # because $1 is now the whole "<mode> SP <sha> SP <stage>" prefix.
     _tracked_extless="$(
-        git -C "$REPO_ROOT" ls-files -s \
-            | awk '$1 != "160000" {print $4}' \
-            | awk -F/ '{print $NF}' \
+        git -C "$REPO_ROOT" ls-files -s -z \
+            | awk 'BEGIN { RS = "\0"; FS = "\t" }
+                   $1 !~ /^160000 / { n = split($2, s, "/"); print s[n] }' \
             | grep -v '\.' \
             | LC_ALL=C sort -u
     )"

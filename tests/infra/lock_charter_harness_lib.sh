@@ -45,7 +45,8 @@ lcl_run_guard() {
 # lcl_canonical_extensions
 #
 # Echo the canonical OQ#2 extension allowlist (sorted-unique, one per line).
-# This is the shared α/γ test vector (PRD §11 Q1) — byte-identical to the
+# This is the shared α/γ test vector (PRD §11 Q2 — allowlist completeness; §11
+# Q1 is the separate predicate-transport question) — byte-identical to the
 # output of 'scripts/lock-charter-guard.sh --list-extensions'.
 # Pinned here so the row-3 C-P3 no-drift assertion has a stable reference
 # independent of the script under test.
