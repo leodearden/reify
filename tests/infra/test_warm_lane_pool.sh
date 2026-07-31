@@ -1072,12 +1072,22 @@ _passset_normalize_cargo_test() {
 # rc table is EMPIRICALLY PROBED on this host (cargo-nextest 0.9.136), not
 # guessed — see Block PS-RC's header for the full probe writeup:
 #   nextest:    0→ok (or no-tests-run if nresults==0); 4→no-tests-run;
-#               100→test-failures; 101→build-failure; else→runner-error.
+#               100→test-failures, UNLESS nresults==0: rc=100 with ZERO
+#               parsed result lines means _passset_normalize_nextest parsed
+#               nothing (output-format drift, the #5878 failure shape) —
+#               not an honest test failure — so that combination is
+#               runner-error instead; 101→build-failure; else→runner-error.
 #   cargo-test: libtest returns rc=101 for BOTH a compile failure and an
 #               honest test failure — the exit code alone cannot
 #               distinguish them, so nresults is the disambiguator: rc==0 is
-#               ok (or no-tests-run if nresults==0); rc!=0 is test-failures
-#               when nresults>0, else build-failure.
+#               ok (or no-tests-run if nresults==0); rc==101 is test-failures
+#               when nresults>0, else build-failure. Any OTHER nonzero rc
+#               (127 command-not-found, 130/137 signal death, a bad
+#               manifest/argument, …) is runner-error, NOT build-failure —
+#               101 is the only code libtest overloads for a compile
+#               failure, so mislabeling an unrelated nonzero rc as
+#               build-failure would misdirect the reader exactly the way
+#               the #5885 defect did.
 #   unknown runner → runner-error, so a typo in the caller can never
 #               silently read as "ok".
 #
@@ -1093,7 +1103,7 @@ _passset_classify_rc() {
             case "$rc" in
                 0)   if [ "$nresults" -eq 0 ]; then echo "no-tests-run"; else echo "ok"; fi ;;
                 4)   echo "no-tests-run" ;;
-                100) echo "test-failures" ;;
+                100) if [ "$nresults" -eq 0 ]; then echo "runner-error"; else echo "test-failures"; fi ;;
                 101) echo "build-failure" ;;
                 *)   echo "runner-error" ;;
             esac
@@ -1101,8 +1111,10 @@ _passset_classify_rc() {
         cargo-test)
             if [ "$rc" -eq 0 ]; then
                 if [ "$nresults" -eq 0 ]; then echo "no-tests-run"; else echo "ok"; fi
-            else
+            elif [ "$rc" -eq 101 ]; then
                 if [ "$nresults" -gt 0 ]; then echo "test-failures"; else echo "build-failure"; fi
+            else
+                echo "runner-error"
             fi
             ;;
         *)
@@ -2090,18 +2102,28 @@ assert "PS-NORM: cargo-test lines normalize stably via _passset_normalize_cargo_
 #   cargo-nextest 0.9.136:
 #     rc=0   → all tests ran, none failed                    → ok
 #     rc=4   → no tests were run at all                       → no-tests-run
-#     rc=100 → an HONEST test failure (PASS/FAIL lines present) → test-failures
+#     rc=100 → an HONEST test failure (PASS/FAIL lines present) → test-failures,
+#              UNLESS nresults==0 too — rc=100 with ZERO parsed result lines
+#              means the normalizer parsed nothing (output-format drift, the
+#              #5878 shape), not an honest failure, so THAT combination is
+#              runner-error instead (amendment; arm A pins both rows).
 #     rc=101 → a BUILD failure (zero PASS/FAIL/SKIP lines)      → build-failure
 #   cargo test (libtest): rc=101 on BOTH a compile failure AND an honest
 #     test failure — the exit code ALONE cannot distinguish them, which is
 #     why the classifier also takes nresults (the count of parsed
 #     `test … ok/FAILED/ignored` lines): zero → build-failure, nonzero →
-#     test-failures.
+#     test-failures. Any OTHER nonzero rc (127 command-not-found, a signal
+#     death, a bad manifest/argument, …) is runner-error, NOT build-failure —
+#     101 is the only code libtest overloads this way, so routing every
+#     nonzero rc through the same build-failure label would misdiagnose things
+#     that have nothing to do with a compile error (amendment; arm A pins this).
 #
 # Discriminating power: the nextest 100→test-failures row is what stops this
 # guard from firing on an honest test failure (the failure mode the task
 # explicitly warns against); the 101→build-failure row is the misdiagnosis
-# this task exists to fix.
+# this task exists to fix; the nresults-gated 100 row and the cargo-test
+# non-101→runner-error row (both added in the amendment pass) keep those two
+# same guarantees from leaking into their respective ambiguous edges.
 #
 # RED (arm A): _passset_classify_rc does not exist yet. Every table-row
 # assertion below captures via `"$(_passset_classify_rc … 2>/dev/null ||
@@ -2122,12 +2144,19 @@ _PSRC_A_NX_NOTESTS="$(_passset_classify_rc nextest 4 0 2>/dev/null || true)"
 _PSRC_A_NX_TESTFAIL="$(_passset_classify_rc nextest 100 2 2>/dev/null || true)"
 _PSRC_A_NX_BUILDFAIL="$(_passset_classify_rc nextest 101 0 2>/dev/null || true)"
 _PSRC_A_NX_RUNNERERR="$(_passset_classify_rc nextest 137 0 2>/dev/null || true)"
+# amendment: rc=100 (nextest's "honest test failure" code) with ZERO parsed
+# result lines is the exact false-green shape #5878 already showed us once —
+# the normalizer parsed nothing, so this is NOT an honest test failure.
+_PSRC_A_NX_TESTFAIL_ZERONRESULTS="$(_passset_classify_rc nextest 100 0 2>/dev/null || true)"
 
 # cargo-test rows
 _PSRC_A_CT_OK="$(_passset_classify_rc cargo-test 0 2 2>/dev/null || true)"
 _PSRC_A_CT_NORESULT_RC0="$(_passset_classify_rc cargo-test 0 0 2>/dev/null || true)"
 _PSRC_A_CT_TESTFAIL="$(_passset_classify_rc cargo-test 101 2 2>/dev/null || true)"
 _PSRC_A_CT_BUILDFAIL="$(_passset_classify_rc cargo-test 101 0 2>/dev/null || true)"
+# amendment: rc=127 (command-not-found) is NOT the ambiguous libtest
+# compile-vs-test code (101) — must not be mislabeled build-failure.
+_PSRC_A_CT_RUNNERERR="$(_passset_classify_rc cargo-test 127 0 2>/dev/null || true)"
 
 # unknown-runner row
 _PSRC_A_UNKNOWN="$(_passset_classify_rc bogus 0 2 2>/dev/null || true)"
@@ -2144,6 +2173,8 @@ assert "PS-RC A: nextest rc=101 nresults=0 → build-failure (the #5885 defect t
     test "$_PSRC_A_NX_BUILDFAIL" = "build-failure"
 assert "PS-RC A: nextest rc=137 nresults=0 → runner-error" \
     test "$_PSRC_A_NX_RUNNERERR" = "runner-error"
+assert "PS-RC A: nextest rc=100 nresults=0 → runner-error, NOT test-failures (zero parsed results means the normalizer saw nothing — output-format drift/#5878, not an honest test failure)" \
+    test "$_PSRC_A_NX_TESTFAIL_ZERONRESULTS" = "runner-error"
 
 assert "PS-RC A: cargo-test rc=0 nresults=2 → ok" \
     test "$_PSRC_A_CT_OK" = "ok"
@@ -2153,6 +2184,8 @@ assert "PS-RC A: cargo-test rc=101 nresults=2 → test-failures (libtest's rc=10
     test "$_PSRC_A_CT_TESTFAIL" = "test-failures"
 assert "PS-RC A: cargo-test rc=101 nresults=0 → build-failure" \
     test "$_PSRC_A_CT_BUILDFAIL" = "build-failure"
+assert "PS-RC A: cargo-test rc=127 nresults=0 → runner-error, NOT build-failure (rc≠101 is not the ambiguous libtest code)" \
+    test "$_PSRC_A_CT_RUNNERERR" = "runner-error"
 
 assert "PS-RC A: unknown runner → runner-error (a typo can never silently read as ok)" \
     test "$_PSRC_A_UNKNOWN" = "runner-error"
