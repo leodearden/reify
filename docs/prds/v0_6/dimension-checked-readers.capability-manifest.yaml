@@ -898,19 +898,48 @@ tasks:
     ≡ Torque DimensionVector collision'
   capabilities:
   - name: the-collision-is-real-and-byte-identical
-    binding: 'MEASURED at decompose: crates/reify-core/src/dimension.rs:275 ROTATIONAL_STIFFNESS
-      = [(0,2),(1,1),(2,-2),(7,-1)] is byte-identical to crates/reify-compiler/stdlib/ports_mechanical.ri:29
+    binding: 'MEASURED at decompose (pre-η — retained verbatim as provenance; this
+      was the state of the tree when the decompose ran): crates/reify-core/src/dimension.rs:275
+      ROTATIONAL_STIFFNESS = [(0,2),(1,1),(2,-2),(7,-1)] is byte-identical to crates/reify-compiler/stdlib/ports_mechanical.ri:29
       `pub type Torque = Force * Length / Angle`. `Torque` is ABSENT from NAMED_DIMENSIONS
       (49 entries), so canonical_name()''s first-match scan (dimension.rs:368) returns
       "RotationalStiffness" for the shared vector — every torque-valued rejection
-      would render as "RotationalStiffness Scalar".'
+      would render as "RotationalStiffness Scalar".
+
+
+      SUPERSEDED IN ITS EVIDENCE, NOT IN ITS CLAIM — corrected 2026-07-31 against η
+      (task 5785, merge commit 61300d09). Three measurements above no longer describe
+      the tree: (1) the ports_mechanical.ri:29 alias is GONE — η deleted it, and :17-28
+      is now a pointer comment recording that no module-level alias is needed because
+      a NAMED_DIMENSIONS lookup outranks a module type-alias. (2) "`Torque` is ABSENT
+      from NAMED_DIMENSIONS (49 entries)" is false on BOTH counts: (DimensionVector::TORQUE,
+      "Torque") IS registered at dimension.rs:627, and the table holds 52 rows
+      (dimension.rs:565-650). (3) the canonical_name() first-match cite has moved from
+      dimension.rs:368 to dimension.rs:402-406.
+
+
+      THE CLAIM ITSELF STANDS — verdict stays PASS. The collision SURVIVES η in a new
+      form: DimensionVector::TORQUE (dimension.rs:328) and DimensionVector::ROTATIONAL_STIFFNESS
+      (dimension.rs:275) still share the vector [(0,2),(1,1),(2,-2),(7,-1)], and because
+      the `Torque` row (:627) sits immediately AFTER `RotationalStiffness` (:623) — an
+      ordering deliberately pinned by the test `torque_named_dimension_registered_as_alias_after_rotational_stiffness`
+      (dimension.rs:1599) — canonical_name()''s forward first-match STILL returns
+      "RotationalStiffness" for the shared vector. ρ''s premise is intact; only its
+      evidence moved from the .ri alias to the registry.
+
+
+      FORWARD NOTE: ρ''s own binding ruling (Leo, 2026-07-29, esc-5799-1) re-dimensions
+      ROTATIONAL_STIFFNESS/ROTATIONAL_DAMPING to rad^-2, which dissolves this collision
+      outright and flips canonical_name() for the torque vector to "Torque". When ρ lands
+      this capability is discharged, and the "placed AFTER RotationalStiffness" ordering
+      rationale (plus its pinning test) should be retired with it.'
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: pub type Torque = Force \* Length / Angle
+      pattern: pub type Torque
       paths:
       - crates/reify-compiler/stdlib/ports_mechanical.ri
-      expect: present
+      expect: absent
   - name: PRD-5-is-protected-without-the-ruling
     binding: 'RESOLUTION, not a guess: α/δ/ε read every DimensionVector FROM the reify-core
       registry const by reference, never a hand-written exponent tuple, so the gate
