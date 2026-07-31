@@ -28,37 +28,51 @@
 #   2 — usage error (unknown subcommand, missing required argument)
 #
 # Mechanism (C-P3 — pure string, no stat, no model):
-#   Strip trailing slash(es) → take final path segment (after last /) → case
-#   suffix-match against the extension allowlist.
+#   Strip trailing slash(es) → take final path segment (after last /) → match
+#   against the extension allowlist (post-dot token) or, for a dotless segment,
+#   against the extensionless-basename allowlist (whole segment).
 #   NO test -f / test -d / -e, NO network, NO LLM call anywhere.
 #   Conservative-reject: an extension-less final segment is treated as a directory
-#   (REJECT); extension-less real files (e.g. hooks/pre-merge-commit) are declared
-#   via [] — the safe under-declaration direction (PRD §5.2).
+#   (REJECT) UNLESS it exactly matches the enumerated _EXTLESS allowlist below.
+#   The exception is bounded by enumeration plus a measured zero-directory-name-
+#   collision result across both tracked corpora — never by a heuristic.  Anything
+#   outside both allowlists is still declared via [] — the safe under-declaration
+#   direction (PRD §5 item 2; §5 is a numbered list, so the header's older "§5.2"
+#   citations mean item 2, not a subsection).
 #
 # Cross-repo seam: γ (fused-memory / dark-factory submit_task backstop)
 #   re-implements this predicate against the PRD §4.1 spec using the shared
-#   --list-extensions test vector (PRD §11 Q1) rather than taking a runtime
-#   dependency on this script.
+#   --list-extensions / --list-extensionless test vectors (PRD §11 Q1, Q2)
+#   rather than taking a runtime dependency on this script.
 #
-#   STATUS 2026-07-29 (#5726): the γ copies still pin the pre-#5726 36-entry
-#   vector and are NOT yet updated — dark-factory shared/src/shared/locking.py
-#   ::CODE_EXTENSIONS, fused-memory/src/fused_memory/middleware/lock_charter_guard.py
-#   ::CODE_EXTENSIONS, and fused-memory/tests/test_lock_charter_guard.py
-#   ::_CANONICAL_EXTENSIONS (plus shared/tests/test_locking.py::_CANONICAL_EXTENSIONS).
-#   TRACKED BY dark_factory:3117 — "Mirror the widened lock-charter extension
-#   allowlist (36 -> 58) into the three dark-factory copies", status pending,
-#   priority high, external_deps ["reify:5726"] (re-verified live 2026-07-29 via
-#   get_task(id=3117, project_root=/home/leo/src/dark-factory); an earlier sweep
-#   that reported this id absent queried the wrong tracker).  Its predecessor
-#   reify #5737 was cancelled as a cross-repo misfile and drained INTO 3117 —
-#   cite 3117, never #5737.  (Origin ticket: tkt_0RRT3KW6B9KF72BHDY5Q038R7Y.)
-#   Until 3117 lands: (i) fused-memory's Tier-2 drift test
-#   test_extension_drift_guard_vs_reify_script compares this script's output
-#   against 36 entries and FAILS in the dark-factory .worktrees/<n>/ layout
-#   (where Path(__file__).parents[5] resolves to <src>/ and finds this script);
-#   (ii) submit_task / scheduler still REJECT the extensions added below, so
-#   declaring e.g. tests/infra/run-all-classification.manifest in a lock charter
-#   still fails at the γ enforcement point.
+#   There are now TWO shared vectors across this seam, at different stages.
+#
+#   STATUS 2026-07-31 (#5890) — EXTENSION vector: CONVERGED.  dark_factory:3117
+#   has landed; DF main carries 58 CODE_EXTENSIONS entries, set-identical to
+#   _EXTS (measured, both sides).  The former "γ still pins 36 entries" note and
+#   both of its consequences are obsolete and have been removed rather than
+#   dated — they described a state that no longer exists.  Its predecessor reify
+#   #5737 was cancelled as a cross-repo misfile and drained INTO 3117 — cite
+#   3117, never #5737.  (Origin ticket: tkt_0RRT3KW6B9KF72BHDY5Q038R7Y.)
+#
+#   STATUS 2026-07-31 (#5890) — EXTENSIONLESS vector: α LEADS, γ LAGS.  This
+#   script accepts the 8 _EXTLESS basenames as of this task; γ does not.
+#   dark_factory:3248 is the mirroring task and had NOT landed at time of
+#   writing (DF main b525c6ee92 still has CODE_EXTENSIONS, no rename to
+#   FILE_EXTENSIONS, and no EXTENSIONLESS_FILENAMES in either
+#   shared/src/shared/locking.py or
+#   fused-memory/src/fused_memory/middleware/lock_charter_guard.py).
+#   CONSEQUENCE while that holds: declaring e.g. hooks/project-checks in a lock
+#   charter passes α here but still FAILS at the γ submit_task / scheduler
+#   backstop.  This task alone does not make those paths declarable end-to-end.
+#   This is the same reify-leads shape as #5726 → 3117 and is handled the same
+#   way: α ships the primitive, γ mirrors it, and this block is the seam record.
+#   It is SAFE to lead, because γ's existing Tier-2 cross-source drift test
+#   (fused-memory/tests/test_lock_charter_guard.py
+#   ::test_extension_drift_guard_vs_reify_script) invokes only --list-extensions
+#   and compares against sorted(CODE_EXTENSIONS) — a surface this task leaves
+#   byte-identical.  The new --list-extensionless emitter is what lets 3248 add
+#   the matching Tier-2 comparison for the second vector from its side.
 
 set -euo pipefail
 
@@ -67,9 +81,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ---------------------------------------------------------------------------
 # Canonical extension allowlist (OQ#2 resolved — PRD §11 Q2).
 # Single source of truth for the α (reify) enforcement point: used by
-# _is_file_path(), classify, and --list-extensions.  It is NOT globally
-# authoritative while the γ copies lag — see the "Cross-repo seam: γ" status
-# note in the header above.
+# _is_file_path(), classify, and --list-extensions.  α/γ-converged at 58 entries
+# since dark_factory:3117 landed — see the "Cross-repo seam: γ" status note in
+# the header above, which is also where the still-diverged extensionless vector
+# is recorded.
 # PRD-explicit: rs ri toml cpp c h hpp md json yaml yml lock py sh ts tsx js txt step stl
 # Corpus-evidenced: css mjs html jsonc gcode service
 # Common source siblings: cc cxx hh mts cts cjs jsx scss svg png
