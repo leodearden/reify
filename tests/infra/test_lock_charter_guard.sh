@@ -502,4 +502,76 @@ do
 done
 
 # ---------------------------------------------------------------------------
+# Cycle 9 — live-corpus drift alarm (standing guard against a stale _EXTLESS)
+#
+# Every other cycle in this file pins a fixed string vector.  This one sweeps the
+# ACTUAL tracked corpus and asserts _EXTLESS still covers it, because the failure
+# mode being defended against is not a wrong entry — it is a MISSING one, and a
+# pinned vector cannot notice a file that landed after it was written.
+#
+# That failure mode has now produced the same incident twice: #5726 (22 tracked
+# extensions the list misclassified as directories) and dark_factory:3248 (these
+# 8 basenames).  Both were found by a human running a manual sweep.  This block
+# converts that sweep into a standing CI signal.
+#
+# A RED here means a new extensionless tracked file has landed.  The fix is to
+# add its basename to BOTH _EXTLESS in scripts/lock-charter-guard.sh AND γ's
+# EXTENSIONLESS_FILENAMES (dark-factory shared/src/shared/locking.py +
+# fused-memory/.../lock_charter_guard.py) — the two must stay byte-identical or
+# the cross-source drift comparison goes RED on the γ side instead.
+#
+# SUBSET, not equality, and deliberately so: Dockerfile is dark-factory-evidenced
+# only, so reify's tracked corpus is a strict subset of the shared vector.  An
+# equality assertion would fail here permanently and would also fight the shared
+# nature of the list.  Over-coverage is the safe direction — an entry with no
+# reify file behind it costs nothing, a missing entry costs a rejected charter.
+#
+# The mode-160000 filter is carried even though reify tracks zero gitlinks: it is
+# the documented invariant (dark-factory's graphiti/mem0 submodule mount points
+# are extensionless and must never be admitted), and it keeps this sweep correct
+# if reify ever vendors a submodule.
+#
+# Host-dependence is confined to this block by the rev-parse probe below, which
+# SKIPs cleanly outside a git checkout — the file header's "no skip guard, the
+# predicate is host-independent (C-P3)" promise holds for Cycles 1-8, which stay
+# pure-string.
+#
+# Green on arrival (7 reify names ⊂ the 8 pinned).  Per G6 it was shown to FIRE
+# rather than assumed to: deleting `project-checks` from _EXTLESS in a scratch
+# copy of the guard turns this block RED with
+#   FAIL: live-corpus drift: 'project-checks' present in --list-extensionless
+# Mutant not committed.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle 9: live-corpus drift alarm (_EXTLESS covers tracked corpus) ---"
+
+if ! git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "  SKIP: $REPO_ROOT is not a git checkout — live-corpus sweep unavailable"
+else
+    run_list_extensionless
+    assert "live-corpus drift: --list-extensionless exits 0" test "$GUARD_RC" -eq 0
+    _emitted="$GUARD_OUT"
+
+    # Tracked, non-gitlink, dotless final segments.
+    _tracked_extless="$(
+        git -C "$REPO_ROOT" ls-files -s \
+            | awk '$1 != "160000" {print $4}' \
+            | awk -F/ '{print $NF}' \
+            | grep -v '\.' \
+            | LC_ALL=C sort -u
+    )"
+
+    # Non-vacuity: the sweep must actually find something, or every assertion
+    # below would pass by finding nothing to check.
+    assert "live-corpus drift: sweep found at least one tracked extensionless basename" \
+        test -n "$_tracked_extless"
+
+    while IFS= read -r _name; do
+        [ -z "$_name" ] && continue
+        assert "live-corpus drift: '$_name' present in --list-extensionless" \
+            test "$(printf '%s\n' "$_emitted" | grep -cxF "$_name")" -eq 1
+    done <<< "$_tracked_extless"
+fi
+
+# ---------------------------------------------------------------------------
 test_summary
