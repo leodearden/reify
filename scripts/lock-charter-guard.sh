@@ -81,6 +81,44 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _EXTS="c cc cjs conf cpp css cts cxx diff envrc example example-systemd-config gcode gitattributes gitignore gitkeep gitmodules golden grammar h hh hpp html icns ico jq js json jsonc jsonl jsx lock log manifest md mjs mts npmrc png py python-version ri rs scss service sh step stl svg template timer toml ts tsx txt typed yaml yml"
 
 # ---------------------------------------------------------------------------
+# Canonical extensionless-basename allowlist (mirror of dark_factory:3248).
+# The second half of the file-vs-directory evidence: _EXTS answers "does the
+# post-dot token name a file?", this answers "is the whole dotless segment a
+# known filename?".  Used by _is_file_path() and --list-extensionless.
+#
+# MATCHED AGAINST THE FULL FINAL SEGMENT ($seg), NEVER THE POST-DOT EXTENSION
+# ($ext).  This is the one dangerous detail.  Bash's "${seg##*.}" on a dotted
+# segment yields the text after the dot, so .cargo -> cargo: an $ext-based match
+# would flip .cargo, .pre-commit, .LICENSE and x.cargo to ACCEPT and blow the
+# Cycle-6 anti-dotfile pin, admitting dotted DIRECTORIES as charters.  The match
+# is also EXACT, never prefix/substring — pre-commit-hooks and cargo-lib are
+# plausible directory names and must stay REJECT.  Both properties are pinned by
+# Cycle 8's over-accept block in tests/infra/test_lock_charter_guard.sh.
+#
+# Sweep of both repos' tracked corpora 2026-07-31, mode-160000 gitlinks excluded:
+#   git ls-files -s | awk '$1 != "160000" {print $4}' \
+#     | awk -F/ '{print $NF}' | grep -v '\.' | sort -u
+# reify-evidenced (7, all real tracked files):
+#   LICENSE cargo cargo-audit-orphans pre-commit pre-merge-commit
+#   project-checks reference-transaction
+# dark-factory-evidenced only (1): Dockerfile — kept because this is a SHARED
+#   α/γ vector, and omitting it would break the cross-source drift comparison
+#   dark_factory:3248 enables.
+# The gitlink exclusion is dark-factory-relevant only: reify tracks zero
+# mode-160000 entries; dark-factory tracks graphiti and mem0, whose extensionless
+# submodule mount points must never be admitted as files.
+#
+# Bounded by measurement, not by heuristic: the same sweep found ZERO
+# directory-name collisions for any of the 8 names across ALL path components
+# (not just leaves) of either corpus — 177 distinct reify directory names, 97
+# dark-factory — so no real directory becomes declarable.  Growing this list
+# requires re-running the sweep and updating γ's EXTENSIONLESS_FILENAMES in
+# lockstep; Cycle 9's live-corpus alarm goes RED if a new tracked extensionless
+# basename lands here without one.
+# ---------------------------------------------------------------------------
+_EXTLESS="Dockerfile LICENSE cargo cargo-audit-orphans pre-commit pre-merge-commit project-checks reference-transaction"
+
+# ---------------------------------------------------------------------------
 # _is_file_path <path>
 # Pure-string predicate.  Returns 0 (true = file) or 1 (false = directory).
 # No filesystem stat, no model call — C-P3 invariant.
@@ -95,6 +133,15 @@ _is_file_path() {
     local seg="${p##*/}"
     # An empty segment (path was all slashes) → treat as directory.
     [ -z "$seg" ] && return 1
+    # Enumerated extensionless filenames → file.  Placed BEFORE the dotless
+    # reject below, mirroring γ's documented step order (dark_factory:3248
+    # inserts `if seg in EXTENSIONLESS_FILENAMES: return True` immediately ahead
+    # of its own no-dot reject).  Compares $seg, never $ext — see the _EXTLESS
+    # header.  Distinct loop variable from the _EXTS loop's $e below.
+    local x
+    for x in $_EXTLESS; do
+        [ "$seg" = "$x" ] && return 0
+    done
     # Extract extension: everything after the last dot in $seg.
     local ext="${seg##*.}"
     # If there's no dot in the segment (seg == ext), extension-less → REJECT.
