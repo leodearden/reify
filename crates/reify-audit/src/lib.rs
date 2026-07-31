@@ -187,17 +187,23 @@ pub enum Pattern {
     /// a `Diagnostic::error(...)` / `Diagnostic::warning(...)` construction
     /// site in scoped Rust source with no `.with_code(...)` attached within a
     /// bounded forward line window, and not marked with a `// pdiag:allow —
-    /// reason` escape. Per-file counts ratchet against the committed
+    /// reason` escape. The escape is forward-scoped and bounded by the next
+    /// constructor as well as by the window, so one escape covers exactly one
+    /// site and can never reach backwards over the site above it. Per-file
+    /// counts ratchet against the committed
     /// `crates/reify-audit/pdiag-baseline.txt` manifest.
     ///
     /// **High** severity for a count that exceeds its baseline row (or a file
     /// with sites and no row) — unlike PTODO/PDSSENTINEL this pattern DOES
     /// move the process exit code, which is the hard gate PRD §8 boundary
     /// row 8 requires. Under-count and orphan-row advisories are Medium and
-    /// exit-neutral, so an opportunistic fix never turns a diff RED. Joins
-    /// the no-`--pattern` default sweep via `is_none_or` (mirroring
-    /// `run_ptodo`). Structural: reads the working tree via `ls_files()` +
-    /// `std::fs`, never contacts jcodemunch or the task DB.
+    /// exit-neutral, so an opportunistic fix never turns a diff RED. OPT-IN
+    /// via `is_some_and` (mirroring `run_pdead`), NOT a member of the
+    /// no-`--pattern` default sweep: because its verdicts move the exit code,
+    /// joining that sweep would make every consumer which omits `--pattern`
+    /// go RED the moment this ratchet drifted. Structural: reads the working
+    /// tree via `ls_files()` + `std::fs`, never contacts jcodemunch or the
+    /// task DB.
     ///
     /// Scope: `crates/<name>/src/**.rs` + `gui/src-tauri/src/**.rs`, minus the
     /// detector's own crate, `reify-test-support`, `tests/`-segment paths and

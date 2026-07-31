@@ -81,7 +81,7 @@
 //!
 //! ## Escape hatch
 //!
-//! A trailing `// pdiag:allow — reason` on the anchor line, or anywhere within
+//! A trailing `// pdiag:allow — reason` on the anchor line, or below it within
 //! the site's window, suppresses the site. Only the substring `pdiag:allow` is
 //! load-bearing — the reason prose is for humans, exactly as `ptodo:allow`
 //! treats it (`ptodo.rs::line_escaped`). The spelling is fixed by PRD §3
@@ -91,12 +91,18 @@
 //! `{I,W,E}_DFM_*` message-prefix convention is documented as code-less by
 //! design.
 //!
-//! The escape is **forward-scoped** over the same window as the code probe —
-//! an escape sitting ABOVE a constructor does not suppress it, so a reviewed
-//! opt-out can never silently cover unrelated code above where it sits. Unlike
-//! the code probe, the escape probe DOES see comment-only lines: an escape is
-//! a comment by its very nature, so a `// pdiag:allow` on its own line inside
-//! the window is honoured.
+//! The escape is **forward-scoped and doubly bounded** — by the window, and by
+//! the next constructor. An escape sitting ABOVE a constructor does not
+//! suppress it, and an escape reaches back only as far as the nearest
+//! constructor above it, so ONE escape covers EXACTLY ONE site and a run of
+//! constructors needs an escape each. Both bounds exist for the same reason: a
+//! reviewed opt-out must never silently cover a site its author did not review.
+//! Without the second bound, adding a code-less constructor within 15
+//! non-comment lines above an existing escape bypassed this hard gate outright
+//! ([`escape_in_window`]). Unlike the code probe, the escape probe DOES see
+//! comment-only lines: an escape is a comment by its very nature, so a
+//! `// pdiag:allow` on its own line inside the window is honoured, and an
+//! anchor merely quoted in a comment does not bound anything.
 //!
 //! ## Severity posture
 //!
@@ -264,8 +270,10 @@ fn anchor_positions(line: &str) -> Vec<usize> {
 ///   that, the next unrelated brace anywhere below would start a bogus skip
 ///   and silently swallow production sites. An unbalanced file simply runs the
 ///   suppression to EOF: terminating, and in the permissive direction.
-/// - **`pdiag:allow` escape.** A site is dropped when its anchor line, or any
-///   line in its forward window, carries the token ([`escape_in_window`]).
+/// - **`pdiag:allow` escape.** A site is dropped when its anchor line carries
+///   the token, or when a line below it does — within the forward window and
+///   before the next constructor ([`escape_in_window`]), so one escape covers
+///   exactly one site.
 ///
 /// Pure `&str` operations throughout: no `syn`, no `regex`.
 fn scan_file(content: &str) -> Vec<Site> {
@@ -349,18 +357,45 @@ fn code_in_window(lines: &[&str], mask: &[bool], anchor_line: usize) -> bool {
     false
 }
 
-/// `true` when a `pdiag:allow` appears on one of the [`PDIAG_CODE_WINDOW`]
-/// non-comment lines below `anchor_line` (a 0-based index into `lines`).
+/// `true` when a `pdiag:allow` appears below `anchor_line` (a 0-based index
+/// into `lines`) within BOTH bounds: at most [`PDIAG_CODE_WINDOW`] non-comment
+/// lines down, and no further than the next constructor.
 ///
-/// Deliberately NOT a clone of [`code_in_window`]: comment-only lines are
-/// *probed* here (an escape is a comment by nature, so a standalone
-/// `// pdiag:allow` in the window must be honoured) while still costing no
-/// window budget, exactly as they cost none for the code probe. Keeping the
-/// two probes as separate functions makes that asymmetry reviewable instead of
-/// hiding it behind a shared flag.
+/// Two deliberate divergences from [`code_in_window`]:
+///
+/// - Comment-only lines are *probed* here (an escape is a comment by nature, so
+///   a standalone `// pdiag:allow` in the window must be honoured) while still
+///   costing no window budget, exactly as they cost none for the code probe.
+/// - The scan TERMINATES at the next non-comment line carrying an anchor, so an
+///   escape reaches back only to the nearest constructor above it — one escape
+///   covers exactly one site. Without it, one reviewed opt-out suppressed every
+///   unescaped constructor within 15 non-comment lines above it, and adding a
+///   code-less site just above an existing escape silently bypassed the
+///   INV-SF-6 hard gate.
+///
+/// Both orderings inside the loop are load-bearing. The anchor check runs
+/// BEFORE [`line_escaped`], so a line carrying both a later anchor and its own
+/// trailing escape terminates the scan instead of leaking that escape upwards
+/// — the lower site's escape is [`scan_file`]'s separate `line_escaped(line)`
+/// test. And the `!*is_comment` guard mirrors `scan_file`'s own anchoring rule,
+/// so an anchor token merely QUOTED in a comment cannot truncate a legitimate
+/// escape's reach (this module's header quotes `Diagnostic::error(` a dozen
+/// times).
+///
+/// [`code_in_window`] deliberately gets NO such terminator: its failure
+/// direction is opposite. An over-reaching escape silently suppresses a new
+/// site — a hole in the hard gate — while an over-reaching code probe only
+/// mis-marks a site coded, which the module header documents as accepted
+/// permissive imprecision. Terminating the code probe at the next anchor would
+/// also break the real `if {…} else {…}.with_code(code)` severity-dispatch
+/// shape, where the first anchor must reach past the second to the shared
+/// trailing code attachment.
 fn escape_in_window(lines: &[&str], mask: &[bool], anchor_line: usize) -> bool {
     let mut budget = PDIAG_CODE_WINDOW;
     for (line, is_comment) in lines.iter().zip(mask).skip(anchor_line + 1) {
+        if !*is_comment && !anchor_positions(line).is_empty() {
+            return false;
+        }
         if line_escaped(line) {
             return true;
         }

@@ -148,10 +148,17 @@ Follow §2. This is the right answer for essentially every new Warning/Error.
 
 ### (b) Escape the site — only when code-less is deliberate
 
-Add a trailing `// pdiag:allow — reason` on the construction site (or anywhere
-within its chain). Only the substring `pdiag:allow` is load-bearing; the reason
-prose is for humans, and it is not optional in review even though the detector
-does not parse it. This mirrors `ptodo:allow` exactly.
+Add a trailing `// pdiag:allow — reason` on the construction site, or on a line
+below it within the site's chain. Only the substring `pdiag:allow` is
+load-bearing; the reason prose is for humans, and it is not optional in review
+even though the detector does not parse it. This mirrors `ptodo:allow` exactly.
+
+**One escape covers exactly one site.** The escape is forward-scoped and stops
+at the next construction site, so it can never reach backwards over the site
+above it — that bound is what stops a new code-less diagnostic from silently
+inheriting somebody else's reviewed opt-out. A run of code-less constructors
+therefore needs an escape on each; if that reads as noise, it is the honest
+signal that (a) is the better remedy.
 
 The archetype of a legitimate escape is
 `crates/reify-stdlib/src/dfm.rs:174-200`: the DFM rules deliberately encode the
