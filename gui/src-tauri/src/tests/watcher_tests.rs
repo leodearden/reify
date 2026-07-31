@@ -130,8 +130,14 @@ fn wait_until_with_retry_on(
     // virtual clock instead of failing -- a silent hang rather than a
     // panic. `WallClock` doesn't have this failure mode (real time
     // advances regardless), so nothing in this file hits it today; this
-    // guards the shared seam for future callers. See #5709.
-    debug_assert!(
+    // guards the shared seam for future callers. This is `assert!`, not
+    // `debug_assert!`, because the verify pipeline's release-profile test
+    // pass builds with `-C debug-assertions=off`: a `debug_assert!` here
+    // would be compiled out in exactly that pass, so the failure mode this
+    // guards against would degrade from a loud panic to a silent hang
+    // burning the whole release-test budget instead of failing fast. See
+    // #5709.
+    assert!(
         !retry_every.is_zero(),
         "retry_every must be non-zero: a zero window never advances a VirtualClock"
     );
@@ -692,6 +698,46 @@ fn wait_until_with_retry_reissues_the_attempt_for_every_window_until_the_deadlin
 }
 
 #[test]
+fn wait_until_with_retry_on_clamps_its_final_window_to_remaining_on_a_non_multiple_timeout() {
+    // The 200ms/20ms case above (and the 2s/20ms case below) can't
+    // distinguish the retry loop's OWN `remaining.min(retry_every)` clamp
+    // from a regression that used a bare `retry_every`, because both land
+    // on the same total either way when the timeout is an exact multiple
+    // of retry_every -- this is the retry loop's own clamp, one layer
+    // above the (separately covered) clamp inside `wait_until_on` itself.
+    // A non-multiple budget can distinguish them: unclamped, a third 20ms
+    // window would overshoot 50ms to 60ms; clamped, it's cut to 10ms and
+    // the call lands on exactly 50ms (windows of 20 + 20 + 10). See #5709.
+    let t0 = Instant::now();
+    let mut clock = VirtualClock::new(t0);
+    let counter = Rc::new(Cell::new(0u32));
+    let attempt_counter = counter.clone();
+
+    let found = wait_until_with_retry_on(
+        &mut clock,
+        move || attempt_counter.set(attempt_counter.get() + 1),
+        Duration::from_millis(20),
+        Duration::from_millis(50),
+        || false,
+    );
+
+    assert!(!found, "condition is never satisfied, should time out");
+    assert_eq!(
+        counter.get(),
+        3,
+        "three windows (20 + 20 + 10ms) should fit in a 50ms budget, got {} attempts",
+        counter.get()
+    );
+    assert_eq!(
+        clock.now() - t0,
+        Duration::from_millis(50),
+        "the final window should be clamped to the remaining budget rather \
+         than overshooting to 60ms, got {:?}",
+        clock.now() - t0
+    );
+}
+
+#[test]
 fn wait_until_with_retry_stops_reissuing_once_the_condition_holds_on_a_virtual_clock() {
     // Deterministic replacement for the former (now-deleted) wall-clock test
     // `wait_until_with_retry_reissues_the_attempt_until_the_condition_holds`.
@@ -734,10 +780,16 @@ fn wait_until_with_retry_stops_reissuing_once_the_condition_holds_on_a_virtual_c
 }
 
 #[test]
-fn wait_until_with_retry_does_not_sleep_when_the_condition_already_holds_on_a_virtual_clock() {
-    // Sharper, deterministic form of "returns without waiting": the clock
-    // does not advance at all, which transitively proves `wait_until`
-    // checks its condition before ever sleeping. See #5709.
+fn wait_until_with_retry_attempts_exactly_once_when_the_condition_already_holds_on_a_virtual_clock()
+ {
+    // This test's subject is the attempt count, not the clock: "the clock
+    // never advances when the condition already holds" is pinned once, at
+    // the layer that actually implements it, by
+    // `wait_until_on_does_not_advance_the_clock_when_the_condition_already_holds`
+    // below -- duplicating that assertion here added scaffolding without a
+    // distinct failure mode. What IS unique to the retry wrapper is that it
+    // calls `attempt` exactly once (not zero, not more) before the first,
+    // immediately-successful poll window. See #5709.
     let t0 = Instant::now();
     let mut clock = VirtualClock::new(t0);
     let counter = Rc::new(Cell::new(0u32));
@@ -758,10 +810,21 @@ fn wait_until_with_retry_does_not_sleep_when_the_condition_already_holds_on_a_vi
         "already-satisfied condition should still attempt exactly once, got {}",
         counter.get()
     );
-    assert_eq!(
-        clock.now(),
-        t0,
-        "already-satisfied condition should not advance the clock at all, i.e. never sleep"
+}
+
+#[test]
+#[should_panic(expected = "retry_every must be non-zero")]
+fn wait_until_with_retry_on_panics_when_retry_every_is_zero() {
+    // The guard in `wait_until_with_retry_on` is an `assert!`, not a
+    // `debug_assert!`, precisely so this stays a loud, profile-independent
+    // panic instead of degrading to a hang that only reproduces in debug
+    // builds -- see the comment on the guard itself. See #5709.
+    wait_until_with_retry_on(
+        &mut VirtualClock::new(Instant::now()),
+        || {},
+        Duration::ZERO,
+        Duration::from_millis(200),
+        || false,
     );
 }
 
@@ -796,9 +859,11 @@ fn wait_until_on_does_not_advance_the_clock_when_the_condition_already_holds() {
     // Companion to the clamping test above, pinned at the same layer:
     // proves `wait_until_on` itself checks `condition` before ever
     // sleeping, directly rather than through the `wait_until_with_retry_on`
-    // wrapper (`..._does_not_sleep_when_the_condition_already_holds_on_a_virtual_clock`
-    // above only proves it one layer up, through the retry loop). See
-    // #5709.
+    // wrapper. This is the ONLY place that claim is pinned -- the
+    // retry-layer test
+    // (`wait_until_with_retry_attempts_exactly_once_when_the_condition_already_holds_on_a_virtual_clock`)
+    // asserts only its own attempt count now, since duplicating this clock
+    // assertion there added no distinct failure mode. See #5709.
     let t0 = Instant::now();
     let mut clock = VirtualClock::new(t0);
 
