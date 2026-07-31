@@ -562,6 +562,81 @@ def run_probe(probe: Probe) -> ProbeRun:
 
 
 # ---------------------------------------------------------------------------
+# grammar_substrate_usable() — can tree-sitter run a grammar probe at all?
+# ---------------------------------------------------------------------------
+
+# Committed fixture used to exercise the grammar toolchain.  Any committed .ri
+# file works — the substrate probe cares whether tree-sitter can LOAD the
+# grammar, never whether this particular fixture parses.
+_SUBSTRATE_PROBE_FIXTURE = "tests/prd-gate/fixtures/arrow_type.ri"
+
+
+def grammar_substrate_usable(fixture: Optional[str] = None) -> tuple:
+    """Return (usable, reason) for the tree-sitter grammar toolchain.
+
+    Runs one real grammar probe through the normal build_command()/run_probe()
+    path — so fixture-path resolution and the CWD=<repo_root>/tree-sitter-reify
+    requirement are honoured without being duplicated here — and reports the
+    substrate unusable when the probe could not run *as a probe*:
+
+        * the grammar cache/lock directory is unwritable (grammar_cache_denied)
+        * the tree-sitter CLI is not on PATH (_BINARY_NOT_FOUND_SENTINEL)
+
+    Anything else — including a clean parse and an ordinary parse rejection — is
+    reported usable.  This is a BEHAVIOURAL check, deliberately not a
+    path-existence one: ``os.path.isfile(tree-sitter-reify/src/parser.c)`` says
+    the grammar was generated, but says nothing about whether tree-sitter can
+    load it, which is the capability a grammar probe actually needs.
+
+    Note what is NOT unusable: a parse failure.  The distinction matters because
+    an unparseable fixture is the *expected* result for several committed
+    probes; treating it as a broken substrate would suppress the grammar e2e
+    exactly when the grammar is healthy.
+
+    Callers use the result to SKIP rather than to alter a verdict — a probe that
+    could not run still reports HARNESS_ERROR / exit 70 (see
+    grammar_cache_denied's contract note).
+
+    Cost: one subprocess, no side effects.
+
+    Args:
+        fixture: Repo-relative fixture to probe with.  Defaults to
+                 _SUBSTRATE_PROBE_FIXTURE.  Present for testability.
+
+    Returns:
+        (True, "") when a grammar probe can run; (False, reason) otherwise,
+        where reason is a short operator-facing sentence naming the subsystem.
+    """
+    probe = Probe(
+        capability="grammar substrate availability",
+        probe_kind="grammar",
+        fixture=fixture if fixture is not None else _SUBSTRATE_PROBE_FIXTURE,
+        expected={"observation": "present", "match": {}},
+    )
+
+    run = run_probe(probe)
+
+    if _BINARY_NOT_FOUND_SENTINEL in run.stderr:
+        return (
+            False,
+            f"the tree-sitter CLI ({_resolve_tree_sitter_bin()!r}) is not "
+            "executable or not on PATH, so grammar probes cannot run",
+        )
+
+    if grammar_cache_denied(run):
+        return (
+            False,
+            "tree-sitter cannot write its grammar cache/lock directory "
+            "(typically ~/.cache/tree-sitter/), so it cannot load the reify "
+            "grammar; a sandboxed agent role whose landlock write set does not "
+            "grant that directory sees this as a permission denial even though "
+            "the directory's mode bits allow the write",
+        )
+
+    return (True, "")
+
+
+# ---------------------------------------------------------------------------
 # evaluate() — wire run → observe → verdict → Result
 # ---------------------------------------------------------------------------
 
