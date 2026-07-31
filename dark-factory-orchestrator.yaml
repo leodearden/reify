@@ -673,15 +673,40 @@ sandbox:
 #     tests/infra/test_agent_cache_redirect.sh's G2/G3 ("exactly two
 #     destination dirs", "conf paths == seeder destinations") red for no
 #     benefit — do not "complete the pattern" here.
+#   UV_CACHE_DIR (task 5909, COUNTER-redirect, NOT another /tmp redirect):
+#   XDG_CACHE_HOME above is a GENERAL variable and uv honours it too;
+#   compute_write_set() row 7 already grants ~/.cache/uv, so without this
+#   pin the XDG_CACHE_HOME redirect would silently move uv's cache OFF its
+#   own grant and into /tmp, where this block's KNOWN GAPS tmpfiles rule
+#   (`D /tmp 1777 root root 30d`) both wipes at boot and age-deletes
+#   contents mid-uptime — the same partial-gutting hazard already
+#   documented above for the cargo registry, on a cache that currently has
+#   a working grant. Pinning UV_CACHE_DIR (uv's highest-precedence cache
+#   override) back at its granted path contains that collateral.
+#   Deliberately NOT pinning SCCACHE_DIR even though ~/.cache/sccache
+#   exists and would also follow the XDG redirect: ~/.cache/sccache is NOT
+#   in compute_write_set(), so a sandboxed role cannot write it today
+#   regardless — pinning it back at ~/.cache/sccache would name an
+#   UNGRANTED path and be strictly worse than letting it follow the
+#   redirect. (sccache is a client/server daemon; storage lives with the
+#   already-running server, which this yaml points at a redis backend via
+#   sccache.backend_env.)
 #   Restart-tier: inert until the orchestrator restarts (companion task
-#   γ6b; XDG_CACHE_HOME rides the same tier — config loads once at
-#   startup, no hot-reload). Reify-side seam guard:
+#   γ6b; XDG_CACHE_HOME/UV_CACHE_DIR ride the same tier — config loads once
+#   at startup, no hot-reload). Reify-side seam guard:
 #   tests/infra/test_sandbox_cache_writability_seam.sh.
 role_env_overrides:
   implementer: &sandbox_cache_env
     CARGO_HOME: /tmp/reify-agent-cargo-home
     npm_config_cache: /tmp/reify-agent-npm-cache
     XDG_CACHE_HOME: /tmp/reify-agent-xdg-cache
+    # Counter-redirect, not a /tmp target on purpose: pins uv back at its
+    # own compute_write_set ~/.cache/uv grant so it does not silently
+    # follow XDG_CACHE_HOME above into /tmp's tmpfiles 30d wipe/age-clean.
+    # See the UV_CACHE_DIR paragraph above. Hardcoded absolute path
+    # (role_env_overrides values are not known to undergo env
+    # interpolation) — do not write $HOME/${HOME} here.
+    UV_CACHE_DIR: /home/leo/.cache/uv
   debugger: *sandbox_cache_env
   simple_task: *sandbox_cache_env
 
