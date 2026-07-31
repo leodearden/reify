@@ -2102,6 +2102,67 @@ assert "S2: summary shows reset=1" \
 assert "S2: summary shows reset_cold=0 (the lane was reset WARM, not discarded cold)" \
     bash -c 'printf "%s\n" "$1" | grep -qE "reset_cold=0"' _ "$OUT"
 
+# ── S3: the DISCARD ITSELF fails ⇒ the hazardous clone survives, and gc must say
+# so loudly rather than silently counting the lane reset. Mirrors K4's existing
+# "rm failed, lane left untouched" accounting on the other reset branch.
+# Technique + root-skip rationale: _discard_fail_seed_stub_body above.
+if [ "$(id -u)" -ne 0 ]; then
+    S3_REPO="$S_ROOT/s3-repo"
+    S3_WORKTREES="$S_ROOT/s3-worktrees"
+    S3_BASE="$S_ROOT/s3-base"
+    mkdir -p "$S3_WORKTREES" "$S3_BASE"
+    make_repo "$S3_REPO"
+    mkdir -p "$S3_BASE/target.gen.1"
+    touch "$S3_BASE/target.gen.1.lock"
+    ln -sfn "$S3_BASE/target.gen.1" "$S3_BASE/target"
+
+    # TWO reclaimable lanes in ONE fixture: _lane-1 aborts and its discard fails,
+    # _lane-2 seeds cleanly. A per-candidate failure must not abort the pass, so
+    # _lane-2 is the proof the sweep continued past _lane-1. Glob order over
+    # "$WORKTREES_DIR"/*/ puts _lane-1 first.
+    make_task_lane "$S3_REPO" "$S3_WORKTREES" "_lane-1" "task/5635" "ahead"
+    make_task_lane "$S3_REPO" "$S3_WORKTREES" "_lane-2" "task/5636" "ahead"
+
+    S3_SEED_LOG="$S_ROOT/s3-seed-calls.log"
+    S3_SEED_STUB="$S_ROOT/s3-seed-stub.sh"
+    _discard_fail_seed_stub_body > "$S3_SEED_STUB"
+    chmod +x "$S3_SEED_STUB"
+    export SEED_LOG="$S3_SEED_LOG"
+
+    HAZARD_LANE=_lane-1 run_helper reclaim \
+        --worktrees-dir "$S3_WORKTREES" \
+        --base-target "$S3_BASE/target" \
+        --seed-script "$S3_SEED_STUB"
+    # Restore BEFORE any assertion can abort the suite: `trap cleanup EXIT`'s
+    # `rm -rf` over _TMPDIRS cannot remove a non-writable lane dir either.
+    _restore_discard_fail_lane "$S3_WORKTREES/_lane-1"
+
+    assert "S3: exit 0 (a failed discard warns and continues, like K4's failed rm)" \
+        test "$RC" -eq 0
+    assert "S3: _lane-1 target/ is STILL PRESENT (the discard did not happen)" \
+        test -d "$S3_WORKTREES/_lane-1/target"
+    assert "S3: a stderr [warn] line names the RETAINED _lane-1 target/" \
+        bash -c 'printf "%s\n" "$1" | grep -F "[warn]" | grep -qF "$2/_lane-1/target"' \
+            _ "$ERR_OUT" "$S3_WORKTREES"
+    assert "S3: stderr carries the rm's own error text (failure detail not swallowed)" \
+        bash -c 'printf "%s\n" "$1" | grep -qi "permission denied"' _ "$ERR_OUT"
+    # K4's rule: an rm that failed leaves the lane untouched, so it is preserved,
+    # not reset — and reset_cold counts only clones actually discarded.
+    assert "S3: the failed discard is counted preserved, not reset (reset=1 preserved=1)" \
+        bash -c 'printf "%s\n" "$1" | grep -qE "reset=1 removed=0 preserved=1"' _ "$OUT"
+    assert "S3: reset_cold is NOT incremented for a discard that never happened" \
+        bash -c 'printf "%s\n" "$1" | grep -qE "reset_cold=0"' _ "$OUT"
+    # The sweep-continues proof: _lane-2 was reached and reseeded after _lane-1's
+    # per-candidate failure.
+    assert "S3: the sweep CONTINUED — _lane-2 was still seeded after _lane-1 failed" \
+        bash -c 'test -f "$1" && grep -q "_lane-2" "$1"' _ "$S3_SEED_LOG"
+    assert "S3: _lane-2 was reset warm (its divergent marker is gone, target/ retained)" \
+        bash -c '[ -d "$1/target" ] && [ ! -e "$1/target/DIVERGENT_MARKER" ]' \
+            _ "$S3_WORKTREES/_lane-2"
+else
+    echo "  SKIP: S3 discard-failure asserts (running as uid 0; DAC write checks are bypassed)"
+fi
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
 # kept as two independently-reported signals: TRASH2 can realistically only ever
