@@ -56,6 +56,12 @@
 //!   site (none observed in the corpus; `pdiag:allow` escapes it).
 //! - An unrelated `.with_code(` inside a site's window can mark it coded —
 //!   7/730 sites repo-wide, all in `#[cfg(test)]` code this detector excludes.
+//!   "Permissive" understates it: unlike the other entries here, this one can
+//!   also mask a BRAND-NEW code-less site placed above an existing coded one,
+//!   which is a hole in the hard gate rather than mere imprecision. It is the
+//!   sibling of the escape leak [`escape_in_window`] closes, left standing
+//!   because the two probes need opposite bounds (see that function's docs),
+//!   and is tracked as its own work item — #5887.
 //! - The comment mask is line-granular and keyed on each line's FIRST
 //!   non-whitespace token, so nothing mid-line is ever stripped. That is
 //!   deliberate: stripping `//`-to-end-of-line would let a `//` inside a string
