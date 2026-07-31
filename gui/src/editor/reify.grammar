@@ -1,7 +1,11 @@
 // Lezer grammar for the Reify CAD language
 // Ported from tree-sitter-reify/grammar.js
 
-@top SourceFile { Declaration* }
+// `module` is admitted ONLY here, never as a member of `Declaration`, so a
+// module decl after any other declaration is a natural parse ERROR — the
+// grammar enforces the top-of-file / one-per-file rule (PRD D-5 §7.2) with no
+// extra code, exactly as tree-sitter-reify/grammar.js:126-132 does.
+@top SourceFile { ModuleDeclaration? Declaration* }
 
 @skip { whitespace | LineComment | BlockComment }
 
@@ -12,9 +16,26 @@ Declaration {
   ImportDeclaration
 }
 
+// ── Module ───────────────────────────────────────────────
+ModuleDeclaration {
+  kw<"module"> ModulePath
+}
+
+// Dot-separated module path: `std.mechanical.fasteners`
+ModulePath {
+  Identifier ("." Identifier)*
+}
+
 // ── Imports ──────────────────────────────────────────────
+// Mirrors tree-sitter-reify/grammar.js:258-282. The path is followed by the
+// destructured items with NO separator (`import a.b {C, D}`); the `String`
+// alternative is retained for the legacy `import "foo.ri"` form.
 ImportDeclaration {
-  kw<"import"> String
+  kw<"pub">? kw<"import"> (ModulePath (ImportItems | kw<"as"> Identifier)? | String)
+}
+
+ImportItems {
+  "{" (Identifier ("," Identifier)* ","?)? "}"
 }
 
 // ── Structure ───────────────────────────────────────────
@@ -201,15 +222,16 @@ CompareOp<expr> { expr }
 // lezer-generator permits only one replacement name per (base token, literal)
 // pair and otherwise hard-fails with
 //   Conflicting names for specialization "def" of Identifier
-// `pub` and `def` were promoted here for StructureDefinition; their keyword
-// styling is re-pinned explicitly in highlight.ts.
+// `pub`/`def` (StructureDefinition) and `module`/`as` (ModuleDeclaration,
+// ImportDeclaration) were promoted out of this list; their keyword styling is
+// re-pinned explicitly in highlight.ts.
 ReservedWord {
   @specialize[@name=ReservedWord]<Identifier,
     "trait" | "fn" | "enum" | "match" | "connect" | "chain" |
     "occurrence" | "purpose" | "field" | "port" |
-    "type" | "module" | "unit" | "forall" | "exists" | "implies" |
+    "type" | "unit" | "forall" | "exists" | "implies" |
     "and" | "or" | "not" | "in" | "out" | "meta" | "self" |
-    "undef" | "some" | "none" | "set" | "map" | "as">
+    "undef" | "some" | "none" | "set" | "map">
 }
 
 @external propSource reifyHighlighting from "./highlight"
