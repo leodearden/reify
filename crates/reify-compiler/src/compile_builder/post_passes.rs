@@ -7,17 +7,20 @@
 //! the exception of `phase_purposes` which returns `Vec<CompiledPurpose>`
 //! since purposes are not owned by `CompilationCtx`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use reify_ast::ParsedModule;
-use reify_core::{ContentHash, Diagnostic, Type};
+use reify_core::{ContentHash, Diagnostic, SourceSpan, Type, ValueCellId};
+use reify_ir::{CompiledExpr, CompiledExprKind};
 
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::functions::{check_field_composition_types, collect_composed_field_dependencies};
 use crate::scc;
 use crate::termination::check_recursive_termination;
 use crate::traits::compile_purpose;
-use crate::types::{CompiledField, CompiledFieldSource, CompiledPurpose, TopologyTemplate};
+use crate::types::{
+    CompiledField, CompiledFieldSource, CompiledPurpose, TopologyTemplate, ValueCellDecl,
+};
 
 /// Phase-12 post-compilation: detect recursive sub-component cycles via
 /// DFS on the template reference graph, verify recursive structures have
@@ -267,6 +270,272 @@ pub(crate) fn phase_purposes(
         }
     }
     purposes
+}
+
+/// A proof that a template's declared objective governs nothing — the payload
+/// of `E_OBJECTIVE_INERT` (DIC γ, task #5417; PRD
+/// `docs/prds/v0_6/declared-intent-consumption-accounting.md` §3 decision 3).
+///
+/// Produced only by [`inert_objective_finding`], and only when the proof is
+/// total; see that function for the bail rules.
+#[derive(Debug, Clone)]
+// Wired into the compile pipeline by `phase_inert_objective_check` (step-6);
+// until then the struct and predicate are exercised by the unit tests below,
+// which do not count as uses for the non-test lib target.
+#[allow(dead_code)]
+pub(crate) struct InertObjectiveFinding {
+    /// The cells the objective expression itself names, each proven to be
+    /// permanently non-`auto`. Sorted and deduplicated so the rendered
+    /// diagnostic text is a pure function of the IR.
+    ///
+    /// These are the objective's *direct* references rather than the whole
+    /// transitive closure: they are the identifiers the author actually wrote,
+    /// which is what a "your objective reads only X" message must name.
+    pub never_auto_cells: Vec<ValueCellId>,
+    /// A non-empty span to anchor the diagnostic's primary label on. Neither
+    /// `TopologyTemplate` nor `CompiledExpr` carries a declaration span, so the
+    /// finding borrows the `ValueCellDecl.span` of the first reported cell —
+    /// the declaration that *proves* the inertness, and therefore the place a
+    /// reader must edit (`k` must become `auto`).
+    pub anchor_span: SourceSpan,
+}
+
+/// Is this node's value-flow fully described by the sub-expressions
+/// `CompiledExpr::collect_value_refs` recurses into, and confined to cells of
+/// the enclosing template?
+///
+/// Deliberately an **allowlist**. The rule this feeds must never produce a
+/// false `E_OBJECTIVE_INERT` — that would be a compile Error on legal code —
+/// so an unrecognised node counts as opaque. The consequence is that a
+/// `CompiledExprKind` variant added later silently *narrows* the rule
+/// (a missed report) instead of silently widening it (a wrong report).
+///
+/// The enumerated opaque shapes this excludes, and why each is not provable
+/// from compile-time refs alone:
+/// - `MethodCall` — `minimize cost(self.descendants)` carries zero
+///   compile-time `ValueRef`s yet genuinely couples to a child's `auto`.
+/// - `Quantifier` and the other structural/reflective queries — they reach
+///   cells no compile-time ref set enumerates.
+/// - `Lambda` — `collect_value_refs` emits its captures and does not descend
+///   into the body, so the body's reads are invisible here.
+/// - `CrossSubGeometryRef` — names a cell in another scope entirely.
+/// - `UserFunctionCall` — the callee's body may read cells that are not among
+///   the argument expressions.
+///
+/// A `Type::Error` result anywhere in the term means compilation already
+/// failed inside it; piling a second Error onto poisoned IR is noise, so those
+/// nodes are opaque too.
+fn is_data_transparent(node: &CompiledExpr) -> bool {
+    if node.result_type.is_error() {
+        return false;
+    }
+    matches!(
+        node.kind,
+        CompiledExprKind::Literal(_)
+            | CompiledExprKind::ValueRef(_)
+            | CompiledExprKind::BinOp { .. }
+            | CompiledExprKind::UnOp { .. }
+            | CompiledExprKind::Conditional { .. }
+            | CompiledExprKind::OptionSome(_)
+            | CompiledExprKind::OptionNone
+    )
+}
+
+/// True when every node of `expr` is data-transparent.
+fn is_wholly_transparent(expr: &CompiledExpr) -> bool {
+    let mut transparent = true;
+    expr.walk(&mut |node| {
+        if !is_data_transparent(node) {
+            transparent = false;
+        }
+    });
+    transparent
+}
+
+/// Every value cell a template declares, including the ones a `where` clause
+/// parks in a guarded group.
+///
+/// A guarded `auto` lands in `guarded_groups[*].members` / `.else_members` and
+/// *not* in `value_cells` (`guards.rs`), so indexing `value_cells` alone would
+/// read a guarded `auto` as an unknown cell and make its objective look
+/// falsely inert.
+fn declared_cells(template: &TopologyTemplate) -> impl Iterator<Item = &ValueCellDecl> {
+    template.value_cells.iter().chain(
+        template
+            .guarded_groups
+            .iter()
+            .flat_map(|g| g.members.iter().chain(g.else_members.iter())),
+    )
+}
+
+/// Does `template_name` denote the structure `structure_name`, allowing for
+/// monomorphisation?
+///
+/// A generic structure is compiled once per instantiation under the mangled
+/// name `Generic$Arg` (`types::mangle_monomorph_name`), while the sub
+/// declaration that instantiated it still records the *unmangled*
+/// `structure_name`. Comparing the two by equality alone would miss the link
+/// and let a genuine `auto` override on a generic child slip through as a
+/// false Inert.
+fn names_same_structure(template_name: &str, structure_name: &str) -> bool {
+    template_name == structure_name
+        || template_name
+            .strip_prefix(structure_name)
+            .is_some_and(|rest| rest.starts_with('$'))
+}
+
+/// Does any template in the module install an `auto` override on an instance of
+/// `template` that lands on one of `closure`'s members?
+///
+/// `sub c : Child { k = auto }` mints a `ValueCellKind::Auto` cell scoped
+/// `Parent.c`/`k` into the **parent** template (`phase_sub_override_autos` /
+/// `phase_connect_auto_params`); `Child`'s own `k` stays a `Param`. A check
+/// with only per-template visibility is therefore structurally guaranteed to
+/// misread that shape as inert, which is why this predicate takes the whole
+/// module.
+///
+/// Returns `true` both when an override is found and when one *cannot be ruled
+/// out* — a scoped `auto` whose owning sub does not resolve to a structure, or
+/// resolves only through a nested path this function does not walk, is treated
+/// as a possible override.
+fn auto_override_possible(
+    template: &TopologyTemplate,
+    all_templates: &[TopologyTemplate],
+    closure: &BTreeSet<ValueCellId>,
+) -> bool {
+    let closure_members: HashSet<&str> = closure.iter().map(|id| id.member.as_str()).collect();
+
+    for other in all_templates {
+        for decl in declared_cells(other) {
+            if !decl.kind.is_auto() || !closure_members.contains(decl.id.member.as_str()) {
+                continue;
+            }
+            let Some(sub_path) = decl
+                .id
+                .entity
+                .strip_prefix(&format!("{}.", other.name))
+                .filter(|rest| !rest.is_empty())
+            else {
+                // An unscoped `auto` belongs to its own template's scope and
+                // cannot be an override of ours. A scoped one we cannot
+                // attribute to `other` is unaccounted for — assume the worst.
+                if decl.id.entity.contains('.') {
+                    return true;
+                }
+                continue;
+            };
+
+            let (head, nested) = match sub_path.split_once('.') {
+                Some((head, _)) => (head, true),
+                None => (sub_path, false),
+            };
+            match other.sub_components.iter().find(|s| s.name == head) {
+                // A nested path (`Parent.a.b`) names a sub of a sub; resolving
+                // it needs a walk this function does not do.
+                Some(_) if nested => return true,
+                Some(sub) => {
+                    if names_same_structure(&template.name, &sub.structure_name) {
+                        return true;
+                    }
+                }
+                // Scoped like a sub override, but `other` declares no such sub:
+                // the target structure is unknown, so it may well be ours.
+                None => return true,
+            }
+        }
+    }
+    false
+}
+
+/// Prove — or decline to prove — that `template`'s declared objective is
+/// **structurally inert**: that no solver variable can ever move its cost,
+/// because every cell it can reach is permanently non-`auto`.
+///
+/// This is the compile half of DIC γ (task #5417). It is a pure function of
+/// the compiled module, wired into the pipeline by
+/// `phase_inert_objective_check`, and it reports only on a positive proof:
+/// every ambiguity returns `None`. A false `E_OBJECTIVE_INERT` would reject
+/// legal code, whereas a missed one merely leaves today's silence in place, so
+/// the asymmetry is deliberate (PRD §3 decision 5).
+///
+/// The proof obligations, in order:
+/// 1. the template declares an objective at all;
+/// 2. every node of every objective term is data-transparent
+///    ([`is_data_transparent`]);
+/// 3. the objective names at least one value cell — `minimize 1mm` asserts
+///    nothing about autos and is not this rule's business;
+/// 4. every named cell resolves to a declaration of *this* template;
+/// 5. the transitive closure of those cells through their `default_expr`s
+///    reaches no `auto` — a `let` may not launder one;
+/// 6. no other template in the module installs an `auto` override onto an
+///    instance of this one that lands in that closure
+///    ([`auto_override_possible`]).
+///
+/// `all_templates` is the whole module, `template` included.
+// See `InertObjectiveFinding` for why this carries `allow(dead_code)` until
+// step-6 wires it.
+#[allow(dead_code)]
+pub(crate) fn inert_objective_finding(
+    template: &TopologyTemplate,
+    all_templates: &[TopologyTemplate],
+) -> Option<InertObjectiveFinding> {
+    // (1) + (2) — an objective exists and is wholly readable.
+    let objective = template.objective.as_ref()?;
+    if !objective
+        .terms
+        .iter()
+        .all(|term| is_wholly_transparent(&term.expr))
+    {
+        return None;
+    }
+
+    let cells: HashMap<&ValueCellId, &ValueCellDecl> =
+        declared_cells(template).map(|d| (&d.id, d)).collect();
+
+    // (3) — the cells the author actually named, sorted and deduplicated.
+    let mut named: Vec<ValueCellId> = objective
+        .terms
+        .iter()
+        .flat_map(|term| term.expr.collect_value_refs())
+        .collect();
+    named.sort();
+    named.dedup();
+    if named.is_empty() {
+        return None;
+    }
+
+    // (4) + (5) — close over `default_expr` inside this template, refusing to
+    // conclude anything the moment a cell is unknown, opaque, or `auto`.
+    let mut closure: BTreeSet<ValueCellId> = BTreeSet::new();
+    let mut pending: Vec<ValueCellId> = named.clone();
+    while let Some(id) = pending.pop() {
+        if !closure.insert(id.clone()) {
+            continue;
+        }
+        let decl = cells.get(&id)?;
+        if decl.kind.is_auto() {
+            return None;
+        }
+        if let Some(default_expr) = &decl.default_expr {
+            if !is_wholly_transparent(default_expr) {
+                return None;
+            }
+            pending.extend(default_expr.collect_value_refs());
+        }
+    }
+
+    // (6) — whole-module sub-instance `auto` overrides.
+    if auto_override_possible(template, all_templates, &closure) {
+        return None;
+    }
+
+    // Anchor on the declaration that proves the inertness, so the reader lands
+    // on the `param` they must turn into an `auto`.
+    let anchor_span = cells.get(&named[0])?.span;
+    Some(InertObjectiveFinding {
+        never_auto_cells: named,
+        anchor_span,
+    })
 }
 
 #[cfg(test)]
