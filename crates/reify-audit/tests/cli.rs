@@ -2553,10 +2553,14 @@ mod cli {
     ///    unknown-`--pattern` arg-parse failure, so asserting `!= 125` is the
     ///    literal "the detector is reachable from the binary" claim.
     /// 2. The exit code is the count of High FINDINGS — one per code-less
-    ///    file, not one per site. The fixture tree holds 3 code-less sites
-    ///    across 2 files, so exit 2 (not 3) is what pins the ratchet as
+    ///    file, not one per site. The fixture tree holds 4 code-less sites
+    ///    across 3 files, so exit 3 (not 4) is what pins the ratchet as
     ///    per-file.
     /// 3. The coded, escaped and out-of-scope fixtures contribute NOTHING.
+    /// 4. `scenario06_escape_leak.rs` is counted. It holds one unreviewed
+    ///    code-less site immediately above a reviewed `pdiag:allow`, so it is
+    ///    the end-to-end proof that an opt-out cannot reach backwards over the
+    ///    site above it — the hard-gate bypass no other test in this suite saw.
     ///
     /// RED until the dispatch arm and the `--pattern` token validator are
     /// wired in `src/bin/reify-audit.rs`; until then every assertion fails on
@@ -2605,16 +2609,17 @@ mod cli {
         // (2) Exit code = High-severity finding count = one per code-less FILE.
         assert_eq!(
             out.status.code(),
-            Some(2),
-            "PDIAG fixture sweep must exit 2 — one NewFile High per code-less file \
-             (scenario01 has 1 site, scenario05 has 2; 3 sites but 2 files)\nstderr: {stderr}"
+            Some(3),
+            "PDIAG fixture sweep must exit 3 — one NewFile High per code-less file \
+             (scenario01 has 1 site, scenario05 has 2, scenario06 has 1 unreviewed site \
+             above its reviewed escape; 4 sites but 3 files)\nstderr: {stderr}"
         );
 
         let findings = parse_findings_from_stderr(&stderr);
         assert_eq!(
             findings.len(),
-            2,
-            "PDIAG fixture sweep must emit exactly 2 findings; got:\n{:#}",
+            3,
+            "PDIAG fixture sweep must emit exactly 3 findings; got:\n{:#}",
             serde_json::Value::Array(findings.clone())
         );
 
@@ -2642,9 +2647,13 @@ mod cli {
             vec![
                 "crates/reify-compiler/src/scenario05_codeless_pair.rs",
                 "crates/reify-eval/src/scenario01_codeless.rs",
+                "crates/reify-eval/src/scenario06_escape_leak.rs",
             ],
-            "only the code-less swept files may be keyed — the coded, `pdiag:allow`-escaped \
-             and `tests`-segment fixtures must each contribute nothing\nstderr: {stderr}"
+            "only the code-less swept files may be keyed — the coded, escaped and \
+             `tests`-segment fixtures must each contribute nothing, while scenario06 \
+             MUST be keyed: its unreviewed site sits inside the forward window of the \
+             reviewed opt-out below it, and an escape that reaches backwards over it is \
+             a silent INV-SF-6 hard-gate bypass\nstderr: {stderr}"
         );
 
         // Every hard-gate summary must route the reader to the policy doc;

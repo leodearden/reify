@@ -1202,6 +1202,107 @@ mod tests {
         assert_eq!(sites(&lines.join("\n")), vec![(1, false)]);
     }
 
+    #[test]
+    fn escape_does_not_reach_backwards_past_an_earlier_constructor() {
+        // The hard gate's load-bearing hole. The escape's forward window used
+        // to run its full length regardless of what sat between, so ONE
+        // reviewed `pdiag:allow` suppressed every unescaped constructor within
+        // 15 non-comment lines ABOVE it. Adding a code-less site just above an
+        // existing opt-out was therefore a silent INV-SF-6 bypass — available
+        // to any author, invisible to every other test in this suite.
+        //
+        // The rule: an escape reaches back only to the nearest constructor
+        // above it, so one escape covers exactly one site.
+
+        // (i) Consecutive anchors, escape trailing the LOWER one. The upper
+        //     site is brand new and unreviewed; it must survive.
+        let src = file(&[
+            "    let a = Diagnostic::error(m);",
+            "    let b = Diagnostic::error(m); // pdiag:allow — reviewed, this site only",
+        ]);
+        assert_eq!(
+            sites(&src),
+            vec![(1, false)],
+            "the lower site's own escape must not absorb the unescaped site above it"
+        );
+
+        // (ii) The same shape with plain lines between. The escape is still
+        //      well inside the upper site's raw 15-line window, and still must
+        //      not reach it.
+        let src = file(&[
+            "    let a = Diagnostic::error(m);",
+            "    let x = 1;",
+            "    let y = 2;",
+            "    let b = Diagnostic::error(m); // pdiag:allow — reviewed",
+        ]);
+        assert_eq!(sites(&src), vec![(1, false)]);
+
+        // (iii) A STANDALONE escape comment below a second constructor. The
+        //       terminator is the intervening anchor, not the escape's own
+        //       line, so the comment-line escape shape is bounded identically.
+        let src = file(&[
+            "    let a = Diagnostic::error(m);",
+            "    let b = Diagnostic::warning(m);",
+            "    // pdiag:allow — reviewed, applies to the constructor above",
+        ]);
+        assert_eq!(
+            sites(&src),
+            vec![(1, false)],
+            "a standalone escape below `b` covers `b`, never `a`"
+        );
+
+        // (iv) Termination is coded-agnostic: a CODED constructor bounds the
+        //      escape exactly as an uncoded one does. `a` reads back as coded
+        //      here only through the CODE probe's own documented permissive
+        //      reach (module header, "an unrelated `.with_code(` inside a
+        //      site's window can mark it coded"), which is a separate and
+        //      lower-severity gap. What this case pins is that `a` is still a
+        //      SITE at all — the escape did not delete it.
+        let src = file(&[
+            "    let a = Diagnostic::error(m);",
+            "    let b = Diagnostic::warning(m).with_code(c);",
+            "    // pdiag:allow — reviewed, applies to the constructor above",
+        ]);
+        assert_eq!(sites(&src), vec![(1, true)]);
+    }
+
+    #[test]
+    fn bounding_the_escape_does_not_narrow_it_to_the_anchor_line() {
+        // Negative controls for the case above: the bound is "the next
+        // constructor", NOT "the anchor line". Both legitimate opt-out shapes
+        // must keep working, or the fix has over-reached and every reviewed
+        // multi-line escape in the tree turns RED.
+
+        // (i) Trailing the anchor line itself. This path is `scan_file`'s own
+        //     `line_escaped(line)` test — it never consults `escape_in_window`.
+        let src = "    let d = Diagnostic::error(m); // pdiag:allow — reviewed";
+        assert_eq!(sites(src), none());
+
+        // (ii) A standalone escape below a MULTI-LINE constructor with no
+        //      intervening anchor — the `tests/fixtures/pdiag/…/
+        //      scenario03_escaped.rs` shape, and the whole reason the escape
+        //      probe sees comment lines at all.
+        let src = file(&[
+            "    out.push(Diagnostic::warning(format!(",
+            "        \"W_DFM_DRAFT_ANGLE below {} degrees\",",
+            "        1.5",
+            "    )));",
+            "    // pdiag:allow — DFM prefix convention",
+        ]);
+        assert_eq!(sites(&src), none());
+
+        // (iii) An anchor token merely QUOTED in a comment must not truncate a
+        //       legitimate escape's reach. Not hypothetical: this module's own
+        //       header quotes `Diagnostic::error(` a dozen times, so the
+        //       terminator has to share `scan_file`'s comment-mask discipline.
+        let src = file(&[
+            "    out.push(Diagnostic::warning(msg));",
+            "    /// Prose naming Diagnostic::error( as an example, not code.",
+            "    // pdiag:allow — DFM prefix convention",
+        ]);
+        assert_eq!(sites(&src), none());
+    }
+
     // -- scope predicate ----------------------------------------------------
     //
     // The predicate takes the repo-root-relative form `GitOps::ls_files()`
