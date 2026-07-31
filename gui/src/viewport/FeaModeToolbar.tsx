@@ -23,6 +23,16 @@
  *                       Optional by design — when omitted no attribute is
  *                       emitted at all, so a single-toolbar caller renders
  *                       exactly as it did before #5670.
+ *
+ * KNOWN GAP (#5891): only the channel `<select>` is addressable per-viewport.
+ * Every sibling control here — the enable toggle, palette select, range-mode
+ * radios, range min/max, lock-current, show-deformed and warp slider — is still
+ * resolved by the debug bridge's generic first-match
+ * `document.querySelector('[data-testid=…]')` (click_element, wait_for_selector,
+ * dom_query, focus_element). With N panes mounted those tools silently drive
+ * pane 0's toolbar with no diagnostic, where `set_fea_channel` would have failed
+ * loudly with selectAmbiguous. The `data-viewport-id` stamped on the ROOT below
+ * is the substrate that fix needs — it is already in the DOM, just unread.
  */
 import { Show, createSignal, For, type Component } from 'solid-js';
 import type { FeaModeStore } from '../stores';

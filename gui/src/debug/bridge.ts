@@ -159,6 +159,13 @@ const FEA_CHANNEL_SELECT = '[data-testid="fea-mode-channel-select"]';
  * There is no "first populated" tiebreak as in `pickViewport`: every mounted
  * toolbar is equally valid to drive, so guessing between N of them would
  * silently misapply a channel switch. Ambiguity is an error, not a heuristic.
+ *
+ * SCOPE (#5891): this ladder covers the channel `<select>` only. The toolbar's
+ * other controls still resolve through the generic first-match testid lookup
+ * used by click_element/wait_for_selector/dom_query, which with N panes mounted
+ * drives pane 0 silently — the loud failure below has no counterpart there yet.
+ * Generalizing those resolvers to an optional viewportId scope is #5891; the
+ * `data-viewport-id` FeaModeToolbar stamps on its root is the substrate for it.
  */
 function pickFeaChannelSelect(
   params: Record<string, unknown>,
