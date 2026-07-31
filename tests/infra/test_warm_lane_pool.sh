@@ -2942,12 +2942,31 @@ assert "B4: fresh-unit count in warm lane == in-place control (path-independence
 # run_passset(manifest) is defined in impl-passset. Until then, calling it
 # errors under set -euo pipefail → RED on a substrate (SKIP on non-substrate
 # because the substrate gate fires first).
+#
+# rc asserts (#5885): run_passset() no longer swallows cargo's exit status
+# (Block PS-RC pins the classifier/diagnostic/wiring, always-run). The two
+# new asserts below discriminate a BUILD/RUNNER failure on EACH side, by
+# name, BEFORE the identity assert runs — every pass-set must be trustworthy
+# independently. This closes a false-GREEN gap the identity assert alone
+# cannot see: if BOTH sides fail to build, both emit the identical
+# `passed=0 failed=0` string and the identity assert reports GREEN on a
+# workspace that never compiled (reproduced directly by Block PS-RC's arm
+# C4). run_passset()'s stderr diagnostic (_passset_report_failure) is NOT
+# captured by the `$( )` below — stdout only — so on a real failure it still
+# reaches the console/verify log even though only the rc is asserted here.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block PS: identical test pass-set (warm vs cold) ---"
 
-_PS_COLD="$(run_passset "$_WS_BASE/Cargo.toml")"
-_PS_WARM="$(run_passset "$_WS_LANE/Cargo.toml")"
+_PS_COLD_RC=0
+_PS_COLD="$(run_passset "$_WS_BASE/Cargo.toml")" || _PS_COLD_RC=$?
+_PS_WARM_RC=0
+_PS_WARM="$(run_passset "$_WS_LANE/Cargo.toml")" || _PS_WARM_RC=$?
+
+assert "PS: cold-control pass-set run completed without a build/runner failure (#5885)" \
+    test "$_PS_COLD_RC" -eq 0
+assert "PS: warm-lane pass-set run completed without a build/runner failure (#5885)" \
+    test "$_PS_WARM_RC" -eq 0
 
 assert "PS: warm-lane test identifiers == cold control (byte-identical source)" \
     test "$_PS_COLD" = "$_PS_WARM"
