@@ -3,8 +3,10 @@
 //! consumers, mirroring the `ModifyKind::VARIANT_COUNT` precedent locked by
 //! `tests/modify_kind_public_api.rs`.
 //!
-//! This test compiles as a separate crate (integration-test context), exercising the
-//! public API surface exactly as `reify-eval`, `reify-test-support`, and other downstream
+//! This test compiles as a separate crate — it is a module of the `harness_geometry_kinds`
+//! integration-test binary (C1 layout contract; see that harness root's header for why it
+//! is consolidated rather than standalone) — exercising the public API surface exactly as
+//! `reify-eval`, `reify-test-support`, and other downstream
 //! crates do.  A unit test inside `types.rs` would pass even if a `VARIANT_COUNT` were
 //! narrowed to `pub(crate)` by accident; placing it here pins the *external* contract
 //! that `reify-eval`'s registry-completeness locks depend on.
