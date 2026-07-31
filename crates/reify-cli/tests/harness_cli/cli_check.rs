@@ -616,12 +616,17 @@ fn check_appearance_violated_exits_failure() {
 ///
 /// A bare `5mm` overload-MATCHED `flexure_compliance(joint: Length)`, so no
 /// `NoMatch` was produced at all and the misuse degraded to a warning plus a
-/// sentinel-zero compliance record.  RED until step-12 retargets the accessor
-/// to `flexure_compliance(joint: FlexureJoint)`, at which point the exact-
-/// equality overload filter (`type_compat.rs::resolve_function_overload`)
-/// rejects `Scalar[LENGTH]` and the existing compile-phase Error exit gate —
-/// unchanged by this task, see the plan's work-item-5 design decision — turns
-/// it into a nonzero exit.
+/// sentinel-zero compliance record.
+///
+/// The flip to a nonzero exit rests on THREE things, any of which failing here
+/// identifies the regression: the accessor declares
+/// `flexure_compliance(joint: FlexureJoint)`; the exact-equality overload filter
+/// (`type_compat.rs::resolve_function_overload`) therefore rejects
+/// `Scalar[LENGTH]`; and the pre-existing compile-phase Error exit gate — NOT
+/// touched by task #5476, per the plan's work-item-5 design decision, and
+/// deliberately not a per-code bolt-on (INV-SF-2) — turns that Error into the
+/// nonzero exit.  Seeing the measured baseline above instead means the first of
+/// the three regressed.
 #[test]
 fn check_flexure_compliance_non_joint_exits_failure() {
     let (status, stdout, stderr) = common::run_subcommand(
@@ -659,11 +664,15 @@ fn check_flexure_compliance_non_joint_exits_failure() {
 /// regression pin that the ratchet tightens the type WITHOUT breaking the
 /// legitimate path.
 ///
-/// NOTE on ordering: this test is transiently RED in the middle of the α
-/// slice.  Step-10 already retyped `prb_*` call sites to
-/// `StructureRef("FlexureJoint")`, but the accessor still declares
-/// `joint: Length` until step-12 — so right now the *positive* path is the one
-/// that fails to overload-match.  Both halves go green together at step-12.
+/// PAIRED WITH BT1 — the two sides must move together.  The accessor's
+/// parameter type (`flexure_compliance(joint: FlexureJoint)` in
+/// `crates/reify-compiler/stdlib/flexures.ri`) and the `prb_*` ctors' result
+/// type (`StructureRef("FlexureJoint")`, from the `is_flexure_typed_fn` arm in
+/// `expr.rs`) must stay in exact agreement, because the overload filter compares
+/// them by equality.  A failure HERE while BT1 still passes means one side was
+/// changed without the other: the ratchet is rejecting real flexure joints, not
+/// just bare literals.  Widening BT1 without re-checking this test is exactly
+/// the mistake this pin exists to catch.
 #[test]
 fn check_flexure_compliance_prb_joint_exits_success() {
     let (status, stdout, stderr) = common::run_subcommand(
