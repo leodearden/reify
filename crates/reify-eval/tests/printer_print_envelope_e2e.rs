@@ -402,13 +402,16 @@ fn printer_print_envelope_eval_e2e() {
     // while the arg is still bare AND make (b) pass after a stray migration —
     // blind to exactly what this section exists to catch.
     let tots_shaper_cell = ValueCellId::new("PrinterPrintEnvelope", "tots_shaper");
-    let tots_shaper_val = eval_result.values.get(&tots_shaper_cell).unwrap_or_else(|| {
-        panic!(
-            "PrinterPrintEnvelope.tots_shaper cell missing from eval result \
-             (all diagnostics: {:#?})",
-            eval_result.diagnostics
-        )
-    });
+    let tots_shaper_val = eval_result
+        .values
+        .get(&tots_shaper_cell)
+        .unwrap_or_else(|| {
+            panic!(
+                "PrinterPrintEnvelope.tots_shaper cell missing from eval result \
+                 (all diagnostics: {:#?})",
+                eval_result.diagnostics
+            )
+        });
     let Value::StructureInstance(tots_shaper) = tots_shaper_val else {
         panic!(
             "PrinterPrintEnvelope.tots_shaper must be a TOTSShaper StructureInstance; \
@@ -472,7 +475,10 @@ fn printer_print_envelope_eval_e2e() {
     //
     // This is a deliberate tripwire, not a bug. Both assertions are GREEN today
     // and must STAY green through task 5758.
-    for (field_name, expected) in [("velocity_limit", 300.0_f64), ("acceleration_limit", 5000.0)] {
+    for (field_name, expected) in [
+        ("velocity_limit", 300.0_f64),
+        ("acceleration_limit", 5000.0),
+    ] {
         match tots_shaper.fields.get(&field_name.to_string()) {
             Some(Value::Real(r)) => assert_eq!(
                 *r, expected,

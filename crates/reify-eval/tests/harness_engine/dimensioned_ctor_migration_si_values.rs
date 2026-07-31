@@ -377,7 +377,11 @@ fn tots_optimal_ptp_example_trajectory_limits_are_dimensioned() {
         "TotsOptimalPtp.optimal should hold exactly 2 waypoints, got {}",
         waypoints.len()
     );
-    let wp1 = as_structure(&waypoints[1], "Waypoint", "TotsOptimalPtp.optimal.waypoints[1]");
+    let wp1 = as_structure(
+        &waypoints[1],
+        "Waypoint",
+        "TotsOptimalPtp.optimal.waypoints[1]",
+    );
     let t1 = si_of(
         field(wp1, "t"),
         DimensionVector::TIME,
