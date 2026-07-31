@@ -90,4 +90,35 @@ describe('feaModeStoreRegistry', () => {
       expect(live['pane-2']).toBe(created);
     });
   });
+
+  it('(f) positional ids intentionally carry FEA state across documents — get() never resets an existing entry', () => {
+    withRoot(() => {
+      const registry = createFeaModeStoreRegistry();
+
+      // Document A: pane-2 auto-enables and the user picks a channel.
+      const docA = registry.get('pane-2');
+      docA.tryAutoEnable('vonMises');
+      docA.setChannel('displacement_magnitude');
+      expect(docA.state.enabled).toBe(true);
+      expect(docA.state.autoEnabledOnce).toBe(true);
+
+      // Document B loads. Keys are POSITIONAL, so the same id comes back for
+      // what is now a different document's pane-2 — and get() hands back the
+      // SAME store rather than minting a fresh one.
+      const docB = registry.get('pane-2');
+
+      expect(docB).toBe(docA);
+      expect(docB.state.channel).toBe('displacement_magnitude');
+      // The load-bearing half: autoEnabledOnce rides along, so Viewport's
+      // one-shot tryAutoEnable will NOT re-fire to pick a default channel for
+      // document B. This is the documented trade — retention is how
+      // design-main behaved before AND after #5670, and #5670 makes pane-N
+      // match design-main rather than changing design-main. A future
+      // per-document reset must update this test deliberately, which is the
+      // point of pinning it: the behaviour cannot drift silently.
+      expect(docB.state.autoEnabledOnce).toBe(true);
+      expect(docB.tryAutoEnable('vonMises')).toBe(false);
+      expect(docB.state.channel).toBe('displacement_magnitude');
+    });
+  });
 });

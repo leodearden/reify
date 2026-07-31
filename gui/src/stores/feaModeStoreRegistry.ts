@@ -63,6 +63,26 @@ export interface FeaModeStoreRegistry {
  * only through a rendered `<select>` that exists only while its pane is
  * mounted. The bound is the number of distinct viewportIds a session produces
  * (`design-main` plus `pane-N`), so there is no unbounded growth to manage.
+ *
+ * **Non-eviction spans documents, not just layout flips.** Keys are POSITIONAL
+ * (`pane-N`), and opening a different file reuses them, so pane-2's store
+ * carries the previous document's channel, palette, range and warp into the
+ * next one — and, because `autoEnabledOnce` rides along, Viewport's one-shot
+ * `tryAutoEnable` will not re-fire to pick a default channel for the new
+ * document. That is chosen, not overlooked: it is exactly how `design-main`
+ * behaved before AND after #5670 (both prior singletons outlived file-open
+ * too), and #5670's remit is to make every pane behave like design-main rather
+ * than to change what design-main does. Retention is also the useful default
+ * for the common case — reopening or reloading a file mid-analysis keeps the
+ * channel the user was looking at.
+ *
+ * The cost is real where documents differ: a retained channel need not exist
+ * among the new document's scalar channels. The toolbar renders only channels
+ * the mesh actually carries, so a stale selection shows as FEA mode enabled
+ * with no matching channel rather than as wrong data. Revisit together with a
+ * per-document reset (`FeaModeStore` has no `reset()` today) if that proves
+ * confusing in practice; `feaModeStoreRegistry.test.ts` case (f) pins the
+ * current contract so the choice cannot drift silently.
  */
 export function createFeaModeStoreRegistry(): FeaModeStoreRegistry {
   const stores: Record<string, FeaModeStore> = {};
