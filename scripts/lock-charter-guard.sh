@@ -20,7 +20,7 @@
 #                            one extension per line (shared α/γ test vector, PRD §11 Q1).
 #   --list-extensionless   — prints the canonical extensionless-basename allowlist
 #                            sorted-unique in BYTE order, one name per line
-#                            (shared α/γ test vector, PRD §11 Q2).
+#                            (shared α/γ test vector, PRD §11 Q1).
 #
 # Exit-code contract:
 #   0 — ACCEPT (file-level declaration or empty list)
@@ -99,7 +99,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _EXTS="c cc cjs conf cpp css cts cxx diff envrc example example-systemd-config gcode gitattributes gitignore gitkeep gitmodules golden grammar h hh hpp html icns ico jq js json jsonc jsonl jsx lock log manifest md mjs mts npmrc png py python-version ri rs scss service sh step stl svg template timer toml ts tsx txt typed yaml yml"
 
 # ---------------------------------------------------------------------------
-# Canonical extensionless-basename allowlist (mirror of dark_factory:3248).
+# Canonical extensionless-basename allowlist (C-P1 clause (ii) — PRD §11 Q2;
+# mirror of dark_factory:3248).
 # The second half of the file-vs-directory evidence: _EXTS answers "does the
 # post-dot token name a file?", this answers "is the whole dotless segment a
 # known filename?".  Used by _is_file_path() and --list-extensionless.
