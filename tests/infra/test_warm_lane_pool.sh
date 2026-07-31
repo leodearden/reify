@@ -878,14 +878,31 @@ _b13_reseed_vs_resetinplace() {
 }
 
 # _passset_normalize_nextest — pure stdin→stdout normalizer for `cargo nextest run`
-# output.  Selects PASS/FAIL/SKIP lines, strips the volatile bracketed duration
-# column (e.g. `[   0.012s]`), collapses internal whitespace, trims, and sorts →
-# produces a timing-free, byte-stable pass-set string suitable for comparison.
+# output.  Selects PASS/FAIL/SKIP lines, strips BOTH volatile columns nextest
+# emits per result line — the bracketed duration (e.g. `[   0.012s]`) and the
+# `(N/M)` progress counter — collapses internal whitespace, trims, and sorts →
+# produces a byte-stable pass-set string suitable for comparison.
+#
+# The `(N/M)` counter must be stripped too, not just the timing (#5878): it
+# encodes nondeterministic test-COMPLETION order (nextest runs test binaries
+# in parallel), so leaving it in place makes the trailing `sort` order by
+# completion rather than by test identifier — serializing an identical test
+# set into two different byte strings depending on which test happened to
+# finish first.
+#
+# nextest RIGHT-ALIGNS the counter's numerator to the width of the run
+# total, so `(1/2)`, `( 1/12)`, and `(  1/105)` are all the same token with
+# 0/1/2 leading spaces of padding — the strip regex must tolerate that
+# padding. Without it, the strip silently no-ops on padded lines while
+# still succeeding on unpadded ones in the very same run, yielding a
+# partially-normalized, interleaved stream that is harder to diagnose than
+# a clean failure (#5878).
 #
 # Used by run_passset's nextest branch and the PS-NORM always-run regression block.
 _passset_normalize_nextest() {
     grep -E '^\s*(PASS|FAIL|SKIP)' \
     | sed -E 's/\[[^]]*\]//g' \
+    | sed -E 's/\([[:space:]]*[0-9]+\/[0-9]+\)//' \
     | sed -E 's/[[:space:]]+/ /g' \
     | sed -E 's/^ //;s/ $//' \
     | sort
@@ -907,9 +924,10 @@ _passset_normalize_cargo_test() {
 #
 # Normalization:
 #   - nextest branch: PASS/FAIL/SKIP lines → _passset_normalize_nextest (strips
-#     the volatile `[...]` timing column → byte-stable across independent builds).
-#   - cargo test branch: `test ... ok/FAILED/ignored` lines (already timing-free)
-#     → grep + sort only (no timing column to strip).
+#     the volatile `[...]` timing column AND the `(N/M)` progress counter →
+#     byte-stable across independent builds and parallel-run completion order).
+#   - cargo test branch: `test ... ok/FAILED/ignored` lines (already timing-free
+#     and counter-free) → grep + sort only (nothing volatile to strip).
 # The output format is designed to be byte-comparable between two runs on
 # semantically identical workspaces.
 run_passset() {
@@ -918,7 +936,7 @@ run_passset() {
 
     if command -v cargo-nextest >/dev/null 2>&1 || \
        cargo nextest --version >/dev/null 2>&1; then
-        # nextest: normalize via _passset_normalize_nextest (strips timing column)
+        # nextest: normalize via _passset_normalize_nextest (strips timing column + progress counter)
         test_output="$(
             CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
                 cargo nextest run \
@@ -1603,29 +1621,50 @@ assert "BH3: flock -n -x probe SUCCEEDS after kill+wait teardown (lock released)
     test "$_BH3_PROBE_RC" -eq 0
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Block PS-NORM — Pass-set normalizer timing-strip regression (ALWAYS-RUN)
+# Block PS-NORM — Pass-set normalizer volatile-column regression (ALWAYS-RUN)
 #
 # Exercises run_passset()'s nextest-branch normalization WITHOUT invoking cargo.
-# Feeds two canned `cargo nextest run` outputs that are byte-identical EXCEPT
-# for the volatile per-test duration column (the `[   0.0NNs]` token) through
+# Covers BOTH volatile columns real nextest output carries per result line:
+# the bracketed per-test duration (`[   0.0NNs]`) and the `(N/M)` progress
+# counter.
+#
+# Arm 1 (timing): feeds two canned `cargo nextest run` outputs that are
+# byte-identical EXCEPT for the duration column through
 # _passset_normalize_nextest and asserts:
 #   (a) the two normalized outputs are BYTE-IDENTICAL;
 #   (b) their derived PASS/FAIL counts match.
-#
 # Premise (exactness): the inputs differ ONLY inside the bracketed `[...]`
 # token; the normalizer strips every `[...]` token so post-normalization byte
 # streams are identical by construction.
 #
-# Without timing stripping the `[   0.0NNs]` column is retained → strings
-# differ → assertion fails → RED.  _passset_normalize_nextest is defined in
-# impl-passset-timing-strip; until then, calling it under set -euo pipefail
-# aborts the script → RED.
+# Arm 2 (progress counter, #5878): feeds two canned outputs shaped like REAL
+# nextest 0.9.136 output — every line carries BOTH the `[...]` duration AND
+# the `(N/M)` counter, the counter positioned after the bracket, matching a
+# probe of actual nextest output — that differ in the counter-TO-TEST
+# binding (i.e. which test won the completion race), mirroring the genuine
+# nondeterminism of nextest's parallel test execution, and asserts the same
+# (a)/(b) pair.
+# Premise (exactness): the inputs differ ONLY inside the `[...]` and `(N/M)`
+# tokens, both of which the normalizer strips; post-normalization byte
+# streams contain the same token multiset and `sort` is a total order on
+# test identifiers, so byte-identity is a theorem, not a tolerance.
+#
+# Arm 1 without timing-column stripping: the `[   0.0NNs]` column survives →
+# strings differ → assertion (a) fails → RED. (Historically, before
+# _passset_normalize_nextest existed at all, this block instead aborted the
+# whole script under set -euo pipefail with "command not found".)
+#
+# Arm 2 without progress-counter stripping: the `(N/M)` counter survives, its
+# binding to a test varies by completion order, and the trailing `sort` keys
+# off it → strings differ → assertion (a) fails → RED (#5878). The function
+# already exists at this point, so this arm's RED is an assertion failure,
+# not a script abort.
 #
 # Also asserts cargo-test fallback lines (already timing-free) are sort-stable
 # across different emission orderings (regression guard).
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
-echo "--- Block PS-NORM: pass-set normalizer timing-strip regression ---"
+echo "--- Block PS-NORM: pass-set normalizer volatile-column regression ---"
 
 # ── Canned nextest outputs — differ ONLY in the [   0.0NNs] timing column ─────
 _PSNORM_COLD_INPUT="$(cat << 'PSNORM_EOF'
@@ -1652,6 +1691,99 @@ _PSNORM_COLD_PASS="$(printf '%s\n' "$_PSNORM_COLD_NORM" | grep -c 'PASS' || echo
 _PSNORM_WARM_PASS="$(printf '%s\n' "$_PSNORM_WARM_NORM" | grep -c 'PASS' || echo 0)"
 assert "PS-NORM: derived PASS count matches between cold and warm normalized outputs" \
     test "$_PSNORM_COLD_PASS" -eq "$_PSNORM_WARM_PASS"
+
+# ── Canned nextest outputs (#5878) — nextest right-aligns the `(N/M)` counter's
+# numerator to the width of the run total, so the counter has THREE observed
+# shapes: unpadded at ≤9 total (`(1/2)`), one-space-padded at 10-99 total
+# (`( 1/12)`), and two-space-padded at 100+ total (`(  1/105)`). This arm pins
+# the UNPADDED width — every line carries both the `[...]` duration AND the
+# unpadded `(N/M)` counter (probed against real nextest 0.9.136). Differ in
+# the counter-TO-TEST binding (which test won the completion race), mirroring
+# nextest's genuine parallel-run nondeterminism — not just in counter values.
+# Arm 3 (below) pins the padded widths.
+_PSNORM_CTR_COLD_INPUT="$(cat << 'PSNORM_EOF'
+  PASS [   0.017s] (1/2) warm_leaf tests::leaf_smoke
+  PASS [   0.024s] (2/2) warm_dep tests::dep_smoke
+PSNORM_EOF
+)"
+_PSNORM_CTR_WARM_INPUT="$(cat << 'PSNORM_EOF'
+  PASS [   0.031s] (1/2) warm_dep tests::dep_smoke
+  PASS [   0.052s] (2/2) warm_leaf tests::leaf_smoke
+PSNORM_EOF
+)"
+
+# Normalize through the same helper. Discriminating power: a normalizer
+# that leaves the `(N/M)` counter unstripped keeps a token that encodes
+# nondeterministic test-completion order, so the trailing `sort` keys off
+# it — swapping which test claims which counter slot then yields two
+# different byte streams → assertion (a) fails (#5878). The shipped
+# normalizer strips the counter → GREEN.
+_PSNORM_CTR_COLD_NORM="$(printf '%s\n' "$_PSNORM_CTR_COLD_INPUT" | _passset_normalize_nextest)"
+_PSNORM_CTR_WARM_NORM="$(printf '%s\n' "$_PSNORM_CTR_WARM_INPUT" | _passset_normalize_nextest)"
+
+assert "PS-NORM: nextest normalized output is byte-identical across progress-counter assignment (#5878)" \
+    test "$_PSNORM_CTR_COLD_NORM" = "$_PSNORM_CTR_WARM_NORM"
+
+# ── Derived PASS count must be exactly 2 (the preceding byte-identity
+# assertion already proves cold == warm, so cross-comparing the two counts
+# would be tautological; asserting the absolute value instead genuinely
+# discriminates a normalizer that drops or duplicates a result line) ──────
+_PSNORM_CTR_COLD_PASS="$(printf '%s\n' "$_PSNORM_CTR_COLD_NORM" | grep -c 'PASS' || echo 0)"
+_PSNORM_CTR_WARM_PASS="$(printf '%s\n' "$_PSNORM_CTR_WARM_NORM" | grep -c 'PASS' || echo 0)"
+assert "PS-NORM: derived PASS count for progress-counter arm (cold) is exactly 2 (#5878)" \
+    test "$_PSNORM_CTR_COLD_PASS" -eq 2
+assert "PS-NORM: derived PASS count for progress-counter arm (warm) is exactly 2 (#5878)" \
+    test "$_PSNORM_CTR_WARM_PASS" -eq 2
+
+# ── Canned nextest outputs (#5878) — PADDED progress-counter shapes. nextest
+# right-aligns the `(N/M)` numerator to the width of the run total: a 12-test
+# run pads single-digit numerators with ONE leading space (`( 1/12)`) while
+# double-digit numerators need no padding (`(12/12)`); a 105-test run pads
+# single-digit numerators with TWO leading spaces (`(  1/105)`) while
+# triple-digit numerators need no padding (`(105/105)`) — so a single run's
+# output MIXES padded and unpadded counters. This arm mixes BOTH the
+# one-space (10-99 total) and two-space (100+ total) widths on one fixture
+# pair, differing in the counter-TO-TEST binding as arm 2 does — so all
+# three documented counter widths (arm 2's unpadded plus this arm's two
+# padded widths) are pinned by fixtures.
+_PSNORM_PAD_COLD_INPUT="$(cat << 'PSNORM_EOF'
+  PASS [   0.009s] ( 1/12) warm_leaf tests::leaf_smoke
+  PASS [   0.031s] (12/12) warm_dep tests::dep_smoke
+  PASS [   0.011s] (  1/105) nxprobe2 tests::t001
+  PASS [   0.044s] (105/105) nxprobe2 tests::t105
+PSNORM_EOF
+)"
+_PSNORM_PAD_WARM_INPUT="$(cat << 'PSNORM_EOF'
+  PASS [   0.014s] ( 1/12) warm_dep tests::dep_smoke
+  PASS [   0.052s] (12/12) warm_leaf tests::leaf_smoke
+  PASS [   0.017s] (  1/105) nxprobe2 tests::t105
+  PASS [   0.061s] (105/105) nxprobe2 tests::t001
+PSNORM_EOF
+)"
+
+# Normalize through the same helper. Discriminating power: a counter regex
+# that anchors `(` directly against a digit leaves padded tokens like
+# `( 1/12)` and `(  1/105)` intact while stripping unpadded tokens like
+# `(12/12)` and `(105/105)` on the SAME fixture, producing a
+# partially-normalized, interleaved stream whose sort order flips →
+# assertion (a) fails (#5878). The shipped `[[:space:]]*`-tolerant regex
+# strips every width uniformly → GREEN.
+_PSNORM_PAD_COLD_NORM="$(printf '%s\n' "$_PSNORM_PAD_COLD_INPUT" | _passset_normalize_nextest)"
+_PSNORM_PAD_WARM_NORM="$(printf '%s\n' "$_PSNORM_PAD_WARM_INPUT" | _passset_normalize_nextest)"
+
+assert "PS-NORM: nextest normalized output is byte-identical across PADDED progress-counter assignment (#5878)" \
+    test "$_PSNORM_PAD_COLD_NORM" = "$_PSNORM_PAD_WARM_NORM"
+
+# ── Derived PASS count must be exactly 4 (the preceding byte-identity
+# assertion already proves cold == warm, so cross-comparing the two counts
+# would be tautological; asserting the absolute value instead genuinely
+# discriminates a normalizer that drops or duplicates a result line) ──────
+_PSNORM_PAD_COLD_PASS="$(printf '%s\n' "$_PSNORM_PAD_COLD_NORM" | grep -c 'PASS' || echo 0)"
+_PSNORM_PAD_WARM_PASS="$(printf '%s\n' "$_PSNORM_PAD_WARM_NORM" | grep -c 'PASS' || echo 0)"
+assert "PS-NORM: derived PASS count for padded progress-counter arm (cold) is exactly 4 (#5878)" \
+    test "$_PSNORM_PAD_COLD_PASS" -eq 4
+assert "PS-NORM: derived PASS count for padded progress-counter arm (warm) is exactly 4 (#5878)" \
+    test "$_PSNORM_PAD_WARM_PASS" -eq 4
 
 # ── Cargo-test fallback regression guard ─────────────────────────────────────
 # Cargo-test `... ok/FAILED/ignored` lines carry no timing column; they are
