@@ -101,19 +101,19 @@ export const SHARED_ESM_MODULES = [
 
 /**
  * Split every `.mjs` in `dir` into the SHARED library modules and the
- * `smoke_*` drivers, in one `readdirSync` pass — the single rule
+ * `smoke_*` drivers, in one `readdirSync` pass.
+ *
+ * THE ONE HOME of that rule, and the only place it is explained (task 5882):
  * {@link discoverSharedEsmModules} below and `./smokeDriverConventions.ts`'s
- * `discoverSmokeDrivers` are both thin wrappers over (task 5882; the two were
- * previously defined independently, one negated character apart, in two
- * files).
+ * `discoverSmokeDrivers` are both thin wrappers over this, where they used to
+ * be two independent filters one negated character apart in two files.
  *
  * Because both halves come from the SAME pass over the SAME list, split on a
  * mutually-exclusive branch, `drivers` and `shared` are disjoint and cover
- * every `.mjs` in `dir` BY CONSTRUCTION. That used to be an executable
- * cross-check running two independently-filtered discoveries over one
- * fixture and comparing the results; now it needs no test of its own — only
- * this function's own split rule needs pinning, in
- * `./sharedModuleLoad.test.ts`.
+ * every `.mjs` in `dir` BY CONSTRUCTION — there is no state in which a
+ * cross-check test of that claim could fail. So only this function's own split
+ * rule needs pinning, in `./sharedModuleLoad.test.ts`; each wrapper pins just
+ * its own delegation, in its own suite.
  *
  * The subtlety worth pinning: the opt-out is the prefix `smoke_` WITH the
  * underscore, so `smokeDriverGuards.mjs` is a shared module and

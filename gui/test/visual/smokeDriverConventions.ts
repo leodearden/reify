@@ -129,17 +129,11 @@ export const SMOKE_DRIVERS = [
 
 /**
  * Every `.mjs` in `dir` that IS a `smoke_*` driver — the driver half of
- * {@link partitionVisualMjs}'s split in `./sharedModuleLoad.ts`, which also
- * backs `discoverSharedEsmModules` there (task 5882; the two filters used to
- * be defined independently, one negated character apart, in two files).
- *
- * Because both halves come from the same partition pass, `discoverSmokeDrivers`
- * and `discoverSharedEsmModules` are disjoint and cover every `.mjs` in `dir`
- * BY CONSTRUCTION — pinned once, on `partitionVisualMjs` itself, in
- * `./sharedModuleLoad.test.ts`.
+ * `./sharedModuleLoad.ts`'s {@link partitionVisualMjs} split, whose docblock is
+ * the one home of the rule and the reasoning behind it.
  *
  * Used ONLY by the completeness guard, never as the `it.each` source; see
- * {@link SMOKE_DRIVERS}. The `dir` parameter exists so the filter rule stays
+ * {@link SMOKE_DRIVERS}. The `dir` parameter exists so this delegation stays
  * pinnable against a fixture directory in isolation.
  */
 export function discoverSmokeDrivers(dir: string = VISUAL_DIR): string[] {

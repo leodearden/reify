@@ -17,6 +17,10 @@
  * Violation assertions are on `code`, never on `message`: the prose is meant to
  * stay free to reword or enrich without churning the pins.
  */
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+
 import { describe, it, expect } from "vitest";
 
 import { readSharedModuleSource } from "./sharedModuleLoad.js";
@@ -164,12 +168,29 @@ describe("stripComments — the mitigation the predicate is built on", () => {
   });
 });
 
-// discoverSmokeDrivers's filter rule — including the disjoint/exhaustive claim
-// against discoverSharedEsmModules — is pinned once, on the partitionVisualMjs
-// helper both functions now derive from, in ./sharedModuleLoad.test.ts (task
-// 5882). This file used to carry two near-clone fixture tests of its own; see
-// that file's "partitionVisualMjs — the split rule behind both discovery
-// filters" describe block.
+describe("discoverSmokeDrivers — the delegation to the shared split rule", () => {
+  it("returns the driver half of the partition", () => {
+    // The split RULE lives in ./sharedModuleLoad.ts's partitionVisualMjs and is
+    // pinned once, there. This pins only the delegation: were it to regress to
+    // the `shared` half, the sole failure would be the completeness guard below
+    // reporting a SMOKE_DRIVERS table mismatch that never names the filter as
+    // the thing that broke.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reify-smoke-drivers-"));
+    try {
+      for (const name of [
+        "smoke_find_uses.mjs", // a driver
+        "smokeDriverGuards.mjs", // `smoke` but NOT `smoke_` — shared, not a driver
+        "rpcEnvelope.mjs", // a shared module
+        "x.ts", // not a `.mjs` at all
+      ]) {
+        fs.writeFileSync(path.join(dir, name), "");
+      }
+      expect(discoverSmokeDrivers(dir)).toEqual(["smoke_find_uses.mjs"]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("the convention that keeps the open_file retry policy in one home", () => {
   // THE POINT OF THIS FILE. Each driver re-implementing the 8×3000ms loop was

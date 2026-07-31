@@ -87,15 +87,11 @@ describe("findBareNodeLoadViolations — the pure predicate behind the constrain
 
 describe("partitionVisualMjs — the split rule behind both discovery filters", () => {
   it("splits shared `.mjs` modules from `smoke_*` drivers, dropping non-`.mjs` files", () => {
-    // THE single pinned copy of the split rule (task 5882). Previously three
-    // fixture tests: one here for discoverSharedEsmModules's filter, a
-    // near-clone in ./smokeDriverConventions.test.ts for discoverSmokeDrivers's
-    // filter (one negated character apart), and a third there asserting the two
-    // filters' results were disjoint and exhaustive. Now there is one filter,
-    // defined once as partitionVisualMjs, so this one fixture pins the split and
-    // the disjoint/exhaustive claim holds BY CONSTRUCTION — discoverSharedEsmModules
-    // below and ./smokeDriverConventions.ts's discoverSmokeDrivers are both thin
-    // wrappers over this same single-pass partition.
+    // THE single pinned copy of the split rule. Both discoverSharedEsmModules
+    // and ./smokeDriverConventions.ts's discoverSmokeDrivers are thin wrappers
+    // over this one single-pass partition, so their disjointness holds BY
+    // CONSTRUCTION and needs no cross-check test; each suite pins only its own
+    // delegation.
     //
     // Driven off a fixture directory so the RULE is pinned in isolation. The
     // opt-out prefix is `smoke_` WITH the underscore, so `smokeDriverGuards.mjs`
