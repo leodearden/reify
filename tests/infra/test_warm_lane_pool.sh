@@ -1148,6 +1148,34 @@ _passset_report_failure() {
     return 0
 }
 
+# _passset_finish(runner, rc, nresults, manifest) — shared tail of BOTH
+# run_passset() branches (amendment, #5885): classify the run via
+# _passset_classify_rc and, for any class other than ok/test-failures, emit
+# the loud diagnostic via _passset_report_failure. Returns 0 for ok/
+# test-failures (an honest pass or an honest test failure — the caller's
+# already-printed pass-set is the right thing to compare) and 3 otherwise.
+# Before this helper existed the nextest and cargo-test branches carried a
+# byte-for-byte copy of this classify→report→return dispatch; extracting it
+# keeps the two branches from drifting out of sync by hand.
+#
+# Caller contract: the pass-set MUST already be printf'd to stdout BEFORE
+# calling this — _passset_finish itself writes nothing to stdout (only
+# _passset_report_failure's stderr diagnostic, and only on the fatal path),
+# so that ordering is what keeps a caller's captured `$( )` pass-set string
+# byte-stable even when the run turns out to be unusable.
+_passset_finish() {
+    local runner="$1" rc="$2" nresults="$3" manifest="$4"
+    local class
+    class="$(_passset_classify_rc "$runner" "$rc" "$nresults")"
+    case "$class" in
+        ok|test-failures) return 0 ;;
+        *)
+            _passset_report_failure "$class" "$manifest" "$rc" "$runner"
+            return 3
+            ;;
+    esac
+}
+
 # run_passset(manifest) — run the workspace tests (cargo nextest run if available,
 # else cargo test) and produce a normalized, deterministic string capturing the
 # sorted test identifiers plus the pass/fail counts.  Output is on stdout.
@@ -1163,7 +1191,8 @@ _passset_report_failure() {
 # semantically identical workspaces.
 #
 # rc contract (#5885): cargo's exit status is classified via
-# _passset_classify_rc and is NOT swallowed. Returns 0 for the ok/
+# _passset_classify_rc (dispatched through the shared _passset_finish tail —
+# see its docblock above) and is NOT swallowed. Returns 0 for the ok/
 # test-failures classes (an honest pass or an honest test failure — the
 # caller's pass-set comparison is the right way to observe those). Returns 3
 # for build-failure/no-tests-run/runner-error — a run that did NOT produce a
@@ -1176,7 +1205,7 @@ _passset_report_failure() {
 run_passset() {
     local manifest="$1"
     local test_output passed=0 failed=0 ignored=0
-    local rc=0 nresults=0 class
+    local rc=0 nresults=0
 
     if command -v cargo-nextest >/dev/null 2>&1 || \
        cargo nextest --version >/dev/null 2>&1; then
@@ -1199,14 +1228,7 @@ run_passset() {
         failed="$(printf '%s\n' "$test_output" | grep -c '^FAIL' || true)"
         nresults="$(printf '%s\n' "$test_output" | grep -c '.' || true)"
         printf 'passed=%s failed=%s\n%s\n' "$passed" "$failed" "$test_output"
-        class="$(_passset_classify_rc nextest "$rc" "$nresults")"
-        case "$class" in
-            ok|test-failures) ;;
-            *)
-                _passset_report_failure "$class" "$manifest" "$rc" nextest
-                return 3
-                ;;
-        esac
+        _passset_finish nextest "$rc" "$nresults" "$manifest" || return 3
     else
         # cargo test: capture raw output + rc FIRST, normalize SECOND — same
         # split as the nextest branch above, same rationale (avoids
@@ -1234,19 +1256,16 @@ run_passset() {
         passed="$(printf '%s\n' "$test_lines" | grep -c '\.\.\. ok$' || true)"
         failed="$(printf '%s\n' "$test_lines" | grep -c '\.\.\. FAILED$' || true)"
         ignored="$(printf '%s\n' "$test_lines" | grep -c '\.\.\. ignored$' || true)"
-        nresults="$(printf '%s\n' "$test_lines" | grep -c '.' || true)"
+        # _passset_normalize_cargo_test's regex matches ONLY ok/FAILED/ignored
+        # lines (no other category passes through), so the total result-line
+        # count is exactly their sum — no need for a 4th grep pass over
+        # $test_lines to recompute what these three greps already counted.
+        nresults=$(( passed + failed + ignored ))
         printf 'passed=%s failed=%s ignored=%s\n%s\n' \
             "$passed" "$failed" "$ignored" "$test_lines"
         # libtest exits 101 for BOTH a compile failure and an honest test
         # failure — nresults (not rc alone) is what tells them apart.
-        class="$(_passset_classify_rc cargo-test "$rc" "$nresults")"
-        case "$class" in
-            ok|test-failures) ;;
-            *)
-                _passset_report_failure "$class" "$manifest" "$rc" cargo-test
-                return 3
-                ;;
-        esac
+        _passset_finish cargo-test "$rc" "$nresults" "$manifest" || return 3
     fi
 }
 
