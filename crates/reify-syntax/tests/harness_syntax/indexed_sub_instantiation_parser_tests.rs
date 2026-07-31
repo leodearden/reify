@@ -16,10 +16,14 @@
 //! test asserts the absence of one specific message rather than an empty
 //! diagnostic list.
 //!
-//! # TDD status
+//! # α rejects what it cannot yet elaborate
 //!
-//! All four tests are **RED** before step-4 — `SubDecl::index_binder` /
-//! `index_domain` do not exist yet, so the RED signal is a compile failure.
+//! Storing the clause syntactically is not the same as supporting it. Until β
+//! (#5482) scopes the binder and derives the count cell, an indexed sub would
+//! elaborate to exactly ONE instance with the binder unresolved — so α also
+//! emits an interim rejection over the parse-error channel. See
+//! [`indexed_sub_emits_interim_unelaborated_diagnostic`] for the contract and
+//! [`non_indexed_subs_emit_no_interim_diagnostic`] for the over-firing guard.
 
 use reify_ast::ast::ExprKind;
 use reify_ast::decl::{Declaration, MemberDecl, SubDecl};
@@ -64,6 +68,20 @@ fn all_subs(source: &str) -> Vec<SubDecl> {
         .collect()
 }
 
+/// The diagnostics whose message carries the interim `#5482` rejection cite.
+///
+/// Filtering on the task cite rather than on the full message keeps the
+/// assertions robust to wording edits while staying exact about *which*
+/// diagnostic is meant: `#5482` is the canonical, greppable marker β deletes.
+fn interim_diagnostics(source: &str) -> Vec<reify_ast::decl::ParseError> {
+    reify_syntax::parse(source, ModulePath::single("test"))
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("#5482"))
+        .cloned()
+        .collect()
+}
+
 /// Locate the first `MemberDecl::Sub` in a member slice.
 fn first_sub(members: &[MemberDecl]) -> SubDecl {
     members
@@ -89,6 +107,16 @@ fn first_sub(members: &[MemberDecl]) -> SubDecl {
 /// scope the binder, and does not create the count cell, so remaining semantic
 /// diagnostics are β's to clear. Asserting an empty list would make this a β
 /// capability check that α structurally cannot turn green.
+///
+/// # The fixture is still rejected — by a *named* diagnostic now
+///
+/// Clearing `invalid sub` does not make this source compile, and it must not.
+/// On the PRD target surface the ctor arg is `Pulley(od: 30mm + i * 2mm)`: the
+/// binder `i` is **unscoped** at α, so without a rejection that `i` would
+/// resolve against nothing while the declaration still elaborated to one
+/// instance. So α trades a *generic* parse error for a *specific, actionable*
+/// one — the interim `#5482` rejection asserted below, which β deletes when it
+/// scopes the binder and derives the count cell.
 #[test]
 fn surface_fixture_no_longer_emits_invalid_sub_parse_error() {
     let parsed = reify_syntax::parse(SURFACE_FIXTURE, ModulePath::single("test"));
@@ -104,6 +132,112 @@ fn surface_fixture_no_longer_emits_invalid_sub_parse_error() {
          (all diagnostics: {:?})",
         parsed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
+
+    // …but it IS still rejected: the fixture declares exactly one indexed sub,
+    // so exactly one interim rejection must fire on it.
+    let interim = interim_diagnostics(SURFACE_FIXTURE);
+    assert_eq!(
+        interim.len(),
+        1,
+        "the committed PRD surface fixture declares exactly one indexed sub, so \
+         exactly one interim `#5482` rejection must fire on it; got {:?}\n\
+         (all diagnostics: {:?})",
+        interim.iter().map(|e| &e.message).collect::<Vec<_>>(),
+        parsed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+/// α closes the silent-miscompile window: an indexed sub is REJECTED, loudly.
+///
+/// The clause parses and lowers (that is α's contract, and β builds on the
+/// populated `SubDecl`), but **no compiler pass reads it yet** — so left
+/// unguarded the source would elaborate to exactly ONE instance instead of one
+/// per index, silently. The rejection is emitted over the parse-error channel,
+/// which every consumer already hard-aborts on (`reify-cli/src/main.rs`,
+/// `mcp_context.rs`, and the `parse_or_panic` family in reify-test-support).
+///
+/// The message must carry the `#5482` cite so β's deletion of the line is
+/// greppable and the cite is canonical per CLAUDE.md's TODO-citation
+/// convention; the span must underline the indexer clause interior
+/// `i in 0..4` rather than the whole `sub`, so the diagnostic points at the
+/// construct the user must remove. Offsets are located via `find` rather than
+/// hand-computed constants, mirroring `indexed_sub_lowers_binder_and_domain`.
+#[test]
+fn indexed_sub_emits_interim_unelaborated_diagnostic() {
+    let interim = interim_diagnostics(INDEXED_SUB_SOURCE);
+    assert_eq!(
+        interim.len(),
+        1,
+        "an indexed sub must emit exactly one interim `#5482` rejection; got {:?}",
+        interim.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+    let diag = &interim[0];
+
+    assert!(
+        diag.message.contains("idlers"),
+        "the rejection must name the offending sub so it is locatable in a \
+         multi-sub structure; got {:?}",
+        diag.message
+    );
+    assert!(
+        diag.message.contains("idlers[i in"),
+        "the rejection must echo the binder as written, so the user can see \
+         which clause to remove; got {:?}",
+        diag.message
+    );
+    assert!(
+        !diag.message.contains("invalid sub"),
+        "the rejection must NOT reuse the `check_and_lower!` `invalid sub` \
+         wording — that string is the α headline signal asserted absent by \
+         `surface_fixture_no_longer_emits_invalid_sub_parse_error`; got {:?}",
+        diag.message
+    );
+
+    let binder_off = INDEXED_SUB_SOURCE
+        .find("i in")
+        .expect("test source must contain the binder");
+    let domain_end = INDEXED_SUB_SOURCE
+        .find("0..4")
+        .expect("test source must contain the domain")
+        + "0..4".len();
+    assert_eq!(
+        diag.span.start, binder_off as u32,
+        "the rejection must start at the binder, not at the `sub` keyword"
+    );
+    assert_eq!(
+        diag.span.end, domain_end as u32,
+        "the rejection must end at the domain, so it underlines exactly the \
+         indexer clause interior `i in 0..4`"
+    );
+}
+
+/// The over-firing guard: the rejection fires ONLY when a clause is present.
+///
+/// The three pre-existing arms are the α regression floor — a diagnostic that
+/// leaked onto them would reject every `sub` in the corpus. This asserts the
+/// stronger `errors.is_empty()` (not merely "no `#5482`"), because these three
+/// arms genuinely parse clean today and must continue to.
+#[test]
+fn non_indexed_subs_emit_no_interim_diagnostic() {
+    let cases: &[(&str, &str)] = &[
+        (
+            "bare instantiation with pose",
+            "structure S { sub a = Foo() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm)) }",
+        ),
+        ("collection arm", "structure S { sub xs : List<Foo> }"),
+        ("specialization arm", "structure S { sub m : Foo { } }"),
+    ];
+
+    for (label, source) in cases {
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "{label}: a sub with no indexer clause must parse with no \
+             diagnostics at all — the interim `#5482` rejection must not \
+             over-fire onto the arms the α regression floor protects; got {:?}",
+            parsed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+    }
 }
 
 /// The indexer clause lowers into `index_binder` / `index_domain`.
