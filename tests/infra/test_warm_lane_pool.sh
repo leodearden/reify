@@ -2141,6 +2141,158 @@ assert "PS-RC B: second invocation's stderr tracks its OWN class (class=runner-e
 assert "PS-RC B: second invocation's stderr tracks its OWN rc (rc=137, not hardcoded)" \
     bash -c 'printf "%s\n" "$1" | grep -q "rc=137"' _ "$_PSRC_B2_ERR"
 
+# ── Arm C: end-to-end wiring of run_passset()'s NEXTEST branch, driven by the
+# _PSRC_STUB_DIR canned cargo (prereq above) — no real compilation, ms-scale.
+# Each sub-case temp-env-prefixes a single `run_passset` call (bash exports
+# prefix assignments into the environment for that call AND any subprocess
+# it forks — verified: the stub `cargo` sees them), captures stdout via
+# `$( )`, rc via `|| _RC=$?`, and stderr via a trailing `2>"$_PSRC_ERRF"` on
+# the same call (the _refresh_capture idiom, :1112-1128).
+#
+# C2/C3 are "must NOT fire" controls: honest-test-failure and all-pass are
+# NOT the defect this task fixes, so their assertions already hold under
+# today's unmodified run_passset and stay green start-to-finish — they exist
+# to catch a regression in step-6's rewiring, not to be RED now.
+#
+# RED: today's run_passset swallows the rc, so C1 and C4 (both build-failure
+# scenarios) return 0 and _passset_report_failure is never called — their
+# rc==3 and marker-present assertions FAIL. C4's byte-equality assertion is
+# green FROM THE START, which is the point: it proves the double-build-
+# failure symmetric case ALREADY produces byte-identical pass-sets today —
+# only the new out-of-band rc (also asserted here, and RED) can see it.
+echo ""
+echo "--- Block PS-RC arm C: run_passset() nextest-branch wiring ---"
+
+_PSRC_C1_MANIFEST="/nonexistent/psrc-c1/Cargo.toml"
+_PSRC_C1_FIXTURE="$(mktemp /tmp/test-warm-pool-psrc-c1-XXXXXX)"
+_TMPDIRS+=("$_PSRC_C1_FIXTURE")
+cat > "$_PSRC_C1_FIXTURE" << 'PSRC_C1_EOF'
+error[E0433]: failed to resolve: use of undeclared crate or module `foo`
+ --> src/lib.rs:3:5
+  |
+3 |     foo::bar();
+  |     ^^^ use of undeclared crate or module `foo`
+
+error: could not compile `warm_leaf` (lib) due to 1 previous error
+PSRC_C1_EOF
+
+# (C1) canned BUILD FAILURE: zero PASS/FAIL/SKIP lines, rc=101.
+_PSRC_C1_RC=0
+> "$_PSRC_ERRF"
+_PSRC_C1_OUT="$(
+    PATH="$_PSRC_STUB_DIR:$_PSRC_STUB_DIR_NEXTEST:$PATH" \
+    REIFY_TEST_PASSSET_CALLS="$_PSRC_CALLS_FILE" \
+    REIFY_TEST_PASSSET_NEXTEST=1 \
+    REIFY_TEST_PASSSET_OUT="$_PSRC_C1_FIXTURE" \
+    REIFY_TEST_PASSSET_RC=101 \
+        run_passset "$_PSRC_C1_MANIFEST" 2>"$_PSRC_ERRF"
+)" || _PSRC_C1_RC=$?
+_PSRC_C1_ERR="$(cat "$_PSRC_ERRF")"
+
+assert "PS-RC C1: build failure (nextest, rc=101, zero result lines) → run_passset returns exactly 3" \
+    test "$_PSRC_C1_RC" -eq 3
+assert "PS-RC C1: stderr carries the PASSSET-RUN-FAILURE marker" \
+    bash -c 'printf "%s\n" "$1" | grep -q "PASSSET-RUN-FAILURE"' _ "$_PSRC_C1_ERR"
+assert "PS-RC C1: stderr names the manifest path passed in" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "$2"' _ "$_PSRC_C1_ERR" "$_PSRC_C1_MANIFEST"
+assert "PS-RC C1: stdout keeps the unchanged passed=0 failed=0 shape" \
+    bash -c 'test "$(printf "%s\n" "$1" | head -1)" = "passed=0 failed=0"' _ "$_PSRC_C1_OUT"
+
+# (C2) canned HONEST TEST FAILURE: real-shaped nextest output, one PASS + one
+# FAIL line, rc=100 — the guard must NOT fire on this.
+_PSRC_C2_MANIFEST="/nonexistent/psrc-c2/Cargo.toml"
+_PSRC_C2_FIXTURE="$(mktemp /tmp/test-warm-pool-psrc-c2-XXXXXX)"
+_TMPDIRS+=("$_PSRC_C2_FIXTURE")
+cat > "$_PSRC_C2_FIXTURE" << 'PSRC_C2_EOF'
+  PASS [   0.012s] warm_dep tests::dep_smoke
+  FAIL [   0.008s] warm_leaf tests::leaf_smoke
+PSRC_C2_EOF
+
+_PSRC_C2_RC=0
+> "$_PSRC_ERRF"
+_PSRC_C2_OUT="$(
+    PATH="$_PSRC_STUB_DIR:$_PSRC_STUB_DIR_NEXTEST:$PATH" \
+    REIFY_TEST_PASSSET_CALLS="$_PSRC_CALLS_FILE" \
+    REIFY_TEST_PASSSET_NEXTEST=1 \
+    REIFY_TEST_PASSSET_OUT="$_PSRC_C2_FIXTURE" \
+    REIFY_TEST_PASSSET_RC=100 \
+        run_passset "$_PSRC_C2_MANIFEST" 2>"$_PSRC_ERRF"
+)" || _PSRC_C2_RC=$?
+_PSRC_C2_ERR="$(cat "$_PSRC_ERRF")"
+
+assert "PS-RC C2: honest test failure (nextest, rc=100) → run_passset returns 0 (guard must NOT fire)" \
+    test "$_PSRC_C2_RC" -eq 0
+assert "PS-RC C2: stderr carries NO PASSSET-RUN-FAILURE marker" \
+    bash -c '! printf "%s\n" "$1" | grep -q "PASSSET-RUN-FAILURE"' _ "$_PSRC_C2_ERR"
+assert "PS-RC C2: stdout's first line is exactly passed=1 failed=1" \
+    bash -c 'test "$(printf "%s\n" "$1" | head -1)" = "passed=1 failed=1"' _ "$_PSRC_C2_OUT"
+
+# (C3) canned ALL PASS: two PASS lines, rc=0.
+_PSRC_C3_MANIFEST="/nonexistent/psrc-c3/Cargo.toml"
+_PSRC_C3_FIXTURE="$(mktemp /tmp/test-warm-pool-psrc-c3-XXXXXX)"
+_TMPDIRS+=("$_PSRC_C3_FIXTURE")
+cat > "$_PSRC_C3_FIXTURE" << 'PSRC_C3_EOF'
+  PASS [   0.012s] warm_dep tests::dep_smoke
+  PASS [   0.008s] warm_leaf tests::leaf_smoke
+PSRC_C3_EOF
+
+_PSRC_C3_RC=0
+> "$_PSRC_ERRF"
+_PSRC_C3_OUT="$(
+    PATH="$_PSRC_STUB_DIR:$_PSRC_STUB_DIR_NEXTEST:$PATH" \
+    REIFY_TEST_PASSSET_CALLS="$_PSRC_CALLS_FILE" \
+    REIFY_TEST_PASSSET_NEXTEST=1 \
+    REIFY_TEST_PASSSET_OUT="$_PSRC_C3_FIXTURE" \
+    REIFY_TEST_PASSSET_RC=0 \
+        run_passset "$_PSRC_C3_MANIFEST" 2>"$_PSRC_ERRF"
+)" || _PSRC_C3_RC=$?
+_PSRC_C3_ERR="$(cat "$_PSRC_ERRF")"
+
+# Expected byte-exact output — empirically verified against the REAL
+# _passset_normalize_nextest run against this exact fixture (not hand-
+# guessed): strips the [ ] timing column, squeezes whitespace, sorts.
+# "PASS warm_dep…" sorts before "PASS warm_leaf…" (d < l).
+_PSRC_C3_EXPECTED="$(printf 'passed=2 failed=0\nPASS warm_dep tests::dep_smoke\nPASS warm_leaf tests::leaf_smoke')"
+
+assert "PS-RC C3: all pass (nextest, rc=0) → run_passset returns 0" \
+    test "$_PSRC_C3_RC" -eq 0
+assert "PS-RC C3: stderr carries NO PASSSET-RUN-FAILURE marker" \
+    bash -c '! printf "%s\n" "$1" | grep -q "PASSSET-RUN-FAILURE"' _ "$_PSRC_C3_ERR"
+assert "PS-RC C3: stdout is byte-equal to the expected passed=2 failed=0 + sorted pass-set" \
+    test "$_PSRC_C3_OUT" = "$_PSRC_C3_EXPECTED"
+
+# (C4) SYMMETRIC FALSE-GREEN NEGATIVE CONTROL: the C1 build-failure fixture,
+# invoked TWICE under different manifest paths standing in for cold/warm.
+_PSRC_C4_COLD_MANIFEST="/nonexistent/psrc-c4-cold/Cargo.toml"
+_PSRC_C4_WARM_MANIFEST="/nonexistent/psrc-c4-warm/Cargo.toml"
+
+_PSRC_C4_COLD_RC=0
+> "$_PSRC_ERRF"
+_PSRC_C4_COLD_OUT="$(
+    PATH="$_PSRC_STUB_DIR:$_PSRC_STUB_DIR_NEXTEST:$PATH" \
+    REIFY_TEST_PASSSET_NEXTEST=1 \
+    REIFY_TEST_PASSSET_OUT="$_PSRC_C1_FIXTURE" \
+    REIFY_TEST_PASSSET_RC=101 \
+        run_passset "$_PSRC_C4_COLD_MANIFEST" 2>"$_PSRC_ERRF"
+)" || _PSRC_C4_COLD_RC=$?
+
+_PSRC_C4_WARM_RC=0
+> "$_PSRC_ERRF"
+_PSRC_C4_WARM_OUT="$(
+    PATH="$_PSRC_STUB_DIR:$_PSRC_STUB_DIR_NEXTEST:$PATH" \
+    REIFY_TEST_PASSSET_NEXTEST=1 \
+    REIFY_TEST_PASSSET_OUT="$_PSRC_C1_FIXTURE" \
+    REIFY_TEST_PASSSET_RC=101 \
+        run_passset "$_PSRC_C4_WARM_MANIFEST" 2>"$_PSRC_ERRF"
+)" || _PSRC_C4_WARM_RC=$?
+
+assert "PS-RC C4: symmetric false-green — cold/warm build-failure pass-sets are BYTE-EQUAL (Block PS's identity assert alone cannot see this)" \
+    test "$_PSRC_C4_COLD_OUT" = "$_PSRC_C4_WARM_OUT"
+assert "PS-RC C4: cold-side rc is 3 (the out-of-band signal that IS able to see it)" \
+    test "$_PSRC_C4_COLD_RC" -eq 3
+assert "PS-RC C4: warm-side rc is 3 (the out-of-band signal that IS able to see it)" \
+    test "$_PSRC_C4_WARM_RC" -eq 3
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block PG — Provenance-guard refusal + rename-negative-control (ALWAYS-RUN)
 #
