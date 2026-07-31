@@ -688,6 +688,20 @@ fn flexures_example_dir() -> std::path::PathBuf {
 /// above covers only 4 of the 6 files present today; this walker covers all of
 /// them and whatever comes next.) The floor assertion below stops a mis-resolved
 /// path from turning "found nothing" into a vacuous pass.
+///
+/// COVERAGE OVERLAP, DELIBERATE — do not delete the wrong half:
+/// - Half **(a)**, the zero-compile-Error gate, is a deliberately-redundant
+///   LOCALIZED RESTATEMENT of repo-wide coverage that already exists in
+///   `crates/reify-compiler/tests/examples_smoke.rs::all_examples_parse_and_compile_with_stdlib`,
+///   which recursively discovers every `examples/**/*.ri` and applies the same
+///   gate (its `SKIP_SET` holds no flexures entry, so all six are covered
+///   there). It is kept because the compile is required anyway to produce
+///   `compiled` for half (b), and because the failure message here names the
+///   specific α mechanisms — first-arg-fallback retype, #4310 `DrivingJoint`
+///   bound, prelude order — which is a much faster diagnosis than the generic
+///   smoke failure. If it is ever cut, the coverage does NOT disappear.
+/// - Half **(b)**, the eval-time gate, is the genuinely NEW coverage:
+///   `examples_smoke` never evals. That half is the one that must not be lost.
 #[test]
 fn flexures_example_corpus_compiles_and_evals_green() {
     let dir = flexures_example_dir();
@@ -740,7 +754,7 @@ fn flexures_example_corpus_compiles_and_evals_green() {
             .diagnostics
             .iter()
             .filter(|d| d.severity == Severity::Error)
-            .filter(|d| !is_preexisting_trampoline_fallback(&d.message))
+            .filter(|d| !is_preexisting_trampoline_fallback(&name, &d.message))
             .collect();
         assert!(
             eval_errors.is_empty(),
@@ -755,6 +769,13 @@ fn flexures_example_corpus_compiles_and_evals_green() {
 /// Is this eval diagnostic the KNOWN, PRE-EXISTING `@optimized` compute-trampoline
 /// fallback notice — a defect that predates task #5476 and is unrelated to it?
 ///
+/// Tracked as **#5850** (`printer_z_compliant_mount.ri` emits two Error-severity
+/// `@optimized` trampoline-fallback diagnostics that escape the check exit gate),
+/// filed while implementing #5476 and deliberately not fixed here: fixing
+/// trampoline registration, or re-severitying the notice, is outside this task's
+/// scope. When #5850 lands, this helper and its single call site above should
+/// be deleted outright.
+///
 /// `examples/flexures/printer_z_compliant_mount.ri` emits exactly two of these
 /// (`modal::mechanism_modal` and `dynamics::inverse_dynamics`). They are
 /// Error-SEVERITY but describe a non-fatal degradation ("falling back to
@@ -766,18 +787,25 @@ fn flexures_example_corpus_compiles_and_evals_green() {
 /// both lines and still exits 0 (the exit gate is compile-phase; these are
 /// eval-phase). So this exclusion is not the α retype hiding its own breakage.
 ///
-/// Scoped as narrowly as possible ON PURPOSE: it keys on the exact message
-/// substring, applies only at the eval stage, and does NOT relax the
-/// compile-stage assertion above — which is where the α retype's actual risk
-/// lives (a `no matching overload` or a #4310 `DrivingJoint` bound complaint
-/// would still fail this test). Any OTHER eval Error, in any example, still
-/// fails. Deliberately not count-pinned, so whoever fixes the underlying
-/// registration does not have to come back and edit this test.
+/// SCOPED TO THE ONE MEASURED FILE. The exclusion is keyed on the example's
+/// FILE NAME as well as the message substring, because the measurement that
+/// justifies it was taken on exactly one file. Without the file-name key the
+/// suppression would silently spread: the same trampoline-fallback Error
+/// appearing in a DIFFERENT example — whether from a future change or from a
+/// newly added example — would be swallowed and the regression would be
+/// invisible. With it, any such occurrence fails the gate and forces a
+/// deliberate re-measurement (widen the match, or fix the cause).
 ///
-/// Filed as follow-up rather than fixed here: fixing trampoline registration
-/// (or re-severitying the notice) is outside this task's scope.
-fn is_preexisting_trampoline_fallback(message: &str) -> bool {
-    message.contains("no registered compute trampoline (falling back to body-inlining)")
+/// It is otherwise as narrow as possible: it applies only at the eval stage and
+/// does NOT relax the compile-stage assertion above — which is where the α
+/// retype's actual risk lives (a `no matching overload` or a #4310
+/// `DrivingJoint` bound complaint would still fail this test). Any OTHER eval
+/// Error, in any example, still fails. Deliberately not count-pinned, so
+/// whoever fixes the underlying registration does not have to come back and
+/// edit this test.
+fn is_preexisting_trampoline_fallback(example_file_name: &str, message: &str) -> bool {
+    example_file_name == "printer_z_compliant_mount.ri"
+        && message.contains("no registered compute trampoline (falling back to body-inlining)")
 }
 
 /// PRD §3.6 defense-in-depth: a FABRICATED `FlexureJoint()` is statically legal
