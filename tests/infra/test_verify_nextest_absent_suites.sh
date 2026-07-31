@@ -303,7 +303,9 @@ echo "--- S: covered suites reach test_summary with rc=0 / 0 FAIL / >= pass floo
 
 # PASS FLOORS — the nextest-less pass count measured for each suite (S1-S4 at
 # task/5599 HEAD=7adf5995f2; S5-S8 at task/5604 HEAD=375ae351e4, ambient and
-# under this harness). See _suite_is_clean_without_nextest for why a bare
+# under this harness; the semaphore_e2e row RE-MEASURED at task/5839
+# HEAD=1c039a8232, 65 → 85, after that task added 20 asserts covering the
+# causal PSI-fixture updater). See _suite_is_clean_without_nextest for why a bare
 # "0 failed" is not sufficient. Where the floor is BELOW the suite's ambient
 # nextest-ful count, the difference is the asserts deliberately guarded away
 # as nextest-only, and the delta is recorded here so a further shrink is
@@ -312,9 +314,16 @@ echo "--- S: covered suites reach test_summary with rc=0 / 0 FAIL / >= pass floo
 #   semaphore_wiring  22 nextest-less / 22 ambient  (all recovered by widening)
 #   offline_partition 30 nextest-less / 35 ambient  (5 guarded: -E heavy-filter
 #                                                    asserts, no fallback shape)
-#   semaphore_e2e     65 nextest-less / 65 ambient  (1 guarded --config-file
+#   semaphore_e2e     85 nextest-less / 85 ambient  (1 guarded --config-file
 #                                                    assert, replaced 1:1 by a
-#                                                    fallback-shape else arm)
+#                                                    fallback-shape else arm;
+#                                                    task 5839's 20 added
+#                                                    asserts all exercise the
+#                                                    PSI/compile-gate path and
+#                                                    never touch cargo-nextest,
+#                                                    so the two counts stay
+#                                                    equal and the 1:1
+#                                                    accounting is unchanged)
 #   scope            153 nextest-less / 153 ambient (10 RED positives recovered
 #                                                    by widening; 9 further
 #                                                    NEGATIVES widened too —
@@ -378,8 +387,8 @@ assert "S3: test_verify_offline_partition.sh reaches test_summary with rc=0 / 0 
 # nothing to do with nextest, making "0 FAIL" unreachable. H3 above pins that
 # tree-sitter still resolves under the harness, so a regression in the farm
 # surfaces there rather than as a confusing failure here.
-assert "S4: test_verify_semaphore_e2e.sh reaches test_summary with rc=0 / 0 FAIL / >= 65 passed on a nextest-less host" \
-    _suite_is_clean_without_nextest test_verify_semaphore_e2e.sh 65
+assert "S4: test_verify_semaphore_e2e.sh reaches test_summary with rc=0 / 0 FAIL / >= 85 passed on a nextest-less host" \
+    _suite_is_clean_without_nextest test_verify_semaphore_e2e.sh 85
 
 assert "S5: test_verify_scope.sh reaches test_summary with rc=0 / 0 FAIL / >= 153 passed on a nextest-less host" \
     _suite_is_clean_without_nextest test_verify_scope.sh 153
