@@ -3747,13 +3747,18 @@ fn compile_expr_guarded_with_expected_inner(
                         //
                         // Unlike the joint arm above, this family is name- AND
                         // argument-agnostic — all 13 map to the one marker type,
-                        // so there is no Coupling-style args-aware branch.
+                        // so there is no Coupling-style args-aware branch. That
+                        // is why the resolver is a ZERO-ARG `flexure_joint_type()`
+                        // rather than the joint family's `(name, args)` shape:
+                        // neither would be consulted, and a signature that
+                        // accepts them would imply a dispatch that does not
+                        // exist.
                         //
                         // The family is pinned disjoint from all sibling families
                         // by the units.rs disjointness test, so this arm's
                         // position in the ladder is unobservable. The one hard
                         // requirement is that it precede the first-arg fallback.
-                        flexure_ctor_result_type(name, &compiled_args)
+                        flexure_joint_type()
                     } else if is_analysis_typed_fn(name) {
                         // FEA stress-analysis reduction family (FEA-5, task
                         // 2884): von_mises / principal_stresses / max_shear /

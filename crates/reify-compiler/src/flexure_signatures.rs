@@ -3,8 +3,8 @@
 //!
 //! Holds the compiler-side source of truth for the PRB flexure-constructor name
 //! family ([`FLEXURE_CTOR_FN_NAMES`]), the name-only classification predicate
-//! ([`is_flexure_typed_fn`]), and the name→nominal-type resolver
-//! ([`flexure_ctor_result_type`]).
+//! ([`is_flexure_typed_fn`]), and the family's single nominal result type
+//! ([`flexure_joint_type`]).
 //!
 //! All 13 ctors map to the single nominal marker `StructureRef("FlexureJoint")`
 //! (declared `structure def FlexureJoint : DrivingJoint { }` in
@@ -47,16 +47,24 @@
 //! depends only on reify-core + reify-ir — NOT on reify-stdlib — so sharing the
 //! list would require a cross-crate dependency in the wrong direction or a
 //! widening of this crate's public API. `JOINT_TYPED_FN_NAMES` sets the
-//! precedent by restating the runtime joint names the same way. Drift is caught
-//! by PAIRED independent-fixture tests: one here, one in reify-stdlib. Either
-//! list drifting fails its own test.
+//! precedent by restating the runtime joint names the same way.
+//!
+//! Drift is caught by PAIRED independent-fixture tests — one here
+//! (`flexure_ctor_fn_names_match_independent_fixture`), one in reify-stdlib
+//! (`is_flexure_ctor_matches_independent_fixture`) — and BOTH assert
+//! SET-EQUALITY against their fixture: every fixture name present AND no entry
+//! beyond it. The no-extras half on each side is what closes the drift loop.
+//! Without it a list could GROW silently, and a compiler-side list missing a
+//! runtime ctor is exactly how a legitimate `flexure_compliance(prb_new(...))`
+//! would start failing with `no matching overload`. (The reify-stdlib side is
+//! only able to assert that direction because its `is_flexure_ctor` is backed
+//! by an enumerable `PRB_CTOR_NAMES` slice rather than a `matches!` arm.)
 //!
 //! Wired into `expr.rs`'s `NoUserFunctions` ladder after the `is_joint_typed_fn`
 //! arm. The family is pinned disjoint from all sibling families by the `units.rs`
 //! disjointness test, which is what makes that arm position unobservable.
 
 use reify_core::Type;
-use reify_ir::CompiledExpr;
 
 /// The complete set of PRB flexure-constructor builtin names recognised by the
 /// compiler. Single source of truth compiler-side — imported into the `units.rs`
@@ -95,9 +103,9 @@ pub(crate) const FLEXURE_CTOR_FN_NAMES: &[&str] = &[
     "prb_cartwheel_flexure",
 ];
 
-/// Is `name` a PRB flexure-constructor builtin the compiler types via
-/// [`flexure_ctor_result_type`]? Name-only classification — a `.contains` over
-/// the single-source-of-truth slice [`FLEXURE_CTOR_FN_NAMES`].
+/// Is `name` a PRB flexure-constructor builtin the compiler types as
+/// [`flexure_joint_type`]? Name-only classification — a `.contains` over the
+/// single-source-of-truth slice [`FLEXURE_CTOR_FN_NAMES`].
 ///
 /// Matches on the EXACT name, never on the `prb_` prefix: `prb_validity_range`
 /// shares that prefix but is a record field, not a ctor.
@@ -105,23 +113,21 @@ pub(crate) fn is_flexure_typed_fn(name: &str) -> bool {
     FLEXURE_CTOR_FN_NAMES.contains(&name)
 }
 
-/// Result type for a PRB flexure-constructor builtin — always the nominal
-/// marker `Type::StructureRef("FlexureJoint")`.
+/// The nominal marker type every PRB flexure constructor resolves to:
+/// `Type::StructureRef("FlexureJoint")`.
 ///
-/// **Both name- and argument-agnostic.** Unlike [`crate::joint_ctor_result_type`],
+/// **Zero-arg on purpose.** Unlike the sibling [`crate::joint_ctor_result_type`],
 /// whose Coupling arm is args-AWARE (`Type::applied("Coupling",[parent])`, task
-/// #4605 ε), this family has no per-name and no per-argument branching: all 13
-/// ctors produce the one marker type. A reader coming from the joint family
-/// should NOT expect a Coupling-style branch here — there is deliberately
-/// nothing to dispatch on.
-///
-/// `name` and `args` are therefore both unused. They are kept in the signature
-/// for uniformity with the sibling family's `(name, args)` shape, so the ladder
-/// arm in `expr.rs` reads identically to the joint arm directly above it.
+/// #4605 ε), this family has nothing to dispatch on: all 13 ctors produce the
+/// one marker type. Taking `(name, args)` for shape-uniformity with the joint
+/// family would only mislead — a reader of the `expr.rs` ladder arm would have
+/// to come here to learn that neither parameter is consulted. Dropping them
+/// makes "the arm dispatches by NAME (via [`is_flexure_typed_fn`]), never by
+/// first-argument type" structurally true instead of test-asserted.
 ///
 /// Runtime values stay `Value::Map` (esc-3845-91); the cell TYPE is the nominal
 /// tag. See the module doc for the full safety argument.
-pub(crate) fn flexure_ctor_result_type(_name: &str, _args: &[CompiledExpr]) -> Type {
+pub(crate) fn flexure_joint_type() -> Type {
     Type::StructureRef("FlexureJoint".to_string())
 }
 
@@ -293,51 +299,29 @@ mod tests {
 
     // ── Result-type resolution ───────────────────────────────────────────────
 
-    /// Every one of the 13 names maps to `Type::StructureRef("FlexureJoint")`.
+    /// `flexure_joint_type()` is exactly `Type::StructureRef("FlexureJoint")`.
     ///
-    /// Unlike `joint_ctor_result_type` — whose Coupling arm is args-AWARE
-    /// (`Type::applied("Coupling",[parent])`, task #4605 ε) — this family is
-    /// both name- and argument-agnostic: all 13 ctors produce the one marker
-    /// type. Asserted with `&[]` here and with a non-empty arg slice in
-    /// `flexure_ctor_result_type_is_args_agnostic` below.
-    #[test]
-    fn flexure_ctor_result_type_is_flexure_joint_for_every_name() {
-        for name in EXPECTED_NAMES {
-            assert_eq!(
-                flexure_ctor_result_type(name, &[]),
-                Type::StructureRef("FlexureJoint".to_string()),
-                "{name} must map to StructureRef(FlexureJoint); got {:?}",
-                flexure_ctor_result_type(name, &[])
-            );
-        }
-    }
-
-    /// Args-agnostic invariant, pinned against a NON-Length first argument.
+    /// The load-bearing content is the SPELLING: the string must match the
+    /// `structure def FlexureJoint` declared in `stdlib/flexures.ri` verbatim,
+    /// because the compiler's overload filter
+    /// (`type_compat.rs::resolve_function_overload`) compares nominal types by
+    /// exact equality. A typo here would not fail to compile — it would type
+    /// every `prb_*` call as a reference to a structure that does not exist,
+    /// and `flexure_compliance` would reject every real flexure joint.
     ///
-    /// This is what makes the ladder arm provably name-dispatched rather than
-    /// coincidentally agreeing with the first-arg fallback it replaces: a dummy
-    /// dimensionless `Real` arg must not change the result type away from
-    /// `FlexureJoint`.
+    /// The former "args-agnostic" and "same for every name" invariants are no
+    /// longer asserted here because they are no longer assertable: the function
+    /// takes neither a name nor an arg slice, so name-/arg-independence is a
+    /// property of the signature rather than of the body.
     #[test]
-    fn flexure_ctor_result_type_is_args_agnostic() {
-        use reify_ir::Value;
-
-        let dummy_arg = CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
-        let args_slice = &[dummy_arg];
-
-        for name in EXPECTED_NAMES {
-            assert_eq!(
-                flexure_ctor_result_type(name, args_slice),
-                Type::StructureRef("FlexureJoint".to_string()),
-                "{name} must return StructureRef(FlexureJoint) regardless of args — \
-                 the arm dispatches on NAME, never on the first argument's type \
-                 (that first-arg inference is the placeholder PRD §2 eradicates)"
-            );
-            assert_eq!(
-                flexure_ctor_result_type(name, args_slice),
-                flexure_ctor_result_type(name, &[]),
-                "{name} result must be identical with and without args"
-            );
-        }
+    fn flexure_joint_type_is_the_nominal_marker() {
+        assert_eq!(
+            flexure_joint_type(),
+            Type::StructureRef("FlexureJoint".to_string()),
+            "the PRB ctor family's result type must be the nominal marker declared \
+             as `structure def FlexureJoint : DrivingJoint {{ }}` in \
+             stdlib/flexures.ri, spelled identically; got {:?}",
+            flexure_joint_type()
+        );
     }
 }

@@ -157,28 +157,56 @@ pub fn flexure_diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagn
 }
 
 /// The 13 PRB flexure constructor names (beam / notch / hinge / prismatic /
-/// compound). Only these surface the ctor success/Undef flexure diagnostics;
-/// plain builtins short-circuit to an empty `Vec`. The
-/// `__flexure_compliance_get` accessor intrinsic is NOT a ctor and is
-/// intercepted earlier by a dedicated arm in [`flexure_diagnose`] (it surfaces
-/// `W_FlexureNonJointArg` for a non-joint arg), so it never reaches this guard.
+/// compound) — runtime-side single source of truth, consulted by
+/// [`is_flexure_ctor`].
+///
+/// Deliberately a SLICE rather than the `matches!` arm it replaced. A `matches!`
+/// arm can only be probed one name at a time, so the fixture test over it could
+/// assert "every expected name is accepted" but never "no UNEXPECTED name is
+/// accepted" — leaving the paired-fixture anti-drift guard one-directional. With
+/// the names in a slice, `is_flexure_ctor_matches_independent_fixture` can and
+/// does assert set-EQUALITY in both directions, which is what makes the
+/// "duplication is safe because both sides are fixture-guarded" claim in
+/// `reify-compiler/src/flexure_signatures.rs`'s module doc actually true.
+///
+/// Compiler-side twin: `flexure_signatures.rs::FLEXURE_CTOR_FN_NAMES`. Adding a
+/// ctor here without adding it there makes the compiler type the new ctor via
+/// the first-arg fallback (`Scalar[LENGTH]`), which then fails to overload-match
+/// `flexure_compliance(joint: FlexureJoint)` — the exact regression the
+/// no-extras assertion now catches at test time instead.
+const PRB_CTOR_NAMES: &[&str] = &[
+    // beam.rs (2)
+    "prb_cantilever_beam",
+    "prb_fixed_fixed_beam",
+    // notch.rs (3)
+    "prb_notch_circular",
+    "prb_notch_elliptical",
+    "prb_notch_right_circular",
+    // hinge.rs (3)
+    "prb_living_hinge",
+    "prb_cross_spring_pivot",
+    "prb_let_joint",
+    // prismatic.rs (2)
+    "prb_prismatic_blade",
+    "prb_two_axis_pivot",
+    // compound.rs (3)
+    "prb_parallelogram_flexure",
+    "prb_double_parallelogram_flexure",
+    "prb_cartwheel_flexure",
+];
+
+/// Is `name` one of the 13 PRB flexure constructors ([`PRB_CTOR_NAMES`])?
+///
+/// Only these surface the ctor success/Undef flexure diagnostics; plain builtins
+/// short-circuit to an empty `Vec`. The `__flexure_compliance_get` accessor
+/// intrinsic is NOT a ctor and is intercepted earlier by a dedicated arm in
+/// [`flexure_diagnose`] (it surfaces `W_FlexureNonJointArg` for a non-joint
+/// arg), so it never reaches this guard.
+///
+/// Exact-name match, never a `prb_` PREFIX match: `prb_validity_range` shares
+/// the prefix but is a `FlexureCompliance` field.
 fn is_flexure_ctor(name: &str) -> bool {
-    matches!(
-        name,
-        "prb_cantilever_beam"
-            | "prb_fixed_fixed_beam"
-            | "prb_notch_circular"
-            | "prb_notch_elliptical"
-            | "prb_notch_right_circular"
-            | "prb_living_hinge"
-            | "prb_cross_spring_pivot"
-            | "prb_let_joint"
-            | "prb_prismatic_blade"
-            | "prb_two_axis_pivot"
-            | "prb_parallelogram_flexure"
-            | "prb_double_parallelogram_flexure"
-            | "prb_cartwheel_flexure"
-    )
+    PRB_CTOR_NAMES.contains(&name)
 }
 
 /// Build the `W_FlexureYielding` warning from the cached compliance record.
@@ -718,9 +746,15 @@ mod tests {
     // way.
     //
     // The safety property that makes duplication acceptable is that BOTH sides
-    // carry an INDEPENDENT fixture test — this one and
-    // `flexure_ctor_fn_names_match_independent_fixture` over there. Either list
-    // drifting fails its own test, so the pair cannot silently diverge.
+    // carry an INDEPENDENT fixture test asserting SET-EQUALITY against it —
+    // this one and `flexure_ctor_fn_names_match_independent_fixture` over
+    // there. Each test checks both directions (every fixture name present AND
+    // no entry beyond the fixture), so neither list can gain, lose, or rename a
+    // ctor without failing its own test. A one-directional "all fixture names
+    // are accepted" check would NOT be sufficient: it lets a list GROW
+    // silently, and a compiler-side list that is missing a runtime ctor is
+    // precisely how a legitimate `flexure_compliance(prb_new_ctor(...))` starts
+    // failing with `no matching overload`.
 
     /// Independent fixture — the 13 PRB flexure constructor names, hard-coded
     /// rather than derived from `is_flexure_ctor`, so a drift in that function
@@ -750,8 +784,20 @@ mod tests {
         "prb_cartwheel_flexure",
     ];
 
-    /// `is_flexure_ctor` accepts exactly the 13 names in the fixture and
-    /// rejects the two near-misses that must never be treated as ctors.
+    /// `is_flexure_ctor` accepts exactly the 13 names in the fixture — no
+    /// fewer AND no more — and rejects the two near-misses that must never be
+    /// treated as ctors.
+    ///
+    /// SET-EQUALITY, both directions. The "no extras" half is the load-bearing
+    /// one for the cross-crate lockstep claim: without it, a future task could
+    /// add (say) `prb_torsion_bar` to `PRB_CTOR_NAMES` and the runtime dispatch,
+    /// leave `FLEXURE_CTOR_FN_NAMES` at 13, and pass BOTH crates' suites
+    /// unchanged — while the compiler silently typed `prb_torsion_bar(...)` via
+    /// the first-arg fallback as `Scalar[LENGTH]`, so the wholly legitimate
+    /// `flexure_compliance(prb_torsion_bar(...))` failed with
+    /// `no matching overload`. (That direction was only assertable once
+    /// `is_flexure_ctor` was backed by a slice instead of a `matches!` arm; a
+    /// `matches!` arm is not enumerable.)
     ///
     /// - **`prb_validity_range`** shares the `prb_` prefix but is a
     ///   `FlexureCompliance` FIELD emitted by all five family modules — not a
@@ -762,6 +808,7 @@ mod tests {
     ///   short-circuit, per the doc comment on `is_flexure_ctor`.
     #[test]
     fn is_flexure_ctor_matches_independent_fixture() {
+        // (a) Every expected name is accepted.
         for name in EXPECTED_PRB_CTOR_NAMES {
             assert!(
                 super::is_flexure_ctor(name),
@@ -769,6 +816,26 @@ mod tests {
                  ctors; if this fails the compiler-side twin \
                  (reify-compiler/src/flexure_signatures.rs::FLEXURE_CTOR_FN_NAMES) \
                  has drifted out of lockstep with this list"
+            );
+        }
+        // (b) …and NOTHING beyond them is (mirrors the compiler-side no-extras
+        // loop in flexure_ctor_fn_names_match_independent_fixture).
+        assert_eq!(
+            super::PRB_CTOR_NAMES.len(),
+            EXPECTED_PRB_CTOR_NAMES.len(),
+            "PRB_CTOR_NAMES must hold exactly {} names, got {:?}",
+            EXPECTED_PRB_CTOR_NAMES.len(),
+            super::PRB_CTOR_NAMES
+        );
+        for name in super::PRB_CTOR_NAMES {
+            assert!(
+                EXPECTED_PRB_CTOR_NAMES.contains(name),
+                "PRB_CTOR_NAMES has unexpected entry {name:?} not in the independent \
+                 fixture. A ctor added here MUST also be added to the compiler-side \
+                 twin (reify-compiler/src/flexure_signatures.rs::FLEXURE_CTOR_FN_NAMES) \
+                 and to both fixtures — otherwise the compiler types it via the \
+                 first-arg fallback and flexure_compliance() rejects it with \
+                 `no matching overload`"
             );
         }
         assert!(
