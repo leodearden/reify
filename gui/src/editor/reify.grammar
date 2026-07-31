@@ -74,8 +74,44 @@ TypeAnnotation {
   ":" TypeExpr
 }
 
+// Four-way choice transliterated from tree-sitter-reify grammar.js:1064-1140.
+// The leading token is unique per alternative — `(` for FunctionType, `Name<`
+// for ParameterizedType, `Name::` for QualifiedType — so no precedence hacks
+// are needed. `auto_type_arg` (`Bearing<auto: Seal>`) is deliberately deferred:
+// no manifest fixture exercises it and it is outside this header-level scope.
 TypeExpr {
+  FunctionType |
+  ParameterizedType |
+  QualifiedType |
   Identifier
+}
+
+// Arrow / function type: `(T) -> U`, `(A, B) -> C`, `() -> U`
+FunctionType {
+  "(" (TypeExpr ("," TypeExpr)* ","?)? ")" "->" TypeExpr
+}
+
+// A type with type arguments: `Box<T>`, `Tensor<2, 3, Force>`
+ParameterizedType {
+  Identifier "<" TypeArgList ">"
+}
+
+// Qualified type-expr: `Beam::Material`, `Beam::(HasMaterial::Material)`.
+// The parenthesized form encodes the FORK-G trait disambiguator (PRD §3.5
+// Phase 8). The base is widened to `Identifier | ParameterizedType` for
+// applied-base projection (`Coupling<Prismatic>::MotionValue`); restricting it
+// to ParameterizedType rather than full TypeExpr avoids recursive
+// qualified-in-base ambiguity.
+QualifiedType {
+  (Identifier | ParameterizedType) "::" (Identifier | "(" Identifier "::" Identifier ")")
+}
+
+TypeArgList {
+  typeArg ("," typeArg)* ","?
+}
+
+typeArg {
+  TypeExpr | Number
 }
 
 DefaultValue {
@@ -271,8 +307,13 @@ ReservedWord {
   @precedence { "<=", "<" }
   @precedence { ">=", ">" }
   @precedence { "!=", "!" }
+  // `->` must win over `-` and `::` over `:`, else the longer token is never
+  // formed (arrow types and qualified types both become error nodes).
+  @precedence { "->", "-" }
+  @precedence { "::", ":" }
   @precedence { BlockComment, LineComment, "/" }
 
   "(" ")" "{" "}" "." "," ":" "="
   "||" "&&" "==" "+" "-" "*"
+  "::" "->" "<" ">"
 }
