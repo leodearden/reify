@@ -2439,6 +2439,84 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_OBJECTIVE_MIXED_DIMENSION`
     /// (severity convention: `E_*` → Error).
     ObjectiveDimensionIncoherent,
+    /// Origin:
+    /// `crates/reify-compiler/src/compile_builder/post_passes.rs::phase_inert_objective_check`
+    /// (module-level post-pass, task γ #5417 — PRD
+    /// `docs/prds/v0_6/declared-intent-consumption-accounting.md` §3 decision 3
+    /// / §4.2).
+    ///
+    /// Canonical message prefix: `"E_OBJECTIVE_INERT: ..."`, naming the
+    /// entity, the objective sense, and the full set of never-auto cells the
+    /// objective reads, with a label anchored on one of those cells'
+    /// `ValueCellDecl.span`.
+    ///
+    /// Emitted as a `Severity::Error` when a template's declared
+    /// `minimize`/`maximize` is *structurally inert*: every value it reads
+    /// resolves, within the module, to a cell that can never be `auto` —
+    /// so the objective can never influence any solved value (the INV-SF-3
+    /// silently-useless-intent failure this PRD exists to eradicate). This is
+    /// a STATIC check (no eval) and therefore gates `reify check`.
+    ///
+    /// The predicate fires only on a positive proof and bails conservatively
+    /// on every ambiguity, so a false `ObjectiveInert` is structurally
+    /// impossible. Correctly excluded cases:
+    /// - Any objective term containing an opaque node (`MethodCall` such as
+    ///   `minimize cost(self.descendants)`, structural query, `Lambda`,
+    ///   `CrossSubGeometryRef`, or an `Error`-typed subexpr) — these carry
+    ///   zero compile-time `ValueRef`s yet genuinely couple to a child's auto
+    ///   at eval time.
+    /// - A pure-literal objective (`minimize 1mm`) — empty resolvable-ref set.
+    /// - Any ref that does not resolve to a cell of the template.
+    /// - An objective transitively reaching an `auto` cell through a
+    ///   `let`/`default_expr` chain.
+    /// - An auto living in `guarded_groups[*].{members,else_members}` (a
+    ///   `where`-clause auto) rather than in `value_cells`.
+    /// - A cell auto-overridden at a sub-instance elsewhere in the module
+    ///   (`sub c : Child { k = auto }`), which makes `Child`'s objective
+    ///   genuinely governing.
+    /// - Purpose objectives, which live on `CompiledPurpose.objective` and are
+    ///   excluded structurally (the post-pass never touches them).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_OBJECTIVE_INERT`
+    /// (severity convention: `E_*` → Error).
+    ObjectiveInert,
+    /// Origin: `crates/reify-eval/src/engine_eval.rs` (the objective solve
+    /// paths — single-scope and merged-cluster — beside the #4804
+    /// `W_SOLVER_OPTIMALITY_UNPROVEN` sites; task γ #5417 — PRD
+    /// `docs/prds/v0_6/declared-intent-consumption-accounting.md` §3 decision 3
+    /// / §4.2).
+    ///
+    /// Canonical message prefix: `"E_OBJECTIVE_UNCONSUMED: ..."`, naming the
+    /// scope, the declared objective, and the FULL set of unconsumed autos —
+    /// one diagnostic per objective declaration (the #5014 aggregation rule),
+    /// never one per component or per solver trial.
+    ///
+    /// Emitted as a `Severity::Error` at eval time when a *user-declared*
+    /// objective transitively reaches at least one `auto` param, yet ZERO
+    /// solver components consumed that objective — the
+    /// `reify_constraints::objective_consumption` fact is `NoComponents`,
+    /// `NoAutoParams`, or `FallbackComponentZero` — and at least one reached
+    /// auto is still unbound after the run. The canonical shape is a purely
+    /// unconstrained optimisation (`param a = auto(free)` +
+    /// `minimize (a-3.0)*(a-3.0)` with no constraints), where the
+    /// decomposition builds zero components and the registry drops the
+    /// objective silently.
+    ///
+    /// Correctly excluded cases:
+    /// - A governing objective whose autos a solving component consumed
+    ///   (`Consumed { .. }`) — the healthy case.
+    /// - The *vacuous-healthy* case: every objective-reachable auto is
+    ///   concretely bound this run (connector-pinned autos are partitioned
+    ///   out of `auto_params`; solver-bound autos land in `resolved_params`).
+    /// - Synthesised Chebyshev-centre objectives (task 4013), which by
+    ///   definition have `template.objective == None`; the gate keys off
+    ///   `template.objective.is_some()`.
+    /// - A let-indirected objective, which is already transitively consumed
+    ///   through `ResolutionProblem.dependent_cells`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_OBJECTIVE_UNCONSUMED`
+    /// (severity convention: `E_*` → Error).
+    ObjectiveUnconsumed,
     /// Origin: `crates/reify-eval/src/engine_eval.rs::detect_scope_coupling`.
     ///
     /// Severity: Warning — detection-only; no automatic fixup is attempted.
@@ -5390,6 +5468,74 @@ mod tests {
     fn diagnostic_code_objective_dimension_incoherent_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::ObjectiveDimensionIncoherent).unwrap();
         assert_eq!(s, "\"ObjectiveDimensionIncoherent\"");
+    }
+
+    // --- ObjectiveInert / ObjectiveUnconsumed tests
+    // (task γ #5417 — E_OBJECTIVE_INERT / E_OBJECTIVE_UNCONSUMED) ---
+    // Pair with the compile-time inert-objective post-pass
+    // (`reify-compiler/src/compile_builder/post_passes.rs::phase_inert_objective_check`)
+    // and the eval-time zero-component consumption diagnostic
+    // (`reify-eval/src/engine_eval.rs`), mirroring the ObjectiveConflict and
+    // ObjectiveDimensionIncoherent test pairs above.
+
+    /// `DiagnosticCode::ObjectiveInert` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`, reports
+    /// `Some(DiagnosticCode::ObjectiveInert)`, carries `Severity::Error`
+    /// (the `E_*` → Error convention), and Debug-prints the variant name.
+    #[test]
+    fn diagnostic_code_objective_inert_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::ObjectiveInert);
+        assert_eq!(d.code, Some(DiagnosticCode::ObjectiveInert));
+        assert_eq!(d.severity, Severity::Error);
+        assert!(format!("{:?}", d.code).contains("ObjectiveInert"));
+    }
+
+    /// `DiagnosticCode::ObjectiveUnconsumed` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`, reports
+    /// `Some(DiagnosticCode::ObjectiveUnconsumed)`, carries `Severity::Error`
+    /// (the `E_*` → Error convention), and Debug-prints the variant name.
+    #[test]
+    fn diagnostic_code_objective_unconsumed_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::ObjectiveUnconsumed);
+        assert_eq!(d.code, Some(DiagnosticCode::ObjectiveUnconsumed));
+        assert_eq!(d.severity, Severity::Error);
+        assert!(format!("{:?}", d.code).contains("ObjectiveUnconsumed"));
+    }
+
+    /// The two γ codes are distinct from each other and from the neighbouring
+    /// objective-family codes, so a consumer can route on them independently
+    /// (a future enum reorganisation that collapses them is caught here).
+    #[test]
+    fn diagnostic_code_objective_gamma_variants_are_distinct() {
+        assert_ne!(
+            DiagnosticCode::ObjectiveInert,
+            DiagnosticCode::ObjectiveUnconsumed
+        );
+        for other in [
+            DiagnosticCode::ObjectiveConflict,
+            DiagnosticCode::ObjectiveDimensionIncoherent,
+        ] {
+            assert_ne!(DiagnosticCode::ObjectiveInert, other);
+            assert_ne!(DiagnosticCode::ObjectiveUnconsumed, other);
+        }
+    }
+
+    /// Under `feature = "serde"`, each γ code serializes to its exact
+    /// PascalCase wire string (from `rename_all = "PascalCase"`) — the form
+    /// the LSP/MCP consumers match on.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_objective_gamma_variants_serde_pascal_case() {
+        let cases = [
+            (DiagnosticCode::ObjectiveInert, "\"ObjectiveInert\""),
+            (DiagnosticCode::ObjectiveUnconsumed, "\"ObjectiveUnconsumed\""),
+        ];
+        for (code, expected) in cases {
+            let s = serde_json::to_string(&code).unwrap();
+            assert_eq!(s, expected, "serde mismatch for {code:?}");
+        }
     }
 
     // --- CostTradeoffNonMoneyArg / CostTradeoffInvalidLambda tests
