@@ -76,16 +76,9 @@ function fail(msg) {
 
 // The tools/call request shape and the envelope decode live in rpcEnvelope.mjs
 // (CI-covered by rpcEnvelope.test.ts) rather than inline here, because this file
-// can never run in CI. `rpc()` now reports BOTH failure dialects as the ONE
-// in-band shape `{error: "<msg>"}`: frontend-mediated tools (open_file,
-// viewport_state, set_display_appearance, ... via query_frontend) already answer
-// in-band that way, and Rust-dispatched `isError: true` + plain-text `Error: <msg>`
-// blocks are folded into it. That fold is what lets the guards below delegate to
-// describeRpcFailure: both dialects arrive as §2a, so one diagnosis covers them.
-// Without it a bare string reached a guard that assumed an object, threw a
-// TypeError, and killed this driver at exit 2 instead of reporting a clean exit-1
-// failure. A top-level envelope error is a TRANSPORT failure and still throws, so
-// waitForServer keeps polling.
+// can never run in CI. `rpc()` folds both failure dialects into one §2a shape —
+// see ./rpcEnvelope.mjs for the fold, and ./smokeDriverGuards.mjs
+// (describeRpcFailure) for what a driver does with the decoded payload.
 const rpc = makeDebugRpc(DEBUG_URL);
 
 function sleep(ms) {
@@ -274,7 +267,8 @@ async function main() {
     const clearResult = await rpc('set_display_appearance', { overrides: {} });
     console.log('  set_display_appearance({}) result:', JSON.stringify(clearResult));
 
-    if (!describeRpcFailure(clearResult, 'set_display_appearance')) {
+    const clearFailure = describeRpcFailure(clearResult, 'set_display_appearance');
+    if (!clearFailure) {
       // Short settle for reactive update.
       await sleep(200);
 
@@ -305,7 +299,7 @@ async function main() {
         console.log('  WARN B6: could not find steel mesh material probe after clear');
       }
     } else {
-      console.log('  SKIP B6: set_display_appearance returned error or null (command not available); covered by meshManager vitest');
+      console.log(`  SKIP B6: ${clearFailure} (best-effort; covered by meshManager vitest)`);
     }
   } catch (e) {
     console.log(`  SKIP B6: set_display_appearance threw (OK — best-effort only): ${e.message}`);

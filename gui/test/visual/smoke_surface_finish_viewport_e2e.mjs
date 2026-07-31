@@ -76,14 +76,9 @@ function fail(msg) {
 
 // The tools/call request shape and the envelope decode live in rpcEnvelope.mjs
 // (CI-covered by rpcEnvelope.test.ts) rather than inline here, because this file
-// can never run in CI. `rpc()` now reports BOTH failure dialects as the ONE
-// in-band shape `{error: "<msg>"}`: frontend-mediated tools (viewport_state, ...
-// via query_frontend) already answer in-band that way, and Rust-dispatched
-// `isError: true` + plain-text `Error: <msg>` blocks are folded into it. That
-// fold is what lets the guard below delegate to describeRpcFailure: both
-// dialects arrive as §2a, so one diagnosis covers them. A top-level envelope
-// error is a TRANSPORT failure and still throws, so waitForServer keeps
-// polling.
+// can never run in CI. `rpc()` folds both failure dialects into one §2a shape —
+// see ./rpcEnvelope.mjs for the fold, and ./smokeDriverGuards.mjs
+// (describeRpcFailure) for what a driver does with the decoded payload.
 const rpc = makeDebugRpc(DEBUG_URL);
 
 function sleep(ms) {
