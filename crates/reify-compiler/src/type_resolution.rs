@@ -1486,6 +1486,13 @@ pub(crate) fn resolve_type_alias_expr(
 
 /// Helper: resolve a TypeExpr to a DimensionVector (for dimensional algebra).
 /// Returns None if the type cannot be resolved to a dimension.
+///
+/// For a `Named` type expr, checks builtins (`resolve_dimension_type`, which
+/// scans `reify_core::NAMED_DIMENSIONS`) BEFORE the alias registry — the
+/// dimension-algebra half of the builtin-before-alias precedence also
+/// documented on `resolve_type_with_aliases` above. Regression oracle:
+/// `tests::builtin_dimension_shadows_same_named_alias_in_dimension_resolution`
+/// (task #5892).
 pub(crate) fn resolve_type_alias_expr_to_dimension(
     type_expr: &reify_ast::TypeExpr,
     alias_registry: &TypeAliasRegistry,
