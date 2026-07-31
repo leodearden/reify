@@ -574,9 +574,11 @@ _assert_delta_newer_than_build_outputs() {
 # docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13 — deliberately NOT
 # restated here (G7 no-lockstep-duplication), exactly as
 # _assert_delta_newer_than_build_outputs points at inv.12. Pinned by Block U:
-# U1/U1b the .fingerprint gate, U1c/U1d the -maxdepth 3 bound, U2/U2b what the
-# guard keys on, U3/U3b/U3c the opt-out knob's exact-"1" contract, U4/U4b/U4c
-# the per-tier attribution this err shares with the resolve site's warn.
+# U1/U1b the .fingerprint gate, U1e the probe's own find-traversal-failure
+# branch (find exits non-zero without ever assigning fingerprint_dir),
+# U1c/U1d the -maxdepth 3 bound, U2/U2b what the guard keys on, U3/U3b/U3c the
+# opt-out knob's exact-"1" contract, U4/U4b/U4c the per-tier attribution this
+# err shares with the resolve site's warn.
 #
 # Implementation notes (local to this site):
 #   - -maxdepth 3 mirrors the non-relocatable build-dir deletion sweep's walk

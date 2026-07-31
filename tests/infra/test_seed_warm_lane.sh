@@ -4023,6 +4023,14 @@ if [ "$(id -u)" -ne 0 ]; then
     chmod 0755 "$U1E_BASE/debug/untraversable" || true
     chmod 0755 "$U1E_CLONE_DIR" || true
 
+    # WHY the mode-000 dir reaches the lane at all, MEASURED (not assumed):
+    # run_helper_real's cp stub exit-0s regardless of `/bin/cp -a`'s own status
+    # (see the stub, above), and GNU cp still CREATES the destination directory
+    # carrying the source's mode even though it could not read the source's
+    # entries to populate it — `/bin/cp: cannot access '<src>/debug/untraversable':
+    # Permission denied`, dest created as `d---------`. The next assertion is the
+    # guard that turns a future change in either of those two behaviours into an
+    # attributable red instead of a silent degrade into a U1b duplicate.
     assert "U1e: NON-VACUITY — the clone's copy of the mode-000 dir really was untraversable before the restore (else this arm silently degrades into a duplicate of U1b)" \
         test -z "$U1E_CLONE_WAS_READABLE"
     assert "U1e: seed exits NON-zero — the traversal-failure probe is an abort, not a return-0 fall-through" \
