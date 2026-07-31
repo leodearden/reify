@@ -78,3 +78,65 @@ fn nm_torque_is_case_distinct_from_nm_nanometre() {
 fn stdlib_units_module_contains_nm_with_torque_dimension() {
     assert_simple_unit("Nm", DimensionVector::TORQUE, 1.0, 1e-12);
 }
+
+// ─── consumer-level pins: PRD §12 θ signal + B9 postcondition ────────────────
+
+#[test]
+fn nm_equals_n_times_m_per_rad_and_is_not_energy() {
+    // `N` has factor 1.0 (si_units.rs:180-184); `m` and `rad` are SI bases with
+    // factor 1 — so both sides resolve to exactly 5.0. This is an exact
+    // identity, not a tuned tolerance.
+    let (nm_v, nm_d) = stdlib_param_si_value("Torque", "5Nm");
+    let (ex_v, ex_d) = stdlib_param_si_value("Torque", "5N*m/rad");
+    assert_eq_rel(nm_v, ex_v, 1e-12, "5Nm should equal 5N*m/rad in SI");
+    assert_eq!(nm_d, ex_d);
+
+    // Torque≠Energy guard: TORQUE and ENERGY differ ONLY in the Angle⁻¹ slot
+    // (TORQUE = FORCE·LENGTH/ANGLE, ENERGY = FORCE·LENGTH), so a `Nm : Energy`
+    // typo in units.ri would otherwise pass every other assertion in this file.
+    //
+    // Deliberately NOT asserted here: `canonical_name()` or any rendered
+    // dimension/unit display string. TORQUE and ROTATIONAL_STIFFNESS currently
+    // share one vector, and `canonical_name()` is first-match-wins with the
+    // TORQUE row placed after RotationalStiffness, so today that vector
+    // renders as "RotationalStiffness". Task #5799 re-dimensions
+    // ROTATIONAL_STIFFNESS, at which point `canonical_name()` for this vector
+    // flips to "Torque" — structural `DimensionVector` equality is invariant
+    // across that flip, so asserting on it here would go red for reasons
+    // outside this task's scope.
+    assert_ne!(
+        nm_d,
+        DimensionVector::ENERGY,
+        "Nm's dimension must be Torque, not Energy (they differ only in the Angle⁻¹ slot)"
+    );
+}
+
+/// Loads the already-committed, previously-unreferenced prd-gate fixture
+/// (`tests/prd-gate/fixtures/unit_nm_torque_immediate.ri`) and asserts it
+/// compiles clean — the end-to-end user-observable θ signal (PRD §12).
+/// Path resolution mirrors the idiom at
+/// `crates/reify-compiler/tests/buckling_stdlib_compile.rs:700-712` and
+/// `crates/reify-eval/tests/no_stale_undef_invariant_gate.rs:766-775`: the
+/// committed fixture is the single source of truth, read from disk rather
+/// than inlined, so it cannot drift out of sync. Read-only input: this test
+/// must never edit the fixture file.
+#[test]
+fn prd_gate_fixture_unit_nm_torque_immediate_compiles_clean() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/prd-gate/fixtures/unit_nm_torque_immediate.ri");
+    let src = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read fixture {}: {}", path.display(), e));
+
+    let module = compile_source_with_stdlib(&src);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "fixture {} should compile with no errors, got: {:?}",
+        path.display(),
+        errors
+    );
+}
