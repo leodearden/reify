@@ -44,6 +44,20 @@
 //! check is TOLERANT — silent — whenever *either* side declines to name one, i.e.
 //! is a dimensionless `Scalar`, a `Type::Int`, or a `Type::ScalarParam`.
 //!
+//! **SEVERITY is inherited from the entry point, not fixed by this rule.**  The
+//! check lives in the walker both conformance entry points share, so it fires at
+//! `CTOR_FIELD_CONFORMANCE_SEVERITY` — Warning at α — when entered through
+//! `check_trait_arg_conformance` (the ctor path, which every `.ri` fixture for
+//! this rule takes), and at `Severity::Error` when entered through
+//! `check_fn_arg_conformance` (the fn-call path).  The Error half is pinned by
+//! `assert_quantity_slot_conflict` in `conformance/mod.rs`'s test module.  In
+//! PRODUCTION that half is currently unreachable for a bare
+//! `fn f(axis: Vector3<Length>)`: `check_expr_fn_calls`
+//! (`compile_builder/entities_phase.rs`) invokes the fn-call entry only for
+//! params satisfying `type_carries_trait_object`, which does not recurse into
+//! quantity slots — so these four arms are reached from a real call only via a
+//! param that also carries a trait object (e.g. `Map<Vector3<Length>, SomeTrait>`).
+//!
 //! **`Type::Field` is HELD LOOSE BY DECISION, on a different axis.**  `Field` has
 //! no quantity slot at all: it carries `domain` / `codomain` `Type` slots, and
 //! BOTH erase to `Real` at every call site (`examples/fea_shell_channels.ri`
@@ -52,15 +66,18 @@
 //! quantity rule to compare, so a `Field` tightening would be zero-signal and
 //! non-zero-risk.  This is a ruling, not an oversight — do not "fix" the asymmetry
 //! with the other four arms by symmetry.  Pinned by
-//! `field_param_holds_loose_against_fully_erased_field_arg`.
+//! `field_param_given_erased_analytical_field_stays_clean`
+//! (`crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`); the
+//! false-warning count that motivated the arm is recorded once, in the
+//! `Type::Field` arm's own comment in `conformance/mod.rs`.
 //!
 //! **Why tolerant rather than strict.**  The ARG side of these arms is
 //! systematically erased, so strict equality would compare a declaration against a
 //! hole: `point3(…)` is an eval-builtin with no `.ri` return type, so its calls
 //! arrive as `Scalar[m]` / `Int` placeholders; `Matrix<3,3,MomentOfInertia>` is
 //! spelled `List<List<Real>>` at every corpus site; a `Field`'s slots always erase
-//! to `Field<Real, Real>` — a comparison that produced six false warnings in
-//! `fea_shell_channels.ri` before the shape arm existed.
+//! to `Field<Real, Real>`, which is what produced the false warnings that arm's
+//! comment records.
 //!
 //! **The residual this knowingly leaves.**  A `Vector3<Length>` fed a
 //! *dimensionless* vector stays silent, which is how `vec3(0, 1, 0)` at
@@ -72,6 +89,22 @@
 //! that way (`kinematic.ri`'s `axis`, `ports.ri`'s `Frame3.x_axis/y_axis/z_axis`);
 //! retyping them is a stdlib type-vocabulary ruling of its own, tracked by task
 //! 5848, and is deliberately not folded in here.
+//!
+//! A SECOND residual is specific to the `Matrix`/`Tensor` leg: a `matrix([[…]])`
+//! arg's quantity comes from `matrix_shape` (`math_signatures.rs`), which derives
+//! the whole matrix's quantity from cell `[0][0]` ALONE.  The rule is therefore
+//! only sound for dimension-HOMOGENEOUS literals.  A heterogeneous one — routine
+//! in this domain: a 6x6 stiffness/compliance matrix or a spatial (screw-theory)
+//! Jacobian mixes translational and rotational blocks — can be false-rejected when
+//! `[0][0]` disagrees with the declaration, and, dually, a genuinely wrong matrix
+//! whose `[0][0]` happens to agree sails through.  That inference weakness
+//! pre-dates this rule and was cosmetic while the quantity was never compared;
+//! this ruling makes it load-bearing for a diagnostic.  No corpus site trips it
+//! today (`no_example_emits_ctor_field_conformance_diagnostics` is green).  The
+//! fix — widen `matrix_shape` to detect heterogeneous cells and degrade to
+//! `Type::dimensionless_scalar()`, which would make the slot yield no dimension
+//! and the rule fall silent — is out of this ruling's scope and is tracked
+//! separately.
 //!
 //! **The unknown-ness fence is preserved.**  `is_numeric_placeholder_leaf`
 //! (`conformance/mod.rs`) still admits a scalar-family arg at the `Point` and
