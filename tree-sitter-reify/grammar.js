@@ -1274,6 +1274,9 @@ module.exports = grammar({
     //   9: postfix index access ([]), qualified access (::)
     //  10: postfix ad-hoc selector (@)
     //  11: postfix member access (.), function call
+    //  12: namespaced call (`pp.Pulley()`) — one level above member access so
+    //      the `(` SHIFTS into namespaced_call rather than reducing the
+    //      `pp.Pulley` prefix to a bare member_access (task 5495 μ)
 
     _expression: $ => choice(
       $.range_expression,
@@ -1286,6 +1289,7 @@ module.exports = grammar({
       $.ad_hoc_selector,
       $.index_access,
       $.trait_method_call,
+      $.namespaced_call,
       $.qualified_access,
       $.instance_qualified_access,
       $._primary_expression,
@@ -1610,6 +1614,35 @@ module.exports = grammar({
 
     function_call: $ => prec(11, seq(
       field('name', $.identifier),
+      callTail($),
+    )),
+
+    // Call through an import binding: `pp.Pulley()`, `pp.compute(1)`
+    // (task 5495 μ; PRD docs/prds/v0_6/stdlib-namespace.md §3.3 NS-Q2 / D-7).
+    //
+    // `prec(12)` sits exactly one level above `member_access`'s `prec.left(11)`
+    // so that on `pp.Pulley` followed by `(` the parser SHIFTS the `(` into
+    // this rule instead of reducing to a bare `member_access` — see the
+    // precedence table above (grammar.js:1178-1202), level 12.
+    //
+    // The callee is a full `$.member_access`, mirroring the shape
+    // `trait_method_call` uses for its `qualified_access` callee (grammar.js
+    // ~1607).  Two reasons: (1) restricting it to an inline
+    // `identifier '.' identifier` collides with `member_access` as a
+    // reduce-reduce ambiguity, whereas this generates conflict-free; (2) the
+    // callee node is then IDENTICAL to the call-less form, so ν's
+    // resolution-phase fixup sees one uniform base.
+    //
+    // Consequence: a 3+-segment callee (`a.b.c()`) is syntactically accepted
+    // here.  Bare full-path qualification is out of scope (D-7 / PRD §9) and is
+    // rejected in LOWERING with a specific diagnostic — a far better message
+    // than a bare ERROR node, and the user-facing outcome is unchanged in kind
+    // (`a.b.c()` is an error before and after μ).
+    //
+    // `callTail($)` is reused verbatim so the argument syntax cannot drift from
+    // `function_call`'s.
+    namespaced_call: $ => prec(12, seq(
+      field('callee', $.member_access),
       callTail($),
     )),
 

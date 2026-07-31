@@ -154,6 +154,176 @@ structure S {
       structure_name: (identifier))))
 
 ================================================================================
+namespaced_ref: nullary qualified call (pp.Pulley())
+================================================================================
+
+structure S {
+  let f = pp.Pulley()
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (namespaced_call
+        callee: (member_access
+          object: (identifier)
+          member: (identifier))))))
+
+================================================================================
+namespaced_ref: qualified call with a positional argument (pp.compute(1))
+================================================================================
+
+structure S {
+  let e = pp.compute(1)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (namespaced_call
+        callee: (member_access
+          object: (identifier)
+          member: (identifier))
+        (argument_list
+          (number_literal))))))
+
+================================================================================
+namespaced_ref: qualified call with named + positional args (pp.make(a: 1, 2))
+================================================================================
+
+structure S {
+  let g = pp.make(a: 1, 2)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (namespaced_call
+        callee: (member_access
+          object: (identifier)
+          member: (identifier))
+        (argument_list
+          (named_argument
+            name: (identifier)
+            value: (number_literal))
+          (number_literal))))))
+
+================================================================================
+namespaced_ref control: call-less dotted chain stays nested member_access
+================================================================================
+
+structure S {
+  let r = pp.FitClass.Clearance
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (member_access
+        object: (member_access
+          object: (identifier)
+          member: (identifier))
+        member: (identifier)))))
+
+================================================================================
+namespaced_ref control: plain member access is unchanged (obj.width)
+================================================================================
+
+structure S {
+  let s = obj.width
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (member_access
+        object: (identifier)
+        member: (identifier)))))
+
+================================================================================
+namespaced_ref control: unqualified call stays a function_call (plain(1))
+================================================================================
+
+structure S {
+  let t = plain(1)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (function_call
+        name: (identifier)
+        (argument_list
+          (number_literal))))))
+
+================================================================================
+namespaced_ref control: :: access stays a qualified_access (Foo::bar)
+================================================================================
+
+structure S {
+  let u = Foo::bar
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (qualified_access
+        qualifier: (identifier)
+        member: (identifier)))))
+
+================================================================================
+namespaced_ref control: instance-qualified call stays a trait_method_call
+================================================================================
+
+structure S {
+  let v = obj.(Trait::m)(x)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (trait_method_call
+        callee: (instance_qualified_access
+          object: (identifier)
+          qualified: (qualified_access
+            qualifier: (identifier)
+            member: (identifier)))
+        (argument_list
+          (identifier))))))
+
+================================================================================
 namespaced_ref control: Listicle<Foo> still takes the specialization arm (rule #1)
 ================================================================================
 
