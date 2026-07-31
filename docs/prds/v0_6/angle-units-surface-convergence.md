@@ -41,7 +41,7 @@ After this PRD:
 |---|---|---|
 | `angle_spec()` + angle eval gates | `.ri` authors; the 4 selector `tol` args (existing consumer, gains the migration hint) | `reify eval` diagnostics + exit 1 |
 | ANGLE `CheckableArg` compile slots | `reify check` (compile slots are the only layer with teeth at check today — RED-TEAM 3, re-verified §3.4); PRD 2 widens this | `reify check` exit 1 |
-| `Torque` named dimension | `crates/reify-compiler/stdlib/ports_mechanical.ri` — its `pub type Torque` alias exists **solely** as a workaround, self-documented at `ports_mechanical.ri:9-11`; retiring it is the consumer proof | stdlib compiles; `Torque` resolves without the alias |
+| `Torque` named dimension | `crates/reify-compiler/stdlib/ports_mechanical.ri` — its `pub type Torque` alias existed **solely** as a workaround, self-documented at the time in that file's header; retiring it was the consumer proof. **DONE — η (task 5785, merge `61300d09`) deleted the alias**; `:17-28` is now a pointer comment, and `Torque` is a built-in `NAMED_DIMENSIONS` entry | stdlib compiles; `Torque` resolves without the alias ✓ |
 | `Nm` unit symbol | `.ri` authors writing torque; `stdlib/flexures.ri:155` (`0N*m/rad`) becomes writable as `0Nm` | `reify eval` resolves `5Nm` |
 | Energy↔Torque teaching diagnostic | `.ri` authors — fires **today's live** param-mismatch path (§3.5) | `reify check`/`eval` diagnostic text |
 | U+00B7 unit-multiply | `.ri` authors copy-pasting Reify's own output and external SI text; PRD 1's GUI param editor (`parse_value_string`) inherits it — **noted, not owned** | `tree-sitter parse` + `reify eval` |
@@ -119,13 +119,23 @@ This corroborates RED-TEAM finding 3 first-hand and is why cluster A carries a c
 rather than treating slots as optional polish. It is also the reason every leaf signal in this
 PRD is phrased against **`reify eval`** — `reify check` semantics belong to PRD 2 (G4).
 
-### 3.5 `Torque` already resolves — as a stdlib alias, not a dimension
+### 3.5 `Torque` already resolved — as a stdlib alias, not a dimension (pre-η analysis)
 
-`crates/reify-compiler/stdlib/ports_mechanical.ri:29` declares
-`pub type Torque = Force * Length / Angle`, with a header comment (`:9-11`) stating the reason:
+> **Superseded by η (task 5785, merge `61300d09`) — retained as the analysis that MOTIVATED this
+> PRD's `Torque` leaf.** This section describes the tree as it stood BEFORE η. The alias is now
+> deleted; `Torque` is a built-in `NAMED_DIMENSIONS` entry — `(DimensionVector::TORQUE, "Torque")`
+> at `crates/reify-core/src/dimension.rs:627` — so a `param t : Torque` slot resolves via the
+> registry with no module import. See §C for the change as planned.
+
+`crates/reify-compiler/stdlib/ports_mechanical.ri:29` **declared** (pre-η)
+`pub type Torque = Force * Length / Angle`, with a header comment stating the reason:
 *"Torque is absent from NAMED_DIMENSIONS … Binary dimensional-operation expressions are admitted
-ONLY on type-alias RHS, not in `param x : <type>` position"*. (That comment cites
-`dimension.rs:443-494`; NAMED_DIMENSIONS is now at `:514-595` — **[drift]**.)
+ONLY on type-alias RHS, not in `param x : <type>` position"*. (That comment cited
+`dimension.rs:443-494`. Both cites are now dead: η deleted the alias and replaced `:17-28` with a
+pointer comment, and the alias-rationale item was dropped from the header's *Deviations from §11
+spec* block, exactly as §C3 planned. NAMED_DIMENSIONS itself has since moved again — re-measured
+2026-07-31 at `dimension.rs:565-650`, 52 rows, superseding the earlier `:514-595` **[drift]**
+note.)
 
 Consequences, all probe-verified:
 
@@ -160,7 +170,8 @@ So `Nm` is free, and case-distinctness from `nm` is a property of the existing l
 `unit` declarations take a **named dimension**, never a compound expression (`units.ri:48`
 `pub unit lbf : Force = 4.4482216152605`; `:53` `pub unit psi : Pressure = …`). So `Nm` requires
 `Torque` to be a *named dimension*, not merely a stdlib alias — which is exactly the deviation
-`ports_mechanical.ri:9-11` records.
+that `ports_mechanical.ri`'s header recorded pre-η, and precisely what motivated making `Torque` a
+named dimension. η (task 5785, merge `61300d09`) landed that, so `Nm` no longer needs the alias.
 
 ### 3.7 Four independent unit-display surfaces; none re-parses
 
