@@ -433,11 +433,37 @@ _b6_clone_and_refresh() {
     # make unsubstantiated in production, and precisely what this arm is here to
     # measure. (Not git-init + --base-commit HEAD: see the note at the B3+B4
     # seed site for why re-ordering the commit would risk B7's own invariant.)
-    REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 \
-    RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
-        bash "$SEED_SCRIPT" "$base_ws/target" "$sibling_ws" \
-            --fresh-checkout \
-            --touch "$sibling_ws/warm_leaf/src/lib.rs" >/dev/null
+    # rc + stdout are captured explicitly (rather than a bare call) because
+    # seed-warm-lane.sh's CALLER OBLIGATION (scripts/seed-warm-lane.sh:63-79)
+    # makes non-empty stdout the ONLY warm-safe signal: under this file's
+    # `set -euo pipefail`, a bare command-substitution assignment would abort
+    # the WHOLE SUITE on a fail-closed guard firing (mirrors the B13
+    # treatment-arm idiom, task #5875). `|| _b6_seed_rc=$?` makes the
+    # assignment errexit-exempt. Deliberately NOT redirecting stderr: seed's
+    # `err` diagnostics on a fail-closed abort are the diagnostic payload and
+    # must stay visible in the run log.
+    local _b6_seed_rc=0
+    local _b6_seed_out=""
+    _b6_seed_out="$(
+        REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 \
+        RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
+            bash "$SEED_SCRIPT" "$base_ws/target" "$sibling_ws" \
+                --fresh-checkout \
+                --touch "$sibling_ws/warm_leaf/src/lib.rs"
+    )" || _b6_seed_rc=$?
+    _B6_SEED_RC="$_b6_seed_rc"
+    _B6_SEED_OUT="$_b6_seed_out"
+
+    if [ "$_b6_seed_rc" -ne 0 ] || [ -z "$_b6_seed_out" ]; then
+        # Honour the caller obligation: an empty stdout (or non-zero rc) means
+        # seed refused to certify the sibling lane warm-safe and aborted ONTO
+        # the hazardous state (CoW clone already in place, sources already
+        # bulk-stamped). Remove the half-seeded target rather than let the
+        # caller (below) build on it; the B6 assertions below fail loudly and
+        # cleanly instead of measuring a half-seeded lane.
+        echo "B6: sibling seed REFUSED to certify the lane warm-safe (rc=$_b6_seed_rc, stdout=${_b6_seed_out:-<empty>}) — removing the half-seeded sibling target (caller obligation, scripts/seed-warm-lane.sh:63-79)" >&2
+        rm -rf "$sibling_ws/target" 2>/dev/null || true
+    fi
 
     # ── Step 2: Normalize lane_ws tree clean (required by provenance guard) ───
     # git checkout -- . resets tracked files; git clean -xfd -e target removes
@@ -2199,11 +2225,38 @@ cp -a "$_WS_BASE/warm_leaf" "$_WS_LANE/"
 # records the 2020-01-01 mtimes and a later `git checkout -- .` does not rewrite
 # warm_dep. Re-ordering that would put B7's own stated critical invariant at
 # risk for no coverage gain.
-REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 \
-RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
-    bash "$SEED_SCRIPT" "$_WS_BASE/target" "$_WS_LANE" \
-        --fresh-checkout \
-        --touch "$_WS_LANE/warm_leaf/src/lib.rs" >/dev/null
+# rc + stdout are captured explicitly (rather than a bare call) because
+# seed-warm-lane.sh's CALLER OBLIGATION (scripts/seed-warm-lane.sh:63-79)
+# makes non-empty stdout the ONLY warm-safe signal: under this file's
+# `set -euo pipefail`, a bare command-substitution assignment would abort the
+# WHOLE SUITE on a fail-closed guard firing (mirrors the B13 treatment-arm
+# idiom, task #5875). `|| _B34_SEED_RC=$?` makes the assignment
+# errexit-exempt. Deliberately NOT redirecting stderr: seed's `err`
+# diagnostics on a fail-closed abort are the diagnostic payload and must stay
+# visible in the run log.
+_B34_SEED_RC=0
+_B34_SEED_OUT="$(
+    REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 \
+    RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
+        bash "$SEED_SCRIPT" "$_WS_BASE/target" "$_WS_LANE" \
+            --fresh-checkout \
+            --touch "$_WS_LANE/warm_leaf/src/lib.rs"
+)" || _B34_SEED_RC=$?
+
+if [ "$_B34_SEED_RC" -ne 0 ] || [ -z "$_B34_SEED_OUT" ]; then
+    # Honour the caller obligation: an empty stdout (or non-zero rc) means
+    # seed refused to certify the lane warm-safe and aborted ONTO the
+    # hazardous state (CoW clone already in place, sources already
+    # bulk-stamped). Remove the half-seeded target rather than let the warm
+    # build below measure a half-seeded lane; the B3/B4 assertions then fail
+    # loudly on the (now cold, not hazardous) lane instead of the suite dying
+    # with no PASS/FAIL lines and no "Results:" tally.
+    echo "B3+B4: lane seed REFUSED to certify the lane warm-safe (rc=$_B34_SEED_RC, stdout=${_B34_SEED_OUT:-<empty>}) — removing the half-seeded lane target (caller obligation, scripts/seed-warm-lane.sh:63-79)" >&2
+    rm -rf "$_WS_LANE/target" 2>/dev/null || true
+fi
+
+assert "B3+B4: lane seed certified the lane warm-safe (rc=0, non-empty stdout)" \
+    test "$_B34_SEED_RC" -eq 0 -a -n "$_B34_SEED_OUT"
 
 # ── Warm lane build: heavy dep reused via CoW (fresh:true), leaf rebuilt ──────
 # Capture JSON to inspect per-crate freshness (B3 warm-skip) AND measure wall.
@@ -2358,6 +2411,9 @@ _B6_SIBLING_LANE="$_GATE_WS_ROOT/synth-sibling"
 # Snapshot sibling/target BEFORE the refresh so we can compare after.
 # _b6_clone_and_refresh is defined in impl-lifecycle → RED until then.
 _b6_clone_and_refresh "$_WS_BASE" "$_WS_LANE" "$_B6_SIBLING_LANE"
+
+assert "B6: sibling seed certified the lane warm-safe (rc=0, non-empty stdout)" \
+    test "$_B6_SEED_RC" -eq 0 -a -n "$_B6_SEED_OUT"
 
 # After the refresh, build the sibling lane and check dep freshness.
 _B6_SIBLING_RC=0
