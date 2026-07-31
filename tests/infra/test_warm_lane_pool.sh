@@ -475,16 +475,16 @@ _b6_clone_and_refresh() {
     # --fresh-checkout: bulk-stamps sibling sources to 2020-01-01, touches leaf now.
     # base_ws/target may be a symlink; seed receives the path — seed resolves it.
     #
-    # REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 is the semantically CORRECT
-    # annotation here, not a workaround for §9.5 inv.13. This fixture builds its
-    # base with REAL cargo, so target/<profile>/.fingerprint/ exists and the
-    # clone crosses inv.13's hazard gate; and it deliberately exercises the D5
-    # accept path — B6's in-flight-independence assertion DEPENDS on warm_dep's
-    # sources staying at 2020-01-01 so the dep reports fresh:true against the
-    # ORIGINAL base's artifacts. That is precisely the claim inv.13 refuses to
-    # make unsubstantiated in production, and precisely what this arm is here to
-    # measure. (Not git-init + --base-commit HEAD: see the note at the B3+B4
-    # seed site for why re-ordering the commit would risk B7's own invariant.)
+    # REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1: this fixture builds its base with
+    # REAL cargo, so target/<profile>/.fingerprint/ exists and the clone crosses
+    # inv.13's hazard gate; and B6's in-flight-independence assertion DEPENDS on
+    # warm_dep's sources staying at 2020-01-01 so the dep reports fresh:true
+    # against the ORIGINAL base's artifacts — i.e. this arm exercises the D5
+    # accept path deliberately. Why the knob is the accurate annotation for such
+    # a site (a deliberate ACCEPT, not a workaround): PRD §9.5 inv.13, which
+    # names this site. (Not git-init + --base-commit HEAD: see the note at the
+    # B3+B4 seed site for why re-ordering the commit would risk B7's own
+    # invariant.)
     # rc/stdout capture + refusal cleanup: see _seed_lane_capture (~line 168).
     _seed_lane_capture "B6" "$sibling_ws/target" \
         env REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 \
@@ -2248,13 +2248,12 @@ cp -a "$_WS_BASE/warm_leaf" "$_WS_LANE/"
 # artifact → dep appears fresh), then touches the leaf to NOW (newer than its
 # artifact → cargo rebuilds just the leaf).
 #
-# REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 is the semantically CORRECT annotation
-# here, not a workaround for §9.5 inv.13. The base is built with REAL cargo, so
+# REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1: the base is built with REAL cargo, so
 # target/<profile>/.fingerprint/ exists and the clone crosses inv.13's hazard
-# gate; and this arm deliberately exercises the D5 accept path — the warm-skip
-# assertion below depends on the 2020-01-01 bulk stamp making warm_dep report
-# fresh:true, which is exactly the claim inv.13 refuses to make unsubstantiated
-# in production.
+# gate; and the warm-skip assertion below depends on the 2020-01-01 bulk stamp
+# making warm_dep report fresh:true — i.e. this arm exercises the D5 accept path
+# deliberately. Why the knob is the accurate annotation for such a site (a
+# deliberate ACCEPT, not a workaround): PRD §9.5 inv.13, which names this site.
 #
 # Deliberately NOT git-init + --base-commit HEAD: that would require committing
 # $_WS_LANE BEFORE this seed, and _b7_init_git_lane below documents a
