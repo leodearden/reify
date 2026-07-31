@@ -1408,8 +1408,8 @@ fn enum_param_given_wrong_enum_warns_arg_type_mismatch() {
 
 // ── (b) HELD family: dimensioned Scalar ← dimensionless Real ─────────────────
 //
-// Supplying a bare dimensionless numeric literal at a dimensioned slot is an
-// idiomatic spelling throughout the corpus. Shape from
+// Migrated by task 5758 (β): the args are now dimensioned unit literals, the
+// fix form the ruling settled on. Shape from
 // examples/trajectory/{printer_print_envelope,tots_optimal_ptp}.ri.
 const SRC_FAMILY_DIMENSIONED_SCALAR: &str = r#"module test.family_dim_scalar
 structure def Limit {
@@ -1417,46 +1417,41 @@ structure def Limit {
     param acceleration_limit : Scalar<Acceleration>
 }
 structure def Root {
-    let l = Limit(velocity_limit: 300.0, acceleration_limit: 5000.0)
+    let l = Limit(velocity_limit: 300mm/s, acceleration_limit: 5000mm/s^2)
 }
 "#;
 
-/// The one family task 5465 did NOT promote — a deliberate, owned hold, not an
-/// oversight.
+/// A dimensioned unit literal at a dimensioned `Scalar<Q>` ctor field slot emits
+/// ZERO ctor-conformance diagnostics — i.e. β's fix form is ACCEPTED.
 ///
-/// **Held pending a language-semantics ruling.** Whether a dimensionless arg is
-/// legal at a dimensioned `Scalar<Q>` slot is a question about the
-/// dimensionless↔dimensioned slot convention, not about this walker. Today's
-/// answer is position-dependent across six gates: LEGAL at struct-ctor field
-/// slots (here), at literal `param`/`let` defaults
-/// (`crates/reify-compiler/src/entity.rs:459-478`) and at constraint-def args;
-/// ILLEGAL at user-fn param slots, fn-param defaults, ambient defaults,
-/// compound-expression initializers, and all arithmetic/comparison operators.
-/// `implicitly_converts_to` encodes no Scalar-vs-Scalar rule in EITHER
-/// direction. Owner: task #5627 (filed from this task as ticket
-/// `tkt_0RRQW5X0WYH2ZW0TZY1JZ6E189`, escalation `agent-followup-5465`), which
-/// carries the four candidate resolutions and their costs.
+/// **The ruling landed.** This probe was formerly
+/// `excluded_family_dimensioned_scalar_given_dimensionless_real_is_silent`, held
+/// pending a language-semantics ruling on whether a dimensionless arg is legal
+/// at a dimensioned slot. Leo ruled (esc-5758-2, and esc-5758-4 for the
+/// printer's deferred pair), recorded in PRD
+/// `docs/prds/v0_6/dimensioned-construction-strictness.md` §6.3 / §11 β: fix the
+/// call sites. Task 5758 migrated this fixture along with the rest of the
+/// corpus, so the probe now pins fix-form ACCEPTANCE rather than the held
+/// dimensionless-at-dimensioned question. See the PRD for the contract table;
+/// it is not restated here.
 ///
 /// **What this probe pins, precisely.** Zero *ctor-conformance* diagnostics —
 /// i.e. exclusion from ONE pass. It does NOT assert that the program is
 /// well-typed, and it must not be read as one.
 ///
-/// **The corpus dependency is acknowledged placeholder work, not a settled
-/// idiom.** `crates/reify-compiler/stdlib/trajectory.ri:568-569` tightened
-/// `velocity_limit` / `acceleration_limit` from `Real` to `Scalar<Velocity>` /
-/// `Scalar<Acceleration>` in task 4580 without updating the call sites, and
-/// `examples/trajectory/printer_print_envelope.ri:146-147` calls its own
-/// arguments "(mm/s placeholder Real)". So the ruling may well be to fix the
-/// call sites rather than to relax the walker.
+/// **The bare-arg negative pin is γ's.** With this fixture migrated, nothing
+/// here asserts what happens to a BARE arg at a dimensioned slot. γ introduces
+/// that as one of its I1-I8 value floors (PRD §7.1) rather than inverting this
+/// probe in place.
 #[test]
-fn excluded_family_dimensioned_scalar_given_dimensionless_real_is_silent() {
+fn family_dimensioned_scalar_given_unit_literal_arg_is_silent() {
     let module = compile_source_with_stdlib(SRC_FAMILY_DIMENSIONED_SCALAR);
     let diags = ctor_conformance_diags(&module);
     assert!(
         diags.is_empty(),
-        "dimensioned Scalar params given dimensionless Real args must emit ZERO \
-         ctor-conformance diagnostics — a bare numeric literal at a dimensioned slot is \
-         idiomatic across the corpus. Got: {diags:#?}"
+        "dimensioned Scalar params given dimensioned unit-literal args must emit ZERO \
+         ctor-conformance diagnostics — this is the fix form task 5758 (β) migrated the \
+         corpus to. Got: {diags:#?}"
     );
 }
 
