@@ -1062,6 +1062,56 @@ _passset_normalize_cargo_test() {
     | sort
 }
 
+# _passset_classify_rc(runner, rc, nresults) — pure classifier: reads cargo's
+# raw exit status (plus the count of normalized result lines already parsed
+# by the caller) and emits exactly ONE classification token on stdout:
+#   ok | test-failures | build-failure | no-tests-run | runner-error
+# Always exits 0 and touches no globals — a plain function of its three
+# positional args, unit-testable with canned integers (Block PS-RC arm A).
+#
+# rc table is EMPIRICALLY PROBED on this host (cargo-nextest 0.9.136), not
+# guessed — see Block PS-RC's header for the full probe writeup:
+#   nextest:    0→ok (or no-tests-run if nresults==0); 4→no-tests-run;
+#               100→test-failures; 101→build-failure; else→runner-error.
+#   cargo-test: libtest returns rc=101 for BOTH a compile failure and an
+#               honest test failure — the exit code alone cannot
+#               distinguish them, so nresults is the disambiguator: rc==0 is
+#               ok (or no-tests-run if nresults==0); rc!=0 is test-failures
+#               when nresults>0, else build-failure.
+#   unknown runner → runner-error, so a typo in the caller can never
+#               silently read as "ok".
+#
+# Honest limitation: a multi-crate `cargo test` where one crate fails to
+# compile AFTER another crate already emitted its results would classify as
+# test-failures rather than build-failure (nresults>0 masks the later
+# compile error). Not fixed here — cargo stops at the first compile error in
+# practice, so this shape is not reachable today.
+_passset_classify_rc() {
+    local runner="$1" rc="$2" nresults="$3"
+    case "$runner" in
+        nextest)
+            case "$rc" in
+                0)   if [ "$nresults" -eq 0 ]; then echo "no-tests-run"; else echo "ok"; fi ;;
+                4)   echo "no-tests-run" ;;
+                100) echo "test-failures" ;;
+                101) echo "build-failure" ;;
+                *)   echo "runner-error" ;;
+            esac
+            ;;
+        cargo-test)
+            if [ "$rc" -eq 0 ]; then
+                if [ "$nresults" -eq 0 ]; then echo "no-tests-run"; else echo "ok"; fi
+            else
+                if [ "$nresults" -gt 0 ]; then echo "test-failures"; else echo "build-failure"; fi
+            fi
+            ;;
+        *)
+            echo "runner-error"
+            ;;
+    esac
+    return 0
+}
+
 # run_passset(manifest) — run the workspace tests (cargo nextest run if available,
 # else cargo test) and produce a normalized, deterministic string capturing the
 # sorted test identifiers plus the pass/fail counts.  Output is on stdout.
