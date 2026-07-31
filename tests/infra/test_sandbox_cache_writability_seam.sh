@@ -58,15 +58,17 @@
 #       under /tmp (the landlock write set's host-global writable root)
 #       and explicitly NOT under $HOME/.cargo, $HOME/.npm or
 #       $HOME/.cache (respectively) — the exact regression this guard
-#       exists to catch. Gated on sandbox.enabled so it stays correct if
-#       sandbox is ever flipped back off (mirrors the precondition-gated
-#       structure of test_merge_role_lint_first_seam.sh's
-#       concurrent_verify guard).
+#       exists to catch. It ALSO defines UV_CACHE_DIR, an absolute path
+#       explicitly NOT under /tmp (the opposite polarity — see the
+#       collateral paragraph below). Gated on sandbox.enabled so it stays
+#       correct if sandbox is ever flipped back off (mirrors the
+#       precondition-gated structure of
+#       test_merge_role_lint_first_seam.sh's concurrent_verify guard).
 #   (B) KNOB-NAME CROSS-CHECK (plain bash grep, always runs, no python
 #       needed): `backend: landlock` and `enabled: true` are cited under
 #       the sandbox block, and `role_env_overrides:`, `CARGO_HOME:`,
-#       `npm_config_cache:` and `XDG_CACHE_HOME:` are all cited verbatim
-#       in the yaml.
+#       `npm_config_cache:`, `XDG_CACHE_HOME:` and `UV_CACHE_DIR:` are all
+#       cited verbatim in the yaml.
 #
 # WHY XDG_CACHE_HOME: compute_write_set() (orchestrator/agents/write_set.py)
 # has no carve-out for ~/.cache/tree-sitter (verified: zero tree-sitter /
@@ -82,6 +84,25 @@
 # compute_write_set directly, cancelled reify-side and refiled in
 # dark-factory); landing it would retire this leg of the redirect the same
 # way task 5724 would retire the CARGO_HOME/npm_config_cache leg.
+#
+# COLLATERAL, AND ITS CONTAINMENT (why UV_CACHE_DIR is pinned here too):
+# XDG_CACHE_HOME is a GENERAL variable, not tree-sitter-specific, and uv
+# honours it. compute_write_set() row 7 explicitly grants ~/.cache/uv, so
+# without a counter-pin the XDG_CACHE_HOME redirect above would silently
+# move uv's cache OFF its own grant and into /tmp — where
+# /usr/lib/tmpfiles.d/tmp.conf's `D /tmp 1777 root root 30d` both wipes at
+# every boot and age-deletes contents mid-uptime, the same partial-gutting
+# hazard the yaml's KNOWN GAPS note already documents for the cargo
+# registry, but on a cache that currently has a working grant. UV_CACHE_DIR
+# (uv's highest-precedence cache override) pins uv back at its granted
+# ~/.cache/uv, so this guard asserts it is present, absolute, and NOT under
+# /tmp — the opposite polarity from CARGO_HOME/npm_config_cache/
+# XDG_CACHE_HOME, which must lie under /tmp.
+# Deliberately NOT pinning SCCACHE_DIR, even though ~/.cache/sccache exists
+# on this host and would also follow the XDG redirect: ~/.cache/sccache is
+# NOT in compute_write_set(), so a sandboxed role cannot write it today
+# regardless — pinning it back at ~/.cache/sccache would name an UNGRANTED
+# path and be strictly worse than leaving it to follow the redirect.
 #
 # (A) is SKIPPED if python3 + PyYAML are unavailable (mirrors the SKIP
 #     idiom used by test_merge_role_lint_first_seam.sh /
@@ -274,6 +295,20 @@ PYEOF
 
             assert "role_env_overrides.${role}.npm_config_cache and .XDG_CACHE_HOME are distinct paths (a same-dir target would let tree-sitter's lib/ and lock/ dirs land inside npm's cache layout and pass every other check)" \
                 python3 "$_PARSE_PY" "$ORCH_YAML" role_keys_distinct "$role" npm_config_cache XDG_CACHE_HOME
+
+            # UV_CACHE_DIR is a COUNTER-redirect (see the "COLLATERAL" header
+            # paragraph): it must NOT be under /tmp, the opposite polarity
+            # from CARGO_HOME/npm_config_cache/XDG_CACHE_HOME above. It is
+            # therefore asserted present/absolute here, outside the
+            # under-tmp loop, rather than joining the `for key in ...` list.
+            assert "role_env_overrides.${role}.UV_CACHE_DIR is present and non-empty" \
+                python3 "$_PARSE_PY" "$ORCH_YAML" role_key_present "$role" UV_CACHE_DIR
+
+            assert "role_env_overrides.${role}.UV_CACHE_DIR is an absolute path" \
+                python3 "$_PARSE_PY" "$ORCH_YAML" role_key_absolute "$role" UV_CACHE_DIR
+
+            assert "role_env_overrides.${role}.UV_CACHE_DIR keeps its own compute_write_set ~/.cache/uv grant instead of following XDG_CACHE_HOME into /tmp" \
+                python3 "$_PARSE_PY" "$ORCH_YAML" role_key_not_under "$role" UV_CACHE_DIR /tmp
         done
     else
         echo "SKIP: sandbox.enabled is not true; cache-redirect contract does not apply (guard is conditional, see header)"
@@ -315,5 +350,8 @@ assert "'npm_config_cache:' cited in dark-factory-orchestrator.yaml" \
 
 assert "'XDG_CACHE_HOME:' cited in dark-factory-orchestrator.yaml" \
     grep -qE '^[[:space:]]*XDG_CACHE_HOME:' "$ORCH_YAML"
+
+assert "'UV_CACHE_DIR:' cited in dark-factory-orchestrator.yaml" \
+    grep -qE '^[[:space:]]*UV_CACHE_DIR:' "$ORCH_YAML"
 
 test_summary
