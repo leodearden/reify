@@ -24,7 +24,7 @@ pub use decompose::{SubProblem, decompose_into_components};
 // primitives).  These re-exports preserve the original
 // `reify_constraints::{NewtonConfig, ...}` paths so downstream callers
 // (reify-eval tests, reify-constraints integration tests) compile unchanged.
-pub use registry::SolverRegistry;
+pub use registry::{ObjectiveConsumption, SolverRegistry, objective_consumption};
 pub use reify_stdlib::loop_closure_solver::{
     LoopClosureChain, LoopClosureReport, NewtonConfig, NewtonOutcome, StartStrategy,
     mechanism_loop_closure_chains, newton_solve, solve_loop_closure,

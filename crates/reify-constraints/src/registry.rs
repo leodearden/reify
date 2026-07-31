@@ -3,7 +3,7 @@
 //! Combines classification + decomposition to dispatch sub-problems
 //! to domain-specific solvers.
 
-use crate::decompose::decompose_into_components;
+use crate::decompose::{SubProblem, decompose_into_components};
 use reify_core::{ConstraintNodeId, Type, ValueCellId};
 use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledFunction, ConstraintDomain, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, OptimalityStatus, RankedCandidate, RankedSolveResult, ResolutionProblem, SolveResult, UnOp, Value, ValueMap};
 use std::collections::HashMap;
@@ -12,6 +12,146 @@ use std::collections::HashMap;
 // Half-width δ = max(REL · |obj*|, ABS) so a near-zero obj* yields a non-degenerate band.
 const LEX_EPSILON_BAND_REL: f64 = 1e-3;
 const LEX_EPSILON_BAND_ABS: f64 = 1e-9;
+
+/// Whether — and by which solver component — a [`ResolutionProblem`]'s declared
+/// objective is actually consumed (task γ #5417, PRD
+/// `docs/prds/v0_6/declared-intent-consumption-accounting.md` §3 decision 3).
+///
+/// `SolverRegistry::solve_inner` has three points at which a declared objective
+/// is silently dropped: the `auto_params.is_empty()` early exit, the
+/// `components.is_empty()` early exit, and the objective-references-no-component
+/// fallback that attaches the objective to component 0 anyway. Each is
+/// invisible today — the solve reports `Solved` and the user's `minimize` never
+/// influenced anything (the INV-SF-3 failure).
+///
+/// This enum names those outcomes so the fact can escape to the engine, which
+/// turns the non-[`Consumed`](Self::Consumed) verdicts into
+/// `E_OBJECTIVE_UNCONSUMED`. It is deliberately a **fact channel only**: the
+/// routing is unchanged (the component-0 fallback stays, as it is PRD 2 α's
+/// fold/let-tracing territory), `solve_inner`'s return arity is unchanged, and
+/// no `ConstraintSolver` trait method is added (`SolveResult` /
+/// `RankedSolveResult` are frozen per F-result I1).
+///
+/// `solve_inner` itself consults the same classifier that produces this
+/// verdict, so the reported fact and the behaviour it describes provably
+/// cannot drift (G7 no-lockstep-duplication).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ObjectiveConsumption {
+    /// The problem declares no objective, so there is nothing to consume.
+    /// Takes precedence over every other verdict.
+    NoObjective,
+    /// An objective is declared but the problem has zero auto params, so
+    /// `solve_inner` returns at the `auto_params.is_empty()` early exit
+    /// without ever looking at the objective.
+    NoAutoParams,
+    /// An objective is declared and auto params exist, but the decomposition
+    /// produced zero components (no constraint references any auto param), so
+    /// `solve_inner` returns at the `components.is_empty()` early exit. This is
+    /// the pure-unconstrained-optimisation shape
+    /// (`docs/prds/v0_6/fixtures/dic_min_unconstrained.ri`).
+    NoComponents,
+    /// Components exist but the objective's value-refs match **no** component's
+    /// auto params, so `solve_inner` silently attaches it to component 0. The
+    /// solve succeeds and the objective governs nothing.
+    FallbackComponentZero,
+    /// The healthy case: the objective's refs reach component `component`'s
+    /// auto params, so that component genuinely carries the objective.
+    Consumed {
+        /// Index into the decomposition's component vector.
+        component: usize,
+    },
+}
+
+/// Collect the union of every objective term's value-refs, or `None` when the
+/// problem declares no objective.
+///
+/// Single-term `ObjectiveSet`s reduce to the prior single-expr ref set
+/// bit-identically (PRD §6.2 invariant I2).
+fn objective_value_refs(
+    problem: &ResolutionProblem,
+) -> Option<std::collections::HashSet<ValueCellId>> {
+    problem.objective.as_ref().map(|obj: &ObjectiveSet| {
+        let mut refs = std::collections::HashSet::new();
+        for term in &obj.terms {
+            crate::decompose::collect_value_refs_pub(&term.expr, &mut refs);
+        }
+        refs
+    })
+}
+
+/// Run `solve_inner`'s decomposition prelude once, returning both the
+/// components it routes on and the [`ObjectiveConsumption`] verdict those
+/// components imply.
+///
+/// This is the single source both `solve_inner` and the public
+/// [`objective_consumption`] read, so the routing decision and the reported
+/// fact cannot diverge (G7). The `auto_params.is_empty()` short-circuit mirrors
+/// `solve_inner`'s own early exit, so no decomposition work is added on that
+/// path.
+fn decompose_and_classify(problem: &ResolutionProblem) -> (Vec<SubProblem>, ObjectiveConsumption) {
+    let has_objective = problem.objective.is_some();
+
+    // Mirrors solve_inner's first early exit: with no auto params there is
+    // nothing to decompose and any declared objective is dropped.
+    if problem.auto_params.is_empty() {
+        let verdict = if has_objective {
+            ObjectiveConsumption::NoAutoParams
+        } else {
+            ObjectiveConsumption::NoObjective
+        };
+        return (Vec::new(), verdict);
+    }
+
+    let obj_refs = objective_value_refs(problem);
+
+    // Decompose into connected components, merging any components whose auto
+    // params are co-referenced by the objective expression(s).
+    let components = decompose_into_components(
+        &problem.auto_params,
+        &problem.constraints,
+        obj_refs.as_ref(),
+    );
+
+    let Some(refs) = obj_refs else {
+        return (components, ObjectiveConsumption::NoObjective);
+    };
+
+    // Mirrors solve_inner's second early exit: no components ⇒ the auto params
+    // are unconstrained and the objective is dropped.
+    if components.is_empty() {
+        return (components, ObjectiveConsumption::NoComponents);
+    }
+
+    // The objective-component first-match scan. Because
+    // `decompose_into_components` unions all objective-referenced params, they
+    // are guaranteed to land in a single component, so first-match always
+    // finds the correct one.
+    let matched = components
+        .iter()
+        .position(|comp| refs.iter().any(|r| comp.auto_params.contains(r)));
+
+    match matched {
+        Some(component) => (components, ObjectiveConsumption::Consumed { component }),
+        // Objective references no auto param in any component → solve_inner
+        // gives it to component 0 regardless.
+        None => (components, ObjectiveConsumption::FallbackComponentZero),
+    }
+}
+
+/// Report whether `problem`'s declared objective is actually consumed by a
+/// solver component — the fact behind `E_OBJECTIVE_UNCONSUMED` (task γ #5417).
+///
+/// Pure, deterministic, and solver-free: the verdict is a function of the
+/// problem alone, so the engine can consult it without dispatching a solve.
+/// `SolverRegistry::solve_inner` derives its own routing from the same
+/// classifier, which is what guarantees the fact describes the behaviour that
+/// actually happens (G7 no-lockstep-duplication).
+///
+/// Cost is one `decompose_into_components` pass — cheap relative to the solve
+/// it accompanies, and skipped entirely when the problem has no auto params.
+pub fn objective_consumption(problem: &ResolutionProblem) -> ObjectiveConsumption {
+    decompose_and_classify(problem).1
+}
 
 /// A registry that dispatches constraint sub-problems to domain-specific solvers.
 ///
@@ -148,8 +288,20 @@ impl SolverRegistry {
         // vector — see the "δ best-of-K propagation" doc section above.
         let mut captured_candidates: Option<Vec<RankedCandidate>> = None;
 
+        // Objective ref-collection + decomposition + objective-component
+        // first-match, run ONCE (task γ #5417). The three objective drop sites
+        // below and the public `objective_consumption` fact both read this one
+        // classification, so the fact can never drift from the routing it
+        // describes (G7 no-lockstep-duplication). Routing is unchanged: each
+        // arm below reproduces exactly what the previous inline code did.
+        let (components, consumption) = decompose_and_classify(problem);
+
         // Early exit: no auto params → already solved
         if problem.auto_params.is_empty() {
+            debug_assert!(
+                !matches!(consumption, ObjectiveConsumption::Consumed { .. }),
+                "no auto params cannot consume an objective"
+            );
             return (
                 SolveResult::Solved {
                     values: HashMap::new(),
@@ -160,22 +312,6 @@ impl SolverRegistry {
                 None,
             );
         }
-
-        // Collect value-refs from ALL objective terms for objective-aware decomposition.
-        // Single-term ObjectiveSet reduces to the prior single-expr ref set bit-identically.
-        let obj_refs: Option<std::collections::HashSet<ValueCellId>> =
-            problem.objective.as_ref().map(|obj: &ObjectiveSet| {
-                let mut refs = std::collections::HashSet::new();
-                for term in &obj.terms {
-                    crate::decompose::collect_value_refs_pub(&term.expr, &mut refs);
-                }
-                refs
-            });
-
-        // Decompose into connected components, merging any components
-        // whose auto params are co-referenced by the objective expression(s)
-        let components =
-            decompose_into_components(&problem.auto_params, &problem.constraints, obj_refs.as_ref());
 
         // If no components (all constraints reference non-auto params),
         // the auto params are unconstrained. Return current values or defaults.
@@ -195,20 +331,20 @@ impl SolverRegistry {
         let param_lookup: HashMap<&ValueCellId, &AutoParam> =
             problem.auto_params.iter().map(|ap| (&ap.id, ap)).collect();
 
-        // Determine which component gets the objective (if any).
-        // Because decompose_into_components unions all objective-referenced
-        // params, they are guaranteed to be in a single component. The
-        // first-match iteration always finds the correct one.
-        let objective_component = obj_refs.as_ref().map(|refs| {
-            for (ci, comp) in components.iter().enumerate() {
-                if refs.iter().any(|r| comp.auto_params.contains(r)) {
-                    return ci;
-                }
-            }
+        // Determine which component gets the objective (if any) — `Some(_)`
+        // exactly when an objective is declared, matching the previous
+        // `obj_refs.as_ref().map(..)` shape byte-for-byte.
+        let objective_component = match consumption {
+            ObjectiveConsumption::Consumed { component } => Some(component),
             // Objective references no auto params in any component →
-            // give it to the first component
-            0
-        });
+            // give it to the first component.
+            ObjectiveConsumption::FallbackComponentZero => Some(0),
+            // No objective declared, or one of the two early-exit verdicts —
+            // both of which the returns above already handled.
+            ObjectiveConsumption::NoObjective
+            | ObjectiveConsumption::NoAutoParams
+            | ObjectiveConsumption::NoComponents => None,
+        };
 
         let mut merged_values: HashMap<ValueCellId, Value> = HashMap::new();
         let mut all_unique = true;
@@ -878,7 +1014,10 @@ mod objective_consumption_tests {
             vec![ge_one("P", "k", 0)],
             Some(minimize_ref("P", "k")),
         );
-        assert_eq!(objective_consumption(&p), ObjectiveConsumption::NoAutoParams);
+        assert_eq!(
+            objective_consumption(&p),
+            ObjectiveConsumption::NoAutoParams
+        );
     }
 
     /// (3) Objective present, one auto, ZERO constraints ⇒ `NoComponents` —
@@ -888,12 +1027,11 @@ mod objective_consumption_tests {
     /// registry drops the objective silently.
     #[test]
     fn objective_over_unconstrained_auto_reports_no_components() {
-        let p = problem(
-            vec![auto("P", "a")],
-            vec![],
-            Some(minimize_ref("P", "a")),
+        let p = problem(vec![auto("P", "a")], vec![], Some(minimize_ref("P", "a")));
+        assert_eq!(
+            objective_consumption(&p),
+            ObjectiveConsumption::NoComponents
         );
-        assert_eq!(objective_consumption(&p), ObjectiveConsumption::NoComponents);
     }
 
     /// (4) The healthy case: the objective references an auto that a
