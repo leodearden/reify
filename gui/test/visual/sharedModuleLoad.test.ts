@@ -27,6 +27,7 @@ import {
   SHARED_ESM_MODULES,
   discoverSharedEsmModules,
   findBareNodeLoadViolations,
+  partitionVisualMjs,
   readSharedModuleSource,
 } from "./sharedModuleLoad.js";
 
@@ -84,29 +85,37 @@ describe("findBareNodeLoadViolations — the pure predicate behind the constrain
   });
 });
 
-describe("discoverSharedEsmModules — the filter rule behind the completeness guard", () => {
-  it("keeps shared `.mjs` modules, drops `smoke_*` drivers and non-`.mjs` files", () => {
+describe("partitionVisualMjs — the split rule behind both discovery filters", () => {
+  it("splits shared `.mjs` modules from `smoke_*` drivers, dropping non-`.mjs` files", () => {
+    // THE single pinned copy of the split rule. Both discoverSharedEsmModules
+    // and ./smokeDriverConventions.ts's discoverSmokeDrivers are thin wrappers
+    // over this one single-pass partition, so their disjointness holds BY
+    // CONSTRUCTION and needs no cross-check test; each suite pins only its own
+    // delegation.
+    //
     // Driven off a fixture directory so the RULE is pinned in isolation. The
     // opt-out prefix is `smoke_` WITH the underscore, so `smokeDriverGuards.mjs`
     // is a shared module while `smoke_appearance_e2e.mjs` is a driver — a
     // regression from `startsWith("smoke_")` to `startsWith("smoke")` would
-    // otherwise surface only as a confusing table mismatch in the guard below,
-    // never naming the filter as the thing that broke.
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reify-shared-esm-"));
+    // otherwise surface only as a confusing table mismatch in the completeness
+    // guards, never naming the filter as the thing that broke.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reify-visual-partition-"));
     try {
       for (const name of [
         "rpcEnvelope.mjs", // a shared module
         "smokeDriverGuards.mjs", // `smoke` but NOT `smoke_` — still shared
         "smoke_appearance_e2e.mjs", // a driver: opted out by name
+        "smoke_find_uses.mjs", // a second driver
         "sharedModuleLoad.ts", // not a `.mjs` at all
         "notes.md",
       ]) {
         fs.writeFileSync(path.join(dir, name), "");
       }
-      expect(discoverSharedEsmModules(dir).sort()).toEqual([
-        "rpcEnvelope.mjs",
-        "smokeDriverGuards.mjs",
-      ]);
+      const { drivers, shared } = partitionVisualMjs(dir);
+      expect(shared.sort()).toEqual(["rpcEnvelope.mjs", "smokeDriverGuards.mjs"]);
+      expect(drivers.sort()).toEqual(["smoke_appearance_e2e.mjs", "smoke_find_uses.mjs"]);
+      // Pins the delegation itself, not just the helper underneath it.
+      expect(discoverSharedEsmModules(dir).sort()).toEqual(["rpcEnvelope.mjs", "smokeDriverGuards.mjs"]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

@@ -31,9 +31,7 @@
  * each false-positive shape be pinned from a string literal with no on-disk
  * fixture.
  */
-import * as fs from "node:fs";
-
-import { VISUAL_DIR } from "./sharedModuleLoad.js";
+import { VISUAL_DIR, partitionVisualMjs } from "./sharedModuleLoad.js";
 
 /**
  * The stable identity of a violation. Assert on THIS, never on the message.
@@ -130,26 +128,14 @@ export const SMOKE_DRIVERS = [
 ];
 
 /**
- * Every `.mjs` in `dir` that IS a `smoke_*` driver — the exact complement of
- * `discoverSharedEsmModules`'s filter, so the two together partition every
- * `.mjs` in the directory and neither can silently drop one.
- *
- * That complement claim is EXECUTABLE, not prose: `./smokeDriverConventions.test.ts`
- * runs both discoveries over one fixture directory and asserts the two results
- * are disjoint and cover it exactly. Without that, editing either filter alone
- * — adding an `.e2e.mjs` carve-out here, say — would drop files out of BOTH
- * tables with every test still green, which is the silent-gap failure mode
- * {@link SMOKE_DRIVERS} exists to avoid on the other axis.
- *
- * The two filters remain one negated character apart, in two files. Collapsing
- * them into a single shared partition helper is the real fix and belongs in
- * `./sharedModuleLoad.ts`, which task 5857 does not hold; the executable
- * cross-check is the in-scope half.
+ * Every `.mjs` in `dir` that IS a `smoke_*` driver — the driver half of
+ * `./sharedModuleLoad.ts`'s {@link partitionVisualMjs} split, whose docblock is
+ * the one home of the rule and the reasoning behind it.
  *
  * Used ONLY by the completeness guard, never as the `it.each` source; see
- * {@link SMOKE_DRIVERS}. The `dir` parameter exists so the filter rule stays
+ * {@link SMOKE_DRIVERS}. The `dir` parameter exists so this delegation stays
  * pinnable against a fixture directory in isolation.
  */
 export function discoverSmokeDrivers(dir: string = VISUAL_DIR): string[] {
-  return fs.readdirSync(dir).filter((name) => name.endsWith(".mjs") && name.startsWith("smoke_"));
+  return partitionVisualMjs(dir).drivers;
 }
