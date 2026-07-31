@@ -1,8 +1,10 @@
 //! Tests for `crates/reify-compiler/stdlib/ports.ri` and
 //! `crates/reify-compiler/stdlib/ports_mechanical.ri` —
 //! `std.ports` module: Directionality enum, Port base trait.
-//! `std.ports.mechanical` module: Torque type alias, MechanicalPort, Bore,
-//! Shaft, RotaryPort, ThreadedPort, StructurePort traits.
+//! `std.ports.mechanical` module: MechanicalPort, Bore, Shaft, RotaryPort,
+//! ThreadedPort, StructurePort traits. (The `Torque` type alias this module
+//! once declared was retired by task η — Torque is a built-in named dimension;
+//! see `torque_alias_removed_builtin_named_dimension_shadows` below.)
 //!
 //! Reconstructs the lost std.ports stdlib surface per PRD
 //! docs/prds/v0_6/stdlib-reconstruction.md task α.
@@ -3158,5 +3160,115 @@ fn example_ports_mechanical_ri_compiles_clean() {
             .iter()
             .map(|t| (&t.name, &t.entity_kind))
             .collect::<Vec<_>>()
+    );
+}
+
+// ─── task η: Torque builtin named dimension retires the stdlib alias ─────────
+
+/// CONSUMER PROOF for task η: the `pub type Torque = Force * Length / Angle`
+/// alias in ports_mechanical.ri existed SOLELY because `Torque` was absent from
+/// `NAMED_DIMENSIONS`, so retiring it is what demonstrates the builtin works.
+/// See the `DimensionVector::TORQUE` docs in reify-core for the PRD §6 D4
+/// rationale behind the registration itself.
+///
+///  (a) no `Torque` entry remains in `module.type_aliases` — the retirement proof;
+///  (b) `RotaryPort.max_torque` still resolves to `Scalar<TORQUE>` — the builtin
+///      shadows the now-absent alias, resolution being builtin-before-alias
+///      (`resolve_type_with_aliases` tries `resolve_type_with_params` first);
+///  (c) a bare user source with NO import compiles clean and carries `TORQUE`;
+///  (d) the negative counterpart — an Energy-dimensioned default against a
+///      `Torque` annotation is still rejected.
+///
+/// Modelled on `rotational_stiffness_alias_removed_builtin_dimension_shadows`
+/// in flexures_stdlib_compile.rs, which pins the identical two-part invariant
+/// for task 4547's structurally identical deletion.
+#[test]
+fn torque_alias_removed_builtin_named_dimension_shadows() {
+    let module = load_module("std/ports/mechanical");
+
+    // (a) The alias itself is gone.
+    assert!(
+        !module.type_aliases.iter().any(|a| a.name == "Torque"),
+        "the `pub type Torque = Force * Length / Angle` alias must be DELETED \
+         (task η registered the built-in DimensionVector::TORQUE, which already \
+         shadows it); got type_aliases: {:?}",
+        module
+            .type_aliases
+            .iter()
+            .map(|a| &a.name)
+            .collect::<Vec<_>>()
+    );
+
+    // (b) The deletion is safe: RotaryPort's required `max_torque : Torque`
+    // still resolves, now via NAMED_DIMENSIONS instead of the alias.
+    let max_torque = param_type("std/ports/mechanical", "RotaryPort", "max_torque");
+    assert_eq!(
+        max_torque,
+        Type::Scalar {
+            dimension: DimensionVector::TORQUE,
+        },
+        "RotaryPort.max_torque must resolve to the built-in TORQUE dimension \
+         even with the alias deleted; got: {:?}",
+        max_torque
+    );
+
+    // (c) The user-observable signal: no import needed.
+    let source = r#"
+structure def S { param t : Torque = 5N*m/rad }
+"#;
+    let compiled = compile_source_with_stdlib(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "`param t : Torque` must compile with NO import now that Torque is a \
+         built-in named dimension; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("compiled module should contain the S template");
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "t")
+        .expect("S should have a value cell named 't'");
+    assert_eq!(
+        cell.cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::TORQUE,
+        },
+        "the unimported `param t : Torque` cell must carry TORQUE; got: {:?}",
+        cell.cell_type
+    );
+
+    // (d) The negative counterpart to (c). Making `Torque` a bare, importless
+    // spelling puts it one keystroke away from `Energy` — `5N*m` instead of
+    // `5N*m/rad` — and the two vectors differ ONLY in the Angle⁻¹ slot. Pin
+    // that the compiler still rejects the mismatch, so the convenience of (c)
+    // cannot quietly become a way to write energy into a torque parameter.
+    let bad = compile_source_with_stdlib("structure def S { param t : Torque = 5N*m }\n");
+    let bad_errors: Vec<&String> = bad
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| &d.message)
+        .collect();
+    assert!(
+        !bad_errors.is_empty(),
+        "`param t : Torque = 5N*m` is an Energy-dimensioned default against a \
+         Torque annotation and MUST be rejected; got no Error diagnostics"
+    );
+    assert!(
+        bad_errors
+            .iter()
+            .any(|m| m.contains("rad^-1") && m.contains("must agree")),
+        "the rejection must name the Angle⁻¹ slot that separates Torque from \
+         Energy (declared `…rad^-1` vs initializer without it); got: {bad_errors:?}"
     );
 }
