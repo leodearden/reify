@@ -125,6 +125,87 @@ describe("findSmokeDriverConventionViolations — the pure predicate behind the 
   });
 });
 
+describe("findSmokeDriverConventionViolations — the post-open `store_state` diagnosis", () => {
+  // One case per spelling of the UNGUARDED read. The optional chain is the whole
+  // defect: an in-band `{error: '<msg>'}` is TRUTHY, so `!storeAfterOpen?.…`
+  // reads past it to `undefined` and the driver reports `got: undefined` —
+  // blaming the frontend for a `store_state` outage.
+  it.each([
+    [
+      "the shape smoke_mesh_count_parity_e2e.mjs:200-205 carries today",
+      [
+        "  const storeAfterOpen = await rpc('store_state');",
+        "  if (!storeAfterOpen?.editor?.activeFile?.includes('large_assembly')) {",
+        "    fail(",
+        "      `Expected activeFile to contain 'large_assembly', got: ${storeAfterOpen?.editor?.activeFile}`,",
+        "    );",
+        "  }",
+      ].join("\n"),
+    ],
+    [
+      "a whitespace variant a formatter could introduce at any time",
+      "  if (!storeAfterOpen ?. editor ?. activeFile) fail('nope');",
+    ],
+    [
+      "the read alone, with no `store_state` call in the snippet",
+      "  const active = storeAfterOpen?.editor?.activeFile;",
+    ],
+  ])("flags %s", (_form, source) => {
+    expect(codesFor(source)).toEqual(["undiagnosed-store-state"]);
+  });
+
+  // THE FALSE POSITIVES — the load-bearing half again. Each of these is a shape
+  // an ALREADY-COMPLIANT driver carries, so a predicate that flags any of them
+  // fails the corpus guard for the wrong reason and gets "fixed" by editing a
+  // correct driver.
+  it.each([
+    [
+      "the compliant shape verbatim (smoke_multi_pane_e2e.mjs:128-136)",
+      [
+        "  const storeAfterOpen = await rpc('store_state');",
+        "  // Diagnose the RPC before the optional chain reads past an in-band error —",
+        "  // see ./smokeDriverGuards.mjs (describeRpcFailure).",
+        "  const storeAfterOpenFailure = describeRpcFailure(storeAfterOpen, 'store_state (post-open)');",
+        "  if (storeAfterOpenFailure) fail(storeAfterOpenFailure);",
+        "  if (!storeAfterOpen?.editor?.activeFile?.includes('multi_pane_viewport')) {",
+        "    fail(`Expected activeFile to contain 'multi_pane_viewport', got: ${storeAfterOpen?.editor?.activeFile}`);",
+        "  }",
+      ].join("\n"),
+    ],
+    [
+      "the chain named in a line comment only",
+      "  // storeAfterOpen?.editor?.activeFile is read below, once diagnosed.",
+    ],
+    [
+      "the chain named in a block comment only",
+      "  /* e.g. storeAfterOpen?.editor?.activeFile — diagnose the payload first */",
+    ],
+    [
+      "a driver that never binds `storeAfterOpen` (smoke_diagnostics_e2e.mjs / smoke_find_uses.mjs)",
+      [
+        "  await openFileWithRetry(rpc, FIXTURE, { fail });",
+        "  const diagnostics = await rpc('get_diagnostics');",
+        "  if (!diagnostics?.diagnostics?.length) fail('expected diagnostics');",
+      ].join("\n"),
+    ],
+  ])("does not flag %s", (_form, source) => {
+    expect(findSmokeDriverConventionViolations(source)).toEqual([]);
+  });
+
+  it("reports each convention exactly once for a driver tripping both", () => {
+    // The at-most-once contract, pinned across the WIDENED predicate: a driver
+    // with two problems gets two violations, not one per offending line.
+    const source = [
+      "  openResult = await rpc('open_file', { path: FIXTURE });",
+      "  console.log(`  open_file result:`, JSON.stringify(openResult));",
+      "  const storeAfterOpen = await rpc('store_state');",
+      "  if (!storeAfterOpen?.editor?.activeFile?.includes('large_assembly')) fail('nope');",
+      "  log(`active: ${storeAfterOpen?.editor?.activeFile}`);",
+    ].join("\n");
+    expect(codesFor(source)).toEqual(["inline-open-file", "undiagnosed-store-state"]);
+  });
+});
+
 describe("stripComments — the mitigation the predicate is built on", () => {
   // Exported and therefore pinned directly, not only through the predicate: its
   // header makes two claims a caller could rely on, and both are load-bearing
