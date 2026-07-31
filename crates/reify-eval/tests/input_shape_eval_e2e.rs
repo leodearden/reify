@@ -36,7 +36,7 @@
 use std::sync::OnceLock;
 
 use reify_compiler::CompiledModule;
-use reify_core::ValueCellId;
+use reify_core::{DimensionVector, ValueCellId};
 use reify_ir::Value;
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
@@ -317,4 +317,122 @@ fn input_shape_tots_shaper_echoes_profile() {
              be returning Value::Undef (TOTS arm not wired) or the .ri surface is broken"
         ),
     }
+}
+
+/// `InputShapeTOTSE2E.shaper`'s actuator/kinematic limits are constructed from
+/// dimensioned unit literals, not bare `Real`s (task 5758 — PRD
+/// `docs/prds/v0_6/dimensioned-construction-strictness.md` §6.3 / §11 β).
+///
+/// ## Two kinds of change, both asserted numerically
+///
+/// The `max_force` pin and the velocity/acceleration pins differ in kind:
+///
+///   * `max_force` 100 → `100N` is MAGNITUDE-PRESERVING. A bare literal at a
+///     `Scalar<Force>` slot was already read as SI newtons, so the "SI values
+///     must not change" invariant still binds here and 100.0 is asserted
+///     exactly.
+///   * `velocity_limit` 300 → `300mm/s` (SI 0.3) and `acceleration_limit`
+///     5000 → `5000mm/s^2` (SI 5.0) are the INTENDED 1000× change ruled by Leo
+///     in esc-5758-2 (option B) for this file's TOTS_SNIPPET :255/:256. Read as
+///     SI, the bare literals denoted 300 m/s and 5000 m/s².
+///
+/// Both facts are asserted numerically at the Value layer rather than inferred
+/// from compile-cleanliness (decompose-addendum D2 / INV-SF-7): "it still
+/// compiles" is exactly the evidence that would NOT have caught either error.
+///
+/// The match is on `Value::Scalar { si_value, dimension }` explicitly, with
+/// `dimension` compared against a named `DimensionVector` constant — never
+/// through an f64 coercion helper, which would fold `Value::Real` and
+/// `Value::Scalar` together and make this pin vacuous.
+#[test]
+fn input_shape_tots_shaper_limits_are_dimensioned() {
+    let compiled = compiled_tots();
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    let result = engine.eval(compiled);
+
+    let id = ValueCellId::new("InputShapeTOTSE2E", "shaper");
+    let shaper = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("InputShapeTOTSE2E.shaper cell missing from eval result"));
+
+    let Value::StructureInstance(data) = shaper else {
+        panic!("InputShapeTOTSE2E.shaper must be a TOTSShaper StructureInstance; got {shaper:?}")
+    };
+
+    /// Assert a field is a dimensioned `Value::Scalar` with exactly this SI
+    /// magnitude and dimension. Panics naming the observed variant so an
+    /// un-migrated (or re-bared) ctor arg reads clearly.
+    fn pin(v: &Value, expected_si: f64, expected_dim: DimensionVector, what: &str) {
+        match v {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert_eq!(
+                    *dimension, expected_dim,
+                    "{what}: wrong dimension — expected {expected_dim:?}, got {dimension:?}"
+                );
+                assert_eq!(
+                    *si_value, expected_si,
+                    "{what}: wrong SI magnitude — expected {expected_si}, got {si_value}"
+                );
+            }
+            Value::Real(r) => panic!(
+                "{what}: still a BARE Value::Real({r}) — expected a dimensioned \
+                 Value::Scalar {{ si_value: {expected_si}, dimension: {expected_dim:?} }}. \
+                 The TOTS_SNIPPET ctor arg has not been migrated to a unit literal \
+                 (task 5758 / PRD docs/prds/v0_6/dimensioned-construction-strictness.md §11 β)."
+            ),
+            other => panic!("{what}: expected a dimensioned Value::Scalar, got {other:?}"),
+        }
+    }
+
+    let field = |name: &str| -> &Value {
+        data.fields
+            .get(&name.to_string())
+            .unwrap_or_else(|| panic!("InputShapeTOTSE2E.shaper.{name} field missing"))
+    };
+
+    pin(
+        field("velocity_limit"),
+        0.3,
+        DimensionVector::VELOCITY,
+        "InputShapeTOTSE2E.shaper.velocity_limit",
+    );
+    pin(
+        field("acceleration_limit"),
+        5.0,
+        DimensionVector::ACCELERATION,
+        "InputShapeTOTSE2E.shaper.acceleration_limit",
+    );
+
+    let Value::List(limits) = field("actuator_limits") else {
+        panic!(
+            "InputShapeTOTSE2E.shaper.actuator_limits must be a Value::List, got {:?}",
+            field("actuator_limits")
+        )
+    };
+    assert_eq!(
+        limits.len(),
+        1,
+        "InputShapeTOTSE2E.shaper.actuator_limits should hold exactly one JointLimit, got {}",
+        limits.len()
+    );
+    let Value::StructureInstance(jl) = &limits[0] else {
+        panic!(
+            "InputShapeTOTSE2E.shaper.actuator_limits[0] must be a JointLimit \
+             StructureInstance; got {:?}",
+            limits[0]
+        )
+    };
+    pin(
+        jl.fields
+            .get(&"max_force".to_string())
+            .expect("JointLimit.max_force field missing"),
+        100.0,
+        DimensionVector::FORCE,
+        "InputShapeTOTSE2E.shaper.actuator_limits[0].max_force",
+    );
 }
