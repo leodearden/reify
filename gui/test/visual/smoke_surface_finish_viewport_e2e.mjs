@@ -128,10 +128,8 @@ async function main() {
 
   // Boot: activeFile must contain 'surface_finish_viewport'
   const storeAfterOpen = await rpc('store_state');
-  // The optional chain below reads straight past an in-band `{error: '<msg>'}`
-  // and reports `activeFile: undefined` — a store_state OUTAGE misreported as
-  // the wrong file being open. See ./smokeDriverGuards.mjs (describeRpcFailure)
-  // for why a truthy error payload defeats a falsy guard.
+  // Diagnose the RPC before the optional chain reads past an in-band error —
+  // see ./smokeDriverGuards.mjs (describeRpcFailure).
   const storeAfterOpenFailure = describeRpcFailure(storeAfterOpen, 'store_state (post-open)');
   if (storeAfterOpenFailure) fail(storeAfterOpenFailure);
   if (!storeAfterOpen?.editor?.activeFile?.includes('surface_finish_viewport')) {
