@@ -2320,6 +2320,112 @@ assert "PS-RC C4: cold-side rc is 3 (the out-of-band signal that IS able to see 
 assert "PS-RC C4: warm-side rc is 3 (the out-of-band signal that IS able to see it)" \
     test "$_PSRC_C4_WARM_RC" -eq 3
 
+# ── Arm D: end-to-end wiring of run_passset()'s CARGO-TEST FALLBACK branch.
+# Forced by PATH="$_PSRC_STUB_DIR:/usr/bin:/bin" — a full REPLACEMENT of
+# PATH (not a prepend), so ~/.cargo/bin (and any other real cargo-nextest
+# location) is excluded outright, PLUS REIFY_TEST_PASSSET_NEXTEST=0 so the
+# stub cargo's `nextest --version` probe also fails. Deliberately NO
+# $_PSRC_STUB_DIR_NEXTEST on this PATH (see the prereq header) — that is
+# what makes `command -v cargo-nextest` genuinely fail rather than finding
+# either stub.
+#
+# NON-VACUITY GUARD FIRST: without proving the fallback branch actually ran,
+# a host that happens to ship cargo-nextest under /usr/bin (this one does
+# not — checked) would silently take the NEXTEST branch instead, and every
+# assertion below would test nothing.
+#
+# RED on D1/D2 (not D3): today's cargo-test branch still passes the
+# nextest-only `-- --test-output immediate-fail` flag (D1) and still
+# swallows the rc (D2's rc/marker checks). D3 (an honest test failure) is a
+# "must NOT fire" control — our canned stub does not simulate the real
+# libtest flag-rejection, so it already holds unmodified and exists to catch
+# a step-8 regression, not to be RED now.
+echo ""
+echo "--- Block PS-RC arm D: run_passset() cargo-test fallback-branch wiring ---"
+
+_PSRC_D2_MANIFEST="/nonexistent/psrc-d2/Cargo.toml"
+_PSRC_D2_FIXTURE="$(mktemp /tmp/test-warm-pool-psrc-d2-XXXXXX)"
+_TMPDIRS+=("$_PSRC_D2_FIXTURE")
+cat > "$_PSRC_D2_FIXTURE" << 'PSRC_D2_EOF'
+error[E0433]: failed to resolve: use of undeclared crate or module `bar`
+ --> src/lib.rs:5:5
+  |
+5 |     bar::baz();
+  |     ^^^ use of undeclared crate or module `bar`
+
+error: could not compile `warm_dep` (lib) due to 1 previous error
+PSRC_D2_EOF
+
+> "$_PSRC_CALLS_FILE"
+_PSRC_D2_RC=0
+> "$_PSRC_ERRF"
+_PSRC_D2_OUT="$(
+    PATH="$_PSRC_STUB_DIR:/usr/bin:/bin" \
+    REIFY_TEST_PASSSET_CALLS="$_PSRC_CALLS_FILE" \
+    REIFY_TEST_PASSSET_NEXTEST=0 \
+    REIFY_TEST_PASSSET_OUT="$_PSRC_D2_FIXTURE" \
+    REIFY_TEST_PASSSET_RC=101 \
+        run_passset "$_PSRC_D2_MANIFEST" 2>"$_PSRC_ERRF"
+)" || _PSRC_D2_RC=$?
+_PSRC_D2_ERR="$(cat "$_PSRC_ERRF")"
+_PSRC_D2_CALLS="$(cat "$_PSRC_CALLS_FILE")"
+
+assert "PS-RC D: non-vacuity — the fallback branch actually ran (stub invoked as \`cargo test …\`)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "^cargo test "' _ "$_PSRC_D2_CALLS"
+assert "PS-RC D: non-vacuity — the NEXTEST branch did NOT run (no \`cargo nextest run\` recorded)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "cargo nextest run"' _ "$_PSRC_D2_CALLS"
+
+# (D1) --test-output is a NEXTEST-only flag; libtest rejects it with
+# `error: Unrecognized option: 'test-output'` (verified empirically on this
+# host), making the fallback branch emit zero result lines UNCONDITIONALLY.
+assert "PS-RC D1: recorded argv carries NO --test-output token (nextest-only flag; libtest rejects it)" \
+    bash -c '! printf "%s\n" "$1" | grep -q -- "--test-output"' _ "$_PSRC_D2_CALLS"
+
+# (D2) canned COMPILE FAILURE: zero `test … ok` lines, rc=101.
+assert "PS-RC D2: compile failure (cargo-test, rc=101, zero result lines) → run_passset returns exactly 3" \
+    test "$_PSRC_D2_RC" -eq 3
+assert "PS-RC D2: stderr carries the PASSSET-RUN-FAILURE marker" \
+    bash -c 'printf "%s\n" "$1" | grep -q "PASSSET-RUN-FAILURE"' _ "$_PSRC_D2_ERR"
+assert "PS-RC D2: stderr names class=build-failure" \
+    bash -c 'printf "%s\n" "$1" | grep -q "class=build-failure"' _ "$_PSRC_D2_ERR"
+assert "PS-RC D2: stderr names runner=cargo-test" \
+    bash -c 'printf "%s\n" "$1" | grep -q "runner=cargo-test"' _ "$_PSRC_D2_ERR"
+
+# (D3) canned TEST FAILURE: rc=101 — the SAME rc a compile failure produces
+# under libtest — so only the result-line count (not rc alone) can tell
+# them apart. The guard must NOT fire on this.
+_PSRC_D3_MANIFEST="/nonexistent/psrc-d3/Cargo.toml"
+_PSRC_D3_FIXTURE="$(mktemp /tmp/test-warm-pool-psrc-d3-XXXXXX)"
+_TMPDIRS+=("$_PSRC_D3_FIXTURE")
+cat > "$_PSRC_D3_FIXTURE" << 'PSRC_D3_EOF'
+running 2 tests
+test a::smoke ... ok
+test b::smoke ... FAILED
+
+failures:
+    b::smoke
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+PSRC_D3_EOF
+
+_PSRC_D3_RC=0
+> "$_PSRC_ERRF"
+_PSRC_D3_OUT="$(
+    PATH="$_PSRC_STUB_DIR:/usr/bin:/bin" \
+    REIFY_TEST_PASSSET_NEXTEST=0 \
+    REIFY_TEST_PASSSET_OUT="$_PSRC_D3_FIXTURE" \
+    REIFY_TEST_PASSSET_RC=101 \
+        run_passset "$_PSRC_D3_MANIFEST" 2>"$_PSRC_ERRF"
+)" || _PSRC_D3_RC=$?
+_PSRC_D3_ERR="$(cat "$_PSRC_ERRF")"
+
+assert "PS-RC D3: honest test failure (cargo-test, rc=101 — SAME rc as a compile failure) → run_passset returns 0 (guard must NOT fire)" \
+    test "$_PSRC_D3_RC" -eq 0
+assert "PS-RC D3: stderr carries NO PASSSET-RUN-FAILURE marker" \
+    bash -c '! printf "%s\n" "$1" | grep -q "PASSSET-RUN-FAILURE"' _ "$_PSRC_D3_ERR"
+assert "PS-RC D3: stdout's first line is exactly passed=1 failed=1 ignored=0" \
+    bash -c 'test "$(printf "%s\n" "$1" | head -1)" = "passed=1 failed=1 ignored=0"' _ "$_PSRC_D3_OUT"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block PG — Provenance-guard refusal + rename-negative-control (ALWAYS-RUN)
 #
