@@ -2286,6 +2286,24 @@ fn solve_cost_robustness_tradeoff(
     solve_core_with_sd_tolerance(&blend_problem, initial, NM_SD_TOLERANCE, false)
 }
 
+/// Returns `true` if `a` and `b` agree within the project's uniqueness
+/// tolerance: relative to the larger magnitude (`UNIQUENESS_REL_TOL * scale`,
+/// `scale = |a|.max(|b|).max(UNIQUENESS_ABS_TOL)`), OR within the absolute
+/// floor `UNIQUENESS_ABS_TOL` — whichever is looser, matching `f64` comparison
+/// best practice at both small and large magnitudes.
+///
+/// Extracted from [`solutions_agree`]'s inline predicate (task #5711) so
+/// parameter comparison and objective-score comparison ([`classify_uniqueness`])
+/// share ONE tolerance policy. That sharing is load-bearing, not cosmetic: it
+/// gives the objective comparison the RELATIVE arm for free, which matters at
+/// large magnitudes — e.g. a `1e8`-scale objective, where an absolute-only
+/// tolerance would misclassify a genuine tie as a strict improvement.
+fn within_uniqueness_tol(a: f64, b: f64) -> bool {
+    let diff = (a - b).abs();
+    let scale = a.abs().max(b.abs()).max(UNIQUENESS_ABS_TOL);
+    !(diff > UNIQUENESS_REL_TOL * scale && diff > UNIQUENESS_ABS_TOL)
+}
+
 /// Compare two solution maps across the given auto params.
 ///
 /// Returns `true` if every param value in `solved_values` and
@@ -2326,9 +2344,8 @@ fn solutions_agree(
                 return false;
             }
         };
-        let diff = (s1 - s2).abs();
-        let scale = s1.abs().max(s2.abs()).max(UNIQUENESS_ABS_TOL);
-        if diff > UNIQUENESS_REL_TOL * scale && diff > UNIQUENESS_ABS_TOL {
+        if !within_uniqueness_tol(s1, s2) {
+            let diff = (s1 - s2).abs();
             tracing::debug!(
                 param = %param.id,
                 s1,
@@ -2341,6 +2358,81 @@ fn solutions_agree(
     }
     tracing::debug!("uniqueness check passed: perturbed solution matches");
     true
+}
+
+/// Verdict from comparing an incumbent solution against a perturbed re-solve,
+/// per `docs/reify-implementation-architecture.md:1140` §11.6's two disjunctive
+/// well-determinedness tests for strict `auto` resolution: the resolved value
+/// must be either uniquely determined by constraints, or uniquely optimal
+/// under the applicable objective.
+///
+/// `#[allow(dead_code)]`: not yet reachable from non-test code — task #5711
+/// step-2 adds this classifier unwired (a behaviour-preserving commit); step-5
+/// wires it into [`verify_uniqueness`], at which point this allow is removed.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UniquenessVerdict {
+    /// The incumbent and perturbed parameter values agree within tolerance —
+    /// the first §11.6 test ("uniquely determined by constraints") is
+    /// satisfied directly, so the objective is never consulted.
+    Unique,
+    /// The parameter values differ, and that difference is NOT explained away
+    /// by an objective-optimality finding: either no effective objective
+    /// exists (so only the first §11.6 test applies, and it fails), or the
+    /// objective ties between the two points (a flat region), or the
+    /// perturbed point scores no better than the incumbent. Both §11.6 tests
+    /// fail, so this is a genuine non-uniqueness report.
+    NonUnique,
+    /// The parameter values differ, but the perturbed point scores STRICTLY
+    /// better than the incumbent under the applicable objective (beyond
+    /// tolerance): the incumbent was never the argmin, so this is an
+    /// OPTIMALITY finding — e.g. a drift-fallback or budget-exhausted local
+    /// search settling short — not a §11.6 non-uniqueness one. Callers
+    /// suppress this verdict (report "cannot prove non-unique") rather than
+    /// `ConstraintNonUnique`.
+    IncumbentSuboptimal,
+}
+
+/// Classify solution uniqueness per §11.6's two disjunctive well-determinedness
+/// tests. `objective_scores`, when present, is `(incumbent, perturbed)` on the
+/// pure-minimiser scale used by [`eval_objective_set`] (lower is better); pass
+/// `None` when no effective objective exists or either score is incomparable
+/// (`eval_objective_set` already collapses `Undef`/non-finite to `None`).
+///
+/// Deliberately MONOTONE relative to pre-#5711 behaviour: the only new branch
+/// is params-differ + perturbed-strictly-better → `IncumbentSuboptimal`. Every
+/// other input shape keeps the verdict the old boolean check would have
+/// produced (folding `Unique` to `true` and `NonUnique` to `false`).
+/// Monotonicity is what bounds this change's blast radius: it can only turn a
+/// `false` (non-unique) verdict into `true`, never the reverse, so no
+/// currently-passing `ConstraintNonUnique` expectation can flip to `Solved` as
+/// a side effect of this classifier alone. In particular, a perturbed point
+/// that scores strictly WORSE than the incumbent is deliberately left at
+/// `NonUnique` even though that comparison is logically inconclusive on its
+/// own (the re-solve may simply have stalled at a worse local point) —
+/// abstaining there would silently convert
+/// `strict_auto_non_unique_returns_infeasible`'s synthetic-centrality-objective
+/// fixture (solver_integration.rs:1659) into a false `Solved`.
+///
+/// `#[allow(dead_code)]`: see [`UniquenessVerdict`] — unwired until step-5.
+#[allow(dead_code)]
+fn classify_uniqueness(
+    auto_params: &[AutoParam],
+    solved_values: &HashMap<ValueCellId, Value>,
+    perturbed_values: &HashMap<ValueCellId, Value>,
+    objective_scores: Option<(f64, f64)>,
+) -> UniquenessVerdict {
+    if solutions_agree(auto_params, solved_values, perturbed_values) {
+        return UniquenessVerdict::Unique;
+    }
+    match objective_scores {
+        Some((incumbent, perturbed))
+            if !within_uniqueness_tol(incumbent, perturbed) && perturbed < incumbent =>
+        {
+            UniquenessVerdict::IncumbentSuboptimal
+        }
+        _ => UniquenessVerdict::NonUnique,
+    }
 }
 
 /// Build the perturbed initial point for uniqueness verification.
