@@ -46,6 +46,9 @@ Harness exit codes:
     2   ≥1 UNPROVABLE, 0 FAIL
     64  usage / argument error (sysexits EX_USAGE)
     70  tool / runtime error (sysexits EX_SOFTWARE) — HARNESS_ERROR verdict
+    75  grammar substrate unavailable — callers should SKIP, not FAIL
+        (sysexits EX_TEMPFAIL; only ever returned by --grammar-substrate-status,
+        which runs no probes and so can never affect a verdict)
 """
 
 from __future__ import annotations
@@ -750,21 +753,28 @@ def verdict(observation: str, expected_observation: str) -> str:
 
 
 def main(argv: List[str]) -> int:
-    """CLI entry-point.  Returns an exit code (0/1/2/64/70).
+    """CLI entry-point.  Returns an exit code (0/1/2/64/70/75).
 
     Usage:
         prd-capability-check.py [--json] PROBE_SET_JSON
+        prd-capability-check.py --grammar-substrate-status
 
     Reads the committed probe-set JSON from PROBE_SET_JSON, evaluates every
     probe with the real runner, prints per-probe evidence (or --json), and
     returns harness_exit_code(results).
 
+    --grammar-substrate-status is a separate, probe-free mode: it reports
+    whether a grammar probe could run here at all, so a shell caller can print
+    a clean SKIP instead of reporting an unrunnable probe as a gate FAIL.  It
+    evaluates nothing, so it cannot affect any verdict.
+
     Exit codes:
-        0   all PASS
+        0   all PASS  (or: grammar substrate usable)
         1   ≥1 FAIL
         2   ≥1 UNPROVABLE, 0 FAIL
         64  usage / argument / IO error (EX_USAGE)
         70  tool / runtime error — missing binary, grammar load failure (EX_SOFTWARE)
+        75  grammar substrate unavailable — SKIP, do not FAIL (EX_TEMPFAIL)
     """
     parser = argparse.ArgumentParser(
         description="Run capability probes from a committed probe-set JSON file.",
@@ -773,6 +783,8 @@ def main(argv: List[str]) -> int:
     parser.add_argument(
         "probe_set",
         metavar="PROBE_SET_JSON",
+        nargs="?",
+        default=None,
         help="Path to the committed probe-set JSON file.",
     )
     parser.add_argument(
@@ -781,11 +793,39 @@ def main(argv: List[str]) -> int:
         dest="emit_json",
         help="Emit machine-readable JSON results to stdout.",
     )
+    parser.add_argument(
+        "--grammar-substrate-status",
+        action="store_true",
+        dest="grammar_substrate_status",
+        help=(
+            "Report whether tree-sitter can run a grammar probe here; "
+            "exit 0 if usable, 75 if not.  Runs no probes."
+        ),
+    )
     try:
         args = parser.parse_args(argv)
     except SystemExit as e:
         code = e.code if isinstance(e.code, int) else 64
         return 0 if code == 0 else 64
+
+    # --- Substrate status mode: report and return, without running probes ---
+    if args.grammar_substrate_status:
+        usable, reason = grammar_substrate_usable()
+        if usable:
+            sys.stdout.write("grammar substrate: usable\n")
+            return 0
+        sys.stdout.write(f"grammar substrate: unusable: {reason}\n")
+        return 75  # EX_TEMPFAIL — environmental, so callers SKIP rather than FAIL
+
+    # PROBE_SET_JSON is optional only so --grammar-substrate-status can stand
+    # alone; without either, the invocation is still the usage error it always
+    # was.  argparse can no longer catch this, so it is checked explicitly.
+    if args.probe_set is None:
+        sys.stderr.write(
+            "error: PROBE_SET_JSON is required unless "
+            "--grammar-substrate-status is given\n"
+        )
+        return 64  # EX_USAGE
 
     # --- Load probe set from file ---
     try:
