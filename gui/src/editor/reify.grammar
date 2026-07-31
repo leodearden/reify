@@ -18,8 +18,11 @@ ImportDeclaration {
 }
 
 // ── Structure ───────────────────────────────────────────
+// Mirrors tree-sitter-reify/grammar.js:504-515 — `pub` and `def` are both
+// optional; the bare `structure Foo { }` form is still used by many committed
+// fixtures, so it must keep parsing.
 StructureDefinition {
-  kw<"structure"> Identifier Block
+  kw<"pub">? kw<"structure"> kw<"def">? Identifier Block
 }
 
 Block {
@@ -193,10 +196,17 @@ CompareOp<expr> { expr }
 // These use @specialize to replace Identifier with ReservedWord,
 // causing parse errors when used as identifiers (correct reserved-word behavior).
 // They parse correctly in expression context via the primaryExpression rule.
+//
+// A word promoted to a real `kw<>` production MUST be removed from this list:
+// lezer-generator permits only one replacement name per (base token, literal)
+// pair and otherwise hard-fails with
+//   Conflicting names for specialization "def" of Identifier
+// `pub` and `def` were promoted here for StructureDefinition; their keyword
+// styling is re-pinned explicitly in highlight.ts.
 ReservedWord {
   @specialize[@name=ReservedWord]<Identifier,
     "trait" | "fn" | "enum" | "match" | "connect" | "chain" |
-    "occurrence" | "purpose" | "field" | "pub" | "def" | "port" |
+    "occurrence" | "purpose" | "field" | "port" |
     "type" | "module" | "unit" | "forall" | "exists" | "implies" |
     "and" | "or" | "not" | "in" | "out" | "meta" | "self" |
     "undef" | "some" | "none" | "set" | "map" | "as">
