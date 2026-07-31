@@ -1462,5 +1462,127 @@ class TestGrammarCacheDenied(unittest.TestCase):
         self.assertFalse(pcc.grammar_cache_denied(self._run(1, stderr)))
 
 
+# ---------------------------------------------------------------------------
+# 5894 step-3 (RED): grammar_substrate_usable() — behavioural substrate probe
+# ---------------------------------------------------------------------------
+
+class TestGrammarSubstrateUsable(unittest.TestCase):
+    """Pins pcc.grammar_substrate_usable() -> (bool, reason).
+
+    Every case is driven by an executable TREE_SITTER_BIN stub (the idiom at
+    TestBuildCommandAbsoluteFixture._make_file_exists_stub), never by ambient
+    sandbox state.  That is deliberate and load-bearing: whether
+    ~/.cache/tree-sitter/lock is writable depends on which agent role executes
+    the suite, so an ambient-conditioned test would flip between RED and GREEN
+    by role and could not be turned green by the role that has to fix it.
+    Stubs make the outcome identical in sandboxed and unsandboxed roles.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="prd_gate_substrate_test_")
+        self._stub_idx = 0
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_stub(self, body):
+        """Write an executable /bin/sh stub with `body` and return its path."""
+        self._stub_idx += 1
+        path = os.path.join(self._tmpdir, f"ts_stub{self._stub_idx}")
+        with open(path, "w") as f:
+            f.write("#!/bin/sh\n" + textwrap.dedent(body))
+        os.chmod(path, 0o755)
+        return path
+
+    def _cache_denied_stub(self):
+        """Stub reproducing the measured cache-denial: stderr signature, exit 1.
+
+        The stderr text is written to a sibling file and cat'd rather than
+        embedded in a heredoc: the measured signature is unindented, so
+        textwrap.dedent would find no common prefix, silently leave the stub
+        body indented, and the heredoc terminator would never match.
+        """
+        stderr_file = os.path.join(self._tmpdir, f"denied_stderr{self._stub_idx + 1}.txt")
+        with open(stderr_file, "w") as f:
+            f.write(_CACHE_DENIED_STDERR)
+        return self._make_stub(f"""\
+            cat {shlex.quote(stderr_file)} >&2
+            exit 1
+        """)
+
+    def _parse_error_stub(self):
+        """Stub reproducing an ordinary grammar rejection: parse error, exit 1."""
+        return self._make_stub("""\
+            echo 'x.ri\t0 ms\t(ERROR [0, 0] - [3, 0])' >&2
+            exit 1
+        """)
+
+    def _clean_stub(self):
+        """Stub reproducing a clean parse: exit 0, no output."""
+        return self._make_stub("exit 0\n")
+
+    @staticmethod
+    def _call(stub):
+        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+            return pcc.grammar_substrate_usable()
+
+    # ── (a) cache denial → unusable, with an actionable reason ────────────────
+
+    def test_cache_denial_is_unusable_with_reason(self):
+        """Cache-denial stderr → (False, reason) naming the tree-sitter cache."""
+        usable, reason = self._call(self._cache_denied_stub())
+        self.assertFalse(usable, "a denied grammar cache is an unusable substrate")
+        self.assertTrue(reason, "an unusable substrate must explain itself")
+        # The reason is printed verbatim as a SKIP line, so it has to name the
+        # subsystem — "permission denied" alone is what made the original
+        # failure cost several probes to attribute.
+        lowered = reason.lower()
+        self.assertIn("tree-sitter", lowered)
+        self.assertIn("cache", lowered)
+
+    # ── (b) a parse error is NOT a broken substrate ───────────────────────────
+
+    def test_parse_error_is_usable(self):
+        """An ordinary parse rejection → (True, "").
+
+        The substrate probe answers "can tree-sitter load the grammar", not
+        "does this fixture parse".  Reading an unparseable fixture as a broken
+        substrate would skip the e2e test precisely when the grammar works,
+        which is the inverse of the bug being fixed.
+        """
+        self.assertEqual(self._call(self._parse_error_stub()), (True, ""))
+
+    # ── (c) clean run → usable ────────────────────────────────────────────────
+
+    def test_clean_run_is_usable(self):
+        """exit 0 → (True, "")."""
+        self.assertEqual(self._call(self._clean_stub()), (True, ""))
+
+    # ── (d) missing CLI → unusable ────────────────────────────────────────────
+
+    def test_missing_cli_is_unusable_with_reason(self):
+        """TREE_SITTER_BIN pointing at nothing → (False, reason) naming the CLI.
+
+        run_probe() turns the FileNotFoundError into _BINARY_NOT_FOUND_SENTINEL,
+        so this arrives through the same channel as the denial and must be
+        distinguished by the reason text, not by the boolean.
+        """
+        missing = os.path.join(self._tmpdir, "definitely-not-here")
+        self.assertFalse(os.path.exists(missing), "precondition: stub must not exist")
+        usable, reason = self._call(missing)
+        self.assertFalse(usable, "a missing tree-sitter CLI is an unusable substrate")
+        self.assertTrue(reason, "an unusable substrate must explain itself")
+        self.assertIn("tree-sitter", reason.lower())
+
+    # ── shape ─────────────────────────────────────────────────────────────────
+
+    def test_returns_bool_and_str_pair(self):
+        """The return is a (bool, str) 2-tuple in both directions."""
+        for stub in (self._clean_stub(), self._cache_denied_stub()):
+            usable, reason = self._call(stub)
+            self.assertIsInstance(usable, bool)
+            self.assertIsInstance(reason, str)
+
+
 if __name__ == "__main__":
     unittest.main()
