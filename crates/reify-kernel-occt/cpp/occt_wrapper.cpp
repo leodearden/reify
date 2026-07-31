@@ -250,8 +250,10 @@ static const char* topabs_name(TopAbs_ShapeEnum type) {
 ///
 /// A face is accepted only when it has EXACTLY ONE wire:
 ///   - 0 wires — an unbounded face, as `make_half_space` builds from a bare
-///     `gp_Pln`. `BRepTools::OuterWire` returns a NULL wire for it, which
-///     would reach `Add` and raise `Standard_NullObject`.
+///     `gp_Pln`. `BRepTools::OuterWire` returns a NULL wire for it, and
+///     letting that reach `Add` SEGFAULTS the process (measured — see the
+///     inline note on the guard below). This is a crash guard, not a
+///     politeness guard.
 ///   - >1 wires — a holed face. It has no single-wire representation, so it is
 ///     rejected rather than silently reduced: keeping only the outer wire
 ///     would delete the holes, and — since a face profile is then solidified —
@@ -271,10 +273,16 @@ static TopoDS_Shape section_profile_to_wire(const TopoDS_Shape& profile) {
             // they are user-facing diagnostics, and the OCCT internals are
             // documented for maintainers in this helper's doc comment.
             if (wire_count == 0) {
-                // BRepTools::OuterWire would return a NULL wire here, which
-                // reaches maker.Add() and raises Standard_NullObject —
-                // resurfacing as the opaque "OCCT <op>: …" text this helper
-                // exists to replace. Diagnose it by name instead.
+                // MEASURED, not assumed: with this branch removed and a
+                // half-space face fed to sweep_guided (see
+                // sweep_guided_rejects_unbounded_face_profile), the process
+                // dies with SIGSEGV — BRepTools::OuterWire returns a NULL
+                // wire, and the null TopoDS_Shape reaching maker.Add() is
+                // dereferenced inside BRepFill_Section rather than raising a
+                // catchable Standard_NullObject. wrap_occt_call cannot convert
+                // a segfault into a Rust Err, so this guard is the ONLY thing
+                // standing between a DSL selector and a hard kernel crash.
+                // Do not weaken it to a `> 1`-only check.
                 throw ContractViolation(
                     "section profile face has no bounding wire (an unbounded "
                     "face, e.g. a half-space boundary plane); a swept section "

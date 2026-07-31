@@ -400,16 +400,20 @@ fn sweep_guided_rejects_unsupported_profile_type() {
     assert_profile_rejected(&mut kernel, edge, "shape type 'Edge'");
 }
 
-/// An UNBOUNDED face (zero wires) must be rejected by name, not left to raise
-/// OCCT's opaque `Standard_NullObject`.
+/// An UNBOUNDED face (zero wires) must be rejected by name.
 ///
-/// `BRepTools::OuterWire` returns a NULL wire for a face with no bounding wire,
-/// and that null shape reaches `maker.Add(...)`. The input is reachable:
-/// `make_half_space` builds its boundary from a bare `gp_Pln` via
-/// `BRepBuilderAPI_MakeFace`, and `extract_faces` on the resulting solid mints
-/// that wire-less face as a `Surface`-typed handle a DSL selector can hand
-/// straight to `sweep_guided`. A `wire_count > 1`-only guard would let it
-/// through — this pins `!= 1`.
+/// This is a CRASH guard, not a message-quality guard. `BRepTools::OuterWire`
+/// returns a NULL wire for a face with no bounding wire; measured behaviour
+/// with the `wire_count == 0` branch removed from `section_profile_to_wire` is
+/// that this test dies with **SIGSEGV** — the null shape is dereferenced inside
+/// `BRepFill_Section` rather than raising a catchable `Standard_NullObject`, so
+/// `wrap_occt_call` never gets the chance to turn it into a Rust `Err`.
+///
+/// The input is reachable from the DSL: `make_half_space` builds its boundary
+/// from a bare `gp_Pln` via `BRepBuilderAPI_MakeFace`, and `extract_faces` on
+/// the resulting solid mints that wire-less face as a `Surface`-typed handle a
+/// selector can hand straight to `sweep_guided`. A `wire_count > 1`-only guard
+/// lets it through — this test is what pins the guard at `!= 1`.
 #[test]
 fn sweep_guided_rejects_unbounded_face_profile() {
     let mut kernel = OcctKernel::new();
