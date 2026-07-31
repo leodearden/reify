@@ -992,7 +992,19 @@ _TS_GRAMMAR_PARSER = os.path.join(_REPO_ROOT, "tree-sitter-reify", "src", "parse
 _REIFY_RELEASE = os.path.join(_REPO_ROOT, "target", "release", "reify")
 _REIFY_DEBUG = os.path.join(_REPO_ROOT, "target", "debug", "reify")
 _REIFY_BUILT = os.path.isfile(_REIFY_RELEASE) or os.path.isfile(_REIFY_DEBUG)
-_TS_GRAMMAR_AVAILABLE = os.path.isfile(_TS_GRAMMAR_PARSER)
+
+# The grammar e2e needs tree-sitter to actually LOAD the reify grammar, which
+# isfile(parser.c) does not establish: in a sandboxed agent role the grammar is
+# generated but tree-sitter cannot write ~/.cache/tree-sitter/lock/, so the probe
+# fails to load the language, observe() classifies it _HARNESS_ERROR, and the
+# suite reported a spurious FAIL (exit 70) instead of a clean skip.
+#
+# Order matters.  isfile() runs first and short-circuits, so a lane that never
+# generated the grammar pays no subprocess; only when parser.c exists do we spend
+# one probe asking whether it can be loaded.
+_TS_GRAMMAR_AVAILABLE = (
+    os.path.isfile(_TS_GRAMMAR_PARSER) and pcc.grammar_substrate_usable()[0]
+)
 
 
 class TestMain(unittest.TestCase):
@@ -1361,7 +1373,9 @@ class TestMain(unittest.TestCase):
 
     @unittest.skipUnless(
         _TS_GRAMMAR_AVAILABLE,
-        "tree-sitter-reify/src/parser.c not found; skip grammar e2e",
+        "grammar substrate unavailable — tree-sitter-reify/src/parser.c not "
+        "found, or tree-sitter cannot load the grammar (e.g. a sandboxed role "
+        "whose write set excludes ~/.cache/tree-sitter/); skip grammar e2e",
     )
     def test_e2e_arrow_type_grammar_is_fail(self):
         """Real tree-sitter parse: arrow_type.ri with expected present → FAIL (exit 1, stable)."""
