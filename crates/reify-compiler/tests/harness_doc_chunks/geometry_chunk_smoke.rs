@@ -23,6 +23,10 @@
 //!
 //! # What is NOT established
 //!
+//! THE CANONICAL SCOPE STATEMENT FOR THIS FILE. Everything below is stated
+//! once, here; the individual test docstrings point back rather than restating,
+//! so there is exactly one place to correct when the compiler gets stricter.
+//!
 //! The compile-acceptance assertions here (both `assert_compiles` and the
 //! ```` ```reify ````-fence scrape) establish PARSE + COMPILE ACCEPTANCE and
 //! nothing stronger. Specifically:
@@ -48,9 +52,34 @@
 //!   `bogus_query_name_feeding_a_comparison_is_an_error` is the negative
 //!   control that pins the part that does work, so it cannot silently rot away.
 //!
+//! STALENESS CAVEAT — the first two bullets are HAND-VERIFIED mutation results,
+//! not executed assertions, so they can go quietly false. Their shared cause is
+//! that `builtin_signatures`'s arg-slot table has no entry for any of the five
+//! names; the day one gains a checkable slot, both bullets stop being true.
+//! They are not asserted for two reasons: `builtin_signatures` is a private
+//! module (`mod builtin_signatures;` in `reify-compiler/src/lib.rs`), so a test
+//! cannot read the table; and an assertion of the form "the mutated arity still
+//! compiles clean" would go RED the day the hole is FIXED, which is exactly the
+//! wrong incentive. Re-verify these two bullets by hand whenever
+//! `builtin_signatures.rs` gains geometry-query entries. What IS executed:
+//! `bogus_query_name_feeding_a_comparison_is_an_error` asserts on the
+//! `CmpOperandKind` diagnostic identity, so the third bullet's mechanism is
+//! pinned rather than merely asserted.
+//!
 //! The registry-membership assertions in
 //! `interference_oracle_names_documented_in_geometry_chunk` are what actually
 //! close the phantom-name direction; the fence compile is a parse/shape guard.
+//!
+//! # Known duplication (out of scope here)
+//!
+//! `harness_doc_chunks` compiles this module and
+//! `stdlib_chunk_geometry_ops_smoke.rs` into one test binary, and the two now
+//! carry near-identical scaffolding: a `geometry.md` path const (here
+//! `CHUNK_PATH`, there `GEOMETRY_CHUNK_PATH`), a loud-panic-never-skip
+//! `read_chunk`, and a `## `-heading section scanner. The right fix is a shared
+//! `chunk_io` module declared from `tests/harness_doc_chunks.rs`, which is
+//! outside task 5389's locked file set — filed as a follow-up rather than done
+//! here.
 
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
@@ -314,15 +343,31 @@ fn read_chunk() -> String {
 /// The body of the `## `-level section headed by `heading`, from that heading
 /// to the next `## ` heading (exclusive). `### ` subsections stay inside.
 ///
+/// FENCE-AWARE: a `## ` line inside a ``` ``` ``` code fence is content, not a
+/// section boundary. Without this the scan would truncate the section at the
+/// first fenced comment line that happens to start with `## ` — the oracle
+/// section's own ```` ```reify ```` fences are exactly where such a line would
+/// appear, so the fragility is live, not theoretical.
+///
 /// PANICS if the heading is absent — that is the anti-vacuity guard, and it is
 /// the failure a reader of a renamed/removed section should see, rather than an
 /// empty slice that makes every downstream assertion pass trivially.
 fn section_body(markdown: &str, heading: &str) -> String {
     let mut body: Vec<&str> = Vec::new();
     let mut in_section = false;
+    let mut in_fence = false;
 
     for line in markdown.lines() {
-        if line.starts_with("## ") {
+        // Any ```-prefixed line toggles fence state (opening tags carry a
+        // language, closing tags do not — both are just toggles here).
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            if in_section {
+                body.push(line);
+            }
+            continue;
+        }
+        if !in_fence && line.starts_with("## ") {
             if in_section {
                 break;
             }
@@ -349,12 +394,51 @@ fn section_body(markdown: &str, heading: &str) -> String {
 /// and taking `(Snapshot, ...)` arguments. `is_geometry_kinematic_query` is a
 /// bare `.contains()` over `GEOMETRY_KINEMATIC_QUERY_NAMES`, so membership in
 /// that slice IS the compiler's recognition semantics.
+///
+/// EXHAUSTIVE, not a subset: this list must equal
+/// `GEOMETRY_KINEMATIC_QUERY_NAMES` entry-for-entry, and
+/// `documented_oracle_list_covers_the_whole_kinematic_registry` enforces that.
+/// The whole kinematic family is interference/clearance, so any member of it
+/// that the chunk does not document reopens exactly the discoverability hole
+/// task 5389 closed.
 const KINEMATIC_ORACLE_NAMES: &[&str] = &["interferes", "interferes_with", "min_clearance"];
 
 /// FORM B oracle names — plain geometry queries over let-bound geometry
 /// operands. `is_geometry_query` is likewise a bare `.contains()` over
 /// `GEOMETRY_QUERY_NAMES`.
+///
+/// A DELIBERATE SUBSET, unlike [`KINEMATIC_ORACLE_NAMES`], and therefore NOT
+/// set-equality-checked. `GEOMETRY_QUERY_NAMES` is a much larger and
+/// heterogeneous family (`volume`, `area`, `centroid`, `bounding_box`,
+/// `normal`, `feature`, …); only these two answer an interference/clearance
+/// question, so only these two belong in the oracle section. Names outside this
+/// pair are documented elsewhere in the chunk corpus and are the sibling
+/// `stdlib_chunk_geometry_ops_smoke.rs`'s coverage concern, not this file's.
 const GEOMETRY_ORACLE_NAMES: &[&str] = &["intersects", "distance"];
+
+/// A kinematic query added to the compiler but never documented must be RED.
+///
+/// The bidirectional guard below covers doc → registry (no phantom names) and
+/// documented-name → chunk (no silent doc deletion), but neither direction sees
+/// a FOURTH kinematic query landing in `units.rs` and never reaching the chunk —
+/// which is the discoverability regression task 5389 exists to prevent, arriving
+/// from the compiler side instead of the doc side. Set equality closes it: a new
+/// registry entry fails here until it is added to `KINEMATIC_ORACLE_NAMES`, and
+/// adding it there immediately fails the coverage half until the chunk documents
+/// it. Mirrors the sibling suite's
+/// `every_implemented_geometry_op_is_documented_in_a_chunk`.
+#[test]
+fn documented_oracle_list_covers_the_whole_kinematic_registry() {
+    assert_eq!(
+        KINEMATIC_ORACLE_NAMES,
+        reify_compiler::GEOMETRY_KINEMATIC_QUERY_NAMES,
+        "KINEMATIC_ORACLE_NAMES must list the kinematic-query registry exactly. A query was \
+         added to (or removed from) reify_compiler::GEOMETRY_KINEMATIC_QUERY_NAMES without \
+         updating this list — so {CHUNK_PATH}'s `{ORACLE_SECTION}` section is not required to \
+         document it, and the in-GUI assistant will keep reading it as a MISSING CAPABILITY \
+         (task 5389). Add the name here AND document its call form in the chunk."
+    );
+}
 
 #[test]
 fn interference_oracle_names_documented_in_geometry_chunk() {
@@ -460,21 +544,17 @@ fn reify_tagged_fences(markdown: &str) -> Vec<String> {
 /// into artifacts that at least parse and lower: a designer copying a fence out
 /// of the chunk gets something the compiler accepts, or this test is RED.
 ///
-/// SCOPE — read the module doc's "What is NOT established" before relying on
-/// this. It is a parse/compile-acceptance guard, NOT a signature pin: arity and
-/// argument dimension of the documented query forms are unchecked (mutating the
-/// fences to `min_clearance(s)` / `intersects(housing)` leaves this suite
-/// GREEN), and an unknown call name is only caught when its result feeds a
-/// downstream typed operation — see
-/// `bogus_query_name_feeding_a_comparison_is_an_error`. The phantom-name
-/// direction is closed by the registry assertions in
-/// `interference_oracle_names_documented_in_geometry_chunk`, not here.
+/// SCOPE — this is a parse/compile-acceptance guard, NOT a signature pin. The
+/// module doc's "What is NOT established" is the canonical statement of what
+/// that does and does not buy (arity, argument dimension, unknown call names);
+/// read it before relying on this test. It is deliberately not restated here,
+/// so the claims cannot drift apart.
 #[test]
 fn reify_tagged_fences_in_geometry_chunk_compile() {
     let markdown = read_chunk();
     let fences = reify_tagged_fences(&markdown);
 
-    // Anti-vacuity. Without these three, dropping the ```reify tags (or
+    // Anti-vacuity. Without these, dropping the ```reify tags (or
     // rewriting the fences as plain prose) would leave the scan empty and the
     // loop below would iterate zero times — GREEN, protecting nothing. The
     // sentinels additionally prove the scan reaches BOTH documented forms, not
@@ -487,7 +567,12 @@ fn reify_tagged_fences_in_geometry_chunk_compile() {
          protection.",
         fences.len()
     );
-    for sentinel in ["min_clearance(", "intersects("] {
+    // `distance(` is included even though the module doc singles it out as the
+    // only name with (indirect) discriminating power — precisely BECAUSE of
+    // that: without a sentinel the FORM B fence could lose its `distance(` call
+    // and the scrape would still pass, quietly retiring the one claim
+    // `bogus_query_name_feeding_a_comparison_is_an_error` is the control for.
+    for sentinel in ["min_clearance(", "intersects(", "distance("] {
         assert!(
             fences.iter().any(|fence| fence.contains(sentinel)),
             "anti-vacuity: no ```reify fence in {CHUNK_PATH} contains `{sentinel}` — the worked \
@@ -535,11 +620,28 @@ fn bogus_query_name_feeding_a_comparison_is_an_error() {
 
     let compiled = compile_source_with_stdlib(source);
     let errors = errors_only(&compiled);
+
+    // Assert the diagnostic IDENTITY, not mere presence. A bare
+    // `!errors.is_empty()` is satisfied by any unrelated Error — a future
+    // `cylinder_centered` signature change, a `translate` arity change, a typo
+    // introduced while editing this inline source — so the control would keep
+    // reading as live while no longer pinning the mechanism it names. The
+    // mechanism is specifically: the misspelled call is NOT itself resolved as
+    // an error; it types as `Geometry` from its first argument, and the
+    // DOWNSTREAM `constraint gap > 1mm` is what rejects it.
     assert!(
-        !errors.is_empty(),
-        "a fence-shaped source whose clearance query is misspelled must not compile clean — if \
-         it does, `reify_tagged_fences_in_geometry_chunk_compile` has lost even its indirect \
-         discriminating power over query names and is a pure parse check. Verify what the fence \
-         guard still establishes and update the module doc's \"What is NOT established\" section."
+        errors
+            .iter()
+            .any(|d| d.code == Some(reify_core::DiagnosticCode::CmpOperandKind)),
+        "a fence-shaped source whose clearance query is misspelled must be rejected by the \
+         downstream comparison with DiagnosticCode::CmpOperandKind. Got these Error \
+         diagnostics instead: {:#?}\n\
+         If the list is EMPTY, `reify_tagged_fences_in_geometry_chunk_compile` has lost even \
+         its indirect discriminating power over query names and is a pure parse check. If it \
+         is non-empty but carries a different code, the rejection mechanism moved (e.g. \
+         unresolved names became an error in their own right) — either way, re-verify what the \
+         fence guard still establishes and update the module doc's \"What is NOT established\" \
+         section.",
+        errors
     );
 }
