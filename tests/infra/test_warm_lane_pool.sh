@@ -890,11 +890,19 @@ _b13_reseed_vs_resetinplace() {
 # set into two different byte strings depending on which test happened to
 # finish first.
 #
+# nextest RIGHT-ALIGNS the counter's numerator to the width of the run
+# total, so `(1/2)`, `( 1/12)`, and `(  1/105)` are all the same token with
+# 0/1/2 leading spaces of padding — the strip regex must tolerate that
+# padding. Without it, the strip silently no-ops on padded lines while
+# still succeeding on unpadded ones in the very same run, yielding a
+# partially-normalized, interleaved stream that is harder to diagnose than
+# a clean failure (#5878).
+#
 # Used by run_passset's nextest branch and the PS-NORM always-run regression block.
 _passset_normalize_nextest() {
     grep -E '^\s*(PASS|FAIL|SKIP)' \
     | sed -E 's/\[[^]]*\]//g' \
-    | sed -E 's/\([0-9]+\/[0-9]+\)//' \
+    | sed -E 's/\([[:space:]]*[0-9]+\/[0-9]+\)//' \
     | sed -E 's/[[:space:]]+/ /g' \
     | sed -E 's/^ //;s/ $//' \
     | sort
