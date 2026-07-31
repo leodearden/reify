@@ -32,6 +32,17 @@ export function countErrorNodes(src: string): number {
   return errors;
 }
 
+/** Parse `src` and collect the set of node type names in the resulting tree. */
+function nodeNames(src: string): Set<string> {
+  const tree = parser.parse(src);
+  const cursor = tree.cursor();
+  const names = new Set<string>();
+  do {
+    names.add(cursor.type.name);
+  } while (cursor.next());
+  return names;
+}
+
 /**
  * SLICE A — committed fixtures greened by the structure-header delta
  * (`pub`? `structure` `def`? Name Block).
@@ -114,5 +125,47 @@ describe('reify.grammar snippets — module and import', () => {
 
   it('parses the back-compat legacy form `import "foo.ri"`', () => {
     expect(countErrorNodes('import "foo.ri"')).toBe(0);
+  });
+});
+
+/**
+ * TypeExpr cases, each wrapped in a minimal structure so the assertion is on a
+ * real declaration rather than a bare fragment. Shapes transliterated from
+ * tree-sitter-reify grammar.js:1064-1140.
+ */
+const TYPE_EXPRS = [
+  // parameterized
+  'Box<T>',
+  // multi-arg with an integer type-arg (Tensor<rank, n, quantity>)
+  'Tensor<2, 3, Force>',
+  // qualified
+  'Beam::Material',
+  // the FORK-G trait disambiguator (PRD §3.5 Phase 8)
+  'Beam::(HasMaterial::Material)',
+  // applied-base projection
+  'Coupling<Prismatic>::MotionValue',
+  // arrow / function types
+  '(Length) -> Length',
+  '(A, B) -> C',
+  '() -> C',
+];
+
+describe('reify.grammar snippets — TypeExpr', () => {
+  for (const typeExpr of TYPE_EXPRS) {
+    it(`parses the type annotation \`${typeExpr}\``, () => {
+      expect(countErrorNodes(`structure def F { param b : ${typeExpr} = auto }`)).toBe(0);
+    });
+  }
+
+  it('still parses a bare-identifier annotation `param w : Length = 80mm`', () => {
+    expect(countErrorNodes('structure def F { param w : Length = 80mm }')).toBe(0);
+  });
+
+  // Guard: `<` and `>` become type-argument delimiters in ParameterizedType.
+  // They must keep working as comparison operators in expression position.
+  it('still parses `constraint thickness < 50mm` as a comparison', () => {
+    const src = 'structure def F { param thickness : Length = 5mm\n  constraint thickness < 50mm }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('CompareOp');
   });
 });
