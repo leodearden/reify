@@ -1149,25 +1149,52 @@ _passset_report_failure() {
 #     and counter-free) → grep + sort only (nothing volatile to strip).
 # The output format is designed to be byte-comparable between two runs on
 # semantically identical workspaces.
+#
+# rc contract (#5885): cargo's exit status is classified via
+# _passset_classify_rc and is NOT swallowed. Returns 0 for the ok/
+# test-failures classes (an honest pass or an honest test failure — the
+# caller's pass-set comparison is the right way to observe those). Returns 3
+# for build-failure/no-tests-run/runner-error — a run that did NOT produce a
+# trustworthy pass-set. In both cases the pass-set string is printed to
+# STDOUT FIRST, so a caller capturing via `$( )` sees the exact same bytes
+# it always has; the fatal-path diagnostic (_passset_report_failure) goes to
+# STDERR ONLY and never touches stdout, so it cannot corrupt that captured
+# string. See Block PS-RC (arms C/D) for the wiring coverage and Block PS
+# for the consumer.
 run_passset() {
     local manifest="$1"
     local test_output passed=0 failed=0 ignored=0
+    local rc=0 nresults=0 class
 
     if command -v cargo-nextest >/dev/null 2>&1 || \
        cargo nextest --version >/dev/null 2>&1; then
-        # nextest: normalize via _passset_normalize_nextest (strips timing column + progress counter)
-        test_output="$(
+        # Capture raw output + rc FIRST, normalize SECOND — keeps
+        # _passset_normalize_nextest a pure stdin→stdout filter and makes rc
+        # a plain local, avoiding PIPESTATUS (which cannot escape the `$( )`
+        # that captures the pass-set). `raw` is declared bare on its own
+        # line: `local raw="$(cmd)" || rc=$?` would capture `local`'s exit
+        # status instead of cargo's, silently reintroducing the swallow.
+        local raw
+        raw="$(
             CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
                 cargo nextest run \
                     --manifest-path "$manifest" \
-                    --no-fail-fast 2>&1 \
-            | _passset_normalize_nextest \
-            || true
-        )"
+                    --no-fail-fast 2>&1
+        )" || rc=$?
+        test_output="$(printf '%s\n' "$raw" | _passset_normalize_nextest || true)"
         # Count outcomes from the NORMALIZED (timing-free) lines
         passed="$(printf '%s\n' "$test_output" | grep -c '^PASS' || true)"
         failed="$(printf '%s\n' "$test_output" | grep -c '^FAIL' || true)"
+        nresults="$(printf '%s\n' "$test_output" | grep -c '.' || true)"
         printf 'passed=%s failed=%s\n%s\n' "$passed" "$failed" "$test_output"
+        class="$(_passset_classify_rc nextest "$rc" "$nresults")"
+        case "$class" in
+            ok|test-failures) ;;
+            *)
+                _passset_report_failure "$class" "$manifest" "$rc" nextest
+                return 3
+                ;;
+        esac
     else
         # cargo test: capture test names and the summary line
         test_output="$(
