@@ -268,3 +268,558 @@ pub(crate) fn phase_purposes(
     }
     purposes
 }
+
+#[cfg(test)]
+mod inert_objective_tests {
+    //! Unit tests for the pure `inert_objective_finding` predicate — the
+    //! compile-half of DIC γ (task #5417, PRD
+    //! `docs/prds/v0_6/declared-intent-consumption-accounting.md` §3 decision 3).
+    //!
+    //! The predicate answers one question: *does this template's declared
+    //! objective provably govern nothing?* It must fire **only on a positive
+    //! proof** and bail conservatively on every ambiguity — a false
+    //! `E_OBJECTIVE_INERT` is a compile Error on legal code, so the whole
+    //! design is skewed toward silence (PRD §3 decision 5, the
+    //! never-a-false-Inert rule).
+    //!
+    //! Templates are hand-built literals, the in-crate idiom already used by
+    //! `containment_graph.rs`'s `minimal_template` and `types.rs`'s
+    //! `monomorph_collision_tests` — this keeps the predicate testable in
+    //! isolation from the parser and the compile pipeline.
+    //!
+    //! Written RED in step-3: `inert_objective_finding` and
+    //! `InertObjectiveFinding` are introduced in step-4.
+    use super::{TopologyTemplate, inert_objective_finding};
+    use crate::types::{
+        CompiledGuardedGroup, EntityKind, GuardState, SubComponentDecl, ValueCellDecl,
+        ValueCellKind, Visibility,
+    };
+    use reify_ast::QuantifierKind;
+    use reify_core::{ContentHash, SourceSpan, Type, ValueCellId};
+    use reify_ir::{
+        BinOp, CompiledExpr, CompiledExprKind, ObjectiveSense, ObjectiveSet, Value,
+    };
+    use std::collections::{HashMap, HashSet};
+
+    // ── builders ────────────────────────────────────────────────────────────
+
+    fn tmpl(name: &str) -> TopologyTemplate {
+        TopologyTemplate {
+            name: name.to_string(),
+            doc: None,
+            entity_kind: EntityKind::Structure,
+            visibility: Visibility::Public,
+            type_params: vec![],
+            trait_bounds: vec![],
+            value_cells: vec![],
+            constraints: vec![],
+            realizations: vec![],
+            sub_components: vec![],
+            relations: vec![],
+            ports: vec![],
+            connections: vec![],
+            guarded_groups: vec![],
+            structure_controlling: HashSet::new(),
+            objective: None,
+            meta: HashMap::new(),
+            content_hash: ContentHash(0),
+            is_recursive: false,
+            annotations: vec![],
+            pragmas: vec![],
+            match_arm_groups: vec![],
+            forall_templates: vec![],
+            assoc_fns: vec![],
+            assoc_types: vec![],
+        }
+    }
+
+    /// Deterministic, always **non-empty** span keyed off the member name, so
+    /// `anchor_span` assertions can identify which declaration was anchored.
+    fn span_for(member: &str) -> SourceSpan {
+        let start = 100 + (member.as_bytes().first().copied().unwrap_or(b'?') as u32);
+        SourceSpan::new(start, start + member.len() as u32)
+    }
+
+    fn cell(
+        entity: &str,
+        member: &str,
+        kind: ValueCellKind,
+        default_expr: Option<CompiledExpr>,
+    ) -> ValueCellDecl {
+        ValueCellDecl {
+            id: ValueCellId::new(entity, member),
+            kind,
+            visibility: Visibility::Public,
+            is_aux: false,
+            cell_type: Type::dimensionless_scalar(),
+            default_expr,
+            solver_hints: vec![],
+            span: span_for(member),
+        }
+    }
+
+    fn param(entity: &str, member: &str, default: f64) -> ValueCellDecl {
+        cell(entity, member, ValueCellKind::Param, Some(lit(default)))
+    }
+
+    fn auto(entity: &str, member: &str) -> ValueCellDecl {
+        cell(entity, member, ValueCellKind::Auto { free: true }, None)
+    }
+
+    fn let_cell(entity: &str, member: &str, body: CompiledExpr) -> ValueCellDecl {
+        cell(entity, member, ValueCellKind::Let, Some(body))
+    }
+
+    fn lit(v: f64) -> CompiledExpr {
+        CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar())
+    }
+
+    fn vref(entity: &str, member: &str) -> CompiledExpr {
+        CompiledExpr::value_ref(
+            ValueCellId::new(entity, member),
+            Type::dimensionless_scalar(),
+        )
+    }
+
+    fn mul(l: CompiledExpr, r: CompiledExpr) -> CompiledExpr {
+        CompiledExpr::binop(BinOp::Mul, l, r, Type::dimensionless_scalar())
+    }
+
+    /// Wrap a raw `CompiledExprKind` with a dimensionless result type. Used for
+    /// the opaque-node shapes that have no public constructor.
+    fn raw(kind: CompiledExprKind) -> CompiledExpr {
+        CompiledExpr {
+            kind,
+            result_type: Type::dimensionless_scalar(),
+            content_hash: ContentHash(0),
+        }
+    }
+
+    fn minimize(expr: CompiledExpr) -> ObjectiveSet {
+        ObjectiveSet::single(ObjectiveSense::Minimize, expr)
+    }
+
+    /// An empty guarded group whose `members` / `else_members` the caller fills.
+    fn guarded_group(entity: &str) -> CompiledGuardedGroup {
+        CompiledGuardedGroup {
+            guard_expr: lit(1.0),
+            guard_value_cell: ValueCellId::new(entity, "__guard_0"),
+            members: vec![],
+            constraints: vec![],
+            else_members: vec![],
+            else_constraints: vec![],
+            parent_guard: None,
+        }
+    }
+
+    fn sub_decl(name: &str, structure_name: &str) -> SubComponentDecl {
+        SubComponentDecl {
+            name: name.to_string(),
+            structure_name: structure_name.to_string(),
+            visibility: Visibility::Public,
+            args: vec![],
+            type_args: vec![],
+            is_collection: false,
+            keyed_members: Vec::new(),
+            keyed_member_overrides: Vec::new(),
+            count_cell: None,
+            guard_state: GuardState::None,
+            pose: None,
+            auto_pose: None,
+            is_aux: false,
+            span: SourceSpan::new(0, 1),
+            content_hash: ContentHash(0),
+        }
+    }
+
+    /// The `dic_min_no_autos.ri` shape: `param k : Real = 3.0` + `minimize k * k`,
+    /// no autos anywhere. Returned unwired so each case can perturb one axis.
+    fn no_autos_template() -> TopologyTemplate {
+        let mut t = tmpl("DicMinNoAutos");
+        t.value_cells = vec![param("DicMinNoAutos", "k", 3.0)];
+        t.objective = Some(minimize(mul(
+            vref("DicMinNoAutos", "k"),
+            vref("DicMinNoAutos", "k"),
+        )));
+        t
+    }
+
+    // ── POSITIVE: the two target fixtures ───────────────────────────────────
+
+    /// `docs/prds/v0_6/fixtures/dic_min_no_autos.ri` — a declared objective in a
+    /// scope with NO auto params at all. Every cell it reads is a literal-backed
+    /// `param`, so no solver variable can ever move the cost: structurally inert.
+    #[test]
+    fn objective_over_literal_param_with_no_autos_is_inert() {
+        let t = no_autos_template();
+        let finding = inert_objective_finding(&t, std::slice::from_ref(&t))
+            .expect("minimize k*k over a never-auto param must be reported inert");
+
+        assert_eq!(
+            finding.never_auto_cells,
+            vec![ValueCellId::new("DicMinNoAutos", "k")],
+            "the finding must name the never-auto cell the objective reads"
+        );
+        assert!(
+            !finding.anchor_span.is_empty(),
+            "anchor_span must be non-empty so the diagnostic carries a ≥1 real label \
+             (the diagnostic_coverage_checkpoint.rs convention)"
+        );
+        assert_eq!(
+            finding.anchor_span,
+            span_for("k"),
+            "anchor_span must point at the declaration that proves the inertness"
+        );
+    }
+
+    /// `docs/prds/v0_6/fixtures/dic_min_unread.ri` — the scope HAS an auto (`a`,
+    /// bounded by constraints), but the objective reads only the concrete `k`.
+    /// The presence of an unrelated auto must NOT rescue the objective: the
+    /// question is reachability from the objective, not scope-level auto count.
+    #[test]
+    fn unrelated_auto_in_scope_does_not_rescue_the_objective() {
+        let mut t = no_autos_template();
+        t.name = "DicMinUnread".to_string();
+        t.value_cells = vec![
+            auto("DicMinUnread", "a"),
+            param("DicMinUnread", "k", 3.0),
+        ];
+        t.objective = Some(minimize(mul(
+            vref("DicMinUnread", "k"),
+            vref("DicMinUnread", "k"),
+        )));
+
+        let finding = inert_objective_finding(&t, std::slice::from_ref(&t))
+            .expect("an objective that reads only `k` is inert even when `a` is auto");
+        assert_eq!(
+            finding.never_auto_cells,
+            vec![ValueCellId::new("DicMinUnread", "k")]
+        );
+    }
+
+    // ── NEGATIVE: genuine reachability ──────────────────────────────────────
+
+    /// `dic_min_unconstrained.ri`'s compile-time half: the objective reads the
+    /// auto directly, so it is well-posed at compile time. (Whether the solver
+    /// then consumes it is the *runtime* half, `E_OBJECTIVE_UNCONSUMED`.)
+    #[test]
+    fn objective_reading_an_auto_directly_is_not_inert() {
+        let mut t = tmpl("DicMinUnconstrained");
+        t.value_cells = vec![auto("DicMinUnconstrained", "a")];
+        t.objective = Some(minimize(mul(
+            vref("DicMinUnconstrained", "a"),
+            vref("DicMinUnconstrained", "a"),
+        )));
+
+        assert!(
+            inert_objective_finding(&t, std::slice::from_ref(&t)).is_none(),
+            "an objective that reads an auto directly governs a solver variable"
+        );
+    }
+
+    /// Transitive closure: `minimize v` where `let v = a * 2.0` and `a` is auto.
+    /// One hop of let-indirection must not hide the auto.
+    #[test]
+    fn objective_reading_a_let_that_reads_an_auto_is_not_inert() {
+        let mut t = tmpl("Indirect");
+        t.value_cells = vec![
+            auto("Indirect", "a"),
+            let_cell("Indirect", "v", mul(vref("Indirect", "a"), lit(2.0))),
+        ];
+        t.objective = Some(minimize(vref("Indirect", "v")));
+
+        assert!(
+            inert_objective_finding(&t, std::slice::from_ref(&t)).is_none(),
+            "the closure over default_expr must reach the auto through the let"
+        );
+    }
+
+    /// Two hops: `minimize w`, `let w = v`, `let v = a`, `a` auto. The closure
+    /// must not stop at depth 1.
+    #[test]
+    fn multi_hop_let_chain_to_an_auto_is_not_inert() {
+        let mut t = tmpl("Chain");
+        t.value_cells = vec![
+            auto("Chain", "a"),
+            let_cell("Chain", "v", vref("Chain", "a")),
+            let_cell("Chain", "w", vref("Chain", "v")),
+        ];
+        t.objective = Some(minimize(vref("Chain", "w")));
+
+        assert!(
+            inert_objective_finding(&t, std::slice::from_ref(&t)).is_none(),
+            "the closure must be transitive, not single-hop"
+        );
+    }
+
+    // ── NEGATIVE: opaque-node conservative bails ────────────────────────────
+
+    /// `minimize cost(self.descendants)` lowers to a `MethodCall` carrying ZERO
+    /// compile-time `ValueRef`s of its own, yet genuinely couples to a child's
+    /// auto at eval time. The whole subtree is opaque ⇒ bail.
+    #[test]
+    fn method_call_in_an_objective_term_bails() {
+        let mut t = no_autos_template();
+        t.objective = Some(minimize(raw(CompiledExprKind::MethodCall {
+            object: Box::new(vref("DicMinNoAutos", "k")),
+            method: "cost".to_string(),
+            args: vec![],
+        })));
+
+        assert!(
+            inert_objective_finding(&t, std::slice::from_ref(&t)).is_none(),
+            "a MethodCall term is not data-transparent — its coupling is invisible \
+             at compile time, so the predicate must stay silent"
+        );
+    }
+
+    /// A structural/reflective query (here a `Quantifier`) reaches cells that no
+    /// compile-time ref set enumerates ⇒ bail.
+    #[test]
+    fn structural_query_in_an_objective_term_bails() {
+        let mut t = no_autos_template();
+        t.objective = Some(minimize(raw(CompiledExprKind::Quantifier {
+            kind: QuantifierKind::ForAll,
+            variable: "x".to_string(),
+            variable_id: ValueCellId::new("DicMinNoAutos", "x"),
+            collection: Box::new(vref("DicMinNoAutos", "k")),
+            predicate: Box::new(lit(1.0)),
+        })));
+
+        assert!(
+            inert_objective_finding(&t, std::slice::from_ref(&t)).is_none(),
+            "a structural query is not data-transparent"
+        );
+    }
+
+    /// A `Lambda` body's refs are not enumerated by `collect_value_refs` (only
+    /// its captures are), so the term is opaque ⇒ bail.
+    #[test]
+    fn lambda_in_an_objective_term_bails() {
+        let mut t = no_autos_template();
+        t.objective = Some(minimize(raw(CompiledExprKind::Lambda {
+            params: vec![],
+            param_ids: vec![],
+            body: Box::new(vref("DicMinNoAutos", "k")),
+            captures: vec![ValueCellId::new("DicMinNoAutos", "k")],
+        })));
+
+        assert!(
+            inert_objective_finding(&t, std::slice::from_ref(&t)).is_none(),
+            "a Lambda term is not data-transparent"
+        );
+    }
+
+    /// A `CrossSubGeometryRef` points outside this template entirely ⇒ bail.
+    #[test]
+    fn cross_sub_geometry_ref_in_an_objective_term_bails() {
+        let mut t = no_autos_template();
+        t.objective = Some(minimize(mul(
+            vref("DicMinNoAutos", "k"),
+            CompiledExpr::cross_sub_geometry_ref(
+                ValueCellId::new("DicMinNoAutos.child", "shape"),
+                Type::dimensionless_scalar(),
+            ),
+        )));
+
+        assert!(
+            inert_objective_finding(&t, std::slice::from_ref(&t)).is_none(),
+            "a CrossSubGeometryRef reaches another scope's cell — not provable here"
+        );
+    }
+
+    /// An `Error`-typed subexpression means compilation already failed somewhere
+    /// in the term; piling a second Error on poisoned IR is noise ⇒ bail.
+    #[test]
+    fn error_typed_subexpr_in_an_objective_term_bails() {
+        let mut t = no_autos_template();
+        let poisoned = CompiledExpr {
+            kind: CompiledExprKind::Literal(Value::Real(1.0)),
+            result_type: Type::Error,
+            content_hash: ContentHash(0),
+        };
+        t.objective = Some(minimize(mul(vref("DicMinNoAutos", "k"), poisoned)));
+
+        assert!(
+            inert_objective_finding(&t, std::slice::from_ref(&t)).is_none(),
+            "a Type::Error subexpr marks already-poisoned IR — stay silent"
+        );
+    }
+
+    // ── NEGATIVE: ref-resolution conservative bails ─────────────────────────
+
+    /// `minimize 1mm` (purpose bodies and doc-build fixtures rely on this being
+    /// diagnostic-free). With an empty resolvable-ref union there is nothing to
+    /// name and nothing was claimed about autos ⇒ not reported.
+    #[test]
+    fn pure_literal_objective_is_not_reported() {
+        let mut t = tmpl("LiteralObjective");
+        t.value_cells = vec![param("LiteralObjective", "k", 3.0)];
+        t.objective = Some(minimize(lit(1.0)));
+
+        assert!(
+            inert_objective_finding(&t, std::slice::from_ref(&t)).is_none(),
+            "a pure-literal objective has no references — the rule presupposes ≥1"
+        );
+    }
+
+    /// `minimize a.b.c.d.e` over a template that declares none of those cells:
+    /// the refs resolve to nothing here, so nothing is proven ⇒ bail.
+    #[test]
+    fn unresolvable_ref_bails() {
+        let mut t = no_autos_template();
+        t.objective = Some(minimize(mul(
+            vref("DicMinNoAutos", "k"),
+            vref("Elsewhere", "ghost"),
+        )));
+
+        assert!(
+            inert_objective_finding(&t, std::slice::from_ref(&t)).is_none(),
+            "a ref that resolves to no cell of this template is unproven"
+        );
+    }
+
+    /// A `where`-guarded auto lands in `guarded_groups[*].members`, NOT in
+    /// `value_cells` (`guards.rs`). The cell index must span both, or a guarded
+    /// auto reads as a missing cell and the objective looks falsely inert.
+    #[test]
+    fn auto_declared_in_a_guarded_group_member_is_not_inert() {
+        let mut t = tmpl("Guarded");
+        let mut g = guarded_group("Guarded");
+        g.members = vec![auto("Guarded", "a")];
+        t.guarded_groups = vec![g];
+        t.objective = Some(minimize(vref("Guarded", "a")));
+
+        assert!(
+            inert_objective_finding(&t, std::slice::from_ref(&t)).is_none(),
+            "guarded_groups[*].members must participate in cell resolution"
+        );
+    }
+
+    /// Same, for the `else` branch of a guarded group.
+    #[test]
+    fn auto_declared_in_a_guarded_group_else_member_is_not_inert() {
+        let mut t = tmpl("GuardedElse");
+        let mut g = guarded_group("GuardedElse");
+        g.else_members = vec![auto("GuardedElse", "a")];
+        t.guarded_groups = vec![g];
+        t.objective = Some(minimize(vref("GuardedElse", "a")));
+
+        assert!(
+            inert_objective_finding(&t, std::slice::from_ref(&t)).is_none(),
+            "guarded_groups[*].else_members must participate in cell resolution"
+        );
+    }
+
+    // ── NEGATIVE: whole-module sub-instance auto override ───────────────────
+
+    /// `sub c : Child { k = auto }` makes `Child`'s `minimize k*k` genuinely
+    /// governing — but the override cell is minted into the PARENT template
+    /// (`phase_sub_override_autos`), scoped `Parent.c`/`k`, while `Child`'s own
+    /// `k` stays a `Param`. Without whole-module visibility this is a
+    /// structurally guaranteed false Inert.
+    #[test]
+    fn sub_instance_auto_override_elsewhere_in_the_module_bails() {
+        let child = no_autos_template();
+        let mut parent = tmpl("Parent");
+        parent.sub_components = vec![sub_decl("c", "DicMinNoAutos")];
+        parent.value_cells = vec![auto("Parent.c", "k")];
+
+        let all = vec![parent, child.clone()];
+        assert!(
+            inert_objective_finding(&child, &all).is_none(),
+            "a parent-scoped `Parent.c`/`k` auto override makes Child's objective \
+             governing — the predicate must see the whole module"
+        );
+    }
+
+    /// The same shape, but the parent declares no `sub c` at all, so the scoped
+    /// auto's structure type cannot be resolved. Unproven ⇒ conservative bail.
+    #[test]
+    fn unresolvable_sub_type_on_a_scoped_auto_bails_conservatively() {
+        let child = no_autos_template();
+        let mut parent = tmpl("Parent");
+        parent.sub_components = vec![];
+        parent.value_cells = vec![auto("Parent.c", "k")];
+
+        let all = vec![parent, child.clone()];
+        assert!(
+            inert_objective_finding(&child, &all).is_none(),
+            "when the scoped auto's sub cannot be resolved to a structure, the \
+             predicate cannot prove the override is unrelated — bail"
+        );
+    }
+
+    /// Control for the two cases above: a scoped auto whose sub resolves to a
+    /// DIFFERENT structure is genuinely unrelated and must NOT suppress the
+    /// finding — otherwise the bail would swallow every real target.
+    #[test]
+    fn scoped_auto_on_an_unrelated_structure_does_not_suppress() {
+        let child = no_autos_template();
+        let other = tmpl("Other");
+        let mut parent = tmpl("Parent");
+        parent.sub_components = vec![sub_decl("c", "Other")];
+        parent.value_cells = vec![auto("Parent.c", "k")];
+
+        let all = vec![parent, other, child.clone()];
+        assert!(
+            inert_objective_finding(&child, &all).is_some(),
+            "an override on an unrelated structure must not rescue this objective"
+        );
+    }
+
+    // ── determinism ─────────────────────────────────────────────────────────
+
+    /// The reported cells are sorted and the predicate is a pure function of its
+    /// inputs — diagnostic text must not vary run to run (PRD §3 decision 8).
+    #[test]
+    fn reported_cells_are_sorted_and_the_predicate_is_deterministic() {
+        let mut t = tmpl("Deterministic");
+        t.value_cells = vec![
+            param("Deterministic", "z", 1.0),
+            param("Deterministic", "m", 2.0),
+            param("Deterministic", "b", 3.0),
+        ];
+        t.objective = Some(minimize(mul(
+            mul(vref("Deterministic", "z"), vref("Deterministic", "m")),
+            vref("Deterministic", "b"),
+        )));
+
+        let first = inert_objective_finding(&t, std::slice::from_ref(&t))
+            .expect("objective over three never-auto params is inert");
+        assert_eq!(
+            first.never_auto_cells,
+            vec![
+                ValueCellId::new("Deterministic", "b"),
+                ValueCellId::new("Deterministic", "m"),
+                ValueCellId::new("Deterministic", "z"),
+            ],
+            "cells must be sorted, not in source/traversal order"
+        );
+
+        let second = inert_objective_finding(&t, std::slice::from_ref(&t))
+            .expect("second call must agree with the first");
+        assert_eq!(first.never_auto_cells, second.never_auto_cells);
+        assert_eq!(first.anchor_span, second.anchor_span);
+    }
+
+    /// A repeated reference to the same cell is reported once.
+    #[test]
+    fn repeated_refs_are_deduplicated() {
+        let t = no_autos_template();
+        let finding = inert_objective_finding(&t, std::slice::from_ref(&t)).unwrap();
+        assert_eq!(
+            finding.never_auto_cells.len(),
+            1,
+            "`minimize k * k` names `k` once, not twice"
+        );
+    }
+
+    /// A template with no declared objective is not this pass's business.
+    #[test]
+    fn template_without_an_objective_yields_nothing() {
+        let mut t = no_autos_template();
+        t.objective = None;
+        assert!(inert_objective_finding(&t, std::slice::from_ref(&t)).is_none());
+    }
+}
