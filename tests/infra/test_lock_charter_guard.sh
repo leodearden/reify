@@ -368,4 +368,64 @@ do
 done
 
 # ---------------------------------------------------------------------------
+# Cycle 7 — extensionless tracked-file basenames ACCEPT (dark_factory:3248 mirror)
+#
+# Cycle 6 pins that a DOT does not make a segment a file.  This cycle pins the
+# complementary hole it left open: the absence of a dot did make a segment a
+# directory, unconditionally — so seven real, tracked reify files were
+# undeclarable.  The originating symptom is the exact mirror of #5726's:
+# declaring hooks/project-checks in a lock charter was REJECTed as a directory.
+#
+# PROVENANCE of the pinned vector — sweep of BOTH repos' tracked corpora, run
+# 2026-07-31, mode-160000 gitlinks excluded:
+#     git ls-files -s | awk '$1 != "160000" {print $4}' \
+#       | awk -F/ '{print $NF}' | grep -v '\.' | sort -u
+#   reify (@ab664afb9c): 7 names — LICENSE cargo cargo-audit-orphans pre-commit
+#                        pre-merge-commit project-checks reference-transaction
+#   dark-factory (main @8d276d3c5f): 5 names — Dockerfile LICENSE pre-commit
+#                        pre-merge-commit project-checks
+#   union: the 8 names pinned as CANONICAL_EXTLESS in Cycle 8.
+# The gitlink exclusion is DARK-FACTORY-RELEVANT ONLY: reify tracks zero
+# mode-160000 entries, while dark-factory tracks two (graphiti, mem0) whose
+# submodule mount points are extensionless and must NEVER be admitted as files.
+# The filter is applied on the reify side regardless — it is the documented
+# invariant, and it future-proofs any later vendoring.
+#
+# Also measured in the same sweep: ZERO directory-name collisions for any of the
+# 8 names across ALL path components (not just leaves) of either corpus — 177
+# distinct reify directory names, 97 dark-factory.  So admitting these as
+# final-segment ACCEPTs cannot make a real directory declarable.
+#
+# The 7 reify cases use REAL tracked paths (verified with git ls-files
+# --error-unmatch); Dockerfile and deploy/Dockerfile are dark-factory-evidenced
+# literals, exactly as Cycle 5 mixes the two.  C-P3 forbids any stat, so a
+# literal is as valid an input as a real path — the same property case E1 relies
+# on.  The bare-basename and deep-path cases pin that the predicate keys on the
+# FINAL SEGMENT at any depth, not on the whole string and not on depth 1.
+#
+# step-1: verify RED (measured @ab664afb9c: every path below exits 1 / "REJECT
+# <path>"); step-2 GREEN by adding _EXTLESS to the guard.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle 7: extensionless tracked-file basenames ACCEPT (dark_factory:3248) ---"
+
+for _extless_path in \
+    "LICENSE" \
+    "hooks/pre-commit" \
+    "hooks/pre-merge-commit" \
+    "hooks/project-checks" \
+    "hooks/reference-transaction" \
+    "scripts/agent-bin/cargo" \
+    "scripts/cargo-audit-orphans" \
+    "Dockerfile" \
+    "deploy/Dockerfile" \
+    "a/b/c/project-checks"
+do
+    run_classify "$_extless_path"
+    assert "extensionless: classify '$_extless_path' exits 0 (ACCEPT)" test "$GUARD_RC" -eq 0
+    assert "extensionless: classify '$_extless_path' stdout contains ACCEPT" \
+        test "${GUARD_OUT#*ACCEPT}" != "$GUARD_OUT"
+done
+
+# ---------------------------------------------------------------------------
 test_summary
