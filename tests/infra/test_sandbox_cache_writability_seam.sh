@@ -53,18 +53,35 @@
 # Pins, against dark-factory-orchestrator.yaml:
 #   (A) STRUCTURE (python3+PyYAML, SKIP-guarded): IF sandbox.enabled is
 #       true, THEN for EACH sandboxed role (implementer, debugger,
-#       simple_task), role_env_overrides[<role>] defines BOTH CARGO_HOME
-#       and npm_config_cache, each an absolute path lying under /tmp (the
-#       landlock write set's host-global writable root) and explicitly
-#       NOT under $HOME/.cargo or $HOME/.npm — the exact regression this
-#       guard exists to catch. Gated on sandbox.enabled so it stays
-#       correct if sandbox is ever flipped back off (mirrors the
-#       precondition-gated structure of
-#       test_merge_role_lint_first_seam.sh's concurrent_verify guard).
+#       simple_task), role_env_overrides[<role>] defines CARGO_HOME,
+#       npm_config_cache AND XDG_CACHE_HOME, each an absolute path lying
+#       under /tmp (the landlock write set's host-global writable root)
+#       and explicitly NOT under $HOME/.cargo, $HOME/.npm or
+#       $HOME/.cache (respectively) — the exact regression this guard
+#       exists to catch. Gated on sandbox.enabled so it stays correct if
+#       sandbox is ever flipped back off (mirrors the precondition-gated
+#       structure of test_merge_role_lint_first_seam.sh's
+#       concurrent_verify guard).
 #   (B) KNOB-NAME CROSS-CHECK (plain bash grep, always runs, no python
 #       needed): `backend: landlock` and `enabled: true` are cited under
-#       the sandbox block, and `role_env_overrides:`, `CARGO_HOME:` and
-#       `npm_config_cache:` are all cited verbatim in the yaml.
+#       the sandbox block, and `role_env_overrides:`, `CARGO_HOME:`,
+#       `npm_config_cache:` and `XDG_CACHE_HOME:` are all cited verbatim
+#       in the yaml.
+#
+# WHY XDG_CACHE_HOME: compute_write_set() (orchestrator/agents/write_set.py)
+# has no carve-out for ~/.cache/tree-sitter (verified: zero tree-sitter /
+# tree_sitter hits in that file), so a sandboxed role's grammar probe dies
+# writing ~/.cache/tree-sitter/lock — the same EACCES-mid-build shape as the
+# CARGO_HOME/npm_config_cache gap above, just for tree-sitter's compile
+# cache. tree-sitter 0.26.8 (the version on PATH at
+# /home/leo/.cargo/bin/tree-sitter) exposes no tree-sitter-specific cache-dir
+# env var; XDG_CACHE_HOME is the only lever, and it was MEASURED on this
+# host to relocate tree-sitter's lib/ + lock/ dirs and to create the whole
+# tree when the root is absent (no provisioning step needed). Upstream fix:
+# cross-repo task 5896 (adds a ~/.cache/tree-sitter carve-out to
+# compute_write_set directly, cancelled reify-side and refiled in
+# dark-factory); landing it would retire this leg of the redirect the same
+# way task 5724 would retire the CARGO_HOME/npm_config_cache leg.
 #
 # (A) is SKIPPED if python3 + PyYAML are unavailable (mirrors the SKIP
 #     idiom used by test_merge_role_lint_first_seam.sh /
@@ -229,7 +246,7 @@ PYEOF
     if python3 "$_PARSE_PY" "$ORCH_YAML" sandbox_enabled_true; then
         echo "sandbox.enabled == true; asserting cache-writability contract for sandboxed roles ($SANDBOXED_ROLES)"
         for role in $SANDBOXED_ROLES; do
-            for key in CARGO_HOME npm_config_cache; do
+            for key in CARGO_HOME npm_config_cache XDG_CACHE_HOME; do
                 assert "role_env_overrides.${role}.${key} is present and non-empty" \
                     python3 "$_PARSE_PY" "$ORCH_YAML" role_key_present "$role" "$key"
 
@@ -246,8 +263,17 @@ PYEOF
             assert "role_env_overrides.${role}.npm_config_cache is NOT under \$HOME/.npm (the regression this guard exists to catch)" \
                 python3 "$_PARSE_PY" "$ORCH_YAML" role_key_not_under "$role" npm_config_cache "$HOME/.npm"
 
+            assert "role_env_overrides.${role}.XDG_CACHE_HOME is NOT under \$HOME/.cache (the ungranted ~/.cache/tree-sitter default this guard exists to catch)" \
+                python3 "$_PARSE_PY" "$ORCH_YAML" role_key_not_under "$role" XDG_CACHE_HOME "$HOME/.cache"
+
             assert "role_env_overrides.${role}.CARGO_HOME and .npm_config_cache are distinct paths (a same-dir target would pass every check above yet collide cargo's and npm's cache layouts)" \
                 python3 "$_PARSE_PY" "$ORCH_YAML" role_keys_distinct "$role" CARGO_HOME npm_config_cache
+
+            assert "role_env_overrides.${role}.CARGO_HOME and .XDG_CACHE_HOME are distinct paths (a same-dir target would let tree-sitter's lib/ and lock/ dirs land inside cargo's cache layout and pass every other check)" \
+                python3 "$_PARSE_PY" "$ORCH_YAML" role_keys_distinct "$role" CARGO_HOME XDG_CACHE_HOME
+
+            assert "role_env_overrides.${role}.npm_config_cache and .XDG_CACHE_HOME are distinct paths (a same-dir target would let tree-sitter's lib/ and lock/ dirs land inside npm's cache layout and pass every other check)" \
+                python3 "$_PARSE_PY" "$ORCH_YAML" role_keys_distinct "$role" npm_config_cache XDG_CACHE_HOME
         done
     else
         echo "SKIP: sandbox.enabled is not true; cache-redirect contract does not apply (guard is conditional, see header)"
@@ -286,5 +312,8 @@ assert "'CARGO_HOME:' cited in dark-factory-orchestrator.yaml" \
 
 assert "'npm_config_cache:' cited in dark-factory-orchestrator.yaml" \
     grep -qE '^[[:space:]]*npm_config_cache:' "$ORCH_YAML"
+
+assert "'XDG_CACHE_HOME:' cited in dark-factory-orchestrator.yaml" \
+    grep -qE '^[[:space:]]*XDG_CACHE_HOME:' "$ORCH_YAML"
 
 test_summary
