@@ -17,13 +17,9 @@
  * Violation assertions are on `code`, never on `message`: the prose is meant to
  * stay free to reword or enrich without churning the pins.
  */
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-
 import { describe, it, expect } from "vitest";
 
-import { discoverSharedEsmModules, readSharedModuleSource } from "./sharedModuleLoad.js";
+import { readSharedModuleSource } from "./sharedModuleLoad.js";
 import {
   SMOKE_DRIVERS,
   discoverSmokeDrivers,
@@ -168,67 +164,12 @@ describe("stripComments — the mitigation the predicate is built on", () => {
   });
 });
 
-describe("discoverSmokeDrivers — the filter rule behind the completeness guard", () => {
-  it("keeps `smoke_*` drivers, drops shared modules and non-`.mjs` files", () => {
-    // Driven off a fixture directory so the RULE is pinned in isolation, and
-    // written as the exact complement of discoverSharedEsmModules's filter: the
-    // opt-in prefix is `smoke_` WITH the underscore, so `smoke_find_uses.mjs` is
-    // a driver while `smokeDriverGuards.mjs` is a shared module. A regression
-    // from `startsWith("smoke_")` to `startsWith("smoke")` would otherwise
-    // surface only as a confusing table mismatch below, never naming the filter.
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reify-smoke-drivers-"));
-    try {
-      for (const name of [
-        "smoke_find_uses.mjs", // a driver
-        "smokeDriverGuards.mjs", // `smoke` but NOT `smoke_` — a shared module
-        "rpcEnvelope.mjs", // a shared module
-        "smokeDriverConventions.ts", // not a `.mjs` at all
-        "run_find_uses_smoke.sh",
-      ]) {
-        fs.writeFileSync(path.join(dir, name), "");
-      }
-      expect(discoverSmokeDrivers(dir)).toEqual(["smoke_find_uses.mjs"]);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("partitions the directory with discoverSharedEsmModules — no `.mjs` in both or neither", () => {
-    // THE COMPLEMENT CLAIM, MADE EXECUTABLE. Both filters say `.endsWith(".mjs")`
-    // and differ by one negation, in two files — so the claim that together they
-    // cover everything held only in prose, and an edit to either alone (an
-    // `.e2e.mjs` carve-out here, a rename there) would drop files out of BOTH
-    // tables with every other test still green. That is the same silent gap the
-    // SMOKE_DRIVERS completeness guard closes on the other axis, and neither of
-    // the two per-filter fixture tests can see it: each is blind to the other's
-    // rule by construction.
-    //
-    // The de-duplication this implies — one shared partition helper, both
-    // discoveries defined on top of it — belongs in ./sharedModuleLoad.ts, which
-    // task 5857 does not hold. This pins the invariant that fix would preserve.
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reify-visual-partition-"));
-    try {
-      const everyMjs = [
-        "smoke_find_uses.mjs",
-        "smoke_multi_pane_e2e.mjs",
-        "smokeDriverGuards.mjs", // `smoke` but NOT `smoke_` — the discriminator
-        "rpcEnvelope.mjs",
-        "meshCountParity.mjs",
-      ];
-      for (const name of [...everyMjs, "smokeDriverConventions.ts", "run_smoke.sh"]) {
-        fs.writeFileSync(path.join(dir, name), "");
-      }
-
-      const drivers = discoverSmokeDrivers(dir);
-      const shared = discoverSharedEsmModules(dir);
-      // Disjoint: sorting the concatenation and comparing to the sorted corpus
-      // catches a file claimed TWICE, which a Set-based union would hide.
-      expect([...drivers, ...shared].sort()).toEqual([...everyMjs].sort());
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-});
+// discoverSmokeDrivers's filter rule — including the disjoint/exhaustive claim
+// against discoverSharedEsmModules — is pinned once, on the partitionVisualMjs
+// helper both functions now derive from, in ./sharedModuleLoad.test.ts (task
+// 5882). This file used to carry two near-clone fixture tests of its own; see
+// that file's "partitionVisualMjs — the split rule behind both discovery
+// filters" describe block.
 
 describe("the convention that keeps the open_file retry policy in one home", () => {
   // THE POINT OF THIS FILE. Each driver re-implementing the 8×3000ms loop was

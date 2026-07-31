@@ -100,8 +100,39 @@ export const SHARED_ESM_MODULES = [
 ];
 
 /**
+ * Split every `.mjs` in `dir` into the SHARED library modules and the
+ * `smoke_*` drivers, in one `readdirSync` pass — the single rule
+ * {@link discoverSharedEsmModules} below and `./smokeDriverConventions.ts`'s
+ * `discoverSmokeDrivers` are both thin wrappers over (task 5882; the two were
+ * previously defined independently, one negated character apart, in two
+ * files).
+ *
+ * Because both halves come from the SAME pass over the SAME list, split on a
+ * mutually-exclusive branch, `drivers` and `shared` are disjoint and cover
+ * every `.mjs` in `dir` BY CONSTRUCTION. That used to be an executable
+ * cross-check running two independently-filtered discoveries over one
+ * fixture and comparing the results; now it needs no test of its own — only
+ * this function's own split rule needs pinning, in
+ * `./sharedModuleLoad.test.ts`.
+ *
+ * The subtlety worth pinning: the opt-out is the prefix `smoke_` WITH the
+ * underscore, so `smokeDriverGuards.mjs` is a shared module and
+ * `smoke_appearance_e2e.mjs` is a driver.
+ */
+export function partitionVisualMjs(dir: string = VISUAL_DIR): { drivers: string[]; shared: string[] } {
+  const drivers: string[] = [];
+  const shared: string[] = [];
+  for (const name of fs.readdirSync(dir)) {
+    if (!name.endsWith(".mjs")) continue;
+    (name.startsWith("smoke_") ? drivers : shared).push(name);
+  }
+  return { drivers, shared };
+}
+
+/**
  * Every `.mjs` in `dir` that is NOT a `smoke_*` driver — i.e. every module the
- * constraint applies to, derived rather than remembered.
+ * constraint applies to, derived rather than remembered. The shared half of
+ * {@link partitionVisualMjs}'s split.
  *
  * Deliberately used ONLY by the completeness guard, never as the source for the
  * `it.each` table: driving the table off a directory read would let a discovery
@@ -110,12 +141,10 @@ export const SHARED_ESM_MODULES = [
  * cross-checks it.
  *
  * The `dir` parameter exists so that filter rule can be pinned against a fixture
- * directory in isolation. The subtlety worth pinning: the opt-out is the prefix
- * `smoke_` WITH the underscore, so `smokeDriverGuards.mjs` is a shared module and
- * `smoke_appearance_e2e.mjs` is a driver.
+ * directory in isolation.
  */
 export function discoverSharedEsmModules(dir: string = VISUAL_DIR): string[] {
-  return fs.readdirSync(dir).filter((name) => name.endsWith(".mjs") && !name.startsWith("smoke_"));
+  return partitionVisualMjs(dir).shared;
 }
 
 /**
