@@ -2,7 +2,9 @@
 
 use reify_core::Type;
 use reify_ir::{BinOp, CompiledExprKind, Value};
-use reify_test_support::{compile_source, errors_only, get_let_expr, parse_and_compile};
+use reify_test_support::{
+    compile_source, errors_only, get_let_expr, get_let_expr_in, parse_and_compile,
+};
 
 // ─── step-1: pi and tau resolve to literal Real constants ────────────────────
 
@@ -142,6 +144,9 @@ fn user_param_pi_shadows_builtin() {
         other => panic!("expected ValueRef to param 'pi', got {:?}", other),
     }
     // The pi param cell should hold the user-provided default 1.5, not the builtin pi ≈ 3.14159.
+    // NOTE: `pi` here is a *param* cell, not a let binding. `get_let_expr` resolves any value
+    // cell carrying a `default_expr`, which a defaulted param does; it would panic on a
+    // defaultless param (e.g. `auto`), which is why this source declares `= 1.5`.
     let pi_expr = get_let_expr(&compiled, "pi");
     match &pi_expr.kind {
         CompiledExprKind::Literal(Value::Real(v)) => {
@@ -174,21 +179,9 @@ structure S {
   let x = pi
 }";
     let compiled = parse_and_compile(src);
-    // Find template S (not PiPart).
-    let template = compiled
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("should have template 'S'");
-    let cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "x")
-        .expect("should have 'x' value cell");
-    let expr = cell
-        .default_expr
-        .as_ref()
-        .expect("'x' should have a default expr");
+    // Two templates here (PiPart and S), so target S explicitly rather than relying on
+    // `get_let_expr`'s first-template resolution.
+    let expr = get_let_expr_in(&compiled, "S", "x");
     // x must resolve to the collection list ValueRef, NOT Literal(Real(PI)).
     match &expr.kind {
         CompiledExprKind::ValueRef(id) => {
