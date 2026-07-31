@@ -17,6 +17,9 @@
 #   B — precondition-refusal + T3 flock guard (step-3/step-4)
 #   C — FREE-FIRST reclaim + T1 source-intact (step-5/step-6)
 #   D — --reseed opt-in + free-BEFORE-stage ordering (step-7/step-8)
+#   E — seed fail-closed abort ⇒ the caller DISCARDS the uncertified
+#       <lane>/target it aborted onto (task 5635; PRD
+#       docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13 caller obligation)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -87,6 +90,58 @@ run_helper() {
     OUT="$(bash "$SCRIPT" "$@" 2>"$ERR_FILE")" || rc=$?
     ERR_OUT="$(cat "$ERR_FILE")"
     RC=$rc
+}
+
+# ── discard-FAILURE fixture (shared shape with tests/infra/test_warm_lane_gc.sh) ──
+# _discard_fail_seed_stub_body — printed to stdout; redirect into a --seed-script
+# stub file. Models a POST-CLONE fail-closed seed abort whose caller-side discard
+# of <lane>/target then FAILS:
+#   1. recreates "$2/target" carrying a HAZARD marker — the uncertified CoW clone
+#      the seed aborted ONTO (seed-warm-lane.sh deliberately does not rm it; PRD
+#      docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13);
+#   2. `chmod a-w "$2"` so the caller's `rm -rf "$2/target"` cannot unlink the
+#      `target` entry from the lane dir and exits non-zero (EACCES);
+#   3. exits 1 — the non-zero exit IS the caller's discard predicate (for the real
+#      primitive, which runs under `set -euo pipefail` and writes stdout exactly
+#      once at its terminal echo, non-zero exit and empty stdout always arrive
+#      together).
+# The chmod deliberately lands only AFTER the free-first `rm -rf <lane>/target`
+# this script performs BEFORE the re-seed (T2 ordering), so that first rm still
+# succeeds and only the post-abort discard fails — which a PATH-level `rm` stub
+# (tests/infra/test_warm_lane_gc.sh's K4 technique) could not achieve.
+#
+# MEASURED technique (2026-07-31, this suite's /tmp): with the lane dir
+# non-writable, `rm -rf <lane>/target` still removes target/'s CONTENTS but cannot
+# unlink the `target` entry itself — it exits 1 and prints "Permission denied".
+# Assert on the PRESENCE of <lane>/target, therefore, not on the HAZARD marker
+# inside it.
+#
+# Every arm built on this stub MUST:
+#   - be gated on `[ "$(id -u)" -ne 0 ]` — uid 0 bypasses DAC write checks, so the
+#     fixture silently inverts under root (same skip idiom as
+#     tests/infra/test_warm_lane_audit.sh's mode-000 record arm); and
+#   - call `_restore_discard_fail_lane <lane_dir>` immediately after the run and
+#     BEFORE any assertion can abort the suite — `trap cleanup EXIT`'s `rm -rf`
+#     over _TMPDIRS cannot remove a non-writable lane dir either.
+_discard_fail_seed_stub_body() {
+    cat << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+# POST-CLONE fail-closed abort: the uncertified CoW clone is left in place, and
+# the lane dir is made non-writable so the caller's discard of it fails.
+mkdir -p "$LANE_DIR/target"
+touch "$LANE_DIR/target/HAZARD"
+chmod a-w "$LANE_DIR"
+exit 1
+STUB_EOF
+}
+
+# _restore_discard_fail_lane <lane_dir> — undo the stub's `chmod a-w` so the
+# suite's EXIT-trap cleanup can remove the fixture. Idempotent; safe to call on a
+# lane the stub never touched.
+_restore_discard_fail_lane() {
+    chmod u+w "$1" 2>/dev/null || true
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -423,6 +478,136 @@ assert "D3: --reseed with a failing seed-script still exits 0 (best-effort)" \
     test "$RC" -eq 0
 assert "D3: target/ is still gone despite the reseed failure" \
     bash -c '[ ! -e "$1" ]' _ "$D_LANE_C/target"
+# This stub refuses BEFORE staging anything, so the free-first rm (T2) is the
+# whole story and Block E's discard has nothing to remove. `rm -rf` exits 0 on a
+# missing path, so the discard branch must PROBE for the target/ rather than
+# infer from its own exit status — otherwise it reports a discard that never
+# happened. The post-clone counterpart is E1.
+assert "D3: stderr reports there was NOTHING to discard (no false 'discarded' claim)" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "nothing to discard"' _ "$ERR_OUT"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block E — seed fail-closed abort ⇒ discard the uncertified lane target/
+# (task 5635; PRD docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13,
+# "Caller obligation on the fail-closed path")
+#
+# D3 above covers a PRE-clone seed failure — its stub never recreates target/, so
+# the free-first rm is the whole story and "already freed" is accurate. This block
+# covers the POST-clone case, which is the one the seed's three fail-closed
+# post-conditions actually produce: they all fire AFTER target/ has been replaced
+# with the CoW clone, so the seed aborts ONTO a hazardous clone it just refused to
+# certify — and deliberately does not rm it, leaving that to the caller.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block E: seed fail-closed abort => discard the uncertified lane target/ ---"
+
+E_BASE="$(mktemp -d /tmp/test-thin-warm-lane-e-base-XXXXXX)"
+_TMPDIRS+=("$E_BASE")
+
+E_SEED_LOG="$(mktemp /tmp/test-thin-warm-lane-e-seedlog-XXXXXX)"
+_TMPDIRS+=("$E_SEED_LOG")
+
+# ONE stub serves both E1 and E2; only $SEED_RC differs between the two runs.
+# That IS the pair's point: the discard is keyed on the seed's EXIT STATUS, so a
+# stub leaving a byte-identical <lane>/target behind must have that clone
+# DISCARDED at rc=1 and PRESERVED at rc=0. Without E2 an unconditional `rm -rf`
+# would keep E1 green. (Neutral marker name: the same staged clone is hazardous
+# only when the seed refused to certify it.)
+E_SEED_STUB="$(mktemp /tmp/test-thin-warm-lane-e-seedstub-XXXXXX)"
+_TMPDIRS+=("$E_SEED_STUB")
+cat > "$E_SEED_STUB" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+mkdir -p "$LANE_DIR/target"
+touch "$LANE_DIR/target/CLONE_MARKER"
+exit "${SEED_RC:-0}"
+STUB_EOF
+chmod +x "$E_SEED_STUB"
+export SEED_LOG="$E_SEED_LOG"
+
+# ── E1: a POST-CLONE fail-closed abort ⇒ the clone is discarded, exit still 0 ──
+E_LANE_A="$(mktemp -d /tmp/test-thin-warm-lane-e-a-XXXXXX)"
+_TMPDIRS+=("$E_LANE_A")
+mkdir -p "$E_LANE_A/target"
+touch "$E_LANE_A/target/MARKER"
+
+SEED_RC=1 run_helper "$E_LANE_A" --reseed --base "$E_BASE" --seed-script "$E_SEED_STUB"
+
+assert "E1: the uncertified clone is DISCARDED — <lane>/target is GONE" \
+    bash -c '[ ! -e "$1" ]' _ "$E_LANE_A/target"
+# The lane is now in exactly the state thin GUARANTEES (target/ freed) — cold but
+# safe — so the documented best-effort-reseed contract still holds and the exit
+# code stays 0. thin's exit code tracks whether the lane is left SAFE, not whether
+# the re-seed succeeded.
+assert "E1: exit is still 0 (lane left cold-but-safe; best-effort reseed contract holds)" \
+    test "$RC" -eq 0
+assert "E1: stdout is still exactly the resolved lane_dir (single line, contract intact)" \
+    test "$OUT" = "$(realpath -m "$E_LANE_A")"
+# Anchored on a [warn]-tagged line specifically: the free-first `ok "Freed
+# <lane>/target"` already names that same path, so an unanchored grep would go
+# green without the discard ever being reported.
+assert "E1: a stderr [warn] line names the discarded path" \
+    bash -c 'printf "%s\n" "$1" | grep -F "[warn]" | grep -qF "$2/target"' _ "$ERR_OUT" "$E_LANE_A"
+assert "E1: stderr cites the §9.5 inv.13 caller obligation" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "inv.13"' _ "$ERR_OUT"
+
+# ── E2: POSITIVE CONTROL — a CERTIFYING seed's clone is never discarded ────────
+# Load-bearing: same stub, same staged target/, rc=0 instead of rc=1.
+E_LANE_B="$(mktemp -d /tmp/test-thin-warm-lane-e-b-XXXXXX)"
+_TMPDIRS+=("$E_LANE_B")
+mkdir -p "$E_LANE_B/target"
+touch "$E_LANE_B/target/MARKER"
+
+SEED_RC=0 run_helper "$E_LANE_B" --reseed --base "$E_BASE" --seed-script "$E_SEED_STUB"
+
+assert "E2: exit 0" test "$RC" -eq 0
+assert "E2: a certifying seed's <lane>/target SURVIVES (discard keys on exit status, not on presence)" \
+    test -d "$E_LANE_B/target"
+assert "E2: the staged clone is byte-intact (nothing was discarded)" \
+    test -f "$E_LANE_B/target/CLONE_MARKER"
+
+# ── E3: the DISCARD ITSELF fails ⇒ the lane is hazardous and must NOT be
+# handed to a caller. This is thin mirroring the seed's own empty-stdout refusal
+# one level up: a lane still carrying an uncertified clone is exactly what a
+# consumer must never be given, so no lane path is emitted at all.
+# Technique + root-skip rationale: _discard_fail_seed_stub_body above.
+if [ "$(id -u)" -ne 0 ]; then
+    E_LANE_C="$(mktemp -d /tmp/test-thin-warm-lane-e-c-XXXXXX)"
+    _TMPDIRS+=("$E_LANE_C")
+    mkdir -p "$E_LANE_C/target"
+    touch "$E_LANE_C/target/MARKER"
+
+    E_FAIL_STUB="$(mktemp /tmp/test-thin-warm-lane-e-failstub-XXXXXX)"
+    _TMPDIRS+=("$E_FAIL_STUB")
+    _discard_fail_seed_stub_body > "$E_FAIL_STUB"
+    chmod +x "$E_FAIL_STUB"
+
+    run_helper "$E_LANE_C" --reseed --base "$E_BASE" --seed-script "$E_FAIL_STUB"
+    # Restore BEFORE any assertion can abort the suite: `trap cleanup EXIT`'s
+    # `rm -rf` over _TMPDIRS cannot remove a non-writable lane dir either.
+    _restore_discard_fail_lane "$E_LANE_C"
+
+    # Exit 1 SPECIFICALLY, not merely non-zero: 1 is the pinned "the rm we
+    # guarantee did not happen" code in this script's header exit-code table,
+    # and 75 (EX_TEMPFAIL) is a caller-meaningful requeue signal here — a
+    # refactor that leaked 75 out of this branch would change how a dark-factory
+    # caller reacts to a hazardous lane while a `-ne 0` assert stayed green.
+    assert "E3: a FAILED discard exits 1 (the pinned code; the lane is not left safe)" \
+        test "$RC" -eq 1
+    assert "E3: STDOUT is EMPTY — a lane carrying an uncertified clone is never emitted" \
+        test -z "$OUT"
+    assert "E3: <lane>/target is RETAINED (the discard did not happen)" \
+        test -d "$E_LANE_C/target"
+    assert "E3: a stderr [error] line names the RETAINED <lane>/target so an operator can find it" \
+        bash -c 'printf "%s\n" "$1" | grep -F "[error]" | grep -qF "$2/target"' _ "$ERR_OUT" "$E_LANE_C"
+    assert "E3: stderr states the lane was NOT returned" \
+        bash -c 'printf "%s\n" "$1" | grep -F "[error]" | grep -qiE "not returned|not emitted"' _ "$ERR_OUT"
+    assert "E3: stderr carries the rm's own error text (failure detail not swallowed)" \
+        bash -c 'printf "%s\n" "$1" | grep -qi "permission denied"' _ "$ERR_OUT"
+else
+    echo "  SKIP: E3 discard-failure asserts (running as uid 0; DAC write checks are bypassed)"
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
