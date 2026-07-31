@@ -1,7 +1,18 @@
 /**
  * The structural conventions the live `smoke_*.mjs` e2e drivers must follow —
- * today, the one that says a driver never re-implements the `open_file` retry
- * policy (task 5857).
+ * today, two of them: a driver never re-implements the `open_file` retry policy
+ * (task 5857), and a driver never reads a post-open `store_state` payload
+ * without first diagnosing it (task 5884).
+ *
+ * WHY THE SECOND ONE IS A CONVENTION AND NOT A CODE REVIEW NOTE. An in-band
+ * `{error: '<msg>'}` envelope is TRUTHY, so the `!storeAfterOpen?.editor?.…`
+ * guard every driver writes reads straight past a `store_state` outage to
+ * `undefined` and reports `got: undefined` — a frontend-shaped verdict for a
+ * tool-shaped failure, which is the most expensive kind of misattribution a
+ * smoke driver can produce. `describeRpcFailure` in `./smokeDriverGuards.mjs`
+ * folds that envelope into a named failure first. Four drivers wrote the same
+ * unguarded chain independently (tasks 5827, 5883, 5884), so it is a shape the
+ * next driver will reach for too.
  *
  * WHY A SOURCE-LEVEL CHECK IS THE ONLY SIGNAL. A driver needs a live reify-gui
  * (WebKit WebView + OCCT) to do anything at all, so CI can never execute one and
@@ -39,8 +50,14 @@ import { VISUAL_DIR, partitionVisualMjs } from "./sharedModuleLoad.js";
  * `inline-open-file` — the driver calls the `open_file` tool directly instead of
  * going through `openFileWithRetry`, re-implementing the retry budget, the `.ok`
  * verdict and the failure wording that `./smokeDriverGuards.mjs` owns.
+ *
+ * `undiagnosed-store-state` — the driver reads `storeAfterOpen?.editor` without
+ * first putting the payload through `describeRpcFailure`, so a truthy in-band
+ * `{error: '<msg>'}` survives the `!x` guard, the chain reports
+ * `activeFile: undefined`, and the run blames the frontend for what was a
+ * `store_state` outage.
  */
-export type SmokeDriverViolationCode = "inline-open-file";
+export type SmokeDriverViolationCode = "inline-open-file" | "undiagnosed-store-state";
 
 /**
  * One convention a driver source breaks.
@@ -88,6 +105,21 @@ export function stripComments(source: string): string {
 const INLINE_OPEN_FILE = /\brpc\s*\(\s*["']open_file["']/;
 
 /**
+ * The OPTIONAL-CHAIN read of the post-open `store_state` payload, however spaced.
+ *
+ * The optional chain and NOT a plain-dot `storeAfterOpen.editor` on purpose: the
+ * defect class this convention defends against is SILENCE. `?.` reads past a
+ * truthy `{error}` to `undefined`; the plain-dot form yields `undefined` at
+ * `.editor` and then THROWS at `.activeFile`, which is a stack trace naming the
+ * exact line — already loud, already attributable. Pinned by name as a
+ * deliberate non-violation in `./smokeDriverConventions.test.ts`.
+ */
+const STORE_STATE_READ = /\bstoreAfterOpen\s*\?\.\s*editor\b/;
+
+/** The diagnosis that must accompany that read, in whatever argument spelling. */
+const STORE_STATE_DIAG = /\bdescribeRpcFailure\s*\(\s*storeAfterOpen\b/;
+
+/**
  * Every convention `source` breaks, as a driver in this directory.
  *
  * Returns a list; `[]` means compliant. A LIST rather than a boolean on purpose:
@@ -105,6 +137,29 @@ export function findSmokeDriverConventionViolations(source: string): SmokeDriver
       code: "inline-open-file",
       message:
         "calls `open_file` directly instead of `openFileWithRetry` from ./smokeDriverGuards.mjs",
+    });
+  }
+  if (
+    STORE_STATE_READ.test(code) &&
+    // RAW `source`, deliberately, NOT the stripped `code` — and this is the line
+    // a later "make it consistent" edit would change. `stripComments`' asymmetry
+    // (see its docblock) holds only for a POSITIVE-presence match: a blind spot
+    // blanks a real call site and the violation goes unseen. A NEGATIVE-presence
+    // half INVERTS it — blanking the real `describeRpcFailure(storeAfterOpen, …)`
+    // line makes `lacks DIAG` true and false-alarms a COMPLIANT driver, the
+    // direction this module refuses to err in. Matching DIAG on the raw source
+    // puts both blind spots out of reach here; the price is that a diagnosis
+    // written only inside a comment suppresses the flag, which is a missed
+    // violation — the direction already accepted. One rule for both halves: each
+    // is matched against whichever text errs toward silence. Pinned in both
+    // directions by ./smokeDriverConventions.test.ts.
+    !STORE_STATE_DIAG.test(source)
+  ) {
+    violations.push({
+      code: "undiagnosed-store-state",
+      message:
+        "reads `storeAfterOpen.editor` without first diagnosing the `store_state` RPC " +
+        "via `describeRpcFailure` from ./smokeDriverGuards.mjs",
     });
   }
   return violations;
