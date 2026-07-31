@@ -3809,7 +3809,8 @@ assert "T4b: counterfactual control — the SAME detached grandchild whose stub 
 #
 # Contract under test, its reasoning, the causal `.fingerprint` gate below and
 # the opt-out knob all live in ONE place — docs/prds/warm-lane-pool-cow-seeding.md
-# §9.5 inv.13 — deliberately NOT restated here (G7 no-lockstep-duplication).
+# §9.5 inv.13 — deliberately NOT restated here or in the arm comments below
+# (G7 no-lockstep-duplication).
 # Block S's S3a/S3b are the BELOW-THRESHOLD control for U1: S3's fixture carries
 # no .fingerprint dir, so it stays under inv.13's hazard gate and keeps asserting
 # the accept path unchanged.
@@ -3936,12 +3937,11 @@ assert "U1b: tracked source still carries the 2020-01-01 bulk stamp ($EPOCH_2020
 assert "U1b: the tauri-* build dir is GONE when the seed proceeds ⇒ the sweep does run on this fixture" \
     bash -c '[ ! -e "$1" ]' _ "$U1B_LANE/target/debug/build/tauri-TTTT"
 
-# ── U1c/U1d: the guard's -maxdepth 3 probe bound, driven from BOTH sides. The
-# bound is the load-bearing half of the causal claim (it is what makes the guard
-# cover the same tree the build-dir deletion sweep walks), yet U1/U1b/U2/U3 all
-# use the depth-2 `debug/.fingerprint` shape and would stay green under a
-# narrowed -maxdepth 2 — which would let EVERY cross-compiled warm base through
-# the gate. Mirrors the boundary arm H3d already keeps on the sweep itself.
+# ── U1c/U1d: the guard's -maxdepth 3 probe bound, driven from BOTH sides.
+# Why the bound is load-bearing and why both edges are pinned: §9.5 inv.13.
+# Local: every other .fingerprint arm in this block (U1/U1b/U2/U3) uses the
+# depth-2 `debug/.fingerprint` shape and would stay green under a narrowed
+# -maxdepth 2 — without this pair, nothing here fails on a narrowed bound.
 
 # U1c: depth 3 — the cross-compile <triple>/<profile>/.fingerprint shape, which
 # is INSIDE the bound and must still be refused.
@@ -3962,8 +3962,7 @@ assert "U1c: the [error] line names the depth-3 .fingerprint path it found" \
 # U1d: depth 4 — a .fingerprint nested inside a build-script output dir, OUTSIDE
 # the bound. It is not a cargo profile fingerprint dir, so it is deliberately
 # not probed and the seed must still proceed. This is the arm a WIDENED bound
-# would fail, keeping the guard's coverage tied to the sweep's rather than
-# drifting into false refusals.
+# would fail.
 IFS='|' read -r U1D_BASE U1D_LANE <<< "$(_u_make_fixture U1d 1 debug/build/somepkg-2222)"
 
 reset_calls
@@ -3994,13 +3993,10 @@ assert "U2: STDOUT is exactly <lane>/target" \
     bash -c '[ "$1" = "$2" ]' _ "$OUT" "$U2_LANE/target"
 
 # ── U2b: the OTHER half of the same discriminator — an explicit --touch list is
-# NOT substantiation. --touch feeds the same _DELTA_PATHS array as the git-diff
-# delta-touch, so `non-empty _DELTA_PATHS ⇒ substantiated` is the obvious
-# refactor; it is wrong, because --touch is an ADDITIONAL path to touch (see the
-# usage block in scripts/seed-warm-lane.sh), not a declaration that the delta
-# set is COMPLETE, and no flag exists with which a caller could assert
-# completeness. Together with U2 this pins the guard's key exactly: BASE
-# RESOLUTION, neither more nor less. Ruling and reasoning: §9.5 inv.13.
+# NOT substantiation. Together with U2 this pins the guard's key exactly: BASE
+# RESOLUTION, neither more nor less. Why --touch does not substantiate, and why
+# the `non-empty _DELTA_PATHS ⇒ substantiated` refactor is the wrong one:
+# §9.5 inv.13.
 IFS='|' read -r U2B_BASE U2B_LANE <<< "$(_u_make_fixture U2b 1)"
 
 reset_calls
@@ -4019,9 +4015,7 @@ assert "U2b: --touch abort still leaves STDOUT empty" \
 # behaviour. The warn is level-scoped so an honoured downgrade is visible in a
 # production log.
 #
-# Polarity is the load-bearing choice and is the INVERSE of the esc-5214
-# mistake: the guard is default-ON and only an explicit export can downgrade it,
-# so no forgetful caller can bypass it by omission.
+# Polarity rationale (default-ON; the INVERSE of esc-5214): §9.5 inv.13.
 IFS='|' read -r U3_BASE U3_LANE <<< "$(_u_make_fixture U3 1)"
 
 reset_calls
