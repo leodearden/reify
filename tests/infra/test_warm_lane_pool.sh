@@ -166,6 +166,58 @@ run_helper() {
 
 reset_calls() { > "$CALLS_FILE"; }
 
+# _seed_lane_capture <label> <target_dir> <seed invocation...>
+#   Shared caller-obligation guard for every SEED-MODE (CoW-clone) call site in
+#   this suite (scripts/seed-warm-lane.sh:63-79). Non-empty stdout (with exit
+#   0) is the ONLY signal that a seed-mode invocation certifies <target_dir>
+#   warm-safe to build in; its fail-closed post-condition guards
+#   (inv.9/inv.12/inv.13) legitimately abort with a non-zero exit ONTO the
+#   hazardous half-seeded state (target/ already CoW-cloned, sources already
+#   bulk-stamped) rather than un-doing it themselves. Two obligations follow
+#   for every caller, centralized here rather than copy-pasted per site
+#   (task #5880 amendment; originally landed inline per-site by task #5875
+#   [B13] and task #5880 [B6, B3+B4]):
+#     1. rc + stdout MUST be captured via `|| rc=$?`, never a bare command
+#        substitution assignment: under this file's `set -euo pipefail`, a
+#        bare assignment aborts the ENTIRE SUITE with no PASS/FAIL lines and
+#        no "Results:" tally the instant a guard fires.
+#     2. On refusal, the half-seeded target/ must be discarded rather than
+#        left for downstream code to build on — that would silently inherit
+#        exactly the stale-artifact false green the guard fired to prevent.
+#   Deliberately does NOT redirect the seed invocation's stderr: seed's `err`
+#   diagnostics on a fail-closed abort are the diagnostic payload and must
+#   stay visible in the run log.
+#
+#   Sets in caller scope (fixed names — callers copy these into their own
+#   site-specific variables immediately after the call, same convention
+#   _b13_build_fresh_counts below uses for _B13_FRESH_TOTAL/_B13_DEP_FRESH):
+#     _SEED_CAP_RC  — seed's exit code
+#     _SEED_CAP_OUT — seed's stdout (guaranteed empty on any refusal, by the
+#                     caller-obligation contract itself)
+#   Callers still decide, themselves, what to do on refusal beyond the target
+#   discard performed here (e.g. skip a downstream build and record sentinels
+#   so the affected asserts fail distinctly rather than measuring a
+#   half-seeded/cold-rebuilt lane — see the call sites).
+_seed_lane_capture() {
+    local label="$1"
+    local target_dir="$2"
+    shift 2
+
+    local rc=0
+    local out=""
+    out="$("$@")" || rc=$?
+    _SEED_CAP_RC="$rc"
+    _SEED_CAP_OUT="$out"
+
+    if [ "$rc" -ne 0 ] || [ -z "$out" ]; then
+        echo "$label: seed REFUSED to certify the lane warm-safe (rc=$rc, stdout=${out:-<empty>}) — removing the half-seeded target at $target_dir (caller obligation, scripts/seed-warm-lane.sh:63-79)" >&2
+        rm -rf "$target_dir" 2>/dev/null || true
+        if [ -d "$target_dir" ]; then
+            echo "$label: WARNING — failed to remove the hazardous half-seeded target at $target_dir; it may still be present for a later step to (mis)measure" >&2
+        fi
+    fi
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Passthrough cp stub — Block PG scaffolding (added by task #4667)
 #
@@ -433,11 +485,15 @@ _b6_clone_and_refresh() {
     # make unsubstantiated in production, and precisely what this arm is here to
     # measure. (Not git-init + --base-commit HEAD: see the note at the B3+B4
     # seed site for why re-ordering the commit would risk B7's own invariant.)
-    REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 \
-    RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
+    # rc/stdout capture + refusal cleanup: see _seed_lane_capture (~line 168).
+    _seed_lane_capture "B6" "$sibling_ws/target" \
+        env REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 \
+            RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
         bash "$SEED_SCRIPT" "$base_ws/target" "$sibling_ws" \
             --fresh-checkout \
-            --touch "$sibling_ws/warm_leaf/src/lib.rs" >/dev/null
+            --touch "$sibling_ws/warm_leaf/src/lib.rs"
+    _B6_SEED_RC="$_SEED_CAP_RC"
+    _B6_SEED_OUT="$_SEED_CAP_OUT"
 
     # ── Step 2: Normalize lane_ws tree clean (required by provenance guard) ───
     # git checkout -- . resets tracked files; git clean -xfd -e target removes
@@ -711,8 +767,16 @@ _b13_reseed_vs_resetinplace() {
         cargo build --manifest-path "$_b13_base_ws/Cargo.toml" >/dev/null 2>&1
 
     # Record base provenance sidecar (RUSTFLAGS guard for seed)
+    # rc captured via `|| rc=$?` (record-base mode has no stdout-emptiness
+    # caller obligation like seed mode — the sidecar path this prints is
+    # discarded here, unused — but a bare failing command is still a plain
+    # simple command under this file's `set -euo pipefail`, so an unguarded
+    # non-zero exit here would abort the whole suite exactly like the
+    # seed-mode call sites; task #5880 amendment).
+    _B13_RECORD_BASE_RC=0
     RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
-        bash "$SEED_SCRIPT" --record-base "$_b13_base_ws/target" >/dev/null
+        bash "$SEED_SCRIPT" --record-base "$_b13_base_ws/target" >/dev/null \
+            || _B13_RECORD_BASE_RC=$?
 
     # git-init base_ws at the mtime-2020-01-01 state so provenance guard passes
     _b7_init_git_lane "$_b13_base_ws"
@@ -797,16 +861,7 @@ _b13_reseed_vs_resetinplace() {
     # Remove the stale lane/target first so seed's clobber guard passes.
     echo "B13: treatment — re-seed from at-head base..." >&2
     rm -rf "$_b13_stale_lane/target" 2>/dev/null || true
-    # rc + stdout are captured explicitly (rather than a bare call) because
-    # seed-warm-lane.sh's CALLER OBLIGATION (scripts/seed-warm-lane.sh:63-79)
-    # makes non-empty stdout the ONLY warm-safe signal: the seed's fail-closed
-    # guards are BY DESIGN and this repair does not change them — the caller,
-    # not the seed, owns deciding what happens on a refusal. `|| _b13_seed_rc=$?`
-    # makes the assignment errexit-exempt so a fail-closed abort (e.g. exit 128
-    # from git diff on a foreign base commit) is observable instead of killing
-    # the whole suite. Deliberately NOT redirecting stderr: seed's `err`
-    # diagnostics on a fail-closed abort are the diagnostic payload and must
-    # stay visible in the run log.
+    # rc/stdout capture + refusal cleanup: see _seed_lane_capture (~line 168).
     #
     # No --touch here (deliberately): the leaf delta is already committed on
     # top of the cloned base commit (see the commit above), so it is already
@@ -818,15 +873,12 @@ _b13_reseed_vs_resetinplace() {
     # _touch_git_delta's git-diff resolution. This weakens no guard: PRD
     # §9.5 inv.13 (_assert_delta_touch_base_substantiated) already keys only
     # on base-commit resolution, not on the explicit --touch list.
-    local _b13_seed_rc=0
-    local _b13_seed_out=""
-    _b13_seed_out="$(
-        RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
-            bash "$SEED_SCRIPT" "$_b13_gen" "$_b13_stale_lane" \
-                --fresh-checkout
-    )" || _b13_seed_rc=$?
-    _B13_SEED_RC="$_b13_seed_rc"
-    _B13_SEED_OUT="$_b13_seed_out"
+    _seed_lane_capture "B13" "$_b13_stale_lane/target" \
+        env RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
+        bash "$SEED_SCRIPT" "$_b13_gen" "$_b13_stale_lane" \
+            --fresh-checkout
+    _B13_SEED_RC="$_SEED_CAP_RC"
+    _B13_SEED_OUT="$_SEED_CAP_OUT"
 
     # TZ-robust stale-bulk-stamp epoch (mirrors seed's own
     # _assert_no_stale_delta_stamp idiom, scripts/seed-warm-lane.sh:455) —
@@ -839,7 +891,7 @@ _b13_reseed_vs_resetinplace() {
     # to 2020-01-01). Building here would inherit exactly the stale-artifact
     # false green the guard fired to prevent, so skip the build entirely and
     # record a sentinel so the warmth comparison fails loudly too.
-    if [ "$_b13_seed_rc" -eq 0 ] && [ -n "$_b13_seed_out" ]; then
+    if [ "$_B13_SEED_RC" -eq 0 ] && [ -n "$_B13_SEED_OUT" ]; then
         # Delta-touch set: pin WHAT the re-seed actually touched, immediately
         # after it returns and before the build can observe/alter anything.
         # The head-ward leaf must be newer than the 2020 bulk stamp — and,
@@ -858,7 +910,7 @@ _b13_reseed_vs_resetinplace() {
         _B13_TREAT_DEP_FRESH="$_B13_DEP_FRESH"
         _B13_TREAT_WALL_MS=$(( $(date +%s%3N) - _b13_treat_t0 ))
     else
-        echo "B13: treatment seed REFUSED to certify the lane (rc=$_b13_seed_rc, stdout=${_b13_seed_out:-<empty>}) — skipping the treatment build rather than measuring a half-seeded lane (caller obligation, scripts/seed-warm-lane.sh:63-79)" >&2
+        echo "B13: treatment seed REFUSED to certify the lane (rc=$_B13_SEED_RC, stdout=${_B13_SEED_OUT:-<empty>}) — skipping the treatment build rather than measuring a half-seeded lane (caller obligation, scripts/seed-warm-lane.sh:63-79)" >&2
         # Sentinels chosen so EVERY treatment-side assertion below FAILs
         # (rather than accidentally passing, or crashing reading a missing/
         # stale file): _B13_LEAF_MTIME equal to the stale epoch fails the
@@ -2159,8 +2211,19 @@ gen_synth_workspace "$_WS_BASE"
 echo "B3+B4: workspace generated at $_WS_BASE (${REIFY_WARM_LANE_GATE_DEP_FNS:-500} dep fns)" >&2
 
 # ── Stamp base provenance so seed-warm-lane.sh RUSTFLAGS guard passes ─────────
+# rc captured via `|| rc=$?` (record-base mode has no stdout-emptiness caller
+# obligation like seed mode — the sidecar path this prints is discarded here,
+# unused — but a bare failing command is still a plain simple command under
+# this file's `set -euo pipefail`, so an unguarded non-zero exit here would
+# abort the whole suite exactly like the seed-mode call sites below; task
+# #5880 amendment).
+_B34_RECORD_BASE_RC=0
 RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
-    bash "$SEED_SCRIPT" --record-base "$_WS_BASE/target" >/dev/null
+    bash "$SEED_SCRIPT" --record-base "$_WS_BASE/target" >/dev/null \
+        || _B34_RECORD_BASE_RC=$?
+
+assert "B3+B4: record-base stamped the base's provenance sidecar (exits 0)" \
+    test "$_B34_RECORD_BASE_RC" -eq 0
 
 # ── Cold control build: empty target → all from scratch (B3 wall baseline) ───
 _B3_COLD_WALL="$(build_walltime "$_WS_BASE/Cargo.toml")"
@@ -2199,36 +2262,69 @@ cp -a "$_WS_BASE/warm_leaf" "$_WS_LANE/"
 # records the 2020-01-01 mtimes and a later `git checkout -- .` does not rewrite
 # warm_dep. Re-ordering that would put B7's own stated critical invariant at
 # risk for no coverage gain.
-REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 \
-RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
+# rc/stdout capture + refusal cleanup: see _seed_lane_capture (~line 168).
+_seed_lane_capture "B3+B4" "$_WS_LANE/target" \
+    env REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 \
+        RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
     bash "$SEED_SCRIPT" "$_WS_BASE/target" "$_WS_LANE" \
         --fresh-checkout \
-        --touch "$_WS_LANE/warm_leaf/src/lib.rs" >/dev/null
+        --touch "$_WS_LANE/warm_leaf/src/lib.rs"
+_B34_SEED_RC="$_SEED_CAP_RC"
+_B34_SEED_OUT="$_SEED_CAP_OUT"
+
+assert "B3+B4: lane seed certified the lane warm-safe (rc=0, non-empty stdout)" \
+    bash -c '[ "$1" -eq 0 ] && [ -n "$2" ]' _ "$_B34_SEED_RC" "$_B34_SEED_OUT"
 
 # ── Warm lane build: heavy dep reused via CoW (fresh:true), leaf rebuilt ──────
-# Capture JSON to inspect per-crate freshness (B3 warm-skip) AND measure wall.
-_B3_WARM_T0="$(date +%s%3N)"
-_WARM_JSON="$(CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
-    cargo build --manifest-path "$_WS_LANE/Cargo.toml" \
-        --message-format=json 2>/dev/null)"
-_B3_WARM_WALL=$(( $(date +%s%3N) - _B3_WARM_T0 ))
+# Skipped entirely when the seed refused to certify the lane (mirrors B13's
+# treatment-arm shape, task #5880 amendment): the verdict is already decided
+# by the assert above, so building would either fail against the now-missing
+# target/ or, worse, silently succeed as a full COLD build — which would make
+# the "leaf delta-closure is fresh:false" assert below pass VACUOUSLY (a cold
+# build reports every unit fresh:false regardless of mechanism) instead of
+# testing the warm-skip mechanism it exists to test. Sentinels below are
+# chosen so every downstream B3/B4 assertion FAILs distinctly on refusal
+# rather than silently passing or crashing on a missing/stale JSON capture.
+#
+# rc is still captured on the run branch itself via `|| _B34_WARM_RC=$?`: a
+# cargo failure unrelated to seeding (e.g. a genuine compile error) must not
+# silently abort the suite either — same bare-command-under-errexit hazard as
+# the seed call above, just for the build instead of the seed.
+_B34_WARM_RC=0
+if [ "$_B34_SEED_RC" -eq 0 ] && [ -n "$_B34_SEED_OUT" ]; then
+    # Capture JSON to inspect per-crate freshness (B3 warm-skip) AND measure wall.
+    _B3_WARM_T0="$(date +%s%3N)"
+    _WARM_JSON="$(CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
+        cargo build --manifest-path "$_WS_LANE/Cargo.toml" \
+            --message-format=json 2>/dev/null)" || _B34_WARM_RC=$?
+    _B3_WARM_WALL=$(( $(date +%s%3N) - _B3_WARM_T0 ))
 
-# ── Extract B3/B4 signals from warm lane build output ────────────────────────
-_B3_DEP_FRESH="$(printf '%s\n' "$_WARM_JSON" | \
-    grep '"reason":"compiler-artifact"' | grep '"name":"warm_dep"' | \
-    grep -o '"fresh":[a-z]*' | head -1 | sed 's/"fresh"://;s/"//g')"
+    # ── Extract B3/B4 signals from warm lane build output ────────────────────
+    _B3_DEP_FRESH="$(printf '%s\n' "$_WARM_JSON" | \
+        grep '"reason":"compiler-artifact"' | grep '"name":"warm_dep"' | \
+        grep -o '"fresh":[a-z]*' | head -1 | sed 's/"fresh"://;s/"//g')"
 
-_B3_LEAF_FRESH="$(printf '%s\n' "$_WARM_JSON" | \
-    grep '"reason":"compiler-artifact"' | grep '"name":"warm_leaf"' | \
-    grep -o '"fresh":[a-z]*' | head -1 | sed 's/"fresh"://;s/"//g')"
+    _B3_LEAF_FRESH="$(printf '%s\n' "$_WARM_JSON" | \
+        grep '"reason":"compiler-artifact"' | grep '"name":"warm_leaf"' | \
+        grep -o '"fresh":[a-z]*' | head -1 | sed 's/"fresh"://;s/"//g')"
 
-_B4_WARM_FRESH="$(printf '%s\n' "$_WARM_JSON" | \
-    grep '"reason":"compiler-artifact"' | grep -c '"fresh":true' || true)"
+    _B4_WARM_FRESH="$(printf '%s\n' "$_WARM_JSON" | \
+        grep '"reason":"compiler-artifact"' | grep -c '"fresh":true' || true)"
+else
+    echo "B3+B4: skipping warm lane build — seed refused to certify the lane warm-safe (caller obligation, scripts/seed-warm-lane.sh:63-79)" >&2
+    _B34_WARM_RC=-1
+    _B3_WARM_WALL=-1
+    _B3_DEP_FRESH="<seed-refused>"
+    _B3_LEAF_FRESH="<seed-refused>"
+    _B4_WARM_FRESH=-1
+fi
 
 # Record signals to stderr (direction-only; no frozen thresholds per G6/PRD §9)
 echo "B3 wall: cold=${_B3_COLD_WALL}ms warm=${_B3_WARM_WALL}ms delta=$((${_B3_COLD_WALL} - ${_B3_WARM_WALL}))ms" >&2
 echo "B4 fresh counts: inplace=${_B4_INPLACE_FRESH} warm=${_B4_WARM_FRESH}" >&2
 
+assert "B3+B4: warm lane build exits 0" \
+    test "$_B34_WARM_RC" -eq 0
 assert "B3: heavy dep unit is fresh:true in warm lane (CoW-reused, not recompiled)" \
     test "$_B3_DEP_FRESH" = "true"
 assert "B3: leaf delta-closure is fresh:false in warm lane (was rebuilt)" \
@@ -2359,15 +2455,28 @@ _B6_SIBLING_LANE="$_GATE_WS_ROOT/synth-sibling"
 # _b6_clone_and_refresh is defined in impl-lifecycle → RED until then.
 _b6_clone_and_refresh "$_WS_BASE" "$_WS_LANE" "$_B6_SIBLING_LANE"
 
-# After the refresh, build the sibling lane and check dep freshness.
-_B6_SIBLING_RC=0
-_B6_SIBLING_JSON="$(CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
-    cargo build --manifest-path "$_B6_SIBLING_LANE/Cargo.toml" \
-        --message-format=json 2>/dev/null)" || _B6_SIBLING_RC=$?
+assert "B6: sibling seed certified the lane warm-safe (rc=0, non-empty stdout)" \
+    bash -c '[ "$1" -eq 0 ] && [ -n "$2" ]' _ "$_B6_SEED_RC" "$_B6_SEED_OUT"
 
-_B6_SIBLING_DEP_FRESH="$(printf '%s\n' "$_B6_SIBLING_JSON" | \
-    grep '"reason":"compiler-artifact"' | grep '"name":"warm_dep"' | \
-    grep -o '"fresh":[a-z]*' | head -1 | sed 's/"fresh"://;s/"//g')"
+# After the refresh, build the sibling lane and check dep freshness — skipped
+# entirely when the sibling seed refused to certify (mirrors the B3+B4
+# treatment above, task #5880 amendment): the verdict is already decided by
+# the assert above, and a build against the (already target-less) sibling
+# would just waste a cold cargo build that has no chance of resolving warm.
+_B6_SIBLING_RC=0
+if [ "$_B6_SEED_RC" -eq 0 ] && [ -n "$_B6_SEED_OUT" ]; then
+    _B6_SIBLING_JSON="$(CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
+        cargo build --manifest-path "$_B6_SIBLING_LANE/Cargo.toml" \
+            --message-format=json 2>/dev/null)" || _B6_SIBLING_RC=$?
+
+    _B6_SIBLING_DEP_FRESH="$(printf '%s\n' "$_B6_SIBLING_JSON" | \
+        grep '"reason":"compiler-artifact"' | grep '"name":"warm_dep"' | \
+        grep -o '"fresh":[a-z]*' | head -1 | sed 's/"fresh"://;s/"//g')"
+else
+    echo "B6: skipping sibling lane build — sibling seed refused to certify the lane warm-safe (caller obligation, scripts/seed-warm-lane.sh:63-79)" >&2
+    _B6_SIBLING_RC=-1
+    _B6_SIBLING_DEP_FRESH="<seed-refused>"
+fi
 
 assert "B6: sibling lane build exits 0 after base refresh (in-flight independence)" \
     test "$_B6_SIBLING_RC" -eq 0
@@ -2531,6 +2640,14 @@ _TMPDIRS+=("$_B13_WS_ROOT")
 # Call the helper (undefined until step-10 → exits 127 under set -euo pipefail
 # on a substrate host → RED; SKIPs gracefully off-substrate via the gate above).
 _b13_reseed_vs_resetinplace "$_B13_WS_ROOT"
+
+# ── (contract) Base provenance sidecar was recorded successfully ─────────────
+# Guards the --record-base call inside the helper above (task #5880
+# amendment): without this, a record-base failure would just silently
+# proceed (missing sidecar → RUSTFLAGS guard below defaults to "", which may
+# or may not matter) instead of surfacing as its own diagnosable FAIL line.
+assert "B13: record-base stamped the at-head base's provenance sidecar (exits 0)" \
+    test "$_B13_RECORD_BASE_RC" -eq 0
 
 # ── (contract) Treatment honoured seed-warm-lane.sh's caller obligation ───────
 # Non-empty stdout (with exit 0) is the ONLY signal the seed considers the lane
