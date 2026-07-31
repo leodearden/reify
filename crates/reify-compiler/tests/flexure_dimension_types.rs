@@ -14,23 +14,23 @@ use reify_core::{DimensionVector, Severity};
 
 #[test]
 fn rotational_stiffness_param_resolves_and_folds() {
-    let (si, dim) = common::stdlib_param_si_value("RotationalStiffness", "1N*m/rad");
-    assert_eq!(si, 1.0, "1 N·m/rad should fold to si_value 1.0");
+    let (si, dim) = common::stdlib_param_si_value("RotationalStiffness", "1N*m/rad^2");
+    assert_eq!(si, 1.0, "1 N·m/rad² should fold to si_value 1.0");
     assert_eq!(
         dim,
         DimensionVector::ROTATIONAL_STIFFNESS,
-        "dimension must equal ROTATIONAL_STIFFNESS (kg·m²·s⁻²·rad⁻¹)"
+        "dimension must equal ROTATIONAL_STIFFNESS (kg·m²·s⁻²·rad⁻²)"
     );
 }
 
 #[test]
 fn rotational_damping_param_resolves_and_folds() {
-    let (si, dim) = common::stdlib_param_si_value("RotationalDamping", "1N*m*s/rad");
-    assert_eq!(si, 1.0, "1 N·m·s/rad should fold to si_value 1.0");
+    let (si, dim) = common::stdlib_param_si_value("RotationalDamping", "1N*m*s/rad^2");
+    assert_eq!(si, 1.0, "1 N·m·s/rad² should fold to si_value 1.0");
     assert_eq!(
         dim,
         DimensionVector::ROTATIONAL_DAMPING,
-        "dimension must equal ROTATIONAL_DAMPING (kg·m²·s⁻¹·rad⁻¹)"
+        "dimension must equal ROTATIONAL_DAMPING (kg·m²·s⁻¹·rad⁻²)"
     );
 }
 
