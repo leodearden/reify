@@ -641,7 +641,10 @@ _b11_concurrent_clone_during_flip() {
 #
 # Treatment arm (re-seed from at-head base):
 #   6. Resolve ws_root/base symlink → concrete .gen.N path.
-#   7. Call seed-warm-lane.sh --fresh-checkout <gen_dir> <stale_lane> (D10 path).
+#   7. Call seed-warm-lane.sh --fresh-checkout <gen_dir> <stale_lane> (D10 path;
+#      deliberately NO --touch — the leaf delta is already git-diff-visible
+#      from the cloned history, so this exercises _touch_git_delta's
+#      base-commit resolution directly instead of an explicit touch).
 #   8. First build → _B13_TREAT_FRESH + _B13_TREAT_WALL_MS.
 #
 # Sets in caller scope:
@@ -656,8 +659,12 @@ _b11_concurrent_clone_during_flip() {
 #   _B13_DEP_MTIME      — post-seed mtime (epoch secs) of warm_dep/src/lib.rs
 #   _B13_STALE_EPOCH    — epoch secs for the 2020-01-01 bulk-stamp (computed,
 #                         TZ-robust; never the hardcoded 1577836800)
-#   _B13_CTRL_DEP_FRESH — 1 if the control build's warm_dep unit was fresh:true, else 0
-#   _B13_TREAT_DEP_FRESH — 1 if the treatment build's warm_dep unit was fresh:true, else 0
+#   _B13_CTRL_DEP_FRESH  — tri-state "true"/"false"/"" for the control build's
+#                          warm_dep unit freshness ("" when no warm_dep
+#                          artifact line exists at all, e.g. the build failed)
+#   _B13_TREAT_DEP_FRESH — tri-state "true"/"false"/"" for the treatment build's
+#                          warm_dep unit freshness (also "" when the seed
+#                          refused to certify and no treatment build ran)
 
 # _b13_build_fresh_counts(lane_dir, json_out_path) — run `cargo build
 # --message-format=json` on lane_dir's workspace (same env as every other
@@ -666,7 +673,12 @@ _b11_concurrent_clone_during_flip() {
 # place this under $ws_root so the suite's _TMPDIRS cleanup reclaims it), and
 # set in caller scope:
 #   _B13_FRESH_TOTAL — count of compiler-artifact lines with "fresh":true
-#   _B13_DEP_FRESH   — 1 when the warm_dep artifact line carries "fresh":true, else 0
+#   _B13_DEP_FRESH   — tri-state "true"/"false"/"" (empty when no warm_dep
+#                      artifact line exists at all — e.g. the build failed
+#                      outright): NOT a 0/1 collapse, so a build that never
+#                      reports on warm_dep cannot silently read the same as
+#                      one that legitimately reports fresh:false. Mirrors B3's
+#                      tri-state idiom (_B3_DEP_FRESH, ~line 2056).
 # Used by BOTH the control and treatment arms so the two builds are measured
 # identically; callers copy these two outputs into their own arm-specific
 # _B13_*_FRESH / _B13_*_DEP_FRESH variables immediately after the call.
@@ -681,10 +693,8 @@ _b13_build_fresh_counts() {
 
     _B13_FRESH_TOTAL="$(grep -c '"fresh":true' "$json_out" || true)"
 
-    _B13_DEP_FRESH=0
-    if grep '"name":"warm_dep"' "$json_out" | grep -q '"fresh":true'; then
-        _B13_DEP_FRESH=1
-    fi
+    _B13_DEP_FRESH="$(grep '"name":"warm_dep"' "$json_out" | \
+        grep -o '"fresh":[a-z]*' | head -1 | sed 's/"fresh"://;s/"//g')"
 }
 
 _b13_reseed_vs_resetinplace() {
@@ -753,10 +763,14 @@ _b13_reseed_vs_resetinplace() {
     # PRESERVES this mtime rather than re-staling it.
     git -C "$_b13_stale_lane" checkout -- warm_dep/src/lib.rs
 
-    # Apply the head-ward delta to the LEAF (matches Setup-3 above and the
-    # --touch path the treatment call has always passed) and commit on top of
-    # the cloned base commit. warm_dep is already clean (the restore above made
-    # it match the index), so this commit's -a picks up only the leaf.
+    # Apply the head-ward delta to the LEAF (matches Setup-3 above) and commit
+    # on top of the cloned base commit. warm_dep is already clean (the restore
+    # above made it match the index), so this commit's -a picks up only the
+    # leaf. Committing it here (rather than relying on an explicit --touch at
+    # the treatment call below) means `git diff --name-only $_b13_base_head`
+    # inside the lane already lists this path, so seed's _touch_git_delta
+    # touches it on its own — the leaf-mtime assertion below then pins
+    # base-commit resolution itself, not a trivially-satisfied explicit touch.
     printf '\npub fn delta_fn() -> u64 { 42 }\n' >> "$_b13_stale_lane/warm_leaf/src/lib.rs"
     git -C "$_b13_stale_lane" \
         -c user.email="warm-lane-test@localhost" \
@@ -793,13 +807,23 @@ _b13_reseed_vs_resetinplace() {
     # the whole suite. Deliberately NOT redirecting stderr: seed's `err`
     # diagnostics on a fail-closed abort are the diagnostic payload and must
     # stay visible in the run log.
+    #
+    # No --touch here (deliberately): the leaf delta is already committed on
+    # top of the cloned base commit (see the commit above), so it is already
+    # listed by `git diff --name-only $_b13_base_head` inside the lane. An
+    # explicit --touch would touch that same path unconditionally, BEFORE base
+    # resolution even runs — masking a base-commit-resolution regression
+    # behind a leaf mtime that would look fine regardless. Leaving it out
+    # makes the leaf-mtime assertion below a genuine pin on
+    # _touch_git_delta's git-diff resolution. This weakens no guard: PRD
+    # §9.5 inv.13 (_assert_delta_touch_base_substantiated) already keys only
+    # on base-commit resolution, not on the explicit --touch list.
     local _b13_seed_rc=0
     local _b13_seed_out=""
     _b13_seed_out="$(
         RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
             bash "$SEED_SCRIPT" "$_b13_gen" "$_b13_stale_lane" \
-                --fresh-checkout \
-                --touch "$_b13_stale_lane/warm_leaf/src/lib.rs"
+                --fresh-checkout
     )" || _b13_seed_rc=$?
     _B13_SEED_RC="$_b13_seed_rc"
     _B13_SEED_OUT="$_b13_seed_out"
@@ -818,10 +842,12 @@ _b13_reseed_vs_resetinplace() {
     if [ "$_b13_seed_rc" -eq 0 ] && [ -n "$_b13_seed_out" ]; then
         # Delta-touch set: pin WHAT the re-seed actually touched, immediately
         # after it returns and before the build can observe/alter anything.
-        # The head-ward leaf (explicit --touch path) must be newer than the
-        # 2020 bulk stamp; the unchanged heavy dep must still BE at the 2020
-        # bulk stamp — together, the delta-touch set is exactly the head-ward
-        # delta, nothing more.
+        # The head-ward leaf must be newer than the 2020 bulk stamp — and,
+        # since no --touch is passed for it (see the call above), that can
+        # only come from _touch_git_delta's git-diff resolution, making this
+        # a genuine pin on base-commit resolution. The unchanged heavy dep
+        # must still BE at the 2020 bulk stamp — together, the delta-touch
+        # set is exactly the head-ward delta, nothing more.
         _B13_LEAF_MTIME="$(stat -c '%Y' "$_b13_stale_lane/warm_leaf/src/lib.rs")"
         _B13_DEP_MTIME="$(stat -c '%Y' "$_b13_stale_lane/warm_dep/src/lib.rs")"
 
@@ -837,11 +863,14 @@ _b13_reseed_vs_resetinplace() {
         # (rather than accidentally passing, or crashing reading a missing/
         # stale file): _B13_LEAF_MTIME equal to the stale epoch fails the
         # "-ne" leaf assertion; _B13_DEP_MTIME not equal to it fails the
-        # "-eq" dep assertion; -1 fails every "-eq 1"/"-gt" freshness check.
+        # "-eq" dep assertion; _B13_TREAT_FRESH=-1 fails the "-gt" aggregate
+        # comparison; _B13_TREAT_DEP_FRESH="" (absent, matching the tri-state
+        # "no build ran" case — never "false") fails the "= true" per-unit
+        # dep-freshness check.
         _B13_LEAF_MTIME="$_B13_STALE_EPOCH"
         _B13_DEP_MTIME=-1
         _B13_TREAT_FRESH=-1
-        _B13_TREAT_DEP_FRESH=-1
+        _B13_TREAT_DEP_FRESH=""
         _B13_TREAT_WALL_MS=-1
     fi
 
@@ -2383,7 +2412,11 @@ assert "B13: treatment re-seed honoured seed-warm-lane.sh's caller contract (exi
 # Pins WHAT the re-seed actually delta-touched: the resolved base commit must
 # produce a MEANINGFUL (leaf touched to now) yet MINIMAL (dep left alone)
 # delta, so the aggregate comparison below can never pass for the wrong reason
-# (e.g. a repair that silently widened or emptied the delta-touch set).
+# (e.g. a repair that silently widened or emptied the delta-touch set). The
+# treatment call passes no --touch for the leaf (see _b13_reseed_vs_resetinplace
+# above), so the leaf assertion below exercises _touch_git_delta's git-diff
+# base-commit resolution directly rather than being trivially satisfied by an
+# explicit touch that fires regardless of whether base resolution succeeded.
 echo "B13 mtimes: leaf=${_B13_LEAF_MTIME} dep=${_B13_DEP_MTIME} stale_epoch=${_B13_STALE_EPOCH}" >&2
 assert "B13: re-seed delta-touched the head-ward leaf to now (not the 2020 bulk stamp)" \
     bash -c '[ "$1" -ne "$2" ]' _ "$_B13_LEAF_MTIME" "$_B13_STALE_EPOCH"
@@ -2395,12 +2428,16 @@ assert "B13: re-seed left the unchanged heavy dep at the 2020 bulk stamp (delta-
 # a bare inequality is satisfiable by accident. Assert the MECHANISM directly:
 # the treatment's unchanged heavy dep is CoW-reused from the at-head base
 # (fresh:true), while the control's reset-in-place rebuild is genuinely
-# near-cold for that same dep (fresh:false).
-echo "B13 dep-fresh: control=${_B13_CTRL_DEP_FRESH} treatment=${_B13_TREAT_DEP_FRESH}" >&2
+# near-cold for that same dep (fresh:false). Tri-state string comparison
+# ("true"/"false"), not -eq 1/0: a build that emits no warm_dep
+# compiler-artifact line at all (e.g. it failed outright) yields an EMPTY
+# _B13_*_DEP_FRESH, which fails both checks below instead of silently
+# matching the "rebuilt"/"not fresh" case.
+echo "B13 dep-fresh: control=${_B13_CTRL_DEP_FRESH:-<absent>} treatment=${_B13_TREAT_DEP_FRESH:-<absent>}" >&2
 assert "B13: treatment keeps the unchanged heavy dep warm (warm_dep fresh:true from the CoW base clone)" \
-    test "$_B13_TREAT_DEP_FRESH" -eq 1
+    test "$_B13_TREAT_DEP_FRESH" = "true"
 assert "B13: control rebuilt the heavy dep (reset-in-place is genuinely near-cold)" \
-    test "$_B13_CTRL_DEP_FRESH" -eq 0
+    test "$_B13_CTRL_DEP_FRESH" = "false"
 
 # ── (a) Treatment is warmer than control ──────────────────────────────────────
 # Re-seed from at-head base gives a higher fresh-unit count than reset-in-place.
