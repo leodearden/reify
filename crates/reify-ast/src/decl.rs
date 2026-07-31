@@ -417,6 +417,13 @@ pub struct SubDecl {
     ///
     /// Parsed and stored here (task α); binder scoping is first consumed by
     /// task β.
+    ///
+    /// **α populates this pair but ALSO rejects the declaration.** Because no
+    /// compiler pass reads these fields yet, `lower_sub` emits an interim
+    /// `#5482` parse-layer error on every indexer clause it lowers, so no
+    /// consumer can observe a half-elaborated indexed sub: a populated pair
+    /// always travels with a diagnostic. β removes that rejection when it
+    /// scopes the binder and derives the count cell.
     pub index_binder: Option<SpannedIdent>,
     /// Domain expression of the indexer clause — the `0..4` in
     /// `sub idlers[i in 0..4] = …` (indexed-sub-instantiation.md §3.1, task α).

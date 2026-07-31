@@ -2738,13 +2738,55 @@ impl<'a> Lowering<'a> {
             node.child_by_field_name("domain"),
         ) {
             (Some(binder_node), Some(domain_node)) => match self.lower_expr(domain_node) {
-                Some(domain) => (
-                    Some(SpannedIdent {
-                        name: self.node_text(binder_node).to_string(),
-                        span: self.span(binder_node),
-                    }),
-                    Some(domain),
-                ),
+                Some(domain) => {
+                    // TODO(#5482): delete this interim rejection when β wires
+                    // the count cell.
+                    //
+                    // The pair is still POPULATED above and below — the AST
+                    // contract is what β builds on, so this diagnostic is a
+                    // guard, not a lowering failure. Without it α would leave a
+                    // silent-miscompile window open: the clause lowers, nothing
+                    // reads it, and the declaration elaborates to exactly ONE
+                    // instance with the binder resolving against nothing.
+                    //
+                    // Reported as an ERROR rather than a warning because the
+                    // parse layer has no warning channel at all
+                    // (`reify_ast::decl::ParseError` is `{message, span}`, no
+                    // severity field), and error matches the pre-α baseline
+                    // where this very source was a hard parse error. Emitting a
+                    // lowering-pass semantic rejection over this channel is the
+                    // established shape in this file — cf. `unknown port
+                    // direction` and `unsupported forall body kind`.
+                    //
+                    // Spanned binder-start..domain-end: the two named fields
+                    // are the stable, field-derived way to reach the clause
+                    // interior. `self.span(node)` would underline the whole
+                    // sub, and the `[`/`]` tokens are anonymous.
+                    self.push_error(
+                        format!(
+                            "indexed sub instantiation `sub {name}[{} in …]` is not yet \
+                             elaborated (#5482): the indexer clause parses but no compiler \
+                             pass reads it, so this declares exactly ONE `{name}` instance \
+                             rather than one per index. Remove the indexer clause until \
+                             indexed-sub elaboration (#5482) lands.",
+                            self.node_text(binder_node),
+                        ),
+                        SourceSpan::new(
+                            binder_node.start_byte() as u32,
+                            domain_node.end_byte() as u32,
+                        ),
+                    );
+                    (
+                        Some(SpannedIdent {
+                            name: self.node_text(binder_node).to_string(),
+                            span: self.span(binder_node),
+                        }),
+                        Some(domain),
+                    )
+                }
+                // Distinct from the rejection above, and deliberately so: this
+                // arm reports a MALFORMED domain and drops the pair; that one
+                // reports a well-formed but unelaborated clause and KEEPS it.
                 None => {
                     self.push_error(
                         format!(
