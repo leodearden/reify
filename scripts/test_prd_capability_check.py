@@ -1083,6 +1083,110 @@ class TestMain(unittest.TestCase):
         self.assertEqual(rc, 64, "empty probe set must return 64 (EX_USAGE)")
         self.assertIn("no probes", err, "error message must mention 'no probes'")
 
+    # ── --grammar-substrate-status (5894 step-5) ──────────────────────────────
+    #
+    # A shell caller (tests/infra/test_prd_capability_check.sh) needs to ask "can
+    # a grammar probe run here at all?" WITHOUT running the gate, so it can print
+    # a clean SKIP instead of reporting the sandbox's cache denial as a gate FAIL.
+    # Every case is driven by a TREE_SITTER_BIN stub, never by ambient sandbox
+    # state — see TestGrammarSubstrateUsable's class docstring for why that is
+    # load-bearing rather than merely tidy.
+
+    def _stub_dir(self):
+        """Per-test tempdir for TREE_SITTER_BIN stubs, removed on test teardown.
+
+        Uses addCleanup rather than setUp/tearDown so the other ~20 TestMain
+        tests, which need no stubs, do not pay for a tempdir.
+        """
+        tmpdir = tempfile.mkdtemp(prefix="prd_gate_substrate_cli_")
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        return tmpdir
+
+    def _run_status_with_stub(self, stub):
+        """Run main(["--grammar-substrate-status"]) against a TREE_SITTER_BIN stub."""
+        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+            return self._run_main_capturing(["--grammar-substrate-status"])
+
+    def test_grammar_substrate_status_usable_returns_0(self):
+        """(a) Usable substrate → exit 0 and a short 'usable' line on stdout."""
+        rc, out, _ = self._run_status_with_stub(_ts_stub_clean(self._stub_dir()))
+        self.assertEqual(rc, 0, "a usable grammar substrate must exit 0")
+        self.assertIn("usable", out.lower(), "the mode must state its finding on stdout")
+
+    def test_grammar_substrate_status_denied_returns_75(self):
+        """(b) Cache denial → exit 75 (EX_TEMPFAIL) with the reason on stdout.
+
+        75 rather than 1 or 70: those already mean "≥1 FAIL verdict" and
+        "HARNESS_ERROR", so overloading either would leave a shell caller unable
+        to tell "substrate unavailable, please SKIP" from a real gate result.
+        """
+        rc, out, _ = self._run_status_with_stub(_ts_stub_cache_denied(self._stub_dir()))
+        self.assertEqual(
+            rc, 75,
+            "an unusable grammar substrate must exit 75 (EX_TEMPFAIL), distinct "
+            "from 1 (FAIL) and 70 (HARNESS_ERROR)",
+        )
+        # The reason is what the shell prints verbatim as its SKIP line, so it
+        # must name the subsystem — a bare "permission denied" is exactly what
+        # made the original failure cost several probes to attribute.
+        lowered = out.lower()
+        self.assertIn("tree-sitter", lowered)
+        self.assertIn("cache", lowered)
+
+    def test_grammar_substrate_status_needs_no_probe_set(self):
+        """(c) The flag is accepted with NO positional PROBE_SET_JSON.
+
+        PROBE_SET_JSON is currently a required positional, so argparse rejects
+        the flag-only invocation and main() maps that to 64.  Pinned separately
+        from (a)/(b) because it is the argparse contract change, and because a
+        64 here would otherwise masquerade as an unrelated usage error.
+        """
+        rc, _, err = self._run_status_with_stub(_ts_stub_clean(self._stub_dir()))
+        self.assertNotEqual(
+            rc, 64,
+            "--grammar-substrate-status must not require a probe set; got the "
+            f"usage error instead (stderr: {err!r})",
+        )
+
+    def test_grammar_substrate_status_runs_no_probes(self):
+        """The status mode must never invoke the probe runner.
+
+        It reports on the substrate, so it cannot be allowed to perturb — or be
+        perturbed by — any probe verdict.
+        """
+        sentinel = unittest.mock.Mock(side_effect=AssertionError(
+            "--grammar-substrate-status must not evaluate probes"
+        ))
+        with unittest.mock.patch.object(pcc, "evaluate", sentinel):
+            rc, _, _ = self._run_status_with_stub(_ts_stub_clean(self._stub_dir()))
+        self.assertEqual(rc, 0)
+        sentinel.assert_not_called()
+
+    # ── (d) regression guards for the argparse change ─────────────────────────
+
+    def test_no_flag_and_no_probe_set_still_exits_64_with_message(self):
+        """Making the positional optional must NOT silently accept an empty argv.
+
+        test_main_no_args_exits_64 pins the code; this pins the message, which is
+        the part an nargs="?" change can quietly drop.
+        """
+        rc, _, err = self._run_main_capturing([])
+        self.assertEqual(rc, 64, "no flag and no probe set is still a usage error")
+        self.assertTrue(err.strip(), "the usage error must explain itself on stderr")
+
+    def test_probe_set_without_flag_is_unaffected(self):
+        """A normal probe-set invocation behaves exactly as before the flag existed."""
+        rc, out, _ = self._run_main_capturing(
+            [str(_EXAMPLE_PROBE_SET)], runner=self._all_pass_runner()
+        )
+        self.assertEqual(rc, 0)
+        self.assertIn(pcc.PASS, out)
+
+    def test_bad_probe_set_without_flag_still_exits_64(self):
+        """A missing probe set still returns 64, not the new 75."""
+        rc, _, _ = self._run_main_capturing(["/nonexistent/probe-set.json"])
+        self.assertEqual(rc, 64)
+
     # ── hermetic: exit code matches harness_exit_code ─────────────────────────
 
     def test_main_all_pass_returns_0(self):
@@ -1383,6 +1487,55 @@ _CACHE_DENIED_STDERR = (
 )
 
 
+# ---------------------------------------------------------------------------
+# TREE_SITTER_BIN stub factories (module-level so both the grammar_substrate_usable()
+# unit tests and the --grammar-substrate-status CLI tests in TestMain share one
+# definition of "what a denied / clean / rejecting tree-sitter looks like").
+#
+# These are forward-referenced from TestMain, which is defined earlier in the
+# file — module-level names resolve at call time, so the ordering is fine and the
+# stubs stay next to the measured stderr signature they encode.
+# ---------------------------------------------------------------------------
+
+def _write_ts_stub(tmpdir: str, name: str, body: str) -> str:
+    """Write an executable /bin/sh stub at <tmpdir>/<name> and return its path."""
+    path = os.path.join(tmpdir, name)
+    with open(path, "w") as f:
+        f.write("#!/bin/sh\n" + textwrap.dedent(body))
+    os.chmod(path, 0o755)
+    return path
+
+
+def _ts_stub_cache_denied(tmpdir: str, name: str = "ts_stub_denied") -> str:
+    """Stub reproducing the measured cache-denial: stderr signature, exit 1.
+
+    The stderr text is written to a sibling file and cat'd rather than embedded
+    in a heredoc: the measured signature is unindented, so textwrap.dedent would
+    find no common prefix, silently leave the stub body indented, and the heredoc
+    terminator would never match.
+    """
+    stderr_file = os.path.join(tmpdir, name + "_stderr.txt")
+    with open(stderr_file, "w") as f:
+        f.write(_CACHE_DENIED_STDERR)
+    return _write_ts_stub(tmpdir, name, f"""\
+        cat {shlex.quote(stderr_file)} >&2
+        exit 1
+    """)
+
+
+def _ts_stub_parse_error(tmpdir: str, name: str = "ts_stub_parse_error") -> str:
+    """Stub reproducing an ordinary grammar rejection: parse error, exit 1."""
+    return _write_ts_stub(tmpdir, name, """\
+        echo 'x.ri\t0 ms\t(ERROR [0, 0] - [3, 0])' >&2
+        exit 1
+    """)
+
+
+def _ts_stub_clean(tmpdir: str, name: str = "ts_stub_clean") -> str:
+    """Stub reproducing a clean parse: exit 0, no output."""
+    return _write_ts_stub(tmpdir, name, "exit 0\n")
+
+
 class TestGrammarCacheDenied(unittest.TestCase):
     """Pins pcc.grammar_cache_denied(run) -> bool.
 
@@ -1480,46 +1633,18 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
 
     def setUp(self):
         self._tmpdir = tempfile.mkdtemp(prefix="prd_gate_substrate_test_")
-        self._stub_idx = 0
 
     def tearDown(self):
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-    def _make_stub(self, body):
-        """Write an executable /bin/sh stub with `body` and return its path."""
-        self._stub_idx += 1
-        path = os.path.join(self._tmpdir, f"ts_stub{self._stub_idx}")
-        with open(path, "w") as f:
-            f.write("#!/bin/sh\n" + textwrap.dedent(body))
-        os.chmod(path, 0o755)
-        return path
-
     def _cache_denied_stub(self):
-        """Stub reproducing the measured cache-denial: stderr signature, exit 1.
-
-        The stderr text is written to a sibling file and cat'd rather than
-        embedded in a heredoc: the measured signature is unindented, so
-        textwrap.dedent would find no common prefix, silently leave the stub
-        body indented, and the heredoc terminator would never match.
-        """
-        stderr_file = os.path.join(self._tmpdir, f"denied_stderr{self._stub_idx + 1}.txt")
-        with open(stderr_file, "w") as f:
-            f.write(_CACHE_DENIED_STDERR)
-        return self._make_stub(f"""\
-            cat {shlex.quote(stderr_file)} >&2
-            exit 1
-        """)
+        return _ts_stub_cache_denied(self._tmpdir)
 
     def _parse_error_stub(self):
-        """Stub reproducing an ordinary grammar rejection: parse error, exit 1."""
-        return self._make_stub("""\
-            echo 'x.ri\t0 ms\t(ERROR [0, 0] - [3, 0])' >&2
-            exit 1
-        """)
+        return _ts_stub_parse_error(self._tmpdir)
 
     def _clean_stub(self):
-        """Stub reproducing a clean parse: exit 0, no output."""
-        return self._make_stub("exit 0\n")
+        return _ts_stub_clean(self._tmpdir)
 
     @staticmethod
     def _call(stub):
