@@ -3972,6 +3972,12 @@ describe('debug bridge set_fea_channel', () => {
    *    they exercise the same fallback path a pre-#5670 caller would.
    *  - given → the toolbar stamps `data-viewport-id`, and the store lands in
    *    the keyed `ctx.feaModes` map under that id, as App's registry does.
+   *    `'design-main'` ALSO populates the scalar `ctx.feaMode` slot, because
+   *    App registers both (`registerDebugPanel('feaMode', registry.get(
+   *    'design-main'))` beside the keyed record). Mirroring that matters: it is
+   *    what makes (p) discriminating — without a populated scalar slot there is
+   *    nothing for a keyed lookup to wrongly fall back TO, so the test would
+   *    pass on absence rather than on the handler's refusal.
    */
   function renderToolbarWithErrorIndicator(viewportId?: string) {
     const store = createFeaModeStore();
@@ -3988,6 +3994,10 @@ describe('debug bridge set_fea_channel', () => {
       ctx.feaMode = store;
     } else {
       (ctx.feaModes ??= {})[viewportId] = store;
+      // App keeps the legacy scalar slot as a mirror of design-main's entry
+      // (exactly as `viewport` is kept beside `viewports`). Reproduce that, so
+      // the keyed cases run against the real two-slot production context.
+      if (viewportId === 'design-main') ctx.feaMode = store;
     }
     return store;
   }
@@ -4278,10 +4288,17 @@ describe('debug bridge set_fea_channel', () => {
     // some other pane's store — which is precisely the "silently read the wrong
     // pane's store" hole keying exists to close. Mirrors (k), one level down:
     // there the legacy scalar slot is missing, here the keyed entry is.
+    //
+    // The fallback is genuinely AVAILABLE here and must still be refused: the
+    // harness populates ctx.feaMode with design-main's store (as App does), so
+    // a handler that fell back would find a store, see its channel already
+    // equals 'errorIndicator'... or not, and either way would be answering
+    // about the wrong pane. That is what the design-main assertion below pins.
     const stores = makeStores();
     await initDebugBridge(stores);
     renderToolbarWithErrorIndicator('design-main');
     const pane1 = renderToolbarWithErrorIndicator('pane-1');
+    expect(window.__REIFY_DEBUG__!.feaMode).toBeDefined();
     delete window.__REIFY_DEBUG__!.feaModes!['pane-1'];
 
     const result = await dispatchCmd(4114, 'set_fea_channel', {
@@ -4299,5 +4316,65 @@ describe('debug bridge set_fea_channel', () => {
     // hole keying exists to close.
     expect(pane1.state.channel).toBe('errorIndicator');
     expect(window.__REIFY_DEBUG__!.feaModes!['design-main'].state.channel).toBe('vonMises');
+  });
+
+  it('(q) a single KEYED toolbar with no viewportId resolves through the keyed map — the production single-pane wiring', async () => {
+    // The combination cases (a)-(k) and (l)-(p) between them miss: exactly one
+    // mounted toolbar that IS stamped, driven by a request that omits
+    // viewportId. That is the DualViewport branch the visual-regression harness
+    // exercises most often, and it takes a path neither group covers —
+    // pickFeaChannelSelect falls through to the document-wide single-match
+    // branch, then the store resolves through ctx.feaModes['design-main']
+    // rather than the scalar slot, because the element it drove carries an id.
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const designMain = renderToolbarWithErrorIndicator('design-main');
+    expect(document.querySelectorAll('[data-testid="fea-mode-channel-select"]')).toHaveLength(1);
+
+    const result = await dispatchCmd(4115, 'set_fea_channel', { channel: 'errorIndicator' });
+
+    expect(result).toEqual({ ok: true });
+    expect(selectFor('design-main').value).toBe('errorIndicator');
+    expect(designMain.state.channel).toBe('errorIndicator');
+  });
+
+  it('(r) that single-keyed-toolbar path reads the keyed entry, not the legacy scalar slot', async () => {
+    // Same shape as (q), with the scalar slot removed. In production both slots
+    // hold the SAME store for design-main, so (q) alone cannot tell which one
+    // the handler read. Dropping ctx.feaMode makes the two paths observably
+    // different: {ok:true} here can only mean the keyed entry was used, since
+    // the fallback no longer exists. (k) pins the converse — an id-LESS select
+    // with no scalar slot is storeUnavailable — so together they fix the
+    // element's own data-viewport-id as what selects between the two slots.
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const designMain = renderToolbarWithErrorIndicator('design-main');
+    delete window.__REIFY_DEBUG__!.feaMode;
+
+    const result = await dispatchCmd(4116, 'set_fea_channel', { channel: 'errorIndicator' });
+
+    expect(result).toEqual({ ok: true });
+    expect(designMain.state.channel).toBe('errorIndicator');
+  });
+
+  it('(s) a viewportId containing selector metacharacters returns selectNotFoundForViewport, not a CSS-parser throw', async () => {
+    // The id is interpolated into an attribute selector, so an unescaped quote
+    // or backslash makes document.querySelector THROW a DOMException, which the
+    // dispatcher converts into an opaque `{error: '<parser message>'}` — an
+    // unknown id reading as a bridge malfunction. Escaping keeps a hostile or
+    // simply typo'd id on the same "no toolbar for that pane" branch as (m).
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const designMain = renderToolbarWithErrorIndicator('design-main');
+
+    for (const [i, badId] of ['pane-"1"', 'pane-\\1', 'pane-1"]'].entries()) {
+      const result = await dispatchCmd(4117 + i, 'set_fea_channel', {
+        channel: 'errorIndicator',
+        viewportId: badId,
+      });
+
+      expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.selectNotFoundForViewport(badId) });
+    }
+    expect(designMain.state.channel).toBe('vonMises');
   });
 });

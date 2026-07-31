@@ -167,8 +167,16 @@ function pickFeaChannelSelect(
 
   if (id !== undefined) {
     if (typeof id !== 'string') return { error: SET_FEA_CHANNEL_ERRORS.viewportIdNotString };
+    // Escape before interpolating: an id carrying a quote or backslash would
+    // otherwise build an invalid selector and make querySelector THROW, which
+    // the dispatcher would surface as an opaque CSS-parser message instead of
+    // the intended selectNotFoundForViewport. Same CSS.escape-with-jsdom-
+    // fallback pattern as buildSelectorPredicate above.
+    const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+      ? CSS.escape(id)
+      : id.replace(/["\\]/g, '\\$&');
     const scoped = document.querySelector(
-      `${FEA_CHANNEL_SELECT}[data-viewport-id="${id}"]`,
+      `${FEA_CHANNEL_SELECT}[data-viewport-id="${escaped}"]`,
     ) as HTMLSelectElement | null;
     if (!scoped) return { error: SET_FEA_CHANNEL_ERRORS.selectNotFoundForViewport(id) };
     return { select: scoped };
@@ -871,12 +879,18 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       // therefore absent on the single-toolbar path. That guarantees the store
       // checked is the one that toolbar actually drives, closing the "silently
       // read the wrong pane's store" hole a global slot would leave open with N
-      // panes mounted (#5670). The legacy scalar `ctx.feaMode` remains the
-      // fallback for a select carrying no id (or an id the map does not know),
-      // exactly as `pickViewport` falls back to `ctx.viewport`.
+      // panes mounted (#5670). The legacy scalar `ctx.feaMode` is the fallback
+      // ONLY for a select carrying no id — the pre-#5670 single-toolbar wiring.
+      //
+      // A KEYED select deliberately does NOT fall back: App registers both
+      // slots (`feaMode` = design-main's store, `feaModes` = the live record),
+      // so falling back on a missing keyed entry would resolve to design-main's
+      // store and, whenever its channel already equalled the requested one,
+      // report {ok:true} having verified nothing about the pane it actually
+      // drove — the exact false-success this read-back exists to eliminate. A
+      // stamped select whose entry is absent is a wiring anomaly; fail loudly.
       const selectViewportId = select.getAttribute('data-viewport-id');
-      const feaStore = (selectViewportId ? ctx.feaModes?.[selectViewportId] : undefined)
-        ?? ctx.feaMode;
+      const feaStore = selectViewportId ? ctx.feaModes?.[selectViewportId] : ctx.feaMode;
       if (!feaStore) return { error: SET_FEA_CHANNEL_ERRORS.storeUnavailable };
       if (feaStore.state.channel !== channel) {
         return { error: SET_FEA_CHANNEL_ERRORS.didNotReachStore(feaStore.state.channel, channel) };
