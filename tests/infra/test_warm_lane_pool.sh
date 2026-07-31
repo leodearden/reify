@@ -1712,52 +1712,78 @@ _PSNORM_CTR_WARM_INPUT="$(cat << 'PSNORM_EOF'
 PSNORM_EOF
 )"
 
-# Normalize through the same helper. Until the counter-strip stage is added,
-# the `(N/M)` token survives and the trailing sort keys off it → RED.
+# Normalize through the same helper. Discriminating power: a normalizer
+# that leaves the `(N/M)` counter unstripped keeps a token that encodes
+# nondeterministic test-completion order, so the trailing `sort` keys off
+# it — swapping which test claims which counter slot then yields two
+# different byte streams → assertion (a) fails (#5878). The shipped
+# normalizer strips the counter → GREEN.
 _PSNORM_CTR_COLD_NORM="$(printf '%s\n' "$_PSNORM_CTR_COLD_INPUT" | _passset_normalize_nextest)"
 _PSNORM_CTR_WARM_NORM="$(printf '%s\n' "$_PSNORM_CTR_WARM_INPUT" | _passset_normalize_nextest)"
 
 assert "PS-NORM: nextest normalized output is byte-identical across progress-counter assignment (#5878)" \
     test "$_PSNORM_CTR_COLD_NORM" = "$_PSNORM_CTR_WARM_NORM"
 
-# ── Derived PASS counts must also match ──────────────────────────────────────
+# ── Derived PASS count must be exactly 2 (the preceding byte-identity
+# assertion already proves cold == warm, so cross-comparing the two counts
+# would be tautological; asserting the absolute value instead genuinely
+# discriminates a normalizer that drops or duplicates a result line) ──────
 _PSNORM_CTR_COLD_PASS="$(printf '%s\n' "$_PSNORM_CTR_COLD_NORM" | grep -c 'PASS' || echo 0)"
 _PSNORM_CTR_WARM_PASS="$(printf '%s\n' "$_PSNORM_CTR_WARM_NORM" | grep -c 'PASS' || echo 0)"
-assert "PS-NORM: derived PASS count matches between cold and warm normalized outputs across progress-counter assignment (#5878)" \
-    test "$_PSNORM_CTR_COLD_PASS" -eq "$_PSNORM_CTR_WARM_PASS"
+assert "PS-NORM: derived PASS count for progress-counter arm (cold) is exactly 2 (#5878)" \
+    test "$_PSNORM_CTR_COLD_PASS" -eq 2
+assert "PS-NORM: derived PASS count for progress-counter arm (warm) is exactly 2 (#5878)" \
+    test "$_PSNORM_CTR_WARM_PASS" -eq 2
 
 # ── Canned nextest outputs (#5878) — PADDED progress-counter shapes. nextest
 # right-aligns the `(N/M)` numerator to the width of the run total: a 12-test
 # run pads single-digit numerators with ONE leading space (`( 1/12)`) while
-# double-digit numerators need no padding (`(12/12)`) — so a single run's
-# output MIXES padded and unpadded counters. This arm reproduces that mix on
-# one fixture pair, differing in the counter-TO-TEST binding as arm 2 does.
+# double-digit numerators need no padding (`(12/12)`); a 105-test run pads
+# single-digit numerators with TWO leading spaces (`(  1/105)`) while
+# triple-digit numerators need no padding (`(105/105)`) — so a single run's
+# output MIXES padded and unpadded counters. This arm mixes BOTH the
+# one-space (10-99 total) and two-space (100+ total) widths on one fixture
+# pair, differing in the counter-TO-TEST binding as arm 2 does — so all
+# three documented counter widths (arm 2's unpadded plus this arm's two
+# padded widths) are pinned by fixtures.
 _PSNORM_PAD_COLD_INPUT="$(cat << 'PSNORM_EOF'
   PASS [   0.009s] ( 1/12) warm_leaf tests::leaf_smoke
   PASS [   0.031s] (12/12) warm_dep tests::dep_smoke
+  PASS [   0.011s] (  1/105) nxprobe2 tests::t001
+  PASS [   0.044s] (105/105) nxprobe2 tests::t105
 PSNORM_EOF
 )"
 _PSNORM_PAD_WARM_INPUT="$(cat << 'PSNORM_EOF'
   PASS [   0.014s] ( 1/12) warm_dep tests::dep_smoke
   PASS [   0.052s] (12/12) warm_leaf tests::leaf_smoke
+  PASS [   0.017s] (  1/105) nxprobe2 tests::t105
+  PASS [   0.061s] (105/105) nxprobe2 tests::t001
 PSNORM_EOF
 )"
 
-# Normalize through the same helper. The shipped (pre-step-4) counter regex
-# anchors `(` directly against a digit, so the padded `( 1/12)` token survives
-# stripping while the unpadded `(12/12)` token on the SAME fixture strips
-# cleanly — a partially-normalized, interleaved output → RED (#5878).
+# Normalize through the same helper. Discriminating power: a counter regex
+# that anchors `(` directly against a digit leaves padded tokens like
+# `( 1/12)` and `(  1/105)` intact while stripping unpadded tokens like
+# `(12/12)` and `(105/105)` on the SAME fixture, producing a
+# partially-normalized, interleaved stream whose sort order flips →
+# assertion (a) fails (#5878). The shipped `[[:space:]]*`-tolerant regex
+# strips every width uniformly → GREEN.
 _PSNORM_PAD_COLD_NORM="$(printf '%s\n' "$_PSNORM_PAD_COLD_INPUT" | _passset_normalize_nextest)"
 _PSNORM_PAD_WARM_NORM="$(printf '%s\n' "$_PSNORM_PAD_WARM_INPUT" | _passset_normalize_nextest)"
 
 assert "PS-NORM: nextest normalized output is byte-identical across PADDED progress-counter assignment (#5878)" \
     test "$_PSNORM_PAD_COLD_NORM" = "$_PSNORM_PAD_WARM_NORM"
 
-# ── Derived PASS counts must also match ──────────────────────────────────────
+# ── Derived PASS count must be exactly 4 (the preceding byte-identity
+# assertion already proves cold == warm, so cross-comparing the two counts
+# would be tautological; asserting the absolute value instead genuinely
+# discriminates a normalizer that drops or duplicates a result line) ──────
 _PSNORM_PAD_COLD_PASS="$(printf '%s\n' "$_PSNORM_PAD_COLD_NORM" | grep -c 'PASS' || echo 0)"
 _PSNORM_PAD_WARM_PASS="$(printf '%s\n' "$_PSNORM_PAD_WARM_NORM" | grep -c 'PASS' || echo 0)"
-assert "PS-NORM: derived PASS count matches between cold and warm normalized outputs across PADDED progress-counter assignment (#5878)" \
-    test "$_PSNORM_PAD_COLD_PASS" -eq "$_PSNORM_PAD_WARM_PASS"
+assert "PS-NORM: derived PASS count for padded progress-counter arm (cold) is exactly 4 (#5878)" \
+    test "$_PSNORM_PAD_COLD_PASS" -eq 4
+assert "PS-NORM: derived PASS count for padded progress-counter arm (warm) is exactly 4 (#5878)" \
+    test "$_PSNORM_PAD_WARM_PASS" -eq 4
 
 # ── Cargo-test fallback regression guard ─────────────────────────────────────
 # Cargo-test `... ok/FAILED/ignored` lines carry no timing column; they are
