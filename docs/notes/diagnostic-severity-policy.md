@@ -185,6 +185,24 @@ cargo run -p reify-audit --bin pdiag-baseline-gen -- --project-root . \
 The generator runs the detector's own scan, so it is the single source of truth
 for site counts. Never hand-edit a count, and never re-derive counts in shell.
 
+### When the finding is not about your diff
+
+Two High findings mean the ratchet could not run at all, rather than that you
+added a site. Neither is remedied by (a)/(b)/(c):
+
+- **`pdiag-baseline-unreadable`** — the manifest does not parse. The summary
+  names the offending line. Regenerate as in (c); never hand-repair a row.
+- **`pdiag-census-empty`** — `git ls-files` returned no swept files while the
+  manifest still holds rows. Almost always the run was not inside the git
+  worktree, or `git` itself failed there. Fix the invocation; regenerating
+  against a broken census would wipe the manifest.
+
+Both are deliberately High rather than advisory. The ratchet has two inputs —
+the manifest and the census — and when either goes missing *wholesale* the
+comparison is vacuous: an empty census makes every row look like a deleted
+file, which would otherwise read as an exit-0 all-clear from a run that
+scanned nothing. A green PDIAG has to mean the detector looked.
+
 ### Scope — what PDIAG does not scan
 
 The detector sweeps `crates/*/src/**.rs` and `gui/src-tauri/src/**.rs` only,

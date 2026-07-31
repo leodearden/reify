@@ -777,6 +777,41 @@ fn malformed_baseline_finding(err: &str) -> Finding {
     }
 }
 
+/// The finding a DEGENERATE census produces — the enumeration reached zero
+/// swept files while the manifest still holds rows.
+///
+/// High, and returned INSTEAD of the ratchet's verdicts, for the same reason
+/// [`malformed_baseline_finding`] is: the ratchet has two inputs, and losing
+/// either one must fail loud rather than resolve to a permissive comparison.
+/// [`crate::RealGitOps::ls_files`] degrades to an empty list on ANY git failure
+/// — spawn error, non-zero exit, non-UTF-8 output — so without this branch a
+/// PDIAG run outside a worktree (or against a broken `git`) would report every
+/// committed row as an exit-neutral Medium `OrphanRow` advisory and exit 0.
+/// That is an all-clear from a run that scanned nothing, which is precisely the
+/// vacuous pass the baseline branch exists to prevent.
+///
+/// Deliberately NOT fired when the baseline is empty too: a hermetic fixture
+/// tree that legitimately tracks nothing has no rows to orphan and nothing to
+/// be wrong about, and a false RED there would be its own kind of noise.
+fn empty_census_finding(rows: usize) -> Finding {
+    Finding {
+        pattern: Pattern::PDiag,
+        severity: Severity::High,
+        // Path-keyed like every other PDIAG finding — the manifest is the
+        // artifact whose enforcement just became unverifiable.
+        task_id: BASELINE_PATH.to_string(),
+        summary: format!(
+            "pdiag-census-empty: git enumeration returned no swept files, yet {BASELINE_PATH} \
+             holds {rows} row(s). The ratchet cannot compare a manifest against a census it \
+             never took, so this is a hard gate rather than {rows} silent orphan-row \
+             advisories and a clean exit. Check that the run is inside the git worktree and \
+             that `git ls-files` succeeds there; regenerate with `{BASELINE_GEN_BIN}` only \
+             once enumeration works again"
+        ),
+        evidence: vec![EvidenceRef::File { path: BASELINE_PATH.to_string() }],
+    }
+}
+
 /// Census the working tree: `swept path -> code-less site count`, for every
 /// tracked file with at least one.
 ///
@@ -805,21 +840,45 @@ fn malformed_baseline_finding(err: &str) -> Finding {
 /// Deliberately blind to the manifest: the census must be reconstructible from
 /// the tree alone, or the generator could never regenerate from scratch.
 pub fn live_counts(ctx: &AuditContext) -> BTreeMap<String, u32> {
-    let mut live: BTreeMap<String, u32> = BTreeMap::new();
+    census(ctx).counts
+}
+
+/// One census pass: what [`live_counts`] returns, plus how many swept files
+/// the enumeration actually reached.
+struct Census {
+    /// Swept paths `ls_files()` yielded — INCLUDING clean ones, which
+    /// contribute no `counts` entry. Zero here means the enumeration itself
+    /// came back empty, which is a different fact from "the tree is clean";
+    /// [`check`] is the consumer that has to tell those two apart.
+    swept: usize,
+    /// `swept path -> code-less site count`, files with zero sites omitted.
+    counts: BTreeMap<String, u32>,
+}
+
+/// The single working-tree pass behind BOTH [`live_counts`] and [`check`].
+///
+/// Split out purely so `check` can see `swept` without a second `ls_files()`
+/// call — [`crate::RealGitOps`] shells out to `git` per call, and two
+/// enumerations could disagree with each other mid-rebase, which would be a
+/// worse foundation for a hard gate than one possibly-stale answer.
+fn census(ctx: &AuditContext) -> Census {
+    let mut swept = 0usize;
+    let mut counts: BTreeMap<String, u32> = BTreeMap::new();
     for path in ctx.git.ls_files() {
         if !is_swept_path(&path) {
             continue;
         }
+        swept += 1;
         let content = match std::fs::read_to_string(ctx.project_root.join(&path)) {
             Ok(content) => content,
             Err(_) => continue,
         };
         let codeless = scan_file(&content).iter().filter(|site| !site.coded).count();
         if codeless > 0 {
-            live.insert(path, codeless as u32);
+            counts.insert(path, codeless as u32);
         }
     }
-    live
+    Census { swept, counts }
 }
 
 /// PDIAG entry point — see the module header for the heuristic and scope.
@@ -830,18 +889,25 @@ pub fn live_counts(ctx: &AuditContext) -> BTreeMap<String, u32> {
 /// `pdssentinel.rs` documents). That is what keeps the detector's verdict a
 /// function of the tree alone.
 ///
-/// Both IO fail-safes point the same way — *permissive on input, loud on
-/// comparison*:
+/// The IO fail-safes are *permissive on individual inputs, loud whenever a
+/// whole side of the comparison goes missing*:
 ///
 /// - An unreadable **source** file (absent from the working tree, non-UTF-8)
 ///   is skipped, contributing no count — see [`live_counts`], which owns that
-///   half.
+///   half. One file is not the census.
 /// - An unreadable **baseline** is an EMPTY baseline, so every code-less file
 ///   surfaces as a `NewFile` High. The inverse convention — treat a missing
 ///   manifest as "nothing to check" — is the vacuous pass this gate exists to
-///   prevent.
+///   prevent. A baseline that will not PARSE is a High of its own
+///   ([`malformed_baseline_finding`]).
+/// - An **empty census** against a populated manifest is a High of its own
+///   ([`empty_census_finding`]) rather than a pile of orphan-row advisories:
+///   `ls_files()` fails soft to `vec![]`, and the ratchet reads that as "every
+///   baselined file was deleted" — an exit-0 all-clear from a run that scanned
+///   nothing. Symmetry matters here: BOTH inputs to the ratchet now fail loud
+///   when they vanish wholesale, so a green PDIAG means the detector looked.
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
-    let live = live_counts(ctx);
+    let Census { swept, counts: live } = census(ctx);
 
     // Resolved under `ctx.project_root`, never `CARGO_MANIFEST_DIR`, so the
     // CLI-level fixture trees can point the whole detector at a tempdir —
@@ -853,6 +919,13 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         },
         Err(_) => BTreeMap::new(),
     };
+
+    // Guard on the ENUMERATION, not on `live`: a tree whose every diagnostic
+    // already carries a code is clean, has an empty `live`, and must stay
+    // green. Only `swept == 0` — nothing to scan at all — is degenerate.
+    if swept == 0 && !baseline.is_empty() {
+        return vec![empty_census_finding(baseline.len())];
+    }
 
     ratchet(&live, &baseline)
         .into_iter()
@@ -1927,6 +2000,94 @@ mod tests {
             f.summary.contains(&err),
             "parse error {err:?} missing from {:?}",
             f.summary
+        );
+    }
+
+    #[test]
+    fn an_empty_census_against_a_populated_baseline_is_a_single_high_finding() {
+        // The mirror of the malformed-baseline branch, on the OTHER input.
+        // `RealGitOps::ls_files()` fails soft to `vec![]` on any git failure
+        // (lib.rs `run_or_warn`), and an empty census makes every committed row
+        // an exit-neutral Medium OrphanRow — the ratchet would report "all
+        // clear" from a run that scanned nothing at all.
+        let mut fx = Fixture::new();
+        let gone = "crates/reify-stdlib/src/dfm.rs";
+        // No tracked files whatsoever: the degenerate enumeration.
+        fx.baseline(&format!("{GEOM} 2\n{gone} 1\n"));
+        let findings = fx.run();
+        assert_eq!(
+            findings.len(),
+            1,
+            "an empty census must be ONE hard finding, not one advisory per \
+             orphaned row; got {findings:?}"
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::PDiag);
+        assert_eq!(f.severity, Severity::High);
+        assert_eq!(f.task_id, BASELINE_PATH);
+        assert_eq!(f.evidence, vec![EvidenceRef::File { path: BASELINE_PATH.to_string() }]);
+        // Names the manifest, the row count it could not verify, and the way
+        // back — a bare "census empty" would leave the reader guessing whether
+        // the tree or the tool is at fault.
+        for needle in [BASELINE_PATH, BASELINE_GEN_BIN, "2 row(s)"] {
+            assert!(f.summary.contains(needle), "{needle} missing from {:?}", f.summary);
+        }
+    }
+
+    #[test]
+    fn tracked_files_all_out_of_scope_still_count_as_an_empty_census() {
+        // "Swept" is post-`is_swept_path`. A run that enumerated only the
+        // detector's own crate and a shell script reached zero files it could
+        // ever have a verdict about, so the manifest is just as unverified as
+        // if `ls_files()` had returned nothing.
+        let mut fx = Fixture::new();
+        fx.write("crates/reify-audit/src/pdiag.rs", &codeless_src(3))
+            .write("scripts/not-rust.sh", &codeless_src(3))
+            .baseline(&format!("{GEOM} 2\n"));
+        let findings = fx.run();
+        assert_eq!(findings.len(), 1, "expected the census guard, got {findings:?}");
+        assert_eq!(findings[0].severity, Severity::High);
+        assert!(findings[0].summary.contains("pdiag-census-empty"));
+    }
+
+    #[test]
+    fn a_clean_tree_is_not_a_degenerate_census() {
+        // The sharp edge of the guard: `live` is empty here too, but the
+        // enumeration DID reach a swept file — every diagnostic in it simply
+        // carries a code. Guarding on `live.is_empty()` instead of on the
+        // enumeration would turn the ratchet's own success state RED, and the
+        // orphan row must still surface as its ordinary Medium advisory.
+        let mut fx = Fixture::new();
+        let gone = "crates/reify-stdlib/src/dfm.rs";
+        fx.write(GEOM, "    Diagnostic::error(msg).with_code(DiagnosticCode::X);")
+            .baseline(&format!("{gone} 4\n"));
+        assert_eq!(fx.keys(), vec![(gone.to_string(), Severity::Medium)]);
+    }
+
+    #[test]
+    fn an_empty_census_against_an_empty_baseline_stays_silent() {
+        // Nothing tracked AND nothing baselined: there is no row whose
+        // enforcement just went unverified, so the guard must not manufacture
+        // a finding. Hermetic fixture trees rely on this staying quiet.
+        let mut fx = Fixture::new();
+        fx.baseline("");
+        assert_eq!(fx.run(), Vec::new());
+    }
+
+    #[test]
+    fn a_malformed_baseline_outranks_an_empty_census() {
+        // Both inputs are broken at once. The parse error is the more
+        // actionable of the two — it names a line — and reporting the census
+        // guard instead would send the reader looking at `git` when the file
+        // in front of them will not parse.
+        let mut fx = Fixture::new();
+        fx.baseline("this row has three fields\n");
+        let findings = fx.run();
+        assert_eq!(findings.len(), 1, "expected exactly one finding, got {findings:?}");
+        assert!(
+            findings[0].summary.contains("pdiag-baseline-unreadable"),
+            "expected the parse error, got {:?}",
+            findings[0].summary
         );
     }
 
