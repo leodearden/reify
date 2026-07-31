@@ -74,9 +74,13 @@
 #   certify, and a "cold fallback" that merely re-runs cargo in the same lane
 #   inherits the stale-artifact false green the guard fired to prevent. The seed
 #   deliberately does not rm -rf the clone itself: that would destroy the
-#   forensic evidence inv.12's operator remedy sends an operator to read.
-#   (§9.5 inv.12/inv.13; the callers' side of this contract is NOT yet enforced
-#   -- see the same PRD note.)
+#   forensic evidence inv.12's operator remedy sends an operator to read, so an
+#   operator driving this script by hand keeps an inspectable lane.
+#   Both production callers (warm-lane-gc.sh, thin-warm-lane.sh) ENFORCE the
+#   caller side, discarding <lane_dir>/target on a non-zero exit from this script
+#   -- the same predicate as an empty stdout, since this script runs under
+#   `set -euo pipefail` and writes stdout exactly once, at the terminal echo.
+#   (§9.5 inv.13 "Caller obligation on the fail-closed path" is the ruling.)
 #
 # Stdout (record mode): resolved sidecar path on success.
 # Stderr:               all diagnostics, progress messages, and errors.
