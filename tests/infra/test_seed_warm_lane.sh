@@ -4014,9 +4014,16 @@ if [ "$(id -u)" -ne 0 ]; then
     # explicit `if ...; then VAR=1; fi` — NOT `[ -r x ] && VAR=1`, whose
     # errexit exemption is positional (only inside an if/while condition; as a
     # bare statement a false `[ -r x ]` would itself trip this file's set -e).
+    # The condition requires existence AND unreadability, not bare `! -r`:
+    # `[ -r path ]` is ALSO false when path does not exist at all, so a bare
+    # `[ ! -r "$U1E_CLONE_DIR" ]` capture would satisfy this precondition for
+    # the WRONG reason if a future GNU cp stopped creating the destination
+    # dir when it can't read the source — silently degrading this arm into a
+    # U1b duplicate while the non-vacuity check meant to catch exactly that
+    # degrade kept printing PASS.
     U1E_CLONE_DIR="$U1E_LANE/target/debug/untraversable"
-    U1E_CLONE_WAS_READABLE=""
-    if [ -r "$U1E_CLONE_DIR" ]; then U1E_CLONE_WAS_READABLE=1; fi
+    U1E_CLONE_WAS_UNTRAVERSABLE=""
+    if [ -d "$U1E_CLONE_DIR" ] && [ ! -r "$U1E_CLONE_DIR" ]; then U1E_CLONE_WAS_UNTRAVERSABLE=1; fi
     # Restore BOTH copies — the base fixture's dir AND the clone's — before any
     # assert runs, so an aborting assertion can never leave cleanup()'s rm -rf
     # stuck on an untraversable path.
@@ -4031,8 +4038,8 @@ if [ "$(id -u)" -ne 0 ]; then
     # Permission denied`, dest created as `d---------`. The next assertion is the
     # guard that turns a future change in either of those two behaviours into an
     # attributable red instead of a silent degrade into a U1b duplicate.
-    assert "U1e: NON-VACUITY — the clone's copy of the mode-000 dir really was untraversable before the restore (else this arm silently degrades into a duplicate of U1b)" \
-        test -z "$U1E_CLONE_WAS_READABLE"
+    assert "U1e: NON-VACUITY — the clone's copy of the mode-000 dir existed AND was untraversable before the restore (else this arm silently degrades into a duplicate of U1b)" \
+        test -n "$U1E_CLONE_WAS_UNTRAVERSABLE"
     assert "U1e: seed exits NON-zero — the traversal-failure probe is an abort, not a return-0 fall-through" \
         test "$RC" -ne 0
     assert "U1e: STDOUT is EMPTY on the traversal-failure abort (caller falls back to a cold rebuild)" \
