@@ -670,6 +670,17 @@ _do_reclaim() {
                     warn "  discarded uncertified clone: $lane/target (§9.5 inv.13 caller obligation; lane left cold-but-safe)"
                     reset_count=$((reset_count + 1))
                     reset_cold_count=$((reset_cold_count + 1))
+                else
+                    # The discard we just took on as an obligation did not happen,
+                    # so the clone survives. Count `preserved` and continue the
+                    # sweep — the same accounting the disk-pressure rm-failure
+                    # branch above uses, for the same reason: the lane was left
+                    # untouched, so calling it reset would be a lie. Deliberately
+                    # NOT reset_count/reset_cold_count, and deliberately not an
+                    # abort (per-candidate failures warn + continue).
+                    warn "  discard failed for $name: ${rm_err:-<rm produced no output>}; continuing"
+                    warn "  $lane/target RETAINS an uncertified clone — the next consumer must not build in it"
+                    preserved_count=$((preserved_count + 1))
                 fi
             fi
         fi
