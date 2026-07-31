@@ -379,6 +379,181 @@ fn list_vs_listicle_lexer_discipline_unchanged() {
     );
 }
 
+// ── (e) Expression position — the call form `pp.Pulley()` ───────────────────
+//
+// Step-3 RED: the grammar has NO call-on-dotted-path form at all
+// (`function_call`'s callee is a bare `$.identifier`; the only call-after-
+// something forms are `ad_hoc_selector` and `trait_method_call`), so
+// `pp.Pulley()` produces an ERROR subtree in expression position.
+//
+// Step-4 GREEN: `namespaced_call: $ => prec(12, seq(field('callee',
+// $.member_access), callTail($)))`, added to the `$._expression` choice.
+
+/// `let f = pp.Pulley()` produces a `namespaced_call` whose `callee` field is
+/// a `member_access`.
+#[test]
+fn nullary_qualified_call_yields_namespaced_call() {
+    let source = "structure def S {\n    let f = pp.Pulley()\n}\n";
+    let tree = parse_clean(source);
+
+    let call = find_node_by_kind(tree.root_node(), "namespaced_call").unwrap_or_else(|| {
+        panic!(
+            "expected a namespaced_call node for `pp.Pulley()`; got kinds: {:?}",
+            collect_kinds(tree.root_node())
+        )
+    });
+    let callee = call
+        .child_by_field_name("callee")
+        .expect("namespaced_call must have a `callee` field");
+    assert_eq!(
+        callee.kind(),
+        "member_access",
+        "the callee must be the SAME node kind as the no-call form, so ν's \
+         resolution fixup sees one uniform base; got kinds: {:?}",
+        collect_kinds(call)
+    );
+    assert_eq!(callee.utf8_text(source.as_bytes()).expect("utf8"), "pp.Pulley");
+    assert!(
+        find_node_by_kind(call, "argument_list").is_none(),
+        "a nullary call has no argument_list"
+    );
+}
+
+/// `let e = pp.compute(1)` — positional argument lands in an `argument_list`.
+#[test]
+fn positional_qualified_call_has_argument_list() {
+    let source = "structure def S {\n    let e = pp.compute(1)\n}\n";
+    let tree = parse_clean(source);
+
+    let call = find_node_by_kind(tree.root_node(), "namespaced_call")
+        .expect("expected a namespaced_call node for `pp.compute(1)`");
+    let args = find_node_by_kind(call, "argument_list").unwrap_or_else(|| {
+        panic!(
+            "expected an argument_list under namespaced_call; got kinds: {:?}",
+            collect_kinds(call)
+        )
+    });
+    assert!(
+        find_node_by_kind(args, "number_literal").is_some(),
+        "the positional `1` must be an argument_list child; got kinds: {:?}",
+        collect_kinds(args)
+    );
+}
+
+/// `let g = pp.make(a: 1, 2)` — named and positional arguments are both
+/// accepted, at parity with the bare `function_call` path (both reuse the
+/// shared `callTail($)` helper, so the argument syntax cannot drift).
+#[test]
+fn mixed_named_and_positional_qualified_call() {
+    let source = "structure def S {\n    let g = pp.make(a: 1, 2)\n}\n";
+    let tree = parse_clean(source);
+
+    let call = find_node_by_kind(tree.root_node(), "namespaced_call")
+        .expect("expected a namespaced_call node for `pp.make(a: 1, 2)`");
+    let args = find_node_by_kind(call, "argument_list")
+        .expect("expected an argument_list under namespaced_call");
+    assert_eq!(
+        find_all_nodes_by_kind(args, "named_argument").len(),
+        1,
+        "expected exactly one named_argument (`a: 1`); got kinds: {:?}",
+        collect_kinds(args)
+    );
+}
+
+// ── (f) Expression-position negative controls ───────────────────────────────
+
+/// `let r = pp.FitClass.Clearance` stays NESTED `member_access` — the
+/// enum-access half of NS-Q2 already parsed before μ and deliberately stays on
+/// ν's D-9 resolution-fixup path rather than getting its own CST node.
+#[test]
+fn chained_dotted_access_stays_nested_member_access() {
+    let source = "structure def S {\n    let r = pp.FitClass.Clearance\n}\n";
+    let tree = parse_clean(source);
+
+    let accesses = find_all_nodes_by_kind(tree.root_node(), "member_access");
+    assert_eq!(
+        accesses.len(),
+        2,
+        "`pp.FitClass.Clearance` must stay two nested member_access nodes; \
+         got kinds: {:?}",
+        collect_kinds(tree.root_node())
+    );
+    assert!(
+        find_node_by_kind(tree.root_node(), "namespaced_call").is_none(),
+        "a call-less dotted chain must not produce a namespaced_call node"
+    );
+}
+
+/// `let s = obj.width` stays a plain `member_access`.
+#[test]
+fn plain_member_access_unchanged() {
+    let source = "structure def S {\n    let s = obj.width\n}\n";
+    let tree = parse_clean(source);
+
+    assert!(
+        find_node_by_kind(tree.root_node(), "member_access").is_some(),
+        "`obj.width` must stay a member_access; got kinds: {:?}",
+        collect_kinds(tree.root_node())
+    );
+    assert!(
+        find_node_by_kind(tree.root_node(), "namespaced_call").is_none(),
+        "`obj.width` must not produce a namespaced_call node"
+    );
+}
+
+/// `let t = plain(1)` stays a `function_call` — the unqualified call path is
+/// untouched.
+#[test]
+fn unqualified_call_stays_function_call() {
+    let source = "structure def S {\n    let t = plain(1)\n}\n";
+    let tree = parse_clean(source);
+
+    assert!(
+        find_node_by_kind(tree.root_node(), "function_call").is_some(),
+        "`plain(1)` must stay a function_call; got kinds: {:?}",
+        collect_kinds(tree.root_node())
+    );
+    assert!(
+        find_node_by_kind(tree.root_node(), "namespaced_call").is_none(),
+        "`plain(1)` must not produce a namespaced_call node"
+    );
+}
+
+/// `let u = Foo::bar` stays a `qualified_access` (the `::` value form).
+#[test]
+fn double_colon_access_stays_qualified_access() {
+    let source = "structure def S {\n    let u = Foo::bar\n}\n";
+    let tree = parse_clean(source);
+
+    assert!(
+        find_node_by_kind(tree.root_node(), "qualified_access").is_some(),
+        "`Foo::bar` must stay a qualified_access; got kinds: {:?}",
+        collect_kinds(tree.root_node())
+    );
+    assert!(
+        find_node_by_kind(tree.root_node(), "namespaced_call").is_none(),
+        "`Foo::bar` must not produce a namespaced_call node"
+    );
+}
+
+/// `obj.(Trait::m)(x)` stays a `trait_method_call` — `namespaced_call`'s
+/// `prec(12)` must not steal the instance-qualified call form.
+#[test]
+fn instance_qualified_call_stays_trait_method_call() {
+    let source = "structure def S {\n    let v = obj.(Trait::m)(x)\n}\n";
+    let tree = parse_clean(source);
+
+    assert!(
+        find_node_by_kind(tree.root_node(), "trait_method_call").is_some(),
+        "`obj.(Trait::m)(x)` must stay a trait_method_call; got kinds: {:?}",
+        collect_kinds(tree.root_node())
+    );
+    assert!(
+        find_node_by_kind(tree.root_node(), "namespaced_call").is_none(),
+        "`obj.(Trait::m)(x)` must not produce a namespaced_call node"
+    );
+}
+
 /// A plain (unqualified) type annotation is unaffected: `param s : Steel`
 /// still has a bare `identifier` under its `type` field.
 #[test]
