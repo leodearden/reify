@@ -244,16 +244,24 @@ structure def InputShapeTOTSE2E {
         spline_kind: SplineKind.CubicSpline
     )
 
-    // A single per-joint actuator limit.
-    let jl = JointLimit(joint: 0.0, max_force: 100.0)
+    // A single per-joint actuator limit. `max_force` is a dimensioned
+    // Scalar<Force> literal: `100N` is 100 N in SI, exactly what the previous
+    // bare `100.0` was already read as, so this is magnitude-preserving.
+    // `joint` stays BARE — `param joint : Real` is a dimensionless joint INDEX.
+    let jl = JointLimit(joint: 0.0, max_force: 100N)
 
     // TOTS shaper: time-optimal trajectory shaping.
     // modes: [] infers List<Mode> from the TOTSShaper.modes param type.
+    // The kinematic limits are dimensioned literals at the Scalar<Velocity> /
+    // Scalar<Acceleration> param slots: 300 mm/s (= 0.3 m/s) and 5000 mm/s²
+    // (= 5 m/s²). They carry Leo's esc-5758-2 option-B ruling — the previous
+    // bare `300.0` / `5000.0` were read as SI (300 m/s, 5000 m/s²), so the
+    // resulting 1000× change in SI magnitude is DELIBERATE, not a regression.
     let shaper = TOTSShaper(
         modes: [],
         actuator_limits: [jl],
-        velocity_limit: 300.0,
-        acceleration_limit: 5000.0,
+        velocity_limit: 300mm/s,
+        acceleration_limit: 5000mm/s^2,
         vibration_tolerance: 0.02
     )
 
