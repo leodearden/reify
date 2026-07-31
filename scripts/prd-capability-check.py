@@ -871,14 +871,35 @@ def main(argv: List[str]) -> int:
         for r in results:
             cmd_str = " ".join(r.command)
             stdout_preview = r.stdout[:200] if r.stdout else "(empty)"
-            stderr_preview = r.stderr[:200] if r.stderr else "(empty)"
+            # A HARNESS_ERROR means the probe could not run, so the operator's
+            # only lead is the tool's own message — truncating it at 200 chars
+            # discards exactly the part that identifies the cause (the measured
+            # cache denial is cut mid-path, naming no file at all).  PASS/FAIL
+            # keep the preview so an ordinary run is not buried in probe stderr.
+            if r.stderr and r.verdict == _HARNESS_ERROR:
+                stderr_text = r.stderr
+            else:
+                stderr_text = r.stderr[:200] if r.stderr else "(empty)"
             sys.stdout.write(f"[{r.verdict}] {r.probe.capability}\n")
             sys.stdout.write(f"  kind:      {r.probe.probe_kind}\n")
             sys.stdout.write(f"  fixture:   {r.probe.fixture}\n")
             sys.stdout.write(f"  command:   {cmd_str}\n")
             sys.stdout.write(f"  exit_code: {r.exit_code}\n")
             sys.stdout.write(f"  stdout:    {stdout_preview}\n")
-            sys.stdout.write(f"  stderr:    {stderr_preview}\n")
+            sys.stdout.write(f"  stderr:    {stderr_text}\n")
+            if grammar_cache_denied(
+                ProbeRun(exit_code=r.exit_code, stdout=r.stdout, stderr=r.stderr)
+            ):
+                sys.stdout.write(
+                    "  hint:      tree-sitter could not write its grammar "
+                    "cache/lock directory (typically ~/.cache/tree-sitter/), so "
+                    "it could not load the reify grammar.  This is typical of a "
+                    "sandboxed agent role whose landlock write set does not "
+                    "grant that directory — note the mode bits may still allow "
+                    "the write, because the denial is an LSM hook.  Run "
+                    "`prd-capability-check.py --grammar-substrate-status` to "
+                    "confirm, and treat it as a SKIP rather than a gate FAIL.\n"
+                )
             sys.stdout.write("\n")
 
     return harness_exit_code(results)
