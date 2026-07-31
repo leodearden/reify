@@ -1943,6 +1943,99 @@ assert "PS-NORM: cargo-test lines normalize stably via _passset_normalize_cargo_
     test "$_PSNORM_CT_FWD" = "$_PSNORM_CT_REV"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Block PS-RC — run_passset() rc classification (ALWAYS-RUN, task #5885)
+#
+# Charter: unit + wiring coverage for the rc-classification layer that keeps
+# run_passset() from swallowing cargo's exit status with `|| true`. Nothing
+# in this block invokes a real cargo build — arm A is pure-function table
+# testing, arm B is a diagnostic-emitter contract test, and arms C/D drive
+# run_passset() end-to-end through the _PSRC_STUB_DIR canned cargo (prereq
+# above) — so the whole block runs in milliseconds, always, on every host.
+#
+# Background (#5885): run_passset()'s nextest AND cargo-test branches both
+# discard cargo's exit code via `| _passset_normalize_* || true`. One side
+# failing to build silently empties that side's pass-set, which Block PS's
+# identity assert (`_PS_COLD = _PS_WARM`) misreports as "warm-lane test
+# identifiers == cold control" mismatch — sending the reader hunting a
+# CoW-divergence bug that does not exist. Worse: if BOTH sides fail to
+# build, both emit the identical `passed=0 failed=0` string and the identity
+# assert reports a false GREEN on a workspace that never compiled (arm C4
+# below reproduces this directly).
+#
+# _passset_classify_rc(runner, rc, nresults) is the pure classifier this
+# block exists to pin. Its rc table is EMPIRICALLY PROBED on this host, not
+# guessed:
+#   cargo-nextest 0.9.136:
+#     rc=0   → all tests ran, none failed                    → ok
+#     rc=4   → no tests were run at all                       → no-tests-run
+#     rc=100 → an HONEST test failure (PASS/FAIL lines present) → test-failures
+#     rc=101 → a BUILD failure (zero PASS/FAIL/SKIP lines)      → build-failure
+#   cargo test (libtest): rc=101 on BOTH a compile failure AND an honest
+#     test failure — the exit code ALONE cannot distinguish them, which is
+#     why the classifier also takes nresults (the count of parsed
+#     `test … ok/FAILED/ignored` lines): zero → build-failure, nonzero →
+#     test-failures.
+#
+# Discriminating power: the nextest 100→test-failures row is what stops this
+# guard from firing on an honest test failure (the failure mode the task
+# explicitly warns against); the 101→build-failure row is the misdiagnosis
+# this task exists to fix.
+#
+# RED (arm A): _passset_classify_rc does not exist yet. Every table-row
+# assertion below captures via `"$(_passset_classify_rc … 2>/dev/null ||
+# true)"` — under this file's `set -euo pipefail`, calling an undefined
+# function inside a bare command substitution would abort the WHOLE script
+# (the historical failure mode Block PS-NORM's header already documents);
+# `2>/dev/null || true` instead yields an empty string, so RED here is one
+# clean per-row assertion FAIL, and the suite still runs to its summary line.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block PS-RC: run_passset() rc classification (#5885) ---"
+
+# ── Arm A: _passset_classify_rc <runner> <rc> <nresults> truth table ────────
+# nextest rows
+_PSRC_A_NX_OK="$(_passset_classify_rc nextest 0 2 2>/dev/null || true)"
+_PSRC_A_NX_NORESULT_RC0="$(_passset_classify_rc nextest 0 0 2>/dev/null || true)"
+_PSRC_A_NX_NOTESTS="$(_passset_classify_rc nextest 4 0 2>/dev/null || true)"
+_PSRC_A_NX_TESTFAIL="$(_passset_classify_rc nextest 100 2 2>/dev/null || true)"
+_PSRC_A_NX_BUILDFAIL="$(_passset_classify_rc nextest 101 0 2>/dev/null || true)"
+_PSRC_A_NX_RUNNERERR="$(_passset_classify_rc nextest 137 0 2>/dev/null || true)"
+
+# cargo-test rows
+_PSRC_A_CT_OK="$(_passset_classify_rc cargo-test 0 2 2>/dev/null || true)"
+_PSRC_A_CT_NORESULT_RC0="$(_passset_classify_rc cargo-test 0 0 2>/dev/null || true)"
+_PSRC_A_CT_TESTFAIL="$(_passset_classify_rc cargo-test 101 2 2>/dev/null || true)"
+_PSRC_A_CT_BUILDFAIL="$(_passset_classify_rc cargo-test 101 0 2>/dev/null || true)"
+
+# unknown-runner row
+_PSRC_A_UNKNOWN="$(_passset_classify_rc bogus 0 2 2>/dev/null || true)"
+
+assert "PS-RC A: nextest rc=0 nresults=2 → ok" \
+    test "$_PSRC_A_NX_OK" = "ok"
+assert "PS-RC A: nextest rc=0 nresults=0 → no-tests-run" \
+    test "$_PSRC_A_NX_NORESULT_RC0" = "no-tests-run"
+assert "PS-RC A: nextest rc=4 nresults=0 → no-tests-run" \
+    test "$_PSRC_A_NX_NOTESTS" = "no-tests-run"
+assert "PS-RC A: nextest rc=100 nresults=2 → test-failures (NOT a build failure — must not fire on honest test failures)" \
+    test "$_PSRC_A_NX_TESTFAIL" = "test-failures"
+assert "PS-RC A: nextest rc=101 nresults=0 → build-failure (the #5885 defect this task fixes)" \
+    test "$_PSRC_A_NX_BUILDFAIL" = "build-failure"
+assert "PS-RC A: nextest rc=137 nresults=0 → runner-error" \
+    test "$_PSRC_A_NX_RUNNERERR" = "runner-error"
+
+assert "PS-RC A: cargo-test rc=0 nresults=2 → ok" \
+    test "$_PSRC_A_CT_OK" = "ok"
+assert "PS-RC A: cargo-test rc=0 nresults=0 → no-tests-run" \
+    test "$_PSRC_A_CT_NORESULT_RC0" = "no-tests-run"
+assert "PS-RC A: cargo-test rc=101 nresults=2 → test-failures (libtest's rc=101 is ambiguous; nresults disambiguates)" \
+    test "$_PSRC_A_CT_TESTFAIL" = "test-failures"
+assert "PS-RC A: cargo-test rc=101 nresults=0 → build-failure" \
+    test "$_PSRC_A_CT_BUILDFAIL" = "build-failure"
+
+assert "PS-RC A: unknown runner → runner-error (a typo can never silently read as ok)" \
+    test "$_PSRC_A_UNKNOWN" = "runner-error"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Block PG — Provenance-guard refusal + rename-negative-control (ALWAYS-RUN)
 #
 # B12: provenance-guard refusal assertions — exercising the REAL
