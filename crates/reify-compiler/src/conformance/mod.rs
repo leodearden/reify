@@ -1618,10 +1618,9 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
                 | Type::Tensor { quantity, .. }
                 | Type::Vector { quantity, .. } => Some(quantity),
                 _ => None,
-            } {
-                if quantity_slots_conflict(param_quantity, arg_quantity) {
-                    emit_arg_type_mismatch(param_type, arg_ty, ctx);
-                }
+            } && quantity_slots_conflict(param_quantity, arg_quantity)
+            {
+                emit_arg_type_mismatch(param_type, arg_ty, ctx);
             }
         }
         // Leaf: param type is a Selector or AnySelector (task-4598).
