@@ -1,8 +1,16 @@
 /**
  * The structural conventions the live `smoke_*.mjs` e2e drivers must follow —
  * today, two of them: a driver never re-implements the `open_file` retry policy
- * (task 5857), and a driver never reads a post-open `store_state` payload
- * without first diagnosing it (task 5884).
+ * (task 5857), and a driver never reads the post-open `store_state` payload it
+ * binds as `storeAfterOpen` without first diagnosing it (task 5884).
+ *
+ * THAT SECOND WORDING IS DELIBERATELY NARROWER than the rule a reader would
+ * state from the rationale below ("never read a post-open `store_state` payload
+ * undiagnosed"), because the narrow one is what actually ships: the check keys
+ * on the conventional `storeAfterOpen` binding and its `?.editor` read, and sees
+ * no other spelling of either. `STORE_STATE_READ` and `STORE_STATE_DIAG` below
+ * each state what they leave unseen and why that gap errs toward a missed
+ * violation; the header states the shipped rule so the two cannot drift.
  *
  * WHY THE SECOND ONE IS A CONVENTION AND NOT A CODE REVIEW NOTE. An in-band
  * `{error: '<msg>'}` envelope is TRUTHY, so the `!storeAfterOpen?.editor?.…`
@@ -55,7 +63,9 @@ import { VISUAL_DIR, partitionVisualMjs } from "./sharedModuleLoad.js";
  * first putting the payload through `describeRpcFailure`, so a truthy in-band
  * `{error: '<msg>'}` survives the `!x` guard, the chain reports
  * `activeFile: undefined`, and the run blames the frontend for what was a
- * `store_state` outage.
+ * `store_state` outage. Keyed on that exact binding and field, not on the
+ * payload shape: another spelling of either is not seen at all (see
+ * `STORE_STATE_READ`).
  */
 export type SmokeDriverViolationCode = "inline-open-file" | "undiagnosed-store-state";
 
@@ -113,10 +123,33 @@ const INLINE_OPEN_FILE = /\brpc\s*\(\s*["']open_file["']/;
  * `.editor` and then THROWS at `.activeFile`, which is a stack trace naming the
  * exact line — already loud, already attributable. Pinned by name as a
  * deliberate non-violation in `./smokeDriverConventions.test.ts`.
+ *
+ * COUPLED TO ONE SPELLING, deliberately and visibly: the conventional
+ * `storeAfterOpen` binding and its `?.editor` field, NOT the payload shape. A
+ * driver binding `postOpenStore`, or reading `storeAfterOpen?.viewports`, walks
+ * straight past this — and such a read is already in the corpus, in
+ * `./smoke_multi_pane_e2e.mjs`'s second `storeState` payload, which is diagnosed
+ * today by author discipline rather than by this check. Widening to `store\w*`
+ * would have to widen {@link STORE_STATE_DIAG} in lockstep, or every alternate
+ * binding that IS diagnosed becomes a false alarm — the one direction this
+ * module refuses to err in — so the narrow form ships and the gap is stated
+ * rather than papered over. Like `stripComments`' blind spots it errs toward a
+ * MISSED violation, and like them it is pinned by name in
+ * `./smokeDriverConventions.test.ts` rather than left as prose.
  */
 const STORE_STATE_READ = /\bstoreAfterOpen\s*\?\.\s*editor\b/;
 
-/** The diagnosis that must accompany that read, in whatever argument spelling. */
+/**
+ * The diagnosis that must accompany that read, in whatever argument spelling.
+ *
+ * A WHOLE-FILE PRESENCE check, with no pairing to the read it guards: one
+ * `describeRpcFailure(storeAfterOpen, …)` anywhere in the source satisfies it,
+ * including one sitting BELOW the read, one inside a different function, and one
+ * covering only the first of two `storeAfterOpen` bindings. Position is not
+ * enforced — pairing it would mean parsing, and this module is a regex pass by
+ * design. That gap errs the accepted way (a missed violation, never a false
+ * alarm on a compliant driver) and is pinned by name alongside the others.
+ */
 const STORE_STATE_DIAG = /\bdescribeRpcFailure\s*\(\s*storeAfterOpen\b/;
 
 /**

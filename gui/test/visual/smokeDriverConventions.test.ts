@@ -1,8 +1,9 @@
 /**
  * CI cover for `./smokeDriverConventions.ts` — the structural conventions the
  * live `smoke_*.mjs` drivers must follow: today, the `open_file` retry policy
- * living in one home (task 5857) and the post-open `store_state` payload being
- * diagnosed before it is read (task 5884).
+ * living in one home (task 5857) and the post-open `store_state` payload bound
+ * as `storeAfterOpen` being diagnosed before it is read (task 5884) — the
+ * narrow wording on purpose, since that is the rule the regexes actually ship.
  *
  * Read that module's header for WHY a source-level check is the only executable
  * signal available here: a driver needs a live reify-gui (WebKit WebView +
@@ -22,6 +23,14 @@
  *     read to diagnose. Its raw-vs-stripped asymmetry — the thing that keeps
  *     those from false-alarming — is pinned in BOTH directions, so a later
  *     "make it consistent" edit flips a case instead of reversing an argument.
+ *
+ * The accepted BLIND SPOTS get the same treatment for the opposite reason. Every
+ * shape these checks knowingly let through — a `//` comment containing `/*`, a
+ * diagnosis written only in prose, a plain-dot read, a diagnosis sitting BELOW
+ * the read, a binding or field spelled any other way — is pinned by name as
+ * CURRENT-not-desirable behaviour, each with the counter-assertion that the same
+ * source minus the excuse IS flagged. Silence must never read as coverage, and a
+ * later widening should flip a case rather than be re-discovered.
  *
  * Violation assertions are on `code`, never on `message`: the prose is meant to
  * stay free to reword or enrich without churning the pins.
@@ -141,7 +150,7 @@ describe("findSmokeDriverConventionViolations — the post-open `store_state` di
   // blaming the frontend for a `store_state` outage.
   it.each([
     [
-      "the shape smoke_mesh_count_parity_e2e.mjs:200-205 carries today",
+      "the unguarded shape smoke_mesh_count_parity_e2e.mjs carried before task 5884",
       [
         "  const storeAfterOpen = await rpc('store_state');",
         "  if (!storeAfterOpen?.editor?.activeFile?.includes('large_assembly')) {",
@@ -169,7 +178,7 @@ describe("findSmokeDriverConventionViolations — the post-open `store_state` di
   // correct driver.
   it.each([
     [
-      "the compliant shape verbatim (smoke_multi_pane_e2e.mjs:128-136)",
+      "the compliant shape smoke_multi_pane_e2e.mjs carries, with the pointer comment collapsed",
       [
         "  const storeAfterOpen = await rpc('store_state');",
         "  // Diagnose the RPC before the optional chain reads past an in-band error —",
@@ -259,6 +268,64 @@ describe("findSmokeDriverConventionViolations — the post-open `store_state` di
     expect(codesFor(source.replace("describeRpcFailure(storeAfterOpen, ", "the helper on "))).toEqual(
       ["undiagnosed-store-state"],
     );
+  });
+
+  it("does not flag a diagnosis that sits BELOW the read it is meant to guard", () => {
+    // THE ORDERING BLIND SPOT, pinned so it stays a known one. `STORE_STATE_DIAG`
+    // is a WHOLE-FILE presence check with no pairing to the read: a
+    // `describeRpcFailure(storeAfterOpen, …)` below the chain — or in another
+    // function, or covering only the first of two `storeAfterOpen` bindings —
+    // satisfies it while the driver carries exactly the defect the convention
+    // exists to catch, since the `!x` guard has already run past the error.
+    //
+    // Asserted as the CURRENT behaviour, not as desirable: pairing a read to its
+    // diagnosis means parsing, and this module is a regex pass by design. It is
+    // accepted only because it errs toward a MISSED violation, the direction
+    // every other gap here errs in too. Without this case a reader would assume
+    // order is enforced, which is the assumption that lets the defect ship.
+    const source = [
+      "  const storeAfterOpen = await rpc('store_state');",
+      "  if (!storeAfterOpen?.editor?.activeFile?.includes('large_assembly')) fail('nope');",
+      "  const storeAfterOpenFailure = describeRpcFailure(storeAfterOpen, 'store_state (post-open)');",
+      "  if (storeAfterOpenFailure) fail(storeAfterOpenFailure);",
+    ].join("\n");
+    expect(findSmokeDriverConventionViolations(source)).toEqual([]);
+    // The discriminating counter-assertion, as on every other blind-spot case:
+    // drop the (mis-ordered) diagnosis and the same read IS flagged. Without it
+    // this would pass for a predicate that never fires at all.
+    expect(
+      codesFor(source.replace("describeRpcFailure(storeAfterOpen", "String(storeAfterOpen")),
+    ).toEqual(["undiagnosed-store-state"]);
+  });
+
+  it("does not flag a post-open read spelled with another binding or another field", () => {
+    // THE SPELLING BLIND SPOT, pinned by name because the convention a reader
+    // states ("never read a post-open `store_state` payload undiagnosed") is
+    // WIDER than the one that ships: `STORE_STATE_READ` keys on the conventional
+    // `storeAfterOpen` binding and its `?.editor` field, so neither of these two
+    // undiagnosed reads is seen at all. One such read already exists in the
+    // corpus — smoke_multi_pane_e2e.mjs's second `storeState` payload, diagnosed
+    // by author discipline rather than by this check.
+    //
+    // Asserted as CURRENT behaviour: widening the read to `store\w*` would have
+    // to widen the diagnosis regex in lockstep, or every alternate binding that
+    // IS diagnosed turns into a false alarm — the one direction this module
+    // refuses to err in. Should someone widen it anyway, this case flips and
+    // forces the paired widening rather than letting half of it land.
+    for (const source of [
+      "  const postOpenStore = await rpc('store_state');\n" +
+        "  if (!postOpenStore?.editor?.activeFile) fail('nope');",
+      "  const storeAfterOpen = await rpc('store_state');\n" +
+        "  if (!storeAfterOpen?.viewports?.length) fail('nope');",
+    ]) {
+      expect(findSmokeDriverConventionViolations(source)).toEqual([]);
+    }
+    // The discriminating counter-assertion: the conventional spelling of the
+    // same undiagnosed read IS flagged, so this pins the coupling and not an
+    // inert predicate.
+    expect(codesFor("  if (!storeAfterOpen?.editor?.activeFile) fail('nope');")).toEqual([
+      "undiagnosed-store-state",
+    ]);
   });
 
   it("carries a human-readable message alongside the code", () => {
