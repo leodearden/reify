@@ -49,6 +49,10 @@ run_list_extensions() {
     GUARD_OUT="$(bash "$SCRIPT" --list-extensions 2>/dev/null)" && GUARD_RC=$? || GUARD_RC=$?
 }
 
+run_list_extensionless() {
+    GUARD_OUT="$(bash "$SCRIPT" --list-extensionless 2>/dev/null)" && GUARD_RC=$? || GUARD_RC=$?
+}
+
 # ---------------------------------------------------------------------------
 # Set up a temp dir for C-P3 on-disk probes; cleaned up on exit.
 # ---------------------------------------------------------------------------
@@ -425,6 +429,76 @@ do
     assert "extensionless: classify '$_extless_path' exits 0 (ACCEPT)" test "$GUARD_RC" -eq 0
     assert "extensionless: classify '$_extless_path' stdout contains ACCEPT" \
         test "${GUARD_OUT#*ACCEPT}" != "$GUARD_OUT"
+done
+
+# ---------------------------------------------------------------------------
+# Cycle 8 — --list-extensionless emitter + over-accept pins
+#
+# (a) EMITTER — the drift guard for _EXTLESS, mirroring Cycle 4's for _EXTS.
+#     Its reason to exist is γ-side: dark_factory:3248 needs a machine-readable
+#     α vector to compare against, exactly as --list-extensions gives it one for
+#     the extension list.  Pinned in BYTE order (uppercase first), not the
+#     ambient-locale order this host would otherwise produce — γ's counterpart
+#     is Python sorted(), which is code-point order, so byte order is what the
+#     two sides must agree on.  The emitter pins LC_ALL=C for that reason.
+#
+# (c) OVER-ACCEPT PINS — green on arrival, so per G6 they were SHOWN to fire
+#     rather than assumed to.  Three scratch mutants of the guard, each a
+#     plausible refactor that leaves all of Cycle 7 green (canonical-8 still
+#     ACCEPT, 8/8, under every one):
+#       A. relocate the _EXTLESS loop below the `ext` extraction and compare
+#          "$ext" instead of "$seg"  → flips .cargo .pre-commit .LICENSE
+#          x.cargo foo.LICENSE (5 assertions RED).  This is the trap the
+#          _EXTLESS header warns about: "${seg##*.}" on .cargo yields cargo.
+#       B. loosen [ "$seg" = "$x" ] to [[ "$seg" == "$x"* ]]  → flips
+#          pre-commit-hooks cargo-lib project-checks-old (3 RED).
+#       C. reverse it to [[ "$x" == "$seg"* ]]  → flips hooks/pre (1 RED).
+#     Every pin below is covered by at least one mutant; none is vacuous.
+#     Mutants not committed.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle 8: --list-extensionless emitter + over-accept pins ---"
+
+# Canonical extensionless-basename allowlist — sorted-unique BYTE order, one per
+# line.  Shared α/γ test vector; γ's mirror is dark_factory:3248.
+CANONICAL_EXTLESS="Dockerfile
+LICENSE
+cargo
+cargo-audit-orphans
+pre-commit
+pre-merge-commit
+project-checks
+reference-transaction"
+
+run_list_extensionless
+assert "--list-extensionless exits 0" test "$GUARD_RC" -eq 0
+assert "--list-extensionless stdout matches canonical extensionless allowlist" \
+    test "$GUARD_OUT" = "$CANONICAL_EXTLESS"
+
+# (b) Coherence: every emitted basename is ACCEPTed by classify.
+while IFS= read -r _el; do
+    [ -z "$_el" ] && continue
+    run_classify "$_el"
+    assert "--list-extensionless coherence: classify '$_el' exits 0" test "$GUARD_RC" -eq 0
+done <<< "$GUARD_OUT"
+
+# (c) Over-accept pins — the match is on the FULL segment and is EXACT.
+for _near_miss in \
+    ".cargo" \
+    ".pre-commit" \
+    ".LICENSE" \
+    "x.cargo" \
+    "foo.LICENSE" \
+    "pre-commit-hooks" \
+    "cargo-lib" \
+    "project-checks-old" \
+    "hooks/pre"
+do
+    run_classify "$_near_miss"
+    assert "extensionless over-accept pin: classify '$_near_miss' exits 1 (REJECT)" \
+        test "$GUARD_RC" -eq 1
+    assert "extensionless over-accept pin: classify '$_near_miss' stdout contains REJECT" \
+        test "${GUARD_OUT#*REJECT}" != "$GUARD_OUT"
 done
 
 # ---------------------------------------------------------------------------
