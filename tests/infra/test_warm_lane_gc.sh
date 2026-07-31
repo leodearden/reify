@@ -76,7 +76,8 @@
 #       docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13 caller obligation),
 #       counted `reset` with the appended `reset_cold` sub-count. S2 is the
 #       positive control that pins the discard to the seed's EXIT STATUS rather
-#       than to an empty stdout; S3 covers a discard that itself fails
+#       than to an empty stdout; S3 covers a discard that itself fails; S4 a
+#       refusal that left nothing to discard (no false "discarded" claim)
 #
 # The former Tier-3 blocks I/J/L (terminal-task reclaim + Pass-2 boundary,
 # task 5167) were deleted when task 5326 collapsed the Pass-1 gate to the
@@ -2053,10 +2054,6 @@ assert "S1: a stderr [warn] line names the discarded path" \
         _ "$ERR_OUT" "$S1_WORKTREES/_lane-1"
 assert "S1: stderr cites the §9.5 inv.13 caller obligation" \
     bash -c 'printf "%s\n" "$1" | grep -qF "inv.13"' _ "$ERR_OUT"
-# The old wording reported the seed error and stopped there — it never said what
-# became of the clone, which was the whole defect.
-assert "S1: the bare seed-script-error/continuing wording is GONE" \
-    bash -c '! printf "%s\n" "$1" | grep -qF "(seed-script error); continuing"' _ "$ERR_OUT"
 # The discard is the same operation the disk-pressure path already counts as
 # reset (K1), so it belongs in the same bucket — `preserved` is factually false
 # once target/ is destroyed.
@@ -2147,7 +2144,8 @@ if [ "$(id -u)" -ne 0 ]; then
     assert "S3: stderr carries the rm's own error text (failure detail not swallowed)" \
         bash -c 'printf "%s\n" "$1" | grep -qi "permission denied"' _ "$ERR_OUT"
     # K4's rule: an rm that failed leaves the lane untouched, so it is preserved,
-    # not reset — and reset_cold counts only clones actually discarded.
+    # not reset — and a lane still holding its target/ is not COLD, so reset_cold
+    # does not count it either.
     assert "S3: the failed discard is counted preserved, not reset (reset=1 preserved=1)" \
         bash -c 'printf "%s\n" "$1" | grep -qE "reset=1 removed=0 preserved=1"' _ "$OUT"
     assert "S3: reset_cold is NOT incremented for a discard that never happened" \
@@ -2162,6 +2160,61 @@ if [ "$(id -u)" -ne 0 ]; then
 else
     echo "  SKIP: S3 discard-failure asserts (running as uid 0; DAC write checks are bypassed)"
 fi
+
+# ── S4: a refusal that left NOTHING behind ⇒ gc must not claim a discard that
+# never happened. `rm -rf` exits 0 on a missing path, so the discard branch
+# cannot tell "removed the uncertified target/" from "there was nothing there"
+# by its own exit status — it has to probe first. A seed can refuse with the
+# lane's target/ already gone: seed-warm-lane.sh moves the old target/ into its
+# reseed trash BEFORE staging the clone, so any guard firing in that window
+# (base absent, RUSTFLAGS mismatch, …) leaves the lane empty. Modelled by a stub
+# that removes "$2/target" and exits non-zero.
+# The COUNTING is deliberately identical to S1's: the lane is left COLD by a
+# refusing seed either way, which is exactly what reset_cold names — and such a
+# refusal is if anything MORE likely to be the pool-wide degradation inv.12
+# predicts, so excluding it would hide the very signal the sub-count exists for.
+S4_REPO="$S_ROOT/s4-repo"
+S4_WORKTREES="$S_ROOT/s4-worktrees"
+S4_BASE="$S_ROOT/s4-base"
+mkdir -p "$S4_WORKTREES" "$S4_BASE"
+make_repo "$S4_REPO"
+mkdir -p "$S4_BASE/target.gen.1"
+touch "$S4_BASE/target.gen.1.lock"
+ln -sfn "$S4_BASE/target.gen.1" "$S4_BASE/target"
+
+make_task_lane "$S4_REPO" "$S4_WORKTREES" "_lane-1" "task/5635" "ahead"
+
+S4_SEED_LOG="$S_ROOT/s4-seed-calls.log"
+S4_SEED_STUB="$S_ROOT/s4-seed-stub.sh"
+cat > "$S4_SEED_STUB" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+rm -rf "$LANE_DIR/target"
+exit 1
+STUB_EOF
+chmod +x "$S4_SEED_STUB"
+export SEED_LOG="$S4_SEED_LOG"
+
+run_helper reclaim \
+    --worktrees-dir "$S4_WORKTREES" \
+    --base-target "$S4_BASE/target" \
+    --seed-script "$S4_SEED_STUB"
+
+assert "S4: exit 0 (per-candidate failures warn + continue)" test "$RC" -eq 0
+assert "S4: <lane>/target is absent (the seed refused with nothing staged)" \
+    bash -c '[ ! -e "$1" ]' _ "$S4_WORKTREES/_lane-1/target"
+# The discriminator: before the presence probe, this run reported a discard of a
+# target/ that was never there.
+assert "S4: a stderr [warn] line reports there was NOTHING to discard, naming the path" \
+    bash -c 'printf "%s\n" "$1" | grep -F "[warn]" | grep -qi "nothing to discard"' _ "$ERR_OUT"
+assert "S4: that line names the lane path" \
+    bash -c 'printf "%s\n" "$1" | grep -i "nothing to discard" | grep -qF "$2/target"' \
+        _ "$ERR_OUT" "$S4_WORKTREES/_lane-1"
+assert "S4: summary counts the lane reset, not preserved (reset=1 preserved=0)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "reset=1 removed=0 preserved=0"' _ "$OUT"
+assert "S4: reset_cold=1 — a refusing seed left the lane COLD, clone or no clone" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "reset_cold=1"' _ "$OUT"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately

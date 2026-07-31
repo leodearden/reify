@@ -283,9 +283,9 @@ Usage: $(basename "$0") reclaim --mount WORKTREE_BASE [OPTIONS]
             reclaim: reset=N removed=M preserved=K preserved_live_ref=L reset_cold=C
             (L is the share of K held back by a live process reference — the
              only preserve reason that can shield an entry indefinitely;
-             C is the share of N left COLD because the α seed ABORTED fail-closed
-             and its uncertified clone was discarded — PRD
-             docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13)
+             C is the share of N left COLD because the α seed REFUSED — its
+             uncertified target/ discarded here, or nothing staged to discard —
+             PRD docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13)
     stderr: all diagnostics.
 EOF
 }
@@ -481,9 +481,13 @@ _do_reclaim() {
     # per-entry `preserving <name>: live consumer (process reference)` warn on
     # stderr names WHICH entries, so an operator can find and clear the holder.
     local preserved_live_ref_count=0
-    # Sub-count of reset_count left COLD rather than warm: lanes whose α seed
-    # ABORTED fail-closed and whose uncertified clone this script then discarded
-    # (§9.5 inv.13 caller obligation). Reported separately because a bare
+    # Sub-count of reset_count left COLD rather than warm: lanes a REFUSING α
+    # seed left with no usable target/ — whether it aborted fail-closed onto the
+    # uncertified clone this script then discarded (§9.5 inv.13 caller
+    # obligation) or refused before staging one at all, leaving nothing to
+    # discard. The two are not distinguishable from here (see the discard branch)
+    # and need not be: what the count names is the lane's OUTCOME — reset to
+    # nothing — not which guard produced it. Reported separately because a bare
     # reset=N cannot distinguish a lane reset WARM — the normal, valuable
     # outcome — from one reset to nothing, and a fail-closed seed abort is
     # rarely per-lane: inv.12 predicts that a bad base generation makes EVERY
@@ -664,10 +668,35 @@ _do_reclaim() {
                 # anyway — the α call's whole output is piped through the [seed]
                 # warn loop above, to protect this script's own single-line
                 # stdout contract.
-                warn "  reset did not certify $name (seed-script exited non-zero); discarding the uncertified clone"
+                warn "  reset did not certify $name (seed-script exited non-zero); discarding the uncertified target/"
+                # Probe BEFORE the rm: `rm -rf` exits 0 on a missing path, so its
+                # own status cannot tell "removed the uncertified target/" from
+                # "there was nothing there". A seed can refuse with the lane
+                # already empty — it moves the old target/ into its reseed trash
+                # BEFORE staging the clone, so any guard firing in that window
+                # (base absent, RUSTFLAGS mismatch, a usage error) leaves nothing
+                # behind. Reporting a discard that never happened would be a
+                # plain falsehood in the operator's log; the probe picks the
+                # wording. Note the converse is NOT knowable here: a target/ that
+                # IS present may be the fail-closed CoW clone or the lane's own
+                # pre-existing target/ (a refusal before the trash-move), hence
+                # "uncertified target/" rather than "clone" — either way the seed
+                # did not certify it and gc's job on this branch is to reset.
+                local had_target=0
+                [ -e "$lane/target" ] && had_target=1
                 local rm_err
                 if rm_err="$(rm -rf "$lane/target" 2>&1)"; then
-                    warn "  discarded uncertified clone: $lane/target (§9.5 inv.13 caller obligation; lane left cold-but-safe)"
+                    if [ "$had_target" = "1" ]; then
+                        warn "  discarded uncertified target/: $lane/target (§9.5 inv.13 caller obligation; lane left cold-but-safe)"
+                    else
+                        warn "  nothing to discard at $lane/target — the seed refused leaving none (§9.5 inv.13 caller obligation; lane left cold-but-safe)"
+                    fi
+                    # Counted identically on both wordings: the lane is left COLD
+                    # by a REFUSING seed either way, which is what reset_cold
+                    # names (see its declaration). A refusal that staged nothing
+                    # is if anything MORE likely to be inv.12's pool-wide
+                    # degradation than a per-lane one, so excluding it would hide
+                    # the signal the sub-count exists for.
                     reset_count=$((reset_count + 1))
                     reset_cold_count=$((reset_cold_count + 1))
                 else

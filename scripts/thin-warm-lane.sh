@@ -319,9 +319,21 @@ if [ -n "$RESEED" ]; then
         # docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13, "Caller obligation
         # on the fail-closed path", is the single normative home for the ruling.
         warn "Re-seed did not certify the lane ($SEED_SCRIPT exited non-zero); discarding the uncertified clone"
+        # Probe BEFORE the rm: `rm -rf` exits 0 on a missing path, so its own
+        # status cannot tell "removed the uncertified clone" from "there was
+        # nothing there". Both happen here — a seed that refuses BEFORE staging
+        # (base absent, RUSTFLAGS mismatch, a usage error) leaves the lane exactly
+        # as the free-first rm above left it — and claiming a discard that never
+        # happened would be a plain falsehood in the operator's log.
+        _had_clone=0
+        [ -e "$LANE_DIR/target" ] && _had_clone=1
         _rm_err=""
         if _rm_err="$(rm -rf "$LANE_DIR/target" 2>&1)"; then
-            warn "Discarded uncertified clone: $LANE_DIR/target (§9.5 inv.13 caller obligation; lane returned cold-but-safe)"
+            if [ "$_had_clone" = "1" ]; then
+                warn "Discarded uncertified clone: $LANE_DIR/target (§9.5 inv.13 caller obligation; lane returned cold-but-safe)"
+            else
+                warn "Nothing to discard at $LANE_DIR/target — the seed refused before staging a clone (the free-first rm already freed it); lane returned cold-but-safe"
+            fi
         else
             # The discard we just took on as an obligation did not happen, so the
             # lane is NOT safe. Exit 1 without reaching the trailing echo, leaving
