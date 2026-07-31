@@ -71,7 +71,7 @@ import {
   formatFailures,
 } from './meshCountParity.mjs';
 import { isInBandError, makeDebugRpc } from './rpcEnvelope.mjs';
-import { openFileWithRetry } from './smokeDriverGuards.mjs';
+import { describeRpcFailure, openFileWithRetry } from './smokeDriverGuards.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -198,6 +198,10 @@ async function main() {
   // Boot: activeFile must contain 'large_assembly' — proves the intended model
   // is loaded, not a leftover from a previous run against the same window.
   const storeAfterOpen = await rpc('store_state');
+  // Diagnose the RPC before the optional chain reads past an in-band error —
+  // see ./smokeDriverGuards.mjs (describeRpcFailure).
+  const storeAfterOpenFailure = describeRpcFailure(storeAfterOpen, 'store_state (post-open)');
+  if (storeAfterOpenFailure) fail(storeAfterOpenFailure);
   if (!storeAfterOpen?.editor?.activeFile?.includes('large_assembly')) {
     fail(
       `Expected activeFile to contain 'large_assembly', got: ${storeAfterOpen?.editor?.activeFile}`,
