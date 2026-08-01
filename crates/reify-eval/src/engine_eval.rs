@@ -1,7 +1,7 @@
 // Split from lib.rs (task 2032) — eval methods.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::panic;
 use std::sync::Arc;
 use std::time::Instant;
@@ -1875,6 +1875,74 @@ fn build_dependent_cells(
         }
     }
     out
+}
+
+/// The auto params `objective` can actually move — the runtime half of DIC γ
+/// (task #5417, PRD `docs/prds/v0_6/declared-intent-consumption-accounting.md`
+/// §3).
+///
+/// Closes the objective's own `ValueRef`s over `dependent_cells` and intersects
+/// the result with `auto_params`. `dependent_cells` is [`build_dependent_cells`]'
+/// already-materialised output, carried on `ResolutionProblem`; this function
+/// **reads** it and never re-derives connectivity (the task's explicit G7
+/// no-lockstep-duplication constraint). Because that list already encodes
+/// let-indirection, a let-indirected objective reads as transitively consumed
+/// here whichever order this PRD and PRD 2 (tasks 5396 / 5467-5474) land in.
+///
+/// **Deliberately under-approximate.** The closure follows only entries the
+/// objective can actually reach, never the whole list —`build_dependent_cells`
+/// is seeded from the constraints *and* the objective, so its output holds cells
+/// the objective never reads. `E_OBJECTIVE_UNCONSUMED` fires when this set is
+/// non-empty, so over-reaching would invent unconsumed autos and raise an Error
+/// on a healthy scope; under-reaching only makes the diagnostic quieter, which
+/// is the safe direction (PRD §3 decision 5).
+///
+/// Returns a `BTreeSet` so the rendered diagnostic is order-stable (PRD §3
+/// decision 8).
+// Wired into the single-scope and merged-cluster emission sites by steps 10/12;
+// until then the unit tests below are its only callers, and those do not count
+// as uses for the non-test lib target.
+#[allow(dead_code)]
+fn objective_auto_reach(
+    objective: &ObjectiveSet,
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
+    auto_params: &[AutoParam],
+) -> BTreeSet<ValueCellId> {
+    let autos: HashSet<&ValueCellId> = auto_params.iter().map(|p| &p.id).collect();
+    // `dependent_cells` may legitimately hold more than one entry per id (stage
+    // (g) emits instance-path aliases beside the template-keyed original), so
+    // the closure follows every match rather than the first.
+    let mut by_id: HashMap<&ValueCellId, Vec<&CompiledExpr>> = HashMap::new();
+    for (id, expr) in dependent_cells {
+        by_id.entry(id).or_default().push(expr);
+    }
+
+    let mut reached: BTreeSet<ValueCellId> = BTreeSet::new();
+    let mut seen: HashSet<ValueCellId> = HashSet::new();
+    let mut pending: Vec<ValueCellId> = objective
+        .terms
+        .iter()
+        .flat_map(|term| crate::deps::extract_value_deps(&term.expr))
+        .collect();
+
+    // `seen` — not `reached` — is the revisit guard: intermediate lets are
+    // traversed but never reported, so guarding on `reached` would walk a
+    // let-only cycle forever.
+    while let Some(id) = pending.pop() {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        if autos.contains(&id) {
+            reached.insert(id.clone());
+        }
+        if let Some(exprs) = by_id.get(&id) {
+            for expr in exprs {
+                pending.extend(crate::deps::extract_value_deps(expr));
+            }
+        }
+    }
+
+    reached
 }
 
 /// Structure name → its SINGLE non-collection instance path, for the
