@@ -12,6 +12,14 @@ use std::path::{Path, PathBuf};
 /// time from this crate's manifest directory (two levels up).
 const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
 
+/// Minimum count of `.ri` files [`discover_ri_files`] must find under
+/// `EXAMPLES_DIR`, asserted in [`all_examples_parse_and_compile_with_stdlib`].
+const MIN_DISCOVERED_RI_FILES: usize = 40;
+
+/// Minimum count of non-skipped `.ri` files that
+/// [`no_example_emits_ctor_field_conformance_diagnostics`] must exercise.
+const MIN_EXERCISED_RI_FILES: usize = 40;
+
 /// Files to skip in the bulk smoke test.  Each entry is `(relative_path, reason)`
 /// where `relative_path` is the forward-slash-separated path rooted at `examples/`
 /// (e.g. `"bracket.ri"`, `"fields/composed_stiffness.ri"`).  Using the full
@@ -137,7 +145,7 @@ fn all_examples_parse_and_compile_with_stdlib() {
     let paths = discover_ri_files();
     let total = paths.len();
     assert!(
-        total >= 40,
+        total >= MIN_DISCOVERED_RI_FILES,
         "examples_smoke discovered only {} .ri files — expected ~42; \
          did the examples/ directory move or get renamed?",
         total
@@ -213,7 +221,7 @@ fn no_example_emits_ctor_field_conformance_diagnostics() {
     }
 
     assert!(
-        exercised >= 40,
+        exercised >= MIN_EXERCISED_RI_FILES,
         "ctor-conformance corpus gate exercised only {} .ri files — expected ~40+; \
          did the examples/ directory move, or did SKIP_SET grow unexpectedly?",
         exercised

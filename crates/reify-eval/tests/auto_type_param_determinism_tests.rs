@@ -53,6 +53,25 @@ const EXAMPLE_PATH: &str = concat!(
 /// Mirrors `EXAMPLES_DIR` in `crates/reify-compiler/tests/examples_smoke.rs`.
 const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
 
+/// Conservative absolute floor, set well below current corpus size so
+/// healthy growth/shrinkage doesn't flake this guard while still catching
+/// a partial-discovery regression (e.g. most files silently skipped) that
+/// a bare non-empty check would miss. If the corpus is ever intentionally
+/// trimmed below this floor, lower the constant to match — the assertion
+/// has no way to distinguish an intended shrink from a regression.
+///
+/// Deliberately NOT relative to paths.len() (e.g. `paths.len() -
+/// skip.len()`, or a fraction like `paths.len() / 2`): a
+/// discover_ri_files() regression shrinks paths.len() and candidates.len()
+/// in lockstep, so any floor derived from paths.len() — subtractive or
+/// proportional — still passes and misses exactly the regression this
+/// check exists to catch.
+///
+/// Also not derived from examples_smoke.rs: that sibling has no analogous
+/// floor to share, and hoisting corpus discovery into a common crate is a
+/// cross-crate change outside this single-file task's scope.
+const EXPECTED_MIN_FILES: usize = 100;
+
 /// Classifies *why* a [`SKIP_SET`] entry is excluded from the v0.1
 /// example-corpus perf regression walk
 /// (`v0_1_example_corpus_compile_and_check_time_is_bounded`).
@@ -602,25 +621,6 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
     use std::collections::HashSet;
 
     const PER_FILE_BUDGET: Duration = Duration::from_secs(10);
-
-    // Conservative absolute floor, set well below current corpus size so
-    // healthy growth/shrinkage doesn't flake this guard while still catching
-    // a partial-discovery regression (e.g. most files silently skipped) that
-    // a bare non-empty check would miss. If the corpus is ever intentionally
-    // trimmed below this floor, lower the constant to match — the assertion
-    // has no way to distinguish an intended shrink from a regression.
-    //
-    // Deliberately NOT relative to paths.len() (e.g. `paths.len() -
-    // skip.len()`, or a fraction like `paths.len() / 2`): a
-    // discover_ri_files() regression shrinks paths.len() and candidates.len()
-    // in lockstep, so any floor derived from paths.len() — subtractive or
-    // proportional — still passes and misses exactly the regression this
-    // check exists to catch.
-    //
-    // Also not derived from examples_smoke.rs: that sibling has no analogous
-    // floor to share, and hoisting corpus discovery into a common crate is a
-    // cross-crate change outside this single-file task's scope.
-    const EXPECTED_MIN_FILES: usize = 100;
 
     let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _, _)| *name).collect();
     let paths = discover_ri_files();
