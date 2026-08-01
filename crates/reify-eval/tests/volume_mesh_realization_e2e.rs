@@ -407,6 +407,98 @@ fn e2e_vm_probe_reads_back_tet_volume_mesh_from_demanded_body() {
     );
 }
 
+/// `cfg(has_gmsh)`: `CacheStats::realization_entries` counts a REAL terminal
+/// realization exactly once, and a repeat build served from cache does not
+/// re-count it (task 4152).
+///
+/// This is the counter's engine-level wiring test, deliberately driven through
+/// the minimal single-`let body` `volume_mesh_box.ri` fixture rather than the
+/// heavier FEA path, so a counter regression stays diagnosable without a full
+/// multi-case solve.
+///
+/// Three signals, in order:
+///
+/// 1. **Before `build()`**: a fresh engine has realized nothing → 0.
+/// 2. **After `build()`**: the fixture's single geometry `let body` yields
+///    exactly ONE terminal realization node, so the terminal insert fires once
+///    → 1. Note this must be 1 and not more even though the OCCT→gmsh route
+///    caches per-step conversion *intermediates* along the way: those go
+///    through the uncounted plain `insert`.
+/// 3. **After a second `build()` of the same unmodified module**: still 1. The
+///    terminal cache probe serves a hit, and the dominated re-insert that
+///    follows returns `false`, so nothing is counted.
+///
+/// The `realization_kernel_provenance()` cross-check is an independent second
+/// opinion: provenance counts realizations PERFORMED, the counter counts cache
+/// entries CREATED. Agreement corroborates the wiring; disagreement localises
+/// the bug to one side or the other.
+///
+/// RED before the terminal insert site is switched to `insert_terminal`: it
+/// still calls plain `insert`, so the counter never leaves 0.
+#[cfg(has_gmsh)]
+#[test]
+fn realization_entries_counts_terminal_realization_once_and_not_on_cache_hit() {
+    use reify_core::KernelId;
+    use reify_ir::{ExportFormat, ReprKind};
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping realization_entries_counts_terminal_realization_once_and_not_on_cache_hit: \
+             OCCT not available (no BRep kernel to build the box body)"
+        );
+        return;
+    }
+
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(include_str!(
+        "fixtures/volume_mesh_box.ri"
+    ));
+
+    let mut engine = make_occt_engine();
+    engine.register_volume_mesh_demand("test::vm-demand-probe");
+    assert!(
+        engine.ensure_gmsh_kernel(),
+        "ensure_gmsh_kernel() must acquire the gmsh adapter from the registry"
+    );
+
+    assert_eq!(
+        engine.cache_stats().realization_entries,
+        0,
+        "a fresh engine must have realized and cached no geometry yet"
+    );
+
+    engine.build(&compiled, ExportFormat::Step);
+
+    // Independent cross-check: exactly one VolumeMesh realization on gmsh.
+    let vm_gmsh = engine
+        .realization_kernel_provenance()
+        .iter()
+        .filter(|p| p.repr == ReprKind::VolumeMesh && p.kernel == KernelId::Gmsh)
+        .count();
+    assert_eq!(
+        vm_gmsh, 1,
+        "the fixture's single `let body` must produce exactly one (VolumeMesh, Gmsh) \
+         realization; got {vm_gmsh}"
+    );
+
+    assert_eq!(
+        engine.cache_stats().realization_entries,
+        1,
+        "one terminal realization must create exactly one counted cache entry \
+         (conversion intermediates route through the uncounted plain insert). \
+         (VolumeMesh, Gmsh) provenance count was {vm_gmsh}"
+    );
+
+    // Second build of the SAME unmodified module: the terminal cache probe
+    // serves a hit, so no new entry is created.
+    engine.build(&compiled, ExportFormat::Step);
+    assert_eq!(
+        engine.cache_stats().realization_entries,
+        1,
+        "a repeat build served from the realization cache must NOT increment the \
+         counter — a cache hit realized nothing"
+    );
+}
+
 /// `cfg(not(has_gmsh))`: skip-stub.
 ///
 /// When the gmsh adapter is absent (no `has_gmsh` cfg), the registry does not
